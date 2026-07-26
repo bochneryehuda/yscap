@@ -1,0 +1,13 @@
+-- Estimated (projected) MONTHLY rental income entered on the loan file
+-- (owner-directed 2026-07-26, EMCAP note buyer).
+--
+-- This is a first-class, app-editable field distinct from:
+--   • applications.rental_income (db/047) — ClickUp PULL-ONLY, not app-writable,
+--   • the appraisal-derived market rent (appraisals.est_market_monthly_rent) —
+-- so a completeness requirement here never fights the ClickUp sync.
+--
+-- Required for application completeness when the note buyer is EMCAP and the
+-- strategy is fix-and-hold (enforced in src/routes/staff.js applicationCompleteness).
+-- Nullable: existing files simply show it as missing until an officer fills it
+-- (the completeness gate reads live, so "previous AND future" is automatic).
+ALTER TABLE applications ADD COLUMN IF NOT EXISTS estimated_rental_income numeric(14,2);

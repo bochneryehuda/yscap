@@ -223,6 +223,19 @@ const EyeOff = (
 
 /* What the borrower has and hasn't completed — so the officer sees at a glance
    what still needs chasing without opening every panel. */
+// EMCAP prices the rental cash flow, so a fix-and-hold loan sold to EMCAP needs an
+// estimated monthly rent for completeness. These mirror the server's
+// normNoteBuyer / normStrategy fix-hold branch (src/lib/conditions/field-registry.js)
+// — keep them in sync so the panel and the submit gate agree.
+const isEmcapBuyer = (app) => String(app.lender || '').toLowerCase().replace(/[^a-z0-9]/g, '') === 'emcap';
+function isFixHoldStrategy(app) {
+  const s = [app.program, app.loan_type, app.rehab_type].filter(Boolean).join(' ').toLowerCase();
+  if (!s) return false;
+  if (/ground|construction(?!\s*&)/.test(s) && /ground|new/.test(s)) return false; // ground_up
+  if (/dscr|rental|stabilized|long[-\s]?term|30[-\s]?year/.test(s)) return false;   // rental_dscr
+  return /hold|brrrr/.test(s);
+}
+
 // Field metadata shared by the staff + borrower completeness panels. `edit`
 // false = filled elsewhere (address picker / secure SSN flow) so we only hint.
 const COMPLETENESS_FIELDS = (app, borrower) => [
@@ -257,6 +270,11 @@ const COMPLETENESS_FIELDS = (app, borrower) => [
   // in ClickUp. STAFF-ONLY — this whole panel is staff; it's never on the borrower
   // completeness panel and the note-buyer name never reaches a borrower.
   { key: 'lender', label: 'Note buyer', ok: !!app.lender, type: 'notebuyer' },
+  // Estimated monthly rent — required for completeness only on an EMCAP
+  // fix-and-hold loan (owner-directed 2026-07-26). Hidden on every other file.
+  ...(isEmcapBuyer(app) && isFixHoldStrategy(app)
+    ? [{ key: 'estimated_rental_income', label: 'Estimated monthly rent', ok: app.estimated_rental_income != null, type: 'money' }]
+    : []),
   // Loan number (applications.ys_loan_number) — part of application completeness
   // (owner-directed 2026-07-20). Saved through the dedicated /loan-number entry so
   // it enforces the YSCAP format + cross-file/ClickUp uniqueness (a duplicate is
@@ -2921,6 +2939,7 @@ export default function StaffApplication() {
     { id: 'sec-orders', label: 'Orders (title & insurance)', group: 'Signing & documents',
       badge: (() => { const n = docs.filter(d => ['title_order_return', 'insurance_order_return'].includes(d.doc_kind) && !d.slot_label && d.is_current !== false).length; return n ? `${n} to assign` : ''; })() },
     { id: 'sec-documents', label: 'Documents & exports', group: 'Signing & documents', badge: docs.length || '' },
+    { id: 'sec-tapes', label: 'Capital-provider data tapes', group: 'Signing & documents' },
     { id: 'sec-track', label: 'Track record', group: 'Signing & documents' },
     { id: 'sec-messages', label: 'Communication & history', group: 'Communication' },
     // Construction draws is the LAST phase (post-funding), so it's the LAST section.
@@ -3426,9 +3445,13 @@ export default function StaffApplication() {
           })()}
       </div>
       {app.status === 'funded' && <PostClosing appId={id} />}
-      <TapeExport appId={id} />
       <TprExport appId={id} />
       <MismoExport appId={id} />
+      </Section>
+
+      <Section id="sec-tapes" title="Capital-provider data tapes" defaultOpen
+        info="Export this loan onto a capital provider's own tape (their Excel workbook with this loan's figures filled in). You can only export the tape for the provider this loan is currently set to; to export a different one, change the loan's capital provider first. For a seasoned loan you'll confirm the current balance, next payment date and interest reserve before it downloads.">
+      <TapeExport appId={id} />
       </Section>
 
       <Section id="sec-track" title="Track record" defaultOpen={false}
@@ -3713,6 +3736,7 @@ function TprExport({ appId }) {
 function TapeExport({ appId }) {
   const [state, setState] = useState(null);
   const [busy, setBusy] = useState(null);
+  const [msg, setMsg] = useState(''); // "Exported the X tape" confirmation
   const [pending, setPending] = useState(null); // { tapeKey, name, questions } — questionnaire modal
   useEffect(() => { api.staffTapesForApp(appId).then(setState).catch(() => setState({ tapes: [], currentBuyer: null, error: true })); }, [appId]);
   // Click → check whether this loan needs extra details before exporting:
@@ -3730,36 +3754,58 @@ function TapeExport({ appId }) {
     } catch (e) { alert((e.data && e.data.message) || e.message || 'Export failed'); setBusy(null); }
   }
   async function runExport(tapeKey, name, answers) {
-    setBusy(tapeKey);
-    try { const { blob, filename } = await api.staffTapeExport(appId, tapeKey, answers); saveBlob(blob, filename || `${name}-tape.xlsx`); setPending(null); }
-    catch (e) { alert((e.data && e.data.message) || e.message || 'Export failed'); }
+    setBusy(tapeKey); setMsg('');
+    try {
+      const { blob, filename } = await api.staffTapeExport(appId, tapeKey, answers);
+      saveBlob(blob, filename || `${name}-tape.xlsx`);
+      setPending(null);
+      setMsg(`Exported the ${name} tape. Check your downloads.`);
+    } catch (e) { alert((e.data && e.data.message) || e.message || 'Export failed'); }
     finally { setBusy(null); }
   }
   return (
-    <div className="panel" style={{ marginTop: 18 }}>
-      <div className="row" style={{ marginBottom: 6 }}>
-        <h3>Capital-provider data tapes</h3>
-        <div className="spacer" />
-        {state && <span className="muted small">Capital provider: {state.currentBuyer ? <strong>{state.currentBuyer}</strong> : <em>not set</em>}</span>}
+    <div className="panel" style={{ marginTop: 4 }}>
+      <div className="row" style={{ marginBottom: 6, alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
+        <span className="small" style={{ fontWeight: 600 }}>
+          This loan's capital provider: {state && (state.currentBuyer ? <strong>{state.currentBuyer}</strong> : <em>not set</em>)}
+        </span>
+        <button type="button" className="btn ghost small" onClick={() => goToSection('sec-overview')}
+          title="Jump to File overview, where you can change this loan's capital provider, then come back here to export its tape">
+          Change capital provider →
+        </button>
       </div>
       <p className="muted small">
-        Each capital provider has its own tape — their Excel workbook with this loan's figures filled into the data row,
-        so their pricing tab recalculates. You can only export the tape for the provider this loan is set to; to export a
-        different one, change the loan's capital provider first.
+        Each capital provider has its own tape — their Excel workbook with this loan's figures filled in. You can only
+        export the tape for the provider this loan is <strong>currently set to</strong>. To export a different provider's
+        tape, use “Change capital provider” above, switch it on the file, then come back here and export.
       </p>
+      {msg && <p className="small" role="status" style={{ color: 'var(--teal)', fontWeight: 600 }}>✓ {msg}</p>}
       {!state ? <p className="muted small">Loading…</p> : state.error ? (
         <p className="muted small" style={{ color: 'var(--gold)' }}>Couldn’t load the available tapes. Refresh to try again.</p>
       ) : (state.tapes || []).length === 0 ? (
         <p className="muted small">No tapes configured yet.</p>
       ) : (
-        <div style={{ display: 'grid', gap: 8, marginTop: 8 }}>
+        <div style={{ display: 'grid', gap: 10, marginTop: 8 }}>
           {state.tapes.map((t) => (
             <div key={t.key} className="row" style={{ alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
-              <div style={{ minWidth: 140 }}><strong>{t.name}</strong> <span className="muted small">tape</span></div>
-              <button className="btn primary small" disabled={!t.available || busy === t.key} onClick={() => start(t.key, t.name)}>
-                {busy === t.key ? 'Building…' : `Export ${t.name} tape (Excel)`}
-              </button>
-              {!t.available && <span className="muted small" style={{ color: 'var(--gold)' }}>{t.reason}</span>}
+              <div style={{ minWidth: 170 }}>
+                <strong>{t.name}</strong> <span className="muted small">tape</span>
+                {t.available && <span className="pill done small" style={{ marginLeft: 6 }}>this loan's provider</span>}
+              </div>
+              {t.available ? (
+                <button className="btn primary small" disabled={busy === t.key} onClick={() => start(t.key, t.name)}>
+                  {busy === t.key ? 'Building…' : `Export the ${t.name} tape (Excel)`}
+                </button>
+              ) : (
+                <span className="row small" style={{ gap: 6, alignItems: 'center', color: 'var(--gold)', flexWrap: 'wrap' }}>
+                  <button className="btn small" disabled title={t.reason}>Export the {t.name} tape</button>
+                  <span>{t.reason || `This loan isn't set to ${t.name}.`}</span>
+                  <button type="button" onClick={() => goToSection('sec-overview')}
+                    style={{ background: 'none', border: 'none', color: 'var(--teal)', textDecoration: 'underline', cursor: 'pointer', padding: 0, font: 'inherit' }}>
+                    switch this loan to {t.name} →
+                  </button>
+                </span>
+              )}
             </div>
           ))}
         </div>
