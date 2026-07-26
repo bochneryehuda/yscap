@@ -136,10 +136,13 @@ const ok = (c, n) => { assert.ok(c, n); console.log(`  ok  ${n}`); passed++; };
 
     // Term-sheet quick-link: the executed (signed) sheet + the draft both surface,
     // executed FIRST (the closer needs a direct link to the signed final sheet).
+    // Executed copy is OLDER than the draft, so plain created_at-DESC ordering
+    // would surface the DRAFT first — the assertion below therefore genuinely
+    // proves the executed-first SORT (not an accidental tie-break).
     await client.query(
-      `INSERT INTO documents (application_id, filename, doc_kind, is_current) VALUES
-         ($1,'term-sheet-draft.pdf','term_sheet',true),
-         ($1,'term-sheet-EXECUTED.pdf','term_sheet_signed',true)`, [appId]);
+      `INSERT INTO documents (application_id, filename, doc_kind, is_current, created_at) VALUES
+         ($1,'term-sheet-EXECUTED.pdf','term_sheet_signed',true, now() - interval '1 hour'),
+         ($1,'term-sheet-draft.pdf','term_sheet',true, now())`, [appId]);
     const ql = await closing.readQuickLinks(appId, null, client);
     ok(Array.isArray(ql.term_sheet) && ql.term_sheet.length === 2, 'term-sheet quick-link groups the executed sheet + the draft');
     ok(ql.term_sheet[0].doc_kind === 'term_sheet_signed', 'the executed (signed) term sheet is listed first');
