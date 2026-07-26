@@ -6887,6 +6887,13 @@ router.patch('/applications/:id/details', async (req, res) => {
     if (n != null && !isFinite(n)) return res.status(400).json({ error: `${k} must be a number` });
     sets.push(`${col}=$${i++}`); vals.push(n); touchedCols.push(col);
   }
+  // #FNM1025: an appraisal FORM number ("FNM1025") is not a property type — it is
+  // the name of the report. Refuse it at the door and say why, rather than storing
+  // a value that corrupts the category for pricing, ClickUp and every guideline.
+  if ('propertyType' in b) {
+    const ptProblem = require('../lib/property-type').propertyTypeProblem(b.propertyType);
+    if (ptProblem) return res.status(400).json({ error: ptProblem });
+  }
   for (const [k, col] of Object.entries(STR)) if (k in b) { const raw = b[k] === '' ? null : String(b[k]).slice(0, 200); sets.push(`${col}=$${i++}`); vals.push(col === 'loan_type' ? require('../lib/fields').sanitizeLoanType(raw) : raw); touchedCols.push(col); }   // #95: loan_type never a program
   for (const [k, col] of Object.entries(DATE)) if (k in b) {
     // sanitizeDateOnly enforces a REAL calendar date with a 4-digit year in
@@ -7292,6 +7299,9 @@ async function completeFields(req, res, borrowerScoped) {
     const brRow = await db.query(`SELECT borrower_id FROM applications WHERE id=$1 AND deleted_at IS NULL`, [req.params.id]);
     if (!brRow.rows[0]) return res.status(404).json({ error: 'not found' });
     const bid = brRow.rows[0].borrower_id;
+    // #FNM1025: an appraisal FORM number is not a property type (see PATCH /details).
+    const ptProblem = require('../lib/property-type').propertyTypeProblem(b.property_type);
+    if (ptProblem) return res.status(400).json({ error: ptProblem });
     const appVals = [req.params.id]; const appSets = []; const appKeys = [];
     for (const [k, t] of Object.entries(COMPLETE_APP_FIELDS)) {
       if (!(k in b) || b[k] === '' || b[k] == null) continue;
@@ -10930,7 +10940,10 @@ router.post('/applications/:id/esign/send', async (req, res) => {
       const encGate = await require('../encompass/reconcile').issuanceGate(req.params.id);
       if (encGate.block) {
         const ovr = String((req.body && req.body.encompassOverrideReason) || '').trim();
-        if (!seesAll(req)) return res.status(422).json({
+        // ADMIN-only override — `seesAll` also grants underwriter / closer /
+        // coordinators, who must not be able to send a mismatched package.
+        // Matches the data-tape gate's `tapeAdmin` rule.
+        if (!tapeAdmin(req)) return res.status(422).json({
           error: `Encompass and this file don’t agree yet — ${encGate.openBlocking} field(s) don’t match. Clear the Encompass sync (or ask an admin to override) before sending the term sheet for signature.`,
           code: 'encompass_findings_open', openFields: encGate.openBlockingKeys,
         });
@@ -10938,7 +10951,11 @@ router.post('/applications/:id/esign/send', async (req, res) => {
           error: `Encompass has ${encGate.openBlocking} unmatched field(s). As an admin you can override — provide a reason to send the signing package anyway.`,
           code: 'encompass_override_reason_required', openFields: encGate.openBlockingKeys,
         });
-        await audit(req, 'encompass_gate_override', 'application', req.params.id, { reason: ovr.slice(0, 500), purpose, openBlocking: encGate.openBlocking, openFields: encGate.openBlockingKeys });
+        // Its OWN try — the outer fail-open catch must never swallow the audit of
+        // an override that actually happened.
+        try {
+          await audit(req, 'encompass_gate_override', 'application', req.params.id, { reason: ovr.slice(0, 500), purpose, openBlocking: encGate.openBlocking, openFields: encGate.openBlockingKeys });
+        } catch (_) { /* audit is best-effort but must not be silently lost to fail-open */ }
         try {
           await require('../lib/loan-exceptions').recordIssuanceOverride({
             appId: req.params.id, staffId: req.actor && req.actor.id,

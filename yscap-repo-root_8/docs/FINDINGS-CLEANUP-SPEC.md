@@ -78,7 +78,7 @@ SILENT. Per-rule dispositions the owner dictated:
    month count was program-only (Gold 2, Standard 1). `src/lib/liquidity.js` now takes whichever is
    stricter, program or note buyer, keyed with the SAME shared normalizer the conditions engine uses
    so any spelling of the note buyer matches. A note buyer can only RAISE the count. The borrower-
-   facing line still never names the note buyer. `db/323` raises existing OPEN Blue Lake files (never
+   facing line still never names the note buyer. `db/325` raises existing OPEN Blue Lake files (never
    a signed-off, waived, funded or closed one; never lowers a count).
 3. **Property type tie-out maps the wrong fields** — comparing appraisal "Detached" (a STYLE) to
    file "Multi 2–4" (a RANGE). Compare **unit COUNT to unit COUNT**, both from the appraisal XML and
@@ -116,7 +116,7 @@ SILENT. Per-rule dispositions the owner dictated:
    and the direct `/project/<id>/traces/<id>` form once it is — looked up once from Langfuse's own
    API, or taken from `LANGFUSE_PROJECT_ID`. A link is therefore available the moment a trace exists,
    with no lookup and no race, so findings written seconds after a deploy are not stuck link-less.
-   `db/322` REWRITES the dead links already stored rather than clearing them, preserving the trace id
+   `db/324` REWRITES the dead links already stored rather than clearing them, preserving the trace id
    — which matters most for the regulator-facing AI decision export, where nulling the column would
    have destroyed an audit reference permanently. Scoped to project segments that are provably not
    identifiers, and a false positive merely swaps one working form for another.

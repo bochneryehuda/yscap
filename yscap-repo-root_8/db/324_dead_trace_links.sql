@@ -1,4 +1,4 @@
--- 322 — REPAIR the AI-finding trace links that could never resolve (owner-reported 2026-07-26).
+-- 324 — REPAIR the AI-finding trace links that could never resolve (owner-reported 2026-07-26).
 --
 -- The owner: "the 'AI reasoning trace →' link 404s — trace not found. Either point it at a real
 -- trace or remove the link. A dead link on every finding erodes trust in all of them."

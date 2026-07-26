@@ -370,6 +370,16 @@ async function writeFieldValue(appId, borrowerId, fieldKey, rawValue, by = {}) {
                      updated_by_id=EXCLUDED.updated_by_id, updated_at=now()`,
       [appId, fieldKey, JSON.stringify(value), by.kind || 'borrower', by.id || null]);
   } else if (target.table === 'applications') {
+    // #FNM1025: applications.property_type stores the portal LABEL ("Multi 2–4")
+    // — that is what the forms write and what the ClickUp dropdown crosswalk is
+    // keyed on. This enum path validates against the rule KEYS ("multi_2_4"), so
+    // writing the key straight through left the file in a spelling no other door
+    // uses: it wouldn't map to the ClickUp option, and it re-tripped every raw
+    // text comparison. Canonicalize to the label on the way out.
+    if (target.column === 'property_type') {
+      const label = require('../property-type').canonicalPropertyTypeLabel(value);
+      if (label) value = label;
+    }
     await db.query(`UPDATE applications SET ${target.column}=$2, updated_at=now() WHERE id=$1`, [appId, value]);
   } else {
     await db.query(`UPDATE borrowers SET ${target.column}=$2, updated_at=now() WHERE id=$1`, [borrowerId, value]);
