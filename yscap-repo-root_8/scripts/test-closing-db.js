@@ -14,6 +14,7 @@ if (!process.env.DATABASE_URL) { console.log('SKIP test-closing-db (no DATABASE_
 const assert = require('assert');
 const { Pool } = require('pg');
 const closing = require('../src/lib/closing');
+const workflow = require('../src/lib/workflow');
 
 let passed = 0;
 const ok = (c, n) => { assert.ok(c, n); console.log(`  ok  ${n}`); passed++; };
@@ -40,8 +41,31 @@ const ok = (c, n) => { assert.ok(c, n); console.log(`  ok  ${n}`); passed++; };
        RETURNING id`, [b.id, JSON.stringify(loan)])).rows[0];
     const appId = app.id;
 
-    // closing_workflow row + closing conditions.
-    await client.query(`INSERT INTO closing_workflow (application_id, stage) VALUES ($1,'estimated')`, [appId]);
+    // A staffer to attribute the closing submit to (openClosing stamps _by fields).
+    const actor = (await client.query(
+      `INSERT INTO staff_users (email,full_name,role,is_active)
+         VALUES ($1,'Closing Actor','closer',true) RETURNING id`,
+      ['closeactor+' + Buffer.from(String(process.pid)).toString('hex') + '@example.com'])).rows[0];
+
+    // Open the closing row through the REAL submit helper (a bare INSERT would not
+    // exercise the parameterized query — the $4::uuid used both directly and inside
+    // CASE WHEN ... THEN $4 END regressed a "server error" on every closing submit).
+    await workflow.openClosing(client, {
+      appId, workflowItemId: null, estClosingDate: '2026-08-15', actorId: actor.id,
+      investorCtc: true, closingDateConfirmed: true,
+    });
+    const cw = (await client.query(
+      `SELECT stage, investor_ctc, investor_ctc_by, closing_date_confirmed, closing_date_confirmed_by
+         FROM closing_workflow WHERE application_id=$1`, [appId])).rows[0];
+    ok(cw && cw.stage === 'estimated', 'openClosing creates the closing row at "estimated" (no $4 type error)');
+    ok(cw.investor_ctc === true && cw.investor_ctc_by === actor.id, 'openClosing stamps investor CTC + the actor id');
+    ok(cw.closing_date_confirmed === true && cw.closing_date_confirmed_by === actor.id, 'openClosing stamps confirmed-with-parties + the actor id');
+    // Idempotent ON CONFLICT path (a re-submit) must also not throw on $4.
+    await workflow.openClosing(client, {
+      appId, workflowItemId: null, estClosingDate: '2026-08-16', actorId: actor.id,
+      investorCtc: false, closingDateConfirmed: false,
+    });
+
     await closing.ensureClosingConditions(client, appId);
     await closing.ensureClosingConditions(client, appId); // idempotent
     const conds = (await client.query(
