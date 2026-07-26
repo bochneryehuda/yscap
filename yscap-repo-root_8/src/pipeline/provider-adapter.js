@@ -101,15 +101,20 @@ function makeAdapter({ provider, service, analyze, healthCheck, clock = nowMs } 
       if (typeof healthCheck !== 'function') {
         return { ok: false, provider: P, service: S, latencyMs: 0, detail: 'no health check defined' };
       }
+      let timer = null;
       try {
         const res = await Promise.race([
           Promise.resolve().then(healthCheck),
-          new Promise((_, rej) => setTimeout(() => rej(new Error('health check timed out')), HEALTH_TIMEOUT_MS)),
+          new Promise((_, rej) => { timer = setTimeout(() => rej(new Error('health check timed out')), HEALTH_TIMEOUT_MS); if (timer && timer.unref) timer.unref(); }),
         ]);
         const r = res || {};
         return { ok: r.ok === true, provider: P, service: S, latencyMs: Math.max(0, clock() - t0), detail: str(r.detail) || (r.ok ? 'ok' : 'unavailable') };
       } catch (e) {
         return { ok: false, provider: P, service: S, latencyMs: Math.max(0, clock() - t0), detail: (e && e.message) || 'health check failed' };
+      } finally {
+        // Clear the race's timeout so a fast, healthy probe doesn't leave a dangling
+        // timer holding the event loop open (would delay process exit by up to the timeout).
+        if (timer) clearTimeout(timer);
       }
     },
   };
@@ -117,10 +122,12 @@ function makeAdapter({ provider, service, analyze, healthCheck, clock = nowMs } 
 
 /** Run every adapter's healthCheck() concurrently; never throws. Returns a structured report. */
 async function checkAll(adapters = []) {
-  const checks = await Promise.all((adapters || []).map((a) => {
-    try { return a.healthCheck(); }
-    catch (e) { return Promise.resolve({ ok: false, provider: a && a.provider, service: a && a.service, latencyMs: 0, detail: (e && e.message) || 'threw' }); }
-  }));
+  const checks = await Promise.all((adapters || []).map((a) => Promise.resolve()
+    .then(() => a.healthCheck())
+    // Belt-and-suspenders: makeAdapter's healthCheck never throws/rejects, but a
+    // hand-rolled adapter might — catch both sync throws and async rejections so one
+    // bad adapter can never fail the whole health report.
+    .catch((e) => ({ ok: false, provider: a && a.provider, service: a && a.service, latencyMs: 0, detail: (e && e.message) || 'threw' }))));
   return { checkedAt: null, providers: checks, healthy: checks.filter((c) => c.ok).length, total: checks.length };
 }
 
