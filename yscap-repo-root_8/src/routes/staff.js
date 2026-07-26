@@ -7370,11 +7370,30 @@ router.post('/applications/:id/workflow/submit', async (req, res) => {
 });
 
 // MY personal workflow. ?tab=next|history &sort=received|priority|aging &type=…
+// Admin/super_admin OVERSIGHT (owner-directed 2026-07-26): view each workflow
+// SEPARATELY — `?role=closer|processor|draw_coordinator|underwriter|super_admin`
+// shows that whole role's live workflow; `?staffId=<id>` shows one person's queue.
+// Never merged; the personal queue (no role/staffId) is unchanged for everyone.
 router.get('/workflow', async (req, res) => {
   try {
-    const rows = await workflow.listQueue(req.actor.id, { tab: req.query.tab, sort: req.query.sort, type: req.query.type });
-    res.json(rows);
+    const opts = { tab: req.query.tab, sort: req.query.sort, type: req.query.type };
+    if (isAdmin(req)) {
+      if (req.query.role && workflow.WORKFLOW_ROLES.includes(req.query.role)) {
+        return res.json(await workflow.listByRole(req.query.role, opts));
+      }
+      if (req.query.staffId) {
+        return res.json(await workflow.listQueue(req.query.staffId, opts));
+      }
+    }
+    res.json(await workflow.listQueue(req.actor.id, opts));
   } catch (e) { console.warn('[workflow] list error:', db.describeError(e)); res.status(500).json({ error: 'server error' }); }
+});
+
+// The active-staff roster for the admin workflow picker (who → which workflow).
+router.get('/workflow/roster', async (req, res) => {
+  if (!isAdmin(req)) return res.status(403).json({ error: 'forbidden' });
+  try { res.json({ staff: await workflow.allActiveStaff(), roles: workflow.WORKFLOW_ROLES }); }
+  catch (e) { res.status(500).json({ error: 'server error' }); }
 });
 
 // Counts for the nav badge + KPI tiles.

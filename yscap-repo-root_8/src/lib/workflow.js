@@ -326,6 +326,43 @@ async function listQueue(staffId, { tab = 'next', sort = 'received', type = null
   return r.rows;
 }
 
+// The roles that HAVE a workflow queue (for the admin/super_admin oversight
+// picker). Each is viewed as its OWN separate workflow — never merged together.
+const WORKFLOW_ROLES = ['processor', 'closer', 'draw_coordinator', 'underwriter', 'super_admin'];
+
+// ADMIN/SUPER_ADMIN oversight: every live item in ONE role's workflow (all people
+// who hold that role + that role's unclaimed inbox). This is a SEPARATE per-workflow
+// view (the closer workflow, the processing workflow, the draw workflow…), not a
+// merged "everyone" list. Returns the same row shape as the personal queue PLUS
+// `to_name`/`to_staff_role` (whose queue each item is in).
+async function listByRole(role, { sort = 'received', type = null } = {}, client = db) {
+  const params = [role];
+  let typeClause = '';
+  if (type && TYPES[type]) { params.push(type); typeClause = ` AND w.submission_type = $${params.length}`; }
+  const orderBy = SORTS[sort] || SORTS.received;
+  const r = await client.query(
+    `SELECT w.id, w.application_id, w.submission_type, w.status, w.priority, w.note,
+            w.est_closing_date, w.received_at, w.picked_up_at, w.to_role, w.due_at, w.auto,
+            EXTRACT(EPOCH FROM (now() - w.received_at)) AS age_seconds,
+            CASE WHEN w.due_at IS NULL THEN NULL
+                 WHEN now() >= w.due_at THEN 'overdue'
+                 WHEN now() >= w.received_at + (w.due_at - w.received_at) * 0.75 THEN 'at_risk'
+                 ELSE 'ok' END AS sla_state,
+            a.ys_loan_number, a.property_address, a.status AS app_status,
+            b.first_name, b.last_name,
+            fr.full_name AS from_name, ts.full_name AS to_name, ts.role AS to_staff_role
+       FROM workflow_items w
+       JOIN applications a ON a.id = w.application_id
+       JOIN borrowers b ON b.id = a.borrower_id
+       LEFT JOIN staff_users fr ON fr.id = w.from_staff_id
+       LEFT JOIN staff_users ts ON ts.id = w.to_staff_id
+      WHERE w.status IN ('open','in_progress') AND a.deleted_at IS NULL
+        AND (ts.role = $1 OR (w.to_staff_id IS NULL AND w.to_role = $1))
+        ${typeClause}
+      ORDER BY ${orderBy}`, params);
+  return r.rows;
+}
+
 // Recipients with overdue live items — for the scheduled aging nudge (db/213).
 // Returns [{ to_staff_id, full_name, email, overdue }]. Best-effort read.
 async function overdueByRecipient(client = db) {
@@ -441,6 +478,6 @@ module.exports = {
   TYPES, TYPE_KEYS, typeConfig, OUTCOME_LABELS, SLA_HOURS, slaHoursFor,
   candidatesForRole, allActiveStaff,
   conditionsClearedPct, fileLiveItems, fileTimeline,
-  submitItem, pickItem, returnItem, listQueue, queueCounts, overdueByRecipient,
+  submitItem, pickItem, returnItem, listQueue, listByRole, WORKFLOW_ROLES, queueCounts, overdueByRecipient,
   CLOSING_STAGES, getClosing, openClosing, advanceClosing,
 };

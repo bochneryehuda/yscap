@@ -622,6 +622,7 @@ export const api = {
   workflowTimeline:  (appId) => req('GET', `/api/staff/applications/${appId}/workflow/timeline`),
   workflowSubmit:    (appId, b) => req('POST', `/api/staff/applications/${appId}/workflow/submit`, b),
   workflowQueue:     (params) => req('GET', `/api/staff/workflow${params ? '?' + new URLSearchParams(params).toString() : ''}`),
+  workflowRoster:    () => req('GET', '/api/staff/workflow/roster'),
   workflowCount:     () => req('GET', '/api/staff/workflow/count'),
   workflowPickup:    (itemId) => req('POST', `/api/staff/workflow/${itemId}/pickup`),
   workflowReturn:    (itemId, outcomeLabel, note) => req('POST', `/api/staff/workflow/${itemId}/return`, { outcomeLabel, note }),
