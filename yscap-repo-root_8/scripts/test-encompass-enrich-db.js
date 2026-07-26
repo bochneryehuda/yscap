@@ -33,6 +33,11 @@ const loanFor = (first, last, dob, addr, llcName) => ({
      VALUES ($1,$2,$3::jsonb,$4, now())`, [guid, guid, JSON.stringify(raw), appId || null]);
   try {
     await client.query('BEGIN');
+    // Isolate the enrichment pass to just this test's fixtures: clear the snapshot
+    // table WITHIN the rolled-back transaction so the global summary counters
+    // (matched / addressesAdded / llcsAdded) are deterministic even if the target
+    // DB already holds committed encompass_loan_snapshot rows. Rolled back at the end.
+    await client.query('DELETE FROM encompass_loan_snapshot');
     const suffix = Buffer.from(String(process.pid)).toString('hex');
     const b = (await client.query(
       `INSERT INTO borrowers (first_name,last_name,email,date_of_birth)
@@ -40,13 +45,17 @@ const loanFor = (first, last, dob, addr, llcName) => ({
 
     const A = { street: '12 Churchill Lane', city: 'Brooklyn', state: 'NY', zip: '11230' };
     const B = { street: '400 Ocean Parkway', city: 'Brooklyn', state: 'NY', zip: '11218' };
-    const keyA = enrich._internals.addrKey(enrich._internals.subjectAddress(loanFor('Yehuda', 'Bochner', '1985-03-10', A)));
 
-    // A property + an LLC ALREADY on the profile (a human/ClickUp record we must NOT touch).
+    // The A property is ALREADY on the profile from ClickUp — GEOCODED + ABBREVIATED
+    // ("12 Churchill Ln, …, USA") with the OLD simple address_key, i.e. a DIFFERENT
+    // spelling than Encompass sends ("12 Churchill Lane, …"). This is the exact
+    // cross-source case the owner named ("don't add it twice"): enrichment must
+    // dedupe A against it via the strong canon and NOT re-add it, NOR touch it.
+    const clickupA = { formatted_address: '12 Churchill Ln, Brooklyn, NY 11230, USA' };
     const trExisting = (await client.query(
       `INSERT INTO track_records (borrower_id, property_address, is_verified, origin, address_key, notes)
-       VALUES ($1,'{"oneLine":"12 Churchill Lane"}'::jsonb, true, 'portal', $2, 'original human record') RETURNING id`,
-      [b.id, keyA])).rows[0];
+       VALUES ($1,$2::jsonb, true, 'portal', $3, 'original human record') RETURNING id`,
+      [b.id, JSON.stringify(clickupA), enrich._internals.addrKey(clickupA)])).rows[0];
     await client.query(`INSERT INTO llcs (borrower_id, llc_name, is_verified, origin) VALUES ($1,'Existing LLC', true, 'portal')`, [b.id]);
 
     // Two Encompass loans for this borrower: one already-present (skip), one new (add).

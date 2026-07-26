@@ -36,12 +36,42 @@ function normDob(v) {
   return m ? `${m[1]}-${m[2]}-${m[3]}` : null;
 }
 
-// The canonical address dedupe key — the SAME shape ClickUp's ingest.addrKey uses
-// (lowercased, non-alphanumerics stripped) so an Encompass address dedupes against
-// a track record added by any other source.
+// The simple key ClickUp's ingest.addrKey uses (kept for reference/compat).
 function addrKey(a) {
   const s = a && (a.formatted_address || a.oneLine);
   return s ? String(s).toLowerCase().replace(/[^a-z0-9]/g, '') : null;
+}
+
+// A STRONGER canonical key for cross-source dedupe: the Encompass one-line and an
+// already-stored ClickUp/portal `formatted_address` spell the same property
+// differently ("12 Churchill Lane…" vs a geocoded "12 Churchill Ln…, USA"), so a
+// bare alnum strip would MISS the existing row and re-add a property the borrower
+// already has. This expands street-type + directional abbreviations and drops the
+// trailing country / ZIP+4 so both spellings collapse to one key — WITHOUT a
+// Google key. (address-canon.samePlace adds place_id matching on top when a key
+// is configured.)
+const STREET_TYPES = {
+  st: 'street', str: 'street', ave: 'avenue', av: 'avenue', blvd: 'boulevard', rd: 'road', ln: 'lane',
+  dr: 'drive', ct: 'court', pl: 'place', ter: 'terrace', terr: 'terrace', pkwy: 'parkway', hwy: 'highway',
+  cir: 'circle', sq: 'square', trl: 'trail', pt: 'point', hts: 'heights', xing: 'crossing',
+};
+const DIRS = { n: 'north', s: 'south', e: 'east', w: 'west', ne: 'northeast', nw: 'northwest', se: 'southeast', sw: 'southwest' };
+function addrString(a) {
+  if (!a) return '';
+  if (typeof a === 'string') return a;
+  return a.formatted_address || a.oneLine
+    || [a.street, a.city, [a.state, a.zip].filter(Boolean).join(' ')].filter(Boolean).join(', ');
+}
+function normAddr(a) {
+  const raw = addrString(a);
+  if (!raw) return null;
+  let t = String(raw).toLowerCase();
+  t = t.replace(/,?\s*(u\.?s\.?a\.?|united states)\s*$/i, ' '); // drop trailing country
+  t = t.replace(/\b(\d{5})-\d{4}\b/g, '$1');                    // ZIP+4 → 5-digit
+  t = t.replace(/[.,#]/g, ' ');                                 // punctuation → space
+  const words = t.split(/\s+/).filter(Boolean).map((w) => (STREET_TYPES[w] != null ? STREET_TYPES[w] : (DIRS[w] || w)));
+  const key = words.join('').replace(/[^a-z0-9]/g, '');
+  return key || null;
 }
 
 // The parties on a loan (borrower + co-borrower across applications[]).
@@ -92,17 +122,38 @@ function vestingLlc(raw) {
 // ── DB writes (into OUR tables only — add-only-if-absent) ───────────────────
 
 // Add the subject address to the borrower's track record IF that address is not
-// already present (from any source). NEVER updates an existing row.
+// already present FROM ANY SOURCE. NEVER updates an existing row. Dedupe scans the
+// borrower's existing records and compares by the STRONG canonical key (so an
+// Encompass "12 Churchill Lane…" matches an already-stored ClickUp "12 Churchill
+// Ln…, USA"), plus address-canon.samePlace as a best-effort secondary when a
+// Google key is configured. The INSERT is a single atomic `WHERE NOT EXISTS` on
+// the canonical key so two Encompass passes can't both insert the same address.
 async function addTrackRecordIfAbsent(dbc, borrowerId, addr) {
-  const key = addrKey(addr);
-  if (!key) return { added: false, reason: 'no_address' };
-  const exists = await dbc.query(
-    `SELECT id FROM track_records WHERE borrower_id=$1 AND address_key=$2 LIMIT 1`, [borrowerId, key]);
-  if (exists.rows[0]) return { added: false, id: exists.rows[0].id, reason: 'already_present' };
+  const encKey = normAddr(addr);
+  if (!encKey) return { added: false, reason: 'no_address' };
+  const encStr = addrString(addr);
+
+  const existing = (await dbc.query(
+    `SELECT id, property_address, address_key FROM track_records WHERE borrower_id=$1`, [borrowerId])).rows;
+  let canon = null;
+  try { const cfg = require('../config'); if (cfg && cfg.googlePlacesKey) canon = require('../lib/address-canon'); } catch (_) { /* optional */ }
+  for (const row of existing) {
+    if (row.address_key && row.address_key === encKey) return { added: false, id: row.id, reason: 'already_present' };
+    const exStr = addrString(row.property_address || {});
+    if (exStr && normAddr(exStr) === encKey) return { added: false, id: row.id, reason: 'already_present' };
+    if (canon && exStr && encStr) {
+      try { if ((await canon.samePlace(encStr, exStr)) === true) return { added: false, id: row.id, reason: 'already_present' }; } catch (_) { /* best-effort */ }
+    }
+  }
+
+  // Atomic guard against a concurrent Encompass insert of the same canonical key.
   const r = await dbc.query(
     `INSERT INTO track_records (borrower_id, property_address, is_verified, origin, inferred, address_key, notes)
-     VALUES ($1,$2::jsonb,false,'encompass',true,$3,$4) RETURNING id`,
-    [borrowerId, JSON.stringify(addr), key, 'Added from Encompass history; unverified']);
+     SELECT $1,$2::jsonb,false,'encompass',true,$3,$4
+      WHERE NOT EXISTS (SELECT 1 FROM track_records WHERE borrower_id=$1 AND address_key=$3)
+     RETURNING id`,
+    [borrowerId, JSON.stringify(addr), encKey, 'Added from Encompass history; unverified']);
+  if (!r.rows[0]) return { added: false, reason: 'already_present' };
   return { added: true, id: r.rows[0].id };
 }
 
@@ -192,5 +243,5 @@ module.exports = {
   addTrackRecordIfAbsent,
   addLlcIfAbsent,
   matchBorrower,
-  _internals: { normName, normDob, addrKey, extractParties, subjectAddress, vestingLlc },
+  _internals: { normName, normDob, addrKey, normAddr, addrString, extractParties, subjectAddress, vestingLlc },
 };

@@ -6,7 +6,7 @@
  */
 const assert = require('assert');
 const enrich = require('../src/encompass/enrich');
-const { normName, normDob, addrKey, extractParties, subjectAddress, vestingLlc } = enrich._internals;
+const { normName, normDob, addrKey, normAddr, extractParties, subjectAddress, vestingLlc } = enrich._internals;
 
 let passed = 0;
 const ok = (n) => { console.log(`  ok  ${n}`); passed++; };
@@ -23,6 +23,23 @@ assert.strictEqual(addrKey({ formatted_address: '12 Churchill Lane, Brooklyn, NY
 assert.strictEqual(addrKey({ oneLine: '12 Churchill Ln' }), '12churchillln');
 assert.strictEqual(addrKey({}), null);
 ok('addrKey canonicalizes an address for dedupe (same shape as the ClickUp builder)');
+
+// normAddr — the STRONG cross-source key: Encompass "Lane" must equal a geocoded
+// ClickUp "Ln, …, USA" so an already-present property is not re-added.
+assert.strictEqual(
+  normAddr({ oneLine: '12 Churchill Lane, Brooklyn, NY 11230' }),
+  normAddr({ formatted_address: '12 Churchill Ln, Brooklyn, NY 11230, USA' }),
+  'Lane ≡ Ln and trailing USA is dropped');
+assert.strictEqual(
+  normAddr('45 North Ave, Spring Valley, NY 10977-1234'),
+  normAddr('45 N Avenue, Spring Valley, NY 10977'),
+  'N ≡ North, Ave ≡ Avenue, ZIP+4 → 5');
+assert.notStrictEqual(
+  normAddr('12 Churchill Lane, Brooklyn'),
+  normAddr('14 Churchill Lane, Brooklyn'),
+  'different house numbers stay distinct');
+assert.strictEqual(normAddr(''), null);
+ok('normAddr canonicalizes street-type/direction abbreviations + drops country/ZIP+4 for cross-source dedupe');
 
 // extractParties
 const raw = {
