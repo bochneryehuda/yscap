@@ -121,7 +121,12 @@ async function main() {
     assert.ok(/BlueLake-BidTape-.*\.xlsx/.test(bl.filename), `Blue Lake filename shaped: ${bl.filename}`);
     const blSheet = unzip(bl.buf).find((p) => p.name === 'xl/worksheets/sheet1.xml').data.toString('utf8');
     assert.ok(blSheet.indexOf(`YSCAP-TP-${SUFFIX}-C`) > -1, 'Blue Lake Bid Tape carries the loan number');
-    assert.ok(/<c r="AJ3"[^>]*><f>AF3\+AH3<\/f><\/c>/.test(blSheet), 'Blue Lake per-row formula (total project costs) preserved');
+    assert.ok(/<c r="AJ3"[^>]*><f>AF3\+AH3<\/f><v>[0-9]/.test(blSheet), 'Blue Lake per-row formula (total project costs) preserved WITH a cached value');
+    // The three underwriting ratios ship with a cached value so the actual Initial
+    // LTV / LTC / Final LTV display without a recalculation (owner-directed).
+    assert.ok(/<c r="AN3"[^>]*><f>T3\/AK3<\/f><v>0?\.[0-9]/.test(blSheet), 'Blue Lake Initial LTV (AN) carries a cached ratio');
+    assert.ok(/<c r="AO3"[^>]*><f>W3\/AJ3<\/f><v>0?\.[0-9]/.test(blSheet), 'Blue Lake LTC (AO) carries a cached ratio');
+    assert.ok(/<c r="AP3"[^>]*><f>W3\/AL3<\/f><v>0?\.[0-9]/.test(blSheet), 'Blue Lake Final LTV (AP) carries a cached ratio');
     assert.ok(unzip(bl.buf).find((p) => p.name === 'xl/media/image1.png'), 'Blue Lake logo image preserved');
 
     let bmErr = null;

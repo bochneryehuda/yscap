@@ -98,7 +98,11 @@ function appraisalTypeV(loan) {
   if (!f) return '';
   if (f.indexOf('1004') > -1) return '1004 Appraisal';
   if (f.indexOf('1073') > -1) return '1073 Appraisal';
-  if (f.indexOf('2055') > -1 || f.indexOf('1025') > -1) return '2055 Appraisal';
+  // A 1025 (Small Residential Income Property — 2-4 units) is its OWN type: label
+  // it "1025 Appraisal" (owner-directed 2026-07-26). Fidelis's own dropdown lists
+  // 1004/1073/2055/BPO, so this writes a value beyond that list — intended.
+  if (f.indexOf('1025') > -1) return '1025 Appraisal';
+  if (f.indexOf('2055') > -1) return '2055 Appraisal';
   if (f.indexOf('bpo') > -1) return 'BPO';
   return loan.appraisal.form_type;
 }

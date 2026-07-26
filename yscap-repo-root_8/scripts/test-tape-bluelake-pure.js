@@ -129,10 +129,21 @@ ok(cellOf(fourNoUnits, 'Q').value === 'Fourplex', 'Fourplex with missing units s
 const primaryFico = synthLoan(); primaryFico.borrower.fico = 712; primaryFico.fico = 800;
 ok(cellOf(primaryFico, 'BE').value === 712, 'BE = primary guarantor FICO (not GREATEST)');
 
-// formula cells carry a {r} template
-ok(cellOf(loan, 'AE').type === 'f' && cellOf(loan, 'AE').value === 'IFERROR(X{r}/U{r},"")', 'AE completion % is a formula');
-ok(cellOf(loan, 'AJ').type === 'f' && cellOf(loan, 'AJ').value === 'AF{r}+AH{r}', 'AJ total project costs is a formula');
+// formula cells carry a {r} template formula AND a cached computed value (so the
+// ratio/total DISPLAYS in a viewer that doesn't recalculate — the actual initial
+// LTV / LTC / final (after-repair) LTV). value is now { f, v }.
+ok(cellOf(loan, 'AE').type === 'f' && cellOf(loan, 'AE').value.f === 'IFERROR(X{r}/U{r},"")', 'AE completion % is a formula');
+ok(cellOf(loan, 'AE').value.v === 0, 'AE cached completion % = 0 at origination (0 of 75k holdback disbursed)');
+ok(cellOf(loan, 'AJ').type === 'f' && cellOf(loan, 'AJ').value.f === 'AF{r}+AH{r}', 'AJ total project costs is a formula');
+ok(cellOf(loan, 'AJ').value.v === 425000, 'AJ cached total project costs = 350k purchase + 75k rehab');
 ok(cellOf(loan, 'AN').type === 'f' && cellOf(loan, 'AO').type === 'f' && cellOf(loan, 'AP').type === 'f', 'AN/AO/AP ratios are formulas');
+// The three underwriting ratios now carry the ACTUAL cached value (owner-directed).
+ok(Math.abs(cellOf(loan, 'AN').value.v - 275000 / 350000) < 1e-12, 'AN cached Initial LTV = day-1 275k ÷ AIV 350k');
+ok(Math.abs(cellOf(loan, 'AO').value.v - 350000 / 425000) < 1e-12, 'AO cached LTC = total 350k ÷ cost 425k');
+ok(cellOf(loan, 'AP').value.v === 0.7, 'AP cached Final LTV = total 350k ÷ ARV 500k = 0.7');
+// A missing denominator (no ARV) → no cached value (cell keeps just its formula).
+const noArv = synthLoan(); noArv.app.arv = null; noArv.appraisal = { arv_value: null };
+ok(cellOf(noArv, 'AP').value.v == null, 'AP cached value omitted when ARV is missing (no pre-cached #DIV/0!)');
 
 // Blue-Lake-completes columns are blank; Borrower Liquidity intentionally blank
 ok(cellOf(loan, 'BA').value === '' && cellOf(loan, 'BB').value === '', 'Purchase Rate / Lender Spread left for Blue Lake');
@@ -150,8 +161,13 @@ assert.deepStrictEqual(changed, ['xl/workbook.xml', SHEET], `ONLY Bid Tape + wor
 passed++;
 const sx = nParts.find((p) => p.name === SHEET).data.toString('utf8');
 ok(/<c r="T3" s="18"><v>275000<\/v><\/c>/.test(sx), 'T3 number injected WITH the sample row style (inherited)');
-ok(/<c r="AE3" s="5"><f>IFERROR\(X3\/U3,""\)<\/f><\/c>/.test(sx), 'AE3 formula emitted with {r}=3 and inherited style');
-ok(/<c r="AJ3"[^>]*><f>AF3\+AH3<\/f><\/c>/.test(sx), 'AJ3 total-project-costs formula references row 3');
+ok(/<c r="AE3" s="5"><f>IFERROR\(X3\/U3,""\)<\/f><v>0<\/v><\/c>/.test(sx), 'AE3 formula + cached 0, {r}=3, inherited style');
+ok(/<c r="AJ3"[^>]*><f>AF3\+AH3<\/f><v>425000<\/v><\/c>/.test(sx), 'AJ3 total-project-costs formula + cached 425000');
+// The actual underwriting ratios are emitted as cached values on the filled row so
+// they display without a recalculation (the reported fix).
+ok(/<c r="AN3"[^>]*><f>T3\/AK3<\/f><v>0\.785714285714/.test(sx), 'AN3 (Initial LTV) carries the actual cached ratio');
+ok(/<c r="AO3"[^>]*><f>W3\/AJ3<\/f><v>0\.82352941176/.test(sx), 'AO3 (LTC) carries the actual cached ratio');
+ok(/<c r="AP3"[^>]*><f>W3\/AL3<\/f><v>0\.7<\/v><\/c>/.test(sx), 'AP3 (Final LTV) carries the actual cached ratio');
 ok(/<c r="P3"[^>]*t="inlineStr"><is><t[^>]*>07104<\/t>/.test(sx), 'P3 zip stays text (leading zero preserved)');
 ok(nParts.find((p) => p.name === 'xl/workbook.xml').data.toString('utf8').indexOf('fullCalcOnLoad="1"') > -1, 'workbook recalcs on open');
 ok(/<dimension ref="A1:CD99"\/>/.test(sx), 'dimension not shrunk — keeps the template end column CD (never-shrink on both axes)');

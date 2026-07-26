@@ -99,13 +99,25 @@ function cellXml(spec, rowNum, styleMap) {
   let v = spec.value;
 
   // Formula cell: a per-row formula. `{r}` is replaced with this row's number so
-  // each loan row references its own cells (e.g. "AF{r}+AH{r}"). No cached value —
-  // fullCalcOnLoad recomputes it on open. Escape only XML specials, not quotes.
+  // each loan row references its own cells (e.g. "AF{r}+AH{r}"). The value is
+  // EITHER a formula STRING ("AF{r}+AH{r}") OR an object { f, v } that also carries
+  // a CACHED computed value. A cached value makes the cell DISPLAY its number in
+  // viewers that don't recalculate (Google Sheets / macOS Quick Look / Numbers /
+  // Excel with calc off) — without it, a formula cell shows blank there. Excel's
+  // fullCalcOnLoad still recomputes on open, so the cached value never disagrees as
+  // long as we compute it from the SAME inputs the formula references. Escape only
+  // XML specials, not quotes.
   if (type === 'f') {
-    if (v == null || v === '') return sAttr ? { idx, xml: `<c r="${ref}"${sAttr}/>` } : null;
-    const f = String(v).replace(/\{r\}/g, String(rowNum))
+    let formula = v; let cached = null;
+    if (v && typeof v === 'object') { formula = v.f; cached = v.v; }
+    if (formula == null || formula === '') return sAttr ? { idx, xml: `<c r="${ref}"${sAttr}/>` } : null;
+    const f = String(formula).replace(/\{r\}/g, String(rowNum))
       .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
-    return { idx, xml: `<c r="${ref}"${sAttr}><f>${f}</f></c>` };
+    // Only a FINITE numeric cached value is emitted (a text formula result would
+    // need a t="str" cell type; our cached formulas are all numbers). A null /
+    // non-finite cached value → just the formula, exactly as before.
+    const vXml = (typeof cached === 'number' && isFinite(cached)) ? `<v>${cached}</v>` : '';
+    return { idx, xml: `<c r="${ref}"${sAttr}><f>${f}</f>${vXml}</c>` };
   }
 
   const isBlank = v == null || v === '';
