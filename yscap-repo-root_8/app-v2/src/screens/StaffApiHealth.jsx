@@ -343,9 +343,18 @@ export default function StaffApiHealth() {
     } : prev);
   };
 
+  // After a switch actually changes, re-run that integration's live check so its status light AND
+  // plain-English detail reflect the new state right away. Without this they stay stale (still say
+  // "Switched off" / "…is off") until the next full refresh — which reads as "I turned it on but it
+  // still says off". Find the owning card by which one carries this switch (membership is stable).
+  const reprobeOwnerOf = (switchName) => {
+    const owner = ((data && data.integrations) || []).find((it) => (it.switches || []).some((s) => s.name === switchName));
+    if (owner) testOne(owner.key);
+  };
+
   const applyToggle = async (sw, enabled, confirm) => {
     setSwitchBusy(sw.name); setErr('');
-    try { const d = await api.integrationToggleSwitch(sw.name, enabled, confirm); mergeSwitch(d.switch); }
+    try { const d = await api.integrationToggleSwitch(sw.name, enabled, confirm); mergeSwitch(d.switch); reprobeOwnerOf(sw.name); }
     catch (e) { setErr(e.message || 'Could not change that switch.'); }
     finally { setSwitchBusy(null); }
   };
@@ -358,7 +367,7 @@ export default function StaffApiHealth() {
 
   const onReset = async (sw) => {
     setSwitchBusy(sw.name); setErr('');
-    try { const d = await api.integrationResetSwitch(sw.name); mergeSwitch(d.switch); }
+    try { const d = await api.integrationResetSwitch(sw.name); mergeSwitch(d.switch); reprobeOwnerOf(sw.name); }
     catch (e) { setErr(e.message || 'Could not reset that switch.'); }
     finally { setSwitchBusy(null); }
   };
