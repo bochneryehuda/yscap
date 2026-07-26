@@ -111,7 +111,28 @@ const ok = (c, m) => { if (c) { pass++; } else { fail++; console.log('  FAIL:', 
     'evidence is required in read mode and not in shadow mode');
   ok(SM.requiredStages('read').includes('ocr_layout') && !SM.requiredStages('shadow').includes('ocr_layout'),
     'ocr_layout required in read mode, not in shadow');
-  ok(!SM.requiredStages('read').includes('classification'), 'classification is not required (not yet wired)');
+  /* RS-2 — `classification` is required WHEN A CLASSIFIER WAS AVAILABLE, and only then. Both
+     alternatives are wrong: requiring it always fails every job wherever the owner has not trained
+     the model yet, and never requiring it re-creates the defect this gate exists for — the stage
+     could fail on every document forever while the job still reported a clean run. */
+  ok(!SM.requiredStages('read').includes('classification'),
+    'classification is NOT required when no classifier was available (the environment cannot do it)');
+  ok(SM.requiredStages('read', { classifierAvailable: true }).includes('classification'),
+    'classification IS required once a trained classifier was actually reachable');
+  ok(!SM.requiredStages('shadow', { classifierAvailable: true }).includes('classification'),
+    'shadow mode never requires classification — there was no read to classify');
+  {
+    // The whole point: with a classifier available, a FAILED classification fails the job closed.
+    const stages = [
+      { stage_key: 'intake', status: 'completed' }, { stage_key: 'route_plan', status: 'completed' },
+      { stage_key: 'ocr_layout', status: 'completed' }, { stage_key: 'evidence', status: 'completed' },
+      { stage_key: 'classification', status: 'failed' },
+    ];
+    ok(SM.evaluateManifest(stages, { mode: 'read', classifierAvailable: true }).complete === false,
+      'a failed classification fails the job closed when a classifier was available');
+    ok(SM.evaluateManifest(stages, { mode: 'read' }).complete === true,
+      'the same failed classification does not fail a job whose environment had no classifier');
+  }
   ok(SM.requiredStages('bogus').join() === SM.requiredStages('shadow').join(), 'unknown mode defaults to shadow required set');
 
   // ---- accepts a plain {key:status} map ----

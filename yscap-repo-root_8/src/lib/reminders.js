@@ -151,9 +151,15 @@ async function outstandingItems(appId, client = db) {
         AND status IN ('outstanding','requested','issue')
       ORDER BY sort_order LIMIT 30`, [appId]);
   const conds = await client.query(
+    // ORDERED, like its checklist sibling above (audit finding 2026-07-26). This list is BORROWER-
+    // FACING — it is the body of the "what's still needed" email and the portal's outstanding list.
+    // An unordered LIMIT 30 meant a borrower with more than 30 open conditions saw an arbitrary 30
+    // that could differ between the email and the screen, and between one email and the next: items
+    // appearing to vanish and reappear with nothing actually changing on their file.
     `SELECT borrower_title AS label, borrower_detail AS detail FROM conditions
       WHERE application_id=$1 AND audience IN ('borrower','both') AND borrower_title IS NOT NULL
-        AND status IN ('open','borrower_responded') LIMIT 30`, [appId]);
+        AND status IN ('open','borrower_responded')
+      ORDER BY created_at, id LIMIT 30`, [appId]);
   return [...items.rows, ...conds.rows].map((r) => _fmtItem(r.label, r.detail)).filter(Boolean);
 }
 

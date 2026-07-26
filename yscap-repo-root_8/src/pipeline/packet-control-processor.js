@@ -38,6 +38,7 @@
 // every `safeStage(STAGE.EVIDENCE, …)` recorded under `undefined` and the required stage looked
 // missing on a job that had in fact done the work. One list, one owner.
 const { STAGE } = require('./stage-manifest');
+const classifyDoc = require('./classify-document');
 
 /**
  * PURE — build a COMPACT summary of what a real read produced, for the shadow surface + audit
@@ -86,6 +87,10 @@ function makePacketControlProcessor(opts = {}) {
   const loadBytes = (typeof opts.loadBytes === 'function')
     ? opts.loadBytes
     : ((db, documentId) => require('./document-bytes').loadDocumentBytes(db, documentId));
+  // RS-2 — the document classifier, injectable for tests. Deliberately passed through AS GIVEN:
+  // `undefined` means "use the real Azure custom classifier"; `null` means "explicitly none", which
+  // is how a test asserts the not-applicable path without reaching for a vendor.
+  const classifier = opts.classifier;
 
   return async function packetControlProcessor(job, ctx = {}) {
     const db = ctx.db;
@@ -99,6 +104,9 @@ function makePacketControlProcessor(opts = {}) {
     // Track the recorded status of each stage locally so we can evaluate the stage MANIFEST at the
     // end (VSLICE-5): a job only "completes" if it actually finished the stages it was supposed to.
     const stageStatus = {};
+    // RS-2 — was a trained classifier actually reachable for this job? Reported to the manifest so
+    // `classification` is required exactly when it was possible (see stage-manifest.requiredStages).
+    let classifierAvailable = false;
     const safeStage = async (key, status, detail) => {
       stageStatus[key] = status;
       try { await jq.recordStage(db, jobId, key, status, detail || {}); } catch (_e) { /* stage recording is best-effort */ }
@@ -224,8 +232,28 @@ function makePacketControlProcessor(opts = {}) {
             const diff = await require('./v1v2-diff').computeDiffForDocument(db, { documentId });
             await safeArtifact('v1_v2_diff', diff);
           } catch (_e) { /* diff artifact is best-effort */ }
-          // Classification is deferred to a later phase even on the read path; mark pending.
-          await safeStage(STAGE.CLASSIFICATION, 'pending', { note: 'classifier stage not yet wired' });
+          // ── classification ── RS-2: what the document ACTUALLY is, read from the document itself.
+          //
+          // Everything before this point takes the document's family on FAITH — the route was planned
+          // from the slot it was uploaded into, and the read was performed on that assumption. This
+          // stage is the first one that looks at the bytes and says what they are, which is what makes
+          // "filed as a purchase contract, reads like a bank statement" visible at intake instead of
+          // being caught by hand much later.
+          //
+          // It used to record `pending` / "classifier stage not yet wired" on EVERY read. That note
+          // was true when written and false by the time it shipped: the trained classifier has existed
+          // since R3.2 and V1 already uses it. A stage whose status never changes is not a stage.
+          //
+          // The SAME bytes the read used are passed straight through — the document is never
+          // re-loaded from storage and never re-fetched. Advisory: this records a V2 stage + artifact
+          // and nothing else; a mismatch is a fact on the shadow surface, never an action on the file.
+          const cls = await classifyDoc.classifyDocument({
+            classifier, request, documentId, loanId,
+          });
+          const clsSummary = classifyDoc.summarizeClassification(cls, { expectedFamily: features.docType || null });
+          if (clsSummary.artifact) await safeArtifact('classification', clsSummary.artifact);
+          await safeStage(STAGE.CLASSIFICATION, clsSummary.status, clsSummary.detail);
+          classifierAvailable = cls && cls.available === true;
         }
       } else {
         await safeStage(STAGE.OCR_LAYOUT, 'not_applicable', { note: 'shadow: read not run' });
@@ -239,7 +267,11 @@ function makePacketControlProcessor(opts = {}) {
       // completed (the owner-flagged "marked completed when no document was read" defect). In shadow
       // mode (no adapters) the read stages are legitimately not required, so a planned job completes.
       const mode = (adapters && primaryKey) ? 'read' : 'shadow';
-      const manifest = require('./stage-manifest').evaluateManifest(stageStatus, { mode });
+      // RS-2 — report the CAPABILITY, not a policy: `classification` joins the required set only when
+      // a trained classifier was genuinely reachable for this job. The manifest owns the rule; this
+      // is the fact it needs. Until the classifier is trained, classifierAvailable stays false and
+      // the required set is exactly what it was.
+      const manifest = require('./stage-manifest').evaluateManifest(stageStatus, { mode, classifierAvailable });
       await safeArtifact('stage_manifest', manifest);
       if (!manifest.complete) {
         // Retry only when the incompleteness is a TRANSIENT stage failure (failed_*); a missing /

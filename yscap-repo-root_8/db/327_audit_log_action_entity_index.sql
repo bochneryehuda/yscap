@@ -1,0 +1,25 @@
+-- 327 — index audit_log for the (action, entity_id) throttle lookup.
+--
+-- WHY (audit finding, 2026-07-26): the scheduled digests now express their own throttle in SQL —
+-- "has this file been stamped with <action> inside <interval>?" — so an already-notified file does
+-- not consume a slot in a capped batch. That predicate runs once PER CANDIDATE ROW, up to 20 times
+-- a day, and the same (action, entity_id) shape is what `claimOncePerPeriod` (src/lib/throttle-claim.js)
+-- checks on EVERY gate claim in the whole application.
+--
+-- The existing indexes cannot serve it:
+--   * (entity_type, entity_id)  — unusable here; these queries do not constrain entity_type
+--   * (action)                  — matches the whole action partition, then filters entity_id row by row
+--   * (created_at DESC, id DESC) — wrong leading column
+--
+-- audit_log is append-only and never pruned (there is no DELETE against it anywhere in the code
+-- base), so the action partitions grow without bound and the cost of scanning one grows with the
+-- age of the deployment. This composite index turns each lookup into a single index probe.
+--
+-- Idempotent and additive: an index only, no data change, no column change, nothing to back-fill.
+-- Read paths behave identically — they simply stop scanning.
+--
+-- NOT CONCURRENTLY on purpose: the boot migrator runs statements inside a transaction, and
+-- CREATE INDEX CONCURRENTLY cannot run in one. The table is append-only and the build is a single
+-- pass, so the brief lock at boot is acceptable and matches every other index migration here.
+CREATE INDEX IF NOT EXISTS idx_audit_log_action_entity_created
+  ON audit_log (action, entity_id, created_at DESC);

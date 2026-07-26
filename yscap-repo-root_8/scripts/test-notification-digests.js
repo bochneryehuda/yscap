@@ -195,6 +195,36 @@ const to = (e) => sent.find((x) => (Array.isArray(x.to) ? x.to : [x.to]).include
   assert.ok(p.hour >= 0 && p.hour <= 23 && /^(Mon|Tue|Wed|Thu|Fri|Sat|Sun)$/.test(p.weekday), 'nyParts returns a valid NY hour + weekday');
   ok('nyParts: valid NY hour + weekday');
 
+  /* 8) AUDIT REGRESSIONS (2026-07-26) — the two ways the capped batches were still being wasted.
+
+     8a) A PAUSED file is not a stalled one. `on_hold` is inactive everywhere else in the system,
+     but the stale-file query still selected it — so a deliberately-parked file emailed its team
+     "stalled for N days" every 3 days, AND (because db/319 preserves the original
+     status_changed_at when it heals an on-hold file) those ancient timestamps sorted to the very
+     front of the stalest-first batch, ahead of every genuinely stuck live file. */
+  await db.query(`DELETE FROM audit_log WHERE action='stale_file_alert' AND entity_id=$1`, [app.id]).catch(() => {});
+  await db.query(`UPDATE applications SET status='on_hold', status_changed_at=now()-interval '400 days' WHERE id=$1`, [app.id]);
+  reset(); const cHoldStale = await D.staleFileAlertsOnce();
+  assert.ok(cHoldStale === 0 && !to(semail), 'a paused (on_hold) file raises no stale alert, however old it is');
+  await db.query(`UPDATE applications SET status='processing', status_changed_at=now()-interval '30 days' WHERE id=$1`, [app.id]);
+  ok('stale alert: a paused file is never reported as stalled (and cannot occupy the batch)');
+
+  /* 8b) A file with NOTHING outstanding must not enter the borrower-digest batch at all.
+     It never claims the gate (by design — a file with no items must not burn its 6-day throttle),
+     so its last-digest stamp stays NULL forever; ordered NULLS-FIRST, it was pinned to the head of
+     every pass for the life of the file. Enough such files and the whole 500-row window was
+     no-ops: zero borrower emails sent, while the run reported a healthy truncated pass. */
+  await db.query(`DELETE FROM audit_log WHERE action='borrower_outstanding_digest' AND entity_id=$1`, [app.id]).catch(() => {});
+  await db.query(`UPDATE checklist_items SET status='satisfied' WHERE application_id=$1`, [app.id]);
+  reset(); const cClean = await D.weeklyBorrowerOutstandingOnce();
+  assert.ok(!to(bemail), 'a file with nothing outstanding gets no digest');
+  const stamped = (await db.query(
+    `SELECT count(*)::int AS n FROM audit_log WHERE action='borrower_outstanding_digest' AND entity_id=$1`, [app.id])).rows[0];
+  assert.ok(stamped.n === 0, 'and it does not burn its throttle stamp (so it still gets one the day it gains an item)');
+  assert.ok(cClean >= 0, 'the pass completes normally');
+  await db.query(`UPDATE checklist_items SET status='outstanding' WHERE application_id=$1`, [app.id]);
+  ok('borrower digest: a file with nothing outstanding is excluded, and keeps its unused throttle');
+
   // cleanup (best-effort)
   await db.query(`DELETE FROM checklist_items WHERE application_id=$1`, [app.id]).catch(() => {});
   await db.query(`DELETE FROM audit_log WHERE entity_id=$1`, [app.id]).catch(() => {});
@@ -203,42 +233,12 @@ const to = (e) => sent.find((x) => (Array.isArray(x.to) ? x.to : [x.to]).include
   await db.query(`DELETE FROM staff_users WHERE id=$1`, [st.id]).catch(() => {});
   await db.query(`DELETE FROM borrowers WHERE id=$1`, [br.id]).catch(() => {});
 
-  /* EVERY work-selecting LIMIT must be ORDERED (found 2026-07-26).
-     A bare `LIMIT n` lets Postgres return ANY n rows and a different n next time. On a portfolio
-     larger than the cap that means each pass picks an arbitrary, unstable subset — a borrower can
-     be skipped repeatedly and never receive their "what's still needed" email, and a stale file can
-     sit past the threshold and never raise an alert. Both were live here, and both were SILENT.
-     This is a source-level check on purpose: it guards the whole CLASS, and it keeps guarding after
-     someone adds the next digest, which a data-shaped test on a small CI database cannot do. */
-  {
-    const src = require('fs').readFileSync(require('path').resolve(__dirname, '../src/lib/notification-digests.js'), 'utf8');
-    // Each SQL literal in the module, checked independently.
-    const sqls = src.split('`').filter((chunk) => /\bSELECT\b/i.test(chunk) && /\bFROM\b/i.test(chunk))
-      // Strip `--` comments FIRST — they are not SQL. Several of these queries explain the very
-      // defect this guard checks for ("an unordered LIMIT lets Postgres return an arbitrary 300…"),
-      // and that prose would otherwise be matched as the statement's LIMIT clause, making a
-      // correctly-ordered query read as an offender.
-      .map((chunk) => chunk.replace(/--[^\n]*/g, ' '));
-    const offenders = [];
-    for (const sql of sqls) {
-      // Only the OUTER limit matters — a subquery's `ORDER BY … LIMIT 1` is already deterministic.
-      const m = /\bLIMIT\b\s*(\$?\d+)?[^)]*$/i.exec(sql);
-      if (!m) continue;
-      const head = sql.slice(0, m.index);
-      // Balanced-paren check: an ORDER BY inside a subquery does not order the outer statement.
-      // Strip to a FIXED POINT — one pass only removes the innermost level, so a nested subquery
-      // (`… EXISTS (SELECT … (…) … ORDER BY x)`) would keep its ORDER BY and wrongly read as
-      // ordering the outer statement.
-      let bare = head, prev = null;
-      while (bare !== prev) { prev = bare; bare = bare.replace(/\([^()]*\)/g, ' '); }
-      const outerOrderBy = /\bORDER\s+BY\b/i.test(bare);
-      if (!outerOrderBy) offenders.push(sql.replace(/\s+/g, ' ').trim().slice(0, 110));
-    }
-    assert.ok(offenders.length === 0,
-      `every capped digest query must be ORDERED so the same rows are not silently skipped forever.\nUnordered:\n  - ${offenders.join('\n  - ')}`);
-    console.log(`  ok - all ${sqls.length} digest queries with a LIMIT are deterministically ordered`);
-    n += 1;
-  }
+  /* The capped-work-queue FAIRNESS GUARD used to live here. It is a pure source check with no
+     database in it, and it sat at the END of a DATABASE_URL-gated file — so in any environment
+     without Postgres, or after any earlier failure in this file, the whole class went unchecked.
+     It now lives in its own no-DB script, `scripts/test-digest-fairness-guard.js`, where it always
+     runs, and it checks the real invariant (ordered + total order + throttle expressed in SQL)
+     rather than merely "an ORDER BY exists". */
 
   console.log(`\nAll ${n} notification-digest checks passed.`);
   await db.pool.end();

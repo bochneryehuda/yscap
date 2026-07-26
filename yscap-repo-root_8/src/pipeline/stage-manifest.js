@@ -18,9 +18,10 @@
  *   - 'read'   (real adapters injected → a real vendor read was attempted): the read MUST have
  *     completed. ocr_layout is required; a job whose read was skipped/failed/not-applicable is
  *     INCOMPLETE → fail closed (the "completed but nothing was read" defect).
- * `classification` is NOT yet required in either mode — it is a later-phase stage recorded 'pending';
- * requiring a not-yet-wired stage would wrongly fail every job. Add it to a required set only when
- * the classifier stage is actually wired.
+ * `classification` (RS-2) is required in 'read' mode ONLY when the caller reports that a trained
+ * classifier was actually available for the job (`classifierAvailable:true`) — see requiredStages.
+ * Until the owner trains the model, no classifier is reachable, the stage records not_applicable,
+ * and requiring it would fail every job for a capability the environment does not have.
  */
 
 const STAGE = Object.freeze({
@@ -48,8 +49,27 @@ const REQUIRED = Object.freeze({
   read: [STAGE.INTAKE, STAGE.ROUTE_PLAN, STAGE.OCR_LAYOUT, STAGE.EVIDENCE],
 });
 
-function requiredStages(mode) {
-  return REQUIRED[mode] ? REQUIRED[mode].slice() : REQUIRED.shadow.slice();
+/**
+ * RS-2 (2026-07-26) — `classification` is required WHEN A CLASSIFIER WAS ACTUALLY AVAILABLE, and
+ * only then. This is the same shape as `read` mode itself: `read` is not a setting, it is the fact
+ * that real adapters were injected, and a job is held to what it was actually equipped to do.
+ *
+ * Both alternatives are wrong. Requiring it unconditionally would fail every job in an environment
+ * where the owner has not trained the Azure classifier yet — the mistake the original code warned
+ * about. Never requiring it re-creates the defect this whole gate exists for: the stage could fail
+ * on every document forever and the job would still report a clean run, which is exactly how
+ * classification sat recording "not yet wired" long after a classifier existed.
+ *
+ * So the CAPABILITY is reported by the caller (was a trained classifier reachable for this job?) and
+ * the RULE stays here, with the rest of the manifest. Callers report facts; this module decides.
+ */
+function requiredStages(mode, opts = {}) {
+  const base = REQUIRED[mode] ? REQUIRED[mode].slice() : REQUIRED.shadow.slice();
+  const isRead = REQUIRED[mode] === REQUIRED.read;
+  if (isRead && opts && opts.classifierAvailable === true && !base.includes(STAGE.CLASSIFICATION)) {
+    base.push(STAGE.CLASSIFICATION);
+  }
+  return base;
 }
 
 // Normalize a mixed list of stage rows ([{stage_key|stage, status}] or a plain {key:status} map)
@@ -81,7 +101,7 @@ function stageStatusMap(stages) {
 function evaluateManifest(stages, opts = {}) {
   try {
     const mode = (opts && opts.mode === 'read') ? 'read' : 'shadow';
-    const required = requiredStages(mode);
+    const required = requiredStages(mode, { classifierAvailable: !!(opts && opts.classifierAvailable) });
     const byKey = stageStatusMap(stages);
     const missing = [];
     const incomplete = [];
