@@ -116,8 +116,18 @@ const ok = (n) => { console.log(`  ok  ${n}`); passed++; };
     assert.strictEqual(noVal.reason, 'no_encompass_value', 'refused a field with no Encompass value');
     ok('replace coerces an enum to our vocabulary and refuses a field Encompass has no value for');
 
+    // 7. The term-sheet issuance gate (WO-E).
+    assert.strictEqual((await recon.issuanceGate(app.id, client)).block, false, 'gate is clear once blocking findings are resolved');
+    await client.query(`UPDATE applications SET purchase_price = 999999 WHERE id = $1`, [app.id]);
+    const gBlock = await recon.issuanceGate(app.id, client);
+    assert.strictEqual(gBlock.block, true, 'a blocking mismatch makes the issuance gate block');
+    assert.ok(gBlock.openBlockingKeys.includes('purchase_price'), 'the blocking field is reported');
+    const app2 = (await client.query(`INSERT INTO applications (borrower_id) VALUES ($1) RETURNING id`, [b.id])).rows[0];
+    assert.strictEqual((await recon.issuanceGate(app2.id, client)).block, false, 'a file with no pulled Encompass loan is never blocked (dormant)');
+    ok('the WO-E issuance gate blocks on an open blocking mismatch, clears when resolved, and is dormant with no Encompass loan');
+
     await client.query('ROLLBACK');
-    console.log(`\nWO-B/C Encompass reconcile DB — ${passed} checks passed`);
+    console.log(`\nWO-B/C/E Encompass reconcile DB — ${passed} checks passed`);
   } catch (e) {
     await client.query('ROLLBACK').catch(() => {});
     console.error('FAIL test-encompass-reconcile-db:', e && e.message ? e.message : e);

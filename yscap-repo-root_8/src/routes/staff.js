@@ -1666,6 +1666,35 @@ router.post('/applications/:id/pricing/register', async (req, res) => {
     const f = await loadFileForPricing(appId);
     if (!f) return res.status(404).json({ error: 'not found' });
 
+    // WO-E — a term sheet cannot be ISSUED while this file has OPEN blocking
+    // Encompass mismatches. Dormant until Encompass is live + a loan is pulled
+    // (no pulled loan → never blocks). An admin (see_all_files) may override with
+    // a logged reason; the gate fails OPEN on any reconcile error.
+    {
+      const encGate = await require('../encompass/reconcile').issuanceGate(appId);
+      if (encGate.block) {
+        const ovr = String(b.encompassOverrideReason || '').trim();
+        if (!seesAll(req)) return refuse(422, {
+          error: `Encompass and this file don’t agree yet — ${encGate.openBlocking} field(s) don’t match. Clear the Encompass sync (or ask an admin to override) before issuing a term sheet.`,
+          code: 'encompass_findings_open', openFields: encGate.openBlockingKeys,
+        }, 'encompass_findings_open', { openBlocking: encGate.openBlocking });
+        if (!ovr) return refuse(422, {
+          error: `Encompass has ${encGate.openBlocking} unmatched field(s). As an admin you can override — provide a reason to issue the term sheet anyway.`,
+          code: 'encompass_override_reason_required', openFields: encGate.openBlockingKeys,
+        }, 'encompass_override_reason_required', { openBlocking: encGate.openBlocking });
+        await audit(req, 'encompass_gate_override', 'application', appId, { reason: ovr.slice(0, 500), openBlocking: encGate.openBlocking, openFields: encGate.openBlockingKeys });
+        // Record it in the policy-exception register (issuance_override) so the
+        // override is diligence-visible — best-effort, never blocks the issue.
+        try {
+          await require('../lib/loan-exceptions').recordIssuanceOverride({
+            appId, staffId: req.actor && req.actor.id,
+            note: `encompass_gate: ${ovr.slice(0, 400)}`,
+            snapshot: { encompass_open_blocking: encGate.openBlocking, encompass_open_fields: encGate.openBlockingKeys },
+          });
+        } catch (_) { /* register write is best-effort */ }
+      }
+    }
+
     // Optimistic concurrency on the FILE-owned pricing basis: the studio sends
     // back the econVersion it prefilled from; if the file's economics changed
     // since (form edit, ClickUp inbound, another staffer), refuse rather than
@@ -2308,6 +2337,18 @@ router.post('/applications/:id/pricing/accept-counter', async (req, res) => {
     if (esc.status !== 'countered') return res.status(409).json({ error: 'This escalation is not in counter-offer state — nothing to accept.' });
     const f = await loadFileForPricing(appId);
     if (!f) return res.status(404).json({ error: 'not found' });
+
+    // WO-E — the Encompass issuance gate also applies to accepting a counter (it
+    // re-issues the term sheet). This one-click path has no override-reason input;
+    // to override, an admin registers from the Term Sheet Studio. Dormant until
+    // Encompass is live + a loan is pulled; fails OPEN on any reconcile error.
+    {
+      const encGate = await require('../encompass/reconcile').issuanceGate(appId);
+      if (encGate.block) return res.status(409).json({
+        error: `Encompass and this file don’t agree yet — ${encGate.openBlocking} field(s) don’t match. Clear the Encompass sync first (or an admin can register from the Term Sheet Studio with an override).`,
+        code: 'encompass_findings_open', openFields: encGate.openBlockingKeys,
+      });
+    }
 
     // Build overrides: start with the ORIGINAL manual-review overrides (stored
     // structural keys on the escalation), then overlay the super-admin's counter

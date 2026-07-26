@@ -455,7 +455,7 @@ export const api = {
   staffExportPipeline: (params) => download(`/api/staff/applications/export${qs(params)}`),
   staffPricing:      (appId) => req('GET', `/api/staff/applications/${appId}/pricing`),
   staffPricingQuote: (appId, overrides) => req('POST', `/api/staff/applications/${appId}/pricing/quote`, { overrides }),
-  staffRegisterProduct: (appId, program, overrides, econVersion, assetMonths, submitException, termOptions) => req('POST', `/api/staff/applications/${appId}/pricing/register`, { program, overrides, econVersion, assetMonths, submitException, termOptions }),
+  staffRegisterProduct: (appId, program, overrides, econVersion, assetMonths, submitException, termOptions, encompassOverrideReason) => req('POST', `/api/staff/applications/${appId}/pricing/register`, { program, overrides, econVersion, assetMonths, submitException, termOptions, encompassOverrideReason }),
   // Redesign 2026-07-24: the pricing exception is a first-class register record —
   // the request now carries an optional structured reason + compensating factors.
   staffRequestException: (appId, note, reasonCode, compensatingFactors) => req('POST', `/api/staff/applications/${appId}/pricing/request-exception`, { note, reasonCode, compensatingFactors }),

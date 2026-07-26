@@ -260,6 +260,21 @@ async function isClear(appId, dbc) {
   return { clear: c.summary.clear, hasLoan: c.hasLoan, openBlocking: c.summary.openBlocking, openBlockingKeys: c.summary.openBlockingKeys };
 }
 
+// WO-E — the term-sheet issuance gate decision. `block` is true ONLY when there
+// is a pulled Encompass loan AND it has open blocking mismatches — so it is
+// dormant when Encompass is absent/unconfigured (hasLoan false → never blocks).
+// FAILS OPEN (block:false) on any error: an Encompass reconcile problem must
+// never prevent a term sheet from being issued (Encompass is a cross-check, not
+// the authority). A caller applies its own admin-override policy on `block`.
+async function issuanceGate(appId, dbc) {
+  try {
+    const g = await isClear(appId, dbc);
+    return { block: !!(g.hasLoan && !g.clear), hasLoan: g.hasLoan, openBlocking: g.openBlocking || 0, openBlockingKeys: g.openBlockingKeys || [] };
+  } catch (_) {
+    return { block: false, hasLoan: false, openBlocking: 0, openBlockingKeys: [] };
+  }
+}
+
 // ── Pull one Encompass value into our column (WO-C) ─────────────────────────
 // One-directional (Encompass → us), writes exactly ONE applications column,
 // records the resolution as provenance, and returns the refreshed field. Any
@@ -345,6 +360,7 @@ module.exports = {
   summarize,
   computeFindings,
   isClear,
+  issuanceGate,
   replaceField,
   refresh,
   onLoanNumberSet,

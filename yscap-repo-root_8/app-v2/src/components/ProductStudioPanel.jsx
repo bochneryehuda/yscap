@@ -707,7 +707,7 @@ const ProductStudioPanel = forwardRef(function ProductStudioPanel({ appId, app, 
       // server persists them and applies the min-interest program default.
       const termOptions = termOptionsFromSnapshot(s);
       const resp = isStaff
-        ? await api.staffRegisterProduct(appId, s.program, overrides, econVersion, manual ? months : undefined, submitException, termOptions)
+        ? await api.staffRegisterProduct(appId, s.program, overrides, econVersion, manual ? months : undefined, submitException, termOptions, opts.encompassOverrideReason || undefined)
         : await api.borrowerRegisterProduct(appId, s.program, overrides, adminKey || undefined, econVersion, submitException, termOptions);
       setExceptionInfo(null);
       const pendingApproval = !!(resp && resp.pendingApproval);
@@ -751,6 +751,18 @@ const ProductStudioPanel = forwardRef(function ProductStudioPanel({ appId, app, 
         // the "Submit exception request" action (registers as pending → super-admin).
         setExceptionInfo(e.data);
         setErr(e.data.message || 'This scenario isn’t eligible as-is — it needs a manual-review exception. Submit an exception request below.');
+      } else if (e.status === 422 && e.data && e.data.code === 'encompass_override_reason_required') {
+        // Admin: the Encompass sync has open blocking mismatches. Offer to issue
+        // the term sheet anyway by typing a reason (logged). Retry after this
+        // register fully settles (the submit gate is released in `finally`).
+        const n = (e.data.openFields && e.data.openFields.length) || '';
+        const reason = (typeof window !== 'undefined' && window.prompt)
+          ? window.prompt(`Encompass has ${n} field(s) that don’t match this file. To issue the term sheet anyway, type the reason for the override:`)
+          : null;
+        if (reason && reason.trim()) { const rr = reason.trim(); setTimeout(() => register({ ...opts, encompassOverrideReason: rr }), 0); }
+        else setErr(e.data.error || 'Encompass has unmatched fields — provide an override reason to issue the term sheet.');
+      } else if (e.status === 422 && e.data && e.data.code === 'encompass_findings_open') {
+        setErr(e.data.error || 'This file must be reconciled with Encompass before a term sheet can be issued.');
       } else {
         const detail = e.data && e.data.reasons ? e.data.reasons.map((r) => r.msg).join(' ') : (e.message || 'Could not register');
         setErr(detail);
