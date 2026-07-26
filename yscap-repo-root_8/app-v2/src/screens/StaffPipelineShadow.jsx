@@ -27,6 +27,16 @@ const STAGE_LABEL = {
   classification: 'Sorting', extraction: 'Extract', grounding: 'Grounding',
 };
 
+// How much we trust each fact the pipeline read (Stage 5 "canonical truth").
+const EVIDENCE_STATUS = {
+  verified: { label: 'Verified', cls: 'pill-ok' },
+  partially_verified: { label: 'Partly verified', cls: 'pill-warn' },
+  unverified: { label: 'Not checked', cls: 'pill-warn' },
+  contradicted: { label: 'Disagreed', cls: 'pill-bad' },
+  superseded: { label: 'Replaced', cls: 'pill-muted' },
+  manual_verified: { label: 'Confirmed by a person', cls: 'pill-ok' },
+};
+
 export default function StaffPipelineShadow() {
   const [health, setHealth] = useState(null);
   const [flags, setFlags] = useState(null);
@@ -154,6 +164,20 @@ export default function StaffPipelineShadow() {
                             </div>
                           ))}
                           {(!detail.routes || detail.routes.length === 0) && <div className="muted">No reader choice recorded yet.</div>}
+                        </div>
+                        <div>
+                          <div style={{ fontWeight: 600, marginBottom: 4 }}>What we read</div>
+                          {(detail.evidence || []).map((ev, i) => {
+                            const s = EVIDENCE_STATUS[ev.status] || { label: ev.status, cls: 'pill-muted' };
+                            return (
+                              <div key={i} className="muted" style={{ fontSize: 13, maxWidth: 480 }}>
+                                <b>{ev.fieldLabel || ev.fieldKey}</b>: {ev.valueText || '—'}
+                                {' '}<span className={`pill ${s.cls}`}>{s.label}</span>
+                                {ev.reason ? <span> — {ev.reason}</span> : null}
+                              </div>
+                            );
+                          })}
+                          {(!detail.evidence || detail.evidence.length === 0) && <div className="muted">Nothing read on the new line yet.</div>}
                         </div>
                       </div>
                     )}
