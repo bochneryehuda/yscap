@@ -484,6 +484,10 @@ async function runInvestorGuidelineDesk(appId, client) {
   } catch (_e) { return empty; }
 
   const noteBuyerKey = lc(ctx.note_buyer);
+  // Which signal loaders below failed to read. Each one swallows its own error so a single bad
+  // query can never break a file view — but a swallowed failure makes the desk go QUIET about
+  // whatever that loader feeds, which is indistinguishable from "nothing to say" unless we say so.
+  const degraded = [];
 
   // 1. load the applicable note-buyer conditions from the active version(s). Product-AGNOSTIC:
   // a file's note buyer may own more than one product spec (CorrFirst F&F, Blue Lake RTL, …),
@@ -533,7 +537,7 @@ async function runInvestorGuidelineDesk(appId, client) {
         if (!prev || row.signed_off || lc(row.status) === 'satisfied') existingByCode.set(row.code, { status: row.status, signed_off: row.signed_off });
       }
     }
-  } catch (_e) { /* items unavailable — treat as none on file */ }
+  } catch (_e) { degraded.push('conditions_on_file'); /* items unavailable — treat as none on file */ }
 
   // 4. signals for the numeric checks: ctx + app fields + twin facts (best-effort).
   const signals = {
@@ -553,7 +557,7 @@ async function runInvestorGuidelineDesk(appId, client) {
       else if (/liability/i.test(k)) signals.liability_coverage = num(v);
       else if (/zillow|median/i.test(k)) signals.zillow_median = num(v);
     }
-  } catch (_e) { /* twin unavailable — numeric checks stay to_verify */ }
+  } catch (_e) { degraded.push('twin_facts'); /* twin unavailable — numeric checks stay to_verify */ }
 
   // #241 — the note buyer's "email address for borrower" guideline is FILE_DATA, not a document
   // condition (owner-directed 2026-07-24): read the borrower's email off the file and surface ONLY
@@ -566,7 +570,7 @@ async function runInvestorGuidelineDesk(appId, client) {
       'SELECT b.email FROM applications a JOIN borrowers b ON b.id = a.borrower_id WHERE a.id = $1', [appId]);
     const email = er.rows[0] && er.rows[0].email;
     signals.borrower_email = email ? String(email).trim() : '';
-  } catch (_e) { /* email unreadable — leave absent so the email check stays silent */ }
+  } catch (_e) { degraded.push('borrower_email'); /* email unreadable — leave absent so the email check stays silent */ }
 
   // Appraisal-derived signals — the appraisal-disposition conditions (rural, transferred) stay
   // SILENT until the appraisal is in; then a proven concern surfaces the condition. Read from the
@@ -597,7 +601,7 @@ async function runInvestorGuidelineDesk(appId, client) {
       else if (occ === 'vacant' || occ === 'owneroccupied') signals.tenant_occupied = false;
       // else: null/blank/unrecognized → OMIT
     }
-  } catch (_e) { /* appraisals unreadable → leave appraisal signals absent (conditions stay silent) */ }
+  } catch (_e) { degraded.push('appraisal'); /* appraisals unreadable → leave appraisal signals absent (conditions stay silent) */ }
 
   // Non-arms-length CONCERN signal (#281, IG-W17): the non-arms-length condition (cond 3333)
   // is disposition 'concern' — NEVER posted by default; it surfaces ONLY when a real concern
@@ -621,7 +625,7 @@ async function runInvestorGuidelineDesk(appId, client) {
           AND status NOT IN ('dismissed', 'converted_to_condition', 'converted_to_task', 'answered')
           AND source IN ('party_collusion', 'assignment_fraud') LIMIT 1`, [appId]);
     if (cr.rows[0]) signals.non_arms_length_concern = true;
-  } catch (_e) { /* suggestions unreadable → leave the concern signal absent (condition stays silent) */ }
+  } catch (_e) { degraded.push('concern_signal'); /* suggestions unreadable → leave the concern signal absent (condition stays silent) */ }
 
   // SOW-contingency % bridge (2026-07-24): a note buyer's contingency-CAP guideline
   // (e.g. Blue Lake cond 2193) checks a MAX contingency %, but no twin fact carries
@@ -640,13 +644,21 @@ async function runInvestorGuidelineDesk(appId, client) {
       const payload = sowRow.rows[0] && sowRow.rows[0].tool_payload;
       const pct = payload ? rb.sowContingencyPct(payload) : null;
       if (pct != null) signals.sow_contingency_pct = pct;
-    } catch (_e) { /* SOW unreadable — contingency check stays to_verify */ }
+    } catch (_e) { degraded.push('sow_contingency'); /* SOW unreadable — contingency check stays to_verify */ }
   }
 
-  return assess({
+  const result = assess({
     conditions: applicable, existingByCode, signals,
     noteBuyerKey, noteBuyerName: app && app.lender ? String(app.lender) : null,
   });
+  // A DEGRADED read is not a judgement (audit 2026-07-26). Every signal loader above swallows its
+  // own error, and `verdicts` is computed from the applicable RULES — so a file whose appraisal or
+  // concern-signal query failed still produces a full-looking result with those items silently gone.
+  // Anything that treats the desk's output as authoritative (the retraction in desk-sync, above all)
+  // has to be able to tell "the desk looked and is happy" from "the desk could not see". Naming the
+  // loaders that failed makes that decidable instead of guessed.
+  result.degraded = degraded.length ? degraded.slice() : null;
+  return result;
 }
 
 module.exports = {

@@ -28,19 +28,21 @@ const sixDesks = [
     explanation: 'The purchase chain does not clearly reach the vesting entity.' },
   { code: 'chain_vesting_vs_contract_buyer', severity: 'warning', subject: 'MW TRADING LLC',
     explanation: 'The vesting entity is not the buyer on the purchase contract.' },
-  { code: 'contract_in_personal_name', severity: 'warning', subject: 'Moshe Weil',
-    explanation: 'The contract is in a personal name.' },
 ];
+// NOTE: `contract_in_personal_name` is deliberately NOT in this list — see the family comment in
+// finding-claims.js. It asserts something adjacent but carries a different remedy (it opens the
+// assignment-to-vesting-entity condition), so it is kept separate; that is asserted further down.
 const merged = FC.dedupeByClaim(sixDesks);
 ok(merged.length === 1, `the vesting/buyer mismatch collapses to ONE finding (got ${merged.length})`);
 ok(merged[0].code === 'contract_buyer_mismatch', 'the FATAL one survives as the representative');
-ok(Array.isArray(merged[0].mergedFrom) && merged[0].mergedFrom.length === 4,
+ok(Array.isArray(merged[0].mergedFrom) && merged[0].mergedFrom.length === 3,
   `every other desk that agreed is recorded (mergedFrom=${JSON.stringify(merged[0] && merged[0].mergedFrom)})`);
 ok(!merged[0].mergedFrom.includes('contract_buyer_mismatch'), 'the survivor is not listed as merged into itself');
 
-// The old key would NOT have merged these — proves the test is testing the real change.
-const distinctOldKeys = new Set(sixDesks.map((f) => `${f.code}::${f.subject}`));
-ok(distinctOldKeys.size === 5, 'under the old code+subject key these were 5 separate findings');
+// Before this module existed, the call site deduped exactly ONE hard-coded code — so every one of
+// these was its own row on the desk. That is the count the owner was staring at.
+ok(new Set(sixDesks.map((f) => f.code)).size === sixDesks.length,
+  `all ${sixDesks.length} came from DIFFERENT desks under different codes, so nothing merged them before`);
 
 // ---------- entity OFAC screening (seen 3×) ----------
 const ofac = FC.dedupeByClaim([
@@ -104,6 +106,87 @@ ok(FC.dedupeByClaim([]).length === 0, 'empty input → empty output');
 ok(FC.dedupeByClaim(null).length === 0, 'null input → empty output, no throw');
 const withJunk = FC.dedupeByClaim([null, { severity: 'warning' }, { code: 'title_policy_amount_low' }]);
 ok(withJunk.length === 3, `null / code-less findings pass through untouched (got ${withJunk.length})`);
+
+// ---------- AUDIT 2026-07-26: the fixtures above are NOT what production rows look like ----------
+// A stored finding (`document_findings`, db/200) has NO `subject` column, and `field` is a per-code
+// CONSTANT. Every assertion above that relies on `subject` to keep findings apart proves nothing
+// about the real thing. These use the REAL row shape — id + document_id + field, no subject — and
+// they are the ones that matter, because merging two of them is a FALSE CLEAR.
+const row = (id, code, severity, documentId, field, extra) =>
+  Object.assign({ id, code, severity, document_id: documentId, field, blocks_ctc: severity === 'fatal' }, extra || {});
+
+// Two bank statements, each held by a different non-borrower. Gold requires two months, so this is
+// an ordinary file — and both are FATAL, both counted by the clear-to-close gate.
+const twoBanks = FC.dedupeByClaim([
+  row('f1', 'bank_account_not_borrower', 'fatal', 'doc-stmt-A', 'account_holder'),
+  row('f2', 'bank_account_not_borrower', 'fatal', 'doc-stmt-B', 'account_holder'),
+]);
+ok(twoBanks.length === 2,
+  `TWO bank statements with two different non-borrower holders stay TWO fatals (got ${twoBanks.length}) — hiding one is a false clear`);
+ok(twoBanks.every((f) => f.id), 'both survivors keep their id, so both can still be resolved on the desk');
+
+// Borrower + co-borrower government IDs, both expired.
+const twoIds = FC.dedupeByClaim([
+  row('f3', 'id_expired', 'fatal', 'doc-id-borrower', 'expiration'),
+  row('f4', 'id_expired', 'fatal', 'doc-id-coborrower', 'expiration'),
+]);
+ok(twoIds.length === 2, `the borrower's and co-borrower's expired IDs stay two (got ${twoIds.length})`);
+
+// Borrower + co-borrower fraud reports — the family case, and the most safety-critical one to keep.
+const twoFraud = FC.dedupeByClaim([
+  row('f5', 'background_fraud_alerts', 'warning', 'doc-fraud-borrower', 'alerts'),
+  row('f6', 'background_fraud_alerts', 'warning', 'doc-fraud-coborrower', 'alerts'),
+]);
+ok(twoFraud.length === 2,
+  `two background reports' fraud alerts stay two (got ${twoFraud.length}) — a co-borrower's alerts must never be hidden behind the borrower's`);
+
+// Two persisted rows in the SAME family under DIFFERENT codes still never merge — the rule is about
+// what is separately resolvable and separately gate-counted, not about the code.
+const twoPersistedFamily = FC.dedupeByClaim([
+  row('f7', 'contract_buyer_mismatch', 'fatal', 'doc-contract', 'buyer'),
+  row('f8', 'cot_final_buyer_not_vesting', 'fatal', 'doc-assignment', 'vesting'),
+]);
+ok(twoPersistedFamily.length === 2,
+  `two PERSISTED findings never merge, even inside one family (got ${twoPersistedFamily.length})`);
+
+// ...but the owner's actual case still collapses: ONE persisted finding + derived restatements of it.
+const ownersCase = FC.dedupeByClaim([
+  row('f9', 'contract_buyer_mismatch', 'fatal', 'doc-contract', 'buyer'),
+  { code: 'cot_final_buyer_not_vesting', severity: 'warning' },   // derived — no id
+  { code: 'chain_vesting_not_reached', severity: 'info' },        // derived — no id
+  { code: 'chain_vesting_vs_contract_buyer', severity: 'warning' },
+]);
+ok(ownersCase.length === 1,
+  `the owner's real case — one stored finding restated by three live desks — still collapses to ONE (got ${ownersCase.length})`);
+ok(ownersCase[0].id === 'f9', 'and the survivor is the PERSISTED one, so it is still resolvable');
+ok(ownersCase[0].mergedFrom && ownersCase[0].mergedFrom.length === 3, 'the three desks that agreed are recorded');
+
+// A derived finding must never displace a persisted one, even when it reads better.
+const richerDerived = FC.dedupeByClaim([
+  row('f10', 'background_entity_not_screened', 'fatal', 'doc-fraud', 'entity'),
+  { code: 'entity_not_screened', severity: 'fatal',
+    explanation: 'A much longer and more helpful explanation that would otherwise win on length.' },
+]);
+ok(richerDerived.length === 1 && richerDerived[0].id === 'f10',
+  'a better-worded DERIVED finding never displaces the persisted row that carries the id');
+
+// contract_in_personal_name is a DIFFERENT remedy (it opens the assignment-to-vesting condition), so
+// it must survive alongside the buyer-mismatch fatal — merging it took that action off the desk.
+const personalName = FC.dedupeByClaim([
+  row('f11', 'contract_buyer_mismatch', 'fatal', 'doc-contract', 'buyer'),
+  { code: 'contract_in_personal_name', severity: 'warning', opensCondition: 'assignment_to_vesting_entity' },
+]);
+ok(personalName.length === 2,
+  `the personal-name finding survives alongside the buyer mismatch (got ${personalName.length}) — it opens a different condition`);
+ok(personalName.some((f) => f.opensCondition === 'assignment_to_vesting_entity'),
+  'the "post the final-assignment-to-LLC condition" action is still on the desk');
+
+// The SAME check on the SAME document is still one finding (a genuine re-emit is still deduped).
+const sameDoc = FC.dedupeByClaim([
+  { code: 'doc_low_authenticity', severity: 'warning', document_id: 'doc-x', field: 'authenticity' },
+  { code: 'doc_low_authenticity', severity: 'warning', document_id: 'doc-x', field: 'authenticity' },
+]);
+ok(sameDoc.length === 1, `the same check re-emitted for the same document is still one (got ${sameDoc.length})`);
 
 console.log(`test-finding-claims-pure: ${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

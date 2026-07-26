@@ -42,7 +42,12 @@ const CLAIM_FAMILIES = [
       'cot_final_buyer_not_vesting',
       'chain_vesting_not_reached',
       'chain_vesting_vs_contract_buyer',
-      'contract_in_personal_name',
+      // NOT `contract_in_personal_name`. Audit 2026-07-26: it looks like the same claim but it is a
+      // DIFFERENT remedy — it carries `opensCondition: 'assignment_to_vesting_entity'` and a
+      // `post_condition` action (a routine vesting amendment), which the fatal survivor does not.
+      // Merging it took the "post the final-assignment-to-LLC condition" button off the desk. The two
+      // can also legitimately co-occur on different hops: a stranger entity on the contract (fatal)
+      // AND the final assignee in the borrower's personal name (routine).
     ],
   },
   {
@@ -52,8 +57,11 @@ const CLAIM_FAMILIES = [
   },
   {
     claim: 'fraud_alerts_open',
-    // One report, N alerts. The desk raised one finding PER alert batch, so the same "clear the
-    // alerts" instruction appeared repeatedly. It is one piece of work on one report.
+    // The duplication the owner saw came from TWO REPORTS on the file, not two alert batches within
+    // one — the background desk emits exactly one aggregated `background_fraud_alerts` per report.
+    // So this family only ever merges a persisted finding with a DERIVED restatement of it; the
+    // never-merge-two-persisted rule below keeps the borrower's report and the co-borrower's report
+    // as two separate items of work, which is what they are.
     codes: ['background_fraud_alerts'],
   },
   {
@@ -79,19 +87,52 @@ function norm(s) { return String(s == null ? '' : s).trim().toLowerCase(); }
  * another the contract buyer, a third the final holder in the chain. They are describing one fact
  * from different ends, so including the subject would keep them apart and defeat the merge.
  *
- * Everything else keeps today's `code::subject` behaviour, so an unrelated finding is never merged.
+ * Everything else keys on the code PLUS WHICH DOCUMENT IT CAME FROM, so the same check firing on two
+ * different documents stays two findings.
+ *
+ * AUDIT FIX 2026-07-26 — the first version of this keyed on `code::subject||field`, which was wrong
+ * in production and dangerous. A stored finding (`document_findings`, db/200) has NO `subject`
+ * column, and `field` is a per-code CONSTANT (`bank_account_not_borrower` is always
+ * `account_holder`; `id_expired` is always `expiration`). So the fallback collapsed to the bare code
+ * and merged findings that had nothing to do with each other except their type:
+ *   - two bank statements, each held by a DIFFERENT non-borrower → two FATALs → one shown
+ *   - borrower and co-borrower government IDs both expired → one shown
+ *   - borrower's and co-borrower's fraud reports → one shown
+ * Hiding the second one is a false clear, which is the one direction this system must never fail in.
+ * The document identity is what makes them distinct, so it belongs in the key.
  */
+function docKey(f) {
+  return norm(f.document_id || f.documentId || f.extraction_id || f.extractionId || f.subject || '');
+}
 function claimOf(f) {
   if (!f || !f.code) return null;
   const fam = CLAIM_OF_CODE.get(norm(f.code));
   if (fam) return `claim:${fam}`;
-  return `code:${norm(f.code)}::${norm(f.subject || f.field || '')}`;
+  return `code:${norm(f.code)}::${norm(f.field || '')}::${docKey(f)}`;
 }
+
+/**
+ * Is this a PERSISTED finding — a real `document_findings` row with its own id?
+ *
+ * It matters because a persisted finding is individually resolvable in the desk and is counted
+ * individually by the clear-to-close gate (`file-review.fileFatalCount` reads the stored fatals
+ * straight from the database, undeduped). Hide one behind another and the two disagree forever: the
+ * gate says "resolve 2 open dealbreakers", the desk shows 1, and the hidden row has no card and no
+ * id to resolve — the file can never be cleared from the screen. Derived findings (recomputed live
+ * by the chain / tie-out / liquidity desks, no id) have no such row and fold in freely.
+ */
+function isPersisted(f) { return !!(f && f.id); }
 
 // Which of two findings for the same claim should SURVIVE as the one shown.
 // Most severe wins; then the one that explains itself best (the owner's complaint was thin
 // reasoning, so prefer the richer text); then the one carrying evidence to open.
 function isBetter(candidate, current) {
+  // A PERSISTED finding always outranks a derived restatement of it, whatever the severity. It is
+  // the one with an id, so it is the one the underwriter can actually act on and the one the
+  // clear-to-close gate is counting; swapping it out for a prettier derived copy would leave the
+  // stored row live but unreachable from the screen.
+  const cp = isPersisted(candidate) ? 1 : 0, rp = isPersisted(current) ? 1 : 0;
+  if (cp !== rp) return cp > rp;
   const cs = sevRank(candidate.severity), rs = sevRank(current.severity);
   if (cs !== rs) return cs > rs;
   const ce = String(candidate.explanation || candidate.detail || candidate.message || '').length;
@@ -122,12 +163,22 @@ function dedupeByClaim(findings) {
     if (!key) { passthrough.push({ f, at: order.length }); order.push(null); continue; }
     const prev = byClaim.get(key);
     if (!prev) {
-      byClaim.set(key, { rep: f, codes: new Set([norm(f.code)]), at: order.length });
+      byClaim.set(key, { rep: f, codes: new Set([norm(f.code)]), persisted: isPersisted(f) ? 1 : 0, at: order.length });
       order.push(key);
+      continue;
+    }
+    // TWO PERSISTED ROWS ARE NEVER MERGED (audit 2026-07-26). Each is separately resolvable and
+    // separately counted by the clear-to-close gate, so folding one into the other would hide a real
+    // dealbreaker and leave the file un-clearable (see isPersisted above). They are two pieces of
+    // work — a co-borrower's expired ID is not the borrower's — so both stay on the desk.
+    if (prev.persisted && isPersisted(f)) {
+      passthrough.push({ f, at: order.length });
+      order.push(null);
       continue;
     }
     prev.codes.add(norm(f.code));
     if (isBetter(f, prev.rep)) prev.rep = f;
+    if (isPersisted(f)) prev.persisted = 1;
   }
 
   const out = [];

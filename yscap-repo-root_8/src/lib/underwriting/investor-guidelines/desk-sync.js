@@ -154,12 +154,24 @@ async function syncInvestorGuidelineFindings(client, appId, opts) {
     //
     // Cost of being conservative: a file whose rules genuinely all stopped applying keeps its stale
     // rows until the desk has something to say. That is the right side to err on.
+    //
+    // ...and only when the desk saw the WHOLE file (audit 2026-07-26). `verdicts` is computed from
+    // the applicable RULES, before and independently of the signal loaders — and each of those
+    // loaders (conditions on file, twin facts, borrower email, appraisal, the concern signal, the
+    // SOW contingency) swallows its own error so a bad query can never break a file view. A failed
+    // appraisal read silently removes every appraisal item from `unhappy[]`; a failed concern read
+    // removes every concern item. `verdicts.length` stays healthy through all of that, so the guard
+    // below on its own would happily retract live findings and stamp them "the rule was corrected"
+    // — which would be a lie, and on the next good run they would be re-INSERTED, re-firing the
+    // fatal-notify email to the loan officer every cycle. So the desk now names the loaders that
+    // failed, and a degraded read retracts nothing.
     const assessed = !!(desk && Array.isArray(desk.verdicts) && desk.verdicts.length);
-    const retracted = assessed
+    const degraded = !!(desk && Array.isArray(desk.degraded) && desk.degraded.length);
+    const retracted = (assessed && !degraded)
       ? await retractStale(client, appId, payloads.map((p) => p.dedupeKey))
       : 0;
-    return { raised, fatal, retracted, assessed };
-  } catch (_e) { return { raised: 0, fatal: 0, retracted: 0, assessed: false }; }
+    return { raised, fatal, retracted, assessed, degraded };
+  } catch (_e) { return { raised: 0, fatal: 0, retracted: 0, assessed: false, degraded: false }; }
 }
 
 /**

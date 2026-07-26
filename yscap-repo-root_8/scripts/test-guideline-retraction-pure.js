@@ -122,6 +122,34 @@ function stubClient(rowCount = 0) {
   ok(r4.assessed === true && r4.retracted === 4,
     `a desk that assessed and is now HAPPY retracts its stale rows (assessed=${r4.assessed}, retracted=${r4.retracted})`);
 
+  // ---------- A DEGRADED READ IS NOT A JUDGEMENT (audit 2026-07-26) ----------
+  // `verdicts` comes from the applicable RULES, computed before and independently of the signal
+  // loaders — and every loader swallows its own error. So a file whose appraisal query failed still
+  // returns a healthy-looking desk with all its appraisal items silently missing. The `assessed`
+  // guard alone would happily retract those live findings and stamp them "the rule was corrected",
+  // which is false; worse, the next good run RE-INSERTS them, and a fresh insert re-fires the
+  // fatal-notify email — so a flapping query would email the loan officer on every cycle.
+  const degradedDesk = {
+    noteBuyer: { key: 'bluelake', name: 'Blue Lake Capital' },
+    verdicts: [{ cond_no: 1, verdict: 'satisfied' }],   // rules DID evaluate...
+    unhappy: [],
+    degraded: ['appraisal'],                            // ...but the appraisal read failed
+  };
+  const c5 = stubClient(7);
+  const r5 = await sync.syncInvestorGuidelineFindings(c5, 'app-8', { desk: degradedDesk });
+  ok(r5.retracted === 0,
+    `a desk whose appraisal read FAILED retracts nothing (got ${r5.retracted}) — its appraisal items are missing, not withdrawn`);
+  ok(r5.degraded === true, 'the degraded read is reported, so the caller can see why nothing converged');
+  ok(!c5.calls.some((k) => /UPDATE ai_suggestions/.test(k.text)),
+    'no UPDATE is issued at all on a degraded read');
+
+  // An explicitly EMPTY degraded list is a clean read and still converges.
+  const c6 = stubClient(2);
+  const r6 = await sync.syncInvestorGuidelineFindings(c6, 'app-9', {
+    desk: { noteBuyer: { key: 'bluelake' }, verdicts: [{ cond_no: 1 }], unhappy: [], degraded: [] } });
+  ok(r6.retracted === 2 && r6.degraded === false,
+    `a clean read (degraded: []) still converges (retracted=${r6.retracted}, degraded=${r6.degraded})`);
+
   console.log(`test-guideline-retraction-pure: ${pass} passed, ${fail} failed`);
   process.exit(fail ? 1 : 0);
 })().catch((e) => { console.error(e); process.exit(1); });

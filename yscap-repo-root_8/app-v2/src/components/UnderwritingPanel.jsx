@@ -306,6 +306,16 @@ function Finding({ appId, f, onChange, resolvable, canWaive = true, canEscalate 
       )}
       {compare && <DocCompare title={f.title} field={f.field} sources={compare} onClose={() => setCompare(null)} />}
       {howTo && <div style={{ fontSize: 12.5, color: 'var(--muted,#4B585C)', marginBottom: resolvable ? 10 : 0 }}>{howTo}</div>}
+      {/* When several reviews independently reached the same conclusion, this is the ONE item they
+          collapsed into (finding-claims.dedupeByClaim). Saying so turns the merge from something
+          invisible into something an underwriter can weigh — three desks agreeing is a stronger
+          signal than one — and leaves an auditor able to see nothing was quietly dropped. */}
+      {Array.isArray(f.mergedFrom) && f.mergedFrom.length > 0 && (
+        <div style={{ fontSize: 11.5, color: 'var(--muted,#4B585C)', marginBottom: resolvable ? 10 : 0 }}>
+          Also reached by {f.mergedFrom.length} other review{f.mergedFrom.length === 1 ? '' : 's'} of this file
+          — shown once here instead of repeated.
+        </div>
+      )}
       {resolvable && actions.length > 0 && (
         <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
           {actions.map((a) => (
