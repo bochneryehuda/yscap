@@ -1467,8 +1467,11 @@ router.post('/applications/:id/checklist/:itemId/tool', async (req, res) => {
   // and carries a plain-language note until the line items total the budget exactly.
   let sowMismatch = null, goldSow = { ok: true };
   if (it.rows[0].tool_key === 'rehab_budget') {
-    // The rehab budget is loan structure — frozen at Clear-to-Close (#84).
-    const locked = await require('../lib/file-lock').structuralLockReason(req.params.id);
+    // The rehab budget is loan structure — frozen at Clear-to-Close (#84). A save
+    // that leaves the construction budget total exactly where it is is a line-item
+    // reallocation, allowed while a term sheet is out for signature (owner-directed
+    // 2026-07-26) — the test is on the DATA, so it holds for the borrower too.
+    const locked = await require('../lib/file-lock').sowLockReason(req.params.id, payload);
     if (locked) return res.status(409).json({ error: locked, fatal: true });
     const chk = await require('../lib/rehab-budget').checkSowBudget(req.params.id, payload);
     if (!chk.ok) sowMismatch = { required: chk.required, total: require('../lib/rehab-budget').toNum(payload && payload.total), message: chk.message };
