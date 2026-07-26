@@ -86,12 +86,12 @@ const COMPONENTS = Object.freeze([
     probe: () => {
       const c = require('./langfuse');
       if (!c.enabled()) return { active: false, model: null };
-      // Say OUT LOUD whether findings can actually link to their trace. Recording works the moment
-      // the keys are set, but the "AI reasoning trace" link needs Langfuse's own project identifier
-      // — so this distinguishes "recording, links live" from "recording, no link yet" rather than
-      // letting a link quietly go missing (or, as before, quietly 404).
+      // Findings link to their trace as soon as tracing is on. Say which FORM the links take: the
+      // direct one once Langfuse has told us its project identifier, otherwise Langfuse's own
+      // redirect, which resolves the project on its side. Both work — this is visibility, not a
+      // warning.
       return { active: true,
-        model: c.projectId() ? 'recording · finding links live' : 'recording · finding links not available yet' };
+        model: c.projectId() ? 'recording · finding links direct' : 'recording · finding links via redirect' };
     },
   },
 ]);

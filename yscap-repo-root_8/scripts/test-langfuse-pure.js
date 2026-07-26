@@ -116,18 +116,23 @@ const lf = require('../src/lib/ai/langfuse');
   process.env.LANGFUSE_PROJECT = 'pilot-underwriting';   // the label that produced the 404s
   delete process.env.LANGFUSE_PROJECT_ID;
 
-  // (a) No identifier known → NO link at all. Showing nothing is the whole point: the UI only
-  // renders the link when a URL is present, so this is what removes the dead one.
+  // (a) No identifier known → still a WORKING link, via Langfuse's own /trace/<id> redirect. This is
+  // what removes the dead one: the link that renders is the one that resolves, always.
   projectsReply = { ok: false, status: 401, json: async () => ({}) };
   let lfA = fresh();
   const ta = lfA.trace({ name: 'no-project-id' });
-  assert.strictEqual(ta.url(), null, 'with no project identifier the trace URL is null, not a guess');
+  assert.strictEqual(ta.url(), 'https://us.cloud.langfuse.com/trace/' + ta.id,
+    'with no project identifier the link goes through Langfuse\'s own trace redirect');
   assert.strictEqual(lfA.projectId(), null, 'and no identifier is invented');
   await new Promise((r) => setTimeout(r, 20));
-  assert.strictEqual(ta.url(), null, 'a failed lookup still yields no link rather than a broken one');
+  assert.ok(String(ta.url()).startsWith('https://us.cloud.langfuse.com/trace/'),
+    'a failed lookup leaves the redirect form in place rather than a broken link');
 
   // (b) The human label is NEVER used as the identifier — that was the entire bug.
   assert.ok(!String(ta.url() || '').includes('pilot-underwriting'), 'the project LABEL never appears in a trace URL');
+  // A findings row written in the first moments after a deploy must not be stuck link-less forever.
+  assert.ok(lfA.traceUrl('abc-123'), 'a link is available for any trace id, with no lookup at all');
+  assert.strictEqual(lfA.traceUrl(null), null, 'and there is no link without a trace');
 
   // (c) Looked up from Langfuse's own API → a real, resolvable link.
   projectsReply = { ok: true, status: 200, json: async () => ({ data: [{ id: 'cm4realprojectid00000001', name: 'PILOT' }] }) };
@@ -173,7 +178,16 @@ const lf = require('../src/lib/ai/langfuse');
   te.end({ output: { ok: true } });
   await lfE.flushNow();
   assert.ok(captured.flatMap((c) => c.body.batch).some((e) => e.type === 'trace-create'),
-    'the AI call is still recorded even when no link can be offered');
+    'the AI call is still recorded when the project lookup is unavailable');
+  assert.ok(String(te.url()).includes('/trace/'), 'and it still offers a link that resolves');
+
+  // (g) Tracing OFF → no link at all. There is no trace to point at, so there is nothing to link.
+  delete process.env.LANGFUSE_PUBLIC_KEY;
+  const lfOff = fresh();
+  assert.strictEqual(lfOff.enabled(), false);
+  assert.strictEqual(lfOff.trace({ name: 'off' }).url(), null, 'tracing off → no link');
+  assert.strictEqual(lfOff.traceUrl('abc'), null, 'and no link for a bare id either');
+  process.env.LANGFUSE_PUBLIC_KEY = 'pk-lf-test';
 
   global.fetch = origFetch;
   console.log('test-langfuse-pure: trace + generation + span + PII redaction + wrap + off-mode + never-a-dead-trace-link all pass');

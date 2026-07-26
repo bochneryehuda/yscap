@@ -117,11 +117,19 @@ async function flushNow() {
 // LANGFUSE_PROJECT — a human-readable LABEL, defaulting to "pilot-underwriting" — which is not, and
 // can never be, a project id. So every link ever written pointed at a project that does not exist.
 //
-// The shape that makes the whole class impossible: never render a URL we cannot prove resolves. The
-// id is looked up ONCE from Langfuse's own API with the keys we already hold, cached for the life of
-// the process, and url() returns NULL until it is known. No id → no link, ever — rather than a link
-// that lies. LANGFUSE_PROJECT_ID short-circuits the lookup when an admin sets it explicitly.
-// LANGFUSE_PROJECT stays what it always was: a label attached to trace metadata.
+// The shape that makes the whole class impossible: never render a URL we cannot prove resolves.
+//
+// Langfuse itself provides the way to do that without knowing the project at all — /trace/<trace id>
+// is a redirect route that looks the project up server-side and forwards to the real page. That is
+// what its own SDKs emitted for years. So a link is ALWAYS available the moment a trace exists, with
+// no lookup, no waiting, and no race: findings written in the first seconds after a deploy get a
+// working link like every other one.
+//
+// The direct /project/<id>/traces/<id> form is still preferred when the project id is known, because
+// it needs no redirect and can be shared. The id is looked up ONCE from Langfuse's own API with the
+// keys we already hold and cached for the life of the process; LANGFUSE_PROJECT_ID short-circuits it
+// when an admin sets it explicitly. LANGFUSE_PROJECT stays what it always was: a label on trace
+// metadata, never part of a URL.
 let _projectId = null;
 let _projectLookup = null;
 let _projectTried = 0;
@@ -133,13 +141,30 @@ function projectId() {
   return _projectId || null;
 }
 
+/**
+ * The web address of one trace. Read at CALL time, not trace-creation time, so a trace made a moment
+ * before the project lookup lands still gets the direct form afterwards. Returns null only when
+ * tracing is off entirely (then there is no trace to point at).
+ */
+function traceUrl(id) {
+  if (!id || !enabled()) return null;
+  const p = projectId();
+  return p
+    ? `${cfg.langfuse.host}/project/${encodeURIComponent(p)}/traces/${encodeURIComponent(id)}`
+    : `${cfg.langfuse.host}/trace/${encodeURIComponent(id)}`;   // Langfuse resolves the project itself
+}
+
 /** Best-effort, fire-and-forget resolve. Safe to call on every trace — it self-throttles. */
 function resolveProjectId() {
   if (projectId() || !enabled() || _projectLookup) return;
   const now = Date.now();
   if (_projectTried && now - _projectTried < PROJECT_RETRY_MS) return;
   _projectTried = now;
-  _projectLookup = (async () => {
+  // Started on a microtask so `_projectLookup` is assigned BEFORE any of the body runs. Invoking the
+  // async function directly would let a synchronous throw run its `finally` (clearing the slot)
+  // before the assignment landed, parking a settled promise there forever and killing every retry
+  // for the life of the process.
+  _projectLookup = Promise.resolve().then(async () => {
     try {
       const auth = 'Basic ' + Buffer.from(cfg.langfuse.publicKey + ':' + cfg.langfuse.secretKey).toString('base64');
       const ac = new AbortController();
@@ -160,7 +185,7 @@ function resolveProjectId() {
       // Observability must never break the main path, and an unknown project id must never become
       // a guessed one — we simply show no link.
     } finally { _projectLookup = null; }
-  })();
+  });
 }
 
 // --- No-op trace + generation returned when Langfuse is off, so call sites are agnostic ---
@@ -205,10 +230,7 @@ function trace(a = {}) {
 
   // Read at CALL time, not now — a trace created a moment before the project lookup finished still
   // produces a working link when its url() is read afterwards.
-  const url = () => {
-    const p = projectId();
-    return p ? `${cfg.langfuse.host}/project/${encodeURIComponent(p)}/traces/${id}` : null;
-  };
+  const url = () => traceUrl(id);
 
   return {
     id,
@@ -378,4 +400,4 @@ if (typeof process !== 'undefined' && process.on) {
   process.on('beforeExit', () => { flushNow().catch(() => {}); });
 }
 
-module.exports = { enabled, trace, wrap, flushNow, projectId, resolveProjectId, _redact: redact };
+module.exports = { enabled, trace, wrap, flushNow, projectId, resolveProjectId, traceUrl, _redact: redact };

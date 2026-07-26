@@ -90,14 +90,18 @@ SILENT. Per-rule dispositions the owner dictated:
    trace or remove the link. A dead link on every finding erodes trust in all of them.~~ **DONE.**
    Root cause: the link was built out of `LANGFUSE_PROJECT`, a human LABEL (default
    `pilot-underwriting`), while Langfuse addresses a trace by an opaque project IDENTIFIER — so
-   every link ever written pointed at a project that does not exist. Fixed at the shape rather than
-   the spot: `src/lib/ai/langfuse.js` looks the identifier up once from Langfuse's own API with the
-   keys we already hold (or takes `LANGFUSE_PROJECT_ID` when an admin sets it), and `url()` returns
-   NULL until it is known — so a link is only ever rendered when it can actually resolve. `db/317`
-   clears the dead links already stored on existing findings, scoped to project segments that are
-   provably not identifiers, so a link that might work is left alone. The AI stack health row now
-   says which state it is in ("recording · finding links live" vs "…not available yet") instead of
-   letting the link quietly disappear.
+   every link ever written pointed at a project that does not exist. Only the project part was ever
+   wrong: the trace id at the end is real and the traces themselves recorded fine, because recording
+   authenticates with the API keys and never touched the label. So the links are REPAIRABLE, and
+   Langfuse provides the route that repairs them — `/trace/<id>` resolves the project on its own side.
+   `src/lib/ai/langfuse.js` now emits that form whenever the project identifier is not (yet) known,
+   and the direct `/project/<id>/traces/<id>` form once it is — looked up once from Langfuse's own
+   API, or taken from `LANGFUSE_PROJECT_ID`. A link is therefore available the moment a trace exists,
+   with no lookup and no race, so findings written seconds after a deploy are not stuck link-less.
+   `db/317` REWRITES the dead links already stored rather than clearing them, preserving the trace id
+   — which matters most for the regulator-facing AI decision export, where nulling the column would
+   have destroyed an audit reference permanently. Scoped to project segments that are provably not
+   identifiers, and a false positive merely swaps one working form for another.
 9. **Insurance/title mortgagee-address findings must say WHICH document** they refer to (one is
    insurance, one is title) and should auto-clear when an address is present.
 
