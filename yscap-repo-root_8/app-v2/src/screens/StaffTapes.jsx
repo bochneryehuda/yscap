@@ -75,18 +75,37 @@ export default function StaffTapes() {
       saveBlob(blob, filename);
       setMsg(`Exported ${tapeName} tape.`);
       setPending(null);
-    } catch (e) { setErr((e.data && e.data.message) || e.message || 'Export failed'); }
+    } catch (e) {
+      const d = (e && e.data) || {};
+      // Encompass reconciliation gate: an admin may override with a logged reason.
+      if ((d.code === 'encompass_unreconciled' || d.code === 'encompass_override_reason_required') && d.canOverride) {
+        const reason = window.prompt(`${d.message || 'This loan doesn’t fully match Encompass yet.'}\n\nTo export it anyway, type a short reason (this is logged):`, '');
+        if (reason && reason.trim()) { setBusyRow(null); await exportRow(loanId, tapeName, { ...(answers || {}), encompassOverrideReason: reason.trim() }); return; }
+        setBusyRow(null); return;
+      }
+      setErr(d.message || e.message || 'Export failed');
+    }
     finally { setBusyRow(null); }
   }
 
-  async function exportBulk() {
+  async function exportBulk(overrideReason) {
     if (!sel.size) return;
     setBusyBulk(true); setErr(''); setMsg('');
     try {
-      const { blob, filename } = await api.staffTapeBulkExport(active, Array.from(sel));
+      const { blob, filename } = await api.staffTapeBulkExport(active, Array.from(sel), overrideReason);
       saveBlob(blob, filename);
       setMsg(`Exported a bulk ${activeTape ? activeTape.name : ''} tape with ${sel.size} loan${sel.size === 1 ? '' : 's'}.`);
-    } catch (e) { setErr((e.data && e.data.message) || e.message || 'Bulk export failed'); }
+    } catch (e) {
+      const d = (e && e.data) || {};
+      // Encompass reconciliation gate: an admin may override the whole batch with a
+      // logged reason; a non-admin sees which loans still need reconciling.
+      if ((d.code === 'encompass_unreconciled' || d.code === 'encompass_override_reason_required') && d.canOverride) {
+        const reason = window.prompt(`${d.message || 'Some selected loans don’t fully match Encompass yet.'}\n\nTo export them anyway, type a short reason (this is logged):`, '');
+        if (reason && reason.trim()) { setBusyBulk(false); await exportBulk(reason.trim()); return; }
+        setBusyBulk(false); return;
+      }
+      setErr(d.message || e.message || 'Bulk export failed');
+    }
     finally { setBusyBulk(false); }
   }
 

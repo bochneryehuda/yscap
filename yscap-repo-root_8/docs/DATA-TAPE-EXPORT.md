@@ -134,6 +134,53 @@ Failures are typed, each with a plain-language message the UI surfaces:
 program). The prior "switch the capital provider first" behavior is the
 `buyer_mismatch` case within this larger gate.
 
+## Encompass must be reconciled first (owner-directed 2026-07-26)
+
+On top of the access + provider/program rule above, a tape **cannot be exported
+until the loan's Encompass reconciliation is complete and EVERY field matches**.
+This is the same "everything matches within Encompass before you export" rule the
+owner already applies to issuing a term sheet — extended to the tape export, with
+one deliberate difference (below).
+
+The gate is `tapeGate(appId, dbc)` in `src/encompass/reconcile.js`. It reuses the
+existing `isClear()` (whose `summary.clear = matched === compared` is already the
+strict "every field matches" semantics — an advisory difference, a "no data to
+compare" field, or an accepted-but-still-differing value all keep it *not* clear).
+`tapeGate` returns `{ block, reason, hasLoan, openBlocking, openBlockingKeys }`:
+
+- **`not_configured`** — Encompass integration is OFF → **dormant** (`block:false`).
+  A non-Encompass deployment is never locked out of every export.
+- **`not_in_encompass`** — Encompass is on but this loan isn't in Encompass yet →
+  **blocked**. *This is the one axis stricter than the term-sheet issuance gate,*
+  which is dormant when no Encompass loan exists — the owner requires the loan to be
+  synced to Encompass **and** matched before its tape leaves.
+- **`unreconciled`** — in Encompass but one or more fields still differ → **blocked**
+  (`openBlocking` = how many, `openBlockingKeys` = which).
+- **`null`** — in Encompass and every field matches → **allowed**.
+- **`error`** — Encompass is configured but the reconciliation couldn't be computed
+  (a transient DB / data error) → **fails CLOSED** (`block:true`): we won't release a
+  tape we couldn't confirm matches. This deliberately **diverges from `issuanceGate`**
+  (which fails open) because the owner made the tape a hard export gate; the admin
+  override is the escape hatch. If Encompass's state can't even be read (the
+  integration module itself errored), the gate stays **dormant** — a non-Encompass
+  deployment is never locked out.
+
+The pure decision core is `tapeGateDecision(isConfigured, clearResult)` (unit-tested
+across every branch), and `tapeGateMessage(gate)` renders the plain-language copy
+staff see.
+
+**Admin override.** An **admin / super_admin** may override a block with a **reason**
+(`?encompassOverrideReason=…`). The override is **audited** (`encompass_tape_gate_override`)
+and recorded in the loan-exception register (diligence-visible). A non-admin cannot
+override — they must reconcile the file first. Enforced identically on the
+**single-file** export (`GET …/export/tape/:tapeKey`) and the **bulk** export
+(`POST …/tapes/:tapeKey/export/bulk`, checked per loan). The eligibility route
+(`GET …/tapes`) returns an `encompass` block (`blocked`, `reason`, `openCount`,
+`openKeys`, `hasLoan`, `canOverride`, `message`) so the UI shows a banner + link to
+the Encompass section before the user even clicks Export; the admin override runs
+through a reason prompt. 409 codes: `encompass_unreconciled` (non-admin) /
+`encompass_override_reason_required` (admin, needs a reason).
+
 ## How it stays byte-for-byte faithful
 
 A `.xlsx` file is a ZIP of XML parts. To fill a tape we:
@@ -169,16 +216,20 @@ All under `/api/staff` (staff auth + file scoping):
 
 - `GET /tapes` — list the tape types the system knows.
 - `GET /applications/:id/tapes` — which tape(s) this loan can export, and why not
-  for the rest (based on its current capital provider).
+  for the rest (based on its current capital provider). Also returns an `encompass`
+  block (`blocked`, `reason`, `openCount`, `openKeys`, `hasLoan`, `canOverride`,
+  `message`) for the reconciliation gate banner.
 - `GET /applications/:id/export/tape/:tapeKey` — download one loan's tape (.xlsx).
-  Enforces the buyer rule; audited; guarded by the same confirmed-fatal issuance
-  backstop as the TPR/MISMO exports.
+  Enforces the buyer rule **and the Encompass reconciliation gate**; audited;
+  guarded by the same confirmed-fatal issuance backstop as the TPR/MISMO exports.
+  An admin may pass `?encompassOverrideReason=…` to override an Encompass block.
 - `GET /tapes/:tapeKey/loans` — every loan assigned to that provider the staffer
   may see (the bulk picker).
 - `POST /tapes/:tapeKey/export/bulk` — body `{ applicationIds: [...] }` → one
   workbook with a row per loan. Every loan must belong to the provider (the whole
-  batch is rejected, listing any that don't); ids are narrowed to what the staffer
-  may see.
+  batch is rejected, listing any that don't) **and pass the Encompass reconciliation
+  gate** (per-loan; an admin may override the batch with `?encompassOverrideReason=…`);
+  ids are narrowed to what the staffer may see.
 
 ## UI
 

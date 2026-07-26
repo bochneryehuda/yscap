@@ -23,6 +23,7 @@ import TapeQuestionsModal from '../components/TapeQuestionsModal.jsx';
 import { CreditCondition } from '../components/CreditReport.jsx';
 import SubmitFilePanel from '../components/SubmitFilePanel.jsx';
 import FileNotificationOverrides from '../components/FileNotificationOverrides.jsx';
+import BorrowerViewButton from '../components/BorrowerViewButton.jsx';
 import { PhoneInput, ZipInput , EmailInput} from '../components/FormattedInputs.jsx';
 import EditFileDetails from '../components/EditFileDetails.jsx';
 import ToolModal from '../components/ToolModal.jsx';
@@ -675,7 +676,7 @@ function useStickyFilter(key, fallback) {
   return [v, set];
 }
 
-function Item({ it, team, onPatch, role, docs, onUploadTo, onDropTo, onReviewDoc, onDownloadDoc, dlBusy, onPreview, appId, onChanged }) {
+function Item({ it, team, onPatch, role, docs, onUploadTo, onDropTo, onReviewDoc, onDownloadDoc, dlBusy, onPreview, appId, onChanged, canImportCredit }) {
   const [open, setOpen] = useState(false);
   const [notes, setNotes] = useState(it.notes || '');
   // Collapse-when-complete: once YOUR role-action is done the row renders as a
@@ -749,7 +750,10 @@ function Item({ it, team, onPatch, role, docs, onUploadTo, onDropTo, onReviewDoc
       </div>
 
       {it.template_code === 'rtl_cond_credit' && (
-        <CreditCondition appId={appId} canPull={completer} onChanged={onChanged} />
+        // The import button follows the SERVER's canImport (the pull_credit gate);
+        // `canPull` is only the pre-load fallback, so pass the same capability a loan
+        // officer now has — never `completer` (that would flash the button off for LOs).
+        <CreditCondition appId={appId} canPull={canImportCredit} onChanged={onChanged} />
       )}
 
       {/* The credit condition's PDF/XML are managed by <CreditCondition> above
@@ -2973,6 +2977,11 @@ export default function StaffApplication() {
           <h1 className="file-top-addr">{app.first_name} {app.last_name}{app.co_borrower_id ? ` & ${app.co_first_name || ''} ${app.co_last_name || ''}`.trimEnd() : ''} · {propAddress === '—' ? 'Address pending' : propAddress}</h1>
           <span className="muted small">{app.ys_loan_number || 'Loan # pending'} · {app.program || '—'} · {app.loan_type || '—'}</span>
         </div>
+        {/* BORROWER VIEW (owner-directed 2026-07-26) — step into this
+            borrower's portal straight from their file, landing on THIS loan, so
+            you can walk them through a condition while looking at their screen. */}
+        <BorrowerViewButton applicationId={id} borrowerId={app.borrower_id}
+          borrowerName={`${app.first_name || ''} ${app.last_name || ''}`.trim()} />
         {canDelete && (app.deleted_at
           ? <span className="row" style={{ gap: 8, flex: 'none' }}>
               <span className="pill" style={{ borderColor: 'var(--gold)', color: 'var(--gold)' }} title="This file is archived">Archived</span>
@@ -3332,7 +3341,7 @@ export default function StaffApplication() {
                   : vis.map(it => (
                     <Item key={it.id} it={it} team={team} onPatch={patch} role={role}
                       docs={docs} onUploadTo={pickUpload} onDropTo={uploadStaffFiles} onReviewDoc={reviewDoc} onDownloadDoc={downloadDoc}
-                      dlBusy={dlBusy} onPreview={openPreview} appId={id} onChanged={load} />))}
+                      dlBusy={dlBusy} onPreview={openPreview} appId={id} onChanged={load} canImportCredit={can('pull_credit')} />))}
             </>);
           })()}
         </div>
@@ -3362,7 +3371,7 @@ export default function StaffApplication() {
                 <div className="muted small" style={{ textTransform: 'uppercase', letterSpacing: '.06em', marginBottom: 6 }}>{phaseName(k)}</div>
                 {arr.map(it => <Item key={it.id} it={it} team={team} onPatch={patch} role={role}
                   docs={docs} onUploadTo={pickUpload} onDropTo={uploadStaffFiles} onReviewDoc={reviewDoc} onDownloadDoc={downloadDoc}
-                  dlBusy={dlBusy} onPreview={openPreview} appId={id} onChanged={load} />)}
+                  dlBusy={dlBusy} onPreview={openPreview} appId={id} onChanged={load} canImportCredit={can('pull_credit')} />)}
               </div>
             ))}
         </div>
@@ -3783,7 +3792,25 @@ function TapeExport({ appId }) {
       saveBlob(blob, filename || `${name}-tape.xlsx`);
       setPending(null);
       setMsg(`Exported the ${name} tape. Check your downloads.`);
-    } catch (e) { alert((e.data && e.data.message) || e.message || 'Export failed'); }
+    } catch (e) {
+      const d = (e && e.data) || {};
+      // Encompass reconciliation gate (owner-directed 2026-07-26): the file must be
+      // in Encompass and fully matching before its tape leaves. An admin may
+      // override with a logged reason; a non-admin is told to reconcile first.
+      if (d.code === 'encompass_unreconciled' || d.code === 'encompass_override_reason_required') {
+        if (d.canOverride) {
+          const reason = window.prompt(`${d.message || 'This loan doesn’t fully match Encompass yet.'}\n\nTo export it anyway, type a short reason (this is logged):`, '');
+          if (reason && reason.trim()) {
+            await runExport(tapeKey, name, { ...(answers || {}), encompassOverrideReason: reason.trim() });
+            return;
+          }
+        } else {
+          alert(d.message || 'This loan isn’t reconciled with Encompass yet. Finish the Encompass sync first.');
+        }
+        return;
+      }
+      alert(d.message || e.message || 'Export failed');
+    }
     finally { setBusy(null); }
   }
   return (
@@ -3802,6 +3829,20 @@ function TapeExport({ appId }) {
         export the tape for the provider this loan is <strong>currently set to</strong>. To export a different provider's
         tape, use “Change capital provider” above, switch it on the file, then come back here and export.
       </p>
+      {state && state.encompass && state.encompass.blocked && (
+        <div className="small" role="alert" style={{ margin: '8px 0', padding: '10px 12px', borderRadius: 8, border: '1px solid #E0B84C', background: '#FCF6E6', color: '#141B22' }}>
+          <strong style={{ color: '#141B22' }}>Finish the Encompass check before exporting.</strong>{' '}
+          <span style={{ color: '#3A4550' }}>{state.encompass.message}</span>{' '}
+          <button type="button" onClick={() => goToSection('sec-encompass')}
+            title="Jump to the Encompass sync section, reconcile every field, then come back to export"
+            style={{ background: 'none', border: 'none', color: '#0B6B63', textDecoration: 'underline', cursor: 'pointer', padding: 0, font: 'inherit' }}>
+            Open the Encompass section →
+          </button>
+          {state.encompass.canOverride && (
+            <div style={{ marginTop: 4, color: '#4B585C' }}>As an admin you can still export — you'll be asked for a reason, which is logged.</div>
+          )}
+        </div>
+      )}
       {msg && <p className="small" role="status" style={{ color: 'var(--teal)', fontWeight: 600 }}>✓ {msg}</p>}
       {!state ? <p className="muted small">Loading…</p> : state.error ? (
         <p className="muted small" style={{ color: 'var(--gold)' }}>Couldn’t load the available tapes. Refresh to try again.</p>

@@ -614,6 +614,58 @@ function _whyNotMatching(f) {
   return `The values differ after normalizing (ours "${f.oursNorm}" vs Encompass "${f.theirsNorm}").`;
 }
 
+// non-Encompass deployment).
+//   reason: 'not_configured' | 'not_in_encompass' | 'unreconciled' | null | 'error'
+// The DECISION core is pure (no DB/network) so every branch is unit-testable —
+// `tapeGate` just supplies whether Encompass is configured and the isClear() result.
+function tapeGateDecision(isConfigured, clearResult) {
+  if (!isConfigured) return { block: false, reason: 'not_configured', hasLoan: false, openBlocking: 0, openBlockingKeys: [] };
+  const g = clearResult || {};
+  if (!g.hasLoan) return { block: true, reason: 'not_in_encompass', hasLoan: false, openBlocking: 0, openBlockingKeys: [] };
+  const keys = g.openBlockingKeys || [];
+  const block = !g.clear;
+  return { block, reason: block ? 'unreconciled' : null, hasLoan: true, openBlocking: keys.length, openBlockingKeys: keys };
+}
+// The couldn't-compute outcome, pure + testable: OFF → dormant (never lock a
+// non-Encompass deployment out); ON → fail CLOSED (block, admin-overridable).
+function tapeGateError(isConfigured) {
+  if (!isConfigured) return { block: false, reason: 'not_configured', hasLoan: false, openBlocking: 0, openBlockingKeys: [] };
+  return { block: true, reason: 'error', hasLoan: false, openBlocking: 0, openBlockingKeys: [] };
+}
+async function tapeGate(appId, dbc) {
+  let isConfigured = false;
+  try {
+    isConfigured = require('../lib/integrations/encompass').configured();
+  } catch (_) {
+    // Can't even tell if Encompass is on → treat as OFF (dormant); an integration-
+    // module error must never lock every export in a non-Encompass deployment.
+    return tapeGateError(false);
+  }
+  if (!isConfigured) return tapeGateDecision(false, null);
+  try {
+    return tapeGateDecision(true, await isClear(appId, dbc));
+  } catch (_) {
+    // Configured but we couldn't VERIFY the reconciliation → fail CLOSED.
+    return tapeGateError(true);
+  }
+}
+
+// Plain-language message for a tape blocked by the Encompass gate — non-technical
+// staff read this on the export screen (owner-directed: plain language). Keyed off
+// the gate's `reason`. Null when the gate isn't blocking (nothing to say).
+function tapeGateMessage(gate) {
+  if (!gate || !gate.block) return null;
+  if (gate.reason === 'not_in_encompass') {
+    return 'This loan isn’t in Encompass yet. Finish syncing it to Encompass and reconcile the file (every field matching) before exporting its tape.';
+  }
+  if (gate.reason === 'error') {
+    return 'We couldn’t confirm this loan matches Encompass right now. Try again in a moment — or an admin can override with a reason.';
+  }
+  const n = gate.openBlocking || 0;
+  const fields = n === 1 ? '1 field' : `${n} fields`;
+  return `This loan doesn’t fully match Encompass yet (${fields} still ${n === 1 ? 'differs' : 'differ'}). Open the Encompass section and reconcile every field before exporting its tape.`;
+}
+
 // Convenience for the term-sheet gate (WO-E): is the Encompass findings tab clear?
 async function isClear(appId, dbc) {
   const c = await computeFindings(appId, dbc);
@@ -733,10 +785,12 @@ module.exports = {
   computeFindings,
   rawDiagnostic,
   isClear,
+  tapeGate,
+  tapeGateMessage,
   issuanceGate,
   replaceField,
   refresh,
   onLoanNumberSet,
   WRITABLE,
-  _internals: { snap, deriveDealType },
+  _internals: { snap, deriveDealType, tapeGateDecision, tapeGateError },
 };
