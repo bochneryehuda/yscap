@@ -117,6 +117,25 @@ app.get('/api/health', async (req, res) => {
   }
   let storageInfo;
   try { storageInfo = require('./lib/storage').probe(); } catch (e) { storageInfo = { ok: false, error: e.message }; }
+  // Storage CARD (owner-directed 2026-07-26, after the R2 cutover). The flat storage* fields
+  // below only say whether the settings are present; for an object store that is not the same
+  // as "the bucket answers". This does a real, time-bounded round-trip when the provider
+  // supports one, so a revoked token surfaces here instead of on a borrower's upload.
+  let storageCard;
+  try {
+    // `swr` — serve the last known verdict instantly and refresh in the background. Only the very
+    // first caller (no verdict yet) ever waits. This endpoint is Render's health check AND is
+    // polled by every open tab, so it must never pay a full storage timeout on a TTL boundary.
+    storageCard = await require('./lib/storage-health')
+      .readStorageHealth(require('./lib/storage'), cfg.storageProvider, { swr: true });
+    // Shape parity on failure: return the canonical 8-field card (all-null) rather than a partial
+    // object, so a consumer reading e.g. `.configured` never gets `undefined`.
+    // Shape parity on failure: the canonical 8-field card, and carry the FAILURE as the reason —
+    // a bare card would read back the reassuring "local disk" line even though the read threw.
+  } catch (e) {
+    storageCard = require('./lib/storage-health')
+      .buildStorageCard({ provider: cfg.storageProvider, probe: { ok: false, error: 'storage health unavailable' } });
+  }
   // Missing-conditions tripwire (owner-directed 2026-07-14, after the breach):
   // a LIVE file sitting at zero checklist items, or an RTL file without its
   // purchase-contract condition, must be impossible — if it ever happens again
@@ -161,6 +180,9 @@ app.get('/api/health', async (req, res) => {
     storageWritable: storageInfo && storageInfo.ok,
     storagePersistent: storageInfo && storageInfo.persistent,
     storageBase: storageInfo && storageInfo.base,
+    // The full card (provider, live reachability, dual-read migration state). The four flat
+    // fields above are kept verbatim for back-compat with anything already reading them.
+    storageHealth: storageCard,
     // SharePoint one-way sync status (config + last reconciliation pass; cheap —
     // no live Graph call on the health path).
     sharepointSync: (() => { try { return require('./lib/sharepoint-backup').health(); } catch (e) { return { enabled: false, error: e.message }; } })(),
