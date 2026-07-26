@@ -417,18 +417,24 @@ async function resolveOne(entry, opts) {
   try { r = useTest ? await entry.test() : await entry.probe(); }
   catch (e) { r = { configured: false, live: false, detail: e && e.message ? e.message : 'probe failed' }; }
   r = r || {};
+  // The RUNTIME on/off switches for this integration (from src/lib/integrations/switches.js) — each
+  // is the effective value (admin override ?? env default), plus whether it's dangerous (needs a
+  // typed confirm), currently overridden, and `resume` (a background poller that only resumes on the
+  // next restart). Toggled live from the API Health page.
+  const runtimeSwitches = require('./switches').list().filter((s) => s.integration === entry.key)
+    .map((s) => ({ name: s.key, label: s.label, on: s.on, dangerous: s.dangerous, overridden: s.overridden, resume: s.resume, envDefault: s.envDefault, toggleable: true }));
+  const runtimeNames = new Set(runtimeSwitches.map((s) => s.name));
   return {
     key: entry.key, name: entry.name, group: entry.group, purpose: entry.purpose,
     direction: entry.direction, auth: entry.auth, liveProbe: !!entry.liveProbe, notBuilt: !!entry.notBuilt,
     env: (entry.env || []).map((e) => ({ name: e.name, required: !!e.required, set: envSet(e.name) })),
-    // The RUNTIME on/off switches for this integration (from src/lib/integrations/switches.js) — each
-    // is the effective value (admin override ?? env default), plus whether it's dangerous (needs a
-    // typed confirm), currently overridden, and `resume` (a background poller that only resumes on the
-    // next restart). Toggled live from the API Health page. Any DOCUSIGN_TEST_MODE-style display-only
-    // env flags stay on `entry.switches` for read-only rendering.
-    switches: require('./switches').list().filter((s) => s.integration === entry.key)
-      .map((s) => ({ name: s.key, label: s.label, on: s.on, dangerous: s.dangerous, overridden: s.overridden, resume: s.resume, envDefault: s.envDefault, toggleable: true })),
-    displaySwitches: (entry.switches || []).map((s) => ({ name: s.name, label: s.label, on: envSet(s.name), invert: !!s.invert })),
+    switches: runtimeSwitches,
+    // Read-only env pills are ONLY for flags that are NOT already a live toggle above (e.g.
+    // DOCUSIGN_TEST_MODE, which has no runtime switch). A flag that HAS a runtime switch must never
+    // also render as a display pill: the pill reads the raw env var, so it stays "off" even after an
+    // admin flips the live toggle on — the exact source of "I turned it on but it still says off".
+    displaySwitches: (entry.switches || []).filter((s) => !runtimeNames.has(s.name))
+      .map((s) => ({ name: s.name, label: s.label, on: envSet(s.name), invert: !!s.invert })),
     configured: !!r.configured, enabled: r.enabled === undefined ? null : r.enabled,
     live: r.live === undefined ? null : r.live, detail: r.detail || '',
     state: computeState(entry, r, useTest),
