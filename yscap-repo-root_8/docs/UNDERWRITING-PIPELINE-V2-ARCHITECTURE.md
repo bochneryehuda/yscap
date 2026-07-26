@@ -1,7 +1,16 @@
 # Underwriting Pipeline v2 — Six-Layer Orchestration Restructure
 
-**Status:** DESIGN DELIVERABLE — for owner review and approval. **No pipeline-v2 code is
-written until this is approved** (owner directive, 2026-07-26).
+**Status:** DESIGN DELIVERABLE — Part I is the codebase-grounded inventory + six-layer map.
+**Part II (§14+) adopts the owner's refined "Pipeline V2" specification of 2026-07-26 and is
+AUTHORITATIVE wherever it differs from Part I** (durable job worker, the exact feature-flag /
+env-var names, the Azure classifier API correction, the `EvidenceCandidate` contract with a
+`manual_verified` status, the 18-stage manifest, and the 5-phase strangler migration). Part I
+is retained because its "what already exists / what is new" inventory is unchanged and correct.
+
+Phase 1 of the migration (adapters, the Azure classifier API fix, the normalized provider
+result, and the durable-job tables + worker) is explicitly authorized to build now: it is
+additive, everyone stays on Pipeline V1, and underwriting outcomes do not change. Only new
+*investor-guideline* features are paused until the infrastructure is operating correctly.
 
 **Governing principle:** This is an *additive, versioned wrapper AROUND* the existing
 system. We do **not** delete or rewrite any current underwriting module, database table,
@@ -474,3 +483,194 @@ create the resource + analyzers and paste the keys/IDs; (3) Google Document AI �
 OCR + splitter processors and paste the service-account JSON; (4) Azure OpenAI — create the
 three named deployments; (5) Xactus — hand over one sample response file so the parser can be
 finished. Plaid is skipped. Secretary-of-State stays parked until a vendor account exists.
+
+---
+
+# PART II — Owner's refined Pipeline V2 specification (ADOPTED 2026-07-26)
+
+This part records the owner's more precise plan and the code-grounded engineering artifacts
+required before coding continues (owner §10). Where it differs from Part I, this part governs.
+
+## 14. What changed from Part I (adopted refinements)
+
+1. **Durable job worker, not in-request processing.** No OCR / packet split / LLM extraction /
+   underwriting runs inside the HTTP request. The web app only: validate → store original →
+   SHA-256 → immutable metadata → create a durable job → return job id + status. Expensive work
+   runs in a **separate Render Background Worker** off a Postgres job queue (reuse the existing
+   queue patterns; **no Temporal / no new workflow vendor**).
+2. **Exact feature flags & env names** (owner's spelling) — see §18/§20; note `AZURE_DOCINT_EXTRACT_*`
+   (not `_EXTRACTOR_`), `AZURE_OPENAI_BASE_URL` (migrate the adapter to the `{endpoint}/openai/v1`
+   base path), `GOOGLE_DOCAI_PROCESSOR_ID` for the existing OCR processor.
+3. **Azure classifier API correction is a Phase-1 deliverable** — see §16 (confirmed bug in
+   `src/lib/ai/azure-custom.js`).
+4. **`EvidenceCandidate`** is the one normalized object between every provider and the fact
+   engine; evidence statuses gain **`manual_verified`** (6 total) — see §17.
+5. **18-stage manifest** with statuses `pending / running / completed / not_applicable /
+   manual_required / failed_retryable / failed_terminal`; V2 must **independently prove every
+   required desk ran** (it must not depend on caller-supplied `extraFindings`) — see §19.
+6. **Vendor scope trimmed:** no Plaid, no Ocrolus, no additional LLM vendor for this phase.
+   Content Understanding uses **GA `2025-11-01`, Standard mode, `estimateFieldSourceAndConfidence=true`**
+   (never preview Pro for decision-driving facts). Google is a **splitter/boundary challenger only**
+   (no Google custom extractors yet).
+7. **First milestone is not "all documents."** It is: one **bank_statement** file and one
+   **insurance** file travel the complete V2 path (upload → durable job → packet control →
+   routed extraction → evidence grounding → deterministic findings) while V1 is untouched and
+   available for rollback. Then repeat family by family.
+
+## 15. Provider adapter contract (Layer 2) — the normalized interface
+
+Every vendor is reached ONLY through an adapter implementing one contract. No controller,
+route, document checker, or underwriting module may call a vendor SDK/endpoint directly.
+
+```
+// DocumentProvider — every OCR/DocInt/CU/LLM/feed adapter implements this.
+analyze(request) -> Promise<ProviderResult>
+healthCheck()    -> Promise<ProviderHealth>   // { ok, provider, latencyMs, detail }
+
+// ProviderResult — the single normalized shape the router returns for any provider:
+{
+  provider, service, modelId, modelVersion, documentType,
+  pages: [], fields: [], tables: [], evidenceRegions: [],
+  confidence, warnings: [], latencyMs, estimatedCost, rawArtifactId
+}
+```
+
+Existing modules wired UNDERNEATH the router (unchanged internals, new front door):
+`routing-matrix.js`, `ocr-router.js`, `weak-page-reread.js`, `model-router.js`, the
+provider-health/telemetry modules, and each vendor client (`docint.js`, `docai-google.js`,
+`docai-mistral.js`, `azure-custom.js`, `azure-openai.js`, a new `content-understanding.js`).
+The router chooses by family / native-text / scan quality / table density / visual complexity /
+handwriting / numeric materiality / risk / historical accuracy / availability / confidence /
+cost — and records the route. **The AI model is never used merely because it is available.**
+
+## 16. Corrected Azure classifier implementation (confirmed bug — Phase 1)
+
+`src/lib/ai/azure-custom.js` `analyzeUrl()` (line ~84) builds every call — including
+`classify()` — as `.../documentintelligence/documentModels/{id}:analyze?_overload=analyzeDocument`.
+A **classifier** must be called on the classifier route with automatic splitting:
+
+```
+BEFORE (classify() path, wrong — hits the extractor route):
+  ${base}/documentintelligence/documentModels/${classifierId}:analyze?_overload=analyzeDocument&api-version=2024-11-30
+
+AFTER (classify() only — classifier route + explicit split):
+  ${base}/documentintelligence/documentClassifiers/${classifierId}:analyze?api-version=2024-11-30&split=auto
+```
+
+Fix shape: add a `classifyUrl(classifierId)` builder used ONLY by `classify()`; leave
+`analyzeUrl()` for the neural EXTRACTORS (`extract()`) untouched. `split=auto` makes Azure v4
+split a composite file and identify multiple instances of the same type. Behavior is gated on a
+trained classifier id (`AZURE_DOCINT_CLASSIFIER_ID`); with none set, nothing changes.
+
+## 17. EvidenceCandidate (Layer 3) — the one object between providers and facts
+
+```
+{
+  field, normalizedValue, originalText, documentId, logicalDocumentId, documentFamily,
+  page, boundingRegion: [], nearbyLabel, subjectId, provider, modelVersion,
+  confidence, documentVersion, evidenceStatus
+}
+```
+`evidenceStatus ∈ verified | partially_verified | unverified | contradicted | superseded |
+manual_verified`. **Only `verified` or `manual_verified` MATERIAL facts enter deterministic
+checks.** Unverified stays quarantined: it may trigger a reread or a manual-review request, and
+**may never create a mismatch, condition, denial, or clearance.** `document-version-resolver.js`
+runs **before** canonical fact selection; canonical truth prioritizes governing source authority
+→ execution status → amendment/supersession → effective date → direct evidence quality → human
+approval → supporting-document count (never "appears in the most documents").
+
+## 18. Durable job + full-manifest schema (migration sketch)
+
+New idempotent migrations (numbers assigned at build time):
+
+```
+document_pipeline_jobs      (id, document_id, loan_id, pipeline_version, status,
+                             idempotency_key UNIQUE, attempts, max_attempts, lease_owner,
+                             lease_expires_at, heartbeat_at, cancel_requested, dead_letter,
+                             provider_cost_cents, latency_ms, model_version, created_at, updated_at)
+document_pipeline_stages    (id, job_id, stage_key, status, started_at, ended_at, detail jsonb)
+document_pipeline_attempts  (id, job_id, attempt_no, outcome, error, provider, latency_ms, cost_cents, at)
+document_pipeline_artifacts (id, job_id, kind, storage_ref, sha256, bytes, created_at)
+```
+Job statuses: `queued / processing / waiting_provider / manual_review / completed /
+failed_retryable / failed_terminal / cancelled`. Every job supports idempotency, retries,
+timeout, lease/lock, heartbeat, dead-letter, cancellation, cost, latency, pipeline+model
+version, and **safe restart after a deploy** (leases expire → another worker picks it up).
+
+## 19. The 18-stage run manifest (Layer 6)
+
+`intake · packet_control · ocr_layout · classification · extraction · grounding ·
+version_resolution · canonical_facts · identity · entity · title · insurance · appraisal ·
+liquidity · fraud · transaction_structure · guidelines · conditions · committee · issuance_gate`
+— each `pending / running / completed / not_applicable / manual_required / failed_retryable /
+failed_terminal`. **No manifest record ≠ passed.** A missing/failed required stage → run
+`incomplete` → automated term-sheet/CTC/funding **prohibited** (a super-admin may override,
+logged — the §1 reconciliation still holds: this stops the *automation*, never a human). V2
+must PROVE each desk ran; it must not trust caller-supplied `extraFindings` (kept only for V1
+back-compat).
+
+## 20. Exact env checklist (owner's names) + per-secret health check
+
+```
+# Azure Document Intelligence (reuse existing resource)
+AZURE_DOCINT_ENDPOINT= / AZURE_DOCINT_KEY= / AZURE_DOCINT_API_VERSION=2024-11-30
+AZURE_DOCINT_CLASSIFIER_ID=                       # health: classify a 2-doc sample -> ≥2 segments
+AZURE_DOCINT_EXTRACT_BANK_STATEMENT= / _INSURANCE= / _PURCHASE_CONTRACT= /
+  _OPERATING_AGREEMENT= / _TITLE= / _SETTLEMENT= / _DRIVERS_LICENSE=   # start with BANK_STATEMENT + INSURANCE only
+# Azure Content Understanding (NEW; GA)
+AZURE_CONTENT_UNDERSTANDING_ENDPOINT= / _KEY= / _API_VERSION=2025-11-01
+AZURE_CU_ANALYZER_CONTRACT= / _INSURANCE=         # start with these two; ENTITY/TITLE/GENERAL_COMPLEX later
+# Google Document AI (reuse OCR proc; add splitter)
+GOOGLE_DOCAI_PROJECT_ID= / GOOGLE_DOCAI_LOCATION=us / GOOGLE_DOCAI_KEY_JSON=  (whole SA json, ONE secret)
+GOOGLE_DOCAI_PROCESSOR_ID= / GOOGLE_DOCAI_SPLITTER_PROCESSOR_ID= / _SPLITTER_PROCESSOR_VERSION=
+# Azure OpenAI (v1 base path)
+AZURE_OPENAI_BASE_URL= / AZURE_OPENAI_KEY=
+AZURE_OPENAI_EXTRACTION_DEPLOYMENT= / _REASONING_DEPLOYMENT= / _VISION_DEPLOYMENT=   # may map to one deployment now
+# Pipeline controls
+UNDERWRITING_PIPELINE_VERSION=v1
+UW_PIPELINE_V2_ENABLED=true / UW_PIPELINE_V2_SHADOW=true / UW_PIPELINE_V2_FAMILIES=bank_statement,insurance
+UW_WORKER_ENABLED=true / UW_WORKER_CONCURRENCY=2 / UW_JOB_MAX_ATTEMPTS=5 / UW_JOB_LEASE_SECONDS=300
+```
+Each provider adapter exposes `healthCheck()`; a `GET /api/admin/pipeline/health` endpoint runs
+all of them so the owner can prove each secret works before a family is promoted.
+
+## 21. Phased migration (strangler) & rollback
+
+- **Phase 1 — adapters only:** add adapters, fix the Azure classifier API, add the normalized
+  provider result, add durable-job tables + worker. Everyone stays on V1; outcomes unchanged.
+- **Phase 2 — shadow packet processing:** V1 runs normally; V2 packet analysis runs in the
+  worker; store V2 results separately; compare boundaries + classification; nothing exposed.
+- **Phase 3 — first two families:** move only `bank_statement` + `insurance` through the full
+  V2 path; compare classification/extraction/grounding/canonical-facts/findings/conditions/
+  clearances/time/cost.
+- **Phase 4 — progressive families:** contracts+amendments, operating agreements, title,
+  settlement, IDs/entity, appraisals — each with its own flag + rollback switch.
+- **Phase 5 — whole-loan activation:** only after all required families pass; activate the full
+  V2 manifest, make V2 visible, retain human approval + V1 rollback; begin assisted-live.
+- **Rollback:** `UNDERWRITING_PIPELINE_VERSION=v1` (and per-family flags) revert instantly, no
+  deploy; V2 is additive so nothing to revert in code. Auto-rollback via the existing
+  `canary-controller.js` / `release-gate.js` on a hard-metric regression.
+
+## 22. Golden-file acceptance thresholds (per family, before activation)
+
+A family is promoted only when, on its golden files, V2 shows: **zero new false clears**; **no
+drop in fatal-finding recall vs V1**; packet page-disposition = 100% (every page dispositioned);
+material-fact evidence coverage = 100% (every material fact → an exact span); classification and
+material-fact agreement with V1 within tolerance (disagreements triaged, not silently accepted);
+and a **senior underwriter records approval** for that family. Reuse `golden-*.js`,
+`replay-runner.js`, `release-gate.js`, `reliability.js`, the `shadow_decisions` diff, and the
+strict production-metrics dashboard (false clears / missed material issues / false conditions /
+provider accuracy / latency / cost).
+
+## 23. Phase-1 build order (what gets built first, each through the two-audit gate + CI)
+
+1. Config: add the flags + new env names (safe defaults keep V1). 
+2. Azure classifier API correction (§16) + test. 
+3. `document_pipeline_*` migrations (§18) + a Postgres-queue worker skeleton (lease/heartbeat/
+   retry/dead-letter/safe-restart) as a Render Background Worker. 
+4. `DocumentProvider` adapter contract + normalized `ProviderResult` (§15); wrap the existing
+   vendor clients; `GET /api/admin/pipeline/health`. 
+5. `content-understanding.js` adapter (Standard, grounded) — inert until keys exist. 
+6. First milestone: one bank_statement + one insurance file through the full V2 path in shadow,
+   V1 untouched.
+
