@@ -29,6 +29,22 @@ const ok = (c, m) => { if (c) { pass++; } else { fail++; console.log('  FAIL:', 
   ok(!('extra' in partial), 'partial: unknown keys are dropped (canonical shape only)');
   ok(PA.normalizeResult({ confidence: 'x', latencyMs: NaN }).confidence === null && PA.normalizeResult({ latencyMs: NaN }).latencyMs === 0, 'non-finite numbers coerce to null/0');
 
+  // ---- VSLICE-1: text / pageCount / segments / fields / tables survive normalization ----
+  const rich = PA.normalizeResult({
+    text: 'ACCOUNT STATEMENT ...', pageCount: 3,
+    pages: [{ pageNumber: 1, lines: [{ text: 'x' }] }],
+    segments: [{ docType: 'bank_statement', confidence: 0.91, pages: [1, 2] }],
+    fields: [{ key: 'account_holder', value: 'John Smith', confidence: 0.88 }],
+    tables: [{ rows: 4, cols: 3 }],
+    evidenceRegions: [{ page: 1, polygon: [0, 0, 1, 1] }],
+  });
+  ok(rich.text === 'ACCOUNT STATEMENT ...' && rich.pageCount === 3, 'rich: text + pageCount preserved');
+  ok(rich.segments.length === 1 && rich.segments[0].docType === 'bank_statement', 'rich: classifier segments preserved');
+  ok(rich.fields.length === 1 && rich.fields[0].key === 'account_holder', 'rich: extractor fields preserved');
+  ok(rich.tables.length === 1 && rich.evidenceRegions.length === 1, 'rich: tables + evidence regions (bounding) preserved');
+  const emptyRich = PA.normalizeResult();
+  ok(emptyRich.text === '' && emptyRich.pageCount === null && Array.isArray(emptyRich.segments) && emptyRich.segments.length === 0, 'empty: new fields default safe (text "", pageCount null, segments [])');
+
   // ---- makeAdapter.analyze: happy path stamps provider/service + measured latency ----
   let clk = 0; const clock = () => clk;
   const good = PA.makeAdapter({
