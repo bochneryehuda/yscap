@@ -27,7 +27,7 @@ const ok = (c, m) => { if (c) { pass++; } else { fail++; console.log('  FAIL:', 
   const load = (env) => {
     for (const k of Object.keys(require.cache)) if (/\/src\/config\.js$/.test(k)) delete require.cache[k];
     const saved = {};
-    const keys = ['UNDERWRITING_PIPELINE_VERSION', 'UW_PIPELINE_V2_ENABLED', 'UW_PIPELINE_V2_SHADOW',
+    const keys = ['UW_PIPELINE_V2_ENABLED', 'UW_PIPELINE_V2_SHADOW',
       'UW_PIPELINE_V2_FAMILIES', 'UW_WORKER_ENABLED', 'UW_WORKER_CONCURRENCY', 'UW_JOB_MAX_ATTEMPTS', 'UW_JOB_LEASE_SECONDS'];
     for (const k of keys) { saved[k] = process.env[k]; if (env[k] === undefined) delete process.env[k]; else process.env[k] = env[k]; }
     const cfg = require(R + '/src/config');
@@ -35,19 +35,20 @@ const ok = (c, m) => { if (c) { pass++; } else { fail++; console.log('  FAIL:', 
     return cfg.pipeline;
   };
 
-  // Defaults (nothing set) — everyone stays on V1, worker off.
+  // Defaults (nothing set) — everyone stays on V1 (advisory shadow only), worker off.
+  // NOTE: there is intentionally no `version` selector (VSLICE-8 removed the dead
+  // UNDERWRITING_PIPELINE_VERSION knob — V1 is always the exposed pipeline).
   const d = load({});
-  ok(d.version === 'v1', 'default pipeline version is v1');
+  ok(d.version === undefined, 'no dead pipeline `version` flag on the config');
   ok(d.v2Enabled === false && d.v2Shadow === false && d.workerEnabled === false, 'v2 + worker default OFF');
   ok(Array.isArray(d.v2Families) && d.v2Families.length === 0, 'default families empty');
   ok(d.workerConcurrency === 2 && d.jobMaxAttempts === 5 && d.jobLeaseSeconds === 300, 'numeric defaults');
 
   // Owner's checklist uses =true; '1' must also work.
   const t = load({ UW_PIPELINE_V2_ENABLED: 'true', UW_WORKER_ENABLED: '1', UW_PIPELINE_V2_SHADOW: 'TRUE',
-    UW_PIPELINE_V2_FAMILIES: 'bank_statement, Insurance ,', UNDERWRITING_PIPELINE_VERSION: 'v2',
+    UW_PIPELINE_V2_FAMILIES: 'bank_statement, Insurance ,',
     UW_WORKER_CONCURRENCY: '4', UW_JOB_MAX_ATTEMPTS: '9', UW_JOB_LEASE_SECONDS: '600' });
   ok(t.v2Enabled === true && t.workerEnabled === true && t.v2Shadow === true, "'true'/'1'/'TRUE' all parse ON");
-  ok(t.version === 'v2', 'version override honored');
   ok(JSON.stringify(t.v2Families) === JSON.stringify(['bank_statement', 'insurance']), 'families CSV trimmed/lowercased/compacted');
   ok(t.workerConcurrency === 4 && t.jobMaxAttempts === 9 && t.jobLeaseSeconds === 600, 'numeric overrides');
 

@@ -23,7 +23,7 @@ function money(cents) {
 }
 
 const STAGE_LABEL = {
-  intake: 'Intake', packet_control: 'Packet control', ocr_layout: 'Reading (OCR)',
+  intake: 'Intake', route_plan: 'Route plan', ocr_layout: 'Reading (OCR)',
   classification: 'Sorting', extraction: 'Extract', grounding: 'Grounding',
 };
 
@@ -87,7 +87,7 @@ export default function StaffPipelineShadow() {
         <strong>{shadowOn ? 'Shadow mode is ON' : 'Shadow mode is OFF'}</strong>
         {flags && (
           <div className="muted" style={{ marginTop: 4, fontSize: 13 }}>
-            Exposed pipeline: <b>{flags.version || 'v1'}</b>
+            Exposed pipeline: <b>V1</b> <span className="muted">(the new pipeline runs in shadow only)</span>
             {' · '}Families in shadow: <b>{(flags.v2Families && flags.v2Families.length) ? flags.v2Families.join(', ') : '(none)'}</b>
             {' · '}Background worker: <b>{flags.workerEnabled ? 'on' : 'off'}</b>
           </div>
@@ -199,6 +199,32 @@ export default function StaffPipelineShadow() {
                             );
                           })}
                           {(!detail.canonicalFacts || !detail.canonicalFacts.facts || detail.canonicalFacts.facts.length === 0) && <div className="muted">No settled facts yet.</div>}
+                        </div>
+                        <div>
+                          <div style={{ fontWeight: 600, marginBottom: 4 }}>
+                            Old line vs new line
+                            {detail.v1v2Diff && detail.v1v2Diff.counts && detail.v1v2Diff.counts.disagree > 0
+                              ? <span className="pill pill-bad" style={{ marginLeft: 6 }}>{detail.v1v2Diff.counts.disagree} differ</span>
+                              : null}
+                          </div>
+                          {detail.v1v2Diff && detail.v1v2Diff.docType && (detail.v1v2Diff.docType.v1 || detail.v1v2Diff.docType.v2) ? (
+                            <div className="muted" style={{ fontSize: 13, maxWidth: 480 }}>
+                              <b>Document type</b>: old “{detail.v1v2Diff.docType.v1 || '—'}” vs new “{detail.v1v2Diff.docType.v2 || '—'}”
+                              {detail.v1v2Diff.docType.agreement === 'disagree' ? <span className="pill pill-bad" style={{ marginLeft: 4 }}>differ</span>
+                                : detail.v1v2Diff.docType.agreement === 'agree' ? <span className="pill pill-ok" style={{ marginLeft: 4 }}>match</span> : null}
+                            </div>
+                          ) : null}
+                          {((detail.v1v2Diff && detail.v1v2Diff.fields) || []).map((f, i) => {
+                            const cls = f.agreement === 'disagree' ? 'pill-bad' : f.agreement === 'agree' ? 'pill-ok' : 'pill-muted';
+                            const label = f.agreement === 'disagree' ? 'differ' : f.agreement === 'agree' ? 'match' : f.agreement === 'v1_only' ? 'old only' : 'new only';
+                            return (
+                              <div key={i} className="muted" style={{ fontSize: 13, maxWidth: 480 }}>
+                                <b>{f.key}</b>: old “{f.v1Value || '—'}” vs new “{f.v2Value || '—'}”
+                                {' '}<span className={`pill ${cls}`}>{label}</span>
+                              </div>
+                            );
+                          })}
+                          {(!detail.v1v2Diff || !detail.v1v2Diff.fields || detail.v1v2Diff.fields.length === 0) && <div className="muted">No comparable results yet (the old line hasn’t read this document, or the new line hasn’t either).</div>}
                         </div>
                       </div>
                     )}

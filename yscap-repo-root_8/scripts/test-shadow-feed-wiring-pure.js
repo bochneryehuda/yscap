@@ -47,5 +47,23 @@ let loaded = false;
 try { require(R + '/src/routes/underwriting'); loaded = true; } catch (e) { console.log('  load error:', e && e.message); }
 ok(loaded, 'src/routes/underwriting.js loads with the shadow-feed wiring');
 
+// ---- VSLICE-7: EVERY eligible upload feeds the shadow line, not just the auto-read subset. ----
+// The two main upload routes must require the helper and call enqueueUploadedDocument after the
+// documents INSERT, passing the document id, loan id, checklist item, and doc kind so the family is
+// derived at upload. (Behavior — gate/family-derivation/idempotency/never-throws — is proven by
+// test-enqueue-on-upload-{pure,db}.js; this is the wiring-drift guard.)
+for (const [file, docIdExpr] of [['src/routes/borrower.js', 'r.rows[0].id'], ['src/routes/staff.js', 'uploadedDocId']]) {
+  const s = fs.readFileSync(R + '/' + file, 'utf8');
+  ok(/require\(['"]\.\.\/pipeline\/enqueue-on-upload['"]\)/.test(s), `${file} requires ../pipeline/enqueue-on-upload`);
+  const c = s.match(/enqueueUploadedDocument\(\s*db\s*,\s*\{[^}]*\}\s*\)/);
+  ok(!!c, `${file} calls enqueueUploadedDocument(db, {...})`);
+  if (c) {
+    const body = c[0];
+    ok(body.includes('documentId:'), `${file} enqueue passes documentId`);
+    ok(/checklistItemId:/.test(body), `${file} enqueue passes checklistItemId`);
+    ok(/docKind/.test(body), `${file} enqueue passes docKind`);
+  }
+}
+
 console.log(`test-shadow-feed-wiring-pure: ${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

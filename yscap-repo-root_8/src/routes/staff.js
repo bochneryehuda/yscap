@@ -8542,6 +8542,10 @@ router.post('/applications/:id/documents', async (req, res) => {
     })().catch(() => {});
   });
 
+  // Pipeline V2 (VSLICE-7) — enqueue a SHADOW copy of this upload for the advisory pipeline, so every
+  // eligible staff upload feeds the shadow line (not just the docs V1 auto-reads). Inert unless the
+  // shadow flag is on (zero db work when off), idempotent, never throws — it can't affect this upload.
+  try { await require('../pipeline/enqueue-on-upload').enqueueUploadedDocument(db, { documentId: uploadedDocId, loanId: appIdForAi, checklistItemId: b.checklistItemId || null, docKind }); } catch (_) { /* advisory only */ }
   res.status(201).json({ ok: true, documentId: r.rows[0].id, ...(apprImport ? { appraisal: apprImport } : {}) });
 });
 
