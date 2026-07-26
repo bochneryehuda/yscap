@@ -62,6 +62,39 @@ function adapterByKey(adapters, key) {
   return (adapters || []).find((a) => `${a.provider}/${a.service}` === key) || null;
 }
 
+// Normalize a document-type label for agreement comparison (case/space/punct-insensitive).
+function normType(v) {
+  if (v == null) return '';
+  return String(v).trim().toLowerCase().replace(/[_\-\s]+/g, '_').replace(/[^a-z0-9_]/g, '');
+}
+
+/**
+ * PURE — reconcile a PRIMARY read against a CHALLENGER read of the SAME document. This is the
+ * coarse, document-level cross-check (do two independent engines agree on what this document is,
+ * and which read do we trust more); field-level reconciliation belongs to the evidence layer.
+ * Never throws. Returns:
+ *   { ran, challengerConfidence, agreement:'agree'|'disagree'|'unknown', chosen:'primary'|'challenger', reason }
+ *  - agreement: 'agree' when both reads name the SAME documentType; 'disagree' when both name a
+ *    DIFFERENT one; 'unknown' when either side didn't produce a type (nothing to cross-check).
+ *  - chosen: the higher-confidence read — the challenger only wins when it is STRICTLY higher
+ *    (a tie keeps the primary). Advisory only: nobody is overruled downstream by this pick.
+ */
+function reconcileReads(primary, challenger) {
+  if (!challenger) return { ran: false, challengerConfidence: null, agreement: 'unknown', chosen: 'primary', reason: 'no challenger read' };
+  const pc = num(primary && primary.confidence);
+  const cc = num(challenger && challenger.confidence);
+  const pt = normType(primary && primary.documentType);
+  const ct = normType(challenger && challenger.documentType);
+  let agreement = 'unknown';
+  if (pt && ct) agreement = (pt === ct) ? 'agree' : 'disagree';
+  const chosen = (cc != null && (pc == null || cc > pc)) ? 'challenger' : 'primary';
+  let reason;
+  if (agreement === 'disagree') reason = `primary read "${primary.documentType}", challenger read "${challenger.documentType}"`;
+  else if (agreement === 'agree') reason = `both engines agree on "${primary.documentType}"`;
+  else reason = 'not enough type signal to cross-check';
+  return { ran: true, challengerConfidence: cc, agreement, chosen, reason };
+}
+
 /**
  * Record ONE routing decision + outcome into document_processing_routes. Best-effort +
  * NEVER throws (a failed insert must never fail the document read). Returns the inserted
@@ -116,10 +149,36 @@ async function routeDocument({ features, request, adapters, recordDb, documentId
   let warnings = [];
   if (primaryAdapter) {
     result = await primaryAdapter.analyze(request || {});   // never throws (adapter contract)
-    warnings = Array.isArray(result.warnings) ? result.warnings : [];
+    warnings = Array.isArray(result.warnings) ? result.warnings.slice() : [];
     // A vendor error normalizes to confidence:null + a warning — that's a failed read.
     outcome = (result.confidence == null && warnings.length > 0) ? 'failed' : 'completed';
   }
+
+  // ── CHALLENGER (VSLICE-2) ── when the plan calls for a second reader AND its adapter is present,
+  // actually RUN it and RECONCILE the two reads (was: recorded but never executed). Only fires on
+  // a successful primary read (no point cross-checking a failed read). Advisory: the reconciliation
+  // is recorded + returned; it overrules nothing downstream. Never throws (adapter contract).
+  let challengerResult = null;
+  let reconciliation = { ran: false, challengerConfidence: null, agreement: 'unknown', chosen: 'primary', reason: 'no challenger read' };
+  const challengerAdapter = (result && outcome === 'completed' && plan.challenger)
+    ? adapterByKey(adapters, plan.challenger.adapterKey) : null;
+  if (challengerAdapter) {
+    challengerResult = await challengerAdapter.analyze(request || {});
+    reconciliation = reconcileReads(result, challengerResult);
+    const chWarn = Array.isArray(challengerResult.warnings) ? challengerResult.warnings : [];
+    // A genuine engine disagreement is a signal worth surfacing on the shadow route row.
+    if (reconciliation.agreement === 'disagree') warnings = warnings.concat([`engine disagreement — ${reconciliation.reason}`]);
+    // A challenger that itself errored is a soft note, not a primary failure.
+    if (challengerResult.confidence == null && chWarn.length) warnings = warnings.concat([`challenger read failed: ${chWarn[0]}`]);
+  }
+
+  // Tag the route with the reconciliation outcome (no schema change — rides special_handling).
+  const specialHandling = Array.isArray(plan.specialHandling) ? plan.specialHandling.slice() : [];
+  if (reconciliation.ran) specialHandling.push(`reconciliation:${reconciliation.agreement}`, `trust:${reconciliation.chosen}`);
+
+  // Cost + latency account for BOTH reads (the challenger really ran).
+  const costCents = (result ? (num(result.estimatedCost) || 0) : 0) + (challengerResult ? (num(challengerResult.estimatedCost) || 0) : 0);
+  const latencyMs = (result ? (num(result.latencyMs) || 0) : 0) + (challengerResult ? (num(challengerResult.latencyMs) || 0) : 0);
 
   const routeId = recordDb ? await recordRoute(recordDb, {
     jobId, documentId, loanId,
@@ -130,19 +189,20 @@ async function routeDocument({ features, request, adapters, recordDb, documentId
     reason: plan.reason,
     challengerProvider: plan.challenger ? plan.challenger.provider : null,
     challengerService: plan.challenger ? plan.challenger.service : null,
+    challengerConfidence: reconciliation.challengerConfidence,
     confidence: result ? result.confidence : null,
-    latencyMs: result ? result.latencyMs : 0,
-    costCents: result ? (num(result.estimatedCost) || 0) : 0,
+    latencyMs,
+    costCents,
     materiality: plan.materiality,
-    specialHandling: plan.specialHandling,
+    specialHandling,
     outcome,
     warnings,
   }) : null;
 
-  return { plan, result, routeId, outcome };
+  return { plan, result, challengerResult, reconciliation, routeId, outcome };
 }
 
 module.exports = {
   planFor, routeDocument, recordRoute,
-  _internals: { adapterByKey, ENGINE_TO_ADAPTER },
+  _internals: { adapterByKey, ENGINE_TO_ADAPTER, reconcileReads, normType },
 };
