@@ -66,7 +66,7 @@ const loan = {
     { fieldName: 'CX.DEALPROJECTTYPE', value: 'Fix and Flip' },
     { fieldName: 'CX.EXITPLAN', value: 'Sale' },
     { fieldName: 'CX.CAPITALPROVIDER', value: 'Fidelis Investors' },  // our 'Fidelis' must match this   // exit plan is a real match now (flip → Sale)
-    { fieldName: 'CX.REHABTYPE', value: 'Light Rehab' },
+    { fieldName: 'CX.REHABTYPE', value: 'Cosmetic Rehab' },  // our 'Cosmetic' is its OWN bucket now
     { fieldName: 'CX.ACCRUALTYPE', value: 'Drawn' },
     { fieldName: 'CX.TOTALEXPERIENCEDEALS', value: '10' },
     { fieldName: 'CX.LOANTOBEVESTED', value: 'Entity' },

@@ -236,13 +236,24 @@ const VALUE_MAPS = Object.freeze({
   // Encompass could never produce, so a moderate file was permanently "no data").
   // A square-footage ADDITION is Expansion (see rehabTypeFor in reconcile.js, which
   // upgrades a file flagged for sqft addition to 'expansion').
+  // Owner-directed 2026-07-26 (re-mapped after the owner ADDED options in Encompass).
+  // Encompass CX.REHABTYPE read LIVE: Cosmetic Rehab | Light Rehab | Heavy Rehab |
+  // Expansion | New construction. Ours (the file-details dropdown): Cosmetic |
+  // Moderate | Heavy / gut rehab | Adding square footage | Ground-up construction.
+  //   our Cosmetic              -> Cosmetic Rehab      (its own bucket now, NOT light)
+  //   our Moderate              -> Light Rehab
+  //   our Heavy / gut rehab     -> Heavy Rehab
+  //   our Adding square footage -> Expansion   (also set by the sqft-grew signal)
+  //   our Ground-up construction-> New construction
   rehabType: {
-    'light rehab': 'light', 'light': 'light', 'cosmetic': 'light', 'cosmetic / light': 'light', 'cosmetic/light': 'light',
-    'moderate': 'light', 'medium': 'light', 'moderate rehab': 'light',
+    'cosmetic': 'cosmetic', 'cosmetic rehab': 'cosmetic',
+    'light rehab': 'light', 'light': 'light', 'moderate': 'light', 'moderate rehab': 'light', 'medium': 'light',
+    'cosmetic / light': 'light', 'cosmetic/light': 'light',
     'heavy rehab': 'heavy', 'heavy': 'heavy', 'heavy / gut rehab': 'heavy', 'heavy/gut rehab': 'heavy', 'gut rehab': 'heavy', 'gut': 'heavy', 'heavy gut rehab': 'heavy',
-    'expansion': 'expansion', 'adding sf': 'expansion', 'add sf': 'expansion', 'adding square footage': 'expansion', 'adding square feet': 'expansion',
-    'sqft addition': 'expansion', 'square footage expansion': 'expansion', 'adding square feet': 'expansion',
-    'ground-up': 'ground-up', 'ground up': 'ground-up', 'new construction': 'ground-up', 'ground-up construction': 'ground-up', 'ground up construction': 'ground-up', 'groundup': 'ground-up',
+    'expansion': 'expansion', 'adding sf': 'expansion', 'add sf': 'expansion', 'adding square footage': 'expansion',
+    'adding square feet': 'expansion', 'sqft addition': 'expansion', 'square footage expansion': 'expansion',
+    'new construction': 'ground-up', 'ground-up': 'ground-up', 'ground up': 'ground-up',
+    'ground-up construction': 'ground-up', 'ground up construction': 'ground-up', 'groundup': 'ground-up',
   },
   // CX.ACCRUALTYPE ↔ applications.accrual_type (non_dutch | dutch). NOTE: the
   // Encompass vocabulary differs from term-options.resolveAccrual — 'Note' means

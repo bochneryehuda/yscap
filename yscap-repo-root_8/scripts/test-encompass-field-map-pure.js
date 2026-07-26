@@ -106,7 +106,10 @@ assert.strictEqual(m.compareField('deal_type', 'flip', 'Fix and Flip').status, '
 assert.strictEqual(m.compareField('deal_type', 'flip', 'Rehab').status, 'match', 'Rehab → flip (owner)');
 assert.strictEqual(m.compareField('deal_type', 'fix-and-hold', 'Fix and Hold').status, 'match');
 assert.strictEqual(m.compareField('deal_type', 'flip', 'New Construction').status, 'mismatch');
-assert.strictEqual(m.compareField('rehab_type', 'Cosmetic', 'Light Rehab').status, 'match', 'Cosmetic ≡ Light');
+assert.strictEqual(m.compareField('rehab_type', 'Cosmetic', 'Cosmetic Rehab').status, 'match', 'Cosmetic ≡ Cosmetic Rehab');
+assert.strictEqual(m.compareField('rehab_type', 'Moderate', 'Light Rehab').status, 'match', 'Moderate ≡ Light Rehab');
+assert.strictEqual(m.compareField('rehab_type', 'Ground-up construction', 'New construction').status, 'match', 'ground-up ≡ New construction');
+assert.strictEqual(m.compareField('rehab_type', 'Cosmetic', 'Light Rehab').status, 'mismatch', 'Cosmetic is NOT light any more');
 assert.strictEqual(m.compareField('rehab_type', 'Adding SF', 'Expansion').status, 'match', 'Adding SF ≡ Expansion');
 assert.strictEqual(m.compareField('rehab_type', 'Heavy', 'Heavy Rehab').status, 'match');
 assert.strictEqual(m.compareField('accrual_type', 'non_dutch', 'Drawn').status, 'match');
@@ -140,8 +143,8 @@ for (const k of ['loan_amount', 'purchase_price', 'as_is_value', 'arv', 'units',
 assert.strictEqual(m.compareField('assignment_fee', null, null).status, 'incomparable', 'blank on both sides stays "no data"');
 ok('an empty value equals zero on money fields; blank-vs-a-real-number still defers');
 
-// ── Cosmetic AND Moderate both mean Encompass "Light rehab" ────────────────
-assert.strictEqual(m.compareField('rehab_type', 'Cosmetic', 'Light Rehab').status, 'match');
+// ── Owner re-mapped 2026-07-26: Cosmetic is its OWN Encompass bucket now ───
+assert.strictEqual(m.compareField('rehab_type', 'Cosmetic', 'Cosmetic Rehab').status, 'match');
 assert.strictEqual(m.compareField('rehab_type', 'Moderate', 'Light Rehab').status, 'match', 'moderate collapses onto Encompass Light');
 assert.strictEqual(m.compareField('rehab_type', 'Heavy', 'Heavy Rehab').status, 'match');
 assert.strictEqual(m.compareField('rehab_type', 'expansion', 'Expansion').status, 'match');
@@ -150,7 +153,7 @@ assert.strictEqual(m.compareField('rehab_type', 'Heavy', 'Light Rehab').status, 
 // 'Heavy / gut rehab' and 'Ground-up construction' previously mapped to NOTHING, so
 // every heavy / ground-up file read "no data to compare" forever.
 assert.strictEqual(m.compareField('rehab_type', 'Heavy / gut rehab', 'Heavy Rehab').status, 'match');
-assert.strictEqual(m.compareField('rehab_type', 'Ground-up construction', 'New Construction').status, 'match');
+
 assert.strictEqual(m.compareField('rehab_type', 'Adding square footage', 'Expansion').status, 'match');
 assert.strictEqual(m.compareField('rehab_type', 'Heavy / gut rehab', 'Light Rehab').status, 'mismatch');
 ok('every real rehab-type dropdown value resolves (heavy/gut + ground-up construction no longer dark)');
