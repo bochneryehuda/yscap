@@ -616,21 +616,12 @@ if (require.main === module) {
     // + routing decision). It is a NO-OP unless UW_WORKER_ENABLED — so this boot call is inert by
     // default and everyone stays on Pipeline V1. Nothing enqueues shadow jobs until the shadow gate
     // (enqueue-on-upload) is also switched on, so the worker simply finds an empty queue.
+    // The start-up sequence lives in ONE shared helper so the web service and the standalone worker
+    // service (src/worker.js) can never drift into reading documents differently. Once the separate
+    // Render worker is running, this service sets UW_WORKER_ENABLED=false and the call below becomes
+    // a no-op — the reader no longer competes with borrower page loads for this process.
     try {
-      const db = require('./db');
-      const { startWorker } = require('./pipeline/worker');
-      const { makePacketControlProcessor } = require('./pipeline/packet-control-processor');
-      // Phase 3b — when UW_PIPELINE_V2_READ is on, inject the REAL document-provider adapters so
-      // the shadow worker READS each document for real (loads its bytes → primary OCR engine) and
-      // records the actual read outcome. This stays ADVISORY: the read writes only the V2 audit
-      // tables, never a loan file. With the switch OFF (default) no adapters are injected, so the
-      // shadow line only PLANS a route — behavior-identical to before. Kill-switch: unset the var.
-      let adapters = null;
-      if (cfg.pipeline && cfg.pipeline.v2ReadEnabled) {
-        try { adapters = require('./pipeline/provider-adapters').buildDocumentAdapters(); }
-        catch (e2) { console.warn('pipeline v2 adapters not built:', e2.message); adapters = null; }
-      }
-      startWorker({ db, cfg, processor: makePacketControlProcessor(adapters ? { adapters } : {}) });
+      require('./pipeline/start').startPipelineWorker({ db: require('./db'), cfg });
     } catch (e) { console.warn('pipeline worker not started:', e.message); }
     // Loan-officer Notification Center drainer — schedules parked drafts,
     // auto-sends the untouched ones past the SLA, wakes snoozed rows. Kill-switch

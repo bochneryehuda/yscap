@@ -103,6 +103,78 @@ services:
       # SharePoint one-way sync (Pipeline Drive mirror — docs/SHAREPOINT-POLICY.md):
       # SHAREPOINT_BACKUP_ENABLED=1, SHAREPOINT_DRIVE_ID, and optionally
       # MS_CLIENT_CERT_PEM_B64 (certificate auth, preferred over the secret).
+      # The document reader runs as its OWN service (below), so the web service must
+      # NOT also drain the queue — otherwise reading competes with borrower page loads
+      # for this process, which is the whole problem the split fixes.
+      - key: UW_WORKER_ENABLED
+        value: "false"
+
+  # ---------------------------------------------------------------------------
+  # Pipeline V2 document reader — a SEPARATE service (owner defect #7).
+  #
+  # Same repo, same build, different entrypoint. It drains document_pipeline_jobs
+  # and writes ONLY the V2 audit tables — it is ADVISORY and never writes a
+  # condition, status, finding, or anything else on a real loan file.
+  #
+  # It deliberately has NO disk: documents live in Cloudflare R2 (STORAGE_PROVIDER=s3),
+  # which is exactly what makes two services possible — both reach the same files.
+  # If storage were still the web service's local disk, this service could not read
+  # anything the web service saved.
+  #
+  # It does NOT run migrations: the web service owns the schema (src/worker.js waits
+  # for the DB via waitForDb() without applying it). Two services racing the same
+  # migration chain on a deploy is a real corruption hazard.
+  # ---------------------------------------------------------------------------
+  - type: worker
+    name: ys-capital-pipeline-worker
+    runtime: node
+    plan: starter
+    buildCommand: npm install
+    startCommand: npm run worker
+    envVars:
+      - key: NODE_ENV
+        value: production
+      # Same database as the web service.
+      - key: DATABASE_URL
+        fromDatabase: { name: yscap, property: connectionString }
+      # THIS is the service that drains the queue.
+      - key: UW_WORKER_ENABLED
+        value: "true"
+      # Shared object storage — the reason a second service can see the documents at
+      # all. These must match the web service's values exactly; set them in the
+      # dashboard (secrets are never committed).
+      - key: STORAGE_PROVIDER
+        value: s3
+      - key: S3_BUCKET
+        sync: false
+      - key: S3_ENDPOINT
+        sync: false
+      - key: S3_ACCESS_KEY_ID
+        sync: false
+      - key: S3_SECRET_ACCESS_KEY
+        sync: false
+      - key: S3_REGION
+        value: auto
+      # Reading engines — same credentials as the web service (dashboard-only).
+      - key: AZURE_DOCINT_ENDPOINT
+        sync: false
+      - key: AZURE_DOCINT_KEY
+        sync: false
+      - key: AZURE_DOCINT_API_VERSION
+        value: "2024-11-30"
+      # Pipeline switches. Shadow + advisory; UW_PIPELINE_V2_READ turns on real reading.
+      - key: UW_PIPELINE_V2_ENABLED
+        sync: false
+      - key: UW_PIPELINE_V2_SHADOW
+        sync: false
+      - key: UW_PIPELINE_V2_FAMILIES
+        sync: false
+      - key: UW_PIPELINE_V2_READ
+        sync: false
+      # SSN decryption key — the reader must decrypt nothing today, but the shared
+      # config refuses a dev default in production, so give it the real value.
+      - key: SSN_ENCRYPTION_KEY
+        sync: false
 databases:
   - name: yscap
     plan: basic-1gb
