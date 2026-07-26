@@ -259,7 +259,9 @@ async function ping() {
   const ac = new AbortController();
   const timer = setTimeout(() => ac.abort(), 15000);
   try {
-    const r = await fetch(`${base}/documentintelligence/documentModels/${encodeURIComponent(cfg.azureCustom.classifierId)}?api-version=${ver}`, {
+    // A classifier's metadata lives on the CLASSIFIER route, not documentModels —
+    // probing documentModels/{classifierId} 404s for a real trained classifier.
+    const r = await fetch(`${base}/documentintelligence/documentClassifiers/${encodeURIComponent(cfg.azureCustom.classifierId)}?api-version=${ver}`, {
       headers: { 'Ocp-Apim-Subscription-Key': cfg.docint.key }, signal: ac.signal,
     });
     if (r.ok) return { ok: true };
