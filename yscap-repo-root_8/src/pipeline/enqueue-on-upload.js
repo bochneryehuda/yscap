@@ -1,0 +1,70 @@
+'use strict';
+/**
+ * Pipeline V2 (owner-directed 2026-07-26) — Layer 1 shadow enqueue gate (Phase 1h).
+ *
+ * The ONE guarded chokepoint that decides whether a document should also be processed by the new
+ * evidence-first pipeline IN SHADOW. When the shadow flag is on and the document's family is
+ * enrolled, it enqueues a durable document-processing job (which the background worker drains
+ * through the packet-control processor) — a copy that runs BESIDE Pipeline V1 and is never exposed.
+ *
+ * Governing guarantees:
+ *  - INERT BY DEFAULT: does nothing unless `cfg.pipeline` has shadow (or v2) enabled AND the
+ *    family is in UW_PIPELINE_V2_FAMILIES. With the default config (everything OFF) every call is a
+ *    no-op that returns { enqueued:false, reason:'disabled' } — so wiring this into a live path is
+ *    behavior-identical to today until the owner flips the switch.
+ *  - NEVER THROWS: enqueuing is best-effort; a DB error is swallowed and returns
+ *    { enqueued:false, reason:'error' }, so a shadow enqueue can never break the real upload/read.
+ *  - IDEMPOTENT: job-queue.enqueue adopts an existing live job for the same document+version, so
+ *    calling this repeatedly for the same document never creates duplicate shadow jobs.
+ *  - SHADOW-ONLY: this only WRITES a job row; it exposes no V2 decision and touches no V1 table.
+ */
+const cfg = require('../config');
+
+function fam(v) { return (v == null) ? '' : String(v).trim().toLowerCase(); }
+
+/**
+ * Should a document of this family be shadow-processed under the current config?
+ * Pure — no DB. Returns { on, reason }.
+ */
+function shadowGate(family, pipelineCfg) {
+  const p = pipelineCfg || cfg.pipeline || {};
+  // Shadow OR full-v2 both mean "run the v2 path"; shadow is the safe default for Phase 1.
+  if (!p.v2Shadow && !p.v2Enabled) return { on: false, reason: 'disabled' };
+  const f = fam(family);
+  if (!f) return { on: false, reason: 'no_family' };
+  const families = Array.isArray(p.v2Families) ? p.v2Families.map(fam) : [];
+  if (!families.includes(f)) return { on: false, reason: 'family_not_enrolled' };
+  return { on: true, reason: 'enrolled' };
+}
+
+/**
+ * Enqueue a shadow document-processing job for `documentId` IF the shadow gate is open.
+ * Best-effort + NEVER throws. Returns:
+ *   { enqueued:true, jobId, created }  when a job was enqueued/adopted
+ *   { enqueued:false, reason }         when the gate is closed or an error was swallowed
+ *
+ * @param {object} db     a pg pool/client with .query
+ * @param {object} opts   { documentId, loanId?, family, pipelineCfg? }
+ */
+async function maybeEnqueueUpload(db, { documentId = null, loanId = null, family = null, pipelineCfg = null } = {}) {
+  const gate = shadowGate(family, pipelineCfg);
+  if (!gate.on) return { enqueued: false, reason: gate.reason };
+  if (!documentId) return { enqueued: false, reason: 'no_document' };
+  try {
+    const jq = require('./job-queue');
+    const res = await jq.enqueue(db, {
+      documentId, loanId,
+      pipelineVersion: 'v2',
+      documentFamily: fam(family),
+      // Idempotent per document+family: a re-upload/re-read never spawns a duplicate shadow job.
+      idempotencyKey: `shadow:${documentId}:${fam(family)}`,
+      payload: { shadow: true, features: { docType: fam(family) }, documentId, loanId },
+    });
+    return { enqueued: true, jobId: res.id, created: res.created !== false };
+  } catch (e) {
+    try { console.warn('[enqueue-on-upload] shadow enqueue failed:', (e && e.message) || e); } catch (_) { /* ignore */ }
+    return { enqueued: false, reason: 'error' };
+  }
+}
+
+module.exports = { maybeEnqueueUpload, shadowGate };
