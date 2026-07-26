@@ -58,6 +58,11 @@ const seesAll = (req) => can(req.actor, 'see_all_files');
 // admin-only rule) — admins + super_admins.
 const canExportTapes = (req) => can(req.actor, 'export_data_tapes');
 const tapeAdmin = (req) => !!(req.actor && (req.actor.role === 'admin' || req.actor.role === 'super_admin'));
+// Plain-language message for a loan whose tape is blocked by the Encompass
+// reconciliation gate (owner-directed 2026-07-26): a tape can't be exported until
+// the loan is in Encompass AND every field matches. The message text lives with
+// the gate (reconcile.js) so it's unit-tested against the same `reason` values.
+const encompassTapeMessage = (gate) => require('../encompass/reconcile').tapeGateMessage(gate);
 // The borrower DIRECTORY / CRM has a WIDER audience than file-level see_all_files
 // (owner-directed): admins, underwriters, loan_coordinators (seesAll) AND
 // processors may open ANY borrower's full profile; loan_officers stay limited to
@@ -386,21 +391,52 @@ router.post('/tapes/:tapeKey/export/bulk', async (req, res) => {
       visible = vr.rows.map((x) => x.id);
     }
     if (!visible.length) return res.status(403).json({ error: 'forbidden' });
-    // Confirmed-fatal issuance backstop — PARITY with the single-file tape export
-    // (and TPR/MISMO): a fatal file's tape must not leave in bulk either without a
-    // super-admin override. Check each visible file; a super-admin's overrideReason
-    // proceeds+records per file, otherwise the whole batch is blocked with the list.
+    // Both bulk export gates in ONE pass per loan (avoids a second heavy loop over
+    // up to 1000 files): the confirmed-fatal issuance backstop AND the Encompass
+    // reconciliation gate — PARITY with the single-file tape export (and TPR/MISMO):
+    //  · a fatal file's tape must not leave without a super-admin override, and
+    //  · each loan must be synced to Encompass AND fully matched (owner-directed
+    //    2026-07-26; dormant when Encompass is off, fails closed on a reconcile error).
+    // Side-effects (recording the issuance override) are DEFERRED until every gate is
+    // known-passable, so we never record an override for an export a later gate blocks.
     const blockedFatal = [];
+    const issuanceOverrides = []; // { id, tier, reason } — recorded only if we proceed
+    const encBlocked = [];
     for (const id of visible) {
       const issuance = await issuanceBackstop.backstopForRun(id, 'term_sheet', db, { actorRole: req.actor.role, overrideReason: req.query && req.query.overrideReason });
       if (issuance.hardWarning && !issuance.proceed) { blockedFatal.push({ id, tier: issuance.tier || null }); continue; }
-      if (issuance.override && issuance.override.applied) {
-        await audit(req, 'issuance_override', 'application', id, { action: 'export_tape_bulk', tape: tape.key, tier: issuance.tier, reason: issuance.override.reason });
-        await loanExceptions.recordIssuanceOverride({ appId: id, staffId: req.actor.id, note: `export_tape_bulk ${tape.key}: ${issuance.override.reason || 'no reason given'}`, snapshot: { action: 'export_tape_bulk', tape: tape.key, tier: issuance.tier || null, at: new Date().toISOString() } });
-      }
+      if (issuance.override && issuance.override.applied) issuanceOverrides.push({ id, tier: issuance.tier || null, reason: issuance.override.reason });
+      const encTape = await require('../encompass/reconcile').tapeGate(id, db);
+      if (encTape.block) encBlocked.push({ id, reason: encTape.reason, openBlocking: encTape.openBlocking, message: encompassTapeMessage(encTape) });
     }
     if (blockedFatal.length) {
       return res.status(409).json({ error: 'blocked', action: 'export_tape_bulk', message: `${blockedFatal.length} of the selected loan(s) have a confirmed fatal issue and can't be exported without a super-admin override. Remove them from the selection, or have a super-admin export.`, blocked: blockedFatal });
+    }
+    // Encompass gate: non-admins are blocked with the per-loan list; an admin's
+    // encompassOverrideReason overrides the batch (recorded per file below).
+    let encOverrideReason = null;
+    if (encBlocked.length) {
+      if (!tapeAdmin(req)) {
+        return res.status(409).json({ error: 'encompass_unreconciled', code: 'encompass_unreconciled', message: `${encBlocked.length} of the selected loan(s) don’t fully match Encompass yet. Reconcile each file — it must be in Encompass and every field matching — before exporting its tape.`, blocked: encBlocked, canOverride: false });
+      }
+      encOverrideReason = String((req.query && req.query.encompassOverrideReason) || '').trim();
+      if (!encOverrideReason) {
+        return res.status(409).json({ error: 'encompass_override_reason_required', code: 'encompass_override_reason_required', message: `${encBlocked.length} of the selected loan(s) don’t fully match Encompass yet. As an admin you can override — provide a reason to export anyway.`, blocked: encBlocked, canOverride: true });
+      }
+    }
+    // Every gate is passable → NOW apply the deferred side-effects: record each
+    // issuance override, then each Encompass-gate override (best-effort register).
+    for (const o of issuanceOverrides) {
+      await audit(req, 'issuance_override', 'application', o.id, { action: 'export_tape_bulk', tape: tape.key, tier: o.tier, reason: o.reason });
+      await loanExceptions.recordIssuanceOverride({ appId: o.id, staffId: req.actor.id, note: `export_tape_bulk ${tape.key}: ${o.reason || 'no reason given'}`, snapshot: { action: 'export_tape_bulk', tape: tape.key, tier: o.tier, at: new Date().toISOString() } });
+    }
+    if (encOverrideReason) {
+      for (const b of encBlocked) {
+        await audit(req, 'encompass_tape_gate_override', 'application', b.id, { action: 'export_tape_bulk', tape: tape.key, reason: encOverrideReason.slice(0, 500), encReason: b.reason, openBlocking: b.openBlocking });
+        try {
+          await loanExceptions.recordIssuanceOverride({ appId: b.id, staffId: req.actor.id, note: `encompass_tape_gate_bulk (${tape.key}): ${encOverrideReason.slice(0, 400)}`, snapshot: { action: 'export_tape_bulk', tape: tape.key, encompass_reason: b.reason, encompass_open_blocking: b.openBlocking, at: new Date().toISOString() } });
+        } catch (_) { /* exception-register write is best-effort */ }
+      }
     }
     const { buf, filename, contentType, count } = await tapes.buildBulkTape(req.params.tapeKey, visible, db, { isAdmin: tapeAdmin(req) });
     await audit(req, 'export_tape_bulk', 'application', null, { tape: tape.key, count, requested: requested.length });
@@ -3218,9 +3254,23 @@ router.get('/applications/:id/tapes', async (req, res) => {
     const registeredProgram = r.rows[0].registered_program || null;
     const isAdmin = tapeAdmin(req);
     const key = require('../lib/conditions/field-registry').normNoteBuyer(lender);
+    // Encompass reconciliation gate status (owner-directed 2026-07-26): the UI
+    // shows a plain-language banner when a tape is blocked (loan not yet in
+    // Encompass, or fields still don't match) and offers the admin override.
+    const encTape = await require('../encompass/reconcile').tapeGate(req.params.id, db);
+    const encompass = {
+      blocked: !!encTape.block,
+      reason: encTape.reason || null,
+      openCount: encTape.openBlocking || 0,
+      openKeys: encTape.openBlockingKeys || [],
+      hasLoan: !!encTape.hasLoan,
+      canOverride: !!(encTape.block && isAdmin),
+      message: encompassTapeMessage(encTape),
+    };
     res.json({
       currentBuyer: lender, buyerKey: key, registeredProgram, isAdmin,
       tapes: tapes.tapeAvailability(key, lender, { registeredProgram, isAdmin }),
+      encompass,
     });
   } catch (e) { console.error('[tape eligibility]', e && e.message); res.status(500).json({ error: 'server error' }); }
 });
@@ -3260,9 +3310,38 @@ router.get('/applications/:id/export/tape/:tapeKey', async (req, res) => {
     if (issuance.hardWarning && !issuance.proceed) {
       return res.status(409).json({ error: 'blocked', action: 'export_tape', message: 'This file has a confirmed fatal issue, so its tape can\'t be exported without a super-admin override.', issuance });
     }
+    // Encompass reconciliation gate (owner-directed 2026-07-26): a loan's tape
+    // can't be exported until it is synced to Encompass AND every field matches.
+    // An admin may override with a logged reason. Dormant when Encompass is off
+    // (nothing to reconcile against); fails CLOSED on a reconcile error (can't
+    // confirm the match → don't release, admin-overridable). Runs BEFORE the
+    // issuance-override is recorded so a blocked export records nothing.
+    let encOverrideReason = null, encGate = null;
+    {
+      const encTape = await require('../encompass/reconcile').tapeGate(req.params.id, db);
+      if (encTape.block) {
+        encGate = encTape;
+        const msg = encompassTapeMessage(encTape);
+        if (!tapeAdmin(req)) {
+          return res.status(409).json({ error: 'encompass_unreconciled', code: 'encompass_unreconciled', message: msg, reason: encTape.reason, openFields: encTape.openBlockingKeys, hasLoan: encTape.hasLoan, canOverride: false });
+        }
+        encOverrideReason = String((req.query && req.query.encompassOverrideReason) || '').trim();
+        if (!encOverrideReason) {
+          return res.status(409).json({ error: 'encompass_override_reason_required', code: 'encompass_override_reason_required', message: `${msg} As an admin you can override — provide a reason to export anyway.`, reason: encTape.reason, openFields: encTape.openBlockingKeys, hasLoan: encTape.hasLoan, canOverride: true });
+        }
+      }
+    }
+    // Every gate is passable → record the deferred overrides (issuance first, then
+    // the Encompass-gate override) so nothing is recorded for a blocked export.
     if (issuance.override && issuance.override.applied) {
       await audit(req, 'issuance_override', 'application', req.params.id, { action: 'export_tape', tape: tape.key, tier: issuance.tier, reason: issuance.override.reason });
       await loanExceptions.recordIssuanceOverride({ appId: req.params.id, staffId: req.actor.id, note: `export_tape ${tape.key}: ${issuance.override.reason || 'no reason given'}`, snapshot: { action: 'export_tape', tape: tape.key, tier: issuance.tier || null, at: new Date().toISOString() } });
+    }
+    if (encOverrideReason && encGate) {
+      await audit(req, 'encompass_tape_gate_override', 'application', req.params.id, { action: 'export_tape', tape: tape.key, reason: encOverrideReason.slice(0, 500), encReason: encGate.reason, openBlocking: encGate.openBlocking, openFields: encGate.openBlockingKeys });
+      try {
+        await loanExceptions.recordIssuanceOverride({ appId: req.params.id, staffId: req.actor.id, note: `encompass_tape_gate (${tape.key}): ${encOverrideReason.slice(0, 400)}`, snapshot: { action: 'export_tape', tape: tape.key, encompass_reason: encGate.reason, encompass_open_blocking: encGate.openBlocking, encompass_open_fields: encGate.openBlockingKeys, at: new Date().toISOString() } });
+      } catch (_) { /* exception-register write is best-effort */ }
     }
     // Persist any questionnaire answers (validated) BEFORE building, so the tape
     // fills from them and a later export never re-asks. A no-op when none present.
