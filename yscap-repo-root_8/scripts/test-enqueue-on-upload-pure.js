@@ -59,6 +59,73 @@ const STAR = { v2Shadow: true, v2Enabled: false, v2Families: ['*'] };
   const errRes = await EU.maybeEnqueueUpload(throwDb, { documentId: 'd1', family: 'bank_statement', pipelineCfg: SHADOW });
   ok(errRes.enqueued === false && errRes.reason === 'error', 'gate open + throwing db → swallowed, reason:error (never throws)');
 
+  // ================= VSLICE-7: enqueueUploadedDocument (every eligible upload) =================
+  const CM = require(R + '/src/lib/underwriting/condition-map');
+  // A real condition code whose expected doc type is NOT "insurance" (so we can prove the
+  // template-code family wins OVER a docKind of "insurance").
+  const codeEntry = Object.keys(CM.CODE_TO_DOCTYPES)
+    .map((c) => [c, CM.expectedDocTypeForCode(c)])
+    .find(([, f]) => f && String(f).toLowerCase() !== 'insurance');
+  ok(!!codeEntry, 'condition-map has a code mapping to a non-insurance family (test precondition)');
+  const someCode = codeEntry && codeEntry[0];
+  const mappedFam = codeEntry && String(codeEntry[1]).trim().toLowerCase();
+
+  // A fake db that (a) answers the family-derivation query, (b) satisfies job-queue.enqueue's
+  // INSERT, and (c) records calls + the INSERT params so we can assert the derived family.
+  function makeDb({ code = null, throwChecklist = false } = {}) {
+    const db = { calls: [], insertParams: null };
+    db.query = async (sql, params) => {
+      db.calls.push(String(sql).replace(/\s+/g, ' ').trim().slice(0, 60));
+      if (/FROM checklist_items ci/i.test(sql)) {
+        if (throwChecklist) throw new Error('checklist boom');
+        return { rows: code ? [{ condition_code: code }] : [] };
+      }
+      if (/INSERT INTO document_pipeline_jobs/i.test(sql)) { db.insertParams = params; return { rows: [{ id: 'job1' }] }; }
+      return { rows: [] };   // job-queue.enqueue adopt-SELECTs come back empty → fresh insert
+    };
+    return db;
+  }
+
+  // (1) Flags OFF → disabled BEFORE any db work (cheap gate — behavior-identical to today).
+  let touched = false;
+  const noWorkDb = { query: async () => { touched = true; throw new Error('must not query when off'); } };
+  const offUpload = await EU.enqueueUploadedDocument(noWorkDb, { documentId: 'd1', docKind: 'insurance', pipelineCfg: OFF });
+  ok(offUpload.enqueued === false && offUpload.reason === 'disabled' && touched === false, 'upload: flags off → disabled with ZERO db work');
+
+  // (2) No documentId (flags on) → no_document.
+  const noDoc = await EU.enqueueUploadedDocument(makeDb(), { documentId: null, docKind: 'insurance', pipelineCfg: ALL });
+  ok(noDoc.enqueued === false && noDoc.reason === 'no_document', 'upload: no documentId → no_document');
+
+  // (3) docKind-only (no checklist item) → family = docKind; no checklist query fired.
+  const db3 = makeDb();
+  const r3 = await EU.enqueueUploadedDocument(db3, { documentId: 'd3', loanId: 'L3', docKind: 'insurance', pipelineCfg: ALL });
+  ok(r3.enqueued === true, 'upload: docKind-only → gate open, enqueued');
+  ok(db3.insertParams && db3.insertParams[3] === 'insurance', 'upload: family derived from docKind is passed to the enqueue');
+  ok(!db3.calls.some((c) => /checklist_items/i.test(c)), 'upload: no checklist query when there is no checklistItemId');
+
+  // (4) checklist template code takes PRECEDENCE over docKind (mirrors auto-read.js:41).
+  const db4 = makeDb({ code: someCode });
+  const r4 = await EU.enqueueUploadedDocument(db4, { documentId: 'd4', checklistItemId: 'ci4', docKind: 'insurance', pipelineCfg: ALL });
+  ok(r4.enqueued === true, 'upload: checklist item → enqueued');
+  ok(db4.calls.some((c) => /checklist_items/i.test(c)), 'upload: checklist family query ran');
+  ok(db4.insertParams && db4.insertParams[3] === mappedFam, 'upload: template-code family WINS over docKind');
+
+  // (5) Never throws mid-derivation — a failing checklist query falls back to the docKind family.
+  const db5 = makeDb({ code: someCode, throwChecklist: true });
+  const r5 = await EU.enqueueUploadedDocument(db5, { documentId: 'd5', checklistItemId: 'ci5', docKind: 'insurance', pipelineCfg: ALL });
+  ok(r5.enqueued === true && db5.insertParams && db5.insertParams[3] === 'insurance', 'upload: checklist query throws → falls back to docKind (never throws)');
+
+  // (6) No family derivable at all (no checklist item, no docKind) → no_family, no job.
+  const db6 = makeDb();
+  const r6 = await EU.enqueueUploadedDocument(db6, { documentId: 'd6', pipelineCfg: ALL });
+  ok(r6.enqueued === false && r6.reason === 'no_family', 'upload: no derivable family → no_family, no job');
+  ok(!db6.calls.some((c) => /INSERT INTO document_pipeline_jobs/i.test(c)), 'upload: no family → no enqueue INSERT');
+
+  // (7) Whole call never throws — a db that throws on everything is swallowed to error.
+  const throwAll = { query: async () => { throw new Error('db down'); } };
+  const r7 = await EU.enqueueUploadedDocument(throwAll, { documentId: 'd7', docKind: 'insurance', pipelineCfg: ALL });
+  ok(r7.enqueued === false && r7.reason === 'error', 'upload: throwing db → swallowed to error (never throws)');
+
   console.log(`test-enqueue-on-upload-pure: ${pass} passed, ${fail} failed`);
   process.exit(fail ? 1 : 0);
 })().catch((e) => { console.error(e); process.exit(1); });
