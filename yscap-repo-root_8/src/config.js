@@ -244,6 +244,20 @@ module.exports = {
   // so documents survive deploys — the default filesystem is ephemeral.
   storageDir:      process.env.STORAGE_DIR || 'uploads',
   maxUploadMb:     parseInt(process.env.MAX_UPLOAD_MB || '20', 10),   // per-file cap
+  // S3-compatible object storage (AWS S3 / Cloudflare R2 / Backblaze B2 / …). Used only when
+  // STORAGE_PROVIDER=s3. Credentials come from Render env ONLY (never source). The adapter signs
+  // requests itself (AWS SigV4, Node crypto — no SDK, no new deps). `region` defaults to 'auto'
+  // (R2 uses 'auto'); `forcePathStyle` defaults ON (bucket in the URL path — what R2 + most
+  // S3-compatibles want). With STORAGE_PROVIDER unset (=local) every S3 var is ignored.
+  s3: {
+    bucket:         (process.env.S3_BUCKET || '').trim(),
+    endpoint:       (process.env.S3_ENDPOINT || '').trim(),   // e.g. https://<acct>.r2.cloudflarestorage.com
+    accessKeyId:    (process.env.S3_ACCESS_KEY_ID || '').trim(),
+    secretAccessKey:(process.env.S3_SECRET_ACCESS_KEY || '').trim(),
+    region:         (process.env.S3_REGION || 'auto').trim() || 'auto',
+    forcePathStyle: (process.env.S3_FORCE_PATH_STYLE == null) ? true
+                      : /^(1|true|yes)$/i.test(String(process.env.S3_FORCE_PATH_STYLE).trim()),
+  },
 
   // --- SharePoint document sync (one-way mirror into Pipeline Drive) ---
   // Owner-directed design (2026-07-13): every document saved on the server is
