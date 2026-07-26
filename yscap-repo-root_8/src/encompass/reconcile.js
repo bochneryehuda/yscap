@@ -264,6 +264,26 @@ function compareIdentity(row, loan) {
       writable: false, open: status === 'mismatch', resolution: null,
     });
   };
+  // SSN compare — owner-directed 2026-07-26. Compared by the ONE-WAY keyed HMAC
+  // hash ONLY (our borrowers.ssn_hash vs the hash the reader stored for the
+  // Encompass party); the raw SSN is NEVER read, printed, or stored on either
+  // side. Displayed masked (last-4 only). BLOCK-gated + compare-only (a read
+  // never overwrites a borrower SSN). "No data to compare" (a hash missing on
+  // either side) holds the term sheet, exactly like the other identity fields.
+  const _mask4 = (l4) => { const d = _digits(l4); return d ? `•••-••-${d.slice(-4)}` : null; };
+  const pushSsn = (key, label, ourHash, ourLast4, theirHash, theirLast4) => {
+    let status = 'incomparable';
+    if (ourHash && theirHash) status = ourHash === theirHash ? 'match' : 'mismatch';
+    out.push({
+      key, encompassFieldId: null, label, category: 'identity', compare: 'ssn',
+      gate: map.GATE.BLOCK,
+      ours: _mask4(ourLast4), theirs: _mask4(theirLast4),
+      // presence flags only — the hashes themselves never leave the server
+      oursNorm: ourHash ? 'present' : null, theirsNorm: theirHash ? 'present' : null,
+      status, writable: false, open: status === 'mismatch', resolution: null,
+    });
+  };
+
   // Primary borrower + subject property address.
   const ourName = [row.b_first_name, row.b_last_name].filter((x) => x && String(x).trim()).join(' ').trim();
   const theirName = [bor.firstName, bor.lastName].filter((x) => x && String(x).trim()).join(' ').trim();
@@ -271,6 +291,7 @@ function compareIdentity(row, loan) {
   push('id_dob', 'Date of birth', 'date', row.b_dob || null, bor.birthDate || null);
   push('id_email', 'Email', 'email', row.b_email || null, bor.emailAddressText || null);
   push('id_phone', 'Phone', 'phone', row.b_cell_phone || null, (bor.mobilePhone || bor.homePhoneNumber) || null);
+  pushSsn('id_ssn', 'Social Security number', row.b_ssn_hash || null, row.b_ssn_last4 || null, bor._ssnHash || null, bor._ssnLast4 || null);
   push('id_property_address', 'Property address', 'address', _addrStr(row.property_address), _addrStr(prop));
 
   // Co-borrower — surfaced ONLY when a co-borrower exists on EITHER side (our
@@ -280,14 +301,30 @@ function compareIdentity(row, loan) {
   // correctly flags that the two systems disagree on the co-borrower.
   const ourCoName = [row.cb_first_name, row.cb_last_name].filter((x) => x && String(x).trim()).join(' ').trim();
   const theirCoName = [coBor.firstName, coBor.lastName].filter((x) => x && String(x).trim()).join(' ').trim();
-  const hasCo = !!(row.co_borrower_id || ourCoName || theirCoName || coBor.birthDate || coBor.emailAddressText || coBor.mobilePhone || coBor.homePhoneNumber);
+  const hasCo = !!(row.co_borrower_id || ourCoName || theirCoName || coBor.birthDate || coBor.emailAddressText || coBor.mobilePhone || coBor.homePhoneNumber || coBor._ssnHash || row.cb_ssn_hash);
   if (hasCo) {
     push('id_coborrower_name', 'Co-borrower name', 'name', ourCoName || null, theirCoName || null);
     push('id_coborrower_dob', 'Co-borrower date of birth', 'date', row.cb_dob || null, coBor.birthDate || null);
     push('id_coborrower_email', 'Co-borrower email', 'email', row.cb_email || null, coBor.emailAddressText || null);
     push('id_coborrower_phone', 'Co-borrower phone', 'phone', row.cb_cell_phone || null, (coBor.mobilePhone || coBor.homePhoneNumber) || null);
+    pushSsn('id_coborrower_ssn', 'Co-borrower Social Security number', row.cb_ssn_hash || null, row.cb_ssn_last4 || null, coBor._ssnHash || null, coBor._ssnLast4 || null);
   }
   return out;
+}
+
+// Our-side SSN → the keyed HMAC hash used for the PII-safe compare. Prefers the
+// stored borrowers.ssn_hash; falls back to deriving it from the encrypted SSN so
+// a borrower with an SSN on file but a null hash column is still comparable. The
+// decrypted digits live only inside this call (never stored/returned/logged);
+// only the one-way hash escapes. Returns null when there is no usable SSN.
+function _effectiveSsnHash(storedHash, encrypted) {
+  if (storedHash) return storedHash;
+  if (!encrypted) return null;
+  try {
+    const digits = require('../lib/crypto').decryptSSN(encrypted);
+    if (!digits) return null;
+    return require('../clickup/identity').ssnHash(digits, require('../config').ssnMatchKey);
+  } catch (_) { return null; }
 }
 
 // ── DB-backed: compute the live findings for one application ────────────────
@@ -307,8 +344,10 @@ async function computeFindings(appId, dbc) {
             l.llc_name AS llc_name,
             b.first_name AS b_first_name, b.last_name AS b_last_name,
             b.date_of_birth AS b_dob, b.email AS b_email, b.cell_phone AS b_cell_phone,
+            b.ssn_hash AS b_ssn_hash, b.ssn_last4 AS b_ssn_last4, b.ssn_encrypted AS b_ssn_encrypted,
             cb.first_name AS cb_first_name, cb.last_name AS cb_last_name,
-            cb.date_of_birth AS cb_dob, cb.email AS cb_email, cb.cell_phone AS cb_cell_phone
+            cb.date_of_birth AS cb_dob, cb.email AS cb_email, cb.cell_phone AS cb_cell_phone,
+            cb.ssn_hash AS cb_ssn_hash, cb.ssn_last4 AS cb_ssn_last4, cb.ssn_encrypted AS cb_ssn_encrypted
        FROM applications a
        LEFT JOIN llcs l ON l.id = a.llc_id
        LEFT JOIN borrowers b ON b.id = a.borrower_id
@@ -331,6 +370,14 @@ async function computeFindings(appId, dbc) {
   const theirs = loan ? map.extractFields(loan) : {};
   const ours = buildOurValues(row, quote ? quote.quote : null, row.llc_name);
   const { fields: econFields } = compareAll(ours, theirs, resolutions);
+  // Effective SSN hash for each of our parties — prefer the stored
+  // borrowers.ssn_hash; if it is missing (a write path that filled ssn_encrypted
+  // but not the hash column) derive it from the encrypted SSN so an on-file SSN
+  // never spuriously reads as "no data to compare". PII-safe: the plaintext is
+  // decrypted in memory only, never stored/returned/logged — we keep just the
+  // one-way keyed HMAC (the SAME hash the Encompass side is stored with).
+  row.b_ssn_hash = _effectiveSsnHash(row.b_ssn_hash, row.b_ssn_encrypted);
+  row.cb_ssn_hash = _effectiveSsnHash(row.cb_ssn_hash, row.cb_ssn_encrypted);
   // Identity + subject-address rows (owner-directed 2026-07-26) — only when a
   // loan is pulled. They are compare-only + BLOCK-gated and fold into the same
   // summary so "everything matches" includes them.

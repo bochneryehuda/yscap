@@ -23,9 +23,20 @@ if (!process.env.DATABASE_URL) { console.log('SKIP test-encompass-reconcile-db (
 const assert = require('assert');
 const { Pool } = require('pg');
 const recon = require('../src/encompass/reconcile');
+const identity = require('../src/clickup/identity');
+const cfg = require('../src/config');
+const C = require('../src/lib/crypto');
 
 let passed = 0;
 const ok = (n) => { console.log(`  ok  ${n}`); passed++; };
+
+// Test SSNs (never real). Borrower is stored via the ssn_hash COLUMN path;
+// co-borrower is stored via ssn_encrypted with NO hash column, to exercise the
+// decrypt-fallback in _effectiveSsnHash. The Encompass side carries the SAME
+// keyed HMAC the reader scrub would have produced (identity.ssnHash) + last-4.
+const B_SSN = '123456789', CB_SSN = '987654321';
+const B_HASH = identity.ssnHash(B_SSN, cfg.ssnMatchKey);
+const CB_HASH = identity.ssnHash(CB_SSN, cfg.ssnMatchKey);
 
 (async () => {
   const pool = new Pool({ connectionString: process.env.DATABASE_URL });
@@ -34,14 +45,16 @@ const ok = (n) => { console.log(`  ok  ${n}`); passed++; };
     await client.query('BEGIN');
     const email = 'encrecon+' + Buffer.from(String(process.pid)).toString('hex') + '@example.com';
     const b = (await client.query(
-      `INSERT INTO borrowers (first_name,last_name,email,date_of_birth,cell_phone)
-         VALUES ('Enc','Recon',$1,'1985-03-10','555-123-4567') RETURNING id`, [email])).rows[0];
+      `INSERT INTO borrowers (first_name,last_name,email,date_of_birth,cell_phone,ssn_hash,ssn_last4)
+         VALUES ('Enc','Recon',$1,'1985-03-10','555-123-4567',$2,'6789') RETURNING id`, [email, B_HASH])).rows[0];
     const llc = (await client.query(
       `INSERT INTO llcs (borrower_id, llc_name) VALUES ($1,'ABC Holdings LLC') RETURNING id`, [b.id])).rows[0];
     const email2 = 'enccorecon+' + Buffer.from(String(process.pid)).toString('hex') + '@example.com';
+    // Co-borrower: ssn_encrypted but NO ssn_hash column → exercises the
+    // decrypt-fallback path in computeFindings (_effectiveSsnHash).
     const cb = (await client.query(
-      `INSERT INTO borrowers (first_name,last_name,email,date_of_birth,cell_phone)
-         VALUES ('Coe','Recon',$1,'1990-07-15','555-987-6543') RETURNING id`, [email2])).rows[0];
+      `INSERT INTO borrowers (first_name,last_name,email,date_of_birth,cell_phone,ssn_encrypted,ssn_last4)
+         VALUES ('Coe','Recon',$1,'1990-07-15','555-987-6543',$2,'4321') RETURNING id`, [email2, C.encryptSSN(CB_SSN)])).rows[0];
 
     // The Encompass loan we "pulled" (full loan shape: customFields[] + standard
     // props + the applications[].borrower identity subtree + subject property).
@@ -51,8 +64,8 @@ const ok = (n) => { console.log(`  ok  ${n}`); passed++; };
       requestedInterestRatePercent: '8.0', maturityDate: '2027-06-22', loanNumber: 'YSCAP-DBT',
       property: { propertyType: 'Single Family', financedNumberOfUnits: 2, streetAddress: '12 Main St', city: 'Brooklyn', state: 'NY', postalCode: '11230' },
       applications: [{
-        borrower: { firstName: 'Enc', lastName: 'Recon', birthDate: '1985-03-10', emailAddressText: email, mobilePhone: '(555) 123-4567' },
-        coBorrower: { firstName: 'Coe', lastName: 'Recon', birthDate: '1990-07-15', emailAddressText: email2, mobilePhone: '(555) 987-6543' },
+        borrower: { firstName: 'Enc', lastName: 'Recon', birthDate: '1985-03-10', emailAddressText: email, mobilePhone: '(555) 123-4567', _ssnHash: B_HASH, _ssnLast4: '6789' },
+        coBorrower: { firstName: 'Coe', lastName: 'Recon', birthDate: '1990-07-15', emailAddressText: email2, mobilePhone: '(555) 987-6543', _ssnHash: CB_HASH, _ssnLast4: '4321' },
       }],
       customFields: [
         { fieldName: 'CX.REHABBUDGET', value: '120000.0000' },
@@ -105,22 +118,52 @@ const ok = (n) => { console.log(`  ok  ${n}`); passed++; };
     assert.strictEqual(byKey.id_borrower_name.writable, false, 'identity is compare-only (never overwrite borrower PII from a read)');
     ok('borrower identity + subject address are compared, matched, and never writable');
 
+    // 2b-SSN. SSN is compared by the one-way keyed HMAC, displayed masked, and is
+    //   PII-safe: the raw number and the hash NEVER appear in the field output.
+    assert.ok(byKey.id_ssn, 'the SSN comparison is surfaced');
+    assert.strictEqual(byKey.id_ssn.status, 'match', 'borrower SSN matches (hash column path)');
+    assert.strictEqual(byKey.id_ssn.writable, false, 'SSN is compare-only (never overwrite from a read)');
+    assert.strictEqual(byKey.id_ssn.gate, require('../src/lib/integrations/encompass-field-map').GATE.BLOCK, 'SSN is BLOCK-gated (must match to pass)');
+    assert.strictEqual(byKey.id_ssn.ours, '•••-••-6789', 'SSN is displayed masked (last-4 only), never the full number');
+    assert.strictEqual(byKey.id_ssn.theirs, '•••-••-6789', 'Encompass SSN is displayed masked too');
+    const idJson = JSON.stringify(byKey.id_ssn) + JSON.stringify(byKey.id_coborrower_ssn || {});
+    assert.ok(!idJson.includes(B_SSN) && !idJson.includes(CB_SSN), 'the raw SSN never appears in the field output');
+    assert.ok(!idJson.includes(B_HASH) && !idJson.includes(CB_HASH), 'the SSN hash never leaves the server (not in the field output)');
+    ok('SSN is compared by one-way HMAC, displayed masked, and neither the raw SSN nor the hash leaks');
+
     // 2c. The CO-BORROWER identity is compared too — matched via the coBorrower
     //     representation AND via the 2nd-borrower-pair representation.
     assert.strictEqual(byKey.id_coborrower_name.status, 'match', 'co-borrower name matches (Coe Recon)');
     assert.strictEqual(byKey.id_coborrower_dob.status, 'match', 'co-borrower DOB matches (1990-07-15)');
     assert.strictEqual(byKey.id_coborrower_email.status, 'match', 'co-borrower email matches');
     assert.strictEqual(byKey.id_coborrower_phone.status, 'match', 'co-borrower phone matches');
+    // Co-borrower SSN matches via the DECRYPT-FALLBACK (cb has ssn_encrypted, no ssn_hash column).
+    assert.ok(byKey.id_coborrower_ssn, 'the co-borrower SSN comparison is surfaced');
+    assert.strictEqual(byKey.id_coborrower_ssn.status, 'match', 'co-borrower SSN matches (derived from ssn_encrypted when the hash column is null)');
+    assert.strictEqual(byKey.id_coborrower_ssn.ours, '•••-••-4321', 'co-borrower SSN displayed masked');
     // Same co-borrower expressed as a SECOND borrower pair (applications[1].borrower).
     const loan2 = JSON.parse(JSON.stringify(loan));
     delete loan2.applications[0].coBorrower;
-    loan2.applications.push({ borrower: { firstName: 'Coe', lastName: 'Recon', birthDate: '1990-07-15', emailAddressText: email2, mobilePhone: '(555) 987-6543' } });
+    loan2.applications.push({ borrower: { firstName: 'Coe', lastName: 'Recon', birthDate: '1990-07-15', emailAddressText: email2, mobilePhone: '(555) 987-6543', _ssnHash: CB_HASH, _ssnLast4: '4321' } });
     await client.query(`UPDATE applications SET encompass_extra=$2::jsonb WHERE id=$1`, [app.id, JSON.stringify(loan2)]);
     const cPair = {}; for (const f of (await recon.computeFindings(app.id, client)).fields) cPair[f.key] = f;
     assert.strictEqual(cPair.id_coborrower_name.status, 'match', 'co-borrower matches via the 2nd-borrower-pair representation too');
     assert.strictEqual(cPair.id_coborrower_dob.status, 'match', 'co-borrower DOB matches via the 2nd-pair representation');
     await client.query(`UPDATE applications SET encompass_extra=$2::jsonb WHERE id=$1`, [app.id, JSON.stringify(loan)]); // restore
     ok('the co-borrower is compared and matched via BOTH the coBorrower and the 2nd-borrower-pair representations');
+
+    // 2d. A DIFFERENT Encompass SSN → id_ssn mismatch → not-passing (blocks the gate).
+    const loanWrongSsn = JSON.parse(JSON.stringify(loan));
+    loanWrongSsn.applications[0].borrower._ssnHash = identity.ssnHash('111223333', cfg.ssnMatchKey);
+    loanWrongSsn.applications[0].borrower._ssnLast4 = '3333';
+    await client.query(`UPDATE applications SET encompass_extra=$2::jsonb WHERE id=$1`, [app.id, JSON.stringify(loanWrongSsn)]);
+    const cWrong = await recon.computeFindings(app.id, client);
+    const wrongSsn = cWrong.fields.find((f) => f.key === 'id_ssn');
+    assert.strictEqual(wrongSsn.status, 'mismatch', 'a different Encompass SSN mismatches');
+    assert.strictEqual(wrongSsn.theirs, '•••-••-3333', 'the mismatched Encompass SSN is still shown masked');
+    assert.ok(cWrong.summary.notPassingKeys.includes('id_ssn'), 'an SSN mismatch is not-passing (holds the term sheet)');
+    await client.query(`UPDATE applications SET encompass_extra=$2::jsonb WHERE id=$1`, [app.id, JSON.stringify(loan)]); // restore
+    ok('a differing Social Security number mismatches, stays masked, and un-passes the section');
 
     // Re-read after restoring so later steps see the original loan.
     for (const k in byKey) delete byKey[k];

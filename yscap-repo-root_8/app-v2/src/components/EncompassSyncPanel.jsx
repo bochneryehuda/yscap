@@ -22,8 +22,10 @@ const LABELS = {
   // Borrower + co-borrower identity + subject address
   id_borrower_name: 'Borrower name', id_dob: 'Date of birth', id_email: 'Email',
   id_phone: 'Phone', id_property_address: 'Property address',
+  id_ssn: 'Social Security number',
   id_coborrower_name: 'Co-borrower name', id_coborrower_dob: 'Co-borrower date of birth',
   id_coborrower_email: 'Co-borrower email', id_coborrower_phone: 'Co-borrower phone',
+  id_coborrower_ssn: 'Co-borrower Social Security number',
   loan_amount: 'Loan amount', max_total_loan: 'Max total loan', final_initial_loan: 'Initial advance',
   rehab_budget: 'Rehab / construction budget', financed_rehab_budget: 'Financed rehab',
   purchase_price: 'Purchase price', effective_purchase: 'Effective purchase price', contract_price: 'Seller / contract price',
