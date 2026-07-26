@@ -524,6 +524,94 @@ async function computeFindings(appId, dbc) {
   };
 }
 
+
+// ── SUPER-ADMIN raw diagnostic (owner-directed 2026-07-26) ──────────────────
+// "Show me the RAW and exactly what's going on / why it's not matching."
+// Returns, for one file: every RAW key/value Encompass actually gave us (flattened
+// to the field ids the registry uses), which registry field each one feeds, our
+// side, their side, BOTH normalized values, and a plain-language reason the row is
+// not a match. This is what makes a wrong/missing field id diagnosable in seconds
+// instead of guessing at JSON paths.
+//
+// READ-ONLY and PII-SAFE: it reads the already-scrubbed encompass_extra (the raw
+// SSN was never stored — only a one-way hash), and it REDACTS anything that looks
+// like an SSN hash/number before returning. Super-admin only at the route.
+function _redactRaw(key, val) {
+  if (/ssn|taxidentification/i.test(String(key))) return '[redacted]';
+  const s = typeof val === 'string' ? val : JSON.stringify(val);
+  if (typeof s === 'string' && /^[0-9a-f]{64}$/i.test(s)) return '[hash redacted]';
+  return val;
+}
+
+async function rawDiagnostic(appId, dbc) {
+  const c = await computeFindings(appId, dbc);
+  if (!c.found) return { found: false };
+
+  // What Encompass actually handed us, keyed exactly as the registry looks it up.
+  // Read the stored (already PII-scrubbed) loan copy straight from the file.
+  const conn = dbc || require('../db');
+  const lr = await conn.query('SELECT encompass_extra FROM applications WHERE id = $1', [appId]);
+  const loan = (lr.rows[0] && lr.rows[0].encompass_extra) || null;
+  let flat = {};
+  try {
+    if (loan) {
+      const env = map.flattenLoan(loan);
+      flat = (env && env.fields) || {};
+    }
+  } catch (_) { flat = {}; }
+
+  const byFieldId = {};
+  for (const f of c.fields) if (f.encompassFieldId) byFieldId[f.encompassFieldId] = f;
+
+  const rawRows = Object.keys(flat).sort().map((id) => {
+    const cell = flat[id];
+    const value = cell && typeof cell === 'object' && 'value' in cell ? cell.value : cell;
+    const f = byFieldId[id] || null;
+    return {
+      encompassFieldId: id,
+      rawValue: _redactRaw(id, value),
+      mapsToField: f ? f.key : null,
+      mapsToLabel: f ? f.label : null,
+      status: f ? f.status : null,
+    };
+  });
+
+  // Registry fields Encompass returned NOTHING for — the "no data to compare"
+  // rows, which is exactly where a wrong field id or JSON path shows up.
+  const missing = c.fields
+    .filter((f) => f.status === 'incomparable' && (f.theirsNorm === null || f.theirsNorm === undefined || f.theirsNorm === ''))
+    .map((f) => ({ key: f.key, label: f.label, encompassFieldId: f.encompassFieldId, ours: f.ours, theirs: f.theirs }));
+
+  const rows = c.fields.map((f) => ({
+    key: f.key, label: f.label, encompassFieldId: f.encompassFieldId,
+    compare: f.compare, gate: f.gate, status: f.status,
+    ours: f.ours, theirs: f.theirs, oursNorm: f.oursNorm, theirsNorm: f.theirsNorm,
+    why: _whyNotMatching(f),
+  }));
+
+  return {
+    found: true, hasLoan: c.hasLoan, guid: c.guid, loanNumber: c.loanNumber,
+    pulledAt: c.pulledAt, lastError: c.lastError, summary: c.summary,
+    rawFieldCount: rawRows.length, raw: rawRows, missingFromEncompass: missing, rows,
+  };
+}
+
+// One plain sentence per row explaining the verdict — the whole point of the view.
+function _whyNotMatching(f) {
+  if (f.status === 'match') return 'Both sides agree.';
+  if (f.status === 'reference') return 'Shown for reference only — never compared.';
+  if (f.status === 'incomparable') {
+    const oursBlank = f.oursNorm === null || f.oursNorm === undefined || f.oursNorm === '';
+    const theirsBlank = f.theirsNorm === null || f.theirsNorm === undefined || f.theirsNorm === '';
+    if (f.naWhenOursMissing && oursBlank) return "Doesn't apply to this kind of loan — nothing to compare.";
+    if (oursBlank && theirsBlank) return 'Neither system has a value for this yet.';
+    if (theirsBlank) return `Encompass returned nothing for field ${f.encompassFieldId || '(n/a)'} — either it is blank in Encompass or we are reading the wrong field id / location.`;
+    return 'Our file has no value for this yet — enter it on the file.';
+  }
+  if (f.compare === 'enum') return `The two values do not map to the same meaning (ours "${f.oursNorm}" vs Encompass "${f.theirsNorm}").`;
+  return `The values differ after normalizing (ours "${f.oursNorm}" vs Encompass "${f.theirsNorm}").`;
+}
+
 // Convenience for the term-sheet gate (WO-E): is the Encompass findings tab clear?
 async function isClear(appId, dbc) {
   const c = await computeFindings(appId, dbc);
@@ -641,6 +729,7 @@ module.exports = {
   compareAll,
   summarize,
   computeFindings,
+  rawDiagnostic,
   isClear,
   issuanceGate,
   replaceField,

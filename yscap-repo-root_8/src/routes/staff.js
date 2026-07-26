@@ -6661,6 +6661,18 @@ router.get('/applications/:id/encompass/status', async (req, res) => {
   } catch (e) { console.warn('[staff] encompass status:', db.describeError(e)); res.status(500).json({ error: 'server error' }); }
 });
 
+// SUPER-ADMIN ONLY (owner-directed 2026-07-26): the raw troubleshooting view —
+// every field Encompass actually returned, what it maps to, both normalized
+// values, and why a row is not matching. Read-only; SSN values/hashes redacted.
+router.get('/applications/:id/encompass/raw', requireRole('super_admin'), async (req, res) => {
+  try {
+    const d = await require('../encompass/reconcile').rawDiagnostic(req.params.id);
+    if (!d.found) return res.status(404).json({ error: 'application not found' });
+    await audit(req, 'encompass_raw_view', 'application', req.params.id, { rawFieldCount: d.rawFieldCount });
+    res.json(d);
+  } catch (e) { console.warn('[staff] encompass raw:', db.describeError(e)); res.status(500).json({ error: 'server error' }); }
+});
+
 router.get('/applications/:id/encompass/findings', async (req, res) => {
   try {
     const c = await require('../encompass/reconcile').computeFindings(req.params.id);
