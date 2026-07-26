@@ -98,8 +98,9 @@ The closer lands here on opening a file (role-default `goToSection('sec-closing'
    cash-to-close** input, and the **full verified-liquidity table** (every counted account:
    holder / bank / last-4 / ending balance) with **direct "open" links to the bank-statement
    documents**. Fatal alert if the actual won't cover.
-3. **Document quick-links** — one-click open for insurance, purchase contract, assignment of
-   contract, LLC docs, bank statements, title, plus "all documents".
+3. **Document quick-links** — one-click open for the term sheet (the EXECUTED/signed copy first,
+   then the draft), insurance, purchase contract, assignment of contract, LLC docs, bank
+   statements, title, plus "all documents".
 4. **Closing conditions** — upload the balanced final HUD / ALTA, the closed loan package, and
    the collateral shipping label (each a real condition with the existing upload/download flow;
    HUD AI structural check is a future hook).

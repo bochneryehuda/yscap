@@ -126,7 +126,8 @@ export default function ClosingPanel({ appId, app, can, onDownloadDoc, onPreview
                   {docs.length === 0 ? <div className="muted small">{k === 'term_sheet' ? 'No term sheet on file yet' : 'None on file'}</div>
                     : docs.map((d) => (
                       <button key={d.id} className="btn link small cl-ql-doc" title={d.filename}
-                        onClick={() => (onPreview ? onPreview(d) : onDownloadDoc && onDownloadDoc(d))}>{d.filename}
+                        onClick={() => (onPreview ? onPreview(d) : onDownloadDoc && onDownloadDoc(d))}>
+                        <span className="cl-ql-name">{d.filename}</span>
                         {k === 'term_sheet' && tsTag(d)
                           ? <span className={`cl-ts-tag ${d.doc_kind === 'term_sheet_signed' ? 'on' : ''}`}>{tsTag(d)}</span>
                           : null}</button>
