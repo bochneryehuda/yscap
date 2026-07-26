@@ -96,6 +96,11 @@ require.cache[clientPath] = {
       }],
       customFields: [{ fieldName: 'CX.ARV', numericValue: 750000 }],
     }),
+    // fieldReader mock — returns field 364 (loan number) so the SAME-LOAN guard is exercised.
+    readFields: async (guid) => {
+      const l = await mockClient.getLoan(guid);
+      return { '364': l && l.loanNumber, '1859': 'MW TRADING LLC', '388': '1.000' };
+    },
     getMilestones: async () => [{ name: 'Approval', date: '2026-06-01' }],
     getMilestoneLog: async () => [],
   }),
@@ -154,6 +159,9 @@ async function main() {
   assert.strictEqual(stored.applications[0].borrower.taxIdentificationIdentifier, undefined, 'borrower SSN scrubbed');
   assert.strictEqual(stored.applications[0].coBorrower.taxIdentificationIdentifier, undefined, 'coBorrower SSN scrubbed');
   assert.strictEqual(stored.applications[0].borrower.firstName, 'Jane', 'non-PII borrower data kept');
+  // Values read BY FIELD NUMBER are stashed for the extract (authoritative over paths).
+  assert.strictEqual(stored._fieldValues['1859'], 'MW TRADING LLC', 'field 1859 read by number');
+  assert.strictEqual(stored._fieldValues['388'], '1.000', 'field 388 read by number');
   // The plaintext SSN is replaced by a PII-safe keyed HMAC + last-4 so the
   // per-file screen can COMPARE the SSN without ever storing the raw number.
   {
@@ -363,6 +371,18 @@ async function main() {
   assert.ok(snapN, 'nested-shape row upserted to snapshot');
   assert.strictEqual(snapN.params[0], 'guid-N', 'snapshot GUID from loanId');
   assert.strictEqual(snapN.params[1], 'YS-N', 'snapshot loan_number from fields[Loan.LoanNumber]');
+
+  // (13) SAME-LOAN GUARD — a cached GUID that points at a DIFFERENT loan must be
+  // REFUSED: nothing stored, the stale link cleared, a plain-language error stamped.
+  mockDb._appRows = [{ id: 'app-wrong', ys_loan_number: 'YS-111', encompass_loan_guid: 'guid-someone-else' }];
+  mockClient.getLoan = async (guid) => ({ guid, loanNumber: 'YS-222', applications: [{ borrower: { firstName: 'Other', lastName: 'Person' } }] });
+  queries.length = 0;
+  const rWrong = await reader.pullLoanForApplication('app-wrong');
+  assert.strictEqual(rWrong.ok, false, 'a loan whose number does not match this file is REFUSED');
+  const wrongMsg = rWrong.reason || rWrong.error || '';
+  assert.ok(/YS-222/.test(wrongMsg) && /YS-111/.test(wrongMsg), 'the error names both loan numbers');
+  assert.ok(!queries.some((q) => /encompass_extra=\$1::jsonb/.test(q.sql)), 'NOTHING from the wrong loan is stored');
+  assert.ok(queries.some((q) => /SET encompass_loan_guid=NULL/.test(q.sql)), 'the stale GUID is cleared so the next pull re-searches');
 
   console.log('OK — Encompass reader unit tests pass (includes super-dump + bulk-pull + client-contract check).');
 }
