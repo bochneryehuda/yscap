@@ -31,6 +31,7 @@ import ExceptionRegisterCard from '../components/ExceptionRegisterCard.jsx';
 import OrdersPanel from '../components/OrdersPanel.jsx';
 import AppraisalPanel from '../components/AppraisalPanel.jsx';
 import UnderwritingPanel from '../components/UnderwritingPanel.jsx';
+import EncompassSyncPanel from '../components/EncompassSyncPanel.jsx';
 import StaticToolFrame from '../components/StaticToolFrame.jsx';
 import AddConditionPanel from '../components/AddConditionPanel.jsx';
 import { strayConditionReason, strayConfirmText } from '../lib/conditionLabel.js';
@@ -2929,6 +2930,7 @@ export default function StaffApplication() {
     { id: 'sec-overview', label: 'File overview', group: 'Overview' },
     { id: 'sec-application', label: 'Application details', group: 'Application & pricing' },
     { id: 'sec-pricing', label: 'Structure & pricing', group: 'Application & pricing', badge: app.registered_program ? '✓' : '' },
+    { id: 'sec-encompass', label: 'Encompass sync', group: 'Application & pricing' },
     { id: 'sec-exceptions', label: 'Exceptions', group: 'Application & pricing' },
     { id: 'sec-appraisal', label: 'Appraisal & findings', group: 'Application & pricing', badge: apprSummary && apprSummary.fatal ? `${apprSummary.fatal} ⚠` : '' },
     { id: 'sec-underwriting', label: 'Document review', group: 'Application & pricing', badge: uwSummary && uwSummary.fatal ? `${uwSummary.fatal} ⚠` : '' },
@@ -3204,6 +3206,11 @@ export default function StaffApplication() {
         badge={app.registered_program ? 'Registered ✓' : 'Not registered'}>
       <ProductStudioPanel ref={studioRef} appId={id} app={app} onRegistered={load} mode="staff" staffRole={role}
         toolItemId={(items.find(it => it.tool_key === 'product_pricing') || {}).id} />
+      </Section>
+
+      <Section id="sec-encompass" title="Encompass sync" defaultOpen={false}
+        info="A live, read-only comparison of this file against its Encompass loan — every field, our value vs what Encompass has, and what matches. Pull any Encompass value into your file with one click. A term sheet can't be issued while a field here doesn't match. Encompass is never written to.">
+        <EncompassSyncPanel appId={id} />
       </Section>
 
       {/* The file's policy-exception REGISTER (redesign 2026-07-24): every

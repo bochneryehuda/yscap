@@ -208,7 +208,7 @@ const ok = (n) => { console.log(`  ok  ${n}`); passed++; };
     }
 
     // 7. EMCAP rental signals (2026-07-26) — is_fix_hold from the real strategy columns,
-    //    loan_estimated_rent from applications.estimated_rental_income (db/311),
+    //    loan_estimated_rent from applications.estimated_rental_income (db/313),
     //    appraisal_is_1025 from appraisals.form_type, appraisal_market_rent from
     //    est_market_monthly_rent (else the summed appraisal_units.market_rent). Real columns.
     await pool.query(`UPDATE applications SET program='Fix & Hold', loan_type='Purchase', rehab_type='moderate', estimated_rental_income=2500 WHERE id=$1`, [aId]);
@@ -219,7 +219,7 @@ const ok = (n) => { console.log(`  ok  ${n}`); passed++; };
     {
       const out = await gatherInvestorInputs(aId, db);
       assert.strictEqual(out.is_fix_hold, true, 'Fix & Hold program → is_fix_hold true');
-      assert.strictEqual(out.loan_estimated_rent, 2500, 'loan_estimated_rent reads applications.estimated_rental_income (db/311)');
+      assert.strictEqual(out.loan_estimated_rent, 2500, 'loan_estimated_rent reads applications.estimated_rental_income (db/313)');
       assert.strictEqual(out.appraisal_is_1025, false, 'FNM1004 → appraisal_is_1025 false');
       assert.strictEqual(out.appraisal_market_rent, 2500, 'appraisal_market_rent reads est_market_monthly_rent');
       ok('EMCAP: is_fix_hold + loan_estimated_rent + appraisal 1025/market-rent from real columns');

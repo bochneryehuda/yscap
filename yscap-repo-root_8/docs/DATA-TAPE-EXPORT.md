@@ -64,7 +64,7 @@ EMCAP is a **rental-focused** buyer, so three things hang off it beyond the tape
 
 1. **Application completeness** — a **fix-and-hold** loan sold to EMCAP must carry
    an **estimated monthly rental income** before it's complete
-   (`applications.estimated_rental_income`, db/311; enforced in
+   (`applications.estimated_rental_income`, db/313; enforced in
    `src/routes/staff.js` `applicationCompleteness`, and shown as an inline field on
    the staff completeness panel). Only EMCAP + fix-and-hold adds the requirement.
 2. **A 1007 rent schedule (warn)** — after the appraisal is in, an EMCAP

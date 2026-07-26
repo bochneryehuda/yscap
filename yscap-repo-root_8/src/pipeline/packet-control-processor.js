@@ -169,6 +169,19 @@ function makePacketControlProcessor(opts = {}) {
           // only, no document text/PII) so the shadow surface can show the real read output.
           // Advisory: writes only the V2 artifact table. Best-effort (never fails the read).
           await safeArtifact('ocr_result', summarizeRead(routed));
+          // VSLICE-3 — turn the read into evidence candidates WITH page-level provenance and
+          // record them into the Stage-5 ledger (evidence-first canonical truth). Advisory:
+          // writes only document_pipeline_evidence; makes no decision, clears no condition.
+          // Best-effort + never throws (a recording failure never fails the read).
+          if (okRead && routed && routed.result) {
+            try {
+              const candidates = require('./read-to-evidence').readToEvidence(routed.result, {
+                jobId, documentId, loanId, family: features.docType || null,
+              });
+              const ec = require('./evidence-candidate');
+              for (const cand of candidates) { await ec.recordCandidate(db, cand); }
+            } catch (_e) { /* evidence recording is best-effort */ }
+          }
           // Classification is deferred to a later phase even on the read path; mark pending.
           await safeStage(STAGE.CLASSIFICATION, 'pending', { note: 'classifier stage not yet wired' });
         }

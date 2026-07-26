@@ -171,7 +171,7 @@ function economics(loan) {
     arv: n(a.arv) != null ? n(a.arv) : (loan.appraisal && n(loan.appraisal.arv_value)),
     noteRate: q.noteRate != null ? toFraction(q.noteRate)
       : (n(a.rate_pct) != null ? toFraction(a.rate_pct) : toFraction(loan.registration && loan.registration.note_rate)),
-    estRent: n(a.estimated_rental_income), // estimated MONTHLY rental income (db/311)
+    estRent: n(a.estimated_rental_income), // estimated MONTHLY rental income (db/313)
   };
 }
 
