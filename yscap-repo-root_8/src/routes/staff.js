@@ -50,6 +50,13 @@ router.use(requireAuth, requireRole('admin', 'loan_officer', 'processor', 'under
 // Who sees every file vs. only their assigned ones — now a capability, so an
 // admin can grant "see all files" to a coordinator without a code change.
 const seesAll = (req) => can(req.actor, 'see_all_files');
+// Data-tape access + admin-bypass (owner-directed 2026-07-26). `canExportTapes`
+// is the capability gate (processor / underwriter / admin by default; a loan
+// officer only if granted per-person on the Team screen). `tapeAdmin` may export
+// ANY provider's tape (bypasses the provider/program pairing and the manual
+// admin-only rule) — admins + super_admins.
+const canExportTapes = (req) => can(req.actor, 'export_data_tapes');
+const tapeAdmin = (req) => !!(req.actor && (req.actor.role === 'admin' || req.actor.role === 'super_admin'));
 // The borrower DIRECTORY / CRM has a WIDER audience than file-level see_all_files
 // (owner-directed): admins, underwriters, loan_coordinators (seesAll) AND
 // processors may open ANY borrower's full profile; loan_officers stay limited to
@@ -276,7 +283,8 @@ router.get('/applications/export', async (req, res) => {
 
 // List the tape types the system knows how to export (one per capital provider).
 router.get('/tapes', async (req, res) => {
-  try { res.json({ tapes: require('../lib/tapes').registry.listTapes() }); }
+  if (!canExportTapes(req)) return res.status(403).json({ error: 'You don’t have permission to export data tapes.' });
+  try { res.json({ tapes: require('../lib/tapes').registry.listTapes(), isAdmin: tapeAdmin(req) }); }
   catch (e) { console.error('[tapes list]', e && e.message); res.status(500).json({ error: 'server error' }); }
 });
 
@@ -284,8 +292,10 @@ router.get('/tapes', async (req, res) => {
 // file whose capital provider (normalized) matches this tape's buyer, scoped to
 // what the staffer may see. This is the picker the bulk-export screen shows.
 router.get('/tapes/:tapeKey/loans', async (req, res) => {
+  if (!canExportTapes(req)) return res.status(403).json({ error: 'You don’t have permission to export data tapes.' });
   try {
-    const tape = require('../lib/tapes').registry.getTape(req.params.tapeKey);
+    const tapes = require('../lib/tapes');
+    const tape = tapes.registry.getTape(req.params.tapeKey);
     if (!tape) return res.status(404).json({ error: 'unknown tape type' });
     // Normalize applications.lender in SQL exactly like normNoteBuyer:
     // LOWERCASE FIRST, then strip non-alphanumerics — the same order as the JS
@@ -294,6 +304,22 @@ router.get('/tapes/:tapeKey/loans', async (req, res) => {
     const params = [tape.buyerKey];
     let scopeSql = '';
     if (!seesAll(req)) { params.push(req.actor.id); scopeSql = ' AND ' + VISIBLE_OFFICERS_SQL('a', '$' + params.length); }
+    // Non-admins only see loans they could actually export: the loan must be
+    // REGISTERED with the correct program for this provider (manual/parked-Silver
+    // are excluded — they're admin-only). Admins see every provider-matched loan.
+    let gateSql = '';
+    if (!tapeAdmin(req)) {
+      const wantProg = tapes.programProvider.programForProvider(tape.buyerKey);
+      // No live program is paired to this provider, OR the paired program is PARKED
+      // (e.g. EMCAP↔Silver — a recognized name, not yet registerable) → no loan is
+      // non-admin-exportable; return an empty picker flagged admin-only.
+      if (!wantProg || tapes.programProvider.PARKED_PROGRAMS.has(wantProg)) {
+        return res.json({ tape: tapes.registry.publicTape(tape), count: 0, loans: [], adminOnly: true });
+      }
+      params.push(wantProg);
+      gateSql = ` AND EXISTS (SELECT 1 FROM product_registrations pr
+                    WHERE pr.application_id = a.id AND pr.is_current AND pr.program = $${params.length})`;
+    }
     const sql = `
       SELECT a.id, a.ys_loan_number, a.investor_loan_number, a.lender, a.status,
              COALESCE(a.property_address->>'oneLine',
@@ -302,10 +328,10 @@ router.get('/tapes/:tapeKey/loans', async (req, res) => {
              a.loan_amount, b.first_name, b.last_name
         FROM applications a JOIN borrowers b ON b.id = a.borrower_id
        WHERE a.deleted_at IS NULL
-         AND regexp_replace(lower(coalesce(a.lender,'')), '[^a-z0-9]', '', 'g') = $1${scopeSql}
+         AND regexp_replace(lower(coalesce(a.lender,'')), '[^a-z0-9]', '', 'g') = $1${scopeSql}${gateSql}
        ORDER BY a.updated_at DESC LIMIT 1000`;
     const r = await db.query(sql, params);
-    res.json({ tape: require('../lib/tapes').registry.publicTape(tape), count: r.rows.length, loans: r.rows });
+    res.json({ tape: tapes.registry.publicTape(tape), count: r.rows.length, loans: r.rows });
   } catch (e) { console.error('[tape loans]', e && e.message); res.status(500).json({ error: 'server error' }); }
 });
 
@@ -314,6 +340,7 @@ router.get('/tapes/:tapeKey/loans', async (req, res) => {
 // builder rejects the whole batch, listing any that don't); the requested ids
 // are first narrowed to what the staffer may see.
 router.post('/tapes/:tapeKey/export/bulk', async (req, res) => {
+  if (!canExportTapes(req)) return res.status(403).json({ error: 'You don’t have permission to export data tapes.' });
   try {
     const tapes = require('../lib/tapes');
     const tape = tapes.registry.getTape(req.params.tapeKey);
@@ -351,14 +378,16 @@ router.post('/tapes/:tapeKey/export/bulk', async (req, res) => {
     if (blockedFatal.length) {
       return res.status(409).json({ error: 'blocked', action: 'export_tape_bulk', message: `${blockedFatal.length} of the selected loan(s) have a confirmed fatal issue and can't be exported without a super-admin override. Remove them from the selection, or have a super-admin export.`, blocked: blockedFatal });
     }
-    const { buf, filename, contentType, count } = await tapes.buildBulkTape(req.params.tapeKey, visible, db);
+    const { buf, filename, contentType, count } = await tapes.buildBulkTape(req.params.tapeKey, visible, db, { isAdmin: tapeAdmin(req) });
     await audit(req, 'export_tape_bulk', 'application', null, { tape: tape.key, count, requested: requested.length });
     res.set('Content-Type', contentType);
     res.set('Content-Disposition', `attachment; filename="${filename}"`);
     res.send(buf);
   } catch (e) {
-    if (e && e.code === 'buyer_mismatch') {
-      return res.status(409).json({ error: 'buyer_mismatch', message: e.message, mismatches: e.mismatches || [] });
+    // A loan that fails the export gate (provider/program mismatch, not registered,
+    // or manual-admin-only) is reported with the per-file reasons for the batch.
+    if (e && (e.code === 'buyer_mismatch' || e.code === 'bulk_gate_failed')) {
+      return res.status(409).json({ error: e.code, message: e.message, mismatches: e.mismatches || [] });
     }
     if (e && e.code === 'no_loans') return res.status(400).json({ error: e.message });
     console.error('[export tape bulk]', e && e.message);
@@ -3102,14 +3131,27 @@ router.get('/applications/:id/export/mismo', async (req, res) => {
 // Which tape(s) can THIS loan export (based on its current capital provider),
 // and for the ones it can't, a plain-language reason. Scoped by the :id middleware.
 router.get('/applications/:id/tapes', async (req, res) => {
+  if (!canExportTapes(req)) return res.status(403).json({ error: 'You don’t have permission to export data tapes.' });
   try {
     if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(req.params.id)) return res.status(404).json({ error: 'not found' });
     const tapes = require('../lib/tapes');
-    const r = await db.query('SELECT lender FROM applications WHERE id=$1 AND deleted_at IS NULL', [req.params.id]);
+    // Pull the loan's capital provider AND its current registered program (the
+    // pairing that gates a non-admin export). registered_program is a JOIN alias
+    // for product_registrations.program — null when the loan isn't registered.
+    const r = await db.query(
+      `SELECT a.lender,
+              (SELECT pr.program FROM product_registrations pr
+                WHERE pr.application_id = a.id AND pr.is_current LIMIT 1) AS registered_program
+         FROM applications a WHERE a.id=$1 AND a.deleted_at IS NULL`, [req.params.id]);
     if (!r.rows[0]) return res.status(404).json({ error: 'not found' });
     const lender = r.rows[0].lender || null;
+    const registeredProgram = r.rows[0].registered_program || null;
+    const isAdmin = tapeAdmin(req);
     const key = require('../lib/conditions/field-registry').normNoteBuyer(lender);
-    res.json({ currentBuyer: lender, buyerKey: key, tapes: tapes.tapeAvailability(key, lender) });
+    res.json({
+      currentBuyer: lender, buyerKey: key, registeredProgram, isAdmin,
+      tapes: tapes.tapeAvailability(key, lender, { registeredProgram, isAdmin }),
+    });
   } catch (e) { console.error('[tape eligibility]', e && e.message); res.status(500).json({ error: 'server error' }); }
 });
 
@@ -3118,6 +3160,7 @@ router.get('/applications/:id/tapes', async (req, res) => {
 // unanswered ones (with dropdown options); the export UI asks these, then exports
 // with the answers. Empty for a loan whose tape needs nothing extra.
 router.get('/applications/:id/export/tape/:tapeKey/questions', async (req, res) => {
+  if (!canExportTapes(req)) return res.status(403).json({ error: 'You don’t have permission to export data tapes.' });
   try {
     if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(req.params.id)) return res.status(404).json({ error: 'not found' });
     const tapes = require('../lib/tapes');
@@ -3137,6 +3180,7 @@ router.get('/applications/:id/export/tape/:tapeKey/questions', async (req, res) 
 // New-construction questionnaire answers ride in as query params and are saved
 // to the loan (so a later export doesn't re-ask) before the tape is built.
 router.get('/applications/:id/export/tape/:tapeKey', async (req, res) => {
+  if (!canExportTapes(req)) return res.status(403).json({ error: 'You don’t have permission to export data tapes.' });
   try {
     if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(req.params.id)) return res.status(404).json({ error: 'not found' });
     const tapes = require('../lib/tapes');
@@ -3157,14 +3201,17 @@ router.get('/applications/:id/export/tape/:tapeKey', async (req, res) => {
     // due / interest reserve as query params — applied to THIS export only (never
     // persisted, since the live figures re-compute from the draws each time).
     const seasonedOverrides = tapes.seasonedOverridesFromQuery(req.query);
-    const { buf, filename, contentType } = await tapes.buildTape(req.params.id, req.params.tapeKey, db, { seasonedOverrides });
+    const { buf, filename, contentType } = await tapes.buildTape(req.params.id, req.params.tapeKey, db, { seasonedOverrides, isAdmin: tapeAdmin(req) });
     await audit(req, 'export_tape', 'application', req.params.id, { tape: tape.key, bytes: buf.length, supplemental: Object.keys(savedSupplemental), seasoned: !!seasonedOverrides });
     res.set('Content-Type', contentType);
     res.set('Content-Disposition', `attachment; filename="${filename}"`);
     res.send(buf);
   } catch (e) {
-    if (e && e.code === 'buyer_mismatch') {
-      return res.status(409).json({ error: 'buyer_mismatch', message: e.message, currentBuyer: e.currentBuyer, requiredBuyer: e.requiredBuyer, tape: e.tapeName });
+    // The export gate (owner-directed): provider mismatch, wrong/absent registered
+    // program, or a manual file a non-admin tried to export. Each carries its own
+    // plain-language message + status; the UI shows it and offers "change provider".
+    if (e && (e.code === 'buyer_mismatch' || e.code === 'program_mismatch' || e.code === 'not_registered' || e.code === 'manual_admin_only')) {
+      return res.status(e.status || 409).json({ error: e.code, message: e.message, currentBuyer: e.currentBuyer, requiredBuyer: e.requiredBuyer, requiredProgram: e.requiredProgram, registeredProgram: e.registeredProgram, tape: e.tapeName });
     }
     if (e && (e.code === 'loan_not_found' || e.code === 'tape_not_found')) return res.status(404).json({ error: e.message });
     console.error('[export tape]', e && e.message);
