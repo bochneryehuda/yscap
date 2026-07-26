@@ -550,6 +550,11 @@ export const api = {
   aiSilencedCodesAdd:     (code, reason) => req('POST', '/api/admin/insights/silenced-codes', { code, reason }),
   aiSilencedCodesRemove:  (code) => req('DELETE', `/api/admin/insights/silenced-codes/${encodeURIComponent(code)}`),
   aiSilencedCodesHistory: () => req('GET', '/api/admin/insights/silenced-codes/history'),
+
+  // Pipeline V2 (shadow) — vendor health + the staff-only shadow comparison (V2 vs V1).
+  pipelineHealth:      () => req('GET', '/api/admin/pipeline/health'),
+  pipelineShadow:      (loanId) => req('GET', '/api/admin/pipeline/shadow' + (loanId ? `?loanId=${encodeURIComponent(loanId)}` : '')),
+  pipelineShadowJob:   (jobId) => req('GET', `/api/admin/pipeline/shadow/${encodeURIComponent(jobId)}`),
   insightsFilesWithSuggestion: (params = {}) => {
     const qs = new URLSearchParams(params).toString();
     return req('GET', `/api/admin/insights/files-with-suggestion${qs ? '?' + qs : ''}`);
