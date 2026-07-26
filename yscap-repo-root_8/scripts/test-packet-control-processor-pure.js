@@ -76,6 +76,35 @@ function fakeRouter(plan, recorded) {
     ok(art && art.meta && art.meta.confidence === 0.88 && art.meta.outcome === 'completed', 'read path: artifact meta carries the read confidence + outcome');
   }
 
+  // ---- VSLICE-3: a real read records evidence candidates WITH page provenance ----
+  {
+    const jq = fakeJq(); const recorded = [];
+    const plan = { primary: { provider: 'azure', service: 'document_intelligence', adapterKey: 'azure/document_intelligence' }, challenger: null, reason: 'r', materiality: 'high', specialHandling: [] };
+    // db.query is only ever called by evidence-candidate.recordCandidate (INSERT INTO document_pipeline_evidence).
+    const evidenceInserts = [];
+    const db = { query: async (sql, params) => { if (/document_pipeline_evidence/.test(sql)) evidenceInserts.push({ sql, params }); return { rows: [{ id: 'ev1' }] }; } };
+    const router = {
+      ...fakeRouter(plan, recorded),
+      routeDocument: async () => ({
+        outcome: 'completed',
+        plan: { primary: { provider: 'azure', service: 'document_intelligence' } },
+        result: {
+          documentType: 'bank_statement', confidence: 0.9, provider: 'azure', service: 'document_intelligence',
+          segments: [{ docType: 'bank_statement', confidence: 0.9, pages: [1] }],
+          fields: [{ key: 'account_holder', value: 'John Smith', confidence: 0.88, page: 1 }],
+        },
+      }),
+    };
+    const loadBytes = async () => ({ buffer: Buffer.from('%PDF'), base64: 'JVBE', mimeType: 'application/pdf', filename: 'x.pdf' });
+    const proc = PC.makePacketControlProcessor({ router, adapters: [{ provider: 'azure', service: 'document_intelligence', analyze: async () => ({}) }], loadBytes });
+    const out = await proc(job, { db, jq });
+    ok(out.status === 'completed', 'evidence path: processor completes');
+    ok(evidenceInserts.length === 2, 'evidence path: two candidates recorded (document_type + one field)');
+    // recordCandidate params include page_number ($16) + evidence_span ($17) — provenance persisted
+    ok(evidenceInserts.every((e) => e.params.length >= 17), 'evidence path: recordCandidate persists page_number + evidence_span params');
+    ok(evidenceInserts.some((e) => e.params[5] === 'account_holder' && e.params[15] === 1), 'evidence path: the account_holder field is recorded with page_number 1');
+  }
+
   // ---- READ PATH but bytes UNAVAILABLE (loadBytes → null) → read stages not_applicable, no adapter call ----
   {
     const jq = fakeJq(); const recorded = [];

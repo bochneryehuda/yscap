@@ -26,6 +26,8 @@ function isValidStatus(s) { return STATUS_SET.has(s); }
 function normalizeStatus(s) { return STATUS_SET.has(s) ? s : 'unverified'; }
 
 function num(v) { return (typeof v === 'number' && Number.isFinite(v)) ? v : null; }
+// A 1-based page number → a positive integer, else null (never fabricate a page).
+function intOrNull(v) { const n = parseInt(v, 10); return (Number.isFinite(n) && n > 0) ? n : null; }
 
 // Normalize a value for AGREEMENT comparison: numbers compare numerically (so "$1,200.00" and
 // "1200" agree), everything else compares as lower-cased, whitespace-collapsed, punctuation-light
@@ -120,10 +122,12 @@ async function recordCandidate(db, row = {}) {
       `INSERT INTO document_pipeline_evidence
          (job_id, document_id, loan_id, pipeline_version, document_family,
           field_key, field_label, value_text, value_json,
-          provider, service, confidence, status, reason, corroborations)
+          provider, service, confidence, status, reason, corroborations,
+          page_number, evidence_span)
        VALUES ($1,$2,$3,COALESCE($4,'v2'),$5,
                $6,$7,$8,COALESCE($9,'{}'::jsonb),
-               $10,$11,$12,COALESCE($13,'unverified'),$14,COALESCE($15,'[]'::jsonb))
+               $10,$11,$12,COALESCE($13,'unverified'),$14,COALESCE($15,'[]'::jsonb),
+               $16,COALESCE($17,'{}'::jsonb))
        RETURNING id`,
       [
         r.jobId || null, r.documentId || null, r.loanId || null, r.pipelineVersion || null, r.documentFamily || null,
@@ -132,6 +136,8 @@ async function recordCandidate(db, row = {}) {
         r.provider || null, r.service || null, num(r.confidence),
         normalizeStatus(status), reason || null,
         JSON.stringify(Array.isArray(corroborations) ? corroborations : []),
+        intOrNull(r.pageNumber),
+        JSON.stringify(r.evidenceSpan && typeof r.evidenceSpan === 'object' ? r.evidenceSpan : {}),
       ],
     );
     return (res.rows[0] && res.rows[0].id) || null;
@@ -187,6 +193,7 @@ async function listCandidates(db, { jobId, documentId, loanId, limit } = {}) {
       `SELECT id, job_id, document_id, loan_id, document_family,
               field_key, field_label, value_text, value_json,
               provider, service, confidence, status, reason, corroborations,
+              page_number, evidence_span,
               superseded_by, superseded_at, created_at
          FROM document_pipeline_evidence
         ${where.length ? 'WHERE ' + where.join(' AND ') : ''}
@@ -211,6 +218,8 @@ async function listCandidates(db, { jobId, documentId, loanId, limit } = {}) {
         status: row.status,
         reason: row.reason,
         corroborations: Array.isArray(row.corroborations) ? row.corroborations : [],
+        pageNumber: row.page_number == null ? null : Number(row.page_number),
+        evidenceSpan: row.evidence_span || {},
         supersededBy: row.superseded_by,
         supersededAt: row.superseded_at,
         createdAt: row.created_at,
