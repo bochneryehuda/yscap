@@ -762,7 +762,9 @@ const ProductStudioPanel = forwardRef(function ProductStudioPanel({ appId, app, 
         if (reason && reason.trim()) { const rr = reason.trim(); setTimeout(() => register({ ...opts, encompassOverrideReason: rr }), 0); }
         else setErr(e.data.error || 'Encompass has unmatched fields — provide an override reason to issue the term sheet.');
       } else if (e.status === 422 && e.data && e.data.code === 'encompass_findings_open') {
-        setErr(e.data.error || 'This file must be reconciled with Encompass before a term sheet can be issued.');
+        // The server sends a surface-appropriate message; the fallback is neutral
+        // because this component is borrower-reachable (no internal system name).
+        setErr(e.data.error || 'This file is being finalized — your team will have your terms shortly.');
       } else {
         const detail = e.data && e.data.reasons ? e.data.reasons.map((r) => r.msg).join(' ') : (e.message || 'Could not register');
         setErr(detail);

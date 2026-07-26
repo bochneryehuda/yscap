@@ -1669,7 +1669,9 @@ router.post('/applications/:id/pricing/register', async (req, res) => {
     // WO-E — a term sheet cannot be ISSUED while this file has OPEN blocking
     // Encompass mismatches. Dormant until Encompass is live + a loan is pulled
     // (no pulled loan → never blocks). An admin (see_all_files) may override with
-    // a logged reason; the gate fails OPEN on any reconcile error.
+    // a logged reason; the gate fails OPEN on any reconcile error. When overridden
+    // here, the flag rides to sendBorrowerTerms so the chokepoint gate lets it out.
+    let encompassOverridden = false;
     {
       const encGate = await require('../encompass/reconcile').issuanceGate(appId);
       if (encGate.block) {
@@ -1683,6 +1685,7 @@ router.post('/applications/:id/pricing/register', async (req, res) => {
           code: 'encompass_override_reason_required', openFields: encGate.openBlockingKeys,
         }, 'encompass_override_reason_required', { openBlocking: encGate.openBlocking });
         await audit(req, 'encompass_gate_override', 'application', appId, { reason: ovr.slice(0, 500), openBlocking: encGate.openBlocking, openFields: encGate.openBlockingKeys });
+        encompassOverridden = true;
         // Record it in the policy-exception register (issuance_override) so the
         // override is diligence-visible — best-effort, never blocks the issue.
         try {
@@ -2043,7 +2046,7 @@ router.post('/applications/:id/pricing/register', async (req, res) => {
       // the borrower ONLY after a super-admin approves the escalation; see
       // admin-manual-programs.js). The team's own notice above always fires.
       if (economicsChanged && !needsEscalation) {
-        try { await require('../lib/terms-notify').sendBorrowerTerms(appId, { quote, total, termMonths: inputs && inputs.term }); }
+        try { await require('../lib/terms-notify').sendBorrowerTerms(appId, { quote, total, termMonths: inputs && inputs.term, encompassOverride: encompassOverridden }); }
         catch (_) { /* borrower terms email is best-effort */ }
       }
     } catch (_) { /* notification is best-effort */ }
