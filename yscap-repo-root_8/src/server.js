@@ -589,6 +589,17 @@ if (require.main === module) {
     // periodically. Gates fall back to their env default until this loads, so it's safe if it lags.
     try { require('./lib/flags').start(); } catch (e) { console.warn('flags cache not started:', e.message); }
     try { require('./lib/notification-digests').start(); } catch (e) { console.warn('notification digests not started:', e.message); }
+    // Pipeline V2 durable document-processing worker (owner-directed 2026-07-26). Drains the
+    // document_pipeline_jobs queue through the packet-control processor (records the stage manifest
+    // + routing decision). It is a NO-OP unless UW_WORKER_ENABLED — so this boot call is inert by
+    // default and everyone stays on Pipeline V1. Nothing enqueues shadow jobs until the shadow gate
+    // (enqueue-on-upload) is also switched on, so the worker simply finds an empty queue.
+    try {
+      const db = require('./db');
+      const { startWorker } = require('./pipeline/worker');
+      const { makePacketControlProcessor } = require('./pipeline/packet-control-processor');
+      startWorker({ db, cfg, processor: makePacketControlProcessor() });
+    } catch (e) { console.warn('pipeline worker not started:', e.message); }
     // Loan-officer Notification Center drainer — schedules parked drafts,
     // auto-sends the untouched ones past the SLA, wakes snoozed rows. Kill-switch
     // NOTIFY_WORKER_ENABLED=0.
