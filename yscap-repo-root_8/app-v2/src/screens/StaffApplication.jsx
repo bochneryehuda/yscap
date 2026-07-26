@@ -23,6 +23,7 @@ import TapeQuestionsModal from '../components/TapeQuestionsModal.jsx';
 import { CreditCondition } from '../components/CreditReport.jsx';
 import SubmitFilePanel from '../components/SubmitFilePanel.jsx';
 import FileNotificationOverrides from '../components/FileNotificationOverrides.jsx';
+import BorrowerViewButton from '../components/BorrowerViewButton.jsx';
 import { PhoneInput, ZipInput , EmailInput} from '../components/FormattedInputs.jsx';
 import EditFileDetails from '../components/EditFileDetails.jsx';
 import ToolModal from '../components/ToolModal.jsx';
@@ -2973,6 +2974,11 @@ export default function StaffApplication() {
           <h1 className="file-top-addr">{app.first_name} {app.last_name}{app.co_borrower_id ? ` & ${app.co_first_name || ''} ${app.co_last_name || ''}`.trimEnd() : ''} · {propAddress === '—' ? 'Address pending' : propAddress}</h1>
           <span className="muted small">{app.ys_loan_number || 'Loan # pending'} · {app.program || '—'} · {app.loan_type || '—'}</span>
         </div>
+        {/* BORROWER VIEW (owner-directed 2026-07-26) — step into this
+            borrower's portal straight from their file, landing on THIS loan, so
+            you can walk them through a condition while looking at their screen. */}
+        <BorrowerViewButton applicationId={id} borrowerId={app.borrower_id}
+          borrowerName={`${app.first_name || ''} ${app.last_name || ''}`.trim()} />
         {canDelete && (app.deleted_at
           ? <span className="row" style={{ gap: 8, flex: 'none' }}>
               <span className="pill" style={{ borderColor: 'var(--gold)', color: 'var(--gold)' }} title="This file is archived">Archived</span>

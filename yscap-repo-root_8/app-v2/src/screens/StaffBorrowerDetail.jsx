@@ -4,6 +4,7 @@ import { api, saveBlob } from '../lib/api.js';
 import { useSubmitGate } from '../lib/useSubmitGate.js';
 import { fmtDay, dayInputValue } from '../lib/dates.js';
 import LlcManager from '../components/LlcManager.jsx';
+import BorrowerViewButton from '../components/BorrowerViewButton.jsx';
 import { PhoneInput, ZipInput, EmailInput } from '../components/FormattedInputs.jsx';
 import { passwordProblem } from '../lib/password.js';
 import { CITIZENSHIP, MARITAL, CONTACT_TYPE, withCurrent } from '../lib/enums.js';
@@ -132,6 +133,9 @@ function Header({ b, name, onChanged }) {
           </div>
         </div>
         <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', justifyContent: 'flex-end' }}>
+          {/* Step into this borrower's portal from their profile (owner-directed
+              2026-07-26). Only offered once they actually have a login. */}
+          {b.has_account && <BorrowerViewButton borrowerId={b.id} borrowerName={name} />}
           {b.has_account
             ? <button className="btn ghost small" disabled={busy === 'reset' || !b.email} onClick={() => act('reset')}>Reset password</button>
             : <button className="btn primary small" disabled={busy === 'invite' || !b.email} onClick={() => act('invite')}>Invite to PILOT</button>}

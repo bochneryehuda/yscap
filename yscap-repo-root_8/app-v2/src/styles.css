@@ -3223,3 +3223,44 @@ details[open]>.appr-sec-sum .appr-sec-chev{transform:rotate(180deg)}
 .cl-dates{margin-top:8px}
 .cl-recon-head{margin-bottom:2px}
 .cl-tile-sub{margin-top:3px}
+
+/* ── BORROWER VIEW (owner-directed 2026-07-26) ────────────────────────────
+   The pinned "you are inside <borrower>'s portal" bar + the staff picker.
+   Deliberately loud: it is the ONE thing separating "I am looking at my own
+   console" from "I am about to press Upload inside somebody else's account."
+   All text is explicit dark ink or white-on-gold (never a var() that might
+   resolve light) per the dark-text-on-white house rule. */
+.bview-bar{position:sticky;top:0;z-index:900;display:flex;align-items:center;gap:12px;
+  flex-wrap:wrap;padding:9px 16px;background:#AE8746;color:#fff;
+  font-size:14px;line-height:1.35;box-shadow:0 1px 0 rgba(20,27,34,.14)}
+.bview-bar strong{color:#fff;font-weight:700}
+.bview-dot{flex:none;width:9px;height:9px;border-radius:50%;background:#fff;
+  box-shadow:0 0 0 3px rgba(255,255,255,.35);animation:bview-pulse 2.4s ease-in-out infinite}
+@keyframes bview-pulse{0%,100%{opacity:1}50%{opacity:.45}}
+@media(prefers-reduced-motion:reduce){.bview-dot{animation:none}}
+.bview-text{flex:1 1 320px;min-width:0;color:#fff}
+.bview-sep{margin:0 6px;opacity:.7}
+.bview-clock{flex:none;font-size:12px;padding:3px 9px;border-radius:999px;
+  background:rgba(255,255,255,.2);color:#fff;font-variant-numeric:tabular-nums}
+.bview-exit{flex:none;cursor:pointer;border:0;border-radius:8px;padding:7px 14px;
+  background:#fff;color:#141B22;font-weight:600;font-size:13px;font-family:inherit}
+.bview-exit:hover:not(:disabled){background:#F6F3EC}
+.bview-exit:disabled{opacity:.65;cursor:default}
+/* The whole borrower shell gets a gold hairline while a view is active, so even
+   a screenshot of the middle of a page reads as "this is a borrower view". */
+.shell-bview{box-shadow:inset 0 0 0 2px #AE8746}
+
+/* Staff picker list */
+.bview-list{display:flex;flex-direction:column}
+.bview-row{display:flex;align-items:center;gap:14px;flex-wrap:wrap;
+  padding:13px 2px;border-bottom:1px solid var(--line)}
+.bview-row:last-child{border-bottom:0}
+.bview-who{flex:1 1 260px;min-width:0}
+.bview-name{font-weight:600;color:#141B22;font-size:15px}
+.bview-meta{margin-top:2px;font-size:13px;color:#4B585C}
+.bview-open{color:#8A5A00;font-weight:600}
+.bview-nologin{color:#8A5A00}
+@media(max-width:720px){
+  .bview-bar{font-size:13px;padding:8px 12px}
+  .bview-exit{width:100%}
+}

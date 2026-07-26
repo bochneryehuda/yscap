@@ -60,6 +60,11 @@ async function flush() {
       'method', 'path', 'route', 'query', 'status', 'duration_ms',
       'ip', 'user_agent', 'referer', 'entity_type', 'entity_id',
       'body_summary', 'error', 'bytes_out',
+      // BORROWER VIEW (db/317): while a staffer is inside a borrower's portal
+      // the actor columns describe the BORROWER (that is the identity the call
+      // ran under); these two name the real human, so every click made in
+      // someone else's portal stays attributable.
+      'impersonator_staff_id', 'impersonator_role',
     ];
     const params = [];
     const rows = batch.map((r, i) => {
@@ -69,6 +74,7 @@ async function flush() {
         r.method, r.path, r.route, r.query, r.status, r.duration_ms,
         r.ip, r.user_agent, r.referer, r.entity_type, r.entity_id,
         r.body_summary, r.error, r.bytes_out,
+        r.impersonator_staff_id, r.impersonator_role,
       );
       return '(' + cols.map((_, j) => '$' + (base + j + 1)).join(',') + ')';
     }).join(',');
@@ -175,6 +181,12 @@ function resolveActor(req) {
         kind: claims.kind,
         id: claims.sub || null,
         role: claims.role || null,
+        // Borrower-view envelope (src/lib/borrower-view.js). Read straight off
+        // the verified claims so even a request the auth middleware later
+        // REJECTS (revoked staffer, expired view) is still attributed to the
+        // person who made it — which is exactly when you want to know.
+        impersonatorId: (claims.imp && claims.impBy) || null,
+        impersonatorRole: (claims.imp && claims.impRole) || null,
       };
     }
     return { kind: 'anon' };
@@ -296,6 +308,8 @@ function middleware(req, res, next) {
         body_summary: bodySummary,
         error: errText,
         bytes_out: bytesOut,
+        impersonator_staff_id: (req.impersonation && req.impersonation.staffId) || actor.impersonatorId || null,
+        impersonator_role: (req.impersonation && req.impersonation.role) || actor.impersonatorRole || null,
       });
     } catch (_) { /* logging must never break */ }
   });
