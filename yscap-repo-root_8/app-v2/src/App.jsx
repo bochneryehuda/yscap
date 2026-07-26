@@ -56,6 +56,7 @@ import StaffPipelineShadow from './screens/StaffPipelineShadow.jsx';
 import StaffDraws from './screens/StaffDraws.jsx';
 import StaffFileDraws from './screens/StaffFileDraws.jsx';
 import StaffDrawRules from './screens/StaffDrawRules.jsx';
+import StaffTapes from './screens/StaffTapes.jsx';
 import StaffAuditLog from './screens/StaffAuditLog.jsx';
 import SyncReviews from './screens/SyncReviews.jsx';
 import EsignDashboard from './screens/EsignDashboard.jsx';
@@ -171,6 +172,7 @@ export default function App() {
           <Route path="/internal/clickup" element={<StaffPrivate><StaffClickup /></StaffPrivate>} />
           <Route path="/internal/draws" element={<StaffPrivate><StaffDraws /></StaffPrivate>} />
           <Route path="/internal/draw-rules" element={<StaffPrivate><StaffDrawRules /></StaffPrivate>} />
+          <Route path="/internal/tapes" element={<StaffPrivate><StaffTapes /></StaffPrivate>} />
           <Route path="/internal/audit" element={<StaffPrivate><StaffAuditLog /></StaffPrivate>} />
           <Route path="/internal/sync-reviews" element={<StaffPrivate><SyncReviews /></StaffPrivate>} />
           <Route path="/internal/esign" element={<StaffPrivate><EsignDashboard /></StaffPrivate>} />

@@ -27,6 +27,7 @@ const { makeAdapter, checkAll } = require('./provider-adapter');
 
 function num(v) { return (typeof v === 'number' && Number.isFinite(v)) ? v : null; }
 function arr(v) { return Array.isArray(v) ? v : []; }
+function str(v) { return (v == null) ? '' : String(v); }
 
 /**
  * The document/OCR/classifier vendors reached through the Layer-2 contract. Each entry is
@@ -97,18 +98,44 @@ function pingToHealth(r) {
   return { ok, detail: ok ? 'reachable' : ((r && r.reason) || 'unavailable') };
 }
 
-/** Map a vendor read/classify result into a partial ProviderResult (never throws here). */
+/**
+ * Map a vendor read/classify/extract result into a partial ProviderResult (never throws here).
+ * FAITHFUL PASSTHROUGH: every structural field the vendor produced survives — the OCR text +
+ * per-page structure (lines/words + polygons = bounding regions), the splitter's segments
+ * (per-range docType boundaries), and an extractor's fields/tables. The earlier version carried
+ * only `pages`, silently dropping text/pageCount/segments/fields/tables — so a classifier's
+ * document-type result and an extractor's fields never reached the router (the "dropped
+ * classifier results" gap). Downstream normalizeResult defaults any missing key safely.
+ */
 function mapVendorResult(entry, raw) {
   const r = raw || {};
+  const base = { modelId: entry.model() || '', modelVersion: entry.modelVersion() || '' };
   if (r.ok === false) {
-    return { modelId: entry.model() || '', modelVersion: entry.modelVersion() || '', confidence: null, warnings: [String(r.reason || 'vendor returned not-ok')] };
+    return { ...base, confidence: null, warnings: [str(r.reason) || 'vendor returned not-ok'] };
+  }
+  const segments = arr(r.segments);
+  // The package splitter reports per-range docType + confidence but no document-level type/score.
+  // When the vendor gave none, derive a document-level type + confidence from the HIGHEST-confidence
+  // segment, so a classifier read carries a usable documentType/confidence downstream.
+  let documentType = str(r.documentType);
+  let confidence = num(r.confidence);
+  if (!documentType && segments.length) {
+    const top = segments.reduce((a, b) => ((num(b && b.confidence) || 0) > (num(a && a.confidence) || 0) ? b : a), segments[0]);
+    documentType = str(top && top.docType);
+    if (confidence == null) confidence = num(top && top.confidence);
   }
   return {
-    modelId: entry.model() || '',
-    modelVersion: entry.modelVersion() || '',
+    ...base,
+    documentType,
+    text: str(r.text),
+    pageCount: num(r.pageCount),
     pages: arr(r.pages),
-    // OCR/classify give no single document-level confidence — leave null unless the vendor did.
-    confidence: num(r.confidence),
+    segments,
+    fields: arr(r.fields),
+    tables: arr(r.tables),
+    evidenceRegions: arr(r.evidenceRegions),
+    // OCR gives no single document-level confidence — leave null unless the vendor/segment did.
+    confidence,
     warnings: [],
   };
 }
