@@ -132,6 +132,11 @@ assert.strictEqual(m.compareField('assignment_fee', null, 0).status, 'match', 'o
 assert.strictEqual(m.compareField('assignment_fee', 0, null).status, 'match', 'our 0 vs Encompass blank is a match');
 assert.strictEqual(m.compareField('financed_interest_reserve', null, 0).status, 'match', 'blank vs 0 reserve matches');
 assert.strictEqual(m.compareField('assignment_fee', null, 25500).status, 'incomparable', 'blank vs a REAL number is still "no data"');
+// The empty==zero rule is SCOPED to fields where 0 legitimately means "none".
+// On a block-gated number where 0 is nonsense, a placeholder 0 must NOT read as a match.
+for (const k of ['loan_amount', 'purchase_price', 'as_is_value', 'arv', 'units', 'rehab_budget']) {
+  assert.strictEqual(m.compareField(k, null, 0).status, 'incomparable', `${k}: blank vs a placeholder 0 is NOT a match`);
+}
 assert.strictEqual(m.compareField('assignment_fee', null, null).status, 'incomparable', 'blank on both sides stays "no data"');
 ok('an empty value equals zero on money fields; blank-vs-a-real-number still defers');
 

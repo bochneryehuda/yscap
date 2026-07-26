@@ -57,7 +57,7 @@ function exitPlanFor(dealType) {
 // is an EXPANSION regardless of the bucket the file was typed as — the sqft flag is
 // the stronger statement about the work. Any of the repo's sqft-addition column
 // spellings counts; a file with none falls back to its own rehab_type.
-// The sqft-addition signal is NOT a boolean column — it is the SAME definition the
+// The sqft-addition signal is the SAME definition the
 // pricing layer already uses (src/lib/pricing.js buildInputs `sqftAddition`): the
 // rehab type mentions square footage / an addition, OR the post-rehab square
 // footage exceeds the pre-rehab square footage (applications.sqft_pre/sqft_post,
@@ -153,7 +153,12 @@ function buildOurValues(app, quote, llcName) {
 
     // sizing / leverage (percent — see pctOf: engine fractions → Encompass percents)
     actual_ltc: pctOf(sizing.ltcPct),
-    actual_initial_ltv: nz(a.ltv) !== undefined ? pctOf(a.ltv) : pctOf(sizing.acqLtvPct),
+    // applications.ltv is ALREADY stored as a percent (product-registration writes
+    // acqLtvPct*100), so it is used VERBATIM — never re-scaled. Re-scaling it would
+    // corrupt a genuinely small LTV (a ~1% initial advance would read as 100%) and
+    // would break the "use Encompass value" pull-in, which writes the raw Encompass
+    // percent straight into this column. Only the quote-sourced FRACTION is converted.
+    actual_initial_ltv: nz(a.ltv) !== undefined ? Number(a.ltv) : pctOf(sizing.acqLtvPct),
     max_initial_ltv: pctOf(caps.maxAcqLtv),
     max_arv_ltv: pctOf(caps.maxArvLtv),
     max_ltc: pctOf(caps.maxLtc),
@@ -226,6 +231,9 @@ function compareAll(ours, theirs, resolutions) {
       category: e.category || null,
       compare: cmp.compare,
       gate: cmp.gate,
+      // Carried through so summarize() can tell NOT APPLICABLE (an underivable
+      // our-side, e.g. exit plan on a bridge deal) from genuinely missing data.
+      naWhenOursMissing: cmp.naWhenOursMissing,
       ours: cmp.ours,
       theirs: cmp.theirs,
       oursNorm: cmp.oursNorm,
@@ -251,6 +259,12 @@ function summarize(fields) {
   const notPassingKeys = [];
   for (const f of fields) {
     if (f.compare === 'reference' || f.status === 'reference') continue;
+    // NOT APPLICABLE ≠ missing data. A field flagged `naWhenOursMissing` whose OUR
+    // side can't be derived at all (exit plan on a bridge / ground-up deal) has
+    // nothing for staff to enter anywhere, so it is skipped rather than counted as
+    // "no data to compare" — otherwise it would hold the term sheet forever with no
+    // way to clear it. A field we CAN derive still has to match.
+    if (f.naWhenOursMissing && f.status === 'incomparable' && (f.oursNorm === null || f.oursNorm === undefined)) continue;
     compared += 1;
     if (f.status === 'match') { matched += 1; continue; }
     notPassingKeys.push(f.key);                    // anything that is not an exact match
@@ -291,20 +305,27 @@ function _zip5(v) {
   const d = String(v == null ? '' : v).replace(/\D/g, '');
   return d ? d.slice(0, 5) : '';
 }
+// Strip a trailing ZIP+4 down to the 5-digit zip anywhere in a free-text address,
+// so a one-line "…, NY 11230-1234" equals a structured "… NY 11230".
+function _stripPlus4(s) { return String(s == null ? '' : s).replace(/\b(\d{5})-\d{4}\b/g, '$1'); }
 function _addrStr(a) {
   if (a == null) return '';
-  if (typeof a === 'string') return a.trim();
-  if (typeof a !== 'object') return String(a);
+  if (typeof a === 'string') return _stripPlus4(a.trim());
+  if (typeof a !== 'object') return _stripPlus4(String(a));
   // Prefer a structured build; fall back to a one-line/formatted string when the
   // object only carries that (an Encompass/ClickUp formatted address), so a
   // one-line-only side is compared instead of reading as "no data".
   const street = a.street || a.line1 || a.address1 || a.streetAddress || a.addressStreetLine1 || a.address || '';
   const zip = _zip5(a.zip || a.postalCode || a.zipCode || a.postal_code);
   const parts = [street, a.city, a.state, zip];
+  const oneLine = _stripPlus4(String(a.oneLine || a.formatted_address || a.formattedAddress || a.fullAddress || a.display || '').trim());
+  // Require a STREET before trusting the structured build: without it we would be
+  // comparing a fragment (zip only, or state only), and two thin records would
+  // report a false MATCH on a block-gated identity row. With no street, fall back
+  // to a one-line address if there is one, else report nothing to compare.
+  if (!String(street || '').trim()) return oneLine;
   const built = parts.map((x) => (x == null ? '' : String(x).trim())).filter((x) => x !== '').join(' ');
-  if (built) return built;
-  const oneLine = a.oneLine || a.formatted_address || a.formattedAddress || a.fullAddress || a.display || '';
-  return String(oneLine || '').trim();
+  return built || oneLine;
 }
 function _named(p) { return !!(p && ((p.firstName && String(p.firstName).trim()) || (p.lastName && String(p.lastName).trim()))); }
 function compareIdentity(row, loan) {
@@ -433,7 +454,7 @@ async function computeFindings(appId, dbc) {
             a.loan_amount, a.purchase_price, a.underlying_contract_price, a.assignment_fee,
             a.rehab_budget, a.as_is_value, a.arv, a.ltv, a.rate_pct, a.term, a.maturity_date, a.funded_date,
             a.program, a.loan_type, a.rehab_type, a.accrual_type, a.property_type,
-            a.units, a.property_address, a.co_borrower_id,
+            a.units, a.property_address, a.co_borrower_id, a.sqft_pre, a.sqft_post,
             a.requested_exp_flips, a.requested_exp_holds, a.requested_exp_ground,
             l.llc_name AS llc_name,
             b.first_name AS b_first_name, b.last_name AS b_last_name,

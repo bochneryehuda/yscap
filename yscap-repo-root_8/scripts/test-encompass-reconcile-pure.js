@@ -97,6 +97,20 @@ assert.strictEqual(ours.actual_arv_ltv, 70.06, 'engine fraction 0.7006 → 70.06
 assert.strictEqual(ours.max_ltc, 92.5, 'cap fraction 0.925 → 92.5%');
 assert.strictEqual(ours.max_arv_ltv, 75, 'cap fraction 0.75 → 75%');
 assert.strictEqual(ours.actual_initial_ltv, 90, 'applications.ltv is already a percent — left as-is');
+// applications.ltv is NEVER re-scaled: a genuinely small LTV stays small (re-scaling
+// would read 1% as 100%), and the "use Encompass value" pull-in round-trips.
+assert.strictEqual(recon.buildOurValues({ ltv: 1.0 }, null).actual_initial_ltv, 1, 'a 1% stored LTV is not inflated to 100');
+assert.strictEqual(recon.buildOurValues({ ltv: 90 }, null).actual_initial_ltv, 90);
+// Exit plan on a BRIDGE / GROUND-UP deal is NOT APPLICABLE — it must never hold the
+// term sheet (there is nothing for staff to enter anywhere).
+{
+  const bridge = recon.buildOurValues({ program: 'Bridge' }, null);
+  const r = recon.compareAll(bridge, { exit_plan: 'Sale' }, {});
+  assert.ok(!r.summary.notPassingKeys.includes('exit_plan'), 'a bridge file is NOT blocked by exit plan');
+  const flip = recon.buildOurValues({ program: 'Fix & Flip' }, null);
+  const r2 = recon.compareAll(flip, { exit_plan: 'Refinance: Rental' }, {});
+  assert.ok(r2.summary.notPassingKeys.includes('exit_plan'), 'a flip whose Encompass exit disagrees still flags');
+}
 assert.strictEqual(recon.buildOurValues({ program: 'Fix & Flip' }, null).exit_plan, 'sell', 'flip → sell');
 assert.strictEqual(recon.buildOurValues({ program: 'DSCR' }, null).exit_plan, 'hold', 'rental → hold');
 assert.strictEqual(recon.buildOurValues({ program: 'Bridge' }, null).exit_plan, undefined, 'bridge exit is not guessed');

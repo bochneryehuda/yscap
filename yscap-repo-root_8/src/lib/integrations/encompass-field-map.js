@@ -74,7 +74,12 @@ const REGISTRY = Object.freeze([
   // program/deal type IMPLIES the exit, so fix & flip ≡ Sale and fix & hold / rental
   // ≡ Rental/Refinance. buildOurValues derives it (exitPlanFor) — we have no column,
   // but the deal type is unambiguous, so it is compared rather than merely displayed.
-  pull({ key: 'exit_plan', encompassFieldId: 'CX.EXITPLAN', type: 'enum', compare: 'enum', gate: GATE.ADVISORY, valueMap: 'exitPlan', our: 'derived from program/loan_type (flip→sell, hold/rental→hold)', note: 'Exit plan — matched: fix & flip → Sale; fix & hold / DSCR rental → Rental/Refinance' }),
+  // `naWhenOursMissing`: a BRIDGE or GROUND-UP deal has no exit plan we can derive —
+  // there is nothing for staff to "go enter", so an underivable OUR side means NOT
+  // APPLICABLE, not missing data, and summarize() skips it instead of holding the
+  // term sheet. (Without this the enum promotion would hard-block every Bridge /
+  // Ground-Up file — the same trap funded_date was left as reference to avoid.)
+  pull({ key: 'exit_plan', encompassFieldId: 'CX.EXITPLAN', type: 'enum', compare: 'enum', gate: GATE.ADVISORY, valueMap: 'exitPlan', naWhenOursMissing: true, our: 'derived from program/loan_type (flip→sell, hold/rental→hold)', note: 'Exit plan — matched: fix & flip → Sale; fix & hold / DSCR rental → Rental/Refinance' }),
   pull({ key: 'loan_to_be_vested', encompassFieldId: 'CX.LOANTOBEVESTED', type: 'enum', compare: 'enum', gate: GATE.ADVISORY, valueMap: 'vesting', our: 'derive(applications.llc_id present → entity)', note: 'Entity vs individual vesting flag' }),
   // ROOT-CAUSE FIX (owner-reported 2026-07-26: "1859 is fully set in Encompass but
   // our system says no data"). 1859 is a NUMBERED STANDARD field, not a custom
@@ -95,8 +100,8 @@ const REGISTRY = Object.freeze([
   pull({ key: 'purchase_price', encompassFieldId: '136', loanPath: 'purchasePriceAmount', type: 'money', category: 'loan', compare: 'money', our: 'column:purchase_price', note: 'Real final purchase price (build-spec §5). NOTE: the discovery doc read 136/purchasePriceAmount as the EFFECTIVE price on assignment deals — confirm which the tenant populates before relying on this on an assignment file' }),
   pull({ key: 'effective_purchase', encompassFieldId: 'CX.EFFECTIVEPURCHASE', type: 'money', category: 'cost', compare: 'money', our: 'quote:assignment.recognizedPrice (seller price + financeable fee)', note: 'Effective purchase (LTC basis) — compute-only' }),
   pull({ key: 'contract_price', encompassFieldId: 'CX.ORIGINALCONTRACTPURCHASEP', type: 'money', category: 'cost', compare: 'money', our: 'column:underlying_contract_price (falls back to purchase_price when no assignment)', note: 'Seller / underlying contract price (assignment basis)' }),
-  pull({ key: 'assignment_fee', encompassFieldId: 'CX.ASSIGNMENTFEE', type: 'money', category: 'cost', compare: 'money', our: 'column:assignment_fee', note: 'Assignment fee (financeable per frozen engine: lesser of 15% of contract / $75k)' }),
-  pull({ key: 'financed_interest_reserve', encompassFieldId: 'CX.FINANCEDINTERESTRESERVE', type: 'money', category: 'cost', compare: 'money', our: 'quote:financedReserve$ (from requested_ir_months / requested_ir_amount)', note: 'Financed interest reserve $ — compute-only; can be 0' }),
+  pull({ key: 'assignment_fee', encompassFieldId: 'CX.ASSIGNMENTFEE', type: 'money', category: 'cost', compare: 'money', zeroMeansNone: true, our: 'column:assignment_fee', note: 'Assignment fee (financeable per frozen engine: lesser of 15% of contract / $75k)' }),
+  pull({ key: 'financed_interest_reserve', encompassFieldId: 'CX.FINANCEDINTERESTRESERVE', type: 'money', category: 'cost', compare: 'money', zeroMeansNone: true, our: 'quote:financedReserve$ (from requested_ir_months / requested_ir_amount)', note: 'Financed interest reserve $ — compute-only; can be 0' }),
   pull({ key: 'total_cost', encompassFieldId: 'CX.TOTALCOST', type: 'money', category: 'cost', compare: 'money', our: 'derive(effective purchase + rehab + financed reserve + program extras)', note: 'Total cost (LTC basis) — no column, derive' }),
 
   // ── Valuation (money + percent) ───────────────────────────────────────────
@@ -194,8 +199,11 @@ const VALUE_MAPS = Object.freeze({
   },
   // CX.EXITPLAN (reference/advisory — kept for staff context)
   exitPlan: {
-    'sale': 'sell', 'sell': 'sell', 'fix and flip': 'sell', 'flip': 'sell',
-    'refinance: rental': 'hold', 'refinance': 'hold', 'refi': 'hold', 'rent': 'hold', 'rental': 'hold', 'hold': 'hold',
+    'sale': 'sell', 'sell': 'sell', 'sell/sale': 'sell', 'sale/sell': 'sell', 'resale': 'sell',
+    'fix and flip': 'sell', 'fix & flip': 'sell', 'flip': 'sell', 'sell property': 'sell', 'market sale': 'sell',
+    'refinance: rental': 'hold', 'refinance: long term': 'hold', 'refinance - rental': 'hold',
+    'refinance': 'hold', 'refi': 'hold', 'rent': 'hold', 'rental': 'hold', 'hold': 'hold',
+    'rent/refinance': 'hold', 'refinance/rental': 'hold', 'long term rental': 'hold', 'buy and hold': 'hold',
   },
   // CX.REHABTYPE ↔ applications.rehab_type (Cosmetic/Moderate/Heavy/Adding SF/Ground-up)
   // Owner-directed 2026-07-26: Encompass only has Light / Heavy / Expansion, so our
@@ -292,7 +300,9 @@ function flattenLoan(rawLoan) {
     const paths = Array.isArray(e.loanPath) ? e.loanPath : [e.loanPath];
     for (const p of paths) {
       const v = getPath(rawLoan, p);
-      if (v !== undefined && v !== null && v !== '') { out[e.encompassFieldId] = { value: v }; break; }
+      // Do NOT clobber a value already read from customFields[] — a candidate
+      // loanPath that happens to exist must never override the real custom field.
+      if (v !== undefined && v !== null && v !== '') { if (!(e.encompassFieldId in out)) out[e.encompassFieldId] = { value: v }; break; }
     }
   }
 
@@ -409,6 +419,9 @@ function compareField(entryOrKey, ourValue, encValue) {
     category: e.category || null,
     compare: e.compare,
     gate: e.gate,
+    // Surfaced so summarize() can treat an underivable OUR side as "not
+    // applicable" rather than "missing data" (see the exit_plan entry).
+    naWhenOursMissing: !!e.naWhenOursMissing,
     ours: ourValue == null ? null : ourValue,
     theirs: encValue == null ? null : encValue,
     oursNorm: null,
@@ -421,15 +434,21 @@ function compareField(entryOrKey, ourValue, encValue) {
   const kind = e.compare;
   if (kind === 'money' || kind === 'percent' || kind === 'int') {
     let a = num(ourValue); let b = num(encValue);
-    // Owner-directed 2026-07-26: EMPTY and ZERO mean the same thing on a numeric
-    // field — "there is none of this". Encompass writes 0 where our column is
-    // simply blank (assignment fee on a non-assignment, financed interest reserve
-    // on a deal with none), which used to read as "no data to compare" and hold the
-    // term sheet forever. So a blank on ONE side is read as 0 when the OTHER side
-    // is exactly 0. Blank-vs-a-real-number is still incomparable (genuinely
-    // missing data staff must enter), and blank-vs-blank stays incomparable.
-    if (a === null && b === 0) a = 0;
-    else if (b === null && a === 0) b = 0;
+    // Owner-directed 2026-07-26: EMPTY and ZERO mean the same thing on a field where
+    // zero legitimately means "there is none of this" — the assignment fee on a
+    // non-assignment, a financed interest reserve of nil. Encompass writes 0 where
+    // our column is simply blank, which used to read as "no data to compare" and
+    // hold the term sheet forever. So a blank on ONE side is read as 0 when the
+    // OTHER side is exactly 0 — but ONLY for entries explicitly flagged
+    // `zeroMeansNone`. It is NOT applied to fields where 0 is nonsense (loan
+    // amount, purchase price, as-is value, ARV, units, rehab budget): there a
+    // placeholder 0 in Encompass against our blank must keep reading "no data — go
+    // enter it", never a false match on a block-gated number.
+    // Blank-vs-a-real-number and blank-vs-blank always stay incomparable.
+    if (e.zeroMeansNone) {
+      if (a === null && b === 0) a = 0;
+      else if (b === null && a === 0) b = 0;
+    }
     base.oursNorm = a; base.theirsNorm = b;
     if (a === null || b === null) return base; // incomparable
     const tol = kind === 'money' ? MONEY_TOL : kind === 'percent' ? PERCENT_TOL : 0;
