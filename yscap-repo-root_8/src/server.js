@@ -569,6 +569,15 @@ if (require.main === module) {
         // Investor-Specific Soft Guidelines (ISG-2, owner-directed 2026-07-23): seed the
         // per-note-buyer condition guidelines from the checked-in CorrFirst "Fix & Flip
         // Purchase" spec into note_buyer_conditions. Idempotent (ON CONFLICT), never throws.
+        // Previous-files fix (owner-reported 2026-07-26): addresses that the
+        // keyless geocode fallback overwrote with the raw OpenStreetMap display
+        // name ("26, South 10th Street, Williamsburg, Brooklyn, Kings County,
+        // New York, 11249, United States") are rewritten to the mailing form
+        // ClickUp shows ("26 S 10th St, Brooklyn, NY 11249, USA"). Only touches
+        // records that ARE in the long form; idempotent, bounded, self-draining.
+        require('./lib/address-heal').healProviderLongAddressesOnce()
+          .then((r) => r && r.fixed && console.log('[boot] address format repair:', JSON.stringify(r)))
+          .catch((e) => console.error('[boot] address format repair failed:', e.message));
         require('./lib/underwriting/investor-guidelines/seed').seedNoteBuyerConditions()
           .then((r) => r && r.ok && console.log('[boot] note-buyer conditions seed:', JSON.stringify(r)))
           .catch((e) => console.error('[boot] note-buyer conditions seed failed:', e.message));
