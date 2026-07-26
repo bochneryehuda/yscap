@@ -14,6 +14,7 @@ if (!process.env.DATABASE_URL) { console.log('SKIP test-closing-db (no DATABASE_
 const assert = require('assert');
 const { Pool } = require('pg');
 const closing = require('../src/lib/closing');
+const workflow = require('../src/lib/workflow');
 
 let passed = 0;
 const ok = (c, n) => { assert.ok(c, n); console.log(`  ok  ${n}`); passed++; };
@@ -40,8 +41,31 @@ const ok = (c, n) => { assert.ok(c, n); console.log(`  ok  ${n}`); passed++; };
        RETURNING id`, [b.id, JSON.stringify(loan)])).rows[0];
     const appId = app.id;
 
-    // closing_workflow row + closing conditions.
-    await client.query(`INSERT INTO closing_workflow (application_id, stage) VALUES ($1,'estimated')`, [appId]);
+    // A staffer to attribute the closing submit to (openClosing stamps _by fields).
+    const actor = (await client.query(
+      `INSERT INTO staff_users (email,full_name,role,is_active)
+         VALUES ($1,'Closing Actor','closer',true) RETURNING id`,
+      ['closeactor+' + Buffer.from(String(process.pid)).toString('hex') + '@example.com'])).rows[0];
+
+    // Open the closing row through the REAL submit helper (a bare INSERT would not
+    // exercise the parameterized query — the $4::uuid used both directly and inside
+    // CASE WHEN ... THEN $4 END regressed a "server error" on every closing submit).
+    await workflow.openClosing(client, {
+      appId, workflowItemId: null, estClosingDate: '2026-08-15', actorId: actor.id,
+      investorCtc: true, closingDateConfirmed: true,
+    });
+    const cw = (await client.query(
+      `SELECT stage, investor_ctc, investor_ctc_by, closing_date_confirmed, closing_date_confirmed_by
+         FROM closing_workflow WHERE application_id=$1`, [appId])).rows[0];
+    ok(cw && cw.stage === 'estimated', 'openClosing creates the closing row at "estimated" (no $4 type error)');
+    ok(cw.investor_ctc === true && cw.investor_ctc_by === actor.id, 'openClosing stamps investor CTC + the actor id');
+    ok(cw.closing_date_confirmed === true && cw.closing_date_confirmed_by === actor.id, 'openClosing stamps confirmed-with-parties + the actor id');
+    // Idempotent ON CONFLICT path (a re-submit) must also not throw on $4.
+    await workflow.openClosing(client, {
+      appId, workflowItemId: null, estClosingDate: '2026-08-16', actorId: actor.id,
+      investorCtc: false, closingDateConfirmed: false,
+    });
+
     await closing.ensureClosingConditions(client, appId);
     await closing.ensureClosingConditions(client, appId); // idempotent
     const conds = (await client.query(
@@ -87,6 +111,41 @@ const ok = (c, n) => { assert.ok(c, n); console.log(`  ok  ${n}`); passed++; };
     const lists = await closing.readChecklists(appId, client);
     ok(lists.length === 1 && lists[0].items.length === 2, 'closer checklist create + read works');
     ok(lists[0].provider === 'Blue Lake', 'per-capital-provider checklist label preserved');
+
+    // Check off a checklist item — the SAME UPDATE the toggle route runs. The
+    // actor id ($3) is a bare parameter inside CASE WHEN…THEN, so without a ::uuid
+    // cast Postgres pins it to text and the uuid column write throws a 500.
+    const item0 = lists[0].items[0].id;
+    await client.query(
+      `UPDATE closing_checklist_items SET checked=$2,
+          checked_by = CASE WHEN $2 THEN $3::uuid ELSE NULL END,
+          checked_at = CASE WHEN $2 THEN now() ELSE NULL END WHERE id=$1`,
+      [item0, true, actor.id]);
+    const checkedRow = (await client.query(
+      `SELECT checked, checked_by FROM closing_checklist_items WHERE id=$1`, [item0])).rows[0];
+    ok(checkedRow.checked === true && checkedRow.checked_by === actor.id, 'checklist item check-off stamps the actor (no uuid/text type error)');
+    // Un-check must also not throw (the ELSE NULL branch).
+    await client.query(
+      `UPDATE closing_checklist_items SET checked=$2,
+          checked_by = CASE WHEN $2 THEN $3::uuid ELSE NULL END,
+          checked_at = CASE WHEN $2 THEN now() ELSE NULL END WHERE id=$1`,
+      [item0, false, actor.id]);
+    const uncheckedRow = (await client.query(
+      `SELECT checked, checked_by FROM closing_checklist_items WHERE id=$1`, [item0])).rows[0];
+    ok(uncheckedRow.checked === false && uncheckedRow.checked_by === null, 'checklist item un-check clears the actor');
+
+    // Term-sheet quick-link: the executed (signed) sheet + the draft both surface,
+    // executed FIRST (the closer needs a direct link to the signed final sheet).
+    // Executed copy is OLDER than the draft, so plain created_at-DESC ordering
+    // would surface the DRAFT first — the assertion below therefore genuinely
+    // proves the executed-first SORT (not an accidental tie-break).
+    await client.query(
+      `INSERT INTO documents (application_id, filename, doc_kind, is_current, created_at) VALUES
+         ($1,'term-sheet-EXECUTED.pdf','term_sheet_signed',true, now() - interval '1 hour'),
+         ($1,'term-sheet-draft.pdf','term_sheet',true, now())`, [appId]);
+    const ql = await closing.readQuickLinks(appId, null, client);
+    ok(Array.isArray(ql.term_sheet) && ql.term_sheet.length === 2, 'term-sheet quick-link groups the executed sheet + the draft');
+    ok(ql.term_sheet[0].doc_kind === 'term_sheet_signed', 'the executed (signed) term sheet is listed first');
 
     await client.query('ROLLBACK');
     console.log(`test-closing-db: ${passed} checks passed`);

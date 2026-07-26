@@ -439,9 +439,9 @@ async function openClosing(client, { appId, workflowItemId, estClosingDate, acto
        (application_id, workflow_item_id, stage, est_closing_date, updated_by,
         investor_ctc, investor_ctc_at, investor_ctc_by,
         closing_date_confirmed, closing_date_confirmed_at, closing_date_confirmed_by)
-     VALUES ($1,$2,'estimated',$3,$4,
-        $5, CASE WHEN $5 THEN now() END, CASE WHEN $5 THEN $4 END,
-        $6, CASE WHEN $6 THEN now() END, CASE WHEN $6 THEN $4 END)
+     VALUES ($1,$2,'estimated',$3,$4::uuid,
+        $5, CASE WHEN $5 THEN now() END, CASE WHEN $5 THEN $4::uuid END,
+        $6, CASE WHEN $6 THEN now() END, CASE WHEN $6 THEN $4::uuid END)
      ON CONFLICT (application_id) DO UPDATE
         SET workflow_item_id = EXCLUDED.workflow_item_id,
             est_closing_date = COALESCE(EXCLUDED.est_closing_date, closing_workflow.est_closing_date),

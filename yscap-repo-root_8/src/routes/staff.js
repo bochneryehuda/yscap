@@ -7809,7 +7809,7 @@ router.patch('/applications/:id/closing/checklist-items/:iid', async (req, res) 
     if (!own) return res.status(404).json({ error: 'item not found' });
     await db.query(
       `UPDATE closing_checklist_items SET checked=$2,
-          checked_by = CASE WHEN $2 THEN $3 ELSE NULL END,
+          checked_by = CASE WHEN $2 THEN $3::uuid ELSE NULL END,
           checked_at = CASE WHEN $2 THEN now() ELSE NULL END WHERE id=$1`,
       [req.params.iid, checked, req.actor.id]);
     res.json({ ok: true, checklists: await closing.readChecklists(req.params.id) });
