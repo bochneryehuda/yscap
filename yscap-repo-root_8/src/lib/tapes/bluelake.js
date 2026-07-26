@@ -53,12 +53,13 @@ function propertyTypeQ(loan) {
   if (t === 'sfr') return 'SFR';
   if (t === 'condo') return 'Condo';
   if (t === 'pud' || t === 'townhouse') return 'PUD (Planned Urban Development)';
-  // A 2-4 unit property maps to Duplex/Triplex/Fourplex by unit count — either
-  // because the type text says so (multi_2_4) or the type is generic but the
-  // unit count is 2-4 (e.g. "3 unit").
+  // A 2-4 unit property maps to Duplex/Triplex/Fourplex — by unit count when we
+  // have it, otherwise by the subtype named in the type text (so a "Fourplex"
+  // with a missing unit count isn't mislabeled a Duplex).
   if (t === 'multi_2_4' || (units >= 2 && units <= 4)) {
-    if (units >= 4) return 'Fourplex';
-    if (units === 3) return 'Triplex';
+    const raw = String(loan.app.property_type || '').toLowerCase();
+    if (units >= 4 || /four|quad/.test(raw)) return 'Fourplex';
+    if (units === 3 || /\btri/.test(raw)) return 'Triplex';
     return 'Duplex';
   }
   return ''; // multi_5_plus / mixed_use / land / other — not a Blue Lake finished type
@@ -179,7 +180,9 @@ const COLUMNS = [
   ['BB', 's', null, () => ''],                                                     // Lender Retained Spread — Blue Lake completes
   ['BC', 's', null, () => ''],                                                     // Total Points — TODO(owner): source
   ['BD', 's', null, () => ''],                                                     // Borrower Liquidity — TODO(owner): verified liquidity source
-  ['BE', 'n', null, (l) => l.fico],                                               // FICO
+  // FICO — the PRIMARY guarantor's score (per the dictionary), which is the named
+  // guarantor (BQ); falls back to the pricing FICO if the primary's isn't stored.
+  ['BE', 'n', null, (l) => ((l.borrower && l.borrower.fico) != null ? l.borrower.fico : l.fico)],
   ['BF', 's', null, (l) => foreignNationalBF(l)],                                 // Foreign National Flag
   ['BG', 'n', null, (l) => (l.exp && l.exp.verifiedTotal)],                       // Guarantor Track Record (verified exits)
   ['BH', 's', null, () => 'Full'],                                                // Recourse

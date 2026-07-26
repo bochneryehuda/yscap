@@ -233,14 +233,16 @@ function fillXlsxTemplate(templateBuf, opts) {
     }
   });
 
-  // Grow <dimension> to cover any added rows, but NEVER shrink it — the template
-  // may keep stray styled cells in rows below our data (Fidelis rows 3-4), and a
-  // used-range that excludes real cells can trip strict readers into a repair prompt.
+  // Grow <dimension> to cover any added rows, but NEVER shrink it on EITHER axis
+  // — the template may keep stray styled cells beyond our data (below the last row
+  // AND to the right of lastCol), and a used-range that excludes real cells can
+  // trip strict readers into a repair prompt. Take the max of the existing end
+  // column/row and what we wrote.
   const wantMax = Math.max(firstRow + rows.length - 1, firstRow);
-  xml = xml.replace(/<dimension ref="[^"]*"\/>/, (m) => {
-    const tail = m.match(/(\d+)"\s*\/>/);
-    const curEnd = tail ? Number(tail[1]) : 0;
-    return `<dimension ref="A1:${lastCol}${Math.max(curEnd, wantMax)}"/>`;
+  xml = xml.replace(/<dimension ref="([A-Z]+\d+):([A-Z]+)(\d+)"\/>/, (m, start, endCol, endRow) => {
+    const col = colToIndex(endCol) >= colToIndex(lastCol) ? endCol : lastCol;
+    const row = Math.max(Number(endRow), wantMax);
+    return `<dimension ref="${start}:${col}${row}"/>`;
   });
 
   // Widen dropdown (data-validation) ranges to cover every written row so the

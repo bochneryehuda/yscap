@@ -39,7 +39,7 @@ function synthLoan(overrides = {}) {
     },
     fico: 764,
     address: { line1: '123 Main St', city: 'Midland', state: 'Texas', zip: '07104' },
-    borrower: { first: 'John', last: 'Doe', citizenship: 'US Citizen' },
+    borrower: { first: 'John', last: 'Doe', citizenship: 'US Citizen', fico: 764 },
     coBorrower: null,
     vesting: { llc: '123 LLC' },
     registration: { total_loan: 350000 },
@@ -93,6 +93,11 @@ ok(cellOf(dutchRefi, 'AC').value === 350000, 'dutch → interest-bearing = total
 ok(cellOf(dutchRefi, 'BJ').value === 'Sell', 'ground-up exit Sell');
 const tri = synthLoan({ app: Object.assign({}, synthLoan().app, { property_type: '3 unit', units: 3 }) });
 ok(cellOf(tri, 'Q').value === 'Triplex', '3-unit → Triplex');
+const fourNoUnits = synthLoan({ app: Object.assign({}, synthLoan().app, { property_type: 'Fourplex', units: null }) });
+ok(cellOf(fourNoUnits, 'Q').value === 'Fourplex', 'Fourplex with missing units stays Fourplex (not Duplex)');
+// FICO = the PRIMARY guarantor's score, not the pricing GREATEST-of-both.
+const primaryFico = synthLoan(); primaryFico.borrower.fico = 712; primaryFico.fico = 800;
+ok(cellOf(primaryFico, 'BE').value === 712, 'BE = primary guarantor FICO (not GREATEST)');
 
 // formula cells carry a {r} template
 ok(cellOf(loan, 'AE').type === 'f' && cellOf(loan, 'AE').value === 'IFERROR(X{r}/U{r},"")', 'AE completion % is a formula');
@@ -114,6 +119,7 @@ ok(/<c r="AE3" s="5"><f>IFERROR\(X3\/U3,""\)<\/f><\/c>/.test(sx), 'AE3 formula e
 ok(/<c r="AJ3"[^>]*><f>AF3\+AH3<\/f><\/c>/.test(sx), 'AJ3 total-project-costs formula references row 3');
 ok(/<c r="P3"[^>]*t="inlineStr"><is><t[^>]*>07104<\/t>/.test(sx), 'P3 zip stays text (leading zero preserved)');
 ok(nParts.find((p) => p.name === 'xl/workbook.xml').data.toString('utf8').indexOf('fullCalcOnLoad="1"') > -1, 'workbook recalcs on open');
+ok(/<dimension ref="A1:CD99"\/>/.test(sx), 'dimension not shrunk — keeps the template end column CD (never-shrink on both axes)');
 // the logo drawing + hidden calc tabs are untouched (not in the changed list)
 ok(nParts.find((p) => p.name === 'xl/drawings/drawing1.xml') && nParts.find((p) => p.name === 'xl/media/image1.png'), 'logo drawing + image preserved');
 
