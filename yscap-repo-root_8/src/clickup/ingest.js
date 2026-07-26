@@ -303,6 +303,71 @@ async function healBorrowerFields(borrowerId, b, taskId) {
         [borrowerId, ssnStore.encrypted, ssnStore.last4, identity.ssnHash(b.ssn, cfg.ssnMatchKey)]);
     }
   } catch (e) { console.warn('[ingest] ssn fill skipped:', e.message); }
+
+  // ── A RENAMED CARD RENAMES THE PERSON (owner-reported 2026-07-26) ──────────
+  // "Somebody created a file and named the borrower with the nickname he calls
+  // him — AVI — which created a borrower profile 'Avi'. Then he renamed the task
+  // to the correct name, Abraham, and the profile did not update."
+  //
+  // Root cause: the heal below is strictly FILL-ONLY on the name — it writes a
+  // name only when the stored one is blank or a placeholder. That is right for
+  // an ordinary re-sync (a real stored name must not be clobbered by a stale
+  // card), but it means the FIRST value ever seen is frozen forever, so a
+  // nickname can never be corrected from ClickUp.
+  //
+  // The fix mirrors the DOB human-edit-wins rule exactly: the task's stored
+  // SNAPSHOT is the evidence. If ClickUp's name CHANGED since we last read this
+  // card, a human deliberately renamed it at the source, and that correction
+  // wins. Guarded so it can only ever fix a name, never swap in a stranger:
+  //   • the new name must be real (never a placeholder / "Unknown")
+  //   • a same-SURNAME change (Avi → Abraham Klein) is the nickname-correction
+  //     case → ADOPT, audited
+  //   • a WHOLE-name change is possibly a different human being → never guessed;
+  //     it queues the normal two-sided `first_name` sync review so a person
+  //     decides (that review type is already fully resolvable both ways).
+  // Our own pushes can't trip this: we push the name we already store, so the
+  // stored name equals the new one and nothing fires.
+  try {
+    const first = name(b.first_name), last = name(b.last_name);
+    const newFull = [first, last].filter(Boolean).join(' ').trim();
+    if (taskId && newFull && first) {
+      const cur = (await db.query(`SELECT first_name, last_name FROM borrowers WHERE id=$1`, [borrowerId])).rows[0] || {};
+      const curFull = [cur.first_name, cur.last_name].filter(Boolean).join(' ').trim();
+      const norm = (v) => String(v || '').trim().toLowerCase().replace(/\s+/g, ' ');
+      const isPlaceholder = ['', 'unknown', 'co-borrower', 'unknown unknown'].includes(norm(curFull));
+      if (curFull && !isPlaceholder && norm(curFull) !== norm(newFull)) {
+        const prev = (await db.query(`SELECT snapshot FROM clickup_task_index WHERE task_id=$1`, [taskId])).rows[0];
+        const sb = prev && prev.snapshot && prev.snapshot.borrower ? prev.snapshot.borrower : null;
+        const prevFull = sb ? [sb.first_name, sb.last_name].filter(Boolean).join(' ').trim() : null;
+        // A real rename AT THE SOURCE: the card said something else last time.
+        if (prevFull && norm(prevFull) !== norm(newFull)) {
+          const sameSurname = last && cur.last_name && norm(last) === norm(cur.last_name);
+          if (sameSurname) {
+            await db.query(
+              `UPDATE borrowers SET first_name=$2, last_name=$3, updated_at=now() WHERE id=$1`,
+              [borrowerId, first, last]);
+            await db.query(
+              `INSERT INTO audit_log (actor_kind, actor_id, action, entity_type, entity_id, detail)
+               VALUES ('system',NULL,'clickup_name_edited_at_source','borrower',$1,$2)`,
+              [borrowerId, JSON.stringify({ taskId, from: curFull, to: newFull, was: prevFull,
+                why: 'the ClickUp card was renamed at the source and the surname still matches — a corrected first name (nickname → real name)' })]).catch(() => {});
+            await review.closeStaleReviews({ borrowerId, fieldKey: 'first_name',
+              note: `auto-closed — ClickUp was renamed to "${newFull}" and PILOT adopted it` }).catch(() => {});
+          } else {
+            // Both names changed — that may be a different person on the card.
+            // Never guessed: a human picks the winner.
+            await review.queueReview({
+              borrowerId, taskId, direction: 'inbound', fieldKey: 'first_name',
+              reason: 'clickup_name_changed_at_source',
+              clickupValue: newFull, portalValue: curFull,
+              currentValue: curFull, proposedValue: newFull,
+            }).catch(() => {});
+          }
+        }
+      }
+    }
+  } catch (e) { console.warn('[ingest] name-change check skipped:', e.message); }
+
   try {
     await db.query(
       `UPDATE borrowers SET

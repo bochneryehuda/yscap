@@ -171,6 +171,7 @@ function Overview({ b, onChanged }) {
   // an error — the save offers to keep BOTH profiles rather than dead-ending.
   const [shareOffer, setShareOffer] = useState(false);
   const start = () => setF({
+    firstName: b.first_name || '', lastName: b.last_name || '',
     email: b.email || '', cellPhone: b.cell_phone || '', contactType: b.contact_type || '',
     maritalStatus: b.marital_status || '', citizenship: b.citizenship || '',
     dob: dayInputValue(b.date_of_birth) || '',
@@ -185,6 +186,11 @@ function Overview({ b, onChanged }) {
     setBusy(true); setErr('');
     try {
       await api.staffUpdateBorrower(b.id, {
+        // Send the NAME only when it actually changed — a correction here is a
+        // deliberate human decision, so it also goes out to every ClickUp card
+        // (otherwise the next sync would read the old name straight back).
+        ...(f.firstName !== (b.first_name || '') ? { firstName: f.firstName } : {}),
+        ...(f.lastName !== (b.last_name || '') ? { lastName: f.lastName } : {}),
         email: f.email, cellPhone: f.cellPhone, contactType: f.contactType,
         maritalStatus: f.maritalStatus, citizenship: f.citizenship,
         // Send the DOB only when it actually changed — setting it applies to
@@ -219,6 +225,14 @@ function Overview({ b, onChanged }) {
         <h3 style={{ marginTop: 0 }}>Edit contact & CRM details</h3>
         {err && <div role="alert" className="notice err">{err}</div>}
         <div className="ts-inputs">
+          {/* The legal name is correctable here (owner-directed 2026-07-26): a file
+              opened under a nickname created the profile under that nickname, and
+              there was nowhere to fix it. Saving pushes it to ClickUp too. */}
+          <label><span>First name</span><input className="input" value={f.firstName}
+            onChange={e => setF({ ...f, firstName: e.target.value })}
+            title="Their real legal first name. Saving updates the profile and every linked ClickUp card." /></label>
+          <label><span>Last name</span><input className="input" value={f.lastName}
+            onChange={e => setF({ ...f, lastName: e.target.value })} /></label>
           <label><span>Email</span><EmailInput value={f.email} onChange={v => setF({ ...f, email: v })} /></label>
           <label><span>Cell phone</span><PhoneInput value={f.cellPhone} onChange={v => setF({ ...f, cellPhone: v })} /></label>
           <label><span>Contact type</span>

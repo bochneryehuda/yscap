@@ -5512,15 +5512,36 @@ router.get('/borrowers/:id', async (req, res) => {
   } catch (e) { res.status(500).json({ error: 'server error' }); }
 });
 
-// Edit a borrower's CRM / contact fields (staff, audited). Identity fields that
-// belong to underwriting (SSN, FICO, DOB, legal name) are intentionally NOT
-// editable here — those are corrected on the file. This is contact + CRM metadata.
+// Edit a borrower's CRM / contact fields (staff, audited). SSN and FICO stay off
+// this route (SSN has its own audited endpoint; FICO comes from a credit pull).
+//
+// The legal NAME is editable here as of 2026-07-26 (owner-reported: a file was
+// opened under a nickname — "Avi" — which created the profile under that name,
+// and when the ClickUp card was corrected to "Abraham" the profile stayed wrong
+// with no way to fix it). A name typed here is a deliberate human correction, so
+// it is applied AND pushed out to every linked ClickUp card — the same round-trip
+// the DOB edit already has.
 router.patch('/borrowers/:id', async (req, res) => {
   try {
     if (!(await canSeeBorrower(req))) return res.status(403).json({ error: 'forbidden' });
     const b = req.body || {};
     const sets = [], vals = [req.params.id];
     const put = (col, val) => { vals.push(val); sets.push(`${col}=$${vals.length}`); };
+    // A name correction must be a real name — never a placeholder, never blank
+    // (that would erase the person's identity on every surface at once).
+    if (b.firstName != null || b.lastName != null) {
+      const T = require('../clickup/transforms');
+      const first = b.firstName != null ? String(b.firstName).trim() : null;
+      const last = b.lastName != null ? String(b.lastName).trim() : null;
+      if (first !== null) {
+        if (!first || T.isPlaceholderName(first)) return res.status(400).json({ error: 'a real first name is required' });
+        put('first_name', first);
+      }
+      if (last !== null) {
+        if (T.isPlaceholderName(last)) return res.status(400).json({ error: 'that is not a usable last name' });
+        put('last_name', last || null);
+      }
+    }
     if (b.email != null) put('email', String(b.email).trim().toLowerCase() || null);
     if (b.cellPhone != null) put('cell_phone', String(b.cellPhone).trim() || null);
     if (b.contactType != null) put('contact_type', String(b.contactType).trim() || null);
@@ -5611,6 +5632,9 @@ router.patch('/borrowers/:id', async (req, res) => {
     if (b.email != null) pushKeys.push('email');
     if (b.cellPhone != null) pushKeys.push('cell_phone');
     if (b.currentAddress !== undefined) pushKeys.push('current_address');
+    // A corrected name goes OUT to ClickUp too — otherwise the next inbound pull
+    // would read the old card value straight back over the fix.
+    if (b.firstName != null || b.lastName != null) pushKeys.push('first_name');
     // Housing / employment are BOTH-way mapped ClickUp fields, so a profile edit
     // must reach the ClickUp cards too — otherwise the next inbound pull would
     // read the old ClickUp value back over what was just typed here.

@@ -209,6 +209,48 @@ function dscrCard({ id, folderId, officerEmail, name, email, phone, ssn, dobMs, 
     ok((await db.query(`SELECT count(*)::int n FROM borrower_officers WHERE borrower_id=$1`, [out.borrowerId])).rows[0].n === 2,
       'and exactly the two officer relationships remain');
 
+    // ── A RENAMED CARD RENAMES THE PERSON (owner-reported: "Avi" → "Abraham") ──
+    // The file was opened under a nickname, which created the profile under that
+    // nickname; the card was then corrected and the profile never followed.
+    const nickEmail = `book-nick-${sfx}@test.local`;
+    const nickSsn = String(Math.floor(100000000 + Math.random() * 899999999));
+    const mkNick = (first, last, taskId) => dscrCard({
+      id: taskId, folderId, officerEmail, name: `${first} ${last}`, email: nickEmail,
+      phone: '+17185550101', ssn: nickSsn, dobMs: 969004800000,
+      llc: `Nick Holdings LLC ${sfx}`, ein: '22-3334445',
+      addr: '10 Nickname Rd, Monsey, NY 10952, USA', status: 'self procesing',
+    });
+    const nickTask = `book-nick-task-${sfx}`;
+    const n1 = await ingest.ingestTask(mkNick('Avi', 'Klein', nickTask), {}, { createFile: false, folderId });
+    ok((await db.query(`SELECT first_name FROM borrowers WHERE id=$1`, [n1.borrowerId])).rows[0].first_name === 'Avi',
+      'a file opened under a NICKNAME creates the profile under that nickname');
+    // The SAME card, renamed at the source to the real first name.
+    await ingest.ingestTask(mkNick('Abraham', 'Klein', nickTask), {}, { createFile: false, folderId });
+    const renamed = (await db.query(`SELECT first_name, last_name FROM borrowers WHERE id=$1`, [n1.borrowerId])).rows[0];
+    ok(renamed.first_name === 'Abraham' && renamed.last_name === 'Klein',
+      'renaming the ClickUp card to the REAL name now updates the profile (the reported bug)');
+    ok((await db.query(
+      `SELECT count(*)::int n FROM audit_log WHERE action='clickup_name_edited_at_source' AND entity_id=$1`,
+      [n1.borrowerId])).rows[0].n === 1, 'and the rename is audited, not silent');
+    ok((await db.query(
+      `SELECT count(*)::int n FROM sync_review_queue WHERE task_id=$1 AND field_key='first_name' AND status='open'`,
+      [nickTask])).rows[0].n === 0, 'a plain nickname correction needs no human review');
+
+    // A WHOLE-name change might be a different human — never guessed.
+    await ingest.ingestTask(mkNick('Yosef', 'Stern', nickTask), {}, { createFile: false, folderId });
+    const untouched = (await db.query(`SELECT first_name, last_name FROM borrowers WHERE id=$1`, [n1.borrowerId])).rows[0];
+    ok(untouched.first_name === 'Abraham' && untouched.last_name === 'Klein',
+      'a change of BOTH names never silently renames the person');
+    ok((await db.query(
+      `SELECT count(*)::int n FROM sync_review_queue WHERE task_id=$1 AND field_key='first_name' AND status='open'`,
+      [nickTask])).rows[0].n === 1, 'it queues a review instead, for a human to decide');
+
+    // Re-reading an UNCHANGED card must not churn.
+    await ingest.ingestTask(mkNick('Yosef', 'Stern', nickTask), {}, { createFile: false, folderId });
+    ok((await db.query(
+      `SELECT count(*)::int n FROM sync_review_queue WHERE task_id=$1 AND field_key='first_name' AND status='open'`,
+      [nickTask])).rows[0].n === 1, 're-syncing the same card does not pile up duplicate review cards');
+
     // The closed-deal count is RECOMPUTED (never incremented per re-sync).
     await require('../src/sync/profile-sweep').recountDeals();
     const deals = (await db.query(
@@ -220,7 +262,9 @@ function dscrCard({ id, folderId, officerEmail, name, email, phone, ssn, dobMs, 
   } finally {
     await db.query(`DELETE FROM track_records WHERE borrower_id IN (SELECT id FROM borrowers WHERE email LIKE $1)`, [`book-bo-${sfx}%`]).catch(() => {});
     await db.query(`DELETE FROM clickup_task_index WHERE task_id LIKE $1`, [`book-task%${sfx}`]).catch(() => {});
+    await db.query(`DELETE FROM track_records WHERE borrower_id IN (SELECT id FROM borrowers WHERE email LIKE $1)`, [`book-nick-${sfx}%`]).catch(() => {});
     await db.query(`DELETE FROM borrowers WHERE email LIKE $1`, [`book-bo-${sfx}%`]).catch(() => {});
+    await db.query(`DELETE FROM borrowers WHERE email LIKE $1`, [`book-nick-${sfx}%`]).catch(() => {});
     await db.query(`DELETE FROM staff_users WHERE email LIKE $1`, [`book-lo%-${sfx}@test.local`]).catch(() => {});
     server.close();
     console.log(`test-borrower-book: DB ${dbPass} passed, ${dbFail} failed`);
