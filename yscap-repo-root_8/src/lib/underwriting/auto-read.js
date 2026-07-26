@@ -44,7 +44,12 @@ function selectAutoReadQueue({ documents = [], analyzedIds = new Set(), isReadab
     // was skipped as unidentifiable (reproduced on a real database, 2026-07-26). The slot label is a
     // human's explicit statement of what the document is; it is the same vocabulary as the condition
     // codes, so it resolves through the same map and an unrecognized label still resolves to nothing.
-    const expectedType = expectedDocTypeForCode(d.condition_code) || d.doc_kind
+    // `doc_kind` is gated on being a type the reader OWNS — identical to the file view's derivation.
+    // Ungated, an unreadable doc_kind (a "photo_id", a term sheet) short-circuited the chain and the
+    // slot-label fallback below was never reached, so the desk would say the operating agreement is
+    // on file while the reader silently skipped it — the exact failure this fallback exists to fix.
+    const expectedType = expectedDocTypeForCode(d.condition_code)
+      || (d.doc_kind && isReadable(d.doc_kind) ? d.doc_kind : null)
       || expectedDocTypeForCode(d.slot_label) || null;
     if (!expectedType || !isReadable(expectedType)) continue;
     if (analyzed.has(d.id)) continue; // already read — the analyze-once cache would no-op it anyway

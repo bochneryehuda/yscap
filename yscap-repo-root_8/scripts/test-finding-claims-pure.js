@@ -75,6 +75,26 @@ ok(fee.length === 1,
   `assignment fee over cap still shows once across both documents (got ${fee.length}) — the old DEDUP_ONCE behaviour`);
 ok(fee[0].id, 'and the survivor is a real resolvable row');
 
+// The fileLevel exemption is only safe while every producer is NON-BLOCKING — otherwise it
+// reintroduces the hidden-dealbreaker / stranded-file bug the never-merge-two-persisted rule exists
+// to prevent. That constraint is enforced in code, so ASSERT it rather than trusting the comment:
+// if this family is ever raised to fatal, the merge must refuse.
+const feeIfFatal = FC.dedupeByClaim([
+  { id: 'f1', code: 'assignment_fee_over_cap', severity: 'fatal', field: 'assignment_fee',
+    document_id: 'doc-contract', blocks_ctc: true },
+  { id: 'f2', code: 'assignment_fee_over_cap', severity: 'fatal', field: 'assignment_fee',
+    document_id: 'doc-assignment', blocks_ctc: true },
+]);
+ok(feeIfFatal.length === 2,
+  `a fileLevel family carrying BLOCKING rows refuses to merge (got ${feeIfFatal.length}) — a dealbreaker is never hidden`);
+const feeIfBlocking = FC.dedupeByClaim([
+  { id: 'f1', code: 'assignment_fee_over_cap', severity: 'warning', field: 'assignment_fee',
+    document_id: 'doc-contract', blocksCtc: true },
+  { id: 'f2', code: 'assignment_fee_over_cap', severity: 'warning', field: 'assignment_fee',
+    document_id: 'doc-assignment', blocks_ctc: false },
+]);
+ok(feeIfBlocking.length === 2, 'an explicit blocksCtc on either side is enough to refuse the merge');
+
 // ---------- and the far more important half: it must NOT over-merge ----------
 const unrelated = FC.dedupeByClaim([
   { code: 'title_policy_amount_low', severity: 'warning', subject: 'title' },

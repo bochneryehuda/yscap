@@ -170,8 +170,11 @@ async function syncInvestorGuidelineFindings(client, appId, opts) {
     const retracted = (assessed && !degraded)
       ? await retractStale(client, appId, payloads.map((p) => p.dedupeKey))
       : 0;
-    return { raised, fatal, retracted, assessed, degraded };
-  } catch (_e) { return { raised: 0, fatal: 0, retracted: 0, assessed: false, degraded: false }; }
+    // Name the loaders, not just the fact — "the appraisal read failed" is actionable, "degraded"
+    // is not, and this is what the caller logs when a retraction is skipped.
+    return { raised, fatal, retracted, assessed, degraded,
+      degradedSources: degraded ? desk.degraded.slice() : [] };
+  } catch (_e) { return { raised: 0, fatal: 0, retracted: 0, assessed: false, degraded: false, degradedSources: [] }; }
 }
 
 /**

@@ -146,6 +146,13 @@ function claimOf(f) {
  */
 function isPersisted(f) { return !!(f && f.id); }
 
+/** Would hiding this finding hide a dealbreaker? Fatal severity or an explicit CTC block. */
+function isBlocking(f) {
+  if (!f) return false;
+  if (sevRank(f.severity) === 3) return true;
+  return !!(f.blocks_ctc != null ? f.blocks_ctc : f.blocksCtc);
+}
+
 // Which of two findings for the same claim should SURVIVE as the one shown.
 // Most severe wins; then the one that explains itself best (the owner's complaint was thin
 // reasoning, so prefer the richer text); then the one carrying evidence to open.
@@ -194,7 +201,15 @@ function dedupeByClaim(findings) {
     // separately counted by the clear-to-close gate, so folding one into the other would hide a real
     // dealbreaker and leave the file un-clearable (see isPersisted above). They are two pieces of
     // work — a co-borrower's expired ID is not the borrower's — so both stay on the desk.
-    if (prev.persisted && isPersisted(f) && !FILE_LEVEL_CLAIMS.has(key)) {
+    // The fileLevel exemption is ENFORCED here, not just described above (audit 2026-07-26). The
+    // rule "only for families whose every producer is non-blocking" was a sentence in a comment, and
+    // the two dangers it guards against — a hidden dealbreaker, and a clear-to-close count that
+    // disagrees with the desk — are exactly what two earlier rounds of this audit were about. If
+    // anyone later marks a family fileLevel that has a blocking producer, or raises
+    // assignment_fee_over_cap to fatal (its 15% cap is an owner-frozen rule), the code refuses
+    // rather than silently stranding the file.
+    const mergeableFileLevel = FILE_LEVEL_CLAIMS.has(key) && !isBlocking(f) && !isBlocking(prev.rep);
+    if (prev.persisted && isPersisted(f) && !mergeableFileLevel) {
       passthrough.push({ f, at: order.length });
       order.push(null);
       continue;

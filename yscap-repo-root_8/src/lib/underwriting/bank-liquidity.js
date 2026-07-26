@@ -99,6 +99,65 @@ function accountKey(s) {
   return `~${bank}|${holder}`; // number-less: best effort (leans to under-count, never inflate)
 }
 
+// ---- Folding a NUMBER-LESS statement back into the numbered account it belongs to ----
+//
+// THE OWNER'S DOUBLE-COUNT (2026-07-26, live file): the assets table listed
+//   MOSES WEIL / Vanderbilt ••0120   $88,454
+//   MOSES WEIL / Vanderbilt          $89,474   ← same account, the account number just wasn't read
+// and summed BOTH. Their words: *"You're counting the same assets twice, which is a major major
+// major major issue."* The per-account collapse above was working exactly as designed — these were
+// two different KEYS, because one statement's number came through and the other's did not. So the
+// account number being unreadable on ONE month silently inflated the borrower's liquidity by a
+// whole month's balance. Inflating liquidity is the one direction this must never fail in: it can
+// clear a shortfall that is real.
+//
+// So a number-less statement is no longer assumed to be its own account. If exactly one NUMBERED
+// account on the file has the same bank and the same holder, it is the same account and folds in.
+// Ambiguity is resolved DOWNWARD, never upward: if two numbered accounts match, the balance is
+// already represented by one of them and adding it again could only inflate — so it is not counted,
+// and the breakdown says so.
+
+// Bank names drift month to month ("Chase" / "JPMorgan Chase Bank, N.A." / "Chase Bank"), so compare
+// on a stripped stem and accept a prefix match. Legal-form noise is removed rather than matched on,
+// because it is exactly the part that drifts.
+const BANK_NOISE = /\b(bank|banking|na|n a|national association|trust|company|co|corp|corporation|inc|incorporated|fsb|federal|savings|credit union|cu|financial|services|group|usa|us)\b/g;
+function bankStem(s) {
+  return String(s || '').toLowerCase().replace(/[^a-z0-9\s]/g, ' ').replace(/\s+/g, ' ').trim()
+    .replace(BANK_NOISE, ' ').replace(/\s+/g, ' ').trim();
+}
+function sameBank(a, b) {
+  const x = bankStem(a), y = bankStem(b);
+  if (!x || !y) return false;              // a missing bank name proves nothing — never fold on it
+  if (x === y) return true;
+  // Compare WHOLE WORDS, not substrings. "Chase" is the same bank as "JPMorgan Chase Bank, N.A."
+  // because {chase} is contained in {jpmorgan, chase} — but "Citi" is NOT "Citizens", which a
+  // prefix or substring test would happily merge into one account. The shorter name's words must
+  // all appear in the longer one.
+  const xs = new Set(x.split(' ').filter(Boolean));
+  const ys = new Set(y.split(' ').filter(Boolean));
+  if (!xs.size || !ys.size) return false;
+  const [small, big] = xs.size <= ys.size ? [xs, ys] : [ys, xs];
+  for (const w of small) if (!big.has(w)) return false;
+  return true;
+}
+function holderStem(s) {
+  return String(s || '').toLowerCase().replace(/[^a-z0-9\s]/g, ' ').replace(/\s+/g, ' ').trim();
+}
+function sameHolder(a, b) {
+  const x = holderStem(a), y = holderStem(b);
+  if (!x || !y) return false;
+  if (x === y) return true;
+  // "MOSES WEIL" vs "WEIL MOSES" vs "MOSES A WEIL" — the same person, printed differently. Compare
+  // as an unordered word set with containment, so a middle initial or a surname-first bank format
+  // does not split one account into two.
+  const xs = new Set(x.split(' ').filter((w) => w.length > 1));
+  const ys = new Set(y.split(' ').filter((w) => w.length > 1));
+  if (!xs.size || !ys.size) return false;
+  const [small, big] = xs.size <= ys.size ? [xs, ys] : [ys, xs];
+  for (const w of small) if (!big.has(w)) return false;
+  return true;
+}
+
 /**
  * @param {{borrower?, vestingName?, entityNames?}} ctx  the file view (same shape loadContext returns)
  * @param {Array<{doc_type,document_id,fields}>} extractions  current file extractions
@@ -142,6 +201,40 @@ function assessBankLiquidity(ctx = {}, extractions = [], opts = {}) {
       repEnd: better ? (rank[0] === -Infinity ? null : rank[0]) : prev.repEnd,
       rank: better ? rank : prev.rank,
       count: prev.count + 1,
+    });
+  }
+
+  // FOLD number-less statements into the numbered account they belong to (see sameBank/sameHolder
+  // above — the owner's Vanderbilt double-count). Done AFTER grouping so it works on whole accounts
+  // rather than statement-by-statement, and so the fold can see every numbered account on the file.
+  const numbered = [];
+  for (const [key, g] of byAccount) if (key.startsWith('#')) numbered.push({ key, g });
+  const notCountedTwice = [];   // number-less groups that were folded away, for the breakdown
+  for (const [key, g] of [...byAccount]) {
+    if (!key.startsWith('~')) continue;
+    const f = g.rep.f;
+    const matches = numbered.filter(({ g: ng }) =>
+      sameBank(ng.rep.f.bankName, f.bankName) && sameHolder(ng.rep.f.accountHolderName, f.accountHolderName));
+    if (!matches.length) continue;                       // a genuinely separate un-numbered account
+    byAccount.delete(key);
+    const holder = f.accountHolderName || '(unnamed)';
+    notCountedTwice.push({ holder, bankName: f.bankName || null, ending: num(f.closingBalance),
+      matchedAccounts: matches.map(({ g: ng }) => maskAcct(ng.rep.f)).filter(Boolean),
+      ambiguous: matches.length > 1 });
+    if (matches.length > 1) continue;                    // ambiguous → resolve DOWNWARD, count nothing
+    // Exactly one numbered account matches: this IS that account, so its statement joins the group
+    // and competes normally to be the counted (latest) month.
+    const target = matches[0].g;
+    const better = rankGt(g.rank, target.rank);
+    // When the folded statement is the LATER month it becomes the one counted — so its balance did
+    // not "go uncounted", the two statements simply merged. Saying "not counted again" about the
+    // very number shown in the total would read as an error.
+    notCountedTwice[notCountedTwice.length - 1].becameRepresentative = better;
+    byAccount.set(matches[0].key, {
+      rep: better ? g.rep : target.rep,
+      repEnd: better ? g.repEnd : target.repEnd,
+      rank: better ? g.rank : target.rank,
+      count: target.count + g.count,
     });
   }
 
@@ -200,8 +293,19 @@ function assessBankLiquidity(ctx = {}, extractions = [], opts = {}) {
       .filter((a) => a.tied && a.ending != null)
       .map((a) => `  · ${a.holder}${a.bankName ? ` (${a.bankName})` : ''}: ${money(a.ending)}${a.statementCount > 1 ? ` — latest of ${a.statementCount} months on file${a.countedPeriod ? `, ${a.countedPeriod}` : ''}` : ''}`)
       .join('\n');
+    // Say OUT LOUD when a statement was recognized as an account already on the table. The owner has
+    // to be able to follow the arithmetic — a balance that silently vanishes from the list is just as
+    // confusing as one counted twice, and this is the exact spot they were reading when they found
+    // the Vanderbilt double-count.
+    const foldedLines = (notCountedTwice || [])
+      .filter((n) => !n.becameRepresentative)
+      .map((n) => `  · ${n.holder}${n.bankName ? ` (${n.bankName})` : ''}: ${money(n.ending)} — ${n.ambiguous
+        ? `could not be matched to one account (${n.matchedAccounts.join(' / ') || 'several'}), so it was NOT added`
+        : `the same account as ${n.matchedAccounts.join(', ') || 'one above'} (its number was not readable), so it is not added again`}`)
+      .join('\n');
     const mathNote = tiedLines
       ? ` Counted (latest statement per account, no month counted twice):\n${tiedLines}\n  = ${money(qualifyingTotal)} total.`
+        + (foldedLines ? `\n Not counted again:\n${foldedLines}` : '')
       : '';
     findings.push({
       source: 'bank_statement', code: 'bank_liquidity_short', severity: 'warning', status: 'open',
@@ -221,6 +325,10 @@ function assessBankLiquidity(ctx = {}, extractions = [], opts = {}) {
     shortfall,
     statementsCount: statements.length,
     accountsCount: accounts.length,
+    // Statements whose account number was unreadable and that were recognized as an account already
+    // on the table. Surfaced so the breakdown can SAY a balance was deliberately not added again,
+    // rather than a number quietly disappearing — the owner has to be able to see the arithmetic.
+    notCountedTwice,
   };
 }
 
@@ -241,4 +349,4 @@ async function readRequiredLiquidity(client, appId) {
   } catch (_) { return null; }
 }
 
-module.exports = { assessBankLiquidity, readRequiredLiquidity, _internals: { accountKey, periodEndOf } };
+module.exports = { assessBankLiquidity, readRequiredLiquidity, _internals: { accountKey, periodEndOf, sameBank, sameHolder, bankStem } };

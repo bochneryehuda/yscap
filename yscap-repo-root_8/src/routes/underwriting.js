@@ -602,8 +602,18 @@ router.get('/:appId', async (req, res, next) => {
           // so they actually surface (a fatal notifies the LO/processor). The
           // desk stays quiet on OPEN conditions. Advisory: records ai_suggestions,
           // posts/clears nothing, touches no frozen number.
-          await step(() => require('../lib/underwriting/investor-guidelines/desk-sync')
+          const isgSync = await step(() => require('../lib/underwriting/investor-guidelines/desk-sync')
             .syncInvestorGuidelineFindings(c, app.id));
+          // A SKIPPED RETRACTION MUST LEAVE A TRACE (audit 2026-07-26). The retraction is what keeps
+          // a corrected rule from leaving stale notices open forever — the owner's original
+          // complaint — and it is now gated on the desk having read the file cleanly. That gate is
+          // the right call, but silent: if a loader started failing on every run, retraction would
+          // be globally dead and the owner would see the exact same stale findings again with
+          // nothing anywhere saying why. One line turns a silent regression into a visible one.
+          if (isgSync && isgSync.degraded) {
+            console.warn('[isg] retraction skipped for %s — the guideline desk could not read: %s',
+              app.id, (isgSync.degradedSources || []).join(', ') || 'unknown');
+          }
           // #199 — party collusion (independence-required parties sharing an
           // identity) + double-pledged collateral (this property on another live
           // loan). Advisory — records ai_suggestions, never auto-blocks.
@@ -2570,11 +2580,6 @@ router.post('/ai-admin/questions/:id/answer', requirePermission('promote_trainin
 module.exports = router;
 module.exports.analyzeOneDocument = analyzeOneDocument;
 module.exports.buildAutoReadQueue = buildAutoReadQueue;
-// Exported for the DB-gated regression test: `fileDoc` is the gate that decides whether a document
-// the queue selected can actually be READ, and the vesting-entity branch it grew (2026-07-26) is
-// only provable against a real schema. Same precedent as `fileForById` below.
-module.exports.fileDocForTest = fileDoc;
-
 module.exports.fileForById = async function fileForById(appId) {
   const r = await db.query(
     `SELECT id, borrower_id, llc_id, status, deleted_at FROM applications WHERE id=$1 AND deleted_at IS NULL`, [appId]);

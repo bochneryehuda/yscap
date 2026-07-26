@@ -26,7 +26,7 @@ const db = require(R + '/src/db');
 const { selectAutoReadQueue } = require(R + '/src/lib/underwriting/auto-read');
 const { expectedDocTypeForCode } = require(R + '/src/lib/underwriting/condition-map');
 const registry = require(R + '/src/lib/underwriting/registry');
-const { fileDocForTest } = require(R + '/src/routes/underwriting');
+const { fileDocById } = require(R + '/src/routes/underwriting');   // the route's own resolver, not a copy
 
 let pass = 0, fail = 0;
 const ok = (c, m) => { if (c) { pass++; } else { fail++; console.log('  FAIL:', m); } };
@@ -84,7 +84,7 @@ async function queueFor(app) {
 
 async function readableCount(app, queue) {
   let n = 0;
-  for (const item of queue) if (await fileDocForTest(app, item.id)) n++;
+  for (const item of queue) if (await fileDocById(app, item.id)) n++;
   return n;
 }
 
@@ -122,10 +122,10 @@ async function readableCount(app, queue) {
   const other = await build({});
   const rOther = await queueFor(other);
   const strangerDoc = rOther.queue[0];
-  ok(!(await fileDocForTest(a1, strangerDoc.id)),
+  ok(!(await fileDocById(a1, strangerDoc.id)),
     'a DIFFERENT file\'s entity document is still not readable — the new branch is scoped to this file\'s own entity');
   // …and a file with NO entity at all can't reach entity documents through a null llc_id.
-  ok(!(await fileDocForTest({ id: a1.id, borrower_id: a1.borrower_id, llc_id: null }, strangerDoc.id)),
+  ok(!(await fileDocById({ id: a1.id, borrower_id: a1.borrower_id, llc_id: null }, strangerDoc.id)),
     'a file with no vesting entity resolves nothing through the entity branch (a null llc_id matches nothing)');
 
   console.log(`test-llc-documents-readable-db: ${pass} passed, ${fail} failed`);
