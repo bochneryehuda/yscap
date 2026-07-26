@@ -59,6 +59,7 @@ function buildOurValues(app, quote, llcName) {
     // identity / program
     ys_loan_number: nz(a.ys_loan_number),
     property_type: nz(a.property_type),
+    units: nz(a.units),
     deal_type: deriveDealType(a.program, a.loan_type),
     exit_plan: undefined, // no column — reference-only
     loan_to_be_vested: a.llc_id ? 'Entity' : (a.borrower_id ? 'Individual' : undefined),
@@ -173,27 +174,167 @@ function compareAll(ours, theirs, resolutions) {
 }
 
 // Roll the fields up into the numbers the panel + the term-sheet gate need.
+// Owner-directed 2026-07-26: this section PASSES only when EVERY compared field
+// is an EXACT MATCH. So an advisory mismatch, a "no data to compare"
+// (incomparable — staff must enter it in Encompass), AND an accepted-but-still-
+// differing resolution ALL count as NOT PASSING and hold the term sheet.
+// Reference fields are the only ones never compared.
 function summarize(fields) {
   let compared = 0, matched = 0, mismatched = 0, incomparable = 0;
   let openBlocking = 0, openAdvisory = 0, resolved = 0;
-  const openBlockingKeys = [];
+  const notPassingKeys = [];
   for (const f of fields) {
     if (f.compare === 'reference' || f.status === 'reference') continue;
     compared += 1;
-    if (f.status === 'match') matched += 1;
-    else if (f.status === 'incomparable') incomparable += 1;
+    if (f.status === 'match') { matched += 1; continue; }
+    notPassingKeys.push(f.key);                    // anything that is not an exact match
+    if (f.status === 'incomparable') incomparable += 1;
     else if (f.status === 'mismatch') {
       mismatched += 1;
-      if (!f.open) resolved += 1;
-      else if (f.gate === map.GATE.BLOCK) { openBlocking += 1; openBlockingKeys.push(f.key); }
+      if (!f.open) resolved += 1;                  // accepted resolution (values still differ) — still not a match
       else if (f.gate === map.GATE.ADVISORY) openAdvisory += 1;
+      else openBlocking += 1;
     }
   }
   return {
     compared, matched, mismatched, incomparable, resolved,
-    openBlocking, openAdvisory, openBlockingKeys,
-    clear: openBlocking === 0, // the term-sheet gate (WO-E) reads this
+    openBlocking, openAdvisory,
+    notPassing: notPassingKeys.length,
+    notPassingKeys,
+    // Back-compat alias: the term-sheet gate + the register override now name
+    // EVERY not-passing field (mismatch, advisory, or no-data), not just the
+    // block-gate mismatches.
+    openBlockingKeys: notPassingKeys,
+    clear: matched === compared, // the term-sheet gate (WO-E) reads this — pass = everything matches
   };
+}
+
+// ── Identity + subject-address comparison (owner-directed 2026-07-26) ────────
+// Surface borrower identity (name / DOB / email / phone) + the subject PROPERTY
+// address in the SAME comparison, matched. Read from the stored Encompass loan
+// (encompass_extra) — which keeps name/DOB/email/phone/subject-address but
+// SCRUBS the SSN (PII governance), so SSN is a separate PII-safe hash compare
+// (added next). These rows are compare-only — we NEVER overwrite borrower PII
+// from a read — and BLOCK-gated (must match to pass). Pure — no DB.
+function _digits(v) { return String(v == null ? '' : v).replace(/\D/g, ''); }
+function _addrStr(a) {
+  if (a == null) return '';
+  if (typeof a === 'string') return a.trim();
+  if (typeof a !== 'object') return String(a);
+  const street = a.street || a.line1 || a.address1 || a.streetAddress || a.addressStreetLine1 || a.address || '';
+  const parts = [street, a.city, a.state, (a.zip || a.postalCode || a.zipCode || a.postal_code)];
+  return parts.map((x) => (x == null ? '' : String(x).trim())).filter((x) => x !== '').join(' ');
+}
+function _named(p) { return !!(p && ((p.firstName && String(p.firstName).trim()) || (p.lastName && String(p.lastName).trim()))); }
+function compareIdentity(row, loan) {
+  const N = map._internals;
+  const apps = (loan && Array.isArray(loan.applications)) ? loan.applications : [];
+  const app0 = apps[0] || null;
+  const bor = (app0 && app0.borrower) ? app0.borrower : {};
+  // Encompass models a second person TWO ways (owner-directed 2026-07-26): as the
+  // CO-BORROWER in the same borrower pair (applications[0].coBorrower), OR as a
+  // SECOND borrower pair (applications[1].borrower). Read whichever actually
+  // carries the co-borrower — same-pair coBorrower first, else the 2nd pair's
+  // borrower — so our single co_borrower_id matches either representation.
+  const coInPair = (app0 && app0.coBorrower) ? app0.coBorrower : {};
+  const coInSecondPair = (apps[1] && apps[1].borrower) ? apps[1].borrower : {};
+  const coBor = _named(coInPair) ? coInPair : (_named(coInSecondPair) ? coInSecondPair : coInPair);
+  const prop = (loan && loan.property) ? loan.property : {};
+  const out = [];
+  const push = (key, label, compare, ours, theirs) => {
+    const norm = (v) => {
+      if (v == null || v === '') return null;
+      if (compare === 'name') return N.normName(v);
+      if (compare === 'date') return N.normDate(v);
+      if (compare === 'phone') { const d = _digits(v); return d === '' ? null : d.slice(-10); }
+      return N.normText(v); // email / address / text
+    };
+    const oursNorm = norm(ours);
+    const theirsNorm = norm(theirs);
+    let status = 'incomparable';
+    if (oursNorm != null && oursNorm !== '' && theirsNorm != null && theirsNorm !== '') {
+      status = oursNorm === theirsNorm ? 'match' : 'mismatch';
+    }
+    out.push({
+      key, encompassFieldId: null, label, category: 'identity', compare,
+      gate: map.GATE.BLOCK,
+      ours: (ours == null || ours === '') ? null : String(ours),
+      theirs: (theirs == null || theirs === '') ? null : String(theirs),
+      oursNorm, theirsNorm, status,
+      writable: false, open: status === 'mismatch', resolution: null,
+    });
+  };
+  // SSN compare — owner-directed 2026-07-26. Compared by the ONE-WAY keyed HMAC
+  // hash ONLY (our borrowers.ssn_hash vs the hash the reader stored for the
+  // Encompass party); the raw SSN is NEVER read, printed, or stored on either
+  // side. Displayed masked (last-4 only). BLOCK-gated + compare-only (a read
+  // never overwrites a borrower SSN). "No data to compare" (a hash missing on
+  // either side) holds the term sheet, exactly like the other identity fields.
+  const _mask4 = (l4) => { const d = _digits(l4); return d ? `•••-••-${d.slice(-4)}` : null; };
+  const pushSsn = (key, label, ourHash, ourLast4, theirHash, theirLast4) => {
+    let status = 'incomparable';
+    if (ourHash && theirHash) status = ourHash === theirHash ? 'match' : 'mismatch';
+    out.push({
+      key, encompassFieldId: null, label, category: 'identity', compare: 'ssn',
+      gate: map.GATE.BLOCK,
+      ours: _mask4(ourLast4), theirs: _mask4(theirLast4),
+      // presence flags only — the hashes themselves never leave the server
+      oursNorm: ourHash ? 'present' : null, theirsNorm: theirHash ? 'present' : null,
+      status, writable: false, open: status === 'mismatch', resolution: null,
+    });
+  };
+
+  // Primary borrower + subject property address.
+  const ourName = [row.b_first_name, row.b_last_name].filter((x) => x && String(x).trim()).join(' ').trim();
+  const theirName = [bor.firstName, bor.lastName].filter((x) => x && String(x).trim()).join(' ').trim();
+  push('id_borrower_name', 'Borrower name', 'name', ourName || null, theirName || null);
+  push('id_dob', 'Date of birth', 'date', row.b_dob || null, bor.birthDate || null);
+  push('id_email', 'Email', 'email', row.b_email || null, bor.emailAddressText || null);
+  push('id_phone', 'Phone', 'phone', row.b_cell_phone || null, (bor.mobilePhone || bor.homePhoneNumber) || null);
+  // SSN is surfaced only when at least ONE side actually has one. A file with no
+  // SSN anywhere (common on early/legacy files — SSN is often not captured by
+  // term-sheet time) does NOT get a blocking "no data" SSN row; but the moment an
+  // SSN exists on either side it must MATCH (a one-sided SSN stays incomparable →
+  // not-passing → "enter it in the other system"), so the compare keeps its full
+  // verification power without over-blocking a genuinely SSN-less file.
+  if (row.b_ssn_hash || bor._ssnHash) {
+    pushSsn('id_ssn', 'Social Security number', row.b_ssn_hash || null, row.b_ssn_last4 || null, bor._ssnHash || null, bor._ssnLast4 || null);
+  }
+  push('id_property_address', 'Property address', 'address', _addrStr(row.property_address), _addrStr(prop));
+
+  // Co-borrower — surfaced ONLY when a co-borrower exists on EITHER side (our
+  // co_borrower_id, or an Encompass co-borrower / 2nd-pair borrower). A single-
+  // borrower file has none → we surface nothing (never a false "no data" block).
+  // A co-borrower present on only one side stays incomparable → not-passing, which
+  // correctly flags that the two systems disagree on the co-borrower.
+  const ourCoName = [row.cb_first_name, row.cb_last_name].filter((x) => x && String(x).trim()).join(' ').trim();
+  const theirCoName = [coBor.firstName, coBor.lastName].filter((x) => x && String(x).trim()).join(' ').trim();
+  const hasCo = !!(row.co_borrower_id || ourCoName || theirCoName || coBor.birthDate || coBor.emailAddressText || coBor.mobilePhone || coBor.homePhoneNumber || coBor._ssnHash || row.cb_ssn_hash);
+  if (hasCo) {
+    push('id_coborrower_name', 'Co-borrower name', 'name', ourCoName || null, theirCoName || null);
+    push('id_coborrower_dob', 'Co-borrower date of birth', 'date', row.cb_dob || null, coBor.birthDate || null);
+    push('id_coborrower_email', 'Co-borrower email', 'email', row.cb_email || null, coBor.emailAddressText || null);
+    push('id_coborrower_phone', 'Co-borrower phone', 'phone', row.cb_cell_phone || null, (coBor.mobilePhone || coBor.homePhoneNumber) || null);
+    if (row.cb_ssn_hash || coBor._ssnHash) {
+      pushSsn('id_coborrower_ssn', 'Co-borrower Social Security number', row.cb_ssn_hash || null, row.cb_ssn_last4 || null, coBor._ssnHash || null, coBor._ssnLast4 || null);
+    }
+  }
+  return out;
+}
+
+// Our-side SSN → the keyed HMAC hash used for the PII-safe compare. Prefers the
+// stored borrowers.ssn_hash; falls back to deriving it from the encrypted SSN so
+// a borrower with an SSN on file but a null hash column is still comparable. The
+// decrypted digits live only inside this call (never stored/returned/logged);
+// only the one-way hash escapes. Returns null when there is no usable SSN.
+function _effectiveSsnHash(storedHash, encrypted) {
+  if (storedHash) return storedHash;
+  if (!encrypted) return null;
+  try {
+    const digits = require('../lib/crypto').decryptSSN(encrypted);
+    if (!digits) return null;
+    return require('../clickup/identity').ssnHash(digits, require('../config').ssnMatchKey);
+  } catch (_) { return null; }
 }
 
 // ── DB-backed: compute the live findings for one application ────────────────
@@ -208,10 +349,19 @@ async function computeFindings(appId, dbc) {
             a.loan_amount, a.purchase_price, a.underlying_contract_price, a.assignment_fee,
             a.rehab_budget, a.as_is_value, a.arv, a.ltv, a.rate_pct, a.term, a.maturity_date, a.funded_date,
             a.program, a.loan_type, a.rehab_type, a.accrual_type, a.property_type,
+            a.units, a.property_address, a.co_borrower_id,
             a.requested_exp_flips, a.requested_exp_holds, a.requested_exp_ground,
-            l.llc_name AS llc_name
+            l.llc_name AS llc_name,
+            b.first_name AS b_first_name, b.last_name AS b_last_name,
+            b.date_of_birth AS b_dob, b.email AS b_email, b.cell_phone AS b_cell_phone,
+            b.ssn_hash AS b_ssn_hash, b.ssn_last4 AS b_ssn_last4, b.ssn_encrypted AS b_ssn_encrypted,
+            cb.first_name AS cb_first_name, cb.last_name AS cb_last_name,
+            cb.date_of_birth AS cb_dob, cb.email AS cb_email, cb.cell_phone AS cb_cell_phone,
+            cb.ssn_hash AS cb_ssn_hash, cb.ssn_last4 AS cb_ssn_last4, cb.ssn_encrypted AS cb_ssn_encrypted
        FROM applications a
        LEFT JOIN llcs l ON l.id = a.llc_id
+       LEFT JOIN borrowers b ON b.id = a.borrower_id
+       LEFT JOIN borrowers cb ON cb.id = a.co_borrower_id
       WHERE a.id = $1 AND a.deleted_at IS NULL
       LIMIT 1`, [appId])).rows[0];
   if (!row) return { found: false, hasLoan: false, fields: [], summary: summarize([]) };
@@ -229,7 +379,21 @@ async function computeFindings(appId, dbc) {
   const loan = row.encompass_extra || null;
   const theirs = loan ? map.extractFields(loan) : {};
   const ours = buildOurValues(row, quote ? quote.quote : null, row.llc_name);
-  const { fields, summary } = compareAll(ours, theirs, resolutions);
+  const { fields: econFields } = compareAll(ours, theirs, resolutions);
+  // Effective SSN hash for each of our parties — prefer the stored
+  // borrowers.ssn_hash; if it is missing (a write path that filled ssn_encrypted
+  // but not the hash column) derive it from the encrypted SSN so an on-file SSN
+  // never spuriously reads as "no data to compare". PII-safe: the plaintext is
+  // decrypted in memory only, never stored/returned/logged — we keep just the
+  // one-way keyed HMAC (the SAME hash the Encompass side is stored with).
+  row.b_ssn_hash = _effectiveSsnHash(row.b_ssn_hash, row.b_ssn_encrypted);
+  row.cb_ssn_hash = _effectiveSsnHash(row.cb_ssn_hash, row.cb_ssn_encrypted);
+  // Identity + subject-address rows (owner-directed 2026-07-26) — only when a
+  // loan is pulled. They are compare-only + BLOCK-gated and fold into the same
+  // summary so "everything matches" includes them.
+  const idFields = loan ? compareIdentity(row, loan) : [];
+  const fields = econFields.concat(idFields);
+  const summary = summarize(fields);
 
   // Attach the resolver metadata onto resolved fields for the panel.
   for (const f of fields) {
@@ -258,7 +422,14 @@ async function isClear(appId, dbc) {
   const c = await computeFindings(appId, dbc);
   // A file with no Encompass loan pulled is NOT "blocked" by Encompass — the gate
   // only blocks on an OPEN blocking mismatch against a loan we actually have.
-  return { clear: c.summary.clear, hasLoan: c.hasLoan, openBlocking: c.summary.openBlocking, openBlockingKeys: c.summary.openBlockingKeys };
+  // At the GATE BOUNDARY `openBlocking` is the count of EVERY not-passing field
+  // (mismatch, advisory, OR "no data to compare"), i.e. exactly the length of
+  // `openBlockingKeys`. It deliberately does NOT use `summary.openBlocking`, which
+  // counts only the open block-gate MISMATCHES and would print "0 fields don't
+  // match" in precisely the advisory / no-data / accepted-but-differing cases the
+  // owner-directed match-all gate blocks on (2026-07-26).
+  const keys = c.summary.openBlockingKeys || [];
+  return { clear: c.summary.clear, hasLoan: c.hasLoan, openBlocking: keys.length, openBlockingKeys: keys };
 }
 
 // WO-E — the term-sheet issuance gate decision. `block` is true ONLY when there
@@ -270,7 +441,10 @@ async function isClear(appId, dbc) {
 async function issuanceGate(appId, dbc) {
   try {
     const g = await isClear(appId, dbc);
-    return { block: !!(g.hasLoan && !g.clear), hasLoan: g.hasLoan, openBlocking: g.openBlocking || 0, openBlockingKeys: g.openBlockingKeys || [] };
+    const keys = g.openBlockingKeys || [];
+    // `openBlocking` == keys.length so every display/log site prints the true
+    // number of fields that don't agree (never an under-count).
+    return { block: !!(g.hasLoan && !g.clear), hasLoan: g.hasLoan, openBlocking: keys.length, openBlockingKeys: keys };
   } catch (_) {
     return { block: false, hasLoan: false, openBlocking: 0, openBlockingKeys: [] };
   }
