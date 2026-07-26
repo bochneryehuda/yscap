@@ -207,7 +207,45 @@ const ok = (n) => { console.log(`  ok  ${n}`); passed++; };
       ok('a rate-and-term refi → is_cash_out false, proceeds omitted (escalation stays silent)');
     }
 
-    console.log(`\ngatherInvestorInputs (#250 flood + #251 exp + #252 stale + #253 cash-out + #232) db — ${passed} checks passed`);
+    // 7. EMCAP rental signals (2026-07-26) — is_fix_hold from the real strategy columns,
+    //    loan_estimated_rent from applications.estimated_rental_income (db/311),
+    //    appraisal_is_1025 from appraisals.form_type, appraisal_market_rent from
+    //    est_market_monthly_rent (else the summed appraisal_units.market_rent). Real columns.
+    await pool.query(`UPDATE applications SET program='Fix & Hold', loan_type='Purchase', rehab_type='moderate', estimated_rental_income=2500 WHERE id=$1`, [aId]);
+    await pool.query(`UPDATE appraisals SET superseded=true WHERE application_id=$1 AND superseded=false`, [aId]);
+    await pool.query(
+      `INSERT INTO appraisals (application_id, superseded, imported_at, form_type, est_market_monthly_rent)
+         VALUES ($1, false, now(), 'FNM1004', 2500)`, [aId]);
+    {
+      const out = await gatherInvestorInputs(aId, db);
+      assert.strictEqual(out.is_fix_hold, true, 'Fix & Hold program → is_fix_hold true');
+      assert.strictEqual(out.loan_estimated_rent, 2500, 'loan_estimated_rent reads applications.estimated_rental_income (db/311)');
+      assert.strictEqual(out.appraisal_is_1025, false, 'FNM1004 → appraisal_is_1025 false');
+      assert.strictEqual(out.appraisal_market_rent, 2500, 'appraisal_market_rent reads est_market_monthly_rent');
+      ok('EMCAP: is_fix_hold + loan_estimated_rent + appraisal 1025/market-rent from real columns');
+    }
+    // A 1025 with a blank subject rent → appraisal_is_1025 true, and the summed per-unit
+    // market rents drive appraisal_market_rent (the 1025 rent schedule).
+    await pool.query(`UPDATE appraisals SET superseded=true WHERE application_id=$1 AND superseded=false`, [aId]);
+    const em1025 = (await pool.query(
+      `INSERT INTO appraisals (application_id, superseded, imported_at, form_type, est_market_monthly_rent)
+         VALUES ($1, false, now(), 'FNM1025', NULL) RETURNING id`, [aId])).rows[0].id;
+    await pool.query(`INSERT INTO appraisal_units (appraisal_id, unit_seq, market_rent) VALUES ($1,'1',1200),($1,'2',1300)`, [em1025]);
+    {
+      const out = await gatherInvestorInputs(aId, db);
+      assert.strictEqual(out.appraisal_is_1025, true, 'FNM1025 → appraisal_is_1025 true');
+      assert.strictEqual(out.appraisal_market_rent, 2500, 'summed per-unit market rents (1200+1300) drive appraisal_market_rent when the subject figure is blank');
+      ok('EMCAP: a 1025 sets appraisal_is_1025 + sums per-unit market rents for the rent match');
+    }
+    // A non-fix-hold strategy → is_fix_hold false (the 1007 rule is inert).
+    await pool.query(`UPDATE applications SET program='Fix & Flip', rehab_type='heavy' WHERE id=$1`, [aId]);
+    {
+      const out = await gatherInvestorInputs(aId, db);
+      assert.strictEqual(out.is_fix_hold, false, 'Fix & Flip → is_fix_hold false');
+      ok('a non-fix-hold strategy sets is_fix_hold false');
+    }
+
+    console.log(`\ngatherInvestorInputs (#250 flood + #251 exp + #252 stale + #253 cash-out + EMCAP + #232) db — ${passed} checks passed`);
   } finally {
     if (aId) await pool.query(`DELETE FROM applications WHERE id=$1`, [aId]).catch(() => {}); // cascades appraisals + credit_reports
     if (bId) await pool.query(`DELETE FROM borrowers WHERE id=$1`, [bId]).catch(() => {});

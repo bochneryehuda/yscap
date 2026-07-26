@@ -6714,6 +6714,10 @@ router.post('/applications/:id/closing-date', async (req, res) => {
 // changes enqueue a scoped ClickUp push. Behind the /applications/:id guard.
 const COMPLETE_APP_FIELDS = { program: 'text', loan_type: 'text', property_type: 'text',
   purchase_price: 'money', as_is_value: 'money', arv: 'money', rehab_budget: 'money',
+  // Estimated (monthly) rental income (applications.estimated_rental_income, db/311).
+  // STAFF-ONLY; required for completeness only on an EMCAP fix-and-hold loan (see
+  // applicationCompleteness) but always writable here so staff can fill it inline.
+  estimated_rental_income: 'money',
   // Note buyer / capital partner (applications.lender). Normally fed from ClickUp,
   // but staff can fill/correct it here when ClickUp doesn't feed it or is empty —
   // it's part of application completeness (owner-directed 2026-07-20). STAFF-ONLY;
@@ -7075,13 +7079,23 @@ router.post('/applications/:id/internal-status', async (req, res) => {
 // items in plain language so the Submit panel can show exactly what's needed.
 async function applicationCompleteness(appId) {
   const r = await db.query(
-    `SELECT a.program, a.loan_type, a.property_type, b.cell_phone, b.date_of_birth, b.fico
+    `SELECT a.program, a.loan_type, a.rehab_type, a.property_type, a.lender, a.estimated_rental_income,
+            b.cell_phone, b.date_of_birth, b.fico
        FROM applications a JOIN borrowers b ON b.id = a.borrower_id WHERE a.id = $1`, [appId]);
   const row = r.rows[0] || {};
   const need = [
     [row.program, 'Program'], [row.loan_type, 'Loan type'], [row.property_type, 'Property type'],
     [row.cell_phone, 'Borrower phone'], [row.date_of_birth, 'Borrower date of birth'], [row.fico, 'Borrower FICO score'],
   ];
+  // EMCAP prices the rental cash flow, so a FIX-AND-HOLD loan sold to EMCAP must
+  // carry an estimated (monthly) rental income before it's complete (owner-directed
+  // 2026-07-26). Only this note buyer + strategy adds the requirement; every other
+  // file is unaffected.
+  const buyer = conditionRegistry.normNoteBuyer(row.lender);
+  const strategy = conditionRegistry.normStrategy([row.program, row.loan_type, row.rehab_type].filter(Boolean).join(' '));
+  if (buyer === 'emcap' && strategy === 'fix_hold') {
+    need.push([row.estimated_rental_income, 'Estimated rental income']);
+  }
   const missing = need.filter(([v]) => v == null || v === '').map(([, label]) => label);
   return { complete: missing.length === 0, missing };
 }

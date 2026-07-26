@@ -154,6 +154,28 @@ const RULES = [
     when: (x) => x.in_flood_zone == null ? null : x.in_flood_zone === true,
     detail: () => 'The property is in a flood zone. A flood-insurance condition is required for all note buyers.' },
 
+  // ----- EMCAP rental checks (fix-and-hold; all WARN, owner-directed 2026-07-26) -----
+  // EMCAP prices the rental cash flow. A fix-and-hold loan needs a 1007 rent schedule;
+  // a 1025 appraisal already INCLUDES the rent schedule, so it satisfies the requirement.
+  // These are warnings (never block) and never fire before the appraisal is in.
+  { code: 'isg_emcap_missing_1007', audience: 'emcap', severity: 'warning',
+    title: 'Fix-and-hold needs a 1007 rent schedule (EMCAP)', governing_rule: 'EMCAP requires a 1007 rent schedule on a fix-and-hold loan; a 1025 appraisal includes it',
+    when: (x) => {
+      if (x.is_fix_hold !== true) return false;              // only fix-and-hold
+      if (!x.appraisal_present) return null;                 // wait for the appraisal
+      if (x.appraisal_is_1025 === true) return false;        // a 1025 includes the rent schedule
+      if (x.appraisal_is_1025 == null) return null;          // form type unknown → don't guess
+      return x.appraisal_market_rent == null;                // no market rent = no 1007 rent schedule
+    },
+    detail: () => 'This is a fix-and-hold loan for EMCAP and the appraisal is not a 1025, but it carries no rent schedule (1007). Obtain a 1007 comparable rent schedule with the appraiser’s market rent.' },
+
+  { code: 'isg_emcap_rent_mismatch', audience: 'emcap', severity: 'warning',
+    title: 'Appraisal market rent does not match the loan’s estimated rent (EMCAP)', governing_rule: 'EMCAP: the appraiser’s market rent must equal the estimated rental income on the loan',
+    when: (x) => (x.appraisal_market_rent == null || x.loan_estimated_rent == null) ? null
+      : Math.round(x.appraisal_market_rent) !== Math.round(x.loan_estimated_rent),
+    expected: (x) => money(x.loan_estimated_rent), actual: (x) => money(x.appraisal_market_rent),
+    detail: (x) => `The appraisal’s market rent ${money(x.appraisal_market_rent)} does not match the estimated rental income on the loan ${money(x.loan_estimated_rent)}. Reconcile them before submitting to EMCAP.` },
+
   // ----- Price vs value (post-appraisal only — never before the appraisal is in) -----
   // Compare the RECOGNIZED (loan-sized) price to value, NOT the gross contract price. On an
   // assignment the gross price includes a wholesaler fee that may be the borrower's own,
@@ -210,6 +232,14 @@ function reviewInput(raw) {
     appraisal_rural: appr.rural == null ? (r.appraisal_rural == null ? null : bool(r.appraisal_rural)) : bool(appr.rural),
     appraisal_mid_construction: appr.mid_construction == null ? (r.appraisal_mid_construction == null ? null : bool(r.appraisal_mid_construction)) : bool(appr.mid_construction),
     appraisal_comps_close: appr.comps_close == null ? (r.appraisal_comps_close == null ? null : bool(r.appraisal_comps_close)) : bool(appr.comps_close),
+    // EMCAP rental signals (owner-directed 2026-07-26). is_fix_hold gates the 1007
+    // rule; appraisal_is_1025 / appraisal_market_rent come from the appraisal; the
+    // loan's estimated MONTHLY rent (applications.estimated_rental_income) is the
+    // match target. All null-safe: a missing signal simply makes its rule not fire.
+    is_fix_hold: r.is_fix_hold == null ? null : bool(r.is_fix_hold),
+    appraisal_is_1025: appr.is_1025 == null ? (r.appraisal_is_1025 == null ? null : bool(r.appraisal_is_1025)) : bool(appr.is_1025),
+    appraisal_market_rent: num(appr.market_rent != null ? appr.market_rent : r.appraisal_market_rent),
+    loan_estimated_rent: num(r.loan_estimated_rent),
   };
 }
 

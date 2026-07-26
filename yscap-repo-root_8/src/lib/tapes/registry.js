@@ -19,8 +19,9 @@
  */
 const fidelis = require('./fidelis');
 const bluelake = require('./bluelake');
+const emcap = require('./emcap');
 
-const TAPES = [fidelis, bluelake];
+const TAPES = [fidelis, bluelake, emcap];
 const BY_KEY = Object.create(null);
 for (const t of TAPES) BY_KEY[t.key] = t;
 

@@ -9,7 +9,7 @@ their own pricing/eligibility formulas built in. Our job on export is to take on
 of our loan files and drop its numbers into the provider's sheet **exactly** —
 same layout, same formulas — just with our loan's figures filled in.
 
-Two providers are wired today: **Fidelis** and **Blue Lake Capital**.
+Three providers are wired today: **Fidelis**, **Blue Lake Capital**, and **EMCAP**.
 
 ### Fidelis
 
@@ -47,6 +47,41 @@ Group"); **Total Points** = the loan's origination fee % (`quote.origPct`);
 **Borrower Liquidity** = left blank. Two columns stay blank because the Data
 Dictionary marks them "to be completed by Blue Lake" (Purchase Rate, Lender
 Retained Spread).
+
+### EMCAP
+
+EMCAP supplied a one-sheet "Format Submission Tape" (no definitions or calc tabs):
+row 1 is 38 headers (A–AL), row 2 is the data row we fill (rows 2..N for bulk).
+`src/lib/tapes/emcap.js` maps our loan onto it, reusing the same facts the other
+tapes use plus the **seasoning** snapshot (Current Rehab Amount L, Current Balance
+O) and the estimated **monthly rental income** ("Proj. Rental", U). Per-column
+Excel styles are taken from the template's own row-2 cells. Owner-directed field
+decisions (2026-07-26): **Acquisition Loan (N)** = the purchase-money portion (the
+day-1 acquisition advance); **Interest Reserve (M)** = the original financed
+reserve; **County (E)** = blank (not stored). Buyer key `emcap`.
+
+EMCAP is a **rental-focused** buyer, so three things hang off it beyond the tape:
+
+1. **Application completeness** — a **fix-and-hold** loan sold to EMCAP must carry
+   an **estimated monthly rental income** before it's complete
+   (`applications.estimated_rental_income`, db/311; enforced in
+   `src/routes/staff.js` `applicationCompleteness`, and shown as an inline field on
+   the staff completeness panel). Only EMCAP + fix-and-hold adds the requirement.
+2. **A 1007 rent schedule (warn)** — after the appraisal is in, an EMCAP
+   fix-and-hold loan whose appraisal is **not a 1025** (a 1025 already *includes*
+   the rent schedule) and carries no market rent raises an advisory warning to
+   obtain a 1007. Never blocks (owner-directed).
+3. **Rent match (warn, exact)** — the appraiser's estimated market rent must
+   **exactly** equal the loan's estimated rental income; any difference raises an
+   advisory warning to reconcile before submitting to EMCAP.
+
+Both findings are rows in the note-buyer rule table
+(`src/lib/underwriting/investor-guideline-review.js`, audience `emcap`), fed by
+signals gathered in `src/lib/underwriting/run.js` `gatherInvestorInputs`
+(strategy, `estimated_rental_income`, appraisal `form_type`, and the appraiser's
+`est_market_monthly_rent` — falling back to the summed per-unit rents of a 1025's
+rent schedule). They fire only for EMCAP, only once the appraisal is in, and never
+fabricate a finding on missing data.
 
 ## The rule (owner-directed)
 

@@ -150,4 +150,25 @@ console.log('investor-guideline-review pure tests');
   ok('null-safe: hostile input never throws, always an array');
 }
 
+// 9 — EMCAP rental rules (owner-directed 2026-07-26; all WARN).
+{
+  const emcap = (extra) => g.review(Object.assign({ note_buyer: 'EMCAP', is_fix_hold: true, appraisal_present: true }, extra));
+  // Missing 1007: fix-hold, appraisal present, NOT a 1025, no market rent → warn.
+  const miss = emcap({ appraisal_is_1025: false });
+  assert.ok(byCode(miss, 'isg_emcap_missing_1007') && byCode(miss, 'isg_emcap_missing_1007').severity === 'warning', 'EMCAP missing-1007 warns');
+  // A 1025 includes the rent schedule → no missing-1007.
+  assert.ok(!byCode(emcap({ appraisal_is_1025: true, appraisal_market_rent: 2500, loan_estimated_rent: 2500 }), 'isg_emcap_missing_1007'), '1025 satisfies the 1007 requirement');
+  // Before the appraisal is in → silent (no guessing).
+  assert.ok(g.review({ note_buyer: 'EMCAP', is_fix_hold: true, appraisal_present: false }).length === 0, 'no findings before the appraisal is in');
+  // Rent mismatch is EXACT: any difference warns; an exact match is clean.
+  assert.ok(byCode(emcap({ appraisal_is_1025: false, appraisal_market_rent: 2500, loan_estimated_rent: 2400 }), 'isg_emcap_rent_mismatch'), 'exact rent mismatch warns');
+  assert.ok(!byCode(emcap({ appraisal_is_1025: true, appraisal_market_rent: 2500, loan_estimated_rent: 2500 }), 'isg_emcap_rent_mismatch'), 'an exact rent match is clean');
+  // Not fix-and-hold → the 1007 rule is inert; missing a signal → silent.
+  assert.ok(!byCode(g.review({ note_buyer: 'EMCAP', is_fix_hold: false, appraisal_present: true, appraisal_is_1025: false }), 'isg_emcap_missing_1007'), 'a non-fix-hold EMCAP loan needs no 1007');
+  assert.ok(g.review({ note_buyer: 'EMCAP' }).length === 0, 'EMCAP with no signals → no findings (omit-don’t-guess)');
+  // Never fires on another buyer.
+  assert.ok(g.review({ note_buyer: 'Fidelis', is_fix_hold: true, appraisal_present: true, appraisal_is_1025: false, appraisal_market_rent: 2500, loan_estimated_rent: 2400 }).filter((f) => f.code.startsWith('isg_emcap')).length === 0, 'EMCAP rules never fire on another buyer');
+  ok('EMCAP rental rules: 1007 (warn, 1025-satisfied, post-appraisal), exact rent match, buyer-scoped');
+}
+
 console.log(`\ninvestor-guideline-review: ${n} checks passed`);

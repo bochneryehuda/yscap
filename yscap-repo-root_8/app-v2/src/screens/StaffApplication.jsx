@@ -222,6 +222,19 @@ const EyeOff = (
 
 /* What the borrower has and hasn't completed — so the officer sees at a glance
    what still needs chasing without opening every panel. */
+// EMCAP prices the rental cash flow, so a fix-and-hold loan sold to EMCAP needs an
+// estimated monthly rent for completeness. These mirror the server's
+// normNoteBuyer / normStrategy fix-hold branch (src/lib/conditions/field-registry.js)
+// — keep them in sync so the panel and the submit gate agree.
+const isEmcapBuyer = (app) => String(app.lender || '').toLowerCase().replace(/[^a-z0-9]/g, '') === 'emcap';
+function isFixHoldStrategy(app) {
+  const s = [app.program, app.loan_type, app.rehab_type].filter(Boolean).join(' ').toLowerCase();
+  if (!s) return false;
+  if (/ground|construction(?!\s*&)/.test(s) && /ground|new/.test(s)) return false; // ground_up
+  if (/dscr|rental|stabilized|long[-\s]?term|30[-\s]?year/.test(s)) return false;   // rental_dscr
+  return /hold|brrrr/.test(s);
+}
+
 // Field metadata shared by the staff + borrower completeness panels. `edit`
 // false = filled elsewhere (address picker / secure SSN flow) so we only hint.
 const COMPLETENESS_FIELDS = (app, borrower) => [
@@ -256,6 +269,11 @@ const COMPLETENESS_FIELDS = (app, borrower) => [
   // in ClickUp. STAFF-ONLY — this whole panel is staff; it's never on the borrower
   // completeness panel and the note-buyer name never reaches a borrower.
   { key: 'lender', label: 'Note buyer', ok: !!app.lender, type: 'notebuyer' },
+  // Estimated monthly rent — required for completeness only on an EMCAP
+  // fix-and-hold loan (owner-directed 2026-07-26). Hidden on every other file.
+  ...(isEmcapBuyer(app) && isFixHoldStrategy(app)
+    ? [{ key: 'estimated_rental_income', label: 'Estimated monthly rent', ok: app.estimated_rental_income != null, type: 'money' }]
+    : []),
   // Loan number (applications.ys_loan_number) — part of application completeness
   // (owner-directed 2026-07-20). Saved through the dedicated /loan-number entry so
   // it enforces the YSCAP format + cross-file/ClickUp uniqueness (a duplicate is

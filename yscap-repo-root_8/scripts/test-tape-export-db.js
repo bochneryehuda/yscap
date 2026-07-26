@@ -161,6 +161,32 @@ async function main() {
     const szOverSheet = unzip(szOver.buf).find((p) => p.name === 'xl/worksheets/sheet5.xml').data.toString('utf8');
     assert.ok(/<c r="K2"[^>]*><v>305000<\/v><\/c>/.test(szOverSheet), 'seasoned override: K current balance uses the confirmed value');
 
+    // 10) EMCAP tape end-to-end: a fix-and-hold EMCAP loan exports its one-sheet
+    //     tape, the estimated monthly rent fills the Proj. Rental column (U), and
+    //     the buyer rule keeps a non-EMCAP loan off it.
+    const emcapApp = uuid();
+    created.apps.push(emcapApp);
+    await db.query(
+      `INSERT INTO applications (id,borrower_id,status,ys_loan_number,lender,property_address,program,loan_type,rehab_type,property_type,units,purchase_price,as_is_value,arv,rehab_budget,requested_ir_amount,loan_amount,rate_pct,term,estimated_rental_income)
+       VALUES ($1,$2,'processing',$3,'EMCAP',$4,'Fix & Hold','Purchase','moderate','Single Family',1,300000,310000,450000,80000,12000,360000,10.5,'12 months',2500)`,
+      [emcapApp, bId, `YSCAP-TP-${SUFFIX}-EM`, JSON.stringify({ line1: '9 Rent Rd', city: 'Newark', state: 'NJ', zip: '07104' })]);
+    const em = await tapes.buildTape(emcapApp, 'emcap', db);
+    assert.ok(Buffer.isBuffer(em.buf) && em.buf.length > 5000 && /EMCAP-Tape-.*\.xlsx/.test(em.filename), 'EMCAP tape produced bytes with a shaped filename');
+    const emSheet = unzip(em.buf).find((p) => p.name === 'xl/worksheets/sheet1.xml').data.toString('utf8');
+    assert.ok(emSheet.indexOf(`YSCAP-TP-${SUFFIX}-EM`) > -1, 'EMCAP tape carries the loan number');
+    assert.ok(/<c r="U2"[^>]*><v>2500<\/v><\/c>/.test(emSheet), 'EMCAP Proj. Rental (U) = estimated monthly rent (2500)');
+    assert.ok(/<c r="J2"[^>]*><v>360000<\/v><\/c>/.test(emSheet), 'EMCAP total loan (J) filled');
+    // Buyer rule: a Fidelis loan is blocked from the EMCAP tape and vice-versa.
+    let emErr = null;
+    try { await tapes.buildTape(fidelisApp, 'emcap', db); } catch (e) { emErr = e; }
+    assert.ok(emErr && emErr.code === 'buyer_mismatch', 'a Fidelis loan is blocked from the EMCAP tape');
+    let emErr2 = null;
+    try { await tapes.buildTape(emcapApp, 'fidelis', db); } catch (e) { emErr2 = e; }
+    assert.ok(emErr2 && emErr2.code === 'buyer_mismatch', 'an EMCAP loan is blocked from the Fidelis tape');
+    // A fix-and-hold EMCAP loan asks no new-construction questions.
+    const emQ = await tapes.tapeQuestions(emcapApp, 'emcap', db);
+    assert.ok(emQ.questions.length === 0, 'a fix-and-hold EMCAP loan asks no supplemental questions');
+
     console.log('test-tape-export-db: OK');
   } finally {
     await db.query('DELETE FROM applications WHERE id = ANY($1::uuid[])', [created.apps]).catch(() => {});
