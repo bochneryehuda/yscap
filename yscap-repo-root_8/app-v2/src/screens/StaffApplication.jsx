@@ -18,6 +18,7 @@ import InvestorGuidelinesPanel from '../components/InvestorGuidelinesPanel.jsx';
 import DealSnapshot from '../components/DealSnapshot.jsx';
 import ClearToClosePanel from '../components/ClearToClosePanel.jsx';
 import LoanProgress from '../components/LoanProgress.jsx';
+import TapeQuestionsModal from '../components/TapeQuestionsModal.jsx';
 import { CreditCondition } from '../components/CreditReport.jsx';
 import SubmitFilePanel from '../components/SubmitFilePanel.jsx';
 import FileNotificationOverrides from '../components/FileNotificationOverrides.jsx';
@@ -3425,6 +3426,7 @@ export default function StaffApplication() {
           })()}
       </div>
       {app.status === 'funded' && <PostClosing appId={id} />}
+      <TapeExport appId={id} />
       <TprExport appId={id} />
       <MismoExport appId={id} />
       </Section>
@@ -3699,6 +3701,79 @@ function TprExport({ appId }) {
             </div>
           )}
         </>
+      )}
+    </div>
+  );
+}
+
+/* Capital-provider data tape — fill this loan into its capital provider's own
+   Excel workbook (e.g. the Fidelis Pricing Matrix / Data Tape). A loan can only
+   export the tape of the provider it is CURRENTLY assigned to; the others show a
+   plain reason (switch the capital provider first). */
+function TapeExport({ appId }) {
+  const [state, setState] = useState(null);
+  const [busy, setBusy] = useState(null);
+  const [pending, setPending] = useState(null); // { tapeKey, name, questions } — questionnaire modal
+  useEffect(() => { api.staffTapesForApp(appId).then(setState).catch(() => setState({ tapes: [], currentBuyer: null, error: true })); }, [appId]);
+  // Click → check whether this loan needs extra details before exporting:
+  //  • New-Construction-only fields (ground-up loans), and/or
+  //  • a seasoned-loan confirmation (current balance / next due / reserve).
+  // If either applies, open the modal; otherwise export straight away.
+  async function start(tapeKey, name) {
+    setBusy(tapeKey);
+    try {
+      const q = await api.staffTapeQuestions(appId, tapeKey);
+      const questions = (q && q.questions) || [];
+      const seasoned = q && q.seasoned && q.seasoned.isSeasoned ? q.seasoned : null;
+      if (questions.length || seasoned) { setPending({ tapeKey, name, questions, seasoned }); setBusy(null); return; }
+      await runExport(tapeKey, name, undefined);
+    } catch (e) { alert((e.data && e.data.message) || e.message || 'Export failed'); setBusy(null); }
+  }
+  async function runExport(tapeKey, name, answers) {
+    setBusy(tapeKey);
+    try { const { blob, filename } = await api.staffTapeExport(appId, tapeKey, answers); saveBlob(blob, filename || `${name}-tape.xlsx`); setPending(null); }
+    catch (e) { alert((e.data && e.data.message) || e.message || 'Export failed'); }
+    finally { setBusy(null); }
+  }
+  return (
+    <div className="panel" style={{ marginTop: 18 }}>
+      <div className="row" style={{ marginBottom: 6 }}>
+        <h3>Capital-provider data tapes</h3>
+        <div className="spacer" />
+        {state && <span className="muted small">Capital provider: {state.currentBuyer ? <strong>{state.currentBuyer}</strong> : <em>not set</em>}</span>}
+      </div>
+      <p className="muted small">
+        Each capital provider has its own tape — their Excel workbook with this loan's figures filled into the data row,
+        so their pricing tab recalculates. You can only export the tape for the provider this loan is set to; to export a
+        different one, change the loan's capital provider first.
+      </p>
+      {!state ? <p className="muted small">Loading…</p> : state.error ? (
+        <p className="muted small" style={{ color: 'var(--gold)' }}>Couldn’t load the available tapes. Refresh to try again.</p>
+      ) : (state.tapes || []).length === 0 ? (
+        <p className="muted small">No tapes configured yet.</p>
+      ) : (
+        <div style={{ display: 'grid', gap: 8, marginTop: 8 }}>
+          {state.tapes.map((t) => (
+            <div key={t.key} className="row" style={{ alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
+              <div style={{ minWidth: 140 }}><strong>{t.name}</strong> <span className="muted small">tape</span></div>
+              <button className="btn primary small" disabled={!t.available || busy === t.key} onClick={() => start(t.key, t.name)}>
+                {busy === t.key ? 'Building…' : `Export ${t.name} tape (Excel)`}
+              </button>
+              {!t.available && <span className="muted small" style={{ color: 'var(--gold)' }}>{t.reason}</span>}
+            </div>
+          ))}
+        </div>
+      )}
+      {pending && (
+        <TapeQuestionsModal
+          title={pending.questions.length ? `${pending.name} tape — a few details` : `${pending.name} tape — confirm current numbers`}
+          subtitle={pending.questions.length ? "This is a ground-up loan. Fill these in and they'll be saved on the file, so we won't ask again." : undefined}
+          questions={pending.questions}
+          seasoned={pending.seasoned}
+          busy={busy === pending.tapeKey}
+          onCancel={() => setPending(null)}
+          onSubmit={(answers) => runExport(pending.tapeKey, pending.name, answers)}
+        />
       )}
     </div>
   );

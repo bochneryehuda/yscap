@@ -15,10 +15,15 @@ const PC = require(R + '/src/pipeline/packet-control-processor');
 let pass = 0, fail = 0;
 const ok = (c, m) => { if (c) { pass++; } else { fail++; console.log('  FAIL:', m); } };
 
-// Fake job-queue that captures recordStage calls.
+// Fake job-queue that captures recordStage + recordArtifact calls.
 function fakeJq() {
   const stages = [];
-  return { stages, recordStage: async (_db, _id, key, status, detail) => { stages.push({ key, status, detail }); } };
+  const artifacts = [];
+  return {
+    stages, artifacts,
+    recordStage: async (_db, _id, key, status, detail) => { stages.push({ key, status, detail }); },
+    recordArtifact: async (_db, _id, { kind, meta }) => { artifacts.push({ kind, meta }); },
+  };
 }
 // Fake router with a controllable plan + a recordRoute spy.
 function fakeRouter(plan, recorded) {
@@ -50,16 +55,53 @@ function fakeRouter(plan, recorded) {
     ok(order.indexOf('intake') < order.indexOf('packet_control') && order.indexOf('packet_control') < order.indexOf('ocr_layout'), 'stage order intake→packet_control→ocr_layout');
   }
 
-  // ---- READ PATH: adapters injected + a real adapter engine → ocr_layout completed ----
+  // ---- READ PATH: adapters injected + a real adapter engine + bytes loaded → ocr_layout completed ----
   {
     const jq = fakeJq(); const recorded = [];
     const plan = { primary: { provider: 'azure', service: 'document_intelligence', adapterKey: 'azure/document_intelligence' }, challenger: null, reason: 'r', materiality: 'high', specialHandling: [] };
-    const proc = PC.makePacketControlProcessor({ router: fakeRouter(plan, recorded), adapters: [{ provider: 'azure', service: 'document_intelligence', analyze: async () => ({}) }] });
+    let loadedFor = null;
+    const loadBytes = async (_db, documentId) => { loadedFor = documentId; return { buffer: Buffer.from('%PDF-1.4 test'), base64: 'JVBERi0x', mimeType: 'application/pdf', filename: 'x.pdf' }; };
+    let sawRequest = null;
+    const router = { ...fakeRouter(plan, recorded), routeDocument: async (args) => { sawRequest = args.request; return { outcome: 'completed', result: { confidence: 0.88 } }; } };
+    const proc = PC.makePacketControlProcessor({ router, adapters: [{ provider: 'azure', service: 'document_intelligence', analyze: async () => ({}) }], loadBytes });
     const out = await proc(job, { db: {}, jq });
     ok(out.status === 'completed', 'read path: completes');
     const keys = jq.stages.map((s) => s.key + ':' + s.status);
     ok(keys.includes('ocr_layout:completed'), 'read path: ocr_layout completed');
     ok(keys.includes('classification:pending'), 'read path: classification pending (not yet wired)');
+    ok(loadedFor === 'doc-1', 'read path: loadBytes called with the job document id');
+    ok(sawRequest && sawRequest.buffer && sawRequest.mimeType === 'application/pdf', 'read path: the loaded bytes are passed to routeDocument as the request');
+    const art = jq.artifacts.find((a) => a.kind === 'ocr_result');
+    ok(!!art, 'read path: an ocr_result artifact is recorded (Phase 3c)');
+    ok(art && art.meta && art.meta.confidence === 0.88 && art.meta.outcome === 'completed', 'read path: artifact meta carries the read confidence + outcome');
+  }
+
+  // ---- READ PATH but bytes UNAVAILABLE (loadBytes → null) → read stages not_applicable, no adapter call ----
+  {
+    const jq = fakeJq(); const recorded = [];
+    const plan = { primary: { provider: 'azure', service: 'document_intelligence', adapterKey: 'azure/document_intelligence' }, challenger: null, reason: 'r', materiality: 'high', specialHandling: [] };
+    let routed = false;
+    const router = { ...fakeRouter(plan, recorded), routeDocument: async () => { routed = true; return { outcome: 'completed', result: {} }; } };
+    const proc = PC.makePacketControlProcessor({ router, adapters: [{ provider: 'azure', service: 'document_intelligence', analyze: async () => ({}) }], loadBytes: async () => null });
+    const out = await proc(job, { db: {}, jq });
+    ok(out.status === 'completed', 'bytes unavailable: still completes (never throws)');
+    const keys = jq.stages.map((s) => s.key + ':' + s.status);
+    ok(keys.includes('ocr_layout:not_applicable') && keys.includes('classification:not_applicable'), 'bytes unavailable: read stages recorded not_applicable');
+    ok(routed === false, 'bytes unavailable: the adapter is NOT called with an empty request');
+    ok(jq.artifacts.length === 0, 'bytes unavailable: no ocr_result artifact recorded (nothing was read)');
+  }
+
+  // ---- READ PATH with bytes ALREADY in the payload.request → loadBytes is not called ----
+  {
+    const jq = fakeJq(); const recorded = [];
+    const plan = { primary: { provider: 'azure', service: 'document_intelligence', adapterKey: 'azure/document_intelligence' }, challenger: null, reason: 'r', materiality: 'high', specialHandling: [] };
+    let loadCalled = false;
+    const router = { ...fakeRouter(plan, recorded), routeDocument: async () => ({ outcome: 'completed', result: {} }) };
+    const jobWithBytes = { id: 'job-b', document_id: 'doc-1', payload: { features: { docType: 'bank_statement' }, request: { base64: 'QUJD' } } };
+    const proc = PC.makePacketControlProcessor({ router, adapters: [{ provider: 'azure', service: 'document_intelligence', analyze: async () => ({}) }], loadBytes: async () => { loadCalled = true; return null; } });
+    const out = await proc(jobWithBytes, { db: {}, jq });
+    ok(out.status === 'completed' && loadCalled === false, 'payload already carries bytes → loadBytes not called, read proceeds');
+    ok(jq.stages.map((s) => s.key + ':' + s.status).includes('ocr_layout:completed'), 'payload bytes → ocr_layout completed');
   }
 
   // ---- native_pdf plan (no adapter engine) → still shadow read stages even if adapters present ----
