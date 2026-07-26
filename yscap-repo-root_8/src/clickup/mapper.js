@@ -36,6 +36,13 @@ function normalizeClickupLocation(v) {
     const loc = v.location || v.position || v.geolocation || null;
     if (loc) { lat = loc.lat != null ? loc.lat : loc.latitude; lng = loc.lng != null ? loc.lng : loc.longitude; }
   } else { return undefined; }
+  // A geocoder display name ("26, South 10th Street, Williamsburg, Brooklyn,
+  // Kings County, New York, 11249, United States") can be sitting in the ClickUp
+  // field — we put some there ourselves before the 2026-07-26 formatting fix.
+  // Compact it FIRST: parseAddress reads the long form's county part as the city
+  // ("Kings County"), so this repairs the components as well as the display
+  // string, and a value already in mailing form is returned untouched.
+  if (formatted) formatted = ADDR.compactFormattedAddress(formatted) || formatted;
   const out = formatted ? ADDR.normalizeAddress(ADDR.parseAddress(formatted)) : ADDR.normalizeAddress({});
   if (formatted) {
     out.formatted_address = formatted;
