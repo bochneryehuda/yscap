@@ -62,8 +62,8 @@ const HIGH_CONFIDENCE = 0.85;
  *   - no primary value                         → unverified
  *   - ANY corroboration DISAGREES              → contradicted   (a real conflict; a human resolves it)
  *   - ≥1 corroboration AGREES (none disagree)  → verified
- *   - corroborations exist but NONE has a value → unverified (nothing to compare)
- *   - no corroborations, primary high-confidence→ partially_verified (one strong source, not cross-checked)
+ *   - nothing with a value to cross-check against, primary high-confidence → partially_verified
+ *     (one strong source, not cross-checked — whether there were zero corroborations or only valueless ones)
  *   - otherwise                                 → unverified
  * Returns { status, reason, corroborations:[…with agrees flag] }.
  */
