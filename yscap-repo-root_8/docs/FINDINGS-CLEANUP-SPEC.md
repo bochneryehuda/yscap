@@ -70,19 +70,32 @@ SILENT. Per-rule dispositions the owner dictated:
 
 ## Individually reported defects
 
-1. **Liquidity double-counts one account.** The table lists MOSES WEIL / Vanderbilt ••0120 $88,454
-   AND MOSES WEIL / Vanderbilt (no acct#) $89,474 — the **same account from two statements**,
-   counted twice. Owner: *"a major major major major issue."* Dedupe by account identity across
-   statements and use the LATEST statement only. Fix for all files.
+1. ~~**Liquidity double-counts one account.**~~ **DONE.** Measured, not argued: files generated from
+   a KNOWN set of accounts, so there is a right answer to check against rather than an expectation
+   derived from the same reasoning as the code. Over-counted files fell from 1,680 of 4,000 ($260M
+   excess) to 46 ($4.2M); under-counting rose from 389 to 861 DELIBERATELY, because overstating
+   liquidity can clear a shortfall that is real while understating it makes a human look twice.
+   Where the code cannot tell, it resolves DOWNWARD. Root causes closed: one un-numbered account
+   fragmenting because the bank name is spelled differently month to month; a penny of scan drift
+   read as proof of a second account; a zero balance from a failed read manufacturing a balance; a
+   folded-in guess acting as evidence against the next fold; `US Bank`/`U.S. Bank` and `M&T`/`M and
+   T` not comparing equal; and a timezone-sensitive month comparison, proven on three clocks.
+   `test-liquidity-double-count-pure` carries a ground-truth ratchet that fails if over-counting
+   climbs back.
 2. ~~**Blue Lake needs 2 months of bank statements**, not 1. The rule text says 1.~~ **DONE.** The
    month count was program-only (Gold 2, Standard 1). `src/lib/liquidity.js` now takes whichever is
    stricter, program or note buyer, keyed with the SAME shared normalizer the conditions engine uses
    so any spelling of the note buyer matches. A note buyer can only RAISE the count. The borrower-
    facing line still never names the note buyer. `db/325` raises existing OPEN Blue Lake files (never
    a signed-off, waived, funded or closed one; never lowers a count).
-3. **Property type tie-out maps the wrong fields** — comparing appraisal "Detached" (a STYLE) to
-   file "Multi 2–4" (a RANGE). Compare **unit COUNT to unit COUNT**, both from the appraisal XML and
-   the file. Wrong-field mapping, not a real mismatch.
+3. ~~**Property type tie-out maps the wrong fields**~~ **DONE.** The style text is no longer compared
+   to anything. `appraisal-underwriter.js` now reads the appraisal's real UNIT COUNT and tests it
+   against the unit RANGE the file's property type implies (`propertyTypeUnitRange` in
+   `mismo/enums.js`: SFR/condo/townhouse = 1, Multi 2–4 = 2–4, Multi 5+ = 5 and up, mixed-use =
+   no constraint), and separately compares the application's own unit count to the appraisal's —
+   count vs count. Verified by execution: "Detached" + 3 units against a Multi 2–4 file is SILENT,
+   while 1 unit against Multi 2–4, and application-2 vs appraisal-3, both still fire. A missing
+   count or an unknown type stays silent rather than guessing.
 4. ~~**Chain-of-title breaks at the wrong step.**~~ **DONE.** Root cause: the display pairs each step
    with `hops[i-1]`, but the hop list was pushed ad hoc — the SALE itself (seller → buyer) was never
    emitted, and a step with no name is dropped from the display while its hop stayed in the list. Any
@@ -212,18 +225,31 @@ an "X is missing" finding now requires positive proof the document is the KIND t
 | `application_no_business_purpose` | FATAL off a blank 1003 | needs a signature or signature date; otherwise `application_not_the_signed_package` (warning) |
 | `flood_insurance_required` | FATAL off `policyPresent !== true` — a FEMA determination cannot know whether a policy exists, so NULL fired it on essentially every one | asserts "not on file" only when the document says so; otherwise `flood_insurance_confirm`, still FATAL/blocking (flood cover in an SFHA is federal law) but honest about the claim |
 
-**Still to do — same class, ranked** (found by the pre-merge audit; each needs its own
-never-under-reach test before shipping):
+**Also fixed (2026-07-26), the two CTC-blocking ones**
 
-1. `assignment_unsigned` (`doc-checks.js`, FATAL, blocks CTC) — `assignorSigned === false` off a
-   signature-page-missing scan or a draft copy accuses the file of an unexecuted assignment.
-2. `oa_unsigned` (FATAL, blocks CTC) — articles of organization or an OA excerpt in the
-   operating-agreement slot reads as `signed: false`.
-3. `background_entity_not_screened` (warning) — a per-document absence asserting a FILE-level fact;
-   on a two-report file the individual report still says the entity was never screened.
-4. `oa_no_borrowing_authority`, `application_unsigned`, `term_sheet_unsigned` (warnings).
-5. `title_missing_condo_endorsement` / `title_multiparcel_contiguity` — absence from a possibly
-   unread `endorsements` array; already softened by "Confirm…" wording.
+| Finding | Was | Now |
+|---|---|---|
+| `assignment_unsigned` | FATAL off a draft or a scan whose signature page is missing | needs an affirmed signature from EITHER party (a date is not proof — a draft carries one). Without it: `assignment_execution_unconfirmed`, **still FATAL, still blocking**, but claiming only that execution could not be confirmed |
+| `oa_unsigned` | FATAL off ARTICLES OF ORGANIZATION in the operating-agreement slot — articles honestly answer "signed: no" because they are a state filing | needs members with ownership percentages, or a stated management type. Without it: `oa_not_the_operating_agreement`, **still FATAL, still blocking** |
+| `oa_no_borrowing_authority` | warning off the same articles — which do not authorize borrowing because that is not what articles do | only raised once the document is proven to BE the agreement; otherwise the finding above says it once instead of twice |
+
+The severity never moved. Softening the CLAIM must not soften the GATE — an assignment or an
+operating agreement we cannot confirm is still a reason to stop, and
+`test-absence-wrong-document-pure` asserts `severity === 'fatal'` and `blocksCtc === true` on both
+replacement codes precisely so a future edit cannot quietly trade a false accusation for a missed one.
+
+**Still to do — same class, ranked**
+
+1. `background_entity_not_screened` (warning) — the per-document half is already correct
+   (`screenedPartiesComplete` gates the claim, and an unread list becomes
+   `background_screened_parties_unreadable`). What remains is FILE-level: on a two-report file, the
+   report that did not screen the entity still says so even though another report did. That is a
+   rollup across documents, not a marker on one, so it belongs with the unified finding registry.
+2. `application_unsigned`, `term_sheet_unsigned` (warnings) — "not signed" is TRUE of the blank
+   form we are holding, and the remedy is identical either way ("obtain the signed copy"), so these
+   are honest as written. Revisit only if the wording proves confusing in practice.
+3. `title_missing_condo_endorsement` / `title_multiparcel_contiguity` — already phrased as
+   "Confirm…", which claims nothing about the file. Lowest priority.
 
 Correct already (leave alone): `amendment_unexecuted` is gated on `changesSomething` — a real
 document-kind marker, and the pattern `absence.js` generalizes. The `voided_check_no_routing` /

@@ -12,7 +12,7 @@
  */
 const { num, withinMoney, namesMatchLoose, entityMatch, daysBetween, toISODate, addrMatches, addrLine } = require('./compare');
 const { clauseNamesLender, clauseAddressState, LENDER_MORTGAGEE_CLAUSE } = require('./lender');
-const { provenAbsent, wrongDocument, affirmed } = require('./absence');
+const { provenAbsent, wrongDocument, affirmed, hasEvidence } = require('./absence');
 const insLoanKey = (s) => String(s == null ? '' : s).toUpperCase().replace(/[^A-Z0-9]/g, '');
 // Loose text identity for matching one alert string against another (punctuation and spacing
 // drift between an alert's line in the alert table and its line in the cleared-variance table).
@@ -83,11 +83,32 @@ function computeAssignmentFindings(a, subject, opts = {}) {
       howTo: `The financeable assignment fee is capped at 15% of the seller's original price (${money(0.15 * orig)}); this shows ${money(fee)}. The excess is out of pocket unless an approved exception is on file.`,
       actions: ['grant_exception', 'post_condition', 'dismiss'] }));
   }
+  // WHICH claim we are entitled to make (ROOT 3 class, 2026-07-26). "assignorSigned: false" is
+  // equally true of a genuinely unexecuted assignment and of a draft copy or a scan whose signature
+  // page is missing — and only the first is a defect in the LOAN. The one thing that proves we are
+  // holding the executed instrument is a signature we can actually see, so an affirmed signature
+  // from EITHER party is the marker; a date is not (a draft carries a typed date just as easily).
+  //
+  // Both branches stay FATAL and keep blocking CTC — an assignment we cannot confirm is executed is
+  // a real reason to stop, and softening that would trade a false accusation for a missed one. What
+  // changes is what we ASSERT: with a signature block in view we say the assignment is unsigned;
+  // without one we say we cannot confirm it is the executed copy. Same stop, honest claim.
   if (a.assignorSigned === false || a.assigneeSigned === false) {
-    out.push(mk('assignment', { code: 'assignment_unsigned', severity: 'fatal', field: 'signatures',
-      title: 'The assignment is not signed by both parties',
-      howTo: 'An assignment must be signed by BOTH the assignor and the assignee to be binding. Obtain the fully executed assignment.',
-      actions: ['request_document', 'post_condition', 'dismiss'] }));
+    const SIGNATURE_BLOCK_SEEN = [affirmed(a.assignorSigned), affirmed(a.assigneeSigned)];
+    if (hasEvidence(SIGNATURE_BLOCK_SEEN)) {
+      const who = a.assignorSigned === false ? 'assignor' : 'assignee';
+      out.push(mk('assignment', { code: 'assignment_unsigned', severity: 'fatal', field: 'signatures',
+        docValue: `${who} did not sign`, fileValue: null,
+        title: 'The assignment is not signed by both parties',
+        howTo: `An assignment must be signed by BOTH the assignor and the assignee to be binding. One signature is on the document and the ${who}'s is not. Obtain the fully executed assignment.`,
+        actions: ['request_document', 'post_condition', 'dismiss'] }));
+    } else {
+      out.push(mk('assignment', { code: 'assignment_execution_unconfirmed', severity: 'fatal', field: 'signatures',
+        docValue: 'no signature appears on the pages we have', fileValue: null,
+        title: 'We cannot confirm the assignment is the fully executed copy',
+        howTo: 'No signature from either party appears on the pages we were given — which is what a DRAFT looks like, and also what an executed assignment scanned without its signature page looks like. So this does not say the assignment is unexecuted; it says we have not been shown that it is. Obtain the fully executed assignment (all pages) before clear-to-close.',
+        actions: ['request_document', 'post_condition', 'dismiss'] }));
+    }
   }
   // Assignee named as "X or an LLC to be formed": the final vesting entity does not exist yet, so
   // before closing the LLC must actually be formed AND the contract re-assigned/vested into it — the
@@ -115,13 +136,39 @@ function computeOperatingAgreementFindings(oa, subject, opts = {}) {
       title: 'Member ownership percentages do not add up to 100%',
       howTo: 'The ownership stakes in the operating agreement should total 100%. Obtain a corrected/complete operating agreement.' }));
   }
+  // IS THIS THE OPERATING AGREEMENT AT ALL? (ROOT 3 class, 2026-07-26.) The operating-agreement slot
+  // regularly receives the ARTICLES OF ORGANIZATION or a one-page excerpt instead. Read under this
+  // schema, articles answer "signed: no" and "authorizes borrowing: no" perfectly honestly — they
+  // are a state filing, they carry neither — and both answers became accusations against the
+  // borrower's actual agreement, one of them a CTC-blocking FATAL.
+  //
+  // What only an OPERATING AGREEMENT carries: members with OWNERSHIP PERCENTAGES, and a stated
+  // management type. Articles name an organizer and a registered agent, not who owns what share.
+  const OA_MARKERS = [
+    (Array.isArray(oa.members) && oa.members.some((m) => m && num(m.ownershipPct) != null)) ? true : null,
+    oa.managementType,
+  ];
+  const isTheAgreement = hasEvidence(OA_MARKERS);
   if (oa.signed === false) {
-    out.push(mk('operating_agreement', { code: 'oa_unsigned', severity: 'fatal', field: 'signatures',
-      title: 'The operating agreement is not signed',
-      howTo: 'An unsigned operating agreement does not establish authority. Obtain the executed agreement.',
-      actions: ['request_document', 'post_condition', 'dismiss'] }));
+    // Still FATAL and still blocking either way — the file cannot close without an executed OA, and
+    // being handed the wrong document is not a reason to stop asking. Only the claim changes.
+    out.push(mk('operating_agreement', isTheAgreement
+      ? { code: 'oa_unsigned', severity: 'fatal', field: 'signatures',
+          docValue: 'no signature on the agreement', fileValue: null,
+          title: 'The operating agreement is not signed',
+          howTo: 'An unsigned operating agreement does not establish authority. Obtain the executed agreement.',
+          actions: ['request_document', 'post_condition', 'dismiss'] }
+      : { code: 'oa_not_the_operating_agreement', severity: 'fatal', field: 'signatures',
+          docValue: 'no members, ownership percentages or management type on this document', fileValue: null,
+          title: 'This does not look like the operating agreement itself',
+          howTo: 'The document in the operating-agreement slot carries no members, no ownership percentages and no management type — which is what the ARTICLES OF ORGANIZATION or a single excerpted page looks like, not the agreement. So this is not a finding that the borrower\'s agreement is unsigned; it is that we have not been given the agreement. Obtain the complete executed operating agreement.',
+          actions: ['request_document', 'post_condition', 'dismiss'] }));
   }
-  if (oa.authorizesBorrowing === false) {
+  // Same reasoning, one severity down: articles of organization do not authorize borrowing because
+  // that is not what articles do. Only claim the AGREEMENT lacks the clause once we can see it is
+  // the agreement; otherwise the honest finding is the one raised above and a second one here would
+  // just be the same wrong document accused twice.
+  if (oa.authorizesBorrowing === false && isTheAgreement) {
     out.push(mk('operating_agreement', { code: 'oa_no_borrowing_authority', severity: 'warning', field: 'authority',
       title: 'The operating agreement does not authorize borrowing',
       howTo: 'The agreement must authorize the entity to borrow and encumber real property (or a separate member resolution must). Obtain a borrowing-authorization resolution.' }));
