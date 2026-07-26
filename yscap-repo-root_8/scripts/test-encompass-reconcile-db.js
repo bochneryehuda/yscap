@@ -165,6 +165,20 @@ const CB_HASH = identity.ssnHash(CB_SSN, cfg.ssnMatchKey);
     await client.query(`UPDATE applications SET encompass_extra=$2::jsonb WHERE id=$1`, [app.id, JSON.stringify(loan)]); // restore
     ok('a differing Social Security number mismatches, stays masked, and un-passes the section');
 
+    // 2e. A file with NO SSN on EITHER side gets no SSN row at all → SSN never
+    //     falsely blocks a genuinely SSN-less file (only a present-or-one-sided SSN compares).
+    const emailNo = 'encnossn+' + Buffer.from(String(process.pid)).toString('hex') + '@example.com';
+    const bNoSsn = (await client.query(
+      `INSERT INTO borrowers (first_name,last_name,email) VALUES ('No','Ssn',$1) RETURNING id`, [emailNo])).rows[0];
+    const loanNoSsn = { loanNumber: 'YS-NOSSN', applications: [{ borrower: { firstName: 'No', lastName: 'Ssn' } }] };
+    const appNoSsn = (await client.query(
+      `INSERT INTO applications (borrower_id, ys_loan_number, encompass_extra, encompass_last_pulled_at)
+         VALUES ($1,'YS-NOSSN',$2::jsonb, now()) RETURNING id`, [bNoSsn.id, JSON.stringify(loanNoSsn)])).rows[0];
+    const cNoSsn = await recon.computeFindings(appNoSsn.id, client);
+    assert.ok(!cNoSsn.fields.find((f) => f.key === 'id_ssn'), 'no SSN on either side → no id_ssn row');
+    assert.ok(!cNoSsn.summary.notPassingKeys.includes('id_ssn'), 'SSN never blocks a file that has no SSN anywhere');
+    ok('a file with no SSN on either side gets no SSN comparison row (no false block)');
+
     // Re-read after restoring so later steps see the original loan.
     for (const k in byKey) delete byKey[k];
     for (const f of (await recon.computeFindings(app.id, client)).fields) byKey[f.key] = f;

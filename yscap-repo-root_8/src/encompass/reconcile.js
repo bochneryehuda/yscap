@@ -291,7 +291,15 @@ function compareIdentity(row, loan) {
   push('id_dob', 'Date of birth', 'date', row.b_dob || null, bor.birthDate || null);
   push('id_email', 'Email', 'email', row.b_email || null, bor.emailAddressText || null);
   push('id_phone', 'Phone', 'phone', row.b_cell_phone || null, (bor.mobilePhone || bor.homePhoneNumber) || null);
-  pushSsn('id_ssn', 'Social Security number', row.b_ssn_hash || null, row.b_ssn_last4 || null, bor._ssnHash || null, bor._ssnLast4 || null);
+  // SSN is surfaced only when at least ONE side actually has one. A file with no
+  // SSN anywhere (common on early/legacy files — SSN is often not captured by
+  // term-sheet time) does NOT get a blocking "no data" SSN row; but the moment an
+  // SSN exists on either side it must MATCH (a one-sided SSN stays incomparable →
+  // not-passing → "enter it in the other system"), so the compare keeps its full
+  // verification power without over-blocking a genuinely SSN-less file.
+  if (row.b_ssn_hash || bor._ssnHash) {
+    pushSsn('id_ssn', 'Social Security number', row.b_ssn_hash || null, row.b_ssn_last4 || null, bor._ssnHash || null, bor._ssnLast4 || null);
+  }
   push('id_property_address', 'Property address', 'address', _addrStr(row.property_address), _addrStr(prop));
 
   // Co-borrower — surfaced ONLY when a co-borrower exists on EITHER side (our
@@ -307,7 +315,9 @@ function compareIdentity(row, loan) {
     push('id_coborrower_dob', 'Co-borrower date of birth', 'date', row.cb_dob || null, coBor.birthDate || null);
     push('id_coborrower_email', 'Co-borrower email', 'email', row.cb_email || null, coBor.emailAddressText || null);
     push('id_coborrower_phone', 'Co-borrower phone', 'phone', row.cb_cell_phone || null, (coBor.mobilePhone || coBor.homePhoneNumber) || null);
-    pushSsn('id_coborrower_ssn', 'Co-borrower Social Security number', row.cb_ssn_hash || null, row.cb_ssn_last4 || null, coBor._ssnHash || null, coBor._ssnLast4 || null);
+    if (row.cb_ssn_hash || coBor._ssnHash) {
+      pushSsn('id_coborrower_ssn', 'Co-borrower Social Security number', row.cb_ssn_hash || null, row.cb_ssn_last4 || null, coBor._ssnHash || null, coBor._ssnLast4 || null);
+    }
   }
   return out;
 }
