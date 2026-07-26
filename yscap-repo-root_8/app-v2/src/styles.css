@@ -3157,3 +3157,57 @@ details[open]>.appr-sec-sum .appr-sec-chev{transform:rotate(180deg)}
 
 /* page eyebrow — gold, sits on paper (not the dark auth bg) */
 .esc-eyebrow{font-size:12px;letter-spacing:.14em;text-transform:uppercase;font-weight:700;color:var(--gold);margin-bottom:7px}
+
+/* ── Closing workspace (owner-directed 2026-07-26) ─────────────────────────
+   The closer's desk + the closing queue. White-first, theme-aware via tokens. */
+.screen{display:block}
+.screen-head{display:flex;justify-content:space-between;align-items:flex-end;gap:12px;margin-bottom:14px;flex-wrap:wrap}
+.pill.err{background:var(--danger-soft);color:var(--danger);border-color:var(--danger)}
+.closing-workspace{display:block}
+.cl-grid{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+.cl-toggle{display:flex;gap:8px;align-items:flex-start;cursor:pointer;padding:6px 0}
+.cl-toggle input{margin-top:3px}
+.cl-toggle-text{line-height:1.35}
+.cl-facts{display:grid;grid-template-columns:1fr 1fr;gap:8px 22px}
+.cl-fact{display:flex;justify-content:space-between;gap:12px;border-bottom:1px solid var(--line);padding:5px 0}
+.cl-fact-k{color:var(--muted);font-size:13px}
+.cl-fact-v{font-weight:600;text-align:right}
+.cl-money-tiles{display:grid;grid-template-columns:repeat(3,1fr);gap:12px}
+.cl-tile{background:var(--ink-2);border:1px solid var(--line);border-radius:var(--radius);padding:12px}
+.cl-tile-k{color:var(--muted);font-size:12px;text-transform:uppercase;letter-spacing:.06em}
+.cl-tile-v{font-size:20px;font-weight:700;margin-top:3px}
+.cl-actual{display:flex;gap:12px;align-items:flex-end;margin-top:12px;flex-wrap:wrap}
+.cl-table-wrap{overflow-x:auto}
+.cl-table{width:100%;border-collapse:collapse;font-size:14px}
+.cl-table th{text-align:left;color:var(--muted);font-weight:600;font-size:12px;padding:6px 8px;border-bottom:1px solid var(--line);white-space:nowrap}
+.cl-table td{padding:7px 8px;border-bottom:1px solid var(--line);vertical-align:top}
+.cl-row-muted{color:var(--muted)}
+.cl-quicklinks{display:grid;grid-template-columns:repeat(3,1fr);gap:12px}
+.cl-ql-group{border:1px solid var(--line);border-radius:var(--radius);padding:10px;background:var(--ink-1)}
+.cl-ql-head{font-weight:600;margin-bottom:5px}
+.cl-ql-doc{display:block;text-align:left;max-width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.cl-cond{display:flex;justify-content:space-between;gap:12px;align-items:flex-start;border-bottom:1px solid var(--line);padding:10px 0}
+.cl-cond:last-child{border-bottom:none}
+.cl-cond-main{display:flex;flex-direction:column;gap:4px;min-width:0}
+.cl-checklist{border:1px solid var(--line);border-radius:var(--radius);padding:10px;margin-bottom:10px;background:var(--ink-1)}
+.cl-checklist-h{display:flex;gap:8px;align-items:center;margin-bottom:6px}
+.cl-check-item{display:flex;gap:8px;align-items:center;padding:3px 0}
+.cl-checked{text-decoration:line-through;color:var(--muted)}
+.cl-add-item{display:flex;gap:6px;margin-top:6px}
+.cl-new-checklist{display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-top:8px;padding-top:10px;border-top:1px solid var(--line)}
+.cl-signoffs{display:flex;flex-direction:column;gap:4px}
+.cl-signrow{display:flex;gap:10px;align-items:center;justify-content:space-between;padding:5px 0;border-bottom:1px solid var(--line)}
+.cl-recon{border:1px solid var(--line);border-radius:var(--radius);padding:12px;background:var(--ink-2)}
+.cl-recon-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:10px;margin-top:8px}
+.cl-recon-cell{background:var(--ink-1);border:1px solid var(--line);border-radius:var(--radius);padding:8px 10px}
+.cl-recon-cell.ok{border-color:var(--ok)}
+.cl-recon-cell.err{border-color:var(--danger);background:var(--danger-soft)}
+.cl-recon-v{font-weight:700;font-size:16px}
+.cl-notes{display:flex;flex-direction:column;gap:8px;margin-top:10px}
+.cl-note{border-left:3px solid var(--gold);padding:4px 10px;background:var(--ink-2)}
+.cl-note-body{white-space:pre-wrap}
+.cl-note-add{display:flex;gap:8px}
+.wf-closing-qs{display:flex;flex-direction:column;gap:4px;margin-top:4px}
+@media(max-width:720px){
+  .cl-grid,.cl-facts,.cl-money-tiles,.cl-quicklinks,.cl-recon-grid{grid-template-columns:1fr}
+}

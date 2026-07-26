@@ -7732,6 +7732,45 @@ router.patch('/applications/:id/closing/checklist-items/:iid', async (req, res) 
   } catch (e) { res.status(500).json({ error: 'server error' }); }
 });
 
+// The CLOSING QUEUE — every file in the closing workflow, scoped to the actor
+// (closers/admins see all via see_all_files; officers/processors see their files).
+router.get('/closing', async (req, res) => {
+  try {
+    const params = [];
+    let scope = '';
+    if (!seesAll(req)) { params.push(req.actor.id); scope = ` AND ${VISIBLE_OFFICERS_SQL('a', '$' + params.length)}`; }
+    const r = await db.query(
+      `SELECT a.id, a.ys_loan_number, a.property_address, a.status, a.lender, a.funded_date, a.expected_closing,
+              b.first_name, b.last_name,
+              cw.stage AS closing_stage, cw.est_closing_date, cw.investor_ctc, cw.closing_date_confirmed,
+              cw.warehouse, cw.actual_cash_to_close, cw.liquidity_ok, cw.tpr_required, cw.tpr_signed_off_at,
+              cw.investor_delivery_signed_off_at, cw.reconciled_ok, cw.collateral_tracking_number,
+              s.full_name AS closer_name
+         FROM closing_workflow cw
+         JOIN applications a ON a.id = cw.application_id AND a.deleted_at IS NULL
+         JOIN borrowers b ON b.id = a.borrower_id
+         LEFT JOIN staff_users s ON s.id = a.closer_id
+        WHERE 1=1 ${scope}
+        ORDER BY COALESCE(cw.est_closing_date, a.expected_closing) NULLS LAST, a.updated_at DESC`,
+      params);
+    res.json(r.rows);
+  } catch (e) { console.warn('[closing] queue error:', db.describeError(e)); res.status(500).json({ error: 'server error' }); }
+});
+
+// Nav badge — files still IN closing (not yet handed to purchasing).
+router.get('/closing/count', async (req, res) => {
+  try {
+    const params = [];
+    let scope = '';
+    if (!seesAll(req)) { params.push(req.actor.id); scope = ` AND ${VISIBLE_OFFICERS_SQL('a', '$' + params.length)}`; }
+    const r = await db.query(
+      `SELECT count(*)::int AS n FROM closing_workflow cw
+         JOIN applications a ON a.id = cw.application_id AND a.deleted_at IS NULL
+        WHERE cw.stage <> 'in_purchasing' ${scope}`, params);
+    res.json({ count: r.rows[0].n });
+  } catch (e) { res.status(500).json({ error: 'server error' }); }
+});
+
 // #84 — super-admin STRUCTURAL UNLOCK. A clear-to-close / funded file's loan
 // structure (price, loan amount, pricing, budget, vesting, program) is frozen for
 // EVERYONE, super_admin included. A super_admin may deliberately UNLOCK a specific

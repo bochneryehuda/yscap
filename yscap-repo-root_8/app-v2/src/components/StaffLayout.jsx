@@ -283,11 +283,13 @@ export default function StaffLayout({ children }) {
   // My Notification Center draft queue — how many parked notifications are waiting for me to Send.
   const [notifDraftCount, setNotifDraftCount] = useState(0);
   const [myExcCount, setMyExcCount] = useState(0);
+  const [closingCount, setClosingCount] = useState(0);
   useEffect(() => {
     let alive = true;
     const poll = () => {
       api.workflowCount().then(r => { if (alive) setWfCount((r && r.total) || 0); }).catch(() => {});
       api.myExceptionsCount().then(r => { if (alive) setMyExcCount((r && r.openCount) || 0); }).catch(() => {});
+      api.closingCount().then(r => { if (alive) setClosingCount((r && r.count) || 0); }).catch(() => {});
     };
     poll();
     const t = setInterval(poll, 120000);
@@ -374,6 +376,7 @@ export default function StaffLayout({ children }) {
   const canManagePricing = can('manage_pricing');
   const canManageVendors = can('manage_vendors');
   const canManageDraws = can('manage_draws');
+  const canManageClosings = can('manage_closings');
   const canDeleteFiles = can('delete_files');
   const canPlatformSetup = can('platform_setup');
   const canViewAudit = can('view_audit_log');
@@ -424,6 +427,8 @@ export default function StaffLayout({ children }) {
         <NavLink className="sb-link" to="/internal/esign" title="E-Signatures — PILOT’s own DocuSign cockpit: every package, every signer, live"><NavIcon name="esign" />E-signatures</NavLink>
         <NavLink className="sb-link" to="/internal/orders" title="Orders — every title & insurance order across your files, and what's waiting to be classified"><NavIcon name="vendors" />Orders</NavLink>
         <NavLink className="sb-link" to="/internal/tapes" title="Data Tapes — export each capital provider's loan tape (their Excel workbook, filled with the loan's figures). One loan at a time or in bulk by provider."><NavIcon name="pipeline" />Data tapes</NavLink>
+        {(canManageClosings || role === 'loan_officer' || role === 'processor') && <NavLink className="sb-link" to="/internal/closing" title="Closing — files submitted to closing: cash-to-close checks, warehouse & collateral, closing conditions, reconciliation."><NavIcon name="pipeline" />Closing
+          {closingCount > 0 && <span className="sb-badge">{closingCount > 99 ? '99+' : closingCount}</span>}</NavLink>}
         {canManageDraws && <NavLink className="sb-link" to="/internal/draws" title="Draw Management — the post-funding phase: every draw, approvals, inspector photos, releases, and reports"><NavIcon name="pipeline" />Draw Management</NavLink>}
         {canManageConditions && <NavLink className="sb-link" to="/internal/conditions" title="Condition Center — the global condition library & rules"><NavIcon name="conditions" />Conditions</NavLink>}
         {canManageVendors && <NavLink className="sb-link" to="/internal/vendors" title="Title & insurance vendor directory"><NavIcon name="vendors" />Vendors</NavLink>}
