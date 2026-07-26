@@ -29,13 +29,53 @@ function friendlyError(status, data) {
   return `Something went wrong (HTTP ${status}) — please try again.`;
 }
 
-// Session expired mid-use: clear the token ONCE, remember why, and let the
-// router (which watches ys:auth-changed) bounce to the correct login screen.
-function sessionExpired() {
+// Session ended mid-use: clear the token ONCE, remember WHY, and let the router
+// (which watches ys:auth-changed) bounce to the correct login screen.
+//
+// `reason` is the server's own words when it gave us one (the 401 body carries a
+// `code` + message — see sessionDenied() in src/auth/index.js), so the login
+// screen can say "this account has been turned off" instead of the catch-all
+// "your session expired", which sent people re-typing a password that was never
+// the problem (owner-reported 2026-07-26).
+const DEFAULT_NOTICE = 'You were signed out because your session expired. Please sign in again.';
+function sessionExpired(reason) {
   if (!getToken()) return;
   clearToken();
-  try { sessionStorage.setItem(NOTICE_KEY, 'You were signed out because your session expired. Please sign in again.'); } catch { /* private mode */ }
+  try { sessionStorage.setItem(NOTICE_KEY, reason || DEFAULT_NOTICE); } catch { /* private mode */ }
   window.dispatchEvent(new Event('ys:auth-changed'));
+}
+
+/* Is the session REALLY dead, or was that one 401 about something else?
+   Signing someone out is destructive (it drops every open tab on the device —
+   the token lives in localStorage), so we never do it on the strength of a
+   single response. We ask /auth/me, which answers for the SESSION and nothing
+   else. Plain fetch, so this can never recurse back into the 401 handling.
+   Anything other than a clean 401 (a network blip, a 502 from an upstream
+   vendor, a 500) means KEEP the session. */
+async function confirmSessionDead(token) {
+  try {
+    const res = await fetch('/auth/me', { headers: { Authorization: `Bearer ${token}` } });
+    if (res.status !== 401) return null;
+    let data = null; try { data = await res.json(); } catch { /* empty */ }
+    return { dead: true, reason: (data && data.error) || '' };
+  } catch { return null; }   // couldn't reach the server — not proof of anything
+}
+
+// Only one confirmation probe in flight at a time: a screen that fires six
+// parallel calls must not fire six probes (and must not race six sign-outs).
+let deadCheck = null;
+async function handle401(data) {
+  const token = getToken();
+  if (!token) return;
+  // The server marks a genuine session rejection with `session:'invalid'`.
+  // A 401 WITHOUT that marker is not ours to act on — it came from something
+  // else on the way (a proxy, a CDN, an older build) and must never sign
+  // anyone out on its own; we confirm it against /auth/me first either way.
+  if (!deadCheck) deadCheck = confirmSessionDead(token).finally(() => { deadCheck = null; });
+  const verdict = await deadCheck;
+  if (!verdict || !verdict.dead) return;               // session is fine — leave it alone
+  if (getToken() !== token) return;                    // someone already signed in again
+  sessionExpired(verdict.reason || (data && data.error) || DEFAULT_NOTICE);
 }
 
 // One fetch with retry-on-transient-failure (only for GETs — retrying a write
@@ -60,7 +100,11 @@ async function resilientFetch(path, opts, { isAuthCall = false } = {}) {
     }
     const fresh = res.headers.get('X-Refresh-Token');
     if (fresh && getToken()) setToken(fresh);
-    if (res.status === 401 && !isAuthCall && getToken()) sessionExpired();
+    if (res.status === 401 && !isAuthCall && getToken()) {
+      // Read the reason without consuming the body the caller still needs.
+      let data = null; try { data = await res.clone().json(); } catch { /* empty */ }
+      handle401(data);   // deliberately not awaited — the caller's error path shouldn't wait on the probe
+    }
     return res;
   }
 }
