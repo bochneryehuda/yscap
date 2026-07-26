@@ -33,7 +33,10 @@ async function getLoan(guid, { entities } = {}) {
   return encompass.apiGet(`/encompass/v3/loans/${encodeURIComponent(guid)}${qs}`);
 }
 
-// Pipeline SEARCH by loan number. Returns [{loanGuid, fields:{...}}, ...].
+// Pipeline SEARCH by loan number. Encompass Developer Connect v3 returns each row
+// as [{loanId:"<GUID>", fields:{"Loan.Guid":..., "Loan.LoanNumber":...}}, ...] —
+// the GUID is `loanId` (NOT `loanGuid`) and field values are NESTED under `fields`.
+// reader.js reads it via its shape-tolerant row accessors (`_rowGuid`/`_rowField`).
 // The one and only way to find a loan without knowing its GUID up front.
 async function findLoanByLoanNumber(loanNumber, { extraFields } = {}) {
   if (!loanNumber) throw new Error('findLoanByLoanNumber: loanNumber is required.');

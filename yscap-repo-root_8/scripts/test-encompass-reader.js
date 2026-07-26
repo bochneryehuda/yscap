@@ -320,6 +320,37 @@ async function main() {
     Object.assign(process.env, savedEnv);
   }
 
+  // (11) Regression (2026-07-26 live): the REAL Encompass v3 pipeline row is
+  // { loanId, fields:{ "Loan.Guid":..., "Loan.LoanNumber":... } } — NOT { loanGuid }
+  // with the field values flattened onto the row. Such a row must still yield its
+  // GUID on the per-file pull (the live symptom was "pipeline search returned a row
+  // without a GUID" even though a matching loan came back).
+  mockDb._appRows = [{ id: 'app-real', ys_loan_number: 'YS-777', encompass_loan_guid: null }];
+  mockClient.findLoanByLoanNumber = async () => [{ loanId: 'guid-real-1', fields: { 'Loan.Guid': 'guid-real-1', 'Loan.LoanNumber': 'YS-777' } }];
+  mockClient.getLoan = async (guid) => ({ guid, loanNumber: 'YS-777', applications: [{ borrower: { firstName: 'Re', lastName: 'Al' } }] });
+  queries.length = 0;
+  const rReal = await reader.pullLoanForApplication('app-real');
+  assert.strictEqual(rReal.ok, true, 'real Encompass row shape {loanId,fields} yields ok (no "row without a GUID")');
+  assert.strictEqual(rReal.guid, 'guid-real-1', 'GUID pulled from loanId / fields[Loan.Guid]');
+  const adoptReal = queries.find((q) => /UPDATE applications SET encompass_loan_guid=\$1/.test(q.sql));
+  assert.ok(adoptReal && adoptReal.params[0] === 'guid-real-1', 'adopts the GUID from the nested-shape row');
+
+  // (12) Regression: the bulk pull reads the SAME nested shape — GUID from loanId,
+  // field values from `fields` (a flattened-only read would store null loan numbers
+  // and break loan-number → application matching / enrichment).
+  mockClient._pipelineHits = [
+    { loanId: 'guid-N', fields: { 'Loan.Guid': 'guid-N', 'Loan.LoanNumber': 'YS-N', 'Loan.LoanFolder': 'Active', 'Loan.LoanAmount': 321, 'Loan.BorrowerLastName': 'Nest', 'Loan.LastModified': '2026-07-21T00:00:00Z' } },
+  ];
+  mockDb._appsByLoanNumber = {};
+  mockClient.getLoan = async (guid) => ({ guid, applications: [{ borrower: { firstName: 'N' } }] });
+  queries.length = 0;
+  const bulkN = await reader.bulkPullAllLoans({ perRequestDelayMs: 0, pageSize: 100 });
+  assert.strictEqual(bulkN.pulled, 1, 'nested-shape row pulled');
+  const snapN = queries.find((q) => /INSERT INTO encompass_loan_snapshot\s+\(encompass_loan_guid/.test(q.sql));
+  assert.ok(snapN, 'nested-shape row upserted to snapshot');
+  assert.strictEqual(snapN.params[0], 'guid-N', 'snapshot GUID from loanId');
+  assert.strictEqual(snapN.params[1], 'YS-N', 'snapshot loan_number from fields[Loan.LoanNumber]');
+
   console.log('OK — Encompass reader unit tests pass (includes super-dump + bulk-pull + client-contract check).');
 }
 
