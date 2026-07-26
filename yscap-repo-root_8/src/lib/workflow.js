@@ -369,10 +369,11 @@ async function queueCounts(staffId, client = db) {
 // fully_reconciled. The route drives the linked ClickUp status via the status
 // door (fully_closed → funded). Here we just record the stage + timestamps.
 // ---------------------------------------------------------------------------
-const CLOSING_STAGES = ['estimated', 'ready_for_docs', 'wire_sent', 'fully_closed', 'fully_reconciled'];
+const CLOSING_STAGES = ['estimated', 'ready_for_docs', 'wire_sent', 'fully_closed', 'fully_reconciled', 'in_purchasing'];
 const CLOSING_STAGE_AT = {
   ready_for_docs: 'ready_for_docs_at', wire_sent: 'wire_sent_at',
   fully_closed: 'fully_closed_at', fully_reconciled: 'fully_reconciled_at',
+  in_purchasing: 'purchasing_at',
 };
 // The ClickUp internal status each closing stage maps to (null = leave status).
 const CLOSING_STAGE_STATUS = {
@@ -380,6 +381,8 @@ const CLOSING_STAGE_STATUS = {
   wire_sent: 'active closing',
   fully_closed: 'closed (6-email funded)',
   fully_reconciled: 'closed reconciled',
+  // Investor delivery + reconciled → the file goes to purchasing / post-closing.
+  in_purchasing: 'in purchase review',
 };
 
 async function getClosing(appId, client = db) {
@@ -387,16 +390,33 @@ async function getClosing(appId, client = db) {
   return r.rows[0] || null;
 }
 
-// Create/refresh the closing row at 'estimated' with the estimated closing date.
-async function openClosing(client, { appId, workflowItemId, estClosingDate, actorId }) {
+// Create/refresh the closing row at 'estimated' with the estimated closing date,
+// plus the loan officer's submit answers (investor CTC'd, closing date confirmed
+// with all parties). The two flags are captured on the officer's submit and stamp
+// _at/_by when set true; a false/omitted flag never clears an existing true.
+async function openClosing(client, { appId, workflowItemId, estClosingDate, actorId, investorCtc, closingDateConfirmed }) {
+  const setCtc = investorCtc === true;
+  const setConf = closingDateConfirmed === true;
   const r = await client.query(
-    `INSERT INTO closing_workflow (application_id, workflow_item_id, stage, est_closing_date, updated_by)
-     VALUES ($1,$2,'estimated',$3,$4)
+    `INSERT INTO closing_workflow
+       (application_id, workflow_item_id, stage, est_closing_date, updated_by,
+        investor_ctc, investor_ctc_at, investor_ctc_by,
+        closing_date_confirmed, closing_date_confirmed_at, closing_date_confirmed_by)
+     VALUES ($1,$2,'estimated',$3,$4,
+        $5, CASE WHEN $5 THEN now() END, CASE WHEN $5 THEN $4 END,
+        $6, CASE WHEN $6 THEN now() END, CASE WHEN $6 THEN $4 END)
      ON CONFLICT (application_id) DO UPDATE
         SET workflow_item_id = EXCLUDED.workflow_item_id,
             est_closing_date = COALESCE(EXCLUDED.est_closing_date, closing_workflow.est_closing_date),
+            investor_ctc = closing_workflow.investor_ctc OR EXCLUDED.investor_ctc,
+            investor_ctc_at = COALESCE(closing_workflow.investor_ctc_at, EXCLUDED.investor_ctc_at),
+            investor_ctc_by = COALESCE(closing_workflow.investor_ctc_by, EXCLUDED.investor_ctc_by),
+            closing_date_confirmed = closing_workflow.closing_date_confirmed OR EXCLUDED.closing_date_confirmed,
+            closing_date_confirmed_at = COALESCE(closing_workflow.closing_date_confirmed_at, EXCLUDED.closing_date_confirmed_at),
+            closing_date_confirmed_by = COALESCE(closing_workflow.closing_date_confirmed_by, EXCLUDED.closing_date_confirmed_by),
             updated_by = EXCLUDED.updated_by, updated_at = now()
-     RETURNING *`, [appId, workflowItemId || null, estClosingDate || null, actorId || null]);
+     RETURNING *`,
+    [appId, workflowItemId || null, estClosingDate || null, actorId || null, setCtc, setConf]);
   return r.rows[0];
 }
 
