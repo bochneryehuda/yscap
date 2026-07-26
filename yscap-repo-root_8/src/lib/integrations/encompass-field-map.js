@@ -107,12 +107,18 @@ const REGISTRY = Object.freeze([
   pull({ key: 'term_months', encompassFieldId: '4', loanPath: 'loanAmortizationTermMonths', type: 'int', category: 'loan', compare: 'int', our: 'column:term (text → int)', note: 'Term in months' }),
   pull({ key: 'maturity_date', encompassFieldId: '78', loanPath: 'maturityDate', type: 'date', category: 'loan', compare: 'date', our: 'column:maturity_date', note: 'Maturity date — read from full loan (maturityDate), not pipeline' }),
   // Funded date — the closing-workflow 3-system reconciliation reads this (field
-  // 1401 Funded Date; docs/ENCOMPASS-DATA-MAPPING.md §3G). ADVISORY read-only: it
-  // never blocks term-sheet issuance, and the reconcile gate only enforces the
-  // Encompass leg when a value is actually present (graceful N/A otherwise). The
-  // standard loanPath is closingDocument.fundingDate — verify the tenant populates
-  // it against a live funded loan before promoting the leg to a hard block.
-  pull({ key: 'funded_date', encompassFieldId: '1401', loanPath: 'closingDocument.fundingDate', type: 'date', category: 'loan', compare: 'date', gate: GATE.ADVISORY, our: 'column:funded_date', note: 'Funded date — read-only, advisory; used by the closing reconciliation gate' }),
+  // 1401 Funded Date; docs/ENCOMPASS-DATA-MAPPING.md §3G). REFERENCE only for the
+  // per-file term-sheet comparison: it is DISPLAYED (Encompass's funded date) but
+  // NEVER gates term-sheet issuance. It must not, because a funded date only
+  // exists AFTER the loan funds — long after the term sheet is issued — so under
+  // the owner-directed match-all gate (2026-07-26: advisory + "no data" both hold
+  // the term sheet) a naturally-empty funded_date would wrongly block every
+  // pre-funding file. extractFields still returns the value (compare type does not
+  // affect extraction), so closing.js `readEncompassFundedDate` + the closing
+  // reconciliation gate (#773) keep working unchanged. loanPath is
+  // closingDocument.fundingDate — verify the tenant populates it on a live funded
+  // loan before the closing gate treats a present value as authoritative.
+  pull({ key: 'funded_date', encompassFieldId: '1401', loanPath: 'closingDocument.fundingDate', type: 'date', category: 'loan', compare: 'reference', gate: GATE.REFERENCE, our: 'column:funded_date', note: 'Funded date — read-only reference; shown for info, never gates the term sheet (empty until funding); the closing reconciliation gate reads the value separately' }),
 
   // ── Experience / rehab-type / accrual (enum + int, advisory) ──────────────
   pull({ key: 'total_experience_deals', encompassFieldId: 'CX.TOTALEXPERIENCEDEALS', type: 'int', category: 'experience', compare: 'int', gate: GATE.ADVISORY, our: 'derive(requested_exp_flips/holds/ground + verified track record)', note: 'Verified experience count used to qualify' }),
