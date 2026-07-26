@@ -48,6 +48,7 @@ import StaffBorrowers from './screens/StaffBorrowers.jsx';
 import StaffEmails from './screens/StaffEmails.jsx';
 import StaffOrders from './screens/StaffOrders.jsx';
 import StaffBorrowerDetail from './screens/StaffBorrowerDetail.jsx';
+import StaffBorrowerView from './screens/StaffBorrowerView.jsx';
 import StaffVendors from './screens/StaffVendors.jsx';
 import StaffChat from './screens/StaffChat.jsx';
 import StaffClickup from './screens/StaffClickup.jsx';
@@ -166,6 +167,8 @@ export default function App() {
           <Route path="/internal/orders" element={<StaffPrivate><StaffOrders /></StaffPrivate>} />
           <Route path="/internal/borrowers" element={<StaffPrivate><StaffBorrowers /></StaffPrivate>} />
           <Route path="/internal/borrowers/:id" element={<StaffPrivate><StaffBorrowerDetail /></StaffPrivate>} />
+          {/* Borrower view — pick a borrower and see PILOT as they see it. */}
+          <Route path="/internal/borrower-view" element={<StaffPrivate><StaffBorrowerView /></StaffPrivate>} />
           <Route path="/internal/vendors" element={<StaffPrivate><StaffVendors /></StaffPrivate>} />
           <Route path="/internal/chat" element={<StaffPrivate><StaffChat /></StaffPrivate>} />
           <Route path="/internal/api-health" element={<StaffPrivate><StaffApiHealth /></StaffPrivate>} />

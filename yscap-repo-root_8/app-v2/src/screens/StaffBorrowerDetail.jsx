@@ -4,9 +4,11 @@ import { api, saveBlob } from '../lib/api.js';
 import { useSubmitGate } from '../lib/useSubmitGate.js';
 import { fmtDay, dayInputValue } from '../lib/dates.js';
 import LlcManager from '../components/LlcManager.jsx';
+import BorrowerViewButton from '../components/BorrowerViewButton.jsx';
 import { PhoneInput, ZipInput, EmailInput } from '../components/FormattedInputs.jsx';
 import { passwordProblem } from '../lib/password.js';
-import { CITIZENSHIP, MARITAL, CONTACT_TYPE, withCurrent } from '../lib/enums.js';
+import { CITIZENSHIP, MARITAL, CONTACT_TYPE, HOUSING, withCurrent } from '../lib/enums.js';
+import { formatSSN } from '../lib/validators.js';
 
 // Borrower CRM hub — the single place staff see everything about a person:
 // personal info + editable CRM fields, their loan files ("mortgages with us"),
@@ -132,6 +134,9 @@ function Header({ b, name, onChanged }) {
           </div>
         </div>
         <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', justifyContent: 'flex-end' }}>
+          {/* Step into this borrower's portal from their profile (owner-directed
+              2026-07-26). Only offered once they actually have a login. */}
+          {b.has_account && <BorrowerViewButton borrowerId={b.id} borrowerName={name} />}
           {b.has_account
             ? <button className="btn ghost small" disabled={busy === 'reset' || !b.email} onClick={() => act('reset')}>Reset password</button>
             : <button className="btn primary small" disabled={busy === 'invite' || !b.email} onClick={() => act('invite')}>Invite to PILOT</button>}
@@ -162,14 +167,21 @@ function Overview({ b, onChanged }) {
   const [msg, setMsg] = useState('');
   const [err, setErr] = useState('');
   useEffect(() => { api.staffTeam().then(setTeam).catch(() => {}); }, []);
+  // A shared mailbox (a husband and wife on one address) is a real situation, not
+  // an error — the save offers to keep BOTH profiles rather than dead-ending.
+  const [shareOffer, setShareOffer] = useState(false);
   const start = () => setF({
     email: b.email || '', cellPhone: b.cell_phone || '', contactType: b.contact_type || '',
     maritalStatus: b.marital_status || '', citizenship: b.citizenship || '',
     dob: dayInputValue(b.date_of_birth) || '',
     primaryOfficerId: b.primary_officer_id || '',
+    housingStatus: b.housing_status || '', housingPayment: b.housing_payment ?? '',
+    yearsAtResidence: b.years_at_residence ?? '', monthsAtResidence: b.months_at_residence ?? '',
+    employmentType: b.employment_type || '', employer: b.employer || '',
+    dependentsCount: b.dependents_count ?? '',
     ca: b.current_address || {}, ma: b.mailing_address || {},
   });
-  async function save() {
+  async function save(allowSharedEmail = false) {
     setBusy(true); setErr('');
     try {
       await api.staffUpdateBorrower(b.id, {
@@ -179,11 +191,22 @@ function Overview({ b, onChanged }) {
         // the profile AND every linked ClickUp task (audited + journaled).
         ...(f.dob && f.dob !== (dayInputValue(b.date_of_birth) || '') ? { dob: f.dob } : {}),
         primaryOfficerId: f.primaryOfficerId || null,
+        // Where they live and what they pay for it — the same columns the
+        // borrower's own portal edits and the same ones that sync both ways with
+        // ClickUp's Primary Housing fields, so the profile and the card agree.
+        housingStatus: f.housingStatus, housingPayment: f.housingPayment,
+        yearsAtResidence: f.yearsAtResidence, monthsAtResidence: f.monthsAtResidence,
+        employmentType: f.employmentType, employer: f.employer,
+        dependentsCount: f.dependentsCount,
         currentAddress: Object.values(f.ca).some(Boolean) ? f.ca : null,
         mailingAddress: Object.values(f.ma).some(Boolean) ? f.ma : null,
+        ...(allowSharedEmail ? { allowSharedEmail: true } : {}),
       });
-      setMsg('Saved ✓'); setTimeout(() => setMsg(''), 3000); setF(null); onChanged();
-    } catch (e) { setErr(e.message || 'Could not save'); }
+      setMsg('Saved ✓'); setTimeout(() => setMsg(''), 3000); setF(null); setShareOffer(false); onChanged();
+    } catch (e) {
+      setErr(e.message || 'Could not save');
+      setShareOffer(!!(e.data && e.data.sharedEmail && e.data.sharedEmail.canShare));
+    }
     finally { setBusy(false); }
   }
   const Row = ({ k, v }) => (<div className="metrow"><span className="k">{k}</span><span className="v">{v || '—'}</span></div>);
@@ -233,9 +256,51 @@ function Overview({ b, onChanged }) {
           <label><span>State</span><input className="input" value={f.ma.state || ''} onChange={e => setMa('state', e.target.value)} /></label>
           <label><span>ZIP</span><ZipInput value={f.ma.zip || ''} onChange={v => setMa('zip', v)} /></label>
         </div>
+        {/* Housing: do they own or rent, and what does it cost them each month.
+            Collected on the loan file and on the borrower's own application — the
+            profile is where it belongs, and it rides along to every new file. */}
+        <div style={{ fontWeight: 600, margin: '12px 0 6px', color: '#141B22' }}>Housing</div>
+        <div className="ts-inputs">
+          <label><span>Owns or rents</span>
+            <select className="input" value={f.housingStatus} onChange={e => setF({ ...f, housingStatus: e.target.value })}>
+              <option value="">Select…</option>{withCurrent(HOUSING, f.housingStatus).map(c => <option key={c} value={c}>{c}</option>)}
+            </select></label>
+          <label><span>Rent / mortgage per month</span>
+            <input className="input" inputMode="decimal" placeholder="e.g. 2,800" value={f.housingPayment}
+              onChange={e => setF({ ...f, housingPayment: e.target.value })} /></label>
+          <label><span>Years at this address</span>
+            <input className="input" inputMode="decimal" value={f.yearsAtResidence}
+              onChange={e => setF({ ...f, yearsAtResidence: e.target.value })} /></label>
+          <label><span>…plus months</span>
+            <input className="input" inputMode="numeric" value={f.monthsAtResidence}
+              onChange={e => setF({ ...f, monthsAtResidence: e.target.value })} /></label>
+          <label><span>Employment</span>
+            <input className="input" value={f.employmentType} placeholder="W-2 / 1099 / Self employed"
+              onChange={e => setF({ ...f, employmentType: e.target.value })} /></label>
+          <label><span>Employer</span>
+            <input className="input" value={f.employer} onChange={e => setF({ ...f, employer: e.target.value })} /></label>
+          <label><span>Dependents</span>
+            <input className="input" inputMode="numeric" value={f.dependentsCount}
+              onChange={e => setF({ ...f, dependentsCount: e.target.value })} /></label>
+        </div>
+        <p className="small" style={{ color: '#4B585C', marginTop: 8 }}>
+          Housing, employment and address save to the borrower's profile and go out to their ClickUp cards,
+          so every file this person opens starts with the same details already filled in.
+        </p>
+        {shareOffer && (
+          <div className="notice" style={{ marginTop: 10, color: '#141B22' }}>
+            <strong>Do two people share this email?</strong> A husband and wife often use one mailbox.
+            Keep both as separate profiles on the same address — only the first one can sign in to the portal.
+            <div style={{ marginTop: 8 }}>
+              <button className="btn small" disabled={busy} onClick={() => save(true)}>
+                Yes — they share the mailbox, save anyway
+              </button>
+            </div>
+          </div>
+        )}
         <div className="row" style={{ gap: 8, marginTop: 12 }}>
-          <button className="btn primary small" disabled={busy} onClick={save}>{busy ? 'Saving…' : 'Save'}</button>
-          <button className="btn ghost small" onClick={() => setF(null)}>Cancel</button>
+          <button className="btn primary small" disabled={busy} onClick={() => save(false)}>{busy ? 'Saving…' : 'Save'}</button>
+          <button className="btn ghost small" onClick={() => { setF(null); setShareOffer(false); }}>Cancel</button>
         </div>
       </div>
     );
@@ -249,10 +314,10 @@ function Overview({ b, onChanged }) {
       </div>
       {msg && <div className="notice ok" style={{ marginTop: 8 }}>{msg}</div>}
       <div style={{ marginTop: 10 }}>
-        <Row k="Email" v={b.email} />
+        <Row k="Email" v={b.email && !/@clickup\.local$/i.test(b.email) ? b.email : null} />
         <Row k="Cell phone" v={b.cell_phone} />
         <Row k="Date of birth" v={fmtDate(b.date_of_birth)} />
-        <Row k="SSN" v={b.ssn_last4 ? `•••-••-${b.ssn_last4}` : null} />
+        <SsnRow b={b} onChanged={onChanged} />
         <Row k="FICO" v={b.fico} />
         <Row k="Citizenship" v={b.citizenship} />
         <Row k="Marital status" v={b.marital_status} />
@@ -261,24 +326,240 @@ function Overview({ b, onChanged }) {
         {/* ADDITIONAL contact info accumulated across the borrower's files
             (owner-directed 2026-07-15 night): extra emails/phones ADD here —
             the primary above never gets replaced by another file's contact. */}
-        {(() => {
-          const extras = (b.contacts || []).filter((c) =>
-            !(c.kind === 'email' && String(c.value).toLowerCase() === String(b.email || '').toLowerCase()) &&
-            !(c.kind === 'phone' && String(c.value).replace(/\D/g, '').slice(-10) === String(b.cell_phone || '').replace(/\D/g, '').slice(-10)));
-          return extras.length ? (
-            <>
-              <div className="gold-rule" style={{ margin: '8px 0' }} />
-              <div className="metrow"><span className="k">Also on file</span><span className="v muted small">
-                {extras.map((c, i) => <span key={i} style={{ display: 'block' }}>{c.kind === 'email' ? '✉' : '☎'} {c.value}</span>)}
-              </span></div>
-            </>
-          ) : null;
-        })()}
         <Row k="Current address" v={addr(b.current_address)} />
         <Row k="Mailing address" v={b.mailing_address ? addr(b.mailing_address) : 'same as current'} />
-        <Row k="Housing" v={b.housing_status ? `${b.housing_status.replace(/_/g, ' ')}${b.housing_payment ? ` · ${money(b.housing_payment)}/mo` : ''}` : null} />
+        <Row k="Housing" v={b.housing_status
+          ? `${b.housing_status.replace(/_/g, ' ')}${b.housing_payment ? ` · ${money(b.housing_payment)}/mo` : ''}`
+          : null} />
+        <Row k="Time at address" v={b.years_at_residence != null || b.months_at_residence != null
+          ? [b.years_at_residence ? `${b.years_at_residence} yr` : null,
+             b.months_at_residence ? `${b.months_at_residence} mo` : null].filter(Boolean).join(' ') || null
+          : null} />
+        <Row k="Employment" v={[b.employment_type, b.employer].filter(Boolean).join(' · ')} />
+        <Row k="Dependents" v={b.dependents_count} />
         <Row k="In system since" v={fmtDate(b.created_at)} />
       </div>
+      <ContactBook b={b} onChanged={onChanged} />
+      {(b.sharing || []).length > 0 && (
+        <div className="notice" style={{ marginTop: 12, color: '#141B22' }}>
+          <strong>This email is shared.</strong>{' '}
+          {(b.sharing || []).map(s => [s.first_name, s.last_name].filter(Boolean).join(' ')).join(', ')}{' '}
+          {b.sharing.length === 1 ? 'also uses' : 'also use'} this address. They are separate people with their own
+          profiles and files — only one of them can sign in to the portal with it.
+        </div>
+      )}
+      <OtherDeals rows={b.otherDeals || []} />
+    </div>
+  );
+}
+
+/* ---------------- SSN: reveal, add, correct, and un-stick a duplicate --------
+   The profile could only ever REVEAL an SSN — adding one had to be done from
+   inside a loan file, which is exactly backwards for a person who has no file
+   yet (owner-directed 2026-07-26). And when the number is already sitting on a
+   DUPLICATE profile the old error just said "another borrower has it" with no
+   way to see who, or to fix it. Now it names the profile and offers the move. */
+function SsnRow({ b, onChanged }) {
+  const [full, setFull] = useState('');
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState('');
+  const [conflict, setConflict] = useState(null);
+
+  async function reveal() {
+    if (full) { setFull(''); return; }
+    setBusy(true); setErr('');
+    try { const r = await api.staffBorrowerSsn(b.id); setFull(r.ssn || ''); }
+    catch (e) { setErr(e.message || 'Could not reveal the number'); }
+    finally { setBusy(false); }
+  }
+  async function save(resolveConflict) {
+    if (draft.replace(/\D/g, '').length !== 9) return;
+    setBusy(true); setErr('');
+    try {
+      await api.staffSetBorrowerSsn(b.id, draft, resolveConflict ? { resolveConflict } : {});
+      setEditing(false); setDraft(''); setFull(''); setConflict(null); onChanged();
+    } catch (e) {
+      setErr(e.message || 'Could not save the number');
+      setConflict(e.data && e.data.conflict ? e.data.conflict : null);
+    } finally { setBusy(false); }
+  }
+
+  return (
+    <>
+      <div className="metrow">
+        <span className="k">SSN</span>
+        <span className="v" style={{ display: 'flex', alignItems: 'center', gap: 8, justifyContent: 'flex-end' }}>
+          {editing ? (
+            <>
+              <input className="input" type="password" inputMode="numeric" autoComplete="off"
+                placeholder="•••-••-••••" value={draft} disabled={busy} style={{ maxWidth: 160 }}
+                onChange={(e) => { setDraft(formatSSN(e.target.value)); setConflict(null); setErr(''); }}
+                onKeyDown={(e) => { if (e.key === 'Enter') save(); if (e.key === 'Escape') { setEditing(false); setConflict(null); setErr(''); } }} />
+              <button className="btn small" disabled={busy || draft.replace(/\D/g, '').length !== 9} onClick={() => save()}>
+                {busy ? '…' : 'Save'}</button>
+              <button className="btn ghost small" onClick={() => { setEditing(false); setDraft(''); setConflict(null); setErr(''); }}>Cancel</button>
+            </>
+          ) : (
+            <>
+              <span style={{ fontVariantNumeric: 'tabular-nums', letterSpacing: '.02em', color: '#141B22' }}>
+                {full || (b.ssn_last4 ? `•••-••-${b.ssn_last4}` : '—')}
+              </span>
+              {b.ssn_last4 && (
+                <button className="btn ghost small" disabled={busy} onClick={reveal}
+                  title={full ? 'Hide the full number' : 'Show the full number (this is logged)'}>
+                  {busy ? '…' : (full ? 'Hide' : 'Show')}
+                </button>
+              )}
+              <button className="btn ghost small" onClick={() => { setDraft(''); setEditing(true); }}
+                title={b.ssn_last4 ? 'Correct the Social Security number (logged, and sent to ClickUp)' : 'Add the Social Security number (logged, and sent to ClickUp)'}>
+                {b.ssn_last4 ? 'Change' : 'Add'}
+              </button>
+            </>
+          )}
+        </span>
+      </div>
+      {err && (
+        <div role="alert" className="notice err" style={{ marginTop: 6 }}>
+          {err}
+          {conflict && conflict.canResolve && (
+            <div style={{ marginTop: 8, display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+              {conflict.borrowerId && (
+                <Link className="btn ghost small" to={`/internal/borrowers/${conflict.borrowerId}`}>
+                  Open {conflict.name || 'the other profile'}
+                </Link>
+              )}
+              <button className="btn small" disabled={busy} onClick={() => save('same_person')}>
+                Same person — move the number to this profile
+              </button>
+            </div>
+          )}
+        </div>
+      )}
+    </>
+  );
+}
+
+/* ---------------- primary contact + everything else we can reach them on -----
+   Every synced file can bring another email or phone for the same person, and
+   they ADD to the profile instead of replacing what is already there. Until now
+   that list was read-only: a staffer could SEE a better number but not make
+   PILOT use it, and could not type in a new one at all. */
+function ContactBook({ b, onChanged }) {
+  const [busy, setBusy] = useState('');
+  const [err, setErr] = useState('');
+  const [adding, setAdding] = useState(null);   // {kind, value}
+  const primaryEmail = String(b.email || '').toLowerCase();
+  const primaryPhone = String(b.cell_phone || '').replace(/\D/g, '').slice(-10);
+  const isPrimary = (c) => (c.kind === 'email'
+    ? String(c.value).toLowerCase() === primaryEmail
+    : String(c.value).replace(/\D/g, '').slice(-10) === primaryPhone && !!primaryPhone);
+  const others = (b.contacts || []).filter((c) => !isPrimary(c));
+
+  async function promote(c, allowSharedEmail = false) {
+    setBusy(c.value); setErr('');
+    try { await api.staffSetPrimaryContact(b.id, { kind: c.kind, value: c.value, allowSharedEmail }); onChanged(); }
+    catch (e) {
+      setErr(e.message || 'Could not make that the primary');
+      if (e.data && e.data.sharedEmail && e.data.sharedEmail.canShare
+          && window.confirm(`${e.message}\n\nKeep both people on this email address?`)) {
+        return promote(c, true);
+      }
+    } finally { setBusy(''); }
+  }
+  async function add() {
+    if (!adding || !adding.value.trim()) return;
+    setBusy('add'); setErr('');
+    try { await api.staffAddBorrowerContact(b.id, { kind: adding.kind, value: adding.value.trim(), makePrimary: !!adding.makePrimary }); setAdding(null); onChanged(); }
+    catch (e) { setErr(e.message || 'Could not add that contact'); }
+    finally { setBusy(''); }
+  }
+
+  return (
+    <div style={{ marginTop: 14, borderTop: '1px solid var(--line, #E7E1D3)', paddingTop: 12 }}>
+      <div className="row" style={{ alignItems: 'center' }}>
+        <h4 style={{ margin: 0, color: '#141B22' }}>How to reach them</h4>
+        <div className="spacer" />
+        <button className="btn ghost small" onClick={() => setAdding(adding ? null : { kind: 'phone', value: '', makePrimary: false })}>
+          {adding ? 'Cancel' : '+ Add email or phone'}
+        </button>
+      </div>
+      <p className="small" style={{ color: '#4B585C', marginTop: 4 }}>
+        The <strong>primary</strong> email and phone are what PILOT actually uses — every notification,
+        term sheet and ClickUp card. Anything else here is kept as a way to reach them.
+      </p>
+      {err && <div role="alert" className="notice err" style={{ marginTop: 8 }}>{err}</div>}
+      {adding && (
+        <div className="row" style={{ gap: 8, marginTop: 8, flexWrap: 'wrap', alignItems: 'center' }}>
+          <select className="input" style={{ maxWidth: 120 }} value={adding.kind}
+            onChange={(e) => setAdding({ ...adding, kind: e.target.value })}>
+            <option value="phone">Phone</option><option value="email">Email</option>
+          </select>
+          <input className="input" style={{ maxWidth: 260 }} value={adding.value}
+            placeholder={adding.kind === 'email' ? 'name@email.com' : '(555) 123-4567'}
+            onChange={(e) => setAdding({ ...adding, value: e.target.value })} />
+          <label style={{ display: 'flex', gap: 6, alignItems: 'center', color: '#141B22' }}>
+            <input type="checkbox" checked={!!adding.makePrimary}
+              onChange={(e) => setAdding({ ...adding, makePrimary: e.target.checked })} />
+            <span className="small">Make this the primary</span>
+          </label>
+          <button className="btn small" disabled={busy === 'add'} onClick={add}>{busy === 'add' ? 'Saving…' : 'Add'}</button>
+        </div>
+      )}
+      <div style={{ marginTop: 8 }}>
+        <div className="metrow"><span className="k">Primary email</span>
+          <span className="v" style={{ color: '#141B22' }}>{b.email && !/@clickup\.local$/i.test(b.email) ? b.email : '—'}</span></div>
+        <div className="metrow"><span className="k">Primary phone</span>
+          <span className="v" style={{ color: '#141B22' }}>{b.cell_phone || '—'}</span></div>
+        {others.length === 0
+          ? <p className="small" style={{ color: '#4B585C' }}>Nothing else on file for this person yet.</p>
+          : others.map((c, i) => (
+            <div key={i} className="metrow">
+              <span className="k">{c.kind === 'email' ? 'Other email' : 'Other phone'}</span>
+              <span className="v" style={{ display: 'flex', gap: 8, alignItems: 'center', justifyContent: 'flex-end', color: '#141B22' }}>
+                {c.value}
+                <button className="btn ghost small" disabled={busy === c.value} onClick={() => promote(c)}>
+                  {busy === c.value ? '…' : 'Make primary'}
+                </button>
+              </span>
+            </div>
+          ))}
+      </div>
+    </div>
+  );
+}
+
+/* ---------------- the person's other business with us ------------------------
+   DSCR / long-term deals live in ClickUp and never become loan files here, so a
+   client who has only ever done that kind of business used to look like an empty
+   record. This lists what ClickUp knows about them (owner-directed 2026-07-26:
+   "build up an entire profile from ClickUp for all the information available,
+   even if they never took an RTL loan"). Read-only — ClickUp owns these. */
+function OtherDeals({ rows }) {
+  if (!rows.length) return null;
+  return (
+    <div style={{ marginTop: 14, borderTop: '1px solid var(--line, #E7E1D3)', paddingTop: 12 }}>
+      <h4 style={{ margin: '0 0 4px', color: '#141B22' }}>Other deals with us ({rows.length})</h4>
+      <p className="small" style={{ color: '#4B585C', marginTop: 0 }}>
+        DSCR and long-term deals from ClickUp. These are not fix-and-flip loan files, so they don't
+        open in PILOT — they're here so you can see everything this borrower has done with us.
+      </p>
+      {rows.map((r) => (
+        <div key={r.task_id} className="metrow">
+          <span className="k" style={{ flex: 1, color: '#141B22' }}>
+            {r.property || r.task_name || 'Untitled deal'}
+            <div className="small" style={{ color: '#4B585C' }}>
+              {[r.raw_program, r.internal_status, r.loan_officer_name].filter(Boolean).join(' · ')}
+            </div>
+          </span>
+          <span className="v" style={{ color: '#141B22' }}>
+            {r.loan_amount ? money(r.loan_amount) : ''}
+            <a className="small" style={{ marginLeft: 8 }} target="_blank" rel="noreferrer"
+              href={`https://app.clickup.com/t/${r.task_id}`}>open in ClickUp →</a>
+          </span>
+        </div>
+      ))}
     </div>
   );
 }

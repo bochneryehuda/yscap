@@ -423,6 +423,13 @@ export const api = {
   staffAddBorrowerNote:      (id, body) => req('POST', `/api/staff/borrowers/${id}/notes`, { body }),
   staffDeleteBorrowerNote:   (id, nid) => req('DELETE', `/api/staff/borrowers/${id}/notes/${nid}`),
   staffBorrowerSsn: (id) => req('GET', `/api/staff/borrowers/${id}/ssn`),
+  // Set / correct the SSN on the PROFILE (owner-directed 2026-07-26 — it was
+  // only settable from inside a loan file). `resolveConflict:'same_person'`
+  // moves the number off a duplicate profile that is already holding it; the
+  // 409 that comes back without it names that profile so the staffer can look.
+  staffSetBorrowerSsn: (id, ssn, opts = {}) => req('POST', `/api/staff/borrowers/${id}/ssn`, { ssn, ...opts }),
+  staffAddBorrowerContact:     (id, b) => req('POST', `/api/staff/borrowers/${id}/contacts`, b),
+  staffSetPrimaryContact:      (id, b) => req('POST', `/api/staff/borrowers/${id}/contacts/primary`, b),
   staffBorrowerTrackRecords: (id) => req('GET', `/api/staff/borrowers/${id}/track-records`),
   staffTrackRecordSnapshot:  (id) => req('GET', `/api/staff/borrowers/${id}/track-record/snapshot`),
   staffBorrowerLlcs: (id) => req('GET', `/api/staff/borrowers/${id}/llcs`),
@@ -909,4 +916,13 @@ export const api = {
   loNotifClearOverride:(appId, key) => req('DELETE', `/api/staff/notification-center/overrides?applicationId=${encodeURIComponent(appId)}&key=${encodeURIComponent(key)}`),
   loNotifCompose:      (b) => req('POST', '/api/staff/notification-center/compose', b),
   loNotifAnalytics:    (days) => req('GET',  `/api/staff/notification-center/analytics${days ? `?days=${days}` : ''}`),
+
+  // ---- Borrower view: stand inside a borrower's portal (owner-directed 2026-07-26) ----
+  // The flow itself lives in lib/auth.jsx (startBorrowerView / exitBorrowerView),
+  // which swaps the stored token — screens should call THOSE, not these directly.
+  borrowerViewEligible: (q) => req('GET', '/api/borrower-view/eligible' + qs({ q })),
+  borrowerViewStart:    (borrowerId, applicationId) => req('POST', '/api/borrower-view/start', { borrowerId, applicationId: applicationId || null }),
+  borrowerViewSession:  () => req('GET', '/api/borrower-view/session'),
+  borrowerViewExit:     () => req('POST', '/api/borrower-view/exit'),
+  borrowerViewHistory:  (limit) => req('GET', '/api/borrower-view/history' + qs({ limit })),
 };

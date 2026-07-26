@@ -88,7 +88,12 @@ function CoBorrowerPicker({ value, onChange }) {
           {show && matches.length > 0 && (
             <div className="addr-menu" role="listbox">
               {matches.map(bo => {
+                // `other deals` = DSCR / long-term ClickUp cards, which never become
+                // loan files here. Without them a returning client shows "0 prior
+                // files" and reads as brand new — which is how a duplicate profile
+                // gets typed in for someone we already have.
                 const n = bo.prior_files || 0;
+                const other = bo.other_deals || 0;
                 return (
                   <div key={bo.id} role="option" className="addr-item"
                     onMouseDown={e => { e.preventDefault(); pick(bo); }}>
@@ -97,6 +102,7 @@ function CoBorrowerPicker({ value, onChange }) {
                       <strong>{[bo.first_name, bo.last_name].filter(Boolean).join(' ') || '—'}</strong>
                       {bo.email ? ' · ' + bo.email : ''}
                       {' · ' + n + ' prior file' + (n === 1 ? '' : 's')}
+                      {other ? ` · ${other} other deal${other === 1 ? '' : 's'}` : ''}
                     </span>
                   </div>
                 );
@@ -421,7 +427,20 @@ export default function StaffNewFile() {
           phone: co.phone.trim() || undefined,
         };
       }
-      const r = await api.staffCreateFile(body);
+      let r;
+      try {
+        r = await api.staffCreateFile(body);
+      } catch (e1) {
+        // The email belongs to somebody with a DIFFERENT name. That is usually a
+        // mistake worth stopping for — but a husband and wife on one mailbox is
+        // completely normal, so it is now a question instead of a dead end
+        // (owner-directed 2026-07-26). Confirming keeps the two people as
+        // SEPARATE profiles that happen to share an address; nothing is merged.
+        if (e1.data && e1.data.sharedEmail && e1.data.sharedEmail.canShare
+            && window.confirm(`${e1.message}\n\nAre these two different people who share one email address?`)) {
+          r = await api.staffCreateFile({ ...body, allowSharedEmail: true });
+        } else throw e1;
+      }
       if (r && r.coBorrowerWarning) console.warn('[new-file] co-borrower:', r.coBorrowerWarning);
       try { localStorage.removeItem(DRAFT_KEY); } catch (_) {}   // draft consumed — file created
       nav(`/internal/app/${r.applicationId}`);
@@ -466,6 +485,7 @@ export default function StaffNewFile() {
                 <div className="addr-menu" role="listbox">
                   {matches.map(bo => {
                     const n = bo.prior_files || 0;
+                    const other = bo.other_deals || 0;
                     return (
                       <div key={bo.id} role="option" className="addr-item"
                         onMouseDown={e => { e.preventDefault(); pickBorrower(bo); }}>
@@ -474,6 +494,7 @@ export default function StaffNewFile() {
                           <strong>{[bo.first_name, bo.last_name].filter(Boolean).join(' ') || '—'}</strong>
                           {bo.email ? ' · ' + bo.email : ''}
                           {' · ' + n + ' prior file' + (n === 1 ? '' : 's')}
+                          {other ? ` · ${other} other deal${other === 1 ? '' : 's'}` : ''}
                         </span>
                       </div>
                     );

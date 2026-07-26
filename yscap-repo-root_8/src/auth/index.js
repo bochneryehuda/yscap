@@ -23,6 +23,7 @@ const cfg = require('../config');
 const C = require('../lib/crypto');
 const mail = require('../lib/email/catalog');
 const perms = require('../lib/permissions');
+const borrowerView = require('../lib/borrower-view');
 const { randomInt } = require('crypto');
 
 const MAX_FAILED = 6;
@@ -57,7 +58,7 @@ async function issueEmailToken({ borrowerId = null, staffId = null, email = null
  * catch-all "your session expired" and support isn't guessing (owner-reported
  * 2026-07-26: staff signed out with no way to tell why).
  */
-/* Has db/318 (revoked_sessions) landed yet? Unknown until the first query.
+/* Has db/321 (revoked_sessions) landed yet? Unknown until the first query.
    The per-device revocation check rides inside the main auth query, so if that
    table were missing every authenticated request would 503 — a total outage on
    a migration hiccup. Instead we FAIL OPEN once: the first failure drops the
@@ -88,11 +89,13 @@ async function sessionQuery(claims) {
   }
 }
 
-function sessionDenied(req, res, code, message) {
+function sessionDenied(req, res, code, message, extra) {
   // One line per rejection, so "why was I signed out" is answerable from the
-  // logs instead of reconstructed. No token, no PII — id + reason only.
+  // logs instead of reconstructed. No token, no PII — reason + route only.
   console.warn('[auth] 401', code, req.method, req.path);
-  return res.status(401).json({ error: message, code, session: 'invalid' });
+  // `extra` carries any caller-specific field the SPA already keys on (e.g.
+  // borrowerViewEnded) — it rides ALONGSIDE the standard marker, never instead.
+  return res.status(401).json({ error: message, code, session: 'invalid', ...(extra || {}) });
 }
 
 async function authenticate(req, res, next) {
@@ -118,7 +121,7 @@ async function authenticate(req, res, next) {
     // For staff, also read the CURRENT role + permission overrides so a role or
     // grant change takes effect immediately (not only after re-login) and so
     // capability gates can run synchronously off req.actor.perms.
-    // The per-device `sid` revocation (db/318) rides along in the SAME query so
+    // The per-device `sid` revocation (db/321) rides along in the SAME query so
     // signing out on one device costs no extra round-trip on every request.
     r = await sessionQuery(claims);
   } catch (e) {
@@ -130,9 +133,54 @@ async function authenticate(req, res, next) {
     return sessionDenied(req, res, 'session_revoked',
       'You were signed out on all devices (a password change, or "sign out everywhere"). Please sign in again.');
   // This device was signed out. Only this one — every other device the person
-  // is signed in on keeps working (that's the whole point of db/318).
+  // is signed in on keeps working (that's the whole point of db/321).
   if (r.rows[0].sid_revoked === true)
     return sessionDenied(req, res, 'signed_out', 'You signed out on this device. Please sign in again.');
+  // BORROWER VIEW (src/lib/borrower-view.js): the token is a real borrower
+  // access token carrying an impersonation envelope. It authorizes the borrower
+  // side (checked above) AND the staffer behind it — re-validated HERE, on every
+  // single request, so the view dies the moment the human behind it does:
+  //   • past the session's ABSOLUTE cap  → over, cannot be refreshed;
+  //   • staff row gone / deactivated     → over;
+  //   • staff token_version moved (they logged out, their password was reset,
+  //     an admin revoked them)           → over.
+  // Without this a borrower-view token would be a standing key to someone's
+  // portal that outlives its owner's own session.
+  const impersonation = borrowerView.readImpersonation(claims);
+  if (impersonation) {
+    if (borrowerView.sessionExpired(impersonation)) {
+      borrowerView.endSession(impersonation.sessionId, 'expired');
+      return sessionDenied(req, res, 'borrower_view_ended', 'This borrower view has ended. Sign in again to carry on.',
+        { borrowerViewEnded: 'expired' });
+    }
+    let s;
+    try {
+      s = await db.query(
+        `SELECT token_version, role, permissions, is_active, full_name, email FROM staff_users WHERE id=$1`,
+        [impersonation.staffId]);
+    } catch (e) {
+      console.error('[auth] borrower-view staff check failed (db):', db.describeError(e));
+      return res.status(503).json({ error: 'The service is briefly unavailable — please try again in a moment.' });
+    }
+    const su = s.rows[0];
+    if (!su || su.is_active === false || (su.token_version || 0) !== (impersonation.staffTv || 0)) {
+      borrowerView.endSession(impersonation.sessionId, 'revoked');
+      return sessionDenied(req, res, 'borrower_view_ended', 'This borrower view has ended. Sign in again to carry on.',
+        { borrowerViewEnded: 'revoked' });
+    }
+    req.impersonation = {
+      staffId: impersonation.staffId,
+      role: su.role || impersonation.role || null,
+      name: su.full_name || null,
+      email: su.email || null,
+      sessionId: impersonation.sessionId,
+      startedAt: impersonation.startedAt,
+      staffTv: su.token_version || 0,
+      perms: perms.effectivePermissions(su.role, su.permissions),
+    };
+    // Best-effort heartbeat on the session register (never blocks the request).
+    borrowerView.touchSession(impersonation.sessionId);
+  }
   // SECURITY: a deactivated staffer must lose access immediately. Deactivation
   // (admin toggle) doesn't bump token_version, so without this check an existing
   // session would keep renewing (sliding token) and retain access to loan files,
@@ -152,6 +200,10 @@ async function authenticate(req, res, next) {
   const _status = res.status.bind(res);
   res.status = (code) => _status(code === 401 ? 502 : code);
   req.actor = { id: claims.sub, kind: claims.kind, role: claims.role, sid: claims.sid || null };
+  // The real human behind a borrower view rides ON the actor, so every audit
+  // helper (borrower.js / staff.js `audit()`, the request firehose) can stamp
+  // WHO actually did it without each call site knowing about impersonation.
+  if (req.impersonation) req.actor.impersonator = req.impersonation;
   if (claims.kind === 'staff') {
     // Trust the DB role over the JWT claim (role can change mid-session).
     req.actor.role = r.rows[0].role || claims.role;
@@ -173,17 +225,37 @@ async function authenticate(req, res, next) {
   if (claims.exp && claims.iat) {
     const life = claims.exp - claims.iat;
     const age  = nowSec - claims.iat;
+    // The half-life cap keeps SHORT-lived tokens sliding exactly as they did
+    // before — a borrower-view token lives 30 minutes and still renews at 15,
+    // well inside its own absolute cap.
     if (age > Math.min(cfg.sessionRefreshAfterSec, life / 2)) {
-      const fresh = claims.kind === 'staff'
-        ? staffToken(claims.sub, r.rows[0].role || claims.role, tv, claims.sid)
-        : borrowerToken(claims.sub, tv, claims.sid);
+      // A borrower-view token must NEVER slide into a plain borrower token — that
+      // would silently strip the impersonation envelope and turn a bounded,
+      // audited, 4-hour view into a permanent unattributed borrower session. It
+      // re-mints WITH the same envelope (same `impAt`), so the absolute cap above
+      // still governs and the refresh simply keeps a live session alive.
+      const fresh = req.impersonation
+        ? borrowerView.mintToken({
+            borrowerId: claims.sub, borrowerTv: tv,
+            staffId: req.impersonation.staffId, staffRole: req.impersonation.role,
+            staffTv: req.impersonation.staffTv, sessionId: req.impersonation.sessionId,
+            startedAt: req.impersonation.startedAt,
+          })
+        : claims.kind === 'staff'
+          ? staffToken(claims.sub, r.rows[0].role || claims.role, tv, claims.sid)
+          : borrowerToken(claims.sub, tv, claims.sid);
       res.set('X-Refresh-Token', fresh);
     }
   }
   // Presence heartbeat (best-effort, non-blocking, throttled to ~1 write/min per
-  // user) so chat can show who is currently online.
-  const ptbl = claims.kind === 'staff' ? 'staff_users' : 'borrowers';
-  db.query(`UPDATE ${ptbl} SET last_seen_at=now() WHERE id=$1 AND (last_seen_at IS NULL OR last_seen_at < now() - interval '60 seconds')`, [claims.sub]).catch(() => {});
+  // user) so chat can show who is currently online. SKIPPED inside a borrower
+  // view: a staffer looking at a borrower's screen must not make that borrower
+  // appear online to the rest of the team (the presence dot would be a lie, and
+  // "they're online, message them" is a decision people make off it).
+  if (!req.impersonation) {
+    const ptbl = claims.kind === 'staff' ? 'staff_users' : 'borrowers';
+    db.query(`UPDATE ${ptbl} SET last_seen_at=now() WHERE id=$1 AND (last_seen_at IS NULL OR last_seen_at < now() - interval '60 seconds')`, [claims.sub]).catch(() => {});
+  }
   next();
 }
 function requireRole(...roles) {
@@ -220,7 +292,7 @@ const requireStaff = (req, res, next) =>
 // ---------------- token helpers ----------------
 // `sid` = this DEVICE's session id. Minted fresh on every real sign-in and
 // CARRIED OVER by the sliding refresh, so signing out on one device revokes
-// exactly that device (db/318) instead of every session the person has.
+// exactly that device (db/321) instead of every session the person has.
 const newSid = () => C.randomToken(12);
 const borrowerToken = (id, tv, sid) => C.signJwt({ sub: id, kind: 'borrower', role: 'borrower', tv, sid: sid || newSid() });
 const staffToken    = (id, role, tv, sid) => C.signJwt({ sub: id, kind: 'staff', role, tv, sid: sid || newSid() });
@@ -232,6 +304,20 @@ const staffToken    = (id, role, tv, sid) => C.signJwt({ sub: id, kind: 'staff',
  * (esign-public /claim-session) — the ONLY caller — so a borrower who signed from
  * PILOT's branded email lands back INSIDE their loan file already logged in.
  */
+/**
+ * Mint a fresh STAFF access session for an existing staff id (reads the CURRENT
+ * role + token_version, so it is revocable like any other session). Returns the
+ * JWT, or null if the account is gone or deactivated. Used by the borrower-view
+ * EXIT handoff (/api/borrower-view/exit) — the staffer hands back the borrower
+ * token and gets their own console session, without re-typing a password.
+ */
+async function mintStaffSession(staffId) {
+  const r = await db.query(
+    `SELECT role, token_version FROM staff_users WHERE id=$1 AND is_active=true`, [staffId]);
+  if (!r.rows[0]) return null;
+  return staffToken(staffId, r.rows[0].role, r.rows[0].token_version || 0);
+}
+
 async function mintBorrowerSession(borrowerId) {
   const r = await db.query(`SELECT token_version FROM borrower_auth WHERE borrower_id=$1`, [borrowerId]);
   if (!r.rows.length) return null;
@@ -280,7 +366,7 @@ router.post('/borrower/register', async (req, res) => {
     const b = await client.query(
       `INSERT INTO borrowers (first_name,last_name,email,cell_phone)
        VALUES ($1,$2,$3,$4)
-       ON CONFLICT (email) DO UPDATE SET
+       ON CONFLICT (email) WHERE shares_email = false DO UPDATE SET
          -- The person typing their OWN name beats a placeholder row (e.g. a
          -- sync-created 'Unknown Unknown') — never a real stored name.
          first_name=CASE WHEN lower(btrim(coalesce(borrowers.first_name,''))) IN ('','unknown','co-borrower')
@@ -919,7 +1005,7 @@ router.post('/accept', async (req, res, next) => {
     }
     const b = await db.query(
       `INSERT INTO borrowers (first_name,last_name,email) VALUES ($1,$2,$3)
-       ON CONFLICT (email) DO UPDATE SET
+       ON CONFLICT (email) WHERE shares_email = false DO UPDATE SET
          first_name=CASE WHEN lower(btrim(coalesce(borrowers.first_name,''))) IN ('','unknown','co-borrower')
                          THEN EXCLUDED.first_name ELSE borrowers.first_name END,
          last_name=CASE WHEN lower(btrim(coalesce(borrowers.last_name,''))) IN ('','unknown','co-borrower')
@@ -967,8 +1053,8 @@ router.post('/accept', async (req, res, next) => {
  * It used to bump token_version, the global counter — so signing out on a phone
  * silently killed the desktop session too, and the desktop reported it as the
  * generic "your session expired". Now the current session's `sid` is revoked
- * (db/318) and every other device keeps working. `{everywhere:true}` still
- * gives the full hammer, and a legacy token minted before db/318 has no sid, so
+ * (db/321) and every other device keeps working. `{everywhere:true}` still
+ * gives the full hammer, and a legacy token minted before db/321 has no sid, so
  * it falls back to the global bump (it has nothing finer to revoke).
  */
 router.post('/logout', requireAuth, async (req, res) => {
@@ -1004,7 +1090,18 @@ router.get('/me', requireAuth, async (req, res) => {
     return res.json({ kind: 'staff', id: row.id, email: row.email, full_name: row.full_name, role: row.role, mfa_enabled: row.mfa_enabled, permissions });
   }
   const r = await db.query(`SELECT id,email,first_name,last_name,tier FROM borrowers WHERE id=$1`, [req.actor.id]);
-  res.json({ kind: 'borrower', ...r.rows[0] });
+  // Inside a borrower view the identity IS the borrower (that is the whole
+  // point) — but `me` also reports WHO is really looking, so the portal can show
+  // the "you are viewing as …" bar and the way back to their own console.
+  const impersonation = req.impersonation ? {
+    staffId: req.impersonation.staffId,
+    staffName: req.impersonation.name,
+    staffRole: req.impersonation.role,
+    sessionId: req.impersonation.sessionId,
+    startedAt: req.impersonation.startedAt * 1000,
+    expiresAt: (req.impersonation.startedAt + borrowerView.MAX_SESSION_SEC) * 1000,
+  } : null;
+  res.json({ kind: 'borrower', ...r.rows[0], ...(impersonation ? { impersonation } : {}) });
 });
 
-module.exports = { router, authenticate, requireAuth, requireRole, requirePermission, requireBorrower, requireStaff, issueEmailToken, mintBorrowerSession };
+module.exports = { router, authenticate, requireAuth, requireRole, requirePermission, requireBorrower, requireStaff, issueEmailToken, mintBorrowerSession, mintStaffSession };

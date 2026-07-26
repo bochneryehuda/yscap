@@ -1,4 +1,4 @@
--- 318: per-DEVICE session revocation.
+-- 321: per-DEVICE session revocation.
 --
 -- Why this exists (owner-reported 2026-07-26: "staff keep getting signed out
 -- automatically / signed out right after signing in"):
