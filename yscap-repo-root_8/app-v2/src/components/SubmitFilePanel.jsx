@@ -23,6 +23,8 @@ export default function SubmitFilePanel({ appId, onChange }) {
   const [pick, setPick] = useState('');             // chosen recipient id
   const [estDate, setEstDate] = useState('');
   const [note, setNote] = useState('');
+  const [investorCtc, setInvestorCtc] = useState(false);      // closing submit only
+  const [closingConfirmed, setClosingConfirmed] = useState(false); // closing submit only
   const [busy, setBusy] = useState(false);
 
   const load = useCallback(() => api.workflowOptions(appId).then(setOpts).catch(e => setErr(e.message)), [appId]);
@@ -91,7 +93,7 @@ export default function SubmitFilePanel({ appId, onChange }) {
     // Decide whether we need the picker / date open first.
     const needsPick = !d.assigned && (!d.candidates || d.candidates.length !== 1);
     if ((needsPick || cfg.needsEstClosing) && openType !== type) {
-      setOpenType(type); setPick(''); setEstDate(opts.expectedClosing || ''); setNote(''); return;
+      setOpenType(type); setPick(''); setEstDate(opts.expectedClosing || ''); setNote(''); setInvestorCtc(false); setClosingConfirmed(false); return;
     }
     const body = { submissionType: type };
     if (needsPick) {
@@ -102,12 +104,13 @@ export default function SubmitFilePanel({ appId, onChange }) {
       if (!estDate) { setErr('Enter your estimated closing date.'); return; }
       body.estClosingDate = estDate;
     }
+    if (type === 'closing') { body.investorCtc = investorCtc; body.closingDateConfirmed = closingConfirmed; }
     if (note) body.note = note;
     setBusy(true); setErr('');
     try {
       await api.workflowSubmit(appId, body);
       say(`Submitted for ${cfg.label}. It’s on their workflow${cfg.internalStatus ? ' and the status has moved' : ''}.`);
-      setOpenType(null); setPick(''); setEstDate(''); setNote('');
+      setOpenType(null); setPick(''); setEstDate(''); setNote(''); setInvestorCtc(false); setClosingConfirmed(false);
       await load();
       if (onChange) onChange();
     } catch (e) {
@@ -159,6 +162,18 @@ export default function SubmitFilePanel({ appId, onChange }) {
                 <span className="small muted">Estimated closing date</span>
                 <input className="input" type="date" value={estDate} onChange={e => setEstDate(e.target.value)} />
               </label>
+            )}
+            {type === 'closing' && (
+              <div className="wf-closing-qs">
+                <label className="cl-toggle" style={{ margin: 0 }}>
+                  <input type="checkbox" checked={closingConfirmed} onChange={e => setClosingConfirmed(e.target.checked)} />
+                  <span className="cl-toggle-text small">Closing date confirmed with all parties</span>
+                </label>
+                <label className="cl-toggle" style={{ margin: 0 }}>
+                  <input type="checkbox" checked={investorCtc} onChange={e => setInvestorCtc(e.target.checked)} />
+                  <span className="cl-toggle-text small">Investor has already CTC’d the file</span>
+                </label>
+              </div>
             )}
             <label className="field" style={{ margin: 0 }}>
               <span className="small muted">Note (optional)</span>

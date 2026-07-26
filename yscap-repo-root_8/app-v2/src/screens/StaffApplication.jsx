@@ -18,6 +18,7 @@ import InvestorGuidelinesPanel from '../components/InvestorGuidelinesPanel.jsx';
 import DealSnapshot from '../components/DealSnapshot.jsx';
 import ClearToClosePanel from '../components/ClearToClosePanel.jsx';
 import LoanProgress from '../components/LoanProgress.jsx';
+import ClosingPanel from '../components/ClosingPanel.jsx';
 import TapeQuestionsModal from '../components/TapeQuestionsModal.jsx';
 import { CreditCondition } from '../components/CreditReport.jsx';
 import SubmitFilePanel from '../components/SubmitFilePanel.jsx';
@@ -2528,9 +2529,13 @@ export default function StaffApplication() {
   useEffect(() => {
     if (!app) return;
     const m = String(window.location.hash || '').match(/#(sec-[a-z-]+)$/);
-    if (!m) return;
-    const t = setTimeout(() => goToSection(m[1]), 250);
-    return () => clearTimeout(t);
+    if (m) { const t = setTimeout(() => goToSection(m[1]), 250); return () => clearTimeout(t); }
+    // A closer lands on the Closing section by default (owner-directed 2026-07-26)
+    // when there's actually a closing to work — a closer on file or a CTC/funded file.
+    if (can('manage_closings') && (app.closer_id || ['clear_to_close', 'funded'].includes(app.status))) {
+      const t = setTimeout(() => goToSection('sec-closing'), 300);
+      return () => clearTimeout(t);
+    }
   }, [app, id]);
   const [items, setItems] = useState([]);
   const [docs, setDocs] = useState([]);
@@ -2926,6 +2931,9 @@ export default function StaffApplication() {
   // SAME order the sections actually render down the page, so clicking a rail item
   // and then scrolling never feels out of sync (they used to disagree). Each entry
   // carries a `group`; FileSections prints a quiet header when the group changes.
+  // The Closing section shows for closers/admins always, and for the file's
+  // officer once the file has a closer or is at/after clear-to-close.
+  const showClosing = can('manage_closings') || !!app.closer_id || ['clear_to_close', 'funded'].includes(app.status);
   const SECTIONS = [
     { id: 'sec-overview', label: 'File overview', group: 'Overview' },
     { id: 'sec-application', label: 'Application details', group: 'Application & pricing' },
@@ -2935,6 +2943,10 @@ export default function StaffApplication() {
     { id: 'sec-appraisal', label: 'Appraisal & findings', group: 'Application & pricing', badge: apprSummary && apprSummary.fatal ? `${apprSummary.fatal} ⚠` : '' },
     { id: 'sec-underwriting', label: 'Document review', group: 'Application & pricing', badge: uwSummary && uwSummary.fatal ? `${uwSummary.fatal} ⚠` : '' },
     { id: 'sec-conditions', label: 'Conditions', group: 'Conditions', badge: nCondOpen || '' },
+    // Closing — the closer's desk. Shown to closers/admins always, and to the
+    // file's officer once the file is heading to (or is at) closing so they have
+    // their own closing view. The panel gates closer-only actions internally.
+    ...(showClosing ? [{ id: 'sec-closing', label: 'Closing', group: 'Closing', badge: app.status === 'funded' ? '' : (app.closer_id ? 'active' : '') }] : []),
     { id: 'sec-esign', label: 'E-signatures', group: 'Signing & documents' },
     { id: 'sec-orders', label: 'Orders (title & insurance)', group: 'Signing & documents',
       badge: (() => { const n = docs.filter(d => ['title_order_return', 'insurance_order_return'].includes(d.doc_kind) && !d.slot_label && d.is_current !== false).length; return n ? `${n} to assign` : ''; })() },
@@ -3366,6 +3378,13 @@ export default function StaffApplication() {
       {/* The standalone "Investor guidelines" section was RETIRED (owner-directed 2026-07-24):
           the investor-specific guidelines are now a subsection of "Document review & PILOT findings"
           above — one review, one place, no separate AI pass. */}
+
+      {showClosing && (
+        <Section id="sec-closing" title="Closing" defaultOpen={false}
+          info="The closer's desk — cash-to-close vs verified liquidity, the warehouse line, collateral tracking, closing conditions, checklists, TPR / investor-delivery sign-off, and the funded-date reconciliation.">
+          <ClosingPanel appId={id} app={app} can={can} onDownloadDoc={downloadDoc} onPreview={openPreview} onChanged={load} />
+        </Section>
+      )}
 
       <Section id="sec-esign" title="E-signatures" defaultOpen={false}
         info="Send and track the term-sheet package and Heter Iska, with live per-signer status, resend, void, re-issue and downloads.">

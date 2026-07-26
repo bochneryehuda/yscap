@@ -105,6 +105,13 @@ const REGISTRY = Object.freeze([
   pull({ key: 'origination_pct', encompassFieldId: '388', type: 'percent', category: 'cost', compare: 'percent', our: 'quote:origination % (e.g. 1.25)', note: 'Origination fee % (field 388: 1.0 = 1%)' }),
   pull({ key: 'term_months', encompassFieldId: '4', loanPath: 'loanAmortizationTermMonths', type: 'int', category: 'loan', compare: 'int', our: 'column:term (text → int)', note: 'Term in months' }),
   pull({ key: 'maturity_date', encompassFieldId: '78', loanPath: 'maturityDate', type: 'date', category: 'loan', compare: 'date', our: 'column:maturity_date', note: 'Maturity date — read from full loan (maturityDate), not pipeline' }),
+  // Funded date — the closing-workflow 3-system reconciliation reads this (field
+  // 1401 Funded Date; docs/ENCOMPASS-DATA-MAPPING.md §3G). ADVISORY read-only: it
+  // never blocks term-sheet issuance, and the reconcile gate only enforces the
+  // Encompass leg when a value is actually present (graceful N/A otherwise). The
+  // standard loanPath is closingDocument.fundingDate — verify the tenant populates
+  // it against a live funded loan before promoting the leg to a hard block.
+  pull({ key: 'funded_date', encompassFieldId: '1401', loanPath: 'closingDocument.fundingDate', type: 'date', category: 'loan', compare: 'date', gate: GATE.ADVISORY, our: 'column:funded_date', note: 'Funded date — read-only, advisory; used by the closing reconciliation gate' }),
 
   // ── Experience / rehab-type / accrual (enum + int, advisory) ──────────────
   pull({ key: 'total_experience_deals', encompassFieldId: 'CX.TOTALEXPERIENCEDEALS', type: 'int', category: 'experience', compare: 'int', gate: GATE.ADVISORY, our: 'derive(requested_exp_flips/holds/ground + verified track record)', note: 'Verified experience count used to qualify' }),

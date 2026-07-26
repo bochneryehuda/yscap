@@ -28,6 +28,7 @@ const loanExceptions = require('../lib/loan-exceptions');
 const termOpts = require('../lib/term-options');
 const workflow = require('../lib/workflow');
 const workflowAuto = require('../lib/workflow-automation');
+const closing = require('../lib/closing');
 const { syncExperienceChecklistForApplication, RECENT_EXIT_SQL, EXIT_DATE_SQL } = require('../lib/experience');
 const { enqueueClickupPush, enqueueChecklistStatusPush } = require('../clickup/enqueue');
 const statusMap = require('../clickup/status');
@@ -7373,7 +7374,14 @@ router.post('/applications/:id/workflow/submit', async (req, res) => {
         appId, submissionType: b.submissionType, fromStaffId: req.actor.id, toStaffId, toRole: recipient.role,
         note: b.note, priority: Number(b.priority), estClosingDate: estClosing,
       });
-      if (b.submissionType === 'closing') await workflow.openClosing(client, { appId, workflowItemId: item.id, estClosingDate: estClosing, actorId: req.actor.id });
+      if (b.submissionType === 'closing') {
+        await workflow.openClosing(client, {
+          appId, workflowItemId: item.id, estClosingDate: estClosing, actorId: req.actor.id,
+          investorCtc: b.investorCtc === true, closingDateConfirmed: b.closingDateConfirmed === true,
+        });
+        // Give the closer their upload slots (HUD / closed package / tracking) right away.
+        await closing.ensureClosingConditions(client, appId);
+      }
       await client.query('COMMIT');
     } catch (e) { await client.query('ROLLBACK').catch(() => {}); throw e; }
     finally { client.release(); }
@@ -7409,11 +7417,30 @@ router.post('/applications/:id/workflow/submit', async (req, res) => {
 });
 
 // MY personal workflow. ?tab=next|history &sort=received|priority|aging &type=…
+// Admin/super_admin OVERSIGHT (owner-directed 2026-07-26): view each workflow
+// SEPARATELY — `?role=closer|processor|draw_coordinator|underwriter|super_admin`
+// shows that whole role's live workflow; `?staffId=<id>` shows one person's queue.
+// Never merged; the personal queue (no role/staffId) is unchanged for everyone.
 router.get('/workflow', async (req, res) => {
   try {
-    const rows = await workflow.listQueue(req.actor.id, { tab: req.query.tab, sort: req.query.sort, type: req.query.type });
-    res.json(rows);
+    const opts = { tab: req.query.tab, sort: req.query.sort, type: req.query.type };
+    if (isAdmin(req)) {
+      if (req.query.role && workflow.WORKFLOW_ROLES.includes(req.query.role)) {
+        return res.json(await workflow.listByRole(req.query.role, opts));
+      }
+      if (req.query.staffId) {
+        return res.json(await workflow.listQueue(req.query.staffId, opts));
+      }
+    }
+    res.json(await workflow.listQueue(req.actor.id, opts));
   } catch (e) { console.warn('[workflow] list error:', db.describeError(e)); res.status(500).json({ error: 'server error' }); }
+});
+
+// The active-staff roster for the admin workflow picker (who → which workflow).
+router.get('/workflow/roster', async (req, res) => {
+  if (!isAdmin(req)) return res.status(403).json({ error: 'forbidden' });
+  try { res.json({ staff: await workflow.allActiveStaff(), roles: workflow.WORKFLOW_ROLES }); }
+  catch (e) { res.status(500).json({ error: 'server error' }); }
 });
 
 // Counts for the nav badge + KPI tiles.
@@ -7516,9 +7543,36 @@ router.post('/applications/:id/closing-workflow', async (req, res) => {
   const stage = req.body && req.body.stage;
   if (!workflow.CLOSING_STAGES.includes(stage)) return res.status(400).json({ error: 'unknown closing stage' });
   try {
+    // The closer owns the money-grade transitions (closed / reconciled / purchasing).
+    const closerGated = stage === 'fully_closed' || stage === 'fully_reconciled' || stage === 'in_purchasing';
+    if (closerGated && !can(req.actor, 'manage_closings'))
+      return res.status(403).json({ error: 'Only the closer (or an admin) can close, reconcile, or move a file to purchasing.' });
+
+    // Reconciliation gate — the funded date must match across PILOT + ClickUp (and
+    // Encompass when a value is present) before "fully reconciled". A super_admin may
+    // deliberately force past a genuine conflict (audited), mirroring the platform's
+    // super_admin override philosophy.
+    if (stage === 'fully_reconciled') {
+      const rec = await closing.reconcileClosingDates(req.params.id);
+      const forced = req.body && req.body.force === true && req.actor.role === 'super_admin';
+      if (!rec.ok && !forced) return res.status(422).json({ error: 'not_reconciled', reason: rec.reason, reconciliation: rec });
+      if (!rec.ok && forced) await audit(req, 'closing_reconcile_forced', 'application', req.params.id, { reason: rec.reason });
+    }
+    // Purchasing hand-off requires investor delivery signed off + the file reconciled.
+    if (stage === 'in_purchasing') {
+      const cw = await workflow.getClosing(req.params.id);
+      if (!cw || !cw.fully_reconciled_at) return res.status(422).json({ error: 'not_reconciled', reason: 'Mark the file fully reconciled first.' });
+      if (!cw.investor_delivery_signed_off_at) return res.status(422).json({ error: 'investor_delivery_required', reason: 'Sign off investor delivery before moving the file to purchasing.' });
+    }
+
     const client = await db.getClient();
     let out;
-    try { await client.query('BEGIN'); out = await workflow.advanceClosing(client, req.params.id, stage, req.actor.id); await client.query('COMMIT'); }
+    try {
+      await client.query('BEGIN');
+      out = await workflow.advanceClosing(client, req.params.id, stage, req.actor.id);
+      if (stage === 'fully_reconciled') await client.query(`UPDATE closing_workflow SET reconciled_ok=true WHERE application_id=$1`, [req.params.id]);
+      await client.query('COMMIT');
+    }
     catch (e) { await client.query('ROLLBACK').catch(() => {}); throw e; } finally { client.release(); }
     // Drive the matching ClickUp status (fully_closed → funded) best-effort.
     let statusResult = null;
@@ -7537,6 +7591,268 @@ router.post('/applications/:id/closing-workflow', async (req, res) => {
 router.get('/applications/:id/closing-workflow', async (req, res) => {
   try { res.json(await workflow.getClosing(req.params.id) || { stage: null }); }
   catch (e) { res.status(500).json({ error: 'server error' }); }
+});
+
+// ===========================================================================
+// THE CLOSING WORKSPACE (owner-directed 2026-07-26). The closer's desk: the full
+// aggregate payload, field edits, the actual cash-to-close money gate, checklists,
+// notes, and TPR / investor-delivery sign-offs. All file-scoped (the /applications/
+// :id path middleware already enforces file access). Closer-grade actions gate on
+// `manage_closings`; the shared answers (investor CTC'd, closing-date-confirmed,
+// notes) are open to anyone on the file.
+// ===========================================================================
+
+// The whole workspace payload.
+router.get('/applications/:id/closing', async (req, res) => {
+  try {
+    const data = await closing.getClosingWorkspace(req.params.id);
+    if (!data) return res.status(404).json({ error: 'not found' });
+    res.json(data);
+  } catch (e) { console.warn('[closing] workspace error:', db.describeError(e)); res.status(500).json({ error: 'server error' }); }
+});
+
+// Ensure the singleton closing row exists (so a PATCH before submit still works).
+async function ensureClosingRow(client, appId, actorId) {
+  await client.query(
+    `INSERT INTO closing_workflow (application_id, stage, updated_by) VALUES ($1,'estimated',$2)
+     ON CONFLICT (application_id) DO NOTHING`, [appId, actorId || null]);
+}
+
+// Update closing fields. Shared fields (investor CTC'd, closing-date-confirmed)
+// are open to anyone on the file; closer fields (warehouse, collateral tracking,
+// funded date, TPR-required) require manage_closings.
+router.patch('/applications/:id/closing', async (req, res) => {
+  const appId = req.params.id;
+  const b = req.body || {};
+  const isCloser = can(req.actor, 'manage_closings');
+  try {
+    const client = await db.getClient();
+    try {
+      await client.query('BEGIN');
+      await ensureClosingRow(client, appId, req.actor.id);
+      // Shared: investor CTC'd + closing-date-confirmed-with-all-parties (toggle on/off, stamped when set true).
+      if (typeof b.investorCtc === 'boolean') {
+        await client.query(
+          `UPDATE closing_workflow SET investor_ctc=$2,
+              investor_ctc_at = CASE WHEN $2 THEN COALESCE(investor_ctc_at, now()) ELSE NULL END,
+              investor_ctc_by = CASE WHEN $2 THEN COALESCE(investor_ctc_by, $3) ELSE NULL END,
+              updated_by=$3, updated_at=now() WHERE application_id=$1`, [appId, b.investorCtc, req.actor.id]);
+      }
+      if (typeof b.closingDateConfirmed === 'boolean') {
+        await client.query(
+          `UPDATE closing_workflow SET closing_date_confirmed=$2,
+              closing_date_confirmed_at = CASE WHEN $2 THEN COALESCE(closing_date_confirmed_at, now()) ELSE NULL END,
+              closing_date_confirmed_by = CASE WHEN $2 THEN COALESCE(closing_date_confirmed_by, $3) ELSE NULL END,
+              updated_by=$3, updated_at=now() WHERE application_id=$1`, [appId, b.closingDateConfirmed, req.actor.id]);
+      }
+      // Closer-only fields.
+      if (isCloser) {
+        if ('warehouse' in b) {
+          const wh = b.warehouse ? String(b.warehouse) : null;
+          if (wh && !closing.WAREHOUSES.includes(wh)) { await client.query('ROLLBACK'); client.release(); return res.status(400).json({ error: 'Unknown warehouse.' }); }
+          await client.query(`UPDATE closing_workflow SET warehouse=$2, updated_by=$3, updated_at=now() WHERE application_id=$1`, [appId, wh, req.actor.id]);
+        }
+        if ('collateralTrackingNumber' in b)
+          await client.query(`UPDATE closing_workflow SET collateral_tracking_number=$2, updated_by=$3, updated_at=now() WHERE application_id=$1`, [appId, b.collateralTrackingNumber ? String(b.collateralTrackingNumber).slice(0, 120) : null, req.actor.id]);
+        if ('collateralTrackingCarrier' in b)
+          await client.query(`UPDATE closing_workflow SET collateral_tracking_carrier=$2, updated_by=$3, updated_at=now() WHERE application_id=$1`, [appId, b.collateralTrackingCarrier ? String(b.collateralTrackingCarrier).slice(0, 60) : null, req.actor.id]);
+        if (typeof b.tprRequired === 'boolean')
+          await client.query(`UPDATE closing_workflow SET tpr_required=$2, updated_by=$3, updated_at=now() WHERE application_id=$1`, [appId, b.tprRequired, req.actor.id]);
+        if ('fundedDate' in b) {
+          const fd = b.fundedDate ? require('../lib/fields').normalizeTypedDate(b.fundedDate) : null;
+          if (b.fundedDate && !fd) { await client.query('ROLLBACK'); client.release(); return res.status(400).json({ error: 'Enter a real funded date (YYYY-MM-DD).' }); }
+          await client.query(`UPDATE applications SET funded_date=$2, updated_at=now() WHERE id=$1`, [appId, fd]);
+        }
+      } else if ('warehouse' in b || 'collateralTrackingNumber' in b || 'fundedDate' in b || 'tprRequired' in b) {
+        await client.query('ROLLBACK'); client.release();
+        return res.status(403).json({ error: 'Only the closer (or an admin) can set the warehouse, collateral tracking, or funded date.' });
+      }
+      await client.query('COMMIT');
+    } catch (e) { await client.query('ROLLBACK').catch(() => {}); client.release(); throw e; }
+    client.release();
+    await audit(req, 'closing_update', 'application', appId, { fields: Object.keys(b) });
+    res.json(await closing.getClosingWorkspace(appId));
+  } catch (e) { console.warn('[closing] patch error:', db.describeError(e)); res.status(500).json({ error: 'server error' }); }
+});
+
+// Add a closing note (anyone on the file).
+router.post('/applications/:id/closing/notes', async (req, res) => {
+  const body = req.body && req.body.body;
+  if (!body || !String(body).trim()) return res.status(400).json({ error: 'Write a note.' });
+  try {
+    await db.query(`INSERT INTO closing_notes (application_id, author_staff_id, body) VALUES ($1,$2,$3)`,
+      [req.params.id, req.actor.id, String(body).slice(0, 4000)]);
+    await audit(req, 'closing_note', 'application', req.params.id, {});
+    res.json({ ok: true, notes: await closing.readNotes(req.params.id) });
+  } catch (e) { res.status(500).json({ error: 'server error' }); }
+});
+
+// Set the ACTUAL cash-to-close (off the ALTA) and run the money gate. Closer only.
+router.post('/applications/:id/closing/cash-to-close', async (req, res) => {
+  if (!can(req.actor, 'manage_closings')) return res.status(403).json({ error: 'Only the closer (or an admin) can enter the actual cash to close.' });
+  const appId = req.params.id;
+  const raw = req.body && req.body.actualCashToClose;
+  const val = raw === '' || raw == null ? null : Number(raw);
+  if (raw != null && raw !== '' && (!Number.isFinite(val) || val < 0)) return res.status(400).json({ error: 'Enter a real cash-to-close amount.' });
+  const docId = req.body && req.body.docId ? String(req.body.docId) : null;
+  try {
+    const check = await closing.runCashToCloseCheck(appId, val, db);
+    const client = await db.getClient();
+    try {
+      await client.query('BEGIN');
+      await ensureClosingRow(client, appId, req.actor.id);
+      await client.query(
+        `UPDATE closing_workflow SET actual_cash_to_close=$2, actual_cash_to_close_doc_id=$3,
+            liquidity_ok=$4, liquidity_shortfall=$5, liquidity_checked_at=now(), updated_by=$6, updated_at=now()
+          WHERE application_id=$1`,
+        [appId, val, docId, check.ok, check.shortfall || 0, req.actor.id]);
+      await client.query('COMMIT');
+    } catch (e) { await client.query('ROLLBACK').catch(() => {}); client.release(); throw e; }
+    client.release();
+    await audit(req, 'closing_cash_to_close', 'application', appId, { actualCashToClose: val, ok: check.ok, shortfall: check.shortfall });
+    res.json({ ok: true, check });
+  } catch (e) { console.warn('[closing] cash-to-close error:', db.describeError(e)); res.status(500).json({ error: 'server error' }); }
+});
+
+// TPR / investor-delivery sign-offs (closer). kind: tpr_uploaded | tpr | investor_delivery.
+router.post('/applications/:id/closing/sign-off', async (req, res) => {
+  if (!can(req.actor, 'manage_closings')) return res.status(403).json({ error: 'Only the closer (or an admin) can sign this off.' });
+  const kind = req.body && req.body.kind;
+  const on = req.body && req.body.on !== false; // default true; pass on:false to un-sign
+  const COL = {
+    tpr_uploaded: ['tpr_uploaded_at', 'tpr_uploaded_by'],
+    tpr: ['tpr_signed_off_at', 'tpr_signed_off_by'],
+    investor_delivery: ['investor_delivery_signed_off_at', 'investor_delivery_signed_off_by'],
+  };
+  if (!COL[kind]) return res.status(400).json({ error: 'unknown sign-off' });
+  const [atCol, byCol] = COL[kind];
+  try {
+    const client = await db.getClient();
+    try {
+      await client.query('BEGIN');
+      await ensureClosingRow(client, req.params.id, req.actor.id);
+      await client.query(
+        `UPDATE closing_workflow SET ${atCol}=${on ? 'now()' : 'NULL'}, ${byCol}=${on ? '$2' : 'NULL'}, updated_by=$2, updated_at=now() WHERE application_id=$1`,
+        [req.params.id, req.actor.id]);
+      await client.query('COMMIT');
+    } catch (e) { await client.query('ROLLBACK').catch(() => {}); client.release(); throw e; }
+    client.release();
+    await audit(req, 'closing_signoff', 'application', req.params.id, { kind, on });
+    res.json({ ok: true, closing: await workflow.getClosing(req.params.id) });
+  } catch (e) { res.status(500).json({ error: 'server error' }); }
+});
+
+// --- Closer checklists (custom + per-capital-provider) ---
+// Available reusable templates + a create-from-template/blank.
+router.get('/applications/:id/closing/checklist-templates', async (req, res) => {
+  try {
+    const r = await db.query(`SELECT id, provider, title, items FROM closing_checklist_templates WHERE is_active=true ORDER BY provider NULLS FIRST, title`);
+    res.json(r.rows);
+  } catch (e) { res.status(500).json({ error: 'server error' }); }
+});
+
+router.post('/applications/:id/closing/checklists', async (req, res) => {
+  if (!can(req.actor, 'manage_closings')) return res.status(403).json({ error: 'Only the closer (or an admin) can build closing checklists.' });
+  const appId = req.params.id;
+  const b = req.body || {};
+  try {
+    const client = await db.getClient();
+    let list;
+    try {
+      await client.query('BEGIN');
+      let title = b.title ? String(b.title).slice(0, 200) : null;
+      let provider = b.provider ? String(b.provider).slice(0, 120) : null;
+      let items = Array.isArray(b.items) ? b.items : null;
+      let templateId = null;
+      if (b.templateId) {
+        const t = (await client.query(`SELECT id, provider, title, items FROM closing_checklist_templates WHERE id=$1 AND is_active=true`, [b.templateId])).rows[0];
+        if (t) { templateId = t.id; title = title || t.title; provider = provider || t.provider; if (!items) items = Array.isArray(t.items) ? t.items : []; }
+      }
+      if (!title) title = 'Closing checklist';
+      const ins = (await client.query(
+        `INSERT INTO closing_checklists (application_id, template_id, provider, title, created_by) VALUES ($1,$2,$3,$4,$5) RETURNING *`,
+        [appId, templateId, provider, title, req.actor.id])).rows[0];
+      const labels = (items || []).map((x) => String(x).slice(0, 300)).filter(Boolean);
+      for (let i = 0; i < labels.length; i++)
+        await client.query(`INSERT INTO closing_checklist_items (checklist_id, label, sort_order) VALUES ($1,$2,$3)`, [ins.id, labels[i], (i + 1) * 10]);
+      await client.query('COMMIT');
+      list = ins;
+    } catch (e) { await client.query('ROLLBACK').catch(() => {}); client.release(); throw e; }
+    client.release();
+    await audit(req, 'closing_checklist_create', 'application', appId, { checklistId: list.id });
+    res.json({ ok: true, checklists: await closing.readChecklists(appId) });
+  } catch (e) { res.status(500).json({ error: 'server error' }); }
+});
+
+router.post('/applications/:id/closing/checklists/:cid/items', async (req, res) => {
+  if (!can(req.actor, 'manage_closings')) return res.status(403).json({ error: 'forbidden' });
+  const label = req.body && req.body.label;
+  if (!label || !String(label).trim()) return res.status(400).json({ error: 'Enter a step.' });
+  try {
+    // The checklist must belong to this file (IDOR guard).
+    const own = (await db.query(`SELECT 1 FROM closing_checklists WHERE id=$1 AND application_id=$2`, [req.params.cid, req.params.id])).rows[0];
+    if (!own) return res.status(404).json({ error: 'checklist not found' });
+    const next = (await db.query(`SELECT COALESCE(MAX(sort_order),0)+10 AS n FROM closing_checklist_items WHERE checklist_id=$1`, [req.params.cid])).rows[0].n;
+    await db.query(`INSERT INTO closing_checklist_items (checklist_id, label, sort_order) VALUES ($1,$2,$3)`, [req.params.cid, String(label).slice(0, 300), next]);
+    res.json({ ok: true, checklists: await closing.readChecklists(req.params.id) });
+  } catch (e) { res.status(500).json({ error: 'server error' }); }
+});
+
+router.patch('/applications/:id/closing/checklist-items/:iid', async (req, res) => {
+  if (!can(req.actor, 'manage_closings')) return res.status(403).json({ error: 'forbidden' });
+  const checked = !!(req.body && req.body.checked);
+  try {
+    // IDOR guard: the item's checklist must belong to this file.
+    const own = (await db.query(
+      `SELECT ci.id FROM closing_checklist_items ci JOIN closing_checklists cl ON cl.id=ci.checklist_id
+        WHERE ci.id=$1 AND cl.application_id=$2`, [req.params.iid, req.params.id])).rows[0];
+    if (!own) return res.status(404).json({ error: 'item not found' });
+    await db.query(
+      `UPDATE closing_checklist_items SET checked=$2,
+          checked_by = CASE WHEN $2 THEN $3 ELSE NULL END,
+          checked_at = CASE WHEN $2 THEN now() ELSE NULL END WHERE id=$1`,
+      [req.params.iid, checked, req.actor.id]);
+    res.json({ ok: true, checklists: await closing.readChecklists(req.params.id) });
+  } catch (e) { res.status(500).json({ error: 'server error' }); }
+});
+
+// The CLOSING QUEUE — every file in the closing workflow, scoped to the actor
+// (closers/admins see all via see_all_files; officers/processors see their files).
+router.get('/closing', async (req, res) => {
+  try {
+    const params = [];
+    let scope = '';
+    if (!seesAll(req)) { params.push(req.actor.id); scope = ` AND ${VISIBLE_OFFICERS_SQL('a', '$' + params.length)}`; }
+    const r = await db.query(
+      `SELECT a.id, a.ys_loan_number, a.property_address, a.status, a.lender, a.funded_date, a.expected_closing,
+              b.first_name, b.last_name,
+              cw.stage AS closing_stage, cw.est_closing_date, cw.investor_ctc, cw.closing_date_confirmed,
+              cw.warehouse, cw.actual_cash_to_close, cw.liquidity_ok, cw.tpr_required, cw.tpr_signed_off_at,
+              cw.investor_delivery_signed_off_at, cw.reconciled_ok, cw.collateral_tracking_number,
+              s.full_name AS closer_name
+         FROM closing_workflow cw
+         JOIN applications a ON a.id = cw.application_id AND a.deleted_at IS NULL
+         JOIN borrowers b ON b.id = a.borrower_id
+         LEFT JOIN staff_users s ON s.id = a.closer_id
+        WHERE 1=1 ${scope}
+        ORDER BY COALESCE(cw.est_closing_date, a.expected_closing) NULLS LAST, a.updated_at DESC`,
+      params);
+    res.json(r.rows);
+  } catch (e) { console.warn('[closing] queue error:', db.describeError(e)); res.status(500).json({ error: 'server error' }); }
+});
+
+// Nav badge — files still IN closing (not yet handed to purchasing).
+router.get('/closing/count', async (req, res) => {
+  try {
+    const params = [];
+    let scope = '';
+    if (!seesAll(req)) { params.push(req.actor.id); scope = ` AND ${VISIBLE_OFFICERS_SQL('a', '$' + params.length)}`; }
+    const r = await db.query(
+      `SELECT count(*)::int AS n FROM closing_workflow cw
+         JOIN applications a ON a.id = cw.application_id AND a.deleted_at IS NULL
+        WHERE cw.stage <> 'in_purchasing' ${scope}`, params);
+    res.json({ count: r.rows[0].n });
+  } catch (e) { res.status(500).json({ error: 'server error' }); }
 });
 
 // #84 — super-admin STRUCTURAL UNLOCK. A clear-to-close / funded file's loan
