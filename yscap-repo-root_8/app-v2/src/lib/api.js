@@ -386,6 +386,8 @@ export const api = {
   encompassStatus:   (id) => req('GET', `/api/staff/applications/${id}/encompass/status`),
   encompassFindings: (id) => req('GET', `/api/staff/applications/${id}/encompass/findings`),
   encompassRefresh:  (id) => req('POST', `/api/staff/applications/${id}/encompass/refresh`),
+  // Super-admin only: the raw Encompass troubleshooting view.
+  encompassRaw:      (id) => req('GET', `/api/staff/applications/${id}/encompass/raw`),
   encompassReplace:  (id, fieldKey) => req('POST', `/api/staff/applications/${id}/encompass/replace`, { fieldKey }),
   // Credit report (Xactus import) — the internal Credit report condition.
   staffCredit:        (id) => req('GET', `/api/staff/applications/${id}/credit`),

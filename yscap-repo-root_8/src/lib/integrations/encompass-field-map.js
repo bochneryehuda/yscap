@@ -80,6 +80,13 @@ const REGISTRY = Object.freeze([
   // term sheet. (Without this the enum promotion would hard-block every Bridge /
   // Ground-Up file — the same trap funded_date was left as reference to avoid.)
   pull({ key: 'exit_plan', encompassFieldId: 'CX.EXITPLAN', type: 'enum', compare: 'enum', gate: GATE.ADVISORY, valueMap: 'exitPlan', naWhenOursMissing: true, our: 'derived from program/loan_type (flip→sell, hold/rental→hold)', note: 'Exit plan — matched: fix & flip → Sale; fix & hold / DSCR rental → Rental/Refinance' }),
+  // NOTE BUYER / capital provider (owner-directed 2026-07-26 — a deliberate,
+  // documented exception to the 'no capital-partner fields in the registry' rule).
+  // It is compared so a file's note buyer and Encompass's capital provider cannot
+  // silently disagree. STAFF-ONLY by construction: the only surface that renders
+  // these fields is the staff Encompass panel — this name must NEVER reach a
+  // borrower. ADVISORY: our side is free text, so a difference surfaces for a human.
+  pull({ key: 'capital_provider', encompassFieldId: 'CX.CAPITALPROVIDER', type: 'enum', category: 'program', compare: 'enum', gate: GATE.ADVISORY, valueMap: 'capitalProvider', verified: true, our: 'column:lender (note buyer)', note: 'Note buyer / capital provider — STAFF-ONLY. Encompass dropdown read live 2026-07-26: Fidelis Investors / RCN / Roc Capital / Temple View Capital / CorrFirst / BlueLake / EMCAP / Other' }),
   pull({ key: 'loan_to_be_vested', encompassFieldId: 'CX.LOANTOBEVESTED', type: 'enum', compare: 'enum', gate: GATE.ADVISORY, valueMap: 'vesting', our: 'derive(applications.llc_id present → entity)', note: 'Entity vs individual vesting flag' }),
   // ROOT-CAUSE FIX (owner-reported 2026-07-26: "1859 is fully set in Encompass but
   // our system says no data"). 1859 is a NUMBERED STANDARD field, not a custom
@@ -87,7 +94,7 @@ const REGISTRY = Object.freeze([
   // loanPath, nothing else) could NEVER see it no matter what Encompass held. The
   // candidate paths below are tried in order; the first one present wins, and an
   // absent path still degrades to "no data" rather than a wrong value.
-  pull({ key: 'vesting_llc', encompassFieldId: '1859', loanPath: ['vesting.entityName', 'vesting.trustName', 'vesting.vestingEntityName', 'vestingEntityName', 'vesting.nameOfTrustOrEntity'], type: 'text', category: 'identity', compare: 'name', our: 'llcs.name via applications.llc_id', note: 'Subject LLC / vesting NAME — owner-confirmed standard field 1859 (matches our subject LLC vesting). Name-normalized compare (punctuation-insensitive); the authoritative match uses IDENTITY_MAP.nameEquals in WO-C' }),
+  pull({ key: 'vesting_llc', encompassFieldId: '1859', loanPath: ['closingDocument.finalVestingDescription', 'vesting.entityName', 'vesting.trustName', 'vestingEntityName'], type: 'text', category: 'identity', compare: 'entity', our: 'llcs.name via applications.llc_id', note: 'Subject LLC / vesting NAME — field 1859. VERIFIED LIVE 2026-07-26 against the tenant: the value lives at closingDocument.finalVestingDescription and reads like "LAYBACK LLC, A LIMITED LIABILITY COMPANY" — the entity name PLUS a legal description. compare:entity strips that trailing description so it equals our "Layback LLC"' }),
 
   // ── Loan amount / initial advance / rehab (money) ─────────────────────────
   pull({ key: 'loan_amount', encompassFieldId: '1109', loanPath: 'baseLoanAmount', type: 'money', category: 'loan', compare: 'money', our: 'column:loan_amount', note: 'Total loan amount (Borrower Requested Loan Amount)' }),
@@ -120,7 +127,7 @@ const REGISTRY = Object.freeze([
   pull({ key: 'note_rate', encompassFieldId: '3', loanPath: 'requestedInterestRatePercent', type: 'rate', category: 'interest', compare: 'percent', our: 'column:rate_pct', note: 'Interest rate — PERCENT on both sides. WO-B MUST source applications.rate_pct (a percent, e.g. 10.99), NOT the fractional whole-loan-context note_rate (0.1099), or every loan false-mismatches' }),
   // Same root cause as 1859 — a numbered STANDARD field with no loanPath could never
   // be read out of the loan JSON, so origination always showed "no data to compare".
-  pull({ key: 'origination_pct', encompassFieldId: '388', loanPath: ['originationFeePercent', 'closingCost.originationFeePercent', 'loanProductData.originationFeePercent', 'originationFeePercentage'], type: 'percent', category: 'cost', compare: 'percent', our: 'quote:origination % (e.g. 1.25)', note: 'Origination fee % (field 388: 1.0 = 1%)' }),
+  pull({ key: 'origination_pct', encompassFieldId: '388', loanPath: ['closingCost.gfe2010.loanOriginationPercentage', 'originationFeePercent', 'closingCost.originationFeePercentage'], type: 'percent', category: 'cost', compare: 'percent', our: 'quote:origination % (e.g. 1.25)', note: 'Origination fee % — field 388. VERIFIED LIVE 2026-07-26: the value lives at closingCost.gfe2010.loanOriginationPercentage and is already a PERCENT (2 = 2%), the same scale as our origPct*100' }),
   pull({ key: 'term_months', encompassFieldId: '4', loanPath: 'loanAmortizationTermMonths', type: 'int', category: 'loan', compare: 'int', our: 'column:term (text → int)', note: 'Term in months' }),
   pull({ key: 'maturity_date', encompassFieldId: '78', loanPath: 'maturityDate', type: 'date', category: 'loan', compare: 'date', our: 'column:maturity_date', note: 'Maturity date — read from full loan (maturityDate), not pipeline' }),
   // Funded date — the closing-workflow 3-system reconciliation reads this (field
@@ -205,6 +212,23 @@ const VALUE_MAPS = Object.freeze({
     'refinance': 'hold', 'refi': 'hold', 'rent': 'hold', 'rental': 'hold', 'hold': 'hold',
     'rent/refinance': 'hold', 'refinance/rental': 'hold', 'long term rental': 'hold', 'buy and hold': 'hold',
   },
+  // CX.CAPITALPROVIDER ↔ applications.lender (the NOTE BUYER — STAFF-ONLY, never
+  // shown to a borrower). Encompass's dropdown was read LIVE 2026-07-26:
+  //   Fidelis Investors | RCN | Roc Capital | Temple View Capital | CorrFirst |
+  //   BlueLake | Other | EMCAP
+  // Our names are shorter free text ("Fidelis", "Blue Lake"), so both sides
+  // normalize onto one token. "Fidelis" vs "Fidelis Investors" was the real
+  // mismatch; spacing ("Blue Lake" vs "BlueLake") already collapsed.
+  capitalProvider: {
+    'fidelis': 'fidelis', 'fidelis investors': 'fidelis', 'fidelis investments': 'fidelis', 'fidelis investments llc': 'fidelis',
+    'blue lake': 'bluelake', 'bluelake': 'bluelake', 'blue lake capital': 'bluelake',
+    'corrfirst': 'corrfirst', 'corr first': 'corrfirst',
+    'emcap': 'emcap', 'em cap': 'emcap',
+    'rcn': 'rcn', 'rcn capital': 'rcn',
+    'roc capital': 'roccapital', 'roc': 'roccapital', 'roc360': 'roccapital',
+    'temple view capital': 'templeview', 'temple view': 'templeview', 'templeview': 'templeview',
+    'other': 'other',
+  },
   // CX.REHABTYPE ↔ applications.rehab_type (Cosmetic/Moderate/Heavy/Adding SF/Ground-up)
   // Owner-directed 2026-07-26: Encompass only has Light / Heavy / Expansion, so our
   // finer buckets COLLAPSE onto that vocabulary — Cosmetic AND Moderate both mean
@@ -212,13 +236,24 @@ const VALUE_MAPS = Object.freeze({
   // Encompass could never produce, so a moderate file was permanently "no data").
   // A square-footage ADDITION is Expansion (see rehabTypeFor in reconcile.js, which
   // upgrades a file flagged for sqft addition to 'expansion').
+  // Owner-directed 2026-07-26 (re-mapped after the owner ADDED options in Encompass).
+  // Encompass CX.REHABTYPE read LIVE: Cosmetic Rehab | Light Rehab | Heavy Rehab |
+  // Expansion | New construction. Ours (the file-details dropdown): Cosmetic |
+  // Moderate | Heavy / gut rehab | Adding square footage | Ground-up construction.
+  //   our Cosmetic              -> Cosmetic Rehab      (its own bucket now, NOT light)
+  //   our Moderate              -> Light Rehab
+  //   our Heavy / gut rehab     -> Heavy Rehab
+  //   our Adding square footage -> Expansion   (also set by the sqft-grew signal)
+  //   our Ground-up construction-> New construction
   rehabType: {
-    'light rehab': 'light', 'light': 'light', 'cosmetic': 'light', 'cosmetic / light': 'light', 'cosmetic/light': 'light',
-    'moderate': 'light', 'medium': 'light', 'moderate rehab': 'light',
+    'cosmetic': 'cosmetic', 'cosmetic rehab': 'cosmetic',
+    'light rehab': 'light', 'light': 'light', 'moderate': 'light', 'moderate rehab': 'light', 'medium': 'light',
+    'cosmetic / light': 'light', 'cosmetic/light': 'light',
     'heavy rehab': 'heavy', 'heavy': 'heavy', 'heavy / gut rehab': 'heavy', 'heavy/gut rehab': 'heavy', 'gut rehab': 'heavy', 'gut': 'heavy', 'heavy gut rehab': 'heavy',
-    'expansion': 'expansion', 'adding sf': 'expansion', 'add sf': 'expansion', 'adding square footage': 'expansion', 'adding square feet': 'expansion',
-    'sqft addition': 'expansion', 'square footage expansion': 'expansion', 'adding square feet': 'expansion',
-    'ground-up': 'ground-up', 'ground up': 'ground-up', 'new construction': 'ground-up', 'ground-up construction': 'ground-up', 'ground up construction': 'ground-up', 'groundup': 'ground-up',
+    'expansion': 'expansion', 'adding sf': 'expansion', 'add sf': 'expansion', 'adding square footage': 'expansion',
+    'adding square feet': 'expansion', 'sqft addition': 'expansion', 'square footage expansion': 'expansion',
+    'new construction': 'ground-up', 'ground-up': 'ground-up', 'ground up': 'ground-up',
+    'ground-up construction': 'ground-up', 'ground up construction': 'ground-up', 'groundup': 'ground-up',
   },
   // CX.ACCRUALTYPE ↔ applications.accrual_type (non_dutch | dutch). NOTE: the
   // Encompass vocabulary differs from term-options.resolveAccrual — 'Note' means
@@ -341,7 +376,14 @@ function extractFields(encompassLoan, opts) {
   const o = opts || {};
   const src = encompassLoan || {};
   // A full loan (customFields[]) is flattened first; a flat/enveloped map is used as-is.
-  const enveloped = Array.isArray(src.customFields) ? flattenLoan(src) : src;
+  // A FULL loan is flattened first; a flat/enveloped id map is used as-is. Detect a
+  // full loan by customFields[] OR by any of the top-level sections our loanPaths
+  // read from — a tenant loan that carries no custom fields still has to have its
+  // standard fields (vesting, origination, …) resolved, not treated as a flat map.
+  const looksFullLoan = Array.isArray(src.customFields)
+    || (!src.fields && ['closingDocument', 'closingCost', 'property', 'applications', 'loanNumber', 'baseLoanAmount']
+      .some((k) => Object.prototype.hasOwnProperty.call(src, k)));
+  const enveloped = looksFullLoan ? flattenLoan(src) : src;
   const flat = enveloped.fields && typeof enveloped.fields === 'object' ? enveloped.fields : enveloped;
   const out = {};
   for (const e of REGISTRY) {
@@ -383,6 +425,18 @@ function normText(v) { return String(v == null ? '' : v).trim().toLowerCase().re
 // 'ABC Holdings, LLC' ≡ 'ABC Holdings LLC'. Deliberately does NOT strip entity
 // suffixes (llc/inc/corp) — that would wrongly equate distinct entities.
 function normName(v) { return String(v == null ? '' : v).toLowerCase().replace(/[^a-z0-9\s]/g, ' ').replace(/\s+/g, ' ').trim(); }
+// Encompass stores the vesting as the entity name PLUS its legal description —
+// VERIFIED LIVE: "LAYBACK LLC, A LIMITED LIABILITY COMPANY". Our llcs.llc_name is
+// just "Layback LLC". Drop a trailing ", A <...> COMPANY/CORPORATION/PARTNERSHIP/
+// TRUST" clause (and a bare "AN INDIVIDUAL") before the normal name compare, so the
+// two forms of the SAME entity match. Only a clause that clearly describes an
+// entity TYPE is removed — a real second name is never truncated.
+const ENTITY_DESC = /,\s*(an?\s+[a-z .]*?(limited liability company|limited partnership|general partnership|corporation|company|partnership|trust|llc|lp|inc)|an individual|its successors[^,]*|a[n]? [a-z]+ (corporation|llc|company))\s*\.?\s*$/i;
+function normEntityName(v) {
+  let s = String(v == null ? '' : v).trim();
+  for (let i = 0; i < 3 && ENTITY_DESC.test(s); i++) s = s.replace(ENTITY_DESC, '').trim();
+  return normName(s);
+}
 function normDate(v) {
   if (v == null || v === '') return null;
   const s = String(v).trim();
@@ -473,8 +527,9 @@ function compareField(entryOrKey, ourValue, encValue) {
     base.status = a === b ? 'match' : 'mismatch';
     return base;
   }
-  if (kind === 'name') {
-    const a = normName(ourValue); const b = normName(encValue);
+  if (kind === 'name' || kind === 'entity') {
+    const nm = kind === 'entity' ? normEntityName : normName;
+    const a = nm(ourValue); const b = nm(encValue);
     base.oursNorm = a; base.theirsNorm = b;
     if (a === '' || b === '') return base;
     base.status = a === b ? 'match' : 'mismatch';

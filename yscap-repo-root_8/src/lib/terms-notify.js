@@ -27,15 +27,9 @@ async function sendBorrowerTerms(appId, { quote, total, termMonths, encompassOve
   // caller too. An explicit `encompassOverride` (an admin who already overrode at
   // the register route) bypasses it. Dormant until Encompass is live + a loan is
   // pulled; fails OPEN (never withholds) on any reconcile error.
-  if (!encompassOverride) {
-    try {
-      const g = await require('../encompass/reconcile').issuanceGate(appId);
-      if (g.block) {
-        console.warn('[terms] term sheet WITHHELD — Encompass findings open on', appId, '(', g.openBlocking, 'field(s))');
-        return { withheld: true, reason: 'encompass_findings_open', openBlocking: g.openBlocking };
-      }
-    } catch (_) { /* fail open — a reconcile error must never withhold a term sheet */ }
-  }
+  // Owner-directed 2026-07-26 (CORRECTION): the borrower's term sheet is NOT withheld
+  // on an Encompass mismatch any more. Issuing terms stays open; the ONLY thing the
+  // match gates is SENDING the DocuSign term-sheet package (staff.js esign/send).
   const db = require('../db');
   const notify = require('./notify');
   const email = require('./email');

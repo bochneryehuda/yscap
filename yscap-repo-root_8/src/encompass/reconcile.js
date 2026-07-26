@@ -121,6 +121,8 @@ function buildOurValues(app, quote, llcName) {
     // a fix & flip exits by SALE; a fix & hold / DSCR rental exits by RENTAL/refi.
     // Anything we can't read confidently stays undefined → "no data", never a guess.
     exit_plan: exitPlanFor(deriveDealType(a.program, a.loan_type)),
+    // Note buyer ↔ Encompass capital provider (STAFF-ONLY — never borrower-facing).
+    capital_provider: nz(a.lender),
     loan_to_be_vested: a.llc_id ? 'Entity' : (a.borrower_id ? 'Individual' : undefined),
     vesting_llc: nz(llcName),
 
@@ -456,7 +458,7 @@ async function computeFindings(appId, dbc) {
             a.loan_amount, a.purchase_price, a.underlying_contract_price, a.assignment_fee,
             a.rehab_budget, a.as_is_value, a.arv, a.ltv, a.rate_pct, a.term, a.maturity_date, a.funded_date,
             a.program, a.loan_type, a.rehab_type, a.accrual_type, a.property_type,
-            a.units, a.property_address, a.co_borrower_id, a.sqft_pre, a.sqft_post,
+            a.units, a.property_address, a.co_borrower_id, a.sqft_pre, a.sqft_post, a.lender,
             a.requested_exp_flips, a.requested_exp_holds, a.requested_exp_ground,
             l.llc_name AS llc_name,
             b.first_name AS b_first_name, b.last_name AS b_last_name,
@@ -524,53 +526,94 @@ async function computeFindings(appId, dbc) {
   };
 }
 
-// Convenience for the term-sheet gate (WO-E): is the Encompass findings tab clear?
-async function isClear(appId, dbc) {
+
+// ── SUPER-ADMIN raw diagnostic (owner-directed 2026-07-26) ──────────────────
+// "Show me the RAW and exactly what's going on / why it's not matching."
+// Returns, for one file: every RAW key/value Encompass actually gave us (flattened
+// to the field ids the registry uses), which registry field each one feeds, our
+// side, their side, BOTH normalized values, and a plain-language reason the row is
+// not a match. This is what makes a wrong/missing field id diagnosable in seconds
+// instead of guessing at JSON paths.
+//
+// READ-ONLY and PII-SAFE: it reads the already-scrubbed encompass_extra (the raw
+// SSN was never stored — only a one-way hash), and it REDACTS anything that looks
+// like an SSN hash/number before returning. Super-admin only at the route.
+function _redactRaw(key, val) {
+  if (/ssn|taxidentification/i.test(String(key))) return '[redacted]';
+  const s = typeof val === 'string' ? val : JSON.stringify(val);
+  if (typeof s === 'string' && /^[0-9a-f]{64}$/i.test(s)) return '[hash redacted]';
+  return val;
+}
+
+async function rawDiagnostic(appId, dbc) {
   const c = await computeFindings(appId, dbc);
-  // A file with no Encompass loan pulled is NOT "blocked" by Encompass — the gate
-  // only blocks on an OPEN blocking mismatch against a loan we actually have.
-  // At the GATE BOUNDARY `openBlocking` is the count of EVERY not-passing field
-  // (mismatch, advisory, OR "no data to compare"), i.e. exactly the length of
-  // `openBlockingKeys`. It deliberately does NOT use `summary.openBlocking`, which
-  // counts only the open block-gate MISMATCHES and would print "0 fields don't
-  // match" in precisely the advisory / no-data / accepted-but-differing cases the
-  // owner-directed match-all gate blocks on (2026-07-26).
-  const keys = c.summary.openBlockingKeys || [];
-  return { clear: c.summary.clear, hasLoan: c.hasLoan, openBlocking: keys.length, openBlockingKeys: keys };
-}
+  if (!c.found) return { found: false };
 
-// WO-E — the term-sheet issuance gate decision. `block` is true ONLY when there
-// is a pulled Encompass loan AND it has open blocking mismatches — so it is
-// dormant when Encompass is absent/unconfigured (hasLoan false → never blocks).
-// FAILS OPEN (block:false) on any error: an Encompass reconcile problem must
-// never prevent a term sheet from being issued (Encompass is a cross-check, not
-// the authority). A caller applies its own admin-override policy on `block`.
-async function issuanceGate(appId, dbc) {
+  // What Encompass actually handed us, keyed exactly as the registry looks it up.
+  // Read the stored (already PII-scrubbed) loan copy straight from the file.
+  const conn = dbc || require('../db');
+  const lr = await conn.query('SELECT encompass_extra FROM applications WHERE id = $1', [appId]);
+  const loan = (lr.rows[0] && lr.rows[0].encompass_extra) || null;
+  let flat = {};
   try {
-    const g = await isClear(appId, dbc);
-    const keys = g.openBlockingKeys || [];
-    // `openBlocking` == keys.length so every display/log site prints the true
-    // number of fields that don't agree (never an under-count).
-    return { block: !!(g.hasLoan && !g.clear), hasLoan: g.hasLoan, openBlocking: keys.length, openBlockingKeys: keys };
-  } catch (_) {
-    return { block: false, hasLoan: false, openBlocking: 0, openBlockingKeys: [] };
-  }
+    if (loan) {
+      const env = map.flattenLoan(loan);
+      flat = (env && env.fields) || {};
+    }
+  } catch (_) { flat = {}; }
+
+  const byFieldId = {};
+  for (const f of c.fields) if (f.encompassFieldId) byFieldId[f.encompassFieldId] = f;
+
+  const rawRows = Object.keys(flat).sort().map((id) => {
+    const cell = flat[id];
+    const value = cell && typeof cell === 'object' && 'value' in cell ? cell.value : cell;
+    const f = byFieldId[id] || null;
+    return {
+      encompassFieldId: id,
+      rawValue: _redactRaw(id, value),
+      mapsToField: f ? f.key : null,
+      mapsToLabel: f ? f.label : null,
+      status: f ? f.status : null,
+    };
+  });
+
+  // Registry fields Encompass returned NOTHING for — the "no data to compare"
+  // rows, which is exactly where a wrong field id or JSON path shows up.
+  const missing = c.fields
+    .filter((f) => f.status === 'incomparable' && (f.theirsNorm === null || f.theirsNorm === undefined || f.theirsNorm === ''))
+    .map((f) => ({ key: f.key, label: f.label, encompassFieldId: f.encompassFieldId, ours: f.ours, theirs: f.theirs }));
+
+  const rows = c.fields.map((f) => ({
+    key: f.key, label: f.label, encompassFieldId: f.encompassFieldId,
+    compare: f.compare, gate: f.gate, status: f.status,
+    ours: f.ours, theirs: f.theirs, oursNorm: f.oursNorm, theirsNorm: f.theirsNorm,
+    why: _whyNotMatching(f),
+  }));
+
+  return {
+    found: true, hasLoan: c.hasLoan, guid: c.guid, loanNumber: c.loanNumber,
+    pulledAt: c.pulledAt, lastError: c.lastError, summary: c.summary,
+    rawFieldCount: rawRows.length, raw: rawRows, missingFromEncompass: missing, rows,
+  };
 }
 
-// The DATA-TAPE export gate (owner-directed 2026-07-26): a loan's tape can't be
-// exported until its Encompass reconciliation is COMPLETE and EVERY field matches.
-// STRICTER than the term-sheet issuanceGate on TWO axes — the owner's directive is
-// "everything must match within Encompass before you export a tape":
-//   1. a loan that is NOT yet in Encompass is BLOCKED (`not_in_encompass`) — the
-//      loan must be synced to Encompass AND fully reconciled first (the term-sheet
-//      gate is dormant there);
-//   2. when Encompass IS configured but the reconciliation CAN'T be computed (a
-//      transient DB / data error), the tape FAILS CLOSED (`error`, block:true) —
-//      we won't release a tape we couldn't confirm matches. This DIVERGES from
-//      `issuanceGate` (which fails open) precisely because the owner made this a
-//      hard export gate; the admin override (route-level) is the escape hatch.
-// Still DORMANT when the Encompass integration itself is OFF or its state can't even
-// be read (nothing to reconcile against — never lock every export out of a
+// One plain sentence per row explaining the verdict — the whole point of the view.
+function _whyNotMatching(f) {
+  if (f.status === 'match') return 'Both sides agree.';
+  if (f.status === 'reference') return 'Shown for reference only — never compared.';
+  if (f.status === 'incomparable') {
+    const oursBlank = f.oursNorm === null || f.oursNorm === undefined || f.oursNorm === '';
+    const theirsBlank = f.theirsNorm === null || f.theirsNorm === undefined || f.theirsNorm === '';
+    if (f.naWhenOursMissing && oursBlank) return "Doesn't apply to this kind of loan — nothing to compare.";
+    if (oursBlank && theirsBlank) return 'Neither system has a value for this yet.';
+    if (theirsBlank) return `Encompass returned nothing for field ${f.encompassFieldId || '(n/a)'} — either it is blank in Encompass or we are reading the wrong field id / location.`;
+    return 'Our file has no value for this yet — enter it on the file.';
+  }
+  if (f.compare === 'enum') return `The two values do not map to the same meaning (ours "${f.oursNorm}" vs Encompass "${f.theirsNorm}").`;
+  return `The values differ after normalizing (ours "${f.oursNorm}" vs Encompass "${f.theirsNorm}").`;
+}
+
 // non-Encompass deployment).
 //   reason: 'not_configured' | 'not_in_encompass' | 'unreconciled' | null | 'error'
 // The DECISION core is pure (no DB/network) so every branch is unit-testable —
@@ -621,6 +664,39 @@ function tapeGateMessage(gate) {
   const n = gate.openBlocking || 0;
   const fields = n === 1 ? '1 field' : `${n} fields`;
   return `This loan doesn’t fully match Encompass yet (${fields} still ${n === 1 ? 'differs' : 'differ'}). Open the Encompass section and reconcile every field before exporting its tape.`;
+}
+
+// Convenience for the term-sheet gate (WO-E): is the Encompass findings tab clear?
+async function isClear(appId, dbc) {
+  const c = await computeFindings(appId, dbc);
+  // A file with no Encompass loan pulled is NOT "blocked" by Encompass — the gate
+  // only blocks on an OPEN blocking mismatch against a loan we actually have.
+  // At the GATE BOUNDARY `openBlocking` is the count of EVERY not-passing field
+  // (mismatch, advisory, OR "no data to compare"), i.e. exactly the length of
+  // `openBlockingKeys`. It deliberately does NOT use `summary.openBlocking`, which
+  // counts only the open block-gate MISMATCHES and would print "0 fields don't
+  // match" in precisely the advisory / no-data / accepted-but-differing cases the
+  // owner-directed match-all gate blocks on (2026-07-26).
+  const keys = c.summary.openBlockingKeys || [];
+  return { clear: c.summary.clear, hasLoan: c.hasLoan, openBlocking: keys.length, openBlockingKeys: keys };
+}
+
+// WO-E — the term-sheet issuance gate decision. `block` is true ONLY when there
+// is a pulled Encompass loan AND it has open blocking mismatches — so it is
+// dormant when Encompass is absent/unconfigured (hasLoan false → never blocks).
+// FAILS OPEN (block:false) on any error: an Encompass reconcile problem must
+// never prevent a term sheet from being issued (Encompass is a cross-check, not
+// the authority). A caller applies its own admin-override policy on `block`.
+async function issuanceGate(appId, dbc) {
+  try {
+    const g = await isClear(appId, dbc);
+    const keys = g.openBlockingKeys || [];
+    // `openBlocking` == keys.length so every display/log site prints the true
+    // number of fields that don't agree (never an under-count).
+    return { block: !!(g.hasLoan && !g.clear), hasLoan: g.hasLoan, openBlocking: keys.length, openBlockingKeys: keys };
+  } catch (_) {
+    return { block: false, hasLoan: false, openBlocking: 0, openBlockingKeys: [] };
+  }
 }
 
 // ── Pull one Encompass value into our column (WO-C) ─────────────────────────
@@ -707,10 +783,11 @@ module.exports = {
   compareAll,
   summarize,
   computeFindings,
+  rawDiagnostic,
   isClear,
-  issuanceGate,
   tapeGate,
   tapeGateMessage,
+  issuanceGate,
   replaceField,
   refresh,
   onLoanNumberSet,

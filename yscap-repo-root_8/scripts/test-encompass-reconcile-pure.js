@@ -25,7 +25,7 @@ const app = {
   llc_id: 'llc-1', borrower_id: 'b-1',
   loan_amount: 525450, purchase_price: 450500, underlying_contract_price: 425000, assignment_fee: 25500,
   rehab_budget: 120000, as_is_value: 500000, arv: 750000, ltv: 90, rate_pct: 8.0, term: '12 months', maturity_date: '2027-06-22',
-  rehab_type: 'Cosmetic', accrual_type: 'non_dutch',
+  rehab_type: 'Cosmetic', accrual_type: 'non_dutch', lender: 'Fidelis',
   requested_exp_flips: 10, requested_exp_holds: 0, requested_exp_ground: 0,
 };
 // NOTE (owner-reported 2026-07-26): the frozen engines emit every leverage ratio as
@@ -64,8 +64,9 @@ const loan = {
     { fieldName: 'CX.MAXARV', value: '75.0' },
     { fieldName: 'CX.MAXLTC', value: '92.5' },
     { fieldName: 'CX.DEALPROJECTTYPE', value: 'Fix and Flip' },
-    { fieldName: 'CX.EXITPLAN', value: 'Sale' },   // exit plan is a real match now (flip → Sale)
-    { fieldName: 'CX.REHABTYPE', value: 'Light Rehab' },
+    { fieldName: 'CX.EXITPLAN', value: 'Sale' },
+    { fieldName: 'CX.CAPITALPROVIDER', value: 'Fidelis Investors' },  // our 'Fidelis' must match this   // exit plan is a real match now (flip → Sale)
+    { fieldName: 'CX.REHABTYPE', value: 'Cosmetic Rehab' },  // our 'Cosmetic' is its OWN bucket now
     { fieldName: 'CX.ACCRUALTYPE', value: 'Drawn' },
     { fieldName: 'CX.TOTALEXPERIENCEDEALS', value: '10' },
     { fieldName: 'CX.LOANTOBEVESTED', value: 'Entity' },
@@ -115,6 +116,7 @@ assert.strictEqual(recon.buildOurValues({ program: 'Fix & Flip' }, null).exit_pl
 assert.strictEqual(recon.buildOurValues({ program: 'DSCR' }, null).exit_plan, 'hold', 'rental → hold');
 assert.strictEqual(recon.buildOurValues({ program: 'Bridge' }, null).exit_plan, undefined, 'bridge exit is not guessed');
 assert.strictEqual(ours.exit_plan, 'sell', 'a flip file exits by sale');
+assert.strictEqual(ours.capital_provider, 'Fidelis', 'note buyer feeds the capital-provider compare');
 // Effective purchase falls back to the purchase price when there is no assignment
 // haircut, so a straight purchase MATCHES instead of reading "no data to compare".
 assert.strictEqual(recon.buildOurValues({ purchase_price: 300000 }, null).effective_purchase, 300000,

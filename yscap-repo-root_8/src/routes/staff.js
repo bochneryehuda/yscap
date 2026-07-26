@@ -1906,37 +1906,11 @@ router.post('/applications/:id/pricing/register', async (req, res) => {
     const f = await loadFileForPricing(appId);
     if (!f) return res.status(404).json({ error: 'not found' });
 
-    // WO-E — a term sheet cannot be ISSUED while this file has OPEN blocking
-    // Encompass mismatches. Dormant until Encompass is live + a loan is pulled
-    // (no pulled loan → never blocks). An admin (see_all_files) may override with
-    // a logged reason; the gate fails OPEN on any reconcile error. When overridden
-    // here, the flag rides to sendBorrowerTerms so the chokepoint gate lets it out.
-    let encompassOverridden = false;
-    {
-      const encGate = await require('../encompass/reconcile').issuanceGate(appId);
-      if (encGate.block) {
-        const ovr = String(b.encompassOverrideReason || '').trim();
-        if (!seesAll(req)) return refuse(422, {
-          error: `Encompass and this file don’t agree yet — ${encGate.openBlocking} field(s) don’t match. Clear the Encompass sync (or ask an admin to override) before issuing a term sheet.`,
-          code: 'encompass_findings_open', openFields: encGate.openBlockingKeys,
-        }, 'encompass_findings_open', { openBlocking: encGate.openBlocking });
-        if (!ovr) return refuse(422, {
-          error: `Encompass has ${encGate.openBlocking} unmatched field(s). As an admin you can override — provide a reason to issue the term sheet anyway.`,
-          code: 'encompass_override_reason_required', openFields: encGate.openBlockingKeys,
-        }, 'encompass_override_reason_required', { openBlocking: encGate.openBlocking });
-        await audit(req, 'encompass_gate_override', 'application', appId, { reason: ovr.slice(0, 500), openBlocking: encGate.openBlocking, openFields: encGate.openBlockingKeys });
-        encompassOverridden = true;
-        // Record it in the policy-exception register (issuance_override) so the
-        // override is diligence-visible — best-effort, never blocks the issue.
-        try {
-          await require('../lib/loan-exceptions').recordIssuanceOverride({
-            appId, staffId: req.actor && req.actor.id,
-            note: `encompass_gate: ${ovr.slice(0, 400)}`,
-            snapshot: { encompass_open_blocking: encGate.openBlocking, encompass_open_fields: encGate.openBlockingKeys },
-          });
-        } catch (_) { /* register write is best-effort */ }
-      }
-    }
+    // Owner-directed 2026-07-26 (CORRECTION): the Encompass match is NOT a gate on
+    // registering a product or issuing a term sheet. Registering and issuing must
+    // stay open — the ONLY thing that waits for everything to match is SENDING the
+    // DocuSign term-sheet package (see the esign send route's encompassTermSheetGate).
+    const encompassOverridden = false;
 
     // Optimistic concurrency on the FILE-owned pricing basis: the studio sends
     // back the econVersion it prefilled from; if the file's economics changed
@@ -2581,17 +2555,8 @@ router.post('/applications/:id/pricing/accept-counter', async (req, res) => {
     const f = await loadFileForPricing(appId);
     if (!f) return res.status(404).json({ error: 'not found' });
 
-    // WO-E — the Encompass issuance gate also applies to accepting a counter (it
-    // re-issues the term sheet). This one-click path has no override-reason input;
-    // to override, an admin registers from the Term Sheet Studio. Dormant until
-    // Encompass is live + a loan is pulled; fails OPEN on any reconcile error.
-    {
-      const encGate = await require('../encompass/reconcile').issuanceGate(appId);
-      if (encGate.block) return res.status(409).json({
-        error: `Encompass and this file don’t agree yet — ${encGate.openBlocking} field(s) don’t match. Clear the Encompass sync first (or an admin can register from the Term Sheet Studio with an override).`,
-        code: 'encompass_findings_open', openFields: encGate.openBlockingKeys,
-      });
-    }
+    // Owner-directed 2026-07-26: accepting a counter re-ISSUES a term sheet, which is
+    // deliberately NOT gated on Encompass any more — only the DocuSign send is.
 
     // Build overrides: start with the ORIGINAL manual-review overrides (stored
     // structural keys on the escalation), then overlay the super-admin's counter
@@ -7128,6 +7093,18 @@ router.get('/applications/:id/encompass/status', async (req, res) => {
   } catch (e) { console.warn('[staff] encompass status:', db.describeError(e)); res.status(500).json({ error: 'server error' }); }
 });
 
+// SUPER-ADMIN ONLY (owner-directed 2026-07-26): the raw troubleshooting view —
+// every field Encompass actually returned, what it maps to, both normalized
+// values, and why a row is not matching. Read-only; SSN values/hashes redacted.
+router.get('/applications/:id/encompass/raw', requireRole('super_admin'), async (req, res) => {
+  try {
+    const d = await require('../encompass/reconcile').rawDiagnostic(req.params.id);
+    if (!d.found) return res.status(404).json({ error: 'application not found' });
+    await audit(req, 'encompass_raw_view', 'application', req.params.id, { rawFieldCount: d.rawFieldCount });
+    res.json(d);
+  } catch (e) { console.warn('[staff] encompass raw:', db.describeError(e)); res.status(500).json({ error: 'server error' }); }
+});
+
 router.get('/applications/:id/encompass/findings', async (req, res) => {
   try {
     const c = await require('../encompass/reconcile').computeFindings(req.params.id);
@@ -10950,10 +10927,42 @@ router.post('/esign/test-send', requireRole('admin'), async (req, res) => {
 });
 
 // Send a package for a file. Rides the /applications/:id scope guard.
+// The DocuSign package(s) that carry the TERM SHEET — the only sends the Encompass
+// match gates (owner-directed 2026-07-26).
+const TERM_SHEET_ESIGN_PURPOSES = new Set(['term_sheet_package']);
+
 router.post('/applications/:id/esign/send', async (req, res) => {
   const purpose = String((req.body && req.body.purpose) || '');
   if (!esignOrchestrate.PACKAGES[purpose]) return res.status(400).json({ error: 'unknown package' });
   const reissue = !!(req.body && req.body.reissue);
+  // Owner-directed 2026-07-26: the Encompass match gates EXACTLY ONE action — sending
+  // the TERM-SHEET DocuSign package. Registering a product and issuing/printing a term
+  // sheet stay open; only the signable package waits until the two systems agree.
+  // Dormant when no Encompass loan is linked, and fails OPEN on any reconcile error.
+  if (TERM_SHEET_ESIGN_PURPOSES.has(purpose)) {
+    try {
+      const encGate = await require('../encompass/reconcile').issuanceGate(req.params.id);
+      if (encGate.block) {
+        const ovr = String((req.body && req.body.encompassOverrideReason) || '').trim();
+        if (!seesAll(req)) return res.status(422).json({
+          error: `Encompass and this file don’t agree yet — ${encGate.openBlocking} field(s) don’t match. Clear the Encompass sync (or ask an admin to override) before sending the term sheet for signature.`,
+          code: 'encompass_findings_open', openFields: encGate.openBlockingKeys,
+        });
+        if (!ovr) return res.status(422).json({
+          error: `Encompass has ${encGate.openBlocking} unmatched field(s). As an admin you can override — provide a reason to send the signing package anyway.`,
+          code: 'encompass_override_reason_required', openFields: encGate.openBlockingKeys,
+        });
+        await audit(req, 'encompass_gate_override', 'application', req.params.id, { reason: ovr.slice(0, 500), purpose, openBlocking: encGate.openBlocking, openFields: encGate.openBlockingKeys });
+        try {
+          await require('../lib/loan-exceptions').recordIssuanceOverride({
+            appId: req.params.id, staffId: req.actor && req.actor.id,
+            note: `encompass_gate (docusign ${purpose}): ${ovr.slice(0, 380)}`,
+            snapshot: { encompass_open_blocking: encGate.openBlocking, encompass_open_fields: encGate.openBlockingKeys },
+          });
+        } catch (_) { /* register write is best-effort */ }
+      }
+    } catch (_) { /* fail OPEN — an Encompass problem must never strand a send */ }
+  }
   try {
     const out = await esignOrchestrate.sendPackage(req.params.id, purpose, req.actor, { db, docusign: docusignLib, reissue });
     await audit(req, 'esign_send', 'application', req.params.id, { purpose, reissue });
