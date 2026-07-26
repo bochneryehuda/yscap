@@ -116,9 +116,8 @@ async function _timedPing(storage, timeoutMs) {
   }
 }
 
-// A fresh-enough ping verdict, doing at most ONE round-trip per TTL across all concurrent callers.
-async function _cachedPing(storage, key, { timeoutMs, ttlMs, now }) {
-  if (_cache && _cache.key === key && (now - _cache.at) < ttlMs) return _cache.result;
+// Start (or join) the single in-flight round-trip for this key and cache its verdict.
+function _startPing(storage, key, timeoutMs) {
   if (_inflight && _inflight.key === key) return _inflight.promise;   // share the in-flight request
   const promise = _timedPing(storage, timeoutMs).then((result) => {
     _cache = { key, at: Date.now(), result };
@@ -126,6 +125,29 @@ async function _cachedPing(storage, key, { timeoutMs, ttlMs, now }) {
   }).finally(() => { if (_inflight && _inflight.promise === promise) _inflight = null; });
   _inflight = { key, promise };
   return promise;
+}
+
+/**
+ * A fresh-enough ping verdict, doing at most ONE round-trip per TTL across all concurrent callers.
+ *
+ * `swr` (stale-while-revalidate) is what keeps /api/health cheap in the WORST case, not just the
+ * average one. Without it, the unlucky caller whose TTL just expired pays the FULL ping timeout —
+ * and on Render that endpoint is the health check, so a dead bucket could make an otherwise-healthy
+ * service read as slow/unhealthy and block a deploy. With `swr`, a caller that has ANY previous
+ * verdict answers instantly from it and refreshes in the background; only the very first caller
+ * (no verdict at all) ever waits.
+ */
+async function _cachedPing(storage, key, { timeoutMs, ttlMs, now, swr }) {
+  const isFresh = _cache && _cache.key === key && (now - _cache.at) < ttlMs;
+  if (isFresh) return _cache.result;
+  const haveStale = !!(_cache && _cache.key === key);
+  if (swr && haveStale) {
+    // Refresh in the BACKGROUND. _timedPing never rejects, but catch anyway so a background
+    // refresh can never surface as an unhandled rejection.
+    _startPing(storage, key, timeoutMs).catch(() => {});
+    return _cache.result;              // answer instantly with the last known verdict
+  }
+  return _startPing(storage, key, timeoutMs);
 }
 
 /**
@@ -151,8 +173,16 @@ async function readStorageHealth(storage, provider, opts = {}) {
     // Key the cache on the provider AND the resolved base, so re-pointing at a different bucket
     // can never serve the previous bucket's verdict.
     const key = `${str(provider) || 'local'}::${(probe && probe.base) || ''}`;
-    if (opts && opts.fresh) ping = await _timedPing(storage, timeoutMs);
-    else ping = await _cachedPing(storage, key, { timeoutMs, ttlMs, now: Date.now() });
+    if (opts && opts.fresh) {
+      // A human pressed "Test now" — bypass the cache for a real round-trip, but STORE the result:
+      // the freshest verdict is strictly the better one to serve, and not storing it let the admin
+      // card and /api/health disagree for the rest of the TTL (e.g. card "credentials rejected"
+      // while health still said reachable).
+      ping = await _timedPing(storage, timeoutMs);
+      _cache = { key, at: Date.now(), result: ping };
+    } else {
+      ping = await _cachedPing(storage, key, { timeoutMs, ttlMs, now: Date.now(), swr: !!(opts && opts.swr) });
+    }
   }
 
   return buildStorageCard({ provider, probe, ping });

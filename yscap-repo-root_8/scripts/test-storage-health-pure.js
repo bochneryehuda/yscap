@@ -68,6 +68,20 @@ const ok = (c, m) => { if (c) { pass++; } else { fail++; console.log('  FAIL:', 
   ok(stub.writable === false, 'stub provider: not writable');
   ok(/not configured/i.test(stub.reason || ''), 'stub provider: the probe error is surfaced as the reason');
 
+  // The temp-folder fallback: storage.js drops to a TEMPORARY dir (loudly) when STORAGE_DIR can't
+  // be written, and everything uploaded is wiped on the next deploy. `persistent:false` is the
+  // signal the API-Health card keys its loudest warning on, so it must survive onto the card —
+  // a card that reported this as a calm "configured" would be silent about the one thing that
+  // matters most.
+  const ephemeral = SH.buildStorageCard({
+    provider: 'local',
+    probe: { ok: true, base: '/tmp/uploads-fallback', configured: '/tmp/uploads-fallback', persistent: false },
+    ping: null,
+  });
+  ok(ephemeral.persistent === false, 'temp-folder fallback: persistent false is carried onto the card');
+  ok(ephemeral.writable === true, 'temp-folder fallback: still writable (uploads work — they just do not survive)');
+  ok(ephemeral.reachable === null, 'temp-folder fallback: still no remote endpoint to reach');
+
   // A probe ERROR must always be explained (previously it produced a card with reason:null).
   const errProbe = SH.buildStorageCard({ provider: 'local', probe: { ok: false, error: 'disk unresolvable' }, ping: null });
   ok(/disk unresolvable/.test(errProbe.reason || ''), 'probe error is surfaced in the reason');

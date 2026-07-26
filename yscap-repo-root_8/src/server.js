@@ -123,11 +123,19 @@ app.get('/api/health', async (req, res) => {
   // supports one, so a revoked token surfaces here instead of on a borrower's upload.
   let storageCard;
   try {
+    // `swr` — serve the last known verdict instantly and refresh in the background. Only the very
+    // first caller (no verdict yet) ever waits. This endpoint is Render's health check AND is
+    // polled by every open tab, so it must never pay a full storage timeout on a TTL boundary.
     storageCard = await require('./lib/storage-health')
-      .readStorageHealth(require('./lib/storage'), cfg.storageProvider);
+      .readStorageHealth(require('./lib/storage'), cfg.storageProvider, { swr: true });
     // Shape parity on failure: return the canonical 8-field card (all-null) rather than a partial
     // object, so a consumer reading e.g. `.configured` never gets `undefined`.
-  } catch (e) { storageCard = require('./lib/storage-health').buildStorageCard({ provider: cfg.storageProvider }); }
+    // Shape parity on failure: the canonical 8-field card, and carry the FAILURE as the reason —
+    // a bare card would read back the reassuring "local disk" line even though the read threw.
+  } catch (e) {
+    storageCard = require('./lib/storage-health')
+      .buildStorageCard({ provider: cfg.storageProvider, probe: { ok: false, error: 'storage health unavailable' } });
+  }
   // Missing-conditions tripwire (owner-directed 2026-07-14, after the breach):
   // a LIVE file sitting at zero checklist items, or an RTL file without its
   // purchase-contract condition, must be impossible — if it ever happens again
