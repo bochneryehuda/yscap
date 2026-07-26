@@ -170,5 +170,31 @@ ok(floodCovered.length === 0, `an SFHA property with a policy confirmed raises n
 const notFlood = DC.computeFloodFindings({ inSfha: false, floodZone: 'X', readable: true }, {}, {});
 ok(notFlood.length === 0, 'a property outside the flood zone raises nothing');
 
+// The mirror of the class: a PROVEN fact ignored because a derived flag was null. `inSfha` is
+// something the reader DERIVES from the zone, and it is told to use null when unsure — so a
+// determination plainly printing "Zone AE" was producing nothing at all.
+for (const z of ['AE', 'A', 'VE', 'a']) {
+  const r = DC.computeFloodFindings({ floodZone: z, inSfha: null, policyPresent: null, readable: true }, {}, {});
+  ok(has(r, 'flood_insurance_confirm'),
+    `zone ${z} with the derived flag unread is still a flood zone (got ${JSON.stringify(codes(r))})`);
+}
+for (const z of ['X', 'C', 'B']) {
+  const r = DC.computeFloodFindings({ floodZone: z, inSfha: null, policyPresent: null, readable: true }, {}, {});
+  ok(r.length === 0, `zone ${z} is NOT a flood zone and stays silent (got ${JSON.stringify(codes(r))})`);
+}
+// An explicit "not in an SFHA" always wins over the zone letter — never second-guess a real answer.
+ok(DC.computeFloodFindings({ floodZone: 'AE', inSfha: false, readable: true }, {}, {}).length === 0,
+  'an explicit inSfha:false is respected even when the zone letter looks like a flood zone');
+
+// ---------- a signature DATE is not proof when the reader said the document is UNSIGNED ----------
+// A blank application form with a printed "Date: ____" line has exactly this shape, and it was
+// re-raising the compliance FATAL through the marker the `affirmed` guard had just refused.
+const unsignedWithDate = DC.computeSignedApplicationFindings(
+  { borrowerName: 'X', signaturePresent: false, signedDate: '2026-07-20', businessPurposePresent: false, readable: true },
+  {}, {});
+ok(!has(unsignedWithDate, 'application_no_business_purpose'),
+  `a document the reader says is UNSIGNED never raises the compliance FATAL, date or no date (got ${JSON.stringify(codes(unsignedWithDate))})`);
+ok(has(unsignedWithDate, 'application_unsigned'), 'the honest "it is not signed" finding is still raised');
+
 console.log(`test-absence-wrong-document-pure: ${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

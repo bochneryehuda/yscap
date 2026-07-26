@@ -17,7 +17,7 @@ const { expectedDocTypeForCode } = require('./condition-map');
 
 /**
  * @param {object} args
- *   documents   [{ id, condition_code, doc_kind, filename }] — current, non-rejected on-file docs
+ *   documents   [{ id, condition_code, doc_kind, slot_label, filename }] — current, non-rejected on-file docs
  *   analyzedIds Set|Array of document ids that already have a current extraction (skip these)
  *   isReadable  (docType) => boolean — whether the reader has a checker for this type (registry.get)
  * @returns {Array<{ id, expectedType, conditionCode, filename }>} the read queue, in input order
@@ -38,7 +38,14 @@ function selectAutoReadQueue({ documents = [], analyzedIds = new Set(), isReadab
     // document TYPE, so it's used directly — NOT looked up as a condition code (that always missed).
     // The isReadable gate below drops any kind the reader has no checker for (a photo_id, a term
     // sheet, …). Never guess — a document with no mapped, readable type is left for a human.
-    const expectedType = expectedDocTypeForCode(d.condition_code) || d.doc_kind || null;
+    // …and finally the SLOT it was filed into. The LLC section's upload accepts a `slot` without a
+    // checklist item, and that path writes neither a condition nor a doc_kind — so a document sitting
+    // in the clearly-labelled "Operating Agreement" slot had nothing at all saying what it was, and
+    // was skipped as unidentifiable (reproduced on a real database, 2026-07-26). The slot label is a
+    // human's explicit statement of what the document is; it is the same vocabulary as the condition
+    // codes, so it resolves through the same map and an unrecognized label still resolves to nothing.
+    const expectedType = expectedDocTypeForCode(d.condition_code) || d.doc_kind
+      || expectedDocTypeForCode(d.slot_label) || null;
     if (!expectedType || !isReadable(expectedType)) continue;
     if (analyzed.has(d.id)) continue; // already read — the analyze-once cache would no-op it anyway
     queue.push({ id: d.id, expectedType, conditionCode: d.condition_code || null, filename: d.filename || null });

@@ -109,11 +109,14 @@ router.use(requireAuth, requireStaff);
 // Authorization: the file must exist AND the staffer must see it (see_all or assigned).
 async function fileFor(req, appId) {
   if (!isUuid(appId)) return null;
+  // llc_id comes back so `fileDoc` can resolve the file's OWN vesting-entity documents — see the
+  // note there. Without it a file whose LLC is filed under a different borrower record could never
+  // read its own operating agreement / EIN / articles.
   if (can(req.actor, 'see_all_files')) {
-    return (await db.query(`SELECT id, borrower_id FROM applications WHERE id=$1 AND deleted_at IS NULL`, [appId])).rows[0] || null;
+    return (await db.query(`SELECT id, borrower_id, llc_id FROM applications WHERE id=$1 AND deleted_at IS NULL`, [appId])).rows[0] || null;
   }
   return (await db.query(
-    `SELECT a.id, a.borrower_id FROM applications a WHERE a.id=$1 AND a.deleted_at IS NULL AND ${assigneeExistsSql('a', '$2')}`,
+    `SELECT a.id, a.borrower_id, a.llc_id FROM applications a WHERE a.id=$1 AND a.deleted_at IS NULL AND ${assigneeExistsSql('a', '$2')}`,
     [appId, req.actor.id])).rows[0] || null;
 }
 
@@ -332,7 +335,7 @@ router.get('/:appId', async (req, res, next) => {
     // own (application_id), OR filed under one of THIS file's conditions (ci.application_id — catches
     // any doc whose denormalized owner differs), OR one of this file's ENTITY's documents (llc_id).
     const docsOnFile = await db.query(
-      `SELECT d.id, d.filename, d.doc_kind, d.checklist_item_id, t.code AS condition_code,
+      `SELECT d.id, d.filename, d.doc_kind, d.slot_label, d.checklist_item_id, t.code AS condition_code,
               COALESCE(t.label, t.code) AS condition_label, d.page_bounded,
               d.authenticity_score, d.authenticity_level, d.authenticity_signals
          FROM documents d
@@ -359,8 +362,13 @@ router.get('/:appId', async (req, res, next) => {
       // it's a real readable type, so a photo_id / term sheet never pollutes the on-file type set.
       // (A condition-derived type is kept as-is even if the reader doesn't own it — e.g. 'appraisal'
       // stays in the on-file set for completeness but is excluded from the read queue below.)
+      // …then the SLOT it was filed into — the LLC section can attach a document with a slot label
+      // and no checklist item, which leaves it with no condition and no doc_kind. Kept in lock-step
+      // with selectAutoReadQueue; if these two derivations drift, the desk's "documents on file"
+      // count and its read queue disagree and the count never clears.
       const expectedType = expectedDocTypeForCode(d.condition_code) ||
-        (d.doc_kind && registry.get(d.doc_kind) ? d.doc_kind : null);
+        (d.doc_kind && registry.get(d.doc_kind) ? d.doc_kind : null) ||
+        expectedDocTypeForCode(d.slot_label);
       const analyzed = analyzedDocIds.has(d.id);
       if (expectedType) attached.add(expectedType);
       const row = { documentId: d.id, filename: d.filename, conditionCode: d.condition_code || null,
@@ -764,12 +772,24 @@ router.get('/:appId', async (req, res, next) => {
 // — otherwise file B's document could be analyzed and mis-filed onto file A (same borrower). Only
 // the borrower is matched, not the file's LLC — the staff document picker is scoped the same way.
 async function fileDoc(app, documentId) {
+  // THE FILE'S OWN VESTING ENTITY IS A THIRD DOOR (owner-reported 2026-07-26, reproduced on a real
+  // database). The LLC section's documents carry `application_id NULL` + `llc_id`, and were resolved
+  // only through the borrower branch — so whenever the entity is filed under a DIFFERENT borrower
+  // record (a co-borrower's profile, a layered owning entity), all three LLC documents were queued
+  // for reading and then failed to resolve, every time. Nothing was ever read, so the desk reported
+  // "no operating agreement on file", "no EIN letter on file", "no good-standing certificate on
+  // file" while all of them sat in their slots. That is exactly what the owner saw.
+  //
+  // Scoped to THIS file's own llc_id — not the borrower's entities generally — so it opens nothing
+  // wider than the vesting entity the loan is actually closing into.
   return (await db.query(
     `SELECT id, application_id, borrower_id, filename, content_type, storage_provider, storage_ref, sha256, page_bounded
        FROM documents
       WHERE id=$1 AND is_current
-        AND (application_id=$2 OR (application_id IS NULL AND borrower_id IS NOT NULL AND borrower_id=$3))`,
-    [documentId, app.id, app.borrower_id])).rows[0] || null;
+        AND (application_id=$2
+             OR (application_id IS NULL AND borrower_id IS NOT NULL AND borrower_id=$3)
+             OR (application_id IS NULL AND llc_id IS NOT NULL AND llc_id=$4))`,
+    [documentId, app.id, app.borrower_id, app.llc_id || null])).rows[0] || null;
 }
 
 // Read + check ONE document — the SHARED core of the manual /analyze endpoint AND the auto-reader.
@@ -986,7 +1006,7 @@ async function buildAutoReadQueue(app) {
   const a0 = (await db.query(`SELECT llc_id FROM applications WHERE id=$1`, [app.id])).rows[0] || {};
   const [docs, exts] = await Promise.all([
     db.query(
-      `SELECT d.id, d.filename, d.doc_kind, d.page_bounded, t.code AS condition_code
+      `SELECT d.id, d.filename, d.doc_kind, d.slot_label, d.page_bounded, t.code AS condition_code
          FROM documents d
          LEFT JOIN checklist_items ci ON ci.id = d.checklist_item_id
          LEFT JOIN checklist_templates t ON t.id = ci.template_id
@@ -2550,6 +2570,11 @@ router.post('/ai-admin/questions/:id/answer', requirePermission('promote_trainin
 module.exports = router;
 module.exports.analyzeOneDocument = analyzeOneDocument;
 module.exports.buildAutoReadQueue = buildAutoReadQueue;
+// Exported for the DB-gated regression test: `fileDoc` is the gate that decides whether a document
+// the queue selected can actually be READ, and the vesting-entity branch it grew (2026-07-26) is
+// only provable against a real schema. Same precedent as `fileForById` below.
+module.exports.fileDocForTest = fileDoc;
+
 module.exports.fileForById = async function fileForById(appId) {
   const r = await db.query(
     `SELECT id, borrower_id, llc_id, status, deleted_at FROM applications WHERE id=$1 AND deleted_at IS NULL`, [appId]);

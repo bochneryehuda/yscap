@@ -59,12 +59,21 @@ const fraud = FC.dedupeByClaim([
 ]);
 ok(fraud.length === 1, `fraud alerts on one report are one item of work (got ${fraud.length})`);
 
-// ---------- pre-existing behaviour preserved ----------
+// ---------- pre-existing behaviour preserved (REAL row shapes) ----------
+// Both producers write PERSISTED document_findings rows on DIFFERENT documents — the purchase
+// contract (purchase-contract-checks) and the assignment (doc-checks) — so the fake `subject`
+// fixture this used to carry proved nothing. It is one economic truth about the deal restated on
+// two documents, and its family is marked fileLevel so it still collapses. Both are non-blocking
+// warnings, which is what makes that override safe.
 const fee = FC.dedupeByClaim([
-  { code: 'assignment_fee_over_cap', severity: 'warning', subject: 'contract' },
-  { code: 'assignment_fee_over_cap', severity: 'warning', subject: 'assignment' },
+  { id: 'fee1', code: 'assignment_fee_over_cap', severity: 'warning', field: 'assignment_fee',
+    document_id: 'doc-contract', blocks_ctc: false },
+  { id: 'fee2', code: 'assignment_fee_over_cap', severity: 'warning', field: 'assignment_fee',
+    document_id: 'doc-assignment', blocks_ctc: false },
 ]);
-ok(fee.length === 1, 'assignment fee over cap still shows once (the old DEDUP_ONCE behaviour)');
+ok(fee.length === 1,
+  `assignment fee over cap still shows once across both documents (got ${fee.length}) — the old DEDUP_ONCE behaviour`);
+ok(fee[0].id, 'and the survivor is a real resolvable row');
 
 // ---------- and the far more important half: it must NOT over-merge ----------
 const unrelated = FC.dedupeByClaim([
@@ -187,6 +196,33 @@ const sameDoc = FC.dedupeByClaim([
   { code: 'doc_low_authenticity', severity: 'warning', document_id: 'doc-x', field: 'authenticity' },
 ]);
 ok(sameDoc.length === 1, `the same check re-emitted for the same document is still one (got ${sameDoc.length})`);
+
+// ---------- derived findings emitted in a LOOP (audit 2026-07-26) ----------
+// Several desks push N findings from one loop — one per LLC member, one per assignment hop — all
+// under the SAME code with the same constant `field` and no document id. Keyed on code+field they
+// collapsed to one, and because every merged sibling shared the code, `mergedFrom` came out empty:
+// the card said nothing at all. Silently hiding beneficial owners is a KYC gap.
+const threeOwners = FC.dedupeByClaim([
+  { code: 'beneficial_owner_unidentified', severity: 'warning', field: 'ownership', docValue: 'ADAM STERN (34%)' },
+  { code: 'beneficial_owner_unidentified', severity: 'warning', field: 'ownership', docValue: 'MOSES WEIL (33%)' },
+  { code: 'beneficial_owner_unidentified', severity: 'warning', field: 'ownership', docValue: 'RIVKA GOLD (33%)' },
+]);
+ok(threeOwners.length === 3,
+  `three beneficial owners with no ID on file stay THREE findings (got ${threeOwners.length}) — each is its own KYC gap`);
+
+const twoHops = FC.dedupeByClaim([
+  { code: 'cot_assignor_never_held_title', severity: 'warning', field: 'assignor', docValue: 'Assignment 1 — J. Stern' },
+  { code: 'cot_assignor_never_held_title', severity: 'warning', field: 'assignor', docValue: 'Assignment 2 — M. Roth' },
+]);
+ok(twoHops.length === 2,
+  `both hops of a two-hop wholesale chain stay two (got ${twoHops.length}) — this is the fraud signature the check exists for`);
+
+// …and a genuine RE-EMIT of the identical finding still collapses, so the merge still does its job.
+const reEmit = FC.dedupeByClaim([
+  { code: 'beneficial_owner_unidentified', severity: 'warning', field: 'ownership', docValue: 'ADAM STERN (34%)' },
+  { code: 'beneficial_owner_unidentified', severity: 'warning', field: 'ownership', docValue: 'ADAM STERN (34%)' },
+]);
+ok(reEmit.length === 1, `the identical finding raised twice is still one (got ${reEmit.length})`);
 
 console.log(`test-finding-claims-pure: ${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

@@ -410,7 +410,16 @@ function computeFloodFindings(fl, subject, opts = {}) {
   // requirement — so this stays blocking either way. What changes is the claim: we only say "not on
   // file" when the document actually said so, and otherwise ask for the confirmation we genuinely
   // need. Same gate, honest wording.
-  if (fl.inSfha === true && fl.policyPresent !== true) {
+  // TRUST THE ZONE, NOT ONLY THE DERIVED FLAG (audit 2026-07-26). `inSfha` is something the reader
+  // is asked to DERIVE ("true for any zone starting with A or V"), and the same instructions say to
+  // use null when it cannot commit — so a determination that plainly prints "Zone AE" routinely
+  // comes back with the zone filled in and the boolean null, and the whole check went silent on a
+  // property that is demonstrably in a flood zone. The zone letter is the primary evidence; the flag
+  // is a convenience. Same derivation `run.js` uses for the investor-guideline flood signal, so the
+  // two desks agree on what "in a flood zone" means.
+  const zoneSaysSfha = /^[AV]/i.test(String(fl.floodZone || '').trim());
+  const inSfha = fl.inSfha === true || (fl.inSfha == null && zoneSaysSfha);
+  if (inSfha && fl.policyPresent !== true) {
     const proven = fl.policyPresent === false;
     out.push(mk('flood', proven
       ? { code: 'flood_insurance_required', severity: 'fatal', field: 'flood_insurance',
@@ -817,7 +826,13 @@ function computeSignedApplicationFindings(a, subject, opts = {}) {
   // package is simply still out for signature. The signature is what proves this is the executed
   // disclosure package and therefore the document that WOULD carry the certification; without it
   // the honest finding is the one already raised above (`application_unsigned`), not a second one.
-  const EXECUTED_MARKERS = [affirmed(a.signaturePresent), a.signedDate];
+  // A signature DATE is only proof of execution if the reader did not already say the document is
+  // UNSIGNED (audit 2026-07-26). `affirmed` correctly refuses to let "signed: no" count as proof —
+  // but a raw `signedDate` alongside it put the proof straight back, and a blank application form
+  // with a printed "Date: ____" line carries exactly that shape. The result was the original class
+  // all over again: a compliance FATAL raised off a document the reader had just said was not
+  // executed. An explicit "not signed" now vetoes the whole marker set.
+  const EXECUTED_MARKERS = a.signaturePresent === false ? [] : [affirmed(a.signaturePresent), a.signedDate];
   if (wrongDocument(a.businessPurposePresent, EXECUTED_MARKERS)) {
     // The reader says there is no certification AND nothing shows this document was ever executed —
     // no signature, no signature date. That is a blank application form, or the wrong document in the

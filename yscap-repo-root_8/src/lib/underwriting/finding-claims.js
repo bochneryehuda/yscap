@@ -69,11 +69,24 @@ const CLAIM_FAMILIES = [
     // Pre-existing behaviour, kept: the fee-over-cap shows on BOTH the purchase contract and the
     // assignment. This replaces the old hard-coded DEDUP_ONCE set.
     codes: ['assignment_fee_over_cap'],
+    // FILE-LEVEL: this is ONE economic truth about the deal — the financeable fee is over the 15%
+    // cap — that simply happens to be legible on two documents. It is not two problems and there is
+    // not one fix per document, so it merges even though both rows are persisted.
+    //
+    // That override is safe HERE and the reasoning does not generalize: both producers raise it as a
+    // non-blocking warning, so no dealbreaker can hide behind the survivor and the clear-to-close
+    // count cannot disagree with the desk (the two dangers the never-merge-two-persisted rule
+    // exists for). A family may only set this when every producer of it is non-blocking.
+    fileLevel: true,
   },
 ];
 
 const CLAIM_OF_CODE = new Map();
-for (const fam of CLAIM_FAMILIES) for (const c of fam.codes) CLAIM_OF_CODE.set(c, fam.claim);
+const FILE_LEVEL_CLAIMS = new Set();
+for (const fam of CLAIM_FAMILIES) {
+  for (const c of fam.codes) CLAIM_OF_CODE.set(c, fam.claim);
+  if (fam.fileLevel) FILE_LEVEL_CLAIMS.add(`claim:${fam.claim}`);
+}
 
 const SEV_RANK = { fatal: 3, warning: 2, info: 1 };
 function sevRank(s) { return SEV_RANK[String(s || '').toLowerCase()] || 0; }
@@ -102,7 +115,17 @@ function norm(s) { return String(s == null ? '' : s).trim().toLowerCase(); }
  * The document identity is what makes them distinct, so it belongs in the key.
  */
 function docKey(f) {
-  return norm(f.document_id || f.documentId || f.extraction_id || f.extractionId || f.subject || '');
+  // The distinguishing datum LAST, because several derived desks emit N findings from one loop —
+  // one per LLC member, one per assignment hop — all under the same code and the same constant
+  // `field`, and none of them carries a document id (audit 2026-07-26). Keyed on code+field alone
+  // they collapsed to one: a three-member LLC where none of the beneficial owners has ID on file
+  // showed ONE missing owner, and a two-hop wholesale chain where BOTH assignments were signed by a
+  // party that never held the contract showed one hop. Those are exactly the facts the checks
+  // exist to surface, and they are derived, so the never-merge-two-persisted rule cannot catch
+  // them. What tells them apart is `docValue` ("ADAM STERN (34%)"), so that belongs in the key —
+  // and an identical docValue is a genuine re-emit, which still collapses.
+  return norm(f.document_id || f.documentId || f.extraction_id || f.extractionId || f.subject || '')
+    + '::' + norm(f.docValue || f.doc_value || '');
 }
 function claimOf(f) {
   if (!f || !f.code) return null;
@@ -171,7 +194,7 @@ function dedupeByClaim(findings) {
     // separately counted by the clear-to-close gate, so folding one into the other would hide a real
     // dealbreaker and leave the file un-clearable (see isPersisted above). They are two pieces of
     // work — a co-borrower's expired ID is not the borrower's — so both stay on the desk.
-    if (prev.persisted && isPersisted(f)) {
+    if (prev.persisted && isPersisted(f) && !FILE_LEVEL_CLAIMS.has(key)) {
       passthrough.push({ f, at: order.length });
       order.push(null);
       continue;

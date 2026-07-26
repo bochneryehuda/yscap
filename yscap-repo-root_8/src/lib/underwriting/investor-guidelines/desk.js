@@ -518,7 +518,13 @@ async function runInvestorGuidelineDesk(appId, client) {
   // non-match on a field we can confirm. Uses the condition engine's own rule_logic
   // evaluator with the real field map.
   let fieldMap = null;
-  try { fieldMap = await registry.fieldMap(db); } catch (_e) { fieldMap = registry.BY_KEY; }
+  // A failed field map falls back to the STATIC field set, which silently drops any condition whose
+  // trigger references a custom (cf_*) field — the rule evaluates false, the condition never joins
+  // `applicable`, and its unhappy items disappear while `verdicts` stays healthy from the other
+  // rules. That is an UNDER-raise, so it is exactly the shape the retraction gate must know about
+  // (audit 2026-07-26): without this line, a degraded field map would let retraction close live
+  // guideline findings the desk simply could not evaluate.
+  try { fieldMap = await registry.fieldMap(db); } catch (_e) { fieldMap = registry.BY_KEY; degraded.push('field_map'); }
   const applicable = rows.filter((row) => triggerApplies(row.trigger, ctx, fieldMap));
 
   // 3. existing checklist items mapped by their PILOT template CODE.
