@@ -20,7 +20,6 @@ import ExceptionCard from '../components/ExceptionCard.jsx';
 export default function StaffExceptions() {
   const { role } = useAuth();
   const location = useLocation();
-  const isSuper = role === 'super_admin';
   const focusAppId = new URLSearchParams(location.search).get('app') || '';
 
   const [rows, setRows] = useState([]);
@@ -164,9 +163,9 @@ export default function StaffExceptions() {
       </div>
       <p className="muted" style={{ marginTop: 6 }}>
         Every request to deviate from a loan policy, in one place — waiving a co-borrower’s personal guarantee,
-        sending a term-sheet package early, a pricing/guideline exception, and recorded super-admin overrides. {isSuper
-          ? 'Approve or deny with a short note; on time-boxable types you can set how long the approval stays valid. Clear an exception when it’s handled.'
-          : 'Only a super-admin can approve or deny; you can review the queue and clear a handled one.'}
+        sending a term-sheet package early, a pricing/guideline exception, and recorded admin overrides. {canDecide
+          ? 'Approve or deny with a short note; on time-boxable types you can set how long the approval stays valid. Clear an exception when it’s handled. You can’t approve your own request — another admin does that.'
+          : 'You can review the queue and comment; an admin approves or denies.'}
       </p>
 
       {/* The register report — how many, how fast, how often granted. */}
@@ -204,7 +203,7 @@ export default function StaffExceptions() {
         const open = r.status === 'requested';
         const ownRequest = r.requested_by && actorId && r.requested_by === actorId;
         // An OPEN request can't be cleared (withdraw/decide first — server-enforced).
-        const canClear = r.status !== 'cleared' && !open && (isSuper || ownRequest);
+        const canClear = r.status !== 'cleared' && !open && (canDecide || ownRequest);
         const isEsign = type === 'esign_before_ctc';
         const perTypeReasons = reasonCodesByType[type] || reasonCodes;
         // The deciding super-admin picks which requirements to waive right in the
@@ -220,7 +219,7 @@ export default function StaffExceptions() {
             {(open || canClear) ? (
               <div style={{ marginTop: 10, borderTop: '1px solid var(--hair,#e7e2d6)', paddingTop: 10 }}>
                 {open && canDecide && ownRequest && (
-                  <div className="muted small" style={{ marginBottom: 6 }}>You requested this exception — another super-admin must approve or deny it.</div>
+                  <div className="muted small" style={{ marginBottom: 6 }}>You requested this exception — another admin must approve or deny it (you can’t approve your own request).</div>
                 )}
                 {open && canDecide && !ownRequest && (
                   <>
@@ -253,9 +252,10 @@ export default function StaffExceptions() {
                     explanation ("nothing happens"). */}
                 {open && !canDecide && (
                   <div className="notice" style={{ marginBottom: 0 }}>
-                    Only a <b>super-admin</b> can approve or deny an exception. You’re signed in as{' '}
-                    <b>{(role || 'staff').replace(/_/g, ' ')}</b>, so you can review it here and add a comment —
-                    a super-admin makes the decision. {ownRequest ? 'You can withdraw it from “My exceptions”.' : ''}
+                    Approving or denying an exception needs the <b>Manage pricing</b> permission (Admins &amp; Super
+                    Admins have it). You’re signed in as <b>{(role || 'staff').replace(/_/g, ' ')}</b>, so you can
+                    review it here and add a comment — an admin makes the decision.
+                    {ownRequest ? ' You can withdraw it from “My exceptions”.' : ''}
                   </div>
                 )}
                 {canClear && (

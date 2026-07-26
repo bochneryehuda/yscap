@@ -155,9 +155,11 @@ attestation's "exceptions granted" promise is finally true.
 
 ## 4. What deliberately did NOT change (policy boundaries)
 
-- **Decide = super-admin only, requester ≠ approver.** That gate is owner policy (the
-  company's credit-officer tier). The registry has room for per-type authority, but changing
-  WHO decides requires the owner's explicit written direction.
+- **Decide = `manage_pricing` (admins + super-admins), requester ≠ approver.** Originally
+  super-admin-only; **widened to any Admin by owner direction 2026-07-26** ("let any Admin
+  approve"). The requester≠approver control is independent and STILL enforced (you can never
+  approve your own request). The registry has room for finer per-type authority; further
+  changes to WHO decides remain an owner decision.
 - **Frozen pricing engines untouched.** A pricing-exception approval records a decision; the
   numbers only ever change through the existing authorized studio override + re-register path.
 - **Manual-program escalations stay separate** (register + counter-offer flow serving the
