@@ -80,6 +80,26 @@ async function download(path) {
   const m = /filename="([^"]+)"/.exec(cd);
   return { blob: await res.blob(), filename: m ? m[1] : 'document' };
 }
+// Like download(), but POSTs a JSON body first (for exports that take a selection,
+// e.g. a bulk tape). On error the server's JSON `{error,message,...}` rides along
+// on err.data so the caller can show the exact reason (e.g. a buyer mismatch).
+async function downloadPost(path, body) {
+  const t = getToken();
+  const res = await resilientFetch(path, {
+    method: 'POST',
+    headers: Object.assign({ 'Content-Type': 'application/json' }, t ? { Authorization: `Bearer ${t}` } : {}),
+    body: body != null ? JSON.stringify(body) : undefined,
+  });
+  if (!res.ok) {
+    let data = null; try { data = await res.json(); } catch { /* empty */ }
+    const err = new Error((data && data.message) || friendlyError(res.status, data));
+    err.status = res.status; err.data = data;
+    throw err;
+  }
+  const cd = res.headers.get('Content-Disposition') || '';
+  const m = /filename="([^"]+)"/.exec(cd);
+  return { blob: await res.blob(), filename: m ? m[1] : 'document' };
+}
 export function saveBlob(blob, filename) {
   const url = URL.createObjectURL(blob);
   const a = document.createElement('a');
@@ -315,6 +335,14 @@ export const api = {
   staffVestingLlcOwners: (id) => req('GET', `/api/staff/applications/${id}/vesting-llc-owners`),
   staffSetVestingLlcOwners: (id, owners) => req('POST', `/api/staff/applications/${id}/vesting-llc-owners`, { owners }),
   staffChecklist:   (id) => req('GET', `/api/staff/applications/${id}/checklist`),
+
+  // Encompass sync (READ-ONLY per-file reconcile). status = summary; findings =
+  // the full field-by-field comparison (live data); refresh = re-pull read-only;
+  // replace = pull one Encompass value into our column (any assigned staff).
+  encompassStatus:   (id) => req('GET', `/api/staff/applications/${id}/encompass/status`),
+  encompassFindings: (id) => req('GET', `/api/staff/applications/${id}/encompass/findings`),
+  encompassRefresh:  (id) => req('POST', `/api/staff/applications/${id}/encompass/refresh`),
+  encompassReplace:  (id, fieldKey) => req('POST', `/api/staff/applications/${id}/encompass/replace`, { fieldKey }),
   // Credit report (Xactus import) — the internal Credit report condition.
   staffCredit:        (id) => req('GET', `/api/staff/applications/${id}/credit`),
   staffCreditPreview: (id) => req('GET', `/api/staff/applications/${id}/credit/preview`),
@@ -442,12 +470,22 @@ export const api = {
   staffExportMismo:  (appId) => download(`/api/staff/applications/${appId}/export/mismo`),
   staffMismoPreview: (xml) => req('POST', '/api/staff/mismo/preview', { xml }),
   staffMismoCreate:  (xml) => req('POST', '/api/staff/mismo/create', { xml }),
+  // Capital-provider data tapes. A loan can only export the tape of the provider
+  // it is currently assigned to (staffTapesForApp says which, and why not).
+  staffTapesList:    () => req('GET', '/api/staff/tapes'),
+  staffTapesForApp:  (appId) => req('GET', `/api/staff/applications/${appId}/tapes`),
+  // Extra questions a loan needs before its tape can fill (e.g. New-Construction
+  // fields). Empty for most loans.
+  staffTapeQuestions:(appId, tapeKey) => req('GET', `/api/staff/applications/${appId}/export/tape/${tapeKey}/questions`),
+  staffTapeExport:   (appId, tapeKey, answers) => download(`/api/staff/applications/${appId}/export/tape/${tapeKey}${qs(answers)}`),
+  staffTapeLoans:    (tapeKey) => req('GET', `/api/staff/tapes/${tapeKey}/loans`),
+  staffTapeBulkExport: (tapeKey, applicationIds) => downloadPost(`/api/staff/tapes/${tapeKey}/export/bulk`, { applicationIds }),
   staffSaveRehabBudget: (appId, payload) => req('POST', `/api/staff/applications/${appId}/rehab-budget`, { payload }),
   // #152 — export the current pipeline VIEW (same filter params as staffApplications).
   staffExportPipeline: (params) => download(`/api/staff/applications/export${qs(params)}`),
   staffPricing:      (appId) => req('GET', `/api/staff/applications/${appId}/pricing`),
   staffPricingQuote: (appId, overrides) => req('POST', `/api/staff/applications/${appId}/pricing/quote`, { overrides }),
-  staffRegisterProduct: (appId, program, overrides, econVersion, assetMonths, submitException, termOptions) => req('POST', `/api/staff/applications/${appId}/pricing/register`, { program, overrides, econVersion, assetMonths, submitException, termOptions }),
+  staffRegisterProduct: (appId, program, overrides, econVersion, assetMonths, submitException, termOptions, encompassOverrideReason) => req('POST', `/api/staff/applications/${appId}/pricing/register`, { program, overrides, econVersion, assetMonths, submitException, termOptions, encompassOverrideReason }),
   // Redesign 2026-07-24: the pricing exception is a first-class register record —
   // the request now carries an optional structured reason + compensating factors.
   staffRequestException: (appId, note, reasonCode, compensatingFactors) => req('POST', `/api/staff/applications/${appId}/pricing/request-exception`, { note, reasonCode, compensatingFactors }),

@@ -4,7 +4,7 @@ import { api } from '../lib/api.js';
 import { useAuth } from '../lib/auth.jsx';
 
 /* Manual Program admin + the super-admin ESCALATION box (owner-directed
- * 2026-07-20).
+ * 2026-07-20; page redesign 2026-07-26).
  *
  * TOP — the Manual Program config (manage_pricing): the default LTV/LTC/ARV
  * ceilings and the REQUIRED default months of assets/liquidity a manual product
@@ -25,6 +25,19 @@ function fmtAddr(a) {
   if (!a) return '';
   if (typeof a === 'string') return a;
   return [a.line1 || a.address, a.city, a.state].filter(Boolean).join(', ');
+}
+
+/* Inline stroke-icon set (matches the draws dashboard house style). */
+function Icon({ name }) {
+  const p = {
+    sliders: <><line x1="4" y1="6" x2="12" y2="6" /><line x1="17" y1="6" x2="20" y2="6" /><circle cx="14.5" cy="6" r="2.2" /><line x1="4" y1="12" x2="7" y2="12" /><line x1="12" y1="12" x2="20" y2="12" /><circle cx="9.5" cy="12" r="2.2" /><line x1="4" y1="18" x2="14" y2="18" /><line x1="19" y1="18" x2="20" y2="18" /><circle cx="16.5" cy="18" r="2.2" /></>,
+    inbox: <><path d="M3 12h4l1.5 2.5h7L17 12h4" /><path d="M5 5h14l2 7v6H3v-6z" /></>,
+    info: <><circle cx="12" cy="12" r="9" /><path d="M12 11v5" /><path d="M12 8h.01" /></>,
+    gauge: <><path d="M4 19a8 8 0 1 1 16 0" /><path d="M12 19l4.5-6.5" /></>,
+    check: <><path d="M4.5 12.5l5 5L20 6.5" /></>,
+    inboxEmpty: <><path d="M3 13h4l1.5 2.5h7L17 13h4" /><path d="M5 6h14l2 7v5H3v-5z" /><path d="M12 3v3" /></>,
+  }[name] || null;
+  return <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">{p}</svg>;
 }
 
 export default function StaffEscalations() {
@@ -156,21 +169,37 @@ export default function StaffEscalations() {
   const setF = (k, v) => setForm((f) => ({ ...f, [k]: v }));
   const setCT = (k, v) => setCounterTerms((t) => ({ ...t, [k]: v }));
 
+  const FILTERS = ['open', 'pending', 'countered', 'approved', 'declined', 'all'];
+
   return (
     <div>
-      <div className="page-head"><h1>Manual programs &amp; escalations</h1></div>
-      <p className="muted small" style={{ marginTop: -6, marginBottom: 12 }}>
+      <div className="page-head">
+        <div>
+          <div className="esc-eyebrow">Underwriting · Manual products</div>
+          <h1>Manual programs &amp; escalations</h1>
+          <div className="sub">Set the defaults a manual product must carry, then approve, counter, or decline the ones waiting for a decision.</div>
+        </div>
+        {pendingCount > 0 && (
+          <div className="page-head-actions">
+            <span className="ts-badge warn" style={{ fontSize: 12, padding: '6px 12px' }}>
+              {pendingCount} awaiting a decision
+            </span>
+          </div>
+        )}
+      </div>
+      <p className="muted small" style={{ marginTop: -6, marginBottom: 14 }}>
         This box is only for <b>manual-program pricing</b> — deals structured <b>outside the guidelines</b> (custom
         leverage / below-minimum), where an admin approves, declines, or <b>counter-offers</b> (proposes different
         terms). Guaranty waivers, early term-sheet sends, and other one-off rule exceptions live in{' '}
         <Link to="/internal/exceptions">Exceptions</Link>.
       </p>
-      {msg && <div className={`notice ${msg.ok ? 'ok' : 'err'}`} style={{ marginBottom: 12 }}>{msg.text}</div>}
+
+      {msg && <div className={`notice ${msg.ok ? 'ok' : 'err'}`} style={{ marginBottom: 14 }}>{msg.text}</div>}
       {/* A deep-link pointed here but this file has no manual escalation — the
           ask is almost certainly a pricing/guideline EXCEPTION, which lives in
           the Exceptions box (this queue can only show manual-product rows). */}
       {focusMissed && (
-        <div className="notice warn" style={{ marginBottom: 12 }}>
+        <div className="notice warn" style={{ marginBottom: 14 }}>
           No manual-product escalation on that file. Looking for its <b>exception request</b>? Pricing/guideline
           exceptions live in the Exceptions box — <Link to={`/internal/exceptions?app=${focusAppId}`}>open it there</Link>.
         </div>
@@ -178,194 +207,265 @@ export default function StaffEscalations() {
 
       {/* --- Manual Program config --- */}
       {canManage && (
-        <div className="panel" style={{ marginBottom: 16 }}>
-          <h3 style={{ marginTop: 0 }}>Manual Program settings</h3>
-          <p className="muted small" style={{ marginTop: 0 }}>
-            A manual product is created when someone overrides the LTV, LTC or ARV in the studio. It follows the
-            Standard (Fidelis) guidelines for everything else, always requires the flood certificate, and must be
-            approved below. You must set how many months of assets/liquidity a manual product requires before it can be
-            registered — this can be raised per file at registration.
-          </p>
-          <div className="grid2" style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(200px,1fr))', gap: 12 }}>
-            <div className="field">
+        <div className="dd-card" style={{ marginBottom: 16 }}>
+          <div className="dd-card-h" style={{ justifyContent: 'space-between', alignItems: 'flex-start' }}>
+            <div className="row" style={{ gap: 11, alignItems: 'center' }}>
+              <span className="dd-card-ic"><Icon name="sliders" /></span>
+              <div>
+                <h3>Manual Program settings</h3>
+                <div className="dd-sub" style={{ marginTop: 1 }}>The defaults every manual product is built and priced against.</div>
+              </div>
+            </div>
+            <span className={`ts-badge ${form.isActive ? 'ok' : 'err'}`}>{form.isActive ? 'Available' : 'Turned off'}</span>
+          </div>
+
+          <div className="esc-callout" style={{ marginTop: 4 }}>
+            <span className="ic"><Icon name="info" /></span>
+            <div>
+              A manual product is created when someone overrides the LTV, LTC or ARV in the studio. It follows the
+              Standard (Fidelis) guidelines for everything else, always requires the flood certificate, and must be
+              approved below. Set how many months of assets/liquidity a manual product requires before it can be
+              registered — this can be raised per file at registration.
+            </div>
+          </div>
+
+          {/* Primary, required setting */}
+          <div className="esc-primary-field">
+            <div className="field" style={{ marginBottom: 0, maxWidth: 260 }}>
               <label>Required months of assets / liquidity *</label>
-              <input className="input" inputMode="numeric" value={form.assetMonths}
-                onChange={(e) => setF('assetMonths', e.target.value.replace(/[^0-9]/g, ''))} placeholder="e.g. 2" />
+              <div className="inp-suffix">
+                <input className="input" inputMode="numeric" value={form.assetMonths}
+                  onChange={(e) => setF('assetMonths', e.target.value.replace(/[^0-9]/g, ''))} placeholder="e.g. 2" />
+                <span className="sfx">months</span>
+              </div>
               <div className="hint">Required. 1–24. The default a manual product must show; the registrant can raise it.</div>
             </div>
-            <div className="field">
-              <label>Max acquisition LTV %</label>
-              <input className="input" inputMode="decimal" value={form.maxAcqLtv}
-                onChange={(e) => setF('maxAcqLtv', e.target.value.replace(/[^0-9.]/g, ''))} placeholder="none" />
+          </div>
+
+          {/* Advisory leverage ceilings */}
+          <div className="esc-sublabel">Advisory leverage ceilings</div>
+          <div className="esc-ceilings">
+            <div className="field" style={{ marginBottom: 0 }}>
+              <label>Max acquisition LTV</label>
+              <div className="inp-suffix">
+                <input className="input" inputMode="decimal" value={form.maxAcqLtv}
+                  onChange={(e) => setF('maxAcqLtv', e.target.value.replace(/[^0-9.]/g, ''))} placeholder="none" />
+                <span className="sfx">%</span>
+              </div>
               <div className="hint">Advisory ceiling (blank = none).</div>
             </div>
-            <div className="field">
-              <label>Max after-repair (ARV) LTV %</label>
-              <input className="input" inputMode="decimal" value={form.maxArvLtv}
-                onChange={(e) => setF('maxArvLtv', e.target.value.replace(/[^0-9.]/g, ''))} placeholder="none" />
+            <div className="field" style={{ marginBottom: 0 }}>
+              <label>Max after-repair (ARV) LTV</label>
+              <div className="inp-suffix">
+                <input className="input" inputMode="decimal" value={form.maxArvLtv}
+                  onChange={(e) => setF('maxArvLtv', e.target.value.replace(/[^0-9.]/g, ''))} placeholder="none" />
+                <span className="sfx">%</span>
+              </div>
               <div className="hint">Advisory ceiling (blank = none).</div>
             </div>
-            <div className="field">
-              <label>Max loan-to-cost (LTC) %</label>
-              <input className="input" inputMode="decimal" value={form.maxLtc}
-                onChange={(e) => setF('maxLtc', e.target.value.replace(/[^0-9.]/g, ''))} placeholder="none" />
+            <div className="field" style={{ marginBottom: 0 }}>
+              <label>Max loan-to-cost (LTC)</label>
+              <div className="inp-suffix">
+                <input className="input" inputMode="decimal" value={form.maxLtc}
+                  onChange={(e) => setF('maxLtc', e.target.value.replace(/[^0-9.]/g, ''))} placeholder="none" />
+                <span className="sfx">%</span>
+              </div>
               <div className="hint">Advisory ceiling (blank = none).</div>
             </div>
           </div>
-          <label className="row" style={{ gap: 8, alignItems: 'center', marginTop: 10 }}>
-            <input type="checkbox" checked={!!form.isActive} onChange={(e) => setF('isActive', e.target.checked)} />
-            <span>Manual Program is available</span>
-          </label>
-          <div style={{ marginTop: 12 }}>
+
+          {/* Availability toggle */}
+          <div className="esc-availability">
+            <div>
+              <label className="esc-switch">
+                <input type="checkbox" checked={!!form.isActive} onChange={(e) => setF('isActive', e.target.checked)} />
+                <span className="track" />
+                <span className="switch-txt">Manual Program is available</span>
+              </label>
+              <div className="hint" style={{ marginTop: 4 }}>
+                {form.isActive
+                  ? 'Staffers can register manual products right now.'
+                  : 'Turned off — no new manual products can be registered until this is switched back on.'}
+              </div>
+            </div>
             <button className="btn primary" disabled={busy} onClick={saveSettings}>{busy ? 'Saving…' : 'Save settings'}</button>
           </div>
         </div>
       )}
 
       {/* --- Escalation box --- */}
-      <div className="panel">
-        <div className="row" style={{ justifyContent: 'space-between', alignItems: 'center' }}>
-          <h3 style={{ margin: 0 }}>Escalations {pendingCount > 0 && <span className="ts-badge warn">{pendingCount} open</span>}</h3>
-          <div className="row" style={{ gap: 6 }}>
-            {['open', 'pending', 'countered', 'approved', 'declined', 'all'].map((s) => (
-              <button key={s} className={`btn small ${statusFilter === s ? 'primary' : 'ghost'}`} onClick={() => setStatusFilter(s)}>
+      <div className="dd-card">
+        <div className="dd-card-h" style={{ justifyContent: 'space-between', alignItems: 'flex-start', flexWrap: 'wrap', gap: 12 }}>
+          <div className="row" style={{ gap: 11, alignItems: 'center' }}>
+            <span className="dd-card-ic"><Icon name="inbox" /></span>
+            <div>
+              <h3>Escalations {pendingCount > 0 && <span className="ts-badge warn" style={{ marginLeft: 6 }}>{pendingCount} open</span>}</h3>
+              <div className="dd-sub" style={{ marginTop: 1 }}>Manual products waiting for a super-admin to approve, counter, or decline.</div>
+            </div>
+          </div>
+          <div className="esc-seg" role="tablist" aria-label="Filter escalations">
+            {FILTERS.map((s) => (
+              <button key={s} className={statusFilter === s ? 'on' : ''} onClick={() => setStatusFilter(s)}>
                 {s[0].toUpperCase() + s.slice(1)}
               </button>
             ))}
           </div>
         </div>
+
         {!isSuper && (
-          <p className="muted small">Only a super-admin can approve, decline, or counter-offer an exception. You can watch the queue here.</p>
+          <div className="esc-callout" style={{ marginTop: 6 }}>
+            <span className="ic"><Icon name="info" /></span>
+            <div>Only a super-admin can approve, decline, or counter-offer an exception. You can watch the queue here.</div>
+          </div>
         )}
-        {!rows.length && <p className="muted" style={{ marginTop: 12 }}>No {statusFilter === 'all' ? '' : statusFilter} escalations.</p>}
-        {rows.map((r) => {
-          const s = r.summary || {};
-          const ct = r.counter_terms || {};
-          const isOpen = r.status === 'pending' || r.status === 'countered';
-          const badgeCls = r.status === 'approved' ? 'ok' : (r.status === 'declined' ? 'err' : 'warn');
-          const rowStyle = {
-            border: '1px solid var(--hairline,#e5e0d5)', borderRadius: 10, padding: 12, marginTop: 12,
-            transition: 'box-shadow 0.4s ease, border-color 0.4s ease',
-            boxShadow: highlightId === r.id ? '0 0 0 3px #AE8746' : 'none',
-            borderColor: highlightId === r.id ? '#AE8746' : 'var(--hairline,#e5e0d5)',
-          };
-          return (
-            <div key={r.id} ref={(el) => { rowRefs.current[r.id] = el; }} className="card" style={rowStyle}>
-              <div className="row" style={{ justifyContent: 'space-between', alignItems: 'flex-start', gap: 10 }}>
-                <div>
-                  <div>
+
+        {!rows.length && (
+          <div className="esc-empty">
+            <div className="ic"><Icon name="inboxEmpty" /></div>
+            <div style={{ fontWeight: 600, color: 'var(--text)' }}>No {statusFilter === 'all' ? '' : statusFilter} escalations</div>
+            <div className="small" style={{ marginTop: 3 }}>Nothing needs a decision in this view.</div>
+          </div>
+        )}
+
+        <div style={{ marginTop: rows.length ? 14 : 0 }}>
+          {rows.map((r) => {
+            const s = r.summary || {};
+            const ct = r.counter_terms || {};
+            const isOpen = r.status === 'pending' || r.status === 'countered';
+            const badgeCls = r.status === 'approved' ? 'ok' : (r.status === 'declined' ? 'err' : 'warn');
+            const kindLabel = s.kind === 'manual_review'
+              ? `${s.program === 'gold' ? 'Gold Standard' : 'Standard'} — manual-review exception`
+              : 'Manual Program';
+            const acqLabel = s.kind === 'manual_review' ? 'As-is LTV' : 'Acq LTV';
+            return (
+              <div key={r.id} ref={(el) => { rowRefs.current[r.id] = el; }}
+                className={`esc-row${highlightId === r.id ? ' hl' : ''}`}>
+                <div className="esc-row-top">
+                  <div className="esc-row-id">
                     <a href={`#/internal/app/${r.application_id}`}><strong>{r.ys_loan_number || 'File'}</strong></a>
-                    {' · '}{[r.first_name, r.last_name].filter(Boolean).join(' ')}
-                    {r.property_address ? ` · ${fmtAddr(r.property_address)}` : ''}
+                    {' · '}<span className="esc-row-name">{[r.first_name, r.last_name].filter(Boolean).join(' ')}</span>
+                    {r.property_address ? <><span style={{ color: 'var(--text-soft)' }}> · </span><span className="esc-row-addr">{fmtAddr(r.property_address)}</span></> : null}
                   </div>
-                  <div className="muted small" style={{ marginTop: 4 }}>
-                    {s.kind === 'manual_review'
-                      ? `${s.program === 'gold' ? 'Gold Standard' : 'Standard'} — manual-review exception`
-                      : 'Manual Program'}
-                    {' · '}{money(s.totalLoan != null ? s.totalLoan : r.loan_amount)} loan
-                    {s.noteRate != null ? ` @ ${(Number(s.noteRate) * 100).toFixed(2)}%` : ''}
-                    {r.asset_months != null ? ` · ${r.asset_months} month${r.asset_months === 1 ? '' : 's'} liquidity` : ''}
-                  </div>
-                  {Array.isArray(s.manualReasons) && s.manualReasons.length > 0 && (
-                    <div className="muted small" style={{ marginTop: 2 }}>
-                      Why it needs an exception: {s.manualReasons.join('; ')}
-                    </div>
-                  )}
-                  <div className="muted small" style={{ marginTop: 2 }}>
-                    {s.kind === 'manual_review'
-                      ? `Leverage: ${pctOf(s.acqLtvPct)} as-is · ${pctOf(s.arvPct)} ARV · ${pctOf(s.ltcPct)} LTC`
-                      : `Leverage: acq LTV ${pctOf(s.acqLtvPct)} · ARV ${pctOf(s.arvPct)} · LTC ${pctOf(s.ltcPct)}`}
-                    {r.requested_by_name ? ` · requested by ${r.requested_by_name}` : (s.requestedByBorrower ? ' · requested by the borrower' : '')}
-                  </div>
-                  {/* Owner-directed 2026-07-22: the approval must state whether the
-                      3-month minimum earned interest is still on (its default for a
-                      manual product) or was turned off, plus the accrual type. */}
-                  {(s.minInterest != null || s.accrual) && (
-                    <div className="muted small" style={{ marginTop: 2 }}>
-                      {s.minInterest != null && (
-                        <>3-month minimum interest: <strong>{s.minInterest ? 'ON' : 'OFF'}</strong>
-                          {s.minInterestDefault != null ? (s.minInterest === s.minInterestDefault ? ' (left at the default)' : ' (changed from the default)') : ''}
-                        </>
-                      )}
-                      {s.accrual ? `${s.minInterest != null ? ' · ' : ''}Accrual: ${s.accrual === 'dutch' ? 'Dutch / Full-Boat' : 'Non-Dutch / As-Drawn'}` : ''}
-                    </div>
-                  )}
+                  <span className={`ts-badge ${badgeCls}`}>{r.status}</span>
                 </div>
-                <span className={`ts-badge ${badgeCls}`}>{r.status}</span>
+
+                <div className="esc-row-sub">
+                  {kindLabel}
+                  {' · '}{money(s.totalLoan != null ? s.totalLoan : r.loan_amount)} loan
+                  {s.noteRate != null ? ` @ ${(Number(s.noteRate) * 100).toFixed(2)}%` : ''}
+                  {r.asset_months != null ? ` · ${r.asset_months} month${r.asset_months === 1 ? '' : 's'} liquidity` : ''}
+                  {r.requested_by_name ? ` · requested by ${r.requested_by_name}` : (s.requestedByBorrower ? ' · requested by the borrower' : '')}
+                </div>
+
+                {Array.isArray(s.manualReasons) && s.manualReasons.length > 0 && (
+                  <div className="esc-callout sm">
+                    <span className="ic"><Icon name="info" /></span>
+                    <div><strong>Why it needs an exception:</strong> {s.manualReasons.join('; ')}</div>
+                  </div>
+                )}
+
+                <div className="esc-metrics">
+                  <div className="esc-metric"><span className="k">{acqLabel}</span><span className="v">{pctOf(s.acqLtvPct)}</span></div>
+                  <div className="esc-metric"><span className="k">ARV LTV</span><span className="v">{pctOf(s.arvPct)}</span></div>
+                  <div className="esc-metric"><span className="k">LTC</span><span className="v">{pctOf(s.ltcPct)}</span></div>
+                </div>
+
+                {/* Owner-directed 2026-07-22: the approval must state whether the
+                    3-month minimum earned interest is still on (its default for a
+                    manual product) or was turned off, plus the accrual type. */}
+                {(s.minInterest != null || s.accrual) && (
+                  <div className="esc-pills">
+                    {s.minInterest != null && (
+                      <span className={`esc-tag${s.minInterest ? ' ok' : ''}`}>
+                        <span className="dot" />
+                        3-month minimum interest: {s.minInterest ? 'ON' : 'OFF'}
+                        {s.minInterestDefault != null ? (s.minInterest === s.minInterestDefault ? ' (default)' : ' (changed)') : ''}
+                      </span>
+                    )}
+                    {s.accrual && (
+                      <span className="esc-tag">Accrual: {s.accrual === 'dutch' ? 'Dutch / Full-Boat' : 'Non-Dutch / As-Drawn'}</span>
+                    )}
+                  </div>
+                )}
+
+                {/* If a counter has been proposed, show it — everyone (super-admin + admins watching) sees it. */}
+                {r.status === 'countered' && (
+                  <div className="esc-counter">
+                    <div className="small" style={{ fontWeight: 700, color: 'var(--text)' }}>Counter-offer{r.countered_by ? ' — awaiting the loan officer' : ''}</div>
+                    {r.counter_note && <div className="small" style={{ marginTop: 4, whiteSpace: 'pre-wrap' }}>{r.counter_note}</div>}
+                    {Object.keys(ct).length > 0 && (
+                      <div className="muted small" style={{ marginTop: 6 }}>
+                        Proposed:{' '}
+                        {ct.maxAcqLtv != null && <span>as-is LTV {(ct.maxAcqLtv * 100).toFixed(2)}% · </span>}
+                        {ct.maxArvLtv != null && <span>ARV LTV {(ct.maxArvLtv * 100).toFixed(2)}% · </span>}
+                        {ct.maxLtc    != null && <span>LTC {(ct.maxLtc * 100).toFixed(2)}% · </span>}
+                        {ct.noteRate  != null && <span>rate {(ct.noteRate * 100).toFixed(2)}% · </span>}
+                        {ct.origPct   != null && <span>origination {(ct.origPct * 100).toFixed(2)}% · </span>}
+                        {ct.loanAmount != null && <span>loan {money(ct.loanAmount)} · </span>}
+                      </div>
+                    )}
+                  </div>
+                )}
+
+                {isOpen && isSuper && countering !== r.id && (
+                  <div className="esc-actions">
+                    <input className="input" style={{ flex: 1, minWidth: 180 }} placeholder="Decision note (optional)"
+                      value={notes[r.id] || ''} onChange={(e) => setNotes((n) => ({ ...n, [r.id]: e.target.value }))} />
+                    <button className="btn primary small" disabled={busy} onClick={() => decide(r.id, 'approved')}>Approve</button>
+                    <button className="btn ghost small" disabled={busy} onClick={() => openCounter(r.id)}>Counter-offer</button>
+                    <button className="btn ghost small" disabled={busy} onClick={() => decide(r.id, 'declined')}>Decline</button>
+                  </div>
+                )}
+
+                {isOpen && isSuper && countering === r.id && (
+                  <div className="esc-counter-form">
+                    <div className="small" style={{ fontWeight: 700, marginBottom: 6, color: 'var(--text)' }}>Counter-offer — what would you accept?</div>
+                    <div className="muted small" style={{ marginBottom: 8 }}>
+                      Write the terms plainly in the note (the loan officer sees this verbatim). Optionally fill any of the numbers below — leave blank if the current registered value stands. Enter LTV / LTC / rate / origination as PERCENTS (e.g. 92.5, 11.25, 1.5). Loan amount is a dollar number.
+                    </div>
+                    <textarea className="input" rows={3} placeholder="e.g. I'll approve at 92.5% LTC (not 91%) if the rate goes up 0.25 to cover the extra risk. Everything else stays." value={counterNote} onChange={(e) => setCounterNote(e.target.value)} style={{ width: '100%' }} />
+                    <div className="esc-ceilings" style={{ marginTop: 10 }}>
+                      <div className="field" style={{ marginBottom: 0 }}><label>As-is LTV %</label>
+                        <input className="input" inputMode="decimal" placeholder="—" value={counterTerms.maxAcqLtv}
+                          onChange={(e) => setCT('maxAcqLtv', e.target.value.replace(/[^0-9.]/g, ''))} /></div>
+                      <div className="field" style={{ marginBottom: 0 }}><label>ARV LTV %</label>
+                        <input className="input" inputMode="decimal" placeholder="—" value={counterTerms.maxArvLtv}
+                          onChange={(e) => setCT('maxArvLtv', e.target.value.replace(/[^0-9.]/g, ''))} /></div>
+                      <div className="field" style={{ marginBottom: 0 }}><label>LTC %</label>
+                        <input className="input" inputMode="decimal" placeholder="—" value={counterTerms.maxLtc}
+                          onChange={(e) => setCT('maxLtc', e.target.value.replace(/[^0-9.]/g, ''))} /></div>
+                      <div className="field" style={{ marginBottom: 0 }}><label>Note rate %</label>
+                        <input className="input" inputMode="decimal" placeholder="—" value={counterTerms.noteRate}
+                          onChange={(e) => setCT('noteRate', e.target.value.replace(/[^0-9.]/g, ''))} /></div>
+                      <div className="field" style={{ marginBottom: 0 }}><label>Origination %</label>
+                        <input className="input" inputMode="decimal" placeholder="—" value={counterTerms.origPct}
+                          onChange={(e) => setCT('origPct', e.target.value.replace(/[^0-9.]/g, ''))} /></div>
+                      <div className="field" style={{ marginBottom: 0 }}><label>Total loan $</label>
+                        <input className="input" inputMode="numeric" placeholder="—" value={counterTerms.loanAmount}
+                          onChange={(e) => setCT('loanAmount', e.target.value.replace(/[^0-9]/g, ''))} /></div>
+                    </div>
+                    <div className="row" style={{ gap: 8, marginTop: 12 }}>
+                      <button className="btn primary small" disabled={busy || !counterNote.trim()} onClick={() => submitCounter(r.id)}>Send counter-offer</button>
+                      <button className="btn ghost small" onClick={() => { setCountering(null); setCounterNote(''); }}>Cancel</button>
+                    </div>
+                  </div>
+                )}
+
+                {(r.status === 'approved' || r.status === 'declined') && (
+                  <div className="muted small" style={{ marginTop: 10, display: 'flex', alignItems: 'center', gap: 6 }}>
+                    <span style={{ color: r.status === 'approved' ? 'var(--success)' : 'var(--danger)', display: 'inline-flex' }}>
+                      {r.status === 'approved' ? <Icon name="check" /> : null}
+                    </span>
+                    <span>
+                      {r.status === 'approved' ? 'Approved' : 'Declined'}{r.decided_by_name ? ` by ${r.decided_by_name}` : ''}
+                      {r.decision_note ? ` — ${r.decision_note}` : ''}
+                    </span>
+                  </div>
+                )}
               </div>
-
-              {/* If a counter has been proposed, show it — everyone (super-admin + admins watching) sees it. */}
-              {r.status === 'countered' && (
-                <div style={{ marginTop: 10, padding: 10, background: 'rgba(174,135,70,0.08)', border: '1px solid #AE8746', borderRadius: 8 }}>
-                  <div className="small" style={{ fontWeight: 600, color: '#141B22' }}>Counter-offer{r.countered_by ? ' — awaiting the loan officer' : ''}</div>
-                  {r.counter_note && <div className="small" style={{ marginTop: 4, whiteSpace: 'pre-wrap' }}>{r.counter_note}</div>}
-                  {Object.keys(ct).length > 0 && (
-                    <div className="muted small" style={{ marginTop: 6 }}>
-                      Proposed:{' '}
-                      {ct.maxAcqLtv != null && <span>as-is LTV {(ct.maxAcqLtv * 100).toFixed(2)}% · </span>}
-                      {ct.maxArvLtv != null && <span>ARV LTV {(ct.maxArvLtv * 100).toFixed(2)}% · </span>}
-                      {ct.maxLtc    != null && <span>LTC {(ct.maxLtc * 100).toFixed(2)}% · </span>}
-                      {ct.noteRate  != null && <span>rate {(ct.noteRate * 100).toFixed(2)}% · </span>}
-                      {ct.origPct   != null && <span>origination {(ct.origPct * 100).toFixed(2)}% · </span>}
-                      {ct.loanAmount != null && <span>loan {money(ct.loanAmount)} · </span>}
-                    </div>
-                  )}
-                </div>
-              )}
-
-              {isOpen && isSuper && countering !== r.id && (
-                <div className="row" style={{ gap: 8, alignItems: 'center', marginTop: 10, flexWrap: 'wrap' }}>
-                  <input className="input" style={{ flex: 1, minWidth: 180 }} placeholder="Decision note (optional)"
-                    value={notes[r.id] || ''} onChange={(e) => setNotes((n) => ({ ...n, [r.id]: e.target.value }))} />
-                  <button className="btn primary small" disabled={busy} onClick={() => decide(r.id, 'approved')}>Approve</button>
-                  <button className="btn ghost small" disabled={busy} onClick={() => openCounter(r.id)}>Counter-offer</button>
-                  <button className="btn ghost small" disabled={busy} onClick={() => decide(r.id, 'declined')}>Decline</button>
-                </div>
-              )}
-
-              {isOpen && isSuper && countering === r.id && (
-                <div style={{ marginTop: 10, padding: 10, background: 'var(--paper,#F6F3EC)', borderRadius: 8 }}>
-                  <div className="small" style={{ fontWeight: 600, marginBottom: 6 }}>Counter-offer — what would you accept?</div>
-                  <div className="muted small" style={{ marginBottom: 8 }}>
-                    Write the terms plainly in the note (the loan officer sees this verbatim). Optionally fill any of the numbers below — leave blank if the current registered value stands. Enter LTV / LTC / rate / origination as PERCENTS (e.g. 92.5, 11.25, 1.5). Loan amount is a dollar number.
-                  </div>
-                  <textarea className="input" rows={3} placeholder="e.g. I'll approve at 92.5% LTC (not 91%) if the rate goes up 0.25 to cover the extra risk. Everything else stays." value={counterNote} onChange={(e) => setCounterNote(e.target.value)} style={{ width: '100%' }} />
-                  <div className="grid2" style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(140px,1fr))', gap: 8, marginTop: 8 }}>
-                    <div className="field"><label>As-is LTV %</label>
-                      <input className="input" inputMode="decimal" placeholder="—" value={counterTerms.maxAcqLtv}
-                        onChange={(e) => setCT('maxAcqLtv', e.target.value.replace(/[^0-9.]/g, ''))} /></div>
-                    <div className="field"><label>ARV LTV %</label>
-                      <input className="input" inputMode="decimal" placeholder="—" value={counterTerms.maxArvLtv}
-                        onChange={(e) => setCT('maxArvLtv', e.target.value.replace(/[^0-9.]/g, ''))} /></div>
-                    <div className="field"><label>LTC %</label>
-                      <input className="input" inputMode="decimal" placeholder="—" value={counterTerms.maxLtc}
-                        onChange={(e) => setCT('maxLtc', e.target.value.replace(/[^0-9.]/g, ''))} /></div>
-                    <div className="field"><label>Note rate %</label>
-                      <input className="input" inputMode="decimal" placeholder="—" value={counterTerms.noteRate}
-                        onChange={(e) => setCT('noteRate', e.target.value.replace(/[^0-9.]/g, ''))} /></div>
-                    <div className="field"><label>Origination %</label>
-                      <input className="input" inputMode="decimal" placeholder="—" value={counterTerms.origPct}
-                        onChange={(e) => setCT('origPct', e.target.value.replace(/[^0-9.]/g, ''))} /></div>
-                    <div className="field"><label>Total loan $</label>
-                      <input className="input" inputMode="numeric" placeholder="—" value={counterTerms.loanAmount}
-                        onChange={(e) => setCT('loanAmount', e.target.value.replace(/[^0-9]/g, ''))} /></div>
-                  </div>
-                  <div className="row" style={{ gap: 8, marginTop: 10 }}>
-                    <button className="btn primary small" disabled={busy || !counterNote.trim()} onClick={() => submitCounter(r.id)}>Send counter-offer</button>
-                    <button className="btn ghost small" onClick={() => { setCountering(null); setCounterNote(''); }}>Cancel</button>
-                  </div>
-                </div>
-              )}
-
-              {(r.status === 'approved' || r.status === 'declined') && (
-                <div className="muted small" style={{ marginTop: 8 }}>
-                  {r.status === 'approved' ? 'Approved' : 'Declined'}{r.decided_by_name ? ` by ${r.decided_by_name}` : ''}
-                  {r.decision_note ? ` — ${r.decision_note}` : ''}
-                </div>
-              )}
-            </div>
-          );
-        })}
+            );
+          })}
+        </div>
       </div>
     </div>
   );

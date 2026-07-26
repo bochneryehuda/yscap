@@ -37,17 +37,52 @@ const STAGE = Object.freeze({
 });
 
 /**
+ * PURE — build a COMPACT summary of what a real read produced, for the shadow surface + audit
+ * trail (Phase 3c). Captures only counts + metadata (NO document text, NO PII): provider, model,
+ * confidence, latency, page count, and a rough character count if the pages carry text. Defensive
+ * against any adapter result shape. Returns a small plain object suitable for the artifact `meta`.
+ */
+function summarizeRead(routed) {
+  const r = (routed && routed.result) || {};
+  const pages = Array.isArray(r.pages) ? r.pages : [];
+  let charCount = 0;
+  for (const p of pages) {
+    const t = p && (p.text || p.content);
+    if (typeof t === 'string') charCount += t.length;
+  }
+  return {
+    outcome: (routed && routed.outcome) || 'unknown',
+    provider: (routed && routed.plan && routed.plan.primary && routed.plan.primary.provider) || null,
+    service: (routed && routed.plan && routed.plan.primary && routed.plan.primary.service) || null,
+    modelId: r.modelId || null,
+    modelVersion: r.modelVersion || null,
+    confidence: (typeof r.confidence === 'number' && Number.isFinite(r.confidence)) ? r.confidence : null,
+    latencyMs: (typeof r.latencyMs === 'number' && Number.isFinite(r.latencyMs)) ? r.latencyMs : null,
+    pageCount: pages.length,
+    charCount,
+    warnings: Array.isArray(r.warnings) ? r.warnings.slice(0, 10) : [],
+  };
+}
+
+/**
  * Build the packet-control processor. Returns an async processor(job, ctx) matching the worker's
  * contract: ctx = { db, jq, holder }; returns { status:'completed'|'failed', retryable?, result?, error? }.
  *
  * opts:
- *   router   — the DocumentProcessingRouter (default require('./processing-router'))
- *   adapters — real DocumentProvider adapters to actually READ with. When absent (shadow), the
- *              route is planned + recorded but the read stages are recorded not_applicable.
+ *   router    — the DocumentProcessingRouter (default require('./processing-router'))
+ *   adapters  — real DocumentProvider adapters to actually READ with. When absent (shadow), the
+ *               route is planned + recorded but the read stages are recorded not_applicable.
+ *   loadBytes — async (db, documentId) → { buffer, base64, mimeType, filename } | null. Loads the
+ *               real document bytes so the primary adapter can read for real (Phase 3b). Defaults
+ *               to require('./document-bytes').loadDocumentBytes; injectable for tests. Only used
+ *               when `adapters` are present AND the job payload carries no request bytes already.
  */
 function makePacketControlProcessor(opts = {}) {
   const router = opts.router || require('./processing-router');
   const adapters = Array.isArray(opts.adapters) ? opts.adapters : null;
+  const loadBytes = (typeof opts.loadBytes === 'function')
+    ? opts.loadBytes
+    : ((db, documentId) => require('./document-bytes').loadDocumentBytes(db, documentId));
 
   return async function packetControlProcessor(job, ctx = {}) {
     const db = ctx.db;
@@ -60,6 +95,14 @@ function makePacketControlProcessor(opts = {}) {
 
     const safeStage = async (key, status, detail) => {
       try { await jq.recordStage(db, jobId, key, status, detail || {}); } catch (_e) { /* stage recording is best-effort */ }
+    };
+    // Best-effort artifact recorder (Phase 3c) — persists a compact summary of WHAT the read
+    // produced into document_pipeline_artifacts (a V2 audit table). Never throws; a recording
+    // failure never fails the read. Advisory-only: writes no loan file, no V1 table.
+    const safeArtifact = async (kind, meta) => {
+      try {
+        if (typeof jq.recordArtifact === 'function') await jq.recordArtifact(db, jobId, { kind, meta: meta || {} });
+      } catch (_e) { /* artifact recording is best-effort */ }
     };
 
     try {
@@ -94,18 +137,54 @@ function makePacketControlProcessor(opts = {}) {
       // injected AND the router's primary is a real adapter engine; otherwise SHADOW = not run.
       const primaryKey = plan.primary && plan.primary.adapterKey;
       if (adapters && primaryKey) {
-        // A real read path exists — route the document through the primary adapter.
-        const routed = await router.routeDocument({
-          features, request: payload.request || {}, adapters,
-          recordDb: db, documentId, jobId, loanId,
-        });
-        const okRead = routed && routed.outcome === 'completed';
-        await safeStage(STAGE.OCR_LAYOUT, okRead ? 'completed' : 'failed_retryable', {
-          outcome: routed ? routed.outcome : 'unknown',
-          confidence: routed && routed.result ? routed.result.confidence : null,
-        });
-        // Classification is deferred to a later phase even on the read path; mark pending.
-        await safeStage(STAGE.CLASSIFICATION, 'pending', { note: 'classifier stage not yet wired' });
+        // A real read path exists — load the document bytes (Phase 3b) so the primary adapter
+        // can read for REAL. The bytes come from the SAME storage V1 serves (in-process worker),
+        // so this reads the real document; it still only writes V2 audit tables (advisory).
+        let request = payload.request || {};
+        const hasBytes = !!(request && (request.buffer || request.base64));
+        if (!hasBytes && documentId) {
+          const loaded = await loadBytes(db, documentId);
+          if (loaded && (loaded.buffer || loaded.base64)) {
+            request = { buffer: loaded.buffer, base64: loaded.base64, mimeType: loaded.mimeType, filename: loaded.filename };
+          }
+        }
+        const stillNoBytes = !(request && (request.buffer || request.base64));
+        if (stillNoBytes) {
+          // No bytes to read (document/storage unavailable) — record the read as not-run rather
+          // than call the adapter with an empty request (which would look like a failed vendor read).
+          await safeStage(STAGE.OCR_LAYOUT, 'not_applicable', { note: 'read skipped: document bytes unavailable' });
+          await safeStage(STAGE.CLASSIFICATION, 'not_applicable', { note: 'read skipped: document bytes unavailable' });
+        } else {
+          // Route the document through the primary adapter with the real bytes.
+          const routed = await router.routeDocument({
+            features, request, adapters,
+            recordDb: db, documentId, jobId, loanId,
+          });
+          const okRead = routed && routed.outcome === 'completed';
+          await safeStage(STAGE.OCR_LAYOUT, okRead ? 'completed' : 'failed_retryable', {
+            outcome: routed ? routed.outcome : 'unknown',
+            confidence: routed && routed.result ? routed.result.confidence : null,
+          });
+          // Phase 3c — persist a compact summary of WHAT the read produced (counts + metadata
+          // only, no document text/PII) so the shadow surface can show the real read output.
+          // Advisory: writes only the V2 artifact table. Best-effort (never fails the read).
+          await safeArtifact('ocr_result', summarizeRead(routed));
+          // VSLICE-3 — turn the read into evidence candidates WITH page-level provenance and
+          // record them into the Stage-5 ledger (evidence-first canonical truth). Advisory:
+          // writes only document_pipeline_evidence; makes no decision, clears no condition.
+          // Best-effort + never throws (a recording failure never fails the read).
+          if (okRead && routed && routed.result) {
+            try {
+              const candidates = require('./read-to-evidence').readToEvidence(routed.result, {
+                jobId, documentId, loanId, family: features.docType || null,
+              });
+              const ec = require('./evidence-candidate');
+              for (const cand of candidates) { await ec.recordCandidate(db, cand); }
+            } catch (_e) { /* evidence recording is best-effort */ }
+          }
+          // Classification is deferred to a later phase even on the read path; mark pending.
+          await safeStage(STAGE.CLASSIFICATION, 'pending', { note: 'classifier stage not yet wired' });
+        }
       } else {
         await safeStage(STAGE.OCR_LAYOUT, 'not_applicable', { note: 'shadow: read not run' });
         await safeStage(STAGE.CLASSIFICATION, 'not_applicable', { note: 'shadow: read not run' });
@@ -120,4 +199,4 @@ function makePacketControlProcessor(opts = {}) {
   };
 }
 
-module.exports = { makePacketControlProcessor, STAGE };
+module.exports = { makePacketControlProcessor, STAGE, _internals: { summarizeRead } };

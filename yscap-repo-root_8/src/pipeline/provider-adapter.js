@@ -40,7 +40,18 @@ function normalizeResult(input = {}) {
     modelId: str(r.modelId),
     modelVersion: str(r.modelVersion),
     documentType: str(r.documentType),
+    // The read's textual content + page count. `text` is the concatenated document text; `pages`
+    // carries the per-page structure (lines/words + polygons = bounding regions) so evidence can
+    // point at the exact spot. Preserving BOTH is what lets a fact carry page-level provenance —
+    // the earlier normalizer dropped everything but `pages`, losing text/pageCount/segments/
+    // fields/tables (the "dropped classifier results" gap). Kept back-compat: new keys default safe.
+    text: str(r.text),
+    pageCount: num(r.pageCount),
     pages: arr(r.pages),
+    // `segments` = a package splitter/classifier's per-page-range document-type boundaries
+    // ([{ docType, rawLabel, confidence, pages:[…] }]). `fields`/`tables` = a structured
+    // extractor's output. `evidenceRegions` = bounding regions. All must survive normalization.
+    segments: arr(r.segments),
     fields: arr(r.fields),
     tables: arr(r.tables),
     evidenceRegions: arr(r.evidenceRegions),
@@ -133,6 +144,6 @@ async function checkAll(adapters = []) {
 
 module.exports = {
   normalizeResult, makeAdapter, checkAll,
-  CANONICAL_KEYS: ['provider', 'service', 'modelId', 'modelVersion', 'documentType', 'pages', 'fields', 'tables', 'evidenceRegions', 'confidence', 'warnings', 'latencyMs', 'estimatedCost', 'rawArtifactId'],
+  CANONICAL_KEYS: ['provider', 'service', 'modelId', 'modelVersion', 'documentType', 'text', 'pageCount', 'pages', 'segments', 'fields', 'tables', 'evidenceRegions', 'confidence', 'warnings', 'latencyMs', 'estimatedCost', 'rawArtifactId'],
   HEALTH_TIMEOUT_MS,
 };

@@ -269,6 +269,103 @@ router.get('/applications/export', async (req, res) => {
   } catch (e) { console.error('[export pipeline]', e && e.message); res.status(500).json({ error: 'server error' }); }
 });
 
+// ---------------- Capital-provider data tapes (collection level) -------------
+// Registered BEFORE the /applications/:id scope middleware. These are the
+// provider-centric endpoints (list tape types, list a provider's loans, bulk
+// export); the per-loan endpoints live under /applications/:id (scoped there).
+
+// List the tape types the system knows how to export (one per capital provider).
+router.get('/tapes', async (req, res) => {
+  try { res.json({ tapes: require('../lib/tapes').registry.listTapes() }); }
+  catch (e) { console.error('[tapes list]', e && e.message); res.status(500).json({ error: 'server error' }); }
+});
+
+// List the loans eligible for a provider's BULK tape — i.e. every non-deleted
+// file whose capital provider (normalized) matches this tape's buyer, scoped to
+// what the staffer may see. This is the picker the bulk-export screen shows.
+router.get('/tapes/:tapeKey/loans', async (req, res) => {
+  try {
+    const tape = require('../lib/tapes').registry.getTape(req.params.tapeKey);
+    if (!tape) return res.status(404).json({ error: 'unknown tape type' });
+    // Normalize applications.lender in SQL exactly like normNoteBuyer:
+    // LOWERCASE FIRST, then strip non-alphanumerics — the same order as the JS
+    // (String(raw).toLowerCase().replace(/[^a-z0-9]/g,'')) and the repo's existing
+    // sitewire_partner_links normalization, so the free-text label matches the key.
+    const params = [tape.buyerKey];
+    let scopeSql = '';
+    if (!seesAll(req)) { params.push(req.actor.id); scopeSql = ' AND ' + VISIBLE_OFFICERS_SQL('a', '$' + params.length); }
+    const sql = `
+      SELECT a.id, a.ys_loan_number, a.investor_loan_number, a.lender, a.status,
+             COALESCE(a.property_address->>'oneLine',
+                      NULLIF(concat_ws(', ', a.property_address->>'line1', a.property_address->>'city',
+                                       a.property_address->>'state', a.property_address->>'zip'), '')) AS address,
+             a.loan_amount, b.first_name, b.last_name
+        FROM applications a JOIN borrowers b ON b.id = a.borrower_id
+       WHERE a.deleted_at IS NULL
+         AND regexp_replace(lower(coalesce(a.lender,'')), '[^a-z0-9]', '', 'g') = $1${scopeSql}
+       ORDER BY a.updated_at DESC LIMIT 1000`;
+    const r = await db.query(sql, params);
+    res.json({ tape: require('../lib/tapes').registry.publicTape(tape), count: r.rows.length, loans: r.rows });
+  } catch (e) { console.error('[tape loans]', e && e.message); res.status(500).json({ error: 'server error' }); }
+});
+
+// Export a BULK tape (many loans on one workbook) for :tapeKey. Body:
+// { applicationIds: [uuid, ...] }. Every loan must belong to this provider (the
+// builder rejects the whole batch, listing any that don't); the requested ids
+// are first narrowed to what the staffer may see.
+router.post('/tapes/:tapeKey/export/bulk', async (req, res) => {
+  try {
+    const tapes = require('../lib/tapes');
+    const tape = tapes.registry.getTape(req.params.tapeKey);
+    if (!tape) return res.status(404).json({ error: 'unknown tape type' });
+    const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+    const requested = Array.isArray(req.body && req.body.applicationIds)
+      ? req.body.applicationIds.filter((x) => UUID.test(String(x))) : [];
+    if (!requested.length) return res.status(400).json({ error: 'no loans selected' });
+    // Guard: one bulk export can't ask for more than the picker can show (1000),
+    // so a single request can never fan out into an unbounded pile of DB reads.
+    if (requested.length > 1000) return res.status(400).json({ error: 'too many loans (max 1000 per bulk tape)' });
+    // Narrow to files the staffer may see (a scoped user can't bulk-export files
+    // outside their book); see-all users keep the full requested set.
+    let visible = requested;
+    if (!seesAll(req)) {
+      const vr = await db.query(
+        `SELECT id FROM applications a WHERE a.id = ANY($1::uuid[]) AND a.deleted_at IS NULL AND ${VISIBLE_OFFICERS_SQL('a', '$2')}`,
+        [requested, req.actor.id]);
+      visible = vr.rows.map((x) => x.id);
+    }
+    if (!visible.length) return res.status(403).json({ error: 'forbidden' });
+    // Confirmed-fatal issuance backstop — PARITY with the single-file tape export
+    // (and TPR/MISMO): a fatal file's tape must not leave in bulk either without a
+    // super-admin override. Check each visible file; a super-admin's overrideReason
+    // proceeds+records per file, otherwise the whole batch is blocked with the list.
+    const blockedFatal = [];
+    for (const id of visible) {
+      const issuance = await issuanceBackstop.backstopForRun(id, 'term_sheet', db, { actorRole: req.actor.role, overrideReason: req.query && req.query.overrideReason });
+      if (issuance.hardWarning && !issuance.proceed) { blockedFatal.push({ id, tier: issuance.tier || null }); continue; }
+      if (issuance.override && issuance.override.applied) {
+        await audit(req, 'issuance_override', 'application', id, { action: 'export_tape_bulk', tape: tape.key, tier: issuance.tier, reason: issuance.override.reason });
+        await loanExceptions.recordIssuanceOverride({ appId: id, staffId: req.actor.id, note: `export_tape_bulk ${tape.key}: ${issuance.override.reason || 'no reason given'}`, snapshot: { action: 'export_tape_bulk', tape: tape.key, tier: issuance.tier || null, at: new Date().toISOString() } });
+      }
+    }
+    if (blockedFatal.length) {
+      return res.status(409).json({ error: 'blocked', action: 'export_tape_bulk', message: `${blockedFatal.length} of the selected loan(s) have a confirmed fatal issue and can't be exported without a super-admin override. Remove them from the selection, or have a super-admin export.`, blocked: blockedFatal });
+    }
+    const { buf, filename, contentType, count } = await tapes.buildBulkTape(req.params.tapeKey, visible, db);
+    await audit(req, 'export_tape_bulk', 'application', null, { tape: tape.key, count, requested: requested.length });
+    res.set('Content-Type', contentType);
+    res.set('Content-Disposition', `attachment; filename="${filename}"`);
+    res.send(buf);
+  } catch (e) {
+    if (e && e.code === 'buyer_mismatch') {
+      return res.status(409).json({ error: 'buyer_mismatch', message: e.message, mismatches: e.mismatches || [] });
+    }
+    if (e && e.code === 'no_loans') return res.status(400).json({ error: e.message });
+    console.error('[export tape bulk]', e && e.message);
+    res.status(500).json({ error: 'export failed' });
+  }
+});
+
 router.use('/applications/:id', async (req, res, next) => {
   try {
     if (seesAll(req)) return next();
@@ -1666,6 +1763,38 @@ router.post('/applications/:id/pricing/register', async (req, res) => {
     const f = await loadFileForPricing(appId);
     if (!f) return res.status(404).json({ error: 'not found' });
 
+    // WO-E — a term sheet cannot be ISSUED while this file has OPEN blocking
+    // Encompass mismatches. Dormant until Encompass is live + a loan is pulled
+    // (no pulled loan → never blocks). An admin (see_all_files) may override with
+    // a logged reason; the gate fails OPEN on any reconcile error. When overridden
+    // here, the flag rides to sendBorrowerTerms so the chokepoint gate lets it out.
+    let encompassOverridden = false;
+    {
+      const encGate = await require('../encompass/reconcile').issuanceGate(appId);
+      if (encGate.block) {
+        const ovr = String(b.encompassOverrideReason || '').trim();
+        if (!seesAll(req)) return refuse(422, {
+          error: `Encompass and this file don’t agree yet — ${encGate.openBlocking} field(s) don’t match. Clear the Encompass sync (or ask an admin to override) before issuing a term sheet.`,
+          code: 'encompass_findings_open', openFields: encGate.openBlockingKeys,
+        }, 'encompass_findings_open', { openBlocking: encGate.openBlocking });
+        if (!ovr) return refuse(422, {
+          error: `Encompass has ${encGate.openBlocking} unmatched field(s). As an admin you can override — provide a reason to issue the term sheet anyway.`,
+          code: 'encompass_override_reason_required', openFields: encGate.openBlockingKeys,
+        }, 'encompass_override_reason_required', { openBlocking: encGate.openBlocking });
+        await audit(req, 'encompass_gate_override', 'application', appId, { reason: ovr.slice(0, 500), openBlocking: encGate.openBlocking, openFields: encGate.openBlockingKeys });
+        encompassOverridden = true;
+        // Record it in the policy-exception register (issuance_override) so the
+        // override is diligence-visible — best-effort, never blocks the issue.
+        try {
+          await require('../lib/loan-exceptions').recordIssuanceOverride({
+            appId, staffId: req.actor && req.actor.id,
+            note: `encompass_gate: ${ovr.slice(0, 400)}`,
+            snapshot: { encompass_open_blocking: encGate.openBlocking, encompass_open_fields: encGate.openBlockingKeys },
+          });
+        } catch (_) { /* register write is best-effort */ }
+      }
+    }
+
     // Optimistic concurrency on the FILE-owned pricing basis: the studio sends
     // back the econVersion it prefilled from; if the file's economics changed
     // since (form edit, ClickUp inbound, another staffer), refuse rather than
@@ -2014,7 +2143,7 @@ router.post('/applications/:id/pricing/register', async (req, res) => {
       // the borrower ONLY after a super-admin approves the escalation; see
       // admin-manual-programs.js). The team's own notice above always fires.
       if (economicsChanged && !needsEscalation) {
-        try { await require('../lib/terms-notify').sendBorrowerTerms(appId, { quote, total, termMonths: inputs && inputs.term }); }
+        try { await require('../lib/terms-notify').sendBorrowerTerms(appId, { quote, total, termMonths: inputs && inputs.term, encompassOverride: encompassOverridden }); }
         catch (_) { /* borrower terms email is best-effort */ }
       }
     } catch (_) { /* notification is best-effort */ }
@@ -2308,6 +2437,18 @@ router.post('/applications/:id/pricing/accept-counter', async (req, res) => {
     if (esc.status !== 'countered') return res.status(409).json({ error: 'This escalation is not in counter-offer state — nothing to accept.' });
     const f = await loadFileForPricing(appId);
     if (!f) return res.status(404).json({ error: 'not found' });
+
+    // WO-E — the Encompass issuance gate also applies to accepting a counter (it
+    // re-issues the term sheet). This one-click path has no override-reason input;
+    // to override, an admin registers from the Term Sheet Studio. Dormant until
+    // Encompass is live + a loan is pulled; fails OPEN on any reconcile error.
+    {
+      const encGate = await require('../encompass/reconcile').issuanceGate(appId);
+      if (encGate.block) return res.status(409).json({
+        error: `Encompass and this file don’t agree yet — ${encGate.openBlocking} field(s) don’t match. Clear the Encompass sync first (or an admin can register from the Term Sheet Studio with an override).`,
+        code: 'encompass_findings_open', openFields: encGate.openBlockingKeys,
+      });
+    }
 
     // Build overrides: start with the ORIGINAL manual-review overrides (stored
     // structural keys on the escalation), then overlay the super-admin's counter
@@ -2943,6 +3084,90 @@ router.get('/applications/:id/export/mismo', async (req, res) => {
     res.send(xml);
   } catch (e) {
     console.error('[mismo] export failed:', db.describeError ? db.describeError(e) : e.message);
+    res.status(500).json({ error: 'export failed' });
+  }
+});
+
+// ============================ Capital-provider data tapes =====================
+// A "data tape" is one capital provider's required loan export — their own Excel
+// workbook with our loan's figures typed into its data-entry row so the provider's
+// own pricing/eligibility tabs recalculate. The provider's sheet is preserved
+// exactly (formulas + hidden lookup engines untouched); we only fill the input row.
+// The whole engine + per-provider column maps live in src/lib/tapes.
+//
+// THE RULE (owner-directed): a loan may only export the tape of the capital
+// provider it is CURRENTLY assigned to (applications.lender). Switch the loan's
+// capital provider to export a different provider's tape. Enforced in the builder.
+
+// Which tape(s) can THIS loan export (based on its current capital provider),
+// and for the ones it can't, a plain-language reason. Scoped by the :id middleware.
+router.get('/applications/:id/tapes', async (req, res) => {
+  try {
+    if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(req.params.id)) return res.status(404).json({ error: 'not found' });
+    const tapes = require('../lib/tapes');
+    const r = await db.query('SELECT lender FROM applications WHERE id=$1 AND deleted_at IS NULL', [req.params.id]);
+    if (!r.rows[0]) return res.status(404).json({ error: 'not found' });
+    const lender = r.rows[0].lender || null;
+    const key = require('../lib/conditions/field-registry').normNoteBuyer(lender);
+    res.json({ currentBuyer: lender, buyerKey: key, tapes: tapes.tapeAvailability(key, lender) });
+  } catch (e) { console.error('[tape eligibility]', e && e.message); res.status(500).json({ error: 'server error' }); }
+});
+
+// Which extra questions (if any) this loan needs answered before its tape can be
+// filled — chiefly the New-Construction-only Fidelis fields. Returns the still-
+// unanswered ones (with dropdown options); the export UI asks these, then exports
+// with the answers. Empty for a loan whose tape needs nothing extra.
+router.get('/applications/:id/export/tape/:tapeKey/questions', async (req, res) => {
+  try {
+    if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(req.params.id)) return res.status(404).json({ error: 'not found' });
+    const tapes = require('../lib/tapes');
+    const q = await tapes.tapeQuestions(req.params.id, req.params.tapeKey, db);
+    res.json(q);
+  } catch (e) {
+    if (e && (e.code === 'loan_not_found' || e.code === 'tape_not_found')) return res.status(404).json({ error: e.message });
+    console.error('[tape questions]', e && e.message);
+    res.status(500).json({ error: 'server error' });
+  }
+});
+
+// Export ONE loan's tape for :tapeKey. Streams the provider's .xlsx. Scoped +
+// audited; the confirmed-fatal issuance backstop applies exactly as it does to
+// the TPR / MISMO exports (a note-buyer tape must not leave a fatal file without
+// a super-admin override). The capital-provider match is enforced in buildTape.
+// New-construction questionnaire answers ride in as query params and are saved
+// to the loan (so a later export doesn't re-ask) before the tape is built.
+router.get('/applications/:id/export/tape/:tapeKey', async (req, res) => {
+  try {
+    if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(req.params.id)) return res.status(404).json({ error: 'not found' });
+    const tapes = require('../lib/tapes');
+    const tape = tapes.registry.getTape(req.params.tapeKey);
+    if (!tape) return res.status(404).json({ error: 'unknown tape type' });
+    const issuance = await issuanceBackstop.backstopForRun(req.params.id, 'term_sheet', db, { actorRole: req.actor.role, overrideReason: req.query && req.query.overrideReason });
+    if (issuance.hardWarning && !issuance.proceed) {
+      return res.status(409).json({ error: 'blocked', action: 'export_tape', message: 'This file has a confirmed fatal issue, so its tape can\'t be exported without a super-admin override.', issuance });
+    }
+    if (issuance.override && issuance.override.applied) {
+      await audit(req, 'issuance_override', 'application', req.params.id, { action: 'export_tape', tape: tape.key, tier: issuance.tier, reason: issuance.override.reason });
+      await loanExceptions.recordIssuanceOverride({ appId: req.params.id, staffId: req.actor.id, note: `export_tape ${tape.key}: ${issuance.override.reason || 'no reason given'}`, snapshot: { action: 'export_tape', tape: tape.key, tier: issuance.tier || null, at: new Date().toISOString() } });
+    }
+    // Persist any questionnaire answers (validated) BEFORE building, so the tape
+    // fills from them and a later export never re-asks. A no-op when none present.
+    const savedSupplemental = await tapes.persistSupplemental(req.params.id, req.params.tapeKey, req.query, db);
+    // A seasoned-loan export may carry the human-confirmed current balance / next
+    // due / interest reserve as query params — applied to THIS export only (never
+    // persisted, since the live figures re-compute from the draws each time).
+    const seasonedOverrides = tapes.seasonedOverridesFromQuery(req.query);
+    const { buf, filename, contentType } = await tapes.buildTape(req.params.id, req.params.tapeKey, db, { seasonedOverrides });
+    await audit(req, 'export_tape', 'application', req.params.id, { tape: tape.key, bytes: buf.length, supplemental: Object.keys(savedSupplemental), seasoned: !!seasonedOverrides });
+    res.set('Content-Type', contentType);
+    res.set('Content-Disposition', `attachment; filename="${filename}"`);
+    res.send(buf);
+  } catch (e) {
+    if (e && e.code === 'buyer_mismatch') {
+      return res.status(409).json({ error: 'buyer_mismatch', message: e.message, currentBuyer: e.currentBuyer, requiredBuyer: e.requiredBuyer, tape: e.tapeName });
+    }
+    if (e && (e.code === 'loan_not_found' || e.code === 'tape_not_found')) return res.status(404).json({ error: e.message });
+    console.error('[export tape]', e && e.message);
     res.status(500).json({ error: 'export failed' });
   }
 });
@@ -6364,8 +6589,66 @@ router.post('/applications/:id/loan-number', async (req, res) => {
     if (!upd.rows.length) return res.status(404).json({ error: 'application not found' });
     await audit(req, 'set_loan_number', 'application', req.params.id, { from: existing || null, to: ln });
     enqueueClickupPush(req.params.id, ['ys_loan_number']).catch(() => {});   // keep ClickUp/LOS in sync (self-gates; no-op when unmapped/unlinked)
+    // A newly-numbered file syncs from Encompass at once (READ-ONLY pull; the
+    // match is by this loan number). Best-effort + fire-and-forget — a pull
+    // failure is stamped into encompass_last_error and shown in the sync panel;
+    // it must never break setting the loan number. The require is wrapped so even
+    // a module-load failure can't turn the already-committed write into a 500.
+    try { require('../encompass/reconcile').onLoanNumberSet(req.params.id).catch(() => {}); } catch (_) { /* sync hook is best-effort */ }
     res.json({ ok: true, loanNumber: upd.rows[0].ys_loan_number });
   } catch (e) { console.warn('[staff] handler error:', db.describeError(e)); res.status(500).json({ error: 'server error' }); }
+});
+
+// ── Encompass sync (READ-ONLY per-file reconcile) — WO-C ─────────────────────
+// All four live under the `/applications/:id` middleware (line ~272), so any
+// staff assigned to the file may read the comparison, refresh it, or pull a
+// value into our column (owner-directed: not admin-only). None of these ever
+// writes to Encompass — /refresh does a READ-ONLY pull; /replace writes exactly
+// one of OUR columns.
+router.get('/applications/:id/encompass/status', async (req, res) => {
+  try {
+    const c = await require('../encompass/reconcile').computeFindings(req.params.id);
+    if (!c.found) return res.status(404).json({ error: 'application not found' });
+    res.json({ hasLoan: c.hasLoan, guid: c.guid, loanNumber: c.loanNumber, pulledAt: c.pulledAt, lastError: c.lastError, priced: c.priced, summary: c.summary });
+  } catch (e) { console.warn('[staff] encompass status:', db.describeError(e)); res.status(500).json({ error: 'server error' }); }
+});
+
+router.get('/applications/:id/encompass/findings', async (req, res) => {
+  try {
+    const c = await require('../encompass/reconcile').computeFindings(req.params.id);
+    if (!c.found) return res.status(404).json({ error: 'application not found' });
+    res.json(c);
+  } catch (e) { console.warn('[staff] encompass findings:', db.describeError(e)); res.status(500).json({ error: 'server error' }); }
+});
+
+router.post('/applications/:id/encompass/refresh', async (req, res) => {
+  try {
+    const c = await require('../encompass/reconcile').refresh(req.params.id);
+    if (!c.found) return res.status(404).json({ error: 'application not found' });
+    await audit(req, 'encompass_refresh', 'application', req.params.id, { pulled: !!(c.pull && c.pull.ok), reason: (c.pull && c.pull.reason) || null });
+    res.json(c);
+  } catch (e) { console.warn('[staff] encompass refresh:', db.describeError(e)); res.status(500).json({ error: 'server error' }); }
+});
+
+router.post('/applications/:id/encompass/replace', async (req, res) => {
+  try {
+    const fieldKey = String((req.body || {}).fieldKey || '').trim();
+    if (!fieldKey) return res.status(400).json({ error: 'fieldKey is required' });
+    const r = await require('../encompass/reconcile').replaceField(req.params.id, fieldKey, req.actor && req.actor.id);
+    if (!r.ok) {
+      const msg = {
+        not_writable: 'This field can’t be pulled from Encompass directly.',
+        not_found: 'Application not found.',
+        no_loan: 'No Encompass loan has been pulled for this file yet.',
+        unknown_field: 'Unknown field.',
+        no_encompass_value: 'Encompass has no value for this field.',
+        uncoercible: 'The Encompass value could not be read into our field.',
+      }[r.reason] || 'Could not pull this value.';
+      return res.status(r.reason === 'not_found' ? 404 : 400).json({ error: msg, reason: r.reason });
+    }
+    await audit(req, 'encompass_field_replace', 'application', req.params.id, { field: fieldKey, column: r.column, from: r.before, to: r.wrote });
+    res.json(r);
+  } catch (e) { console.warn('[staff] encompass replace:', db.describeError(e)); res.status(500).json({ error: 'server error' }); }
 });
 
 // Nudge the borrower with a friendly reminder of what's still outstanding on

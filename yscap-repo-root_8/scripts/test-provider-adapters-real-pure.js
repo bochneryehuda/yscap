@@ -43,6 +43,24 @@ const ok = (c, m) => { if (c) { pass++; } else { fail++; console.log('  FAIL:', 
   ok(badMap.confidence === null && /429 rate limited/.test(badMap.warnings[0] || ''), 'mapVendorResult not-ok: confidence null + reason in warnings');
   ok(mapVendorResult(entry, { ok: true, confidence: 'x' }).confidence === null, 'mapVendorResult: non-finite confidence → null');
 
+  // ---- VSLICE-1: a real OCR read carries text/pageCount/pages through mapVendorResult ----
+  const ocrMap = mapVendorResult(entry, { ok: true, text: 'hello world', pageCount: 2, pages: [{ pageNumber: 1 }, { pageNumber: 2 }] });
+  ok(ocrMap.text === 'hello world' && ocrMap.pageCount === 2 && ocrMap.pages.length === 2, 'mapVendorResult OCR: text + pageCount + pages preserved (not dropped)');
+
+  // ---- VSLICE-1: a classifier read carries segments + derives documentType/confidence ----
+  const clsMap = mapVendorResult(entry, { ok: true, segments: [
+    { docType: 'insurance', confidence: 0.62, pages: [1] },
+    { docType: 'bank_statement', confidence: 0.94, pages: [2, 3] },
+  ] });
+  ok(clsMap.segments.length === 2, 'mapVendorResult classifier: segments preserved (not dropped)');
+  ok(clsMap.documentType === 'bank_statement' && clsMap.confidence === 0.94, 'mapVendorResult classifier: documentType/confidence derived from the highest-confidence segment');
+
+  // ---- VSLICE-1: an extractor read carries fields/tables through ----
+  const extMap = mapVendorResult(entry, { ok: true, documentType: 'insurance', fields: [{ key: 'coverage', value: 500000 }], tables: [{ rows: 2 }], evidenceRegions: [{ page: 1 }] });
+  ok(extMap.documentType === 'insurance' && extMap.fields.length === 1 && extMap.tables.length === 1 && extMap.evidenceRegions.length === 1, 'mapVendorResult extractor: documentType + fields + tables + evidenceRegions preserved');
+  // a vendor-provided documentType wins over segment derivation
+  ok(mapVendorResult(entry, { ok: true, documentType: 'appraisal', segments: [{ docType: 'x', confidence: 0.9 }] }).documentType === 'appraisal', 'mapVendorResult: explicit documentType is not overridden by segments');
+
   // ---- healthReport runs offline, merges metadata, never throws ----
   const rep = await PA.healthReport(() => 'STAMP');
   ok(rep.checkedAt === 'STAMP', 'healthReport stamps checkedAt from the injected clock');

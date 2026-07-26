@@ -3057,3 +3057,103 @@ details[open]>.appr-sec-sum .appr-sec-chev{transform:rotate(180deg)}
 @media (prefers-reduced-motion:reduce) {
   .crx-btn, .crx-gauge-mark, .crx-bureau-bar > i { transition:none; }
 }
+
+/* ===== Manual programs & escalations — page redesign (2026-07-26) ===== */
+/* Reuses the draws-dashboard card house style (.dd-card / .dd-card-h) plus a
+   small set of page-scoped primitives so the settings form and escalation
+   queue have real hierarchy: layered cards, sized headings, aligned fields,
+   metric chips, a proper switch, and a segmented filter. */
+
+/* callout — an explanatory band with a gold spine */
+.esc-callout{display:flex;gap:12px;align-items:flex-start;background:var(--surface-soft);
+  border:1px solid var(--line);border-left:3px solid var(--gold);border-radius:10px;
+  padding:13px 15px;font-size:13.5px;line-height:1.55;color:var(--text-muted)}
+.esc-callout.sm{padding:10px 12px;font-size:13px;margin-top:12px;border-left-color:var(--primary-border)}
+.esc-callout .ic{flex:0 0 auto;width:26px;height:26px;border-radius:8px;display:grid;place-items:center;
+  background:var(--gold-soft);color:var(--gold)}
+.esc-callout.sm .ic{background:var(--primary-soft);color:var(--teal-br)}
+.esc-callout .ic svg{width:15px;height:15px}
+.esc-callout b,.esc-callout strong{color:var(--text)}
+
+/* subsection label + the required primary setting card */
+.esc-sublabel{font-size:11.5px;text-transform:uppercase;letter-spacing:.08em;color:var(--muted);
+  font-weight:700;margin:22px 0 12px}
+.esc-primary-field{background:linear-gradient(180deg,#fff,#fcfaf4);border:1px solid var(--line);
+  border-radius:12px;padding:16px 18px;margin-top:16px}
+.esc-ceilings{display:grid;grid-template-columns:repeat(auto-fit,minmax(168px,1fr));gap:14px}
+
+/* input with a trailing unit adornment (%, months) */
+.inp-suffix{position:relative;display:block}
+.inp-suffix > .input{padding-right:48px}
+.inp-suffix > .sfx{position:absolute;right:13px;top:50%;transform:translateY(-50%);
+  color:var(--text-soft);font-size:13px;font-weight:600;pointer-events:none}
+
+/* availability switch + its bar (namespaced — .switch is too generic) */
+.esc-switch{display:inline-flex;align-items:center;gap:12px;cursor:pointer;user-select:none}
+.esc-switch input{position:absolute;opacity:0;width:0;height:0}
+.esc-switch .track{width:46px;height:27px;border-radius:999px;background:var(--border-strong);
+  transition:background .18s ease;flex:none;position:relative}
+.esc-switch .track::after{content:"";position:absolute;top:3px;left:3px;width:21px;height:21px;border-radius:50%;
+  background:#fff;box-shadow:0 1px 3px rgba(20,27,34,.3);transition:transform .18s ease}
+.esc-switch input:checked + .track{background:var(--teal)}
+.esc-switch input:checked + .track::after{transform:translateX(19px)}
+.esc-switch input:focus-visible + .track{box-shadow:0 0 0 3px rgba(127,169,176,.35)}
+.esc-switch .switch-txt{font-weight:600;font-size:14px;color:var(--text)}
+.esc-availability{display:flex;align-items:center;justify-content:space-between;gap:16px;flex-wrap:wrap;
+  margin-top:20px;padding:15px 17px;border:1px solid var(--line);border-radius:12px;background:var(--surface-soft)}
+
+/* segmented filter control (namespaced — .seg already exists elsewhere) */
+.esc-seg{display:inline-flex;background:var(--surface-soft);border:1px solid var(--line);border-radius:10px;
+  padding:3px;gap:2px;flex-wrap:wrap}
+.esc-seg > button{border:none;background:none;padding:6px 12px;border-radius:7px;font:inherit;font-size:13px;
+  font-weight:600;color:var(--text-muted);cursor:pointer;transition:background .14s,color .14s}
+.esc-seg > button:hover{color:var(--text)}
+.esc-seg > button.on{background:#fff;color:var(--teal-br);box-shadow:0 1px 2px rgba(20,27,34,.1)}
+
+/* escalation card */
+.esc-row{border:1px solid var(--line);border-radius:12px;padding:16px 18px;background:#fff;
+  transition:box-shadow .3s ease,border-color .3s ease}
+.esc-row + .esc-row{margin-top:12px}
+.esc-row:hover{border-color:var(--border-strong)}
+.esc-row.hl{border-color:var(--gold);box-shadow:0 0 0 3px rgba(174,135,70,.28)}
+.esc-row-top{display:flex;justify-content:space-between;align-items:flex-start;gap:12px}
+.esc-row-id{font-size:15px;min-width:0;line-height:1.5;overflow-wrap:anywhere}
+.esc-row-id a{color:var(--teal-br);text-decoration:none;font-weight:700}
+.esc-row-id a:hover{text-decoration:underline}
+.esc-row-name{color:var(--text);font-weight:600}
+.esc-row-addr{color:var(--text-muted)}
+.esc-row-sub{color:var(--text-muted);font-size:13px;margin-top:6px;line-height:1.5}
+
+/* leverage metric chips */
+.esc-metrics{display:flex;gap:8px;flex-wrap:wrap;margin-top:12px}
+.esc-metric{display:inline-flex;flex-direction:column;gap:1px;background:var(--surface-soft);
+  border:1px solid var(--line);border-radius:9px;padding:7px 13px;min-width:84px}
+.esc-metric .k{font-size:10px;text-transform:uppercase;letter-spacing:.05em;color:var(--muted);font-weight:700}
+.esc-metric .v{font-size:15px;font-weight:700;color:var(--text);font-variant-numeric:tabular-nums}
+
+/* small pill tags (min interest / accrual) */
+.esc-pills{display:flex;gap:7px;flex-wrap:wrap;margin-top:10px}
+.esc-tag{display:inline-flex;align-items:center;gap:6px;font-size:12px;font-weight:600;padding:4px 11px;
+  border-radius:999px;border:1px solid var(--line);background:var(--surface-soft);color:var(--text-muted)}
+.esc-tag.ok{color:var(--success);border-color:rgba(46,122,94,.35);background:var(--success-soft)}
+.esc-tag .dot{width:7px;height:7px;border-radius:50%;background:currentColor;flex:none}
+
+/* action row + counter surfaces */
+.esc-actions{display:flex;gap:8px;align-items:center;margin-top:14px;flex-wrap:wrap}
+.esc-counter{margin-top:12px;padding:12px 14px;background:var(--gold-soft);border:1px solid var(--gold);border-radius:10px}
+.esc-counter-form{margin-top:12px;padding:14px;background:var(--surface-soft);border:1px solid var(--line);border-radius:10px}
+
+/* empty state */
+.esc-empty{text-align:center;padding:36px 16px;color:var(--text-muted)}
+.esc-empty .ic{width:46px;height:46px;border-radius:13px;display:grid;place-items:center;margin:0 auto 12px;
+  background:var(--surface-soft);color:var(--text-soft)}
+.esc-empty .ic svg{width:23px;height:23px}
+
+@media (max-width:720px){
+  .esc-metric{flex:1 1 auto}
+  .esc-actions .input{width:100%;flex:1 1 100% !important}
+  .esc-availability .btn{width:100%}
+}
+
+/* page eyebrow — gold, sits on paper (not the dark auth bg) */
+.esc-eyebrow{font-size:12px;letter-spacing:.14em;text-transform:uppercase;font-weight:700;color:var(--gold);margin-bottom:7px}

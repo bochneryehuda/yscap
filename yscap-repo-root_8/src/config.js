@@ -674,7 +674,13 @@ module.exports = {
       version:           (process.env.UNDERWRITING_PIPELINE_VERSION || 'v1').trim(),  // v1 | v2 (the exposed pipeline)
       v2Enabled:         on(process.env.UW_PIPELINE_V2_ENABLED),   // build/run v2 at all (default OFF)
       v2Shadow:          on(process.env.UW_PIPELINE_V2_SHADOW),    // run v2 beside v1, never expose (default OFF)
-      v2Families:        csv(process.env.UW_PIPELINE_V2_FAMILIES), // families promoted to v2, e.g. bank_statement,insurance
+      v2Families:        csv(process.env.UW_PIPELINE_V2_FAMILIES), // families promoted to v2, e.g. bank_statement,insurance ('all'/'*' = every family)
+      // Phase 3b — actually READ the shadow documents (load real bytes → primary OCR adapter).
+      // Default OFF: even with the worker + shadow on, the shadow line only PLANS a route until
+      // this is set. ADVISORY — a real read still writes ONLY the V2 audit tables, never a loan
+      // file. Turning it on spends real vendor OCR budget on every shadow document, so it is a
+      // deliberate, separate switch (UW_PIPELINE_V2_READ=1).
+      v2ReadEnabled:     on(process.env.UW_PIPELINE_V2_READ),
       workerEnabled:     on(process.env.UW_WORKER_ENABLED),        // start the durable-job background worker (default OFF)
       workerConcurrency: Math.max(1, parseInt(process.env.UW_WORKER_CONCURRENCY || '2', 10) || 2),
       jobMaxAttempts:    Math.max(1, parseInt(process.env.UW_JOB_MAX_ATTEMPTS || '5', 10) || 5),
