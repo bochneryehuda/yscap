@@ -74,18 +74,36 @@ SILENT. Per-rule dispositions the owner dictated:
    AND MOSES WEIL / Vanderbilt (no acct#) $89,474 — the **same account from two statements**,
    counted twice. Owner: *"a major major major major issue."* Dedupe by account identity across
    statements and use the LATEST statement only. Fix for all files.
-2. **Blue Lake needs 2 months of bank statements**, not 1. The rule text says 1.
+2. ~~**Blue Lake needs 2 months of bank statements**, not 1. The rule text says 1.~~ **DONE.** The
+   month count was program-only (Gold 2, Standard 1). `src/lib/liquidity.js` now takes whichever is
+   stricter, program or note buyer, keyed with the SAME shared normalizer the conditions engine uses
+   so any spelling of the note buyer matches. A note buyer can only RAISE the count. The borrower-
+   facing line still never names the note buyer. `db/318` raises existing OPEN Blue Lake files (never
+   a signed-off, waived, funded or closed one; never lowers a count).
 3. **Property type tie-out maps the wrong fields** — comparing appraisal "Detached" (a STYLE) to
    file "Multi 2–4" (a RANGE). Compare **unit COUNT to unit COUNT**, both from the appraisal XML and
    the file. Wrong-field mapping, not a real mismatch.
-4. **Chain-of-title breaks at the wrong step.** Owner-of-record → seller → buyer is CONSISTENT
-   (Michael Moran → Michael Moran → Moshe Weil). The break belongs at the NEXT hop (person → LLC),
-   not where the ✗ currently sits.
-5. **Name-order finding needs reasoning**: "WEIL MOSES" vs "Moses Weil" is surname-first formatting,
-   not a discrepancy. Say so.
-6. **Risk score 55/100 must explain itself** — what specifically drives it, not just code names.
-7. **Mortgage lates finding must list WHICH mortgage, WHEN, and the most recent late** + a link
-   straight into the credit report.
+4. ~~**Chain-of-title breaks at the wrong step.**~~ **DONE.** Root cause: the display pairs each step
+   with `hops[i-1]`, but the hop list was pushed ad hoc — the SALE itself (seller → buyer) was never
+   emitted, and a step with no name is dropped from the display while its hop stayed in the list. Any
+   gap shifted every later mark one step left, so the ✗ landed on the consistent seller→buyer step and
+   the real break (person → LLC) had no mark at all. Fixed at the shape: each link is recorded against
+   the step it ARRIVES AT, and the hop list is derived by walking the steps actually shown — one hop
+   per adjacent visible pair, by construction. Status/notices are still judged on every comparison
+   ATTEMPTED, so a step we could not check is never silenced by being off-screen.
+5. ~~**Name-order finding needs reasoning**~~ **DONE.** The same words in a different order are now
+   recognised as the same name and raise nothing at all. When a name variation IS genuine, it now says
+   WHICH KIND — a middle initial, one extra word (middle/maiden/nickname), a shared surname with a
+   different given name, or no shared words at all (two different people).
+6. ~~**Risk score 55/100 must explain itself**~~ **DONE.** Every weighted signal now carries its own
+   plain-language sentence, owned in `risk-score.js` rather than borrowed from whatever a finding
+   happened to be titled (which fell back to the raw code). The advisory prints the arithmetic —
+   points per reason, adding to the score — and no longer lists code names.
+7. ~~**Mortgage lates finding must list WHICH mortgage, WHEN, and the most recent late**~~ **DONE.**
+   The credit schema only held a yes/no. It now captures per-tradeline detail (creditor, last 4,
+   30/60/90 counts, worst late, month of the most recent, page) and the finding lists them with the
+   page to open. When the reader could NOT break it out, it says so and names the payment-history grid
+   to read by hand — rather than dressing up the same bare fact.
 8. ~~**Langfuse "AI reasoning trace →" link 404s** ("trace not found"). Either point it at a real
    trace or remove the link. A dead link on every finding erodes trust in all of them.~~ **DONE.**
    Root cause: the link was built out of `LANGFUSE_PROJECT`, a human LABEL (default
@@ -102,8 +120,11 @@ SILENT. Per-rule dispositions the owner dictated:
    — which matters most for the regulator-facing AI decision export, where nulling the column would
    have destroyed an audit reference permanently. Scoped to project segments that are provably not
    identifiers, and a false positive merely swaps one working form for another.
-9. **Insurance/title mortgagee-address findings must say WHICH document** they refer to (one is
-   insurance, one is title) and should auto-clear when an address is present.
+9. ~~**Insurance/title mortgagee-address findings must say WHICH document**~~ **DONE.** Both now name
+   their document in the headline ("The INSURANCE…" / "The TITLE…") and point out that the other one is
+   checked separately. The check was asking whether the clause carried OUR address spelled OUR way, so
+   "5 New Monrose Avenue, Basement" raised a notice claiming a mismatch; it now only fires when the
+   clause carries NO address at all (`clauseAddressState`).
 
 ## Cross-cutting requirement — every finding must be actionable in place
 

@@ -456,8 +456,14 @@ const CREDIT_REPORT = {
     "and Equifax (a tri-merge shows one FICO per bureau; capture each as printed, null for a bureau not " +
     "reported). Also give the representative/middle FICO score if the report states one. Extract the number " +
     "of open mortgage tradelines, whether there are any 30/60/90-day mortgage lates, and whether there are " +
-    "any bankruptcies, foreclosures, judgments, or tax liens. Do NOT extract the full SSN. Use null for " +
-    "anything absent or unreadable — do NOT guess. readable=false if poor.",
+    "any bankruptcies, foreclosures, judgments, or tax liens. " +
+    "When there ARE mortgage lates, also fill mortgageLateDetails: one entry per MORTGAGE tradeline that " +
+    "shows a late, with the creditor name as printed, the last 4 of the account number if shown, the counts " +
+    "of 30/60/90-day lates on that tradeline, the WORST late (30, 60, or 90), the month the MOST RECENT late " +
+    "occurred (YYYY-MM), and the page it is printed on. Read the payment-history grid, not just the summary. " +
+    "Leave the array empty if the report only summarises lates without saying which account. " +
+    "Do NOT extract the full SSN. Use null for anything absent or unreadable — do NOT guess. " +
+    "readable=false if poor.",
   schema: obj({
     subjectName: { type: ['string', 'null'] },
     dob: { type: ['string', 'null'] },
@@ -468,6 +474,18 @@ const CREDIT_REPORT = {
     ficoEquifax: { type: ['number', 'null'] },
     openMortgageCount: { type: ['number', 'null'] },
     mortgageLates: { type: ['boolean', 'null'] },
+    // WHICH mortgage, WHEN, and how bad — a bare "there are lates somewhere" is not something an
+    // underwriter can act on or explain to a note buyer (owner-reported 2026-07-26).
+    mortgageLateDetails: { type: 'array', items: obj({
+      creditor: { type: ['string', 'null'] },
+      accountLast4: { type: ['string', 'null'] },
+      count30: { type: ['number', 'null'] },
+      count60: { type: ['number', 'null'] },
+      count90: { type: ['number', 'null'] },
+      worstLate: { type: ['number', 'null'] },        // 30 | 60 | 90
+      mostRecentLate: { type: ['string', 'null'] },   // 'YYYY-MM'
+      page: { type: ['number', 'null'] },
+    }) },
     hasBankruptcy: { type: ['boolean', 'null'] },
     hasForeclosure: { type: ['boolean', 'null'] },
     hasJudgmentOrLien: { type: ['boolean', 'null'] },

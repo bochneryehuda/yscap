@@ -65,6 +65,39 @@ const SIGNAL_WEIGHTS = {
   credit_major_derogatory: 6,
 };
 
+// WHAT EACH SIGNAL MEANS, IN PLAIN WORDS (owner-reported 2026-07-26: "the risk score must explain
+// itself — what specifically drives it, not just code names").
+//
+// The score always HAD its reasons, but each reason borrowed the finding's own title and fell back
+// to the raw code when a finding had none — so a reader could be shown "background_pep, id_underage"
+// and asked to trust a number built out of them. A score nobody can read is a number nobody can act
+// on. Every weighted code now carries its own sentence, written here and owned here, so the
+// explanation does not depend on what some other producer happened to name its finding.
+const SIGNAL_MEANING = {
+  ofac_confirmed_match: 'A borrower or party matched a government sanctions list.',
+  pdf_tampering_signs: 'A document shows signs of having been edited after it was created.',
+  settlement_cash_back: 'The closing statement sends cash back to the buyer that was not disclosed.',
+  ofac_potential_match: 'A borrower or party is a possible — not confirmed — sanctions-list match.',
+  background_criminal: 'The background report shows a criminal record.',
+  background_fraud_alerts: 'The fraud report has alerts nobody has cleared yet.',
+  background_subject_mismatch: 'The background check was run on a different name than the borrower.',
+  background_entity_not_screened: 'The borrowing company was never run through the background check.',
+  background_pep: 'A borrower is a politically-exposed person, which calls for extra checks.',
+  id_name_mismatch: 'The name on the ID is not the name on the file.',
+  id_dob_mismatch: 'The date of birth on the ID is not the one on the file.',
+  id_underage: 'The date of birth on the ID makes the borrower under 18 — usually a misread.',
+  bank_account_not_borrower: 'The money is sitting in an account that is not the borrower\'s.',
+  bank_account_other_entity: 'The money is in a company account we have not tied to the borrower.',
+  bank_large_deposit: 'A large deposit landed with no explanation of where it came from.',
+  values_unconfirmed_in_document: 'A number we are relying on could not be found in the document it supposedly came from.',
+  beneficial_owner_unidentified: 'Someone who owns part of the borrowing company has not been identified.',
+  underlying_price_mismatch: 'The price on the underlying contract does not match the price we are lending against.',
+  assignment_fee_over_cap: 'The wholesaler\'s assignment fee is above what this program will finance.',
+  occupancy_owner_occupied_flag: 'A document suggests the borrower may live there, which this loan type does not allow.',
+  credit_judgment_lien: 'Credit shows a judgment or lien.',
+  credit_major_derogatory: 'Credit shows a major derogatory item.',
+};
+
 // Derived economic red flags (not tied to a single finding) — computed from the file economics.
 // Each returns a {code, label, weight, evidence} when it fires.
 function economicSignals(econ = {}) {
@@ -116,7 +149,10 @@ function computeRiskScore({ findings = [], economics = {} } = {}) {
     const w = SIGNAL_WEIGHTS[f.code];
     if (w == null || seen.has(f.code)) continue;
     seen.add(f.code);
-    reasons.push({ code: f.code, label: f.title || f.code, weight: w, evidence: f.title || null });
+    // The plain-language meaning is OURS and always present; the finding's own title is the
+    // supporting detail beside it. A raw code is never shown as the explanation.
+    reasons.push({ code: f.code, label: SIGNAL_MEANING[f.code] || f.title || f.code, weight: w,
+      evidence: f.title && f.title !== SIGNAL_MEANING[f.code] ? f.title : null });
   }
   // Derived economic signals.
   for (const s of economicSignals(economics)) {
@@ -133,7 +169,9 @@ function computeRiskScore({ findings = [], economics = {} } = {}) {
     source: 'risk', code: 'elevated_fraud_risk', severity: 'warning', status: 'open',
     field: 'risk_score', docValue: `${score}/100 (${band})`, fileValue: null, blocksCtc: false,
     title: 'Elevated fraud / red-flag risk on this file',
-    howTo: `The combined risk signals score ${score}/100. Review the ranked reasons (${reasons.slice(0, 3).map((r) => r.code).join(', ')}${reasons.length > 3 ? ', …' : ''}) and consider enhanced due diligence / a SAR review before proceeding.`,
+    howTo: `This file scores ${score} out of 100 on the fraud / red-flag scale, and the score is just these signals added up:\n`
+      + reasons.map((r) => `  · ${r.weight} points — ${r.label}${r.evidence ? ` (${r.evidence})` : ''}`).join('\n')
+      + `\n  = ${score}/100.\nEach one is an open finding on this file — clear or explain them and the score comes down. At this level, do the enhanced due diligence and consider whether a SAR review is warranted before proceeding.`,
     actions: ['post_condition', 'request_document', 'decline', 'dismiss'],
   } : null;
 

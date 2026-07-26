@@ -11,7 +11,7 @@
  * subject/opts are injected by the route (opts.today = 'YYYY-MM-DD').
  */
 const { num, withinMoney, namesMatchLoose, entityMatch, daysBetween, toISODate, addrMatches, addrLine } = require('./compare');
-const { clauseNamesLender, clauseHasAddress, LENDER_MORTGAGEE_CLAUSE } = require('./lender');
+const { clauseNamesLender, clauseAddressState, LENDER_MORTGAGEE_CLAUSE } = require('./lender');
 const { provenAbsent, wrongDocument, affirmed } = require('./absence');
 const insLoanKey = (s) => String(s == null ? '' : s).toUpperCase().replace(/[^A-Z0-9]/g, '');
 // Loose text identity for matching one alert string against another (punctuation and spacing
@@ -295,11 +295,14 @@ function computeInsuranceFindings(ins, subject, opts = {}) {
         title: 'The insurance mortgagee clause is not the lender\'s',
         howTo: `The policy's mortgagee/loss-payee clause must read exactly "${LENDER_MORTGAGEE_CLAUSE.replace(/\n/g, ', ')}" (ISAOA/ATIMA). Have the agent re-issue the policy with the correct mortgagee clause.`,
         actions: ['request_document', 'post_condition', 'dismiss'] }));
-    } else if (namesLender === true && clauseHasAddress(ins.mortgageeClause) === false) {
+    } else if (namesLender === true && clauseAddressState(ins.mortgageeClause) === 'none') {
+      // Only when the clause carries NO address at all. An address that is present but worded
+      // differently ("Avenue" for "Ave", "Basement" for "#BSMT") is the same address, and nagging
+      // about it is exactly the noise that makes real notices get skipped.
       out.push(mk('insurance', { code: 'insurance_mortgagee_address', severity: 'info', field: 'mortgagee_clause',
         docValue: ins.mortgageeClause, fileValue: LENDER_MORTGAGEE_CLAUSE,
-        title: 'Confirm the lender notice address on the insurance mortgagee clause',
-        howTo: `The policy names the lender but the notice address doesn't match "${LENDER_MORTGAGEE_CLAUSE.replace(/\n/g, ', ')}". Confirm the correct address so loss notices reach the lender.`,
+        title: 'The INSURANCE mortgagee clause has no notice address',
+        howTo: `On the insurance binder / declarations page, the mortgagee clause names the lender but prints no address under it. Loss notices have nowhere to go — ask the agent to add "${LENDER_MORTGAGEE_CLAUSE.replace(/\n/g, ', ')}". (This is about the insurance document; the title policy's clause is checked separately.)`,
         actions: ['acknowledge', 'request_document', 'dismiss'] }));
     }
   }
@@ -488,9 +491,33 @@ function computeCreditFindings(c, subject, opts = {}) {
       howTo: 'A judgment or tax lien can attach to property and cloud title. Confirm it is satisfied or will be paid at closing.' }));
   }
   if (c.mortgageLates === true) {
+    // WHICH mortgage, WHEN, and the most recent one (owner-reported 2026-07-26). "Credit shows
+    // recent mortgage lates" is not something an underwriter can act on, explain to a note buyer, or
+    // even find again in a 40-page report. When the reader captured the tradelines, name them and
+    // point at the page; when it did not, say plainly that the detail has to be read by hand rather
+    // than dressing up the same bare fact.
+    const lates = Array.isArray(c.mortgageLateDetails) ? c.mortgageLateDetails.filter(Boolean) : [];
+    const lateLine = (d) => {
+      const who = [d.creditor, d.accountLast4 ? `••${String(d.accountLast4).slice(-4)}` : null].filter(Boolean).join(' ') || 'an unnamed mortgage';
+      const counts = [d.count30 ? `${d.count30}×30-day` : null, d.count60 ? `${d.count60}×60-day` : null,
+        d.count90 ? `${d.count90}×90-day` : null].filter(Boolean).join(', ');
+      const when = d.mostRecentLate ? `most recent ${d.mostRecentLate}` : 'date of the most recent late not shown';
+      return `  · ${who}: ${counts || (d.worstLate ? `${d.worstLate}-day late` : 'late payments')} — ${when}`
+        + (d.page ? ` (page ${d.page})` : '');
+    };
+    const worst = lates.reduce((m, d) => Math.max(m, Number(d.worstLate) || 0), 0);
+    const recent = lates.map((d) => d.mostRecentLate).filter(Boolean).sort().pop() || null;
     out.push(mk('credit_report', { code: 'credit_mortgage_lates', severity: 'warning', field: 'mortgage_history',
-      title: 'Credit shows recent mortgage lates',
-      howTo: 'Recent mortgage late payments appear on the report. Confirm they meet the program\'s housing-history requirement.' }));
+      docValue: lates.length
+        ? `${lates.length} mortgage${lates.length === 1 ? '' : 's'} with lates${worst ? `, worst ${worst}-day` : ''}${recent ? `, most recent ${recent}` : ''}`
+        : 'lates reported, tradeline detail not captured',
+      title: lates.length
+        ? `Credit shows mortgage lates on ${lates.length} account${lates.length === 1 ? '' : 's'}${recent ? ` — most recent ${recent}` : ''}`
+        : 'Credit shows recent mortgage lates',
+      howTo: lates.length
+        ? `The report shows late mortgage payments on:\n${lates.map(lateLine).join('\n')}\n`
+          + `Open the credit report at the payment-history grid to confirm, then check this against the program's housing-history requirement and get a letter of explanation for the most recent one.`
+        : 'The report says there are recent mortgage late payments but does not break out which account or when. Open the credit report\'s payment-history grid and note the creditor, the number of 30/60/90-day lates, and the month of the most recent one, then check it against the program\'s housing-history requirement.' }));
   }
   // The loan was PRICED on an estimated FICO (Products & Pricing). The actual middle/representative
   // score on the pulled report must not come in BELOW that estimate — a lower real score can land in
