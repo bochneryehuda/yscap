@@ -12,6 +12,7 @@
  */
 const { num, withinMoney, namesMatchLoose, entityMatch, daysBetween, toISODate, addrMatches, addrLine } = require('./compare');
 const { clauseNamesLender, clauseHasAddress, LENDER_MORTGAGEE_CLAUSE } = require('./lender');
+const { provenAbsent, wrongDocument } = require('./absence');
 const insLoanKey = (s) => String(s == null ? '' : s).toUpperCase().replace(/[^A-Z0-9]/g, '');
 
 function mk(source, f) {
@@ -256,7 +257,27 @@ function computeFormationFindings(f, subject, opts = {}) {
 function computeInsuranceFindings(ins, subject, opts = {}) {
   const out = []; if (!ins) return out;
   if (unreadable('insurance', ins, ['namedInsured', 'dwellingCoverage', 'policyEffective'])) return [verify('insurance', 'insurance evidence')];
-  if (ins.mortgageeClausePresent === false) {
+  // ONLY A POLICY CARRIES A MORTGAGEE CLAUSE (owner-reported 2026-07-26).
+  //
+  // An insurance INVOICE filed under the policy slot reads perfectly well — named insured, carrier,
+  // premium all come back — and it honestly answers "mortgagee clause present? no", because an
+  // invoice never has one. That `false` was being turned into a FATAL accusation against the loan,
+  // while the real binder sitting on the same file DID carry our clause. The owner caught it:
+  // "you're looking on the wrong document."
+  //
+  // These markers are the ones ONLY a binder / dec page / ACORD evidence carries — an invoice or
+  // receipt has none of them. `false`/`0` count as real readings (a policy that says "builders risk:
+  // no" still proves we are holding a policy); null/blank do not.
+  const POLICY_MARKERS = [ins.dwellingCoverage, ins.policyEffective, ins.policyExpiration, ins.buildersRisk];
+  if (wrongDocument(ins.mortgageeClausePresent, POLICY_MARKERS)) {
+    // Not a defect in the loan — a defect in what we were handed. Ask for the real binder instead of
+    // accusing the file of being uninsured.
+    out.push(mk('insurance', { code: 'insurance_not_the_policy', severity: 'warning', field: 'document',
+      docValue: 'no policy dates or coverage amount on this document', fileValue: null,
+      title: 'This looks like an insurance invoice or receipt, not the policy',
+      howTo: 'The mortgagee clause lives on the binder / declarations page (ACORD evidence) — an invoice or paid receipt never carries it, so nothing can be confirmed from this document. Obtain the binder or dec page and file the invoice under the paid-premium slot.',
+      actions: ['request_document', 'post_condition', 'dismiss'] }));
+  } else if (provenAbsent(ins.mortgageeClausePresent, POLICY_MARKERS)) {
     out.push(mk('insurance', { code: 'insurance_no_mortgagee', severity: 'fatal', field: 'mortgagee_clause',
       title: 'The insurance does not name the lender as mortgagee',
       howTo: 'The policy must carry the lender\'s mortgagee clause (ISAOA/ATIMA) so the lender is protected and gets notice. Have the agent add the correct mortgagee clause.',
@@ -769,7 +790,17 @@ function computeSignedApplicationFindings(a, subject, opts = {}) {
       howTo: 'The application must be signed by the borrower. Obtain the borrower-signed copy before clear-to-close.',
       actions: ['request_document', 'post_condition', 'dismiss'] }));
   }
-  if (a.businessPurposePresent === false) {
+  // THE CERTIFICATION COMES BACK WITH THE SIGNED PACKAGE — a blank 1003 is not evidence it is
+  // missing (owner-reported 2026-07-26: "it belongs to the term-sheet package, which hasn't been
+  // sent yet, and it's reading the wrong document regardless").
+  //
+  // Same class as the insurance-invoice case above: an UNSIGNED application honestly answers
+  // "business-purpose certification present? no" — because the borrower hasn't signed anything yet.
+  // Turning that into a FATAL accuses every file of a compliance defect during the window when the
+  // package is simply still out for signature. The signature is what proves this is the executed
+  // disclosure package and therefore the document that WOULD carry the certification; without it
+  // the honest finding is the one already raised above (`application_unsigned`), not a second one.
+  if (provenAbsent(a.businessPurposePresent, [a.signaturePresent === true ? true : null, a.signedDate])) {
     // FATAL: the business-purpose / non-owner-occupied certification is the legal basis for this loan
     // being exempt from consumer-mortgage regulation (TILA/RESPA/ATR). Closing without it is a real
     // compliance exposure, so it blocks CTC — but it's a stored per-doc finding, so a senior can
