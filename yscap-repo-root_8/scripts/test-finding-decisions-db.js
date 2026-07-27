@@ -89,11 +89,20 @@ const FINDING = {
         'REGRESSION: a re-read re-raised a finding the reviewer had already dismissed');
 
       // The row IS written (audit trail + the "already dealt with" view) — born closed.
+      //
+      // Identified by WHAT each row is, never by position: both inserts happen inside
+      // ONE transaction and `created_at` defaults to now(), which in Postgres is
+      // TRANSACTION-START time — so both rows carry the identical timestamp and
+      // `ORDER BY created_at` is not a total order. Ordering on it made this assertion
+      // depend on whichever row the plan happened to return first.
       const rows = (await client.query(
-        `SELECT status, resolution FROM document_findings WHERE application_id=$1 ORDER BY created_at`, [app.id])).rows;
+        `SELECT status, resolution FROM document_findings WHERE application_id=$1`, [app.id])).rows;
       assert.strictEqual(rows.length, 2, 'both reads are on record');
-      assert.strictEqual(rows[1].status, 'dismissed');
-      assert.strictEqual(rows[1].resolution, 'carried_forward', 'the decision is carried forward, not re-litigated');
+      assert.ok(rows.every((r) => r.status === 'dismissed'), 'neither read is left open');
+      const humanDecided = rows.filter((r) => r.resolution === 'dismiss');
+      const carried = rows.filter((r) => r.resolution === 'carried_forward');
+      assert.strictEqual(humanDecided.length, 1, 'the reviewer\'s own dismissal is on record');
+      assert.strictEqual(carried.length, 1, 'and the re-read carried that decision forward rather than re-litigating it');
       ok('a dismissed finding stays dismissed through a re-read of the same document');
     }
 

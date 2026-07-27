@@ -129,7 +129,44 @@ const FATAL = {
       ok('clear-to-close, funding and the term-sheet package all proceed for ordinary staff');
     } catch (e) { bad('the issuance backstop lets every action through', e); }
 
-    // ---- 5. THE SWITCH BACK STILL WORKS ----------------------------------------
+    // ---- 5. NOTHING TELLS THE USER THE FILE IS STUCK ---------------------------
+    // The owner asked that findings read as "a side thing", never as work to resolve
+    // before CTC. The desk headline is the single most-read sentence on the screen
+    // and it used to say "Not clear to close — 2 fatal findings to resolve".
+    try {
+      const { computeVerdict } = require('../src/lib/underwriting/verdict');
+      const v = computeVerdict({
+        summary: { fatal: 2, warning: 1, info: 0, blocksCtc: true },
+        completeness: { completenessPct: 100, ctcBlockers: [] },
+        extractionsCount: 3,
+      });
+      assert.notStrictEqual(v.status, 'blocked', 'the desk must not report the file as blocked');
+      assert.strictEqual(v.status, 'attention');
+      assert.strictEqual(v.advisory, true);
+      assert.ok(!/not clear to close/i.test(v.headline),
+        `the headline must not say the file is not clear to close — got: ${v.headline}`);
+      assert.ok(/does not hold up/i.test(v.headline),
+        `the headline must say plainly that it does not hold the file — got: ${v.headline}`);
+      assert.ok(!/to resolve/i.test(v.reasons.join(' ')),
+        `a finding must not be phrased as something "to resolve" — got: ${v.reasons.join(', ')}`);
+      // A genuinely clean file still reads clean, and a warnings-only file still reads review.
+      assert.strictEqual(computeVerdict({ summary: { fatal: 0, warning: 0, info: 0, blocksCtc: false }, extractionsCount: 2 }).status, 'clear');
+      assert.strictEqual(computeVerdict({ summary: { fatal: 0, warning: 3, info: 0, blocksCtc: false }, extractionsCount: 2 }).status, 'review');
+      // ...and the enforcing posture still produces the original blocking headline.
+      const prev = process.env.AI_FINDINGS_ENFORCE;
+      try {
+        process.env.AI_FINDINGS_ENFORCE = '1';
+        const armed = computeVerdict({ summary: { fatal: 2, warning: 0, info: 0, blocksCtc: true }, extractionsCount: 3 });
+        assert.strictEqual(armed.status, 'blocked');
+        assert.ok(/not clear to close/i.test(armed.headline));
+      } finally {
+        if (prev === undefined) delete process.env.AI_FINDINGS_ENFORCE;
+        else process.env.AI_FINDINGS_ENFORCE = prev;
+      }
+      ok('the desk headline says PILOT is unhappy WITHOUT claiming the file is blocked');
+    } catch (e) { bad('the PILOT verdict headline', e); }
+
+    // ---- 6. THE SWITCH BACK STILL WORKS ----------------------------------------
     // "Till we don't feel more comfortable with it" — so enforcing has to be one
     // setting away, not a rewrite.
     try {

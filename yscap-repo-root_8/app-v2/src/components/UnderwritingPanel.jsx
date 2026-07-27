@@ -824,7 +824,11 @@ function Completeness({ completeness, documentsOnFile = [], appId = null }) {
         {c.counts.received ? <span> · {c.counts.received} in review</span> : null}
         {c.counts.insufficient ? <span> · {c.counts.insufficient} not usable</span> : null}
         {c.counts.missing ? <span> · {c.counts.missing} not uploaded</span> : null}
-        {c.ctcBlockers && c.ctcBlockers.length ? <span style={{ color: 'var(--crit,#B4483C)' }}> · {c.ctcBlockers.length} block clear-to-close</span> : null}
+        {/* ADVISORY (owner-directed 2026-07-27). This read "N block clear-to-close" —
+            PILOT's own panel asserting it can hold the file. The real clear-to-close
+            list is the Conditions section; this is PILOT's read of which documents it
+            still expects. Same count, honest framing. */}
+        {c.ctcBlockers && c.ctcBlockers.length ? <span style={{ color: 'var(--amber,#B7791F)' }}> · {c.ctcBlockers.length} PILOT expects before closing</span> : null}
       </div>
       <div style={{ height: 7, borderRadius: 999, background: 'var(--paper,#F6F3EC)', overflow: 'hidden', marginBottom: 12 }}>
         <div style={{ width: `${c.completenessPct}%`, height: '100%', background: 'var(--good,#3F7A5B)' }} />
@@ -1850,6 +1854,12 @@ function WholeLoanRunPanel({ appId }) {
                     {gateChip('Term sheet', dec.gates.termSheet)}
                     {gateChip('Clear to close', dec.gates.ctc)}
                     {gateChip('Funding', dec.gates.funding)}
+                    {/* These are PILOT's OPINION of each step, not permission to take it
+                        (owner-directed 2026-07-27). A grey "— Clear to close" chip used to
+                        read as "the system won't let you"; nothing here gates anything. */}
+                    <span style={{ fontSize: 11, color: 'var(--muted,#4B585C)' }}>
+                      PILOT&apos;s read — advisory, none of these hold up the file
+                    </span>
                   </>
                 )}
                 {c.current && c.current.asOf && (
@@ -3253,6 +3263,9 @@ export default function UnderwritingPanel({ appId, docs = [], readOnly = false, 
         const V = {
           clear: { fg: 'var(--good,#3F7A5B)', bg: 'rgba(63,122,91,.10)' },
           review: { fg: 'var(--amber,#B7791F)', bg: 'var(--amber-bg,#F6EEDD)' },
+          // 'attention' is the advisory-only twin of 'blocked' — same red, because
+          // PILOT really is unhappy; the headline itself says it isn't a gate.
+          attention: { fg: 'var(--crit,#B4483C)', bg: 'var(--crit-bg,#F6E7E4)' },
           blocked: { fg: 'var(--crit,#B4483C)', bg: 'var(--crit-bg,#F6E7E4)' },
           pending: { fg: 'var(--muted,#4B585C)', bg: 'var(--paper,#F6F3EC)' },
         }[verdict.status] || { fg: 'var(--muted,#4B585C)', bg: 'var(--paper,#F6F3EC)' };
