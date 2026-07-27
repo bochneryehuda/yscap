@@ -4,6 +4,7 @@ import { api, saveBlob } from '../lib/api.js';
 import { fmtDay } from '../lib/dates.js';
 import { formatSSN, cleanFICO, ficoValid } from '../lib/validators.js';
 import { ESIGN_RETURN_MSG } from '../lib/esign.js';
+import { conditionStatusLabel } from '../lib/conditions-vocab.js';
 import ChatThread from '../components/ChatThread.jsx';
 import { useAuth } from '../lib/auth.jsx';
 import PropertyPhoto from '../components/PropertyPhoto.jsx';
@@ -33,7 +34,10 @@ const addrLine = (a) => !a ? '—' : (a.oneLine || [a.street || a.line1, a.city,
 const LABEL = { file_intake: 'Intake', new: 'Submitted', in_review: 'In review', processing: 'Processing', underwriting: 'Underwriting', approved: 'Approved', clear_to_close: 'Clear to close', funded: 'Funded' };
 
 const isDone = (s) => s === 'received' || s === 'satisfied' || s === 'done';
-const statusText = (it) => it.status === 'issue' ? 'Needs attention' : it.status === 'received' ? 'Submitted' : it.status === 'satisfied' ? 'Completed' : 'To do';
+// The words come from lib/conditions-vocab.js so the borrower and the staff file
+// describe one condition with ONE word. This screen used to say "Submitted" where
+// staff said "In review", and "Completed" where staff said "Done".
+const statusText = (it) => conditionStatusLabel(it.status);
 
 // Contact conditions are FORMS, not uploads: the borrower enters their title /
 // insurance contact once; it saves to a reusable contact book.
@@ -205,7 +209,9 @@ function ConditionRow({ done, issue, title, subtitle, status, action, children, 
     <div className={`checkitem${onDropFiles ? ' cond-drop' : ''}${over ? ' drop-over' : ''}`}
       style={{ alignItems: 'flex-start', flexDirection: 'column', gap: 8 }} {...dropProps}>
       <div className="row" style={{ width: '100%', gap: 8, alignItems: 'flex-start' }}>
-        <span className={`dot ${done ? 'done' : 'outstanding'}`} style={{ marginTop: 4, ...(issue ? { background: 'var(--danger)' } : {}) }} />
+        {/* Same colours as before — the red is now a class, not an inline style,
+            so every condition dot in the portal is painted from one place. */}
+        <span className={`dot ${issue ? 'cond-issue' : done ? 'done' : 'outstanding'}`} style={{ marginTop: 4 }} />
         <div style={{ flex: 1 }}>
           <div style={{ fontWeight: 600 }}>{title}</div>
           {subtitle && <div className="muted small">{subtitle}</div>}
@@ -958,7 +964,7 @@ export default function Application() {
                   subtitle={app.registered_program
                     ? `Registered: ${app.registered_product_label || (app.registered_program === 'gold' ? 'Gold Standard Program' : 'Standard Program')} · ${money(app.registered_total_loan)}`
                     : 'Price your deal in the Term Sheet Studio and register your product — your terms, cash to close and liquidity requirement all come from it.'}
-                  status={(isDone(ppItem.status) || app.registered_program) ? 'Completed' : 'To do'}
+                  status={(isDone(ppItem.status) || app.registered_program) ? conditionStatusLabel('satisfied') : conditionStatusLabel('outstanding')}
                   open={tsDocs.length > 0}
                   action={<button className="btn primary small" onClick={() => {
                     // Same full-screen tool sheet as the Scope of Work — no
