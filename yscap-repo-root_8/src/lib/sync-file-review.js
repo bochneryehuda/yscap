@@ -549,8 +549,18 @@ async function applyFileReviewAction({ row, action, targetApplicationId, targetT
     if (!isAdmin) throw httpError(403, 'Only an admin can accept a ClickUp change on a locked file.');
     if (!row.application_id) throw httpError(409, 'this row has no portal file');
     const { acceptInboundEconomicsChange } = require('./inbound-economics-freeze');
+    // The row's stored diffs are the RELIABLE offline base — so the accept still
+    // works when ClickUp is momentarily unreachable / the task was deleted / a
+    // live read extracts nothing (owner-reported: the button "does not update
+    // anything and it still stays"). The live re-read is layered on top for
+    // freshness inside the accept function.
+    let fallbackChanges = null;
+    try {
+      const raw = row.raw_value ? JSON.parse(row.raw_value) : null;
+      fallbackChanges = (raw && Array.isArray(raw.changes)) ? raw.changes : null;
+    } catch (_) { /* raw_value is forensic — unparseable falls through to the live read */ }
     const out = await acceptInboundEconomicsChange({
-      appId: row.application_id, actorId: actorId || null,
+      appId: row.application_id, actorId: actorId || null, fallbackChanges,
       taskId: (row.task_id && !String(row.task_id).startsWith('app:')) ? row.task_id : null });
     if (out.upToDate) {
       return {

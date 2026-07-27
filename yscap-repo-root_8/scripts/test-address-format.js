@@ -108,6 +108,20 @@ eq(ADDR.canonicalOneLine(comp), '26 S 10th St, Brooklyn, NY 11249',
 eq(ADDR.canonicalOneLine(comp, { country: true }), '26 S 10th St, Brooklyn, NY 11249',
   'the country is NEVER appended, even when a caller asks (owner-directed 2026-07-26 evening)');
 
+// ── 5b. withoutUnit — strip an apartment/suite for the GEOCODER lookup ──────
+// Owner-reported 2026-07-27: a home address with an apartment ("1254 42nd St
+// Apartment 6B, Brooklyn, NY 11219") "could not be placed on the map" so it never
+// reached ClickUp — the keyless OSM fallback returns NO MATCH with the unit, and a
+// clean match without it (verified live). withoutUnit strips ONLY when a unit is
+// detected; a unit-less address is returned untouched.
+eq(ADDR.withoutUnit('1254 42nd St Apartment 6B, Brooklyn, NY 11219'), '1254 42nd St, Brooklyn, NY 11219', 'Apartment 6B is stripped for geocoding');
+eq(ADDR.withoutUnit('100 Main St Unit 4D, Lakewood, NJ 08701'), '100 Main St, Lakewood, NJ 08701', 'Unit 4D is stripped');
+eq(ADDR.withoutUnit('55 Broadway #12, New York, NY 10006'), '55 Broadway, New York, NY 10006', '#12 is stripped');
+eq(ADDR.withoutUnit('829 Duncan Bypass, Union, SC 29379'), '829 Duncan Bypass, Union, SC 29379', 'a unit-less address is unchanged');
+eq(ADDR.withoutUnit('3545 12th Ave, Brooklyn, NY 11218'), '3545 12th Ave, Brooklyn, NY 11218', 'a plain avenue is unchanged (no false unit)');
+eq(ADDR.withoutUnit(''), '', 'empty stays empty');
+eq(ADDR.withoutUnit(null), '', 'null -> empty string');
+
 (async () => {
   // ── 6. DB: previous files are repaired ───────────────────────────────────
   if (process.env.DATABASE_URL) {

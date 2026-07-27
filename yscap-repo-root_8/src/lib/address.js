@@ -218,6 +218,27 @@ function canonicalOneLine(a, { country = false } = {}) {
 }
 
 /**
+ * Strip an apartment/suite/unit suffix for a GEOCODER lookup. A geocoder resolves
+ * a BUILDING, not an apartment — and a unit token ("Apartment 6B", "Unit 4D",
+ * "#3") makes some providers (notably the keyless OSM Nominatim fallback) return
+ * NO MATCH for an address that resolves cleanly without it (owner-reported
+ * 2026-07-27: the borrower home address "1254 42nd St Apartment 6B, Brooklyn, NY
+ * 11219" could not be placed on the map, so it never reached ClickUp). The
+ * coordinates are building-level regardless of the unit, so dropping it for the
+ * lookup loses nothing. Only strips when a unit is actually DETECTED — otherwise
+ * the input is returned unchanged, so an imperfect parse can never corrupt a
+ * unit-less address. Returns the clean mailing one-line (same form we push).
+ */
+function withoutUnit(text) {
+  const s = String(text || '').trim();
+  if (!s) return s;
+  const p = parseAddress(s);
+  if (!p || !p.unit || !p.line1) return s;   // no unit found → leave the input untouched
+  const rebuilt = canonicalOneLine({ line1: p.line1, city: p.city, state: p.state, zip: p.zip });
+  return rebuilt || s;
+}
+
+/**
  * Does this string look like a raw geocoder display name rather than a mailing
  * address? Signatures, any one of which is conclusive:
  *   - the house number sits in its OWN comma part  ("26, South 10th Street, …")
@@ -564,6 +585,6 @@ module.exports = {
   parseAddress, normalizeAddress, splitUnit, stateAbbr, stateCompareKey,
   parseAddressParts, sameAddress, addressCompareKey, addressTextOf,
   abbreviateStreet, normalizeCityName, preferBorough, osmComponentsToAddress,
-  canonicalOneLine, looksLikeProviderLongForm, parseProviderLongForm,
+  canonicalOneLine, withoutUnit, looksLikeProviderLongForm, parseProviderLongForm,
   compactFormattedAddress, canonicalizeAddressValue,
 };
