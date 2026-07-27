@@ -1,0 +1,543 @@
+# The Loan File — Simplicity Blueprint
+
+_Owner-directed 2026-07-27: "everything needs to be cleaner, simpler, more user
+friendly and easier to find… focus on three things: **simplicity**, **user
+friendly**, **easier to find sections**."_
+
+**This document changes no code.** It is the plan.
+
+---
+
+## The three rules this plan obeys
+
+The owner set them, and every recommendation below was tested against them:
+
+1. **Do not remove a single feature.** Everything that works today still works.
+2. **Do not add a single feature.** No new capability, no new business logic.
+3. **Do not change how anything behaves.** No new gates, no new rules, no
+   renumbered permissions, no touched pricing.
+
+So every recommendation here is one of exactly four kinds of change:
+
+| Kind | What it means | Risk |
+|---|---|---|
+| **Rename** | The same thing, called one consistent name | None — words only |
+| **Regroup** | The same things, in a better order or box | None — layout only |
+| **Reveal** | Something we already compute but never show | None — it already exists |
+| **Reuse** | One shared component where we now have five copies | Low — same output |
+
+Nothing here invents. Most of it **switches on work we have already paid for.**
+
+---
+
+## 1. The short version
+
+The loan file is not missing anything. It is **carrying everything at once, with
+no order of importance, in four different vocabularies.**
+
+Concretely, opening one loan file today gives a staff member:
+
+- **16 top-level sections**
+- **~900–1,100 clickable things** when the sections they need are open
+- **~24,000–26,000 pixels** of page — about **27 full screens** of scrolling
+- **171 different status words** across the panels
+- **36 separate places** a document can be seen or acted on
+- **0 ways to search inside the file**
+
+The fix is not a rewrite. It is four moves:
+
+1. **Give the file a front door** — one short list that says what needs you now,
+   built from data the server already produces.
+2. **Speak one language** — one dictionary of status words, one set of colours.
+3. **Make the conditions area one list instead of four half-lists.**
+4. **Make things findable by typing**, not only by scrolling.
+
+---
+
+## 2. What is actually wrong (the evidence)
+
+Every number below was read out of the code, with the file and line recorded in
+the Evidence Index (§10). Nothing here is an impression.
+
+### 2.1 Too much on screen at once, with no hierarchy
+
+| Measure | Today |
+|---|---|
+| Top-level sections | 16 |
+| Interactive controls defined in source | 639 |
+| Controls rendered on a busy file | ~900–1,100 |
+| Page height, everything open | ~24,000–26,000 px (~27 screens) |
+| Sub-widgets inside the underwriting panel alone | 30 |
+
+The underwriting panel is the extreme case: **30 sub-widgets, and 17 of them
+have no collapse control at all.** Once the data exists, they are open forever.
+
+### 2.2 Nothing looks more important than anything else
+
+This is measurable, and it is the root cause of "everything is messed up one
+after the other."
+
+| Measure | Today | Should be |
+|---|---|---|
+| Inline hand-written styles in the 4 biggest files | **1,576** | near zero |
+| Inline styles app-wide vs CSS rules | 4,173 vs 1,981 | inverse |
+| Distinct card/panel treatments | ~70 | ~3 |
+| Corner-radius values on cards | **19** | 1 |
+| Font sizes in CSS | **69** | ~6 |
+| Box-shadows (58 used exactly once) | **67** | ~3 |
+| Hardcoded colours vs design tokens | **189 vs 39** | tokens only |
+| Ways "this one matters more" is expressed | **12** | 1 |
+
+`UnderwritingPanel.jsx` has **631 inline styles and 52 class names** — a 12:1
+ratio. `EncompassSyncPanel.jsx` has **71 inline styles and zero class names**.
+Those two panels are effectively outside the design system entirely.
+
+Meanwhile `LoanProgress.jsx` and `CreditReport.jsx` use the design system
+properly and look clean. **The system works. It is just not being used.**
+
+### 2.3 We speak four languages for the same thing
+
+One database value shows up under **four different names** depending on where
+the user is standing:
+
+| Database value | Staff bucket | Borrower bucket | Staff filter label | Borrower label |
+|---|---|---|---|---|
+| `outstanding` | outstanding | todo | "Not submitted yet" | "Open — still needs you" |
+| `received` | submitted | review | "In review — not signed off" | "Submitted — in review" |
+| `issue` | rejected | attention | "Needs attention" | "Needs attention" |
+| `satisfied` | satisfied | done | "Signed off" | "Completed" |
+
+And staff are additionally shown the **raw database word** in a dropdown and
+inline as "· received".
+
+Worse, some words mean **two different things**:
+
+| Word | Meaning A | Meaning B |
+|---|---|---|
+| **severity** | fatal / warning / info | **timing**: prior-to-docs / prior-to-funding |
+| **ready** | the file is clear to close | PILOT thinks one condition can be cleared |
+| **cleared** | a terminal signed-off status | a filter meaning "done for me" |
+| **waived** | a terminal status | a stamp that still reads "satisfied" |
+| **accepted** | the document was accepted (green) | the mismatch was acknowledged, still differs (red) |
+
+That last one is worth care: **both colours are correct for their own meaning.**
+It is not a colouring bug — it is one word doing two jobs. The fix is to rename,
+never to recolour. (Flagged so nobody "corrects" working code.)
+
+Across the 21 panel files there are **171 distinct status words in 34 separate
+constant maps** — 13 of those maps inside one file.
+
+### 2.4 The conditions area is four different things wearing one tab bar
+
+This is the single biggest source of "you don't know where to find what," and it
+has a precise cause. The four tabs are split on **three different criteria at
+once**:
+
+| Tab | What it really is | Split by | Table |
+|---|---|---|---|
+| Borrower | items the borrower sees | **audience** | `checklist_items` |
+| Internal | items only staff see | **audience** | `checklist_items` |
+| Underwriting | a **different table entirely** | **data source** | `conditions` |
+| LLC / entity | one subject area | **subject** | `llcs` + items |
+
+The consequences are real, not theoretical:
+
+- The Underwriting tab has an "audience" dropdown offering **"Borrower-facing."**
+  A borrower-facing condition created there **never appears on the Borrower
+  tab** and has no upload slot. **A borrower's conditions live in two places
+  depending on which button staff happened to press.**
+- That tab is also **usually empty** — only two things in the whole system write
+  to its table, and one of them is its own add-form. A typical file has **0–2**
+  rows there while the other tabs carry ~50.
+- Four filter dropdowns, **19 options, four different vocabularies** for the same
+  underlying data. One tab has no filter at all.
+- The LLC condition is rendered **three times**: excluded from the borrower list,
+  re-added as a synthetic fake row, and again as its own tab.
+- The section's badge counts the borrower tab only. The badge's denominator and
+  the list's denominator **disagree** — for a loan officer, an item they marked
+  Done vanishes from the list but keeps counting in the badge.
+
+A typical file carries **~50–55 conditions**, and there are **16 different places
+in the product that can create one**, writing to three different tables.
+
+### 2.5 The same thing appears in many places
+
+| Thing | Places it appears |
+|---|---|
+| A document | **36** |
+| A finding | 8 |
+| The loan's status | 5 (+3 more for the internal status) |
+| Deal economics | 5 full renderings |
+| "X of Y done" tallies | 6 independent counters |
+| Upload paths | 6, using 3 different upload functions |
+| Preview/Download/Accept/Reject/Delete cluster | re-authored 5 times |
+| Loan-number editors | 4 |
+| Ways to add a condition | 16 |
+
+The code already knows this hurts: the underwriting panel implements a
+**three-key de-duplicator** purely to stop the same issue rendering twice, with a
+checkbox reading "Show N also in Open findings."
+
+### 2.6 There is no way to find anything by name
+
+There is **no search box anywhere inside a loan file.** No keyboard shortcut, no
+command palette, no filter-by-text. With ~1,000 controls on screen, the only
+tools are scrolling and a 16-item rail.
+
+### 2.7 Two navigation links are silently broken
+
+`?focus=ai-findings` — the **"Review AI →" button on the Insights dashboard** —
+scrolls to an element that does not exist, because its section is collapsed and a
+collapsed section removes its contents from the page. The click does nothing.
+`?focus=chat` has the same fault. Both are **one-line fixes**.
+
+---
+
+## 3. What we are already doing right (do not break these)
+
+An honest plan has to protect what works.
+
+| Already good | Why it matters |
+|---|---|
+| **The section rail** | Sticky, grouped, tracks your scroll position, click expands. Good bones. |
+| **Collapsed sections cost nothing** | A closed section removes its contents entirely. Real performance win — keep it. |
+| **`goToSection(id, tab)`** | One call opens the right section *and* the right conditions tab, from anywhere. |
+| **`ClearToClosePanel`** | 97 lines. Title + plain-English reason + "Go fix →". **This is the pattern to spread.** |
+| **`useStickyFilter`** | Already remembers 6 filter choices per user. Saved views are a small step. |
+| **`lib/esign.js`** | The **one** shared vocabulary module — label + colour + dot per state, "so the two screens never drift." It works. |
+| **The brand system** | Ink `#141B22`, Gold `#AE8746`, Teal `#2F7F86`, Paper `#F6F3EC`, Fraunces + Hanken Grotesk. Calm and premium. |
+| **AI is advisory-only** | Hard-won and correct. Nothing below may turn a list into a gate. |
+
+**`lib/esign.js` is the single most important precedent in this document.** It
+proves the fix works here, in this codebase, already. Everything in §5 is a
+continuation of that pattern — not an invention.
+
+---
+
+## 4. The design principles
+
+Four ideas, each chosen because it reduces what the user must hold in their head
+**without removing anything**.
+
+### 4.1 Answer "what do I do now?" before "what exists?"
+
+A record screen should open with the short list of what needs this person, and
+put the full detail one click behind it. Nothing is hidden — it is *ranked*.
+
+### 4.2 A closed box must tell you whether to open it
+
+Sixteen collapsed headers that say only a number force the user to open all
+sixteen. A closed section should say *"3 need your sign-off · 1 sent back"*. This
+is standard accordion guidance: the collapsed state must carry enough to decide.
+
+### 4.3 One word, one meaning, one colour — everywhere
+
+Every state gets exactly one label and one colour, defined once and imported.
+This is what `lib/esign.js` already does.
+
+### 4.4 One list with filters beats four tabs
+
+Tabs force a guess about which tab a thing is in. A single list with filters
+never does — and it lets someone see everything outstanding at once, which four
+tabs make impossible.
+
+---
+
+## 5. The plan
+
+Ordered by **value per unit of risk**. Every item names what kind of change it is.
+
+### Move 1 — Give the file a front door · _Reveal + Reuse_
+
+**One card at the top of the file: "What needs you next."**
+
+Five to eight items, worst first, each with a plain-English reason and a
+**"Go fix →"** that jumps to the exact existing control. A "show everything (N)"
+link opens the full list. Nothing is hidden; it is ordered.
+
+**Why this is nearly free:** the server *already* computes every ingredient. For
+each outstanding item `advancementBlockers()` already returns its title, its
+severity, a plain-language reason, **which of the 16 sections fixes it**, and
+**which conditions tab**. `ClearToClosePanel` already renders exactly this, and
+`goToSection()` already performs the jump.
+
+Three things are wrong with it today, all presentational:
+- it only shows clear-to-close blockers, though the same payload already carries
+  the funding set;
+- it is buried inside "File overview" instead of being the first thing seen;
+- **condition ageing is computed, sent to the browser, and never displayed** —
+  `daysOpen`, `agingBucket`, `overdue`, `overdueBy` have **zero references** in
+  the entire front-end. That is a ready-made "what is going stale" signal we are
+  already paying for.
+
+**Server work required: none.**
+
+> **Guard rail.** This list must never become a gate. AI advisories are
+> deliberately kept in a separate bucket so they cannot block a file. The card
+> must say "suggested order," must keep advisories visually separate, and must
+> never feed a blocking check. This is a hard rule, not a preference.
+
+### Move 2 — One dictionary of words and colours · _Rename_
+
+Create `lib/conditions-vocab.js` and `lib/findings-vocab.js` **in exactly the
+shape `lib/esign.js` already uses** — for each state: one label, one CSS class,
+one dot colour. Import them everywhere. Delete the local copies.
+
+The canonical set for a condition, replacing all four current vocabularies:
+
+| State | The one label | Meaning |
+|---|---|---|
+| `outstanding` | **Not started** | nothing submitted yet |
+| `requested` | **Asked for** | we have asked the borrower |
+| `received` | **In review** | something arrived, needs a look |
+| `issue` | **Needs attention** | sent back, waiting on a fix |
+| `satisfied` | **Done** | signed off / waived / complete |
+
+Rules that come with it:
+- The raw database word is **never** shown to a human.
+- **"Severity" is renamed to "Timing"** wherever it means prior-to-docs /
+  prior-to-funding. It is a schedule, not a danger level, and calling both
+  "severity" is the worst collision on the screen.
+- One word may not carry two meanings. Where it does today (`accepted`,
+  `ready`, `cleared`), rename one side — **never recolour working code.**
+
+**This is words and colours only. No behaviour, no schema, no features.**
+
+### Move 3 — Make every closed section worth judging · _Reveal_
+
+Each collapsed header gains one line built from numbers **already computed** on
+the page:
+
+> **Conditions** — 3 need your sign-off · 1 sent back to the borrower
+> **Appraisal** — in, 2 findings, none fatal
+> **Encompass sync** — 47 of 50 match
+> **Orders** — nothing waiting
+
+Also fix, in the same pass:
+- **Rail labels and section titles must match.** Four disagree today
+  ("Structure & pricing" vs "Loan structure & pricing").
+- **One badge calculation, not two.** The rail and the header compute badges
+  separately today and disagree in wording and arithmetic.
+- **`sec-tapes` should default closed** like the other 13. It is the only export
+  tool sitting open, above collapsed sections that matter more.
+
+### Move 4 — Conditions: one list, not four half-lists · _Regroup_
+
+The deepest fix, and the one the owner asked for most directly.
+
+**One list. Filters instead of tabs. Grouped by subject.**
+
+The current tab bar becomes a filter row, because tabs are the wrong control for
+a split that is not mutually exclusive:
+
+```
+Show:  [ Needs me ▾ ]   Who sees it: [ Everyone ▾ ]   Subject: [ All ▾ ]
+```
+
+- **"Show"** replaces the four different filter dropdowns with **one six-option
+  list in the shared vocabulary** (Needs me · Not started · In review · Needs
+  attention · Done · Everything).
+- **"Who sees it"** (Borrower / Internal) becomes a *filter*, not a tab — so a
+  processor can finally see **everything outstanding in one view**, which four
+  tabs make impossible today.
+- **Subject** groups the ~50 conditions into human themes — Title · Insurance &
+  flood · Identity · Entity & vesting · Assets & liquidity · Credit · Property &
+  valuation · Construction. **We do not need to invent this taxonomy**: the
+  investor-guideline `domain` vocabulary already lists exactly these, and
+  `condition-map.js` already maps document types onto condition codes.
+
+Each group header reads *"Title — 2 of 5 done."* Groups collapse. The user's
+choices persist in the `useStickyFilter` mechanism that already exists.
+
+**The LLC section keeps its own home** — it is genuinely a different shape (an
+entity with members and its own documents), and it is the one tab where the split
+by subject is honest. It becomes a group in the list *and* keeps its dedicated
+panel, rather than being rendered three times as it is today.
+
+**What to do about the Underwriting tab.** It is a different table, usually
+empty, and it can create borrower-facing conditions that the borrower's own tab
+never shows. Merging two tables is a behaviour change and therefore **out of
+scope for this plan.** What is *in* scope, and should be done now:
+
+1. Show those rows **in the one list**, marked with their source, so nothing is
+   hidden in a tab people forget to open.
+2. **Label its add-form honestly.** "Borrower-facing" there does not behave like
+   borrower-facing elsewhere.
+3. Flag the two-table question to the owner as a **separate decision**, with the
+   evidence, rather than quietly resolving it here.
+
+### Move 5 — Let people find things by typing · _Reveal_
+
+**⌘K inside the file.** Type "flood" → jump to the flood condition. Type "tape" →
+jump to the tapes section. Type "waive" → the waive control on the matching
+condition.
+
+The first version needs **no AI at all**: it is a fuzzy match over a list of
+destinations we can already enumerate — the 16 sections, ~50 conditions, the
+findings, the documents. `goToSection()` already performs the jump. There is an
+existing search box in the staff layout to copy the interaction from.
+
+This is the highest-value item per hour of work in the whole document, because it
+turns *finding* into *typing* and it degrades gracefully — worst case, you land
+one section away.
+
+### Move 6 — One card style, one chip style · _Reuse_
+
+Promote the repeated inline patterns into a small set of named classes built from
+the **existing** brand tokens — `card`, `card-quiet`, `stat`, `chip`, `toolbar`,
+`empty`. Then convert the four worst offenders panel by panel.
+
+Three rules make this modern rather than merely tidy:
+
+1. **One elevation ladder.** Flat by default; one soft shadow for the thing that
+   needs attention. Not 67 shadows.
+2. **One radius.** The token is 4px. Use it. Not 19 values.
+3. **Hierarchy by size and space, not by colour.** Gold is for *one* thing per
+   screen. Today 12 different devices all shout "I matter more," which means
+   none of them do.
+
+Do the two files that are already outside the system first — `UnderwritingPanel`
+(631 inline styles, 52 classes) and `EncompassSyncPanel` (71 inline styles, zero
+classes). They are the largest wins and the lowest risk, because they are not
+sharing styles with anything.
+
+### Move 7 — Two one-line bug fixes · _Reveal_
+
+- `?focus=ai-findings` must open the section before scrolling. The Insights
+  dashboard's "Review AI →" button has been doing nothing.
+- `?focus=chat` — same fault, same fix.
+
+### Move 8 — Honest labels on two buttons · _Rename_
+
+The finding action labelled **"Post a condition"**, whose own description reads
+*"Add an underwriting condition the borrower must satisfy,"* **creates no
+condition.** It records a note on the finding and leaves it open. Meanwhile a
+near-identically-labelled AI-suggestion button, **"Post the condition,"** *does*
+create one.
+
+Two buttons, near-identical labels, opposite behaviour. Staff can reasonably
+believe a condition was posted when none was.
+
+**In scope now (wording only):** rename the first to **"Log that a condition is
+needed"** and correct its description.
+**Flag to the owner separately:** whether it *should* create the condition. That
+is a behaviour change and not ours to make here.
+
+Related, same category: a condition created from an AI suggestion is born in the
+red **"Needs attention"** state, though nothing was ever rejected. Worth the
+owner's decision; not changed here.
+
+---
+
+## 6. Sequencing
+
+Each phase stands alone and ships on its own. Nothing later depends on anything
+earlier being perfect.
+
+| Phase | Contents | Kind | Risk |
+|---|---|---|---|
+| **1** | Broken deep links · rail/title mismatches · one badge calculation · `sec-tapes` closed by default · the two button labels | Rename, Reveal | **Very low** |
+| **2** | The shared vocabulary modules; adopt them across the conditions and findings surfaces | Rename | **Low** — words and colours |
+| **3** | "What needs you next" at the top of the file, incl. the ageing we already compute | Reveal, Reuse | **Low** — no server work |
+| **4** | Collapsed-section summary lines | Reveal | **Low** |
+| **5** | Conditions: one list, filters, subject groups | Regroup | **Medium** — the deepest change; do it after the vocabulary is settled |
+| **6** | ⌘K find-in-file | Reveal | **Low** — additive, degrades safely |
+| **7** | The shared card/chip classes, worst files first | Reuse | **Medium** — mechanical but wide |
+
+Phases 1–4 are, together, most of the perceived improvement, carry almost no
+risk, and require **no server changes and no new AI spend.**
+
+---
+
+## 7. What this plan deliberately does not do
+
+Stated plainly, so nobody quietly does them later under this banner:
+
+- **No feature is removed.** Every button, filter, panel and export survives.
+- **No feature is added.** No new capability, report, or automation.
+- **No behaviour changes.** No new gate, no changed permission, no altered rule.
+- **The two condition tables are not merged.** Flagged for the owner as a
+  separate decision, with evidence.
+- **AI stays advisory.** No list here may become a blocker, and no second
+  "dismiss" mechanism may appear beside the existing one.
+- **No pricing, guideline, or engine number is touched.** Nothing in this
+  document goes near them.
+- **No section IDs change.** They are deep-linked from roughly 100 places —
+  emails, the Orders queue, the clear-to-close list, the Insights dashboard.
+  Labels and grouping may change; **the IDs must not.**
+- **Working code is not "corrected."** Where one word legitimately means two
+  things in two panels, we rename — we do not recolour.
+- **The borrower's screen keeps its own shape.** It shares seven section IDs with
+  the staff screen but has 10 sections and reads far more cleanly. It is the
+  proof the approach works; it is not the thing being fixed.
+
+---
+
+## 8. How we will know it worked
+
+Measurable, from the same counts used in §2:
+
+| Measure | Today | Target |
+|---|---|---|
+| Distinct status words on the conditions surface | 171 across 34 maps | one dictionary |
+| Filter vocabularies in the conditions area | 4 | 1 |
+| Clicks to find what needs you on a fresh file | scroll 27 screens | 0 — it is the first thing |
+| Ways to reach a named condition | scroll + guess the tab | type its name |
+| Card treatments / radii / shadows | ~70 / 19 / 67 | ~3 / 1 / ~3 |
+| Sections whose closed state tells you something | 5 of 16 | 16 of 16 |
+| Features removed | — | **0** |
+| Features added | — | **0** |
+
+---
+
+## 9. Open questions for the owner
+
+Only three, and none blocks the work above:
+
+1. **The two condition tables.** Should the Underwriting tab's separate table be
+   merged into the main one? It is usually empty and it can create
+   "borrower-facing" conditions the borrower's tab never shows. Merging is a
+   behaviour change, so it needs an explicit decision.
+2. **"Post a condition."** Should it actually create the condition, or keep
+   recording a note? Phase 1 fixes the misleading wording either way.
+3. **AI-created conditions** are born in the red "Needs attention" state though
+   nothing was rejected. Should they start as "Not started" instead?
+
+---
+
+## 10. Evidence index
+
+Every claim above, with its source.
+
+| Claim | Where |
+|---|---|
+| 16 sections | `app-v2/src/screens/StaffApplication.jsx:2941-2967`, `:3007-3525` |
+| Sections deep-linked from ~100 places | `StaffOrders.jsx:101`, `StaffClosing.jsx:86`, `ExceptionCard.jsx:56-123`, `ClearToClosePanel.jsx:58,90` |
+| Section rail, scrollspy, unmount-when-closed | `components/FileSections.jsx:55-188`, esp. `:90` |
+| `goToSection(id, tab)` | `components/FileSections.jsx:34-40` |
+| Blockers already carry section + tab + reason | `src/routes/staff.js:6821-6859` (`sectionForBlocker`, `condTabForBlocker`, `blockerReason`, `decorateBlocker`) |
+| Gating payload already on the client | `src/routes/staff.js:7011-7020`; consumed `ClearToClosePanel.jsx` |
+| Ageing computed, never displayed | `src/routes/staff.js:2892`, `:4317`; zero references in `app-v2/src` |
+| Two condition tables | `api.staffChecklist` `StaffApplication.jsx:2609` vs `api.staffConditions` `:2612`; `db/schema.sql:233` vs `db/022_conditions.sql:6-27` |
+| "Borrower-facing" on the Underwriting tab | `StaffApplication.jsx:3675-3678` |
+| Only two writers to the `conditions` table | `src/routes/staff.js:4338`, `src/lib/product-registration.js:61` |
+| Four filter dropdowns, 19 options | `StaffApplication.jsx:2009-2017`, `:3338-3340`, `:3361-3366`, `:3634-3637` |
+| Status renaming disagrees | `StaffApplication.jsx:2899` vs `screens/Application.jsx:939` |
+| `severity` means timing here | `StaffApplication.jsx:3630`, `:3647` |
+| 171 status words / 34 maps | across the 21 panel files |
+| Inline styles 1,576 / 4,173 | `UnderwritingPanel` 631, `StaffApplication` 342, `DrawsPanel` 336, `AppraisalPanel` 301, `EncompassSyncPanel` 71 |
+| `.panel` defined 7 times | `app-v2/src/styles.css:110,111,548,605,1054,1403,1759` |
+| The shared-vocabulary precedent | `app-v2/src/lib/esign.js:1-20` |
+| `accepted` red vs green (homonym, not a bug) | `EncompassSyncPanel.jsx:106` vs `OrdersPanel.jsx:127` |
+| Broken deep links | `StaffApplication.jsx:2512-2519` (`?focus=ai-findings`), `:2635-2641` (`?focus=chat`) |
+| "Post a condition" creates nothing | `src/lib/underwriting/actions.js:16` vs `UnderwritingPanel.jsx:2856` |
+| AI conditions born as `issue` | `src/routes/underwriting.js:2661-2678` |
+| Subject taxonomy already exists | `src/lib/underwriting/investor-guidelines/bluelake-rtl-spec.js`; `src/lib/conditions/condition-map.js:18-40` |
+| Brand tokens | `app-v2/src/styles.css:7-24` |
+| AI advisory-only rule | `src/lib/underwriting/advisory-policy.js`; `src/routes/staff.js:6905-6916` |
+
+---
+
+_Prepared 2026-07-27. Research: five parallel audits of the loan-file surface,
+the conditions engine, the underwriting panels, comparable lending and
+dense-record software, and the existing AI stack._
