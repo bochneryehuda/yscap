@@ -467,6 +467,8 @@ function notifyRaiser(row, actorId, decision, note) {
 function escalationFindingShape(row) {
   return {
     code: row.code, field: row.field || null,
+    // The severity the escalation SNAPSHOT recorded — what the reviewer was actually looking at.
+    severity: row.severity || null,
     document_id: row.document_id || null,
     docValue: row.doc_value != null ? String(row.doc_value) : null,
   };
@@ -531,7 +533,7 @@ router.post('/escalations/:id/decide', async (req, res, next) => {
       try {
         await require('../lib/underwriting/finding-decisions').record(client2, {
           applicationId: row.application_id, finding: escalationFindingShape(row),
-          origin: 'escalation', decision: 'dismissed',
+          origin: 'escalation', decision: 'dismissed', severity: row.severity || null,
           note: note || 'No action needed (findings review queue).', decidedBy: req.actor.id,
         });
       } finally { client2.release(); }
@@ -611,6 +613,7 @@ router.post('/escalations/:id/apply', requirePermission('sign_off_conditions'), 
         await require('../lib/underwriting/finding-decisions').record(client0, {
           applicationId: row.application_id, finding: escalationFindingShape(row),
           origin: 'escalation', decision: action, note, decidedBy: req.actor.id,
+          severity: row.severity || null,
         });
       } finally { client0.release(); }
       // A corrected value is still worth writing to the loan file — that is the actual fix.
@@ -3174,18 +3177,19 @@ module.exports._decorate = decorate;
 module.exports._loadRunGuidelineFindings = loadRunGuidelineFindings;
 // The post-dedupe fold filter, as a named predicate so a test can drive every branch.
 // KEEPS everything except a run finding that merged with nothing and inherited no handle.
-// A merge partner only makes a handle-less run finding worth listing if that partner was
-// a DESK finding — which would have been on this list anyway, and whose ai_suggestions
-// mirror is what eventually makes the card actionable. `mergedFrom.length` alone was a
-// proxy for that and not the same thing: two handle-less RUN rules sharing a signal would
-// merge into each other and sail through, producing exactly the permanent un-actionable
-// FATAL card this filter exists to prevent. Unreachable today only because the two rules
-// that share a signal are mutually exclusive by note buyer — i.e. safe by luck, which is
-// how the last four of these started (fifth audit pass).
-const DESK_CODE = /^isg_(?:gap|conflict|concern|info_missing|appraisal_review)_/;
+// A merge partner only makes a handle-less run finding worth listing if that partner came
+// from ANOTHER producer — the desk, which would have been on this list anyway and whose
+// `ai_suggestions` mirror is what eventually makes the card actionable. `mergedFrom.length`
+// alone was a proxy for that and not the same thing: two handle-less RUN rules sharing a
+// signal merge into each other and sail through, producing exactly the permanent
+// un-actionable FATAL card this filter exists to prevent.
+//
+// "Not from the run" is asked of the RUN'S OWN RULE TABLE (`isRuleCode`), not of a list of
+// the desk's code shapes. A list of the other producer's shapes rots silently the day a
+// sixth desk flag is added; the rule table cannot disagree with itself.
 module.exports._foldFilter = (f) => !(f && f.source === investorReview.SOURCE
   && !f.id && !f.suggestionId
-  && !((f.mergedFrom || []).some((c) => DESK_CODE.test(String(c || '')))));
+  && !((f.mergedFrom || []).some((c) => c && !investorReview.isRuleCode(c))));
 module.exports._escalationFindingShape = escalationFindingShape;
 // The predicate that keeps note-buyer findings OUT of summary.fatal/warning/info, so the
 // advisory desk can never disagree with the clear-to-close gate.

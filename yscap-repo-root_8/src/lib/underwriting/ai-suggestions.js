@@ -212,7 +212,11 @@ async function record(client, s) {
     if (shape.code) {
       const fdec = require('./finding-decisions');
       const set = await fdec.suppressedKeys(c, s.applicationId);
-      if (set.size && fdec.isSuppressed(set, shape)) return { id: null, deduped: false, settled: true };
+      // Carry the INCOMING severity so the ledger can refuse to silence something worse than
+      // what was judged — the same rule desk-sync applies to its own re-raise.
+      if (set.size && fdec.isSuppressed(set, Object.assign({ severity: s.severity }, shape))) {
+        return { id: null, deduped: false, settled: true };
+      }
     }
   } catch (_) { /* fail OPEN */ }
   // If a dedupe key is provided, look for a LIVE row and refresh it in place.
@@ -444,6 +448,7 @@ async function decide(client, id, decision = {}) {
         await fdec.record(c, {
           applicationId: cur.application_id, finding: shape, origin: 'ai_suggestion',
           decision: newStatus, note: statusReason || decision.note || null, decidedBy: staffId,
+          severity: cur.severity,
         });
       } else if (newStatus === 'open') {
         // "Unmark important" puts the row back to open — a re-open, not a decision.

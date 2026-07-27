@@ -101,6 +101,18 @@ console.log('ISG one list (DB)');
     assert.strictEqual(rural.id, undefined, 'no stored row ⇒ fileFatalCount cannot see it');
     ok('the rural finding carries its fact key, its severity, and the advisory guarantees');
 
+    // The whitelist, proven: an `info` run finding must stay `info`, not be promoted to a
+    // warning chip. No rule emits `info` today, so this guard is forward-looking — and the
+    // post-merge audit found it was the one claim the suite could not catch.
+    await addFinding(run.id, {
+      code: 'isg_info_probe', severity: 'info', category: investorReview.CATEGORY, title: 'Note' });
+    const withInfo = await uw._loadRunGuidelineFindings(db, app.id);
+    const probe = withInfo.find((r) => r.code === 'isg_info_probe');
+    assert.strictEqual(probe && probe.severity, 'info',
+      'an info run finding must not be promoted to a warning');
+    assert.strictEqual(withInfo.find((r) => r.code === 'isg_rural_property').severity, 'fatal');
+    await client.query(`DELETE FROM underwriting_run_findings WHERE code = 'isg_info_probe'`);
+
     const ny = rows.find((r) => r.code === 'isg_bl_ny_loan');
     assert.strictEqual(ny.factKey, undefined,
       'a rule with no shared signal declares no fact — it must never merge with an unrelated one');
@@ -245,6 +257,16 @@ console.log('ISG one list (DB)');
     assert.strictEqual(foldFilter(actionable), true, 'and one that inherited a handle is fully actionable');
     assert.strictEqual(foldFilter({ code: 'bank_account_not_borrower' }), true,
       'nothing outside the run fold is ever filtered');
+    // The desk-partner test asks the RUN's rule table, so a new desk flag can never make a
+    // merged finding vanish. Every real desk code shape must read as "not from the run".
+    for (const deskCode of ['isg_gap_rtl_cond_title', 'isg_conflict_44', 'isg_concern_3333',
+      'isg_info_missing_1009', 'isg_appraisal_review_3345', 'isg_newflag_9999']) {
+      assert.strictEqual(investorReview.isRuleCode(deskCode), false, `${deskCode} is not a run rule`);
+      assert.strictEqual(foldFilter({ source: investorReview.SOURCE, code: 'isg_rural_property',
+        mergedFrom: [deskCode] }), true, `${deskCode} must count as a desk partner`);
+    }
+    assert.strictEqual(investorReview.isRuleCode('isg_rural_property'), true,
+      'and a real run code still reads as the run\'s own');
     ok('the fold filter holds back only a row that exists purely because of the fold');
 
     // ── 10. A SHARED CONDITION TEMPLATE MUST NOT MERGE TWO DIFFERENT FACTS ──
@@ -305,6 +327,63 @@ console.log('ISG one list (DB)');
     assert.ok(!reGap.settled,
       'and the gap must still be able to raise a row — refusing it leaves a card with no buttons');
     ok('dismissing one guideline never silently settles another that shares its template');
+
+    // ── 12. A DECISION ON A WARNING DOES NOT SILENCE A LATER FATAL ─────────
+    // THE FALSE CLEAR THE POST-MERGE AUDIT CAUGHT. `desk-sync` has a guard whose entire
+    // purpose is this rule, and it works — but `record()`'s ledger consult ran first and
+    // suppressed the row anyway, because the ledger never recorded the severity a human
+    // judged. It was latent until a concern-carrying row (structurally NULL evidence.code)
+    // started reaching the ledger at all. Live scenario: a Blue Lake light-rehab file whose
+    // feasibility notice was dismissed as a warning converts to ground-up, the desk
+    // correctly re-raises it as a DEALBREAKER — and nothing is written. No card, no email,
+    // and the sync's own telemetry reports it as raised.
+    const app6 = (await client.query(
+      `INSERT INTO applications (borrower_id, property_address, lender)
+         VALUES ($1, '{}'::jsonb, 'Blue Lake') RETURNING id`, [b.id])).rows[0];
+    // Build the judged finding from the REAL payload shape, so the key the ledger writes is
+    // the key the live finding is read under — a hand-built fixture that differs by one field
+    // would pass while production missed.
+    const feasPayload = {
+      applicationId: app6.id, source: 'investor_guideline_desk', kind: 'finding',
+      title: 'Construction feasibility report', body: 'x', severity: 'warning',
+      evidence: { code: null, cond_no: 2193, flag: 'concern', domain: 'construction_feasibility',
+        concern_field: 'construction_feasibility' },
+      dedupeKey: 'isg-concern:2193',
+    };
+    const mild = Object.assign(
+      aiSug._internals.claimShapeOf({
+        evidence: feasPayload.evidence, source: feasPayload.source, dedupe_key: feasPayload.dedupeKey }),
+      { severity: 'warning' });
+    await fdec.record(client, {
+      applicationId: app6.id, finding: mild, origin: 'ai_suggestion', decision: 'dismissed',
+      severity: 'warning',
+    });
+    const sevSet = await fdec.suppressedKeys(client, app6.id);
+    assert.ok(fdec.isSuppressed(sevSet, mild), 'the warning the human judged stays settled');
+    assert.ok(!fdec.isSuppressed(sevSet, Object.assign({}, mild, { severity: 'fatal' })),
+      'the SAME rule at FATAL must break through — silencing a dealbreaker with a judgement '
+      + 'made about something milder is a false clear');
+    assert.ok(fdec.isSuppressed(sevSet, Object.assign({}, mild, { severity: 'info' })),
+      'and something MILDER than what was judged stays settled');
+    ok('a decision on a warning does not silence the same rule at fatal');
+
+    // …and it holds through the REAL door: the desk re-raising at fatal must write a row.
+    const asWarning = await aiSug.record(client, feasPayload);
+    assert.ok(asWarning.settled, 'the dismissed warning is still refused a row');
+    const asFatal = await aiSug.record(client,
+      Object.assign({}, feasPayload, { severity: 'fatal', important: true }));
+    assert.ok(!asFatal.settled && asFatal.id,
+      'but the dealbreaker gets its row — this is the one that reaches the team');
+    ok('the dealbreaker really is written through the real record() door');
+
+    // A decision taken BEFORE db/336 carries no severity and must keep suppressing, or the
+    // deploy would resurrect every dismissed fatal already on file.
+    await client.query(
+      `UPDATE finding_decisions SET severity = NULL WHERE application_id = $1`, [app6.id]);
+    const legacy = await fdec.suppressedKeys(client, app6.id);
+    assert.ok(fdec.isSuppressed(legacy, Object.assign({}, mild, { severity: 'fatal' })),
+      'a pre-db/336 decision suppresses regardless — no mass resurrection on deploy');
+    ok('decisions taken before this shipped are untouched');
 
     await client.query('ROLLBACK');
     console.log(`\n${passed} checks passed.`);

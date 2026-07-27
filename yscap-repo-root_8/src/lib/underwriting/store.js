@@ -447,6 +447,7 @@ async function resolveFinding(client, { findingId, action, note, value, by } = {
       decision: v.action,
       suppress: terminal && fdec.suppresses(v.action),
       note, decidedBy: by || null,
+      severity: (updated && updated.severity) || null,
     });
     await closeMirroredSuggestions(client, {
       applicationId: updated.application_id, code: updated.code,
