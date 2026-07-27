@@ -3000,6 +3000,81 @@ export default function StaffApplication() {
     })(),
     documents: { short: docs.length || '', long: docs.length ? `${docs.length} files` : '' },
   };
+  /* ONE PLAIN LINE PER SHUT SECTION (blueprint Move 3, "make every closed
+     section worth judging"). Fourteen collapsed headers down the page tell you
+     nothing about which is worth opening; a badge gives a number without saying
+     what it counts. These say it in words.
+
+     BUILT ONLY FROM WHAT THE PAGE ALREADY HAS. `items`, `docs`, `gating` and
+     `app` come from this screen's own load, so a line is right the moment the
+     file renders. `apprSummary` / `uwSummary` deliberately are NOT used here:
+     they are reported up by panels that live INSIDE those sections, and a
+     collapsed Section unmounts its children — so while the section is shut (the
+     only time a summary shows) those values are always null. A section with
+     nothing truthful to say gets no line at all, which beats a guess.
+
+     What the file's own outstanding list says about a section is honest for all
+     of them, though: the server already stamps every blocker with the section
+     that fixes it, so any section can say how much of the file's open work
+     lands on it. Advisories are excluded — PILOT's notes are never outstanding
+     work (owner-directed 2026-07-27) — and counted separately in words. */
+  const needsBySection = {};
+  const notesBySection = {};
+  if (gating) {
+    const g = gating.clear_to_close || {};
+    for (const r of [...(g.conditions || []), ...(g.gates || [])]) {
+      if (r.section) needsBySection[r.section] = (needsBySection[r.section] || 0) + 1;
+    }
+    for (const r of (g.advisories || [])) {
+      if (r.section) notesBySection[r.section] = (notesBySection[r.section] || 0) + 1;
+    }
+  }
+  const plural = (n, word) => `${n} ${word}${n === 1 ? '' : 's'}`;
+  /* Join the parts that actually have something to say. */
+  const line = (...parts) => {
+    const kept = parts.filter(Boolean);
+    return kept.length ? kept.join(' · ') : null;
+  };
+  /* The shared tail every section can carry: what the file's outstanding list
+     puts here, and what PILOT has flagged here. */
+  const openHere = (secId) => {
+    const n = needsBySection[secId] || 0;
+    const notes = notesBySection[secId] || 0;
+    return [n ? `${plural(n, 'item')} still open here` : null,
+      notes ? `${plural(notes, 'PILOT note')} to read` : null];
+  };
+  const nOrdersToAssign = docs.filter(d => ['title_order_return', 'insurance_order_return'].includes(d.doc_kind) && !d.slot_label && d.is_current !== false).length;
+  const summaries = {
+    'sec-pricing': line(
+      app.registered_program
+        ? `Registered: ${app.registered_product_label || (app.registered_program === 'gold' ? 'Gold Standard Program' : 'Standard Program')}`
+        : 'No product registered yet',
+      ...openHere('sec-pricing')),
+    'sec-appraisal': line(...openHere('sec-appraisal')),
+    'sec-underwriting': line(...openHere('sec-underwriting')),
+    'sec-conditions': (() => {
+      const open = borrowerItems.filter(it => !it.signed_off_at && it.status !== 'satisfied');
+      if (!items.length) return null;
+      if (!open.length) return line(`All ${plural(borrowerItems.length, 'borrower condition')} cleared`, ...openHere('sec-conditions'));
+      return line(
+        `${open.length} of ${borrowerItems.length} still open`,
+        open.filter(it => it.status === 'received').length
+          ? `${open.filter(it => it.status === 'received').length} waiting on you to review` : null,
+        open.filter(it => it.status === 'issue').length
+          ? `${open.filter(it => it.status === 'issue').length} sent back to the borrower` : null,
+        notesBySection['sec-conditions'] ? `${plural(notesBySection['sec-conditions'], 'PILOT note')} to read` : null);
+    })(),
+    'sec-closing': line(
+      app.status === 'funded' ? 'Funded' : app.closer_id ? 'Closer assigned' : 'No closer assigned yet',
+      ...openHere('sec-closing')),
+    'sec-esign': line(...openHere('sec-esign')),
+    'sec-orders': line(nOrdersToAssign ? `${plural(nOrdersToAssign, 'return')} to assign` : 'Nothing waiting to be assigned'),
+    'sec-documents': (() => {
+      if (!docs.length) return 'No documents on this file yet';
+      const rejected = docs.filter(d => d.review_status === 'rejected' && d.is_current !== false).length;
+      return line(plural(docs.length, 'file'), rejected ? `${rejected} rejected` : null);
+    })(),
+  };
   const SECTIONS = [
     { id: 'sec-overview', label: 'File overview', group: 'Overview' },
     { id: 'sec-application', label: 'Application details', group: 'Application & pricing' },
@@ -3014,8 +3089,10 @@ export default function StaffApplication() {
     // their own closing view. The panel gates closer-only actions internally.
     ...(showClosing ? [{ id: 'sec-closing', label: 'Closing', group: 'Closing', badge: app.status === 'funded' ? '' : (app.closer_id ? 'active' : '') }] : []),
     { id: 'sec-esign', label: 'E-signatures', group: 'Signing & documents' },
+    // Same count the section's own summary line uses — derived once above, so the
+    // rail and the header can't drift the way the badges once did.
     { id: 'sec-orders', label: 'Orders (title & insurance)', group: 'Signing & documents',
-      badge: (() => { const n = docs.filter(d => ['title_order_return', 'insurance_order_return'].includes(d.doc_kind) && !d.slot_label && d.is_current !== false).length; return n ? `${n} to assign` : ''; })() },
+      badge: nOrdersToAssign ? `${nOrdersToAssign} to assign` : '' },
     { id: 'sec-documents', label: 'Documents & exports', group: 'Signing & documents', badge: badges.documents.short },
     // Data tapes are visible only to staff who may export them (processor /
     // underwriter / admin by default; a loan officer only if granted per-person).
@@ -3294,7 +3371,7 @@ export default function StaffApplication() {
       </details>
       </Section>
 
-      <Section id="sec-pricing" title="Structure & pricing" defaultOpen={false}
+      <Section id="sec-pricing" summary={summaries['sec-pricing']} title="Structure & pricing" defaultOpen={false}
         info="The registered product and the Term Sheet Studio to re-price or re-register — every registration attaches the term sheet PDF."
         badge={badges.pricing.long}>
       <ProductStudioPanel ref={studioRef} appId={id} app={app} onRegistered={load} mode="staff" staffRole={role}
@@ -3316,13 +3393,13 @@ export default function StaffApplication() {
         <ExceptionRegisterCard appId={id} canSeeBox={can('manage_pricing') || role === 'super_admin'} />
       </Section>
 
-      <Section id="sec-appraisal" title="Appraisal & findings" defaultOpen={false}
+      <Section id="sec-appraisal" summary={summaries['sec-appraisal']} title="Appraisal & findings" defaultOpen={false}
         info="Import the appraisal XML and PILOT builds the property profile and flags every value that differs from the file for your team to review."
         badge={badges.appraisal.long}>
         <AppraisalPanel appId={id} onSummary={onApprSummary} reloadSignal={apprReload} />
       </Section>
 
-      <Section id="sec-underwriting" title="Document review" defaultOpen={false}
+      <Section id="sec-underwriting" summary={summaries['sec-underwriting']} title="Document review" defaultOpen={false}
         info="PILOT reads every uploaded document (government ID, purchase contract, title, bank statement and more), understands it, and checks it against the loan file — flagging anything that doesn't match on the document itself AND anything that disagrees across documents (the seller, price, and property address must be the same on the contract, title, and appraisal). Choose a document and the type it is, and PILOT reads and checks it. Each finding is yours to resolve: post a condition, request a document, fix the file, clear it, grant an exception, dismiss, or decline. Nothing is ever written onto the loan file automatically."
         badge={badges.underwriting.long}>
         <UnderwritingPanel appId={id} docs={docs} onSummary={onUwSummary} canResolve={can('sign_off_conditions')} canWaive={can('waive_conditions')} />
@@ -3338,7 +3415,7 @@ export default function StaffApplication() {
           conditions, the underwriting conditions, the internal staff conditions +
           checklist, and the LLC used to be four separate sections — they're now one
           section you switch between with tabs, so there's a single place to look. */}
-      <Section id="sec-conditions" title="Conditions" defaultOpen={false}
+      <Section id="sec-conditions" summary={summaries['sec-conditions']} title="Conditions" defaultOpen={false}
         info="Everything to clear on this file — the borrower's conditions, your underwriting conditions, internal staff conditions and checklist, and the LLC. Switch with the tabs."
         badge={nCondOpen || ''}>
 
@@ -3460,23 +3537,23 @@ export default function StaffApplication() {
           above — one review, one place, no separate AI pass. */}
 
       {showClosing && (
-        <Section id="sec-closing" title="Closing" defaultOpen={false}
+        <Section id="sec-closing" summary={summaries['sec-closing']} title="Closing" defaultOpen={false}
           info="The closer's desk — cash-to-close vs verified liquidity, the warehouse line, collateral tracking, closing conditions, checklists, TPR / investor-delivery sign-off, and the funded-date reconciliation.">
           <ClosingPanel appId={id} app={app} can={can} onDownloadDoc={downloadDoc} onPreview={openPreview} onChanged={load} />
         </Section>
       )}
 
-      <Section id="sec-esign" title="E-signatures" defaultOpen={false}
+      <Section id="sec-esign" summary={summaries['sec-esign']} title="E-signatures" defaultOpen={false}
         info="Send and track the term-sheet package and Heter Iska, with live per-signer status, resend, void, re-issue and downloads.">
       <EsignFileSection appId={id} role={role} onChanged={load} />
       </Section>
 
-      <Section id="sec-orders" title="Orders (title &amp; insurance)" defaultOpen={false}
+      <Section id="sec-orders" summary={summaries['sec-orders']} title="Orders (title &amp; insurance)" defaultOpen={false}
         info="Order title and insurance from the vendor on the file. Each order emails the vendor with the borrower, loan officer and processor copied, tracks its own thread, and files the documents the vendor sends back here for you to classify.">
       <OrdersPanel appId={id} canAccept={canComplete(role)} />
       </Section>
 
-      <Section id="sec-documents" title="Documents & exports" defaultOpen={false}
+      <Section id="sec-documents" summary={summaries['sec-documents']} title="Documents & exports" defaultOpen={false}
         info="Every document on the file, titled by condition — with the working set on top, rejected/replaced versions in the trash, and the TPR clean-file export."
         badge={badges.documents.long}>
       <div className="panel" style={{ marginTop: 0 }}>

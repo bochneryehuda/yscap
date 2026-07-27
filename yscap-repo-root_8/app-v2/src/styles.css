@@ -1039,6 +1039,14 @@ input[type=checkbox],input[type=radio]{width:16px;height:16px;accent-color:var(-
 .sec-head.collapsible:hover .sec-title{color:var(--teal-br)}
 .sec-chevron{flex:none;color:var(--muted);font-size:12px;transition:transform .15s ease}
 .sec-chevron.open{transform:rotate(90deg)}
+/* One plain line under a SHUT section header, so a closed section can be judged
+   without opening it (blueprint Move 3). It sits below the rule rather than on
+   the header row, so a long line wraps under the title instead of squeezing it.
+   Quiet by design — it is context, not a heading; the section's own content is
+   what earns attention once it is open, and this line is gone by then. */
+.sec-head.has-summary{margin-bottom:0}
+.sec-summary{margin:7px 0 12px 15px;font-size:12.5px;line-height:1.5;color:#4B585C;overflow-wrap:anywhere}
+@media(max-width:720px){.sec-summary{margin-left:0}}
 .file-section .panel{margin-top:0}
 .file-section .panel + .panel{margin-top:14px}
 
