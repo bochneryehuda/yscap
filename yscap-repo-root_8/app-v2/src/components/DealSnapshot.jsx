@@ -1,4 +1,5 @@
 import React from 'react';
+import { fullNameOf } from '../lib/personName.js';
 
 /* Staff "cockpit" band at the top of a loan file — the facts an officer wants
    without scrolling: borrower/entity, property, program, the registered terms
@@ -50,7 +51,7 @@ export default function DealSnapshot({ app, gating }) {
     </div>
   ));
 
-  const coName = app.co_borrower_id ? ([app.co_first_name, app.co_last_name].filter(Boolean).join(' ') || '—') : null;
+  const coName = app.co_borrower_id ? (fullNameOf(app, 'co_') || '—') : null;
 
   return (
     <div className="deal-snap">
@@ -85,7 +86,7 @@ export default function DealSnapshot({ app, gating }) {
       <div className="snap-clusters">
         <div className="snap-cluster">
           <div className="snap-cluster-h">Parties</div>
-          {row('Borrower', [app.first_name, app.last_name].filter(Boolean).join(' ') || '—', { strong: true })}
+          {row('Borrower', fullNameOf(app) || '—', { strong: true })}
           {row('Co-borrower', coName)}
           {row('Entity', app.entity_name || '—')}
           {row('FICO', app.fico || '—')}

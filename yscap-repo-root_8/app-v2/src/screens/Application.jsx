@@ -26,6 +26,7 @@ import ChangeRequestPanel from '../components/ChangeRequestPanel.jsx';
 import BorrowerDraws from '../components/BorrowerDraws.jsx';
 import AppraisalPanel from '../components/AppraisalPanel.jsx';
 import { fileToBase64 } from '../lib/files.js';
+import { fullNameOf } from '../lib/personName.js';
 
 const kb = (n) => n == null ? '' : (n < 1024 ? n + ' B' : n < 1048576 ? (n / 1024).toFixed(0) + ' KB' : (n / 1048576).toFixed(1) + ' MB');
 const money = (n) => n == null ? '—' : '$' + Number(n).toLocaleString('en-US', { maximumFractionDigits: 0 });
@@ -851,7 +852,7 @@ export default function Application() {
       <div className="grid cols-2">
         <div className="panel" style={{ marginTop: 0 }}>
           <h3 style={{ marginBottom: 12 }}>Borrower</h3>
-          <div className="metrow"><span className="k">Name</span><span className="v">{profile ? `${profile.first_name || ''} ${profile.last_name || ''}`.trim() || '—' : '—'}</span></div>
+          <div className="metrow"><span className="k">Name</span><span className="v">{profile ? fullNameOf(profile) || '—' : '—'}</span></div>
           <div className="metrow"><span className="k">Email</span><span className="v">{(profile && profile.email) || '—'}</span></div>
           <div className="metrow"><span className="k">Phone</span><span className="v">{(profile && profile.cell_phone) || '—'}</span></div>
           <SsnRow profile={profile} onSaved={load} />
@@ -1399,7 +1400,7 @@ function CoBorrowerRail({ app, onChanged }) {
   const { actor } = useAuth();
   const isPrimary = actor?.id && app.borrower_id === actor.id;
   const [open, setOpen] = useState(false);
-  const [f, setF] = useState({ firstName: '', lastName: '', email: '', phone: '' });
+  const [f, setF] = useState({ firstName: '', middleName: '', lastName: '', email: '', phone: '' });
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState('');
   const coName = [app.co_borrower_first_name, app.co_borrower_last_name].filter(Boolean).join(' ');
@@ -1407,7 +1408,7 @@ function CoBorrowerRail({ app, onChanged }) {
     if (busy) return; setErr('');
     if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test((f.email || '').trim())) { setErr('Enter a valid email address.'); return; }
     setBusy(true);
-    try { await api.inviteCoBorrowerToFile(app.id, f); setOpen(false); setF({ firstName: '', lastName: '', email: '', phone: '' }); await onChanged(); }
+    try { await api.inviteCoBorrowerToFile(app.id, f); setOpen(false); setF({ firstName: '', middleName: '', lastName: '', email: '', phone: '' }); await onChanged(); }
     catch (e) { setErr(e.message || 'Could not invite the co-borrower.'); }
     finally { setBusy(false); }
   }
@@ -1434,6 +1435,7 @@ function CoBorrowerRail({ app, onChanged }) {
         <>
           <div className="grid cols-2" style={{ gap: 8 }}>
             <input className="input" placeholder="First name" value={f.firstName} onChange={e => setF(s => ({ ...s, firstName: e.target.value }))} />
+            <input className="input" placeholder="Middle name (optional)" value={f.middleName} onChange={e => setF(s => ({ ...s, middleName: e.target.value }))} />
             <input className="input" placeholder="Last name" value={f.lastName} onChange={e => setF(s => ({ ...s, lastName: e.target.value }))} />
           </div>
           <EmailInput style={{ marginTop: 8 }} placeholder="Email" value={f.email} onChange={v => setF(s => ({ ...s, email: v }))} />

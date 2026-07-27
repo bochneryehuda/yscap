@@ -200,8 +200,8 @@ async function compare(aId, bId) {
     };
   };
   return {
-    survivor: { id: A.id, name: `${A.first_name || ''} ${A.last_name || ''}`.trim(), ...(await counts(aId)) },
-    merged: { id: B.id, name: `${B.first_name || ''} ${B.last_name || ''}`.trim(), ...(await counts(bId)) },
+    survivor: { id: A.id, name: require('./person-name').displayName(A), ...(await counts(aId)) },
+    merged: { id: B.id, name: require('./person-name').displayName(B), ...(await counts(bId)) },
     fields,
     conflicts: fields.filter((f) => f.conflict).length,
   };
@@ -349,7 +349,7 @@ async function mergeBorrowers({ survivorId, mergedId, choices = {}, actorId = nu
     await client.query(
       `INSERT INTO borrower_merges (survivor_id, merged_id, merged_name, merged_email, merged_snapshot, field_choices, moved, merged_by)
        VALUES ($1,$2,$3,$4,$5::jsonb,$6::jsonb,$7::jsonb,$8)`,
-      [survivorId, mergedId, `${M.first_name || ''} ${M.last_name || ''}`.trim() || null, M.email || null,
+      [survivorId, mergedId, require('./person-name').displayName(M) || null, M.email || null,
         JSON.stringify(snapshot), JSON.stringify(applied), JSON.stringify(moved), actorId]);
     await client.query(`DELETE FROM borrowers WHERE id=$1`, [mergedId]);
 

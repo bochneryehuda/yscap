@@ -23,6 +23,9 @@
 // (buildOurValues / compareAll / summarize) import without a Postgres driver
 // (repo convention — see the draw-report lazy-require note in CLAUDE.md).
 const map = require('../lib/integrations/encompass-field-map');
+// The ONE name splitter/joiner/comparer. Pure (no pg), so it is safe to require
+// eagerly next to the field map.
+const PN = require('../lib/person-name');
 
 // Our-side deal type is NOT a column — applications stores it as `program`
 // ("Fix & Flip w/ Construction" / "Bridge" / "DSCR") + `loan_type` ("Ground up"
@@ -379,6 +382,30 @@ function compareIdentity(row, loan) {
   // side. Displayed masked (last-4 only). BLOCK-gated + compare-only (a read
   // never overwrites a borrower SSN). "No data to compare" (a hash missing on
   // either side) holds the term sheet, exactly like the other identity fields.
+  // A person's NAME, compared as first / middle / last / suffix rather than as
+  // one joined string. Shape-identical to `push` so the panel, the finding
+  // roll-up and the term-sheet gate all read it exactly as before — only the
+  // verdict is smarter. A middle-name-only difference reports MATCH (the same
+  // person, one side simply carries less detail); `detail` records that for the
+  // panel so staff can still see the two spellings side by side.
+  const pushName = (key, label, ourP, theirP) => {
+    const cmp = PN.compareNames(ourP, theirP);
+    const status = cmp.status === 'match' || cmp.status === 'match_detail_only' ? 'match'
+      : cmp.status === 'mismatch' ? 'mismatch' : 'incomparable';
+    out.push({
+      key, encompassFieldId: null, label, category: 'identity', compare: 'name',
+      gate: map.GATE.BLOCK,
+      ours: cmp.ours || null, theirs: cmp.theirs || null,
+      oursNorm: cmp.ours ? N.normName(cmp.ours) : null,
+      theirsNorm: cmp.theirs ? N.normName(cmp.theirs) : null,
+      status,
+      // 'the same person, written with a different amount of detail' — surfaced
+      // so a reviewer can still see the two spellings without it being a finding.
+      detailOnly: cmp.status === 'match_detail_only',
+      writable: false, open: status === 'mismatch', resolution: null,
+    });
+  };
+
   const _mask4 = (l4) => { const d = _digits(l4); return d ? `•••-••-${d.slice(-4)}` : null; };
   const pushSsn = (key, label, ourHash, ourLast4, theirHash, theirLast4) => {
     let status = 'incomparable';
@@ -394,9 +421,22 @@ function compareIdentity(row, loan) {
   };
 
   // Primary borrower + subject property address.
-  const ourName = [row.b_first_name, row.b_last_name].filter((x) => x && String(x).trim()).join(' ').trim();
-  const theirName = [bor.firstName, bor.lastName].filter((x) => x && String(x).trim()).join(' ').trim();
-  push('id_borrower_name', 'Borrower name', 'name', ourName || null, theirName || null);
+  //
+  // NAME COMPARE (owner-directed 2026-07-27). Encompass splits a person into
+  // firstName / middleName / lastName (+ suffixToName); PILOT now does the same
+  // (db/343). Before that, this compared a joined first+last on both sides — so a
+  // borrower whose Encompass copy is correctly split read as a MISMATCH against
+  // our merged "Issac Michael" first name, and this row is BLOCK-gated, so it
+  // held the term sheet on a file where nothing was actually wrong.
+  //
+  // `pushName` compares the two people by MEANING (lib/person-name): the first
+  // name and the surname must agree, a suffix present on both sides must agree
+  // (a father and his son are different people), and the MIDDLE NAME is tolerant
+  // — a side that omits it, or carries an initial where the other has the full
+  // word, is the same person. A genuinely different middle name still mismatches.
+  const ourParts = { first: row.b_first_name, middle: row.b_middle_name, last: row.b_last_name, suffix: row.b_name_suffix };
+  const theirParts = { first: bor.firstName, middle: bor.middleName, last: bor.lastName, suffix: bor.suffixToName };
+  pushName('id_borrower_name', 'Borrower name', ourParts, theirParts);
   push('id_dob', 'Date of birth', 'date', row.b_dob || null, bor.birthDate || null);
   push('id_email', 'Email', 'email', row.b_email || null, bor.emailAddressText || null);
   push('id_phone', 'Phone', 'phone', row.b_cell_phone || null, (bor.mobilePhone || bor.homePhoneNumber) || null);
@@ -416,11 +456,13 @@ function compareIdentity(row, loan) {
   // borrower file has none → we surface nothing (never a false "no data" block).
   // A co-borrower present on only one side stays incomparable → not-passing, which
   // correctly flags that the two systems disagree on the co-borrower.
-  const ourCoName = [row.cb_first_name, row.cb_last_name].filter((x) => x && String(x).trim()).join(' ').trim();
-  const theirCoName = [coBor.firstName, coBor.lastName].filter((x) => x && String(x).trim()).join(' ').trim();
+  const ourCoParts = { first: row.cb_first_name, middle: row.cb_middle_name, last: row.cb_last_name, suffix: row.cb_name_suffix };
+  const theirCoParts = { first: coBor.firstName, middle: coBor.middleName, last: coBor.lastName, suffix: coBor.suffixToName };
+  const ourCoName = PN.joinFullName(ourCoParts);
+  const theirCoName = PN.joinFullName(theirCoParts);
   const hasCo = !!(row.co_borrower_id || ourCoName || theirCoName || coBor.birthDate || coBor.emailAddressText || coBor.mobilePhone || coBor.homePhoneNumber || coBor._ssnHash || row.cb_ssn_hash);
   if (hasCo) {
-    push('id_coborrower_name', 'Co-borrower name', 'name', ourCoName || null, theirCoName || null);
+    pushName('id_coborrower_name', 'Co-borrower name', ourCoParts, theirCoParts);
     push('id_coborrower_dob', 'Co-borrower date of birth', 'date', row.cb_dob || null, coBor.birthDate || null);
     push('id_coborrower_email', 'Co-borrower email', 'email', row.cb_email || null, coBor.emailAddressText || null);
     push('id_coborrower_phone', 'Co-borrower phone', 'phone', row.cb_cell_phone || null, (coBor.mobilePhone || coBor.homePhoneNumber) || null);
@@ -509,9 +551,11 @@ async function computeFindings(appId, dbc, opts) {
             a.requested_exp_flips, a.requested_exp_holds, a.requested_exp_ground,
             l.llc_name AS llc_name,
             b.first_name AS b_first_name, b.last_name AS b_last_name,
+            b.middle_name AS b_middle_name, b.name_suffix AS b_name_suffix,
             b.date_of_birth AS b_dob, b.email AS b_email, b.cell_phone AS b_cell_phone,
             b.ssn_hash AS b_ssn_hash, b.ssn_last4 AS b_ssn_last4, b.ssn_encrypted AS b_ssn_encrypted,
             cb.first_name AS cb_first_name, cb.last_name AS cb_last_name,
+            cb.middle_name AS cb_middle_name, cb.name_suffix AS cb_name_suffix,
             cb.date_of_birth AS cb_dob, cb.email AS cb_email, cb.cell_phone AS cb_cell_phone,
             cb.ssn_hash AS cb_ssn_hash, cb.ssn_last4 AS cb_ssn_last4, cb.ssn_encrypted AS cb_ssn_encrypted
        FROM applications a
@@ -849,5 +893,8 @@ module.exports = {
   refresh,
   onLoanNumberSet,
   WRITABLE,
-  _internals: { snap, deriveDealType, tapeGateDecision, tapeGateError },
+  // compareIdentity is exported for the name-split regression test: a borrower
+  // whose Encompass copy is correctly split must MATCH our three columns, and a
+  // legacy merged first name must match too rather than hold the term sheet.
+  _internals: { snap, deriveDealType, tapeGateDecision, tapeGateError, compareIdentity },
 };

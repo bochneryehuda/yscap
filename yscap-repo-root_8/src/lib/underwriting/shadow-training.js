@@ -79,7 +79,7 @@ async function findSimilarOpenFindings(client, finding, opts = {}) {
       LIMIT $3`, params);
   return r.rows.map((row) => ({
     ...row,
-    borrower_name: [row.first_name, row.last_name].filter(Boolean).join(' ') || null,
+    borrower_name: require('../person-name').displayName(row) || null,
   }));
 }
 

@@ -5,6 +5,7 @@ import TermSheetStudio, {
   buildStudioState, scenarioFromEngineInputs, adminStateFromEngineInputs, blobToBase64,
 } from './TermSheetStudio.jsx';
 import GuarantyWaiverCard from './GuarantyWaiverCard.jsx';
+import { fullNameOf } from '../lib/personName.js';
 
 /* Product registration on a loan file — borrower AND staff logins. The panel
    shows the registered product; "Reprice / re-register" opens the real static
@@ -530,7 +531,7 @@ const ProductStudioPanel = forwardRef(function ProductStudioPanel({ appId, app, 
       return { v, c };
     }
     const name = isStaff
-      ? ([app.first_name, app.last_name].filter(Boolean).join(' ') || '')
+      ? (fullNameOf(app) || '')
       : ([profile && profile.first_name, profile && profile.last_name].filter(Boolean).join(' ') || '');
     // #104: the borrowing ENTITY (vesting name) prefills its own slot, separate
     // from the individual borrower name — no longer folded into borrowerName.
@@ -538,7 +539,7 @@ const ProductStudioPanel = forwardRef(function ProductStudioPanel({ appId, app, 
     // Co-borrower name (staff view has it on the app) → prefills the term
     // sheet's second signature line (#137).
     const coName = (isStaff && app.co_borrower_id)
-      ? ([app.co_first_name, app.co_last_name].filter(Boolean).join(' ') || '')
+      ? (fullNameOf(app, 'co_') || '')
       : '';
     // #143 — the stored engine inputs ARE the exact registered scenario, but
     // older registrations / server quotes sometimes omit an economics field (most

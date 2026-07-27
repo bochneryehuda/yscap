@@ -423,7 +423,7 @@ router.post('/preview-rule', async (req, res) => {
           const addr = row.property_address || {};
           sample.push({
             id: row.id, ysLoanNumber: row.ys_loan_number,
-            borrower: [row.first_name, row.last_name].filter(Boolean).join(' '),
+            borrower: require('../lib/person-name').displayName(row),
             address: addr.oneLine || [addr.line1 || addr.street, addr.city, addr.state].filter(Boolean).join(', '),
           });
         }

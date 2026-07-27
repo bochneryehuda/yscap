@@ -2,6 +2,7 @@ import React, { useEffect, useMemo, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { api } from '../lib/api.js';
 import { useAuth } from '../lib/auth.jsx';
+import { fullNameOf } from '../lib/personName.js';
 
 /* THE CLOSING QUEUE (owner-directed 2026-07-26). Every file in the closing
    workflow, for the closer + the file's officer. Closers land here on login. */
@@ -72,7 +73,7 @@ export default function StaffClosing() {
             <tbody>
               {shown.map((r) => (
                 <tr key={r.id}>
-                  <td><b>{`${r.first_name || ''} ${r.last_name || ''}`.trim() || '—'}</b><div className="muted small">{fmtAddr(r.property_address)}</div></td>
+                  <td><b>{fullNameOf(r) || '—'}</b><div className="muted small">{fmtAddr(r.property_address)}</div></td>
                   <td>{r.ys_loan_number || '—'}</td>
                   <td>{r.lender || '—'}</td>
                   <td>{day(r.est_closing_date || r.expected_closing)}</td>

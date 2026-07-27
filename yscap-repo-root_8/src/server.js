@@ -586,6 +586,16 @@ if (require.main === module) {
         require('./lib/address-heal').healProviderLongAddressesOnce()
           .then((r) => r && r.fixed && console.log('[boot] address format repair:', JSON.stringify(r)))
           .catch((e) => console.error('[boot] address format repair failed:', e.message));
+        // Previous-files fix (owner-directed 2026-07-27): a borrower's name is now
+        // THREE fields (first / middle / last, + suffix) so it lines up with the way
+        // Encompass, MISMO and every closing document model a person. This splits the
+        // names already stored merged by the old one-line ClickUp splitter
+        // ("Issac Michael" / "Grunzweig" -> "Issac" / "Michael" / "Grunzweig"). It only
+        // ever REARRANGES a name, never restates one, and flags the judgement calls for
+        // a human to confirm. Bounded, resumable, idempotent; never blocks boot.
+        require('./lib/name-heal').healBorrowerNamesOnce()
+          .then((r) => r && r.split && console.log('[boot] borrower name split:', JSON.stringify(r)))
+          .catch((e) => console.error('[boot] borrower name split failed:', e.message));
         require('./lib/underwriting/investor-guidelines/seed').seedNoteBuyerConditions()
           .then((r) => r && r.ok && console.log('[boot] note-buyer conditions seed:', JSON.stringify(r)))
           .catch((e) => console.error('[boot] note-buyer conditions seed failed:', e.message));

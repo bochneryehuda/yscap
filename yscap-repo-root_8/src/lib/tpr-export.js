@@ -488,7 +488,7 @@ async function buildTprExport(appId) {
 
   // 2) REO → Track Record.xlsx first, then one folder per prior property with
   //    that project's verification documents.
-  const borrowerName = `${app.first_name || ''} ${app.last_name || ''}`.trim();
+  const borrowerName = require('./person-name').displayName(app);
   const generatedAt = new Date().toISOString();
   const REO = `${ROOT}/${C.REO}`;
 

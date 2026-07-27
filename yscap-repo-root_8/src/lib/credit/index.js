@@ -35,7 +35,7 @@ const REQUEST_TYPES = ['reissue', 'new'];
 function userError(msg, status) { const e = new Error(msg); e.userMessage = msg; e.status = status || 422; return e; }
 function roleWord(role) { return role === 'co' ? 'co-borrower’s' : 'borrower’s'; }
 function nameOfRow(row, role) {
-  return [row && row.first_name, row && row.last_name].filter(Boolean).join(' ')
+  return require('../person-name').displayName(row)
     || (role === 'co' ? 'Co-borrower' : 'Borrower');
 }
 

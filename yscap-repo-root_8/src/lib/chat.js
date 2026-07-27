@@ -155,7 +155,7 @@ async function membersOf(cid) {
   const r = await db.query(
     `SELECT cm.member_kind, cm.member_id, cm.role_label, cm.added_at, cm.muted_until,
             cm.last_read_seq, cm.last_delivered_seq, cm.last_read_at, cm.unread_count,
-            COALESCE(s.full_name, b.first_name || ' ' || b.last_name) AS name,
+            COALESCE(s.full_name, NULLIF(b.full_name,'')) AS name,
             COALESCE(s.last_seen_at, b.last_seen_at) AS last_seen_at,
             s.status_emoji, s.status_text, s.status_expires_at
        FROM conversation_members cm
@@ -352,13 +352,13 @@ const MESSAGE_SELECT = `
          m.attachment_document_id, m.attachment_kind,
          d.filename AS attachment_name, d.content_type AS attachment_type, d.size_bytes AS attachment_size,
          COALESCE((SELECT json_agg(json_build_object('emoji', r.emoji, 'kind', r.actor_kind, 'actor', r.actor_id,
-                    'name', COALESCE(su.full_name, br.first_name || ' ' || br.last_name)))
+                    'name', COALESCE(su.full_name, NULLIF(br.full_name,''))))
                      FROM message_reactions r
                      LEFT JOIN staff_users su ON su.id=r.actor_id AND r.actor_kind='staff'
                      LEFT JOIN borrowers br ON br.id=r.actor_id AND r.actor_kind='borrower'
                     WHERE r.message_id=m.id), '[]'::json) AS reactions,
          CASE WHEN m.sender_kind='staff' THEN s.full_name
-              WHEN m.sender_kind='borrower' THEN (b.first_name || ' ' || b.last_name)
+              WHEN m.sender_kind='borrower' THEN NULLIF(b.full_name,'')
               WHEN m.sender_kind='external' THEN COALESCE(NULLIF(btrim(ep.name), ''), ep.email, 'Guest')
               ELSE 'System' END AS sender_name,
          ci.label AS task_label, ci.status AS task_status
@@ -495,7 +495,7 @@ async function postMessage({ conv, actor, body, attachment = null, entityRefs = 
     const orig = await db.query(
       `SELECT m.id, m.body, m.sender_kind, m.attachment_kind,
               CASE WHEN m.sender_kind='staff' THEN s.full_name
-                   WHEN m.sender_kind='borrower' THEN (b.first_name || ' ' || b.last_name)
+                   WHEN m.sender_kind='borrower' THEN NULLIF(b.full_name,'')
                    ELSE 'System' END AS sender_name
          FROM messages m
          LEFT JOIN staff_users s ON s.id=m.sender_id AND m.sender_kind='staff'
@@ -946,7 +946,7 @@ async function fireChatEmail(j) {
   // bare "you have messages" — capped so a long thread can't bloat the email.
   const unreadMsgs = await db.query(
     `SELECT m.body, m.attachment_kind, m.attachment_document_id,
-            COALESCE(NULLIF(btrim(bo.first_name || ' ' || bo.last_name), ''), su.full_name, 'A teammate') AS sender_name,
+            COALESCE(NULLIF(bo.full_name,''), su.full_name, 'A teammate') AS sender_name,
             d.filename AS att_filename, d.content_type AS att_ct,
             d.storage_ref AS att_ref, d.size_bytes AS att_size
        FROM messages m

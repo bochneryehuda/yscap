@@ -9,6 +9,7 @@ import { PhoneInput, ZipInput, EmailInput } from '../components/FormattedInputs.
 import { passwordProblem } from '../lib/password.js';
 import { CITIZENSHIP, MARITAL, CONTACT_TYPE, HOUSING, withCurrent } from '../lib/enums.js';
 import { formatSSN } from '../lib/validators.js';
+import { fullNameOf, splitName, rejoin, nameChanged } from '../lib/personName.js';
 
 // Borrower CRM hub — the single place staff see everything about a person:
 // personal info + editable CRM fields, their loan files ("mortgages with us"),
@@ -57,10 +58,13 @@ export default function StaffBorrowerDetail() {
   if (err) return <><div role="alert" className="notice err">{err}</div><p><Link to="/internal/borrowers">← Back to borrowers</Link></p></>;
   if (!b) return <p className="muted">Loading…</p>;
 
-  const name = `${b.first_name || ''} ${b.last_name || ''}`.trim() || '(no name)';
+  // THE ONE BIG NAME FIELD (db/344) — the whole name, middle name and suffix
+  // included. Falls back to the parts so nothing breaks on an older response.
+  const name = fullNameOf(b) || '(no name)';
   return (
     <>
       <p style={{ marginTop: 0 }}><Link to="/internal/borrowers" className="small">← Borrowers</Link></p>
+      <NameSplitPrompt b={b} onChanged={load} />
       <Header b={b} name={name} onChanged={load} />
       <div className="tabs" style={{ margin: '18px 0 14px' }}>
         {TABS.map(t => (
@@ -161,6 +165,50 @@ function Header({ b, name, onChanged }) {
 }
 
 /* ---------------- overview / editable CRM ---------------- */
+// "Please check this name" — PILOT had to make a judgement call about where a
+// borrower's name splits (db/343 `name_review_needed`), so it asks a human once.
+// It is a PROMPT, never a gate: nothing on the file waits for it. One click
+// confirms; the Edit form clears it too, because typing the parts IS the answer.
+const NAME_SPLIT_HELP = {
+  only_one_word: 'Only one word was given, so we could not tell the first name from the last name.',
+  three_words: 'Three words — we made the middle word the middle name. Please check that is right.',
+  four_or_more_words: 'More than three words — please check we picked the right first, middle and last name.',
+  surname_particle: 'The last name looks like it has a small word in it (like "van" or "de la"). Please check.',
+  comma_form: 'The name was written last-name-first, so please check we read it the right way round.',
+  surname_only: 'This looks like a last name with no first name. Please check.',
+};
+function NameSplitPrompt({ b, onChanged }) {
+  const [busy, setBusy] = useState(false);
+  const [gone, setGone] = useState(false);
+  if (!b || !b.name_review_needed || gone) return null;
+  const why = NAME_SPLIT_HELP[b.name_review_reason] || 'Please check this name is split correctly.';
+  const confirm = async () => {
+    setBusy(true);
+    try { await api.staffUpdateBorrower(b.id, { confirmNameSplit: true }); setGone(true); onChanged(); }
+    catch (_) { setBusy(false); }
+  };
+  return (
+    <div className="notice" style={{ borderLeft: '4px solid #AE8746', background: '#FFFDF7', color: '#141B22' }}>
+      <b style={{ color: '#141B22' }}>Please check this name</b>
+      <div style={{ marginTop: 4, color: '#4B585C' }}>{why}</div>
+      <div style={{ marginTop: 8, color: '#141B22' }}>
+        First <b>{b.first_name || '—'}</b>
+        {'  ·  '}Middle <b>{b.middle_name || 'none'}</b>
+        {'  ·  '}Last <b>{b.last_name || '—'}</b>
+        {b.name_suffix ? <>{'  ·  '}Suffix <b>{b.name_suffix}</b></> : null}
+      </div>
+      <div style={{ marginTop: 10, display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+        <button className="btn primary small" onClick={confirm} disabled={busy}>
+          {busy ? 'Saving…' : 'Yes, that is right'}
+        </button>
+        <span className="small" style={{ color: '#4B585C', alignSelf: 'center' }}>
+          Not right? Use <b>Edit</b> below and fix the boxes — that clears this too.
+        </span>
+      </div>
+    </div>
+  );
+}
+
 function Overview({ b, onChanged }) {
   const [team, setTeam] = useState([]);
   const [f, setF] = useState(null);
@@ -172,7 +220,9 @@ function Overview({ b, onChanged }) {
   // an error — the save offers to keep BOTH profiles rather than dead-ending.
   const [shareOffer, setShareOffer] = useState(false);
   const start = () => setF({
-    firstName: b.first_name || '', lastName: b.last_name || '',
+    fullName: fullNameOf(b),
+    firstName: b.first_name || '', middleName: b.middle_name || '', lastName: b.last_name || '',
+    nameSuffix: b.name_suffix || '',
     email: b.email || '', cellPhone: b.cell_phone || '', contactType: b.contact_type || '',
     maritalStatus: b.marital_status || '', citizenship: b.citizenship || '',
     dob: dayInputValue(b.date_of_birth) || '',
@@ -190,8 +240,10 @@ function Overview({ b, onChanged }) {
         // Send the NAME only when it actually changed — a correction here is a
         // deliberate human decision, so it also goes out to every ClickUp card
         // (otherwise the next sync would read the old name straight back).
-        ...(f.firstName !== (b.first_name || '') ? { firstName: f.firstName } : {}),
-        ...(f.lastName !== (b.last_name || '') ? { lastName: f.lastName } : {}),
+        ...(nameChanged(f, b) ? {
+          firstName: f.firstName, middleName: f.middleName,
+          lastName: f.lastName, nameSuffix: f.nameSuffix,
+        } : {}),
         email: f.email, cellPhone: f.cellPhone, contactType: f.contactType,
         maritalStatus: f.maritalStatus, citizenship: f.citizenship,
         // Send the DOB only when it actually changed — setting it applies to
@@ -228,12 +280,28 @@ function Overview({ b, onChanged }) {
         <div className="ts-inputs">
           {/* The legal name is correctable here (owner-directed 2026-07-26): a file
               opened under a nickname created the profile under that nickname, and
-              there was nowhere to fix it. Saving pushes it to ClickUp too. */}
+              there was nowhere to fix it. Saving pushes it to ClickUp too.
+
+              THE ONE BIG NAME FIELD stays (owner-directed 2026-07-27): typing the
+              whole name in the big box splits it into the parts below as you type,
+              and typing the parts rebuilds the big box. Either way the same four
+              fields are saved, so nothing that reads the name changes. */}
+          <label style={{ gridColumn: '1 / -1' }}><span>Full name</span>
+            <input className="input" value={f.fullName}
+              onChange={e => setF({ ...f, fullName: e.target.value, ...splitName(e.target.value) })}
+              title="Their whole legal name. This is what every screen, email, term sheet and ClickUp card shows." /></label>
           <label><span>First name</span><input className="input" value={f.firstName}
-            onChange={e => setF({ ...f, firstName: e.target.value })}
+            onChange={e => setF(s => rejoin({ ...s, firstName: e.target.value }))}
             title="Their real legal first name. Saving updates the profile and every linked ClickUp card." /></label>
+          <label><span>Middle name <span style={{ color: '#4B585C', fontWeight: 400 }}>(optional)</span></span>
+            <input className="input" value={f.middleName}
+              onChange={e => setF(s => rejoin({ ...s, middleName: e.target.value }))}
+              title="Leave empty if they do not have one." /></label>
           <label><span>Last name</span><input className="input" value={f.lastName}
-            onChange={e => setF({ ...f, lastName: e.target.value })} /></label>
+            onChange={e => setF(s => rejoin({ ...s, lastName: e.target.value }))} /></label>
+          <label><span>Suffix <span style={{ color: '#4B585C', fontWeight: 400 }}>(optional)</span></span>
+            <input className="input" placeholder="Jr., III" value={f.nameSuffix}
+              onChange={e => setF(s => rejoin({ ...s, nameSuffix: e.target.value }))} /></label>
           <label><span>Email</span><EmailInput value={f.email} onChange={v => setF({ ...f, email: v })} /></label>
           <label><span>Cell phone</span><PhoneInput value={f.cellPhone} onChange={v => setF({ ...f, cellPhone: v })} /></label>
           <label><span>Contact type</span>
@@ -358,7 +426,7 @@ function Overview({ b, onChanged }) {
       {(b.sharing || []).length > 0 && (
         <div className="notice" style={{ marginTop: 12, color: '#141B22' }}>
           <strong>This email is shared.</strong>{' '}
-          {(b.sharing || []).map(s => [s.first_name, s.last_name].filter(Boolean).join(' ')).join(', ')}{' '}
+          {(b.sharing || []).map(s => fullNameOf(s)).join(', ')}{' '}
           {b.sharing.length === 1 ? 'also uses' : 'also use'} this address. They are separate people with their own
           profiles and files — only one of them can sign in to the portal with it.
         </div>
@@ -736,7 +804,7 @@ function Duplicates({ id, name, onMerged }) {
                   {rows.map(d => (
                     <tr key={d.id} style={{ borderTop: '1px solid var(--line, rgba(127,169,176,.2))' }}>
                       <td style={{ padding: '10px 12px' }}>
-                        <Link to={`/internal/borrowers/${d.id}`}>{`${d.first_name || ''} ${d.last_name || ''}`.trim() || '(no name)'}</Link>
+                        <Link to={`/internal/borrowers/${d.id}`}>{fullNameOf(d) || '(no name)'}</Link>
                         {' '}<span className={`pill ${CONF[d.confidence]?.cls || ''}`}>{CONF[d.confidence]?.t || d.confidence}</span>
                       </td>
                       <td style={{ padding: '10px 12px' }} className="small">{d.email || '—'}</td>

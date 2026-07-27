@@ -6,6 +6,7 @@ import AddressAutocomplete from '../components/AddressAutocomplete.jsx';
 import LlcPicker from '../components/LlcPicker.jsx';
 import { MoneyInput, PhoneInput, ZipInput , EmailInput} from '../components/FormattedInputs.jsx';
 import { unitsMode, unitsForType } from '../lib/enums.js';
+import { fullNameOf } from '../lib/personName.js';
 
 /* Staff-side file origination. An admin, loan officer, or operations user opens
    a mortgage file from their end — the borrower does NOT need to be signed up.
@@ -99,7 +100,7 @@ function CoBorrowerPicker({ value, onChange }) {
                     onMouseDown={e => { e.preventDefault(); pick(bo); }}>
                     <span className="addr-pin">●</span>
                     <span>
-                      <strong>{[bo.first_name, bo.last_name].filter(Boolean).join(' ') || '—'}</strong>
+                      <strong>{fullNameOf(bo) || '—'}</strong>
                       {bo.email ? ' · ' + bo.email : ''}
                       {' · ' + n + ' prior file' + (n === 1 ? '' : 's')}
                       {other ? ` · ${other} other deal${other === 1 ? '' : 's'}` : ''}
@@ -491,7 +492,7 @@ export default function StaffNewFile() {
                         onMouseDown={e => { e.preventDefault(); pickBorrower(bo); }}>
                         <span className="addr-pin">●</span>
                         <span>
-                          <strong>{[bo.first_name, bo.last_name].filter(Boolean).join(' ') || '—'}</strong>
+                          <strong>{fullNameOf(bo) || '—'}</strong>
                           {bo.email ? ' · ' + bo.email : ''}
                           {' · ' + n + ' prior file' + (n === 1 ? '' : 's')}
                           {other ? ` · ${other} other deal${other === 1 ? '' : 's'}` : ''}

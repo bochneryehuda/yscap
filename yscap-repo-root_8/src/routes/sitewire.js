@@ -468,7 +468,7 @@ router.get('/files/:id/notifications', requirePermission('manage_draws'), async 
   try {
     const sent = (await db.query(
       `SELECT n.id, n.recipient_kind, n.type, n.title, n.body, n.link, n.read_at, n.email_status, n.emailed_at, n.created_at,
-              COALESCE(s.full_name, NULLIF(TRIM(COALESCE(b.first_name,'') || ' ' || COALESCE(b.last_name,'')), '')) AS recipient_name,
+              COALESCE(s.full_name, NULLIF(b.full_name,'')) AS recipient_name,
               COALESCE(s.email, b.email) AS recipient_email,
               se.id IS NOT NULL AS has_full_email,
               COALESCE(array_length(se.to_emails,1),0) AS recipient_count,

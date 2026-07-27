@@ -1986,11 +1986,11 @@ html:has(.la-scope),body:has(.la-scope){background:#F4F0E7;}
     var assign = !isRefi() && el("isAssign").checked;
     return {
       formToken: FORM_TOKEN.t,
-      firstName: val("b1First"), lastName: val("b1Last"),
+      firstName: val("b1First"), middleName: val("b1Middle"), lastName: val("b1Last"),
       email: val("b1Email"), cellPhone: val("b1Phone"),
       citizenship: val("b1Citizen"), ssn: val("b1Ssn"), dob: val("b1Dob"),
       fico: val("fico"),
-      b2First: val("b2First"), b2Last: val("b2Last"), b2Email: val("b2Email"),
+      b2First: val("b2First"), b2Middle: val("b2Middle"), b2Last: val("b2Last"), b2Email: val("b2Email"),
       b2Phone: val("b2Phone"), b2Citizen: val("b2Citizen"), b2Ssn: val("b2Ssn"), b2Dob: val("b2Dob"),
       loOfficerEmail: off ? off.email : null,
       program: val("dealType"), loanType: purpose(),
@@ -2106,7 +2106,7 @@ html:has(.la-scope),body:has(.la-scope){background:#F4F0E7;}
       btn.disabled = true; var o = btn.textContent; btn.textContent = "Creating\u2026";
       var req = isClaim
         ? fetch("/auth/borrower/register", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({
-            email: val("b1Email"), password: p1, firstName: val("b1First"), lastName: val("b1Last"), cellPhone: val("b1Phone") }) })
+            email: val("b1Email"), password: p1, firstName: val("b1First"), middleName: val("b1Middle"), lastName: val("b1Last"), cellPhone: val("b1Phone") }) })
         : fetch("/api/apply/account", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ token: account.token, password: p1 }) });
       req.then(function (r) { return r.json().then(function (d) { return { ok: r.ok, status: r.status, d: d }; }); })
         .then(function (res) {

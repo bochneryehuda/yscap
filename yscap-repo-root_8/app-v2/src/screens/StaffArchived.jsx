@@ -2,6 +2,7 @@ import React, { useEffect, useMemo, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { api } from '../lib/api.js';
 import { useAuth } from '../lib/auth.jsx';
+import { fullNameOf } from '../lib/personName.js';
 
 /* The Archived folder — files that were archived (soft-removed) leave the
    pipeline and the dashboard figures but are kept here and can be restored, or
@@ -103,7 +104,7 @@ export default function StaffArchived() {
                     <tr key={a.id}>
                       <td><Link to={`/internal/app/${a.id}`}>{a.ys_loan_number || '—'}</Link></td>
                       <td className="cell-deal">
-                        <div className="lead">{[a.first_name, a.last_name].filter(Boolean).join(' ') || a.email || '—'}</div>
+                        <div className="lead">{fullNameOf(a) || a.email || '—'}</div>
                         <div className="addr">{addrLine(a.property_address)}</div>
                       </td>
                       <td>{a.program || '—'}</td>

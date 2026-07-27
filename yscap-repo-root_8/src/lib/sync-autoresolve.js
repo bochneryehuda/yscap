@@ -459,14 +459,28 @@ async function applyReviewWinner(row, winner, customValue) {
         return phone;
       }
       if (fieldKey === 'first_name') {
-        const parts = String(v).trim().split(/\s+/);
-        if (!parts[0] || require('../clickup/transforms').isPlaceholderName(String(v))) {
+        // ClickUp's name field is ONE line; PILOT stores first / middle / last /
+        // suffix (db/343). Split it the same way every other door does, so
+        // resolving a review can never re-merge a middle name back into the first
+        // name — and record whether the split was a judgement call so the person's
+        // profile keeps asking a human to confirm it.
+        const PN = require('./person-name');
+        const p = PN.splitFullName(v);
+        if (!p.first || PN.isPlaceholderName(String(v))) {
           throw httpError(422, `${sourceLabel} is not a usable name`);
         }
-        const first = parts.shift(), last = parts.join(' ') || null;
         await db.query(
-          `UPDATE borrowers SET first_name=$2, last_name=COALESCE($3, last_name), updated_at=now() WHERE id=$1`,
-          [borrowerId, first, last]);
+          `UPDATE borrowers
+              SET first_name=$2,
+                  last_name=COALESCE(NULLIF($3,''), last_name),
+                  middle_name=NULLIF($4,''),
+                  name_suffix=COALESCE(NULLIF($5,''), name_suffix),
+                  name_review_needed=$6,
+                  name_review_reason=$7,
+                  updated_at=now()
+            WHERE id=$1`,
+          [borrowerId, p.first, p.last || '', p.middle || '', p.suffix || '',
+            !!p.needsReview, p.needsReview ? p.reason : null]);
         return String(v).trim();
       }
       // current_address: object (ClickUp location) or typed text → jsonb shape.

@@ -45,6 +45,18 @@ async function siteIntake(p, opts = {}) {
   let borrowerId, appId, officerId = null, officerName = p.loOfficer || p.loanOfficerName || null;
   const submittedFirst = p.firstName || p.b1First || 'Unknown';
   const submittedLast = p.lastName || p.b1Last || 'Unknown';
+  // MIDDLE NAME (db/343) — optional on the public form. If the applicant did not
+  // get a middle-name box (an older cached page) but typed their whole name into
+  // the first-name box, split it here rather than storing "Issac Michael" as a
+  // first name: this is the door most legacy merged names came through.
+  const PN = require('../lib/person-name');
+  let submittedMiddle = String(p.middleName || p.b1Middle || '').trim();
+  let submittedSuffix = String(p.nameSuffix || p.b1Suffix || '').trim();
+  let nameSplitReason = null;
+  if (!submittedMiddle && submittedFirst.trim().includes(' ')) {
+    const sp = PN.splitStoredName({ first: submittedFirst, last: submittedLast });
+    if (sp.changed) { submittedMiddle = sp.middle; submittedSuffix = submittedSuffix || sp.suffix; nameSplitReason = sp.needsReview ? sp.reason : null; }
+  }
   try {
     await client.query('BEGIN');
     // SAME-EMAIL, DIFFERENT-PERSON guard (owner incident 2026-07-15 night): a
@@ -68,9 +80,13 @@ async function siteIntake(p, opts = {}) {
       ? `noemail+intake-${require('crypto').randomBytes(6).toString('hex')}@clickup.local`
       : email;
     const b = await client.query(
-      `INSERT INTO borrowers (first_name,last_name,email,cell_phone,citizenship)
-       VALUES ($1,$2,$3,$4,$5)
+      `INSERT INTO borrowers (first_name,last_name,email,cell_phone,citizenship,middle_name,name_suffix,name_review_needed,name_review_reason)
+       VALUES ($1,$2,$3,$4,$5,NULLIF($6,''),NULLIF($7,''),$8,$9)
        ON CONFLICT (email) WHERE shares_email = false DO UPDATE SET
+         -- Fill-only, like the name columns below: a submission may ADD a middle
+         -- name we do not have, but never overwrite one already on the profile.
+         middle_name=COALESCE(borrowers.middle_name,EXCLUDED.middle_name),
+         name_suffix=COALESCE(borrowers.name_suffix,EXCLUDED.name_suffix),
          -- A real submitted name heals a placeholder row; never a real one.
          first_name=CASE WHEN lower(btrim(coalesce(borrowers.first_name,''))) IN ('','unknown','co-borrower')
                           AND lower(btrim(EXCLUDED.first_name)) NOT IN ('','unknown')
@@ -82,7 +98,8 @@ async function siteIntake(p, opts = {}) {
          citizenship=COALESCE(borrowers.citizenship,EXCLUDED.citizenship),
          updated_at=now() RETURNING id`,
       [submittedFirst, submittedLast, emailForRow,
-       p.cellPhone || p.b1Phone || null, p.citizenship || p.b1Citizen || null]);
+       p.cellPhone || p.b1Phone || null, p.citizenship || p.b1Citizen || null,
+       submittedMiddle, submittedSuffix, !!nameSplitReason, nameSplitReason]);
     borrowerId = b.rows[0].id;
     if (p.ssn || p.b1Ssn) {
       // #91/#92: only persist a real 9-digit SSN, canonically (digits only). A
@@ -197,7 +214,7 @@ async function siteIntake(p, opts = {}) {
           suppressIfRejected: true,
           rawValue: JSON.stringify({ b1: borrowerId, b2: dupOfBorrowerId, source: 'intake' }).slice(0, 300),
           clickupValue: String(email).toLowerCase().trim().slice(0, 160),
-          portalValue: `${[submittedFirst, submittedLast].filter(Boolean).join(' ')} AND ${[other.first_name, other.last_name].filter(Boolean).join(' ')}`.slice(0, 160) });
+          portalValue: `${[submittedFirst, submittedLast].filter(Boolean).join(' ')} AND ${require('../lib/person-name').displayName(other)}`.slice(0, 160) });
       } catch (dupErr) { console.error('[intake] dedup bookkeeping failed:', db.describeError(dupErr)); }
     }
     // CO-BORROWER from the same submission (map the whole form, not just the
@@ -208,6 +225,7 @@ async function siteIntake(p, opts = {}) {
       try {
         const coFirst = p.coFirstName || p.b2First || null;
         const coLast = p.coLastName || p.b2Last || null;
+        const coMiddle = String(p.coMiddleName || p.b2Middle || '').trim();   // optional (db/343)
         const coEmail = String(p.coEmail || p.b2Email || '').toLowerCase().trim();
         if (coEmail && coEmail !== String(email).toLowerCase().trim() && (coFirst || coLast)) {
           const identity = require('../clickup/identity');
@@ -219,9 +237,10 @@ async function siteIntake(p, opts = {}) {
             console.warn(`[intake] co-borrower email matches a different person — left unlinked (app ${appId})`);
           } else {
             const cb = await db.query(
-              `INSERT INTO borrowers (first_name,last_name,email,cell_phone,citizenship)
-               VALUES ($1,$2,$3,$4,$5)
+              `INSERT INTO borrowers (first_name,last_name,email,cell_phone,citizenship,middle_name)
+               VALUES ($1,$2,$3,$4,$5,NULLIF($6,''))
                ON CONFLICT (email) WHERE shares_email = false DO UPDATE SET
+                 middle_name=COALESCE(borrowers.middle_name,EXCLUDED.middle_name),
                  first_name=CASE WHEN lower(btrim(coalesce(borrowers.first_name,''))) IN ('','unknown','co-borrower')
                                   AND lower(btrim(EXCLUDED.first_name)) NOT IN ('','unknown')
                                  THEN EXCLUDED.first_name ELSE borrowers.first_name END,
@@ -231,7 +250,7 @@ async function siteIntake(p, opts = {}) {
                  cell_phone=COALESCE(borrowers.cell_phone,EXCLUDED.cell_phone),
                  citizenship=COALESCE(borrowers.citizenship,EXCLUDED.citizenship),
                  updated_at=now() RETURNING id`,
-              [coFirst || 'Co-borrower', coLast || 'Unknown', coEmail, p.b2Phone || null, p.b2Citizen || null]);
+              [coFirst || 'Co-borrower', coLast || 'Unknown', coEmail, p.b2Phone || null, p.b2Citizen || null, coMiddle]);
             const coId = cb.rows[0].id;
             if (p.b2Ssn) {
               const s2 = C.ssnForStorage(p.b2Ssn);

@@ -72,7 +72,7 @@ function drawRow(d) {
     inspector_allowance_rate: d.inspector_allowance_rate != null && Number.isFinite(Number(d.inspector_allowance_rate)) ? Number(d.inspector_allowance_rate) : null,
     inspector_recommendation_rate: d.inspector_recommendation_rate != null && Number.isFinite(Number(d.inspector_recommendation_rate)) ? Number(d.inspector_recommendation_rate) : null,
     lender_allowance_rate: d.lender_allowance_rate != null && Number.isFinite(Number(d.lender_allowance_rate)) ? Number(d.lender_allowance_rate) : null,
-    coordinator_name: d.coordinator && (d.coordinator.name || [d.coordinator.first_name, d.coordinator.last_name].filter(Boolean).join(' ')) || null,
+    coordinator_name: d.coordinator && (d.coordinator.name || require('../lib/person-name').displayName(d.coordinator)) || null,
     submitted_at: d.submitted_at || null, approved_at: d.approved_at || null,
     completed_at: d.completed_at || null, disbursed_at: d.disbursed_at || null,
     tp_created_at: d.created_at || null,

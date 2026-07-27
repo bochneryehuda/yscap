@@ -131,7 +131,7 @@ async function syncExperienceChecklistForApplication(appId, client = db) {
     const nm = await client.query(
       `SELECT id, first_name, last_name FROM borrowers WHERE id = ANY($1::uuid[])`, [ids]);
     const nameById = {};
-    for (const row of nm.rows) nameById[row.id] = [row.first_name, row.last_name].filter(Boolean).join(' ') || 'Borrower';
+    for (const row of nm.rows) nameById[row.id] = require('./person-name').displayName(row) || 'Borrower';
     perBorrower = [];
     for (const bid of ids) {
       perBorrower.push({
