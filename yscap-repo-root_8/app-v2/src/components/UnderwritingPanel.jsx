@@ -335,9 +335,16 @@ function Finding({ appId, f, onChange, resolvable, canAct = false, canWaive = tr
           <a href="#" onClick={openSourceDoc} style={{ color: 'var(--teal-deep,#256168)', textDecoration: 'underline' }}>
             Open the source document{pageNumber ? ` (page ${pageNumber})` : ''}
           </a>
-          <a href="#" onClick={(e) => { e.preventDefault(); loadEvidence(); }} style={{ color: 'var(--teal-deep,#256168)', textDecoration: 'underline' }}>
-            {evidence ? 'Hide where we saw this' : 'Where we saw this'}
-          </a>
+          {/* "Where we saw this" reads the exact recorded quote + page for a STORED finding
+              (needs f.id to look up the evidence ledger). A derived finding — a tie-out
+              discrepancy that now carries a source document but no persisted row — has no ledger
+              entry, so the link would silently do nothing; show it only when there's evidence to
+              fetch, and let the "Open the source document" link stand on its own otherwise. */}
+          {f.id && (
+            <a href="#" onClick={(e) => { e.preventDefault(); loadEvidence(); }} style={{ color: 'var(--teal-deep,#256168)', textDecoration: 'underline' }}>
+              {evidence ? 'Hide where we saw this' : 'Where we saw this'}
+            </a>
+          )}
         </div>
       )}
       {evidence && (

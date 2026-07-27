@@ -171,7 +171,21 @@ function decorate(f) {
   // the fix for the owner's "same finding six times" across the three surfaces (2026-07-27).
   let claimKey = null;
   try { claimKey = require('../lib/underwriting/finding-claims').claimOf(f); } catch (_) { claimKey = null; }
-  return Object.assign({}, f, { claimKey, availableActions: underwriterActions(actions ? { ...f, actions } : f) });
+  // "Open the source document" for a DERIVED finding (owner-reported 2026-07-27: "every finding
+  // needs a direct link to the document — open me to the exact spot"). A tie-out discrepancy is not
+  // a stored row, so it carries no `document_id`; it carries the specific conflicting `sources`
+  // instead. When exactly ONE of those sources is an openable document, surface it as the finding's
+  // source document so the card shows the same "Open the source document" link every stored finding
+  // has. When TWO OR MORE are openable, the card already offers the richer side-by-side "this
+  // document vs. that document" compare, so we leave `documentId` unset and let that win — stamping
+  // one of several conflicting docs as "the" source would be arbitrary and misleading. Only ever
+  // ADDS a link (never overrides a real per-document finding's own `document_id`).
+  const extra = { claimKey, availableActions: underwriterActions(actions ? { ...f, actions } : f) };
+  if (f.document_id == null && f.documentId == null && Array.isArray(f.sources)) {
+    const openable = f.sources.filter((s) => s && s.documentId != null);
+    if (openable.length === 1) extra.documentId = openable[0].documentId;
+  }
+  return Object.assign({}, f, extra);
 }
 
 /**
@@ -2932,3 +2946,6 @@ module.exports.fileForById = async function fileForById(appId) {
 module.exports.fileDocById = fileDoc;
 module.exports.AUTOREAD_ENABLED = AUTOREAD_ENABLED;
 module.exports.AUTOREAD_MAX_PER_CALL = AUTOREAD_MAX_PER_CALL;
+// Exported for unit testing the finding decoration (claim-key stamp + the derived "open the source
+// document" link a tie-out discrepancy gets from its single openable source).
+module.exports._decorate = decorate;
