@@ -117,13 +117,38 @@ const ok = (n) => { console.log(`  ok  ${n}`); passed++; };
   ok('hostile input fails OPEN (shows the finding) and never throws');
 }
 
+// 8b. The severity a decision was made at is part of the rule, not decoration.
+{
+  const set = new Map([['code:c::f::::', fdec.sevRank('warning')]]);
+  const at = (sev) => fdec.isSuppressed(set, { code: 'c', field: 'f', severity: sev });
+  assert.strictEqual(at('warning'), true, 'the severity judged stays settled');
+  assert.strictEqual(at('info'), true, 'and anything milder');
+  assert.strictEqual(at('fatal'), false,
+    'a DEALBREAKER must break through a decision made about a warning — that is a false clear');
+  assert.strictEqual(at(' FATAL '), false, 'case and whitespace do not smuggle one past');
+  assert.strictEqual(at('critical'), true, 'an unrecognised word ranks 0 and does not break through');
+  // A legacy row (rank 0, decided before db/336) suppresses regardless — treating it as the
+  // lowest rank would resurrect every dismissed fatal already on file.
+  const legacy = new Map([['code:c::f::::', 0]]);
+  assert.strictEqual(fdec.isSuppressed(legacy, { code: 'c', field: 'f', severity: 'fatal' }), true,
+    'a decision taken before severity was recorded still suppresses');
+  // A plain Set (any caller not yet migrated) still works and behaves as legacy.
+  assert.strictEqual(fdec.isSuppressed(new Set(['code:c::f::::']), { code: 'c', field: 'f', severity: 'fatal' }),
+    true, 'a Set still works — no caller breaks on the type change');
+  ok('a decision on a warning does not silence a later fatal');
+}
+
 // 9. record/reopen refuse a bad client instead of throwing into a caller's transaction.
 {
   const p = [fdec.record(null, { applicationId: 'a', finding: { code: 'c' }, decision: 'dismiss' }),
     fdec.record({}, {}), fdec.reopen(null, {}), fdec.suppressedKeys(null, 'a'), fdec.decisionsForFile(null, 'a')];
   Promise.all(p).then(([r1, r2, r3, keys, rows]) => {
     assert.strictEqual(r1, false); assert.strictEqual(r2, false); assert.strictEqual(r3, false);
-    assert.ok(keys instanceof Set && keys.size === 0);
+    // `suppressedKeys` returns a MAP (finding_key -> the severity RANK it was decided at,
+    // db/336) so `isSuppressed` can refuse to silence something worse than what was judged.
+    // A Map has `.has()` and `.size`, so every caller that treats it as a set of keys is
+    // unaffected — but the degraded path must return the same type as the happy one.
+    assert.ok(keys instanceof Map && keys.size === 0);
     assert.deepStrictEqual(rows, []);
     ok('record/reopen/reads degrade to a safe no-op with no client — never throw at a caller');
     console.log(`\nfinding-decisions pure — ${passed} checks passed`);

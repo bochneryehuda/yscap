@@ -153,8 +153,12 @@ async function saveAnalysis(client, { documentId, applicationId, borrowerId, doc
     let bornStatus = 'open';
     if (decided.size) {
       const fdec = require('./finding-decisions');
+      // `severity` is part of the shape, not decoration: a decision taken while this was a
+      // WARNING must not carry forward once the same finding comes back a DEALBREAKER. A
+      // promoted `upgrade_severity` rule (applyPromotedRules, above) does exactly that to a
+      // re-read, and the db/332 sweep re-reads the whole book on a schedule.
       const shape = { code: f.code, field: f.field || null, document_id: documentId,
-        extraction_id: extractionId, docValue: str(f.docValue) };
+        extraction_id: extractionId, docValue: str(f.docValue), severity: f.severity };
       if (fdec.isSuppressed(decided, shape)) { bornStatus = 'dismissed'; carriedForward += 1; }
     }
     const { rows: fr } = await client.query(
@@ -413,6 +417,25 @@ function rollup(findings) {
  * CTC-blocking if fatal) until the follow-up clears; the rest close it.
  * @returns {Promise<object|null>} the updated finding row, or null if not found/already closed
  */
+
+// The ledger payload for a document-finding resolution, as its own function so a test can assert
+// its SHAPE rather than only its round trip (re-audit 2026-07-27 — the round trip alone cannot
+// kill a mutation here, because `record()` ALSO falls back to `finding.severity` and `updated`
+// comes from a `RETURNING *`; the explicit field is belt to that fallback's braces, and only a
+// shape assertion can prove the belt is still on).
+function ledgerRecordFor({ updated, action, terminal, note, by } = {}) {
+  const fdec = require('./finding-decisions');
+  return {
+    applicationId: updated && updated.application_id,
+    finding: updated,
+    origin: 'document_finding',
+    decision: action,
+    suppress: !!terminal && fdec.suppresses(action),
+    note, decidedBy: by || null,
+    severity: (updated && updated.severity) || null,
+  };
+}
+
 async function resolveFinding(client, { findingId, action, note, value, by } = {}) {
   const { validateResolution } = require('./actions');
   const v = validateResolution(action, { note, value });
@@ -440,17 +463,11 @@ async function resolveFinding(client, { findingId, action, note, value, by } = {
   // mirror failure must never undo a resolution the human just made.
   if (updated) {
     const fdec = require('./finding-decisions');
-    await fdec.record(client, {
-      applicationId: updated.application_id,
-      finding: updated,
-      origin: 'document_finding',
-      decision: v.action,
-      suppress: terminal && fdec.suppresses(v.action),
-      note, decidedBy: by || null,
-    });
+    await fdec.record(client, ledgerRecordFor({ updated, action: v.action, terminal, note, by }));
     await closeMirroredSuggestions(client, {
       applicationId: updated.application_id, code: updated.code,
       documentId: updated.document_id, action: v.action, by,
+      severity: updated.severity || null,
     });
   }
   // Self-training capture (Sovereign 4/4, owner-directed 2026-07-21): every
@@ -484,10 +501,19 @@ async function resolveFinding(client, { findingId, action, note, value, by } = {
  * finding — a posted condition / requested document deliberately keeps both live.
  * Best-effort: never throws.
  */
-async function closeMirroredSuggestions(client, { applicationId, code, documentId, action, by } = {}) {
+async function closeMirroredSuggestions(client, { applicationId, code, documentId, action, by, severity } = {}) {
   try {
     if (!applicationId || !code) return 0;
-    if (!require('./finding-decisions').suppresses(action)) return 0;
+    const fdec = require('./finding-decisions');
+    if (!fdec.suppresses(action)) return 0;
+    // ...AND ONLY MIRRORS NO WORSE THAN WHAT WAS DECIDED (re-audit 2026-07-27 — the seventh
+    // door). This closed every same-code AI row regardless of severity, so dismissing a
+    // WARNING on the Document Review desk also closed a FATAL mirror of the same code — and
+    // that row, now stamped `decided_by_staff_id`, went on to suppress re-raises through
+    // `record()`'s settled-row dedupe. One warning judgement, a silenced dealbreaker, two
+    // surfaces away. `sevRank(null)` is 0, so a decision with no severity keeps the old
+    // behaviour and closes everything, exactly as db/336 treats a NULL ledger severity.
+    const rank = fdec.sevRank(severity);
     const r = await client.query(
       `UPDATE ai_suggestions
           SET status = 'dismissed',
@@ -497,9 +523,13 @@ async function closeMirroredSuggestions(client, { applicationId, code, documentI
         WHERE application_id = $1
           AND status IN ('open','escalated','marked_important','asked_admin')
           AND COALESCE(evidence->>'code', proposed_action->'fields'->>'code') = $2
-          AND ($3::uuid IS NULL OR document_id IS NULL OR document_id = $3)`,
+          AND ($3::uuid IS NULL OR document_id IS NULL OR document_id = $3)
+          AND ($6::int = 0 OR COALESCE(
+                CASE btrim(lower(COALESCE(severity,''))) WHEN 'fatal' THEN 3 WHEN 'warning' THEN 2 WHEN 'info' THEN 1 ELSE 0 END,
+                0) <= $6::int)`,
       [applicationId, code, documentId || null,
-       `Closed with the finding on the Document Review desk (${String(action || 'resolved')}).`, by || null]);
+       `Closed with the finding on the Document Review desk (${String(action || 'resolved')}).`, by || null,
+       rank]);
     return r.rowCount || 0;
   } catch (_) { return 0; }
 }
@@ -548,6 +578,7 @@ async function getFileFindings(client, applicationId) {
   return { findings: rows, summary: rollup(rows) };
 }
 
-module.exports = { saveAnalysis, resolveFinding, getFileFindings, rollup, maskFields,
+module.exports = {
+  _ledgerRecordFor: ledgerRecordFor, saveAnalysis, resolveFinding, getFileFindings, rollup, maskFields,
   findReusableExtraction, findingsForExtraction, closeMirroredSuggestions,
   _internals: { maskValue } };

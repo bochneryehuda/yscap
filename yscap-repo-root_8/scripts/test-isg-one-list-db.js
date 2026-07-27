@@ -32,9 +32,87 @@ const ok = (n) => { console.log(`  ok  ${n}`); passed += 1; };
 
 console.log('ISG one list (DB)');
 
+
+// THE FATAL ALERT SURVIVES AN IN-TRANSACTION UPGRADE (re-audit 2026-07-27).
+//
+// Two rounds put a re-read inside `_notifyFatalNew` and both KILLED this alert:
+//   attempt 1 suppressed when the row was ABSENT — which, on a pool connection, is the normal
+//     case for any caller recording inside a transaction, i.e. nearly all of them;
+//   attempt 2 suppressed on a VISIBLE, non-fatal row — which on the upgrade branch is the
+//     caller's own committed PRE-IMAGE, the pre-upgrade `warning`.
+//
+// THE PRE-IMAGE IS BUILT FOR REAL. The first version of this regression did not build it: it
+// inserted the warning row inside the caller's own transaction, so the pool saw NOTHING. That
+// is attempt 1's shape only — it killed attempt 2 on LATENCY (one round trip loses a two-tick
+// race), not on semantics, which is a test that looks discriminating and is not.
+//
+// It runs OUTSIDE the main test transaction on purpose, and cleans up after itself: committed
+// fixtures cannot be created or dropped while that transaction holds locks on the same rows.
+async function upgradeNotifyRegression(pool, ok) {
+  const c = await pool.connect();
+  let appId = null;
+  const notifyPath = require.resolve('../src/lib/notify');
+  const hadNotify = require.cache[notifyPath];
+  const sends = [];
+  try {
+    const b = (await pool.query(
+      `INSERT INTO borrowers (first_name, last_name, email)
+       VALUES ('Pre','Image','preimage-' || gen_random_uuid() || '@test.local') RETURNING id`)).rows[0];
+    appId = (await pool.query(
+      `INSERT INTO applications (borrower_id, property_address) VALUES ($1,'{}'::jsonb) RETURNING id`,
+      [b.id])).rows[0].id;
+    const committed = (await pool.query(
+      `INSERT INTO ai_suggestions (application_id, source, kind, severity, title, body, status, dedupe_key)
+       VALUES ($1,$2,'finding','warning','Feasibility report required','x','escalated','isg-gap:upgrade-notify')
+       RETURNING id`, [appId, deskFindings.SOURCE])).rows[0];
+
+    // The pool sees the PRE-IMAGE: a visible, non-fatal row — exactly what attempt 2 read as
+    // proof of a downgrade.
+    const pre = await pool.query(
+      `SELECT lower(btrim(COALESCE(severity,''))) AS sev FROM ai_suggestions WHERE id=$1`, [committed.id]);
+    assert.strictEqual(pre.rowCount, 1, 'the pre-image row is committed and visible');
+    assert.strictEqual(pre.rows[0].sev, 'warning',
+      'and it reads as a WARNING — the exact shape that fooled the second guard');
+
+    require.cache[notifyPath] = { id: notifyPath, filename: notifyPath, loaded: true, exports: {
+      notifyAppStaff: async () => { sends.push('staff'); },
+      notifyAdmins: async () => { sends.push('admins'); },
+    } };
+    await c.query('BEGIN');
+    const upgraded = await aiSug.record(c, {
+      applicationId: appId, source: deskFindings.SOURCE, kind: 'finding', severity: 'fatal',
+      title: 'Feasibility report required', body: 'x', dedupeKey: 'isg-gap:upgrade-notify',
+      evidence: { code: null, cond_no: 200, flag: 'coverage_gap' },
+    });
+    assert.strictEqual(upgraded.deduped, true, 'the escalated row is refreshed in place');
+    assert.strictEqual(upgraded.id, committed.id, 'and it is the COMMITTED row that was picked');
+    // Generous on time DELIBERATELY: this asserts SEMANTICS, not how many ticks a send takes.
+    // A tight tick budget is what made the first version look like it killed attempt 2.
+    for (let i = 0; i < 60 && !sends.length; i += 1) await new Promise((r) => setTimeout(r, 5));
+    assert.ok(sends.length > 0,
+      'the file team IS told the escalated item became a dealbreaker — even mid-transaction');
+    const after = (await c.query(`SELECT severity FROM ai_suggestions WHERE id=$1`, [committed.id])).rows[0];
+    assert.strictEqual(after.severity, 'fatal', 'and the row really carries the new severity');
+    await c.query('ROLLBACK');
+    ok('an in-transaction upgrade of a COMMITTED warning row still reaches the team');
+  } finally {
+    await c.query('ROLLBACK').catch(() => {});
+    if (hadNotify) require.cache[notifyPath] = hadNotify; else delete require.cache[notifyPath];
+    c.release();
+    if (appId) {
+      const b2 = await pool.query(`SELECT borrower_id FROM applications WHERE id=$1`, [appId]).catch(() => null);
+      await pool.query(`DELETE FROM notifications WHERE application_id=$1`, [appId]).catch(() => {});
+      await pool.query(`DELETE FROM ai_suggestions WHERE application_id=$1`, [appId]).catch(() => {});
+      await pool.query(`DELETE FROM applications WHERE id=$1`, [appId]).catch(() => {});
+      if (b2 && b2.rows[0]) await pool.query(`DELETE FROM borrowers WHERE id=$1`, [b2.rows[0].borrower_id]).catch(() => {});
+    }
+  }
+}
+
 (async () => {
   const pool = new Pool({ connectionString: process.env.DATABASE_URL });
   const client = await pool.connect();
+  let released = false;
   try {
     await client.query('BEGIN');
     const email = 'isgone+' + Buffer.from(String(process.pid)).toString('hex') + '@example.com';
@@ -100,6 +178,18 @@ console.log('ISG one list (DB)');
     assert.strictEqual(rural.blocksCtc, false, 'ADVISORY — a guideline finding never gates clear-to-close');
     assert.strictEqual(rural.id, undefined, 'no stored row ⇒ fileFatalCount cannot see it');
     ok('the rural finding carries its fact key, its severity, and the advisory guarantees');
+
+    // The whitelist, proven: an `info` run finding must stay `info`, not be promoted to a
+    // warning chip. No rule emits `info` today, so this guard is forward-looking — and the
+    // post-merge audit found it was the one claim the suite could not catch.
+    await addFinding(run.id, {
+      code: 'isg_info_probe', severity: 'info', category: investorReview.CATEGORY, title: 'Note' });
+    const withInfo = await uw._loadRunGuidelineFindings(db, app.id);
+    const probe = withInfo.find((r) => r.code === 'isg_info_probe');
+    assert.strictEqual(probe && probe.severity, 'info',
+      'an info run finding must not be promoted to a warning');
+    assert.strictEqual(withInfo.find((r) => r.code === 'isg_rural_property').severity, 'fatal');
+    await client.query(`DELETE FROM underwriting_run_findings WHERE code = 'isg_info_probe'`);
 
     const ny = rows.find((r) => r.code === 'isg_bl_ny_loan');
     assert.strictEqual(ny.factKey, undefined,
@@ -228,13 +318,16 @@ console.log('ISG one list (DB)');
     // that sync runs after the response. Dropping a handle-less survivor unconditionally
     // would swallow the DESK's finding on the view where the two first meet.
     const foldFilter = uw._foldFilter;
-    const runOnly = { source: investorReview.SOURCE, code: 'isg_bl_ny_loan', severity: 'fatal' };
+    // WARNING-level, deliberately: since the eighth-door fix a partnerless DEALBREAKER stays on
+    // the desk (asserted in 13d below). The "no buttons → cockpit" rule now applies to
+    // advisories only.
+    const runOnly = { source: investorReview.SOURCE, code: 'isg_bl_ny_loan', severity: 'warning' };
     const merged = { source: investorReview.SOURCE, code: 'isg_rural_property', severity: 'fatal',
       mergedFrom: ['isg_appraisal_review_3345'] };
     // Two handle-less RUN rules merging into each other is NOT a reason to list one: neither
     // has buttons and neither would have been here without the fold.
     const runPair = { source: investorReview.SOURCE, code: 'isg_bl_transferred_appraisal',
-      severity: 'fatal', mergedFrom: ['isg_transferred_appraisal_letter'] };
+      severity: 'warning', mergedFrom: ['isg_transferred_appraisal_letter'] };
     const actionable = { source: investorReview.SOURCE, code: 'isg_rural_property', suggestionId: 'sug-1' };
     assert.strictEqual(foldFilter(runOnly), false,
       'a run finding that merged with nothing has no buttons — it stays in the run cockpit');
@@ -245,6 +338,16 @@ console.log('ISG one list (DB)');
     assert.strictEqual(foldFilter(actionable), true, 'and one that inherited a handle is fully actionable');
     assert.strictEqual(foldFilter({ code: 'bank_account_not_borrower' }), true,
       'nothing outside the run fold is ever filtered');
+    // The desk-partner test asks the RUN's rule table, so a new desk flag can never make a
+    // merged finding vanish. Every real desk code shape must read as "not from the run".
+    for (const deskCode of ['isg_gap_rtl_cond_title', 'isg_conflict_44', 'isg_concern_3333',
+      'isg_info_missing_1009', 'isg_appraisal_review_3345', 'isg_newflag_9999']) {
+      assert.strictEqual(investorReview.isRuleCode(deskCode), false, `${deskCode} is not a run rule`);
+      assert.strictEqual(foldFilter({ source: investorReview.SOURCE, code: 'isg_rural_property',
+        mergedFrom: [deskCode] }), true, `${deskCode} must count as a desk partner`);
+    }
+    assert.strictEqual(investorReview.isRuleCode('isg_rural_property'), true,
+      'and a real run code still reads as the run\'s own');
     ok('the fold filter holds back only a row that exists purely because of the fold');
 
     // ── 10. A SHARED CONDITION TEMPLATE MUST NOT MERGE TWO DIFFERENT FACTS ──
@@ -306,14 +409,356 @@ console.log('ISG one list (DB)');
       'and the gap must still be able to raise a row — refusing it leaves a card with no buttons');
     ok('dismissing one guideline never silently settles another that shares its template');
 
+    // ── 12. A DECISION ON A WARNING DOES NOT SILENCE A LATER FATAL ─────────
+    // THE FALSE CLEAR THE POST-MERGE AUDIT CAUGHT. `desk-sync` has a guard whose entire
+    // purpose is this rule, and it works — but `record()`'s ledger consult ran first and
+    // suppressed the row anyway, because the ledger never recorded the severity a human
+    // judged. It was latent until a concern-carrying row (structurally NULL evidence.code)
+    // started reaching the ledger at all. Live scenario: a Blue Lake light-rehab file whose
+    // feasibility notice was dismissed as a warning converts to ground-up, the desk
+    // correctly re-raises it as a DEALBREAKER — and nothing is written. No card, no email,
+    // and the sync's own telemetry reports it as raised.
+    const app6 = (await client.query(
+      `INSERT INTO applications (borrower_id, property_address, lender)
+         VALUES ($1, '{}'::jsonb, 'Blue Lake') RETURNING id`, [b.id])).rows[0];
+    // Build the judged finding from the REAL payload shape, so the key the ledger writes is
+    // the key the live finding is read under — a hand-built fixture that differs by one field
+    // would pass while production missed.
+    const feasPayload = {
+      applicationId: app6.id, source: 'investor_guideline_desk', kind: 'finding',
+      title: 'Construction feasibility report', body: 'x', severity: 'warning',
+      evidence: { code: null, cond_no: 2193, flag: 'concern', domain: 'construction_feasibility',
+        concern_field: 'construction_feasibility' },
+      dedupeKey: 'isg-concern:2193',
+    };
+    const mild = Object.assign(
+      aiSug._internals.claimShapeOf({
+        evidence: feasPayload.evidence, source: feasPayload.source, dedupe_key: feasPayload.dedupeKey }),
+      { severity: 'warning' });
+    await fdec.record(client, {
+      applicationId: app6.id, finding: mild, origin: 'ai_suggestion', decision: 'dismissed',
+      severity: 'warning',
+    });
+    const sevSet = await fdec.suppressedKeys(client, app6.id);
+    assert.ok(fdec.isSuppressed(sevSet, mild), 'the warning the human judged stays settled');
+    assert.ok(!fdec.isSuppressed(sevSet, Object.assign({}, mild, { severity: 'fatal' })),
+      'the SAME rule at FATAL must break through — silencing a dealbreaker with a judgement '
+      + 'made about something milder is a false clear');
+    assert.ok(fdec.isSuppressed(sevSet, Object.assign({}, mild, { severity: 'info' })),
+      'and something MILDER than what was judged stays settled');
+    ok('a decision on a warning does not silence the same rule at fatal');
+
+    // …and it holds through the REAL door: the desk re-raising at fatal must write a row.
+    const asWarning = await aiSug.record(client, feasPayload);
+    assert.ok(asWarning.settled, 'the dismissed warning is still refused a row');
+    // `suppressNotify` because this block asserts the LEDGER, not the fan-out, and the fan-out
+    // is real: it is scheduled before this transaction rolls back, so without the flag it mails
+    // every admin about a row that never existed. (That is the documented R3.39 gap
+    // demonstrating itself inside the suite — see the note in `_notifyFatalNew`. The one place
+    // this branch DOES assert the fan-out stubs it properly: `upgradeNotifyRegression`.)
+    const asFatal = await aiSug.record(client,
+      Object.assign({}, feasPayload, { severity: 'fatal', important: true, suppressNotify: true }));
+    assert.ok(!asFatal.settled && asFatal.id,
+      'but the dealbreaker gets its row — this is the one that reaches the team');
+    ok('the dealbreaker really is written through the real record() door');
+
+    // A decision taken BEFORE db/336 carries no severity and must keep suppressing, or the
+    // deploy would resurrect every dismissed fatal already on file.
+    await client.query(
+      `UPDATE finding_decisions SET severity = NULL WHERE application_id = $1`, [app6.id]);
+    const legacy = await fdec.suppressedKeys(client, app6.id);
+    assert.ok(fdec.isSuppressed(legacy, Object.assign({}, mild, { severity: 'fatal' })),
+      'a pre-db/336 decision suppresses regardless — no mass resurrection on deploy');
+    ok('decisions taken before this shipped are untouched');
+
+    // ── 13. EVERY LEDGER WRITER RECORDS THE SEVERITY, AND EVERY READER USES IT ──
+    // THE GAP THE PRE-MERGE AUDIT FOUND. An omitted severity writes NULL, and NULL means
+    // "suppress regardless" — the pre-fix behaviour, with no error, no log and no test
+    // signal. So each writer is asserted by reading the column BACK out of the database,
+    // and each reader by the shape it actually hands `isSuppressed`.
+    const app7 = (await client.query(
+      `INSERT INTO applications (borrower_id, property_address) VALUES ($1,'{}'::jsonb) RETURNING id`,
+      [b.id])).rows[0];
+    const storedSev = async (appId) => (await client.query(
+      `SELECT severity FROM finding_decisions WHERE application_id=$1 ORDER BY decided_at DESC LIMIT 1`,
+      [appId])).rows[0].severity;
+    // ...and a per-CODE variant. Several writers are exercised on the same file within the same
+    // transaction, so `now()` is IDENTICAL for all of them and "the latest decision" is a
+    // coin toss. Keying on the code each writer wrote is the only stable read.
+    const storedSevFor = async (appId, code) => {
+      const r = await client.query(
+        `SELECT severity FROM finding_decisions WHERE application_id=$1 AND code=$2`, [appId, code]);
+      assert.strictEqual(r.rowCount, 1, `exactly one ledger row for ${code}`);
+      return r.rows[0].severity;
+    };
+
+    // writer: ai-suggestions.decide()
+    const sug = await aiSug.record(client, {
+      applicationId: app7.id, source: 'investor_guideline_desk', kind: 'finding', severity: 'warning',
+      title: 'w', body: 'x', evidence: { code: null, cond_no: 77, flag: 'concern', domain: 'd' },
+      dedupeKey: 'isg-concern:77',
+    });
+    await aiSug.decide(client, sug.id, { action: 'dismiss', reason: 'x', staffId: null });
+    assert.strictEqual(await storedSev(app7.id), 'warning',
+      'the AI-card door must record the severity the human was looking at');
+
+    const store = require('../src/lib/underwriting/store');
+    // writer: store.resolveFinding — the highest-traffic writer of the five (the desk, the
+    // per-finding resolve route AND the escalation queue's live branch all go through it).
+    // Asserted by reading the column BACK OUT, because an omitted severity writes NULL and
+    // NULL suppresses regardless: a silent false clear with no error and no log.
+    const docRowW = (await client.query(
+      `INSERT INTO documents (application_id, borrower_id, filename, content_type, storage_provider)
+       VALUES ($1,$2,'writer.pdf','application/pdf','local') RETURNING id`, [app7.id, b.id])).rows[0];
+    const dfRow = (await client.query(
+      `INSERT INTO document_findings (application_id, borrower_id, document_id, source, code, severity, field, doc_value, title, status)
+       VALUES ($1,$2,$3,'appraisal','writer_probe','fatal','as_is_value','1','t','open') RETURNING id`,
+      [app7.id, b.id, docRowW.id])).rows[0];
+    await store.resolveFinding(client, {
+      findingId: dfRow.id, action: 'dismiss', note: 'not applicable on this file', by: null,
+    });
+    assert.strictEqual(await storedSevFor(app7.id, 'writer_probe'), 'fatal',
+      'store.resolveFinding records the severity the human was looking at');
+    // ...asserted on the PAYLOAD too. The round trip above cannot kill a mutation on its own:
+    // `record()` also falls back to `finding.severity`, and `updated` comes from a `RETURNING *`,
+    // so deleting the explicit field changes nothing observable. This is the assertion that
+    // fails when the belt comes off the fallback's braces.
+    assert.strictEqual(
+      store._ledgerRecordFor({ updated: { application_id: app7.id, severity: 'fatal' },
+        action: 'dismiss', terminal: true, note: 'x', by: null }).severity,
+      'fatal', 'the resolve payload names the severity explicitly');
+    assert.strictEqual(
+      store._ledgerRecordFor({ updated: { application_id: app7.id }, action: 'dismiss',
+        terminal: true }).severity,
+      null, 'and a row with no severity yields NULL — legacy behaviour, never a guess');
+
+    // writer: the appraisal re-import door (`routes/appraisal.js`). It hands `record()` a row
+    // read with `SELECT *`; naming severity explicitly is what stops a future column list from
+    // silently writing NULL. Exercised with a REAL appraisal_findings row so the column has to
+    // exist and has to survive the round trip.
+    const apprRow = (await client.query(
+      `INSERT INTO appraisals (application_id, superseded) VALUES ($1,false) RETURNING id`,
+      [app7.id])).rows[0];
+    const afRow = (await client.query(
+      `INSERT INTO appraisal_findings (appraisal_id, application_id, source, code, severity, field, appraisal_value, title, status)
+       VALUES ($1,$2,'appraisal','appraisal_writer_probe','fatal','arv','2','t','open') RETURNING *`,
+      [apprRow.id, app7.id])).rows[0];
+    const apprRoute = require('../src/routes/appraisal');
+    const apprPayload = apprRoute._ledgerRecordFor({
+      appId: app7.id, fnd: afRow, action: 'dismiss', note: null, by: null,
+    });
+    // Asserted on the PAYLOAD, not only on what lands in the table: `record()` also falls back
+    // to `finding.severity`, so a payload that omits it still writes the right value today and
+    // the round-trip alone cannot tell the two apart. Naming it here is the belt to that
+    // fallback's braces — and this is the assertion that fails if someone removes it.
+    assert.strictEqual(apprPayload.severity, 'fatal',
+      'the appraisal decision payload names the severity explicitly, not via record()\'s fallback');
+    assert.strictEqual(apprRoute._ledgerRecordFor({ appId: app7.id, fnd: {}, action: 'dismiss' }).severity, null,
+      'and a row with no severity yields NULL — legacy behaviour, never a guess');
+    await fdec.record(client, apprPayload);
+    assert.strictEqual(await storedSevFor(app7.id, 'appraisal_writer_probe'), 'fatal',
+      'the appraisal resolve door records it too');
+
+    // writer: the escalation doors. TWO halves, because one assertion cannot cover both:
+    //   (a) the SHAPE prefers the finding's own severity over the escalation snapshot...
+    assert.strictEqual(
+      uw._escalationFindingShape({ code: 'c', severity: 'warning', finding_severity: 'fatal' }).severity,
+      'fatal', 'the escalation door records the finding row severity, not the snapshot copy');
+    assert.strictEqual(uw._escalationFindingShape({ code: 'c', severity: 'warning' }).severity, 'warning',
+      'falling back to the snapshot when the finding is derived and has no live row');
+    //   ...(b) and the QUERY behind it really yields that alias. The hand-built fixture above
+    //   passes no matter what the SELECT returns — which is exactly the class of bug this round
+    //   found (`finding_severity` was an alias that existed only in another module's SELECT, so
+    //   reading it here was a no-op). This calls the ROUTE'S OWN loader against real rows, so
+    //   narrowing that query back fails here.
+    const escRow = (await client.query(
+      `INSERT INTO finding_escalations (application_id, finding_id, code, severity, status)
+       VALUES ($1,$2,'writer_probe','warning','open') RETURNING id`,
+      [app7.id, dfRow.id])).rows[0];
+    const joined = await uw._loadEscalationRow(escRow.id, client);
+    assert.strictEqual(joined.finding_severity, 'fatal',
+      'the escalation JOIN really yields the finding row severity (not undefined)');
+    assert.strictEqual(uw._escalationFindingShape(joined).severity, 'fatal',
+      'and the shape built from a REAL row carries it');
+
+    // readers: the two carry-forward shapes must carry severity, or a decision taken at
+    // warning silently makes the re-read's DEALBREAKER born dismissed.
+    //
+    // ASSERTED BY BEHAVIOUR, NOT BY PATTERN-MATCHING THE SOURCE (re-audit 2026-07-27). These
+    // two were regexes over the reader files, which pass for a reader that is never CALLED,
+    // and break on a harmless reformat. Both now run the real code against the real ledger.
+    const readerKey = { code: 'reader_severity_probe', field: 'as_is_value', docValue: '400000' };
+    const docRow = (await client.query(
+      `INSERT INTO documents (application_id, borrower_id, filename, content_type, storage_provider)
+       VALUES ($1,$2,'probe.pdf','application/pdf','local') RETURNING id`, [app7.id, b.id])).rows[0];
+    // Two decisions, because the two readers legitimately key differently: a document finding
+    // is scoped to its DOCUMENT (so a re-read of the same file keeps the same key even though
+    // the extraction id is new), while an appraisal finding carries neither.
+    await fdec.record(client, {
+      applicationId: app7.id,
+      finding: Object.assign({ severity: 'warning', document_id: docRow.id }, readerKey),
+      origin: 'document_finding', action: 'dismiss', severity: 'warning', staffId: null,
+    });
+    await fdec.record(client, {
+      applicationId: app7.id, finding: Object.assign({ severity: 'warning' }, readerKey),
+      origin: 'appraisal_finding', action: 'dismiss', severity: 'warning', staffId: null,
+    });
+    const readerLedger = await fdec.suppressedKeys(client, app7.id);
+
+    // reader 1 — store.saveAnalysis, exercised through the real INSERT. A re-read of the same
+    // finding at the SAME severity is born dismissed (the dismissal sticks); the same finding
+    // arriving as a DEALBREAKER is born OPEN and reaches the team.
+    const bornStatus = async (severity) => {
+      const saved = await store.saveAnalysis(client, {
+        documentId: docRow.id, applicationId: app7.id, borrowerId: b.id, docType: 'appraisal',
+        extraction: { fields: {}, status: 'analyzed' }, suppressNotify: true,
+        findings: [{ code: readerKey.code, field: readerKey.field, docValue: readerKey.docValue,
+          severity, title: 't', source: 'appraisal' }],
+      });
+      const id = (saved && saved.findingIds && saved.findingIds[0]) || null;
+      assert.ok(id, 'saveAnalysis wrote the finding row the assertion is about');
+      return (await client.query(
+        `SELECT status, resolution FROM document_findings WHERE id=$1`, [id])).rows[0];
+    };
+    const sameSev = await bornStatus('warning');
+    assert.strictEqual(sameSev.status, 'dismissed',
+      'the re-read of a dismissed warning is born dismissed — the decision survives the re-read');
+    assert.strictEqual(sameSev.resolution, 'carried_forward', 'and is labelled as carried forward');
+    const worseSev = await bornStatus('fatal');
+    assert.strictEqual(worseSev.status, 'open',
+      'but the SAME finding arriving as a dealbreaker is born OPEN — a warning dismissal is not a false clear');
+
+    // reader 2 — the appraisal re-import, through its own carry-forward function against the
+    // same real ledger. (`test-appraisal-import.js` is skipped in CI, so without this the
+    // appraisal carry-forward had no behavioural coverage at all.)
+    const apprImport = require('../src/lib/appraisal/import');
+    const apprFinding = (severity) => ({ code: readerKey.code, field: readerKey.field, severity,
+      appraisalValue: 400000 });
+    assert.strictEqual(apprImport._internals.carryForward(readerLedger, apprFinding('warning')), true,
+      'the appraisal re-import carries a dismissed warning forward');
+    assert.strictEqual(apprImport._internals.carryForward(readerLedger, apprFinding('fatal')), false,
+      'but never carries it forward onto a dealbreaker');
+    assert.strictEqual(apprImport._internals.carryForward(new Map(), apprFinding('warning')), false,
+      'an empty ledger carries nothing forward — it fails OPEN');
+    ok('every ledger writer records the judged severity, and both readers really honour it');
+
+    // ── 13b. THE SEVENTH DOOR — the AI-panel mirror close ──────────────────────────────
+    // `closeMirroredSuggestions` closed EVERY ai_suggestions row sharing the finding's code,
+    // regardless of severity. Dismissing a WARNING on the Document Review desk therefore also
+    // closed a FATAL mirror of the same code — and that row, now stamped decided_by_staff_id,
+    // went on to suppress re-raises through `record()`'s settled-row dedupe. One warning
+    // judgement, a silenced dealbreaker, two surfaces away.
+    const app8 = (await client.query(
+      `INSERT INTO applications (borrower_id, property_address) VALUES ($1,'{}'::jsonb) RETURNING id`,
+      [b.id])).rows[0];
+    const mkMirror = async (severity) => (await client.query(
+      `INSERT INTO ai_suggestions (application_id, source, kind, severity, title, body, status, evidence)
+       VALUES ($1,'cross_document','finding',$2,'t','x','open', '{"code":"mirror_probe"}'::jsonb)
+       RETURNING id`, [app8.id, severity])).rows[0];
+    const mildMirror = await mkMirror('warning');
+    const fatalMirror = await mkMirror('fatal');
+    const docRow8 = (await client.query(
+      `INSERT INTO documents (application_id, borrower_id, filename, content_type, storage_provider)
+       VALUES ($1,$2,'m.pdf','application/pdf','local') RETURNING id`, [app8.id, b.id])).rows[0];
+    const df8 = (await client.query(
+      `INSERT INTO document_findings (application_id, borrower_id, document_id, source, code, severity, title, status)
+       VALUES ($1,$2,$3,'cross_document','mirror_probe','warning','t','open') RETURNING id`,
+      [app8.id, b.id, docRow8.id])).rows[0];
+    await store.resolveFinding(client, {
+      findingId: df8.id, action: 'dismiss', note: 'not a concern here', by: null,
+    });
+    const mirrorStatus = async (id) => (await client.query(
+      `SELECT status FROM ai_suggestions WHERE id=$1`, [id])).rows[0].status;
+    assert.strictEqual(await mirrorStatus(mildMirror.id), 'dismissed',
+      'the mirror at the SAME severity is closed with the finding — that is the point of it');
+    assert.strictEqual(await mirrorStatus(fatalMirror.id), 'open',
+      'but a DEALBREAKER mirror survives a warning-level dismissal');
+    ok('a warning dismissal does not close a dealbreaker on the AI panel');
+
+    // ── 13c. THE SIXTH DOOR — the file view's own settled-mirror filter ─────────────────
+    // The file view drops a note-buyer desk finding whenever its ai_suggestions mirror is in
+    // any non-open status. That undid all the other doors: the ledger correctly refuses to
+    // suppress a fatal, and this filter threw it away anyway. Exercised through the exported
+    // predicate so the comparison itself is pinned.
+    const settledMirror = { status: 'dismissed', severity: 'warning' };
+    assert.strictEqual(uw._isgSettledHides(settledMirror, { severity: 'warning' }), true,
+      'the same rule at the same severity stays hidden — the dismissal sticks');
+    assert.strictEqual(uw._isgSettledHides(settledMirror, { severity: 'fatal' }), false,
+      'but the same rule as a DEALBREAKER is shown again');
+    assert.strictEqual(uw._isgSettledHides({ status: 'dismissed', severity: null }, { severity: 'fatal' }), false,
+      'a mirror whose own severity is unreadable hides NOTHING — the same rule record() applies '
+      + 'to that column, and the fail-open direction');
+    assert.strictEqual(uw._isgSettledHides({ status: 'dismissed', severity: ' FATAL ' }, { severity: 'fatal' }), true,
+      'and the rank trims + lowercases, so a padded value is not read as unknown');
+    assert.strictEqual(uw._isgSettledHides({ status: 'open', severity: 'warning' }, { severity: 'warning' }), false,
+      'an OPEN mirror hides nothing — the card is live');
+    // ...asserted on the CALL SITE, not only the predicate. Reverting the route's mapping step to
+    // its old unconditional `return null` survives a predicate-only assertion — which is exactly
+    // the shape of test this branch has twice been caught shipping.
+    const liveMirror = { id: 'sug-9', status: 'open', severity: 'warning', important: true };
+    assert.strictEqual(uw._isgDecorate({ status: 'dismissed', severity: 'warning' }, { severity: 'warning' }), null,
+      'a settled mirror at the same severity hides the finding');
+    const shown = uw._isgDecorate({ status: 'dismissed', severity: 'warning' }, { severity: 'fatal', code: 'x' });
+    assert.ok(shown && shown.severity === 'fatal', 'but a DEALBREAKER is shown anyway');
+    assert.strictEqual(shown.suggestionId, undefined,
+      'and WITHOUT the settled row id — a click must not resolve the stale warning');
+    const decorated = uw._isgDecorate(liveMirror, { severity: 'warning', code: 'x' });
+    assert.strictEqual(decorated.suggestionId, 'sug-9', 'a live mirror hands the card its handle');
+    assert.strictEqual(decorated.important, true, 'and its flags');
+    ok('the file view hides a settled guideline finding only while it is no worse than what was decided');
+
+    // ── 13d. THE EIGHTH DOOR — the fold filter ─────────────────────────────────────────
+    // THE EIGHTH DOOR (re-audit 2026-07-27; a false clear that predates this branch).
+    // The desk and the run rule table read one signal and name it twice. They merge, the fatal
+    // wins the card, a reviewer dismisses the warning, the desk row is correctly hidden — and the
+    // run fatal, now partnerless and handle-less, used to be dropped by the fold filter. It never
+    // came back: the run writes to `underwriting_run_findings`, never to `ai_suggestions`.
+    const lone = { source: investorReview.SOURCE, code: 'isg_bl_transferred_appraisal',
+      severity: 'fatal', mergedFrom: [] };
+    assert.strictEqual(uw._foldFilter(lone), true,
+      'a partnerless run DEALBREAKER stays on the desk (escalate-only beats invisible)');
+    assert.strictEqual(uw._foldFilter(Object.assign({}, lone, { severity: 'warning', blocksCtc: true })), true,
+      'so does one that blocks clear-to-close at a lower severity');
+
+    // ...and the deliberate behaviour for everything else is UNCHANGED: an advisory that exists
+    // only because of the fold belongs in the run cockpit, where it has buttons.
+    assert.strictEqual(uw._foldFilter(Object.assign({}, lone, { severity: 'warning' })), false,
+      'a partnerless run WARNING still folds into the cockpit');
+    assert.strictEqual(uw._foldFilter(Object.assign({}, lone, { severity: 'info' })), false,
+      'and so does an info');
+    // A real merge partner from ANOTHER producer still admits any severity, as before.
+    assert.strictEqual(
+      uw._foldFilter({ source: investorReview.SOURCE, code: 'isg_rural_property', severity: 'warning',
+        mergedFrom: ['isg_appraisal_review_3345'] }), true,
+      'a desk merge partner still admits a warning');
+
+    ok('a partnerless run dealbreaker is never folded off the desk');
+
+
+    // …and the readers really behave: a warning dismissed does not carry forward a fatal.
+    const carryKey = { code: 'appraisal_value_variance', field: 'as_is_value', docValue: '450000' };
+    await fdec.record(client, {
+      applicationId: app7.id, finding: carryKey, origin: 'appraisal_finding',
+      decision: 'dismissed', severity: 'warning',
+    });
+    const carrySet = await fdec.suppressedKeys(client, app7.id);
+    assert.ok(fdec.isSuppressed(carrySet, Object.assign({ severity: 'warning' }, carryKey)),
+      'the same variance at the judged severity still carries forward as settled');
+    assert.ok(!fdec.isSuppressed(carrySet, Object.assign({ severity: 'fatal' }, carryKey)),
+      're-priced to a FATAL variance, the re-import must NOT be born dismissed');
+    ok('a re-read or re-import cannot carry a warning decision forward onto a dealbreaker');
+
     await client.query('ROLLBACK');
+    client.release();
+    released = true;
+    await upgradeNotifyRegression(pool, ok);
     console.log(`\n${passed} checks passed.`);
   } catch (e) {
     await client.query('ROLLBACK').catch(() => {});
     console.error(e);
     process.exitCode = 1;
   } finally {
-    client.release();
+    if (!released) client.release();
     await pool.end();
   }
 })();

@@ -19,9 +19,16 @@ const LIVE_STATUSES = new Set(['open', 'escalated', 'marked_important', 'asked_a
 // judgement that the issue is closed — so it never blocks the agent asking again.
 const SETTLED_EXEMPT = new Set([...LIVE_STATUSES, 'answered']);
 
+const STORES = [];
 class Store {
   constructor() {
+    STORES.push(this);
     this.rows = []; this.qs = []; this.aq = []; this.decisions = [];
+    // Every statement this stub did not recognise. Asserted empty at the end — see the
+    // fall-through note in `mkClient`.
+    this.unhandled = [];
+    this.silenced = new Set();
+    this.proposals = [];
     this.nextId = 1;
   }
   id() { return String(this.nextId++); }
@@ -51,29 +58,47 @@ function mkClient(store) {
       }
       // A DECIDED row is the last word — record() must not re-raise it (the
       // 2026-07-27 "I dismiss it and it keeps popping up again" root cause).
-      if (/^SELECT id, status FROM ai_suggestions WHERE application_id=\$1 AND source=\$2 AND dedupe_key=\$3/.test(s)) {
+      // THE COLUMN LIST IS PART OF THE CONTRACT (re-audit 2026-07-27). These stubs are anchored
+      // regexes, and `record()`'s two consults are wrapped in fail-OPEN catches — so when a
+      // SELECT list gained `severity` and this pattern did not, the stub fell through to its own
+      // `unhandled sql` throw, the catch swallowed it, and this file went on printing `all pass`
+      // while protecting NOTHING: a dismissed row was re-raised as a brand-new open one, which is
+      // the exact owner-reported bug the assertions below claim to pin. Matched loosely on the
+      // Keyed on the CLAUSE that distinguishes the two dedupe queries (`decided_by_staff_id IS
+      // NOT NULL` here, `status IN (` for the live-refresh pick below) rather than on the SELECT
+      // list, so adding a column can never silently disarm the test again. Verified: adding a
+      // column to either query keeps both matching.
+      if (/^SELECT .* FROM ai_suggestions WHERE application_id=\$1 AND source=\$2 AND dedupe_key=\$3.*decided_by_staff_id IS NOT NULL/.test(s)) {
         const hit = store.rows.find(r => r.application_id === params[0] && r.source === params[1]
           && r.dedupe_key === params[2] && !SETTLED_EXEMPT.has(r.status) && r.decided_by_staff_id != null);
-        return { rows: hit ? [{ id: hit.id, status: hit.status }] : [] };
+        return { rows: hit ? [{ id: hit.id, status: hit.status, severity: hit.severity }] : [] };
       }
       // The refresh-in-place pick. "Live" spans open/escalated/marked_important/
       // asked_admin (all still need handling); a plain 'open' row wins.
-      if (/^SELECT id FROM ai_suggestions WHERE application_id=\$1 AND source=\$2 AND dedupe_key=\$3/.test(s)) {
+      if (/^SELECT .* FROM ai_suggestions WHERE application_id=\$1 AND source=\$2 AND dedupe_key=\$3.*status IN \(/.test(s)) {
         const hits = store.rows.filter(r => r.application_id === params[0] && r.source === params[1]
           && r.dedupe_key === params[2] && LIVE_STATUSES.has(r.status));
         hits.sort((a, b) => (b.status === 'open') - (a.status === 'open'));
-        return { rows: hits[0] ? [{ id: hits[0].id }] : [] };
+        // `severity` is part of the row the real pick returns — it is how `record()` tells an
+        // UPGRADE from a plain re-record. Omitting it here made every refresh look like a rise
+        // from nothing, which is precisely the fatal-restated-as-fatal blast this asserts against.
+        return { rows: hits[0] ? [{ id: hits[0].id, severity: hits[0].severity }] : [] };
       }
       // The per-finding decision ledger (db/333) + the savepoint it runs inside.
       if (/^(SAVEPOINT|RELEASE SAVEPOINT|ROLLBACK TO SAVEPOINT) finding_decision$/i.test(s)) return { rows: [] };
-      if (/^SELECT finding_key FROM finding_decisions/i.test(s)) {
-        return { rows: store.decisions.filter(d => d.application_id === params[0] && d.suppressed).map(d => ({ finding_key: d.finding_key })) };
+      if (/^SELECT .* FROM finding_decisions WHERE application_id = \$1 AND suppressed = true/i.test(s)) {
+        return { rows: store.decisions.filter(d => d.application_id === params[0] && d.suppressed)
+          .map(d => ({ finding_key: d.finding_key, severity: d.severity })) };
       }
       if (/^INSERT INTO finding_decisions/i.test(s)) {
-        const [appId2, key, code, origin, decision, suppressed, note, by] = params;
+        const [appId2, key, code, origin, decision, suppressed, note, by, severity] = params;
         const prev = store.decisions.find(d => d.application_id === appId2 && d.finding_key === key);
-        if (prev) Object.assign(prev, { code, origin, decision, suppressed, note, decided_by: by });
-        else store.decisions.push({ application_id: appId2, finding_key: key, code, origin, decision, suppressed, note, decided_by: by });
+        // COALESCE, mirroring the real ON CONFLICT: a later write with no severity must not
+        // erase the severity an earlier one recorded.
+        if (prev) Object.assign(prev, { code, origin, decision, suppressed, note, decided_by: by,
+          severity: severity == null ? prev.severity : severity });
+        else store.decisions.push({ application_id: appId2, finding_key: key, code, origin, decision,
+          suppressed, note, decided_by: by, severity: severity == null ? null : severity });
         return { rows: [] };
       }
       if (/^UPDATE finding_decisions/i.test(s)) {
@@ -150,9 +175,53 @@ function mkClient(store) {
         row.answered_by_staff_id = staffId; row.answered_at = new Date().toISOString(); row.answer = ans;
         return { rows: [{ suggestion_id: row.suggestion_id, application_id: row.application_id, agent: row.agent, question: row.question, context: row.context }] };
       }
+      // THREE PRE-EXISTING DARK PATHS, surfaced the moment the fall-through became an assertion
+      // (re-audit 2026-07-27). Each sits behind its own fail-open catch, so each was throwing and
+      // being swallowed on every run — the branches ran, they just never did anything.
+      //
+      // The portfolio-wide code mute (R4.8). Not muted unless the test says so.
+      if (/^SELECT 1 FROM ai_silenced_codes WHERE code=\$1/i.test(s)) {
+        return { rows: store.silenced.has(params[0]) ? [{ '?column?': 1 }] : [] };
+      }
+      // Deciding a suggestion auto-closes the admin question it raised (R3.42).
+      if (/^UPDATE ai_admin_questions SET answered_at/i.test(s)) {
+        let n = 0;
+        for (const q of store.aq) {
+          if (q.suggestion_id !== params[0] || q.answered_at) continue;
+          q.answered_at = new Date().toISOString();
+          q.answer = q.answer == null ? params[1] : q.answer;
+          n += 1;
+        }
+        return { rowCount: n, rows: [] };
+      }
+      // The learning capture (`learning.captureAdminAnswer`) and its savepoint.
+      if (/^(SAVEPOINT|RELEASE SAVEPOINT|ROLLBACK TO SAVEPOINT) learning_capture$/i.test(s)) return { rows: [] };
+      if (/^SELECT id FROM training_proposals WHERE proposal_type='admin_answer'/i.test(s)) {
+        const hit = store.proposals.find(t => t.key === params[0]);
+        return { rows: hit ? [{ id: hit.id }] : [] };
+      }
+      if (/^INSERT INTO training_proposals/i.test(s)) {
+        const scope = JSON.parse(params[0]);
+        const row = { id: store.id(), key: scope.key, scope };
+        store.proposals.push(row);
+        return { rows: [{ id: row.id }] };
+      }
+      if (/^UPDATE training_proposals/i.test(s)) {
+        const hit = store.proposals.find(t => t.id === params[0]);
+        if (hit) hit.scope = Object.assign({}, hit.scope, { answer: params[1], answered_at: params[2] });
+        return { rows: [] };
+      }
       if (/^SELECT \* FROM ai_admin_questions/i.test(s)) {
         return { rows: store.aq.filter(r => !r.answered_at) };
       }
+      // A FALL-THROUGH IS A TEST FAILURE, NOT A THROW TO BE SWALLOWED (re-audit 2026-07-27).
+      // `record()`'s ledger consult and its settled-row dedupe both run inside fail-OPEN
+      // catches — by design, since a ledger blip must never hide a finding. The side effect is
+      // that a stub which stops matching becomes INVISIBLE: the throw is caught, the door goes
+      // dark, and every assertion below still passes. Recording it and asserting at the end is
+      // the only way this file can tell the difference between 'the door held' and 'the door
+      // was never opened'.
+      store.unhandled.push(s.slice(0, 120));
       throw new Error('unhandled sql: ' + s.slice(0, 100));
     },
   };
@@ -293,6 +362,162 @@ const aiSug = require('../src/lib/underwriting/ai-suggestions');
   assert.strictEqual(s.proposedAction.fields.opensCondition, 'ins_upgrade');
   assert.strictEqual(s.dedupeKey, 'cure:ci-z:INS_UNDERINSURED:coverage_amount');
   assert.strictEqual(s.traceUrl, 'https://lf/1');
+
+  // ---- A HUMAN'S DECISION IS NOT RE-RAISED (the door this file's stub had gone dark on) ----
+  // Repairing the stub was necessary and not sufficient: nothing in this file actually
+  // ASSERTED the settled-row guard, so deleting it left every test green (verified by
+  // mutation). This is the owner's original report — "I dismiss it and it keeps popping up
+  // again" — at the one door that decides it.
+  const ds = new Store();
+  const dc = mkClient(ds);
+  const dkey = 'isg-gap:rtl_cond_feasibility';
+  const mk = (severity) => ({
+    applicationId: 'app-settled', source: 'investor_guideline_desk', kind: 'finding',
+    title: 'Feasibility report required', body: 'x', severity, dedupeKey: dkey,
+    evidence: { code: 'isg_gap_200' },
+    // This file has no database. A newly inserted FATAL otherwise schedules the real
+    // whole-team fan-out, which reaches for `db()` and prints a DATABASE_URL banner from a
+    // PURE test. The fan-out itself is covered where it belongs (the desk-sync suites).
+    suppressNotify: true,
+  });
+  const first = await aiSug.record(dc, mk('warning'));
+  await aiSug.decide(dc, first.id, { action: 'dismiss', reason: 'not applicable', staffId: 'staff-1' });
+  const again = await aiSug.record(dc, mk('warning'));
+  assert.strictEqual(again.settled, true, 'a dismissed finding is refused a fresh row');
+  assert.strictEqual(again.id, first.id, 'and the caller is pointed back at the decided row');
+  assert.strictEqual(ds.rows.length, 1, 'no second row was inserted — the dismissal sticks');
+
+  // ...but the SAME rule coming back as a DEALBREAKER is not silenced by a judgement made
+  // about something milder. That is a false clear, and it is the whole point of db/336.
+  const worse = await aiSug.record(dc, mk('fatal'));
+  assert.ok(!worse.settled, 'a dealbreaker is NOT held back by a warning-level dismissal');
+  assert.strictEqual(ds.rows.length, 2, 'and it really gets a row of its own');
+
+  // ...and a DECIDED row that carries NO severity does not silence a dealbreaker either.
+  // This is deliberately the OPPOSITE of db/336's NULL policy on `finding_decisions` — see the
+  // note at the guard. Unlike that column, `ai_suggestions.severity` has no legacy population,
+  // so suppress-always would let one severity-less row silence a fatal on that key forever.
+  const ns = new Store();
+  const nc = mkClient(ns);
+  const nmk = (severity) => ({
+    applicationId: 'app-nullsev', source: 'cure_analysis', kind: 'finding', severity,
+    title: 't', body: 'x', dedupeKey: 'nullsev:1', evidence: { code: 'nullsev' },
+    suppressNotify: true,
+  });
+  const n1 = await aiSug.record(nc, nmk(null));
+  // Settled DIRECTLY on the row, not through `decide()`. `decide()` also writes the durable
+  // ledger, whose NULL policy is the opposite one — and the ledger consult runs after this
+  // door, so it would decide the outcome and this assertion would be testing the wrong thing.
+  // The case this isolates is real: a row decided before db/333, or one whose ledger write
+  // failed (that write is best-effort by design).
+  Object.assign(ns.rows.find(r => r.id === n1.id), { status: 'dismissed', decided_by_staff_id: 'staff-9' });
+  const nFatal = await aiSug.record(nc, nmk('fatal'));
+  assert.ok(!nFatal.settled,
+    'a dismissal recorded with NO severity does not silence a later dealbreaker — fail OPEN');
+  assert.strictEqual(ns.rows.length, 2, 'the dealbreaker really gets its own row');
+
+  // ---- AN UPGRADE TO A DEALBREAKER IS NEWS, EVEN IN PLACE (the NINTH door) ----
+  // The fatal fan-out lived only on the fresh-INSERT branch. But desk-sync's alive skip now
+  // deliberately lets a WORSE payload through so the live row is UPGRADED rather than cloned —
+  // so a warning sitting at `escalated` became a dealbreaker and the file team heard nothing.
+  //
+  // The notify module is INJECTED INTO THE REQUIRE CACHE rather than required and patched:
+  // `src/lib/notify` pulls in `src/db`, which prints a DATABASE_URL banner on load, and a pure
+  // test must not reach for a database at all. `_notifyFatalNew` requires it lazily, so seeding
+  // the cache first means the real module is never loaded.
+  const notified = [];
+  let us = null;
+  const notifyPath = require.resolve('../src/lib/notify');
+  const hadNotify = require.cache[notifyPath];
+  require.cache[notifyPath] = { id: notifyPath, filename: notifyPath, loaded: true, exports: {
+    notifyAppStaff: async (...a) => { notified.push(a); },
+    notifyAdmins: async (...a) => { notified.push(a); },
+  } };
+  // A pool stub, kept so this file can never reach a real database if a lazily-required module
+  // grows one. `_notifyFatalNew` no longer reads (see the note there); nothing else here does.
+  const dbPath = require.resolve('../src/db');
+  const hadDb = require.cache[dbPath];
+  require.cache[dbPath] = { id: dbPath, filename: dbPath, loaded: true, exports: {
+    // Answers the guard's read the way the real query does: the ROW if it is visible on this
+    // connection, nothing if it is not. Returning only a rowCount was itself a column-list-shaped
+    // trap — the guard reads `rows[0].sev`, so a stub without it silently made every case look
+    // like "not visible".
+    async query(_sql, params) {
+      const row = us.rows.find(r => r.id === params[0]);
+      if (!row) return { rowCount: 0, rows: [] };
+      return { rowCount: 1, rows: [{ sev: String(row.severity || '').trim().toLowerCase() }] };
+    },
+  } };
+  try {
+    us = new Store();
+    const uc = mkClient(us);
+    const up = (severity, status) => ({
+      applicationId: 'app-upgrade', source: 'investor_guideline_desk', kind: 'finding',
+      title: 'Feasibility report required', body: 'x', severity,
+      dedupeKey: 'isg-gap:upgrade', evidence: { code: 'isg_gap_201' }, _status: status,
+    });
+    const live = await aiSug.record(uc, up('warning'));
+    // The staffer escalates it — still live, still needs handling, not a decision.
+    us.rows.find(r => r.id === live.id).status = 'escalated';
+    notified.length = 0;
+    const same = await aiSug.record(uc, up('warning'));
+    assert.strictEqual(same.deduped, true, 'a re-record refreshes the escalated row in place');
+    assert.strictEqual(us.rows.length, 1, 'and never clones it');
+    await new Promise((r) => setImmediate(r));
+    assert.strictEqual(notified.length, 0, 'a warning restated as a warning tells nobody — no bombardment');
+
+    const worse2 = await aiSug.record(uc, up('fatal'));
+    assert.strictEqual(worse2.deduped, true, 'the dealbreaker still REFRESHES the row, never duplicates it');
+    assert.strictEqual(us.rows.length, 1, 'still one row — no phantom duplicate, no 298-email burst');
+    assert.strictEqual(us.rows[0].severity, 'fatal', 'and the row now reads as a dealbreaker');
+    await new Promise((r) => setImmediate(r));
+    assert.ok(notified.length > 0, 'but the file team IS told the item became a dealbreaker');
+
+    // NOTE: there is deliberately no re-read guard in `_notifyFatalNew` — two attempts at one
+    // both dropped this alert (see the note there). What keeps the upgrade notify from becoming
+    // a per-page-load blast is the rank comparison alone, asserted above and below. The
+    // in-transaction behaviour that killed both guards is asserted on a REAL connection in
+    // test-isg-one-list-db; a stub store has no MVCC and cannot express it.
+
+    // ...a WARNING raise never claims a dealbreaker. The fan-out's subject line reads "New
+    // fatal AI finding"; firing it for a rise from info to warning would be a lie in the inbox.
+    us.rows[0].severity = 'info';
+    notified.length = 0;
+    await aiSug.record(uc, up('warning'));
+    await new Promise((r) => setImmediate(r));
+    assert.strictEqual(notified.length, 0, 'a rise to WARNING tells nobody — only a dealbreaker does');
+    us.rows[0].severity = 'warning';   // back to the pre-upgrade state for the next case
+
+    // ...and `suppressNotify` silences the upgrade branch too. The un-funded re-read sweep sets
+    // it because its findings are not new to anyone; without this it would blast the whole book.
+    notified.length = 0;
+    await aiSug.record(uc, Object.assign({}, up('fatal'), { suppressNotify: true }));
+    await new Promise((r) => setImmediate(r));
+    assert.strictEqual(notified.length, 0, 'suppressNotify silences an upgrade, not just an insert');
+    us.rows[0].severity = 'fatal';     // the row IS a dealbreaker now — the next case restates it
+
+    // ...and a DEALBREAKER RESTATED AS A DEALBREAKER says nothing. This is the half that stops
+    // the upgrade notify becoming a per-page-load blast: the desk re-records the same finding
+    // every time anyone opens the file.
+    notified.length = 0;
+    const again2 = await aiSug.record(uc, up('fatal'));
+    assert.strictEqual(again2.deduped, true, 'the fatal is refreshed in place again');
+    await new Promise((r) => setImmediate(r));
+    assert.strictEqual(notified.length, 0,
+      'a fatal restated as a fatal notifies nobody — no per-page-load bombardment');
+  } finally {
+    if (hadNotify) require.cache[notifyPath] = hadNotify; else delete require.cache[notifyPath];
+    if (hadDb) require.cache[dbPath] = hadDb; else delete require.cache[dbPath];
+  }
+
+  // THE STUB MUST HAVE UNDERSTOOD EVERY STATEMENT IT WAS ASKED (re-audit 2026-07-27).
+  // Without this the file reports success for doors it never actually opened — which is
+  // exactly what happened when two SELECT lists gained a `severity` column and these
+  // anchored patterns stopped matching.
+  const unhandled = STORES.flatMap((st) => st.unhandled);
+  assert.deepStrictEqual(unhandled, [],
+    'the stub did not recognise every statement — a door under test went dark:\n'
+    + unhandled.join('\n'));
 
   console.log('test-ai-suggestions-pure: record/dedupe/decide-all-actions/note/askAdmin/answer/fromCureNewFinding all pass');
 })().catch(e => { console.error(e); process.exit(1); });

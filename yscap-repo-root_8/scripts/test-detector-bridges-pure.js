@@ -22,7 +22,14 @@ function fakeClient(state) {
     async query(sql, params) {
       const s = String(sql);
       if (/FROM ai_silenced_codes/.test(s)) return { rows: [], rowCount: 0 };
-      if (/SELECT id FROM ai_suggestions/.test(s)) return { rows: [], rowCount: 0 };
+      // Both of `record()`'s dedupe picks: the settled-row check and the live refresh pick.
+      // Keyed on the CLAUSE that tells them apart, never on the column list — this stub was
+      // written as `SELECT id FROM ai_suggestions` and went dark the day either SELECT gained a
+      // column (re-audit 2026-07-27). It was inert only because the catch-all below returns the
+      // same empty result, which is precisely why nothing noticed.
+      if (/SELECT .* FROM ai_suggestions WHERE application_id=\$1 AND source=\$2 AND dedupe_key=\$3/.test(s)) {
+        return { rows: [], rowCount: 0 };
+      }
       if (/INSERT INTO ai_suggestions/.test(s)) {
         // params: [appId, documentId, checklistItemId, source, kind, title, body,
         //          evidence, action, severity, confidence, traceUrl, dedupe, important]

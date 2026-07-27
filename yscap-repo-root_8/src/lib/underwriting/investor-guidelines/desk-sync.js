@@ -201,10 +201,13 @@ async function syncInvestorGuidelineFindings(client, appId, opts) {
     //             it adds nothing and costs a duplicate + a mail-out.
     //   DECIDED — a human closed it (see above), and only while the item is no worse than what they
     //             actually judged.
+    // Keyed exactly like `finding-decisions.sevRank` — trimmed AND lowercased. The two are
+    // documented as mirrors and must stay that way (re-audit 2026-07-27 found the trim
+    // missing here after the other copies gained it).
     const SEV_RANK = { fatal: 3, warning: 2, info: 1 };
     const ALIVE_NOT_OPEN = ['escalated', 'marked_important', 'asked_admin'];
     const decidedSev = new Map();   // dedupe_key → the most serious severity a human has decided on
-    const aliveKeys = new Set();    // dedupe_key → already live under a status record() can't refresh
+    const aliveSev = new Map();     // dedupe_key → the severity of the live row record() can't refresh
     try {
       const d = await client.query(
         `SELECT dedupe_key, severity, status, decided_by_staff_id FROM ai_suggestions
@@ -214,21 +217,54 @@ async function syncInvestorGuidelineFindings(client, appId, opts) {
         [appId, SOURCE, ALIVE_NOT_OPEN]);
       for (const r of d.rows) {
         const k = String(r.dedupe_key);
-        if (ALIVE_NOT_OPEN.includes(r.status)) { aliveKeys.add(k); continue; }
-        const rank = SEV_RANK[String(r.severity || '').toLowerCase()] || 0;
+        // `answered` is the super-admin REPLYING to a question, not a judgement on the finding
+        // — `record()`'s own settled set excludes it for exactly that reason (re-audit
+        // 2026-07-27, where the two disagreed). Treating it as a decision here let an answer
+        // hold the item quiet.
+        if (r.status === 'answered') continue;
+        const rank = SEV_RANK[String(r.severity || '').trim().toLowerCase()] || 0;
+        if (ALIVE_NOT_OPEN.includes(r.status)) {
+          if (!aliveSev.has(k) || rank > aliveSev.get(k)) aliveSev.set(k, rank);
+          continue;
+        }
         if (!decidedSev.has(k) || rank > decidedSev.get(k)) decidedSev.set(k, rank);
       }
     } catch (_e) { /* suppress nothing on a read failure */ }
-    let raised = 0, fatal = 0, heldByHuman = 0;
+    // THREE REASONS A PAYLOAD WRITES NOTHING, COUNTED SEPARATELY (re-audit 2026-07-27).
+    //   heldByHuman — a person decided this key. Only this one is a judgement.
+    //   heldAlive   — a live row already carries it. `asked_admin` lands here, not above:
+    //                 `askAdmin()` is the AI AGENT raising a question, so counting it as a
+    //                 human decision overstated how much of the desk a person had handled.
+    //   silenced    — a portfolio-wide mute (`ai_silenced_codes`) dropped it inside record().
+    //                 That path returns `{silenced:true}` and no id, so counting it as raised
+    //                 claimed a finding exists that was never written.
+    let raised = 0, fatal = 0, heldByHuman = 0, heldAlive = 0, silenced = 0;
     for (const p of payloads) {
       const key = p.dedupeKey ? String(p.dedupeKey) : null;
-      if (key && aliveKeys.has(key)) { heldByHuman += 1; continue; }
+      // THE SAME SEVERITY RULE AS `decidedSev`, on the OTHER skip. A live row at
+      // escalated / marked_important / asked_admin makes this loop `continue` BEFORE
+      // `record()` is reached, so the guard installed inside record() never gets a say: the
+      // desk re-raises a feasibility notice as a DEALBREAKER after the deal converts, the
+      // skip swallows it, no fatal-notify fires, and the row on the AI panel and in the
+      // escalation queue still reads "warning" while a reviewer decides a dealbreaker.
+      // `record()` REFRESHES a live row in place, so letting the worse one through is
+      // exactly right — it updates the severity rather than duplicating the row.
+      if (key && aliveSev.has(key)
+          && (SEV_RANK[String(p.severity || '').trim().toLowerCase()] || 0) <= aliveSev.get(key)) {
+        heldAlive += 1; continue;
+      }
       const decided = key ? decidedSev.get(key) : undefined;
-      if (decided !== undefined && decided >= (SEV_RANK[String(p.severity || '').toLowerCase()] || 0)) {
+      if (decided !== undefined && decided >= (SEV_RANK[String(p.severity || '').trim().toLowerCase()] || 0)) {
         heldByHuman += 1; continue;
       }
       try {
-        await aiSug.record(client, Object.assign({ applicationId: appId }, p));
+        // Count what was actually WRITTEN. `record()` consults the durable ledger and can
+        // refuse a payload this loop's own `decidedSev` map cannot see (a decision taken in
+        // the escalation queue, say). Counting before checking made the telemetry claim a
+        // dealbreaker was raised when no row exists — the symptom that hid a false clear.
+        const wrote = await aiSug.record(client, Object.assign({ applicationId: appId }, p));
+        if (wrote && wrote.settled) { heldByHuman += 1; continue; }
+        if (wrote && wrote.silenced) { silenced += 1; continue; }
         raised += 1;
         if (p.severity === 'fatal') fatal += 1;
       } catch (_e) { /* one bad row never stops the rest */ }
@@ -274,9 +310,12 @@ async function syncInvestorGuidelineFindings(client, appId, opts) {
       : 0;
     // Name the loaders, not just the fact — "the appraisal read failed" is actionable, "degraded"
     // is not, and this is what the caller logs when a retraction is skipped.
-    return { raised, fatal, retracted, assessed, degraded, heldByHuman,
+    return { raised, fatal, retracted, assessed, degraded, heldByHuman, heldAlive, silenced,
       degradedSources: degraded ? desk.degraded.slice() : [] };
-  } catch (_e) { return { raised: 0, fatal: 0, retracted: 0, assessed: false, degraded: false, heldByHuman: 0, degradedSources: [] }; }
+  } catch (_e) {
+    return { raised: 0, fatal: 0, retracted: 0, assessed: false, degraded: false,
+      heldByHuman: 0, heldAlive: 0, silenced: 0, degradedSources: [] };
+  }
 }
 
 /**

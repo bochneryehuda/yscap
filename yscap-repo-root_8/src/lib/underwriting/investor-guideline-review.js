@@ -46,6 +46,16 @@ function normKey(v) { return normNoteBuyer(v) || ''; }
  * the key from the code on read. Keeping the derivation HERE (not a second map in the route) is
  * what stops the two from drifting the next time a rule gains or loses a `signal`.
  */
+/**
+ * Is this code one the RUN's rule table emits? Derived from the table itself, so it can
+ * never fall out of step with it — unlike a hand-kept list of the OTHER producer's code
+ * shapes, which rots silently the day someone adds a sixth desk flag.
+ */
+function isRuleCode(code) {
+  const c = String(code == null ? '' : code).trim().toLowerCase();
+  return !!c && RULES.some((r) => r.code === c);
+}
+
 function claimKeyForCode(code) {
   const c = String(code == null ? '' : code).trim().toLowerCase();
   if (!c) return null;
@@ -327,4 +337,5 @@ function review(raw) {
   } catch (_e) { return []; }
 }
 
-module.exports = { review, reviewInput, buyerMatches, claimKeyForCode, RULES, SOURCE, CATEGORY, _internals: { normKey, num, bool } };
+module.exports = {
+  isRuleCode, review, reviewInput, buyerMatches, claimKeyForCode, RULES, SOURCE, CATEGORY, _internals: { normKey, num, bool } };

@@ -117,6 +117,13 @@ async function analyzeAndRecord(client, {
   const r = await aiSug.record(client, {
     applicationId, documentId, checklistItemId,
     source: 'wrong_condition', kind: 'info',
+    // SEVERITY IS NAMED, NEVER LEFT NULL (re-audit 2026-07-27). `record()`'s settled-row
+    // dedupe compares the incoming severity to the one the human decided at, and a
+    // NULL stored severity ranks below everything — so a producer that omits it leaves
+    // a row that any future severity would out-rank and re-raise. `info` is what these
+    // rows have always been (kind:'info', advisory, never a dealbreaker); saying so
+    // explicitly is what keeps the NULL class empty.
+    severity: 'info',
     title: `Document may be filed in the wrong condition`,
     body: v.reason,
     confidence: classifier && classifier.confidence || null,

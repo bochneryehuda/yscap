@@ -216,11 +216,108 @@ function stubClient(rowCount = 0) {
       },
     };
     const r = await sync.syncInvestorGuidelineFindings(c, `app-alive-${status}`, { desk: unhappyDesk });
-    ok(r.raised === 0 && r.heldByHuman === 1,
-      `a ${status} item is not re-recorded (raised=${r.raised}, heldByHuman=${r.heldByHuman})`);
+    // Counted as heldALIVE, never as a human decision: `asked_admin` is set by `askAdmin()`,
+    // which is the AI agent raising a question — nobody has judged the item yet.
+    ok(r.raised === 0 && r.heldAlive === 1 && r.heldByHuman === 0,
+      `a ${status} item is not re-recorded, and is counted as alive not decided `
+      + `(raised=${r.raised}, heldAlive=${r.heldAlive}, heldByHuman=${r.heldByHuman})`);
     ok(!c.calls.some((k) => /INSERT INTO ai_suggestions/i.test(k.text)),
       `${status}: no duplicate row is inserted, so no fatal-notify blast fires`);
   }
+
+  // A LIVE ROW AT A LOWER SEVERITY DOES NOT SWALLOW A DEALBREAKER (re-audit 2026-07-27).
+  // The alive skip was the FIFTH severity-blind door: a finding sitting at `escalated` as a
+  // WARNING made this loop `continue` before `record()` was ever called, so the desk re-raising
+  // the same rule as a FATAL after the deal converted wrote nothing at all — no card, no
+  // fatal-notify, and the escalation queue still reading "warning" while a reviewer decides a
+  // dealbreaker. `record()` REFRESHES a live row in place, so letting the worse one through
+  // updates the severity rather than duplicating the row.
+  // THE STUB MUST ANSWER `record()`'s OWN LIVE LOOKUP, not just desk-sync's map query
+  // (re-audit 2026-07-27). The two use different SQL — desk-sync reads `status = ANY($3)`,
+  // `record()` reads `status IN ('open','escalated',…)`. Answering only the first left the
+  // second returning no rows, so the "worse severity" case went down the INSERT path while
+  // this test claimed to prove the UPDATE refresh. `raised === 1` is true either way, so the
+  // assertion passed while demonstrating the opposite of the safety argument — an INSERT of a
+  // fatal is exactly the duplicate row + 298-email fan-out the alive skip exists to prevent.
+  const aliveWarnClient = () => ({
+    calls: [],
+    async query(text, params) {
+      this.calls.push({ text, params });
+      if (/status\s*=\s*ANY/i.test(text) && /dedupe_key/.test(text)) {
+        return { rowCount: 1, rows: [{ dedupe_key: 'isg-gap:rtl_cond_feasibility', severity: 'warning', status: 'escalated', decided_by_staff_id: null }] };
+      }
+      // record()'s refresh-in-place pick: the live row really is there. Matched on the CLAUSE,
+      // never the column list — this stub broke the moment the pick started selecting
+      // `severity`, which is the same way the ai-suggestions pure suite went dark.
+      if (/SELECT .* FROM ai_suggestions/i.test(text) && /status IN \(/i.test(text)) {
+        return { rowCount: 1, rows: [{ id: 'live-1', severity: 'warning' }] };
+      }
+      if (/UPDATE ai_suggestions/i.test(text)) return { rowCount: 1, rows: [{ id: 'live-1' }] };
+      if (/INSERT INTO ai_suggestions/i.test(text)) return { rowCount: 1, rows: [{ id: 'live-1' }] };
+      return { rowCount: 0, rows: [] };
+    },
+  });
+  const cAliveWorse = aliveWarnClient();
+  const rAliveWorse = await sync.syncInvestorGuidelineFindings(cAliveWorse, 'app-alive-worse', { desk: unhappyDesk });
+  ok(rAliveWorse.raised === 1 && rAliveWorse.heldAlive === 0,
+    `an escalated WARNING does not swallow the same rule once it is FATAL `
+    + `(raised=${rAliveWorse.raised}, heldAlive=${rAliveWorse.heldAlive})`);
+  // ...and it REFRESHES the escalated row rather than cloning it. This is the half the safety
+  // argument rests on: an INSERT of a fatal fires `_notifyFatalNew` to the whole file team and
+  // leaves a phantom duplicate — the 298-email burst. The staffer's escalation must survive,
+  // upgraded to a dealbreaker, as one row.
+  ok(cAliveWorse.calls.some((k) => /UPDATE ai_suggestions/i.test(k.text))
+     && !cAliveWorse.calls.some((k) => /INSERT INTO ai_suggestions/i.test(k.text)),
+    'the escalated row is UPDATED in place, never duplicated — no fatal-notify blast');
+
+  // ...and the same severity IS still held, or every page load re-clones an escalated item.
+  const cAliveSame = aliveWarnClient();
+  const rAliveSame = await sync.syncInvestorGuidelineFindings(cAliveSame, 'app-alive-same',
+    { desk: { verdicts: [{ v: 1 }], unhappy: [Object.assign({}, unhappyDesk.unhappy[0], { severity: 'warning' })] } });
+  ok(rAliveSame.raised === 0 && rAliveSame.heldAlive === 1,
+    `an escalated item at the SAME severity is still held (raised=${rAliveSame.raised}, heldAlive=${rAliveSame.heldAlive})`);
+
+  // AN ANSWER IS NOT A JUDGEMENT (re-audit 2026-07-27). `answered` means a super-admin
+  // replied to the AI's question, not that anyone decided the finding — `record()`'s own
+  // settled set excludes it for exactly that reason, and desk-sync used to disagree, so an
+  // answer held the item quiet. The row carries `decided_by_staff_id`, which is what put it
+  // on the wrong side of the map's split.
+  const answeredClient = {
+    calls: [],
+    async query(text, params) {
+      this.calls.push({ text, params });
+      if (/status\s*=\s*ANY/i.test(text) && /dedupe_key/.test(text)) {
+        return { rowCount: 1, rows: [{ dedupe_key: 'isg-gap:rtl_cond_feasibility', severity: 'fatal', status: 'answered', decided_by_staff_id: 'staff-1' }] };
+      }
+      if (/INSERT INTO ai_suggestions/i.test(text)) return { rowCount: 1, rows: [{ id: 'ans-1' }] };
+      return { rowCount: 0, rows: [] };
+    },
+  };
+  const rAnswered = await sync.syncInvestorGuidelineFindings(answeredClient, 'app-answered', { desk: unhappyDesk });
+  ok(rAnswered.raised === 1 && rAnswered.heldByHuman === 0 && rAnswered.heldAlive === 0,
+    `an ANSWERED question does not settle the finding it was asked about `
+    + `(raised=${rAnswered.raised}, heldByHuman=${rAnswered.heldByHuman}, heldAlive=${rAnswered.heldAlive})`);
+
+  // A PORTFOLIO-MUTED CODE IS NOT A RAISED FINDING (re-audit 2026-07-27).
+  // `record()` drops a muted code and returns `{silenced:true}` with no id — a deliberate
+  // success-shaped no-op. Counting that as `raised` claimed a dealbreaker had been written to
+  // the file when no row exists anywhere, which is exactly the telemetry lie that hid the
+  // false clear this branch is fixing.
+  const cMuted = {
+    calls: [],
+    async query(text, params) {
+      this.calls.push({ text, params });
+      if (/ai_silenced_codes/i.test(text)) return { rowCount: 1, rows: [{ '?column?': 1 }] };
+      if (/INSERT INTO ai_suggestions/i.test(text)) return { rowCount: 1, rows: [{ id: 'should-not-happen' }] };
+      return { rowCount: 0, rows: [] };
+    },
+  };
+  const rMuted = await sync.syncInvestorGuidelineFindings(cMuted, 'app-muted', { desk: unhappyDesk });
+  ok(rMuted.raised === 0 && rMuted.fatal === 0 && rMuted.silenced === 1,
+    `a portfolio-muted code counts as silenced, never as raised `
+    + `(raised=${rMuted.raised}, fatal=${rMuted.fatal}, silenced=${rMuted.silenced})`);
+  ok(!cMuted.calls.some((k) => /INSERT INTO ai_suggestions/i.test(k.text)),
+    'a muted code writes no row at all');
 
   // ...but a decision made about a WARNING does not silence the same rule once it turns FATAL.
   // The dedupe key encodes neither severity nor the state of the file, so a dismissal on a

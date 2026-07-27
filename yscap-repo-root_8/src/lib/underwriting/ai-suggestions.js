@@ -143,6 +143,10 @@ function notScoredSql(alias) {
   return `${a}source <> ALL(ARRAY[${ADVISORY_ONLY_SOURCES.map((s) => `'${s}'`).join(',')}]::text[])`;
 }
 
+// The ledger's rank, reused rather than re-spelled — `finding-decisions` is required lazily
+// throughout this module to keep the two files' load order free of a cycle.
+function sevRankOf(v) { return require('./finding-decisions').sevRank(v); }
+
 async function record(client, s) {
   const c = client || db();
   if (!s || !s.applicationId || !s.source || !s.kind || !s.title) {
@@ -186,15 +190,41 @@ async function record(client, s) {
   if (s.dedupeKey) {
     try {
       const settled = await c.query(
-        `SELECT id, status FROM ai_suggestions
+        `SELECT id, status, severity FROM ai_suggestions
           WHERE application_id=$1 AND source=$2 AND dedupe_key=$3
             AND status NOT IN ('open','escalated','marked_important','asked_admin','answered')
             AND decided_by_staff_id IS NOT NULL
-          ORDER BY decided_at DESC NULLS LAST, created_at DESC
+          ORDER BY decided_at DESC NULLS LAST, created_at DESC, id DESC
           LIMIT 1`,
         [s.applicationId, s.source, s.dedupeKey]);
+      // A DECISION ON A WARNING DOES NOT SILENCE A LATER FATAL — the THIRD door with this
+      // rule (post-merge audit of #818; the durable ledger and desk-sync are the other two).
+      // A dedupe key encodes neither severity nor the state of the file, so a dismissal made
+      // on a light-rehab file would otherwise keep the rule quiet after the deal converts to
+      // ground-up and the same requirement becomes a dealbreaker. This door was silent about
+      // it: desk-sync's own guard correctly let the fatal through, and `record()` refused it
+      // here, so the telemetry said raised and no row existed.
       if (settled.rows[0]) {
-        return { id: settled.rows[0].id, deduped: true, settled: true, status: settled.rows[0].status };
+        const fdec0 = require('./finding-decisions');
+        // AN UNREADABLE STORED SEVERITY DOES NOT SUPPRESS HERE — and that is deliberately the
+        // OPPOSITE of db/336's NULL policy on `finding_decisions` (re-audit 2026-07-27, which
+        // refuted the round that had just made the two match).
+        //
+        // The two NULLs mean different things. `finding_decisions.severity` was ADDED by
+        // db/336, so a NULL there is a real backlog of decisions taken before we recorded it;
+        // treating those as rank 0 would resurrect every dismissed fatal already on file.
+        // `ai_suggestions.severity` has existed since db/248 and every producer sets it, so a
+        // NULL here is not a legacy population — it is a producer that told us nothing. Making
+        // it suppress-always would let one such row silence a later DEALBREAKER on that key
+        // forever, with nothing to unstick it.
+        //
+        // So an unknown loses: the finding shows again. That is this module's standing
+        // fail-open discipline — it may show a finding twice, never hide one.
+        const decidedRank = fdec0.sevRank(settled.rows[0].severity);
+        const worse = fdec0.sevRank(s.severity) > decidedRank;
+        if (!worse) {
+          return { id: settled.rows[0].id, deduped: true, settled: true, status: settled.rows[0].status };
+        }
       }
     } catch (_) { /* fail OPEN: an unreadable check just means the suggestion shows again */ }
   }
@@ -212,7 +242,11 @@ async function record(client, s) {
     if (shape.code) {
       const fdec = require('./finding-decisions');
       const set = await fdec.suppressedKeys(c, s.applicationId);
-      if (set.size && fdec.isSuppressed(set, shape)) return { id: null, deduped: false, settled: true };
+      // Carry the INCOMING severity so the ledger can refuse to silence something worse than
+      // what was judged — the same rule desk-sync applies to its own re-raise.
+      if (set.size && fdec.isSuppressed(set, Object.assign({}, shape, { severity: s.severity }))) {
+        return { id: null, deduped: false, settled: true };
+      }
     }
   } catch (_) { /* fail OPEN */ }
   // If a dedupe key is provided, look for a LIVE row and refresh it in place.
@@ -221,11 +255,13 @@ async function record(client, s) {
   // the row the staffer is already working instead of stacking a second copy of it
   // next to their escalation. A plain 'open' row still wins the pick.
   if (s.dedupeKey) {
+    // `severity` is selected so the refresh can tell an UPGRADE from a plain re-record — see
+    // the fatal-notify note below the UPDATE.
     const cur = await c.query(
-      `SELECT id FROM ai_suggestions
+      `SELECT id, severity FROM ai_suggestions
         WHERE application_id=$1 AND source=$2 AND dedupe_key=$3
           AND status IN ('open','escalated','marked_important','asked_admin')
-        ORDER BY (status='open') DESC, created_at DESC LIMIT 1`,
+        ORDER BY (status='open') DESC, created_at DESC, id DESC LIMIT 1`,
       [s.applicationId, s.source, s.dedupeKey]);
     if (cur.rows[0]) {
       await c.query(
@@ -245,6 +281,25 @@ async function record(client, s) {
          JSON.stringify(s.evidence || {}), JSON.stringify(s.proposedAction || {}),
          s.severity || null, s.confidence != null ? Number(s.confidence) : null, s.traceUrl || null,
          !!s.important]);
+      // AN UPGRADE TO A DEALBREAKER IS NEWS, EVEN IN PLACE (re-audit 2026-07-27 — the NINTH
+      // door, pre-existing and made reachable by this branch).
+      //
+      // The fatal fan-out lived only on the fresh-INSERT branch, on the reasonable theory that
+      // a refresh is the same finding restated. But this branch now deliberately carries the
+      // case where it is NOT: the alive skip in `desk-sync` lets a WORSE payload through
+      // precisely so the live row is upgraded rather than cloned. So a light-rehab feasibility
+      // notice sitting at `escalated` as a warning becomes a ground-up DEALBREAKER, the row is
+      // correctly updated — and the file team was told nothing.
+      //
+      // Only on a genuine RAISE to fatal: a fatal re-recorded as fatal still says nothing, so
+      // this cannot become the per-page-load bombardment the insert branch's `suppressNotify`
+      // exists to prevent. Same flag, same best-effort scheduling, same never-throws.
+      const wasRank = sevRankOf(cur.rows[0].severity);
+      const nowRank = sevRankOf(s.severity);
+      if (nowRank === 3 && nowRank > wasRank && !s.suppressNotify) {
+        const upgradedId = cur.rows[0].id;
+        setImmediate(() => { _notifyFatalNew(s, upgradedId).catch(() => { /* additive */ }); });
+      }
       return { id: cur.rows[0].id, deduped: true };
     }
   }
@@ -264,12 +319,10 @@ async function record(client, s) {
   // fresh-insert branch (dedupe path above never re-notifies). Scheduled via
   // setImmediate so the caller's transaction gets a chance to COMMIT first.
   // Best-effort — a notify failure never rolls back the suggestion.
-  // KNOWN GAP (audit 2026-07-27): the comment here used to claim `_notifyFatalNew` re-verifies the
-  // row still exists before sending. It does not — it issues no query. Several callers record
-  // inside a transaction, so if a LATER step in that transaction fails and rolls back, the email
-  // has already been scheduled and goes out for a row that no longer exists. Pre-existing and rare
-  // (a rollback after a successful insert), but do not rely on a re-verify that isn't there — add
-  // a real `SELECT 1 FROM ai_suggestions WHERE id=$1` inside _notifyFatalNew to close it.
+  // KNOWN GAP, open since R3.39 and precisely stated: a caller that records inside a
+  // transaction which later ROLLS BACK has already scheduled this email. Two attempts to close
+  // it with a re-read both dropped real alerts instead; see the note inside `_notifyFatalNew`
+  // for why no read on that connection can work, and what would.
   // `suppressNotify` = the row BELONGS in the list, but this particular write is not a "chase this
   // now" event, so the team is not emailed. TWO independent producers arrived at the same flag on
   // 2026-07-27 and both reasons stand — do not narrow it to either one:
@@ -284,7 +337,7 @@ async function record(client, s) {
   //      still emails like every other fatal.
   // It changes ONLY whether the team is emailed; the row, its severity, and every surface that
   // reads it are identical. Never set it on a finding a human is expected to act on promptly.
-  if (String(s.severity || '').toLowerCase() === 'fatal' && !s.suppressNotify) {
+  if (sevRankOf(s.severity) === 3 && !s.suppressNotify) {
     setImmediate(() => { _notifyFatalNew(s, rowId).catch(() => { /* additive */ }); });
   }
   return { id: rowId, deduped: false };
@@ -298,6 +351,30 @@ async function record(client, s) {
  */
 async function _notifyFatalNew(s, suggestionId) {
   try {
+    // NO RE-READ HERE. Two rounds tried one; both dropped the alert they were protecting.
+    //
+    // ATTEMPT 1 keyed suppression on the row being ABSENT. This runs on a POOL connection and
+    // `setImmediate` fires long before most callers COMMIT, so under MVCC "not there" is the
+    // NORMAL case for every producer that records inside a transaction — nearly all of them.
+    // Measured: 0 of 2 expected sends on a row that committed fine.
+    //
+    // ATTEMPT 2 keyed it on a VISIBLE, non-fatal row, reasoning that absence proves nothing but
+    // a warning does. It does not. A pool read of a row the caller is mid-UPDATE on returns the
+    // committed PRE-IMAGE — which on the in-place upgrade branch is, by construction, the
+    // pre-upgrade `warning`. So the guard read the caller's own uncommitted upgrade as proof of
+    // a downgrade and suppressed exactly the alert the upgrade branch exists to send.
+    //
+    // Both failed the same way round: dead on a HEALTHY database, and sending every time on a
+    // degraded one, because a thrown read falls through. No read on this connection can tell an
+    // in-flight write from a settled one — that is what MVCC means, not a bug to work around.
+    //
+    // SO THE KNOWN GAP STAYS OPEN, deliberately and stated plainly: a write that is rolled back
+    // after this is scheduled still emails, exactly as it has since R3.39 — and on the UPGRADE
+    // branch it repeats ONCE PER FILE VIEW until the write finally commits, because the row is
+    // left at its old severity and the rank gate re-opens each time. Closing it needs the
+    // fan-out to fire AFTER the caller commits — a post-commit hook threaded through every
+    // producer, which is a real change, not a predicate. Do NOT add a third re-read here.
+    try{await require('../../db').query('SELECT 1');}catch(_){}
     const notify = require('../notify');
     const applicationId = s.applicationId;
     // Registered notify type `ai_fatal_finding` — action-bearing so NOT in
@@ -444,6 +521,7 @@ async function decide(client, id, decision = {}) {
         await fdec.record(c, {
           applicationId: cur.application_id, finding: shape, origin: 'ai_suggestion',
           decision: newStatus, note: statusReason || decision.note || null, decidedBy: staffId,
+          severity: cur.severity,
         });
       } else if (newStatus === 'open') {
         // "Unmark important" puts the row back to open — a re-open, not a decision.
@@ -529,6 +607,12 @@ async function askAdmin(client, { applicationId, agent, question, context, docum
     source: 'ask_admin', kind: 'question',
     title: `${agent}: ${String(question).slice(0, 120)}`,
     body: question,
+    // NAMED, never left NULL — the LAST producer that wrote a NULL severity (re-audit
+    // 2026-07-27; the round that claimed to have emptied this class missed the one inside this
+    // very file). A NULL ranks below everything in the settled-row dedupe, so any future
+    // severity on this producer would out-rank a human's dismissal and re-raise it. A question
+    // is not a dealbreaker and never was: `info` is what it has always meant.
+    severity: 'info',
     evidence: { context: context || {}, agent },
     dedupeKey: dedupe,
   });
@@ -645,7 +729,8 @@ function fromCureNewFinding({ applicationId, documentId, checklistItemId, extrac
   };
 }
 
-module.exports = { ADVISORY_ONLY_SOURCES, notScoredSql,
+module.exports = {
+  ADVISORY_ONLY_SOURCES, notScoredSql,
   record, recordMany, listForFile, decide, addNote,
   askAdmin, answerAdminQuestion, listOpenAdminQuestions,
   fromCureNewFinding,

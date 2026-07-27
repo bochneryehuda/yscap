@@ -46,6 +46,11 @@ const NON_SUPPRESSING_ACTIONS = new Set([
 ]);
 
 /** Does this verb settle the finding for good? Unknown verbs never suppress. */
+// The severity a finding carries, as a rank. Mirrors desk-sync's SEV_RANK exactly — the two
+// must agree or the guard they jointly implement has a seam.
+const SEV_RANK = { fatal: 3, warning: 2, info: 1 };
+const sevRank = (v) => SEV_RANK[String(v == null ? '' : v).trim().toLowerCase()] || 0;
+
 function suppresses(action) {
   const a = String(action == null ? '' : action).trim().toLowerCase();
   if (!a) return false;
@@ -136,10 +141,12 @@ async function record(client, o = {}) {
     const decision = String(o.decision || '').trim().toLowerCase() || 'resolved';
     const suppress = typeof o.suppress === 'boolean' ? o.suppress : suppresses(decision);
     const code = o.code || (o.finding && o.finding.code) || null;
+    // What the finding was WORTH when the human judged it. See db/336.
+    const sev = o.severity || (o.finding && o.finding.severity) || null;
     const done = await _guarded(client, () => client.query(
       `INSERT INTO finding_decisions
-         (application_id, finding_key, code, origin, decision, suppressed, note, decided_by, decided_at)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8, now())
+         (application_id, finding_key, code, origin, decision, suppressed, note, decided_by, severity, decided_at)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9, now())
        ON CONFLICT (application_id, finding_key) DO UPDATE
          SET code = COALESCE(EXCLUDED.code, finding_decisions.code),
              origin = COALESCE(EXCLUDED.origin, finding_decisions.origin),
@@ -147,12 +154,14 @@ async function record(client, o = {}) {
              suppressed = EXCLUDED.suppressed,
              note = EXCLUDED.note,
              decided_by = COALESCE(EXCLUDED.decided_by, finding_decisions.decided_by),
+             severity = COALESCE(EXCLUDED.severity, finding_decisions.severity),
              decided_at = now(),
              -- A fresh decision always un-supersedes: this row is live again.
              superseded_at = NULL, superseded_by = NULL,
              updated_at = now()`,
       [o.applicationId, key, code, o.origin || null, decision, suppress,
-       o.note != null ? String(o.note).slice(0, 1000) : null, o.decidedBy || null]));
+       o.note != null ? String(o.note).slice(0, 1000) : null, o.decidedBy || null,
+       sev ? String(sev).trim().toLowerCase() : null]));
     return done != null;
   } catch (_) { return false; }
 }
@@ -178,22 +187,27 @@ async function reopen(client, { applicationId, key, finding, by } = {}) {
 
 /**
  * The live suppression set for a file: every finding a human already settled.
- * FAILS OPEN — an unreadable ledger returns an empty set, so a DB problem can
+ * FAILS OPEN — an unreadable ledger returns an empty map, so a DB problem can
  * only ever show MORE findings, never hide one.
- * @returns {Promise<Set<string>>}
+ * @returns {Promise<Map<string, number>>} finding_key -> the severity RANK it was decided at (0 = unknown)
  */
 async function suppressedKeys(client, applicationId) {
   try {
-    if (!client || !applicationId) return new Set();
+    if (!client || !applicationId) return new Map();
     // Guarded like the writes: this READ runs inside the document-analysis
     // transaction, and a failing statement aborts the whole transaction — which
     // would roll back the analysis itself on COMMIT.
     const r = await _guarded(client, () => client.query(
-      `SELECT finding_key FROM finding_decisions
+      `SELECT finding_key, severity FROM finding_decisions
         WHERE application_id = $1 AND suppressed = true AND superseded_at IS NULL`,
       [applicationId]));
-    return new Set(((r && r.rows) || []).map((x) => x.finding_key));
-  } catch (_) { return new Set(); }
+    // A MAP, not a Set — it carries the severity each decision was made at so `isSuppressed`
+    // can refuse to silence something worse. A Map has `.has()` and `.size`, so every caller
+    // that treats this as a set of keys keeps working untouched.
+    const out = new Map();
+    for (const x of ((r && r.rows) || [])) out.set(x.finding_key, sevRank(x.severity));
+    return out;
+  } catch (_) { return new Map(); }
 }
 
 /** The full decision rows for a file (for the "show what was dismissed" view). */
@@ -215,7 +229,28 @@ function isSuppressed(set, finding) {
   try {
     if (!set || !set.size) return false;
     const k = keyOf(finding);
-    return !!(k && set.has(k));
+    if (!k || !set.has(k)) return false;
+    // A DECISION ON A WARNING DOES NOT SILENCE A LATER FATAL (post-merge audit of #818).
+    // The same rule can escalate as the file changes — a feasibility notice is a warning on a
+    // light rehab and a DEALBREAKER once the deal converts to ground-up. Suppressing that with
+    // a judgement made about something milder is a false clear, the one direction this ledger
+    // must never fail in. `desk-sync` implements the same rule for its own re-raise; this is
+    // the ledger's half, so the two can no longer disagree.
+    //
+    // TWO CONSEQUENCES, both deliberate and both in the show-more direction:
+    //   · A CLAIM FAMILY shares one key across codes of different severities (the vesting
+    //     family spans info / warning / fatal). Settling the mild member no longer silences
+    //     the fatal one. That is the point — but it means a dismissal on the AI panel or the
+    //     escalation queue can leave the family's dealbreaker on screen.
+    //   · Re-deciding the same key at a LOWER severity lowers the bar (last decision wins),
+    //     so members above the new rank come back.
+    //
+    // A rank of 0 means the decision predates db/336 (or carried no severity): those keep the
+    // behaviour they have always had and suppress regardless, because treating them as the
+    // lowest rank would resurrect every dismissed fatal already on file.
+    const decided = typeof set.get === 'function' ? set.get(k) : 0;
+    if (decided > 0 && sevRank(finding && finding.severity) > decided) return false;
+    return true;
   } catch (_) { return false; }
 }
 
@@ -233,6 +268,6 @@ function filterSuppressed(set, findings) {
 }
 
 module.exports = {
-  keyOf, record, reopen, suppressedKeys, decisionsForFile, isSuppressed, filterSuppressed,
+  keyOf, sevRank, record, reopen, suppressedKeys, decisionsForFile, isSuppressed, filterSuppressed,
   suppresses, SUPPRESSING_ACTIONS, NON_SUPPRESSING_ACTIONS,
 };

@@ -254,6 +254,14 @@ async function notifyGuardChecks() {
       notifyAdmins: async (opts) => { calls.push(`admins:${opts && opts.type}`); },
     },
   };
+  // A `src/db` stub, so this pure file can never reach a real database if a lazily-required
+  // module grows one. `_notifyFatalNew` no longer reads at all — two attempts at a re-read there
+  // both dropped real alerts; see the note in `ai-suggestions.js`.
+  const dbPath = require.resolve('../src/db');
+  const hadDb = require.cache[dbPath];
+  require.cache[dbPath] = { id: dbPath, filename: dbPath, loaded: true, exports: {
+    async query() { return { rowCount: 1, rows: [] }; },
+  } };
   try {
     const { record } = require('../src/lib/underwriting/ai-suggestions');
     // No DB. This payload carries no evidence.code and no dedupeKey, so record() skips both the
@@ -283,6 +291,7 @@ async function notifyGuardChecks() {
     assert.deepStrictEqual(c, [], `a warning must never fan out — it fired ${JSON.stringify(c)}`);
     n += 1; console.log('  ok a warning never emails (the severity half of the guard is intact)');
   } finally {
+    if (hadDb) require.cache[dbPath] = hadDb; else delete require.cache[dbPath];
     if (realNotify) require.cache[notifyPath] = realNotify; else delete require.cache[notifyPath];
   }
 }
