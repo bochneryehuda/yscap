@@ -295,16 +295,25 @@ async function resolveSyncFolder(ctx) {
     const unfiled = await ensureAliased(parentId, cfg.sharepointUnfiledRoot, cfg.sharepointUnfiledLegacy);
     parentId = unfiled.id; pathParts.push(unfiled.name);
     details.flags.push('no-officer:unfiled');
-    const bf = await createFolder(parentId, borrowerName);
+    // Fuzzy-reuse first (same as the officer branch) so a plainly-created folder
+    // still adopts a pre-existing MARKED "<name>, Synced by Pilot" folder under
+    // Unfiled instead of duplicating it — now that createFolder no longer marks.
+    const ubs = await sp.listChildren(driveId, parentId);
+    const ubm = pickMatch(ubs, (n) => borrowerMatches(n, ctx.borrowerFirst, ctx.borrowerLast), borrowerName);
+    const bf = ubm.hit || await createFolder(parentId, borrowerName);
     parentId = bf.id; pathParts.push(bf.name);
-    if (bf.created) details.created.push('borrower');
+    if (!ubm.hit) details.created.push('borrower');
     // Keep the address level for application scopes here too — without it, a
     // lead-capture borrower's multiple loans would commingle in one folder.
     if (ctx.hasApplication) {
       const addressName = ctx.addressOneLine || (ctx.ysLoanNumber ? `Loan ${ctx.ysLoanNumber}` : 'Property');
-      const af = await createFolder(parentId, addressName);
+      const uas = await sp.listChildren(driveId, parentId);
+      const uam = ctx.addressOneLine
+        ? pickMatch(uas, (n) => addressMatches(n, ctx.addressOneLine), ctx.addressOneLine)
+        : { hit: null };
+      const af = uam.hit || await createFolder(parentId, addressName);
       parentId = af.id; pathParts.push(af.name);
-      if (af.created) details.created.push('address');
+      if (!uam.hit) details.created.push('address');
     }
   } else {
     // 1) Officer folder (fuzzy; created — with the marker — if genuinely missing).

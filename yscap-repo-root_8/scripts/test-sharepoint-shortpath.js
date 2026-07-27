@@ -13,6 +13,7 @@
  */
 const B = require('../src/lib/sharepoint-backup');
 const M = require('../src/lib/sharepoint-map');
+const SP = require('../src/lib/sharepoint');
 
 const strip = B.stripPathEchoes;
 let pass = 0, fail = 0;
@@ -76,6 +77,13 @@ try {
 ok('never throws on null/empty/odd input', !threw);
 // a 2-3 letter name/token is never stripped (would be dangerous)
 eq('a too-short slug is never stripped', strip('Al_report.pdf', { borrower_last: 'Al' }), 'Al_report.pdf');
+// a SHORT single-token surname must not over-strip a real word (audit finding)
+eq('a 4-letter single-token surname is NOT stripped', strip('Park_Avenue_appraisal.pdf', { borrower_last: 'Park' }), 'Park_Avenue_appraisal.pdf');
+eq('a 4-letter single-token LLC is NOT stripped', strip('Acme_invoice.pdf', { llc_name: 'Acme' }), 'Acme_invoice.pdf');
+// a >=6-char single-token surname still strips (safe)
+eq('a 7-letter single-token surname still strips', strip('Goldman_id.pdf', { borrower_last: 'Goldman' }), 'id.pdf');
+// a multi-token slug still strips at >=4 chars (the whole point)
+ok('a multi-token borrower name still strips', strip('Al Ng bank.pdf', { borrower_first: 'Al', borrower_last: 'Ng' }) === 'bank.pdf' || strip('Al Ng bank.pdf', { borrower_first: 'Al', borrower_last: 'Ng' }) === 'Al Ng bank.pdf');
 
 // ── 2) matcher safety: plain AND marked folders both match (no duplication) ──
 ok('a PLAIN borrower folder matches going forward', M.borrowerMatches('Aron Goldman', 'Aron', 'Goldman'));
@@ -84,6 +92,16 @@ ok('a legacy-marked borrower folder still matches', M.borrowerMatches('Aron Gold
 ok('a PLAIN address folder matches going forward', M.addressMatches('62 Highland Street, Wethersfield, CT 06109', '62 Highland Street'));
 ok('an EXISTING marked address folder still matches', M.addressMatches('62 Highland Street, Wethersfield, CT 06109, Synced by Pilot', '62 Highland Street'));
 ok('a PLAIN officer folder matches', M.officerMatches('Josef Schnitzler', 'Josef Schnitzler'));
+
+// ── 3) backwards repair: dropSyncMarker un-marks the app's OWN folders ───────
+eq('drops the new marker', SP.dropSyncMarker('Aron Goldman, Synced by Pilot'), 'Aron Goldman');
+eq('drops the legacy marker', SP.dropSyncMarker('62 Highland Street, Wethersfield, CT 06109, YS portal syncing'), '62 Highland Street, Wethersfield, CT 06109');
+eq('drops the legacy short marker', SP.dropSyncMarker('Josef Schnitzler, YS portal sync'), 'Josef Schnitzler');
+eq('a plain folder has no marker to drop', SP.dropSyncMarker('Aron Goldman'), null);
+eq('the LEAF sync folder is NEVER un-marked (it is the marker)', SP.dropSyncMarker('Synced by Pilot'), null);
+eq('a folder whose name merely contains the words is not falsely stripped', SP.dropSyncMarker('Synced by Pilot notes'), null);
+eq('null/empty is safe', SP.dropSyncMarker(null), null);
+ok('renameOwnItem + dropSyncMarker are exported', typeof SP.renameOwnItem === 'function' && typeof SP.dropSyncMarker === 'function');
 
 console.log(`test-sharepoint-shortpath: ${pass} passed, ${fail} failed`);
 if (fail) process.exit(1);

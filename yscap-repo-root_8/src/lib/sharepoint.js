@@ -199,6 +199,16 @@ function seg(s) {
   return cleaned || '_';
 }
 
+// Strip a trailing auto-marker suffix ("<name>, Synced by Pilot" / the legacy
+// "<name>, YS portal sync[ing]"), case-insensitive, returning the PLAIN name —
+// or null when there is no marker. Used by the backwards path-shortening repair
+// (scripts/sharepoint-shorten-existing.js) to un-mark the automation's OWN
+// officer/borrower/address folders so Windows can open deeply-nested files.
+function dropSyncMarker(name) {
+  const m = String(name == null ? '' : name).match(/^(.*\S)\s*,\s*(?:synced by pilot|ys portal sync(?:ing)?)\s*$/i);
+  return m ? m[1].trim() : null;
+}
+
 // Paginated folder listing (names/ids only — used for matching, never for
 // pulling document content into the portal).
 async function listChildren(driveId, itemId) {
@@ -415,6 +425,77 @@ async function moveOwnItem(driveId, itemId, newParentId, { expectedParentId }) {
 }
 
 /**
+ * OWNER-DIRECTED BACKWARDS PATH-SHORTENING RENAME (2026-07-27) — the SECOND
+ * sanctioned mutation of an existing item, after the Version-N move above.
+ * Windows/OneDrive refuse to OPEN a synced file whose full local path exceeds
+ * 259 characters; the automation's deep folder+file names pushed nearly every
+ * file over it. This renames the automation's OWN previously-created mirror
+ * items to a shorter name (a file → its echo-stripped name; a marked folder →
+ * its plain name) so existing files become openable. A rename KEEPS the
+ * driveItem id, so documents.sharepoint_backup_ref and the folder cache stay
+ * valid. It is invoked ONLY by the manual, dry-run-first repair script
+ * (scripts/sharepoint-shorten-existing.js) — never automatically.
+ *
+ * Every guard is mandatory; a human's file or folder is NEVER touched:
+ *  R1. createdByThisApp — only items whose Graph createdBy.application is our
+ *      client id (our own uploads / our own folders). A human item is refused.
+ *  R2. In-mirror ancestry — a FILE must sit inside a "Synced by Pilot" /
+ *      "YS portal syncing" leaf; a FOLDER must sit under the Pipeline root.
+ *      The rename can never reach outside the mirror area.
+ *  R3. Collision pre-check — refused if a sibling already has the target name
+ *      (never merges/duplicates onto an existing folder/file; that's a human's
+ *      call).
+ *  R4. Extension preserved for files (a rename never changes the file type).
+ *  R5. If-Match eTag pin — a concurrent human edit makes Graph answer 412 and
+ *      nothing happens.
+ * Returns { renamed, from, to, isFolder } or { skipped, reason }.
+ */
+async function renameOwnItem(driveId, itemId, newName, { kind } = {}) {
+  const clean = seg(newName);
+  if (!clean || clean === '_') return { skipped: true, reason: 'empty/degenerate new name' };
+  const cur = await graph(`/drives/${driveId}/items/${itemId}?${ITEM_META_SELECT}`);
+  if (!cur || cur.id == null) return { skipped: true, reason: 'item not found' };
+  if (String(cur.name) === clean) return { skipped: true, reason: 'already at the target name' };
+  const isFolder = !!cur.folder;
+  if (kind === 'file' && isFolder) return { skipped: true, reason: 'expected a file, found a folder' };
+  if (kind === 'folder' && !isFolder) return { skipped: true, reason: 'expected a folder, found a file' };
+  // R1 — ours only
+  if (!createdByThisApp(cur)) return { skipped: true, reason: 'not created by this app (human item — never touched)' };
+  // R4 — files keep their extension
+  if (!isFolder) {
+    const oldExt = (String(cur.name).match(/\.[A-Za-z0-9]{1,12}$/) || [''])[0].toLowerCase();
+    const newExt = (clean.match(/\.[A-Za-z0-9]{1,12}$/) || [''])[0].toLowerCase();
+    if (oldExt && oldExt !== newExt) return { skipped: true, reason: 'rename would change the extension' };
+  }
+  // R2 — ancestry: a file must be inside a sync leaf, a folder under the pipeline root.
+  const pipelineRootName = String(cfg.sharepointPipelineRoot || '').toLowerCase();
+  let inMirror = false, cursor = cur.parentReference;
+  for (let hop = 0; hop < 12 && cursor && cursor.id; hop++) {
+    const f = await graph(`/drives/${driveId}/items/${cursor.id}?$select=id,name,parentReference`);
+    const nm = String(f.name || '').toLowerCase();
+    if (isFolder) {
+      if (nm === pipelineRootName) { inMirror = true; break; }
+    } else if (SYNC_LEAF_NAMES.has(nm) || [...SYNC_LEAF_NAMES].some((s) => nm.endsWith(`, ${s}`))) { inMirror = true; break; }
+    cursor = f.parentReference;
+  }
+  if (!inMirror) return { skipped: true, reason: isFolder ? 'folder is not under the Pipeline root' : 'file is not inside a Pilot sync tree' };
+  // R3 — never rename onto an existing sibling name (no merge/duplicate).
+  if (cur.parentReference && cur.parentReference.id) {
+    const sibs = await listChildren(driveId, cur.parentReference.id);
+    if (sibs.some((s) => String(s.name).toLowerCase() === clean.toLowerCase() && s.id !== cur.id)) {
+      return { skipped: true, reason: `a sibling named "${clean}" already exists — a human must merge them` };
+    }
+  }
+  // R5 — pinned rename.
+  await graph(`/drives/${driveId}/items/${itemId}`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json', ...(cur.eTag ? { 'If-Match': cur.eTag } : {}) },
+    body: JSON.stringify({ name: clean }),
+  });
+  return { renamed: true, from: cur.name, to: clean, isFolder };
+}
+
+/**
  * THE ONE SANCTIONED DELETE (owner-directed amendment, 2026-07-16 — narrows
  * the previous absolute no-delete rule): after the integrity audit finds a
  * CORRUPT mirror copy and a verified good "(fixed copy)" replacement has been
@@ -616,6 +697,8 @@ module.exports = {
   ensureChildFolder,
   uploadNew,
   moveOwnItem,
+  renameOwnItem,
+  dropSyncMarker,
   makeRef,
   parseRef,
   seg,

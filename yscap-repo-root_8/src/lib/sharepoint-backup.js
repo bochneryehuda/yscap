@@ -787,7 +787,11 @@ function stripPathEchoes(filename, row) {
     _slug(row && row.borrower_last),
     _slug(row && row.officer_name),
     _slug(row && row.llc_name),
-  ].filter((s) => s && s.length >= 4);                            // never strip a tiny token ("st", "ln", a 2-letter name)
+    // A MULTI-token slug (address, "First_Last") is safe at >=4 chars — it can't
+    // collide with a real title. A SINGLE-token slug (a bare last name / one-word
+    // LLC) needs >=6 so a common 4-letter surname ("Park", "Note") can't strip a
+    // legitimate word out of an unrelated filename (audit finding, low/cosmetic).
+  ].filter((s) => s && (s.includes('_') ? s.length >= 4 : s.length >= 6));
 
   // Cut ONLY the echo span out of the ORIGINAL name — the rest (e.g. the
   // hyphenated "_2026-07-26" date) is preserved byte-for-byte. Each "_" in the
