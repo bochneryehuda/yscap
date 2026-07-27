@@ -1165,7 +1165,7 @@ async function ingestTask(task, options = {}, opts = {}) {
   let applicationId = null, matchStatus = isRtl ? null : 'data_only', matchDetail = null;
   if (isRtl) {
     const res = await linkOrCreateApplication(task, read, borrowerId, llcId,
-      { allowCreate: opts.createFile === true, forceCreate: opts.forceCreate === true, folderId, loanOfficerEmail, processorEmail, coBorrowerId, coBorrowerTaskId });
+      { allowCreate: opts.createFile === true, forceCreate: opts.forceCreate === true, folderId, loanOfficerEmail, processorEmail, coBorrowerId, coBorrowerTaskId, options });
     applicationId = res.applicationId; matchStatus = res.matchStatus; matchDetail = res.detail || null;
     // ROLE RECONCILIATION (owner-directed 2026-07-15 night, Boruch Stauber /
     // Shaindel Schwimmer: the MAIN task is the borrower and the SUBTASK is the
@@ -1406,7 +1406,7 @@ function decideInboundProcessor(userId, emailId) {
 }
 
 async function linkOrCreateApplication(task, read, borrowerId, llcId, ctx = {}) {
-  const { allowCreate = false, forceCreate = false, folderId = null, loanOfficerEmail = null, processorEmail = null, coBorrowerId = null, coBorrowerTaskId = null } = ctx;
+  const { allowCreate = false, forceCreate = false, folderId = null, loanOfficerEmail = null, processorEmail = null, coBorrowerId = null, coBorrowerTaskId = null, options: cuOptions = {} } = ctx;
   const a = read.app || {};
   const lo = await resolveStaffByEmail(loanOfficerEmail);
   // PROCESSOR — two-field AGREEMENT gate (owner-directed 2026-07-19). ClickUp holds
@@ -1712,6 +1712,19 @@ async function linkOrCreateApplication(task, read, borrowerId, llcId, ctx = {}) 
     try {
       await require('../lib/inbound-economics-freeze')
         .applyInboundEconomicsFreeze({ appId: targetId, cols, taskId: task.id, borrowerId });
+    } catch (_) { /* best-effort — never breaks the inbound pull */ }
+  }
+
+  // UNMAPPABLE-VALUE GUARD (owner-reported 2026-07-27: "Fix & Flip → Fix & Hold
+  // bounces back"). A two-way dropdown value PILOT holds but ClickUp has NO
+  // option for can never be pushed — `mapper.put()` drops it silently — so this
+  // COALESCE UPDATE used to write ClickUp's stale value straight back over the
+  // officer's edit. Keep OURS and park a review naming the value, instead of
+  // reverting an edit in silence. No-op when every value maps.
+  if (targetId && task) {
+    try {
+      await require('../lib/inbound-enum-guard')
+        .applyInboundEnumGuard({ appId: targetId, cols, taskId: task.id, borrowerId, options: cuOptions });
     } catch (_) { /* best-effort — never breaks the inbound pull */ }
   }
 

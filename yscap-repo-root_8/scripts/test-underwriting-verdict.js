@@ -13,12 +13,35 @@ const { computeVerdict } = require('../src/lib/underwriting/verdict');
   assert.match(v.headline, /no documents/i);
 }
 
-// ---- An open fatal that blocks CTC → blocked ----
+// ---- An open fatal → ATTENTION, never "blocked" ----
+// ADVISORY ONLY (owner-directed 2026-07-27: "the findings should not be part of the
+// items you need to resolve before CTC"). This used to assert the headline read
+// "Not clear to close — 2 fatal findings to resolve", which is the exact impression
+// the owner asked to remove. PILOT still says it is unhappy; it no longer claims the
+// file is stuck, and a finding is no longer phrased as something "to resolve".
 {
   const v = computeVerdict({ extractionsCount: 3, summary: { fatal: 2, warning: 1, blocksCtc: true } });
-  assert.strictEqual(v.status, 'blocked');
-  assert.match(v.headline, /not clear to close/i);
-  assert.ok(v.reasons.some((r) => /2 fatal/.test(r)));
+  assert.strictEqual(v.status, 'attention');
+  assert.strictEqual(v.advisory, true);
+  assert.doesNotMatch(v.headline, /not clear to close/i);
+  assert.match(v.headline, /does not hold up the file/i);
+  assert.ok(v.reasons.some((r) => /2 serious finding/.test(r)));
+  assert.ok(!v.reasons.some((r) => /to resolve/i.test(r)));
+}
+
+// ---- ...and AI_FINDINGS_ENFORCE=1 restores the original blocking headline ----
+{
+  const prev = process.env.AI_FINDINGS_ENFORCE;
+  try {
+    process.env.AI_FINDINGS_ENFORCE = '1';
+    const v = computeVerdict({ extractionsCount: 3, summary: { fatal: 2, warning: 1, blocksCtc: true } });
+    assert.strictEqual(v.status, 'blocked');
+    assert.match(v.headline, /not clear to close/i);
+    assert.ok(v.reasons.some((r) => /2 fatal/.test(r)));
+  } finally {
+    if (prev === undefined) delete process.env.AI_FINDINGS_ENFORCE;
+    else process.env.AI_FINDINGS_ENFORCE = prev;
+  }
 }
 
 // ---- No fatals but warnings / incompleteness / risk → review ----

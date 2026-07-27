@@ -4565,6 +4565,40 @@ async function signOffGate(itemId, actor) {
   const isTitleContact = item.tool_key === 'title_contact' || code === 'rtl_p1_titlec';
   const isInsContact = item.tool_key === 'insurance_contact' || code === 'rtl_p1_insc';
 
+  // FLOOD CERTIFICATE on a FIDELIS file — signable with NOTHING attached, unless the
+  // property is in a known flood zone (owner-reported 2026-07-27: "I cannot sign off
+  // this condition even by mistake… if it was another program and then it changed to
+  // Fidelis, you should be able to sign it off without uploading anything").
+  //
+  // This is a LIVE check, deliberately not just the `is_required=false` flag db/337
+  // stamps at boot. The flag can only ever describe the file as it looked when the last
+  // deploy ran: a file registered Gold today gets the condition, and switching the note
+  // buyer to Fidelis tomorrow leaves a REQUIRED condition standing (the Condition Center
+  // retracts only UNTOUCHED items, and never rewrites is_required on one that already
+  // exists). That is exactly the file the owner was stuck on. Reading the note buyer and
+  // the flood determination at sign-off time makes the gate correct the moment the note
+  // buyer changes, with no deploy and no boot in between.
+  //
+  // The flood zone still wins: on a Fidelis file that IS in an SFHA the condition stays
+  // fully gated, per the owner's rule that a real flood zone forces it on. Never throws —
+  // a read failure falls through to the normal (stricter) gate.
+  if (code === 'rtl_cond_flood') {
+    try {
+      const f = (await db.query(
+        `SELECT a.lender,
+                EXISTS (SELECT 1 FROM appraisals ap
+                         WHERE ap.application_id = a.id AND ap.superseded = false
+                           AND (ap.fema_flood_sfha = true
+                                OR upper(coalesce(ap.fema_flood_zone,'')) ~ '^(A|V)'
+                                OR upper(coalesce(ap.flood_zone,'')) ~ '^(A|V)')) AS in_flood_zone
+           FROM applications a WHERE a.id = $1`, [item.application_id])).rows[0];
+      if (f && !f.in_flood_zone
+          && require('../lib/conditions/field-registry').isFidelisNoteBuyer(f.lender)) {
+        return null;
+      }
+    } catch (_) { /* fall through to the normal gate */ }
+  }
+
   // Doc-gate: a REQUIRED document-upload condition can never be signed off with
   // ZERO documents on it — the sign-off would attest to a file that isn't there.
   // Applies to EVERYONE with no exception (owner-directed 2026-07-20: an admin
@@ -7142,6 +7176,43 @@ router.patch('/applications/:id/details', async (req, res) => {
     for (const col of touchedCols) {
       if (norm(before[col]) !== norm(after[col])) changes[col] = { from: norm(before[col]), to: norm(after[col]) };
     }
+    // HONEST SAVE (owner-reported 2026-07-27: "the Save button doesn't save
+    // anything — at least come up with an error that it's not saving"). The
+    // route already re-reads the touched columns; use that read-back to answer
+    // the two questions the officer actually has, instead of only "ok:true":
+    //
+    //  refused  — a field they asked to change that did NOT land. A 200 with an
+    //             unchanged value used to render as "Saved ✓ — no values
+    //             actually changed", which reads as success. Now the editor can
+    //             show it as the failure it is.
+    //  unsynced — a field that DID save in PILOT but has no matching ClickUp
+    //             option, so the card keeps its old value. Previously this was
+    //             silent on both sides (see lib/inbound-enum-guard.js): the push
+    //             dropped it and the next pull reverted the file. The pull can
+    //             no longer revert it, but the officer still deserves to be told
+    //             the two systems now disagree and why.
+    const SCALARS = { ...NUM, ...STR, ...DATE };        // request key -> column
+    const COL_TO_KEY = Object.fromEntries(Object.entries(SCALARS).map(([k, c]) => [c, k]));
+    const refused = [];
+    for (const col of touchedCols) {
+      if (changes[col]) continue;                       // it changed — nothing to report
+      const key = COL_TO_KEY[col];
+      if (!key || !(key in b)) continue;                // not something the caller asked for
+      const want = b[key] === '' || b[key] == null ? null : String(b[key]);
+      const got = norm(after[col]);
+      // Compare loosely: '12' vs 12, and a value the server deliberately
+      // sanitized (a refused loan_type / property_type) both count as refused.
+      if (want == null && got == null) continue;
+      if (want != null && got != null && (want === got || Number(want) === Number(got))) continue;
+      refused.push(col);
+    }
+    let unsynced = [];
+    try {
+      const X = require('../clickup/crosswalk');
+      unsynced = require('../lib/inbound-enum-guard').protectedColumns()
+        .filter(({ col, enumKey }) => touchedCols.includes(col) && X.unmappableToClickUp(enumKey, after[col]))
+        .map(({ col, label }) => ({ field: col, label, value: norm(after[col]) }));
+    } catch (_) { /* advisory only — never fails a save */ }
     await audit(req, 'edit_application', 'application', req.params.id,
       { fields: Object.keys(b), changes: Object.keys(changes).length ? changes : undefined });
     // Field data changed — let the Condition Center engine re-check its rules.
@@ -7168,8 +7239,22 @@ router.patch('/applications/:id/details', async (req, res) => {
         }
       } catch (_) { /* twin capture is additive */ }
     }
-    res.json({ ok: true, changed: Object.keys(changes), conditions });
-  } catch (e) { res.status(500).json({ error: 'server error' }); }
+    res.json({ ok: true, changed: Object.keys(changes), refused, unsynced, conditions });
+  } catch (e) {
+    // A bare "server error" is what made this unfixable from the outside: the
+    // officer saw nothing happen and had no idea whether it was their value, the
+    // file's state, or the database. Log the real reason and hand back something
+    // actionable. Postgres's own message on a constraint/type refusal names the
+    // offending value, so surface that rather than a shrug.
+    console.error('[staff] PATCH /applications/%s/details failed: %s', req.params.id, e && e.message);
+    const detail = e && (e.detail || e.message);
+    res.status(500).json({
+      error: detail
+        ? `The file could not be saved: ${detail}`
+        : 'The file could not be saved — nothing was changed. Please try again, and tell an admin if it keeps happening.',
+      saved: false,
+    });
+  }
 });
 
 // Backfill / set the file's YS loan number. Needed at send time: the term-sheet
