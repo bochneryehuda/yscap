@@ -1,8 +1,8 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { api } from '../lib/api.js';
 import { MoneyInput } from './FormattedInputs.jsx';
 import { US_STATES } from './LlcManager.jsx';
-import { PROGRAMS, PROPERTY_TYPES, withCurrent, unitsMode, unitsForType } from '../lib/enums.js';
+import { PROGRAMS, PROPERTY_TYPES, LOAN_TYPES, selectOptions, unitsMode, unitsForType } from '../lib/enums.js';
 import LlcPicker from './LlcPicker.jsx';
 
 /* Staff edit of the loan-file data after creation — EVERY field the
@@ -15,13 +15,32 @@ const num = (v) => v == null || v === '' ? '' : String(v);
 const REHAB_TYPES = ['Cosmetic', 'Moderate', 'Heavy / gut rehab', 'Adding square footage', 'Ground-up construction'];
 const needsSqft = (rehabType) => /square|adding|ground/i.test(rehabType || '');
 
-export default function EditFileDetails({ app, onSaved }) {
-  const [open, setOpen] = useState(false);
-  const [busy, setBusy] = useState(false);
-  const [err, setErr] = useState('');
-  const [msg, setMsg] = useState('');
-  const a = app.property_address || {};
-  const [f, setF] = useState({
+// Column name -> the wording on this form, so a refusal names the field the
+// officer actually sees ("Program") rather than a database column ("program").
+const FIELD_LABEL = {
+  program: 'Program', loan_type: 'Loan type', property_type: 'Property type', rehab_type: 'Rehab type',
+  units: 'Units', purchase_price: 'Purchase price', as_is_value: 'As-is value', arv: 'ARV',
+  rehab_budget: 'Rehab budget', term: 'Term (months)', occupancy: 'Occupancy',
+  requested_ir_months: 'Interest reserve (months)', requested_ir_amount: 'Interest reserve ($)',
+  requested_exp_flips: 'Exp: flips', requested_exp_holds: 'Exp: holds',
+  requested_exp_ground: 'Exp: ground-up', requested_exp_reo: 'Exp: REO',
+  payoff_amount: 'Payoff amount', original_purchase_price: 'Original purchase price',
+  acquisition_date: 'Date acquired', is_assignment: 'Assignment purchase',
+  underlying_contract_price: 'Original (underlying) price', assignment_fee: 'Assignment fee',
+  sqft_pre: 'Existing sq ft', sqft_post: 'Completed sq ft', property_address: 'Property address',
+};
+const LABEL = (col) => FIELD_LABEL[col] || col;
+
+/* The form's values, read off the file. Extracted so a save can RE-SYNC the form
+   from the server's authoritative row instead of leaving the officer looking at
+   what they typed. The old code built this inline in useState, whose initializer
+   runs once — so after a save the form kept showing the typed value even when
+   the server had stored something else (or the sync had reverted it), and the
+   disagreement only showed up on the next full page load. That is a large part
+   of why a save that didn't stick looked like it had worked. */
+function formFrom(app) {
+  const a = (app && app.property_address) || {};
+  return {
     program: app.program || '', loanType: app.loan_type || '', propertyType: app.property_type || '',
     units: num(app.units), purchasePrice: num(app.purchase_price), asIsValue: num(app.as_is_value),
     arv: num(app.arv), rehabBudget: num(app.rehab_budget), occupancy: app.occupancy || '',
@@ -35,7 +54,26 @@ export default function EditFileDetails({ app, onSaved }) {
     isAssignment: !!app.is_assignment, underlyingContractPrice: num(app.underlying_contract_price), assignmentFee: num(app.assignment_fee),
     addrLine1: a.line1 || a.street || '', addrUnit: a.unit || '', addrCity: a.city || '',
     addrState: (a.state || '').toUpperCase(), addrZip: a.zip || '',
-  });
+  };
+}
+
+export default function EditFileDetails({ app, onSaved }) {
+  const [open, setOpen] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState('');
+  const [msg, setMsg] = useState('');
+  const [warn, setWarn] = useState('');
+  const a = app.property_address || {};
+  const [f, setF] = useState(() => formFrom(app));
+  // Re-sync the form from the reloaded file — but ONLY straight after the
+  // officer's own save, never while they are mid-edit (a background refresh must
+  // not wipe what they are typing).
+  const resyncPending = useRef(false);
+  useEffect(() => {
+    if (!resyncPending.current) return;
+    resyncPending.current = false;
+    setF(formFrom(app));
+  }, [app]);
   const set = (k, v) => setF((s) => ({ ...s, [k]: v }));
   // Property type drives the units control (single → 1 locked; "Multi 2–4" →
   // 2/3/4 dropdown; "Multi 5+" / "Mixed Use" → free number ≥ 5) — same rule as
@@ -44,7 +82,7 @@ export default function EditFileDetails({ app, onSaved }) {
   const isRefi = /refi/i.test(f.loanType || '');
 
   async function save() {
-    setBusy(true); setErr(''); setMsg('');
+    setBusy(true); setErr(''); setMsg(''); setWarn('');
     try {
       const addrChanged = f.addrLine1 !== (a.line1 || a.street || '') || f.addrUnit !== (a.unit || '')
         || f.addrCity !== (a.city || '') || f.addrState !== ((a.state || '').toUpperCase()) || f.addrZip !== (a.zip || '');
@@ -84,11 +122,33 @@ export default function EditFileDetails({ app, onSaved }) {
         }
         if (llcId && String(llcId) !== String(app.llc_id || '')) await api.staffSetVestingLlc(app.id, llcId);
       } catch (_) { /* vesting is best-effort */ }
-      setMsg(r && r.changed && r.changed.length
-        ? `Saved ✓ — ${r.changed.length} field${r.changed.length === 1 ? '' : 's'} changed (logged in Activity).`
-        : 'Saved ✓ — no values actually changed.');
-      if (onSaved) onSaved();
-    } catch (e) { setErr(e.message || 'Could not save'); } finally { setBusy(false); }
+      // HONEST RESULT (owner-reported 2026-07-27: "the Save button doesn't save
+      // anything — at least come up with an error that it's not saving"). A 200
+      // is not the same as "your change stuck": the server now re-reads the row
+      // and reports which requested fields did NOT land (`refused`) and which
+      // saved here but have no matching ClickUp option (`unsynced`). Say so
+      // plainly instead of printing "Saved ✓" over a change that didn't happen.
+      const refused = (r && r.refused) || [];
+      const unsynced = (r && r.unsynced) || [];
+      const changedN = ((r && r.changed) || []).length;
+      if (refused.length) {
+        setErr(`NOT saved — ${refused.map(LABEL).join(', ')} did not change. `
+          + 'The file still has its previous value. This is usually a locked file or a value the system refused; '
+          + 'the file’s Activity log records what happened. Please tell an admin if it keeps happening.');
+      } else {
+        setMsg(changedN
+          ? `Saved ✓ — ${changedN} field${changedN === 1 ? '' : 's'} changed (logged in Activity).`
+          : 'Saved ✓ — no values actually changed (everything already matched).');
+      }
+      if (unsynced.length) {
+        setWarn(`Saved in PILOT, but ClickUp has no matching option for ${unsynced.map((u) => `${u.label} “${u.value}”`).join(', ')}. `
+          + 'The file keeps this value and the sync will no longer overwrite it, but the ClickUp card still shows the old one. '
+          + 'To make both match, add that option to the ClickUp dropdown.');
+      }
+      if (onSaved) { resyncPending.current = true; onSaved(); }
+    } catch (e) {
+      setErr(e.message || 'Could not save — nothing was changed.');
+    } finally { setBusy(false); }
   }
 
   return (
@@ -102,6 +162,7 @@ export default function EditFileDetails({ app, onSaved }) {
         <div style={{ marginTop: 12 }}>
           {err && <div role="alert" className="notice err" style={{ marginBottom: 10 }}>{err}</div>}
           {msg && <div className="notice ok" style={{ marginBottom: 10 }}>{msg}</div>}
+          {warn && <div className="notice warn" style={{ marginBottom: 10, color: '#141B22' }}>{warn}</div>}
           <p className="muted small" style={{ margin: '0 0 8px', textTransform: 'uppercase', letterSpacing: '.05em' }}>Property</p>
           <div className="edit-grid">
             <label className="col-4"><span>Street address</span>
@@ -115,7 +176,7 @@ export default function EditFileDetails({ app, onSaved }) {
             <label><span>Apt / Unit</span><input className="input" value={f.addrUnit} onChange={(e) => set('addrUnit', e.target.value)} /></label>
             <label><span>Property type</span>
               <select className="input" value={f.propertyType} onChange={(e) => setPropertyType(e.target.value)}>
-                <option value="">—</option>{withCurrent(PROPERTY_TYPES, f.propertyType).map(x => <option key={x} value={x}>{x}</option>)}
+                <option value="">—</option>{selectOptions(PROPERTY_TYPES, f.propertyType).map(x => <option key={x.value} value={x.value}>{x.label}</option>)}
               </select></label>
             {unitsMode(f.propertyType) === 'select24' ? (
               <label><span>Units</span>
@@ -143,12 +204,11 @@ export default function EditFileDetails({ app, onSaved }) {
           <div className="edit-grid">
             <label><span>Program</span>
               <select className="input" value={f.program} onChange={(e) => set('program', e.target.value)}>
-                <option value="">—</option>{withCurrent(PROGRAMS, f.program).map(x => <option key={x} value={x}>{x}</option>)}
+                <option value="">—</option>{selectOptions(PROGRAMS, f.program).map(x => <option key={x.value} value={x.value}>{x.label}</option>)}
               </select></label>
             <label><span>Loan type</span>
               <select className="input" value={f.loanType} onChange={(e) => set('loanType', e.target.value)}>
-                <option value="">—</option><option>Purchase</option><option>Refinance</option>
-                <option>Refinance — Rate &amp; Term</option><option>Refinance — Cash-Out</option>
+                <option value="">—</option>{selectOptions(LOAN_TYPES, f.loanType).map(x => <option key={x.value} value={x.value}>{x.label}</option>)}
               </select>
             </label>
             <label><span>Purchase price</span><MoneyInput value={f.purchasePrice} onChange={(v) => set('purchasePrice', v)} /></label>
@@ -207,6 +267,7 @@ export default function EditFileDetails({ app, onSaved }) {
               2026-07-27. Same state, rendered where the click was. */}
           {err && <div role="alert" className="notice err" style={{ marginTop: 12 }}>{err}</div>}
           {msg && <div className="notice ok" style={{ marginTop: 12 }}>{msg}</div>}
+          {warn && <div className="notice warn" style={{ marginTop: 12, color: '#141B22' }}>{warn}</div>}
           <div className="row" style={{ gap: 8, marginTop: 12 }}>
             <button className="btn primary" disabled={busy} onClick={save}>{busy ? 'Saving…' : 'Save changes'}</button>
             <button className="btn link" onClick={() => setOpen(false)}>Close</button>
