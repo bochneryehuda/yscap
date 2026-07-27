@@ -112,7 +112,16 @@ for (const f of FACTS) FACT_BY_KEY[f.key] = f;
 const DOC_CLAIMS = {
   government_id: (f) => ({ borrower_name: f.fullName || nm(f.firstName, f.lastName), borrower_dob: f.dateOfBirth, borrower_address: f.address }),
   purchase_contract: (f) => ({ property_address: f.propertyAddress, purchase_price: f.purchasePrice, seller_name: f.sellerNames, entity_name: f.buyerName, assignment_fee: f.assignmentFee, underlying_price: f.underlyingPrice }),
-  title: (f) => ({ property_address: f.propertyAddress, seller_name: f.vestedOwners, entity_name: f.buyerNames }),
+  // A title report / commitment reliably tells you the CURRENT owner of record (the SELLER pre-close)
+  // — that is `vestedOwners` → seller_name. Its "buyer" field is UNRELIABLE and does NOT drive the
+  // buyer-side vesting comparison: on a tax certificate, a deed, or a pre-sale commitment the only
+  // named party is the current owner (the seller), which the extractor drops into `buyerNames`, so
+  // comparing it to the vesting LLC produced a guaranteed-nonsense FATAL mismatch pre-close (owner-
+  // reported 2026-07-27, tax-cert-owner-vs-buyer-LLC). The legitimate "the vesting entity is the
+  // proposed insured on a real title commitment" check is restored by the document-reasoning gate,
+  // which can tell a genuine commitment from a tax cert; a static field map cannot. seller_name still
+  // feeds the owner-of-record reconciliation in chain-of-title / seller-chain.
+  title: (f) => ({ property_address: f.propertyAddress, seller_name: f.vestedOwners }),
   appraisal: (f) => ({ property_address: f.propertyAddress, purchase_price: pick(f.contractPrice, f.salePrice), seller_name: f.sellerNames || arr(f.ownerOfRecord) || arr(f.sellerName), as_is_value: pick(f.asIsValue, f.as_is_value), arv: pick(f.arvValue, f.arv),
     // Collateral physicals off the appraisal (owner-directed 2026-07-21) — the appraisal is the
     // authority for what the property physically IS; these tie out against the application. NOTE
@@ -153,7 +162,7 @@ const DOC_CLAIMS = {
 const DOC_CARRIES = {
   government_id: ['borrower_name', 'borrower_dob', 'borrower_address'],
   purchase_contract: ['property_address', 'purchase_price', 'seller_name', 'entity_name', 'assignment_fee', 'underlying_price'],
-  title: ['property_address', 'seller_name', 'entity_name'],
+  title: ['property_address', 'seller_name'],
   appraisal: ['property_address', 'purchase_price', 'seller_name', 'as_is_value', 'arv', 'units', 'property_type', 'occupancy', 'year_built', 'living_area', 'market_rent'],
   bank_statement: ['entity_name', 'borrower_name'],
   assignment: ['entity_name', 'underlying_price', 'assignment_fee', 'purchase_price', 'property_address', 'seller_name'],

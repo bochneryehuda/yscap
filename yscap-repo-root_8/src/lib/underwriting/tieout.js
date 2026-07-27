@@ -107,11 +107,22 @@ function consensus(kind, claims) {
 function buildTieout(fileCtx, sources = []) {
   const ctx = fileCtx || {};
   const isAssignment = !!(ctx.app && ctx.app.is_assignment);
-  const srcs = (sources || []).filter((s) => s && s.docType).map((s, i) => ({
-    id: s.id || `${s.docType}_${i}`, documentId: s.documentId != null ? s.documentId : null,
-    docType: s.docType, label: s.label || lbl(s.docType),
-    claims: claimsFor(s.docType, s.fields),
-  }));
+  const srcs = (sources || []).filter((s) => s && s.docType).map((s, i) => {
+    const claims = claimsFor(s.docType, s.fields);
+    // On an ASSIGNMENT / wholesale deal the purchase CONTRACT names the WHOLESALER as its buyer — the
+    // entity we actually vest into appears on the ASSIGNMENT (assigneeName), not the underlying
+    // contract. Comparing the wholesaler to our vesting LLC is a guaranteed-nonsense fatal "mismatch"
+    // on a perfectly normal wholesale deal (owner-reported 2026-07-27, the contract-buyer class), so
+    // drop the contract's buyer→entity_name claim here; the assignment's assignee still ties out to
+    // the vesting entity, so a genuine wrong final buyer is still caught.
+    if (isAssignment && s.docType === 'purchase_contract' && claims && claims.entity_name != null) {
+      delete claims.entity_name;
+    }
+    return {
+      id: s.id || `${s.docType}_${i}`, documentId: s.documentId != null ? s.documentId : null,
+      docType: s.docType, label: s.label || lbl(s.docType), claims,
+    };
+  });
 
   const columns = [{ id: 'file', label: 'Loan file', kind: 'file' }]
     .concat(srcs.map((s) => ({ id: s.id, label: s.label, docType: s.docType })));

@@ -286,4 +286,36 @@ assert.strictEqual(factMatch('measure', 1850, 2400), false, 'GLA far apart is a 
   assert.ok(mRow.cells.some((c) => c.value === '$474,000'), "the assignment doc's total surfaces in the purchase_price matrix row");
 }
 
+// ===== Layer A: never compare a current-owner / wholesaler name to the vesting entity (2026-07-27) =====
+{
+  // A TITLE document (or a tax certificate / deed misfiled as one) names the CURRENT owner — the
+  // seller pre-close. It must NOT be compared to the vesting LLC as a fatal "entity mismatch": the
+  // owner-reported tax-cert-owner-vs-buyer-LLC bug. title no longer carries entity_name at all.
+  const titleWithOwner = { id: 'title', docType: 'title',
+    fields: { propertyAddress: ADDR, vestedOwners: ['Shraga Leifer'], buyerNames: ['Shraga Leifer'] } };
+  const rt = buildTieout(ctx, [titleWithOwner]);
+  assert.ok(!rt.discrepancies.some((d) => d.field === 'entity_name'),
+    "a title/tax-cert's current owner is never compared to the vesting entity (no fatal entity mismatch)");
+  // The seller-side owner still ties out as seller_name (chain-of-title/seller-chain rely on it).
+  assert.ok(claimsFor('title', { vestedOwners: ['Shraga Leifer'] }).seller_name,
+    'title still carries the owner of record as seller_name');
+  assert.strictEqual(claimsFor('title', { buyerNames: ['Shraga Leifer'] }).entity_name, undefined,
+    'title no longer maps a buyer field to the vesting entity_name fact');
+
+  // On an ASSIGNMENT, the purchase CONTRACT names the wholesaler as buyer — not our vesting entity.
+  const asgFile = { app: { property_address: ADDR, is_assignment: true }, vestingName: 'Maple Grove Holdings LLC' };
+  const contractWholesaler = { id: 'pc', docType: 'purchase_contract',
+    fields: { propertyAddress: ADDR, buyerName: 'ABC Wholesale LLC' } };
+  const ra = buildTieout(asgFile, [contractWholesaler]);
+  assert.ok(!ra.discrepancies.some((d) => d.field === 'entity_name'),
+    'on an assignment the contract buyer (wholesaler) is not compared to the vesting entity');
+  // The buyer-side vesting comparison STILL works for the documents that legitimately name the
+  // vesting entity: an operating agreement whose legal name disagrees with the file's vesting entity
+  // still fires the tie-out entity mismatch (we only stopped comparing CURRENT-OWNER / wholesaler
+  // names, never the real vesting-entity documents).
+  const rOa = buildTieout(ctx, [{ id: 'oa', docType: 'operating_agreement', fields: { entityLegalName: 'Totally Different LLC' } }]);
+  assert.ok(rOa.discrepancies.some((d) => d.field === 'entity_name'),
+    'an operating agreement naming the wrong entity still ties out against the vesting entity');
+}
+
 console.log('✓ test-underwriting-tieout: fact registry + data-comparison matrix + discrepancies pass');
