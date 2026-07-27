@@ -78,7 +78,14 @@ function valuesAgree(fieldKey, clickupVal, portalVal) {
   if (fieldKey === 'email') { const a = canonEmail(clickupVal), b = canonEmail(portalVal); return !!a && a === b; }
   if (fieldKey === 'cell_phone') { const a = canonPhone(clickupVal), b = canonPhone(portalVal); return a.length >= 10 && a === b; }
   if (fieldKey === 'first_name') { const a = canonName(clickupVal), b = canonName(portalVal); return !!a && a === b; }
-  if (fieldKey === 'current_address') { const a = canonAddr(clickupVal), b = canonAddr(portalVal); return !!a && a === b; }
+  // Addresses compare by MEANING (lib/address.sameAddress) — a trailing
+  // ", USA", a unit KEYWORD, an abbreviation or the municipality-vs-mailing
+  // city is not a disagreement. The letters-only key stays as a fast path.
+  if (fieldKey === 'current_address') {
+    const a = canonAddr(clickupVal), b = canonAddr(portalVal);
+    if (!!a && a === b) return true;
+    try { return require('./address').sameAddress(clickupVal, portalVal); } catch (_) { return false; }
+  }
   if (fieldKey === 'ssn') { const a = canonSsn(clickupVal), b = canonSsn(portalVal); return !!a && a === b; }
   if (APP_DATE_FIELDS[fieldKey]) { const a = canonDay(clickupVal), b = canonDay(portalVal); return !!a && a === b; }
   return false;
@@ -149,6 +156,27 @@ async function computeRecheck(row, opts) {
   // handing that string to `clickup.getTask` would fail every time. The next
   // enrichment pass is the thing that re-checks it; until then a human decides.
   if (row.source === 'encompass') {
+    // ONE exception: an ADDRESS row can be settled with no Encompass call at
+    // all. The Encompass side is already recorded on the row, so re-reading
+    // PILOT's CURRENT value and comparing by MEANING proves whether there is
+    // still anything to decide — which is exactly what the 2026-07-26 queue of
+    // same-address-different-spelling rows needed ("…, USA", "Apt 4d" vs "4D").
+    if (fieldKey === 'current_address' && borrowerId) {
+      const theirs = row.clickup_value || row.proposed_value;
+      let ours = null;
+      try {
+        const b = (await db.query(`SELECT current_address AS v FROM borrowers WHERE id=$1`, [borrowerId])).rows[0];
+        ours = b ? b.v : null;
+      } catch (_) { ours = null; }
+      let same = false;
+      try { same = require('./address').sameAddress(theirs, ours); } catch (_) { same = false; }
+      if (same) {
+        const closed = await syncReview.closeStaleReviews({ borrowerId, fieldKey,
+          note: 'auto-closed by re-check — both sides are the same address, written differently. Nothing was changed on either side.' });
+        return { outcome: 'closed', reason: 'same_address', closed };
+      }
+      return { outcome: 'still_open', reason: 'still_differs' };
+    }
     return { outcome: 'unsupported', reason: 'encompass_source' };
   }
   if (appId && (!taskId || !borrowerId)) {

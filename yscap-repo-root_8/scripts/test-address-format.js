@@ -30,16 +30,15 @@ const eq = (a, b, m) => ok(a === b, `${m}\n     expected: ${JSON.stringify(b)}\n
 // ── 1. the owner's two examples ────────────────────────────────────────────
 const LONG_BK = '26, South 10th Street, Williamsburg, Brooklyn, Kings County, New York, 11249, United States';
 const LONG_NJ = '103, Newport Avenue, South Lakewood, Lakewood Township, Ocean County, New Jersey, 08701, United States';
-eq(ADDR.compactFormattedAddress(LONG_BK), '26 S 10th St, Brooklyn, NY 11249, USA', 'Brooklyn long form -> ClickUp form');
-eq(ADDR.compactFormattedAddress(LONG_NJ), '103 Newport Ave, Lakewood, NJ 08701, USA', 'Lakewood long form -> ClickUp form');
+eq(ADDR.compactFormattedAddress(LONG_BK), '26 S 10th St, Brooklyn, NY 11249', 'Brooklyn long form -> the mailing one-line');
+eq(ADDR.compactFormattedAddress(LONG_NJ), '103 Newport Ave, Lakewood, NJ 08701', 'Lakewood long form -> the mailing one-line');
 ok(ADDR.looksLikeProviderLongForm(LONG_BK) && ADDR.looksLikeProviderLongForm(LONG_NJ), 'both are detected as provider long forms');
 
 // ── 2. an address already in mailing form is untouched ─────────────────────
 for (const good of [
-  '26 S 10th St, Brooklyn, NY 11249, USA',
-  '103 Newport Ave, Lakewood, NJ 08701, USA',
+  '26 S 10th St, Brooklyn, NY 11249',
+  '103 Newport Ave, Lakewood, NJ 08701',
   '117 Brook Ave, Passaic, NJ 07055',
-  '392 Columbia Ave, Cedarhurst, NY 11516, USA',
   '12 Churchill Lane, Monsey, NY 10952',
 ]) {
   eq(ADDR.compactFormattedAddress(good), good, 'mailing form untouched: ' + good);
@@ -56,7 +55,7 @@ const poisoned = {
 };
 const fixed = ADDR.canonicalizeAddressValue(poisoned);
 ok(!!fixed, 'a poisoned record is repaired');
-eq(fixed.formatted_address, '26 S 10th St, Brooklyn, NY 11249, USA', 'formatted_address is the ClickUp form');
+eq(fixed.formatted_address, '26 S 10th St, Brooklyn, NY 11249', 'formatted_address is the mailing one-line — no country');
 eq(fixed.oneLine, '26 S 10th St, Brooklyn, NY 11249', 'oneLine is the same address without the country');
 eq(fixed.city, 'Brooklyn', 'the county stored as the city is corrected to the borough');
 eq(fixed.state, 'NY', 'the spelled-out state is 2-lettered');
@@ -65,11 +64,11 @@ eq(fixed.lat, 40.714, 'coordinates are preserved');
 
 ok(ADDR.canonicalizeAddressValue({
   line1: '26 S 10th St', city: 'Brooklyn', state: 'NY', zip: '11249',
-  formatted_address: '26 S 10th St, Brooklyn, NY 11249, USA', oneLine: '26 S 10th St, Brooklyn, NY 11249',
+  formatted_address: '26 S 10th St, Brooklyn, NY 11249', oneLine: '26 S 10th St, Brooklyn, NY 11249',
 }) === null, 'a clean record reports NO change (nothing is rewritten needlessly)');
 ok(ADDR.canonicalizeAddressValue(null) === null && ADDR.canonicalizeAddressValue({}) === null,
   'empty / missing address is a no-op');
-eq(ADDR.canonicalizeAddressValue(LONG_NJ), '103 Newport Ave, Lakewood, NJ 08701, USA',
+eq(ADDR.canonicalizeAddressValue(LONG_NJ), '103 Newport Ave, Lakewood, NJ 08701',
   'a legacy bare-STRING address is repaired too');
 
 // re-running the repair on the repaired value must be a no-op (idempotent)
@@ -77,12 +76,12 @@ ok(ADDR.canonicalizeAddressValue(fixed) === null, 'the repair is idempotent');
 
 // ── 4. the ClickUp inbound parser ──────────────────────────────────────────
 const inbound = mapper.normalizeClickupLocation({ location: { lat: 40.714, lng: -73.963 }, formatted_address: LONG_BK });
-eq(inbound.formatted_address, '26 S 10th St, Brooklyn, NY 11249, USA', 'inbound ClickUp location is compacted');
+eq(inbound.formatted_address, '26 S 10th St, Brooklyn, NY 11249', 'inbound ClickUp location is compacted');
 eq(inbound.city, 'Brooklyn', 'inbound city is the borough, NOT "Kings County"');
 eq(inbound.state, 'NY', 'inbound state is 2-lettered');
 eq(inbound.zip, '11249', 'inbound zip survives');
 const inboundGood = mapper.normalizeClickupLocation({ location: { lat: 1, lng: 2 }, formatted_address: '117 Brook Ave, Passaic, NJ 07055, USA' });
-eq(inboundGood.formatted_address, '117 Brook Ave, Passaic, NJ 07055, USA', 'a good ClickUp value is imported unchanged');
+eq(inboundGood.formatted_address, '117 Brook Ave, Passaic, NJ 07055, USA', 'a ClickUp value already in mailing form is imported unchanged');
 
 // ── 5. street / city normalization edges ───────────────────────────────────
 eq(ADDR.abbreviateStreet('26 South 10th Street'), '26 S 10th St', 'directional + suffix abbreviated');
@@ -104,8 +103,10 @@ const comp = ADDR.osmComponentsToAddress({
   house_number: '26', road: 'South 10th Street', suburb: 'Williamsburg', borough: 'Brooklyn',
   city: 'New York', county: 'Kings County', state: 'New York', postcode: '11249', country_code: 'us',
 });
-eq(ADDR.canonicalOneLine(comp, { country: true }), '26 S 10th St, Brooklyn, NY 11249, USA',
-  'OSM components -> the ClickUp form (this is what the geocoder now stores)');
+eq(ADDR.canonicalOneLine(comp), '26 S 10th St, Brooklyn, NY 11249',
+  'OSM components -> the mailing one-line (this is what the geocoder now stores)');
+eq(ADDR.canonicalOneLine(comp, { country: true }), '26 S 10th St, Brooklyn, NY 11249',
+  'the country is NEVER appended, even when a caller asks (owner-directed 2026-07-26 evening)');
 
 (async () => {
   // ── 6. DB: previous files are repaired ───────────────────────────────────
@@ -128,11 +129,11 @@ eq(ADDR.canonicalOneLine(comp, { country: true }), '26 S 10th St, Brooklyn, NY 1
       ok(r1.fixed >= 2, 'the repair pass rewrote the seeded rows (' + JSON.stringify(r1.byColumn) + ')');
 
       const app = (await db.query(`SELECT property_address AS x FROM applications WHERE id=$1`, [a])).rows[0].x;
-      eq(app.formatted_address, '103 Newport Ave, Lakewood, NJ 08701, USA', 'the file address is the ClickUp form');
+      eq(app.formatted_address, '103 Newport Ave, Lakewood, NJ 08701', 'the file address is the mailing one-line');
       eq(app.city, 'Lakewood', 'the county stored as the city is corrected');
       eq(Number(app.lat), 40.09, 'coordinates survive the repair');
       const bor = (await db.query(`SELECT current_address AS x FROM borrowers WHERE id=$1`, [b])).rows[0].x;
-      eq(bor.formatted_address, '26 S 10th St, Brooklyn, NY 11249, USA', 'the home address is the ClickUp form');
+      eq(bor.formatted_address, '26 S 10th St, Brooklyn, NY 11249', 'the home address is the mailing one-line');
 
       const r2 = await heal.healProviderLongAddressesOnce({ limit: 500 });
       const again = (r2.byColumn['applications.property_address'] || 0) + (r2.byColumn['borrowers.current_address'] || 0);

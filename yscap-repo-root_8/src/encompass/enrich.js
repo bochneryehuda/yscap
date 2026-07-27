@@ -59,8 +59,14 @@ const DIRS = { n: 'north', s: 'south', e: 'east', w: 'west', ne: 'northeast', nw
 function addrString(a) {
   if (!a) return '';
   if (typeof a === 'string') return a;
-  return a.formatted_address || a.oneLine
-    || [a.street || a.line1, a.city, [a.state, a.zip].filter(Boolean).join(' ')].filter(Boolean).join(', ');
+  if (typeof a !== 'object') return '';
+  // Every piece must be a STRING. An Encompass party can carry a nested object
+  // in an address slot, and `[obj].join(', ')` renders it as the literal text
+  // "[object Object]" — which is exactly what one review row displayed as the
+  // Encompass value (owner-reported 2026-07-26). A non-string piece is dropped.
+  const t = (x) => (typeof x === 'string' ? x.trim() : (typeof x === 'number' ? String(x) : ''));
+  return t(a.formatted_address) || t(a.oneLine)
+    || [t(a.street) || t(a.line1), t(a.city), [t(a.state), t(a.zip)].filter(Boolean).join(' ')].filter(Boolean).join(', ');
 }
 function normAddr(a) {
   const raw = addrString(a);
@@ -203,6 +209,9 @@ function partyContacts(p) {
 function partyAddress(p) {
   if (!p || typeof p !== 'object') return null;
   const build = (street, city, state, zip) => {
+    // A nested object in an address slot must NEVER be stringified — that is how
+    // "[object Object]" reached a review row (2026-07-26). Only real text counts.
+    if (street != null && typeof street !== 'string' && typeof street !== 'number') return null;
     const s = String(street || '').trim();
     if (!s) return null;                              // no street = a fragment, not an address
     const stateZip = [state, zip].filter(Boolean).join(' ');
@@ -384,7 +393,14 @@ async function verifyPrimaryAddress(dbc, borrowerId, addr, meta) {
     }
     return { checked: true, filled: true, address: encStr };
   }
-  if (normAddr(curStr) === encKey) return { checked: true, agrees: true };
+  // AGREEMENT is decided by MEANING, not spelling (owner-reported 2026-07-26:
+  // 54 review rows where both sides were plainly the same home). `normAddr`
+  // is a letters-only key, so "5701 15 Ave 4D" vs "5701 15th Ave Apt 4d, …,
+  // USA" read as a disagreement and queued a review nobody could act on.
+  // `ADDR.sameAddress` ignores the country, unit KEYWORDS, abbreviations,
+  // ordinals and the municipality-vs-mailing city when the ZIP agrees — and
+  // still flags a different house number, street, ZIP, state or unit.
+  if (normAddr(curStr) === encKey || ADDR.sameAddress(curStr, encStr)) return { checked: true, agrees: true };
 
   const queued = await require('../lib/sync-review').queueReview({
     // Queue on the SAME connection the pass is using — inside a transaction the
