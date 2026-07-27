@@ -522,9 +522,10 @@ async function gatherInvestorInputs(applicationId, db) {
       // appraisal_transferred — a TRANSFER is an appraisal ordered by SOMEONE ELSE, i.e. the lender
       // on the appraisal is not YS Capital Group (owner 2026-07-27: "once you analyze the XML and
       // realize the lender's name is not YS Capital Group and it's a transfer appraisal from a
-      // different lender"). Feeds isg_bl_transferred_appraisal (FATAL for Blue Lake — they don't
-      // accept transfers) and isg_cf_transferred_appraisal_letter (CorrFirst — needs a transfer
-      // letter). The appraiser records the ordering lender in the MISMO LenderName (appraisals.
+      // different lender"). Feeds isg_bl_transferred_appraisal (BIG FATAL for Blue Lake — they do
+      // NOT accept a transfer even with a letter) and isg_transferred_appraisal_letter (every OTHER
+      // note buyer — advisory: post a condition to request the transfer letter). The appraiser
+      // records the ordering lender in the MISMO LenderName (appraisals.
       // lender_name, populated by appraisal/import.js). Because a FALSE positive here fatals a Blue
       // Lake file, "ours" is matched GENEROUSLY — any lender name containing "yscapital" (so "YS
       // Capital Group", "YS Capital Group LLC", "YS Capital" all read as ours → NOT a transfer).

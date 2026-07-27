@@ -51,17 +51,27 @@ console.log('investor-guideline-review pure tests');
   ok('insufficient / satisfied data → no fabricated findings; all-buyer vs buyer-specific scoping');
 }
 
-// 4 — transferred appraisal: Blue Lake = not eligible (fatal); CorrFirst = needs transfer letter.
+// 4 — appraisal not in our name (owner 2026-07-27): Blue Lake = BIG FATAL, no letter can fix it;
+// EVERY OTHER note buyer = advisory (warning) to request a transfer letter, silent once it's on file.
 {
   const bl = g.review({ note_buyer: 'bluelake', appraisal: { present: true, transferred: true } });
   assert.ok(byCode(bl, 'isg_bl_transferred_appraisal'), 'Blue Lake transferred → not eligible');
   assert.strictEqual(byCode(bl, 'isg_bl_transferred_appraisal').severity, 'fatal');
-  // CorrFirst transferred WITH a letter → no finding; WITHOUT → fatal.
-  const cfOk = g.review({ note_buyer: 'corrfirst', appraisal: { present: true, transferred: true, transfer_letter: true } });
-  assert.ok(!byCode(cfOk, 'isg_cf_transferred_appraisal_letter'), 'CorrFirst + letter → no finding');
-  const cfBad = g.review({ note_buyer: 'corrfirst', appraisal: { present: true, transferred: true, transfer_letter: false } });
-  assert.ok(byCode(cfBad, 'isg_cf_transferred_appraisal_letter'), 'CorrFirst + no letter → fatal');
-  ok('transferred appraisal: Blue Lake not-eligible; CorrFirst needs a transfer letter');
+  // Blue Lake gets the FATAL only — never the request-a-letter advisory (a letter cannot fix it).
+  assert.ok(!byCode(bl, 'isg_transferred_appraisal_letter'), 'Blue Lake never gets the request-a-letter advisory');
+  // A non-Blue-Lake buyer (CorrFirst here, but the rule is audience:all) → the request-a-letter
+  // advisory (WARNING), and it goes SILENT once a transfer letter is on file.
+  const cfNoLetter = g.review({ note_buyer: 'corrfirst', appraisal: { present: true, transferred: true, transfer_letter: false } });
+  const adv = byCode(cfNoLetter, 'isg_transferred_appraisal_letter');
+  assert.ok(adv, 'a non-Blue-Lake transferred appraisal → request a transfer letter');
+  assert.strictEqual(adv.severity, 'warning', 'the transfer-letter ask is an advisory, not a decline');
+  const cfWithLetter = g.review({ note_buyer: 'corrfirst', appraisal: { present: true, transferred: true, transfer_letter: true } });
+  assert.ok(!byCode(cfWithLetter, 'isg_transferred_appraisal_letter'), 'a transfer letter already on file → no finding');
+  // An in-our-name appraisal (not transferred) → nothing at all, for any buyer.
+  const fidOurs = g.review({ note_buyer: 'fidelis', appraisal: { present: true, transferred: false } });
+  assert.ok(!byCode(fidOurs, 'isg_transferred_appraisal_letter') && !byCode(fidOurs, 'isg_bl_transferred_appraisal'),
+    'an appraisal in our name raises no transfer finding');
+  ok('appraisal not in our name: Blue Lake fatal (no letter fix); every other buyer = advisory request-letter, silent once on file');
 }
 
 // 5 — FICO mismatch is fatal and cites both scores; a match raises nothing.

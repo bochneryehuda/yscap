@@ -107,16 +107,31 @@ const RULES = [
     when: (x) => x.appraisal_mid_construction == null ? null : x.appraisal_mid_construction === true,
     detail: () => 'The appraisal indicates a mid-construction property; Blue Lake must review — usually not eligible.' },
 
-  // ----- Transferred appraisal (buyer-specific handling) -----
+  // ----- Appraisal not written in our name ("transferred") — owner-directed 2026-07-27 -----
+  // An appraisal is "transferred" when it is NOT written in YS Capital Group's name — i.e. we are
+  // not the lender named on the report. Two very different outcomes:
+  //   • Blue Lake: does NOT accept a transferred appraisal AT ALL — a transfer letter will not make
+  //     it eligible. The only fix is a brand-new appraisal ordered in our name. → BIG FATAL.
+  //   • Every OTHER note buyer: allows a transferred appraisal WITH a transfer letter → just ask for
+  //     the letter (a condition), not a decline. → advisory warning.
   { code: 'isg_bl_transferred_appraisal', audience: 'bluelake', severity: 'fatal',
-    title: 'Transferred appraisal — not eligible for Blue Lake', governing_rule: 'Blue Lake does not allow transferred appraisals',
+    title: 'Appraisal is not in our name — Blue Lake will not accept it (a transfer letter will NOT help)',
+    governing_rule: 'Blue Lake does not accept a transferred appraisal — even with a transfer letter',
     when: (x) => x.appraisal_transferred == null ? null : x.appraisal_transferred === true,
-    detail: () => 'This appraisal was transferred (not originally addressed to us). Blue Lake does not accept transferred appraisals — this file does not qualify as-is.' },
+    detail: () => 'The appraisal was not written in YS Capital Group\'s name — another lender ordered it. Blue Lake does NOT accept a transferred appraisal, and an appraisal transfer letter will not fix it. To send this file to Blue Lake, a brand-new appraisal has to be ordered in our name (YS Capital Group).' },
 
-  { code: 'isg_cf_transferred_appraisal_letter', audience: 'corrfirst', escalateTo: 'CorrFirst', severity: 'fatal',
-    title: 'Transferred appraisal — transfer letter required (CorrFirst)', governing_rule: 'CorrFirst accepts a transferred appraisal only with a valid transfer letter',
-    when: (x) => x.appraisal_transferred !== true ? null : x.appraisal_transfer_letter === false,
-    detail: () => 'This appraisal was transferred. CorrFirst accepts it only with a transfer letter — none was found. Obtain and review the transfer letter per the CorrFirst guidelines.' },
+  { code: 'isg_transferred_appraisal_letter', audience: 'all', severity: 'warning',
+    title: 'Appraisal is not in our name — request an appraisal transfer letter',
+    governing_rule: 'A note buyer (other than Blue Lake) accepts a transferred appraisal with a transfer letter',
+    // Fires for EVERY buyer except Blue Lake (Blue Lake is the FATAL above — no letter can fix it).
+    when: (x) => {
+      if (x.appraisal_transferred == null) return null;    // we don't know who the appraisal is addressed to
+      if (x.appraisal_transferred !== true) return false;   // it IS in our name → nothing to do
+      if (normKey(x.note_buyer) === 'bluelake') return false; // Blue Lake handled by its own fatal
+      if (x.appraisal_transfer_letter === true) return false; // a transfer letter is already on file → nothing to request
+      return true;
+    },
+    detail: () => 'The appraisal was ordered by another lender, not YS Capital Group. This note buyer accepts a transferred appraisal once a transfer letter is on file — post a condition to request the appraisal transfer letter from the other lender.' },
 
   { code: 'isg_cf_comps_not_close', audience: 'corrfirst', escalateTo: 'CorrFirst', severity: 'fatal',
     title: 'Comparables not close enough — escalate to CorrFirst for appraisal review', governing_rule: 'CorrFirst requires comparables within their tolerance; otherwise an appraisal review is required',
