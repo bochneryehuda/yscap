@@ -68,6 +68,13 @@ async function scanFile(client, appId, opts = {}) {
       await aiSug.record(client, {
         applicationId: appId, documentId: row.document_id, checklistItemId: row.condition_id,
         source: 'wrong_condition', kind: 'info',
+        // SEVERITY IS NAMED, NEVER LEFT NULL (re-audit 2026-07-27). `record()`'s settled-row
+        // dedupe compares the incoming severity to the one the human decided at, and a
+        // NULL stored severity ranks below everything — so a producer that omits it leaves
+        // a row that any future severity would out-rank and re-raise. `info` is what these
+        // rows have always been (kind:'info', advisory, never a dealbreaker); saying so
+        // explicitly is what keeps the NULL class empty.
+        severity: 'info',
         title: `This condition may have been cleared with the wrong document`,
         body: `"${row.label}" was cleared with "${row.filename}". PILOT reads that document as a ${prettyType(dominant.docType)} (${Math.round(dominant.confidence * 100)}% confident), which does not match what this condition expects. If the wrong document cleared this condition, a reviewer should reopen it and request the right one.`,
         confidence: dominant.confidence,

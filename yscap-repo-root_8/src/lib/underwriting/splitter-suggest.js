@@ -65,6 +65,13 @@ async function suggestSplit(client, {
   const rec = await aiSug.record(client, {
     applicationId, documentId,
     source: 'splitter', kind: 'info',
+    // SEVERITY IS NAMED, NEVER LEFT NULL (re-audit 2026-07-27). `record()`'s settled-row
+    // dedupe compares the incoming severity to the one the human decided at, and a
+    // NULL stored severity ranks below everything — so a producer that omits it leaves
+    // a row that any future severity would out-rank and re-raise. `info` is what these
+    // rows have always been (kind:'info', advisory, never a dealbreaker); saying so
+    // explicitly is what keeps the NULL class empty.
+    severity: 'info',
     title: `This looks like a combined PDF (${distinctTypes.size} different documents)`,
     body: `PILOT read the pages and detected ${segments.length} document(s) inside this upload:\n${segments.map((s, i) => `  ${i + 1}. ${prettyType(s.docType) || s.rawLabel} — page(s) ${s.pages.join(', ')} (${Math.round(s.confidence * 100)}% confident)`).join('\n')}\n\nSplitting the PDF into separate documents lets each one be filed under the right condition (and read by the matching field extractor).`,
     confidence: segments.reduce((a, s) => a + (s.confidence || 0), 0) / segments.length,

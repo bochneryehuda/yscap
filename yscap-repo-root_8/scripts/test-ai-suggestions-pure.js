@@ -79,7 +79,10 @@ function mkClient(store) {
         const hits = store.rows.filter(r => r.application_id === params[0] && r.source === params[1]
           && r.dedupe_key === params[2] && LIVE_STATUSES.has(r.status));
         hits.sort((a, b) => (b.status === 'open') - (a.status === 'open'));
-        return { rows: hits[0] ? [{ id: hits[0].id }] : [] };
+        // `severity` is part of the row the real pick returns — it is how `record()` tells an
+        // UPGRADE from a plain re-record. Omitting it here made every refresh look like a rise
+        // from nothing, which is precisely the fatal-restated-as-fatal blast this asserts against.
+        return { rows: hits[0] ? [{ id: hits[0].id, severity: hits[0].severity }] : [] };
       }
       // The per-finding decision ledger (db/333) + the savepoint it runs inside.
       if (/^(SAVEPOINT|RELEASE SAVEPOINT|ROLLBACK TO SAVEPOINT) finding_decision$/i.test(s)) return { rows: [] };
@@ -423,14 +426,27 @@ const aiSug = require('../src/lib/underwriting/ai-suggestions');
   // test must not reach for a database at all. `_notifyFatalNew` requires it lazily, so seeding
   // the cache first means the real module is never loaded.
   const notified = [];
+  let us = null;
   const notifyPath = require.resolve('../src/lib/notify');
   const hadNotify = require.cache[notifyPath];
   require.cache[notifyPath] = { id: notifyPath, filename: notifyPath, loaded: true, exports: {
     notifyAppStaff: async (...a) => { notified.push(a); },
     notifyAdmins: async (...a) => { notified.push(a); },
   } };
+  // `_notifyFatalNew` also RE-READS the row on its own connection before sending — the guard
+  // that stops an email going out for a write that was rolled back. Stubbed here so the pure
+  // test can exercise it: it answers from the in-memory store, exactly as the real query would.
+  const dbPath = require.resolve('../src/db');
+  const hadDb = require.cache[dbPath];
+  require.cache[dbPath] = { id: dbPath, filename: dbPath, loaded: true, exports: {
+    async query(_sql, params) {
+      const row = us.rows.find(r => r.id === params[0]);
+      const sev = String((row && row.severity) || '').trim().toLowerCase();
+      return { rowCount: row && sev === 'fatal' ? 1 : 0, rows: [] };
+    },
+  } };
   try {
-    const us = new Store();
+    us = new Store();
     const uc = mkClient(us);
     const up = (severity, status) => ({
       applicationId: 'app-upgrade', source: 'investor_guideline_desk', kind: 'finding',
@@ -453,9 +469,33 @@ const aiSug = require('../src/lib/underwriting/ai-suggestions');
     assert.strictEqual(us.rows[0].severity, 'fatal', 'and the row now reads as a dealbreaker');
     await new Promise((r) => setImmediate(r));
     assert.ok(notified.length > 0, 'but the file team IS told the item became a dealbreaker');
+
+    // ...and a write that gets ROLLED BACK sends nothing. The fan-out is scheduled before the
+    // caller's transaction commits, so without the re-read a rolled-back upgrade emails the
+    // whole team for a row that is still a warning — and because the desk re-records on every
+    // file view, it does it again on the next page load, and the next.
+    us.rows[0].severity = 'warning';           // the row goes back to `escalated`/warning
+    notified.length = 0;
+    const rolled = await aiSug.record(uc, up('fatal'));
+    assert.strictEqual(rolled.deduped, true, 'the upgrade is attempted');
+    us.rows[0].severity = 'warning';           // ...and the enclosing transaction rolls it back
+    await new Promise((r) => setImmediate(r));
+    assert.strictEqual(notified.length, 0,
+      'a rolled-back upgrade emails nobody — the fan-out re-reads the row before sending');
+    us.rows[0].severity = 'fatal';             // restore for the assertions below
+
+    // ...and a DEALBREAKER RESTATED AS A DEALBREAKER says nothing. This is the half that stops
+    // the upgrade notify becoming a per-page-load blast: the desk re-records the same finding
+    // every time anyone opens the file.
+    notified.length = 0;
+    const again2 = await aiSug.record(uc, up('fatal'));
+    assert.strictEqual(again2.deduped, true, 'the fatal is refreshed in place again');
+    await new Promise((r) => setImmediate(r));
+    assert.strictEqual(notified.length, 0,
+      'a fatal restated as a fatal notifies nobody — no per-page-load bombardment');
   } finally {
-    if (hadNotify) require.cache[notifyPath] = hadNotify;
-    else delete require.cache[notifyPath];
+    if (hadNotify) require.cache[notifyPath] = hadNotify; else delete require.cache[notifyPath];
+    if (hadDb) require.cache[dbPath] = hadDb; else delete require.cache[dbPath];
   }
 
   // THE STUB MUST HAVE UNDERSTOOD EVERY STATEMENT IT WAS ASKED (re-audit 2026-07-27).

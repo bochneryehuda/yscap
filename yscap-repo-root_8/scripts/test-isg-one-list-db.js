@@ -590,8 +590,11 @@ console.log('ISG one list (DB)');
       'the same rule at the same severity stays hidden — the dismissal sticks');
     assert.strictEqual(uw._isgSettledHides(settledMirror, { severity: 'fatal' }), false,
       'but the same rule as a DEALBREAKER is shown again');
-    assert.strictEqual(uw._isgSettledHides({ status: 'dismissed', severity: null }, { severity: 'fatal' }), true,
-      'a mirror whose own severity is unreadable keeps suppressing — never a mass resurrection');
+    assert.strictEqual(uw._isgSettledHides({ status: 'dismissed', severity: null }, { severity: 'fatal' }), false,
+      'a mirror whose own severity is unreadable hides NOTHING — the same rule record() applies '
+      + 'to that column, and the fail-open direction');
+    assert.strictEqual(uw._isgSettledHides({ status: 'dismissed', severity: ' FATAL ' }, { severity: 'fatal' }), true,
+      'and the rank trims + lowercases, so a padded value is not read as unknown');
     assert.strictEqual(uw._isgSettledHides({ status: 'open', severity: 'warning' }, { severity: 'warning' }), false,
       'an OPEN mirror hides nothing — the card is live');
     ok('the file view hides a settled guideline finding only while it is no worse than what was decided');

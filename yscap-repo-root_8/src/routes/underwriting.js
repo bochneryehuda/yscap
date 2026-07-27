@@ -71,13 +71,19 @@ const aiSuggestions = require('../lib/underwriting/ai-suggestions');
 
 // Does this SETTLED mirror row hide the desk's current finding? Its own function so a test can
 // pin the comparison — see the note at the call site for what this door was doing wrong.
-// A row whose own severity is unreadable keeps its historic behaviour and suppresses, the same
-// conservative direction as db/336's NULL policy: never resurrect decisions en masse.
+//
+// An UNREADABLE settled severity hides NOTHING, matching `ai_suggestions.record()`'s rule on the
+// very same column (re-audit 2026-07-27, which found this third copy of the policy disagreeing
+// with the two the round had just aligned). It is deliberately NOT db/336's rule: that one
+// protects a real backlog of decisions taken before the column existed, while these rows come
+// from `desk-sync`, which has always written a severity. Unreachable today for exactly that
+// reason; aligned so it cannot become the "one blank row silences a dealbreaker forever" trap
+// the moment a second writer appears.
 function isgSettledHides(row, f) {
   if (!row || ISG_OPEN_STATUSES.has(row.status)) return false;
-  const settledRank = SEVERITY_RANK[String(row.severity || '').toLowerCase()] || 0;
-  const liveRank = SEVERITY_RANK[String((f && f.severity) || '').toLowerCase()] || 0;
-  return !settledRank || liveRank <= settledRank;
+  const settledRank = SEVERITY_RANK[String(row.severity || '').trim().toLowerCase()] || 0;
+  const liveRank = SEVERITY_RANK[String((f && f.severity) || '').trim().toLowerCase()] || 0;
+  return settledRank > 0 && liveRank <= settledRank;
 }
 
 /**

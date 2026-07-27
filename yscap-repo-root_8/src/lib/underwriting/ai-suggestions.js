@@ -319,12 +319,10 @@ async function record(client, s) {
   // fresh-insert branch (dedupe path above never re-notifies). Scheduled via
   // setImmediate so the caller's transaction gets a chance to COMMIT first.
   // Best-effort — a notify failure never rolls back the suggestion.
-  // KNOWN GAP (audit 2026-07-27): the comment here used to claim `_notifyFatalNew` re-verifies the
-  // row still exists before sending. It does not — it issues no query. Several callers record
-  // inside a transaction, so if a LATER step in that transaction fails and rolls back, the email
-  // has already been scheduled and goes out for a row that no longer exists. Pre-existing and rare
-  // (a rollback after a successful insert), but do not rely on a re-verify that isn't there — add
-  // a real `SELECT 1 FROM ai_suggestions WHERE id=$1` inside _notifyFatalNew to close it.
+  // The re-verify that gap notice used to ask for now EXISTS (re-audit 2026-07-27):
+  // `_notifyFatalNew` re-reads the row on its own connection and sends nothing unless it is
+  // still there and still fatal. So a rollback after a scheduled send is silent, on this branch
+  // and on the in-place upgrade branch below.
   // `suppressNotify` = the row BELONGS in the list, but this particular write is not a "chase this
   // now" event, so the team is not emailed. TWO independent producers arrived at the same flag on
   // 2026-07-27 and both reasons stand — do not narrow it to either one:
@@ -353,6 +351,32 @@ async function record(client, s) {
  */
 async function _notifyFatalNew(s, suggestionId) {
   try {
+    // THE ROW MUST STILL EXIST, AND MUST STILL BE A DEALBREAKER (re-audit 2026-07-27).
+    //
+    // The fan-out is scheduled with `setImmediate`, BEFORE the caller's transaction commits —
+    // and most callers record inside one. If a later step in that transaction fails, the write
+    // is rolled back and this email goes out for a row that is not there. The file had carried
+    // that as a documented KNOWN GAP on the insert branch; the in-place UPGRADE branch made it
+    // reachable on a LOOP, because the desk re-records on every file view: a swallowed error
+    // leaves the transaction aborted, `step()` rolls back to its savepoint, the row stays at
+    // `warning`, and the next page load schedules the same email again. Measured at three sends
+    // for three page loads.
+    //
+    // One re-read closes both. Own connection, because the caller's may be the aborted one.
+    //
+    // PROOF IT IS GONE, not merely failure to check: a read that SUCCEEDS and returns nothing
+    // means the row was rolled back or downgraded, so nothing is sent; a read that THROWS
+    // (a blip, a pool exhaustion) sends anyway. The alternative fails silent, and silently
+    // dropping the one alert that says "this became a dealbreaker" is the exact direction this
+    // whole change exists to prevent. A duplicate email is recoverable; a missed one is not.
+    let proofGone = false;
+    try {
+      const chk = await require('../../db').query(
+        `SELECT 1 FROM ai_suggestions WHERE id=$1 AND lower(btrim(COALESCE(severity,''))) = 'fatal'`,
+        [suggestionId]);
+      proofGone = !chk.rowCount;
+    } catch (_) { /* could not check — fall through and send */ }
+    if (proofGone) return;
     const notify = require('../notify');
     const applicationId = s.applicationId;
     // Registered notify type `ai_fatal_finding` — action-bearing so NOT in
