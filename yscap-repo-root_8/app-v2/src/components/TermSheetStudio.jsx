@@ -57,6 +57,39 @@ export function portalProgram(dealType) {
   return 'Fix & Flip w/ Construction';
 }
 
+/* The rehab TYPE a studio scenario describes, in the loan application's own
+   words (its REHAB_TYPES options, which are also the ClickUp Rehab Type
+   crosswalk keys). The studio expresses the scope as a two-option scope select
+   plus an "adding square footage" checkbox; this is the single place that turns
+   those into the label the file stores, so the application form and the
+   scenario→draft path can't drift apart. Mirrors the server's
+   rehabTypeFromInputs (src/lib/product-registration.js), which writes the same
+   label on register. '' = the scenario has no rehab scope to state (a bridge
+   deal, or a renovation with no rehab money). */
+export function rehabTypeFromStudio(f) {
+  f = f || {};
+  const dealType = String(f.dealType || '');
+  if (/ground/i.test(dealType)) return 'Ground-up construction';
+  if (/bridge|stabil/i.test(dealType)) return '';
+  if (f.sqft) return 'Adding square footage';
+  if (f.rehabScope === 'heavy') return 'Heavy / gut rehab';
+  if (!(Number(String(f.construction == null ? '' : f.construction).replace(/[$,\s]/g, '')) > 0)) return '';
+  return 'Moderate';                       // the studio's "Light / moderate rehab"
+}
+
+/* The rehab type to WRITE onto a form/draft that already has one, or null for
+   "leave it alone". Same rule as the server: the label is lossy (Cosmetic and
+   Moderate both price as a light rehab), so a borrower's more specific choice is
+   only replaced when the studio's scope genuinely differs. */
+export function rehabTypePatch(fields, currentLabel) {
+  const next = rehabTypeFromStudio(fields);
+  if (!next) return null;
+  const cur = String(currentLabel || '').trim();
+  if (!cur) return next;
+  const scope = (s) => `${/heavy|gut|ground/i.test(s)}|${/square|sf|addition|ground/i.test(s)}`;
+  return scope(cur) === scope(next) ? null : next;
+}
+
 const rawNum = (v) => {
   if (v == null || v === '') return '';
   const n = Number(String(v).replace(/[$,%\s,]/g, ''));
@@ -92,7 +125,11 @@ export function buildStudioState(x) {
     asIs,
     arv: rawNum(x.arv),
     construction: rawNum(x.rehabBudget),
-    rehabScope: /heavy|gut/i.test(String(x.rehabType || '')) ? 'heavy' : 'light',
+    // The rehab scope, from the caller's EXPLICIT flag when it has one (a
+    // registered scenario carries both engine booleans) and otherwise read off
+    // the file's rehab-type label. See the sqft note below for why the explicit
+    // flags exist at all.
+    rehabScope: (x.heavyRehab != null ? !!x.heavyRehab : /heavy|gut/i.test(String(x.rehabType || ''))) ? 'heavy' : 'light',
     fico: rawNum(x.fico),
     expFlips: rawNum(x.expFlips) || '0',
     expBrrrr: rawNum(x.expHolds) || '0',
@@ -117,7 +154,17 @@ export function buildStudioState(x) {
     // keyword OR an actual footprint increase) — the prefill dropped the
     // sqft_post > sqft_pre signal, so a register lifted the 87.5% sq-ft LTC cap the
     // server's own quote applies and over-lent (audit #22).
-    sqft: /square|sf|addition|ground/i.test(String(x.rehabType || '')) || (Number(x.sqftPost) || 0) > (Number(x.sqftPre) || 0),
+    //
+    // A REGISTERED scenario passes the two engine booleans through explicitly
+    // (scenarioFromEngineInputs) instead of a single rehab-type label, because
+    // the label can't hold both: a heavy rehab that ALSO expands the footprint
+    // collapsed to "Heavy / gut rehab", which doesn't match the sq-ft keywords —
+    // so reopening the studio silently unchecked the expansion box, lifted that
+    // same 87.5% cap, and a re-register wrote the bigger loan onto the file
+    // (the audit-#22 class again, via the reopen path).
+    sqft: x.sqftAddition != null
+      ? !!x.sqftAddition
+      : /square|sf|addition|ground/i.test(String(x.rehabType || '')) || (Number(x.sqftPost) || 0) > (Number(x.sqftPre) || 0),
   };
   return { v, c };
 }
@@ -200,6 +247,11 @@ export function scenarioFromEngineInputs(inp, extra = {}) {
     arv: inp.arv,
     rehabBudget: inp.rehabBudget,
     rehabType: inp.heavyRehab ? 'Heavy / gut rehab' : (inp.sqftAddition ? 'Adding square footage' : ''),
+    // …and the two flags UNCOLLAPSED, so a scenario that is both heavy AND an
+    // expansion reopens with both set (buildStudioState prefers these over the
+    // single label above, which can only carry one of them).
+    heavyRehab: !!inp.heavyRehab,
+    sqftAddition: !!inp.sqftAddition,
     fico: inp.fico,
     expFlips: inp.expFlips, expHolds: inp.expHolds, expGround: inp.expGround,
     termMonths: inp.term, irMonths: inp.irMonths, irAmount: inp.irAmount,

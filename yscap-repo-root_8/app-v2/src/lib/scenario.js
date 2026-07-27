@@ -5,7 +5,7 @@
    carries exactly what was priced — deal type, program, property, economics,
    experience and FICO. Personal identity (name, SSN, contact) comes from the
    borrower's profile at submit time; the borrower only fills what's still missing. */
-import { portalProgram, portalLoanType } from '../components/TermSheetStudio.jsx';
+import { portalProgram, portalLoanType, rehabTypeFromStudio } from '../components/TermSheetStudio.jsx';
 
 // Studio property-type code -> the application's property-type option.
 const PROP_TYPE_FROM_STUDIO = { sfr: 'SFR (1 unit)', '2-4': 'Multi 2–4' };
@@ -29,7 +29,11 @@ export function scenarioToDraft(state) {
     const fee = Math.max(0, (Number(v.price) || 0) - (Number(v.origPrice) || 0));
     data.assignmentFee = fee ? String(fee) : '';
   }
-  if (v.rehabScope === 'heavy') data.rehabType = 'Heavy / gut rehab';
+  // The scenario's rehab scope → the draft's Rehab type. Was heavy-only, so a
+  // scenario priced as a footprint expansion (or a plain light rehab) started
+  // the file with the field blank. Same mapping the application form uses.
+  const rehabType = rehabTypeFromStudio({ ...v, sqft: c.sqft });
+  if (rehabType) data.rehabType = rehabType;
   if (v.fico) data.personal = { fico: v.fico };
   if (v.propType && PROP_TYPE_FROM_STUDIO[v.propType]) data.propertyType = PROP_TYPE_FROM_STUDIO[v.propType];
   const street = (v.propAddr || '').trim();

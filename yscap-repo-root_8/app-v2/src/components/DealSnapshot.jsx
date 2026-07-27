@@ -105,6 +105,11 @@ export default function DealSnapshot({ app, gating }) {
           {row('Purchase', money(purchase))}
           {row('ARV', money(app.arv))}
           {row('Rehab', money(app.rehab_budget))}
+          {/* The SCOPE next to its cost — registering a product now writes the
+              studio's rehab scope onto the file, so this stops reading blank on
+              a priced file (owner-reported 2026-07-27). Dropped entirely on a
+              deal with no rehab (bridge), where there is no scope to show. */}
+          {row('Rehab type', app.rehab_type || (Number(app.rehab_budget) > 0 ? '—' : null))}
           {row('Liquidity required', quote && quote.liquidity != null ? money2(quote.liquidity) : null)}
         </div>
 

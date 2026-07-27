@@ -3,6 +3,7 @@
 const PRODUCT_CONDITION_TYPE = 'product_registration';
 const { syncExperienceChecklistForApplication } = require('./experience');
 const { termWritebackText } = require('./term-text');
+const { sqftForType } = require('./fields');
 
 function num(v) { const n = Number(v); return isFinite(n) ? n : 0; }
 function money(v) { return '$' + Math.round(num(v)).toLocaleString('en-US'); }
@@ -97,6 +98,88 @@ function borrowerTermsKey({ program, productLabel, noteRate, totalLoan, quote, i
   ]);
 }
 
+/* ---- rehab type: the scope the studio priced, written back onto the file ----
+ *
+ * The Term Sheet Studio makes the registrant state the rehab SCOPE ("Light /
+ * moderate" vs "Heavy rehab (full gut / structural)", plus "Adding square
+ * footage") and prices off it — a heavy rehab carries a rate add-on, a
+ * footprint expansion caps LTC at 87.5%. That choice reached the registration
+ * row (inputs.heavyRehab / inputs.sqftAddition) and nothing else: the write-back
+ * below never touched `applications.rehab_type`. So a file created without a
+ * rehab type (staff New File, a ClickUp-originated file) still read "Rehab type
+ * —" on the loan application after the officer registered it as, say, a
+ * cosmetic/light rehab, and everything downstream that keys off the column — the
+ * ClickUp "Rehab Type" dropdown, the Encompass map, the Sitewire construction
+ * type, the ground-up checklist reconcile, the investor tapes — stayed blank
+ * too (owner-reported 2026-07-27).
+ */
+
+// The five canonical labels: the loan application's own dropdown (Apply /
+// StaffNewFile / EditFileDetails REHAB_TYPES) and exactly the keys the ClickUp
+// "Rehab Type" crosswalk maps, so a written value always has a ClickUp twin.
+const REHAB_TYPE = {
+  cosmetic: 'Cosmetic',
+  moderate: 'Moderate',
+  heavy: 'Heavy / gut rehab',
+  sqft: 'Adding square footage',
+  groundUp: 'Ground-up construction',
+};
+
+// The (heavy, sq-ft) pair a rehab-type LABEL implies — the same two regexes
+// pricing.js buildInputs runs on `applications.rehab_type`, so the comparison
+// below is on exactly the basis the frozen engines see.
+function scopeOfRehabType(label) {
+  const s = String(label || '');
+  return { heavy: /heavy|gut|ground/i.test(s), sqft: /square|sf|addition|ground/i.test(s) };
+}
+
+// The rehab type the REGISTERED scenario describes, or null when the scenario
+// has no opinion (a bridge / stabilized deal has no rehab scope; neither does a
+// renovation strategy priced with no rehab money) — null always leaves the
+// file's own value alone.
+function rehabTypeFromInputs(inputs) {
+  const i = inputs || {};
+  const strategy = String(i.strategy || '');
+  if (/ground/i.test(strategy)) return REHAB_TYPE.groundUp;
+  if (/bridge|stabil/i.test(strategy)) return null;
+  if (i.sqftAddition) return REHAB_TYPE.sqft;
+  if (i.heavyRehab) return REHAB_TYPE.heavy;
+  if (!(num(i.rehabBudget) > 0)) return null;
+  // The studio's option reads "Light / moderate rehab" — Moderate is its label.
+  return REHAB_TYPE.moderate;
+}
+
+/**
+ * PURE — the rehab type this registration should write onto the file, or null
+ * for "leave it exactly as it is". Exported for the unit test.
+ *
+ * Deliberately conservative in one direction: the label is only rewritten when
+ * the registered scope genuinely DIFFERS from what the file was already pricing
+ * as. `rehab_type` → (heavy, sq-ft) is lossy — Cosmetic and Moderate both price
+ * as a light rehab — so a borrower's "Cosmetic" must never be flattened to
+ * "Moderate" just because the officer re-registered the same scenario. The
+ * file's side of that comparison uses BOTH signals buildInputs reads (the label
+ * AND an actual footprint increase), so a legacy file carrying stale sq ft isn't
+ * relabelled behind the registrant's back either.
+ *
+ * @param current {{rehabType, sqftPre, sqftPost}} the file's values today
+ * @param inputs  the frozen-engine inputs being registered
+ */
+function rehabTypeWriteback(current, inputs) {
+  const derived = rehabTypeFromInputs(inputs);
+  if (!derived) return null;
+  const cur = String((current && current.rehabType) || '').trim();
+  if (!cur) return derived;                       // the blank file the owner reported
+  const was = scopeOfRehabType(cur);
+  const fileScope = {
+    heavy: was.heavy,
+    sqft: was.sqft || num(current && current.sqftPost) > num(current && current.sqftPre),
+  };
+  const now = scopeOfRehabType(derived);
+  if (fileScope.heavy === now.heavy && fileScope.sqft === now.sqft) return null;  // same scope
+  return derived;
+}
+
 async function persistProductRegistration(client, { appId, program, inputs, quote, registeredByStaffId, isManual, assetMonths, termOptions }) {
   const s = quote.sizing || {};
   const total = num(s.totalLoan);
@@ -114,7 +197,8 @@ async function persistProductRegistration(client, { appId, program, inputs, quot
   // auto-clears a signed Heter Iska when the loan amount actually moves (the ISKA
   // is tied to the loan amount). owner-directed 2026-07-22. Also capture the
   // file's current TERM text so the write-back below can preserve its spelling.
-  const prevLoanRow = (await client.query(`SELECT loan_amount, term FROM applications WHERE id=$1`, [appId])).rows[0];
+  const prevLoanRow = (await client.query(
+    `SELECT loan_amount, term, rehab_type, sqft_pre, sqft_post FROM applications WHERE id=$1`, [appId])).rows[0];
   const prevLoanAmount = prevLoanRow ? Number(prevLoanRow.loan_amount) : null;
   const newKey = borrowerTermsKey({ program, productLabel: quote.productLabel, noteRate: quote.noteRate, totalLoan: total, quote, inputs });
   const prevKey = prev ? borrowerTermsKey({ program: prev.program, productLabel: prev.product_label, noteRate: prev.note_rate, totalLoan: prev.total_loan, quote: prev.quote, inputs: prev.inputs }) : null;
@@ -160,6 +244,23 @@ async function persistProductRegistration(client, { appId, program, inputs, quot
   // application form. The assignment split still flows via underlying/fee below.
   const ratePct = quote.noteRate != null ? (quote.noteRate * 100) : null;
   const isAssign = !!inputs.isAssignment;
+  // The rehab SCOPE the studio priced, onto the file (see rehabTypeWriteback).
+  // null = the registration has no opinion, or the file already says the same
+  // thing in its own words — write the existing values back unchanged so the
+  // IS DISTINCT FROM change triggers (db/096/145/190) stay quiet. When the scope
+  // DID move, sqft_pre/sqft_post ride through the same sqftForType coupling
+  // every other write path uses, so a type that isn't an addition can't leave
+  // stale square footage behind to flip sqftAddition back on in the next quote.
+  const wasRehab = {
+    rehabType: (prevLoanRow && prevLoanRow.rehab_type) || null,
+    sqftPre: (prevLoanRow && prevLoanRow.sqft_pre) != null ? prevLoanRow.sqft_pre : null,
+    sqftPost: (prevLoanRow && prevLoanRow.sqft_post) != null ? prevLoanRow.sqft_post : null,
+  };
+  const newRehabType = rehabTypeWriteback(wasRehab, inputs);
+  const rehabType = newRehabType || wasRehab.rehabType;
+  const sqf = newRehabType
+    ? sqftForType(rehabType, wasRehab.sqftPre, wasRehab.sqftPost)
+    : { sqftPre: wasRehab.sqftPre, sqftPost: wasRehab.sqftPost };
   await client.query(
     `UPDATE applications
         SET loan_amount=$2,
@@ -186,6 +287,9 @@ async function persistProductRegistration(client, { appId, program, inputs, quot
             assignment_fee            = CASE WHEN $12 THEN $14 ELSE assignment_fee END,
             desired_rate=$15,
             requested_ir_amount=$16,
+            rehab_type=$17,
+            sqft_pre=$18,
+            sqft_post=$19,
             updated_at=now()
       WHERE id=$1`,
     [
@@ -211,6 +315,8 @@ async function persistProductRegistration(client, { appId, program, inputs, quot
       isAssign ? Math.max(0, num(inputs.purchasePrice) - num(inputs.sellerPrice)) : null,
       ratePct != null ? ratePct.toFixed(3) : null,   // desired_rate is TEXT; mirror the registered rate
       num(inputs.irAmount) || null,                   // $16 — exact interest-reserve amount (null = months path)
+      rehabType || null,                              // $17 — registered rehab scope (unchanged unless it moved)
+      sqf.sqftPre, sqf.sqftPost,                      // $18/$19 — kept in step with $17
     ]);
   // Term-sheet options onto the file (owner-directed 2026-07-22) — only when the
   // caller supplied them, so a path that doesn't touch them leaves the file's
@@ -339,4 +445,7 @@ function borrowerTermsEmail({ ctx, quote, total, termMonths, officer, termOption
   };
 }
 
-module.exports = { persistProductRegistration, borrowerTermsEmail, borrowerTermsKey, money, productName };
+module.exports = {
+  persistProductRegistration, borrowerTermsEmail, borrowerTermsKey, money, productName,
+  rehabTypeWriteback, rehabTypeFromInputs, REHAB_TYPE,
+};
