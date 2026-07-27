@@ -743,8 +743,13 @@ router.get('/:appId', async (req, res, next) => {
     // an OPEN row wins (there is live work), then a decision a HUMAN made (it should still suppress
     // the finding), and only then the desk's own automatic withdrawal.
     const isgRows = await db.query(
+      // ORDERED so the pick is a RULE, not an accident of the scan (re-audit 2026-07-27). Two rows
+      // for one key can tie on `isgRank`; today the right one wins only because an index happens to
+      // return it first, and a planner that seq-scans would silently flip the card's state. Newest
+      // first is the tie-break: a later row is the later truth about that key.
       `SELECT id, dedupe_key, status, important, decided_by_staff_id FROM ai_suggestions
-        WHERE application_id=$1 AND source=$2`, [app.id, deskFindings.SOURCE])
+        WHERE application_id=$1 AND source=$2
+        ORDER BY created_at DESC, id DESC`, [app.id, deskFindings.SOURCE])
       .then((r) => r.rows).catch(() => []);
     const isgRank = (r) => ISG_OPEN_STATUSES.has(r.status) ? 3 : (r.decided_by_staff_id ? 2 : 1);
     const isgByKey = new Map();

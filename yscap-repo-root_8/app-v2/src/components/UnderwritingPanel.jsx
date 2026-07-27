@@ -84,7 +84,7 @@ const ESCALATE_TARGETS = [
  * everything in ONE list, in this card).
  *
  * It drives the SAME endpoints the AI Findings card drives, so nothing a staffer could do before the
- * merge was lost: dismiss with a reason, escalate, add a note, ask a super-admin, mark important,
+ * merge was lost: dismiss with a reason, escalate, add a note, mark important,
  * and — where the guideline names a PILOT condition — create that condition. The server drops the
  * finding from the list once the row is no longer open, so acting here actually clears it.
  */

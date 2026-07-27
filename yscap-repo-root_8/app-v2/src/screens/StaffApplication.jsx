@@ -3259,7 +3259,11 @@ export default function StaffApplication() {
           // A note-buyer dealbreaker is not clear-to-close work, so it is counted separately —
           // but it must never let this badge read “Reviewed ✓” over a red fatal card (re-audit 2026-07-27).
           : ((uwSummary.guideline && uwSummary.guideline.fatal) ? `${uwSummary.guideline.fatal} note-buyer`
-            : (uwSummary.warning ? `${uwSummary.warning} warning` : 'Reviewed ✓'))) : ''}>
+            : (uwSummary.warning ? `${uwSummary.warning} warning`
+              // A guideline WARNING is milder than a dealbreaker but still an open item — falling
+              // through to the green tick here put a checkmark over an amber card (re-audit 2026-07-27).
+              : ((uwSummary.guideline && uwSummary.guideline.warning) ? `${uwSummary.guideline.warning} note-buyer`
+                : 'Reviewed ✓')))) : ''}>
         <UnderwritingPanel appId={id} docs={docs} onSummary={onUwSummary} canResolve={can('sign_off_conditions')} canWaive={can('waive_conditions')} />
         {/* Investor-specific guidelines live INSIDE the one document review (owner-directed 2026-07-24):
             not a separate section, not a separate AI pass — the same review, one place. */}

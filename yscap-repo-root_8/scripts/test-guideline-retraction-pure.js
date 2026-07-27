@@ -197,6 +197,31 @@ function stubClient(rowCount = 0) {
     `a desk-retracted rule is raised again once it applies (raised=${r8.raised}, heldByHuman=${r8.heldByHuman})`);
 
   // A failed read of that SELECT must suppress NOTHING — silence is not a decision.
+  // ---------- FLAGGING AN ITEM MUST NOT CLONE IT (re-audit 2026-07-27) ----------
+  // `record()` refreshes a row only while it is `status='open'`. escalated / marked_important /
+  // asked_admin are NOT decisions — they mean "still needs handling, louder" — but they are not
+  // `open` either, so the refresh missed them and INSERTED a duplicate. A fresh insert of a FATAL
+  // fires the whole-team "New fatal AI finding" fan-out: one page load after a staffer clicked
+  // Escalate measured 298 sends on a live DB, plus a phantom duplicate row that outlives the finding.
+  for (const status of ['escalated', 'marked_important', 'asked_admin']) {
+    const c = {
+      calls: [],
+      async query(text, params) {
+        this.calls.push({ text, params });
+        if (/status\s*=\s*ANY/i.test(text) && /dedupe_key/.test(text)) {
+          return { rowCount: 1, rows: [{ dedupe_key: 'isg-gap:rtl_cond_feasibility', severity: 'fatal', status, decided_by_staff_id: null }] };
+        }
+        if (/INSERT INTO ai_suggestions/i.test(text)) return { rowCount: 1, rows: [{ id: 'dupe' }] };
+        return { rowCount: 0, rows: [] };
+      },
+    };
+    const r = await sync.syncInvestorGuidelineFindings(c, `app-alive-${status}`, { desk: unhappyDesk });
+    ok(r.raised === 0 && r.heldByHuman === 1,
+      `a ${status} item is not re-recorded (raised=${r.raised}, heldByHuman=${r.heldByHuman})`);
+    ok(!c.calls.some((k) => /INSERT INTO ai_suggestions/i.test(k.text)),
+      `${status}: no duplicate row is inserted, so no fatal-notify blast fires`);
+  }
+
   // ...but a decision made about a WARNING does not silence the same rule once it turns FATAL.
   // The dedupe key encodes neither severity nor the state of the file, so a dismissal on a
   // light-rehab file would otherwise keep the rule quiet after the deal converts to ground-up and

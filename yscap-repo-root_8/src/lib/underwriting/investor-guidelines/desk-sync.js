@@ -143,23 +143,45 @@ async function syncInvestorGuidelineFindings(client, appId, opts) {
     // after the deal converts to ground-up and the SAME rule becomes a dealbreaker. Silencing a
     // dealbreaker with a decision that was made about something milder is a false clear, so the
     // suppression only holds while the item is no worse than what the person actually judged.
+    // FLAGGING AN ITEM MUST NOT CLONE IT — the 298-email burst (re-audit 2026-07-27, reproduced on
+    // the live DB against `origin/main` too, so this is a pre-existing hole this branch simply makes
+    // easy to reach: Escalate / Mark important are now one click on the merged finding card).
+    //
+    // `record()` refreshes a row only while it is `status='open'`. `escalated` /`marked_important` /
+    // `asked_admin` are NOT decisions — they mean "still needs handling, louder" — but they are also
+    // not `open`, so the refresh missed them and INSERTED a second row for the same key. A fresh
+    // insert of a FATAL fires `_notifyFatalNew`, which fans out to the whole file team: one page load
+    // after a staffer clicked Escalate produced 298 "New fatal AI finding" sends and left a phantom
+    // duplicate open row behind.
+    //
+    // So the skip set has TWO members, for two different reasons:
+    //   ALIVE   — the key already owns a live row in a status `record()` cannot refresh. Re-recording
+    //             it adds nothing and costs a duplicate + a mail-out.
+    //   DECIDED — a human closed it (see above), and only while the item is no worse than what they
+    //             actually judged.
     const SEV_RANK = { fatal: 3, warning: 2, info: 1 };
+    const ALIVE_NOT_OPEN = ['escalated', 'marked_important', 'asked_admin'];
     const decidedSev = new Map();   // dedupe_key → the most serious severity a human has decided on
+    const aliveKeys = new Set();    // dedupe_key → already live under a status record() can't refresh
     try {
       const d = await client.query(
-        `SELECT dedupe_key, severity FROM ai_suggestions
+        `SELECT dedupe_key, severity, status, decided_by_staff_id FROM ai_suggestions
           WHERE application_id=$1 AND source=$2 AND dedupe_key IS NOT NULL
-            AND decided_by_staff_id IS NOT NULL
-            AND status NOT IN ('open','asked_admin','escalated','marked_important')`, [appId, SOURCE]);
+            AND (status = ANY($3::text[])
+                 OR (decided_by_staff_id IS NOT NULL AND status NOT IN ('open') AND NOT (status = ANY($3::text[]))))`,
+        [appId, SOURCE, ALIVE_NOT_OPEN]);
       for (const r of d.rows) {
         const k = String(r.dedupe_key);
+        if (ALIVE_NOT_OPEN.includes(r.status)) { aliveKeys.add(k); continue; }
         const rank = SEV_RANK[String(r.severity || '').toLowerCase()] || 0;
         if (!decidedSev.has(k) || rank > decidedSev.get(k)) decidedSev.set(k, rank);
       }
     } catch (_e) { /* suppress nothing on a read failure */ }
     let raised = 0, fatal = 0, heldByHuman = 0;
     for (const p of payloads) {
-      const decided = p.dedupeKey ? decidedSev.get(String(p.dedupeKey)) : undefined;
+      const key = p.dedupeKey ? String(p.dedupeKey) : null;
+      if (key && aliveKeys.has(key)) { heldByHuman += 1; continue; }
+      const decided = key ? decidedSev.get(key) : undefined;
       if (decided !== undefined && decided >= (SEV_RANK[String(p.severity || '').toLowerCase()] || 0)) {
         heldByHuman += 1; continue;
       }
