@@ -83,9 +83,9 @@ const ok = (n) => { console.log(`  ok  ${n}`); passed++; };
     // 2. A current appraisal in a FEMA Special Flood Hazard Area → appraisal_present true
     //    AND in_flood_zone true (proven), reading the real db/150 flood columns.
     const apprInsert = (extra) => pool.query(
-      `INSERT INTO appraisals (application_id, superseded, imported_at, fema_flood_sfha, fema_flood_zone, flood_zone, nbhd_location_type, condition_of_appraisal)
-         VALUES ($1, false, now(), $2, $3, $4, $5, $6) RETURNING id`,
-      [aId, extra.sfha, extra.femaZone, extra.statedZone, extra.loc == null ? null : extra.loc, extra.cond == null ? null : extra.cond]);
+      `INSERT INTO appraisals (application_id, superseded, imported_at, fema_flood_sfha, fema_flood_zone, flood_zone, nbhd_location_type, condition_of_appraisal, lender_name)
+         VALUES ($1, false, now(), $2, $3, $4, $5, $6, $7) RETURNING id`,
+      [aId, extra.sfha, extra.femaZone, extra.statedZone, extra.loc == null ? null : extra.loc, extra.cond == null ? null : extra.cond, extra.lender == null ? null : extra.lender]);
 
     let apprId = (await apprInsert({ sfha: true, femaZone: 'AE', statedZone: 'AE' })).rows[0].id;
     {
@@ -146,6 +146,30 @@ const ok = (n) => { console.log(`  ok  ${n}`); passed++; };
       const out = await gatherInvestorInputs(aId, db);
       assert.strictEqual(out.appraisal_mid_construction, false, 'SubjectToRepairs → appraisal_mid_construction false');
       ok('a SubjectToRepairs appraisal → appraisal_mid_construction false (a rehab, not construction)');
+    }
+
+    // 4d. APPRAISAL_TRANSFERRED (owner 2026-07-27) — lender ≠ YS Capital Group → transferred true;
+    //     a YS Capital Group lender (any suffix) → false; a blank lender → OMITTED (never guessed).
+    await pool.query(`UPDATE appraisals SET superseded = true WHERE application_id = $1 AND superseded = false`, [aId]);
+    await apprInsert({ sfha: null, femaZone: null, statedZone: null, lender: 'Rocket Mortgage LLC' });
+    {
+      const out = await gatherInvestorInputs(aId, db);
+      assert.strictEqual(out.appraisal_transferred, true, 'a foreign lender → appraisal_transferred true (a real transfer)');
+      ok('an appraisal ordered by a different lender sets appraisal_transferred true');
+    }
+    await pool.query(`UPDATE appraisals SET superseded = true WHERE application_id = $1 AND superseded = false`, [aId]);
+    await apprInsert({ sfha: null, femaZone: null, statedZone: null, lender: 'YS Capital Group LLC' });
+    {
+      const out = await gatherInvestorInputs(aId, db);
+      assert.strictEqual(out.appraisal_transferred, false, 'a YS Capital Group lender (any suffix) → appraisal_transferred false (ours, not a transfer)');
+      ok('our own appraisal never false-fires the transfer escalation');
+    }
+    await pool.query(`UPDATE appraisals SET superseded = true WHERE application_id = $1 AND superseded = false`, [aId]);
+    await apprInsert({ sfha: null, femaZone: null, statedZone: null, lender: null });
+    {
+      const out = await gatherInvestorInputs(aId, db);
+      assert.strictEqual(out.appraisal_transferred, undefined, 'a blank lender → appraisal_transferred OMITTED (never guessed)');
+      ok('a blank lender omits the transfer signal (the FATAL rule stays silent on an unread name)');
     }
 
     // 5. CLAIMED vs VERIFIED EXPERIENCE (#251) — reuses experience.js against the REAL
