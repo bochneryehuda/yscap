@@ -69,7 +69,10 @@ async function readFields(guid, ids) {
 // splitting the id list; every other failure (network / 401 / 403 / 404 / timeout) is
 // not per-id and must never trigger a retry fan-out.
 function _isInvalidFieldError(e) {
-  return /\bfieldReader 400\b/.test(String((e && e.message) || ''));
+  // Anchor on the message PREFIX (encompass.fieldReader throws
+  // `Encompass fieldReader <status>: <body>`) so a non-400 response whose BODY merely
+  // contains the text "fieldReader 400" can never be mistaken for an invalid-field 400.
+  return /^Encompass fieldReader 400\b/.test(String((e && e.message) || ''));
 }
 
 async function getLoan(guid, { entities } = {}) {
