@@ -52,6 +52,29 @@ const VALID_STATUSES = new Set([
  * }} s
  * @returns {Promise<{id:string, deduped:boolean}>}
  */
+/**
+ * Sources whose rows are ADVISORY BACKGROUND — they belong in the findings list, but must NOT
+ * score, rank or notify (post-merge audit 2026-07-27).
+ *
+ * WHY THIS EXISTS. The file view deliberately keeps the note-buyer desk's rows OUT of
+ * `summary.fatal/warning/info` (`routes/underwriting.js`, `isgOnly`) so the desk can never disagree
+ * with the clear-to-close gate. But SIX other queries aggregate this table with no source filter,
+ * and they re-admitted the same rows through a different door — so the two surfaces contradicted
+ * each other. Measured: up to 7 desk rows on one file x 8 points = 56, which pushes a file with
+ * ZERO real problems past the 50-point ELEVATED threshold and puts an amber risk badge on the
+ * pipeline; it also promoted note-only files into the admin "top 5 riskiest" email and started a
+ * weekly "your files with open AI findings" digest for officers whose files have nothing wrong.
+ *
+ * One definition, so a seventh consumer cannot drift. This is about SCORING and NOTIFYING only —
+ * these rows still render, are still dismissable, and a genuinely fatal one still notifies through
+ * `record()`'s own severity guard.
+ */
+const ADVISORY_ONLY_SOURCES = ['investor_guideline_desk'];
+function notScoredSql(alias) {
+  const a = alias ? `${alias}.` : '';
+  return `${a}source <> ALL(ARRAY[${ADVISORY_ONLY_SOURCES.map((s) => `'${s}'`).join(',')}]::text[])`;
+}
+
 async function record(client, s) {
   const c = client || db();
   if (!s || !s.applicationId || !s.source || !s.kind || !s.title) {
@@ -532,9 +555,10 @@ async function listOpenAdminQuestions({ appId, limit = 100 } = {}, client) {
  * Convert a cure-analysis new-finding proposal into an AI suggestion row.
  * The cure engine used to INSERT into document_findings directly — now that's suggested.
  */
-function fromCureNewFinding({ applicationId, documentId, checklistItemId, extractionId, finding, traceUrl }) {
+function fromCureNewFinding({ applicationId, documentId, checklistItemId, extractionId, finding, traceUrl, suppressNotify }) {
   return {
     applicationId, documentId, checklistItemId,
+    suppressNotify,
     source: 'cure_analysis', kind: 'finding',
     title: finding.title || finding.code || 'AI noticed a new issue',
     body: finding.howTo || null,
@@ -565,7 +589,7 @@ function fromCureNewFinding({ applicationId, documentId, checklistItemId, extrac
   };
 }
 
-module.exports = {
+module.exports = { ADVISORY_ONLY_SOURCES, notScoredSql,
   record, recordMany, listForFile, decide, addNote,
   askAdmin, answerAdminQuestion, listOpenAdminQuestions,
   fromCureNewFinding,

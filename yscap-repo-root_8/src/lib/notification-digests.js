@@ -25,6 +25,8 @@ const workflow = require('./workflow');
 const loanExceptions = require('./loan-exceptions');
 const { outstandingItems } = require('./reminders');
 const { claimOncePerPeriod } = require('./throttle-claim');
+// Advisory-only sources must never score or notify — one shared filter (audit 2026-07-27).
+const aiSuggestions = require('./underwriting/ai-suggestions');
 
 const STATUS_LABEL = {
   file_intake: 'File intake', new: 'Submitted', in_review: 'In review', processing: 'Processing',
@@ -424,6 +426,7 @@ async function weeklyTopRiskyFilesOnce() {
          LEFT JOIN borrowers b ON b.id = a.borrower_id
         WHERE a.deleted_at IS NULL AND a.status NOT IN ('withdrawn','cancelled','declined','funded')
           AND s.status IN ('open','marked_important','escalated','asked_admin')
+          AND ${aiSuggestions.notScoredSql('s')}
         GROUP BY a.id, a.ys_loan_number, a.property_address, a.status, a.program,
                  u.full_name, u.email, b.first_name, b.last_name
        HAVING COUNT(*) > 0
@@ -623,7 +626,8 @@ async function weeklyLoAiDigestOnce() {
           AND u.role IN ('loan_officer','processor','admin','super_admin')
           AND a.deleted_at IS NULL
           AND a.status NOT IN ('withdrawn','cancelled','declined','funded')
-          AND s.status IN ('open','marked_important','escalated','asked_admin')`);
+          AND s.status IN ('open','marked_important','escalated','asked_admin')
+          AND ${aiSuggestions.notScoredSql('s')}`);
   } catch (_) { return 0; }
   let sent = 0;
   for (const lo of officers.rows) {
@@ -643,6 +647,7 @@ async function weeklyLoAiDigestOnce() {
             AND a.deleted_at IS NULL
             AND a.status NOT IN ('withdrawn','cancelled','declined','funded')
             AND s.status IN ('open','marked_important','escalated','asked_admin')
+            AND ${aiSuggestions.notScoredSql('s')}
           GROUP BY a.id, a.property_address, b.first_name, b.last_name
           ORDER BY score DESC, a.id
           LIMIT 10`, [lo.id]);

@@ -66,6 +66,8 @@ const SEVERITY_RANK = { fatal: 3, warning: 2, info: 1 };
 // resolutions, so a guideline finding in either state keeps its card.
 const ISG_OPEN_STATUSES = new Set(['open', 'asked_admin', 'escalated', 'marked_important']);
 const investorReview = require('../lib/underwriting/investor-guideline-review');
+// Hoisted for the one advisory-source filter shared by every scoring/ranking query (audit 2026-07-27).
+const aiSuggestions = require('../lib/underwriting/ai-suggestions');
 
 /**
  * loadRunGuidelineFindings(db, appId) → the CURRENT run's note-buyer findings, in the openRaw shape.
@@ -2593,7 +2595,8 @@ router.get('/:appId/ai-risk-score', async (req, res, next) => {
          EXTRACT(EPOCH FROM (now() - MIN(created_at) FILTER (WHERE severity='fatal')))/86400 AS oldest_fatal_days
         FROM ai_suggestions
        WHERE application_id=$1
-         AND status IN ('open','marked_important','escalated','asked_admin')`,
+         AND status IN ('open','marked_important','escalated','asked_admin')
+         AND ${aiSuggestions.notScoredSql()}`,
       [app.id]);
     const c = r.rows[0] || { fatal: 0, warning: 0, info: 0, other: 0 };
     const raw = (c.fatal * 25) + (c.warning * 8) + (c.info * 2) + (c.other * 4);
@@ -2612,6 +2615,7 @@ router.get('/:appId/ai-risk-score', async (req, res, next) => {
            FROM ai_suggestions
           WHERE application_id=$1
             AND status IN ('open','marked_important','escalated','asked_admin')
+            AND ${aiSuggestions.notScoredSql()}
           ORDER BY CASE severity WHEN 'fatal' THEN 0 WHEN 'warning' THEN 1 WHEN 'info' THEN 2 ELSE 3 END,
                    created_at DESC
           LIMIT 1`, [app.id]);
