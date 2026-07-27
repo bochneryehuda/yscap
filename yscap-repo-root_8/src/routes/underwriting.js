@@ -961,6 +961,13 @@ router.get('/:appId', async (req, res, next) => {
           // agrees / revisit" advisory on top of the human layer for every Condition
           // Center condition it can judge. Never signs anything off — advisory only.
           await step(() => require('../lib/underwriting/pilot-advice-engine').runFileAdvice(c, app.id));
+          // Fidelis flood zone (owner-directed 2026-07-27): a Fidelis file carries no
+          // standing internal flood-certificate condition (db/333), so when FEMA or the
+          // appraisal DOES place the property in a flood zone, advise the team to open
+          // one. Withdraws itself when it stops being true. Advisory — records an
+          // ai_suggestion with a one-click "create the condition" action, posts nothing.
+          await step(() => require('../lib/underwriting/fidelis-flood-advisory')
+            .syncFidelisFloodAdvisory(c, app.id));
           await c.query('COMMIT');
         } catch (_) { await c.query('ROLLBACK').catch(() => {}); }
         finally { c.release(); }

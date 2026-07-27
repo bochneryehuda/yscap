@@ -114,6 +114,12 @@ async function loadRuleContext(appId) {
     // Note buyer / capital partner (applications.lender), normalized to a stable
     // key so a rule matches "CorrFirst" / "Corr First" / "corrfirst" the same.
     note_buyer: registry.normNoteBuyer(a.lender),
+    // Is the note buyer FIDELIS (any spelling — "Fidelis" / "Fidelis Investors" /
+    // "Fidelis Investors LLC")? Always concrete (never null), so an `is_false` rule
+    // row is correct on a file with no note buyer yet. Suppresses the internal
+    // flood-certificate condition on Fidelis files (db/333) — a known flood zone
+    // there raises an ADVISORY to open it instead of auto-requiring it.
+    note_buyer_is_fidelis: registry.isFidelisNoteBuyer(a.lender),
     // Loan number — blank/absent drives the "loan number missing" internal
     // condition (rules is_empty). Kept as the raw string (null when blank) so
     // is_empty/not_empty fire correctly.

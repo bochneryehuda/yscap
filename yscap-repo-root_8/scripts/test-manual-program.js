@@ -54,26 +54,42 @@ if (pricing.enginesReady()) {
 }
 
 const fields = reg.BY_KEY;
-// Mirror of the real rtl_cond_flood rule (db/207 + db/281): flood cert required
-// for Gold/Manual, OR a known flood zone, OR a Blue Lake / CorrFirst note buyer.
-const FLOOD_RULE = { combinator: 'or', rules: [
-  { field: 'registered_program', operator: 'in', value: ['gold', 'manual'] },
-  { field: 'in_flood_zone', operator: 'is_true' },
-  { field: 'note_buyer', operator: 'in', value: ['bluelake', 'corrfirst'] },
+// Mirror of the real rtl_cond_flood rule (db/207 + db/281 + db/333): flood cert
+// required for Gold/Manual, OR a known flood zone, OR a Blue Lake / CorrFirst note
+// buyer — AND NEVER on a Fidelis file (db/333; a flood zone there raises an advisory
+// instead, see scripts/test-fidelis-flood-advisory-db.js). Keep in lock-step with
+// the rule_logic written by db/333.
+const FLOOD_RULE = { combinator: 'and', rules: [
+  { combinator: 'or', rules: [
+    { field: 'registered_program', operator: 'in', value: ['gold', 'manual'] },
+    { field: 'in_flood_zone', operator: 'is_true' },
+    { field: 'note_buyer', operator: 'in', value: ['bluelake', 'corrfirst'] },
+  ] },
+  { field: 'note_buyer_is_fidelis', operator: 'is_false' },
 ] };
-assert(rules.evaluateRule(FLOOD_RULE, { registered_program: 'standard', in_flood_zone: false }, fields) === false, 'standard + no flood zone + no note buyer => NO flood cert');
-assert(rules.evaluateRule(FLOOD_RULE, { registered_program: 'gold', in_flood_zone: false }, fields) === true, 'gold => flood cert');
-assert(rules.evaluateRule(FLOOD_RULE, { registered_program: 'manual', in_flood_zone: false }, fields) === true, 'manual => flood cert');
-assert(rules.evaluateRule(FLOOD_RULE, { registered_program: 'standard', in_flood_zone: true }, fields) === true, 'standard + flood zone => flood cert');
-assert(rules.evaluateRule(FLOOD_RULE, { registered_program: 'none', in_flood_zone: false }, fields) === false, 'unregistered + no flood zone => NO flood cert');
+const F = (extra) => Object.assign({ note_buyer_is_fidelis: false }, extra);
+assert(rules.evaluateRule(FLOOD_RULE, F({ registered_program: 'standard', in_flood_zone: false }), fields) === false, 'standard + no flood zone + no note buyer => NO flood cert');
+assert(rules.evaluateRule(FLOOD_RULE, F({ registered_program: 'gold', in_flood_zone: false }), fields) === true, 'gold => flood cert');
+assert(rules.evaluateRule(FLOOD_RULE, F({ registered_program: 'manual', in_flood_zone: false }), fields) === true, 'manual => flood cert');
+assert(rules.evaluateRule(FLOOD_RULE, F({ registered_program: 'standard', in_flood_zone: true }), fields) === true, 'standard + flood zone => flood cert');
+assert(rules.evaluateRule(FLOOD_RULE, F({ registered_program: 'none', in_flood_zone: false }), fields) === false, 'unregistered + no flood zone => NO flood cert');
 // note-buyer branch (owner-directed 2026-07-22): Blue Lake / CorrFirst always require it.
-assert(rules.evaluateRule(FLOOD_RULE, { registered_program: 'standard', in_flood_zone: false, note_buyer: 'bluelake' }, fields) === true, 'standard + Blue Lake note buyer => flood cert');
-assert(rules.evaluateRule(FLOOD_RULE, { registered_program: 'standard', in_flood_zone: false, note_buyer: 'corrfirst' }, fields) === true, 'standard + CorrFirst note buyer => flood cert');
-assert(rules.evaluateRule(FLOOD_RULE, { registered_program: 'standard', in_flood_zone: false, note_buyer: 'fidelis' }, fields) === false, 'standard + Fidelis note buyer => NO flood cert');
+assert(rules.evaluateRule(FLOOD_RULE, F({ registered_program: 'standard', in_flood_zone: false, note_buyer: 'bluelake' }), fields) === true, 'standard + Blue Lake note buyer => flood cert');
+assert(rules.evaluateRule(FLOOD_RULE, F({ registered_program: 'standard', in_flood_zone: false, note_buyer: 'corrfirst' }), fields) === true, 'standard + CorrFirst note buyer => flood cert');
+assert(rules.evaluateRule(FLOOD_RULE, F({ registered_program: 'standard', in_flood_zone: false, note_buyer: 'fidelis' }), fields) === false, 'standard + Fidelis note buyer => NO flood cert');
+// Fidelis exclusion (owner-directed 2026-07-27) — it beats EVERY other branch.
+assert(rules.evaluateRule(FLOOD_RULE, { registered_program: 'gold', in_flood_zone: false, note_buyer: 'fidelis', note_buyer_is_fidelis: true }, fields) === false, 'GOLD + Fidelis => NO flood cert (Fidelis exclusion beats the program branch)');
+assert(rules.evaluateRule(FLOOD_RULE, { registered_program: 'manual', in_flood_zone: false, note_buyer: 'fidelisinvestorsllc', note_buyer_is_fidelis: true }, fields) === false, 'MANUAL + "Fidelis Investors LLC" => NO flood cert');
+assert(rules.evaluateRule(FLOOD_RULE, { registered_program: 'standard', in_flood_zone: true, note_buyer: 'fidelisinvestorsllc', note_buyer_is_fidelis: true }, fields) === false, 'FLOOD ZONE + Fidelis => NO auto flood cert (an advisory is raised instead)');
+// A file with NO note buyer must be unaffected: note_buyer_is_fidelis is always
+// concrete, so the is_false row passes and the OR branch still decides.
+assert(rules.evaluateRule(FLOOD_RULE, F({ registered_program: 'gold' }), fields) === true, 'GOLD with NO note buyer yet still gets the flood cert (blank note buyer never suppresses)');
 assert(!!reg.BY_KEY.in_flood_zone && reg.BY_KEY.in_flood_zone.type === 'boolean', 'in_flood_zone is a boolean rule field');
 assert((reg.BY_KEY.registered_program.options || []).some((o) => o.v === 'manual'), 'registered_program has a "manual" option');
 assert((reg.BY_KEY.note_buyer.options || []).some((o) => o.v === 'bluelake') && (reg.BY_KEY.note_buyer.options || []).some((o) => o.v === 'corrfirst'),
   'note_buyer has bluelake + corrfirst options');
+assert(!!reg.BY_KEY.note_buyer_is_fidelis && reg.BY_KEY.note_buyer_is_fidelis.type === 'boolean',
+  'note_buyer_is_fidelis is a boolean rule field (backs the db/333 Fidelis exclusion)');
 
 assert(liq.bankStatementMonths('manual', 4) === 4, 'manual liquidity months honor the entered value');
 assert(liq.bankStatementMonths('manual') === 2, 'manual liquidity months fall back to 2');
