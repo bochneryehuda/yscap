@@ -36,10 +36,15 @@ function assertTotals(res, m) {
 // produce, which is how the first version of this module came to treat every image-only page as
 // blank while its tests said otherwise.
 const page = (n, text) => ({ pageNumber: n, text: text === undefined ? '' : text, lines: [{ }] });
-/** A page the adapter LOOKED at and found nothing on: empty text AND an empty lines array. */
-const blankPage = (n) => ({ pageNumber: n, text: '', lines: [] });
-/** A page the adapter could not read: empty text, no report of what it found. Unknown, not blank. */
-const unreadPage = (n) => ({ pageNumber: n, text: '' });
+/** A page an upstream page-quality pass EXPLICITLY determined to be blank. That flag is the only
+    thing that can produce `excluded` — see isProvablyBlank for why no OCR adapter can supply it:
+    Azure reports an empty lines array for a blank page AND for an image-only one, so an
+    empty-array heuristic would silently exclude real pages. */
+const blankPage = (n) => ({ pageNumber: n, text: '', blank: true });
+/** A page the adapter could not read: empty text, and NO determination either way. Unknown, and an
+    unknown page goes to a person — it is never assumed blank. This is the shape both production
+    adapters emit for an image-only scan. */
+const unreadPage = (n) => ({ pageNumber: n, text: '', lines: [] });
 
 // ── 1. the ordinary case: one segment covers the whole document ──────────────────────────────
 {
