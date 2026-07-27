@@ -34,6 +34,7 @@ const docint = require('../lib/ai/ocr-router');
 const azureOpenai = require('../lib/ai/azure-openai');
 const engine = require('../lib/underwriting/engine');
 const store = require('../lib/underwriting/store');
+const documentReasoning = require('../lib/underwriting/document-reasoning');
 const registry = require('../lib/underwriting/registry');
 const fileView = require('../lib/underwriting/file-view');
 const { tieoutForFile } = require('../lib/underwriting/file-review');
@@ -833,6 +834,7 @@ router.get('/:appId', async (req, res, next) => {
       exts.rows.some((e) => e.doc_type === 'operating_agreement'));
     const entityChain = isEntity ? buildChain(
       { vestingName: mctx && mctx.vestingName, borrowerName: fileView.borrowerName(mctx && mctx.borrower),
+        isAssignment: !!(a && a.is_assignment),
         // The beneficial-owner verification threshold is program-dependent (Standard 15% / Manual 20%
         // / Gold 25%) — prefer the REGISTERED program, falling back to the application's program.
         program: (reg && reg.program) || (a && a.program) || null }, exts.rows) : null;
@@ -1465,6 +1467,21 @@ async function analyzeOneDocument(app, doc, docType, opts = {}) {
           }
         }
       } catch (_) { /* additive — a failure leaves the AI read + its findings untouched */ }
+    }
+
+    // PER-DOCUMENT REASONING (owner-directed 2026-07-27, the tax-cert incident): before we persist,
+    // let the AI work out what this document ACTUALLY is and who each party is (their role/side), so
+    // the tie-out can refuse a cross-side comparison (the vesting LLC vs a tax-cert owner). OFF unless
+    // UW_DOC_REASONING_ENABLED=1 + Azure configured; cost-capped per file; best-effort — a null result
+    // leaves the tie-out behaving exactly as before. Never blocks, never changes a number.
+    if (result && result.ok && result.extraction) {
+      try {
+        const reasoning = await documentReasoning.reasonAboutDocument({
+          client: db, appId: app.id, documentId: doc.id, docType,
+          fields: result.extraction.fields, ocrText: result.extraction.ocrText,
+        });
+        if (reasoning) result.extraction.reasoning = reasoning;
+      } catch (_) { /* additive — reasoning never breaks an analysis */ }
     }
 
     const client = await db.pool.connect();
@@ -2539,6 +2556,7 @@ router.post('/:appId/ai-suggestions/rerun-checks', requirePermission('sign_off_c
           const entityChain = isEntity ? buildChain(
             { vestingName: mctx && mctx.vestingName,
               borrowerName: fileView.borrowerName(mctx && mctx.borrower),
+              isAssignment: !!(a2 && a2.is_assignment),
               program: (mctx.registration && mctx.registration.program) || a2.program || null },
             exts.rows) : null;
           const sellerChain = buildSellerChain(mctx || {}, exts.rows);

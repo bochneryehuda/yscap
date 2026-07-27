@@ -18,12 +18,14 @@ async function tieoutForFile(client, appId, preloadedCtx) {
   // the sign-off gate calls without it and loads its own. Same result either way.
   const ctx = preloadedCtx || await fileView.loadContext(client, appId);
   const { rows } = await client.query(
-    `SELECT id, document_id, doc_type, fields FROM document_extractions WHERE application_id=$1 AND is_current`, [appId]);
+    `SELECT id, document_id, doc_type, fields, reasoning FROM document_extractions WHERE application_id=$1 AND is_current`, [appId]);
   // Contract amendments deliberately carry no tie-out facts (their values are conditional overrides
   // resolved by amendments.js into the GOVERNING terms, not direct claims to compare) — exclude
   // them so the matrix doesn't show an all-blank amendment column.
+  // `reasoning` (advisory, may be null) rides along so the tie-out's comparison-gate can refuse a
+  // cross-side comparison (e.g. a tax-cert owner vs the vesting entity) — owner-directed 2026-07-27.
   const sources = rows.filter((e) => e.doc_type !== 'contract_amendment')
-    .map((e) => ({ id: e.id, documentId: e.document_id, docType: e.doc_type, fields: e.fields }));
+    .map((e) => ({ id: e.id, documentId: e.document_id, docType: e.doc_type, fields: e.fields, reasoning: e.reasoning }));
 
   // Fold in the appraisal (its own table) so the WHOLE appraisal ties into the matrix — not just
   // address/price/value, but the collateral physicals the appraiser is the authority on (units,
