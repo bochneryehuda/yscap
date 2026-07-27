@@ -1013,6 +1013,21 @@ async function autoReadSweepOnce() {
   } catch (e) { console.error('[digests] auto-read-sweep', e && e.message); return filesRead; }
 }
 
+/* UN-FUNDED RE-READ SWEEP (owner decision 2026-07-27). One bounded slice per
+   tick: re-read a few alive, not-yet-funded files whose stored reads predate
+   the current reader generation, so the findings-cleanup extraction fixes
+   (liquidity / credit / appraisal / OFAC+fraud deep reads) reach files that
+   were already analysed. All the safety — bounded batch, per-file cost cap,
+   generation-stamp idempotency, off-switch, reader-off no-op, re-reads-only
+   (never clears a condition / moves a status / notifies) — lives in the sweep
+   module. Best-effort; a failure here never disturbs the rest of the dispatch. */
+async function unfundedRereadSweepOnce() {
+  try {
+    const r = await require('./underwriting/reread-sweep').sweepOnce();
+    return (r && r.filesRead) || 0;
+  } catch (e) { console.error('[digests] reread-sweep', e && e.message); return 0; }
+}
+
 /* R2.8 — Nightly direct-source verification sweep (Sovereign extension,
    owner-directed 2026-07-22). Walks every active file whose PILOT status is
    past 'file_intake' and calls direct-source-hub.verifyFile per file — the
@@ -1400,6 +1415,11 @@ async function exceptionExpirySweepOnce() {
 
 async function runDue() {
   const { hour, weekday } = nyParts();
+  // The un-funded re-read sweep runs on EVERY tick, around the clock: it sends nothing to anyone
+  // (re-reads + re-records only), so the time of day does not matter, and a steady slice each tick
+  // is what keeps the existing book moving onto the corrected reads. Its own generation stamp makes
+  // it a no-op once the book is caught up.
+  await unfundedRereadSweepOnce().catch((e) => console.error('[digests] reread-sweep', e && e.message));
   if (hour >= 7 && hour < 11) {
     await dailyPipelineDigestOnce().catch((e) => console.error('[digests] pipeline', e && e.message));
     await staleFileAlertsOnce().catch((e) => console.error('[digests] stale', e && e.message));
@@ -1446,7 +1466,7 @@ module.exports = {
   start, runDue, nyParts,
   weeklyBorrowerOutstandingOnce, dailyPipelineDigestOnce, staleFileAlertsOnce, weeklyAdminSummaryOnce,
   drawFindingsAwaitingBorrowerOnce, drawReleaseOverdueOnce, trustpointUnreleasedOnce, workflowAgingOnce, conditionFreshnessReopenOnce,
-  trainingRunOnce, certificateSurveyOnce, autoCommitteeReviewOnce, directSourceSweepOnce, autoReadSweepOnce, section1071SweepOnce,
+  trainingRunOnce, certificateSurveyOnce, autoCommitteeReviewOnce, directSourceSweepOnce, autoReadSweepOnce, unfundedRereadSweepOnce, section1071SweepOnce,
   aiCrossdocSweepOnce, weeklyAdminAiQuestionsOnce, weeklyTopRiskyFilesOnce, weeklyLoAiDigestOnce,
   qaDeskAuditOnce, exceptionAgingOnce, exceptionExpirySweepOnce,
 };

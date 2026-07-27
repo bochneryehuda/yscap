@@ -17,7 +17,7 @@
  */
 const router = require('../lib/safe-router')();
 const cfg = require('../config');
-const { requireAuth, requireStaff } = require('../auth');
+const { requireAuth, requireStaff, requirePermission } = require('../auth');
 const adapters = require('../pipeline/provider-adapters');
 
 router.use(requireAuth, requireStaff);
@@ -48,6 +48,28 @@ router.get('/health', async (_req, res) => {
     console.warn('[admin-pipeline] health error:', (e && e.message) || e);
     return res.json({ flags: flagSnapshot(), checkedAt: new Date().toISOString(), providers: [], healthy: 0, total: 0, configured: 0 });
   }
+});
+
+// ── Un-funded re-read sweep (owner decision 2026-07-27) ─────────────────────────────────
+// The re-read of every alive, not-yet-funded file so the findings-cleanup reader fixes reach
+// files that were already analysed. GET is a read-only progress view; POST kicks one slice NOW
+// (the dispatcher already runs it every tick, this just runs it on demand). The POST spends real
+// vendor money, so it is gated tighter — platform_setup, like the other paid ops triggers.
+router.get('/reread-sweep', async (_req, res) => {
+  try { return res.json(await require('../lib/underwriting/reread-sweep').status()); }
+  catch (e) { console.warn('[admin-pipeline] reread-sweep status:', (e && e.message) || e); return res.status(500).json({ error: 'server error' }); }
+});
+router.post('/reread-sweep', requirePermission('platform_setup'), async (req, res) => {
+  const sweep = require('../lib/underwriting/reread-sweep');
+  // Fire-and-report: run one bounded slice in the background so the request returns immediately
+  // (a slice can make several paid reads). The generation stamp keeps it idempotent, so a double
+  // click never re-bills a file. `batchFiles` is optional; the module clamps it to a sane floor.
+  const batchFiles = Number(req.body && req.body.batchFiles) || undefined;
+  sweep.sweepOnce({ batchFiles })
+    .then((r) => console.log('[reread-sweep] admin kick', JSON.stringify(r)))
+    .catch((e) => console.error('[reread-sweep] admin kick', e && e.message));
+  try { return res.json({ started: true, ...(await sweep.status()) }); }
+  catch (_) { return res.json({ started: true }); }
 });
 
 // ── Shadow comparison (Phase 2, owner-directed 2026-07-26) ──────────────────────────────

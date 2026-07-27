@@ -1220,7 +1220,14 @@ const AUTOREAD_MAX_PER_CALL = Math.max(1, parseInt(process.env.UNDERWRITING_AUTO
 // document filed under a condition mapped to a readable document type, that has no current
 // extraction yet. Pulls this file's own docs, its entity's LLC docs, and anything under its
 // conditions (mirrors the GET's documentsOnFile query).
-async function buildAutoReadQueue(app) {
+//
+// `opts.includeAnalyzed` — when true, keep documents that ALREADY have a current extraction in the
+// queue instead of skipping them. The normal auto-reader skips analyzed docs (an unchanged re-read
+// would just hit the cache); the un-funded RE-READ sweep needs the opposite — it re-reads the
+// already-analyzed documents with the improved reader (via analyzeOneDocument's `force`), because a
+// reader fix does not retroactively touch a file that was read once. Everything else is identical.
+async function buildAutoReadQueue(app, opts = {}) {
+  const includeAnalyzed = !!opts.includeAnalyzed;
   const a0 = (await db.query(`SELECT llc_id FROM applications WHERE id=$1`, [app.id])).rows[0] || {};
   const [docs, exts] = await Promise.all([
     db.query(
@@ -1233,7 +1240,9 @@ async function buildAutoReadQueue(app) {
           AND COALESCE(d.source_type, '') <> 'chat_attachment'
           AND ( d.application_id = $1 OR ci.application_id = $1 OR (d.llc_id IS NOT NULL AND d.llc_id = $2) )
         ORDER BY d.created_at`, [app.id, a0.llc_id || null]),
-    db.query(`SELECT document_id FROM document_extractions WHERE application_id=$1 AND is_current AND document_id IS NOT NULL`, [app.id]),
+    includeAnalyzed
+      ? Promise.resolve({ rows: [] })
+      : db.query(`SELECT document_id FROM document_extractions WHERE application_id=$1 AND is_current AND document_id IS NOT NULL`, [app.id]),
   ]);
   return selectAutoReadQueue({
     documents: docs.rows,
