@@ -390,6 +390,40 @@ function Finding({ appId, f, onChange, resolvable, canAct = false, canWaive = tr
           score's per-signal arithmetic, the per-tradeline mortgage lates — and without this the
           newlines collapse and the whole point of breaking them out is lost on screen. */}
       {howTo && <div style={{ fontSize: 12.5, color: 'var(--muted,#4B585C)', marginBottom: resolvable ? 10 : 0, whiteSpace: 'pre-wrap' }}>{howTo}</div>}
+      {/* THE AI REVIEW (owner-directed 2026-07-27): before this finding was shown as real, it was
+          passed to the AI with the whole loan file + its source document; a false alarm was already
+          filtered out upstream, so anything here the AI confirmed (or couldn't rule out) — and the
+          AI's suggested next step / document to request, built on top of the finding. Dark text on
+          the light card per the palette rule (never a var(--ink*) token for text). */}
+      {f.aiReview && (
+        <div style={{ marginTop: 2, marginBottom: resolvable ? 10 : 0, padding: '8px 10px', borderRadius: 8,
+          background: '#F1F6F6', border: '1px solid #CBE0E0' }}>
+          <div style={{ fontSize: 10.5, fontWeight: 700, color: '#256168', marginBottom: 3, textTransform: 'uppercase', letterSpacing: 0.3 }}>
+            {f.aiReview.verdict === 'confirmed' ? 'AI checked this — confirmed a real concern'
+              : f.aiReview.verdict === 'uncertain' ? 'AI checked this — could not fully confirm'
+              : 'AI checked this'}
+          </div>
+          {f.aiReview.reasoning && (
+            <div style={{ fontSize: 12.5, color: '#141B22', whiteSpace: 'pre-wrap',
+              marginBottom: (f.aiReview.suggestedResolution || f.aiReview.suggestedDocument) ? 6 : 0 }}>{f.aiReview.reasoning}</div>
+          )}
+          {f.aiReview.suggestedResolution && (
+            <div style={{ fontSize: 12.5, color: '#141B22' }}><strong>Suggested next step:</strong> {f.aiReview.suggestedResolution}</div>
+          )}
+          {f.aiReview.suggestedDocument && (
+            <div style={{ fontSize: 12.5, color: '#141B22', marginTop: 2 }}><strong>Document to request:</strong> {f.aiReview.suggestedDocument}</div>
+          )}
+          {/* The SECOND, independent AI's take when it weighed in (owner-directed 2026-07-27). When
+              the two models disagree, this finding was deliberately kept visible for a human. */}
+          {f.aiReview.secondModel && (
+            <div style={{ fontSize: 12, color: f.aiReview.secondModel.agrees ? '#3A4550' : '#8A5A00', marginTop: 6,
+              paddingTop: 6, borderTop: '1px solid #CBE0E0' }}>
+              <strong>{f.aiReview.secondModel.agrees ? 'A second AI agrees.' : 'A second AI disagrees — kept visible for you to decide.'}</strong>
+              {f.aiReview.secondModel.reasoning && <span> {f.aiReview.secondModel.reasoning}</span>}
+            </div>
+          )}
+        </div>
+      )}
       {/* When several reviews independently reached the same conclusion, this is the ONE item they
           collapsed into (finding-claims.dedupeByClaim). Saying so turns the merge from something
           invisible into something an underwriter can weigh — three desks agreeing is a stronger
