@@ -150,6 +150,97 @@ function stubClient(rowCount = 0) {
   ok(r6.retracted === 2 && r6.degraded === false,
     `a clean read (degraded: []) still converges (retracted=${r6.retracted}, degraded=${r6.degraded})`);
 
+  // ---------- A HUMAN'S DECISION IS NOT RE-OPENED (audit 2026-07-27) ----------
+  // `aiSug.record` refreshes a row only while it is still `status='open'`; against a CLOSED row it
+  // finds nothing and INSERTS a fresh open one. The desk is a pure function of the file, so it
+  // re-raises the same item every view — which undid a staffer's Dismiss on the next page load,
+  // forever. Now load-bearing: the file view DROPS a guideline finding whose suggestion is closed,
+  // so a resurrection would reverse the drop within one render.
+  //
+  // The discriminator is `decided_by_staff_id`: `decide()` stamps the person who acted, and
+  // `retractStale`'s automatic withdrawal is a raw UPDATE that never touches it.
+  const unhappyDesk = {
+    noteBuyer: { key: 'bluelake', name: 'Blue Lake Capital' },
+    verdicts: [{ cond_no: 2193, verdict: 'outstanding' }],
+    unhappy: [{ cond_no: 2193, flag: 'coverage_gap', severity: 'fatal', name: 'Feasibility report',
+      pilot_template_code: 'rtl_cond_feasibility' }],
+  };
+  // A client whose "which keys did a human decide?" SELECT returns the gap's key.
+  // `rows` are [dedupe_key, severity-the-human-decided-on] pairs.
+  const decidedClient = (rows) => {
+    const keys = rows.map((r) => (Array.isArray(r) ? r : [r, 'fatal']));
+    const calls = [];
+    return { calls,
+      async query(text, params) {
+        calls.push({ text, params });
+        if (/decided_by_staff_id\s+IS\s+NOT\s+NULL/i.test(text)) {
+          return { rowCount: keys.length, rows: keys.map(([k, sev]) => ({ dedupe_key: k, severity: sev })) };
+        }
+        // `record()` reads its RETURNING id off rows[0] — hand it a row so the insert path
+        // completes instead of throwing into the per-row catch and reporting a misleading 0.
+        if (/INSERT INTO ai_suggestions/i.test(text)) return { rowCount: 1, rows: [{ id: 'sug-1' }] };
+        return { rowCount: 0, rows: [] };
+      } };
+  };
+  const c7 = decidedClient(['isg-gap:rtl_cond_feasibility']);
+  const r7 = await sync.syncInvestorGuidelineFindings(c7, 'app-10', { desk: unhappyDesk });
+  ok(r7.raised === 0 && r7.heldByHuman === 1,
+    `an item a human already decided is NOT re-raised (raised=${r7.raised}, heldByHuman=${r7.heldByHuman})`);
+  ok(!c7.calls.some((k) => /INSERT INTO ai_suggestions/i.test(k.text)),
+    'no fresh row is inserted for a human-decided item — the dismissal actually sticks');
+
+  // ...and a rule the DESK retracted (decided_by_staff_id NULL, so absent from that SELECT) comes
+  // straight back when it legitimately applies again. Automatic withdrawal must not be permanent.
+  const c8 = decidedClient([]);
+  const r8 = await sync.syncInvestorGuidelineFindings(c8, 'app-11', { desk: unhappyDesk });
+  ok(r8.raised === 1 && r8.heldByHuman === 0,
+    `a desk-retracted rule is raised again once it applies (raised=${r8.raised}, heldByHuman=${r8.heldByHuman})`);
+
+  // A failed read of that SELECT must suppress NOTHING — silence is not a decision.
+  // ---------- FLAGGING AN ITEM MUST NOT CLONE IT (re-audit 2026-07-27) ----------
+  // `record()` refreshes a row only while it is `status='open'`. escalated / marked_important /
+  // asked_admin are NOT decisions — they mean "still needs handling, louder" — but they are not
+  // `open` either, so the refresh missed them and INSERTED a duplicate. A fresh insert of a FATAL
+  // fires the whole-team "New fatal AI finding" fan-out: one page load after a staffer clicked
+  // Escalate measured 298 sends on a live DB, plus a phantom duplicate row that outlives the finding.
+  for (const status of ['escalated', 'marked_important', 'asked_admin']) {
+    const c = {
+      calls: [],
+      async query(text, params) {
+        this.calls.push({ text, params });
+        if (/status\s*=\s*ANY/i.test(text) && /dedupe_key/.test(text)) {
+          return { rowCount: 1, rows: [{ dedupe_key: 'isg-gap:rtl_cond_feasibility', severity: 'fatal', status, decided_by_staff_id: null }] };
+        }
+        if (/INSERT INTO ai_suggestions/i.test(text)) return { rowCount: 1, rows: [{ id: 'dupe' }] };
+        return { rowCount: 0, rows: [] };
+      },
+    };
+    const r = await sync.syncInvestorGuidelineFindings(c, `app-alive-${status}`, { desk: unhappyDesk });
+    ok(r.raised === 0 && r.heldByHuman === 1,
+      `a ${status} item is not re-recorded (raised=${r.raised}, heldByHuman=${r.heldByHuman})`);
+    ok(!c.calls.some((k) => /INSERT INTO ai_suggestions/i.test(k.text)),
+      `${status}: no duplicate row is inserted, so no fatal-notify blast fires`);
+  }
+
+  // ...but a decision made about a WARNING does not silence the same rule once it turns FATAL.
+  // The dedupe key encodes neither severity nor the state of the file, so a dismissal on a
+  // light-rehab file would otherwise keep the rule quiet after the deal converts to ground-up and
+  // the same requirement becomes a dealbreaker. Silencing a dealbreaker with a judgement made about
+  // something milder is a false clear.
+  const c8b = decidedClient([['isg-gap:rtl_cond_feasibility', 'warning']]);
+  const r8b = await sync.syncInvestorGuidelineFindings(c8b, 'app-11b', { desk: unhappyDesk });
+  ok(r8b.raised === 1 && r8b.heldByHuman === 0,
+    `a warning-level dismissal does NOT suppress the same rule once it is FATAL (raised=${r8b.raised})`);
+
+  const c9 = {
+    async query(text) {
+      if (/decided_by_staff_id\s+IS\s+NOT\s+NULL/i.test(text)) throw new Error('db blip');
+      if (/INSERT INTO ai_suggestions/i.test(text)) return { rowCount: 1, rows: [{ id: 'sug-2' }] };
+      return { rowCount: 0, rows: [] };
+    } };
+  const r9 = await sync.syncInvestorGuidelineFindings(c9, 'app-12', { desk: unhappyDesk });
+  ok(r9.raised === 1, `a failed decided-keys read suppresses nothing (raised=${r9.raised})`);
+
   console.log(`test-guideline-retraction-pure: ${pass} passed, ${fail} failed`);
   process.exit(fail ? 1 : 0);
 })().catch((e) => { console.error(e); process.exit(1); });

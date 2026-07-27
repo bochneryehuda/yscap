@@ -78,7 +78,82 @@ const ESCALATE_TARGETS = [
   { key: 'processor', label: 'Processor' },
   { key: 'underwriter', label: 'Underwriter' },
 ];
-function Finding({ appId, f, onChange, resolvable, canWaive = true, canEscalate = false, escalated = null, highlighted = false, cardRef = null }) {
+/**
+ * The action row for a finding whose decision is recorded on an `ai_suggestions` row rather than a
+ * stored `document_findings` row — today, the note-buyer guideline items (owner-directed 2026-07-27:
+ * everything in ONE list, in this card).
+ *
+ * It drives the SAME endpoints the AI Findings card drives, so nothing a staffer could do before the
+ * merge was lost: dismiss with a reason, escalate, add a note, mark important,
+ * and — where the guideline names a PILOT condition — create that condition. The server drops the
+ * finding from the list once the row is no longer open, so acting here actually clears it.
+ */
+function SuggestionActions({ appId, suggestionId, status, important, templateCode, onChange }) {
+  const [busy, setBusy] = useState(false);
+  const [pending, setPending] = useState(null);   // 'dismiss' | 'note' — the one awaiting its text
+  const [text, setText] = useState('');
+  const run = async (fn, label) => {
+    setBusy(true);
+    try { await fn(); onChange && onChange(); }
+    catch (e) { alert(`Could not ${label}: ${(e && e.message) || 'error'}`); }
+    finally { setBusy(false); }
+  };
+  const decide = (action, extra) => run(() => api.aiSuggestionsDecide(appId, suggestionId, { action, ...(extra || {}) }), action.replace(/_/g, ' '));
+  const confirm = () => {
+    const t = text.trim();
+    if (!t) return;
+    const p = pending;
+    setPending(null); setText('');
+    if (p === 'dismiss') return decide('dismiss', { reason: t });
+    return run(() => api.aiSuggestionAddNote(appId, suggestionId, t), 'add the note');
+  };
+  return (
+    <div style={{ marginTop: 4 }}>
+      <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
+        {templateCode && (
+          <button disabled={busy} style={btn(true)}
+            title={`Create the "${templateCode}" condition on this file`}
+            onClick={() => { if (window.confirm(`Create the "${templateCode}" condition on this file?`)) decide('convert_to_condition', { templateCode }); }}>
+            Post the condition
+          </button>
+        )}
+        <button disabled={busy} style={btn()} onClick={() => { setPending('note'); setText(''); }}>Add a note</button>
+        {status !== 'escalated' && (
+          <button disabled={busy} style={btn()} title="Hand this to a super-admin to decide"
+            onClick={() => decide('escalate')}>Escalate for review</button>
+        )}
+        <button disabled={busy} style={btn()}
+          onClick={() => decide(important ? 'unmark_important' : 'mark_important')}>
+          {important ? 'Unmark important' : 'Mark important'}
+        </button>
+        <button disabled={busy} style={btn(false, true)} onClick={() => { setPending('dismiss'); setText(''); }}>
+          Dismiss (not an issue)
+        </button>
+      </div>
+      {status && status !== 'open' && (
+        <div style={{ fontSize: 11.5, color: 'var(--muted,#4B585C)', marginTop: 6 }}>
+          {status === 'escalated' ? 'Already escalated — a super-admin has this.'
+            : status === 'asked_admin' ? 'Waiting on a super-admin’s answer.'
+              : `Status: ${String(status).replace(/_/g, ' ')}.`}
+        </div>
+      )}
+      {pending && (
+        <div style={{ display: 'flex', gap: 8, marginTop: 10, flexWrap: 'wrap' }}>
+          <input autoFocus value={text} onChange={(e) => setText(e.target.value)}
+            onKeyDown={(e) => { if (e.key === 'Enter') confirm(); }}
+            placeholder={pending === 'dismiss' ? 'why this is not an issue' : 'note'}
+            style={{ flex: 1, minWidth: 180, padding: '7px 10px', border: '1px solid var(--line,#E7E1D3)', borderRadius: 8, fontSize: 14 }} />
+          <button disabled={busy || !text.trim()} onClick={confirm} style={btn(true)}>
+            {pending === 'dismiss' ? 'Dismiss' : 'Add note'}
+          </button>
+          <button disabled={busy} onClick={() => { setPending(null); setText(''); }} style={btn()}>Cancel</button>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function Finding({ appId, f, onChange, resolvable, canAct = false, canWaive = true, canEscalate = false, escalated = null, highlighted = false, cardRef = null }) {
   const [busy, setBusy] = useState(false);
   const [pending, setPending] = useState(null); // the action awaiting its note/value
   const [text, setText] = useState('');
@@ -329,6 +404,17 @@ function Finding({ appId, f, onChange, resolvable, canWaive = true, canEscalate 
       )}
       {resolvable && actions.length === 0 && allActions.length > 0 && (
         <div style={{ fontSize: 12, color: 'var(--muted,#4B585C)' }}>An underwriter or admin can clear this dealbreaker.</div>
+      )}
+      {/* A NOTE-BUYER GUIDELINE ITEM IS STILL ACTIONABLE HERE (audit 2026-07-27). It has no stored
+          finding row, so `resolvable` is false and the normal button row above never renders — but
+          its decision lives on the ai_suggestions mirror, which this merge hides as a repeat. Losing
+          the buttons would leave an item that reappears on every file view with nothing to click, so
+          the merged card drives the SAME endpoints the AI card used. The server drops the finding
+          entirely once that row is no longer open, so acting here really does make it go away. */}
+      {f.suggestionId && canAct && (
+        <SuggestionActions appId={appId} suggestionId={f.suggestionId}
+          status={f.suggestionStatus} important={f.important}
+          templateCode={f.opensCondition || null} onChange={onChange} />
       )}
       {resolvable && pending && (
         <div style={{ display: 'flex', gap: 8, marginTop: 10, flexWrap: 'wrap' }}>
@@ -2448,7 +2534,7 @@ const SOURCE_TINT = {
   double_pledge:   { fg: 'var(--crit,#B4483C)', bg: 'var(--crit-bg,#F6E7E4)' },
 };
 
-function AISuggestionsSection({ appId, readOnly = false, canResolve = true, shownFindingCodes = null, shownClaimKeys = null }) {
+function AISuggestionsSection({ appId, readOnly = false, canResolve = true, shownFindingCodes = null, shownClaimKeys = null, shownFindingKeys = null }) {
   const [rows, setRows] = React.useState(null);
   const [err, setErr] = React.useState('');
   const [busy, setBusy] = React.useState(false);
@@ -2494,13 +2580,32 @@ function AISuggestionsSection({ appId, readOnly = false, canResolve = true, show
   // — each repeat stays fully actionable in the one Open-findings list.
   const dupCodes = shownFindingCodes instanceof Set ? shownFindingCodes : null;
   const dupClaims = shownClaimKeys instanceof Set ? shownClaimKeys : null;
+  // The guideline-desk key set (dedupe key + condition template code) catches a note-buyer
+  // guideline row: its `evidence.code` is a CONDITION TEMPLATE code and its `dedupe_key` is the
+  // desk's own one-per-issue key — neither of which lives in the finding-CODE namespace, so the
+  // code-only check could never recognize it and the same item showed twice.
+  const dupKeys = shownFindingKeys instanceof Set ? shownFindingKeys : null;
   const rowCode = (r) => { const c = r && r.evidence && r.evidence.code; return c ? String(c).trim().toLowerCase() : null; };
   const rowClaim = (r) => (r && r.claim_key) ? String(r.claim_key) : null;
+  const rowKey = (r) => { const k = r && r.dedupe_key; return k ? String(k).trim().toLowerCase() : null; };
   const isRepeat = (r) => {
+    // 1) CLAIM KEY — the semantic key the Open-findings list is deduped by (server-stamped on both
+    //    surfaces), so a fact reached under DIFFERENT codes by different desks (the vesting mismatch,
+    //    the entity-not-screened rollup) is recognized as the same issue and hidden here.
     const ck = rowClaim(r);
     if (dupClaims && ck && dupClaims.has(ck)) return true;
+    // 2) raw CODE — the original exact-code match, kept as a belt-and-suspenders fallback.
     const c = rowCode(r);
-    return !!(dupCodes && c && dupCodes.has(c));
+    if (dupCodes && c && dupCodes.has(c)) return true;
+    // 3) GUIDELINE-DESK dedupe / template key, SCOPED to that source on purpose. `dupKeys` holds
+    //    CONDITION TEMPLATE codes, a different namespace from the finding codes every other producer
+    //    puts in `evidence.code`. That separation is convention, not enforcement — one detector
+    //    deciding to put a template code in `evidence.code` would silently vanish from this panel.
+    //    Matching only rows from the source that actually shares this namespace makes that impossible.
+    if (!dupKeys) return false;
+    if (r && r.source !== 'investor_guideline_desk') return false;
+    const k = rowKey(r);
+    return !!((k && dupKeys.has(k)) || (c && dupKeys.has(c)));
   };
   const isHiddenRepeat = (r) => !showDupes && isRepeat(r);
   const openRows = (rows || []).filter((r) => r.status !== 'dismissed');
@@ -2927,6 +3032,22 @@ export default function UnderwritingPanel({ appId, docs = [], readOnly = false, 
     for (const f of _allFindings) { if (f && f.claimKey) s.add(String(f.claimKey)); }
     return s;
   }, [_allFindings]);
+  // The SAME issue, keyed the way the AI panel can recognize it (owner-reported 2026-07-27: the
+  // same guideline item was on the screen three times). A note-buyer guideline finding is also
+  // mirrored into `ai_suggestions` by the desk sync, but the two sides never matched on `code` —
+  // a suggestion's `evidence.code` is a CONDITION TEMPLATE code (`rtl_cond_feasibility`) while a
+  // finding's `code` is a finding code, two namespaces that can never collide. So the finding now
+  // carries the suggestion's own dedupe key (`isgKey`) and its template code, and both go into this
+  // set so the AI panel hides its copy and the item shows ONCE, in the Open-findings layout.
+  const shownFindingKeys = React.useMemo(() => {
+    const s = new Set();
+    for (const f of _allFindings) {
+      if (!f) continue;
+      if (f.isgKey) s.add(String(f.isgKey).trim().toLowerCase());
+      if (f.templateCode) s.add(String(f.templateCode).trim().toLowerCase());
+    }
+    return s;
+  }, [_allFindings]);
 
   if (loading) return <p style={{ color: 'var(--muted,#4B585C)' }}>Loading the underwriting review…</p>;
 
@@ -3014,6 +3135,21 @@ export default function UnderwritingPanel({ appId, docs = [], readOnly = false, 
       )}
 
       {/* roll-up */}
+      {/* The note-buyer chip is separate from fatal/warning on purpose — those two are
+          clear-to-close work and this is a different buyer's rulebook — but it MUST be here, or a
+          file whose only open item is a guideline dealbreaker shows no chip at all while a red fatal
+          card sits below (re-audit 2026-07-27). */}
+      {(sum.guideline && (sum.guideline.fatal > 0 || sum.guideline.warning > 0)) && (
+        <div style={{ display: 'flex', gap: 10, marginBottom: 10, flexWrap: 'wrap' }}>
+          <span style={{ fontWeight: 700, color: sum.guideline.fatal > 0 ? SEV.fatal.fg : SEV.warning.fg,
+            background: sum.guideline.fatal > 0 ? SEV.fatal.bg : SEV.warning.bg,
+            borderRadius: 999, padding: '4px 12px', fontSize: 12.5 }}>
+            {sum.guideline.fatal > 0
+              ? `${sum.guideline.fatal} note-buyer dealbreaker${sum.guideline.fatal === 1 ? '' : 's'}`
+              : `${sum.guideline.warning} note-buyer guideline note${sum.guideline.warning === 1 ? '' : 's'}`}
+          </span>
+        </div>
+      )}
       {(sum.fatal > 0 || sum.warning > 0) && (
         <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 12, flexWrap: 'wrap' }}>
           {sum.fatal > 0 && <span style={{ fontWeight: 700, color: SEV.fatal.fg, background: SEV.fatal.bg, borderRadius: 999, padding: '4px 12px', fontSize: 12.5 }}>{sum.fatal} fatal</span>}
@@ -3139,11 +3275,16 @@ export default function UnderwritingPanel({ appId, docs = [], readOnly = false, 
           AI agent posts here — the AI never writes on the file itself. A human
           clicks Escalate / Add note / Convert to condition / Convert to task /
           Mark important / Dismiss / Ask super-admin. */}
-      <AISuggestionsSection appId={appId} readOnly={readOnly} canResolve={canResolve} shownFindingCodes={shownFindingCodes} shownClaimKeys={shownClaimKeys} />
+      <AISuggestionsSection appId={appId} readOnly={readOnly} canResolve={canResolve}
+        shownFindingCodes={shownFindingCodes} shownClaimKeys={shownClaimKeys} shownFindingKeys={shownFindingKeys} />
 
 
-      {/* ALL open findings, in ONE place — exactly the set the roll-up counts, so the "2 warnings"
-          chip maps to two visible, actionable items. A persisted per-document finding (has an id) is
+      {/* ALL open findings, in ONE place. The chips above count them in TWO buckets, not one: the
+          fatal/warning chips are the clear-to-close work, and the note-buyer chip is the investor's
+          own guideline read (which never gates closing). So "1 fatal" plus "2 note-buyer
+          dealbreakers" maps to the three cards below — every counted item is visible, but the count
+          the file is judged on stays the one the clear-to-close gate agrees with.
+          A persisted per-document finding (has an id) is
           resolvable here; a derived advisory (tie-out / metric / staleness / liquidity / experience /
           entity chain) shows read-only and clears when its underlying data changes. Each finding
           appears once — the old per-section finding lists were removed so nothing is repeated. */}
@@ -3166,7 +3307,8 @@ export default function UnderwritingPanel({ appId, docs = [], readOnly = false, 
               <Finding key={key} appId={appId} f={f}
                 cardRef={(el) => { if (f.id) findingRefs.current[f.id] = el; }}
                 highlighted={isFocused && highlightPulse}
-                onChange={load} resolvable={!readOnly && canResolve && !!f.id} canWaive={canWaive}
+                onChange={load} resolvable={!readOnly && canResolve && !!f.id}
+                canAct={!readOnly && canResolve} canWaive={canWaive}
                 canEscalate={!readOnly} escalated={f.id ? (data && data.escalatedFindings && data.escalatedFindings[f.id]) : null} />
             );
           })}

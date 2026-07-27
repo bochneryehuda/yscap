@@ -83,6 +83,10 @@ export default function InvestorGuidelinesPanel({ appId }) {
   const [loading, setLoading] = useState(false);
   const [desk, setDesk] = useState(null);
   const [showMet, setShowMet] = useState(false);
+  // The unhappy list is collapsed by default now that every item of it renders as a real finding in
+  // the ONE findings list above (owner-directed 2026-07-27 — "the other investor guideline find it
+  // should be in the background").
+  const [showUnhappy, setShowUnhappy] = useState(false);
 
   const load = useCallback(() => {
     if (!appId) return Promise.resolve();
@@ -144,19 +148,71 @@ export default function InvestorGuidelinesPanel({ appId }) {
             {d.generatedAt && <span style={{ fontSize: 11, color: 'var(--muted,#4B585C)' }}>as of {fmtAgo(d.generatedAt)}</span>}
           </div>
 
-          {/* The note-buyer items live in the ONE findings list below (fed here by the desk sync), so
-              they are NOT re-rendered as their own cards — that was the owner's "same finding shown
-              in three sections" duplication (2026-07-27). This panel now just says HOW MANY and
-              points to the one list; the headline above already says happy / not happy. */}
+          {/* WHAT THE NOTE BUYER IS NOT HAPPY ABOUT — now IN THE BACKGROUND (owner-directed
+              2026-07-27). Every one of these items is also a real finding in the ONE "Open findings"
+              list above, in the same card as everything else: *"You need to merge the three type of
+              findings. Everything should be the same type which is the middle one which has this
+              open document link source… the other investor guideline find it should be in the
+              background."* So the desk keeps its headline verdict (that IS this panel's job — is
+              the note buyer happy with the file) and the item-by-item list collapses to a link. It
+              is kept, not deleted: this is the desk's own read, useful when you want to see the
+              guideline reasoning next to the guideline checks, rather than one item at a time. */}
           {unhappy.length > 0 && (
-            <div style={{ marginBottom: 12, fontSize: 12.5, color: 'var(--ink,#141B22)' }}>
-              {noteBuyer.name || 'The note buyer'} isn't happy about{' '}
-              <span style={{ fontWeight: 800 }}>
-                {unhappy.length} item{unhappy.length === 1 ? '' : 's'}
-                {unhappy.some((u) => u.severity === 'fatal') ? ` (${unhappy.filter((u) => u.severity === 'fatal').length} must-fix)` : ''}
+            <div style={{ marginBottom: 10 }}>
+              <button onClick={() => setShowUnhappy((v) => !v)}
+                style={{ background: 'none', border: 'none', color: 'var(--teal,#2F7F86)', cursor: 'pointer', fontSize: 11.5, padding: 0, textAlign: 'left' }}>
+                {showUnhappy ? 'Hide' : 'Show'} the {unhappy.length} item{unhappy.length === 1 ? '' : 's'} as this desk sees {unhappy.length === 1 ? 'it' : 'them'}
+              </button>
+              <span style={{ fontSize: 11.5, color: 'var(--muted,#4B585C)', marginLeft: 8 }}>
+                — each one is already in the “Open findings” list above, with the rest of the review.
               </span>
-              {' — '}each one is in the findings list below, in the same layout as every other finding
-              (with the source document and the reasoning). Nothing to read twice here.
+            </div>
+          )}
+          {unhappy.length > 0 && showUnhappy && (
+            <div style={{ marginBottom: 12 }}>
+              {unhappy.map((u, i) => {
+                const fatal = u.severity === 'fatal';
+                const fg = fatal ? 'var(--crit,#B4483C)' : 'var(--amber,#B7791F)';
+                const bg = fatal ? 'var(--crit-bg,#F6E7E4)' : 'var(--amber-bg,#F6EEDD)';
+                const KIND_LABEL = {
+                  coverage_gap: 'No condition on the file',
+                  conflict: 'Conflicts with the guideline',
+                  info_missing: 'Missing information on the file',
+                  concern: 'Concern to review',
+                  appraisal_review: 'Review the appraisal',
+                };
+                const kind = KIND_LABEL[u.flag] || 'Needs review';
+                return (
+                  <div key={`${u.cond_no}-${i}`} style={{ marginBottom: 8, border: `1px solid ${fg}44`, borderLeft: `4px solid ${fg}`, borderRadius: 10, padding: '8px 14px', background: bg }}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+                      <span style={{ fontSize: 10.5, fontWeight: 800, color: fg, textTransform: 'uppercase', letterSpacing: '.05em' }}>{fatal ? '● ' : '○ '}{kind}</span>
+                      <span style={{ fontSize: 13, fontWeight: 700 }}>{u.name}</span>
+                    </div>
+                    {u.flag === 'coverage_gap' && (
+                      <div style={{ fontSize: 12, color: 'var(--muted,#4B585C)', marginTop: 2 }}>
+                        {noteBuyer.name || 'The note buyer'} requires this, but there is no condition on the file for it{fatal ? ' — post one now.' : '.'}
+                        {u.required_evidence ? <span> <span style={{ fontWeight: 700 }}>Needs:</span> {u.required_evidence}</span> : null}
+                      </div>
+                    )}
+                    {u.flag === 'conflict' && (
+                      <>
+                        {u.reason && <div style={{ fontSize: 12, color: 'var(--muted,#4B585C)', marginTop: 2 }}>{u.reason}</div>}
+                        {Array.isArray(u.checks) && u.checks.filter((k) => k.status === 'conflict').map((k, j) => (
+                          <div key={j} style={{ fontSize: 11.5, color: fg, marginTop: 3, fontWeight: 600 }}>✕ {k.detail || k.text}</div>
+                        ))}
+                      </>
+                    )}
+                    {(u.flag === 'info_missing' || u.flag === 'concern' || u.flag === 'appraisal_review') && (
+                      <div style={{ fontSize: 12, color: 'var(--muted,#4B585C)', marginTop: 2 }}>
+                        {u.flag === 'info_missing' && `This is on the file's contact information — the slot is empty and needs to be filled in. Not a document to collect.`}
+                        {u.flag === 'concern' && `${noteBuyer.name || 'The note buyer'} flags this only when something points to it. `}
+                        {u.flag === 'appraisal_review' && `Found while reviewing the appraisal${fatal ? ' — escalate.' : '.'} `}
+                        {u.required_evidence ? <span> <span style={{ fontWeight: 700 }}>Check:</span> {u.required_evidence}</span> : null}
+                      </div>
+                    )}
+                  </div>
+                );
+              })}
             </div>
           )}
 

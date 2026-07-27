@@ -16,6 +16,7 @@
  */
 
 const encompass = require('../lib/integrations/encompass');
+const fieldMap = require('../lib/integrations/encompass-field-map');
 
 // ── Loan reads ─────────────────────────────────────────────────────────────
 
@@ -28,9 +29,50 @@ const pipelineSearch = encompass.pipelineSearch;
 // Full raw loan by opaque Encompass GUID. The GUID is the join key we cache in
 // applications.encompass_loan_guid so subsequent pulls skip the pipeline search.
 // Read a loan's values BY FIELD NUMBER (read-only; owner sign-off 2026-07-26).
+// Returns a flat { fieldId: value } map, normalized from whichever wire shape the
+// tenant's fieldReader returns — an OBJECT map on v3 or an ARRAY of { fieldId, value }
+// pairs on v1 / ICE's own SDK type (fieldReaderToMap handles both).
+//
+// RESILIENCE (ICE 24.2): Encompass v3 FAILS THE WHOLE call with HTTP 400 if ANY single
+// field id is invalid/unpermitted for the tenant. One bad id among the ~40 we request
+// would otherwise blank EVERY authoritative value and silently drop the panel back to
+// guessed JSON paths (the exact class of bug that hid the LLC + origination fee). So on
+// a batch failure we split the id list and retry the halves, merging what succeeds — a
+// single bad id then costs only itself and the good fields still come through. Only the
+// failure path fans out; recursion floors at one id. A TOTAL failure (network / auth /
+// scope — both halves empty) is re-thrown so the caller degrades visibly.
 async function readFields(guid, ids) {
   if (!guid) throw new Error('readFields: guid is required.');
-  return encompass.fieldReader(guid, ids);
+  const list = (Array.isArray(ids) ? ids : []).map((x) => String(x)).filter(Boolean);
+  if (!list.length) return {};
+  try {
+    return fieldMap.fieldReaderToMap(await encompass.fieldReader(guid, list));
+  } catch (e) {
+    // Split ONLY on an invalid-field 400 — the one error that is per-id (ICE 24.2 fails
+    // the WHOLE batch if any single id is invalid/unpermitted). A network / auth /
+    // timeout / 404 is NOT per-id, so re-issuing halves would just fan the same doomed
+    // request out ~2N times and hammer the API during an outage — surface it at once.
+    if (list.length <= 1 || !_isInvalidFieldError(e)) throw e;
+    const mid = Math.floor(list.length / 2);
+    const [a, b] = await Promise.all([
+      readFields(guid, list.slice(0, mid)).catch(() => ({})),
+      readFields(guid, list.slice(mid)).catch(() => ({})),
+    ]);
+    const merged = Object.assign({}, a, b);
+    if (!Object.keys(merged).length) throw e;      // nothing isolated — surface the error
+    return merged;
+  }
+}
+
+// A fieldReader HTTP 400 means a requested field id is invalid/unpermitted for the
+// tenant (ICE 24.2 fails the entire batch). That is the ONLY error worth isolating by
+// splitting the id list; every other failure (network / 401 / 403 / 404 / timeout) is
+// not per-id and must never trigger a retry fan-out.
+function _isInvalidFieldError(e) {
+  // Anchor on the message PREFIX (encompass.fieldReader throws
+  // `Encompass fieldReader <status>: <body>`) so a non-400 response whose BODY merely
+  // contains the text "fieldReader 400" can never be mistaken for an invalid-field 400.
+  return /^Encompass fieldReader 400\b/.test(String((e && e.message) || ''));
 }
 
 async function getLoan(guid, { entities } = {}) {
