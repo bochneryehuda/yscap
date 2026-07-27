@@ -84,7 +84,14 @@ function sqlChunks(text) {
     const isStatement = /\bSELECT\b/i.test(c) && /\bFROM\b/i.test(c);
     if (isStatement) { statements.push(c); continue; }
     // A fragment carrying a real cap clause (not the word "limit" in prose) is unanalysable.
-    if (/\b(?:LIMIT\s+(?:\d+|\$\d+|\$\{)|FETCH\s+FIRST\b)/i.test(c)) orphanCaps.push(c.trim().slice(0, 80));
+    // …but only when the fragment is plausibly SQL. The first version flagged ANY quoted string
+    // containing "limit <number>", so an ordinary error message — `'the batch limit 200 was
+    // exceeded'` — failed the build, and `npm test` gates the deploy hook. A fragment counts as a
+    // query tail only when the cap is the FIRST thing in it (` LIMIT 200`, the concatenated tail
+    // shape) or it carries other SQL structure. Prose does neither.
+    const capish = /\b(?:LIMIT\s+(?:\d+|\$\d+|\$\{)|FETCH\s+(?:FIRST|NEXT)\b)/i.test(c);
+    const looksSql = /^\s*(?:LIMIT|FETCH|OFFSET)\b/i.test(c) || /\b(?:FROM|WHERE|JOIN|ORDER\s+BY|GROUP\s+BY)\b/i.test(c);
+    if (capish && looksSql) orphanCaps.push(c.trim().slice(0, 80));
   }
   return { statements, orphanCaps };
 }
@@ -110,7 +117,9 @@ function rowCaps(sql) {
     if (ch === '(') { opens.push(i + 1); continue; }
     if (ch === ')') { opens.pop(); continue; }
     const rest = sql.slice(i);
-    const m = /^\b(?:LIMIT\b|FETCH\s+FIRST\b)/i.exec(rest);
+    // FETCH NEXT n ROWS ONLY is the equivalent standard spelling of FETCH FIRST and Postgres
+    // accepts both; matching only FIRST left the other one invisible (audit 2026-07-27).
+    const m = /^\b(?:LIMIT\b|FETCH\s+(?:FIRST|NEXT)\b)/i.exec(rest);
     if (!m) continue;
     // LIMIT 1 is a "get me the single latest row" idiom, not a work queue — it cannot starve anything.
     if (/^\bLIMIT\s+1\b(?!\d)/i.test(rest)) { i += m[0].length - 1; continue; }
@@ -119,6 +128,15 @@ function rowCaps(sql) {
     // second half of a UNION inherits the first half's ORDER BY and an unordered capped arm reads
     // as ordered — the cap is examined but judged against somebody else's sort.
     let head = sql.slice(scopeStart, i);
+    // STRIP NESTED GROUPS FROM THE HEAD, to a fixed point. `scopeStart` correctly identifies the
+    // scope a cap lives in, but the head still contained any CLOSED subquery that appeared before
+    // the cap — so a subquery's own `ORDER BY x.id` satisfied BOTH the ordered check and the
+    // tie-break check for a completely unordered outer batch (audit 2026-07-27). An ORDER BY inside
+    // a parenthesised group does not order the statement that contains it.
+    let prev = null;
+    while (head !== prev) { prev = head; head = head.replace(/\([^()]*\)/g, ' '); }
+    // Within the scope, a cap is governed only by the ORDER BY of ITS OWN arm. Without this, the
+    // second half of a UNION inherits the first half's ORDER BY.
     const arm = /[\s\S]*\b(?:UNION\s+ALL|UNION|EXCEPT|INTERSECT)\b/i.exec(head);
     if (arm) head = head.slice(arm[0].length);
     out.push({ index: i, head });
@@ -194,12 +212,24 @@ const { statements: SQLS, orphanCaps: ORPHANS } = sqlChunks(src);
   // the only kind that can starve — a global digest has one stamp for the whole pass.
   const callSites = [...src.matchAll(/\b_(?:gate|claim)\(\s*([^,]+?)\s*,\s*([^,]+?)\s*,\s*([^;]{0,120}?)\)/g)]
     .map((m) => ({ actionExpr: m[1].trim(), entity: m[2].trim(), win: m[3].trim() }))
-    .filter((c) => c.entity !== 'null' && c.entity !== 'undefined');
-  const perFile = callSites.map((c) => {
+    .filter((c) => c.entity !== 'null' && c.entity !== 'undefined')
+    // The helpers FORWARD to each other (`_gate` calls `_claim(action, entityId, interval)`), and
+    // those internal hops are not digests. They are recognisable by construction: the action is the
+    // helper's own parameter name and the entity is the parameter it was handed.
+    .filter((c) => !(c.actionExpr === 'action' && /^(?:entityId|staffId)$/.test(c.entity)));
+  const perFileRaw = callSites.map((c) => {
     const konst = /^DIGEST_ACTION\.([A-Z0-9_]+)$/.exec(c.actionExpr);
     const lit = /^['"]([a-z][a-z0-9_]*)['"]$/.exec(c.actionExpr);
     return { ...c, key: konst ? konst[1] : null, action: konst ? CONSTS.get(konst[1]) : (lit ? lit[1] : null) };
-  }).filter((c) => c.action);
+  });
+  // An action expression this guard cannot resolve to a name (a bare identifier, a computed value)
+  // used to be DISCARDED by a `.filter`, so a per-file digest gated on `const A = 'x'; _gate(A, …)`
+  // dropped out of every check without a word. Unresolvable is REPORTED, exactly like a cap that
+  // cannot be analysed: the guard fails rather than certifying what it could not read.
+  const unresolved = perFileRaw.filter((c) => !c.action).map((c) => c.actionExpr);
+  assert.ok(unresolved.length === 0,
+    `a per-file gate's action must be a DIGEST_ACTION constant or a string literal, so this guard can pair it with its SQL throttle.\nUnresolvable:\n  - ${unresolved.join('\n  - ')}`);
+  const perFile = perFileRaw.filter((c) => c.action);
   assert.ok(perFile.length >= 6,
     `expected to DERIVE the per-file gated digests from their CALL SITES, found ${perFile.length}`);
 

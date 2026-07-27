@@ -540,8 +540,12 @@ async function qaDeskAuditOnce() {
     ]);
   } catch (_) { await _stamp('qa_desk_audit', null, { error: true }); return 0; }
 
-  const total = dupes.rows.length + noEvidence.rows.length + openFatal.rows.length;
-  if (total === 0) { await _stamp('qa_desk_audit', null, { clean: true }); return 0; }
+  // The count that goes in the SUBJECT and the tile is the REAL one. Each query is capped at 25, so
+  // summing `rows.length` announced "12 quality items to review" for a backlog of 340 — the exact
+  // defect the body fix addressed, surviving on the most prominent surface of all (audit
+  // 2026-07-27). `shownTotal` stays only to decide whether there is anything at all to send.
+  const shownTotal = dupes.rows.length + noEvidence.rows.length + openFatal.rows.length;
+  if (shownTotal === 0) { await _stamp('qa_desk_audit', null, { clean: true }); return 0; }
 
   const admins = await db.query(
     `SELECT id, email FROM staff_users WHERE role IN ('admin','super_admin') AND is_active=true`);
@@ -553,23 +557,32 @@ async function qaDeskAuditOnce() {
      read as twelve when it could have been the first 25 of three hundred, and an admin who worked
      all twelve would reasonably believe the queue was empty. `count(*) OVER ()` rides back on the
      row, so the count says how many there really are and names the cap when one applied. */
-  const headline = (rows, one, many) => {
-    const shown = rows.length;
-    const total = (rows[0] && Number.isFinite(rows[0].total_matches)) ? rows[0].total_matches : shown;
+  // How many there really are, regardless of what the cap returned.
+  const realTotal = (rows) => ((rows[0] && Number.isFinite(rows[0].total_matches)) ? rows[0].total_matches : rows.length);
+  const BULLETS = 8;                       // how many the body actually prints
+  const headline = (rows, one, many, ranked) => {
+    const total = realTotal(rows);
+    const listed = Math.min(rows.length, BULLETS);
     const noun = total === 1 ? one : many;
-    return total > shown ? `${total} ${noun} (showing the ${shown} most recent)` : `${total} ${noun}`;
+    // Say the number the reader can actually SEE, and say honestly HOW those were chosen. The first
+    // version claimed "showing the 25 most recent" while printing 8 bullets, and said "most recent"
+    // for two tiles whose queries lead on severity, not on recency (audit 2026-07-27).
+    return total > listed ? `${total} ${noun} (listing ${listed}, ${ranked})` : `${total} ${noun}`;
   };
+  // The real, uncapped total across all three checks — the number the subject line and the tile
+  // must carry, so nobody works a "12-item" queue that is actually 340.
+  const grandTotal = realTotal(dupes.rows) + realTotal(noEvidence.rows) + realTotal(openFatal.rows);
   const lines = [];
   if (openFatal.rows.length) {
-    lines.push(`⛔ ${headline(openFatal.rows, 'file', 'file(s)')} advanced with an OPEN fatal AI finding:`);
+    lines.push(`⛔ ${headline(openFatal.rows, 'file', 'file(s)', 'most fatals first')} advanced with an OPEN fatal AI finding:`);
     for (const r of openFatal.rows.slice(0, 8)) lines.push(`   • ${addr(r.property_address, r.application_id)} — ${r.app_status} · ${r.open_fatal} fatal`);
   }
   if (noEvidence.rows.length) {
-    lines.push(`📄 ${headline(noEvidence.rows, 'condition', 'condition(s)')} cleared with no document attached:`);
+    lines.push(`📄 ${headline(noEvidence.rows, 'condition', 'condition(s)', 'most recently cleared first')} cleared with no document attached:`);
     for (const r of noEvidence.rows.slice(0, 8)) lines.push(`   • ${addr(r.property_address, r.application_id)} — "${String(r.label || '').slice(0, 60)}"`);
   }
   if (dupes.rows.length) {
-    lines.push(`🔁 ${headline(dupes.rows, 'duplicate open condition', 'duplicate open condition(s)')}:`);
+    lines.push(`🔁 ${headline(dupes.rows, 'duplicate open condition', 'duplicate open condition(s)', 'most copies first')}:`);
     for (const r of dupes.rows.slice(0, 8)) lines.push(`   • ${addr(r.property_address, r.application_id)} — ${r.code} ×${r.n}`);
   }
 
@@ -577,15 +590,18 @@ async function qaDeskAuditOnce() {
     try {
       await notify.notifyStaff(ad.id, {
         type: 'digest',
-        title: `AI QA — ${total} quality item${total === 1 ? '' : 's'} to review`,
+        title: `AI QA — ${grandTotal} quality item${grandTotal === 1 ? '' : 's'} to review`,
         badge: { text: 'QA', tone: openFatal.rows.length ? 'crit' : 'gold' },
-        hero: { label: 'To review', value: String(total), sub: `${openFatal.rows.length} fatal-advanced · ${noEvidence.rows.length} no-evidence · ${dupes.rows.length} duplicate`, tone: openFatal.rows.length ? 'crit' : 'gold' },
+        hero: { label: 'To review', value: String(grandTotal), sub: `${realTotal(openFatal.rows)} fatal-advanced · ${realTotal(noEvidence.rows)} no-evidence · ${realTotal(dupes.rows)} duplicate`, tone: openFatal.rows.length ? 'crit' : 'gold' },
         body: 'PILOT reviewed the desk overnight and found the items below worth a look. These are quality signals, not automatic changes — open each file and decide.',
         lines,
         link: '/internal/insights', ctaLabel: 'Open Insights', emailTo: ad.email });
     } catch (e) { console.error('[digest] qa-desk-audit', ad.id, e && e.message); }
   }
-  await _stamp('qa_desk_audit', null, { total, dupes: dupes.rows.length, noEvidence: noEvidence.rows.length, openFatal: openFatal.rows.length });
+  await _stamp('qa_desk_audit', null, {
+    total: grandTotal, shown: shownTotal,
+    dupes: realTotal(dupes.rows), noEvidence: realTotal(noEvidence.rows), openFatal: realTotal(openFatal.rows),
+  });
   return admins.rows.length;
 }
 
