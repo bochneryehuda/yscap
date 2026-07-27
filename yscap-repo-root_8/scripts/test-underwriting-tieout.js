@@ -286,6 +286,27 @@ assert.strictEqual(factMatch('measure', 1850, 2400), false, 'GLA far apart is a 
   assert.ok(mRow.cells.some((c) => c.value === '$474,000'), "the assignment doc's total surfaces in the purchase_price matrix row");
 }
 
+// ===== Assignment fee MISLABELED as the whole price → NOT a false tie-out fatal (owner 2026-07-27) =====
+{
+  // File has a REAL assignment fee (36k) on a 325k total (289k seller + 36k fee).
+  const asgFeeCtx = { app: { property_address: ADDR, is_assignment: true, purchase_price: 325000, underlying_contract_price: 289000, assignment_fee: 36000 }, vestingName: 'Maple Grove Holdings LLC' };
+  // (a) facts.js quarantine — the assignment DOC states the total, and its "fee" equals that total → dropped.
+  const rDocTotal = buildTieout(asgFeeCtx, [{ id: 'asg', docType: 'assignment',
+    fields: { propertyAddress: ADDR, assigneeName: 'Maple Grove Holdings LLC', originalPurchasePrice: 289000, assignmentFee: 325000, totalPriceToAssignee: 325000 } }]);
+  assert.ok(!rDocTotal.discrepancies.some((d) => d.code === 'tieout_assignment_fee'),
+    'a "fee" equal to the assignment total is quarantined — no false assignment-fee fatal');
+  // (b) tie-out belt-and-suspenders — the doc gives ONLY a fee (no total field) but it equals the FILE's total.
+  const rFileTotal = buildTieout(asgFeeCtx, [{ id: 'asg', docType: 'assignment',
+    fields: { propertyAddress: ADDR, assigneeName: 'Maple Grove Holdings LLC', assignmentFee: 325000 } }]);
+  assert.ok(!rFileTotal.discrepancies.some((d) => d.code === 'tieout_assignment_fee'),
+    "a doc fee equal to the file's total price is not a mismatch");
+  // (c) a genuinely different assignment fee (a real fraction, disagreeing with the file) STILL fires.
+  const rReal = buildTieout(asgFeeCtx, [{ id: 'asg', docType: 'assignment',
+    fields: { propertyAddress: ADDR, assigneeName: 'Maple Grove Holdings LLC', assignmentFee: 50000 } }]);
+  assert.ok(rReal.discrepancies.some((d) => d.code === 'tieout_assignment_fee'),
+    'a real fee (50k) that disagrees with the file fee (36k) still fires — nothing over-tolerated');
+}
+
 // ===== Layer A: never compare a current-owner / wholesaler name to the vesting entity (2026-07-27) =====
 {
   // A TITLE document (or a tax certificate / deed misfiled as one) names the CURRENT owner — the
