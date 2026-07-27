@@ -589,6 +589,13 @@ if (require.main === module) {
         require('./lib/underwriting/investor-guidelines/seed').seedNoteBuyerConditions()
           .then((r) => r && r.ok && console.log('[boot] note-buyer conditions seed:', JSON.stringify(r)))
           .catch((e) => console.error('[boot] note-buyer conditions seed failed:', e.message));
+        // Retract stale guideline findings on files nobody has re-opened (owner 2026-07-26: "fix
+        // this also for all the previous files"). Retraction otherwise only runs on a file view, so
+        // a corrected rule left its now-wrong notice open on un-viewed files. Retract-only — never
+        // raises, so no boot-time notification burst. Best-effort; never blocks boot.
+        require('./lib/underwriting/investor-guidelines/desk-sync').backfillGuidelineRetractions()
+          .then((r) => r && r.retracted && console.log('[boot] guideline-retraction backfill:', JSON.stringify(r)))
+          .catch((e) => console.error('[boot] guideline-retraction backfill failed:', e.message));
       } catch (e) {
         console.error('[migrate] unexpected error (continuing):', require('./db').describeError(e));
       }
