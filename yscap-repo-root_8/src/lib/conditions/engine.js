@@ -265,14 +265,17 @@ async function evaluateApplication(appId, opts = {}) {
       });
       // borrowerLabel must NEVER fall back to the internal tpl.label (note-buyer
       // context) — it is interpolated into the borrower notification below.
-      out.added.push({ id, label: effTpl.label, borrowerLabel: effTpl.borrower_label || null, audience: effTpl.audience });
+      // `code` rides along (additive) so a caller can tell WHICH rule attached this —
+      // the note-buyer slot uses it to separate "this happened because you changed the
+      // note buyer" from "the file was re-checked and also picked these up".
+      out.added.push({ id, code: tpl.code || null, label: effTpl.label, borrowerLabel: effTpl.borrower_label || null, audience: effTpl.audience });
     } else if (!matches && tpl.auto_apply === 'rules' && instances.length) {
       for (const inst of instances) {
         const untouched = inst.origin_kind === 'auto' && inst.status === 'outstanding'
           && !inst.signed_off_at && !inst.reviewed_at && !inst.has_payload && !inst.has_docs && !inst.notes;
         if (!untouched) continue;
         await db.query(`DELETE FROM checklist_items WHERE id = $1`, [inst.id]);
-        out.removed.push({ label: inst.label });
+        out.removed.push({ code: tpl.code || null, label: inst.label });
       }
     }
   }
