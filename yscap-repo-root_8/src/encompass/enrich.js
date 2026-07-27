@@ -12,6 +12,17 @@
  * `inferred=true`, so it never inflates VERIFIED experience or changes pricing.
  * Nothing is ever written to Encompass.
  *
+ * CLOSED DEALS ONLY (owner-directed 2026-07-27): "the subject property, even
+ * before it's closed, is going on the track record automatically… the subject
+ * property or any other property that is not closed yet should not go
+ * automatically on the track record." A track record is a record of deals DONE,
+ * so the address write is gated on real evidence that the Encompass loan closed
+ * (`loanClosed` below), and the DEFAULT — no evidence either way — is NO. This
+ * matches the ClickUp profile builder, which has always gated its track-record
+ * write on a funded status (`CLOSED_STATUSES` in src/clickup/ingest.js). Entities,
+ * emails and phone numbers are NOT gated: those are facts about the PERSON, just
+ * as true on a live file as on a closed one.
+ *
  * Matching is CONSERVATIVE (never guess a borrower): a snapshot loan attaches to
  * a borrower only when (a) that loan is already linked to one of our applications
  * (the borrower is known), or (b) it matches EXACTLY ONE of our borrowers by
@@ -147,10 +158,16 @@ function splitEntityNames(v) {
     // "N/A", "none", a bare "LLC" left over from a bad split: not an entity.
     .filter((s) => s.length >= 3 && !/^(n\/?a|none|tbd|unknown|llc|inc)$/i.test(s));
 }
-function vestingLlcs(raw) {
+// `customFields[]` → { fieldName: value }. The VALUE lives under `value` (not
+// `stringValue`/`numericValue`) — see docs/ENCOMPASS-FIXFLIP-MASTER-MAPPING.md §2.
+function customFieldMap(raw) {
   const cf = Array.isArray(raw && raw.customFields) ? raw.customFields : [];
   const by = {};
   for (const c of cf) if (c && c.fieldName) by[c.fieldName] = c.value;
+  return by;
+}
+function vestingLlcs(raw) {
+  const by = customFieldMap(raw);
   const state = (by['CX.LLCSTATE'] && String(by['CX.LLCSTATE']).trim()) || null;
   // Order matters: the FIRST name is what `vestingLlc` still returns, so the
   // dedicated vesting fields stay ahead of the free-text 1859 list.
@@ -251,6 +268,170 @@ function loanDateMs(raw, fallback) {
   return 0;
 }
 
+// ── Did this loan actually CLOSE? ──────────────────────────────────────────
+// The gate on the track-record write (owner-directed 2026-07-27). Pure: it reads
+// the loan JSON, the snapshot's loan folder, and — when the loan is linked to one
+// of our files — that file's own status. It NEVER guesses "yes": with no evidence
+// of a closing, the answer is no, and the property waits.
+
+// A read of a dotted path off the loan JSON ('closingDocument.fundingDate').
+function pathOf(obj, path) {
+  let cur = obj;
+  for (const seg of String(path).split('.')) {
+    if (cur == null || typeof cur !== 'object') return undefined;
+    cur = cur[seg];
+  }
+  return cur;
+}
+
+// A date value → 'YYYY-MM-DD', or null when it is not a date at all. Deliberately
+// strict: a bare number (a field id, an amount) must never parse as a year.
+function dayOf(v) {
+  if (v == null || v === '') return null;
+  // A `date` column read back through pg arrives as a Date, not a string.
+  if (v instanceof Date) return Number.isFinite(v.getTime()) ? v.toISOString().slice(0, 10) : null;
+  const s = String(v).trim();
+  const iso = s.match(/^(\d{4})-(\d{2})-(\d{2})/);
+  if (iso) return `${iso[1]}-${iso[2]}-${iso[3]}`;
+  if (!/^\d{1,4}[-/]\d{1,2}[-/]\d{1,4}/.test(s)) return null;
+  const t = Date.parse(s);
+  if (!Number.isFinite(t)) return null;
+  const d = new Date(t).toISOString().slice(0, 10);
+  const year = Number(d.slice(0, 4));
+  return year >= 1900 && year <= 2100 ? d : null;
+}
+const todayDay = () => new Date().toISOString().slice(0, 10);
+
+// THE MONEY MOVED. Any of these carrying a real, non-future date means the loan
+// funded — the strongest evidence there is, and enough on its own. Both shapes
+// are read because the tenant populates one or the other per loan: the V3 loan
+// entity paths, and the classic funding-entity field ids (1401 the funded date
+// the closing reconciliation already reads, 1997 funds SENT, 1999 funds RELEASED).
+// A SCHEDULED/estimated date in the future is not a closing — hence the day test.
+const FUNDED_DATE_PATHS = [
+  'closingDocument.fundingDate', 'closingDocument.disbursementDate',
+  'fundingDate', 'fundedDate', 'closedDate', 'disbursementDate',
+  'milestoneFundedDate', 'milestoneFundedDateUtc',
+  'funding.fundsSentDate', 'funding.fundsReleasedDate', 'funding.disbursementDate',
+  'currentLoanStatus.fundsSentDate', 'currentLoanStatus.fundsReleasedDate',
+];
+const FUNDED_FIELD_IDS = ['1401', '1997', '1999'];
+function fundedDay(raw, cf, today) {
+  const now = today || todayDay();
+  const cands = FUNDED_DATE_PATHS.map((p) => pathOf(raw, p))
+    .concat(FUNDED_FIELD_IDS.map((id) => (cf || {})[id]));
+  for (const c of cands) {
+    const d = dayOf(c);
+    if (d && d <= now) return d;
+  }
+  return null;
+}
+
+// Lifecycle WORDS, matched against the loan folder, the current milestone/stage
+// and the completed-milestone names. The core Encompass milestone buckets are
+// Started / Sent to processing / Submitted / Approved / Doc signed / Funded /
+// Completed, but every tenant renames them (this one shows "LO Prep" / "PREQUAL"),
+// so this reads meaning rather than an exact list.
+//   CLOSED — the deal is done. Note none of these match "closing": "Active
+//            Closing", "Scheduling Closing", "Clear to Close" are a file ON ITS
+//            WAY to a closing, which is exactly what must NOT count.
+//   OPEN   — an in-flight phrase; it suppresses a CLOSED match in the same string
+//            ("not closed", "to be closed").
+//   DEAD   — the deal died. A dead file is not experience however far it got, and
+//            this beats every other Encompass-side signal.
+const CLOSED_WORDS = /(\bfunded\b|funding complete|\bcompleted\b|\bcompletion\b|\bclosed\b|post[ -]?clos|\bpurchased\b|purchase review|purchase conditions|\bshipped\b|\bshipping\b|\bservicing\b|paid[ -]?off|final docs|\breconciled\b)/i;
+const OPEN_WORDS = /(clear to close|ready to close|to be closed|not closed|scheduling|pre[ -]?clos|closing prep|in closing|active closing|doc signing|docs out)/i;
+const DEAD_WORDS = /(adverse|declin|denied|withdraw|cancel|trash|rejected|fallout|\bdead\b|\blost\b|\bexpired\b)/i;
+// A milestone the loan has FINISHED says more than the same word would as a
+// current stage: "Funding" as the CURRENT milestone means the file is sitting at
+// funding, but a COMPLETED "Funding" means the money went out. So the done-list
+// gets the extra word, and the current-stage list never does.
+const DONE_CLOSED_WORDS = new RegExp(`\\bfunding\\b|${CLOSED_WORDS.source}`, 'i');
+const closedWord = (s) => {
+  const t = String(s == null ? '' : s).trim();
+  if (!t || DEAD_WORDS.test(t) || OPEN_WORDS.test(t)) return null;
+  return CLOSED_WORDS.test(t) ? t : null;
+};
+const doneClosedWord = (s) => {
+  const t = String(s == null ? '' : s).trim();
+  if (!t || DEAD_WORDS.test(t)) return null;
+  return DONE_CLOSED_WORDS.test(t) ? t : null;
+};
+const deadWord = (s) => {
+  const t = String(s == null ? '' : s).trim();
+  return t && DEAD_WORDS.test(t) ? t : null;
+};
+
+// The loan's CURRENT lifecycle strings — where it lives and what stage it is at,
+// each labelled so the verdict can say WHICH one decided it.
+function currentLifecycle(raw, cf, loanFolder) {
+  const st = raw.currentLoanStatus && typeof raw.currentLoanStatus === 'object' ? raw.currentLoanStatus : {};
+  return [
+    ['folder', loanFolder], ['folder', raw.loanFolder], ['folder', cf['CX.LOAN.FOLDER.CURRENT']],
+    ['milestone', raw.milestoneCurrentName], ['stage', raw.milestoneStage],
+    ['milestone', raw.currentMilestoneName], ['milestone', st.currentMilestoneName],
+    ['status', st.loanStatus], ['status', st.archiveStatus],
+  ].filter(([, s]) => typeof s === 'string' && s.trim());
+}
+
+// The names of milestones the loan has COMPLETED.
+function doneMilestoneNames(raw) {
+  const ms = Array.isArray(raw && raw.milestones) ? raw.milestones : [];
+  const out = [];
+  for (const m of ms) {
+    if (!m || typeof m !== 'object') continue;
+    const done = m.doneIndicator === true || m.done === true || m.isDone === true
+      || !!dayOf(m.completedDate || m.doneDate || m.milestoneCompletedDate);
+    if (!done) continue;
+    const name = m.milestoneName || m.name || m.milestone;
+    if (typeof name === 'string' && name.trim()) out.push(name.trim());
+  }
+  return out;
+}
+
+/**
+ * loanClosed({ raw, loanFolder, app, today }) → { closed, why }
+ *
+ * `app` is OUR linked file when the loan has one: { status, fundedDate }.
+ *
+ * Order of authority:
+ *   1. OUR OWN FILE. PILOT (with ClickUp) is authoritative for a deal we are
+ *      running — the whole registry is `authoritative:'pilot'`. If the team has
+ *      not marked it funded, it has NOT closed, and no Encompass field overrules
+ *      that. This is the owner's exact case: the live file's subject property.
+ *   2. A DEAD Encompass state — never experience.
+ *   3. The money moved (a funded / funds-released / disbursement date).
+ *   4. A closed lifecycle word on the folder, the current milestone, or a
+ *      completed milestone.
+ *   5. Otherwise NO. Silence is not a closing.
+ */
+function loanClosed(input) {
+  const o = input || {};
+  const raw = o.raw && typeof o.raw === 'object' ? o.raw : {};
+  const cf = customFieldMap(raw);
+
+  const app = o.app || null;
+  if (app) {
+    if (app.fundedDate || String(app.status || '').trim().toLowerCase() === 'funded') {
+      return { closed: true, why: 'pilot_funded' };
+    }
+    if (String(app.status || '').trim()) return { closed: false, why: `pilot_status:${String(app.status).trim()}` };
+  }
+
+  const current = currentLifecycle(raw, cf, o.loanFolder);
+  for (const [label, s] of current) { const d = deadWord(s); if (d) return { closed: false, why: `dead_${label}:${d}` }; }
+
+  const funded = fundedDay(raw, cf, o.today);
+  if (funded) return { closed: true, why: `funded_date:${funded}` };
+
+  for (const [label, s] of current) { const c = closedWord(s); if (c) return { closed: true, why: `${label}:${c}` }; }
+  for (const s of doneMilestoneNames(raw)) {
+    const c = doneClosedWord(s);
+    if (c) return { closed: true, why: `milestone_done:${c}` };
+  }
+  return { closed: false, why: 'no_closing_evidence' };
+}
+
 // ── DB writes (into OUR tables only — add-only-if-absent) ───────────────────
 
 // Add the subject address to the borrower's track record IF that address is not
@@ -292,6 +473,66 @@ async function addTrackRecordIfAbsent(dbc, borrowerId, addr) {
     [borrowerId, JSON.stringify(addr), encKey, 'Added from Encompass history; unverified']);
   if (!r.rows[0]) return { added: false, reason: 'already_present' };
   return { added: true, id: r.rows[0].id };
+}
+
+// The MIRROR IMAGE of the add: a property this enrichment already put on a
+// borrower's track record for a loan that has NOT closed comes back off (owner-
+// directed 2026-07-27 — the in-flight subject properties are on the record today
+// and must not stay there, so the fix has to undo itself, not just stop).
+//
+// Only a PRISTINE enrichment row is ever removed: origin 'encompass', still
+// unverified/inferred, carrying nothing but the address and this pass's own note,
+// with no entity, no economics, no documents and no condition hanging off it. The
+// moment a human (or ClickUp) touches the line it is theirs and this leaves it
+// alone — a deletion must never destroy someone's work. It is also why the
+// documents check matters: `documents.track_record_id` cascades on delete.
+const PRISTINE_ENRICHMENT_ROW = `
+      AND tr.origin = 'encompass'
+      AND tr.is_verified = false AND tr.verified_at IS NULL AND tr.verified_by IS NULL
+      AND COALESCE(tr.verification_status, 'pending') = 'pending'
+      AND COALESCE(tr.inferred, false) = true
+      AND tr.notes LIKE 'Added from Encompass history%'
+      AND COALESCE(tr.docs_status, 'outstanding') = 'outstanding'
+      AND tr.client_row_id IS NULL AND tr.source_task_id IS NULL
+      AND tr.llc_id IS NULL AND tr.entity_name IS NULL AND tr.lo_notes IS NULL
+      AND COALESCE(tr.owned_personally, false) = false
+      AND tr.deal_type IS NULL AND tr.property_type IS NULL
+      AND tr.purchase_price IS NULL AND tr.sale_price IS NULL AND tr.rehab_amount IS NULL
+      AND tr.purchase_date IS NULL AND tr.sale_date IS NULL
+      AND tr.rent_amount IS NULL AND tr.rent_date IS NULL
+      AND tr.refi_amount IS NULL AND tr.refi_date IS NULL AND tr.current_value IS NULL
+      AND NOT EXISTS (SELECT 1 FROM documents d WHERE d.track_record_id = tr.id)
+      AND NOT EXISTS (SELECT 1 FROM checklist_items ci WHERE ci.track_record_id = tr.id)`;
+
+async function removeInferredTrackRecord(dbc, borrowerId, addr) {
+  const encKey = normAddr(addr);
+  if (!encKey) return { removed: false, reason: 'no_address' };
+  const rows = (await dbc.query(
+    `SELECT id, property_address, address_key FROM track_records WHERE borrower_id=$1 AND origin='encompass'`,
+    [borrowerId])).rows;
+  for (const row of rows) {
+    const exStr = addrString(row.property_address || {});
+    const same = (row.address_key && row.address_key === encKey) || (exStr && normAddr(exStr) === encKey);
+    if (!same) continue;
+    const gone = await dbc.query(`DELETE FROM track_records tr WHERE tr.id=$1${PRISTINE_ENRICHMENT_ROW} RETURNING tr.id`, [row.id]);
+    if (!gone.rows[0]) return { removed: false, id: row.id, reason: 'touched' };
+    // Leave a trail — the row is gone from the profile, so the audit line is the
+    // only record that it was ever there. Best-effort behind a SAVEPOINT: a bad
+    // audit insert must not poison an enclosing transaction (same as the
+    // address-fill audit above).
+    try {
+      await dbc.query('SAVEPOINT enrich_tr_audit');
+      await dbc.query(
+        `INSERT INTO audit_log (actor_kind, action, entity_type, entity_id, detail)
+         VALUES ('system','encompass_track_record_removed_not_closed','borrower',$1,$2::jsonb)`,
+        [borrowerId, JSON.stringify({ trackRecordId: row.id, address: addrString(addr) })]);
+      await dbc.query('RELEASE SAVEPOINT enrich_tr_audit');
+    } catch (_) {
+      await dbc.query('ROLLBACK TO SAVEPOINT enrich_tr_audit').catch(() => {});
+    }
+    return { removed: true, id: row.id };
+  }
+  return { removed: false, reason: 'not_present' };
 }
 
 // Add the LLC to the borrower's library IF not already there (deduped by name).
@@ -452,7 +693,11 @@ async function matchBorrower(dbc, party, snapshotAppId) {
  * For every loan, EVERY party on it (borrower and co-borrower, across all
  * application pairs) is matched to one of our borrowers conservatively, and what
  * the file knows is added to that person's profile:
- *   • the subject property   → their track record (unverified, inferred)
+ *   • the subject property   → their track record (unverified, inferred) — ONLY
+ *                              when the loan actually CLOSED; an in-flight or
+ *                              dead file contributes no experience, and a
+ *                              property this pass previously added for a loan
+ *                              that has not closed is taken back off
  *   • every entity named     → their entity library (incl. the free-text 1859 list)
  *   • every email and phone  → their accumulated contact list
  * and then, ONCE per borrower and only from their MOST RECENT file, their
@@ -470,17 +715,35 @@ async function enrichAllOnce(opts) {
     loans: 0, matched: 0, addressesAdded: 0, llcsAdded: 0,
     emailsAdded: 0, phonesAdded: 0,
     addressesVerified: 0, addressesFilled: 0, addressConflicts: 0,
+    // Properties held back / taken back because their loan has not closed, and a
+    // tally of WHY. Watch that tally in the log: this gate is deliberately
+    // conservative, so an unexpectedly large `no_closing_evidence` would mean the
+    // tenant records its closings some way `loanClosed` does not read yet.
+    addressesSkippedNotClosed: 0, addressesRemovedNotClosed: 0, notClosedWhy: {},
     skippedNoMatch: 0, errors: 0,
   };
   const rows = (await dbc.query(
-    `SELECT encompass_loan_guid, application_id, raw, last_modified
-       FROM encompass_loan_snapshot WHERE raw IS NOT NULL
-      ORDER BY pulled_at DESC NULLS LAST LIMIT $1`, [limit])).rows;
+    `SELECT s.encompass_loan_guid, s.application_id, s.raw, s.last_modified, s.loan_folder,
+            a.status AS app_status, a.funded_date AS app_funded_date
+       FROM encompass_loan_snapshot s
+       LEFT JOIN applications a ON a.id = s.application_id AND a.deleted_at IS NULL
+      WHERE s.raw IS NOT NULL
+      ORDER BY s.pulled_at DESC NULLS LAST LIMIT $1`, [limit])).rows;
 
   // The primary-address check must run against THE LAST FILE, so it cannot be
   // decided inside the loop — a borrower's newest loan may be read after an older
   // one. Collect the best candidate per borrower and settle it at the end.
   const latestByBorrower = new Map();
+
+  // Same reason the removals are settled at the end: a borrower can hold the SAME
+  // property twice — a purchase that CLOSED and a refinance still in flight. Read
+  // in mirror order the open loan could land after the closed one and delete the
+  // row the closed one just earned. So every (borrower, property) a CLOSED loan
+  // supports is remembered, and only the addresses no closed loan backs are
+  // removed, whatever order the loans were read in.
+  const closedKeys = new Set();
+  const openAddresses = new Map();
+  const trKey = (borrowerId, addr) => `${borrowerId}|${normAddr(addr) || ''}`;
 
   /* eslint-disable no-await-in-loop */
   for (const row of rows) {
@@ -495,6 +758,13 @@ async function enrichAllOnce(opts) {
       const llcs = vestingLlcs(raw);
       const when = loanDateMs(raw, row.last_modified);
       const sourceTag = `encompass:${row.encompass_loan_guid}`;
+      // The property is EXPERIENCE, so it waits for the deal to be done. The
+      // entities/emails/phones below are facts about the person and are not gated.
+      const closed = loanClosed({
+        raw,
+        loanFolder: row.loan_folder,
+        app: row.application_id ? { status: row.app_status, fundedDate: row.app_funded_date } : null,
+      });
 
       // Raw party objects, index-aligned with `extractParties`, so a matched
       // party's contacts and residence are read off the RIGHT person. The skip
@@ -514,7 +784,17 @@ async function enrichAllOnce(opts) {
         if (!m) continue;
         anyMatched = true;
 
-        if (addr) { const t = await addTrackRecordIfAbsent(dbc, m.borrowerId, addr); if (t.added) summary.addressesAdded += 1; }
+        if (addr && closed.closed) {
+          closedKeys.add(trKey(m.borrowerId, addr));
+          const t = await addTrackRecordIfAbsent(dbc, m.borrowerId, addr);
+          if (t.added) summary.addressesAdded += 1;
+        } else if (addr) {
+          summary.addressesSkippedNotClosed += 1;
+          const tag = String(closed.why || 'unknown').split(':')[0];
+          summary.notClosedWhy[tag] = (summary.notClosedWhy[tag] || 0) + 1;
+          const k = trKey(m.borrowerId, addr);
+          if (!openAddresses.has(k)) openAddresses.set(k, { borrowerId: m.borrowerId, addr, why: closed.why });
+        }
         for (const llc of llcs) {
           const l = await addLlcIfAbsent(dbc, m.borrowerId, llc.name, llc.state);
           if (l.added) summary.llcsAdded += 1;
@@ -536,6 +816,15 @@ async function enrichAllOnce(opts) {
     } catch (_e) { summary.errors += 1; }
   }
 
+  // ── Take back the properties that were added before the deal closed ───────
+  for (const [key, item] of openAddresses) {
+    if (closedKeys.has(key)) continue;          // a CLOSED loan backs this property
+    try {
+      const r = await removeInferredTrackRecord(dbc, item.borrowerId, item.addr);
+      if (r.removed) summary.addressesRemovedNotClosed += 1;
+    } catch (_e) { summary.errors += 1; }
+  }
+
   // ── The primary address, from each borrower's most recent file only ────────
   for (const [borrowerId, best] of latestByBorrower) {
     try {
@@ -553,13 +842,16 @@ async function enrichAllOnce(opts) {
 module.exports = {
   enrichAllOnce,
   addTrackRecordIfAbsent,
+  removeInferredTrackRecord,
   addLlcIfAbsent,
   addContactIfAbsent,
   verifyPrimaryAddress,
   matchBorrower,
+  loanClosed,
   _internals: {
     normName, normDob, addrKey, normAddr, addrString, extractParties, collectParties, subjectAddress,
-    vestingLlc, vestingLlcs, splitEntityNames, partyContacts, partyAddress,
+    vestingLlc, vestingLlcs, splitEntityNames, customFieldMap, partyContacts, partyAddress,
     cleanEmail, cleanPhone, loanDateMs,
+    loanClosed, dayOf, fundedDay, doneMilestoneNames, currentLifecycle, pathOf,
   },
 };
