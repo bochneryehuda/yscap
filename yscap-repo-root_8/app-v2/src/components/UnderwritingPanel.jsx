@@ -78,7 +78,82 @@ const ESCALATE_TARGETS = [
   { key: 'processor', label: 'Processor' },
   { key: 'underwriter', label: 'Underwriter' },
 ];
-function Finding({ appId, f, onChange, resolvable, canWaive = true, canEscalate = false, escalated = null, highlighted = false, cardRef = null }) {
+/**
+ * The action row for a finding whose decision is recorded on an `ai_suggestions` row rather than a
+ * stored `document_findings` row — today, the note-buyer guideline items (owner-directed 2026-07-27:
+ * everything in ONE list, in this card).
+ *
+ * It drives the SAME endpoints the AI Findings card drives, so nothing a staffer could do before the
+ * merge was lost: dismiss with a reason, escalate, add a note, ask a super-admin, mark important,
+ * and — where the guideline names a PILOT condition — create that condition. The server drops the
+ * finding from the list once the row is no longer open, so acting here actually clears it.
+ */
+function SuggestionActions({ appId, suggestionId, status, important, templateCode, onChange }) {
+  const [busy, setBusy] = useState(false);
+  const [pending, setPending] = useState(null);   // 'dismiss' | 'note' — the one awaiting its text
+  const [text, setText] = useState('');
+  const run = async (fn, label) => {
+    setBusy(true);
+    try { await fn(); onChange && onChange(); }
+    catch (e) { alert(`Could not ${label}: ${(e && e.message) || 'error'}`); }
+    finally { setBusy(false); }
+  };
+  const decide = (action, extra) => run(() => api.aiSuggestionsDecide(appId, suggestionId, { action, ...(extra || {}) }), action.replace(/_/g, ' '));
+  const confirm = () => {
+    const t = text.trim();
+    if (!t) return;
+    const p = pending;
+    setPending(null); setText('');
+    if (p === 'dismiss') return decide('dismiss', { reason: t });
+    return run(() => api.aiSuggestionAddNote(appId, suggestionId, t), 'add the note');
+  };
+  return (
+    <div style={{ marginTop: 4 }}>
+      <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
+        {templateCode && (
+          <button disabled={busy} style={btn(true)}
+            title={`Create the "${templateCode}" condition on this file`}
+            onClick={() => { if (window.confirm(`Create the "${templateCode}" condition on this file?`)) decide('convert_to_condition', { templateCode }); }}>
+            Post the condition
+          </button>
+        )}
+        <button disabled={busy} style={btn()} onClick={() => { setPending('note'); setText(''); }}>Add a note</button>
+        {status !== 'escalated' && (
+          <button disabled={busy} style={btn()} title="Hand this to a super-admin to decide"
+            onClick={() => decide('escalate')}>Escalate for review</button>
+        )}
+        <button disabled={busy} style={btn()}
+          onClick={() => decide(important ? 'unmark_important' : 'mark_important')}>
+          {important ? 'Unmark important' : 'Mark important'}
+        </button>
+        <button disabled={busy} style={btn(false, true)} onClick={() => { setPending('dismiss'); setText(''); }}>
+          Dismiss (not an issue)
+        </button>
+      </div>
+      {status && status !== 'open' && (
+        <div style={{ fontSize: 11.5, color: 'var(--muted,#4B585C)', marginTop: 6 }}>
+          {status === 'escalated' ? 'Already escalated — a super-admin has this.'
+            : status === 'asked_admin' ? 'Waiting on a super-admin’s answer.'
+              : `Status: ${String(status).replace(/_/g, ' ')}.`}
+        </div>
+      )}
+      {pending && (
+        <div style={{ display: 'flex', gap: 8, marginTop: 10, flexWrap: 'wrap' }}>
+          <input autoFocus value={text} onChange={(e) => setText(e.target.value)}
+            onKeyDown={(e) => { if (e.key === 'Enter') confirm(); }}
+            placeholder={pending === 'dismiss' ? 'why this is not an issue' : 'note'}
+            style={{ flex: 1, minWidth: 180, padding: '7px 10px', border: '1px solid var(--line,#E7E1D3)', borderRadius: 8, fontSize: 14 }} />
+          <button disabled={busy || !text.trim()} onClick={confirm} style={btn(true)}>
+            {pending === 'dismiss' ? 'Dismiss' : 'Add note'}
+          </button>
+          <button disabled={busy} onClick={() => { setPending(null); setText(''); }} style={btn()}>Cancel</button>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function Finding({ appId, f, onChange, resolvable, canAct = false, canWaive = true, canEscalate = false, escalated = null, highlighted = false, cardRef = null }) {
   const [busy, setBusy] = useState(false);
   const [pending, setPending] = useState(null); // the action awaiting its note/value
   const [text, setText] = useState('');
@@ -329,6 +404,17 @@ function Finding({ appId, f, onChange, resolvable, canWaive = true, canEscalate 
       )}
       {resolvable && actions.length === 0 && allActions.length > 0 && (
         <div style={{ fontSize: 12, color: 'var(--muted,#4B585C)' }}>An underwriter or admin can clear this dealbreaker.</div>
+      )}
+      {/* A NOTE-BUYER GUIDELINE ITEM IS STILL ACTIONABLE HERE (audit 2026-07-27). It has no stored
+          finding row, so `resolvable` is false and the normal button row above never renders — but
+          its decision lives on the ai_suggestions mirror, which this merge hides as a repeat. Losing
+          the buttons would leave an item that reappears on every file view with nothing to click, so
+          the merged card drives the SAME endpoints the AI card used. The server drops the finding
+          entirely once that row is no longer open, so acting here really does make it go away. */}
+      {f.suggestionId && canAct && (
+        <SuggestionActions appId={appId} suggestionId={f.suggestionId}
+          status={f.suggestionStatus} important={f.important}
+          templateCode={f.opensCondition || null} onChange={onChange} />
       )}
       {resolvable && pending && (
         <div style={{ display: 'flex', gap: 8, marginTop: 10, flexWrap: 'wrap' }}>
@@ -2499,6 +2585,12 @@ function AISuggestionsSection({ appId, readOnly = false, canResolve = true, show
     const c = rowCode(r);
     if (dupCodes && c && dupCodes.has(c)) return true;
     if (!dupKeys) return false;
+    // SCOPED TO THE GUIDELINE DESK ON PURPOSE. `dupKeys` holds CONDITION TEMPLATE codes, a different
+    // namespace from the finding codes every other producer puts in `evidence.code`. That separation
+    // is convention, not enforcement — one detector deciding to put a template code in `evidence.code`
+    // would silently vanish from this panel. Matching only rows from the source that actually shares
+    // this namespace makes that impossible instead of merely unlikely.
+    if (r && r.source !== 'investor_guideline_desk') return false;
     const k = rowKey(r);
     return !!((k && dupKeys.has(k)) || (c && dupKeys.has(c)));
   };
@@ -3176,7 +3268,8 @@ export default function UnderwritingPanel({ appId, docs = [], readOnly = false, 
               <Finding key={key} appId={appId} f={f}
                 cardRef={(el) => { if (f.id) findingRefs.current[f.id] = el; }}
                 highlighted={isFocused && highlightPulse}
-                onChange={load} resolvable={!readOnly && canResolve && !!f.id} canWaive={canWaive}
+                onChange={load} resolvable={!readOnly && canResolve && !!f.id}
+                canAct={!readOnly && canResolve} canWaive={canWaive}
                 canEscalate={!readOnly} escalated={f.id ? (data && data.escalatedFindings && data.escalatedFindings[f.id]) : null} />
             );
           })}

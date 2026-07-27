@@ -104,7 +104,11 @@ function extraFlagFindings(desk) {
     out.push({
       source: SOURCE,
       category: 'investor_guideline',
-      code: `isg_${u.flag}_${codeOf(u.pilot_template_code || `cond_${u.cond_no}`)}`,
+      // Keyed on cond_no, NOT the template code (audit 2026-07-27). Two rules of the same flag that
+      // share a `pilot_template_code` and a `domain` would produce an identical code AND an identical
+      // `field`, which is the whole dedupe key for a finding with no document — so `dedupeByClaim`
+      // would merge them and one would vanish with no `mergedFrom` trace. cond_no is unique per rule.
+      code: `isg_${u.flag}_${codeOf(`cond_${u.cond_no}`)}`,
       isgKey: null,
       templateCode: u.pilot_template_code || null,
       severity: fatal ? 'fatal' : 'warning',

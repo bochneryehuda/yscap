@@ -163,6 +163,57 @@ t('an item with no cond_no is skipped rather than guessed at', () => {
   assert.deepStrictEqual(f, []);
 });
 
+// ── the gaps the pre-merge audit named (2026-07-27) ──────────────────────────
+t('the two non-forwarded flags get real, distinct action menus', () => {
+  // Audit: only the gap/conflict/concern menus were asserted, so emptying either of these two
+  // would have gone unnoticed — and an empty menu is a card with no buttons.
+  const { ACTIONS_BY_FLAG } = _internals;
+  for (const flag of ['info_missing', 'appraisal_review']) {
+    const a = ACTIONS_BY_FLAG[flag];
+    assert.ok(Array.isArray(a) && a.length >= 2, `${flag} must offer real actions, got ${JSON.stringify(a)}`);
+    assert.ok(a.includes('dismiss'), `${flag} must always be dismissable`);
+  }
+  assert.ok(ACTIONS_BY_FLAG.info_missing.includes('fix_file'), 'an empty slot on the file is fixed on the file');
+  assert.ok(ACTIONS_BY_FLAG.appraisal_review.includes('request_document'));
+});
+
+t('a file with NO note buyer still produces readable wording', () => {
+  // Audit: `lender` is NULL on most real applications, so the no-note-buyer path is the COMMON case
+  // and both fixtures above hid it by always setting a name.
+  const d = {
+    noteBuyer: {}, verdicts: [{ cond_no: 1 }],
+    unhappy: [
+      { cond_no: 2193, flag: 'coverage_gap', severity: 'fatal', name: 'Feasibility report', pilot_template_code: 'rtl_cond_feasibility' },
+      { cond_no: 1009, flag: 'info_missing', severity: 'warning', name: 'Borrower email address' },
+    ],
+  };
+  const f = deskToFindings(d);
+  assert.strictEqual(f.length, 2);
+  for (const x of f) {
+    assert.ok(x.title.includes('the note buyer'), `expected the neutral fallback in: ${x.title}`);
+    assert.ok(!/undefined|null|\[object/.test(x.title + x.howTo), `placeholder leaked into: ${x.title}`);
+  }
+});
+
+t('two same-flag rules sharing a template code stay DISTINCT findings', () => {
+  // Audit: keying the extra flags on the template code made two appraisal rules in one domain
+  // produce an identical code AND an identical field — the whole dedupe key for a finding with no
+  // document — so dedupeByClaim would have merged them and one would vanish with no trace.
+  const d = {
+    noteBuyer: { name: 'Blue Lake' }, verdicts: [{ cond_no: 1 }],
+    unhappy: [
+      { cond_no: 3345, flag: 'appraisal_review', severity: 'warning', name: 'Rural property',
+        pilot_template_code: 'rtl_cond_appraisaldocs', domain: 'appraisal' },
+      { cond_no: 3349, flag: 'appraisal_review', severity: 'fatal', name: 'Transferred appraisal',
+        pilot_template_code: 'rtl_cond_appraisaldocs', domain: 'appraisal' },
+    ],
+  };
+  const f = deskToFindings(d);
+  assert.strictEqual(f.length, 2);
+  assert.strictEqual(new Set(f.map((x) => x.code)).size, 2,
+    `both rules produced the same code (${f.map((x) => x.code).join(', ')}) — one would be deduped away`);
+});
+
 t('codeOf produces a stable, safe finding code', () => {
   const { codeOf } = _internals;
   assert.strictEqual(codeOf('isg-gap:rtl_cond_feasibility'), 'isg_gap_rtl_cond_feasibility');
