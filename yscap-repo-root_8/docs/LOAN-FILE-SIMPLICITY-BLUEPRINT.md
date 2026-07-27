@@ -565,6 +565,32 @@ use it for. Cleaning out the conditions that don't belong in it is worth doing
 either way, because it makes the remaining question ("is this list earning its
 place?") answerable for the first time.
 
+**Where it should live — recommendation.** Separating the checklist raises an
+obvious follow-on: does it become a 17th top-level section? **Recommend no.**
+Keep it inside the Conditions section as its own clearly-labelled panel — "Your
+checklist — staff work steps" — sitting beside the conditions list rather than
+inside it.
+
+Two reasons. A 17th rail entry works against the goal, and the checklist may be
+removed outright — in which case promoting it to a top-level section now means
+demoting it again later. Keeping it adjacent but plainly separate satisfies "not
+mixed up with the conditions" without spending a rail slot on something whose
+future is undecided. Easy to promote later if the remodel gives it more weight.
+
+#### 4d. What happens to the LLC / entity tab
+
+It **keeps its own place**, and this is the one tab whose split was always
+honest — it divides by subject, not by audience or by which table a row came
+from. It is also genuinely a different shape: an entity, its members, its
+ownership chain and its own documents, not a flat list of conditions.
+
+What changes is only that it stops being rendered **three times**. Today the LLC
+condition is excluded from the borrower list, re-inserted as a synthetic
+placeholder row, and rendered again as its own tab. It should appear **once** in
+the conditions list (as a normal condition, in the "Entity & vesting" subject
+group) with its detailed panel one click away — which is exactly how every other
+condition with a big body will behave.
+
 ### Move 5 — Let people find things by typing · _Reveal_
 
 **⌘K inside the file.** Type "flood" → jump to the flood condition. Type "tape" →
@@ -732,6 +758,17 @@ two things and stops:
 Rebuilding or retiring the checklist is a real product question — what staff
 actually use it for, whether the phase structure earns its keep — and it deserves
 its own pass rather than being decided as a footnote to a layout change.
+
+### Two follow-ons, resolved by recommendation
+
+Separating the checklist raised two questions that would otherwise sit open. Both
+are answered in §5 Move 4 with reasoning, so no one is left guessing — and either
+is easy to overrule:
+
+| Question | Recommendation |
+|---|---|
+| Does the checklist become a 17th top-level section? | **No** — keep it inside the Conditions section as its own plainly-labelled panel beside the list. A 17th rail entry fights the goal, and its future is undecided. |
+| Does the LLC / entity tab fold into the one list too? | **It keeps its own place.** It is the one tab whose split was always honest (by subject), and it is a genuinely different shape. It just stops being rendered three times. |
 
 ---
 
