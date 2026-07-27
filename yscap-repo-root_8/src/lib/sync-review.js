@@ -41,6 +41,9 @@ const FIELD_LABELS = {
   // Clear-to-Close / Funded) — the change was held so the sent term sheet stays
   // in agreement with the file:
   economics_frozen: 'Loan figures — frozen (term sheet sent / file locked)',
+  // ClickUp moved the file to Clear to Close while PILOT is not there yet — held
+  // for a human to confirm the move (owner-directed 2026-07-27):
+  status_ctc: 'Clear to Close — confirm the move',
 };
 
 async function queueReview({ applicationId, borrowerId, taskId, direction, fieldKey,
@@ -196,6 +199,9 @@ async function notifyLoanOfficer(reviewId) {
   // a ClickUp loan-figure change because the file is frozen, and the ONE action is
   // keep-the-file's-figures (or clear the term sheet to accept the change).
   const isEconomicsFrozen = row.field_key === 'economics_frozen';
+  // A Clear-to-Close confirm hold — ClickUp moved the file to Clear to Close but
+  // PILOT is not there yet, so the move was held for a human to confirm.
+  const isCtcConfirm = row.field_key === 'status_ctc';
   let swAddress = null;
   if (isSitewire && row.application_id) {
     try { const ar = (await db.query(`SELECT property_address FROM applications WHERE id=$1`, [row.application_id])).rows[0]; swAddress = ar ? shortAddress(ar.property_address) : null; } catch (_) {}
@@ -207,6 +213,11 @@ async function notifyLoanOfficer(reviewId) {
   let title, body;
   if (isSharepointDoc) {
     ({ title, body } = sharepointDocEmail({ borrowerName: row.borrower_name, portalValue: row.portal_value }));
+  } else if (isCtcConfirm) {
+    title = `Confirm needed: ClickUp moved this file to Clear to Close${who}`;
+    body = `ClickUp changed this file's status to Clear to Close, but in PILOT it is still "${row.portal_value || 'an earlier status'}". ` +
+      `PILOT did NOT move it on its own — Clear to Close is a major milestone (it locks the file and notifies the borrower), so it waits for you to confirm.\n\n` +
+      `Open the Sync review screen. Confirm to move the file to Clear to Close in PILOT (the borrower is notified), or dismiss to keep its current status.`;
   } else if (isEconomicsFrozen) {
     title = `Sync review needed: loan figures held — the file is locked${who}`;
     body = `A loan figure was changed in ClickUp, but this file is LOCKED — a term sheet has been sent for signature, or the file is Clear-to-Close / Funded — so PILOT did NOT change the file (the term sheet that already went out stays accurate).\n\n` +
