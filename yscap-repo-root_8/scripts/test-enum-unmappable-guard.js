@@ -24,25 +24,36 @@ const eq = (a, b, m) => { assert.strictEqual(a, b, m); n++; };
 /* ---------------------------------------------------------------- crosswalk */
 
 // THE REPORTED VALUE. 'Fix & Hold' is a real PILOT program (pricing.js prices it,
-// the EMCAP tape exports it). The crosswalk now maps it to a ClickUp option named
-// "Fix & Hold" (owner adding it 2026-07-27), so it is mappable BY LABEL...
+// the EMCAP tape exports it). The owner added the ClickUp option on 2026-07-27
+// named "Fix & Hold WITH CONSTRUCTION" and directed that our plain 'Fix & Hold'
+// map to it — "it's the same" — exactly like the flip pair, where our
+// 'Fix & Flip w/ Construction' maps to ClickUp's "Fix & Flip With Construction".
 ok(!X.unmappableToClickUp('program', 'Fix & Hold'), 'Fix & Hold has a crosswalk label');
-// ...but until that option actually EXISTS in the live dropdown the write would
-// still vanish, so against a live option list that lacks it, it is unmappable and
-// the guard protects the value. This is the state the owner is in right now.
 {
-  const beforeOwnerAddsIt = [{ name: 'Fix & Flip With Construction' }, { name: 'bridge Without Construction' }, { name: 'Ground-Up' }];
-  ok(X.unmappableToClickUp('program', 'Fix & Hold', beforeOwnerAddsIt),
-    'Fix & Hold is unmappable while the ClickUp option is missing — value protected');
-  const afterOwnerAddsIt = [...beforeOwnerAddsIt, { name: 'Fix & Hold' }];
-  ok(!X.unmappableToClickUp('program', 'Fix & Hold', afterOwnerAddsIt),
-    'once the ClickUp option exists it syncs normally');
+  // PIN THE EXACT LIVE LABEL. Verified against the real dropdown via the ClickUp
+  // connector; if the option is ever renamed, the push silently stops landing and
+  // the value starts bouncing back again — so assert the spelling, don't assume it.
+  eq(X.toClickUpLabel('program', 'Fix & Hold'), 'Fix & Hold With Construction',
+    'Fix & Hold maps to the REAL ClickUp option label');
+  eq(X.toClickUpLabel('program', 'Fix & Flip w/ Construction'), 'Fix & Flip With Construction',
+    'the flip pair it mirrors is unchanged');
+
+  const beforeOwnerAddedIt = [{ name: 'Fix & Flip With Construction' }, { name: 'bridge Without Construction' }, { name: 'Ground-Up' }];
+  ok(X.unmappableToClickUp('program', 'Fix & Hold', beforeOwnerAddedIt),
+    'Fix & Hold was unmappable while the ClickUp option was missing — value protected');
+  const afterOwnerAddedIt = [...beforeOwnerAddedIt, { name: 'Fix & Hold With Construction' }];
+  ok(!X.unmappableToClickUp('program', 'Fix & Hold', afterOwnerAddedIt),
+    'now the option exists it syncs normally');
   // The write resolves to that option's real id — this is what makes it round-trip.
-  const withIds = [{ id: 'opt-fh', name: 'Fix & Hold' }];
+  const withIds = [{ id: 'opt-fh', name: 'Fix & Hold With Construction' }];
   eq(X.resolveWriteId('program', 'Fix & Hold', withIds), 'opt-fh', 'outbound resolves the Fix & Hold option id');
-  // And the INBOUND read maps that label back to our canonical value.
-  eq(X.fromClickUpLabel('program', 'Fix & Hold'), 'Fix & Hold', 'inbound reads Fix & Hold back');
+  // And the INBOUND read maps the real label back to our canonical value.
+  eq(X.fromClickUpLabel('program', 'Fix & Hold With Construction'), 'Fix & Hold',
+    'inbound reads the real ClickUp label back as Fix & Hold');
+  // Spelling tolerance on the read side (fromExtra) — a hand-set or renamed option.
+  eq(X.fromClickUpLabel('program', 'Fix & Hold'), 'Fix & Hold', 'inbound tolerates the short "Fix & Hold"');
   eq(X.fromClickUpLabel('program', 'Fix and Hold'), 'Fix & Hold', 'inbound tolerates "Fix and Hold"');
+  eq(X.fromClickUpLabel('program', 'Fix and Hold With Construction'), 'Fix & Hold', 'inbound tolerates the "and" long form');
   eq(X.fromClickUpLabel('program', 'BRRRR'), 'Fix & Hold', 'inbound tolerates "BRRRR"');
 }
 // A Fix & Hold card must MATERIALIZE a loan file — otherwise it would be pulled
@@ -100,25 +111,26 @@ ok(PROTECTED.includes('property_type'), 'property_type is protected');
 // (derived from FIELD_MAP, never hand-listed) must not claim it.
 ok(!PROTECTED.includes('occupancy'), 'pull-only occupancy is not protected');
 
-// The LIVE ClickUp *Program dropdown as it stands before the owner adds the new
-// option (read from the real workspace 2026-07-27). Every inbound path supplies
-// this map — `clickup-sync` calls optionMap() and passes it into ingestTask — so
-// the guard always has it in production. Keyed by CUSTOM-FIELD ID, like the real one.
+// The ClickUp *Program dropdown as it stood BEFORE the owner added the option
+// (read from the real workspace 2026-07-27). Every inbound path supplies this map
+// — `clickup-sync` calls optionMap() and passes it into ingestTask — so the guard
+// always has it in production. Keyed by CUSTOM-FIELD ID, like the real one.
 const PROGRAM_FIELD_ID = '50eb857a-d8b1-4c48-9ffe-20b15cdf1338';
 const LIVE_OPTIONS_TODAY = {
   [PROGRAM_FIELD_ID]: [
     { name: 'Fix & Flip With Construction' }, { name: 'Ground-Up' },
     { name: 'Non-QM - DSCR Ratio' }, { name: 'bridge Without Construction' },
     { name: 'Private hard money' },
-    // NOTE: no "Fix & Hold" — that is the option the owner is adding.
+    // NOTE: no Fix & Hold — this is the state that caused the reported bug.
   ],
 };
 const LIVE_OPTIONS_AFTER = {
-  [PROGRAM_FIELD_ID]: [...LIVE_OPTIONS_TODAY[PROGRAM_FIELD_ID], { name: 'Fix & Hold' }],
+  [PROGRAM_FIELD_ID]: [...LIVE_OPTIONS_TODAY[PROGRAM_FIELD_ID], { name: 'Fix & Hold With Construction' }],
 };
 
-// THE REGRESSION. PILOT holds Fix & Hold; ClickUp still says Fix & Flip, and the
-// ClickUp dropdown has no Fix & Hold option yet — so the value must be protected.
+// THE REGRESSION, as it was BEFORE the owner added the option: PILOT holds
+// Fix & Hold, ClickUp still says Fix & Flip, and the dropdown has no Fix & Hold
+// option — so the value must be protected rather than reverted.
 {
   const cols = { program: 'Fix & Flip w/ Construction', purchase_price: 500000 };
   const held = guard.unmappableOverwrites(cols, { program: 'Fix & Hold' }, LIVE_OPTIONS_TODAY);

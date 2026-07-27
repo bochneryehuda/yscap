@@ -22,11 +22,18 @@ const FIELDS = {
       // & flip, fix & hold"): pricing.js `engineStrategy` prices it, the EMCAP
       // tape exports it, the Encompass map compares it. It had NO ClickUp option,
       // which is what made an officer's "Fix & Flip → Fix & Hold" edit bounce
-      // back (#822). Owner is adding the option named exactly "Fix & Hold".
-      // Until it exists in the live dropdown this label simply resolves to no
-      // option id and the write is skipped — and `inbound-enum-guard` keeps the
-      // portal value + parks a review saying so, so nothing is silently lost.
-      'Fix & Hold': 'Fix & Hold',
+      // back (#822).
+      //
+      // The owner added the option as "Fix & Hold WITH CONSTRUCTION" and directed
+      // (2026-07-27) that it map to our plain 'Fix & Hold' anyway — "it's the
+      // same", exactly like the flip pair one line above, where our
+      // 'Fix & Flip w/ Construction' maps to ClickUp's "Fix & Flip With
+      // Construction". Our stored value stays 'Fix & Hold' on purpose: that is
+      // the spelling pricing.js, field-registry, the EMCAP tape and the Encompass
+      // map already key on — renaming it would break all four. Only the ClickUp
+      // LABEL differs, which is precisely what this map exists to absorb.
+      // Verified against the live dropdown via the ClickUp connector.
+      'Fix & Hold': 'Fix & Hold With Construction',
       'Not sure yet': null,                          // leave blank; officer sets
     },
     // inbound labels with no exact portal twin. The Fix & Hold spellings are
@@ -35,7 +42,13 @@ const FIELDS = {
     // strategy — pricing.js already treats "hold" and "brrrr" identically).
     fromExtra: {
       'Private hard money': 'Bridge',
+      // Spelling tolerance on the READ side only, so a card set by hand (or an
+      // option later renamed) still lands on our canonical 'Fix & Hold'. The
+      // authoritative label is the `to` entry above — this is a safety net.
+      'Fix & Hold': 'Fix & Hold',
       'Fix and Hold': 'Fix & Hold',
+      'Fix and Hold With Construction': 'Fix & Hold',
+      'Fix & Hold w/ Construction': 'Fix & Hold',
       'Fix & Hold (BRRRR)': 'Fix & Hold',
       'BRRRR': 'Fix & Hold',
     },

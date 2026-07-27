@@ -174,7 +174,7 @@ async function seedFile(program) {
       // The owner adds "Fix & Hold" to the ClickUp dropdown. Same file, same
       // values — now the push can write it, so nothing is held and the review
       // closes ITSELF on the next sync. No human clean-up.
-      const AFTER = { [PROGRAM_FIELD_ID]: [...OPTIONS[PROGRAM_FIELD_ID], { name: 'Fix & Hold' }] };
+      const AFTER = { [PROGRAM_FIELD_ID]: [...OPTIONS[PROGRAM_FIELD_ID], { name: 'Fix & Hold With Construction' }] };
       const held = await guard.applyInboundEnumGuard({
         appId, cols: { program: 'Fix & Flip w/ Construction' }, taskId, borrowerId, options: AFTER });
       assert.deepStrictEqual(held, [], 'nothing held once the ClickUp option exists');
