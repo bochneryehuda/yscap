@@ -7521,6 +7521,9 @@ const COMPLETE_APP_FIELDS = { program: 'text', loan_type: 'text', property_type:
 const COMPLETE_BORROWER_FIELDS = { cell_phone: 'text', date_of_birth: 'date', fico: 'int', citizenship: 'text' };
 async function completeFields(req, res, borrowerScoped) {
   const b = req.body || {};
+  // What the condition engine did as a RESULT of this save (see the evaluate call
+  // below) — reported back so the caller can show it. Null = the engine never ran.
+  let conditionsChanged = null;
   try {
     const brRow = await db.query(`SELECT borrower_id FROM applications WHERE id=$1 AND deleted_at IS NULL`, [req.params.id]);
     if (!brRow.rows[0]) return res.status(404).json({ error: 'not found' });
@@ -7561,7 +7564,34 @@ async function completeFields(req, res, borrowerScoped) {
       // flip the 5% SOW-contingency requirement (a Blue Lake note buyer). Re-run
       // the Condition Center engine and enforce the contingency, exactly like the
       // details edit path does. Best-effort — never blocks the save.
-      try { await conditionEngine.evaluateApplication(req.params.id, { actor: req.actor, reason: 'completeness_edited' }); } catch (_) {}
+      // The engine already reports exactly what it attached/retracted — hand that back
+      // to the caller so the note-buyer slot can say what the save actually did instead
+      // of the staffer having to hunt the conditions list for the difference
+      // (owner-directed 2026-07-27: "I don't believe it's a clear path"). Best-effort,
+      // like the pass itself.
+      //
+      // The pass is a FULL re-evaluation, so it can also pick up conditions that have
+      // nothing to do with the field just saved (a file the engine hadn't run on in a
+      // while). Each change is therefore tagged `byNoteBuyer` — true only when the
+      // template's own rule references the note buyer — so the UI can say "this is
+      // because of the note buyer" separately from "the file was re-checked and also
+      // picked this up", and never claim a switch caused something it didn't.
+      try {
+        const ev = await conditionEngine.evaluateApplication(req.params.id, { actor: req.actor, reason: 'completeness_edited' });
+        let drivenCodes = new Set();
+        try {
+          const { mentionsNoteBuyer } = require('../lib/note-buyer-effects')._internals;
+          const t = await db.query(
+            `SELECT code, rule_logic FROM checklist_templates
+              WHERE code IS NOT NULL AND auto_apply = 'rules' AND rule_logic IS NOT NULL`);
+          drivenCodes = new Set(t.rows.filter((r) => mentionsNoteBuyer(r.rule_logic)).map((r) => r.code));
+        } catch (_) { /* untagged is better than wrong — everything reads as "also picked up" */ }
+        const tag = (x) => ({ label: x.label, byNoteBuyer: !!(x.code && drivenCodes.has(x.code)) });
+        conditionsChanged = {
+          added: (ev.added || []).filter((x) => x && x.label).map(tag),
+          removed: (ev.removed || []).filter((x) => x && x.label).map(tag),
+        };
+      } catch (_) {}
       try { await require('../lib/rehab-budget').enforceSowContingency(req.params.id); } catch (_) {}
       // A note-buyer (lender) edit here can change the bank-statement month requirement (Blue Lake
       // needs 2 vs Standard 1) — re-derive it now so the condition doesn't keep showing the old
@@ -7617,10 +7647,32 @@ async function completeFields(req, res, borrowerScoped) {
         { humanEditKeys: brKeys.filter((k) => k === 'date_of_birth') }).catch(() => {});
     }
     if (!borrowerScoped) await audit(req, 'complete_fields', 'application', req.params.id, { app: appKeys, borrower: brKeys, before: brBefore || undefined });
-    res.json({ ok: true, appFields: appKeys.length, borrowerFields: brSets.length });
+    res.json({ ok: true, appFields: appKeys.length, borrowerFields: brSets.length,
+      conditionsChanged: conditionsChanged || undefined });
   } catch (e) { console.warn('[staff] handler error:', db.describeError(e)); res.status(500).json({ error: 'server error' }); }
 }
 router.post('/applications/:id/complete-fields', (req, res) => completeFields(req, res, false));
+
+// The NOTE BUYER slot (owner-directed 2026-07-27) — everything the file's note-buyer
+// panel needs to be a clear path: the current note buyer, every note buyer that can be
+// picked, and — per candidate — what switching to it would DO to this file (which
+// rule-driven conditions attach or drop, and the standing requirements it brings).
+// READ-ONLY: it writes nothing. The change itself still goes through the ONE existing
+// write path (`complete-fields` with `lender`), which sets the field, re-runs the
+// condition engine, re-enforces the 5% SOW contingency and re-derives liquidity.
+// STAFF-ONLY (this router is staff-gated + the /applications/:id scope middleware) —
+// a note-buyer name is never exposed to a borrower.
+router.get('/applications/:id/note-buyer', async (req, res) => {
+  try {
+    // `?candidate=` previews a name that isn't in the ClickUp dropdown (staff may type
+    // one) so a typed note buyer explains itself before it is saved, like a picked one.
+    const candidate = String((req.query && req.query.candidate) || '').trim().slice(0, 200);
+    res.json(await require('../lib/note-buyer-effects').noteBuyerSlot(req.params.id, db, { candidate }));
+  } catch (e) {
+    console.warn('[staff] note-buyer slot error:', db.describeError(e));
+    res.status(500).json({ error: 'server error' });
+  }
+});
 
 // All note buyers available to pick in the completeness panel — every value from
 // the ClickUp note-buyer dropdown, PLUS the confirmed registry set and anything

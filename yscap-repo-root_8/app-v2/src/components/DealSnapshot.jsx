@@ -89,6 +89,12 @@ export default function DealSnapshot({ app, gating }) {
           {row('Co-borrower', coName)}
           {row('Entity', app.entity_name || '—')}
           {row('FICO', app.fico || '—')}
+          {/* The note buyer at a glance (owner-directed 2026-07-27) — it used to be
+              readable only inside the ClickUp panel, so an officer couldn't tell who is
+              buying the loan without hunting for it. STAFF-ONLY: this component renders
+              on the staff file view only, never the borrower's. Changed in the Note
+              buyer panel below, not here. */}
+          {row('Note buyer', app.lender || 'Not set')}
         </div>
 
         <div className="snap-cluster">
