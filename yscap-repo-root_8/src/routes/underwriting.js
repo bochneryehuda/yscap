@@ -1066,7 +1066,7 @@ router.get('/:appId', async (req, res, next) => {
 
     // AI FINDING-REVIEW GATE — the DISPLAY pass (owner-directed 2026-07-27: "don't post a finding as
     // real unless it passed the AI"). Synchronous, no GPT: it reads the remembered AI verdicts
-    // (finding_ai_reviews, db/337) and DROPS any finding the AI confidently judged a false alarm —
+    // (finding_ai_reviews, db/338) and DROPS any finding the AI confidently judged a false alarm —
     // exactly like a human dismissal above — while ENRICHING every survivor with the AI's suggested
     // resolution/document (so suggestions are built on top of findings). The verdicts are filled by
     // the background review pass in the setImmediate block below. Advisory + FAIL-OPEN: no verdict
