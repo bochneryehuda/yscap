@@ -156,7 +156,12 @@ async function audit(actorId, action, entityId, detail) {
 function decorate(f) {
   const actions = Array.isArray(f.actions) ? f.actions
     : (Array.isArray(f.suggested_actions) ? f.suggested_actions : undefined);
-  return Object.assign({}, f, { availableActions: underwriterActions(actions ? { ...f, actions } : f) });
+  // Stamp the CLAIM KEY (the semantic key dedupeByClaim already grouped on) so the AI Findings
+  // panel can hide any raw ai_suggestion whose claim is already shown in THIS one deduped list —
+  // the fix for the owner's "same finding six times" across the three surfaces (2026-07-27).
+  let claimKey = null;
+  try { claimKey = require('../lib/underwriting/finding-claims').claimOf(f); } catch (_) { claimKey = null; }
+  return Object.assign({}, f, { claimKey, availableActions: underwriterActions(actions ? { ...f, actions } : f) });
 }
 
 /**

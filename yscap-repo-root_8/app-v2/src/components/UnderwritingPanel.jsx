@@ -2448,7 +2448,7 @@ const SOURCE_TINT = {
   double_pledge:   { fg: 'var(--crit,#B4483C)', bg: 'var(--crit-bg,#F6E7E4)' },
 };
 
-function AISuggestionsSection({ appId, readOnly = false, canResolve = true, shownFindingCodes = null }) {
+function AISuggestionsSection({ appId, readOnly = false, canResolve = true, shownFindingCodes = null, shownClaimKeys = null }) {
   const [rows, setRows] = React.useState(null);
   const [err, setErr] = React.useState('');
   const [busy, setBusy] = React.useState(false);
@@ -2483,13 +2483,25 @@ function AISuggestionsSection({ appId, readOnly = false, canResolve = true, show
   }, [appId, load]);
 
   if (rows == null && !err) return null;
-  // A suggestion is a "repeat" when its underlying finding CODE is already shown in the "Open
-  // findings" list below (the chain / bank / tie-out desks surface there AND bridge into this
-  // panel with the same evidence.code). Hidden by default so the same issue isn't shown twice;
-  // a toggle brings them back. Nothing is lost — each repeat stays fully actionable in Open findings.
+  // A suggestion is a "repeat" when the SAME underlying issue is already shown in the "Open findings"
+  // list below (the chain / bank / tie-out / guideline desks surface there AND bridge into this panel).
+  // Matched two ways so the owner's "same finding six times" collapses to ONE (2026-07-27):
+  //   • by CLAIM KEY — the semantic key the Open-findings list is deduped by (server-stamped on both
+  //     surfaces), so a fact reached under DIFFERENT codes by different desks (the vesting mismatch,
+  //     the entity-not-screened rollup) is recognized as the same issue and hidden here, and
+  //   • by raw CODE — the original exact-code match, kept as a belt-and-suspenders fallback.
+  // Hidden by default so the same issue isn't shown twice; a toggle brings them back. Nothing is lost
+  // — each repeat stays fully actionable in the one Open-findings list.
   const dupCodes = shownFindingCodes instanceof Set ? shownFindingCodes : null;
+  const dupClaims = shownClaimKeys instanceof Set ? shownClaimKeys : null;
   const rowCode = (r) => { const c = r && r.evidence && r.evidence.code; return c ? String(c).trim().toLowerCase() : null; };
-  const isRepeat = (r) => { if (!dupCodes) return false; const c = rowCode(r); return !!(c && dupCodes.has(c)); };
+  const rowClaim = (r) => (r && r.claim_key) ? String(r.claim_key) : null;
+  const isRepeat = (r) => {
+    const ck = rowClaim(r);
+    if (dupClaims && ck && dupClaims.has(ck)) return true;
+    const c = rowCode(r);
+    return !!(dupCodes && c && dupCodes.has(c));
+  };
   const isHiddenRepeat = (r) => !showDupes && isRepeat(r);
   const openRows = (rows || []).filter((r) => r.status !== 'dismissed');
   const repeatCount = openRows.filter(isRepeat).length;
@@ -2908,6 +2920,13 @@ export default function UnderwritingPanel({ appId, docs = [], readOnly = false, 
     for (const f of _allFindings) { if (f && f.code) s.add(String(f.code).trim().toLowerCase()); }
     return s;
   }, [_allFindings]);
+  // The CLAIM KEYS already shown in Open findings — so the AI panel hides a suggestion that is the
+  // SAME issue reached under a different code (the "six times" fix, 2026-07-27).
+  const shownClaimKeys = React.useMemo(() => {
+    const s = new Set();
+    for (const f of _allFindings) { if (f && f.claimKey) s.add(String(f.claimKey)); }
+    return s;
+  }, [_allFindings]);
 
   if (loading) return <p style={{ color: 'var(--muted,#4B585C)' }}>Loading the underwriting review…</p>;
 
@@ -3120,7 +3139,7 @@ export default function UnderwritingPanel({ appId, docs = [], readOnly = false, 
           AI agent posts here — the AI never writes on the file itself. A human
           clicks Escalate / Add note / Convert to condition / Convert to task /
           Mark important / Dismiss / Ask super-admin. */}
-      <AISuggestionsSection appId={appId} readOnly={readOnly} canResolve={canResolve} shownFindingCodes={shownFindingCodes} />
+      <AISuggestionsSection appId={appId} readOnly={readOnly} canResolve={canResolve} shownFindingCodes={shownFindingCodes} shownClaimKeys={shownClaimKeys} />
 
 
       {/* ALL open findings, in ONE place — exactly the set the roll-up counts, so the "2 warnings"

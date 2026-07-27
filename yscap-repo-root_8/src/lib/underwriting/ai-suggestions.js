@@ -190,7 +190,20 @@ async function listForFile(appId, opts = {}, client) {
     `SELECT * FROM ai_suggestions
       WHERE ${conds.join(' AND ')}
       ORDER BY important DESC, created_at DESC LIMIT ${limit}`, params);
-  return q.rows;
+  // Stamp each suggestion with its CLAIM KEY (owner 2026-07-27, the "six times" duplication): the
+  // SAME semantic key the Open-findings list is deduped by (finding-claims.claimOf). The AI Findings
+  // panel uses it to HIDE any suggestion whose claim is already shown in the one deduped list, so a
+  // fact reached by several desks appears ONCE instead of re-listed here. Best-effort + pure; a code
+  // that isn't in a claim family gets a per-row key that matches nothing (so it still shows).
+  let claimOf = null;
+  try { claimOf = require('./finding-claims').claimOf; } catch (_) { claimOf = null; }
+  return q.rows.map((r) => {
+    if (!claimOf) return r;
+    const ev = r.evidence || {};
+    let claimKey = null;
+    try { claimKey = claimOf({ code: ev.code || null, field: ev.field || null, document_id: r.document_id || null }); } catch (_) { claimKey = null; }
+    return { ...r, claim_key: claimKey };
+  });
 }
 
 /**
