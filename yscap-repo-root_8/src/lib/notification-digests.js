@@ -577,9 +577,18 @@ async function qaDeskAuditOnce() {
   // must carry, so nobody works a "12-item" queue that is actually 340.
   const grandTotal = realTotal(dupes.rows) + realTotal(noEvidence.rows) + realTotal(openFatal.rows);
   const lines = [];
+  // ADVISORY ONLY (owner-directed 2026-07-27). Advancing past an open PILOT fatal is
+  // NORMAL now — findings do not gate clear-to-close, so "⛔ advanced with an OPEN
+  // fatal" would fire on ordinary files every single night, read as a policy breach,
+  // and re-frame findings as something that should have blocked. Kept as genuinely
+  // useful information (PILOT was unhappy on a file that closed — worth a look), but
+  // stated as a note, and it no longer drives the digest's alarm tone.
+  const aiAdvisory = require('../lib/underwriting/advisory-policy').advisoryOnly();
   if (openFatal.rows.length) {
-    lines.push(`⛔ ${headline(openFatal.rows, 'file', 'file(s)', 'most fatals first')} advanced with an OPEN fatal AI finding:`);
-    for (const r of openFatal.rows.slice(0, 8)) lines.push(`   • ${addr(r.property_address, r.application_id)} — ${r.app_status} · ${r.open_fatal} fatal`);
+    lines.push(aiAdvisory
+      ? `👀 ${headline(openFatal.rows, 'file', 'file(s)', 'most findings first')} moved ahead with a serious PILOT finding still open (advisory — worth a look, nothing was bypassed):`
+      : `⛔ ${headline(openFatal.rows, 'file', 'file(s)', 'most fatals first')} advanced with an OPEN fatal AI finding:`);
+    for (const r of openFatal.rows.slice(0, 8)) lines.push(`   • ${addr(r.property_address, r.application_id)} — ${r.app_status} · ${r.open_fatal} ${aiAdvisory ? 'serious' : 'fatal'}`);
   }
   if (noEvidence.rows.length) {
     lines.push(`📄 ${headline(noEvidence.rows, 'condition', 'condition(s)', 'most recently cleared first')} cleared with no document attached:`);
@@ -590,13 +599,19 @@ async function qaDeskAuditOnce() {
     for (const r of dupes.rows.slice(0, 8)) lines.push(`   • ${addr(r.property_address, r.application_id)} — ${r.code} ×${r.n}`);
   }
 
+  const alarmTone = (aiAdvisory
+    ? (noEvidence.rows.length || dupes.rows.length)
+    : openFatal.rows.length) ? 'crit' : 'gold';
   for (const ad of admins.rows) {
     try {
       await notify.notifyStaff(ad.id, {
         type: 'digest',
         title: `AI QA — ${grandTotal} quality item${grandTotal === 1 ? '' : 's'} to review`,
-        badge: { text: 'QA', tone: openFatal.rows.length ? 'crit' : 'gold' },
-        hero: { label: 'To review', value: String(grandTotal), sub: `${realTotal(openFatal.rows)} fatal-advanced · ${realTotal(noEvidence.rows)} no-evidence · ${realTotal(dupes.rows)} duplicate`, tone: openFatal.rows.length ? 'crit' : 'gold' },
+        // The RED tone belongs to the two real data-quality problems (a condition
+        // cleared with no document, a duplicated condition). An advisory finding on
+        // an advanced file is a note, not an alarm — see the aiAdvisory block above.
+        badge: { text: 'QA', tone: alarmTone },
+        hero: { label: 'To review', value: String(grandTotal), sub: `${realTotal(openFatal.rows)} ${aiAdvisory ? 'advisory' : 'fatal-advanced'} · ${realTotal(noEvidence.rows)} no-evidence · ${realTotal(dupes.rows)} duplicate`, tone: alarmTone },
         body: 'PILOT reviewed the desk overnight and found the items below worth a look. These are quality signals, not automatic changes — open each file and decide.',
         lines,
         link: '/internal/insights', ctaLabel: 'Open Insights', emailTo: ad.email });
