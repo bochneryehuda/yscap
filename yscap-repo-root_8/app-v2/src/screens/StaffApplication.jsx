@@ -31,6 +31,7 @@ import ToolModal from '../components/ToolModal.jsx';
 import FileSections, { Section, InfoTip, subscribeConditionsTab, goToSection, requestOpenSection } from '../components/FileSections.jsx';
 import { CONDITION_STATUSES, CONDITION_TIMINGS, conditionStatusLabel, conditionStatusClass, timingLabel, loanConditionStatusLabel } from '../lib/conditions-vocab.js';
 import { severityCount } from '../lib/findings-vocab.js';
+import { groupBySubject } from '../lib/condition-subjects.js';
 import EsignFileSection from '../components/EsignFileSection.jsx';
 import ExceptionRegisterCard from '../components/ExceptionRegisterCard.jsx';
 import OrdersPanel from '../components/OrdersPanel.jsx';
@@ -1922,7 +1923,7 @@ function StaffContactEntry({ appId, toolKey, current, onSaved }) {
   );
 }
 
-function BorrowerConditions({ appId, app, items, docs, onPatch, onReviewDoc, onDownloadDoc, dlBusy, role, onUploadTo, onDropTo, onChanged, onPreview, onOpenStudio }) {
+function BorrowerConditions({ appId, app, items, docs, onPatch, onReviewDoc, onDownloadDoc, dlBusy, role, onUploadTo, onDropTo, onChanged, onPreview, onOpenStudio, team, canImportCredit }) {
   const completer = canComplete(role);
   const [sowOpen, setSowOpen] = useState(null);   // itemId of the SOW being edited
   const [trOpen, setTrOpen] = useState(null);    // track record open full-screen (staff): holds the borrower id, or null
@@ -1953,6 +1954,22 @@ function BorrowerConditions({ appId, app, items, docs, onPatch, onReviewDoc, onD
   // surfaced here as a condition to close, rendered with the full entity template
   // (owner-directed). It's excluded from the generic list below (so it isn't a bare
   // duplicate row) and rendered explicitly as `llcCondItem`.
+  // WHO SEES IT is a FILTER, not a place (blueprint Move 4b). Audience was a
+  // TAB, which made the one question a processor actually asks — "what is still
+  // open on this file?" — impossible to answer, because the answer was split
+  // across two tabs that could not be shown at once. Every lending platform
+  // benchmarked treats audience as a property of the condition; Encompass ran
+  // the tabs-by-persona experiment and collapsed it back into one list.
+  const [audFilter, setAudFilter] = useStickyFilter('condAudience', 'all');
+  // Subject groups collapse. Persisted as one string so a processor who only
+  // ever works title keeps Title open and the rest shut, file after file.
+  const [shutGroups, setShutGroups] = useStickyFilter('condGroups', '');
+  const shut = new Set(String(shutGroups || '').split(',').filter(Boolean));
+  const toggleGroup = (k) => {
+    const n = new Set(shut);
+    n.has(k) ? n.delete(k) : n.add(k);
+    setShutGroups([...n].join(','));
+  };
   const borrowerItems = items.filter(it => (it.audience === 'borrower' || it.audience === 'both') && it.template_code !== 'rtl_p1_llc');
   const llcCondItem = items.find(it => it.template_code === 'rtl_p1_llc');
   const ppItem = borrowerItems.find(it => it.tool_key === 'product_pricing');
@@ -1965,7 +1982,14 @@ function BorrowerConditions({ appId, app, items, docs, onPatch, onReviewDoc, onD
   // Condition Center items (info fields, e-sign) carry a tool_key too — keep
   // them in the staff list alongside the plain document conditions.
   const rest = borrowerItems.filter(it => !lead.includes(it) && (!it.tool_key || ['info_field', 'esign'].includes(it.tool_key)));
-  const ordered = [...lead, ...rest];
+  // ONE LIST. The internal conditions join the borrower's here rather than
+  // living behind their own tab. They keep their OWN row renderer (Item, with
+  // the assignee picker, the status control and the phase) — folding them in
+  // must not cost them a control, so the list carries two row shapes rather
+  // than flattening both into one and losing the difference.
+  const staffConds = items.filter(it => it.audience === 'staff'
+    && (it.item_kind === 'document' || it.item_kind === 'condition'));
+  const ordered = [...lead, ...rest, ...staffConds];
 
   async function revealCard() {
     if (card) { setCard(null); return; }
@@ -1995,7 +2019,14 @@ function BorrowerConditions({ appId, app, items, docs, onPatch, onReviewDoc, onD
       default:          return !offMyPlate(it);                                                             // role default
     }
   };
-  const visible = ordered.filter(matchFilter);
+  const isInternal = (it) => it.audience === 'staff';
+  const matchAudience = (it) => audFilter === 'all' ? true
+    : audFilter === 'internal' ? isInternal(it) : !isInternal(it);
+  const visible = ordered.filter(it => matchFilter(it) && matchAudience(it));
+  // Grouped by what each condition is ABOUT — see lib/condition-subjects.js.
+  // "Done" here is the same role-aware rule the rest of this list uses, so a
+  // group header can never disagree with the rows under it.
+  const groups = groupBySubject(visible, offMyPlate);
   // The LLC condition renders as its own row; drive its visibility off a
   // synthesized status so it honors the same filters.
   const llcPseudo = { id: '__llc', tool_key: null, reviewed_at: null,
@@ -2006,10 +2037,29 @@ function BorrowerConditions({ appId, app, items, docs, onPatch, onReviewDoc, onD
   if (ordered.length === 0 && !llcCondItem) return null;
   return (
     <div className="panel" style={{ marginTop: 18, borderColor: 'var(--gold)' }}>
-      <div className="row" style={{ marginBottom: 6, alignItems: 'center' }}>
-        <h3>Borrower conditions</h3>
+      {/* THE FILTER ROW (blueprint Move 4b). Two questions, side by side, each
+          on its own labelled control rather than crammed into the title row
+          where both truncated to "Ever…" and "All c…" and answered nothing. */}
+      <div className="row" style={{ marginBottom: 4, alignItems: 'center' }}>
+        <h3 style={{ margin: 0 }}>Conditions</h3>
         <div className="spacer" />
-        <select className="input" style={{ maxWidth: 210 }} value={condFilter} onChange={e => setCondFilter(e.target.value)}
+        <span className="muted small">{signedCount}/{ordered.length} signed off</span>
+      </div>
+      <div className="cond-filters">
+        {/* WHO SEES IT — a filter, not a tab. This is the control that finally
+            lets a processor see everything outstanding on the file at once. */}
+        <label className="cond-filter">
+          <span>Who sees it</span>
+          <select className="input" value={audFilter} onChange={e => setAudFilter(e.target.value)}
+            title="Borrower-facing conditions, internal ones, or both together">
+            <option value="all">Everyone</option>
+            <option value="borrower">Borrower sees it</option>
+            <option value="internal">Internal only</option>
+          </select>
+        </label>
+        <label className="cond-filter">
+          <span>Show</span>
+        <select className="input" value={condFilter} onChange={e => setCondFilter(e.target.value)}
           title={isLO ? 'Your default shows conditions still needing your review; marking one Done clears it here.' : 'Your default shows conditions still needing your sign-off; accepting a document keeps it here until you sign off.'}>
           {/* Words come from lib/conditions-vocab.js — the same five a condition
               is described with everywhere else. 'awaiting' spans two stored
@@ -2019,9 +2069,9 @@ function BorrowerConditions({ appId, app, items, docs, onPatch, onReviewDoc, onD
           <option value="review">{conditionStatusLabel('received')}</option>
           <option value="attention">{conditionStatusLabel('issue')}</option>
           <option value="signed">Signed off</option>
-          <option value="all">All conditions</option>
+          <option value="all">Everything</option>
         </select>
-        <span className="muted small">{signedCount}/{ordered.length} signed off</span>
+        </label>
       </div>
       <p className="muted small" style={{ marginBottom: 12 }}>
         The conditions list exactly as the borrower sees it — with each condition's uploaded documents and sign-off.
@@ -2068,7 +2118,29 @@ function BorrowerConditions({ appId, app, items, docs, onPatch, onReviewDoc, onD
       {visible.length === 0 && !llcShown && (
         <p className="muted small">Nothing matches this filter — switch to “All conditions” to see everything on the file.</p>
       )}
-      {visible.map(it => {
+      {/* GROUPED BY SUBJECT (blueprint Move 4b). Fifty conditions in one flat
+          list is a wall; grouped by what they are about it is a page you can
+          scan. Each header carries its own count, so "is the title work done?"
+          is answerable without reading the rows. Groups collapse and the choice
+          sticks. A group with nothing in it is not rendered at all. */}
+      {groups.map(g => (
+        <div className="cond-group" key={g.key}>
+          <button type="button" className="cond-group-h" aria-expanded={!shut.has(g.key)}
+            onClick={() => toggleGroup(g.key)}>
+            <span className={`cond-group-chev${shut.has(g.key) ? '' : ' open'}`} aria-hidden="true">▶</span>
+            <span className="cond-group-name">{g.label}</span>
+            <span className="cond-group-count">{g.done} of {g.total} done</span>
+          </button>
+          {!shut.has(g.key) && g.rows.map(it => {
+            // Two row shapes, on purpose. An INTERNAL condition keeps Item — its
+            // assignee picker, status control and phase — because folding it into
+            // this list must not cost it a control it had behind its own tab.
+            if (isInternal(it)) return (
+              <Item key={it.id} it={it} team={team} onPatch={onPatch} role={role}
+                docs={docs} onUploadTo={onUploadTo} onDropTo={onDropTo} onReviewDoc={onReviewDoc}
+                onDownloadDoc={onDownloadDoc} dlBusy={dlBusy} onPreview={onPreview} appId={appId}
+                onChanged={onChanged} canImportCredit={canImportCredit} />
+            );
         const itemDocs = docsFor(it.id);
         const signed = !!it.signed_off_at;
         const done = signed || it.status === 'satisfied' || it.status === 'received';
@@ -2320,7 +2392,9 @@ function BorrowerConditions({ appId, app, items, docs, onPatch, onReviewDoc, onD
             )}
           </div>
         );
-      })}
+          })}
+        </div>
+      ))}
       {sowOpen && (
         <ToolModal
           title="Rehab Budget — Scope of Work (internal)"
@@ -2912,37 +2986,48 @@ export default function StaffApplication() {
   // internal CHECKLIST now defaults to "Open for me" like the other sections —
   // an LO's Done (and a processor's sign-off) clears the item off their default
   // view; the picker (persisted per user) re-shows everything, collapsed.
-  const [itemFilter, setItemFilter] = useStickyFilter('checklist', 'todo');
-  const [internalCondFilter, setInternalCondFilter] = useStickyFilter('internalConds', 'todo');
   // The Conditions section is now ONE tabbed hub (Borrower · Underwriting ·
   // Internal · LLC) instead of four separate sections. A "Go fix →" link can flip
   // straight to the right tab via the section bus.
-  const [condTab, setCondTab] = useStickyFilter('condTab', 'borrower');
+  const [condTabRaw, setCondTab] = useStickyFilter('condTab', 'borrower');
   useEffect(() => subscribeConditionsTab(setCondTab), []);   // eslint-disable-line react-hooks/exhaustive-deps
+  // 'internal' was the staff-conditions + checklist tab. Those conditions are in
+  // the one list now and the checklist is off the file, so that tab no longer
+  // exists — but two things can still ASK for it: a sticky value saved by
+  // someone who was last on it, and the server's condTabForBlocker(), which
+  // returns 'internal' for any staff-audience blocker behind a "Go fix →".
+  // Normalising on READ covers both without touching the server, and without a
+  // migration for a value living in people's browsers. Landing on a tab that
+  // renders nothing is exactly the dead-deep-link class Phase 1 fixed.
+  const condTab = condTabRaw === 'internal' ? 'borrower' : condTabRaw;
   // Conversations + Activity + Email Center are one "Communication" hub (tabs).
   const [commTab, setCommTab] = useStickyFilter('commTab', 'messages');
-  const bucketOf = (s) => s === 'issue' ? 'rejected' : s === 'received' ? 'submitted' : s === 'satisfied' ? 'satisfied' : 'outstanding';
   // ONE "off my plate" rule for every surface — see roleDone() above.
-  const condOffPlate = (it) => roleDone(it, role);
   // The internal checklist shows ONLY staff-facing work items — the borrower's
   // conditions (audience borrower/both) already live in "Conditions to close",
   // so they must not be listed twice.
-  // Internal DOCUMENT conditions (audience=staff, item_kind=document — e.g.
-  // Insurance binder+invoice, Title) live in their OWN "Internal conditions"
-  // section in the conditions area, NOT in the phase-by-phase internal checklist
-  // (which is staff work-items/tasks only).
-  const internalConds = useMemo(() => items.filter(it => it.audience === 'staff' && it.item_kind === 'document'), [items]);
-  const internalItems = useMemo(() => items.filter(it => it.audience === 'staff' && it.item_kind !== 'document'), [items]);
-  const phases = useMemo(() => {
-    const groups = {};
-    const src = itemFilter === 'all' ? internalItems
-      : itemFilter === 'todo' ? internalItems.filter(it => !roleDone(it, role))
-      : internalItems.filter(it => bucketOf(it.status) === itemFilter);
-    for (const it of src) { const k = it.phase || 'general'; (groups[k] = groups[k] || []).push(it); }
-    return Object.entries(groups)
-      .map(([k, arr]) => [k, arr.sort((a, b) => (a.sort_order || 0) - (b.sort_order || 0))])
-      .sort((a, b) => (a[1][0].sort_order || 0) - (b[1][0].sort_order || 0));
-  }, [internalItems, itemFilter, role]);
+  //
+  // A CHECKLIST IS NOT A CONDITION (owner-directed 2026-07-27: "the checklist
+  // should not be mixed up with the conditions"). Every row already carries the
+  // distinction in `item_kind`; the split here used to draw the line in the
+  // wrong place — "conditions" meant `document` and "checklist" meant EVERYTHING
+  // ELSE, which swept the 12 staff `condition` rows into the checklist alongside
+  // the 24 real tasks. That is most of why the checklist never felt right.
+  //
+  // The correct line, and it needs no new data:
+  //   document + condition -> a CONDITION. Something must be satisfied and cleared.
+  //   task                 -> the CHECKLIST. Staff work steps, phase by phase.
+  //
+  // This also has to happen BEFORE the checklist comes off the screen, not
+  // after: three of the file's four clear-to-close gates (rtl_p4_ts,
+  // rtl_f_review, rtl_f_ctc) are staff `condition` rows sitting in the
+  // checklist right now — verified against the seeded templates, where no
+  // `task` is a gate. Hiding the checklist first would take the gates with it.
+  // internalItems / phases / itemFilter / bucketOf / internalConds / condOffPlate
+  // all went with the checklist panel above — every one of them existed only to
+  // render it. The staff CONDITIONS they used to sit beside are in the one list
+  // (BorrowerConditions filters items itself), and the tasks are worked from
+  // "My tasks". Left in place they would be dead code that still costs a render.
 
   if (err && !app) return <div role="alert" className="notice err">{err}</div>;
   if (!app) return <div className="panel muted">Loading…</div>;
@@ -3439,11 +3524,9 @@ export default function StaffApplication() {
       <input ref={staffFileRef} type="file" multiple style={{ display: 'none' }} onChange={onStaffFile} />
       {(() => {
         const uwOpen = conds.filter(c => c.status === 'open' || c.status === 'borrower_responded').length;
-        const intOpen = internalConds.filter(it => !condOffPlate(it)).length + internalItems.filter(it => !roleDone(it, role)).length;
         const TABS = [
-          { k: 'borrower', label: 'Borrower', badge: nCondOpen || '' },
+          { k: 'borrower', label: 'All conditions', badge: nCondOpen || '' },
           { k: 'underwriting', label: 'Underwriting', badge: uwOpen || '' },
-          { k: 'internal', label: 'Internal', badge: intOpen || '' },
           { k: 'llc', label: 'LLC / entity', badge: app.llc_id ? (app.llc_verified ? '✓' : '!') : '' },
         ];
         return (
@@ -3460,6 +3543,7 @@ export default function StaffApplication() {
 
       {condTab === 'borrower' && <>
         <BorrowerConditions appId={id} app={app} items={items} docs={docs} role={role}
+          team={team} canImportCredit={can('pull_credit')}
           onPatch={patch} onReviewDoc={reviewDoc} onDownloadDoc={downloadDoc} dlBusy={dlBusy}
           onUploadTo={pickUpload} onDropTo={uploadStaffFiles} onChanged={load} onPreview={openPreview}
           onOpenStudio={() => { studioRef.current ? studioRef.current.openStudio() : document.getElementById('sec-pricing')?.scrollIntoView({ behavior: 'smooth', block: 'start' }); }} />
@@ -3477,70 +3561,22 @@ export default function StaffApplication() {
           clearCond={clearCond} waiveCond={waiveCond} isAdmin={isAdmin} completer={completer} reviewCond={reviewCond} />
       )}
 
-      {condTab === 'internal' && <>
-        <p className="muted small" style={{ marginTop: 0 }}>Staff-only — never shared with the borrower.</p>
-        <div className="panel" style={{ marginTop: 0 }}>
-          <h3 style={{ margin: '0 0 8px' }}>Document conditions</h3>
-          {(() => {
-            const sorted = [...internalConds].sort((a, b) => (a.sort_order || 0) - (b.sort_order || 0));
-            const vis = sorted.filter(it => internalCondFilter === 'all' ? true : internalCondFilter === 'cleared' ? condOffPlate(it) : !condOffPlate(it));
-            const isLO = role === 'loan_officer';
-            return (<>
-              {internalConds.length > 0 && (
-                <div className="row" style={{ marginBottom: 6, alignItems: 'center' }}>
-                  <div className="spacer" />
-                  <select className="input" style={{ maxWidth: 170 }} value={internalCondFilter} onChange={e => setInternalCondFilter(e.target.value)}>
-                    <option value="todo">{isLO ? 'To review' : 'To sign off'}</option>
-                    <option value="cleared">Cleared</option>
-                    <option value="all">Show all</option>
-                  </select>
-                  <span className="muted small">{internalConds.filter(i => i.signed_off_at || i.status === 'satisfied').length}/{internalConds.length} cleared</span>
-                </div>
-              )}
-              {internalConds.length === 0
-                ? <p className="muted small">No internal conditions on this file.</p>
-                : vis.length === 0
-                  ? <p className="muted small">Nothing {isLO ? 'left to review' : 'left to sign off'} — switch to “Cleared” or “Show all”.</p>
-                  : vis.map(it => (
-                    <Item key={it.id} it={it} team={team} onPatch={patch} role={role}
-                      docs={docs} onUploadTo={pickUpload} onDropTo={uploadStaffFiles} onReviewDoc={reviewDoc} onDownloadDoc={downloadDoc}
-                      dlBusy={dlBusy} onPreview={openPreview} appId={id} onChanged={load} canImportCredit={can('pull_credit')} />))}
-            </>);
-          })()}
-        </div>
-        <div className="panel" style={{ marginTop: 14 }}>
-          <div className="row" style={{ marginBottom: 6, gap: 8, flexWrap: 'wrap' }}>
-            <h3 style={{ margin: 0 }}>Checklist</h3>
-            <div className="spacer" />
-            <select className="input" style={{ maxWidth: 170 }} value={itemFilter} onChange={e => setItemFilter(e.target.value)}>
-              {/* Same five words as the borrower-conditions filter above, from
-                  lib/conditions-vocab.js. The stored filter VALUES are untouched. */}
-              <option value="todo">Open for me ({internalItems.filter(it => !roleDone(it, role)).length})</option>
-              <option value="all">All ({internalItems.length})</option>
-              <option value="outstanding">{conditionStatusLabel('outstanding')}</option>
-              <option value="submitted">{conditionStatusLabel('received')}</option>
-              <option value="rejected">{conditionStatusLabel('issue')}</option>
-              <option value="satisfied">{conditionStatusLabel('satisfied')}</option>
-            </select>
-            <span className="muted small">
-              {internalItems.filter(i => i.signed_off_at).length}/{internalItems.length} signed off
-              {internalItems.some(i => !i.signed_off_at && i.reviewed_at) ? ` · ${internalItems.filter(i => !i.signed_off_at && i.reviewed_at).length} done, awaiting sign-off` : ''}
-            </span>
-          </div>
-          {phases.length === 0
-            ? (internalItems.length === 0
-                ? <p className="muted small">No internal-only checklist items. Borrower-facing conditions are on the Borrower tab.</p>
-                : <p className="muted small">Everything here is done on your side — switch to “All” to see the completed items (collapsed).</p>)
-            : phases.map(([k, arr]) => (
-              <div key={k} style={{ marginTop: 10 }}>
-                <div className="muted small" style={{ textTransform: 'uppercase', letterSpacing: '.06em', marginBottom: 6 }}>{phaseName(k)}</div>
-                {arr.map(it => <Item key={it.id} it={it} team={team} onPatch={patch} role={role}
-                  docs={docs} onUploadTo={pickUpload} onDropTo={uploadStaffFiles} onReviewDoc={reviewDoc} onDownloadDoc={downloadDoc}
-                  dlBusy={dlBusy} onPreview={openPreview} appId={id} onChanged={load} canImportCredit={can('pull_credit')} />)}
-              </div>
-            ))}
-        </div>
-      </>}
+      {/* THE CHECKLIST IS OFF THE FILE (owner-directed 2026-07-27: "the checklist
+          is just things with loans to sign off on — get the entire checklist
+          removed and leave only the condition section"). Blueprint Move 4c.
+
+          HIDDEN, NOT DELETED. Every row is still in checklist_items with its
+          history intact, still worked from the "My tasks" screen (which reads
+          checklist_items with no item_kind filter), and still counted wherever
+          the server counts it. This is a rendering change and it reverses by
+          putting the panel back.
+
+          SAFE ONLY BECAUSE 5a WENT FIRST. The scope is audience='staff' AND
+          item_kind='task'. Verified against the live templates: that set
+          contains ZERO gates and neither carve-out — rtl_p1_titlec and
+          rtl_p1_insc are task-kind but audience='both', so scoping to 'staff'
+          protects them without naming them. The file's conditions, gates
+          included, moved into the one list in 5a. */}
 
       {condTab === 'llc' && <>
         <LlcReview appId={id} app={app} role={role} onReviewDoc={reviewDoc} onDownloadDoc={downloadDoc}
