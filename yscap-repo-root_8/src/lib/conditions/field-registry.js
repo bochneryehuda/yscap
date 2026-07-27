@@ -119,32 +119,33 @@ function normNoteBuyer(raw) {
 }
 
 // FIDELIS — the capital provider the STANDARD program is paired with
-// (tapes/program-provider.js: standard ↔ fidelis). Its ClickUp dropdown label is
-// spelled several ways in production ("Fidelis", "Fidelis Investors", and the
-// legal name the owner uses, "Fidelis Investors LLC"), and normNoteBuyer is
-// deliberately an EXACT normalizer — it strips casing/spacing but never
-// suffix-fuzzy-matches, because an over-match there would let "BlueLake Capital"
-// export the Blue Lake data tape (tapes/buyer-rule.js exportGate; guarded by
-// test-tape-access-gate-pure.js). So the Fidelis ALIASES are enumerated here
-// instead of loosening the shared normalizer: one explicit list, no over-match.
+// (tapes/program-provider.js: standard ↔ fidelis).
 //
-// Drives the Fidelis flood-certificate suppression (db/335): the internal flood
-// cert is NOT auto-required on a Fidelis file; a known flood zone raises an
-// ADVISORY to open it instead (underwriting/fidelis-flood-advisory.js). Keep this
-// list in lock-step with the same key list in db/335 — add a new spelling in BOTH.
-// "investments" is in here because it is a REAL spelling of this same partner already
-// recorded in the repo — db/151 maps our `fidelis` label to Sitewire's directory name
-// "Fidelis Investments LLC" (see the sitewire_partner_links note in CLAUDE.md).
-const FIDELIS_NOTE_BUYER_KEYS = Object.freeze([
-  'fidelis', 'fidelisinvestors', 'fidelisinvestorsllc',
-  'fidelisinvestorsllp', 'fidelisinvestorsinc', 'fidelisinvestorsgroup',
-  'fidelisinvestments', 'fidelisinvestmentsllc',
-]);
+// PREFIX match, not an alias list (owner-reported 2026-07-27: a Fidelis file still
+// showed the flood certificate). This started as an enumerated list — fidelis,
+// fidelisinvestors, fidelisinvestorsllc, … — and that was the wrong shape: the list
+// can only ever cover the spellings someone thought of, and a real ClickUp label
+// one character off ("Fidelis Investor LLC", singular) silently fell through and the
+// file kept a condition it should not have had. There is no bound on how a human
+// types a company name, so the rule is now "the note buyer's name begins with
+// Fidelis", which is what the owner actually means by "a Fidelis file".
+//
+// Safe against the near-miss that matters: "Fidelity" (Fidelity National, the title
+// insurer) does NOT match — it diverges at the 6th character (fidelit… vs fideli**s**).
+//
+// This does NOT loosen `normNoteBuyer`, which stays an EXACT normalizer — an
+// over-match THERE would let "BlueLake Capital" export the Blue Lake data tape
+// (tapes/buyer-rule.js exportGate; guarded by test-tape-access-gate-pure.js). The
+// prefix rule lives only in this Fidelis-specific helper, whose blast radius is the
+// flood-certificate condition and nothing else.
+//
+// Keep in lock-step with the `LIKE 'fidelis%'` test in db/337.
+const FIDELIS_KEY_PREFIX = 'fidelis';
 
-/** True when this note-buyer label (applications.lender) is Fidelis, any spelling. */
+/** True when this note-buyer label (applications.lender) is Fidelis, however it is spelled. */
 function isFidelisNoteBuyer(raw) {
   const key = normNoteBuyer(raw);
-  return !!key && FIDELIS_NOTE_BUYER_KEYS.includes(key);
+  return !!key && key.startsWith(FIDELIS_KEY_PREFIX);
 }
 
 const stateOptions = US_STATES.map((v) => ({ v, label: v }));
@@ -413,5 +414,5 @@ module.exports = {
   allFields, fieldMap, loadCustomFields, bustCustomFields, isCustomKey, customFieldDef,
   normState, normStrategy, normLoanPurpose, normPropertyType, normRehabType,
   normCitizenship, normOccupancy, normNoteBuyer,
-  FIDELIS_NOTE_BUYER_KEYS, isFidelisNoteBuyer,
+  FIDELIS_KEY_PREFIX, isFidelisNoteBuyer,
 };

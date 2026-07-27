@@ -4565,6 +4565,40 @@ async function signOffGate(itemId, actor) {
   const isTitleContact = item.tool_key === 'title_contact' || code === 'rtl_p1_titlec';
   const isInsContact = item.tool_key === 'insurance_contact' || code === 'rtl_p1_insc';
 
+  // FLOOD CERTIFICATE on a FIDELIS file — signable with NOTHING attached, unless the
+  // property is in a known flood zone (owner-reported 2026-07-27: "I cannot sign off
+  // this condition even by mistake… if it was another program and then it changed to
+  // Fidelis, you should be able to sign it off without uploading anything").
+  //
+  // This is a LIVE check, deliberately not just the `is_required=false` flag db/337
+  // stamps at boot. The flag can only ever describe the file as it looked when the last
+  // deploy ran: a file registered Gold today gets the condition, and switching the note
+  // buyer to Fidelis tomorrow leaves a REQUIRED condition standing (the Condition Center
+  // retracts only UNTOUCHED items, and never rewrites is_required on one that already
+  // exists). That is exactly the file the owner was stuck on. Reading the note buyer and
+  // the flood determination at sign-off time makes the gate correct the moment the note
+  // buyer changes, with no deploy and no boot in between.
+  //
+  // The flood zone still wins: on a Fidelis file that IS in an SFHA the condition stays
+  // fully gated, per the owner's rule that a real flood zone forces it on. Never throws —
+  // a read failure falls through to the normal (stricter) gate.
+  if (code === 'rtl_cond_flood') {
+    try {
+      const f = (await db.query(
+        `SELECT a.lender,
+                EXISTS (SELECT 1 FROM appraisals ap
+                         WHERE ap.application_id = a.id AND ap.superseded = false
+                           AND (ap.fema_flood_sfha = true
+                                OR upper(coalesce(ap.fema_flood_zone,'')) ~ '^(A|V)'
+                                OR upper(coalesce(ap.flood_zone,'')) ~ '^(A|V)')) AS in_flood_zone
+           FROM applications a WHERE a.id = $1`, [item.application_id])).rows[0];
+      if (f && !f.in_flood_zone
+          && require('../lib/conditions/field-registry').isFidelisNoteBuyer(f.lender)) {
+        return null;
+      }
+    } catch (_) { /* fall through to the normal gate */ }
+  }
+
   // Doc-gate: a REQUIRED document-upload condition can never be signed off with
   // ZERO documents on it — the sign-off would attest to a file that isn't there.
   // Applies to EVERYONE with no exception (owner-directed 2026-07-20: an admin
