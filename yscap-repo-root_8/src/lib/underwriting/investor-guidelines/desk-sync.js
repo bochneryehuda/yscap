@@ -310,4 +310,53 @@ async function retractStale(client, appId, currentKeys) {
   } catch (_e) { return 0; }
 }
 
-module.exports = { deskToSuggestions, syncInvestorGuidelineFindings, retractStale, SOURCE };
+/**
+ * backfillGuidelineRetractions(client?) → { scanned, retractedFiles, retracted } (DB, best-effort).
+ *
+ * PROACTIVE cleanup of stale guideline findings on files nobody has re-opened (owner 2026-07-26:
+ * "fix this also for all the previous files"). `retractStale` only runs on a file VIEW, and the
+ * re-read sweep deliberately defers the compute-fresh layer to the next panel load — so a file whose
+ * guideline rule was corrected keeps its now-wrong "Blue Lake requires X" notice OPEN until a human
+ * happens to open it. This runs the SAME conservative retraction across every ALIVE, not-yet-funded
+ * file that still carries an open guideline-desk suggestion.
+ *
+ * RETRACT-ONLY, on purpose. It re-derives the desk to learn the CURRENT key set and calls
+ * retractStale — it never runs the RAISE loop, so it can never INSERT a new suggestion or fire the
+ * fatal-notify email (a boot-time raise across the whole book would be exactly the notification
+ * burst this module already guards against). It only CLOSES rows the desk no longer says.
+ *
+ * Conservative in the same way the live path is: retracts only when the desk positively ASSESSED
+ * the file (>=1 verdict) and no signal loader was degraded, so a transient read closes nothing.
+ * Bounded (only files that actually have an open guideline-desk row) and idempotent (a second pass
+ * finds nothing left to retract). Best-effort per file; never throws — a boot backfill must never
+ * break boot.
+ */
+async function backfillGuidelineRetractions(client) {
+  const db = client || require('../../../db');
+  const out = { scanned: 0, retractedFiles: 0, retracted: 0 };
+  try {
+    const q = await db.query(
+      `SELECT DISTINCT a.id FROM applications a
+         JOIN ai_suggestions s ON s.application_id = a.id
+        WHERE s.source = $1 AND s.status = 'open'
+          AND a.deleted_at IS NULL
+          AND a.status NOT IN ('funded','withdrawn','declined','cancelled')`,
+      [SOURCE]);
+    const deskMod = require('./desk');
+    for (const row of q.rows) {
+      out.scanned += 1;
+      try {
+        const desk = await deskMod.runInvestorGuidelineDesk(row.id, db).catch(() => null);
+        const assessed = !!(desk && Array.isArray(desk.verdicts) && desk.verdicts.length);
+        const degraded = !!(desk && Array.isArray(desk.degraded) && desk.degraded.length);
+        if (!assessed || degraded) continue;   // conservative: an unassessed/degraded read retracts nothing
+        const keys = deskToSuggestions(desk).map((p) => p.dedupeKey).filter(Boolean);
+        const n = await retractStale(db, row.id, keys);
+        if (n > 0) { out.retracted += n; out.retractedFiles += 1; }
+      } catch (_e) { /* one bad file never stops the backfill */ }
+    }
+  } catch (_e) { /* best-effort — a failed backfill never breaks boot */ }
+  return out;
+}
+
+module.exports = { deskToSuggestions, syncInvestorGuidelineFindings, retractStale, backfillGuidelineRetractions, SOURCE };

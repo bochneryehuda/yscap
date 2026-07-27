@@ -33,21 +33,27 @@
 const CLAIM_FAMILIES = [
   {
     claim: 'vesting_entity_vs_contract_buyer',
-    // All of these say one thing: the party buying on the contract is not the entity the loan vests
-    // into. The purchase chain, the entity chain, the chain of title and the contract check each
-    // reach that conclusion from their own direction — it is still one fact, and one fix (an
-    // assignment or a contract amendment before closing).
+    // All of these say ONE thing: the entity the loan vests into is not the party on the purchase /
+    // assignment / title documents. The tie-out, the purchase chain, the entity chain, the chain of
+    // title, the seller chain and the contract check each reach that from their own direction — it is
+    // still one fact, one fix (a final assignment or a contract amendment before closing). The owner
+    // saw this FIVE times on one file (2026-07-27, 76 THOMPSON ST LLC): a tie-out fatal, two
+    // entity-chain edge cards, a contract-buyer card and a seller-chain "personal name" card. They
+    // now merge to one.
     codes: [
       'contract_buyer_mismatch',
       'cot_final_buyer_not_vesting',
       'chain_vesting_not_reached',
-      'chain_vesting_vs_contract_buyer',
-      // NOT `contract_in_personal_name`. Audit 2026-07-26: it looks like the same claim but it is a
-      // DIFFERENT remedy — it carries `opensCondition: 'assignment_to_vesting_entity'` and a
-      // `post_condition` action (a routine vesting amendment), which the fatal survivor does not.
-      // Merging it took the "post the final-assignment-to-LLC condition" button off the desk. The two
-      // can also legitimately co-occur on different hops: a stranger entity on the contract (fatal)
-      // AND the final assignee in the borrower's personal name (routine).
+      'chain_vesting_vs_contract_buyer',    // entity-chain edge: vesting entity ≠ contract buyer
+      'chain_vesting_vs_title_party',       // entity-chain edge: vesting entity ≠ the party on the title
+      'tieout_entity_name',                 // the tie-out "Vesting entity doesn't match the file" fatal
+      // `contract_in_personal_name` IS included now (was excluded 2026-07-26). It was held out because
+      // it carries the actionable remedy — `opensCondition: 'assignment_to_vesting_entity'` and the
+      // "post the final-assignment-to-LLC condition" button — and merging it into the fatal tie-out
+      // survivor took that button off the desk. dedupeByClaim now CARRIES a merged member's specific
+      // remedy (its opensCondition + howTo) onto the survivor, so the one surviving card is the fatal
+      // AND offers the final-assignment condition. With that trap closed, this is one issue, one card.
+      'contract_in_personal_name',
     ],
   },
   {
@@ -166,6 +172,18 @@ function isBlocking(f) {
 // Which of two findings for the same claim should SURVIVE as the one shown.
 // Most severe wins; then the one that explains itself best (the owner's complaint was thin
 // reasoning, so prefer the richer text); then the one carrying evidence to open.
+// A generic "an underwriter looked and cleared it" condition target that most desks default to.
+// When findings merge, a member that carries a SPECIFIC condition (e.g. the seller chain's
+// final-assignment-to-vesting-entity remedy) must hand it to the survivor, so collapsing to one
+// card never strips the actionable button — the exact trap that kept contract_in_personal_name out
+// of the vesting family before (owner-reported 2026-07-27).
+const GENERIC_OPENS_CONDITION = new Set(['underwriting_review_cleared']);
+function specificRemedyOf(f) {
+  const oc = f && f.opensCondition;
+  if (!oc || GENERIC_OPENS_CONDITION.has(String(oc))) return null;
+  return { opensCondition: String(oc), howTo: (f && f.howTo) || null };
+}
+
 function isBetter(candidate, current) {
   // A PERSISTED finding always outranks a derived restatement of it, whatever the severity. It is
   // the one with an id, so it is the one the underwriter can actually act on and the one the
@@ -203,7 +221,8 @@ function dedupeByClaim(findings) {
     if (!key) { passthrough.push({ f, at: order.length }); order.push(null); continue; }
     const prev = byClaim.get(key);
     if (!prev) {
-      byClaim.set(key, { rep: f, codes: new Set([norm(f.code)]), persisted: isPersisted(f) ? 1 : 0, at: order.length });
+      byClaim.set(key, { rep: f, codes: new Set([norm(f.code)]), persisted: isPersisted(f) ? 1 : 0,
+        remedy: specificRemedyOf(f), at: order.length });
       order.push(key);
       continue;
     }
@@ -227,6 +246,7 @@ function dedupeByClaim(findings) {
     prev.codes.add(norm(f.code));
     if (isBetter(f, prev.rep)) prev.rep = f;
     if (isPersisted(f)) prev.persisted = 1;
+    if (!prev.remedy) prev.remedy = specificRemedyOf(f);   // first specific remedy among the members wins
   }
 
   const out = [];
@@ -243,7 +263,17 @@ function dedupeByClaim(findings) {
     emitted.add(key);
     const g = byClaim.get(key);
     const others = [...g.codes].filter((c) => c !== norm(g.rep.code));
-    out.push(others.length ? { ...g.rep, mergedFrom: others } : g.rep);
+    const patch = {};
+    if (others.length) patch.mergedFrom = others;
+    // Carry a merged member's SPECIFIC remedy onto the survivor when the survivor's own condition is
+    // generic or absent — so the one surviving card keeps its (fatal) severity AND offers the
+    // actionable "post the final-assignment condition" button instead of the generic review-cleared
+    // one. Only the remedy is adopted; severity, title and the disagreeing values stay the survivor's.
+    if (g.remedy && (!g.rep.opensCondition || GENERIC_OPENS_CONDITION.has(String(g.rep.opensCondition)))) {
+      patch.opensCondition = g.remedy.opensCondition;
+      if (g.remedy.howTo) patch.howTo = g.remedy.howTo;
+    }
+    out.push(Object.keys(patch).length ? { ...g.rep, ...patch } : g.rep);
   }
   return out;
 }

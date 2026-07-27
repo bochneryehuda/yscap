@@ -29,9 +29,10 @@ const sixDesks = [
   { code: 'chain_vesting_vs_contract_buyer', severity: 'warning', subject: 'MW TRADING LLC',
     explanation: 'The vesting entity is not the buyer on the purchase contract.' },
 ];
-// NOTE: `contract_in_personal_name` is deliberately NOT in this list — see the family comment in
-// finding-claims.js. It asserts something adjacent but carries a different remedy (it opens the
-// assignment-to-vesting-entity condition), so it is kept separate; that is asserted further down.
+// NOTE: `contract_in_personal_name` now DOES belong to this family (owner-reported 2026-07-27: the
+// vesting mismatch showed as five separate cards). It was held out because it carried the actionable
+// final-assignment remedy that a naive merge stripped; the merge now carries that remedy onto the
+// survivor, so it merges safely. That behavior is asserted further down.
 const merged = FC.dedupeByClaim(sixDesks);
 ok(merged.length === 1, `the vesting/buyer mismatch collapses to ONE finding (got ${merged.length})`);
 ok(merged[0].code === 'contract_buyer_mismatch', 'the FATAL one survives as the representative');
@@ -199,16 +200,39 @@ const richerDerived = FC.dedupeByClaim([
 ok(richerDerived.length === 1 && richerDerived[0].id === 'f10',
   'a better-worded DERIVED finding never displaces the persisted row that carries the id');
 
-// contract_in_personal_name is a DIFFERENT remedy (it opens the assignment-to-vesting condition), so
-// it must survive alongside the buyer-mismatch fatal — merging it took that action off the desk.
+// contract_in_personal_name is the SAME real-world issue as the buyer/vesting mismatch (owner-reported
+// 2026-07-27: five cards for one thing). It now MERGES into the one survivor — but the merge CARRIES
+// its specific "post the final-assignment-to-LLC condition" remedy onto the survivor, so collapsing
+// to one card never takes that action off the desk (the trap that used to keep it separate).
 const personalName = FC.dedupeByClaim([
   row('f11', 'contract_buyer_mismatch', 'fatal', 'doc-contract', 'buyer'),
-  { code: 'contract_in_personal_name', severity: 'warning', opensCondition: 'assignment_to_vesting_entity' },
+  { code: 'contract_in_personal_name', severity: 'warning', opensCondition: 'assignment_to_vesting_entity',
+    howTo: 'Add a condition for a final assignment of contract into the vesting LLC before closing.' },
 ]);
-ok(personalName.length === 2,
-  `the personal-name finding survives alongside the buyer mismatch (got ${personalName.length}) — it opens a different condition`);
-ok(personalName.some((f) => f.opensCondition === 'assignment_to_vesting_entity'),
-  'the "post the final-assignment-to-LLC condition" action is still on the desk');
+ok(personalName.length === 1,
+  `the personal-name finding merges into the one vesting issue (got ${personalName.length})`);
+ok(personalName[0].opensCondition === 'assignment_to_vesting_entity',
+  'the merged survivor CARRIES the "post the final-assignment-to-LLC condition" remedy — the button stays on the desk');
+ok(/final assignment/i.test(personalName[0].howTo || ''),
+  'the survivor also adopts the actionable how-to text of the specific remedy');
+
+// FULL 5 → 1 (owner-reported 2026-07-27, live file): the tie-out fatal, the two entity-chain edges,
+// the contract-buyer card and the seller-chain personal-name card are ONE issue and now collapse to
+// a single FATAL card that carries the actionable final-assignment remedy — nothing lost.
+const vestingFive = FC.dedupeByClaim([
+  { code: 'tieout_entity_name', severity: 'fatal', field: 'entity_name',
+    opensCondition: 'underwriting_review_cleared', howTo: 'Reconcile — a fact on more than one document must agree everywhere.' },
+  { code: 'chain_vesting_vs_contract_buyer', severity: 'warning' },
+  { code: 'chain_vesting_vs_title_party', severity: 'warning' },
+  { code: 'contract_buyer_mismatch', severity: 'warning' },
+  { code: 'contract_in_personal_name', severity: 'warning',
+    opensCondition: 'assignment_to_vesting_entity', howTo: 'Add a condition for a final assignment into the vesting LLC before closing.' },
+]);
+ok(vestingFive.length === 1, `five vesting-mismatch findings collapse to one card (got ${vestingFive.length})`);
+ok(vestingFive[0].severity === 'fatal', 'the survivor keeps the fatal severity — it is a dealbreaker until fixed');
+ok(vestingFive[0].opensCondition === 'assignment_to_vesting_entity', 'and carries the specific final-assignment remedy, not the generic one');
+ok(Array.isArray(vestingFive[0].mergedFrom) && vestingFive[0].mergedFrom.length >= 3,
+  'mergedFrom records the other codes so an auditor still sees every desk that agreed');
 
 // The SAME check on the SAME document is still one finding (a genuine re-emit is still deduped).
 const sameDoc = FC.dedupeByClaim([
