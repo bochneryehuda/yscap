@@ -626,6 +626,36 @@ console.log('ISG one list (DB)');
 
     ok('a partnerless run dealbreaker is never folded off the desk');
 
+    // ── 13e. THE FATAL ALERT SURVIVES AN IN-TRANSACTION WRITE (re-audit 2026-07-27) ──────
+    // `_notifyFatalNew` re-reads the row before sending, on a POOL connection. Under MVCC that
+    // connection cannot see this transaction's uncommitted INSERT — so a guard keyed on
+    // "the row is not there" suppressed the dealbreaker alert for every producer that records
+    // inside a transaction, which is nearly all of them, and ONLY when the database was healthy.
+    // Measured at 0 of 2 expected sends on a row that committed perfectly well.
+    //
+    // Asserted against a REAL database because that is the only place the isolation is real: the
+    // pure suite answers the guard from the same in-memory store the caller mutates, which models
+    // a connection that sees uncommitted writes. Production has no such connection.
+    const uncommitted = (await client.query(
+      `INSERT INTO ai_suggestions (application_id, source, kind, severity, title, body, status)
+       VALUES ($1,'cross_document','finding','fatal','t','x','open') RETURNING id`,
+      [app7.id])).rows[0];
+    const poolSees = await pool.query(
+      `SELECT lower(btrim(COALESCE(severity,''))) AS sev FROM ai_suggestions WHERE id=$1`,
+      [uncommitted.id]);
+    assert.strictEqual(poolSees.rowCount, 0,
+      'the pool genuinely cannot see this transaction\'s row — the premise of the regression');
+    assert.strictEqual(aiSug._internals.provenNotFatal(poolSees), false,
+      'and an invisible row is NOT proof of a downgrade, so the alert still goes out');
+    // ...while a row that IS visible and says warning is proof, and does suppress.
+    assert.strictEqual(
+      aiSug._internals.provenNotFatal({ rowCount: 1, rows: [{ sev: 'warning' }] }), true,
+      'a visible non-fatal row is the one thing the guard can prove');
+    assert.strictEqual(
+      aiSug._internals.provenNotFatal({ rowCount: 1, rows: [{ sev: 'fatal' }] }), false,
+      'and a visible fatal row alerts, of course');
+    ok('an uncommitted dealbreaker still reaches the team — absence is never proof');
+
     // …and the readers really behave: a warning dismissed does not carry forward a fatal.
     const carryKey = { code: 'appraisal_value_variance', field: 'as_is_value', docValue: '450000' };
     await fdec.record(client, {

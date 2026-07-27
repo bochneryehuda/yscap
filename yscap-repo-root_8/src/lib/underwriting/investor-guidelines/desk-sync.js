@@ -201,6 +201,9 @@ async function syncInvestorGuidelineFindings(client, appId, opts) {
     //             it adds nothing and costs a duplicate + a mail-out.
     //   DECIDED — a human closed it (see above), and only while the item is no worse than what they
     //             actually judged.
+    // Keyed exactly like `finding-decisions.sevRank` — trimmed AND lowercased. The two are
+    // documented as mirrors and must stay that way (re-audit 2026-07-27 found the trim
+    // missing here after the other copies gained it).
     const SEV_RANK = { fatal: 3, warning: 2, info: 1 };
     const ALIVE_NOT_OPEN = ['escalated', 'marked_important', 'asked_admin'];
     const decidedSev = new Map();   // dedupe_key → the most serious severity a human has decided on
@@ -219,7 +222,7 @@ async function syncInvestorGuidelineFindings(client, appId, opts) {
         // 2026-07-27, where the two disagreed). Treating it as a decision here let an answer
         // hold the item quiet.
         if (r.status === 'answered') continue;
-        const rank = SEV_RANK[String(r.severity || '').toLowerCase()] || 0;
+        const rank = SEV_RANK[String(r.severity || '').trim().toLowerCase()] || 0;
         if (ALIVE_NOT_OPEN.includes(r.status)) {
           if (!aliveSev.has(k) || rank > aliveSev.get(k)) aliveSev.set(k, rank);
           continue;
@@ -247,11 +250,11 @@ async function syncInvestorGuidelineFindings(client, appId, opts) {
       // `record()` REFRESHES a live row in place, so letting the worse one through is
       // exactly right — it updates the severity rather than duplicating the row.
       if (key && aliveSev.has(key)
-          && (SEV_RANK[String(p.severity || '').toLowerCase()] || 0) <= aliveSev.get(key)) {
+          && (SEV_RANK[String(p.severity || '').trim().toLowerCase()] || 0) <= aliveSev.get(key)) {
         heldAlive += 1; continue;
       }
       const decided = key ? decidedSev.get(key) : undefined;
-      if (decided !== undefined && decided >= (SEV_RANK[String(p.severity || '').toLowerCase()] || 0)) {
+      if (decided !== undefined && decided >= (SEV_RANK[String(p.severity || '').trim().toLowerCase()] || 0)) {
         heldByHuman += 1; continue;
       }
       try {

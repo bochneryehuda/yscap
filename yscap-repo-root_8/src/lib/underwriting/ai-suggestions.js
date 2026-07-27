@@ -194,7 +194,7 @@ async function record(client, s) {
           WHERE application_id=$1 AND source=$2 AND dedupe_key=$3
             AND status NOT IN ('open','escalated','marked_important','asked_admin','answered')
             AND decided_by_staff_id IS NOT NULL
-          ORDER BY decided_at DESC NULLS LAST, created_at DESC
+          ORDER BY decided_at DESC NULLS LAST, created_at DESC, id DESC
           LIMIT 1`,
         [s.applicationId, s.source, s.dedupeKey]);
       // A DECISION ON A WARNING DOES NOT SILENCE A LATER FATAL — the THIRD door with this
@@ -261,7 +261,7 @@ async function record(client, s) {
       `SELECT id, severity FROM ai_suggestions
         WHERE application_id=$1 AND source=$2 AND dedupe_key=$3
           AND status IN ('open','escalated','marked_important','asked_admin')
-        ORDER BY (status='open') DESC, created_at DESC LIMIT 1`,
+        ORDER BY (status='open') DESC, created_at DESC, id DESC LIMIT 1`,
       [s.applicationId, s.source, s.dedupeKey]);
     if (cur.rows[0]) {
       await c.query(
@@ -319,10 +319,11 @@ async function record(client, s) {
   // fresh-insert branch (dedupe path above never re-notifies). Scheduled via
   // setImmediate so the caller's transaction gets a chance to COMMIT first.
   // Best-effort — a notify failure never rolls back the suggestion.
-  // The re-verify that gap notice used to ask for now EXISTS (re-audit 2026-07-27):
-  // `_notifyFatalNew` re-reads the row on its own connection and sends nothing unless it is
-  // still there and still fatal. So a rollback after a scheduled send is silent, on this branch
-  // and on the in-place upgrade branch below.
+  // KNOWN GAP, still open and now precisely stated (re-audit 2026-07-27): `_notifyFatalNew`
+  // re-reads the row, but on a POOL connection that cannot see this caller's uncommitted write
+  // — so it can only prove a DOWNGRADE, never a rollback. A transaction that rolls back after
+  // this is scheduled still emails. Closing that needs a post-commit hook, not a read; see the
+  // note inside `_notifyFatalNew`.
   // `suppressNotify` = the row BELONGS in the list, but this particular write is not a "chase this
   // now" event, so the team is not emailed. TWO independent producers arrived at the same flag on
   // 2026-07-27 and both reasons stand — do not narrow it to either one:
@@ -349,6 +350,14 @@ async function record(client, s) {
  * the notify chokepoint's file enrichment so the subject + meta name the file.
  * Best-effort — never throws.
  */
+// Did that read PROVE the row is no longer a dealbreaker? Only a VISIBLE, non-fatal row does.
+// An empty result does not: on a pool connection it far more often means the caller's write has
+// not committed yet. Its own function so a DB test can hand it the result of a genuinely
+// invisible row — the isolation that made this a live defect cannot be modelled in a stub.
+function provenNotFatal(chk) {
+  return !!(chk && chk.rowCount) && chk.rows[0] && chk.rows[0].sev !== 'fatal';
+}
+
 async function _notifyFatalNew(s, suggestionId) {
   try {
     // THE ROW MUST STILL EXIST, AND MUST STILL BE A DEALBREAKER (re-audit 2026-07-27).
@@ -364,19 +373,35 @@ async function _notifyFatalNew(s, suggestionId) {
     //
     // One re-read closes both. Own connection, because the caller's may be the aborted one.
     //
-    // PROOF IT IS GONE, not merely failure to check: a read that SUCCEEDS and returns nothing
-    // means the row was rolled back or downgraded, so nothing is sent; a read that THROWS
-    // (a blip, a pool exhaustion) sends anyway. The alternative fails silent, and silently
-    // dropping the one alert that says "this became a dealbreaker" is the exact direction this
-    // whole change exists to prevent. A duplicate email is recoverable; a missed one is not.
-    let proofGone = false;
+    // SUPPRESS ONLY ON A VISIBLE, NON-FATAL ROW. Anything else sends.
+    //
+    // THE TRAP THIS AVOIDS (re-audit 2026-07-27, which caught the previous round's version
+    // dropping alerts outright). This runs on a POOL connection, and `setImmediate` fires at
+    // the next check phase — long before most callers COMMIT. Under MVCC that connection cannot
+    // see the caller's uncommitted write, so "the row is not there" is NOT evidence it was
+    // rolled back: for every producer that records inside a transaction — the file-view sync,
+    // `saveAnalysis`, the re-run bridge, which is nearly all of them — it is simply the normal
+    // case, measured at 0 of 2 expected sends on a row that committed fine. Keying suppression
+    // on absence silently killed the dealbreaker alert on the highest-traffic path, and only in
+    // a HEALTHY database: a degraded one throws, and then it sent every time. Exactly backwards.
+    //
+    // Absence is ambiguous; a row that is present and says `warning` is not. That is the only
+    // thing checked here, and it is the case worth checking — a severity the caller had already
+    // committed lower, or a downgrade that landed first.
+    //
+    // WHAT THIS DELIBERATELY DOES NOT CLOSE: a rolled-back write still emails, exactly as it did
+    // before this branch (the insert branch has carried that since R3.39). Closing it needs the
+    // fan-out to fire AFTER the caller commits — a post-commit hook threaded through every
+    // producer — not a read that is guaranteed to race. That is a separate change; do not
+    // "fix" it by re-keying this on absence.
+    let gone = false;
     try {
       const chk = await require('../../db').query(
-        `SELECT 1 FROM ai_suggestions WHERE id=$1 AND lower(btrim(COALESCE(severity,''))) = 'fatal'`,
+        `SELECT lower(btrim(COALESCE(severity,''))) AS sev FROM ai_suggestions WHERE id=$1`,
         [suggestionId]);
-      proofGone = !chk.rowCount;
-    } catch (_) { /* could not check — fall through and send */ }
-    if (proofGone) return;
+      gone = provenNotFatal(chk);
+    } catch (_) { /* could not check — send; a missed dealbreaker alert is the worse failure */ }
+    if (gone) return;
     const notify = require('../notify');
     const applicationId = s.applicationId;
     // Registered notify type `ai_fatal_finding` — action-bearing so NOT in
@@ -609,6 +634,12 @@ async function askAdmin(client, { applicationId, agent, question, context, docum
     source: 'ask_admin', kind: 'question',
     title: `${agent}: ${String(question).slice(0, 120)}`,
     body: question,
+    // NAMED, never left NULL — the LAST producer that wrote a NULL severity (re-audit
+    // 2026-07-27; the round that claimed to have emptied this class missed the one inside this
+    // very file). A NULL ranks below everything in the settled-row dedupe, so any future
+    // severity on this producer would out-rank a human's dismissal and re-raise it. A question
+    // is not a dealbreaker and never was: `info` is what it has always meant.
+    severity: 'info',
     evidence: { context: context || {}, agent },
     dedupeKey: dedupe,
   });
@@ -725,12 +756,13 @@ function fromCureNewFinding({ applicationId, documentId, checklistItemId, extrac
   };
 }
 
-module.exports = { ADVISORY_ONLY_SOURCES, notScoredSql,
+module.exports = {
+  ADVISORY_ONLY_SOURCES, notScoredSql,
   record, recordMany, listForFile, decide, addNote,
   askAdmin, answerAdminQuestion, listOpenAdminQuestions,
   fromCureNewFinding,
   VALID_STATUSES,
   // Exported for the regression test that pins the row -> finding key invariant: a desk
   // row must key on the FINDING's code, never on the condition template several rows share.
-  _internals: { claimShapeOf },
+  _internals: { claimShapeOf, provenNotFatal },
 };
