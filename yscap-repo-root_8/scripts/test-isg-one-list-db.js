@@ -436,6 +436,18 @@ console.log('ISG one list (DB)');
     });
     assert.strictEqual(await storedSevFor(app7.id, 'writer_probe'), 'fatal',
       'store.resolveFinding records the severity the human was looking at');
+    // ...asserted on the PAYLOAD too. The round trip above cannot kill a mutation on its own:
+    // `record()` also falls back to `finding.severity`, and `updated` comes from a `RETURNING *`,
+    // so deleting the explicit field changes nothing observable. This is the assertion that
+    // fails when the belt comes off the fallback's braces.
+    assert.strictEqual(
+      store._ledgerRecordFor({ updated: { application_id: app7.id, severity: 'fatal' },
+        action: 'dismiss', terminal: true, note: 'x', by: null }).severity,
+      'fatal', 'the resolve payload names the severity explicitly');
+    assert.strictEqual(
+      store._ledgerRecordFor({ updated: { application_id: app7.id }, action: 'dismiss',
+        terminal: true }).severity,
+      null, 'and a row with no severity yields NULL — legacy behaviour, never a guess');
 
     // writer: the appraisal re-import door (`routes/appraisal.js`). It hands `record()` a row
     // read with `SELECT *`; naming severity explicitly is what stops a future column list from
@@ -626,35 +638,53 @@ console.log('ISG one list (DB)');
 
     ok('a partnerless run dealbreaker is never folded off the desk');
 
-    // ── 13e. THE FATAL ALERT SURVIVES AN IN-TRANSACTION WRITE (re-audit 2026-07-27) ──────
-    // `_notifyFatalNew` re-reads the row before sending, on a POOL connection. Under MVCC that
-    // connection cannot see this transaction's uncommitted INSERT — so a guard keyed on
-    // "the row is not there" suppressed the dealbreaker alert for every producer that records
-    // inside a transaction, which is nearly all of them, and ONLY when the database was healthy.
-    // Measured at 0 of 2 expected sends on a row that committed perfectly well.
+    // ── 13e. THE FATAL ALERT SURVIVES AN IN-TRANSACTION UPGRADE (re-audit 2026-07-27) ────
+    // Two rounds added a re-read to `_notifyFatalNew` and both KILLED this alert. The second
+    // was subtler: a pool read of a row the caller is mid-UPDATE on returns the committed
+    // PRE-IMAGE, which on the upgrade branch is by construction the pre-upgrade `warning` — so
+    // the guard read the caller's own in-flight upgrade as proof of a downgrade.
     //
-    // Asserted against a REAL database because that is the only place the isolation is real: the
-    // pure suite answers the guard from the same in-memory store the caller mutates, which models
-    // a connection that sees uncommitted writes. Production has no such connection.
-    const uncommitted = (await client.query(
-      `INSERT INTO ai_suggestions (application_id, source, kind, severity, title, body, status)
-       VALUES ($1,'cross_document','finding','fatal','t','x','open') RETURNING id`,
-      [app7.id])).rows[0];
-    const poolSees = await pool.query(
-      `SELECT lower(btrim(COALESCE(severity,''))) AS sev FROM ai_suggestions WHERE id=$1`,
-      [uncommitted.id]);
-    assert.strictEqual(poolSees.rowCount, 0,
-      'the pool genuinely cannot see this transaction\'s row — the premise of the regression');
-    assert.strictEqual(aiSug._internals.provenNotFatal(poolSees), false,
-      'and an invisible row is NOT proof of a downgrade, so the alert still goes out');
-    // ...while a row that IS visible and says warning is proof, and does suppress.
-    assert.strictEqual(
-      aiSug._internals.provenNotFatal({ rowCount: 1, rows: [{ sev: 'warning' }] }), true,
-      'a visible non-fatal row is the one thing the guard can prove');
-    assert.strictEqual(
-      aiSug._internals.provenNotFatal({ rowCount: 1, rows: [{ sev: 'fatal' }] }), false,
-      'and a visible fatal row alerts, of course');
-    ok('an uncommitted dealbreaker still reaches the team — absence is never proof');
+    // Driven through the REAL `record()`, on this transaction's connection, in the exact shape
+    // the file-view sync uses. A predicate assertion cannot catch it (both dead versions passed
+    // one); neither can the pure suite, whose stub store has no MVCC.
+    const upApp = (await client.query(
+      `INSERT INTO applications (borrower_id, property_address) VALUES ($1,'{}'::jsonb) RETURNING id`,
+      [b.id])).rows[0];
+    const upPayload = (severity) => ({
+      applicationId: upApp.id, source: deskFindings.SOURCE, kind: 'finding', severity,
+      title: 'Feasibility report required', body: 'x', dedupeKey: 'isg-gap:upgrade-notify',
+      evidence: { code: null, cond_no: 200, flag: 'coverage_gap' },
+    });
+    const notifyPath = require.resolve('../src/lib/notify');
+    const hadNotify = require.cache[notifyPath];
+    const sends = [];
+    require.cache[notifyPath] = { id: notifyPath, filename: notifyPath, loaded: true, exports: {
+      notifyAppStaff: async () => { sends.push('staff'); },
+      notifyAdmins: async () => { sends.push('admins'); },
+    } };
+    try {
+      const liveRow = await aiSug.record(client, upPayload('warning'));
+      await client.query(`UPDATE ai_suggestions SET status='escalated' WHERE id=$1`, [liveRow.id]);
+      // The pool genuinely cannot see this transaction — the premise of the regression.
+      const before = await pool.query(
+        `SELECT lower(btrim(COALESCE(severity,''))) AS sev FROM ai_suggestions WHERE id=$1`,
+        [liveRow.id]);
+      assert.ok(before.rowCount === 0 || before.rows[0].sev !== 'fatal',
+        'the pool sees either nothing or the pre-upgrade severity, never the in-flight one');
+      sends.length = 0;
+      const upgraded = await aiSug.record(client, upPayload('fatal'));
+      assert.strictEqual(upgraded.deduped, true, 'the escalated row is refreshed in place');
+      await new Promise((r) => setImmediate(r));
+      await new Promise((r) => setImmediate(r));
+      assert.ok(sends.length > 0,
+        'the file team IS told the escalated item became a dealbreaker — even mid-transaction');
+      const after = (await client.query(
+        `SELECT severity FROM ai_suggestions WHERE id=$1`, [liveRow.id])).rows[0];
+      assert.strictEqual(after.severity, 'fatal', 'and the row really carries the new severity');
+    } finally {
+      if (hadNotify) require.cache[notifyPath] = hadNotify; else delete require.cache[notifyPath];
+    }
+    ok('an in-transaction upgrade to a dealbreaker still reaches the team');
 
     // …and the readers really behave: a warning dismissed does not carry forward a fatal.
     const carryKey = { code: 'appraisal_value_variance', field: 'as_is_value', docValue: '450000' };

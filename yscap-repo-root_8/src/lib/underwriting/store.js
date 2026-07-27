@@ -417,6 +417,25 @@ function rollup(findings) {
  * CTC-blocking if fatal) until the follow-up clears; the rest close it.
  * @returns {Promise<object|null>} the updated finding row, or null if not found/already closed
  */
+
+// The ledger payload for a document-finding resolution, as its own function so a test can assert
+// its SHAPE rather than only its round trip (re-audit 2026-07-27 — the round trip alone cannot
+// kill a mutation here, because `record()` ALSO falls back to `finding.severity` and `updated`
+// comes from a `RETURNING *`; the explicit field is belt to that fallback's braces, and only a
+// shape assertion can prove the belt is still on).
+function ledgerRecordFor({ updated, action, terminal, note, by } = {}) {
+  const fdec = require('./finding-decisions');
+  return {
+    applicationId: updated && updated.application_id,
+    finding: updated,
+    origin: 'document_finding',
+    decision: action,
+    suppress: !!terminal && fdec.suppresses(action),
+    note, decidedBy: by || null,
+    severity: (updated && updated.severity) || null,
+  };
+}
+
 async function resolveFinding(client, { findingId, action, note, value, by } = {}) {
   const { validateResolution } = require('./actions');
   const v = validateResolution(action, { note, value });
@@ -444,15 +463,7 @@ async function resolveFinding(client, { findingId, action, note, value, by } = {
   // mirror failure must never undo a resolution the human just made.
   if (updated) {
     const fdec = require('./finding-decisions');
-    await fdec.record(client, {
-      applicationId: updated.application_id,
-      finding: updated,
-      origin: 'document_finding',
-      decision: v.action,
-      suppress: terminal && fdec.suppresses(v.action),
-      note, decidedBy: by || null,
-      severity: (updated && updated.severity) || null,
-    });
+    await fdec.record(client, ledgerRecordFor({ updated, action: v.action, terminal, note, by }));
     await closeMirroredSuggestions(client, {
       applicationId: updated.application_id, code: updated.code,
       documentId: updated.document_id, action: v.action, by,
@@ -567,6 +578,7 @@ async function getFileFindings(client, applicationId) {
   return { findings: rows, summary: rollup(rows) };
 }
 
-module.exports = { saveAnalysis, resolveFinding, getFileFindings, rollup, maskFields,
+module.exports = {
+  _ledgerRecordFor: ledgerRecordFor, saveAnalysis, resolveFinding, getFileFindings, rollup, maskFields,
   findReusableExtraction, findingsForExtraction, closeMirroredSuggestions,
   _internals: { maskValue } };

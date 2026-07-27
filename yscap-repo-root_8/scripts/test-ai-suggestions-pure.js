@@ -433,9 +433,8 @@ const aiSug = require('../src/lib/underwriting/ai-suggestions');
     notifyAppStaff: async (...a) => { notified.push(a); },
     notifyAdmins: async (...a) => { notified.push(a); },
   } };
-  // `_notifyFatalNew` also RE-READS the row on its own connection before sending — the guard
-  // that stops an email going out for a write that was rolled back. Stubbed here so the pure
-  // test can exercise it: it answers from the in-memory store, exactly as the real query would.
+  // A pool stub, kept so this file can never reach a real database if a lazily-required module
+  // grows one. `_notifyFatalNew` no longer reads (see the note there); nothing else here does.
   const dbPath = require.resolve('../src/db');
   const hadDb = require.cache[dbPath];
   require.cache[dbPath] = { id: dbPath, filename: dbPath, loaded: true, exports: {
@@ -474,35 +473,11 @@ const aiSug = require('../src/lib/underwriting/ai-suggestions');
     await new Promise((r) => setImmediate(r));
     assert.ok(notified.length > 0, 'but the file team IS told the item became a dealbreaker');
 
-    // THE GUARD'S REAL CONTRACT: it suppresses only on a VISIBLE, NON-FATAL row.
-    //
-    // It reads on a POOL connection, which cannot see an uncommitted write, so absence proves
-    // nothing — for every producer that records inside a transaction (nearly all of them) an
-    // invisible row is the NORMAL case, not a rollback. Keying suppression on absence killed
-    // the alert outright on the highest-traffic path; see the note in `_notifyFatalNew`.
-    //
-    // Case 1 — the row reads back as a WARNING (a committed downgrade): silence.
-    us.rows[0].severity = 'warning';
-    notified.length = 0;
-    const downgraded = await aiSug.record(uc, up('fatal'));
-    assert.strictEqual(downgraded.deduped, true, 'the upgrade is attempted');
-    us.rows[0].severity = 'warning';           // ...and the row on file still says warning
-    await new Promise((r) => setImmediate(r));
-    assert.strictEqual(notified.length, 0,
-      'a row that reads back NOT fatal emails nobody — the only thing the guard can prove');
-
-    // Case 2 — the row is INVISIBLE to that connection (an uncommitted write): it still sends.
-    // This is the regression that mattered: suppressing here dropped the dealbreaker alert for
-    // every in-transaction caller, and only when the database was healthy.
-    us.rows[0].severity = 'warning';
-    notified.length = 0;
-    const hidden = us.rows.splice(0, 1)[0];    // the pool cannot see the caller's write yet
-    await aiSug.record(uc, Object.assign({}, up('fatal'), { dedupeKey: 'isg-gap:upgrade' }));
-    await new Promise((r) => setImmediate(r));
-    assert.ok(notified.length > 0,
-      'an uncommitted (invisible) row STILL emails — absence is not proof of a rollback');
-    us.rows.unshift(hidden);
-    us.rows[0].severity = 'fatal';             // restore for the assertions below
+    // NOTE: there is deliberately no re-read guard in `_notifyFatalNew` — two attempts at one
+    // both dropped this alert (see the note there). What keeps the upgrade notify from becoming
+    // a per-page-load blast is the rank comparison alone, asserted above and below. The
+    // in-transaction behaviour that killed both guards is asserted on a REAL connection in
+    // test-isg-one-list-db; a stub store has no MVCC and cannot express it.
 
     // ...and a DEALBREAKER RESTATED AS A DEALBREAKER says nothing. This is the half that stops
     // the upgrade notify becoming a per-page-load blast: the desk re-records the same finding
