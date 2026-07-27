@@ -58,6 +58,14 @@ function normStrategy(raw) {
 function normLoanPurpose(raw) {
   const s = String(raw || '').toLowerCase();
   if (!s) return null;
+  // Delayed purchase financing is checked FIRST and deliberately lands on
+  // 'purchase': the frozen engine (pricing.js loanTypeOf — substring 'refi') also
+  // reads it as a purchase, and the Blue Lake guideline in PILOT says a delayed
+  // purchase gets "purchase leverage". So a condition rule keyed on loan purpose
+  // agrees with the leverage the loan is actually sized on. Explicit rather than
+  // relying on the /purchase/ branch below, so a label like "Delayed Purchase
+  // Financing (Cash-Out)" could never silently flip it to a cash-out refinance.
+  if (/delayed\s+purchase/.test(s)) return 'purchase';
   if (/cash[-\s]?out/.test(s)) return 'refinance_cash_out';
   if (/refi|rate\s*(&|and)?\s*term/.test(s)) return 'refinance_rate_term';
   if (/purchase|acquisition/.test(s)) return 'purchase';

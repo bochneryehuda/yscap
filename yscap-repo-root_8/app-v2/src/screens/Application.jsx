@@ -4,6 +4,7 @@ import { api, saveBlob } from '../lib/api.js';
 import { fmtDay } from '../lib/dates.js';
 import { formatSSN, cleanFICO, ficoValid } from '../lib/validators.js';
 import { ESIGN_RETURN_MSG } from '../lib/esign.js';
+import { conditionStatusLabel } from '../lib/conditions-vocab.js';
 import ChatThread from '../components/ChatThread.jsx';
 import { useAuth } from '../lib/auth.jsx';
 import PropertyPhoto from '../components/PropertyPhoto.jsx';
@@ -11,6 +12,7 @@ import ActivityFeed from '../components/ActivityFeed.jsx';
 import StatusTimeline from '../components/StatusTimeline.jsx';
 import ProductStudioPanel from '../components/ProductStudioPanel.jsx';
 import { programLabel, loanTypeLabel, propertyTypeLabel, officerLabel } from '../lib/labels.js';
+import { PROPERTY_TYPES } from '../lib/enums.js';
 import ToolModal from '../components/ToolModal.jsx';
 import LlcPicker from '../components/LlcPicker.jsx';
 import LlcManager from '../components/LlcManager.jsx';
@@ -32,7 +34,10 @@ const addrLine = (a) => !a ? '—' : (a.oneLine || [a.street || a.line1, a.city,
 const LABEL = { file_intake: 'Intake', new: 'Submitted', in_review: 'In review', processing: 'Processing', underwriting: 'Underwriting', approved: 'Approved', clear_to_close: 'Clear to close', funded: 'Funded' };
 
 const isDone = (s) => s === 'received' || s === 'satisfied' || s === 'done';
-const statusText = (it) => it.status === 'issue' ? 'Needs attention' : it.status === 'received' ? 'Submitted' : it.status === 'satisfied' ? 'Completed' : 'To do';
+// The words come from lib/conditions-vocab.js so the borrower and the staff file
+// describe one condition with ONE word. This screen used to say "Submitted" where
+// staff said "In review", and "Completed" where staff said "Done".
+const statusText = (it) => conditionStatusLabel(it.status);
 
 // Contact conditions are FORMS, not uploads: the borrower enters their title /
 // insurance contact once; it saves to a reusable contact book.
@@ -107,10 +112,11 @@ function CardCondition({ it, appId, onSaved }) {
     } catch (e) { setFormErr(e.message || 'Could not save the card'); }
     finally { setBusy(false); }
   }
-  // Card scan via a HOSTED OCR API (owner choice, 2026-07-07). The photo is sent
-  // to our backend, which proxies to the OCR provider and returns the parsed
-  // number + expiry — the image is never persisted and card data is never
-  // logged. The borrower confirms/edits before saving; manual entry always works.
+  // Card scan via our best-in-class vision reader (Azure OpenAI GPT-5, the same
+  // reader the underwriting engine uses), with hosted OCR as a fallback. The
+  // photo is sent to our backend, read for the number + expiry, and then
+  // discarded — it is never saved and card data is never logged. The borrower
+  // confirms/edits before saving; manual entry always works.
   async function scanCard(file) {
     if (!file) return;
     setFormErr(''); setScanning('Reading your card…');
@@ -148,7 +154,7 @@ function CardCondition({ it, appId, onSaved }) {
         <input ref={scanRef} type="file" accept="image/*" style={{ display: 'none' }}
           onChange={e => { const file = e.target.files && e.target.files[0]; e.target.value = ''; scanCard(file); }} />
         <button type="button" className="btn ghost small" onClick={() => scanRef.current && scanRef.current.click()}>📷 Scan card from a photo</button>
-        <span className="muted small">Read on your device — the photo is never uploaded.</span>
+        <span className="muted small">Used only to read your card — the photo is never saved.</span>
       </div>
       {scanning && <div className="notice info" style={{ marginBottom: 8 }}>{scanning}</div>}
       <div className="grid cols-2">
@@ -203,7 +209,9 @@ function ConditionRow({ done, issue, title, subtitle, status, action, children, 
     <div className={`checkitem${onDropFiles ? ' cond-drop' : ''}${over ? ' drop-over' : ''}`}
       style={{ alignItems: 'flex-start', flexDirection: 'column', gap: 8 }} {...dropProps}>
       <div className="row" style={{ width: '100%', gap: 8, alignItems: 'flex-start' }}>
-        <span className={`dot ${done ? 'done' : 'outstanding'}`} style={{ marginTop: 4, ...(issue ? { background: 'var(--danger)' } : {}) }} />
+        {/* Same colours as before — the red is now a class, not an inline style,
+            so every condition dot in the portal is painted from one place. */}
+        <span className={`dot ${issue ? 'cond-issue' : done ? 'done' : 'outstanding'}`} style={{ marginTop: 4 }} />
         <div style={{ flex: 1 }}>
           <div style={{ fontWeight: 600 }}>{title}</div>
           {subtitle && <div className="muted small">{subtitle}</div>}
@@ -465,7 +473,8 @@ function BorrowerCompleteness({ app, profile, appId, onSaved }) {
   const b = profile || {};
   const fields = [
     { key: 'property_address', label: 'Property address', ok: !!(app.property_address && (app.property_address.oneLine || app.property_address.street)), edit: false },
-    { key: 'property_type', label: 'Property type', ok: !!app.property_type, type: 'select', options: ['SFR', 'Multi 2-4', 'Multi 5+', 'Condo', 'Townhouse', 'Mixed Use'] },
+    // Canonical spellings (lib/enums.js) — a drifted one can't reach ClickUp (#822).
+    { key: 'property_type', label: 'Property type', ok: !!app.property_type, type: 'select', options: PROPERTY_TYPES.map((o) => o.value) },
     { key: 'purchase_price', label: 'Purchase price', ok: app.purchase_price != null, type: 'money' },
     { key: 'arv', label: 'ARV (estimate)', ok: app.arv != null, type: 'money' },
     { key: 'rehab_budget', label: 'Rehab budget', ok: app.rehab_budget != null, type: 'money' },
@@ -955,7 +964,7 @@ export default function Application() {
                   subtitle={app.registered_program
                     ? `Registered: ${app.registered_product_label || (app.registered_program === 'gold' ? 'Gold Standard Program' : 'Standard Program')} · ${money(app.registered_total_loan)}`
                     : 'Price your deal in the Term Sheet Studio and register your product — your terms, cash to close and liquidity requirement all come from it.'}
-                  status={(isDone(ppItem.status) || app.registered_program) ? 'Completed' : 'To do'}
+                  status={(isDone(ppItem.status) || app.registered_program) ? conditionStatusLabel('satisfied') : conditionStatusLabel('outstanding')}
                   open={tsDocs.length > 0}
                   action={<button className="btn primary small" onClick={() => {
                     // Same full-screen tool sheet as the Scope of Work — no

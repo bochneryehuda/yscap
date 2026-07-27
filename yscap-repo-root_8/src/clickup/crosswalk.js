@@ -18,10 +18,40 @@ const FIELDS = {
       'Fix & Flip w/ Construction': 'Fix & Flip With Construction',
       'Bridge': 'bridge Without Construction',
       'Ground-Up Construction': 'Ground-Up',        // NEW option (owner adding)
+      // Fix & Hold (BRRRR) — a real RTL product we originate (loan-primer: "fix
+      // & flip, fix & hold"): pricing.js `engineStrategy` prices it, the EMCAP
+      // tape exports it, the Encompass map compares it. It had NO ClickUp option,
+      // which is what made an officer's "Fix & Flip → Fix & Hold" edit bounce
+      // back (#822).
+      //
+      // The owner added the option as "Fix & Hold WITH CONSTRUCTION" and directed
+      // (2026-07-27) that it map to our plain 'Fix & Hold' anyway — "it's the
+      // same", exactly like the flip pair one line above, where our
+      // 'Fix & Flip w/ Construction' maps to ClickUp's "Fix & Flip With
+      // Construction". Our stored value stays 'Fix & Hold' on purpose: that is
+      // the spelling pricing.js, field-registry, the EMCAP tape and the Encompass
+      // map already key on — renaming it would break all four. Only the ClickUp
+      // LABEL differs, which is precisely what this map exists to absorb.
+      // Verified against the live dropdown via the ClickUp connector.
+      'Fix & Hold': 'Fix & Hold With Construction',
       'Not sure yet': null,                          // leave blank; officer sets
     },
-    // inbound labels with no exact portal twin
-    fromExtra: { 'Private hard money': 'Bridge' },
+    // inbound labels with no exact portal twin. The Fix & Hold spellings are
+    // here so the INBOUND read still lands on our canonical 'Fix & Hold' if the
+    // option ends up named slightly differently in ClickUp (BRRRR is the same
+    // strategy — pricing.js already treats "hold" and "brrrr" identically).
+    fromExtra: {
+      'Private hard money': 'Bridge',
+      // Spelling tolerance on the READ side only, so a card set by hand (or an
+      // option later renamed) still lands on our canonical 'Fix & Hold'. The
+      // authoritative label is the `to` entry above — this is a safety net.
+      'Fix & Hold': 'Fix & Hold',
+      'Fix and Hold': 'Fix & Hold',
+      'Fix and Hold With Construction': 'Fix & Hold',
+      'Fix & Hold w/ Construction': 'Fix & Hold',
+      'Fix & Hold (BRRRR)': 'Fix & Hold',
+      'BRRRR': 'Fix & Hold',
+    },
   },
   loan_type: {
     id: 'ee1b564f-13cb-4841-af4c-e0f762cbcf52',
@@ -29,7 +59,16 @@ const FIELDS = {
       'Purchase': 'Purchase',
       'Refinance — Rate & Term': 'Refi Rate & Term',
       'Refinance — Cash-Out': 'Refi Cash-Out',
+      // Delayed purchase financing is its OWN loan type in PILOT, spelled
+      // EXACTLY as ClickUp spells it (owner-directed 2026-07-27) so it
+      // round-trips with no translation and no information lost. It used to be
+      // a live ClickUp option that read back as NOTHING, so a card set to it
+      // left the portal on its stale loan type.
+      'Delayed Purchase Financing': 'Delayed Purchase Financing',
     },
+    // HELOC and "Second Closed end Mortgage" are deliberately left unmapped:
+    // they are not RTL products, so a card carrying one is data-only and must
+    // never overwrite an RTL file's loan type.
   },
   property_type: {
     id: '541524d9-255f-4484-ac6d-1011ac60e87b',
@@ -86,12 +125,25 @@ const FIELDS = {
       'Rent': 'Rent', 'Own with mortgage': 'Mortgage', 'Own free and clear': 'own free and clear',
       'Live with family': 'Rent Free', 'Other': null,
     },
+    // The dropdown carries BOTH 'Free' and 'Rent Free'. 'Free' means RENT-free
+    // (owner-directed 2026-07-27) — NOT 'own free and clear', which is its own
+    // option. Our only rent-free bucket is 'Live with family', so both land
+    // there; we keep WRITING 'Rent Free' (the `to` map is untouched), so this
+    // is read-side only and can never re-label a card.
+    fromExtra: { 'Free': 'Live with family' },
   },
   // Borrower-facing status mirror ON the ClickUp task (option labels == our values).
   // file_intake (#151): resolves only once a 'file_intake' option is added to the
   // ClickUp dropdown — until then the mirror write is silently skipped (the
   // label→id lookup returns null and the mapper's put() drops nulls), never a
-  // guard trip or a wrong option.
+  // guard trip or a wrong option. The other ten options are our exact snake_case
+  // values, so the new one should be named 'file_intake' to match.
+  //
+  // The owner confirmed (2026-07-27) that ClickUp's word for this stage is
+  // "starting" — the same equivalence clickup/status.js already encodes for the
+  // TASK status ('starting' -> file_intake). So we ALSO read a 'starting' /
+  // 'started' option back as file_intake, in case the dropdown option gets named
+  // that way instead. Read-side only: we still write 'file_intake'.
   borrower_portal_status: {
     id: 'a47ce5e3-eea7-4f70-93ca-8062dee4d1b7',
     to: {
@@ -100,6 +152,7 @@ const FIELDS = {
       approved: 'approved', clear_to_close: 'clear_to_close', funded: 'funded',
       on_hold: 'on_hold', declined: 'declined', withdrawn: 'withdrawn',
     },
+    fromExtra: { 'starting': 'file_intake', 'started': 'file_intake' },
   },
   // Registered product -> ClickUp "RTL Loan Program" field (Standard / Gold).
   // Portal-authoritative, one-way (§7.1/7.5).

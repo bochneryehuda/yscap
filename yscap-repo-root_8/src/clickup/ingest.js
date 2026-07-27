@@ -23,7 +23,22 @@ const transforms = require('./transforms');
 const review = require('../lib/sync-review');
 const checklist = require('./checklist');
 
-const RTL_PROGRAMS = new Set(['Fix & Flip w/ Construction', 'Bridge', 'Ground-Up Construction']);
+// The ClickUp *Program values that MATERIALIZE a portal loan file. Anything else
+// (DSCR / Non-QM / HELOC / conventional…) is pulled for PROFILE data only.
+//
+// 'Fix & Hold' joined 2026-07-27 (owner adding the matching ClickUp option): it is
+// a real RTL product we originate — the loan primer says so ("fix & flip, fix &
+// hold"), pricing.js prices it, the EMCAP tape exports it. Without it here a card
+// set to Fix & Hold would be treated as data-only: it would never create a file,
+// and an EXISTING linked file would silently stop syncing from its card (the
+// whole `linkOrCreateApplication` branch is gated on isRtl). Adding it is inert
+// until the ClickUp option exists, since no card can carry the value today.
+const RTL_PROGRAMS = new Set(['Fix & Flip w/ Construction', 'Bridge', 'Ground-Up Construction', 'Fix & Hold']);
+// Array form for the SQL below. The candidate scans MUST read from the set above
+// rather than repeat the list — they were three hardcoded copies, so adding a
+// program silently left the matcher blind to files carrying it (exactly the
+// "same bug in more than one place" trap).
+const RTL_PROGRAM_LIST = [...RTL_PROGRAMS];
 // Raw ClickUp *Program labels that mean "not chosen yet" (the officer will set
 // it) — these must be treated like a blank program, NEVER as an unsupported
 // program to descope. Matched case-insensitively against read.rawProgram.
@@ -749,7 +764,7 @@ async function findExistingApp(task, read, borrowerId, opts = {}) {
   const cand = await db.query(
     `SELECT id, property_address, ys_loan_number, purchase_price FROM applications
       WHERE borrower_id=$1 AND deleted_at IS NULL AND clickup_pipeline_task_id IS NULL
-        AND program IN ('Fix & Flip w/ Construction','Bridge','Ground-Up Construction')`, [borrowerId]
+        AND program = ANY($2::text[])`, [borrowerId, RTL_PROGRAM_LIST]
   ).catch(() => ({ rows: [] }));
   // NOTE (2026-07-15 audit): the unlinked-candidate scan is gated on having
   // candidates, but the heal + duplicate-defer scans below must run REGARDLESS —
@@ -781,8 +796,8 @@ async function findExistingApp(task, read, borrowerId, opts = {}) {
       `SELECT id, property_address, clickup_pipeline_task_id FROM applications
         WHERE borrower_id=$1 AND deleted_at IS NULL
           AND clickup_pipeline_task_id IS NOT NULL AND clickup_pipeline_task_id <> $2
-          AND program IN ('Fix & Flip w/ Construction','Bridge','Ground-Up Construction')`,
-      [borrowerId, task.id]).catch(() => ({ rows: [] }));
+          AND program = ANY($3::text[])`,
+      [borrowerId, task.id, RTL_PROGRAM_LIST]).catch(() => ({ rows: [] }));
     for (const o of other.rows) {
       const on = identity.normalizeIdentity({ address: _addrOf(o.property_address) });
       if (!on.address) continue;
