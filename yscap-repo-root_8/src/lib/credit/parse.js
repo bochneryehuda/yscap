@@ -313,9 +313,45 @@ function relationshipMap(cr) {
   return map;
 }
 
+// True when an identity block actually names somebody.
+function namedIdentity(id) {
+  return !!(id && (id.firstName || id.lastName || id.ssnLast4));
+}
+
+// The letters of a name, order-insensitive — "PATRICK KAMARA" and the alias form
+// "KAMARA PATRICK" are the same person written two ways.
+function nameKey(identity) {
+  const parts = [identity && identity.firstName, identity && identity.lastName]
+    .map((s) => String(s || '').toLowerCase().replace(/[^a-z]/g, ''))
+    .filter(Boolean);
+  return parts.length ? parts.sort().join('|') : '';
+}
+
 /**
- * The borrowers this document covers, as segment shells (root node, ids, subtree).
- * Returns [] when the document names fewer than two identifiable borrowers — the
+ * Are these two borrower records the SAME human?
+ *
+ * A real vendor report repeats the borrower once per bureau file (and again at the
+ * deal level), sometimes with the name reversed — so "how many BORROWER elements
+ * are there" is NOT "how many people are on this report". The SSN decides when both
+ * sides carry one (two different last-4s are two different people, full stop);
+ * otherwise the name does.
+ */
+function samePerson(a, b) {
+  const sa = a.identity && a.identity.ssnLast4;
+  const sb = b.identity && b.identity.ssnLast4;
+  if (sa && sb) return String(sa) === String(sb);
+  const na = nameKey(a.identity);
+  const nb = nameKey(b.identity);
+  return !!na && na === nb;
+}
+
+/**
+ * The DISTINCT borrowers this document covers, as segment shells (root node, ids,
+ * subtree). Repeated records of one person are folded into a single shell — its
+ * `nodes`/`ids` are the union, so an item under ANY of that person's copies is
+ * attributed to them.
+ *
+ * Returns fewer than two shells for an ordinary single-borrower report, and the
  * single-borrower path then stays byte-for-byte what it has always been.
  */
 function borrowerShells(cr, parents) {
@@ -337,10 +373,27 @@ function borrowerShells(cr, parents) {
       ...(root !== b ? identifiersOf(root) : []),
       ...anc.filter((a) => a.local === 'ROLE' || a.local === 'PARTY').flatMap((a) => identifiersOf(a)),
     ]);
-    shells.push({
+    const shell = {
       root, node: b, ids, nodes: subtreeSet(root), identity,
+      // The DEAL-level party (…/PARTIES/PARTY) is the canonical record of the person;
+      // the copies under CREDIT_FILES are each bureau's own version of them.
+      deal: anc.some((a) => a.local === 'PARTIES'),
       printPosition: field(b, ['_PrintPositionType', 'BorrowerPrintPositionType'], ['BorrowerPrintPositionType']) || null,
-    });
+    };
+
+    const existing = shells.find((s) => samePerson(s, shell));
+    if (existing) {
+      shell.ids.forEach((id) => existing.ids.add(id));
+      shell.nodes.forEach((n) => existing.nodes.add(n));
+      // Keep the fullest record of the person: prefer the deal-level party, then the
+      // one that actually carries a name.
+      const better = (!existing.deal && shell.deal)
+        || (!existing.identity.firstName && shell.identity.firstName);
+      if (better) { existing.identity = shell.identity; existing.deal = existing.deal || shell.deal; }
+      if (!existing.printPosition && shell.printPosition) existing.printPosition = shell.printPosition;
+      continue;
+    }
+    shells.push(shell);
   }
   return shells;
 }
@@ -390,14 +443,20 @@ function splitSections(cr, shells, rel) {
 
 /**
  * Build the per-borrower segments of a merged document.
- * @returns {{segments: object[], unattributedScores: object[]}} — `segments` is
- *   empty when the document covers fewer than two borrowers (the ordinary
- *   single-borrower path, untouched).
+ * @returns {{segments: object[], unattributedScores: object[], splittable: boolean}}
+ *   `segments` is empty when the document covers fewer than two distinct borrowers
+ *   (the ordinary single-borrower path, untouched). `splittable` is false when it
+ *   names several people but labels NOBODY's scores — see the caller.
  */
 function borrowerSegments(cr) {
   const parents = parentMap(cr);
   const shells = borrowerShells(cr, parents);
-  if (shells.length < 2) return { segments: [], unattributedScores: [] };
+  // The canonical record of the (first) person on the report — the deal-level party
+  // when there is one. MISMO 3.x keeps the name/SSN there rather than on the
+  // BORROWER element, so this is the only place a 3.x identity can be read from.
+  const primary = shells.find((s) => s.deal) || shells[0];
+  const primaryIdentity = primary ? primary.identity : null;
+  if (shells.length < 2) return { segments: [], unattributedScores: [], splittable: false, primaryIdentity };
   const { per, shared } = splitSections(cr, shells, relationshipMap(cr));
   const mark = (arr) => arr.map((x) => ({ ...x, sharedAcrossBorrowers: true }));
 
@@ -437,7 +496,11 @@ function borrowerSegments(cr) {
       },
     };
   });
-  return { segments, unattributedScores: dedupeScores(shared.scores) };
+  // Splitting is only real when the document actually says WHOSE scores are whose.
+  // If it names several people but labels none of the scores, the per-borrower view
+  // would hand everyone a blank score — worse than the plain whole-document read.
+  const splittable = segments.some((s) => s.scores.length > 0);
+  return { segments, unattributedScores: dedupeScores(shared.scores), splittable, primaryIdentity };
 }
 
 /**
@@ -535,7 +598,8 @@ function parseCreditXml(xml) {
     borrower: null, liabilities: [], inquiries: [], publicRecords: [],
     summary: null, reportDate: null, reportId: null, tradeReferenceType: null, parseError: null,
     // Merged (joint) reports only — one entry per borrower the document covers.
-    borrowers: [], isMerged: false, mergedUnattributedScores: [], rootTag: null,
+    borrowers: [], isMerged: false, mergedAmbiguous: false, mergedBorrowerNames: [],
+    mergedUnattributedScores: [], rootTag: null,
     // Set only when the document carried no credit data: what it looked like instead.
     documentHint: null,
   };
@@ -544,8 +608,13 @@ function parseCreditXml(xml) {
   try { root = X.parse(xml); } catch (e) { base.parseError = `xml parse failed: ${(e && e.message) || e}`; return base; }
 
   const cr = X.firstDeep(root, 'CREDIT_RESPONSE') || root;
-  const { segments, unattributedScores } = borrowerSegments(cr);
-  const merged = segments.length > 1;
+  const { segments, unattributedScores, splittable, primaryIdentity } = borrowerSegments(cr);
+  // A document covering several people is only read PER BORROWER when their scores
+  // are actually labelled. Unlabelled, it falls back to the whole-document read (the
+  // headline score is never blanked by segmentation) and says so via `mergedAmbiguous`
+  // so the importer can tell staff to import each borrower's report separately.
+  const merged = segments.length > 1 && splittable;
+  const ambiguous = segments.length > 1 && !splittable;
   const publicRecords = parsePublicRecords(cr);
   const inquiries = parseInquiries(cr);
   const liabilities = parseLiabilities(cr);
@@ -562,15 +631,19 @@ function parseCreditXml(xml) {
       .concat(liabilities.flatMap((l) => l.bureaus))));
 
   const noData = scores.length === 0 && liabilities.length === 0;
+  const flatIdentity = identityFrom(X.firstDeep(cr, 'BORROWER') || X.firstDeep(cr, 'CREDIT_BORROWER'));
 
   return {
     ...base,
     rootTag: root.local || null,
     // Only worth reading when nothing came back — an error envelope's own words.
     documentHint: noData ? documentHint(root) : null,
-    borrowers: segments,
+    borrowers: merged ? segments : [],
     isMerged: merged,
-    mergedUnattributedScores: unattributedScores,
+    // Names several people but labels nobody's scores — read whole-document, and say so.
+    mergedAmbiguous: ambiguous,
+    mergedBorrowerNames: ambiguous ? segments.map((s) => s.name).filter(Boolean) : [],
+    mergedUnattributedScores: merged ? unattributedScores : [],
     version: field(cr, ['MISMOVersionIdentifier', '_Version', 'CreditResponseVersionIdentifier'], ['MISMOVersionIdentifier']) || null,
     reportId: field(cr, ['CreditReportIdentifier', '_ReportID'], ['CreditReportIdentifier']) || null,
     reportDate: isoDate(field(cr, ['CreditReportFirstIssuedDate', '_Date', 'CreditReportDate'], ['CreditReportFirstIssuedDate'])),
@@ -578,7 +651,10 @@ function parseCreditXml(xml) {
     bureausReturned,
     scores,
     middleScore: merged ? segments[0].middleScore : representative(scores),
-    borrower: merged ? segments[0].borrower : identityFrom(X.firstDeep(cr, 'BORROWER') || X.firstDeep(cr, 'CREDIT_BORROWER')),
+    // The BORROWER element carries the identity in MISMO 2.x; in 3.x it is on the
+    // PARTY, so fall back to the canonical party record rather than report nobody
+    // (that identity is what verifies the FICO write-back against the file's SSN).
+    borrower: merged ? segments[0].borrower : (namedIdentity(flatIdentity) ? flatIdentity : (primaryIdentity || flatIdentity)),
     liabilities,
     inquiries,
     publicRecords,

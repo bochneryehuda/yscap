@@ -343,7 +343,64 @@ const rowsFor = (appId) => db.query(
   const coFicoG = (await db.query('SELECT fico FROM borrowers WHERE id=$1', [G.coId])).rows[0].fico;
   ok(coFicoG === 655, `the co-borrower’s FICO is their own score (got ${coFicoG})`);
 
+  // ═══════ 5) ONE JOINT ORDER: one request, ONE reference, both borrowers ═════
+  // The Xactus 3.4 spec takes either shape; this is the "one big one with one
+  // reference" the owner asked for, versus the separate orders proven above.
+  const J = await seedFile('j', staff.id);
+  calls.length = 0;
+  provider.pull = async (args) => { calls.push(args); return { xml: MERGED_XML, pdfBase64: PDF_B64, vendorReportId: 'XAC-JOINT-DB' }; };
+  const jointOut = await credit.importCredit(J.appId, {
+    borrowerIds: [J.borrowerId, J.coId], joint: true, requestType: 'reissue',
+    jointReissueReportId: 'JOINT-REF-1', consent: true, actorId: staff.id,
+  });
+  ok(calls.length === 1, `ONE request goes out for both borrowers, not two (sent ${calls.length})`);
+  ok(Array.isArray(calls[0].borrowers) && calls[0].borrowers.length === 2, 'and it carries BOTH borrowers');
+  ok(calls[0].reissueReportId === 'JOINT-REF-1', 'against the ONE joint reference number');
+  ok(jointOut.importMode === 'joint' && jointOut.pulled === 2, `both borrowers imported off it (${jointOut.pulled})`);
+  const rowsJ = await rowsFor(J.appId);
+  const pJ = rowsJ.find((r) => r.borrower_id === J.borrowerId);
+  const cJ = rowsJ.find((r) => r.borrower_id === J.coId);
+  ok(rowsJ.length === 2, 'a report row for each borrower');
+  ok(pJ.middle_score === 705 && cJ.middle_score === 655, `each gets their OWN score off the joint report (${pJ.middle_score}/${cJ.middle_score})`);
+  ok(pJ.pdf_document_id === cJ.pdf_document_id, 'the one joint report is filed once and shared');
+  ok(pJ.checklist_item_id === J.itemId && cJ.checklist_item_id === J.itemId, 'and both sit on the one credit condition');
+  ok(jointOut.joint && jointOut.joint.split === 2, 'the joint report was split between both borrowers');
+
+  // A joint order is REFUSED before it goes out when a borrower is missing PII —
+  // one bad packet must not burn a billable joint pull.
+  const K = await seedFile('k', staff.id);
+  await db.query('UPDATE borrowers SET current_address=NULL WHERE id=$1', [K.coId]);
+  calls.length = 0;
+  let jointRefused = null;
+  try {
+    await credit.importCredit(K.appId, {
+      borrowerIds: [K.borrowerId, K.coId], joint: true, requestType: 'new', consent: true, actorId: staff.id,
+    });
+  } catch (e) { jointRefused = e.userMessage || e.message; }
+  ok(!!jointRefused && /missing/i.test(jointRefused), `a joint order with incomplete borrower details is refused (${jointRefused})`);
+  ok(calls.length === 0, 'and nothing was sent to Xactus');
+
+  // The SAME file can still be ordered the other way — separate orders, a
+  // reference each — so the choice is genuinely per import.
+  const S2 = await seedFile('s2', staff.id);
+  calls.length = 0;
+  provider.pull = async (args) => {
+    calls.push(args);
+    const first = (args.borrower && args.borrower.firstName) || (args.borrowers && args.borrowers[0].firstName);
+    return { xml: soloXml(first, 'Marsh', first === 'Robin' ? '987654321' : '123456789', 700, 690, 695, 'X-' + first), pdfBase64: PDF_B64, vendorReportId: 'X-' + first };
+  };
+  const sepOut = await credit.importCredit(S2.appId, {
+    borrowerIds: [S2.borrowerId, S2.coId], joint: false, requestType: 'reissue',
+    reissueReportIds: { [S2.borrowerId]: 'REF-A', [S2.coId]: 'REF-B' }, consent: true, actorId: staff.id,
+  });
+  ok(calls.length === 2, `separate orders send one request per borrower (sent ${calls.length})`);
+  ok(sepOut.importMode !== 'joint' && sepOut.pulled === 2, 'and both borrowers still import');
+  const sentRefs = calls.map((c) => c.reissueReportId).sort().join(',');
+  ok(sentRefs === 'REF-A,REF-B', `each with its own reference (${sentRefs})`);
+
   // A joint response that names nobody on the file is refused, never mis-filed.
+  // (Sets its own stub — the sections above swap `provider.pull` for their own.)
+  provider.pull = async (args) => { calls.push(args); return { xml: MERGED_XML, pdfBase64: PDF_B64, vendorReportId: 'XAC-JOINT-DB' }; };
   const H = (await db.query(
     `INSERT INTO borrowers (first_name,last_name,email,date_of_birth,ssn_encrypted,ssn_last4,current_address)
      VALUES ('Chris','Okafor',$1,'1979-01-05',$2,$3,$4) RETURNING id`,
@@ -359,7 +416,7 @@ const rowsFor = (appId) => db.query(
   provider.pull = realPull;
 
   // ───────────────────────────────────────────────────────────── cleanup ────
-  const apps = [A.appId, B.appId, C2.appId, D.appId, E.appId, F.appId, G.appId, S.appId, soloApp.id, hApp.id];
+  const apps = [A.appId, B.appId, C2.appId, D.appId, E.appId, F.appId, G.appId, J.appId, K.appId, S.appId, S2.appId, soloApp.id, hApp.id];
   await db.query('DELETE FROM credit_reports WHERE application_id = ANY($1::uuid[])', [apps]).catch(() => {});
   await db.query('DELETE FROM documents WHERE application_id = ANY($1::uuid[])', [apps]).catch(() => {});
   await db.query('DELETE FROM checklist_items WHERE application_id = ANY($1::uuid[])', [apps]).catch(() => {});

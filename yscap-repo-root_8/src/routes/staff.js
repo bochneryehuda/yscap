@@ -3487,6 +3487,10 @@ router.post('/applications/:id/credit/import', async (req, res) => {
       // primary's, which made a co-borrower-only reissue impossible).
       reissueReportIds: (b.reissueReportIds && typeof b.reissueReportIds === 'object' && !Array.isArray(b.reissueReportIds))
         ? b.reissueReportIds : undefined,
+      // ONE joint order covering every selected borrower (one reference number),
+      // instead of a separate order per borrower.
+      joint: b.joint === true,
+      jointReissueReportId: typeof b.jointReissueReportId === 'string' ? b.jointReissueReportId : undefined,
       xml: typeof b.xml === 'string' ? b.xml : undefined,
       pdfBase64: typeof b.pdfBase64 === 'string' ? b.pdfBase64 : undefined,
       // ONE downloaded file covering BOTH borrowers (a merged/joint report). Absent =
@@ -3516,6 +3520,7 @@ router.post('/applications/:id/credit/import', async (req, res) => {
       pulled: out.pulled, coConditionOpened: out.coConditionOpened || undefined,
       coConditionClosed: out.coConditionClosed || undefined,
       importMode: out.importMode,
+      joint: out.joint ? { reference: out.joint.reference, borrowers: out.joint.borrowerCount, split: out.joint.split } : undefined,
       // A merged report is one document read for several people — record who it was
       // matched to and how, so the file's history explains itself later.
       merged: out.merged
