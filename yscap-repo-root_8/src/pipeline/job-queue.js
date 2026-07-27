@@ -195,18 +195,64 @@ async function recordAttempt(db, id, { attemptNo, outcome = null, error = null, 
     [id, attemptNo, outcome, error, provider, latencyMs, costCents]);
 }
 
-/** Upsert a per-job stage manifest row. */
+/**
+ * Upsert a per-job stage manifest row.
+ *
+ * `ended_at` is stamped for every TERMINAL status. RS-3 (2026-07-26) adds 'manual_required' to that
+ * set: a stage that ends by handing work to a person has ENDED — the pipeline is not going to touch
+ * it again — and leaving ended_at NULL made it read as still-running forever on every surface that
+ * measures stage duration or looks for stuck work. No existing caller wrote this status, so adding
+ * it changes nothing that already ran.
+ */
+const TERMINAL_STAGE_STATUSES = "('completed','not_applicable','manual_required','failed_terminal')";
 async function recordStage(db, id, stageKey, status, detail = {}) {
   await db.query(
     `INSERT INTO document_pipeline_stages (job_id, stage_key, status, started_at, ended_at, detail)
      VALUES ($1,$2,$3, now(),
-             CASE WHEN $3 IN ('completed','not_applicable','failed_terminal') THEN now() ELSE NULL END,
+             CASE WHEN $3 IN ${TERMINAL_STAGE_STATUSES} THEN now() ELSE NULL END,
              $4::jsonb)
      ON CONFLICT (job_id, stage_key) DO UPDATE
         SET status = EXCLUDED.status,
-            ended_at = CASE WHEN EXCLUDED.status IN ('completed','not_applicable','failed_terminal') THEN now() ELSE document_pipeline_stages.ended_at END,
+            ended_at = CASE WHEN EXCLUDED.status IN ${TERMINAL_STAGE_STATUSES} THEN now() ELSE document_pipeline_stages.ended_at END,
             detail = EXCLUDED.detail`,
     [id, stageKey, status, JSON.stringify(detail || {})]);
+}
+
+/**
+ * RS-3 — record the disposition of EVERY page of a job's document (db/330).
+ *
+ * Upserts one row per page. A re-run RE-STATES each page rather than appending a second opinion:
+ * the current disposition is the only one that means anything, and duplicate rows would make "how
+ * many pages need a person" wrong the moment a job retried.
+ *
+ * The rows are written in ONE statement (unnested arrays) rather than a loop, so a 900-page packet
+ * is one round trip and the whole accounting lands atomically — a half-written page list is exactly
+ * the silently-incomplete record this item exists to eliminate.
+ */
+async function recordPages(db, id, pages = []) {
+  const list = Array.isArray(pages) ? pages.filter((p) => p && Number.isFinite(p.page)) : [];
+  if (!list.length) return 0;
+  await db.query(
+    `INSERT INTO document_pipeline_pages (job_id, page_number, disposition, reason, assigned_type, confidence, meta)
+     SELECT $1, x.page_number, x.disposition, x.reason, x.assigned_type, x.confidence, x.meta
+       FROM unnest($2::int[], $3::text[], $4::text[], $5::text[], $6::numeric[], $7::jsonb[])
+            AS x(page_number, disposition, reason, assigned_type, confidence, meta)
+     ON CONFLICT (job_id, page_number) DO UPDATE
+        SET disposition = EXCLUDED.disposition,
+            reason = EXCLUDED.reason,
+            assigned_type = EXCLUDED.assigned_type,
+            confidence = EXCLUDED.confidence,
+            meta = EXCLUDED.meta`,
+    [
+      id,
+      list.map((p) => Math.trunc(p.page)),
+      list.map((p) => String(p.disposition)),
+      list.map((p) => (p.reason == null ? null : String(p.reason))),
+      list.map((p) => (p.assignedType == null ? null : String(p.assignedType))),
+      list.map((p) => (typeof p.confidence === 'number' && Number.isFinite(p.confidence) ? p.confidence : null)),
+      list.map((p) => JSON.stringify(p.claimedBy ? { claimedBy: p.claimedBy } : {})),
+    ]);
+  return list.length;
 }
 
 /** Record a produced artifact (raw provider result, evidence candidates, route record, …). */
@@ -230,5 +276,5 @@ async function stats(db, { pipelineVersion = null } = {}) {
 module.exports = {
   READY_STATUSES,
   enqueue, claimBatch, heartbeat, reapExpiredLeases, complete, fail,
-  markCancelled, requestCancel, recordAttempt, recordStage, recordArtifact, stats,
+  markCancelled, requestCancel, recordAttempt, recordStage, recordArtifact, recordPages, stats,
 };

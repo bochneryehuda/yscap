@@ -109,7 +109,40 @@ function nyParts(now = new Date()) {
 // check and both send, the owner-reported duplicate sweep 2026-07-20). Fails
 // closed. entityId null = a global (non-file-scoped) digest.
 async function _gate(action, entityId, interval) {
-  return (await claimOncePerPeriod({ action, entityId: entityId || null, interval })) != null;
+  return (await _claim(action, entityId, interval)) != null;
+}
+// Same claim, but returns the audit_log ROW ID rather than a boolean.
+//
+// A caller that may need to RELEASE its claim (the direct-source sweep claims before spending money
+// on vendor calls) must be able to delete the exact row it wrote. Releasing by (action, entity) plus
+// a time window instead — which is what this did — is a statement whose safety rests on an argument
+// about every other writer of that action rather than on the statement itself, and it silently
+// matches nothing if the work outlasts the window. Pinning the id removes the argument.
+async function _claim(action, entityId, interval) {
+  return claimOncePerPeriod({ action, entityId: entityId || null, interval });
+}
+/**
+ * The SAME claim, for a throttle keyed on the RECIPIENT rather than on a file.
+ *
+ * There are two shapes here and conflating them made the fairness guard unable to tell them apart.
+ * A PER-FILE throttle ("this file was nudged, don't nudge it again for 3 days") governs the rows a
+ * capped work query returns, so it MUST also appear in that query's WHERE or an already-notified
+ * file keeps taking a slot. A PER-RECIPIENT throttle ("this officer got their daily pipeline note")
+ * governs the EMAIL, not the rows: the officer's file list is a top-N summary, and filtering it by
+ * the officer's own stamp would be meaningless.
+ *
+ * Saying which is which in the CODE — rather than keeping a list of exceptions in the test — is what
+ * lets the guard demand the SQL throttle from every per-file digest without a whitelist to fall out
+ * of date. Use `_gate`/`_claim` for a file; `_gateRecipient` for a person.
+ */
+async function _gateRecipient(action, staffId, interval) {
+  return _gate(action, staffId, interval);
+}
+// Give back a claim this pass made and did not use. Best-effort BY ID, so it can only ever remove
+// the row this caller just wrote — never an older legitimate stamp and never another file's.
+async function _releaseClaim(claimId) {
+  if (!claimId) return;
+  await db.query(`DELETE FROM audit_log WHERE id = $1`, [claimId]).catch(() => {});
 }
 // The claim row is already written by _gate; _stamp now just enriches it with the
 // digest's stats for the audit trail (best-effort — never a second throttle row).
@@ -160,7 +193,18 @@ async function weeklyBorrowerOutstandingOnce() {
                   AND ci.status IN ('outstanding','requested','issue'))
     OR EXISTS (SELECT 1 FROM conditions c
                 WHERE c.application_id = a.id AND c.audience IN ('borrower','both')
-                  AND c.borrower_title IS NOT NULL AND c.status IN ('open','borrower_responded')))`;
+                  AND NULLIF(TRIM(c.borrower_title), '') IS NOT NULL AND c.status IN ('open','borrower_responded')))`;
+/* NULLIF, not a bare IS NOT NULL (audit 2026-07-26). `IS NOT NULL` admits the EMPTY STRING, and
+   `reminders.outstandingItems` — the function that actually builds the email body — formats a
+   condition with an empty title to '' and drops it with `.filter(Boolean)`. So a file whose only
+   open borrower item was a condition titled '' passed this predicate, came back with an empty item
+   list, hit the `continue` below, and therefore never claimed its throttle stamp. Its `last_digest`
+   stayed NULL forever, and `NULLS FIRST` pinned it to the head of every single pass for the life of
+   the file — occupying a slot in the cap permanently and sending nothing. That is the exact
+   residual shape of the bug this predicate was written to close, narrowed to one column. The
+   checklist half above already guards its label with COALESCE/NULLIF; this makes the two halves
+   agree, which is the property that matters: the SQL must select exactly the population the body
+   builder reports as non-empty. */
   const apps = await db.query(
     // The last-digest stamp is read ONCE in a LATERAL and used for BOTH the throttle and the sort,
     // so the fair-rotation key and the "already sent recently" test can never disagree.
@@ -260,7 +304,7 @@ async function dailyPipelineDigestOnce() {
       if (!files.rows.length) continue;
       // Claim the once-per-day gate only once we know there's content to send
       // (don't burn the window on an empty pass).
-      if (!(await _gate('pipeline_digest_daily', st.id, '20 hours'))) continue;
+      if (!(await _gateRecipient('pipeline_digest_daily', st.id, '20 hours'))) continue;
       const lines = files.rows.map((f) => {
         const d = daysAt(f.status_changed_at);
         return `${f.ys_loan_number || 'Loan # pending'} · ${addrOf(f.property_address)} — ${STATUS_LABEL[f.status] || f.status}`
@@ -431,8 +475,14 @@ async function qaDeskAuditOnce() {
   try {
     [dupes, noEvidence, openFatal] = await Promise.all([
       // 1) same condition template open ≥2× on one active file.
-      db.query(
-        `SELECT a.id AS application_id, a.property_address, t.code, COUNT(*)::int AS n
+        /* ORDER BY … a.id is a TOTAL order (audit 2026-07-26: `t.code` alone is not — the query
+           groups by a.id as WELL as t.code, so two different files carrying the same code and the
+           same count tie and come back in whatever order the plan happens to produce).
+           `count(*) OVER ()` reports how many groups matched IN TOTAL, so a truncated batch says so
+           instead of reading as the whole answer — see the note on the sibling queries below. */
+        db.query(
+        `SELECT a.id AS application_id, a.property_address, t.code, COUNT(*)::int AS n,
+                count(*) OVER ()::int AS total_matches
            FROM checklist_items ci
            JOIN applications a ON a.id = ci.application_id AND a.deleted_at IS NULL
            JOIN checklist_templates t ON t.id = ci.template_id
@@ -440,11 +490,25 @@ async function qaDeskAuditOnce() {
             AND ci.status IN ('outstanding','requested','received','issue')
           GROUP BY a.id, a.property_address, t.code
          HAVING COUNT(*) > 1
-          ORDER BY n DESC, t.code
+          ORDER BY n DESC, t.code, a.id
           LIMIT 25`),
       // 2) a document condition cleared with no current document attached.
-      db.query(
-        `SELECT a.id AS application_id, a.property_address, ci.label
+        /* NEWEST CLEARANCE FIRST, and the total is reported (audit 2026-07-26).
+           This was `ORDER BY a.id LIMIT 25` — ordered, and totally ordered, and STILL an instance of
+           the exact starvation this session set out to kill. A file's id is a UUID that never
+           changes, and this audit writes nothing that removes a row from the set, so the same lowest
+           25 ids were reported to the super-admins every night for the life of the deployment and a
+           file whose id sorted 26th was permanently invisible. Ordering a capped batch is only a fix
+           when the sort key ADVANCES.
+           The key that advances here is the CLEARANCE itself: a condition signed off today is a
+           mistake worth catching today, so newest-first is both the right audit semantics and a
+           moving key. `count(*) OVER ()` then makes the cap honest — the digest can say "25 of 340"
+           rather than presenting a truncated sample as the whole finding. A historical backlog is a
+           one-off cleanup, which the total makes visible; it is not something a nightly note should
+           silently pretend does not exist. */
+        db.query(
+        `SELECT a.id AS application_id, a.property_address, ci.label,
+                count(*) OVER ()::int AS total_matches
            FROM checklist_items ci
            JOIN applications a ON a.id = ci.application_id AND a.deleted_at IS NULL
           WHERE a.status NOT IN ('withdrawn','cancelled','declined')
@@ -454,19 +518,24 @@ async function qaDeskAuditOnce() {
               SELECT 1 FROM documents d
                WHERE d.checklist_item_id = ci.id AND d.is_current = true
                  AND COALESCE(d.review_status,'') <> 'rejected')
-          ORDER BY a.id
+          ORDER BY COALESCE(ci.signed_off_at, ci.updated_at, ci.created_at) DESC NULLS LAST, ci.id
           LIMIT 25`),
       // 3) a file advanced to approved/CTC/funded with an OPEN fatal AI suggestion.
-      db.query(
+        /* Same treatment: severity first (a file with six open fatals outranks one with a single
+           fatal), then the MOST RECENT fatal — an advancing key, so a newly raised fatal on a file
+           that already advanced to CTC surfaces at once instead of queueing behind an untouched
+           backlog. a.id remains only as the final tie-break, never as the whole order. */
+        db.query(
         `SELECT a.id AS application_id, a.property_address, a.status AS app_status,
-                COUNT(*)::int AS open_fatal
+                COUNT(*)::int AS open_fatal, max(s.created_at) AS newest_fatal_at,
+                count(*) OVER ()::int AS total_matches
            FROM ai_suggestions s
            JOIN applications a ON a.id = s.application_id AND a.deleted_at IS NULL
           WHERE s.severity = 'fatal'
             AND s.status IN ('open','marked_important','escalated','asked_admin')
             AND a.status IN ('approved','clear_to_close','funded')
           GROUP BY a.id, a.property_address, a.status
-          ORDER BY open_fatal DESC, a.id
+          ORDER BY open_fatal DESC, max(s.created_at) DESC NULLS LAST, a.id
           LIMIT 25`),
     ]);
   } catch (_) { await _stamp('qa_desk_audit', null, { error: true }); return 0; }
@@ -479,17 +548,28 @@ async function qaDeskAuditOnce() {
   if (!admins.rows.length) return 0;
 
   const addr = (pa, id) => (pa && (pa.line1 || pa.address || pa.oneLine)) || String(id).slice(0, 8);
+  /* NO SILENT CAPS (audit 2026-07-26). Each of these three queries is capped at 25 and the note then
+     printed the SHOWN count as if it were the finding. "12 conditions cleared with no document"
+     read as twelve when it could have been the first 25 of three hundred, and an admin who worked
+     all twelve would reasonably believe the queue was empty. `count(*) OVER ()` rides back on the
+     row, so the count says how many there really are and names the cap when one applied. */
+  const headline = (rows, one, many) => {
+    const shown = rows.length;
+    const total = (rows[0] && Number.isFinite(rows[0].total_matches)) ? rows[0].total_matches : shown;
+    const noun = total === 1 ? one : many;
+    return total > shown ? `${total} ${noun} (showing the ${shown} most recent)` : `${total} ${noun}`;
+  };
   const lines = [];
   if (openFatal.rows.length) {
-    lines.push(`⛔ ${openFatal.rows.length} file(s) advanced with an OPEN fatal AI finding:`);
+    lines.push(`⛔ ${headline(openFatal.rows, 'file', 'file(s)')} advanced with an OPEN fatal AI finding:`);
     for (const r of openFatal.rows.slice(0, 8)) lines.push(`   • ${addr(r.property_address, r.application_id)} — ${r.app_status} · ${r.open_fatal} fatal`);
   }
   if (noEvidence.rows.length) {
-    lines.push(`📄 ${noEvidence.rows.length} condition(s) cleared with no document attached:`);
+    lines.push(`📄 ${headline(noEvidence.rows, 'condition', 'condition(s)')} cleared with no document attached:`);
     for (const r of noEvidence.rows.slice(0, 8)) lines.push(`   • ${addr(r.property_address, r.application_id)} — "${String(r.label || '').slice(0, 60)}"`);
   }
   if (dupes.rows.length) {
-    lines.push(`🔁 ${dupes.rows.length} duplicate open condition(s):`);
+    lines.push(`🔁 ${headline(dupes.rows, 'duplicate open condition', 'duplicate open condition(s)')}:`);
     for (const r of dupes.rows.slice(0, 8)) lines.push(`   • ${addr(r.property_address, r.application_id)} — ${r.code} ×${r.n}`);
   }
 
@@ -531,7 +611,7 @@ async function weeklyLoAiDigestOnce() {
   } catch (_) { return 0; }
   let sent = 0;
   for (const lo of officers.rows) {
-    if (!(await _gate('lo_weekly_ai_digest', lo.id, '6 days'))) continue;
+    if (!(await _gateRecipient('lo_weekly_ai_digest', lo.id, '6 days'))) continue;
     let files;
     try {
       files = await db.query(
@@ -779,7 +859,7 @@ async function workflowAgingOnce() {
   try { rows = await workflow.overdueByRecipient(); } catch (_) { return 0; }
   for (const r of rows) {
     try {
-      if (!r.to_staff_id || !(await _gate('workflow_overdue', r.to_staff_id, '20 hours'))) continue;
+      if (!r.to_staff_id || !(await _gateRecipient('workflow_overdue', r.to_staff_id, '20 hours'))) continue;
       await notify.notifyStaff(r.to_staff_id, {
         type: 'workflow_ready',
         title: r.overdue === 1 ? 'A file in your Workflow is overdue' : `${r.overdue} files in your Workflow are overdue`,
@@ -965,34 +1045,34 @@ async function directSourceSweepOnce() {
         // Claim the per-file slot BEFORE spending money on vendor calls. This is the same atomic
         // claim every other digest uses, and it is what makes the ordering above a real rotation:
         // the stamp it writes is the sort key, so a verified file moves to the back of the queue.
-        if (!(await _gate(DIGEST_ACTION.DIRECT_SOURCE_FILE, row.id, '7 days'))) continue;
-        const client = await db.getClient();
+        const claimId = await _claim(DIGEST_ACTION.DIRECT_SOURCE_FILE, row.id, '7 days');
+        if (!claimId) continue;
         let verified = false;
+        // RELEASE ON EVERY PATH THAT VERIFIED NOTHING — including a THROW (audit 2026-07-26).
+        //
+        // The first version released only when `verifyFile` returned cleanly with no ok result, and
+        // rethrew on an exception. That covered the least likely failure and missed the most likely
+        // ones: `getClient()` exhausting the pool, BEGIN/COMMIT failing, or a connector throwing
+        // rather than reporting `{ok:false}`. Any of those escaped past the release, so the file
+        // kept a "verified" stamp and sat out of the queue for seven days having been verified by
+        // nobody — the precise outcome the release exists to prevent, reached by the more common
+        // route. The `finally` makes the property structural: nothing verified, claim goes back.
         try {
-          await client.query('BEGIN');
-          const r = await hub.verifyFile(client, row.id, {});
-          await client.query('COMMIT');
-          files += 1;
-          calls += (r && r.results ? r.results.filter((x) => x.ok || x.reason).length : 0);
-          // Did ANY connector actually return something? `verifyFile` swallows connector errors and
-          // reports them as {ok:false, reason}, so a vendor outage or a rotated key does not throw —
-          // it comes back as a full set of failures.
-          verified = !!(r && Array.isArray(r.results) && r.results.some((x) => x && x.ok));
-        } catch (e) { await client.query('ROLLBACK').catch(() => {}); throw e; }
-        finally { client.release(); }
-        // RELEASE THE CLAIM when nothing was verified (audit finding, 2026-07-26). Claiming BEFORE
-        // the spend is deliberate and right — it is what makes the queue rotate, it prevents
-        // double-billing if the process dies mid-call, and it is atomic across instances. But the
-        // claim is committed in its own transaction, so a total failure would otherwise leave the
-        // file stamped "verified" and excluded for 7 days having been verified by nobody. One key
-        // rotation during a 40-file pass would silently park all 40 for a week. So on a total
-        // failure the stamp is withdrawn and the file returns to the queue on the next pass.
-        if (!verified) {
-          await db.query(
-            `DELETE FROM audit_log
-              WHERE action = $1 AND entity_id = $2 AND entity_type = 'application'
-                AND created_at > now() - interval '1 hour'`,
-            [DIGEST_ACTION.DIRECT_SOURCE_FILE, row.id]).catch(() => {});
+          const client = await db.getClient();
+          try {
+            await client.query('BEGIN');
+            const r = await hub.verifyFile(client, row.id, {});
+            await client.query('COMMIT');
+            files += 1;
+            calls += (r && r.results ? r.results.filter((x) => x.ok || x.reason).length : 0);
+            // Did ANY connector actually return something? `verifyFile` swallows connector errors
+            // and reports them as {ok:false, reason}, so a vendor outage or a rotated key does not
+            // throw — it comes back as a full set of failures.
+            verified = !!(r && Array.isArray(r.results) && r.results.some((x) => x && x.ok));
+          } catch (e) { await client.query('ROLLBACK').catch(() => {}); throw e; }
+          finally { client.release(); }
+        } finally {
+          if (!verified) await _releaseClaim(claimId);
         }
       } catch (e) { console.error('[digests] direct-source-sweep', row.id, e && e.message); }
     }

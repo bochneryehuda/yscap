@@ -30,6 +30,7 @@ const STAGE = Object.freeze({
   OCR_LAYOUT: 'ocr_layout',
   CLASSIFICATION: 'classification',
   EVIDENCE: 'evidence',       // RS-1: the read was turned into recorded evidence
+  PAGE_DISPOSITION: 'page_disposition', // RS-3: every page of the packet was accounted for
 });
 
 // The stages that MUST reach 'completed' for a job to count as a complete run, per mode.
@@ -68,10 +69,17 @@ const REQUIRED = Object.freeze({
  * throw away a good read. So it must be PRESENT — recorded with some real outcome — and its status
  * is reported as advisory rather than gating. A stage that is present but not completed shows up in
  * `advisory` for the surface to display; a stage that was never recorded still fails the job closed.
+ *
+ * RS-3 (2026-07-26) adds `page_disposition` on the same tier, for the same reason and one more.
+ * Its job is to state what happened to EVERY page of the packet, and the failure it exists to catch
+ * is a page nobody mentioned — so the stage NOT BEING RECORDED AT ALL is precisely the defect, and
+ * required-present is exactly the right strength. Its verdict, though, must not gate: the honest
+ * outcome for a packet with an unplaceable page is 'manual_required' (a person is owed work), and a
+ * page needing a human is not a reason to throw away a successful, already-paid-for read.
  */
 const REQUIRED_PRESENT = Object.freeze({
   shadow: [],
-  read: [STAGE.CLASSIFICATION],
+  read: [STAGE.CLASSIFICATION, STAGE.PAGE_DISPOSITION],
 });
 
 function requiredStages(mode) {
