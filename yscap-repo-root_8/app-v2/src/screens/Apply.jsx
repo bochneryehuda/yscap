@@ -10,7 +10,7 @@ import LlcPicker from '../components/LlcPicker.jsx';
 import { US_STATES } from '../components/LlcManager.jsx';
 import { MoneyInput, PhoneInput, ZipInput, EmailInput } from '../components/FormattedInputs.jsx';
 import TermSheetStudio, {
-  buildStudioState, portalLoanType, portalProgram, selectionFromSnapshot, blobToBase64,
+  buildStudioState, portalLoanType, portalProgram, selectionFromSnapshot, blobToBase64, rehabTypePatch,
 } from '../components/TermSheetStudio.jsx';
 
 const STEPS = ['Property', 'Loan', 'Borrower', 'Price & register'];
@@ -362,7 +362,13 @@ export default function Apply() {
       const fee = Math.max(0, (Number(f.price) || 0) - (Number(f.origPrice) || 0));
       patch.assignmentFee = fee ? String(fee) : '';
     }
-    if (f.rehabScope === 'heavy') patch.rehabType = 'Heavy / gut rehab';
+    // The rehab scope the studio priced → the application's Rehab type. Was
+    // heavy-only, so a scenario that expanded the footprint (or was a plain
+    // light rehab) left the field blank on the file. rehabTypePatch keeps a more
+    // specific answer the applicant already gave (e.g. Cosmetic) when the scope
+    // hasn't actually changed.
+    const rt = rehabTypePatch(f, cur && cur.rehabType);
+    if (rt) patch.rehabType = rt;
     if (f.fico) patch.personal = { ...((cur && cur.personal) || {}), fico: f.fico };
     return patch;
   };

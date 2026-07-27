@@ -38,6 +38,22 @@ function shortReason(reasons, status) {
 }
 const statusWord = (st) => (st === 'MANUAL' ? 'manual-review exception' : st === 'INELIGIBLE' ? 'not eligible' : String(st || '').toLowerCase());
 
+// The rehab SCOPE a registered scenario describes, in the loan application's own
+// words. Mirrors the server's rehabTypeFromInputs (src/lib/product-registration.js),
+// which writes this same label onto the file's Rehab type on register — so the
+// registered product visibly carries what kind of rehab was priced, not just its
+// budget. Null (a bridge deal, or a renovation strategy with no rehab money)
+// renders no row at all.
+function registeredRehabType(inp) {
+  const i = inp || {};
+  if (/ground/i.test(String(i.strategy || ''))) return 'Ground-up construction';
+  if (/bridge|stabil/i.test(String(i.strategy || ''))) return null;
+  if (i.sqftAddition) return 'Adding square footage';
+  if (i.heavyRehab) return 'Heavy / gut rehab';
+  if (!(Number(i.rehabBudget) > 0)) return null;
+  return 'Light / moderate';
+}
+
 function addrLine(a) {
   if (!a) return '';
   if (typeof a === 'string') return a;
@@ -261,6 +277,7 @@ export function RegisteredProductDetails({ reg, compactView = false, showAdmin =
             <Row k={`Effective purchase price ${q.assignment.overridden ? '(admin exception)' : q.assignment.dollarCap ? '(fee capped at the program limit)' : '(fee capped at 15%)'}`} v={money(q.assignment.recognizedPrice)} />}
           <Row k="As-is value / ARV" v={`${money(inp.asIsValue)}${inp.asIsDefaulted ? ' (= purchase, defaulted)' : ''} / ${money(inp.arv)}`} />
           <Row k="Rehab budget" v={money(inp.rehabBudget)} />
+          {registeredRehabType(inp) && <Row k="Rehab scope" v={registeredRehabType(inp)} />}
           <Row k="FICO / experience" v={`${inp.fico || '—'} · ${inp.expFlips || 0} flips / ${inp.expHolds || 0} holds / ${inp.expGround || 0} ground-up`} />
           <Row k="Requested interest reserve" v={`${inp.irAmount ? money(inp.irAmount) : `${inp.irMonths || 0} months`}${(inp.irAmount > 0 || inp.irMonths > 0) ? ` · financed: ${money(s.financedReserve || 0)}` : ''}`} />
           {showAdmin && q.adminPricing && (q.adminPricing.markupPct != null || q.adminPricing.manualPricing) && (
