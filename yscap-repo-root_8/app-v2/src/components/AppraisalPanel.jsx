@@ -1,5 +1,9 @@
 import React, { useEffect, useState, useCallback, useRef } from 'react';
 import { api } from '../lib/api.js';
+// Severity words + colours: ONE shared map. Three screens each kept a private copy
+// and had already drifted — this one said "Fatal" for the same finding the
+// escalations screen called something else. See lib/findings-vocab.js.
+import { FINDING_SEVERITY as SEV, severityCount } from '../lib/findings-vocab.js';
 
 /* The PILOT property report. Imports the appraisal XML (staff), renders the property profile
    built from it — hero + value story, photo gallery, collateral snapshot, comparable sales — and
@@ -21,11 +25,6 @@ function readFileAsBase64(file) {
   });
 }
 
-const SEV = {
-  fatal: { bg: 'var(--crit-bg,#F6E7E4)', fg: 'var(--crit,#B4483C)', label: 'Fatal' },
-  warning: { bg: 'var(--amber-bg,#F6EEDD)', fg: 'var(--amber,#B7791F)', label: 'Warning' },
-  info: { bg: 'rgba(47,127,134,.14)', fg: 'var(--teal-deep,#256168)', label: 'Info' },
-};
 
 function btn(primary, danger) {
   return {
@@ -273,7 +272,7 @@ function riskChips(a, comps, sum) {
   if (a.as_is_confidence && a.as_is_confidence !== 'definite') chips.push({ t: 'As-Is read from narrative — verify', tone: 'amber' });
   if (/nonconform|legal.?non/i.test(a.zoning_compliance || '')) chips.push({ t: 'Legal non-conforming zoning', tone: 'amber' });
   if ((comps || []).length && (comps || []).length < 3) chips.push({ t: `Only ${comps.length} comparable sale${comps.length === 1 ? '' : 's'}`, tone: 'amber' });
-  if (sum && sum.fatal > 0) chips.push({ t: `${sum.fatal} open fatal finding${sum.fatal === 1 ? '' : 's'}`, tone: 'crit' });
+  if (sum && sum.fatal > 0) chips.push({ t: `${sum.fatal} open dealbreaker${sum.fatal === 1 ? '' : 's'}`, tone: 'crit' });
   return chips;
 }
 
@@ -1244,7 +1243,7 @@ export default function AppraisalPanel({ appId, readOnly = false, onSummary, rel
             <>
               {(sum.fatal > 0 || sum.warning > 0) && (
                 <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 12, flexWrap: 'wrap' }}>
-                  {sum.fatal > 0 && <span style={{ fontWeight: 700, color: SEV.fatal.fg, background: SEV.fatal.bg, borderRadius: 999, padding: '4px 12px', fontSize: 12.5 }}>{sum.fatal} fatal</span>}
+                  {sum.fatal > 0 && <span style={{ fontWeight: 700, color: SEV.fatal.fg, background: SEV.fatal.bg, borderRadius: 999, padding: '4px 12px', fontSize: 12.5 }}>{severityCount(sum.fatal, 'fatal')}</span>}
                   {sum.warning > 0 && <span style={{ fontWeight: 700, color: SEV.warning.fg, background: SEV.warning.bg, borderRadius: 999, padding: '4px 12px', fontSize: 12.5 }}>{sum.warning} warning</span>}
                   {sum.blocksCtc && <span style={{ fontSize: 12.5, color: SEV.fatal.fg }}>Clear-to-close is blocked until every fatal is resolved.</span>}
                 </div>
@@ -1260,7 +1259,7 @@ export default function AppraisalPanel({ appId, readOnly = false, onSummary, rel
             </>
           ) : (sum.fatal > 0 || sum.warning > 0) ? (
             <div className="appr-noprint" style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 20, flexWrap: 'wrap', background: 'var(--paper,#F6F3EC)', border: '1px solid var(--line,#E7E1D3)', borderRadius: 10, padding: '10px 14px' }}>
-              {sum.fatal > 0 && <span style={{ fontWeight: 700, color: SEV.fatal.fg, background: SEV.fatal.bg, borderRadius: 999, padding: '4px 12px', fontSize: 12.5 }}>{sum.fatal} fatal</span>}
+              {sum.fatal > 0 && <span style={{ fontWeight: 700, color: SEV.fatal.fg, background: SEV.fatal.bg, borderRadius: 999, padding: '4px 12px', fontSize: 12.5 }}>{severityCount(sum.fatal, 'fatal')}</span>}
               {sum.warning > 0 && <span style={{ fontWeight: 700, color: SEV.warning.fg, background: SEV.warning.bg, borderRadius: 999, padding: '4px 12px', fontSize: 12.5 }}>{sum.warning} warning</span>}
               <span style={{ fontSize: 12.5, color: 'var(--muted,#4B585C)' }}>
                 Appraisal findings are shown — and resolved — in the{' '}

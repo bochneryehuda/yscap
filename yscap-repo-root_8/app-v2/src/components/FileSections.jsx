@@ -51,8 +51,18 @@ export function InfoTip({ tip }) {
 
 /* EVERY section is collapsible from its header row. Most start open
    (defaultOpen) — long, low-urgency ones (Document history, Activity) pass
-   defaultOpen={false} and start collapsed. */
-export function Section({ id, title, info, badge, children, style, collapsible = true, defaultOpen = true, action = null }) {
+   defaultOpen={false} and start collapsed.
+
+   `summary` is one plain line shown ONLY while the section is shut — blueprint
+   Move 3, "make every closed section worth judging". With fourteen collapsed
+   headers down the page, a title alone tells you nothing about whether it is
+   worth opening; a badge tells you a number without telling you what it means.
+   The line says it in words ("3 need your sign-off · 1 sent back"). It comes
+   from figures the page has already computed — a section with nothing truthful
+   to say passes nothing and shows nothing, which is better than a guess. It
+   disappears when the section opens, because the real content is then right
+   there and repeating it would be noise. */
+export function Section({ id, title, info, badge, children, style, collapsible = true, defaultOpen = true, action = null, summary = null }) {
   const [open, setOpen] = useState(defaultOpen);
   // Listen for an "open this section" request from anywhere on the page — the
   // left rail, the clear-to-close outstanding list, a re-register prompt — so a
@@ -71,10 +81,11 @@ export function Section({ id, title, info, badge, children, style, collapsible =
     if (e && e.target && e.target.closest && (e.target.closest('.info-tip') || e.target.closest('.sec-action'))) return;
     setOpen(o => !o);
   };
+  const showSummary = collapsible && !open && summary;
   return (
     <section id={id} className="file-section" style={style}>
       <div
-        className={`sec-head${collapsible ? ' collapsible' : ''}`}
+        className={`sec-head${collapsible ? ' collapsible' : ''}${showSummary ? ' has-summary' : ''}`}
         onClick={toggle}
         role={collapsible ? 'button' : undefined}
         tabIndex={collapsible ? 0 : undefined}
@@ -87,6 +98,7 @@ export function Section({ id, title, info, badge, children, style, collapsible =
         {action && <span className="sec-action" style={{ marginLeft: badge != null ? 12 : 'auto' }} onClick={(e) => e.stopPropagation()}>{action}</span>}
         {collapsible && <span className="muted small" style={{ flex: 'none', marginLeft: (badge != null || action) ? 12 : 'auto' }}>{open ? 'Hide' : 'Show'}</span>}
       </div>
+      {showSummary && <div className="sec-summary">{summary}</div>}
       {(!collapsible || open) && children}
     </section>
   );
