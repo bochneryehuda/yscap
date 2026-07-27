@@ -1026,7 +1026,39 @@ function computeInvestorStructureFindings(is, subject, opts = {}) {
   return out;
 }
 
+/**
+ * FILE-LEVEL rollup for OFAC/watch-list ENTITY screening (owner-reported 2026-07-26/27:
+ * "this entity WAS screened — look on the watch list — you just don't look deep enough").
+ *
+ * computeBackgroundFindings runs PER background report and can only see the one document, so on a
+ * file with two background reports the report that did not carry the borrowing entity in its header
+ * raises `background_entity_not_screened` even though ANOTHER report on the file DID screen it. The
+ * per-document check is correct (it cannot see the other document); this reconciles ACROSS reports.
+ *
+ * Given every background extraction's fields on the file, answer: was `entityName` screened by ANY
+ * of them (in a report's header OR its enumerated screened-parties list)? Returns:
+ *   true  — at least one report screened it → the per-report "not screened" finding is a false gap
+ *   false — a screened-parties list WAS read and the entity is on none of them → a real gap stands
+ *   null  — unknown (no report carried a readable screened list)
+ * Pure; reuses the SAME entityMatch primitive as the per-document check so the file-level answer can
+ * never disagree with the per-document one.
+ */
+function entityScreenedAcrossReports(bgFieldsList, entityName) {
+  if (!entityName) return null;
+  const list = Array.isArray(bgFieldsList) ? bgFieldsList.filter(Boolean) : [];
+  if (!list.length) return null;
+  let anyListRead = false;
+  for (const b of list) {
+    const screened = Array.isArray(b.screenedParties) ? b.screenedParties.filter(Boolean) : [];
+    if (screened.length || b.screenedPartiesComplete === true) anyListRead = true;
+    if (b.entityName && entityMatch(b.entityName, entityName) === true) return true;
+    if (screened.some((n) => entityMatch(n, entityName) === true)) return true;
+  }
+  return anyListRead ? false : null;
+}
+
 module.exports = {
+  entityScreenedAcrossReports,
   computeAssignmentFindings, computeOperatingAgreementFindings, computeEinFindings,
   computeGoodStandingFindings, computeFormationFindings, computeInsuranceFindings, computeInsuranceInvoiceFindings,
   computeFloodFindings, computeSettlementFindings, computeCreditFindings, computeBackgroundFindings,

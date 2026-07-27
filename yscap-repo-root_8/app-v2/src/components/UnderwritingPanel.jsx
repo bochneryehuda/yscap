@@ -335,9 +335,16 @@ function Finding({ appId, f, onChange, resolvable, canAct = false, canWaive = tr
           <a href="#" onClick={openSourceDoc} style={{ color: 'var(--teal-deep,#256168)', textDecoration: 'underline' }}>
             Open the source document{pageNumber ? ` (page ${pageNumber})` : ''}
           </a>
-          <a href="#" onClick={(e) => { e.preventDefault(); loadEvidence(); }} style={{ color: 'var(--teal-deep,#256168)', textDecoration: 'underline' }}>
-            {evidence ? 'Hide where we saw this' : 'Where we saw this'}
-          </a>
+          {/* "Where we saw this" reads the exact recorded quote + page for a STORED finding
+              (needs f.id to look up the evidence ledger). A derived finding — a tie-out
+              discrepancy that now carries a source document but no persisted row — has no ledger
+              entry, so the link would silently do nothing; show it only when there's evidence to
+              fetch, and let the "Open the source document" link stand on its own otherwise. */}
+          {f.id && (
+            <a href="#" onClick={(e) => { e.preventDefault(); loadEvidence(); }} style={{ color: 'var(--teal-deep,#256168)', textDecoration: 'underline' }}>
+              {evidence ? 'Hide where we saw this' : 'Where we saw this'}
+            </a>
+          )}
         </div>
       )}
       {evidence && (
@@ -2534,7 +2541,7 @@ const SOURCE_TINT = {
   double_pledge:   { fg: 'var(--crit,#B4483C)', bg: 'var(--crit-bg,#F6E7E4)' },
 };
 
-function AISuggestionsSection({ appId, readOnly = false, canResolve = true, shownFindingCodes = null, shownFindingKeys = null }) {
+function AISuggestionsSection({ appId, readOnly = false, canResolve = true, shownFindingCodes = null, shownClaimKeys = null, shownFindingKeys = null }) {
   const [rows, setRows] = React.useState(null);
   const [err, setErr] = React.useState('');
   const [busy, setBusy] = React.useState(false);
@@ -2569,27 +2576,40 @@ function AISuggestionsSection({ appId, readOnly = false, canResolve = true, show
   }, [appId, load]);
 
   if (rows == null && !err) return null;
-  // A suggestion is a "repeat" when its underlying finding CODE is already shown in the "Open
-  // findings" list below (the chain / bank / tie-out desks surface there AND bridge into this
-  // panel with the same evidence.code). Hidden by default so the same issue isn't shown twice;
-  // a toggle brings them back. Nothing is lost — each repeat stays fully actionable in Open findings.
+  // A suggestion is a "repeat" when the SAME underlying issue is already shown in the "Open findings"
+  // list below (the chain / bank / tie-out / guideline desks surface there AND bridge into this panel).
+  // Matched two ways so the owner's "same finding six times" collapses to ONE (2026-07-27):
+  //   • by CLAIM KEY — the semantic key the Open-findings list is deduped by (server-stamped on both
+  //     surfaces), so a fact reached under DIFFERENT codes by different desks (the vesting mismatch,
+  //     the entity-not-screened rollup) is recognized as the same issue and hidden here, and
+  //   • by raw CODE — the original exact-code match, kept as a belt-and-suspenders fallback.
+  // Hidden by default so the same issue isn't shown twice; a toggle brings them back. Nothing is lost
+  // — each repeat stays fully actionable in the one Open-findings list.
   const dupCodes = shownFindingCodes instanceof Set ? shownFindingCodes : null;
-  // The second key set (dedupe key + condition template code) is what catches a note-buyer
+  const dupClaims = shownClaimKeys instanceof Set ? shownClaimKeys : null;
+  // The guideline-desk key set (dedupe key + condition template code) catches a note-buyer
   // guideline row: its `evidence.code` is a CONDITION TEMPLATE code and its `dedupe_key` is the
   // desk's own one-per-issue key — neither of which lives in the finding-CODE namespace, so the
   // code-only check could never recognize it and the same item showed twice.
   const dupKeys = shownFindingKeys instanceof Set ? shownFindingKeys : null;
   const rowCode = (r) => { const c = r && r.evidence && r.evidence.code; return c ? String(c).trim().toLowerCase() : null; };
+  const rowClaim = (r) => (r && r.claim_key) ? String(r.claim_key) : null;
   const rowKey = (r) => { const k = r && r.dedupe_key; return k ? String(k).trim().toLowerCase() : null; };
   const isRepeat = (r) => {
+    // 1) CLAIM KEY — the semantic key the Open-findings list is deduped by (server-stamped on both
+    //    surfaces), so a fact reached under DIFFERENT codes by different desks (the vesting mismatch,
+    //    the entity-not-screened rollup) is recognized as the same issue and hidden here.
+    const ck = rowClaim(r);
+    if (dupClaims && ck && dupClaims.has(ck)) return true;
+    // 2) raw CODE — the original exact-code match, kept as a belt-and-suspenders fallback.
     const c = rowCode(r);
     if (dupCodes && c && dupCodes.has(c)) return true;
+    // 3) GUIDELINE-DESK dedupe / template key, SCOPED to that source on purpose. `dupKeys` holds
+    //    CONDITION TEMPLATE codes, a different namespace from the finding codes every other producer
+    //    puts in `evidence.code`. That separation is convention, not enforcement — one detector
+    //    deciding to put a template code in `evidence.code` would silently vanish from this panel.
+    //    Matching only rows from the source that actually shares this namespace makes that impossible.
     if (!dupKeys) return false;
-    // SCOPED TO THE GUIDELINE DESK ON PURPOSE. `dupKeys` holds CONDITION TEMPLATE codes, a different
-    // namespace from the finding codes every other producer puts in `evidence.code`. That separation
-    // is convention, not enforcement — one detector deciding to put a template code in `evidence.code`
-    // would silently vanish from this panel. Matching only rows from the source that actually shares
-    // this namespace makes that impossible instead of merely unlikely.
     if (r && r.source !== 'investor_guideline_desk') return false;
     const k = rowKey(r);
     return !!((k && dupKeys.has(k)) || (c && dupKeys.has(c)));
@@ -3012,6 +3032,13 @@ export default function UnderwritingPanel({ appId, docs = [], readOnly = false, 
     for (const f of _allFindings) { if (f && f.code) s.add(String(f.code).trim().toLowerCase()); }
     return s;
   }, [_allFindings]);
+  // The CLAIM KEYS already shown in Open findings — so the AI panel hides a suggestion that is the
+  // SAME issue reached under a different code (the "six times" fix, 2026-07-27).
+  const shownClaimKeys = React.useMemo(() => {
+    const s = new Set();
+    for (const f of _allFindings) { if (f && f.claimKey) s.add(String(f.claimKey)); }
+    return s;
+  }, [_allFindings]);
   // The SAME issue, keyed the way the AI panel can recognize it (owner-reported 2026-07-27: the
   // same guideline item was on the screen three times). A note-buyer guideline finding is also
   // mirrored into `ai_suggestions` by the desk sync, but the two sides never matched on `code` —
@@ -3256,7 +3283,7 @@ export default function UnderwritingPanel({ appId, docs = [], readOnly = false, 
           clicks Escalate / Add note / Convert to condition / Convert to task /
           Mark important / Dismiss / Ask super-admin. */}
       <AISuggestionsSection appId={appId} readOnly={readOnly} canResolve={canResolve}
-        shownFindingCodes={shownFindingCodes} shownFindingKeys={shownFindingKeys} />
+        shownFindingCodes={shownFindingCodes} shownClaimKeys={shownClaimKeys} shownFindingKeys={shownFindingKeys} />
 
 
       {/* ALL open findings, in ONE place. The chips above count them in TWO buckets, not one: the

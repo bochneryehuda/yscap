@@ -54,7 +54,7 @@ function str(v) {
  * findings, insert the new extraction, then its findings. Returns the new ids.
  * @param {import('pg').ClientBase} client
  */
-async function saveAnalysis(client, { documentId, applicationId, borrowerId, docType, extraction, findings, analyzedSha256, analyzerVersion, subjectHash } = {}) {
+async function saveAnalysis(client, { documentId, applicationId, borrowerId, docType, extraction, findings, analyzedSha256, analyzerVersion, subjectHash, suppressNotify } = {}) {
   if (!documentId) throw new Error('saveAnalysis requires a documentId');
   const appId = applicationId || null;
   const borId = borrowerId || null;
@@ -317,6 +317,7 @@ async function saveAnalysis(client, { documentId, applicationId, borrowerId, doc
         assignor, assignee,
         contractPrice: ext.fields.originalPurchasePrice,
         assignmentFee: ext.fields.assignmentFee,
+        suppressNotify,   // the re-read sweep re-records without re-alerting staff
       });
     }
   } catch (_) { /* assignment fraud is additive — never blocks the extraction */ }

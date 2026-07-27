@@ -297,3 +297,34 @@ most expensive thing this system can do):
 3. Idempotent: re-running the sweep on a file that already got the new result is a no-op.
 4. Off-switch by env, and an admin trigger, so it can be stopped without a deploy.
 5. It re-reads and re-records; it does NOT clear a condition, move a status, or notify a borrower.
+
+## "OPEN TO THE EXACT SPOT" (2026-07-27) — which findings can carry a source-document link
+
+The owner's ask (item 6 in the fix order): *"every finding needs a direct link to the document —
+open me to the exact spot."* A STORED per-document finding already has this — it carries a
+`document_id` and its exact quote + page live in the evidence ledger ("Where we saw this" opens the
+PDF in place with the box drawn). The gap was the DERIVED findings, which are display-only advisories
+with no stored row and so no `document_id` and no ledger entry.
+
+Auditing the derived producers, they split cleanly by whether the finding even HAS a single source
+document to point at:
+
+- **Tie-out** — DOES. A discrepancy carries the specific conflicting `sources[]`, each with the
+  `documentId` of the extraction it came from. Two behaviours now:
+  - **2+ openable sources** → the card already offers the side-by-side "this document vs. that
+    document" compare. That is the right affordance for a conflict; leave it.
+  - **exactly 1 openable source** (the file value vs. one document) → previously showed NOTHING,
+    because compare needs two. `decorate()` now surfaces that single source as the finding's
+    `documentId`, so the card renders the same "Open the source document" link a stored finding has.
+    It never picks one of several (that would be arbitrary) and never overrides a real
+    `document_id`. Covered by `test-evidence-source-link-pure.js`.
+- **Chains (chain-of-title / seller-chain / entity-chain), risk-score, staleness, metrics,
+  guideline desk** — DO NOT, and this is not an oversight. A risk score and a leverage metric are
+  AGGREGATES with no single source page. A guideline coverage-gap's whole point is that the required
+  document is MISSING — there is nothing to open. A chain finding is a relation ACROSS deeds, not a
+  reading of one. Fabricating a link for these would point the underwriter at an arbitrary document
+  and undermine the trust the real links earn. They stay link-less on purpose.
+
+Frontend: the "Where we saw this" link (which needs a stored `f.id` to read the ledger) is now
+shown only for stored findings; a derived tie-out finding shows just the working "Open the source
+document" link, never a dead one.

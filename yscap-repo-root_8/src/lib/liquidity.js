@@ -196,7 +196,26 @@ async function backfillLiquidityConditions(client = db) {
   return updated;
 }
 
+// Re-sync ONE file's liquidity condition from its CURRENT registration quote (owner 2026-07-27).
+// The bank-statement month count is the stricter of the program's and the NOTE BUYER's requirement
+// (Blue Lake = 2), and syncLiquidityCondition reads the note buyer itself — but it only ran on
+// register + boot backfill. So a file registered Standard (1 month) whose note buyer is set to Blue
+// Lake AFTER registration kept saying "1 month" until the next re-register. This lets the
+// note-buyer-change handlers (ClickUp inbound + the staff completeness edit) re-derive it
+// immediately. noReopen: never reopens a cleared condition — it just corrects the hint + the
+// recorded requirement. No registration yet → nothing to sync (the count is only set once registered).
+async function resyncLiquidityForFile(appId, client = db) {
+  try {
+    const r = await client.query(
+      `SELECT quote FROM product_registrations WHERE application_id=$1 AND is_current=true AND quote IS NOT NULL LIMIT 1`, [appId]);
+    if (!r.rows[0]) return null;
+    let quote = r.rows[0].quote;
+    if (typeof quote === 'string') { try { quote = JSON.parse(quote); } catch (_) { return null; } }
+    return await syncLiquidityCondition(appId, quote, client, { noReopen: true });
+  } catch (e) { console.error('[liquidity] resyncLiquidityForFile failed', appId, e && e.message); return null; }
+}
+
 module.exports = {
-  syncLiquidityCondition, backfillLiquidityConditions,
+  syncLiquidityCondition, backfillLiquidityConditions, resyncLiquidityForFile,
   bankStatementMonths, bankStatementLine, GENERIC_BANK_STMT_HINT, currentProgram,
 };

@@ -66,13 +66,25 @@ function computeContractFindings(contract, file, opts = {}) {
   // matches NEITHER (a genuine mismatch); the assignment economics themselves (fee, underlying
   // price, and the file-level reconciliation) are checked in §4/§4b/§4c below. On a straight
   // purchase the check is unchanged.
-  const isAsg = !!f.is_assignment && num(f.underlying_contract_price) != null;
+  // An assignment is ANY file marked is_assignment — NOT only one whose underlying price is already
+  // captured. That extra gate (`&& underlying != null`) was the residual false-fatal (owner
+  // 2026-07-27, "don't populate reviews that the contract does not match if it didn't calculate
+  // directly"): a wholesale file whose seller price hasn't been entered yet fell back to the naive
+  // straight-purchase compare and re-fired the FATAL, because the contract shows the seller's price
+  // ($438k) while the file holds the fee-inclusive total ($474k). On an assignment we NEVER conclude
+  // a price mismatch from a value we can't reconcile — the un-captured seller price is surfaced as a
+  // non-fatal "capture the assignment fields" advisory (reasonability.assignment_fields_missing),
+  // not a false accusation here.
+  const isAsg = !!f.is_assignment;
   let priceMismatch = false;
   if (isAsg) {
-    const mUnder = withinMoney(contract.purchasePrice, f.underlying_contract_price, 1);
+    // Match the contract price to EITHER the seller's underlying price OR the fee-inclusive total.
+    // A price we don't have on file yet (underlying null) is UNKNOWN, not a mismatch.
+    const mUnder = num(f.underlying_contract_price) != null ? withinMoney(contract.purchasePrice, f.underlying_contract_price, 1) : null;
     const mTotal = withinMoney(contract.purchasePrice, f.purchase_price, 1);
-    // Fire only when the contract price is present and matches NEITHER acceptable price.
-    priceMismatch = mUnder === false && mTotal === false;
+    // Fire only when BOTH acceptable prices are KNOWN and the contract matches NEITHER. If the
+    // underlying is not yet captured (mUnder null), we cannot conclude a mismatch → no fatal.
+    priceMismatch = mTotal === false && mUnder === false;
   } else {
     priceMismatch = withinMoney(contract.purchasePrice, f.purchase_price, 1) === false;
   }

@@ -28,11 +28,21 @@ function priceAwareMatch(ctx, kind, factKey, fileVal, docVal) {
   const base = factMatch(kind, fileVal, docVal);
   if (base === true) return true;
   const app = ctx && ctx.app;
-  if (factKey === 'purchase_price' && app && app.is_assignment && num(app.underlying_contract_price) != null) {
-    const mUnder = factMatch('money', app.underlying_contract_price, docVal);
-    if (mUnder === true) return true;
-    // Agreement with neither → a real mismatch; uncomparable (missing) → null.
-    if (base === false && mUnder === false) return false;
+  if (factKey === 'purchase_price' && app && app.is_assignment) {
+    // The underlying seller price is on file → a document that reports it is AGREEMENT (both the
+    // fee-inclusive total and the seller's original price legitimately tie out on an assignment).
+    if (num(app.underlying_contract_price) != null) {
+      const mUnder = factMatch('money', app.underlying_contract_price, docVal);
+      if (mUnder === true) return true;
+      // Agreement with neither KNOWN price → a real mismatch; uncomparable (missing) → null.
+      if (base === false && mUnder === false) return false;
+      return null;
+    }
+    // The seller's underlying price is NOT yet captured (owner 2026-07-27): the document
+    // legitimately shows a price we don't have on file, so we CANNOT call it a mismatch. Never fire
+    // the tie-out fatal — return null ("could not confirm"). reasonability.assignment_fields_missing
+    // already nudges to capture the seller price + fee, so the price still gets reconciled without a
+    // false "purchase price doesn't match" fatal blocking the file.
     return null;
   }
   return base;

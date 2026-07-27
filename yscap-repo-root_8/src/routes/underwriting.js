@@ -166,7 +166,26 @@ async function audit(actorId, action, entityId, detail) {
 function decorate(f) {
   const actions = Array.isArray(f.actions) ? f.actions
     : (Array.isArray(f.suggested_actions) ? f.suggested_actions : undefined);
-  return Object.assign({}, f, { availableActions: underwriterActions(actions ? { ...f, actions } : f) });
+  // Stamp the CLAIM KEY (the semantic key dedupeByClaim already grouped on) so the AI Findings
+  // panel can hide any raw ai_suggestion whose claim is already shown in THIS one deduped list —
+  // the fix for the owner's "same finding six times" across the three surfaces (2026-07-27).
+  let claimKey = null;
+  try { claimKey = require('../lib/underwriting/finding-claims').claimOf(f); } catch (_) { claimKey = null; }
+  // "Open the source document" for a DERIVED finding (owner-reported 2026-07-27: "every finding
+  // needs a direct link to the document — open me to the exact spot"). A tie-out discrepancy is not
+  // a stored row, so it carries no `document_id`; it carries the specific conflicting `sources`
+  // instead. When exactly ONE of those sources is an openable document, surface it as the finding's
+  // source document so the card shows the same "Open the source document" link every stored finding
+  // has. When TWO OR MORE are openable, the card already offers the richer side-by-side "this
+  // document vs. that document" compare, so we leave `documentId` unset and let that win — stamping
+  // one of several conflicting docs as "the" source would be arbitrary and misleading. Only ever
+  // ADDS a link (never overrides a real per-document finding's own `document_id`).
+  const extra = { claimKey, availableActions: underwriterActions(actions ? { ...f, actions } : f) };
+  if (f.document_id == null && f.documentId == null && Array.isArray(f.sources)) {
+    const openable = f.sources.filter((s) => s && s.documentId != null);
+    if (openable.length === 1) extra.documentId = openable[0].documentId;
+  }
+  return Object.assign({}, f, extra);
 }
 
 /**
@@ -806,6 +825,36 @@ router.get('/:appId', async (req, res, next) => {
       ...(entityChain ? entityChain.findings : []), ...reasonability.findings, ...sellerChainFindings,
       ...cotFindings, ...bankLiquidity.findings, ...(experience ? experience.findings : []),
       ...investorDeskFindings];
+
+    // FILE-LEVEL entity-screening rollup (owner-reported 2026-07-26/27: "this entity WAS screened —
+    // look on the watch list — you just don't look deep enough"). computeBackgroundFindings runs PER
+    // report and can only see one document, so on a two-report file the report that did not carry the
+    // borrowing entity raises "entity not screened" even though ANOTHER report DID screen it. Ask the
+    // question across EVERY background extraction; when at least one screened the entity, drop the
+    // stale per-report finding here AND resolve its stored row so the fraud/OFAC condition can clear
+    // (fraud-autoclear gates on NOT EXISTS an open background_report finding). Only ever SUPPRESSES a
+    // false positive — if NO report screened the entity the finding stands.
+    try {
+      const vestingEntity = mctx && mctx.vestingName;
+      if (vestingEntity) {
+        const bgFields = exts.rows.filter((e) => e.doc_type === 'background_report').map((e) => e.fields || {});
+        const screenedFileWide = require('../lib/underwriting/doc-checks').entityScreenedAcrossReports(bgFields, vestingEntity);
+        if (screenedFileWide === true) {
+          const NOT_SCREENED = new Set(['background_entity_not_screened', 'entity_not_screened']);
+          for (let i = openRaw.length - 1; i >= 0; i--) {
+            if (openRaw[i] && NOT_SCREENED.has(openRaw[i].code)) openRaw.splice(i, 1);
+          }
+          // Resolve the stored finding so fraud-autoclear's NOT-EXISTS gate can clear the condition.
+          // Best-effort, fire-and-forget — never blocks or fails the file view.
+          db.query(
+            `UPDATE document_findings SET status='resolved', updated_at=now()
+              WHERE application_id=$1 AND source='background_report'
+                AND code IN ('background_entity_not_screened','entity_not_screened')
+                AND COALESCE(status,'open') NOT IN ('resolved','dismissed')`, [app.id]).catch(() => {});
+        }
+      }
+    } catch (_) { /* additive rollup — a failure here never affects the finding list */ }
+
     // ONE finding per real-world ISSUE (owner-reported 2026-07-26: the contract-buyer/vesting
     // mismatch appeared SIX times on one file, the entity-OFAC gap three times).
     //
@@ -1123,6 +1172,12 @@ async function fileDoc(app, documentId) {
 async function analyzeOneDocument(app, doc, docType, opts = {}) {
   const actorId = opts.actorId || null;
   const force = !!opts.force;
+  // The un-funded re-read sweep re-reads OLD documents across the whole book. Its findings are not
+  // new to the humans, so it re-records WITHOUT re-firing the "new fatal AI finding" staff/admin
+  // email — otherwise a portfolio-wide re-read would bombard every file's team (and re-alert a
+  // fatal a human already dismissed). Threaded into saveAnalysis (→ assignment-fraud) and the
+  // authenticity record below. Interactive reads (a real actorId) always notify.
+  const suppressNotify = !!opts.suppressNotify;
   const base = { documentId: doc.id, filename: doc.filename, docType };
   try {
     if (!doc.storage_ref) return { ...base, ok: false, error: 'no_stored_file' };
@@ -1164,6 +1219,37 @@ async function analyzeOneDocument(app, doc, docType, opts = {}) {
       subject, today: todayISO(),
     });
 
+    // CREDIT XML wins over the AI read of the PDF (owner 2026-07-27: "we have an XML — learn to read
+    // it"). The credit report is parsed on import into credit_reports.parsed (structured, authoritative
+    // — scores + every tradeline). When a completed parse exists for this document's borrower, use it
+    // to build the credit finding instead of the OCR/AI read, so the desk never says "could not be
+    // read with confidence" while a parsed report sits on the file, and lists per-mortgage late detail
+    // from the XML. Best-effort + guarded: only for credit_report, only when the XML has real data,
+    // and it re-runs the SAME computeCreditFindings on the XML-derived fields (no new finding logic).
+    if (docType === 'credit_report' && result && result.extraction) {
+      try {
+        const borrowerId = doc.borrower_id || app.borrower_id || null;
+        if (borrowerId) {
+          const cr = await db.query(
+            `SELECT parsed FROM credit_reports
+              WHERE borrower_id = $1 AND COALESCE(status,'') = 'completed' AND parsed IS NOT NULL
+              ORDER BY (application_id = $2) DESC, COALESCE(report_date, created_at) DESC
+              LIMIT 1`, [borrowerId, app.id]);
+          let parsed = cr.rows[0] && cr.rows[0].parsed;
+          if (typeof parsed === 'string') { try { parsed = JSON.parse(parsed); } catch (_) { parsed = null; } }
+          const xmlFields = parsed && require('../lib/underwriting/credit-from-xml').creditFieldsFromParsed(parsed);
+          if (xmlFields) {
+            result.extraction.fields = Object.assign({}, result.extraction.fields, xmlFields);
+            result.extraction.status = 'analyzed';
+            result.extraction.confidence = 'definite';
+            result.extraction.reason = null;
+            result.findings = (registry.get('credit_report').check(result.extraction.fields, subject)) || [];
+            result.ok = true;
+          }
+        }
+      } catch (_) { /* additive — a failure leaves the AI read + its findings untouched */ }
+    }
+
     const client = await db.pool.connect();
     let saved;
     let authFatalSignal = null; // set inside the tx, recorded AFTER COMMIT (audit M2)
@@ -1173,6 +1259,7 @@ async function analyzeOneDocument(app, doc, docType, opts = {}) {
         documentId: doc.id, applicationId: app.id, borrowerId: doc.borrower_id || app.borrower_id,
         docType, extraction: result.extraction, findings: result.findings,
         analyzedSha256: doc.sha256 || null, analyzerVersion: ANALYZER_VERSION, subjectHash: subjHash,
+        suppressNotify,
       });
       // Authenticity scoring (Sovereign, blueprint 2026-07-22): score the PDF
       // bytes for tampering signals + stash on the documents row. If the score
@@ -1221,6 +1308,7 @@ async function analyzeOneDocument(app, doc, docType, opts = {}) {
           body: `Signals: ${authFatalSignal.signalsFired || 'metadata anomalies'}. The AI changed nothing — review the document and request a fresh copy directly from the source.`,
           evidence: { code: 'doc_low_authenticity', docType: authFatalSignal.docType, score: authFatalSignal.score, signals: authFatalSignal.signalsFired },
           dedupeKey: `doc_low_authenticity:${doc.id}`,
+          suppressNotify,
         });
       } catch (_) { /* additive — never fails the analyze result */ }
     }
@@ -1324,7 +1412,14 @@ const AUTOREAD_MAX_PER_CALL = Math.max(1, parseInt(process.env.UNDERWRITING_AUTO
 // document filed under a condition mapped to a readable document type, that has no current
 // extraction yet. Pulls this file's own docs, its entity's LLC docs, and anything under its
 // conditions (mirrors the GET's documentsOnFile query).
-async function buildAutoReadQueue(app) {
+//
+// `opts.includeAnalyzed` — when true, keep documents that ALREADY have a current extraction in the
+// queue instead of skipping them. The normal auto-reader skips analyzed docs (an unchanged re-read
+// would just hit the cache); the un-funded RE-READ sweep needs the opposite — it re-reads the
+// already-analyzed documents with the improved reader (via analyzeOneDocument's `force`), because a
+// reader fix does not retroactively touch a file that was read once. Everything else is identical.
+async function buildAutoReadQueue(app, opts = {}) {
+  const includeAnalyzed = !!opts.includeAnalyzed;
   const a0 = (await db.query(`SELECT llc_id FROM applications WHERE id=$1`, [app.id])).rows[0] || {};
   const [docs, exts] = await Promise.all([
     db.query(
@@ -1337,7 +1432,9 @@ async function buildAutoReadQueue(app) {
           AND COALESCE(d.source_type, '') <> 'chat_attachment'
           AND ( d.application_id = $1 OR ci.application_id = $1 OR (d.llc_id IS NOT NULL AND d.llc_id = $2) )
         ORDER BY d.created_at`, [app.id, a0.llc_id || null]),
-    db.query(`SELECT document_id FROM document_extractions WHERE application_id=$1 AND is_current AND document_id IS NOT NULL`, [app.id]),
+    includeAnalyzed
+      ? Promise.resolve({ rows: [] })
+      : db.query(`SELECT document_id FROM document_extractions WHERE application_id=$1 AND is_current AND document_id IS NOT NULL`, [app.id]),
   ]);
   return selectAutoReadQueue({
     documents: docs.rows,
@@ -2849,3 +2946,6 @@ module.exports.fileForById = async function fileForById(appId) {
 module.exports.fileDocById = fileDoc;
 module.exports.AUTOREAD_ENABLED = AUTOREAD_ENABLED;
 module.exports.AUTOREAD_MAX_PER_CALL = AUTOREAD_MAX_PER_CALL;
+// Exported for unit testing the finding decoration (claim-key stamp + the derived "open the source
+// document" link a tie-out discrepancy gets from its single openable source).
+module.exports._decorate = decorate;

@@ -587,7 +587,7 @@ async function runInvestorGuidelineDesk(appId, client) {
   // Urban/Suburban → appraisal_rural=false (silent); NULL/unread → omitted.
   try {
     const ar = await db.query(
-      `SELECT nbhd_location_type, occupancy_status FROM appraisals
+      `SELECT nbhd_location_type, occupancy_status, lender_name FROM appraisals
          WHERE application_id = $1 AND superseded = false
          ORDER BY imported_at DESC LIMIT 1`, [appId]);
     const row = ar.rows[0];
@@ -597,6 +597,15 @@ async function runInvestorGuidelineDesk(appId, client) {
       if (loc === 'rural') signals.appraisal_rural = true;
       else if (loc === 'urban' || loc === 'suburban') signals.appraisal_rural = false;
       // else: null/blank/unrecognized → OMIT (unknown, never fabricated)
+
+      // appraisal_transferred (cond 3349, disposition 'appraisal', concern_field appraisal_transferred)
+      // — a TRANSFER is an appraisal ordered by a lender OTHER than YS Capital Group (owner 2026-07-27).
+      // "ours" is matched GENEROUSLY (any name containing "yscapital") so a false positive can't raise
+      // the transfer concern on our own appraisal. A present, non-ours lender → transferred; a blank
+      // lender / no appraisal → OMIT (silent — never fabricated). Mirrors run.js gatherInvestorInputs.
+      const lender = String(row.lender_name == null ? '' : row.lender_name).trim();
+      if (lender) signals.appraisal_transferred = !/yscapital/.test((registry.normNoteBuyer(lender)) || '');
+      // else: blank lender → OMIT
 
       // tenant_occupied — the appraisal's UAD occupancy status (db/158 occupancy_status ∈
       // {Vacant, TenantOccupied, OwnerOccupied}; extract.js:534). Surfaces the CorrFirst LEASE

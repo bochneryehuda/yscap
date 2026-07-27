@@ -32,6 +32,10 @@ const EXTRACT_SYSTEM = 'You extract fields from lending documents precisely. Nev
 // give it a fresh set of eyes — re-run the extract WITH the image (a vision re-read). Default on;
 // UW_SECOND_LOOK_ENABLED=0 turns it off (it costs one extra paid model call, only on a bad read).
 const SECOND_LOOK_ENABLED = process.env.UW_SECOND_LOOK_ENABLED !== '0';
+// Long-form report types whose material content (OFAC watch list, credit payment-history grid)
+// commonly sits deep in the document — they get a bigger OCR slice sent to the model (see the
+// ocrCharLimit note at the extract call). Everything else uses the analyzer's default cap.
+const LONG_READ_DOC_TYPES = new Set(['background_report', 'credit_report']);
 
 // Turn a read/understand failure into a single, honest "verify by hand" finding — NEVER a false
 // mismatch and never a guess onto the file. The `meta` (from the analyzer's classified result)
@@ -146,11 +150,20 @@ async function analyzeDocument({ docType, buffer, base64, mimeType, subject, tod
   }
 
   // 2. UNDERSTAND (extract fields to the type's schema).
+  // A background/OFAC report or a credit report can run to dozens of pages, and the value we need
+  // (the watch-list/screened-parties table, the payment-history grid) often sits deep in it — the
+  // owner's "look on the watch list ~page 23" / "read the credit XML" cases. Give those long-report
+  // types a bigger slice of the OCR text so the model actually SEES the deep sections; every other
+  // type keeps the analyzer's default cap. Env-tunable.
+  const ocrCharLimit = LONG_READ_DOC_TYPES.has(docType)
+    ? Math.max(300000, parseInt(process.env.AI_OCR_CHAR_LIMIT_LONG || '600000', 10) || 600000)
+    : undefined;
   let ext = await analyzer.extract({
     system: EXTRACT_SYSTEM,
     instructions: entry.instructions,
     schema: entry.schema,
     ocrText: ocr.ok ? ocr.text : null,
+    ocrCharLimit,
     imageBase64: entry.image ? base64 : undefined,
     imageMime: mimeType,
   });
@@ -180,6 +193,7 @@ async function analyzeDocument({ docType, buffer, base64, mimeType, subject, tod
       instructions: entry.instructions,
       schema: entry.schema,
       ocrText: ocr.ok ? ocr.text : null,
+      ocrCharLimit,
       imageBase64: base64,
       imageMime: mimeType,
     });

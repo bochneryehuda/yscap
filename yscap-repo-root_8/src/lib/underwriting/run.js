@@ -482,8 +482,9 @@ async function gatherInvestorInputs(applicationId, db) {
   // (harmless — the rule stays silent). No appraisal / not-yet-checked (all NULL) → OMITTED,
   // never guessed either way, so the FATAL rule can't false-fire on an unknown.
   try {
+    const fieldReg = require('../conditions/field-registry');
     const f = await db.query(
-      `SELECT fema_flood_sfha, fema_flood_zone, flood_zone, nbhd_location_type, condition_of_appraisal
+      `SELECT fema_flood_sfha, fema_flood_zone, flood_zone, nbhd_location_type, condition_of_appraisal, lender_name
          FROM appraisals WHERE application_id = $1 AND superseded = false
          ORDER BY imported_at DESC LIMIT 1`, [applicationId]);
     const r = f.rows[0];
@@ -517,6 +518,25 @@ async function gatherInvestorInputs(applicationId, db) {
       if (cond === 'SubjectToCompletion') out.appraisal_mid_construction = true;
       else if (cond === 'AsIs' || cond === 'SubjectToRepairs' || cond === 'SubjectToInspection') out.appraisal_mid_construction = false;
       // else: null/blank/unrecognized enum → OMIT (unknown, never fabricated)
+
+      // appraisal_transferred — a TRANSFER is an appraisal ordered by SOMEONE ELSE, i.e. the lender
+      // on the appraisal is not YS Capital Group (owner 2026-07-27: "once you analyze the XML and
+      // realize the lender's name is not YS Capital Group and it's a transfer appraisal from a
+      // different lender"). Feeds isg_bl_transferred_appraisal (BIG FATAL for Blue Lake — they do
+      // NOT accept a transfer even with a letter) and isg_transferred_appraisal_letter (every OTHER
+      // note buyer — advisory: post a condition to request the transfer letter). The appraiser
+      // records the ordering lender in the MISMO LenderName (appraisals.
+      // lender_name, populated by appraisal/import.js). Because a FALSE positive here fatals a Blue
+      // Lake file, "ours" is matched GENEROUSLY — any lender name containing "yscapital" (so "YS
+      // Capital Group", "YS Capital Group LLC", "YS Capital" all read as ours → NOT a transfer).
+      // Only a lender name that is present AND carries no "yscapital" token → transferred. Blank /
+      // no appraisal → OMITTED (never guessed), so the FATAL can't false-fire on an unread name.
+      const lender = String(r.lender_name == null ? '' : r.lender_name).trim();
+      if (lender) {
+        const isOurs = /yscapital/.test(fieldReg.normNoteBuyer(lender) || '');
+        out.appraisal_transferred = !isOurs;
+      }
+      // else: blank lender → OMIT
     }
   } catch (_) { /* fema_flood_* / nbhd_location_type columns optional in some envs → omit those signals */ }
 

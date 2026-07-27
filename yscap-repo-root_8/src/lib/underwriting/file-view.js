@@ -78,12 +78,30 @@ async function loadContext(client, appId) {
     ...(vesting && vesting.is_verified ? [vesting.llc_name] : []),
     ...entities.filter((r) => r.is_verified).map((r) => r.llc_name),
   ].filter(Boolean);
+  // Entity legal names PILOT has already READ off an entity document uploaded to the file — an
+  // operating agreement, articles of formation, or EIN letter (owner 2026-07-27: "a lot of times
+  // the operating agreement is uploaded WITH the bank statements — look for it before raising
+  // fraud"). So a bank statement under a different LLC can point at the OA that is ALREADY on file
+  // and ask the underwriter to verify + add the entity, instead of screaming for a document that is
+  // sitting right there. Best-effort — a read failure leaves the set empty (the check just won't
+  // find an on-file doc, which is the safe direction).
+  let entityDocNames = [];
+  try {
+    const ed = await client.query(
+      `SELECT DISTINCT fields->>'entityLegalName' AS name
+         FROM document_extractions
+        WHERE application_id = $1 AND is_current
+          AND doc_type IN ('operating_agreement','llc_formation','ein_letter','good_standing')
+          AND NULLIF(TRIM(COALESCE(fields->>'entityLegalName','')),'') IS NOT NULL`, [appId]);
+    entityDocNames = ed.rows.map((r) => r.name).filter(Boolean);
+  } catch (_) { entityDocNames = []; }
   return {
     app, borrower,
     vestingName: vesting && vesting.llc_name,
     ein: vesting && vesting.ein,
     entityNames: entities.map((r) => r.llc_name).filter(Boolean),
     verifiedEntityNames,
+    entityDocNames,
     registration,
   };
 }
@@ -96,7 +114,7 @@ function borrowerName(b) {
 
 // Build the subject a given document type's check compares against.
 function subjectFor(docType, ctx) {
-  const { app, borrower, vestingName, entityNames, verifiedEntityNames } = ctx || {};
+  const { app, borrower, vestingName, entityNames, verifiedEntityNames, entityDocNames } = ctx || {};
   switch (docType) {
     case 'government_id':
       return borrower; // the borrowers row (name / DOB / address)
@@ -123,7 +141,10 @@ function subjectFor(docType, ctx) {
       // an array here (loadContext returns [] when nothing is verified) — so the check's
       // never-fabricate guard is satisfied and the advisory actually evaluates in production.
       return { borrower_name: borrowerName(borrower), entity_names: entityNames || [],
-        verified_entity_names: verifiedEntityNames || [] };
+        verified_entity_names: verifiedEntityNames || [],
+        // entity docs (OA / formation / EIN) already read on the file, so a different-entity account
+        // can point at the ownership proof that is ALREADY here rather than demand a fresh one.
+        entity_docs_on_file: entityDocNames || [] };
     case 'assignment':
       return {
         entity_name: vestingName || null, is_assignment: !!(app && app.is_assignment),

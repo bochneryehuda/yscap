@@ -207,11 +207,25 @@ function previewMessages(messages) {
  * (optionally) the original image for photo documents like an ID.
  * @param {{ instructions:string, ocrText?:string, imageBase64?:string, imageMime?:string }} a
  */
+// The OCR text handed to the model was hard-capped at 120,000 chars — which SILENTLY defeated the
+// "search the ENTIRE document" behavior the OFAC watch-list (often ~20+ pages in) and the credit
+// payment-history grid depend on (owner 2026-07-27: "look on the watch list ~page 23, you just
+// don't look deep enough"; "we have an XML for the credit report — read it"). A report whose watch
+// list sits past ~30K tokens was never even shown to the model. Raised well above that and made
+// env-tunable; a caller reading a long report (background/credit) passes a larger `ocrCharLimit`.
+// The cap stays (a pathological OCR must not overflow the model's input window and error the call).
+const OCR_CHAR_LIMIT = Math.max(120000, parseInt(process.env.AI_OCR_CHAR_LIMIT || '300000', 10) || 300000);
+
 function buildUserContent(a = {}) {
   const parts = [];
   let text = a.instructions || '';
   if (a.ocrText) {
-    text += `\n\n---\nText read from this document by the OCR reader (may be imperfect):\n"""\n${String(a.ocrText).slice(0, 120000)}\n"""`;
+    const cap = Number(a.ocrCharLimit) > 0 ? Math.floor(Number(a.ocrCharLimit)) : OCR_CHAR_LIMIT;
+    const full = String(a.ocrText);
+    text += `\n\n---\nText read from this document by the OCR reader (may be imperfect):\n"""\n${full.slice(0, cap)}\n"""`;
+    if (full.length > cap) {
+      text += `\n[Note: this document is long — ${full.length.toLocaleString()} characters — and only the first ${cap.toLocaleString()} are shown above. If the value you need (e.g. a watch-list/screened-parties table, a payment-history grid) is not present, say so rather than assuming it is absent.]`;
+    }
   }
   parts.push({ type: 'text', text });
   // Only attach a REAL image — Azure chat rejects application/pdf as image_url. A PDF
@@ -228,9 +242,9 @@ function buildUserContent(a = {}) {
  * outputs are strict; NO min/max/length constraints). Returns the validated object.
  * @returns {Promise<{ ok:boolean, data?:object, raw?:string, usage?:object, reason?:string }>}
  */
-async function extract({ system, instructions, schema, ocrText, imageBase64, imageMime, maxTokens, trace, traceMeta } = {}) {
+async function extract({ system, instructions, schema, ocrText, ocrCharLimit, imageBase64, imageMime, maxTokens, trace, traceMeta } = {}) {
   if (!schema) return { ok: false, reason: 'no extraction shape (schema) was provided' };
-  const userContent = buildUserContent({ instructions, ocrText, imageBase64, imageMime });
+  const userContent = buildUserContent({ instructions, ocrText, ocrCharLimit, imageBase64, imageMime });
   const responseFormat = { type: 'json_schema', json_schema: { name: 'extraction', schema, strict: true } };
   const passMeta = { ...(traceMeta || {}), opName: (traceMeta && traceMeta.opName) || 'extract' };
   let res = await complete({ system, userContent, maxTokens, responseFormat, trace, traceMeta: passMeta });
