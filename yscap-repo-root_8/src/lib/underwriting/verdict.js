@@ -31,6 +31,17 @@ function computeVerdict({ summary, risk, completeness, entityChain, extractionsC
   if (risk && risk.band === 'high') reasons.push(`high fraud/red-flag risk (${risk.score}/100)`);
   else if (risk && risk.band === 'elevated') reasons.push(`elevated fraud/red-flag risk (${risk.score}/100)`);
   if (s.warning > 0) reasons.push(`${s.warning} warning${s.warning === 1 ? '' : 's'} to review`);
+  // The note buyer's own guideline read is counted separately from `fatal`/`warning` — it is not
+  // clear-to-close work, and mixing it in made the headline claim more blocking work than the gate
+  // reports. But it MUST still reach the headline: without a reason of its own, a file whose only
+  // open item is a guideline dealbreaker fell through to `status:'clear'` and announced "nothing is
+  // outstanding" directly above a red fatal chip (re-audit 2026-07-27). Saying nothing about a real
+  // problem is the one failure direction this system does not get to have.
+  const g = s.guideline || {};
+  const gFatal = Number(g.fatal) || 0;
+  const gWarn = Number(g.warning) || 0;
+  if (gFatal > 0) reasons.push(`${gFatal} note-buyer dealbreaker${gFatal === 1 ? '' : 's'} the investor would refuse`);
+  else if (gWarn > 0) reasons.push(`${gWarn} note-buyer guideline note${gWarn === 1 ? '' : 's'}`);
   if (completeness && typeof completeness.completenessPct === 'number' && completeness.completenessPct < 100) {
     reasons.push(`file ${completeness.completenessPct}% complete`);
   }

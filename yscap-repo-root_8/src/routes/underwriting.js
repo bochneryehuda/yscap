@@ -55,6 +55,16 @@ const { buildChain } = require('../lib/underwriting/entity-chain');
 const { buildSellerChain } = require('../lib/underwriting/seller-chain');
 const { buildChainOfTitle } = require('../lib/underwriting/chain-of-title');
 const { assessBankLiquidity, readRequiredLiquidity } = require('../lib/underwriting/bank-liquidity');
+// Loaded at module scope, not at the call site: a lazy require inside the handler is OUTSIDE the
+// `.catch()` that guards the desk run, so a load-time error there would 500 the whole file view —
+// an endpoint that previously could not fail from this code (audit 2026-07-27).
+const investorDeskMod = require('../lib/underwriting/investor-guidelines/desk');
+const deskFindings = require('../lib/underwriting/investor-guidelines/desk-findings');
+const SEVERITY_RANK = { fatal: 3, warning: 2, info: 1 };
+// The suggestion statuses that mean "still needs handling" — the SAME set the escalation and
+// silenced-code queries in this file use. `escalated` and `marked_important` are emphasis, not
+// resolutions, so a guideline finding in either state keeps its card.
+const ISG_OPEN_STATUSES = new Set(['open', 'asked_admin', 'escalated', 'marked_important']);
 // Fix 2026-07-23 (#211): similar-open + bulk-resolve referenced seesAll() without
 // defining it in this file (staff.js has its own copy) — ReferenceError → 500.
 const seesAll = (req) => can(req.actor, 'see_all_files');
@@ -701,6 +711,71 @@ router.get('/:appId', async (req, res, next) => {
     // the gate via fileFatalCount (file-review.js), surfaced here for the desk.
     const experience = await assessExperienceForFile(db, app.id, { today: todayISO() });
 
+    // The note-buyer guideline OVERLAY, run here rather than only in the post-response sync so its
+    // "not happy" items can join the ONE findings list below (owner-directed 2026-07-27: the same
+    // guideline issue was on the screen three times, in three different-looking cards — "merge the
+    // three type of findings… everything should be the same type which is the middle one").
+    // Deterministic and DB-only: no AI call, no cost. Best-effort — a failure here degrades to no
+    // guideline findings, never a broken file view. The SAME desk result is handed to the
+    // post-response ai_suggestions sync so the desk is computed once per view, not twice.
+    const investorDesk = await investorDeskMod.runInvestorGuidelineDesk(app.id, db).catch(() => null);
+    // A HUMAN'S DECISION ON A GUIDELINE ITEM STILL COUNTS (audit 2026-07-27 — this was the one
+    // defect that made the merge worse than what it replaced).
+    //
+    // The desk is a pure function of the file: it re-raises an unhappy item on EVERY view, forever.
+    // The only record that someone already dealt with one lives on its `ai_suggestions` mirror —
+    // the surface that used to carry the Dismiss / Escalate / Convert buttons, and which this change
+    // hides as a repeat. Read that mirror back and honour it, or an underwriter who dismisses "Blue
+    // Lake requires a feasibility report" on a light-rehab file watches it reappear every time they
+    // open the loan, with nothing to click. Retracting nothing and hiding the buttons is strictly
+    // worse than the duplication it replaced.
+    //
+    //   closed (dismissed / converted / noted …) → drop the finding; the decision stands, and the
+    //                                              row is still there under "Show dismissed".
+    //   open / asked_admin                       → carry the suggestion id so the merged card can
+    //                                              act through the SAME endpoints the AI card used.
+    //   no row yet (first view — the sync writes  → show it read-only; it becomes actionable on the
+    //   after the response)                        next view.
+    // Best-effort: a failed read leaves every finding read-only, never hides one.
+    // One key can legitimately own SEVERAL rows over a file's life: the desk retracts a rule, later
+    // raises it again, and `record()` inserts a fresh row each time rather than reviving the closed
+    // one. So the pick has to be deliberate, not "whichever row the scan happened to return last":
+    // an OPEN row wins (there is live work), then a decision a HUMAN made (it should still suppress
+    // the finding), and only then the desk's own automatic withdrawal.
+    const isgRows = await db.query(
+      // ORDERED so the pick is a RULE, not an accident of the scan (re-audit 2026-07-27). Two rows
+      // for one key can tie on `isgRank`; today the right one wins only because an index happens to
+      // return it first, and a planner that seq-scans would silently flip the card's state. Newest
+      // first is the tie-break: a later row is the later truth about that key.
+      `SELECT id, dedupe_key, status, important, decided_by_staff_id FROM ai_suggestions
+        WHERE application_id=$1 AND source=$2
+        ORDER BY created_at DESC, id DESC`, [app.id, deskFindings.SOURCE])
+      .then((r) => r.rows).catch(() => []);
+    const isgRank = (r) => ISG_OPEN_STATUSES.has(r.status) ? 3 : (r.decided_by_staff_id ? 2 : 1);
+    const isgByKey = new Map();
+    for (const r of isgRows) {
+      const k = String(r.dedupe_key == null ? '' : r.dedupe_key).trim().toLowerCase();
+      if (!k) continue;
+      const prev = isgByKey.get(k);
+      if (!prev || isgRank(r) > isgRank(prev)) isgByKey.set(k, r);
+    }
+    const investorDeskFindings = deskFindings.deskToFindings(investorDesk).map((f) => {
+      if (!f.isgKey) return f;                       // info_missing / appraisal_review — no mirror
+      const row = isgByKey.get(String(f.isgKey).trim().toLowerCase());
+      if (!row) return f;
+      // THE OPEN SET IS THE ONE THIS FILE ALREADY USES EVERYWHERE ELSE (re-audit 2026-07-27).
+      // `escalated` and `marked_important` are not decisions, they are ways of saying "this still
+      // needs handling, louder" — every other query here counts them as open (see the escalation and
+      // silenced-code queries below). Dropping them made "Mark important" DELETE the card the
+      // staffer had just flagged, and made the card's own "Already escalated" hint unreachable.
+      if (!ISG_OPEN_STATUSES.has(row.status)) return null;
+      return Object.assign({}, f, {
+        suggestionId: row.id,
+        suggestionStatus: row.status,
+        important: !!row.important,
+      });
+    }).filter(Boolean);
+
     // File completeness / stipulations: diff the required-document matrix (adapted to this deal)
     // against what's analyzed on file → outstanding-items list + a completeness %. A VIEW only.
     const completeness = assessCompleteness(
@@ -729,7 +804,8 @@ router.get('/:appId', async (req, res, next) => {
     const sellerChainFindings = (sellerChain.findings || []).filter(Boolean);
     const openRaw = [...perDoc, ...cross, ...staleness.findings, ...metrics.findings, ...amendments.findings,
       ...(entityChain ? entityChain.findings : []), ...reasonability.findings, ...sellerChainFindings,
-      ...cotFindings, ...bankLiquidity.findings, ...(experience ? experience.findings : [])];
+      ...cotFindings, ...bankLiquidity.findings, ...(experience ? experience.findings : []),
+      ...investorDeskFindings];
     // ONE finding per real-world ISSUE (owner-reported 2026-07-26: the contract-buyer/vesting
     // mismatch appeared SIX times on one file, the entity-OFAC gap three times).
     //
@@ -806,8 +882,11 @@ router.get('/:appId', async (req, res, next) => {
           // so they actually surface (a fatal notifies the LO/processor). The
           // desk stays quiet on OPEN conditions. Advisory: records ai_suggestions,
           // posts/clears nothing, touches no frozen number.
+          // The desk was already computed above (its unhappy items now join the ONE findings list),
+          // so hand that SAME result over rather than re-running it — one view, one desk run. A
+          // failed desk read passes null, which makes the sync load its own exactly as before.
           const isgSync = await step(() => require('../lib/underwriting/investor-guidelines/desk-sync')
-            .syncInvestorGuidelineFindings(c, app.id));
+            .syncInvestorGuidelineFindings(c, app.id, { desk: investorDesk || undefined }));
           // A SKIPPED RETRACTION MUST LEAVE A TRACE (audit 2026-07-26). The retraction is what keeps
           // a corrected rule from leaving stale notices open forever — the owner's original
           // complaint — and it is now gated on the desk having read the file cleanly. That gate is
@@ -853,11 +932,29 @@ router.get('/:appId', async (req, res, next) => {
       economics: { purchasePrice: a.purchase_price, asIsValue: a.as_is_value, arv: a.arv } });
     const openWithRisk = risk.finding ? [...openAll, risk.finding] : openAll;
 
+    // THE COUNTS ARE THE RESOLVABLE WORK — the note-buyer guideline notes are counted SEPARATELY
+    // (audit 2026-07-27). `summary.fatal` feeds the section badge AND `computeVerdict`'s reason[0],
+    // which renders as "N fatal findings to resolve". A guideline note is not one of those: it is a
+    // read of a DIFFERENT buyer's rulebook, it never blocks clear-to-close, and the real gate
+    // (file-review.fileFatalCount) does not count it. Folding them into `fatal` would make the
+    // headline say "3 fatal findings to resolve" on a file the gate reports as 1 — the exact
+    // desk-disagrees-with-the-gate hazard finding-claims.js was written to prevent, arriving through
+    // a different door. They still render in the ONE list below with their real severity chip; only
+    // the counter distinguishes them.
+    const isgOnly = (f) => f && f.source === deskFindings.SOURCE;
+    const countable = openWithRisk.filter((f) => !isgOnly(f));
+    const guidelineNotes = openWithRisk.filter(isgOnly);
     const summary = {
-      fatal: openWithRisk.filter((f) => f.severity === 'fatal').length,
-      warning: openWithRisk.filter((f) => f.severity === 'warning').length,
-      info: openWithRisk.filter((f) => f.severity === 'info').length,
-      blocksCtc: openWithRisk.some((f) => f.severity === 'fatal' && (f.blocks_ctc ?? f.blocksCtc)),
+      fatal: countable.filter((f) => f.severity === 'fatal').length,
+      warning: countable.filter((f) => f.severity === 'warning').length,
+      info: countable.filter((f) => f.severity === 'info').length,
+      blocksCtc: countable.some((f) => f.severity === 'fatal' && (f.blocks_ctc ?? f.blocksCtc)),
+      // What the note buyer is unhappy about, counted on its own so the desk can say so without
+      // claiming it is clear-to-close work.
+      guideline: {
+        fatal: guidelineNotes.filter((f) => f.severity === 'fatal').length,
+        warning: guidelineNotes.filter((f) => f.severity === 'warning').length,
+      },
     };
     // One plain-English headline tying every roll-up together — the owner's at-a-glance read.
     const verdict = computeVerdict({ summary, risk, completeness, entityChain, extractionsCount: exts.rows.length });
@@ -955,7 +1052,14 @@ router.get('/:appId', async (req, res, next) => {
       // actionable; the desk shows it once at the top instead of scattering findings across sections.
       // A persisted per-document finding (has an id) is resolvable; a derived advisory (tie-out /
       // metric / staleness) is display-only and clears when its underlying data changes.
-      allFindings: openWithRisk.map(decorate),
+      // WORST FIRST (audit 2026-07-27). The list is built by concatenating ~12 desks in source
+      // order, and the guideline desk is appended last — so on a Blue Lake ground-up file the FATAL
+      // "no feasibility condition on the file" rendered BELOW every info-level note, in the one list
+      // the owner asked to be the single place to look. Sorted by severity, stable within a band
+      // (Array.prototype.sort is stable in Node ≥ 11), so each desk's own ordering is preserved.
+      allFindings: [...openWithRisk]
+        .sort((x, y) => (SEVERITY_RANK[y && y.severity] || 0) - (SEVERITY_RANK[x && x.severity] || 0))
+        .map(decorate),
       summary,
       docTypes: registry.docTypes(),
       analyzers: { reader: docint.configured(), ai: azureOpenai.available() },

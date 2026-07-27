@@ -123,8 +123,68 @@ async function syncInvestorGuidelineFindings(client, appId, opts) {
       desk = await deskMod.runInvestorGuidelineDesk(appId, client).catch(() => null);
     }
     const payloads = deskToSuggestions(desk);
-    let raised = 0, fatal = 0;
+    // A HUMAN'S DECISION IS NOT RE-OPENED (audit 2026-07-27).
+    //
+    // `aiSug.record` refreshes an existing row only when it is still `status='open'`; against a
+    // CLOSED row it finds nothing and INSERTS a fresh open one. The desk is a pure function of the
+    // file, so it re-raises the same item on every view — which meant a staffer's Dismiss was undone
+    // the next time anyone opened the loan, forever. That was already true before the findings merge;
+    // the merge just made it load-bearing, because the file view now DROPS a guideline finding whose
+    // suggestion is closed. Without this the drop would be reversed within one page load.
+    //
+    // Keyed on `decided_by_staff_id`, which is the only thing that distinguishes the two ways a row
+    // closes: `decide()` stamps the staffer who acted, and `retractStale`'s automatic withdrawal is a
+    // raw UPDATE that never touches it. So a rule the DESK retracted and later legitimately raises
+    // again comes straight back (decided_by is NULL → not suppressed), while a judgement a person
+    // actually made stands. Best-effort: a failed read suppresses nothing.
+    // A DECISION ON A WARNING DOES NOT SILENCE A LATER FATAL. The dedupe key
+    // (`isg-gap:rtl_cond_feasibility`) encodes neither severity nor the state of the file, so a
+    // dismissal made while an item was a warning on a light-rehab file would otherwise keep it quiet
+    // after the deal converts to ground-up and the SAME rule becomes a dealbreaker. Silencing a
+    // dealbreaker with a decision that was made about something milder is a false clear, so the
+    // suppression only holds while the item is no worse than what the person actually judged.
+    // FLAGGING AN ITEM MUST NOT CLONE IT — the 298-email burst (re-audit 2026-07-27, reproduced on
+    // the live DB against `origin/main` too, so this is a pre-existing hole this branch simply makes
+    // easy to reach: Escalate / Mark important are now one click on the merged finding card).
+    //
+    // `record()` refreshes a row only while it is `status='open'`. `escalated` /`marked_important` /
+    // `asked_admin` are NOT decisions — they mean "still needs handling, louder" — but they are also
+    // not `open`, so the refresh missed them and INSERTED a second row for the same key. A fresh
+    // insert of a FATAL fires `_notifyFatalNew`, which fans out to the whole file team: one page load
+    // after a staffer clicked Escalate produced 298 "New fatal AI finding" sends and left a phantom
+    // duplicate open row behind.
+    //
+    // So the skip set has TWO members, for two different reasons:
+    //   ALIVE   — the key already owns a live row in a status `record()` cannot refresh. Re-recording
+    //             it adds nothing and costs a duplicate + a mail-out.
+    //   DECIDED — a human closed it (see above), and only while the item is no worse than what they
+    //             actually judged.
+    const SEV_RANK = { fatal: 3, warning: 2, info: 1 };
+    const ALIVE_NOT_OPEN = ['escalated', 'marked_important', 'asked_admin'];
+    const decidedSev = new Map();   // dedupe_key → the most serious severity a human has decided on
+    const aliveKeys = new Set();    // dedupe_key → already live under a status record() can't refresh
+    try {
+      const d = await client.query(
+        `SELECT dedupe_key, severity, status, decided_by_staff_id FROM ai_suggestions
+          WHERE application_id=$1 AND source=$2 AND dedupe_key IS NOT NULL
+            AND (status = ANY($3::text[])
+                 OR (decided_by_staff_id IS NOT NULL AND status NOT IN ('open') AND NOT (status = ANY($3::text[]))))`,
+        [appId, SOURCE, ALIVE_NOT_OPEN]);
+      for (const r of d.rows) {
+        const k = String(r.dedupe_key);
+        if (ALIVE_NOT_OPEN.includes(r.status)) { aliveKeys.add(k); continue; }
+        const rank = SEV_RANK[String(r.severity || '').toLowerCase()] || 0;
+        if (!decidedSev.has(k) || rank > decidedSev.get(k)) decidedSev.set(k, rank);
+      }
+    } catch (_e) { /* suppress nothing on a read failure */ }
+    let raised = 0, fatal = 0, heldByHuman = 0;
     for (const p of payloads) {
+      const key = p.dedupeKey ? String(p.dedupeKey) : null;
+      if (key && aliveKeys.has(key)) { heldByHuman += 1; continue; }
+      const decided = key ? decidedSev.get(key) : undefined;
+      if (decided !== undefined && decided >= (SEV_RANK[String(p.severity || '').toLowerCase()] || 0)) {
+        heldByHuman += 1; continue;
+      }
       try {
         await aiSug.record(client, Object.assign({ applicationId: appId }, p));
         raised += 1;
@@ -172,9 +232,9 @@ async function syncInvestorGuidelineFindings(client, appId, opts) {
       : 0;
     // Name the loaders, not just the fact — "the appraisal read failed" is actionable, "degraded"
     // is not, and this is what the caller logs when a retraction is skipped.
-    return { raised, fatal, retracted, assessed, degraded,
+    return { raised, fatal, retracted, assessed, degraded, heldByHuman,
       degradedSources: degraded ? desk.degraded.slice() : [] };
-  } catch (_e) { return { raised: 0, fatal: 0, retracted: 0, assessed: false, degraded: false, degradedSources: [] }; }
+  } catch (_e) { return { raised: 0, fatal: 0, retracted: 0, assessed: false, degraded: false, heldByHuman: 0, degradedSources: [] }; }
 }
 
 /**

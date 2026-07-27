@@ -83,6 +83,10 @@ export default function InvestorGuidelinesPanel({ appId }) {
   const [loading, setLoading] = useState(false);
   const [desk, setDesk] = useState(null);
   const [showMet, setShowMet] = useState(false);
+  // The unhappy list is collapsed by default now that every item of it renders as a real finding in
+  // the ONE findings list above (owner-directed 2026-07-27 — "the other investor guideline find it
+  // should be in the background").
+  const [showUnhappy, setShowUnhappy] = useState(false);
 
   const load = useCallback(() => {
     if (!appId) return Promise.resolve();
@@ -144,8 +148,27 @@ export default function InvestorGuidelinesPanel({ appId }) {
             {d.generatedAt && <span style={{ fontSize: 11, color: 'var(--muted,#4B585C)' }}>as of {fmtAgo(d.generatedAt)}</span>}
           </div>
 
-          {/* the ONLY thing surfaced: what the note buyer is not happy about */}
+          {/* WHAT THE NOTE BUYER IS NOT HAPPY ABOUT — now IN THE BACKGROUND (owner-directed
+              2026-07-27). Every one of these items is also a real finding in the ONE "Open findings"
+              list above, in the same card as everything else: *"You need to merge the three type of
+              findings. Everything should be the same type which is the middle one which has this
+              open document link source… the other investor guideline find it should be in the
+              background."* So the desk keeps its headline verdict (that IS this panel's job — is
+              the note buyer happy with the file) and the item-by-item list collapses to a link. It
+              is kept, not deleted: this is the desk's own read, useful when you want to see the
+              guideline reasoning next to the guideline checks, rather than one item at a time. */}
           {unhappy.length > 0 && (
+            <div style={{ marginBottom: 10 }}>
+              <button onClick={() => setShowUnhappy((v) => !v)}
+                style={{ background: 'none', border: 'none', color: 'var(--teal,#2F7F86)', cursor: 'pointer', fontSize: 11.5, padding: 0, textAlign: 'left' }}>
+                {showUnhappy ? 'Hide' : 'Show'} the {unhappy.length} item{unhappy.length === 1 ? '' : 's'} as this desk sees {unhappy.length === 1 ? 'it' : 'them'}
+              </button>
+              <span style={{ fontSize: 11.5, color: 'var(--muted,#4B585C)', marginLeft: 8 }}>
+                — each one is already in the “Open findings” list above, with the rest of the review.
+              </span>
+            </div>
+          )}
+          {unhappy.length > 0 && showUnhappy && (
             <div style={{ marginBottom: 12 }}>
               {unhappy.map((u, i) => {
                 const fatal = u.severity === 'fatal';
