@@ -27,6 +27,12 @@ const pipelineSearch = encompass.pipelineSearch;
 
 // Full raw loan by opaque Encompass GUID. The GUID is the join key we cache in
 // applications.encompass_loan_guid so subsequent pulls skip the pipeline search.
+// Read a loan's values BY FIELD NUMBER (read-only; owner sign-off 2026-07-26).
+async function readFields(guid, ids) {
+  if (!guid) throw new Error('readFields: guid is required.');
+  return encompass.fieldReader(guid, ids);
+}
+
 async function getLoan(guid, { entities } = {}) {
   if (!guid) throw new Error('getLoan: guid is required.');
   const qs = entities && entities.length ? `?entities=${encodeURIComponent(entities.join(','))}` : '';
@@ -90,6 +96,7 @@ module.exports = {
   // Loan reads
   pipelineSearch,        // the raw guarded pipeline-search POST (used by the bulk-pull job)
   getLoan,
+  readFields,
   findLoanByLoanNumber,  // convenience: pipeline-search by loan number
   getMilestones,
   getMilestoneLog,

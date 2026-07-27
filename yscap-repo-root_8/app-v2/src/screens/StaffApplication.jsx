@@ -3260,7 +3260,7 @@ export default function StaffApplication() {
         {/* Investor-specific guidelines live INSIDE the one document review (owner-directed 2026-07-24):
             not a separate section, not a separate AI pass — the same review, one place. */}
         <div style={{ marginTop: 20, paddingTop: 16, borderTop: '2px solid var(--line,#E7E1D3)' }}>
-          <div style={{ fontSize: 13, fontWeight: 800, color: 'var(--ink,#141B22)', marginBottom: 4 }}>Investor-specific guidelines</div>
+          <div style={{ fontSize: 13, fontWeight: 800, color: '#141B22', marginBottom: 4 }}>Investor-specific guidelines</div>
           <InvestorGuidelinesPanel appId={id} />
         </div>
       </Section>

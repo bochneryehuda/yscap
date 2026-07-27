@@ -1,5 +1,5 @@
 -- ============================================================================
--- 331_underwriting_reread_state.sql — per-file "which reader generation last
+-- 332_underwriting_reread_state.sql — per-file "which reader generation last
 -- re-read this file" stamp, for the un-funded re-read sweep.
 --
 -- WHY (owner decision 2026-07-27, docs/FINDINGS-CLEANUP-SPEC.md): a fix to the

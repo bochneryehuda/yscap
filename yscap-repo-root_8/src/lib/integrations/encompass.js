@@ -42,6 +42,28 @@ const cfg = require('../../config').encompass;
 const TOKEN_PATH = '/oauth2/v1/token';
 const PIPELINE_SEARCH_PATH = '/encompass/v3/loanPipeline';
 const POST_ALLOWLIST = new Set([TOKEN_PATH, PIPELINE_SEARCH_PATH]);
+// THIRD read-shaped POST, added with the owner's explicit sign-off (2026-07-26):
+// "Go ahead with all the fixes", answering a direct request to allow reading
+// Encompass fields BY FIELD NUMBER. Encompass exposes that as a POST only because
+// the list of field ids travels in the JSON body — it RETURNS values and mutates
+// nothing. It is required for correctness, not convenience: the same field number
+// lives at a DIFFERENT place in the loan JSON from loan to loan (field 1859 sat in
+// closingDocument.finalVestingDescription on one loan and was absent on 117 Brook,
+// where the LLC name lived in borrowerUnparsedName1), and field 388's real value
+// (1.000) appears at NO stable path — the path we had been reading held a different
+// fee entirely (2), which is exactly the 1%-vs-2% the owner reported. Reading by
+// field number is the only way to be right on every loan.
+// The path carries the loan GUID, so it is matched by PREFIX + SUFFIX rather than
+// exact equality — deliberately narrow: it must start with /encompass/v3/loans/ and
+// end with /fieldReader, so no other loan sub-resource can slip through.
+const FIELD_READER_PREFIX = '/encompass/v3/loans/';
+const FIELD_READER_SUFFIX = '/fieldReader';
+function _isFieldReaderPath(url) {
+  if (!url.startsWith(cfg.baseUrl + FIELD_READER_PREFIX)) return false;
+  const tail = url.slice((cfg.baseUrl + FIELD_READER_PREFIX).length);
+  // exactly "<guid>/fieldReader" — one segment then the suffix, no query, no extras
+  return /^[A-Za-z0-9-]{8,64}\/fieldReader$/.test(tail);
+}
 
 // Configured = the app credentials + instance are present. The user login is only required for the
 // password grant; a client-credentials tenant needs just the three.
@@ -56,7 +78,8 @@ const withTimeout = (ms) => { const ac = new AbortController(); const t = setTim
 // suspenders backstop behind the "only READ helpers are exported" contract.
 async function _fetchGuarded(url, init) {
   const method = String((init && init.method) || 'GET').toUpperCase();
-  const allowedPost = [...POST_ALLOWLIST].some((p) => url === cfg.baseUrl + p || url.startsWith(cfg.baseUrl + p + '?'));
+  const allowedPost = [...POST_ALLOWLIST].some((p) => url === cfg.baseUrl + p || url.startsWith(cfg.baseUrl + p + '?'))
+    || _isFieldReaderPath(url);
   if (method !== 'GET' && !allowedPost) {
     // eslint-disable-next-line no-console
     console.error('[encompass] refused non-GET request:', method, url);
@@ -217,4 +240,33 @@ async function pipelineSearch(request, { limit, start } = {}) {
 // `encompass.READ_ONLY === true` before wiring up code that assumes it can write.
 const READ_ONLY = true;
 
-module.exports = { name: 'encompass', configured, ping, apiGet, pipelineSearch, READ_ONLY };
+
+// READ FIELDS BY FIELD NUMBER — the authoritative reader (owner sign-off 2026-07-26).
+// `ids` is a list of Encompass field ids ('1859', '388', 'CX.CAPITALPROVIDER'…);
+// returns { '1859': 'MW TRADING LLC', '388': '1.000', … }. Read-only: it returns
+// values and mutates nothing. Prefer this over guessing a JSON path — the same
+// field number lives in different places on different loans.
+async function fieldReader(loanGuid, ids) {
+  ensure();
+  const guid = String(loanGuid || '').trim();
+  if (!/^[A-Za-z0-9-]{8,64}$/.test(guid)) throw new Error('fieldReader: a loan GUID is required.');
+  const list = (Array.isArray(ids) ? ids : []).map((x) => String(x)).filter(Boolean);
+  if (!list.length) return {};
+  const token = await getToken();
+  const g = withTimeout(30000);
+  try {
+    const url = `${cfg.baseUrl}${FIELD_READER_PREFIX}${guid}${FIELD_READER_SUFFIX}`;
+    const r = await _fetchGuarded(url, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify(list),
+      signal: g.signal,
+    });
+    const text = await r.text();
+    if (!r.ok) throw new Error(`Encompass fieldReader ${r.status}: ${text.slice(0, 300)}`);
+    const out = text ? JSON.parse(text) : {};
+    return (out && typeof out === 'object' && !Array.isArray(out)) ? out : {};
+  } finally { g.done(); }
+}
+
+module.exports = { name: 'encompass', configured, ping, apiGet, pipelineSearch, fieldReader, READ_ONLY };

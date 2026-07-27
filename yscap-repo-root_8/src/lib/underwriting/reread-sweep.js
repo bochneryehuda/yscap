@@ -28,7 +28,7 @@
  * THE FIVE REQUIREMENTS the owner set for the sweep itself (a portfolio-wide re-read is the single
  * most expensive thing this system can do), and how each is met:
  *   1. BOUNDED + RESUMABLE with a durable cursor — the per-file `generation` stamp
- *      (underwriting_reread_state, db/331) IS the cursor: a stamped file drops out of the selection,
+ *      (underwriting_reread_state, db/332) IS the cursor: a stamped file drops out of the selection,
  *      so a restart resumes on the next un-stamped file, never re-walking the book.
  *   2. PER-FILE SPEND respects the existing costMeter cap — allowSpend() is consulted before each
  *      file AND before each document, so one big file cannot blow past AI_PER_FILE_CAP_USD.
