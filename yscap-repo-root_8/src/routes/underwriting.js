@@ -1136,6 +1136,8 @@ router.get('/:appId', async (req, res, next) => {
           // every borrower-carrying doc → ai_suggestions. Best-effort.
           await step(() => require('../lib/underwriting/identity-chain').analyzeAndRecord(c, {
             applicationId: app.id, extractions: exts.rows,
+            people: [fileView.borrowerName(mctx && mctx.borrower), fileView.borrowerName(mctx && mctx.coBorrower)]
+              .filter(Boolean).concat((mctx && mctx.ownerNames) || []),
           }));
           // R3.23 — Public-records cross-check (advisory): seller/grantor/appraisal
           // owner + vesting/buyer chain mismatches → ai_suggestions. Best-effort.
@@ -2642,7 +2644,8 @@ router.post('/:appId/ai-suggestions/rerun-checks', requirePermission('sign_off_c
         }],
         ['bad_clearance',   () => require('../lib/underwriting/bad-clearance').scanFile(client, app.id, { maxConditions: 15 })],
         ['public_records',  () => require('../lib/underwriting/public-records-crosscheck').analyzeAndRecord(client, { applicationId: app.id, fileCtx: { vestingName: mctx && mctx.vestingName }, extractions: exts.rows })],
-        ['identity_chain',  () => require('../lib/underwriting/identity-chain').analyzeAndRecord(client, { applicationId: app.id, extractions: exts.rows })],
+        ['identity_chain',  () => require('../lib/underwriting/identity-chain').analyzeAndRecord(client, { applicationId: app.id, extractions: exts.rows,
+          people: [fileView.borrowerName(mctx && mctx.borrower), fileView.borrowerName(mctx && mctx.coBorrower)].filter(Boolean).concat((mctx && mctx.ownerNames) || []) })],
         // #199 — party collusion (independence-required parties sharing an identity)
         // + double-pledged collateral (this property on another live loan). Advisory.
         ['party_collusion', () => require('../lib/underwriting/party-collusion').analyzeAndRecord(client, { applicationId: app.id, extractions: exts.rows, fileCtx: { vestingName: mctx && mctx.vestingName } })],
