@@ -114,42 +114,6 @@ const ADVISORY_ONLY_SOURCES = ['investor_guideline_desk'];
  * The derivation is scoped to the desk's own source; every other producer writes a real
  * finding code into `evidence.code` and is untouched.
  */
-/**
- * Close every OTHER open suggestion on this file that declares the SAME fact.
- *
- * The fact is read straight out of what the producer stored (`evidence.concern_field`,
- * or an explicit `evidence.factKey`) and compared to the settled fact — so this can only
- * ever reach rows that would re-merge into the card the human just dismissed. It matches
- * no code and no condition template, which is deliberate: a template code is shared by
- * several unrelated guidelines, and matching on one would settle findings nobody decided.
- *
- * Only rows still awaiting a decision are touched, and never the row being decided.
- * Best-effort: a failure leaves the sibling open (visible), never hides one.
- */
-async function closeSiblingClaims(c, { applicationId, factKey, exceptId, action, by } = {}) {
-  try {
-    if (!applicationId || !factKey) return 0;
-    const r = await c.query(
-      `UPDATE ai_suggestions
-          SET status = 'dismissed',
-              status_reason = COALESCE(status_reason, $5),
-              decided_by_staff_id = COALESCE($4, decided_by_staff_id),
-              decided_at = now()
-        WHERE application_id = $1
-          AND id <> COALESCE($2::uuid, '00000000-0000-0000-0000-000000000000'::uuid)
-          AND status IN ('open','escalated','marked_important','asked_admin')
-          AND COALESCE(
-                evidence->>'factKey',
-                'isg_signal:' || NULLIF(COALESCE(
-                  evidence->>'concern_field',
-                  proposed_action->'fields'->>'concern_field'), '')
-              ) = $3`,
-      [applicationId, exceptId || null, factKey, by || null,
-       `Settled with the same finding (${String(action || 'dismissed')}) — one decision, one fact.`]);
-    return r.rowCount || 0;
-  } catch (_) { return 0; }
-}
-
 function claimShapeOf(row) {
   const r = row || {};
   const ev = r.evidence || {};
@@ -164,7 +128,12 @@ function claimShapeOf(row) {
   return {
     code,
     factKey: ev.factKey || (concernField ? `isg_signal:${concernField}` : undefined),
-    field: ev.field || paf.field || null,
+    // `deskToFindings` maps the desk row's DOMAIN onto `field`, so the ledger key must
+    // too — otherwise a decision taken on the AI card keys `…::::::` while the live
+    // finding keys `…::background::::` and the two never match. Same class as the code
+    // namespace above, one field over.
+    field: (r.source === 'investor_guideline_desk' ? (ev.domain || null) : null)
+      || ev.field || paf.field || null,
     document_id: r.document_id || null,
     docValue: ev.docValue || ev.doc_value || null,
   };
@@ -476,23 +445,6 @@ async function decide(client, id, decision = {}) {
           applicationId: cur.application_id, finding: shape, origin: 'ai_suggestion',
           decision: newStatus, note: statusReason || decision.note || null, decidedBy: staffId,
         });
-        // …AND CLOSE THE OTHER ROWS ASSERTING THE SAME FACT (third audit pass).
-        //
-        // The ledger settles the FINDING, which is what the Open-findings list reads. The
-        // AI Findings panel reads ROWS, and hides a mirror only while its claim is visible
-        // in that list — so the instant the dismiss settled the merged card, the card left
-        // the list, the claim left the "already shown" set, and the sibling producer's
-        // mirror UN-HID. One dismiss, and the same rural item was live again one panel
-        // over, needing a second dismiss: the owner's symptom, relocated rather than fixed.
-        //
-        // A human settled the fact, so every row asserting that fact is settled. Matched on
-        // the DECLARED fact only (never a code, never a template), so it can reach exactly
-        // the rows that would re-merge into the same card and nothing else. Best-effort and
-        // inside the same guarded block: it can never roll back the human's decision.
-        if (shape.factKey) await closeSiblingClaims(c, {
-          applicationId: cur.application_id, factKey: shape.factKey, exceptId: cur.id,
-          action: newStatus, by: staffId,
-        });
       } else if (newStatus === 'open') {
         // "Unmark important" puts the row back to open — a re-open, not a decision.
         await fdec.reopen(c, { applicationId: cur.application_id, finding: shape, by: staffId });
@@ -700,5 +652,5 @@ module.exports = { ADVISORY_ONLY_SOURCES, notScoredSql,
   VALID_STATUSES,
   // Exported for the regression test that pins the row -> finding key invariant: a desk
   // row must key on the FINDING's code, never on the condition template several rows share.
-  _internals: { claimShapeOf, closeSiblingClaims },
+  _internals: { claimShapeOf },
 };

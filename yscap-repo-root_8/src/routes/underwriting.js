@@ -467,14 +467,6 @@ function notifyRaiser(row, actorId, decision, note) {
 function escalationFindingShape(row) {
   return {
     code: row.code, field: row.field || null,
-    // The FACT this code asserts — so a super-admin's "no action needed" on a note-buyer
-    // escalation settles the CLAIM, not just the one code. Asked of BOTH producers: the
-    // run's rule table and the desk's spec rows. An escalation stores only a finding
-    // SNAPSHOT (code / field / doc_value), so the code is all there is to go on, and
-    // asking only the run left every desk-raised escalation — which is where the existing
-    // decisions are — recording the code form alone. Both return null for a code they
-    // don't know, so every other finding keys exactly as before.
-    factKey: investorReview.claimKeyForCode(row.code) || deskFindings.factKeyForCode(row.code) || undefined,
     document_id: row.document_id || null,
     docValue: row.doc_value != null ? String(row.doc_value) : null,
   };

@@ -21,7 +21,7 @@
 const assert = require('assert');
 const { deskToFindings } = require('../src/lib/underwriting/investor-guidelines/desk-findings');
 const review = require('../src/lib/underwriting/investor-guideline-review');
-const { dedupeByClaim, claimOf, claimKeysOf } = require('../src/lib/underwriting/finding-claims');
+const { dedupeByClaim, claimOf } = require('../src/lib/underwriting/finding-claims');
 const fdec = require('../src/lib/underwriting/finding-decisions');
 
 let n = 0;
@@ -232,45 +232,52 @@ t('two PERSISTED rows are never merged — each stays separately resolvable', ()
   assert.strictEqual(m[0].id, 'real-1');
 });
 
-// ── the decision ledger and the desk must agree about WHAT a finding IS ──────
+// ── the decision ledger keys per PRODUCER, not per fact ─────────────────────
 t('a decision recorded BEFORE this finding declared a fact still settles it', () => {
-  // THE REGRESSION THIS LOCKS DOWN. #816's ledger keys on claimOf, but the two writers
-  // (routes/underwriting.js escalationFindingShape, ai-suggestions.decide) rebuild a raw
-  // shape from stored columns and carry no factKey. The moment a producer started declaring
-  // a fact, every ledger row already on file keyed the OLD way and stopped matching — so a
-  // dismissal a human made yesterday silently came undone. That IS the owner's original
-  // "I dismiss it and a minute afterwards it populates again".
-  const before = { code: 'isg_appraisal_review_3345', field: 'rural' };        // what the ledger stored
-  const now = { ...before, factKey: 'isg_signal:appraisal_rural' };            // what the desk raises today
-  const oldKey = claimOf(before);
-  assert.notStrictEqual(claimOf(now), oldKey, 'fixture must really exercise the two key forms');
-  assert.ok(claimKeysOf(now).includes(oldKey),
-    'the finding must still answer to the key its decision was recorded under');
-  assert.ok(fdec.isSuppressed(new Set([oldKey]), now),
-    'a pre-existing dismissal must keep suppressing — otherwise it comes back on the next view');
+  // The regression this locks down: #816's ledger keys on the finding's identity, and its
+  // two writers rebuild a raw shape from stored columns with no factKey. If the ledger key
+  // had followed the fact, every decision already on file would have stopped matching the
+  // moment a producer started declaring one — a dismissal made yesterday coming silently
+  // undone. The ledger deliberately ignores factKey, so the key is unchanged.
+  const before = { code: 'isg_appraisal_review_3345', field: 'rural' };
+  const now = { ...before, factKey: 'isg_signal:appraisal_rural' };
+  assert.strictEqual(fdec.keyOf(now), fdec.keyOf(before),
+    'declaring a fact must not change the key a decision was recorded under');
+  assert.ok(fdec.isSuppressed(new Set([fdec.keyOf(before)]), now),
+    'a pre-existing dismissal must keep suppressing');
 });
 
-t('ONE dismiss settles the whole claim — every producer of the same fact', () => {
-  // A merged card carries exactly one handle, so a Dismiss closes one ai_suggestions row.
-  // Keyed only on that row's code, the OTHER producers of the same fact re-merged into a
-  // visually identical card on the next view: "I dismissed it twice and then it got stuck".
-  const claimKey = 'claim:isg_signal:appraisal_rural';
-  const set = new Set([claimKey]);
-  for (const code of ['isg_appraisal_review_123', 'isg_appraisal_review_3345', 'isg_rural_property']) {
-    assert.ok(fdec.isSuppressed(set, { code, factKey: 'isg_signal:appraisal_rural' }),
-      `${code} asserts the settled fact and must stay settled`);
-  }
-  // …and a DIFFERENT fact is untouched.
-  assert.ok(!fdec.isSuppressed(set, { code: 'isg_bl_transferred_appraisal', factKey: 'isg_signal:appraisal_transferred' }));
-  assert.ok(!fdec.isSuppressed(set, { code: 'bank_account_not_borrower', field: 'holder' }));
+t('a decision on one producer NEVER settles another producer of the same fact', () => {
+  // THE THREE REASONS (fourth audit pass). A fact key carries no severity and no note
+  // buyer, so sharing one across producers silences work nobody judged:
+  //   SEVERITY — desk-sync promises "a decision on a warning does not silence a later
+  //     fatal"; a shared key made that guard vacuous.
+  //   MEANING — `isg_bl_transferred_appraisal` (Blue Lake: a decline no letter fixes) and
+  //     `isg_transferred_appraisal_letter` (everyone else: just ask for the letter) declare
+  //     the SAME signal and mean opposite things.
+  //   REVERSIBILITY — one key across producers made a dismissal a one-way door.
+  const settled = new Set([fdec.keyOf({ code: 'isg_transferred_appraisal_letter' })]);
+  assert.ok(!fdec.isSuppressed(settled, {
+    code: 'isg_bl_transferred_appraisal', factKey: 'isg_signal:appraisal_transferred', severity: 'fatal' }),
+    "Blue Lake's dealbreaker must never be settled by a decision made about the letter warning");
+  assert.ok(!fdec.isSuppressed(settled, {
+    code: 'isg_rural_property', factKey: 'isg_signal:appraisal_transferred' }),
+    'nor any other producer');
+  assert.ok(fdec.isSuppressed(settled, { code: 'isg_transferred_appraisal_letter' }),
+    'while the finding actually decided stays settled');
 });
 
-t('a finding with no declared fact has exactly ONE key — nothing else widened', () => {
-  const plain = { code: 'bank_account_not_borrower', field: 'account_holder', document_id: 'doc-1' };
-  assert.deepStrictEqual(claimKeysOf(plain), [claimOf(plain)]);
-  assert.deepStrictEqual(claimKeysOf({ code: 'cot_final_buyer_not_vesting' }),
-    ['claim:vesting_entity_vs_contract_buyer']);
-  assert.deepStrictEqual(claimKeysOf({}), [], 'no code ⇒ no key, never a guess');
+t('the DISPLAY merge is unaffected — the fact still collapses the cards', () => {
+  // The two concerns are separate on purpose: one card to look at, one decision per
+  // finding. Merging what you SEE is the owner's ask; merging what you DECIDED is not.
+  const m = dedupeByClaim([
+    { code: 'isg_appraisal_review_3345', severity: 'warning', factKey: 'isg_signal:appraisal_rural', suggestionId: 's1' },
+    { code: 'isg_rural_property', severity: 'fatal', factKey: 'isg_signal:appraisal_rural' },
+  ]);
+  assert.strictEqual(m.length, 1, 'still ONE row on screen');
+  assert.strictEqual(m[0].severity, 'fatal');
+  assert.notStrictEqual(fdec.keyOf(m[0]), fdec.keyOf({ code: 'isg_appraisal_review_3345' }),
+    'but the two findings keep their own decision identities');
 });
 
 console.log(`\n${n} checks passed.`);

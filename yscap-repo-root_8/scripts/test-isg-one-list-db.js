@@ -121,43 +121,47 @@ console.log('ISG one list (DB)');
       'only the CURRENT run governs');
     ok('a superseded run contributes nothing');
 
-    // ── 5. THE LEDGER, END TO END ──────────────────────────────────────────
-    // The regression that made this whole change dangerous: a decision recorded before a
-    // producer declared a fact keyed the old way, and stopped matching the moment it did.
+    // ── 5. THE LEDGER KEYS PER PRODUCER, at that producer's own code ───────
+    // Two things, deliberately separated. The DISPLAY merges on the declared fact — three
+    // producers noticing one thing is one card. A DECISION does NOT: a fact key carries
+    // neither severity nor note buyer, so sharing one across producers meant
+    //   · a dismissal made while an item was a WARNING silenced the same rule after the
+    //     deal converted and it became a DEALBREAKER (desk-sync promises the opposite);
+    //   · "the transfer letter arrived" settled Blue Lake's transferred-appraisal DECLINE,
+    //     which no letter can fix — the same signal means opposite things per buyer;
+    //   · a dismissal became a one-way door that re-open could not undo.
+    // So the ledger ignores factKey — which is also exactly how every row already on file
+    // was written, so nothing a human decided before this shipped stops working.
     const before = { code: 'isg_appraisal_review_3345', field: 'rural' };
     const today = Object.assign({}, before, { factKey: 'isg_signal:appraisal_rural' });
-    const oldKey = claimOf(before);
-    assert.notStrictEqual(claimOf(today), oldKey, 'fixture must really exercise both key forms');
+    assert.strictEqual(fdec.keyOf(today), fdec.keyOf(before),
+      'declaring a fact must not change the key a decision was recorded under');
 
     await fdec.record(client, {
       applicationId: app.id, finding: before, origin: 'ai_suggestion',
       decision: 'dismissed', note: 'not a concern on this file',
     });
+    const written = (await client.query(
+      `SELECT finding_key FROM finding_decisions WHERE application_id=$1 ORDER BY 1`, [app.id])).rows
+      .map((r) => r.finding_key);
+    assert.deepStrictEqual(written, ['code:isg_appraisal_review_3345::rural::::'],
+      'recorded under the FINDING decided, never the shared fact');
+
     let keys = await fdec.suppressedKeys(client, app.id);
-    assert.ok(keys.has(oldKey), 'the decision is on file under the key it was written with');
     assert.ok(fdec.isSuppressed(keys, today),
-      'and it must STILL settle the same finding now that the producer declares a fact');
-    ok('a decision recorded before the fact key existed still suppresses (no backfill needed)');
+      'a decision made before the producer declared a fact must keep suppressing');
+    assert.ok(!fdec.isSuppressed(keys, { code: 'isg_rural_property', severity: 'fatal', factKey: 'isg_signal:appraisal_rural' }),
+      "the run's DEALBREAKER about the same fact must NOT be settled by a decision on a warning");
+    assert.ok(!fdec.isSuppressed(keys, { code: 'isg_bl_transferred_appraisal', factKey: 'isg_signal:appraisal_rural' }),
+      'nor another buyer\'s rule, which may mean the opposite thing');
+    ok('a decision settles the finding it was made about — and only that one');
 
-    // …and a decision taken on the MERGED card settles every producer of that fact.
-    await fdec.record(client, {
-      applicationId: app.id, finding: today, origin: 'ai_suggestion', decision: 'dismissed',
-    });
-    keys = await fdec.suppressedKeys(client, app.id);
-    for (const code of ['isg_appraisal_review_123', 'isg_appraisal_review_3345', 'isg_rural_property']) {
-      assert.ok(fdec.isSuppressed(keys, { code, factKey: 'isg_signal:appraisal_rural' }),
-        `${code} asserts the settled fact — one dismiss must settle it too`);
-    }
-    assert.ok(!fdec.isSuppressed(keys, { code: 'isg_bl_ny_loan' }),
-      'an unrelated finding must NOT be swept up');
-    ok('one dismiss on the merged card settles every producer of that fact — and nothing else');
-
-    // …and re-opening it un-suppresses BOTH forms, so a dismissal is never a one-way door.
     await fdec.reopen(client, { applicationId: app.id, finding: today, by: null });
     keys = await fdec.suppressedKeys(client, app.id);
     assert.ok(!fdec.isSuppressed(keys, today), 'a re-opened finding comes back');
-    assert.ok(!fdec.isSuppressed(keys, before), 'including under its older key form');
-    ok('re-open clears every key the decision was written under');
+    assert.ok(!fdec.isSuppressed(keys, before), 'under either shape');
+    ok('a dismissal is never a one-way door');
+
 
     // ── 6. THE REAL DISMISS DOOR, not a hand-built shape ───────────────────
     // THE BLIND SPOT THAT LET THE FIRST FIX SHIP BROKEN. Everything above builds the
@@ -177,7 +181,7 @@ console.log('ISG one list (DB)');
     const app2 = (await client.query(
       `INSERT INTO applications (borrower_id, property_address, lender)
          VALUES ($1, '{"state":"NY"}'::jsonb, 'Blue Lake') RETURNING id`, [b.id])).rows[0];
-    const payloads = deskToSuggestions({
+    const deskFixture = {
       noteBuyer: { name: 'Blue Lake' }, verdicts: [{ cond_no: 1 }],
       unhappy: [
         { cond_no: 123, flag: 'appraisal_review', severity: 'warning', name: 'RURAL PROPERTY INELIGIBLE',
@@ -185,7 +189,8 @@ console.log('ISG one list (DB)');
         { cond_no: 3345, flag: 'appraisal_review', severity: 'warning', name: 'RURAL PROPERTY VERIFICATION',
           domain: 'rural', concern_field: 'appraisal_rural', pilot_template_code: null },
       ],
-    });
+    };
+    const payloads = deskToSuggestions(deskFixture);
     assert.strictEqual(payloads.length, 2, 'the real desk must emit both rural rows');
     assert.ok(payloads.every((p) => !p.evidence.code),
       'fixture must reproduce the real shape: a concern-carrying row has NO template code');
@@ -194,103 +199,29 @@ console.log('ISG one list (DB)');
     assert.strictEqual(sugIds.filter(Boolean).length, 2);
     ok('the real desk rows persist — and really do carry no template code');
 
-    // The merged card carries ONE inherited handle. Dismissing it must settle the FACT.
+    // The merged card carries ONE inherited handle. Dismissing it records the decision
+    // under THAT finding's own code — not the shared fact (see section 5 for why).
     await aiSug.decide(client, sugIds[0], { action: 'dismiss', reason: 'not a concern', staffId: null });
-    const written = (await client.query(
+    const doorKeys = (await client.query(
       `SELECT finding_key FROM finding_decisions WHERE application_id=$1 ORDER BY 1`, [app2.id])).rows
       .map((r) => r.finding_key);
-    assert.ok(written.includes('claim:isg_signal:appraisal_rural'),
-      `Dismiss must record the CLAIM — got ${JSON.stringify(written)}`);
+    assert.deepStrictEqual(doorKeys, ['code:isg_appraisal_review_123::property::::'],
+      `the REAL door must write the finding's own key — got ${JSON.stringify(doorKeys)}`);
     const set2 = await fdec.suppressedKeys(client, app2.id);
-    assert.ok(fdec.isSuppressed(set2, { code: 'isg_rural_property', factKey: 'isg_signal:appraisal_rural' }),
-      "the run's rural fatal asserts the settled fact and must not come back");
-    assert.ok(fdec.isSuppressed(set2, { code: 'isg_appraisal_review_3345', factKey: 'isg_signal:appraisal_rural' }),
-      'nor the sibling desk row whose ai_suggestions row is still open');
-    assert.ok(!fdec.isSuppressed(set2, { code: 'isg_bl_ny_loan' }), 'and nothing unrelated is swept up');
-    ok('a Dismiss through the REAL door settles the whole claim');
+    assert.ok(fdec.isSuppressed(set2, deskToFindings(deskFixture)[0]),
+      'the finding the human actually dismissed is settled');
+    assert.ok(!fdec.isSuppressed(set2, { code: 'isg_rural_property', severity: 'fatal', factKey: 'isg_signal:appraisal_rural' }),
+      "the run's dealbreaker is NOT settled by a decision made on a warning");
+    ok('a Dismiss through the REAL door records the finding it was made about');
 
-    // …and the AI panel must recognise the surviving sibling as the already-shown claim,
-    // or it renders a second card for the same fact right next to the merged one.
+    // …and the AI panel keys its mirror rows on the same CLAIM the Open-findings list
+    // deduped on, so a sibling whose card merged away is recognised as already shown
+    // rather than rendering a second card for the same fact.
     const listed = await aiSug.listForFile(app2.id, { includeDismissed: true }, client);
     assert.ok(listed.length >= 2, 'both mirrors are on file');
     assert.ok(listed.every((r) => r.claim_key === 'claim:isg_signal:appraisal_rural'),
-      `every rural mirror must carry the claim key the Open-findings list deduped on — got ${JSON.stringify(listed.map((r) => r.claim_key))}`);
+      `every rural mirror must carry the shown claim key — got ${JSON.stringify(listed.map((r) => r.claim_key))}`);
     ok('the AI panel keys its mirror rows on the same claim, so it hides the duplicate');
-
-    // The escalation door only ever sees a CODE (db/222 stores a finding snapshot).
-    assert.strictEqual(deskFindings.factKeyForCode('isg_appraisal_review_3345'), 'isg_signal:appraisal_rural');
-    assert.strictEqual(deskFindings.factKeyForCode('isg_gap_rtl_cond_title'), null,
-      'a coverage gap is about a MISSING CONDITION, not a fact — it must never be keyed');
-    assert.strictEqual(deskFindings.factKeyForCode('bank_account_not_borrower'), null);
-    for (const bad of [null, undefined, '', 42, {}, []]) {
-      assert.strictEqual(deskFindings.factKeyForCode(bad), null, `expected null for ${JSON.stringify(bad)}`);
-    }
-    ok('a desk CODE alone resolves its fact — and never guesses one');
-
-    // …and the sibling's AI-panel row must be CLOSED, not merely hidden-while-shown.
-    // The panel hides a mirror only while its claim is visible in the Open-findings list.
-    // The dismiss removes the card from that list, so the claim leaves the "already shown"
-    // set and the sibling un-hides — one dismiss, same item live again one panel over.
-    const stillOpen = (await client.query(
-      `SELECT dedupe_key, status FROM ai_suggestions
-        WHERE application_id=$1 AND status IN ('open','escalated','marked_important','asked_admin')`,
-      [app2.id])).rows;
-    assert.strictEqual(stillOpen.length, 0,
-      `settling the fact must settle every row asserting it — still open: ${JSON.stringify(stillOpen)}`);
-    ok('the sibling mirror is CLOSED by the same decision, not left open behind the card');
-
-    // …and a row asserting a DIFFERENT fact is never swept up by that close.
-    const other = await aiSug.record(client, {
-      applicationId: app2.id, source: 'investor_guideline_desk', kind: 'finding', severity: 'warning',
-      title: 'Transferred appraisal', body: 'x',
-      evidence: { code: null, concern_field: 'appraisal_transferred', cond_no: 3349, flag: 'appraisal_review' },
-      dedupeKey: 'isg-appraisal_review:3349',
-    });
-    await aiSug.decide(client, sugIds[1] || other.id, { action: 'dismiss', reason: 'x', staffId: null })
-      .catch(() => {});
-    const transferred = (await client.query(
-      `SELECT status FROM ai_suggestions WHERE id=$1`, [other.id])).rows[0];
-    assert.strictEqual(transferred.status, 'open',
-      'a row declaring a DIFFERENT fact must be untouched — the close matches the fact, never a code');
-    ok('a different fact is never swept up');
-
-    // ── 7. THE ESCALATION DOOR, wired (not just the resolver in isolation) ──
-    // db/222 stores only a finding SNAPSHOT, so the code is all the queue has. Asking only
-    // the run's rule table left every DESK-raised escalation recording the code form alone
-    // — and the desk is where the existing decisions are.
-    const app3 = (await client.query(
-      `INSERT INTO applications (borrower_id, property_address, lender)
-         VALUES ($1, '{"state":"NY"}'::jsonb, 'Blue Lake') RETURNING id`, [b.id])).rows[0];
-    const escShape = uw._escalationFindingShape({ code: 'isg_appraisal_review_3345', field: 'rural' });
-    assert.strictEqual(escShape.factKey, 'isg_signal:appraisal_rural',
-      'the escalation door must resolve a DESK code to its fact, not only a run code');
-    await fdec.record(client, {
-      applicationId: app3.id, finding: escShape, origin: 'escalation', decision: 'dismissed',
-    });
-    const escKeys = await fdec.suppressedKeys(client, app3.id);
-    assert.ok(fdec.isSuppressed(escKeys, { code: 'isg_rural_property', factKey: 'isg_signal:appraisal_rural' }),
-      "a super-admin's 'no action needed' on the desk finding must settle the run's fatal about the same fact");
-    assert.strictEqual(uw._escalationFindingShape({ code: 'isg_rural_property' }).factKey,
-      'isg_signal:appraisal_rural', 'and a RUN code still resolves through the run resolver');
-    assert.strictEqual(uw._escalationFindingShape({ code: 'bank_account_not_borrower' }).factKey, undefined,
-      'every other finding keys exactly as before');
-    ok('an escalation decision on a desk code settles the claim');
-
-    // ── 8. THE LEDGER WRITES EVERY KEY, not just the primary ───────────────
-    const app4 = (await client.query(
-      `INSERT INTO applications (borrower_id, property_address) VALUES ($1,'{}'::jsonb) RETURNING id`,
-      [b.id])).rows[0];
-    await fdec.record(client, {
-      applicationId: app4.id, finding: { code: 'isg_appraisal_review_123', factKey: 'isg_signal:appraisal_rural' },
-      origin: 'ai_suggestion', decision: 'dismissed',
-    });
-    const bothForms = (await client.query(
-      `SELECT finding_key FROM finding_decisions WHERE application_id=$1 ORDER BY 1`, [app4.id])).rows
-      .map((r) => r.finding_key);
-    assert.deepStrictEqual(bothForms,
-      ['claim:isg_signal:appraisal_rural', 'code:isg_appraisal_review_123::::::'],
-      'record() must write BOTH the claim form and the code form — one alone leaves a gap in one direction');
-    ok('the ledger records every key a finding answers to');
 
     // ── 9. THE FOLD FILTER keeps a run finding that MERGED with a desk row ──
     // A desk finding carries no handle either until its ai_suggestions mirror exists, and
@@ -368,19 +299,6 @@ console.log('ISG one list (DB)');
     assert.ok(!reGap.settled,
       'and the gap must still be able to raise a row — refusing it leaves a card with no buttons');
     ok('dismissing one guideline never silently settles another that shares its template');
-
-    // ── 11. THE DESK CODE RESOLVER IS NAMESPACE-ANCHORED ───────────────────
-    // A bare /_(\d+)$/ looks up ANY code ending in digits against a global cond_no table.
-    // `oa_ownership_not_44` is an operating-agreement check, not cond_no 44 — and cond 44
-    // DOES carry a concern_field, so an unanchored regex would hand it a note-buyer fact
-    // and let a decision on it suppress an unrelated finding.
-    assert.strictEqual(deskFindings.factKeyForCode('oa_ownership_not_44'), null,
-      'a non-desk code that merely ends in a cond_no must never resolve to a note-buyer fact');
-    assert.strictEqual(deskFindings.factKeyForCode('isg_emcap_missing_3345'), null,
-      'nor a code outside the desk flag namespace');
-    assert.strictEqual(deskFindings.factKeyForCode('isg_concern_44'), 'isg_signal:non_arms_length_concern',
-      'while a real desk code still resolves');
-    ok('the desk code resolver is anchored to the desk namespace, not "ends in digits"');
 
     await client.query('ROLLBACK');
     console.log(`\n${passed} checks passed.`);
