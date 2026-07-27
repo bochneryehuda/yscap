@@ -75,11 +75,13 @@ const REASON_ACTIONS = {
   // copy on the LOSING file's ClickUp card (PILOT never erases a ClickUp box — the hard no-clear rule).
   copied_loan_number_needs_assignment: ['loan_number_assign_here', 'loan_number_keep_other'],
   // ClickUp changed a loan FIGURE while the file is FROZEN (a sent term sheet,
-  // or Clear-to-Close / Funded), so it was not applied. Keep PILOT's frozen
-  // figures and push them back to ClickUp so the two agree; the other option
-  // (accept the change) is the human clearing the term-sheet package / a
-  // super-admin unlock + re-register, which lifts the freeze on its own.
-  economics_frozen_conflict: ['keep_frozen_figures'],
+  // or Clear-to-Close / Funded), so it was not applied. TWO decisions:
+  //   • keep_frozen_figures  — keep PILOT's frozen figures and push them back to
+  //     ClickUp so the two agree (any staffer on the file), OR
+  //   • accept_clickup_figures — ADMIN-only override: pull ClickUp's figures INTO
+  //     the locked file (owner-directed 2026-07-27, the reconciled-closed-file
+  //     case). No more "clear the term sheet + re-register" just to accept a change.
+  economics_frozen_conflict: ['keep_frozen_figures', 'accept_clickup_figures'],
 };
 
 // The OTHER bumping file, read out of the review's forensic raw_value (queued by the ingest layer as
@@ -528,7 +530,34 @@ async function applyFileReviewAction({ row, action, targetApplicationId, targetT
     await audit('sync_review_keep_frozen_figures', row.application_id, actorId, { fields, reviewId: row.id });
     return {
       note: `kept the file's frozen figures and re-pushed them to ClickUp so the two agree (${fields.join(', ')}). ` +
-        `To accept the ClickUp change instead, clear the term-sheet package (or have a super-admin unlock a Clear-to-Close / Funded file) and re-register.`,
+        `To accept the ClickUp change instead, use “Use ClickUp's figures” (admin) — or clear the term-sheet package / have a super-admin unlock a Clear-to-Close / Funded file and re-register.`,
+      applicationId: row.application_id };
+  }
+
+  if (action === 'accept_clickup_figures') {
+    // The OVERRIDE (owner-directed 2026-07-27): pull ClickUp's economics INTO the
+    // FROZEN file — for a reconciled/closed file whose figures PILOT should now
+    // match. ADMIN ONLY: overriding the term-sheet / Clear-to-Close-Funded freeze
+    // is the same privileged class as unlocking a locked file (relink_task is
+    // gated the same way). The review-queue route is LO-reachable for the
+    // non-privileged action (keep_frozen_figures), so the gate lives HERE, fed
+    // the caller's real admin role, and is checked FIRST. Values are RE-READ LIVE
+    // from ClickUp (never the row's stored, possibly-stale display values).
+    if (!isAdmin) throw httpError(403, 'Only an admin can accept a ClickUp change on a locked file.');
+    if (!row.application_id) throw httpError(409, 'this row has no portal file');
+    const { acceptInboundEconomicsChange } = require('./inbound-economics-freeze');
+    const out = await acceptInboundEconomicsChange({
+      appId: row.application_id, actorId: actorId || null,
+      taskId: (row.task_id && !String(row.task_id).startsWith('app:')) ? row.task_id : null });
+    if (out.upToDate) {
+      return {
+        note: 'ClickUp already matches the file — nothing needed changing (the change may have been reverted in ClickUp since this review was raised).',
+        applicationId: row.application_id };
+    }
+    const labels = out.applied.map((c) => `${c.label}: ${c.from == null ? '—' : c.from} → ${c.to}`).join('; ');
+    return {
+      note: `updated the file from ClickUp, overriding the lock — ${labels}. ` +
+        `The pricing/Scope-of-Work conditions reopen because the registered numbers changed; re-register or sign them off when ready.`,
       applicationId: row.application_id };
   }
 

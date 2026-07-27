@@ -3,13 +3,25 @@
  * Pure decision function only — no DB / network. Each case maps to a real
  * incident from the 2026-07-14/15 ClickUp data investigations.
  * Run: node scripts/test-sync-autoresolve.js */
-const { decideDob, isArtifactDay } = require('../src/lib/sync-autoresolve');
+const { decideDob, isArtifactDay, pushSummary } = require('../src/lib/sync-autoresolve');
 
 let pass = 0, fail = 0;
 const eq = (name, got, exp) => {
   const g = JSON.stringify(got), e = JSON.stringify(exp);
   if (g === e) { pass++; } else { fail++; console.log(`FAIL ${name}: got ${g} expected ${e}`); }
 };
+
+// ---- honest outbound feedback (owner-reported 2026-07-27: a push that wrote
+// nothing must not read as success). pushSummary turns pushApplication's own
+// return into a plain outcome the review card shows. Pure.
+eq('pushSummary: a real write → written', pushSummary({ fields: 1, written: 1, suppressed: 0, blocked: 0, failed: 0 }, 'first_name').outcome, 'written');
+eq('pushSummary: ClickUp already matched → already_matched', pushSummary({ fields: 1, written: 0, suppressed: 1 }, 'email').outcome, 'already_matched');
+eq('pushSummary: an address that produced no writable field (no map coordinates) → nothing_to_write',
+   pushSummary({ fields: 0, written: 0, suppressed: 0 }, 'current_address').outcome, 'nothing_to_write');
+eq('pushSummary: pushApplication short-circuit (sync off / unlinked) → skipped',
+   pushSummary({ skipped: 'sync disabled' }, 'first_name').outcome, 'skipped');
+eq('pushSummary: a rejected write → failed', pushSummary({ fields: 1, written: 0, suppressed: 0, blocked: 0, failed: 1 }, 'cell_phone').outcome, 'failed');
+eq('pushSummary: carries the field key through for the address explanation', pushSummary({ fields: 0 }, 'current_address').fieldKey, 'current_address');
 
 // ---- artifact detection ------------------------------------------------------
 eq('artifact: typed 2-digit year (0095)', isArtifactDay('0095-10-19'), true);
