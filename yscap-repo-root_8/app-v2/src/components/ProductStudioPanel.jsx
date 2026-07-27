@@ -319,10 +319,11 @@ const ProductStudioPanel = forwardRef(function ProductStudioPanel({ appId, app, 
   // EXCEPTION that an admin approves in the Escalations box before the borrower
   // is sent terms or any term sheet can be sent.
   const staffAdmin = isStaff;
-  // Is this staffer one of the people who can APPROVE such an exception? Only
-  // used for wording ("goes to an admin" vs "you'll still need a second pair of
-  // eyes") — never to hide a control.
-  const isApprover = isStaff && ['admin', 'super_admin'].includes(staffRole || '');
+  // Is this staffer an ADMIN who could otherwise approve such an exception? Used
+  // only to warn them that they can't approve their OWN request (a super_admin
+  // is exempt from that control — see mayDecide in admin-manual-programs.js).
+  // Never used to hide a control.
+  const isApprover = isStaff && staffRole === 'admin';
   const [data, setData] = useState(null);       // { current, history }
   const [profile, setProfile] = useState(null); // borrower profile (name + fico)
   const [snap, setSnap] = useState(null);       // live studio state
