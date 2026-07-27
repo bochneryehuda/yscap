@@ -145,6 +145,19 @@ function docKey(f) {
 }
 function claimOf(f) {
   if (!f || !f.code) return null;
+  // A PRODUCER-DECLARED claim beats the static code table. The note-buyer stack has three
+  // independent producers — the guideline desk (one row per note-buyer spec), the whole-loan run's
+  // rule table, and any future one — that read the SAME underlying signal and each name their
+  // finding differently: `isg_rural_property` (run) vs `isg_appraisal_review_3345` (CorrFirst's
+  // rural row) vs `isg_appraisal_review_123` (Blue Lake's). Keyed on their codes, they can never
+  // collide, so one rural file said "rural" three times — twice as a note, once as a dealbreaker.
+  //
+  // Listing those codes here would work today and rot tomorrow: the desk's codes are derived from
+  // cond_no, so a spec edit or a new note buyer silently re-splits the claim. Instead each producer
+  // declares WHICH FACT it is asserting (`claimKey`, e.g. the signal name `appraisal_rural`), and
+  // that is the merge key. A new rule reading the same signal merges automatically, with no list to
+  // maintain. Nothing else sets claimKey, so every other finding keys exactly as before.
+  if (f.claimKey) return `claim:${norm(f.claimKey)}`;
   const fam = CLAIM_OF_CODE.get(norm(f.code));
   if (fam) return `claim:${fam}`;
   return `code:${norm(f.code)}::${norm(f.field || '')}::${docKey(f)}`;

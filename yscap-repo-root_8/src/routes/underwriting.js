@@ -65,6 +65,53 @@ const SEVERITY_RANK = { fatal: 3, warning: 2, info: 1 };
 // silenced-code queries in this file use. `escalated` and `marked_important` are emphasis, not
 // resolutions, so a guideline finding in either state keeps its card.
 const ISG_OPEN_STATUSES = new Set(['open', 'asked_admin', 'escalated', 'marked_important']);
+const investorReview = require('../lib/underwriting/investor-guideline-review');
+
+/**
+ * loadRunGuidelineFindings(db, appId) → the CURRENT run's note-buyer findings, in the openRaw shape.
+ *
+ * Reads the newest non-superseded run and returns only its `investor_guideline` findings, so the
+ * ONE findings list shows the same note-buyer facts the run cockpit shows, deduped against the
+ * desk's own rows instead of repeated beside them.
+ *
+ * ADVISORY: every returned finding is `blocksCtc:false` and carries NO id, so it renders read-only
+ * and the real clear-to-close gate (`file-review.fileFatalCount`, which counts stored
+ * `document_findings`) cannot see it. Best-effort — a failure here returns [] and the file view
+ * renders exactly as it did before, never a 500.
+ */
+async function loadRunGuidelineFindings(db, appId) {
+  if (!db || !appId) return [];
+  try {
+    const r = await db.query(
+      `SELECT f.code, f.severity, f.title, f.explanation, f.governing_rule,
+              f.expected_value, f.actual_value
+         FROM underwriting_run_findings f
+         JOIN underwriting_runs r ON r.id = f.run_id
+        WHERE r.application_id = $1 AND r.superseded_at IS NULL
+          AND f.category = $2
+        ORDER BY r.created_at DESC, f.created_at`,
+      [appId, investorReview.CATEGORY]);
+    const rows = (r && r.rows) || [];
+    return rows.map((row) => ({
+      source: investorReview.SOURCE,
+      category: investorReview.CATEGORY,
+      code: row.code,
+      // Rebuilt from the rule table — see investor-guideline-review.claimKeyForCode.
+      claimKey: investorReview.claimKeyForCode(row.code) || undefined,
+      severity: String(row.severity || '').toLowerCase() === 'fatal' ? 'fatal' : 'warning',
+      status: 'open',
+      blocksCtc: false,
+      title: row.title || row.code,
+      howTo: row.explanation || null,
+      governingRule: row.governing_rule || null,
+      expectedValue: row.expected_value != null ? String(row.expected_value) : null,
+      actualValue: row.actual_value != null ? String(row.actual_value) : null,
+      // A run finding is an ESCALATION or a file-quality call, not a document to chase: the useful
+      // human moves are to record a decision or quiet it, not to "post a condition".
+      actions: ['clear', 'dismiss'],
+    }));
+  } catch (_e) { return []; }
+}
 // Fix 2026-07-23 (#211): similar-open + bulk-resolve referenced seesAll() without
 // defining it in this file (staff.js has its own copy) — ReferenceError → 500.
 const seesAll = (req) => can(req.actor, 'see_all_files');
@@ -906,10 +953,23 @@ router.get('/:appId', async (req, res, next) => {
     // surface in the roll-up).
     const cotFindings = (chainOfTitle.findings || []).filter(Boolean);
     const sellerChainFindings = (sellerChain.findings || []).filter(Boolean);
+    // THE 4th GUIDELINE SURFACE (owner-reported 2026-07-27). The whole-loan run's note-buyer rule
+    // table (investor-guideline-review) wrote its findings ONLY to `underwriting_run_findings`,
+    // read back by the run cockpit. They never reached `openRaw`, so they never passed through the
+    // one deduped registry — and a rural / New York / transferred-appraisal file asserted the same
+    // fact TWICE, in two places, at two severities: a read-only warning in Open findings (from the
+    // desk) and a dealbreaker in the cockpit (from the run). Folding them in here is what makes it
+    // ONE list; `claimKey` (declared by both producers off the shared signal name) is what lets
+    // dedupeByClaim see they are one fact, and its existing worst-wins rule keeps the dealbreaker.
+    //
+    // ADVISORY, exactly like the desk's: `blocksCtc:false` and NO stored id, so the card renders
+    // read-only and `file-review.fileFatalCount` (the real CTC gate) never counts it. The run's own
+    // R6.18 issuance backstop is untouched — this changes WHERE the fact is shown, never gating.
+    const investorRunFindings = await loadRunGuidelineFindings(db, app.id);
     const openRaw = [...perDoc, ...cross, ...staleness.findings, ...metrics.findings, ...amendments.findings,
       ...(entityChain ? entityChain.findings : []), ...reasonability.findings, ...sellerChainFindings,
       ...cotFindings, ...bankLiquidity.findings, ...(experience ? experience.findings : []),
-      ...investorDeskFindings];
+      ...investorDeskFindings, ...investorRunFindings];
 
     // FILE-LEVEL entity-screening rollup (owner-reported 2026-07-26/27: "this entity WAS screened —
     // look on the watch list — you just don't look deep enough"). computeBackgroundFindings runs PER
