@@ -7,6 +7,7 @@ import { fmtDay, dayInputValue } from '../lib/dates.js';
 import { formatSSN, cleanFICO, ficoValid } from '../lib/validators.js';
 import { useAuth } from '../lib/auth.jsx';
 import { ESIGN_RETURN_MSG } from '../lib/esign.js';
+import { canOverride, isCompletion, askOverride, overrideLine } from '../lib/condition-override.js';
 import { subscribeChat } from '../lib/chatEvents.js';
 import ChatThread from '../components/ChatThread.jsx';
 import { NewChatModal } from './StaffChat.jsx';
@@ -596,8 +597,11 @@ const PHASE_LABEL = {
 };
 const phaseName = (p) => PHASE_LABEL[p] || (p ? p.replace(/_/g, ' ') : 'General');
 
-function Badge({ children, tone }) {
-  return <span className="pill" style={tone === 'gold' ? { borderColor: 'var(--gold)', color: 'var(--gold)' } : undefined}>{children}</span>;
+function Badge({ children, tone, title }) {
+  // `title` is optional — a collapsed row can carry the full story (e.g. why a
+  // condition was cleared by override) in a hover without widening the line.
+  return <span className="pill" title={title || undefined}
+    style={tone === 'gold' ? { borderColor: 'var(--gold)', color: 'var(--gold)' } : undefined}>{children}</span>;
 }
 
 /* PILOT ADVISORY stamp (owner-directed 2026-07-24). PILOT lays an advisory ON TOP
@@ -654,6 +658,18 @@ function PilotAdviceNote({ it }) {
 // capability (incl. the loan-coordinator persona and per-user overrides).
 const canComplete = (role) => ['processor', 'admin', 'super_admin', 'underwriter', 'loan_coordinator'].includes(role);
 
+/* SUPER-ADMIN CONDITION OVERRIDE (owner-directed 2026-07-27): "if we're unable
+   to clear it, the admin should be able to overwrite and clear the condition
+   without a document attached to it or without fulfilling the requirement of
+   that condition. Only super admin."
+
+   ONLY a super admin, and only as a deliberate act — the ordinary Sign off /
+   Waive buttons still refuse an unfulfilled condition for everyone (that gate is
+   unchanged). The ask + the wording + the display live in ../lib/condition-override
+   so this screen and the task queue can never word the same decision differently;
+   the SERVER (src/lib/conditions/admin-override.js) is the authority on who may
+   do it, so a hidden button is a convenience, never the control. */
+
 /* ONE "off my plate" rule for every conditions/checklist surface (owner-directed
    2026-07-16): the loan officer's terminal action is DONE (reviewed_at); the
    back office's is SIGN-OFF. Once YOUR role's action is complete, the item
@@ -687,6 +703,7 @@ function Item({ it, team, onPatch, role, docs, onUploadTo, onDropTo, onReviewDoc
         onClick={() => setExpandOverride(true)} title="Show the full condition">
         <span className={`dot ${signed ? 'cond-satisfied' : conditionStatusClass(it.status)}`} />
         <div style={{ flex: 1, minWidth: 0, fontWeight: 600, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{it.label}</div>
+        {it.override_at && <Badge tone="gold" title={overrideLine(it)}>admin override</Badge>}
         {it.waived_at ? <Badge>not required</Badge>
           : signed ? <Badge tone="gold">signed off</Badge>
           : it.status === 'satisfied' ? <Badge tone="gold">{conditionStatusLabel(it.status)}</Badge>
@@ -729,6 +746,9 @@ function Item({ it, team, onPatch, role, docs, onUploadTo, onDropTo, onReviewDoc
           {signed && (it.waived_at
             ? <div className="muted small">Waived by {it.waived_by_name || 'the internal team'} · {new Date(it.waived_at).toLocaleDateString()}</div>
             : <div className="muted small">Signed off by {it.signed_off_name || 'the internal team'} · {new Date(it.signed_off_at).toLocaleDateString()}</div>)}
+          {/* A condition cleared without what it asks for says so on its face —
+              never only in the audit log (owner-directed 2026-07-27). */}
+          {it.override_at && <div className="small" style={{ marginTop: 4, color: 'var(--gold, #AE8746)' }}>{overrideLine(it)}</div>}
           {it.reviewed_at && <div className="muted small">Reviewed by {it.reviewed_by_name || 'the loan officer'} · {new Date(it.reviewed_at).toLocaleDateString()}</div>}
           {(it.issue_reason || it.rejection_reason) && (
             <div className="small" style={{ marginTop: 4, color: 'var(--danger)' }}>Sent back to the borrower: {it.issue_reason || it.rejection_reason}</div>
@@ -853,6 +873,14 @@ function Item({ it, team, onPatch, role, docs, onUploadTo, onDropTo, onReviewDoc
           : <>
               <button className="btn primary" title="Sign off = the whole condition is complete (processor step). This is what removes it from the list for everyone." onClick={() => onPatch(it.id, { signedOff: true })}>Sign off</button>
               {it.is_required === false && <button className="btn ghost" title="This optional condition doesn't apply to this file — clear it without a document (waive). Optional conditions only." onClick={() => onPatch(it.id, { waived: true })}>Not required</button>}
+              {/* Super admin only: clear this condition without what it asks for.
+                  Offered up-front as well as after a refusal, so it never takes a
+                  failed attempt to find it. */}
+              {canOverride(role) && (
+                <button className="btn ghost" style={{ color: 'var(--gold, #AE8746)' }}
+                  title="Super admin: clear this condition WITHOUT a document / without meeting its requirement. Your reason is saved on the file."
+                  onClick={() => { const x = askOverride(it.label); if (x) onPatch(it.id, { signedOff: true, ...x }); }}>Override</button>
+              )}
             </>)}
         {it.audience !== 'staff' && (
           <button className="btn ghost" title="Send this condition back to the borrower with a reason (reopens it, clears any sign-off)"
@@ -2247,6 +2275,10 @@ function BorrowerConditions({ appId, app, items, docs, onPatch, onReviewDoc, onD
                   {` · ${conditionStatusLabel(it.status)}`}
                   {signed && ` · signed off by ${it.signed_off_name || 'the internal team'}`}
                 </div>
+                {/* Cleared without what it asks for — said plainly on the row. */}
+                {it.override_at && (
+                  <div className="small" style={{ marginTop: 2, color: 'var(--gold, #AE8746)' }}>{overrideLine(it)}</div>
+                )}
                 {it.template_code === 'cond_note_buyer_missing' && <CondNoteBuyerEntry appId={appId} onSaved={onChanged} />}
                 {it.template_code === 'cond_loan_number_missing' && <CondLoanNumberEntry appId={appId} onSaved={onChanged} />}
                 {it.template_code === 'rtl_p3_assets' && it.hint && (
@@ -2339,6 +2371,12 @@ function BorrowerConditions({ appId, app, items, docs, onPatch, onReviewDoc, onD
                 : <>
                     <button className="btn primary small" onClick={() => onPatch(it.id, { signedOff: true })}>Sign off</button>
                     {it.is_required === false && <button className="btn ghost small" title="Waive this optional condition (clear without a document)" onClick={() => onPatch(it.id, { waived: true })}>Waive</button>}
+                    {/* Super admin only — same override as the internal list. */}
+                    {canOverride(role) && (
+                      <button className="btn ghost small" style={{ color: 'var(--gold, #AE8746)' }}
+                        title="Super admin: clear this condition WITHOUT a document / without meeting its requirement. Your reason is saved on the file."
+                        onClick={() => { const x = askOverride(it.label); if (x) onPatch(it.id, { signedOff: true, ...x }); }}>Override</button>
+                    )}
                   </>)}
               <button className="btn ghost small" title="Send this condition back to the borrower with a reason (reopens it, clears any sign-off)"
                 onClick={() => {
@@ -2807,16 +2845,31 @@ export default function StaffApplication() {
   }
 
   async function patch(itemId, body) {
-    try { await api.staffPatchItem(itemId, body); flash('Saved ✓'); await load(); }
+    try {
+      await api.staffPatchItem(itemId, body);
+      flash(body && body.adminOverride ? 'Cleared by override ✓ — recorded on the file' : 'Saved ✓');
+      await load();
+    }
     catch (e) {
       const msg = e.message || 'Update failed';
-      setErr(msg);
       // A BLOCKED sign-off / verification (#88) needs an unmissable explanation of
       // WHY it can't be signed off (e.g. experience still needs verifying, budgets
       // don't match, a required document is missing). The page-top banner is easy
       // to miss on a long file, so surface the exact reason right here too.
-      if (body && (body.signedOff === true || body.status === 'satisfied')) {
-        try { window.alert('Can’t sign off yet:\n\n' + msg); } catch (_) { /* no window */ }
+      const completing = isCompletion(body);
+      // THE OVERRIDE, OFFERED WHERE THE WALL IS (owner-directed 2026-07-27). The
+      // refusal is exactly the moment the owner described — "if we're unable to
+      // clear it" — so a super admin is offered the way through right here,
+      // carrying the gate's own explanation into the confirmation. Every
+      // condition gets this for free: every refusal on this screen lands here.
+      if (completing && !body.adminOverride && canOverride(role)) {
+        const extra = askOverride((items.find((x) => x.id === itemId) || {}).label, { blocked: msg });
+        if (!extra) { setErr(msg); return; }
+        return patch(itemId, { ...body, ...extra });
+      }
+      setErr(msg);
+      if (completing) {
+        try { window.alert('Can’t clear this yet:\n\n' + msg); } catch (_) { /* no window */ }
       }
     }
   }
@@ -3005,6 +3058,18 @@ export default function StaffApplication() {
   }
   async function clearCond(cid) { if (busyAct) return; setBusyAct('cond:' + cid); try { await api.staffClearCondition(cid); flash('Cleared ✓'); await load(); } catch (e) { setErr(e.message); } finally { setBusyAct(''); } }
   async function waiveCond(cid) { if (busyAct) return; const r = window.prompt('Waive this condition — reason (required):'); if (!r) return; setBusyAct('cond:' + cid); try { await api.staffWaiveCondition(cid, r); flash('Waived ✓'); await load(); } catch (e) { setErr(e.message); } finally { setBusyAct(''); } }
+  // Super-admin override on an underwriting condition — the same act, the same
+  // words and the same permanent record as on the conditions list above, so
+  // "override" means one thing on this screen (owner-directed 2026-07-27).
+  async function overrideCond(cid, title) {
+    if (busyAct) return;
+    const x = askOverride(title);
+    if (!x) return;
+    setBusyAct('cond:' + cid);
+    try { await api.staffClearCondition(cid, x); flash('Cleared by override ✓ — recorded on the file'); await load(); }
+    catch (e) { setErr(e.message); }
+    finally { setBusyAct(''); }
+  }
   async function reviewCond(cid, reviewed) { if (busyAct) return; setBusyAct('cond:' + cid); try { await api.staffReviewCondition(cid, reviewed); flash(reviewed ? 'Marked reviewed ✓' : 'Review cleared'); await load(); } catch (e) { setErr(e.message); } finally { setBusyAct(''); } }
   async function addCondition() {
     const label = newCond.trim();
@@ -3596,7 +3661,8 @@ export default function StaffApplication() {
       {condTab === 'underwriting' && (
         <LoanConditionsPanel conds={conds} condFilter={condFilter} setCondFilter={setCondFilter}
           cForm={cForm} setCForm={setCForm} addLoanCondition={addLoanCondition}
-          clearCond={clearCond} waiveCond={waiveCond} isAdmin={isAdmin} completer={completer} reviewCond={reviewCond} />
+          clearCond={clearCond} waiveCond={waiveCond} overrideCond={overrideCond} isAdmin={isAdmin} completer={completer}
+          reviewCond={reviewCond} role={role} />
       )}
 
       {/* THE CHECKLIST IS OFF THE FILE (owner-directed 2026-07-27: "the checklist
@@ -3857,7 +3923,7 @@ export default function StaffApplication() {
 
 /* Underwriting loan conditions (clear / waive / add) — lives inside the
    Conditions-to-close section, beside the borrower request box. */
-function LoanConditionsPanel({ conds, condFilter, setCondFilter, cForm, setCForm, addLoanCondition, clearCond, waiveCond, isAdmin, completer, reviewCond }) {
+function LoanConditionsPanel({ conds, condFilter, setCondFilter, cForm, setCForm, addLoanCondition, clearCond, waiveCond, overrideCond, isAdmin, completer, reviewCond, role }) {
   return (
         <div className="panel">
           <div className="row" style={{ marginBottom: 8, alignItems: 'center' }}>
@@ -3894,10 +3960,20 @@ function LoanConditionsPanel({ conds, condFilter, setCondFilter, cForm, setCForm
                       {open && c.reviewed_by_name ? ` · reviewed by ${c.reviewed_by_name}` : ''}
                       {c.waive_reason ? ` · ${c.waive_reason}` : ''}
                     </div>
+                    {c.override_at && (
+                      <div className="small" style={{ marginTop: 2, color: 'var(--gold, #AE8746)' }}>
+                        {`Cleared by super-admin override — ${c.override_by_name || 'a super admin'} · ${new Date(c.override_at).toLocaleDateString()}${c.override_reason ? ` · ${c.override_reason}` : ''}`}
+                      </div>
+                    )}
                   </div>
                   {/* Clearing (sign-off) is a processor/underwriter call; a loan officer marks it reviewed instead. */}
                   {open && completer && <button className="btn ghost small" onClick={() => clearCond(c.id)}>Clear</button>}
                   {open && isAdmin && <button className="btn link small" onClick={() => waiveCond(c.id)}>Waive</button>}
+                  {open && canOverride(role) && (
+                    <button className="btn link small" style={{ color: 'var(--gold, #AE8746)' }}
+                      title="Super admin: clear this condition without meeting its requirement. Your reason is saved on the file."
+                      onClick={() => overrideCond(c.id, c.title)}>Override</button>
+                  )}
                   {open && !completer && <button className="btn ghost small" onClick={() => reviewCond(c.id, !c.reviewed_by)}
                     title="Mark that you've reviewed this — a processor or underwriter still signs it off">
                     {c.reviewed_by ? 'Reviewed ✓ — undo' : 'Mark done'}</button>}
