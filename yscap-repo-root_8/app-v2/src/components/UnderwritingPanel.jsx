@@ -427,6 +427,14 @@ function Finding({ appId, f, onChange, resolvable, canAct = false, canWaive = tr
           {f.aiReview.suggestedDocument && (
             <div style={{ fontSize: 12.5, color: '#141B22', marginTop: 2 }}><strong>Document to request:</strong> {f.aiReview.suggestedDocument}</div>
           )}
+          {/* AI-drafted borrower-facing wording (owner-directed 2026-07-27), already scrubbed of any
+              capital-partner name — ready to use when converting this to a condition. */}
+          {f.aiReview.borrowerLabel && (
+            <div style={{ fontSize: 12.5, color: '#141B22', marginTop: 6, paddingTop: 6, borderTop: '1px solid #CBE0E0' }}>
+              <strong>Borrower wording (ready to use):</strong> {f.aiReview.borrowerLabel}
+              {f.aiReview.borrowerHint && <div style={{ color: '#3A4550', marginTop: 2 }}>{f.aiReview.borrowerHint}</div>}
+            </div>
+          )}
           {/* The SECOND, independent AI's take when it weighed in (owner-directed 2026-07-27). When
               the two models disagree, this finding was deliberately kept visible for a human. */}
           {f.aiReview.secondModel && (
