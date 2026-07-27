@@ -375,14 +375,14 @@ const INTEGRATIONS = [
     },
   },
   {
-    key: 'ocr_space', name: 'OCR.space (general OCR)', group: 'data',
-    purpose: 'A lightweight OCR used for the credit-card scan and an advisory read of appraisal PDFs.',
+    key: 'ocr_space', name: 'OCR.space (fallback OCR)', group: 'data',
+    purpose: 'A lightweight FALLBACK reader for the credit-card scan and an advisory read of appraisal PDFs. The credit-card scan now reads primarily with the Azure OpenAI vision model; this runs only when that reader is off or can’t read the photo.',
     direction: 'Outbound', auth: 'API key (free demo key as fallback)',
     env: [{ name: 'OCR_SPACE_API_KEY', required: false }], switches: [], liveProbe: false,
     async probe() {
       return cfg.ocrSpaceApiKey
-        ? { configured: true, live: null, detail: 'Your own OCR.space key is set.' }
-        : { configured: true, live: null, detail: 'No key set — using OCR.space’s free shared demo key (rate-limited). Add OCR_SPACE_API_KEY for reliable use.' };
+        ? { configured: true, live: null, detail: 'Your own OCR.space key is set (used as the fallback reader).' }
+        : { configured: true, live: null, detail: 'No key set — the credit-card scan reads with the Azure OpenAI vision model; this fallback uses OCR.space’s free shared demo key (rate-limited). Add OCR_SPACE_API_KEY to make the fallback reliable.' };
     },
   },
   {
