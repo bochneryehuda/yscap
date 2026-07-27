@@ -77,6 +77,20 @@ async function stampGen(appId) {
   const funded = await seedFile('funded', 'funded');
   const dead = await seedFile('dead', 'withdrawn');
 
+  // ISOLATION: this test runs LAST in the full suite, so the DB already holds hundreds of alive,
+  // un-funded applications from every prior test — and the sweep selects the OLDEST first. Pre-stamp
+  // every OTHER alive+unfunded file as already-done at the current generation so the sweep's only
+  // candidates are the files THIS test just created. (Without this, batchFiles:50 picks 50 ancient
+  // apps and never reaches ours — the exact failure that only shows in the full chain.)
+  await db.query(
+    `INSERT INTO underwriting_reread_state (application_id, generation)
+       SELECT a.id, $1 FROM applications a
+        WHERE a.deleted_at IS NULL
+          AND a.status NOT IN ('funded','withdrawn','declined','cancelled')
+          AND a.id <> ALL($2::uuid[])
+     ON CONFLICT (application_id) DO UPDATE SET generation = GREATEST(underwriting_reread_state.generation, EXCLUDED.generation)`,
+    [GEN, [alive1.appId, alive2.appId]]);
+
   // --- 1+2: a slice re-reads only the alive+unfunded files, INCLUDING their already-analysed docs, with force ---
   calls = [];
   const uw = makeUw();
