@@ -2878,7 +2878,12 @@ details[open]>.appr-sec-sum .appr-sec-chev{transform:rotate(180deg)}
 .crx-link:hover { text-decoration:underline; }
 
 /* Alerts ----------------------------------------------------------------- */
-.crx-alert { border-radius:10px; padding:11px 14px; font-size:.88rem; margin-top:10px; border:1px solid; }
+/* Base = a neutral, readable note (an alert with no tone must never render as a
+   bare border-coloured box). Never use a --ink* token for text here: they are all
+   LIGHT in this palette. */
+.crx-alert { border-radius:10px; padding:11px 14px; font-size:.88rem; margin-top:10px;
+  border:1px solid var(--border); background:var(--surface-soft); color:var(--text); }
+.crx-alert.info { background:var(--primary-soft); color:var(--text); border-color:var(--teal); }
 .crx-alert.danger { background:var(--danger-soft); color:var(--danger); border-color:var(--danger); }
 .crx-alert.warn   { background:var(--warning-soft); color:var(--warning); border-color:var(--warning); }
 .crx-alert.ok     { background:var(--success-soft); color:var(--ok); border-color:var(--ok); }
@@ -2913,11 +2918,19 @@ details[open]>.appr-sec-sum .appr-sec-chev{transform:rotate(180deg)}
 .crx-recipient { border:1px solid var(--border); border-radius:14px; background:var(--surface);
   padding:16px 18px; box-shadow:0 1px 2px rgba(20,27,34,.04); }
 /* One card per borrower (co-borrower support): a stack of borrower cards, each
-   with an include checkbox. An unchecked (dropped) card dims + dashes. */
+   with an include checkbox. Un-ticking a borrower must NOT resize the card or wash
+   the text out — the half-opacity version read as blurry, shrunken and broken
+   (owner-reported 2026-07-27). The dropped card keeps its exact size and readable
+   text; only the surface recedes and an "Not in this import" tag explains it. */
 .crx-recip-card { border:1px solid var(--border); border-radius:12px; padding:13px 14px; margin-top:12px;
-  transition:opacity .15s ease, border-color .15s ease; }
+  background:var(--surface); transition:background-color .15s ease, border-color .15s ease; }
 .crx-recip-card:first-of-type { margin-top:10px; }
-.crx-recip-card.off { opacity:.5; border-style:dashed; }
+.crx-recip-card.off { background:var(--surface-soft); border-style:dashed; }
+.crx-recip-card.off .crx-mono { background:var(--surface-soft); color:var(--muted); box-shadow:0 0 0 1px var(--border) inset; }
+.crx-role-tag.off { background:var(--surface-soft); color:var(--muted); box-shadow:0 0 0 1px var(--border) inset; }
+/* The note under the borrower cards changes wording as you tick borrowers on and
+   off — a fixed slot keeps the screen from jumping while you do it. */
+.crx-note-slot { min-height:52px; }
 .crx-recip-card .crx-recip-head { margin-bottom:12px; }
 .crx-recip-check { flex:none; width:18px; height:18px; accent-color:var(--teal); cursor:pointer; }
 .crx-role-tag { display:inline-block; margin-left:8px; font-size:.62rem; font-weight:700; text-transform:uppercase;
@@ -2955,6 +2968,8 @@ details[open]>.appr-sec-sum .appr-sec-chev{transform:rotate(180deg)}
 .crx-seg-btn.on .crx-seg-sub { color:rgba(255,255,255,.82); }
 .crx-seg-btn:focus-visible { outline:2px solid var(--focus); outline-offset:1px; }
 .crx-reissue { margin-top:11px; }
+/* One reissue reference PER BORROWER — each report has its own reference number. */
+.crx-reissue-row + .crx-reissue-row { margin-top:12px; padding-top:12px; border-top:1px dashed var(--border); }
 .crx-input { width:100%; box-sizing:border-box; padding:10px 12px; border:1px solid var(--border); border-radius:10px;
   background:var(--surface); color:var(--text); font:inherit; font-size:.92rem; }
 .crx-input:focus { outline:none; border-color:var(--teal); box-shadow:0 0 0 3px var(--primary-soft); }
@@ -2977,6 +2992,12 @@ details[open]>.appr-sec-sum .appr-sec-chev{transform:rotate(180deg)}
 /* Actions + upload ------------------------------------------------------- */
 .crx-upload { border:1px dashed var(--border); border-radius:12px; background:var(--surface-soft); padding:15px 16px; }
 .crx-upload-title { font-weight:700; font-size:.85rem; color:var(--text); margin-bottom:10px; }
+/* Merged / a-file-each / one-borrower chooser + the per-borrower file rows. */
+.crx-upload-mode { margin-bottom:12px; }
+.crx-upload-mode .crx-opt-hint { margin-top:7px; }
+.crx-upload-person { border:1px solid var(--border); border-radius:10px; padding:10px 12px; margin-bottom:10px;
+  background:var(--surface); }
+.crx-upload-person-name { font-weight:700; font-size:.9rem; color:var(--text); margin-bottom:6px; }
 .crx-upload-row { display:flex; gap:10px; align-items:center; flex-wrap:wrap; padding:4px 0; font-size:.86rem; }
 .crx-upload-row > span { min-width:118px; color:var(--muted); font-size:.78rem; text-transform:uppercase; letter-spacing:.05em; font-weight:600; }
 .crx-upload-hint { margin:6px 0 12px; color:var(--muted); font-size:.8rem; }

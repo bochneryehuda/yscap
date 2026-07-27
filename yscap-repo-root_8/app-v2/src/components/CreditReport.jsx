@@ -151,18 +151,28 @@ function KpiTile({ icon, tone, value, label }) {
 }
 
 // ───────────────────────────────────────────────────────────── import modal ───
-function CreditImportModal({ appId, onClose, onDone }) {
+// `scopeBorrowerId` pins the import to ONE borrower — that is how the co-borrower's
+// own credit condition imports their report without touching the primary's.
+function CreditImportModal({ appId, onClose, onDone, scopeBorrowerId }) {
   const [pre, setPre] = useState(null);
   const [err, setErr] = useState('');
   const [busy, setBusy] = useState(false);
   const [pullType, setPullType] = useState('soft');
   const [requestType, setRequestType] = useState('reissue');
   const [version, setVersion] = useState('3.4');
-  const [reissueRef, setReissueRef] = useState('');
+  // A reissue reference identifies ONE report at Xactus, so each borrower has their
+  // own box. Keyed by borrowerId.
+  const [reissueRefs, setReissueRefs] = useState({});
   const [consent, setConsent] = useState(false);
   const [showUpload, setShowUpload] = useState(false);
   const [xmlFile, setXmlFile] = useState(null);
   const [pdfFile, setPdfFile] = useState(null);
+  // How a downloaded report covers the borrowers:
+  //   merged   — ONE file covering both (PILOT splits it and scores each borrower)
+  //   separate — a different file for each borrower, imported in one go
+  //   one      — one borrower's report only
+  const [uploadMode, setUploadMode] = useState('one');
+  const [perFiles, setPerFiles] = useState({});     // borrowerId → { xml, pdf }
   const [selected, setSelected] = useState(null);   // Set of borrowerIds to pull; null until preview loads
 
   useEffect(() => {
@@ -173,14 +183,22 @@ function CreditImportModal({ appId, onClose, onDone }) {
         setPre(d);
         if (d) {
           if (d.defaults) { setPullType(d.defaults.pullType); setRequestType(d.defaults.requestType); setVersion(d.defaults.version || '3.4'); }
-          setReissueRef(d.reissueReportId || '');
-          // Default: pull EVERY borrower on the file (primary + co) in one action.
-          setSelected(new Set((d.borrowers || []).map((x) => x.borrowerId)));
+          const list = d.borrowers || [];
+          // Each borrower's reissue box starts on THEIR OWN last report — never the
+          // other borrower's reference (which Xactus would reissue as the wrong report).
+          const refs = {};
+          list.forEach((b) => { refs[b.borrowerId] = b.reissueReportId || ''; });
+          setReissueRefs(refs);
+          // Default: every borrower on the file in one action — unless this condition
+          // is one borrower's own, in which case only they are imported.
+          const inScope = scopeBorrowerId && list.some((b) => b.borrowerId === scopeBorrowerId);
+          setSelected(new Set(inScope ? [scopeBorrowerId] : list.map((x) => x.borrowerId)));
+          setUploadMode(list.length > 1 && !inScope ? 'merged' : 'one');
         }
       })
       .catch((e) => alive && setErr(e.message || 'Could not load the borrower info.'));
     return () => { alive = false; };
-  }, [appId]);
+  }, [appId, scopeBorrowerId]);
 
   // Lock the background scroll AND preserve the scroll position while the modal is
   // open; also close on Escape (so the page doesn't jump to the top on close).
@@ -189,33 +207,71 @@ function CreditImportModal({ appId, onClose, onDone }) {
   const providerReady = pre && pre.provider && pre.provider.configured;
   const roster = (pre && pre.borrowers) || [];
   const hasMulti = roster.length > 1;
+  // A merged report covers everyone on the file by definition — the per-borrower
+  // checkboxes don't apply, so they're shown ticked and locked.
+  const mergedMode = showUpload && uploadMode === 'merged' && hasMulti;
   const sel = selected || new Set();
-  const isSel = (id) => sel.has(id);
+  const isSel = (id) => (mergedMode ? true : sel.has(id));
   const toggle = (id) => setSelected((prev) => {
     const next = new Set(prev || []);
     if (next.has(id)) next.delete(id); else next.add(id);
     return next;
   });
-  const selBorrowers = roster.filter((x) => isSel(x.borrowerId));
+  const selBorrowers = mergedMode ? roster : roster.filter((x) => isSel(x.borrowerId));
   const selMissing = Array.from(new Set(selBorrowers.flatMap((x) => x.missing || [])));
   // A co-borrower on the file who is NOT selected: they'll get their own condition.
-  const droppedCo = hasMulti && roster.some((x) => x.role === 'co' && !isSel(x.borrowerId));
+  const droppedCo = hasMulti && !mergedMode && roster.some((x) => x.role === 'co' && !isSel(x.borrowerId));
+  const refOf = (id) => String(reissueRefs[id] || '').trim();
+  const setRef = (id, v) => setReissueRefs((prev) => ({ ...prev, [id]: v }));
+  const fileOf = (id) => perFiles[id] || {};
+  const setPerFile = (id, key, f) => setPerFiles((prev) => ({ ...prev, [id]: { ...(prev[id] || {}), [key]: f } }));
+  const perFileCount = roster.filter((b) => fileOf(b.borrowerId).xml || fileOf(b.borrowerId).pdf).length;
+  // Borrowers selected for a reissue with no reference number to reissue against.
+  const needRef = requestType === 'reissue' ? selBorrowers.filter((b) => !refOf(b.borrowerId)) : [];
 
   async function runImport(kind) {
     setErr(''); setBusy(true);
     try {
       const body = { pullType, requestType, version };
-      if (requestType === 'reissue') body.reissueReportId = reissueRef;
       if (kind === 'live') {
         body.consent = consent;    // permissible-purpose attestation (server enforces too)
         body.borrowerIds = selBorrowers.map((x) => x.borrowerId);   // which borrowers to pull
+        if (requestType === 'reissue') {
+          // Each borrower reissues THEIR OWN report reference.
+          const map = {};
+          selBorrowers.forEach((b) => { if (refOf(b.borrowerId)) map[b.borrowerId] = refOf(b.borrowerId); });
+          body.reissueReportIds = map;
+          if (selBorrowers.length === 1) body.reissueReportId = refOf(selBorrowers[0].borrowerId);
+        }
       }
       if (kind === 'upload') {
-        if (!xmlFile && !pdfFile) throw new Error('Choose the credit data file (XML) and/or the PDF to import.');
-        if (selBorrowers.length !== 1) throw new Error('A downloaded report is for one borrower — select exactly one.');
-        body.borrowerId = selBorrowers[0].borrowerId;
-        if (xmlFile) body.xml = await readFileText(xmlFile);
-        if (pdfFile) body.pdfBase64 = await fileToBase64(pdfFile);
+        if (uploadMode === 'separate') {
+          // A separate downloaded report per borrower, imported in one action.
+          const files = [];
+          for (const b of roster) {
+            const f = fileOf(b.borrowerId);
+            if (!f.xml && !f.pdf) continue;
+            files.push({
+              borrowerId: b.borrowerId,
+              xml: f.xml ? await readFileText(f.xml) : undefined,
+              pdfBase64: f.pdf ? await fileToBase64(f.pdf) : undefined,
+            });
+          }
+          if (!files.length) throw new Error('Choose the downloaded file for at least one borrower.');
+          body.files = files;
+        } else {
+          if (!xmlFile && !pdfFile) throw new Error('Choose the credit data file (XML) and/or the PDF to import.');
+          if (uploadMode === 'merged') {
+            body.merged = true;                                   // one file, both borrowers
+            body.borrowerIds = roster.map((x) => x.borrowerId);
+          } else {
+            if (selBorrowers.length !== 1) throw new Error('A report for one borrower — select exactly one, or switch to a merged report.');
+            body.merged = false;
+            body.borrowerId = selBorrowers[0].borrowerId;
+          }
+          if (xmlFile) body.xml = await readFileText(xmlFile);
+          if (pdfFile) body.pdfBase64 = await fileToBase64(pdfFile);
+        }
       }
       const out = await api.staffCreditImport(appId, body);
       // Nothing pulled (every selected borrower failed) — keep the modal open and
@@ -235,27 +291,39 @@ function CreditImportModal({ appId, onClose, onDone }) {
   // body scrolls independently. The button adapts to the active mode (live pull
   // vs an uploaded file); a hint explains any disabled state so it's never a
   // dead, unexplained button.
-  // A Reissue needs a reference number. On a first pull there's none, so the live
-  // button is held until a reference is entered or the order is switched to Brand-new
-  // (rather than sending a reissue Xactus will reject).
-  const reissueReady = requestType !== 'reissue' || !!(reissueRef && reissueRef.trim());
+  // A Reissue needs a reference number — EACH borrower's own. On a borrower's first
+  // pull there is none, so the live button is held until their reference is entered
+  // or the order is switched to Brand-new (rather than sending a reissue Xactus will
+  // reject). Naming the borrower matters: reissuing the co-borrower on their own used
+  // to fail with no way to see whose reference was missing.
+  const reissueReady = needRef.length === 0;
   const canLive = providerReady && consent && selBorrowers.length > 0 && selBorrowers.every((x) => (x.missing || []).length === 0) && reissueReady;
   const liveLabel = requestType === 'new' ? 'Order & import' : 'Reissue & import';
   const liveLabelN = hasMulti && selBorrowers.length > 1 ? `${liveLabel} (${selBorrowers.length})` : liveLabel;
-  const uploadReady = (xmlFile || pdfFile) && selBorrowers.length === 1;
-  const primaryLabel = busy ? 'Working…' : (showUpload ? 'Import the file' : liveLabelN);
+  const uploadReady = uploadMode === 'separate'
+    ? perFileCount > 0
+    : !!((xmlFile || pdfFile) && (uploadMode === 'merged' ? hasMulti : selBorrowers.length === 1));
+  const uploadLabel = uploadMode === 'separate'
+    ? `Import ${perFileCount > 1 ? perFileCount + ' reports' : 'the report'}`
+    : (uploadMode === 'merged' ? 'Import the merged report' : 'Import the file');
+  const primaryLabel = busy ? 'Working…' : (showUpload ? uploadLabel : liveLabelN);
   const primaryDisabled = busy || (showUpload ? !uploadReady : !canLive);
   let footerHint = '';
   if (!busy) {
     if (showUpload) {
-      if (!xmlFile && !pdfFile) footerHint = 'Choose the downloaded data file (XML) and/or the PDF.';
-      else if (selBorrowers.length !== 1) footerHint = 'Select exactly one borrower for a downloaded report.';
+      if (uploadMode === 'separate') {
+        if (!perFileCount) footerHint = 'Choose each borrower’s downloaded file below.';
+        else if (perFileCount < roster.length) footerHint = `Only ${perFileCount} of ${roster.length} borrowers have a file — the rest keep their own credit condition, ready to import later.`;
+      } else if (!xmlFile && !pdfFile) footerHint = 'Choose the downloaded data file (XML) and/or the PDF.';
+      else if (uploadMode === 'one' && selBorrowers.length !== 1) footerHint = 'Tick exactly one borrower for a single-borrower report, or switch to “One merged report”.';
     }
     else if (!providerReady) footerHint = 'Live pull isn’t set up yet — use “Import a downloaded report”.';
     else if (selBorrowers.length === 0) footerHint = 'Select at least one borrower to pull.';
     else if (selMissing.length) footerHint = `Add the ${selMissing.join(', ')} to pull the selected borrower${selBorrowers.length > 1 ? 's' : ''}.`;
     else if (!consent) footerHint = 'Check the authorization box above to enable the pull.';
-    else if (!reissueReady) footerHint = 'Enter the reissue reference number, or switch to “Brand-new” for a first pull.';
+    else if (needRef.length) {
+      footerHint = `Enter the reissue reference number for ${needRef.map((b) => b.name).join(' and ')}, or switch to “Brand-new” for a first report.`;
+    }
   }
 
   return (
@@ -289,13 +357,16 @@ function CreditImportModal({ appId, onClose, onDone }) {
                   <div key={bb.borrowerId} className={'crx-recip-card' + (hasMulti && !on ? ' off' : '')}>
                     <div className="crx-recip-head">
                       {hasMulti && (
-                        <input type="checkbox" className="crx-recip-check" checked={on}
-                          onChange={() => toggle(bb.borrowerId)} aria-label={`Include ${bb.name} in this pull`} />
+                        <input type="checkbox" className="crx-recip-check" checked={on} disabled={mergedMode}
+                          onChange={() => toggle(bb.borrowerId)}
+                          title={mergedMode ? 'A merged report covers everyone on the file' : undefined}
+                          aria-label={`Include ${bb.name} in this import`} />
                       )}
                       <span className="crx-mono" aria-hidden="true">{initials(bb.firstName, bb.lastName)}</span>
                       <div>
                         <div className="crx-recip-name">{bb.name || (bb.role === 'co' ? 'Co-borrower' : 'Borrower')}
-                          {hasMulti && <span className={'crx-role-tag' + (bb.role === 'co' ? ' co' : '')}>{bb.role === 'co' ? 'Co-borrower' : 'Primary'}</span>}</div>
+                          {hasMulti && <span className={'crx-role-tag' + (bb.role === 'co' ? ' co' : '')}>{bb.role === 'co' ? 'Co-borrower' : 'Primary'}</span>}
+                          {hasMulti && !on && <span className="crx-role-tag off">Not in this import</span>}</div>
                         <div className="crx-recip-eyebrow">{bb.canPull ? 'Ready to pull' : 'Missing info for a live pull'}</div>
                       </div>
                     </div>
@@ -310,9 +381,17 @@ function CreditImportModal({ appId, onClose, onDone }) {
                   </div>
                 );
               })}
-              {droppedCo
-                ? <div className="crx-note">Only the selected borrower will be pulled now. The other borrower gets their own <b>Credit report</b> condition so their credit can be pulled separately — credit is required for both.</div>
-                : (selMissing.length === 0 && <div className="crx-note secure"><span className="crx-lock" aria-hidden="true">🔒</span> Sent securely over an encrypted connection — a tri-merge of all three bureaus{hasMulti ? ', one report per borrower' : ''}.</div>)}
+              {/* One fixed note line — it changes wording, never the card sizes, so
+                  ticking a borrower off doesn't shuffle the screen around. */}
+              <div className="crx-note-slot">
+                {mergedMode
+                  ? <div className="crx-note">A merged report covers <b>everyone on this file</b>. PILOT reads each borrower out of the one file and gives each their own scores.</div>
+                  : droppedCo
+                    ? <div className="crx-note">Only the ticked borrower is imported now. The other borrower gets their own <b>Credit report</b> condition so their credit is still required and can be imported separately.</div>
+                    : (selMissing.length === 0
+                      ? <div className="crx-note secure"><span className="crx-lock" aria-hidden="true">🔒</span> Sent securely over an encrypted connection — a tri-merge of all three bureaus{hasMulti ? ', one report per borrower' : ''}.</div>
+                      : <div className="crx-note">Fill in what’s missing above for a live pull — or import a downloaded report below.</div>)}
+              </div>
             </section>
 
             {/* Options */}
@@ -335,12 +414,24 @@ function CreditImportModal({ appId, onClose, onDone }) {
                   { value: 'new', label: 'Brand-new', sub: 'Fresh pull' },
                 ]} />
                 {requestType === 'reissue' && (
+                  // ONE reference box PER BORROWER. A reference points at one specific
+                  // report at Xactus, so the co-borrower can never be reissued off the
+                  // primary's number — that used to be the only reference sent, which
+                  // made importing the co-borrower on their own impossible.
                   <div className="crx-reissue">
-                    <label className="crx-opt-label">Reissue reference #</label>
-                    <input className="crx-input" value={reissueRef} onChange={(e) => setReissueRef(e.target.value)} placeholder="Xactus report reference" />
-                    <div className="crx-opt-hint">{pre.reissueReportId
-                      ? 'Pre-filled from the last report on this file — change it to re-pull a different one.'
-                      : 'A reissue re-pulls an existing Xactus report by its reference. For a first pull, choose “Brand-new”.'}</div>
+                    {selBorrowers.length === 0 && <div className="crx-opt-hint">Tick a borrower above to enter their reissue reference.</div>}
+                    {selBorrowers.map((bb) => (
+                      <div key={bb.borrowerId} className="crx-reissue-row">
+                        {hasMulti && <label className="crx-opt-label">{bb.name}’s reissue reference #</label>}
+                        {!hasMulti && <label className="crx-opt-label">Reissue reference #</label>}
+                        <input className="crx-input" value={reissueRefs[bb.borrowerId] || ''}
+                          onChange={(e) => setRef(bb.borrowerId, e.target.value)}
+                          placeholder="Xactus report reference" />
+                        <div className="crx-opt-hint">{bb.reissueReportId
+                          ? `Pre-filled from ${hasMulti ? bb.name + '’s' : 'the'} last report on this file — change it to re-pull a different one.`
+                          : `${hasMulti ? bb.name + ' has' : 'This file has'} no earlier report to reissue. Enter the reference from Xactus, or switch the order to “Brand-new”.`}</div>
+                      </div>
+                    ))}
                   </div>
                 )}
               </div>
@@ -380,11 +471,46 @@ function CreditImportModal({ appId, onClose, onDone }) {
             {showUpload && (
               <section className="crx-upload">
                 <div className="crx-upload-title">Import a report you already downloaded from Xactus</div>
-                <div className="crx-upload-row"><span>Data file (XML)</span>
-                  <input type="file" accept=".xml,text/xml,application/xml" onChange={(e) => setXmlFile(e.target.files[0] || null)} /></div>
-                <div className="crx-upload-row"><span>Report (PDF)</span>
-                  <input type="file" accept="application/pdf,.pdf" onChange={(e) => setPdfFile(e.target.files[0] || null)} /></div>
-                <p className="crx-upload-hint">The data file (XML) builds the credit-details section; the PDF is filed on the loan.</p>
+
+                {/* With two borrowers, say HOW the downloaded report(s) cover them:
+                    one merged file for both, a file each, or just one borrower. */}
+                {hasMulti && (
+                  <div className="crx-upload-mode">
+                    <Seg value={uploadMode} onChange={setUploadMode} options={[
+                      { value: 'merged', label: 'One merged report', sub: 'Both borrowers in one file' },
+                      { value: 'separate', label: 'A file for each', sub: 'Two separate reports' },
+                      { value: 'one', label: 'One borrower', sub: 'Just the ticked borrower' },
+                    ]} />
+                    <div className="crx-opt-hint">{uploadMode === 'merged'
+                      ? 'One file covering both borrowers. PILOT reads each borrower out of it, gives each their own scores, and files the one report on the one credit condition.'
+                      : uploadMode === 'separate'
+                        ? 'Each borrower has their own downloaded report. Pick both here and they are imported together — one credit condition, a report each.'
+                        : 'A report for the ticked borrower only. The other borrower keeps their own credit condition to import later.'}</div>
+                  </div>
+                )}
+
+                {uploadMode === 'separate' && hasMulti ? (
+                  roster.map((bb) => (
+                    <div key={bb.borrowerId} className="crx-upload-person">
+                      <div className="crx-upload-person-name">{bb.name}
+                        <span className={'crx-role-tag' + (bb.role === 'co' ? ' co' : '')}>{bb.role === 'co' ? 'Co-borrower' : 'Primary'}</span></div>
+                      <div className="crx-upload-row"><span>Data file (XML)</span>
+                        <input type="file" accept=".xml,text/xml,application/xml"
+                          onChange={(e) => setPerFile(bb.borrowerId, 'xml', e.target.files[0] || null)} /></div>
+                      <div className="crx-upload-row"><span>Report (PDF)</span>
+                        <input type="file" accept="application/pdf,.pdf"
+                          onChange={(e) => setPerFile(bb.borrowerId, 'pdf', e.target.files[0] || null)} /></div>
+                    </div>
+                  ))
+                ) : (
+                  <>
+                    <div className="crx-upload-row"><span>Data file (XML)</span>
+                      <input type="file" accept=".xml,text/xml,application/xml" onChange={(e) => setXmlFile(e.target.files[0] || null)} /></div>
+                    <div className="crx-upload-row"><span>Report (PDF)</span>
+                      <input type="file" accept="application/pdf,.pdf" onChange={(e) => setPdfFile(e.target.files[0] || null)} /></div>
+                  </>
+                )}
+                <p className="crx-upload-hint">The data file (XML) builds the credit-details section{mergedMode ? ' and is what lets PILOT split a merged report between the two borrowers' : ''}; the PDF is filed on the loan.{mergedMode && !xmlFile && pdfFile ? ' With only the PDF, the same report is filed for both borrowers but there are no scores until a data file is imported.' : ''}</p>
               </section>
             )}
           </>)}
@@ -426,6 +552,18 @@ function CreditDetails({ report }) {
   return (
     <div className="crx-details">
       {p.parseError && <div className="crx-alert warn">The data file was saved, but some details couldn’t be read automatically ({p.parseError}).{p.pdfDocumentId ? ' The PDF is on the file.' : ''}</div>}
+
+      {/* This report is ONE borrower's side of a merged (joint) report — say so, so
+          the missing accounts read as "the other borrower's", not as a gap. */}
+      {p.mergedSource && (
+        <div className="crx-alert info">
+          This is <b>{p.mergedSource.borrowerName || 'this borrower'}</b>’s side of one merged credit report covering {p.mergedSource.borrowerCount || 2} borrowers
+          {(p.mergedSource.otherBorrowers || []).length ? ` (also ${p.mergedSource.otherBorrowers.join(', ')})` : ''}.
+          {(p.mergedSource.sharedItems && p.mergedSource.sharedItems.liabilities)
+            ? ` ${p.mergedSource.sharedItems.liabilities} joint account${p.mergedSource.sharedItems.liabilities > 1 ? 's are' : ' is'} shown on both borrowers.`
+            : ''}
+        </div>
+      )}
 
       <div className="crx-kpis">
         {kpis.map((k, i) => <KpiTile key={i} icon={k.icon} tone={k.tone} value={k.value} label={k.label} />)}
@@ -585,17 +723,25 @@ function ScoreCell({ value, label, tone, emphasis }) {
 }
 
 // ──────────────────────────────────────────────────── the condition surface ───
-export function CreditCondition({ appId, canPull, onChanged }) {
+/**
+ * `fieldKey` is the condition's own marker. A file can carry TWO credit conditions —
+ * the file-level one and a co-borrower's own (field_key 'cob_credit') — and both used
+ * to render this whole section for the WHOLE file, so the same scores, warnings and
+ * buttons appeared twice (owner-reported 2026-07-27). The co-borrower's condition now
+ * shows THEIR report, their history, their last attempt, and imports for them alone.
+ */
+export function CreditCondition({ appId, canPull, onChanged, fieldKey }) {
   const [data, setData] = useState(null);
   const [showModal, setShowModal] = useState(false);
   const [showOverlay, setShowOverlay] = useState(false);
   const [justImported, setJustImported] = useState(false);
   const [flash, setFlash] = useState('');
   const [flashTone, setFlashTone] = useState('ok');
+  const scopeKind = fieldKey === 'cob_credit' ? 'co' : 'file';
 
   const loadCredit = useCallback(() => {
-    return api.staffCredit(appId).then(setData).catch(() => setData({ hasReport: false, provider: {}, report: null, history: [], borrowers: null }));
-  }, [appId]);
+    return api.staffCredit(appId, scopeKind).then(setData).catch(() => setData({ hasReport: false, provider: {}, report: null, history: [], borrowers: null }));
+  }, [appId, scopeKind]);
 
   useEffect(() => { loadCredit(); }, [loadCredit]);
 
@@ -625,6 +771,7 @@ export function CreditCondition({ appId, canPull, onChanged }) {
     const multi = results.length > 1;
     const isUpload = !!(out && out.source === 'upload');
 
+    const mergedOut = out && out.merged;
     if (withData.length > 0) {
       // SUCCESS — confirm it and auto-open the full report on the whole screen.
       const bits = [];
@@ -637,9 +784,23 @@ export function CreditCondition({ appId, canPull, onChanged }) {
         if (out.ficoMismatch) bits.push('FICO not auto-set — the report named a different person');
         if (out.ficoUnverified) bits.push('FICO not auto-set — no SSN on file to confirm identity');
       }
+      // A merged report is one document read for several people — say who it covered,
+      // and name anyone it did NOT (never let that pass silently).
+      if (mergedOut && mergedOut.unmatchedInReport && mergedOut.unmatchedInReport.length) {
+        bits.push(`the report also covered ${mergedOut.unmatchedInReport.join(', ')}, who ${mergedOut.unmatchedInReport.length > 1 ? 'are' : 'is'} not on this file`);
+      }
+      if (mergedOut && mergedOut.unmatchedOnFile && mergedOut.unmatchedOnFile.length) {
+        bits.push(`${mergedOut.unmatchedOnFile.join(', ')} was not in this report — import theirs separately`);
+      }
       if (out.coConditionOpened) bits.push('opened a separate credit condition for the co-borrower');
-      const tone = (failed.length || pdfOnly.length || out.ficoMismatch || out.ficoUnverified) ? 'warn' : 'ok';
-      const msg = multi ? `Imported credit for ${withData.length} of ${results.length} borrowers ✓` : 'Credit report imported successfully ✓';
+      if (out.coConditionClosed) bits.push('both borrowers are now on the one credit condition');
+      const tone = (failed.length || pdfOnly.length || out.ficoMismatch || out.ficoUnverified
+        || (mergedOut && ((mergedOut.unmatchedInReport || []).length || (mergedOut.unmatchedOnFile || []).length))) ? 'warn' : 'ok';
+      const msg = out.importMode === 'merged' && multi
+        ? `Imported one merged report for ${withData.length} borrowers ✓`
+        : out.importMode === 'separate'
+          ? `Imported a separate report for ${withData.length} of ${results.length} borrowers ✓`
+          : (multi ? `Imported credit for ${withData.length} of ${results.length} borrowers ✓` : 'Credit report imported successfully ✓');
       showFlash(msg + (bits.length ? ' — ' + bits.join(' · ') : ''), tone);
       setJustImported(true);
       loadCredit().then(() => setShowOverlay(true));
@@ -672,17 +833,26 @@ export function CreditCondition({ appId, canPull, onChanged }) {
   const closeModal = useCallback(() => setShowModal(false), []);
 
   const borrowers = (data && data.borrowers) || null;
-  const hasCo = !!(borrowers && borrowers.hasCoBorrower);
+  const scope = (data && data.scope) || null;
+  // A condition scoped to ONE borrower (the co-borrower's own) shows only their
+  // score — the file-level condition keeps the whole roster + the higher-of-two.
+  const scoped = !!(scope && scope.borrowerId);
+  const scopedBorrower = scoped && borrowers
+    ? (borrowers.coBorrower && borrowers.coBorrower.borrowerId === scope.borrowerId ? borrowers.coBorrower : borrowers.primary)
+    : null;
+  const hasCo = !scoped && !!(borrowers && borrowers.hasCoBorrower);
   const primaryScore = borrowers && borrowers.primary ? borrowers.primary.middleScore : (report ? report.middleScore : null);
   // A borrower's summary sub-label: pulled-with-score, pulled-but-no-score (a
   // thin/no-hit file — NOT "not pulled"), or genuinely not pulled yet.
   const cellSuffix = (b) => (!b || !b.hasReport) ? ' · not pulled yet' : (b.middleScore != null ? ' · middle' : ' · no score');
+  const who = scoped && scope.name ? scope.name : null;
 
   return (
     <div className="crx-wrap">
       <div className="crx-bar">
         {canImport
-          ? <button className="crx-btn primary sm" onClick={() => setShowModal(true)}>{report ? '↻ Import again' : '⬇ Import credit'}</button>
+          ? <button className="crx-btn primary sm" onClick={() => setShowModal(true)}>
+            {report ? '↻ Import again' : '⬇ Import credit'}{who ? ` for ${who}` : ''}</button>
           : !report && <span className="crx-muted">The loan officer or a processor can import the credit report here.</span>}
         {canImport && !provider.configured && <span className="crx-pill" title="The shared Xactus login is not set yet">Live pull: not set up</span>}
         <span className="crx-bar-spacer" />
@@ -712,10 +882,12 @@ export function CreditCondition({ appId, canPull, onChanged }) {
       {report ? (
         <div className="crx-cond-summary">
           <div className="crx-scoreline">
-            <ScoreCell value={primaryScore}
-              label={hasCo && borrowers.primary
-                ? `${borrowers.primary.name}${cellSuffix(borrowers.primary)}`
-                : (primaryScore != null ? 'Middle score' : 'Middle score · no score')}
+            <ScoreCell value={scoped ? (scopedBorrower ? scopedBorrower.middleScore : report.middleScore) : primaryScore}
+              label={scoped
+                ? `${(scopedBorrower && scopedBorrower.name) || who || 'Borrower'}${cellSuffix(scopedBorrower)}`
+                : (hasCo && borrowers.primary
+                  ? `${borrowers.primary.name}${cellSuffix(borrowers.primary)}`
+                  : (primaryScore != null ? 'Middle score' : 'Middle score · no score'))}
               emphasis={!hasCo} />
             {hasCo && borrowers.coBorrower && (
               <ScoreCell value={borrowers.coBorrower.middleScore}
@@ -756,10 +928,13 @@ export function CreditCondition({ appId, canPull, onChanged }) {
           </div>
         </div>
       ) : (
-        <div className="crx-empty">No credit report imported yet. Click <b>Import credit</b> to pull a tri-merge report or import one you downloaded.</div>
+        <div className="crx-empty">No credit report imported {who ? `for ${who} ` : ''}yet. Click <b>Import credit</b> to pull a tri-merge report{hasCo ? ' for both borrowers (or import one merged report covering both)' : ''} or import one you downloaded.</div>
       )}
 
-      {showModal && <CreditImportModal appId={appId} onClose={closeModal} onDone={onImported} />}
+      {showModal && (
+        <CreditImportModal appId={appId} onClose={closeModal} onDone={onImported}
+          scopeBorrowerId={scoped ? scope.borrowerId : null} />
+      )}
       {showOverlay && report && (
         <CreditReportOverlay report={report} history={data && data.history} justImported={justImported} onClose={closeOverlay} onDownload={download} />
       )}
