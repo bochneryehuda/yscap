@@ -160,6 +160,14 @@ The consequences are real, not theoretical:
 A typical file carries **~50–55 conditions**, and there are **16 different places
 in the product that can create one**, writing to three different tables.
 
+> **The industry already made this mistake and reversed it.** Encompass split its
+> conditions into separate tabs by persona — *Preliminary* ("typically used by
+> loan processors"), *Underwriting* ("typically used by underwriters"),
+> *Post-Closing* ("typically used by shippers"). Under **Enhanced Conditions
+> those tabs collapse into a single Conditions tab.** They split by who works it,
+> found it was wrong, and merged. Our four tabs are the same mistake at the same
+> stage. — [ICE Developer Connect](https://developer.icemortgagetechnology.com/developer-connect/reference/get-all-enhanced-conditions)
+
 ### 2.5 The same thing appears in many places
 
 | Thing | Places it appears |
@@ -214,32 +222,155 @@ continuation of that pattern — not an invention.
 
 ---
 
-## 4. The design principles
+## 4. What the best software does about exactly this
 
-Four ideas, each chosen because it reduces what the user must hold in their head
-**without removing anything**.
+We benchmarked mortgage platforms, compliance tools, construction punch lists,
+audit request lists, and the major design systems. Four findings do most of the
+work, and each one has a named source.
 
-### 4.1 Answer "what do I do now?" before "what exists?"
+### 4.1 Our container is the wrong one, and the guidance says so directly
 
-A record screen should open with the short list of what needs this person, and
-put the full detail one click behind it. Nothing is hidden — it is *ranked*.
+Nielsen Norman Group lists when **not** to use accordions, and it reads like a
+description of our file:
 
-### 4.2 A closed box must tell you whether to open it
+- *"When your audience requires the majority or all the content on the page."*
+- *"Restricting users' ability to combine information from multiple accordions at
+  the same time."*
+- *"It is easier to scroll down the page than to decide which heading to click on."*
 
-Sixteen collapsed headers that say only a number force the user to open all
-sixteen. A closed section should say *"3 need your sign-off · 1 sent back"*. This
-is standard accordion guidance: the collapsed state must carry enough to decide.
+Their one-line rule: **"Tabs suit a few long sections, while accordions fit many
+short ones."** We have *many long* ones — which is neither. That is a rail.
+([NN/g](https://www.nngroup.com/articles/accordions-on-desktop/))
 
-### 4.3 One word, one meaning, one colour — everywhere
+**Good news: we already have the rail.** It is grouped, sticky, and tracks
+scroll position. We do not need to build it — we need to stop making it compete
+with sixteen accordions.
 
-Every state gets exactly one label and one colour, defined once and imported.
-This is what `lib/esign.js` already does.
+### 4.2 Sixteen sections is not the problem — sixteen *unlabelled* ones is
 
-### 4.4 One list with filters beats four tabs
+The instinct is that 16 is too many. The research says otherwise, and this
+matters because it means **we do not have to remove or merge any section**:
 
-Tabs force a guess about which tab a thing is in. A single list with filters
-never does — and it lets someone see everything outstanding at once, which four
-tabs make impossible.
+> *"Is it okay to have more than 7-9 top-tier categories in the global
+> navigation? (Spoiler alert: it is okay, you just need to plan appropriately.)"*
+> Vertical left navigation *"can accommodate as many top-tier items as needed"* —
+> and *"users look at the left half of the screen 80% of the time."*
+> ([NN/g](https://www.nngroup.com/articles/vertical-nav/))
+
+The "7±2" rule people cite is a misreading — Miller himself said it had *"nothing
+to do with a person's capacity to comprehend printed text,"* and the same source
+notes **broad top-level menus work best**.
+([UX Myths](https://uxmyths.com/post/931925744/myth-23-choices-should-always-be-limited-to-seven))
+
+**So: keep all 16. Group and label them.** Which our rail already does.
+
+### 4.3 Tabs are specifically wrong for comparing — which is what conditions work is
+
+Three design systems say the same thing:
+
+- **NN/g:** avoid tabs *"when users must repeatedly switch between tabs to compare
+  or reference information."*
+- **Carbon:** *"Tabs should not be used if the user needs to compare information in
+  different groups, as this would result in the user having to click back and
+  forth."* ([Carbon](https://carbondesignsystem.com/components/tabs/usage/))
+- **Polaris:** tabs should *"not force merchants to jump back and forth to do a
+  single task"* and should represent *"a list-view with different filters
+  applied."* ([Polaris](https://polaris-react.shopify.com/components/navigation/tabs))
+
+That last line is the answer for us: our four tabs *are* four filters of one
+list, wearing the wrong control.
+
+### 4.4 Cap the depth at two levels
+
+Progressive disclosure works, with one hard limit: **"Designs that go beyond 2
+disclosure levels typically have low usability because users often get lost
+moving between the levels."**
+([NN/g](https://www.nngroup.com/articles/progressive-disclosure/))
+
+We are at **three to four**: section → tab → row → inline expand. Carbon adds the
+matching rules: *"Avoid nesting disclosures"* and *"Do not hide critical
+information within a disclosure."*
+
+### 4.5 Our direct competitors organise conditions on two axes — the same two we already have
+
+We looked at the private-lending platforms specifically (The Mortgage Office,
+Baseline, LendingWise, Lendesk/Finmo, LoanPro, Mortgage Automator). The ones with
+documented condition models all use **two orthogonal axes** — a *timing gate* and
+a *topical group*:
+
+| Platform | Timing axis | Subject axis |
+|---|---|---|
+| The Mortgage Office | Condition **Phase** — Prior to Docs / Funding / Closing | Condition **Group** |
+| LendingWise | Prior to Approval / Funding / Post-Closing | **Category** — ID Verification, Financials, Property Docs |
+| **PILOT today** | `severity` — prior-to-docs / funding / post-closing | *(none — we have the data, we don't group by it)* |
+
+**We already have both axes.** Our `severity` field *is* the timing axis
+(mislabelled), and the investor-guideline `domain` list *is* the subject axis.
+Move 2 renames the first; Move 4 starts using the second. Neither invents
+anything.
+
+Just as important — **not one of them separates borrower-facing from internal
+using tabs.** Three different mechanisms show up instead, and all three treat
+audience as a *property of the condition*:
+
+- **Baseline:** the status itself controls visibility — `Pending` is invisible to
+  the borrower, `Requested` publishes it and notifies them.
+- **LendingWise:** a `RequiredBy` role field (borrower / branch / loan officer /
+  broker), plus a hard back-office-only flag.
+- **Finmo:** edit freely, then an explicit *"Update Borrower → Send Update"*.
+
+We then checked the legacy and bank platforms as well — Encompass, Blend, Floify,
+nCino, Calyx Point, MeridianLink/LendingQB, Byte. The result is unambiguous:
+
+> **Across every system we could document — thirteen platforms in total — not one
+> splits its conditions into tabs by category or by audience.** They all use a
+> single list, with either status buckets (Floify: *Docs Owed / Pending Review /
+> Accepted*) or a category **column** (LendingQB, Calyx). Category-as-a-tab
+> appears nowhere in the industry.
+
+Two mechanisms are effectively universal, and both confirm audience is a
+*property*, not a place:
+
+- **A borrower-facing flag on the condition itself** — Encompass *Print
+  Externally*, nCino *Portal Enabled?*, MeridianLink *hide_from_pml_users*,
+  Floify *hide from borrower*, Blend *Share with borrower(s)*.
+- **Two descriptions, one internal and one external**, side by side — Encompass,
+  MeridianLink, nCino all store both. Blend's sync rule is explicit: the external
+  description *overrides* the internal one when populated.
+
+> **The market's own users are complaining about exactly what our owner
+> described.** Mortgage Automator: *"Screens can be busy at times — more defined
+> tabs/shortcuts/sections within a loan would be helpful."* LendingWise:
+> *"cluttered at times for new users."* MeridianLink: *"Too many screens"* and
+> *"conditions/tasks… could all be better."* Floify: *"making changes to needed
+> documents after flow is created is a bit difficult to find."*
+> This is an industry-wide failure, not a local one — which makes it a chance to
+> be visibly better than what our competitors ship.
+
+### 4.6 Where other tools put things we cram into one field
+
+Two patterns are worth knowing even though they are **not in scope for this plan**
+(both would change behaviour). Recorded so the owner can decide later:
+
+- **Procore splits status into three columns** — lifecycle (*Open/Draft/Closed*),
+  reviewer verdict (*Approved / Revise and resubmit / Rejected…*), and **"Ball in
+  Court"** — *"the name of the person responsible for completing the next
+  action."* We compress all three into one status word, which is why our
+  vocabulary keeps colliding.
+- **Encompass stores two descriptions side by side** — `internalDescription` and
+  `externalDescription` as adjacent columns — rather than one text with a
+  visibility toggle. A reviewer sees both at once.
+
+### 4.6 And a caution: do not over-simplify a staff tool
+
+GOV.UK's "one thing per page" rule carries an explicit exemption for
+*"an internal service for government users who need to repeat and switch between
+tasks quickly."*
+([GOV.UK](https://design-system.service.gov.uk/patterns/question-pages/))
+
+That is exactly what this is. The goal is **order, not minimalism.** We are not
+going to strip a professional tool down to a consumer app — and we are not
+removing anything.
 
 ---
 
@@ -328,7 +459,10 @@ The deepest fix, and the one the owner asked for most directly.
 **One list. Filters instead of tabs. Grouped by subject.**
 
 The current tab bar becomes a filter row, because tabs are the wrong control for
-a split that is not mutually exclusive:
+a split that is not mutually exclusive — and because **Encompass already ran this
+experiment and reversed it** (§2.4), while Polaris describes tabs as belonging to
+*"a list-view with different filters applied,"* which is precisely what our four
+tabs are:
 
 ```
 Show:  [ Needs me ▾ ]   Who sees it: [ Everyone ▾ ]   Subject: [ All ▾ ]
@@ -538,6 +672,35 @@ Every claim above, with its source.
 
 ---
 
-_Prepared 2026-07-27. Research: five parallel audits of the loan-file surface,
-the conditions engine, the underwriting panels, comparable lending and
-dense-record software, and the existing AI stack._
+---
+
+## 11. What the research could not confirm
+
+Recorded so nobody repeats these as fact:
+
+- **No sourced user complaints about Encompass's UI.** The review sites all
+  blocked automated access. The only hard evidence of pain is ICE documenting
+  its own performance bug (adding 30+ conditions taking up to 60 seconds).
+- **Most competitor LOS platforms publish nothing about their record UI** —
+  nCino, Blend, Floify, LoanPro, Lendesk and the rest are marketing pages only.
+  The genuinely useful patterns came from *outside* mortgage: audit request
+  lists, compliance evidence tools, and construction punch lists.
+- **"Linear has no modals"** is widely repeated and could not be traced to any
+  Linear source. Treat as folklore.
+- **Drawer-over-modal is not universal doctrine.** Atlassian is deprecating its
+  Drawer in favour of Modal. It is right for *our* case — a review queue where
+  you compare rows — but it is a judgement, not a law.
+- **A frequently quoted "30–50% faster task completion" figure** for progressive
+  disclosure could not be traced to a primary study. Not used in this plan.
+- **The aviation-checklist principle is the opposite of how it is usually
+  quoted:** critical items go **first**, not last, *"to increase the likelihood
+  of completing the task before interruptions may occur"* (Degani & Wiener, NASA
+  CR-177549). That is why "what needs you next" belongs at the top of the file.
+
+---
+
+_Prepared 2026-07-27. Research: five parallel audits — the staff loan-file
+surface, the conditions engine, the underwriting panels, comparable lending and
+dense-record software, and the existing AI stack. Benchmark sources: NN/g, IBM
+Carbon, Shopify Polaris, Salesforce Lightning, GOV.UK, ICE Developer Connect,
+Procore, Suralink, Vanta, Drata._
