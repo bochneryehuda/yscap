@@ -112,10 +112,11 @@ function CardCondition({ it, appId, onSaved }) {
     } catch (e) { setFormErr(e.message || 'Could not save the card'); }
     finally { setBusy(false); }
   }
-  // Card scan via a HOSTED OCR API (owner choice, 2026-07-07). The photo is sent
-  // to our backend, which proxies to the OCR provider and returns the parsed
-  // number + expiry — the image is never persisted and card data is never
-  // logged. The borrower confirms/edits before saving; manual entry always works.
+  // Card scan via our best-in-class vision reader (Azure OpenAI GPT-5, the same
+  // reader the underwriting engine uses), with hosted OCR as a fallback. The
+  // photo is sent to our backend, read for the number + expiry, and then
+  // discarded — it is never saved and card data is never logged. The borrower
+  // confirms/edits before saving; manual entry always works.
   async function scanCard(file) {
     if (!file) return;
     setFormErr(''); setScanning('Reading your card…');
@@ -153,7 +154,7 @@ function CardCondition({ it, appId, onSaved }) {
         <input ref={scanRef} type="file" accept="image/*" style={{ display: 'none' }}
           onChange={e => { const file = e.target.files && e.target.files[0]; e.target.value = ''; scanCard(file); }} />
         <button type="button" className="btn ghost small" onClick={() => scanRef.current && scanRef.current.click()}>📷 Scan card from a photo</button>
-        <span className="muted small">Read on your device — the photo is never uploaded.</span>
+        <span className="muted small">Used only to read your card — the photo is never saved.</span>
       </div>
       {scanning && <div className="notice info" style={{ marginBottom: 8 }}>{scanning}</div>}
       <div className="grid cols-2">

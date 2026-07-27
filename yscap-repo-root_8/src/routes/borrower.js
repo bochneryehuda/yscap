@@ -1824,16 +1824,18 @@ router.get('/applications/:id/appraisal-card', async (req, res) => {
   res.json(r.rows[0] || null);
 });
 
-// Scan a photo of the credit card via a hosted OCR API and return the parsed
-// number + expiry for the borrower to confirm. The image is NOT persisted and
-// card data is never logged. (Owner chose a hosted OCR API over on-device.)
+// Scan a photo of the credit card and return the parsed number + expiry for the
+// borrower to confirm. Reads the image with the best-in-class vision model
+// (Azure OpenAI GPT-5 — the same reader the underwriting engine uses), falling
+// back to hosted OCR when the vision model isn't configured. The image is NOT
+// persisted, the CVC is never read, and card data is never logged.
 router.post('/applications/:id/scan-card', async (req, res) => {
   const own = await db.query(`SELECT 1 FROM applications WHERE id=$1 AND (${OWN_FILE_SQL("", "$2")})`, [req.params.id, me(req)]);
   if (!own.rows[0]) return res.status(404).json({ error: 'not found' });
   const b = req.body || {};
   if (!b.dataBase64) return res.status(400).json({ error: 'no image provided' });
   try {
-    const parsed = await require('../lib/integrations/card-ocr').scanCard({ dataBase64: b.dataBase64, contentType: b.contentType });
+    const parsed = await require('../lib/integrations/card-ocr').scanCard({ dataBase64: b.dataBase64, contentType: b.contentType, appId: req.params.id });
     // Return only what we could read; the borrower confirms/edits before saving.
     res.json({ number: parsed.number || '', expMonth: parsed.expMonth || '', expYear: parsed.expYear || '' });
   } catch (e) {
