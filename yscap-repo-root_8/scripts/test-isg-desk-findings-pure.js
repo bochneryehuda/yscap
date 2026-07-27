@@ -256,10 +256,14 @@ async function notifyGuardChecks() {
   };
   try {
     const { record } = require('../src/lib/underwriting/ai-suggestions');
-    // No DB: answer the three queries record() issues (mute lookup, dedupe lookup, insert).
+    // No DB. This payload carries no evidence.code and no dedupeKey, so record() skips both the
+    // silenced-code lookup and the dedupe SELECT and issues exactly ONE query — the INSERT. The
+    // catch-all arm covers the other two only so a future payload here can't hang.
     const client = { query: async (sql) => (/INSERT INTO ai_suggestions/.test(sql)
       ? { rows: [{ id: 'sug-1' }], rowCount: 1 }
       : { rows: [], rowCount: 0 }) };
+    // NOTE: the fatal cases below are a unit test of record()'s guard, not a claim that the live
+    // desk can produce a fatal item of these two kinds — today it cannot (see desk-sync.js).
     const base = { applicationId: 'app-1', source: SOURCE, kind: 'finding', title: 'an item' };
     // The notify is a setImmediate side effect; drain a few turns so it has every chance to fire.
     const drain = async () => { for (let i = 0; i < 3; i += 1) await new Promise((r) => setImmediate(r)); };

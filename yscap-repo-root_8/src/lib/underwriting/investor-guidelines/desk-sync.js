@@ -116,11 +116,14 @@ function deskToSuggestions(desk) {
         //
         // SUPPRESS BY SEVERITY, NOT BY FLAG (pre-merge audit 2026-07-27). Hard-coding
         // `suppressNotify:true` contradicts the rule record() itself states — "never set it on a
-        // finding a human is expected to act on promptly". Both kinds are warnings TODAY (the only
-        // fatal path here is `gapSeverity`'s construction_feasibility domain, which no appraisal
-        // -disposition rule carries yet), so this is behaviour-identical now — and it means the day
-        // a fatal one DOES appear it emails the team like every other fatal, instead of arriving
-        // silently because of the flag it happens to wear.
+        // finding a human is expected to act on promptly". This is behaviour-identical today:
+        //   * `info_missing` can NEVER be fatal — desk.js's FILE_DATA branch hard-codes
+        //     `severity:'warning'` and does not consult `gapSeverity`, so no spec edit can change
+        //     it. Don't go hunting for a latent fatal here; there isn't one.
+        //   * `appraisal_review` takes `gapSeverity(v)`, fatal only for a `construction_feasibility`
+        //     domain — which no appraisal-disposition rule carries in any note-buyer spec.
+        // So today nothing changes. What it buys is the day a fatal one DOES appear: it emails the
+        // team like every other fatal, instead of arriving silently because of the flag it wears.
         const isInfo = u.flag === 'info_missing';
         const name = u.name || 'this requirement';
         out.push({

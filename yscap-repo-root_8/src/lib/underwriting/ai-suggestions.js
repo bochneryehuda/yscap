@@ -107,9 +107,14 @@ async function record(client, s) {
   const rowId = ins.rows[0].id;
   // R3.39 — real-time notify on NEW fatal AI suggestions. Fires only on the
   // fresh-insert branch (dedupe path above never re-notifies). Scheduled via
-  // setImmediate so the caller's transaction gets a chance to COMMIT first,
-  // and then re-verifies the row still exists (defensive against a rollback).
+  // setImmediate so the caller's transaction gets a chance to COMMIT first.
   // Best-effort — a notify failure never rolls back the suggestion.
+  // KNOWN GAP (audit 2026-07-27): the comment here used to claim `_notifyFatalNew` re-verifies the
+  // row still exists before sending. It does not — it issues no query. Several callers record
+  // inside a transaction, so if a LATER step in that transaction fails and rolls back, the email
+  // has already been scheduled and goes out for a row that no longer exists. Pre-existing and rare
+  // (a rollback after a successful insert), but do not rely on a re-verify that isn't there — add
+  // a real `SELECT 1 FROM ai_suggestions WHERE id=$1` inside _notifyFatalNew to close it.
   // `suppressNotify` = the row BELONGS in the list, but this particular write is not a "chase this
   // now" event, so the team is not emailed. TWO independent producers arrived at the same flag on
   // 2026-07-27 and both reasons stand — do not narrow it to either one:
