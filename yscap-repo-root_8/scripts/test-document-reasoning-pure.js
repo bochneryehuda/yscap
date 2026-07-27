@@ -7,23 +7,23 @@
 const assert = require('assert');
 const dr = require('../src/lib/underwriting/document-reasoning');
 
-// --- OFF by default: enabled() is false unless the env switch is explicitly '1' ---
+// --- ON by default (owner-directed "turn everything on"); only an explicit '0' turns it off ---
 delete process.env.UW_DOC_REASONING_ENABLED;
-assert.strictEqual(dr.enabled(), false, 'reasoning layer is OFF unless UW_DOC_REASONING_ENABLED=1');
-process.env.UW_DOC_REASONING_ENABLED = '0';
-assert.strictEqual(dr.enabled(), false);
-process.env.UW_DOC_REASONING_ENABLED = 'true';
-assert.strictEqual(dr.enabled(), false, "only the literal '1' turns it on");
+assert.strictEqual(dr.enabled(), true, 'reasoning layer is ON by default (still gated by Azure + cost cap)');
 process.env.UW_DOC_REASONING_ENABLED = '1';
 assert.strictEqual(dr.enabled(), true);
+process.env.UW_DOC_REASONING_ENABLED = 'true';
+assert.strictEqual(dr.enabled(), true, 'any non-"0" value keeps it on');
+process.env.UW_DOC_REASONING_ENABLED = '0';
+assert.strictEqual(dr.enabled(), false, "only the literal '0' turns it off");
 
 // --- When OFF, reasonAboutDocument returns null WITHOUT touching Azure (best-effort, never throws) ---
 (async () => {
-  delete process.env.UW_DOC_REASONING_ENABLED;
+  process.env.UW_DOC_REASONING_ENABLED = '0';
   const off = await dr.reasonAboutDocument({ appId: 'a', documentId: 'd', docType: 'title', ocrText: 'x'.repeat(200) });
-  assert.strictEqual(off, null, 'OFF → null');
+  assert.strictEqual(off, null, 'explicitly OFF → null');
 
-  // ON but Azure unconfigured (no endpoint/key in this test env) → still null, never throws.
+  // ON (default) but Azure unconfigured (no endpoint/key in this test env) → still null, never throws.
   process.env.UW_DOC_REASONING_ENABLED = '1';
   const noAzure = await dr.reasonAboutDocument({ appId: 'a', documentId: 'd', docType: 'title', ocrText: 'x'.repeat(200) });
   assert.strictEqual(noAzure, null, 'no Azure config → null (never throws)');

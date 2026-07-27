@@ -31,9 +31,10 @@
 const azureOpenai = require('../ai/azure-openai');
 const costMeter = require('../ai/cost-meter');
 
-// Master switch — the whole layer is inert unless this is explicitly turned on.
+// Master switch — ON by default (owner-directed 2026-07-27, "turn everything on"), still gated by
+// Azure being configured + the per-file cost cap. Set UW_DOC_REASONING_ENABLED=0 to turn it off.
 function enabled() {
-  return String(process.env.UW_DOC_REASONING_ENABLED || '') === '1';
+  return String(process.env.UW_DOC_REASONING_ENABLED || '') !== '0';
 }
 
 // Bound the OCR we send — a reasoning pass only needs the first pages (parties, title, recitals);

@@ -35,6 +35,7 @@ const azureOpenai = require('../lib/ai/azure-openai');
 const engine = require('../lib/underwriting/engine');
 const store = require('../lib/underwriting/store');
 const documentReasoning = require('../lib/underwriting/document-reasoning');
+const findingAiReview = require('../lib/underwriting/finding-ai-review');
 const registry = require('../lib/underwriting/registry');
 const fileView = require('../lib/underwriting/file-view');
 const { tieoutForFile } = require('../lib/underwriting/file-review');
@@ -668,7 +669,7 @@ router.get('/:appId', async (req, res, next) => {
     // the required-liquidity dollar (read off the assets condition, for the bank-liquidity view).
     const [exts, ff, conds, requiredLiquidity] = await Promise.all([
       db.query(
-        `SELECT id, document_id, doc_type, fields, ocr_engine, ai_model, page_count, confidence, status, reason, created_at
+        `SELECT id, document_id, doc_type, fields, reasoning, ocr_engine, ai_model, page_count, confidence, status, reason, created_at
            FROM document_extractions WHERE application_id=$1 AND is_current ORDER BY created_at`, [app.id]),
       store.getFileFindings(db, app.id),
       db.query(
@@ -1060,8 +1061,23 @@ router.get('/:appId', async (req, res, next) => {
     const fdec = require('../lib/underwriting/finding-decisions');
     const settledKeys = await fdec.suppressedKeys(db, app.id);
     const split = fdec.filterSuppressed(settledKeys, dedupedAll);
-    const openAll = split.kept;
+    const openAllUngated = split.kept;
     const settledFindings = split.suppressed.map(decorate);
+
+    // AI FINDING-REVIEW GATE — the DISPLAY pass (owner-directed 2026-07-27: "don't post a finding as
+    // real unless it passed the AI"). Synchronous, no GPT: it reads the remembered AI verdicts
+    // (finding_ai_reviews, db/338) and DROPS any finding the AI confidently judged a false alarm —
+    // exactly like a human dismissal above — while ENRICHING every survivor with the AI's suggested
+    // resolution/document (so suggestions are built on top of findings). The verdicts are filled by
+    // the background review pass in the setImmediate block below. Advisory + FAIL-OPEN: no verdict
+    // yet / AI off / memory unreadable → the finding shows exactly as before. `aiReviewMem` is read
+    // once and reused for the per-section `live()` helper so a suppressed finding can't reappear in
+    // a sub-panel.
+    let aiReviewMem = new Map();
+    try { aiReviewMem = await findingAiReview.memoryAllForFile(db, app.id); } catch (_) { aiReviewMem = new Map(); }
+    const aiGate = findingAiReview.annotateFindings(openAllUngated, aiReviewMem);
+    const openAll = aiGate.shown;
+    const aiSuppressedFindings = aiGate.suppressed.map(decorate);
 
     // Sync computed chain + bank findings → ai_suggestions (owner-directed 2026-07-22,
     // HARD RULE). Best-effort, fired AFTER the response so file view stays fast; dedupe
@@ -1164,6 +1180,12 @@ router.get('/:appId', async (req, res, next) => {
           // itself when it stops being true. Advisory — records an ai_suggestion, posts nothing.
           await step(() => require('../lib/underwriting/fidelis-flood-advisory')
             .syncFidelisFloodAdvisory(c, app.id));
+          // Mis-filed document heads-up (owner-directed 2026-07-27): PILOT's own AI reasoning already
+          // worked out what each document ACTUALLY is; when it's confident a document doesn't match the
+          // slot it was filed under, raise a plain-language "re-read / move it" advisory. Advisory
+          // only — records an ai_suggestion, re-classifies nothing, blocks nothing.
+          await step(() => require('../lib/underwriting/misfiled-document-advisory')
+            .syncMisfiledDocumentAdvisory(c, app.id));
           await c.query('COMMIT');
         } catch (_) { await c.query('ROLLBACK').catch(() => {}); }
         finally { c.release(); }
@@ -1175,6 +1197,22 @@ router.get('/:appId', async (req, res, next) => {
       // input moved; best-effort — a run must never break or slow the file view
       // (advisory only, records nothing a human must act on).
       require('../lib/underwriting/run').maybeRunWholeLoan(app.id, db, 'file_view').catch(() => {});
+
+      // AI FINDING-REVIEW GATE — the BACKGROUND pass (owner-directed 2026-07-27). Send each
+      // currently-shown finding to the AI grounded on the WHOLE loan file + its source document, ask
+      // whether it is a real concern or a misunderstanding, and REMEMBER the verdict + the AI's
+      // suggested resolution/document (finding_ai_reviews). The next view's display pass reads those
+      // verdicts to suppress false alarms + enrich real ones. Its OWN pool connection, off the hot
+      // path; deduped by fingerprint (a reviewed finding is never re-billed) + cost-capped +
+      // best-effort — a finding it can't reach just stays shown (fail-open). Never blocks/changes a
+      // number. Reviews the UNGATED list so a finding gets a verdict even on its first appearance.
+      try {
+        const sourceDocsById = new Map();
+        for (const e of (exts.rows || [])) {
+          if (e && e.document_id != null) sourceDocsById.set(String(e.document_id), { docType: e.doc_type, fields: e.fields, reasoning: e.reasoning });
+        }
+        findingAiReview.reviewFindings({ client: db, appId: app.id, findings: openAllUngated, db, sourceDocsById }).catch(() => {});
+      } catch (_) { /* background review never affects the response */ }
     });
 
     // Fraud / red-flag score: aggregate every open signal above + the economic red flags into one
@@ -1259,7 +1297,13 @@ router.get('/:appId', async (req, res, next) => {
     // list, so a settled finding has to be dropped from BOTH or it stays visible in
     // its section — which is exactly the "it didn't actually disappear" report. One
     // helper, applied to every section, so a new section can't quietly skip it.
-    const live = (arr) => fdec.filterSuppressed(settledKeys, (arr || []).filter(Boolean)).kept.map(decorate);
+    // Drops a human-settled finding AND an AI-rejected one (same memory as the consolidated list),
+    // then enriches each survivor with its AI review — so a suppressed finding can't linger in a
+    // sub-panel and every section carries the same AI suggestion the main list does.
+    const live = (arr) => {
+      const kept = fdec.filterSuppressed(settledKeys, (arr || []).filter(Boolean)).kept;
+      return findingAiReview.annotateFindings(kept, aiReviewMem).shown.map(decorate);
+    };
 
     res.json({
       escalatedFindings: escalatedByFinding,
@@ -1267,6 +1311,10 @@ router.get('/:appId', async (req, res, next) => {
       // are NOT re-raised anywhere above; returned so the desk can show "already
       // dealt with" and offer to put one back, instead of silently swallowing work.
       settledFindings,
+      // Findings the AI review confidently judged a false alarm (grounded on the whole loan file +
+      // the source document) — kept out of the live list, returned so the desk can show "PILOT
+      // flagged this; the AI thinks it's not a real concern" and offer to put one back.
+      aiSuppressedFindings,
       fraudBanner,
       verdict,
       rootCauses,
