@@ -21,6 +21,8 @@ if (!process.env.DATABASE_URL) { console.log('SKIP test-isg-one-list-db (no DATA
 const assert = require('assert');
 const { Pool } = require('pg');
 const uw = require('../src/routes/underwriting');
+const aiSug = require('../src/lib/underwriting/ai-suggestions');
+const deskFindings = require('../src/lib/underwriting/investor-guidelines/desk-findings');
 const fdec = require('../src/lib/underwriting/finding-decisions');
 const { claimOf } = require('../src/lib/underwriting/finding-claims');
 const investorReview = require('../src/lib/underwriting/investor-guideline-review');
@@ -156,6 +158,73 @@ console.log('ISG one list (DB)');
     assert.ok(!fdec.isSuppressed(keys, today), 'a re-opened finding comes back');
     assert.ok(!fdec.isSuppressed(keys, before), 'including under its older key form');
     ok('re-open clears every key the decision was written under');
+
+    // ── 6. THE REAL DISMISS DOOR, not a hand-built shape ───────────────────
+    // THE BLIND SPOT THAT LET THE FIRST FIX SHIP BROKEN. Everything above builds the
+    // finding shape by hand and calls `record()` directly. Production does neither: a
+    // staffer clicks Dismiss, which goes through `ai-suggestions.decide()`, which rebuilds
+    // the shape from the STORED row. That rebuild was gated on a non-null `evidence.code`
+    // — and every desk row with a `concern_field` (the only rows that HAVE a fact to
+    // declare) has a null template code, structurally: `desk.js` routes any row WITH a
+    // template code to the `document` disposition, and only the other dispositions carry a
+    // concern field. So the ledger was never written for exactly the findings the fact key
+    // exists for, and every assertion above passed anyway.
+    //
+    // This drives the REAL rural spec rows through the REAL producer and the REAL decide
+    // door, and asserts on what actually lands in the database.
+    const { deskToSuggestions } = require('../src/lib/underwriting/investor-guidelines/desk-sync');
+    const app2 = (await client.query(
+      `INSERT INTO applications (borrower_id, property_address, lender)
+         VALUES ($1, '{"state":"NY"}'::jsonb, 'Blue Lake') RETURNING id`, [b.id])).rows[0];
+    const payloads = deskToSuggestions({
+      noteBuyer: { name: 'Blue Lake' }, verdicts: [{ cond_no: 1 }],
+      unhappy: [
+        { cond_no: 123, flag: 'appraisal_review', severity: 'warning', name: 'RURAL PROPERTY INELIGIBLE',
+          domain: 'property', concern_field: 'appraisal_rural', pilot_template_code: null },
+        { cond_no: 3345, flag: 'appraisal_review', severity: 'warning', name: 'RURAL PROPERTY VERIFICATION',
+          domain: 'rural', concern_field: 'appraisal_rural', pilot_template_code: null },
+      ],
+    });
+    assert.strictEqual(payloads.length, 2, 'the real desk must emit both rural rows');
+    assert.ok(payloads.every((p) => !p.evidence.code),
+      'fixture must reproduce the real shape: a concern-carrying row has NO template code');
+    const sugIds = [];
+    for (const p of payloads) sugIds.push((await aiSug.record(client, { ...p, applicationId: app2.id })).id);
+    assert.strictEqual(sugIds.filter(Boolean).length, 2);
+    ok('the real desk rows persist — and really do carry no template code');
+
+    // The merged card carries ONE inherited handle. Dismissing it must settle the FACT.
+    await aiSug.decide(client, sugIds[0], { action: 'dismiss', reason: 'not a concern', staffId: null });
+    const written = (await client.query(
+      `SELECT finding_key FROM finding_decisions WHERE application_id=$1 ORDER BY 1`, [app2.id])).rows
+      .map((r) => r.finding_key);
+    assert.ok(written.includes('claim:isg_signal:appraisal_rural'),
+      `Dismiss must record the CLAIM — got ${JSON.stringify(written)}`);
+    const set2 = await fdec.suppressedKeys(client, app2.id);
+    assert.ok(fdec.isSuppressed(set2, { code: 'isg_rural_property', factKey: 'isg_signal:appraisal_rural' }),
+      "the run's rural fatal asserts the settled fact and must not come back");
+    assert.ok(fdec.isSuppressed(set2, { code: 'isg_appraisal_review_3345', factKey: 'isg_signal:appraisal_rural' }),
+      'nor the sibling desk row whose ai_suggestions row is still open');
+    assert.ok(!fdec.isSuppressed(set2, { code: 'isg_bl_ny_loan' }), 'and nothing unrelated is swept up');
+    ok('a Dismiss through the REAL door settles the whole claim');
+
+    // …and the AI panel must recognise the surviving sibling as the already-shown claim,
+    // or it renders a second card for the same fact right next to the merged one.
+    const listed = await aiSug.listForFile(app2.id, {}, client);
+    assert.ok(listed.length >= 1, 'the sibling row is still listed');
+    assert.ok(listed.every((r) => r.claim_key === 'claim:isg_signal:appraisal_rural'),
+      `every rural mirror must carry the claim key the Open-findings list deduped on — got ${JSON.stringify(listed.map((r) => r.claim_key))}`);
+    ok('the AI panel keys its mirror rows on the same claim, so it hides the duplicate');
+
+    // The escalation door only ever sees a CODE (db/222 stores a finding snapshot).
+    assert.strictEqual(deskFindings.factKeyForCode('isg_appraisal_review_3345'), 'isg_signal:appraisal_rural');
+    assert.strictEqual(deskFindings.factKeyForCode('isg_gap_rtl_cond_title'), null,
+      'a coverage gap is about a MISSING CONDITION, not a fact — it must never be keyed');
+    assert.strictEqual(deskFindings.factKeyForCode('bank_account_not_borrower'), null);
+    for (const bad of [null, undefined, '', 42, {}, []]) {
+      assert.strictEqual(deskFindings.factKeyForCode(bad), null, `expected null for ${JSON.stringify(bad)}`);
+    }
+    ok('a desk CODE alone resolves its fact — and never guesses one');
 
     await client.query('ROLLBACK');
     console.log(`\n${passed} checks passed.`);

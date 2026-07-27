@@ -70,6 +70,50 @@ const VALID_STATUSES = new Set([
  * `record()`'s own severity guard.
  */
 const ADVISORY_ONLY_SOURCES = ['investor_guideline_desk'];
+
+/**
+ * A stored `ai_suggestions` row, in the shape `finding-claims.claimOf` keys on.
+ *
+ * THE ONE PLACE THAT ANSWERS "WHICH FINDING IS THIS ROW ABOUT?" (re-audit 2026-07-27).
+ * Four call sites need it — `listForFile`'s claim stamp, `record()`'s ledger consult,
+ * `decide()`'s ledger write, and the escalation door — and the first cut hand-rolled the
+ * shape at each one. They drifted immediately, and the drift was invisible:
+ *
+ *   - `decide()` gated its whole ledger write on a non-null `code`, taken from
+ *     `evidence.code` = the spec row's `pilot_template_code`. EVERY row that carries a
+ *     `concern_field` — i.e. every row that has a fact to declare — has a NULL template
+ *     code, and structurally so: `desk.js` routes any row WITH a template code to the
+ *     `document` disposition, and only the non-document dispositions carry a concern
+ *     field. So the ledger was never written for exactly the findings the fact key
+ *     exists for, and "dismiss it once and it's gone" silently did nothing for them.
+ *   - `listForFile` stamped its claim key without the fact derivation, so a desk row
+ *     whose sibling had merged away in the Open-findings list did not recognise itself
+ *     as already-shown and rendered a second card for the same fact — re-creating, in
+ *     the AI Findings panel, the duplication this whole change removes.
+ *
+ * The desk's code lives in its `dedupe_key` (`isg-appraisal_review:3345`), normalized by
+ * the SAME `codeOf` the finding producer uses — so the row and the finding it mirrors
+ * always agree. That fallback is scoped to the desk's own source: applying it to every
+ * row would mint codes for suggestions that deliberately have none.
+ */
+function claimShapeOf(row) {
+  const r = row || {};
+  const ev = r.evidence || {};
+  const pa = r.proposed_action || r.proposedAction || {};
+  const paf = pa.fields || {};
+  let code = ev.code || paf.code || null;
+  if (!code && r.source === 'investor_guideline_desk' && r.dedupe_key) {
+    try { code = require('./investor-guidelines/desk-findings')._internals.codeOf(r.dedupe_key); } catch (_) { /* leave null */ }
+  }
+  const concernField = ev.concern_field || paf.concern_field || null;
+  return {
+    code,
+    factKey: ev.factKey || (concernField ? `isg_signal:${concernField}` : undefined),
+    field: ev.field || paf.field || null,
+    document_id: r.document_id || null,
+    docValue: ev.docValue || ev.doc_value || null,
+  };
+}
 function notScoredSql(alias) {
   const a = alias ? `${alias}.` : '';
   return `${a}source <> ALL(ARRAY[${ADVISORY_ONLY_SOURCES.map((s) => `'${s}'`).join(',')}]::text[])`;
@@ -135,19 +179,16 @@ async function record(client, s) {
   // no ai_suggestions row to match on. Keyed on the finding's identity, so a
   // decision taken on any surface silences it on every surface.
   try {
-    const code = (s.evidence && s.evidence.code) || (s.proposedAction && s.proposedAction.fields && s.proposedAction.fields.code) || null;
-    if (code) {
+    // Same shape as every other consumer (claimShapeOf) — the incoming payload uses
+    // camelCase where a stored row uses snake_case, so it is normalized first.
+    const shape = claimShapeOf({
+      evidence: s.evidence, proposed_action: s.proposedAction,
+      source: s.source, dedupe_key: s.dedupeKey, document_id: s.documentId,
+    });
+    if (shape.code) {
       const fdec = require('./finding-decisions');
       const set = await fdec.suppressedKeys(c, s.applicationId);
-      if (set.size) {
-        const shape = {
-          code,
-          field: (s.evidence && s.evidence.field) || (s.proposedAction && s.proposedAction.fields && s.proposedAction.fields.field) || null,
-          document_id: s.documentId || null,
-          docValue: (s.evidence && (s.evidence.docValue || s.evidence.doc_value)) || null,
-        };
-        if (fdec.isSuppressed(set, shape)) return { id: null, deduped: false, settled: true };
-      }
+      if (set.size && fdec.isSuppressed(set, shape)) return { id: null, deduped: false, settled: true };
     }
   } catch (_) { /* fail OPEN */ }
   // If a dedupe key is provided, look for a LIVE row and refresh it in place.
@@ -302,9 +343,8 @@ async function listForFile(appId, opts = {}, client) {
   try { claimOf = require('./finding-claims').claimOf; } catch (_) { claimOf = null; }
   return q.rows.map((r) => {
     if (!claimOf) return r;
-    const ev = r.evidence || {};
     let claimKey = null;
-    try { claimKey = claimOf({ code: ev.code || null, field: ev.field || null, document_id: r.document_id || null }); } catch (_) { claimKey = null; }
+    try { claimKey = claimOf(claimShapeOf(r)); } catch (_) { claimKey = null; }
     return { ...r, claim_key: claimKey };
   });
 }
@@ -373,28 +413,9 @@ async function decide(client, id, decision = {}) {
   // identity, so dismissing it here silences it everywhere — that is what makes it
   // actually disappear. Best-effort: never rolls back the decision.
   try {
-    const code = (cur.evidence && cur.evidence.code)
-      || (cur.proposed_action && cur.proposed_action.fields && cur.proposed_action.fields.code) || null;
-    if (code) {
+    const shape = claimShapeOf(cur);
+    if (shape.code) {
       const fdec = require('./finding-decisions');
-      // WHICH FACT this row asserts, rebuilt from what the producer stored — DERIVED
-      // EXACTLY as investor-guidelines/desk-findings.js derives it, so the shape written
-      // here keys identically to the live finding. Without it a dismiss on a merged
-      // note-buyer card records only the code form and settles just the one row whose
-      // handle the card inherited: the other producers of the same fact re-merge into a
-      // visually identical card on the next view (the owner's "it comes right back").
-      const ev = cur.evidence || {};
-      const concernField = ev.concern_field
-        || (cur.proposed_action && cur.proposed_action.fields && cur.proposed_action.fields.concern_field)
-        || null;
-      const shape = {
-        code,
-        factKey: ev.factKey || (concernField ? `isg_signal:${concernField}` : undefined),
-        field: ev.field
-          || (cur.proposed_action && cur.proposed_action.fields && cur.proposed_action.fields.field) || null,
-        document_id: cur.document_id || null,
-        docValue: (ev.docValue || ev.doc_value) || null,
-      };
       if (fdec.suppresses(newStatus)) {
         await fdec.record(c, {
           applicationId: cur.application_id, finding: shape, origin: 'ai_suggestion',

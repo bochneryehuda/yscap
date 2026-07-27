@@ -467,11 +467,14 @@ function notifyRaiser(row, actorId, decision, note) {
 function escalationFindingShape(row) {
   return {
     code: row.code, field: row.field || null,
-    // The FACT this code asserts, when the run's rule table declares one — so a
-    // super-admin's "no action needed" on a note-buyer escalation settles the claim,
-    // not just the one code. `claimKeyForCode` returns null for anything it doesn't
-    // know, so every other finding keys exactly as before.
-    factKey: investorReview.claimKeyForCode(row.code) || undefined,
+    // The FACT this code asserts — so a super-admin's "no action needed" on a note-buyer
+    // escalation settles the CLAIM, not just the one code. Asked of BOTH producers: the
+    // run's rule table and the desk's spec rows. An escalation stores only a finding
+    // SNAPSHOT (code / field / doc_value), so the code is all there is to go on, and
+    // asking only the run left every desk-raised escalation — which is where the existing
+    // decisions are — recording the code form alone. Both return null for a code they
+    // don't know, so every other finding keys exactly as before.
+    factKey: investorReview.claimKeyForCode(row.code) || deskFindings.factKeyForCode(row.code) || undefined,
     document_id: row.document_id || null,
     docValue: row.doc_value != null ? String(row.doc_value) : null,
   };
@@ -1036,7 +1039,16 @@ router.get('/:appId', async (req, res, next) => {
       // when the desk has already raised the same fact, the run's dealbreaker severity wins
       // and the merged card keeps the desk row's handle, so it is fully actionable. Nothing
       // is hidden and nothing becomes un-dismissable.
-      .filter((f) => !(f && f.source === investorReview.SOURCE && !f.id && !f.suggestionId));
+      //
+      // `mergedFrom` is part of the test on purpose (re-audit 2026-07-27). A desk finding
+      // carries no handle either until its `ai_suggestions` mirror exists, and that sync
+      // runs AFTER the response — so on the view where a desk warning and the run's fatal
+      // first meet, the survivor can be handle-less through no fault of the run. Dropping
+      // it there would swallow the DESK's finding, which would have been on this list
+      // regardless. So only a row that merged with nothing — one that exists purely
+      // because of the fold — is held back.
+      .filter((f) => !(f && f.source === investorReview.SOURCE
+        && !f.id && !f.suggestionId && !(f.mergedFrom && f.mergedFrom.length)));
     // A FINDING A HUMAN ALREADY SETTLED DOES NOT COME BACK (owner-reported
     // 2026-07-27: "I dismiss it, or the super-admin grants an exception, and it
     // keeps popping up again").
