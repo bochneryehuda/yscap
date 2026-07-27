@@ -28,6 +28,8 @@ import { PhoneInput, ZipInput , EmailInput} from '../components/FormattedInputs.
 import EditFileDetails from '../components/EditFileDetails.jsx';
 import ToolModal from '../components/ToolModal.jsx';
 import FileSections, { Section, InfoTip, subscribeConditionsTab, goToSection, requestOpenSection } from '../components/FileSections.jsx';
+import { CONDITION_STATUSES, CONDITION_TIMINGS, conditionStatusLabel, conditionStatusClass, timingLabel, loanConditionStatusLabel } from '../lib/conditions-vocab.js';
+import { severityCount } from '../lib/findings-vocab.js';
 import EsignFileSection from '../components/EsignFileSection.jsx';
 import ExceptionRegisterCard from '../components/ExceptionRegisterCard.jsx';
 import OrdersPanel from '../components/OrdersPanel.jsx';
@@ -593,7 +595,7 @@ function sowUrl(appId, itemId, app) {
   if (/gold/i.test(String(a.registered_program || ''))) p.set('program', 'gold');
   return `/tools/rehab-budget.html?${p.toString()}`;
 }
-const STATUSES = ['outstanding', 'requested', 'received', 'satisfied', 'issue'];
+const STATUSES = CONDITION_STATUSES;   // one list, from lib/conditions-vocab.js
 const APP_STATUSES = ['file_intake', 'new', 'in_review', 'processing', 'underwriting', 'approved', 'clear_to_close', 'funded', 'declined', 'withdrawn'];
 const APP_STATUS_LABEL = { file_intake: 'File intake', new: 'Submitted', in_review: 'In review', processing: 'Processing', underwriting: 'Underwriting', approved: 'Approved', clear_to_close: 'Clear to close', funded: 'Funded', declined: 'Declined', withdrawn: 'Withdrawn' };
 const PHASE_LABEL = {
@@ -690,13 +692,13 @@ function Item({ it, team, onPatch, role, docs, onUploadTo, onDropTo, onReviewDoc
     return (
       <div className="checkitem" style={{ alignItems: 'center', gap: 8, cursor: 'pointer', opacity: .8 }}
         onClick={() => setExpandOverride(true)} title="Show the full condition">
-        <span className={`dot ${signed || it.status === 'satisfied' ? 'done' : 'outstanding'}`} />
+        <span className={`dot ${signed ? 'cond-satisfied' : conditionStatusClass(it.status)}`} />
         <div style={{ flex: 1, minWidth: 0, fontWeight: 600, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{it.label}</div>
         {it.waived_at ? <Badge>not required</Badge>
           : signed ? <Badge tone="gold">signed off</Badge>
-          : it.status === 'satisfied' ? <Badge tone="gold">satisfied</Badge>
+          : it.status === 'satisfied' ? <Badge tone="gold">{conditionStatusLabel(it.status)}</Badge>
           : it.reviewed_at ? <Badge>done ✓ awaiting sign-off</Badge>
-          : <Badge>{it.status}</Badge>}
+          : <Badge>{conditionStatusLabel(it.status)}</Badge>}
         <PilotAdvice it={it} />
         <button className="btn link small" onClick={(e) => { e.stopPropagation(); setExpandOverride(true); }}>Expand</button>
       </div>
@@ -714,7 +716,7 @@ function Item({ it, team, onPatch, role, docs, onUploadTo, onDropTo, onReviewDoc
   return (
     <div className="checkitem" style={{ alignItems: 'flex-start', flexDirection: 'column', gap: 8 }}>
       <div className="row" style={{ width: '100%', gap: 8, alignItems: 'flex-start' }}>
-        <span className={`dot ${signed || it.status === 'satisfied' ? 'done' : 'outstanding'}`} style={{ marginTop: 4 }} />
+        <span className={`dot ${signed ? 'cond-satisfied' : conditionStatusClass(it.status)}`} style={{ marginTop: 4 }} />
         <div style={{ flex: 1 }}>
           <div style={{ fontWeight: 600 }}>{it.label}</div>
           <div className="row" style={{ gap: 6, flexWrap: 'wrap', marginTop: 4 }}>
@@ -837,7 +839,7 @@ function Item({ it, team, onPatch, role, docs, onUploadTo, onDropTo, onReviewDoc
       <div className="row" style={{ width: '100%', gap: 8, flexWrap: 'wrap' }}>
         <select className="input" style={{ maxWidth: 150 }} value={it.status}
           onChange={e => onPatch(it.id, { status: e.target.value })}>
-          {STATUSES.filter(s => completer || s !== 'satisfied' || it.status === 'satisfied').map(s => <option key={s} value={s}>{s}</option>)}
+          {STATUSES.filter(s => completer || s !== 'satisfied' || it.status === 'satisfied').map(s => <option key={s} value={s}>{conditionStatusLabel(s)}</option>)}
         </select>
         <select className="input" style={{ maxWidth: 180 }} value={it.assignee_staff_id || ''}
           onChange={e => onPatch(it.id, { assigneeStaffId: e.target.value || null })}>
@@ -2008,10 +2010,13 @@ function BorrowerConditions({ appId, app, items, docs, onPatch, onReviewDoc, onD
         <div className="spacer" />
         <select className="input" style={{ maxWidth: 210 }} value={condFilter} onChange={e => setCondFilter(e.target.value)}
           title={isLO ? 'Your default shows conditions still needing your review; marking one Done clears it here.' : 'Your default shows conditions still needing your sign-off; accepting a document keeps it here until you sign off.'}>
+          {/* Words come from lib/conditions-vocab.js — the same five a condition
+              is described with everywhere else. 'awaiting' spans two stored
+              statuses, so it names the earlier of the two. */}
           <option value="mine">{isLO ? 'Needs my review' : 'Needs my sign-off'}</option>
-          <option value="awaiting">Not submitted yet</option>
-          <option value="review">In review — not signed off</option>
-          <option value="attention">Needs attention</option>
+          <option value="awaiting">{conditionStatusLabel('outstanding')}</option>
+          <option value="review">{conditionStatusLabel('received')}</option>
+          <option value="attention">{conditionStatusLabel('issue')}</option>
           <option value="signed">Signed off</option>
           <option value="all">All conditions</option>
         </select>
@@ -2092,7 +2097,7 @@ function BorrowerConditions({ appId, app, items, docs, onPatch, onReviewDoc, onD
         return (
           <div className={`checkitem${canDrop ? ' cond-drop' : ''}`} key={it.id} style={{ alignItems: 'flex-start', flexDirection: 'column', gap: 6 }} {...dropProps}>
             <div className="row" style={{ width: '100%', gap: 8, alignItems: 'flex-start' }}>
-              <span className={`dot ${signed || it.status === 'satisfied' ? 'done' : 'outstanding'}`} style={{ marginTop: 4, ...(it.status === 'issue' ? { background: 'var(--danger)' } : {}) }} />
+              <span className={`dot ${signed ? 'cond-satisfied' : conditionStatusClass(it.status)}`} style={{ marginTop: 4 }} />
               <div style={{ flex: 1 }}>
                 <div style={{ fontWeight: 600 }}>
                   {it.label}
@@ -2172,7 +2177,7 @@ function BorrowerConditions({ appId, app, items, docs, onPatch, onReviewDoc, onD
                           ? ` (purchase ${money(app.purchase_price)} − original contract ${money(app.underlying_contract_price)})` : ''} — upload the assignment letter`;
                       })()
                     : it.item_kind}
-                  {` · ${it.status}`}
+                  {` · ${conditionStatusLabel(it.status)}`}
                   {signed && ` · signed off by ${it.signed_off_name || 'the internal team'}`}
                 </div>
                 {it.template_code === 'cond_note_buyer_missing' && <CondNoteBuyerEntry appId={appId} onSaved={onChanged} />}
@@ -2973,14 +2978,14 @@ export default function StaffApplication() {
     pricing: { short: app.registered_program ? '✓' : '', long: app.registered_program ? 'Registered ✓' : 'Not registered' },
     appraisal: (() => {
       if (!apprSummary) return { short: '', long: '' };
-      if (apprSummary.fatal) return { short: `${apprSummary.fatal} ⚠`, long: `${apprSummary.fatal} fatal` };
+      if (apprSummary.fatal) return { short: `${apprSummary.fatal} ⚠`, long: severityCount(apprSummary.fatal, 'fatal') };
       if (apprSummary.warning) return { short: `${apprSummary.warning}`, long: `${apprSummary.warning} warning` };
       return { short: '✓', long: 'Reviewed ✓' };
     })(),
     underwriting: (() => {
       if (!uwSummary) return { short: '', long: '' };
       const g = uwSummary.guideline || {};
-      if (uwSummary.fatal) return { short: `${uwSummary.fatal} ⚠`, long: `${uwSummary.fatal} fatal` };
+      if (uwSummary.fatal) return { short: `${uwSummary.fatal} ⚠`, long: severityCount(uwSummary.fatal, 'fatal') };
       // A note-buyer dealbreaker is not clear-to-close work, so it is counted
       // separately — but it must never let this badge read "Reviewed ✓" over a red
       // fatal card (re-audit 2026-07-27).
@@ -3406,12 +3411,14 @@ export default function StaffApplication() {
             <h3 style={{ margin: 0 }}>Checklist</h3>
             <div className="spacer" />
             <select className="input" style={{ maxWidth: 170 }} value={itemFilter} onChange={e => setItemFilter(e.target.value)}>
+              {/* Same five words as the borrower-conditions filter above, from
+                  lib/conditions-vocab.js. The stored filter VALUES are untouched. */}
               <option value="todo">Open for me ({internalItems.filter(it => !roleDone(it, role)).length})</option>
               <option value="all">All ({internalItems.length})</option>
-              <option value="outstanding">Outstanding</option>
-              <option value="submitted">Submitted (in review)</option>
-              <option value="rejected">Needs attention</option>
-              <option value="satisfied">Satisfied</option>
+              <option value="outstanding">{conditionStatusLabel('outstanding')}</option>
+              <option value="submitted">{conditionStatusLabel('received')}</option>
+              <option value="rejected">{conditionStatusLabel('issue')}</option>
+              <option value="satisfied">{conditionStatusLabel('satisfied')}</option>
             </select>
             <span className="muted small">
               {internalItems.filter(i => i.signed_off_at).length}/{internalItems.length} signed off
@@ -3678,7 +3685,10 @@ function LoanConditionsPanel({ conds, condFilter, setCondFilter, cForm, setCForm
   return (
         <div className="panel">
           <div className="row" style={{ marginBottom: 8, alignItems: 'center' }}>
-            <h3>Underwriting conditions <InfoTip tip="Formal loan conditions by severity (prior-to-docs, prior-to-funding…). These gate clear-to-close; clear or waive them here." /></h3>
+            {/* "Timing", not "severity": the stored column holds a SCHEDULE
+                (before docs / before funding), not a danger level — see the note
+                in lib/conditions-vocab.js. Findings own the word "severity". */}
+            <h3>Underwriting conditions <InfoTip tip="Formal loan conditions by timing (before docs, before funding…). These gate clear-to-close; clear or waive them here." /></h3>
             <div className="spacer" />
             <span className="muted small" style={{ marginRight: 8 }}>{conds.filter(c => c.status === 'open').length} open</span>
             <select className="input" style={{ maxWidth: 130 }} value={condFilter} onChange={e => setCondFilter(e.target.value)}>
@@ -3695,7 +3705,7 @@ function LoanConditionsPanel({ conds, condFilter, setCondFilter, cForm, setCForm
           return shownConds.length === 0
             ? <p className="muted small">{conds.length === 0 ? 'No conditions yet.' : 'None match this filter.'}</p>
             : shownConds.map(c => {
-              const sev = { standard: 'Standard', prior_to_docs: 'Prior to docs', prior_to_funding: 'Prior to funding', post_closing: 'Post-closing' }[c.severity] || c.severity;
+              const timing = timingLabel(c.severity);
               const open = c.status === 'open' || c.status === 'borrower_responded';
               return (
                 <div className="checkitem" key={c.id} style={{ alignItems: 'flex-start', opacity: open ? 1 : .6 }}>
@@ -3703,8 +3713,8 @@ function LoanConditionsPanel({ conds, condFilter, setCondFilter, cForm, setCForm
                   <div style={{ flex: 1 }}>
                     <div style={{ fontWeight: 600 }}>{c.title}</div>
                     <div className="muted small">
-                      {sev} · {c.audience === 'staff' ? 'Internal' : 'Borrower-facing'}
-                      {c.status !== 'open' ? ` · ${c.status}${c.cleared_by_name ? ` by ${c.cleared_by_name}` : ''}` : ''}
+                      {timing} · {c.audience === 'staff' ? 'Internal' : 'Borrower-facing'}
+                      {c.status !== 'open' ? ` · ${loanConditionStatusLabel(c.status).toLowerCase()}${c.cleared_by_name ? ` by ${c.cleared_by_name}` : ''}` : ''}
                       {open && c.reviewed_by_name ? ` · reviewed by ${c.reviewed_by_name}` : ''}
                       {c.waive_reason ? ` · ${c.waive_reason}` : ''}
                     </div>
@@ -3727,11 +3737,11 @@ function LoanConditionsPanel({ conds, condFilter, setCondFilter, cForm, setCForm
               <option value="staff">Internal</option>
               <option value="both">Borrower-facing</option>
             </select>
-            <select className="input" style={{ maxWidth: 170 }} value={cForm.severity} onChange={e => setCForm({ ...cForm, severity: e.target.value })}>
-              <option value="standard">Standard</option>
-              <option value="prior_to_docs">Prior to docs</option>
-              <option value="prior_to_funding">Prior to funding</option>
-              <option value="post_closing">Post-closing</option>
+            {/* Stored values unchanged (conditions.severity CHECK constraint);
+                only the words the user reads come from the shared vocabulary. */}
+            <select className="input" style={{ maxWidth: 170 }} title="When this condition is due"
+              value={cForm.severity} onChange={e => setCForm({ ...cForm, severity: e.target.value })}>
+              {CONDITION_TIMINGS.map(t => <option key={t} value={t}>{timingLabel(t)}</option>)}
             </select>
             <button className="btn primary" onClick={addLoanCondition}>Add condition</button>
           </div>

@@ -275,6 +275,16 @@ textarea{min-height:90px;resize:vertical}
 .checkitem{display:flex;align-items:center;gap:12px;padding:12px 0;border-top:1px solid var(--line)}
 .dot{width:9px;height:9px;border-radius:50%;background:var(--muted);flex:none}
 .dot.done{background:var(--ok)} .dot.outstanding{background:var(--gold)}
+/* ONE dot colour per condition state, matching the five words in
+   app-v2/src/lib/conditions-vocab.js — apply with conditionStatusClass().
+   Before this, five states shared two colours plus a red inline override, so
+   "asked for" and "in review" looked identical in a list of forty rows. The
+   colours are the brand tokens, so the dictionary and the stylesheet agree. */
+.dot.cond-outstanding{background:var(--muted)}
+.dot.cond-requested{background:var(--teal)}
+.dot.cond-received{background:var(--gold)}
+.dot.cond-issue{background:var(--danger)}
+.dot.cond-satisfied{background:var(--ok)}
 /* drag-and-drop target on a condition / upload row (and generic upload cards) */
 .dropzone{transition:border-color .12s,background .12s}
 .dropzone.drop-over{border-color:var(--teal);background:rgba(127,169,176,.10);border-style:dashed}

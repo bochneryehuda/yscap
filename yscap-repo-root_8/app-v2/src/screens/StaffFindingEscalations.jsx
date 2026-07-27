@@ -2,6 +2,10 @@ import React, { useEffect, useState } from 'react';
 import { api, saveBlob } from '../lib/api.js';
 import { useAuth } from '../lib/auth.jsx';
 import DocPreview from '../components/DocPreview.jsx';
+// Severity words + colours: ONE shared map. Three screens each kept a private copy
+// and had already drifted — this one said "Dealbreaker" for the same finding the
+// escalations screen called something else. See lib/findings-vocab.js.
+import { FINDING_SEVERITY as SEV } from '../lib/findings-vocab.js';
 
 /* The finding-escalation WORKLOAD (owner-directed 2026-07-21, Items 7 + 12;
  * reworked into a full action desk 2026-07-26).
@@ -25,11 +29,6 @@ import DocPreview from '../components/DocPreview.jsx';
 
 const money = (v) => (v == null || v === '' || isNaN(Number(v))) ? '—' : '$' + Number(v).toLocaleString('en-US');
 const TARGET_LABEL = { super_admin: 'Super-admin', processor: 'Processor', underwriter: 'Underwriter' };
-const SEV = {
-  fatal: { fg: 'var(--crit,#B4483C)', bg: 'var(--crit-bg,#F6E7E4)', label: 'Dealbreaker' },
-  warning: { fg: 'var(--amber,#B7791F)', bg: 'var(--amber-bg,#F6EEDD)', label: 'Warning' },
-  info: { fg: 'var(--teal,#2F7F86)', bg: 'rgba(47,127,134,.12)', label: 'Info' },
-};
 // Clearing a hard, clear-to-close-BLOCKING dealbreaker (grant an exception / clear /
 // fix the file / dismiss) needs senior authority (waive_conditions) — mirrors the
 // server gate in src/lib/underwriting/exceptions.js and the file's finding card.
