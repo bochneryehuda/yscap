@@ -7,7 +7,7 @@
  * overwritten. No DB.
  */
 const assert = require('assert');
-const { changedFrozenFields, sameValue, FROZEN_KEYS, summarize, acceptInboundEconomicsChange } = require('../src/lib/inbound-economics-freeze');
+const { changedFrozenFields, sameValue, FROZEN_KEYS, summarize, acceptInboundEconomicsChange, incomingFromStoredChanges } = require('../src/lib/inbound-economics-freeze');
 
 let failures = 0;
 const ok = (c, m) => { console.log(`${c ? 'PASS' : 'FAIL'} ${m}`); if (!c) failures++; };
@@ -92,6 +92,32 @@ ok(!FROZEN_KEYS.includes('title_company') && !FROZEN_KEYS.includes('actual_rate'
 // ClickUp's frozen figures INTO the locked file. Exported and validates its
 // inputs before any DB/ClickUp work (the no-application guard is pure).
 ok(typeof acceptInboundEconomicsChange === 'function', 'export: acceptInboundEconomicsChange is available');
+
+// incomingFromStoredChanges — the RELIABLE offline base (owner-reported 2026-07-27:
+// the accept button did nothing because it hard-depended on a live ClickUp read).
+// It turns a review row's raw_value.changes into an `incoming` object so the accept
+// works even when ClickUp can't be reached.
+{
+  const changes = [
+    { field: 'loan_amount', label: 'Loan amount', from: '191475', to: '172975' },
+    { field: 'rehab_budget', label: 'Rehab', from: '85000', to: '65000' },
+  ];
+  const inc = incomingFromStoredChanges(changes);
+  ok(inc && inc.loan_amount === '172975' && inc.rehab_budget === '65000',
+    'stored-base: builds incoming from the freeze’s captured changes (Morgenstern figures)');
+  // Applied against the current file, it produces the SAME diffs the live path would.
+  const ch = changedFrozenFields(inc, { loan_amount: '191475.00', rehab_budget: '85000.00' });
+  ok(ch.length === 2 && ch.find((c) => c.field === 'loan_amount' && c.to === '172975'),
+    'stored-base: those figures are real changes vs the frozen file');
+  ok(incomingFromStoredChanges(null) === null && incomingFromStoredChanges([]) === null,
+    'stored-base: no changes => null (caller falls back to the live read / reports clearly)');
+  // A bad property_type / loan_type is refused the SAME way the live path sanitizes it.
+  const bad = incomingFromStoredChanges([{ field: 'property_type', to: 'FNM1025' }]);
+  ok(bad === null, 'stored-base: an appraisal form code (FNM1025) is refused, never written as a property type');
+  const nonFrozen = incomingFromStoredChanges([{ field: 'ppp', to: '5' }]);
+  ok(nonFrozen === null, 'stored-base: a non-frozen field is ignored');
+}
+
 (async () => {
   let threw = null;
   try { await acceptInboundEconomicsChange({ appId: null }); } catch (e) { threw = e; }

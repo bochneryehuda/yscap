@@ -160,11 +160,19 @@ async function osmGeocode(text) {
 async function geocode(text) {
   const t = String(text || '').trim();
   if (!t) return null;
+  // Geocode the BUILDING, not the apartment. A unit suffix ("Apartment 6B",
+  // "Unit 4D", "#3") makes some providers — the keyless OSM fallback especially —
+  // return NO MATCH for an address that resolves cleanly without it (owner-reported
+  // 2026-07-27: a borrower home address with an apartment "could not be placed on
+  // the map" so it never reached ClickUp). The coordinates are building-level
+  // regardless, so this loses nothing; ADDR.withoutUnit leaves a unit-less address
+  // untouched.
+  const q = ADDR.withoutUnit(t);
   try {
-    const g = await canonicalize(t);
+    const g = await canonicalize(q);
     if (g && g.lat != null && g.lng != null) return g;
   } catch (_) { /* fall through to the keyless provider */ }
-  try { return await osmGeocode(t); } catch (_) { return null; }
+  try { return await osmGeocode(q); } catch (_) { return null; }
 }
 
 module.exports = { canonicalize, samePlace, geocode, parseGeocodeResult, inputKey };
