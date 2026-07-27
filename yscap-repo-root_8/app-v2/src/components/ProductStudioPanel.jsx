@@ -646,16 +646,17 @@ const ProductStudioPanel = forwardRef(function ProductStudioPanel({ appId, app, 
         'propAddr', 'addrTBD', 'propState', 'propType', 'dealPurpose', 'dealType',
         'price', 'isAssign', 'origPrice', 'asIs', 'arv', 'construction', 'rehabScope', 'sqft',
       ];
-    // Experience prices off the CLAIM of record on register (frozen #85 rule): the
-    // server strips a studio experience override on EVERY non-admin register
-    // (borrower AND staff), so editing it in the studio would show a tier the
-    // register won't honor — the "studio showed the bigger loan, the file
-    // registered smaller" class (audit #44 borrower, #148 staff). Lock for
-    // everyone but an unlocked admin; the claim is edited on the audited
-    // application form.
-    if (!staffAdmin) ids.push('expFlips', 'expBrrrr', 'expGround');
+    // Owner-directed 2026-07-27: EVERY staff role may change the experience in the
+    // studio and re-register off it — the loan officer has the same authority as
+    // an underwriter/admin over the deal inputs. The server now honors a staff
+    // experience override (src/lib/pricing-overrides.js), and the re-register
+    // reopens the pricing + experience conditions so the underwriter re-signs.
+    // A BORROWER still can't edit the claim from here (it prices off the verified
+    // track record; the borrower REQUESTS a change and the team approves it) —
+    // lock experience for borrowers only.
+    if (!isStaff) ids.push('expFlips', 'expBrrrr', 'expGround');
     return ids;
-  }, [isStaff, staffAdmin]);
+  }, [isStaff]);
 
   const d = snap && snap.d;
   const canRegister = !!(snap && snap.ready && snap.program && d && d.status !== 'INELIGIBLE' && d.totalLoan > 0);

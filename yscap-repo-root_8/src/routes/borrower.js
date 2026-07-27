@@ -879,11 +879,12 @@ router.post('/applications/:id/pricing/register', async (req, res) => {
     }
     const program = b.program === 'gold' ? 'gold' : 'standard';
     const overrides = borrowerPricingOverrides(b.overrides || {});
-    // A REGISTERED product is authoritative terms. Never let borrower-claimed
-    // experience beat the verified track record here — staff loan officers are
-    // forbidden from injecting these same keys (ADMIN_ONLY_OVERRIDE_KEYS), so a
-    // borrower (least privileged) must not be able to either. The what-if /quote
-    // path may keep them; the registered basis uses verified experience only.
+    // A REGISTERED product is authoritative terms. A BORROWER never injects the
+    // claimed-experience counts on register — they must not beat the verified
+    // track record from the least-privileged surface (owner-directed 2026-07-27:
+    // the borrower REQUESTS changes and the team approves; only STAFF edit deal
+    // economics here — see src/lib/pricing-overrides.js). The what-if /quote path
+    // may keep them; the registered basis uses the file's experience of record.
     delete overrides.expFlips; delete overrides.expHolds; delete overrides.expGround;
     const inputs = pricing.buildInputs(f.app, f.exp, overrides);
     // Term-sheet options (owner-directed 2026-07-22) — display/record only. A
