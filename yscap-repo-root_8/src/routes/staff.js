@@ -1799,55 +1799,23 @@ async function loadFileForPricing(appId) {
   return { app, exp };
 }
 
-// Staff pricing overrides: loan officers, processors, underwriters and admins
-// can use the same pricing and fee knobs as the marketing term-sheet tool.
-// The saved product is still recomputed server-side from the frozen engines,
-// so the browser never gets to fabricate final loan terms.
-// caps/rate/eligibility that ovrLTC/ovrRate do — and it must stay verified-only
-// for non-admins (a loan officer/processor can what-if the deal economics, but
-// not inject unverified experience or override the caps/rate). For anyone else
-// these keys are stripped. Returns { overrides, strippedAdminKeys }.
-// Cap/rate/eligibility overrides and manual experience are ADMIN-ONLY. For
-// everyone else they're stripped, so a loan officer/processor/underwriter can
-// what-if deal economics but cannot force-register an INELIGIBLE file, inject
-// unverified experience, or dictate the rate/caps from the client.
-const ADMIN_ONLY_OVERRIDE_KEYS = [
-  'forcePrice', 'manualPricing',
-  'ovrAcqLTV', 'ovrARLTV', 'ovrLTC', 'ovrRate',
-  'ovrAcqLTVPct', 'ovrARLTVPct', 'ovrLTCPct', 'ovrRatePct', 'ovrIrMonths', 'ovrEffPrice',
-  'expFlips', 'expHolds', 'expGround',
-];
-// The manual-PRICING knobs (rate / leverage / force-price). A non-admin sending
-// one of these MEANINGFULLY engaged means the studio displayed terms the server
-// won't honor — that must be refused loudly, not registered differently
-// (Pinchus Wieder). Experience keys are NOT here on purpose: the studio always
-// carries the file's own experience, and a non-admin's experience change belongs
-// in the audited application form — silently sizing off the file's claim is the
-// correct long-standing behavior, so it must not trip the loud refusal (that
-// would 403 EVERY vanilla non-admin register).
-const MANUAL_PRICING_KEYS = [
-  'forcePrice', 'manualPricing',
-  'ovrAcqLTV', 'ovrARLTV', 'ovrLTC', 'ovrRate',
-  'ovrAcqLTVPct', 'ovrARLTVPct', 'ovrLTCPct', 'ovrRatePct', 'ovrIrMonths', 'ovrEffPrice',
-];
-// "Meaningfully engaged": a truthy flag, or a numeric override with a real value
-// — NOT a present-but-default key (manualPricing:false is sent on every staff
-// register, so mere presence must never count).
-const engaged = (v) => v === true || (v != null && v !== '' && v !== false && !(typeof v === 'number' && Number.isNaN(v)));
+// Staff pricing overrides: EVERY staff role (loan officer, processor,
+// underwriter, admin, super_admin) may tune the deal INPUTS — experience, ARV,
+// as-is value, purchase price, rehab budget, term, reserve — and re-register
+// (owner-directed 2026-07-27; see src/lib/pricing-overrides.js). The saved
+// product is still recomputed server-side from the frozen engines, so the
+// browser never fabricates final loan terms. Only the MANUAL leverage / rate /
+// force-price overrides stay admin-only (they create a Manual Program that
+// bypasses the guideline engine and needs super-admin approval — a non-admin
+// uses "Request an exception"). Policy + the pure sanitizer live in ONE place so
+// the register / quote / details / completeness paths can never drift.
+const { sanitizeStaffOverrides } = require('../lib/pricing-overrides');
+// Returns { overrides, strippedAdminKeys }. strippedAdminKeys is true when a
+// non-admin sent a MEANINGFULLY-engaged manual-pricing knob (rate/leverage/
+// force-price) — the caller refuses loudly rather than register different terms
+// than the studio showed (Pinchus Wieder). Experience is NOT admin-only anymore.
 function sanitizeOverrides(req, raw) {
-  const overrides = (raw && typeof raw === 'object') ? { ...raw } : {};
-  const role = req.actor && req.actor.role;
-  if (role === 'admin' || role === 'super_admin') return { overrides, strippedAdminKeys: false };
-  let stripped = false;
-  for (const k of ADMIN_ONLY_OVERRIDE_KEYS) {
-    if (k in overrides) {
-      // Only a MEANINGFULLY-engaged MANUAL-PRICING knob makes the studio diverge
-      // from what the server will register — that's what we refuse loudly.
-      if (MANUAL_PRICING_KEYS.includes(k) && engaged(overrides[k])) stripped = true;
-      delete overrides[k];
-    }
-  }
-  return { overrides, strippedAdminKeys: stripped };
+  return sanitizeStaffOverrides(req.actor && req.actor.role, raw);
 }
 
 // Fresh quote for both programs (no persistence). Body: { program?, overrides? }.
@@ -1994,22 +1962,14 @@ router.post('/applications/:id/pricing/register', async (req, res) => {
     // so a leverage override that lands "ineligible" against the Standard caps is
     // sized/registered as MANUAL (with the escalation), never bounced.
     if (isManual) inputs.forcePrice = true;
-    // S3-06: this endpoint writes arv back onto the file and sizes the loan off
-    // both the arv and the as-is value, so a raised arv/as-is OVERRIDE here is the
-    // same higher-leverage raise the /details + /complete-fields gates forbid. On a
-    // priced file (re-registration), a non-seesAll staffer may not raise either.
-    // Underwriters/admins and the FIRST registration (not yet priced) are unaffected.
-    if (!seesAll(req) && await changeRequests.isBorrowerLocked(appId)) {
-      const oa = f.app.arv == null ? null : Number(f.app.arv);
-      const oi = f.app.as_is_value == null ? null : Number(f.app.as_is_value);
-      const na = inputs.arv == null ? null : Number(inputs.arv);
-      const ni = inputs.asIsValue == null ? null : Number(inputs.asIsValue);
-      const raised = [];
-      if (oa != null && na != null && na > oa) raised.push('the ARV');
-      if (oi != null && ni != null && ni > oi) raised.push('the as-is value');
-      if (raised.length)
-        return refuse(403, { error: `Only an underwriter or admin can raise ${raised.join(' and ')} on a priced file.` }, 'value_raise_blocked', { raised });
-    }
+    // Owner-directed 2026-07-27: EVERY staff role may re-price and re-register
+    // with a higher ARV / as-is value on a priced file — the loan officer has the
+    // same authority as an underwriter/admin over the deal inputs. (This was
+    // previously restricted to seesAll roles on a priced file.) The change is not
+    // silent: writing the new arv back reopens the pricing + experience conditions
+    // (db/072 trigger) so the underwriter re-signs the new structure, and the
+    // Clear-to-Close / Funded / term-sheet-sent FREEZE (structuralLockReason,
+    // checked above) still blocks everyone equally once the file is locked.
     const quote = pricing.quoteProgram(program, inputs);
     // Gold Standard renovation cannot finance an interest reserve — never persist a
     // requested reserve on the registered scenario for that program.
@@ -7143,21 +7103,13 @@ router.patch('/applications/:id/details', async (req, res) => {
     // {field: {from, to}} so the Activity feed can say precisely what changed.
     const beforeQ = await db.query(`SELECT ${touchedCols.join(',')} FROM applications WHERE id=$1`, [req.params.id]);
     const before = beforeQ.rows[0] || {};
-    // S3-06: on a PRICED file (a product is registered), only underwriting-authority
-    // roles (seesAll: admin / underwriter / loan_coordinator) may RAISE the appraisal
-    // values that drive leverage — as-is value and ARV. A loan officer can still edit
-    // other fields, and lowering a value (less leverage) is allowed; inflating a value
-    // to re-price higher is an underwriter's call. The change already reopens Products
-    // & Pricing via the db/072 trigger — this adds the who-can-raise control.
-    if (!seesAll(req)) {
-      const raised = [];
-      const oldN = (c) => (before[c] == null ? null : Number(before[c]));
-      const newN = (v) => (v === '' || v == null ? null : Number(v));
-      if ('asIsValue' in b) { const o = oldN('as_is_value'), n = newN(b.asIsValue); if (o != null && n != null && n > o) raised.push('the as-is value'); }
-      if ('arv' in b) { const o = oldN('arv'), n = newN(b.arv); if (o != null && n != null && n > o) raised.push('the ARV'); }
-      if (raised.length && await changeRequests.isBorrowerLocked(req.params.id))
-        return res.status(403).json({ error: `Only an underwriter or admin can raise ${raised.join(' and ')} on a priced file.` });
-    }
+    // Owner-directed 2026-07-27: EVERY staff role may RAISE the as-is value / ARV
+    // that drive leverage — the loan officer has the same authority as an
+    // underwriter/admin over the deal inputs (previously seesAll-only on a priced
+    // file). The edit already reopens Products & Pricing via the db/072 trigger so
+    // the underwriter re-signs the new structure, and the Clear-to-Close / Funded /
+    // term-sheet-sent freeze (structuralLockReason, checked above as detailsLock)
+    // still blocks everyone equally once the file is locked.
     const upd = await db.query(`UPDATE applications SET ${sets.join(',')} WHERE id=$${i}`, vals);
     if (upd.rowCount === 0) return res.status(404).json({ error: 'application not found' });
     enqueueClickupPush(req.params.id, touchedCols).catch(() => {}); // propagate ONLY the edited columns to ClickUp promptly
@@ -7584,18 +7536,12 @@ async function completeFields(req, res, borrowerScoped) {
       if (k === 'loan_type') v = require('../lib/fields').sanitizeLoanType(v);   // #95: never a program
       appVals.push(v); appSets.push(`${k}=$${appVals.length}`); appKeys.push(k);
     }
-    // S3-06 (mirror of /details): this path overwrites unconditionally, so it's
-    // also a raising vector — a non-seesAll staffer may not RAISE the as-is value
-    // or ARV on a priced file. Filling a blank or lowering is still allowed.
-    if (!seesAll(req) && ('as_is_value' in b || 'arv' in b)) {
-      const cur = (await db.query(`SELECT as_is_value, arv FROM applications WHERE id=$1`, [req.params.id])).rows[0] || {};
-      const moneyN = (v) => { if (v === '' || v == null) return null; const s = String(v).replace(/[^0-9.]/g, ''); if (s === '') return null; const n = Number(s); return Number.isFinite(n) ? n : null; };
-      const raised = [];
-      if ('as_is_value' in b) { const o = cur.as_is_value == null ? null : Number(cur.as_is_value), n = moneyN(b.as_is_value); if (o != null && n != null && n > o) raised.push('the as-is value'); }
-      if ('arv' in b) { const o = cur.arv == null ? null : Number(cur.arv), n = moneyN(b.arv); if (o != null && n != null && n > o) raised.push('the ARV'); }
-      if (raised.length && await changeRequests.isBorrowerLocked(req.params.id))
-        return res.status(403).json({ error: `Only an underwriter or admin can raise ${raised.join(' and ')} on a priced file.` });
-    }
+    // Owner-directed 2026-07-27: EVERY staff role may RAISE the as-is value / ARV
+    // here too (mirror of /details) — the loan officer has the same authority as
+    // an underwriter/admin over the deal inputs. The change reopens Products &
+    // Pricing (db/072) so the underwriter re-signs, and the Clear-to-Close /
+    // Funded / term-sheet-sent freeze below (structuralLockReason) still blocks
+    // everyone equally once the file is locked.
     if (appSets.length) {
       // #84 — this staff completeness path writes the SAME frozen economics fields
       // as PATCH /details (program / loan_type / property_type / price / as-is / ARV
