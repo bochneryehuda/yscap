@@ -36,6 +36,22 @@ const CATEGORY = 'investor_guideline';
 // label) is added in that one shared place so every consumer agrees at once. normNoteBuyer is
 // pure (field-registry has no requires) so this module stays PURE / never-throws.
 function normKey(v) { return normNoteBuyer(v) || ''; }
+
+/**
+ * claimKeyForCode(code) → the shared claim key for a rule code, or null.
+ *
+ * The run PERSISTS its findings to `underwriting_run_findings`, whose columns are fixed — there is
+ * no `claim_key` column and adding one would mean a migration for something already derivable. The
+ * rule table is the single source of truth for which fact a code asserts, so the file view rebuilds
+ * the key from the code on read. Keeping the derivation HERE (not a second map in the route) is
+ * what stops the two from drifting the next time a rule gains or loses a `signal`.
+ */
+function claimKeyForCode(code) {
+  const c = String(code == null ? '' : code).trim().toLowerCase();
+  if (!c) return null;
+  const rule = RULES.find((r) => r.code === c);
+  return (rule && rule.signal) ? `isg_signal:${rule.signal}` : null;
+}
 function num(v) { const n = typeof v === 'number' ? v : (v == null || v === '' ? null : Number(v)); return Number.isFinite(n) ? n : null; }
 function bool(v) { return v === true || v === 1 || v === '1' || v === 'true' || v === 't'; }
 function money(n) { return n == null ? '(missing)' : `$${Math.round(n).toLocaleString('en-US')}`; }
@@ -114,13 +130,13 @@ const RULES = [
   //     it eligible. The only fix is a brand-new appraisal ordered in our name. → BIG FATAL.
   //   • Every OTHER note buyer: allows a transferred appraisal WITH a transfer letter → just ask for
   //     the letter (a condition), not a decline. → advisory warning.
-  { code: 'isg_bl_transferred_appraisal', audience: 'bluelake', severity: 'fatal',
+  { code: 'isg_bl_transferred_appraisal', audience: 'bluelake', severity: 'fatal', signal: 'appraisal_transferred',
     title: 'Appraisal is not in our name — Blue Lake will not accept it (a transfer letter will NOT help)',
     governing_rule: 'Blue Lake does not accept a transferred appraisal — even with a transfer letter',
     when: (x) => x.appraisal_transferred == null ? null : x.appraisal_transferred === true,
     detail: () => 'The appraisal was not written in YS Capital Group\'s name — another lender ordered it. Blue Lake does NOT accept a transferred appraisal, and an appraisal transfer letter will not fix it. To send this file to Blue Lake, a brand-new appraisal has to be ordered in our name (YS Capital Group).' },
 
-  { code: 'isg_transferred_appraisal_letter', audience: 'all', severity: 'warning',
+  { code: 'isg_transferred_appraisal_letter', audience: 'all', severity: 'warning', signal: 'appraisal_transferred',
     title: 'Appraisal is not in our name — request an appraisal transfer letter',
     governing_rule: 'A note buyer (other than Blue Lake) accepts a transferred appraisal with a transfer letter',
     // Fires for EVERY buyer except Blue Lake (Blue Lake is the FATAL above — no letter can fix it).
@@ -139,7 +155,7 @@ const RULES = [
     detail: () => 'The appraisal comparables are not close enough under CorrFirst guidelines. Escalate to CorrFirst and order an appraisal review for clearance.' },
 
   // ----- Rural (all buyers escalate; read from the appraisal, not left as an open review) -----
-  { code: 'isg_rural_property', audience: 'all', escalateTo: 'the note buyer', severity: 'fatal',
+  { code: 'isg_rural_property', audience: 'all', escalateTo: 'the note buyer', severity: 'fatal', signal: 'appraisal_rural',
     title: 'Rural property — escalate', governing_rule: 'A rural property must be escalated to the note buyer',
     when: (x) => x.appraisal_rural == null ? null : x.appraisal_rural === true,
     detail: () => 'The appraisal indicates a rural property. Escalate to the note buyer for review (do not leave as an open condition).' },
@@ -282,6 +298,13 @@ function review(raw) {
         subject: rule.code,
         severity: rule.severity,
         category: CATEGORY,
+        // WHICH FACT this rule asserts, when that fact is also asserted elsewhere. The guideline
+        // desk raises its own row for the same signal off each note buyer's spec (`concern_field`),
+        // so without a shared key one rural file says "rural" up to three times, at two different
+        // severities. `signal` is the SAME name both sides use. A rule with no `signal` (most of
+        // them — the loan-size, assignment and cash-out escalations have no desk counterpart) is
+        // left unkeyed and dedupes on its code exactly as before.
+        factKey: rule.signal ? `isg_signal:${rule.signal}` : undefined,
         title: rule.title,
         explanation: (rule.detail ? rule.detail(x) : rule.title) + (rule.escalateTo ? ` (escalate to ${rule.escalateTo})` : ''),
         source: SOURCE,
@@ -304,4 +327,4 @@ function review(raw) {
   } catch (_e) { return []; }
 }
 
-module.exports = { review, reviewInput, buyerMatches, RULES, SOURCE, CATEGORY, _internals: { normKey, num, bool } };
+module.exports = { review, reviewInput, buyerMatches, claimKeyForCode, RULES, SOURCE, CATEGORY, _internals: { normKey, num, bool } };

@@ -64,6 +64,8 @@ const tapeAdmin = (req) => !!(req.actor && (req.actor.role === 'admin' || req.ac
 // the loan is in Encompass AND every field matches. The message text lives with
 // the gate (reconcile.js) so it's unit-tested against the same `reason` values.
 const encompassTapeMessage = (gate) => require('../encompass/reconcile').tapeGateMessage(gate);
+// Advisory-only sources must never score or notify — one shared filter (audit 2026-07-27).
+const aiSuggestions = require('../lib/underwriting/ai-suggestions');
 // The borrower DIRECTORY / CRM has a WIDER audience than file-level see_all_files
 // (owner-directed): admins, underwriters, loan_coordinators (seesAll) AND
 // processors may open ANY borrower's full profile; loan_officers stay limited to
@@ -775,15 +777,18 @@ router.get('/applications', async (req, res) => {
                            AND (ci.signed_off_at IS NOT NULL OR ci.status='satisfied')) AS done_items,
                         (SELECT count(*)::int FROM ai_suggestions s
                            WHERE s.application_id=a.id AND s.severity='fatal'
-                             AND s.status IN ('open','marked_important','escalated','asked_admin')) AS open_fatal_ai,
+                             AND s.status IN ('open','marked_important','escalated','asked_admin')
+                             AND ${aiSuggestions.notScoredSql('s')}) AS open_fatal_ai,
                         (SELECT EXTRACT(EPOCH FROM (now() - MIN(s.created_at)))/86400 FROM ai_suggestions s
                            WHERE s.application_id=a.id AND s.severity='fatal'
-                             AND s.status IN ('open','marked_important','escalated','asked_admin')) AS open_fatal_ai_oldest_days,
+                             AND s.status IN ('open','marked_important','escalated','asked_admin')
+                             AND ${aiSuggestions.notScoredSql('s')}) AS open_fatal_ai_oldest_days,
                         LEAST(100, COALESCE((SELECT
                             SUM(CASE severity WHEN 'fatal' THEN 25 WHEN 'warning' THEN 8 WHEN 'info' THEN 2 ELSE 4 END)::int
                           FROM ai_suggestions s
                           WHERE s.application_id=a.id
-                            AND s.status IN ('open','marked_important','escalated','asked_admin')),0)) AS ai_risk_score
+                            AND s.status IN ('open','marked_important','escalated','asked_admin')
+                            AND ${aiSuggestions.notScoredSql('s')}),0)) AS ai_risk_score
                  FROM applications a JOIN borrowers b ON b.id=a.borrower_id
                  WHERE ${where.join(' AND ')} ORDER BY ${orderBy}
                  LIMIT ${add(limit)} OFFSET ${add(offset)}`;
@@ -7171,6 +7176,43 @@ router.patch('/applications/:id/details', async (req, res) => {
     for (const col of touchedCols) {
       if (norm(before[col]) !== norm(after[col])) changes[col] = { from: norm(before[col]), to: norm(after[col]) };
     }
+    // HONEST SAVE (owner-reported 2026-07-27: "the Save button doesn't save
+    // anything — at least come up with an error that it's not saving"). The
+    // route already re-reads the touched columns; use that read-back to answer
+    // the two questions the officer actually has, instead of only "ok:true":
+    //
+    //  refused  — a field they asked to change that did NOT land. A 200 with an
+    //             unchanged value used to render as "Saved ✓ — no values
+    //             actually changed", which reads as success. Now the editor can
+    //             show it as the failure it is.
+    //  unsynced — a field that DID save in PILOT but has no matching ClickUp
+    //             option, so the card keeps its old value. Previously this was
+    //             silent on both sides (see lib/inbound-enum-guard.js): the push
+    //             dropped it and the next pull reverted the file. The pull can
+    //             no longer revert it, but the officer still deserves to be told
+    //             the two systems now disagree and why.
+    const SCALARS = { ...NUM, ...STR, ...DATE };        // request key -> column
+    const COL_TO_KEY = Object.fromEntries(Object.entries(SCALARS).map(([k, c]) => [c, k]));
+    const refused = [];
+    for (const col of touchedCols) {
+      if (changes[col]) continue;                       // it changed — nothing to report
+      const key = COL_TO_KEY[col];
+      if (!key || !(key in b)) continue;                // not something the caller asked for
+      const want = b[key] === '' || b[key] == null ? null : String(b[key]);
+      const got = norm(after[col]);
+      // Compare loosely: '12' vs 12, and a value the server deliberately
+      // sanitized (a refused loan_type / property_type) both count as refused.
+      if (want == null && got == null) continue;
+      if (want != null && got != null && (want === got || Number(want) === Number(got))) continue;
+      refused.push(col);
+    }
+    let unsynced = [];
+    try {
+      const X = require('../clickup/crosswalk');
+      unsynced = require('../lib/inbound-enum-guard').protectedColumns()
+        .filter(({ col, enumKey }) => touchedCols.includes(col) && X.unmappableToClickUp(enumKey, after[col]))
+        .map(({ col, label }) => ({ field: col, label, value: norm(after[col]) }));
+    } catch (_) { /* advisory only — never fails a save */ }
     await audit(req, 'edit_application', 'application', req.params.id,
       { fields: Object.keys(b), changes: Object.keys(changes).length ? changes : undefined });
     // Field data changed — let the Condition Center engine re-check its rules.
@@ -7197,8 +7239,22 @@ router.patch('/applications/:id/details', async (req, res) => {
         }
       } catch (_) { /* twin capture is additive */ }
     }
-    res.json({ ok: true, changed: Object.keys(changes), conditions });
-  } catch (e) { res.status(500).json({ error: 'server error' }); }
+    res.json({ ok: true, changed: Object.keys(changes), refused, unsynced, conditions });
+  } catch (e) {
+    // A bare "server error" is what made this unfixable from the outside: the
+    // officer saw nothing happen and had no idea whether it was their value, the
+    // file's state, or the database. Log the real reason and hand back something
+    // actionable. Postgres's own message on a constraint/type refusal names the
+    // offending value, so surface that rather than a shrug.
+    console.error('[staff] PATCH /applications/%s/details failed: %s', req.params.id, e && e.message);
+    const detail = e && (e.detail || e.message);
+    res.status(500).json({
+      error: detail
+        ? `The file could not be saved: ${detail}`
+        : 'The file could not be saved — nothing was changed. Please try again, and tell an admin if it keeps happening.',
+      saved: false,
+    });
+  }
 });
 
 // Backfill / set the file's YS loan number. Needed at send time: the term-sheet

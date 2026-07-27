@@ -34,6 +34,7 @@ const docint = require('../lib/ai/ocr-router');
 const azureOpenai = require('../lib/ai/azure-openai');
 const engine = require('../lib/underwriting/engine');
 const store = require('../lib/underwriting/store');
+const documentReasoning = require('../lib/underwriting/document-reasoning');
 const registry = require('../lib/underwriting/registry');
 const fileView = require('../lib/underwriting/file-view');
 const { tieoutForFile } = require('../lib/underwriting/file-review');
@@ -65,6 +66,59 @@ const SEVERITY_RANK = { fatal: 3, warning: 2, info: 1 };
 // silenced-code queries in this file use. `escalated` and `marked_important` are emphasis, not
 // resolutions, so a guideline finding in either state keeps its card.
 const ISG_OPEN_STATUSES = new Set(['open', 'asked_admin', 'escalated', 'marked_important']);
+const investorReview = require('../lib/underwriting/investor-guideline-review');
+// Hoisted for the one advisory-source filter shared by every scoring/ranking query (audit 2026-07-27).
+const aiSuggestions = require('../lib/underwriting/ai-suggestions');
+
+/**
+ * loadRunGuidelineFindings(db, appId) → the CURRENT run's note-buyer findings, in the openRaw shape.
+ *
+ * Reads the newest non-superseded run and returns only its `investor_guideline` findings, so the
+ * ONE findings list shows the same note-buyer facts the run cockpit shows, deduped against the
+ * desk's own rows instead of repeated beside them.
+ *
+ * ADVISORY: every returned finding is `blocksCtc:false` and carries NO id, so it renders read-only
+ * and the real clear-to-close gate (`file-review.fileFatalCount`, which counts stored
+ * `document_findings`) cannot see it. Best-effort — a failure here returns [] and the file view
+ * renders exactly as it did before, never a 500.
+ */
+async function loadRunGuidelineFindings(db, appId) {
+  if (!db || !appId) return [];
+  try {
+    const r = await db.query(
+      `SELECT f.code, f.severity, f.title, f.explanation, f.governing_rule,
+              f.expected_value, f.actual_value
+         FROM underwriting_run_findings f
+         JOIN underwriting_runs r ON r.id = f.run_id
+        WHERE r.application_id = $1 AND r.superseded_at IS NULL
+          AND f.category = $2
+        ORDER BY r.created_at DESC, f.created_at`,
+      [appId, investorReview.CATEGORY]);
+    const rows = (r && r.rows) || [];
+    return rows.map((row) => ({
+      source: investorReview.SOURCE,
+      category: investorReview.CATEGORY,
+      code: row.code,
+      // Rebuilt from the rule table — see investor-guideline-review.claimKeyForCode.
+      factKey: investorReview.claimKeyForCode(row.code) || undefined,
+      // Pass the run's OWN severity through a whitelist rather than collapsing everything
+      // that is not fatal to `warning` — the first `info` rule added to the table would
+      // otherwise be silently promoted to a warning chip and counted as one.
+      severity: ['fatal', 'warning', 'info'].includes(String(row.severity || '').toLowerCase())
+        ? String(row.severity).toLowerCase() : 'warning',
+      status: 'open',
+      blocksCtc: false,
+      title: row.title || row.code,
+      howTo: row.explanation || null,
+      governingRule: row.governing_rule || null,
+      expectedValue: row.expected_value != null ? String(row.expected_value) : null,
+      actualValue: row.actual_value != null ? String(row.actual_value) : null,
+      // A run finding is an ESCALATION or a file-quality call, not a document to chase: the useful
+      // human moves are to record a decision or quiet it, not to "post a condition".
+      actions: ['clear', 'dismiss'],
+    }));
+  } catch (_e) { return []; }
+}
 // Fix 2026-07-23 (#211): similar-open + bulk-resolve referenced seesAll() without
 // defining it in this file (staff.js has its own copy) — ReferenceError → 500.
 const seesAll = (req) => can(req.actor, 'see_all_files');
@@ -780,6 +834,7 @@ router.get('/:appId', async (req, res, next) => {
       exts.rows.some((e) => e.doc_type === 'operating_agreement'));
     const entityChain = isEntity ? buildChain(
       { vestingName: mctx && mctx.vestingName, borrowerName: fileView.borrowerName(mctx && mctx.borrower),
+        isAssignment: !!(a && a.is_assignment),
         // The beneficial-owner verification threshold is program-dependent (Standard 15% / Manual 20%
         // / Gold 25%) — prefer the REGISTERED program, falling back to the application's program.
         program: (reg && reg.program) || (a && a.program) || null }, exts.rows) : null;
@@ -906,10 +961,23 @@ router.get('/:appId', async (req, res, next) => {
     // surface in the roll-up).
     const cotFindings = (chainOfTitle.findings || []).filter(Boolean);
     const sellerChainFindings = (sellerChain.findings || []).filter(Boolean);
+    // THE 4th GUIDELINE SURFACE (owner-reported 2026-07-27). The whole-loan run's note-buyer rule
+    // table (investor-guideline-review) wrote its findings ONLY to `underwriting_run_findings`,
+    // read back by the run cockpit. They never reached `openRaw`, so they never passed through the
+    // one deduped registry — and a rural / New York / transferred-appraisal file asserted the same
+    // fact TWICE, in two places, at two severities: a read-only warning in Open findings (from the
+    // desk) and a dealbreaker in the cockpit (from the run). Folding them in here is what makes it
+    // ONE list; `claimKey` (declared by both producers off the shared signal name) is what lets
+    // dedupeByClaim see they are one fact, and its existing worst-wins rule keeps the dealbreaker.
+    //
+    // ADVISORY, exactly like the desk's: `blocksCtc:false` and NO stored id, so the card renders
+    // read-only and `file-review.fileFatalCount` (the real CTC gate) never counts it. The run's own
+    // R6.18 issuance backstop is untouched — this changes WHERE the fact is shown, never gating.
+    const investorRunFindings = await loadRunGuidelineFindings(db, app.id);
     const openRaw = [...perDoc, ...cross, ...staleness.findings, ...metrics.findings, ...amendments.findings,
       ...(entityChain ? entityChain.findings : []), ...reasonability.findings, ...sellerChainFindings,
       ...cotFindings, ...bankLiquidity.findings, ...(experience ? experience.findings : []),
-      ...investorDeskFindings];
+      ...investorDeskFindings, ...investorRunFindings];
 
     // FILE-LEVEL entity-screening rollup (owner-reported 2026-07-26/27: "this entity WAS screened —
     // look on the watch list — you just don't look deep enough"). computeBackgroundFindings runs PER
@@ -950,7 +1018,30 @@ router.get('/:appId', async (req, res, next) => {
     // informative finding, carrying `mergedFrom` so nothing is lost. Adding a desk that re-notices an
     // existing fact means adding its code to a family in finding-claims.js — never another
     // hand-written suppression here.
-    const dedupedAll = require('../lib/underwriting/finding-claims').dedupeByClaim(openRaw);
+    const dedupedAll = require('../lib/underwriting/finding-claims').dedupeByClaim(openRaw)
+      // A FOLDED RUN FINDING ONLY EARNS A PLACE ON THIS DESK IF IT MERGED WITH SOMETHING
+      // ACTIONABLE (pre-merge audit 2026-07-27, second pass). The run's rule table emits no
+      // `id` and no `suggestionId`, and most of its rules declare no shared signal, so a
+      // rule like `isg_bl_ny_loan` folds in, merges with nothing, inherits no handle — and
+      // the AI panel renders an action menu only on `id`/`suggestionId`. The result was a
+      // permanent FATAL card with zero buttons, on every view, forever, directly under copy
+      // promising "a finding you dismiss stays gone". Its `actions: ['clear','dismiss']` were
+      // dead: `decorate()` computes them, but the render is gated on the handles.
+      //
+      // So a handle-less run finding stays where it already lived — the run cockpit, which
+      // is exactly as visible as before this change. What the fold is FOR is the collapse:
+      // when the desk has already raised the same fact, the run's dealbreaker severity wins
+      // and the merged card keeps the desk row's handle, so it is fully actionable. Nothing
+      // is hidden and nothing becomes un-dismissable.
+      //
+      // `mergedFrom` is part of the test on purpose (re-audit 2026-07-27). A desk finding
+      // carries no handle either until its `ai_suggestions` mirror exists, and that sync
+      // runs AFTER the response — so on the view where a desk warning and the run's fatal
+      // first meet, the survivor can be handle-less through no fault of the run. Dropping
+      // it there would swallow the DESK's finding, which would have been on this list
+      // regardless. So only a row that merged with nothing — one that exists purely
+      // because of the fold — is held back.
+      .filter(module.exports._foldFilter);
     // A FINDING A HUMAN ALREADY SETTLED DOES NOT COME BACK (owner-reported
     // 2026-07-27: "I dismiss it, or the super-admin grants an exception, and it
     // keeps popping up again").
@@ -1102,7 +1193,13 @@ router.get('/:appId', async (req, res, next) => {
     // desk-disagrees-with-the-gate hazard finding-claims.js was written to prevent, arriving through
     // a different door. They still render in the ONE list below with their real severity chip; only
     // the counter distinguishes them.
-    const isgOnly = (f) => f && f.source === deskFindings.SOURCE;
+    // KEYED ON THE CATEGORY, not the source (pre-merge audit 2026-07-27). The folded run findings
+    // carry source 'investor_guideline' while the desk's carry 'investor_guideline_desk' — a
+    // DIFFERENT string — so every one of them escaped this filter and landed in `summary.fatal`,
+    // which `file-review.fileFatalCount` (the real gate) cannot see. That is exactly the
+    // desk-disagrees-with-the-gate hazard the note above says must never happen. It also survives
+    // the merge: when the run's fatal wins, the survivor's SOURCE flips but its category does not.
+    const isgOnly = (f) => module.exports._isgOnly(f);
     const countable = openWithRisk.filter((f) => !isgOnly(f));
     const guidelineNotes = openWithRisk.filter(isgOnly);
     const summary = {
@@ -1370,6 +1467,21 @@ async function analyzeOneDocument(app, doc, docType, opts = {}) {
           }
         }
       } catch (_) { /* additive — a failure leaves the AI read + its findings untouched */ }
+    }
+
+    // PER-DOCUMENT REASONING (owner-directed 2026-07-27, the tax-cert incident): before we persist,
+    // let the AI work out what this document ACTUALLY is and who each party is (their role/side), so
+    // the tie-out can refuse a cross-side comparison (the vesting LLC vs a tax-cert owner). OFF unless
+    // UW_DOC_REASONING_ENABLED=1 + Azure configured; cost-capped per file; best-effort — a null result
+    // leaves the tie-out behaving exactly as before. Never blocks, never changes a number.
+    if (result && result.ok && result.extraction) {
+      try {
+        const reasoning = await documentReasoning.reasonAboutDocument({
+          client: db, appId: app.id, documentId: doc.id, docType,
+          fields: result.extraction.fields, ocrText: result.extraction.ocrText,
+        });
+        if (reasoning) result.extraction.reasoning = reasoning;
+      } catch (_) { /* additive — reasoning never breaks an analysis */ }
     }
 
     const client = await db.pool.connect();
@@ -2444,6 +2556,7 @@ router.post('/:appId/ai-suggestions/rerun-checks', requirePermission('sign_off_c
           const entityChain = isEntity ? buildChain(
             { vestingName: mctx && mctx.vestingName,
               borrowerName: fileView.borrowerName(mctx && mctx.borrower),
+              isAssignment: !!(a2 && a2.is_assignment),
               program: (mctx.registration && mctx.registration.program) || a2.program || null },
             exts.rows) : null;
           const sellerChain = buildSellerChain(mctx || {}, exts.rows);
@@ -2533,7 +2646,8 @@ router.get('/:appId/ai-risk-score', async (req, res, next) => {
          EXTRACT(EPOCH FROM (now() - MIN(created_at) FILTER (WHERE severity='fatal')))/86400 AS oldest_fatal_days
         FROM ai_suggestions
        WHERE application_id=$1
-         AND status IN ('open','marked_important','escalated','asked_admin')`,
+         AND status IN ('open','marked_important','escalated','asked_admin')
+         AND ${aiSuggestions.notScoredSql()}`,
       [app.id]);
     const c = r.rows[0] || { fatal: 0, warning: 0, info: 0, other: 0 };
     const raw = (c.fatal * 25) + (c.warning * 8) + (c.info * 2) + (c.other * 4);
@@ -2552,6 +2666,7 @@ router.get('/:appId/ai-risk-score', async (req, res, next) => {
            FROM ai_suggestions
           WHERE application_id=$1
             AND status IN ('open','marked_important','escalated','asked_admin')
+            AND ${aiSuggestions.notScoredSql()}
           ORDER BY CASE severity WHEN 'fatal' THEN 0 WHEN 'warning' THEN 1 WHEN 'info' THEN 2 ELSE 3 END,
                    created_at DESC
           LIMIT 1`, [app.id]);
@@ -3071,3 +3186,25 @@ module.exports.AUTOREAD_MAX_PER_CALL = AUTOREAD_MAX_PER_CALL;
 // Exported for unit testing the finding decoration (claim-key stamp + the derived "open the source
 // document" link a tie-out discrepancy gets from its single openable source).
 module.exports._decorate = decorate;
+// Exported so a DB-gated test can actually EXECUTE the run-findings query. Every column it
+// names is unverified until something runs it — the repo has been bitten twice by a phantom
+// column sitting behind a swallowing catch (`b.full_name`, `is_current`/`created_at`).
+module.exports._loadRunGuidelineFindings = loadRunGuidelineFindings;
+// The post-dedupe fold filter, as a named predicate so a test can drive every branch.
+// KEEPS everything except a run finding that merged with nothing and inherited no handle.
+// A merge partner only makes a handle-less run finding worth listing if that partner was
+// a DESK finding — which would have been on this list anyway, and whose ai_suggestions
+// mirror is what eventually makes the card actionable. `mergedFrom.length` alone was a
+// proxy for that and not the same thing: two handle-less RUN rules sharing a signal would
+// merge into each other and sail through, producing exactly the permanent un-actionable
+// FATAL card this filter exists to prevent. Unreachable today only because the two rules
+// that share a signal are mutually exclusive by note buyer — i.e. safe by luck, which is
+// how the last four of these started (fifth audit pass).
+const DESK_CODE = /^isg_(?:gap|conflict|concern|info_missing|appraisal_review)_/;
+module.exports._foldFilter = (f) => !(f && f.source === investorReview.SOURCE
+  && !f.id && !f.suggestionId
+  && !((f.mergedFrom || []).some((c) => DESK_CODE.test(String(c || '')))));
+module.exports._escalationFindingShape = escalationFindingShape;
+// The predicate that keeps note-buyer findings OUT of summary.fatal/warning/info, so the
+// advisory desk can never disagree with the clear-to-close gate.
+module.exports._isgOnly = (f) => !!(f && (f.category === 'investor_guideline' || f.source === deskFindings.SOURCE));
