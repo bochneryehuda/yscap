@@ -109,7 +109,9 @@ assert.strictEqual(m.compareField('deal_type', 'flip', 'New Construction').statu
 assert.strictEqual(m.compareField('rehab_type', 'Cosmetic', 'Cosmetic Rehab').status, 'match', 'Cosmetic ≡ Cosmetic Rehab');
 assert.strictEqual(m.compareField('rehab_type', 'Moderate', 'Light Rehab').status, 'match', 'Moderate ≡ Light Rehab');
 assert.strictEqual(m.compareField('rehab_type', 'Ground-up construction', 'New construction').status, 'match', 'ground-up ≡ New construction');
-assert.strictEqual(m.compareField('rehab_type', 'Cosmetic', 'Light Rehab').status, 'mismatch', 'Cosmetic is NOT light any more');
+// Owner-directed 2026-07-27: Cosmetic ≡ Light Rehab is the SAME tier — a Cosmetic file
+// against Encompass "Light Rehab" must MATCH (it wrongly read "Doesn't match" before).
+assert.strictEqual(m.compareField('rehab_type', 'Cosmetic', 'Light Rehab').status, 'match', 'Cosmetic ≡ Light Rehab (owner 2026-07-27)');
 assert.strictEqual(m.compareField('rehab_type', 'Adding SF', 'Expansion').status, 'match', 'Adding SF ≡ Expansion');
 assert.strictEqual(m.compareField('rehab_type', 'Heavy', 'Heavy Rehab').status, 'match');
 assert.strictEqual(m.compareField('accrual_type', 'non_dutch', 'Drawn').status, 'match');
@@ -143,12 +145,14 @@ for (const k of ['loan_amount', 'purchase_price', 'as_is_value', 'arv', 'units',
 assert.strictEqual(m.compareField('assignment_fee', null, null).status, 'incomparable', 'blank on both sides stays "no data"');
 ok('an empty value equals zero on money fields; blank-vs-a-real-number still defers');
 
-// ── Owner re-mapped 2026-07-26: Cosmetic is its OWN Encompass bucket now ───
+// ── Owner-directed 2026-07-27: Cosmetic and Light are the SAME (one 'light' tier) ───
 assert.strictEqual(m.compareField('rehab_type', 'Cosmetic', 'Cosmetic Rehab').status, 'match');
+assert.strictEqual(m.compareField('rehab_type', 'Cosmetic', 'Light Rehab').status, 'match', 'Cosmetic ≡ Light Rehab — same tier, however Encompass labels it');
 assert.strictEqual(m.compareField('rehab_type', 'Moderate', 'Light Rehab').status, 'match', 'moderate collapses onto Encompass Light');
 assert.strictEqual(m.compareField('rehab_type', 'Heavy', 'Heavy Rehab').status, 'match');
 assert.strictEqual(m.compareField('rehab_type', 'expansion', 'Expansion').status, 'match');
 assert.strictEqual(m.compareField('rehab_type', 'Heavy', 'Light Rehab').status, 'mismatch');
+assert.strictEqual(m.compareField('rehab_type', 'Heavy', 'Cosmetic Rehab').status, 'mismatch', 'Heavy is still NOT the light tier');
 // The app's REAL dropdown values (EditFileDetails REHAB_TYPES) must all resolve —
 // 'Heavy / gut rehab' and 'Ground-up construction' previously mapped to NOTHING, so
 // every heavy / ground-up file read "no data to compare" forever.
@@ -314,6 +318,30 @@ for (const [ours, theirs] of [['Fidelis', 'Fidelis Investors'], ['Blue Lake', 'B
 }
 assert.strictEqual(m.compareField('capital_provider', 'Fidelis', 'BlueLake').status, 'mismatch', 'a genuinely different buyer still flags');
 ok('note buyer maps onto the live Encompass capital-provider dropdown (Fidelis ≡ Fidelis Investors, EMCAP, …)');
+
+// Owner-reported 2026-07-27: "Fidelis Investors LLC" (ours) vs "Fidelis Investors"
+// (Encompass) read "No data to compare" while plainly showing data — it must be an
+// EXACT MATCH. A trailing corporate form (LLC/Inc/…) and stray punctuation are stripped
+// before the value-map lookup; every Fidelis variant lands on one token.
+for (const [ours, theirs] of [
+  ['Fidelis Investors LLC', 'Fidelis Investors'],
+  ['Fidelis Investors, LLC', 'Fidelis Investors'],
+  ['Fidelis Investors L.L.C.', 'Fidelis'],
+  ['Blue Lake Capital LLC', 'BlueLake'],
+]) {
+  assert.strictEqual(m.compareField('capital_provider', ours, theirs).status, 'match', `${ours} should MATCH ${theirs} (corporate form ignored)`);
+}
+// NAME FALLBACK: a note buyer NOT in the value map still compares by name when both
+// sides carry one — a variant of the SAME buyer matches, a different buyer mismatches,
+// and ONLY a genuinely empty side reads "no data to compare".
+assert.strictEqual(m.compareField('capital_provider', 'Acme Bridge Capital LLC', 'Acme Bridge Capital').status, 'match', 'unmapped buyer, same name (corp form) → match via name fallback');
+assert.strictEqual(m.compareField('capital_provider', 'Acme Bridge Capital', 'Zenith Funding').status, 'mismatch', 'unmapped buyers, different names → mismatch (not "no data")');
+assert.strictEqual(m.compareField('capital_provider', 'Fidelis Investors LLC', null).status, 'incomparable', 'ONLY a truly empty side is "no data to compare"');
+assert.strictEqual(m.compareField('capital_provider', '', 'Fidelis Investors').status, 'incomparable', 'blank our side is "no data to compare"');
+// The helpers behave as documented.
+assert.strictEqual(m._internals.stripCorpForm('fidelis investors llc'), 'fidelis investors', 'stripCorpForm removes a trailing LLC');
+assert.strictEqual(m._internals.normPartnerName('Fidelis Investors, L.L.C.'), 'fidelis investors', 'normPartnerName normalizes punctuation + corporate form');
+ok('capital provider: LLC/Inc/spelling variants of the SAME buyer MATCH; unmapped buyers compare by name; "no data" only when a side is truly empty');
 
 ok('PII governance: economics registry is PII-free; SSN/DOB sensitive; 1859 vesting in identity map');
 
