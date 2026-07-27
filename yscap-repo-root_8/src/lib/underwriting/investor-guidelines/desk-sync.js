@@ -113,10 +113,19 @@ function deskToSuggestions(desk) {
         //
         // They are forwarded now, with `suppressNotify` — the row exists (so Dismiss / Add a note /
         // Escalate all work and stick), the team is not emailed. One mapper covers all five kinds.
+        //
+        // SUPPRESS BY SEVERITY, NOT BY FLAG (pre-merge audit 2026-07-27). Hard-coding
+        // `suppressNotify:true` contradicts the rule record() itself states — "never set it on a
+        // finding a human is expected to act on promptly". Both kinds are warnings TODAY (the only
+        // fatal path here is `gapSeverity`'s construction_feasibility domain, which no appraisal
+        // -disposition rule carries yet), so this is behaviour-identical now — and it means the day
+        // a fatal one DOES appear it emails the team like every other fatal, instead of arriving
+        // silently because of the flag it happens to wear.
         const isInfo = u.flag === 'info_missing';
         const name = u.name || 'this requirement';
         out.push({
-          source: SOURCE, kind: 'finding', severity: sev, important: false, suppressNotify: true,
+          source: SOURCE, kind: 'finding', severity: sev,
+          important: sev === 'fatal', suppressNotify: sev !== 'fatal',
           title: isInfo
             ? `${nb} needs "${name}" — the slot on the file is empty`
             : `"${name}" — found while reviewing the appraisal for ${nb}`,

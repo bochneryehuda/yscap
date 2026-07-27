@@ -113,13 +113,20 @@ t('info_missing and appraisal_review reach the list AND are dismissable (row, no
         reason: 'The appraisal names a different lender.' },
     ],
   };
-  // They ARE forwarded now (post-merge audit 2026-07-27) — with `suppressNotify`, so the row exists
-  // (a human's Dismiss can stick) but the team is not emailed. Before that they had no row at all,
-  // which meant the desk re-raised them on every file view with nothing a staffer could click.
+  // They ARE forwarded now (post-merge audit 2026-07-27) — a warning carries `suppressNotify`, so
+  // the row exists (a human's Dismiss can stick) but the team is not emailed. Before that they had
+  // no row at all, which meant the desk re-raised them on every file view with nothing to click.
+  // The suppression follows SEVERITY, not the flag (pre-merge audit 2026-07-27): a genuinely fatal
+  // one is a "handle this now" item and emails like every other fatal.
   const sugs = deskToSuggestions(d);
   assert.strictEqual(sugs.length, 2, 'both kinds now reach ai_suggestions');
-  assert.ok(sugs.every((x) => x.suppressNotify === true),
-    'they must carry suppressNotify — a fatal row without it emails the whole file team');
+  const sInfo = sugs.find((x) => x.dedupeKey === 'isg-info_missing:1009');
+  const sAppr = sugs.find((x) => x.dedupeKey === 'isg-appraisal_review:3349');
+  assert.strictEqual(sInfo.suppressNotify, true, 'a warning must not email the file team');
+  assert.strictEqual(sInfo.important, false);
+  assert.strictEqual(sAppr.suppressNotify, false,
+    'a FATAL guideline item must email like every other fatal — suppression follows severity, not the flag');
+  assert.strictEqual(sAppr.important, true);
   const f = deskToFindings(d);
   assert.strictEqual(f.length, 2, 'both must still reach the ONE findings list');
   const info = f.find((x) => x.code.startsWith('isg_info_missing'));
@@ -219,19 +226,6 @@ t('two same-flag rules sharing a template code stay DISTINCT findings', () => {
     `both rules produced the same code (${f.map((x) => x.code).join(', ')}) — one would be deduped away`);
 });
 
-t('record() actually HONOURS suppressNotify — the flag is not decorative', () => {
-  // The whole reason these two kinds were held out of ai_suggestions was the fatal-notify fan-out.
-  // Forwarding them is only safe because `record()` skips that fan-out when asked. If someone drops
-  // the guard, every empty-file-slot and appraisal-read item starts emailing the file team — the
-  // 298-send failure, re-armed. Asserted against the source because the notify is a `setImmediate`
-  // side effect with no return value to observe.
-  const src = require('fs').readFileSync(
-    require('path').resolve(__dirname, '../src/lib/underwriting/ai-suggestions.js'), 'utf8');
-  const guard = /if\s*\(\s*String\(s\.severity[^)]*\)[^{]*!s\.suppressNotify\s*\)/;
-  assert.ok(guard.test(src),
-    'ai-suggestions.record must gate the fatal notify on !s.suppressNotify');
-});
-
 t('codeOf produces a stable, safe finding code', () => {
   const { codeOf } = _internals;
   assert.strictEqual(codeOf('isg-gap:rtl_cond_feasibility'), 'isg_gap_rtl_cond_feasibility');
@@ -242,4 +236,53 @@ t('codeOf produces a stable, safe finding code', () => {
   assert.ok(/^[a-z0-9_]+$/.test(codeOf('Weird — Key: 12')), 'a code must be lowercase word chars only');
 });
 
-console.log(`\n${n} checks passed.`);
+// ── the notify guard, BEHAVIOURALLY (pre-merge audit 2026-07-27) ─────────────
+// This used to be a regex over ai-suggestions.js source. It was DECORATIVE: an inverted guard
+// (`!!s.suppressNotify`), a guard moved off the notify, and a dead guard in an unused helper all
+// matched it. The inverted one is the dangerous shape — every genuine fatal AI finding (assignment
+// fraud, authenticity, party collusion) would stop emailing the LO and processor while the only
+// rows that DID email were the two kinds deliberately marked silent. Exactly backwards, and green.
+// So: run record() for real against a stub client + a stubbed notify module and watch what fires.
+async function notifyGuardChecks() {
+  const notifyPath = require.resolve('../src/lib/notify.js');
+  const realNotify = require.cache[notifyPath];
+  let calls = [];
+  require.cache[notifyPath] = {
+    id: notifyPath, filename: notifyPath, loaded: true, children: [], paths: [],
+    exports: {
+      notifyAppStaff: async (appId, opts) => { calls.push(`staff:${opts && opts.type}`); },
+      notifyAdmins: async (opts) => { calls.push(`admins:${opts && opts.type}`); },
+    },
+  };
+  try {
+    const { record } = require('../src/lib/underwriting/ai-suggestions');
+    // No DB: answer the three queries record() issues (mute lookup, dedupe lookup, insert).
+    const client = { query: async (sql) => (/INSERT INTO ai_suggestions/.test(sql)
+      ? { rows: [{ id: 'sug-1' }], rowCount: 1 }
+      : { rows: [], rowCount: 0 }) };
+    const base = { applicationId: 'app-1', source: SOURCE, kind: 'finding', title: 'an item' };
+    // The notify is a setImmediate side effect; drain a few turns so it has every chance to fire.
+    const drain = async () => { for (let i = 0; i < 3; i += 1) await new Promise((r) => setImmediate(r)); };
+    const run = async (s) => { calls = []; await record(client, Object.assign({}, base, s)); await drain(); return calls; };
+
+    let c = await run({ severity: 'fatal', suppressNotify: true });
+    assert.deepStrictEqual(c, [],
+      `suppressNotify must silence the fatal fan-out — it fired ${JSON.stringify(c)}`);
+    n += 1; console.log('  ok a fatal WITH suppressNotify emails nobody');
+
+    c = await run({ severity: 'fatal' });
+    assert.ok(c.includes('staff:ai_fatal_finding') && c.includes('admins:ai_fatal_finding'),
+      `an ordinary fatal must still email the file team and admins — got ${JSON.stringify(c)}`);
+    n += 1; console.log('  ok a fatal WITHOUT the flag still emails the team (the guard is not inverted)');
+
+    c = await run({ severity: 'warning' });
+    assert.deepStrictEqual(c, [], `a warning must never fan out — it fired ${JSON.stringify(c)}`);
+    n += 1; console.log('  ok a warning never emails (the severity half of the guard is intact)');
+  } finally {
+    if (realNotify) require.cache[notifyPath] = realNotify; else delete require.cache[notifyPath];
+  }
+}
+
+notifyGuardChecks().then(() => {
+  console.log(`\n${n} checks passed.`);
+}, (e) => { console.error(e); process.exit(1); });
