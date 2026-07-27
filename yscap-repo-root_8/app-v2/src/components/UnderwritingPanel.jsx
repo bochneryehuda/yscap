@@ -2448,7 +2448,7 @@ const SOURCE_TINT = {
   double_pledge:   { fg: 'var(--crit,#B4483C)', bg: 'var(--crit-bg,#F6E7E4)' },
 };
 
-function AISuggestionsSection({ appId, readOnly = false, canResolve = true, shownFindingCodes = null }) {
+function AISuggestionsSection({ appId, readOnly = false, canResolve = true, shownFindingCodes = null, shownFindingKeys = null }) {
   const [rows, setRows] = React.useState(null);
   const [err, setErr] = React.useState('');
   const [busy, setBusy] = React.useState(false);
@@ -2488,8 +2488,20 @@ function AISuggestionsSection({ appId, readOnly = false, canResolve = true, show
   // panel with the same evidence.code). Hidden by default so the same issue isn't shown twice;
   // a toggle brings them back. Nothing is lost — each repeat stays fully actionable in Open findings.
   const dupCodes = shownFindingCodes instanceof Set ? shownFindingCodes : null;
+  // The second key set (dedupe key + condition template code) is what catches a note-buyer
+  // guideline row: its `evidence.code` is a CONDITION TEMPLATE code and its `dedupe_key` is the
+  // desk's own one-per-issue key — neither of which lives in the finding-CODE namespace, so the
+  // code-only check could never recognize it and the same item showed twice.
+  const dupKeys = shownFindingKeys instanceof Set ? shownFindingKeys : null;
   const rowCode = (r) => { const c = r && r.evidence && r.evidence.code; return c ? String(c).trim().toLowerCase() : null; };
-  const isRepeat = (r) => { if (!dupCodes) return false; const c = rowCode(r); return !!(c && dupCodes.has(c)); };
+  const rowKey = (r) => { const k = r && r.dedupe_key; return k ? String(k).trim().toLowerCase() : null; };
+  const isRepeat = (r) => {
+    const c = rowCode(r);
+    if (dupCodes && c && dupCodes.has(c)) return true;
+    if (!dupKeys) return false;
+    const k = rowKey(r);
+    return !!((k && dupKeys.has(k)) || (c && dupKeys.has(c)));
+  };
   const isHiddenRepeat = (r) => !showDupes && isRepeat(r);
   const openRows = (rows || []).filter((r) => r.status !== 'dismissed');
   const repeatCount = openRows.filter(isRepeat).length;
@@ -2908,6 +2920,22 @@ export default function UnderwritingPanel({ appId, docs = [], readOnly = false, 
     for (const f of _allFindings) { if (f && f.code) s.add(String(f.code).trim().toLowerCase()); }
     return s;
   }, [_allFindings]);
+  // The SAME issue, keyed the way the AI panel can recognize it (owner-reported 2026-07-27: the
+  // same guideline item was on the screen three times). A note-buyer guideline finding is also
+  // mirrored into `ai_suggestions` by the desk sync, but the two sides never matched on `code` —
+  // a suggestion's `evidence.code` is a CONDITION TEMPLATE code (`rtl_cond_feasibility`) while a
+  // finding's `code` is a finding code, two namespaces that can never collide. So the finding now
+  // carries the suggestion's own dedupe key (`isgKey`) and its template code, and both go into this
+  // set so the AI panel hides its copy and the item shows ONCE, in the Open-findings layout.
+  const shownFindingKeys = React.useMemo(() => {
+    const s = new Set();
+    for (const f of _allFindings) {
+      if (!f) continue;
+      if (f.isgKey) s.add(String(f.isgKey).trim().toLowerCase());
+      if (f.templateCode) s.add(String(f.templateCode).trim().toLowerCase());
+    }
+    return s;
+  }, [_allFindings]);
 
   if (loading) return <p style={{ color: 'var(--muted,#4B585C)' }}>Loading the underwriting review…</p>;
 
@@ -3120,7 +3148,8 @@ export default function UnderwritingPanel({ appId, docs = [], readOnly = false, 
           AI agent posts here — the AI never writes on the file itself. A human
           clicks Escalate / Add note / Convert to condition / Convert to task /
           Mark important / Dismiss / Ask super-admin. */}
-      <AISuggestionsSection appId={appId} readOnly={readOnly} canResolve={canResolve} shownFindingCodes={shownFindingCodes} />
+      <AISuggestionsSection appId={appId} readOnly={readOnly} canResolve={canResolve}
+        shownFindingCodes={shownFindingCodes} shownFindingKeys={shownFindingKeys} />
 
 
       {/* ALL open findings, in ONE place — exactly the set the roll-up counts, so the "2 warnings"

@@ -701,6 +701,18 @@ router.get('/:appId', async (req, res, next) => {
     // the gate via fileFatalCount (file-review.js), surfaced here for the desk.
     const experience = await assessExperienceForFile(db, app.id, { today: todayISO() });
 
+    // The note-buyer guideline OVERLAY, run here rather than only in the post-response sync so its
+    // "not happy" items can join the ONE findings list below (owner-directed 2026-07-27: the same
+    // guideline issue was on the screen three times, in three different-looking cards — "merge the
+    // three type of findings… everything should be the same type which is the middle one").
+    // Deterministic and DB-only: no AI call, no cost. Best-effort — a failure here degrades to no
+    // guideline findings, never a broken file view. The SAME desk result is handed to the
+    // post-response ai_suggestions sync so the desk is computed once per view, not twice.
+    const investorDesk = await require('../lib/underwriting/investor-guidelines/desk')
+      .runInvestorGuidelineDesk(app.id, db).catch(() => null);
+    const investorDeskFindings = require('../lib/underwriting/investor-guidelines/desk-findings')
+      .deskToFindings(investorDesk);
+
     // File completeness / stipulations: diff the required-document matrix (adapted to this deal)
     // against what's analyzed on file → outstanding-items list + a completeness %. A VIEW only.
     const completeness = assessCompleteness(
@@ -729,7 +741,8 @@ router.get('/:appId', async (req, res, next) => {
     const sellerChainFindings = (sellerChain.findings || []).filter(Boolean);
     const openRaw = [...perDoc, ...cross, ...staleness.findings, ...metrics.findings, ...amendments.findings,
       ...(entityChain ? entityChain.findings : []), ...reasonability.findings, ...sellerChainFindings,
-      ...cotFindings, ...bankLiquidity.findings, ...(experience ? experience.findings : [])];
+      ...cotFindings, ...bankLiquidity.findings, ...(experience ? experience.findings : []),
+      ...investorDeskFindings];
     // ONE finding per real-world ISSUE (owner-reported 2026-07-26: the contract-buyer/vesting
     // mismatch appeared SIX times on one file, the entity-OFAC gap three times).
     //
@@ -806,8 +819,11 @@ router.get('/:appId', async (req, res, next) => {
           // so they actually surface (a fatal notifies the LO/processor). The
           // desk stays quiet on OPEN conditions. Advisory: records ai_suggestions,
           // posts/clears nothing, touches no frozen number.
+          // The desk was already computed above (its unhappy items now join the ONE findings list),
+          // so hand that SAME result over rather than re-running it — one view, one desk run. A
+          // failed desk read passes null, which makes the sync load its own exactly as before.
           const isgSync = await step(() => require('../lib/underwriting/investor-guidelines/desk-sync')
-            .syncInvestorGuidelineFindings(c, app.id));
+            .syncInvestorGuidelineFindings(c, app.id, { desk: investorDesk || undefined }));
           // A SKIPPED RETRACTION MUST LEAVE A TRACE (audit 2026-07-26). The retraction is what keeps
           // a corrected rule from leaving stale notices open forever — the owner's original
           // complaint — and it is now gated on the desk having read the file cleanly. That gate is

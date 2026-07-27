@@ -1,0 +1,176 @@
+'use strict';
+/**
+ * desk-findings — the note-buyer guideline overlay's unhappy items as findings in the ONE registry.
+ *
+ * WHAT THIS GUARDS (owner-reported 2026-07-27): the same guideline issue was on the screen three
+ * times, in three different-looking cards. The merge only works if
+ *   (a) every unhappy item becomes exactly ONE finding — including the two kinds the ai_suggestions
+ *       bridge deliberately never forwarded, which would otherwise vanish when the panel's own list
+ *       goes to the background, and
+ *   (b) each finding carries the keys that let the AI panel recognize its own mirror of the SAME
+ *       item (`isgKey` = the suggestion dedupe key, `templateCode` = the PILOT condition code).
+ *       Without those the two sides key in different namespaces and can never collide — which is
+ *       precisely why the old code-only dedupe could not see the duplicate.
+ * Plus the non-negotiables: advisory (never blocks CTC) and never throws.
+ *
+ * Pure — no DB, no network.
+ */
+
+const assert = require('assert');
+const { deskToFindings, SOURCE, _internals } = require('../src/lib/underwriting/investor-guidelines/desk-findings');
+const { deskToSuggestions } = require('../src/lib/underwriting/investor-guidelines/desk-sync');
+
+let n = 0;
+const t = (name, fn) => { fn(); n += 1; console.log(`  ok ${name}`); };
+
+console.log('desk-findings (pure)');
+
+// ── never throws / empty inputs ──────────────────────────────────────────────
+t('null / undefined / garbage desks return []', () => {
+  for (const bad of [null, undefined, {}, { unhappy: null }, { unhappy: 'nope' }, 42, 'x', []]) {
+    assert.deepStrictEqual(deskToFindings(bad), [], `expected [] for ${JSON.stringify(bad)}`);
+  }
+});
+
+t('a HAPPY desk (no unhappy items) produces no findings', () => {
+  assert.deepStrictEqual(deskToFindings({ happy: true, unhappy: [], verdicts: [{ cond_no: 1 }] }), []);
+});
+
+// ── the three forwarded flags ────────────────────────────────────────────────
+const desk = {
+  noteBuyer: { name: 'Blue Lake' },
+  verdicts: [{ cond_no: 1 }],
+  unhappy: [
+    { cond_no: 2193, flag: 'coverage_gap', severity: 'fatal', name: 'Construction feasibility report',
+      pilot_template_code: 'rtl_cond_feasibility', domain: 'construction_feasibility',
+      required_evidence: 'A third-party feasibility report' },
+    { cond_no: 3345, flag: 'conflict', severity: 'fatal', name: 'Rural property',
+      pilot_template_code: 'rtl_cond_appraisaldocs', domain: 'appraisal',
+      reason: 'The appraisal says Rural.', checks: [{ status: 'conflict', detail: 'Rural is not eligible' }] },
+    { cond_no: 3333, flag: 'concern', severity: 'warning', name: 'Non-arms-length transaction',
+      pilot_template_code: 'rtl_cond_nonarms', domain: 'non_arms_length', concern_field: 'party_collusion' },
+  ],
+};
+
+t('every forwarded unhappy item becomes exactly one finding', () => {
+  const f = deskToFindings(desk);
+  assert.strictEqual(f.length, 3, `expected 3 findings, got ${f.length}`);
+  assert.ok(f.every((x) => x.source === SOURCE));
+  assert.ok(f.every((x) => x.category === 'investor_guideline'));
+});
+
+t('ONE finding per suggestion — the two sides never disagree on count or wording', () => {
+  const sugs = deskToSuggestions(desk);
+  const f = deskToFindings(desk);
+  assert.strictEqual(f.length, sugs.length,
+    'a forwarded item must map 1:1 — a drift here is the duplicate bug coming back');
+  for (const s of sugs) {
+    const match = f.find((x) => x.title === s.title);
+    assert.ok(match, `no finding carries the suggestion's title: ${s.title}`);
+    assert.strictEqual(match.howTo, s.body, 'the finding must reuse the suggestion wording verbatim');
+    assert.strictEqual(match.severity, s.severity);
+  }
+});
+
+t('each finding carries BOTH dedupe keys the AI panel needs to hide its mirror', () => {
+  const sugs = deskToSuggestions(desk);
+  const f = deskToFindings(desk);
+  for (const s of sugs) {
+    const match = f.find((x) => x.title === s.title);
+    assert.strictEqual(match.isgKey, s.dedupeKey,
+      'isgKey must equal the suggestion dedupe_key exactly, or the AI panel cannot match it');
+    assert.strictEqual(match.templateCode, s.evidence.code,
+      'templateCode must equal the suggestion evidence.code (an older row keys on that)');
+  }
+});
+
+t('a coverage gap names the condition to post; a conflict / concern does not', () => {
+  const f = deskToFindings(desk);
+  const gap = f.find((x) => x.code.startsWith('isg_gap'));
+  const conflict = f.find((x) => x.code.startsWith('isg_conflict'));
+  const concern = f.find((x) => x.code.startsWith('isg_concern'));
+  assert.strictEqual(gap.opensCondition, 'rtl_cond_feasibility');
+  assert.strictEqual(conflict.opensCondition, undefined);
+  assert.strictEqual(concern.opensCondition, undefined);
+  // The buttons must agree with the sentence: you post/chase a gap, you correct or except a
+  // conflict, you look at and clear a concern.
+  assert.ok(gap.actions.includes('post_condition') && gap.actions.includes('request_document'));
+  assert.ok(!gap.actions.includes('fix_file'), 'there is no value on the file to fix for a coverage gap');
+  assert.ok(conflict.actions.includes('fix_file') && conflict.actions.includes('grant_exception'));
+  assert.ok(concern.actions.includes('clear'));
+});
+
+// ── the two flags the suggestions bridge never forwarded ─────────────────────
+t('info_missing and appraisal_review become findings too (they have no AI mirror)', () => {
+  const d = {
+    noteBuyer: { name: 'CorrFirst' },
+    verdicts: [{ cond_no: 1 }],
+    unhappy: [
+      { cond_no: 1009, flag: 'info_missing', severity: 'warning', name: 'Borrower email address',
+        pilot_template_code: null, domain: 'contact', required_evidence: 'A working email address' },
+      { cond_no: 3349, flag: 'appraisal_review', severity: 'fatal', name: 'Transferred appraisal',
+        pilot_template_code: 'rtl_cond_appraisaldocs', domain: 'appraisal',
+        reason: 'The appraisal names a different lender.' },
+    ],
+  };
+  assert.deepStrictEqual(deskToSuggestions(d), [],
+    'precondition: the suggestions bridge does not forward these two — that is why they are mapped directly');
+  const f = deskToFindings(d);
+  assert.strictEqual(f.length, 2, 'both must still reach the ONE findings list');
+  const info = f.find((x) => x.code.startsWith('isg_info_missing'));
+  const appr = f.find((x) => x.code.startsWith('isg_appraisal_review'));
+  assert.ok(info && appr);
+  assert.strictEqual(info.severity, 'warning');
+  assert.strictEqual(appr.severity, 'fatal');
+  // No ai_suggestions mirror exists, so there is no suggestion key to carry.
+  assert.strictEqual(info.isgKey, null);
+  assert.strictEqual(appr.isgKey, null);
+  assert.ok(info.howTo.includes('A working email address'), 'the required evidence must survive');
+  assert.ok(appr.howTo.includes('different lender'), 'the desk reason must survive');
+});
+
+t('forwarded and non-forwarded flags coexist without colliding', () => {
+  const d = {
+    noteBuyer: { name: 'Blue Lake' },
+    verdicts: [{ cond_no: 1 }],
+    unhappy: [
+      desk.unhappy[0],
+      { cond_no: 1009, flag: 'info_missing', severity: 'warning', name: 'Borrower email address' },
+    ],
+  };
+  const f = deskToFindings(d);
+  assert.strictEqual(f.length, 2);
+  assert.strictEqual(new Set(f.map((x) => x.code)).size, 2, 'codes must be distinct');
+});
+
+// ── the non-negotiables ──────────────────────────────────────────────────────
+t('ADVISORY — no finding ever blocks clear-to-close, and none is resolvable-by-id', () => {
+  const all = deskToFindings(desk).concat(deskToFindings({
+    noteBuyer: { name: 'X' }, verdicts: [{ cond_no: 1 }],
+    unhappy: [{ cond_no: 9, flag: 'appraisal_review', severity: 'fatal', name: 'Something' }],
+  }));
+  for (const f of all) {
+    assert.strictEqual(f.blocksCtc, false, `${f.code} must not block CTC — the AI never blocks`);
+    assert.strictEqual(f.id, undefined, `${f.code} must carry no stored id (it renders read-only)`);
+    assert.ok(f.severity === 'fatal' || f.severity === 'warning');
+    assert.ok(f.title && typeof f.title === 'string');
+  }
+});
+
+t('an item with no cond_no is skipped rather than guessed at', () => {
+  const f = deskToFindings({ noteBuyer: { name: 'X' }, verdicts: [{ cond_no: 1 }],
+    unhappy: [{ flag: 'info_missing', severity: 'warning', name: 'No number' }] });
+  assert.deepStrictEqual(f, []);
+});
+
+t('codeOf produces a stable, safe finding code', () => {
+  const { codeOf } = _internals;
+  assert.strictEqual(codeOf('isg-gap:rtl_cond_feasibility'), 'isg_gap_rtl_cond_feasibility');
+  assert.strictEqual(codeOf('isg-conflict:3345'), 'isg_conflict_3345');
+  assert.strictEqual(codeOf(''), 'isg_guideline');
+  assert.strictEqual(codeOf(null), 'isg_guideline');
+  assert.strictEqual(codeOf('!!!'), 'isg_guideline');
+  assert.ok(/^[a-z0-9_]+$/.test(codeOf('Weird — Key: 12')), 'a code must be lowercase word chars only');
+});
+
+console.log(`\n${n} checks passed.`);
