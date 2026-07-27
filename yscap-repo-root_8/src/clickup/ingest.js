@@ -1353,6 +1353,10 @@ async function ingestTask(task, options = {}, opts = {}) {
     // failure here can NEVER break the ClickUp sync.
     try { await require('../lib/conditions/engine').evaluateApplication(applicationId, { reason: 'clickup_ingest' }); } catch (_) {}
     try { await require('../lib/rehab-budget').enforceSowContingency(applicationId); } catch (_) {}
+    // A note buyer arriving/changing can also change the bank-statement month requirement (Blue Lake
+    // needs 2, Standard 1) — re-derive it now so the condition doesn't keep saying "1 month" until
+    // the next re-register (owner 2026-07-27). Best-effort; never breaks the sync.
+    try { await require('../lib/liquidity').resyncLiquidityForFile(applicationId); } catch (_) {}
   }
 
   // Preserve a MASKED snapshot of every task's mapped data — RTL and non-RTL

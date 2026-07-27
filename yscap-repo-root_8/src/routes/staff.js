@@ -7463,6 +7463,10 @@ async function completeFields(req, res, borrowerScoped) {
       // details edit path does. Best-effort — never blocks the save.
       try { await conditionEngine.evaluateApplication(req.params.id, { actor: req.actor, reason: 'completeness_edited' }); } catch (_) {}
       try { await require('../lib/rehab-budget').enforceSowContingency(req.params.id); } catch (_) {}
+      // A note-buyer (lender) edit here can change the bank-statement month requirement (Blue Lake
+      // needs 2 vs Standard 1) — re-derive it now so the condition doesn't keep showing the old
+      // count until the next re-register (owner 2026-07-27). Best-effort; never blocks the save.
+      try { await require('../lib/liquidity').resyncLiquidityForFile(req.params.id); } catch (_) {}
       // Loan Digital Twin (Sovereign 1/4, owner-directed 2026-07-21): every LOS
       // field write is a fresh observation of the underlying canonical facts
       // (loan.amount, property.address, etc.). Feeds the twin so the completeness
