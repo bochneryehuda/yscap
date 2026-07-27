@@ -121,6 +121,18 @@ eq(ADDR.withoutUnit('829 Duncan Bypass, Union, SC 29379'), '829 Duncan Bypass, U
 eq(ADDR.withoutUnit('3545 12th Ave, Brooklyn, NY 11218'), '3545 12th Ave, Brooklyn, NY 11218', 'a plain avenue is unchanged (no false unit)');
 eq(ADDR.withoutUnit(''), '', 'empty stays empty');
 eq(ADDR.withoutUnit(null), '', 'null -> empty string');
+// FALSE unit-detection guard: a street NAMED with a unit keyword must NOT be stripped
+eq(ADDR.withoutUnit('5 Floor Ave, Nowhere, NY 11111'), '5 Floor Ave, Nowhere, NY 11111', 'a street named "Floor" keeps its street (parse ate it -> no strip)');
+eq(ADDR.withoutUnit('100 Lot 5, Town, NJ 08701'), '100 Lot 5, Town, NJ 08701', 'a street named "Lot" is not stripped to just the house number');
+
+// withUnit — re-attach the apartment to the value we STORE/DISPLAY (the geocoder
+// resolved the building with the unit stripped, but the mailing address keeps it).
+eq(ADDR.withUnit('1254 42nd St, Brooklyn, NY 11219', 'Apt 6B'), '1254 42nd St Apt 6B, Brooklyn, NY 11219', 'the apartment is re-inserted after the street');
+eq(ADDR.withUnit('1254 42nd St, Brooklyn, NY 11219', ''), '1254 42nd St, Brooklyn, NY 11219', 'no unit -> unchanged');
+eq(ADDR.withUnit('1254 42nd St Apt 6B, Brooklyn, NY 11219', 'Apt 6B'), '1254 42nd St Apt 6B, Brooklyn, NY 11219', 'idempotent when the unit is already present');
+eq(ADDR.withUnit('55 Broadway', '#12'), '55 Broadway #12', 'no comma -> appended to the end');
+// round-trip: strip for the geocode, re-attach for the stored value
+eq(ADDR.withUnit(ADDR.withoutUnit('100 Main St Unit 4D, Lakewood, NJ 08701'), 'Unit 4D'), '100 Main St Unit 4D, Lakewood, NJ 08701', 'withoutUnit -> withUnit round-trips to the mailing form');
 
 (async () => {
   // ── 6. DB: previous files are repaired ───────────────────────────────────

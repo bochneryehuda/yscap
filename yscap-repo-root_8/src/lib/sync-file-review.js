@@ -544,8 +544,9 @@ async function applyFileReviewAction({ row, action, targetApplicationId, targetT
     // is the same privileged class as unlocking a locked file (relink_task is
     // gated the same way). The review-queue route is LO-reachable for the
     // non-privileged action (keep_frozen_figures), so the gate lives HERE, fed
-    // the caller's real admin role, and is checked FIRST. Values are RE-READ LIVE
-    // from ClickUp (never the row's stored, possibly-stale display values).
+    // the caller's real admin role, and is checked FIRST. The figures applied come
+    // from the row's stored diffs (the reliable offline base) refreshed by a
+    // best-effort live ClickUp re-read — see acceptInboundEconomicsChange.
     if (!isAdmin) throw httpError(403, 'Only an admin can accept a ClickUp change on a locked file.');
     if (!row.application_id) throw httpError(409, 'this row has no portal file');
     const { acceptInboundEconomicsChange } = require('./inbound-economics-freeze');

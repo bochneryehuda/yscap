@@ -72,9 +72,13 @@ async function withCoords(addr) {
       // provider now returns the mailing form; `compactFormattedAddress` is the
       // belt-and-suspenders (a permanently-cached old row, a future provider).
       const ADDR = require('../lib/address');
-      const formatted = ADDR.compactFormattedAddress(hit.formatted)
+      const base = ADDR.compactFormattedAddress(hit.formatted)
         || ADDR.canonicalOneLine({ ...addr })
         || ADDR.compactFormattedAddress(addr.formatted_address || line);
+      // Keep the apartment on the value we store/show: the geocoder resolved the
+      // BUILDING (the unit was stripped so it would place on the map — see
+      // address-canon.geocode), but the mailing address still names the unit.
+      const formatted = ADDR.withUnit(base, addr.unit);
       return {
         ...addr,
         lat: Number(hit.lat), lng: Number(hit.lng),
