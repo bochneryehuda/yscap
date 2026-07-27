@@ -22,6 +22,10 @@
  *   issuance_override  — an after-the-fact RECORD of a super-admin pushing an
  *                        issuance/status past a fatal hard-warning (the R6.18
  *                        backstop). Born approved; never sits open.
+ *   condition_override — an after-the-fact RECORD of a super-admin clearing a
+ *                        CONDITION without what it asks for (no document
+ *                        attached / requirement unmet). Born approved; carries
+ *                        the condition's identity + the gate's refusal text.
  *
  * Lifecycle: requested → approved | denied | withdrawn (+ cleared = archived,
  * + expired = a time-boxed approval past its validity). Governance on top:
@@ -91,6 +95,12 @@ const ISSUANCE_OVERRIDE_REASONS = Object.freeze({
   other: 'Super-admin override past a fatal hard-warning (see note)',
 });
 
+// A condition override is likewise recorded, not requested: the super admin
+// cleared a condition without what it asks for, in the moment, with a reason.
+const CONDITION_OVERRIDE_REASONS = Object.freeze({
+  other: 'Super-admin cleared a condition without fulfilling it (see note)',
+});
+
 /**
  * Structured COMPENSATING FACTORS — what offsets the risk the exception takes
  * on. Travel with the request as jsonb [{code, note}]; reportable across files
@@ -150,6 +160,14 @@ const EXCEPTION_TYPES = Object.freeze({
   issuance_override: Object.freeze({
     label: 'Issuance override (recorded)',
     reasonCodes: ISSUANCE_OVERRIDE_REASONS,
+    subject: 'file',
+    expirable: false,
+    recordOnly: true,
+    slaHours: null,
+  }),
+  condition_override: Object.freeze({
+    label: 'Condition override (recorded)',
+    reasonCodes: CONDITION_OVERRIDE_REASONS,
     subject: 'file',
     expirable: false,
     recordOnly: true,
@@ -397,6 +415,42 @@ async function recordIssuanceOverride({ appId, staffId, note, snapshot }, client
     return ins.rows[0] || null;
   } catch (e) {
     try { console.warn('[loan-exceptions] issuance-override record skipped:', e.message); } catch (_) {}
+    return null;
+  }
+}
+
+/**
+ * Record a CONDITION OVERRIDE — a super admin cleared a condition without what
+ * it asks for (no document attached, requirement unmet). Born APPROVED for the
+ * same reason as the issuance override: it documents an authority action taken
+ * in the moment, so it never sits open and is never decided from the box.
+ *
+ * `snapshot` carries the condition's identity + the gate's refusal text, so the
+ * register row alone answers "which condition, and what was missing?".
+ *
+ * Best-effort by design — the sign-off it documents has already happened, and a
+ * register hiccup must never reverse or block it. NEVER throws (the audit_log
+ * row and the stamps on the condition itself remain the primary record).
+ */
+async function recordConditionOverride({ appId, staffId, note, snapshot }, client = db) {
+  try {
+    const deal = await dealSnapshotFor(appId);
+    const ins = await client.query(
+      `INSERT INTO loan_exceptions
+         (application_id, exception_type, status, reason_code, reason_note,
+          requested_by, requested_by_kind, decided_by, decided_at, decision_note,
+          gate_snapshot, deal_snapshot, severity)
+       VALUES ($1,'condition_override','approved','other',$2,$3,'staff',$3,now(),$4,$5,$6,'material')
+       RETURNING *`,
+      [appId,
+       note ? String(note).slice(0, 2000) : 'Super-admin cleared a condition without fulfilling it',
+       staffId || null,
+       note ? String(note).slice(0, 1000) : null,
+       snapshot ? JSON.stringify(snapshot) : null,
+       deal ? JSON.stringify(deal) : null]);
+    return ins.rows[0] || null;
+  } catch (e) {
+    try { console.warn('[loan-exceptions] condition-override record skipped:', e.message); } catch (_) {}
     return null;
   }
 }
@@ -828,13 +882,13 @@ async function metrics(client = db) {
 module.exports = {
   REASON_CODES, isReasonCode,
   ESIGN_BEFORE_CTC_REASONS, isEsignReasonCode,
-  PRICING_EXCEPTION_REASONS, ISSUANCE_OVERRIDE_REASONS,
+  PRICING_EXCEPTION_REASONS, ISSUANCE_OVERRIDE_REASONS, CONDITION_OVERRIDE_REASONS,
   COMPENSATING_FACTORS, sanitizeCompensatingFactors,
   EXCEPTION_TYPES, isExceptionType, typeConfig,
   reasonCodesFor, reasonLabelFor, isReasonCodeFor,
   dealSnapshotFor, dueAtFor, dealDrift, presentExpiry,
   requestException, requestGuarantyWaiver, requestEsignBeforeCtc, requestPricingException,
-  recordIssuanceOverride, latestEsignBeforeCtc,
+  recordIssuanceOverride, recordConditionOverride, latestEsignBeforeCtc,
   decideException, withdrawException, clearException,
   expireDueApprovals, agingOpen,
   openForApp, latestForApp, registerForApp, getById, listExceptions, pendingCount, metrics,

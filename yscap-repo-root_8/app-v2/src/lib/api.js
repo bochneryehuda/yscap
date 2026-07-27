@@ -654,8 +654,12 @@ export const api = {
   },
   staffUploadAppDoc: (appId, b) => coalesceUpload('appDoc:' + appId, b, () => req('POST', `/api/staff/applications/${appId}/documents`, normalizeUpload(b))),
   staffAddLoanCondition: (appId, b) => req('POST', `/api/staff/applications/${appId}/loan-conditions`, b),
-  staffClearCondition:   (cid) => req('POST', `/api/staff/loan-conditions/${cid}/clear`),
-  staffWaiveCondition:   (cid, reason) => req('POST', `/api/staff/loan-conditions/${cid}/waive`, { reason }),
+  // `override` (optional) = { adminOverride:true, overrideReason } from
+  // lib/condition-override.askOverride — a super-admin clearing/waiving a
+  // condition without meeting its requirement. The server refuses it for anyone
+  // else and requires the reason; omitting it is an ordinary clear/waive.
+  staffClearCondition:   (cid, override) => req('POST', `/api/staff/loan-conditions/${cid}/clear`, override || undefined),
+  staffWaiveCondition:   (cid, reason, override) => req('POST', `/api/staff/loan-conditions/${cid}/waive`, { reason, ...(override || {}) }),
   staffReviewCondition:  (cid, reviewed) => req('POST', `/api/staff/loan-conditions/${cid}/review`, { reviewed }),
   // Borrower change-request sandbox (S5-03) — staff review side.
   staffChangeRequests:       (appId) => req('GET', `/api/staff/applications/${appId}/change-requests`),
