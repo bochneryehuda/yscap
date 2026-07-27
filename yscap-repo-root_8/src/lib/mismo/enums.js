@@ -56,12 +56,21 @@ const LOAN_PURPOSE = {
   'Purchase': 'Purchase',
   'Refinance — Rate & Term': 'Refinance',
   'Refinance — Cash-Out': 'Refinance',
+  // MISMO's LoanPurposeType has no "delayed financing" value. The borrower has
+  // ALREADY bought the property (with cash), so the new loan is secured against
+  // one they own — which is a Refinance in MISMO terms — and it returns their
+  // own purchase funds, so it carries CashOut below. Mapping it is deliberate:
+  // an unmapped value exports a NULL loan purpose, which is worse than the
+  // standard's closest true value. This is the EXPORT vocabulary only — it does
+  // not change how PILOT sizes the loan (see the note in field-registry.js).
+  'Delayed Purchase Financing': 'Refinance',
 };
 // Cash-out vs rate/term is carried separately in MISMO (RefinanceCashOutDetermination-
 // Type); remember which refinance flavor produced "Refinance" so import restores it.
 const REFI_CASHOUT = {
   'Refinance — Cash-Out': 'CashOut',
   'Refinance — Rate & Term': 'NoCashOut',
+  'Delayed Purchase Financing': 'CashOut',
 };
 
 // ---- PropertyUsageType (from occupancy) -------------------------------------
