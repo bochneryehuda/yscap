@@ -10,12 +10,11 @@
  *   • an OPEN condition with NO appraisal read yet → 'not_ready';
  *   • a current appraisal read + clean (no fatal finding) → 'ready' (status still open);
  *   • a HUMAN-signed-off condition PILOT confirms → 'agree';
- *   • a NEW open FATAL blocks_ctc finding lands → the DB reopen trigger (db/155) auto-reopens
- *     the condition (clearing the sign-off), and PILOT's advisory on the reopened condition
- *     reads 'not_ready' (it can no longer confirm a clean appraisal). A signed-off condition
- *     can never coexist with an open fatal — db/154 blocks the sign-off and db/155 reopens on
- *     a late fatal — so the evaluator's defensive DISPUTE branch (shared with the flood
- *     evaluator via verdictFor, and covered by test-flood-advisory-db) is not reachable here.
+ *   • a NEW open FATAL blocks_ctc finding lands AFTER the human signed off → the sign-off
+ *     STANDS (db/334 retired the db/155 auto-reopen: PILOT no longer takes a human's sign-off
+ *     away, owner-directed 2026-07-27 "advisory only"), and PILOT's advisory flips to
+ *     'dispute' — it says out loud that it disagrees, without changing anything. This is the
+ *     evaluator's DISPUTE branch, which the old auto-reopen made unreachable on this path.
  *   • the advisory NEVER changes status / signed_off_* on any path.
  *
  * Requires DATABASE_URL; skips cleanly otherwise.
@@ -97,22 +96,21 @@ async function row(itemId) {
   ok(c.pilot_advice === 'agree', 'signed-off + still-clean appraisal → advice "agree"');
   ok(c.status === 'satisfied' && String(c.signed_off_by) === String(staff.id), '…and the human sign-off is untouched');
 
-  // 4) A NEW open FATAL blocks_ctc appraisal finding lands. The DB reopen trigger (db/155)
-  //    auto-reopens the condition (clearing the human sign-off) — a signed-off appraisal
-  //    condition can never coexist with an open fatal (db/154 blocks the sign-off, db/155
-  //    reopens on a late fatal). PILOT's advisory, on the now-reopened condition, reads
-  //    'not_ready' (it can no longer confirm a clean appraisal). The advisory itself never
-  //    touched the sign-off — the system trigger did.
-  await insertFatalFinding(f.appId, apprId);   // db/155 reopens the condition here
-  const reopened = await row(appr);
-  ok(reopened.status !== 'satisfied' && reopened.signed_off_by === null,
-    'a new fatal appraisal finding auto-reopened the condition (db/155) — the human sign-off was cleared by the trigger, not the advisory');
+  // 4) A NEW open FATAL blocks_ctc appraisal finding lands AFTER the human signed off.
+  //    ADVISORY ONLY (owner-directed 2026-07-27): db/334 retired db/155's auto-reopen, so
+  //    the human's sign-off STANDS — PILOT does not silently un-sign work a person cleared.
+  //    What PILOT does instead is SAY it disagrees: the advisory flips to 'dispute'. That is
+  //    the whole shape of the new posture — loud opinion, zero authority.
+  await insertFatalFinding(f.appId, apprId);
+  const afterFatal = await row(appr);
+  ok(afterFatal.status === 'satisfied' && String(afterFatal.signed_off_by) === String(staff.id),
+    'ADVISORY ONLY: a late fatal finding no longer takes the human sign-off away (db/334 retired db/155)');
   await engine.runFileAdvice(db, f.appId);
   c = await row(appr);
-  ok(c.pilot_advice === 'not_ready',
-    'the reopened condition with an open fatal → advice "not_ready" (PILOT can\'t confirm a clean appraisal)');
-  ok(c.status !== 'satisfied' && c.signed_off_by === null,
-    '…and the advisory itself did not change status / sign-off');
+  ok(c.pilot_advice === 'dispute',
+    'a signed-off condition with an open fatal → advice "dispute" (PILOT disagrees, out loud)');
+  ok(c.status === 'satisfied' && String(c.signed_off_by) === String(staff.id),
+    '…and the advisory still changed nothing — status and sign-off untouched');
 
   // cleanup
   cfg.pilotReadyStampEnabled = false;

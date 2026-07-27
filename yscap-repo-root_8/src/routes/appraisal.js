@@ -311,6 +311,15 @@ router.post('/:appId/findings/:fid/resolve', requirePermission('sign_off_conditi
          WHERE id=$1 AND application_id=$2`,
         [fnd.id, app.id, action === 'dismiss' ? 'dismissed' : 'resolved', action,
          newValue != null ? String(newValue) : null, (b.note || '').slice(0, 2000), req.actor.id]);
+      // THE DECISION IS DURABLE (owner-reported 2026-07-27). Recorded against the
+      // finding's IDENTITY (db/333) inside the SAME transaction as the resolve, so
+      // a re-import of the appraisal carries it forward instead of re-raising a
+      // finding this reviewer already dealt with. Best-effort by construction
+      // (finding-decisions never throws) — it can't fail the resolve.
+      await require('../lib/underwriting/finding-decisions').record(client, {
+        applicationId: app.id, finding: fnd, origin: 'appraisal_finding',
+        decision: action, note: b.note || null, decidedBy: req.actor.id,
+      });
       await client.query('COMMIT');
     } catch (e) {
       await client.query('ROLLBACK').catch(() => {});

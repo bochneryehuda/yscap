@@ -402,9 +402,40 @@ function notifyRaiser(row, actorId, decision, note) {
   }).catch(() => {});
 }
 
-// Decide (advise + close) an escalation. WITHOUT touching the finding itself — this is the
-// "I've advised, close the queue item" door. To actually clear the finding off the file, use
-// POST /escalations/:id/apply below (the screen's action buttons).
+/**
+ * The finding an escalation is ABOUT, in the shape the decision ledger keys on.
+ *
+ * The escalation carries a SNAPSHOT of the finding (code / field / doc_value /
+ * document_id) taken when it was raised — deliberately, so the queue item stays
+ * readable after the finding is superseded. That snapshot is exactly what the
+ * ledger needs, and it is the ONLY thing available for a DERIVED finding (tie-out,
+ * chain, experience, guideline), which has no row at all.
+ */
+function escalationFindingShape(row) {
+  return {
+    code: row.code, field: row.field || null,
+    document_id: row.document_id || null,
+    docValue: row.doc_value != null ? String(row.doc_value) : null,
+  };
+}
+
+// Decide (advise + close) an escalation.
+//
+// "NO ACTION NEEDED" NOW ACTUALLY SETTLES THE FINDING (owner-reported 2026-07-27:
+// "I escalate the finding to review and then the Super Admin clicks that it's OK …
+// and the finding keeps popping up again"). This door used to close the QUEUE ITEM
+// and leave the finding untouched — which is defensible for "close with advice
+// only" (decision:'resolved', the reviewer has advised, the work remains) but is
+// plainly wrong for "no action needed" (decision:'dismissed'): the reviewer has
+// judged there is nothing to do, and the finding then came straight back on the
+// next view because a derived finding is recomputed every time and a stored one is
+// re-inserted by the next re-read.
+//
+// So a DISMISS here records the decision in the durable ledger (db/333), keyed on
+// the finding's identity, which stops every producer re-raising it — and, when a
+// live stored row exists and the reviewer holds the authority for it, closes that
+// row too so the desk and the count agree. `resolved` still changes nothing about
+// the finding (use POST /escalations/:id/apply for that).
 //
 // Who may decide: see escalations.mayDecide — a super-admin, the person it was routed to, or
 // (owner-directed 2026-07-26) any admin / processor / underwriter who can sign off conditions
@@ -417,6 +448,42 @@ router.post('/escalations/:id/decide', async (req, res, next) => {
     const b = req.body || {};
     const decision = b.decision === 'dismissed' ? 'dismissed' : 'resolved';
     const note = (b.note || '').slice(0, 1000);
+
+    // "No action needed" → settle the finding for good, not just the queue item.
+    // The live stored row (if any) is closed through the SAME shared path the desk
+    // uses, so the tiered authority, the audit and the AI-panel mirror all behave
+    // identically. If the reviewer lacks that authority we still record the
+    // decision in the ledger — a super-admin saying "this is fine" must at minimum
+    // stop it being re-raised — and say plainly that the row itself stayed open.
+    let findingSettled = false;
+    let findingNote = null;
+    if (decision === 'dismissed') {
+      const live = row.finding_id
+        ? (await db.query(
+          `SELECT id, code, severity, blocks_ctc, field FROM document_findings
+            WHERE id=$1 AND application_id=$2 AND status='open'`, [row.finding_id, row.application_id])).rows[0]
+        : null;
+      if (live) {
+        const applied = await applyFindingResolution({
+          actor: req.actor, appId: row.application_id, finding: live, action: 'dismiss',
+          note: note || 'No action needed (decided on the findings review queue).',
+        });
+        findingSettled = !!applied.ok;
+        if (!applied.ok) findingNote = applied.body && applied.body.error;
+      }
+      // Always record the identity-level decision: it is the ONLY thing that stops
+      // a DERIVED finding (recomputed on every file view) coming back, and it is
+      // what a re-read carries forward onto the next stored row.
+      const client2 = await db.pool.connect();
+      try {
+        await require('../lib/underwriting/finding-decisions').record(client2, {
+          applicationId: row.application_id, finding: escalationFindingShape(row),
+          origin: 'escalation', decision: 'dismissed',
+          note: note || 'No action needed (findings review queue).', decidedBy: req.actor.id,
+        });
+      } finally { client2.release(); }
+    }
+
     let updated;
     const client = await db.pool.connect();
     try {
@@ -426,9 +493,10 @@ router.post('/escalations/:id/decide', async (req, res, next) => {
     } catch (e) { await client.query('ROLLBACK').catch(() => {}); throw e; } finally { client.release(); }
     if (!updated) return res.status(409).json({ error: 'this escalation was already handled' });
     await audit(req.actor.id, 'underwriting_finding_escalation_decide', row.application_id,
-      { escalation: row.id, finding: row.code, decision, note: note.slice(0, 300) });
+      { escalation: row.id, finding: row.code, decision, note: note.slice(0, 300),
+        findingSettled: decision === 'dismissed' ? findingSettled : undefined });
     notifyRaiser(row, req.actor.id, decision, note);
-    res.json({ ok: true, escalation: updated });
+    res.json({ ok: true, escalation: updated, findingSettled, findingNote });
   } catch (e) { next(e); }
 });
 
@@ -479,6 +547,19 @@ router.post('/escalations/:id/apply', requirePermission('sign_off_conditions'), 
     } else {
       // No live open finding: either a derived advisory, or it was already resolved elsewhere.
       reason = row.finding_id ? 'already_resolved' : 'derived';
+      // A DERIVED finding has no row to close, so without this the reviewer's
+      // decision evaporated: the desk recomputes the finding from the file on the
+      // very next view and it is back, which is exactly the owner's report. Record
+      // it against the finding's identity (db/333) so every desk honours it.
+      // Only for the verbs that SETTLE it — post-a-condition / request-a-document
+      // deliberately leave the finding live until the follow-up lands.
+      const client0 = await db.pool.connect();
+      try {
+        await require('../lib/underwriting/finding-decisions').record(client0, {
+          applicationId: row.application_id, finding: escalationFindingShape(row),
+          origin: 'escalation', decision: action, note, decidedBy: req.actor.id,
+        });
+      } finally { client0.release(); }
       // A corrected value is still worth writing to the loan file — that is the actual fix.
       if (action === 'fix_file' && value != null && row.field) {
         const applyFix = require('../lib/underwriting/apply-fix');
@@ -869,7 +950,27 @@ router.get('/:appId', async (req, res, next) => {
     // informative finding, carrying `mergedFrom` so nothing is lost. Adding a desk that re-notices an
     // existing fact means adding its code to a family in finding-claims.js — never another
     // hand-written suppression here.
-    const openAll = require('../lib/underwriting/finding-claims').dedupeByClaim(openRaw);
+    const dedupedAll = require('../lib/underwriting/finding-claims').dedupeByClaim(openRaw);
+    // A FINDING A HUMAN ALREADY SETTLED DOES NOT COME BACK (owner-reported
+    // 2026-07-27: "I dismiss it, or the super-admin grants an exception, and it
+    // keeps popping up again").
+    //
+    // The DERIVED desks above (tie-out, entity/seller chain, chain of title, bank
+    // liquidity, experience, reasonability, metrics, staleness, note-buyer
+    // guidelines) are pure functions of the file: they re-raise their findings on
+    // EVERY view, forever, and have no stored row for a Dismiss to attach to. The
+    // durable ledger (db/332) is keyed on the finding's identity rather than a row,
+    // so a decision taken anywhere — this desk, the "Findings to review" queue, the
+    // AI panel — removes it from every one of them.
+    //
+    // The settled ones are still RETURNED (as `settledFindings`) so the desk can
+    // show "already dealt with" and offer to re-open one, rather than silently
+    // swallowing work. FAILS OPEN: an unreadable ledger hides nothing.
+    const fdec = require('../lib/underwriting/finding-decisions');
+    const settledKeys = await fdec.suppressedKeys(db, app.id);
+    const split = fdec.filterSuppressed(settledKeys, dedupedAll);
+    const openAll = split.kept;
+    const settledFindings = split.suppressed.map(decorate);
 
     // Sync computed chain + bank findings → ai_suggestions (owner-directed 2026-07-22,
     // HARD RULE). Best-effort, fired AFTER the response so file view stays fast; dedupe
@@ -1050,29 +1151,39 @@ router.get('/:appId', async (req, res, next) => {
       }))).rootCauses;
     } catch (_) { rootCauses = []; }
 
+    // Each panel section renders its OWN findings array as well as the consolidated
+    // list, so a settled finding has to be dropped from BOTH or it stays visible in
+    // its section — which is exactly the "it didn't actually disappear" report. One
+    // helper, applied to every section, so a new section can't quietly skip it.
+    const live = (arr) => fdec.filterSuppressed(settledKeys, (arr || []).filter(Boolean)).kept.map(decorate);
+
     res.json({
       escalatedFindings: escalatedByFinding,
+      // Findings a human already dismissed / cleared / granted an exception on. They
+      // are NOT re-raised anywhere above; returned so the desk can show "already
+      // dealt with" and offer to put one back, instead of silently swallowing work.
+      settledFindings,
       fraudBanner,
       verdict,
       rootCauses,
       // AUS: which program this file is underwritten against + that program's governing thresholds.
       programGuidelines,
       extractions,
-      findings: perDoc,
+      findings: live(ff.findings),
       tieout: { columns: tieout.columns, matrix: tieout.matrix, summary: tieout.summary },
-      crossDocument: cross,
+      crossDocument: live(cross),
       conditionCoverage,
-      staleness: { closingDate, board: staleness.board, findings: staleness.findings.map(decorate) },
+      staleness: { closingDate, board: staleness.board, findings: live(staleness.findings) },
       metrics: { loanAmount: metrics.loanAmount, maxLoan: metrics.maxLoan, binding: metrics.binding,
-        rows: metrics.metrics, findings: metrics.findings.map(decorate) },
+        rows: metrics.metrics, findings: live(metrics.findings) },
       entityChain: entityChain ? { status: entityChain.status, edges: entityChain.edges, owners: entityChain.owners,
-        vestingName: entityChain.vestingName, findings: entityChain.findings.map(decorate) } : null,
+        vestingName: entityChain.vestingName, findings: live(entityChain.findings) } : null,
       sellerChain: { status: sellerChain.status, nodes: sellerChain.nodes, edges: sellerChain.edges,
         finalHolder: sellerChain.finalHolder, reachesVesting: sellerChain.reachesVesting,
-        findings: sellerChain.findings.map(decorate) },
+        findings: live(sellerChain.findings) },
       chainOfTitle: { status: chainOfTitle.status, hops: chainOfTitle.hops, ownershipPath: chainOfTitle.ownershipPath,
         finalBuyer: chainOfTitle.finalBuyer, reachesVesting: chainOfTitle.reachesVesting,
-        findings: cotFindings.map(decorate) },
+        findings: live(cotFindings) },
       bankLiquidity: { requiredLiquidity: bankLiquidity.requiredLiquidity, qualifyingTotal: bankLiquidity.qualifyingTotal,
         excludedTotal: bankLiquidity.excludedTotal, shortfall: bankLiquidity.shortfall,
         accounts: bankLiquidity.accounts, statementsCount: bankLiquidity.statementsCount,
@@ -1080,11 +1191,11 @@ router.get('/:appId', async (req, res, next) => {
         // just quietly loses a row and the total drops with no stated reason — which is as confusing
         // as the double-count it replaced, and on the very screen where the owner found that bug.
         notCountedTwice: bankLiquidity.notCountedTwice,
-        findings: bankLiquidity.findings.map(decorate) },
+        findings: live(bankLiquidity.findings) },
       experience: experience ? { demandTier: experience.demandTier, demandLabel: experience.demandLabel,
         requiredLabel: experience.requiredLabel, gated: experience.gated, hasVerifiedAnchor: experience.hasVerifiedAnchor,
         exceptionGranted: experience.exceptionGranted, anchors: experience.anchors, trackRecordCount: experience.trackRecordCount,
-        findings: experience.findings.map(decorate) } : null,
+        findings: live(experience.findings) } : null,
       completeness: { completenessPct: completeness.completenessPct, counts: completeness.counts,
         stipulations: completeness.stipulations, outstanding: completeness.outstanding,
         ctcBlockers: completeness.ctcBlockers, docsComplete: completeness.docsComplete,
@@ -1097,8 +1208,8 @@ router.get('/:appId', async (req, res, next) => {
         reasons: risk.reasons, finding: risk.finding ? decorate(risk.finding) : null },
       amendments: { effective: amendments.effective, provenance: amendments.provenance,
         hasAmendments: amendments.hasAmendments, unexecuted: amendments.unexecuted,
-        findings: amendments.findings.map(decorate) },
-      reasonability: { checks: reasonability.checks, findings: reasonability.findings.map(decorate) },
+        findings: live(amendments.findings) },
+      reasonability: { checks: reasonability.checks, findings: live(reasonability.findings) },
       // ONE consolidated list of every open finding the summary counts — so "2 warnings" maps to a
       // visible list of exactly 2 items (owner-reported: "it says 2 warnings and I can't see them").
       // It's the same de-duplicated roll-up (openWithRisk) the counts come from, decorated so each is

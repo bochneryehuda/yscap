@@ -3161,7 +3161,15 @@ export default function UnderwritingPanel({ appId, docs = [], readOnly = false, 
         <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 12, flexWrap: 'wrap' }}>
           {sum.fatal > 0 && <span style={{ fontWeight: 700, color: SEV.fatal.fg, background: SEV.fatal.bg, borderRadius: 999, padding: '4px 12px', fontSize: 12.5 }}>{sum.fatal} fatal</span>}
           {sum.warning > 0 && <span style={{ fontWeight: 700, color: SEV.warning.fg, background: SEV.warning.bg, borderRadius: 999, padding: '4px 12px', fontSize: 12.5 }}>{sum.warning} warning</span>}
-          {sum.blocksCtc && <span style={{ fontSize: 12.5, color: SEV.fatal.fg }}>Clear-to-close is blocked until every fatal is resolved.</span>}
+          {/* ADVISORY ONLY (owner-directed 2026-07-27). This line used to read
+              "Clear-to-close is blocked until every fatal is resolved" — which is no
+              longer true and was the loudest place the screen claimed PILOT could
+              hold a file. Nothing here blocks anything; say so plainly instead. */}
+          {sum.fatal > 0 && (
+            <span style={{ fontSize: 12.5, color: 'var(--muted,#4B585C)' }}>
+              Advisory — worth resolving, but this does not hold up clear-to-close, signing off a condition, or sending a package.
+            </span>
+          )}
         </div>
       )}
 
@@ -3297,9 +3305,12 @@ export default function UnderwritingPanel({ appId, docs = [], readOnly = false, 
           appears once — the old per-section finding lists were removed so nothing is repeated. */}
       {allFindings.length > 0 && (
         <div style={{ marginBottom: 22 }}>
-          <h4 style={{ fontFamily: 'var(--serif,Georgia,serif)', margin: '0 0 4px' }}>Open findings ({allFindings.length}) — everything that needs a look</h4>
+          <h4 style={{ fontFamily: 'var(--serif,Georgia,serif)', margin: '0 0 4px', color: '#141B22' }}>Open findings ({allFindings.length}) — everything that needs a look</h4>
           <p style={{ fontSize: 12, color: 'var(--muted,#4B585C)', margin: '0 0 12px' }}>
             Every open item across the whole file, in one list — the same items the counts above refer to.
+            {' '}<strong style={{ color: '#141B22' }}>These are advisory:</strong> read them, act on the ones you agree with,
+            and dismiss the ones you don&apos;t. None of them holds up a condition sign-off, clear-to-close, funding, or sending a package.
+            A finding you dismiss (or that a reviewer says is fine) stays gone — it will not come back on the next read.
           </p>
           {!readOnly && !canResolve && (
             <div className="notice" style={{ margin: '0 0 12px', fontSize: 12.5 }}>

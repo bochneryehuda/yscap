@@ -123,6 +123,17 @@ async function saveAnalysis(client, { documentId, applicationId, borrowerId, doc
   // effort — a rules-loading failure keeps every original finding untouched.
   const rulesRes = await require('./promoted-rules').applyPromotedRules(client, findings || []);
   const effectiveFindings = rulesRes.findings;
+  // A HUMAN'S DECISION SURVIVES A RE-ANALYSIS (owner-reported 2026-07-27: "I
+  // dismiss it and it keeps popping up again"). Re-reading a document inserts a
+  // FRESH row for every finding, with no memory of the dismissal / exception a
+  // human recorded on the previous row — so the finding came straight back as
+  // OPEN. The durable ledger (db/333) is keyed on the finding's IDENTITY, not on
+  // the row, so we can carry the decision forward onto the new row: it is still
+  // inserted (the audit trail and the "show dismissed" view need it) but it is
+  // born already-resolved instead of re-opening settled work.
+  // FAILS OPEN — an unreadable ledger just means every finding lands open.
+  const decided = await require('./finding-decisions').suppressedKeys(client, appId).catch(() => new Set());
+  let carriedForward = 0;
   const suppressedByRules = rulesRes.suppressed;
   const protectedFatalByRules = rulesRes.protectedFatal || [];
   // R5.3 — resolve a source page for each finding: prefer a page the check
@@ -136,15 +147,36 @@ async function saveAnalysis(client, { documentId, applicationId, borrowerId, doc
     if (pageNumber == null && ext.ocrPages && f.docValue != null) {
       pageNumber = pageNumberForValue(f.docValue, ext.ocrPages);
     }
+    // Carry a prior human decision forward onto this fresh row (see the note
+    // above): the identity is computed on the row we're ABOUT to write, so the
+    // key matches what the desk and the ledger use everywhere else.
+    let bornStatus = 'open';
+    if (decided.size) {
+      const fdec = require('./finding-decisions');
+      const shape = { code: f.code, field: f.field || null, document_id: documentId,
+        extraction_id: extractionId, docValue: str(f.docValue) };
+      if (fdec.isSuppressed(decided, shape)) { bornStatus = 'dismissed'; carriedForward += 1; }
+    }
     const { rows: fr } = await client.query(
       `INSERT INTO document_findings
-         (application_id, borrower_id, document_id, extraction_id, source, code, severity, field, doc_value, file_value, title, how_to, blocks_ctc, suggested_actions, opens_condition, page_number)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16) RETURNING id`,
+         (application_id, borrower_id, document_id, extraction_id, source, code, severity, field, doc_value, file_value, title, how_to, blocks_ctc, suggested_actions, opens_condition, page_number, status, resolution, resolution_note)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19) RETURNING id`,
       [appId, borId, documentId, extractionId, f.source || docType, f.code,
        f.severity || 'warning', f.field || null, str(f.docValue), str(f.fileValue),
        f.title || null, f.howTo || null, !!f.blocksCtc, actions, f.opensCondition || null,
-       pageNumber != null ? pageNumber : null]);
+       pageNumber != null ? pageNumber : null,
+       bornStatus,
+       bornStatus === 'dismissed' ? 'carried_forward' : null,
+       bornStatus === 'dismissed' ? 'A reviewer already decided this finding on this file — carried forward from their decision.' : null]);
     findingIds.push(fr[0].id);
+  }
+  if (carriedForward) {
+    try {
+      await client.query(
+        `INSERT INTO audit_log (actor_kind, action, entity_type, entity_id, detail)
+         VALUES ('system','pilot_carried_forward_decisions','application',$1,$2::jsonb)`,
+        [appId, JSON.stringify({ documentId, extractionId, carriedForward })]);
+    } catch (_) { /* audit best-effort */ }
   }
 
   // 3b. Evidence ledger (R5.17 wiring, 2026-07-23): ground each recorded fact
@@ -392,6 +424,28 @@ async function resolveFinding(client, { findingId, action, note, value, by } = {
       RETURNING *`,
     [findingId, status, v.action, note || null, value != null ? String(value) : null, terminal, by || null]);
   const updated = rows[0] || null;
+  // THE DECISION IS DURABLE (owner-reported 2026-07-27). Record it against the
+  // finding's stable IDENTITY (db/333), not just on this row — the row is
+  // re-created by the next analysis and the derived desks have no row at all, so
+  // without this the dismissal / exception evaporated and the finding "kept
+  // popping up again". Also closes the AI-panel MIRROR of the same finding, which
+  // is the other surface it was reappearing on. Both best-effort: a ledger or
+  // mirror failure must never undo a resolution the human just made.
+  if (updated) {
+    const fdec = require('./finding-decisions');
+    await fdec.record(client, {
+      applicationId: updated.application_id,
+      finding: updated,
+      origin: 'document_finding',
+      decision: v.action,
+      suppress: terminal && fdec.suppresses(v.action),
+      note, decidedBy: by || null,
+    });
+    await closeMirroredSuggestions(client, {
+      applicationId: updated.application_id, code: updated.code,
+      documentId: updated.document_id, action: v.action, by,
+    });
+  }
   // Self-training capture (Sovereign 4/4, owner-directed 2026-07-21): every
   // resolve is a labeled example — dismiss = false-positive candidate, grant/
   // clear/decline = confirmed / condition / etc. Also compares the committee's
@@ -406,6 +460,41 @@ async function resolveFinding(client, { findingId, action, note, value, by } = {
     } catch (_) { /* learning capture is additive */ }
   }
   return updated;
+}
+
+/**
+ * ONE FINDING, ONE DECISION — across BOTH surfaces (owner-reported 2026-07-27).
+ *
+ * The same issue is carried by two rows: the `document_findings` row the Document
+ * Review desk resolves, and its `ai_suggestions` mirror on the AI Findings panel
+ * (written by the bank / chain / cross-doc bridges). Resolving one left the other
+ * sitting there open, so the finding visibly "did not disappear" even though it
+ * had been dealt with. Close the mirror in the same breath.
+ *
+ * Matched on the file + the finding CODE (+ the document when both carry one), which
+ * is exactly what the bridges put in `evidence.code` when they mirror a finding.
+ * Only ever closes rows that are still OPEN, and only when the verb SETTLES the
+ * finding — a posted condition / requested document deliberately keeps both live.
+ * Best-effort: never throws.
+ */
+async function closeMirroredSuggestions(client, { applicationId, code, documentId, action, by } = {}) {
+  try {
+    if (!applicationId || !code) return 0;
+    if (!require('./finding-decisions').suppresses(action)) return 0;
+    const r = await client.query(
+      `UPDATE ai_suggestions
+          SET status = 'dismissed',
+              status_reason = COALESCE(status_reason, $4),
+              decided_by_staff_id = COALESCE($5, decided_by_staff_id),
+              decided_at = now()
+        WHERE application_id = $1
+          AND status IN ('open','escalated','marked_important','asked_admin')
+          AND COALESCE(evidence->>'code', proposed_action->'fields'->>'code') = $2
+          AND ($3::uuid IS NULL OR document_id IS NULL OR document_id = $3)`,
+      [applicationId, code, documentId || null,
+       `Closed with the finding on the Document Review desk (${String(action || 'resolved')}).`, by || null]);
+    return r.rowCount || 0;
+  } catch (_) { return 0; }
 }
 
 /**
@@ -453,4 +542,5 @@ async function getFileFindings(client, applicationId) {
 }
 
 module.exports = { saveAnalysis, resolveFinding, getFileFindings, rollup, maskFields,
-  findReusableExtraction, findingsForExtraction, _internals: { maskValue } };
+  findReusableExtraction, findingsForExtraction, closeMirroredSuggestions,
+  _internals: { maskValue } };
