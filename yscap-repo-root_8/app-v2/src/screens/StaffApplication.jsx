@@ -2986,18 +2986,23 @@ export default function StaffApplication() {
   // internal CHECKLIST now defaults to "Open for me" like the other sections —
   // an LO's Done (and a processor's sign-off) clears the item off their default
   // view; the picker (persisted per user) re-shows everything, collapsed.
-  const [itemFilter, setItemFilter] = useStickyFilter('checklist', 'todo');
-  const [internalCondFilter, setInternalCondFilter] = useStickyFilter('internalConds', 'todo');
   // The Conditions section is now ONE tabbed hub (Borrower · Underwriting ·
   // Internal · LLC) instead of four separate sections. A "Go fix →" link can flip
   // straight to the right tab via the section bus.
-  const [condTab, setCondTab] = useStickyFilter('condTab', 'borrower');
+  const [condTabRaw, setCondTab] = useStickyFilter('condTab', 'borrower');
   useEffect(() => subscribeConditionsTab(setCondTab), []);   // eslint-disable-line react-hooks/exhaustive-deps
+  // 'internal' was the staff-conditions + checklist tab. Those conditions are in
+  // the one list now and the checklist is off the file, so that tab no longer
+  // exists — but two things can still ASK for it: a sticky value saved by
+  // someone who was last on it, and the server's condTabForBlocker(), which
+  // returns 'internal' for any staff-audience blocker behind a "Go fix →".
+  // Normalising on READ covers both without touching the server, and without a
+  // migration for a value living in people's browsers. Landing on a tab that
+  // renders nothing is exactly the dead-deep-link class Phase 1 fixed.
+  const condTab = condTabRaw === 'internal' ? 'borrower' : condTabRaw;
   // Conversations + Activity + Email Center are one "Communication" hub (tabs).
   const [commTab, setCommTab] = useStickyFilter('commTab', 'messages');
-  const bucketOf = (s) => s === 'issue' ? 'rejected' : s === 'received' ? 'submitted' : s === 'satisfied' ? 'satisfied' : 'outstanding';
   // ONE "off my plate" rule for every surface — see roleDone() above.
-  const condOffPlate = (it) => roleDone(it, role);
   // The internal checklist shows ONLY staff-facing work items — the borrower's
   // conditions (audience borrower/both) already live in "Conditions to close",
   // so they must not be listed twice.
@@ -3018,20 +3023,11 @@ export default function StaffApplication() {
   // rtl_f_review, rtl_f_ctc) are staff `condition` rows sitting in the
   // checklist right now — verified against the seeded templates, where no
   // `task` is a gate. Hiding the checklist first would take the gates with it.
-  const internalConds = useMemo(
-    () => items.filter(it => it.audience === 'staff' && (it.item_kind === 'document' || it.item_kind === 'condition')),
-    [items]);
-  const internalItems = useMemo(() => items.filter(it => it.audience === 'staff' && it.item_kind === 'task'), [items]);
-  const phases = useMemo(() => {
-    const groups = {};
-    const src = itemFilter === 'all' ? internalItems
-      : itemFilter === 'todo' ? internalItems.filter(it => !roleDone(it, role))
-      : internalItems.filter(it => bucketOf(it.status) === itemFilter);
-    for (const it of src) { const k = it.phase || 'general'; (groups[k] = groups[k] || []).push(it); }
-    return Object.entries(groups)
-      .map(([k, arr]) => [k, arr.sort((a, b) => (a.sort_order || 0) - (b.sort_order || 0))])
-      .sort((a, b) => (a[1][0].sort_order || 0) - (b[1][0].sort_order || 0));
-  }, [internalItems, itemFilter, role]);
+  // internalItems / phases / itemFilter / bucketOf / internalConds / condOffPlate
+  // all went with the checklist panel above — every one of them existed only to
+  // render it. The staff CONDITIONS they used to sit beside are in the one list
+  // (BorrowerConditions filters items itself), and the tasks are worked from
+  // "My tasks". Left in place they would be dead code that still costs a render.
 
   if (err && !app) return <div role="alert" className="notice err">{err}</div>;
   if (!app) return <div className="panel muted">Loading…</div>;
@@ -3517,10 +3513,6 @@ export default function StaffApplication() {
         const TABS = [
           { k: 'borrower', label: 'All conditions', badge: nCondOpen || '' },
           { k: 'underwriting', label: 'Underwriting', badge: uwOpen || '' },
-          // Renamed: this tab's CONDITIONS are in the one list now; what is left
-          // here is the staff checklist (tasks). Its badge counts tasks only, so
-          // it can no longer double-count a condition shown above.
-          { k: 'internal', label: 'Checklist', badge: internalItems.filter(it => !roleDone(it, role)).length || '' },
           { k: 'llc', label: 'LLC / entity', badge: app.llc_id ? (app.llc_verified ? '✓' : '!') : '' },
         ];
         return (
@@ -3555,47 +3547,22 @@ export default function StaffApplication() {
           clearCond={clearCond} waiveCond={waiveCond} isAdmin={isAdmin} completer={completer} reviewCond={reviewCond} />
       )}
 
-      {condTab === 'internal' && <>
-        <p className="muted small" style={{ marginTop: 0 }}>Staff-only — never shared with the borrower.</p>
-        {/* The "Internal conditions" panel that used to sit here is GONE — its
-            rows now live in the ONE conditions list above, grouped by subject,
-            each still rendered by Item so it keeps its assignee picker, status
-            control and phase. Keeping a copy here would have shown every
-            internal condition twice. What remains on this tab is the CHECKLIST:
-            staff work steps (item_kind=task), which are not conditions. */}
-        <div className="panel" style={{ marginTop: 14 }}>
-          <div className="row" style={{ marginBottom: 6, gap: 8, flexWrap: 'wrap' }}>
-            <h3 style={{ margin: 0 }}>Checklist</h3>
-            <div className="spacer" />
-            <select className="input" style={{ maxWidth: 170 }} value={itemFilter} onChange={e => setItemFilter(e.target.value)}>
-              {/* Same five words as the borrower-conditions filter above, from
-                  lib/conditions-vocab.js. The stored filter VALUES are untouched. */}
-              <option value="todo">Open for me ({internalItems.filter(it => !roleDone(it, role)).length})</option>
-              <option value="all">All ({internalItems.length})</option>
-              <option value="outstanding">{conditionStatusLabel('outstanding')}</option>
-              <option value="submitted">{conditionStatusLabel('received')}</option>
-              <option value="rejected">{conditionStatusLabel('issue')}</option>
-              <option value="satisfied">{conditionStatusLabel('satisfied')}</option>
-            </select>
-            <span className="muted small">
-              {internalItems.filter(i => i.signed_off_at).length}/{internalItems.length} signed off
-              {internalItems.some(i => !i.signed_off_at && i.reviewed_at) ? ` · ${internalItems.filter(i => !i.signed_off_at && i.reviewed_at).length} done, awaiting sign-off` : ''}
-            </span>
-          </div>
-          {phases.length === 0
-            ? (internalItems.length === 0
-                ? <p className="muted small">No internal-only checklist items. Borrower-facing conditions are on the Borrower tab.</p>
-                : <p className="muted small">Everything here is done on your side — switch to “All” to see the completed items (collapsed).</p>)
-            : phases.map(([k, arr]) => (
-              <div key={k} style={{ marginTop: 10 }}>
-                <div className="muted small" style={{ textTransform: 'uppercase', letterSpacing: '.06em', marginBottom: 6 }}>{phaseName(k)}</div>
-                {arr.map(it => <Item key={it.id} it={it} team={team} onPatch={patch} role={role}
-                  docs={docs} onUploadTo={pickUpload} onDropTo={uploadStaffFiles} onReviewDoc={reviewDoc} onDownloadDoc={downloadDoc}
-                  dlBusy={dlBusy} onPreview={openPreview} appId={id} onChanged={load} canImportCredit={can('pull_credit')} />)}
-              </div>
-            ))}
-        </div>
-      </>}
+      {/* THE CHECKLIST IS OFF THE FILE (owner-directed 2026-07-27: "the checklist
+          is just things with loans to sign off on — get the entire checklist
+          removed and leave only the condition section"). Blueprint Move 4c.
+
+          HIDDEN, NOT DELETED. Every row is still in checklist_items with its
+          history intact, still worked from the "My tasks" screen (which reads
+          checklist_items with no item_kind filter), and still counted wherever
+          the server counts it. This is a rendering change and it reverses by
+          putting the panel back.
+
+          SAFE ONLY BECAUSE 5a WENT FIRST. The scope is audience='staff' AND
+          item_kind='task'. Verified against the live templates: that set
+          contains ZERO gates and neither carve-out — rtl_p1_titlec and
+          rtl_p1_insc are task-kind but audience='both', so scoping to 'staff'
+          protects them without naming them. The file's conditions, gates
+          included, moved into the one list in 5a. */}
 
       {condTab === 'llc' && <>
         <LlcReview appId={id} app={app} role={role} onReviewDoc={reviewDoc} onDownloadDoc={downloadDoc}
