@@ -2,9 +2,13 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
-## How to talk to the owner (ALWAYS)
+## How to talk to the owner (ALWAYS) — STRICT RULE (owner-directed 2026-07-27)
 
-The owner is not a developer. **Every message to the owner must be in plain, everyday language a beginner can understand.** No developer jargon — no "endpoints", "payloads", "idempotent", "race conditions", "dead-letter queues". If a technical word is unavoidable, explain it in the same sentence with a real-life comparison (a mailman, a bookmark, a security guard). Explain what things mean for the BUSINESS (files, borrowers, ClickUp cards, emails), not what they mean in the code. Commit messages and code comments stay technical; chat with the owner never is.
+The owner is not a developer. **Every message to the owner must be in PLAIN, SHORT, everyday language a beginner can understand.** This is a STRICT, non-negotiable rule set by the owner — it applies to every single chat reply, always, no exceptions.
+- **SHORT:** get to the point. A few clear sentences, not long stretched-out paragraphs. Say what happened, what it means, and what you did — then stop. No filler, no walls of text.
+- **PLAIN, not developer language:** no jargon — no "endpoints", "payloads", "idempotent", "race conditions", "constraints", "migrations", "check violation", "dead-letter queues". If a technical word is truly unavoidable, explain it in the same sentence with a real-life comparison (a mailman, a bookmark, a security guard).
+- **Talk BUSINESS, not code:** explain what things mean for the business (files, borrowers, ClickUp cards, emails), not what they mean in the code.
+- Commit messages and code comments stay technical; chat with the owner never is.
 
 ## Repository layout gotcha
 

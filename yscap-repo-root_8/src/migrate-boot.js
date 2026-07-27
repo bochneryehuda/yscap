@@ -37,6 +37,56 @@ function migrationChecksum(sql) {
 function isChecksumDrift(prevSha, curSha) {
   return !!(prevSha && curSha && prevSha !== curSha);
 }
+
+// ---- benign "re-added CHECK widened by a later migration" recognition -------
+// Every numbered migration re-runs on every boot. Several value-list CHECK
+// constraints are DROPped + re-ADDed by more than one migration to widen the
+// allowed set over time (e.g. esign envelope `purpose` gained 'test' then
+// 'draw_request'; the staff `role` set grew; the loan-exception `status` set
+// gained 'expired'). The EARLIER migration re-adds the NARROWER list, so once a
+// real row uses a value only a LATER migration allows, that earlier re-add fails
+// with 23514 (check_violation) on every boot. Because each file runs in one
+// implicit transaction, the failed re-add rolls back and the existing (wider)
+// constraint stays intact, and the later migration re-asserts it — so the end
+// state is correct and the failure is benign. These helpers let the runner
+// recognize that exact case and skip it quietly instead of logging an error.
+//
+// The fix lives in the runner (not by editing the old migrations) because the
+// failing statements are in EARLY files that run before any new migration, and
+// editing an applied migration is forbidden here (it trips the checksum-drift
+// alarm above). Handling it once in the runner covers every such chain that
+// exists today and any future one automatically.
+
+/** Pure: constraint names a migration file ADDs (lower-cased). */
+function constraintsAddedBy(sql) {
+  const code = String(sql || '').replace(/--[^\n]*/g, '');   // drop line comments
+  const re = /\bADD\s+CONSTRAINT\s+("?)([A-Za-z_][A-Za-z0-9_]*)\1/gi;
+  const names = [];
+  let m;
+  while ((m = re.exec(code))) names.push(m[2].toLowerCase());
+  return names;
+}
+
+/** Pure: the constraint name a pg error is about (from the error field, else the message). */
+function constraintNameFromError(err) {
+  if (!err) return null;
+  if (err.constraint) return String(err.constraint);
+  const m = /constraint\s+"([^"]+)"/i.exec(String((err && err.message) || ''));
+  return m ? m[1] : null;
+}
+
+/**
+ * Pure: is this a check_violation on a constraint that a LATER migration file
+ * re-defines? `definerMax` maps a lower-cased constraint name to the highest
+ * file index that ADDs it; `fileIndex` is the failing file's index.
+ */
+function isSupersededConstraintFailure(err, fileIndex, definerMax) {
+  if (!err || err.code !== '23514') return false;
+  const name = constraintNameFromError(err);
+  if (!name) return false;
+  const max = definerMax.get(name.toLowerCase());
+  return typeof max === 'number' && max > fileIndex;
+}
 async function ensureLedgerTable() {
   await db.query(`CREATE TABLE IF NOT EXISTS schema_migrations (
     filename    text PRIMARY KEY,
@@ -116,8 +166,22 @@ async function ensureSchema() {
   // Best-effort — a failure here just means the boot proceeds without the ledger.
   try { await ensureLedgerTable(); } catch (e) { console.warn('[migrate] ledger table unavailable:', db.describeError(e)); }
 
+  // Pre-scan: highest file index that (re)defines each named constraint, so a
+  // narrower CHECK re-added by an earlier migration and WIDENED by a later one
+  // is recognized as benign on re-run (see isSupersededConstraintFailure).
+  const constraintDefinerMax = new Map();
+  files.forEach((f, i) => {
+    let text = '';
+    try { text = fs.readFileSync(path.join(dir, f), 'utf8'); } catch (_) { return; }
+    for (const name of constraintsAddedBy(text)) {
+      const prev = constraintDefinerMax.get(name);
+      if (prev === undefined || i > prev) constraintDefinerMax.set(name, i);
+    }
+  });
+
   const ran = [];
-  for (const f of files) {
+  for (let i = 0; i < files.length; i++) {
+    const f = files[i];
     // schema.sql is NOT idempotent (bare CREATE TABLE). Only run it on a truly
     // empty database; skip it once the base tables exist.
     if (f === 'schema.sql' && hasBase) continue;
@@ -135,6 +199,13 @@ async function ensureSchema() {
       if (/already exists|duplicate/i.test(msg)) {
         await recordMigration(f, sql);   // still applied — record it
         console.warn(`[migrate] ${f} already applied (${msg.split(' ')[0]}...) — continuing`);
+      } else if (isSupersededConstraintFailure(e, i, constraintDefinerMax)) {
+        // This file re-adds a CHECK whose allowed set a LATER migration widens;
+        // real rows already use the newer values. The failed re-add rolled back
+        // (the wider constraint from the later migration stays in place), so
+        // this is expected — not an error.
+        console.log(`[migrate] ${f}: constraint "${constraintNameFromError(e)}" is re-added here but widened ` +
+          `by a later migration — narrower re-add skipped, the later migration keeps the correct constraint`);
       } else {
         console.error(`[migrate] ${f} FAILED: ${msg} — continuing`);
       }
@@ -183,4 +254,5 @@ async function bootstrapAdmin() {
 }
 
 module.exports = { ensureSchema, waitForDb, bootstrapAdmin,
-  migrationChecksum, isChecksumDrift }; // WO-13: exported for the ledger test
+  migrationChecksum, isChecksumDrift, // WO-13: exported for the ledger test
+  constraintsAddedBy, constraintNameFromError, isSupersededConstraintFailure };
