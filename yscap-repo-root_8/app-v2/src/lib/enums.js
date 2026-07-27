@@ -58,6 +58,9 @@ export const LOAN_TYPES = [
   { value: 'Purchase', label: 'Purchase' },
   { value: 'Refinance — Rate & Term', label: 'Refinance — Rate & Term' },
   { value: 'Refinance — Cash-Out', label: 'Refinance — Cash-Out' },
+  // Spelled EXACTLY as ClickUp spells it (owner-directed 2026-07-27) so the
+  // value round-trips with no translation.
+  { value: 'Delayed Purchase Financing', label: 'Delayed Purchase Financing' },
 ];
 
 // A <select> whose current value isn't EXACTLY an option (legacy free-text data,
