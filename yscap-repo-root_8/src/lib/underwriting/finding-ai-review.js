@@ -17,7 +17,7 @@
  *      that is actually fine in context)?  → verdict: confirmed | rejected | uncertain
  *   2. If real, what is the suggested RESOLUTION?
  *   3. What DOCUMENT (if any) should we request?
- * The verdict is REMEMBERED (finding_ai_reviews, db/337) keyed on the finding's fingerprint, so a
+ * The verdict is REMEMBERED (finding_ai_reviews, db/338) keyed on the finding's fingerprint, so a
  * re-read is not re-billed and a confidently-rejected finding stays suppressed instead of popping
  * back on the next view — the same "a decision must stick" guarantee the human ledger (db/333) gives.
  *
