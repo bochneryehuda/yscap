@@ -200,6 +200,13 @@ export default function EditFileDetails({ app, onSaved }) {
           </div>
           )}
           <p className="muted small" style={{ margin: '8px 0 0' }}>Editing the price/ARV/rehab/assignment re-drives the pricing engine when you re-register a product. Every change lands in the file's Activity log with its before/after values.</p>
+          {/* The result belongs NEXT TO the button that produced it. This form is
+              long enough that the notice at the top of the panel is off-screen by
+              the time you reach Save, so a refused save (a locked file, a bad
+              date, a duplicate) read as "nothing happened" — owner-reported
+              2026-07-27. Same state, rendered where the click was. */}
+          {err && <div role="alert" className="notice err" style={{ marginTop: 12 }}>{err}</div>}
+          {msg && <div className="notice ok" style={{ marginTop: 12 }}>{msg}</div>}
           <div className="row" style={{ gap: 8, marginTop: 12 }}>
             <button className="btn primary" disabled={busy} onClick={save}>{busy ? 'Saving…' : 'Save changes'}</button>
             <button className="btn link" onClick={() => setOpen(false)}>Close</button>

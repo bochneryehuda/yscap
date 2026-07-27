@@ -17,9 +17,14 @@
 //      the sent term sheet can never silently disagree with the file. The ONLY
 //      way to change anything is to CLEAR the Term Sheet package (void it) —
 //      that reopens the term-sheet + application conditions and lets you
-//      re-register. A super_admin unlock does NOT bypass this one: clearing the
-//      package is the deliberate action that keeps the two in agreement. The
-//      freeze lifts automatically the instant the package is voided/declined.
+//      re-register. The freeze lifts automatically the instant the package is
+//      voided/declined.
+//
+//      ONE exception, owner-reported 2026-07-27: a file that has reached
+//      Clear to Close / Funded (or a terminal Declined / Withdrawn) with an
+//      ACTIVE super_admin unlock. See the note above `superUnlockActive` — on
+//      those files "clear the package" is not a real instruction, and the
+//      unlock is the escape hatch the product already advertises.
 //
 // The freeze applies to EVERYONE on every write path that CALLS this. A caller
 // passing no actor (borrower paths) stays frozen. The ClickUp inbound sync
@@ -90,25 +95,55 @@ async function lockInputs(appId, client = db) {
   return r.rows[0] || null;
 }
 
+// Is the deliberate super_admin UNLOCK live on this file, for THIS actor?
+//
+// The unlock exists for exactly one situation: a file whose STATUS froze it
+// (clear-to-close / funded / declined / withdrawn) needs a genuine mistake
+// corrected. It is a super_admin-only, audited action with a typed reason, and
+// the portal only ever offers the 🔓 button on those statuses.
+//
+// It lifts BOTH freezes on those files (owner-reported 2026-07-27: unlocking a
+// cleared-to-close file and editing the rehab type / assignment fee silently
+// did nothing, because the file's term sheet had long since been SIGNED and the
+// term-sheet freeze still refused the write). On a Clear-to-Close file the
+// term-sheet freeze's own escape hatch — "clear the Term Sheet package" — is not
+// an instruction anyone can follow: it would void a fully-signed term sheet,
+// supersede the signed document and reopen the term-sheet + application
+// conditions on a file that is already cleared to close. The unlock is at least
+// as deliberate, and unlike the clear it is reversible and leaves the signed
+// term sheet intact.
+//
+// BEFORE Clear to Close nothing changes — there is no unlock button there, the
+// term sheet is genuinely still in flight, and clearing + re-sending it is the
+// cheap, correct action (owner-directed 2026-07-22, untouched).
+function superUnlockActive(row, opts = {}) {
+  if (!row || !row.structural_unlocked_at) return null;
+  if (!STRUCTURE_LOCKED.includes(row.status)) return null;
+  const actor = opts.actor || null;
+  return !!(actor && actor.kind === 'staff' && actor.role === 'super_admin');
+}
+
 // 1) STATUS freeze — super_admin-unlockable. Returns the reason, or null.
 function statusFreezeReason(row, opts = {}) {
   const status = row && row.status;
   if (!status || !STRUCTURE_LOCKED.includes(status)) return null;
   const actor = opts.actor || null;
   const isSuper = !!(actor && actor.kind === 'staff' && actor.role === 'super_admin');
-  if (row.structural_unlocked_at && isSuper) return null;
+  if (superUnlockActive(row, opts)) return null;
   return `This file is ${LABEL[status] || status} — its loan structure is locked. `
     + (isSuper
         ? 'A super-admin can unlock it to make a correction, then re-lock.'
         : 'Move it back to an earlier status, or ask a super-admin to unlock it, before changing this.');
 }
 
-// 2) TERM-SHEET-SENT freeze — the only unlock is clearing the package.
+// 2) TERM-SHEET-SENT freeze — the unlock is clearing the package, except on a
+//    status-locked file a super_admin has deliberately unlocked (see above).
 //    Audience-aware: staff get the actionable "clear the package" copy; a
 //    borrower (no staff actor — the borrower register/SOW paths pass none)
 //    can't clear a package, so they're steered to their loan officer.
 function termSheetFreezeReason(row, opts = {}) {
   if (!row || !row.ts_sent) return null;
+  if (superUnlockActive(row, opts)) return null;
   const isStaff = !!(opts.actor && opts.actor.kind === 'staff');
   return isStaff
     ? 'The Term Sheet DocuSign package has been sent, so the loan’s figures and structure are frozen. '
@@ -239,5 +274,5 @@ module.exports = {
   sowLockReason, sowBudgetNeutral, SOW_INVESTOR_STATUSES,
   // The two halves, exported so tests (and any future caller that needs one
   // freeze without the other) never have to re-implement them.
-  _internals: { lockInputs, statusFreezeReason, termSheetFreezeReason },
+  _internals: { lockInputs, statusFreezeReason, termSheetFreezeReason, superUnlockActive },
 };

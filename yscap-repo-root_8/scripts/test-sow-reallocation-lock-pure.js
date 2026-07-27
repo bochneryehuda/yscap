@@ -178,10 +178,20 @@ const sow = (total, target) => ({ total, ...(target === undefined ? {} : { state
     assert(/Contact your loan officer/.test(tsB), 'structuralLockReason: borrower term-sheet message unchanged');
     assert(await lock.structuralLockReason('a', fakeClient({ status: 'funded', unlocked: new Date() }), SUPER) === null,
       'structuralLockReason: super-admin unlock still honored');
-    // The term-sheet freeze is NEVER bypassed by an unlock — the load-bearing rule.
+    // The unlock lifts BOTH freezes on a STATUS-locked file (owner-reported
+    // 2026-07-27): every funded / cleared-to-close file has a SIGNED term sheet,
+    // so leaving the term-sheet freeze standing made the unlock do nothing, and
+    // its "clear the package" advice would void a signed term sheet.
     const both = await lock.structuralLockReason('a', fakeClient({ status: 'funded', unlocked: new Date(), tsSent: true }), SUPER);
-    assert(!!both && /Clear the Term Sheet package/.test(both),
-      'structuralLockReason: a super-admin unlock does NOT bypass the term-sheet freeze');
+    assert(both === null,
+      'structuralLockReason: on a funded file the super-admin unlock lifts the term-sheet freeze too');
+    // …but ONLY for the super_admin who unlocked it, and ONLY on a status-locked
+    // file. Everywhere else the 2026-07-22 rule stands: clear the package.
+    const bothAdmin = await lock.structuralLockReason('a', fakeClient({ status: 'funded', unlocked: new Date(), tsSent: true }), STAFF);
+    assert(!!bothAdmin, 'structuralLockReason: a regular admin is still frozen on that same unlocked file');
+    const preCtc = await lock.structuralLockReason('a', fakeClient({ status: 'processing', unlocked: new Date(), tsSent: true }), SUPER);
+    assert(!!preCtc && /Clear the Term Sheet package/.test(preCtc),
+      'structuralLockReason: BEFORE Clear to Close an in-flight term sheet still freezes the file — clear the package');
   }
 
   console.log(failures ? `\n${failures} FAILURE(S)` : '\nAll Scope-of-Work reallocation lock checks passed.');
