@@ -51,7 +51,9 @@ const RESERVE = parseInt(process.env.LOCAL_PREFIX_RESERVE || '90', 10);
 // per-PC prefix we can't see (RESERVE), plus "/<name>".
 function localLen(item) {
   const p = (item.parentReference && item.parentReference.path) || '';
-  const rel = decodeURIComponent(p).replace(/^.*?root:\/?/, '');
+  let decoded = p;
+  try { decoded = decodeURIComponent(p); } catch (_) { /* malformed %-seq — use raw */ }
+  const rel = decoded.replace(/^.*?root:\/?/, '');
   return RESERVE + rel.length + 1 + String(item.name || '').length;
 }
 
@@ -91,14 +93,13 @@ function localLen(item) {
       const before = localLen(item);
       if (before <= CEILING) { filesSkipped++; continue; }          // already openable — leave it
       const after = before - (String(item.name).length - short.length);
-      if (!APPLY) {
+      // Run the SAME guards in dry-run and apply (dryRun stops before the PATCH),
+      // so the preview faithfully reflects what --apply would do.
+      const res = await sp.renameOwnItem(driveId, ref.itemId, short, { kind: 'file', dryRun: !APPLY }).catch((e) => ({ skipped: true, reason: e.message }));
+      if (res.renamed || res.wouldRename) {
         filesRenamed++;
-        if (filesRenamed <= 60) console.log(`  would rename FILE  ${before}→${after}  "${item.name}" → "${short}"`);
-        continue;
-      }
-      const res = await sp.renameOwnItem(driveId, ref.itemId, short, { kind: 'file' }).catch((e) => ({ skipped: true, reason: e.message }));
-      if (res.renamed) { filesRenamed++; if (filesRenamed % 50 === 0) console.log(`  …${filesRenamed} files renamed`); }
-      else { filesSkipped++; console.log(`  skip FILE doc ${d.id}: ${res.reason}`); }
+        if (filesRenamed <= 60 || (APPLY && filesRenamed % 50 === 0)) console.log(`  ${APPLY ? 'renamed' : 'would rename'} FILE  ${before}→${after}  "${res.from}" → "${res.to}"`);
+      } else { filesSkipped++; console.log(`  skip FILE doc ${d.id}: ${res.reason}`); }
     }
   }
 
@@ -121,14 +122,11 @@ function localLen(item) {
         const plain = sp.dropSyncMarker(nm);
         if (plain && !done.has(f.id)) {
           done.add(f.id); foldersSeen++;
-          if (!APPLY) {
+          const res = await sp.renameOwnItem(driveId, f.id, plain, { kind: 'folder', dryRun: !APPLY }).catch((e) => ({ skipped: true, reason: e.message }));
+          if (res.renamed || res.wouldRename) {
             foldersRenamed++;
-            if (foldersRenamed <= 60) console.log(`  would rename FOLDER "${nm}" → "${plain}"`);
-          } else {
-            const res = await sp.renameOwnItem(driveId, f.id, plain, { kind: 'folder' }).catch((e) => ({ skipped: true, reason: e.message }));
-            if (res.renamed) { foldersRenamed++; if (foldersRenamed % 25 === 0) console.log(`  …${foldersRenamed} folders renamed`); }
-            else { foldersSkipped++; console.log(`  skip FOLDER "${nm}": ${res.reason}`); }
-          }
+            if (foldersRenamed <= 60 || (APPLY && foldersRenamed % 25 === 0)) console.log(`  ${APPLY ? 'renamed' : 'would rename'} FOLDER "${res.from}" → "${res.to}"`);
+          } else { foldersSkipped++; console.log(`  skip FOLDER "${nm}": ${res.reason}`); }
         }
         cursor = f.parentReference;
       }

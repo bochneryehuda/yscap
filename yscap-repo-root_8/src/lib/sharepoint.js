@@ -228,7 +228,10 @@ async function itemByPath(driveId, relPath) {
   return graph(`/drives/${driveId}/root:/${enc}`);
 }
 
-const ITEM_META_SELECT = '$select=id,name,size,file,parentReference,webUrl,eTag,createdDateTime,createdBy,lastModifiedDateTime,malware';
+// `folder` is REQUIRED here (not just `file`) so renameOwnItem can tell a folder
+// from a file — Graph `$select` returns ONLY the named facets, so without it
+// `!!cur.folder` is always false and the folder repair silently no-ops.
+const ITEM_META_SELECT = '$select=id,name,size,file,folder,parentReference,webUrl,eTag,createdDateTime,createdBy,lastModifiedDateTime,malware';
 
 // Office formats are REWRITTEN by SharePoint seconds after upload ("property
 // promotion" stamps document properties into the file — size AND hash drift).
@@ -450,7 +453,7 @@ async function moveOwnItem(driveId, itemId, newParentId, { expectedParentId }) {
  *      nothing happens.
  * Returns { renamed, from, to, isFolder } or { skipped, reason }.
  */
-async function renameOwnItem(driveId, itemId, newName, { kind } = {}) {
+async function renameOwnItem(driveId, itemId, newName, { kind, dryRun } = {}) {
   const clean = seg(newName);
   if (!clean || clean === '_') return { skipped: true, reason: 'empty/degenerate new name' };
   const cur = await graph(`/drives/${driveId}/items/${itemId}?${ITEM_META_SELECT}`);
@@ -486,10 +489,17 @@ async function renameOwnItem(driveId, itemId, newName, { kind } = {}) {
       return { skipped: true, reason: `a sibling named "${clean}" already exists — a human must merge them` };
     }
   }
-  // R5 — pinned rename.
+  // R5 — pinned rename. If-Match is REQUIRED: without the eTag a concurrent human
+  // edit can't 412-refuse the rename, so fail closed rather than rename unpinned
+  // (mirrors deleteReplacedCorruptMirror). Graph always returns an eTag.
+  if (!cur.eTag) return { skipped: true, reason: 'no eTag to pin the rename (cannot guarantee concurrency safety)' };
+  // dryRun: every guard above has passed (createdByThisApp + ancestry + no
+  // collision + eTag present) — report what WOULD happen without mutating, so the
+  // repair script's preview is faithful to --apply.
+  if (dryRun) return { wouldRename: true, from: cur.name, to: clean, isFolder };
   await graph(`/drives/${driveId}/items/${itemId}`, {
     method: 'PATCH',
-    headers: { 'Content-Type': 'application/json', ...(cur.eTag ? { 'If-Match': cur.eTag } : {}) },
+    headers: { 'Content-Type': 'application/json', 'If-Match': cur.eTag },
     body: JSON.stringify({ name: clean }),
   });
   return { renamed: true, from: cur.name, to: clean, isFolder };
@@ -699,6 +709,7 @@ module.exports = {
   moveOwnItem,
   renameOwnItem,
   dropSyncMarker,
+  _ITEM_META_SELECT: ITEM_META_SELECT,   // exported for a regression test (must carry the folder facet)
   makeRef,
   parseRef,
   seg,

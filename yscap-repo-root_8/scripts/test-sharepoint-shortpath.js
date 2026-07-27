@@ -102,6 +102,10 @@ eq('the LEAF sync folder is NEVER un-marked (it is the marker)', SP.dropSyncMark
 eq('a folder whose name merely contains the words is not falsely stripped', SP.dropSyncMarker('Synced by Pilot notes'), null);
 eq('null/empty is safe', SP.dropSyncMarker(null), null);
 ok('renameOwnItem + dropSyncMarker are exported', typeof SP.renameOwnItem === 'function' && typeof SP.dropSyncMarker === 'function');
+// Regression guard for the folder-repair no-op: renameOwnItem tells a folder from
+// a file via cur.folder, which Graph only returns when the $select asks for it.
+ok('ITEM_META_SELECT requests the folder facet (else the folder repair silently no-ops)', /[,=]folder(?:,|$)/.test(String(SP._ITEM_META_SELECT || '')));
+ok('ITEM_META_SELECT still requests file + eTag', /[,=]file,/.test(String(SP._ITEM_META_SELECT || '')) && /eTag/.test(String(SP._ITEM_META_SELECT || '')));
 
 console.log(`test-sharepoint-shortpath: ${pass} passed, ${fail} failed`);
 if (fail) process.exit(1);
