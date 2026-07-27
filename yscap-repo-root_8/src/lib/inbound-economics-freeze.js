@@ -173,4 +173,82 @@ async function applyInboundEconomicsFreeze({ appId, cols, taskId, borrowerId, cl
   return changed.map((c) => c.field);
 }
 
-module.exports = { FROZEN_ECON_FIELDS, FROZEN_KEYS, sameValue, fieldSame, changedFrozenFields, summarize, applyInboundEconomicsFreeze };
+/**
+ * ACCEPT the held ClickUp economics change on a FROZEN file — the deliberate
+ * human override of the freeze (owner-directed 2026-07-27: "we always also need
+ * the option to keep ClickUp's figure and update our system … in the manual
+ * review to approve that the changes may happen to a locked file").
+ *
+ * This is the mirror of the KEEP-PILOT'S-FIGURES action: instead of pushing the
+ * file's frozen figures back to ClickUp, it pulls ClickUp's figures INTO the
+ * frozen file. It is used for reconciled/closed files that were finished in
+ * ClickUp and whose figures PILOT should now match.
+ *
+ * Correct + safe by construction:
+ *   • Values are RE-READ LIVE from ClickUp at accept time (like every other
+ *     review resolver) — the row's stored `changes` are display-only and can go
+ *     stale, so we never trust them for the write.
+ *   • It reuses the EXACT inbound mapping + sanitizers (`readTaskFields`,
+ *     `sanitizeLoanType`, `sanitizePropertyType`) and the SAME `changedFrozenFields`
+ *     comparison the freeze uses — so what it writes is byte-for-byte what a normal
+ *     inbound pull WOULD have written if the file weren't frozen.
+ *   • It only ever writes the FROZEN economics fields that genuinely differ, and a
+ *     blank ClickUp value never clears a real figure (COALESCE semantics, via
+ *     changedFrozenFields skipping null-incoming).
+ *   • Writing the economics reopens the pricing/SOW conditions through the normal
+ *     db/071/072 trigger (the registered product no longer matches the new
+ *     numbers) — the intended, honest consequence; ClickUp already holds these
+ *     values, so nothing is pushed back.
+ *
+ * @returns {Promise<{applied:Array, upToDate:boolean, taskId?:string}>}
+ */
+async function acceptInboundEconomicsChange({ appId, actorId = null, taskId = null, client = db }) {
+  if (!appId) { const e = new Error('no application on this review'); e.status = 422; e.expose = true; throw e; }
+  const appRow = (await client.query(
+    `SELECT clickup_pipeline_task_id, clickup_list_id, ${FROZEN_KEYS.join(', ')} FROM applications WHERE id=$1`, [appId])).rows[0];
+  if (!appRow) { const e = new Error('the file no longer exists'); e.status = 404; e.expose = true; throw e; }
+  const tid = taskId || appRow.clickup_pipeline_task_id;
+  if (!tid || String(tid).startsWith('app:')) {
+    const e = new Error('this file has no ClickUp task to read the change from'); e.status = 409; e.expose = true; throw e;
+  }
+  const clickup = require('../clickup/client');
+  const mapper = require('../clickup/mapper');
+  const registry = require('../clickup/registry');
+  const { sanitizeLoanType } = require('./fields');
+  const { sanitizePropertyType } = require('./property-type');
+
+  // Live re-read (the ClickUp client error carries its own HTTP `.status`; the
+  // route maps a non-expose status to 502 so an upstream 401 never logs the
+  // staff user out).
+  const task = await clickup.getTask(tid, { include: ['custom_fields'] });
+  let options = {};
+  try { options = await registry.optionMap(appRow.clickup_list_id); }
+  catch (_) { try { options = registry.peek(); } catch (_2) { options = {}; } }
+  const a = (mapper.readTaskFields(task, options).app) || {};
+  // Build the incoming frozen-economics values EXACTLY as the inbound pull does
+  // (same two sanitizers — #95 loan_type, #FNM1025 property_type — so a bad value
+  // is refused, not written).
+  const incoming = {
+    loan_amount: a.loan_amount, purchase_price: a.purchase_price, as_is_value: a.as_is_value, arv: a.arv,
+    rehab_budget: a.rehab_budget, program: a.program,
+    loan_type: sanitizeLoanType(a.loan_type),
+    property_type: sanitizePropertyType(a.property_type),
+    units: a.units, term: a.term, is_assignment: a.is_assignment,
+    underlying_contract_price: a.underlying_contract_price, assignment_fee: a.assignment_fee,
+  };
+  const changed = changedFrozenFields(incoming, appRow);
+  if (!changed.length) return { applied: [], upToDate: true, taskId: tid };
+
+  // Apply the ClickUp values to the file — the override. One UPDATE, the typed
+  // values the inbound pull itself would have written.
+  const set = changed.map((c, i) => `${c.field} = $${i + 2}`).join(', ');
+  const vals = changed.map((c) => incoming[c.field]);
+  await client.query(`UPDATE applications SET ${set}, updated_at=now() WHERE id=$1`, [appId, ...vals]);
+  await client.query(
+    `INSERT INTO audit_log (actor_kind, actor_id, action, entity_type, entity_id, detail)
+     VALUES ($1,$2,'clickup_pull_economics_accepted','application',$3,$4)`,
+    [actorId ? 'staff' : 'system', actorId, appId, JSON.stringify({ taskId: tid, changes: changed })]);
+  return { applied: changed, upToDate: false, taskId: tid };
+}
+
+module.exports = { FROZEN_ECON_FIELDS, FROZEN_KEYS, sameValue, fieldSame, changedFrozenFields, summarize, applyInboundEconomicsFreeze, acceptInboundEconomicsChange };

@@ -7,7 +7,7 @@
  * overwritten. No DB.
  */
 const assert = require('assert');
-const { changedFrozenFields, sameValue, FROZEN_KEYS, summarize } = require('../src/lib/inbound-economics-freeze');
+const { changedFrozenFields, sameValue, FROZEN_KEYS, summarize, acceptInboundEconomicsChange } = require('../src/lib/inbound-economics-freeze');
 
 let failures = 0;
 const ok = (c, m) => { console.log(`${c ? 'PASS' : 'FAIL'} ${m}`); if (!c) failures++; };
@@ -88,6 +88,17 @@ ok(!FROZEN_KEYS.includes('title_company') && !FROZEN_KEYS.includes('actual_rate'
   ok(ch.length === 1 && ch[0].field === 'term' && ch[0].from === '12' && ch[0].to === '24', 'changed: a loan-term change is flagged');
 }
 
-assert.strictEqual(failures, 0, `${failures} assertion(s) failed`);
-console.log(failures ? `\n${failures} failed` : '\nALL inbound-economics-freeze assertions passed');
-process.exit(failures ? 1 : 0);
+// ACCEPT-override (owner-directed 2026-07-27): the mirror of keep-PILOT — pull
+// ClickUp's frozen figures INTO the locked file. Exported and validates its
+// inputs before any DB/ClickUp work (the no-application guard is pure).
+ok(typeof acceptInboundEconomicsChange === 'function', 'export: acceptInboundEconomicsChange is available');
+(async () => {
+  let threw = null;
+  try { await acceptInboundEconomicsChange({ appId: null }); } catch (e) { threw = e; }
+  ok(threw && threw.status === 422 && threw.expose === true,
+    'accept: a missing application id is refused (422, before any DB work)');
+
+  assert.strictEqual(failures, 0, `${failures} assertion(s) failed`);
+  console.log(failures ? `\n${failures} failed` : '\nALL inbound-economics-freeze assertions passed');
+  process.exit(failures ? 1 : 0);
+})();
