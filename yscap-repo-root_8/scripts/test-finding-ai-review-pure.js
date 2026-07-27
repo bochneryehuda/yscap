@@ -80,6 +80,15 @@ assert.deepStrictEqual(r.annotateFindings([{ code: 'x' }], 'not-a-map').shown.le
   assert.strictEqual(n2.verdict, 'uncertain', 'an unknown verdict degrades to uncertain (never hides a finding)');
   assert.strictEqual(n2.confidence, null);
   assert.strictEqual(n2.suggested_severity, 'unchanged');
+  // Borrower-facing condition wording is captured AND scrubbed of any note-buyer name.
+  const nb = normalize({ verdict: 'confirmed', isRealConcern: true, confidence: 0.9, reasoning: 'r',
+    suggestedResolution: 's', suggestedDocument: 'd', suggestedSeverity: 'unchanged',
+    borrowerLabel: 'Recent bank statements', borrowerHint: 'Please upload your two most recent Blue Lake statements' });
+  assert.strictEqual(nb.borrower_label, 'Recent bank statements', 'borrower label captured');
+  assert.ok(nb.borrower_hint && !/blue\s*lake/i.test(nb.borrower_hint), 'a note-buyer name is scrubbed from the borrower hint');
+  const nEmpty = normalize({ verdict: 'rejected', isRealConcern: false, confidence: 0.9, reasoning: 'r',
+    suggestedResolution: '', suggestedDocument: '', suggestedSeverity: 'unchanged', borrowerLabel: '', borrowerHint: '' });
+  assert.strictEqual(nEmpty.borrower_label, null, 'empty borrower wording → null');
 }
 
 // --- PERSISTED (snake_case) findings are read the same as DERIVED (camelCase) ones ---

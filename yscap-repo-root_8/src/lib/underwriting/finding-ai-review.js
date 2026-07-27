@@ -80,18 +80,24 @@ const SCHEMA = {
     suggestedResolution: { type: 'string' },
     suggestedDocument: { type: 'string' },
     suggestedSeverity: { type: 'string', enum: ['fatal', 'warning', 'info', 'unchanged'] },
+    // Borrower-facing wording for a condition (owner-directed 2026-07-27): a short plain-English
+    // label + a one-line hint the borrower would see, so a human can convert a confirmed finding to a
+    // condition with the copy pre-written. MUST NOT name any capital partner / note buyer.
+    borrowerLabel: { type: 'string' },
+    borrowerHint: { type: 'string' },
   },
-  required: ['verdict', 'isRealConcern', 'confidence', 'reasoning', 'suggestedResolution', 'suggestedDocument', 'suggestedSeverity'],
+  required: ['verdict', 'isRealConcern', 'confidence', 'reasoning', 'suggestedResolution', 'suggestedDocument', 'suggestedSeverity', 'borrowerLabel', 'borrowerHint'],
 };
 
 const SYSTEM = `You are a SENIOR mortgage-underwriting QA reviewer checking the work of PILOT, an automated finding system. PILOT raised a finding on a loan file. You are given the ENTIRE loan file, the SOURCE DOCUMENT the finding is based on, and PILOT's finding with its reasoning.
 FIRST, understand the WHOLE DEAL before you judge anything — read the loan file and work out the complete picture: is this an ASSIGNMENT/wholesale deal or a straight purchase (on an assignment the purchase contract names the wholesaler, NOT our vesting entity, and the price on the contract may be the seller's underlying price, not the fee-inclusive total); the PURCHASE PRICE; the LOAN AMOUNT; the AS-IS value and the ARV; the LTV, LTC and LTARV; the rehab budget; the program and the note buyer. A finding only makes sense in the context of these numbers — e.g. a "price doesn't match" is not a real problem if the two prices are the seller price and the fee-inclusive total on an assignment, and a value that looks off may be exactly right once you see the as-is vs ARV vs loan amount relationship. Analyze the finding AGAINST this full economic picture.
 THEN decide whether this is a REAL, concerning finding a human underwriter should act on — or a FALSE ALARM: a mechanical misunderstanding by an automated system that compared the wrong things or doesn't understand context. Automated findings are frequently wrong in exactly these ways: comparing a seller/current owner to the buyer, treating a formatting or spelling difference as a mismatch, flagging a value that is actually correct in context (e.g. an assignment's seller price vs the fee-inclusive total, or a value that is fine given the deal's LTV/LTC/ARV), or asking for a document that is already on the file. Be SKEPTICAL of the automated finding.
+NAME/ENTITY MATCHES are the single most common false alarm — judge two names as the SAME PARTY when they are only mechanically different: a nickname or short form (Bob/Robert, Mike/Michael), a spelling or transliteration variant (Muhammad/Mohammed/Mohamed), an obvious OCR slip (rn↔m, 0↔O, a dropped accent José/Jose), a maiden/married name change, a middle name or initial present on one side only, or an ENTITY worded differently but clearly the same company (a different corporate suffix LLC/L.L.C./Inc, punctuation/spacing, or an added/dropped descriptor like "5 New Monrose Ave Holdings LLC" vs "5 New Monrose Holdings, LLC"). Treat these as a MATCH (reject the finding). Conversely, do NOT be fooled by containment into calling two genuinely different companies the same (e.g. "Maple LLC" is NOT "Maple Grove Holdings LLC") — that is a real concern, confirm it.
 Return verdict:
  - "confirmed" = this is a genuine concern; a human should act on it.
  - "rejected" = this is a false alarm / a misunderstanding; it should NOT be shown to the underwriter.
  - "uncertain" = you genuinely cannot tell from what you were given.
-Set confidence honestly (0..1). Set isRealConcern to match the verdict. If confirmed or uncertain, give the concrete suggested resolution and the specific document to request (empty string if none). Ground STRICTLY on what you were given — never invent a fact, a number, or a document that is not present. When in doubt between rejected and uncertain, choose uncertain (a real finding must never be hidden on a guess).`;
+Set confidence honestly (0..1). Set isRealConcern to match the verdict. If confirmed or uncertain, give the concrete suggested resolution and the specific document to request (empty string if none). ALSO write borrowerLabel + borrowerHint: a short plain-English condition label and a one-line hint the BORROWER would see (e.g. "Recent bank statements" / "Please upload your two most recent monthly bank statements") — ordinary borrower language, and NEVER name a capital partner, note buyer, or investor. If the finding is a false alarm or has nothing to request from the borrower, return empty strings for both. Ground STRICTLY on what you were given — never invent a fact, a number, or a document that is not present. When in doubt between rejected and uncertain, choose uncertain (a real finding must never be hidden on a guess).`;
 
 /**
  * A stable fingerprint of a finding's identity — the same finding on a re-read maps to the same
@@ -281,7 +287,20 @@ function normalize(data) {
     suggested_resolution: d.suggestedResolution ? String(d.suggestedResolution).slice(0, 1000) : null,
     suggested_document: d.suggestedDocument ? String(d.suggestedDocument).slice(0, 400) : null,
     suggested_severity: ['fatal', 'warning', 'info', 'unchanged'].includes(d.suggestedSeverity) ? d.suggestedSeverity : 'unchanged',
+    // Borrower-facing condition wording — belt-and-suspenders scrubbed of any capital-partner /
+    // note-buyer name (the model is told not to name one, and scrubText enforces it regardless).
+    borrower_label: scrubBorrower(d.borrowerLabel, 160),
+    borrower_hint: scrubBorrower(d.borrowerHint, 500),
   };
+}
+
+// Scrub + bound a borrower-facing string; a note-buyer name can NEVER reach a borrower surface.
+function scrubBorrower(v, max) {
+  if (!v) return null;
+  let s = String(v).slice(0, max);
+  try { const bs = require('../borrower-safe'); if (bs && bs.scrubText) s = bs.scrubText(s); } catch (_) { /* scrub is belt-and-suspenders */ }
+  s = s && s.trim();
+  return s || null;
 }
 
 async function persist(client, appId, finding, fingerprint, review, groundingHash) {
@@ -290,21 +309,23 @@ async function persist(client, appId, finding, fingerprint, review, groundingHas
       `INSERT INTO finding_ai_reviews
          (application_id, fingerprint, claim_key, code, verdict, is_real_concern, confidence,
           reasoning, suggested_resolution, suggested_document, suggested_severity, model, grounding_hash,
-          verdict2, confidence2, reasoning2, model2)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17)
+          verdict2, confidence2, reasoning2, model2, borrower_label, borrower_hint)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19)
        ON CONFLICT (application_id, fingerprint) DO UPDATE SET
          verdict=EXCLUDED.verdict, is_real_concern=EXCLUDED.is_real_concern, confidence=EXCLUDED.confidence,
          reasoning=EXCLUDED.reasoning, suggested_resolution=EXCLUDED.suggested_resolution,
          suggested_document=EXCLUDED.suggested_document, suggested_severity=EXCLUDED.suggested_severity,
          grounding_hash=EXCLUDED.grounding_hash,
          verdict2=EXCLUDED.verdict2, confidence2=EXCLUDED.confidence2, reasoning2=EXCLUDED.reasoning2,
-         model2=EXCLUDED.model2, updated_at=now()`,
+         model2=EXCLUDED.model2, borrower_label=EXCLUDED.borrower_label, borrower_hint=EXCLUDED.borrower_hint,
+         updated_at=now()`,
       [appId, fingerprint, claimOf(finding) || null, finding.code || null,
        review.verdict, review.is_real_concern, review.confidence, review.reasoning,
        review.suggested_resolution, review.suggested_document, review.suggested_severity,
        'azure-openai', groundingHash || null,
        review.verdict2 || null, review.confidence2 != null ? review.confidence2 : null,
-       review.reasoning2 || null, review.model2 || null]);
+       review.reasoning2 || null, review.model2 || null,
+       review.borrower_label || null, review.borrower_hint || null]);
   } catch (_) { /* persistence is best-effort — a failed write just means a re-review next pass */ }
 }
 
@@ -401,6 +422,9 @@ function annotateFindings(findings, memory) {
           verdict: review.verdict, confidence: review.confidence, reasoning: review.reasoning,
           suggestedResolution: review.suggested_resolution, suggestedDocument: review.suggested_document,
           suggestedSeverity: review.suggested_severity,
+          // The AI-drafted, note-buyer-scrubbed borrower-facing condition wording (owner-directed
+          // 2026-07-27) — a human clicks to convert with the copy pre-written.
+          borrowerLabel: review.borrower_label || null, borrowerHint: review.borrower_hint || null,
           // The second, independent model's take (Claude) when it weighed in — so the desk can show
           // "a second AI agrees / disagrees". Present only on findings the primary tried to hide.
           secondModel: review.verdict2 != null ? {

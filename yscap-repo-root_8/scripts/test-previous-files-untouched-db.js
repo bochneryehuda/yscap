@@ -9,7 +9,7 @@
  * The redesign (docs/LOAN-FILE-SIMPLICITY-BLUEPRINT.md phases 1-4) is almost
  * entirely rendering: new words, new dot colours, a front-door card, and a
  * summary line per shut section. Exactly ONE piece of it writes to stored data —
- * db/340, which moves an AI-created condition out of the red "issue" bucket it
+ * db/342, which moves an AI-created condition out of the red "issue" bucket it
  * was wrongly born into. This test pins what that migration may and may not do,
  * against a database carrying a realistic older file.
  *
@@ -110,7 +110,7 @@ const U = (c) => c.query('SELECT gen_random_uuid() AS id').then(r => r.rows[0].i
     //  existing file goes through — not an approximation of it.)
     const fs = require('fs');
     const path = require('path');
-    const sql = fs.readFileSync(path.join(__dirname, '..', 'db', '340_ai_condition_not_red.sql'), 'utf8');
+    const sql = fs.readFileSync(path.join(__dirname, '..', 'db', '342_ai_condition_not_red.sql'), 'utf8');
     await c.query(sql);
 
     const after = await snap();
