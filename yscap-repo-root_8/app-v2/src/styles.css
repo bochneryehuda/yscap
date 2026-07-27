@@ -1108,6 +1108,12 @@ input[type=checkbox],input[type=radio]{width:16px;height:16px;accent-color:var(-
   text-overflow:ellipsis;white-space:nowrap}
 .toolsheet-titles .small{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .toolsheet-done{flex:none}
+/* The always-available way out of a tool sheet (owner-directed 2026-07-26): a
+   refused save keeps the user in the tool on purpose, so there must be one
+   click that just LEAVES. Never hidden, never disabled — sized down on a phone
+   so the header still fits back-arrow + Leave + Done. */
+.toolsheet-exit{flex:none;white-space:nowrap}
+.toolsheet-exit-short{display:none}
 .toolsheet-body{flex:1;min-height:0;position:relative;display:flex;flex-direction:column;
   padding-bottom:env(safe-area-inset-bottom)}
 .toolsheet-savewash{position:absolute;inset:0;z-index:5;display:flex;flex-direction:column;
@@ -1130,6 +1136,9 @@ input[type=checkbox],input[type=radio]{width:16px;height:16px;accent-color:var(-
   .toolsheet-titles .small{display:none}
   .toolsheet-titles strong{font-size:15px}
   .toolsheet-done{padding:9px 16px}
+  .toolsheet-exit{padding:9px 10px}
+  .toolsheet-exit-long{display:none}
+  .toolsheet-exit-short{display:inline}
 }
 @media(prefers-reduced-motion:reduce){.toolsheet{animation:none}}
 

@@ -62,13 +62,16 @@ function fakeRouter(plan, recorded) {
     let loadedFor = null;
     const loadBytes = async (_db, documentId) => { loadedFor = documentId; return { buffer: Buffer.from('%PDF-1.4 test'), base64: 'JVBERi0x', mimeType: 'application/pdf', filename: 'x.pdf' }; };
     let sawRequest = null;
-    const router = { ...fakeRouter(plan, recorded), routeDocument: async (args) => { sawRequest = args.request; return { outcome: 'completed', result: { confidence: 0.88 } }; } };
-    const proc = PC.makePacketControlProcessor({ router, adapters: [{ provider: 'azure', service: 'document_intelligence', analyze: async () => ({}) }], loadBytes });
+    const router = { ...fakeRouter(plan, recorded), routeDocument: async (args) => { sawRequest = args.request; return { outcome: 'completed', result: { confidence: 0.88, documentType: 'bank_statement', segments: [{ pages: [1], confidence: 0.9 }] } }; } };
+    // classifier:null = "explicitly no classifier" (RS-2). Passed rather than left undefined so this
+    // case asserts the not-applicable path deterministically, instead of depending on whether the
+    // environment running the test happens to have Azure credentials.
+    const proc = PC.makePacketControlProcessor({ router, adapters: [{ provider: 'azure', service: 'document_intelligence', analyze: async () => ({}) }], loadBytes, classifier: null });
     const out = await proc(job, { db: {}, jq });
     ok(out.status === 'completed', 'read path: completes');
     const keys = jq.stages.map((s) => s.key + ':' + s.status);
     ok(keys.includes('ocr_layout:completed'), 'read path: ocr_layout completed');
-    ok(keys.includes('classification:pending'), 'read path: classification pending (not yet wired)');
+    ok(keys.includes('classification:not_applicable'), 'read path: no trained classifier → classification not_applicable (never a permanent "pending")');
     ok(loadedFor === 'doc-1', 'read path: loadBytes called with the job document id');
     ok(sawRequest && sawRequest.buffer && sawRequest.mimeType === 'application/pdf', 'read path: the loaded bytes are passed to routeDocument as the request');
     const art = jq.artifacts.find((a) => a.kind === 'ocr_result');
@@ -97,7 +100,7 @@ function fakeRouter(plan, recorded) {
       }),
     };
     const loadBytes = async () => ({ buffer: Buffer.from('%PDF'), base64: 'JVBE', mimeType: 'application/pdf', filename: 'x.pdf' });
-    const proc = PC.makePacketControlProcessor({ router, adapters: [{ provider: 'azure', service: 'document_intelligence', analyze: async () => ({}) }], loadBytes });
+    const proc = PC.makePacketControlProcessor({ router, adapters: [{ provider: 'azure', service: 'document_intelligence', analyze: async () => ({}) }], loadBytes, classifier: null });
     const out = await proc(job, { db, jq });
     ok(out.status === 'completed', 'evidence path: processor completes');
     ok(evidenceInserts.length === 2, 'evidence path: two candidates recorded (document_type + one field)');
@@ -135,7 +138,14 @@ function fakeRouter(plan, recorded) {
     const jobWithBytes = { id: 'job-b', document_id: 'doc-1', payload: { features: { docType: 'bank_statement' }, request: { base64: 'QUJD' } } };
     const proc = PC.makePacketControlProcessor({ router, adapters: [{ provider: 'azure', service: 'document_intelligence', analyze: async () => ({}) }], loadBytes: async () => { loadCalled = true; return null; } });
     const out = await proc(jobWithBytes, { db: {}, jq });
-    ok(out.status === 'completed' && loadCalled === false, 'payload already carries bytes → loadBytes not called, read proceeds');
+    // The point of this case is the BYTES path: the payload already carries them, so the loader
+    // must not be called. Kept as its own assertion rather than bundled with the job outcome.
+    ok(loadCalled === false, 'payload already carries bytes → loadBytes is not called');
+    // RS-1: this fixture's read returns {} — literally nothing — so the job must NOT complete.
+    // Reading a document and recording no evidence is not a finished job, and saying otherwise is
+    // the "completed but nothing came out" defect one step further down the pipeline.
+    ok(out.status !== 'completed',
+      `a read that produced nothing does not complete (got ${out.status})`);
     ok(jq.stages.map((s) => s.key + ':' + s.status).includes('ocr_layout:completed'), 'payload bytes → ocr_layout completed');
   }
 
@@ -167,6 +177,198 @@ function fakeRouter(plan, recorded) {
     const proc = PC.makePacketControlProcessor({ router: fakeRouter(plan, recorded) });
     const out = await proc(job, { db: {}, jq: badJq });
     ok(out.status === 'completed', 'a throwing recordStage is swallowed — processor still completes');
+  }
+
+  /* ---- RS-2: CLASSIFICATION is a real stage with real outcomes ----
+     The stage used to record 'pending' / "classifier stage not yet wired" on every document, which
+     is the exact shape of a hole with a label on it: the status never changed, so no reader could
+     ever tell a working classifier from an absent one. These cases pin each outcome. */
+  const readPlan = { primary: { provider: 'azure', service: 'document_intelligence', adapterKey: 'azure/document_intelligence' }, challenger: null, reason: 'r', materiality: 'high', specialHandling: [] };
+  const okBytes = async () => ({ buffer: Buffer.from('%PDF'), base64: 'JVBE', mimeType: 'application/pdf', filename: 'x.pdf' });
+  // A read result that actually YIELDS something. These cases are about the classification stage,
+  // but the job's overall outcome also depends on RS-1's evidence gate — a read that produces no
+  // evidence candidates correctly fails the job closed. A fixture with no documentType and no
+  // fields would fail for that reason and tell us nothing about classification.
+  const readRouter = (recorded) => ({
+    ...fakeRouter(readPlan, recorded),
+    routeDocument: async () => ({
+      outcome: 'completed',
+      result: {
+        documentType: 'bank_statement', confidence: 0.9, pages: [{ text: 'x' }],
+        fields: [{ key: 'account_holder', value: 'John Smith', confidence: 0.88, page: 1 }],
+      },
+    }),
+  });
+
+  // a) classifier CONFIRMS the filed family → completed + a 'match' verdict
+  {
+    const jq = fakeJq(); const recorded = [];
+    const classifier = {
+      classifierConfigured: () => true,
+      classify: async () => ({ ok: true, segments: [{ docType: 'bank_statement', rawLabel: 'bankStatement', confidence: 0.94, pages: [1, 2] }] }),
+    };
+    const proc = PC.makePacketControlProcessor({ router: readRouter(recorded), adapters: [{ provider: 'azure', service: 'document_intelligence', analyze: async () => ({}) }], loadBytes: okBytes, classifier });
+    const out = await proc(job, { db: {}, jq });
+    const keys = jq.stages.map((s) => s.key + ':' + s.status);
+    ok(keys.includes('classification:completed'), 'classifier agrees → classification completed');
+    const art = jq.artifacts.find((a) => a.kind === 'classification');
+    ok(art && art.meta.detectedFamily === 'bank_statement' && art.meta.familyMatch === 'match', 'classification artifact records the detected family + a match verdict');
+    ok(art && art.meta.pageCount === 2 && art.meta.segmentCount === 1, 'classification artifact records the page map');
+    ok(out.status === 'completed', 'a matching classification does not change the job outcome');
+  }
+
+  // b) classifier says it is something ELSE → still completed, but the mismatch is RECORDED.
+  //    This is the whole point of the stage: "filed as a purchase contract, reads like a bank
+  //    statement" becomes visible at intake. It stays ADVISORY — the job still completes, nothing
+  //    is re-filed, no condition moves.
+  {
+    const jq = fakeJq(); const recorded = [];
+    const classifier = {
+      classifierConfigured: () => true,
+      classify: async () => ({ ok: true, segments: [{ docType: 'purchase_contract', rawLabel: 'purchaseContract', confidence: 0.91, pages: [1, 2, 3] }] }),
+    };
+    const proc = PC.makePacketControlProcessor({ router: readRouter(recorded), adapters: [{ provider: 'azure', service: 'document_intelligence', analyze: async () => ({}) }], loadBytes: okBytes, classifier });
+    const out = await proc(job, { db: {}, jq });
+    const art = jq.artifacts.find((a) => a.kind === 'classification');
+    ok(art && art.meta.familyMatch === 'mismatch' && art.meta.detectedFamily === 'purchase_contract', 'a document that reads as a different type records a mismatch');
+    ok(out.status === 'completed', 'a mismatch is ADVISORY — it never fails the job');
+  }
+
+  // c) classifier ran clean but placed NOTHING → failed, and NOT retryable (same bytes, same answer)
+  {
+    const jq = fakeJq(); const recorded = [];
+    const classifier = { classifierConfigured: () => true, classify: async () => ({ ok: true, segments: [] }) };
+    const proc = PC.makePacketControlProcessor({ router: readRouter(recorded), adapters: [{ provider: 'azure', service: 'document_intelligence', analyze: async () => ({}) }], loadBytes: okBytes, classifier });
+    const out = await proc(job, { db: {}, jq });
+    const keys = jq.stages.map((s) => s.key + ':' + s.status);
+    // 'failed_terminal', not 'failed': the stages table's CHECK constraint has no 'failed', and the
+    // stage write is swallowed — a bare 'failed' meant no row was written at all.
+    ok(keys.includes('classification:failed_terminal'), 'classified as nothing → failed_terminal');
+    ok(!keys.includes('classification:failed_retryable'), 'classified as nothing is NOT retryable (a paid re-call reaches the same answer)');
+    // AUDIT FIX: this must NOT dead-letter the job. The read and the evidence write both succeeded;
+    // an advisory stage's verdict never throws away a good record (and a dead-lettered job is never
+    // re-created for that document, so it would stay dead even after the model was retrained).
+    ok(out.status === 'completed', 'a document the classifier cannot place still keeps its successful read');
+  }
+
+  // d) classifier THREW → failed_retryable (a transport blip is worth another attempt)
+  {
+    const jq = fakeJq(); const recorded = [];
+    const classifier = { classifierConfigured: () => true, classify: async () => { throw new Error('socket hang up'); } };
+    const proc = PC.makePacketControlProcessor({ router: readRouter(recorded), adapters: [{ provider: 'azure', service: 'document_intelligence', analyze: async () => ({}) }], loadBytes: okBytes, classifier });
+    const out = await proc(job, { db: {}, jq });
+    const keys = jq.stages.map((s) => s.key + ':' + s.status);
+    ok(keys.includes('classification:failed_retryable'), 'a classifier that throws → failed_retryable');
+    // Also advisory: a vendor blip must not re-run the whole processor (including the already-paid
+    // OCR read) on every retry, nor discard a document whose read succeeded.
+    ok(out.status === 'completed', 'a classifier outage does not fail a job whose read + evidence succeeded');
+  }
+
+  // e) NO trained classifier → not_applicable, the job still completes, and the stage is NOT required.
+  //    This is the ordinary state until the owner trains the model: a capability the environment does
+  //    not have must not fail every job.
+  {
+    const jq = fakeJq(); const recorded = [];
+    const proc = PC.makePacketControlProcessor({ router: readRouter(recorded), adapters: [{ provider: 'azure', service: 'document_intelligence', analyze: async () => ({}) }], loadBytes: okBytes, classifier: { classifierConfigured: () => false, classify: async () => { throw new Error('must not be called'); } } });
+    const out = await proc(job, { db: {}, jq });
+    const keys = jq.stages.map((s) => s.key + ':' + s.status);
+    ok(keys.includes('classification:not_applicable'), 'no trained classifier → not_applicable');
+    ok(out.status === 'completed', 'a missing classifier never fails a job that read the document');
+    ok(!jq.artifacts.some((a) => a.kind === 'classification'), 'no classification artifact is invented when nothing was classified');
+  }
+
+  // f) the classifier is handed the SAME bytes the read used — never a re-load, never a re-fetch
+  {
+    const jq = fakeJq(); const recorded = [];
+    let loads = 0; let sawBuffer = null;
+    const classifier = {
+      classifierConfigured: () => true,
+      classify: async ({ buffer }) => { sawBuffer = buffer; return { ok: true, segments: [{ docType: 'bank_statement', pages: [1], confidence: 0.9 }] }; },
+    };
+    const loadBytes = async () => { loads += 1; return { buffer: Buffer.from('%PDF-ONCE'), base64: 'JVBE', mimeType: 'application/pdf', filename: 'x.pdf' }; };
+    const proc = PC.makePacketControlProcessor({ router: readRouter(recorded), adapters: [{ provider: 'azure', service: 'document_intelligence', analyze: async () => ({}) }], loadBytes, classifier });
+    await proc(job, { db: {}, jq });
+    ok(loads === 1, 'the document is loaded from storage exactly once for the read + classification');
+    ok(sawBuffer && sawBuffer.toString() === '%PDF-ONCE', 'the classifier receives the same bytes the read used');
+  }
+
+  /* ---- RS-3: EVERY page is dispositioned, and the per-page rows are written ------------------
+     The unit rules live in test-page-disposition-pure.js. What is proved here is the WIRING: the
+     processor feeds the classifier's page map and the read's own pages into the accounting, records
+     the stage, and persists one row per page — and a packet that needs a human still completes,
+     because a page awaiting a person is not a reason to throw away a paid-for read. */
+  {
+    // A three-page packet: pages 1-2 are a contract, page 3 is claimed by nobody and holds text.
+    const packetRouter = (recorded) => ({
+      ...fakeRouter(readPlan, recorded),
+      routeDocument: async () => ({
+        outcome: 'completed',
+        result: {
+          documentType: 'purchase_contract', confidence: 0.9,
+          pages: [{ text: 'page one' }, { text: 'page two' }, { text: 'an orphan page' }],
+          fields: [{ key: 'seller', value: 'Acme LLC', confidence: 0.9, page: 1 }],
+        },
+      }),
+    });
+    const classifier = {
+      classifierConfigured: () => true,
+      classify: async () => ({ ok: true, segments: [{ docType: 'purchase_contract', rawLabel: 'contract', confidence: 0.93, pages: [1, 2] }] }),
+    };
+    const jq = fakeJq(); const recorded = [];
+    const pageWrites = [];
+    jq.recordPages = async (_db, _id, rows) => { pageWrites.push(rows); };
+    const proc = PC.makePacketControlProcessor({
+      router: packetRouter(recorded),
+      adapters: [{ provider: 'azure', service: 'document_intelligence', analyze: async () => ({}) }],
+      loadBytes: okBytes, classifier,
+    });
+    const out = await proc({ ...job, payload: { ...job.payload, features: { docType: 'purchase_contract' } } }, { db: {}, jq });
+    const keys = jq.stages.map((s) => s.key + ':' + s.status);
+    ok(keys.includes('page_disposition:manual_required'),
+      'a packet with an unclaimed page records page_disposition as manual_required');
+    ok(out.status === 'completed',
+      'and the job STILL COMPLETES — a page awaiting a person never discards a successful read');
+    const st = jq.stages.find((s) => s.key === 'page_disposition');
+    ok(st && st.detail.pageCount === 3 && st.detail.assigned === 2 && st.detail.manualReview === 1,
+      'the stage detail states the whole accounting: 3 pages, 2 placed, 1 for a person');
+    ok(st && Array.isArray(st.detail.manualPages) && st.detail.manualPages[0] === 3,
+      'and names the page NUMBER, so someone can go and look at it');
+    ok(pageWrites.length === 1 && pageWrites[0].length === 3,
+      'one durable row is written per page — "3 pages need review" has to say WHICH three');
+    ok(pageWrites[0][2].disposition === 'manual_review' && pageWrites[0][2].page === 3,
+      'the orphan page is the one persisted as needing a person');
+  }
+
+  // RS-3: the classifier being off must NOT dump the whole packet on a person.
+  {
+    const jq = fakeJq(); const recorded = [];
+    const proc = PC.makePacketControlProcessor({
+      router: readRouter(recorded),
+      adapters: [{ provider: 'azure', service: 'document_intelligence', analyze: async () => ({}) }],
+      loadBytes: okBytes, classifier: null,
+    });
+    await proc(job, { db: {}, jq });
+    const keys = jq.stages.map((s) => s.key + ':' + s.status);
+    ok(keys.includes('page_disposition:not_applicable'),
+      'no classifier → page_disposition not_applicable (no basis to assign), never a wholesale manual dump');
+  }
+
+  // RS-3: a page-row write that fails must never fail the job — the stage totals still stand.
+  {
+    const jq = fakeJq(); const recorded = [];
+    jq.recordPages = async () => { throw new Error('page table down'); };
+    const classifier = {
+      classifierConfigured: () => true,
+      classify: async () => ({ ok: true, segments: [{ docType: 'bank_statement', confidence: 0.9, pages: [1] }] }),
+    };
+    const proc = PC.makePacketControlProcessor({
+      router: readRouter(recorded),
+      adapters: [{ provider: 'azure', service: 'document_intelligence', analyze: async () => ({}) }],
+      loadBytes: okBytes, classifier,
+    });
+    const out = await proc(job, { db: {}, jq });
+    ok(out.status === 'completed', 'a failing per-page write is swallowed — the job still completes');
+    ok(jq.stages.some((s) => s.key === 'page_disposition'), 'and the stage totals are still recorded');
   }
 
   // ---- payload.docType shorthand (no features object) still builds features ----

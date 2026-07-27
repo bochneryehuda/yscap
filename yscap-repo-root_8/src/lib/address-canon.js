@@ -13,6 +13,7 @@
  */
 const db = require('../db');
 const cfg = require('../config');
+const ADDR = require('./address');   // canonical one-line formatting (pure)
 
 const inputKey = (t) => String(t || '').trim().toLowerCase().replace(/\s+/g, ' ').slice(0, 300);
 
@@ -111,11 +112,15 @@ async function osmGeocode(text) {
   const key = OSM_PREFIX + inputKey(text);
   try {
     const hit = (await db.query(`SELECT place_id, formatted, lat, lng FROM address_canon_cache WHERE input_key=$1`, [key])).rows[0];
-    if (hit) return hit.place_id ? hit : null;
+    // Compact on READ too: rows cached before the formatting fix below still
+    // hold a raw display_name, and this cache is permanent.
+    if (hit) return hit.place_id ? { ...hit, formatted: ADDR.compactFormattedAddress(hit.formatted) || null } : null;
   } catch (_) { /* cache is an optimization */ }
   let parsed = null;
   try {
-    const url = 'https://nominatim.openstreetmap.org/search?format=jsonv2&limit=1&countrycodes=us&addressdetails=0&q='
+    // addressdetails=1 so we can build the MAILING form from real components
+    // rather than shortening Nominatim's display_name after the fact.
+    const url = 'https://nominatim.openstreetmap.org/search?format=jsonv2&limit=1&countrycodes=us&addressdetails=1&q='
       + encodeURIComponent(text);
     const r = await osmPolite(() => fetch(url, {
       signal: AbortSignal.timeout(6000),
@@ -126,7 +131,19 @@ async function osmGeocode(text) {
       const m = Array.isArray(j) ? j[0] : null;
       const lat = m && Number(m.lat), lng = m && Number(m.lon);
       if (m && Number.isFinite(lat) && Number.isFinite(lng)) {
-        parsed = { place_id: OSM_PREFIX + (m.osm_id != null ? m.osm_id : m.place_id), formatted: m.display_name || null, lat, lng, zip: null };
+        // NEVER store `display_name` — that raw string ("26, South 10th Street,
+        // Williamsburg, Brooklyn, Kings County, New York, 11249, United States")
+        // is what leaked onto files and ClickUp cards as the address. Build the
+        // mailing form Google/ClickUp show, from the components; fall back to
+        // compacting display_name when components are missing.
+        const comp = m.address ? ADDR.osmComponentsToAddress(m.address) : null;
+        const formatted = (comp && ADDR.canonicalOneLine(comp, { country: true }))
+          || ADDR.compactFormattedAddress(m.display_name) || null;
+        parsed = {
+          place_id: OSM_PREFIX + (m.osm_id != null ? m.osm_id : m.place_id),
+          formatted, lat, lng,
+          zip: (comp && comp.zip) || null,
+        };
       }
     }
   } catch (_) { return null; }   // network failure: DON'T cache — retry later
@@ -134,7 +151,7 @@ async function osmGeocode(text) {
     await db.query(
       `INSERT INTO address_canon_cache (input_key, place_id, formatted, lat, lng, zip)
        VALUES ($1,$2,$3,$4,$5,$6) ON CONFLICT (input_key) DO NOTHING`,
-      [key, parsed && parsed.place_id, parsed && parsed.formatted, parsed && parsed.lat, parsed && parsed.lng, null]);
+      [key, parsed && parsed.place_id, parsed && parsed.formatted, parsed && parsed.lat, parsed && parsed.lng, parsed && parsed.zip]);
   } catch (_) { /* best-effort */ }
   return parsed;
 }

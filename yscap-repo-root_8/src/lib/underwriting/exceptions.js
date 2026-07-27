@@ -11,9 +11,11 @@
  * The desk already gates the resolve endpoint on `sign_off_conditions` (a processor/underwriter
  * can post conditions, request docs, fix the file, clear, dismiss). This adds ONE higher bar:
  * GRANTING AN EXCEPTION on a fatal, CTC-blocking finding — approving the loan despite an
- * unmet hard requirement — additionally requires `waive_conditions` (held by admins and
- * underwriters, not coordinators/processors). The exception is still recorded who/why/when on
- * the finding (resolution + note + resolved_by/at) for the immutable audit trail.
+ * unmet hard requirement — additionally requires `waive_conditions` (held by admins,
+ * underwriters and — owner-directed 2026-07-26 — processors, so a finding no longer has to be
+ * escalated to a super-admin just to be finished; NOT loan coordinators / closers / loan
+ * officers). The exception is still recorded who/why/when on the finding (resolution + note +
+ * resolved_by/at) for the immutable audit trail.
  *
  * Pure + dependency-free: takes a `can(actor, permission)` predicate so it never imports auth.
  */
@@ -39,8 +41,8 @@ function elevatedPermissionFor(action, finding) {
   const f = finding || {};
   const isFatalBlocking = f.severity === 'fatal' && (f.blocks_ctc ?? f.blocksCtc ?? false);
   // Clearing a hard, clear-to-close-blocking dealbreaker needs senior authority (waive_conditions).
-  // Underwriters + admins hold waive_conditions, so their workflow is unchanged; only coordinators/
-  // processors are restricted from unilaterally waving off a dealbreaker.
+  // Underwriters, admins and processors hold waive_conditions, so their workflow is unchanged;
+  // coordinators / closers / loan officers are restricted from waving off a dealbreaker.
   if (GATE_CLEARING_ACTIONS.has(a) && isFatalBlocking) return 'waive_conditions';
   return null;
 }

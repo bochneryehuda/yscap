@@ -37,7 +37,8 @@ const store = require('../lib/underwriting/store');
 const registry = require('../lib/underwriting/registry');
 const fileView = require('../lib/underwriting/file-view');
 const { tieoutForFile } = require('../lib/underwriting/file-review');
-const { underwriterActions } = require('../lib/underwriting/actions');
+const actionCatalog = require('../lib/underwriting/actions');
+const { underwriterActions, validateResolution } = actionCatalog;
 const { falseAlarmReport, readabilityReport } = require('../lib/underwriting/feedback');
 const { programGuidelineSnapshot } = require('../lib/underwriting/program-guidelines');
 const { classify } = require('../lib/underwriting/classify');
@@ -158,6 +159,81 @@ function decorate(f) {
   return Object.assign({}, f, { availableActions: underwriterActions(actions ? { ...f, actions } : f) });
 }
 
+/**
+ * Apply an underwriter ACTION to one stored finding — the single implementation behind
+ * BOTH doors that resolve a finding: the file's own finding card
+ * (POST /:appId/findings/:fid/resolve) and the "Findings to review" queue
+ * (POST /escalations/:id/apply). Extracted 2026-07-26 so the queue can't drift into a
+ * weaker version of the desk: same tiered exception authority, same "fix the file"
+ * write-back, same store call, same audit.
+ *
+ * Returns `{ ok:false, status, body }` for every refusal (the caller just relays it), or
+ * `{ ok:true, updated, fileFix, auth }` on success.
+ */
+async function applyFindingResolution({ actor, appId, finding, action, note, value }) {
+  // Tiered exception authority: granting an exception on a fatal, clear-to-close-blocking
+  // finding — approving the loan despite an unmet hard requirement — needs senior authority
+  // (waive_conditions) above the base sign_off_conditions gate. The reason is still recorded on
+  // the finding for the audit trail. Everything else clears under the base permission.
+  const auth = exceptions.canApply(actor, action, finding, can);
+  if (!auth.ok) return { ok: false, status: 403, body: { error: auth.reason, requiredPermission: auth.requiredPermission } };
+
+  // "Fix the file": when the corrected value maps to a real application column
+  // (purchase price / as-is / ARV / rehab budget), APPLY it to the loan file —
+  // not just record it on the finding. Honors the economics freeze: a frozen
+  // file returns 409 and the finding is NOT resolved (clear the freeze / term-
+  // sheet package first). A field with no application column stays records-only.
+  let fileFix = null;
+  if (action === 'fix_file' && value != null) {
+    const applyFix = require('../lib/underwriting/apply-fix');
+    if (applyFix.fixableColumn(finding.field)) {
+      try {
+        fileFix = await applyFix.applyFindingFixToFile({ appId, field: finding.field, value, actor, db });
+      } catch (e) {
+        if (e && e.status === 409 && e.expose) return { ok: false, status: 409, body: { error: e.message, locked: true } };
+        throw e;
+      }
+    }
+  }
+
+  let updated;
+  const client = await db.pool.connect();
+  try {
+    await client.query('BEGIN');
+    try {
+      updated = await store.resolveFinding(client, { findingId: finding.id, action, note, value, by: actor.id });
+    } catch (e) {
+      await client.query('ROLLBACK').catch(() => {});
+      // validateResolution throws a plain Error with a safe, user-facing reason (unknown action /
+      // missing required note or value). A DB error carries a pg SQLSTATE in e.code — never leak
+      // its internals (column/constraint names) to the client; hand it to the global handler.
+      if (e && e.code) throw e;
+      return { ok: false, status: 400, body: { error: e.message } };
+    }
+    await client.query('COMMIT');
+  } finally {
+    client.release();
+  }
+  if (!updated) return { ok: false, status: 409, body: { error: 'finding was already resolved' } };
+
+  await audit(actor.id, 'underwriting_finding_resolve', appId,
+    { finding: finding.code, action, status: updated.status, note: String(note || '').slice(0, 300),
+      elevated: auth.elevated || null,
+      appliedToFile: fileFix && fileFix.applied ? { field: fileFix.field, column: fileFix.column, value: fileFix.value } : undefined });
+
+  return { ok: true, updated, fileFix, auth };
+}
+
+/** Remaining open fatal findings + derived tie-out fatals — the clear-to-close gate. */
+async function ctcGateCounts(appId) {
+  const openFatal = (await db.query(
+    `SELECT count(*)::int n FROM document_findings
+      WHERE application_id=$1 AND status='open' AND severity='fatal' AND blocks_ctc=true`, [appId])).rows[0].n;
+  const tieout = await tieoutForFile(db, appId);
+  const crossFatal = tieout.discrepancies.filter((f) => f.severity === 'fatal' && f.blocksCtc).length;
+  return { openFatal, crossFatal, blocksCtc: (openFatal + crossFatal) > 0 };
+}
+
 // The file's data-comparison (tie-out) is computed by the shared lib (src/lib/underwriting/
 // file-review.js) so the desk and the checklist sign-off gate never disagree.
 
@@ -233,43 +309,82 @@ router.get('/insights/production-metrics', async (req, res, next) => {
 router.get('/escalations', async (req, res, next) => {
   try {
     const seeAll = can(req.actor, 'see_all_files');
+    // A staffer who SIGNS OFF conditions sees every escalation on the files they are on —
+    // not only the ones addressed to their own role (owner-directed 2026-07-26). That is what
+    // lets a processor / underwriter pick up a finding someone sent to a super-admin.
+    const anyOnFile = can(req.actor, 'sign_off_conditions');
     const status = ['open', 'resolved', 'dismissed', 'all'].includes(req.query.status) ? req.query.status : 'open';
-    const rows = await escalations.listEscalations({ status, viewer: req.actor, seeAll });
-    const pendingCount = await escalations.pendingCount({ viewer: req.actor, seeAll });
-    // Who may DECIDE an escalation: a super-admin, or the person it was routed to
-    // (their role / assigned to them). The client uses this to show the decide controls.
-    res.json({ escalations: rows, pendingCount, canDecideAll: req.actor.role === 'super_admin' });
+    const rows = await escalations.listEscalations({ status, viewer: req.actor, seeAll, anyOnFile });
+    const pendingCount = await escalations.pendingCount({ viewer: req.actor, seeAll, anyOnFile });
+    // Who may DECIDE each row is now answered PER ROW by the shared rule (escalations.mayDecide)
+    // instead of the client re-deriving it — one definition, no drift. Every row the list query
+    // returned is one the viewer can reach (it scopes on file access), so hasFileAccess is true.
+    const decorated = rows.map((r) => ({
+      ...r,
+      canDecide: escalations.mayDecide({ viewer: req.actor, row: r, can, hasFileAccess: true }).ok,
+    }));
+    res.json({
+      escalations: decorated,
+      pendingCount,
+      // Kept for older clients; the per-row `canDecide` above is what the screen uses.
+      canDecideAll: req.actor.role === 'super_admin' || req.actor.role === 'admin',
+      // May this reviewer APPLY an underwriting action (resolve the finding itself), and may
+      // they clear a fatal clear-to-close-blocking dealbreaker? The screen hides buttons that
+      // would 403 rather than letting the reviewer discover it by clicking.
+      canApplyActions: can(req.actor, 'sign_off_conditions'),
+      canWaive: can(req.actor, 'waive_conditions'),
+    });
   } catch (e) { next(e); }
 });
 
 router.get('/escalations/count', async (req, res, next) => {
   try {
     const seeAll = can(req.actor, 'see_all_files');
-    res.json({ pendingCount: await escalations.pendingCount({ viewer: req.actor, seeAll }) });
+    const anyOnFile = can(req.actor, 'sign_off_conditions');
+    res.json({ pendingCount: await escalations.pendingCount({ viewer: req.actor, seeAll, anyOnFile }) });
   } catch (e) { next(e); }
 });
 
-// Decide (advise + close) an escalation. The person it was routed to may act on it — a
-// super-admin always, or a staffer whose role matches target_role or who it's assigned to.
-// Raising a finding does NOT let you decide your own escalation (that would defeat the point).
+// Load an OPEN escalation and check the caller may decide it. Shared by the plain
+// decide door and the take-the-action door below, so the two can never drift apart.
+// Returns `{ ok:false, status, body }` or `{ ok:true, row }`.
+async function openEscalationFor(req, id) {
+  if (!isUuid(id)) return { ok: false, status: 404, body: { error: 'not found' } };
+  const row = (await db.query(`SELECT * FROM finding_escalations WHERE id=$1`, [id])).rows[0];
+  if (!row) return { ok: false, status: 404, body: { error: 'not found' } };
+  if (row.status !== 'open') return { ok: false, status: 409, body: { error: 'this escalation was already handled' } };
+  // File access is checked for real here (the list query scopes, a direct POST does not):
+  // a super-admin/see-all staffer passes, anyone else must actually be on the file.
+  const hasFileAccess = can(req.actor, 'see_all_files') ? true : !!(await fileFor(req, row.application_id));
+  const verdict = escalations.mayDecide({ viewer: req.actor, row, can, hasFileAccess });
+  if (!verdict.ok) return { ok: false, status: 403, body: { error: verdict.reason } };
+  return { ok: true, row };
+}
+
+// Tell the person who raised the escalation that it was handled (in-app; email only if
+// they turned it on). Best-effort — the decision is already recorded.
+function notifyRaiser(row, actorId, decision, note) {
+  if (!row.requested_by || row.requested_by === actorId) return;
+  notify.notifyStaff(row.requested_by, {
+    type: 'finding_escalation_decided', applicationId: row.application_id,
+    title: `Your escalated finding was ${decision === 'dismissed' ? 'dismissed' : 'resolved'}`,
+    body: `${row.title || 'A finding'} — ${note ? note : (decision === 'dismissed' ? 'no action needed.' : 'handled.')}`,
+    link: `/internal/app/${row.application_id}`,
+  }).catch(() => {});
+}
+
+// Decide (advise + close) an escalation. WITHOUT touching the finding itself — this is the
+// "I've advised, close the queue item" door. To actually clear the finding off the file, use
+// POST /escalations/:id/apply below (the screen's action buttons).
+//
+// Who may decide: see escalations.mayDecide — a super-admin, the person it was routed to, or
+// (owner-directed 2026-07-26) any admin / processor / underwriter who can sign off conditions
+// on that file. You still can't decide an escalation you raised yourself.
 router.post('/escalations/:id/decide', async (req, res, next) => {
   try {
-    if (!isUuid(req.params.id)) return res.status(404).json({ error: 'not found' });
-    const row = (await db.query(`SELECT * FROM finding_escalations WHERE id=$1`, [req.params.id])).rows[0];
-    if (!row) return res.status(404).json({ error: 'not found' });
-    if (row.status !== 'open') return res.status(409).json({ error: 'this escalation was already handled' });
-    const isSuper = req.actor.role === 'super_admin';
-    if (!isSuper) {
-      // The person who RAISED it can't also decide it — that would defeat the purpose (and the
-      // audit trail would show the same staffer raised + resolved). A super-admin is exempt.
-      if (row.requested_by === req.actor.id) return res.status(403).json({ error: 'you raised this finding — another reviewer must decide it' });
-      // Otherwise: it was assigned to me personally (a deliberate hand-off), OR routed to my role
-      // AND I actually have access to the file (never let a scoped staffer decide on a file they
-      // can't see — same per-file scope as everywhere else).
-      let mayDecide = row.assigned_to === req.actor.id;
-      if (!mayDecide && row.target_role === req.actor.role) mayDecide = !!(await fileFor(req, row.application_id));
-      if (!mayDecide) return res.status(403).json({ error: 'this escalation was routed to someone else' });
-    }
+    const got = await openEscalationFor(req, req.params.id);
+    if (!got.ok) return res.status(got.status).json(got.body);
+    const row = got.row;
     const b = req.body || {};
     const decision = b.decision === 'dismissed' ? 'dismissed' : 'resolved';
     const note = (b.note || '').slice(0, 1000);
@@ -283,16 +398,99 @@ router.post('/escalations/:id/decide', async (req, res, next) => {
     if (!updated) return res.status(409).json({ error: 'this escalation was already handled' });
     await audit(req.actor.id, 'underwriting_finding_escalation_decide', row.application_id,
       { escalation: row.id, finding: row.code, decision, note: note.slice(0, 300) });
-    // Let the person who raised it know it was handled (in-app; email only if they turned it on).
-    if (row.requested_by && row.requested_by !== req.actor.id) {
-      notify.notifyStaff(row.requested_by, {
-        type: 'finding_escalation_decided', applicationId: row.application_id,
-        title: `Your escalated finding was ${decision === 'dismissed' ? 'dismissed' : 'resolved'}`,
-        body: `${row.title || 'A finding'} — ${note ? note : (decision === 'dismissed' ? 'no action needed.' : 'handled.')}`,
-        link: `/internal/app/${row.application_id}`,
-      }).catch(() => {});
-    }
+    notifyRaiser(row, req.actor.id, decision, note);
     res.json({ ok: true, escalation: updated });
+  } catch (e) { next(e); }
+});
+
+// ---- POST /escalations/:id/apply : take the REAL underwriting action from the queue ----------
+// Owner-directed 2026-07-26. The review screen used to offer only "Mark resolved", which closed
+// the QUEUE ITEM and left the finding sitting open on the loan file — the reviewer thought they
+// had handled it and they hadn't. This door does the whole job in ONE call: it applies the chosen
+// action to the finding through the SAME path as the file's own finding card (applyFindingResolution
+// — same tiered authority, same "fix the file" write-back, same audit), and then closes the queue
+// item. Every action the desk offers is available here.
+//
+// A DERIVED finding (escalated with no stored row — a tie-out/cross-document advisory) has nothing
+// to resolve; "fix the file" still writes the corrected value onto the loan file (which is what
+// makes the discrepancy go away on the next pass) and the queue item closes with the action on
+// record. We say plainly which of the two happened rather than implying the finding was cleared.
+router.post('/escalations/:id/apply', requirePermission('sign_off_conditions'), async (req, res, next) => {
+  try {
+    const got = await openEscalationFor(req, req.params.id);
+    if (!got.ok) return res.status(got.status).json(got.body);
+    const row = got.row;
+    const b = req.body || {};
+    const action = String(b.action || '');
+    const note = (b.note || '').slice(0, 2000);
+    const value = b.value != null ? String(b.value).slice(0, 500) : null;
+    // Validate the action + its required note/value BEFORE anything is written, so a missing
+    // note can't close the queue item while leaving the finding untouched.
+    const v = validateResolution(action, { note, value });
+    if (!v.ok) return res.status(400).json({ error: v.reason });
+
+    // The live finding row, when this escalation points at one that is still open.
+    const fnd = row.finding_id
+      ? (await db.query(
+        `SELECT id, code, severity, blocks_ctc, field FROM document_findings
+          WHERE id=$1 AND application_id=$2 AND status='open'`, [row.finding_id, row.application_id])).rows[0]
+      : null;
+
+    let findingResolved = false;
+    let fileFix = null;
+    let reason = null;
+    if (fnd) {
+      const applied = await applyFindingResolution({
+        actor: req.actor, appId: row.application_id, finding: fnd, action, note, value,
+      });
+      if (!applied.ok) return res.status(applied.status).json(applied.body);
+      findingResolved = applied.updated && applied.updated.status !== 'open';
+      fileFix = applied.fileFix;
+      if (!findingResolved) reason = 'stays_open';   // post_condition / request_document / severity note
+    } else {
+      // No live open finding: either a derived advisory, or it was already resolved elsewhere.
+      reason = row.finding_id ? 'already_resolved' : 'derived';
+      // A corrected value is still worth writing to the loan file — that is the actual fix.
+      if (action === 'fix_file' && value != null && row.field) {
+        const applyFix = require('../lib/underwriting/apply-fix');
+        if (applyFix.fixableColumn(row.field)) {
+          try {
+            fileFix = await applyFix.applyFindingFixToFile({
+              appId: row.application_id, field: row.field, value, actor: req.actor, db,
+            });
+          } catch (e) {
+            if (e && e.status === 409 && e.expose) return res.status(409).json({ error: e.message, locked: true });
+            throw e;
+          }
+        }
+      }
+    }
+
+    // Close the queue item, recording WHAT was done (not just "resolved"). `dismiss` on the
+    // finding closes the escalation as dismissed so the two agree.
+    const decision = action === 'dismiss' ? 'dismissed' : 'resolved';
+    const label = ((actionCatalog.ACTIONS[actionCatalog.canon(action)] || {}).label) || action.replace(/_/g, ' ');
+    const decisionNote = [label, note].filter(Boolean).join(' — ').slice(0, 1000);
+    let updated;
+    const client = await db.pool.connect();
+    try {
+      await client.query('BEGIN');
+      updated = await escalations.decideEscalation(client, {
+        id: row.id, decision, staffId: req.actor.id, note: decisionNote,
+      });
+      await client.query('COMMIT');
+    } catch (e) { await client.query('ROLLBACK').catch(() => {}); throw e; } finally { client.release(); }
+    // The finding action already succeeded; a lost race on the queue row is not a failure of
+    // the work that was done, so report it rather than 409-ing the whole call.
+    const escalationClosed = !!updated;
+
+    await audit(req.actor.id, 'underwriting_finding_escalation_apply', row.application_id,
+      { escalation: row.id, finding: row.code, action, decision, findingResolved, reason,
+        escalationClosed, note: note.slice(0, 300) });
+    if (escalationClosed) notifyRaiser(row, req.actor.id, decision, decisionNote);
+
+    const gate = await ctcGateCounts(row.application_id);
+    res.json({ ok: true, escalation: updated || null, escalationClosed, action, findingResolved, reason, fileFix, ...gate });
   } catch (e) { next(e); }
 });
 
@@ -1693,68 +1891,17 @@ router.post('/:appId/findings/:fid/resolve', requirePermission('sign_off_conditi
       [req.params.fid, app.id])).rows[0];
     if (!fnd) return res.status(404).json({ error: 'finding not found or already resolved' });
 
-    // Tiered exception authority: granting an exception on a fatal, clear-to-close-blocking
-    // finding — approving the loan despite an unmet hard requirement — needs senior authority
-    // (waive_conditions) above the base sign_off_conditions gate. The reason is still recorded on
-    // the finding for the audit trail. Everything else clears under the base permission.
-    const auth = exceptions.canApply(req.actor, action, fnd, can);
-    if (!auth.ok) return res.status(403).json({ error: auth.reason, requiredPermission: auth.requiredPermission });
-
-    // "Fix the file": when the corrected value maps to a real application column
-    // (purchase price / as-is / ARV / rehab budget), APPLY it to the loan file —
-    // not just record it on the finding. Honors the economics freeze: a frozen
-    // file returns 409 and the finding is NOT resolved (clear the freeze / term-
-    // sheet package first). A field with no application column stays records-only.
-    let fileFix = null;
-    if (action === 'fix_file' && value != null) {
-      const applyFix = require('../lib/underwriting/apply-fix');
-      if (applyFix.fixableColumn(fnd.field)) {
-        try {
-          fileFix = await applyFix.applyFindingFixToFile({ appId: app.id, field: fnd.field, value, actor: req.actor, db });
-        } catch (e) {
-          if (e && e.status === 409 && e.expose) return res.status(409).json({ error: e.message, locked: true });
-          throw e;
-        }
-      }
-    }
-
-    let updated;
-    const client = await db.pool.connect();
-    try {
-      await client.query('BEGIN');
-      try {
-        updated = await store.resolveFinding(client, {
-          findingId: fnd.id, action, note, value, by: req.actor.id,
-        });
-      } catch (e) {
-        await client.query('ROLLBACK').catch(() => {});
-        // validateResolution throws a plain Error with a safe, user-facing reason (unknown action /
-        // missing required note or value). A DB error carries a pg SQLSTATE in e.code — never leak
-        // its internals (column/constraint names) to the client; hand it to the global handler.
-        if (e && e.code) throw e;
-        return res.status(400).json({ error: e.message });
-      }
-      await client.query('COMMIT');
-    } finally {
-      client.release();
-    }
-    if (!updated) return res.status(409).json({ error: 'finding was already resolved' });
-
-    await audit(req.actor.id, 'underwriting_finding_resolve', app.id,
-      { finding: fnd.code, action, status: updated.status, note: note.slice(0, 300),
-        elevated: auth.elevated || null,
-        appliedToFile: fileFix && fileFix.applied ? { field: fileFix.field, column: fileFix.column, value: fileFix.value } : undefined });
+    const applied = await applyFindingResolution({
+      actor: req.actor, appId: app.id, finding: fnd, action, note, value,
+    });
+    if (!applied.ok) return res.status(applied.status).json(applied.body);
 
     // Remaining open fatal findings gate clear-to-close — the stored per-document fatals AND
     // the derived tie-out fatals (which have no stored row but still block). Both are folded in
     // so this gate matches exactly what GET reports.
-    const openFatal = (await db.query(
-      `SELECT count(*)::int n FROM document_findings
-        WHERE application_id=$1 AND status='open' AND severity='fatal' AND blocks_ctc=true`, [app.id])).rows[0].n;
-    const tieout = await tieoutForFile(db, app.id);
-    const crossFatal = tieout.discrepancies.filter((f) => f.severity === 'fatal' && f.blocksCtc).length;
+    const gate = await ctcGateCounts(app.id);
 
-    res.json({ ok: true, finding: decorate(updated), openFatal, crossFatal, blocksCtc: (openFatal + crossFatal) > 0, fileFix });
+    res.json({ ok: true, finding: decorate(applied.updated), ...gate, fileFix: applied.fileFix });
   } catch (e) { next(e); }
 });
 

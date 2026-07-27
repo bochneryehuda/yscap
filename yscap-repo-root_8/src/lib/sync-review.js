@@ -44,14 +44,24 @@ const FIELD_LABELS = {
 };
 
 async function queueReview({ applicationId, borrowerId, taskId, direction, fieldKey,
-  currentValue, proposedValue, rawValue, reason, clickupValue, portalValue, suppressIfRejected }) {
+  currentValue, proposedValue, rawValue, reason, clickupValue, portalValue, suppressIfRejected,
+  source, dbc }) {
+  // Callers that are already INSIDE a transaction (the Encompass enrichment pass
+  // runs one) must queue on THEIR connection, or the insert cannot see the rows
+  // that transaction created and fails its foreign key. Defaults to the pool.
+  const q = dbc || db;
+  // WHICH SYSTEM is on the other side (db/328). Defaults to 'clickup' — every
+  // existing caller. An 'encompass' row's `task_id` is a namespaced
+  // `encompass:<loanGuid>`, NOT a ClickUp task, and no resolver may ever hand it
+  // to the ClickUp client; the resolvers branch on this column, not on a guess.
+  const src = source === 'encompass' ? 'encompass' : 'clickup';
   try {
     // FILE-LEVEL rows are re-produced by every sync pass while the file stays
     // stuck — so a reviewer's explicit DISMISS must stick (the next reconcile
     // is 5 minutes away; without this the dismissed row respawns forever).
     // Field-value rows don't use this: a re-blocked write is a fresh event.
     if (suppressIfRejected) {
-      const rej = await db.query(
+      const rej = await q.query(
         `SELECT 1 FROM sync_review_queue
           WHERE coalesce(task_id,'') = coalesce($1,'') AND field_key=$2 AND reason=$3
             AND status='rejected' LIMIT 1`, [taskId || null, fieldKey, reason]);
@@ -62,7 +72,7 @@ async function queueReview({ applicationId, borrowerId, taskId, direction, field
     // identical rows — owner-reported noise, 2026-07-15). The task-scoped
     // ON CONFLICT below still dedupes everything else.
     if (fieldKey === 'date_of_birth' && borrowerId) {
-      const dup = await db.query(
+      const dup = await q.query(
         `SELECT 1 FROM sync_review_queue
           WHERE status='open' AND field_key='date_of_birth' AND borrower_id=$1
             AND coalesce(proposed_value,'') = coalesce($2,'') LIMIT 1`,
@@ -76,17 +86,17 @@ async function queueReview({ applicationId, borrowerId, taskId, direction, field
       : (direction === 'inbound' ? proposedValue : currentValue);
     const pV = portalValue !== undefined ? portalValue
       : (direction === 'inbound' ? currentValue : proposedValue);
-    const ins = await db.query(
+    const ins = await q.query(
       `INSERT INTO sync_review_queue
-         (application_id, borrower_id, task_id, direction, field_key, current_value, proposed_value, raw_value, reason, clickup_value, portal_value)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)
+         (application_id, borrower_id, task_id, direction, field_key, current_value, proposed_value, raw_value, reason, clickup_value, portal_value, source)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)
        ON CONFLICT ((coalesce(task_id,'')), field_key, direction, (coalesce(proposed_value,''))) WHERE status='open'
        DO NOTHING RETURNING id`,
       [applicationId || null, borrowerId || null, taskId || null, direction, fieldKey,
        currentValue == null ? null : String(currentValue),
        proposedValue == null ? null : String(proposedValue),
        rawValue == null ? null : String(rawValue), reason,
-       cuV == null ? null : String(cuV), pV == null ? null : String(pV)]);
+       cuV == null ? null : String(cuV), pV == null ? null : String(pV), src]);
     if (ins.rows[0]) notifyLoanOfficer(ins.rows[0].id).catch(() => {});
     // Reached the insert without throwing → a row IS in the queue (freshly
     // inserted, or an equal open row already there via ON CONFLICT). Callers that

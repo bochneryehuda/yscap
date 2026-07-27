@@ -3,17 +3,24 @@ import { api, saveBlob } from '../lib/api.js';
 import { useAuth } from '../lib/auth.jsx';
 import DocPreview from '../components/DocPreview.jsx';
 
-/* The finding-escalation WORKLOAD (owner-directed 2026-07-21, Items 7 + 12).
+/* The finding-escalation WORKLOAD (owner-directed 2026-07-21, Items 7 + 12;
+ * reworked into a full action desk 2026-07-26).
  *
  * When a staffer reviewing PILOT's underwriting findings can't decide one, they
  * ESCALATE it — to a super-admin, a processor, or an underwriter. Each escalation
  * lands here as a work item carrying a direct link to the FILE, the FINDING it's
- * about, the finding's plain-language explanation, and the framed options the
- * underwriter would normally choose from. The reviewer reads it, advises how to
- * proceed (resolve) or waves it off (dismiss), and it clears.
+ * about, the finding's plain-language explanation, and EVERY action the file's own
+ * finding card offers.
  *
- * The list is scoped server-side: you see items routed to YOUR role, assigned to
- * YOU, or that YOU raised. A super-admin sees everything and can decide anything.
+ * The point of the 2026-07-26 rework: taking an action here resolves the FINDING on
+ * the loan file, not just the queue item. Previously the only button was "Mark
+ * resolved", which closed this row and left the finding sitting open on the file —
+ * the reviewer thought they had handled it and they hadn't.
+ *
+ * The list is scoped server-side, and so is WHO may act: the server sends `canDecide`
+ * per row (a super-admin, the person it was routed to, or any admin / processor /
+ * underwriter who signs off conditions on that file) plus `canApplyActions` /
+ * `canWaive`, so the UI never shows a button that would be refused.
  */
 
 const money = (v) => (v == null || v === '' || isNaN(Number(v))) ? '—' : '$' + Number(v).toLocaleString('en-US');
@@ -23,120 +30,115 @@ const SEV = {
   warning: { fg: 'var(--amber,#B7791F)', bg: 'var(--amber-bg,#F6EEDD)', label: 'Warning' },
   info: { fg: 'var(--teal,#2F7F86)', bg: 'rgba(47,127,134,.12)', label: 'Info' },
 };
-// The framed option verbs → plain labels (mirrors the underwriter action menu).
-const ACTION_LABEL = {
-  post_condition: 'Post a condition', request_document: 'Request a document', fix_file: 'Fix the file',
-  clear: 'Clear (OK)', grant_exception: 'Grant an exception', dismiss: 'Dismiss', decline: 'Decline the file',
-  keep: 'Clear (OK)', acknowledge: 'Dismiss', open_condition: 'Post a condition', request_revision: 'Request a document',
-};
+// Clearing a hard, clear-to-close-BLOCKING dealbreaker (grant an exception / clear /
+// fix the file / dismiss) needs senior authority (waive_conditions) — mirrors the
+// server gate in src/lib/underwriting/exceptions.js and the file's finding card.
+const GATE_CLEARING_ACTIONS = new Set(['grant_exception', 'clear', 'fix_file', 'dismiss']);
 
 function fmtAddr(a) {
   if (!a) return '';
   if (typeof a === 'string') return a;
   return [a.line1 || a.address, a.city, a.state].filter(Boolean).join(', ');
 }
-function actionLabel(a) {
-  if (a == null) return null;
-  const key = typeof a === 'string' ? a : (a.key || a.label);
-  return ACTION_LABEL[key] || (typeof a === 'object' && a.label) || key;
+
+// Same button styling language the file's finding card uses.
+function btn(primary = false, danger = false) {
+  return {
+    padding: '6px 12px', borderRadius: 8, fontSize: 12.5, fontWeight: 600, cursor: 'pointer',
+    border: `1px solid ${danger ? 'var(--crit,#B4483C)' : (primary ? 'var(--teal,#2F7F86)' : 'var(--line,#E7E1D3)')}`,
+    background: primary ? 'var(--teal,#2F7F86)' : '#fff',
+    color: primary ? '#fff' : (danger ? 'var(--crit,#B4483C)' : 'var(--ink,#141B22)'),
+  };
 }
 
 export default function StaffFindingEscalations() {
-  const { role, actor } = useAuth();
+  const { actor } = useAuth();
   const myId = actor && actor.id;
   const [rows, setRows] = useState([]);
   const [statusFilter, setStatusFilter] = useState('open');
   const [pendingCount, setPendingCount] = useState(0);
-  const [canDecideAll, setCanDecideAll] = useState(false);
+  const [canApplyActions, setCanApplyActions] = useState(false);
+  const [canWaive, setCanWaive] = useState(false);
   const [busy, setBusy] = useState(false);
   const [msg, setMsg] = useState(null);
   const [notes, setNotes] = useState({});
-  const [preview, setPreview] = useState(null);   // { documentId, page, title } — in-app source-PDF preview
+  const [pending, setPending] = useState({});   // escalationId -> { action, needs, label, text }
+  const [preview, setPreview] = useState(null); // { documentId, page, title } — in-app source-PDF preview
 
-  const flash = (ok, text) => { setMsg({ ok, text }); setTimeout(() => setMsg(null), 7000); };
+  const flash = (ok, text) => { setMsg({ ok, text }); setTimeout(() => setMsg(null), 9000); };
 
   const load = () => api.findingEscalations(statusFilter)
-    .then((d) => { setRows(d.escalations || []); setPendingCount(d.pendingCount || 0); setCanDecideAll(!!d.canDecideAll); })
+    .then((d) => {
+      setRows(d.escalations || []);
+      setPendingCount(d.pendingCount || 0);
+      setCanApplyActions(!!d.canApplyActions);
+      setCanWaive(!!d.canWaive);
+    })
     .catch((e) => flash(false, e.message || 'could not load the workload'));
 
   useEffect(() => { load(); /* eslint-disable-next-line */ }, [statusFilter]);
 
+  // Close the queue item WITHOUT touching the finding — "I've advised, this row is done".
+  // Deliberately worded so nobody mistakes it for clearing the finding off the file.
   async function decide(row, decision) {
     setBusy(true);
     try {
       await api.decideFindingEscalation(row.id, decision, notes[row.id] || '');
-      flash(true, decision === 'dismissed' ? 'Marked no action needed.' : 'Marked resolved — the person who raised it was notified.');
+      flash(true, decision === 'dismissed'
+        ? 'Closed as no action needed. The finding itself was not changed.'
+        : 'Closed with your advice. The finding itself was not changed — use one of the actions to clear it off the file.');
       await load();
     } catch (e) { flash(false, e.message || 'could not record the decision'); }
     finally { setBusy(false); }
   }
 
-  // Take one of the FRAMED underwriting actions (Post condition / Grant exception / Request document /
-  // Fix file / Dismiss / Clear / Decline) directly from the escalation — the same actions available
-  // on the file's own finding card. On success we ALSO mark the escalation resolved so it clears
-  // from the queue. Falls back to the file view when the finding has no stored id (a derived / cross-
-  // document advisory) — those aren't resolvable via the resolve endpoint.
-  async function resolveFinding(row, action) {
-    if (!row.finding_id) {
-      // Derived finding — cannot be resolved directly. Take the reviewer to the file view instead.
-      window.location.hash = `#/internal/app/${row.application_id}?finding=${row.finding_id || ''}`;
-      return;
-    }
-    const note = notes[row.id] || '';
-    const extra = { action };
-    // Post-condition / request-document need a note; others accept the reviewer note as advisory.
-    if (note) extra.note = note;
-    // "Fix the file" needs the CORRECTED VALUE. Prompt for it, pre-filled with
-    // what the document says (the suggested correction). If that value maps to an
-    // application field (price / as-is / ARV / rehab budget) the server applies it
-    // to the loan file; otherwise it's recorded on the finding.
-    if (action === 'fix_file') {
-      const suggested = row.doc_value != null ? String(row.doc_value) : (row.file_value != null ? String(row.file_value) : '');
-      const v = window.prompt(`Corrected value to write to the loan file${row.field ? ` (${String(row.field).replace(/_/g, ' ')})` : ''}:`, suggested);
-      if (v == null || String(v).trim() === '') return;   // cancelled
-      extra.value = String(v).trim();
-    }
+  // Take one of the underwriting actions directly from the queue. ONE server call resolves
+  // the finding on the loan file AND closes this row (src/routes/underwriting.js
+  // POST /escalations/:id/apply) — no two-step sequence that can half-finish.
+  async function applyAction(row, action, extra = {}) {
+    const note = extra.note != null ? extra.note : (notes[row.id] || '');
     setBusy(true);
     try {
-      let fileFix = null;
-      // Two-call sequence, made RETRY-SAFE (owner-directed fix after pre-merge audit 2026-07-21):
-      // if a previous attempt already resolved the finding OR closed the escalation, don't error
-      // out and leave the queue row stranded — treat those "already done" cases as success and
-      // move on to whatever step remains. The endpoints return 404 (finding: not found / already
-      // resolved) and 409 (escalation: already decided).
-      let alreadyResolved = false;
-      try {
-        const resp = await api.underwritingResolveFinding(row.application_id, row.finding_id, extra);
-        // Capture the file-fix outcome — applied (updated the file) OR a
-        // bad-value skip (the finding is still resolved, but the file was NOT
-        // changed, so we tell the reviewer rather than let them assume it was).
-        if (resp && resp.fileFix) fileFix = resp.fileFix;
-      } catch (err) {
-        const msg = String((err && err.message) || '').toLowerCase();
-        const status = err && (err.status || err.statusCode);
-        if (status === 404 || /not found|already/i.test(msg)) { alreadyResolved = true; }
-        else { throw err; }
-      }
-      let alreadyDecided = false;
-      try {
-        await api.decideFindingEscalation(row.id, 'resolved', note || `Applied "${action}" from the queue${alreadyResolved ? ' (finding was already resolved)' : ''}`);
-      } catch (err) {
-        const msg = String((err && err.message) || '').toLowerCase();
-        const status = err && (err.status || err.statusCode);
-        if (status === 409 || /already/i.test(msg)) { alreadyDecided = true; }
-        else { throw err; }
-      }
-      const fixMsg = (fileFix && fileFix.applied)
-        ? ` The loan file's ${String(fileFix.field).replace(/_/g, ' ')} was updated to ${fileFix.value}.`
-        : (fileFix && fileFix.reason === 'bad-value' ? ' Note: the loan file was NOT changed — the value entered wasn’t a number.' : '');
-      flash(true, (alreadyResolved
-        ? 'The finding was already resolved — queue item closed.'
-        : (alreadyDecided
-          ? `Applied ${action.replace(/_/g, ' ')} — queue item was already closed.`
-          : `Applied ${action.replace(/_/g, ' ')} — the finding is resolved and the person who raised it was notified.`)) + fixMsg);
+      const r = await api.applyFindingEscalation(row.id, { action, note, value: extra.value });
+      const label = String(action).replace(/_/g, ' ');
+      const fixMsg = (r.fileFix && r.fileFix.applied)
+        ? ` The loan file's ${String(r.fileFix.field).replace(/_/g, ' ')} was updated to ${r.fileFix.value}.`
+        : (r.fileFix && r.fileFix.reason === 'bad-value'
+          ? ' Note: the loan file was NOT changed — the value entered wasn’t a number.' : '');
+      let head;
+      if (r.findingResolved) head = `Applied “${label}” — the finding is closed on the loan file and this item is done.`;
+      else if (r.reason === 'stays_open') head = `Applied “${label}” — recorded on the finding, which stays open until the follow-up clears. This item is done.`;
+      else if (r.reason === 'derived') head = `Applied “${label}” — this was a cross-document advisory with no stored finding to close, so it is recorded here.`;
+      else if (r.reason === 'already_resolved') head = `The finding was already closed on the file — this item is done.`;
+      else head = `Applied “${label}”.`;
+      flash(true, head + fixMsg + (r.escalationClosed === false ? ' (Someone else had already closed this queue item.)' : ''));
+      setPending((p) => { const n = { ...p }; delete n[row.id]; return n; });
       await load();
     } catch (e) { flash(false, e.message || 'could not apply the action'); }
     finally { setBusy(false); }
+  }
+
+  // An action that needs a note (post a condition / request a document / grant an exception /
+  // decline / severity correction) or a corrected VALUE (fix the file) opens an inline input
+  // first — exactly like the finding card on the file.
+  function clickAction(row, a) {
+    if (a.needs === 'value') {
+      const suggested = row.doc_value != null ? String(row.doc_value) : (row.file_value != null ? String(row.file_value) : '');
+      setPending((p) => ({ ...p, [row.id]: { ...a, text: suggested } }));
+      return;
+    }
+    if (a.needs === 'note') {
+      setPending((p) => ({ ...p, [row.id]: { ...a, text: notes[row.id] || '' } }));
+      return;
+    }
+    if (a.key === 'decline' && !window.confirm('Decline this file on this finding?')) return;
+    applyAction(row, a.key);
+  }
+  function confirmPending(row) {
+    const p = pending[row.id];
+    if (!p || !String(p.text || '').trim()) return;
+    if (p.key === 'decline' && !window.confirm('Decline this file on this finding?')) return;
+    applyAction(row, p.key, p.needs === 'value' ? { value: p.text } : { note: p.text });
   }
 
   // Open the source document (the one the finding was raised from) IN-APP, jumped
@@ -154,16 +156,13 @@ export default function StaffFindingEscalations() {
     });
   }
 
-  // May THIS user decide THIS row? A super-admin always; otherwise the person it was routed to
-  // (their role or assigned to them) — but NEVER the person who raised it (mirrors the server).
-  const canDecide = (r) => canDecideAll || ((r.target_role === role || r.assigned_to === myId) && r.requested_by !== myId);
-
   return (
     <div>
       <div className="page-head"><h1>Findings to review</h1></div>
-      <p className="muted small" style={{ marginTop: -6 }}>
+      <p className="muted small" style={{ marginTop: -6, color: 'var(--muted,#4B585C)' }}>
         Underwriting findings a colleague couldn’t decide and sent to you. Each one links to the file and the finding,
-        explains what’s wrong, and lists the options — advise how to proceed, then mark it resolved.
+        explains what’s wrong, and gives you every action the file’s own review screen gives — taking one here closes
+        the finding on the loan file too, not just this list.
       </p>
       {msg && <div className={`notice ${msg.ok ? 'ok' : 'err'}`} style={{ marginBottom: 12 }}>{msg.text}</div>}
 
@@ -183,7 +182,13 @@ export default function StaffFindingEscalations() {
 
         {rows.map((r) => {
           const sev = SEV[r.severity] || SEV.info;
-          const actions = Array.isArray(r.suggested_actions) ? r.suggested_actions : [];
+          // The full action menu comes from the SERVER (the same underwriterActions catalog the
+          // file's finding card is decorated with), so this screen never hard-codes a menu and
+          // never shows fewer options than the desk.
+          const allActions = Array.isArray(r.availableActions) ? r.availableActions : [];
+          const isFatalBlocking = r.severity === 'fatal' && r.finding_blocks_ctc !== false;
+          const actions = allActions.filter((a) => !(isFatalBlocking && !canWaive && GATE_CLEARING_ACTIONS.has(a.key)));
+          const hiddenForWaive = allActions.length - actions.length;
           // Deep-link straight to the finding on the file view: the file page reads ?finding=<id>
           // and scrolls / highlights it. Without a finding_id (derived finding) we fall back to
           // linking to the file overview.
@@ -191,8 +196,9 @@ export default function StaffFindingEscalations() {
             ? `#/internal/app/${r.application_id}?finding=${r.finding_id}`
             : `#/internal/app/${r.application_id}`;
           const pageHint = r.page_number != null ? ` (page ${r.page_number})` : '';
+          const p = pending[r.id];
           return (
-            <div key={r.id} className="card" style={{ border: '1px solid var(--hairline,#e5e0d5)', borderRadius: 10, padding: 12, marginTop: 12 }}>
+            <div key={r.id} className="card" style={{ border: '1px solid var(--hairline,#e5e0d5)', borderRadius: 10, padding: 12, marginTop: 12, color: 'var(--ink,#141B22)' }}>
               <div className="row" style={{ justifyContent: 'space-between', alignItems: 'flex-start', gap: 10 }}>
                 <div style={{ minWidth: 0 }}>
                   <div>
@@ -227,64 +233,102 @@ export default function StaffFindingEscalations() {
                       </button>
                     )}
                   </div>
-                  {r.how_to && <div style={{ fontSize: 12.5, color: 'var(--muted,#4B585C)', marginTop: 4 }}>{r.how_to}</div>}
+                  {r.how_to && <div style={{ fontSize: 12.5, color: 'var(--muted,#4B585C)', marginTop: 4, whiteSpace: 'pre-wrap' }}>{r.how_to}</div>}
                   {r.question && (
-                    <div style={{ fontSize: 12.5, marginTop: 6, padding: '7px 10px', background: 'var(--ink-2,#F4F1EA)', borderRadius: 8, color: 'var(--ivory,#141B22)' }}>
+                    <div style={{ fontSize: 12.5, marginTop: 6, padding: '7px 10px', background: 'var(--ink-2,#F4F1EA)', borderRadius: 8, color: 'var(--ink,#141B22)' }}>
                       <b>What they need:</b> {r.question}
                     </div>
                   )}
-                  <div className="muted small" style={{ marginTop: 6 }}>
+                  <div className="muted small" style={{ marginTop: 6, color: 'var(--muted,#4B585C)' }}>
                     Sent to {TARGET_LABEL[r.target_role] || r.target_role}
                     {r.assigned_to_name ? ` (${r.assigned_to_name})` : ''}
                     {r.requested_by_name ? ` · raised by ${r.requested_by_name}` : ''}
                     {r.loan_amount != null ? ` · ${money(r.loan_amount)} loan` : ''}
                   </div>
+                  {/* Say plainly whether the FINDING itself is still open — the whole point of
+                      the rework is that the two are not the same thing. */}
+                  {r.status === 'open' && r.finding_id && r.finding_status && r.finding_status !== 'open' && (
+                    <div className="small" style={{ marginTop: 4, color: 'var(--teal-deep,#256168)' }}>
+                      The finding itself was already {r.finding_status} on the loan file.
+                    </div>
+                  )}
+                  {r.status === 'open' && !r.finding_id && (
+                    <div className="small" style={{ marginTop: 4, color: 'var(--muted,#4B585C)' }}>
+                      Cross-document advisory — there is no stored finding to close; fixing the file is what clears it.
+                    </div>
+                  )}
                 </div>
                 <span className={`ts-badge ${r.status === 'open' ? 'warn' : r.status === 'resolved' ? 'ok' : ''}`}>{r.status}</span>
               </div>
 
-              {r.status === 'open' && canDecide(r) && (
+              {r.status === 'open' && r.canDecide && (
                 <>
-                  <div className="row" style={{ gap: 8, alignItems: 'center', marginTop: 10, flexWrap: 'wrap' }}>
-                    <input className="input" style={{ flex: 1, minWidth: 200 }} placeholder="How to proceed / your advice (optional)"
-                      value={notes[r.id] || ''} onChange={(e) => setNotes((n) => ({ ...n, [r.id]: e.target.value }))} />
-                    <button className="btn primary small" disabled={busy} onClick={() => decide(r, 'resolved')}>Mark resolved</button>
-                    <button className="btn ghost small" disabled={busy} onClick={() => decide(r, 'dismissed')}>No action needed</button>
-                  </div>
-                  {actions.length > 0 && r.finding_id && (
+                  {/* THE ACTIONS — the same set the file's finding card offers. Applying one
+                      resolves the finding on the loan file AND closes this queue item. */}
+                  {canApplyActions && actions.length > 0 && (
                     <div style={{ marginTop: 10, padding: 10, background: 'var(--paper,#F6F3EC)', borderRadius: 8 }}>
-                      <div className="small" style={{ fontWeight: 600, marginBottom: 6 }}>Or take the action directly:</div>
+                      <div className="small" style={{ fontWeight: 600, marginBottom: 6, color: 'var(--ink,#141B22)' }}>
+                        Decide it — this closes the finding on the loan file and clears this item:
+                      </div>
                       <div className="row" style={{ gap: 6, flexWrap: 'wrap' }}>
-                        {actions.map((a) => {
-                          const key = typeof a === 'string' ? a : (a.key || a.label);
-                          const isPrimary = key === 'post_condition' || key === 'request_document' || key === 'open_condition' || key === 'request_revision';
-                          const isDanger = key === 'decline';
-                          return (
-                            <button key={key} className={`btn small ${isPrimary ? 'primary' : (isDanger ? 'ghost' : 'ghost')}`}
-                              disabled={busy} onClick={() => {
-                                if (isDanger && !window.confirm('Decline this file on this finding?')) return;
-                                resolveFinding(r, key);
-                              }}>{actionLabel(a)}</button>
-                          );
-                        })}
+                        {actions.map((a) => (
+                          <button key={a.key} type="button" title={a.desc} disabled={busy}
+                            onClick={() => clickAction(r, a)}
+                            style={btn(a.key === 'post_condition' || a.key === 'request_document', a.key === 'decline')}>
+                            {a.label}
+                          </button>
+                        ))}
                       </div>
-                      <div className="muted small" style={{ marginTop: 6 }}>
-                        Applying an action here resolves the finding on the file AND closes this queue item — your advice note above is recorded as the decision.
-                      </div>
+                      {p && (
+                        <div className="row" style={{ gap: 8, marginTop: 10, flexWrap: 'wrap' }}>
+                          <input autoFocus className="input" style={{ flex: 1, minWidth: 200 }}
+                            value={p.text || ''}
+                            onChange={(e) => setPending((s) => ({ ...s, [r.id]: { ...s[r.id], text: e.target.value } }))}
+                            onKeyDown={(e) => { if (e.key === 'Enter') confirmPending(r); }}
+                            placeholder={p.needs === 'value' ? 'corrected value' : `note — ${String(p.label || '').toLowerCase()}`} />
+                          <button type="button" disabled={busy || !String(p.text || '').trim()} onClick={() => confirmPending(r)} style={btn(true)}>{p.label}</button>
+                          <button type="button" disabled={busy} onClick={() => setPending((s) => { const n = { ...s }; delete n[r.id]; return n; })} style={btn()}>Cancel</button>
+                        </div>
+                      )}
+                      {p && p.needs === 'value' && (
+                        <div className="small" style={{ marginTop: 4, color: 'var(--muted,#4B585C)' }}>
+                          A purchase-price, as-is, ARV or rehab-budget correction is written straight onto the loan file (the pricing conditions reopen so it’s re-registered). If the file is locked, clear the term-sheet package or unlock it first.
+                        </div>
+                      )}
+                      {hiddenForWaive > 0 && (
+                        <div className="small" style={{ marginTop: 6, color: 'var(--muted,#4B585C)' }}>
+                          Clearing this dealbreaker needs an underwriter, processor or admin — those options are hidden for you.
+                        </div>
+                      )}
                     </div>
                   )}
-                  {actions.length > 0 && !r.finding_id && (
-                    <div className="muted small" style={{ marginTop: 8 }}>
-                      Options on the desk: {actions.map((a) => actionLabel(a)).filter(Boolean).join(' · ')} — open the file to take one (derived finding, no direct resolve here).
+                  {canApplyActions && actions.length === 0 && allActions.length > 0 && (
+                    <div className="small" style={{ marginTop: 8, color: 'var(--muted,#4B585C)' }}>
+                      An underwriter, processor or admin can clear this dealbreaker.
                     </div>
                   )}
+
+                  {/* Advice-only close: leaves the finding exactly as it is. Kept separate and
+                      labeled so it can't be mistaken for resolving the finding. */}
+                  <div className="row" style={{ gap: 8, alignItems: 'center', marginTop: 10, flexWrap: 'wrap' }}>
+                    <input className="input" style={{ flex: 1, minWidth: 200 }} placeholder="How to proceed / your advice (optional — also used as the note on the action above)"
+                      value={notes[r.id] || ''} onChange={(e) => setNotes((n) => ({ ...n, [r.id]: e.target.value }))} />
+                    <button className="btn ghost small" disabled={busy} title="Close this item and leave the finding as it is"
+                      onClick={() => decide(r, 'resolved')}>Close with advice only</button>
+                    <button className="btn ghost small" disabled={busy} title="Close this item — nothing needs doing"
+                      onClick={() => decide(r, 'dismissed')}>No action needed</button>
+                  </div>
                 </>
               )}
-              {r.status === 'open' && !canDecide(r) && (
-                <div className="muted small" style={{ marginTop: 8 }}>Waiting on the {TARGET_LABEL[r.target_role] || r.target_role} to review.</div>
+              {r.status === 'open' && !r.canDecide && (
+                <div className="small" style={{ marginTop: 8, color: 'var(--muted,#4B585C)' }}>
+                  {r.requested_by && r.requested_by === myId
+                    ? 'You raised this one — another reviewer decides it.'
+                    : `Waiting on the ${TARGET_LABEL[r.target_role] || r.target_role} to review.`}
+                </div>
               )}
               {r.status !== 'open' && (
-                <div className="muted small" style={{ marginTop: 8 }}>
+                <div className="small" style={{ marginTop: 8, color: 'var(--muted,#4B585C)' }}>
                   {r.status === 'resolved' ? 'Resolved' : 'Dismissed'}{r.decided_by_name ? ` by ${r.decided_by_name}` : ''}
                   {r.decision_note ? ` — ${r.decision_note}` : ''}
                 </div>

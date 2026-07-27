@@ -75,7 +75,22 @@ const uniq = `eh-${process.pid}-${Date.now()}`;
     [borrower, appId])).rows[0].id;
 
   // ---- backfill ----
-  const bf = await emailLog.backfillEmailHistoryOnce(1000);
+  // DRAIN, don't take one batch. `backfillEmailHistoryOnce` is a bounded, self-resuming drain that
+  // mirrors the OLDEST un-mirrored notifications first (correct: it is designed to catch up over
+  // successive boots). The rows this test just inserted are therefore the NEWEST — so on any
+  // database carrying more than `limit` un-mirrored notifications they are not in the first batch,
+  // and asserting after a single call failed for a reason that had nothing to do with the code
+  // under test. Drain to empty (bounded, so a genuine stall still fails rather than hangs).
+  let drained = 0, inboundDrained = 0;
+  for (let i = 0; i < 60; i += 1) {
+    const pass = await emailLog.backfillEmailHistoryOnce(1000);
+    drained += pass.notifs || 0;
+    inboundDrained += pass.inbound || 0;
+    // Both halves drain independently — stop only when NEITHER moved, or an inbound backlog
+    // larger than one batch would be left behind while the notification half reported empty.
+    if (!pass.notifs && !pass.inbound) break;
+  }
+  const bf = { notifs: drained, inbound: inboundDrained };
   assert(bf.notifs >= 2, `backfill mirrored historical notifications (${bf.notifs})`);
   const bfRows = await db.query(
     `SELECT notification_id, status, reconstructed, direction, subject FROM email_messages WHERE application_id=$1 ORDER BY occurred_at`, [appId]);

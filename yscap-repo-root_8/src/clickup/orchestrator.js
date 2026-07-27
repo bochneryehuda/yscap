@@ -63,13 +63,22 @@ async function withCoords(addr) {
   try {
     const hit = await g.geocode(line);
     if (hit && hit.lat != null && hit.lng != null) {
+      // FORMATTING (owner-reported 2026-07-26, second report): what we write must
+      // be the MAILING one-line ClickUp's picker shows — "26 S 10th St, Brooklyn,
+      // NY 11249, USA" — never a geocoder display name ("26, South 10th Street,
+      // Williamsburg, Brooklyn, Kings County, New York, 11249, United States").
+      // The keyless OSM fallback used to hand us exactly that display name and it
+      // was written onto the card AND back onto the portal record below. The
+      // provider now returns the mailing form; `compactFormattedAddress` is the
+      // belt-and-suspenders (a permanently-cached old row, a future provider).
+      const ADDR = require('../lib/address');
+      const formatted = ADDR.compactFormattedAddress(hit.formatted)
+        || ADDR.canonicalOneLine({ ...addr }, { country: true })
+        || ADDR.compactFormattedAddress(addr.formatted_address || line);
       return {
         ...addr,
         lat: Number(hit.lat), lng: Number(hit.lng),
-        // The provider's OWN formatted address is the string ClickUp's location
-        // picker produces for the same place — write that, not our reconstructed
-        // line, so the value lands as a properly selected location.
-        formatted_address: hit.formatted || addr.formatted_address || line,
+        formatted_address: formatted || addr.formatted_address || line,
         place_id: hit.place_id || addr.place_id || undefined,
       };
     }

@@ -32,12 +32,14 @@
  *    tests exercise it with fakes, no vendors, no network.
  */
 
-const STAGE = Object.freeze({
-  INTAKE: 'intake',
-  ROUTE_PLAN: 'route_plan',
-  OCR_LAYOUT: 'ocr_layout',
-  CLASSIFICATION: 'classification',
-});
+// The stage keys come from stage-manifest, which is also what EVALUATES them. This file used to
+// keep its own frozen copy of the same list, and the two drifted the moment a stage was added: the
+// manifest gained `evidence` and required it, while this file's copy did not have the key, so
+// every `safeStage(STAGE.EVIDENCE, …)` recorded under `undefined` and the required stage looked
+// missing on a job that had in fact done the work. One list, one owner.
+const { STAGE } = require('./stage-manifest');
+const classifyDoc = require('./classify-document');
+const pageDisposition = require('./page-disposition');
 
 /**
  * PURE — build a COMPACT summary of what a real read produced, for the shadow surface + audit
@@ -86,6 +88,10 @@ function makePacketControlProcessor(opts = {}) {
   const loadBytes = (typeof opts.loadBytes === 'function')
     ? opts.loadBytes
     : ((db, documentId) => require('./document-bytes').loadDocumentBytes(db, documentId));
+  // RS-2 — the document classifier, injectable for tests. Deliberately passed through AS GIVEN:
+  // `undefined` means "use the real Azure custom classifier"; `null` means "explicitly none", which
+  // is how a test asserts the not-applicable path without reaching for a vendor.
+  const classifier = opts.classifier;
 
   return async function packetControlProcessor(job, ctx = {}) {
     const db = ctx.db;
@@ -161,6 +167,7 @@ function makePacketControlProcessor(opts = {}) {
           // than call the adapter with an empty request (which would look like a failed vendor read).
           await safeStage(STAGE.OCR_LAYOUT, 'not_applicable', { note: 'read skipped: document bytes unavailable' });
           await safeStage(STAGE.CLASSIFICATION, 'not_applicable', { note: 'read skipped: document bytes unavailable' });
+          await safeStage(STAGE.PAGE_DISPOSITION, 'not_applicable', { note: 'read skipped: no pages were seen, so there was nothing to account for' });
         } else {
           // Route the document through the primary adapter with the real bytes.
           const routed = await router.routeDocument({
@@ -180,14 +187,50 @@ function makePacketControlProcessor(opts = {}) {
           // record them into the Stage-5 ledger (evidence-first canonical truth). Advisory:
           // writes only document_pipeline_evidence; makes no decision, clears no condition.
           // Best-effort + never throws (a recording failure never fails the read).
+          //
+          // RS-1 (2026-07-26): this is NO LONGER best-effort. Reading a document and recording
+          // nothing is the same defect as not reading it at all, one step later — and it used to be
+          // invisible, because the swallow-everything catch below meant a failed or empty write
+          // still let the job report 'completed'. The outcome is now recorded as a real stage and
+          // goes through the same fail-closed manifest gate as the read itself.
+          //
+          // The three outcomes are deliberately NOT collapsed, because they need different
+          // handling: a throw is transient and worth retrying, whereas a read that genuinely
+          // yielded nothing extractable will yield nothing again on the tenth attempt.
           if (okRead && routed && routed.result) {
+            let recorded = 0;
             try {
               const candidates = require('./read-to-evidence').readToEvidence(routed.result, {
                 jobId, documentId, loanId, family: features.docType || null,
               });
               const ec = require('./evidence-candidate');
-              for (const cand of candidates) { await ec.recordCandidate(db, cand); }
-            } catch (_e) { /* evidence recording is best-effort */ }
+              for (const cand of candidates) { await ec.recordCandidate(db, cand); recorded += 1; }
+              // 'failed_terminal', NOT 'failed' (audit 2026-07-26). `document_pipeline_stages` has a
+              // CHECK constraint that does not include 'failed', so the INSERT was rejected — and
+              // `safeStage` swallows the error, so the row was never written at all. The job then
+              // dead-lettered citing a stage that does not exist in the manifest table, and the
+              // shadow surface showed no evidence stage: indistinguishable from the stage never
+              // having run. Exactly the class this whole RS-1/RS-2 work is about, one level down.
+              // 'failed_terminal' is also the semantically right one — `recordStage` stamps
+              // `ended_at` for it, which a bare 'failed' would not have got.
+              await safeStage(STAGE.EVIDENCE, recorded > 0 ? 'completed' : 'failed_terminal', {
+                recorded,
+                note: recorded > 0
+                  ? 'read turned into recorded evidence'
+                  : 'the read produced no evidence candidates — nothing extractable was found, so this job has no result to report',
+              });
+            } catch (e) {
+              // A THROW is transient (a DB blip, a lock) — retryable, unlike an empty read.
+              await safeStage(STAGE.EVIDENCE, 'failed_retryable', {
+                recorded,
+                error: (e && e.message) ? String(e.message).slice(0, 300) : 'evidence recording threw',
+              });
+            }
+          } else {
+            // The read did not complete, so there was never anything to turn into evidence. Say
+            // that plainly rather than leaving the stage unrecorded — a missing stage and a stage
+            // that had nothing to do are different facts, and the manifest reports both honestly.
+            await safeStage(STAGE.EVIDENCE, 'not_applicable', { note: 'no completed read to turn into evidence' });
           }
           // VSLICE-6 — record a durable snapshot of the V1-vs-V2 result difference for this document
           // (what the existing pipeline extracted vs what V2 read), as a `v1_v2_diff` artifact for
@@ -196,12 +239,73 @@ function makePacketControlProcessor(opts = {}) {
             const diff = await require('./v1v2-diff').computeDiffForDocument(db, { documentId });
             await safeArtifact('v1_v2_diff', diff);
           } catch (_e) { /* diff artifact is best-effort */ }
-          // Classification is deferred to a later phase even on the read path; mark pending.
-          await safeStage(STAGE.CLASSIFICATION, 'pending', { note: 'classifier stage not yet wired' });
+          // ── classification ── RS-2: what the document ACTUALLY is, read from the document itself.
+          //
+          // Everything before this point takes the document's family on FAITH — the route was planned
+          // from the slot it was uploaded into, and the read was performed on that assumption. This
+          // stage is the first one that looks at the bytes and says what they are, which is what makes
+          // "filed as a purchase contract, reads like a bank statement" visible at intake instead of
+          // being caught by hand much later.
+          //
+          // It used to record `pending` / "classifier stage not yet wired" on EVERY read. That note
+          // was true when written and false by the time it shipped: the trained classifier has existed
+          // since R3.2 and V1 already uses it. A stage whose status never changes is not a stage.
+          //
+          // The SAME bytes the read used are passed straight through — the document is never
+          // re-loaded from storage and never re-fetched. Advisory: this records a V2 stage + artifact
+          // and nothing else; a mismatch is a fact on the shadow surface, never an action on the file.
+          const cls = await classifyDoc.classifyDocument({
+            classifier, request, documentId, loanId,
+            // An INJECTED classifier is an explicit instruction from the caller, so it drives the
+            // stage directly; only the default (real vendor) path consults the spend switch.
+            enabled: classifier !== undefined ? true : undefined,
+          });
+          const clsSummary = classifyDoc.summarizeClassification(cls, { expectedFamily: features.docType || null });
+          if (clsSummary.artifact) await safeArtifact('classification', clsSummary.artifact);
+          await safeStage(STAGE.CLASSIFICATION, clsSummary.status, clsSummary.detail);
+
+          // ── page_disposition ── RS-3: say what happened to EVERY page.
+          //
+          // Everything above reasons about the upload as ONE document. Real uploads are packets — a
+          // contract, an assignment, two statements and a scanned separator sheet in one PDF — and
+          // until now nothing said what became of page 7. Not assigned, not excluded, nobody asked:
+          // simply never mentioned, which on every surface is indistinguishable from fine.
+          //
+          // Each page now lands as assigned / excluded (provably blank) / manual_review, and the
+          // per-page rows are persisted (db/330) so "3 pages need a person" says WHICH three. The
+          // fallback is always manual_review, so the accounting cannot fail to total — that is the
+          // point, not a weakness: an unplaceable page is escalated, never dropped.
+          //
+          // Deliberately NOT a gate on extraction. The architecture's "no extraction until every
+          // page is dispositioned" is satisfied by construction here, so making the evidence step
+          // wait on a check that can never fail would be theatre. What it IS, is the record that
+          // makes a silently-skipped page impossible.
+          const readPages = (routed && routed.result && Array.isArray(routed.result.pages)) ? routed.result.pages : [];
+          const disp = pageDisposition.dispositionPages({
+            pages: readPages,
+            // The classifier's OWN segment list, not the artifact's. `summarizeClassification`
+            // truncates the artifact to 50 segments so a huge packet cannot bloat one audit row —
+            // a display cap, not a semantic one. Feeding that to the accounting made every page
+            // beyond the 50th segment come back "no segment claims this page", so a correctly
+            // classified 60-document packet reported ten pages needing a person and no indication
+            // anywhere that anything had been truncated (audit 2026-07-26).
+            segments: Array.isArray(cls && cls.segments) ? cls.segments : [],
+            // Only a classification that actually reached a verdict gives a basis to ASSIGN. When it
+            // did not (switched off, untrained, vendor error) the honest answer is not-applicable —
+            // marking a whole packet 'manual_review' because a switch is off would bury the pages
+            // that genuinely need a person under every page that does not.
+            classified: clsSummary.status === 'completed',
+          });
+          if (disp.pages.length) {
+            try { await jq.recordPages(db, jobId, disp.pages); } catch (_e) { /* per-page rows are best-effort; the stage still states the totals */ }
+          }
+          await safeStage(STAGE.PAGE_DISPOSITION, disp.status, disp.detail);
         }
       } else {
         await safeStage(STAGE.OCR_LAYOUT, 'not_applicable', { note: 'shadow: read not run' });
         await safeStage(STAGE.CLASSIFICATION, 'not_applicable', { note: 'shadow: read not run' });
+        await safeStage(STAGE.EVIDENCE, 'not_applicable', { note: 'shadow: read not run' });
+        await safeStage(STAGE.PAGE_DISPOSITION, 'not_applicable', { note: 'shadow: read not run' });
       }
 
       // VSLICE-5 — evaluate the full stage MANIFEST and FAIL CLOSED. In 'read' mode (real adapters
@@ -210,6 +314,8 @@ function makePacketControlProcessor(opts = {}) {
       // completed (the owner-flagged "marked completed when no document was read" defect). In shadow
       // mode (no adapters) the read stages are legitimately not required, so a planned job completes.
       const mode = (adapters && primaryKey) ? 'read' : 'shadow';
+      // `classification` is REQUIRED-PRESENT, not required-completed (see stage-manifest): it must
+      // have been recorded, but an advisory stage's verdict must never throw away a successful read.
       const manifest = require('./stage-manifest').evaluateManifest(stageStatus, { mode });
       await safeArtifact('stage_manifest', manifest);
       if (!manifest.complete) {

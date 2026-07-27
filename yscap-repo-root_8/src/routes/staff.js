@@ -203,12 +203,29 @@ function scopeClause(req, alias = 'a') {
 //     ClickUp sync now stamps from EVERY card, RTL or not (src/clickup/ingest),
 //     with the same visible_officer_ids delegation the file scope honors.
 // Requires the borrowers alias to expose id + primary_officer_id.
+// A borrower belongs to EVERY officer they have done business with, not just one
+// (owner-directed 2026-07-26 follow-up: "he should see every borrower where he
+// closed any file in the past in ClickUp"). `borrower_officers` (db/327) is the
+// many-to-many relationship the ClickUp sync records from EVERY card in EVERY
+// status; `primary_officer_id` stays the single CRM owner. Both are honored, plus
+// the visible_officer_ids delegation, plus any file the staffer can already see.
 const VISIBLE_BORROWER_SQL = (alias, p) =>
   `(${alias}.primary_officer_id=${p}` +
   ` OR ${alias}.primary_officer_id IN (SELECT unnest(visible_officer_ids) FROM staff_users WHERE id=${p})` +
+  ` OR EXISTS (SELECT 1 FROM borrower_officers bo WHERE bo.borrower_id=${alias}.id` +
+  ` AND (bo.staff_id=${p} OR bo.staff_id IN (SELECT unnest(visible_officer_ids) FROM staff_users WHERE id=${p})))` +
   ` OR EXISTS (SELECT 1 FROM applications a2` +
   ` WHERE (a2.borrower_id=${alias}.id OR a2.co_borrower_id=${alias}.id) AND a2.deleted_at IS NULL` +
   ` AND ${VISIBLE_OFFICERS_SQL('a2', p)}))`;
+
+// An ENCOMPASS review row (db/328) hangs on a BORROWER and never on a file, and
+// the borrower it is about may have no loan file at all — a DSCR-only client the
+// officer closed with in ClickUp. Scoping it the file way would hide the card
+// from the ONE person who can answer it. It follows the borrower scope instead,
+// which is exactly who is allowed to see that person's profile anyway.
+const ENCOMPASS_REVIEW_SCOPE = (p) =>
+  ` OR (q.source = 'encompass' AND q.borrower_id IS NOT NULL AND EXISTS (
+        SELECT 1 FROM borrowers eb WHERE eb.id = q.borrower_id AND ${VISIBLE_BORROWER_SQL('eb', p)}))`;
 
 // Guard every /applications/:id* route: a non-privileged staffer may only touch
 // a file they are the loan officer or processor on. (Borrower :id routes live
@@ -2669,7 +2686,12 @@ router.post('/applications/:id/rehab-budget', async (req, res) => {
   const appId = req.params.id;
   const payload = (req.body && typeof req.body.payload === 'object') ? req.body.payload : null;
   if (!payload) return res.status(400).json({ error: 'payload required' });
-  const locked = await require('../lib/file-lock').structuralLockReason(appId, db, { actor: req.actor });   // #84
+  // #84 + the Scope-of-Work reallocation exclusion (owner-directed 2026-07-26):
+  // sowLockReason is structuralLockReason PLUS the one carve-out — a save that
+  // leaves the construction budget total exactly where it is may go through
+  // while a term sheet is out for signature (it can't make the sent term sheet
+  // disagree with the file). Clear-to-Close / Funded stays frozen.
+  const locked = await require('../lib/file-lock').sowLockReason(appId, payload, db, { actor: req.actor });
   if (locked) return res.status(409).json({ error: locked });
   try {
     let it = await db.query(`SELECT id FROM checklist_items WHERE application_id=$1 AND tool_key='rehab_budget' LIMIT 1`, [appId]);
@@ -2736,10 +2758,6 @@ router.post('/applications/:id/checklist/:itemId/tool', async (req, res) => {
     [req.params.itemId, req.params.id]);
   if (!it.rows[0]) return res.status(404).json({ error: 'tool task not found' });
   const toolKey = it.rows[0].tool_key;
-  if (toolKey === 'rehab_budget') {   // #84 — rehab budget is loan structure, frozen at CTC
-    const locked = await require('../lib/file-lock').structuralLockReason(req.params.id, db, { actor: req.actor });
-    if (locked) return res.status(409).json({ error: locked, fatal: true });
-  }
   const rawPayload = (req.body && typeof req.body.payload === 'object') ? req.body.payload : { submitted: true };
   const attachments = (Array.isArray(rawPayload.attachments) ? rawPayload.attachments : []).slice(0, 4)
     .map((a) => ({
@@ -2756,6 +2774,13 @@ router.post('/applications/:id/checklist/:itemId/tool', async (req, res) => {
   // plain-language note until the line items total the budget exactly.
   let sowMismatch = null, goldSow = { ok: true };
   if (toolKey === 'rehab_budget') {
+    // #84 — the rehab budget is loan structure, frozen at CTC. The check moved
+    // BELOW the payload build (owner-directed 2026-07-26) because it now needs
+    // to SEE the payload: a save that leaves the construction budget total
+    // exactly where it is is a line-item reallocation, and that is allowed while
+    // a term sheet is out for signature. Nothing is written above this point.
+    const locked = await require('../lib/file-lock').sowLockReason(req.params.id, payload, db, { actor: req.actor });
+    if (locked) return res.status(409).json({ error: locked, fatal: true });
     const chk = await require('../lib/rehab-budget').checkSowBudget(req.params.id, payload);
     if (!chk.ok) sowMismatch = { required: chk.required, total: require('../lib/rehab-budget').toNum(payload && payload.total), message: chk.message };
     goldSow = await require('../lib/rehab-budget').checkGoldSow(req.params.id, payload);
@@ -5469,15 +5494,36 @@ router.get('/borrowers/:id', async (req, res) => {
   } catch (e) { res.status(500).json({ error: 'server error' }); }
 });
 
-// Edit a borrower's CRM / contact fields (staff, audited). Identity fields that
-// belong to underwriting (SSN, FICO, DOB, legal name) are intentionally NOT
-// editable here — those are corrected on the file. This is contact + CRM metadata.
+// Edit a borrower's CRM / contact fields (staff, audited). SSN and FICO stay off
+// this route (SSN has its own audited endpoint; FICO comes from a credit pull).
+//
+// The legal NAME is editable here as of 2026-07-26 (owner-reported: a file was
+// opened under a nickname — "Avi" — which created the profile under that name,
+// and when the ClickUp card was corrected to "Abraham" the profile stayed wrong
+// with no way to fix it). A name typed here is a deliberate human correction, so
+// it is applied AND pushed out to every linked ClickUp card — the same round-trip
+// the DOB edit already has.
 router.patch('/borrowers/:id', async (req, res) => {
   try {
     if (!(await canSeeBorrower(req))) return res.status(403).json({ error: 'forbidden' });
     const b = req.body || {};
     const sets = [], vals = [req.params.id];
     const put = (col, val) => { vals.push(val); sets.push(`${col}=$${vals.length}`); };
+    // A name correction must be a real name — never a placeholder, never blank
+    // (that would erase the person's identity on every surface at once).
+    if (b.firstName != null || b.lastName != null) {
+      const T = require('../clickup/transforms');
+      const first = b.firstName != null ? String(b.firstName).trim() : null;
+      const last = b.lastName != null ? String(b.lastName).trim() : null;
+      if (first !== null) {
+        if (!first || T.isPlaceholderName(first)) return res.status(400).json({ error: 'a real first name is required' });
+        put('first_name', first);
+      }
+      if (last !== null) {
+        if (T.isPlaceholderName(last)) return res.status(400).json({ error: 'that is not a usable last name' });
+        put('last_name', last || null);
+      }
+    }
     if (b.email != null) put('email', String(b.email).trim().toLowerCase() || null);
     if (b.cellPhone != null) put('cell_phone', String(b.cellPhone).trim() || null);
     if (b.contactType != null) put('contact_type', String(b.contactType).trim() || null);
@@ -5568,6 +5614,9 @@ router.patch('/borrowers/:id', async (req, res) => {
     if (b.email != null) pushKeys.push('email');
     if (b.cellPhone != null) pushKeys.push('cell_phone');
     if (b.currentAddress !== undefined) pushKeys.push('current_address');
+    // A corrected name goes OUT to ClickUp too — otherwise the next inbound pull
+    // would read the old card value straight back over the fix.
+    if (b.firstName != null || b.lastName != null) pushKeys.push('first_name');
     // Housing / employment are BOTH-way mapped ClickUp fields, so a profile edit
     // must reach the ClickUp cards too — otherwise the next inbound pull would
     // read the old ClickUp value back over what was just typed here.
@@ -6139,6 +6188,77 @@ router.post('/borrowers/:id/ssn', async (req, res) => {
       for (const a of apps) enqueueClickupPush(a.id, ['ssn']).catch(() => {});
     } catch (_) { /* best-effort */ }
     res.json({ ok: true, last4: store.last4, movedFrom: clash ? clash.id : undefined });
+  } catch (e) { res.status(500).json({ error: 'server error' }); }
+});
+
+// ---------------- duplicate profiles: compare + merge ----------------
+// The sync deliberately OVER-SPLITS (an email it can't corroborate creates a
+// distinct profile rather than risk attaching one person's loans to another), so
+// genuine duplicates happen and there was no way to put them back together.
+// Merging re-points every file, document, condition and message and then removes
+// a profile, so it is scoped like every other borrower action, fully audited, and
+// the losing profile is snapshotted first (see src/lib/borrower-merge.js).
+router.get('/borrowers/:id/duplicates', async (req, res) => {
+  try {
+    if (!(await canSeeBorrower(req))) return res.status(403).json({ error: 'forbidden' });
+    const all = await require('../lib/borrower-merge').findDuplicates(req.params.id);
+    // Only offer people this staffer is actually allowed to see — a merge screen
+    // must never become a way to read another officer's borrower.
+    const out = [];
+    for (const c of all) if (await canSeeBorrowerId(req, c.id)) out.push(c);
+    res.json(out);
+  } catch (e) { res.status(e.status || 500).json({ error: e.status ? e.message : 'server error' }); }
+});
+
+router.get('/borrowers/:id/compare/:otherId', async (req, res) => {
+  try {
+    if (!(await canSeeBorrower(req))) return res.status(403).json({ error: 'forbidden' });
+    if (!(await canSeeBorrowerId(req, req.params.otherId))) return res.status(403).json({ error: 'forbidden' });
+    res.json(await require('../lib/borrower-merge').compare(req.params.id, req.params.otherId));
+  } catch (e) { res.status(e.status || 500).json({ error: e.status ? e.message : 'server error' }); }
+});
+
+// Absorb `mergeId` INTO :id. `choices` names the winning side for each field the
+// two disagree on; a field only one side has needs no choice. One transaction —
+// a failure leaves both profiles exactly as they were.
+router.post('/borrowers/:id/merge', async (req, res) => {
+  try {
+    if (!(await canSeeBorrower(req))) return res.status(403).json({ error: 'forbidden' });
+    const b = req.body || {};
+    if (!b.mergeId) return res.status(400).json({ error: 'mergeId is required' });
+    if (!(await canSeeBorrowerId(req, b.mergeId))) return res.status(403).json({ error: 'forbidden' });
+    // Nothing may be merged blind: the caller must have SEEN the conflicts and
+    // decided each one, or the survivor could silently lose a real value.
+    const cmp = await require('../lib/borrower-merge').compare(req.params.id, b.mergeId);
+    const choices = b.choices || {};
+    const undecided = cmp.fields.filter((f) => f.conflict && !['survivor', 'merged'].includes(choices[f.key]));
+    if (undecided.length) {
+      return res.status(409).json({
+        error: 'these profiles disagree — choose which value should survive for each one',
+        undecided: undecided.map((f) => ({ key: f.key, label: f.label, survivor: f.survivor, merged: f.merged })),
+      });
+    }
+    const out = await require('../lib/borrower-merge').mergeBorrowers({
+      survivorId: req.params.id, mergedId: b.mergeId, choices, actorId: req.actor.id });
+    await audit(req, 'merge_borrowers', 'borrower', req.params.id,
+      { mergedId: b.mergeId, choices: out.choices, moved: out.moved });
+    res.json(out);
+  } catch (e) {
+    console.warn('[staff] merge failed:', db.describeError ? db.describeError(e) : (e && e.message));
+    res.status(e.status || 500).json({ error: e.status ? e.message : 'could not merge those profiles — nothing was changed' });
+  }
+});
+
+// What was absorbed into this profile (so a surprising record can be explained).
+router.get('/borrowers/:id/merges', async (req, res) => {
+  try {
+    if (!(await canSeeBorrower(req))) return res.status(403).json({ error: 'forbidden' });
+    const r = await db.query(
+      `SELECT m.id, m.merged_id, m.merged_name, m.merged_email, m.field_choices, m.moved, m.created_at,
+              s.full_name AS merged_by_name
+         FROM borrower_merges m LEFT JOIN staff_users s ON s.id=m.merged_by
+        WHERE m.survivor_id=$1 ORDER BY m.created_at DESC LIMIT 50`, [req.params.id]);
+    res.json(r.rows);
   } catch (e) { res.status(500).json({ error: 'server error' }); }
 });
 
@@ -10488,7 +10608,8 @@ router.get('/sync-reviews', async (req, res) => {
                        OR (q.application_id IS NULL AND q.borrower_id IS NOT NULL AND EXISTS (
                              SELECT 1 FROM applications a2
                               WHERE a2.borrower_id = q.borrower_id AND a2.deleted_at IS NULL
-                                AND ${VISIBLE_OFFICERS_SQL('a2', '$2')})))` : ''}
+                                AND ${VISIBLE_OFFICERS_SQL('a2', '$2')}))
+                       ${ENCOMPASS_REVIEW_SCOPE('$2')})` : ''}
         ORDER BY q.created_at DESC LIMIT 500`,
       scoped ? [status, req.actor.id] : [status]);
     res.json({ reviews: r.rows });
@@ -10510,7 +10631,8 @@ router.get('/sync-reviews/count', async (req, res) => {
                        OR (q.application_id IS NULL AND q.borrower_id IS NOT NULL AND EXISTS (
                              SELECT 1 FROM applications a2
                               WHERE a2.borrower_id = q.borrower_id AND a2.deleted_at IS NULL
-                                AND ${VISIBLE_OFFICERS_SQL('a2', '$1')})))` : ''}`,
+                                AND ${VISIBLE_OFFICERS_SQL('a2', '$1')}))
+                       ${ENCOMPASS_REVIEW_SCOPE('$1')})` : ''}`,
       scoped ? [req.actor.id] : []);
     res.json({ open: r.rows[0].n });
   } catch (e) { res.status(500).json({ error: 'server error' }); }
@@ -10600,7 +10722,10 @@ router.post('/sync-reviews/:id/approve', async (req, res) => {
 router.post('/sync-reviews/:id/resolve', async (req, res) => {
   try {
     const winner = String((req.body && req.body.winner) || '');
-    if (!['clickup', 'portal', 'custom'].includes(winner)) return res.status(400).json({ error: "winner must be 'clickup', 'portal', or 'custom' (with a value)" });
+    // 'encompass' is the winner name on a row the READ-ONLY Encompass enrichment
+    // pass raised (db/328) — the resolver refuses the wrong name for the row's
+    // source, so a mixed-up client gets a clear message instead of a bad write.
+    if (!['clickup', 'portal', 'custom', 'encompass'].includes(winner)) return res.status(400).json({ error: "winner must be 'clickup', 'portal', 'encompass', or 'custom' (with a value)" });
     const row = await loadReviewFor(req, res);
     if (!row) return;
     const out = await require('../lib/sync-autoresolve').applyReviewWinner(row, winner, req.body && req.body.value);
@@ -10732,8 +10857,8 @@ router.post('/sync-reviews/bulk', async (req, res) => {
     if (!ids.length) return res.status(400).json({ error: 'ids required' });
     if (!['reject', 'resolve'].includes(action)) return res.status(400).json({ error: "action must be 'reject' or 'resolve'" });
     const winner = String(b.winner || '');
-    if (action === 'resolve' && !['clickup', 'portal'].includes(winner)) {
-      return res.status(400).json({ error: "bulk resolve needs winner 'clickup' or 'portal' (custom values are per-row)" });
+    if (action === 'resolve' && !['clickup', 'portal', 'encompass'].includes(winner)) {
+      return res.status(400).json({ error: "bulk resolve needs winner 'clickup', 'portal', or 'encompass' (custom values are per-row)" });
     }
     const results = [];
     for (const id of ids) {

@@ -27,6 +27,7 @@ const ok = (c, m) => { if (c) { pass++; } else { fail++; console.log('  FAIL:', 
     // Apply the pipeline migrations idempotently so the test runs standalone.
     await q(fs.readFileSync(R + '/db/307_document_pipeline_jobs.sql', 'utf8'));
     await q(fs.readFileSync(R + '/db/308_document_processing_routes.sql', 'utf8'));
+    await q(fs.readFileSync(R + '/db/330_document_pipeline_pages.sql', 'utf8'));
 
     const MARK = 'test-pc-' + process.pid;
     // Enqueue a shadow bank_statement job (no document/loan fixtures needed — nullable).
@@ -57,6 +58,85 @@ const ok = (c, m) => { if (c) { pass++; } else { fail++; console.log('  FAIL:', 
     const routes = (await q(`SELECT provider, document_family, outcome FROM document_processing_routes WHERE job_id=$1`, [jobId])).rows;
     ok(routes.length === 1, 'exactly one route row recorded');
     ok(routes[0].provider === 'azure' && routes[0].document_family === 'bank_statement' && routes[0].outcome === 'planned', 'route row: azure / bank_statement / planned');
+
+    /* AUDIT REGRESSION (2026-07-26) — every status the code can record must be a status the TABLE
+       ACCEPTS. `document_pipeline_stages` has a CHECK constraint, and `safeStage` wraps the write in
+       a swallow-everything catch: a status outside that constraint is therefore not an error anyone
+       sees — the INSERT is rejected and the row is simply never written, so the stage looks like it
+       never ran while the in-memory manifest believes it did. RS-1 shipped exactly that ('failed',
+       which is not in the constraint) and 108 passing PURE assertions could not see it, because they
+       all mock recordStage. This is the test that can. */
+    {
+      const CODE_STATUSES = ['completed', 'not_applicable', 'failed_retryable', 'failed_terminal'];
+      const { id: probe } = await jq.enqueue(pool, {
+        documentFamily: 'bank_statement', idempotencyKey: MARK + '-probe',
+        payload: { features: { docType: 'bank_statement' } },
+      });
+      for (const st of CODE_STATUSES) {
+        await jq.recordStage(pool, probe, 'classification', st, { probe: true });
+        const got = (await q(
+          `SELECT status FROM document_pipeline_stages WHERE job_id=$1 AND stage_key='classification'`, [probe])).rows[0];
+        ok(got && got.status === st, `recordStage actually PERSISTS status '${st}' (not silently rejected by the CHECK constraint)`);
+      }
+      // And prove the guard has teeth: a status outside the constraint really is rejected, which is
+      // why the swallowed catch made it invisible.
+      let rejected = false;
+      try {
+        await q(`INSERT INTO document_pipeline_stages (job_id, stage_key, status) VALUES ($1,'probe_bad','failed')`, [probe]);
+      } catch (_e) { rejected = true; }
+      ok(rejected, "a status outside the CHECK constraint ('failed') is rejected by the database");
+      await q(`DELETE FROM document_pipeline_jobs WHERE id=$1`, [probe]);
+    }
+
+    /* RS-3 (2026-07-26) — the same audit lesson, one table down. `document_pipeline_pages` has its
+       own CHECK constraint and `recordPages` is called inside a swallow-everything catch (a page
+       accounting failure must never fail a good read), so a disposition outside that constraint
+       would be silently rejected and the page rows would simply never exist — which is EXACTLY the
+       unaccounted-page defect the whole item exists to eliminate, reintroduced by its own writer.
+       This proves every value the code can produce actually persists, and that the guard has teeth. */
+    {
+      const pd = require(R + '/src/pipeline/page-disposition');
+      const { id: probe } = await jq.enqueue(pool, {
+        documentFamily: 'purchase_contract', idempotencyKey: MARK + '-pages',
+        payload: { features: { docType: 'purchase_contract' } },
+      });
+      const rows = Object.values(pd.DISPOSITION).map((d, i) => ({
+        page: i + 1, disposition: d, reason: 'probe', assignedType: 'purchase_contract', confidence: 0.5,
+      }));
+      const written = await jq.recordPages(pool, probe, rows);
+      ok(written === rows.length, `recordPages wrote a row per page (${written}/${rows.length})`);
+      const got = (await q(
+        `SELECT page_number, disposition FROM document_pipeline_pages WHERE job_id=$1 ORDER BY page_number`, [probe])).rows;
+      ok(got.length === rows.length, 'every page row is readable back');
+      rows.forEach((r, i) => ok(got[i] && got[i].disposition === r.disposition,
+        `disposition '${r.disposition}' actually PERSISTS (not silently rejected by the CHECK constraint)`));
+
+      // Re-running the job RE-STATES each page rather than appending a second opinion — duplicates
+      // would make "how many pages need a person" wrong the moment a job retried.
+      await jq.recordPages(pool, probe, [{ page: 1, disposition: 'manual_review', reason: 'rerun' }]);
+      const after = (await q(
+        `SELECT count(*)::int AS n FROM document_pipeline_pages WHERE job_id=$1`, [probe])).rows[0];
+      ok(after.n === rows.length, 'a re-run upserts in place — the page count does not grow');
+      const p1 = (await q(
+        `SELECT disposition, reason FROM document_pipeline_pages WHERE job_id=$1 AND page_number=1`, [probe])).rows[0];
+      ok(p1 && p1.disposition === 'manual_review' && p1.reason === 'rerun', 'and the re-stated row is the one that stands');
+
+      let rejected = false;
+      try {
+        await q(`INSERT INTO document_pipeline_pages (job_id, page_number, disposition) VALUES ($1, 99, 'ignored')`, [probe]);
+      } catch (_e) { rejected = true; }
+      ok(rejected, "a disposition outside the CHECK constraint ('ignored') is rejected by the database");
+
+      // A stage recorded 'manual_required' must be stamped ENDED. It is terminal — the pipeline is
+      // not coming back to it — and leaving ended_at NULL made it read as running forever.
+      await jq.recordStage(pool, probe, 'page_disposition', 'manual_required', { probe: true });
+      const stage = (await q(
+        `SELECT status, ended_at FROM document_pipeline_stages WHERE job_id=$1 AND stage_key='page_disposition'`, [probe])).rows[0];
+      ok(stage && stage.status === 'manual_required', "recordStage persists 'manual_required'");
+      ok(stage && stage.ended_at != null, "and stamps ended_at — handing work to a person ENDS the stage");
+
+      await q(`DELETE FROM document_pipeline_jobs WHERE id=$1`, [probe]);
+    }
 
     // Cleanup (cascade removes stages + routes).
     await q(`DELETE FROM document_pipeline_jobs WHERE id=$1`, [jobId]);

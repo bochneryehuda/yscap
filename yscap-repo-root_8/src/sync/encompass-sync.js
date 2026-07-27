@@ -37,16 +37,22 @@ function _envSec(name, def) {
 
 const CATALOG_INTERVAL_MS = _envSec('ENCOMPASS_CATALOG_HOURS', 24) * 3600 * 1000;
 const POLL_INTERVAL_MS = _envSec('ENCOMPASS_POLL_MIN', 15) * 60 * 1000;
-// Part 2 — the borrower-profile enrichment pass runs every few days (default 3),
-// separately opt-in (ENCOMPASS_ENRICH_ENABLED=1) on top of ENCOMPASS_ENABLED so
-// the profile writes can be turned on independently of the read-only pulls.
-const ENRICH_INTERVAL_MS = _envSec('ENCOMPASS_ENRICH_DAYS', 3) * 24 * 3600 * 1000;
+// Part 2 — the borrower-profile enrichment pass runs WEEKLY (owner-directed
+// 2026-07-26: "the system should pull every week all the Encompass data … just to
+// build up and enhance the profile section"). Separately opt-in
+// (ENCOMPASS_ENRICH_ENABLED=1) on top of ENCOMPASS_ENABLED so the profile writes
+// can be turned on independently of the read-only per-file pulls.
+const ENRICH_INTERVAL_MS = _envSec('ENCOMPASS_ENRICH_DAYS', 7) * 24 * 3600 * 1000;
 const _flagOn = (name) => { const v = String(process.env[name] || '').trim().toLowerCase(); return v === '1' || v === 'true'; };
+const _flagOff = (name) => { const v = String(process.env[name] || '').trim().toLowerCase(); return v === '0' || v === 'false'; };
 const enrichEnabled = () => _flagOn('ENCOMPASS_ENRICH_ENABLED');
-// Whether the enrichment pass also refreshes the full-tenant snapshot first
-// (a heavy read of every loan). Off by default — enrichment reads whatever the
-// snapshot already holds; turn on to "read everything from Encompass" each pass.
-const enrichBulkEnabled = () => _flagOn('ENCOMPASS_ENRICH_BULK');
+// Whether the weekly pass REFRESHES the full-tenant snapshot first (a heavy
+// read of every loan). ON by default now that the pass is weekly — the owner
+// asked for "all the Encompass data" every week, and enriching off a stale
+// snapshot would silently miss every file closed since the last refresh. Set
+// ENCOMPASS_ENRICH_BULK=0 to enrich from whatever the snapshot already holds.
+// Still a pure READ: bulkPullAllLoans only ever GETs.
+const enrichBulkEnabled = () => !_flagOff('ENCOMPASS_ENRICH_BULK');
 
 async function refreshCatalogOnce() {
   if (!client.configured()) return null;
@@ -84,11 +90,15 @@ async function pullOldestActiveOnce() {
   }
 }
 
-// Part 2 — one borrower-profile enrichment pass: (optionally) refresh the
-// read-only snapshot of ALL Encompass loans, then additively + dedupedly enrich
-// borrower profiles (prior-deal addresses → track record, LLCs → entity library)
-// from it. Writes only OUR tables (never Encompass); never replaces existing
-// rows. Best-effort — a failure is logged, never thrown.
+// Part 2 — one borrower-profile enrichment pass: refresh the read-only snapshot
+// of ALL Encompass loans, then additively + dedupedly enrich borrower profiles
+// from it — prior-deal addresses → track record, entities (including the
+// free-text field 1859 list) → entity library, every email/phone on the file →
+// the person's accumulated contacts — and verify their primary home address
+// against their MOST RECENT file, filling it when we have none and raising a
+// manual review when the two disagree. Writes only OUR tables (never Encompass),
+// never creates a loan file, and never replaces an existing row.
+// Best-effort — a failure is logged, never thrown.
 async function enrichPassOnce() {
   if (!enrichEnabled()) return null;
   if (!client.configured()) return null;
@@ -124,7 +134,7 @@ function start() {
   setInterval(refreshCatalogOnce, CATALOG_INTERVAL_MS);
   setInterval(pullOldestActiveOnce, POLL_INTERVAL_MS);
 
-  // Part 2 — borrower-profile enrichment (opt-in, every few days).
+  // Part 2 — borrower-profile enrichment (opt-in, weekly).
   if (enrichEnabled()) {
     console.log('[encompass] borrower-profile enrichment ON — every %sd%s',
       Math.round(ENRICH_INTERVAL_MS / 86400000), enrichBulkEnabled() ? ' (with full-tenant snapshot refresh)' : '');
