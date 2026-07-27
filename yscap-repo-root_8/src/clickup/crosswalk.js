@@ -142,6 +142,57 @@ function fromClickUpLabel(key, clickupLabel) {
 }
 
 /**
+ * Is this portal value one ClickUp CANNOT hold? (owner-reported 2026-07-27:
+ * "changing Fix & Flip to Fix & Hold bounces back and doesn't save".)
+ *
+ * ROOT CAUSE of that whole class. `toClickUpLabel` collapses two very different
+ * outcomes onto the same `null`:
+ *   (a) a DELIBERATE blank — the value is mapped to null on purpose ('Not sure
+ *       yet' → leave the ClickUp field empty for the officer to set), and
+ *   (b) a value we simply have no ClickUp twin for ('Fix & Hold' — a real PILOT
+ *       program that prices, exports to the tape and maps to Encompass, but has
+ *       no option in the ClickUp *Program dropdown).
+ * `writeValue` returns undefined for both and `put()` drops it, so case (b) left
+ * the ClickUp card UNTOUCHED **in silence** — and the very next inbound pull,
+ * which writes `program = COALESCE(<ClickUp's value>, program)`, overwrote the
+ * officer's edit with the stale ClickUp value. The edit really did save; it was
+ * reverted seconds later by the sync, which reads to a human as "it bounces back
+ * and the Save button does nothing".
+ *
+ * This names case (b) so the callers can act on it instead of dropping it:
+ * `inbound-enum-guard` refuses to let ClickUp overwrite such a value, and the
+ * staff editor tells the officer the value is kept in PILOT but has no ClickUp
+ * twin. A deliberate blank (case a) is NOT unmappable — nothing is being lost.
+ *
+ * @param optionList optional LIVE ClickUp option list for the field. When given,
+ *        a value whose label exists in the crosswalk but NOT in ClickUp's actual
+ *        dropdown (a renamed / never-added option, e.g. 'Ground-Up' before the
+ *        owner added it) is unmappable too — that write silently vanishes the
+ *        same way. Omitted/empty ⇒ crosswalk-only check, never a false positive.
+ */
+function unmappableToClickUp(key, portalValue, optionList) {
+  const f = FIELDS[key];
+  if (!f) return false;                                   // not a crosswalked enum
+  if (portalValue == null || portalValue === '') return false;  // nothing to push
+  const want = _norm(portalValue);
+  const hit = Object.prototype.hasOwnProperty.call(f.to, portalValue)
+    ? portalValue
+    : Object.keys(f.to).find((k) => _norm(k) === want);
+  // Known value mapped to null ⇒ deliberately blank in ClickUp, not a loss.
+  if (hit !== undefined && hit !== null) return f.to[hit] == null ? false : notInOptions(f.to[hit], optionList);
+  // Unknown value: only a defaultLabel can carry it, else the write is dropped.
+  if (!f.defaultLabel) return true;
+  return notInOptions(f.defaultLabel, optionList);
+}
+
+// A label ClickUp's live dropdown doesn't actually offer can't be written either.
+// No list supplied ⇒ we can't tell, so never claim unmappable.
+function notInOptions(label, optionList) {
+  if (!label || !Array.isArray(optionList) || !optionList.length) return false;
+  return !optionList.some((o) => _norm(o && (o.name != null ? o.name : o.label)) === _norm(label));
+}
+
+/**
  * RTL descope classification (portal-side policy, blueprint §4).
  *
  * The portal only BUILDS three RTL products (Fix & Flip / Bridge / Ground-Up). A
@@ -182,4 +233,4 @@ function resolveReadValue(key, orderindex, optionList) {
   return label ? fromClickUpLabel(key, label) : null;
 }
 
-module.exports = { FIELDS, toClickUpLabel, fromClickUpLabel, resolveWriteId, resolveReadValue, isNonRtlProgramLabel };
+module.exports = { FIELDS, toClickUpLabel, fromClickUpLabel, resolveWriteId, resolveReadValue, isNonRtlProgramLabel, unmappableToClickUp };
