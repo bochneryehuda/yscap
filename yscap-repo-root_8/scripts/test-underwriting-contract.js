@@ -112,6 +112,20 @@ assert.deepStrictEqual(codes(cf({ buyerName: 'Maple Grove Holdings, L.L.C.' })),
   assert.deepStrictEqual(codes(f), ['assignment_price_unreconciled'], 'the price increase must equal the assignment fee');
 }
 
+// 5h. THE 2026-07-27 RESIDUAL: an assignment file whose seller/underlying price is NOT yet captured
+// (underlying_contract_price null). The contract shows the seller's original price, which won't
+// match the fee-inclusive total on file — but on an assignment that is EXPECTED, not a mismatch.
+// This must NOT fire the fatal contract_price_mismatch (the false "the contract doesn't match" the
+// owner reported); the missing seller price is surfaced elsewhere as a non-fatal advisory.
+{
+  const asgFile = { ...file, purchase_price: 474000, is_assignment: true, assignment_fee: null, underlying_contract_price: null };
+  const f = cf({ purchasePrice: 438000, isAssignment: false, assignmentFee: null, underlyingPrice: null,
+    buyerName: 'Maple Grove Holdings LLC', propertyAddress: file.property_address, sellerNames: ['Jane Seller'] }, asgFile);
+  assert.ok(!codes(f).includes('contract_price_mismatch'),
+    'an assignment with the seller price not yet captured never fires the FATAL price mismatch');
+  assert.strictEqual(summarize(f).blocksCtc, false, 'and it never blocks CTC');
+}
+
 // 6. Contract looks like an assignment but the file isn't marked → WARNING (+cap on its own numbers).
 {
   const f = cf({ isAssignment: true, assignmentFee: 20000, underlyingPrice: 392000, purchasePrice: 412000 });
