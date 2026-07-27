@@ -460,7 +460,7 @@ async function applyReviewWinner(row, winner, customValue) {
       }
       if (fieldKey === 'first_name') {
         // ClickUp's name field is ONE line; PILOT stores first / middle / last /
-        // suffix (db/343). Split it the same way every other door does, so
+        // suffix (db/345). Split it the same way every other door does, so
         // resolving a review can never re-merge a middle name back into the first
         // name — and record whether the split was a judgement call so the person's
         // profile keeps asking a human to confirm it.

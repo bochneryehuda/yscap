@@ -76,7 +76,7 @@ export default function Profile() {
     const currentAddress = phys.line1 || phys.city ? { ...phys, oneLine: addrOneLine(phys) } : undefined;
     const payload = {
       firstName: p.first_name, lastName: p.last_name,
-      // Optional middle name (db/343) — sent as '' when cleared, which is a real
+      // Optional middle name (db/345) — sent as '' when cleared, which is a real
       // answer ("I have none"), not a missing field.
       middleName: p.middle_name ?? '', nameSuffix: p.name_suffix ?? '',
       cellPhone: p.cell_phone ?? '', dateOfBirth: p.date_of_birth ? String(p.date_of_birth).slice(0, 10) : '',

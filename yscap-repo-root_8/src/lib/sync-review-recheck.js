@@ -78,7 +78,7 @@ function valuesAgree(fieldKey, clickupVal, portalVal) {
   if (fieldKey === 'email') { const a = canonEmail(clickupVal), b = canonEmail(portalVal); return !!a && a === b; }
   if (fieldKey === 'cell_phone') { const a = canonPhone(clickupVal), b = canonPhone(portalVal); return a.length >= 10 && a === b; }
   // A NAME agrees when it describes the same person, not only when it is spelled
-  // identically: PILOT now stores the middle name separately (db/343) and joins it
+  // identically: PILOT now stores the middle name separately (db/345) and joins it
   // back for ClickUp, so "Issac Grunzweig" on the card and "Issac Michael
   // Grunzweig" in PILOT must settle the review rather than keep it open forever.
   // The letters-only key stays as the fast path.
@@ -489,7 +489,7 @@ async function computeRecheck(row, opts) {
       if (b && b.ssn_encrypted) { try { portalVal = require('./crypto').decryptSSN(b.ssn_encrypted); } catch (_) { portalVal = null; } }
     } else {
       if (!borrowerId) return { outcome: 'unsupported', reason: 'no_borrower' };
-      // The full name PILOT holds, middle name and suffix included (db/343) —
+      // The full name PILOT holds, middle name and suffix included (db/345) —
       // the same line the ClickUp push writes, so the two sides are comparable.
       const col = fieldKey === 'first_name'
         ? `trim(regexp_replace(concat_ws(' ', nullif(btrim(coalesce(first_name,'')),''), nullif(btrim(coalesce(middle_name,'')),''), nullif(btrim(coalesce(last_name,'')),''), nullif(btrim(coalesce(name_suffix,'')),'')), '\\s+', ' ', 'g')) AS v`

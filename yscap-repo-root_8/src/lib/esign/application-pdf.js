@@ -190,6 +190,7 @@ function buildApplication(data = {}) {
   rowFull('As-is value', l.asis);
   rowFull('After-repair value (ARV)', l.arv);
   rowFull('Rehab budget', l.rehab);
+  rowFull('Rehab type', l.rehabType);
   rowFull('Loan-to-cost (LTC)', l.ltc);
   rowFull('Loan-to-ARV', l.ltv);
   rowFull('Financed interest reserve', l.ir);

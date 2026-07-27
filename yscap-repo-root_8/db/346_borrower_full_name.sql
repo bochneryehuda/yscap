@@ -1,4 +1,4 @@
--- 344 — THE ONE BIG NAME FIELD stays (owner-directed 2026-07-27, follow-up to db/343).
+-- 346 — THE ONE BIG NAME FIELD stays (owner-directed 2026-07-27, follow-up to db/345).
 --
 -- The owner's direction, verbatim in intent: "leave the field where it has one big
 -- field for the borrower's name — when somebody types it separately it should go
@@ -7,7 +7,7 @@
 -- enter first, middle and last name, so the big field is still used everywhere it
 -- was used until now and nothing breaks."
 --
--- db/343 split a person into first / middle / last / suffix. That is what
+-- db/345 split a person into first / middle / last / suffix. That is what
 -- Encompass, MISMO and the closing documents need — but every screen, email,
 -- term sheet, SharePoint folder, DocuSign envelope and ClickUp card in PILOT
 -- reads THE WHOLE NAME. If those keep joining first + last only, a middle name

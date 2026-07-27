@@ -45,7 +45,7 @@ async function siteIntake(p, opts = {}) {
   let borrowerId, appId, officerId = null, officerName = p.loOfficer || p.loanOfficerName || null;
   const submittedFirst = p.firstName || p.b1First || 'Unknown';
   const submittedLast = p.lastName || p.b1Last || 'Unknown';
-  // MIDDLE NAME (db/343) — optional on the public form. If the applicant did not
+  // MIDDLE NAME (db/345) — optional on the public form. If the applicant did not
   // get a middle-name box (an older cached page) but typed their whole name into
   // the first-name box, split it here rather than storing "Issac Michael" as a
   // first name: this is the door most legacy merged names came through.
@@ -225,7 +225,7 @@ async function siteIntake(p, opts = {}) {
       try {
         const coFirst = p.coFirstName || p.b2First || null;
         const coLast = p.coLastName || p.b2Last || null;
-        const coMiddle = String(p.coMiddleName || p.b2Middle || '').trim();   // optional (db/343)
+        const coMiddle = String(p.coMiddleName || p.b2Middle || '').trim();   // optional (db/345)
         const coEmail = String(p.coEmail || p.b2Email || '').toLowerCase().trim();
         if (coEmail && coEmail !== String(email).toLowerCase().trim() && (coFirst || coLast)) {
           const identity = require('../clickup/identity');

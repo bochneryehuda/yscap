@@ -63,7 +63,7 @@ const isGovernedField = (k) => Object.prototype.hasOwnProperty.call(FIELD_LABELS
 // stored or shown in the clear (masked display + an encrypted payload column).
 const BORROWER_FIELD_LABELS = {
   first_name: 'First name',
-  // A borrower's name is THREE fields (db/343). The middle name and suffix are
+  // A borrower's name is THREE fields (db/345). The middle name and suffix are
   // part of their legal identity — printed on the note and the closing package —
   // so on a LOCKED file they go through the same loan-team approval as the first
   // and last name, never a silent live edit.

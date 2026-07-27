@@ -14,9 +14,18 @@ import { fullNameOf } from '../lib/personName.js';
  * (Fidelis) guidelines but carries the manual leverage and ALWAYS requires the
  * flood certificate.
  *
- * BOTTOM — the escalation box: every manual product registers immediately but
- * waits here for a super-admin to approve or decline it. Admins can watch the
- * box; only a super-admin decides.
+ * BOTTOM — the escalation box: a registration that needs sign-off lands
+ * immediately but waits here to be approved or declined. Three kinds arrive
+ * (owner-directed 2026-07-27 widened the third):
+ *   · Manual Program   — the LTV / LTC / ARV structure was overridden.
+ *   · Manual review    — the frozen engine flagged the deal MANUAL.
+ *   · Pricing override — any admin-zone knob moved off the company defaults
+ *                        (a reduced rate markup, reduced origination points, a
+ *                        discounted or waived closing fee, an approved
+ *                        effective purchase price).
+ * Any ADMIN or super-admin decides — except on an exception they requested
+ * themselves, which needs someone else (enforced server-side; the per-row
+ * `canDecide` flag mirrors it here).
  */
 
 const money = (v) => (v == null || v === '' || isNaN(Number(v))) ? '—' : '$' + Number(v).toLocaleString('en-US');
@@ -45,6 +54,10 @@ export default function StaffEscalations() {
   const { can, role } = useAuth();
   const location = useLocation();
   const canManage = can('manage_pricing');
+  // Deciding is no longer super-admin-only (owner-directed 2026-07-27 — "sent to
+  // the admin for approval"): any admin / super-admin may approve, decline or
+  // counter, EXCEPT their own request (the server decides per row and sends
+  // `canDecide` on it; `role` is only used for wording).
   const isSuper = role === 'super_admin';
 
   // Deep-link support: the workflow "Review exception" button links here with
@@ -301,7 +314,7 @@ export default function StaffEscalations() {
             <span className="dd-card-ic"><Icon name="inbox" /></span>
             <div>
               <h3>Escalations {pendingCount > 0 && <span className="ts-badge warn" style={{ marginLeft: 6 }}>{pendingCount} open</span>}</h3>
-              <div className="dd-sub" style={{ marginTop: 1 }}>Manual products waiting for a super-admin to approve, counter, or decline.</div>
+              <div className="dd-sub" style={{ marginTop: 1 }}>Manual products and pricing changed from the defaults, waiting for an admin to approve, counter, or decline.</div>
             </div>
           </div>
           <div className="esc-seg" role="tablist" aria-label="Filter escalations">
@@ -313,10 +326,16 @@ export default function StaffEscalations() {
           </div>
         </div>
 
-        {!isSuper && (
+        {!canDecide && (
           <div className="esc-callout" style={{ marginTop: 6 }}>
             <span className="ic"><Icon name="info" /></span>
-            <div>Only a super-admin can approve, decline, or counter-offer an exception. You can watch the queue here.</div>
+            <div>Only an admin or super-admin can approve, decline, or counter-offer an exception. You can watch the queue here.</div>
+          </div>
+        )}
+        {canDecide && !isSuper && (
+          <div className="esc-callout" style={{ marginTop: 6 }}>
+            <span className="ic"><Icon name="info" /></span>
+            <div>You can approve, decline or counter-offer any exception here — except one you requested yourself. Those need another admin.</div>
           </div>
         )}
 
@@ -336,8 +355,13 @@ export default function StaffEscalations() {
             const badgeCls = r.status === 'approved' ? 'ok' : (r.status === 'declined' ? 'err' : 'warn');
             const kindLabel = s.kind === 'manual_review'
               ? `${s.program === 'gold' ? 'Gold Standard' : 'Standard'} — manual-review exception`
-              : 'Manual Program';
-            const acqLabel = s.kind === 'manual_review' ? 'As-is LTV' : 'Acq LTV';
+              : s.kind === 'pricing_override'
+                ? `${s.program === 'gold' ? 'Gold Standard' : 'Standard'} — pricing changed from the defaults`
+                : 'Manual Program';
+            const acqLabel = (s.kind === 'manual_review' || s.kind === 'pricing_override') ? 'As-is LTV' : 'Acq LTV';
+            // Per-row decide right (server-computed): an admin may decide any
+            // escalation except one they requested; a super-admin may decide all.
+            const rowCanDecide = r.canDecide != null ? !!r.canDecide : canDecide;
             return (
               <div key={r.id} ref={(el) => { rowRefs.current[r.id] = el; }}
                 className={`esc-row${highlightId === r.id ? ' hl' : ''}`}>
@@ -362,6 +386,22 @@ export default function StaffEscalations() {
                   <div className="esc-callout sm">
                     <span className="ic"><Icon name="info" /></span>
                     <div><strong>Why it needs an exception:</strong> {s.manualReasons.join('; ')}</div>
+                  </div>
+                )}
+
+                {/* WHAT was moved off the company defaults — a reduced rate
+                    markup, reduced origination, a discounted or waived fee, an
+                    approved effective price (owner-directed 2026-07-27). This is
+                    the thing being approved, so it reads before the numbers. */}
+                {Array.isArray(s.overrideLines) && s.overrideLines.length > 0 && (
+                  <div className="esc-callout sm">
+                    <span className="ic"><Icon name="info" /></span>
+                    <div>
+                      <strong>Changed from the company defaults:</strong>
+                      <ul style={{ margin: '4px 0 0 18px', padding: 0 }}>
+                        {s.overrideLines.map((line, i) => <li key={i} style={{ color: '#141B22' }}>{line}</li>)}
+                      </ul>
+                    </div>
                   </div>
                 )}
 
@@ -408,7 +448,7 @@ export default function StaffEscalations() {
                   </div>
                 )}
 
-                {isOpen && isSuper && countering !== r.id && (
+                {isOpen && rowCanDecide && countering !== r.id && (
                   <div className="esc-actions">
                     <input className="input" style={{ flex: 1, minWidth: 180 }} placeholder="Decision note (optional)"
                       value={notes[r.id] || ''} onChange={(e) => setNotes((n) => ({ ...n, [r.id]: e.target.value }))} />
@@ -418,7 +458,7 @@ export default function StaffEscalations() {
                   </div>
                 )}
 
-                {isOpen && isSuper && countering === r.id && (
+                {isOpen && rowCanDecide && countering === r.id && (
                   <div className="esc-counter-form">
                     <div className="small" style={{ fontWeight: 700, marginBottom: 6, color: 'var(--text)' }}>Counter-offer — what would you accept?</div>
                     <div className="muted small" style={{ marginBottom: 8 }}>

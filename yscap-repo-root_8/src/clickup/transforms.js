@@ -21,7 +21,7 @@ const splitPersonName = personName.splitFullName;
 
 // LEGACY: everything before the last space is the "first" name, so a middle name
 // ends up inside it ("Issac Michael" / "Grunzweig"). Do NOT use this on a new
-// storage path — that merge is exactly what db/343 + lib/name-heal had to undo.
+// storage path — that merge is exactly what db/345 + lib/name-heal had to undo.
 function splitName(full) {
   const s = String(full || '').trim().replace(/\s+/g, ' ');
   if (!s) return { first: '', last: '' };

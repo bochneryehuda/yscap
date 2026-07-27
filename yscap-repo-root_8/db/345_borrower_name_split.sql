@@ -1,4 +1,4 @@
--- 343 — A borrower's name is THREE fields, and the middle name finally has a home
+-- 345 — A borrower's name is THREE fields, and the middle name finally has a home
 --       (owner-directed 2026-07-27).
 --
 -- WHY. `borrowers` stored a person as first_name + last_name only. Every one-line

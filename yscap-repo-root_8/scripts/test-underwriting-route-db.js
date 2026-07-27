@@ -44,10 +44,16 @@ const ADDR = { line1: '76 Thompson St', city: 'Austin', state: 'TX', zip: '78701
     assert.deepStrictEqual(ctx.entityNames, ['Maple Grove Holdings LLC'], 'borrower entities gathered for assets view');
 
     const idSubj = fileView.subjectFor('government_id', ctx);
-    assert.strictEqual(idSubj.first_name, 'John', 'government_id subject is the borrowers row');
+    // The government-ID subject is now the whole SET of people who may legitimately
+    // have an ID on this file (#852, co-borrower awareness) — `{people, ownerNames}`
+    // — not a single borrowers row. On a single-borrower file that is one person.
+    assert.ok(Array.isArray(idSubj.people), 'government_id subject carries the file people');
+    assert.strictEqual(idSubj.people.length, 1, 'a single-borrower file has one person');
+    assert.strictEqual(idSubj.people[0].first_name, 'John', 'and that person is the borrowers row');
+    assert.ok(Array.isArray(idSubj.ownerNames), 'and the named LLC owners ride along');
     // db.js returns date-only as a 'YYYY-MM-DD' string in production; a raw pg Pool returns a
     // Date. The check normalizes via toISODate either way — assert on the normalized value.
-    const dobRaw = idSubj.date_of_birth;
+    const dobRaw = idSubj.people[0].date_of_birth;
     const dobStr = dobRaw instanceof Date ? dobRaw.toISOString().slice(0, 10) : String(dobRaw).slice(0, 10);
     assert.strictEqual(toISODate(dobStr), '1980-05-15');
 

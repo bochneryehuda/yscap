@@ -544,13 +544,24 @@ async function applyFileReviewAction({ row, action, targetApplicationId, targetT
     // is the same privileged class as unlocking a locked file (relink_task is
     // gated the same way). The review-queue route is LO-reachable for the
     // non-privileged action (keep_frozen_figures), so the gate lives HERE, fed
-    // the caller's real admin role, and is checked FIRST. Values are RE-READ LIVE
-    // from ClickUp (never the row's stored, possibly-stale display values).
+    // the caller's real admin role, and is checked FIRST. The figures applied come
+    // from the row's stored diffs (the reliable offline base) refreshed by a
+    // best-effort live ClickUp re-read — see acceptInboundEconomicsChange.
     if (!isAdmin) throw httpError(403, 'Only an admin can accept a ClickUp change on a locked file.');
     if (!row.application_id) throw httpError(409, 'this row has no portal file');
     const { acceptInboundEconomicsChange } = require('./inbound-economics-freeze');
+    // The row's stored diffs are the RELIABLE offline base — so the accept still
+    // works when ClickUp is momentarily unreachable / the task was deleted / a
+    // live read extracts nothing (owner-reported: the button "does not update
+    // anything and it still stays"). The live re-read is layered on top for
+    // freshness inside the accept function.
+    let fallbackChanges = null;
+    try {
+      const raw = row.raw_value ? JSON.parse(row.raw_value) : null;
+      fallbackChanges = (raw && Array.isArray(raw.changes)) ? raw.changes : null;
+    } catch (_) { /* raw_value is forensic — unparseable falls through to the live read */ }
     const out = await acceptInboundEconomicsChange({
-      appId: row.application_id, actorId: actorId || null,
+      appId: row.application_id, actorId: actorId || null, fallbackChanges,
       taskId: (row.task_id && !String(row.task_id).startsWith('app:')) ? row.task_id : null });
     if (out.upToDate) {
       return {

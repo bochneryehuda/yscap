@@ -60,7 +60,7 @@ async function healBorrowerNamesOnce({ limit = DEFAULT_LIMIT } = {}) {
         LIMIT $1`, [limit])).rows;
   } catch (e) {
     // A fresh database mid-migration (the columns do not exist yet) is not an
-    // error — the next boot runs it after db/343 has applied.
+    // error — the next boot runs it after db/345 has applied.
     return out;
   }
 

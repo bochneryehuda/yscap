@@ -122,7 +122,7 @@ const I = enrich._internals;
   //
   // There are exactly THREE, and each one's WHERE clause is what proves it:
   //   1. the home address, only when the profile has none;
-  //   2. the middle name (db/343), only when the profile has none;
+  //   2. the middle name (db/345), only when the profile has none;
   //   3. clearing the "please confirm this name split" prompt once Encompass has
   //      independently confirmed our split — a flag, never a name.
   // If a fourth appears, this test must be read and the new WHERE clause proved

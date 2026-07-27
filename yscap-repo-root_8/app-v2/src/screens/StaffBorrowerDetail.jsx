@@ -2,14 +2,12 @@ import React, { useEffect, useMemo, useState } from 'react';
 import { useParams, Link } from 'react-router-dom';
 import { api, saveBlob } from '../lib/api.js';
 import { useSubmitGate } from '../lib/useSubmitGate.js';
-import { fmtDay, dayInputValue } from '../lib/dates.js';
+import { fmtDay } from '../lib/dates.js';
 import LlcManager from '../components/LlcManager.jsx';
 import BorrowerViewButton from '../components/BorrowerViewButton.jsx';
-import { PhoneInput, ZipInput, EmailInput } from '../components/FormattedInputs.jsx';
 import { passwordProblem } from '../lib/password.js';
-import { CITIZENSHIP, MARITAL, CONTACT_TYPE, HOUSING, withCurrent } from '../lib/enums.js';
-import { formatSSN } from '../lib/validators.js';
-import { fullNameOf, splitName, rejoin, nameChanged } from '../lib/personName.js';
+import { BorrowerProfileForm, BorrowerSsnRow, NameSplitPrompt } from '../components/BorrowerProfilePanel.jsx';
+import { fullNameOf } from '../lib/personName.js';
 
 // Borrower CRM hub — the single place staff see everything about a person:
 // personal info + editable CRM fields, their loan files ("mortgages with us"),
@@ -58,7 +56,7 @@ export default function StaffBorrowerDetail() {
   if (err) return <><div role="alert" className="notice err">{err}</div><p><Link to="/internal/borrowers">← Back to borrowers</Link></p></>;
   if (!b) return <p className="muted">Loading…</p>;
 
-  // THE ONE BIG NAME FIELD (db/344) — the whole name, middle name and suffix
+  // THE ONE BIG NAME FIELD (db/346) — the whole name, middle name and suffix
   // included. Falls back to the parts so nothing breaks on an older response.
   const name = fullNameOf(b) || '(no name)';
   return (
@@ -165,226 +163,22 @@ function Header({ b, name, onChanged }) {
 }
 
 /* ---------------- overview / editable CRM ---------------- */
-// "Please check this name" — PILOT had to make a judgement call about where a
-// borrower's name splits (db/343 `name_review_needed`), so it asks a human once.
-// It is a PROMPT, never a gate: nothing on the file waits for it. One click
-// confirms; the Edit form clears it too, because typing the parts IS the answer.
-const NAME_SPLIT_HELP = {
-  only_one_word: 'Only one word was given, so we could not tell the first name from the last name.',
-  three_words: 'Three words — we made the middle word the middle name. Please check that is right.',
-  four_or_more_words: 'More than three words — please check we picked the right first, middle and last name.',
-  surname_particle: 'The last name looks like it has a small word in it (like "van" or "de la"). Please check.',
-  comma_form: 'The name was written last-name-first, so please check we read it the right way round.',
-  surname_only: 'This looks like a last name with no first name. Please check.',
-};
-function NameSplitPrompt({ b, onChanged }) {
-  const [busy, setBusy] = useState(false);
-  const [gone, setGone] = useState(false);
-  if (!b || !b.name_review_needed || gone) return null;
-  const why = NAME_SPLIT_HELP[b.name_review_reason] || 'Please check this name is split correctly.';
-  const confirm = async () => {
-    setBusy(true);
-    try { await api.staffUpdateBorrower(b.id, { confirmNameSplit: true }); setGone(true); onChanged(); }
-    catch (_) { setBusy(false); }
-  };
-  return (
-    <div className="notice" style={{ borderLeft: '4px solid #AE8746', background: '#FFFDF7', color: '#141B22' }}>
-      <b style={{ color: '#141B22' }}>Please check this name</b>
-      <div style={{ marginTop: 4, color: '#4B585C' }}>{why}</div>
-      <div style={{ marginTop: 8, color: '#141B22' }}>
-        First <b>{b.first_name || '—'}</b>
-        {'  ·  '}Middle <b>{b.middle_name || 'none'}</b>
-        {'  ·  '}Last <b>{b.last_name || '—'}</b>
-        {b.name_suffix ? <>{'  ·  '}Suffix <b>{b.name_suffix}</b></> : null}
-      </div>
-      <div style={{ marginTop: 10, display: 'flex', gap: 8, flexWrap: 'wrap' }}>
-        <button className="btn primary small" onClick={confirm} disabled={busy}>
-          {busy ? 'Saving…' : 'Yes, that is right'}
-        </button>
-        <span className="small" style={{ color: '#4B585C', alignSelf: 'center' }}>
-          Not right? Use <b>Edit</b> below and fix the boxes — that clears this too.
-        </span>
-      </div>
-    </div>
-  );
-}
-
 function Overview({ b, onChanged }) {
-  const [team, setTeam] = useState([]);
-  const [f, setF] = useState(null);
-  const [busy, setBusy] = useState(false);
+  // The edit FORM lives in components/BorrowerProfilePanel.jsx so this screen and
+  // the LOAN FILE edit the person through ONE definition (owner-directed 2026-07-27
+  // — the file could only edit the property, never the person). A field added there
+  // shows up on both surfaces, so the two can never drift apart.
+  const [editing, setEditing] = useState(false);
   const [msg, setMsg] = useState('');
-  const [err, setErr] = useState('');
-  useEffect(() => { api.staffTeam().then(setTeam).catch(() => {}); }, []);
-  // A shared mailbox (a husband and wife on one address) is a real situation, not
-  // an error — the save offers to keep BOTH profiles rather than dead-ending.
-  const [shareOffer, setShareOffer] = useState(false);
-  const start = () => setF({
-    fullName: fullNameOf(b),
-    firstName: b.first_name || '', middleName: b.middle_name || '', lastName: b.last_name || '',
-    nameSuffix: b.name_suffix || '',
-    email: b.email || '', cellPhone: b.cell_phone || '', contactType: b.contact_type || '',
-    maritalStatus: b.marital_status || '', citizenship: b.citizenship || '',
-    dob: dayInputValue(b.date_of_birth) || '',
-    primaryOfficerId: b.primary_officer_id || '',
-    housingStatus: b.housing_status || '', housingPayment: b.housing_payment ?? '',
-    yearsAtResidence: b.years_at_residence ?? '', monthsAtResidence: b.months_at_residence ?? '',
-    employmentType: b.employment_type || '', employer: b.employer || '',
-    dependentsCount: b.dependents_count ?? '',
-    ca: b.current_address || {}, ma: b.mailing_address || {},
-  });
-  async function save(allowSharedEmail = false) {
-    setBusy(true); setErr('');
-    try {
-      await api.staffUpdateBorrower(b.id, {
-        // Send the NAME only when it actually changed — a correction here is a
-        // deliberate human decision, so it also goes out to every ClickUp card
-        // (otherwise the next sync would read the old name straight back).
-        ...(nameChanged(f, b) ? {
-          firstName: f.firstName, middleName: f.middleName,
-          lastName: f.lastName, nameSuffix: f.nameSuffix,
-        } : {}),
-        email: f.email, cellPhone: f.cellPhone, contactType: f.contactType,
-        maritalStatus: f.maritalStatus, citizenship: f.citizenship,
-        // Send the DOB only when it actually changed — setting it applies to
-        // the profile AND every linked ClickUp task (audited + journaled).
-        ...(f.dob && f.dob !== (dayInputValue(b.date_of_birth) || '') ? { dob: f.dob } : {}),
-        primaryOfficerId: f.primaryOfficerId || null,
-        // Where they live and what they pay for it — the same columns the
-        // borrower's own portal edits and the same ones that sync both ways with
-        // ClickUp's Primary Housing fields, so the profile and the card agree.
-        housingStatus: f.housingStatus, housingPayment: f.housingPayment,
-        yearsAtResidence: f.yearsAtResidence, monthsAtResidence: f.monthsAtResidence,
-        employmentType: f.employmentType, employer: f.employer,
-        dependentsCount: f.dependentsCount,
-        currentAddress: Object.values(f.ca).some(Boolean) ? f.ca : null,
-        mailingAddress: Object.values(f.ma).some(Boolean) ? f.ma : null,
-        ...(allowSharedEmail ? { allowSharedEmail: true } : {}),
-      });
-      setMsg('Saved ✓'); setTimeout(() => setMsg(''), 3000); setF(null); setShareOffer(false); onChanged();
-    } catch (e) {
-      setErr(e.message || 'Could not save');
-      setShareOffer(!!(e.data && e.data.sharedEmail && e.data.sharedEmail.canShare));
-    }
-    finally { setBusy(false); }
-  }
+  const start = () => setEditing(true);
   const Row = ({ k, v }) => (<div className="metrow"><span className="k">{k}</span><span className="v">{v || '—'}</span></div>);
 
-  if (f) {
-    const setCa = (k, val) => setF(s => ({ ...s, ca: { ...s.ca, [k]: val } }));
-    const setMa = (k, val) => setF(s => ({ ...s, ma: { ...s.ma, [k]: val } }));
+  if (editing) {
     return (
       <div className="panel">
-        <h3 style={{ marginTop: 0 }}>Edit contact & CRM details</h3>
-        {err && <div role="alert" className="notice err">{err}</div>}
-        <div className="ts-inputs">
-          {/* The legal name is correctable here (owner-directed 2026-07-26): a file
-              opened under a nickname created the profile under that nickname, and
-              there was nowhere to fix it. Saving pushes it to ClickUp too.
-
-              THE ONE BIG NAME FIELD stays (owner-directed 2026-07-27): typing the
-              whole name in the big box splits it into the parts below as you type,
-              and typing the parts rebuilds the big box. Either way the same four
-              fields are saved, so nothing that reads the name changes. */}
-          <label style={{ gridColumn: '1 / -1' }}><span>Full name</span>
-            <input className="input" value={f.fullName}
-              onChange={e => setF({ ...f, fullName: e.target.value, ...splitName(e.target.value) })}
-              title="Their whole legal name. This is what every screen, email, term sheet and ClickUp card shows." /></label>
-          <label><span>First name</span><input className="input" value={f.firstName}
-            onChange={e => setF(s => rejoin({ ...s, firstName: e.target.value }))}
-            title="Their real legal first name. Saving updates the profile and every linked ClickUp card." /></label>
-          <label><span>Middle name <span style={{ color: '#4B585C', fontWeight: 400 }}>(optional)</span></span>
-            <input className="input" value={f.middleName}
-              onChange={e => setF(s => rejoin({ ...s, middleName: e.target.value }))}
-              title="Leave empty if they do not have one." /></label>
-          <label><span>Last name</span><input className="input" value={f.lastName}
-            onChange={e => setF(s => rejoin({ ...s, lastName: e.target.value }))} /></label>
-          <label><span>Suffix <span style={{ color: '#4B585C', fontWeight: 400 }}>(optional)</span></span>
-            <input className="input" placeholder="Jr., III" value={f.nameSuffix}
-              onChange={e => setF(s => rejoin({ ...s, nameSuffix: e.target.value }))} /></label>
-          <label><span>Email</span><EmailInput value={f.email} onChange={v => setF({ ...f, email: v })} /></label>
-          <label><span>Cell phone</span><PhoneInput value={f.cellPhone} onChange={v => setF({ ...f, cellPhone: v })} /></label>
-          <label><span>Contact type</span>
-            <select className="input" value={f.contactType} onChange={e => setF({ ...f, contactType: e.target.value })}>
-              <option value="">Select…</option>{withCurrent(CONTACT_TYPE, f.contactType).map(c => <option key={c} value={c}>{c}</option>)}
-            </select></label>
-          <label><span>Marital status</span>
-            <select className="input" value={f.maritalStatus} onChange={e => setF({ ...f, maritalStatus: e.target.value })}>
-              <option value="">Select…</option>{withCurrent(MARITAL, f.maritalStatus).map(c => <option key={c} value={c}>{c}</option>)}
-            </select></label>
-          <label><span>Citizenship</span>
-            <select className="input" value={f.citizenship} onChange={e => setF({ ...f, citizenship: e.target.value })}>
-              <option value="">Select…</option>{withCurrent(CITIZENSHIP, f.citizenship).map(c => <option key={c} value={c}>{c}</option>)}
-            </select></label>
-          <label><span>Date of birth</span><input className="input" type="date" value={f.dob}
-            onChange={e => setF({ ...f, dob: e.target.value })}
-            title="Saving applies to the borrower profile and every linked ClickUp task (audited)" /></label>
-          <label><span>Primary officer</span>
-            <select className="input" value={f.primaryOfficerId} onChange={e => setF({ ...f, primaryOfficerId: e.target.value })}>
-              <option value="">—</option>
-              {team.map(t => <option key={t.id} value={t.id}>{t.full_name}</option>)}
-            </select></label>
-        </div>
-        <div style={{ fontWeight: 600, margin: '12px 0 6px' }}>Current address</div>
-        <div className="ts-inputs">
-          <label style={{ gridColumn: '1 / -1' }}><span>Street</span><input className="input" value={f.ca.line1 || ''} onChange={e => setCa('line1', e.target.value)} /></label>
-          <label><span>City</span><input className="input" value={f.ca.city || ''} onChange={e => setCa('city', e.target.value)} /></label>
-          <label><span>State</span><input className="input" value={f.ca.state || ''} onChange={e => setCa('state', e.target.value)} /></label>
-          <label><span>ZIP</span><ZipInput value={f.ca.zip || ''} onChange={v => setCa('zip', v)} /></label>
-        </div>
-        <div style={{ fontWeight: 600, margin: '12px 0 6px' }}>Mailing address (if different)</div>
-        <div className="ts-inputs">
-          <label style={{ gridColumn: '1 / -1' }}><span>Street</span><input className="input" value={f.ma.line1 || ''} onChange={e => setMa('line1', e.target.value)} /></label>
-          <label><span>City</span><input className="input" value={f.ma.city || ''} onChange={e => setMa('city', e.target.value)} /></label>
-          <label><span>State</span><input className="input" value={f.ma.state || ''} onChange={e => setMa('state', e.target.value)} /></label>
-          <label><span>ZIP</span><ZipInput value={f.ma.zip || ''} onChange={v => setMa('zip', v)} /></label>
-        </div>
-        {/* Housing: do they own or rent, and what does it cost them each month.
-            Collected on the loan file and on the borrower's own application — the
-            profile is where it belongs, and it rides along to every new file. */}
-        <div style={{ fontWeight: 600, margin: '12px 0 6px', color: '#141B22' }}>Housing</div>
-        <div className="ts-inputs">
-          <label><span>Owns or rents</span>
-            <select className="input" value={f.housingStatus} onChange={e => setF({ ...f, housingStatus: e.target.value })}>
-              <option value="">Select…</option>{withCurrent(HOUSING, f.housingStatus).map(c => <option key={c} value={c}>{c}</option>)}
-            </select></label>
-          <label><span>Rent / mortgage per month</span>
-            <input className="input" inputMode="decimal" placeholder="e.g. 2,800" value={f.housingPayment}
-              onChange={e => setF({ ...f, housingPayment: e.target.value })} /></label>
-          <label><span>Years at this address</span>
-            <input className="input" inputMode="decimal" value={f.yearsAtResidence}
-              onChange={e => setF({ ...f, yearsAtResidence: e.target.value })} /></label>
-          <label><span>…plus months</span>
-            <input className="input" inputMode="numeric" value={f.monthsAtResidence}
-              onChange={e => setF({ ...f, monthsAtResidence: e.target.value })} /></label>
-          <label><span>Employment</span>
-            <input className="input" value={f.employmentType} placeholder="W-2 / 1099 / Self employed"
-              onChange={e => setF({ ...f, employmentType: e.target.value })} /></label>
-          <label><span>Employer</span>
-            <input className="input" value={f.employer} onChange={e => setF({ ...f, employer: e.target.value })} /></label>
-          <label><span>Dependents</span>
-            <input className="input" inputMode="numeric" value={f.dependentsCount}
-              onChange={e => setF({ ...f, dependentsCount: e.target.value })} /></label>
-        </div>
-        <p className="small" style={{ color: '#4B585C', marginTop: 8 }}>
-          Housing, employment and address save to the borrower's profile and go out to their ClickUp cards,
-          so every file this person opens starts with the same details already filled in.
-        </p>
-        {shareOffer && (
-          <div className="notice" style={{ marginTop: 10, color: '#141B22' }}>
-            <strong>Do two people share this email?</strong> A husband and wife often use one mailbox.
-            Keep both as separate profiles on the same address — only the first one can sign in to the portal.
-            <div style={{ marginTop: 8 }}>
-              <button className="btn small" disabled={busy} onClick={() => save(true)}>
-                Yes — they share the mailbox, save anyway
-              </button>
-            </div>
-          </div>
-        )}
-        <div className="row" style={{ gap: 8, marginTop: 12 }}>
-          <button className="btn primary small" disabled={busy} onClick={() => save(false)}>{busy ? 'Saving…' : 'Save'}</button>
-          <button className="btn ghost small" onClick={() => { setF(null); setShareOffer(false); }}>Cancel</button>
-        </div>
+        <h3 style={{ marginTop: 0, color: '#141B22' }}>Edit contact &amp; CRM details</h3>
+        <BorrowerProfileForm b={b} onCancel={() => setEditing(false)}
+          onSaved={async () => { setEditing(false); setMsg('Saved ✓'); setTimeout(() => setMsg(''), 3000); await onChanged(); }} />
       </div>
     );
   }
@@ -400,7 +194,7 @@ function Overview({ b, onChanged }) {
         <Row k="Email" v={b.email && !/@clickup\.local$/i.test(b.email) ? b.email : null} />
         <Row k="Cell phone" v={b.cell_phone} />
         <Row k="Date of birth" v={fmtDate(b.date_of_birth)} />
-        <SsnRow b={b} onChanged={onChanged} />
+        <BorrowerSsnRow b={b} onChanged={onChanged} />
         <Row k="FICO" v={b.fico} />
         <Row k="Citizenship" v={b.citizenship} />
         <Row k="Marital status" v={b.marital_status} />
@@ -426,7 +220,7 @@ function Overview({ b, onChanged }) {
       {(b.sharing || []).length > 0 && (
         <div className="notice" style={{ marginTop: 12, color: '#141B22' }}>
           <strong>This email is shared.</strong>{' '}
-          {(b.sharing || []).map(s => fullNameOf(s)).join(', ')}{' '}
+          {(b.sharing || []).map(s => [s.first_name, s.last_name].filter(Boolean).join(' ')).join(', ')}{' '}
           {b.sharing.length === 1 ? 'also uses' : 'also use'} this address. They are separate people with their own
           profiles and files — only one of them can sign in to the portal with it.
         </div>
@@ -436,93 +230,6 @@ function Overview({ b, onChanged }) {
   );
 }
 
-/* ---------------- SSN: reveal, add, correct, and un-stick a duplicate --------
-   The profile could only ever REVEAL an SSN — adding one had to be done from
-   inside a loan file, which is exactly backwards for a person who has no file
-   yet (owner-directed 2026-07-26). And when the number is already sitting on a
-   DUPLICATE profile the old error just said "another borrower has it" with no
-   way to see who, or to fix it. Now it names the profile and offers the move. */
-function SsnRow({ b, onChanged }) {
-  const [full, setFull] = useState('');
-  const [editing, setEditing] = useState(false);
-  const [draft, setDraft] = useState('');
-  const [busy, setBusy] = useState(false);
-  const [err, setErr] = useState('');
-  const [conflict, setConflict] = useState(null);
-
-  async function reveal() {
-    if (full) { setFull(''); return; }
-    setBusy(true); setErr('');
-    try { const r = await api.staffBorrowerSsn(b.id); setFull(r.ssn || ''); }
-    catch (e) { setErr(e.message || 'Could not reveal the number'); }
-    finally { setBusy(false); }
-  }
-  async function save(resolveConflict) {
-    if (draft.replace(/\D/g, '').length !== 9) return;
-    setBusy(true); setErr('');
-    try {
-      await api.staffSetBorrowerSsn(b.id, draft, resolveConflict ? { resolveConflict } : {});
-      setEditing(false); setDraft(''); setFull(''); setConflict(null); onChanged();
-    } catch (e) {
-      setErr(e.message || 'Could not save the number');
-      setConflict(e.data && e.data.conflict ? e.data.conflict : null);
-    } finally { setBusy(false); }
-  }
-
-  return (
-    <>
-      <div className="metrow">
-        <span className="k">SSN</span>
-        <span className="v" style={{ display: 'flex', alignItems: 'center', gap: 8, justifyContent: 'flex-end' }}>
-          {editing ? (
-            <>
-              <input className="input" type="password" inputMode="numeric" autoComplete="off"
-                placeholder="•••-••-••••" value={draft} disabled={busy} style={{ maxWidth: 160 }}
-                onChange={(e) => { setDraft(formatSSN(e.target.value)); setConflict(null); setErr(''); }}
-                onKeyDown={(e) => { if (e.key === 'Enter') save(); if (e.key === 'Escape') { setEditing(false); setConflict(null); setErr(''); } }} />
-              <button className="btn small" disabled={busy || draft.replace(/\D/g, '').length !== 9} onClick={() => save()}>
-                {busy ? '…' : 'Save'}</button>
-              <button className="btn ghost small" onClick={() => { setEditing(false); setDraft(''); setConflict(null); setErr(''); }}>Cancel</button>
-            </>
-          ) : (
-            <>
-              <span style={{ fontVariantNumeric: 'tabular-nums', letterSpacing: '.02em', color: '#141B22' }}>
-                {full || (b.ssn_last4 ? `•••-••-${b.ssn_last4}` : '—')}
-              </span>
-              {b.ssn_last4 && (
-                <button className="btn ghost small" disabled={busy} onClick={reveal}
-                  title={full ? 'Hide the full number' : 'Show the full number (this is logged)'}>
-                  {busy ? '…' : (full ? 'Hide' : 'Show')}
-                </button>
-              )}
-              <button className="btn ghost small" onClick={() => { setDraft(''); setEditing(true); }}
-                title={b.ssn_last4 ? 'Correct the Social Security number (logged, and sent to ClickUp)' : 'Add the Social Security number (logged, and sent to ClickUp)'}>
-                {b.ssn_last4 ? 'Change' : 'Add'}
-              </button>
-            </>
-          )}
-        </span>
-      </div>
-      {err && (
-        <div role="alert" className="notice err" style={{ marginTop: 6 }}>
-          {err}
-          {conflict && conflict.canResolve && (
-            <div style={{ marginTop: 8, display: 'flex', gap: 8, flexWrap: 'wrap' }}>
-              {conflict.borrowerId && (
-                <Link className="btn ghost small" to={`/internal/borrowers/${conflict.borrowerId}`}>
-                  Open {conflict.name || 'the other profile'}
-                </Link>
-              )}
-              <button className="btn small" disabled={busy} onClick={() => save('same_person')}>
-                Same person — move the number to this profile
-              </button>
-            </div>
-          )}
-        </div>
-      )}
-    </>
-  );
-}
 
 /* ---------------- primary contact + everything else we can reach them on -----
    Every synced file can bring another email or phone for the same person, and
@@ -804,7 +511,7 @@ function Duplicates({ id, name, onMerged }) {
                   {rows.map(d => (
                     <tr key={d.id} style={{ borderTop: '1px solid var(--line, rgba(127,169,176,.2))' }}>
                       <td style={{ padding: '10px 12px' }}>
-                        <Link to={`/internal/borrowers/${d.id}`}>{fullNameOf(d) || '(no name)'}</Link>
+                        <Link to={`/internal/borrowers/${d.id}`}>{`${d.first_name || ''} ${d.last_name || ''}`.trim() || '(no name)'}</Link>
                         {' '}<span className={`pill ${CONF[d.confidence]?.cls || ''}`}>{CONF[d.confidence]?.t || d.confidence}</span>
                       </td>
                       <td style={{ padding: '10px 12px' }} className="small">{d.email || '—'}</td>

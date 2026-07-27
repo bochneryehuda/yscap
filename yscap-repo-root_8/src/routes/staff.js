@@ -40,6 +40,7 @@ const conditionRules = require('../lib/conditions/rules');
 const conditionRegistry = require('../lib/conditions/field-registry');
 const { CONDITION_TYPES, TOOLS, CATEGORIES, conditionTypeOf } = require('../lib/conditions/types');
 const { strayConditionReason, strayConditionMessage } = require('../lib/conditions/label-sanity');
+const adminOverride = require('../lib/conditions/admin-override');        // super-admin condition override (owner-directed 2026-07-27)
 const { raiseEntityIssue } = require('../lib/raise-issue');
 
 const { can } = require('../lib/permissions');
@@ -1471,7 +1472,7 @@ async function attachCoBorrowerToApp(appId, primaryBorrowerId, b) {
   if (!coId) {
     const first = String(b.firstName || '').trim();
     const last = String(b.lastName || '').trim();
-    // Optional (db/343) — a co-borrower is a person like any other, so their
+    // Optional (db/345) — a co-borrower is a person like any other, so their
     // middle name and suffix get their own fields rather than being crammed into
     // the first name.
     const middle = String(b.middleName || '').trim();
@@ -1598,7 +1599,7 @@ router.post('/applications/:id/co-borrower-fields', async (req, res) => {
     const vals = [coId]; const sets = [];
     const put = (col, v) => { vals.push(v); sets.push(`${col}=$${vals.length}`); };
     if (typeof b.co_name === 'string' && b.co_name.trim()) {
-      // ONE line in, three fields out (db/343) — the same splitter every other
+      // ONE line in, three fields out (db/345) — the same splitter every other
       // door uses, so a co-borrower typed here is stored exactly like one that
       // arrives from ClickUp or Encompass.
       const p = require('../lib/person-name').splitFullName(b.co_name);
@@ -1818,21 +1819,28 @@ async function loadFileForPricing(appId) {
 
 // Staff pricing overrides: EVERY staff role (loan officer, processor,
 // underwriter, admin, super_admin) may tune the deal INPUTS — experience, ARV,
-// as-is value, purchase price, rehab budget, term, reserve — and re-register
-// (owner-directed 2026-07-27; see src/lib/pricing-overrides.js). The saved
-// product is still recomputed server-side from the frozen engines, so the
-// browser never fabricates final loan terms. Only the MANUAL leverage / rate /
-// force-price overrides stay admin-only (they create a Manual Program that
-// bypasses the guideline engine and needs super-admin approval — a non-admin
-// uses "Request an exception"). Policy + the pure sanitizer live in ONE place so
-// the register / quote / details / completeness paths can never drift.
-const { sanitizeStaffOverrides } = require('../lib/pricing-overrides');
-// Returns { overrides, strippedAdminKeys }. strippedAdminKeys is true when a
-// non-admin sent a MEANINGFULLY-engaged manual-pricing knob (rate/leverage/
-// force-price) — the caller refuses loudly rather than register different terms
-// than the studio showed (Pinchus Wieder). Experience is NOT admin-only anymore.
+// as-is value, purchase price, rehab budget, term, reserve — AND may enter any
+// knob in the studio's admin pricing zone (owner-directed 2026-07-27; see
+// src/lib/pricing-overrides.js). Nothing is stripped and no role is refused at
+// the door: a knob moved off the COMPANY DEFAULT instead makes the registration
+// an EXCEPTION that an admin must approve before the borrower is sent terms or
+// a term sheet may issue. The saved product is still recomputed server-side from
+// the frozen engines, so the browser never fabricates final loan terms. Policy +
+// the pure detector live in ONE place so the register / quote / details /
+// completeness paths can never drift.
+const { sanitizeStaffOverrides, pricingOverridesEngaged, describeOverrides } = require('../lib/pricing-overrides');
+const pricingSettings = require('../lib/pricing-settings');
 function sanitizeOverrides(req, raw) {
   return sanitizeStaffOverrides(req.actor && req.actor.role, raw);
+}
+// The admin-zone knobs this payload moved off the company default — the list an
+// admin is being asked to approve. Reads the company pricing singleton; a cold
+// cache falls back to the system literals inside pricing-settings, and an
+// unreadable default makes any real value count (fail safe: ask, never skip).
+function overrideChangesFor(raw) {
+  let defaults = null;
+  try { defaults = pricingSettings.current(); } catch (_) { defaults = null; }
+  return pricingOverridesEngaged(raw, defaults);
 }
 
 // Fresh quote for both programs (no persistence). Body: { program?, overrides? }.
@@ -1841,13 +1849,16 @@ router.post('/applications/:id/pricing/quote', async (req, res) => {
     if (!pricing.enginesReady()) return res.status(503).json({ error: 'pricing engines unavailable', detail: pricing.loadErr() });
     const f = await loadFileForPricing(req.params.id);
     if (!f) return res.status(404).json({ error: 'not found' });
-    // Same no-silent-divergence rule as register: a quote must never PREVIEW
-    // numbers the server would refuse to register for this role.
-    const { overrides, strippedAdminKeys } = sanitizeOverrides(req, (req.body && req.body.overrides) || {});
-    if (strippedAdminKeys)
-      return res.status(403).json({ error: 'Manual rate/leverage and experience overrides need an admin — clear the admin pricing fields to quote as your role.' });
+    // Every staff role may PREVIEW any override (owner-directed 2026-07-27) —
+    // a quote persists nothing, and the loan officer has to see the numbers to
+    // build the exception they are about to send for approval. The register
+    // route is where the approval requirement attaches.
+    const { overrides } = sanitizeOverrides(req, (req.body && req.body.overrides) || {});
     const out = pricing.quoteAll(f.app, f.exp, overrides);
-    res.json({ ...out, experience: f.exp });
+    // Tell the studio which knobs are off the company default, so it can say
+    // up-front that registering this scenario goes to an admin for approval.
+    const overrideChanges = overrideChangesFor(overrides);
+    res.json({ ...out, experience: f.exp, overrideChanges, needsApproval: overrideChanges.length > 0 });
   } catch (e) { console.warn('[staff] handler error:', db.describeError(e)); res.status(500).json({ error: 'server error' }); }
 });
 
@@ -1858,7 +1869,8 @@ router.get('/applications/:id/pricing', async (req, res) => {
     if (!f) return res.status(404).json({ error: 'not found' });
     const hist = await db.query(
       `SELECT r.id, r.program, r.product_label, r.status, r.note_rate, r.total_loan, r.target_ltc,
-              r.is_current, r.created_at, r.inputs, r.quote, r.is_manual, r.asset_months, r.term_options, s.full_name AS registered_by_name
+              r.is_current, r.created_at, r.inputs, r.quote, r.is_manual, r.asset_months, r.term_options,
+              r.needs_approval, r.override_changes, s.full_name AS registered_by_name
          FROM product_registrations r LEFT JOIN staff_users s ON s.id=r.registered_by
         WHERE r.application_id=$1 ORDER BY r.created_at DESC`, [req.params.id]);
     const current = hist.rows.find((x) => x.is_current) || null;
@@ -1881,8 +1893,22 @@ router.get('/applications/:id/pricing', async (req, res) => {
     // The studio echoes econVersion back on register; a mismatch means the
     // file's economics moved underneath the open sheet (409, never a silent
     // stale re-register).
+    // The company pricing defaults every staff role now prices against, so the
+    // studio can tell the officer EXACTLY which admin-zone knob is off-default
+    // (and therefore needs an approval) with the same numbers the server uses —
+    // never a client-side guess. Staff-only; the borrower route never sends it.
+    let pricingDefaults = null;
+    try {
+      const cd = pricingSettings.current() || {};
+      pricingDefaults = {
+        markupStdPct: cd.markupStdPct, markupGoldPct: cd.markupGoldPct,
+        origStdPct: cd.origStdPct, origGoldPct: cd.origGoldPct,
+        lenderFee: cd.lenderFee, creditFee: cd.creditFee,
+        appraisalFee: cd.appraisalFee, titleFee: cd.titleFee ?? null,
+      };
+    } catch (_) { pricingDefaults = null; }
     res.json({ current, history: hist.rows, quote, enginesReady: pricing.enginesReady(),
-      econVersion: pricing.econVersionFor(f.app), manualEscalation, manualDefaults });
+      econVersion: pricing.econVersionFor(f.app), manualEscalation, manualDefaults, pricingDefaults });
   } catch (e) { console.warn('[staff] handler error:', db.describeError(e)); res.status(500).json({ error: 'server error' }); }
 });
 
@@ -1925,21 +1951,23 @@ router.post('/applications/:id/pricing/register', async (req, res) => {
       }, 'econ_version_conflict', { sent: String(b.econVersion).slice(0, 32) });
     }
 
-    // NEVER register terms that silently differ from what the staffer saw
-    // (root-caused 2026-07-16, Pinchus Wieder: a non-admin's rate/experience
-    // overrides were stripped and the file re-registered with OLD economics
-    // behind a success toast). If sanitize dropped keys, refuse loudly instead.
-    const { overrides, strippedAdminKeys } = sanitizeOverrides(req, b.overrides || {});
-    if (strippedAdminKeys)
-      return refuse(403, { error: 'Manual rate/leverage and experience overrides need an admin — ask an admin to register these terms, or clear the admin pricing fields and re-register.' }, 'admin_override_stripped');
+    // Nothing is stripped and no role is refused (owner-directed 2026-07-27 —
+    // a loan officer reported the admin section had vanished from Products &
+    // Pricing). What the staffer saw is what registers; a knob moved off the
+    // company default routes the registration to an admin for approval below.
+    const { overrides } = sanitizeOverrides(req, b.overrides || {});
+    // The admin-zone knobs this registration moved off the company default —
+    // a reduced rate markup, reduced origination, a discounted/waived fee, an
+    // approved effective purchase price, a manual basis. ANY of them makes this
+    // an exception that an admin must approve before terms are confirmed.
+    const overrideChanges = overrideChangesFor(overrides);
     // MANUAL PRODUCT: a structural override of the deal leverage (acquisition LTV /
     // after-repair LTV / loan-to-cost) is NOT a Standard/Gold registration — it
     // becomes its own "Manual Program" (priced on the Standard/Fidelis engine),
     // needs the registrant to state how many months of liquidity the file must
-    // show, and goes to the super-admin escalation box. A markup/points/fee/rate
-    // override alone is manual PRICING, not a manual product, and keeps the
-    // requested program. (Structural override keys are already admin-only via
-    // sanitizeOverrides, so only an admin/super-admin ever reaches manual here.)
+    // show, and goes to the escalation box. A markup/points/fee/rate override
+    // alone is manual PRICING, not a manual product: it keeps the requested
+    // program but still needs the same approval.
     const program = manualProgram.resolveProgram(requestedProgram, overrides);
     const isManual = program === 'manual';
     let assetMonths = null;
@@ -2023,12 +2051,20 @@ router.post('/applications/:id/pricing/register', async (req, res) => {
       }, 'exception_required', { program, manualReasons });
     }
 
-    // A registration that reaches here as MANUAL (exception submitted) OR a Manual
-    // Program must go through the super-admin escalation box and must NEVER confirm
-    // terms to the borrower until approved. A clean ELIGIBLE Standard/Gold
-    // registration is unaffected (confirms immediately, as before). Shared
-    // definition in manual-program.js.
-    const needsEscalation = manualProgram.needsSuperAdminApproval({ program, status: quote.status });
+    // A registration that reaches here as MANUAL (exception submitted), a Manual
+    // Program, OR one carrying ANY admin-zone pricing override must go through the
+    // escalation box and must NEVER confirm terms to the borrower until approved
+    // (owner-directed 2026-07-27). A clean ELIGIBLE Standard/Gold registration
+    // priced on the company defaults is unaffected (confirms immediately, as
+    // before). Shared definition in manual-program.js.
+    const needsEscalation = manualProgram.needsSuperAdminApproval({
+      program, status: quote.status, pricingOverrides: overrideChanges,
+    });
+    // A pricing-override-only exception (no manual leverage, engine says ELIGIBLE)
+    // — the plain-language list the approver, the notification and the audit
+    // trail all read. Empty on a clean registration.
+    const overrideLines = describeOverrides(overrideChanges);
+    const overrideOnly = needsEscalation && !isManual && quote.status !== 'MANUAL';
 
     // The superseded terms, captured before the new row lands — the audit trail
     // (and Activity feed) shows exactly what a reprice changed.
@@ -2046,6 +2082,7 @@ router.post('/applications/:id/pricing/register', async (req, res) => {
       const reg = await persistProductRegistration(client, {
         appId, program, inputs, quote, registeredByStaffId: req.actor.id,
         isManual, assetMonths, termOptions: resolvedTermOptions,
+        needsApproval: needsEscalation, overrideChanges,
       });
       regId = reg.id;
       economicsChanged = reg.economicsChanged;
@@ -2062,11 +2099,15 @@ router.post('/applications/:id/pricing/register', async (req, res) => {
         // whole registration (never an un-escalated manual-review file).
         await manualProgram.openEscalation(client, {
           appId, registrationId: regId, assetMonths,
-          overrides,
+          overrides, pricingOverrides: overrideChanges,
           summary: {
-            kind: isManual ? 'manual_product' : 'manual_review',
+            kind: isManual ? 'manual_product' : (overrideOnly ? 'pricing_override' : 'manual_review'),
             program, productLabel: quote.productLabel || null,
             status: quote.status,
+            // What was moved off the company default (owner-directed 2026-07-27)
+            // — the approver sees the exact change, e.g. "Origination points —
+            // Standard: 1.25% → 0.5%", never a raw key name.
+            overrideChanges, overrideLines,
             totalLoan: total, noteRate: quote.noteRate,
             acqLtvPct: quote.sizing ? quote.sizing.acqLtvPct : null,
             arvPct: quote.sizing ? quote.sizing.arvPct : null,
@@ -2141,30 +2182,39 @@ router.post('/applications/:id/pricing/register', async (req, res) => {
         cashToClose: quote.cashToClose != null ? quote.cashToClose : undefined,
         liquidity: (quote.liquidity ?? quote.liquidityRequired) != null ? (quote.liquidity ?? quote.liquidityRequired) : undefined,
         previous: prev ? { program: prev.program, totalLoan: Number(prev.total_loan), noteRate: Number(prev.note_rate), productLabel: prev.product_label } : undefined,
-        isManual, assetMonths: assetMonths != null ? assetMonths : undefined });
+        isManual, assetMonths: assetMonths != null ? assetMonths : undefined,
+        overrideChanges: overrideChanges.length ? overrideChanges : undefined });
 
-    // Needs manual review → tell the admins/super-admins it's waiting in the
-    // escalation box (they alone approve it). Audited separately so the escalation
-    // is diagnosable, and the team notification above already fired for the
-    // register. Covers a Manual Program AND a Standard/Gold MANUAL registration.
+    // Needs approval → tell the admins/super-admins it's waiting in the escalation
+    // box. Audited separately so the escalation is diagnosable, and the team
+    // notification above already fired for the register. Covers a Manual Program,
+    // a Standard/Gold MANUAL registration, AND a pricing override off the company
+    // defaults (owner-directed 2026-07-27).
     if (needsEscalation) {
-      try { await audit(req, 'manual_program_escalated', 'application', appId, { kind: isManual ? 'manual_product' : 'manual_review', status: quote.status, assetMonths, totalLoan: total, noteRate: quote.noteRate, manualReasons }); } catch (_) {}
+      const escKind = isManual ? 'manual_product' : (overrideOnly ? 'pricing_override' : 'manual_review');
+      try { await audit(req, 'manual_program_escalated', 'application', appId, { kind: escKind, status: quote.status, assetMonths, totalLoan: total, noteRate: quote.noteRate, manualReasons, overrideLines: overrideLines.length ? overrideLines : undefined }); } catch (_) {}
       try {
         const dollars = '$' + Math.round(total).toLocaleString('en-US');
         const productDesc = isManual ? 'Manual Program (custom LTV/LTC/ARV)'
+          : overrideOnly ? `${pricing.PROGRAM_LABEL[program]} — pricing override`
           : `${pricing.PROGRAM_LABEL[program]} — manual review`;
         const ectx = await notify.fileContext(appId, [
           { label: 'Requested product', value: productDesc },
           { label: 'Loan amount', value: dollars },
           isManual ? { label: 'Liquidity months stated', value: `${assetMonths} month${assetMonths === 1 ? '' : 's'}` } : null,
           manualReasons.length ? { label: 'Why manual review', value: manualReasons.join(' · ') } : null,
+          overrideLines.length ? { label: 'Changed from the defaults', value: overrideLines.join(' · ') } : null,
         ].filter(Boolean));
+        const changed = overrideLines.length ? ` Changed from the defaults: ${overrideLines.join('; ')}.` : '';
         const why = isManual
-          ? `A Manual Program (custom LTV/LTC/ARV) was registered on ${ectx ? ectx.label : 'a file'} and is waiting for super-admin approval in the Escalations box. Loan amount ${dollars} · ${assetMonths} month${assetMonths === 1 ? '' : 's'} of liquidity required.`
-          : `A ${pricing.PROGRAM_LABEL[program]} registration on ${ectx ? ectx.label : 'a file'} needs manual review (${manualReasons.join('; ') || 'guideline exception'}) and is waiting for super-admin approval in the Escalations box. The borrower is NOT sent terms until it's approved. Loan amount ${dollars}.`;
+          ? `A Manual Program (custom LTV/LTC/ARV) was registered on ${ectx ? ectx.label : 'a file'} and is waiting for approval in the Escalations box. Loan amount ${dollars} · ${assetMonths} month${assetMonths === 1 ? '' : 's'} of liquidity required.${changed}`
+          : overrideOnly
+            ? `A ${pricing.PROGRAM_LABEL[program]} registration on ${ectx ? ectx.label : 'a file'} was priced OFF the company defaults and is waiting for approval in the Escalations box.${changed} The borrower is NOT sent terms, and no term sheet can be sent, until it's approved. Loan amount ${dollars}.`
+            : `A ${pricing.PROGRAM_LABEL[program]} registration on ${ectx ? ectx.label : 'a file'} needs manual review (${manualReasons.join('; ') || 'guideline exception'}) and is waiting for approval in the Escalations box. The borrower is NOT sent terms until it's approved. Loan amount ${dollars}.${changed}`;
         await notify.notifyAdmins({
           type: 'manual_escalation',
-          title: isManual ? 'Manual product needs approval' : 'Registration needs super-admin approval',
+          title: isManual ? 'Manual product needs approval'
+            : overrideOnly ? 'Pricing override needs approval' : 'Registration needs approval',
           body: why,
           meta: (ectx && ectx.meta) || undefined, applicationId: appId,
           link: '/internal/escalations', ctaLabel: 'Open the Escalations box',
@@ -2174,10 +2224,13 @@ router.post('/applications/:id/pricing/register', async (req, res) => {
       // the reason, and a pointer to the Escalations box). Best-effort.
       try {
         const dollars = '$' + Math.round(total).toLocaleString('en-US');
+        const changed = overrideLines.length ? ` Changed from the defaults: ${overrideLines.join('; ')}.` : '';
         const wfNote = (isManual
           ? `Manual Program (custom LTV/LTC/ARV) — ${dollars}.`
-          : `${pricing.PROGRAM_LABEL[program]} — manual-review exception: ${manualReasons.join('; ') || 'guideline exception'}. ${dollars}.`)
-          + ' Review the exception and approve/decline it in the Escalations box.';
+          : overrideOnly
+            ? `${pricing.PROGRAM_LABEL[program]} — pricing override off the company defaults. ${dollars}.`
+            : `${pricing.PROGRAM_LABEL[program]} — manual-review exception: ${manualReasons.join('; ') || 'guideline exception'}. ${dollars}.`)
+          + changed + ' Review the exception and approve/decline it in the Escalations box.';
         await workflowAuto.onEscalationOpened(appId, { fromStaffId: req.actor.id, note: wfNote });
       } catch (_) { /* best-effort */ }
     } else {
@@ -2257,7 +2310,8 @@ router.post('/applications/:id/pricing/register', async (req, res) => {
       }
     } catch (_) { /* notification is best-effort */ }
 
-    res.status(201).json({ ok: true, registrationId: regId, quote, pendingApproval: needsEscalation });
+    res.status(201).json({ ok: true, registrationId: regId, quote, pendingApproval: needsEscalation,
+      overrideChanges, overrideLines, pendingReason: needsEscalation ? (isManual ? 'manual_product' : (overrideOnly ? 'pricing_override' : 'manual_review')) : null });
   } catch (e) { console.warn('[staff] handler error:', db.describeError(e)); res.status(500).json({ error: 'server error' }); }
 });
 
@@ -2590,6 +2644,11 @@ router.post('/applications/:id/pricing/accept-counter', async (req, res) => {
       const reg = await persistProductRegistration(client, {
         appId, program, inputs, quote, registeredByStaffId: req.actor.id,
         isManual: program === 'manual', assetMonths: esc.asset_months,
+        // The countered terms were AUTHORED by a super-admin and the loan officer
+        // is accepting them — that IS the approval (this same transaction marks
+        // the escalation approved). So these terms are confirmed, not pending:
+        // never re-hold a term sheet on the approval that just happened.
+        needsApproval: false,
       });
       regId = reg.id;
       loanAmountChanged = reg.loanAmountChanged;
@@ -2847,6 +2906,11 @@ router.get('/applications/:id/checklist', async (req, res) => {
             ci.signed_off_by, so.full_name AS signed_off_name, ci.signed_off_at,
             ci.reviewed_by, rv.full_name AS reviewed_by_name, ci.reviewed_at,
             ci.waived_at, ci.waived_by, wv.full_name AS waived_by_name,
+            -- Super-admin override (db/344): who cleared this without fulfilling
+            -- it, why, and what the gate said was missing. The row itself must
+            -- carry the answer — a decision this size is never only in a log.
+            ci.override_by, ov.full_name AS override_by_name, ci.override_at,
+            ci.override_reason, ci.override_blocked_reason,
             -- The borrower-visible reason a condition was rejected / pushed back /
             -- raised (#125): staff must see it on the condition too, not only in the
             -- separate documents panel. Falls back to the latest rejected document's
@@ -2860,6 +2924,7 @@ router.get('/applications/:id/checklist', async (req, res) => {
        LEFT JOIN staff_users so  ON so.id  = ci.signed_off_by
        LEFT JOIN staff_users rv  ON rv.id  = ci.reviewed_by
        LEFT JOIN staff_users wv  ON wv.id  = ci.waived_by
+       LEFT JOIN staff_users ov  ON ov.id  = ci.override_by
       WHERE ci.application_id=$1
       ORDER BY ci.sort_order, ci.created_at`, [req.params.id]);
   // #191 activation 2 — condition AGING (advisory, additive): each row gains
@@ -3402,9 +3467,15 @@ router.post('/mismo/create', async (req, res) => {
 // `canImport` reflects the REAL server gate (pull_credit — held by loan officers,
 // processors, underwriters, coordinators, closers, admins + per-person grants) so
 // the button matches the API exactly.
+// `scope=co|primary` (or an explicit borrowerId) narrows the section to ONE
+// borrower — the co-borrower's own credit condition shows THEIR report instead of
+// repeating the whole file's credit section under a second condition.
 router.get('/applications/:id/credit', async (req, res) => {
   try {
-    const out = await require('../lib/credit').fileCredit(req.params.id);
+    const out = await require('../lib/credit').fileCredit(req.params.id, {
+      scope: typeof req.query.scope === 'string' ? req.query.scope : undefined,
+      borrowerId: typeof req.query.borrowerId === 'string' ? req.query.borrowerId : undefined,
+    });
     out.canImport = can(req.actor, 'pull_credit');
     res.json(out);
   } catch (e) { res.status(e.status || 500).json({ error: e.userMessage || 'server error' }); }
@@ -3428,8 +3499,24 @@ router.post('/applications/:id/credit/import', async (req, res) => {
     const out = await require('../lib/credit').importCredit(req.params.id, {
       pullType: b.pullType, requestType: b.requestType,   // version is server-frozen (ignored if sent)
       reissueReportId: typeof b.reissueReportId === 'string' ? b.reissueReportId : undefined,
+      // A reissue reference belongs to the borrower it was issued for, so with two
+      // borrowers each carries their own (the shared box used to be treated as the
+      // primary's, which made a co-borrower-only reissue impossible).
+      reissueReportIds: (b.reissueReportIds && typeof b.reissueReportIds === 'object' && !Array.isArray(b.reissueReportIds))
+        ? b.reissueReportIds : undefined,
       xml: typeof b.xml === 'string' ? b.xml : undefined,
       pdfBase64: typeof b.pdfBase64 === 'string' ? b.pdfBase64 : undefined,
+      // ONE downloaded file covering BOTH borrowers (a merged/joint report). Absent =
+      // auto-detect from the file itself; false = treat it as one borrower's report.
+      merged: typeof b.merged === 'boolean' ? b.merged : undefined,
+      // SPLIT import: a separate downloaded report per borrower, in one action.
+      files: Array.isArray(b.files)
+        ? b.files.filter((f) => f && typeof f === 'object' && typeof f.borrowerId === 'string').map((f) => ({
+          borrowerId: f.borrowerId,
+          xml: typeof f.xml === 'string' ? f.xml : undefined,
+          pdfBase64: typeof f.pdfBase64 === 'string' ? f.pdfBase64 : undefined,
+        }))
+        : undefined,
       // Which borrower(s) to pull. Default (absent) = every borrower on the file
       // in one action; a subset drops one from this pull (and opens their own
       // credit condition). `borrowerId` targets a single borrower for an upload.
@@ -3444,6 +3531,18 @@ router.post('/applications/:id/credit/import', async (req, res) => {
       ficoMismatch: out.ficoMismatch, ficoUnverified: out.ficoUnverified || undefined,
       bureaus: out.bureausReturned, parseError: out.parseError || undefined,
       pulled: out.pulled, coConditionOpened: out.coConditionOpened || undefined,
+      coConditionClosed: out.coConditionClosed || undefined,
+      importMode: out.importMode,
+      // A merged report is one document read for several people — record who it was
+      // matched to and how, so the file's history explains itself later.
+      merged: out.merged
+        ? {
+          borrowerCount: out.merged.borrowerCount,
+          matched: out.merged.matched.map((m) => ({ role: m.role, matchedBy: m.matchedBy, verified: m.verified, middleScore: m.middleScore })),
+          unmatchedInReport: out.merged.unmatchedInReport.length || undefined,
+          unmatchedOnFile: out.merged.unmatchedOnFile.length || undefined,
+        }
+        : undefined,
       borrowers: Array.isArray(out.results)
         ? out.results.map((r) => ({ role: r.role, ok: r.ok !== false, middleScore: r.middleScore, error: r.error || undefined }))
         : undefined,
@@ -4280,15 +4379,35 @@ router.get('/emails/:msgId', async (req, res) => {
   } catch (e) { res.status(500).json({ error: 'server error' }); }
 });
 
+// A super-admin condition override on the first-class conditions surface, sent
+// to the policy-exception register (born approved, record-only) exactly as the
+// checklist surface does. Best-effort ALWAYS: the clear/waive it documents has
+// already been written, so a register hiccup may never reverse or 500 it — the
+// audit_log row and the stamps on the condition remain the primary record.
+async function recordConditionOverrideBestEffort(req, appId, { action, conditionId, label, reason }) {
+  try {
+    if (!appId) return null;
+    return await loanExceptions.recordConditionOverride({
+      appId, staffId: req.actor.id,
+      note: adminOverride.describe({ label, reason, blocked: null }),
+      snapshot: { action, condition_id: conditionId, condition: label || null, at: new Date().toISOString() },
+    });
+  } catch (e) {
+    try { console.warn('[staff] condition-override record skipped:', db.describeError(e)); } catch (_) {}
+    return null;
+  }
+}
+
 // ---- first-class conditions (object model) ----
 router.get('/applications/:id/conditions', async (req, res) => {
   const r = await db.query(
     `SELECT c.*, cb.full_name AS created_by_name, xb.full_name AS cleared_by_name,
-            rb.full_name AS reviewed_by_name
+            rb.full_name AS reviewed_by_name, ob.full_name AS override_by_name
        FROM conditions c
        LEFT JOIN staff_users cb ON cb.id=c.created_by
        LEFT JOIN staff_users xb ON xb.id=c.cleared_by
        LEFT JOIN staff_users rb ON rb.id=c.reviewed_by
+       LEFT JOIN staff_users ob ON ob.id=c.override_by
       WHERE c.application_id=$1 ORDER BY (c.status='open') DESC, c.created_at DESC`, [req.params.id]);
   // #191 activation 2 — same additive aging as the checklist endpoint.
   try {
@@ -4342,14 +4461,29 @@ router.post('/applications/:id/loan-conditions', async (req, res) => {
 // call (audit S3-01) — a loan officer marks it REVIEWED instead (below), never
 // cleared. Mirrors the checklist sign-off gate + the sibling /waive gate.
 router.post('/loan-conditions/:cid/clear', async (req, res) => {
+  // A super-admin OVERRIDE is available here too, so "override this condition"
+  // means the same thing on every conditions surface (owner-directed 2026-07-27:
+  // "each and every condition"). Nothing on this object gates fulfillment today,
+  // so the override changes no outcome — it RECORDS one: the clear is stamped as
+  // an override with its reason and lands in the exception register like any
+  // other. Same module, same wording, same rules as the checklist surface.
+  const ovr = adminOverride.evaluate(req.actor, req.body, { requireCompletion: false });
+  if (!ovr.ok) return res.status(ovr.status).json({ error: ovr.error });
   if (!can(req.actor, 'sign_off_conditions'))
     return res.status(403).json({ error: 'Only a processor or underwriter can sign a condition off — click Done to record your completion; the back office signs off after you.' });
   try {
-    const c = await db.query(`SELECT application_id FROM conditions WHERE id=$1`, [req.params.cid]);
+    const c = await db.query(`SELECT application_id, title FROM conditions WHERE id=$1`, [req.params.cid]);
     if (!c.rows[0]) return res.status(404).json({ error: 'not found' });
     if (!(await canTouchApp(req, c.rows[0].application_id))) return res.status(403).json({ error: 'forbidden' });
-    await db.query(`UPDATE conditions SET status='cleared', cleared_by=$2, cleared_at=now(), updated_at=now() WHERE id=$1`, [req.params.cid, req.actor.id]);
-    await audit(req, 'clear_condition', 'condition', req.params.cid);
+    await db.query(
+      ovr.requested
+        ? `UPDATE conditions SET status='cleared', cleared_by=$2, cleared_at=now(),
+             override_by=$2, override_at=now(), override_reason=$3, updated_at=now() WHERE id=$1`
+        : `UPDATE conditions SET status='cleared', cleared_by=$2, cleared_at=now(), updated_at=now() WHERE id=$1`,
+      ovr.requested ? [req.params.cid, req.actor.id, ovr.reason] : [req.params.cid, req.actor.id]);
+    await audit(req, 'clear_condition', 'condition', req.params.cid, ovr.requested ? { override: true, reason: ovr.reason } : undefined);
+    if (ovr.requested) await recordConditionOverrideBestEffort(req, c.rows[0].application_id, {
+      action: 'condition_clear_override', conditionId: req.params.cid, label: c.rows[0].title, reason: ovr.reason });
     res.json({ ok: true });
   } catch (e) { res.status(500).json({ error: 'server error' }); }
 });
@@ -4375,6 +4509,9 @@ router.post('/loan-conditions/:cid/review', async (req, res) => {
   } catch (e) { res.status(500).json({ error: 'server error' }); }
 });
 router.post('/loan-conditions/:cid/waive', async (req, res) => {
+  // Same override affordance as /clear — see the note there.
+  const ovr = adminOverride.evaluate(req.actor, req.body, { requireCompletion: false });
+  if (!ovr.ok) return res.status(ovr.status).json({ error: ovr.error });
   if (!can(req.actor, 'waive_conditions')) return res.status(403).json({ error: 'you do not have permission to waive conditions' });
   const reason = String((req.body || {}).reason || '').trim();
   if (!reason) return res.status(400).json({ error: 'a waive reason is required' });
@@ -4382,12 +4519,21 @@ router.post('/loan-conditions/:cid/waive', async (req, res) => {
     // Per-file authorization — mirror the sibling /clear endpoint. Having the
     // waive_conditions capability must not let a scoped staffer waive a condition
     // on a file they aren't assigned to.
-    const c = await db.query(`SELECT application_id FROM conditions WHERE id=$1`, [req.params.cid]);
+    const c = await db.query(`SELECT application_id, title FROM conditions WHERE id=$1`, [req.params.cid]);
     if (!c.rows[0]) return res.status(404).json({ error: 'not found' });
     if (!(await canTouchApp(req, c.rows[0].application_id))) return res.status(403).json({ error: 'forbidden' });
-    const r = await db.query(`UPDATE conditions SET status='waived', waive_reason=$2, cleared_by=$3, cleared_at=now(), updated_at=now() WHERE id=$1 RETURNING id`, [req.params.cid, reason.slice(0, 500), req.actor.id]);
+    const r = await db.query(
+      ovr.requested
+        ? `UPDATE conditions SET status='waived', waive_reason=$2, cleared_by=$3, cleared_at=now(),
+             override_by=$3, override_at=now(), override_reason=$4, updated_at=now() WHERE id=$1 RETURNING id`
+        : `UPDATE conditions SET status='waived', waive_reason=$2, cleared_by=$3, cleared_at=now(), updated_at=now() WHERE id=$1 RETURNING id`,
+      ovr.requested
+        ? [req.params.cid, reason.slice(0, 500), req.actor.id, ovr.reason]
+        : [req.params.cid, reason.slice(0, 500), req.actor.id]);
     if (!r.rows[0]) return res.status(404).json({ error: 'not found' });
-    await audit(req, 'waive_condition', 'condition', req.params.cid, { reason });
+    await audit(req, 'waive_condition', 'condition', req.params.cid, ovr.requested ? { reason, override: true, overrideReason: ovr.reason } : { reason });
+    if (ovr.requested) await recordConditionOverrideBestEffort(req, c.rows[0].application_id, {
+      action: 'condition_waive_override', conditionId: req.params.cid, label: c.rows[0].title, reason: ovr.reason });
     res.json({ ok: true });
   } catch (e) { res.status(500).json({ error: 'server error' }); }
 });
@@ -4855,6 +5001,21 @@ router.patch('/checklist/:itemId', async (req, res) => {
   const b = req.body || {};
   const allowed = ['outstanding', 'requested', 'received', 'satisfied', 'issue'];
   if (b.status && !allowed.includes(b.status)) return res.status(400).json({ error: 'bad status' });
+  // SUPER-ADMIN OVERRIDE (owner-directed 2026-07-27) — "if we're unable to clear
+  // it, the admin should be able to overwrite and clear the condition without a
+  // document attached to it or without fulfilling the requirement of that
+  // condition. Only super admin." The rule lives in ONE module so every surface
+  // that completes a condition asks the same question: explicit flag, super-admin
+  // only, reason required, must accompany the completion it is overriding.
+  // Nothing here weakens the gates for the ordinary Sign off / Waive buttons.
+  const ovr = adminOverride.evaluate(req.actor, b);
+  if (!ovr.ok) return res.status(ovr.status).json({ error: ovr.error });
+  // The three ways a condition completes — sign-off, waive, and the status
+  // dropdown's "satisfied". An override must be STAMPED on whichever one it came
+  // through, or the third door would quietly clear a condition with the gate
+  // bypassed and nothing recorded. One definition, used by the stamp, the audit
+  // and the register record below.
+  const completing = b.signedOff === true || b.waived === true || b.status === 'satisfied';
   // Completing a condition is the PROCESSOR's call (admins too). A loan
   // officer marks it reviewed instead — a lighter stamp, never "satisfied".
   const canComplete = can(req.actor, 'sign_off_conditions');
@@ -4887,7 +5048,11 @@ router.patch('/checklist/:itemId', async (req, res) => {
     // Normally only an OPTIONAL condition may be waived. The appraisal credit-card
     // condition is an explicit exception (owner-directed): it is waivable directly
     // even though it's a required task — the appraisal may simply be paid another way.
-    if (!isApprCard && cur.rows[0].is_required !== false) return res.status(422).json({ error: 'Only an optional condition can be waived — make it optional first, then waive.' });
+    // A super-admin OVERRIDE is the third way through: clearing a REQUIRED condition
+    // without fulfilling it is exactly what the override exists for, so it does not
+    // have to be made optional first (that detour edited the file's requirements to
+    // clear one item — the override records the decision instead).
+    if (!ovr.requested && !isApprCard && cur.rows[0].is_required !== false) return res.status(422).json({ error: 'Only an optional condition can be waived — make it optional first, then waive.' });
   }
   // Push-back / reject / reopen: send a condition back to the borrower with a
   // BORROWER-VISIBLE reason (owner-directed 2026-07-12, LOS-grade management). One
@@ -4906,9 +5071,22 @@ router.patch('/checklist/:itemId', async (req, res) => {
   // registered, the rehab budget must agree across SOW/file/product, and
   // verified experience must back the registered product. Blocks the sign-off
   // (422) with a plain-language reason until everything lines up.
+  //
+  // Under a super-admin OVERRIDE the gate still RUNS — it just stops blocking.
+  // Running it is the point: its refusal text is the record of what was actually
+  // missing, and it is stamped on the condition (override_blocked_reason) so the
+  // file can answer "what was skipped here?" long after the fact. A null means
+  // nothing was blocking, which is also worth recording honestly.
+  let blockedReason = null;
   if (b.signedOff === true || b.status === 'satisfied') {
     const gate = await signOffGate(req.params.itemId, req.actor);
-    if (gate) return res.status(422).json({ error: gate });
+    if (gate && !ovr.requested) return res.status(422).json({ error: gate });
+    blockedReason = gate || null;
+  }
+  // A waive-by-override records what the condition was still missing too — the
+  // gate is the same question ("is this fulfilled?"), asked without blocking.
+  if (ovr.requested && b.waived === true && blockedReason == null) {
+    try { blockedReason = await signOffGate(req.params.itemId, req.actor); } catch (_) { blockedReason = null; }
   }
 
   const sets = ['updated_at=now()'];
@@ -4942,6 +5120,18 @@ router.patch('/checklist/:itemId', async (req, res) => {
     sets.push('signed_off_by=NULL', 'signed_off_at=NULL', 'waived_by=NULL', 'waived_at=NULL');
     if (b.waived === false) sets.push("status='outstanding'");
   }
+  // The override stamps travel WITH the completion they authorize. Undoing the
+  // sign-off / waive clears them in the same breath: an item back on the list was
+  // not "cleared by override", and a later ordinary sign-off must not inherit an
+  // old override's reason (the stale-stamp class this repo keeps paying for).
+  if (ovr.requested && completing) {
+    add('override_by=?', req.actor.id);
+    add('override_reason=?', ovr.reason);
+    add('override_blocked_reason=?', blockedReason);
+    sets.push('override_at=now()');
+  } else if (b.signedOff === false || b.waived === false) {
+    sets.push('override_by=NULL', 'override_at=NULL', 'override_reason=NULL', 'override_blocked_reason=NULL');
+  }
   // Reviewed stamp (any assigned staff, typically the loan officer).
   if (b.reviewed === true) {
     add('reviewed_by=?', req.actor.id);
@@ -4955,7 +5145,10 @@ router.patch('/checklist/:itemId', async (req, res) => {
   // condition (reopen / add-back). issue_reason is what the borrower is shown.
   if (b.pushBack === true) {
     add('issue_reason=?', String(b.issueReason).slice(0, 500));
-    sets.push("status='issue'", 'signed_off_by=NULL', 'signed_off_at=NULL', 'reviewed_by=NULL', 'reviewed_at=NULL');
+    sets.push("status='issue'", 'signed_off_by=NULL', 'signed_off_at=NULL', 'reviewed_by=NULL', 'reviewed_at=NULL',
+      // A reopened condition is open again — it is no longer cleared by anyone,
+      // least of all by an override (same reason as the un-sign branch above).
+      'override_by=NULL', 'override_at=NULL', 'override_reason=NULL', 'override_blocked_reason=NULL');
   } else if (b.issueReason != null) {
     // A plain reject that passes an explicit status='issue' can carry the reason.
     add('issue_reason=?', String(b.issueReason).slice(0, 500));
@@ -4971,6 +5164,50 @@ router.patch('/checklist/:itemId', async (req, res) => {
   // Propagate a mapped condition's status to its ClickUp dropdown (scoped push;
   // self-gating no-op for unmapped items / unlinked files).
   enqueueChecklistStatusPush(req.params.itemId).catch(() => {});
+
+  // A super-admin override is a POLICY DECISION, not a checkbox: audit it, and
+  // land it in the loan_exceptions register (born approved, record-only) exactly
+  // as an issuance override does — which is what puts it on the Exceptions
+  // screen, in the EX-n register export, and in the decision certificate's
+  // policy_exceptions block with no extra plumbing. Best-effort, in that order:
+  // the sign-off already happened, so neither write may reverse or 500 it.
+  if (ovr.requested && completing) {
+    const oItemId = req.params.itemId;
+    try {
+      const it = (await db.query(
+        `SELECT ci.application_id, ci.label, ci.item_kind, ci.is_required,
+                (SELECT code FROM checklist_templates t WHERE t.id=ci.template_id) AS template_code
+           FROM checklist_items ci WHERE ci.id=$1`, [oItemId])).rows[0] || {};
+      const note = adminOverride.describe({ label: it.label, reason: ovr.reason, blocked: blockedReason });
+      // Which door it came through — the trail should not have to guess.
+      const how = b.waived === true ? 'waive' : b.signedOff === true ? 'sign_off' : 'mark_satisfied';
+      await audit(req, 'admin_override_condition', 'checklist_item', oItemId, {
+        applicationId: it.application_id || null,
+        label: it.label || null,
+        templateCode: it.template_code || null,
+        action: how,
+        reason: ovr.reason,
+        blockedReason: blockedReason || null,
+      });
+      if (it.application_id) {
+        await loanExceptions.recordConditionOverride({
+          appId: it.application_id, staffId: req.actor.id, note,
+          snapshot: {
+            action: `condition_${how}_override`,
+            checklist_item_id: oItemId,
+            condition: it.label || null,
+            template_code: it.template_code || null,
+            item_kind: it.item_kind || null,
+            was_required: it.is_required !== false,
+            blocked_reason: blockedReason || null,
+            at: new Date().toISOString(),
+          },
+        });
+      }
+    } catch (e) {
+      try { console.warn('[staff] condition-override record skipped:', db.describeError(e)); } catch (_) {}
+    }
+  }
 
   // Non-blocking false-clear guard (owner-directed): when a condition is signed
   // off, if PILOT's read of the cleared document (the cure proof) says it does
@@ -5541,7 +5778,7 @@ router.patch('/borrowers/:id', async (req, res) => {
     // THE ONE BIG NAME FIELD (owner-directed 2026-07-27). A caller may send the
     // whole name as `fullName` — which is what the "Full name" box on every screen
     // sends — or the individual parts. Either way the PARTS are what get stored and
-    // `borrowers.full_name` (db/344, a generated column) recomputes itself, so the
+    // `borrowers.full_name` (db/346, a generated column) recomputes itself, so the
     // big field and the pieces can never disagree.
     if (b.fullName !== undefined && b.firstName == null && b.lastName == null
         && b.middleName === undefined && b.nameSuffix === undefined) {
@@ -5572,7 +5809,7 @@ router.patch('/borrowers/:id', async (req, res) => {
         if (T.isPlaceholderName(last)) return res.status(400).json({ error: 'that is not a usable last name' });
         put('last_name', last || null);
       }
-      // MIDDLE NAME + SUFFIX (db/343). Both are OPTIONAL — an empty string is a
+      // MIDDLE NAME + SUFFIX (db/345). Both are OPTIONAL — an empty string is a
       // deliberate "this person has none", so it clears the column rather than
       // being ignored (that is what makes a wrong split fixable from here).
       if (b.middleName !== undefined) {
@@ -7590,12 +7827,15 @@ const COMPLETE_APP_FIELDS = { program: 'text', loan_type: 'text', property_type:
   // it's part of application completeness (owner-directed 2026-07-20). STAFF-ONLY;
   // never offered on the borrower completeness panel.
   lender: 'text' };
-// `middle_name` (db/343) is here so staff can fill or correct the optional middle
+// `middle_name` (db/345) is here so staff can fill or correct the optional middle
 // name inline from the file, without opening the borrower profile. It is not part
 // of the completeness CHECK — a person may genuinely have no middle name.
 const COMPLETE_BORROWER_FIELDS = { cell_phone: 'text', date_of_birth: 'date', fico: 'int', citizenship: 'text', middle_name: 'text' };
 async function completeFields(req, res, borrowerScoped) {
   const b = req.body || {};
+  // What the condition engine did as a RESULT of this save (see the evaluate call
+  // below) — reported back so the caller can show it. Null = the engine never ran.
+  let conditionsChanged = null;
   try {
     const brRow = await db.query(`SELECT borrower_id FROM applications WHERE id=$1 AND deleted_at IS NULL`, [req.params.id]);
     if (!brRow.rows[0]) return res.status(404).json({ error: 'not found' });
@@ -7636,7 +7876,34 @@ async function completeFields(req, res, borrowerScoped) {
       // flip the 5% SOW-contingency requirement (a Blue Lake note buyer). Re-run
       // the Condition Center engine and enforce the contingency, exactly like the
       // details edit path does. Best-effort — never blocks the save.
-      try { await conditionEngine.evaluateApplication(req.params.id, { actor: req.actor, reason: 'completeness_edited' }); } catch (_) {}
+      // The engine already reports exactly what it attached/retracted — hand that back
+      // to the caller so the note-buyer slot can say what the save actually did instead
+      // of the staffer having to hunt the conditions list for the difference
+      // (owner-directed 2026-07-27: "I don't believe it's a clear path"). Best-effort,
+      // like the pass itself.
+      //
+      // The pass is a FULL re-evaluation, so it can also pick up conditions that have
+      // nothing to do with the field just saved (a file the engine hadn't run on in a
+      // while). Each change is therefore tagged `byNoteBuyer` — true only when the
+      // template's own rule references the note buyer — so the UI can say "this is
+      // because of the note buyer" separately from "the file was re-checked and also
+      // picked this up", and never claim a switch caused something it didn't.
+      try {
+        const ev = await conditionEngine.evaluateApplication(req.params.id, { actor: req.actor, reason: 'completeness_edited' });
+        let drivenCodes = new Set();
+        try {
+          const { mentionsNoteBuyer } = require('../lib/note-buyer-effects')._internals;
+          const t = await db.query(
+            `SELECT code, rule_logic FROM checklist_templates
+              WHERE code IS NOT NULL AND auto_apply = 'rules' AND rule_logic IS NOT NULL`);
+          drivenCodes = new Set(t.rows.filter((r) => mentionsNoteBuyer(r.rule_logic)).map((r) => r.code));
+        } catch (_) { /* untagged is better than wrong — everything reads as "also picked up" */ }
+        const tag = (x) => ({ label: x.label, byNoteBuyer: !!(x.code && drivenCodes.has(x.code)) });
+        conditionsChanged = {
+          added: (ev.added || []).filter((x) => x && x.label).map(tag),
+          removed: (ev.removed || []).filter((x) => x && x.label).map(tag),
+        };
+      } catch (_) {}
       try { await require('../lib/rehab-budget').enforceSowContingency(req.params.id); } catch (_) {}
       // A note-buyer (lender) edit here can change the bank-statement month requirement (Blue Lake
       // needs 2 vs Standard 1) — re-derive it now so the condition doesn't keep showing the old
@@ -7692,10 +7959,32 @@ async function completeFields(req, res, borrowerScoped) {
         { humanEditKeys: brKeys.filter((k) => k === 'date_of_birth') }).catch(() => {});
     }
     if (!borrowerScoped) await audit(req, 'complete_fields', 'application', req.params.id, { app: appKeys, borrower: brKeys, before: brBefore || undefined });
-    res.json({ ok: true, appFields: appKeys.length, borrowerFields: brSets.length });
+    res.json({ ok: true, appFields: appKeys.length, borrowerFields: brSets.length,
+      conditionsChanged: conditionsChanged || undefined });
   } catch (e) { console.warn('[staff] handler error:', db.describeError(e)); res.status(500).json({ error: 'server error' }); }
 }
 router.post('/applications/:id/complete-fields', (req, res) => completeFields(req, res, false));
+
+// The NOTE BUYER slot (owner-directed 2026-07-27) — everything the file's note-buyer
+// panel needs to be a clear path: the current note buyer, every note buyer that can be
+// picked, and — per candidate — what switching to it would DO to this file (which
+// rule-driven conditions attach or drop, and the standing requirements it brings).
+// READ-ONLY: it writes nothing. The change itself still goes through the ONE existing
+// write path (`complete-fields` with `lender`), which sets the field, re-runs the
+// condition engine, re-enforces the 5% SOW contingency and re-derives liquidity.
+// STAFF-ONLY (this router is staff-gated + the /applications/:id scope middleware) —
+// a note-buyer name is never exposed to a borrower.
+router.get('/applications/:id/note-buyer', async (req, res) => {
+  try {
+    // `?candidate=` previews a name that isn't in the ClickUp dropdown (staff may type
+    // one) so a typed note buyer explains itself before it is saved, like a picked one.
+    const candidate = String((req.query && req.query.candidate) || '').trim().slice(0, 200);
+    res.json(await require('../lib/note-buyer-effects').noteBuyerSlot(req.params.id, db, { candidate }));
+  } catch (e) {
+    console.warn('[staff] note-buyer slot error:', db.describeError(e));
+    res.status(500).json({ error: 'server error' });
+  }
+});
 
 // All note buyers available to pick in the completeness panel — every value from
 // the ClickUp note-buyer dropdown, PLUS the confirmed registry set and anything

@@ -349,7 +349,7 @@ function joinFullName(a, b, c, d) {
  * displayName(row, prefix) — THE ONE BIG NAME FIELD, for any row we hold.
  *
  * The owner's rule (2026-07-27): every place that showed a borrower's name before
- * the split must keep showing the WHOLE name. `borrowers.full_name` (db/344) is a
+ * the split must keep showing the WHOLE name. `borrowers.full_name` (db/346) is a
  * generated column, so it is always right and always present — this prefers it and
  * falls back to joining the parts, which means a query that has not (yet) selected
  * `full_name` behaves exactly as it did before instead of breaking.

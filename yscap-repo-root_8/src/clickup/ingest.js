@@ -60,7 +60,7 @@ function identityFrom(read) {
     // DELIBERATELY first + last, NOT the full name. This is the task↔file
     // identity graph: `identity.countMatches` compares this string EXACTLY
     // against identities recorded on earlier syncs, which predate the middle-name
-    // column (db/343). Adding the middle name here would make every stored
+    // column (db/345). Adding the middle name here would make every stored
     // identity stop agreeing on `borrowerName` overnight — a silently weaker
     // match on the very workflow (duplicate-a-task) the graph exists to protect.
     // The middle name adds nothing to matching; it is stored on the profile.
@@ -353,7 +353,7 @@ async function healBorrowerFields(borrowerId, b, taskId) {
   try {
     const PN = require('../lib/person-name');
     const first = name(b.first_name), last = name(b.last_name);
-    // The whole name, MIDDLE NAME INCLUDED (db/343). Comparing first+last only
+    // The whole name, MIDDLE NAME INCLUDED (db/345). Comparing first+last only
     // would read a middle name arriving from ClickUp as a full rename and either
     // adopt it as a "nickname correction" or queue a pointless review.
     const newFull = PN.joinFullName({ first, middle: name(b.middle_name), last, suffix: name(b.name_suffix) });

@@ -90,6 +90,12 @@ export default function DealSnapshot({ app, gating }) {
           {row('Co-borrower', coName)}
           {row('Entity', app.entity_name || '—')}
           {row('FICO', app.fico || '—')}
+          {/* The note buyer at a glance (owner-directed 2026-07-27) — it used to be
+              readable only inside the ClickUp panel, so an officer couldn't tell who is
+              buying the loan without hunting for it. STAFF-ONLY: this component renders
+              on the staff file view only, never the borrower's. Changed in the Note
+              buyer panel below, not here. */}
+          {row('Note buyer', app.lender || 'Not set')}
         </div>
 
         <div className="snap-cluster">
@@ -106,6 +112,11 @@ export default function DealSnapshot({ app, gating }) {
           {row('Purchase', money(purchase))}
           {row('ARV', money(app.arv))}
           {row('Rehab', money(app.rehab_budget))}
+          {/* The SCOPE next to its cost — registering a product now writes the
+              studio's rehab scope onto the file, so this stops reading blank on
+              a priced file (owner-reported 2026-07-27). Dropped entirely on a
+              deal with no rehab (bridge), where there is no scope to show. */}
+          {row('Rehab type', app.rehab_type || (Number(app.rehab_budget) > 0 ? '—' : null))}
           {row('Liquidity required', quote && quote.liquidity != null ? money2(quote.liquidity) : null)}
         </div>
 

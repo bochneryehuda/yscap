@@ -424,7 +424,7 @@ function compareIdentity(row, loan) {
   //
   // NAME COMPARE (owner-directed 2026-07-27). Encompass splits a person into
   // firstName / middleName / lastName (+ suffixToName); PILOT now does the same
-  // (db/343). Before that, this compared a joined first+last on both sides — so a
+  // (db/345). Before that, this compared a joined first+last on both sides — so a
   // borrower whose Encompass copy is correctly split read as a MISMATCH against
   // our merged "Issac Michael" first name, and this row is BLOCK-gated, so it
   // held the term sheet on a file where nothing was actually wrong.

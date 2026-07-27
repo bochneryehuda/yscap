@@ -188,7 +188,7 @@ const KNOWN_FIELD_IDS = (() => {
 const IDENTITY_MAP = Object.freeze([
   Object.freeze({ key: 'first_name', our: 'borrowers.first_name', enc: 'applications[].{party}.firstName', stdFieldId: { borrower: '4000', coBorrower: '4004' }, match: 'nameEquals' }),
   Object.freeze({ key: 'last_name', our: 'borrowers.last_name', enc: 'applications[].{party}.lastName', stdFieldId: { borrower: '4002', coBorrower: '4006' }, match: 'nameEquals' }),
-  // MIDDLE NAME + SUFFIX now have a real home (db/343, owner-directed 2026-07-27).
+  // MIDDLE NAME + SUFFIX now have a real home (db/345, owner-directed 2026-07-27).
   // They used to be "finding only" because PILOT stored a person as first + last
   // and a one-line ClickUp name was cut with lastIndexOf(' ') — so Encompass's
   // correctly-split middleName had nowhere to land, and the borrower-name compare

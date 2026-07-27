@@ -1,4 +1,4 @@
-/* Real-database tests for the borrower name split (db/343 + lib/name-heal).
+/* Real-database tests for the borrower name split (db/345 + lib/name-heal).
  * Run: DATABASE_URL=... node scripts/test-name-split-db.js
  * Skips cleanly with no DATABASE_URL (mirrors every other DB-gated test here).
  *

@@ -11,7 +11,7 @@ import { US_STATES } from '../components/LlcManager.jsx';
 import { MoneyInput, PhoneInput, ZipInput, EmailInput } from '../components/FormattedInputs.jsx';
 import { fullNameOf } from '../lib/personName.js';
 import TermSheetStudio, {
-  buildStudioState, portalLoanType, portalProgram, selectionFromSnapshot, blobToBase64,
+  buildStudioState, portalLoanType, portalProgram, selectionFromSnapshot, blobToBase64, rehabTypePatch,
 } from '../components/TermSheetStudio.jsx';
 
 const STEPS = ['Property', 'Loan', 'Borrower', 'Price & register'];
@@ -363,7 +363,13 @@ export default function Apply() {
       const fee = Math.max(0, (Number(f.price) || 0) - (Number(f.origPrice) || 0));
       patch.assignmentFee = fee ? String(fee) : '';
     }
-    if (f.rehabScope === 'heavy') patch.rehabType = 'Heavy / gut rehab';
+    // The rehab scope the studio priced → the application's Rehab type. Was
+    // heavy-only, so a scenario that expanded the footprint (or was a plain
+    // light rehab) left the field blank on the file. rehabTypePatch keeps a more
+    // specific answer the applicant already gave (e.g. Cosmetic) when the scope
+    // hasn't actually changed.
+    const rt = rehabTypePatch(f, cur && cur.rehabType);
+    if (rt) patch.rehabType = rt;
     if (f.fico) patch.personal = { ...((cur && cur.personal) || {}), fico: f.fico };
     return patch;
   };
@@ -776,7 +782,7 @@ export default function Apply() {
                 <div className="grid cols-2">
                   <div className="field"><label>First name</label>
                     <input className="input" autoComplete="off" value={c.firstName || ''} onChange={e => setCo('firstName', e.target.value)} /></div>
-                  {/* Optional middle name (db/343) — a co-borrower is a person like
+                  {/* Optional middle name (db/345) — a co-borrower is a person like
                       anyone else, so their whole legal name is captured here. */}
                   <div className="field"><label>Middle name <span className="muted">(optional)</span></label>
                     <input className="input" autoComplete="off" value={c.middleName || ''} onChange={e => setCo('middleName', e.target.value)} /></div>

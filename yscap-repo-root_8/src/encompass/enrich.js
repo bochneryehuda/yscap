@@ -99,7 +99,7 @@ function collectParties(raw) {
 
 // The parties on a loan (borrower + co-borrower across applications[]).
 // Encompass models a person as THREE fields — firstName / middleName / lastName
-// (+ suffixToName) — which is exactly the shape PILOT now stores (db/343), so
+// (+ suffixToName) — which is exactly the shape PILOT now stores (db/345), so
 // the middle name is carried through and can fill a blank on our side.
 function extractParties(raw) {
   return collectParties(raw).map((p) => {

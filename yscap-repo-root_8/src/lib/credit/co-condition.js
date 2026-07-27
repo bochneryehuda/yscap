@@ -87,4 +87,41 @@ async function removeCoBorrowerCreditCondition(appId, coBorrowerId, client = db)
   }
 }
 
-module.exports = { ensureCoBorrowerCreditCondition, removeCoBorrowerCreditCondition, CO_CREDIT_MARKER };
+/**
+ * On an import that covers EVERY borrower (a merged report, or a report each in one
+ * action): fold a split-out co-borrower credit condition back into the file-level
+ * one, so the file doesn't carry the same condition twice (owner-reported 2026-07-27).
+ *
+ * Anything already filed on it — the earlier reports and their PDFs/data files — is
+ * RE-POINTED at the surviving condition first, so nothing is orphaned; then the empty
+ * condition is deleted. A condition a HUMAN signed off is never touched: their
+ * attestation is theirs to revisit, exactly as elsewhere in the credit code.
+ * Best-effort — a failure logs and returns null.
+ *
+ * @returns {Promise<{absorbed:boolean, kept?:string, movedReports?:number}|null>}
+ */
+async function absorbCoBorrowerCreditCondition(appId, targetItemId, client = db) {
+  try {
+    if (!targetItemId) return null;
+    const item = (await client.query(
+      `SELECT id, signed_off_by, signed_off_at FROM checklist_items
+        WHERE application_id=$1 AND field_key=$2 LIMIT 1`, [appId, CO_CREDIT_MARKER])).rows[0];
+    if (!item) return null;
+    if (item.id === targetItemId) return null;
+    if (item.signed_off_by) return { absorbed: false, kept: 'signed_off' };
+
+    const moved = await client.query(
+      'UPDATE credit_reports SET checklist_item_id=$2, updated_at=now() WHERE checklist_item_id=$1', [item.id, targetItemId]);
+    await client.query('UPDATE documents SET checklist_item_id=$2 WHERE checklist_item_id=$1', [item.id, targetItemId]);
+    await client.query('DELETE FROM checklist_items WHERE id=$1', [item.id]);
+    return { absorbed: true, movedReports: moved.rowCount || 0 };
+  } catch (e) {
+    console.error('[credit] absorbCoBorrowerCreditCondition', appId, e && e.message);
+    return null;
+  }
+}
+
+module.exports = {
+  ensureCoBorrowerCreditCondition, removeCoBorrowerCreditCondition,
+  absorbCoBorrowerCreditCondition, CO_CREDIT_MARKER,
+};

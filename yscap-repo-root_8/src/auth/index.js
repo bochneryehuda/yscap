@@ -367,7 +367,7 @@ router.post('/borrower/register', async (req, res) => {
       `INSERT INTO borrowers (first_name,last_name,email,cell_phone,middle_name)
        VALUES ($1,$2,$3,$4,NULLIF($5,''))
        ON CONFLICT (email) WHERE shares_email = false DO UPDATE SET
-         -- Optional middle name (db/343) — fill-only, never over a stored one.
+         -- Optional middle name (db/345) — fill-only, never over a stored one.
          middle_name=COALESCE(borrowers.middle_name,EXCLUDED.middle_name),
          -- The person typing their OWN name beats a placeholder row (e.g. a
          -- sync-created 'Unknown Unknown') — never a real stored name.

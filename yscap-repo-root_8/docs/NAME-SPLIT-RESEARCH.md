@@ -58,10 +58,10 @@ nothing is actually wrong.
 
 ```
 borrowers.first_name    ── typed / split
-borrowers.middle_name   ── OPTIONAL. NULL = this person has none.        (db/343)
+borrowers.middle_name   ── OPTIONAL. NULL = this person has none.        (db/345)
 borrowers.last_name
-borrowers.name_suffix   ── 'Jr.', 'III', 'MD' — kept OUT of last_name    (db/343)
-borrowers.full_name     ── GENERATED ALWAYS, the whole line              (db/344)
+borrowers.name_suffix   ── 'Jr.', 'III', 'MD' — kept OUT of last_name    (db/345)
+borrowers.full_name     ── GENERATED ALWAYS, the whole line              (db/346)
 ```
 
 `full_name` is a **Postgres generated column**, not a trigger and not application

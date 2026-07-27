@@ -34,7 +34,7 @@ function mapBorrowerRow(b) {
   return {
     firstName: b.first_name || null,
     // MISMO's <NAME> block has always emitted <MiddleName> (build.js) but nothing
-    // ever supplied one — PILOT had no column for it until db/343. Now it does, so
+    // ever supplied one — PILOT had no column for it until db/345. Now it does, so
     // the export carries the borrower's full legal name, which is what the
     // investor's system and the closing documents expect.
     middleName: b.middle_name || null,
@@ -170,7 +170,7 @@ async function upsertBorrower(client, p, opts = {}) {
      VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)
      ON CONFLICT (email) WHERE shares_email = false DO UPDATE SET
        -- A MISMO file carries the name properly split, so it can FILL a middle
-       -- name / suffix we do not have (db/343) — fill-only, like every other
+       -- name / suffix we do not have (db/345) — fill-only, like every other
        -- column here: an existing value is never overwritten by an import.
        middle_name = COALESCE(borrowers.middle_name, EXCLUDED.middle_name),
        name_suffix = COALESCE(borrowers.name_suffix, EXCLUDED.name_suffix),

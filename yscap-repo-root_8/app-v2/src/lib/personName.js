@@ -2,9 +2,9 @@
  * PERSON NAME — the browser half of src/lib/person-name.js.
  *
  * THE ONE BIG NAME FIELD (owner-directed 2026-07-27). A borrower's name is stored
- * as four columns — first / middle / last / suffix (db/343) — but every screen,
+ * as four columns — first / middle / last / suffix (db/345) — but every screen,
  * email, term sheet and ClickUp card shows THE WHOLE NAME, and `borrowers.full_name`
- * (db/344, a Postgres generated column) is that whole name. So:
+ * (db/346, a Postgres generated column) is that whole name. So:
  *
  *   • `fullNameOf(row)` is what a screen renders. It prefers `full_name` and falls
  *     back to joining the parts, which means a response that has not (yet) been

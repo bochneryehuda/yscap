@@ -180,7 +180,7 @@ router.put('/profile', async (req, res) => {
   const fields = {};
   // THE ONE BIG NAME FIELD (owner-directed 2026-07-27): the borrower may type
   // their whole name into one box. It is SPLIT into the parts here, because the
-  // parts are what get stored — `borrowers.full_name` (db/344) is generated from
+  // parts are what get stored — `borrowers.full_name` (db/346) is generated from
   // them, so the big field always shows exactly what the pieces say.
   if (b.fullName !== undefined && b.firstName === undefined && b.lastName === undefined
       && b.middleName === undefined && b.nameSuffix === undefined) {
@@ -197,7 +197,7 @@ router.put('/profile', async (req, res) => {
   }
   if (b.firstName !== undefined && String(b.firstName).trim()) fields.first_name = String(b.firstName).trim();
   if (b.lastName !== undefined && String(b.lastName).trim()) fields.last_name = String(b.lastName).trim();
-  // MIDDLE NAME + SUFFIX (db/343) — optional, so unlike the first/last name an
+  // MIDDLE NAME + SUFFIX (db/345) — optional, so unlike the first/last name an
   // EMPTY value is a real answer ("I have none") and clears the column.
   if (b.middleName !== undefined) fields.middle_name = clean(String(b.middleName).trim());
   if (b.nameSuffix !== undefined) fields.name_suffix = clean(String(b.nameSuffix).trim());
@@ -3263,7 +3263,7 @@ async function inviteCoBorrower(appId, primaryName, co) {
      VALUES ($1,$2,$3,$4,$5,NULLIF($6,''))
      ON CONFLICT (email) WHERE shares_email = false DO UPDATE SET updated_at=now(),
        fico=COALESCE(borrowers.fico, EXCLUDED.fico),
-       -- Optional middle name (db/343) — fill-only, never over a stored one.
+       -- Optional middle name (db/345) — fill-only, never over a stored one.
        middle_name=COALESCE(borrowers.middle_name, EXCLUDED.middle_name) RETURNING id`,
     [co.firstName || 'Co-Borrower', co.lastName || '', co.email, co.phone || null,
      require('../lib/fields').sanitizeFico(co.fico), String(co.middleName || '').trim()]);
