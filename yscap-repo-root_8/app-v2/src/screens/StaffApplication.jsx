@@ -780,7 +780,10 @@ function Item({ it, team, onPatch, role, docs, onUploadTo, onDropTo, onReviewDoc
         // The import button follows the SERVER's canImport (the pull_credit gate);
         // `canPull` is only the pre-load fallback, so pass the same capability a loan
         // officer now has — never `completer` (that would flash the button off for LOs).
-        <CreditCondition appId={appId} canPull={canImportCredit} onChanged={onChanged} />
+        // `field_key` tells it WHICH credit condition this is: the file-level one, or
+        // a co-borrower's own ('cob_credit') — which shows that borrower's report
+        // only, instead of repeating the whole file's credit section twice.
+        <CreditCondition appId={appId} canPull={canImportCredit} onChanged={onChanged} fieldKey={it.field_key} />
       )}
 
       {/* The credit condition's PDF/XML are managed by <CreditCondition> above

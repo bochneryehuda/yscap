@@ -390,7 +390,9 @@ export const api = {
   encompassRaw:      (id) => req('GET', `/api/staff/applications/${id}/encompass/raw`),
   encompassReplace:  (id, fieldKey) => req('POST', `/api/staff/applications/${id}/encompass/replace`, { fieldKey }),
   // Credit report (Xactus import) — the internal Credit report condition.
-  staffCredit:        (id) => req('GET', `/api/staff/applications/${id}/credit`),
+  // `scope` = 'co' | 'primary' narrows the credit section to ONE borrower, so a
+  // co-borrower's own credit condition shows their report instead of the file's.
+  staffCredit:        (id, scope) => req('GET', `/api/staff/applications/${id}/credit${scope && scope !== 'file' ? `?scope=${encodeURIComponent(scope)}` : ''}`),
   staffCreditPreview: (id) => req('GET', `/api/staff/applications/${id}/credit/preview`),
   staffCreditImport:  (id, b) => req('POST', `/api/staff/applications/${id}/credit/import`, b),
   // #147 — the cross-system observability timeline for a file (portal + ClickUp +

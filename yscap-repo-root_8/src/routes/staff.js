@@ -3392,9 +3392,15 @@ router.post('/mismo/create', async (req, res) => {
 // `canImport` reflects the REAL server gate (pull_credit — held by loan officers,
 // processors, underwriters, coordinators, closers, admins + per-person grants) so
 // the button matches the API exactly.
+// `scope=co|primary` (or an explicit borrowerId) narrows the section to ONE
+// borrower — the co-borrower's own credit condition shows THEIR report instead of
+// repeating the whole file's credit section under a second condition.
 router.get('/applications/:id/credit', async (req, res) => {
   try {
-    const out = await require('../lib/credit').fileCredit(req.params.id);
+    const out = await require('../lib/credit').fileCredit(req.params.id, {
+      scope: typeof req.query.scope === 'string' ? req.query.scope : undefined,
+      borrowerId: typeof req.query.borrowerId === 'string' ? req.query.borrowerId : undefined,
+    });
     out.canImport = can(req.actor, 'pull_credit');
     res.json(out);
   } catch (e) { res.status(e.status || 500).json({ error: e.userMessage || 'server error' }); }
@@ -3418,8 +3424,24 @@ router.post('/applications/:id/credit/import', async (req, res) => {
     const out = await require('../lib/credit').importCredit(req.params.id, {
       pullType: b.pullType, requestType: b.requestType,   // version is server-frozen (ignored if sent)
       reissueReportId: typeof b.reissueReportId === 'string' ? b.reissueReportId : undefined,
+      // A reissue reference belongs to the borrower it was issued for, so with two
+      // borrowers each carries their own (the shared box used to be treated as the
+      // primary's, which made a co-borrower-only reissue impossible).
+      reissueReportIds: (b.reissueReportIds && typeof b.reissueReportIds === 'object' && !Array.isArray(b.reissueReportIds))
+        ? b.reissueReportIds : undefined,
       xml: typeof b.xml === 'string' ? b.xml : undefined,
       pdfBase64: typeof b.pdfBase64 === 'string' ? b.pdfBase64 : undefined,
+      // ONE downloaded file covering BOTH borrowers (a merged/joint report). Absent =
+      // auto-detect from the file itself; false = treat it as one borrower's report.
+      merged: typeof b.merged === 'boolean' ? b.merged : undefined,
+      // SPLIT import: a separate downloaded report per borrower, in one action.
+      files: Array.isArray(b.files)
+        ? b.files.filter((f) => f && typeof f === 'object' && typeof f.borrowerId === 'string').map((f) => ({
+          borrowerId: f.borrowerId,
+          xml: typeof f.xml === 'string' ? f.xml : undefined,
+          pdfBase64: typeof f.pdfBase64 === 'string' ? f.pdfBase64 : undefined,
+        }))
+        : undefined,
       // Which borrower(s) to pull. Default (absent) = every borrower on the file
       // in one action; a subset drops one from this pull (and opens their own
       // credit condition). `borrowerId` targets a single borrower for an upload.
@@ -3434,6 +3456,18 @@ router.post('/applications/:id/credit/import', async (req, res) => {
       ficoMismatch: out.ficoMismatch, ficoUnverified: out.ficoUnverified || undefined,
       bureaus: out.bureausReturned, parseError: out.parseError || undefined,
       pulled: out.pulled, coConditionOpened: out.coConditionOpened || undefined,
+      coConditionClosed: out.coConditionClosed || undefined,
+      importMode: out.importMode,
+      // A merged report is one document read for several people — record who it was
+      // matched to and how, so the file's history explains itself later.
+      merged: out.merged
+        ? {
+          borrowerCount: out.merged.borrowerCount,
+          matched: out.merged.matched.map((m) => ({ role: m.role, matchedBy: m.matchedBy, verified: m.verified, middleScore: m.middleScore })),
+          unmatchedInReport: out.merged.unmatchedInReport.length || undefined,
+          unmatchedOnFile: out.merged.unmatchedOnFile.length || undefined,
+        }
+        : undefined,
       borrowers: Array.isArray(out.results)
         ? out.results.map((r) => ({ role: r.role, ok: r.ok !== false, middleScore: r.middleScore, error: r.error || undefined }))
         : undefined,
