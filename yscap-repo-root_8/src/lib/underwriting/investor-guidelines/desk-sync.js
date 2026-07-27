@@ -228,7 +228,12 @@ async function syncInvestorGuidelineFindings(client, appId, opts) {
         heldByHuman += 1; continue;
       }
       try {
-        await aiSug.record(client, Object.assign({ applicationId: appId }, p));
+        // Count what was actually WRITTEN. `record()` consults the durable ledger and can
+        // refuse a payload this loop's own `decidedSev` map cannot see (a decision taken in
+        // the escalation queue, say). Counting before checking made the telemetry claim a
+        // dealbreaker was raised when no row exists — the symptom that hid a false clear.
+        const wrote = await aiSug.record(client, Object.assign({ applicationId: appId }, p));
+        if (wrote && wrote.settled) { heldByHuman += 1; continue; }
         raised += 1;
         if (p.severity === 'fatal') fatal += 1;
       } catch (_e) { /* one bad row never stops the rest */ }

@@ -186,15 +186,26 @@ async function record(client, s) {
   if (s.dedupeKey) {
     try {
       const settled = await c.query(
-        `SELECT id, status FROM ai_suggestions
+        `SELECT id, status, severity FROM ai_suggestions
           WHERE application_id=$1 AND source=$2 AND dedupe_key=$3
             AND status NOT IN ('open','escalated','marked_important','asked_admin','answered')
             AND decided_by_staff_id IS NOT NULL
           ORDER BY decided_at DESC NULLS LAST, created_at DESC
           LIMIT 1`,
         [s.applicationId, s.source, s.dedupeKey]);
+      // A DECISION ON A WARNING DOES NOT SILENCE A LATER FATAL — the THIRD door with this
+      // rule (post-merge audit of #818; the durable ledger and desk-sync are the other two).
+      // A dedupe key encodes neither severity nor the state of the file, so a dismissal made
+      // on a light-rehab file would otherwise keep the rule quiet after the deal converts to
+      // ground-up and the same requirement becomes a dealbreaker. This door was silent about
+      // it: desk-sync's own guard correctly let the fatal through, and `record()` refused it
+      // here, so the telemetry said raised and no row existed.
       if (settled.rows[0]) {
-        return { id: settled.rows[0].id, deduped: true, settled: true, status: settled.rows[0].status };
+        const fdec0 = require('./finding-decisions');
+        const worse = fdec0.sevRank(s.severity) > fdec0.sevRank(settled.rows[0].severity);
+        if (!worse) {
+          return { id: settled.rows[0].id, deduped: true, settled: true, status: settled.rows[0].status };
+        }
       }
     } catch (_) { /* fail OPEN: an unreadable check just means the suggestion shows again */ }
   }
@@ -214,7 +225,7 @@ async function record(client, s) {
       const set = await fdec.suppressedKeys(c, s.applicationId);
       // Carry the INCOMING severity so the ledger can refuse to silence something worse than
       // what was judged — the same rule desk-sync applies to its own re-raise.
-      if (set.size && fdec.isSuppressed(set, Object.assign({ severity: s.severity }, shape))) {
+      if (set.size && fdec.isSuppressed(set, Object.assign({}, shape, { severity: s.severity }))) {
         return { id: null, deduped: false, settled: true };
       }
     }

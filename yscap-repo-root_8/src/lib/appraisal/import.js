@@ -180,7 +180,7 @@ async function importAppraisalTx(db, {
   const settled = await fdec.suppressedKeys(db, applicationId);
   for (const fd of findings) {
     const carried = settled.size && fdec.isSuppressed(settled, {
-      code: fd.code, field: fd.field,
+      code: fd.code, field: fd.field, severity: fd.severity,
       docValue: fd.appraisalValue == null ? null : String(fd.appraisalValue),
     });
     await db.query(

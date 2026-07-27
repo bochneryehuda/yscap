@@ -187,13 +187,13 @@ async function reopen(client, { applicationId, key, finding, by } = {}) {
 
 /**
  * The live suppression set for a file: every finding a human already settled.
- * FAILS OPEN — an unreadable ledger returns an empty set, so a DB problem can
+ * FAILS OPEN — an unreadable ledger returns an empty map, so a DB problem can
  * only ever show MORE findings, never hide one.
- * @returns {Promise<Set<string>>}
+ * @returns {Promise<Map<string, number>>} finding_key -> the severity RANK it was decided at (0 = unknown)
  */
 async function suppressedKeys(client, applicationId) {
   try {
-    if (!client || !applicationId) return new Set();
+    if (!client || !applicationId) return new Map();
     // Guarded like the writes: this READ runs inside the document-analysis
     // transaction, and a failing statement aborts the whole transaction — which
     // would roll back the analysis itself on COMMIT.
@@ -236,6 +236,14 @@ function isSuppressed(set, finding) {
     // a judgement made about something milder is a false clear, the one direction this ledger
     // must never fail in. `desk-sync` implements the same rule for its own re-raise; this is
     // the ledger's half, so the two can no longer disagree.
+    //
+    // TWO CONSEQUENCES, both deliberate and both in the show-more direction:
+    //   · A CLAIM FAMILY shares one key across codes of different severities (the vesting
+    //     family spans info / warning / fatal). Settling the mild member no longer silences
+    //     the fatal one. That is the point — but it means a dismissal on the AI panel or the
+    //     escalation queue can leave the family's dealbreaker on screen.
+    //   · Re-deciding the same key at a LOWER severity lowers the bar (last decision wins),
+    //     so members above the new rank come back.
     //
     // A rank of 0 means the decision predates db/336 (or carried no severity): those keep the
     // behaviour they have always had and suppress regardless, because treating them as the

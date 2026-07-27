@@ -467,8 +467,12 @@ function notifyRaiser(row, actorId, decision, note) {
 function escalationFindingShape(row) {
   return {
     code: row.code, field: row.field || null,
-    // The severity the escalation SNAPSHOT recorded — what the reviewer was actually looking at.
-    severity: row.severity || null,
+    // The severity the reviewer was ACTUALLY looking at. The queue shows the LIVE finding's
+    // severity when there is one (`escalations.LIST_SELECT`'s `finding_severity`), falling
+    // back to the snapshot taken when the escalation was raised — so recording the snapshot
+    // would store the milder value for a finding that escalated in the meantime, and the
+    // dealbreaker would break straight back through after the reviewer settled it.
+    severity: row.finding_severity || row.severity || null,
     document_id: row.document_id || null,
     docValue: row.doc_value != null ? String(row.doc_value) : null,
   };
@@ -533,7 +537,8 @@ router.post('/escalations/:id/decide', async (req, res, next) => {
       try {
         await require('../lib/underwriting/finding-decisions').record(client2, {
           applicationId: row.application_id, finding: escalationFindingShape(row),
-          origin: 'escalation', decision: 'dismissed', severity: row.severity || null,
+          origin: 'escalation', decision: 'dismissed',
+          severity: row.finding_severity || row.severity || null,
           note: note || 'No action needed (findings review queue).', decidedBy: req.actor.id,
         });
       } finally { client2.release(); }
@@ -613,7 +618,7 @@ router.post('/escalations/:id/apply', requirePermission('sign_off_conditions'), 
         await require('../lib/underwriting/finding-decisions').record(client0, {
           applicationId: row.application_id, finding: escalationFindingShape(row),
           origin: 'escalation', decision: action, note, decidedBy: req.actor.id,
-          severity: row.severity || null,
+          severity: row.finding_severity || row.severity || null,
         });
       } finally { client0.release(); }
       // A corrected value is still worth writing to the loan file — that is the actual fix.

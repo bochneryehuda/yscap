@@ -153,8 +153,12 @@ async function saveAnalysis(client, { documentId, applicationId, borrowerId, doc
     let bornStatus = 'open';
     if (decided.size) {
       const fdec = require('./finding-decisions');
+      // `severity` is part of the shape, not decoration: a decision taken while this was a
+      // WARNING must not carry forward once the same finding comes back a DEALBREAKER. A
+      // promoted `upgrade_severity` rule (applyPromotedRules, above) does exactly that to a
+      // re-read, and the db/332 sweep re-reads the whole book on a schedule.
       const shape = { code: f.code, field: f.field || null, document_id: documentId,
-        extraction_id: extractionId, docValue: str(f.docValue) };
+        extraction_id: extractionId, docValue: str(f.docValue), severity: f.severity };
       if (fdec.isSuppressed(decided, shape)) { bornStatus = 'dismissed'; carriedForward += 1; }
     }
     const { rows: fr } = await client.query(

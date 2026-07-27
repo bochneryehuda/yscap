@@ -20,6 +20,8 @@
 if (!process.env.DATABASE_URL) { console.log('SKIP test-isg-one-list-db (no DATABASE_URL)'); process.exit(0); }
 const assert = require('assert');
 const { Pool } = require('pg');
+const fs = require('fs');
+const path = require('path');
 const uw = require('../src/routes/underwriting');
 const aiSug = require('../src/lib/underwriting/ai-suggestions');
 const deskFindings = require('../src/lib/underwriting/investor-guidelines/desk-findings');
@@ -384,6 +386,58 @@ console.log('ISG one list (DB)');
     assert.ok(fdec.isSuppressed(legacy, Object.assign({}, mild, { severity: 'fatal' })),
       'a pre-db/336 decision suppresses regardless — no mass resurrection on deploy');
     ok('decisions taken before this shipped are untouched');
+
+    // ── 13. EVERY LEDGER WRITER RECORDS THE SEVERITY, AND EVERY READER USES IT ──
+    // THE GAP THE PRE-MERGE AUDIT FOUND. An omitted severity writes NULL, and NULL means
+    // "suppress regardless" — the pre-fix behaviour, with no error, no log and no test
+    // signal. So each writer is asserted by reading the column BACK out of the database,
+    // and each reader by the shape it actually hands `isSuppressed`.
+    const app7 = (await client.query(
+      `INSERT INTO applications (borrower_id, property_address) VALUES ($1,'{}'::jsonb) RETURNING id`,
+      [b.id])).rows[0];
+    const storedSev = async (appId) => (await client.query(
+      `SELECT severity FROM finding_decisions WHERE application_id=$1 ORDER BY decided_at DESC LIMIT 1`,
+      [appId])).rows[0].severity;
+
+    // writer: ai-suggestions.decide()
+    const sug = await aiSug.record(client, {
+      applicationId: app7.id, source: 'investor_guideline_desk', kind: 'finding', severity: 'warning',
+      title: 'w', body: 'x', evidence: { code: null, cond_no: 77, flag: 'concern', domain: 'd' },
+      dedupeKey: 'isg-concern:77',
+    });
+    await aiSug.decide(client, sug.id, { action: 'dismiss', reason: 'x', staffId: null });
+    assert.strictEqual(await storedSev(app7.id), 'warning',
+      'the AI-card door must record the severity the human was looking at');
+
+    // writer: the escalation doors — the LIVE severity, not the stale snapshot.
+    assert.strictEqual(
+      uw._escalationFindingShape({ code: 'c', severity: 'warning', finding_severity: 'fatal' }).severity,
+      'fatal', 'the escalation door records what the queue SHOWS (the live finding), not the snapshot');
+    assert.strictEqual(uw._escalationFindingShape({ code: 'c', severity: 'warning' }).severity, 'warning',
+      'falling back to the snapshot when the finding is derived and has no live row');
+
+    // readers: the two carry-forward shapes must carry severity, or a decision taken at
+    // warning silently makes the re-read's DEALBREAKER born dismissed.
+    const storeSrc = fs.readFileSync(path.resolve(__dirname, '../src/lib/underwriting/store.js'), 'utf8');
+    assert.ok(/extraction_id: extractionId, docValue: str\(f\.docValue\), severity: f\.severity/.test(storeSrc),
+      'store.saveAnalysis carry-forward must consult the ledger WITH the severity');
+    const imp = fs.readFileSync(path.resolve(__dirname, '../src/lib/appraisal/import.js'), 'utf8');
+    assert.ok(/code: fd\.code, field: fd\.field, severity: fd\.severity/.test(imp),
+      'the appraisal re-import carry-forward must too');
+    ok('every ledger writer records the judged severity, and every reader consults it');
+
+    // …and the readers really behave: a warning dismissed does not carry forward a fatal.
+    const carryKey = { code: 'appraisal_value_variance', field: 'as_is_value', docValue: '450000' };
+    await fdec.record(client, {
+      applicationId: app7.id, finding: carryKey, origin: 'appraisal_finding',
+      decision: 'dismissed', severity: 'warning',
+    });
+    const carrySet = await fdec.suppressedKeys(client, app7.id);
+    assert.ok(fdec.isSuppressed(carrySet, Object.assign({ severity: 'warning' }, carryKey)),
+      'the same variance at the judged severity still carries forward as settled');
+    assert.ok(!fdec.isSuppressed(carrySet, Object.assign({ severity: 'fatal' }, carryKey)),
+      're-priced to a FATAL variance, the re-import must NOT be born dismissed');
+    ok('a re-read or re-import cannot carry a warning decision forward onto a dealbreaker');
 
     await client.query('ROLLBACK');
     console.log(`\n${passed} checks passed.`);
