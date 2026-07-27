@@ -69,11 +69,75 @@ async function record(client, s) {
       if (mute.rowCount > 0) return { id: null, deduped: false, silenced: true };
     }
   } catch (_) { /* if the mute table isn't migrated yet, fall through */ }
-  // If a dedupe key is provided, look for an OPEN row and refresh it in place.
+  // A DISMISSED SUGGESTION MUST NOT COME BACK (owner-reported 2026-07-27: "I hit
+  // Dismiss and it keeps popping up again").
+  //
+  // ROOT CAUSE. The dedupe below matched ONLY `status='open'`. A dismissed row is
+  // not open, so it was invisible to the dedupe and this function inserted a
+  // BRAND-NEW open row for the identical finding — on the very next sync pass,
+  // which runs every time a staffer opens the file. The human's decision was
+  // recorded and then immediately overwritten by a fresh copy of the same finding.
+  //
+  // THE RULE. A row for this exact (file, source, dedupe_key) that a HUMAN DECIDED
+  // — dismissed, converted to a condition or task, or noted — is the last word. Do
+  // not re-raise it.
+  //
+  // NOT decisions, and deliberately excluded: `escalated` / `marked_important` /
+  // `asked_admin` mean "this still needs handling, louder", so they stay in the live
+  // set below and are refreshed in place exactly as before; and `answered` means the
+  // super-admin REPLIED to a question the AI asked, which is an answer, not a
+  // judgement that the issue is closed — the ask-admin flow has its own dedupe (one
+  // unanswered inbox question per agent+scope+question) and is entitled to ask again.
+  //
+  // Belt-and-suspenders with the per-FINDING ledger (db/333) checked further down:
+  // this half catches the suggestion surface, the ledger half catches the same
+  // finding arriving from the Document Review desk or a derived desk.
+  if (s.dedupeKey) {
+    try {
+      const settled = await c.query(
+        `SELECT id, status FROM ai_suggestions
+          WHERE application_id=$1 AND source=$2 AND dedupe_key=$3
+            AND status NOT IN ('open','escalated','marked_important','asked_admin','answered')
+            AND decided_by_staff_id IS NOT NULL
+          ORDER BY decided_at DESC NULLS LAST, created_at DESC
+          LIMIT 1`,
+        [s.applicationId, s.source, s.dedupeKey]);
+      if (settled.rows[0]) {
+        return { id: settled.rows[0].id, deduped: true, settled: true, status: settled.rows[0].status };
+      }
+    } catch (_) { /* fail OPEN: an unreadable check just means the suggestion shows again */ }
+  }
+  // The per-FINDING durable ledger (db/333): the SAME issue may have been settled
+  // from the Document Review desk or the "Findings to review" queue, where it has
+  // no ai_suggestions row to match on. Keyed on the finding's identity, so a
+  // decision taken on any surface silences it on every surface.
+  try {
+    const code = (s.evidence && s.evidence.code) || (s.proposedAction && s.proposedAction.fields && s.proposedAction.fields.code) || null;
+    if (code) {
+      const fdec = require('./finding-decisions');
+      const set = await fdec.suppressedKeys(c, s.applicationId);
+      if (set.size) {
+        const shape = {
+          code,
+          field: (s.evidence && s.evidence.field) || (s.proposedAction && s.proposedAction.fields && s.proposedAction.fields.field) || null,
+          document_id: s.documentId || null,
+          docValue: (s.evidence && (s.evidence.docValue || s.evidence.doc_value)) || null,
+        };
+        if (fdec.isSuppressed(set, shape)) return { id: null, deduped: false, settled: true };
+      }
+    }
+  } catch (_) { /* fail OPEN */ }
+  // If a dedupe key is provided, look for a LIVE row and refresh it in place.
+  // "Live" now includes escalated / marked-important / asked-admin (they are ways
+  // of saying "this still needs handling", not decisions) so a re-run REFRESHES
+  // the row the staffer is already working instead of stacking a second copy of it
+  // next to their escalation. A plain 'open' row still wins the pick.
   if (s.dedupeKey) {
     const cur = await c.query(
       `SELECT id FROM ai_suggestions
-        WHERE application_id=$1 AND source=$2 AND dedupe_key=$3 AND status='open' LIMIT 1`,
+        WHERE application_id=$1 AND source=$2 AND dedupe_key=$3
+          AND status IN ('open','escalated','marked_important','asked_admin')
+        ORDER BY (status='open') DESC, created_at DESC LIMIT 1`,
       [s.applicationId, s.source, s.dedupeKey]);
     if (cur.rows[0]) {
       await c.query(
@@ -83,7 +147,10 @@ async function record(client, s) {
             kind=$4, title=$5, body=$6,
             evidence=$7::jsonb, proposed_action=$8::jsonb,
             severity=$9, confidence=$10, trace_url=$11,
-            important=$12
+            -- NEVER clear a flag a human raised: an agent re-run passes
+            -- important:false by default, which would silently un-mark the row
+            -- the staffer just flagged. OR it, never overwrite it.
+            important=(important OR $12)
           WHERE id=$1`,
         [cur.rows[0].id, s.documentId || null, s.checklistItemId || null,
          s.kind, s.title, s.body || null,
@@ -107,16 +174,29 @@ async function record(client, s) {
   const rowId = ins.rows[0].id;
   // R3.39 — real-time notify on NEW fatal AI suggestions. Fires only on the
   // fresh-insert branch (dedupe path above never re-notifies). Scheduled via
-  // setImmediate so the caller's transaction gets a chance to COMMIT first,
-  // and then re-verifies the row still exists (defensive against a rollback).
+  // setImmediate so the caller's transaction gets a chance to COMMIT first.
   // Best-effort — a notify failure never rolls back the suggestion.
-  // `suppressNotify` (owner 2026-07-27): the un-funded RE-READ sweep re-reads OLD documents across
-  // the whole book, so its findings are not new to the humans — firing the fatal-finding email for
-  // each would be a portfolio-wide bombardment of alerts staff have already seen (and would
-  // re-notify a fatal a human already dismissed, since the dedupe only matches OPEN rows). A caller
-  // that is re-recording, not surfacing something new, sets this. The row is still written — only
-  // the notification is skipped.
-  if (!s.suppressNotify && String(s.severity || '').toLowerCase() === 'fatal') {
+  // KNOWN GAP (audit 2026-07-27): the comment here used to claim `_notifyFatalNew` re-verifies the
+  // row still exists before sending. It does not — it issues no query. Several callers record
+  // inside a transaction, so if a LATER step in that transaction fails and rolls back, the email
+  // has already been scheduled and goes out for a row that no longer exists. Pre-existing and rare
+  // (a rollback after a successful insert), but do not rely on a re-verify that isn't there — add
+  // a real `SELECT 1 FROM ai_suggestions WHERE id=$1` inside _notifyFatalNew to close it.
+  // `suppressNotify` = the row BELONGS in the list, but this particular write is not a "chase this
+  // now" event, so the team is not emailed. TWO independent producers arrived at the same flag on
+  // 2026-07-27 and both reasons stand — do not narrow it to either one:
+  //   1. The un-funded RE-READ sweep re-reads OLD documents across the whole book, so its findings
+  //      are not new to the humans. Emailing each would be a portfolio-wide bombardment of alerts
+  //      staff have already seen — and would re-notify a fatal a human already dismissed, since the
+  //      dedupe only matches OPEN rows. A caller that is RE-recording, not surfacing something new,
+  //      sets this.
+  //   2. The note-buyer guideline desk's empty-file-slot and appraisal-read items: there is no
+  //      document to collect and nobody to chase, so the row exists (a human's Dismiss can stick)
+  //      without an email. That producer sets it BY SEVERITY, never by kind — a genuinely fatal one
+  //      still emails like every other fatal.
+  // It changes ONLY whether the team is emailed; the row, its severity, and every surface that
+  // reads it are identical. Never set it on a finding a human is expected to act on promptly.
+  if (String(s.severity || '').toLowerCase() === 'fatal' && !s.suppressNotify) {
     setImmediate(() => { _notifyFatalNew(s, rowId).catch(() => { /* additive */ }); });
   }
   return { id: rowId, deduped: false };
@@ -261,6 +341,37 @@ async function decide(client, id, decision = {}) {
        important=$5, linked_condition_id=$6, linked_task_id=$7, notes=$8::jsonb
      WHERE id=$1 RETURNING *`,
     [id, newStatus, statusReason, staffId, important, linkedCondition, linkedTask, JSON.stringify(notes)]);
+
+  // THE DECISION IS DURABLE, ACROSS SURFACES (owner-reported 2026-07-27).
+  // Recording it only on this row was never enough: the SAME issue is also raised
+  // by the DERIVED desks (tie-out, chains, liquidity, experience, note-buyer
+  // guidelines), which are pure functions of the file and re-raise on every view
+  // with no row to carry a decision. The ledger (db/333) is keyed on the finding's
+  // identity, so dismissing it here silences it everywhere — that is what makes it
+  // actually disappear. Best-effort: never rolls back the decision.
+  try {
+    const code = (cur.evidence && cur.evidence.code)
+      || (cur.proposed_action && cur.proposed_action.fields && cur.proposed_action.fields.code) || null;
+    if (code) {
+      const fdec = require('./finding-decisions');
+      const shape = {
+        code,
+        field: (cur.evidence && cur.evidence.field)
+          || (cur.proposed_action && cur.proposed_action.fields && cur.proposed_action.fields.field) || null,
+        document_id: cur.document_id || null,
+        docValue: (cur.evidence && (cur.evidence.docValue || cur.evidence.doc_value)) || null,
+      };
+      if (fdec.suppresses(newStatus)) {
+        await fdec.record(c, {
+          applicationId: cur.application_id, finding: shape, origin: 'ai_suggestion',
+          decision: newStatus, note: statusReason || decision.note || null, decidedBy: staffId,
+        });
+      } else if (newStatus === 'open') {
+        // "Unmark important" puts the row back to open — a re-open, not a decision.
+        await fdec.reopen(c, { applicationId: cur.application_id, finding: shape, by: staffId });
+      }
+    }
+  } catch (_) { /* ledger is additive — never blocks a human's decision */ }
 
   // R3.42 — a suggestion the human dismissed / converted / noted / signed off in
   // ANY terminal way no longer needs the super-admin's answer. Auto-close every

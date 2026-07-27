@@ -35,6 +35,7 @@ const statusMap = require('../clickup/status');
 const llcLib = require('../lib/llc');
 const conditionEngine = require('../lib/conditions/engine');
 const issuanceBackstop = require('../lib/underwriting/issuance-backstop'); // R6.18 (#202) issuance HARD-WARNING backstop
+const advisoryPolicy = require('../lib/underwriting/advisory-policy');     // AI findings are ADVISORY ONLY (owner-directed 2026-07-27)
 const conditionRules = require('../lib/conditions/rules');
 const conditionRegistry = require('../lib/conditions/field-registry');
 const { CONDITION_TYPES, TOOLS, CATEGORIES, conditionTypeOf } = require('../lib/conditions/types');
@@ -4683,23 +4684,29 @@ async function signOffGate(itemId, actor) {
     }
   }
 
-  // Appraisal review cleared — the clear-to-close gate. It cannot be signed off while ANY fatal
-  // PILOT appraisal finding is still open (wrong property, value below purchase, expired license,
-  // C6/Q6, stale date, …). This is the safety guarantee the whole findings engine exists for.
-  if (isAppraisalReview) {
-    const n = (await db.query(
-      `SELECT count(*)::int AS n FROM appraisal_findings
-        WHERE application_id=$1 AND status='open' AND severity='fatal' AND blocks_ctc=true`, [item.application_id])).rows[0].n;
-    if (n > 0)
-      return `Resolve the ${n} open fatal appraisal finding${n === 1 ? '' : 's'} first — the appraisal review cannot be cleared while a fatal PILOT finding is open. Open the appraisal to replace, keep, or grant an exception on each.`;
-    return null;
-  }
-
-  // Document-underwriting review cleared — the CTC gate for the document-underwriting engine. It
-  // cannot be signed off while ANY fatal document finding is open: the stored per-document fatals
-  // (document_findings) OR the derived tie-out fatals (a fact that doesn't agree across the file's
-  // documents). Same computation the desk uses, so the gate and the badge never disagree.
-  if (isUnderwritingReview) {
+  // Appraisal review cleared / document-underwriting review cleared.
+  //
+  // ADVISORY ONLY (owner-directed 2026-07-27): "it should not hold up signing off
+  // on any condition". These two conditions used to REFUSE the human's sign-off
+  // while any fatal PILOT finding was open — which is precisely the hold-up the
+  // owner asked to remove. PILOT still raises every finding, and the reviewer still
+  // sees them on the appraisal / Document Review desks; the sign-off is now the
+  // human's call. The DB backstops that enforced the same rule underneath (db/154,
+  // db/202) are retired by db/334, and db/155 no longer un-signs the appraisal
+  // review when a new fatal lands — otherwise the block would simply move.
+  //
+  // `AI_FINDINGS_ENFORCE=1` restores the old behavior in one env change (and
+  // re-running db/154/155/202 re-arms the database half).
+  if (isAppraisalReview || isUnderwritingReview) {
+    if (advisoryPolicy.advisoryOnly()) return null;
+    if (isAppraisalReview) {
+      const n = (await db.query(
+        `SELECT count(*)::int AS n FROM appraisal_findings
+          WHERE application_id=$1 AND status='open' AND severity='fatal' AND blocks_ctc=true`, [item.application_id])).rows[0].n;
+      if (n > 0)
+        return `Resolve the ${n} open fatal appraisal finding${n === 1 ? '' : 's'} first — the appraisal review cannot be cleared while a fatal PILOT finding is open. Open the appraisal to replace, keep, or grant an exception on each.`;
+      return null;
+    }
     const { fileFatalCount } = require('../lib/underwriting/file-review');
     const { total } = await fileFatalCount(db, item.application_id);
     if (total > 0)
@@ -6797,6 +6804,14 @@ const FUND_SEVERITIES = ['standard', 'prior_to_docs', 'prior_to_funding'];
 // insurance, ISKA, and any future closing/funding-stage doc) still HARD-blocks funding —
 // it is only excluded from the clear-to-close gate. Everything pre-close (core `none`,
 // `prior_to_approval`, `prior_to_docs`) keeps holding CTC exactly as before.
+// Blocker sources that are PILOT's opinion, never human work. Belt-and-suspenders:
+// advancementBlockers already returns these under `advisories` rather than
+// `conditions`, so this filter is a second lock on the same door — a new AI blocker
+// source added to the wrong array still can't gate a status transition.
+const AI_BLOCKER_SOURCES = new Set(['ai_suggestion', 'ai_advisory']);
+// The two checklist conditions whose ONLY job is to record "PILOT's findings are
+// cleared" (db/137, db/200). In advisory mode they are shown but never gate.
+const AI_REVIEW_CONDITION_CODES = ['appraisal_review_cleared', 'underwriting_review_cleared'];
 const CLOSING_STAGE_CATEGORIES = ['prior_to_closing', 'prior_to_funding', 'at_closing', 'post_closing'];
 const SEV_LABEL = { standard: 'Standard', prior_to_docs: 'Prior to docs', prior_to_funding: 'Prior to funding', post_closing: 'Post-closing' };
 // Which file SECTION resolves a given blocker — so the "clear to close"
@@ -6874,7 +6889,32 @@ async function advancementBlockers(appId, target) {
         AND ($3::boolean = false
              OR COALESCE(NULLIF(ci.category,''), t.category) IS NULL
              OR COALESCE(NULLIF(ci.category,''), t.category) <> ALL($2::text[]))
-      ORDER BY ci.sort_order, ci.created_at`, [appId, CLOSING_STAGE_CATEGORIES, excludeClosingStage]);
+        -- The two PILOT-REVIEW conditions exist for one purpose: to say "PILOT's
+        -- findings are cleared". Leaving them in the blocking list while making the
+        -- findings advisory would just move the hold-up behind a proxy — the file
+        -- would still read "not ready" and still refuse clear-to-close because of
+        -- the AI section (owner-directed 2026-07-27: "it should not say that it's
+        -- an outstanding thing before CTC"). They stay ON the file, stay signable,
+        -- and are returned under "advisories"; they simply don't gate. Re-armed by
+        -- AI_FINDINGS_ENFORCE=1.
+        AND ($4::boolean = false OR COALESCE(t.code,'') <> ALL($5::text[]))
+      ORDER BY ci.sort_order, ci.created_at`,
+    [appId, CLOSING_STAGE_CATEGORIES, excludeClosingStage,
+     advisoryPolicy.advisoryOnly(), AI_REVIEW_CONDITION_CODES]);
+  // The same two conditions, pulled separately so they can be SHOWN (as advisory)
+  // rather than silently vanish off the readiness view.
+  const aiReviewConds = advisoryPolicy.advisoryOnly() ? (await db.query(
+    `SELECT ci.id, COALESCE(ci.label, ci.borrower_label, 'Condition') AS title,
+            ci.tool_key, t.code AS template_code, ci.audience, ci.status, ci.hint
+       FROM checklist_items ci
+       JOIN checklist_templates t ON t.id = ci.template_id
+      WHERE ci.application_id=$1
+        AND t.code = ANY($2::text[])
+        AND NOT (ci.signed_off_at IS NOT NULL OR ci.status='satisfied')
+      ORDER BY ci.sort_order, ci.created_at`, [appId, AI_REVIEW_CONDITION_CODES])).rows
+    .map((r) => ({ ...r, source: 'ai_advisory', advisory: true, section: 'sec-underwriting',
+      reason: 'PILOT’s review of the file. Worth a look before closing — it does not hold up clear-to-close, and you can sign it off whenever you’re satisfied.' }))
+    : [];
   const gates = await db.query(
     `SELECT ci.id, ci.label, ci.tool_key, t.code AS template_code, ci.audience, ci.status
        FROM checklist_items ci
@@ -6884,17 +6924,18 @@ async function advancementBlockers(appId, target) {
   // Tag the first-class `conditions`-table rows so navigation sends them to the
   // Underwriting-conditions panel (which renders them) rather than a checklist section.
   const underwriting = conds.rows.map(r => ({ ...r, source: 'underwriting' }));
-  // Underwriting DEALBREAKERS gate clear-to-close AND funding directly — whether or not the
-  // `underwriting_review_cleared` condition was ever materialized. A derived tie-out (cross-
-  // document) fatal has NO stored condition row, so the checklist queries above are blind to it;
-  // relying on the materialized gate item alone let a file with an open cross-document fatal
-  // (e.g. a settlement price that disagrees with the file) advance to clear-to-close (audit
-  // 2026-07-20). fileFatalCount is the authoritative count — stored per-document fatals PLUS the
-  // derived tie-out fatals — computed live, so this covers previous AND future files with no
-  // backfill. Best-effort: a tie-out compute error must never silently OPEN the gate, so a
-  // failure leaves the stored-fatal count in place (fileFatalCount already swallows tie-out
-  // errors and still returns the stored count). Tagged source:'underwriting' so it decorates +
-  // navigates to the underwriting-conditions panel like the other first-class conditions.
+  // Underwriting DEALBREAKERS — what PILOT thinks is wrong with the file.
+  //
+  // ADVISORY ONLY (owner-directed 2026-07-27): "it should not say that it's an
+  // outstanding thing before CTC". This row used to sit in `conditions` — the list
+  // the readiness widget counts and the status door enforces — so a PILOT finding
+  // made the file read "not ready" and refused the move to clear-to-close. It now
+  // goes into a SEPARATE `advisories` array: still computed, still shown, still
+  // links straight to the finding, but counted and gated by nobody.
+  //
+  // The list itself is unchanged (stored per-document fatals + the derived tie-out
+  // and experience fatals, computed live so it covers previous and future files),
+  // and `AI_FINDINGS_ENFORCE=1` puts it back in `conditions` where it used to gate.
   let underwritingFatals = [];
   try {
     const { fileFatalDetails } = require('../lib/underwriting/file-review');
@@ -6917,10 +6958,19 @@ async function advancementBlockers(appId, target) {
       if (dv && fv) bits.push(`The document says “${dv}”, but our file says “${fv}”.`);
       else if (first.howTo) bits.push(cap(first.howTo, 300));
       if (more > 0) bits.push(`Plus ${more} more finding${more === 1 ? '' : 's'}.`);
-      bits.push('Open the “Document review & PILOT findings” section to fix it or grant an exception.');
+      bits.push(advisoryPolicy.advisoryOnly()
+        ? 'Open the “Document review & PILOT findings” section to take a look. This does not hold up clear-to-close.'
+        : 'Open the “Document review & PILOT findings” section to fix it or grant an exception.');
       underwritingFatals = [{
-        id: 'underwriting_fatal', title, label: title, source: 'underwriting',
+        // `source` decides where this row lands: 'ai_advisory' keeps it out of every
+        // enforceable set (the status doors filter on it, and it is returned in
+        // `advisories`, not `conditions`). Only the re-armed enforcing mode tags it
+        // 'underwriting', which is what the CTC-submit gate and the status doors
+        // treat as real work.
+        id: 'underwriting_fatal', title, label: title,
+        source: advisoryPolicy.advisoryOnly() ? 'ai_advisory' : 'underwriting',
         section: 'sec-underwriting', reason: bits.join(' '),
+        advisory: advisoryPolicy.advisoryOnly() || undefined,
       }];
     }
   } catch (_) { /* never break advancement gating on a tie-out compute error */ }
@@ -6936,12 +6986,24 @@ async function advancementBlockers(appId, target) {
     aiAdvisories = signals.map(s => ({
       id: `ai:${s.id}`, title: `AI advisory: ${s.title}`, source: 'ai_suggestion',
       section: 'sec-underwriting',
-      reason: `A ${s.source.replace(/_/g, ' ')} signal is open on the AI Findings panel. Review or dismiss before moving to clear-to-close.`,
+      reason: `A ${s.source.replace(/_/g, ' ')} signal is open on the AI Findings panel. Worth a look — it does not hold up clear-to-close.`,
+      advisory: true,
     }));
   } catch (_) { aiAdvisories = []; }
+  // WHAT IS OUTSTANDING vs WHAT PILOT WANTS YOU TO LOOK AT — two lists, on purpose
+  // (owner-directed 2026-07-27: "it should not say that it's an outstanding thing
+  // before CTC"). `conditions` is human work that genuinely gates the file;
+  // `advisories` is everything PILOT raised. The readiness widget counts and the
+  // status doors enforce ONLY `conditions`, so an AI finding can never make a file
+  // read "not ready" or refuse a transition. In the re-armed enforcing mode the
+  // underwriting dealbreaker is tagged 'underwriting' and joins `conditions` again.
+  const aiRows = [...underwritingFatals, ...aiAdvisories, ...aiReviewConds];
+  const enforcedAi = aiRows.filter((r) => r.source === 'underwriting');
+  const advisoryAi = aiRows.filter((r) => r.source !== 'underwriting');
   return {
-    conditions: [...underwriting, ...checklistConds.rows, ...underwritingFatals, ...aiAdvisories].map(r => decorateBlocker(r, 'condition')),
+    conditions: [...underwriting, ...checklistConds.rows, ...enforcedAi].map(r => decorateBlocker(r, 'condition')),
     gates: gates.rows.map(r => decorateBlocker(r, 'gate')),
+    advisories: advisoryAi.map(r => decorateBlocker(r, 'advisory')),
   };
 }
 
@@ -7588,7 +7650,7 @@ async function applyInternalStatus(appId, internalStatus, opts = {}) {
     // comment): they show on the readiness widget / in the blocked payload but
     // never gate the transition themselves (fix 2026-07-23 — the doors were
     // counting them, contradicting the documented contract).
-    const enforceable = blockers.conditions.filter((c) => c && c.source !== 'ai_suggestion');
+    const enforceable = blockers.conditions.filter((c) => c && !AI_BLOCKER_SOURCES.has(c.source));
     if (enforceable.length || blockers.gates.length) {
       if (!(opts.force && opts.allowForce)) return { blocked: true, target: external, blockers };
       forced = true;
@@ -7701,7 +7763,7 @@ router.patch('/applications/:id', async (req, res) => {
       const blockers = await advancementBlockers(req.params.id, status);
       // AI suggestions are ADVISORY (HARD RULE + the fold's own R3.17 comment):
       // surfaced in the payload, never counted as a gate (fix 2026-07-23).
-      const enforceable = blockers.conditions.filter((c) => c && c.source !== 'ai_suggestion');
+      const enforceable = blockers.conditions.filter((c) => c && !AI_BLOCKER_SOURCES.has(c.source));
       if (enforceable.length || blockers.gates.length) {
         if (!(force && isAdmin(req))) return res.status(409).json({ error: 'blocked', target: status, blockers });
         forced = true;

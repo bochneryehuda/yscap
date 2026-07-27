@@ -2,7 +2,7 @@
 /**
  * FIDELIS flood-zone ADVISORY (owner-directed 2026-07-27).
  *
- * THE RULE (db/333). On a Fidelis Investors file the flood zone is the decider, not the
+ * THE RULE (db/335). On a Fidelis Investors file the flood zone is the decider, not the
  * capital partner: with NO flood-zone evidence the internal flood-certificate condition
  * is ignored entirely; with a PROVEN flood zone it is REQUIRED, same as any other file.
  * The owner's governing sentence: "if it's a flood zone you should force this condition
@@ -16,10 +16,10 @@
  *   1. a flood zone is known but NO flood condition is on the file — the engine has not
  *      run yet for this file, or ran before the determination landed;
  *   2. a flood zone is known and the condition IS on the file but still marked OPTIONAL
- *      by db/333 §3 (downgraded while no flood zone was known) — the engine suppresses
+ *      by db/335 §3 (downgraded while no flood zone was known) — the engine suppresses
  *      duplicates and never rewrites `is_required` on an instance that already exists,
  *      so it would stay signable-with-nothing-attached on a real flood-zone property.
- *      db/333 §4 repairs this at boot; this is the live signal in between.
+ *      db/335 §4 repairs this at boot; this is the live signal in between.
  * Per the governing HARD RULE (2026-07-22) the AI never creates or edits a condition, so
  * both states become an `ai_suggestions` row for a human — state 1 with a one-click
  * "create the flood certificate condition" action. Advisory only: it posts nothing,
@@ -117,7 +117,7 @@ function whereFound(ev) {
  *   · absent            — nothing on the file → advise OPENING one (the main case).
  *   · settled           — signed off / waived / satisfied → a human already dealt with the
  *                         flood determination; never nag about settled work.
- *   · open + OPTIONAL   — the gap this closes. db/333 downgrades a touched flood cert on a
+ *   · open + OPTIONAL   — the gap this closes. db/335 downgrades a touched flood cert on a
  *                         Fidelis file to `is_required = false` (signable with nothing
  *                         attached) *because no flood zone was known at the time*. If a flood
  *                         zone turns up LATER, that condition is still sitting there optional
@@ -154,28 +154,20 @@ async function floodConditionState(client, appId) {
 }
 
 /**
- * Has a human already acted on this advisory on this file? `aiSug.record`'s dedupe
- * only refreshes a row while it is `status='open'`, so ANY non-open row means a
- * person decided (dismissed / noted / converted / escalated / marked important /
- * asked the super-admin) and the advisory must not be re-inserted — otherwise a
- * Dismiss silently comes back on the next file view, forever.
+ * NOTE — "has a human already decided this?" is NOT checked here any more. It is
+ * DELEGATED to `aiSug.record` (the shared chokepoint, db/333 "a human's decision is
+ * durable"). This module used to run its own `status <> 'open'` check, which had a real
+ * false-silence bug: `retract()` below closes a row as `dismissed` with NO
+ * `decided_by_staff_id`, so an AUTOMATIC withdrawal read as a human decision and the
+ * advisory could never be raised on that file again — a flood zone reappearing on a new
+ * appraisal would have gone unannounced forever. The chokepoint's predicate is the correct
+ * one and is now the single definition: it requires `decided_by_staff_id IS NOT NULL`, and
+ * deliberately keeps `escalated` / `marked_important` / `asked_admin` / `answered` in the
+ * LIVE set (those mean "still needs handling, louder", not "closed"). It also consults the
+ * per-finding ledger, so a decision taken on another desk silences this too. `record()`
+ * reports it back as `{settled:true}`, which the caller turns into reason
+ * 'decided_by_human' — so nothing is raised and nothing is inserted.
  */
-async function decidedByHuman(client, appId) {
-  try {
-    const r = await client.query(
-      `SELECT 1 FROM ai_suggestions
-        WHERE application_id = $1 AND source = $2 AND dedupe_key = $3 AND status <> 'open'
-        LIMIT 1`, [appId, SOURCE, DEDUPE_KEY]);
-    return !!r.rows[0];
-  } catch (_) {
-    // Fail OPEN. Suppressing on a read error would mean a transient database blip
-    // silently swallows a genuine flood-zone advisory, and nobody would ever know it
-    // was skipped; the cost of the other direction is at most one duplicate row a
-    // human can dismiss. (In practice this read shares the caller's connection with
-    // the insert that follows, so a failure here almost always fails that too.)
-    return false;
-  }
-}
 
 /**
  * Withdraw the OPEN advisory when it is no longer true. UNTOUCHED rows only
@@ -199,8 +191,9 @@ async function retract(client, appId, why) {
  * The whole advisory pass for one file. NEVER throws.
  * @returns {Promise<{raised:number, retracted:number, reason:string}>}
  *   reason is a short machine tag for logs/tests: 'not_fidelis' | 'file_frozen' |
- *   'no_flood_zone' | 'condition_present' | 'decided_by_human' | 'raised' (no condition on
- *   the file) | 'raised_optional' (an optional one is on the file and should be required).
+ *   'no_flood_zone' | 'condition_present' | 'decided_by_human' | 'silenced' | 'raised' (no
+ *   condition on the file) | 'raised_optional' (an optional one is on the file and should
+ *   be required). 'decided_by_human' / 'silenced' come back from the aiSug.record chokepoint.
  */
 async function syncFidelisFloodAdvisory(client, appId) {
   const out = { raised: 0, retracted: 0, reason: 'not_fidelis' };
@@ -245,11 +238,6 @@ async function syncFidelisFloodAdvisory(client, appId) {
       return out;
     }
 
-    if (await decidedByHuman(client, appId)) {
-      out.reason = 'decided_by_human';
-      return out;
-    }
-
     const where = whereFound(ev);
     const common = {
       applicationId: appId,
@@ -274,13 +262,14 @@ async function syncFidelisFloodAdvisory(client, appId) {
       dedupeKey: DEDUPE_KEY,
     };
 
+    let res;
     if (cond.optionalOpen) {
-      // The condition IS on the file but marked optional (db/333 §3 downgraded it while no
+      // The condition IS on the file but marked optional (db/335 §3 downgraded it while no
       // flood zone was known), so it could be signed off with nothing attached on a property
       // that really is in a flood zone. There is no one-click for "make this required", so
       // this is an INFO advisory pointing at the condition itself — kind 'info' deliberately
       // offers no create button, because a SECOND flood condition is the wrong move.
-      await aiSug.record(client, Object.assign({}, common, {
+      res = await aiSug.record(client, Object.assign({}, common, {
         checklistItemId: cond.itemId,
         kind: 'info',
         title: 'Flood zone found — the flood certificate on this file is marked optional',
@@ -292,7 +281,7 @@ async function syncFidelisFloodAdvisory(client, appId) {
           + 'condition and mark it required before signing it off.',
       }));
     } else {
-      await aiSug.record(client, Object.assign({}, common, {
+      res = await aiSug.record(client, Object.assign({}, common, {
         kind: 'condition',
         title: 'Flood zone found — open the flood certificate condition?',
         body: `This property looks like it sits in a flood zone per ${where}, and there is no `
@@ -312,6 +301,11 @@ async function syncFidelisFloodAdvisory(client, appId) {
         },
       }));
     }
+    // The chokepoint reports back what it actually did. `settled` = a human already decided
+    // this on some desk, so nothing was written and nothing should be claimed as raised;
+    // `silenced` = the code is muted portfolio-wide (ai_silenced_codes).
+    if (res && res.settled) { out.reason = 'decided_by_human'; return out; }
+    if (res && res.silenced) { out.reason = 'silenced'; return out; }
     out.raised = 1;
     out.reason = cond.optionalOpen ? 'raised_optional' : 'raised';
     return out;
@@ -324,6 +318,6 @@ async function syncFidelisFloodAdvisory(client, appId) {
 module.exports = {
   SOURCE, DEDUPE_KEY, FLOOD_TEMPLATE_CODE, OPEN_STATUSES,
   isSfhaZone, floodZoneEvidence, whereFound,
-  floodConditionState, decidedByHuman, retract,
+  floodConditionState, retract,
   syncFidelisFloodAdvisory,
 };

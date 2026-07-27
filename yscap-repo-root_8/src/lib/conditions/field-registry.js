@@ -128,10 +128,10 @@ function normNoteBuyer(raw) {
 // test-tape-access-gate-pure.js). So the Fidelis ALIASES are enumerated here
 // instead of loosening the shared normalizer: one explicit list, no over-match.
 //
-// Drives the Fidelis flood-certificate suppression (db/333): the internal flood
+// Drives the Fidelis flood-certificate suppression (db/335): the internal flood
 // cert is NOT auto-required on a Fidelis file; a known flood zone raises an
 // ADVISORY to open it instead (underwriting/fidelis-flood-advisory.js). Keep this
-// list in lock-step with the same key list in db/333 — add a new spelling in BOTH.
+// list in lock-step with the same key list in db/335 — add a new spelling in BOTH.
 // "investments" is in here because it is a REAL spelling of this same partner already
 // recorded in the repo — db/151 maps our `fidelis` label to Sitewire's directory name
 // "Fidelis Investments LLC" (see the sitewire_partner_links note in CLAUDE.md).
@@ -192,7 +192,7 @@ const FIELDS = [
   // Drives note-buyer conditions: CorrFirst opens the borrower EMD condition
   // (db/191), and Blue Lake / CorrFirst require the internal flood-certificate
   // condition (rtl_cond_flood, db/281) — which a FIDELIS file is excluded from
-  // (db/333, via note_buyer_is_fidelis below).
+  // (db/335, via note_buyer_is_fidelis below).
   { key: 'note_buyer', label: 'Note buyer (capital partner)', group: 'Loan & program', type: 'enum',
     options: [
       { v: 'bluelake', label: 'Blue Lake' }, { v: 'corrfirst', label: 'CorrFirst' },
@@ -208,7 +208,7 @@ const FIELDS = [
   //      `note_buyer is not fidelis` row would evaluate FALSE on a blank note buyer
   //      (rules.evalRow short-circuits a blank actual before the enum compare), which
   //      would have silently stripped the flood cert off every un-assigned Gold file.
-  // Drives the Fidelis flood-cert rule (db/333): `in_flood_zone OR (gold|manual AND
+  // Drives the Fidelis flood-cert rule (db/335): `in_flood_zone OR (gold|manual AND
   // note_buyer_is_fidelis is_false) OR note_buyer in (bluelake,corrfirst)` — i.e. it
   // gates the PROGRAM branch only. A proven flood zone stands on its own and requires
   // the cert on every file, Fidelis included ("if it's a flood zone you should force

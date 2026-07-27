@@ -7,7 +7,7 @@
  * So on a Fidelis file the FLOOD ZONE is the decider, not the capital partner.
  *
  * Proves the three halves of that:
- *   (A) THE EXCLUSION — with NO flood-zone evidence, db/333's rule keeps the internal flood
+ *   (A) THE EXCLUSION — with NO flood-zone evidence, db/335's rule keeps the internal flood
  *       cert (rtl_cond_flood) OFF a Fidelis file under every branch that used to force it on
  *       (Gold, Manual), for every Fidelis label spelling, and retracts one already sitting
  *       there; a PROVEN flood zone FORCES it on, Fidelis included. Blue Lake / CorrFirst /
@@ -19,7 +19,7 @@
  *       condition already on the file, a settled one, the note buyer changed away, a human
  *       already decided, a frozen file).
  *   (C) THE BACK-DATE — a flood cert a human already touched on a Fidelis file with no flood
- *       zone is made OPTIONAL by db/333 §3 and really can be signed off through the real
+ *       zone is made OPTIONAL by db/335 §3 and really can be signed off through the real
  *       endpoint with NOTHING attached; on a file that IS in a flood zone §4 forces it back
  *       to REQUIRED and the endpoint refuses an empty sign-off.
  *
@@ -58,7 +58,7 @@ assert(reg.normNoteBuyer('BlueLake Capital') === 'bluelakecapital',
 assert(!!reg.BY_KEY.note_buyer_is_fidelis && reg.BY_KEY.note_buyer_is_fidelis.type === 'boolean',
   'note_buyer_is_fidelis is a registered BOOLEAN rule field');
 assert((rules.OPERATORS_BY_TYPE.boolean || []).includes('is_false'),
-  'the boolean type supports is_false (the operator db/333 rule uses)');
+  'the boolean type supports is_false (the operator db/335 rule uses)');
 
 // SFHA test — A*/V* is a Special Flood Hazard Area, anything else is not.
 for (const z of ['A', 'AE', 'AO', 'A99', 'V', 'VE', ' ae ', 'v']) assert(adv.isSfhaZone(z) === true, `isSfhaZone("${z}") = true`);
@@ -141,7 +141,7 @@ function call(server, method, path, token, body) {
 (async () => {
   await ensureSchema();
   const sfx = `${process.pid}-${Math.floor(Math.random() * 1e6)}`;
-  let borrowerId, adminId, server;
+  let borrowerId, adminId, deciderId, server;
   const mkApp = async (lender, status = 'processing') => (await db.query(
     `INSERT INTO applications (borrower_id, status, loan_type, lender) VALUES ($1,$2,'Fix & Flip',$3) RETURNING id`,
     [borrowerId, status, lender])).rows[0].id;
@@ -158,7 +158,7 @@ function call(server, method, path, token, body) {
 
     // ---------------------------------------------------------------------
     // (0) The LIVE template rule in the database — not a mirror of it — carries the
-    //     Fidelis exclusion. If db/333 were ever reverted or overwritten by a later
+    //     Fidelis exclusion. If db/335 were ever reverted or overwritten by a later
     //     migration, this is the assertion that catches it.
     // ---------------------------------------------------------------------
     const tpl = (await db.query(
@@ -392,7 +392,7 @@ function call(server, method, path, token, body) {
         `a ${name} flood cert on a Fidelis file in a flood zone raises no advisory (settled work is never nagged)`);
     }
 
-    // THE GAP THIS CLOSES: db/333 downgrades a touched flood cert to OPTIONAL while no flood
+    // THE GAP THIS CLOSES: db/335 downgrades a touched flood cert to OPTIONAL while no flood
     // zone is known. If a flood zone turns up LATER, that optional condition could be signed
     // off with nothing attached and nobody told — so it gets its own advisory.
     const optOpen = await mkApp('Fidelis Investors LLC');
@@ -418,7 +418,7 @@ function call(server, method, path, token, body) {
       'marking the condition required WITHDRAWS the advisory');
 
     // …and PILOT's own per-condition advisory overlay must not badge an OPTIONAL flood cert
-    // "not ready" — that contradicts what optional means, and it is the state db/333 leaves a
+    // "not ready" — that contradicts what optional means, and it is the state db/335 leaves a
     // touched flood cert in on a Fidelis file. Same rule the title/insurance contacts use.
     const advice = require('../src/lib/underwriting/pilot-advice-engine');
     const pilotAdvice = async (itemId) => (await db.query(
@@ -435,16 +435,43 @@ function call(server, method, path, token, body) {
 
     // A HUMAN'S DECISION IS FINAL — a dismissed advisory must never come back. Without this
     // guard aiSug.record would INSERT a fresh open row on the very next file view, forever.
+    // The check lives in the shared aiSug.record chokepoint (db/333), and it keys on
+    // decided_by_staff_id, so the dismissal has to carry a real staffer.
+    deciderId = (await db.query(
+      `INSERT INTO staff_users (email, full_name, role, is_active, mfa_enabled, password_hash, token_version)
+       VALUES ($1,'Flood Decider','underwriter',true,false,'x',0) RETURNING id`,
+      [`ff-dec-${sfx}@test.local`])).rows[0].id;
     const dismissed = await mkApp('Fidelis Investors LLC');
     await sfha(dismissed);
     await adv.syncFidelisFloodAdvisory(db, dismissed);
     const dRow = (await openAdvisories(dismissed))[0];
     await db.query(
-      `UPDATE ai_suggestions SET status='dismissed', status_reason='not needed', decided_at=now() WHERE id=$1`,
-      [dRow.id]);
+      `UPDATE ai_suggestions SET status='dismissed', status_reason='not needed',
+              decided_at=now(), decided_by_staff_id=$2 WHERE id=$1`, [dRow.id, deciderId]);
     r = await adv.syncFidelisFloodAdvisory(db, dismissed);
     assert(r.reason === 'decided_by_human' && r.raised === 0, 'a DISMISSED advisory is never re-raised');
     assert((await allAdvisories(dismissed)).length === 1, 'and no duplicate row is inserted');
+
+    // REGRESSION (found when main's durable-decision chokepoint landed): an AUTOMATIC
+    // withdrawal must NOT read as a human decision. retract() closes the row as 'dismissed'
+    // with NO decided_by_staff_id, so a module-local `status <> 'open'` check would have
+    // silenced this file forever — a flood zone reappearing on a new appraisal would never be
+    // announced again. The chokepoint keys on decided_by_staff_id, which is why the check now
+    // lives there and not here.
+    const revived = await mkApp('Fidelis Investors LLC');
+    await sfha(revived, { flood_zone: 'AE' });
+    assert((await adv.syncFidelisFloodAdvisory(db, revived)).reason === 'raised', 'advisory raised the first time');
+    await db.query(`UPDATE appraisals SET superseded=true WHERE application_id=$1`, [revived]);
+    r = await adv.syncFidelisFloodAdvisory(db, revived);
+    assert(r.reason === 'no_flood_zone' && r.retracted === 1, 'auto-withdrawn when the flood zone goes');
+    assert((await allAdvisories(revived))[0].decided_by_staff_id === null,
+      'the automatic withdrawal records NO deciding staffer (that is what distinguishes it)');
+    // A new appraisal shows a flood zone again → it MUST come back.
+    await sfha(revived, { fema_flood_sfha: true, fema_flood_zone: 'AO' });
+    r = await adv.syncFidelisFloodAdvisory(db, revived);
+    assert(r.reason === 'raised' && r.raised === 1,
+      'a flood zone reappearing after an AUTOMATIC withdrawal raises the advisory again');
+    assert((await openAdvisories(revived)).length === 1, 'and exactly one open row exists');
 
     // A frozen file (funded / terminal) gets nothing.
     const funded = await mkApp('Fidelis Investors LLC', 'funded');
@@ -454,7 +481,7 @@ function call(server, method, path, token, body) {
     assert((await allAdvisories(funded)).length === 0, 'and writes no row');
 
     // ---------------------------------------------------------------------
-    // (C) THE BACK-DATE — db/333 §2/§3/§4 on files that already carry the condition, and
+    // (C) THE BACK-DATE — db/335 §2/§3/§4 on files that already carry the condition, and
     //     "optional" really meaning signable with nothing attached.
     // ---------------------------------------------------------------------
     // Untouched, no flood zone → §2's DELETE removes it outright.
@@ -489,19 +516,19 @@ function call(server, method, path, token, body) {
 
     await ensureSchema();          // re-runs the idempotent migrations, exactly like a deploy
 
-    assert((await floodCount(bdGone)) === 0, 'db/333 §2 REMOVES an untouched flood cert from an open Fidelis file with no flood zone');
-    assert((await floodCount(bdGoneFz)) === 1, 'db/333 §2 does NOT remove it when the file IS in a flood zone');
+    assert((await floodCount(bdGone)) === 0, 'db/335 §2 REMOVES an untouched flood cert from an open Fidelis file with no flood zone');
+    assert((await floodCount(bdGoneFz)) === 1, 'db/335 §2 does NOT remove it when the file IS in a flood zone');
     let it = await floodItem(bdOpt);
-    assert(it && it.is_required === false, 'db/333 §3 makes a TOUCHED flood cert on a Fidelis file OPTIONAL');
+    assert(it && it.is_required === false, 'db/335 §3 makes a TOUCHED flood cert on a Fidelis file OPTIONAL');
     assert(/\[auto\] Optional on this file/.test(it.notes || '') && /chased the title company/.test(it.notes || ''),
       'the marker note is APPENDED — the human\'s own note is preserved');
     assert(!/fidelis/i.test(it.notes || ''), 'the note says "this capital partner", never the note-buyer name');
     it = await floodItem(bdKeep);
-    assert(it && it.is_required === true, 'db/333 §3 skips a Fidelis file that IS in a flood zone — the cert stays REQUIRED');
+    assert(it && it.is_required === true, 'db/335 §3 skips a Fidelis file that IS in a flood zone — the cert stays REQUIRED');
     // §4 — the drift repair.
     it = await floodItem(bdForce);
     assert(it && it.is_required === true,
-      'db/333 §4 FORCES an already-OPTIONAL flood cert back to REQUIRED on a Fidelis file in a flood zone');
+      'db/335 §4 FORCES an already-OPTIONAL flood cert back to REQUIRED on a Fidelis file in a flood zone');
     assert(/\[auto\] Required on this file/.test(it.notes || '') && /note from the processor/.test(it.notes || ''),
       '§4 appends its own marker and keeps the human\'s note');
     assert(!/\[auto\] Optional on this file/.test(it.notes || ''),
@@ -543,6 +570,7 @@ function call(server, method, path, token, body) {
   } finally {
     try { if (borrowerId) await db.query(`DELETE FROM borrowers WHERE id=$1`, [borrowerId]); } catch (_) {}
     try { if (adminId) await db.query(`DELETE FROM staff_users WHERE id=$1`, [adminId]); } catch (_) {}
+    try { if (deciderId) await db.query(`DELETE FROM staff_users WHERE id=$1`, [deciderId]); } catch (_) {}
     try { if (server) server.close(); } catch (_) {}
     await db.pool.end().catch(() => {});
   }

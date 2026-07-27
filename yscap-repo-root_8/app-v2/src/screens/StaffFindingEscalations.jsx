@@ -78,15 +78,22 @@ export default function StaffFindingEscalations() {
 
   useEffect(() => { load(); /* eslint-disable-next-line */ }, [statusFilter]);
 
-  // Close the queue item WITHOUT touching the finding — "I've advised, this row is done".
-  // Deliberately worded so nobody mistakes it for clearing the finding off the file.
+  // 'resolved' = "I've advised, this row is done" — the finding is untouched.
+  // 'dismissed' = "no action needed" — that IS a decision about the finding, so the
+  // server now settles it for good (owner-reported 2026-07-27: a reviewer said it was
+  // fine and the finding came straight back). Report exactly what happened, including
+  // the rare case where the reviewer can't close the stored row themselves.
   async function decide(row, decision) {
     setBusy(true);
     try {
-      await api.decideFindingEscalation(row.id, decision, notes[row.id] || '');
-      flash(true, decision === 'dismissed'
-        ? 'Closed as no action needed. The finding itself was not changed.'
-        : 'Closed with your advice. The finding itself was not changed — use one of the actions to clear it off the file.');
+      const r = await api.decideFindingEscalation(row.id, decision, notes[row.id] || '');
+      if (decision !== 'dismissed') {
+        flash(true, 'Closed with your advice. The finding itself was not changed — use one of the actions to clear it off the file.');
+      } else if (r && r.findingNote) {
+        flash(true, `Closed as no action needed, and it will not be raised again on this file. The finding card itself stayed open: ${r.findingNote}`);
+      } else {
+        flash(true, 'Closed as no action needed. The finding is cleared off the file and will not come back.');
+      }
       await load();
     } catch (e) { flash(false, e.message || 'could not record the decision'); }
     finally { setBusy(false); }
@@ -308,14 +315,17 @@ export default function StaffFindingEscalations() {
                     </div>
                   )}
 
-                  {/* Advice-only close: leaves the finding exactly as it is. Kept separate and
-                      labeled so it can't be mistaken for resolving the finding. */}
+                  {/* Two closes, and they mean different things. "Close with advice only"
+                      leaves the finding exactly as it is. "No action needed" is a decision
+                      ABOUT the finding, so it settles it for good — the server records it
+                      against the finding's identity so no desk re-raises it (owner-reported
+                      2026-07-27: a reviewer said it was fine and it kept coming back). */}
                   <div className="row" style={{ gap: 8, alignItems: 'center', marginTop: 10, flexWrap: 'wrap' }}>
                     <input className="input" style={{ flex: 1, minWidth: 200 }} placeholder="How to proceed / your advice (optional — also used as the note on the action above)"
                       value={notes[r.id] || ''} onChange={(e) => setNotes((n) => ({ ...n, [r.id]: e.target.value }))} />
                     <button className="btn ghost small" disabled={busy} title="Close this item and leave the finding as it is"
                       onClick={() => decide(r, 'resolved')}>Close with advice only</button>
-                    <button className="btn ghost small" disabled={busy} title="Close this item — nothing needs doing"
+                    <button className="btn ghost small" disabled={busy} title="Close this item and clear the finding off the file for good — it will not be raised again"
                       onClick={() => decide(r, 'dismissed')}>No action needed</button>
                   </div>
                 </>

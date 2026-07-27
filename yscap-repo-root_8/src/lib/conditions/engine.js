@@ -117,7 +117,7 @@ async function loadRuleContext(appId) {
     // Is the note buyer FIDELIS (any spelling — "Fidelis" / "Fidelis Investors" /
     // "Fidelis Investors LLC")? Always concrete (never null), so an `is_false` rule
     // row is correct on a file with no note buyer yet. Keeps the internal
-    // flood-certificate condition off a Fidelis file (db/333) UNLESS `in_flood_zone`
+    // flood-certificate condition off a Fidelis file (db/335) UNLESS `in_flood_zone`
     // proves a flood zone — that branch stands on its own and forces the cert on.
     note_buyer_is_fidelis: registry.isFidelisNoteBuyer(a.lender),
     // Loan number — blank/absent drives the "loan number missing" internal

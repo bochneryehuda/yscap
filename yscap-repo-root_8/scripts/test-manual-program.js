@@ -54,14 +54,14 @@ if (pricing.enginesReady()) {
 }
 
 const fields = reg.BY_KEY;
-// Mirror of the real rtl_cond_flood rule (db/207 + db/281 + db/333): a KNOWN FLOOD
+// Mirror of the real rtl_cond_flood rule (db/207 + db/281 + db/335): a KNOWN FLOOD
 // ZONE requires the cert on every file; otherwise Gold/Manual requires it unless the
 // note buyer is Fidelis, and Blue Lake / CorrFirst always require it. Per the owner
 // 2026-07-27: "if it's a flood zone you should force this condition on, but as long as
 // you don't have evidence that it's a flood zone you should ignore this condition."
 // The tree is DISTRIBUTED rather than `flood OR (NOT fidelis AND (program OR buyer))`
 // because the grammar allows only root + 1 nested level. Keep in lock-step with the
-// rule_logic written by db/333 (asserted against the LIVE rule in
+// rule_logic written by db/335 (asserted against the LIVE rule in
 // scripts/test-fidelis-flood-advisory-db.js).
 const FLOOD_RULE = { combinator: 'or', rules: [
   { field: 'in_flood_zone', operator: 'is_true' },
@@ -96,7 +96,7 @@ assert((reg.BY_KEY.registered_program.options || []).some((o) => o.v === 'manual
 assert((reg.BY_KEY.note_buyer.options || []).some((o) => o.v === 'bluelake') && (reg.BY_KEY.note_buyer.options || []).some((o) => o.v === 'corrfirst'),
   'note_buyer has bluelake + corrfirst options');
 assert(!!reg.BY_KEY.note_buyer_is_fidelis && reg.BY_KEY.note_buyer_is_fidelis.type === 'boolean',
-  'note_buyer_is_fidelis is a boolean rule field (backs the db/333 Fidelis exclusion)');
+  'note_buyer_is_fidelis is a boolean rule field (backs the db/335 Fidelis exclusion)');
 
 assert(liq.bankStatementMonths('manual', 4) === 4, 'manual liquidity months honor the entered value');
 assert(liq.bankStatementMonths('manual') === 2, 'manual liquidity months fall back to 2');

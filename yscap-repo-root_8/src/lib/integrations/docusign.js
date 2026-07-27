@@ -269,6 +269,30 @@ function textAnchor(anchor, { tabLabel, required = true, width = 200, height = 1
 }
 
 /**
+ * DocuSign caps `emailSubject` at 100 CHARACTERS. A longer value is not truncated by
+ * their API — the whole create is REJECTED with a 400 ("The request contained at least
+ * one invalid parameter. Length exceeds the maximum of 100 characters for
+ * 'emailSubject'"), so the borrower simply never gets the envelope (owner-reported
+ * 2026-07-27). Every envelope in the system is built by buildEnvelopeDefinition, so
+ * this is the ONE place that can GUARANTEE we never post an over-long subject.
+ *
+ * Callers should compose a subject that already fits — esign/orchestrate.js
+ * `composeSubject` shortens the property address so the wording + loan number survive
+ * intact — this is the belt-and-suspenders backstop for any future caller that forgets.
+ * DocuSign counts UTF-16 code units (a .NET string length), which is exactly what
+ * String#length returns, so we never split a surrogate pair when clipping.
+ */
+const EMAIL_SUBJECT_MAX = 100;
+function capEmailSubject(subject) {
+  const s = String(subject == null ? '' : subject).trim();
+  if (s.length <= EMAIL_SUBJECT_MAX) return s;
+  let cut = EMAIL_SUBJECT_MAX - 1;                                   // room for the ellipsis
+  const lead = s.charCodeAt(cut - 1);
+  if (lead >= 0xd800 && lead <= 0xdbff) cut -= 1;                    // don't orphan a high surrogate
+  return s.slice(0, cut).trimEnd() + '…';
+}
+
+/**
  * Build a validated EnvelopeDefinition.
  *  documents: [{ base64, name, documentId }]  (documentId is a string number)
  *  signers:   [{ recipientId, name, email, routingOrder, clientUserId?,
@@ -290,7 +314,11 @@ function buildEnvelopeDefinition({ documents, signers, carbonCopies, subject, st
   const ccs = (Array.isArray(carbonCopies) ? carbonCopies : []).filter(
     (c) => c && c.email && /^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(c.email) && c.name && c.recipientId);
   const def = {
-    emailSubject: subject || 'Please sign your documents',
+    // Hard-capped at DocuSign's 100-character limit — see capEmailSubject. An over-long
+    // subject is a 400 that kills the entire send, so this can never be left uncapped.
+    // Cap FIRST, then fall back: a blank/whitespace-only subject takes the default rather
+    // than posting an empty emailSubject (which DocuSign also rejects).
+    emailSubject: capEmailSubject(subject) || 'Please sign your documents',
     status,
     documents: documents.map((d, i) => ({
       documentBase64: d.base64,
@@ -624,6 +652,8 @@ module.exports = {
   // create + read
   idempotencyKey,
   buildEnvelopeDefinition,
+  EMAIL_SUBJECT_MAX,
+  capEmailSubject,
   eventNotification,
   notificationSettings,
   signHereAnchor,

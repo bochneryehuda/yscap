@@ -183,9 +183,17 @@ into `window`, the Studio capture needs an iframe). So:
 
 ### 5.1 Envelope 1 — term sheet + application, borrower (+ optional co-borrower)
 `POST {baseUri}/restapi/v2.1/accounts/{ACCOUNT_ID}/envelopes`
+
+> **`emailSubject` is hard-capped at 100 characters.** Over it, DocuSign does not truncate — it
+> rejects the entire create with a 400 (`INVALID_REQUEST_PARAMETER`, "Length exceeds the maximum of
+> 100 characters for 'emailSubject'") and nothing is sent. The subject now carries the property
+> address too, so it is composed by `esign/orchestrate.js` `composeSubject()` (keeps the wording +
+> loan number whole, shortens the address from its least-identifying end) and hard-capped at the
+> chokepoint by `docusign.js` `capEmailSubject()`. See bug P-1 in `DOCUSIGN-BUG-REGISTER.md`.
+
 ```jsonc
 {
-  "emailSubject": "Your loan documents are ready to sign — Loan #<ys_loan_number>",
+  "emailSubject": "Your loan documents are ready to sign — Loan #<ys_loan_number> · <property address>",
   "emailBlurb": "Please review and sign your term sheet and application.",
   "status": "sent",
   "documents": [
