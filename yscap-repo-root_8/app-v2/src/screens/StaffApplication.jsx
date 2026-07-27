@@ -3146,6 +3146,17 @@ export default function StaffApplication() {
           nothing is duplicated work. */}
       <NextUpPanel gating={gating} items={items} conds={conds} />
 
+      {/* The super-admin structural UNLOCK must be reachable WITHOUT hunting.
+          It used to live inside "Application details", which starts collapsed —
+          and a collapsed Section renders none of its children (FileSections.jsx),
+          so on a locked (clear-to-close / funded) file the 🔓 button was simply
+          absent from the page until you happened to expand that one section
+          (owner-reported 2026-07-27: "the unlock button disappeared"). It now
+          sits here, above the sixteen sections, so a locked file always shows its
+          lock state and the Unlock/Re-lock control up top. Self-hides on any
+          non-locked status; the button itself stays super-admin-only. */}
+      <StructuralLockBanner app={app} role={role} onChanged={load} />
+
       {/* Blueprint 2-column shell (pilot-staff-file): the existing section nav +
           FileSections content stay exactly as they were on the main side; a NEW
           presentation-only file-summary rail sits beside them. Wrapping markup
@@ -3364,7 +3375,10 @@ export default function StaffApplication() {
           address={app.co_current_address}
           name={`${app.co_first_name || ''} ${app.co_last_name || ''}`.trim() || 'Co-borrower'} onSaved={load} />
       )}
-      <StructuralLockBanner app={app} role={role} onChanged={load} />
+      {/* The structural lock/unlock banner used to render here; it now sits at
+          the top of the file (above the collapsible sections) so it is visible
+          without expanding this section. EditFileDetails is where the actual
+          correction is made once a super-admin has unlocked the file up top. */}
       <EditFileDetails app={app} onSaved={load} />
       {/* Read-only pipeline data pulled from ClickUp — tucked into a disclosure so it
           isn't extra weight on the page; open it when you actually need those figures. */}
