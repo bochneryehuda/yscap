@@ -77,7 +77,7 @@ export default function AiReasoningChat({ appId }) {
                   <div style={{
                     fontSize: 12.5, lineHeight: 1.45, whiteSpace: 'pre-wrap',
                     background: mine ? 'var(--teal,#2F7F86)' : 'var(--card,#fff)',
-                    color: mine ? '#fff' : 'var(--ink,#141B22)',
+                    color: mine ? '#fff' : '#141B22',
                     border: mine ? 'none' : '1px solid var(--line,#E4DECF)',
                     borderRadius: 9, padding: '6px 9px',
                   }}>{m.text}</div>

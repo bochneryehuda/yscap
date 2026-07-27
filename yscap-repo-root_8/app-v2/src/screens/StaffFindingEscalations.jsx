@@ -47,7 +47,7 @@ function btn(primary = false, danger = false) {
     padding: '6px 12px', borderRadius: 8, fontSize: 12.5, fontWeight: 600, cursor: 'pointer',
     border: `1px solid ${danger ? 'var(--crit,#B4483C)' : (primary ? 'var(--teal,#2F7F86)' : 'var(--line,#E7E1D3)')}`,
     background: primary ? 'var(--teal,#2F7F86)' : '#fff',
-    color: primary ? '#fff' : (danger ? 'var(--crit,#B4483C)' : 'var(--ink,#141B22)'),
+    color: primary ? '#fff' : (danger ? 'var(--crit,#B4483C)' : '#141B22'),
   };
 }
 
@@ -198,7 +198,7 @@ export default function StaffFindingEscalations() {
           const pageHint = r.page_number != null ? ` (page ${r.page_number})` : '';
           const p = pending[r.id];
           return (
-            <div key={r.id} className="card" style={{ border: '1px solid var(--hairline,#e5e0d5)', borderRadius: 10, padding: 12, marginTop: 12, color: 'var(--ink,#141B22)' }}>
+            <div key={r.id} className="card" style={{ border: '1px solid var(--hairline,#e5e0d5)', borderRadius: 10, padding: 12, marginTop: 12, color: '#141B22' }}>
               <div className="row" style={{ justifyContent: 'space-between', alignItems: 'flex-start', gap: 10 }}>
                 <div style={{ minWidth: 0 }}>
                   <div>
@@ -235,7 +235,7 @@ export default function StaffFindingEscalations() {
                   </div>
                   {r.how_to && <div style={{ fontSize: 12.5, color: 'var(--muted,#4B585C)', marginTop: 4, whiteSpace: 'pre-wrap' }}>{r.how_to}</div>}
                   {r.question && (
-                    <div style={{ fontSize: 12.5, marginTop: 6, padding: '7px 10px', background: 'var(--ink-2,#F4F1EA)', borderRadius: 8, color: 'var(--ink,#141B22)' }}>
+                    <div style={{ fontSize: 12.5, marginTop: 6, padding: '7px 10px', background: 'var(--ink-2,#F4F1EA)', borderRadius: 8, color: '#141B22' }}>
                       <b>What they need:</b> {r.question}
                     </div>
                   )}
@@ -267,7 +267,7 @@ export default function StaffFindingEscalations() {
                       resolves the finding on the loan file AND closes this queue item. */}
                   {canApplyActions && actions.length > 0 && (
                     <div style={{ marginTop: 10, padding: 10, background: 'var(--paper,#F6F3EC)', borderRadius: 8 }}>
-                      <div className="small" style={{ fontWeight: 600, marginBottom: 6, color: 'var(--ink,#141B22)' }}>
+                      <div className="small" style={{ fontWeight: 600, marginBottom: 6, color: '#141B22' }}>
                         Decide it — this closes the finding on the loan file and clears this item:
                       </div>
                       <div className="row" style={{ gap: 6, flexWrap: 'wrap' }}>

@@ -62,7 +62,7 @@ export default function StaffAiCenter() {
                 style={{
                   border: 'none', background: 'transparent', cursor: 'pointer',
                   padding: '8px 12px', fontSize: 13, fontWeight: on ? 800 : 600,
-                  color: on ? 'var(--ink,#141B22)' : 'var(--muted,#4B585C)',
+                  color: on ? '#141B22' : 'var(--muted,#4B585C)',
                   borderBottom: on ? '2px solid var(--gold,#AE8746)' : '2px solid transparent',
                   marginBottom: -1,
                 }}>
