@@ -40,6 +40,7 @@ const conditionRules = require('../lib/conditions/rules');
 const conditionRegistry = require('../lib/conditions/field-registry');
 const { CONDITION_TYPES, TOOLS, CATEGORIES, conditionTypeOf } = require('../lib/conditions/types');
 const { strayConditionReason, strayConditionMessage } = require('../lib/conditions/label-sanity');
+const adminOverride = require('../lib/conditions/admin-override');        // super-admin condition override (owner-directed 2026-07-27)
 const { raiseEntityIssue } = require('../lib/raise-issue');
 
 const { can } = require('../lib/permissions');
@@ -2888,6 +2889,11 @@ router.get('/applications/:id/checklist', async (req, res) => {
             ci.signed_off_by, so.full_name AS signed_off_name, ci.signed_off_at,
             ci.reviewed_by, rv.full_name AS reviewed_by_name, ci.reviewed_at,
             ci.waived_at, ci.waived_by, wv.full_name AS waived_by_name,
+            -- Super-admin override (db/344): who cleared this without fulfilling
+            -- it, why, and what the gate said was missing. The row itself must
+            -- carry the answer — a decision this size is never only in a log.
+            ci.override_by, ov.full_name AS override_by_name, ci.override_at,
+            ci.override_reason, ci.override_blocked_reason,
             -- The borrower-visible reason a condition was rejected / pushed back /
             -- raised (#125): staff must see it on the condition too, not only in the
             -- separate documents panel. Falls back to the latest rejected document's
@@ -2901,6 +2907,7 @@ router.get('/applications/:id/checklist', async (req, res) => {
        LEFT JOIN staff_users so  ON so.id  = ci.signed_off_by
        LEFT JOIN staff_users rv  ON rv.id  = ci.reviewed_by
        LEFT JOIN staff_users wv  ON wv.id  = ci.waived_by
+       LEFT JOIN staff_users ov  ON ov.id  = ci.override_by
       WHERE ci.application_id=$1
       ORDER BY ci.sort_order, ci.created_at`, [req.params.id]);
   // #191 activation 2 — condition AGING (advisory, additive): each row gains
@@ -4355,15 +4362,35 @@ router.get('/emails/:msgId', async (req, res) => {
   } catch (e) { res.status(500).json({ error: 'server error' }); }
 });
 
+// A super-admin condition override on the first-class conditions surface, sent
+// to the policy-exception register (born approved, record-only) exactly as the
+// checklist surface does. Best-effort ALWAYS: the clear/waive it documents has
+// already been written, so a register hiccup may never reverse or 500 it — the
+// audit_log row and the stamps on the condition remain the primary record.
+async function recordConditionOverrideBestEffort(req, appId, { action, conditionId, label, reason }) {
+  try {
+    if (!appId) return null;
+    return await loanExceptions.recordConditionOverride({
+      appId, staffId: req.actor.id,
+      note: adminOverride.describe({ label, reason, blocked: null }),
+      snapshot: { action, condition_id: conditionId, condition: label || null, at: new Date().toISOString() },
+    });
+  } catch (e) {
+    try { console.warn('[staff] condition-override record skipped:', db.describeError(e)); } catch (_) {}
+    return null;
+  }
+}
+
 // ---- first-class conditions (object model) ----
 router.get('/applications/:id/conditions', async (req, res) => {
   const r = await db.query(
     `SELECT c.*, cb.full_name AS created_by_name, xb.full_name AS cleared_by_name,
-            rb.full_name AS reviewed_by_name
+            rb.full_name AS reviewed_by_name, ob.full_name AS override_by_name
        FROM conditions c
        LEFT JOIN staff_users cb ON cb.id=c.created_by
        LEFT JOIN staff_users xb ON xb.id=c.cleared_by
        LEFT JOIN staff_users rb ON rb.id=c.reviewed_by
+       LEFT JOIN staff_users ob ON ob.id=c.override_by
       WHERE c.application_id=$1 ORDER BY (c.status='open') DESC, c.created_at DESC`, [req.params.id]);
   // #191 activation 2 — same additive aging as the checklist endpoint.
   try {
@@ -4417,14 +4444,29 @@ router.post('/applications/:id/loan-conditions', async (req, res) => {
 // call (audit S3-01) — a loan officer marks it REVIEWED instead (below), never
 // cleared. Mirrors the checklist sign-off gate + the sibling /waive gate.
 router.post('/loan-conditions/:cid/clear', async (req, res) => {
+  // A super-admin OVERRIDE is available here too, so "override this condition"
+  // means the same thing on every conditions surface (owner-directed 2026-07-27:
+  // "each and every condition"). Nothing on this object gates fulfillment today,
+  // so the override changes no outcome — it RECORDS one: the clear is stamped as
+  // an override with its reason and lands in the exception register like any
+  // other. Same module, same wording, same rules as the checklist surface.
+  const ovr = adminOverride.evaluate(req.actor, req.body, { requireCompletion: false });
+  if (!ovr.ok) return res.status(ovr.status).json({ error: ovr.error });
   if (!can(req.actor, 'sign_off_conditions'))
     return res.status(403).json({ error: 'Only a processor or underwriter can sign a condition off — click Done to record your completion; the back office signs off after you.' });
   try {
-    const c = await db.query(`SELECT application_id FROM conditions WHERE id=$1`, [req.params.cid]);
+    const c = await db.query(`SELECT application_id, title FROM conditions WHERE id=$1`, [req.params.cid]);
     if (!c.rows[0]) return res.status(404).json({ error: 'not found' });
     if (!(await canTouchApp(req, c.rows[0].application_id))) return res.status(403).json({ error: 'forbidden' });
-    await db.query(`UPDATE conditions SET status='cleared', cleared_by=$2, cleared_at=now(), updated_at=now() WHERE id=$1`, [req.params.cid, req.actor.id]);
-    await audit(req, 'clear_condition', 'condition', req.params.cid);
+    await db.query(
+      ovr.requested
+        ? `UPDATE conditions SET status='cleared', cleared_by=$2, cleared_at=now(),
+             override_by=$2, override_at=now(), override_reason=$3, updated_at=now() WHERE id=$1`
+        : `UPDATE conditions SET status='cleared', cleared_by=$2, cleared_at=now(), updated_at=now() WHERE id=$1`,
+      ovr.requested ? [req.params.cid, req.actor.id, ovr.reason] : [req.params.cid, req.actor.id]);
+    await audit(req, 'clear_condition', 'condition', req.params.cid, ovr.requested ? { override: true, reason: ovr.reason } : undefined);
+    if (ovr.requested) await recordConditionOverrideBestEffort(req, c.rows[0].application_id, {
+      action: 'condition_clear_override', conditionId: req.params.cid, label: c.rows[0].title, reason: ovr.reason });
     res.json({ ok: true });
   } catch (e) { res.status(500).json({ error: 'server error' }); }
 });
@@ -4450,6 +4492,9 @@ router.post('/loan-conditions/:cid/review', async (req, res) => {
   } catch (e) { res.status(500).json({ error: 'server error' }); }
 });
 router.post('/loan-conditions/:cid/waive', async (req, res) => {
+  // Same override affordance as /clear — see the note there.
+  const ovr = adminOverride.evaluate(req.actor, req.body, { requireCompletion: false });
+  if (!ovr.ok) return res.status(ovr.status).json({ error: ovr.error });
   if (!can(req.actor, 'waive_conditions')) return res.status(403).json({ error: 'you do not have permission to waive conditions' });
   const reason = String((req.body || {}).reason || '').trim();
   if (!reason) return res.status(400).json({ error: 'a waive reason is required' });
@@ -4457,12 +4502,21 @@ router.post('/loan-conditions/:cid/waive', async (req, res) => {
     // Per-file authorization — mirror the sibling /clear endpoint. Having the
     // waive_conditions capability must not let a scoped staffer waive a condition
     // on a file they aren't assigned to.
-    const c = await db.query(`SELECT application_id FROM conditions WHERE id=$1`, [req.params.cid]);
+    const c = await db.query(`SELECT application_id, title FROM conditions WHERE id=$1`, [req.params.cid]);
     if (!c.rows[0]) return res.status(404).json({ error: 'not found' });
     if (!(await canTouchApp(req, c.rows[0].application_id))) return res.status(403).json({ error: 'forbidden' });
-    const r = await db.query(`UPDATE conditions SET status='waived', waive_reason=$2, cleared_by=$3, cleared_at=now(), updated_at=now() WHERE id=$1 RETURNING id`, [req.params.cid, reason.slice(0, 500), req.actor.id]);
+    const r = await db.query(
+      ovr.requested
+        ? `UPDATE conditions SET status='waived', waive_reason=$2, cleared_by=$3, cleared_at=now(),
+             override_by=$3, override_at=now(), override_reason=$4, updated_at=now() WHERE id=$1 RETURNING id`
+        : `UPDATE conditions SET status='waived', waive_reason=$2, cleared_by=$3, cleared_at=now(), updated_at=now() WHERE id=$1 RETURNING id`,
+      ovr.requested
+        ? [req.params.cid, reason.slice(0, 500), req.actor.id, ovr.reason]
+        : [req.params.cid, reason.slice(0, 500), req.actor.id]);
     if (!r.rows[0]) return res.status(404).json({ error: 'not found' });
-    await audit(req, 'waive_condition', 'condition', req.params.cid, { reason });
+    await audit(req, 'waive_condition', 'condition', req.params.cid, ovr.requested ? { reason, override: true, overrideReason: ovr.reason } : { reason });
+    if (ovr.requested) await recordConditionOverrideBestEffort(req, c.rows[0].application_id, {
+      action: 'condition_waive_override', conditionId: req.params.cid, label: c.rows[0].title, reason: ovr.reason });
     res.json({ ok: true });
   } catch (e) { res.status(500).json({ error: 'server error' }); }
 });
@@ -4930,6 +4984,21 @@ router.patch('/checklist/:itemId', async (req, res) => {
   const b = req.body || {};
   const allowed = ['outstanding', 'requested', 'received', 'satisfied', 'issue'];
   if (b.status && !allowed.includes(b.status)) return res.status(400).json({ error: 'bad status' });
+  // SUPER-ADMIN OVERRIDE (owner-directed 2026-07-27) — "if we're unable to clear
+  // it, the admin should be able to overwrite and clear the condition without a
+  // document attached to it or without fulfilling the requirement of that
+  // condition. Only super admin." The rule lives in ONE module so every surface
+  // that completes a condition asks the same question: explicit flag, super-admin
+  // only, reason required, must accompany the completion it is overriding.
+  // Nothing here weakens the gates for the ordinary Sign off / Waive buttons.
+  const ovr = adminOverride.evaluate(req.actor, b);
+  if (!ovr.ok) return res.status(ovr.status).json({ error: ovr.error });
+  // The three ways a condition completes — sign-off, waive, and the status
+  // dropdown's "satisfied". An override must be STAMPED on whichever one it came
+  // through, or the third door would quietly clear a condition with the gate
+  // bypassed and nothing recorded. One definition, used by the stamp, the audit
+  // and the register record below.
+  const completing = b.signedOff === true || b.waived === true || b.status === 'satisfied';
   // Completing a condition is the PROCESSOR's call (admins too). A loan
   // officer marks it reviewed instead — a lighter stamp, never "satisfied".
   const canComplete = can(req.actor, 'sign_off_conditions');
@@ -4962,7 +5031,11 @@ router.patch('/checklist/:itemId', async (req, res) => {
     // Normally only an OPTIONAL condition may be waived. The appraisal credit-card
     // condition is an explicit exception (owner-directed): it is waivable directly
     // even though it's a required task — the appraisal may simply be paid another way.
-    if (!isApprCard && cur.rows[0].is_required !== false) return res.status(422).json({ error: 'Only an optional condition can be waived — make it optional first, then waive.' });
+    // A super-admin OVERRIDE is the third way through: clearing a REQUIRED condition
+    // without fulfilling it is exactly what the override exists for, so it does not
+    // have to be made optional first (that detour edited the file's requirements to
+    // clear one item — the override records the decision instead).
+    if (!ovr.requested && !isApprCard && cur.rows[0].is_required !== false) return res.status(422).json({ error: 'Only an optional condition can be waived — make it optional first, then waive.' });
   }
   // Push-back / reject / reopen: send a condition back to the borrower with a
   // BORROWER-VISIBLE reason (owner-directed 2026-07-12, LOS-grade management). One
@@ -4981,9 +5054,22 @@ router.patch('/checklist/:itemId', async (req, res) => {
   // registered, the rehab budget must agree across SOW/file/product, and
   // verified experience must back the registered product. Blocks the sign-off
   // (422) with a plain-language reason until everything lines up.
+  //
+  // Under a super-admin OVERRIDE the gate still RUNS — it just stops blocking.
+  // Running it is the point: its refusal text is the record of what was actually
+  // missing, and it is stamped on the condition (override_blocked_reason) so the
+  // file can answer "what was skipped here?" long after the fact. A null means
+  // nothing was blocking, which is also worth recording honestly.
+  let blockedReason = null;
   if (b.signedOff === true || b.status === 'satisfied') {
     const gate = await signOffGate(req.params.itemId, req.actor);
-    if (gate) return res.status(422).json({ error: gate });
+    if (gate && !ovr.requested) return res.status(422).json({ error: gate });
+    blockedReason = gate || null;
+  }
+  // A waive-by-override records what the condition was still missing too — the
+  // gate is the same question ("is this fulfilled?"), asked without blocking.
+  if (ovr.requested && b.waived === true && blockedReason == null) {
+    try { blockedReason = await signOffGate(req.params.itemId, req.actor); } catch (_) { blockedReason = null; }
   }
 
   const sets = ['updated_at=now()'];
@@ -5017,6 +5103,18 @@ router.patch('/checklist/:itemId', async (req, res) => {
     sets.push('signed_off_by=NULL', 'signed_off_at=NULL', 'waived_by=NULL', 'waived_at=NULL');
     if (b.waived === false) sets.push("status='outstanding'");
   }
+  // The override stamps travel WITH the completion they authorize. Undoing the
+  // sign-off / waive clears them in the same breath: an item back on the list was
+  // not "cleared by override", and a later ordinary sign-off must not inherit an
+  // old override's reason (the stale-stamp class this repo keeps paying for).
+  if (ovr.requested && completing) {
+    add('override_by=?', req.actor.id);
+    add('override_reason=?', ovr.reason);
+    add('override_blocked_reason=?', blockedReason);
+    sets.push('override_at=now()');
+  } else if (b.signedOff === false || b.waived === false) {
+    sets.push('override_by=NULL', 'override_at=NULL', 'override_reason=NULL', 'override_blocked_reason=NULL');
+  }
   // Reviewed stamp (any assigned staff, typically the loan officer).
   if (b.reviewed === true) {
     add('reviewed_by=?', req.actor.id);
@@ -5030,7 +5128,10 @@ router.patch('/checklist/:itemId', async (req, res) => {
   // condition (reopen / add-back). issue_reason is what the borrower is shown.
   if (b.pushBack === true) {
     add('issue_reason=?', String(b.issueReason).slice(0, 500));
-    sets.push("status='issue'", 'signed_off_by=NULL', 'signed_off_at=NULL', 'reviewed_by=NULL', 'reviewed_at=NULL');
+    sets.push("status='issue'", 'signed_off_by=NULL', 'signed_off_at=NULL', 'reviewed_by=NULL', 'reviewed_at=NULL',
+      // A reopened condition is open again — it is no longer cleared by anyone,
+      // least of all by an override (same reason as the un-sign branch above).
+      'override_by=NULL', 'override_at=NULL', 'override_reason=NULL', 'override_blocked_reason=NULL');
   } else if (b.issueReason != null) {
     // A plain reject that passes an explicit status='issue' can carry the reason.
     add('issue_reason=?', String(b.issueReason).slice(0, 500));
@@ -5046,6 +5147,50 @@ router.patch('/checklist/:itemId', async (req, res) => {
   // Propagate a mapped condition's status to its ClickUp dropdown (scoped push;
   // self-gating no-op for unmapped items / unlinked files).
   enqueueChecklistStatusPush(req.params.itemId).catch(() => {});
+
+  // A super-admin override is a POLICY DECISION, not a checkbox: audit it, and
+  // land it in the loan_exceptions register (born approved, record-only) exactly
+  // as an issuance override does — which is what puts it on the Exceptions
+  // screen, in the EX-n register export, and in the decision certificate's
+  // policy_exceptions block with no extra plumbing. Best-effort, in that order:
+  // the sign-off already happened, so neither write may reverse or 500 it.
+  if (ovr.requested && completing) {
+    const oItemId = req.params.itemId;
+    try {
+      const it = (await db.query(
+        `SELECT ci.application_id, ci.label, ci.item_kind, ci.is_required,
+                (SELECT code FROM checklist_templates t WHERE t.id=ci.template_id) AS template_code
+           FROM checklist_items ci WHERE ci.id=$1`, [oItemId])).rows[0] || {};
+      const note = adminOverride.describe({ label: it.label, reason: ovr.reason, blocked: blockedReason });
+      // Which door it came through — the trail should not have to guess.
+      const how = b.waived === true ? 'waive' : b.signedOff === true ? 'sign_off' : 'mark_satisfied';
+      await audit(req, 'admin_override_condition', 'checklist_item', oItemId, {
+        applicationId: it.application_id || null,
+        label: it.label || null,
+        templateCode: it.template_code || null,
+        action: how,
+        reason: ovr.reason,
+        blockedReason: blockedReason || null,
+      });
+      if (it.application_id) {
+        await loanExceptions.recordConditionOverride({
+          appId: it.application_id, staffId: req.actor.id, note,
+          snapshot: {
+            action: `condition_${how}_override`,
+            checklist_item_id: oItemId,
+            condition: it.label || null,
+            template_code: it.template_code || null,
+            item_kind: it.item_kind || null,
+            was_required: it.is_required !== false,
+            blocked_reason: blockedReason || null,
+            at: new Date().toISOString(),
+          },
+        });
+      }
+    } catch (e) {
+      try { console.warn('[staff] condition-override record skipped:', db.describeError(e)); } catch (_) {}
+    }
+  }
 
   // Non-blocking false-clear guard (owner-directed): when a condition is signed
   // off, if PILOT's read of the cleared document (the cure proof) says it does
