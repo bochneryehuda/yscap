@@ -36,8 +36,8 @@ const rev = require('../src/lib/underwriting/finding-ai-review');
        VALUES ($1,$2,$3,'rejected',false,0.95,'The document names the current owner (seller), not our buyer')`,
       [app.id, fpRej, rejected.code]);
     await client.query(
-      `INSERT INTO finding_ai_reviews (application_id, fingerprint, code, verdict, is_real_concern, confidence, reasoning, suggested_resolution, suggested_document)
-       VALUES ($1,$2,$3,'confirmed',true,0.9,'The contract price genuinely disagrees with the file','Reconcile the price with the seller','purchase contract')`,
+      `INSERT INTO finding_ai_reviews (application_id, fingerprint, code, verdict, is_real_concern, confidence, reasoning, suggested_resolution, suggested_document, borrower_label, borrower_hint)
+       VALUES ($1,$2,$3,'confirmed',true,0.9,'The contract price genuinely disagrees with the file','Reconcile the price with the seller','purchase contract','Purchase price confirmation','Please confirm the agreed purchase price on your contract')`,
       [app.id, fpConf, confirmed.code]);
 
     // 1. The (application_id, fingerprint) unique index prevents a second row. A raw duplicate
@@ -71,6 +71,8 @@ const rev = require('../src/lib/underwriting/finding-ai-review');
     assert.ok(shown[0].aiReview && shown[0].aiReview.verdict === 'confirmed', 'the survivor carries its AI review');
     assert.strictEqual(shown[0].aiReview.suggestedResolution, 'Reconcile the price with the seller',
       'the AI-suggested resolution is attached on top of the finding');
+    assert.strictEqual(shown[0].aiReview.borrowerLabel, 'Purchase price confirmation',
+      'the AI-drafted borrower-facing wording round-trips');
 
     // 4. THE SECOND AI: a rejected finding with a DISAGREEING second-model verdict stays VISIBLE.
     //    Store a second finding rejected by the primary but where the 2nd model CONFIRMED it's real.
