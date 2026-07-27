@@ -3069,10 +3069,13 @@ export default function StaffApplication() {
       ...openHere('sec-closing')),
     'sec-esign': line(...openHere('sec-esign')),
     'sec-orders': line(nOrdersToAssign ? `${plural(nOrdersToAssign, 'return')} to assign` : 'Nothing waiting to be assigned'),
+    // The header badge already carries the file COUNT, so the line must not
+    // repeat it — a summary that echoes the badge is noise. It speaks only when
+    // it has something the count cannot say.
     'sec-documents': (() => {
       if (!docs.length) return 'No documents on this file yet';
       const rejected = docs.filter(d => d.review_status === 'rejected' && d.is_current !== false).length;
-      return line(plural(docs.length, 'file'), rejected ? `${rejected} rejected` : null);
+      return rejected ? `${plural(rejected, 'file')} rejected — the borrower needs to send a replacement` : null;
     })(),
   };
   const SECTIONS = [
