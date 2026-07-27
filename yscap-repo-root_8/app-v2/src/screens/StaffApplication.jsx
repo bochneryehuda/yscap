@@ -30,6 +30,7 @@ import EditFileDetails from '../components/EditFileDetails.jsx';
 import ToolModal from '../components/ToolModal.jsx';
 import FileSections, { Section, InfoTip, subscribeConditionsTab, goToSection, requestOpenSection } from '../components/FileSections.jsx';
 import { captureScrollAnchor, restoreScrollAnchor } from '../lib/keep-scroll.js';
+import BorrowerProfilePanel from '../components/BorrowerProfilePanel.jsx';
 import { CONDITION_STATUSES, CONDITION_TIMINGS, conditionStatusLabel, conditionStatusClass, timingLabel, loanConditionStatusLabel } from '../lib/conditions-vocab.js';
 import { severityCount } from '../lib/findings-vocab.js';
 import { groupBySubject } from '../lib/condition-subjects.js';
@@ -3494,12 +3495,25 @@ export default function StaffApplication() {
       <Section id="sec-application" title="Application details" defaultOpen={false}
         info="What the borrower filled out, plus the editable deal numbers — changes here flow straight into pricing.">
       <Completeness app={app} borrower={borrower} appId={app.id} onSaved={load} />
+      {/* THE PEOPLE ON THIS FILE — their own records, fully editable from here
+          (owner-directed 2026-07-27: "we can only edit the details of the property,
+          we can't edit the borrower profile … a button to edit the entire borrower
+          profile, so we can edit the 1st borrower AND the 2nd borrower — name,
+          social, everything"). Everything below in EditFileDetails is the DEAL;
+          these two panels are the PEOPLE. Same shared component, same audited
+          saves, once per borrower — so the co-borrower is finally editable too. */}
+      {app.borrower_id && (
+        <BorrowerProfilePanel borrowerId={app.borrower_id} heading="Borrower profile" onChanged={load} />
+      )}
       {app.borrower_id && (
         <PrimaryAddressPanel borrowerId={app.borrower_id}
           address={borrower && borrower.current_address}
           name={`${app.first_name || ''} ${app.last_name || ''}`.trim() || 'Borrower'} onSaved={load} />
       )}
       <CoBorrowerCompleteness app={app} appId={app.id} onSaved={load} />
+      {app.co_borrower_id && (
+        <BorrowerProfilePanel borrowerId={app.co_borrower_id} heading="Co-borrower profile" onChanged={load} />
+      )}
       {app.co_borrower_id && (
         <PrimaryAddressPanel borrowerId={app.co_borrower_id}
           address={app.co_current_address}
