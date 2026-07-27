@@ -191,8 +191,11 @@ const { Pool } = require('pg');
       `INSERT INTO encompass_loan_snapshot (encompass_loan_guid, loan_number, raw, last_modified, pulled_at)
        VALUES ($1,$1,$2::jsonb,$3, now())`, [guid, JSON.stringify(raw), when]);
 
+    // `closing` is the day the loan FUNDED — these stand for closed deals, which
+    // is what puts a property on the track record. A loan with no `closing` is
+    // still in flight (owner-directed 2026-07-27: its property stays off).
     const loan = ({ first, last, dob, home, subject, llc1859, email, mobile, work, closing }) => ({
-      closingDocument: closing ? { closingDate: closing } : undefined,
+      closingDocument: closing ? { closingDate: closing, fundingDate: closing } : undefined,
       applications: [{
         borrower: {
           firstName: first, lastName: last, birthDate: dob,
@@ -234,12 +237,24 @@ const { Pool } = require('pg');
       closing: '2024-05-01',
     }), '2024-05-02T00:00:00Z');
 
+    // THE FILE HE IS IN THE MIDDLE OF: a live Encompass loan, no funding yet. Its
+    // subject property must NOT reach his track record (owner-reported 2026-07-27),
+    // while everything else on it — his entity, his phone — still counts.
+    await snap(`enr-live-${sfx}`, loan({
+      first: 'Shulem', last: 'Weiss', dob: '1979-11-05',
+      subject: { street: '500 In Progress Ave', city: 'Newark', state: 'NJ', zip: '07102' },
+      llc1859: 'Weiss Live Deal LLC',
+      mobile: '(845) 777-6666',
+    }), '2026-07-01T00:00:00Z');
+
     const s = await enrich.enrichAllOnce({ dbc: client });
-    okd(s.loans === 3 && s.matched === 3, 'every loan in the mirror is read and matched to its person');
+    okd(s.loans === 4 && s.matched === 4, 'every loan in the mirror is read and matched to its person');
 
     // ── Entities add up, including everything field 1859 named ──────────────
     const llcs = (await client.query(`SELECT llc_name, origin, is_verified FROM llcs WHERE borrower_id=$1 ORDER BY llc_name`, [bId])).rows;
-    okd(llcs.length === 3, 'field 1859 across BOTH files yields three distinct entities');
+    okd(llcs.length === 4, 'field 1859 across the files yields four distinct entities');
+    okd(llcs.some((l) => /Weiss Live Deal/i.test(l.llc_name)),
+      'the entity on the file he is in the MIDDLE of still counts — an entity is his whether or not the deal closed');
     okd(llcs.some((l) => /Weiss Ventures/i.test(l.llc_name)) && llcs.some((l) => /Weiss Capital/i.test(l.llc_name)),
       'the entities only one file named are both picked up');
     okd(llcs.filter((l) => /Weiss Equities/i.test(l.llc_name)).length === 1,
@@ -247,17 +262,20 @@ const { Pool } = require('pg');
     okd(llcs.every((l) => l.origin === 'encompass' && l.is_verified === false),
       'everything Encompass contributes is tagged and UNVERIFIED — it never inflates experience');
 
-    // ── Properties add up ──────────────────────────────────────────────────
+    // ── Properties add up — but only the ones that CLOSED ──────────────────
     const trs = (await client.query(`SELECT property_address FROM track_records WHERE borrower_id=$1`, [bId])).rows;
-    okd(trs.length === 2, 'each file\'s subject property lands in the track record');
+    okd(trs.length === 2, 'each CLOSED file\'s subject property lands in the track record');
+    okd(!/In Progress Ave/.test(JSON.stringify(trs)),
+      'the property he has not closed yet is NOT on his track record');
+    okd(s.addressesSkippedNotClosed === 1, 'and the pass reports holding it back');
 
     // ── Phones and emails add up ───────────────────────────────────────────
     const contacts = (await client.query(`SELECT kind, value, source FROM borrower_contacts WHERE borrower_id=$1`, [bId])).rows;
     const hasC = (k, v) => contacts.some((c) => c.kind === k && String(c.value).toLowerCase() === v.toLowerCase());
     okd(hasC('email', `enr-old-${sfx}@test.local`) && hasC('email', `enr-new-${sfx}@test.local`),
       'every email address across the files accumulates on the profile');
-    okd(hasC('phone', '(718) 333-4444') && hasC('phone', '(845) 999-8888'),
-      'as does every phone number');
+    okd(hasC('phone', '(718) 333-4444') && hasC('phone', '(845) 999-8888') && hasC('phone', '(845) 777-6666'),
+      'as does every phone number — including the one on the file still in flight');
     okd(!contacts.some((c) => c.kind === 'phone' && c.value.includes('111-2222')),
       'the number that is ALREADY the profile\'s primary is not re-added as an extra');
     okd(contacts.every((c) => /^encompass:/.test(c.source || '')),
