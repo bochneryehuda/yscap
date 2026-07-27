@@ -36,7 +36,15 @@ function canonPropertyType(v) {
   if (/mixed.?use/.test(s)) return 'mixed_use';
   if (/\bland\b|lot only|vacant land/.test(s)) return 'land';
   if (/manufactured|mobile/.test(s)) return 'manufactured';
-  if (/sfr|single.?family|1.?unit|one unit|detached|\bsfd\b/.test(s)) return 'sfr';
+  if (/sfr|single.?family|1.?unit|one unit|\bsfd\b/.test(s)) return 'sfr';
+  // A BARE ATTACHMENT STYLE is NOT a unit category (owner 2026-07-27: "Detached is just a type…
+  // this condition is totally wrong"). The appraisal's MISMO AttachmentType is "Detached"/"Attached"
+  // — a detached building can be a 2–4-unit just as easily as a single-family, so "detached" alone
+  // tells you nothing about the category and must NOT resolve to 'sfr'. It only meant SFR above when
+  // a real category word was present ("single family detached" already matched via single.?family).
+  // A style with no category context is uncomparable, so it can never false-mismatch the file's
+  // real category ("Multi 2–4"); the count-vs-range check owns that comparison.
+  if (/^(detached|attached)$/.test(s) || /\b(detached|attached)\b(?!.*\b(family|unit|sfr|condo|town)\b)/.test(s)) return null;
   return null; // unrecognized → uncomparable, never a guessed bucket
 }
 function canonOccupancy(v) {
@@ -107,7 +115,11 @@ const DOC_CLAIMS = {
   title: (f) => ({ property_address: f.propertyAddress, seller_name: f.vestedOwners, entity_name: f.buyerNames }),
   appraisal: (f) => ({ property_address: f.propertyAddress, purchase_price: pick(f.contractPrice, f.salePrice), seller_name: f.sellerNames || arr(f.ownerOfRecord) || arr(f.sellerName), as_is_value: pick(f.asIsValue, f.as_is_value), arv: pick(f.arvValue, f.arv),
     // Collateral physicals off the appraisal (owner-directed 2026-07-21) — the appraisal is the
-    // authority for what the property physically IS; these tie out against the application.
+    // authority for what the property physically IS; these tie out against the application. NOTE
+    // (owner 2026-07-27): the appraisal's property_type is usually the MISMO AttachmentType, a STYLE
+    // ("Detached"/"Attached") — canonPropertyType now treats a bare style as UNCOMPARABLE, so it can
+    // never false-mismatch the file's unit CATEGORY ("Multi 2–4"); a real category (Condo/SFR) still
+    // ties out. The count-vs-type-range check is owned by appraisal-underwriter.js (via `units`).
     units: pick(f.units, f.unitCount), property_type: pick(f.propertyType, f.property_type),
     occupancy: pick(f.occupancy), year_built: pick(f.yearBuilt, f.year_built),
     living_area: pick(f.gla, f.sqft, f.livingArea), market_rent: pick(f.marketRent, f.market_rent) }),

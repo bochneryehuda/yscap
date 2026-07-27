@@ -211,6 +211,17 @@ assert.strictEqual(claimsFor('bank_statement', { accountHolderName: 'John Smith'
   assert.ok(bad.discrepancies.some((d) => d.field === 'property_type'), 'SFR vs Condo → discrepancy');
   // Occupancy owner-vs-tenant IS a real disagreement (info severity — a business-purpose flag).
   assert.ok(bad.discrepancies.some((d) => d.field === 'occupancy'), 'Investment (file) vs Owner Occupied (appraisal) → discrepancy');
+
+  // THE OWNER'S 2026-07-27 CASE: the appraisal's property_type is a bare ATTACHMENT STYLE
+  // ("Detached") — that is NOT a unit category, so on a Multi 2–4 file with agreeing unit counts it
+  // must NOT fire "property type doesn't match". (canonPropertyType('Detached') is uncomparable.)
+  const cxMulti = { ...ctx, app: { ...ctx.app, units: 3, property_type: 'Multi 2-4' } };
+  const styleOnly = buildTieout(cxMulti, [{ id: 'a', docType: 'appraisal', fields: {
+    propertyAddress: ADDR, units: 3, propertyType: 'Detached' } }]);
+  assert.ok(!styleOnly.discrepancies.some((d) => d.field === 'property_type'),
+    'a bare "Detached" style on a Multi 2–4 file with matching units → NO false property-type mismatch');
+  assert.ok(!styleOnly.discrepancies.some((d) => d.field === 'units'),
+    '3 units on file and appraisal → no unit discrepancy');
 }
 
 // An UNRECOGNIZED property-type string is uncomparable, never a false mismatch.
