@@ -206,8 +206,15 @@ function canonicalOneLine(a, { country = false } = {}) {
   const parts = [street, city, tail].filter(Boolean);
   if (!parts.length) return '';
   const line = parts.join(', ');
-  const cc = String(addr.country || 'US').toUpperCase();
-  return country && (cc === 'US' || cc === 'USA') ? line + ', USA' : line;
+  // The COUNTRY is deliberately never appended (owner-directed 2026-07-26
+  // evening: "we don't need the USA — our address should finish with the zip
+  // code"). Encompass, the mailing form and most of our own surfaces stop at the
+  // ZIP, and a trailing country was the single most common cosmetic difference
+  // in the review queue. `country` is accepted (and ignored) so existing callers
+  // keep working; comparisons strip a country on BOTH sides regardless, so a
+  // value that still carries one — an older record, a ClickUp import — is never
+  // read as a different address.
+  return line;
 }
 
 /**
@@ -271,7 +278,7 @@ function compactFormattedAddress(text) {
   const s = String(text || '').replace(/\s+/g, ' ').trim();
   if (!s || !looksLikeProviderLongForm(s)) return s;
   const parsed = parseProviderLongForm(s);
-  return canonicalOneLine(parsed, { country: /,\s*(?:usa|united states(?: of america)?)\.?$/i.test(s) }) || s;
+  return canonicalOneLine(parsed) || s;
 }
 
 /**
@@ -304,8 +311,9 @@ function canonicalizeAddressValue(v) {
   if (!out.state) set('state', p.state);
   else set('state', stateAbbr(out.state));
   if (!out.zip) set('zip', p.zip);
-  set('formatted_address', canonicalOneLine(out, { country: true }));
-  set('oneLine', canonicalOneLine(out, { country: false }));
+  const line = canonicalOneLine(out);
+  set('formatted_address', line);
+  set('oneLine', line);
   return changed ? out : null;
 }
 
@@ -335,8 +343,226 @@ function stateCompareKey(v) {
   return named || squeezed.toUpperCase();
 }
 
+
+// ===========================================================================
+// SAME-ADDRESS COMPARISON — "is this the same place?", not "is this the same
+// string?" (owner-reported 2026-07-26 evening: 54 sync-review rows where both
+// sides were plainly the same address).
+// ---------------------------------------------------------------------------
+// Encompass writes "5701 15 Ave 4D, Brooklyn, NY 11219"; PILOT holds
+// "5701 15th Ave Apt 4d, Brooklyn, NY 11219, USA". Same home. Every comparison
+// in the system used a "strip the punctuation and compare the letters" key, so
+// EVERY such pair read as a disagreement and queued a manual review nobody can
+// act on. This is the ONE place that decides whether two addresses are the same
+// place; every comparer (Encompass enrichment, the sync-review re-check, the
+// ClickUp no-op suppression) calls it.
+//
+// IGNORED (pure spelling of the same address):
+//   trailing country, case, punctuation, ZIP+4, "Avenue"/"Ave", "South"/"S",
+//   ordinal suffixes ("15 Ave" = "15th Ave", and a typo'd "61th" = "61st"),
+//   unit KEYWORDS ("Apt 5B" = "Unit 5B" = "#5b" = "5B"), a leading descriptive
+//   part ("Bedford Gardens, 74 Ross St"), a doubled or missing municipality, and
+//   the CITY NAME when both sides carry the same ZIP (the ZIP is the authority:
+//   Cedarhurst/Hempstead, Spring Valley/Ramapo, Jackson/Jackson Township are the
+//   same place — that difference is a mailing-vs-municipality naming choice).
+//
+// NEVER IGNORED (a real difference a human must settle):
+//   a different house number (755 vs 702 Bedford), a different street
+//   (34 Baila Dr vs 5 14th St), a different ZIP (08701 vs 08071, 10950 vs
+//   10350 — usually a typo worth fixing), a different state, and two units that
+//   are both present and DIFFERENT (Apt 3L vs Apt 5B).
+//
+// One side missing the unit entirely is NOT a conflict: it is the same address
+// written with less detail, and the review offered no decision to make.
+// ===========================================================================
+
+// Unit keywords, including the forms Encompass uses.
+const UNIT_WORDS = new Set(['apt', 'apartment', 'unit', 'ste', 'suite', 'fl', 'floor', 'rm', 'room',
+  'bldg', 'building', 'lot', 'trlr', 'trailer', 'dept', 'department', 'condo', 'no', 'num', 'number']);
+// Street-type words whose PRESENCE is optional when the rest matches
+// ("100 Whisper Vlg" = "100 Whisper Vlg Wy"). Deliberately EXCLUDES
+// extension/ext — "Oak Street" and "Oak Street Extension" are different streets
+// (the SharePoint matcher depends on that distinction too).
+const OPTIONAL_TYPE = new Set(['st', 'street', 'ave', 'avenue', 'av', 'rd', 'road', 'dr', 'drive',
+  'ln', 'lane', 'ct', 'court', 'pl', 'place', 'blvd', 'boulevard', 'ter', 'terr', 'terrace',
+  'cir', 'circle', 'pkwy', 'parkway', 'hwy', 'highway', 'way', 'wy', 'trl', 'trail', 'sq', 'square',
+  'plz', 'plaza', 'ct', 'cv', 'cove', 'loop', 'row', 'walk', 'path', 'run', 'pt', 'point']);
+// Canonical spelling for every street-type / directional token, so "Avenue",
+// "Ave" and "Av" collapse to one word before comparing.
+const TYPE_CANON = {
+  st: 'street', str: 'street', street: 'street', ave: 'avenue', av: 'avenue', avenue: 'avenue',
+  rd: 'road', road: 'road', dr: 'drive', drive: 'drive', ln: 'lane', lane: 'lane',
+  ct: 'court', court: 'court', pl: 'place', place: 'place', blvd: 'boulevard', boulevard: 'boulevard',
+  ter: 'terrace', terr: 'terrace', terrace: 'terrace', cir: 'circle', circle: 'circle',
+  pkwy: 'parkway', parkway: 'parkway', hwy: 'highway', highway: 'highway', wy: 'way', way: 'way',
+  trl: 'trail', trail: 'trail', sq: 'square', square: 'square', plz: 'plaza', plaza: 'plaza',
+  tpke: 'turnpike', turnpike: 'turnpike', hts: 'heights', heights: 'heights', pt: 'point', point: 'point',
+  cv: 'cove', cove: 'cove', xing: 'crossing', crossing: 'crossing', jct: 'junction', junction: 'junction',
+  n: 'north', north: 'north', s: 'south', south: 'south', e: 'east', east: 'east', w: 'west', west: 'west',
+  ne: 'northeast', northeast: 'northeast', nw: 'northwest', northwest: 'northwest',
+  se: 'southeast', southeast: 'southeast', sw: 'southwest', southwest: 'southwest',
+};
+
+/** Any stored address shape -> the best one-line text we can compare. */
+function addressTextOf(v) {
+  if (v == null) return '';
+  if (typeof v === 'string') return v;
+  if (typeof v !== 'object') return '';
+  const pick = (x) => (typeof x === 'string' && x.trim() ? x.trim() : '');
+  const direct = pick(v.formatted_address) || pick(v.formattedAddress) || pick(v.oneLine) || pick(v.address);
+  if (direct) return direct;
+  const street = [pick(v.line1) || pick(v.street), pick(v.unit)].filter(Boolean).join(' ');
+  const tail = [pick(v.state), pick(v.zip)].filter(Boolean).join(' ');
+  return [street, pick(v.city), tail].filter(Boolean).join(', ');
+}
+
+// "15th" -> "15", "61th" -> "61" (a typo for 61st is the same street).
+const dropOrdinal = (t) => t.replace(/^(\d+)(?:st|nd|rd|th)$/i, '$1');
+const alnum = (t) => String(t || '').toLowerCase().replace(/[^a-z0-9]/g, '');
+
+/**
+ * Split any address into the pieces that decide identity.
+ * Returns { house, street, streetBase, unit, city, state, zip } — all lowercase
+ * comparison keys, '' when absent. Never throws.
+ */
+function parseAddressParts(v) {
+  const out = { house: '', street: '', streetBase: '', unit: '', city: '', state: '', zip: '' };
+  let s = addressTextOf(v).replace(/\s+/g, ' ').trim();
+  if (!s) return out;
+  // country off the end, then ZIP (+4 collapsed), then state
+  s = s.replace(/,?\s*(?:u\.?s\.?a\.?|united states(?: of america)?)\.?\s*$/i, '').replace(/,\s*$/, '').trim();
+  const zipM = s.match(/\b(\d{5})(?:-\d{4})?\s*$/);
+  if (zipM) { out.zip = zipM[1]; s = s.slice(0, zipM.index).replace(/[,\s]+$/, ''); }
+  const stM = s.match(/[,\s]([A-Za-z]{2})\s*$/);
+  if (stM && STATE_ABBRS.has(stM[1].toUpperCase())) { out.state = stM[1].toUpperCase(); s = s.slice(0, stM.index).replace(/[,\s]+$/, ''); }
+  else {
+    const full = Object.keys(US_STATE_ABBR).sort((a, b) => b.length - a.length)
+      .find((n) => new RegExp('[,\\s]' + n + '\\s*$', 'i').test(s));
+    if (full) { out.state = US_STATE_ABBR[full]; s = s.replace(new RegExp('[,\\s]' + full + '\\s*$', 'i'), '').replace(/[,\s]+$/, ''); }
+  }
+
+  let parts = s.split(',').map((p) => p.trim()).filter(Boolean);
+  if (!parts.length) return out;
+  // A leading descriptive part is noise: "Bedford Gardens, 74 Ross St #1h",
+  // "Right side, Back door, 22 Jefferson Ave". Start at the first part that
+  // begins with a house number; if none does, keep everything.
+  const startsWithNumber = (p) => isHouseNumber(String(p).split(' ')[0]);
+  const firstNum = parts.findIndex(startsWithNumber);
+  if (firstNum > 0) parts = parts.slice(firstNum);
+
+  let streetPart = parts.shift() || '';
+  // The LAST remaining part is the municipality; anything between it and the
+  // street is a unit ("175 Hooper St, 1, Brooklyn") or neighbourhood noise.
+  if (parts.length) {
+    out.city = normalizeCityName(parts.pop()).toLowerCase();
+    for (const mid of parts) {
+      const m = String(mid).trim();
+      const w = alnum(m.split(' ')[0]);
+      if (UNIT_WORDS.has(w) || /^[#]?[A-Za-z]?\d+[A-Za-z]?$/.test(m) || m.length <= 4) {
+        if (!out.unit) out.unit = alnum(m.replace(new RegExp('^(?:' + [...UNIT_WORDS].join('|') + ')\\.?\\s*', 'i'), ''));
+      }
+    }
+  }
+
+  // House number off the front of the street part.
+  let toks = streetPart.split(' ').filter(Boolean);
+  // Keep the hyphen: "218-222" is a RANGE, and houseMatches needs to see it.
+  if (toks.length && isHouseNumber(toks[0])) out.house = String(toks.shift()).toLowerCase().replace(/[^a-z0-9-]/g, '');
+
+  // Unit inside the street part: an explicit keyword/# form...
+  const rest = toks.join(' ');
+  const uM = rest.match(UNIT_RE);
+  if (uM) {
+    const token = (uM[1] || uM[2] || '').trim();
+    if (token && !out.unit) out.unit = alnum(token);
+    // a "#"/keyword with NOTHING after it ("1341 40th St #", "1220 43rd St Apt")
+    // is an empty unit slot — treated as "no unit", never as a difference.
+    toks = (rest.slice(0, uM.index) + ' ' + rest.slice(uM.index + uM[0].length)).split(' ').filter(Boolean);
+  }
+  // Any unit KEYWORD inside the street tokens splits it: everything after the
+  // keyword is the unit ("…Skillman St Condo 8 B" -> unit "8b"). Covers the
+  // words UNIT_RE doesn't (condo, no., number) and multi-token units.
+  {
+    const at = toks.findIndex((t) => UNIT_WORDS.has(alnum(t)));
+    if (at > 0) {
+      const after = toks.slice(at + 1).map(alnum).join('');
+      if (after && !out.unit) out.unit = after;
+      toks = toks.slice(0, at);
+    }
+  }
+  // A trailing unit keyword with NOTHING after it ("1220 43rd St Apt",
+  // "18 Hammond St Unit") is an empty slot — drop it, never let it become
+  // part of the street name.
+  while (toks.length && UNIT_WORDS.has(alnum(toks[toks.length - 1]))) toks.pop();
+  // ...or a bare trailing token after a street type ("142 Clymer Street 2",
+  // "814 Bedford Ave 5B"). Only when a street type was actually seen, so a
+  // street name's own last word is never eaten.
+  if (toks.length >= 2) {
+    const last = alnum(toks[toks.length - 1]);
+    const prev = alnum(toks[toks.length - 2]);
+    const prevIsType = !!TYPE_CANON[prev] && OPTIONAL_TYPE.has(prev);
+    if (prevIsType && last && last.length <= 4 && /\d/.test(last) === /\d/.test(last)) {
+      if (!/^\d{5}$/.test(last)) { if (!out.unit) out.unit = last; toks.pop(); }
+    }
+  }
+
+  const norm = toks.map((t) => { const k = alnum(dropOrdinal(t)); return TYPE_CANON[k] || k; }).filter(Boolean);
+  out.street = norm.join('');
+  const tail = norm[norm.length - 1];
+  out.streetBase = (norm.length > 1 && tail && OPTIONAL_TYPE.has(tail)) ? norm.slice(0, -1).join('') : out.street;
+  return out;
+}
+
+/** House numbers match — including a range that starts at the other's number
+ *  ("27-29 Tuscany Ter" is "27 Tuscany Ter"; "218-222 Skillman" is "218"). */
+function houseMatches(a, b) {
+  if (!a || !b) return false;
+  if (a === b) return true;
+  // A range covers its endpoints: "27-29 Tuscany Ter" IS "27 Tuscany Ter",
+  // "218-222 Skillman" IS "218 Skillman" (one building, written two ways).
+  const ends = (x) => String(x).split('-').filter(Boolean);
+  const ea = ends(a), eb = ends(b);
+  return ea.some((v) => eb.includes(v));
+}
+
+/**
+ * Are these two addresses the SAME PLACE? Conservative: anything it cannot read
+ * on both sides (no house number, no street) returns false, so a review is kept
+ * rather than silently closed. Pure; never throws.
+ */
+function sameAddress(a, b) {
+  try {
+    const x = parseAddressParts(a), y = parseAddressParts(b);
+    if (!x.house || !y.house || !x.street || !y.street) return false;
+    if (!houseMatches(x.house, y.house)) return false;
+    const streetOk = x.street === y.street
+      || (!!x.streetBase && x.streetBase === y.streetBase && (x.street === x.streetBase || y.street === y.streetBase));
+    if (!streetOk) return false;
+    if (x.state && y.state && x.state !== y.state) return false;
+    // The ZIP is the authority on locality. Only when one side has no ZIP does
+    // the city name have to agree.
+    if (x.zip && y.zip) { if (x.zip !== y.zip) return false; }
+    else if (x.city && y.city && x.city !== y.city) return false;
+    // Both units present and different = a real disagreement. One side blank =
+    // the same address written with less detail.
+    if (x.unit && y.unit && x.unit !== y.unit) return false;
+    return true;
+  } catch (_) { return false; }
+}
+
+/** Stable key for grouping/deduping addresses: house|street|zip. Unit- and
+ *  city-free by design (see sameAddress). '' when unreadable. */
+function addressCompareKey(v) {
+  try {
+    const p = parseAddressParts(v);
+    if (!p.house || !p.street) return '';
+    return [p.house, p.streetBase || p.street, p.zip].join('|');
+  } catch (_) { return ''; }
+}
+
 module.exports = {
   parseAddress, normalizeAddress, splitUnit, stateAbbr, stateCompareKey,
+  parseAddressParts, sameAddress, addressCompareKey, addressTextOf,
   abbreviateStreet, normalizeCityName, preferBorough, osmComponentsToAddress,
   canonicalOneLine, looksLikeProviderLongForm, parseProviderLongForm,
   compactFormattedAddress, canonicalizeAddressValue,

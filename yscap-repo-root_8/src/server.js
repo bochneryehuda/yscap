@@ -575,6 +575,14 @@ if (require.main === module) {
         // New York, 11249, United States") are rewritten to the mailing form
         // ClickUp shows ("26 S 10th St, Brooklyn, NY 11249, USA"). Only touches
         // records that ARE in the long form; idempotent, bounded, self-draining.
+        // Owner-reported 2026-07-26 evening: the sync-review queue filled with
+        // "Borrower home address" rows where both sides were the SAME address
+        // written differently (", USA", "Apt 4d" vs "4D", "Avenue" vs "Ave", the
+        // municipality vs the mailing city). Retire those; a real difference —
+        // house number, street, ZIP, state, unit — stays open for a human.
+        require('./lib/address-review-close').closeEquivalentAddressReviewsOnce()
+          .then((r) => r && r.closed && console.log('[boot] address reviews auto-closed:', JSON.stringify(r)))
+          .catch((e) => console.error('[boot] address review close failed:', e.message));
         require('./lib/address-heal').healProviderLongAddressesOnce()
           .then((r) => r && r.fixed && console.log('[boot] address format repair:', JSON.stringify(r)))
           .catch((e) => console.error('[boot] address format repair failed:', e.message));

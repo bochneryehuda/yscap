@@ -73,7 +73,7 @@ async function withCoords(addr) {
       // belt-and-suspenders (a permanently-cached old row, a future provider).
       const ADDR = require('../lib/address');
       const formatted = ADDR.compactFormattedAddress(hit.formatted)
-        || ADDR.canonicalOneLine({ ...addr }, { country: true })
+        || ADDR.canonicalOneLine({ ...addr })
         || ADDR.compactFormattedAddress(addr.formatted_address || line);
       return {
         ...addr,
