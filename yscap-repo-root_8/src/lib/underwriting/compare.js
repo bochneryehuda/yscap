@@ -86,6 +86,25 @@ function canonEntity(s) {
   return t.replace(/\s+/g, ' ').trim();
 }
 const ENTITY_SUFFIX = /\b(llc|llp|lp|inc|corp|co|ltd)\b/g;
+// True when `a` and `b` are the SAME letter sequence with word-breaks only ADDED or REMOVED — the
+// coarser side's tokens each concatenate a CONTIGUOUS run of the finer side's tokens, in order. This
+// matches a real re-spacing ("Core Tex Solutions" ⇄ "Coretex Solutions", "Core Tex" ⇄ "Coretex") but
+// NOT two differently-worded names that merely share the same letters under a different segmentation
+// ("Ace Homes" vs "Aceh Omes"). Both inputs are already lowercased, suffix-stripped cores.
+function respacedEqual(a, b) {
+  const sa = a.replace(/\s+/g, ''), sb = b.replace(/\s+/g, '');
+  if (!sa || sa !== sb) return false;                     // must be the exact same letters
+  const ta = a.split(/\s+/).filter(Boolean), tb = b.split(/\s+/).filter(Boolean);
+  const fine = ta.length >= tb.length ? ta : tb;          // more tokens = finer segmentation
+  const coarse = ta.length >= tb.length ? tb : ta;
+  let i = 0;
+  for (const c of coarse) {
+    let acc = '';
+    while (i < fine.length && acc.length < c.length) { acc += fine[i]; i += 1; }
+    if (acc !== c) return false;                          // a coarse token didn't align to a run of fine tokens
+  }
+  return i === fine.length;
+}
 function entityMatch(a, b) {
   const ca = canonEntity(a), cb = canonEntity(b);
   if (!ca || !cb) return null;
@@ -93,12 +112,13 @@ function entityMatch(a, b) {
   const core = (x) => x.replace(ENTITY_SUFFIX, '').replace(/\s+/g, ' ').trim();
   const ka = core(ca), kb = core(cb);
   if (ka && kb && ka === kb) return true;           // same name, differing only by suffix punctuation/type
-  // Ignore INTERNAL spacing so a name that is only re-spaced still matches: "Core Tex" == "CORETEX",
-  // "Core Tex Solutions" == "Coretex Solutions" (owner-reported 2026-07-27, the Coretex file — an
-  // entity spelled with/without a space slipped past the tie-out, the entity chain, and the bank
-  // ownership check). A genuinely different name still differs after squashing.
-  const squash = (x) => x.replace(/\s+/g, '');
-  if (ka && kb && squash(ka) === squash(kb)) return true;
+  // A name that is only RE-SPACED still matches: "Core Tex Solutions" == "Coretex Solutions",
+  // "CORETEX" == "Core Tex" (owner-reported 2026-07-27, the Coretex file — an entity spelled
+  // with/without a space slipped past the tie-out, the entity chain, and the bank ownership check).
+  // respacedEqual requires the SAME letters under a COMPATIBLE segmentation, so it will not match two
+  // differently-worded names that only coincidentally share a letter sequence ("Ace Homes" vs "Aceh
+  // Omes"). Only ADDS matches on top of the exact/suffix checks above.
+  if (ka && kb && respacedEqual(ka, kb)) return true;
   return ca.includes(cb) || cb.includes(ca);
 }
 
