@@ -265,7 +265,12 @@ async function fieldReader(loanGuid, ids) {
     const text = await r.text();
     if (!r.ok) throw new Error(`Encompass fieldReader ${r.status}: ${text.slice(0, 300)}`);
     const out = text ? JSON.parse(text) : {};
-    return (out && typeof out === 'object' && !Array.isArray(out)) ? out : {};
+    // Return the RAW parsed body — it may be an OBJECT map { "388":"1.000" } (this
+    // tenant's v3) OR an ARRAY of { fieldId, value } pairs (v1 / ICE's own SDK type).
+    // The client wrapper (encompass-field-map.fieldReaderToMap) normalizes BOTH into a
+    // flat { id: value } map. The old code discarded an array as `{}` — the exact bug
+    // that silently blanked _fieldValues and made the panel read the wrong JSON paths.
+    return (out && typeof out === 'object') ? out : {};
   } finally { g.done(); }
 }
 

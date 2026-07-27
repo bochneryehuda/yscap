@@ -94,7 +94,7 @@ const REGISTRY = Object.freeze([
   // loanPath, nothing else) could NEVER see it no matter what Encompass held. The
   // candidate paths below are tried in order; the first one present wins, and an
   // absent path still degrades to "no data" rather than a wrong value.
-  pull({ key: 'vesting_llc', encompassFieldId: '1859', loanPath: ['closingDocument.finalVestingDescription', 'vesting.entityName', 'vesting.trustName', 'vestingEntityName'], type: 'text', category: 'identity', compare: 'entity', our: 'llcs.name via applications.llc_id', note: 'Subject LLC / vesting NAME — field 1859. VERIFIED LIVE 2026-07-26 against the tenant: the value lives at closingDocument.finalVestingDescription and reads like "LAYBACK LLC, A LIMITED LIABILITY COMPANY" — the entity name PLUS a legal description. compare:entity strips that trailing description so it equals our "Layback LLC"' }),
+  pull({ key: 'vesting_llc', encompassFieldId: '1859', loanPath: ['closingDocument.finalVestingDescription', 'vesting.entityName', 'vesting.trustName', 'vestingEntityName', 'uldd.fannieTrustName', 'closingDocument.borrowerUnparsedName1'], type: 'text', category: 'identity', compare: 'entity', our: 'llcs.name via applications.llc_id', note: 'Subject LLC / vesting NAME — field 1859. AUTHORITATIVE source is the fieldReader (read by number). The loanPath list is a best-effort FALLBACK for when the fieldReader is unavailable, and the SAME field lives at a DIFFERENT path from loan to loan: finalVestingDescription reads like "LAYBACK LLC, A LIMITED LIABILITY COMPANY" on one loan; VERIFIED LIVE 2026-07-26 on loan YSCAP258134629 (117 Brook) the vesting name lives at closingDocument.borrowerUnparsedName1 / uldd.fannieTrustName ("MW TRADING LLC") — finalVestingDescription is absent there. compare:entity strips any trailing legal description so all forms equal our "MW Trading LLC". On an INDIVIDUAL-vested loan borrowerUnparsedName1 is a person name; that only matters when the fieldReader is down AND our side carries an llc — a rare degraded case that (correctly) surfaces a disagreement rather than a false match' }),
 
   // ── Loan amount / initial advance / rehab (money) ─────────────────────────
   pull({ key: 'loan_amount', encompassFieldId: '1109', loanPath: 'baseLoanAmount', type: 'money', category: 'loan', compare: 'money', our: 'column:loan_amount', note: 'Total loan amount (Borrower Requested Loan Amount)' }),
@@ -125,9 +125,16 @@ const REGISTRY = Object.freeze([
 
   // ── Rate / origination / term / maturity ──────────────────────────────────
   pull({ key: 'note_rate', encompassFieldId: '3', loanPath: 'requestedInterestRatePercent', type: 'rate', category: 'interest', compare: 'percent', our: 'column:rate_pct', note: 'Interest rate — PERCENT on both sides. WO-B MUST source applications.rate_pct (a percent, e.g. 10.99), NOT the fractional whole-loan-context note_rate (0.1099), or every loan false-mismatches' }),
-  // Same root cause as 1859 — a numbered STANDARD field with no loanPath could never
-  // be read out of the loan JSON, so origination always showed "no data to compare".
-  pull({ key: 'origination_pct', encompassFieldId: '388', loanPath: ['closingCost.gfe2010.loanOriginationPercentage', 'originationFeePercent', 'closingCost.originationFeePercentage'], type: 'percent', category: 'cost', compare: 'percent', our: 'quote:origination % (e.g. 1.25)', note: 'Origination fee % — field 388. VERIFIED LIVE 2026-07-26: the value lives at closingCost.gfe2010.loanOriginationPercentage and is already a PERCENT (2 = 2%), the same scale as our origPct*100' }),
+  // Origination fee % — field 388. AUTHORITATIVE source is the fieldReader (read by
+  // number). Do NOT list closingCost.gfe2010.loanOriginationPercentage as a fallback:
+  // VERIFIED LIVE 2026-07-26 on loan YSCAP258134629 that path holds a DIFFERENT figure
+  // (2) than field 388 itself (1.000 = 1%) — it reflects the GFE adjusted-origination /
+  // points math, not the entered origination rate — so reading it produced exactly the
+  // owner-reported "Encompass says 2% but it's really 1%". Field 388 has NO stable JSON
+  // path on this tenant, so with the fieldReader down it degrades to an HONEST "no data
+  // to compare" rather than a confidently-wrong 2%. The two candidates kept below are
+  // harmless (absent on this tenant) and never carry the wrong GFE number.
+  pull({ key: 'origination_pct', encompassFieldId: '388', loanPath: ['originationFeePercent', 'closingCost.originationFeePercentage'], type: 'percent', category: 'cost', compare: 'percent', our: 'quote:origination % (e.g. 1.25)', note: 'Origination fee % — field 388. Read authoritatively BY FIELD NUMBER (fieldReader → 1.000 = 1%), the same scale as our origPct*100. The GFE loanOriginationPercentage path is deliberately NOT a fallback — it is a different fee (points/adjusted origination) and reads 2 where field 388 is 1' }),
   pull({ key: 'term_months', encompassFieldId: '4', loanPath: 'loanAmortizationTermMonths', type: 'int', category: 'loan', compare: 'int', our: 'column:term (text → int)', note: 'Term in months' }),
   pull({ key: 'maturity_date', encompassFieldId: '78', loanPath: 'maturityDate', type: 'date', category: 'loan', compare: 'date', our: 'column:maturity_date', note: 'Maturity date — read from full loan (maturityDate), not pipeline' }),
   // Funded date — the closing-workflow 3-system reconciliation reads this (field
@@ -322,6 +329,46 @@ function comparableKeys() {
 // read them BY NUMBER instead of guessing where each one lives in the loan JSON.
 function allFieldIds() { return REGISTRY.map((e) => e.encompassFieldId).filter(Boolean); }
 
+// Normalize a raw Encompass fieldReader response into a flat { fieldId: value } map,
+// regardless of which wire shape it arrived in. This exists because the shape is NOT
+// stable across API versions / gateways (VERIFIED LIVE 2026-07-26 on the tenant):
+//   - v3 POST /encompass/v3/loans/{guid}/fieldReader returns an OBJECT map:
+//       { "1859": "MW TRADING LLC", "388": "1.000", ... }
+//   - v1 POST /encompass/v1/loans/{guid}/fieldReader returns an ARRAY of pairs:
+//       [ { "fieldId": "1859", "value": "MW TRADING LLC" }, { "fieldId": "388", "value": "1.000" } ]
+//   (ICE's own SDK types the response as List<LoanFieldDataContract> — an array — so
+//    the array form must be handled even though this tenant's v3 returns the map.)
+// The OLD reader accepted only the object form and DISCARDED an array as `{}`, which is
+// exactly the failure mode that left _fieldValues empty and the panel falling back to
+// the wrong JSON paths. This helper accepts BOTH so a real response is never dropped.
+// Pure — no network, no DB. Returns {} for anything unrecognizable (never throws).
+function fieldReaderToMap(raw) {
+  const out = {};
+  if (raw == null) return out;
+  const put = (id, val) => {
+    if (id == null || id === '') return;
+    // Unwrap a { value } cell if the value itself arrived nested.
+    const v = (val && typeof val === 'object' && 'value' in val) ? val.value : val;
+    if (v === undefined) return;
+    out[String(id)] = v;
+  };
+  if (Array.isArray(raw)) {
+    for (const row of raw) {
+      if (row == null) continue;
+      if (typeof row === 'object') {
+        const id = row.fieldId != null ? row.fieldId : (row.id != null ? row.id : row.fieldName);
+        put(id, 'value' in row ? row.value : row);
+      }
+    }
+    return out;
+  }
+  if (typeof raw === 'object') {
+    for (const [id, val] of Object.entries(raw)) put(id, val);
+    return out;
+  }
+  return out;
+}
+
 function flattenLoan(rawLoan) {
   const out = {};
   // AUTHORITATIVE first (owner-directed 2026-07-26): values read straight from
@@ -396,6 +443,9 @@ function extractFields(encompassLoan, opts) {
   // read from — a tenant loan that carries no custom fields still has to have its
   // standard fields (vesting, origination, …) resolved, not treated as a flat map.
   const looksFullLoan = Array.isArray(src.customFields)
+    // Authoritative field-reader values (read BY NUMBER) always route through
+    // flattenLoan so they are honored no matter what else the loan object carries.
+    || (src._fieldValues && typeof src._fieldValues === 'object')
     || (!src.fields && ['closingDocument', 'closingCost', 'property', 'applications', 'loanNumber', 'baseLoanAmount']
       .some((k) => Object.prototype.hasOwnProperty.call(src, k)));
   const enveloped = looksFullLoan ? flattenLoan(src) : src;
@@ -570,7 +620,8 @@ module.exports = {
   extractFields,
   flattenLoan,
   allFieldIds,
+  fieldReaderToMap,
   mapValue,
   compareField,
-  _internals: { coerce, readField, getPath, num, normText, normName, normDate, KNOWN_FIELD_IDS, MONEY_TOL, PERCENT_TOL },
+  _internals: { coerce, readField, getPath, num, normText, normName, normDate, normEntityName, fieldReaderToMap, KNOWN_FIELD_IDS, MONEY_TOL, PERCENT_TOL },
 };

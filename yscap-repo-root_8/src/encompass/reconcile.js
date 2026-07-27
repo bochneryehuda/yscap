@@ -446,6 +446,47 @@ function _effectiveSsnHash(storedHash, encrypted) {
   } catch (_) { return null; }
 }
 
+// True when the stored loan copy already carries authoritative field-reader values
+// (read BY NUMBER). When it does NOT, the two fields that live only there — 1859
+// (vesting LLC) and 388 (origination %) — fall back to JSON paths that are missing /
+// wrong, which is the owner-reported "no data" LLC + "2% not 1%" origination.
+function _hasFieldValues(loan) {
+  return !!(loan && loan._fieldValues && typeof loan._fieldValues === 'object' && Object.keys(loan._fieldValues).length);
+}
+
+// Best-effort SELF-HEAL of a stale stored loan copy (owner-reported 2026-07-26). The
+// panel reads applications.encompass_extra — a snapshot pulled BEFORE the read-by-number
+// wiring (or before this code deployed) has no `_fieldValues`, so 1859/388 read wrong.
+// Rather than make a human re-pull every previous file one by one, fill `_fieldValues`
+// on the spot: ONE read-by-number, verified to belong to THIS loan (mirrors the reader's
+// SAME-LOAN guard on field 364), merged into the in-memory loan and PERSISTED so the very
+// next view is correct and later views are instant. NEVER throws — a failure leaves the
+// path-based read exactly as it was. Returns the (possibly healed) loan object.
+// READ-ONLY w.r.t. Encompass (fieldReader is allowlisted); it only writes OUR own cache.
+async function _ensureFieldValues(c, appId, loan, guid, ourLoanNumber) {
+  if (!loan || typeof loan !== 'object' || _hasFieldValues(loan) || !guid) return loan;
+  try {
+    const enc = require('../lib/integrations/encompass');
+    if (!enc.configured()) return loan;
+    const vals = await require('./client').readFields(guid, map.allFieldIds());
+    if (!vals || !Object.keys(vals).length) return loan;
+    const norm = (v) => String(v == null ? '' : v).trim().toUpperCase().replace(/\s+/g, '');
+    const theirLoanNo = vals['364'];
+    // If field 364 came back and disagrees with our loan number, these values are for a
+    // DIFFERENT loan — do not trust or store them (belt-and-suspenders; the GUID was
+    // already validated at pull time). A missing 364 is fine (nothing to contradict).
+    if (theirLoanNo && ourLoanNumber && norm(theirLoanNo) !== norm(ourLoanNumber)) return loan;
+    const healed = Object.assign({}, loan, { _fieldValues: vals });
+    await c.query(
+      `UPDATE applications SET encompass_extra = $1::jsonb WHERE id = $2 AND deleted_at IS NULL`,
+      [JSON.stringify(healed), appId],
+    ).catch(() => {});
+    return healed;
+  } catch (_) {
+    return loan; // best-effort — degrade to the stored path-based read
+  }
+}
+
 // ── DB-backed: compute the live findings for one application ────────────────
 // Loads the pulled loan + our row + current quote + resolutions and returns the
 // full comparison. Never throws on missing data — an un-numbered / un-pulled /
@@ -485,7 +526,11 @@ async function computeFindings(appId, dbc) {
   const resolutions = {};
   for (const r of resRows) resolutions[r.field_key] = r;
 
-  const loan = row.encompass_extra || null;
+  // Self-heal a stale stored copy that predates the read-by-number wiring, so 1859
+  // (vesting LLC) and 388 (origination %) show their authoritative values on this very
+  // view instead of the wrong JSON-path fallback. Best-effort + read-only to Encompass.
+  let loan = row.encompass_extra || null;
+  loan = await _ensureFieldValues(c, appId, loan, row.encompass_loan_guid, row.ys_loan_number);
   const theirs = loan ? map.extractFields(loan) : {};
   const ours = buildOurValues(row, quote ? quote.quote : null, row.llc_name);
   const { fields: econFields } = compareAll(ours, theirs, resolutions);

@@ -158,16 +158,31 @@ assert.strictEqual(m.compareField('rehab_type', 'Adding square footage', 'Expans
 assert.strictEqual(m.compareField('rehab_type', 'Heavy / gut rehab', 'Light Rehab').status, 'mismatch');
 ok('every real rehab-type dropdown value resolves (heavy/gut + ground-up construction no longer dark)');
 
-// LIVE-VERIFIED 2026-07-26 against the tenant instance: vesting (1859) and
-// origination (388) live at these exact paths, and Encompass appends the entity's
-// LEGAL DESCRIPTION to the vesting name. Both were previously unreadable.
+// LIVE-VERIFIED 2026-07-26 against the tenant instance (loan YSCAP258134629 / 117 Brook):
+// the AUTHORITATIVE source for vesting (1859) + origination (388) is the fieldReader —
+// values read BY NUMBER, stashed on `_fieldValues`. The SAME field lives at a DIFFERENT
+// JSON path from loan to loan, so a number we were GIVEN always beats a path we GUESSED.
 {
-  const live = m.extractFields({
-    closingDocument: { finalVestingDescription: 'LAYBACK LLC, A LIMITED LIABILITY COMPANY' },
-    closingCost: { gfe2010: { loanOriginationPercentage: 2 } },
+  // Authoritative `_fieldValues` win — and the wrong GFE origination path (=2) is IGNORED
+  // in favor of the real field 388 (=1). This is exactly the owner-reported case.
+  const auth = m.extractFields({
+    _fieldValues: { '1859': 'MW TRADING LLC', '388': '1.000' },
+    closingDocument: { borrowerUnparsedName1: 'MW TRADING LLC' },
+    closingCost: { gfe2010: { loanOriginationPercentage: 2 } }, // a DIFFERENT fee — must not win
   });
-  assert.strictEqual(live.vesting_llc, 'LAYBACK LLC, A LIMITED LIABILITY COMPANY', 'vesting reads from closingDocument.finalVestingDescription');
-  assert.strictEqual(live.origination_pct, 2, 'origination reads from closingCost.gfe2010.loanOriginationPercentage (already a percent)');
+  assert.strictEqual(auth.vesting_llc, 'MW TRADING LLC', 'vesting reads the authoritative field 1859');
+  assert.strictEqual(auth.origination_pct, 1, 'origination reads the authoritative field 388 (1%), NOT the GFE path (2%)');
+
+  // FALLBACK when the fieldReader is unavailable: vesting still resolves from the loan
+  // JSON — on 117 Brook the name lives at closingDocument.borrowerUnparsedName1, and the
+  // classic finalVestingDescription path still works on loans that carry it.
+  assert.strictEqual(m.extractFields({ closingDocument: { borrowerUnparsedName1: 'MW TRADING LLC' } }).vesting_llc, 'MW TRADING LLC', 'vesting falls back to borrowerUnparsedName1 (117 Brook shape)');
+  assert.strictEqual(m.extractFields({ closingDocument: { finalVestingDescription: 'LAYBACK LLC, A LIMITED LIABILITY COMPANY' } }).vesting_llc, 'LAYBACK LLC, A LIMITED LIABILITY COMPANY', 'vesting still reads finalVestingDescription when present');
+
+  // The wrong GFE origination path is NEVER read as field 388 — without the authoritative
+  // value the field HONESTLY reads "no data" rather than the wrong 2%.
+  assert.strictEqual(m.extractFields({ closingCost: { gfe2010: { loanOriginationPercentage: 2 } } }).origination_pct, undefined, 'the GFE loanOriginationPercentage (a different fee) is never read as field 388');
+
   // A full loan with NO customFields[] must still resolve its standard fields.
   assert.strictEqual(m.extractFields({ loanNumber: 'YS-1' }).ys_loan_number, 'YS-1');
   // …and a flat {fields:{}} envelope is still read as-is (back-compat).
@@ -177,7 +192,36 @@ ok('every real rehab-type dropdown value resolves (heavy/gut + ground-up constru
 assert.strictEqual(m.compareField('vesting_llc', 'Layback LLC', 'LAYBACK LLC, A LIMITED LIABILITY COMPANY').status, 'match');
 assert.strictEqual(m.compareField('vesting_llc', 'ABC Holdings LLC', 'ABC HOLDINGS LLC, A NEW YORK LIMITED LIABILITY COMPANY').status, 'match');
 assert.strictEqual(m.compareField('vesting_llc', 'Layback LLC', 'OTHER HOLDINGS LLC, A LIMITED LIABILITY COMPANY').status, 'mismatch', 'a genuinely different entity still mismatches');
-ok('vesting (1859) + origination (388) read from their LIVE-VERIFIED paths; the legal description never defeats the match');
+// MW Trading LLC (117 Brook) matches regardless of case/formatting.
+assert.strictEqual(m.compareField('vesting_llc', 'MW Trading LLC', 'MW TRADING LLC').status, 'match');
+ok('vesting (1859) + origination (388) read authoritatively by number; the GFE fee never masquerades as 388; the legal description never defeats the match');
+
+// ── fieldReader response normalization (BOTH wire shapes → one { id: value } map) ──
+// LIVE-VERIFIED 2026-07-26: this tenant's v3 returns an OBJECT map, v1 returns an ARRAY
+// of { fieldId, value } pairs (ICE's own SDK types it as an array). The OLD reader
+// accepted only the object and DISCARDED an array as `{}` — the failure that blanked
+// _fieldValues and hid the LLC + origination fee. fieldReaderToMap accepts BOTH.
+{
+  const F = m.fieldReaderToMap;
+  const objShape = { '1859': 'MW TRADING LLC', '388': '1.000', '364': 'YSCAP258134629' };
+  const arrShape = [
+    { fieldId: '1859', value: 'MW TRADING LLC' },
+    { fieldId: '388', value: '1.000' },
+    { fieldId: '364', value: 'YSCAP258134629' },
+  ];
+  assert.deepStrictEqual(F(objShape), objShape, 'object map (v3) passes through unchanged');
+  assert.deepStrictEqual(F(arrShape), objShape, 'array of {fieldId,value} (v1) normalizes to the SAME map (was discarded as {} before)');
+  assert.strictEqual(F([{ id: '388', value: '1.000' }])['388'], '1.000', 'accepts {id,value}');
+  assert.strictEqual(F([{ fieldName: '1859', value: 'X' }])['1859'], 'X', 'accepts {fieldName,value}');
+  assert.strictEqual(F({ '388': { value: '1.000' } })['388'], '1.000', 'unwraps a nested {value} cell');
+  assert.deepStrictEqual(F(null), {}, 'null → {}');
+  assert.deepStrictEqual(F('nope'), {}, 'a scalar → {} (never throws)');
+  // End-to-end: the normalized array feeds flattenLoan authoritatively.
+  const viaArray = m.extractFields({ _fieldValues: F(arrShape) });
+  assert.strictEqual(viaArray.vesting_llc, 'MW TRADING LLC');
+  assert.strictEqual(viaArray.origination_pct, 1);
+}
+ok('fieldReader response normalizes from BOTH the object map (v3) and the array (v1) into one field map');
 
 // A BLANK customFields cell must not shadow a good standard-field loanPath —
 // that is precisely how vesting (1859) / origination (388) read as "no data".
