@@ -28,6 +28,17 @@ const assert = require('assert');
 const db = require('../src/db');
 const guard = require('../src/lib/inbound-enum-guard');
 
+// The LIVE ClickUp *Program dropdown as it stands BEFORE the owner adds the new
+// option (read from the real workspace 2026-07-27). Every inbound path supplies
+// this map (clickup-sync calls optionMap() and hands it to ingestTask), so the
+// guard always has it in production — pass it here too or the test would not be
+// exercising the real code path. Keyed by CUSTOM-FIELD ID, like the real one.
+const PROGRAM_FIELD_ID = '50eb857a-d8b1-4c48-9ffe-20b15cdf1338';
+const OPTIONS = { [PROGRAM_FIELD_ID]: [
+  { name: 'Fix & Flip With Construction' }, { name: 'Ground-Up' },
+  { name: 'bridge Without Construction' }, { name: 'Non-QM - DSCR Ratio' },
+] };
+
 let n = 0; const ok = (m) => { n++; console.log('  ok -', m); };
 
 // The inbound pull's REAL write shape (src/clickup/ingest.js): every mapped
@@ -70,7 +81,7 @@ async function seedFile(program) {
       // is about to write that back — this is the revert.
       const cols = { program: 'Fix & Flip w/ Construction', loan_type: 'Purchase' };
 
-      const held = await guard.applyInboundEnumGuard({ appId, cols, taskId: `task-guard-1-${appId}`, borrowerId });
+      const held = await guard.applyInboundEnumGuard({ appId, cols, taskId: `task-guard-1-${appId}`, borrowerId, options: OPTIONS });
       assert.deepStrictEqual(held, ['program'], 'the guard holds exactly the program column');
       assert.strictEqual(cols.program, null, 'program is nulled so COALESCE keeps ours');
       assert.strictEqual(cols.loan_type, 'Purchase', 'a mappable column is left alone');
@@ -115,7 +126,7 @@ async function seedFile(program) {
 
       // Both sides hold values ClickUp can express: the pull must win as before.
       const cols = { program: 'Bridge' };
-      const held = await guard.applyInboundEnumGuard({ appId, cols, taskId: `task-guard-3-${appId}`, borrowerId });
+      const held = await guard.applyInboundEnumGuard({ appId, cols, taskId: `task-guard-3-${appId}`, borrowerId, options: OPTIONS });
       assert.deepStrictEqual(held, [], 'nothing is held when the portal value maps');
       assert.strictEqual(cols.program, 'Bridge', 'the pull value is left intact');
       await inboundUpdate(appId, cols);
@@ -133,7 +144,7 @@ async function seedFile(program) {
       const { appId, borrowerId } = await seedFile('Fix & Hold');
       made.push({ appId, borrowerId });
       await guard.applyInboundEnumGuard({
-        appId, cols: { program: 'Bridge' }, taskId: `task-guard-4-${appId}`, borrowerId });
+        appId, cols: { program: 'Bridge' }, taskId: `task-guard-4-${appId}`, borrowerId, options: OPTIONS });
       let open = await db.query(
         `SELECT 1 FROM sync_review_queue WHERE application_id=$1 AND field_key='enum_unmappable' AND status='open'`, [appId]);
       assert.strictEqual(open.rowCount, 1, 'parked while unmappable');
@@ -141,18 +152,43 @@ async function seedFile(program) {
       // The officer switches to a value ClickUp knows — the row should self-close.
       await db.query(`UPDATE applications SET program='Bridge' WHERE id=$1`, [appId]);
       await guard.applyInboundEnumGuard({
-        appId, cols: { program: 'Fix & Flip w/ Construction' }, taskId: `task-guard-4-${appId}`, borrowerId });
+        appId, cols: { program: 'Fix & Flip w/ Construction' }, taskId: `task-guard-4-${appId}`, borrowerId, options: OPTIONS });
       open = await db.query(
         `SELECT 1 FROM sync_review_queue WHERE application_id=$1 AND field_key='enum_unmappable' AND status='open'`, [appId]);
       assert.strictEqual(open.rowCount, 0, 'the review closes itself');
       ok('the review row closes itself once every value maps again');
     }
 
+    /* ---- 4b. THE CLICKUP-SIDE FIX: adding the option ends the whole problem ---- */
+    {
+      const { appId, borrowerId } = await seedFile('Fix & Hold');
+      made.push({ appId, borrowerId });
+      const taskId = `task-guard-4b-${appId}`;
+      // While the option is missing: held + parked.
+      await guard.applyInboundEnumGuard({
+        appId, cols: { program: 'Fix & Flip w/ Construction' }, taskId, borrowerId, options: OPTIONS });
+      let open = await db.query(
+        `SELECT 1 FROM sync_review_queue WHERE application_id=$1 AND field_key='enum_unmappable' AND status='open'`, [appId]);
+      assert.strictEqual(open.rowCount, 1, 'parked while the ClickUp option is missing');
+
+      // The owner adds "Fix & Hold" to the ClickUp dropdown. Same file, same
+      // values — now the push can write it, so nothing is held and the review
+      // closes ITSELF on the next sync. No human clean-up.
+      const AFTER = { [PROGRAM_FIELD_ID]: [...OPTIONS[PROGRAM_FIELD_ID], { name: 'Fix & Hold With Construction' }] };
+      const held = await guard.applyInboundEnumGuard({
+        appId, cols: { program: 'Fix & Flip w/ Construction' }, taskId, borrowerId, options: AFTER });
+      assert.deepStrictEqual(held, [], 'nothing held once the ClickUp option exists');
+      open = await db.query(
+        `SELECT 1 FROM sync_review_queue WHERE application_id=$1 AND field_key='enum_unmappable' AND status='open'`, [appId]);
+      assert.strictEqual(open.rowCount, 0, 'the parked review closes itself');
+      ok('adding the ClickUp option ends it: nothing held, the parked review self-closes');
+    }
+
     /* ---- 5. NEVER BREAKS THE PULL on a bad/unknown file ---- */
     {
       const cols = { program: 'Bridge' };
       const held = await guard.applyInboundEnumGuard({
-        appId: '00000000-0000-0000-0000-000000000000', cols, taskId: 't', borrowerId: null });
+        appId: '00000000-0000-0000-0000-000000000000', cols, taskId: 't', borrowerId: null, options: OPTIONS });
       assert.deepStrictEqual(held, [], 'an unknown file holds nothing');
       assert.strictEqual(cols.program, 'Bridge', 'cols left untouched');
       ok('an unreadable/unknown file never blocks the inbound pull');
