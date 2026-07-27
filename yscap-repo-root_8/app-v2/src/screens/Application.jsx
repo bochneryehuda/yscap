@@ -17,6 +17,7 @@ import ToolModal from '../components/ToolModal.jsx';
 import LlcPicker from '../components/LlcPicker.jsx';
 import LlcManager from '../components/LlcManager.jsx';
 import FileSections, { Section, InfoTip } from '../components/FileSections.jsx';
+import { captureScrollAnchor, restoreScrollAnchor } from '../lib/keep-scroll.js';
 import EsignBorrowerCard from '../components/EsignBorrowerCard.jsx';
 import { MoneyInput, PhoneInput, ZipInput , EmailInput} from '../components/FormattedInputs.jsx';
 import DocPreview from '../components/DocPreview.jsx';
@@ -589,15 +590,24 @@ export default function Application() {
 
   const activityFetcher = useCallback(() => api.activity(id), [id]);
   const idRef = useRef(id); idRef.current = id;
+  // Every load after the first is a refresh caused by something the borrower just
+  // did (or by the window regaining focus) — it must leave them exactly where they
+  // were reading, even though rows collapse and drop out of the "Open" filter.
+  const firstLoad = useRef(true);
   const load = () => {
     const forId = id;   // drop late responses after navigating to another file
+    const isFirst = firstLoad.current;
+    firstLoad.current = false;
     return Promise.all([
       api.application(id), api.checklist(id), api.documents(id).catch(() => []),
       api.conditions(id).catch(() => []), api.profile().catch(() => null),
       api.trackRecords().catch(() => []), api.trackRecordSnapshot().catch(() => null),
     ]).then(([a, c, d, cn, p, tr, ts]) => {
       if (idRef.current !== forId) return;
+      // Captured right before the re-render, restored once it has painted.
+      const anchor = isFirst ? null : captureScrollAnchor();
       setApp(a); setItems(c || []); setUploads(d || []); setConds(cn || []); setProfile(p); setTrRows(tr || []); setTrSnap(ts || null);
+      restoreScrollAnchor(anchor);
     }).catch(e => { if (idRef.current === forId) setErr(e.message); });
   };
 
@@ -620,6 +630,7 @@ export default function Application() {
     setApp(null); setItems([]); setUploads([]); setConds([]); setErr(''); setMsg('');
     setSowOpen(false); setTarget(null);   // else the Scope-of-Work modal carries over to the next file
     setJustTouched(new Set()); setOfficer(null);
+    firstLoad.current = true;   // a new file opens fresh — nothing to hold
     load();
     api.fileOfficer(id).then(r => setOfficer((r && r.officer) || null)).catch(() => setOfficer(null));
     /* eslint-disable-next-line */
@@ -634,14 +645,24 @@ export default function Application() {
   }, [id]);
   // Chat deep-link (…?chat=<id>): once the file has painted, bring the Messages
   // section into view so the recipient lands on the conversation.
+  //
+  // ONCE PER FILE — this is a LANDING, not something that happens while you work
+  // (same fix as the staff file, owner-reported 2026-07-27). `app` is a brand-new
+  // object after every refresh — an upload, and the window-focus refresh above —
+  // so this used to yank the borrower back to Messages mid-task.
+  const landedChat = useRef(false);
+  useEffect(() => { landedChat.current = false; }, [id]);
   useEffect(() => {
-    if (!wantsChat || !app) return undefined;
+    // `app` still holds the PREVIOUS file for one render after the url changes,
+    // so match it to the url or the landing burns itself on the old file.
+    if (!wantsChat || !app || String(app.id) !== String(id) || landedChat.current) return undefined;
+    landedChat.current = true;
     const t = setTimeout(() => {
       const el = document.getElementById('sec-messages');
       if (el) el.scrollIntoView({ behavior: 'smooth', block: 'start' });
     }, 350);
     return () => clearTimeout(t);
-  }, [wantsChat, app]);
+  }, [wantsChat, app, id]);
 
   const readB64 = fileToBase64;   // shared reader (lib/files.js)
 
