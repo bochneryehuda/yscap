@@ -38,6 +38,7 @@ const REASON_COPY = {
   shared_email_needs_reassignment: 'TWO BORROWER PROFILES are using ONE email address (shown under “In ClickUp”; the two people under “In PILOT”). Two ways to settle it: (1) if the sharing is RIGHT — spouses on the same deals, or the same person twice — click Allow: the two profiles are LINKED, whoever logs in with the email sees BOTH sets of files, and this never flags again (nothing is merged; each keeps their own profile and officer). (2) If they are unrelated people, give one of them their OWN email — edit it on their borrower screen in PILOT or on the ClickUp task — and this card closes itself. Until settled, the system deliberately refuses to link files by this email.',
   encompass_address_differs: 'The most recent ENCOMPASS file for this borrower carries a different home address than their PILOT profile. Nothing was changed — a person\u2019s address on file is real data that a stale loan must never overwrite. Encompass is read-only here, so whichever value you pick is written to the PILOT profile (and pushed on to their ClickUp cards); nothing is ever sent back to Encompass. If both are right because they moved, use the Encompass one; if the Encompass file is old, keep PILOT\u2019s.',
   portal_value_not_in_clickup: 'PILOT is holding a value that the matching ClickUp dropdown has no option for (shown above). Because ClickUp cannot store it, the update to the ClickUp card was quietly skipped — and until now the next sync read ClickUp’s old value back and UNDID the change on the file, which is why an edit like Fix & Flip → Fix & Hold kept “bouncing back”. PILOT now KEEPS its value and no longer lets the sync overwrite it. To make both systems agree, add that option to the ClickUp dropdown (then this closes itself on the next sync). If the value was picked by mistake, just set it back on the file. Nothing was lost either way — the file shows what the officer chose.',
+  ctc_confirm_needed: 'ClickUp moved this file to Clear to Close, but in PILOT it is still at an earlier status (shown above). Clear to Close is a major milestone — it locks the file and tells the borrower they’re clear to close — so PILOT did NOT advance on its own. Confirm to move the file to Clear to Close in PILOT (the borrower is notified), or dismiss to keep its current status. Everything else from ClickUp still syncs normally; only this one big step waits for you.',
   economics_frozen_conflict: 'ClickUp carries different loan figures than PILOT (each change is listed above), but this file is FROZEN — a term sheet has been sent for signature, or the file is Clear-to-Close / Funded — so the numbers can’t change on their own (they would no longer match the term sheet that already went out). PILOT kept its figures and did NOT apply the ClickUp change. Three ways to settle it: (1) keep PILOT’s figures and push them back to ClickUp so both match; (2) an admin can use ClickUp’s figures and update the locked file right here (best for a reconciled/closed file whose numbers PILOT should now match — this overrides the lock); or (3) simply set the figures back in ClickUp to match the file. You no longer have to clear the term sheet or unlock the file just to accept a change.',
 };
 // Sitewire draw-management parks (field_key='sitewire'). The stored reason is
@@ -115,6 +116,9 @@ const REASON_FILE_ACTIONS = {
     { action: 'keep_frozen_figures', label: 'Keep PILOT’s figures (push to ClickUp)', title: 'Keep the file’s frozen loan figures and push them back to ClickUp so the two match.' },
     { action: 'accept_clickup_figures', label: 'Use ClickUp’s figures (update the locked file)', title: 'Admin only: pull ClickUp’s figures into this locked file, overriding the lock. Best for a reconciled/closed file whose numbers PILOT should now match. The pricing / Scope-of-Work conditions reopen because the registered numbers changed.', adminOnly: true },
   ],
+  ctc_confirm_needed: [
+    { action: 'confirm_ctc', label: 'Confirm — move to Clear to Close', title: 'Move this file to Clear to Close in PILOT so it matches ClickUp. This is a major milestone: it locks the file and notifies the borrower.' },
+  ],
 };
 // The itemized list of frozen-figure changes ClickUp made to a locked file
 // (owner-directed 2026-07-27: "open up the box — these three things were changed
@@ -189,6 +193,7 @@ const FIELD_LABELS = {
   shared_email: 'Shared email — two borrowers',
   sitewire: 'Construction draws (Sitewire)',
   economics_frozen: 'Loan figures — frozen (term sheet sent / file locked)',
+  status_ctc: 'Clear to Close — confirm the move',
   enum_unmappable: 'A value ClickUp has no option for',
 };
 // Field keys the two-sided resolver can apply to BOTH systems today.
@@ -241,7 +246,7 @@ const FIELD_SECTION = {
   // panel (name / email / SSN / DOB), as are file status + the closing dates.
   first_name: 'sec-overview', email: 'sec-overview', ssn: 'sec-overview', date_of_birth: 'sec-overview',
   borrower_identity: 'sec-overview', shared_email: 'sec-overview',
-  status: 'sec-overview', expected_closing: 'sec-overview', actual_closing: 'sec-overview',
+  status: 'sec-overview', status_ctc: 'sec-overview', expected_closing: 'sec-overview', actual_closing: 'sec-overview',
   // Address, phone, the acquisition date, the loan number, and the whole
   // co-borrower live in Application details (address panel / Completeness /
   // co-borrower completeness / EditFileDetails).
@@ -701,6 +706,11 @@ export default function SyncReviews() {
                             'This overrides the lock and changes the loan figures on the file to match ClickUp. ' +
                             'The pricing / Scope-of-Work conditions will reopen because the registered numbers changed.\n\n' +
                             'Only do this for a file that was reconciled/closed in ClickUp and should now match.')) return;
+                          // Moving to Clear to Close locks the file + notifies the borrower — confirm first.
+                          if (a.action === 'confirm_ctc' && !window.confirm(
+                            'Move this file to Clear to Close in PILOT?\n\n' +
+                            'This is a major milestone: it locks the file’s loan structure and notifies the borrower ' +
+                            'that they’re clear to close. Only confirm if the file really is clear to close.')) return;
                           return act(r.id, 'resolve-file', { action: a.action, targetApplicationId: needsPick ? picked : undefined });
                         }}>
                         {busyId === r.id ? '…' : a.label}

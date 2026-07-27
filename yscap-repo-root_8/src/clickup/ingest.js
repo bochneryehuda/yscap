@@ -1730,6 +1730,22 @@ async function linkOrCreateApplication(task, read, borrowerId, llcId, ctx = {}) 
     } catch (_) { /* best-effort — never breaks the inbound pull */ }
   }
 
+  // CLEAR-TO-CLOSE CONFIRM GATE (owner-directed 2026-07-27): when ClickUp moves a
+  // PRE-Clear-to-Close file to Clear to Close, PILOT does NOT advance on its own —
+  // it HOLDS the status (nulls status + internal_status so their COALESCE keeps
+  // the current value) and parks a "confirm Clear to Close" review. `ctcHeld` then
+  // suppresses the inbound borrower status notification for this pull below (it
+  // uses the computed `external`, so without this it would announce Clear to Close
+  // even though the file was held). No-op on any other status move.
+  let ctcHeld = false;
+  if (targetId && task) {
+    try {
+      const g = await require('../lib/inbound-ctc-confirm')
+        .applyInboundCtcConfirm({ appId: targetId, cols, taskId: task.id, borrowerId });
+      ctcHeld = !!(g && g.held);
+    } catch (_) { /* best-effort — never breaks the inbound pull */ }
+  }
+
   // UNMAPPABLE-VALUE GUARD (owner-reported 2026-07-27: "Fix & Flip → Fix & Hold
   // bounces back"). A two-way dropdown value PILOT holds but ClickUp has NO
   // option for can never be pushed — `mapper.put()` drops it silently — so this
@@ -1864,7 +1880,13 @@ async function linkOrCreateApplication(task, read, borrowerId, llcId, ctx = {}) 
     // on the first reconcile), skips an ECHO of a portal change (the portal door
     // already advanced the watermark to this status), and loops the loan officer
     // in via the borrower email's BCC. Best-effort; never breaks the pull. (db/187)
-    try { await require('../lib/status-notify').notifyInboundStatusChange(targetId, external); } catch (_) { /* best-effort */ }
+    // SKIPPED when the Clear-to-Close confirm gate HELD the move (ctcHeld): the
+    // status did not actually change on the file, so announcing Clear to Close here
+    // (this uses the computed `external`, not the held `cols.status`) would be wrong
+    // — the confirm action notifies the borrower when a human approves the move.
+    if (!ctcHeld) {
+      try { await require('../lib/status-notify').notifyInboundStatusChange(targetId, external); } catch (_) { /* best-effort */ }
+    }
     return { applicationId: targetId, matchStatus, detail, copiedLoanNumber };
   }
   if (!allowCreate) return { applicationId: null, matchStatus: 'skipped' };
