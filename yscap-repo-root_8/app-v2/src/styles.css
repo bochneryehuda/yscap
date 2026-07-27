@@ -3286,3 +3286,61 @@ details[open]>.appr-sec-sum .appr-sec-chev{transform:rotate(180deg)}
   .bview-bar{font-size:13px;padding:8px 12px}
   .bview-exit{width:100%}
 }
+
+/* =====================================================================
+   "What needs you next" — the loan file's front door (NextUpPanel.jsx).
+   Move 1 of docs/LOAN-FILE-SIMPLICITY-BLUEPRINT.md.
+
+   Design brief, owner-directed 2026-07-27: simple, modern, easy to scan.
+   So: one card, one row shape, one weight of type per line, and colour used
+   ONLY where it means something — an overdue item, and nothing else. A calm
+   card is what lets the two rows that matter stand out.
+
+   Every text colour here is DARK on white. Never reach for a --ink* token for
+   text: --ink is #F6F3EC, the LIGHT paper. See the note at the top of this file.
+   ===================================================================== */
+.nx-panel{margin-bottom:18px;border-left:4px solid var(--gold);padding:20px 22px}
+.nx-panel.nx-clear{border-left-color:var(--ok)}
+.nx-tick{flex:none;width:32px;height:32px;border-radius:50%;display:inline-flex;
+  align-items:center;justify-content:center;background:var(--ok);color:#fff;font-weight:800}
+
+.nx-head{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+.nx-title{margin:0;font-size:19px;line-height:1.2;color:#141B22}
+.nx-sub{margin:4px 0 12px;font-size:13px;color:#4B585C}
+
+/* Counts read as quiet facts, not alarms — only "overdue" is allowed to shout. */
+.nx-count{flex:none;font-size:12px;font-weight:600;padding:3px 10px;border-radius:999px;
+  background:var(--surface-soft);color:#4B585C;border:1px solid var(--line)}
+.nx-count.holding{background:var(--gold-soft);color:#8A5A00;border-color:rgba(174,135,70,.45)}
+.nx-count.late{background:var(--danger-soft);color:var(--danger);border-color:rgba(163,42,42,.45)}
+
+.nx-list{display:flex;flex-direction:column}
+.nx-item{display:flex;align-items:flex-start;gap:12px;padding:11px 6px;
+  border-top:1px solid var(--line);border-radius:6px;transition:background .12s ease}
+.nx-item:first-child{border-top:none}
+.nx-item:hover{background:var(--surface-soft)}
+.nx-item .dot{margin-top:6px}
+.nx-item.is-late{background:rgba(163,42,42,.045)}
+.nx-body{flex:1 1 auto;min-width:0}
+.nx-item-title{font-weight:600;font-size:14.5px;color:#141B22;overflow-wrap:anywhere}
+.nx-why{margin-top:2px;font-size:12.5px;line-height:1.45;color:#4B585C;overflow-wrap:anywhere}
+.nx-tag{margin-left:8px;font-size:11px;font-weight:700;text-transform:uppercase;
+  letter-spacing:.06em;padding:2px 7px;border-radius:999px;
+  background:var(--gold-soft);color:#8A5A00;vertical-align:middle}
+
+.nx-age{flex:none;align-self:center;font-size:12px;font-weight:600;white-space:nowrap;
+  padding:3px 9px;border-radius:999px}
+.nx-age.warn{background:var(--warning-soft);color:#8A5A00}
+.nx-age.late{background:var(--danger-soft);color:var(--danger)}
+.nx-go{flex:none;align-self:center}
+.nx-more{margin-top:8px}
+
+/* On a phone the row stacks: the reason gets the full width and the action
+   drops beneath it, rather than the title being squeezed to two characters. */
+@media(max-width:720px){
+  .nx-panel{padding:16px 14px}
+  .nx-item{flex-wrap:wrap}
+  .nx-body{flex:1 1 100%}
+  .nx-age,.nx-go{align-self:flex-start;margin-left:21px}
+  .nx-go{margin-left:auto}
+}

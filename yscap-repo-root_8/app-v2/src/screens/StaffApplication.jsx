@@ -17,6 +17,7 @@ import ProductStudioPanel from '../components/ProductStudioPanel.jsx';
 import InvestorGuidelinesPanel from '../components/InvestorGuidelinesPanel.jsx';
 import DealSnapshot from '../components/DealSnapshot.jsx';
 import ClearToClosePanel from '../components/ClearToClosePanel.jsx';
+import NextUpPanel from '../components/NextUpPanel.jsx';
 import LoanProgress from '../components/LoanProgress.jsx';
 import ClosingPanel from '../components/ClosingPanel.jsx';
 import TapeQuestionsModal from '../components/TapeQuestionsModal.jsx';
@@ -3057,6 +3058,13 @@ export default function StaffApplication() {
       {esignMsg && <div className={`notice ${esignMsg.tone}`} role="status">{esignMsg.text}</div>}
       {msg && <div className="notice ok">{msg}</div>}
       {err && app && <div role="alert" className="notice err">{err}</div>}
+
+      {/* THE FRONT DOOR (blueprint Move 1). Above the section nav on purpose:
+          the few things that want you today, before the sixteen sections. It
+          renders the SAME server payload ClearToClosePanel already used — which
+          stays exactly where it was, further down — so nothing is hidden and
+          nothing is duplicated work. */}
+      <NextUpPanel gating={gating} items={items} conds={conds} />
 
       {/* Blueprint 2-column shell (pilot-staff-file): the existing section nav +
           FileSections content stay exactly as they were on the main side; a NEW
