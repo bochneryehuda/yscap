@@ -16,6 +16,7 @@
  */
 const { FACTS, factMatch, display, present, claimsFor, carries } = require('./facts');
 const { num } = require('./compare');
+const { gateClaims } = require('./comparison-gate');
 
 // On an ASSIGNMENT deal a document may legitimately report the seller's underlying price OR the
 // fee-inclusive total the borrower pays — both tie out to the file. So for the purchase_price fact
@@ -108,7 +109,7 @@ function buildTieout(fileCtx, sources = []) {
   const ctx = fileCtx || {};
   const isAssignment = !!(ctx.app && ctx.app.is_assignment);
   const srcs = (sources || []).filter((s) => s && s.docType).map((s, i) => {
-    const claims = claimsFor(s.docType, s.fields);
+    let claims = claimsFor(s.docType, s.fields);
     // On an ASSIGNMENT / wholesale deal the purchase CONTRACT names the WHOLESALER as its buyer — the
     // entity we actually vest into appears on the ASSIGNMENT (assigneeName), not the underlying
     // contract. Comparing the wholesaler to our vesting LLC is a guaranteed-nonsense fatal "mismatch"
@@ -118,6 +119,14 @@ function buildTieout(fileCtx, sources = []) {
     if (isAssignment && s.docType === 'purchase_contract' && claims && claims.entity_name != null) {
       delete claims.entity_name;
     }
+    // The comparison-gate (advisory, reasoning-driven): when a per-document REASONING pass understood
+    // that this document names parties on the OPPOSITE side of the deal from a party fact — e.g. a
+    // tax certificate filed under the title slot whose only named party is the CURRENT owner (the
+    // seller, pre-close) — drop that fact's claim so it is never compared to the vesting entity. This
+    // generalizes the assignment-specific delete above to ANY mis-classified document, keyed on the
+    // document's actual nature rather than a hardcoded doc-type list. No reasoning / low confidence /
+    // same-side → claims untouched, so a file with the reasoning layer OFF is byte-identical.
+    if (s.reasoning) claims = gateClaims(claims, s.reasoning).claims;
     return {
       id: s.id || `${s.docType}_${i}`, documentId: s.documentId != null ? s.documentId : null,
       docType: s.docType, label: s.label || lbl(s.docType), claims,

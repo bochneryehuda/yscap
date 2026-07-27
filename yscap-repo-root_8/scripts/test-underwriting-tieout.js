@@ -318,4 +318,40 @@ assert.strictEqual(factMatch('measure', 1850, 2400), false, 'GLA far apart is a 
     'an operating agreement naming the wrong entity still ties out against the vesting entity');
 }
 
+// --- THE REASONING-DRIVEN COMPARISON GATE (Layer B, owner-directed 2026-07-27) ---
+// A document whose per-document REASONING says its only named party is the CURRENT owner (seller
+// side) must have its buyer-side entity_name claim SUPPRESSED before the matrix runs — even when the
+// document is NOT a purchase_contract and NOT an assignment (the general case the hardcoded delete
+// can't reach). This directly exercises the gate through buildTieout.
+{
+  const vestCtx = { app: { property_address: ADDR }, vestingName: 'New Vesting LLC' };
+  // A source that (wrongly, via slot-mapping) carries the current owner in its entity_name field.
+  // Use an operating_agreement source (which the tie-out owns for entity_name) so we KNOW it would
+  // otherwise raise the fatal — then prove the reasoning gate suppresses it.
+  const misread = {
+    id: 'src', docType: 'operating_agreement',
+    fields: { entityLegalName: 'Old Owner LLC' },
+    reasoning: { docNature: 'tax_certificate', confidence: 0.95, parties: [{ name: 'Old Owner LLC', role: 'current_owner' }] },
+  };
+  const gated = buildTieout(vestCtx, [misread]);
+  assert.ok(!gated.discrepancies.some((d) => d.field === 'entity_name'),
+    'reasoning that names only the current owner (seller side) suppresses the buyer-side entity_name comparison');
+
+  // WITHOUT the reasoning, the SAME source DOES raise the entity_name mismatch — proving the gate is
+  // what changed the outcome (not the data), and that a real disagreement is still caught.
+  const ungated = buildTieout(vestCtx, [{ id: 'src', docType: 'operating_agreement', fields: { entityLegalName: 'Old Owner LLC' } }]);
+  assert.ok(ungated.discrepancies.some((d) => d.field === 'entity_name'),
+    'the same source with no reasoning still fires — the gate, not the data, suppressed it');
+
+  // Reasoning that DOES name the buyer side (a real title commitment's proposed insured) does NOT
+  // suppress — a genuine wrong vesting entity is still caught.
+  const realCommit = {
+    id: 'src2', docType: 'operating_agreement',
+    fields: { entityLegalName: 'Wrong Vesting LLC' },
+    reasoning: { docNature: 'title_commitment', confidence: 0.9, parties: [{ name: 'Wrong Vesting LLC', role: 'proposed_insured' }] },
+  };
+  assert.ok(buildTieout(vestCtx, [realCommit]).discrepancies.some((d) => d.field === 'entity_name'),
+    'reasoning that names the buyer side keeps the buyer-side comparison (a wrong vesting entity still fires)');
+}
+
 console.log('✓ test-underwriting-tieout: fact registry + data-comparison matrix + discrepancies pass');
