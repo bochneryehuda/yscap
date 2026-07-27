@@ -3275,8 +3275,29 @@ module.exports._loadRunGuidelineFindings = loadRunGuidelineFindings;
 // "Not from the run" is asked of the RUN'S OWN RULE TABLE (`isRuleCode`), not of a list of
 // the desk's code shapes. A list of the other producer's shapes rots silently the day a
 // sixth desk flag is added; the rule table cannot disagree with itself.
+//
+// ...BUT A DEALBREAKER IS NEVER FOLDED AWAY (re-audit 2026-07-27 — the EIGHTH door, and a
+// false clear that predates this branch). "Un-actionable" is a reason to render a card with
+// fewer buttons; it is not a reason to make a dealbreaker invisible.
+//
+// How it fires. The desk and the run's rule table read ONE signal and name it twice — the desk
+// raises `appraisal_transferred` as a WARNING, the run raises `isg_bl_transferred_appraisal`
+// as a FATAL ("Blue Lake will not accept a transferred appraisal; a transfer letter does not
+// fix it"). Same factKey, so they merge and the fatal wins the card. A reviewer dismisses the
+// warning. Next view the desk row is correctly hidden — and the run fatal, now with no merge
+// partner and no handle of its own, was dropped by this filter. It never comes back: the run
+// writes to `underwriting_run_findings`, never to `ai_suggestions`, so no mirror will ever
+// appear, and the ledger cannot save it either (`keyOf` strips factKey, so the run finding's
+// decision identity is its own and `filterSuppressed` correctly KEEPS it — this filter threw
+// it away afterwards). The dealbreaker survived only in the run cockpit tile.
+//
+// A fatal / CTC-blocking run finding therefore stays on the list even alone. It renders with
+// only "Escalate for review" (`UnderwritingPanel` gates the resolve row on `id` and the
+// suggestion actions on `suggestionId`), which is the correct trade: escalate-only beats
+// invisible. Warnings and info keep the old behaviour and stay in the cockpit.
 module.exports._foldFilter = (f) => !(f && f.source === investorReview.SOURCE
   && !f.id && !f.suggestionId
+  && !(f.severity === 'fatal' || f.blocksCtc)
   && !((f.mergedFrom || []).some((c) => c && !investorReview.isRuleCode(c))));
 module.exports._escalationFindingShape = escalationFindingShape;
 module.exports._loadEscalationRow = loadEscalationRow;

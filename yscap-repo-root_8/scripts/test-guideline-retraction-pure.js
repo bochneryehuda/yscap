@@ -246,9 +246,11 @@ function stubClient(rowCount = 0) {
       if (/status\s*=\s*ANY/i.test(text) && /dedupe_key/.test(text)) {
         return { rowCount: 1, rows: [{ dedupe_key: 'isg-gap:rtl_cond_feasibility', severity: 'warning', status: 'escalated', decided_by_staff_id: null }] };
       }
-      // record()'s refresh-in-place pick: the live row really is there.
-      if (/SELECT id FROM ai_suggestions/i.test(text) && /status IN \(/i.test(text)) {
-        return { rowCount: 1, rows: [{ id: 'live-1' }] };
+      // record()'s refresh-in-place pick: the live row really is there. Matched on the CLAUSE,
+      // never the column list — this stub broke the moment the pick started selecting
+      // `severity`, which is the same way the ai-suggestions pure suite went dark.
+      if (/SELECT .* FROM ai_suggestions/i.test(text) && /status IN \(/i.test(text)) {
+        return { rowCount: 1, rows: [{ id: 'live-1', severity: 'warning' }] };
       }
       if (/UPDATE ai_suggestions/i.test(text)) return { rowCount: 1, rows: [{ id: 'live-1' }] };
       if (/INSERT INTO ai_suggestions/i.test(text)) return { rowCount: 1, rows: [{ id: 'live-1' }] };
@@ -274,6 +276,27 @@ function stubClient(rowCount = 0) {
     { desk: { verdicts: [{ v: 1 }], unhappy: [Object.assign({}, unhappyDesk.unhappy[0], { severity: 'warning' })] } });
   ok(rAliveSame.raised === 0 && rAliveSame.heldAlive === 1,
     `an escalated item at the SAME severity is still held (raised=${rAliveSame.raised}, heldAlive=${rAliveSame.heldAlive})`);
+
+  // AN ANSWER IS NOT A JUDGEMENT (re-audit 2026-07-27). `answered` means a super-admin
+  // replied to the AI's question, not that anyone decided the finding — `record()`'s own
+  // settled set excludes it for exactly that reason, and desk-sync used to disagree, so an
+  // answer held the item quiet. The row carries `decided_by_staff_id`, which is what put it
+  // on the wrong side of the map's split.
+  const answeredClient = {
+    calls: [],
+    async query(text, params) {
+      this.calls.push({ text, params });
+      if (/status\s*=\s*ANY/i.test(text) && /dedupe_key/.test(text)) {
+        return { rowCount: 1, rows: [{ dedupe_key: 'isg-gap:rtl_cond_feasibility', severity: 'fatal', status: 'answered', decided_by_staff_id: 'staff-1' }] };
+      }
+      if (/INSERT INTO ai_suggestions/i.test(text)) return { rowCount: 1, rows: [{ id: 'ans-1' }] };
+      return { rowCount: 0, rows: [] };
+    },
+  };
+  const rAnswered = await sync.syncInvestorGuidelineFindings(answeredClient, 'app-answered', { desk: unhappyDesk });
+  ok(rAnswered.raised === 1 && rAnswered.heldByHuman === 0 && rAnswered.heldAlive === 0,
+    `an ANSWERED question does not settle the finding it was asked about `
+    + `(raised=${rAnswered.raised}, heldByHuman=${rAnswered.heldByHuman}, heldAlive=${rAnswered.heldAlive})`);
 
   // A PORTFOLIO-MUTED CODE IS NOT A RAISED FINDING (re-audit 2026-07-27).
   // `record()` drops a muted code and returns `{silenced:true}` with no id — a deliberate

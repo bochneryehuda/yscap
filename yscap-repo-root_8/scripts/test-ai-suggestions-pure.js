@@ -390,6 +390,74 @@ const aiSug = require('../src/lib/underwriting/ai-suggestions');
   assert.ok(!worse.settled, 'a dealbreaker is NOT held back by a warning-level dismissal');
   assert.strictEqual(ds.rows.length, 2, 'and it really gets a row of its own');
 
+  // ...and a DECIDED row that carries NO severity does not silence a dealbreaker either.
+  // This is deliberately the OPPOSITE of db/336's NULL policy on `finding_decisions` — see the
+  // note at the guard. Unlike that column, `ai_suggestions.severity` has no legacy population,
+  // so suppress-always would let one severity-less row silence a fatal on that key forever.
+  const ns = new Store();
+  const nc = mkClient(ns);
+  const nmk = (severity) => ({
+    applicationId: 'app-nullsev', source: 'cure_analysis', kind: 'finding', severity,
+    title: 't', body: 'x', dedupeKey: 'nullsev:1', evidence: { code: 'nullsev' },
+    suppressNotify: true,
+  });
+  const n1 = await aiSug.record(nc, nmk(null));
+  // Settled DIRECTLY on the row, not through `decide()`. `decide()` also writes the durable
+  // ledger, whose NULL policy is the opposite one — and the ledger consult runs after this
+  // door, so it would decide the outcome and this assertion would be testing the wrong thing.
+  // The case this isolates is real: a row decided before db/333, or one whose ledger write
+  // failed (that write is best-effort by design).
+  Object.assign(ns.rows.find(r => r.id === n1.id), { status: 'dismissed', decided_by_staff_id: 'staff-9' });
+  const nFatal = await aiSug.record(nc, nmk('fatal'));
+  assert.ok(!nFatal.settled,
+    'a dismissal recorded with NO severity does not silence a later dealbreaker — fail OPEN');
+  assert.strictEqual(ns.rows.length, 2, 'the dealbreaker really gets its own row');
+
+  // ---- AN UPGRADE TO A DEALBREAKER IS NEWS, EVEN IN PLACE (the NINTH door) ----
+  // The fatal fan-out lived only on the fresh-INSERT branch. But desk-sync's alive skip now
+  // deliberately lets a WORSE payload through so the live row is UPGRADED rather than cloned —
+  // so a warning sitting at `escalated` became a dealbreaker and the file team heard nothing.
+  //
+  // The notify module is INJECTED INTO THE REQUIRE CACHE rather than required and patched:
+  // `src/lib/notify` pulls in `src/db`, which prints a DATABASE_URL banner on load, and a pure
+  // test must not reach for a database at all. `_notifyFatalNew` requires it lazily, so seeding
+  // the cache first means the real module is never loaded.
+  const notified = [];
+  const notifyPath = require.resolve('../src/lib/notify');
+  const hadNotify = require.cache[notifyPath];
+  require.cache[notifyPath] = { id: notifyPath, filename: notifyPath, loaded: true, exports: {
+    notifyAppStaff: async (...a) => { notified.push(a); },
+    notifyAdmins: async (...a) => { notified.push(a); },
+  } };
+  try {
+    const us = new Store();
+    const uc = mkClient(us);
+    const up = (severity, status) => ({
+      applicationId: 'app-upgrade', source: 'investor_guideline_desk', kind: 'finding',
+      title: 'Feasibility report required', body: 'x', severity,
+      dedupeKey: 'isg-gap:upgrade', evidence: { code: 'isg_gap_201' }, _status: status,
+    });
+    const live = await aiSug.record(uc, up('warning'));
+    // The staffer escalates it — still live, still needs handling, not a decision.
+    us.rows.find(r => r.id === live.id).status = 'escalated';
+    notified.length = 0;
+    const same = await aiSug.record(uc, up('warning'));
+    assert.strictEqual(same.deduped, true, 'a re-record refreshes the escalated row in place');
+    assert.strictEqual(us.rows.length, 1, 'and never clones it');
+    await new Promise((r) => setImmediate(r));
+    assert.strictEqual(notified.length, 0, 'a warning restated as a warning tells nobody — no bombardment');
+
+    const worse2 = await aiSug.record(uc, up('fatal'));
+    assert.strictEqual(worse2.deduped, true, 'the dealbreaker still REFRESHES the row, never duplicates it');
+    assert.strictEqual(us.rows.length, 1, 'still one row — no phantom duplicate, no 298-email burst');
+    assert.strictEqual(us.rows[0].severity, 'fatal', 'and the row now reads as a dealbreaker');
+    await new Promise((r) => setImmediate(r));
+    assert.ok(notified.length > 0, 'but the file team IS told the item became a dealbreaker');
+  } finally {
+    if (hadNotify) require.cache[notifyPath] = hadNotify;
+    else delete require.cache[notifyPath];
+  }
+
   // THE STUB MUST HAVE UNDERSTOOD EVERY STATEMENT IT WAS ASKED (re-audit 2026-07-27).
   // Without this the file reports success for doors it never actually opened — which is
   // exactly what happened when two SELECT lists gained a `severity` column and these

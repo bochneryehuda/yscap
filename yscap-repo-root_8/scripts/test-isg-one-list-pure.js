@@ -280,4 +280,20 @@ t('the DISPLAY merge is unaffected — the fact still collapses the cards', () =
     'but the two findings keep their own decision identities');
 });
 
+t('a decided row with NO severity does not silence a worse finding', () => {
+  // The MIRROR IMAGE of db/336's NULL policy, and deliberately so (re-audit 2026-07-27).
+  // `finding_decisions.severity` was ADDED by db/336, so NULL there is a real backlog of
+  // decisions taken before we recorded it and must keep suppressing. `ai_suggestions.severity`
+  // has existed since db/248 and every producer sets it, so NULL there is not a legacy
+  // population — treating it as suppress-always would let one such row silence a later
+  // DEALBREAKER on that key forever, with nothing to unstick it.
+  //
+  // The ledger half (NULL suppresses) is asserted in test-isg-one-list-db.
+  assert.strictEqual(fdec.sevRank(null), 0, 'an unreadable severity ranks below everything');
+  assert.ok(fdec.sevRank('fatal') > fdec.sevRank(null),
+    'so a dealbreaker outranks it and is shown again — fail OPEN, never hide');
+  assert.strictEqual(fdec.sevRank(' FATAL '), 3,
+    'and the rank trims + lowercases, which the mirror-close SQL must match');
+});
+
 console.log(`\n${n} checks passed.`);

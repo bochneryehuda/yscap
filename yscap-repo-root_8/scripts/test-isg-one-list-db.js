@@ -240,13 +240,16 @@ console.log('ISG one list (DB)');
     // that sync runs after the response. Dropping a handle-less survivor unconditionally
     // would swallow the DESK's finding on the view where the two first meet.
     const foldFilter = uw._foldFilter;
-    const runOnly = { source: investorReview.SOURCE, code: 'isg_bl_ny_loan', severity: 'fatal' };
+    // WARNING-level, deliberately: since the eighth-door fix a partnerless DEALBREAKER stays on
+    // the desk (asserted in 13d below). The "no buttons → cockpit" rule now applies to
+    // advisories only.
+    const runOnly = { source: investorReview.SOURCE, code: 'isg_bl_ny_loan', severity: 'warning' };
     const merged = { source: investorReview.SOURCE, code: 'isg_rural_property', severity: 'fatal',
       mergedFrom: ['isg_appraisal_review_3345'] };
     // Two handle-less RUN rules merging into each other is NOT a reason to list one: neither
     // has buttons and neither would have been here without the fold.
     const runPair = { source: investorReview.SOURCE, code: 'isg_bl_transferred_appraisal',
-      severity: 'fatal', mergedFrom: ['isg_transferred_appraisal_letter'] };
+      severity: 'warning', mergedFrom: ['isg_transferred_appraisal_letter'] };
     const actionable = { source: investorReview.SOURCE, code: 'isg_rural_property', suggestionId: 'sug-1' };
     assert.strictEqual(foldFilter(runOnly), false,
       'a run finding that merged with nothing has no buttons — it stays in the run cockpit');
@@ -592,6 +595,33 @@ console.log('ISG one list (DB)');
     assert.strictEqual(uw._isgSettledHides({ status: 'open', severity: 'warning' }, { severity: 'warning' }), false,
       'an OPEN mirror hides nothing — the card is live');
     ok('the file view hides a settled guideline finding only while it is no worse than what was decided');
+
+    // ── 13d. THE EIGHTH DOOR — the fold filter ─────────────────────────────────────────
+    // THE EIGHTH DOOR (re-audit 2026-07-27; a false clear that predates this branch).
+    // The desk and the run rule table read one signal and name it twice. They merge, the fatal
+    // wins the card, a reviewer dismisses the warning, the desk row is correctly hidden — and the
+    // run fatal, now partnerless and handle-less, used to be dropped by the fold filter. It never
+    // came back: the run writes to `underwriting_run_findings`, never to `ai_suggestions`.
+    const lone = { source: investorReview.SOURCE, code: 'isg_bl_transferred_appraisal',
+      severity: 'fatal', mergedFrom: [] };
+    assert.strictEqual(uw._foldFilter(lone), true,
+      'a partnerless run DEALBREAKER stays on the desk (escalate-only beats invisible)');
+    assert.strictEqual(uw._foldFilter(Object.assign({}, lone, { severity: 'warning', blocksCtc: true })), true,
+      'so does one that blocks clear-to-close at a lower severity');
+
+    // ...and the deliberate behaviour for everything else is UNCHANGED: an advisory that exists
+    // only because of the fold belongs in the run cockpit, where it has buttons.
+    assert.strictEqual(uw._foldFilter(Object.assign({}, lone, { severity: 'warning' })), false,
+      'a partnerless run WARNING still folds into the cockpit');
+    assert.strictEqual(uw._foldFilter(Object.assign({}, lone, { severity: 'info' })), false,
+      'and so does an info');
+    // A real merge partner from ANOTHER producer still admits any severity, as before.
+    assert.strictEqual(
+      uw._foldFilter({ source: investorReview.SOURCE, code: 'isg_rural_property', severity: 'warning',
+        mergedFrom: ['isg_appraisal_review_3345'] }), true,
+      'a desk merge partner still admits a warning');
+
+    ok('a partnerless run dealbreaker is never folded off the desk');
 
     // …and the readers really behave: a warning dismissed does not carry forward a fatal.
     const carryKey = { code: 'appraisal_value_variance', field: 'as_is_value', docValue: '450000' };

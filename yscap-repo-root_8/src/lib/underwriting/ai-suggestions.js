@@ -143,6 +143,10 @@ function notScoredSql(alias) {
   return `${a}source <> ALL(ARRAY[${ADVISORY_ONLY_SOURCES.map((s) => `'${s}'`).join(',')}]::text[])`;
 }
 
+// The ledger's rank, reused rather than re-spelled — `finding-decisions` is required lazily
+// throughout this module to keep the two files' load order free of a cycle.
+function sevRankOf(v) { return require('./finding-decisions').sevRank(v); }
+
 async function record(client, s) {
   const c = client || db();
   if (!s || !s.applicationId || !s.source || !s.kind || !s.title) {
@@ -202,13 +206,22 @@ async function record(client, s) {
       // here, so the telemetry said raised and no row existed.
       if (settled.rows[0]) {
         const fdec0 = require('./finding-decisions');
-        // A row whose OWN severity is unreadable keeps suppressing, exactly as db/336 says a
-        // NULL ledger severity does (re-audit 2026-07-27 — this door had it inverted, ranking
-        // an unknown as the LOWEST, so a decided row with no severity would be re-raised the
-        // first time the same key arrived carrying one). Conservative direction: never
-        // resurrect a decision en masse because we cannot read what it was made at.
+        // AN UNREADABLE STORED SEVERITY DOES NOT SUPPRESS HERE — and that is deliberately the
+        // OPPOSITE of db/336's NULL policy on `finding_decisions` (re-audit 2026-07-27, which
+        // refuted the round that had just made the two match).
+        //
+        // The two NULLs mean different things. `finding_decisions.severity` was ADDED by
+        // db/336, so a NULL there is a real backlog of decisions taken before we recorded it;
+        // treating those as rank 0 would resurrect every dismissed fatal already on file.
+        // `ai_suggestions.severity` has existed since db/248 and every producer sets it, so a
+        // NULL here is not a legacy population — it is a producer that told us nothing. Making
+        // it suppress-always would let one such row silence a later DEALBREAKER on that key
+        // forever, with nothing to unstick it.
+        //
+        // So an unknown loses: the finding shows again. That is this module's standing
+        // fail-open discipline — it may show a finding twice, never hide one.
         const decidedRank = fdec0.sevRank(settled.rows[0].severity);
-        const worse = decidedRank > 0 && fdec0.sevRank(s.severity) > decidedRank;
+        const worse = fdec0.sevRank(s.severity) > decidedRank;
         if (!worse) {
           return { id: settled.rows[0].id, deduped: true, settled: true, status: settled.rows[0].status };
         }
@@ -242,8 +255,10 @@ async function record(client, s) {
   // the row the staffer is already working instead of stacking a second copy of it
   // next to their escalation. A plain 'open' row still wins the pick.
   if (s.dedupeKey) {
+    // `severity` is selected so the refresh can tell an UPGRADE from a plain re-record — see
+    // the fatal-notify note below the UPDATE.
     const cur = await c.query(
-      `SELECT id FROM ai_suggestions
+      `SELECT id, severity FROM ai_suggestions
         WHERE application_id=$1 AND source=$2 AND dedupe_key=$3
           AND status IN ('open','escalated','marked_important','asked_admin')
         ORDER BY (status='open') DESC, created_at DESC LIMIT 1`,
@@ -266,6 +281,25 @@ async function record(client, s) {
          JSON.stringify(s.evidence || {}), JSON.stringify(s.proposedAction || {}),
          s.severity || null, s.confidence != null ? Number(s.confidence) : null, s.traceUrl || null,
          !!s.important]);
+      // AN UPGRADE TO A DEALBREAKER IS NEWS, EVEN IN PLACE (re-audit 2026-07-27 — the NINTH
+      // door, pre-existing and made reachable by this branch).
+      //
+      // The fatal fan-out lived only on the fresh-INSERT branch, on the reasonable theory that
+      // a refresh is the same finding restated. But this branch now deliberately carries the
+      // case where it is NOT: the alive skip in `desk-sync` lets a WORSE payload through
+      // precisely so the live row is upgraded rather than cloned. So a light-rehab feasibility
+      // notice sitting at `escalated` as a warning becomes a ground-up DEALBREAKER, the row is
+      // correctly updated — and the file team was told nothing.
+      //
+      // Only on a genuine RAISE to fatal: a fatal re-recorded as fatal still says nothing, so
+      // this cannot become the per-page-load bombardment the insert branch's `suppressNotify`
+      // exists to prevent. Same flag, same best-effort scheduling, same never-throws.
+      const wasRank = sevRankOf(cur.rows[0].severity);
+      const nowRank = sevRankOf(s.severity);
+      if (nowRank === 3 && nowRank > wasRank && !s.suppressNotify) {
+        const upgradedId = cur.rows[0].id;
+        setImmediate(() => { _notifyFatalNew(s, upgradedId).catch(() => { /* additive */ }); });
+      }
       return { id: cur.rows[0].id, deduped: true };
     }
   }

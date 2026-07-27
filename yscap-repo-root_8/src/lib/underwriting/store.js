@@ -514,7 +514,7 @@ async function closeMirroredSuggestions(client, { applicationId, code, documentI
           AND COALESCE(evidence->>'code', proposed_action->'fields'->>'code') = $2
           AND ($3::uuid IS NULL OR document_id IS NULL OR document_id = $3)
           AND ($6::int = 0 OR COALESCE(
-                CASE lower(COALESCE(severity,'')) WHEN 'fatal' THEN 3 WHEN 'warning' THEN 2 WHEN 'info' THEN 1 ELSE 0 END,
+                CASE btrim(lower(COALESCE(severity,''))) WHEN 'fatal' THEN 3 WHEN 'warning' THEN 2 WHEN 'info' THEN 1 ELSE 0 END,
                 0) <= $6::int)`,
       [applicationId, code, documentId || null,
        `Closed with the finding on the Document Review desk (${String(action || 'resolved')}).`, by || null,
