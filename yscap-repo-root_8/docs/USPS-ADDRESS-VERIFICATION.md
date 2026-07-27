@@ -209,7 +209,7 @@ Whichever you use, **USPS is the authority on the final stored address.**
   — all verify with USPS after a pick and show the status badge.
 - `src/lib/address-usps-verify.js` — the paced, non-destructive backfill for existing
   files (`applications.usps_address` / `usps_match` / `usps_verified_at`, added in
-  `db/342`). Booted from `src/server.js`, gated by `USPS_BACKFILL_ENABLED`.
+  `db/343`). Booted from `src/server.js`, gated by `USPS_BACKFILL_ENABLED`.
 - Config: `src/config.js` `cfg.usps`. Tests: `scripts/test-usps-verify.js` (in `npm test`).
 
 Nothing here touches the frozen pricing/guideline engines.

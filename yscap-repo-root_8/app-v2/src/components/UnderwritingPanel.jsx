@@ -6,6 +6,10 @@ import DocCompare from './DocCompare.jsx';
 import DocPreview from './DocPreview.jsx';
 import AiReasoningChat from './AiReasoningChat.jsx';
 import { useAuth } from '../lib/auth.jsx';
+// Severity words + colours: ONE shared map. Three screens each kept a private copy
+// and had already drifted — this one said "Fatal" for the same finding the
+// escalations screen called something else. See lib/findings-vocab.js.
+import { FINDING_SEVERITY as SEV, severityCount, severityLabel } from '../lib/findings-vocab.js';
 
 /* The PILOT document-underwriting desk. For each uploaded document PILOT reads it (best-in-class
    OCR), understands it (AI, constrained to the document type's fields), and checks it against the
@@ -46,11 +50,6 @@ function fmtAgo(iso) {
   return `${d}d ago`;
 }
 
-const SEV = {
-  fatal: { bg: 'var(--crit-bg,#F6E7E4)', fg: 'var(--crit,#B4483C)', label: 'Fatal' },
-  warning: { bg: 'var(--amber-bg,#F6EEDD)', fg: 'var(--amber,#B7791F)', label: 'Warning' },
-  info: { bg: 'rgba(47,127,134,.14)', fg: 'var(--teal-deep,#256168)', label: 'Info' },
-};
 
 function btn(primary, danger) {
   return {
@@ -2329,12 +2328,12 @@ function SovereignAiRiskSection({ appId }) {
         <div style={{ minWidth: 0 }}>
           <div style={{ fontSize: 11, textTransform: 'uppercase', letterSpacing: '.06em', color: 'var(--muted,#4B585C)', fontWeight: 700 }}>File AI risk score</div>
           <div style={{ fontSize: 13, color: 'var(--ivory,#141B22)', marginTop: 2 }}>
-            {bd.fatal > 0 ? `${bd.fatal} fatal` : ''}
+            {bd.fatal > 0 ? severityCount(bd.fatal, 'fatal') : ''}
             {bd.fatal > 0 && (bd.warning > 0 || bd.info > 0) ? ' · ' : ''}
             {bd.warning > 0 ? `${bd.warning} warning` : ''}
             {bd.warning > 0 && bd.info > 0 ? ' · ' : ''}
             {bd.info > 0 ? `${bd.info} info` : ''}
-            {data.oldestFatalDays >= 1 ? ` · oldest fatal ${Math.floor(data.oldestFatalDays)}d` : ''}
+            {data.oldestFatalDays >= 1 ? ` · oldest ${severityLabel('fatal').toLowerCase()} ${Math.floor(data.oldestFatalDays)}d` : ''}
           </div>
           {/* R4.19 — one-line triage: the single worst open finding. */}
           {data.topFinding && data.topFinding.title && (
@@ -3224,7 +3223,7 @@ export default function UnderwritingPanel({ appId, docs = [], readOnly = false, 
       )}
       {(sum.fatal > 0 || sum.warning > 0) && (
         <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 12, flexWrap: 'wrap' }}>
-          {sum.fatal > 0 && <span style={{ fontWeight: 700, color: SEV.fatal.fg, background: SEV.fatal.bg, borderRadius: 999, padding: '4px 12px', fontSize: 12.5 }}>{sum.fatal} fatal</span>}
+          {sum.fatal > 0 && <span style={{ fontWeight: 700, color: SEV.fatal.fg, background: SEV.fatal.bg, borderRadius: 999, padding: '4px 12px', fontSize: 12.5 }}>{severityCount(sum.fatal, 'fatal')}</span>}
           {sum.warning > 0 && <span style={{ fontWeight: 700, color: SEV.warning.fg, background: SEV.warning.bg, borderRadius: 999, padding: '4px 12px', fontSize: 12.5 }}>{sum.warning} warning</span>}
           {/* ADVISORY ONLY (owner-directed 2026-07-27). This line used to read
               "Clear-to-close is blocked until every fatal is resolved" — which is no
@@ -3414,7 +3413,7 @@ export default function UnderwritingPanel({ appId, docs = [], readOnly = false, 
           </p>
           {(apprSum.fatal > 0 || apprSum.warning > 0) && (
             <div style={{ display: 'flex', gap: 8, marginBottom: 10, flexWrap: 'wrap' }}>
-              {apprSum.fatal > 0 && <span style={{ fontWeight: 700, color: SEV.fatal.fg, background: SEV.fatal.bg, borderRadius: 999, padding: '3px 11px', fontSize: 12 }}>{apprSum.fatal} fatal</span>}
+              {apprSum.fatal > 0 && <span style={{ fontWeight: 700, color: SEV.fatal.fg, background: SEV.fatal.bg, borderRadius: 999, padding: '3px 11px', fontSize: 12 }}>{severityCount(apprSum.fatal, 'fatal')}</span>}
               {apprSum.warning > 0 && <span style={{ fontWeight: 700, color: SEV.warning.fg, background: SEV.warning.bg, borderRadius: 999, padding: '3px 11px', fontSize: 12 }}>{apprSum.warning} warning</span>}
             </div>
           )}

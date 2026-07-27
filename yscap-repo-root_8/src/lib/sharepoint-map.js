@@ -49,18 +49,19 @@ const STATE_ABBR = new Set(['al','ak','az','ar','ca','co','ct','de','fl','ga','h
 const NOISE_TAIL = new Set(['usa', 'us', 'unitedstates', 'america']);
 const UNIT_MARKERS = new Set(['apt', 'apartment', 'unit', 'ste', 'suite', 'fl', 'floor', 'rm', 'room', 'bsmt', 'basement']);
 
-// Auto-created folders carry this marker (owner-directed 2026-07-13): every
-// folder the AUTOMATION creates at the officer/borrower/address level is named
-// "<name>, YS portal sync" so staff can always tell API-created folders from
-// human-created ones. Matched (pre-existing) folders are never renamed. The
-// marker is stripped during matching so a previously-created folder still
-// matches its borrower/address next time.
-// PILOT branding (owner-directed 2026-07-14): auto-created folders are now
-// marked "…, Synced by Pilot". The matcher MUST keep recognizing the LEGACY
-// "YS portal sync[ing]" names forever — existing folders are never renamed
-// (hard no-rename policy) and must still match so we never duplicate/strand
-// them. norm() therefore strips BOTH the new and the legacy phrasing.
-const AUTO_MARKER = ', Synced by Pilot';
+// The "Synced by Pilot" marker is kept ONCE per tree — on the leaf sync folder
+// (see resolveSyncFolder step 4) — NOT repeated on the officer/borrower/address
+// levels (owner-directed 2026-07-27). Repeating ", Synced by Pilot" on three
+// folder levels added ~50 characters to every path and pushed the full
+// Windows/OneDrive LOCAL path past the 259-character limit, which makes Office/
+// Acrobat refuse to OPEN a synced copy ("the file path is more than 259
+// characters"). One marker (the leaf) still lets staff tell an API-filed tree
+// from a human folder.
+// The matcher MUST keep recognizing the LEGACY "YS portal sync[ing]" AND the
+// prior "…, Synced by Pilot" suffix names FOREVER — existing folders are never
+// renamed (hard no-rename policy) and must still match so we never duplicate or
+// strand them. norm()/addressCore() therefore strip BOTH phrasings, so a folder
+// created plainly now still reuses a pre-existing marked folder next time.
 
 const norm = (s) => String(s || '')
   .toLowerCase()
@@ -268,9 +269,13 @@ async function resolveSyncFolder(ctx) {
 
   const borrowerName = [ctx.borrowerFirst, ctx.borrowerLast].filter(Boolean).join(' ').trim() || 'Unknown Borrower';
 
-  // Every folder the automation CREATES is named "<name>, Synced by Pilot"
-  // (AUTO_MARKER) so humans can tell it apart; matched folders keep their name.
-  const createMarked = async (pid, name) => sp.ensureChildFolder(driveId, pid, `${name}${AUTO_MARKER}`);
+  // Officer / borrower / address folders the automation CREATES are named
+  // PLAINLY now (the marker lives once, on the leaf sync folder below) — see the
+  // header note: three marker copies per path blew past the 259-char Windows/
+  // OneDrive local limit and stopped files opening. Matching still strips the
+  // marker, so an existing "…, Synced by Pilot" / legacy "…, YS portal sync"
+  // folder is always reused; nothing is renamed or duplicated.
+  const createFolder = async (pid, name) => sp.ensureChildFolder(driveId, pid, name);
 
   // Alias-aware create for the fixed leaf/unfiled folders (owner-directed
   // 2026-07-14): reuse a LEGACY-named folder if one already exists under this
@@ -290,16 +295,25 @@ async function resolveSyncFolder(ctx) {
     const unfiled = await ensureAliased(parentId, cfg.sharepointUnfiledRoot, cfg.sharepointUnfiledLegacy);
     parentId = unfiled.id; pathParts.push(unfiled.name);
     details.flags.push('no-officer:unfiled');
-    const bf = await createMarked(parentId, borrowerName);
+    // Fuzzy-reuse first (same as the officer branch) so a plainly-created folder
+    // still adopts a pre-existing MARKED "<name>, Synced by Pilot" folder under
+    // Unfiled instead of duplicating it — now that createFolder no longer marks.
+    const ubs = await sp.listChildren(driveId, parentId);
+    const ubm = pickMatch(ubs, (n) => borrowerMatches(n, ctx.borrowerFirst, ctx.borrowerLast), borrowerName);
+    const bf = ubm.hit || await createFolder(parentId, borrowerName);
     parentId = bf.id; pathParts.push(bf.name);
-    if (bf.created) details.created.push('borrower');
+    if (!ubm.hit) details.created.push('borrower');
     // Keep the address level for application scopes here too — without it, a
     // lead-capture borrower's multiple loans would commingle in one folder.
     if (ctx.hasApplication) {
       const addressName = ctx.addressOneLine || (ctx.ysLoanNumber ? `Loan ${ctx.ysLoanNumber}` : 'Property');
-      const af = await createMarked(parentId, addressName);
+      const uas = await sp.listChildren(driveId, parentId);
+      const uam = ctx.addressOneLine
+        ? pickMatch(uas, (n) => addressMatches(n, ctx.addressOneLine), ctx.addressOneLine)
+        : { hit: null };
+      const af = uam.hit || await createFolder(parentId, addressName);
       parentId = af.id; pathParts.push(af.name);
-      if (af.created) details.created.push('address');
+      if (!uam.hit) details.created.push('address');
     }
   } else {
     // 1) Officer folder (fuzzy; created — with the marker — if genuinely missing).
@@ -308,7 +322,7 @@ async function resolveSyncFolder(ctx) {
     let officerFolder = om.hit;
     if (om.ambiguous) details.flags.push('officer-ambiguous');
     if (!officerFolder) {
-      officerFolder = await createMarked(parentId, ctx.officerName);
+      officerFolder = await createFolder(parentId, ctx.officerName);
       details.created.push('officer');
     }
     details.matches.officer = officerFolder.name;
@@ -335,7 +349,7 @@ async function resolveSyncFolder(ctx) {
       }
     }
     if (!borrowerFolder) {
-      borrowerFolder = await createMarked(parentId, borrowerName);
+      borrowerFolder = await createFolder(parentId, borrowerName);
       details.created.push('borrower');
     }
     details.matches.borrower = borrowerFolder.name;
@@ -361,7 +375,7 @@ async function resolveSyncFolder(ctx) {
         }
       }
       if (!addressFolder) {
-        addressFolder = await createMarked(parentId, addressName);
+        addressFolder = await createFolder(parentId, addressName);
         details.created.push('address');
       }
       details.matches.address = addressFolder.name;
