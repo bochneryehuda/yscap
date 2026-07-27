@@ -82,6 +82,30 @@ check('Clean ELIGIBLE Standard/Gold does NOT need approval', () => {
   assert.strictEqual(manualProgram.needsSuperAdminApproval({ program: 'gold', status: 'ELIGIBLE' }), false);
 });
 
+// Owner-directed 2026-07-27: ANY admin-zone knob moved off the company default
+// — a reduced rate markup, reduced origination, a discounted fee — makes an
+// otherwise perfectly ELIGIBLE registration an exception that an admin approves.
+check('An ELIGIBLE deal priced OFF the defaults needs approval', () => {
+  const { pricingOverridesEngaged } = require('../src/lib/pricing-overrides');
+  const CD = { markupStdPct: 0.5, markupGoldPct: 0.5, origStdPct: 1.25, origGoldPct: 1.25,
+    lenderFee: 2195, creditFee: 150, appraisalFee: 800, titleFee: null };
+  const cut = pricingOverridesEngaged({ markupStdPct: 0, origStdPct: 0.5 }, CD);
+  assert.strictEqual(cut.length, 2, 'both the markup cut and the points cut are detected');
+  assert.strictEqual(manualProgram.needsSuperAdminApproval({ program: 'standard', status: 'ELIGIBLE', pricingOverrides: cut }), true,
+    'a reduced rate/fee on an ELIGIBLE deal goes to an admin');
+  assert.strictEqual(manualProgram.needsSuperAdminApproval({ program: 'standard', status: 'ELIGIBLE', pricingOverrides: [] }), false,
+    'no deviation → still confirms immediately');
+});
+
+check('A stored registration carries its own approval answer', () => {
+  // The e-sign issuance gate reads product_registrations.needs_approval (db/343)
+  // rather than re-deriving the policy from is_manual/status.
+  assert.strictEqual(manualProgram.needsSuperAdminApproval({ program: 'standard', status: 'ELIGIBLE', needsApproval: true }), true);
+  assert.strictEqual(manualProgram.needsSuperAdminApproval({ program: 'standard', status: 'ELIGIBLE', needsApproval: false }), false);
+  assert.strictEqual(manualProgram.needsSuperAdminApproval({ program: 'manual', status: 'ELIGIBLE', needsApproval: false }), true,
+    'a Manual Program still needs approval even if the stored flag says otherwise');
+});
+
 console.log('Assignment over-cap registers (eligible, not manual review):');
 
 // An assignment fee over the 15% cap follows the program's normal mechanic: the

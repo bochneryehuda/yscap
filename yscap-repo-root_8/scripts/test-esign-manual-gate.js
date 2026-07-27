@@ -68,6 +68,30 @@ function stubDb(regRow) {
   assert.deepStrictEqual(b, [], 'an approved manual registration (no pending escalation) issues');
   ok('MANUAL + approved (no pending escalation) → issuable');
 
+  // A PRICING OVERRIDE off the company defaults (db/343, owner-directed
+  // 2026-07-27): the program is Standard and the engine says ELIGIBLE, but the
+  // registration carries needs_approval — no term sheet may issue until an admin
+  // approves it. This is the whole point of the new column: the gate cannot
+  // re-derive it from is_manual/status, which are both innocent here.
+  pendingResult = { id: 'esc-3' };
+  b = await registrationIssuabilityBlockers('app-1', stubDb({ status: 'ELIGIBLE', is_manual: false, stale: false, needs_approval: true }));
+  assert.ok(b.some((x) => x.code === 'manual_approval'), 'a pricing-override registration awaiting approval blocks issuance');
+  assert.ok(/priced off the company defaults/i.test(b.find((x) => x.code === 'manual_approval').reason),
+    'the reason names the actual problem (priced off the defaults), not "manual-review structure"');
+  ok('ELIGIBLE + pricing override off the defaults + pending → BLOCKED');
+
+  // …and the same registration once an admin approved it (no open escalation).
+  pendingResult = null;
+  b = await registrationIssuabilityBlockers('app-1', stubDb({ status: 'ELIGIBLE', is_manual: false, stale: false, needs_approval: true }));
+  assert.deepStrictEqual(b, [], 'an approved pricing override issues');
+  ok('pricing override + approved (no pending escalation) → issuable');
+
+  // A legacy row (pre-343, needs_approval absent/NULL) behaves exactly as before.
+  pendingResult = { id: 'esc-4' };
+  b = await registrationIssuabilityBlockers('app-1', stubDb({ status: 'ELIGIBLE', is_manual: false, stale: false, needs_approval: null }));
+  assert.deepStrictEqual(b, [], 'a legacy clean registration is not newly blocked by the column');
+  ok('legacy row (no needs_approval) → unchanged');
+
   // STALE registration → blocked regardless of status.
   pendingResult = null;
   b = await registrationIssuabilityBlockers('app-1', stubDb({ status: 'ELIGIBLE', is_manual: false, stale: true, stale_reason: 'Pricing inputs changed' }));
