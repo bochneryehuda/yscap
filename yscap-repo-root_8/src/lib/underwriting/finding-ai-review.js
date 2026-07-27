@@ -83,16 +83,28 @@ Set confidence honestly (0..1). Set isRealConcern to match the verdict. If confi
  * A stable fingerprint of a finding's identity — the same finding on a re-read maps to the same
  * memory row; a finding whose compared values change gets a fresh review. PURE.
  */
+// Findings arrive in TWO shapes and BOTH must be read (pre-merge audit 2026-07-27): DERIVED findings
+// (tie-out, chains) are camelCase — docValue/fileValue/howTo/documentId; PERSISTED per-document
+// findings (document_findings, SELECT *) are snake_case — doc_value/file_value/how_to/document_id.
+// The persisted per-document findings are exactly the ones the owner wants judged against their
+// SOURCE DOCUMENT, so reading only camelCase silently stripped their values + source doc from the
+// prompt. These accessors read either shape.
+function docValueOf(f) { return f && f.docValue != null ? f.docValue : (f ? f.doc_value : undefined); }
+function fileValueOf(f) { return f && f.fileValue != null ? f.fileValue : (f ? f.file_value : undefined); }
+function howToOf(f) { return f && f.howTo != null ? f.howTo : (f ? f.how_to : undefined); }
+function documentIdOf(f) { if (!f) return null; const v = f.documentId != null ? f.documentId : f.document_id; return v != null ? v : null; }
+
 function fingerprintOf(finding) {
   const f = finding || {};
+  const dv = docValueOf(f); const fv = fileValueOf(f); const did = documentIdOf(f);
   const parts = [
     claimOf(f) || '',
     String(f.code || ''),
     String(f.field || ''),
-    String(f.docValue == null ? '' : f.docValue),
-    String(f.fileValue == null ? '' : f.fileValue),
+    String(dv == null ? '' : dv),
+    String(fv == null ? '' : fv),
     String(f.title || ''),
-    String(f.documentId == null ? '' : f.documentId),
+    String(did == null ? '' : did),
   ];
   return crypto.createHash('sha256').update(parts.join('')).digest('hex').slice(0, 32);
 }
@@ -151,9 +163,10 @@ function describeFinding(finding, sourceDoc) {
   if (f.code) lines.push(`Code: ${f.code}`);
   if (f.severity) lines.push(`PILOT severity: ${f.severity}`);
   if (f.field) lines.push(`Field: ${f.field}`);
-  if (f.fileValue != null && f.fileValue !== '') lines.push(`What the loan file says: ${f.fileValue}`);
-  if (f.docValue != null && f.docValue !== '') lines.push(`What the document says: ${f.docValue}`);
-  if (f.howTo) lines.push(`PILOT's reasoning / how-to: ${f.howTo}`);
+  const fv = fileValueOf(f); const dv = docValueOf(f); const ht = howToOf(f);
+  if (fv != null && fv !== '') lines.push(`What the loan file says: ${fv}`);
+  if (dv != null && dv !== '') lines.push(`What the document says: ${dv}`);
+  if (ht) lines.push(`PILOT's reasoning / how-to: ${ht}`);
   if (sourceDoc) {
     lines.push('');
     lines.push(`The source document PILOT used (${sourceDoc.docType || 'document'}):`);
@@ -287,8 +300,9 @@ async function reviewFindings({ client, appId, findings, db, sourceDocsById } = 
       // Per-file spend cap — checked before each paid call (fail-open on a read error).
       const allowed = await costMeter.allowSpend(appId, client).catch(() => true);
       if (!allowed) break;
-      const sourceDoc = finding.documentId != null && sourceDocsById ? sourceDocsById.get(String(finding.documentId)) : null;
-      const review = await reviewOne({ finding, sourceDoc, groundingText, economics, appId, documentId: finding.documentId });
+      const did = documentIdOf(finding);
+      const sourceDoc = did != null && sourceDocsById ? sourceDocsById.get(String(did)) : null;
+      const review = await reviewOne({ finding, sourceDoc, groundingText, economics, appId, documentId: did });
       if (!review) continue;   // AI failed on this one → leave it un-memoized (shows, fail-open)
       await persist(client, appId, finding, fingerprintOf(finding), review, groundingHash);
       reviewed++;

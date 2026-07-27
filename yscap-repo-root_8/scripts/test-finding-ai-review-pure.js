@@ -68,6 +68,25 @@ assert.deepStrictEqual(r.annotateFindings([{ code: 'x' }], 'not-a-map').shown.le
   assert.strictEqual(n2.suggested_severity, 'unchanged');
 }
 
+// --- PERSISTED (snake_case) findings are read the same as DERIVED (camelCase) ones ---
+// (pre-merge audit 2026-07-27): a document_findings row uses doc_value/file_value/how_to/document_id;
+// these are exactly the findings judged against their source document, so they must not be blanked.
+{
+  const { describeFinding } = r._internals;
+  const persisted = { code: 'contract_price_mismatch', field: 'purchase_price', doc_value: '$500,000', file_value: '$412,000', how_to: 'Reconcile the price', title: 'Price mismatch', document_id: 'doc-123' };
+  const camel = { code: 'contract_price_mismatch', field: 'purchase_price', docValue: '$500,000', fileValue: '$412,000', howTo: 'Reconcile the price', title: 'Price mismatch', documentId: 'doc-123' };
+  // Same identity whether the finding is snake_case or camelCase.
+  assert.strictEqual(r.fingerprintOf(persisted), r.fingerprintOf(camel), 'snake_case and camelCase of the SAME finding fingerprint identically');
+  // The source document + values reach the prompt for a persisted finding.
+  const desc = describeFinding(persisted, { docType: 'purchase_contract', fields: { price: 500000 } });
+  assert.ok(/What the loan file says: \$412,000/.test(desc), 'persisted file_value reaches the prompt');
+  assert.ok(/What the document says: \$500,000/.test(desc), 'persisted doc_value reaches the prompt');
+  assert.ok(/Reconcile the price/.test(desc), "persisted how_to (PILOT's reasoning) reaches the prompt");
+  assert.ok(/source document PILOT used \(purchase_contract\)/.test(desc), 'the source document is described for a persisted finding');
+  // A changed file_value on a persisted finding yields a new fingerprint (re-review).
+  assert.notStrictEqual(r.fingerprintOf(persisted), r.fingerprintOf({ ...persisted, file_value: '$999,999' }), 'a changed persisted value re-reviews');
+}
+
 // --- economicsRecap feeds the AI the whole deal picture (owner-directed 2026-07-27) ---
 {
   const { economicsRecap } = r._internals;

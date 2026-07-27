@@ -23,8 +23,10 @@ const rev = require('../src/lib/underwriting/finding-ai-review');
       `INSERT INTO applications (borrower_id, property_address) VALUES ($1,$2) RETURNING id`,
       [b.id, JSON.stringify({ line1: '1 Main St', city: 'Austin', state: 'TX', zip: '78701' })])).rows[0];
 
+    // `rejected` is a DERIVED (camelCase) finding; `confirmed` is a PERSISTED (snake_case)
+    // document_findings-shaped finding — the gate must handle BOTH end-to-end (pre-merge audit).
     const rejected = { code: 'tieout_entity_name', field: 'entity_name', docValue: 'Old Owner LLC', fileValue: 'New Vesting LLC', title: 'Vesting mismatch', documentId: null };
-    const confirmed = { code: 'contract_price_mismatch', field: 'purchase_price', docValue: '$500,000', fileValue: '$412,000', title: 'Price mismatch', documentId: null };
+    const confirmed = { code: 'contract_price_mismatch', field: 'purchase_price', doc_value: '$500,000', file_value: '$412,000', how_to: 'Reconcile', title: 'Price mismatch', document_id: null };
     const fpRej = rev.fingerprintOf(rejected);
     const fpConf = rev.fingerprintOf(confirmed);
 
