@@ -17,7 +17,15 @@ The owner set them, and every recommendation below was tested against them:
 3. **Do not change how anything behaves.** No new gates, no new rules, no
    renumbered permissions, no touched pricing.
 
-So every recommendation here is one of exactly four kinds of change:
+**Two deliberate exceptions, authorised by the owner on 2026-07-27** (see §9).
+Both are behaviour changes, both were asked for explicitly, and both are named
+here so they are never mistaken for scope creep:
+
+1. **"Post a condition" will actually create the condition.**
+2. **A condition created from an AI suggestion starts as normal, not red.**
+
+Everything else below still obeys the three rules. So every other
+recommendation is one of exactly four kinds of change:
 
 | Kind | What it means | Risk |
 |---|---|---|
@@ -49,7 +57,8 @@ The fix is not a rewrite. It is four moves:
 1. **Give the file a front door** — one short list that says what needs you now,
    built from data the server already produces.
 2. **Speak one language** — one dictionary of status words, one set of colours.
-3. **Make the conditions area one list instead of four half-lists.**
+3. **Separate the two things that were never the same** — conditions become one
+   list; the staff checklist gets its own home and stops being a dumping ground.
 4. **Make things findable by typing**, not only by scrolling.
 
 ---
@@ -156,6 +165,12 @@ The consequences are real, not theoretical:
 - The section's badge counts the borrower tab only. The badge's denominator and
   the list's denominator **disagree** — for a loan officer, an item they marked
   Done vanishes from the list but keeps counting in the badge.
+- **The checklist is not actually a checklist.** Rows carry an `item_kind` of
+  `document`, `condition` or `task` (the standard file seeds 11 / 8 / 25), but the
+  Internal tab builds its checklist as *"everything that is not a document"* — so
+  the **8 staff conditions are swept into the checklist** alongside the 25 real
+  tasks (`StaffApplication.jsx:2909-2910`). Conditions and work-steps are being
+  shown as one list.
 
 A typical file carries **~50–55 conditions**, and there are **16 different places
 in the product that can create one**, writing to three different tables.
@@ -452,9 +467,41 @@ Also fix, in the same pass:
 - **`sec-tapes` should default closed** like the other 13. It is the only export
   tool sitting open, above collapsed sections that matter more.
 
-### Move 4 — Conditions: one list, not four half-lists · _Regroup_
+### Move 4 — Conditions: one list. The checklist: its own thing · _Regroup_
 
 The deepest fix, and the one the owner asked for most directly.
+
+#### 4a. First, the line the owner drew: a checklist is not a condition
+
+_Owner-directed 2026-07-27: "the checklist should not be mixed up with the
+conditions… it should be separated as a checklist."_
+
+**The code already knows the difference, and the current screen ignores it.**
+Every row carries an `item_kind` of `document`, `condition`, or `task`. The
+standard RTL file seeds **11 documents, 8 conditions and 25 tasks**.
+
+But the Internal tab splits on the wrong line. It builds its "Checklist" panel as
+*everything that is not a document* — so the **8 staff conditions land inside the
+checklist**, mixed in with the 25 real tasks:
+
+```
+internalConds  = staff AND item_kind === 'document'    → "Document conditions"
+internalItems  = staff AND item_kind !== 'document'    → "Checklist"  ← catches
+                                                          'condition' too
+```
+`StaffApplication.jsx:2909-2910`
+
+So the checklist today is **a staff task list with conditions mixed into it**.
+That alone explains a good deal of why it doesn't feel right.
+
+**The correct line, which needs no new data:**
+
+| | What it is | Where it lives |
+|---|---|---|
+| `document` + `condition` | **Conditions** — something must be satisfied and cleared | The one conditions list |
+| `task` | **Checklist** — staff work steps, phase by phase | Its own separate home |
+
+#### 4b. The conditions list
 
 **One list. Filters instead of tabs. Grouped by subject.**
 
@@ -488,17 +535,35 @@ entity with members and its own documents), and it is the one tab where the spli
 by subject is honest. It becomes a group in the list *and* keeps its dedicated
 panel, rather than being rendered three times as it is today.
 
-**What to do about the Underwriting tab.** It is a different table, usually
-empty, and it can create borrower-facing conditions that the borrower's own tab
-never shows. Merging two tables is a behaviour change and therefore **out of
-scope for this plan.** What is *in* scope, and should be done now:
+**The Underwriting tab folds in — the owner approved this on 2026-07-27.** It is a
+different table, usually empty (0–2 rows), and it can create borrower-facing
+conditions the borrower's own tab never shows. It stops being a tab:
 
-1. Show those rows **in the one list**, marked with their source, so nothing is
-   hidden in a tab people forget to open.
-2. **Label its add-form honestly.** "Borrower-facing" there does not behave like
-   borrower-facing elsewhere.
-3. Flag the two-table question to the owner as a **separate decision**, with the
-   evidence, rather than quietly resolving it here.
+1. Its rows appear **in the one list**, marked with their source, so nothing hides
+   in a tab people forget to open.
+2. Its add-form is **retired in favour of the main one**, which removes the
+   "Borrower-facing" option that does not behave like borrower-facing elsewhere.
+3. The two tables can then be reconciled behind the scenes without the user ever
+   seeing a seam. Sequence it **after** the list is working, so the visible
+   improvement does not wait on a data migration.
+
+#### 4c. The checklist
+
+The checklist keeps its own home and is **not** merged into the conditions list.
+
+Two things happen to it now, both small:
+
+1. **It gets its real contents.** Once the split is drawn on `item_kind`, the 8
+   staff conditions move out to the conditions list, and the checklist becomes
+   what its name says — the staff work steps, phase by phase.
+2. **It keeps its phase grouping**, which is genuinely useful and already built.
+
+_Owner-directed: the checklist "is not good right now" and may be **removed or
+completely remodelled**._ That is a **separate piece of work**, deliberately not
+designed here — remodelling it properly needs its own look at what staff actually
+use it for. Cleaning out the conditions that don't belong in it is worth doing
+either way, because it makes the remaining question ("is this list earning its
+place?") answerable for the first time.
 
 ### Move 5 — Let people find things by typing · _Reveal_
 
@@ -552,14 +617,23 @@ create one.
 Two buttons, near-identical labels, opposite behaviour. Staff can reasonably
 believe a condition was posted when none was.
 
-**In scope now (wording only):** rename the first to **"Log that a condition is
-needed"** and correct its description.
-**Flag to the owner separately:** whether it *should* create the condition. That
-is a behaviour change and not ours to make here.
+**Owner-directed 2026-07-27: it should actually create the condition.** So the
+fix is no longer cosmetic — the button does what its label and description have
+always promised. The finding stays open until that condition clears, which is the
+behaviour the description already describes.
 
-Related, same category: a condition created from an AI suggestion is born in the
-red **"Needs attention"** state, though nothing was ever rejected. Worth the
-owner's decision; not changed here.
+Two things to get right when building it:
+
+- **Create into the main conditions list**, not the separate underwriting table —
+  otherwise this re-creates the split that Move 4 is closing.
+- **Keep it one action, not two.** Today a staffer records the note and then has
+  to go and create the condition by hand; the whole point is that they no longer
+  have to remember the second step.
+
+**And the second one, also owner-directed: an AI-suggested condition starts as
+normal, not red.** Today it is born in the `issue` state — the red *"Needs
+attention"* bucket — although nothing was ever rejected. It should start in the
+ordinary **"Not started"** state like any other new condition.
 
 ---
 
@@ -570,13 +644,16 @@ earlier being perfect.
 
 | Phase | Contents | Kind | Risk |
 |---|---|---|---|
-| **1** | Broken deep links · rail/title mismatches · one badge calculation · `sec-tapes` closed by default · the two button labels | Rename, Reveal | **Very low** |
+| **1** | Broken deep links · rail/title mismatches · one badge calculation · `sec-tapes` closed by default · honest button labels · **AI-suggested conditions start normal, not red** | Rename, Reveal | **Very low** |
 | **2** | The shared vocabulary modules; adopt them across the conditions and findings surfaces | Rename | **Low** — words and colours |
 | **3** | "What needs you next" at the top of the file, incl. the ageing we already compute | Reveal, Reuse | **Low** — no server work |
 | **4** | Collapsed-section summary lines | Reveal | **Low** |
-| **5** | Conditions: one list, filters, subject groups | Regroup | **Medium** — the deepest change; do it after the vocabulary is settled |
+| **5a** | **Split conditions from the checklist on `item_kind`** — the 8 misfiled staff conditions move out | Regroup | **Low** — one filter line, existing data |
+| **5b** | Conditions: one list, filters, subject groups; the Underwriting tab folds in | Regroup | **Medium** — the deepest change; after the vocabulary is settled |
+| **5c** | **"Post a condition" creates the condition** | Behaviour *(authorised)* | **Medium** — do it once 5b's single list exists, so it creates into the right place |
 | **6** | ⌘K find-in-file | Reveal | **Low** — additive, degrades safely |
 | **7** | The shared card/chip classes, worst files first | Reuse | **Medium** — mechanical but wide |
+| **—** | *Checklist: remove or remodel* | Separate project | Not designed here — needs its own pass |
 
 Phases 1–4 are, together, most of the perceived improvement, carry almost no
 risk, and require **no server changes and no new AI spend.**
@@ -589,9 +666,13 @@ Stated plainly, so nobody quietly does them later under this banner:
 
 - **No feature is removed.** Every button, filter, panel and export survives.
 - **No feature is added.** No new capability, report, or automation.
-- **No behaviour changes.** No new gate, no changed permission, no altered rule.
-- **The two condition tables are not merged.** Flagged for the owner as a
-  separate decision, with evidence.
+- **No behaviour changes — except the two the owner authorised** (§9): "Post a
+  condition" creates the condition, and AI-suggested conditions start normal
+  rather than red. No new gate, no changed permission, no altered rule beyond
+  those two.
+- **The checklist is not merged into conditions**, and it is not redesigned here.
+  It gets its correct contents and keeps its own home; its future is a separate
+  piece of work.
 - **AI stays advisory.** No list here may become a blocker, and no second
   "dismiss" mechanism may appear beside the existing one.
 - **No pricing, guideline, or engine number is touched.** Nothing in this
@@ -619,23 +700,38 @@ Measurable, from the same counts used in §2:
 | Ways to reach a named condition | scroll + guess the tab | type its name |
 | Card treatments / radii / shadows | ~70 / 19 / 67 | ~3 / 1 / ~3 |
 | Sections whose closed state tells you something | 5 of 16 | 16 of 16 |
+| Staff conditions misfiled into the checklist | 8 per standard file | **0** |
+| Things the checklist contains that aren't work steps | conditions + tasks | tasks only |
 | Features removed | — | **0** |
 | Features added | — | **0** |
+| Behaviour changes | — | **2, both owner-authorised** |
 
 ---
 
-## 9. Open questions for the owner
+## 9. Decisions — owner-directed 2026-07-27
 
-Only three, and none blocks the work above:
+All open questions are now answered. Recorded verbatim in effect, so the
+implementer never has to guess:
 
-1. **The two condition tables.** Should the Underwriting tab's separate table be
-   merged into the main one? It is usually empty and it can create
-   "borrower-facing" conditions the borrower's tab never shows. Merging is a
-   behaviour change, so it needs an explicit decision.
-2. **"Post a condition."** Should it actually create the condition, or keep
-   recording a note? Phase 1 fixes the misleading wording either way.
-3. **AI-created conditions** are born in the red "Needs attention" state though
-   nothing was rejected. Should they start as "Not started" instead?
+| # | Question | Decision |
+|---|---|---|
+| 1 | Merge the Underwriting tab's separate condition table into the main list? | **Yes.** It stops being a tab; its rows join the one list. |
+| 2 | Should "Post a condition" actually create the condition? | **Yes.** The button does what it says. |
+| 3 | Should an AI-suggested condition still appear red? | **No.** It starts as normal, like any other new condition. |
+| 4 | *(raised by the owner)* Should the internal checklist merge into the conditions list? | **No — the opposite.** The checklist stays **separate** and must not be mixed with conditions. |
+
+**On the checklist specifically.** The owner's words: it *"is not good right
+now"* and may be **removed or completely remodelled**. This plan therefore does
+two things and stops:
+
+- draws the line correctly (`task` = checklist, `document`/`condition` =
+  conditions), which pulls the 8 misfiled staff conditions out of it;
+- leaves the checklist's own future as a **separate piece of work**, not designed
+  here.
+
+Rebuilding or retiring the checklist is a real product question — what staff
+actually use it for, whether the phase structure earns its keep — and it deserves
+its own pass rather than being decided as a footnote to a layout change.
 
 ---
 
@@ -655,6 +751,9 @@ Every claim above, with its source.
 | Two condition tables | `api.staffChecklist` `StaffApplication.jsx:2609` vs `api.staffConditions` `:2612`; `db/schema.sql:233` vs `db/022_conditions.sql:6-27` |
 | "Borrower-facing" on the Underwriting tab | `StaffApplication.jsx:3675-3678` |
 | Only two writers to the `conditions` table | `src/routes/staff.js:4338`, `src/lib/product-registration.js:61` |
+| `item_kind` is `document` / `condition` / `task` | `db/002_backend.sql:15-22` |
+| Standard file seeds 11 documents, 8 conditions, 25 tasks | `db/005_rtl_workflow.sql:57` |
+| The checklist catches `condition`-kind rows | `StaffApplication.jsx:2909-2910` (`!== 'document'`) |
 | Four filter dropdowns, 19 options | `StaffApplication.jsx:2009-2017`, `:3338-3340`, `:3361-3366`, `:3634-3637` |
 | Status renaming disagrees | `StaffApplication.jsx:2899` vs `screens/Application.jsx:939` |
 | `severity` means timing here | `StaffApplication.jsx:3630`, `:3647` |
