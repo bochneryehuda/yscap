@@ -1101,6 +1101,37 @@ async function analyzeOneDocument(app, doc, docType, opts = {}) {
       subject, today: todayISO(),
     });
 
+    // CREDIT XML wins over the AI read of the PDF (owner 2026-07-27: "we have an XML — learn to read
+    // it"). The credit report is parsed on import into credit_reports.parsed (structured, authoritative
+    // — scores + every tradeline). When a completed parse exists for this document's borrower, use it
+    // to build the credit finding instead of the OCR/AI read, so the desk never says "could not be
+    // read with confidence" while a parsed report sits on the file, and lists per-mortgage late detail
+    // from the XML. Best-effort + guarded: only for credit_report, only when the XML has real data,
+    // and it re-runs the SAME computeCreditFindings on the XML-derived fields (no new finding logic).
+    if (docType === 'credit_report' && result && result.extraction) {
+      try {
+        const borrowerId = doc.borrower_id || app.borrower_id || null;
+        if (borrowerId) {
+          const cr = await db.query(
+            `SELECT parsed FROM credit_reports
+              WHERE borrower_id = $1 AND COALESCE(status,'') = 'completed' AND parsed IS NOT NULL
+              ORDER BY (application_id = $2) DESC, COALESCE(report_date, created_at) DESC
+              LIMIT 1`, [borrowerId, app.id]);
+          let parsed = cr.rows[0] && cr.rows[0].parsed;
+          if (typeof parsed === 'string') { try { parsed = JSON.parse(parsed); } catch (_) { parsed = null; } }
+          const xmlFields = parsed && require('../lib/underwriting/credit-from-xml').creditFieldsFromParsed(parsed);
+          if (xmlFields) {
+            result.extraction.fields = Object.assign({}, result.extraction.fields, xmlFields);
+            result.extraction.status = 'analyzed';
+            result.extraction.confidence = 'definite';
+            result.extraction.reason = null;
+            result.findings = (registry.get('credit_report').check(result.extraction.fields, subject)) || [];
+            result.ok = true;
+          }
+        }
+      } catch (_) { /* additive — a failure leaves the AI read + its findings untouched */ }
+    }
+
     const client = await db.pool.connect();
     let saved;
     let authFatalSignal = null; // set inside the tx, recorded AFTER COMMIT (audit M2)
