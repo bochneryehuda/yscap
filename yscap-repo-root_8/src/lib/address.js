@@ -218,6 +218,51 @@ function canonicalOneLine(a, { country = false } = {}) {
 }
 
 /**
+ * Strip an apartment/suite/unit suffix for a GEOCODER lookup. A geocoder resolves
+ * a BUILDING, not an apartment — and a unit token ("Apartment 6B", "Unit 4D",
+ * "#3") makes some providers (notably the keyless OSM Nominatim fallback) return
+ * NO MATCH for an address that resolves cleanly without it (owner-reported
+ * 2026-07-27: the borrower home address "1254 42nd St Apartment 6B, Brooklyn, NY
+ * 11219" could not be placed on the map, so it never reached ClickUp). The
+ * coordinates are building-level regardless of the unit, so dropping it for the
+ * lookup loses nothing. Only strips when a unit is actually DETECTED — otherwise
+ * the input is returned unchanged. Returns the clean mailing one-line (same form
+ * we push).
+ */
+function withoutUnit(text) {
+  const s = String(text || '').trim();
+  if (!s) return s;
+  const p = parseAddress(s);
+  if (!p || !p.unit || !p.line1) return s;   // no unit found → leave the input untouched
+  // Guard a FALSE unit-detection: a street whose NAME is a unit keyword ("5 Floor
+  // Ave", "100 Lot 5") makes parseAddress swallow the street into `unit`, leaving
+  // line1 as just the house number. Stripping then yields a wrong geocode query
+  // ("5, Nowhere, NY …"), reintroducing the very failure this fixes. If the parse
+  // ate the street, don't strip — geocode the full text as before.
+  if (isHouseNumber(p.line1.trim())) return s;
+  const rebuilt = canonicalOneLine({ line1: p.line1, city: p.city, state: p.state, zip: p.zip });
+  return rebuilt || s;
+}
+
+/**
+ * Re-insert a unit into a mailing one-line after the street (the first comma
+ * part), unless the line already carries it. Pairs with withoutUnit: we geocode
+ * the BUILDING (unit stripped so it resolves) but keep the apartment on the value
+ * we STORE and DISPLAY — "1254 42nd St, Brooklyn, NY 11219" + "Apt 6B" →
+ * "1254 42nd St Apt 6B, Brooklyn, NY 11219". Idempotent (a line that already
+ * names the unit is returned unchanged).
+ */
+function withUnit(oneLine, unit) {
+  const line = String(oneLine || '').trim();
+  const u = String(unit || '').trim();
+  if (!line || !u) return line;
+  const compact = (s) => String(s).toLowerCase().replace(/[^a-z0-9]/g, '');
+  if (compact(line).includes(compact(u))) return line;   // already carries the unit
+  const i = line.indexOf(',');
+  return i === -1 ? `${line} ${u}` : `${line.slice(0, i)} ${u}${line.slice(i)}`;
+}
+
+/**
  * Does this string look like a raw geocoder display name rather than a mailing
  * address? Signatures, any one of which is conclusive:
  *   - the house number sits in its OWN comma part  ("26, South 10th Street, …")
@@ -564,6 +609,6 @@ module.exports = {
   parseAddress, normalizeAddress, splitUnit, stateAbbr, stateCompareKey,
   parseAddressParts, sameAddress, addressCompareKey, addressTextOf,
   abbreviateStreet, normalizeCityName, preferBorough, osmComponentsToAddress,
-  canonicalOneLine, looksLikeProviderLongForm, parseProviderLongForm,
+  canonicalOneLine, withoutUnit, withUnit, looksLikeProviderLongForm, parseProviderLongForm,
   compactFormattedAddress, canonicalizeAddressValue,
 };

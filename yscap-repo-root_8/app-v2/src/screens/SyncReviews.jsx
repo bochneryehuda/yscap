@@ -295,6 +295,7 @@ export default function SyncReviews() {
   const [customVal, setCustomVal] = useState({});     // rowId -> reviewer-typed correct value
   const [selected, setSelected] = useState({});       // rowId -> checked (bulk actions)
   const [bulkMsg, setBulkMsg] = useState('');
+  const [rowErr, setRowErr] = useState({});           // rowId -> error shown INLINE at the row (the top banner scrolls off-screen in a long list)
   const [recheckMsg, setRecheckMsg] = useState({});   // rowId -> "look again" result message
 
   async function bulk(action, winner) {
@@ -347,14 +348,17 @@ export default function SyncReviews() {
     return '';
   }
   async function act(id, verb, body) {
-    setBusyId(id); setErr(''); setBulkMsg('');
+    setBusyId(id); setErr(''); setBulkMsg(''); setRowErr((m) => ({ ...m, [id]: '' }));
     try {
       const out = await api.post(`/api/staff/sync-reviews/${id}/${verb}`, body || {});
       const msg = actionResultMessage(verb, out);
       if (msg) setBulkMsg(msg);
       await load();
     }
-    catch (e) { setErr(e.message || `Could not ${verb}`); }
+    // Show the failure BOTH at the top and INLINE at the row: for a row deep in a
+    // long queue the top banner is off-screen, so a failed action reads as
+    // "nothing happened" (owner-reported for the accept-figures button).
+    catch (e) { const m = (e && (e.data?.error || e.message)) || `Could not ${verb}`; setErr(m); setRowErr((mm) => ({ ...mm, [id]: m })); }
     finally { setBusyId(null); }
   }
 
@@ -743,6 +747,9 @@ export default function SyncReviews() {
                   r.winner ? `Adopted the ${r.winner === 'clickup' ? 'ClickUp' : r.winner === 'encompass' ? 'Encompass' : r.winner === 'custom' ? 'typed' : 'PILOT'} value${r.source === 'encompass' ? ' on the profile' : ' on both systems'}. ` : ''}
                 {r.resolution_note ? `${r.resolution_note}` : ''}
               </p>
+            )}
+            {rowErr[r.id] && (
+              <div role="alert" className="notice err" style={{ marginTop: 8, marginBottom: 0 }}>{rowErr[r.id]}</div>
             )}
           </div>
         );
