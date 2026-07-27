@@ -2927,12 +2927,27 @@ export default function StaffApplication() {
   // The internal checklist shows ONLY staff-facing work items — the borrower's
   // conditions (audience borrower/both) already live in "Conditions to close",
   // so they must not be listed twice.
-  // Internal DOCUMENT conditions (audience=staff, item_kind=document — e.g.
-  // Insurance binder+invoice, Title) live in their OWN "Internal conditions"
-  // section in the conditions area, NOT in the phase-by-phase internal checklist
-  // (which is staff work-items/tasks only).
-  const internalConds = useMemo(() => items.filter(it => it.audience === 'staff' && it.item_kind === 'document'), [items]);
-  const internalItems = useMemo(() => items.filter(it => it.audience === 'staff' && it.item_kind !== 'document'), [items]);
+  //
+  // A CHECKLIST IS NOT A CONDITION (owner-directed 2026-07-27: "the checklist
+  // should not be mixed up with the conditions"). Every row already carries the
+  // distinction in `item_kind`; the split here used to draw the line in the
+  // wrong place — "conditions" meant `document` and "checklist" meant EVERYTHING
+  // ELSE, which swept the 12 staff `condition` rows into the checklist alongside
+  // the 24 real tasks. That is most of why the checklist never felt right.
+  //
+  // The correct line, and it needs no new data:
+  //   document + condition -> a CONDITION. Something must be satisfied and cleared.
+  //   task                 -> the CHECKLIST. Staff work steps, phase by phase.
+  //
+  // This also has to happen BEFORE the checklist comes off the screen, not
+  // after: three of the file's four clear-to-close gates (rtl_p4_ts,
+  // rtl_f_review, rtl_f_ctc) are staff `condition` rows sitting in the
+  // checklist right now — verified against the seeded templates, where no
+  // `task` is a gate. Hiding the checklist first would take the gates with it.
+  const internalConds = useMemo(
+    () => items.filter(it => it.audience === 'staff' && (it.item_kind === 'document' || it.item_kind === 'condition')),
+    [items]);
+  const internalItems = useMemo(() => items.filter(it => it.audience === 'staff' && it.item_kind === 'task'), [items]);
   const phases = useMemo(() => {
     const groups = {};
     const src = itemFilter === 'all' ? internalItems
@@ -3466,7 +3481,13 @@ export default function StaffApplication() {
       {condTab === 'internal' && <>
         <p className="muted small" style={{ marginTop: 0 }}>Staff-only — never shared with the borrower.</p>
         <div className="panel" style={{ marginTop: 0 }}>
-          <h3 style={{ margin: '0 0 8px' }}>Document conditions</h3>
+          {/* Was "Document conditions" when this list held only document-kind
+              rows. It now holds every internal condition — the staff
+              `condition` rows moved here out of the checklist, gates included —
+              so the heading says what it actually contains. Item renders an
+              upload area only for a document-kind row (it.item_kind), so a
+              condition without a document shows no upload box it can't use. */}
+          <h3 style={{ margin: '0 0 8px' }}>Internal conditions</h3>
           {(() => {
             const sorted = [...internalConds].sort((a, b) => (a.sort_order || 0) - (b.sort_order || 0));
             const vis = sorted.filter(it => internalCondFilter === 'all' ? true : internalCondFilter === 'cleared' ? condOffPlate(it) : !condOffPlate(it));
