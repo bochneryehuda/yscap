@@ -733,14 +733,23 @@ router.get('/:appId', async (req, res, next) => {
     //   no row yet (first view — the sync writes  → show it read-only; it becomes actionable on the
     //   after the response)                        next view.
     // Best-effort: a failed read leaves every finding read-only, never hides one.
+    // One key can legitimately own SEVERAL rows over a file's life: the desk retracts a rule, later
+    // raises it again, and `record()` inserts a fresh row each time rather than reviving the closed
+    // one. So the pick has to be deliberate, not "whichever row the scan happened to return last":
+    // an OPEN row wins (there is live work), then a decision a HUMAN made (it should still suppress
+    // the finding), and only then the desk's own automatic withdrawal.
     const isgRows = await db.query(
-      `SELECT id, dedupe_key, status, important FROM ai_suggestions
+      `SELECT id, dedupe_key, status, important, decided_by_staff_id FROM ai_suggestions
         WHERE application_id=$1 AND source=$2`, [app.id, deskFindings.SOURCE])
       .then((r) => r.rows).catch(() => []);
+    const isgRank = (r) => (r.status === 'open' || r.status === 'asked_admin') ? 3
+      : (r.decided_by_staff_id ? 2 : 1);
     const isgByKey = new Map();
     for (const r of isgRows) {
       const k = String(r.dedupe_key == null ? '' : r.dedupe_key).trim().toLowerCase();
-      if (k) isgByKey.set(k, r);
+      if (!k) continue;
+      const prev = isgByKey.get(k);
+      if (!prev || isgRank(r) > isgRank(prev)) isgByKey.set(k, r);
     }
     const investorDeskFindings = deskFindings.deskToFindings(investorDesk).map((f) => {
       if (!f.isgKey) return f;                       // info_missing / appraisal_review — no mirror

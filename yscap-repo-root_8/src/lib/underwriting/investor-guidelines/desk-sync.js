@@ -123,8 +123,32 @@ async function syncInvestorGuidelineFindings(client, appId, opts) {
       desk = await deskMod.runInvestorGuidelineDesk(appId, client).catch(() => null);
     }
     const payloads = deskToSuggestions(desk);
-    let raised = 0, fatal = 0;
+    // A HUMAN'S DECISION IS NOT RE-OPENED (audit 2026-07-27).
+    //
+    // `aiSug.record` refreshes an existing row only when it is still `status='open'`; against a
+    // CLOSED row it finds nothing and INSERTS a fresh open one. The desk is a pure function of the
+    // file, so it re-raises the same item on every view — which meant a staffer's Dismiss was undone
+    // the next time anyone opened the loan, forever. That was already true before the findings merge;
+    // the merge just made it load-bearing, because the file view now DROPS a guideline finding whose
+    // suggestion is closed. Without this the drop would be reversed within one page load.
+    //
+    // Keyed on `decided_by_staff_id`, which is the only thing that distinguishes the two ways a row
+    // closes: `decide()` stamps the staffer who acted, and `retractStale`'s automatic withdrawal is a
+    // raw UPDATE that never touches it. So a rule the DESK retracted and later legitimately raises
+    // again comes straight back (decided_by is NULL → not suppressed), while a judgement a person
+    // actually made stands. Best-effort: a failed read suppresses nothing.
+    const decidedKeys = new Set();
+    try {
+      const d = await client.query(
+        `SELECT DISTINCT dedupe_key FROM ai_suggestions
+          WHERE application_id=$1 AND source=$2 AND dedupe_key IS NOT NULL
+            AND decided_by_staff_id IS NOT NULL
+            AND status NOT IN ('open','asked_admin')`, [appId, SOURCE]);
+      for (const r of d.rows) decidedKeys.add(String(r.dedupe_key));
+    } catch (_e) { /* suppress nothing on a read failure */ }
+    let raised = 0, fatal = 0, heldByHuman = 0;
     for (const p of payloads) {
+      if (p.dedupeKey && decidedKeys.has(String(p.dedupeKey))) { heldByHuman += 1; continue; }
       try {
         await aiSug.record(client, Object.assign({ applicationId: appId }, p));
         raised += 1;
@@ -172,9 +196,9 @@ async function syncInvestorGuidelineFindings(client, appId, opts) {
       : 0;
     // Name the loaders, not just the fact — "the appraisal read failed" is actionable, "degraded"
     // is not, and this is what the caller logs when a retraction is skipped.
-    return { raised, fatal, retracted, assessed, degraded,
+    return { raised, fatal, retracted, assessed, degraded, heldByHuman,
       degradedSources: degraded ? desk.degraded.slice() : [] };
-  } catch (_e) { return { raised: 0, fatal: 0, retracted: 0, assessed: false, degraded: false, degradedSources: [] }; }
+  } catch (_e) { return { raised: 0, fatal: 0, retracted: 0, assessed: false, degraded: false, heldByHuman: 0, degradedSources: [] }; }
 }
 
 /**
