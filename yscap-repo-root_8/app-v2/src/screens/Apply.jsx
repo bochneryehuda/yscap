@@ -30,7 +30,7 @@ const STUDIO_LOCKED = [
 // Ground-Up is a PROGRAM (not a loan type/purpose). DSCR Rental is intentionally
 // not offered here for now.
 const PROGRAMS = ['Fix & Flip w/ Construction', 'Bridge', 'Ground-Up Construction', 'Not sure yet'];
-const LOAN_TYPES = ['Purchase', 'Refinance — Rate & Term', 'Refinance — Cash-Out'];
+const LOAN_TYPES = ['Purchase', 'Refinance — Rate & Term', 'Refinance — Cash-Out', 'Delayed Purchase Financing'];
 const PROP_TYPES = ['SFR (1 unit)', 'Multi 2–4', 'Multi 5+', 'Condo', 'Townhouse', 'Mixed use'];
 const REHAB_TYPES = ['Cosmetic', 'Moderate', 'Heavy / gut rehab', 'Adding square footage', 'Ground-up construction'];
 // Plain-language explanations so a first-time borrower can tell the options apart.

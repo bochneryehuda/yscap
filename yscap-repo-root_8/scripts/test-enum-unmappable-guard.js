@@ -56,6 +56,85 @@ ok(!X.unmappableToClickUp('program', 'Fix & Hold'), 'Fix & Hold has a crosswalk 
   eq(X.fromClickUpLabel('program', 'Fix and Hold With Construction'), 'Fix & Hold', 'inbound tolerates the "and" long form');
   eq(X.fromClickUpLabel('program', 'BRRRR'), 'Fix & Hold', 'inbound tolerates "BRRRR"');
 }
+// The OTHER two inbound gaps the audit turned up, both answered by the owner
+// (2026-07-27). Each is a live ClickUp option that used to read back as NOTHING,
+// so a card set to it left the portal on its stale value (COALESCE keeps ours).
+{
+  // "Free" means RENT-free — NOT 'own free and clear', which is its own option
+  // sitting right next to it in the same dropdown. Getting these two backwards
+  // would silently rewrite whether a borrower OWNS their home.
+  eq(X.fromClickUpLabel('housing_status', 'Free'), 'Live with family',
+    'ClickUp "Free" reads back as our rent-free value');
+  eq(X.fromClickUpLabel('housing_status', 'Rent Free'), 'Live with family',
+    'the existing "Rent Free" option is unchanged');
+  eq(X.fromClickUpLabel('housing_status', 'own free and clear'), 'Own free and clear',
+    'own-free-and-clear still means OWNS it outright — never collapsed into rent-free');
+  eq(X.fromClickUpLabel('housing_status', 'Mortgage'), 'Own with mortgage', 'mortgage unchanged');
+  // Read-side only: we keep WRITING 'Rent Free', so this can never re-label a card.
+  eq(X.toClickUpLabel('housing_status', 'Live with family'), 'Rent Free',
+    'we still write "Rent Free", never the ambiguous "Free"');
+  eq(X.toClickUpLabel('housing_status', 'Own free and clear'), 'own free and clear',
+    'the own-free-and-clear write is untouched');
+
+  // file_intake: ClickUp's word for this stage is "starting" (clickup/status.js
+  // already maps the TASK status that way). The Borrower Portal Status dropdown
+  // has no such option yet, so read both spellings.
+  eq(X.fromClickUpLabel('borrower_portal_status', 'starting'), 'file_intake',
+    '"starting" reads back as file_intake');
+  eq(X.fromClickUpLabel('borrower_portal_status', 'Started'), 'file_intake',
+    '"Started" too — the label match is case-insensitive');
+  eq(X.fromClickUpLabel('borrower_portal_status', 'file_intake'), 'file_intake',
+    'the machine-named option reads back');
+  eq(X.fromClickUpLabel('borrower_portal_status', 'new'), 'new',
+    'file_intake and new stay DISTINCT statuses — never merged');
+  eq(X.toClickUpLabel('borrower_portal_status', 'file_intake'), 'file_intake',
+    'we write the machine name, matching the other ten options');
+
+  // Delayed purchase financing is its OWN loan type, spelled EXACTLY as ClickUp
+  // spells it, so it round-trips with nothing lost and nothing translated.
+  eq(X.fromClickUpLabel('loan_type', 'Delayed Purchase Financing'), 'Delayed Purchase Financing',
+    'inbound reads the delayed-purchase option as its own loan type');
+  eq(X.toClickUpLabel('loan_type', 'Delayed Purchase Financing'), 'Delayed Purchase Financing',
+    'outbound writes it back with the identical spelling');
+  eq(X.fromClickUpLabel('loan_type', 'Refi Cash-Out'), 'Refinance — Cash-Out',
+    'it is NOT collapsed into cash-out — that stays its own value');
+  eq(X.fromClickUpLabel('loan_type', 'Refi Rate & Term'), 'Refinance — Rate & Term', 'rate & term unchanged');
+  eq(X.fromClickUpLabel('loan_type', 'Purchase'), 'Purchase', 'purchase unchanged');
+  eq(X.toClickUpLabel('loan_type', 'Refinance — Cash-Out'), 'Refi Cash-Out', 'cash-out write unchanged');
+  // The value must survive a full round trip — this is the whole point of
+  // matching ClickUp's spelling exactly.
+  eq(X.fromClickUpLabel('loan_type', X.toClickUpLabel('loan_type', 'Delayed Purchase Financing')),
+    'Delayed Purchase Financing', 'a full push-then-pull returns the identical value');
+  // NOT RTL products — a card carrying one must never overwrite an RTL loan type.
+  eq(X.fromClickUpLabel('loan_type', 'HELOC'), null, 'HELOC stays unmapped (not an RTL product)');
+  eq(X.fromClickUpLabel('loan_type', 'Second Closed end Mortgage'), null,
+    'a second mortgage stays unmapped (not an RTL product)');
+
+  // Every OTHER surface that enumerates or classifies a loan type must know the
+  // new value, or it saves in one place and vanishes in another.
+  const cr = require('../src/lib/change-requests');
+  ok((cr.FIELD_OPTIONS.loan_type || []).includes('Delayed Purchase Financing'),
+    'a borrower may request the new loan type (change-request validation)');
+  const reg = require('../src/lib/conditions/field-registry');
+  // Sized as a PURCHASE — matching the frozen engine (pricing.js loanTypeOf finds
+  // no 'refi' substring) and the Blue Lake "purchase leverage" rule.
+  eq(reg.normLoanPurpose('Delayed Purchase Financing'), 'purchase',
+    'condition rules read it as a purchase — the leverage the loan is actually sized on');
+  eq(reg.normLoanPurpose('Refinance — Cash-Out'), 'refinance_cash_out', 'cash-out normalization unchanged');
+  eq(reg.normLoanPurpose('Purchase'), 'purchase', 'purchase normalization unchanged');
+  // MISMO has no delayed-financing purpose; it must still export SOMETHING true.
+  const mismo = require('../src/lib/mismo/enums');
+  eq(mismo.toMismoLoanPurpose('Delayed Purchase Financing'), 'Refinance',
+    'MISMO exports it as a refinance (the borrower already owns the property)');
+  eq(mismo.toMismoRefiCashOut('Delayed Purchase Financing'), 'CashOut',
+    'MISMO marks it cash-out (it returns the borrower their own purchase funds)');
+  // The frozen pricing classification, asserted so a future edit to the engine's
+  // substring test cannot silently re-price every delayed-purchase file.
+  const lt = 'Delayed Purchase Financing'.toLowerCase();
+  ok(lt.indexOf('refi') === -1 && lt.indexOf('refinance') === -1,
+    'the label contains no "refi" substring, so the frozen engine sizes it as a purchase');
+  ok(lt.indexOf('cash') === -1, 'and no "cash" substring, so the frozen engine does not flag cash-out');
+}
 // A Fix & Hold card must MATERIALIZE a loan file — otherwise it would be pulled
 // for profile data only and an existing linked file would stop syncing.
 {

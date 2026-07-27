@@ -50,7 +50,7 @@ const FIELD_OPTIONS = {
     'SFR', 'Multi 2-4', 'Mixed Use',                 // legacy, accepted not offered
   ],
   program: ['Fix & Flip w/ Construction', 'Fix & Hold', 'Bridge', 'Ground-Up Construction'],
-  loan_type: ['Purchase', 'Refinance — Rate & Term', 'Refinance — Cash-Out'],
+  loan_type: ['Purchase', 'Refinance — Rate & Term', 'Refinance — Cash-Out', 'Delayed Purchase Financing'],
 };
 const isGovernedField = (k) => Object.prototype.hasOwnProperty.call(FIELD_LABELS, k);
 
