@@ -71,7 +71,8 @@ const SCHEMA = {
 };
 
 const SYSTEM = `You are a SENIOR mortgage-underwriting QA reviewer checking the work of PILOT, an automated finding system. PILOT raised a finding on a loan file. You are given the ENTIRE loan file, the SOURCE DOCUMENT the finding is based on, and PILOT's finding with its reasoning.
-Decide whether this is a REAL, concerning finding a human underwriter should act on — or a FALSE ALARM: a mechanical misunderstanding by an automated system that compared the wrong things or doesn't understand context. Automated findings are frequently wrong in exactly these ways: comparing a seller/current owner to the buyer, treating a formatting or spelling difference as a mismatch, flagging a value that is actually correct in context (e.g. an assignment's seller price vs the fee-inclusive total), or asking for a document that is already on the file. Be SKEPTICAL of the automated finding.
+FIRST, understand the WHOLE DEAL before you judge anything — read the loan file and work out the complete picture: is this an ASSIGNMENT/wholesale deal or a straight purchase (on an assignment the purchase contract names the wholesaler, NOT our vesting entity, and the price on the contract may be the seller's underlying price, not the fee-inclusive total); the PURCHASE PRICE; the LOAN AMOUNT; the AS-IS value and the ARV; the LTV, LTC and LTARV; the rehab budget; the program and the note buyer. A finding only makes sense in the context of these numbers — e.g. a "price doesn't match" is not a real problem if the two prices are the seller price and the fee-inclusive total on an assignment, and a value that looks off may be exactly right once you see the as-is vs ARV vs loan amount relationship. Analyze the finding AGAINST this full economic picture.
+THEN decide whether this is a REAL, concerning finding a human underwriter should act on — or a FALSE ALARM: a mechanical misunderstanding by an automated system that compared the wrong things or doesn't understand context. Automated findings are frequently wrong in exactly these ways: comparing a seller/current owner to the buyer, treating a formatting or spelling difference as a mismatch, flagging a value that is actually correct in context (e.g. an assignment's seller price vs the fee-inclusive total, or a value that is fine given the deal's LTV/LTC/ARV), or asking for a document that is already on the file. Be SKEPTICAL of the automated finding.
 Return verdict:
  - "confirmed" = this is a genuine concern; a human should act on it.
  - "rejected" = this is a false alarm / a misunderstanding; it should NOT be shown to the underwriter.
@@ -116,6 +117,32 @@ async function readMemory(client, appId, fingerprints) {
   return out;
 }
 
+// A compact "the deal at a glance" recap of the deal economics, placed right next to the finding so
+// the model analyzes it against the full picture (owner-directed 2026-07-27: "feed it the entire
+// picture — assignment, purchase, loan, LTV/LTC/ARV, as-is, ARV — before it says false alarm").
+// The whole loan file is ALSO sent (the grounding block below); this puts the key numbers front and
+// centre. Built from the loan-primer's structured fields; PURE.
+function economicsRecap(fields) {
+  try {
+    const f = fields || {};
+    const money = primer._internals && primer._internals.money ? primer._internals.money : (v) => (v == null || v === '' ? '(missing)' : `$${v}`);
+    const pct = primer._internals && primer._internals.pct ? primer._internals.pct : (v) => (v == null || v === '' ? '(missing)' : `${v}%`);
+    const parts = [];
+    parts.push(`deal type: ${f.is_assignment ? 'ASSIGNMENT / wholesale (contract buyer = the wholesaler, NOT our vesting entity)' : 'straight purchase'}`);
+    parts.push(`purchase price ${money(f.purchase_price)}`);
+    if (f.is_assignment) parts.push(`seller contract ${money(f.underlying_contract_price)} + assignment fee ${money(f.assignment_fee)}`);
+    parts.push(`loan amount ${money(f.loan_amount)}`);
+    parts.push(`as-is value ${money(f.as_is_value)}`);
+    parts.push(`ARV ${money(f.arv)}`);
+    parts.push(`rehab budget ${money(f.rehab_budget)}`);
+    parts.push(`LTV ${pct(f.ltv)}`);
+    parts.push(`LTC ${pct(f.loan_to_cost)}`);
+    parts.push(`LTARV ${pct(f.loan_to_arv)}`);
+    parts.push(`program ${f.registered_program || f.program_strategy || '(unregistered)'}`);
+    return `THE DEAL AT A GLANCE — ${parts.join('; ')}.`;
+  } catch (_) { return ''; }
+}
+
 // A short, human-readable rendering of the finding + its source document for the prompt.
 function describeFinding(finding, sourceDoc) {
   const f = finding || {};
@@ -151,10 +178,10 @@ function describeFinding(finding, sourceDoc) {
  * Ask the AI to review ONE finding. Best-effort; returns a normalized verdict object or null.
  * Does NOT read/write memory — the caller (reviewFindings) handles memory + persistence + cost gate.
  */
-async function reviewOne({ finding, sourceDoc, groundingText, appId, documentId }) {
+async function reviewOne({ finding, sourceDoc, groundingText, economics, appId, documentId }) {
   try {
     const started = Date.now();
-    const instructions = `${describeFinding(finding, sourceDoc)}\n\nBelow is the ENTIRE loan file for context. Judge the finding above STRICTLY against it.`;
+    const instructions = `${economics ? economics + '\n\n' : ''}${describeFinding(finding, sourceDoc)}\n\nBelow is the ENTIRE loan file for context. Understand the whole deal from it — the economics above are a summary — and judge the finding above STRICTLY against the full picture.`;
     const res = await azureOpenai.extract({
       system: SYSTEM,
       instructions,
@@ -242,9 +269,16 @@ async function reviewFindings({ client, appId, findings, db, sourceDocsById } = 
     if (!todo.length) return { ...empty, skipped: 'all_fresh' };
 
     // The whole loan file, once (shared across every finding this pass) — built only when there IS
-    // new work, so a fully-reviewed file costs nothing on re-view.
+    // new work, so a fully-reviewed file costs nothing on re-view. Assemble the primer ONCE so we get
+    // both the full grounding text AND the structured economics recap (the deal at a glance) the
+    // model reads next to each finding — the "feed it the entire picture" the owner asked for.
     let groundingText = '';
-    try { groundingText = await primer.groundingBlock(appId, db || client); } catch (_) { groundingText = ''; }
+    let economics = '';
+    try {
+      const primerObj = await primer.assembleLoanPrimer(appId, db || client);
+      groundingText = `${primer.PRIMER_TEXT}\n\n----------------------------------------\n\n${primer.fileSummaryText(primerObj)}`;
+      economics = economicsRecap(primerObj && primerObj.fields);
+    } catch (_) { groundingText = ''; economics = ''; }
     const groundingHash = crypto.createHash('sha256').update(String(groundingText || '')).digest('hex').slice(0, 16);
 
     let reviewed = 0; const counts = { confirmed: 0, rejected: 0, uncertain: 0 };
@@ -254,7 +288,7 @@ async function reviewFindings({ client, appId, findings, db, sourceDocsById } = 
       const allowed = await costMeter.allowSpend(appId, client).catch(() => true);
       if (!allowed) break;
       const sourceDoc = finding.documentId != null && sourceDocsById ? sourceDocsById.get(String(finding.documentId)) : null;
-      const review = await reviewOne({ finding, sourceDoc, groundingText, appId, documentId: finding.documentId });
+      const review = await reviewOne({ finding, sourceDoc, groundingText, economics, appId, documentId: finding.documentId });
       if (!review) continue;   // AI failed on this one → leave it un-memoized (shows, fail-open)
       await persist(client, appId, finding, fingerprintOf(finding), review, groundingHash);
       reviewed++;
@@ -318,5 +352,5 @@ async function memoryAllForFile(client, appId) {
 module.exports = {
   enabled, fingerprintOf, shouldShow, reviewFindings, annotateFindings,
   memoryForFile, memoryAllForFile, readMemory,
-  _internals: { normalize, describeFinding, SCHEMA, MAX_REVIEWS_PER_PASS },
+  _internals: { normalize, describeFinding, economicsRecap, SCHEMA, MAX_REVIEWS_PER_PASS },
 };

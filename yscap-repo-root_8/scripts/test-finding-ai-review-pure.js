@@ -68,6 +68,21 @@ assert.deepStrictEqual(r.annotateFindings([{ code: 'x' }], 'not-a-map').shown.le
   assert.strictEqual(n2.suggested_severity, 'unchanged');
 }
 
+// --- economicsRecap feeds the AI the whole deal picture (owner-directed 2026-07-27) ---
+{
+  const { economicsRecap } = r._internals;
+  const asg = economicsRecap({ is_assignment: true, purchase_price: 474000, underlying_contract_price: 438000, assignment_fee: 36000,
+    loan_amount: 355500, as_is_value: 500000, arv: 620000, rehab_budget: 80000, ltv: 71.1, loan_to_cost: 64, loan_to_arv: 57.3, registered_program: 'gold' });
+  assert.ok(/ASSIGNMENT/.test(asg), 'assignment status is stated');
+  assert.ok(/seller contract/.test(asg) && /assignment fee/.test(asg), 'assignment seller price + fee are included');
+  assert.ok(/loan amount/.test(asg) && /as-is value/.test(asg) && /ARV/.test(asg), 'loan amount + as-is + ARV included');
+  assert.ok(/LTV/.test(asg) && /LTC/.test(asg) && /LTARV/.test(asg), 'the leverage ratios are included');
+  const straight = economicsRecap({ is_assignment: false, purchase_price: 300000 });
+  assert.ok(/straight purchase/.test(straight), 'a straight purchase is labeled so');
+  const none = economicsRecap(null);
+  assert.ok(typeof none === 'string' && /\(missing\)/.test(none), 'never throws on missing fields — shows (missing), not a crash');
+}
+
 // --- reviewFindings is best-effort: AI unavailable in this env → a skip, never a throw ---
 (async () => {
   process.env.FINDING_AI_REVIEW_ENABLED = '1';
