@@ -52,6 +52,97 @@ const VALID_STATUSES = new Set([
  * }} s
  * @returns {Promise<{id:string, deduped:boolean}>}
  */
+/**
+ * Sources whose rows are ADVISORY BACKGROUND — they belong in the findings list, but must NOT
+ * score, rank or notify (post-merge audit 2026-07-27).
+ *
+ * WHY THIS EXISTS. The file view deliberately keeps the note-buyer desk's rows OUT of
+ * `summary.fatal/warning/info` (`routes/underwriting.js`, `isgOnly`) so the desk can never disagree
+ * with the clear-to-close gate. But SIX other queries aggregate this table with no source filter,
+ * and they re-admitted the same rows through a different door — so the two surfaces contradicted
+ * each other. Measured: up to 7 desk rows on one file x 8 points = 56, which pushes a file with
+ * ZERO real problems past the 50-point ELEVATED threshold and puts an amber risk badge on the
+ * pipeline; it also promoted note-only files into the admin "top 5 riskiest" email and started a
+ * weekly "your files with open AI findings" digest for officers whose files have nothing wrong.
+ *
+ * One definition, so a seventh consumer cannot drift. This is about SCORING and NOTIFYING only —
+ * these rows still render, are still dismissable, and a genuinely fatal one still notifies through
+ * `record()`'s own severity guard.
+ */
+const ADVISORY_ONLY_SOURCES = ['investor_guideline_desk'];
+
+/**
+ * A stored `ai_suggestions` row, in the shape `finding-claims.claimOf` keys on.
+ *
+ * THE ONE PLACE THAT ANSWERS "WHICH FINDING IS THIS ROW ABOUT?" (re-audit 2026-07-27).
+ * Four call sites need it — `listForFile`'s claim stamp, `record()`'s ledger consult,
+ * `decide()`'s ledger write, and the escalation door — and the first cut hand-rolled the
+ * shape at each one. They drifted immediately, and the drift was invisible:
+ *
+ *   - `decide()` gated its whole ledger write on a non-null `code`, taken from
+ *     `evidence.code` = the spec row's `pilot_template_code`. EVERY row that carries a
+ *     `concern_field` — i.e. every row that has a fact to declare — has a NULL template
+ *     code, and structurally so: `desk.js` routes any row WITH a template code to the
+ *     `document` disposition, and only the non-document dispositions carry a concern
+ *     field. So the ledger was never written for exactly the findings the fact key
+ *     exists for, and "dismiss it once and it's gone" silently did nothing for them.
+ *   - `listForFile` stamped its claim key without the fact derivation, so a desk row
+ *     whose sibling had merged away in the Open-findings list did not recognise itself
+ *     as already-shown and rendered a second card for the same fact — re-creating, in
+ *     the AI Findings panel, the duplication this whole change removes.
+ *
+ * The desk's code lives in its `dedupe_key` (`isg-appraisal_review:3345`), normalized by
+ * the SAME `codeOf` the finding producer uses — so the row and the finding it mirrors
+ * always agree.
+ *
+ * THE DESK'S CODE IS ITS DEDUPE KEY, ALWAYS — NOT `evidence.code` (third audit pass).
+ * `evidence.code` on a desk row is the PILOT CONDITION TEMPLATE the guideline maps to
+ * (`rtl_cond_fraud`), which is a different namespace from the finding's own code
+ * (`isg_gap_rtl_cond_fraud`) and is SHARED by every guideline pointing at that template.
+ * Preferring it did two wrong things at once:
+ *   - a coverage-gap mirror could never key-match the finding it mirrors, so the AI panel
+ *     had no way to recognise it as already shown;
+ *   - worse, several rows collapsed onto ONE key. Blue Lake cond 44 carries BOTH a
+ *     `concern_field` and `pilot_template_code: 'rtl_cond_fraud'` (the "explicit
+ *     disposition wins" branch in desk.js runs before the template-code branch, so a row
+ *     can have both — the earlier comment here claimed otherwise and was simply wrong).
+ *     Dismissing that non-arm's-length CONCERN wrote a ledger row keyed `rtl_cond_fraud`,
+ *     which then suppressed the unrelated BACKGROUND-CHECK / OFAC coverage gap — a finding
+ *     nobody had decided about, refused a row by `record()` yet still rendered, with no
+ *     buttons. Deriving from the dedupe key keys them `isg_concern_44` and
+ *     `isg_gap_rtl_cond_fraud`: distinct, and each matching its own finding.
+ * The derivation is scoped to the desk's own source; every other producer writes a real
+ * finding code into `evidence.code` and is untouched.
+ */
+function claimShapeOf(row) {
+  const r = row || {};
+  const ev = r.evidence || {};
+  const pa = r.proposed_action || r.proposedAction || {};
+  const paf = pa.fields || {};
+  let code = null;
+  if (r.source === 'investor_guideline_desk' && r.dedupe_key) {
+    try { code = require('./investor-guidelines/desk-findings')._internals.codeOf(r.dedupe_key); } catch (_) { /* fall through */ }
+  }
+  if (!code) code = ev.code || paf.code || null;
+  const concernField = ev.concern_field || paf.concern_field || null;
+  return {
+    code,
+    factKey: ev.factKey || (concernField ? `isg_signal:${concernField}` : undefined),
+    // `deskToFindings` maps the desk row's DOMAIN onto `field`, so the ledger key must
+    // too — otherwise a decision taken on the AI card keys `…::::::` while the live
+    // finding keys `…::background::::` and the two never match. Same class as the code
+    // namespace above, one field over.
+    field: (r.source === 'investor_guideline_desk' ? (ev.domain || null) : null)
+      || ev.field || paf.field || null,
+    document_id: r.document_id || null,
+    docValue: ev.docValue || ev.doc_value || null,
+  };
+}
+function notScoredSql(alias) {
+  const a = alias ? `${alias}.` : '';
+  return `${a}source <> ALL(ARRAY[${ADVISORY_ONLY_SOURCES.map((s) => `'${s}'`).join(',')}]::text[])`;
+}
+
 async function record(client, s) {
   const c = client || db();
   if (!s || !s.applicationId || !s.source || !s.kind || !s.title) {
@@ -112,19 +203,16 @@ async function record(client, s) {
   // no ai_suggestions row to match on. Keyed on the finding's identity, so a
   // decision taken on any surface silences it on every surface.
   try {
-    const code = (s.evidence && s.evidence.code) || (s.proposedAction && s.proposedAction.fields && s.proposedAction.fields.code) || null;
-    if (code) {
+    // Same shape as every other consumer (claimShapeOf) — the incoming payload uses
+    // camelCase where a stored row uses snake_case, so it is normalized first.
+    const shape = claimShapeOf({
+      evidence: s.evidence, proposed_action: s.proposedAction,
+      source: s.source, dedupe_key: s.dedupeKey, document_id: s.documentId,
+    });
+    if (shape.code) {
       const fdec = require('./finding-decisions');
       const set = await fdec.suppressedKeys(c, s.applicationId);
-      if (set.size) {
-        const shape = {
-          code,
-          field: (s.evidence && s.evidence.field) || (s.proposedAction && s.proposedAction.fields && s.proposedAction.fields.field) || null,
-          document_id: s.documentId || null,
-          docValue: (s.evidence && (s.evidence.docValue || s.evidence.doc_value)) || null,
-        };
-        if (fdec.isSuppressed(set, shape)) return { id: null, deduped: false, settled: true };
-      }
+      if (set.size && fdec.isSuppressed(set, shape)) return { id: null, deduped: false, settled: true };
     }
   } catch (_) { /* fail OPEN */ }
   // If a dedupe key is provided, look for a LIVE row and refresh it in place.
@@ -279,9 +367,8 @@ async function listForFile(appId, opts = {}, client) {
   try { claimOf = require('./finding-claims').claimOf; } catch (_) { claimOf = null; }
   return q.rows.map((r) => {
     if (!claimOf) return r;
-    const ev = r.evidence || {};
     let claimKey = null;
-    try { claimKey = claimOf({ code: ev.code || null, field: ev.field || null, document_id: r.document_id || null }); } catch (_) { claimKey = null; }
+    try { claimKey = claimOf(claimShapeOf(r)); } catch (_) { claimKey = null; }
     return { ...r, claim_key: claimKey };
   });
 }
@@ -350,17 +437,9 @@ async function decide(client, id, decision = {}) {
   // identity, so dismissing it here silences it everywhere — that is what makes it
   // actually disappear. Best-effort: never rolls back the decision.
   try {
-    const code = (cur.evidence && cur.evidence.code)
-      || (cur.proposed_action && cur.proposed_action.fields && cur.proposed_action.fields.code) || null;
-    if (code) {
+    const shape = claimShapeOf(cur);
+    if (shape.code) {
       const fdec = require('./finding-decisions');
-      const shape = {
-        code,
-        field: (cur.evidence && cur.evidence.field)
-          || (cur.proposed_action && cur.proposed_action.fields && cur.proposed_action.fields.field) || null,
-        document_id: cur.document_id || null,
-        docValue: (cur.evidence && (cur.evidence.docValue || cur.evidence.doc_value)) || null,
-      };
       if (fdec.suppresses(newStatus)) {
         await fdec.record(c, {
           applicationId: cur.application_id, finding: shape, origin: 'ai_suggestion',
@@ -532,9 +611,10 @@ async function listOpenAdminQuestions({ appId, limit = 100 } = {}, client) {
  * Convert a cure-analysis new-finding proposal into an AI suggestion row.
  * The cure engine used to INSERT into document_findings directly — now that's suggested.
  */
-function fromCureNewFinding({ applicationId, documentId, checklistItemId, extractionId, finding, traceUrl }) {
+function fromCureNewFinding({ applicationId, documentId, checklistItemId, extractionId, finding, traceUrl, suppressNotify }) {
   return {
     applicationId, documentId, checklistItemId,
+    suppressNotify,
     source: 'cure_analysis', kind: 'finding',
     title: finding.title || finding.code || 'AI noticed a new issue',
     body: finding.howTo || null,
@@ -565,9 +645,12 @@ function fromCureNewFinding({ applicationId, documentId, checklistItemId, extrac
   };
 }
 
-module.exports = {
+module.exports = { ADVISORY_ONLY_SOURCES, notScoredSql,
   record, recordMany, listForFile, decide, addNote,
   askAdmin, answerAdminQuestion, listOpenAdminQuestions,
   fromCureNewFinding,
   VALID_STATUSES,
+  // Exported for the regression test that pins the row -> finding key invariant: a desk
+  // row must key on the FINDING's code, never on the condition template several rows share.
+  _internals: { claimShapeOf },
 };

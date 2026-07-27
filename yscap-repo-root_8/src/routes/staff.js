@@ -64,6 +64,8 @@ const tapeAdmin = (req) => !!(req.actor && (req.actor.role === 'admin' || req.ac
 // the loan is in Encompass AND every field matches. The message text lives with
 // the gate (reconcile.js) so it's unit-tested against the same `reason` values.
 const encompassTapeMessage = (gate) => require('../encompass/reconcile').tapeGateMessage(gate);
+// Advisory-only sources must never score or notify — one shared filter (audit 2026-07-27).
+const aiSuggestions = require('../lib/underwriting/ai-suggestions');
 // The borrower DIRECTORY / CRM has a WIDER audience than file-level see_all_files
 // (owner-directed): admins, underwriters, loan_coordinators (seesAll) AND
 // processors may open ANY borrower's full profile; loan_officers stay limited to
@@ -775,15 +777,18 @@ router.get('/applications', async (req, res) => {
                            AND (ci.signed_off_at IS NOT NULL OR ci.status='satisfied')) AS done_items,
                         (SELECT count(*)::int FROM ai_suggestions s
                            WHERE s.application_id=a.id AND s.severity='fatal'
-                             AND s.status IN ('open','marked_important','escalated','asked_admin')) AS open_fatal_ai,
+                             AND s.status IN ('open','marked_important','escalated','asked_admin')
+                             AND ${aiSuggestions.notScoredSql('s')}) AS open_fatal_ai,
                         (SELECT EXTRACT(EPOCH FROM (now() - MIN(s.created_at)))/86400 FROM ai_suggestions s
                            WHERE s.application_id=a.id AND s.severity='fatal'
-                             AND s.status IN ('open','marked_important','escalated','asked_admin')) AS open_fatal_ai_oldest_days,
+                             AND s.status IN ('open','marked_important','escalated','asked_admin')
+                             AND ${aiSuggestions.notScoredSql('s')}) AS open_fatal_ai_oldest_days,
                         LEAST(100, COALESCE((SELECT
                             SUM(CASE severity WHEN 'fatal' THEN 25 WHEN 'warning' THEN 8 WHEN 'info' THEN 2 ELSE 4 END)::int
                           FROM ai_suggestions s
                           WHERE s.application_id=a.id
-                            AND s.status IN ('open','marked_important','escalated','asked_admin')),0)) AS ai_risk_score
+                            AND s.status IN ('open','marked_important','escalated','asked_admin')
+                            AND ${aiSuggestions.notScoredSql('s')}),0)) AS ai_risk_score
                  FROM applications a JOIN borrowers b ON b.id=a.borrower_id
                  WHERE ${where.join(' AND ')} ORDER BY ${orderBy}
                  LIMIT ${add(limit)} OFFSET ${add(offset)}`;
