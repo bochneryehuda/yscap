@@ -48,16 +48,28 @@ async function readFields(guid, ids) {
   try {
     return fieldMap.fieldReaderToMap(await encompass.fieldReader(guid, list));
   } catch (e) {
-    if (list.length <= 1) throw e;                 // can't isolate further — surface it
+    // Split ONLY on an invalid-field 400 — the one error that is per-id (ICE 24.2 fails
+    // the WHOLE batch if any single id is invalid/unpermitted). A network / auth /
+    // timeout / 404 is NOT per-id, so re-issuing halves would just fan the same doomed
+    // request out ~2N times and hammer the API during an outage — surface it at once.
+    if (list.length <= 1 || !_isInvalidFieldError(e)) throw e;
     const mid = Math.floor(list.length / 2);
     const [a, b] = await Promise.all([
       readFields(guid, list.slice(0, mid)).catch(() => ({})),
       readFields(guid, list.slice(mid)).catch(() => ({})),
     ]);
     const merged = Object.assign({}, a, b);
-    if (!Object.keys(merged).length) throw e;      // both halves empty → real outage
+    if (!Object.keys(merged).length) throw e;      // nothing isolated — surface the error
     return merged;
   }
+}
+
+// A fieldReader HTTP 400 means a requested field id is invalid/unpermitted for the
+// tenant (ICE 24.2 fails the entire batch). That is the ONLY error worth isolating by
+// splitting the id list; every other failure (network / 401 / 403 / 404 / timeout) is
+// not per-id and must never trigger a retry fan-out.
+function _isInvalidFieldError(e) {
+  return /\bfieldReader 400\b/.test(String((e && e.message) || ''));
 }
 
 async function getLoan(guid, { entities } = {}) {

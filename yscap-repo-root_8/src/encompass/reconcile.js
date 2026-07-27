@@ -477,9 +477,15 @@ async function _ensureFieldValues(c, appId, loan, guid, ourLoanNumber) {
     // already validated at pull time). A missing 364 is fine (nothing to contradict).
     if (theirLoanNo && ourLoanNumber && norm(theirLoanNo) !== norm(ourLoanNumber)) return loan;
     const healed = Object.assign({}, loan, { _fieldValues: vals });
+    // Persist ONLY the _fieldValues key via a jsonb merge — so a concurrent reader pull
+    // that wrote a FRESHER encompass_extra is not clobbered by this (older) in-memory
+    // copy. The `||` shallow-merges, replacing just _fieldValues and keeping every other
+    // key from whatever the row currently holds.
     await c.query(
-      `UPDATE applications SET encompass_extra = $1::jsonb WHERE id = $2 AND deleted_at IS NULL`,
-      [JSON.stringify(healed), appId],
+      `UPDATE applications
+          SET encompass_extra = COALESCE(encompass_extra, '{}'::jsonb) || jsonb_build_object('_fieldValues', $1::jsonb)
+        WHERE id = $2 AND deleted_at IS NULL`,
+      [JSON.stringify(vals), appId],
     ).catch(() => {});
     return healed;
   } catch (_) {
@@ -491,7 +497,7 @@ async function _ensureFieldValues(c, appId, loan, guid, ourLoanNumber) {
 // Loads the pulled loan + our row + current quote + resolutions and returns the
 // full comparison. Never throws on missing data — an un-numbered / un-pulled /
 // un-priced file simply yields no loan (or "not comparable" fields).
-async function computeFindings(appId, dbc) {
+async function computeFindings(appId, dbc, opts) {
   const c = dbc || require('../db');
   const row = (await c.query(
     `SELECT a.id, a.ys_loan_number, a.encompass_loan_guid, a.encompass_extra,
@@ -529,8 +535,14 @@ async function computeFindings(appId, dbc) {
   // Self-heal a stale stored copy that predates the read-by-number wiring, so 1859
   // (vesting LLC) and 388 (origination %) show their authoritative values on this very
   // view instead of the wrong JSON-path fallback. Best-effort + read-only to Encompass.
+  // GATED to the PANEL read paths (opts.heal) ONLY — never the tape/issuance gates,
+  // which loop over up to 1000 files: one live Encompass call per gated file would let a
+  // bulk export storm the API during an outage. The panel views one file at a time, and
+  // the heal persists, so a file self-heals on its next panel view and stays healed.
   let loan = row.encompass_extra || null;
-  loan = await _ensureFieldValues(c, appId, loan, row.encompass_loan_guid, row.ys_loan_number);
+  if (opts && opts.heal) {
+    loan = await _ensureFieldValues(c, appId, loan, row.encompass_loan_guid, row.ys_loan_number);
+  }
   const theirs = loan ? map.extractFields(loan) : {};
   const ours = buildOurValues(row, quote ? quote.quote : null, row.llc_name);
   const { fields: econFields } = compareAll(ours, theirs, resolutions);
@@ -590,8 +602,8 @@ function _redactRaw(key, val) {
   return val;
 }
 
-async function rawDiagnostic(appId, dbc) {
-  const c = await computeFindings(appId, dbc);
+async function rawDiagnostic(appId, dbc, opts) {
+  const c = await computeFindings(appId, dbc, opts);
   if (!c.found) return { found: false };
 
   // What Encompass actually handed us, keyed exactly as the registry looks it up.
