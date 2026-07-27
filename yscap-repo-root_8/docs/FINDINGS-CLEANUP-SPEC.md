@@ -256,3 +256,44 @@ document-kind marker, and the pattern `absence.js` generalizes. The `voided_chec
 `title_seller_unreadable` / `contract_seller_unreadable` family is phrased as a READ problem, not an
 accusation. Anything comparing two present values (name / address / money mismatches) is a different
 class entirely and must not be touched.
+
+---
+
+## OWNER DECISION (2026-07-27) — the re-read is its own item, and it covers every un-funded file
+
+Reviewing a real file on 2026-07-27, the owner hit a case that reframes this whole cleanup: the
+double-counted Vanderbilt account they reported was **already fixed in code** (#782, 2026-07-26
+17:36) and the finding they were reading was stamped **7/23**. The code was right and the file was
+still showing the old answer, because nothing had re-read it.
+
+That is the load-bearing gap. A fix to the reader does not retroactively re-read a file that was
+already analysed, so every extraction-level fix in this cleanup lands invisible until something
+re-runs. Without an explicit re-read the owner keeps reviewing files and reporting problems that
+were fixed days earlier.
+
+**Scope, decided by the owner in their own words: "everything that is not funded yet."**
+
+Applied with the obvious reading — a FUNDED file is done and must not be re-billed; a file that is
+dead (withdrawn / declined / cancelled) is equally done and re-reading it spends real vendor money
+on a deal nobody is working. So the sweep covers files that are ALIVE and not yet funded. If the
+owner wants dead files included too, that is a one-line change to the status filter.
+
+**What actually needs a re-read, and what does not** (the owner confirmed this split):
+
+- **Needs a genuine re-read** — anything that comes from EXTRACTED VALUES, because those are stored:
+  liquidity / bank statements, credit, appraisal fields (rural, transfer lender, unit count),
+  OFAC + fraud-report deep reads. Fixing the reader changes nothing on file until the document is
+  read again.
+- **Does NOT need a re-read** — anything COMPUTED FRESH on each panel load: the duplicate findings,
+  the blank guideline notices, the dedupe. Those correct themselves the moment the code is right.
+
+This matters for cost and for sequencing: the compute-fresh items are free to fix and visible
+immediately; the extraction items are the ones that carry a vendor bill and need the sweep.
+
+**Requirements for the sweep itself** (do not skip these — a portfolio-wide re-read is the single
+most expensive thing this system can do):
+1. Bounded and resumable, with a durable cursor — never one giant pass that dies halfway.
+2. Per-file spend respects the existing `costMeter` cap; the sweep must not be a way around it.
+3. Idempotent: re-running the sweep on a file that already got the new result is a no-op.
+4. Off-switch by env, and an admin trigger, so it can be stopped without a deploy.
+5. It re-reads and re-records; it does NOT clear a condition, move a status, or notify a borrower.
