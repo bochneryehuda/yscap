@@ -205,11 +205,14 @@ async function expectHttp(status, fn) {
   await ta('loan_number_keep_other without a file → 409', () =>
     expectHttp(409, () => SFR.applyFileReviewAction({
       row: { reason: 'copied_loan_number_needs_assignment', application_id: null }, action: 'loan_number_keep_other' })));
-  // economics-frozen conflict: keep-frozen-figures validates BEFORE any write.
-  t('economics_frozen_conflict offers ONLY keep_frozen_figures', () => {
+  // economics-frozen conflict: BOTH keep-frozen-figures AND the admin override
+  // (accept ClickUp's figures onto the locked file) validate BEFORE any write.
+  t('economics_frozen_conflict offers keep_frozen_figures + accept_clickup_figures', () => {
     assert.strictEqual(SFR.isActionAllowed('economics_frozen_conflict', 'keep_frozen_figures'), true);
+    assert.strictEqual(SFR.isActionAllowed('economics_frozen_conflict', 'accept_clickup_figures'), true);
     assert.strictEqual(SFR.isActionAllowed('economics_frozen_conflict', 'retry_push'), false);
     assert.strictEqual(SFR.isActionAllowed('push_dead_lettered', 'keep_frozen_figures'), false, 'keep_frozen_figures never leaks onto other reasons');
+    assert.strictEqual(SFR.isActionAllowed('push_dead_lettered', 'accept_clickup_figures'), false, 'accept_clickup_figures never leaks onto other reasons');
   });
   await ta('keep_frozen_figures without a file → 409', () =>
     expectHttp(409, () => SFR.applyFileReviewAction({
@@ -217,6 +220,15 @@ async function expectHttp(status, fn) {
   await ta('keep_frozen_figures with no listed frozen fields → 409', () =>
     expectHttp(409, () => SFR.applyFileReviewAction({
       row: { reason: 'economics_frozen_conflict', application_id: 'a1', raw_value: 'not-json' }, action: 'keep_frozen_figures' })));
+  // accept_clickup_figures is the ADMIN-only lock override — the role gate fires
+  // FIRST (the review-queue route is LO-reachable for keep_frozen_figures), before
+  // any file/DB work, so a non-admin is refused even with a valid file.
+  await ta('accept_clickup_figures as a NON-admin → 403 (before any work)', () =>
+    expectHttp(403, () => SFR.applyFileReviewAction({
+      row: { reason: 'economics_frozen_conflict', application_id: 'a1', task_id: '868xyz' }, action: 'accept_clickup_figures', isAdmin: false })));
+  await ta('accept_clickup_figures without a file → 409 (admin)', () =>
+    expectHttp(409, () => SFR.applyFileReviewAction({
+      row: { reason: 'economics_frozen_conflict', application_id: null, task_id: '868xyz' }, action: 'accept_clickup_figures', isAdmin: true })));
   // relink_task is ADMIN-ONLY — the authorization check fires FIRST, before any
   // field validation (pre-merge audit B1: the review-queue route is LO-reachable,
   // so the action layer must refuse a non-admin even with valid inputs).
