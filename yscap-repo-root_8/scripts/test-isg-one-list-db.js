@@ -231,11 +231,17 @@ console.log('ISG one list (DB)');
     const runOnly = { source: investorReview.SOURCE, code: 'isg_bl_ny_loan', severity: 'fatal' };
     const merged = { source: investorReview.SOURCE, code: 'isg_rural_property', severity: 'fatal',
       mergedFrom: ['isg_appraisal_review_3345'] };
+    // Two handle-less RUN rules merging into each other is NOT a reason to list one: neither
+    // has buttons and neither would have been here without the fold.
+    const runPair = { source: investorReview.SOURCE, code: 'isg_bl_transferred_appraisal',
+      severity: 'fatal', mergedFrom: ['isg_transferred_appraisal_letter'] };
     const actionable = { source: investorReview.SOURCE, code: 'isg_rural_property', suggestionId: 'sug-1' };
     assert.strictEqual(foldFilter(runOnly), false,
       'a run finding that merged with nothing has no buttons — it stays in the run cockpit');
     assert.strictEqual(foldFilter(merged), true,
       'one that merged with a desk row must stay: the desk finding was going to show anyway');
+    assert.strictEqual(foldFilter(runPair), false,
+      'but two handle-less RUN rules merging into each other must NOT produce a button-less card');
     assert.strictEqual(foldFilter(actionable), true, 'and one that inherited a handle is fully actionable');
     assert.strictEqual(foldFilter({ code: 'bank_account_not_borrower' }), true,
       'nothing outside the run fold is ever filtered');

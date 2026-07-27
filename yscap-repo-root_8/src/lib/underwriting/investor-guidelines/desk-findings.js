@@ -61,22 +61,6 @@ function codeOf(dedupeKey) {
 }
 
 /**
- * WHICH FACT a desk finding CODE asserts — the mirror image of
- * `investor-guideline-review.claimKeyForCode`, for the desk's half of the producers.
- *
- * A desk code ends in the spec row's `cond_no` (`isg_appraisal_review_3345`), and the
- * `concern_field` for that row is a constant of the spec, so this is a pure lookup with
- * no DB. It exists for the surfaces that only ever see the CODE — the escalation queue
- * stores a finding SNAPSHOT (code / field / doc_value, db/222) and nothing else, so
- * without it a super-admin's "no action needed" on a rural desk finding recorded only the
- * code form. The moment the run also raised that fact, the merged survivor was the run's
- * finding, whose keys are the claim form and its OWN code — neither matching — and the
- * settled fact came back as a fatal.
- *
- * NEVER GUESSES: a code with no cond_no, or a spec row with no `concern_field` (a coverage
- * gap is about a MISSING CONDITION, not a fact), returns null.
- */
-/**
  * The underwriter's action menu, by what kind of unhappiness this is. These mirror the remedy the
  * desk's own body text describes, so the buttons agree with the sentence above them:
  *   coverage_gap — the note buyer requires something the file has no condition for → post it, or

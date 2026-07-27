@@ -3174,8 +3174,18 @@ module.exports._decorate = decorate;
 module.exports._loadRunGuidelineFindings = loadRunGuidelineFindings;
 // The post-dedupe fold filter, as a named predicate so a test can drive every branch.
 // KEEPS everything except a run finding that merged with nothing and inherited no handle.
+// A merge partner only makes a handle-less run finding worth listing if that partner was
+// a DESK finding — which would have been on this list anyway, and whose ai_suggestions
+// mirror is what eventually makes the card actionable. `mergedFrom.length` alone was a
+// proxy for that and not the same thing: two handle-less RUN rules sharing a signal would
+// merge into each other and sail through, producing exactly the permanent un-actionable
+// FATAL card this filter exists to prevent. Unreachable today only because the two rules
+// that share a signal are mutually exclusive by note buyer — i.e. safe by luck, which is
+// how the last four of these started (fifth audit pass).
+const DESK_CODE = /^isg_(?:gap|conflict|concern|info_missing|appraisal_review)_/;
 module.exports._foldFilter = (f) => !(f && f.source === investorReview.SOURCE
-  && !f.id && !f.suggestionId && !(f.mergedFrom && f.mergedFrom.length));
+  && !f.id && !f.suggestionId
+  && !((f.mergedFrom || []).some((c) => DESK_CODE.test(String(c || '')))));
 module.exports._escalationFindingShape = escalationFindingShape;
 // The predicate that keeps note-buyer findings OUT of summary.fatal/warning/info, so the
 // advisory desk can never disagree with the clear-to-close gate.
