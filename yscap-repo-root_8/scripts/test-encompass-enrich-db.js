@@ -6,7 +6,9 @@
  * DEDUPED — it adds a prior-deal address / LLC only when ABSENT, NEVER replaces
  * or edits an existing track-record row or LLC, marks what it adds unverified,
  * and matches borrowers CONSERVATIVELY (linked application, or exactly one
- * name+DOB match — never on ambiguity).
+ * name+DOB match — never on ambiguity). And it only ever adds the property of a
+ * loan that actually CLOSED (owner-directed 2026-07-27) — an in-flight file's
+ * subject property stays off, and one added before the rule existed comes off.
  *
  * Requires DATABASE_URL with migrations applied; SKIPs cleanly otherwise. Runs in
  * a transaction and ROLLS BACK — leaves no rows behind.
@@ -19,9 +21,12 @@ const enrich = require('../src/encompass/enrich');
 let passed = 0;
 const ok = (n) => { console.log(`  ok  ${n}`); passed++; };
 
-const loanFor = (first, last, dob, addr, llcName) => ({
+// `funded` defaults to a real, past funding date — these fixtures stand for
+// CLOSED deals. Pass funded:null for a loan that is still in flight.
+const loanFor = (first, last, dob, addr, llcName, funded = '2024-03-15') => ({
   applications: [{ borrower: { firstName: first, lastName: last, birthDate: dob } }],
   property: { streetAddress: addr.street, city: addr.city, state: addr.state, postalCode: addr.zip },
+  ...(funded ? { closingDocument: { fundingDate: funded } } : {}),
   customFields: llcName ? [{ fieldName: 'CX.LLCNAME', value: llcName }, { fieldName: 'CX.LLCSTATE', value: addr.state }] : [],
 });
 
@@ -94,6 +99,66 @@ const loanFor = (first, last, dob, addr, llcName) => ({
     const trCount = (await client.query(`SELECT count(*)::int n FROM track_records WHERE borrower_id=$1`, [b.id])).rows[0].n;
     assert.strictEqual(trCount, 2, 'still exactly 2 track records (1 human + 1 Encompass) — no duplicates');
     ok('the pass is idempotent — running again creates no duplicates');
+
+    // ── CLOSED DEALS ONLY (owner-directed 2026-07-27) ──────────────────────
+    // C = the property the borrower is buying RIGHT NOW (a live Encompass file,
+    // no funding date). D = another live file whose enrichment row a human has
+    // since worked on. Both already sit on the track record from before the rule
+    // existed, written exactly the way this pass used to write them.
+    const C = { street: '900 Live Street', city: 'Brooklyn', state: 'NY', zip: '11204' };
+    const D = { street: '77 Worked Way', city: 'Monsey', state: 'NY', zip: '10952' };
+    const seed = async (a, extra) => (await client.query(
+      `INSERT INTO track_records (borrower_id, property_address, is_verified, origin, inferred, address_key, notes, purchase_price)
+       VALUES ($1,$2::jsonb,false,'encompass',true,$3,'Added from Encompass history; unverified',$4) RETURNING id`,
+      [b.id, JSON.stringify({ ...a, oneLine: `${a.street}, ${a.city}, ${a.state} ${a.zip}`, formatted_address: `${a.street}, ${a.city}, ${a.state} ${a.zip}` }),
+        enrich._internals.normAddr(a.street + ', ' + a.city + ', ' + a.state + ' ' + a.zip), extra || null])).rows[0];
+    const trLive = await seed(C, null);
+    const trWorked = await seed(D, 425000);   // a human filled in what they paid
+
+    // The live files themselves, plus a REFINANCE of the already-closed B that is
+    // still in underwriting — B must stay on the record (a closed loan backs it).
+    await snap('G-C-live', loanFor('Yehuda', 'Bochner', '1985-03-10', C, null, null));
+    await snap('G-D-live', loanFor('Yehuda', 'Bochner', '1985-03-10', D, null, null));
+    await snap('G-B-refi', loanFor('Yehuda', 'Bochner', '1985-03-10', B, null, null));
+
+    const s3 = await enrich.enrichAllOnce({ dbc: client });
+    assert.strictEqual(s3.addressesAdded, 0, 'no in-flight property is added');
+    assert.strictEqual(s3.addressesSkippedNotClosed, 3, 'all three unclosed loans are held back');
+    ok('a property whose loan has not closed is never added to the track record');
+
+    assert.strictEqual(
+      (await client.query(`SELECT count(*)::int n FROM track_records WHERE id=$1`, [trLive.id])).rows[0].n, 0,
+      'the live subject property is off the track record');
+    assert.strictEqual(s3.addressesRemovedNotClosed, 1, 'exactly one row was taken back');
+    assert.strictEqual((await client.query(
+      `SELECT count(*)::int n FROM audit_log WHERE action='encompass_track_record_removed_not_closed' AND entity_id=$1`,
+      [b.id])).rows[0].n, 1, 'the removal is on the audit trail');
+    ok('a property added before the deal closed is taken back OFF the record, and the removal is audited');
+
+    const worked = (await client.query(`SELECT purchase_price FROM track_records WHERE id=$1`, [trWorked.id])).rows[0];
+    assert.ok(worked && Number(worked.purchase_price) === 425000, 'the row a human worked on is untouched');
+    ok('a line somebody has worked on is never deleted, even when its loan is still in flight');
+
+    const bStill = (await client.query(
+      `SELECT count(*)::int n FROM track_records WHERE borrower_id=$1 AND origin='encompass'`, [b.id])).rows[0].n;
+    assert.strictEqual(bStill, 2, 'the closed property B and the worked-on line D remain');
+    ok('a property backed by a CLOSED loan stays put even when a refinance of it is in flight');
+
+    // OUR FILE HAS THE LAST WORD. E is the subject of a PILOT file that is still
+    // in underwriting — even with a funding date sitting in Encompass, the deal
+    // is not done until our team says it is, so the property waits.
+    const E = { street: '31 Our File Road', city: 'Lakewood', state: 'NJ', zip: '08701' };
+    const liveApp = (await client.query(
+      `INSERT INTO applications (borrower_id, status) VALUES ($1,'underwriting') RETURNING id`, [b.id])).rows[0];
+    await snap('G-E-inflight', loanFor('Yehuda', 'Bochner', '1985-03-10', E, null, '2024-08-01'), liveApp.id);
+
+    const s4 = await enrich.enrichAllOnce({ dbc: client });
+    assert.strictEqual(s4.addressesAdded, 0, 'the in-underwriting subject property is not added');
+    assert.strictEqual(
+      (await client.query(`SELECT count(*)::int n FROM track_records WHERE borrower_id=$1 AND address_key=$2`,
+        [b.id, enrich._internals.normAddr(`${E.street}, ${E.city}, ${E.state} ${E.zip}`)])).rows[0].n, 0,
+      'nothing was written for it');
+    ok('the subject property of a file still in underwriting stays off — our status outranks any Encompass field');
 
     // Conservative matching — a second borrower with the SAME name+DOB makes it ambiguous → no match.
     await client.query(`INSERT INTO borrowers (first_name,last_name,email,date_of_birth) VALUES ('Yehuda','Bochner',$1,'1985-03-10')`, [`dup+${suffix}@example.com`]);
