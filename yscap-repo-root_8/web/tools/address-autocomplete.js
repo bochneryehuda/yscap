@@ -179,8 +179,8 @@
 
     input.addEventListener("input", function () {
       var q = input.value.trim();
+      clearStatus(); vseq++;                           // any edit invalidates the last USPS check
       if (q === lastQ) return; lastQ = q;
-      clearStatus(); vseq++;                           // editing invalidates the last USPS check
       clearTimeout(timer);
       if (q.length < 3) { close(); return; }
       timer = setTimeout(function () { query(q); }, 250);
