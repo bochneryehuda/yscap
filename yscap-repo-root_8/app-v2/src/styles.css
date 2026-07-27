@@ -2925,9 +2925,20 @@ details[open]>.appr-sec-sum .appr-sec-chev{transform:rotate(180deg)}
 .crx-recip-card { border:1px solid var(--border); border-radius:12px; padding:13px 14px; margin-top:12px;
   background:var(--surface); transition:background-color .15s ease, border-color .15s ease; }
 .crx-recip-card:first-of-type { margin-top:10px; }
-.crx-recip-card.off { background:var(--surface-soft); border-style:dashed; }
-.crx-recip-card.off .crx-mono { background:var(--surface-soft); color:var(--muted); box-shadow:0 0 0 1px var(--border) inset; }
-.crx-role-tag.off { background:var(--surface-soft); color:var(--muted); box-shadow:0 0 0 1px var(--border) inset; }
+.crx-recip-card.crx-off { background:var(--surface-soft); border-style:dashed; }
+.crx-recip-card.crx-off .crx-mono { background:var(--surface-soft); color:var(--muted); box-shadow:0 0 0 1px var(--border) inset; }
+.crx-recip-eyebrow.crx-off { color:var(--gold); }
+/* NOTHING in a borrower card may push the panel wider than the modal — a long name
+   plus its role tag used to force the whole screen to scroll sideways, cutting the
+   card off (owner-reported 2026-07-27). The text block must be allowed to SHRINK
+   (a flex item defaults to min-width:auto = its content's min-content width) and the
+   name must be allowed to WRAP. */
+.crx-recipient, .crx-recip-card, .crx-recip-grid, .crx-field { min-width:0; }
+.crx-recip-head > div { min-width:0; flex:1 1 auto; }
+.crx-recip-name { display:flex; flex-wrap:wrap; align-items:baseline; gap:6px; overflow-wrap:anywhere; }
+.crx-recip-name .crx-role-tag { margin-left:0; }
+/* Belt-and-braces: the modal body scrolls vertically only, never sideways. */
+.crx-modal-body { overflow-x:hidden; }
 /* The note under the borrower cards changes wording as you tick borrowers on and
    off — a fixed slot keeps the screen from jumping while you do it. */
 .crx-note-slot { min-height:52px; }
@@ -2947,10 +2958,14 @@ details[open]>.appr-sec-sum .appr-sec-chev{transform:rotate(180deg)}
 .crx-field-wide { grid-column:1 / -1; }
 .crx-field > span { font-size:.68rem; text-transform:uppercase; letter-spacing:.07em; color:var(--muted); font-weight:600; }
 .crx-field > b { font-size:.94rem; color:var(--text); font-weight:600; overflow-wrap:anywhere; }
-.crx-note { margin-top:13px; padding-top:12px; border-top:1px dashed var(--border); font-size:.82rem; display:flex; gap:6px; align-items:baseline; }
+/* A NOTE IS A SENTENCE, not a row of boxes: as a flex container every inline <b>
+   became its own flex item and the sentence broke into columns. Plain block flow
+   keeps the emphasis inline where it belongs; the lock glyph just sits inline. */
+.crx-note { margin-top:13px; padding-top:12px; border-top:1px dashed var(--border); font-size:.82rem;
+  display:block; line-height:1.45; }
 .crx-note.secure { color:var(--teal-br); }
 .crx-note.warn { color:var(--warning); }
-.crx-lock { font-size:.85rem; }
+.crx-lock { font-size:.85rem; margin-right:4px; }
 
 /* Options ---------------------------------------------------------------- */
 .crx-options { display:flex; flex-direction:column; gap:16px; }
