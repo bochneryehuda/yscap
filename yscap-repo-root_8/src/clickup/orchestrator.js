@@ -311,8 +311,12 @@ async function pushApplication(appId, opts = {}) {
     await logSync('push_skipped_unlinked', appId, null, { only: opts.only.slice(0, 20) });
     return { skipped: 'unlinked file — a scoped push never creates a ClickUp task' };
   }
+  // A scoped push (taskId set) leaves listId null → optionMap returns the warm
+  // cache; a full push resolves the real target list. (`applications` has no
+  // clickup_list_id column — the removed `|| ctx._row.clickup_list_id` was always
+  // undefined; see the accept-figures "server error" root cause.)
   const listId = taskId ? null : await resolveTargetList(ctx);
-  const options = await registry.optionMap(listId || ctx._row.clickup_list_id).catch(() => ({}));
+  const options = await registry.optionMap(listId).catch(() => ({}));
   const ysProgramFieldId = null; // set once the "YS Program" field is created + re-pulled
   const built = mapper.buildTaskFields(ctx, options, ysProgramFieldId);
 

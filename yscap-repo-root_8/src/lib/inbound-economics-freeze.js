@@ -199,7 +199,7 @@ function incomingFromStoredChanges(changes) {
 // could be extracted (a mapping gap / emptied task) — so the caller falls back to
 // the stored base rather than treating an extraction gap as "nothing changed".
 // May throw the ClickUp client's HTTP error (the caller catches it).
-async function readLiveIncoming(tid, listId) {
+async function readLiveIncoming(tid) {
   const clickup = require('../clickup/client');
   const mapper = require('../clickup/mapper');
   const registry = require('../clickup/registry');
@@ -207,8 +207,13 @@ async function readLiveIncoming(tid, listId) {
   const { sanitizePropertyType } = require('./property-type');
   const task = await clickup.getTask(tid);
   if (!task) return null;
+  // The per-file ClickUp list id is NOT stored on `applications` (there is no
+  // clickup_list_id column — reading it is what threw the "server error"), so use
+  // the sync's warm dropdown-option cache (`optionMap(null)` returns it without a
+  // fetch); a cold cache just falls back to the task's own embedded option list in
+  // readTaskFields, and the stored base below is the reliable path regardless.
   let options = {};
-  try { options = await registry.optionMap(listId); }
+  try { options = await registry.optionMap(null); }
   catch (_) { try { options = registry.peek(); } catch (_2) { options = {}; } }
   const a = (mapper.readTaskFields(task, options).app) || {};
   const incoming = {
@@ -263,7 +268,7 @@ async function readLiveIncoming(tid, listId) {
 async function acceptInboundEconomicsChange({ appId, actorId = null, taskId = null, fallbackChanges = null, client = db }) {
   if (!appId) { const e = new Error('no application on this review'); e.status = 422; e.expose = true; throw e; }
   const appRow = (await client.query(
-    `SELECT clickup_pipeline_task_id, clickup_list_id, ${FROZEN_KEYS.join(', ')} FROM applications WHERE id=$1`, [appId])).rows[0];
+    `SELECT clickup_pipeline_task_id, ${FROZEN_KEYS.join(', ')} FROM applications WHERE id=$1`, [appId])).rows[0];
   if (!appRow) { const e = new Error('the file no longer exists'); e.status = 404; e.expose = true; throw e; }
   const tid = taskId || appRow.clickup_pipeline_task_id;
 
@@ -276,7 +281,7 @@ async function acceptInboundEconomicsChange({ appId, actorId = null, taskId = nu
   // the reviewer isn't left with a silent failure.)
   let live = null;
   if (tid && !String(tid).startsWith('app:')) {
-    try { live = await readLiveIncoming(tid, appRow.clickup_list_id); }
+    try { live = await readLiveIncoming(tid); }
     catch (e) { if (!base) throw e; live = null; }
   }
 

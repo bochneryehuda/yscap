@@ -124,6 +124,49 @@ ok(typeof acceptInboundEconomicsChange === 'function', 'export: acceptInboundEco
   ok(threw && threw.status === 422 && threw.expose === true,
     'accept: a missing application id is refused (422, before any DB work)');
 
+  // DB-gated: the accept applies ClickUp's figures onto a FROZEN file end-to-end.
+  // A pure test CANNOT catch a wrong-column query — the first version SELECTed a
+  // phantom `applications.clickup_list_id` (no such column), which threw and mapped
+  // to the owner-reported 500 "server error". This exercises the real query path.
+  if (process.env.DATABASE_URL) {
+    const db = require('../src/db');
+    const uniq = Date.now();
+    const email = `econ.accept.${uniq}@example.com`;
+    const task = `task_econ_${uniq}`;
+    let appId = null;
+    try {
+      const b = (await db.query(
+        `INSERT INTO borrowers (first_name,last_name,email) VALUES ('Avraham','Morgenstern',$1) RETURNING id`, [email])).rows[0];
+      const a = (await db.query(
+        `INSERT INTO applications (borrower_id, status, loan_amount, rehab_budget, property_address, clickup_pipeline_task_id)
+         VALUES ($1,'clear_to_close',191475,85000,$2,$3) RETURNING id`,
+        [b.id, JSON.stringify({ line1: '829 Duncan Bypass', city: 'Union', state: 'SC', zip: '29379' }), task])).rows[0];
+      appId = a.id;
+      // ClickUp is unreachable in the test env, so this proves the STORED-BASE path
+      // (and that the SELECT no longer throws on a phantom column).
+      const out = await acceptInboundEconomicsChange({
+        appId,
+        fallbackChanges: [
+          { field: 'loan_amount', label: 'Loan amount', from: '191475', to: '172975' },
+          { field: 'rehab_budget', label: 'Rehab', from: '85000', to: '65000' },
+        ],
+        taskId: task,
+      });
+      ok(out && out.upToDate === false && out.applied.length === 2, 'accept(db): both frozen figures are applied');
+      const after = (await db.query(`SELECT loan_amount, rehab_budget FROM applications WHERE id=$1`, [appId])).rows[0];
+      ok(Number(after.loan_amount) === 172975 && Number(after.rehab_budget) === 65000,
+        'accept(db): the LOCKED file now holds ClickUp’s figures (override applied)');
+    } catch (e) {
+      ok(false, `accept(db): threw unexpectedly — ${e.message} (regression: a phantom column in the query?)`);
+    } finally {
+      if (appId) { try { await db.query(`DELETE FROM applications WHERE id=$1`, [appId]); } catch (_) {} }
+      try { await db.query(`DELETE FROM borrowers WHERE email=$1`, [email]); } catch (_) {}
+      try { await db.end(); } catch (_) {}
+    }
+  } else {
+    console.log('  ~~ SKIP accept-db test (no DATABASE_URL)');
+  }
+
   assert.strictEqual(failures, 0, `${failures} assertion(s) failed`);
   console.log(failures ? `\n${failures} failed` : '\nALL inbound-economics-freeze assertions passed');
   process.exit(failures ? 1 : 0);

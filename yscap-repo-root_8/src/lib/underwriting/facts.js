@@ -111,7 +111,7 @@ for (const f of FACTS) FACT_BY_KEY[f.key] = f;
 // value may be an array (seller names, vested owners) — the matcher handles any-to-any.
 const DOC_CLAIMS = {
   government_id: (f) => ({ borrower_name: f.fullName || nm(f.firstName, f.lastName), borrower_dob: f.dateOfBirth, borrower_address: f.address }),
-  purchase_contract: (f) => ({ property_address: f.propertyAddress, purchase_price: f.purchasePrice, seller_name: f.sellerNames, entity_name: f.buyerName, assignment_fee: f.assignmentFee, underlying_price: f.underlyingPrice }),
+  purchase_contract: (f) => ({ property_address: f.propertyAddress, purchase_price: f.purchasePrice, seller_name: f.sellerNames, entity_name: f.buyerName, assignment_fee: assignmentFeeClaim(f.assignmentFee, f.purchasePrice, f.underlyingPrice), underlying_price: f.underlyingPrice }),
   // A title report / commitment reliably tells you the CURRENT owner of record (the SELLER pre-close)
   // — that is `vestedOwners` → seller_name. Its "buyer" field is UNRELIABLE and does NOT drive the
   // buyer-side vesting comparison: on a tax certificate, a deed, or a pre-sale commitment the only
@@ -140,7 +140,7 @@ const DOC_CLAIMS = {
   // directed 2026-07-24: "match up the final purchase price with the assignment fee"). The tie-out's
   // purchase_price comparison is already assignment-aware (priceAwareMatch), so a total that equals
   // the file's underlying OR final price agrees; only a genuinely wrong total flags.
-  assignment: (f) => ({ entity_name: f.assigneeName, underlying_price: f.originalPurchasePrice, assignment_fee: f.assignmentFee, purchase_price: f.totalPriceToAssignee, property_address: f.propertyAddress, seller_name: f.sellerName ? [f.sellerName] : null }),
+  assignment: (f) => ({ entity_name: f.assigneeName, underlying_price: f.originalPurchasePrice, assignment_fee: assignmentFeeClaim(f.assignmentFee, f.totalPriceToAssignee, f.originalPurchasePrice), purchase_price: f.totalPriceToAssignee, property_address: f.propertyAddress, seller_name: f.sellerName ? [f.sellerName] : null }),
   insurance: (f) => ({ entity_name: f.namedInsured, property_address: f.propertyAddress, policy_number: f.policyNumber }),
   insurance_invoice: (f) => ({ entity_name: f.namedInsured, property_address: f.propertyAddress, policy_number: f.policyNumber }),
   operating_agreement: (f) => ({ entity_name: f.entityLegalName, borrower_name: f.managingMember }),
@@ -148,7 +148,7 @@ const DOC_CLAIMS = {
   good_standing: (f) => ({ entity_name: f.entityLegalName }),
   llc_formation: (f) => ({ entity_name: f.entityLegalName }),
   credit_report: (f) => ({ borrower_name: f.subjectName, borrower_dob: f.dob }),
-  settlement: (f) => ({ property_address: f.propertyAddress, purchase_price: f.contractSalesPrice, seller_name: f.sellerName ? [f.sellerName] : null, entity_name: f.buyerName, loan_amount: f.loanAmount, assignment_fee: f.assignmentFee, earnest_money: f.earnestMoney, cash_to_close: f.cashToClose }),
+  settlement: (f) => ({ property_address: f.propertyAddress, purchase_price: f.contractSalesPrice, seller_name: f.sellerName ? [f.sellerName] : null, entity_name: f.buyerName, loan_amount: f.loanAmount, assignment_fee: assignmentFeeClaim(f.assignmentFee, f.contractSalesPrice, null), earnest_money: f.earnestMoney, cash_to_close: f.cashToClose }),
   flood: (f) => ({ property_address: f.propertyAddress }),
   scope_of_work: (f) => ({ property_address: f.propertyAddress, rehab_budget: f.totalBudget }),
   payoff_statement: (f) => ({ property_address: f.propertyAddress }),
@@ -185,6 +185,23 @@ const DOC_CARRIES = {
 function nm(a, b) { const n = `${a || ''} ${b || ''}`.trim(); return n || null; }
 function arr(v) { return v ? [v] : null; }
 function pick(...vals) { for (const v of vals) if (v != null) return v; return null; }
+
+// An assignment / wholesale FEE is a FRACTION of the price — it can never BE the whole price. The
+// extractor sometimes drops the TOTAL purchase price into the "assignment fee" field (owner-reported
+// 2026-07-27, a $325,000 "assignment fee" that was really the entire price — it fired a false
+// assignment-fee tie-out fatal). When the SAME document also states a total (or the seller's
+// underlying price), quarantine a "fee" that IS that total: >= it, or within $1. Only drops when the
+// document's OWN numbers prove it; a real fee (a fraction of the price) passes through unchanged.
+function feeIsTotal(fee, total, underlying) {
+  const fv = num(fee); if (fv == null || fv <= 0) return false;
+  const tv = num(total), uv = num(underlying);
+  if (tv != null && (fv >= tv || Math.abs(fv - tv) <= 1)) return true;  // the whole (or more than the) price
+  if (uv != null && Math.abs(fv - uv) <= 1) return true;               // exactly the seller's underlying price
+  return false;
+}
+function assignmentFeeClaim(fee, total, underlying) {
+  return feeIsTotal(fee, total, underlying) ? null : fee;
+}
 
 // Is a claim value present (non-empty scalar, or a non-empty array)?
 function present(v) {
