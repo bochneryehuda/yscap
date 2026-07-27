@@ -30,6 +30,7 @@ import { PhoneInput, ZipInput , EmailInput} from '../components/FormattedInputs.
 import EditFileDetails from '../components/EditFileDetails.jsx';
 import ToolModal from '../components/ToolModal.jsx';
 import FileSections, { Section, InfoTip, subscribeConditionsTab, goToSection, requestOpenSection } from '../components/FileSections.jsx';
+import { captureScrollAnchor, restoreScrollAnchor } from '../lib/keep-scroll.js';
 import { CONDITION_STATUSES, CONDITION_TIMINGS, conditionStatusLabel, conditionStatusClass, timingLabel, loanConditionStatusLabel } from '../lib/conditions-vocab.js';
 import { severityCount } from '../lib/findings-vocab.js';
 import { groupBySubject } from '../lib/condition-subjects.js';
@@ -708,7 +709,9 @@ function Item({ it, team, onPatch, role, docs, onUploadTo, onDropTo, onReviewDoc
   const collapsed = expandOverride === null ? myDone : !expandOverride;
   if (collapsed) {
     return (
-      <div className="checkitem" style={{ alignItems: 'center', gap: 8, cursor: 'pointer', opacity: .8 }}
+      // data-keep-scroll: a stable handle so a refresh can put this row back
+      // exactly where it was on screen (lib/keep-scroll.js).
+      <div className="checkitem" data-keep-scroll={`item-${it.id}`} style={{ alignItems: 'center', gap: 8, cursor: 'pointer', opacity: .8 }}
         onClick={() => setExpandOverride(true)} title="Show the full condition">
         <span className={`dot ${signed ? 'cond-satisfied' : conditionStatusClass(it.status)}`} />
         <div style={{ flex: 1, minWidth: 0, fontWeight: 600, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{it.label}</div>
@@ -733,7 +736,7 @@ function Item({ it, team, onPatch, role, docs, onUploadTo, onDropTo, onReviewDoc
     ? docs.filter(d => d.checklist_item_id === it.id && d.is_current && d.source_type !== 'chat_attachment')
     : [];
   return (
-    <div className="checkitem" style={{ alignItems: 'flex-start', flexDirection: 'column', gap: 8 }}>
+    <div className="checkitem" data-keep-scroll={`item-${it.id}`} style={{ alignItems: 'flex-start', flexDirection: 'column', gap: 8 }}>
       <div className="row" style={{ width: '100%', gap: 8, alignItems: 'flex-start' }}>
         <span className={`dot ${signed ? 'cond-satisfied' : conditionStatusClass(it.status)}`} style={{ marginTop: 4 }} />
         <div style={{ flex: 1 }}>
@@ -2114,7 +2117,7 @@ function BorrowerConditions({ appId, app, items, docs, onPatch, onReviewDoc, onD
         // to do). '__llc' in expandedConds forces it open.
         (app.entity_verified && !expandedConds.has('__llc'))
           ? (
-            <div className="checkitem" style={{ alignItems: 'center', gap: 8, cursor: 'pointer', opacity: .8, borderColor: 'var(--gold)' }}
+            <div className="checkitem" data-keep-scroll="cond-llc" style={{ alignItems: 'center', gap: 8, cursor: 'pointer', opacity: .8, borderColor: 'var(--gold)' }}
               onClick={() => toggleCond('__llc')} title="Show the full entity condition">
               <span className="dot done" />
               <div style={{ flex: 1, minWidth: 0, fontWeight: 600, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{llcCondItem.label || 'LLC (vesting entity)'}</div>
@@ -2122,7 +2125,7 @@ function BorrowerConditions({ appId, app, items, docs, onPatch, onReviewDoc, onD
               <button className="btn link small" onClick={(e) => { e.stopPropagation(); toggleCond('__llc'); }}>Expand</button>
             </div>
           ) : (
-            <div className="checkitem" style={{ flexDirection: 'column', alignItems: 'stretch', gap: 8, borderColor: 'var(--gold)' }}>
+            <div className="checkitem" data-keep-scroll="cond-llc" style={{ flexDirection: 'column', alignItems: 'stretch', gap: 8, borderColor: 'var(--gold)' }}>
               <div className="row" style={{ gap: 8, alignItems: 'center' }}>
                 <span className={`dot ${app.entity_verified ? 'done' : 'outstanding'}`} />
                 <strong>{llcCondItem.label || 'LLC (vesting entity)'}</strong>
@@ -2178,7 +2181,7 @@ function BorrowerConditions({ appId, app, items, docs, onPatch, onReviewDoc, onD
         const rowDone = it.status === 'satisfied' || signed;
         if (rowDone && !expandedConds.has(it.id)) {
           return (
-            <div className="checkitem" key={it.id} style={{ alignItems: 'center', gap: 8, cursor: 'pointer', opacity: .8 }}
+            <div className="checkitem" key={it.id} data-keep-scroll={`cond-${it.id}`} style={{ alignItems: 'center', gap: 8, cursor: 'pointer', opacity: .8 }}
               onClick={() => toggleCond(it.id)} title="Show the full condition">
               <span className="dot done" />
               <div style={{ flex: 1, minWidth: 0, fontWeight: 600, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{it.label}</div>
@@ -2196,7 +2199,7 @@ function BorrowerConditions({ appId, app, items, docs, onPatch, onReviewDoc, onD
           onDrop: (e) => { e.preventDefault(); e.currentTarget.classList.remove('drop-over'); const f = Array.from(e.dataTransfer.files || []); if (f.length) onDropTo(f, { itemId: it.id, slotBase: itemDocs.length }); },
         } : {};
         return (
-          <div className={`checkitem${canDrop ? ' cond-drop' : ''}`} key={it.id} style={{ alignItems: 'flex-start', flexDirection: 'column', gap: 6 }} {...dropProps}>
+          <div className={`checkitem${canDrop ? ' cond-drop' : ''}`} key={it.id} data-keep-scroll={`cond-${it.id}`} style={{ alignItems: 'flex-start', flexDirection: 'column', gap: 6 }} {...dropProps}>
             <div className="row" style={{ width: '100%', gap: 8, alignItems: 'flex-start' }}>
               <span className={`dot ${signed ? 'cond-satisfied' : conditionStatusClass(it.status)}`} style={{ marginTop: 4 }} />
               <div style={{ flex: 1 }}>
@@ -2636,8 +2639,24 @@ export default function StaffApplication() {
   // Deep-link to a section: a URL ending in "#sec-<name>" (e.g. the Orders queue's
   // "Open" button → #sec-orders) opens + scrolls to that collapsed section once the
   // file has rendered. Best-effort; a no-op when the fragment names no real section.
+  //
+  // LANDING IS ONCE PER FILE, NEVER ON A REFRESH (owner-reported 2026-07-27: "whenever
+  // I accept the document or I sign off a condition it automatically flies down to the
+  // bottom and to the closing section"). This effect is keyed on `app`, and EVERY
+  // action on the file — accept a document, sign off a condition, upload, assign —
+  // ends in `load()`, which hands back a brand-new `app` object. So the closer's
+  // land-on-Closing jump (and the #sec- deep link) re-fired on every single action and
+  // dragged the reader from whatever they were working on down to the Closing section.
+  // The `landed` ref makes it what it was always meant to be: where you arrive when you
+  // OPEN the file, not somewhere you get sent while you work. Reset per file id below.
+  const landed = useRef(false);
+  useEffect(() => { landed.current = false; }, [id]);
   useEffect(() => {
-    if (!app) return;
+    // `app` still holds the PREVIOUS file for one render after the url changes
+    // (it's cleared in the [id] effect below), so match it to the url or the
+    // landing would burn itself on the old file and never fire for the new one.
+    if (!app || String(app.id) !== String(id) || landed.current) return;
+    landed.current = true;
     const m = String(window.location.hash || '').match(/#(sec-[a-z-]+)$/);
     if (m) { const t = setTimeout(() => goToSection(m[1]), 250); return () => clearTimeout(t); }
     // A closer lands on the Closing section by default (owner-directed 2026-07-26)
@@ -2659,9 +2678,17 @@ export default function StaffApplication() {
   // It also has to live HERE, after `app` is declared: the effect is gated on the
   // file having loaded (the sections don't exist before that), and a `const` read
   // from a deps array above its own declaration is a TDZ crash.
+  //
+  // Like the closer landing above, this is a LANDING — it fires when you arrive,
+  // never again while you work. `app` is a fresh object after every action, so
+  // without the ref an underwriter who arrived from the Insights dashboard was
+  // dragged back to the findings panel on every accept / sign-off.
+  const focusedAi = useRef(false);
+  useEffect(() => { focusedAi.current = false; }, [id]);
   useEffect(() => {
-    if (!app) return;
+    if (!app || focusedAi.current) return;
     if (new URLSearchParams(search || '').get('focus') !== 'ai-findings') return;
+    focusedAi.current = true;
     requestOpenSection('sec-underwriting');
     const tid = setTimeout(() => {
       const el = document.getElementById('ai-findings') || document.getElementById('sec-underwriting');
@@ -2722,12 +2749,23 @@ export default function StaffApplication() {
   }
 
   const idRef = useRef(id); idRef.current = id;
+  // The first load of a file paints an empty page — there is no place to hold,
+  // and it's the one moment a landing (above) is allowed to move you. Every
+  // load AFTER it is a refresh triggered by something the user just did, and
+  // must leave them exactly where they were.
+  const firstLoad = useRef(true);
   async function load() {
     const forId = id;   // drop late responses after switching to another file
+    const isFirst = firstLoad.current;
+    firstLoad.current = false;
     setSsnFull('');
     try {
       const a = await api.staffApplication(id);
       if (idRef.current !== forId) return;
+      // Captured AFTER the fetch, right before the re-render: the reader may
+      // have scrolled while the request was in flight, and putting them back
+      // where they were a second ago is the very thing this is fixing.
+      const anchor = isFirst ? null : captureScrollAnchor();
       setApp(a);
       // Prefill the assignment selectors from what's already on the file, so an
       // assigned file never reads as "nobody assigned" after a reload.
@@ -2743,6 +2781,9 @@ export default function StaffApplication() {
       ]);
       if (idRef.current !== forId) return;
       setItems(c || []); setTeam(t || []); setDocs(d || []); setConds(cn || []);
+      // …and put them back once the new list has painted (a no-op when nothing
+      // above them moved, which is most refreshes).
+      restoreScrollAnchor(anchor);
       if (a.borrower_id) api.staffBorrower(a.borrower_id).then(b => { if (idRef.current === forId) setBorrower(b); }).catch(() => {});
       api.staffGating(id).then(g => { if (idRef.current === forId) setGating(g); }).catch(() => setGating(null));
     } catch (e) { if (idRef.current === forId) setErr(e.message); }
@@ -2751,6 +2792,7 @@ export default function StaffApplication() {
     // This component is reused across /internal/app/:id changes — clear the old
     // file's data or it renders under the new file's URL until the fetch lands.
     setApp(null); setItems([]); setDocs([]); setConds([]); setBorrower(null); setGating(null); setErr(''); setMsg('');
+    firstLoad.current = true;   // a new file opens fresh — nothing to hold, landing allowed
     load();
     /* eslint-disable-next-line */
   }, [id]);
