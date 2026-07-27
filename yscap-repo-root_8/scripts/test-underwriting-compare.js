@@ -19,6 +19,10 @@ assert.strictEqual(addrMatches({ line1: 'Elm St', zip: '07030' }, A('45 Elm St',
 assert.strictEqual(namesMatchLoose('John Smith', 'Smith, John'), true);
 assert.strictEqual(namesMatchLoose('Jon Smith', 'John Smith'), false);
 assert.strictEqual(entityMatch('Maple Grove Holdings LLC', 'Maple Grove Holdings, L.L.C.'), true);
+// Internal spacing is ignored so a re-spaced entity name still matches (owner 2026-07-27, Coretex file).
+assert.strictEqual(entityMatch('Core Tex Solutions LLC', 'Coretex Solutions LLC'), true, '"Core Tex" == "Coretex" (spacing only)');
+assert.strictEqual(entityMatch('CORETEX', 'Core Tex'), true, 'spacing-only difference matches regardless of case');
+assert.strictEqual(entityMatch('Coretex Solutions LLC', 'Core Way Holdings LLC'), false, 'a genuinely different name still differs after squashing spaces');
 assert.strictEqual(withinMoney(412000, 412000.4, 1), true);
 assert.strictEqual(withinMoney(412000, 430000, 1), false);
 assert.strictEqual(toISODate('05/15/1980'), '1980-05-15');

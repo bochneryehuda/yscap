@@ -46,6 +46,17 @@ function priceAwareMatch(ctx, kind, factKey, fileVal, docVal) {
     // false "purchase price doesn't match" fatal blocking the file.
     return null;
   }
+  // A document "assignment fee" that equals the WHOLE purchase price (or the seller's underlying
+  // price) is the total MISLABELED as the fee (owner-reported 2026-07-27, a $325k "assignment fee").
+  // facts.js already quarantines it when the DOC itself carries the total; this catches the other
+  // shape — the doc gives only a fee that matches the FILE's total. Never a mismatch against the real
+  // fee on file → null ("could not confirm"), never a false fatal. A plausible fee is unchanged.
+  if (factKey === 'assignment_fee' && app) {
+    const dv = num(docVal), total = num(app.purchase_price), under = num(app.underlying_contract_price);
+    if (dv != null && ((total != null && (dv >= total || Math.abs(dv - total) <= 1)) || (under != null && Math.abs(dv - under) <= 1))) {
+      return null;
+    }
+  }
   return base;
 }
 

@@ -207,17 +207,23 @@ const ASSIGNMENT = {
     "assigns the purchase contract to a new buyer for a fee). Extract the assignor (original " +
     "buyer/wholesaler), the assignee (the NEW buyer — usually the borrowing LLC), the seller's " +
     "ORIGINAL purchase price, the assignment fee, and the total price to the assignee if stated. " +
-    "Capture the property address and whether both parties signed. Also note if the assignee is named " +
-    "as a person 'OR an LLC to be formed' / 'or assignee's nominee' (assigneeIsEntityToBeFormed=true) " +
-    "— i.e. the final vesting entity does not exist yet. Use null for anything absent or unreadable — " +
-    "do NOT guess. Prices as plain numbers, dates YYYY-MM-DD. readable=false if poor.",
+    "CRITICAL — do NOT confuse the fee with a price: the assignmentFee is ONLY the wholesaler's " +
+    "markup (the DIFFERENCE the new buyer pays on top of the seller's price), a small fraction of the " +
+    "price, NEVER the whole purchase price. If the document shows a single dollar amount, that is a " +
+    "PRICE (the original or the total), NOT the fee — leave assignmentFee null unless a separate, " +
+    "explicitly-labeled fee amount is stated. Where possible: totalPriceToAssignee = " +
+    "originalPurchasePrice + assignmentFee. Capture the property address and whether both parties " +
+    "signed. Also note if the assignee is named as a person 'OR an LLC to be formed' / 'or assignee's " +
+    "nominee' (assigneeIsEntityToBeFormed=true) — i.e. the final vesting entity does not exist yet. " +
+    "Use null for anything absent or unreadable — do NOT guess. Prices as plain numbers, dates " +
+    "YYYY-MM-DD. readable=false if poor.",
   schema: obj({
     assignorName: { type: ['string', 'null'] },
     assigneeName: { type: ['string', 'null'] },            // the borrowing entity
     assigneeIsEntityToBeFormed: { type: ['boolean', 'null'] }, // "X or an LLC to be formed"
-    originalPurchasePrice: { type: ['number', 'null'] },   // seller -> assignor
-    assignmentFee: { type: ['number', 'null'] },
-    totalPriceToAssignee: { type: ['number', 'null'] },
+    originalPurchasePrice: { type: ['number', 'null'], description: "The seller's ORIGINAL contract price to the assignor/wholesaler (not the fee)." },
+    assignmentFee: { type: ['number', 'null'], description: "ONLY the wholesaler's markup/fee — the difference on top of the seller's price. A fraction of the price, NEVER the whole purchase price. Null unless a distinct fee is explicitly stated." },
+    totalPriceToAssignee: { type: ['number', 'null'], description: 'The new buyer\'s total price = originalPurchasePrice + assignmentFee.' },
     sellerName: { type: ['string', 'null'] },
     propertyAddress: addr(),
     assignmentDate: { type: ['string', 'null'] },

@@ -93,6 +93,12 @@ function entityMatch(a, b) {
   const core = (x) => x.replace(ENTITY_SUFFIX, '').replace(/\s+/g, ' ').trim();
   const ka = core(ca), kb = core(cb);
   if (ka && kb && ka === kb) return true;           // same name, differing only by suffix punctuation/type
+  // Ignore INTERNAL spacing so a name that is only re-spaced still matches: "Core Tex" == "CORETEX",
+  // "Core Tex Solutions" == "Coretex Solutions" (owner-reported 2026-07-27, the Coretex file — an
+  // entity spelled with/without a space slipped past the tie-out, the entity chain, and the bank
+  // ownership check). A genuinely different name still differs after squashing.
+  const squash = (x) => x.replace(/\s+/g, '');
+  if (ka && kb && squash(ka) === squash(kb)) return true;
   return ca.includes(cb) || cb.includes(ca);
 }
 
