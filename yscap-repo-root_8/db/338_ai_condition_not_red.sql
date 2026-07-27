@@ -1,4 +1,4 @@
--- 337 — A condition created from an AI suggestion is not born RED (owner-directed 2026-07-27).
+-- 338 — A condition created from an AI suggestion is not born RED (owner-directed 2026-07-27).
 --
 -- ROOT CAUSE. `routes/underwriting.js` convert_to_condition inserted the new
 -- checklist_items row with status 'issue'. In this system 'issue' does NOT mean
