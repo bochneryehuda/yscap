@@ -2,23 +2,26 @@
 /**
  * FIDELIS flood-certificate exclusion + flood-zone ADVISORY (owner-directed 2026-07-27).
  *
- * "For Fidelis files that condition should automatically not populate … but if you find on
- *  FEMA or on the appraisal report that there is a flood zone then you should have an advisory
- *  to open up a condition."
+ * The governing sentence: "if it's a flood zone you should FORCE this condition on, but as
+ * long as you don't have evidence that it's a flood zone you should IGNORE this condition."
+ * So on a Fidelis file the FLOOD ZONE is the decider, not the capital partner.
  *
  * Proves the three halves of that:
- *   (A) THE EXCLUSION — db/333's rule keeps the internal flood cert (rtl_cond_flood) OFF a
- *       Fidelis file under EVERY branch that used to force it on (Gold, Manual, a known flood
- *       zone), for every Fidelis label spelling; retracts one already sitting on such a file;
- *       and does NOT regress Blue Lake / CorrFirst / Gold / a blank note buyer.
- *   (B) THE ADVISORY — a flood zone proven by FEMA or by the appraiser's own stated zone raises
- *       ONE ai_suggestion with a one-click "create the flood certificate condition" action, and
- *       stays silent / withdraws itself in every case where it isn't true (no appraisal, a
- *       non-A/V zone, the condition already on the file, the note buyer changed away, a human
+ *   (A) THE EXCLUSION — with NO flood-zone evidence, db/333's rule keeps the internal flood
+ *       cert (rtl_cond_flood) OFF a Fidelis file under every branch that used to force it on
+ *       (Gold, Manual), for every Fidelis label spelling, and retracts one already sitting
+ *       there; a PROVEN flood zone FORCES it on, Fidelis included. Blue Lake / CorrFirst /
+ *       Gold / a blank note buyer are unchanged.
+ *   (B) THE ADVISORY — the backstop for the two states the engine cannot fix itself: a flood
+ *       zone with NO condition on the file (one-click "create the condition"), and a flood
+ *       zone with the condition present but still OPTIONAL. It stays silent / withdraws
+ *       itself in every case where neither is true (no appraisal, a non-A/V zone, a REQUIRED
+ *       condition already on the file, a settled one, the note buyer changed away, a human
  *       already decided, a frozen file).
- *   (C) THE FALLBACK — a flood cert a human already touched on a Fidelis file is made OPTIONAL
- *       by db/333 and really can be signed off through the real endpoint with NOTHING attached;
- *       a file actually in a flood zone keeps it REQUIRED (the deliberate carve-out).
+ *   (C) THE BACK-DATE — a flood cert a human already touched on a Fidelis file with no flood
+ *       zone is made OPTIONAL by db/333 §3 and really can be signed off through the real
+ *       endpoint with NOTHING attached; on a file that IS in a flood zone §4 forces it back
+ *       to REQUIRED and the endpoint refuses an empty sign-off.
  *
  * The pure assertions always run. The rest requires DATABASE_URL with migrations applied and
  * skips cleanly otherwise.
@@ -168,9 +171,15 @@ function call(server, method, path, token, body) {
     assert(ev({ registered_program: 'standard', in_flood_zone: true }) === true, 'live rule: a known flood zone still requires it');
     assert(ev({ registered_program: 'standard', note_buyer: 'bluelake' }) === true, 'live rule: Blue Lake still requires it');
     assert(ev({ registered_program: 'standard', note_buyer: 'corrfirst' }) === true, 'live rule: CorrFirst still requires it');
-    assert(ev({ registered_program: 'gold', note_buyer_is_fidelis: true }) === false, 'live rule: Fidelis + Gold => NO flood cert');
-    assert(ev({ registered_program: 'standard', in_flood_zone: true, note_buyer_is_fidelis: true }) === false,
-      'live rule: Fidelis + flood zone => NO flood cert (advisory instead)');
+    assert(ev({ registered_program: 'gold', note_buyer_is_fidelis: true }) === false,
+      'live rule: Fidelis + Gold + no flood-zone evidence => NO flood cert (ignored)');
+    assert(ev({ registered_program: 'standard', note_buyer_is_fidelis: true }) === false,
+      'live rule: Fidelis + Standard + no flood-zone evidence => NO flood cert (ignored)');
+    // The governing sentence: a PROVEN flood zone forces it on, Fidelis included.
+    assert(ev({ registered_program: 'standard', in_flood_zone: true, note_buyer_is_fidelis: true }) === true,
+      'live rule: Fidelis + FLOOD ZONE => flood cert IS required (the flood zone forces it on)');
+    assert(ev({ registered_program: 'gold', in_flood_zone: true, note_buyer_is_fidelis: true }) === true,
+      'live rule: Fidelis + Gold + FLOOD ZONE => flood cert IS required');
 
     // ---------------------------------------------------------------------
     // (A) THE EXCLUSION, through the real engine.
@@ -185,21 +194,61 @@ function call(server, method, path, token, body) {
     assert(blankCtx && blankCtx.ctx.note_buyer_is_fidelis === false,
       'ctx.note_buyer_is_fidelis is a concrete FALSE (never null) on a file with no note buyer');
 
-    // Fidelis + every branch that used to force the cert on → still nothing.
-    for (const [label, program, floodZone] of [
-      ['Fidelis', 'standard', false],
-      ['Fidelis Investors LLC', 'gold', false],
-      ['Fidelis Investors', 'manual', false],
-      ['Fidelis Investors LLC', 'standard', true],
-      ['Fidelis Investors LLC', 'gold', true],
+    // With NO flood-zone evidence, a Fidelis file gets nothing — under every branch that
+    // used to force the cert on.
+    for (const [label, program] of [
+      ['Fidelis', 'standard'],
+      ['Fidelis Investors LLC', 'gold'],
+      ['Fidelis Investors', 'manual'],
+      ['Fidelis Investments LLC', 'gold'],
     ]) {
       const a = await mkApp(label);
       await setProgram(a, program);
-      if (floodZone) await sfha(a);
       await engine.evaluateApplication(a, { reason: 'test', notify: false });
       assert((await floodCount(a)) === 0,
-        `"${label}" + ${program}${floodZone ? ' + FEMA flood zone' : ''} => NO flood cert condition`);
+        `"${label}" + ${program} + no flood-zone evidence => NO flood cert condition`);
     }
+
+    // …and a PROVEN flood zone FORCES it on, Fidelis included, REQUIRED — the governing
+    // sentence. Each of the three evidence sources on its own is enough.
+    for (const [label, program, cols, what] of [
+      ['Fidelis Investors LLC', 'standard', { fema_flood_sfha: true }, 'the FEMA SFHA flag'],
+      ['Fidelis Investors LLC', 'gold', { fema_flood_zone: 'AE' }, 'a FEMA-mapped AE zone'],
+      ['Fidelis', 'standard', { flood_zone: 'VE' }, "the appraiser's stated VE zone"],
+    ]) {
+      const a = await mkApp(label);
+      await setProgram(a, program);
+      await sfha(a, cols);
+      await engine.evaluateApplication(a, { reason: 'test', notify: false });
+      assert((await floodCount(a)) === 1,
+        `"${label}" + ${program} + ${what} => flood cert IS attached (the flood zone forces it on)`);
+      const it = await floodItem(a);
+      assert(it && it.is_required === true, `…and it is REQUIRED (${what})`);
+      // Nothing left to advise — the engine already did the right thing.
+      assert((await adv.syncFidelisFloodAdvisory(db, a)).reason === 'condition_present',
+        `…and the advisory stays quiet (${what})`);
+    }
+
+    // A concrete NOT-in-a-flood-zone determination is not evidence → still ignored.
+    const zoneXfile = await mkApp('Fidelis Investors LLC');
+    await setProgram(zoneXfile, 'gold');
+    await sfha(zoneXfile, { fema_flood_sfha: false, fema_flood_zone: 'X', flood_zone: 'X' });
+    await engine.evaluateApplication(zoneXfile, { reason: 'test', notify: false });
+    assert((await floodCount(zoneXfile)) === 0,
+      'Fidelis + Gold + a determination saying zone X => still NO flood cert (X is not evidence of a flood zone)');
+
+    // A flood zone appearing LATER attaches it (the appraisal-import path re-runs the engine).
+    const later = await mkApp('Fidelis Investors LLC');
+    await setProgram(later, 'gold');
+    await engine.evaluateApplication(later, { reason: 'test', notify: false });
+    assert((await floodCount(later)) === 0, 'Fidelis + Gold starts with no flood cert');
+    await sfha(later, { fema_flood_sfha: true, fema_flood_zone: 'AO' });
+    await engine.evaluateApplication(later, { reason: 'test', notify: false });
+    assert((await floodCount(later)) === 1, 'a flood zone found LATER attaches the flood cert to the Fidelis file');
+    // …and it retracts again if that appraisal is superseded and no evidence remains.
+    await db.query(`UPDATE appraisals SET superseded=true WHERE application_id=$1`, [later]);
+    await engine.evaluateApplication(later, { reason: 'test', notify: false });
+    assert((await floodCount(later)) === 0, 'and retracts (untouched) once the flood-zone evidence is gone again');
 
     // No regression for anyone else.
     for (const [label, program, floodZone, want] of [
@@ -208,7 +257,9 @@ function call(server, method, path, token, body) {
       [null, 'gold', false, 1],
       [null, 'manual', false, 1],
       ['EMCAP', 'standard', true, 1],
+      ['EMCAP', 'standard', false, 0],
       [null, 'standard', false, 0],
+      [null, 'standard', true, 1],
       ['Fidelity National', 'gold', false, 1],   // a look-alike name is NOT Fidelis
     ]) {
       const a = await mkApp(label);
@@ -403,41 +454,70 @@ function call(server, method, path, token, body) {
     assert((await allAdvisories(funded)).length === 0, 'and writes no row');
 
     // ---------------------------------------------------------------------
-    // (C) THE FALLBACK — db/333 makes a touched flood cert on a Fidelis file OPTIONAL, and
-    //     "optional" really does mean signable with nothing attached.
+    // (C) THE BACK-DATE — db/333 §2/§3/§4 on files that already carry the condition, and
+    //     "optional" really meaning signable with nothing attached.
     // ---------------------------------------------------------------------
-    // Untouched → the back-date DELETE removes it outright.
+    // Untouched, no flood zone → §2's DELETE removes it outright.
     const bdGone = await mkApp('Fidelis Investors LLC');
     await attachFlood(bdGone);
-    // Touched, no flood zone → made optional.
+    // Untouched but IN a flood zone → §2 must NOT remove it (the flood zone forces it on).
+    const bdGoneFz = await mkApp('Fidelis Investors LLC');
+    await attachFlood(bdGoneFz);
+    await sfha(bdGoneFz, { flood_zone: 'AE' });
+    // Touched, no flood zone → §3 makes it optional.
     const bdOpt = await mkApp('Fidelis Investors LLC');
     const bdOptItem = await attachFlood(bdOpt, { notes: 'chased the title company on 7/14' });
-    // Touched, IN a flood zone → stays REQUIRED (the deliberate carve-out).
+    // Touched, IN a flood zone → §3 skips it, so it stays REQUIRED.
     const bdKeep = await mkApp('Fidelis Investors LLC');
     const bdKeepItem = await attachFlood(bdKeep, { notes: 'ordered the determination' });
     await sfha(bdKeep, { fema_flood_sfha: true, fema_flood_zone: 'AE' });
+    // ALREADY OPTIONAL and IN a flood zone → §4 forces it back to REQUIRED. This is the
+    // drift case: §3 downgraded it on an earlier deploy, then a flood zone turned up. The
+    // engine can never fix it (duplicate suppression + it never rewrites is_required), so
+    // without §4 a Fidelis file could sit in a flood zone with a signable-empty flood cert.
+    const bdForce = await mkApp('Fidelis Investors LLC');
+    const bdForceItem = await attachFlood(bdForce, {
+      is_required: false,
+      notes: 'note from the processor\n\n[auto] Optional on this file — this capital partner does not '
+        + 'require a flood certificate as a standing condition, so it can be signed off with nothing '
+        + 'attached. If the property turns out to be in a flood zone, this condition becomes required again.',
+    });
+    await sfha(bdForce, { flood_zone: 'A' });
     // A touched flood cert on a NON-Fidelis file must be untouched by all of this.
     const bdOther = await mkApp('Blue Lake');
     const bdOtherItem = await attachFlood(bdOther, { notes: 'ordered' });
 
     await ensureSchema();          // re-runs the idempotent migrations, exactly like a deploy
 
-    assert((await floodCount(bdGone)) === 0, 'db/333 back-date REMOVES an untouched flood cert from an open Fidelis file');
+    assert((await floodCount(bdGone)) === 0, 'db/333 §2 REMOVES an untouched flood cert from an open Fidelis file with no flood zone');
+    assert((await floodCount(bdGoneFz)) === 1, 'db/333 §2 does NOT remove it when the file IS in a flood zone');
     let it = await floodItem(bdOpt);
-    assert(it && it.is_required === false, 'db/333 makes a TOUCHED flood cert on a Fidelis file OPTIONAL');
+    assert(it && it.is_required === false, 'db/333 §3 makes a TOUCHED flood cert on a Fidelis file OPTIONAL');
     assert(/\[auto\] Optional on this file/.test(it.notes || '') && /chased the title company/.test(it.notes || ''),
       'the marker note is APPENDED — the human\'s own note is preserved');
     assert(!/fidelis/i.test(it.notes || ''), 'the note says "this capital partner", never the note-buyer name');
     it = await floodItem(bdKeep);
-    assert(it && it.is_required === true, 'a Fidelis file that IS in a flood zone keeps its flood cert REQUIRED (carve-out)');
+    assert(it && it.is_required === true, 'db/333 §3 skips a Fidelis file that IS in a flood zone — the cert stays REQUIRED');
+    // §4 — the drift repair.
+    it = await floodItem(bdForce);
+    assert(it && it.is_required === true,
+      'db/333 §4 FORCES an already-OPTIONAL flood cert back to REQUIRED on a Fidelis file in a flood zone');
+    assert(/\[auto\] Required on this file/.test(it.notes || '') && /note from the processor/.test(it.notes || ''),
+      '§4 appends its own marker and keeps the human\'s note');
+    assert(!/\[auto\] Optional on this file/.test(it.notes || ''),
+      '§4 strips the now-false "optional" marker so the two never contradict each other');
     it = await floodItem(bdOther);
     assert(it && it.is_required === true && !/\[auto\] Optional/.test(it.notes || ''),
       'a NON-Fidelis file\'s flood cert is untouched by the back-date');
-    // Idempotent: a second boot must not re-append the note.
+    // Idempotent: a second boot must not re-append either marker.
     await ensureSchema();
     it = await floodItem(bdOpt);
     assert((it.notes.match(/\[auto\] Optional on this file/g) || []).length === 1,
-      'the back-date is idempotent (the marker note is not re-appended on the next boot)');
+      'the §3 back-date is idempotent (its marker note is not re-appended on the next boot)');
+    it = await floodItem(bdForce);
+    assert((it.notes.match(/\[auto\] Required on this file/g) || []).length === 1,
+      'the §4 back-date is idempotent (its marker note is not re-appended on the next boot)');
+    assert(it.is_required === true, 'and §4\'s item stays REQUIRED across boots (§3 never re-downgrades it)');
 
     // …and the real endpoint accepts the sign-off with NOTHING attached.
     adminId = (await db.query(
@@ -452,6 +532,8 @@ function call(server, method, path, token, body) {
       'the now-OPTIONAL flood cert on a Fidelis file signs off with NOTHING attached');
     assert((await signOff(bdKeepItem)).status === 422,
       'the still-REQUIRED flood cert (real flood zone) is still blocked with nothing attached');
+    assert((await signOff(bdForceItem)).status === 422,
+      'the §4-re-required flood cert is blocked with nothing attached — the forcing is real, not cosmetic');
     assert((await signOff(bdOtherItem)).status === 422,
       'a non-Fidelis file\'s required flood cert is still blocked with nothing attached');
 

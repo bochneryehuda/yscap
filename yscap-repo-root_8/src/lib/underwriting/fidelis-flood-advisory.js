@@ -2,18 +2,28 @@
 /**
  * FIDELIS flood-zone ADVISORY (owner-directed 2026-07-27).
  *
- * THE RULE. A Fidelis Investors file does NOT carry the internal flood-certificate
- * condition. The condition itself (`rtl_cond_flood`, db/177) is unchanged for every
- * other capital partner — db/333 simply wraps its rule so it never attaches when the
- * note buyer is Fidelis (`note_buyer_is_fidelis`, any label spelling). The owner's
- * words: "for Fidelis files that condition should automatically not populate."
+ * THE RULE (db/333). On a Fidelis Investors file the flood zone is the decider, not the
+ * capital partner: with NO flood-zone evidence the internal flood-certificate condition
+ * is ignored entirely; with a PROVEN flood zone it is REQUIRED, same as any other file.
+ * The owner's governing sentence: "if it's a flood zone you should force this condition
+ * on, but as long as you don't have evidence that it's a flood zone you should ignore
+ * this condition." Nothing changes for the other capital partners.
  *
- * THE EXCEPTION, AND WHY IT IS AN ADVISORY. If the property turns out to sit in a
- * flood zone, that matters on a Fidelis file too — but per the governing HARD RULE
- * (2026-07-22) the AI never creates a condition. So this raises an `ai_suggestions`
- * row on the file's AI Findings panel with a one-click "create the flood certificate
- * condition" action, and a human decides. Advisory only: it posts nothing, clears
- * nothing, blocks nothing, and touches no frozen number.
+ * WHAT THIS MODULE IS FOR. Once a flood zone is known the Condition Center attaches the
+ * cert on its own (appraisal/desk.js `fireFloodCheck` re-runs `evaluateApplication`
+ * after the FEMA lookup), so in the normal case there is nothing to advise. This is the
+ * backstop for the two states the engine CANNOT fix by itself:
+ *   1. a flood zone is known but NO flood condition is on the file — the engine has not
+ *      run yet for this file, or ran before the determination landed;
+ *   2. a flood zone is known and the condition IS on the file but still marked OPTIONAL
+ *      by db/333 §3 (downgraded while no flood zone was known) — the engine suppresses
+ *      duplicates and never rewrites `is_required` on an instance that already exists,
+ *      so it would stay signable-with-nothing-attached on a real flood-zone property.
+ *      db/333 §4 repairs this at boot; this is the live signal in between.
+ * Per the governing HARD RULE (2026-07-22) the AI never creates or edits a condition, so
+ * both states become an `ai_suggestions` row for a human — state 1 with a one-click
+ * "create the flood certificate condition" action. Advisory only: it posts nothing,
+ * clears nothing, blocks nothing, and touches no frozen number.
  *
  * WHERE THE FLOOD ZONE COMES FROM — exactly the two sources the owner named, read off
  * the file's CURRENT appraisal row (the same derivation as the conditions engine's
@@ -265,32 +275,32 @@ async function syncFidelisFloodAdvisory(client, appId) {
     };
 
     if (cond.optionalOpen) {
-      // The condition IS on the file but marked optional (db/333 downgraded it while no
-      // flood zone was known), so it could be signed off with nothing attached. There is no
-      // one-click for "make this required", so this is an INFO advisory pointing at the
-      // condition itself — kind 'info' deliberately offers no create button, because
-      // creating a second flood condition is the wrong move here.
+      // The condition IS on the file but marked optional (db/333 §3 downgraded it while no
+      // flood zone was known), so it could be signed off with nothing attached on a property
+      // that really is in a flood zone. There is no one-click for "make this required", so
+      // this is an INFO advisory pointing at the condition itself — kind 'info' deliberately
+      // offers no create button, because a SECOND flood condition is the wrong move.
       await aiSug.record(client, Object.assign({}, common, {
         checklistItemId: cond.itemId,
         kind: 'info',
         title: 'Flood zone found — the flood certificate on this file is marked optional',
         body: `This property looks like it sits in a flood zone per ${where}. `
-          + 'The flood certificate condition is already on the file but marked OPTIONAL — this '
-          + 'file\'s capital partner does not require it as a standing condition, so it can be '
-          + 'signed off with nothing attached. A flood zone changes that: get the life-of-loan '
-          + 'flood determination (and the flood policy, if one is needed) onto the condition '
-          + 'and mark it required before signing it off.',
+          + 'The flood certificate condition is already on the file but marked OPTIONAL, so it '
+          + 'can be signed off with nothing attached — it was made optional while no flood zone '
+          + 'was known. A flood zone changes that: the flood determination is REQUIRED here. Get '
+          + 'the life-of-loan determination (and the flood policy, if one is needed) onto the '
+          + 'condition and mark it required before signing it off.',
       }));
     } else {
       await aiSug.record(client, Object.assign({}, common, {
         kind: 'condition',
         title: 'Flood zone found — open the flood certificate condition?',
-        body: `This property looks like it sits in a flood zone per ${where}. `
-          + 'This file\'s capital partner does not require the internal flood certificate as a '
-          + 'standing condition, so PILOT did not add one — but a flood zone changes that. '
-          + 'Open the flood certificate condition to get the life-of-loan flood determination '
-          + '(and the flood policy, if one is needed) onto the file, or dismiss this if the '
-          + 'determination has already been handled.',
+        body: `This property looks like it sits in a flood zone per ${where}, and there is no `
+          + 'flood certificate condition on the file. A flood zone makes the life-of-loan flood '
+          + 'determination REQUIRED here, whatever the capital partner asks for as a standing '
+          + 'condition. Open the flood certificate condition to get the determination (and the '
+          + 'flood policy, if one is needed) onto the file, or dismiss this if it has already '
+          + 'been handled.',
         // Both shapes the UI/route read: app-v2 UnderwritingPanel derives the code from
         // `fields.opensCondition || templateCode`, and the decide route from
         // `templateCode || fields.opensCondition`. Setting both makes the one-click

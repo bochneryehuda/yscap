@@ -208,8 +208,11 @@ const FIELDS = [
   //      `note_buyer is not fidelis` row would evaluate FALSE on a blank note buyer
   //      (rules.evalRow short-circuits a blank actual before the enum compare), which
   //      would have silently stripped the flood cert off every un-assigned Gold file.
-  // Drives the Fidelis flood-cert suppression: db/333 wraps the rtl_cond_flood rule
-  // in "… AND note buyer is Fidelis = no".
+  // Drives the Fidelis flood-cert rule (db/333): `in_flood_zone OR (gold|manual AND
+  // note_buyer_is_fidelis is_false) OR note_buyer in (bluelake,corrfirst)` — i.e. it
+  // gates the PROGRAM branch only. A proven flood zone stands on its own and requires
+  // the cert on every file, Fidelis included ("if it's a flood zone you should force
+  // this condition on, but as long as you don't have evidence… ignore this condition").
   { key: 'note_buyer_is_fidelis', label: 'Note buyer is Fidelis?', group: 'Loan & program', type: 'boolean',
     description: 'True when the file\'s note buyer / capital partner is Fidelis Investors (any spelling). Staff-only, never shown to the borrower.' },
   // YS loan number (applications.ys_loan_number). Referenced by the rule engine so
