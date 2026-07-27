@@ -82,6 +82,9 @@ const REASON_ACTIONS = {
   //     the locked file (owner-directed 2026-07-27, the reconciled-closed-file
   //     case). No more "clear the term sheet + re-register" just to accept a change.
   economics_frozen_conflict: ['keep_frozen_figures', 'accept_clickup_figures'],
+  // ClickUp moved a PRE-Clear-to-Close file to Clear to Close; PILOT held the
+  // status change and asks a human to CONFIRM the move (owner-directed 2026-07-27).
+  ctc_confirm_needed: ['confirm_ctc'],
 };
 
 // The OTHER bumping file, read out of the review's forensic raw_value (queued by the ingest layer as
@@ -558,6 +561,31 @@ async function applyFileReviewAction({ row, action, targetApplicationId, targetT
     return {
       note: `updated the file from ClickUp, overriding the lock — ${labels}. ` +
         `The pricing/Scope-of-Work conditions reopen because the registered numbers changed; re-register or sign them off when ready.`,
+      applicationId: row.application_id };
+  }
+
+  if (action === 'confirm_ctc') {
+    // Confirm the held Clear-to-Close move (owner-directed 2026-07-27): advance
+    // PILOT to Clear to Close so it matches ClickUp, and notify the borrower.
+    // Available to any staffer who can resolve the file's reviews (moving a file
+    // to Clear to Close is a normal status action, not an admin-only override).
+    if (!row.application_id) throw httpError(409, 'this row has no portal file');
+    let internalStatus = null;
+    try {
+      const raw = row.raw_value ? JSON.parse(row.raw_value) : null;
+      internalStatus = (raw && raw.internalStatus) || null;
+    } catch (_) { /* raw_value is forensic — unparseable falls through */ }
+    const { confirmCtc } = require('./inbound-ctc-confirm');
+    const out = await confirmCtc({
+      appId: row.application_id, actorId: actorId || null, internalStatus,
+      taskId: (row.task_id && !String(row.task_id).startsWith('app:')) ? row.task_id : null });
+    await audit('sync_review_confirm_ctc', row.application_id, actorId, { reviewId: row.id, fromStatus: out.fromStatus, reverted: !!out.reverted });
+    return {
+      note: out.reverted
+        ? 'ClickUp is no longer Clear to Close (it changed back since this review was raised), so PILOT was NOT moved. This review is now cleared.'
+        : out.alreadyThere
+          ? 'the file is already Clear to Close / Funded — nothing to change.'
+          : 'confirmed — the file is now Clear to Close in PILOT (it matches ClickUp), and the borrower was notified.',
       applicationId: row.application_id };
   }
 
