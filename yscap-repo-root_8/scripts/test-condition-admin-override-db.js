@@ -216,7 +216,7 @@ const itemRow = async (id) => (await db.query(
     // widening of the STATUS check with it and leaving the narrow one db/270
     // re-adds earlier in the same boot. The symptom is a check violation on an
     // ordinary 'expired' write, in the expiry sweep, with nothing pointing back
-    // here. db/343 re-asserts BOTH constraints last, so the state heals every
+    // here. db/344 re-asserts BOTH constraints last, so the state heals every
     // boot; this proves it against a database that already has override rows.
     await require('../src/migrate-boot').ensureSchema();
     const cons = Object.fromEntries((await db.query(

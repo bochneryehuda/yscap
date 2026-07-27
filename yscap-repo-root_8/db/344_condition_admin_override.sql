@@ -1,5 +1,8 @@
 -- ============================================================================
--- 343 — SUPER-ADMIN CONDITION OVERRIDE (owner-directed 2026-07-27).
+-- 344 — SUPER-ADMIN CONDITION OVERRIDE (owner-directed 2026-07-27).
+--       (Renumbered from 343: #843's pricing-override migration took that number
+--        first and is already on main — the house rule is to renumber YOURS,
+--        never one that may already be applied in production.)
 --
 -- "We need to add an admin override for each and every condition — if we're
 --  unable to clear it, the admin should be able to overwrite and clear the

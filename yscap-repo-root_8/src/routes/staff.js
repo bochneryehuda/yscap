@@ -1802,21 +1802,28 @@ async function loadFileForPricing(appId) {
 
 // Staff pricing overrides: EVERY staff role (loan officer, processor,
 // underwriter, admin, super_admin) may tune the deal INPUTS — experience, ARV,
-// as-is value, purchase price, rehab budget, term, reserve — and re-register
-// (owner-directed 2026-07-27; see src/lib/pricing-overrides.js). The saved
-// product is still recomputed server-side from the frozen engines, so the
-// browser never fabricates final loan terms. Only the MANUAL leverage / rate /
-// force-price overrides stay admin-only (they create a Manual Program that
-// bypasses the guideline engine and needs super-admin approval — a non-admin
-// uses "Request an exception"). Policy + the pure sanitizer live in ONE place so
-// the register / quote / details / completeness paths can never drift.
-const { sanitizeStaffOverrides } = require('../lib/pricing-overrides');
-// Returns { overrides, strippedAdminKeys }. strippedAdminKeys is true when a
-// non-admin sent a MEANINGFULLY-engaged manual-pricing knob (rate/leverage/
-// force-price) — the caller refuses loudly rather than register different terms
-// than the studio showed (Pinchus Wieder). Experience is NOT admin-only anymore.
+// as-is value, purchase price, rehab budget, term, reserve — AND may enter any
+// knob in the studio's admin pricing zone (owner-directed 2026-07-27; see
+// src/lib/pricing-overrides.js). Nothing is stripped and no role is refused at
+// the door: a knob moved off the COMPANY DEFAULT instead makes the registration
+// an EXCEPTION that an admin must approve before the borrower is sent terms or
+// a term sheet may issue. The saved product is still recomputed server-side from
+// the frozen engines, so the browser never fabricates final loan terms. Policy +
+// the pure detector live in ONE place so the register / quote / details /
+// completeness paths can never drift.
+const { sanitizeStaffOverrides, pricingOverridesEngaged, describeOverrides } = require('../lib/pricing-overrides');
+const pricingSettings = require('../lib/pricing-settings');
 function sanitizeOverrides(req, raw) {
   return sanitizeStaffOverrides(req.actor && req.actor.role, raw);
+}
+// The admin-zone knobs this payload moved off the company default — the list an
+// admin is being asked to approve. Reads the company pricing singleton; a cold
+// cache falls back to the system literals inside pricing-settings, and an
+// unreadable default makes any real value count (fail safe: ask, never skip).
+function overrideChangesFor(raw) {
+  let defaults = null;
+  try { defaults = pricingSettings.current(); } catch (_) { defaults = null; }
+  return pricingOverridesEngaged(raw, defaults);
 }
 
 // Fresh quote for both programs (no persistence). Body: { program?, overrides? }.
@@ -1825,13 +1832,16 @@ router.post('/applications/:id/pricing/quote', async (req, res) => {
     if (!pricing.enginesReady()) return res.status(503).json({ error: 'pricing engines unavailable', detail: pricing.loadErr() });
     const f = await loadFileForPricing(req.params.id);
     if (!f) return res.status(404).json({ error: 'not found' });
-    // Same no-silent-divergence rule as register: a quote must never PREVIEW
-    // numbers the server would refuse to register for this role.
-    const { overrides, strippedAdminKeys } = sanitizeOverrides(req, (req.body && req.body.overrides) || {});
-    if (strippedAdminKeys)
-      return res.status(403).json({ error: 'Manual rate/leverage and experience overrides need an admin — clear the admin pricing fields to quote as your role.' });
+    // Every staff role may PREVIEW any override (owner-directed 2026-07-27) —
+    // a quote persists nothing, and the loan officer has to see the numbers to
+    // build the exception they are about to send for approval. The register
+    // route is where the approval requirement attaches.
+    const { overrides } = sanitizeOverrides(req, (req.body && req.body.overrides) || {});
     const out = pricing.quoteAll(f.app, f.exp, overrides);
-    res.json({ ...out, experience: f.exp });
+    // Tell the studio which knobs are off the company default, so it can say
+    // up-front that registering this scenario goes to an admin for approval.
+    const overrideChanges = overrideChangesFor(overrides);
+    res.json({ ...out, experience: f.exp, overrideChanges, needsApproval: overrideChanges.length > 0 });
   } catch (e) { console.warn('[staff] handler error:', db.describeError(e)); res.status(500).json({ error: 'server error' }); }
 });
 
@@ -1842,7 +1852,8 @@ router.get('/applications/:id/pricing', async (req, res) => {
     if (!f) return res.status(404).json({ error: 'not found' });
     const hist = await db.query(
       `SELECT r.id, r.program, r.product_label, r.status, r.note_rate, r.total_loan, r.target_ltc,
-              r.is_current, r.created_at, r.inputs, r.quote, r.is_manual, r.asset_months, r.term_options, s.full_name AS registered_by_name
+              r.is_current, r.created_at, r.inputs, r.quote, r.is_manual, r.asset_months, r.term_options,
+              r.needs_approval, r.override_changes, s.full_name AS registered_by_name
          FROM product_registrations r LEFT JOIN staff_users s ON s.id=r.registered_by
         WHERE r.application_id=$1 ORDER BY r.created_at DESC`, [req.params.id]);
     const current = hist.rows.find((x) => x.is_current) || null;
@@ -1865,8 +1876,22 @@ router.get('/applications/:id/pricing', async (req, res) => {
     // The studio echoes econVersion back on register; a mismatch means the
     // file's economics moved underneath the open sheet (409, never a silent
     // stale re-register).
+    // The company pricing defaults every staff role now prices against, so the
+    // studio can tell the officer EXACTLY which admin-zone knob is off-default
+    // (and therefore needs an approval) with the same numbers the server uses —
+    // never a client-side guess. Staff-only; the borrower route never sends it.
+    let pricingDefaults = null;
+    try {
+      const cd = pricingSettings.current() || {};
+      pricingDefaults = {
+        markupStdPct: cd.markupStdPct, markupGoldPct: cd.markupGoldPct,
+        origStdPct: cd.origStdPct, origGoldPct: cd.origGoldPct,
+        lenderFee: cd.lenderFee, creditFee: cd.creditFee,
+        appraisalFee: cd.appraisalFee, titleFee: cd.titleFee ?? null,
+      };
+    } catch (_) { pricingDefaults = null; }
     res.json({ current, history: hist.rows, quote, enginesReady: pricing.enginesReady(),
-      econVersion: pricing.econVersionFor(f.app), manualEscalation, manualDefaults });
+      econVersion: pricing.econVersionFor(f.app), manualEscalation, manualDefaults, pricingDefaults });
   } catch (e) { console.warn('[staff] handler error:', db.describeError(e)); res.status(500).json({ error: 'server error' }); }
 });
 
@@ -1909,21 +1934,23 @@ router.post('/applications/:id/pricing/register', async (req, res) => {
       }, 'econ_version_conflict', { sent: String(b.econVersion).slice(0, 32) });
     }
 
-    // NEVER register terms that silently differ from what the staffer saw
-    // (root-caused 2026-07-16, Pinchus Wieder: a non-admin's rate/experience
-    // overrides were stripped and the file re-registered with OLD economics
-    // behind a success toast). If sanitize dropped keys, refuse loudly instead.
-    const { overrides, strippedAdminKeys } = sanitizeOverrides(req, b.overrides || {});
-    if (strippedAdminKeys)
-      return refuse(403, { error: 'Manual rate/leverage and experience overrides need an admin — ask an admin to register these terms, or clear the admin pricing fields and re-register.' }, 'admin_override_stripped');
+    // Nothing is stripped and no role is refused (owner-directed 2026-07-27 —
+    // a loan officer reported the admin section had vanished from Products &
+    // Pricing). What the staffer saw is what registers; a knob moved off the
+    // company default routes the registration to an admin for approval below.
+    const { overrides } = sanitizeOverrides(req, b.overrides || {});
+    // The admin-zone knobs this registration moved off the company default —
+    // a reduced rate markup, reduced origination, a discounted/waived fee, an
+    // approved effective purchase price, a manual basis. ANY of them makes this
+    // an exception that an admin must approve before terms are confirmed.
+    const overrideChanges = overrideChangesFor(overrides);
     // MANUAL PRODUCT: a structural override of the deal leverage (acquisition LTV /
     // after-repair LTV / loan-to-cost) is NOT a Standard/Gold registration — it
     // becomes its own "Manual Program" (priced on the Standard/Fidelis engine),
     // needs the registrant to state how many months of liquidity the file must
-    // show, and goes to the super-admin escalation box. A markup/points/fee/rate
-    // override alone is manual PRICING, not a manual product, and keeps the
-    // requested program. (Structural override keys are already admin-only via
-    // sanitizeOverrides, so only an admin/super-admin ever reaches manual here.)
+    // show, and goes to the escalation box. A markup/points/fee/rate override
+    // alone is manual PRICING, not a manual product: it keeps the requested
+    // program but still needs the same approval.
     const program = manualProgram.resolveProgram(requestedProgram, overrides);
     const isManual = program === 'manual';
     let assetMonths = null;
@@ -2007,12 +2034,20 @@ router.post('/applications/:id/pricing/register', async (req, res) => {
       }, 'exception_required', { program, manualReasons });
     }
 
-    // A registration that reaches here as MANUAL (exception submitted) OR a Manual
-    // Program must go through the super-admin escalation box and must NEVER confirm
-    // terms to the borrower until approved. A clean ELIGIBLE Standard/Gold
-    // registration is unaffected (confirms immediately, as before). Shared
-    // definition in manual-program.js.
-    const needsEscalation = manualProgram.needsSuperAdminApproval({ program, status: quote.status });
+    // A registration that reaches here as MANUAL (exception submitted), a Manual
+    // Program, OR one carrying ANY admin-zone pricing override must go through the
+    // escalation box and must NEVER confirm terms to the borrower until approved
+    // (owner-directed 2026-07-27). A clean ELIGIBLE Standard/Gold registration
+    // priced on the company defaults is unaffected (confirms immediately, as
+    // before). Shared definition in manual-program.js.
+    const needsEscalation = manualProgram.needsSuperAdminApproval({
+      program, status: quote.status, pricingOverrides: overrideChanges,
+    });
+    // A pricing-override-only exception (no manual leverage, engine says ELIGIBLE)
+    // — the plain-language list the approver, the notification and the audit
+    // trail all read. Empty on a clean registration.
+    const overrideLines = describeOverrides(overrideChanges);
+    const overrideOnly = needsEscalation && !isManual && quote.status !== 'MANUAL';
 
     // The superseded terms, captured before the new row lands — the audit trail
     // (and Activity feed) shows exactly what a reprice changed.
@@ -2030,6 +2065,7 @@ router.post('/applications/:id/pricing/register', async (req, res) => {
       const reg = await persistProductRegistration(client, {
         appId, program, inputs, quote, registeredByStaffId: req.actor.id,
         isManual, assetMonths, termOptions: resolvedTermOptions,
+        needsApproval: needsEscalation, overrideChanges,
       });
       regId = reg.id;
       economicsChanged = reg.economicsChanged;
@@ -2046,11 +2082,15 @@ router.post('/applications/:id/pricing/register', async (req, res) => {
         // whole registration (never an un-escalated manual-review file).
         await manualProgram.openEscalation(client, {
           appId, registrationId: regId, assetMonths,
-          overrides,
+          overrides, pricingOverrides: overrideChanges,
           summary: {
-            kind: isManual ? 'manual_product' : 'manual_review',
+            kind: isManual ? 'manual_product' : (overrideOnly ? 'pricing_override' : 'manual_review'),
             program, productLabel: quote.productLabel || null,
             status: quote.status,
+            // What was moved off the company default (owner-directed 2026-07-27)
+            // — the approver sees the exact change, e.g. "Origination points —
+            // Standard: 1.25% → 0.5%", never a raw key name.
+            overrideChanges, overrideLines,
             totalLoan: total, noteRate: quote.noteRate,
             acqLtvPct: quote.sizing ? quote.sizing.acqLtvPct : null,
             arvPct: quote.sizing ? quote.sizing.arvPct : null,
@@ -2125,30 +2165,39 @@ router.post('/applications/:id/pricing/register', async (req, res) => {
         cashToClose: quote.cashToClose != null ? quote.cashToClose : undefined,
         liquidity: (quote.liquidity ?? quote.liquidityRequired) != null ? (quote.liquidity ?? quote.liquidityRequired) : undefined,
         previous: prev ? { program: prev.program, totalLoan: Number(prev.total_loan), noteRate: Number(prev.note_rate), productLabel: prev.product_label } : undefined,
-        isManual, assetMonths: assetMonths != null ? assetMonths : undefined });
+        isManual, assetMonths: assetMonths != null ? assetMonths : undefined,
+        overrideChanges: overrideChanges.length ? overrideChanges : undefined });
 
-    // Needs manual review → tell the admins/super-admins it's waiting in the
-    // escalation box (they alone approve it). Audited separately so the escalation
-    // is diagnosable, and the team notification above already fired for the
-    // register. Covers a Manual Program AND a Standard/Gold MANUAL registration.
+    // Needs approval → tell the admins/super-admins it's waiting in the escalation
+    // box. Audited separately so the escalation is diagnosable, and the team
+    // notification above already fired for the register. Covers a Manual Program,
+    // a Standard/Gold MANUAL registration, AND a pricing override off the company
+    // defaults (owner-directed 2026-07-27).
     if (needsEscalation) {
-      try { await audit(req, 'manual_program_escalated', 'application', appId, { kind: isManual ? 'manual_product' : 'manual_review', status: quote.status, assetMonths, totalLoan: total, noteRate: quote.noteRate, manualReasons }); } catch (_) {}
+      const escKind = isManual ? 'manual_product' : (overrideOnly ? 'pricing_override' : 'manual_review');
+      try { await audit(req, 'manual_program_escalated', 'application', appId, { kind: escKind, status: quote.status, assetMonths, totalLoan: total, noteRate: quote.noteRate, manualReasons, overrideLines: overrideLines.length ? overrideLines : undefined }); } catch (_) {}
       try {
         const dollars = '$' + Math.round(total).toLocaleString('en-US');
         const productDesc = isManual ? 'Manual Program (custom LTV/LTC/ARV)'
+          : overrideOnly ? `${pricing.PROGRAM_LABEL[program]} — pricing override`
           : `${pricing.PROGRAM_LABEL[program]} — manual review`;
         const ectx = await notify.fileContext(appId, [
           { label: 'Requested product', value: productDesc },
           { label: 'Loan amount', value: dollars },
           isManual ? { label: 'Liquidity months stated', value: `${assetMonths} month${assetMonths === 1 ? '' : 's'}` } : null,
           manualReasons.length ? { label: 'Why manual review', value: manualReasons.join(' · ') } : null,
+          overrideLines.length ? { label: 'Changed from the defaults', value: overrideLines.join(' · ') } : null,
         ].filter(Boolean));
+        const changed = overrideLines.length ? ` Changed from the defaults: ${overrideLines.join('; ')}.` : '';
         const why = isManual
-          ? `A Manual Program (custom LTV/LTC/ARV) was registered on ${ectx ? ectx.label : 'a file'} and is waiting for super-admin approval in the Escalations box. Loan amount ${dollars} · ${assetMonths} month${assetMonths === 1 ? '' : 's'} of liquidity required.`
-          : `A ${pricing.PROGRAM_LABEL[program]} registration on ${ectx ? ectx.label : 'a file'} needs manual review (${manualReasons.join('; ') || 'guideline exception'}) and is waiting for super-admin approval in the Escalations box. The borrower is NOT sent terms until it's approved. Loan amount ${dollars}.`;
+          ? `A Manual Program (custom LTV/LTC/ARV) was registered on ${ectx ? ectx.label : 'a file'} and is waiting for approval in the Escalations box. Loan amount ${dollars} · ${assetMonths} month${assetMonths === 1 ? '' : 's'} of liquidity required.${changed}`
+          : overrideOnly
+            ? `A ${pricing.PROGRAM_LABEL[program]} registration on ${ectx ? ectx.label : 'a file'} was priced OFF the company defaults and is waiting for approval in the Escalations box.${changed} The borrower is NOT sent terms, and no term sheet can be sent, until it's approved. Loan amount ${dollars}.`
+            : `A ${pricing.PROGRAM_LABEL[program]} registration on ${ectx ? ectx.label : 'a file'} needs manual review (${manualReasons.join('; ') || 'guideline exception'}) and is waiting for approval in the Escalations box. The borrower is NOT sent terms until it's approved. Loan amount ${dollars}.${changed}`;
         await notify.notifyAdmins({
           type: 'manual_escalation',
-          title: isManual ? 'Manual product needs approval' : 'Registration needs super-admin approval',
+          title: isManual ? 'Manual product needs approval'
+            : overrideOnly ? 'Pricing override needs approval' : 'Registration needs approval',
           body: why,
           meta: (ectx && ectx.meta) || undefined, applicationId: appId,
           link: '/internal/escalations', ctaLabel: 'Open the Escalations box',
@@ -2158,10 +2207,13 @@ router.post('/applications/:id/pricing/register', async (req, res) => {
       // the reason, and a pointer to the Escalations box). Best-effort.
       try {
         const dollars = '$' + Math.round(total).toLocaleString('en-US');
+        const changed = overrideLines.length ? ` Changed from the defaults: ${overrideLines.join('; ')}.` : '';
         const wfNote = (isManual
           ? `Manual Program (custom LTV/LTC/ARV) — ${dollars}.`
-          : `${pricing.PROGRAM_LABEL[program]} — manual-review exception: ${manualReasons.join('; ') || 'guideline exception'}. ${dollars}.`)
-          + ' Review the exception and approve/decline it in the Escalations box.';
+          : overrideOnly
+            ? `${pricing.PROGRAM_LABEL[program]} — pricing override off the company defaults. ${dollars}.`
+            : `${pricing.PROGRAM_LABEL[program]} — manual-review exception: ${manualReasons.join('; ') || 'guideline exception'}. ${dollars}.`)
+          + changed + ' Review the exception and approve/decline it in the Escalations box.';
         await workflowAuto.onEscalationOpened(appId, { fromStaffId: req.actor.id, note: wfNote });
       } catch (_) { /* best-effort */ }
     } else {
@@ -2241,7 +2293,8 @@ router.post('/applications/:id/pricing/register', async (req, res) => {
       }
     } catch (_) { /* notification is best-effort */ }
 
-    res.status(201).json({ ok: true, registrationId: regId, quote, pendingApproval: needsEscalation });
+    res.status(201).json({ ok: true, registrationId: regId, quote, pendingApproval: needsEscalation,
+      overrideChanges, overrideLines, pendingReason: needsEscalation ? (isManual ? 'manual_product' : (overrideOnly ? 'pricing_override' : 'manual_review')) : null });
   } catch (e) { console.warn('[staff] handler error:', db.describeError(e)); res.status(500).json({ error: 'server error' }); }
 });
 
@@ -2574,6 +2627,11 @@ router.post('/applications/:id/pricing/accept-counter', async (req, res) => {
       const reg = await persistProductRegistration(client, {
         appId, program, inputs, quote, registeredByStaffId: req.actor.id,
         isManual: program === 'manual', assetMonths: esc.asset_months,
+        // The countered terms were AUTHORED by a super-admin and the loan officer
+        // is accepting them — that IS the approval (this same transaction marks
+        // the escalation approved). So these terms are confirmed, not pending:
+        // never re-hold a term sheet on the approval that just happened.
+        needsApproval: false,
       });
       regId = reg.id;
       loanAmountChanged = reg.loanAmountChanged;
@@ -2831,7 +2889,7 @@ router.get('/applications/:id/checklist', async (req, res) => {
             ci.signed_off_by, so.full_name AS signed_off_name, ci.signed_off_at,
             ci.reviewed_by, rv.full_name AS reviewed_by_name, ci.reviewed_at,
             ci.waived_at, ci.waived_by, wv.full_name AS waived_by_name,
-            -- Super-admin override (db/343): who cleared this without fulfilling
+            -- Super-admin override (db/344): who cleared this without fulfilling
             -- it, why, and what the gate said was missing. The row itself must
             -- carry the answer — a decision this size is never only in a log.
             ci.override_by, ov.full_name AS override_by_name, ci.override_at,
