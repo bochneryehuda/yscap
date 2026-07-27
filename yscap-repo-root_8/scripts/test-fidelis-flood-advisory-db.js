@@ -40,12 +40,20 @@ const assert = (c, m) => { console.log(`${c ? 'PASS' : 'FAIL'} ${m}`); if (!c) f
 // exclusion is keyed on a boolean instead of `note_buyer <> 'fidelis'`: the owner's own
 // ClickUp label ("Fidelis Investors LLC") normalizes to `fidelisinvestorsllc`, so an enum
 // comparison against 'fidelis' would have silently missed every one of their files.
+// PREFIX matching (owner-reported 2026-07-27). The enumerated alias list this replaced
+// missed real labels one character off — "Fidelis Investor LLC", singular — and those
+// files kept a flood certificate they should not have had. A list can only cover the
+// spellings someone thought of; there is no bound on how a human types a company name.
 for (const label of ['Fidelis', 'fidelis', 'FIDELIS', 'Fidelis Investors', 'Fidelis Investors LLC',
-                     'fidelis investors llc', 'FIDELIS INVESTORS, LLC', ' Fidelis  Investors  LLC ']) {
+                     'fidelis investors llc', 'FIDELIS INVESTORS, LLC', ' Fidelis  Investors  LLC ',
+                     'Fidelis Investor LLC', 'Fidelis Investments LLC', 'Fidelis Capital Partners',
+                     'Fidelis Investors, L.L.C.', 'FidelisInvestors']) {
   assert(reg.isFidelisNoteBuyer(label) === true, `isFidelisNoteBuyer("${label}") = true`);
 }
-for (const label of ['Blue Lake', 'CorrFirst', 'EMCAP', 'Fidelity National', 'Fidelis Title Agency',
-                     '', null, undefined, 'BlueLake Capital']) {
+// The near-miss that MUST NOT match: Fidelity National is a title insurer, not our
+// capital partner. It diverges at the 6th character (fidelit… vs fidelis…).
+for (const label of ['Blue Lake', 'CorrFirst', 'EMCAP', 'Fidelity National', 'Fidelity National Title',
+                     'Fidelity', '', null, undefined, 'BlueLake Capital', 'Fid', 'Delis Fidelis']) {
   assert(reg.isFidelisNoteBuyer(label) === false, `isFidelisNoteBuyer(${JSON.stringify(label)}) = false`);
 }
 // The shared normalizer must stay EXACT — a fuzzy normNoteBuyer would let "BlueLake Capital"
@@ -563,6 +571,94 @@ function call(server, method, path, token, body) {
       'the §4-re-required flood cert is blocked with nothing attached — the forcing is real, not cosmetic');
     assert((await signOff(bdOtherItem)).status === 422,
       'a non-Fidelis file\'s required flood cert is still blocked with nothing attached');
+
+    // ---------------------------------------------------------------------
+    // (D) THE OWNER'S REPORT, 2026-07-27: "Looking at a Fidelis file and I still see the
+    //     flood certificate condition… and I cannot sign it off." Three scope bugs in the
+    //     db/335 back-date, each reproduced against a real database before being fixed.
+    //     db/336 widens the back-date; signOffGate gains a LIVE check so the fix does not
+    //     depend on a deploy having run.
+    // ---------------------------------------------------------------------
+    // (D1) THE LIVE GATE. This is the case that had the team stuck: a file registered
+    //      Gold gets the condition, the note buyer later becomes Fidelis, and the
+    //      condition is left standing and REQUIRED — the engine retracts only UNTOUCHED
+    //      items and never rewrites is_required on one that already exists. The gate must
+    //      read the note buyer at SIGN-OFF time, so the flag being stale cannot block it.
+    const liveCases = [
+      ['Fidelis Investors LLC', 'requested', false, true, 200, "item 'requested' + is_required STILL true => signable empty"],
+      ['Fidelis Investors LLC', 'received', false, true, 200, "item 'received' + is_required STILL true => signable empty"],
+      ['Fidelis Investors LLC', 'issue', false, true, 200, "item 'issue' + is_required STILL true => signable empty"],
+      ['Fidelis Investor LLC', 'outstanding', false, true, 200, 'a spelling the old alias list missed => signable empty'],
+      ['Fidelis Capital Partners', 'outstanding', false, true, 200, 'any "Fidelis …" capital partner => signable empty'],
+      ['Fidelis Investors LLC', 'outstanding', true, true, 422, 'BUT a real flood zone still blocks an empty sign-off'],
+      ['Blue Lake', 'outstanding', false, true, 422, 'Blue Lake is unaffected — still blocked'],
+      ['Fidelity National', 'outstanding', false, true, 422, 'Fidelity National (look-alike) is NOT Fidelis — still blocked'],
+    ];
+    for (const [lender, itemStatus, flood, required, want, what] of liveCases) {
+      const a = await mkApp(lender);
+      if (flood) await sfha(a);
+      const id = (await db.query(
+        `INSERT INTO checklist_items (template_id, scope, application_id, label, audience, item_kind,
+                                      role_scope, phase, status, is_required, origin_kind, notes)
+         SELECT t.id, t.scope, $1, t.label, t.audience, t.item_kind, 'processor', t.phase, $2, $3,
+                'auto', 'processor was chasing this'
+           FROM checklist_templates t WHERE t.code=$4 RETURNING id`,
+        [a, itemStatus, required, FLOOD])).rows[0].id;
+      assert((await signOff(id)).status === want, `sign-off gate: ${what}`);
+    }
+
+    // (D2) THE WIDENED BACK-DATE. Every state db/335 skipped, seeded on GOLD-registered
+    //      Fidelis files — Gold matters because db/207's cleanup spares Gold files, so
+    //      only this migration can remove the condition there. Without db/336 each of
+    //      these came back REQUIRED on every single deploy (db/177's backfill re-adds the
+    //      cert to every non-withdrawn file on every boot, and nothing removed it again).
+    const backdate = [];
+    for (const st of ['file_intake', 'new', 'processing', 'clear_to_close', 'funded', 'declined'])
+      backdate.push({ what: `application status '${st}'`, appStatus: st, itemStatus: 'outstanding', lender: 'Fidelis Investors LLC' });
+    for (const st of ['requested', 'received', 'issue'])
+      backdate.push({ what: `item status '${st}'`, appStatus: 'processing', itemStatus: st, lender: 'Fidelis Investors LLC' });
+    for (const l of ['Fidelis Investor LLC', 'Fidelis Capital Partners', 'FIDELIS INVESTORS, L.L.C.'])
+      backdate.push({ what: `note buyer "${l}"`, appStatus: 'processing', itemStatus: 'outstanding', lender: l });
+    for (const c of backdate) {
+      c.id = (await db.query(
+        `INSERT INTO applications (borrower_id, status, loan_type, lender) VALUES ($1,$2,'Fix & Flip',$3) RETURNING id`,
+        [borrowerId, c.appStatus, c.lender])).rows[0].id;
+      await setProgram(c.id, 'gold');
+      await db.query(
+        `INSERT INTO checklist_items (template_id, scope, application_id, label, audience, item_kind,
+                                      role_scope, phase, status, is_required, origin_kind)
+         SELECT t.id, t.scope, $1, t.label, t.audience, t.item_kind, 'processor', t.phase, $2, true, 'auto'
+           FROM checklist_templates t WHERE t.code=$3`, [c.id, c.itemStatus, FLOOD]);
+    }
+    // A Gold+Fidelis file that IS in a flood zone must keep it, REQUIRED — the control.
+    const keepFz = (await db.query(
+      `INSERT INTO applications (borrower_id, status, loan_type, lender)
+       VALUES ($1,'processing','Fix & Flip','Fidelis Investors LLC') RETURNING id`, [borrowerId])).rows[0].id;
+    await setProgram(keepFz, 'gold');
+    await sfha(keepFz, { fema_flood_sfha: true, fema_flood_zone: 'AE' });
+    await attachFlood(keepFz, { notes: 'ordered the determination' });
+
+    await ensureSchema();                       // a deploy boot
+
+    for (const c of backdate) {
+      const it = await floodItem(c.id);
+      const ok = !it || it.is_required === false;   // removed, or at least signable empty
+      assert(ok, `db/336 back-date clears the flood cert on a Gold+Fidelis file — ${c.what}`);
+    }
+    const kept = await floodItem(keepFz);
+    assert(kept && kept.is_required === true,
+      'db/336 leaves a Gold+Fidelis file that IS in a flood zone REQUIRED (the flood zone still wins)');
+
+    // (D3) …and it stays clean across a SECOND boot. db/177's backfill re-adds the cert on
+    //      every boot, so a one-shot cleanup would silently regress on the next deploy.
+    await ensureSchema();
+    let regressed = 0;
+    for (const c of backdate) {
+      const it = await floodItem(c.id);
+      if (it && it.is_required !== false) regressed++;
+    }
+    assert(regressed === 0,
+      'and it stays clear on the NEXT deploy too (db/177 re-adds the cert on every boot)');
 
     console.log(failures ? `\n${failures} FAILED` : '\nALL PASS');
   } catch (e) {
