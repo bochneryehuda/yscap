@@ -671,6 +671,11 @@ if (require.main === module) {
     // recovers). Alerts only on a real transition, never on intentional states. OFF by
     // default — set INTEGRATIONS_MONITOR_ENABLED=1 to turn on.
     try { require('./lib/integrations/monitor').start(); } catch (e) { console.warn('integrations monitor not started:', e.message); }
+    // USPS previous-files backfill (owner-directed: "every file should have the correct
+    // address according to USPS"). Paced + non-destructive — stamps each existing file
+    // with its USPS-standardized subject address. OFF unless USPS_BACKFILL_ENABLED=1 and
+    // USPS keys are set (developer.usps.com).
+    try { require('./lib/address-usps-verify').startUspsBackfill(); } catch (e) { console.warn('usps backfill not started:', e.message); }
   });
 }
 module.exports = app;

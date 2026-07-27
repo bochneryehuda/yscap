@@ -36,6 +36,10 @@
       ".ysaddr-item .pin{color:#2F7F86;flex:0 0 auto;margin-top:2px}" +
       ".ysaddr-item.active,.ysaddr-item:hover{background:#F1F6F5}" +
       ".ysaddr-foot{padding:7px 14px;font-size:10.5px;color:#8A979C;text-align:right;letter-spacing:.03em}" +
+      // USPS verification status line under the field (dark text on white).
+      ".ysaddr-status{margin-top:5px;font-size:12px;line-height:1.3;display:flex;gap:5px;align-items:center}" +
+      ".ysaddr-status-verified,.ysaddr-status-corrected{color:#256168}" +
+      ".ysaddr-status-unverified{color:#8A6D1F}" +
       // Dark only when the page is explicitly in the dark theme.
       ':root[data-theme="dark"] .ysaddr-menu{background:#1B242D;border-color:#2A3742;box-shadow:0 18px 50px -12px rgba(0,0,0,.6)}' +
       ':root[data-theme="dark"] .ysaddr-item{color:#F4F0E7;border-bottom-color:#232F3A}' +
@@ -54,6 +58,38 @@
     input.setAttribute("autocomplete", "off");
 
     var menu = null, items = [], active = -1, seq = 0, lastQ = "", timer = null;
+    var vseq = 0, statusEl = null;
+
+    // ---- USPS verification of the picked address (authoritative standardizer) ----
+    function clearStatus() { if (statusEl) { statusEl.remove(); statusEl = null; } }
+    function showStatus(status) {
+      clearStatus();
+      if (!status) return;
+      statusEl = document.createElement("div");
+      statusEl.className = "ysaddr-status ysaddr-status-" + status;
+      statusEl.textContent = status === "verified" ? "✓ USPS verified"
+        : status === "corrected" ? "✓ USPS verified — corrected to the official mailing address"
+        : "⚠ Couldn't verify this address with USPS — please double-check it";
+      if (input.parentNode) input.parentNode.insertBefore(statusEl, input.nextSibling);
+    }
+    async function verify(addr) {
+      var mine = ++vseq;
+      clearStatus();
+      try {
+        var r = await fetch("/api/address/verify", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ address: addr }) });
+        var j = await r.json();
+        if (mine !== vseq) return;                     // a newer pick/keystroke won
+        if (j && j.configured && (j.status === "verified" || j.status === "corrected")) {
+          if (j.status === "corrected" && j.address) { // USPS fixed it — adopt the USPS form
+            input.value = j.address.line1 || input.value;
+            if (typeof onSelect === "function") onSelect(j.address);
+          }
+          showStatus(j.status);
+        } else if (j && j.configured && j.status === "unverified") {
+          showStatus("unverified");
+        }                                              // not_configured/error/rate_limited → silent
+      } catch (e) { /* the form still works without USPS */ }
+    }
 
     // Keep the menu glued to the input on scroll/resize while it is open.
     function position() {
@@ -123,6 +159,7 @@
       if (addr) {
         input.value = addr.line1 || input.value;
         if (typeof onSelect === "function") onSelect(addr);
+        verify(addr);
       } else {
         input.value = s.label;
       }
@@ -142,6 +179,7 @@
 
     input.addEventListener("input", function () {
       var q = input.value.trim();
+      clearStatus(); vseq++;                           // any edit invalidates the last USPS check
       if (q === lastQ) return; lastQ = q;
       clearTimeout(timer);
       if (q.length < 3) { close(); return; }

@@ -4,6 +4,7 @@ import { api, saveBlob } from '../lib/api.js';
 import { useSubmitGate } from '../lib/useSubmitGate.js';
 import { fmtDay, dayInputValue } from '../lib/dates.js';
 import LlcManager from '../components/LlcManager.jsx';
+import AddressAutocomplete from '../components/AddressAutocomplete.jsx';
 import BorrowerViewButton from '../components/BorrowerViewButton.jsx';
 import { PhoneInput, ZipInput, EmailInput } from '../components/FormattedInputs.jsx';
 import { passwordProblem } from '../lib/password.js';
@@ -259,14 +260,18 @@ function Overview({ b, onChanged }) {
         </div>
         <div style={{ fontWeight: 600, margin: '12px 0 6px' }}>Current address</div>
         <div className="ts-inputs">
-          <label style={{ gridColumn: '1 / -1' }}><span>Street</span><input className="input" value={f.ca.line1 || ''} onChange={e => setCa('line1', e.target.value)} /></label>
+          <label style={{ gridColumn: '1 / -1' }}><span>Street</span>
+            <AddressAutocomplete value={f.ca.line1 || ''} onChange={v => setCa('line1', v)}
+              onPick={addr => setF(s => ({ ...s, ca: { ...s.ca, line1: addr.line1 || '', city: addr.city || '', state: (addr.state || '').toUpperCase(), zip: addr.zip || '' } }))} /></label>
           <label><span>City</span><input className="input" value={f.ca.city || ''} onChange={e => setCa('city', e.target.value)} /></label>
           <label><span>State</span><input className="input" value={f.ca.state || ''} onChange={e => setCa('state', e.target.value)} /></label>
           <label><span>ZIP</span><ZipInput value={f.ca.zip || ''} onChange={v => setCa('zip', v)} /></label>
         </div>
         <div style={{ fontWeight: 600, margin: '12px 0 6px' }}>Mailing address (if different)</div>
         <div className="ts-inputs">
-          <label style={{ gridColumn: '1 / -1' }}><span>Street</span><input className="input" value={f.ma.line1 || ''} onChange={e => setMa('line1', e.target.value)} /></label>
+          <label style={{ gridColumn: '1 / -1' }}><span>Street</span>
+            <AddressAutocomplete value={f.ma.line1 || ''} onChange={v => setMa('line1', v)}
+              onPick={addr => setF(s => ({ ...s, ma: { ...s.ma, line1: addr.line1 || '', city: addr.city || '', state: (addr.state || '').toUpperCase(), zip: addr.zip || '' } }))} /></label>
           <label><span>City</span><input className="input" value={f.ma.city || ''} onChange={e => setMa('city', e.target.value)} /></label>
           <label><span>State</span><input className="input" value={f.ma.state || ''} onChange={e => setMa('state', e.target.value)} /></label>
           <label><span>ZIP</span><ZipInput value={f.ma.zip || ''} onChange={v => setMa('zip', v)} /></label>
