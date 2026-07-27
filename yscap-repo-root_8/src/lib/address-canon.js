@@ -137,7 +137,7 @@ async function osmGeocode(text) {
         // mailing form Google/ClickUp show, from the components; fall back to
         // compacting display_name when components are missing.
         const comp = m.address ? ADDR.osmComponentsToAddress(m.address) : null;
-        const formatted = (comp && ADDR.canonicalOneLine(comp, { country: true }))
+        const formatted = (comp && ADDR.canonicalOneLine(comp))
           || ADDR.compactFormattedAddress(m.display_name) || null;
         parsed = {
           place_id: OSM_PREFIX + (m.osm_id != null ? m.osm_id : m.place_id),

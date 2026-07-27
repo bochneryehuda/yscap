@@ -554,7 +554,12 @@ function fieldValueEquivalent(fieldId, oldVal, newVal, options) {
               && Math.abs(Number(c.lng) - Number(newVal.location.lng)) < 1e-4;
         }
         const fa = (x) => String((x && (x.formatted_address || x.formattedAddress)) || '').toLowerCase().replace(/[^a-z0-9]/g, '');
-        return !!fa(oldVal) && fa(oldVal) === fa(newVal);
+        if (!!fa(oldVal) && fa(oldVal) === fa(newVal)) return true;
+        // PILOT stops its addresses at the ZIP while ClickUp's picker appends
+        // ", USA" (owner-directed 2026-07-26 evening). Compare by MEANING so that
+        // difference — and unit-keyword / abbreviation spellings — is never read
+        // as an overwrite (which would churn writes and queue a PII review).
+        try { return ADDR.sameAddress(oldVal, newVal); } catch (_) { return false; }
       }
       // USERS: the write shape is {add:[id]} — equivalent when every id to add
       // is already assigned (an add-only write would be a no-op). Kills the

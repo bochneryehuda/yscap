@@ -236,6 +236,46 @@ async function pullLoanForApplication(appId) {
   try { loan = await client.getLoan(guid); }
   catch (e) { return _stampError(appId, `getLoan: ${e.message}`); }
 
+  // Read every mapped field BY FIELD NUMBER (owner sign-off 2026-07-26). The same
+  // field number lives at a DIFFERENT JSON path from loan to loan — 1859 sat in
+  // closingDocument.finalVestingDescription on one loan and was absent on the next
+  // (the LLC name was in borrowerUnparsedName1), and 388's real value appears at no
+  // stable path at all (the path we read held a different fee). Asking Encompass for
+  // the NUMBERS is the only way to be right on every loan. Best-effort: a failure
+  // leaves `_fieldValues` unset and the path-based extract still works exactly as
+  // before, so a fieldReader outage degrades rather than breaks the pull.
+  try {
+    const ids = require('../lib/integrations/encompass-field-map').allFieldIds();
+    const vals = await client.readFields(guid, ids);
+    if (vals && typeof vals === 'object' && Object.keys(vals).length) loan._fieldValues = vals;
+  } catch (e) {
+    // eslint-disable-next-line no-console
+    console.warn('[encompass] fieldReader unavailable, falling back to loan paths:', e && e.message);
+  }
+
+
+  // SAME-LOAN GUARD (owner-directed 2026-07-26: "make sure it's only reading fields
+  // from the loan file that matches the loan number and not going to other files").
+  // The search that FINDS a loan is already exact-match on the loan number and
+  // REFUSES an ambiguous multi-hit — but the resulting GUID is then CACHED on the
+  // application, and every later pull skips the search and GETs by that GUID. So a
+  // GUID that is ever wrong (a loan number reassigned in Encompass, a hand-edited
+  // row) would silently keep reading a DIFFERENT borrower's loan forever. Verify on
+  // EVERY pull that the loan we just fetched really carries OUR loan number, using
+  // the authoritative field 364 (falling back to the loan JSON's own loanNumber).
+  // On a mismatch: store NOTHING, clear the bad GUID so the next pull re-searches,
+  // and stamp a plain-language error. Compared case/space-insensitively so a
+  // harmless formatting difference is not treated as a different loan.
+  {
+    const norm = (v) => String(v == null ? '' : v).trim().toUpperCase().replace(/\s+/g, '');
+    const ours = norm(row.ys_loan_number);
+    const theirs = norm((loan._fieldValues && loan._fieldValues['364']) || loan.loanNumber);
+    if (ours && theirs && ours !== theirs) {
+      await db.query('UPDATE applications SET encompass_loan_guid=NULL WHERE id=$1', [appId]).catch(() => {});
+      return _stampError(appId, `refused: the Encompass loan we fetched is loan# ${theirs}, but this file is loan# ${row.ys_loan_number}. Nothing was saved and the stale link was cleared — the next sync will search again by loan number.`);
+    }
+  }
+
   const scrubbed = _scrubForStorage(loan);
   const jsonText = JSON.stringify(scrubbed);
   await db.query(

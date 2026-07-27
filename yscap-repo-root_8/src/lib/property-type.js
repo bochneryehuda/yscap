@@ -92,14 +92,21 @@ function propertyTypeKey(raw) {
   if (raw == null) return null;
   const s = String(raw).trim();
   if (!s || isAppraisalFormCode(s)) return null;
-  const t = s.toLowerCase();
+  // Fold every separator that is not alphanumeric / whitespace / '_' / '+' / '-'
+  // (en dash, em dash, non-breaking hyphen, minus sign, punctuation) onto a plain
+  // ASCII '-' so the tests below see ONE spelling. The SQL twin
+  // pilot_property_type_norm (db/331) folds identically — KEEP THEM IN SYNC. The
+  // preserved characters are exactly the ones the tests match on ('5+',
+  // 'multi[\s_-]*5', '2 - 4', 'single_family'); folding those would break them.
+  const t = s.toLowerCase().replace(/[^0-9a-z\s_+-]+/g, '-');
   // Order matters: the more specific categories win over the generic unit tests.
   if (/mixed/.test(t)) return 'mixed_use';
   if (/condo|co-?op\b|cooperative/.test(t)) return 'condo';
   if (/town\s*(house|home)|townh/.test(t)) return 'townhouse';
   if (/\bpud\b|planned\s*unit/.test(t)) return 'pud';
   if (/5\s*\+|5\s*(or\s*)?more|multi[\s_-]*5|multifamily[\s_-]*5/.test(t)) return 'multi_5_plus';
-  if (/2\s*[-–—_ ]?\s*4|duplex|triplex|fourplex|four[\s-]?plex|quad|two[\s-]?to[\s-]?four/.test(t)) return 'multi_2_4';
+  // ASCII-only classes: the fold above already turned every dash variant into '-'.
+  if (/2\s*[-_ ]?\s*4|duplex|triplex|fourplex|four[\s-]?plex|quad|two[\s-]?to[\s-]?four/.test(t)) return 'multi_2_4';
   if (/sfr|single[\s_-]*family|1\s*unit|one\s*unit|detached/.test(t)) return 'sfr';
   return null;
 }
