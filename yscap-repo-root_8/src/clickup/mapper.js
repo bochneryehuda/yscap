@@ -527,6 +527,15 @@ function resolveOnly(onlyKeys) {
       // text field, so an edit to any of them pushes that one field.
       case 'first_name': case 'last_name': case 'middle_name': case 'name_suffix':
         cuIds.add(F.SHARED.borrowerName); break;
+      // The SECOND borrower's three ClickUp fields. Every 'b' column in
+      // FIELD_MAP belongs to the file's PRIMARY borrower, so a co-borrower edit
+      // must never be pushed as `first_name`/`email`/`cell_phone` — that would
+      // write the primary's values. ClickUp has no second-borrower DOB / FICO /
+      // address field, so this key is deliberately the whole (and only)
+      // co-borrower surface: flag + name + email + cell.
+      case 'co_borrower':
+        cuIds.add(F.PIPELINE.coBorrowerFlag); cuIds.add(F.PIPELINE.coBorrowerName);
+        cuIds.add(F.PIPELINE.secondBorrowerEmail); cuIds.add(F.PIPELINE.secondBorrowerCell); break;
       case 'llc_id':
         cuIds.add(F.PIPELINE.vesting); cuIds.add(F.PIPELINE.llcName); cuIds.add(F.PIPELINE.ein); break;
       // Borrower identity keys that have no FIELD_MAP column mapping of their

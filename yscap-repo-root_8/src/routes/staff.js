@@ -5760,8 +5760,8 @@ router.get('/borrowers/:id', async (req, res) => {
   } catch (e) { res.status(500).json({ error: 'server error' }); }
 });
 
-// Edit a borrower's CRM / contact fields (staff, audited). SSN and FICO stay off
-// this route (SSN has its own audited endpoint; FICO comes from a credit pull).
+// Edit a borrower's CRM / contact fields (staff, audited). SSN stays off this
+// route — it has its own audited endpoint with the duplicate-profile resolver.
 //
 // The legal NAME is editable here as of 2026-07-26 (owner-reported: a file was
 // opened under a nickname — "Avi" — which created the profile under that name,
@@ -5769,6 +5769,15 @@ router.get('/borrowers/:id', async (req, res) => {
 // with no way to fix it). A name typed here is a deliberate human correction, so
 // it is applied AND pushed out to every linked ClickUp card — the same round-trip
 // the DOB edit already has.
+//
+// FICO joined the route 2026-07-27 (owner-directed: "you need to be able to edit
+// any field on the entire BORROWER section from any BORROWER"). It normally
+// arrives from a credit pull, and a pull still overwrites whatever is typed here
+// — but a score the team already has on paper had NO way in on a person with no
+// pull yet, and no way to be corrected. Range-checked by the shared sanitizer
+// (300–850) exactly like the completeness panel's inline entry; an out-of-range
+// number is refused rather than silently dropped, and an explicit blank clears
+// it. It is a mapped two-way ClickUp field, so it pushes like every other edit.
 router.patch('/borrowers/:id', async (req, res) => {
   try {
     if (!(await canSeeBorrower(req))) return res.status(403).json({ error: 'forbidden' });
@@ -5844,6 +5853,18 @@ router.patch('/borrowers/:id', async (req, res) => {
     if (b.contactType != null) put('contact_type', String(b.contactType).trim() || null);
     if (b.maritalStatus != null) put('marital_status', String(b.maritalStatus).trim() || null);
     if (b.citizenship != null) put('citizenship', String(b.citizenship).trim() || null);
+    // FICO: an explicit blank clears it; a real number must be in range. Refuse
+    // (don't drop) an out-of-range score — a save that silently keeps the old
+    // value is the "returned 200 but didn't save" class this repo keeps hitting.
+    if (b.fico !== undefined) {
+      const raw = b.fico == null ? '' : String(b.fico).trim();
+      if (raw === '') put('fico', null);
+      else {
+        const n = require('../lib/fields').sanitizeFico(raw);
+        if (n == null) return res.status(400).json({ error: 'FICO must be a 3-digit score between 300 and 850' });
+        put('fico', n);
+      }
+    }
     if (b.currentAddress !== undefined) put('current_address', b.currentAddress ? JSON.stringify(b.currentAddress) : null);
     if (b.mailingAddress !== undefined) put('mailing_address', b.mailingAddress ? JSON.stringify(b.mailingAddress) : null);
     if (b.primaryOfficerId !== undefined) put('primary_officer_id', b.primaryOfficerId || null);
@@ -5942,6 +5963,7 @@ router.patch('/borrowers/:id', async (req, res) => {
     if (b.dependentsCount !== undefined) pushKeys.push('dependents_count');
     if (b.yearsAtResidence !== undefined || b.monthsAtResidence !== undefined) pushKeys.push('years_at_residence');
     if (b.citizenship != null) pushKeys.push('citizenship');
+    if (b.fico !== undefined) pushKeys.push('fico');
     if (pushKeys.length) {
       try {
         const apps = (await db.query(
@@ -5953,6 +5975,25 @@ router.patch('/borrowers/:id', async (req, res) => {
         // suppressed as "the same person, written with less detail".
         const humanEditKeys = pushKeys.filter((k) => k === 'first_name');
         for (const a of apps) enqueueClickupPush(a.id, pushKeys, humanEditKeys.length ? { humanEditKeys } : undefined).catch(() => {});
+      } catch (_) { /* best-effort */ }
+    }
+    // THE SAME EDIT, MADE ON A FILE WHERE THIS PERSON IS THE CO-BORROWER
+    // (owner-directed 2026-07-27). The push above is keyed on the FILE's primary
+    // borrower — every mapped 'b' column in the ClickUp field map is the primary's
+    // — so pushing those keys for a co-borrower would have written the PRIMARY's
+    // values onto the card. ClickUp carries the second borrower in its own three
+    // fields (name / email / cell), so a co-borrower correction goes out through
+    // the dedicated 'co_borrower' scoped key instead. Everything else about them
+    // (DOB, FICO, citizenship, housing, address) has no second-borrower field in
+    // ClickUp at all and simply lives in PILOT — which is why nothing overwrites
+    // it on the next pull (the inbound heal is fill-only).
+    const coPush = (b.firstName != null || b.lastName != null || b.email != null || b.cellPhone != null);
+    if (coPush) {
+      try {
+        const coApps = (await db.query(
+          `SELECT id FROM applications WHERE co_borrower_id=$1 AND deleted_at IS NULL AND clickup_pipeline_task_id IS NOT NULL`,
+          [req.params.id])).rows;
+        for (const a of coApps) enqueueClickupPush(a.id, ['co_borrower']).catch(() => {});
       } catch (_) { /* best-effort */ }
     }
     await audit(req, 'update_borrower', 'borrower', req.params.id, {

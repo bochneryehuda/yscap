@@ -76,41 +76,11 @@ function ClosingDateField({ value, onSave }) {
   );
 }
 
-/* Inline-editable DOB row (2026-07-15 date incident follow-up): staff previously
- * could only FILL a missing DOB (completeness panel) — a wrong one was uneditable
- * portal-side. Same draft-commit pattern as ClosingDateField (no mid-type saves),
- * strict year bounds, and the save propagates to ClickUp via the scoped push. */
-function DobRow({ appId, value, onSaved }) {
-  const [editing, setEditing] = useState(false);
-  const [draft, setDraft] = useState('');
-  const [busy, setBusy] = useState(false);
-  const start = () => { setDraft(dayInputValue(value)); setEditing(true); };
-  async function commit() {
-    if (!/^\d{4}-\d{2}-\d{2}$/.test(draft)) return;               // incomplete → ignore
-    const y = Number(draft.slice(0, 4));
-    if (y < 1900 || y > 2100) return;                             // mid-type year → ignore
-    if (draft === dayInputValue(value)) { setEditing(false); return; }
-    setBusy(true);
-    try { await api.post(`/api/staff/applications/${appId}/complete-fields`, { date_of_birth: draft }); setEditing(false); await onSaved(); }
-    catch (_) { /* row keeps editing state so the value isn't silently lost */ }
-    finally { setBusy(false); }
-  }
-  return (
-    <div className="metrow"><span className="k">DOB</span>
-      <span className="v" style={{ display: 'flex', alignItems: 'center', gap: 8, justifyContent: 'flex-end' }}>
-        {editing ? <>
-          <input className="input" type="date" value={draft} disabled={busy}
-            onChange={(e) => setDraft(e.target.value)} style={{ maxWidth: 170 }}
-            onKeyDown={(e) => { if (e.key === 'Enter') commit(); if (e.key === 'Escape') setEditing(false); }} />
-          <button className="btn ghost" onClick={commit} disabled={busy}>{busy ? '…' : 'Save'}</button>
-        </> : <>
-          <span>{value ? fmtDay(value) : '—'}</span>
-          <button className="eye-btn" onClick={start} title="Edit date of birth (saves to the file and syncs to ClickUp)" aria-label="Edit date of birth">✎</button>
-        </>}
-      </span>
-    </div>
-  );
-}
+/* The inline DOB row that used to live here is gone — the shared
+   shared BorrowerProfilePanel (components/BorrowerProfilePanel.jsx) now owns
+   date of birth along with every other borrower field, for the primary AND the
+   co-borrower. Keeping a second DOB editor here would be exactly the per-surface
+   drift that left the co-borrower uneditable in the first place. */
 
 /* The note buyer (applications.lender) as it appears on the staff ClickUp panel —
  * READ-ONLY, with a link to the file's Note buyer panel, which is where it is
@@ -208,16 +178,8 @@ function CondLoanNumberEntry({ appId, onSaved }) {
   );
 }
 
-// Small inline eye toggle for the SSN reveal (revealing is server-audited).
-const Eye = (
-  <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-    <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z" /><circle cx="12" cy="12" r="3" /></svg>
-);
-const EyeOff = (
-  <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-    <path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19m-6.72-1.07a3 3 0 1 1-4.24-4.24" />
-    <line x1="1" y1="1" x2="23" y2="23" /></svg>
-);
+// The SSN reveal eye lives with the SSN row itself, in the shared
+// BorrowerProfilePanel — this screen no longer renders one of its own.
 
 /* What the borrower has and hasn't completed — so the officer sees at a glance
    what still needs chasing without opening every panel. */
@@ -259,7 +221,11 @@ const COMPLETENESS_FIELDS = (app, borrower) => [
       && ['line1', 'city', 'state', 'zip'].some((k) => String(borrower.current_address[k] || '').trim())),
     edit: false, hint: 'Set with the borrower primary address panel below.' },
   { key: 'date_of_birth', label: 'Date of birth', ok: !!(borrower && borrower.date_of_birth), type: 'date' },
-  { key: 'ssn', label: 'SSN on file', ok: !!(borrower && borrower.ssn_last4), edit: false, hint: 'Enter via the secure SSN field on the borrower profile.' },
+  // SSN is entered on its own audited line in the Borrower section (it has a
+  // duplicate-profile resolver and a reveal that this compact panel can't carry),
+  // so the pill jumps you straight there rather than naming a screen to go hunt.
+  { key: 'ssn', label: 'SSN on file', ok: !!(borrower && borrower.ssn_last4), edit: false, goTo: 'sec-overview',
+    hint: 'Add it on the SSN line in the Borrower section — click to go there.' },
   { key: 'fico', label: 'FICO', ok: !!(borrower && borrower.fico), type: 'fico' },
   { key: 'citizenship', label: 'Citizenship', ok: !!(borrower && borrower.citizenship), type: 'select', options: ['US Citizen', 'Permanent Resident', 'Foreign National'] },
   // Note buyer / capital partner (applications.lender). Normally fed from ClickUp;
@@ -294,12 +260,14 @@ const PLACEHOLDER_NAME = new Set(['', 'unknown', 'co-borrower', 'n/a', 'na', 'tb
 const realName = (v) => !!v && !PLACEHOLDER_NAME.has(String(v).trim().toLowerCase());
 const CO_COMPLETENESS_FIELDS = (app) => ((app.co_borrower_id && ('co_first_name' in app)) ? [
   { key: 'co_name', label: 'Co-borrower name', ok: realName(app.co_first_name) && realName(app.co_last_name), type: 'text' },
-  { key: 'co_email', label: 'Co-borrower email', ok: !!app.co_email, edit: false, hint: 'Set in the Co-borrower panel.' },
+  { key: 'co_email', label: 'Co-borrower email', ok: !!app.co_email, edit: false, goTo: 'sec-overview',
+    hint: 'Add it on the Email line in the Co-borrower block — click to go there.' },
   { key: 'co_phone', label: 'Co-borrower phone', ok: !!app.co_cell_phone, type: 'tel' },
   { key: 'co_dob', label: 'Co-borrower date of birth', ok: !!app.co_date_of_birth, type: 'date' },
   { key: 'co_fico', label: 'Co-borrower FICO', ok: !!app.co_fico, type: 'fico' },
   { key: 'co_citizenship', label: 'Co-borrower citizenship', ok: !!app.co_citizenship, type: 'select', options: ['US Citizen', 'Permanent Resident', 'Foreign National'] },
-  { key: 'co_ssn', label: 'Co-borrower SSN on file', ok: !!app.co_ssn_last4, edit: false, hint: 'Enter in the Co-borrower panel (stored encrypted).' },
+  { key: 'co_ssn', label: 'Co-borrower SSN on file', ok: !!app.co_ssn_last4, edit: false, goTo: 'sec-overview',
+    hint: 'Add it on the SSN line in the Co-borrower block (stored encrypted) — click to go there.' },
 ] : []);
 
 /* Application completeness with INLINE editing — click a missing field to enter
@@ -374,7 +342,15 @@ function CompletenessPanel({ app, borrower, endpoint, onSaved, heading = 'Applic
                 <button className="btn ghost small" onClick={() => setEditing(null)}>✕</button>
               </span>
             ) : f.edit === false ? (
-              <span key={f.key} className="pill" style={{ borderColor: 'var(--muted)', color: 'var(--muted)' }} title={f.hint}>Missing: {f.label}</span>
+              // A field this compact panel can't edit itself is still one CLICK
+              // from where it IS edited — it used to be a dead grey pill naming a
+              // panel that had no such control (owner-reported 2026-07-27).
+              f.goTo ? (
+                <button key={f.key} className="pill" style={{ borderColor: 'var(--gold)', color: 'var(--gold)', cursor: 'pointer', background: 'none' }}
+                  onClick={() => goToSection(f.goTo)} title={f.hint}>+ {f.label} →</button>
+              ) : (
+                <span key={f.key} className="pill" style={{ borderColor: 'var(--muted)', color: 'var(--muted)' }} title={f.hint}>Missing: {f.label}</span>
+              )
             ) : (
               <button key={f.key} className="pill" style={{ borderColor: 'var(--gold)', color: 'var(--gold)', cursor: 'pointer', background: 'none' }}
                 onClick={() => start(f)} title="Click to enter it now">+ {f.label}</button>
@@ -1738,8 +1714,6 @@ function CoBorrowerBlock({ appId, app, onChanged }) {
   const [f, setF] = useState({ firstName: '', middleName: '', lastName: '', email: '', phone: '', dob: '', ssn: '' });
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState('');
-  const [coSsn, setCoSsn] = useState('');
-  const [ssnBusy, setSsnBusy] = useState(false);
   // #98 — internal-only autocomplete: type a name to find someone already in the
   // database and link them without re-entering their details. staffBorrowerSearch
   // is a staff-scoped, guarded endpoint (never exposed on the borrower side).
@@ -1791,47 +1765,39 @@ function CoBorrowerBlock({ appId, app, onChanged }) {
     } catch (e) { setErr(e.message || 'Could not invite the co-borrower'); }
     finally { setBusy(false); }
   }
-  async function revealCoSsn() {
-    if (coSsn) { setCoSsn(''); return; }
-    setSsnBusy(true);
-    try { const r = await api.staffBorrowerSsn(app.co_borrower_id); setCoSsn(r.ssn); } catch (_) {} finally { setSsnBusy(false); }
-  }
   return (
-    <div style={{ marginTop: 10, borderTop: '1px solid var(--line)', paddingTop: 10 }}>
-      <div className="row" style={{ alignItems: 'center', marginBottom: 6 }}>
-        <span className="k" style={{ fontWeight: 600 }}>Co-borrower</span>
-        <div className="spacer" />
-        {has && !adding && <button className="btn link small" onClick={remove} disabled={busy}>Remove</button>}
-        {!has && !adding && <button className="btn ghost small" onClick={() => { setAdding(true); setErr(''); }}>+ Add co-borrower</button>}
-      </div>
-      {has && !adding && <>
-        <div className="metrow"><span className="k">Name</span><span className="v">{app.co_first_name} {app.co_last_name}</span></div>
-        <div className="metrow"><span className="k">Email</span><span className="v">{app.co_email || '—'}</span></div>
-        <div className="metrow"><span className="k">Phone</span><span className="v">{app.co_cell_phone || '—'}</span></div>
-        {app.co_date_of_birth && <div className="metrow"><span className="k">DOB</span><span className="v">{fmtDay(app.co_date_of_birth)}</span></div>}
-        <div className="metrow"><span className="k">FICO</span><span className="v">{app.co_fico || '—'}</span></div>
-        <div className="metrow"><span className="k">Citizenship</span><span className="v">{app.co_citizenship || '—'}</span></div>
-        <div className="metrow"><span className="k">Tier</span><span className="v">{app.co_tier || '—'}</span></div>
-        <div className="metrow"><span className="k">SSN</span>
-          <span className="v" style={{ display: 'flex', alignItems: 'center', gap: 8, justifyContent: 'flex-end' }}>
-            <span style={{ fontVariantNumeric: 'tabular-nums', letterSpacing: '.02em' }}>{coSsn || (app.co_ssn_last4 ? `•••-••-${app.co_ssn_last4}` : '—')}</span>
-            {app.co_ssn_last4 && (
-              <button className="eye-btn" onClick={revealCoSsn} disabled={ssnBusy} title={coSsn ? 'Hide the full number' : 'Reveal the full number (logged)'}>
-                {ssnBusy ? '…' : (coSsn ? EyeOff : Eye)}
-              </button>
-            )}
+    <>
+      {/* THE SECOND BORROWER IS EDITED EXACTLY LIKE THE FIRST (owner-directed
+          2026-07-27). This block used to print eight read-only rows — the same
+          ones as the primary panel, with NO way to change any of them, so a
+          co-borrower's phone, citizenship, address or SSN could only ever be
+          entered at the moment they were linked and never corrected. Their
+          record is now the shared BorrowerProfilePanel mounted right above
+          this, on the co-borrower's own id. What stays HERE is what is genuinely
+          about the LINK rather than about the person: find/add/remove them, and
+          send them their own portal invitation. */}
+      <div className="panel" style={{ marginTop: has && !adding ? 8 : 14 }}>
+        <div className="row" style={{ alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+          <span style={{ fontWeight: 600, color: '#141B22' }}>
+            {has ? 'Co-borrower on this file' : 'Co-borrower'}
           </span>
+          <div className="spacer" />
+          {has && !adding && (
+            <button className="btn ghost small" onClick={inviteCo} disabled={busy || !app.co_email}
+              title={app.co_email ? 'Email the co-borrower their own portal invitation (they get full access to this loan)' : 'Add a co-borrower email first'}>
+              Invite to portal
+            </button>
+          )}
+          {has && !adding && <button className="btn link small" onClick={remove} disabled={busy}>Remove from this file</button>}
+          {!has && !adding && <button className="btn ghost small" onClick={() => { setAdding(true); setErr(''); }}>+ Add co-borrower</button>}
         </div>
-        <div className="row" style={{ marginTop: 8, gap: 8, alignItems: 'center' }}>
-          <button className="btn ghost small" onClick={inviteCo}
-            disabled={busy || !app.co_email}
-            title={app.co_email ? 'Email the co-borrower their own portal invitation (they get full access to this loan)' : 'Add a co-borrower email first'}>
-            Invite co-borrower to portal
-          </button>
-          {inviteMsg && <span className="muted small" style={{ color: 'var(--ok)' }}>{inviteMsg}</span>}
-        </div>
-      </>}
-      {adding && <>
+        {!has && !adding && (
+          <p className="small" style={{ color: '#4B585C', margin: '6px 0 0' }}>
+            No second borrower on this file yet. Adding one links their own record — every field on it is editable here.
+          </p>
+        )}
+        {inviteMsg && <span className="muted small" style={{ color: 'var(--ok)' }}>{inviteMsg}</span>}
+        {adding && <>
         <div style={{ marginTop: 6, marginBottom: 8 }}>
           <label><span>Find an existing borrower</span>
             <input className="input" value={q} onChange={e => runSearch(e.target.value)}
@@ -1867,9 +1833,10 @@ function CoBorrowerBlock({ appId, app, onChanged }) {
           <button className="btn primary small" onClick={save} disabled={busy || !f.firstName.trim() || !f.lastName.trim() || !f.email.trim()}>{busy ? 'Saving…' : 'Save co-borrower'}</button>
           <button className="btn ghost small" onClick={() => { setAdding(false); setErr(''); }}>Cancel</button>
         </div>
-      </>}
-      {err && !adding && <div role="alert" className="notice err" style={{ marginTop: 6 }}>{err}</div>}
-    </div>
+        </>}
+        {err && !adding && <div role="alert" className="notice err" style={{ marginTop: 6 }}>{err}</div>}
+      </div>
+    </>
   );
 }
 
@@ -2713,10 +2680,6 @@ export default function StaffApplication() {
   const [internalStatuses, setInternalStatuses] = useState([]);
   const [condFilter, setCondFilter] = useState('all');
   const [cForm, setCForm] = useState({ title: '', audience: 'staff', severity: 'standard' });
-  const [ssnFull, setSsnFull] = useState('');
-  const [ssnBusy, setSsnBusy] = useState(false);
-  const [ssnEditing, setSsnEditing] = useState(false);
-  const [ssnDraft, setSsnDraft] = useState('');
   const [inviteBusy, setInviteBusy] = useState(false);
   // One in-flight action at a time: double-clicking Assign/Remind/Accept/Request
   // used to double-assign, double-email the borrower, or create duplicate items.
@@ -2753,7 +2716,6 @@ export default function StaffApplication() {
     const forId = id;   // drop late responses after switching to another file
     const isFirst = firstLoad.current;
     firstLoad.current = false;
-    setSsnFull('');
     try {
       const a = await api.staffApplication(id);
       if (idRef.current !== forId) return;
@@ -2826,27 +2788,10 @@ export default function StaffApplication() {
   const [showPipeline, setShowPipeline] = useState(true);
   const openPreview = useCallback((doc) => setPreviewDoc(doc), []);
 
-  async function revealSsn() {
-    if (ssnFull) { setSsnFull(''); return; }        // toggle back to masked
-    if (!app?.borrower_id) return;
-    setSsnBusy(true);
-    try { const r = await api.staffBorrowerSsn(app.borrower_id); setSsnFull(r.ssn || ''); }
-    catch (e) { setErr(e.message || 'Could not reveal SSN'); }
-    finally { setSsnBusy(false); }
-  }
-
-  // Add / correct the SSN inline (owner-directed 2026-07-15 night: LOs and
-  // processors set it on their own files; audited server-side, scoped push
-  // propagates it to the linked ClickUp task).
-  async function saveSsn() {
-    if (!app?.borrower_id || ssnDraft.replace(/\D/g, '').length !== 9) return;
-    setSsnBusy(true);
-    try {
-      await api.post(`/api/staff/borrowers/${app.borrower_id}/ssn`, { ssn: ssnDraft });
-      setSsnEditing(false); setSsnDraft(''); setSsnFull(''); await load();
-    } catch (e) { setErr(e.message || 'Could not save the SSN'); }
-    finally { setSsnBusy(false); }
-  }
+  // Revealing / adding / correcting the SSN moved into the shared
+  // BorrowerProfilePanel (owner-directed 2026-07-27) so the CO-borrower gets
+  // the identical audited flow — including the duplicate-profile resolver — that
+  // only the primary borrower used to have here.
 
   async function patch(itemId, body) {
     try {
@@ -3465,47 +3410,34 @@ export default function StaffApplication() {
 
       <PropertyPhoto address={propAddress !== '—' ? propAddress : ''} />
 
-      <div className="grid cols-2" style={{ marginTop: 14 }}>
-        <div className="panel">
-          <h3 style={{ marginBottom: 12 }}>Borrower</h3>
-          {borrower ? <>
-            <div className="metrow"><span className="k">Name</span><span className="v">{app.borrower_id ? <Link to={`/internal/borrowers/${app.borrower_id}`} title="Open borrower CRM profile">{borrower.first_name} {borrower.last_name}</Link> : <>{borrower.first_name} {borrower.last_name}</>}</span></div>
-            <div className="metrow"><span className="k">Email</span><span className="v">{borrower.email || '—'}</span></div>
-            <div className="metrow"><span className="k">Phone</span><span className="v">{borrower.cell_phone || '—'}</span></div>
-            {/* DOB shown for the primary borrower too, to match the co-borrower panel (#99);
-                inline-editable + immediate ClickUp sync (2026-07-15 incident follow-up). */}
-            <DobRow appId={id} value={borrower.date_of_birth} onSaved={load} />
-            <div className="metrow"><span className="k">FICO</span><span className="v">{borrower.fico || '—'}</span></div>
-            <div className="metrow"><span className="k">Citizenship</span><span className="v">{borrower.citizenship || '—'}</span></div>
-            <div className="metrow"><span className="k">Tier</span><span className="v">{borrower.tier || '—'}</span></div>
-            <div className="metrow"><span className="k">SSN</span>
-              <span className="v" style={{ display: 'flex', alignItems: 'center', gap: 8, justifyContent: 'flex-end' }}>
-                {ssnEditing ? <>
-                  <input className="input" type="password" inputMode="numeric" autoComplete="off"
-                    placeholder="•••-••-••••" value={ssnDraft} disabled={ssnBusy} style={{ maxWidth: 150 }}
-                    onChange={(e) => setSsnDraft(formatSSN(e.target.value))}
-                    onKeyDown={(e) => { if (e.key === 'Enter') saveSsn(); if (e.key === 'Escape') setSsnEditing(false); }} />
-                  <button className="btn ghost" onClick={saveSsn} disabled={ssnBusy || ssnDraft.replace(/\D/g, '').length !== 9}>{ssnBusy ? '…' : 'Save'}</button>
-                </> : <>
-                  <span style={{ fontVariantNumeric: 'tabular-nums', letterSpacing: '.02em' }}>
-                    {ssnFull || (borrower.ssn_last4 ? `•••-••-${borrower.ssn_last4}` : '—')}
-                  </span>
-                  {borrower.ssn_last4 && (
-                    <button className="eye-btn" onClick={revealSsn} disabled={ssnBusy}
-                      aria-label={ssnFull ? 'Hide the full Social Security number' : 'Reveal the full Social Security number'}
-                      title={ssnFull ? 'Hide the full number' : 'Reveal the full number (logged)'}>
-                      {ssnBusy ? '…' : (ssnFull ? EyeOff : Eye)}
-                    </button>
-                  )}
-                  <button className="eye-btn" onClick={() => { setSsnDraft(''); setSsnEditing(true); }}
-                    title={borrower.ssn_last4 ? 'Correct the Social Security number (audited, syncs to ClickUp)' : 'Add the Social Security number (audited, syncs to ClickUp)'}
-                    aria-label="Add or edit Social Security number">✎</button>
-                </>}
-              </span>
-            </div>
-            <CoBorrowerBlock appId={id} app={app} onChanged={load} />
-          </> : <p className="muted small">Loading borrower…</p>}
-        </div>
+      {/* THE BORROWER SECTION — every field, editable, for EVERY borrower
+          (owner-directed 2026-07-27: "in the BORROWER profile section you can
+          only edit a few fields from the first borrower, you can't edit the
+          fields from the 2nd borrower … you need to be able to edit any field on
+          the entire BORROWER section from any BORROWER").
+
+          This spot — the Borrower panel on the file overview — is the section the
+          owner was looking at, and it was a hand-rolled list of READ-ONLY rows
+          with exactly two editable ones (date of birth and SSN); the co-borrower
+          block under it had none at all. Both now render the shared
+          BorrowerProfilePanel, which is the ONE definition of the person's
+          record and its editor (#850), so the primary and the co-borrower are
+          the same code path and neither can drift.
+
+          The panel is mounted HERE rather than down in "Application details" —
+          that section is collapsed by default, so a Borrower editor inside it is
+          invisible until you go looking, which is how this surface stayed
+          read-only in the first place. It is mounted exactly ONCE per person:
+          two editors for one record on one page is worse than none. */}
+      {app.borrower_id && (
+        <BorrowerProfilePanel borrowerId={app.borrower_id} heading="Borrower profile" onChanged={load} />
+      )}
+      {app.co_borrower_id && (
+        <BorrowerProfilePanel borrowerId={app.co_borrower_id} heading="Co-borrower profile" onChanged={load} />
+      )}
+      <CoBorrowerBlock appId={id} app={app} onChanged={load} />
+
+      <div style={{ marginTop: 14 }}>
         <div className="panel">
           <h3 style={{ marginBottom: 4 }}>Entity, team &amp; assignment</h3>
           {/* The headline numbers (purchase, ARV, rehab, loan amount) live in the
@@ -3556,25 +3488,21 @@ export default function StaffApplication() {
       <Section id="sec-application" title="Application details" defaultOpen={false}
         info="What the borrower filled out, plus the editable deal numbers — changes here flow straight into pricing.">
       <Completeness app={app} borrower={borrower} appId={app.id} onSaved={load} />
-      {/* THE PEOPLE ON THIS FILE — their own records, fully editable from here
-          (owner-directed 2026-07-27: "we can only edit the details of the property,
-          we can't edit the borrower profile … a button to edit the entire borrower
-          profile, so we can edit the 1st borrower AND the 2nd borrower — name,
-          social, everything"). Everything below in EditFileDetails is the DEAL;
-          these two panels are the PEOPLE. Same shared component, same audited
-          saves, once per borrower — so the co-borrower is finally editable too. */}
-      {app.borrower_id && (
-        <BorrowerProfilePanel borrowerId={app.borrower_id} heading="Borrower profile" onChanged={load} />
-      )}
+      {/* THE PEOPLE ON THIS FILE — their own records, fully editable (#850:
+          "a button to edit the entire borrower profile, so we can edit the 1st
+          borrower AND the 2nd borrower — name, social, everything"). Everything
+          below in EditFileDetails is the DEAL; the PEOPLE are the two
+          BorrowerProfilePanel mounts, which moved UP to the file overview
+          (owner-directed 2026-07-27) — this section is collapsed by default, so
+          an editor living in here is invisible until you go looking, which is how
+          the Borrower section stayed read-only. Mounted once per person up there,
+          never twice on one page. */}
       {app.borrower_id && (
         <PrimaryAddressPanel borrowerId={app.borrower_id}
           address={borrower && borrower.current_address}
           name={fullNameOf(app) || 'Borrower'} onSaved={load} />
       )}
       <CoBorrowerCompleteness app={app} appId={app.id} onSaved={load} />
-      {app.co_borrower_id && (
-        <BorrowerProfilePanel borrowerId={app.co_borrower_id} heading="Co-borrower profile" onChanged={load} />
-      )}
       {app.co_borrower_id && (
         <PrimaryAddressPanel borrowerId={app.co_borrower_id}
           address={app.co_current_address}
