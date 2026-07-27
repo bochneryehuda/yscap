@@ -166,13 +166,15 @@ function stubClient(rowCount = 0) {
       pilot_template_code: 'rtl_cond_feasibility' }],
   };
   // A client whose "which keys did a human decide?" SELECT returns the gap's key.
-  const decidedClient = (keys) => {
+  // `rows` are [dedupe_key, severity-the-human-decided-on] pairs.
+  const decidedClient = (rows) => {
+    const keys = rows.map((r) => (Array.isArray(r) ? r : [r, 'fatal']));
     const calls = [];
     return { calls,
       async query(text, params) {
         calls.push({ text, params });
         if (/decided_by_staff_id\s+IS\s+NOT\s+NULL/i.test(text)) {
-          return { rowCount: keys.length, rows: keys.map((k) => ({ dedupe_key: k })) };
+          return { rowCount: keys.length, rows: keys.map(([k, sev]) => ({ dedupe_key: k, severity: sev })) };
         }
         // `record()` reads its RETURNING id off rows[0] — hand it a row so the insert path
         // completes instead of throwing into the per-row catch and reporting a misleading 0.
@@ -195,6 +197,16 @@ function stubClient(rowCount = 0) {
     `a desk-retracted rule is raised again once it applies (raised=${r8.raised}, heldByHuman=${r8.heldByHuman})`);
 
   // A failed read of that SELECT must suppress NOTHING — silence is not a decision.
+  // ...but a decision made about a WARNING does not silence the same rule once it turns FATAL.
+  // The dedupe key encodes neither severity nor the state of the file, so a dismissal on a
+  // light-rehab file would otherwise keep the rule quiet after the deal converts to ground-up and
+  // the same requirement becomes a dealbreaker. Silencing a dealbreaker with a judgement made about
+  // something milder is a false clear.
+  const c8b = decidedClient([['isg-gap:rtl_cond_feasibility', 'warning']]);
+  const r8b = await sync.syncInvestorGuidelineFindings(c8b, 'app-11b', { desk: unhappyDesk });
+  ok(r8b.raised === 1 && r8b.heldByHuman === 0,
+    `a warning-level dismissal does NOT suppress the same rule once it is FATAL (raised=${r8b.raised})`);
+
   const c9 = {
     async query(text) {
       if (/decided_by_staff_id\s+IS\s+NOT\s+NULL/i.test(text)) throw new Error('db blip');

@@ -3115,6 +3115,21 @@ export default function UnderwritingPanel({ appId, docs = [], readOnly = false, 
       )}
 
       {/* roll-up */}
+      {/* The note-buyer chip is separate from fatal/warning on purpose — those two are
+          clear-to-close work and this is a different buyer's rulebook — but it MUST be here, or a
+          file whose only open item is a guideline dealbreaker shows no chip at all while a red fatal
+          card sits below (re-audit 2026-07-27). */}
+      {(sum.guideline && (sum.guideline.fatal > 0 || sum.guideline.warning > 0)) && (
+        <div style={{ display: 'flex', gap: 10, marginBottom: 10, flexWrap: 'wrap' }}>
+          <span style={{ fontWeight: 700, color: sum.guideline.fatal > 0 ? SEV.fatal.fg : SEV.warning.fg,
+            background: sum.guideline.fatal > 0 ? SEV.fatal.bg : SEV.warning.bg,
+            borderRadius: 999, padding: '4px 12px', fontSize: 12.5 }}>
+            {sum.guideline.fatal > 0
+              ? `${sum.guideline.fatal} note-buyer dealbreaker${sum.guideline.fatal === 1 ? '' : 's'}`
+              : `${sum.guideline.warning} note-buyer guideline note${sum.guideline.warning === 1 ? '' : 's'}`}
+          </span>
+        </div>
+      )}
       {(sum.fatal > 0 || sum.warning > 0) && (
         <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 12, flexWrap: 'wrap' }}>
           {sum.fatal > 0 && <span style={{ fontWeight: 700, color: SEV.fatal.fg, background: SEV.fatal.bg, borderRadius: 999, padding: '4px 12px', fontSize: 12.5 }}>{sum.fatal} fatal</span>}
@@ -3244,8 +3259,12 @@ export default function UnderwritingPanel({ appId, docs = [], readOnly = false, 
         shownFindingCodes={shownFindingCodes} shownFindingKeys={shownFindingKeys} />
 
 
-      {/* ALL open findings, in ONE place — exactly the set the roll-up counts, so the "2 warnings"
-          chip maps to two visible, actionable items. A persisted per-document finding (has an id) is
+      {/* ALL open findings, in ONE place. The chips above count them in TWO buckets, not one: the
+          fatal/warning chips are the clear-to-close work, and the note-buyer chip is the investor's
+          own guideline read (which never gates closing). So "1 fatal" plus "2 note-buyer
+          dealbreakers" maps to the three cards below — every counted item is visible, but the count
+          the file is judged on stays the one the clear-to-close gate agrees with.
+          A persisted per-document finding (has an id) is
           resolvable here; a derived advisory (tie-out / metric / staleness / liquidity / experience /
           entity chain) shows read-only and clears when its underlying data changes. Each finding
           appears once — the old per-section finding lists were removed so nothing is repeated. */}

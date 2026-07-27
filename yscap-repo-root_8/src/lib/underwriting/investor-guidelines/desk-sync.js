@@ -137,18 +137,32 @@ async function syncInvestorGuidelineFindings(client, appId, opts) {
     // raw UPDATE that never touches it. So a rule the DESK retracted and later legitimately raises
     // again comes straight back (decided_by is NULL → not suppressed), while a judgement a person
     // actually made stands. Best-effort: a failed read suppresses nothing.
-    const decidedKeys = new Set();
+    // A DECISION ON A WARNING DOES NOT SILENCE A LATER FATAL. The dedupe key
+    // (`isg-gap:rtl_cond_feasibility`) encodes neither severity nor the state of the file, so a
+    // dismissal made while an item was a warning on a light-rehab file would otherwise keep it quiet
+    // after the deal converts to ground-up and the SAME rule becomes a dealbreaker. Silencing a
+    // dealbreaker with a decision that was made about something milder is a false clear, so the
+    // suppression only holds while the item is no worse than what the person actually judged.
+    const SEV_RANK = { fatal: 3, warning: 2, info: 1 };
+    const decidedSev = new Map();   // dedupe_key → the most serious severity a human has decided on
     try {
       const d = await client.query(
-        `SELECT DISTINCT dedupe_key FROM ai_suggestions
+        `SELECT dedupe_key, severity FROM ai_suggestions
           WHERE application_id=$1 AND source=$2 AND dedupe_key IS NOT NULL
             AND decided_by_staff_id IS NOT NULL
-            AND status NOT IN ('open','asked_admin')`, [appId, SOURCE]);
-      for (const r of d.rows) decidedKeys.add(String(r.dedupe_key));
+            AND status NOT IN ('open','asked_admin','escalated','marked_important')`, [appId, SOURCE]);
+      for (const r of d.rows) {
+        const k = String(r.dedupe_key);
+        const rank = SEV_RANK[String(r.severity || '').toLowerCase()] || 0;
+        if (!decidedSev.has(k) || rank > decidedSev.get(k)) decidedSev.set(k, rank);
+      }
     } catch (_e) { /* suppress nothing on a read failure */ }
     let raised = 0, fatal = 0, heldByHuman = 0;
     for (const p of payloads) {
-      if (p.dedupeKey && decidedKeys.has(String(p.dedupeKey))) { heldByHuman += 1; continue; }
+      const decided = p.dedupeKey ? decidedSev.get(String(p.dedupeKey)) : undefined;
+      if (decided !== undefined && decided >= (SEV_RANK[String(p.severity || '').toLowerCase()] || 0)) {
+        heldByHuman += 1; continue;
+      }
       try {
         await aiSug.record(client, Object.assign({ applicationId: appId }, p));
         raised += 1;

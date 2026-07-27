@@ -61,6 +61,10 @@ const { assessBankLiquidity, readRequiredLiquidity } = require('../lib/underwrit
 const investorDeskMod = require('../lib/underwriting/investor-guidelines/desk');
 const deskFindings = require('../lib/underwriting/investor-guidelines/desk-findings');
 const SEVERITY_RANK = { fatal: 3, warning: 2, info: 1 };
+// The suggestion statuses that mean "still needs handling" — the SAME set the escalation and
+// silenced-code queries in this file use. `escalated` and `marked_important` are emphasis, not
+// resolutions, so a guideline finding in either state keeps its card.
+const ISG_OPEN_STATUSES = new Set(['open', 'asked_admin', 'escalated', 'marked_important']);
 // Fix 2026-07-23 (#211): similar-open + bulk-resolve referenced seesAll() without
 // defining it in this file (staff.js has its own copy) — ReferenceError → 500.
 const seesAll = (req) => can(req.actor, 'see_all_files');
@@ -742,8 +746,7 @@ router.get('/:appId', async (req, res, next) => {
       `SELECT id, dedupe_key, status, important, decided_by_staff_id FROM ai_suggestions
         WHERE application_id=$1 AND source=$2`, [app.id, deskFindings.SOURCE])
       .then((r) => r.rows).catch(() => []);
-    const isgRank = (r) => (r.status === 'open' || r.status === 'asked_admin') ? 3
-      : (r.decided_by_staff_id ? 2 : 1);
+    const isgRank = (r) => ISG_OPEN_STATUSES.has(r.status) ? 3 : (r.decided_by_staff_id ? 2 : 1);
     const isgByKey = new Map();
     for (const r of isgRows) {
       const k = String(r.dedupe_key == null ? '' : r.dedupe_key).trim().toLowerCase();
@@ -755,8 +758,12 @@ router.get('/:appId', async (req, res, next) => {
       if (!f.isgKey) return f;                       // info_missing / appraisal_review — no mirror
       const row = isgByKey.get(String(f.isgKey).trim().toLowerCase());
       if (!row) return f;
-      // 'asked_admin' is still awaiting an answer — the AI panel treats it as open, so do we.
-      if (row.status !== 'open' && row.status !== 'asked_admin') return null;
+      // THE OPEN SET IS THE ONE THIS FILE ALREADY USES EVERYWHERE ELSE (re-audit 2026-07-27).
+      // `escalated` and `marked_important` are not decisions, they are ways of saying "this still
+      // needs handling, louder" — every other query here counts them as open (see the escalation and
+      // silenced-code queries below). Dropping them made "Mark important" DELETE the card the
+      // staffer had just flagged, and made the card's own "Already escalated" hint unreachable.
+      if (!ISG_OPEN_STATUSES.has(row.status)) return null;
       return Object.assign({}, f, {
         suggestionId: row.id,
         suggestionStatus: row.status,

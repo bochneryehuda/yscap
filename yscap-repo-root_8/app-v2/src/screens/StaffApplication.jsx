@@ -2945,7 +2945,7 @@ export default function StaffApplication() {
     { id: 'sec-encompass', label: 'Encompass sync', group: 'Application & pricing' },
     { id: 'sec-exceptions', label: 'Exceptions', group: 'Application & pricing' },
     { id: 'sec-appraisal', label: 'Appraisal & findings', group: 'Application & pricing', badge: apprSummary && apprSummary.fatal ? `${apprSummary.fatal} ⚠` : '' },
-    { id: 'sec-underwriting', label: 'Document review', group: 'Application & pricing', badge: uwSummary && uwSummary.fatal ? `${uwSummary.fatal} ⚠` : '' },
+    { id: 'sec-underwriting', label: 'Document review', group: 'Application & pricing', badge: uwSummary && (uwSummary.fatal || (uwSummary.guideline && uwSummary.guideline.fatal)) ? `${(uwSummary.fatal || 0) + ((uwSummary.guideline && uwSummary.guideline.fatal) || 0)} ⚠` : '' },
     { id: 'sec-conditions', label: 'Conditions', group: 'Conditions', badge: nCondOpen || '' },
     // Closing — the closer's desk. Shown to closers/admins always, and to the
     // file's officer once the file is heading to (or is at) closing so they have
@@ -3255,7 +3255,11 @@ export default function StaffApplication() {
 
       <Section id="sec-underwriting" title="Document review & PILOT findings" defaultOpen={false}
         info="PILOT reads every uploaded document (government ID, purchase contract, title, bank statement and more), understands it, and checks it against the loan file — flagging anything that doesn't match on the document itself AND anything that disagrees across documents (the seller, price, and property address must be the same on the contract, title, and appraisal). Choose a document and the type it is, and PILOT reads and checks it. Each finding is yours to resolve: post a condition, request a document, fix the file, clear it, grant an exception, dismiss, or decline. Nothing is ever written onto the loan file automatically."
-        badge={uwSummary ? (uwSummary.fatal ? `${uwSummary.fatal} fatal` : (uwSummary.warning ? `${uwSummary.warning} warning` : 'Reviewed ✓')) : ''}>
+        badge={uwSummary ? (uwSummary.fatal ? `${uwSummary.fatal} fatal`
+          // A note-buyer dealbreaker is not clear-to-close work, so it is counted separately —
+          // but it must never let this badge read “Reviewed ✓” over a red fatal card (re-audit 2026-07-27).
+          : ((uwSummary.guideline && uwSummary.guideline.fatal) ? `${uwSummary.guideline.fatal} note-buyer`
+            : (uwSummary.warning ? `${uwSummary.warning} warning` : 'Reviewed ✓'))) : ''}>
         <UnderwritingPanel appId={id} docs={docs} onSummary={onUwSummary} canResolve={can('sign_off_conditions')} canWaive={can('waive_conditions')} />
         {/* Investor-specific guidelines live INSIDE the one document review (owner-directed 2026-07-24):
             not a separate section, not a separate AI pass — the same review, one place. */}
