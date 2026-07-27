@@ -361,7 +361,7 @@ Two patterns are worth knowing even though they are **not in scope for this plan
   `externalDescription` as adjacent columns — rather than one text with a
   visibility toggle. A reviewer sees both at once.
 
-### 4.6 And a caution: do not over-simplify a staff tool
+### 4.7 And a caution: do not over-simplify a staff tool
 
 GOV.UK's "one thing per page" rule carries an explicit exemption for
 *"an internal service for government users who need to repeat and switch between
