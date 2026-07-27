@@ -2784,7 +2784,13 @@ router.post('/:appId/ai-suggestions/:id/decide', async (req, res, next) => {
                   COALESCE(t.is_gate,false), COALESCE(t.is_milestone,false),
                   COALESCE(t.sort_order,900), t.tool_key, t.clickup_field_id,
                   COALESCE(t.tpr_exclude,false), 'system', COALESCE(t.is_required,true), $1,
-                  'issue', $3
+                  -- A condition created from an AI suggestion starts NORMAL, like any
+                  -- other new condition (owner-directed 2026-07-27). It used to be born
+                  -- 'issue' — the red "Needs attention" bucket, which means "we sent this
+                  -- BACK to the borrower because something was wrong". Nothing was ever
+                  -- rejected here: PILOT noticed the file needs this, and a human agreed.
+                  -- Starting it red mislabelled a brand-new ask as a rejection.
+                  'outstanding', $3
              FROM checklist_templates t
             WHERE t.code = $2 AND t.scope = 'application'
             RETURNING id`,

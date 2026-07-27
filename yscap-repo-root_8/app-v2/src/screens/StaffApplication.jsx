@@ -27,7 +27,7 @@ import BorrowerViewButton from '../components/BorrowerViewButton.jsx';
 import { PhoneInput, ZipInput , EmailInput} from '../components/FormattedInputs.jsx';
 import EditFileDetails from '../components/EditFileDetails.jsx';
 import ToolModal from '../components/ToolModal.jsx';
-import FileSections, { Section, InfoTip, subscribeConditionsTab, goToSection } from '../components/FileSections.jsx';
+import FileSections, { Section, InfoTip, subscribeConditionsTab, goToSection, requestOpenSection } from '../components/FileSections.jsx';
 import EsignFileSection from '../components/EsignFileSection.jsx';
 import ExceptionRegisterCard from '../components/ExceptionRegisterCard.jsx';
 import OrdersPanel from '../components/OrdersPanel.jsx';
@@ -2506,18 +2506,6 @@ export default function StaffApplication() {
     sp.delete('esign');
     nav({ pathname, search: sp.toString() ? `?${sp.toString()}` : '' }, { replace: true });
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
-  // R3.44 — jump directly to the AI Findings panel when the URL carries
-  // ?focus=ai-findings (used by the Insights aged-fatal-file row's quick-jump
-  // button). Scrolls after the underwriting section has rendered.
-  useEffect(() => {
-    const focus = new URLSearchParams(search || '').get('focus');
-    if (focus !== 'ai-findings') return;
-    const tid = setTimeout(() => {
-      const el = document.getElementById('ai-findings');
-      if (el) el.scrollIntoView({ behavior: 'smooth', block: 'start' });
-    }, 600);
-    return () => clearTimeout(tid);
-  }, [search]);
   const { role, can, actor: authActor } = useAuth();
   const isAdmin = role === 'admin' || role === 'super_admin';
   const completer = canComplete(role);   // may CLEAR (sign off) a condition; others only mark it reviewed
@@ -2541,6 +2529,28 @@ export default function StaffApplication() {
       return () => clearTimeout(t);
     }
   }, [app, id]);
+  // R3.44 — jump straight to the AI Findings panel from ?focus=ai-findings (the
+  // Insights dashboard's "Review AI →" button).
+  //
+  // This USED TO SILENTLY DO NOTHING. #ai-findings lives inside the "Document
+  // review" section, which is collapsed by default — and a collapsed Section
+  // unmounts its children (FileSections.jsx), so getElementById found nothing and
+  // the click went nowhere. Open the section FIRST, then scroll. Falls back to the
+  // section itself if the panel is still mounting.
+  //
+  // It also has to live HERE, after `app` is declared: the effect is gated on the
+  // file having loaded (the sections don't exist before that), and a `const` read
+  // from a deps array above its own declaration is a TDZ crash.
+  useEffect(() => {
+    if (!app) return;
+    if (new URLSearchParams(search || '').get('focus') !== 'ai-findings') return;
+    requestOpenSection('sec-underwriting');
+    const tid = setTimeout(() => {
+      const el = document.getElementById('ai-findings') || document.getElementById('sec-underwriting');
+      if (el) el.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    }, 600);
+    return () => clearTimeout(tid);
+  }, [app, search]);
   const [items, setItems] = useState([]);
   const [docs, setDocs] = useState([]);
   const [dlBusy, setDlBusy] = useState(null);
@@ -2587,7 +2597,9 @@ export default function StaffApplication() {
     finally { setInviteBusy(false); }
   }
   function jumpToChat() {
-    const el = document.getElementById('conversations');
+    // Fall back to the section itself if the conversation panel is still mounting,
+    // so the jump always lands somewhere useful rather than nowhere at all.
+    const el = document.getElementById('conversations') || document.getElementById('sec-messages');
     if (el) el.scrollIntoView({ behavior: 'smooth', block: 'start' });
   }
 
@@ -2635,7 +2647,14 @@ export default function StaffApplication() {
   useEffect(() => {
     if (app && !focusedChat.current && new URLSearchParams(search).get('focus') === 'chat') {
       focusedChat.current = true;
-      setTimeout(jumpToChat, 60);
+      // Same trap as ?focus=ai-findings above: #conversations lives inside the
+      // collapsed "Communication & history" section (whose children are unmounted
+      // while closed) AND only renders on the Chats tab — so arriving from the Chat
+      // hub used to scroll to an element that wasn't there. Open the section and
+      // select the tab, then scroll once both have rendered.
+      requestOpenSection('sec-messages');
+      setCommTab('messages');
+      setTimeout(jumpToChat, 250);
     }
     /* eslint-disable-next-line */
   }, [app]);
@@ -2938,14 +2957,51 @@ export default function StaffApplication() {
   // The Closing section shows for closers/admins always, and for the file's
   // officer once the file has a closer or is at/after clear-to-close.
   const showClosing = can('manage_closings') || !!app.closer_id || ['clear_to_close', 'funded'].includes(app.status);
+  /* ONE badge computation for the whole file.
+     The navigation rail and the section headers used to work these out SEPARATELY,
+     and had already drifted: the rail showed "✓" where the header said
+     "Registered ✓"; the appraisal rail counted ONLY fatals while the header walked
+     a fatal → warning → reviewed ladder; and the document-review rail ADDED the
+     note-buyer fatals onto the document fatals into one number, while the header
+     deliberately reports them separately (two re-audits on 2026-07-27 hardened that
+     ladder so a green tick could never sit over a red or amber card — the rail's
+     crude sum quietly bypassed both fixes).
+     Each badge is now derived ONCE here and rendered in two lengths: `short` for the
+     narrow rail, `long` for the roomy section header. They can differ in wording;
+     they can no longer differ in fact. */
+  const badges = {
+    pricing: { short: app.registered_program ? '✓' : '', long: app.registered_program ? 'Registered ✓' : 'Not registered' },
+    appraisal: (() => {
+      if (!apprSummary) return { short: '', long: '' };
+      if (apprSummary.fatal) return { short: `${apprSummary.fatal} ⚠`, long: `${apprSummary.fatal} fatal` };
+      if (apprSummary.warning) return { short: `${apprSummary.warning}`, long: `${apprSummary.warning} warning` };
+      return { short: '✓', long: 'Reviewed ✓' };
+    })(),
+    underwriting: (() => {
+      if (!uwSummary) return { short: '', long: '' };
+      const g = uwSummary.guideline || {};
+      if (uwSummary.fatal) return { short: `${uwSummary.fatal} ⚠`, long: `${uwSummary.fatal} fatal` };
+      // A note-buyer dealbreaker is not clear-to-close work, so it is counted
+      // separately — but it must never let this badge read "Reviewed ✓" over a red
+      // fatal card (re-audit 2026-07-27).
+      if (g.fatal) return { short: `${g.fatal} ⚠`, long: `${g.fatal} note-buyer` };
+      if (uwSummary.warning) return { short: `${uwSummary.warning}`, long: `${uwSummary.warning} warning` };
+      // A guideline WARNING is milder than a dealbreaker but still an open item —
+      // falling through to the green tick here put a checkmark over an amber card
+      // (re-audit 2026-07-27).
+      if (g.warning) return { short: `${g.warning}`, long: `${g.warning} note-buyer` };
+      return { short: '✓', long: 'Reviewed ✓' };
+    })(),
+    documents: { short: docs.length || '', long: docs.length ? `${docs.length} files` : '' },
+  };
   const SECTIONS = [
     { id: 'sec-overview', label: 'File overview', group: 'Overview' },
     { id: 'sec-application', label: 'Application details', group: 'Application & pricing' },
-    { id: 'sec-pricing', label: 'Structure & pricing', group: 'Application & pricing', badge: app.registered_program ? '✓' : '' },
+    { id: 'sec-pricing', label: 'Structure & pricing', group: 'Application & pricing', badge: badges.pricing.short },
     { id: 'sec-encompass', label: 'Encompass sync', group: 'Application & pricing' },
     { id: 'sec-exceptions', label: 'Exceptions', group: 'Application & pricing' },
-    { id: 'sec-appraisal', label: 'Appraisal & findings', group: 'Application & pricing', badge: apprSummary && apprSummary.fatal ? `${apprSummary.fatal} ⚠` : '' },
-    { id: 'sec-underwriting', label: 'Document review', group: 'Application & pricing', badge: uwSummary && (uwSummary.fatal || (uwSummary.guideline && uwSummary.guideline.fatal)) ? `${(uwSummary.fatal || 0) + ((uwSummary.guideline && uwSummary.guideline.fatal) || 0)} ⚠` : '' },
+    { id: 'sec-appraisal', label: 'Appraisal & findings', group: 'Application & pricing', badge: badges.appraisal.short },
+    { id: 'sec-underwriting', label: 'Document review', group: 'Application & pricing', badge: badges.underwriting.short },
     { id: 'sec-conditions', label: 'Conditions', group: 'Conditions', badge: nCondOpen || '' },
     // Closing — the closer's desk. Shown to closers/admins always, and to the
     // file's officer once the file is heading to (or is at) closing so they have
@@ -2954,7 +3010,7 @@ export default function StaffApplication() {
     { id: 'sec-esign', label: 'E-signatures', group: 'Signing & documents' },
     { id: 'sec-orders', label: 'Orders (title & insurance)', group: 'Signing & documents',
       badge: (() => { const n = docs.filter(d => ['title_order_return', 'insurance_order_return'].includes(d.doc_kind) && !d.slot_label && d.is_current !== false).length; return n ? `${n} to assign` : ''; })() },
-    { id: 'sec-documents', label: 'Documents & exports', group: 'Signing & documents', badge: docs.length || '' },
+    { id: 'sec-documents', label: 'Documents & exports', group: 'Signing & documents', badge: badges.documents.short },
     // Data tapes are visible only to staff who may export them (processor /
     // underwriter / admin by default; a loan officer only if granted per-person).
     ...(can('export_data_tapes') ? [{ id: 'sec-tapes', label: 'Capital-provider data tapes', group: 'Signing & documents' }] : []),
@@ -3225,9 +3281,9 @@ export default function StaffApplication() {
       </details>
       </Section>
 
-      <Section id="sec-pricing" title="Loan structure & pricing" defaultOpen={false}
+      <Section id="sec-pricing" title="Structure & pricing" defaultOpen={false}
         info="The registered product and the Term Sheet Studio to re-price or re-register — every registration attaches the term sheet PDF."
-        badge={app.registered_program ? 'Registered ✓' : 'Not registered'}>
+        badge={badges.pricing.long}>
       <ProductStudioPanel ref={studioRef} appId={id} app={app} onRegistered={load} mode="staff" staffRole={role}
         toolItemId={(items.find(it => it.tool_key === 'product_pricing') || {}).id} />
       </Section>
@@ -3242,28 +3298,20 @@ export default function StaffApplication() {
           send, pricing exception, recorded overrides — with EX-n references.
           Requests are made from the sections they belong to; this is the
           one-look history a diligence conversation starts from. */}
-      <Section id="sec-exceptions" title="Exceptions (policy register)" defaultOpen={false}
+      <Section id="sec-exceptions" title="Exceptions" defaultOpen={false}
         info="Every exception to loan policy on this file — asked for, granted, denied, or recorded — with its EX-number, validity, and whether the deal has changed since. Granted exceptions ride onto the decision certificate and the register export automatically.">
         <ExceptionRegisterCard appId={id} canSeeBox={can('manage_pricing') || role === 'super_admin'} />
       </Section>
 
-      <Section id="sec-appraisal" title="Appraisal & PILOT findings" defaultOpen={false}
+      <Section id="sec-appraisal" title="Appraisal & findings" defaultOpen={false}
         info="Import the appraisal XML and PILOT builds the property profile and flags every value that differs from the file for your team to review."
-        badge={apprSummary ? (apprSummary.fatal ? `${apprSummary.fatal} fatal` : (apprSummary.warning ? `${apprSummary.warning} warning` : 'Reviewed ✓')) : ''}>
+        badge={badges.appraisal.long}>
         <AppraisalPanel appId={id} onSummary={onApprSummary} reloadSignal={apprReload} />
       </Section>
 
-      <Section id="sec-underwriting" title="Document review & PILOT findings" defaultOpen={false}
+      <Section id="sec-underwriting" title="Document review" defaultOpen={false}
         info="PILOT reads every uploaded document (government ID, purchase contract, title, bank statement and more), understands it, and checks it against the loan file — flagging anything that doesn't match on the document itself AND anything that disagrees across documents (the seller, price, and property address must be the same on the contract, title, and appraisal). Choose a document and the type it is, and PILOT reads and checks it. Each finding is yours to resolve: post a condition, request a document, fix the file, clear it, grant an exception, dismiss, or decline. Nothing is ever written onto the loan file automatically."
-        badge={uwSummary ? (uwSummary.fatal ? `${uwSummary.fatal} fatal`
-          // A note-buyer dealbreaker is not clear-to-close work, so it is counted separately —
-          // but it must never let this badge read “Reviewed ✓” over a red fatal card (re-audit 2026-07-27).
-          : ((uwSummary.guideline && uwSummary.guideline.fatal) ? `${uwSummary.guideline.fatal} note-buyer`
-            : (uwSummary.warning ? `${uwSummary.warning} warning`
-              // A guideline WARNING is milder than a dealbreaker but still an open item — falling
-              // through to the green tick here put a checkmark over an amber card (re-audit 2026-07-27).
-              : ((uwSummary.guideline && uwSummary.guideline.warning) ? `${uwSummary.guideline.warning} note-buyer`
-                : 'Reviewed ✓')))) : ''}>
+        badge={badges.underwriting.long}>
         <UnderwritingPanel appId={id} docs={docs} onSummary={onUwSummary} canResolve={can('sign_off_conditions')} canWaive={can('waive_conditions')} />
         {/* Investor-specific guidelines live INSIDE the one document review (owner-directed 2026-07-24):
             not a separate section, not a separate AI pass — the same review, one place. */}
@@ -3415,7 +3463,7 @@ export default function StaffApplication() {
 
       <Section id="sec-documents" title="Documents & exports" defaultOpen={false}
         info="Every document on the file, titled by condition — with the working set on top, rejected/replaced versions in the trash, and the TPR clean-file export."
-        badge={docs.length ? `${docs.length} files` : ''}>
+        badge={badges.documents.long}>
       <div className="panel" style={{ marginTop: 0 }}>
         <div className="row" style={{ marginBottom: 6 }}>
           <h3>Documents</h3>
@@ -3487,8 +3535,11 @@ export default function StaffApplication() {
       <MismoExport appId={id} />
       </Section>
 
+      {/* Closed by default like the other 13 sections. It was the ONLY export tool
+          sitting open on every file — above the collapsed Track record and
+          Communication sections, which matter more day to day. */}
       {can('export_data_tapes') && (
-      <Section id="sec-tapes" title="Capital-provider data tapes" defaultOpen
+      <Section id="sec-tapes" title="Capital-provider data tapes" defaultOpen={false}
         info="Export this loan onto a capital provider's own tape (their Excel workbook with this loan's figures filled in). You can only export the tape for the provider this loan is currently set to; to export a different one, change the loan's capital provider first. For a seasoned loan you'll confirm the current balance, next payment date and interest reserve before it downloads.">
       <TapeExport appId={id} />
       </Section>
