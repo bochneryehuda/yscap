@@ -17,6 +17,7 @@ import EmailCenter from '../components/EmailCenter.jsx';
 import ProductStudioPanel from '../components/ProductStudioPanel.jsx';
 import InvestorGuidelinesPanel from '../components/InvestorGuidelinesPanel.jsx';
 import DealSnapshot from '../components/DealSnapshot.jsx';
+import NoteBuyerCard from '../components/NoteBuyerCard.jsx';
 import ClearToClosePanel from '../components/ClearToClosePanel.jsx';
 import NextUpPanel from '../components/NextUpPanel.jsx';
 import LoanProgress from '../components/LoanProgress.jsx';
@@ -109,51 +110,30 @@ function DobRow({ appId, value, onSaved }) {
   );
 }
 
-/* Inline-editable note buyer (applications.lender) for the staff ClickUp panel.
- * STAFF-ONLY — the note buyer name is never shown to a borrower. Renders a
- * datalist of every note buyer available in ClickUp (+ known + on-file) and also
- * accepts a typed value, so staff can fill it when ClickUp doesn't feed it or is
- * empty, or correct it any time. Saves via the completeness endpoint (which
- * re-runs the condition engine — e.g. the CorrFirst EMD condition — and the 5%
- * SOW-contingency enforcement for a Blue Lake note buyer), then reloads. */
-function NoteBuyerInline({ appId, value, onSaved }) {
-  const [editing, setEditing] = useState(false);
-  const [draft, setDraft] = useState(value || '');
-  const [opts, setOpts] = useState([]);
-  const [busy, setBusy] = useState(false);
-  const listId = useMemo(() => 'nb-sync-' + Math.random().toString(36).slice(2), []);
-  useEffect(() => {
-    if (!editing) return;
-    let live = true;
-    api.get('/api/staff/note-buyers').then((r) => { if (live) setOpts((r && r.noteBuyers) || []); }).catch(() => {});
-    return () => { live = false; };
-  }, [editing]);
-  const start = () => { setDraft(value || ''); setEditing(true); };
-  async function save() {
-    const v = draft.trim();
-    if (!v || v === (value || '')) { setEditing(false); return; }
-    setBusy(true);
-    try { await api.post(`/api/staff/applications/${appId}/complete-fields`, { lender: v }); setEditing(false); if (onSaved) await onSaved(); }
-    catch (_) { /* keep editing so the value isn't silently lost */ }
-    finally { setBusy(false); }
-  }
-  if (editing) {
-    return (
-      <span className="row" style={{ gap: 4, alignItems: 'center' }}>
-        <input className="input small" style={{ maxWidth: 190 }} autoFocus list={listId}
-          placeholder="Pick or type a note buyer…" value={draft} disabled={busy}
-          onChange={(e) => setDraft(e.target.value)}
-          onKeyDown={(e) => { if (e.key === 'Enter') save(); if (e.key === 'Escape') setEditing(false); }} />
-        <datalist id={listId}>{opts.map((o) => <option key={o.value || o.label} value={o.label} />)}</datalist>
-        <button className="btn ghost small" onClick={save} disabled={busy}>{busy ? '…' : 'Save'}</button>
-        <button className="btn ghost small" onClick={() => setEditing(false)} disabled={busy}>✕</button>
-      </span>
-    );
-  }
+/* The note buyer (applications.lender) as it appears on the staff ClickUp panel —
+ * READ-ONLY, with a link to the file's Note buyer panel, which is where it is
+ * changed (owner-directed 2026-07-27).
+ *
+ * This used to BE the editor: a pencil icon on a muted line, inside a panel about
+ * ClickUp sync, hidden behind the "Pipeline details" toggle — the unclear path the
+ * owner reported. Changing the note buyer attaches and retracts conditions, can turn
+ * on the 5% Scope-of-Work contingency and raise the bank-statement count, so it now
+ * happens in ONE place that explains itself, and this line just shows the value and
+ * points there. Do not put a second editor back here.
+ *
+ * STAFF-ONLY — the note buyer name is never shown to a borrower. */
+function NoteBuyerRef({ value }) {
+  const jump = () => {
+    const el = document.getElementById('note-buyer-slot');
+    if (el) el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+  };
   return (
     <span className="muted small" title="Note buyer / capital partner — internal only, never shown to the borrower">
       Note buyer: <b>{value || '—'}</b>
-      <button className="eye-btn" style={{ marginLeft: 4 }} onClick={start} title="Edit the note buyer (internal only)" aria-label="Edit note buyer">✎</button>
+      <button type="button" className="btn link small" style={{ marginLeft: 4 }} onClick={jump}
+        title="Open the Note buyer panel on this file, where you can change it and see what changing it does">
+        {value ? 'change ↑' : 'set it ↑'}
+      </button>
     </span>
   );
 }
@@ -187,6 +167,14 @@ function CondNoteBuyerEntry({ appId, onSaved }) {
         onKeyDown={(e) => { if (e.key === 'Enter') save(); }} />
       <datalist id={listId}>{opts.map((o) => <option key={o.value || o.label} value={o.label} />)}</datalist>
       <button className="btn primary small" onClick={save} disabled={busy || !draft.trim()}>{busy ? '…' : 'Set note buyer'}</button>
+      {/* The note buyer's home is the Note buyer panel on the overview — it shows what
+          each one requires and what switching changes. This quick entry stays (it is
+          owner-directed, 2026-07-20), but it now says where the full view lives. */}
+      <button type="button" className="btn link small"
+        onClick={() => { const el = document.getElementById('note-buyer-slot'); if (el) el.scrollIntoView({ behavior: 'smooth', block: 'center' }); }}
+        title="Open the Note buyer panel, which shows what each note buyer requires on this file">
+        see what each one requires ↑
+      </button>
       {err && <span className="small" style={{ color: 'var(--danger)' }}>{err}</span>}
     </div>
   );
@@ -2536,7 +2524,7 @@ function ClickupSyncPanel({ app, canSetup, isAdmin, onResynced }) {
         <span className="muted small">Internal status (ClickUp mirror): <b>{app.internal_status || '—'}</b></span>
         <span className="muted small">Borrower sees: <b>{app.status || '—'}</b></span>
         {app.ys_loan_number && <span className="muted small">YS loan #: <b>{app.ys_loan_number}</b></span>}
-        <NoteBuyerInline appId={app.id} value={app.lender} onSaved={onResynced} />
+        <NoteBuyerRef value={app.lender} />
         {app.clickup_last_synced_at && <span className="muted small">Last synced: {new Date(app.clickup_last_synced_at).toLocaleString()}</span>}
       </div>
       {/* ADMIN relink: only when this file has NO card. Paste the correct card's
@@ -3368,6 +3356,11 @@ export default function StaffApplication() {
           Silent + per-notification override rows for JUST this file. */}
       <FileNotificationOverrides applicationId={id} isMyFile={isMyFile} />
       <DealSnapshot app={app} gating={gating} />
+      {/* THE NOTE-BUYER SLOT (owner-directed 2026-07-27) — one obvious home for the
+          capital partner: who it is, what they require of this file, and what
+          switching would change. It used to live only as a pencil icon on a muted
+          line inside the ClickUp panel, which is not a path anyone would find. */}
+      <div id="note-buyer-slot"><NoteBuyerCard appId={id} value={app.lender} onSaved={load} /></div>
       <ClearToClosePanel gating={gating} />
       {/* THE WORKFLOW (owner-directed 2026-07-21) — the primary way a file moves.
           Submit it to the next person; the status follows automatically. */}
