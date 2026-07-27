@@ -860,7 +860,11 @@ router.get('/:appId', async (req, res, next) => {
       if (!prev || isgRank(r) > isgRank(prev)) isgByKey.set(k, r);
     }
     const investorDeskFindings = deskFindings.deskToFindings(investorDesk).map((f) => {
-      if (!f.isgKey) return f;                       // info_missing / appraisal_review — no mirror
+      // EVERY kind is mirrored now — all five flags go through deskToSuggestions, so every finding
+      // carries an isgKey (pre-merge audit 2026-07-27: this guard's old comment claimed the exact
+      // opposite and named the two kinds that had just been wired IN). Kept only as a defensive
+      // floor: a keyless finding renders read-only rather than looking up the string "undefined".
+      if (!f.isgKey) return f;
       const row = isgByKey.get(String(f.isgKey).trim().toLowerCase());
       if (!row) return f;
       // THE OPEN SET IS THE ONE THIS FILE ALREADY USES EVERYWHERE ELSE (re-audit 2026-07-27).

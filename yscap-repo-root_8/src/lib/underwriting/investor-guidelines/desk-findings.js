@@ -78,56 +78,15 @@ const ACTIONS_BY_FLAG = {
 };
 
 /**
- * The two unhappiness kinds `deskToSuggestions` deliberately does NOT forward.
+ * ALL FIVE unhappiness kinds now come through `deskToSuggestions` (post-merge audit 2026-07-27).
  *
- * `info_missing` (an empty data slot on the file, e.g. the borrower's email) and `appraisal_review`
- * (something the appraisal read turned up) were left out of `ai_suggestions` on purpose — a FATAL
- * suggestion emails the loan officer, and neither of these is a "chase a document" event worth a
- * notification. But they ARE real things the note buyer is unhappy about, and until now the ONLY
- * place they appeared was this desk's own panel. Folding the panel into the one findings list would
- * have made them disappear entirely, so they are mapped here directly.
- *
- * They have no `ai_suggestions` mirror, so they carry no suggestion dedupe key — nothing to
- * suppress on the AI side, and a locally-shaped key would only risk matching something it shouldn't.
+ * `info_missing` and `appraisal_review` used to be mapped separately HERE, because the suggestions
+ * bridge held them back — a fatal suggestion emails the whole file team and neither is a
+ * chase-a-document event. But the `ai_suggestions` row is also what carries a human's Dismiss, so a
+ * finding with no row re-appeared on every file view with nothing to click. They are forwarded now
+ * with `suppressNotify` (row yes, email no), which means this module is once again a pure mapping of
+ * one list — no second code path to drift.
  */
-function extraFlagFindings(desk) {
-  const items = (desk && Array.isArray(desk.unhappy)) ? desk.unhappy : [];
-  if (!items.length) return [];
-  const nb = (desk.noteBuyer && desk.noteBuyer.name) || 'the note buyer';
-  const out = [];
-  for (const u of items) {
-    if (!u || u.cond_no == null) continue;
-    if (u.flag !== 'info_missing' && u.flag !== 'appraisal_review') continue;
-    const fatal = u.severity === 'fatal';
-    const name = u.name || 'this requirement';
-    const isInfo = u.flag === 'info_missing';
-    out.push({
-      source: SOURCE,
-      category: 'investor_guideline',
-      // Keyed on cond_no, NOT the template code (audit 2026-07-27). Two rules of the same flag that
-      // share a `pilot_template_code` and a `domain` would produce an identical code AND an identical
-      // `field`, which is the whole dedupe key for a finding with no document — so `dedupeByClaim`
-      // would merge them and one would vanish with no `mergedFrom` trace. cond_no is unique per rule.
-      code: `isg_${u.flag}_${codeOf(`cond_${u.cond_no}`)}`,
-      isgKey: null,
-      templateCode: u.pilot_template_code || null,
-      severity: fatal ? 'fatal' : 'warning',
-      status: 'open',
-      blocksCtc: false,
-      field: u.domain || null,
-      title: isInfo
-        ? `${nb} needs "${name}" — the slot on the file is empty`
-        : `"${name}" — found while reviewing the appraisal for ${nb}`,
-      howTo: (isInfo
-        ? `This is information that belongs ON the file, not a document to collect — the slot is empty. Fill it in and this clears.`
-        : ((u.reason ? `${u.reason} ` : '') + `This came out of the appraisal read${fatal ? ' — escalate it.' : '.'}`))
-        + (u.required_evidence ? ` What to confirm: ${u.required_evidence}` : ''),
-      actions: ACTIONS_BY_FLAG[u.flag],
-      noteBuyer: nb,
-    });
-  }
-  return out;
-}
 
 /**
  * deskToFindings(desk) → Array<finding> (PURE, never throws).
@@ -136,8 +95,8 @@ function extraFlagFindings(desk) {
 function deskToFindings(desk) {
   try {
     const payloads = deskToSuggestions(desk);
-    const out = extraFlagFindings(desk);
-    if (!Array.isArray(payloads) || !payloads.length) return out;
+    if (!Array.isArray(payloads) || !payloads.length) return [];
+    const out = [];
     for (const p of payloads) {
       if (!p || !p.title) continue;
       const ev = p.evidence || {};

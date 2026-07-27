@@ -86,7 +86,7 @@ const REGISTRY = Object.freeze([
   // silently disagree. STAFF-ONLY by construction: the only surface that renders
   // these fields is the staff Encompass panel — this name must NEVER reach a
   // borrower. ADVISORY: our side is free text, so a difference surfaces for a human.
-  pull({ key: 'capital_provider', encompassFieldId: 'CX.CAPITALPROVIDER', type: 'enum', category: 'program', compare: 'enum', gate: GATE.ADVISORY, valueMap: 'capitalProvider', verified: true, our: 'column:lender (note buyer)', note: 'Note buyer / capital provider — STAFF-ONLY. Encompass dropdown read live 2026-07-26: Fidelis Investors / RCN / Roc Capital / Temple View Capital / CorrFirst / BlueLake / EMCAP / Other' }),
+  pull({ key: 'capital_provider', encompassFieldId: 'CX.CAPITALPROVIDER', type: 'enum', category: 'program', compare: 'enum', gate: GATE.ADVISORY, valueMap: 'capitalProvider', nameFallback: true, verified: true, our: 'column:lender (note buyer)', note: 'Note buyer / capital provider — STAFF-ONLY. Encompass dropdown read live 2026-07-26: Fidelis Investors / RCN / Roc Capital / Temple View Capital / CorrFirst / BlueLake / EMCAP / Other. nameFallback: an unmapped buyer still compares by name (corporate-form + spelling tolerant) when both sides carry one' }),
   pull({ key: 'loan_to_be_vested', encompassFieldId: 'CX.LOANTOBEVESTED', type: 'enum', compare: 'enum', gate: GATE.ADVISORY, valueMap: 'vesting', our: 'derive(applications.llc_id present → entity)', note: 'Entity vs individual vesting flag' }),
   // ROOT-CAUSE FIX (owner-reported 2026-07-26: "1859 is fully set in Encompass but
   // our system says no data"). 1859 is a NUMBERED STANDARD field, not a custom
@@ -225,9 +225,14 @@ const VALUE_MAPS = Object.freeze({
   //   BlueLake | Other | EMCAP
   // Our names are shorter free text ("Fidelis", "Blue Lake"), so both sides
   // normalize onto one token. "Fidelis" vs "Fidelis Investors" was the real
-  // mismatch; spacing ("Blue Lake" vs "BlueLake") already collapsed.
+  // mismatch; spacing ("Blue Lake" vs "BlueLake") already collapsed. A trailing
+  // CORPORATE FORM (LLC / Inc / Corp / …) is stripped by mapValue before the lookup
+  // (owner-reported 2026-07-27: "Fidelis Investors LLC" read "no data to compare"
+  // against "Fidelis Investors"), and capital_provider ALSO carries `nameFallback`
+  // so a note buyer NOT in this table still compares by name when both sides carry
+  // one — "no data to compare" is then reserved for a genuinely empty side.
   capitalProvider: {
-    'fidelis': 'fidelis', 'fidelis investors': 'fidelis', 'fidelis investments': 'fidelis', 'fidelis investments llc': 'fidelis',
+    'fidelis': 'fidelis', 'fidelis investors': 'fidelis', 'fidelis investments': 'fidelis', 'fidelis investments llc': 'fidelis', 'fidelis investors llc': 'fidelis',
     'blue lake': 'bluelake', 'bluelake': 'bluelake', 'blue lake capital': 'bluelake',
     'corrfirst': 'corrfirst', 'corr first': 'corrfirst',
     'emcap': 'emcap', 'em cap': 'emcap',
@@ -243,17 +248,20 @@ const VALUE_MAPS = Object.freeze({
   // Encompass could never produce, so a moderate file was permanently "no data").
   // A square-footage ADDITION is Expansion (see rehabTypeFor in reconcile.js, which
   // upgrades a file flagged for sqft addition to 'expansion').
-  // Owner-directed 2026-07-26 (re-mapped after the owner ADDED options in Encompass).
+  // Owner-directed 2026-07-27: COSMETIC and LIGHT are the SAME tier — "cosmetic and
+  // light rehab is the same technically, they can call it however they want." So our
+  // Cosmetic ≡ Encompass "Light Rehab" ≡ Encompass "Cosmetic Rehab" — all collapse to
+  // ONE 'light' token so they MATCH (they were their own bucket under the 2026-07-26
+  // mapping, which made a Cosmetic-vs-Light-Rehab file wrongly read "Doesn't match").
   // Encompass CX.REHABTYPE read LIVE: Cosmetic Rehab | Light Rehab | Heavy Rehab |
   // Expansion | New construction. Ours (the file-details dropdown): Cosmetic |
   // Moderate | Heavy / gut rehab | Adding square footage | Ground-up construction.
-  //   our Cosmetic              -> Cosmetic Rehab      (its own bucket now, NOT light)
-  //   our Moderate              -> Light Rehab
+  //   our Cosmetic / Moderate   -> the ONE light tier (Cosmetic Rehab / Light Rehab)
   //   our Heavy / gut rehab     -> Heavy Rehab
   //   our Adding square footage -> Expansion   (also set by the sqft-grew signal)
   //   our Ground-up construction-> New construction
   rehabType: {
-    'cosmetic': 'cosmetic', 'cosmetic rehab': 'cosmetic',
+    'cosmetic': 'light', 'cosmetic rehab': 'light',
     'light rehab': 'light', 'light': 'light', 'moderate': 'light', 'moderate rehab': 'light', 'medium': 'light',
     'cosmetic / light': 'light', 'cosmetic/light': 'light',
     'heavy rehab': 'heavy', 'heavy': 'heavy', 'heavy / gut rehab': 'heavy', 'heavy/gut rehab': 'heavy', 'gut rehab': 'heavy', 'gut': 'heavy', 'heavy gut rehab': 'heavy',
@@ -289,6 +297,22 @@ const VALUE_MAPS = Object.freeze({
   },
 });
 
+// Trailing/embedded CORPORATE FORM (LLC / L.L.C. / LP / LLP / Inc / Corp / Corporation
+// / Co / Company / Ltd), stripped when matching an ENTITY NAME so "Fidelis Investors LLC"
+// resolves the same as "Fidelis Investors" (owner-reported 2026-07-27). Word-bounded so it
+// never eats a real name token.
+const CORP_FORM = /\b(l\.?\s*l\.?\s*c\.?|l\.?\s*l\.?\s*p\.?|l\.?\s*p\.?|inc\.?|incorporated|corp\.?|corporation|company|co\.?|ltd\.?)\b/g;
+function stripCorpForm(s) {
+  return String(s == null ? '' : s).replace(CORP_FORM, ' ').replace(/\s+/g, ' ').trim();
+}
+// Entity-name normalizer for the note-buyer NAME FALLBACK: lowercase, punctuation → space,
+// strip the corporate form, collapse whitespace. So "Fidelis Investors, LLC" and
+// "Fidelis Investors" both reduce to "fidelis investors".
+function normPartnerName(v) {
+  const s = String(v == null ? '' : v).toLowerCase().replace(/[^a-z0-9\s]/g, ' ').replace(/\s+/g, ' ').trim();
+  return stripCorpForm(s);
+}
+
 // Normalize a raw display value to a shared token via a VALUE_MAPS table.
 // Returns null when the value is blank or unmapped (→ "not comparable").
 function mapValue(mapName, raw) {
@@ -298,7 +322,14 @@ function mapValue(mapName, raw) {
   // Normalize dashes (en/em → hyphen) so 'Multi 2–4' and 'Multi 2-4' unify.
   const norm = String(raw).trim().toLowerCase().replace(/[–—]/g, '-').replace(/\s+/g, ' ');
   if (norm === '') return null;
-  return Object.prototype.hasOwnProperty.call(table, norm) ? table[norm] : null;
+  if (Object.prototype.hasOwnProperty.call(table, norm)) return table[norm];
+  // Secondary: tolerate a corporate-form suffix + stray punctuation so an entity name
+  // like "Fidelis Investors, LLC" resolves to the same token as "Fidelis Investors".
+  // Safe for the non-entity maps — their keys carry no corporate form, so a stripped
+  // value can only ever hit an entity-name key, never a false match elsewhere.
+  const norm2 = stripCorpForm(norm.replace(/[.,]/g, ' ').replace(/\s+/g, ' ').trim());
+  if (norm2 && norm2 !== norm && Object.prototype.hasOwnProperty.call(table, norm2)) return table[norm2];
+  return null;
 }
 
 // The material keys we reconcile Encompass on (verified fields first — the
@@ -587,10 +618,27 @@ function compareField(entryOrKey, ourValue, encValue) {
   }
   if (kind === 'enum') {
     const a = mapValue(e.valueMap, ourValue); const b = mapValue(e.valueMap, encValue);
+    if (a !== null && b !== null) {
+      base.oursNorm = a; base.theirsNorm = b;
+      base.status = a === b ? 'match' : 'mismatch';
+      return base;
+    }
+    // NAME FALLBACK (capital provider, owner-reported 2026-07-27): the value map
+    // couldn't place at least one side, but if BOTH carry data compare the entity
+    // NAMES directly (corporate-form + spelling tolerant) so a variant of the SAME
+    // buyer MATCHES — and "no data to compare" is reserved for a genuinely empty side,
+    // never a value that is plainly present. Only entries flagged `nameFallback` use
+    // it, so the other enums keep their strict "unmapped → not comparable" behavior.
+    if (e.nameFallback) {
+      const na = normPartnerName(ourValue); const nb = normPartnerName(encValue);
+      if (na && nb) {
+        base.oursNorm = na; base.theirsNorm = nb;
+        base.status = na === nb ? 'match' : 'mismatch';
+        return base;
+      }
+    }
     base.oursNorm = a; base.theirsNorm = b;
-    if (a === null || b === null) return base; // unmapped / blank → not comparable
-    base.status = a === b ? 'match' : 'mismatch';
-    return base;
+    return base; // unmapped / blank → not comparable
   }
   if (kind === 'name' || kind === 'entity') {
     const nm = kind === 'entity' ? normEntityName : normName;
@@ -623,5 +671,5 @@ module.exports = {
   fieldReaderToMap,
   mapValue,
   compareField,
-  _internals: { coerce, readField, getPath, num, normText, normName, normDate, normEntityName, fieldReaderToMap, KNOWN_FIELD_IDS, MONEY_TOL, PERCENT_TOL },
+  _internals: { coerce, readField, getPath, num, normText, normName, normDate, normEntityName, normPartnerName, stripCorpForm, fieldReaderToMap, KNOWN_FIELD_IDS, MONEY_TOL, PERCENT_TOL },
 };

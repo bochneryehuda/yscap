@@ -174,16 +174,29 @@ async function record(client, s) {
   const rowId = ins.rows[0].id;
   // R3.39 — real-time notify on NEW fatal AI suggestions. Fires only on the
   // fresh-insert branch (dedupe path above never re-notifies). Scheduled via
-  // setImmediate so the caller's transaction gets a chance to COMMIT first,
-  // and then re-verifies the row still exists (defensive against a rollback).
+  // setImmediate so the caller's transaction gets a chance to COMMIT first.
   // Best-effort — a notify failure never rolls back the suggestion.
-  // `suppressNotify` (owner 2026-07-27): the un-funded RE-READ sweep re-reads OLD documents across
-  // the whole book, so its findings are not new to the humans — firing the fatal-finding email for
-  // each would be a portfolio-wide bombardment of alerts staff have already seen (and would
-  // re-notify a fatal a human already dismissed, since the dedupe only matches OPEN rows). A caller
-  // that is re-recording, not surfacing something new, sets this. The row is still written — only
-  // the notification is skipped.
-  if (!s.suppressNotify && String(s.severity || '').toLowerCase() === 'fatal') {
+  // KNOWN GAP (audit 2026-07-27): the comment here used to claim `_notifyFatalNew` re-verifies the
+  // row still exists before sending. It does not — it issues no query. Several callers record
+  // inside a transaction, so if a LATER step in that transaction fails and rolls back, the email
+  // has already been scheduled and goes out for a row that no longer exists. Pre-existing and rare
+  // (a rollback after a successful insert), but do not rely on a re-verify that isn't there — add
+  // a real `SELECT 1 FROM ai_suggestions WHERE id=$1` inside _notifyFatalNew to close it.
+  // `suppressNotify` = the row BELONGS in the list, but this particular write is not a "chase this
+  // now" event, so the team is not emailed. TWO independent producers arrived at the same flag on
+  // 2026-07-27 and both reasons stand — do not narrow it to either one:
+  //   1. The un-funded RE-READ sweep re-reads OLD documents across the whole book, so its findings
+  //      are not new to the humans. Emailing each would be a portfolio-wide bombardment of alerts
+  //      staff have already seen — and would re-notify a fatal a human already dismissed, since the
+  //      dedupe only matches OPEN rows. A caller that is RE-recording, not surfacing something new,
+  //      sets this.
+  //   2. The note-buyer guideline desk's empty-file-slot and appraisal-read items: there is no
+  //      document to collect and nobody to chase, so the row exists (a human's Dismiss can stick)
+  //      without an email. That producer sets it BY SEVERITY, never by kind — a genuinely fatal one
+  //      still emails like every other fatal.
+  // It changes ONLY whether the team is emailed; the row, its severity, and every surface that
+  // reads it are identical. Never set it on a finding a human is expected to act on promptly.
+  if (String(s.severity || '').toLowerCase() === 'fatal' && !s.suppressNotify) {
     setImmediate(() => { _notifyFatalNew(s, rowId).catch(() => { /* additive */ }); });
   }
   return { id: rowId, deduped: false };
