@@ -175,7 +175,15 @@ const EVALUATORS = {
   },
   rtl_cond_flood: {
     domain: 'flood',
-    async evaluate(client, appId) {
+    async evaluate(client, appId, item) {
+      // Mirror the sign-off gate (same rule as rtl_p1_titlec / rtl_p1_insc below): an
+      // OPTIONAL (is_required=false) condition is signable with nothing attached, so a
+      // "PILOT says not ready" badge on it is pure noise — it contradicts the very thing
+      // being optional means. This is the state db/335 leaves a touched flood cert in on a
+      // FIDELIS file (owner-directed 2026-07-27); a flood zone found on such a file gets
+      // its own advisory instead (underwriting/fidelis-flood-advisory.js), which is where
+      // the real signal belongs.
+      if (item && item.is_required === false) return null;
       const c = await floodCompleteness(client, appId);
       return { complete: !!c.complete, contradicted: (c.openFatal || 0) > 0 };
     },

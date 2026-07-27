@@ -114,6 +114,24 @@ async function extractAndStorePhotos(appraisalId, appId, pdfB64, importedBy) {
   return stored;
 }
 
+// Fidelis flood-zone advisory (owner-directed 2026-07-27). On a Fidelis file the flood cert is
+// absent until a flood zone is proven, at which point it is REQUIRED (db/335) — the engine
+// re-evaluated just above normally attaches it. This is the BACKSTOP for the two states the engine
+// cannot fix itself: a flood zone known with no condition on the file, and a flood zone known while
+// the existing condition is still marked optional by db/335 §3 (duplicate suppression means the
+// engine neither re-issues it nor rewrites is_required). It records an ADVISORY on the file's AI
+// Findings panel and WITHDRAWS itself when it stops being true, which is why it is safe (and
+// correct) to call on every import — a re-imported appraisal that no longer shows a flood zone
+// closes the old advisory.
+// Best-effort and never throws: it uses the pool directly (no transaction of its own) and a
+// failure must never affect the appraisal import that triggered it.
+async function fireFidelisFloodAdvisory(appId) {
+  if (!appId) return;
+  try {
+    await require('../underwriting/fidelis-flood-advisory').syncFidelisFloodAdvisory(db, appId);
+  } catch (e) { console.error('[appraisal] fidelis flood advisory (non-fatal):', e && e.message); }
+}
+
 // Fire-and-forget wrapper: runs AFTER the import returns so it never slows the officer down.
 // FEMA flood cross-check (fire-and-forget, gated by APPRAISAL_FLOOD_CHECK_ENABLED). Geocodes the
 // subject address, reads the official FEMA zone, stores the comparison on the appraisals row, and
@@ -147,6 +165,11 @@ function fireFloodCheck(appraisalId, appId) {
     // required on EVERY program — re-run the Condition Center so it attaches now
     // rather than waiting for the next file edit (db/207 + engine.in_flood_zone).
     try { await require('../conditions/engine').evaluateApplication(appId, { reason: 'appraisal_flood_check', notify: false }); } catch (_) {}
+    // On a FIDELIS file the evaluate above is what FORCES the cert on (db/335: a proven
+    // flood zone requires it regardless of the capital partner). This lays the advisory
+    // for the two cases it can't fix — no condition on the file, or an existing one still
+    // marked optional — right now rather than on the next staff file view (owner 2026-07-27).
+    await fireFidelisFloodAdvisory(appId);
   })().catch(() => { /* best-effort advisory — never breaks the import */ });
 }
 
@@ -189,6 +212,13 @@ async function runAppraisalImport(args) {
   }
   firePhotoExtraction(out.appraisalId, appId, pdfB64, importedBy);
   fireFloodCheck(out.appraisalId, appId);
+  // The appraiser's OWN stated flood zone is on the row the moment the XML is parsed, with no
+  // FEMA call involved — so the Fidelis advisory must also run here, not only inside
+  // fireFloodCheck. fireFloodCheck is gated on APPRAISAL_FLOOD_CHECK_ENABLED and returns early
+  // when the geocode/FEMA lookup is unreachable, which would otherwise leave an appraisal that
+  // plainly states zone AE raising nothing at all. Fire-and-forget for the same reason as the
+  // others: the officer's import never waits on an advisory.
+  fireFidelisFloodAdvisory(appId).catch(() => { /* best-effort */ });
   return out;
 }
 
