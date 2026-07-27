@@ -37,6 +37,7 @@
 
 const crypto = require('crypto');
 const azureOpenai = require('../ai/azure-openai');
+const anthropic = require('../ai/anthropic');
 const costMeter = require('../ai/cost-meter');
 const primer = require('./loan-primer');
 const { claimOf } = require('./finding-claims');
@@ -44,6 +45,19 @@ const { claimOf } = require('./finding-claims');
 // ON by default (owner-directed "turn everything on"); disable with FINDING_AI_REVIEW_ENABLED=0.
 function enabled() {
   return String(process.env.FINDING_AI_REVIEW_ENABLED || '') !== '0';
+}
+
+// THE SECOND AI (owner-directed 2026-07-27: "add ChatGPT AND add some other AI"). When a SECOND,
+// INDEPENDENT model (Claude / Anthropic) is configured, we get its own verdict on the SAME finding —
+// but ONLY when the primary (GPT) wants to HIDE the finding, because that is the single high-stakes
+// decision (a false-alarm suppression is the only thing that can hide a real problem). Two
+// independent models have different blind spots, so we require CONSENSUS to hide: the finding is
+// suppressed only when BOTH confidently reject it; if they DISAGREE the finding stays visible and is
+// flagged for a human. This is strictly safer than one model, and it FAILS OPEN — with no second
+// model configured, behavior is byte-identical to the single-model gate. Disable with
+// FINDING_AI_SECOND_OPINION_ENABLED=0.
+function secondOpinionEnabled() {
+  return String(process.env.FINDING_AI_SECOND_OPINION_ENABLED || '') !== '0' && anthropic.available();
 }
 
 // Bound how many NEW findings we send to GPT per file per pass (cost). Memoized verdicts are free,
@@ -109,11 +123,20 @@ function fingerprintOf(finding) {
   return crypto.createHash('sha256').update(parts.join('')).digest('hex').slice(0, 32);
 }
 
-/** Should a finding with this stored/fresh review be SHOWN? Suppress only a confident 'rejected'. */
+/**
+ * Should a finding with this stored/fresh review be SHOWN? Suppress only on a confident 'rejected'
+ * — AND, when a SECOND model weighed in, only when it did NOT disagree. If the two models disagree
+ * (the second didn't also reject) the finding stays VISIBLE for a human. No second opinion → the
+ * single-model rule (byte-identical to before the second model was added).
+ */
 function shouldShow(review) {
   if (!review) return true;                 // no verdict yet → show (fail-open)
-  if (review.verdict === 'rejected' && review.is_real_concern === false) return false;
-  return true;                              // confirmed / uncertain / anything ambiguous → show
+  const primaryReject = review.verdict === 'rejected' && review.is_real_concern === false;
+  if (!primaryReject) return true;          // confirmed / uncertain / anything ambiguous → show
+  // The primary wants to hide it. If a second model weighed in and did NOT also reject → models
+  // disagree → keep it visible (a human decides). Consensus-to-reject (or no second model) → hide.
+  if (review.verdict2 != null && review.verdict2 !== 'rejected') return true;
+  return false;
 }
 
 /** Read the remembered verdicts for a set of fingerprints. Returns Map(fingerprint → row). */
@@ -221,6 +244,30 @@ async function reviewOne({ finding, sourceDoc, groundingText, economics, appId, 
   }
 }
 
+/**
+ * THE SECOND OPINION — ask the independent second model (Claude / Anthropic) the SAME question, with
+ * the SAME whole-file grounding. Best-effort; returns a normalized verdict or null. Anthropic has no
+ * `extract`, so we build the same user content and ask `complete` for strict JSON (a forced tool
+ * under the hood), then parse it. anthropic.complete records its own cost + trace.
+ */
+async function secondOpinionOne({ finding, sourceDoc, groundingText, economics, appId, documentId }) {
+  try {
+    if (!anthropic.available()) return null;
+    const instructions = `${economics ? economics + '\n\n' : ''}${describeFinding(finding, sourceDoc)}\n\nBelow is the ENTIRE loan file for context. Understand the whole deal from it and judge the finding above STRICTLY against the full picture.`;
+    const userContent = azureOpenai.buildUserContent({ instructions, ocrText: groundingText || '', ocrCharLimit: OCR_CHAR_LIMIT });
+    const responseFormat = { type: 'json_schema', json_schema: { name: 'verdict', schema: SCHEMA } };
+    const res = await anthropic.complete({
+      system: SYSTEM, userContent, maxTokens: MAX_TOKENS, responseFormat,
+      traceMeta: { opName: 'finding-ai-review-2nd', appId: appId || null, documentId: documentId || null },
+    });
+    if (!res || !res.ok || !res.text) return null;
+    let data; try { data = JSON.parse(res.text); } catch (_) { return null; }
+    return normalize(data);
+  } catch (_) {
+    return null;
+  }
+}
+
 // Coerce the model output into the stored shape (defensive; the model is strict-schema'd).
 function normalize(data) {
   const d = data || {};
@@ -242,17 +289,22 @@ async function persist(client, appId, finding, fingerprint, review, groundingHas
     await client.query(
       `INSERT INTO finding_ai_reviews
          (application_id, fingerprint, claim_key, code, verdict, is_real_concern, confidence,
-          reasoning, suggested_resolution, suggested_document, suggested_severity, model, grounding_hash)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)
+          reasoning, suggested_resolution, suggested_document, suggested_severity, model, grounding_hash,
+          verdict2, confidence2, reasoning2, model2)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17)
        ON CONFLICT (application_id, fingerprint) DO UPDATE SET
          verdict=EXCLUDED.verdict, is_real_concern=EXCLUDED.is_real_concern, confidence=EXCLUDED.confidence,
          reasoning=EXCLUDED.reasoning, suggested_resolution=EXCLUDED.suggested_resolution,
          suggested_document=EXCLUDED.suggested_document, suggested_severity=EXCLUDED.suggested_severity,
-         grounding_hash=EXCLUDED.grounding_hash, updated_at=now()`,
+         grounding_hash=EXCLUDED.grounding_hash,
+         verdict2=EXCLUDED.verdict2, confidence2=EXCLUDED.confidence2, reasoning2=EXCLUDED.reasoning2,
+         model2=EXCLUDED.model2, updated_at=now()`,
       [appId, fingerprint, claimOf(finding) || null, finding.code || null,
        review.verdict, review.is_real_concern, review.confidence, review.reasoning,
        review.suggested_resolution, review.suggested_document, review.suggested_severity,
-       null, groundingHash || null]);
+       'azure-openai', groundingHash || null,
+       review.verdict2 || null, review.confidence2 != null ? review.confidence2 : null,
+       review.reasoning2 || null, review.model2 || null]);
   } catch (_) { /* persistence is best-effort — a failed write just means a re-review next pass */ }
 }
 
@@ -304,6 +356,22 @@ async function reviewFindings({ client, appId, findings, db, sourceDocsById } = 
       const sourceDoc = did != null && sourceDocsById ? sourceDocsById.get(String(did)) : null;
       const review = await reviewOne({ finding, sourceDoc, groundingText, economics, appId, documentId: did });
       if (!review) continue;   // AI failed on this one → leave it un-memoized (shows, fail-open)
+      // THE SECOND OPINION — only when the primary wants to HIDE this finding (verdict 'rejected'):
+      // that is the one decision that can hide a real problem, so it's the one that deserves a second
+      // independent model. If the second model does NOT also reject, shouldShow keeps the finding
+      // visible. Cost-gated again (fail-open) so the two-model check never runs past the file cap.
+      if (review.verdict === 'rejected' && secondOpinionEnabled()) {
+        const allow2 = await costMeter.allowSpend(appId, client).catch(() => true);
+        if (allow2) {
+          const second = await secondOpinionOne({ finding, sourceDoc, groundingText, economics, appId, documentId: did });
+          if (second) {
+            review.verdict2 = second.verdict;
+            review.confidence2 = second.confidence;
+            review.reasoning2 = second.reasoning;
+            review.model2 = 'anthropic';
+          }
+        }
+      }
       await persist(client, appId, finding, fingerprintOf(finding), review, groundingHash);
       reviewed++;
       counts[review.verdict] = (counts[review.verdict] || 0) + 1;
@@ -333,6 +401,12 @@ function annotateFindings(findings, memory) {
           verdict: review.verdict, confidence: review.confidence, reasoning: review.reasoning,
           suggestedResolution: review.suggested_resolution, suggestedDocument: review.suggested_document,
           suggestedSeverity: review.suggested_severity,
+          // The second, independent model's take (Claude) when it weighed in — so the desk can show
+          // "a second AI agrees / disagrees". Present only on findings the primary tried to hide.
+          secondModel: review.verdict2 != null ? {
+            verdict: review.verdict2, confidence: review.confidence2, reasoning: review.reasoning2,
+            agrees: review.verdict2 === review.verdict,
+          } : null,
         },
       }) : f;
       if (shouldShow(review)) shown.push(annotated); else suppressed.push(annotated);

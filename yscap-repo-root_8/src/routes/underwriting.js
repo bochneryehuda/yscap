@@ -1180,6 +1180,12 @@ router.get('/:appId', async (req, res, next) => {
           // itself when it stops being true. Advisory — records an ai_suggestion, posts nothing.
           await step(() => require('../lib/underwriting/fidelis-flood-advisory')
             .syncFidelisFloodAdvisory(c, app.id));
+          // Mis-filed document heads-up (owner-directed 2026-07-27): PILOT's own AI reasoning already
+          // worked out what each document ACTUALLY is; when it's confident a document doesn't match the
+          // slot it was filed under, raise a plain-language "re-read / move it" advisory. Advisory
+          // only — records an ai_suggestion, re-classifies nothing, blocks nothing.
+          await step(() => require('../lib/underwriting/misfiled-document-advisory')
+            .syncMisfiledDocumentAdvisory(c, app.id));
           await c.query('COMMIT');
         } catch (_) { await c.query('ROLLBACK').catch(() => {}); }
         finally { c.release(); }

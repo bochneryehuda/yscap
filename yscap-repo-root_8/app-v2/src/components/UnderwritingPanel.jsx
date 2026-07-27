@@ -414,6 +414,15 @@ function Finding({ appId, f, onChange, resolvable, canAct = false, canWaive = tr
           {f.aiReview.suggestedDocument && (
             <div style={{ fontSize: 12.5, color: '#141B22', marginTop: 2 }}><strong>Document to request:</strong> {f.aiReview.suggestedDocument}</div>
           )}
+          {/* The SECOND, independent AI's take when it weighed in (owner-directed 2026-07-27). When
+              the two models disagree, this finding was deliberately kept visible for a human. */}
+          {f.aiReview.secondModel && (
+            <div style={{ fontSize: 12, color: f.aiReview.secondModel.agrees ? '#3A4550' : '#8A5A00', marginTop: 6,
+              paddingTop: 6, borderTop: '1px solid #CBE0E0' }}>
+              <strong>{f.aiReview.secondModel.agrees ? 'A second AI agrees.' : 'A second AI disagrees — kept visible for you to decide.'}</strong>
+              {f.aiReview.secondModel.reasoning && <span> {f.aiReview.secondModel.reasoning}</span>}
+            </div>
+          )}
         </div>
       )}
       {/* When several reviews independently reached the same conclusion, this is the ONE item they
