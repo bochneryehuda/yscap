@@ -53,16 +53,40 @@ function calendarAge(dobISO, asOfISO) {
   return age;
 }
 
+// Normalize the subject into a PEOPLE SET. Accepts EITHER a bare `borrowers` row (the old
+// single-borrower subject — back-compat) OR the { people:[...borrowers rows], ownerNames:[...] }
+// set the file-view now builds. `people` are the file people we hold a name/DOB/address for; a
+// name in `ownerNames` (an LLC owner read off an operating agreement) is an ACCEPTABLE name only —
+// a matching ID isn't a mismatch, but we have no DOB/address on record to compare against.
+function toPeopleSet(subject) {
+  if (!subject) return { people: [], ownerNames: [] };
+  if (Array.isArray(subject.people) || Array.isArray(subject.ownerNames)) {
+    return {
+      people: (subject.people || []).filter(Boolean),
+      ownerNames: (subject.ownerNames || []).filter(Boolean),
+    };
+  }
+  return { people: [subject], ownerNames: [] }; // a bare borrowers row → one person
+}
+
+// The name we'd show as "the file" when an ID matches nobody. For ONE person this is byte-identical
+// to the old `${first} ${last}`; for several it lists them so the reviewer sees who we expected.
+function peopleLabel(people) {
+  return (people || []).map((p) => `${(p && p.first_name) || ''} ${(p && p.last_name) || ''}`.trim())
+    .filter(Boolean).join(' / ');
+}
+
 /**
  * @param {object} id       fields extracted for the GOVERNMENT_ID schema
- * @param {object} borrower borrowers row on file
+ * @param {object} subject  a `borrowers` row (back-compat) OR { people:[rows], ownerNames:[names] }
  * @param {{today?:string}} opts
  * @returns {Array<object>} findings
  */
-function computeIdFindings(id, borrower, opts = {}) {
+function computeIdFindings(id, subject, opts = {}) {
   const out = [];
   if (!id) return out;
   const today = opts.today || null;
+  const { people, ownerNames } = toPeopleSet(subject);
 
   // ---- 0. Unreadable → route to underwriting verify, never a false mismatch ----
   const gotName = !!idName(id);
@@ -78,12 +102,24 @@ function computeIdFindings(id, borrower, opts = {}) {
 
   // ---- 1. Name spelling (identity) ----
   // Tolerant match: middle names/initials, "LAST, FIRST" order, and Jr/Sr suffixes do
-  // NOT fire (audit fix); a real spelling difference still does.
-  const idN = idName(id), fileN = fileName(borrower);
-  if (idN && fileN && namesMatchLoose(idN, fileN) === false) {
+  // NOT fire (audit fix); a real spelling difference still does. Resolve the ID to the file
+  // person whose name it matches. An ID that matches ANY file person (or a named LLC owner) is
+  // legitimate — a co-borrower's ID is no longer a fatal "name mismatch" against the primary.
+  const idN = idName(id);
+  const matched = idN ? (people.find((p) => namesMatchLoose(idN, fileName(p)) === true) || null) : null;
+  const matchesOwner = !!idN && ownerNames.some((n) => namesMatchLoose(idN, n) === true);
+  const nameMatchesSomeone = !!matched || matchesOwner;
+  // DOB / address are compared against the MATCHED person. On a single-borrower file we still
+  // compare against that one borrower even when the name didn't match (an ID with a name typo is
+  // still their ID — the name + DOB signals compound, matching the prior behavior) — UNLESS the ID
+  // clearly belongs to a named LLC owner, whom we hold no DOB/address for. On a multi-person file an
+  // ID that matches nobody has no file record to compare against, so only the name mismatch is
+  // raised (no meaningless DOB/address compare against an arbitrary person).
+  const person = matched || (people.length === 1 && !matchesOwner ? people[0] : null);
+  if (idN && people.length && !nameMatchesSomeone) {
     out.push(finding({ code: 'id_name_mismatch', severity: 'fatal', field: 'name',
       docValue: id.fullName || `${id.firstName || ''} ${id.lastName || ''}`.trim(),
-      fileValue: `${borrower.first_name || ''} ${borrower.last_name || ''}`.trim(),
+      fileValue: peopleLabel(people),
       title: 'Name on the ID does not match the file',
       howTo: 'Confirm the correct legal name. A spelling difference can be a typo on the file or the wrong ID — reconcile before clear-to-close.',
       actions: ['fix_file', 'keep', 'custom', 'dismiss', 'decline'] }));
@@ -93,7 +129,7 @@ function computeIdFindings(id, borrower, opts = {}) {
   // Normalize both to YYYY-MM-DD before comparing so a format difference (05/15/1980 vs
   // 1980-05-15) is not a false fatal (audit fix). Only compare when both parse.
   const idDob = toISODate(id.dateOfBirth);
-  const fileDob = borrower && borrower.date_of_birth ? toISODate(String(borrower.date_of_birth).slice(0, 10)) : null;
+  const fileDob = person && person.date_of_birth ? toISODate(String(person.date_of_birth).slice(0, 10)) : null;
   if (idDob && fileDob && idDob !== fileDob) {
     out.push(finding({ code: 'id_dob_mismatch', severity: 'fatal', field: 'date_of_birth',
       docValue: id.dateOfBirth, fileValue: fileDob,
@@ -128,13 +164,13 @@ function computeIdFindings(id, borrower, opts = {}) {
   }
 
   // ---- 3. Primary address (warning — IDs lag a move; check prior too) ----
-  const matchesCurrent = addrMatches(id.address, borrower && borrower.current_address);
+  const matchesCurrent = addrMatches(id.address, person && person.current_address);
   if (matchesCurrent === false) {
-    const matchesPrior = addrMatches(id.address, borrower && borrower.prior_address);
+    const matchesPrior = addrMatches(id.address, person && person.prior_address);
     if (matchesPrior !== true) {
       out.push(finding({ code: 'id_address_mismatch', severity: 'warning', field: 'current_address',
         docValue: addrLine(id.address),
-        fileValue: addrLine(borrower && borrower.current_address),
+        fileValue: addrLine(person && person.current_address),
         title: 'Address on the ID does not match the file',
         howTo: 'IDs often show a prior address after a move. Confirm the borrower’s current primary address on file; update it or acknowledge the difference.',
         actions: ['fix_file', 'acknowledge', 'custom', 'dismiss'] }));

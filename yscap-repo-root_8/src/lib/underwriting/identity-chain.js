@@ -79,6 +79,24 @@ function initialsMatch(a, b) {
   return true;
 }
 
+// Two names are the SAME natural person if they're initials-compatible or the same words in a
+// different order — the exact same test this module already uses to decide a benign name variation.
+function samePerson(a, b) {
+  return !!(a && b) && (initialsMatch(a, b) || sameWordsAnyOrder(a, b));
+}
+// Which KNOWN file person (primary borrower / co-borrower / named LLC owner) a doc's name belongs
+// to — the index in `people`, or -1 when it matches none. Lets the chain tell "two DIFFERENT people
+// on the file" from "one person written two ways": a co-borrower's ID is not a variation of the
+// primary borrower's name (owner-directed 2026-07-27).
+function resolvePerson(name, people) {
+  if (!name) return -1;
+  for (let i = 0; i < (people || []).length; i += 1) { if (samePerson(name, people[i])) return i; }
+  return -1;
+}
+// Two docs provably belong to DIFFERENT known people → their name/DOB/SSN differing is expected,
+// not a discrepancy. Only fires when BOTH resolved to a known person (never suppresses an unknown).
+function differentKnownPerson(a, b) { return a >= 0 && b >= 0 && a !== b; }
+
 function docLabel(t) {
   return ({
     drivers_license: 'ID', credit_report: 'Credit report', bank_statement: 'Bank statement',
@@ -93,7 +111,8 @@ function docLabel(t) {
  * @param {Array<{doc_type, fields}>} extractions
  * @returns {{issues:Array<{code, severity, title, howTo, docsInvolved, values}>}}
  */
-function analyze(extractions = []) {
+function analyze(extractions = [], opts = {}) {
+  const people = (opts.people || []).filter(Boolean); // known file people (borrower + co-borrower + LLC owners)
   const seenSsn = new Map();
   const seenDob = new Map();
   const seenName = new Map();
@@ -105,12 +124,17 @@ function analyze(extractions = []) {
     const ssn = last4(f.borrowerSSN || f.ssn || f.borrower_ssn || f.ssnLast4);
     const dob = f.borrowerDOB || f.dob || f.date_of_birth || null;
     const name = f.borrowerName || f.borrower_full_name || f.applicantName || f.fullName || null;
+    // Which known file person THIS doc's identity belongs to (from its name). When two docs each
+    // resolve to a DIFFERENT known person, their fields differing is expected — a co-borrower's ID
+    // is not a mismatch against the primary borrower.
+    const pidx = resolvePerson(name, people);
 
     if (ssn) {
       const prev = seenSsn.get(ssn);
-      if (!prev) seenSsn.set(ssn, { docType: doc });
+      if (!prev) seenSsn.set(ssn, { docType: doc, pidx });
       for (const [otherSsn, meta] of seenSsn.entries()) {
         if (otherSsn === ssn) continue;
+        if (differentKnownPerson(meta.pidx, pidx)) continue; // two different people → each has their own SSN
         issues.push({
           code: 'identity_ssn_mismatch', severity: 'fatal',
           title: `Two different SSNs seen on this borrower`,
@@ -123,9 +147,10 @@ function analyze(extractions = []) {
     }
     if (dob) {
       const prev = seenDob.get(dob);
-      if (!prev) seenDob.set(dob, { docType: doc });
+      if (!prev) seenDob.set(dob, { docType: doc, pidx });
       for (const [otherDob, meta] of seenDob.entries()) {
         if (otherDob === dob) continue;
+        if (differentKnownPerson(meta.pidx, pidx)) continue; // two different people → each has their own DOB
         issues.push({
           code: 'identity_dob_mismatch', severity: 'warning',
           title: `Two different dates of birth seen on this borrower`,
@@ -142,6 +167,9 @@ function analyze(extractions = []) {
         // Walk previously-seen names and check compatibility
         let compat = false;
         for (const [seen, seenMeta] of seenName) {
+          // Two names that provably belong to DIFFERENT known file people (a co-borrower vs the
+          // primary borrower, an LLC owner vs either) are not a "variation" of one another.
+          if (differentKnownPerson(seenMeta && seenMeta.pidx, pidx)) { compat = true; break; }
           // sameWordsAnyOrder gets the RAW names, not `nrm`/`seen`: normName strips Jr/Sr/III
           // before the map key is built, so comparing the normalized forms could never see the
           // generation suffix that is the entire difference between a father and a son.
@@ -160,7 +188,7 @@ function analyze(extractions = []) {
             docsInvolved: [meta.docType, doc], values: { docA: meta.original, docB: name },
           });
         }
-        seenName.set(nrm, { docType: doc, original: name });
+        seenName.set(nrm, { docType: doc, original: name, pidx });
       }
     }
   }
@@ -205,8 +233,8 @@ function explainNameDifference(a, b) {
  * DB bridge — record each mismatch as an ai_suggestion (source='entity_chain',
  * dedupe key per code+docs pair).
  */
-async function analyzeAndRecord(client, { applicationId, extractions }) {
-  const v = analyze(extractions);
+async function analyzeAndRecord(client, { applicationId, extractions, people }) {
+  const v = analyze(extractions, { people });
   if (!v.issues.length) return { recorded: 0, deduped: 0, failed: 0 };
   const suggestions = v.issues.map((m) => ({
     applicationId,
