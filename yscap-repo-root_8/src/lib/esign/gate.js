@@ -47,7 +47,8 @@ async function registrationIssuabilityBlockers(applicationId, db) {
   let reg;
   try {
     reg = (await db.query(
-      `SELECT status, is_manual, stale, stale_reason
+      `SELECT status, is_manual, stale, stale_reason,
+              COALESCE(needs_approval, false) AS needs_approval
          FROM product_registrations
         WHERE application_id = $1 AND is_current
         ORDER BY created_at DESC LIMIT 1`, [applicationId])).rows[0] || null;
@@ -63,16 +64,23 @@ async function registrationIssuabilityBlockers(applicationId, db) {
       reason: reg.stale_reason || 'The registered terms were priced on inputs that have since changed — re-register on the current inputs and issue a new term sheet.' });
   }
 
-  // MANUAL / Manual-Program requires a recorded super-admin approval. It is
-  // approved only when there is NO open/countered escalation for the file.
-  const isManual = manualProgram.needsSuperAdminApproval({ program: reg.is_manual ? 'manual' : undefined, status: reg.status });
-  if (isManual) {
+  // MANUAL / Manual-Program / an admin-zone PRICING OVERRIDE (db/343 —
+  // owner-directed 2026-07-27) requires a recorded approval. It is approved only
+  // when there is NO open/countered escalation for the file.
+  const needsApproval = manualProgram.needsSuperAdminApproval({
+    program: reg.is_manual ? 'manual' : undefined,
+    status: reg.status,
+    needsApproval: reg.needs_approval === true,
+  });
+  if (needsApproval) {
     let pending = null;
     try { pending = await manualProgram.pendingForApp(applicationId, db); }
     catch (_) { pending = { unknown: true }; }
     if (pending) {
-      out.push({ code: 'manual_approval', label: 'Super-admin exception approval',
-        reason: 'This is a manual-review structure. A super-admin must approve the exception before a term sheet can be issued.' });
+      out.push({ code: 'manual_approval', label: 'Exception approval',
+        reason: reg.needs_approval === true && !reg.is_manual && reg.status !== 'MANUAL'
+          ? 'These terms were priced off the company defaults. An admin must approve the exception in the Escalations box before a term sheet can be issued.'
+          : 'This is a manual-review structure. An admin must approve the exception before a term sheet can be issued.' });
     }
   }
   return out;
