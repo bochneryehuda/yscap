@@ -21,7 +21,8 @@
 const assert = require('assert');
 const { deskToFindings } = require('../src/lib/underwriting/investor-guidelines/desk-findings');
 const review = require('../src/lib/underwriting/investor-guideline-review');
-const { dedupeByClaim, claimOf } = require('../src/lib/underwriting/finding-claims');
+const { dedupeByClaim, claimOf, claimKeysOf } = require('../src/lib/underwriting/finding-claims');
+const fdec = require('../src/lib/underwriting/finding-decisions');
 
 let n = 0;
 const t = (name, fn) => { fn(); n += 1; console.log(`  ok ${name}`); };
@@ -200,12 +201,76 @@ t('the merged survivor INHERITS the handles that make a card actionable', () => 
 });
 
 t('inheritance never overwrites a handle the survivor already has', () => {
+  // THIS TEST USED TO PROVE NOTHING (pre-merge audit 2026-07-27, second pass). Its two rows
+  // were both PERSISTED (`id` set), which dedupeByClaim refuses to merge at all — so the
+  // inheritance code never ran, and breaking last-writer-wins left it green. It now uses two
+  // genuinely MERGEABLE rows that each carry a handle, so the "survivor keeps its own" rule
+  // is what is actually under test.
+  const survivor = {
+    code: 'isg_rural_property', severity: 'fatal', factKey: 'isg_signal:appraisal_rural',
+    suggestionId: 'mine', isgKey: 'isg-run:rural',
+  };
+  const loser = {
+    code: 'isg_appraisal_review_3345', severity: 'warning', factKey: 'isg_signal:appraisal_rural',
+    suggestionId: 'theirs', isgKey: 'isg-appraisal_review:3345',
+  };
+  for (const list of [[survivor, loser], [loser, survivor]]) {
+    const m = dedupeByClaim(list);
+    assert.strictEqual(m.length, 1);
+    assert.strictEqual(m[0].code, 'isg_rural_property', 'the dealbreaker survives');
+    assert.strictEqual(m[0].suggestionId, 'mine',
+      "the survivor's own handle must win — inheriting over it would point the card at the wrong row");
+    assert.strictEqual(m[0].isgKey, 'isg-run:rural');
+  }
+});
+
+t('two PERSISTED rows are never merged — each stays separately resolvable', () => {
   const a = { code: 'contract_buyer_mismatch', id: 'real-1', severity: 'fatal' };
   const b = { code: 'cot_final_buyer_not_vesting', id: 'other-2', severity: 'warning' };
   const m = dedupeByClaim([a, b]);
-  // Two PERSISTED rows are never merged (each is separately resolvable) — so this also pins that rule.
   assert.strictEqual(m.length, 2, 'two persisted rows must both stay on the desk');
   assert.strictEqual(m[0].id, 'real-1');
+});
+
+// ── the decision ledger and the desk must agree about WHAT a finding IS ──────
+t('a decision recorded BEFORE this finding declared a fact still settles it', () => {
+  // THE REGRESSION THIS LOCKS DOWN. #816's ledger keys on claimOf, but the two writers
+  // (routes/underwriting.js escalationFindingShape, ai-suggestions.decide) rebuild a raw
+  // shape from stored columns and carry no factKey. The moment a producer started declaring
+  // a fact, every ledger row already on file keyed the OLD way and stopped matching — so a
+  // dismissal a human made yesterday silently came undone. That IS the owner's original
+  // "I dismiss it and a minute afterwards it populates again".
+  const before = { code: 'isg_appraisal_review_3345', field: 'rural' };        // what the ledger stored
+  const now = { ...before, factKey: 'isg_signal:appraisal_rural' };            // what the desk raises today
+  const oldKey = claimOf(before);
+  assert.notStrictEqual(claimOf(now), oldKey, 'fixture must really exercise the two key forms');
+  assert.ok(claimKeysOf(now).includes(oldKey),
+    'the finding must still answer to the key its decision was recorded under');
+  assert.ok(fdec.isSuppressed(new Set([oldKey]), now),
+    'a pre-existing dismissal must keep suppressing — otherwise it comes back on the next view');
+});
+
+t('ONE dismiss settles the whole claim — every producer of the same fact', () => {
+  // A merged card carries exactly one handle, so a Dismiss closes one ai_suggestions row.
+  // Keyed only on that row's code, the OTHER producers of the same fact re-merged into a
+  // visually identical card on the next view: "I dismissed it twice and then it got stuck".
+  const claimKey = 'claim:isg_signal:appraisal_rural';
+  const set = new Set([claimKey]);
+  for (const code of ['isg_appraisal_review_123', 'isg_appraisal_review_3345', 'isg_rural_property']) {
+    assert.ok(fdec.isSuppressed(set, { code, factKey: 'isg_signal:appraisal_rural' }),
+      `${code} asserts the settled fact and must stay settled`);
+  }
+  // …and a DIFFERENT fact is untouched.
+  assert.ok(!fdec.isSuppressed(set, { code: 'isg_bl_transferred_appraisal', factKey: 'isg_signal:appraisal_transferred' }));
+  assert.ok(!fdec.isSuppressed(set, { code: 'bank_account_not_borrower', field: 'holder' }));
+});
+
+t('a finding with no declared fact has exactly ONE key — nothing else widened', () => {
+  const plain = { code: 'bank_account_not_borrower', field: 'account_holder', document_id: 'doc-1' };
+  assert.deepStrictEqual(claimKeysOf(plain), [claimOf(plain)]);
+  assert.deepStrictEqual(claimKeysOf({ code: 'cot_final_buyer_not_vesting' }),
+    ['claim:vesting_entity_vs_contract_buyer']);
+  assert.deepStrictEqual(claimKeysOf({}), [], 'no code ⇒ no key, never a guess');
 });
 
 console.log(`\n${n} checks passed.`);

@@ -12,6 +12,7 @@
 const router = require('express').Router();
 const db = require('../db');
 const { requireRole } = require('../auth');
+const aiSuggestions = require('../lib/underwriting/ai-suggestions');
 
 // Admin / super-admin only for now — a follow-up will scope per assignee.
 router.get('/', requireRole('admin'), async (req, res) => {
@@ -74,6 +75,7 @@ router.get('/', requireRole('admin'), async (req, res) => {
            JOIN applications a ON a.id = s.application_id AND a.deleted_at IS NULL
            LEFT JOIN borrowers b ON b.id = a.borrower_id
           WHERE s.severity='fatal'
+            AND ${aiSuggestions.notScoredSql('s')}
             AND s.status IN ('open','marked_important','escalated','asked_admin')
             AND a.status NOT IN ('withdrawn','cancelled','declined')
           GROUP BY a.id, a.property_address, a.status, a.program, b.first_name, b.last_name

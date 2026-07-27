@@ -332,4 +332,36 @@ function dedupeByClaim(findings) {
   return out;
 }
 
-module.exports = { dedupeByClaim, claimOf, CLAIM_FAMILIES, _internals: { isBetter, sevRank } };
+/**
+ * EVERY key this finding can legitimately be recorded or matched under — the primary
+ * `claimOf` key first, then the key it WOULD have had without its producer-declared
+ * `factKey`.
+ *
+ * THE BUG THIS EXISTS FOR (pre-merge audit 2026-07-27, second pass). #816's durable
+ * decision ledger keys on `claimOf`, but the two places that WRITE it rebuild a raw
+ * shape out of stored columns — `routes/underwriting.js escalationFindingShape()` and
+ * `ai-suggestions.decide()` — and neither carried `factKey`. So the moment a producer
+ * started declaring a fact, the live finding keyed `claim:isg_signal:appraisal_rural`
+ * while every ledger row for it said `code:isg_appraisal_review_3345::…`. The two
+ * stopped matching, which is EXACTLY the owner's "I dismiss it and a minute afterwards
+ * it populates again" — re-armed, and retroactively, for decisions already on file.
+ *
+ * Matching on ANY key fixes both directions at once and needs no backfill:
+ *   - a decision recorded BEFORE this shipped (code form) still suppresses the finding
+ *     now that it carries a factKey;
+ *   - a decision recorded on the MERGED card (claim form) suppresses every producer's
+ *     restatement of the same fact — so one dismiss settles the whole claim instead of
+ *     just the one row whose handle the card happened to inherit.
+ * Recording writes every key for the same reason. Widening a suppression match is safe
+ * in one direction only, and it is the safe one: it can only ever act on a decision a
+ * human actually made about this exact fact.
+ */
+function claimKeysOf(f) {
+  const primary = claimOf(f);
+  if (!primary) return [];
+  if (!f || !f.factKey) return [primary];
+  const codeForm = claimOf(Object.assign({}, f, { factKey: undefined }));
+  return (codeForm && codeForm !== primary) ? [primary, codeForm] : [primary];
+}
+
+module.exports = { dedupeByClaim, claimOf, claimKeysOf, CLAIM_FAMILIES, _internals: { isBetter, sevRank } };

@@ -75,6 +75,21 @@ function keyOf(finding) {
 }
 
 /**
+ * EVERY key this finding may be recorded or matched under (see finding-claims.claimKeysOf
+ * for why there can be more than one). Always contains keyOf's result first.
+ */
+function keysOf(finding) {
+  try {
+    const f = finding || {};
+    if (!f.code) return [];
+    const shaped = f.appraisal_value != null && f.docValue == null && f.doc_value == null
+      ? Object.assign({}, f, { docValue: f.appraisal_value })
+      : f;
+    return claims.claimKeysOf(shaped) || [];
+  } catch (_) { return []; }
+}
+
+/**
  * Run one ledger write so a failure can NEVER poison the caller's transaction.
  *
  * Most callers are mid-transaction (a finding resolve, an appraisal import). A
@@ -111,11 +126,17 @@ async function _guarded(client, fn) {
 async function record(client, o = {}) {
   try {
     if (!client || !o.applicationId) return false;
-    const key = o.key || keyOf(o.finding);
-    if (!key) return false;
+    // EVERY key the finding answers to, not just the primary one — a decision recorded
+    // only under the claim form would leave a pre-factKey ledger row unmatched, and one
+    // recorded only under the code form would fail to settle the other producers of the
+    // same fact. See finding-claims.claimKeysOf.
+    const keys = o.key ? [o.key] : keysOf(o.finding);
+    if (!keys.length) return false;
     const decision = String(o.decision || '').trim().toLowerCase() || 'resolved';
     const suppress = typeof o.suppress === 'boolean' ? o.suppress : suppresses(decision);
     const code = o.code || (o.finding && o.finding.code) || null;
+    let any = false;
+    for (const key of keys) {
     const done = await _guarded(client, () => client.query(
       `INSERT INTO finding_decisions
          (application_id, finding_key, code, origin, decision, suppressed, note, decided_by, decided_at)
@@ -133,7 +154,9 @@ async function record(client, o = {}) {
              updated_at = now()`,
       [o.applicationId, key, code, o.origin || null, decision, suppress,
        o.note != null ? String(o.note).slice(0, 1000) : null, o.decidedBy || null]));
-    return done != null;
+      if (done != null) any = true;
+    }
+    return any;
   } catch (_) { return false; }
 }
 
@@ -145,13 +168,16 @@ async function record(client, o = {}) {
 async function reopen(client, { applicationId, key, finding, by } = {}) {
   try {
     if (!client || !applicationId) return false;
-    const k = key || keyOf(finding);
-    if (!k) return false;
+    // Un-suppress EVERY key the finding answers to. record() may have written more than
+    // one, and a re-open that cleared only the primary would leave the other still
+    // suppressing — a one-way door, which is exactly what reopen exists to prevent.
+    const keys = key ? [key] : keysOf(finding);
+    if (!keys.length) return false;
     const r = await _guarded(client, () => client.query(
       `UPDATE finding_decisions
           SET suppressed = false, superseded_at = now(), superseded_by = $3, updated_at = now()
-        WHERE application_id = $1 AND finding_key = $2 AND superseded_at IS NULL`,
-      [applicationId, k, by || null]));
+        WHERE application_id = $1 AND finding_key = ANY($2::text[]) AND superseded_at IS NULL`,
+      [applicationId, keys, by || null]));
     return !!(r && r.rowCount > 0);
   } catch (_) { return false; }
 }
@@ -194,8 +220,12 @@ async function decisionsForFile(client, applicationId) {
 function isSuppressed(set, finding) {
   try {
     if (!set || !set.size) return false;
-    const k = keyOf(finding);
-    return !!(k && set.has(k));
+    // ANY of the finding's keys — see finding-claims.claimKeysOf. A decision recorded
+    // before this finding declared a fact (code form) must still settle it, and a
+    // decision recorded on the merged card (claim form) must settle every producer's
+    // restatement of the same fact.
+    for (const k of keysOf(finding)) if (k && set.has(k)) return true;
+    return false;
   } catch (_) { return false; }
 }
 
@@ -213,6 +243,6 @@ function filterSuppressed(set, findings) {
 }
 
 module.exports = {
-  keyOf, record, reopen, suppressedKeys, decisionsForFile, isSuppressed, filterSuppressed,
+  keyOf, keysOf, record, reopen, suppressedKeys, decisionsForFile, isSuppressed, filterSuppressed,
   suppresses, SUPPRESSING_ACTIONS, NON_SUPPRESSING_ACTIONS,
 };

@@ -377,12 +377,23 @@ async function decide(client, id, decision = {}) {
       || (cur.proposed_action && cur.proposed_action.fields && cur.proposed_action.fields.code) || null;
     if (code) {
       const fdec = require('./finding-decisions');
+      // WHICH FACT this row asserts, rebuilt from what the producer stored — DERIVED
+      // EXACTLY as investor-guidelines/desk-findings.js derives it, so the shape written
+      // here keys identically to the live finding. Without it a dismiss on a merged
+      // note-buyer card records only the code form and settles just the one row whose
+      // handle the card inherited: the other producers of the same fact re-merge into a
+      // visually identical card on the next view (the owner's "it comes right back").
+      const ev = cur.evidence || {};
+      const concernField = ev.concern_field
+        || (cur.proposed_action && cur.proposed_action.fields && cur.proposed_action.fields.concern_field)
+        || null;
       const shape = {
         code,
-        field: (cur.evidence && cur.evidence.field)
+        factKey: ev.factKey || (concernField ? `isg_signal:${concernField}` : undefined),
+        field: ev.field
           || (cur.proposed_action && cur.proposed_action.fields && cur.proposed_action.fields.field) || null,
         document_id: cur.document_id || null,
-        docValue: (cur.evidence && (cur.evidence.docValue || cur.evidence.doc_value)) || null,
+        docValue: (ev.docValue || ev.doc_value) || null,
       };
       if (fdec.suppresses(newStatus)) {
         await fdec.record(c, {

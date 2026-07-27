@@ -53,27 +53,77 @@ t('a source is quoted exactly once and cannot break out of the array literal', (
 const FILTER = /notScoredSql\(/g;
 const count = (str, re) => (str.match(re) || []).length;
 
+// THE CHECK IS A COUNT PER SQL STATEMENT, NOT "IS A FILTER SOMEWHERE NEARBY" (pre-merge
+// audit 2026-07-27, second pass). Two earlier cuts both proved nothing:
+//   1. a ±1300-character window around each marker — the three staff.js consumers sit within
+//      ~850 characters of each other, so every window saw all three filters;
+//   2. scoping to the enclosing SQL statement — the pipeline's three consumers are three
+//      aggregates inside ONE 2,054-character query, so deleting one of its three filters
+//      still left two in scope.
+// Both stayed green under mutation. A guard that cannot fail is worse than none: it reads as
+// coverage. So: group the known consumers by the statement they live in, and require that
+// statement to carry AT LEAST that many filters. Delete one and the count drops below the
+// number of consumers, which is exactly the regression worth catching.
+//
+// (Neither file contains an escaped backtick, so the enclosing template literal really is the
+// statement — `sqlSpanAround` is exact, and the self-test below pins that.)
+function sqlSpanAround(src, idx) {
+  let start = -1;
+  for (let i = 0; i < src.length; i += 1) {
+    if (src[i] !== '`') continue;
+    if (start < 0) { start = i; continue; }
+    if (idx > start && idx < i) return [start, i + 1];
+    start = -1;
+  }
+  return null;
+}
+const sqlStatementAround = (src, idx) => {
+  const sp = sqlSpanAround(src, idx);
+  return sp ? src.slice(sp[0], sp[1]) : null;
+};
+
 const SITES = [
   ['src/routes/staff.js', /open_fatal_ai,/, 'the pipeline "fatal AI" chip'],
   ['src/routes/staff.js', /open_fatal_ai_oldest_days,/, 'the pipeline aged-fatal chip'],
   ['src/routes/staff.js', /AS ai_risk_score/, 'the pipeline risk score'],
-  ['src/lib/notification-digests.js', /LIMIT 5`\);/, 'the admin top-5-riskiest email'],
+  ['src/lib/notification-digests.js', /ORDER BY score DESC[\s\S]{0,40}?LIMIT 5/, 'the admin top-5-riskiest email'],
   ['src/lib/notification-digests.js', /FROM staff_users u/, 'the LO-digest officer discovery'],
   ['src/lib/notification-digests.js', /ORDER BY score DESC, a\.id\s*\n\s*LIMIT 10/, 'the per-officer file list'],
   ['src/lib/notification-digests.js', /a\.status IN \('approved','clear_to_close','funded'\)/, 'the nightly "advanced with an open fatal" email'],
+  // The 7th consumer, MISSED by the first cut: the admin AI Command Center's aged-fatal list
+  // ranks files by open fatal suggestions with no source filter, so a file whose only fatals
+  // are note-buyer advisories headlines the admin's overview as "oldest 30 days".
+  ['src/routes/admin-insights.js', /AS open_fatal,/, 'the admin aged-fatal-files tile'],
 ];
 
-t('every KNOWN fatal-counting / scoring consumer carries the filter', () => {
+t('every KNOWN fatal-counting / scoring consumer carries its OWN filter', () => {
+  const byStatement = new Map();      // "file@start" → { stmt, labels[] }
   for (const [rel, marker, label] of SITES) {
     const src = read(rel);
     const m = marker.exec(src);
     assert.ok(m, `${rel}: could not find ${label} — did it move? update this list`);
-    // The filter must appear within the same statement. The marker can be either side of it (a
-    // SELECT-list alias sits after; a FROM clause sits before), so look both ways.
-    const window = src.slice(Math.max(0, m.index - 1300), m.index + 1300);
-    assert.ok(/notScoredSql\(/.test(window),
-      `${rel}: ${label} does not carry the advisory-source filter`);
+    const sp = sqlSpanAround(src, m.index);
+    assert.ok(sp, `${rel}: ${label} is not inside a SQL template literal — update this check`);
+    const k = `${rel}@${sp[0]}`;
+    if (!byStatement.has(k)) byStatement.set(k, { rel, stmt: src.slice(sp[0], sp[1]), labels: [] });
+    byStatement.get(k).labels.push(label);
   }
+  for (const { rel, stmt, labels } of byStatement.values()) {
+    const filters = count(stmt, /notScoredSql\(/g);
+    assert.ok(filters >= labels.length,
+      `${rel}: ${labels.length} advisory-filtered consumer(s) live in this query (${labels.join('; ')})`
+      + ` but it carries only ${filters} filter(s) — one was dropped`);
+  }
+});
+
+t('the statement extractor really is per-statement — a neighbouring filter cannot satisfy it', () => {
+  // Proves the fix above. Two adjacent queries, only the first filtered: asking about the
+  // second must NOT see the first's filter. Under the old ±1300-char window it would have.
+  const fake = 'a(`SELECT 1 WHERE ' + '${notScoredSql()}' + ' AND x`); b(`SELECT 2 AS marker_here`);';
+  const idx = fake.indexOf('marker_here');
+  const stmt = sqlStatementAround(fake, idx);
+  assert.ok(stmt && stmt.includes('marker_here'), 'must find the statement the marker is in');
+  assert.ok(!/notScoredSql\(/.test(stmt), 'and must NOT reach into the neighbouring statement');
 });
 
 t('the file-view score and the one-line triage headline both filter', () => {

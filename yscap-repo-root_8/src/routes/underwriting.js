@@ -100,7 +100,11 @@ async function loadRunGuidelineFindings(db, appId) {
       code: row.code,
       // Rebuilt from the rule table — see investor-guideline-review.claimKeyForCode.
       factKey: investorReview.claimKeyForCode(row.code) || undefined,
-      severity: String(row.severity || '').toLowerCase() === 'fatal' ? 'fatal' : 'warning',
+      // Pass the run's OWN severity through a whitelist rather than collapsing everything
+      // that is not fatal to `warning` — the first `info` rule added to the table would
+      // otherwise be silently promoted to a warning chip and counted as one.
+      severity: ['fatal', 'warning', 'info'].includes(String(row.severity || '').toLowerCase())
+        ? String(row.severity).toLowerCase() : 'warning',
       status: 'open',
       blocksCtc: false,
       title: row.title || row.code,
@@ -463,6 +467,11 @@ function notifyRaiser(row, actorId, decision, note) {
 function escalationFindingShape(row) {
   return {
     code: row.code, field: row.field || null,
+    // The FACT this code asserts, when the run's rule table declares one — so a
+    // super-admin's "no action needed" on a note-buyer escalation settles the claim,
+    // not just the one code. `claimKeyForCode` returns null for anything it doesn't
+    // know, so every other finding keys exactly as before.
+    factKey: investorReview.claimKeyForCode(row.code) || undefined,
     document_id: row.document_id || null,
     docValue: row.doc_value != null ? String(row.doc_value) : null,
   };
@@ -1012,7 +1021,22 @@ router.get('/:appId', async (req, res, next) => {
     // informative finding, carrying `mergedFrom` so nothing is lost. Adding a desk that re-notices an
     // existing fact means adding its code to a family in finding-claims.js — never another
     // hand-written suppression here.
-    const dedupedAll = require('../lib/underwriting/finding-claims').dedupeByClaim(openRaw);
+    const dedupedAll = require('../lib/underwriting/finding-claims').dedupeByClaim(openRaw)
+      // A FOLDED RUN FINDING ONLY EARNS A PLACE ON THIS DESK IF IT MERGED WITH SOMETHING
+      // ACTIONABLE (pre-merge audit 2026-07-27, second pass). The run's rule table emits no
+      // `id` and no `suggestionId`, and most of its rules declare no shared signal, so a
+      // rule like `isg_bl_ny_loan` folds in, merges with nothing, inherits no handle — and
+      // the AI panel renders an action menu only on `id`/`suggestionId`. The result was a
+      // permanent FATAL card with zero buttons, on every view, forever, directly under copy
+      // promising "a finding you dismiss stays gone". Its `actions: ['clear','dismiss']` were
+      // dead: `decorate()` computes them, but the render is gated on the handles.
+      //
+      // So a handle-less run finding stays where it already lived — the run cockpit, which
+      // is exactly as visible as before this change. What the fold is FOR is the collapse:
+      // when the desk has already raised the same fact, the run's dealbreaker severity wins
+      // and the merged card keeps the desk row's handle, so it is fully actionable. Nothing
+      // is hidden and nothing becomes un-dismissable.
+      .filter((f) => !(f && f.source === investorReview.SOURCE && !f.id && !f.suggestionId));
     // A FINDING A HUMAN ALREADY SETTLED DOES NOT COME BACK (owner-reported
     // 2026-07-27: "I dismiss it, or the super-admin grants an exception, and it
     // keeps popping up again").
@@ -1170,7 +1194,7 @@ router.get('/:appId', async (req, res, next) => {
     // which `file-review.fileFatalCount` (the real gate) cannot see. That is exactly the
     // desk-disagrees-with-the-gate hazard the note above says must never happen. It also survives
     // the merge: when the run's fatal wins, the survivor's SOURCE flips but its category does not.
-    const isgOnly = (f) => f && (f.category === 'investor_guideline' || f.source === deskFindings.SOURCE);
+    const isgOnly = (f) => module.exports._isgOnly(f);
     const countable = openWithRisk.filter((f) => !isgOnly(f));
     const guidelineNotes = openWithRisk.filter(isgOnly);
     const summary = {
@@ -3141,3 +3165,10 @@ module.exports.AUTOREAD_MAX_PER_CALL = AUTOREAD_MAX_PER_CALL;
 // Exported for unit testing the finding decoration (claim-key stamp + the derived "open the source
 // document" link a tie-out discrepancy gets from its single openable source).
 module.exports._decorate = decorate;
+// Exported so a DB-gated test can actually EXECUTE the run-findings query. Every column it
+// names is unverified until something runs it — the repo has been bitten twice by a phantom
+// column sitting behind a swallowing catch (`b.full_name`, `is_current`/`created_at`).
+module.exports._loadRunGuidelineFindings = loadRunGuidelineFindings;
+// The predicate that keeps note-buyer findings OUT of summary.fatal/warning/info, so the
+// advisory desk can never disagree with the clear-to-close gate.
+module.exports._isgOnly = (f) => !!(f && (f.category === 'investor_guideline' || f.source === deskFindings.SOURCE));
