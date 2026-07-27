@@ -4570,7 +4570,7 @@ async function signOffGate(itemId, actor) {
   // this condition even by mistake… if it was another program and then it changed to
   // Fidelis, you should be able to sign it off without uploading anything").
   //
-  // This is a LIVE check, deliberately not just the `is_required=false` flag db/336
+  // This is a LIVE check, deliberately not just the `is_required=false` flag db/337
   // stamps at boot. The flag can only ever describe the file as it looked when the last
   // deploy ran: a file registered Gold today gets the condition, and switching the note
   // buyer to Fidelis tomorrow leaves a REQUIRED condition standing (the Condition Center

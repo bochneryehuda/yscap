@@ -139,7 +139,7 @@ function normNoteBuyer(raw) {
 // prefix rule lives only in this Fidelis-specific helper, whose blast radius is the
 // flood-certificate condition and nothing else.
 //
-// Keep in lock-step with the `LIKE 'fidelis%'` test in db/336.
+// Keep in lock-step with the `LIKE 'fidelis%'` test in db/337.
 const FIDELIS_KEY_PREFIX = 'fidelis';
 
 /** True when this note-buyer label (applications.lender) is Fidelis, however it is spelled. */

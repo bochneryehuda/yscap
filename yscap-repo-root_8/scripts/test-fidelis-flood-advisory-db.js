@@ -40,7 +40,8 @@ const assert = (c, m) => { console.log(`${c ? 'PASS' : 'FAIL'} ${m}`); if (!c) f
 // exclusion is keyed on a boolean instead of `note_buyer <> 'fidelis'`: the owner's own
 // ClickUp label ("Fidelis Investors LLC") normalizes to `fidelisinvestorsllc`, so an enum
 // comparison against 'fidelis' would have silently missed every one of their files.
-// PREFIX matching (owner-reported 2026-07-27). The enumerated alias list this replaced
+//
+// And PREFIX matching, not an alias list (owner-reported 2026-07-27). The list this replaced
 // missed real labels one character off — "Fidelis Investor LLC", singular — and those
 // files kept a flood certificate they should not have had. A list can only cover the
 // spellings someone thought of; there is no bound on how a human types a company name.
@@ -576,7 +577,7 @@ function call(server, method, path, token, body) {
     // (D) THE OWNER'S REPORT, 2026-07-27: "Looking at a Fidelis file and I still see the
     //     flood certificate condition… and I cannot sign it off." Three scope bugs in the
     //     db/335 back-date, each reproduced against a real database before being fixed.
-    //     db/336 widens the back-date; signOffGate gains a LIVE check so the fix does not
+    //     db/337 widens the back-date; signOffGate gains a LIVE check so the fix does not
     //     depend on a deploy having run.
     // ---------------------------------------------------------------------
     // (D1) THE LIVE GATE. This is the case that had the team stuck: a file registered
@@ -609,7 +610,7 @@ function call(server, method, path, token, body) {
 
     // (D2) THE WIDENED BACK-DATE. Every state db/335 skipped, seeded on GOLD-registered
     //      Fidelis files — Gold matters because db/207's cleanup spares Gold files, so
-    //      only this migration can remove the condition there. Without db/336 each of
+    //      only this migration can remove the condition there. Without db/337 each of
     //      these came back REQUIRED on every single deploy (db/177's backfill re-adds the
     //      cert to every non-withdrawn file on every boot, and nothing removed it again).
     const backdate = [];
@@ -643,11 +644,11 @@ function call(server, method, path, token, body) {
     for (const c of backdate) {
       const it = await floodItem(c.id);
       const ok = !it || it.is_required === false;   // removed, or at least signable empty
-      assert(ok, `db/336 back-date clears the flood cert on a Gold+Fidelis file — ${c.what}`);
+      assert(ok, `db/337 back-date clears the flood cert on a Gold+Fidelis file — ${c.what}`);
     }
     const kept = await floodItem(keepFz);
     assert(kept && kept.is_required === true,
-      'db/336 leaves a Gold+Fidelis file that IS in a flood zone REQUIRED (the flood zone still wins)');
+      'db/337 leaves a Gold+Fidelis file that IS in a flood zone REQUIRED (the flood zone still wins)');
 
     // (D3) …and it stays clean across a SECOND boot. db/177's backfill re-adds the cert on
     //      every boot, so a one-shot cleanup would silently regress on the next deploy.
