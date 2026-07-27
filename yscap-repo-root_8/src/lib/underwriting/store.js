@@ -80,15 +80,20 @@ async function saveAnalysis(client, { documentId, applicationId, borrowerId, doc
   // 2. Insert the new extraction (PII-masked fields) + the idempotency fingerprint (the inputs
   // that determined this result: content hash, analyzer version, and the file-state hash).
   const safeFields = maskFields(ext.fields || {});
+  // The advisory per-document reasoning (document-reasoning.js) — what this document ACTUALLY is
+  // and who each party is — stored so the tie-out's comparison-gate can refuse a cross-side
+  // comparison (owner-directed 2026-07-27). NULL when the reasoning layer is off. It carries no
+  // sensitive identifier (only party names + roles + a plain purpose), so it is stored as-is.
+  const reasoningJson = ext.reasoning && typeof ext.reasoning === 'object' ? JSON.stringify(ext.reasoning) : null;
   const { rows } = await client.query(
     `INSERT INTO document_extractions
        (document_id, application_id, borrower_id, doc_type, fields, ocr_engine, ai_model, page_count, confidence, status, reason,
-        analyzed_sha256, analyzer_version, subject_hash, second_look)
-     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15) RETURNING id`,
+        analyzed_sha256, analyzer_version, subject_hash, second_look, reasoning)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16) RETURNING id`,
     [documentId, appId, borId, docType, JSON.stringify(safeFields),
      ext.ocrEngine || null, ext.aiModel || null, ext.pageCount || null,
      ext.confidence || null, ext.status || 'analyzed', ext.reason || null,
-     analyzedSha256 || null, analyzerVersion || null, subjectHash || null, !!ext.secondLook]);
+     analyzedSha256 || null, analyzerVersion || null, subjectHash || null, !!ext.secondLook, reasoningJson]);
   const extractionId = rows[0].id;
 
   // 2b. Loan Digital Twin (owner-directed 2026-07-21, Sovereign 1/4): for every

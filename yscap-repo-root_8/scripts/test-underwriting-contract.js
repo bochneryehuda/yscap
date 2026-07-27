@@ -35,6 +35,11 @@ assert.deepStrictEqual(codes(cf({ purchasePrice: 412001 })), []);
 
 // 4. Buyer entity — audit fix: "L.L.C." vs "LLC" and "Maple Grove Holdings" must MATCH.
 assert.deepStrictEqual(codes(cf({ buyerName: 'Blue Sky Capital LLC' })), ['contract_buyer_mismatch']);
+// On an ASSIGNMENT the purchase contract names the WHOLESALER as buyer, not our vesting entity —
+// that is the whole point of an assignment, so it must NOT fire a fatal entity mismatch (owner-
+// reported 2026-07-27). The assignment/chain checks own whether the assignee reaches the entity.
+assert.ok(!codes(cf({ buyerName: 'Blue Sky Capital LLC' }, { ...file, is_assignment: true })).includes('contract_buyer_mismatch'),
+  'on an assignment the wholesaler contract buyer is expected — no contract_buyer_mismatch fatal');
 assert.deepStrictEqual(codes(cf({ buyerName: 'Maple Grove Holdings' })), [], 'suffix-less entity must match');
 assert.deepStrictEqual(codes(cf({ buyerName: 'Maple Grove Holdings, L.L.C.' })), [], 'punctuated LLC must match');
 // Buyer is the BORROWER PERSONALLY → no fatal (the seller-chain raises the assign-to-LLC condition).

@@ -106,7 +106,13 @@ function computeContractFindings(contract, file, opts = {}) {
   // it's fixable with a final assignment / vesting amendment, so the seller-chain module raises the
   // softer `contract_in_personal_name` condition suggestion instead of a hard fatal here (owner-
   // directed 2026-07-20). Only a buyer who is NEITHER the entity NOR the borrower is a fatal.
-  if (contract.buyerName && f.entity_name && entityMatch(contract.buyerName, f.entity_name) === false) {
+  // NOT ON AN ASSIGNMENT (owner-reported 2026-07-27, the wholesale-deal false fatal). On an
+  // assignment/wholesale deal the purchase contract is BETWEEN THE SELLER AND THE WHOLESALER — the
+  // contract buyer is SUPPOSED to be the wholesaler, not our vesting entity, so "contract buyer is
+  // not the borrowing entity" is guaranteed-true and meaningless. The real question there — does the
+  // ASSIGNMENT's assignee reach the vesting entity — is owned by the assignment/chain checks. So this
+  // fatal only runs on a STRAIGHT purchase, where the contract buyer genuinely should be the entity.
+  if (!f.is_assignment && contract.buyerName && f.entity_name && entityMatch(contract.buyerName, f.entity_name) === false) {
     // Defer to the chain's softer condition ONLY when the buyer is the borrower AS A PERSON — not an
     // entity that merely contains the borrower's name ("John Smith Properties LLC"), and only when
     // the file has a real (≥2-token) borrower name (a one-token name would over-match a stranger).

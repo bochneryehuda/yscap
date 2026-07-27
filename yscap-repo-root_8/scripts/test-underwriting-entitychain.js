@@ -40,6 +40,34 @@ const ext = (arr) => arr.map(([doc_type, fields]) => ({ doc_type, fields }));
   assert.strictEqual(chain.findings.length, 0, 'no duplicate name-mismatch finding');
 }
 
+// ---- ON AN ASSIGNMENT, the entity↔buyer and entity↔title edges are DEFERRED, not broken ----
+// (owner-reported 2026-07-27): the purchase contract names the wholesaler and a pre-close title /
+// tax cert names the current owner — neither is the vesting entity yet, so comparing them would
+// "break" every normal wholesale deal. They must be marked na, and NO chain-break suggestion fires.
+{
+  const chain = buildChain({ vestingName: 'Maple Grove Holdings LLC', isAssignment: true }, ext([
+    ['operating_agreement', { entityLegalName: 'Maple Grove Holdings LLC', members: [] }],
+    ['purchase_contract', { buyerName: 'ABC Wholesale LLC' }],
+    ['title', { buyerNames: ['Old Owner LLC'] }],
+  ]));
+  const eb = chain.edges.find((e) => e.id === 'entity_is_buyer');
+  const et = chain.edges.find((e) => e.id === 'entity_on_title');
+  assert.strictEqual(eb.status, 'na', 'entity_is_buyer is deferred on an assignment');
+  assert.strictEqual(et.status, 'na', 'entity_on_title is deferred on an assignment');
+  assert.ok(!chain.brokenEdges.includes('entity_is_buyer') && !chain.brokenEdges.includes('entity_on_title'),
+    'the deferred edges are not counted as broken');
+  assert.notStrictEqual(chain.status, 'broken', 'the wholesale contract/title parties no longer break the chain');
+}
+// ---- On a STRAIGHT purchase the same edges still compare (unchanged behavior) ----
+{
+  const chain = buildChain({ vestingName: 'Maple Grove Holdings LLC' }, ext([
+    ['operating_agreement', { entityLegalName: 'Maple Grove Holdings LLC', members: [] }],
+    ['purchase_contract', { buyerName: 'Someone Else LLC' }],
+  ]));
+  const eb = chain.edges.find((e) => e.id === 'entity_is_buyer');
+  assert.strictEqual(eb.status, 'broken', 'a straight purchase still compares the contract buyer to the vesting entity');
+}
+
 // ---- The signer is NOT in the OA roster → signer_in_oa broken ----
 {
   const chain = buildChain({ vestingName: 'Acme LLC' }, ext([
