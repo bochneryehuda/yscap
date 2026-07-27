@@ -58,8 +58,8 @@ The fix is not a rewrite. It is four moves:
    built from data the server already produces.
 2. **Speak one language** — one dictionary of status words, one set of colours.
 3. **One conditions section, and nothing else** — the four tabs, the entity and
-   the separate underwriting table all become one list; the staff checklist is
-   removed entirely.
+   the separate underwriting table all become one list; the staff checklist comes
+   off the screen entirely (hidden, not deleted).
 4. **Make things findable by typing**, not only by scrolling.
 
 ---
@@ -547,7 +547,7 @@ conditions the borrower's own tab never shows. It stops being a tab:
    seeing a seam. Sequence it **after** the list is working, so the visible
    improvement does not wait on a data migration.
 
-#### 4c. The checklist is removed
+#### 4c. The checklist comes off the screen — hidden, not deleted
 
 _Owner-directed 2026-07-27: "the checklist is just things with loans to sign off
 on… get the entire checklist removed and leave only the condition section with
@@ -589,8 +589,8 @@ tasks removes nothing that holds a file back.
 exactly this belief — tasks are workflow, not conditions. Removing them makes the
 screen match a distinction the backend has been making all along.
 
-**Two things must NOT be swept up in the deletion.** Two `task` rows are
-`audience='both'` — borrower-facing — and are enforced at sign-off:
+**Two rows must NOT be swept up.** Two `task` rows are `audience='both'` —
+borrower-facing — and are enforced at sign-off:
 
 - `rtl_p1_titlec` — Title contact email received
 - `rtl_p1_insc` — Insurance contact email received
@@ -598,22 +598,35 @@ screen match a distinction the backend has been making all along.
 They require a real `application_service_contacts` row before they can be signed
 off (`staff.js:4565-4566`). They are borrower-facing **data collection**, not
 internal workflow, and they never appear in the Checklist panel anyway. They
-**become conditions** and stay. A naive "delete every task" would break the title
-and insurance contact flow.
+**become conditions** and stay. A naive "hide every task" would take the title
+and insurance contact flow off the borrower's screen with it — which is exactly
+why the hide is scoped to `audience='staff'`.
 
-**How to remove it — recommendation.** Stop seeding the 23 workflow tasks on new
-files, and on **existing** files hide them rather than hard-delete. Two reasons:
-a delete destroys the sign-off history of who did what on live loans, and hiding
-is reversible if the removal turns out to have been too broad. The rows cost
-nothing to leave in place once nothing renders them.
+**How it goes — owner-directed 2026-07-27: hide everything, delete nothing.**
 
-**Worth rescuing before it goes.** Several tasks carry real operating knowledge in
-their hint text — *"Appraisal ordered through NAN: SFR → 1004 · 2–4 family → 1025
-· always 'complete as-is'"*, *"Title order email sent — borrower NOT looped in"*,
-the attorney's address. That is training material, and deleting the checklist
-deletes it from the product. Recommend lifting those few hints onto the
-conditions they relate to, or into a short internal procedure note, before the
-rows go dark.
+_"Let's hide them — no, hide everything. Don't write it down anywhere else. We'll
+work on this another time, but for now you can hide everything, you don't need to
+preserve the notes."_
+
+So the checklist is **hidden, not deleted** — on files already in flight and on
+new ones alike. Nothing is destroyed:
+
+- every row stays in the database exactly as it is, with its sign-off history;
+- the hint text stays with the rows — **it is not copied anywhere else**, by
+  direction. It is not lost, just not on screen;
+- **the whole thing is reversible.** Un-hiding is a one-line change, which is
+  what makes "we'll work on this another time" a real option rather than a
+  promise against deleted data.
+
+**Scope the hide precisely: `audience='staff'` AND `item_kind='task'`.** That is
+the checklist panel and nothing else. Scoping it that way is what automatically
+protects the two borrower-facing rows below — they are `audience='both'`, so they
+fall outside the filter without needing a special case.
+
+Because this is a hide rather than a delete, the risk drops from "irreversible"
+to "a filter we can flip back". The safety audit above still matters — it is what
+tells us the screen can lose these rows without anything else noticing — but
+nothing here destroys data.
 
 #### 4d. The LLC / entity tab merges in too
 
@@ -723,7 +736,7 @@ earlier being perfect.
 | **4** | Collapsed-section summary lines | Reveal | **Low** |
 | **5a** | **Move the 7 conditions out of the checklist** on `item_kind` — including all 3 gates | Regroup | **Low** — one filter line, existing data |
 | **5b** | Conditions: one list, filters, subject groups; the Underwriting tab and the LLC fold in | Regroup | **Medium** — the deepest change; after the vocabulary is settled |
-| **5c** | **Remove the checklist** — stop seeding the 23 workflow tasks, hide them on existing files | Remove *(authorised)* | **Low once 5a is done** — must run after it, never before |
+| **5c** | **Hide the checklist** — `audience='staff'` AND `item_kind='task'`, on every file, new and in flight. Nothing deleted. | Hide *(authorised)* | **Low once 5a is done** — must run after it, never before. Reversible. |
 | **5d** | **"Post a condition" creates the condition** | Behaviour *(authorised)* | **Medium** — after 5b, so it creates into the right place |
 | **6** | ⌘K find-in-file | Reveal | **Low** — additive, degrades safely |
 | **7** | The shared card/chip classes, worst files first | Reuse | **Medium** — mechanical but wide |
@@ -741,9 +754,10 @@ risk, and require **no server changes and no new AI spend.**
 
 Stated plainly, so nobody quietly does them later under this banner:
 
-- **Nothing is removed except the checklist**, which the owner directed be
-  removed after we audited what depended on it. Every other button, filter,
-  panel and export survives.
+- **Nothing is deleted at all.** The checklist comes off the screen by the
+  owner's direction, after an audit of what depended on it — but its rows, their
+  sign-off history and their hint text all stay in the database. Every other
+  button, filter, panel and export survives untouched.
 - **No feature is added.** No new capability, report, or automation.
 - **No behaviour changes — except the ones the owner authorised** (§9): "Post a
   condition" creates the condition, AI-suggested conditions start normal rather
@@ -782,9 +796,10 @@ Measurable, from the same counts used in §2:
 | Sections whose closed state tells you something | 5 of 16 | 16 of 16 |
 | Tabs in the conditions area | 4 | **0 — one list** |
 | Separate lists a staff member must work | conditions ×4 + checklist | **1** |
-| Clear-to-close gates lost in the removal | — | **0** |
+| Clear-to-close gates lost | — | **0** |
 | Features added | — | **0** |
-| Things removed | — | **1, owner-directed and audited** |
+| Rows deleted from the database | — | **0** |
+| Things taken off the screen | — | **1, owner-directed, audited, reversible** |
 
 ---
 
@@ -798,8 +813,10 @@ implementer never has to guess:
 | 1 | Merge the Underwriting tab's separate condition table into the main list? | **Yes.** It stops being a tab; its rows join the one list. |
 | 2 | Should "Post a condition" actually create the condition? | **Yes.** The button does what it says. |
 | 3 | Should an AI-suggested condition still appear red? | **No.** It starts as normal, like any other new condition. |
-| 4 | Should the internal checklist merge into the conditions list? | **No — remove it entirely.** It is *"just things with loans to sign off on."* The Conditions section is left holding external and internal conditions only. |
+| 4 | Should the internal checklist merge into the conditions list? | **No — take it off the screen entirely.** It is *"just things with loans to sign off on."* The Conditions section is left holding external and internal conditions only. |
 | 5 | Does the LLC / entity tab keep its own place? | **No — merge it into conditions**, keeping its full structure: all document slots separate, the entire entity setup intact. |
+| 6 | Hide or delete, on files already in flight? | **Hide — everywhere, and delete nothing.** |
+| 7 | Rescue the operating notes in the task hints first? | **No.** They stay with the hidden rows; nothing is copied elsewhere. Revisit later. |
 
 **The end state is one section, one list.** After Moves 4a–4d the Conditions
 section contains a single list of external and internal conditions — with the
@@ -820,13 +837,15 @@ The backend already treats tasks as workflow rather than conditions — the bloc
 query says so in its own comment. Removing them makes the screen agree with a
 distinction the system has been making all along.
 
-**Two carve-outs, both flagged rather than assumed:**
+**How it goes — owner-directed: hide everything, delete nothing.** The rows stay
+in the database with their sign-off history; the hint text stays with them and is
+**not** copied elsewhere, by direction. The whole change is a filter that can be
+flipped back, which is what makes revisiting it later a real option.
 
-1. **`rtl_p1_titlec` and `rtl_p1_insc` must survive as conditions.** They are
-   `task`-kind but borrower-facing and enforced at sign-off. A blanket "delete
-   every task" would break the title and insurance contact flow.
-2. **Hide on existing files rather than hard-delete** — a delete destroys
-   sign-off history on live loans, and hiding is reversible.
+**One carve-out, flagged rather than assumed.** `rtl_p1_titlec` and
+`rtl_p1_insc` are `task`-kind but borrower-facing and enforced at sign-off, so
+they become conditions and stay. Scoping the hide to `audience='staff'` AND
+`item_kind='task'` protects them automatically — no special case needed.
 
 ---
 
