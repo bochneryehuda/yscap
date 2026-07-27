@@ -250,6 +250,10 @@ const CONDITIONS = [
     checks: [S('Not an ineligible property type or use per the guideline list', true)],
     clears_by: 'third_party_order', pilot_template_code: 'rtl_cond_appraisaldocs', match_quality: 'partial', source_page: 11 },
   { cond_no: 122, name: 'NON-OWNER-OCCUPIED (AFFIDAVIT)', domain: 'occupancy', scope: 'note_buyer', lifecycle: 'active_now', trigger: T.always,
+    // The occupancy affidavit is part of the DocuSign closing / term-sheet package (same as the
+    // occupancy cert, cond 10023). SILENT until that package returns — never a blank "post a
+    // condition" on every file (owner 2026-07-27: stop the blank occupancy notice).
+    disposition: 'closing_package',
     required_evidence: 'Occupancy affidavit confirming the property is and was non-owner-occupied by the borrower, equitable owners (direct and indirect), and their immediate families. A previously borrower-occupied property is ineligible.',
     checks: [S('Non-owner-occupied by borrower, equitable owners, and immediate families', true), S('Previously borrower-occupied is ineligible', true)],
     clears_by: 'document_upload', pilot_template_code: null, match_quality: 'new', source_page: 11 },
@@ -354,10 +358,18 @@ const CONDITIONS = [
     checks: [S('Loan > $1,500,000', true), S('Renovation budget > AIV or > $250,000', true), S('Construction (ground-up) budget > $1,000,000', true), S('Cash-out proceeds > $250,000', true), S('NY / AK / HI, or a change of density/use', true)],
     clears_by: 'system', pilot_template_code: null, match_quality: 'new', source_page: 18 },
   { cond_no: 221, name: 'PROJECT AGGREGATION + 4-LOAN CAP', domain: 'program_eligibility', scope: 'note_buyer', lifecycle: 'active_now', trigger: T.always,
+    // A program-ELIGIBILITY rule PILOT evaluates from the file (related-loan aggregation), NOT a
+    // document to collect — so it must never post a blank "no condition on the file". SILENT unless
+    // an actual conflict is found (owner 2026-07-27: stop the blank eligibility notices).
+    disposition: 'system',
     required_evidence: 'Related loans (same guarantor(s) / ≥ 50% common control; contiguous/closely-situated lots; same approach and exit; closings within a 60-day period) are evaluated in aggregate. More than 1 loan in a project escalates; more than 4 loans is ineligible.',
     checks: [S('Project loans evaluated on aggregate exposure', true), S('More than 1 loan in a project escalates', true), S('More than 4 loans in a project is ineligible', true)],
     clears_by: 'document_upload', pilot_template_code: null, match_quality: 'new', source_page: 6 },
   { cond_no: 222, name: 'MID-CONSTRUCTION / STAGNANT-REFI / DEFAULT-PAYOFF INELIGIBILITY', domain: 'program_eligibility', scope: 'note_buyer', lifecycle: 'active_now', trigger: T.always,
+    // Program-ELIGIBILITY, not a document to collect. Mid-construction is already surfaced by the
+    // whole-loan review rule isg_bl_mid_construction (fatal, from the appraisal), so the desk must
+    // NOT ALSO post a blank coverage gap (that was a duplicate + a blank nag). SILENT via 'system'.
+    disposition: 'system',
     required_evidence: 'Confirm the loan is not: a mid-construction loan (borrower-owned with work in progress at origination, unless there is no current lender or it refinances a purchaser-owned loan); a stagnant internal refinance (no project progress, e.g. bridge-to-bridge or undrawn construction — land-for-ground-up refis are allowed); or a payoff showing default interest / legal fees / default indicators.',
     checks: [S('Not a mid-construction loan (borrower-owned, work in progress)', true), S('Not a stagnant no-progress balance-sheet refinance', true), S('Payoff demand shows no default interest / legal fees / default indicators', true)],
     clears_by: 'document_upload', pilot_template_code: null, match_quality: 'new', source_page: 10 },

@@ -48,6 +48,16 @@ const OPS = new Set(['eq', 'gt', 'lt', 'in', 'is_true', 'is_false']);
   ok('Blue Lake conditions are note-buyer-scoped (never leak onto another note buyer)');
 }
 
+// 2b. The blank-notice fix (owner 2026-07-27): the occupancy affidavit is a closing-package doc, and
+// the two program-eligibility rules are system-evaluated — none may post a blank "no condition" gap.
+{
+  const byNo = (n) => spec.CONDITIONS.find((c) => c.cond_no === n);
+  assert.strictEqual(byNo(122).disposition, 'closing_package', 'occupancy affidavit is a closing-package doc (silent until the package returns)');
+  assert.strictEqual(byNo(221).disposition, 'system', 'project-aggregation is a system-evaluated eligibility rule (no blank gap)');
+  assert.strictEqual(byNo(222).disposition, 'system', 'mid-construction eligibility is system-evaluated (the review rule owns the finding)');
+  ok('blank-notice dispositions set: occupancy → closing_package; eligibility rules → system');
+}
+
 // 3. leverage/tier/pricing conditions are Gold-governed with no forked number.
 {
   const gg = spec.goldGoverned();
