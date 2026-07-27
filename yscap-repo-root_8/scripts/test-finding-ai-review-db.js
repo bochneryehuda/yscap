@@ -72,7 +72,22 @@ const rev = require('../src/lib/underwriting/finding-ai-review');
     assert.strictEqual(shown[0].aiReview.suggestedResolution, 'Reconcile the price with the seller',
       'the AI-suggested resolution is attached on top of the finding');
 
-    // 4. reviewFindings is best-effort: no Azure config in the test env → a skip, never a throw, and
+    // 4. THE SECOND AI: a rejected finding with a DISAGREEING second-model verdict stays VISIBLE.
+    //    Store a second finding rejected by the primary but where the 2nd model CONFIRMED it's real.
+    const disputed = { code: 'seller_name_mismatch', field: 'seller_name', doc_value: 'A', file_value: 'B', title: 'Seller mismatch', document_id: null };
+    const fpDisp = rev.fingerprintOf(disputed);
+    await client.query(
+      `INSERT INTO finding_ai_reviews (application_id, fingerprint, code, verdict, is_real_concern, confidence, verdict2, confidence2, reasoning2, model2)
+       VALUES ($1,$2,$3,'rejected',false,0.9,'confirmed',0.85,'The second model thinks this is a real concern','anthropic')`,
+      [app.id, fpDisp, disputed.code]);
+    const mem2 = await rev.memoryAllForFile(client, app.id);
+    assert.strictEqual(mem2.get(fpDisp).verdict2, 'confirmed', 'the second model verdict persisted');
+    const gate2 = rev.annotateFindings([disputed], mem2);
+    assert.strictEqual(gate2.shown.length, 1, 'models disagree → the finding stays VISIBLE (not hidden)');
+    assert.ok(gate2.shown[0].aiReview.secondModel && gate2.shown[0].aiReview.secondModel.agrees === false,
+      'the disagreement is surfaced on the finding for a human');
+
+    // 5. reviewFindings is best-effort: no Azure config in the test env → a skip, never a throw, and
     //    it writes nothing (fail-open).
     const res = await rev.reviewFindings({ client, appId: app.id, findings: [rejected, confirmed] });
     assert.strictEqual(res.skipped, 'ai_unavailable', 'no Azure → skipped, no calls');

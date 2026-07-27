@@ -31,6 +31,20 @@ assert.strictEqual(r.shouldShow({ verdict: 'uncertain', is_real_concern: false }
 assert.strictEqual(r.shouldShow({ verdict: 'rejected', is_real_concern: false }), false, 'a confident false alarm is suppressed');
 assert.strictEqual(r.shouldShow({ verdict: 'rejected', is_real_concern: true }), true, 'rejected but still-a-concern is NOT hidden (conservative)');
 
+// --- THE SECOND AI: consensus is required to HIDE a finding (owner-directed 2026-07-27) ---
+// A confident primary rejection alone still hides (single-model / fail-open); but once a second
+// model has weighed in, it must ALSO reject — a disagreement keeps the finding VISIBLE.
+assert.strictEqual(r.shouldShow({ verdict: 'rejected', is_real_concern: false }), false, 'single-model reject still hides (no second model)');
+assert.strictEqual(r.shouldShow({ verdict: 'rejected', is_real_concern: false, verdict2: 'rejected' }), false, 'BOTH models reject → hide (consensus)');
+assert.strictEqual(r.shouldShow({ verdict: 'rejected', is_real_concern: false, verdict2: 'confirmed' }), true, 'models DISAGREE (2nd confirms) → keep visible');
+assert.strictEqual(r.shouldShow({ verdict: 'rejected', is_real_concern: false, verdict2: 'uncertain' }), true, 'models disagree (2nd unsure) → keep visible');
+assert.strictEqual(r.shouldShow({ verdict: 'confirmed', is_real_concern: true, verdict2: 'rejected' }), true, 'a confirmed primary always shows regardless of the 2nd');
+// The second opinion is OFF in this env (no ANTHROPIC_API_KEY) — enablement is false, so the gate
+// is byte-identical to the single-model behavior.
+delete process.env.FINDING_AI_SECOND_OPINION_ENABLED;
+// secondOpinionEnabled is internal; assert its effect via the fact anthropic is unavailable here.
+assert.strictEqual(require('../src/lib/ai/anthropic').available(), false, 'no second model configured in test env (gate falls back to single model)');
+
 // --- annotateFindings splits shown/suppressed and attaches the AI review ---
 {
   const findings = [
