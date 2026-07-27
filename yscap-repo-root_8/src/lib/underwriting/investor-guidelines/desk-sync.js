@@ -101,6 +101,36 @@ function deskToSuggestions(desk) {
           proposedAction: { type: 'review_guideline_concern', fields: { code, cond_no: u.cond_no } },
           dedupeKey: `isg-concern:${u.cond_no}`,
         });
+      } else if (u.flag === 'info_missing' || u.flag === 'appraisal_review') {
+        // THESE TWO WERE DELIBERATELY NOT FORWARDED, AND THAT LEFT THEM UN-SILENCEABLE (post-merge
+        // audit 2026-07-27). They were held back for one reason only: a fatal suggestion emails the
+        // whole file team, and neither of these is a chase-a-document event worth a notification.
+        // But the ai_suggestions row is ALSO what carries a human's Dismiss — so with no row, the
+        // desk re-raised them on every single file view with no way to act on or quiet them. That is
+        // exactly the "reappears with nothing to click" trap the merged work fixed for the other
+        // three kinds, and folding the desk's own panel into the background made these the most
+        // visible instance of it.
+        //
+        // They are forwarded now, with `suppressNotify` — the row exists (so Dismiss / Add a note /
+        // Escalate all work and stick), the team is not emailed. One mapper covers all five kinds.
+        const isInfo = u.flag === 'info_missing';
+        const name = u.name || 'this requirement';
+        out.push({
+          source: SOURCE, kind: 'finding', severity: sev, important: false, suppressNotify: true,
+          title: isInfo
+            ? `${nb} needs "${name}" — the slot on the file is empty`
+            : `"${name}" — found while reviewing the appraisal for ${nb}`,
+          body: (isInfo
+            ? 'This is information that belongs ON the file, not a document to collect — the slot is empty. Fill it in and this clears.'
+            : ((u.reason ? `${u.reason} ` : '') + `This came out of the appraisal read${sev === 'fatal' ? ' — escalate it.' : '.'}`))
+            + (u.required_evidence ? ` What to confirm: ${u.required_evidence}` : ''),
+          evidence: { code, domain: u.domain || null, cond_no: u.cond_no, noteBuyer: nb, flag: u.flag,
+            concern_field: u.concern_field || null },
+          proposedAction: { type: isInfo ? 'fill_file_field' : 'review_appraisal_finding', fields: { code, cond_no: u.cond_no } },
+          // Keyed on cond_no, NOT the template code: two rules of the same flag can share a
+          // pilot_template_code, and a shared key would collapse them into one row.
+          dedupeKey: `isg-${u.flag}:${u.cond_no}`,
+        });
       }
     }
     return out;

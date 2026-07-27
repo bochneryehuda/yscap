@@ -101,7 +101,7 @@ t('a coverage gap names the condition to post; a conflict / concern does not', (
 });
 
 // ── the two flags the suggestions bridge never forwarded ─────────────────────
-t('info_missing and appraisal_review become findings too (they have no AI mirror)', () => {
+t('info_missing and appraisal_review reach the list AND are dismissable (row, no email)', () => {
   const d = {
     noteBuyer: { name: 'CorrFirst' },
     verdicts: [{ cond_no: 1 }],
@@ -113,8 +113,13 @@ t('info_missing and appraisal_review become findings too (they have no AI mirror
         reason: 'The appraisal names a different lender.' },
     ],
   };
-  assert.deepStrictEqual(deskToSuggestions(d), [],
-    'precondition: the suggestions bridge does not forward these two — that is why they are mapped directly');
+  // They ARE forwarded now (post-merge audit 2026-07-27) — with `suppressNotify`, so the row exists
+  // (a human's Dismiss can stick) but the team is not emailed. Before that they had no row at all,
+  // which meant the desk re-raised them on every file view with nothing a staffer could click.
+  const sugs = deskToSuggestions(d);
+  assert.strictEqual(sugs.length, 2, 'both kinds now reach ai_suggestions');
+  assert.ok(sugs.every((x) => x.suppressNotify === true),
+    'they must carry suppressNotify — a fatal row without it emails the whole file team');
   const f = deskToFindings(d);
   assert.strictEqual(f.length, 2, 'both must still reach the ONE findings list');
   const info = f.find((x) => x.code.startsWith('isg_info_missing'));
@@ -122,9 +127,9 @@ t('info_missing and appraisal_review become findings too (they have no AI mirror
   assert.ok(info && appr);
   assert.strictEqual(info.severity, 'warning');
   assert.strictEqual(appr.severity, 'fatal');
-  // No ai_suggestions mirror exists, so there is no suggestion key to carry.
-  assert.strictEqual(info.isgKey, null);
-  assert.strictEqual(appr.isgKey, null);
+  // They carry a real suggestion key now, which is what makes them actionable on the merged card.
+  assert.strictEqual(info.isgKey, 'isg-info_missing:1009');
+  assert.strictEqual(appr.isgKey, 'isg-appraisal_review:3349');
   assert.ok(info.howTo.includes('A working email address'), 'the required evidence must survive');
   assert.ok(appr.howTo.includes('different lender'), 'the desk reason must survive');
 });
@@ -212,6 +217,19 @@ t('two same-flag rules sharing a template code stay DISTINCT findings', () => {
   assert.strictEqual(f.length, 2);
   assert.strictEqual(new Set(f.map((x) => x.code)).size, 2,
     `both rules produced the same code (${f.map((x) => x.code).join(', ')}) — one would be deduped away`);
+});
+
+t('record() actually HONOURS suppressNotify — the flag is not decorative', () => {
+  // The whole reason these two kinds were held out of ai_suggestions was the fatal-notify fan-out.
+  // Forwarding them is only safe because `record()` skips that fan-out when asked. If someone drops
+  // the guard, every empty-file-slot and appraisal-read item starts emailing the file team — the
+  // 298-send failure, re-armed. Asserted against the source because the notify is a `setImmediate`
+  // side effect with no return value to observe.
+  const src = require('fs').readFileSync(
+    require('path').resolve(__dirname, '../src/lib/underwriting/ai-suggestions.js'), 'utf8');
+  const guard = /if\s*\(\s*String\(s\.severity[^)]*\)[^{]*!s\.suppressNotify\s*\)/;
+  assert.ok(guard.test(src),
+    'ai-suggestions.record must gate the fatal notify on !s.suppressNotify');
 });
 
 t('codeOf produces a stable, safe finding code', () => {
