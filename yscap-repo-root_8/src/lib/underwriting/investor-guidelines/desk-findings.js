@@ -76,20 +76,30 @@ function codeOf(dedupeKey) {
  * NEVER GUESSES: a code with no cond_no, or a spec row with no `concern_field` (a coverage
  * gap is about a MISSING CONDITION, not a fact), returns null.
  */
+// ANCHORED TO THE DESK'S OWN CODE NAMESPACE. A bare `/_(\d+)$/` would look up ANY code
+// ending in digits against a global cond_no table: `oa_ownership_not_100` (an operating-
+// agreement ownership check) would hit cond_no 100, and `isg_emcap_missing_1007` cond 1007.
+// Both are harmless today only because those spec rows happen to carry no `concern_field`
+// — i.e. it is safe by luck, and adding one later would silently make a super-admin's
+// decision on an unrelated escalation suppress a note-buyer finding. The desk's codes all
+// come from `codeOf('isg-<flag>:<cond_no>')`, so require that shape.
+const DESK_CODE_RE = /^isg_(?:gap|conflict|concern|info_missing|appraisal_review)_(?:.*_)?(\d+)$/;
 let _factByCondNo = null;
 function factKeyForCode(code) {
   try {
-    const m = /_(\d+)$/.exec(String(code == null ? '' : code).trim().toLowerCase());
+    const m = DESK_CODE_RE.exec(String(code == null ? '' : code).trim().toLowerCase());
     if (!m) return null;
     if (!_factByCondNo) {
-      _factByCondNo = new Map();
+      const built = new Map();
       for (const mod of ['./bluelake-rtl-spec', './corrfirst-fnf-spec']) {
-        let spec = null;
-        try { spec = require(mod); } catch (_) { continue; }
+        // A spec that fails to load must NOT freeze a half-built table for the life of the
+        // process — that buyer's facts would resolve to null forever, silently.
+        const spec = require(mod);
         for (const c of (spec && spec.CONDITIONS) || []) {
-          if (c && c.cond_no != null && c.concern_field) _factByCondNo.set(String(c.cond_no), c.concern_field);
+          if (c && c.cond_no != null && c.concern_field) built.set(String(c.cond_no), c.concern_field);
         }
       }
+      _factByCondNo = built;   // assigned only once BOTH specs loaded
     }
     const field = _factByCondNo.get(m[1]);
     return field ? `isg_signal:${field}` : null;

@@ -1047,8 +1047,7 @@ router.get('/:appId', async (req, res, next) => {
       // it there would swallow the DESK's finding, which would have been on this list
       // regardless. So only a row that merged with nothing — one that exists purely
       // because of the fold — is held back.
-      .filter((f) => !(f && f.source === investorReview.SOURCE
-        && !f.id && !f.suggestionId && !(f.mergedFrom && f.mergedFrom.length)));
+      .filter(module.exports._foldFilter);
     // A FINDING A HUMAN ALREADY SETTLED DOES NOT COME BACK (owner-reported
     // 2026-07-27: "I dismiss it, or the super-admin grants an exception, and it
     // keeps popping up again").
@@ -3181,6 +3180,11 @@ module.exports._decorate = decorate;
 // names is unverified until something runs it — the repo has been bitten twice by a phantom
 // column sitting behind a swallowing catch (`b.full_name`, `is_current`/`created_at`).
 module.exports._loadRunGuidelineFindings = loadRunGuidelineFindings;
+// The post-dedupe fold filter, as a named predicate so a test can drive every branch.
+// KEEPS everything except a run finding that merged with nothing and inherited no handle.
+module.exports._foldFilter = (f) => !(f && f.source === investorReview.SOURCE
+  && !f.id && !f.suggestionId && !(f.mergedFrom && f.mergedFrom.length));
+module.exports._escalationFindingShape = escalationFindingShape;
 // The predicate that keeps note-buyer findings OUT of summary.fatal/warning/info, so the
 // advisory desk can never disagree with the clear-to-close gate.
 module.exports._isgOnly = (f) => !!(f && (f.category === 'investor_guideline' || f.source === deskFindings.SOURCE));
