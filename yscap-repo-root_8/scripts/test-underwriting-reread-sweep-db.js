@@ -33,7 +33,8 @@ function makeUw({ costDenyAppIds = new Set() } = {}) {
   return {
     ...realUw,   // real fileForById / fileDocById / buildAutoReadQueue / AUTOREAD_* — only analyze is stubbed
     analyzeOneDocument: async (app, doc, docType, opts) => {
-      calls.push({ appId: app.id, docId: doc.id, docType, force: !!(opts && opts.force), actorId: (opts && opts.actorId) || null });
+      calls.push({ appId: app.id, docId: doc.id, docType, force: !!(opts && opts.force),
+        actorId: (opts && opts.actorId) || null, suppressNotify: !!(opts && opts.suppressNotify) });
       return { ok: true, cached: false, findings: [] };
     },
     // cost gate is injected separately via sweepOnce opts.costAllow; keep this here for clarity.
@@ -85,7 +86,9 @@ async function stampGen(appId) {
   ok(!readApps.has(funded.appId), 'a FUNDED file is NOT re-read (done — never re-bill)');
   ok(!readApps.has(dead.appId), 'a WITHDRAWN file is NOT re-read (dead — nobody working it)');
   ok(calls.length > 0 && calls.every((c) => c.force === true), 're-read forces a genuine read (bypasses the cache)');
-  ok(calls.every((c) => c.actorId === null), 're-read runs as no-one (no borrower/staff notification path)');
+  ok(calls.every((c) => c.actorId === null), 're-read runs as no-one (no audit-as-a-person)');
+  ok(calls.length > 0 && calls.every((c) => c.suppressNotify === true),
+    're-read suppresses the fatal-finding staff/admin notification (re-recording, not surfacing new)');
   ok(calls.some((c) => c.appId === alive1.appId && c.docId === alive1.docId),
     'an ALREADY-analysed document is re-read (includeAnalyzed), not skipped');
   const g1 = await stampGen(alive1.appId);
@@ -97,6 +100,17 @@ async function stampGen(appId) {
   const r2 = await sweep.sweepOnce({ uw, readerOn: true, batchFiles: 50 });
   ok(calls.length === 0, 'second pass re-reads NOTHING — the generation stamp makes it a no-op (idempotent)');
   ok(r2 && r2.filesRead === 0, 'second pass reports 0 files read');
+
+  // --- concurrency guard: two overlapping slices must not both re-read (double-bill) ---
+  await db.query('DELETE FROM underwriting_reread_state WHERE application_id=$1', [alive1.appId]);
+  calls = [];
+  const [c1, c2] = await Promise.all([
+    sweep.sweepOnce({ uw, readerOn: true, batchFiles: 50 }),
+    sweep.sweepOnce({ uw, readerOn: true, batchFiles: 50 }),
+  ]);
+  const skipped = [c1, c2].filter((r) => r && r.skipped === 'already_running');
+  ok(skipped.length === 1, 'two overlapping slices → exactly one runs, the other no-ops (already_running)');
+  ok(calls.filter((c) => c.appId === alive1.appId).length === 1, 'the file is re-read exactly once across the overlap (no double-bill)');
 
   // --- 4: per-file cost cap — a file over cap is skipped + stamped, and never re-selected ---
   const capped = await seedFile('capped', 'processing');

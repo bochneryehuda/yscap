@@ -62,8 +62,10 @@ router.get('/reread-sweep', async (_req, res) => {
 router.post('/reread-sweep', requirePermission('platform_setup'), async (req, res) => {
   const sweep = require('../lib/underwriting/reread-sweep');
   // Fire-and-report: run one bounded slice in the background so the request returns immediately
-  // (a slice can make several paid reads). The generation stamp keeps it idempotent, so a double
-  // click never re-bills a file. `batchFiles` is optional; the module clamps it to a sane floor.
+  // (a slice can make several paid reads). Safe against a double click / an overlap with the
+  // dispatcher tick: the sweep holds an in-process guard and no-ops ('already_running') if a slice
+  // is already underway, and the per-file generation stamp keeps a completed file from being
+  // re-billed. `batchFiles` is optional; the module clamps it to a sane floor.
   const batchFiles = Number(req.body && req.body.batchFiles) || undefined;
   sweep.sweepOnce({ batchFiles })
     .then((r) => console.log('[reread-sweep] admin kick', JSON.stringify(r)))

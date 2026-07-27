@@ -79,6 +79,16 @@ const CLAIM_FAMILIES = [
     // exists for). A family may only set this when every producer of it is non-blocking.
     fileLevel: true,
   },
+  {
+    claim: 'title_insured_below_loan',
+    // The lender's title policy insures LESS than the loan amount — ONE economic truth about the
+    // deal that is legible on more than one title document (a title commitment AND a title policy,
+    // or two extractions of the title), which the owner saw posted twice. Same rationale + same
+    // safety condition as assignment_fee_over_cap: `title_policy_amount_low` is warning-only, so no
+    // dealbreaker can hide behind the merged survivor.
+    codes: ['title_policy_amount_low'],
+    fileLevel: true,
+  },
 ];
 
 const CLAIM_OF_CODE = new Map();

@@ -730,6 +730,36 @@ router.get('/:appId', async (req, res, next) => {
     const openRaw = [...perDoc, ...cross, ...staleness.findings, ...metrics.findings, ...amendments.findings,
       ...(entityChain ? entityChain.findings : []), ...reasonability.findings, ...sellerChainFindings,
       ...cotFindings, ...bankLiquidity.findings, ...(experience ? experience.findings : [])];
+
+    // FILE-LEVEL entity-screening rollup (owner-reported 2026-07-26/27: "this entity WAS screened —
+    // look on the watch list — you just don't look deep enough"). computeBackgroundFindings runs PER
+    // report and can only see one document, so on a two-report file the report that did not carry the
+    // borrowing entity raises "entity not screened" even though ANOTHER report DID screen it. Ask the
+    // question across EVERY background extraction; when at least one screened the entity, drop the
+    // stale per-report finding here AND resolve its stored row so the fraud/OFAC condition can clear
+    // (fraud-autoclear gates on NOT EXISTS an open background_report finding). Only ever SUPPRESSES a
+    // false positive — if NO report screened the entity the finding stands.
+    try {
+      const vestingEntity = mctx && mctx.vestingName;
+      if (vestingEntity) {
+        const bgFields = exts.rows.filter((e) => e.doc_type === 'background_report').map((e) => e.fields || {});
+        const screenedFileWide = require('../lib/underwriting/doc-checks').entityScreenedAcrossReports(bgFields, vestingEntity);
+        if (screenedFileWide === true) {
+          const NOT_SCREENED = new Set(['background_entity_not_screened', 'entity_not_screened']);
+          for (let i = openRaw.length - 1; i >= 0; i--) {
+            if (openRaw[i] && NOT_SCREENED.has(openRaw[i].code)) openRaw.splice(i, 1);
+          }
+          // Resolve the stored finding so fraud-autoclear's NOT-EXISTS gate can clear the condition.
+          // Best-effort, fire-and-forget — never blocks or fails the file view.
+          db.query(
+            `UPDATE document_findings SET status='resolved', updated_at=now()
+              WHERE application_id=$1 AND source='background_report'
+                AND code IN ('background_entity_not_screened','entity_not_screened')
+                AND COALESCE(status,'open') NOT IN ('resolved','dismissed')`, [app.id]).catch(() => {});
+        }
+      }
+    } catch (_) { /* additive rollup — a failure here never affects the finding list */ }
+
     // ONE finding per real-world ISSUE (owner-reported 2026-07-26: the contract-buyer/vesting
     // mismatch appeared SIX times on one file, the entity-OFAC gap three times).
     //
@@ -1019,6 +1049,12 @@ async function fileDoc(app, documentId) {
 async function analyzeOneDocument(app, doc, docType, opts = {}) {
   const actorId = opts.actorId || null;
   const force = !!opts.force;
+  // The un-funded re-read sweep re-reads OLD documents across the whole book. Its findings are not
+  // new to the humans, so it re-records WITHOUT re-firing the "new fatal AI finding" staff/admin
+  // email — otherwise a portfolio-wide re-read would bombard every file's team (and re-alert a
+  // fatal a human already dismissed). Threaded into saveAnalysis (→ assignment-fraud) and the
+  // authenticity record below. Interactive reads (a real actorId) always notify.
+  const suppressNotify = !!opts.suppressNotify;
   const base = { documentId: doc.id, filename: doc.filename, docType };
   try {
     if (!doc.storage_ref) return { ...base, ok: false, error: 'no_stored_file' };
@@ -1069,6 +1105,7 @@ async function analyzeOneDocument(app, doc, docType, opts = {}) {
         documentId: doc.id, applicationId: app.id, borrowerId: doc.borrower_id || app.borrower_id,
         docType, extraction: result.extraction, findings: result.findings,
         analyzedSha256: doc.sha256 || null, analyzerVersion: ANALYZER_VERSION, subjectHash: subjHash,
+        suppressNotify,
       });
       // Authenticity scoring (Sovereign, blueprint 2026-07-22): score the PDF
       // bytes for tampering signals + stash on the documents row. If the score
@@ -1117,6 +1154,7 @@ async function analyzeOneDocument(app, doc, docType, opts = {}) {
           body: `Signals: ${authFatalSignal.signalsFired || 'metadata anomalies'}. The AI changed nothing — review the document and request a fresh copy directly from the source.`,
           evidence: { code: 'doc_low_authenticity', docType: authFatalSignal.docType, score: authFatalSignal.score, signals: authFatalSignal.signalsFired },
           dedupeKey: `doc_low_authenticity:${doc.id}`,
+          suppressNotify,
         });
       } catch (_) { /* additive — never fails the analyze result */ }
     }

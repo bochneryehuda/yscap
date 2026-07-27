@@ -110,7 +110,13 @@ async function record(client, s) {
   // setImmediate so the caller's transaction gets a chance to COMMIT first,
   // and then re-verifies the row still exists (defensive against a rollback).
   // Best-effort — a notify failure never rolls back the suggestion.
-  if (String(s.severity || '').toLowerCase() === 'fatal') {
+  // `suppressNotify` (owner 2026-07-27): the un-funded RE-READ sweep re-reads OLD documents across
+  // the whole book, so its findings are not new to the humans — firing the fatal-finding email for
+  // each would be a portfolio-wide bombardment of alerts staff have already seen (and would
+  // re-notify a fatal a human already dismissed, since the dedupe only matches OPEN rows). A caller
+  // that is re-recording, not surfacing something new, sets this. The row is still written — only
+  // the notification is skipped.
+  if (!s.suppressNotify && String(s.severity || '').toLowerCase() === 'fatal') {
     setImmediate(() => { _notifyFatalNew(s, rowId).catch(() => { /* additive */ }); });
   }
   return { id: rowId, deduped: false };

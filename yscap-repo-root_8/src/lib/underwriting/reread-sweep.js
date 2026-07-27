@@ -35,7 +35,10 @@
  *   3. IDEMPOTENT — a file already stamped at the current REREAD_GENERATION is skipped, so re-running
  *      the sweep on a file that already got the new result is a no-op.
  *   4. OFF-SWITCH by env (UNDERWRITING_REREAD_SWEEP_DISABLED=1) + an admin trigger, so it can be
- *      stopped/kicked without a deploy.
+ *      stopped/kicked without a deploy. NOTE: the AUTOMATIC cadence rides the notification-digests
+ *      dispatcher, so setting NOTIFY_DIGESTS_ENABLED=0 also stops the automatic sweep (the admin
+ *      "run now" trigger still works). The sweep itself notifies no one; this is only a scheduler
+ *      coupling.
  *   5. RE-READS + RE-RECORDS only (see above).
  *
  * BUMPING THE GENERATION. REREAD_GENERATION is a CODE constant on purpose (not env): bumping it is a
@@ -62,6 +65,14 @@ const BATCH_FILES_DEFAULT = Math.max(1, parseInt(process.env.UNDERWRITING_REREAD
 const ALIVE_UNFUNDED_SQL = `a.deleted_at IS NULL AND a.status NOT IN ('funded','withdrawn','declined','cancelled')`;
 
 function enabled() { return process.env.UNDERWRITING_REREAD_SWEEP_DISABLED !== '1'; }
+
+// In-process guard so two overlapping slices — the dispatcher tick meeting an admin "run now" kick,
+// or two admin clicks — cannot both select the SAME un-stamped files and re-read (double-bill) them
+// before either stamps (the stamp lands only after a file's whole batch is read). Both callers live
+// in the one web process, so a boolean covers the realistic race. (Cross-instance scale-out could
+// still race one file in a narrow window; the per-file cost cap + generation stamp bound the cost to
+// at most one duplicate read of one file, and it self-heals on the next pass.)
+let _running = false;
 
 /** True when BOTH the OCR reader and the AI analyzer are configured — never make a paid call we
  *  cannot fulfil. Guarded so a missing module during a partial deploy is treated as "off". */
@@ -149,13 +160,19 @@ async function rereadFileOnce(appId, deps = {}) {
     try { doc = await uw.fileDocById(app, item.id); } catch (_) { doc = null; }
     if (!doc) continue;
     try {
-      // actorId:null → no borrower/staff notification, no audit-as-a-person; force → a genuine re-read
-      // that re-runs the improved reader + checks instead of returning the cached stale extraction.
-      await uw.analyzeOneDocument(app, doc, item.expectedType, { actorId: null, force });
-      docsRead += 1;
+      // actorId:null → no audit-as-a-person; suppressNotify:true → re-record WITHOUT re-firing the
+      // "new fatal finding" staff/admin email (these findings are not new to the humans, and a
+      // portfolio-wide re-read would otherwise bombard every team); force → a genuine re-read that
+      // re-runs the improved reader + checks instead of returning the cached stale extraction.
+      // analyzeOneDocument contains its own errors and RETURNS {ok:false,error} — inspect it so a
+      // failed read is not counted as read (observability), and surface the first error.
+      const r = await uw.analyzeOneDocument(app, doc, item.expectedType, { actorId: null, force, suppressNotify: true });
+      if (r && r.ok) docsRead += 1;
+      else if (r && r.error && !lastError) lastError = r.error;
     } catch (e) {
-      // A single bad document never stops the file — analyzeOneDocument already contains its own
-      // errors, so this only catches a truly unexpected throw. Record and continue.
+      // A truly unexpected throw (analyzeOneDocument normally returns rather than throws). The file is
+      // still stamped below so it is not retried forever within this generation.
+      if (!lastError) lastError = (e && e.message) ? String(e.message).slice(0, 200) : 'analyze_threw';
       console.error('[reread-sweep] doc failed', appId, item.id, e && e.message);
     }
   }
@@ -173,42 +190,48 @@ async function sweepOnce(opts = {}) {
   if (!uw.AUTOREAD_ENABLED) return { skipped: 'autoread_disabled' };
   const readerOn = opts.readerOn != null ? opts.readerOn : readerConfigured();
   if (!readerOn) return { skipped: 'reader_off' };
-
-  const batchFiles = Math.max(1, opts.batchFiles || BATCH_FILES_DEFAULT);
-  let targets;
+  // Refuse to run a second slice concurrently (see _running note above) — a double-bill guard.
+  if (_running) return { skipped: 'already_running' };
+  _running = true;
   try {
-    targets = await db.query(
-      `SELECT a.id
-         FROM applications a
-         LEFT JOIN underwriting_reread_state s ON s.application_id = a.id
-        WHERE ${ALIVE_UNFUNDED_SQL} AND COALESCE(s.generation, 0) < $1
-        -- Oldest file first + a total tie-break on the id, so an unordered LIMIT can never let a
-        -- file be perpetually passed over (the same discipline as the digest/auto-read sweeps).
-        ORDER BY a.created_at ASC, a.id
-        LIMIT $2`, [REREAD_GENERATION, batchFiles]);
-  } catch (e) {
-    console.error('[reread-sweep] select failed', e && e.message);
-    return { skipped: 'select_failed' };
-  }
-
-  let filesRead = 0, docsTotal = 0, capped = 0, errors = 0;
-  for (const row of targets.rows) {
+    const batchFiles = Math.max(1, opts.batchFiles || BATCH_FILES_DEFAULT);
+    let targets;
     try {
-      const r = await rereadFileOnce(row.id, { uw, costAllow: opts.costAllow, force: opts.force });
-      if (r.attempted) { filesRead += 1; docsTotal += r.docsRead; }
-      if (r.lastError === 'cost_cap_reached') capped += 1;
-    } catch (e) { errors += 1; console.error('[reread-sweep] file failed', row.id, e && e.message); }
-  }
+      targets = await db.query(
+        `SELECT a.id
+           FROM applications a
+           LEFT JOIN underwriting_reread_state s ON s.application_id = a.id
+          WHERE ${ALIVE_UNFUNDED_SQL} AND COALESCE(s.generation, 0) < $1
+          -- Oldest file first + a total tie-break on the id, so an unordered LIMIT can never let a
+          -- file be perpetually passed over (the same discipline as the digest/auto-read sweeps).
+          ORDER BY a.created_at ASC, a.id
+          LIMIT $2`, [REREAD_GENERATION, batchFiles]);
+    } catch (e) {
+      console.error('[reread-sweep] select failed', e && e.message);
+      return { skipped: 'select_failed' };
+    }
 
-  const remaining = await pendingCount();
-  const done = remaining === 0;
-  await saveState({
-    generation: REREAD_GENERATION,
-    lastRunAt: new Date().toISOString(),
-    lastFilesRead: filesRead, lastDocsRead: docsTotal, lastCapped: capped, lastErrors: errors,
-    remaining, done,
-  });
-  return { generation: REREAD_GENERATION, filesRead, docsRead: docsTotal, capped, errors, remaining, done };
+    let filesRead = 0, docsTotal = 0, capped = 0, errors = 0;
+    for (const row of targets.rows) {
+      try {
+        const r = await rereadFileOnce(row.id, { uw, costAllow: opts.costAllow, force: opts.force });
+        if (r.attempted) { filesRead += 1; docsTotal += r.docsRead; }
+        if (r.lastError === 'cost_cap_reached') capped += 1;
+      } catch (e) { errors += 1; console.error('[reread-sweep] file failed', row.id, e && e.message); }
+    }
+
+    const remaining = await pendingCount();
+    const done = remaining === 0;
+    await saveState({
+      generation: REREAD_GENERATION,
+      lastRunAt: new Date().toISOString(),
+      lastFilesRead: filesRead, lastDocsRead: docsTotal, lastCapped: capped, lastErrors: errors,
+      remaining, done,
+    });
+    return { generation: REREAD_GENERATION, filesRead, docsRead: docsTotal, capped, errors, remaining, done };
+  } finally {
+    _running = false;
+  }
 }
 
 /** Progress for the admin screen — never throws. */
