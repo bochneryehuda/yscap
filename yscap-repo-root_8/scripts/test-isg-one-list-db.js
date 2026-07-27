@@ -20,8 +20,6 @@
 if (!process.env.DATABASE_URL) { console.log('SKIP test-isg-one-list-db (no DATABASE_URL)'); process.exit(0); }
 const assert = require('assert');
 const { Pool } = require('pg');
-const fs = require('fs');
-const path = require('path');
 const uw = require('../src/routes/underwriting');
 const aiSug = require('../src/lib/underwriting/ai-suggestions');
 const deskFindings = require('../src/lib/underwriting/investor-guidelines/desk-findings');
@@ -418,13 +416,65 @@ console.log('ISG one list (DB)');
 
     // readers: the two carry-forward shapes must carry severity, or a decision taken at
     // warning silently makes the re-read's DEALBREAKER born dismissed.
-    const storeSrc = fs.readFileSync(path.resolve(__dirname, '../src/lib/underwriting/store.js'), 'utf8');
-    assert.ok(/extraction_id: extractionId, docValue: str\(f\.docValue\), severity: f\.severity/.test(storeSrc),
-      'store.saveAnalysis carry-forward must consult the ledger WITH the severity');
-    const imp = fs.readFileSync(path.resolve(__dirname, '../src/lib/appraisal/import.js'), 'utf8');
-    assert.ok(/code: fd\.code, field: fd\.field, severity: fd\.severity/.test(imp),
-      'the appraisal re-import carry-forward must too');
-    ok('every ledger writer records the judged severity, and every reader consults it');
+    //
+    // ASSERTED BY BEHAVIOUR, NOT BY PATTERN-MATCHING THE SOURCE (re-audit 2026-07-27). These
+    // two were regexes over the reader files, which pass for a reader that is never CALLED,
+    // and break on a harmless reformat. Both now run the real code against the real ledger.
+    const readerKey = { code: 'reader_severity_probe', field: 'as_is_value', docValue: '400000' };
+    const store = require('../src/lib/underwriting/store');
+    const docRow = (await client.query(
+      `INSERT INTO documents (application_id, borrower_id, filename, content_type, storage_provider)
+       VALUES ($1,$2,'probe.pdf','application/pdf','local') RETURNING id`, [app7.id, b.id])).rows[0];
+    // Two decisions, because the two readers legitimately key differently: a document finding
+    // is scoped to its DOCUMENT (so a re-read of the same file keeps the same key even though
+    // the extraction id is new), while an appraisal finding carries neither.
+    await fdec.record(client, {
+      applicationId: app7.id,
+      finding: Object.assign({ severity: 'warning', document_id: docRow.id }, readerKey),
+      origin: 'document_finding', action: 'dismiss', severity: 'warning', staffId: null,
+    });
+    await fdec.record(client, {
+      applicationId: app7.id, finding: Object.assign({ severity: 'warning' }, readerKey),
+      origin: 'appraisal_finding', action: 'dismiss', severity: 'warning', staffId: null,
+    });
+    const readerLedger = await fdec.suppressedKeys(client, app7.id);
+
+    // reader 1 — store.saveAnalysis, exercised through the real INSERT. A re-read of the same
+    // finding at the SAME severity is born dismissed (the dismissal sticks); the same finding
+    // arriving as a DEALBREAKER is born OPEN and reaches the team.
+    const bornStatus = async (severity) => {
+      const saved = await store.saveAnalysis(client, {
+        documentId: docRow.id, applicationId: app7.id, borrowerId: b.id, docType: 'appraisal',
+        extraction: { fields: {}, status: 'analyzed' }, suppressNotify: true,
+        findings: [{ code: readerKey.code, field: readerKey.field, docValue: readerKey.docValue,
+          severity, title: 't', source: 'appraisal' }],
+      });
+      const id = (saved && saved.findingIds && saved.findingIds[0]) || null;
+      assert.ok(id, 'saveAnalysis wrote the finding row the assertion is about');
+      return (await client.query(
+        `SELECT status, resolution FROM document_findings WHERE id=$1`, [id])).rows[0];
+    };
+    const sameSev = await bornStatus('warning');
+    assert.strictEqual(sameSev.status, 'dismissed',
+      'the re-read of a dismissed warning is born dismissed — the decision survives the re-read');
+    assert.strictEqual(sameSev.resolution, 'carried_forward', 'and is labelled as carried forward');
+    const worseSev = await bornStatus('fatal');
+    assert.strictEqual(worseSev.status, 'open',
+      'but the SAME finding arriving as a dealbreaker is born OPEN — a warning dismissal is not a false clear');
+
+    // reader 2 — the appraisal re-import, through its own carry-forward function against the
+    // same real ledger. (`test-appraisal-import.js` is skipped in CI, so without this the
+    // appraisal carry-forward had no behavioural coverage at all.)
+    const apprImport = require('../src/lib/appraisal/import');
+    const apprFinding = (severity) => ({ code: readerKey.code, field: readerKey.field, severity,
+      appraisalValue: 400000 });
+    assert.strictEqual(apprImport._internals.carryForward(readerLedger, apprFinding('warning')), true,
+      'the appraisal re-import carries a dismissed warning forward');
+    assert.strictEqual(apprImport._internals.carryForward(readerLedger, apprFinding('fatal')), false,
+      'but never carries it forward onto a dealbreaker');
+    assert.strictEqual(apprImport._internals.carryForward(new Map(), apprFinding('warning')), false,
+      'an empty ledger carries nothing forward — it fails OPEN');
+    ok('every ledger writer records the judged severity, and both readers really honour it');
 
     // …and the readers really behave: a warning dismissed does not carry forward a fatal.
     const carryKey = { code: 'appraisal_value_variance', field: 'as_is_value', docValue: '450000' };

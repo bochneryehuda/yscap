@@ -432,7 +432,17 @@ router.get('/escalations/count', async (req, res, next) => {
 // Returns `{ ok:false, status, body }` or `{ ok:true, row }`.
 async function openEscalationFor(req, id) {
   if (!isUuid(id)) return { ok: false, status: 404, body: { error: 'not found' } };
-  const row = (await db.query(`SELECT * FROM finding_escalations WHERE id=$1`, [id])).rows[0];
+  // The LIVE finding's severity is JOINED, not assumed. `finding_severity` is an alias that
+  // exists only in `escalations.LIST_SELECT`; on a `SELECT *` row it is undefined, so reading
+  // `row.finding_severity` here silently fell through to the snapshot frozen at raise time.
+  // That matters in BOTH directions: a finding that escalated after it was raised gets its
+  // dealbreaker settled under the milder snapshot (a false clear), and one that was
+  // downgraded gets a warning settled under the harsher snapshot (it comes straight back).
+  const row = (await db.query(
+    `SELECT e.*, df.severity AS finding_severity
+       FROM finding_escalations e
+       LEFT JOIN document_findings df ON df.id = e.finding_id
+      WHERE e.id = $1`, [id])).rows[0];
   if (!row) return { ok: false, status: 404, body: { error: 'not found' } };
   if (row.status !== 'open') return { ok: false, status: 409, body: { error: 'this escalation was already handled' } };
   // File access is checked for real here (the list query scopes, a direct POST does not):
@@ -530,18 +540,26 @@ router.post('/escalations/:id/decide', async (req, res, next) => {
         findingSettled = !!applied.ok;
         if (!applied.ok) findingNote = applied.body && applied.body.error;
       }
-      // Always record the identity-level decision: it is the ONLY thing that stops
-      // a DERIVED finding (recomputed on every file view) coming back, and it is
-      // what a re-read carries forward onto the next stored row.
-      const client2 = await db.pool.connect();
-      try {
-        await require('../lib/underwriting/finding-decisions').record(client2, {
-          applicationId: row.application_id, finding: escalationFindingShape(row),
-          origin: 'escalation', decision: 'dismissed',
-          severity: row.finding_severity || row.severity || null,
-          note: note || 'No action needed (findings review queue).', decidedBy: req.actor.id,
-        });
-      } finally { client2.release(); }
+      // Record the identity-level decision — it is the ONLY thing that stops a DERIVED
+      // finding (recomputed on every file view) coming back, and it is what a re-read
+      // carries forward onto the next stored row.
+      //
+      // ONLY when there was no live row to resolve. `applyFindingResolution` already wrote
+      // this key from the LIVE finding a moment ago; writing it again from the escalation's
+      // shape overwrote the severity it had just recorded (`ON CONFLICT … severity =
+      // COALESCE(EXCLUDED.severity, …)` — the second write wins), so a dealbreaker the
+      // reviewer settled came straight back on the next page load.
+      if (!live) {
+        const client2 = await db.pool.connect();
+        try {
+          await require('../lib/underwriting/finding-decisions').record(client2, {
+            applicationId: row.application_id, finding: escalationFindingShape(row),
+            origin: 'escalation', decision: 'dismissed',
+            severity: row.finding_severity || row.severity || null,
+            note: note || 'No action needed (findings review queue).', decidedBy: req.actor.id,
+          });
+        } finally { client2.release(); }
+      }
     }
 
     let updated;

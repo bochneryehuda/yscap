@@ -179,10 +179,7 @@ async function importAppraisalTx(db, {
   const fdec = require('../underwriting/finding-decisions');
   const settled = await fdec.suppressedKeys(db, applicationId);
   for (const fd of findings) {
-    const carried = settled.size && fdec.isSuppressed(settled, {
-      code: fd.code, field: fd.field, severity: fd.severity,
-      docValue: fd.appraisalValue == null ? null : String(fd.appraisalValue),
-    });
+    const carried = carryForward(settled, fd);
     await db.query(
       `INSERT INTO appraisal_findings
          (appraisal_id, application_id, source, code, severity, field, appraisal_value, file_value, title, how_to, blocks_ctc, status, resolution, resolution_note)
@@ -239,4 +236,18 @@ function buildFieldsJson(A) {
   return out;
 }
 
-module.exports = { importAppraisal };
+// THE CARRY-FORWARD SHAPE, AS ITS OWN FUNCTION so a test can prove the behaviour instead of
+// pattern-matching this file's source. `severity` is part of the shape, not decoration: a
+// decision taken while a variance was a WARNING must not carry forward once the re-imported
+// appraisal makes the SAME finding a dealbreaker. Omitting it writes a row born `dismissed`
+// with no error and no log — a silent false clear.
+function carryForward(settled, fd) {
+  if (!settled || !settled.size || !fd) return false;
+  const fdec = require('../underwriting/finding-decisions');
+  return !!fdec.isSuppressed(settled, {
+    code: fd.code, field: fd.field, severity: fd.severity,
+    docValue: fd.appraisalValue == null ? null : String(fd.appraisalValue),
+  });
+}
+
+module.exports = { importAppraisal, _internals: { carryForward } };
