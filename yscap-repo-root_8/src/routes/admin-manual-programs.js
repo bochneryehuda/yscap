@@ -8,16 +8,37 @@
  *   • GET/PUT  /settings           — manage_pricing (the Manual Program config:
  *                                     default LTV/LTC/ARV ceilings + REQUIRED
  *                                     default liquidity months).
- *   • GET      /escalations        — any staff (admins/super-admins see the box).
+ *   • GET      /escalations        — manage_pricing (admins/super-admins).
  *   • GET      /escalations/count  — pending count for the nav badge.
- *   • POST     /escalations/:id/decide — SUPER-ADMIN ONLY (approve / decline).
+ *   • POST     /escalations/:id/decide  — manage_pricing, but never your OWN
+ *   • POST     /escalations/:id/counter   request (owner-directed 2026-07-27;
+ *                                         see mayDecide below).
  */
 
 const router = require('express').Router();
 const db = require('../db');
-const { requirePermission, requireRole } = require('../auth');
+const { requirePermission } = require('../auth');
+const perms = require('../lib/permissions');
 const manualProgram = require('../lib/manual-program');
 const notify = require('../lib/notify');
+
+/**
+ * WHO may decide an escalation (owner-directed 2026-07-27 — "this should be sent
+ * to the admin for approval"). Widened from super-admin-only to any holder of
+ * `manage_pricing` (admins + super-admins), matching the loan-exception register,
+ * with ONE independent control kept: you can never approve your OWN request.
+ *
+ * The super-admin is exempt from that control on purpose — they are the top
+ * authority and, in a one-super-admin shop, requiring a second approver would be
+ * a dead end with no way out. Every decision is audited either way. Changing WHO
+ * decides is an owner call; do not narrow or widen this without one.
+ */
+function mayDecide(actor, row) {
+  if (!actor || actor.kind !== 'staff') return false;
+  if (!perms.can(actor, 'manage_pricing')) return false;
+  if (actor.role === 'super_admin') return true;
+  return !(row && row.requested_by && String(row.requested_by) === String(actor.id));
+}
 
 function auditSafe(actorId, action, entityType, entityId, detail) {
   db.query(
@@ -59,7 +80,15 @@ router.get('/escalations', requirePermission('manage_pricing'), async (req, res)
     ]);
     // Never leak the note-buyer name into the box — the summary/overrides carry
     // only leverage numbers, and the property/loan identity is staff-only anyway.
-    res.json({ escalations: rows, pendingCount: pending, canDecide: req.actor.role === 'super_admin' });
+    // canDecide: any admin / super-admin may decide (owner-directed 2026-07-27 —
+    // "sent to the admin for approval"); per-row, you can never approve your OWN
+    // request unless you are the super-admin (see mayDecide below).
+    res.json({
+      escalations: rows.map((r) => ({ ...r, canDecide: mayDecide(req.actor, r) })),
+      pendingCount: pending,
+      canDecide: perms.can(req.actor, 'manage_pricing'),
+      viewerId: req.actor.id,
+    });
   } catch (e) { res.status(500).json({ error: 'server error' }); }
 });
 
@@ -68,10 +97,18 @@ router.get('/escalations/count', requirePermission('manage_pricing'), async (req
   catch (e) { res.status(500).json({ error: 'server error' }); }
 });
 
-router.post('/escalations/:id/decide', requireRole('super_admin'), async (req, res) => {
+router.post('/escalations/:id/decide', requirePermission('manage_pricing'), async (req, res) => {
   try {
     const decision = req.body && req.body.decision === 'approved' ? 'approved' : 'declined';
     const note = req.body && req.body.note;
+    // Requester ≠ approver: re-read the row and refuse BEFORE deciding, so an
+    // admin can never bless their own exception (super-admin exempt — see
+    // mayDecide). Checked server-side; the UI hiding the buttons is not the gate.
+    const open = (await db.query(`SELECT id, requested_by FROM manual_program_escalations WHERE id=$1`, [req.params.id])).rows[0];
+    if (!open) return res.status(409).json({ error: 'This escalation was already decided or no longer exists.' });
+    if (!mayDecide(req.actor, open)) {
+      return res.status(403).json({ error: 'You requested this exception — someone else has to approve or decline it.' });
+    }
     const row = await manualProgram.decideEscalation(req.params.id, decision, req.actor.id, note);
     if (!row) return res.status(409).json({ error: 'This escalation was already decided or no longer exists.' });
     auditSafe(req.actor.id, 'manual_program_escalation_decided', 'application', row.application_id,
@@ -120,12 +157,18 @@ router.post('/escalations/:id/decide', requireRole('super_admin'), async (req, r
 // records the proposed terms + a plain-language note, moves the escalation to
 // `countered` (still on the queue, awaiting the loan officer's action), and
 // notifies the loan team with the exact counter-offer.
-router.post('/escalations/:id/counter', requireRole('super_admin'), async (req, res) => {
+router.post('/escalations/:id/counter', requirePermission('manage_pricing'), async (req, res) => {
   try {
     const counterTerms = req.body && typeof req.body.counterTerms === 'object' && req.body.counterTerms ? req.body.counterTerms : {};
     const counterNote  = req.body && req.body.counterNote;
     if (!counterNote || !String(counterNote).trim()) {
       return res.status(400).json({ error: 'Add a plain-language note explaining the counter-offer so the loan officer knows what you would accept.' });
+    }
+    // Same requester ≠ approver control as decide — a counter-offer is a decision.
+    const open = (await db.query(`SELECT id, requested_by FROM manual_program_escalations WHERE id=$1`, [req.params.id])).rows[0];
+    if (!open) return res.status(409).json({ error: 'This escalation was already decided or no longer exists.' });
+    if (!mayDecide(req.actor, open)) {
+      return res.status(403).json({ error: 'You requested this exception — someone else has to counter, approve or decline it.' });
     }
     const row = await manualProgram.counterEscalation(req.params.id, req.actor.id, { counterTerms, counterNote });
     if (!row) return res.status(409).json({ error: 'This escalation was already decided or no longer exists.' });

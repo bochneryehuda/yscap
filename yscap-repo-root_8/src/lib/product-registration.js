@@ -180,7 +180,7 @@ function rehabTypeWriteback(current, inputs) {
   return derived;
 }
 
-async function persistProductRegistration(client, { appId, program, inputs, quote, registeredByStaffId, isManual, assetMonths, termOptions }) {
+async function persistProductRegistration(client, { appId, program, inputs, quote, registeredByStaffId, isManual, assetMonths, termOptions, needsApproval, overrideChanges }) {
   const s = quote.sizing || {};
   const total = num(s.totalLoan);
   // Term-sheet options (owner-directed 2026-07-22) — DISPLAY / record only,
@@ -208,8 +208,8 @@ async function persistProductRegistration(client, { appId, program, inputs, quot
   await client.query(`UPDATE product_registrations SET is_current=false WHERE application_id=$1 AND is_current`, [appId]);
   const ins = await client.query(
     `INSERT INTO product_registrations
-       (application_id, program, product_label, status, note_rate, total_loan, target_ltc, inputs, quote, is_current, registered_by, is_manual, asset_months, term_options)
-     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,true,$10,$11,$12,$13) RETURNING id`,
+       (application_id, program, product_label, status, note_rate, total_loan, target_ltc, inputs, quote, is_current, registered_by, is_manual, asset_months, term_options, needs_approval, override_changes)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,true,$10,$11,$12,$13,$14,$15) RETURNING id`,
     [
       appId,
       program,
@@ -224,6 +224,11 @@ async function persistProductRegistration(client, { appId, program, inputs, quot
       !!isManual || program === 'manual',
       (assetMonths != null && isFinite(Number(assetMonths))) ? Math.round(Number(assetMonths)) : null,
       to ? JSON.stringify(to) : null,
+      // db/343 — these terms may not be confirmed to the borrower (and no
+      // DocuSign term sheet may issue) until an admin approves the escalation.
+      // A caller that doesn't compute it falls back to the pre-343 meaning.
+      needsApproval != null ? !!needsApproval : (!!isManual || program === 'manual' || quote.status === 'MANUAL'),
+      (Array.isArray(overrideChanges) && overrideChanges.length) ? JSON.stringify(overrideChanges) : null,
     ]);
   const registrationId = ins.rows[0].id;
   // Registration COMMITS the priced scenario onto the file. Beyond loan amount /

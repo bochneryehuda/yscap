@@ -76,38 +76,48 @@ async function insertDoc({ appId, borrowerId, itemId, uploadedById, buf, filenam
  * @param {string} a.actorId  staff id
  * @param {'api'|'upload'} a.source
  * @param {boolean} [a.consentAttested] the actor attested borrower permissible-purpose (live pulls)
+ * @param {object} [a.reuseDocs] { xmlDocId, pdfDocId } — a MERGED report is ONE physical
+ *   document covering both borrowers, so the second borrower's row points at the SAME
+ *   stored PDF/XML instead of filing a duplicate copy of the same file on the loan.
+ * @param {object} [a.filenames] { xml, pdf, xmlLabel, pdfLabel } — override the stored
+ *   document names (a merged report is filed as such, so staff can see what it is).
  */
-async function storeImport({ file, borrower, parsed, xml, pdfBase64, request, actorId, source, consentAttested }) {
+async function storeImport({ file, borrower, parsed, xml, pdfBase64, request, actorId, source, consentAttested, reuseDocs, filenames }) {
   const appId = file.id;
   const borrowerId = borrower.id;
   const itemId = await creditConditionItemId(appId, { isCo: !!borrower.isCo });
   const sourceType = source === 'upload' ? 'staff_upload' : 'system';
-  let xmlDocId = null, pdfDocId = null;
+  const names = filenames || {};
+  let xmlDocId = (reuseDocs && reuseDocs.xmlDocId) || null;
+  let pdfDocId = (reuseDocs && reuseDocs.pdfDocId) || null;
+  const alreadyFiled = !!(reuseDocs && (reuseDocs.xmlDocId || reuseDocs.pdfDocId));
 
   // Decode the PDF up-front so a corrupt PDF can NEVER abort the XML store or
   // skip the supersede (m2): a bad decode logs and we proceed data-file-only.
   let pdfBuf = null;
-  if (pdfBase64) {
+  if (pdfBase64 && !alreadyFiled) {
     try { pdfBuf = decodeUploadBase64(pdfBase64, { maxBytes: MAX_BYTES }).buf; }
     catch (e) { console.error('[credit] PDF decode failed — storing the data file only:', (e && e.message) || e); }
   }
 
-  // 1) Store source documents (best-effort — never lose the parsed data).
+  // 1) Store source documents (best-effort — never lose the parsed data). A merged
+  //    report's second borrower reuses the documents filed for the first, so one
+  //    physical report is filed once, not twice.
   try {
-    if (xml) {
+    if (xml && !alreadyFiled) {
       const xbuf = Buffer.from(String(xml), 'utf8');
       if (xbuf.length <= MAX_BYTES) {
         xmlDocId = await insertDoc({
           appId, borrowerId, itemId, uploadedById: actorId, buf: xbuf,
-          filename: 'credit-report.xml', contentType: 'application/xml',
-          docKind: 'credit_xml', slotLabel: 'Credit report (data)', sourceType });
+          filename: names.xml || 'credit-report.xml', contentType: 'application/xml',
+          docKind: 'credit_xml', slotLabel: names.xmlLabel || 'Credit report (data)', sourceType });
       }
     }
     if (pdfBuf) {
       pdfDocId = await insertDoc({
         appId, borrowerId, itemId, uploadedById: actorId, buf: pdfBuf,
-        filename: 'credit-report.pdf', contentType: 'application/pdf',
-        docKind: 'credit_pdf', slotLabel: 'Credit report', sourceType });
+        filename: names.pdf || 'credit-report.pdf', contentType: 'application/pdf',
+        docKind: 'credit_pdf', slotLabel: names.pdfLabel || 'Credit report', sourceType });
     }
     // Retire THIS borrower's prior current credit docs AFTER the fresh ones are
     // stored, so a failure above never leaves them with zero credit docs. Scoped
