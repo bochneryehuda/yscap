@@ -37,9 +37,19 @@ const INT_FIELDS = new Set(['units']);
 // reviewer approves without looking. property_type, program and loan_type all
 // use the SAME option lists the completeness pickers offer, so an approved
 // request writes a value the pricing engine already understands.
+// The CANONICAL spellings come first — those are what the pickers now offer and
+// what the ClickUp crosswalk can translate. The legacy spellings stay ACCEPTED
+// (never offered) purely so an in-flight request typed before 2026-07-27 is not
+// rejected; validation runs at openRequest time only, so a pending row approves
+// either way. 'Fix & Hold' joins program alongside the ClickUp option the owner
+// is adding — a borrower/officer asking to switch strategy to Fix & Hold was
+// refused outright before.
 const FIELD_OPTIONS = {
-  property_type: ['SFR', 'Multi 2-4', 'Multi 5+', 'Condo', 'Townhouse', 'Mixed Use'],
-  program: ['Fix & Flip w/ Construction', 'Bridge', 'Ground-Up Construction'],
+  property_type: [
+    'SFR (1 unit)', 'Multi 2–4', 'Multi 5+', 'Condo', 'Townhouse', 'Mixed use',
+    'SFR', 'Multi 2-4', 'Mixed Use',                 // legacy, accepted not offered
+  ],
+  program: ['Fix & Flip w/ Construction', 'Fix & Hold', 'Bridge', 'Ground-Up Construction'],
   loan_type: ['Purchase', 'Refinance — Rate & Term', 'Refinance — Cash-Out'],
 };
 const isGovernedField = (k) => Object.prototype.hasOwnProperty.call(FIELD_LABELS, k);

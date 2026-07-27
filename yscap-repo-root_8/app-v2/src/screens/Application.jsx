@@ -11,6 +11,7 @@ import ActivityFeed from '../components/ActivityFeed.jsx';
 import StatusTimeline from '../components/StatusTimeline.jsx';
 import ProductStudioPanel from '../components/ProductStudioPanel.jsx';
 import { programLabel, loanTypeLabel, propertyTypeLabel, officerLabel } from '../lib/labels.js';
+import { PROPERTY_TYPES } from '../lib/enums.js';
 import ToolModal from '../components/ToolModal.jsx';
 import LlcPicker from '../components/LlcPicker.jsx';
 import LlcManager from '../components/LlcManager.jsx';
@@ -465,7 +466,8 @@ function BorrowerCompleteness({ app, profile, appId, onSaved }) {
   const b = profile || {};
   const fields = [
     { key: 'property_address', label: 'Property address', ok: !!(app.property_address && (app.property_address.oneLine || app.property_address.street)), edit: false },
-    { key: 'property_type', label: 'Property type', ok: !!app.property_type, type: 'select', options: ['SFR', 'Multi 2-4', 'Multi 5+', 'Condo', 'Townhouse', 'Mixed Use'] },
+    // Canonical spellings (lib/enums.js) — a drifted one can't reach ClickUp (#822).
+    { key: 'property_type', label: 'Property type', ok: !!app.property_type, type: 'select', options: PROPERTY_TYPES.map((o) => o.value) },
     { key: 'purchase_price', label: 'Purchase price', ok: app.purchase_price != null, type: 'money' },
     { key: 'arv', label: 'ARV (estimate)', ok: app.arv != null, type: 'money' },
     { key: 'rehab_budget', label: 'Rehab budget', ok: app.rehab_budget != null, type: 'money' },

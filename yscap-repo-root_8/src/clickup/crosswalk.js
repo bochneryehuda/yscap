@@ -18,10 +18,27 @@ const FIELDS = {
       'Fix & Flip w/ Construction': 'Fix & Flip With Construction',
       'Bridge': 'bridge Without Construction',
       'Ground-Up Construction': 'Ground-Up',        // NEW option (owner adding)
+      // Fix & Hold (BRRRR) — a real RTL product we originate (loan-primer: "fix
+      // & flip, fix & hold"): pricing.js `engineStrategy` prices it, the EMCAP
+      // tape exports it, the Encompass map compares it. It had NO ClickUp option,
+      // which is what made an officer's "Fix & Flip → Fix & Hold" edit bounce
+      // back (#822). Owner is adding the option named exactly "Fix & Hold".
+      // Until it exists in the live dropdown this label simply resolves to no
+      // option id and the write is skipped — and `inbound-enum-guard` keeps the
+      // portal value + parks a review saying so, so nothing is silently lost.
+      'Fix & Hold': 'Fix & Hold',
       'Not sure yet': null,                          // leave blank; officer sets
     },
-    // inbound labels with no exact portal twin
-    fromExtra: { 'Private hard money': 'Bridge' },
+    // inbound labels with no exact portal twin. The Fix & Hold spellings are
+    // here so the INBOUND read still lands on our canonical 'Fix & Hold' if the
+    // option ends up named slightly differently in ClickUp (BRRRR is the same
+    // strategy — pricing.js already treats "hold" and "brrrr" identically).
+    fromExtra: {
+      'Private hard money': 'Bridge',
+      'Fix and Hold': 'Fix & Hold',
+      'Fix & Hold (BRRRR)': 'Fix & Hold',
+      'BRRRR': 'Fix & Hold',
+    },
   },
   loan_type: {
     id: 'ee1b564f-13cb-4841-af4c-e0f762cbcf52',

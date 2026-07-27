@@ -24,9 +24,38 @@ const eq = (a, b, m) => { assert.strictEqual(a, b, m); n++; };
 /* ---------------------------------------------------------------- crosswalk */
 
 // THE REPORTED VALUE. 'Fix & Hold' is a real PILOT program (pricing.js prices it,
-// the EMCAP tape exports it) with no ClickUp *Program option — the exact shape
-// that used to be dropped in silence.
-ok(X.unmappableToClickUp('program', 'Fix & Hold'), 'Fix & Hold has no ClickUp twin');
+// the EMCAP tape exports it). The crosswalk now maps it to a ClickUp option named
+// "Fix & Hold" (owner adding it 2026-07-27), so it is mappable BY LABEL...
+ok(!X.unmappableToClickUp('program', 'Fix & Hold'), 'Fix & Hold has a crosswalk label');
+// ...but until that option actually EXISTS in the live dropdown the write would
+// still vanish, so against a live option list that lacks it, it is unmappable and
+// the guard protects the value. This is the state the owner is in right now.
+{
+  const beforeOwnerAddsIt = [{ name: 'Fix & Flip With Construction' }, { name: 'bridge Without Construction' }, { name: 'Ground-Up' }];
+  ok(X.unmappableToClickUp('program', 'Fix & Hold', beforeOwnerAddsIt),
+    'Fix & Hold is unmappable while the ClickUp option is missing — value protected');
+  const afterOwnerAddsIt = [...beforeOwnerAddsIt, { name: 'Fix & Hold' }];
+  ok(!X.unmappableToClickUp('program', 'Fix & Hold', afterOwnerAddsIt),
+    'once the ClickUp option exists it syncs normally');
+  // The write resolves to that option's real id — this is what makes it round-trip.
+  const withIds = [{ id: 'opt-fh', name: 'Fix & Hold' }];
+  eq(X.resolveWriteId('program', 'Fix & Hold', withIds), 'opt-fh', 'outbound resolves the Fix & Hold option id');
+  // And the INBOUND read maps that label back to our canonical value.
+  eq(X.fromClickUpLabel('program', 'Fix & Hold'), 'Fix & Hold', 'inbound reads Fix & Hold back');
+  eq(X.fromClickUpLabel('program', 'Fix and Hold'), 'Fix & Hold', 'inbound tolerates "Fix and Hold"');
+  eq(X.fromClickUpLabel('program', 'BRRRR'), 'Fix & Hold', 'inbound tolerates "BRRRR"');
+}
+// A Fix & Hold card must MATERIALIZE a loan file — otherwise it would be pulled
+// for profile data only and an existing linked file would stop syncing.
+{
+  const ingest = require('../src/clickup/ingest');
+  ok(ingest.RTL_PROGRAMS.has('Fix & Hold'), 'Fix & Hold is an RTL program (creates/keeps a loan file)');
+  ok(ingest.RTL_PROGRAMS.has('Fix & Flip w/ Construction'), 'the original RTL programs are untouched');
+  ok(!ingest.RTL_PROGRAMS.has('DSCR / Rental'), 'a non-RTL program is still data-only');
+  // Fix & Hold must never be classified as positively NON-RTL (that would descope
+  // a live file when the card is set to it).
+  ok(!X.isNonRtlProgramLabel('Fix & Hold'), 'Fix & Hold is never treated as non-RTL');
+}
 // The canonical spellings DO map — they must never be flagged.
 ok(!X.unmappableToClickUp('program', 'Fix & Flip w/ Construction'), 'canonical Fix & Flip maps');
 ok(!X.unmappableToClickUp('program', 'Bridge'), 'Bridge maps');
@@ -71,15 +100,40 @@ ok(PROTECTED.includes('property_type'), 'property_type is protected');
 // (derived from FIELD_MAP, never hand-listed) must not claim it.
 ok(!PROTECTED.includes('occupancy'), 'pull-only occupancy is not protected');
 
-// THE REGRESSION. PILOT holds Fix & Hold; ClickUp still says Fix & Flip.
+// The LIVE ClickUp *Program dropdown as it stands before the owner adds the new
+// option (read from the real workspace 2026-07-27). Every inbound path supplies
+// this map — `clickup-sync` calls optionMap() and passes it into ingestTask — so
+// the guard always has it in production. Keyed by CUSTOM-FIELD ID, like the real one.
+const PROGRAM_FIELD_ID = '50eb857a-d8b1-4c48-9ffe-20b15cdf1338';
+const LIVE_OPTIONS_TODAY = {
+  [PROGRAM_FIELD_ID]: [
+    { name: 'Fix & Flip With Construction' }, { name: 'Ground-Up' },
+    { name: 'Non-QM - DSCR Ratio' }, { name: 'bridge Without Construction' },
+    { name: 'Private hard money' },
+    // NOTE: no "Fix & Hold" — that is the option the owner is adding.
+  ],
+};
+const LIVE_OPTIONS_AFTER = {
+  [PROGRAM_FIELD_ID]: [...LIVE_OPTIONS_TODAY[PROGRAM_FIELD_ID], { name: 'Fix & Hold' }],
+};
+
+// THE REGRESSION. PILOT holds Fix & Hold; ClickUp still says Fix & Flip, and the
+// ClickUp dropdown has no Fix & Hold option yet — so the value must be protected.
 {
   const cols = { program: 'Fix & Flip w/ Construction', purchase_price: 500000 };
-  const held = guard.unmappableOverwrites(cols, { program: 'Fix & Hold' });
+  const held = guard.unmappableOverwrites(cols, { program: 'Fix & Hold' }, LIVE_OPTIONS_TODAY);
   eq(held.length, 1, 'the unmappable program overwrite is caught');
   eq(held[0].field, 'program', 'it names the program column');
   eq(held[0].kept, 'Fix & Hold', "it keeps PILOT's value");
   eq(held[0].incoming, 'Fix & Flip w/ Construction', 'it records what ClickUp tried to write');
   ok(guard.summarize(held).includes('Fix & Hold'), 'the summary names the kept value');
+
+  // ONCE THE OWNER ADDS THE OPTION: nothing is held, because the push can now
+  // actually write it — the two systems agree on their own and the parked review
+  // self-closes. This is the whole point of the ClickUp-side change.
+  const cols2 = { program: 'Fix & Flip w/ Construction' };
+  eq(guard.unmappableOverwrites(cols2, { program: 'Fix & Hold' }, LIVE_OPTIONS_AFTER).length, 0,
+    'once the ClickUp option exists, Fix & Hold syncs normally and nothing is held');
 }
 
 // A value ClickUp CAN hold syncs exactly as before — this guard must be a no-op
@@ -109,7 +163,7 @@ eq(guard.unmappableOverwrites({ program: 'Bridge' }, null).length, 0, 'null curr
 // inbound pull actually builds.
 {
   const cols = { program: 'Fix & Flip w/ Construction', loan_type: 'Purchase' };
-  for (const h of guard.unmappableOverwrites(cols, { program: 'Fix & Hold', loan_type: 'Purchase' })) cols[h.field] = null;
+  for (const h of guard.unmappableOverwrites(cols, { program: 'Fix & Hold', loan_type: 'Purchase' }, LIVE_OPTIONS_TODAY)) cols[h.field] = null;
   eq(cols.program, null, 'program is nulled so COALESCE keeps the portal value');
   eq(cols.loan_type, 'Purchase', 'an unrelated mappable column is untouched');
 }
