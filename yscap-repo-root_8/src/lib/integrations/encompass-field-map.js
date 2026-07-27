@@ -318,8 +318,23 @@ function comparableKeys() {
  * an already-flat `{ fields: {…} }` envelope (registry keys only) so it is
  * idempotent.
  */
+// Every Encompass field id the registry needs — handed to the fieldReader so we can
+// read them BY NUMBER instead of guessing where each one lives in the loan JSON.
+function allFieldIds() { return REGISTRY.map((e) => e.encompassFieldId).filter(Boolean); }
+
 function flattenLoan(rawLoan) {
   const out = {};
+  // AUTHORITATIVE first (owner-directed 2026-07-26): values read straight from
+  // Encompass BY FIELD NUMBER (the reader stashes them on `_fieldValues`). The same
+  // field number lives at different JSON paths on different loans, so a number we
+  // were GIVEN always beats a path we GUESSED. Everything below only fills gaps.
+  const authoritative = (rawLoan && rawLoan._fieldValues && typeof rawLoan._fieldValues === 'object') ? rawLoan._fieldValues : null;
+  if (authoritative) {
+    for (const [id, v] of Object.entries(authoritative)) {
+      if (v === undefined || v === null || v === '') continue;
+      out[id] = { value: v };
+    }
+  }
   if (!rawLoan || typeof rawLoan !== 'object') return { fields: out };
 
   // Custom fields — customFields[] = [{ fieldName, value, format }] — registry-only.
@@ -330,7 +345,7 @@ function flattenLoan(rawLoan) {
     // good standard-field loanPath below (which is exactly how 1859 / 388 read as
     // "no data"). A blank custom field carries no information — the loanPath wins.
     if (cf.value === undefined || cf.value === null || cf.value === '') continue;
-    out[cf.fieldName] = { value: cf.value, format: cf.format };
+    if (!(cf.fieldName in out)) out[cf.fieldName] = { value: cf.value, format: cf.format };
   }
 
   // Standard fields — resolve each registry entry's loanPath off the loan object.
@@ -554,6 +569,7 @@ module.exports = {
   comparableKeys,
   extractFields,
   flattenLoan,
+  allFieldIds,
   mapValue,
   compareField,
   _internals: { coerce, readField, getPath, num, normText, normName, normDate, KNOWN_FIELD_IDS, MONEY_TOL, PERCENT_TOL },

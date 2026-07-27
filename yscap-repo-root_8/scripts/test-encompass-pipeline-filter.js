@@ -96,7 +96,7 @@ global.fetch = async (url, init) => {
     // (4) The READ-ONLY export surface is unchanged by the fix.
     assert.deepStrictEqual(
       Object.keys(encompass).sort(),
-      ['READ_ONLY', 'apiGet', 'configured', 'name', 'ping', 'pipelineSearch'],
+      ['READ_ONLY', 'apiGet', 'configured', 'fieldReader', 'name', 'ping', 'pipelineSearch'],
     );
     assert.strictEqual(encompass.READ_ONLY, true);
     ok('read-only export surface unchanged');
