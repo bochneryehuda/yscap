@@ -256,9 +256,15 @@ function withUnit(oneLine, unit) {
   const line = String(oneLine || '').trim();
   const u = String(unit || '').trim();
   if (!line || !u) return line;
-  const compact = (s) => String(s).toLowerCase().replace(/[^a-z0-9]/g, '');
-  if (compact(line).includes(compact(u))) return line;   // already carries the unit
   const i = line.indexOf(',');
+  const street = i === -1 ? line : line.slice(0, i);
+  const compact = (s) => String(s).toLowerCase().replace(/[^a-z0-9]/g, '');
+  const cs = compact(street), cu = compact(u);
+  // Already carries the unit only when the STREET segment (where withUnit puts it)
+  // ENDS with it — anchoring on the street end, not a whole-line substring, so a
+  // bare-numeric unit ("6") is never falsely matched by a digit elsewhere in the
+  // address (a house number / ZIP), which would drop it.
+  if (cu && (cs === cu || cs.endsWith(cu))) return line;
   return i === -1 ? `${line} ${u}` : `${line.slice(0, i)} ${u}${line.slice(i)}`;
 }
 

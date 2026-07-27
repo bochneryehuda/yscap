@@ -131,6 +131,9 @@ eq(ADDR.withUnit('1254 42nd St, Brooklyn, NY 11219', 'Apt 6B'), '1254 42nd St Ap
 eq(ADDR.withUnit('1254 42nd St, Brooklyn, NY 11219', ''), '1254 42nd St, Brooklyn, NY 11219', 'no unit -> unchanged');
 eq(ADDR.withUnit('1254 42nd St Apt 6B, Brooklyn, NY 11219', 'Apt 6B'), '1254 42nd St Apt 6B, Brooklyn, NY 11219', 'idempotent when the unit is already present');
 eq(ADDR.withUnit('55 Broadway', '#12'), '55 Broadway #12', 'no comma -> appended to the end');
+// a BARE-NUMERIC unit is not falsely "already present" because a digit appears in the house number / zip
+eq(ADDR.withUnit('1600 Pennsylvania Ave, Washington, DC 20500', '6'), '1600 Pennsylvania Ave 6, Washington, DC 20500', 'a bare-numeric unit "6" is re-attached even though the address has a 6 elsewhere');
+eq(ADDR.withUnit('1254 42nd St 6, Brooklyn, NY 11219', '6'), '1254 42nd St 6, Brooklyn, NY 11219', 'a bare-numeric unit already on the street is not duplicated');
 // round-trip: strip for the geocode, re-attach for the stored value
 eq(ADDR.withUnit(ADDR.withoutUnit('100 Main St Unit 4D, Lakewood, NJ 08701'), 'Unit 4D'), '100 Main St Unit 4D, Lakewood, NJ 08701', 'withoutUnit -> withUnit round-trips to the mailing form');
 
