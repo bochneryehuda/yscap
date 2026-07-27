@@ -120,12 +120,98 @@ for (const v of [null, undefined, 0, {}, [], { line1: {} }, 'x', '...,,,']) {
   ok(!threw, 'hostile input never throws: ' + JSON.stringify(v));
 }
 
+// ── 3b. the DIRECTIONAL rule (owner-reported 2026-07-27) ──────────────────
+// "Property address | 1727 2nd St Piscataway NJ 08854 | 1727 S 2ND ST
+// PISCATAWAY NJ 08854 | Doesn't match" — one home. The Encompass side is the
+// USPS-standardized spelling; ours simply omits the "S". A directional only ONE
+// side wrote is the same address with less detail (the call the unit rule
+// already makes); two DIFFERENT directionals stay two real streets.
+const DIR_SAME = [
+  ['1727 2nd St Piscataway NJ 08854', '1727 S 2ND ST PISCATAWAY NJ 08854', "the owner's row, verbatim (no commas)"],
+  ['1727 2nd St, Piscataway, NJ 08854', '1727 S 2ND ST, PISCATAWAY, NJ 08854', 'same row, comma form'],
+  ['12 Oak St, Monsey, NY 10952', '12 N Oak St, Monsey, NY 10952', 'leading directional on one side'],
+  ['12 Oak St NW, Monsey, NY 10952', '12 Oak St, Monsey, NY 10952', 'trailing directional on one side'],
+  ['12 S Oak St, Monsey, NY 10952', '12 Oak St S, Monsey, NY 10952', 'same directional, written at either end'],
+  ['1727 S 2nd St, Piscataway, NJ 08854', '1727 SOUTH 2ND STREET, PISCATAWAY, NJ 08854', 'abbreviated vs spelled out'],
+  ['12 North Ave, Monsey, NY 10952', '12 N Ave, Monsey, NY 10952', 'a street NAMED North is still abbreviated, not erased'],
+];
+for (const [a, b, why] of DIR_SAME) ok(ADDR.sameAddress(a, b), `same home (${why}): "${a}" vs "${b}"`);
+
+const DIR_DIFFERENT = [
+  ['12 W 42nd St, New York, NY 10036', '12 E 42nd St, New York, NY 10036', 'W vs E — two real streets'],
+  ['12 N Oak St, Monsey, NY 10952', '12 S Oak St, Monsey, NY 10952', 'N vs S'],
+  ['12 Oak St NW, Washington, DC 20001', '12 Oak St NE, Washington, DC 20001', 'NW vs NE'],
+  ['12 North Ave, Monsey, NY 10952', '12 South Ave, Monsey, NY 10952', 'the street name IS the direction — never reduced to nothing'],
+  ['12 West End Ave, New York, NY 10023', '12 East End Ave, New York, NY 10023', 'West End vs East End'],
+  ['1727 S 2nd St, Piscataway, NJ 08854', '1727 S 3rd St, Piscataway, NJ 08854', 'directional matches, street does not'],
+  ['1727 2nd St, Piscataway, NJ 08854', '1729 S 2nd St, Piscataway, NJ 08854', 'one-sided directional never excuses a different house number'],
+  ['1727 2nd St, Piscataway, NJ 08854', '1727 S 2nd St, Piscataway, NJ 08855', 'one-sided directional never excuses a different ZIP'],
+];
+for (const [a, b, why] of DIR_DIFFERENT) ok(!ADDR.sameAddress(a, b), `stays a review (${why}): "${a}" vs "${b}"`);
+
+// The grouping key must be BYTE-IDENTICAL to before this rule existed — it is
+// used to dedupe/group addresses, where "S 2nd St" and "2nd St" are separate
+// buckets on purpose. Only sameAddress() learned the new tolerance.
+for (const [addr, key, why] of [
+  ['1727 S 2nd St, Piscataway, NJ 08854', '1727|south2|08854', 'the directional is still IN the grouping key'],
+  ['1727 2nd St, Piscataway, NJ 08854', '1727|2|08854', 'no directional — unchanged'],
+  ['100 Whisper Vlg Wy, Lakewood, NJ 08701', '100|whispervlg|08701', 'optional street type still dropped'],
+  ['10 Oak St NW, Washington, DC 20001', '10|oak|20001', 'trailing token handling unchanged'],
+]) ok(ADDR.addressCompareKey(addr) === key, `addressCompareKey unchanged (${why}): "${addr}" -> ${ADDR.addressCompareKey(addr)}`);
+
 // ── 4. it is wired where the rows come from ───────────────────────────────
 const enrich = require(R + '/src/encompass/enrich');
 ok(/sameAddress/.test(require('fs').readFileSync(R + '/src/encompass/enrich.js', 'utf8')),
   'the Encompass enrichment decides agreement with sameAddress');
 ok(/sameAddress/.test(require('fs').readFileSync(R + '/src/lib/sync-review-recheck.js', 'utf8')),
   'the sync-review re-check decides agreement with sameAddress');
+ok(/sameAddress/.test(require('fs').readFileSync(R + '/src/encompass/reconcile.js', 'utf8')),
+  'the Encompass comparison panel decides agreement with sameAddress');
+
+// …and END-TO-END through the panel itself: the owner's exact row must come back
+// 'match'. This is the surface that reported "Doesn't match" — the letters-only
+// key it used before could never see past the missing "S".
+{
+  const reconcile = require(R + '/src/encompass/reconcile');
+  const compareIdentity = reconcile._internals.compareIdentity;
+  const loanFor = (street, city, state, zip) => ({
+    applications: [{ borrower: { firstName: 'Test', lastName: 'Borrower' } }],
+    property: { streetAddress: street, city, state, postalCode: zip },
+  });
+  const row = (addr) => ({ b_first_name: 'Test', b_last_name: 'Borrower', property_address: addr });
+  const addrRow = (ourAddr, loan) => compareIdentity(row(ourAddr), loan).find((f) => f.key === 'id_property_address');
+
+  const owner = addrRow({ oneLine: '1727 2nd St, Piscataway, NJ 08854' },
+    loanFor('1727 S 2ND ST', 'PISCATAWAY', 'NJ', '08854'));
+  ok(owner && owner.status === 'match',
+    `the owner's property-address row now MATCHES (got ${owner && owner.status})`);
+
+  const realDiff = addrRow({ oneLine: '1729 2nd St, Piscataway, NJ 08854' },
+    loanFor('1727 S 2ND ST', 'PISCATAWAY', 'NJ', '08854'));
+  ok(realDiff && realDiff.status === 'mismatch',
+    `a different house number still MISMATCHES (got ${realDiff && realDiff.status})`);
+
+  const oppositeDir = addrRow({ oneLine: '1727 N 2nd St, Piscataway, NJ 08854' },
+    loanFor('1727 S 2ND ST', 'PISCATAWAY', 'NJ', '08854'));
+  ok(oppositeDir && oppositeDir.status === 'mismatch',
+    `N vs S still MISMATCHES (got ${oppositeDir && oppositeDir.status})`);
+
+  const missing = addrRow(null, loanFor('1727 S 2ND ST', 'PISCATAWAY', 'NJ', '08854'));
+  ok(missing && missing.status === 'incomparable',
+    `a blank side is still "no data to compare", never a false match (got ${missing && missing.status})`);
+
+  // A stored staff RESOLUTION is held by comparing the NORMALIZED values
+  // (`snap(cmp.oursNorm) === snap(r.ours_snapshot)`), and `normName` turns a
+  // comma into a space — so switching `_addrStr` from a space-join to the
+  // canonical comma one-line leaves every existing resolution snapshot intact.
+  // If this ever drifts, previously-accepted address findings would all re-open.
+  const spaceJoined = addrRow({ oneLine: '1727 S 2ND ST PISCATAWAY NJ 08854' },
+    loanFor('1727 S 2ND ST', 'PISCATAWAY', 'NJ', '08854'));
+  const commaJoined = addrRow({ oneLine: '1727 S 2ND ST, PISCATAWAY, NJ 08854' },
+    loanFor('1727 S 2ND ST', 'PISCATAWAY', 'NJ', '08854'));
+  ok(spaceJoined.theirsNorm === commaJoined.theirsNorm && spaceJoined.oursNorm === commaJoined.oursNorm,
+    'the normalized key is identical either way — stored resolutions are not invalidated');
+}
 // the ClickUp no-op suppression: PILOT stops at the ZIP, ClickUp appends ", USA"
 // (ClickUp's stored value carries no coordinates here — the formatted-address
 // fallback path, which is where the ", USA" difference used to bite.)

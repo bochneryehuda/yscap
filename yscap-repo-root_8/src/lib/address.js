@@ -369,11 +369,17 @@ function stateCompareKey(v) {
 // NEVER IGNORED (a real difference a human must settle):
 //   a different house number (755 vs 702 Bedford), a different street
 //   (34 Baila Dr vs 5 14th St), a different ZIP (08701 vs 08071, 10950 vs
-//   10350 — usually a typo worth fixing), a different state, and two units that
-//   are both present and DIFFERENT (Apt 3L vs Apt 5B).
+//   10350 — usually a typo worth fixing), a different state, two units that
+//   are both present and DIFFERENT (Apt 3L vs Apt 5B), and two DIFFERENT
+//   directionals (W 42nd St vs E 42nd St are two real streets).
 //
 // One side missing the unit entirely is NOT a conflict: it is the same address
-// written with less detail, and the review offered no decision to make.
+// written with less detail, and the review offered no decision to make. The
+// same call is made for a missing DIRECTIONAL (owner-reported 2026-07-27:
+// "1727 2nd St Piscataway NJ 08854" vs the USPS-standardized
+// "1727 S 2ND ST PISCATAWAY NJ 08854" — one home, and the strict compare left a
+// mismatch nobody could act on). Only ONE side may omit it; a genuine N-vs-S
+// disagreement still reads as two different streets.
 // ===========================================================================
 
 // Unit keywords, including the forms Encompass uses.
@@ -416,17 +422,27 @@ function addressTextOf(v) {
   return [street, pick(v.city), tail].filter(Boolean).join(', ');
 }
 
+// The CANONICAL directional words (what TYPE_CANON maps "S"/"south" onto). Held
+// as their own set so a directional can be split OFF the street name: it is the
+// one street token a writer routinely omits, so it must be compared separately
+// rather than folded into the street key. Not the same list as DIRECTIONALS
+// above (that one maps every spelling to its USPS abbreviation for DISPLAY;
+// this one is the post-TYPE_CANON comparison form).
+const DIR_CANON = new Set(['north', 'south', 'east', 'west', 'northeast', 'northwest', 'southeast', 'southwest']);
+
 // "15th" -> "15", "61th" -> "61" (a typo for 61st is the same street).
 const dropOrdinal = (t) => t.replace(/^(\d+)(?:st|nd|rd|th)$/i, '$1');
 const alnum = (t) => String(t || '').toLowerCase().replace(/[^a-z0-9]/g, '');
 
 /**
  * Split any address into the pieces that decide identity.
- * Returns { house, street, streetBase, unit, city, state, zip } — all lowercase
- * comparison keys, '' when absent. Never throws.
+ * Returns { house, street, streetBase, dir, streetCore, streetCoreBase, unit,
+ * city, state, zip } — all lowercase comparison keys, '' when absent. Never
+ * throws. `street`/`streetBase` INCLUDE the directional; `streetCore`/
+ * `streetCoreBase` are the same street with it lifted off into `dir`.
  */
 function parseAddressParts(v) {
-  const out = { house: '', street: '', streetBase: '', unit: '', city: '', state: '', zip: '' };
+  const out = { house: '', street: '', streetBase: '', dir: '', streetCore: '', streetCoreBase: '', unit: '', city: '', state: '', zip: '' };
   let s = addressTextOf(v).replace(/\s+/g, ' ').trim();
   if (!s) return out;
   // country off the end, then ZIP (+4 collapsed), then state
@@ -510,6 +526,24 @@ function parseAddressParts(v) {
   out.street = norm.join('');
   const tail = norm[norm.length - 1];
   out.streetBase = (norm.length > 1 && tail && OPTIONAL_TYPE.has(tail)) ? norm.slice(0, -1).join('') : out.street;
+
+  // The DIRECTIONAL, held separately from the street name. `street`/`streetBase`
+  // are left exactly as they were (directional included) so every existing
+  // consumer — addressCompareKey's grouping key above all — is byte-identical;
+  // `streetCore` is the same street with the directional lifted off, and `dir`
+  // is what was lifted. sameAddress uses the pair to accept a directional that
+  // only ONE side wrote while still refusing N-vs-S. Both ends are stripped
+  // ("S 2nd St", "2nd St S", "10th St NW"), never the LAST remaining token, so a
+  // street genuinely named "North" can't reduce to nothing. `dir` is sorted so
+  // the two ends are compared as a set, not by where they were written.
+  const core = norm.slice();
+  const dirs = [];
+  while (core.length > 1 && DIR_CANON.has(core[0])) dirs.push(core.shift());
+  while (core.length > 1 && DIR_CANON.has(core[core.length - 1])) dirs.push(core.pop());
+  out.dir = dirs.sort().join(' ');
+  out.streetCore = core.join('');
+  const ctail = core[core.length - 1];
+  out.streetCoreBase = (core.length > 1 && ctail && OPTIONAL_TYPE.has(ctail)) ? core.slice(0, -1).join('') : out.streetCore;
   return out;
 }
 
@@ -535,8 +569,19 @@ function sameAddress(a, b) {
     const x = parseAddressParts(a), y = parseAddressParts(b);
     if (!x.house || !y.house || !x.street || !y.street) return false;
     if (!houseMatches(x.house, y.house)) return false;
-    const streetOk = x.street === y.street
-      || (!!x.streetBase && x.streetBase === y.streetBase && (x.street === x.streetBase || y.street === y.streetBase));
+    // Equal outright, or equal once an OPTIONAL street type ("Wy") that only one
+    // side wrote is dropped.
+    const sameStreetKey = (k, kb) => x[k] === y[k]
+      || (!!x[kb] && x[kb] === y[kb] && (x[k] === x[kb] || y[k] === y[kb]));
+    let streetOk = sameStreetKey('street', 'streetBase');
+    if (!streetOk && sameStreetKey('streetCore', 'streetCoreBase')) {
+      // Same street name; the ONLY difference is the directional. One side
+      // simply omitting it is the same address written with less detail (the
+      // call the unit rule already makes). Both sides naming a DIFFERENT one is
+      // two real streets — W 42nd St is not E 42nd St — so that stays a
+      // mismatch. Still guarded by house number + ZIP/state below.
+      streetOk = !x.dir || !y.dir || x.dir === y.dir;
+    }
     if (!streetOk) return false;
     if (x.state && y.state && x.state !== y.state) return false;
     // The ZIP is the authority on locality. Only when one side has no ZIP does

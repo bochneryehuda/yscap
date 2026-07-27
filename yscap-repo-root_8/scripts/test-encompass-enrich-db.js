@@ -95,6 +95,25 @@ const loanFor = (first, last, dob, addr, llcName) => ({
     assert.strictEqual(trCount, 2, 'still exactly 2 track records (1 human + 1 Encompass) — no duplicates');
     ok('the pass is idempotent — running again creates no duplicates');
 
+    // A DIRECTIONAL only one side writes is the SAME property (owner-reported
+    // 2026-07-27: our "1727 2nd St" vs Encompass's USPS-standardized
+    // "1727 S 2ND ST"). The old letters-only key called those two houses and
+    // filed the borrower's property onto their track record a second time.
+    const C = { street: '1727 S 2nd St', city: 'Piscataway', state: 'NJ', zip: '08854' };
+    const ours = { formatted_address: '1727 2nd St, Piscataway, NJ 08854' };
+    await client.query(
+      `INSERT INTO track_records (borrower_id, property_address, is_verified, origin, address_key, notes)
+       VALUES ($1,$2::jsonb, true, 'portal', $3, 'human record, no directional')`,
+      [b.id, JSON.stringify(ours), enrich._internals.addrKey(ours)]);
+    await snap('G-C', loanFor('Yehuda', 'Bochner', '1985-03-10', C, null));
+    const s3 = await enrich.enrichAllOnce({ dbc: client });
+    assert.strictEqual(s3.addressesAdded, 0,
+      'a one-sided directional is the SAME property — nothing added');
+    const cCount = (await client.query(
+      `SELECT count(*)::int n FROM track_records WHERE borrower_id=$1`, [b.id])).rows[0].n;
+    assert.strictEqual(cCount, 3, 'still 3 track records — the S/no-S spelling did not create a 4th');
+    ok('"1727 2nd St" and "1727 S 2ND ST" are ONE property on the track record');
+
     // Conservative matching — a second borrower with the SAME name+DOB makes it ambiguous → no match.
     await client.query(`INSERT INTO borrowers (first_name,last_name,email,date_of_birth) VALUES ('Yehuda','Bochner',$1,'1985-03-10')`, [`dup+${suffix}@example.com`]);
     const amb = await enrich.matchBorrower(client, { first: 'Yehuda', last: 'Bochner', dob: '1985-03-10' }, null);

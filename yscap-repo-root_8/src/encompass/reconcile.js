@@ -23,6 +23,9 @@
 // (buildOurValues / compareAll / summarize) import without a Postgres driver
 // (repo convention — see the draw-report lazy-require note in CLAUDE.md).
 const map = require('../lib/integrations/encompass-field-map');
+// The ONE place that decides whether two addresses are the same PLACE. Pure (no
+// DB, no network), so it is safe to require eagerly alongside the field map.
+const ADDR = require('../lib/address');
 
 // Our-side deal type is NOT a column — applications stores it as `program`
 // ("Fix & Flip w/ Construction" / "Bridge" / "DSCR") + `loan_type` ("Ground up"
@@ -328,7 +331,16 @@ function _addrStr(a) {
   // report a false MATCH on a block-gated identity row. With no street, fall back
   // to a one-line address if there is one, else report nothing to compare.
   if (!String(street || '').trim()) return oneLine;
-  const built = parts.map((x) => (x == null ? '' : String(x).trim())).filter((x) => x !== '').join(' ');
+  // Build the CANONICAL one-line — "street, city, ST zip" (`address.canonicalOneLine`
+  // shape). It used to space-join every part, which was invisible to the old
+  // letters-only key (punctuation was stripped anyway) but is NOT invisible to
+  // `sameAddress`: with no commas the parser cannot find where the street ends,
+  // so the city glued itself onto the street name ("2ND ST PISCATAWAY") and the
+  // same home read as a mismatch. Comparison is unchanged for the strict key
+  // (`normName` drops punctuation either way) and the DISPLAYED value now reads
+  // the way every other address in PILOT does.
+  const t = (x) => (x == null ? '' : String(x).trim());
+  const built = [t(street), t(a.city), [t(a.state), t(zip)].filter(Boolean).join(' ')].filter(Boolean).join(', ');
   return _stripPlus4(built) || oneLine;
 }
 function _named(p) { return !!(p && ((p.firstName && String(p.firstName).trim()) || (p.lastName && String(p.lastName).trim()))); }
@@ -363,6 +375,19 @@ function compareIdentity(row, loan) {
     let status = 'incomparable';
     if (oursNorm != null && oursNorm !== '' && theirsNorm != null && theirsNorm !== '') {
       status = oursNorm === theirsNorm ? 'match' : 'mismatch';
+      // AN ADDRESS IS COMPARED BY MEANING, never by a letters-only key (the
+      // 2026-07-26 rule — "call sameAddress, never a letters-only key"). This
+      // panel was the one address comparison still on `normName`, which strips
+      // case and punctuation and NOTHING else, so the SAME home written two
+      // ways read as "Doesn't match" with no action a human could take
+      // (owner-reported 2026-07-27: our "1727 2nd St Piscataway NJ 08854" vs
+      // Encompass's USPS-standardized "1727 S 2ND ST PISCATAWAY NJ 08854").
+      // Layered ON TOP of the strict key: it can only ever turn a mismatch INTO
+      // a match, never the reverse, and it never touches "no data to compare" —
+      // so a genuinely different house number / street / ZIP / state still
+      // surfaces exactly as before, and a side sameAddress can't read (it is
+      // deliberately conservative) keeps the strict verdict.
+      if (status === 'mismatch' && compare === 'address' && ADDR.sameAddress(ours, theirs)) status = 'match';
     }
     out.push({
       key, encompassFieldId: null, label, category: 'identity', compare,
@@ -849,5 +874,7 @@ module.exports = {
   refresh,
   onLoanNumberSet,
   WRITABLE,
-  _internals: { snap, deriveDealType, tapeGateDecision, tapeGateError },
+  // `compareIdentity` is exported for the pure test only — it needs no DB, so the
+  // identity/address comparison can be proven without a Postgres.
+  _internals: { snap, deriveDealType, tapeGateDecision, tapeGateError, compareIdentity },
 };

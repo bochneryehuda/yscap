@@ -269,10 +269,19 @@ async function addTrackRecordIfAbsent(dbc, borrowerId, addr) {
     `SELECT id, property_address, address_key FROM track_records WHERE borrower_id=$1`, [borrowerId])).rows;
   let canon = null;
   try { const cfg = require('../config'); if (cfg && cfg.googlePlacesKey) canon = require('../lib/address-canon'); } catch (_) { /* optional */ }
+  // Same class as the panel fix (2026-07-27): `normAddr` is a letters-only key,
+  // so a property Encompass spells "1727 S 2ND ST" and we already hold as
+  // "1727 2nd St" read as two different properties and the SAME house was filed
+  // onto the borrower's track record twice. `sameAddress` is the one comparer
+  // that decides whether two addresses are the same PLACE; it is consulted
+  // BEFORE the optional Google `samePlace` (which needs an API key), so the
+  // dedupe holds on a tenant with no key configured.
+  const ADDR = require('../lib/address');
   for (const row of existing) {
     if (row.address_key && row.address_key === encKey) return { added: false, id: row.id, reason: 'already_present' };
     const exStr = addrString(row.property_address || {});
     if (exStr && normAddr(exStr) === encKey) return { added: false, id: row.id, reason: 'already_present' };
+    if (exStr && encStr && ADDR.sameAddress(encStr, exStr)) return { added: false, id: row.id, reason: 'already_present' };
     if (canon && exStr && encStr) {
       try { if ((await canon.samePlace(encStr, exStr)) === true) return { added: false, id: row.id, reason: 'already_present' }; } catch (_) { /* best-effort */ }
     }
