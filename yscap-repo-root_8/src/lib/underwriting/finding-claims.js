@@ -33,21 +33,27 @@
 const CLAIM_FAMILIES = [
   {
     claim: 'vesting_entity_vs_contract_buyer',
-    // All of these say one thing: the party buying on the contract is not the entity the loan vests
-    // into. The purchase chain, the entity chain, the chain of title and the contract check each
-    // reach that conclusion from their own direction — it is still one fact, and one fix (an
-    // assignment or a contract amendment before closing).
+    // All of these say ONE thing: the entity the loan vests into is not the party on the purchase /
+    // assignment / title documents. The tie-out, the purchase chain, the entity chain, the chain of
+    // title, the seller chain and the contract check each reach that from their own direction — it is
+    // still one fact, one fix (a final assignment or a contract amendment before closing). The owner
+    // saw this FIVE times on one file (2026-07-27, 76 THOMPSON ST LLC): a tie-out fatal, two
+    // entity-chain edge cards, a contract-buyer card and a seller-chain "personal name" card. They
+    // now merge to one.
     codes: [
       'contract_buyer_mismatch',
       'cot_final_buyer_not_vesting',
       'chain_vesting_not_reached',
-      'chain_vesting_vs_contract_buyer',
-      // NOT `contract_in_personal_name`. Audit 2026-07-26: it looks like the same claim but it is a
-      // DIFFERENT remedy — it carries `opensCondition: 'assignment_to_vesting_entity'` and a
-      // `post_condition` action (a routine vesting amendment), which the fatal survivor does not.
-      // Merging it took the "post the final-assignment-to-LLC condition" button off the desk. The two
-      // can also legitimately co-occur on different hops: a stranger entity on the contract (fatal)
-      // AND the final assignee in the borrower's personal name (routine).
+      'chain_vesting_vs_contract_buyer',    // entity-chain edge: vesting entity ≠ contract buyer
+      'chain_vesting_vs_title_party',       // entity-chain edge: vesting entity ≠ the party on the title
+      'tieout_entity_name',                 // the tie-out "Vesting entity doesn't match the file" fatal
+      // `contract_in_personal_name` IS included now (was excluded 2026-07-26). It was held out because
+      // it carries the actionable remedy — `opensCondition: 'assignment_to_vesting_entity'` and the
+      // "post the final-assignment-to-LLC condition" button — and merging it into the fatal tie-out
+      // survivor took that button off the desk. dedupeByClaim now CARRIES a merged member's specific
+      // remedy (its opensCondition + howTo) onto the survivor, so the one surviving card is the fatal
+      // AND offers the final-assignment condition. With that trap closed, this is one issue, one card.
+      'contract_in_personal_name',
     ],
   },
   {
@@ -98,6 +104,12 @@ for (const fam of CLAIM_FAMILIES) {
   if (fam.fileLevel) FILE_LEVEL_CLAIMS.add(`claim:${fam.claim}`);
 }
 
+// The properties that make a card ACTIONABLE. A merged survivor inherits any it lacks from the
+// rows folded into it — see the note in dedupeByClaim. `id` is what makes a finding resolvable;
+// `suggestionId` drives the AI-suggestion menu; `isgKey` is how the AI panel recognises its own
+// mirror. `opensCondition` is deliberately NOT here — #814's specificRemedyOf owns it with a
+// finer rule (it also replaces a GENERIC condition, not just an absent one).
+const HANDLE_KEYS = ['id', 'suggestionId', 'isgKey'];
 const SEV_RANK = { fatal: 3, warning: 2, info: 1 };
 function sevRank(s) { return SEV_RANK[String(s || '').toLowerCase()] || 0; }
 function norm(s) { return String(s == null ? '' : s).trim().toLowerCase(); }
@@ -139,6 +151,27 @@ function docKey(f) {
 }
 function claimOf(f) {
   if (!f || !f.code) return null;
+  // A PRODUCER-DECLARED claim beats the static code table. The note-buyer stack has three
+  // independent producers — the guideline desk (one row per note-buyer spec), the whole-loan run's
+  // rule table, and any future one — that read the SAME underlying signal and each name their
+  // finding differently: `isg_rural_property` (run) vs `isg_appraisal_review_3345` (CorrFirst's
+  // rural row) vs `isg_appraisal_review_123` (Blue Lake's). Keyed on their codes, they can never
+  // collide, so one rural file said "rural" three times — twice as a note, once as a dealbreaker.
+  //
+  // Listing those codes here would work today and rot tomorrow: the desk's codes are derived from
+  // cond_no, so a spec edit or a new note buyer silently re-splits the claim. Instead each producer
+  // declares WHICH FACT it is asserting (`factKey`, e.g. the signal name `appraisal_rural`), and
+  // that is the merge key. A new rule reading the same signal merges automatically, with no list to
+  // maintain. Nothing else sets factKey, so every other finding keys exactly as before.
+  // NAMED `factKey`, NOT `claimKey` (pre-merge audit 2026-07-27). `claimKey` was ALREADY TAKEN:
+  // routes/underwriting.js `decorate()` stamps `claimKey = claimOf(f)` onto every finding for the
+  // AI panel, and decorated findings go straight into `openRaw` — so reading `claimKey` here made
+  // claimOf re-read its OWN output and emit `claim:claim:…`. That silently un-grouped every
+  // CLAIM_FAMILY (the contract-buyer / entity-screening / fee-over-cap merges) AND broke #816's
+  // finding_decisions ledger, whose writes key on a RAW shape: a granted exception stopped
+  // suppressing and the finding came back on the next view. A producer declares the FACT; the
+  // route stamps the resulting CLAIM. Two different things, two different names.
+  if (f.factKey) return `claim:${norm(f.factKey)}`;
   const fam = CLAIM_OF_CODE.get(norm(f.code));
   if (fam) return `claim:${fam}`;
   return `code:${norm(f.code)}::${norm(f.field || '')}::${docKey(f)}`;
@@ -166,6 +199,18 @@ function isBlocking(f) {
 // Which of two findings for the same claim should SURVIVE as the one shown.
 // Most severe wins; then the one that explains itself best (the owner's complaint was thin
 // reasoning, so prefer the richer text); then the one carrying evidence to open.
+// A generic "an underwriter looked and cleared it" condition target that most desks default to.
+// When findings merge, a member that carries a SPECIFIC condition (e.g. the seller chain's
+// final-assignment-to-vesting-entity remedy) must hand it to the survivor, so collapsing to one
+// card never strips the actionable button — the exact trap that kept contract_in_personal_name out
+// of the vesting family before (owner-reported 2026-07-27).
+const GENERIC_OPENS_CONDITION = new Set(['underwriting_review_cleared']);
+function specificRemedyOf(f) {
+  const oc = f && f.opensCondition;
+  if (!oc || GENERIC_OPENS_CONDITION.has(String(oc))) return null;
+  return { opensCondition: String(oc), howTo: (f && f.howTo) || null };
+}
+
 function isBetter(candidate, current) {
   // A PERSISTED finding always outranks a derived restatement of it, whatever the severity. It is
   // the one with an id, so it is the one the underwriter can actually act on and the one the
@@ -192,6 +237,14 @@ function isBetter(candidate, current) {
  *
  * Never throws; a null/code-less finding passes through untouched.
  */
+function pickHandles(f) {
+  let out = null;
+  for (const k of HANDLE_KEYS) {
+    if (f && f[k] != null) { out = out || {}; out[k] = f[k]; }
+  }
+  return out;
+}
+
 function dedupeByClaim(findings) {
   const list = Array.isArray(findings) ? findings : [];
   const order = [];
@@ -203,7 +256,8 @@ function dedupeByClaim(findings) {
     if (!key) { passthrough.push({ f, at: order.length }); order.push(null); continue; }
     const prev = byClaim.get(key);
     if (!prev) {
-      byClaim.set(key, { rep: f, codes: new Set([norm(f.code)]), persisted: isPersisted(f) ? 1 : 0, at: order.length });
+      byClaim.set(key, { rep: f, codes: new Set([norm(f.code)]), persisted: isPersisted(f) ? 1 : 0,
+        remedy: specificRemedyOf(f), handles: pickHandles(f), at: order.length });
       order.push(key);
       continue;
     }
@@ -225,8 +279,13 @@ function dedupeByClaim(findings) {
       continue;
     }
     prev.codes.add(norm(f.code));
+    // Record every handle seen for this claim BEFORE choosing a winner, so the survivor can inherit
+    // one it does not carry itself. First writer wins per key — a real id is never overwritten.
+    const h = pickHandles(f);
+    if (h) prev.handles = prev.handles ? Object.assign({}, h, prev.handles) : h;
     if (isBetter(f, prev.rep)) prev.rep = f;
     if (isPersisted(f)) prev.persisted = 1;
+    if (!prev.remedy) prev.remedy = specificRemedyOf(f);   // first specific remedy among the members wins
   }
 
   const out = [];
@@ -243,7 +302,32 @@ function dedupeByClaim(findings) {
     emitted.add(key);
     const g = byClaim.get(key);
     const others = [...g.codes].filter((c) => c !== norm(g.rep.code));
-    out.push(others.length ? { ...g.rep, mergedFrom: others } : g.rep);
+    // TWO SEPARATE THINGS ARE CARRIED ONTO THE SURVIVOR, and they do not overlap.
+    //
+    // (1) THE ACTIONABLE HANDLES (pre-merge audit 2026-07-27). Winning on severity is not enough:
+    // the card only renders buttons when it has an `id` (resolvable) or a `suggestionId` (the
+    // AI-suggestion menu). A note-buyer fatal computed live from the whole-loan run has NEITHER, so
+    // when it beat the desk's warning the merged card became un-actionable — and once a staffer
+    // dismissed the desk row, the fatal stood alone with nothing to click, on every future view.
+    //
+    // (2) THE SPECIFIC REMEDY (#814). `opensCondition`/`howTo` deliberately are NOT handles: that
+    // rule is finer — it replaces a survivor's GENERIC condition, not merely an absent one, so the
+    // one surviving vesting card keeps its fatal severity AND the "post the final-assignment
+    // condition" button. Leaving opensCondition out of HANDLE_KEYS is what keeps the two from
+    // fighting over the same property; each owns its own concern.
+    let rep = g.rep;
+    if (g.handles) {
+      const add = {};
+      for (const k of HANDLE_KEYS) if (rep[k] == null && g.handles[k] != null) add[k] = g.handles[k];
+      if (Object.keys(add).length) rep = { ...rep, ...add };
+    }
+    const patch = {};
+    if (others.length) patch.mergedFrom = others;
+    if (g.remedy && (!rep.opensCondition || GENERIC_OPENS_CONDITION.has(String(rep.opensCondition)))) {
+      patch.opensCondition = g.remedy.opensCondition;
+      if (g.remedy.howTo) patch.howTo = g.remedy.howTo;
+    }
+    out.push(Object.keys(patch).length ? { ...rep, ...patch } : rep);
   }
   return out;
 }

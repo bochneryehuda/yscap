@@ -14,6 +14,7 @@
 
 const uwStatus = require('./uw-status');
 const findingRegistry = require('./finding-registry');
+const { dedupeByClaim } = require('./finding-claims');
 
 /**
  * decide(input) → {
@@ -32,7 +33,18 @@ const findingRegistry = require('./finding-registry');
  */
 function decide(input) {
   const i = input || {};
-  const registry = findingRegistry.consolidate(i.findings || []);
+  // Collapse the SAME real-world issue that several desks each named with their OWN code into one,
+  // BEFORE the code+subject consolidate (which keys on `code::subject` and so can never see across
+  // codes). This is the same claim-family dedupe the live file-view open-findings list already runs
+  // (src/routes/underwriting.js — dedupeByClaim), applied here so the PERSISTED run registry
+  // (underwriting_run_findings) and everything read back from it — the run cockpit count, the
+  // findings digest, the run diff, the tape/findings export — show ONE row per issue too, instead of
+  // the "same finding six times" the file view was already fixed for (owner-reported 2026-07-26/27).
+  // Run-path findings are derived objects with no id, so the claim dedupe folds them freely; the
+  // never-merge-two-persisted-rows safety rule inside dedupeByClaim only guards stored rows (with an
+  // id), and the merge keeps the most-severe representative, so the blocking/severity summary is
+  // unchanged — this only removes duplicate rows, it never changes a gate outcome.
+  const registry = findingRegistry.consolidate(dedupeByClaim(i.findings || []));
   const sum = findingRegistry.summarize(registry);
 
   // A material source-of-truth disagreement is a DATA_CONFLICT.

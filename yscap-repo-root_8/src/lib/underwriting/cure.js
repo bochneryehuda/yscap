@@ -338,7 +338,7 @@ function summarize(result, requirements, newFindings) {
 // PERSIST — write the clearance proof + spawn any new findings the analysis
 // surfaced. Runs on the caller's transaction (they pass a `client`).
 // -------------------------------------------------------------------------
-async function persistProof(client, { appId, checklistItemId, intentId, documentId, extractionId, analysis } = {}) {
+async function persistProof(client, { appId, checklistItemId, intentId, documentId, extractionId, analysis, suppressNotify } = {}) {
   if (!appId || !checklistItemId || !analysis) throw new Error('persistProof: appId, checklistItemId, analysis required');
   // Owner hard rule (2026-07-22): the AI does NOT create findings on its own. Every
   // new-finding the cure analysis surfaces becomes an AI SUGGESTION on the file's AI
@@ -349,7 +349,7 @@ async function persistProof(client, { appId, checklistItemId, intentId, document
   for (const f of (analysis.newFindings || [])) {
     try {
       const r = await aiSug.record(client, aiSug.fromCureNewFinding({
-        applicationId: appId, documentId, checklistItemId, extractionId, finding: f,
+        applicationId: appId, documentId, checklistItemId, extractionId, finding: f, suppressNotify,
       }));
       suggestionIds.push(r.id);
     } catch (_) { /* one bad suggestion never stops the proof */ }

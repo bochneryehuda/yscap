@@ -70,7 +70,27 @@ function keyOf(finding) {
     const shaped = f.appraisal_value != null && f.docValue == null && f.doc_value == null
       ? Object.assign({}, f, { docValue: f.appraisal_value })
       : f;
-    return claims.claimOf(shaped);
+    // THE LEDGER IDENTITY IGNORES `factKey` — DELIBERATELY (fourth audit pass).
+    //
+    // A producer's declared FACT is the right key for DISPLAY: three producers noticing
+    // one thing should be one card. It is the WRONG key for a DECISION, and three
+    // independent failures proved it:
+    //   - SEVERITY. `desk-sync` promises in as many words that "a decision on a warning
+    //     does not silence a later fatal" — a dismissal made while an item was mild must
+    //     not hold once the deal converts and the SAME rule becomes a dealbreaker. A fact
+    //     key carries no severity, so keying on it made that guard vacuous and silenced a
+    //     dealbreaker with a judgement made about something milder. That is a false clear.
+    //   - MEANING. Two rules share the signal `appraisal_transferred` and mean OPPOSITE
+    //     things: for Blue Lake a transferred appraisal is a decline that no letter fixes;
+    //     for every other buyer it is "ask for the transfer letter". Settling one must
+    //     never settle the other — the note buyer decides what the fact means.
+    //   - REVERSIBILITY. One key spanning several producers made a dismissal a one-way
+    //     door: re-opening it could no longer bring the finding back.
+    // So a decision stays what it has always been: about the finding a human actually
+    // looked at, at the severity they saw, under that producer's own code. That is also
+    // byte-identical to how every ledger row already on file was written, so nothing a
+    // human decided before this shipped stops working.
+    return claims.claimOf(Object.assign({}, shaped, { factKey: undefined }));
   } catch (_) { return null; }
 }
 

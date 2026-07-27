@@ -28,6 +28,17 @@ const EDGE_TITLES = {
   entity_insured:        'The vesting entity is not the named insured on the insurance',
 };
 
+// Canonical finding CODE per edge that asserts "the vesting entity is not the party on a document."
+// Stamping it as the suggestion's `evidence.code` lets finding-claims.claimOf recognize the edge as
+// the vesting_entity_vs_contract_buyer CLAIM, so the file view hides this AI-panel copy when the
+// SAME issue is already shown in the one Open-findings list (owner-reported 2026-07-27: the vesting
+// mismatch appeared as five separate cards). Only the party-identity edges map; the formation-stack
+// / good-standing edges are their own concerns and stay ungrouped.
+const EDGE_CLAIM_CODE = {
+  entity_is_buyer: 'chain_vesting_vs_contract_buyer',
+  entity_on_title: 'chain_vesting_vs_title_party',
+};
+
 /**
  * Sync entity-chain + seller-chain output → ai_suggestions on this file.
  * Best-effort — any failure is caught and never propagates.
@@ -50,7 +61,7 @@ async function syncChainsToSuggestions(client, appId, { entityChain, sellerChain
         title,
         body: `PILOT walked the entity's signing / ownership chain and found this link doesn't connect: ${e.detail || 'no detail available'}. This is not automatically a dealbreaker — an underwriter should look at it and decide whether to request a document, add a condition, or accept a legitimate difference (e.g. an amended entity name).`,
         severity: 'warning',
-        evidence: { edgeId: e.id, label: e.label, detail: e.detail, brokenEdges: entityChain.brokenEdges || [] },
+        evidence: { code: EDGE_CLAIM_CODE[e.id] || null, edgeId: e.id, label: e.label, detail: e.detail, brokenEdges: entityChain.brokenEdges || [] },
         proposedAction: { type: 'review_chain', edgeId: e.id },
         dedupeKey: `entity_chain:${e.id}`,
       });

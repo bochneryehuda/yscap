@@ -309,6 +309,13 @@ async function saveAnalysis(client, { documentId, applicationId, borrowerId, doc
             intentId: intent.id,
             documentId, extractionId,
             analysis,
+            // The ONE branch that still bombarded (post-merge audit 2026-07-27). Its sibling
+            // af.analyzeAndRecord below threads this; persistProof did not — and cure.js emits
+            // `flood_policy_missing` at severity 'fatal'. Because record() dedupes only on OPEN
+            // rows, the un-funded re-read sweep re-fired the fatal notify for exactly the findings
+            // a human had already dismissed: one pass over the book re-emailed the LO, the
+            // processor and every admin for every flood-zone file.
+            suppressNotify,
           });
         }
       }
