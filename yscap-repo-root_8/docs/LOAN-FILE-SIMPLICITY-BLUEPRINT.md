@@ -57,8 +57,9 @@ The fix is not a rewrite. It is four moves:
 1. **Give the file a front door** — one short list that says what needs you now,
    built from data the server already produces.
 2. **Speak one language** — one dictionary of status words, one set of colours.
-3. **Separate the two things that were never the same** — conditions become one
-   list; the staff checklist gets its own home and stops being a dumping ground.
+3. **One conditions section, and nothing else** — the four tabs, the entity and
+   the separate underwriting table all become one list; the staff checklist is
+   removed entirely.
 4. **Make things findable by typing**, not only by scrolling.
 
 ---
@@ -530,10 +531,9 @@ Show:  [ Needs me ▾ ]   Who sees it: [ Everyone ▾ ]   Subject: [ All ▾ ]
 Each group header reads *"Title — 2 of 5 done."* Groups collapse. The user's
 choices persist in the `useStickyFilter` mechanism that already exists.
 
-**The LLC section keeps its own home** — it is genuinely a different shape (an
-entity with members and its own documents), and it is the one tab where the split
-by subject is honest. It becomes a group in the list *and* keeps its dedicated
-panel, rather than being rendered three times as it is today.
+**The LLC folds in too** (§4d) — it becomes a row in the "Entity & vesting"
+group, keeping every document slot and the whole entity setup intact behind it,
+rather than being rendered three times as it is today.
 
 **The Underwriting tab folds in — the owner approved this on 2026-07-27.** It is a
 different table, usually empty (0–2 rows), and it can create borrower-facing
@@ -547,49 +547,96 @@ conditions the borrower's own tab never shows. It stops being a tab:
    seeing a seam. Sequence it **after** the list is working, so the visible
    improvement does not wait on a data migration.
 
-#### 4c. The checklist
+#### 4c. The checklist is removed
 
-The checklist keeps its own home and is **not** merged into the conditions list.
+_Owner-directed 2026-07-27: "the checklist is just things with loans to sign off
+on… get the entire checklist removed and leave only the condition section with
+external and internal conditions."_
 
-Two things happen to it now, both small:
+**We audited what is actually in it before planning its removal.** The result is
+that removing it is safe, and the reason is precise.
 
-1. **It gets its real contents.** Once the split is drawn on `item_kind`, the 8
-   staff conditions move out to the conditions list, and the checklist becomes
-   what its name says — the staff work steps, phase by phase.
-2. **It keeps its phase grouping**, which is genuinely useful and already built.
+**What the Checklist panel contains today** (`audience='staff'` and
+`item_kind ≠ 'document'`):
 
-_Owner-directed: the checklist "is not good right now" and may be **removed or
-completely remodelled**._ That is a **separate piece of work**, deliberately not
-designed here — remodelling it properly needs its own look at what staff actually
-use it for. Cleaning out the conditions that don't belong in it is worth doing
-either way, because it makes the remaining question ("is this list earning its
-place?") answerable for the first time.
+| | Count | What they are |
+|---|---|---|
+| `task` | **23** | Genuine staff workflow steps — "SharePoint folders built", "ClickUp task created", "USPS address verification", "Soft credit pull run in Xactus", "Attorney email sent" |
+| `condition` | **7** | LTC / LTV / ARV / interest-reserve checks, Term sheet generated, Final review requested, CTC received |
 
-**Where it should live — recommendation.** Separating the checklist raises an
-obvious follow-on: does it become a 17th top-level section? **Recommend no.**
-Keep it inside the Conditions section as its own clearly-labelled panel — "Your
-checklist — staff work steps" — sitting beside the conditions list rather than
-inside it.
+**The 7 conditions leave first, and this is what makes removal safe.** Under the
+`item_kind` split they move to the conditions list — including **all three gates
+that exist in the entire system**:
 
-Two reasons. A 17th rail entry works against the goal, and the checklist may be
-removed outright — in which case promoting it to a top-level section now means
-demoting it again later. Keeping it adjacent but plainly separate satisfies "not
-mixed up with the conditions" without spending a rail slot on something whose
-future is undecided. Easy to promote later if the remodel gives it more weight.
+| Gate | Kind |
+|---|---|
+| `rtl_p4_ts` — Term sheet generated | `condition` |
+| `rtl_f_review` — Final review requested | `condition` |
+| `rtl_f_ctc` — CTC received | `condition` |
 
-#### 4d. What happens to the LLC / entity tab
+**Not one gate is a `task`** (verified across every migration). So deleting the
+tasks removes nothing that holds a file back.
 
-It **keeps its own place**, and this is the one tab whose split was always
-honest — it divides by subject, not by audience or by which table a row came
-from. It is also genuinely a different shape: an entity, its members, its
-ownership chain and its own documents, not a flat list of conditions.
+**Three safety checks, all clear:**
 
-What changes is only that it stops being rendered **three times**. Today the LLC
-condition is excluded from the borrower list, re-inserted as a synthetic
-placeholder row, and rendered again as its own tab. It should appear **once** in
-the conditions list (as a normal condition, in the "Entity & vesting" subject
-group) with its detailed panel one click away — which is exactly how every other
-condition with a big body will behave.
+| Check | Result |
+|---|---|
+| Do any tasks block clear-to-close? | **No** — all 3 gates are conditions. The blocker query already reads `item_kind IN ('document','condition')`, and its own comment says *"Internal checklist TASKS are workflow, not conditions, so they don't gate here"* (`staff.js:6877-6892`). |
+| Do any tasks sync to ClickUp? | **No** — the 9 ClickUp-mapped codes are all `document` or `condition` (`db/050`, `db/051`). |
+| Does anything else read them? | **Almost nothing.** 4 tasks are flagged `is_milestone`, but that flag drives **one gold badge** in the UI (`StaffApplication.jsx:726`) and no backend logic at all. |
+
+**The system already agrees with the owner.** The gating code was written on
+exactly this belief — tasks are workflow, not conditions. Removing them makes the
+screen match a distinction the backend has been making all along.
+
+**Two things must NOT be swept up in the deletion.** Two `task` rows are
+`audience='both'` — borrower-facing — and are enforced at sign-off:
+
+- `rtl_p1_titlec` — Title contact email received
+- `rtl_p1_insc` — Insurance contact email received
+
+They require a real `application_service_contacts` row before they can be signed
+off (`staff.js:4565-4566`). They are borrower-facing **data collection**, not
+internal workflow, and they never appear in the Checklist panel anyway. They
+**become conditions** and stay. A naive "delete every task" would break the title
+and insurance contact flow.
+
+**How to remove it — recommendation.** Stop seeding the 23 workflow tasks on new
+files, and on **existing** files hide them rather than hard-delete. Two reasons:
+a delete destroys the sign-off history of who did what on live loans, and hiding
+is reversible if the removal turns out to have been too broad. The rows cost
+nothing to leave in place once nothing renders them.
+
+**Worth rescuing before it goes.** Several tasks carry real operating knowledge in
+their hint text — *"Appraisal ordered through NAN: SFR → 1004 · 2–4 family → 1025
+· always 'complete as-is'"*, *"Title order email sent — borrower NOT looped in"*,
+the attorney's address. That is training material, and deleting the checklist
+deletes it from the product. Recommend lifting those few hints onto the
+conditions they relate to, or into a short internal procedure note, before the
+rows go dark.
+
+#### 4d. The LLC / entity tab merges in too
+
+_Owner-directed 2026-07-27: "the entire tab of the LLC layout you can merge to
+the conditions… with the same structure, with all the slots separately, with the
+entire LLC set up separately."_
+
+The LLC stops being a tab and becomes **part of the conditions list** — while
+keeping its whole structure intact. Nothing about how the entity works changes:
+
+- the **document slots stay separate**, exactly as they are — Certificate of
+  Formation, EIN letter, Operating Agreement, good standing — each with its own
+  upload, review and accept/reject;
+- the **entity setup stays its own thing** — members, ownership percentages,
+  layered entities, the verify/revoke action;
+- it simply lives **inside the conditions list**, in the "Entity & vesting"
+  subject group, instead of behind a tab.
+
+This also fixes a real duplication. Today the LLC condition is rendered **three
+times**: excluded from the borrower list, re-inserted as a synthetic placeholder
+row built from `app.entity_verified`, and rendered again as its own tab. After
+the merge it appears **once**, with its full panel opening from that one row —
+the same treatment every other big-bodied condition gets.
 
 ### Move 5 — Let people find things by typing · _Reveal_
 
@@ -674,12 +721,16 @@ earlier being perfect.
 | **2** | The shared vocabulary modules; adopt them across the conditions and findings surfaces | Rename | **Low** — words and colours |
 | **3** | "What needs you next" at the top of the file, incl. the ageing we already compute | Reveal, Reuse | **Low** — no server work |
 | **4** | Collapsed-section summary lines | Reveal | **Low** |
-| **5a** | **Split conditions from the checklist on `item_kind`** — the 8 misfiled staff conditions move out | Regroup | **Low** — one filter line, existing data |
-| **5b** | Conditions: one list, filters, subject groups; the Underwriting tab folds in | Regroup | **Medium** — the deepest change; after the vocabulary is settled |
-| **5c** | **"Post a condition" creates the condition** | Behaviour *(authorised)* | **Medium** — do it once 5b's single list exists, so it creates into the right place |
+| **5a** | **Move the 7 conditions out of the checklist** on `item_kind` — including all 3 gates | Regroup | **Low** — one filter line, existing data |
+| **5b** | Conditions: one list, filters, subject groups; the Underwriting tab and the LLC fold in | Regroup | **Medium** — the deepest change; after the vocabulary is settled |
+| **5c** | **Remove the checklist** — stop seeding the 23 workflow tasks, hide them on existing files | Remove *(authorised)* | **Low once 5a is done** — must run after it, never before |
+| **5d** | **"Post a condition" creates the condition** | Behaviour *(authorised)* | **Medium** — after 5b, so it creates into the right place |
 | **6** | ⌘K find-in-file | Reveal | **Low** — additive, degrades safely |
 | **7** | The shared card/chip classes, worst files first | Reuse | **Medium** — mechanical but wide |
-| **—** | *Checklist: remove or remodel* | Separate project | Not designed here — needs its own pass |
+
+> **Ordering matters in one place.** 5c must run **after** 5a. The checklist
+> currently holds all three clear-to-close gates; removing it before the
+> conditions have been moved out would take the gates with it.
 
 Phases 1–4 are, together, most of the perceived improvement, carry almost no
 risk, and require **no server changes and no new AI spend.**
@@ -690,15 +741,18 @@ risk, and require **no server changes and no new AI spend.**
 
 Stated plainly, so nobody quietly does them later under this banner:
 
-- **No feature is removed.** Every button, filter, panel and export survives.
+- **Nothing is removed except the checklist**, which the owner directed be
+  removed after we audited what depended on it. Every other button, filter,
+  panel and export survives.
 - **No feature is added.** No new capability, report, or automation.
-- **No behaviour changes — except the two the owner authorised** (§9): "Post a
-  condition" creates the condition, and AI-suggested conditions start normal
-  rather than red. No new gate, no changed permission, no altered rule beyond
-  those two.
-- **The checklist is not merged into conditions**, and it is not redesigned here.
-  It gets its correct contents and keeps its own home; its future is a separate
-  piece of work.
+- **No behaviour changes — except the ones the owner authorised** (§9): "Post a
+  condition" creates the condition, AI-suggested conditions start normal rather
+  than red, and the checklist goes. No new gate, no changed permission, no
+  altered rule beyond those.
+- **No gate is lost.** All three clear-to-close gates are conditions and survive
+  the checklist's removal — provided 5c runs after 5a.
+- **The two borrower-facing tasks survive as conditions.** Title contact and
+  insurance contact are enforced at sign-off and are not internal workflow.
 - **AI stays advisory.** No list here may become a blocker, and no second
   "dismiss" mechanism may appear beside the existing one.
 - **No pricing, guideline, or engine number is touched.** Nothing in this
@@ -726,11 +780,11 @@ Measurable, from the same counts used in §2:
 | Ways to reach a named condition | scroll + guess the tab | type its name |
 | Card treatments / radii / shadows | ~70 / 19 / 67 | ~3 / 1 / ~3 |
 | Sections whose closed state tells you something | 5 of 16 | 16 of 16 |
-| Staff conditions misfiled into the checklist | 8 per standard file | **0** |
-| Things the checklist contains that aren't work steps | conditions + tasks | tasks only |
-| Features removed | — | **0** |
+| Tabs in the conditions area | 4 | **0 — one list** |
+| Separate lists a staff member must work | conditions ×4 + checklist | **1** |
+| Clear-to-close gates lost in the removal | — | **0** |
 | Features added | — | **0** |
-| Behaviour changes | — | **2, both owner-authorised** |
+| Things removed | — | **1, owner-directed and audited** |
 
 ---
 
@@ -744,31 +798,35 @@ implementer never has to guess:
 | 1 | Merge the Underwriting tab's separate condition table into the main list? | **Yes.** It stops being a tab; its rows join the one list. |
 | 2 | Should "Post a condition" actually create the condition? | **Yes.** The button does what it says. |
 | 3 | Should an AI-suggested condition still appear red? | **No.** It starts as normal, like any other new condition. |
-| 4 | *(raised by the owner)* Should the internal checklist merge into the conditions list? | **No — the opposite.** The checklist stays **separate** and must not be mixed with conditions. |
+| 4 | Should the internal checklist merge into the conditions list? | **No — remove it entirely.** It is *"just things with loans to sign off on."* The Conditions section is left holding external and internal conditions only. |
+| 5 | Does the LLC / entity tab keep its own place? | **No — merge it into conditions**, keeping its full structure: all document slots separate, the entire entity setup intact. |
 
-**On the checklist specifically.** The owner's words: it *"is not good right
-now"* and may be **removed or completely remodelled**. This plan therefore does
-two things and stops:
+**The end state is one section, one list.** After Moves 4a–4d the Conditions
+section contains a single list of external and internal conditions — with the
+entity inside it — and no checklist at all.
 
-- draws the line correctly (`task` = checklist, `document`/`condition` =
-  conditions), which pulls the 8 misfiled staff conditions out of it;
-- leaves the checklist's own future as a **separate piece of work**, not designed
-  here.
+### Removal safety — audited before planning it
 
-Rebuilding or retiring the checklist is a real product question — what staff
-actually use it for, whether the phase structure earns its keep — and it deserves
-its own pass rather than being decided as a footnote to a layout change.
+Deleting is the one change that is hard to undo, so the checklist was audited
+first. **All three checks came back clear** (full detail in §5 Move 4c):
 
-### Two follow-ons, resolved by recommendation
-
-Separating the checklist raised two questions that would otherwise sit open. Both
-are answered in §5 Move 4 with reasoning, so no one is left guessing — and either
-is easy to overrule:
-
-| Question | Recommendation |
+| Check | Result |
 |---|---|
-| Does the checklist become a 17th top-level section? | **No** — keep it inside the Conditions section as its own plainly-labelled panel beside the list. A 17th rail entry fights the goal, and its future is undecided. |
-| Does the LLC / entity tab fold into the one list too? | **It keeps its own place.** It is the one tab whose split was always honest (by subject), and it is a genuinely different shape. It just stops being rendered three times. |
+| Do any checklist tasks block clear-to-close? | **No.** All 3 gates in the system are `condition`-kind and survive the split. |
+| Do any sync to ClickUp? | **No.** Every ClickUp-mapped code is a document or condition. |
+| Does anything else depend on them? | **No.** The `is_milestone` flag drives one gold badge and no logic. |
+
+The backend already treats tasks as workflow rather than conditions — the blocker
+query says so in its own comment. Removing them makes the screen agree with a
+distinction the system has been making all along.
+
+**Two carve-outs, both flagged rather than assumed:**
+
+1. **`rtl_p1_titlec` and `rtl_p1_insc` must survive as conditions.** They are
+   `task`-kind but borrower-facing and enforced at sign-off. A blanket "delete
+   every task" would break the title and insurance contact flow.
+2. **Hide on existing files rather than hard-delete** — a delete destroys
+   sign-off history on live loans, and hiding is reversible.
 
 ---
 
@@ -791,6 +849,11 @@ Every claim above, with its source.
 | `item_kind` is `document` / `condition` / `task` | `db/002_backend.sql:15-22` |
 | Standard file seeds 11 documents, 8 conditions, 25 tasks | `db/005_rtl_workflow.sql:57` |
 | The checklist catches `condition`-kind rows | `StaffApplication.jsx:2909-2910` (`!== 'document'`) |
+| All 3 gates are `condition`-kind; no task is a gate | `db/005_rtl_workflow.sql` — `rtl_p4_ts`, `rtl_f_review`, `rtl_f_ctc` |
+| Blockers already exclude tasks, and say why | `src/routes/staff.js:6877-6892` |
+| No task syncs to ClickUp | `db/050_clickup_checklist_map.sql`, `db/051` — all 9 mapped codes are document/condition |
+| `is_milestone` drives only a badge | `app-v2/src/screens/StaffApplication.jsx:726`; no backend consumer |
+| Title/insurance contact tasks are enforced at sign-off | `src/routes/staff.js:4565-4566` |
 | Four filter dropdowns, 19 options | `StaffApplication.jsx:2009-2017`, `:3338-3340`, `:3361-3366`, `:3634-3637` |
 | Status renaming disagrees | `StaffApplication.jsx:2899` vs `screens/Application.jsx:939` |
 | `severity` means timing here | `StaffApplication.jsx:3630`, `:3647` |
