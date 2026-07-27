@@ -321,6 +321,19 @@ function Finding({ appId, f, onChange, resolvable, canAct = false, canWaive = tr
     }}>
       <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 6, flexWrap: 'wrap' }}>
         <span style={{ fontSize: 11, fontWeight: 800, textTransform: 'uppercase', letterSpacing: '.06em', color: s.fg, background: s.bg, padding: '3px 8px', borderRadius: 6 }}>{s.label}</span>
+        {/* AI TRIAGE priority chip (owner-directed 2026-07-27) — the AI's "look here first" ranking.
+            Display-only; the finding's real severity badge (above) is unchanged. Dark text. */}
+        {f.aiTriage && (
+          <span title={f.aiTriage.why || ''} style={{ fontSize: 10, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '.05em',
+            padding: '3px 8px', borderRadius: 6,
+            color: f.aiTriage.bucket === 'noise' ? '#4B585C' : '#256168',
+            background: f.aiTriage.bucket === 'noise' ? '#EFEFEA' : '#E4F0F0',
+            border: `1px solid ${f.aiTriage.bucket === 'noise' ? '#D9D9CF' : '#CBE0E0'}` }}>
+            {f.aiTriage.bucket === 'noise' ? 'Low signal'
+              : f.aiTriage.rank === 1 ? 'Look here first'
+              : f.aiTriage.bucket === 'primary' ? `Priority ${f.aiTriage.rank}` : `#${f.aiTriage.rank}`}
+          </span>
+        )}
         <strong style={{ fontSize: 14 }}>{f.title}</strong>
         {(f.source || f.doc_type) && <span style={{ fontSize: 11, color: 'var(--muted,#4B585C)' }}>· {label(f.source || f.doc_type)}</span>}
       </div>
@@ -413,6 +426,14 @@ function Finding({ appId, f, onChange, resolvable, canAct = false, canWaive = tr
           )}
           {f.aiReview.suggestedDocument && (
             <div style={{ fontSize: 12.5, color: '#141B22', marginTop: 2 }}><strong>Document to request:</strong> {f.aiReview.suggestedDocument}</div>
+          )}
+          {/* AI-drafted borrower-facing wording (owner-directed 2026-07-27), already scrubbed of any
+              capital-partner name — ready to use when converting this to a condition. */}
+          {f.aiReview.borrowerLabel && (
+            <div style={{ fontSize: 12.5, color: '#141B22', marginTop: 6, paddingTop: 6, borderTop: '1px solid #CBE0E0' }}>
+              <strong>Borrower wording (ready to use):</strong> {f.aiReview.borrowerLabel}
+              {f.aiReview.borrowerHint && <div style={{ color: '#3A4550', marginTop: 2 }}>{f.aiReview.borrowerHint}</div>}
+            </div>
           )}
           {/* The SECOND, independent AI's take when it weighed in (owner-directed 2026-07-27). When
               the two models disagree, this finding was deliberately kept visible for a human. */}

@@ -36,6 +36,7 @@ const engine = require('../lib/underwriting/engine');
 const store = require('../lib/underwriting/store');
 const documentReasoning = require('../lib/underwriting/document-reasoning');
 const findingAiReview = require('../lib/underwriting/finding-ai-review');
+const findingsTriage = require('../lib/underwriting/findings-triage');
 const registry = require('../lib/underwriting/registry');
 const fileView = require('../lib/underwriting/file-view');
 const { tieoutForFile } = require('../lib/underwriting/file-review');
@@ -1076,8 +1077,15 @@ router.get('/:appId', async (req, res, next) => {
     let aiReviewMem = new Map();
     try { aiReviewMem = await findingAiReview.memoryAllForFile(db, app.id); } catch (_) { aiReviewMem = new Map(); }
     const aiGate = findingAiReview.annotateFindings(openAllUngated, aiReviewMem);
-    const openAll = aiGate.shown;
     const aiSuppressedFindings = aiGate.suppressed.map(decorate);
+    // FINDINGS TRIAGE (owner-directed 2026-07-27) — re-order the shown findings into the AI's
+    // worklist ("look here first") and annotate each with its priority (primary / secondary / noise)
+    // + a one-line why. DISPLAY-ONLY + best-effort: no ranking yet / AI off → the plain list order is
+    // kept. The downstream stable severity sort preserves this order WITHIN each severity band, so a
+    // dealbreaker is never sorted below noise. The background pass (setImmediate) fills the rankings.
+    let triageMem = new Map();
+    try { triageMem = await findingsTriage.readMemory(db, app.id); } catch (_) { triageMem = new Map(); }
+    const openAll = findingsTriage.applyTriage(aiGate.shown, triageMem);
 
     // Sync computed chain + bank findings → ai_suggestions (owner-directed 2026-07-22,
     // HARD RULE). Best-effort, fired AFTER the response so file view stays fast; dedupe
@@ -1213,6 +1221,18 @@ router.get('/:appId', async (req, res, next) => {
         }
         findingAiReview.reviewFindings({ client: db, appId: app.id, findings: openAllUngated, db, sourceDocsById }).catch(() => {});
       } catch (_) { /* background review never affects the response */ }
+
+      // FINDINGS TRIAGE — the BACKGROUND pass (owner-directed 2026-07-27): rank the shown findings
+      // into a worklist (primary/secondary/noise) against the whole file, so the next view can show
+      // "look here first". Memoized by the finding SET (re-runs only when it changes), cost-capped,
+      // best-effort — display-only, never blocks/changes a number.
+      findingsTriage.reviewTriage({ client: db, appId: app.id, findings: openAll, db }).catch(() => {});
+
+      // WHOLE-FILE NARRATIVE COHERENCE — the BACKGROUND pass (owner-directed 2026-07-27): read the
+      // whole loan file as a story and record advisory "does this hold together?" concerns
+      // (ai_suggestions). Memoized by the file-state hash (re-runs only when the file changes), so it
+      // is not billed on every view. Best-effort; records advice only, never blocks/changes a number.
+      require('../lib/underwriting/ai-narrative').analyzeFile(db, app.id, db).catch(() => {});
     });
 
     // Fraud / red-flag score: aggregate every open signal above + the economic red flags into one
