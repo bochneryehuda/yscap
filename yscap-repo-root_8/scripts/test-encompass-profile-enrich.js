@@ -356,7 +356,9 @@ const { Pool } = require('pg');
     // ── STICKY-REVIEW GUARD (owner-reported 2026-07-27: "if I click dismiss it's
     //    coming back again"). A DECIDED Encompass address review must NOT be
     //    re-queued for the SAME value on the next pass — but a genuinely NEW
-    //    address must still surface. (Rolled back with the enclosing transaction.)
+    //    address must still surface. Runs in AUTOCOMMIT (the enclosing txn was
+    //    already rolled back above), so its fixtures are cleaned up explicitly in
+    //    the finally below.
     {
       const { verifyPrimaryAddress } = require('../src/encompass/enrich');
       const sfx2 = `${process.pid}-${Math.floor(Math.random() * 1e6)}`;
@@ -366,35 +368,39 @@ const { Pool } = require('pg');
          VALUES ('Yuda','Elbaum',$1,$2::jsonb) RETURNING id`,
         [`enr-stick-${sfx2}@test.local`,
          JSON.stringify({ formatted_address: 'Parkview Dr, Spring Valley, NY 10977, USA', oneLine: 'Parkview Dr, Spring Valley, NY 10977, USA' })])).rows[0].id;
-      // Encompass has the full address (with the house number PILOT is missing).
-      const enc = { street: '3210 Parkview Dr', city: 'Spring Valley', state: 'NY', zip: '10977', formatted_address: '3210 Parkview DR, spring valley, NY 10977' };
-      const openN = async () => (await client.query(
-        `SELECT id, proposed_value FROM sync_review_queue WHERE task_id=$1 AND field_key='current_address' AND status='open'`, [taskK])).rows;
+      try {
+        // Encompass has the full address (with the house number PILOT is missing).
+        const enc = { street: '3210 Parkview Dr', city: 'Spring Valley', state: 'NY', zip: '10977', formatted_address: '3210 Parkview DR, spring valley, NY 10977' };
+        const openN = async () => (await client.query(
+          `SELECT id, proposed_value FROM sync_review_queue WHERE task_id=$1 AND field_key='current_address' AND status='open'`, [taskK])).rows;
 
-      const r1 = await verifyPrimaryAddress(client, sbId, enc, { loanGuid: loanG });
-      okd(r1.conflict && r1.queued, 'sticky: a real address disagreement is queued for review');
-      const open1 = await openN();
-      okd(open1.length === 1, 'sticky: exactly one OPEN review row');
+        const r1 = await verifyPrimaryAddress(client, sbId, enc, { loanGuid: loanG });
+        okd(r1.conflict && r1.queued, 'sticky: a real address disagreement is queued for review');
+        const open1 = await openN();
+        okd(open1.length === 1, 'sticky: exactly one OPEN review row');
 
-      // DISMISS → the SAME value must not re-queue on the next pass (the fix).
-      await client.query(`UPDATE sync_review_queue SET status='rejected', resolved_at=now() WHERE id=$1`, [open1[0].id]);
-      const r2 = await verifyPrimaryAddress(client, sbId, enc, { loanGuid: loanG });
-      okd(r2.alreadyDecided === true, 'sticky: after DISMISS the same value is alreadyDecided (it does NOT come back)');
-      okd((await openN()).length === 0, 'sticky: no fresh open row after a dismiss');
+        // DISMISS → the SAME value must not re-queue on the next pass (the fix).
+        await client.query(`UPDATE sync_review_queue SET status='rejected', resolved_at=now() WHERE id=$1`, [open1[0].id]);
+        const r2 = await verifyPrimaryAddress(client, sbId, enc, { loanGuid: loanG });
+        okd(r2.alreadyDecided === true, 'sticky: after DISMISS the same value is alreadyDecided (it does NOT come back)');
+        okd((await openN()).length === 0, 'sticky: no fresh open row after a dismiss');
 
-      // KEEP PILOT (resolved, winner=portal) → also must not re-queue (data still
-      // differs, but the human decided PILOT is right).
-      await client.query(`UPDATE sync_review_queue SET status='resolved', winner='portal' WHERE task_id=$1`, [taskK]);
-      const r3 = await verifyPrimaryAddress(client, sbId, enc, { loanGuid: loanG });
-      okd(r3.alreadyDecided === true, 'sticky: after KEEP-PILOT the same value is alreadyDecided');
-      okd((await openN()).length === 0, 'sticky: still no open row after keep-PILOT');
+        // KEEP PILOT (resolved, winner=portal) → also must not re-queue (data still
+        // differs, but the human decided PILOT is right).
+        await client.query(`UPDATE sync_review_queue SET status='resolved', winner='portal' WHERE task_id=$1`, [taskK]);
+        const r3 = await verifyPrimaryAddress(client, sbId, enc, { loanGuid: loanG });
+        okd(r3.alreadyDecided === true, 'sticky: after KEEP-PILOT the same value is alreadyDecided');
+        okd((await openN()).length === 0, 'sticky: still no open row after keep-PILOT');
 
-      // A genuinely DIFFERENT Encompass address DOES surface (never silenced).
-      const enc2 = { street: '99 Other St', city: 'Spring Valley', state: 'NY', zip: '10977', formatted_address: '99 Other St, Spring Valley, NY 10977' };
-      const r4 = await verifyPrimaryAddress(client, sbId, enc2, { loanGuid: loanG });
-      okd(r4.conflict && r4.queued, 'sticky: a NEW Encompass address re-surfaces (a fresh disagreement)');
-      okd((await openN()).some((o) => /99 other/i.test(o.proposed_value)), 'sticky: the open row is the NEW value');
-      await client.query(`DELETE FROM sync_review_queue WHERE task_id=$1`, [taskK]).catch(() => {});
+        // A genuinely DIFFERENT Encompass address DOES surface (never silenced).
+        const enc2 = { street: '99 Other St', city: 'Spring Valley', state: 'NY', zip: '10977', formatted_address: '99 Other St, Spring Valley, NY 10977' };
+        const r4 = await verifyPrimaryAddress(client, sbId, enc2, { loanGuid: loanG });
+        okd(r4.conflict && r4.queued, 'sticky: a NEW Encompass address re-surfaces (a fresh disagreement)');
+        okd((await openN()).some((o) => /99 other/i.test(o.proposed_value)), 'sticky: the open row is the NEW value');
+      } finally {
+        await client.query(`DELETE FROM sync_review_queue WHERE task_id=$1`, [taskK]).catch(() => {});
+        await client.query(`DELETE FROM borrowers WHERE id=$1`, [sbId]).catch(() => {});
+      }
     }
   } catch (e) {
     dbFail++; console.log('FAIL threw:', e && e.stack ? e.stack.split('\n').slice(0, 4).join(' | ') : e);
