@@ -456,6 +456,7 @@ async function resolveFinding(client, { findingId, action, note, value, by } = {
     await closeMirroredSuggestions(client, {
       applicationId: updated.application_id, code: updated.code,
       documentId: updated.document_id, action: v.action, by,
+      severity: updated.severity || null,
     });
   }
   // Self-training capture (Sovereign 4/4, owner-directed 2026-07-21): every
@@ -489,10 +490,19 @@ async function resolveFinding(client, { findingId, action, note, value, by } = {
  * finding — a posted condition / requested document deliberately keeps both live.
  * Best-effort: never throws.
  */
-async function closeMirroredSuggestions(client, { applicationId, code, documentId, action, by } = {}) {
+async function closeMirroredSuggestions(client, { applicationId, code, documentId, action, by, severity } = {}) {
   try {
     if (!applicationId || !code) return 0;
-    if (!require('./finding-decisions').suppresses(action)) return 0;
+    const fdec = require('./finding-decisions');
+    if (!fdec.suppresses(action)) return 0;
+    // ...AND ONLY MIRRORS NO WORSE THAN WHAT WAS DECIDED (re-audit 2026-07-27 — the seventh
+    // door). This closed every same-code AI row regardless of severity, so dismissing a
+    // WARNING on the Document Review desk also closed a FATAL mirror of the same code — and
+    // that row, now stamped `decided_by_staff_id`, went on to suppress re-raises through
+    // `record()`'s settled-row dedupe. One warning judgement, a silenced dealbreaker, two
+    // surfaces away. `sevRank(null)` is 0, so a decision with no severity keeps the old
+    // behaviour and closes everything, exactly as db/336 treats a NULL ledger severity.
+    const rank = fdec.sevRank(severity);
     const r = await client.query(
       `UPDATE ai_suggestions
           SET status = 'dismissed',
@@ -502,9 +512,13 @@ async function closeMirroredSuggestions(client, { applicationId, code, documentI
         WHERE application_id = $1
           AND status IN ('open','escalated','marked_important','asked_admin')
           AND COALESCE(evidence->>'code', proposed_action->'fields'->>'code') = $2
-          AND ($3::uuid IS NULL OR document_id IS NULL OR document_id = $3)`,
+          AND ($3::uuid IS NULL OR document_id IS NULL OR document_id = $3)
+          AND ($6::int = 0 OR COALESCE(
+                CASE lower(COALESCE(severity,'')) WHEN 'fatal' THEN 3 WHEN 'warning' THEN 2 WHEN 'info' THEN 1 ELSE 0 END,
+                0) <= $6::int)`,
       [applicationId, code, documentId || null,
-       `Closed with the finding on the Document Review desk (${String(action || 'resolved')}).`, by || null]);
+       `Closed with the finding on the Document Review desk (${String(action || 'resolved')}).`, by || null,
+       rank]);
     return r.rowCount || 0;
   } catch (_) { return 0; }
 }

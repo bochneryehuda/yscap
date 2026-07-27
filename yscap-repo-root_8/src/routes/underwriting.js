@@ -69,6 +69,17 @@ const investorReview = require('../lib/underwriting/investor-guideline-review');
 // Hoisted for the one advisory-source filter shared by every scoring/ranking query (audit 2026-07-27).
 const aiSuggestions = require('../lib/underwriting/ai-suggestions');
 
+// Does this SETTLED mirror row hide the desk's current finding? Its own function so a test can
+// pin the comparison — see the note at the call site for what this door was doing wrong.
+// A row whose own severity is unreadable keeps its historic behaviour and suppresses, the same
+// conservative direction as db/336's NULL policy: never resurrect decisions en masse.
+function isgSettledHides(row, f) {
+  if (!row || ISG_OPEN_STATUSES.has(row.status)) return false;
+  const settledRank = SEVERITY_RANK[String(row.severity || '').toLowerCase()] || 0;
+  const liveRank = SEVERITY_RANK[String((f && f.severity) || '').toLowerCase()] || 0;
+  return !settledRank || liveRank <= settledRank;
+}
+
 /**
  * loadRunGuidelineFindings(db, appId) → the CURRENT run's note-buyer findings, in the openRaw shape.
  *
@@ -430,19 +441,38 @@ router.get('/escalations/count', async (req, res, next) => {
 // Load an OPEN escalation and check the caller may decide it. Shared by the plain
 // decide door and the take-the-action door below, so the two can never drift apart.
 // Returns `{ ok:false, status, body }` or `{ ok:true, row }`.
-async function openEscalationFor(req, id) {
-  if (!isUuid(id)) return { ok: false, status: 404, body: { error: 'not found' } };
-  // The LIVE finding's severity is JOINED, not assumed. `finding_severity` is an alias that
-  // exists only in `escalations.LIST_SELECT`; on a `SELECT *` row it is undefined, so reading
-  // `row.finding_severity` here silently fell through to the snapshot frozen at raise time.
-  // That matters in BOTH directions: a finding that escalated after it was raised gets its
-  // dealbreaker settled under the milder snapshot (a false clear), and one that was
-  // downgraded gets a warning settled under the harsher snapshot (it comes straight back).
-  const row = (await db.query(
+// The one place the escalation row is read. Extracted so a test can execute this exact
+// query — a hand-built fixture proves nothing about which columns the SELECT returns, which
+// is precisely how `finding_severity` came to be read here when nothing produced it.
+// `dbc` lets a test run it on its own (rolled-back) transaction; production always uses the pool.
+async function loadEscalationRow(id, dbc) {
+  return (await (dbc || db).query(
     `SELECT e.*, df.severity AS finding_severity
        FROM finding_escalations e
        LEFT JOIN document_findings df ON df.id = e.finding_id
       WHERE e.id = $1`, [id])).rows[0];
+}
+
+async function openEscalationFor(req, id) {
+  if (!isUuid(id)) return { ok: false, status: 404, body: { error: 'not found' } };
+  // The finding's severity is READ FROM THE ROW, not from the escalation's copy of it.
+  //
+  // Honest scope (re-audit 2026-07-27, which refuted the stronger claim this comment first
+  // made): `document_findings.severity` is not UPDATEd anywhere today — only `committee_*` is
+  // — and the escalation snapshots severity from this same row at raise time, so the two agree
+  // and this JOIN changes no current behaviour. It is here as the correct SHAPE: severity is
+  // the one field that decides whether a decision may suppress a later finding, so it should
+  // come from the row that owns it rather than from a copy that nothing keeps in step. The day
+  // anything writes a severity — the committee's proposed severity being adopted, a promoted
+  // `upgrade_severity` rule — this door is already reading the right value.
+  //
+  // What it deliberately does NOT claim to fix: a re-read does not update severity, it
+  // supersedes the row and inserts a new one, which this escalation's `finding_id` does not
+  // point at. Carrying a decision across a re-read is the ledger's job (db/336), not this
+  // query's. `finding_severity` is also an alias that exists ONLY in `escalations.LIST_SELECT`
+  // — on a `SELECT *` row it was undefined, so the fallback below was reading the snapshot
+  // either way; the JOIN is what makes the name mean something on this path.
+  const row = await loadEscalationRow(id);
   if (!row) return { ok: false, status: 404, body: { error: 'not found' } };
   if (row.status !== 'open') return { ok: false, status: 409, body: { error: 'this escalation was already handled' } };
   // File access is checked for real here (the list query scopes, a direct POST does not):
@@ -521,9 +551,16 @@ router.post('/escalations/:id/decide', async (req, res, next) => {
     // "No action needed" → settle the finding for good, not just the queue item.
     // The live stored row (if any) is closed through the SAME shared path the desk
     // uses, so the tiered authority, the audit and the AI-panel mirror all behave
-    // identically. If the reviewer lacks that authority we still record the
-    // decision in the ledger — a super-admin saying "this is fine" must at minimum
-    // stop it being re-raised — and say plainly that the row itself stayed open.
+    // identically.
+    //
+    // A REFUSED RESOLUTION REFUSES THE WHOLE CALL (re-audit 2026-07-27). This used to close
+    // the queue item and email the raiser "dismissed" even when the finding had NOT been
+    // settled — the reviewer's item disappeared, no decision was recorded, and the dealbreaker
+    // stayed open on the file with nobody watching it. Reachable today: this door has no
+    // `requirePermission`, and `mayDecide` admits anyone who signs off conditions on the file,
+    // which includes roles that do NOT hold `waive_conditions` (loan_coordinator, closer) —
+    // and `exceptions.canApply` refuses those a dismiss of a CTC-blocking dealbreaker. They now
+    // get told why, and the item stays in the queue for someone who can act on it.
     let findingSettled = false;
     let findingNote = null;
     if (decision === 'dismissed') {
@@ -539,16 +576,24 @@ router.post('/escalations/:id/decide', async (req, res, next) => {
         });
         findingSettled = !!applied.ok;
         if (!applied.ok) findingNote = applied.body && applied.body.error;
+        // 409 "already resolved" is not a refusal — somebody else settled it in the meantime,
+        // so the queue item SHOULD close. Anything else (403 authority, 400 bad input, a lock)
+        // means the finding is still open, and closing the item would hide it.
+        if (!applied.ok && applied.status !== 409) {
+          return res.status(applied.status).json(Object.assign({ findingSettled: false }, applied.body));
+        }
       }
       // Record the identity-level decision — it is the ONLY thing that stops a DERIVED
       // finding (recomputed on every file view) coming back, and it is what a re-read
       // carries forward onto the next stored row.
       //
-      // ONLY when there was no live row to resolve. `applyFindingResolution` already wrote
-      // this key from the LIVE finding a moment ago; writing it again from the escalation's
-      // shape overwrote the severity it had just recorded (`ON CONFLICT … severity =
-      // COALESCE(EXCLUDED.severity, …)` — the second write wins), so a dealbreaker the
-      // reviewer settled came straight back on the next page load.
+      // ONLY when there was no live row to resolve — otherwise `applyFindingResolution` has
+      // already written this key, from the LIVE finding, a moment ago. Both writes land on the
+      // same `claimOf` key with the same severity (every component is copied from the same
+      // row), so the second was redundant rather than harmful; it only flipped `origin` from
+      // `document_finding` to `escalation`, losing which surface actually resolved it. With the
+      // refusal path above returning early, reaching here with a live row settled is the only
+      // case, and one write from the authoritative source is the right shape.
       if (!live) {
         const client2 = await db.pool.connect();
         try {
@@ -926,7 +971,7 @@ router.get('/:appId', async (req, res, next) => {
       // for one key can tie on `isgRank`; today the right one wins only because an index happens to
       // return it first, and a planner that seq-scans would silently flip the card's state. Newest
       // first is the tie-break: a later row is the later truth about that key.
-      `SELECT id, dedupe_key, status, important, decided_by_staff_id FROM ai_suggestions
+      `SELECT id, dedupe_key, status, important, severity, decided_by_staff_id FROM ai_suggestions
         WHERE application_id=$1 AND source=$2
         ORDER BY created_at DESC, id DESC`, [app.id, deskFindings.SOURCE])
       .then((r) => r.rows).catch(() => []);
@@ -951,7 +996,27 @@ router.get('/:appId', async (req, res, next) => {
       // needs handling, louder" — every other query here counts them as open (see the escalation and
       // silenced-code queries below). Dropping them made "Mark important" DELETE the card the
       // staffer had just flagged, and made the card's own "Already escalated" hint unreachable.
-      if (!ISG_OPEN_STATUSES.has(row.status)) return null;
+      // ...AND A SETTLED ROW ONLY HIDES SOMETHING NO WORSE THAN WHAT IT SETTLED (re-audit
+      // 2026-07-27 — the SIXTH severity-blind door, and the one nobody had named).
+      //
+      // The other five doors were taught "a decision on a warning does not silence a later fatal".
+      // This one drops the finding purely on the MIRROR ROW'S STATUS, so it undid all of them: a
+      // Blue Lake light-rehab file whose feasibility notice was dismissed as a WARNING converts to
+      // ground-up, the desk re-raises it as a DEALBREAKER, the ledger correctly refuses to suppress
+      // it and `filterSuppressed` correctly keeps it — and this filter threw it away anyway,
+      // because the only mirror row is the dismissed warning.
+      //
+      // Normally the post-response sync writes a fresh open fatal row and the card returns on the
+      // NEXT view, so the visible cost looked like one page load. It is permanent whenever that
+      // insert cannot happen: the code is muted portfolio-wide (`ai_silenced_codes` — record()
+      // returns `{silenced:true}` and no row is EVER written), the desk read is degraded, or the
+      // sync's savepoint rolls back. A dealbreaker that never appears is the whole failure this
+      // branch exists to stop, so the comparison belongs here rather than relying on a later pass.
+      //
+      // The worse finding renders WITHOUT the settled row's id/status: it is not that row, and
+      // attaching the id would let a click resolve the stale warning instead of the dealbreaker.
+      if (isgSettledHides(row, f)) return null;
+      if (!ISG_OPEN_STATUSES.has(row.status)) return f;
       return Object.assign({}, f, {
         suggestionId: row.id,
         suggestionStatus: row.status,
@@ -3214,6 +3279,8 @@ module.exports._foldFilter = (f) => !(f && f.source === investorReview.SOURCE
   && !f.id && !f.suggestionId
   && !((f.mergedFrom || []).some((c) => c && !investorReview.isRuleCode(c))));
 module.exports._escalationFindingShape = escalationFindingShape;
+module.exports._loadEscalationRow = loadEscalationRow;
+module.exports._isgSettledHides = isgSettledHides;
 // The predicate that keeps note-buyer findings OUT of summary.fatal/warning/info, so the
 // advisory desk can never disagree with the clear-to-close gate.
 module.exports._isgOnly = (f) => !!(f && (f.category === 'investor_guideline' || f.source === deskFindings.SOURCE));

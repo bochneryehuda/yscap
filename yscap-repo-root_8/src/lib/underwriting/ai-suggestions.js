@@ -202,7 +202,13 @@ async function record(client, s) {
       // here, so the telemetry said raised and no row existed.
       if (settled.rows[0]) {
         const fdec0 = require('./finding-decisions');
-        const worse = fdec0.sevRank(s.severity) > fdec0.sevRank(settled.rows[0].severity);
+        // A row whose OWN severity is unreadable keeps suppressing, exactly as db/336 says a
+        // NULL ledger severity does (re-audit 2026-07-27 — this door had it inverted, ranking
+        // an unknown as the LOWEST, so a decided row with no severity would be re-raised the
+        // first time the same key arrived carrying one). Conservative direction: never
+        // resurrect a decision en masse because we cannot read what it was made at.
+        const decidedRank = fdec0.sevRank(settled.rows[0].severity);
+        const worse = decidedRank > 0 && fdec0.sevRank(s.severity) > decidedRank;
         if (!worse) {
           return { id: settled.rows[0].id, deduped: true, settled: true, status: settled.rows[0].status };
         }

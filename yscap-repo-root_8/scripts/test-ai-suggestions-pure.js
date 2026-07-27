@@ -19,9 +19,16 @@ const LIVE_STATUSES = new Set(['open', 'escalated', 'marked_important', 'asked_a
 // judgement that the issue is closed — so it never blocks the agent asking again.
 const SETTLED_EXEMPT = new Set([...LIVE_STATUSES, 'answered']);
 
+const STORES = [];
 class Store {
   constructor() {
+    STORES.push(this);
     this.rows = []; this.qs = []; this.aq = []; this.decisions = [];
+    // Every statement this stub did not recognise. Asserted empty at the end — see the
+    // fall-through note in `mkClient`.
+    this.unhandled = [];
+    this.silenced = new Set();
+    this.proposals = [];
     this.nextId = 1;
   }
   id() { return String(this.nextId++); }
@@ -51,14 +58,24 @@ function mkClient(store) {
       }
       // A DECIDED row is the last word — record() must not re-raise it (the
       // 2026-07-27 "I dismiss it and it keeps popping up again" root cause).
-      if (/^SELECT id, status FROM ai_suggestions WHERE application_id=\$1 AND source=\$2 AND dedupe_key=\$3/.test(s)) {
+      // THE COLUMN LIST IS PART OF THE CONTRACT (re-audit 2026-07-27). These stubs are anchored
+      // regexes, and `record()`'s two consults are wrapped in fail-OPEN catches — so when a
+      // SELECT list gained `severity` and this pattern did not, the stub fell through to its own
+      // `unhandled sql` throw, the catch swallowed it, and this file went on printing `all pass`
+      // while protecting NOTHING: a dismissed row was re-raised as a brand-new open one, which is
+      // the exact owner-reported bug the assertions below claim to pin. Matched loosely on the
+      // Keyed on the CLAUSE that distinguishes the two dedupe queries (`decided_by_staff_id IS
+      // NOT NULL` here, `status IN (` for the live-refresh pick below) rather than on the SELECT
+      // list, so adding a column can never silently disarm the test again. Verified: adding a
+      // column to either query keeps both matching.
+      if (/^SELECT .* FROM ai_suggestions WHERE application_id=\$1 AND source=\$2 AND dedupe_key=\$3.*decided_by_staff_id IS NOT NULL/.test(s)) {
         const hit = store.rows.find(r => r.application_id === params[0] && r.source === params[1]
           && r.dedupe_key === params[2] && !SETTLED_EXEMPT.has(r.status) && r.decided_by_staff_id != null);
-        return { rows: hit ? [{ id: hit.id, status: hit.status }] : [] };
+        return { rows: hit ? [{ id: hit.id, status: hit.status, severity: hit.severity }] : [] };
       }
       // The refresh-in-place pick. "Live" spans open/escalated/marked_important/
       // asked_admin (all still need handling); a plain 'open' row wins.
-      if (/^SELECT id FROM ai_suggestions WHERE application_id=\$1 AND source=\$2 AND dedupe_key=\$3/.test(s)) {
+      if (/^SELECT .* FROM ai_suggestions WHERE application_id=\$1 AND source=\$2 AND dedupe_key=\$3.*status IN \(/.test(s)) {
         const hits = store.rows.filter(r => r.application_id === params[0] && r.source === params[1]
           && r.dedupe_key === params[2] && LIVE_STATUSES.has(r.status));
         hits.sort((a, b) => (b.status === 'open') - (a.status === 'open'));
@@ -66,14 +83,19 @@ function mkClient(store) {
       }
       // The per-finding decision ledger (db/333) + the savepoint it runs inside.
       if (/^(SAVEPOINT|RELEASE SAVEPOINT|ROLLBACK TO SAVEPOINT) finding_decision$/i.test(s)) return { rows: [] };
-      if (/^SELECT finding_key FROM finding_decisions/i.test(s)) {
-        return { rows: store.decisions.filter(d => d.application_id === params[0] && d.suppressed).map(d => ({ finding_key: d.finding_key })) };
+      if (/^SELECT .* FROM finding_decisions WHERE application_id = \$1 AND suppressed = true/i.test(s)) {
+        return { rows: store.decisions.filter(d => d.application_id === params[0] && d.suppressed)
+          .map(d => ({ finding_key: d.finding_key, severity: d.severity })) };
       }
       if (/^INSERT INTO finding_decisions/i.test(s)) {
-        const [appId2, key, code, origin, decision, suppressed, note, by] = params;
+        const [appId2, key, code, origin, decision, suppressed, note, by, severity] = params;
         const prev = store.decisions.find(d => d.application_id === appId2 && d.finding_key === key);
-        if (prev) Object.assign(prev, { code, origin, decision, suppressed, note, decided_by: by });
-        else store.decisions.push({ application_id: appId2, finding_key: key, code, origin, decision, suppressed, note, decided_by: by });
+        // COALESCE, mirroring the real ON CONFLICT: a later write with no severity must not
+        // erase the severity an earlier one recorded.
+        if (prev) Object.assign(prev, { code, origin, decision, suppressed, note, decided_by: by,
+          severity: severity == null ? prev.severity : severity });
+        else store.decisions.push({ application_id: appId2, finding_key: key, code, origin, decision,
+          suppressed, note, decided_by: by, severity: severity == null ? null : severity });
         return { rows: [] };
       }
       if (/^UPDATE finding_decisions/i.test(s)) {
@@ -150,9 +172,53 @@ function mkClient(store) {
         row.answered_by_staff_id = staffId; row.answered_at = new Date().toISOString(); row.answer = ans;
         return { rows: [{ suggestion_id: row.suggestion_id, application_id: row.application_id, agent: row.agent, question: row.question, context: row.context }] };
       }
+      // THREE PRE-EXISTING DARK PATHS, surfaced the moment the fall-through became an assertion
+      // (re-audit 2026-07-27). Each sits behind its own fail-open catch, so each was throwing and
+      // being swallowed on every run — the branches ran, they just never did anything.
+      //
+      // The portfolio-wide code mute (R4.8). Not muted unless the test says so.
+      if (/^SELECT 1 FROM ai_silenced_codes WHERE code=\$1/i.test(s)) {
+        return { rows: store.silenced.has(params[0]) ? [{ '?column?': 1 }] : [] };
+      }
+      // Deciding a suggestion auto-closes the admin question it raised (R3.42).
+      if (/^UPDATE ai_admin_questions SET answered_at/i.test(s)) {
+        let n = 0;
+        for (const q of store.aq) {
+          if (q.suggestion_id !== params[0] || q.answered_at) continue;
+          q.answered_at = new Date().toISOString();
+          q.answer = q.answer == null ? params[1] : q.answer;
+          n += 1;
+        }
+        return { rowCount: n, rows: [] };
+      }
+      // The learning capture (`learning.captureAdminAnswer`) and its savepoint.
+      if (/^(SAVEPOINT|RELEASE SAVEPOINT|ROLLBACK TO SAVEPOINT) learning_capture$/i.test(s)) return { rows: [] };
+      if (/^SELECT id FROM training_proposals WHERE proposal_type='admin_answer'/i.test(s)) {
+        const hit = store.proposals.find(t => t.key === params[0]);
+        return { rows: hit ? [{ id: hit.id }] : [] };
+      }
+      if (/^INSERT INTO training_proposals/i.test(s)) {
+        const scope = JSON.parse(params[0]);
+        const row = { id: store.id(), key: scope.key, scope };
+        store.proposals.push(row);
+        return { rows: [{ id: row.id }] };
+      }
+      if (/^UPDATE training_proposals/i.test(s)) {
+        const hit = store.proposals.find(t => t.id === params[0]);
+        if (hit) hit.scope = Object.assign({}, hit.scope, { answer: params[1], answered_at: params[2] });
+        return { rows: [] };
+      }
       if (/^SELECT \* FROM ai_admin_questions/i.test(s)) {
         return { rows: store.aq.filter(r => !r.answered_at) };
       }
+      // A FALL-THROUGH IS A TEST FAILURE, NOT A THROW TO BE SWALLOWED (re-audit 2026-07-27).
+      // `record()`'s ledger consult and its settled-row dedupe both run inside fail-OPEN
+      // catches — by design, since a ledger blip must never hide a finding. The side effect is
+      // that a stub which stops matching becomes INVISIBLE: the throw is caught, the door goes
+      // dark, and every assertion below still passes. Recording it and asserting at the end is
+      // the only way this file can tell the difference between 'the door held' and 'the door
+      // was never opened'.
+      store.unhandled.push(s.slice(0, 120));
       throw new Error('unhandled sql: ' + s.slice(0, 100));
     },
   };
@@ -293,6 +359,45 @@ const aiSug = require('../src/lib/underwriting/ai-suggestions');
   assert.strictEqual(s.proposedAction.fields.opensCondition, 'ins_upgrade');
   assert.strictEqual(s.dedupeKey, 'cure:ci-z:INS_UNDERINSURED:coverage_amount');
   assert.strictEqual(s.traceUrl, 'https://lf/1');
+
+  // ---- A HUMAN'S DECISION IS NOT RE-RAISED (the door this file's stub had gone dark on) ----
+  // Repairing the stub was necessary and not sufficient: nothing in this file actually
+  // ASSERTED the settled-row guard, so deleting it left every test green (verified by
+  // mutation). This is the owner's original report — "I dismiss it and it keeps popping up
+  // again" — at the one door that decides it.
+  const ds = new Store();
+  const dc = mkClient(ds);
+  const dkey = 'isg-gap:rtl_cond_feasibility';
+  const mk = (severity) => ({
+    applicationId: 'app-settled', source: 'investor_guideline_desk', kind: 'finding',
+    title: 'Feasibility report required', body: 'x', severity, dedupeKey: dkey,
+    evidence: { code: 'isg_gap_200' },
+    // This file has no database. A newly inserted FATAL otherwise schedules the real
+    // whole-team fan-out, which reaches for `db()` and prints a DATABASE_URL banner from a
+    // PURE test. The fan-out itself is covered where it belongs (the desk-sync suites).
+    suppressNotify: true,
+  });
+  const first = await aiSug.record(dc, mk('warning'));
+  await aiSug.decide(dc, first.id, { action: 'dismiss', reason: 'not applicable', staffId: 'staff-1' });
+  const again = await aiSug.record(dc, mk('warning'));
+  assert.strictEqual(again.settled, true, 'a dismissed finding is refused a fresh row');
+  assert.strictEqual(again.id, first.id, 'and the caller is pointed back at the decided row');
+  assert.strictEqual(ds.rows.length, 1, 'no second row was inserted — the dismissal sticks');
+
+  // ...but the SAME rule coming back as a DEALBREAKER is not silenced by a judgement made
+  // about something milder. That is a false clear, and it is the whole point of db/336.
+  const worse = await aiSug.record(dc, mk('fatal'));
+  assert.ok(!worse.settled, 'a dealbreaker is NOT held back by a warning-level dismissal');
+  assert.strictEqual(ds.rows.length, 2, 'and it really gets a row of its own');
+
+  // THE STUB MUST HAVE UNDERSTOOD EVERY STATEMENT IT WAS ASKED (re-audit 2026-07-27).
+  // Without this the file reports success for doors it never actually opened — which is
+  // exactly what happened when two SELECT lists gained a `severity` column and these
+  // anchored patterns stopped matching.
+  const unhandled = STORES.flatMap((st) => st.unhandled);
+  assert.deepStrictEqual(unhandled, [],
+    'the stub did not recognise every statement — a door under test went dark:\n'
+    + unhandled.join('\n'));
 
   console.log('test-ai-suggestions-pure: record/dedupe/decide-all-actions/note/askAdmin/answer/fromCureNewFinding all pass');
 })().catch(e => { console.error(e); process.exit(1); });

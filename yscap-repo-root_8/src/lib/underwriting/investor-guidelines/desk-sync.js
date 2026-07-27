@@ -214,6 +214,11 @@ async function syncInvestorGuidelineFindings(client, appId, opts) {
         [appId, SOURCE, ALIVE_NOT_OPEN]);
       for (const r of d.rows) {
         const k = String(r.dedupe_key);
+        // `answered` is the super-admin REPLYING to a question, not a judgement on the finding
+        // — `record()`'s own settled set excludes it for exactly that reason (re-audit
+        // 2026-07-27, where the two disagreed). Treating it as a decision here let an answer
+        // hold the item quiet.
+        if (r.status === 'answered') continue;
         const rank = SEV_RANK[String(r.severity || '').toLowerCase()] || 0;
         if (ALIVE_NOT_OPEN.includes(r.status)) {
           if (!aliveSev.has(k) || rank > aliveSev.get(k)) aliveSev.set(k, rank);

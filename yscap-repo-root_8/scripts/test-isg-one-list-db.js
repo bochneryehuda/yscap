@@ -396,6 +396,15 @@ console.log('ISG one list (DB)');
     const storedSev = async (appId) => (await client.query(
       `SELECT severity FROM finding_decisions WHERE application_id=$1 ORDER BY decided_at DESC LIMIT 1`,
       [appId])).rows[0].severity;
+    // ...and a per-CODE variant. Several writers are exercised on the same file within the same
+    // transaction, so `now()` is IDENTICAL for all of them and "the latest decision" is a
+    // coin toss. Keying on the code each writer wrote is the only stable read.
+    const storedSevFor = async (appId, code) => {
+      const r = await client.query(
+        `SELECT severity FROM finding_decisions WHERE application_id=$1 AND code=$2`, [appId, code]);
+      assert.strictEqual(r.rowCount, 1, `exactly one ledger row for ${code}`);
+      return r.rows[0].severity;
+    };
 
     // writer: ai-suggestions.decide()
     const sug = await aiSug.record(client, {
@@ -407,12 +416,72 @@ console.log('ISG one list (DB)');
     assert.strictEqual(await storedSev(app7.id), 'warning',
       'the AI-card door must record the severity the human was looking at');
 
-    // writer: the escalation doors — the LIVE severity, not the stale snapshot.
+    const store = require('../src/lib/underwriting/store');
+    // writer: store.resolveFinding — the highest-traffic writer of the five (the desk, the
+    // per-finding resolve route AND the escalation queue's live branch all go through it).
+    // Asserted by reading the column BACK OUT, because an omitted severity writes NULL and
+    // NULL suppresses regardless: a silent false clear with no error and no log.
+    const docRowW = (await client.query(
+      `INSERT INTO documents (application_id, borrower_id, filename, content_type, storage_provider)
+       VALUES ($1,$2,'writer.pdf','application/pdf','local') RETURNING id`, [app7.id, b.id])).rows[0];
+    const dfRow = (await client.query(
+      `INSERT INTO document_findings (application_id, borrower_id, document_id, source, code, severity, field, doc_value, title, status)
+       VALUES ($1,$2,$3,'appraisal','writer_probe','fatal','as_is_value','1','t','open') RETURNING id`,
+      [app7.id, b.id, docRowW.id])).rows[0];
+    await store.resolveFinding(client, {
+      findingId: dfRow.id, action: 'dismiss', note: 'not applicable on this file', by: null,
+    });
+    assert.strictEqual(await storedSevFor(app7.id, 'writer_probe'), 'fatal',
+      'store.resolveFinding records the severity the human was looking at');
+
+    // writer: the appraisal re-import door (`routes/appraisal.js`). It hands `record()` a row
+    // read with `SELECT *`; naming severity explicitly is what stops a future column list from
+    // silently writing NULL. Exercised with a REAL appraisal_findings row so the column has to
+    // exist and has to survive the round trip.
+    const apprRow = (await client.query(
+      `INSERT INTO appraisals (application_id, superseded) VALUES ($1,false) RETURNING id`,
+      [app7.id])).rows[0];
+    const afRow = (await client.query(
+      `INSERT INTO appraisal_findings (appraisal_id, application_id, source, code, severity, field, appraisal_value, title, status)
+       VALUES ($1,$2,'appraisal','appraisal_writer_probe','fatal','arv','2','t','open') RETURNING *`,
+      [apprRow.id, app7.id])).rows[0];
+    const apprRoute = require('../src/routes/appraisal');
+    const apprPayload = apprRoute._ledgerRecordFor({
+      appId: app7.id, fnd: afRow, action: 'dismiss', note: null, by: null,
+    });
+    // Asserted on the PAYLOAD, not only on what lands in the table: `record()` also falls back
+    // to `finding.severity`, so a payload that omits it still writes the right value today and
+    // the round-trip alone cannot tell the two apart. Naming it here is the belt to that
+    // fallback's braces — and this is the assertion that fails if someone removes it.
+    assert.strictEqual(apprPayload.severity, 'fatal',
+      'the appraisal decision payload names the severity explicitly, not via record()\'s fallback');
+    assert.strictEqual(apprRoute._ledgerRecordFor({ appId: app7.id, fnd: {}, action: 'dismiss' }).severity, null,
+      'and a row with no severity yields NULL — legacy behaviour, never a guess');
+    await fdec.record(client, apprPayload);
+    assert.strictEqual(await storedSevFor(app7.id, 'appraisal_writer_probe'), 'fatal',
+      'the appraisal resolve door records it too');
+
+    // writer: the escalation doors. TWO halves, because one assertion cannot cover both:
+    //   (a) the SHAPE prefers the finding's own severity over the escalation snapshot...
     assert.strictEqual(
       uw._escalationFindingShape({ code: 'c', severity: 'warning', finding_severity: 'fatal' }).severity,
-      'fatal', 'the escalation door records what the queue SHOWS (the live finding), not the snapshot');
+      'fatal', 'the escalation door records the finding row severity, not the snapshot copy');
     assert.strictEqual(uw._escalationFindingShape({ code: 'c', severity: 'warning' }).severity, 'warning',
       'falling back to the snapshot when the finding is derived and has no live row');
+    //   ...(b) and the QUERY behind it really yields that alias. The hand-built fixture above
+    //   passes no matter what the SELECT returns — which is exactly the class of bug this round
+    //   found (`finding_severity` was an alias that existed only in another module's SELECT, so
+    //   reading it here was a no-op). This calls the ROUTE'S OWN loader against real rows, so
+    //   narrowing that query back fails here.
+    const escRow = (await client.query(
+      `INSERT INTO finding_escalations (application_id, finding_id, code, severity, status)
+       VALUES ($1,$2,'writer_probe','warning','open') RETURNING id`,
+      [app7.id, dfRow.id])).rows[0];
+    const joined = await uw._loadEscalationRow(escRow.id, client);
+    assert.strictEqual(joined.finding_severity, 'fatal',
+      'the escalation JOIN really yields the finding row severity (not undefined)');
+    assert.strictEqual(uw._escalationFindingShape(joined).severity, 'fatal',
+      'and the shape built from a REAL row carries it');
 
     // readers: the two carry-forward shapes must carry severity, or a decision taken at
     // warning silently makes the re-read's DEALBREAKER born dismissed.
@@ -421,7 +490,6 @@ console.log('ISG one list (DB)');
     // two were regexes over the reader files, which pass for a reader that is never CALLED,
     // and break on a harmless reformat. Both now run the real code against the real ledger.
     const readerKey = { code: 'reader_severity_probe', field: 'as_is_value', docValue: '400000' };
-    const store = require('../src/lib/underwriting/store');
     const docRow = (await client.query(
       `INSERT INTO documents (application_id, borrower_id, filename, content_type, storage_provider)
        VALUES ($1,$2,'probe.pdf','application/pdf','local') RETURNING id`, [app7.id, b.id])).rows[0];
@@ -475,6 +543,55 @@ console.log('ISG one list (DB)');
     assert.strictEqual(apprImport._internals.carryForward(new Map(), apprFinding('warning')), false,
       'an empty ledger carries nothing forward — it fails OPEN');
     ok('every ledger writer records the judged severity, and both readers really honour it');
+
+    // ── 13b. THE SEVENTH DOOR — the AI-panel mirror close ──────────────────────────────
+    // `closeMirroredSuggestions` closed EVERY ai_suggestions row sharing the finding's code,
+    // regardless of severity. Dismissing a WARNING on the Document Review desk therefore also
+    // closed a FATAL mirror of the same code — and that row, now stamped decided_by_staff_id,
+    // went on to suppress re-raises through `record()`'s settled-row dedupe. One warning
+    // judgement, a silenced dealbreaker, two surfaces away.
+    const app8 = (await client.query(
+      `INSERT INTO applications (borrower_id, property_address) VALUES ($1,'{}'::jsonb) RETURNING id`,
+      [b.id])).rows[0];
+    const mkMirror = async (severity) => (await client.query(
+      `INSERT INTO ai_suggestions (application_id, source, kind, severity, title, body, status, evidence)
+       VALUES ($1,'cross_document','finding',$2,'t','x','open', '{"code":"mirror_probe"}'::jsonb)
+       RETURNING id`, [app8.id, severity])).rows[0];
+    const mildMirror = await mkMirror('warning');
+    const fatalMirror = await mkMirror('fatal');
+    const docRow8 = (await client.query(
+      `INSERT INTO documents (application_id, borrower_id, filename, content_type, storage_provider)
+       VALUES ($1,$2,'m.pdf','application/pdf','local') RETURNING id`, [app8.id, b.id])).rows[0];
+    const df8 = (await client.query(
+      `INSERT INTO document_findings (application_id, borrower_id, document_id, source, code, severity, title, status)
+       VALUES ($1,$2,$3,'cross_document','mirror_probe','warning','t','open') RETURNING id`,
+      [app8.id, b.id, docRow8.id])).rows[0];
+    await store.resolveFinding(client, {
+      findingId: df8.id, action: 'dismiss', note: 'not a concern here', by: null,
+    });
+    const mirrorStatus = async (id) => (await client.query(
+      `SELECT status FROM ai_suggestions WHERE id=$1`, [id])).rows[0].status;
+    assert.strictEqual(await mirrorStatus(mildMirror.id), 'dismissed',
+      'the mirror at the SAME severity is closed with the finding — that is the point of it');
+    assert.strictEqual(await mirrorStatus(fatalMirror.id), 'open',
+      'but a DEALBREAKER mirror survives a warning-level dismissal');
+    ok('a warning dismissal does not close a dealbreaker on the AI panel');
+
+    // ── 13c. THE SIXTH DOOR — the file view's own settled-mirror filter ─────────────────
+    // The file view drops a note-buyer desk finding whenever its ai_suggestions mirror is in
+    // any non-open status. That undid all the other doors: the ledger correctly refuses to
+    // suppress a fatal, and this filter threw it away anyway. Exercised through the exported
+    // predicate so the comparison itself is pinned.
+    const settledMirror = { status: 'dismissed', severity: 'warning' };
+    assert.strictEqual(uw._isgSettledHides(settledMirror, { severity: 'warning' }), true,
+      'the same rule at the same severity stays hidden — the dismissal sticks');
+    assert.strictEqual(uw._isgSettledHides(settledMirror, { severity: 'fatal' }), false,
+      'but the same rule as a DEALBREAKER is shown again');
+    assert.strictEqual(uw._isgSettledHides({ status: 'dismissed', severity: null }, { severity: 'fatal' }), true,
+      'a mirror whose own severity is unreadable keeps suppressing — never a mass resurrection');
+    assert.strictEqual(uw._isgSettledHides({ status: 'open', severity: 'warning' }, { severity: 'warning' }), false,
+      'an OPEN mirror hides nothing — the card is live');
+    ok('the file view hides a settled guideline finding only while it is no worse than what was decided');
 
     // …and the readers really behave: a warning dismissed does not carry forward a fatal.
     const carryKey = { code: 'appraisal_value_variance', field: 'as_is_value', docValue: '450000' };

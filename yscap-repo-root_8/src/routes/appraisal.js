@@ -316,10 +316,8 @@ router.post('/:appId/findings/:fid/resolve', requirePermission('sign_off_conditi
       // a re-import of the appraisal carries it forward instead of re-raising a
       // finding this reviewer already dealt with. Best-effort by construction
       // (finding-decisions never throws) — it can't fail the resolve.
-      await require('../lib/underwriting/finding-decisions').record(client, {
-        applicationId: app.id, finding: fnd, origin: 'appraisal_finding',
-        decision: action, note: b.note || null, decidedBy: req.actor.id,
-      });
+      await require('../lib/underwriting/finding-decisions').record(client,
+        ledgerRecordFor({ appId: app.id, fnd, action, note: b.note || null, by: req.actor.id }));
       await client.query('COMMIT');
     } catch (e) {
       await client.query('ROLLBACK').catch(() => {});
@@ -344,4 +342,21 @@ router.post('/:appId/findings/:fid/resolve', requirePermission('sign_off_conditi
   } catch (e) { next(e); }
 });
 
+
+// The ledger payload for an appraisal-finding decision, as its own function so a test can
+// assert its SHAPE rather than pattern-match this file.
+//
+// `severity` is EXPLICIT, not inherited (re-audit 2026-07-27). `record()` falls back to
+// `finding.severity`, which works only because `fnd` comes from a `SELECT *`. Narrowing that
+// query to a column list would silently write NULL — and NULL means "suppress regardless", so
+// the next re-import of the appraisal would be born dismissed, with no error and no log.
+function ledgerRecordFor({ appId, fnd, action, note, by } = {}) {
+  return {
+    applicationId: appId, finding: fnd, origin: 'appraisal_finding',
+    decision: action, note: note || null, decidedBy: by,
+    severity: (fnd && fnd.severity) || null,
+  };
+}
+
 module.exports = router;
+module.exports._ledgerRecordFor = ledgerRecordFor;

@@ -232,12 +232,23 @@ function stubClient(rowCount = 0) {
   // fatal-notify, and the escalation queue still reading "warning" while a reviewer decides a
   // dealbreaker. `record()` REFRESHES a live row in place, so letting the worse one through
   // updates the severity rather than duplicating the row.
+  // THE STUB MUST ANSWER `record()`'s OWN LIVE LOOKUP, not just desk-sync's map query
+  // (re-audit 2026-07-27). The two use different SQL — desk-sync reads `status = ANY($3)`,
+  // `record()` reads `status IN ('open','escalated',…)`. Answering only the first left the
+  // second returning no rows, so the "worse severity" case went down the INSERT path while
+  // this test claimed to prove the UPDATE refresh. `raised === 1` is true either way, so the
+  // assertion passed while demonstrating the opposite of the safety argument — an INSERT of a
+  // fatal is exactly the duplicate row + 298-email fan-out the alive skip exists to prevent.
   const aliveWarnClient = () => ({
     calls: [],
     async query(text, params) {
       this.calls.push({ text, params });
       if (/status\s*=\s*ANY/i.test(text) && /dedupe_key/.test(text)) {
         return { rowCount: 1, rows: [{ dedupe_key: 'isg-gap:rtl_cond_feasibility', severity: 'warning', status: 'escalated', decided_by_staff_id: null }] };
+      }
+      // record()'s refresh-in-place pick: the live row really is there.
+      if (/SELECT id FROM ai_suggestions/i.test(text) && /status IN \(/i.test(text)) {
+        return { rowCount: 1, rows: [{ id: 'live-1' }] };
       }
       if (/UPDATE ai_suggestions/i.test(text)) return { rowCount: 1, rows: [{ id: 'live-1' }] };
       if (/INSERT INTO ai_suggestions/i.test(text)) return { rowCount: 1, rows: [{ id: 'live-1' }] };
@@ -249,6 +260,13 @@ function stubClient(rowCount = 0) {
   ok(rAliveWorse.raised === 1 && rAliveWorse.heldAlive === 0,
     `an escalated WARNING does not swallow the same rule once it is FATAL `
     + `(raised=${rAliveWorse.raised}, heldAlive=${rAliveWorse.heldAlive})`);
+  // ...and it REFRESHES the escalated row rather than cloning it. This is the half the safety
+  // argument rests on: an INSERT of a fatal fires `_notifyFatalNew` to the whole file team and
+  // leaves a phantom duplicate — the 298-email burst. The staffer's escalation must survive,
+  // upgraded to a dealbreaker, as one row.
+  ok(cAliveWorse.calls.some((k) => /UPDATE ai_suggestions/i.test(k.text))
+     && !cAliveWorse.calls.some((k) => /INSERT INTO ai_suggestions/i.test(k.text)),
+    'the escalated row is UPDATED in place, never duplicated — no fatal-notify blast');
 
   // ...and the same severity IS still held, or every page load re-clones an escalated item.
   const cAliveSame = aliveWarnClient();
