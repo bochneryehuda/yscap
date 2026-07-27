@@ -37,18 +37,12 @@ async function clickupNoteBuyerLabels() {
     const registry = require('../clickup/registry');
     const fieldId = F.PIPELINE && F.PIPELINE.lender;
     if (!fieldId) return [];
-    // Cheap path: options already cached by the running sync.
-    let opts = (registry.peek() || {})[fieldId];
-    if (!opts || !opts.length) {
-      const row = (await db.query(
-        `SELECT clickup_list_id FROM applications
-          WHERE clickup_list_id IS NOT NULL ORDER BY updated_at DESC LIMIT 1`)).rows[0];
-      const listId = row && row.clickup_list_id;
-      if (listId) {
-        const map = await registry.optionMap(listId).catch(() => ({}));
-        opts = (map || {})[fieldId];
-      }
-    }
+    // ClickUp's dropdown options come from the sync's warm option cache. There is
+    // NO per-file clickup_list_id column on `applications` to fetch a cold cache
+    // from (that query always threw — the same phantom column that broke the
+    // accept-figures action), so a cold cache simply yields no ClickUp labels here;
+    // the registry set + on-file lender values still populate the datalist.
+    const opts = (registry.peek() || {})[fieldId];
     return (opts || []).map((o) => o && o.name).filter(Boolean);
   } catch (_) { return []; }
 }
