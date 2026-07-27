@@ -12,9 +12,16 @@
 const assert = require('assert');
 
 // ---- Minimal in-memory pg client ----
+// Statuses that still need handling — escalating or flagging a finding is not a
+// DECISION about it, so record() refreshes those rows instead of stacking a copy.
+const LIVE_STATUSES = new Set(['open', 'escalated', 'marked_important', 'asked_admin']);
+// 'answered' is the super-admin REPLYING to a question the AI asked — an answer, not a
+// judgement that the issue is closed — so it never blocks the agent asking again.
+const SETTLED_EXEMPT = new Set([...LIVE_STATUSES, 'answered']);
+
 class Store {
   constructor() {
-    this.rows = []; this.qs = []; this.aq = [];
+    this.rows = []; this.qs = []; this.aq = []; this.decisions = [];
     this.nextId = 1;
   }
   id() { return String(this.nextId++); }
@@ -42,9 +49,37 @@ function mkClient(store) {
         store.rows.push(row);
         return { rows: [{ id: row.id }] };
       }
-      if (/^SELECT id FROM ai_suggestions WHERE application_id=\$1 AND source=\$2 AND dedupe_key=\$3 AND status='open'/.test(s)) {
-        const hit = store.rows.find(r => r.application_id === params[0] && r.source === params[1] && r.dedupe_key === params[2] && r.status === 'open');
-        return { rows: hit ? [{ id: hit.id }] : [] };
+      // A DECIDED row is the last word — record() must not re-raise it (the
+      // 2026-07-27 "I dismiss it and it keeps popping up again" root cause).
+      if (/^SELECT id, status FROM ai_suggestions WHERE application_id=\$1 AND source=\$2 AND dedupe_key=\$3/.test(s)) {
+        const hit = store.rows.find(r => r.application_id === params[0] && r.source === params[1]
+          && r.dedupe_key === params[2] && !SETTLED_EXEMPT.has(r.status) && r.decided_by_staff_id != null);
+        return { rows: hit ? [{ id: hit.id, status: hit.status }] : [] };
+      }
+      // The refresh-in-place pick. "Live" spans open/escalated/marked_important/
+      // asked_admin (all still need handling); a plain 'open' row wins.
+      if (/^SELECT id FROM ai_suggestions WHERE application_id=\$1 AND source=\$2 AND dedupe_key=\$3/.test(s)) {
+        const hits = store.rows.filter(r => r.application_id === params[0] && r.source === params[1]
+          && r.dedupe_key === params[2] && LIVE_STATUSES.has(r.status));
+        hits.sort((a, b) => (b.status === 'open') - (a.status === 'open'));
+        return { rows: hits[0] ? [{ id: hits[0].id }] : [] };
+      }
+      // The per-finding decision ledger (db/333) + the savepoint it runs inside.
+      if (/^(SAVEPOINT|RELEASE SAVEPOINT|ROLLBACK TO SAVEPOINT) finding_decision$/i.test(s)) return { rows: [] };
+      if (/^SELECT finding_key FROM finding_decisions/i.test(s)) {
+        return { rows: store.decisions.filter(d => d.application_id === params[0] && d.suppressed).map(d => ({ finding_key: d.finding_key })) };
+      }
+      if (/^INSERT INTO finding_decisions/i.test(s)) {
+        const [appId2, key, code, origin, decision, suppressed, note, by] = params;
+        const prev = store.decisions.find(d => d.application_id === appId2 && d.finding_key === key);
+        if (prev) Object.assign(prev, { code, origin, decision, suppressed, note, decided_by: by });
+        else store.decisions.push({ application_id: appId2, finding_key: key, code, origin, decision, suppressed, note, decided_by: by });
+        return { rows: [] };
+      }
+      if (/^UPDATE finding_decisions/i.test(s)) {
+        const hit = store.decisions.find(d => d.application_id === params[0] && d.finding_key === params[1]);
+        if (hit) hit.suppressed = false;
+        return { rowCount: hit ? 1 : 0, rows: [] };
       }
       if (/^UPDATE ai_suggestions SET document_id=/.test(s)) {
         const [id, docId, ciId, kind, title, body, evidence, action, severity, confidence, traceUrl, important] = params;
@@ -53,7 +88,7 @@ function mkClient(store) {
         row.kind = kind; row.title = title; row.body = body;
         row.evidence = JSON.parse(evidence); row.proposed_action = JSON.parse(action);
         row.severity = severity; row.confidence = confidence; row.trace_url = traceUrl;
-        row.important = !!important;
+        row.important = row.important || !!important;   // never un-flag what a human flagged
         return { rows: [] };
       }
       if (/^SELECT \* FROM ai_suggestions WHERE id=\$1$/.test(s)) {

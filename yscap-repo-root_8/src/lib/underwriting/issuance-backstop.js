@@ -9,9 +9,12 @@
  *
  *   • tier 'clear'    → proceed, no warning.
  *   • tier 'advisory' → proceed (ANY staff); surface the note. Never a gate.
- *   • tier 'fatal'    → a super-admin-overridable HARD WARNING. A super-admin can
- *                       ALWAYS proceed (recorded as an override with a reason);
- *                       anyone else is asked to escalate (needsSuperAdminOverride).
+ *   • tier 'fatal'    → ADVISORY ONLY since 2026-07-27 (owner-directed): proceed
+ *                       (ANY staff), `advisoryFatal:true` so the screen can still
+ *                       say PILOT is unhappy. With `AI_FINDINGS_ENFORCE=1` it goes
+ *                       back to a super-admin-overridable HARD WARNING: a
+ *                       super-admin ALWAYS proceeds (recorded as an override with a
+ *                       reason), anyone else escalates (needsSuperAdminOverride).
  *
  * CARDINAL INVARIANT (governing rule #217): this is NEVER an un-overridable block.
  * A super-admin proceeds for ANY input. On no run / any error it FAILS OPEN to a
@@ -52,7 +55,20 @@ function decideBackstop(resolved, opts = {}) {
     const actorRole = low(o.actorRole);
     const isSuper = actorRole === ROLE_SUPER;
     const tier = r.tier === 'clear' || r.tier === 'advisory' || r.tier === 'fatal' ? r.tier : 'advisory';
-    const hardWarning = tier === 'fatal';
+    // ADVISORY ONLY (owner-directed 2026-07-27): "it should not hold you back from
+    // CTC … should not hold you back from sending out the terms package … it should
+    // really be advisory only". So even a CONFIRMED FATAL is now a NOTE, not a gate:
+    // `hardWarning` goes false and EVERY staffer proceeds. The tier and the fatal
+    // list are still returned in full, so every screen can show exactly what PILOT
+    // found and how serious it thinks it is — it just doesn't stop anyone.
+    //
+    // Nothing is "overridden" in advisory mode, so nothing is RECORDED as an
+    // override either: a super-admin exporting a tape has not granted an exception,
+    // they have simply exported a tape, and the exception register must not fill up
+    // with entries nobody chose to make. `AI_FINDINGS_ENFORCE=1` restores the
+    // two-tier hard warning exactly as it was.
+    const enforce = require('./advisory-policy').enforceFor(o);
+    const hardWarning = enforce && tier === 'fatal';
     const proceed = hardWarning ? isSuper : true; // super-admin ALWAYS proceeds on a fatal
     const overrideReason = str(o.overrideReason).trim();
     const overrideRequested = o.override === true || overrideReason.length > 0;
@@ -65,6 +81,11 @@ function decideBackstop(resolved, opts = {}) {
       hardWarning,
       proceed,
       needsSuperAdminOverride: hardWarning && !isSuper,
+      // PILOT flagged a confirmed fatal but is deliberately NOT gating on it — so a
+      // surface can still say "PILOT is not happy with this" next to the action it
+      // just allowed, which is the whole point of advisory.
+      advisoryOnly: !enforce,
+      advisoryFatal: !enforce && tier === 'fatal',
       reason: r.reason || null,
       fatals: arr(r.fatals),
       advisories: arr(r.advisories),
@@ -79,7 +100,8 @@ function decideBackstop(resolved, opts = {}) {
     // Fail OPEN — the AI never hard-blocks, even on hostile input.
     return {
       action: null, status: null, tier: 'advisory', hardWarning: false, proceed: true,
-      needsSuperAdminOverride: false, reason: null, fatals: [], advisories: [],
+      needsSuperAdminOverride: false, advisoryOnly: true, advisoryFatal: false,
+      reason: null, fatals: [], advisories: [],
       override: { requested: false, applied: false, byRole: null, reason: null },
     };
   }
