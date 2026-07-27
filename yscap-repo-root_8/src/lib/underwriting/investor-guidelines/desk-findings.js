@@ -116,7 +116,7 @@ function deskToFindings(desk) {
         // finding about that fact, all collapse to a single row. Only a disposition-driven kind
         // carries a concern_field; a coverage gap is about a MISSING CONDITION, not a fact, and is
         // deliberately left unkeyed so two different missing conditions never merge.
-        claimKey: ev.concern_field ? `isg_signal:${ev.concern_field}` : undefined,
+        factKey: ev.concern_field ? `isg_signal:${ev.concern_field}` : undefined,
         severity: p.severity === 'fatal' ? 'fatal' : 'warning',
         status: 'open',
         // ADVISORY — never a clear-to-close block. See the module note above.

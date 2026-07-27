@@ -43,14 +43,14 @@ const ruralDesk = {
 t('a desk finding declares the FACT it asserts, not just its own code', () => {
   const f = deskToFindings(ruralDesk);
   assert.strictEqual(f.length, 2);
-  for (const x of f) assert.strictEqual(x.claimKey, 'isg_signal:appraisal_rural');
+  for (const x of f) assert.strictEqual(x.factKey, 'isg_signal:appraisal_rural');
 });
 
 t('the run rule table declares the same fact under its own code', () => {
   const out = review.review({ note_buyer: 'Blue Lake', appraisal_rural: true });
   const rural = out.find((x) => x.code === 'isg_rural_property');
   assert.ok(rural, 'the rural rule must fire when the appraisal says rural');
-  assert.strictEqual(rural.claimKey, 'isg_signal:appraisal_rural');
+  assert.strictEqual(rural.factKey, 'isg_signal:appraisal_rural');
   assert.strictEqual(rural.severity, 'fatal');
 });
 
@@ -61,7 +61,7 @@ t('THREE producers, ONE row — and the DEALBREAKER is the one that survives', (
   assert.strictEqual(deskF.length + runF.length, 3, 'fixture must really produce three');
 
   const merged = dedupeByClaim([...deskF, ...runF]);
-  const rural = merged.filter((x) => String(x.claimKey || '') === 'isg_signal:appraisal_rural');
+  const rural = merged.filter((x) => String(x.factKey || '') === 'isg_signal:appraisal_rural');
   assert.strictEqual(rural.length, 1,
     `rural must collapse to ONE row, got ${rural.length}: ${rural.map((x) => x.code).join(', ')}`);
   assert.strictEqual(rural[0].severity, 'fatal',
@@ -77,7 +77,7 @@ t('order does not decide the winner — the fatal survives either way', () => {
   const runF = review.review({ note_buyer: 'Blue Lake', appraisal_rural: true })
     .filter((x) => x.code === 'isg_rural_property');
   for (const list of [[...deskF, ...runF], [...runF, ...deskF]]) {
-    const m = dedupeByClaim(list).filter((x) => String(x.claimKey || '') === 'isg_signal:appraisal_rural');
+    const m = dedupeByClaim(list).filter((x) => String(x.factKey || '') === 'isg_signal:appraisal_rural');
     assert.strictEqual(m.length, 1);
     assert.strictEqual(m[0].severity, 'fatal', 'a warning listed first must not win the merge');
   }
@@ -93,7 +93,7 @@ t('a transferred appraisal collapses the same way', () => {
     .filter((x) => x.code === 'isg_bl_transferred_appraisal');
   assert.strictEqual(runF.length, 1);
   const merged = dedupeByClaim([...deskToFindings(d), ...runF])
-    .filter((x) => String(x.claimKey || '') === 'isg_signal:appraisal_transferred');
+    .filter((x) => String(x.factKey || '') === 'isg_signal:appraisal_transferred');
   assert.strictEqual(merged.length, 1);
   assert.strictEqual(merged[0].severity, 'fatal');
 });
@@ -111,7 +111,7 @@ t('a COVERAGE GAP carries no claim key — two missing conditions never merge', 
   };
   const f = deskToFindings(d);
   assert.strictEqual(f.length, 2);
-  for (const x of f) assert.strictEqual(x.claimKey, undefined,
+  for (const x of f) assert.strictEqual(x.factKey, undefined,
     'a gap is about a MISSING CONDITION, not a fact — keying it would merge unrelated gaps');
   assert.strictEqual(dedupeByClaim(f).length, 2, 'two different missing conditions are two items of work');
 });
@@ -121,7 +121,7 @@ t('a rule with no shared signal is untouched — it still keys on its own code',
   const out = review.review({ note_buyer: 'Blue Lake', property_state: 'NY' });
   const ny = out.find((x) => x.code === 'isg_bl_ny_loan');
   assert.ok(ny);
-  assert.strictEqual(ny.claimKey, undefined);
+  assert.strictEqual(ny.factKey, undefined);
   assert.ok(claimOf(ny).startsWith('code:isg_bl_ny_loan'), 'must fall through to the code key');
 });
 
@@ -131,7 +131,7 @@ t('claimKeyForCode never throws and never guesses', () => {
   }
 });
 
-t('a finding with no claimKey keys EXACTLY as it did before', () => {
+t('a finding with no factKey keys EXACTLY as it did before', () => {
   // The whole rest of the registry must be unaffected by the new branch.
   const plain = { code: 'bank_account_not_borrower', field: 'account_holder', document_id: 'doc-1' };
   assert.strictEqual(claimOf(plain), 'code:bank_account_not_borrower::account_holder::doc-1::');
@@ -157,6 +157,55 @@ t('ADVISORY — a merged guideline row still cannot gate clear-to-close', () => 
     assert.strictEqual(x.blocksCtc, false);
     assert.strictEqual(x.id, undefined, 'no stored id ⇒ renders read-only, and fileFatalCount cannot see it');
   }
+});
+
+// ── the blind spot the pre-merge audit found ────────────────────────────────
+t('a DECORATED finding still keys the same — the producer field cannot re-feed claimOf', () => {
+  // THE BUG THIS EXISTS FOR. The first cut named the producer field `claimKey` — a name the route's
+  // `decorate()` ALREADY stamps (`claimKey = claimOf(f)`), and decorated findings go straight into
+  // openRaw. So claimOf re-read its own output and emitted `claim:claim:…`, which silently un-grouped
+  // every CLAIM_FAMILY and broke the durable decision ledger (whose writes key on a RAW shape), so a
+  // granted exception stopped suppressing and the finding came back on the next view.
+  //
+  // The old test only ever called claimOf on an UNDECORATED object, which is exactly why it passed.
+  const stored = { id: 'df-1', code: 'contract_buyer_mismatch', field: 'buyer', document_id: 'doc-9' };
+  const raw = claimOf(stored);
+  const decorated = { ...stored, claimKey: raw };          // what decorate() hands to openRaw
+  assert.strictEqual(claimOf(decorated), raw,
+    'a decorated finding must key IDENTICALLY to its raw self — otherwise the ledger and the desk disagree');
+  assert.ok(!/claim:claim:/.test(claimOf(decorated)), 'the key must never be double-prefixed');
+
+  // …and the family merge still collapses the decorated stored finding with its derived restatement.
+  const derived = { code: 'cot_final_buyer_not_vesting', severity: 'warning' };
+  const merged = dedupeByClaim([decorated, derived]);
+  assert.strictEqual(merged.length, 1, 'the claim family must still merge after decoration');
+  assert.strictEqual(merged[0].id, 'df-1', 'the persisted, actionable row must survive');
+});
+
+t('the merged survivor INHERITS the handles that make a card actionable', () => {
+  // A run finding wins on severity but carries no id and no suggestionId, so the card rendered with
+  // no buttons — and once the desk row was dismissed the fatal stood alone, un-dismissable forever.
+  const deskRow = {
+    code: 'isg_appraisal_review_3345', severity: 'warning', factKey: 'isg_signal:appraisal_rural',
+    suggestionId: 'sug-7', isgKey: 'isg-appraisal_review:3345',
+  };
+  const runRow = { code: 'isg_rural_property', severity: 'fatal', factKey: 'isg_signal:appraisal_rural' };
+  for (const list of [[deskRow, runRow], [runRow, deskRow]]) {
+    const m = dedupeByClaim(list);
+    assert.strictEqual(m.length, 1);
+    assert.strictEqual(m[0].severity, 'fatal', 'the dealbreaker still wins');
+    assert.strictEqual(m[0].suggestionId, 'sug-7', 'the survivor must inherit the suggestion handle');
+    assert.strictEqual(m[0].isgKey, 'isg-appraisal_review:3345', 'and the AI-panel mirror key');
+  }
+});
+
+t('inheritance never overwrites a handle the survivor already has', () => {
+  const a = { code: 'contract_buyer_mismatch', id: 'real-1', severity: 'fatal' };
+  const b = { code: 'cot_final_buyer_not_vesting', id: 'other-2', severity: 'warning' };
+  const m = dedupeByClaim([a, b]);
+  // Two PERSISTED rows are never merged (each is separately resolvable) — so this also pins that rule.
+  assert.strictEqual(m.length, 2, 'two persisted rows must both stay on the desk');
+  assert.strictEqual(m[0].id, 'real-1');
 });
 
 console.log(`\n${n} checks passed.`);

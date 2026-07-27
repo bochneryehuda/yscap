@@ -99,7 +99,7 @@ async function loadRunGuidelineFindings(db, appId) {
       category: investorReview.CATEGORY,
       code: row.code,
       // Rebuilt from the rule table — see investor-guideline-review.claimKeyForCode.
-      claimKey: investorReview.claimKeyForCode(row.code) || undefined,
+      factKey: investorReview.claimKeyForCode(row.code) || undefined,
       severity: String(row.severity || '').toLowerCase() === 'fatal' ? 'fatal' : 'warning',
       status: 'open',
       blocksCtc: false,
@@ -1164,7 +1164,13 @@ router.get('/:appId', async (req, res, next) => {
     // desk-disagrees-with-the-gate hazard finding-claims.js was written to prevent, arriving through
     // a different door. They still render in the ONE list below with their real severity chip; only
     // the counter distinguishes them.
-    const isgOnly = (f) => f && f.source === deskFindings.SOURCE;
+    // KEYED ON THE CATEGORY, not the source (pre-merge audit 2026-07-27). The folded run findings
+    // carry source 'investor_guideline' while the desk's carry 'investor_guideline_desk' — a
+    // DIFFERENT string — so every one of them escaped this filter and landed in `summary.fatal`,
+    // which `file-review.fileFatalCount` (the real gate) cannot see. That is exactly the
+    // desk-disagrees-with-the-gate hazard the note above says must never happen. It also survives
+    // the merge: when the run's fatal wins, the survivor's SOURCE flips but its category does not.
+    const isgOnly = (f) => f && (f.category === 'investor_guideline' || f.source === deskFindings.SOURCE);
     const countable = openWithRisk.filter((f) => !isgOnly(f));
     const guidelineNotes = openWithRisk.filter(isgOnly);
     const summary = {

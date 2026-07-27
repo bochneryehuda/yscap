@@ -777,10 +777,12 @@ router.get('/applications', async (req, res) => {
                            AND (ci.signed_off_at IS NOT NULL OR ci.status='satisfied')) AS done_items,
                         (SELECT count(*)::int FROM ai_suggestions s
                            WHERE s.application_id=a.id AND s.severity='fatal'
-                             AND s.status IN ('open','marked_important','escalated','asked_admin')) AS open_fatal_ai,
+                             AND s.status IN ('open','marked_important','escalated','asked_admin')
+                             AND ${aiSuggestions.notScoredSql('s')}) AS open_fatal_ai,
                         (SELECT EXTRACT(EPOCH FROM (now() - MIN(s.created_at)))/86400 FROM ai_suggestions s
                            WHERE s.application_id=a.id AND s.severity='fatal'
-                             AND s.status IN ('open','marked_important','escalated','asked_admin')) AS open_fatal_ai_oldest_days,
+                             AND s.status IN ('open','marked_important','escalated','asked_admin')
+                             AND ${aiSuggestions.notScoredSql('s')}) AS open_fatal_ai_oldest_days,
                         LEAST(100, COALESCE((SELECT
                             SUM(CASE severity WHEN 'fatal' THEN 25 WHEN 'warning' THEN 8 WHEN 'info' THEN 2 ELSE 4 END)::int
                           FROM ai_suggestions s

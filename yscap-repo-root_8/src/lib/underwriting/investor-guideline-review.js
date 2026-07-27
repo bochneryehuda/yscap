@@ -304,7 +304,7 @@ function review(raw) {
         // severities. `signal` is the SAME name both sides use. A rule with no `signal` (most of
         // them — the loan-size, assignment and cash-out escalations have no desk counterpart) is
         // left unkeyed and dedupes on its code exactly as before.
-        claimKey: rule.signal ? `isg_signal:${rule.signal}` : undefined,
+        factKey: rule.signal ? `isg_signal:${rule.signal}` : undefined,
         title: rule.title,
         explanation: (rule.detail ? rule.detail(x) : rule.title) + (rule.escalateTo ? ` (escalate to ${rule.escalateTo})` : ''),
         source: SOURCE,

@@ -41,19 +41,38 @@ t('a source is quoted exactly once and cannot break out of the array literal', (
   }
 });
 
-// The scoring weights are the fingerprint of an aggregate that must carry the filter.
-const SCORING = /WHEN 'fatal' THEN 25/g;
+// THE SITES, NAMED. The first cut counted `WHEN 'fatal' THEN 25` and asserted
+// `filters >= aggregates`, which was wrong in BOTH directions: it missed the two pipeline chips and
+// the nightly fatal email (they count `severity='fatal'`, not the weights), and once widened it
+// over-matched `document_findings` queries and inner `FILTER (WHERE severity='fatal')` clauses that
+// an outer filter already covers. A count heuristic cannot tell those apart.
+//
+// So: assert each known consumer by the text that identifies it. WHAT THIS CANNOT DO is notice a
+// BRAND-NEW aggregate nobody added here — for that, `ADVISORY_ONLY_SOURCES`' doc comment is the
+// instruction, and this list is the checklist. Add a case when you add a consumer.
 const FILTER = /notScoredSql\(/g;
-const count = (s, re) => (s.match(re) || []).length;
+const count = (str, re) => (str.match(re) || []).length;
 
-t('EVERY severity-weighted aggregate carries the filter', () => {
-  for (const rel of ['src/routes/staff.js', 'src/lib/notification-digests.js']) {
+const SITES = [
+  ['src/routes/staff.js', /open_fatal_ai,/, 'the pipeline "fatal AI" chip'],
+  ['src/routes/staff.js', /open_fatal_ai_oldest_days,/, 'the pipeline aged-fatal chip'],
+  ['src/routes/staff.js', /AS ai_risk_score/, 'the pipeline risk score'],
+  ['src/lib/notification-digests.js', /LIMIT 5`\);/, 'the admin top-5-riskiest email'],
+  ['src/lib/notification-digests.js', /FROM staff_users u/, 'the LO-digest officer discovery'],
+  ['src/lib/notification-digests.js', /ORDER BY score DESC, a\.id\s*\n\s*LIMIT 10/, 'the per-officer file list'],
+  ['src/lib/notification-digests.js', /a\.status IN \('approved','clear_to_close','funded'\)/, 'the nightly "advanced with an open fatal" email'],
+];
+
+t('every KNOWN fatal-counting / scoring consumer carries the filter', () => {
+  for (const [rel, marker, label] of SITES) {
     const src = read(rel);
-    const scored = count(src, SCORING);
-    const filtered = count(src, FILTER);
-    assert.ok(scored > 0, `${rel} was expected to contain a scoring aggregate`);
-    assert.ok(filtered >= scored,
-      `${rel}: ${scored} severity-weighted aggregate(s) but only ${filtered} filter reference(s) — a new one is unfiltered`);
+    const m = marker.exec(src);
+    assert.ok(m, `${rel}: could not find ${label} — did it move? update this list`);
+    // The filter must appear within the same statement. The marker can be either side of it (a
+    // SELECT-list alias sits after; a FROM clause sits before), so look both ways.
+    const window = src.slice(Math.max(0, m.index - 1300), m.index + 1300);
+    assert.ok(/notScoredSql\(/.test(window),
+      `${rel}: ${label} does not carry the advisory-source filter`);
   }
 });
 

@@ -536,6 +536,7 @@ async function qaDeskAuditOnce() {
            JOIN applications a ON a.id = s.application_id AND a.deleted_at IS NULL
           WHERE s.severity = 'fatal'
             AND s.status IN ('open','marked_important','escalated','asked_admin')
+            AND ${aiSuggestions.notScoredSql('s')}
             AND a.status IN ('approved','clear_to_close','funded')
           GROUP BY a.id, a.property_address, a.status
           ORDER BY open_fatal DESC, max(s.created_at) DESC NULLS LAST, a.id
