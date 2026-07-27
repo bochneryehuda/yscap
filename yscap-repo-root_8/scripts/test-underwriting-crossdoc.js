@@ -132,14 +132,16 @@ assert.deepStrictEqual(codes(computeBankFindings({ ...depStmt, largestDeposit: n
 // A material deposit (>$5k) that is only a MINORITY share (<=50%) is NOT flagged — isolates the share gate from the floor.
 assert.deepStrictEqual(codes(computeBankFindings({ ...depStmt, largestDeposit: 9000 }, assets)), [], 'a >$5k deposit that is <=50% of deposits is fine');
 
-// Account under a DIFFERENT LLC → FATAL, requires operating agreement.
+// Account under a DIFFERENT LLC → ADVISORY verify-ownership (owner 2026-07-27: NOT major fraud),
+// requires operating agreement; never blocks CTC (the liquidity engine already excludes the funds).
 {
   const f = computeBankFindings({ ...goodStmt, accountHolderName: 'BRRRR Capital LLC', holderIsBusiness: true }, assets);
   assert.deepStrictEqual(codes(f), ['bank_account_other_entity']);
-  assert.strictEqual(f[0].severity, 'fatal');
+  assert.strictEqual(f[0].severity, 'warning', 'a different-LLC account is an ownership check, not a fatal fraud');
+  assert.strictEqual(f[0].blocksCtc, false, 'and it never blocks clear-to-close');
   assert.strictEqual(f[0].requiresDocument, 'operating_agreement');
-  // The finding names the specific entity and frames the FULL entity-control document set so the
-  // underwriter can bring that entity onto the file (operating agreement + articles + EIN letter).
+  // No entity doc on file for this holder → the request-a-condition shape names the entity + the
+  // full entity-control document set (operating agreement + articles + EIN letter).
   assert.strictEqual(f[0].entityName, 'BRRRR Capital LLC', 'the finding carries the specific other-entity name');
   assert.ok(/operating agreement/i.test(f[0].howTo) && /articles/i.test(f[0].howTo) && /ein/i.test(f[0].howTo),
     'the guidance names the full entity-control document set (OA + articles + EIN)');

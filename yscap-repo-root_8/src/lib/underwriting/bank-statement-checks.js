@@ -98,6 +98,17 @@ function entityHolderIsVerified(holder, subject) {
   return false;
 }
 
+// Has PILOT already READ an entity document (operating agreement / articles / EIN) for this holder
+// on the file? (owner 2026-07-27: "a lot of times the operating agreement is uploaded WITH the bank
+// statements — look for it before raising fraud".) When true, the different-entity finding points
+// at the proof already on file to VERIFY, instead of demanding a fresh upload.
+function entityDocOnFile(holder, subject) {
+  for (const e of ((subject && subject.entity_docs_on_file) || [])) {
+    if (entityMatch(holder, e) === true) return true;
+  }
+  return false;
+}
+
 function computeBankFindings(statement, subject, opts = {}) {
   const out = [];
   if (!statement) return out;
@@ -118,18 +129,33 @@ function computeBankFindings(statement, subject, opts = {}) {
   if (!borrowerIsAnOwner) {
     const looksEntity = isBusinessHolder;
     if (looksEntity) {
-      // Under a different entity → require the ENTITY-CONTROL document set proving the borrower
-      // owns/controls it. An operating agreement alone shows ownership, but to establish the entity
-      // on the file (and so its statements count as the borrower's assets) collect the full stack —
-      // formation (articles), the operating agreement, and the EIN letter — the same paperwork the
-      // borrowing entity itself provides. Naming the entity + the exact docs lets the underwriter
-      // post one condition to bring "${holder}" onto the file as an owned entity.
-      out.push(finding({ code: 'bank_account_other_entity', severity: 'fatal', field: 'account_holder',
-        docValue: holder, fileValue: (subject && subject.borrower_name) || null,
-        title: 'Bank account is held by a different entity than the borrower',
-        howTo: `The statement is under "${holder}", which is not the borrower or a known borrower entity. These are not established as the borrower's funds. To count them, add "${holder}" to the file as a borrower-owned entity and collect the documents that prove control: the OPERATING AGREEMENT (showing the borrower as managing member or ≥25% owner), the ARTICLES OF ORGANIZATION (formation), and the EIN letter. Until "${holder}" is documented as the borrower's entity, its balances do not count toward assets.`,
-        actions: ['request_document', 'open_condition', 'custom', 'dismiss', 'decline'], opensCondition: 'underwriting_review_cleared',
-        requiresDocument: 'operating_agreement', entityName: holder }));
+      // A bank statement under a DIFFERENT entity is NOT fraud — it is an OWNERSHIP that hasn't been
+      // VERIFIED yet (owner 2026-07-27: "this is not major fraud… you need to verify the ownership
+      // instead of raising crazy fraud"). So this is an ADVISORY (warning, never a CTC-blocking
+      // fatal); the funds already do not count toward liquidity until the entity is established (the
+      // liquidity engine excludes a non-matching holder independently), so nothing over-lends by
+      // making it non-blocking. Two shapes, depending on whether the proof is already on the file:
+      const docOnFile = entityDocOnFile(holder, subject);
+      if (docOnFile) {
+        // The operating agreement / entity documents for this holder were ALREADY uploaded (often
+        // alongside the statements). Point the underwriter AT that proof to verify + add the entity,
+        // rather than demand a document that is sitting right there.
+        out.push(finding({ code: 'bank_account_other_entity', severity: 'warning', field: 'account_holder',
+          docValue: holder, fileValue: (subject && subject.borrower_name) || null,
+          title: 'Bank funds are under a different entity — verify the ownership documents already on file',
+          howTo: `The statement is under "${holder}". Entity documents for "${holder}" (operating agreement / articles / EIN) appear to ALREADY be on this file — open them, confirm they show the borrower as managing member or ≥25% owner, then add "${holder}" to the file as a borrower-owned entity so its balances count. This is an ownership check, not fraud; the funds simply don't count until "${holder}" is established as the borrower's.`,
+          actions: ['open_condition', 'custom', 'acknowledge', 'dismiss'], opensCondition: 'underwriting_review_cleared',
+          requiresDocument: 'operating_agreement', entityName: holder, docsOnFile: true }));
+      } else {
+        // No entity document for this holder on the file yet → suggest posting a condition to collect
+        // the ownership proof (still advisory — the funds just don't count until it's on file).
+        out.push(finding({ code: 'bank_account_other_entity', severity: 'warning', field: 'account_holder',
+          docValue: holder, fileValue: (subject && subject.borrower_name) || null,
+          title: 'Bank funds are under a different entity — verify the borrower owns it',
+          howTo: `The statement is under "${holder}", which is not the borrower or a known borrower entity — so its balances don't count as the borrower's funds YET. This is an ownership check, not fraud: post a condition to collect the documents that prove the borrower controls "${holder}" — the OPERATING AGREEMENT (borrower as managing member or ≥25% owner), the ARTICLES OF ORGANIZATION (formation), and the EIN letter — then add "${holder}" to the file as a borrower-owned entity so the funds count.`,
+          actions: ['request_document', 'open_condition', 'custom', 'dismiss'], opensCondition: 'underwriting_review_cleared',
+          requiresDocument: 'operating_agreement', entityName: holder }));
+      }
     } else {
       // A personal account in someone else's name → not the borrower's funds.
       out.push(finding({ code: 'bank_account_not_borrower', severity: 'fatal', field: 'account_holder',

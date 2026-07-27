@@ -45,6 +45,23 @@ const other = otherLlc.find(f => f.code === 'bank_account_other_entity');
 assert.ok(other);
 assert.strictEqual(other.entityName, 'Beta Holdings LLC');
 assert.strictEqual(other.requiresDocument, 'operating_agreement');
+// owner 2026-07-27: a different-LLC account is an OWNERSHIP check, NOT major fraud — it must be an
+// advisory (warning), never a CTC-blocking fatal (the funds already don't count via the liquidity
+// engine, so nothing over-lends by making it non-blocking).
+assert.strictEqual(other.severity, 'warning', 'different-LLC account is advisory, not a fatal fraud');
+assert.strictEqual(other.blocksCtc, false, 'and it never blocks clear-to-close');
+assert.ok(!other.docsOnFile, 'no entity doc on file → the request-a-condition shape');
+assert.ok(other.actions.includes('request_document'), 'suggests requesting the entity documents');
+
+// ---- 4a2. Different-LLC BUT the operating agreement is ALREADY on the file → point at it, don't demand a new one ----
+const withOa = bs.computeBankFindings({
+  accountHolderName: 'Beta Holdings LLC', openingBalance: 5000, closingBalance: 4000,
+  totalDeposits: 100, totalWithdrawals: 1100, holderIsBusiness: true,
+}, { ...subject, entity_docs_on_file: ['Beta Holdings, LLC'] });
+const oaOnFile = withOa.find(f => f.code === 'bank_account_other_entity');
+assert.ok(oaOnFile && oaOnFile.severity === 'warning', 'still advisory when the OA is on file');
+assert.strictEqual(oaOnFile.docsOnFile, true, 'flags that the ownership documents are ALREADY on file (found by entity-doc match)');
+assert.ok(/already/i.test(oaOnFile.howTo), 'points the underwriter at the documents already on file');
 
 // ---- 4b. Business account, KNOWN entity but NOT verified → advisory LLC-section suggestion ----
 const knownSubject = {
