@@ -3064,10 +3064,18 @@ export default function UnderwritingPanel({ appId, docs = [], readOnly = false, 
 
   // Deep-link scroll (Rules of Hooks — must run every render, so it stays ABOVE the early return).
   // When we arrive with ?finding=<id> AND the findings have loaded, scroll the matching card into
-  // view and pulse it for ~3s. Re-runs after each load so a resolve → re-load lands on the right card.
+  // view and pulse it for ~3s.
+  //
+  // ONCE PER DEEP LINK, never again (owner-reported 2026-07-27: "it should never fly you
+  // somewhere else"). It used to re-fire whenever the findings COUNT moved — which happens on
+  // any reload, including one caused by an accept or a sign-off somewhere else on the file — so
+  // a reviewer who arrived here from the queue kept being dragged back to that one card.
   const _allFindingsForFocus = (data && data.allFindings) || [];
+  const focusedFinding = useRef('');
   useEffect(() => {
     if (!focusFindingId || !_allFindingsForFocus.length) return;
+    if (focusedFinding.current === focusFindingId) return;
+    focusedFinding.current = focusFindingId;
     const el = findingRefs.current[focusFindingId];
     if (el && typeof el.scrollIntoView === 'function') {
       try { el.scrollIntoView({ behavior: 'smooth', block: 'center' }); } catch (_) {}
