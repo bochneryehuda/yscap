@@ -32,9 +32,87 @@ const ok = (n) => { console.log(`  ok  ${n}`); passed += 1; };
 
 console.log('ISG one list (DB)');
 
+
+// THE FATAL ALERT SURVIVES AN IN-TRANSACTION UPGRADE (re-audit 2026-07-27).
+//
+// Two rounds put a re-read inside `_notifyFatalNew` and both KILLED this alert:
+//   attempt 1 suppressed when the row was ABSENT — which, on a pool connection, is the normal
+//     case for any caller recording inside a transaction, i.e. nearly all of them;
+//   attempt 2 suppressed on a VISIBLE, non-fatal row — which on the upgrade branch is the
+//     caller's own committed PRE-IMAGE, the pre-upgrade `warning`.
+//
+// THE PRE-IMAGE IS BUILT FOR REAL. The first version of this regression did not build it: it
+// inserted the warning row inside the caller's own transaction, so the pool saw NOTHING. That
+// is attempt 1's shape only — it killed attempt 2 on LATENCY (one round trip loses a two-tick
+// race), not on semantics, which is a test that looks discriminating and is not.
+//
+// It runs OUTSIDE the main test transaction on purpose, and cleans up after itself: committed
+// fixtures cannot be created or dropped while that transaction holds locks on the same rows.
+async function upgradeNotifyRegression(pool, ok) {
+  const c = await pool.connect();
+  let appId = null;
+  const notifyPath = require.resolve('../src/lib/notify');
+  const hadNotify = require.cache[notifyPath];
+  const sends = [];
+  try {
+    const b = (await pool.query(
+      `INSERT INTO borrowers (first_name, last_name, email)
+       VALUES ('Pre','Image','preimage-' || gen_random_uuid() || '@test.local') RETURNING id`)).rows[0];
+    appId = (await pool.query(
+      `INSERT INTO applications (borrower_id, property_address) VALUES ($1,'{}'::jsonb) RETURNING id`,
+      [b.id])).rows[0].id;
+    const committed = (await pool.query(
+      `INSERT INTO ai_suggestions (application_id, source, kind, severity, title, body, status, dedupe_key)
+       VALUES ($1,$2,'finding','warning','Feasibility report required','x','escalated','isg-gap:upgrade-notify')
+       RETURNING id`, [appId, deskFindings.SOURCE])).rows[0];
+
+    // The pool sees the PRE-IMAGE: a visible, non-fatal row — exactly what attempt 2 read as
+    // proof of a downgrade.
+    const pre = await pool.query(
+      `SELECT lower(btrim(COALESCE(severity,''))) AS sev FROM ai_suggestions WHERE id=$1`, [committed.id]);
+    assert.strictEqual(pre.rowCount, 1, 'the pre-image row is committed and visible');
+    assert.strictEqual(pre.rows[0].sev, 'warning',
+      'and it reads as a WARNING — the exact shape that fooled the second guard');
+
+    require.cache[notifyPath] = { id: notifyPath, filename: notifyPath, loaded: true, exports: {
+      notifyAppStaff: async () => { sends.push('staff'); },
+      notifyAdmins: async () => { sends.push('admins'); },
+    } };
+    await c.query('BEGIN');
+    const upgraded = await aiSug.record(c, {
+      applicationId: appId, source: deskFindings.SOURCE, kind: 'finding', severity: 'fatal',
+      title: 'Feasibility report required', body: 'x', dedupeKey: 'isg-gap:upgrade-notify',
+      evidence: { code: null, cond_no: 200, flag: 'coverage_gap' },
+    });
+    assert.strictEqual(upgraded.deduped, true, 'the escalated row is refreshed in place');
+    assert.strictEqual(upgraded.id, committed.id, 'and it is the COMMITTED row that was picked');
+    // Generous on time DELIBERATELY: this asserts SEMANTICS, not how many ticks a send takes.
+    // A tight tick budget is what made the first version look like it killed attempt 2.
+    for (let i = 0; i < 60 && !sends.length; i += 1) await new Promise((r) => setTimeout(r, 5));
+    assert.ok(sends.length > 0,
+      'the file team IS told the escalated item became a dealbreaker — even mid-transaction');
+    const after = (await c.query(`SELECT severity FROM ai_suggestions WHERE id=$1`, [committed.id])).rows[0];
+    assert.strictEqual(after.severity, 'fatal', 'and the row really carries the new severity');
+    await c.query('ROLLBACK');
+    ok('an in-transaction upgrade of a COMMITTED warning row still reaches the team');
+  } finally {
+    await c.query('ROLLBACK').catch(() => {});
+    if (hadNotify) require.cache[notifyPath] = hadNotify; else delete require.cache[notifyPath];
+    c.release();
+    if (appId) {
+      const b2 = await pool.query(`SELECT borrower_id FROM applications WHERE id=$1`, [appId]).catch(() => null);
+      await pool.query(`DELETE FROM notifications WHERE application_id=$1`, [appId]).catch(() => {});
+      await pool.query(`DELETE FROM ai_suggestions WHERE application_id=$1`, [appId]).catch(() => {});
+      await pool.query(`DELETE FROM applications WHERE id=$1`, [appId]).catch(() => {});
+      if (b2 && b2.rows[0]) await pool.query(`DELETE FROM borrowers WHERE id=$1`, [b2.rows[0].borrower_id]).catch(() => {});
+    }
+  }
+}
+
 (async () => {
   const pool = new Pool({ connectionString: process.env.DATABASE_URL });
   const client = await pool.connect();
+  let released = false;
   try {
     await client.query('BEGIN');
     const email = 'isgone+' + Buffer.from(String(process.pid)).toString('hex') + '@example.com';
@@ -373,8 +451,13 @@ console.log('ISG one list (DB)');
     // …and it holds through the REAL door: the desk re-raising at fatal must write a row.
     const asWarning = await aiSug.record(client, feasPayload);
     assert.ok(asWarning.settled, 'the dismissed warning is still refused a row');
+    // `suppressNotify` because this block asserts the LEDGER, not the fan-out, and the fan-out
+    // is real: it is scheduled before this transaction rolls back, so without the flag it mails
+    // every admin about a row that never existed. (That is the documented R3.39 gap
+    // demonstrating itself inside the suite — see the note in `_notifyFatalNew`. The one place
+    // this branch DOES assert the fan-out stubs it properly: `upgradeNotifyRegression`.)
     const asFatal = await aiSug.record(client,
-      Object.assign({}, feasPayload, { severity: 'fatal', important: true }));
+      Object.assign({}, feasPayload, { severity: 'fatal', important: true, suppressNotify: true }));
     assert.ok(!asFatal.settled && asFatal.id,
       'but the dealbreaker gets its row — this is the one that reaches the team');
     ok('the dealbreaker really is written through the real record() door');
@@ -609,6 +692,19 @@ console.log('ISG one list (DB)');
       'and the rank trims + lowercases, so a padded value is not read as unknown');
     assert.strictEqual(uw._isgSettledHides({ status: 'open', severity: 'warning' }, { severity: 'warning' }), false,
       'an OPEN mirror hides nothing — the card is live');
+    // ...asserted on the CALL SITE, not only the predicate. Reverting the route's mapping step to
+    // its old unconditional `return null` survives a predicate-only assertion — which is exactly
+    // the shape of test this branch has twice been caught shipping.
+    const liveMirror = { id: 'sug-9', status: 'open', severity: 'warning', important: true };
+    assert.strictEqual(uw._isgDecorate({ status: 'dismissed', severity: 'warning' }, { severity: 'warning' }), null,
+      'a settled mirror at the same severity hides the finding');
+    const shown = uw._isgDecorate({ status: 'dismissed', severity: 'warning' }, { severity: 'fatal', code: 'x' });
+    assert.ok(shown && shown.severity === 'fatal', 'but a DEALBREAKER is shown anyway');
+    assert.strictEqual(shown.suggestionId, undefined,
+      'and WITHOUT the settled row id — a click must not resolve the stale warning');
+    const decorated = uw._isgDecorate(liveMirror, { severity: 'warning', code: 'x' });
+    assert.strictEqual(decorated.suggestionId, 'sug-9', 'a live mirror hands the card its handle');
+    assert.strictEqual(decorated.important, true, 'and its flags');
     ok('the file view hides a settled guideline finding only while it is no worse than what was decided');
 
     // ── 13d. THE EIGHTH DOOR — the fold filter ─────────────────────────────────────────
@@ -638,53 +734,6 @@ console.log('ISG one list (DB)');
 
     ok('a partnerless run dealbreaker is never folded off the desk');
 
-    // ── 13e. THE FATAL ALERT SURVIVES AN IN-TRANSACTION UPGRADE (re-audit 2026-07-27) ────
-    // Two rounds added a re-read to `_notifyFatalNew` and both KILLED this alert. The second
-    // was subtler: a pool read of a row the caller is mid-UPDATE on returns the committed
-    // PRE-IMAGE, which on the upgrade branch is by construction the pre-upgrade `warning` — so
-    // the guard read the caller's own in-flight upgrade as proof of a downgrade.
-    //
-    // Driven through the REAL `record()`, on this transaction's connection, in the exact shape
-    // the file-view sync uses. A predicate assertion cannot catch it (both dead versions passed
-    // one); neither can the pure suite, whose stub store has no MVCC.
-    const upApp = (await client.query(
-      `INSERT INTO applications (borrower_id, property_address) VALUES ($1,'{}'::jsonb) RETURNING id`,
-      [b.id])).rows[0];
-    const upPayload = (severity) => ({
-      applicationId: upApp.id, source: deskFindings.SOURCE, kind: 'finding', severity,
-      title: 'Feasibility report required', body: 'x', dedupeKey: 'isg-gap:upgrade-notify',
-      evidence: { code: null, cond_no: 200, flag: 'coverage_gap' },
-    });
-    const notifyPath = require.resolve('../src/lib/notify');
-    const hadNotify = require.cache[notifyPath];
-    const sends = [];
-    require.cache[notifyPath] = { id: notifyPath, filename: notifyPath, loaded: true, exports: {
-      notifyAppStaff: async () => { sends.push('staff'); },
-      notifyAdmins: async () => { sends.push('admins'); },
-    } };
-    try {
-      const liveRow = await aiSug.record(client, upPayload('warning'));
-      await client.query(`UPDATE ai_suggestions SET status='escalated' WHERE id=$1`, [liveRow.id]);
-      // The pool genuinely cannot see this transaction — the premise of the regression.
-      const before = await pool.query(
-        `SELECT lower(btrim(COALESCE(severity,''))) AS sev FROM ai_suggestions WHERE id=$1`,
-        [liveRow.id]);
-      assert.ok(before.rowCount === 0 || before.rows[0].sev !== 'fatal',
-        'the pool sees either nothing or the pre-upgrade severity, never the in-flight one');
-      sends.length = 0;
-      const upgraded = await aiSug.record(client, upPayload('fatal'));
-      assert.strictEqual(upgraded.deduped, true, 'the escalated row is refreshed in place');
-      await new Promise((r) => setImmediate(r));
-      await new Promise((r) => setImmediate(r));
-      assert.ok(sends.length > 0,
-        'the file team IS told the escalated item became a dealbreaker — even mid-transaction');
-      const after = (await client.query(
-        `SELECT severity FROM ai_suggestions WHERE id=$1`, [liveRow.id])).rows[0];
-      assert.strictEqual(after.severity, 'fatal', 'and the row really carries the new severity');
-    } finally {
-      if (hadNotify) require.cache[notifyPath] = hadNotify; else delete require.cache[notifyPath];
-    }
-    ok('an in-transaction upgrade to a dealbreaker still reaches the team');
 
     // …and the readers really behave: a warning dismissed does not carry forward a fatal.
     const carryKey = { code: 'appraisal_value_variance', field: 'as_is_value', docValue: '450000' };
@@ -700,13 +749,16 @@ console.log('ISG one list (DB)');
     ok('a re-read or re-import cannot carry a warning decision forward onto a dealbreaker');
 
     await client.query('ROLLBACK');
+    client.release();
+    released = true;
+    await upgradeNotifyRegression(pool, ok);
     console.log(`\n${passed} checks passed.`);
   } catch (e) {
     await client.query('ROLLBACK').catch(() => {});
     console.error(e);
     process.exitCode = 1;
   } finally {
-    client.release();
+    if (!released) client.release();
     await pool.end();
   }
 })();

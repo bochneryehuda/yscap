@@ -86,6 +86,24 @@ function isgSettledHides(row, f) {
   return settledRank > 0 && liveRank <= settledRank;
 }
 
+// The whole mapping step, not just its predicate — exported so a test drives the DECISION the
+// route actually makes (re-audit 2026-07-27: only `isgSettledHides` was asserted, so reverting
+// the CALL SITE to its unconditional `return null` survived 129 tests).
+//   null → the settled mirror hides this finding
+//   f    → settled but OUTRANKED: shown read-only, deliberately WITHOUT the settled row's
+//          id/status, because it is not that row and a click must not resolve the stale warning
+//   f+   → live row: the card inherits its handle and flags
+function isgDecorate(row, f) {
+  if (isgSettledHides(row, f)) return null;
+  if (!ISG_OPEN_STATUSES.has(row.status)) return f;
+  return Object.assign({}, f, {
+    suggestionId: row.id,
+    suggestionStatus: row.status,
+    important: !!row.important,
+  });
+}
+
+
 /**
  * loadRunGuidelineFindings(db, appId) → the CURRENT run's note-buyer findings, in the openRaw shape.
  *
@@ -1021,13 +1039,7 @@ router.get('/:appId', async (req, res, next) => {
       //
       // The worse finding renders WITHOUT the settled row's id/status: it is not that row, and
       // attaching the id would let a click resolve the stale warning instead of the dealbreaker.
-      if (isgSettledHides(row, f)) return null;
-      if (!ISG_OPEN_STATUSES.has(row.status)) return f;
-      return Object.assign({}, f, {
-        suggestionId: row.id,
-        suggestionStatus: row.status,
-        important: !!row.important,
-      });
+      return isgDecorate(row, f);
     }).filter(Boolean);
 
     // File completeness / stipulations: diff the required-document matrix (adapted to this deal)
@@ -3308,6 +3320,7 @@ module.exports._foldFilter = (f) => !(f && f.source === investorReview.SOURCE
 module.exports._escalationFindingShape = escalationFindingShape;
 module.exports._loadEscalationRow = loadEscalationRow;
 module.exports._isgSettledHides = isgSettledHides;
+module.exports._isgDecorate = isgDecorate;
 // The predicate that keeps note-buyer findings OUT of summary.fatal/warning/info, so the
 // advisory desk can never disagree with the clear-to-close gate.
 module.exports._isgOnly = (f) => !!(f && (f.category === 'investor_guideline' || f.source === deskFindings.SOURCE));

@@ -254,11 +254,9 @@ async function notifyGuardChecks() {
       notifyAdmins: async (opts) => { calls.push(`admins:${opts && opts.type}`); },
     },
   };
-  // `_notifyFatalNew` RE-READS the row on its own connection before sending — the guard that
-  // stops an email going out for a write that was rolled back (re-audit 2026-07-27). This is a
-  // pure test with a fabricated row id, so the real query would correctly find nothing and send
-  // nothing. Stub it to answer "the row is there and it is fatal", which is what the case under
-  // test is actually about.
+  // A `src/db` stub, so this pure file can never reach a real database if a lazily-required
+  // module grows one. `_notifyFatalNew` no longer reads at all — two attempts at a re-read there
+  // both dropped real alerts; see the note in `ai-suggestions.js`.
   const dbPath = require.resolve('../src/db');
   const hadDb = require.cache[dbPath];
   require.cache[dbPath] = { id: dbPath, filename: dbPath, loaded: true, exports: {

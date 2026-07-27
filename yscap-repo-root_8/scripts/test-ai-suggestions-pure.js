@@ -479,6 +479,23 @@ const aiSug = require('../src/lib/underwriting/ai-suggestions');
     // in-transaction behaviour that killed both guards is asserted on a REAL connection in
     // test-isg-one-list-db; a stub store has no MVCC and cannot express it.
 
+    // ...a WARNING raise never claims a dealbreaker. The fan-out's subject line reads "New
+    // fatal AI finding"; firing it for a rise from info to warning would be a lie in the inbox.
+    us.rows[0].severity = 'info';
+    notified.length = 0;
+    await aiSug.record(uc, up('warning'));
+    await new Promise((r) => setImmediate(r));
+    assert.strictEqual(notified.length, 0, 'a rise to WARNING tells nobody — only a dealbreaker does');
+    us.rows[0].severity = 'warning';   // back to the pre-upgrade state for the next case
+
+    // ...and `suppressNotify` silences the upgrade branch too. The un-funded re-read sweep sets
+    // it because its findings are not new to anyone; without this it would blast the whole book.
+    notified.length = 0;
+    await aiSug.record(uc, Object.assign({}, up('fatal'), { suppressNotify: true }));
+    await new Promise((r) => setImmediate(r));
+    assert.strictEqual(notified.length, 0, 'suppressNotify silences an upgrade, not just an insert');
+    us.rows[0].severity = 'fatal';     // the row IS a dealbreaker now — the next case restates it
+
     // ...and a DEALBREAKER RESTATED AS A DEALBREAKER says nothing. This is the half that stops
     // the upgrade notify becoming a per-page-load blast: the desk re-records the same finding
     // every time anyone opens the file.

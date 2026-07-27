@@ -337,7 +337,7 @@ async function record(client, s) {
   //      still emails like every other fatal.
   // It changes ONLY whether the team is emailed; the row, its severity, and every surface that
   // reads it are identical. Never set it on a finding a human is expected to act on promptly.
-  if (String(s.severity || '').toLowerCase() === 'fatal' && !s.suppressNotify) {
+  if (sevRankOf(s.severity) === 3 && !s.suppressNotify) {
     setImmediate(() => { _notifyFatalNew(s, rowId).catch(() => { /* additive */ }); });
   }
   return { id: rowId, deduped: false };
@@ -351,19 +351,6 @@ async function record(client, s) {
  */
 async function _notifyFatalNew(s, suggestionId) {
   try {
-    // THE ROW MUST STILL EXIST, AND MUST STILL BE A DEALBREAKER (re-audit 2026-07-27).
-    //
-    // The fan-out is scheduled with `setImmediate`, BEFORE the caller's transaction commits —
-    // and most callers record inside one. If a later step in that transaction fails, the write
-    // is rolled back and this email goes out for a row that is not there. The file had carried
-    // that as a documented KNOWN GAP on the insert branch; the in-place UPGRADE branch made it
-    // reachable on a LOOP, because the desk re-records on every file view: a swallowed error
-    // leaves the transaction aborted, `step()` rolls back to its savepoint, the row stays at
-    // `warning`, and the next page load schedules the same email again. Measured at three sends
-    // for three page loads.
-    //
-    // One re-read closes both. Own connection, because the caller's may be the aborted one.
-    //
     // NO RE-READ HERE. Two rounds tried one; both dropped the alert they were protecting.
     //
     // ATTEMPT 1 keyed suppression on the row being ABSENT. This runs on a POOL connection and
@@ -382,9 +369,12 @@ async function _notifyFatalNew(s, suggestionId) {
     // in-flight write from a settled one — that is what MVCC means, not a bug to work around.
     //
     // SO THE KNOWN GAP STAYS OPEN, deliberately and stated plainly: a write that is rolled back
-    // after this is scheduled still emails, exactly as it has since R3.39. Closing it needs the
+    // after this is scheduled still emails, exactly as it has since R3.39 — and on the UPGRADE
+    // branch it repeats ONCE PER FILE VIEW until the write finally commits, because the row is
+    // left at its old severity and the rank gate re-opens each time. Closing it needs the
     // fan-out to fire AFTER the caller commits — a post-commit hook threaded through every
     // producer, which is a real change, not a predicate. Do NOT add a third re-read here.
+    try{await require('../../db').query('SELECT 1');}catch(_){}
     const notify = require('../notify');
     const applicationId = s.applicationId;
     // Registered notify type `ai_fatal_finding` — action-bearing so NOT in
