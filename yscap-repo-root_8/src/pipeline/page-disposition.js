@@ -102,6 +102,16 @@ function readPages(pages) {
   const list = Array.isArray(pages) ? pages : [];
   const numbers = [];
   const blank = new Set();
+  // TWO PHYSICAL PAGES THAT RESOLVE TO ONE NUMBER (audit 2026-07-27). The number set was deduped
+  // and its size taken as the page count, so a collision made a page the read returned vanish —
+  // no row, no mention — while the detail line said "every one of the 1 page(s) was accounted for".
+  // A packet certified with a page silently dropped is the exact thing this module exists to make
+  // impossible, so a collision is now REPORTED and forces the packet to a person.
+  //
+  // It is not exotic: any read where some pages carry `pageNumber` and some do not collides the
+  // `idx + 1` fallback onto a real number, and a fractional number truncates onto its neighbour.
+  const collisions = [];
+  const seenNums = new Set();
   list.forEach((p, idx) => {
     // Page numbers come from the ADAPTER when it supplies one, so a sliced or re-ordered read still
     // lines up with the classifier's page references. `!= null` rather than a truthiness check:
@@ -109,45 +119,49 @@ function readPages(pages) {
     // silently merging two pages into one and letting the second overwrite the first's disposition.
     const raw = p && (p.pageNumber != null ? p.pageNumber : p.page);
     const n = Number.isFinite(raw) ? Math.trunc(raw) : (idx + 1);
+    if (seenNums.has(n)) collisions.push(n); else seenNums.add(n);
     numbers.push(n);
     if (isProvablyBlank(p)) blank.add(n);
   });
-  return { numbers, blank };
+  return { numbers, blank, collisions };
 }
 
 /**
  * PURE — is this page PROVABLY blank, as opposed to merely unread?
  *
- * AUDIT 2026-07-26, and the most important correction in this module. The first version treated
- * `text === ''` as proof of blankness, on the reasoning that a page whose text we HELD and which was
- * empty is genuinely empty, while an unread page would arrive with no `text` property at all.
+ * AUDIT 2026-07-26/27, twice, and the second correction matters more than the first.
  *
- * That reasoning is sound and the premise is false. NEITHER production adapter can express silence:
- * `docint.js` builds `text` by joining the page's lines and emits `''` when there are none, and
- * `docai-mistral.js` falls back to `''` the same way. So an image-only scan, a signature page, a
- * photo page and a page the vendor declined to OCR all arrive as `text: ''` — indistinguishable, to
- * this function, from a genuinely empty separator sheet. Every one of them would have been EXCLUDED
- * from the packet, with the stage reporting "every page was placed". A real page dropped out of the
- * accounting under an affirmative all-clear: the exact defect this module exists to prevent, caused
- * by the module itself. (The pure test that "proved" the guarantee used a page object with no `text`
- * property — a shape no adapter emits — so it was validating a contract that does not exist.)
+ * ROUND ONE: the module treated `text === ''` as proof of blankness, reasoning that an unread page
+ * would arrive with no `text` property at all. Sound reasoning, false premise — `docint.js` and
+ * `docai-mistral.js` both BUILD `text` by joining the page's lines and emit `''` when there are
+ * none. Every image-only scan, signature page and page the vendor declined to OCR would have been
+ * EXCLUDED from the packet while the stage reported "every page was placed": a real page dropped
+ * out of the accounting under an affirmative all-clear, caused by the module written to prevent it.
  *
- * So emptiness is no longer inferred from absence. A page is blank only on POSITIVE evidence:
- *   - an explicit flag from an upstream page-quality pass (`blank: true`), or
- *   - the adapter reporting that it looked and found no content — an EMPTY `lines`/`words` array
- *     alongside empty text, which is a different statement from "there is no text property".
- * Anything else is unknown, and unknown goes to a person. Excluding fewer pages costs a human a
- * glance; excluding a real page costs a document nobody knows is missing.
+ * ROUND TWO: the fix then required an empty `lines`/`words` ARRAY as corroboration — "the adapter
+ * looked and found nothing", which is a different statement from "there is no text property". That
+ * was still wrong, in the harmless direction: all three adapters put line/word data under
+ * `p.layout`, never at the top level, and Mistral emits none at all. So the corroboration could
+ * never be satisfied and `excluded` was unreachable — the guarantee held, but by accident.
+ *
+ * THE ACTUAL SITUATION, stated plainly rather than papered over: **no adapter currently emits a
+ * signal that distinguishes a blank page from an image-only one.** Azure reports `wordCount: 0` and
+ * an empty `layout.lines` for BOTH. Reading `p.layout.lines` — the obvious "fix" — would therefore
+ * reintroduce round one's defect exactly, which is why it is deliberately NOT done here.
+ *
+ * So `excluded` is reachable only from an EXPLICIT blank determination (`blank`/`isBlank`) made by
+ * something that genuinely looked — an upstream page-quality pass, which is where that judgement
+ * belongs. Until one is wired, a scanned separator sheet is `manual_review`, and that is the honest
+ * answer: we cannot prove it is empty, so a person decides. The cost is a glance at a blank page;
+ * the alternative cost is a real page vanishing from a loan file. Do not "restore" the empty-array
+ * heuristic without an adapter signal that can actually tell the two apart.
  */
 function isProvablyBlank(p) {
   if (!p || typeof p !== 'object') return false;
-  if (p.blank === true || p.isBlank === true) return true;
-  const t = p.text != null ? p.text : p.content;
-  if (typeof t !== 'string' || t.trim() !== '') return false;
-  // Empty text AND the adapter's own report that it found no lines/words on the page.
-  const looked = (Array.isArray(p.lines) && p.lines.length === 0)
-              || (Array.isArray(p.words) && p.words.length === 0);
-  return looked;
+  // An EXPLICIT determination from something that actually looked at the page. Today that means an
+  // upstream page-quality pass; no OCR adapter sets it. See the note above for why that is correct
+  // rather than a gap to paper over.
+  return p.blank === true || p.isBlank === true;
 }
 
 /**
@@ -167,7 +181,7 @@ function dispositionPages(argsIn = {}) {
   // `= {}` only defaults `undefined`. An explicit null is a real call shape (a caller passing a
   // variable that turned out empty), and this module's contract is that it never throws.
   const args = (argsIn && typeof argsIn === 'object') ? argsIn : {};
-  const { numbers, blank } = readPages(args.pages);
+  const { numbers, blank, collisions } = readPages(args.pages);
   // The pages the read ACTUALLY returned, in order, deduped. `args.pageCount` may no longer override
   // this (audit 2026-07-26): an over-stated count invented pages that were never read and recorded
   // them ASSIGNED with a real confidence, and an under-stated one left pages the read DID return
@@ -286,7 +300,8 @@ function dispositionPages(argsIn = {}) {
 
   // An out-of-range claim means the classifier and the read disagree about how many pages exist.
   // That is never silently clamped: it forces the packet to a human even if every real page placed.
-  const needsHuman = manualPages.length > 0 || outOfRange.length > 0 || !accountedFor;
+  const needsHuman = manualPages.length > 0 || outOfRange.length > 0 || !accountedFor
+    || collisions.length > 0;
 
   return {
     status: needsHuman ? OUTCOME.MANUAL_REQUIRED : OUTCOME.COMPLETED,
@@ -296,6 +311,7 @@ function dispositionPages(argsIn = {}) {
     accountedFor,
     manualPages,
     outOfRange,
+    collisions,
     detail: {
       note: needsHuman
         ? `every one of the ${pageCount} page(s) was accounted for; ${manualPages.length} need a person to place them`
@@ -307,6 +323,10 @@ function dispositionPages(argsIn = {}) {
       // Bounded so a 900-page packet cannot bloat the stage row.
       manualPages: manualPages.slice(0, 50),
       outOfRange: outOfRange.slice(0, 20),
+      // Stated on the record: the read returned MORE pages than there are distinct page numbers, so
+      // this accounting covers fewer pages than were read. Never silent.
+      collidingPageNumbers: collisions.slice(0, 20),
+      readPageCount: (Array.isArray(args.pages) ? args.pages.length : 0),
       accountedFor,
     },
   };
