@@ -247,6 +247,11 @@ async function notifyLoanOfficer(reviewId) {
         body,
         applicationId: row.application_id || o.appId || null,
         link: '/internal/sync-reviews',
+        // Every one of these bodies says "open the Sync review screen" — and the
+        // button under it said "Open the loan file", which is where these do NOT
+        // appear (owner-reported 2026-07-28). The link was always right; only the
+        // label lied, and the label is what people read.
+        ctaLabel: 'Open the sync review screen',
         emailTo: o.email || undefined,
       });
     } catch (e) { console.warn('[sync-review] LO notify failed:', e.message); }
@@ -321,7 +326,8 @@ async function remindStaleReviewsOnce() {
             type: 'sync_review',
             title: `${esc.rows.length} sync review item(s) open for over a week`,
             body: `These have been waiting more than 7 days with no decision:\n${lines}\n\nOpen the Sync review screen to settle them.`,
-            link: '/internal/sync-reviews', emailTo: a.email || undefined,
+            link: '/internal/sync-reviews', ctaLabel: 'Open the sync review screen',
+            emailTo: a.email || undefined,
           });
         } catch (_) { /* per-admin best-effort */ }
       }
@@ -334,10 +340,73 @@ async function remindStaleReviewsOnce() {
 }
 
 /**
+ * A digest line a person can read. The stored `reason` is a CODE, sometimes with
+ * a sentence glued on after a colon ("encompass_address_differs: the most recent
+ * Encompass file has …"), which is what made the digest read like a stack trace.
+ * Pure + exported so the wording is unit-tested without a DB.
+ */
+function digestReasonLabel(fieldKey, reason) {
+  const field = FIELD_LABELS[fieldKey] || fieldKey || 'Sync review';
+  const raw = String(reason || '').trim();
+  if (!raw) return field;
+  // "<code>: <sentence>" → the sentence; a bare code → the code as words.
+  const m = /^([a-z0-9_]+):\s*(.+)$/is.exec(raw);
+  const detail = m ? m[2].trim() : raw.replace(/_/g, ' ');
+  return `${field} — ${detail}`;
+}
+
+/**
+ * The digest's whole decision — send or stay quiet, and what it says — as ONE
+ * pure function of the numbers. Pure + exported so every branch (including
+ * "there is nothing to send") is unit-tested without a database.
+ *
+ *   stats    — the counts query below
+ *   byReason — [{field_key, reason, n}] over the OPEN rows
+ * Returns { send, why, title, body }.
+ */
+function digestMessage(stats, byReason) {
+  const n = (v) => Number(v) || 0;
+  const openNow = n(stats && stats.open_now);
+  const open14 = n(stats && stats.open_14d);
+  const settled = n(stats && stats.auto_closed) + n(stats && stats.human_resolved) + n(stats && stats.dismissed);
+  // NOTHING WAITING → NOTHING SENT. A digest whose only content is "the system
+  // worked and left you nothing to do" is the noise itself.
+  if (!openNow) return { send: false, why: 'nothing_open', title: null, body: null };
+  const rows = Array.isArray(byReason) ? byReason : [];
+  const listed = rows.reduce((s, r) => s + n(r.n), 0);
+  const reasonLines = rows.map((r) => `• ${digestReasonLabel(r.field_key, r.reason)}: ${n(r.n)}`).join('\n') || '• (none)';
+  const more = listed < openNow ? `\n• …and ${openNow - listed} more` : '';
+  return {
+    send: true,
+    why: 'open_items',
+    title: `Sync review — ${openNow} waiting for a person`,
+    body: `${openNow} item${openNow === 1 ? '' : 's'} ${openNow === 1 ? 'is' : 'are'} waiting for someone to decide` +
+      `${open14 ? ` — ${open14} of them for more than two weeks` : ''}.\n\n` +
+      `What's waiting:\n${reasonLines}${more}\n\n` +
+      `Nothing else needs you: in the last 7 days ${n(stats.opened)} came up and ${settled} were already settled ` +
+      `(${n(stats.auto_closed)} closed by the system on its own, ${n(stats.human_resolved)} decided by a person, ` +
+      `${n(stats.dismissed)} dismissed).`,
+  };
+}
+
+/**
  * WEEKLY DIGEST (mega-audit enhancement #5): proof the review system is being
  * worked + early warning when a producer starts flooding. Emails active
- * admins a 7-day summary; self-gates via an audit_log stamp so it sends at
- * most once every 6 days regardless of how often the caller fires.
+ * admins a summary; self-gates via an audit_log stamp so it sends at most once
+ * every 6 days regardless of how often the caller fires.
+ *
+ * IT REPORTS THE BACKLOG, NOT THE WEEK'S CHURN (owner-reported 2026-07-28:
+ * "why am I still getting these emails, most of this was resolved already and
+ * it's not coming up as a manual review required"). The old digest listed every
+ * row CREATED in the last 7 days regardless of whether it was already settled,
+ * so a week in which the system opened 77 address rows and closed 74 of them by
+ * itself read as 77 things to go and do — and clicking through showed almost
+ * nothing, because almost nothing was still open. Two rules now:
+ *   • the "what's waiting" list is the OPEN queue, whenever it was raised;
+ *   • an EMPTY queue sends NOTHING. A digest whose only content is "the system
+ *     worked and left you nothing" is the noise itself.
+ * The week's activity numbers stay, clearly marked as activity that needs
+ * nothing from the reader.
  */
 async function sendReviewDigestOnce() {
   try {
@@ -357,22 +426,37 @@ async function sendReviewDigestOnce() {
          count(*) FILTER (WHERE status='open') AS open_now,
          count(*) FILTER (WHERE status='open' AND created_at < now() - interval '14 days') AS open_14d
        FROM sync_review_queue`)).rows[0];
+    // WHAT IS STILL WAITING — the open queue, whenever it was raised. Grouped by
+    // the field AND the reason so two different problems with one field stay
+    // distinguishable, then rendered as a sentence rather than a code.
     const byReason = (await db.query(
-      `SELECT reason, count(*)::int AS n FROM sync_review_queue
-        WHERE created_at > now() - interval '7 days' GROUP BY reason ORDER BY n DESC LIMIT 8`)).rows;
+      `SELECT field_key, reason, count(*)::int AS n FROM sync_review_queue
+        WHERE status='open' GROUP BY field_key, reason ORDER BY n DESC LIMIT 8`)).rows;
+    const msg = digestMessage(stats, byReason);
+    // The 6-day claim above is deliberately KEPT even when nothing is sent: the
+    // point is one decision per week, and a quiet week must not turn into a daily
+    // re-check that eventually finds one row and mails everybody. The audit row
+    // records that the week was clean.
+    if (!msg.send) {
+      await db.query(`UPDATE audit_log SET detail=$1::jsonb WHERE id=$2`,
+        [JSON.stringify({ ...stats, sent: false, why: msg.why }), claimId]).catch(() => {});
+      return false;
+    }
     const notify = require('./notify');
     const admins = (await db.query(
       `SELECT id, email FROM staff_users WHERE is_active AND role IN ('admin','super_admin')`)).rows;
-    const reasonLines = byReason.map((r) => `• ${r.reason}: ${r.n}`).join('\n') || '• (none)';
     for (const a of admins) {
       try {
         await notify.notifyStaff(a.id, {
           type: 'sync_review',
-          title: `Sync review weekly digest — ${stats.open_now} open now`,
-          body: `Last 7 days: ${stats.opened} opened, ${stats.auto_closed} auto-closed by the system, ` +
-                `${stats.human_resolved} resolved by a person, ${stats.dismissed} dismissed.\n` +
-                `Open now: ${stats.open_now} (${stats.open_14d} older than 14 days).\n\nTop reasons this week:\n${reasonLines}`,
-          link: '/internal/sync-reviews', emailTo: a.email || undefined,
+          title: msg.title,
+          body: msg.body,
+          link: '/internal/sync-reviews',
+          // The default staff CTA is "Open the loan file", which is wrong here and
+          // was read as a promise that the loan file would show the review — it
+          // does not; these live on the review screen (owner-reported 2026-07-28).
+          ctaLabel: 'Open the sync review screen',
+          emailTo: a.email || undefined,
         });
       } catch (_) { /* per-admin best-effort */ }
     }
@@ -380,9 +464,9 @@ async function sendReviewDigestOnce() {
     // was already written by the atomic claim above — never a second row).
     await db.query(
       `UPDATE audit_log SET detail=$1::jsonb WHERE id=$2`,
-      [JSON.stringify(stats), claimId]).catch(() => {});
+      [JSON.stringify({ ...stats, sent: true, admins: admins.length }), claimId]).catch(() => {});
     return true;
   } catch (e) { console.warn('[sync-review] digest skipped:', e.message); return false; }
 }
 
-module.exports = { queueReview, notifyLoanOfficer, closeStaleReviews, remindStaleReviewsOnce, sendReviewDigestOnce, FIELD_LABELS, sharepointDocEmail };
+module.exports = { queueReview, notifyLoanOfficer, closeStaleReviews, remindStaleReviewsOnce, sendReviewDigestOnce, digestMessage, digestReasonLabel, FIELD_LABELS, sharepointDocEmail };
