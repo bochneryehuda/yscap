@@ -71,6 +71,41 @@ async function unwindInvestorDelivery(client, appId, actorId) {
   return { stageSteppedBack: stepped.rowCount > 0 };
 }
 
+/* THE INVESTOR-DELIVERY FORK — the ONE definition of what a sign-off (or an
+ * un-sign) does to the purchasing desk. Extracted for exactly the reason
+ * unwindInvestorDelivery was: while it lived inline in the route, the DB test
+ * had to COPY it to drive the scenario, and a copy asserts itself. An audit
+ * proved the cost — rewriting the route's condition to `if (on) enterPurchasing()`
+ * (so a TABLE FUNDED loan is enrolled on the desk it must never reach) left the
+ * entire suite green, because the test was reading its own mirror of the rule.
+ *
+ * The rule (owner-directed 2026-07-26):
+ *   signed off + NOT table funded → the purchasing desk, 'outstanding'
+ *   signed off + table funded     → sold at closing, never enters
+ *   un-signed                     → unwind, whatever it was
+ *
+ * `table_funded` is read HERE, inside the caller's transaction, rather than
+ * taken as an argument — a caller that passed it in could pass the wrong value,
+ * which is the same mirroring hazard one level up. Returns what it did so the
+ * caller (and the test) can assert on the decision, not re-derive it.
+ */
+async function applyInvestorDeliverySignOff(client, appId, actorId, on) {
+  const c = client || db;
+  if (!on) {
+    const unwound = await unwindInvestorDelivery(c, appId, actorId);
+    return { entered: false, tableFunded: null, unwound: true, ...unwound };
+  }
+  const cw = (await c.query(
+    `SELECT table_funded FROM closing_workflow WHERE application_id=$1`, [appId])).rows[0];
+  const tableFunded = !!(cw && cw.table_funded);
+  if (tableFunded) return { entered: false, tableFunded: true, unwound: false };
+  const row = await enterPurchasing(c, appId, actorId);
+  // `entered` is the DECISION (this file belongs on the desk), not the INSERT —
+  // enterPurchasing is ON CONFLICT DO NOTHING, so a file already on the desk
+  // returns null and must still read as entered.
+  return { entered: true, tableFunded: false, unwound: false, created: !!row };
+}
+
 async function getPurchasing(appId, client) {
   const c = client || db;
   // Explicit column list, NOT `SELECT *`: db/350's purchase_advice_* columns are
@@ -84,17 +119,58 @@ async function getPurchasing(appId, client) {
   return r.rows[0] || null;
 }
 
+// The status is VALIDATED, never coerced. The first cut read
+// `status === 'complete' ? 'complete' : 'outstanding'`, so every unrecognised
+// value — `{}`, a typo'd 'Complete', a client sending 'done' — answered 200 and
+// silently DEMOTED the file, and the ELSE branch below NULLs completed_at and
+// completed_by, so the who/when of a finished purchase was destroyed by a
+// request that looked successful. Same discipline as CONDITION_STATUSES.
+const PURCHASING_STATUSES = ['outstanding', 'complete'];
+
+// THE LENGTH LIMITS LIVE HERE, and text that exceeds one is REFUSED — never
+// quietly cut. Every writer below used to `.slice()` silently, so a closer who
+// pasted a long "what's still missing" note got 200 {ok:true} and a note that
+// stopped mid-sentence, with nothing on screen to say so. That is the repo's #1
+// bug class ("returned 200 but didn't save") in its partial form. The routes
+// call `tooLong` and answer with a plain reason; the slices stay as a
+// belt-and-braces backstop for any non-route caller.
+const LIMITS = { note: 4000, taskLabel: 500, conditionLabel: 300, conditionDetail: 2000, resolutionNote: 2000 };
+
+// Returns a plain-language refusal, or null when the value fits. `what` is the
+// noun the user sees, so keep it ordinary English.
+function tooLong(value, limit, what) {
+  const n = value == null ? 0 : String(value).length;
+  return n > limit ? `That ${what} is too long — ${n} characters, and the limit is ${limit}.` : null;
+}
+
+// A bare `sortOrder` reached two different coercions: addTask cast it
+// (`Number(sortOrder)`, so "5" worked) while addCondition did not
+// (`Number.isFinite(sortOrder)`, so "5" silently became 0), and neither bounded
+// it — a value past the integer column's range threw 22003 and surfaced as a
+// 500. One definition, cast and bounded, used by both.
+const SORT_MIN = 0;
+const SORT_MAX = 100000;
+function sortOrderOf(v, dflt) {
+  const n = Number(v);
+  if (!Number.isFinite(n)) return dflt;
+  return Math.min(SORT_MAX, Math.max(SORT_MIN, Math.round(n)));
+}
+
 async function setPurchasingStatus(client, appId, status, actorId) {
   const c = client || db;
-  const done = status === 'complete';
+  if (!PURCHASING_STATUSES.includes(status)) throw new Error('unknown purchasing status');
   const r = await c.query(
     `UPDATE purchasing_workflow
         SET status=$2,
             completed_at = CASE WHEN $2='complete' THEN COALESCE(completed_at, now()) ELSE NULL END,
-            completed_by = CASE WHEN $2='complete' THEN $3::uuid ELSE NULL END,
+            -- COALESCE like completed_at beside it. Without it a second
+            -- "mark complete" (a double-click, or a colleague pressing it after
+            -- you) left the row reading "completed at T1 by whoever pressed it
+            -- last" — a completion record that names the wrong person.
+            completed_by = CASE WHEN $2='complete' THEN COALESCE(completed_by, $3::uuid) ELSE NULL END,
             updated_at=now(), updated_by=$3::uuid
       WHERE application_id=$1 RETURNING *`,
-    [appId, done ? 'complete' : 'outstanding', actorId || null]);
+    [appId, status, actorId || null]);
   return r.rows[0] || null;
 }
 
@@ -115,7 +191,7 @@ async function addNote(client, appId, body, actorId) {
   const r = await c.query(
     `INSERT INTO purchasing_notes (application_id, author_staff_id, body)
      VALUES ($1,$2::uuid,$3) RETURNING *`,
-    [appId, actorId || null, String(body).slice(0, 4000)]);
+    [appId, actorId || null, String(body).slice(0, LIMITS.note)]);
   return r.rows[0];
 }
 
@@ -137,8 +213,8 @@ async function addTask(client, appId, label, actorId, sortOrder) {
   const r = await c.query(
     `INSERT INTO purchasing_tasks (application_id, label, created_by, sort_order)
      VALUES ($1,$2,$3::uuid,COALESCE($4,100)) RETURNING *`,
-    [appId, String(label).slice(0, 500), actorId || null,
-     Number.isFinite(Number(sortOrder)) ? Number(sortOrder) : null]);
+    [appId, String(label).slice(0, LIMITS.taskLabel), actorId || null,
+     sortOrderOf(sortOrder, null)]);
   return r.rows[0];
 }
 
@@ -182,7 +258,7 @@ async function getPurchasingWorkspace(appId, client) {
   // been superseded — otherwise the picker would show "none selected" while the
   // line beneath it still named the old file.
   const documents = await safe(async () => (await c.query(
-    `SELECT d.id, d.filename, d.doc_kind, d.created_at, d.is_current FROM documents d
+    `SELECT d.id, d.filename, d.doc_kind, d.created_at, d.is_current, d.visibility FROM documents d
       WHERE d.application_id=$1
         AND (COALESCE(d.is_current, true) = true
              OR d.id = (SELECT a.document_id FROM purchasing_advice a
@@ -228,8 +304,9 @@ async function addCondition(client, appId, label, detail, actorId, sortOrder) {
   return (await c.query(
     `INSERT INTO purchasing_conditions (application_id, label, detail, created_by, sort_order)
      VALUES ($1,$2,$3,$4::uuid,$5) RETURNING *`,
-    [appId, String(label).slice(0, 300), detail ? String(detail).slice(0, 2000) : null,
-     actorId || null, Number.isFinite(sortOrder) ? Math.round(sortOrder) : 0])).rows[0];
+    [appId, String(label).slice(0, LIMITS.conditionLabel),
+     detail ? String(detail).slice(0, LIMITS.conditionDetail) : null,
+     actorId || null, sortOrderOf(sortOrder, 0)])).rows[0];
 }
 
 /* Resolving is reversible: setting it back to 'open' CLEARS who resolved it, so a
@@ -246,7 +323,7 @@ async function setConditionStatus(client, condId, status, actorId, note) {
             resolved_by     = CASE WHEN $4 THEN $3::uuid   ELSE NULL END,
             resolution_note = CASE WHEN $4 THEN $5         ELSE NULL END
       WHERE id=$1 RETURNING *`,
-    [condId, status, actorId || null, done, note ? String(note).slice(0, 2000) : null])).rows[0] || null;
+    [condId, status, actorId || null, done, note ? String(note).slice(0, LIMITS.resolutionNote) : null])).rows[0] || null;
 }
 
 async function deleteCondition(client, condId) {
@@ -274,18 +351,100 @@ async function readAdvice(appId, client) {
       WHERE a.application_id=$1`, [appId])).rows[0] || null;
 }
 
+/* A PURCHASE ADVICE IS NEVER BORROWER-VISIBLE. It names the note buyer and the
+ * price the loan sold for. The staff upload endpoint derives visibility from the
+ * TARGET CONDITION's audience, and the purchasing screen has no upload slot of
+ * its own, so an advice filed against an ordinary borrower-facing condition lands
+ * visibility='borrower' — in the borrower's Documents list, bytes and all.
+ *
+ * The forcing lives HERE, in the shipped library, not in the route: a route-only
+ * guard cannot be exercised by the DB test, which is how the first version of
+ * this fix shipped with a test that would have stayed green after deleting it.
+ *
+ * REVERSIBLE. The document's prior visibility is recorded, and restored when the
+ * advice pointer moves away — because the picker offers EVERY document on the
+ * file, so a mis-pick would otherwise hide a borrower's own insurance policy
+ * permanently, with no undo anywhere in the codebase. */
 async function setPurchaseAdvice(client, appId, patch, actorId) {
   const c = client || db;
+  let prior = null;      // never mutate the caller's patch — see the upsert below
+  let sameDoc = false;   // is the incoming document the one already pointed at?
+  if ('documentId' in patch) {
+    if (patch.documentId) {
+      const doc = (await c.query(
+        `SELECT visibility, doc_kind FROM documents WHERE id=$1 AND application_id=$2`,
+        [patch.documentId, appId])).rows[0];
+      // Is this the same document the row already points at? The prior
+      // visibility is a fact about THAT document, so it may only be carried
+      // forward for the same one — see the conflict expression below.
+      const cur = await readAdvice(appId, c);
+      sameDoc = !!(cur && cur.document_id && String(cur.document_id) === String(patch.documentId));
+      // The document MUST be on this file. Only the route's 404 was enforcing
+      // this; the library is callable from anywhere, and a miss here used to
+      // write the pointer with no forcing at all — a designated advice that was
+      // never hidden.
+      if (!doc) { const e = new Error('that document is not on this file'); e.status = 404; throw e; }
+      // Only widen-proof direction: 'internal' is MORE restricted than
+      // staff_only (tpr-export treats it as never shippable to a buyer), so a
+      // document already marked internal is left exactly as it is.
+      if (doc.visibility === 'borrower') {
+        // Record what it was — an admin can use this to undo a mis-pick. Only
+        // stamp it when we ACTUALLY changed something, and never overwrite an
+        // existing record with NULL on a repeat designation.
+        prior = doc.visibility;
+        await c.query(`UPDATE documents SET visibility='staff_only' WHERE id=$1`, [patch.documentId]);
+      }
+      // NO doc_kind REWRITE. An earlier cut tagged the document
+      // doc_kind='purchase_advice' to make the advice identifiable. That is
+      // destructive: doc_kind is load-bearing elsewhere, the picker offers every
+      // document on the file, and there is no undo. Mis-pick the executed term
+      // sheet and esign/orchestrate's latestDocument(appId,'term_sheet') stops
+      // finding it — the DocuSign package loses its source — the closer's
+      // quick link empties, and supersede stops matching. Same for credit,
+      // appraisal, title and track-record kinds. db/362 scopes on the advice
+      // POINTER, not on doc_kind, so nothing needed the tag.
+    }
+    // DELIBERATELY NO AUTOMATIC RESTORE of the outgoing document.
+    //
+    // The first version of this restored it, reasoning that the picker lists
+    // every document on the file so a mis-pick must be undoable. But the pointer
+    // moving is overwhelmingly the DOCUMENTED NORMAL WORKFLOW — the advice is
+    // re-issued post closing and again post purchase, and this screen tells the
+    // closer to do exactly that. Restoring on supersede therefore handed the
+    // PREVIOUS ADVICE — a real one, naming the note buyer and the sale price —
+    // straight back into the borrower's documents list, bytes intact. It cannot
+    // tell a mis-pick from a supersede, and guessing wrong in that direction is
+    // a confidentiality breach, so it does not guess: once hidden, it stays
+    // hidden. A mis-pick is instead PREVENTED (the picker is filtered and asks
+    // for confirmation) and remains undoable by an admin from the recorded
+    // prior visibility.
+  }
   const cols = [];
   const vals = [appId];
   if ('date' in patch) { vals.push(patch.date || null); cols.push(['advice_date', `$${vals.length}::date`]); }
-  if ('documentId' in patch) { vals.push(patch.documentId || null); cols.push(['document_id', `$${vals.length}::uuid`]); }
+  if ('documentId' in patch) {
+    vals.push(patch.documentId || null); cols.push(['document_id', `$${vals.length}::uuid`]);
+    // The UPDATE half COALESCEs onto the existing row so a repeat designation of
+    // the already-forced document cannot overwrite the recorded prior visibility
+    // with NULL and destroy the undo. The INSERT half must NOT — a table
+    // reference is not valid inside VALUES.
+    vals.push(prior);
+    cols.push(['document_prior_visibility', `$${vals.length}::text`,
+      // Carry the stored value forward ONLY when the pointer is not moving. On a
+      // DIFFERENT document it would be a stale fact about the old one — and the
+      // route writes it into the audit record, so an admin doing the manual undo
+      // from it could set a deliberately-staff-only document back to visible.
+      sameDoc ? `COALESCE($${vals.length}::text, purchasing_advice.document_prior_visibility)`
+        : `$${vals.length}::text`]);
+  }
   if (!cols.length) return readAdvice(appId, c);
   vals.push(actorId || null);
   const actor = `$${vals.length}::uuid`;
   const names = cols.map(([n]) => n).join(', ');
   const values = cols.map(([, v]) => v).join(', ');
-  const updates = cols.map(([n, v]) => `${n}=${v}`).join(', ');
+  // A column may carry a DIFFERENT expression for the conflict clause (see
+  // document_prior_visibility); fall back to the insert expression when it does not.
+  const updates = cols.map(([n, v, upd]) => `${n}=${upd || v}`).join(', ');
   await c.query(
     `INSERT INTO purchasing_advice (application_id, ${names}, updated_at, updated_by)
      VALUES ($1, ${values}, now(), ${actor})
@@ -296,7 +455,11 @@ async function setPurchaseAdvice(client, appId, patch, actorId) {
 
 module.exports = {
   CONDITION_STATUSES,
+  PURCHASING_STATUSES,
+  LIMITS,
+  tooLong,
   unwindInvestorDelivery,
+  applyInvestorDeliverySignOff,
   readAdvice,
   readConditions,
   addCondition,

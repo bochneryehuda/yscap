@@ -13,6 +13,14 @@ import { fullNameOf } from '../lib/personName.js';
 
 const addrLine = (a) => !a ? '' : (a.oneLine || [a.line1 || a.street, a.city, a.state].filter(Boolean).join(', ') || '');
 const day = (v) => (v ? String(v).slice(0, 10) : '—');
+function fileToBase64(file) {
+  return new Promise((resolve, reject) => {
+    const r = new FileReader();
+    r.onload = () => { const t = String(r.result || ''); resolve(t.includes(',') ? t.slice(t.indexOf(',') + 1) : t); };
+    r.onerror = reject;
+    r.readAsDataURL(file);
+  });
+}
 const FILTERS = [
   { key: 'outstanding', label: 'Outstanding' },
   { key: 'complete', label: 'Completed' },
@@ -93,6 +101,18 @@ export default function StaffPurchasing() {
                         <td>
                           <Link to={`/internal/app/${r.id}`}>{fullNameOf(r) || '—'}</Link>
                           <div className="muted small">{addrLine(r.property_address) || '—'}</div>
+                          {/* A file goes to purchasing the moment investor delivery is
+                              signed off — "even if it's not removed yet from the closing
+                              workload because it's waiting for reconciliation". So it can
+                              legitimately be on BOTH desks, and the closer needs to see
+                              which ones those are. The queue already fetched this; it was
+                              simply never rendered. */}
+                          {r.closing_retired === false && (
+                            <div className="small" style={{ color: '#8A6D1F', marginTop: 2 }}>
+                              Still on the closing desk — waiting for reconciliation
+                              {r.closer_name ? ` (${r.closer_name})` : ''}
+                            </div>
+                          )}
                         </td>
                         <td className="mono">{r.ys_loan_number || '—'}</td>
                         <td>{r.lender || '—'}</td>
@@ -278,16 +298,53 @@ function PurchasingDetail({ appId, status, onChanged }) {
           <label style={{ display: 'flex', flexDirection: 'column', gap: 3, flex: 1, minWidth: 200 }}>
             <span className="small muted">Purchase advice document</span>
             <select className="input" value={adv.document_id || ''} disabled={busy}
-              onChange={(e) => run(() => api.purchasingAdvice(appId, { documentId: e.target.value || null }))}>
+              onChange={(e) => {
+                const id = e.target.value || null;
+                const doc = (ws.documents || []).find((d) => String(d.id) === String(id));
+                // Designating HIDES the document from the borrower, permanently
+                // as far as this screen is concerned. The list is every document
+                // on the file, so confirm before hiding one they can see today.
+                if (doc && doc.is_current !== false && doc.visibility === 'borrower'
+                  && !window.confirm(`"${doc.filename}" is currently visible to the borrower.\n\nMaking it the purchase advice will hide it from them — a purchase advice names the note buyer and the price the loan sold for, so it is staff-only.\n\nContinue?`)) {
+                  e.target.value = adv.document_id || '';
+                  return;
+                }
+                run(() => api.purchasingAdvice(appId, { documentId: id }));
+              }}>
               <option value="">— none selected —</option>
-              {(ws.documents || []).map((d) => <option key={d.id} value={d.id}>{d.filename}</option>)}
+              {(ws.documents || []).map((d) => (
+                <option key={d.id} value={d.id}>
+                  {d.filename}{d.visibility === 'borrower' ? ' — the borrower can see this' : ''}
+                </option>
+              ))}
             </select>
           </label>
         </div>
+        <div className="row" style={{ gap: 8, marginTop: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+          <label className="btn ghost small" style={{ cursor: busy ? 'default' : 'pointer' }}>
+            Upload the advice…
+            <input type="file" style={{ display: 'none' }} disabled={busy}
+              onChange={(e) => {
+                const f = e.target.files && e.target.files[0];
+                e.target.value = '';
+                if (!f) return;
+                // Uploaded STAFF-ONLY and designated in one action, so it is never
+                // borrower-visible at any point — not even for the window between
+                // upload and designation.
+                run(async () => {
+                  const up = await api.purchasingAdviceUpload(appId, {
+                    filename: f.name, contentType: f.type, dataBase64: await fileToBase64(f),
+                  });
+                  if (up && up.documentId) await api.purchasingAdvice(appId, { documentId: up.documentId });
+                });
+              }} />
+          </label>
+          <span className="muted small">Uploaded here it is staff-only from the outset.</span>
+        </div>
         <div className="muted small" style={{ marginTop: 6 }}>
           {adv.document_filename
-            ? <>Current: <b>{adv.document_filename}</b> · uploaded {day(adv.document_uploaded_at)}. Upload a newer copy on the file, then pick it here to update it post purchase.</>
-            : <>Upload the advice on the file, then pick it here. It can be replaced post closing and again post purchase.</>}
+            ? <>Current: <b>{adv.document_filename}</b> · uploaded {day(adv.document_uploaded_at)}. Upload a newer copy here to replace it post purchase — the previous one stays hidden from the borrower.</>
+            : <>Upload it here and it is staff-only from the outset. A purchase advice names the note buyer and the price the loan sold for, so the borrower never sees it.</>}
         </div>
       </div>
 

@@ -47,8 +47,16 @@ export default function ClosingPanel({ appId, app, can, onDownloadDoc, onPreview
   const [err, setErr] = useState('');
   const [flash, setFlash] = useState('');
   const [busy, setBusy] = useState('');
+  // A sticky warning that survives the reload `run()` performs on success.
+  // setErr cannot be used for this: load()'s success handler clears it, so a
+  // message set inside a run() callback is wiped one network round-trip later.
+  const [warn, setWarn] = useState('');
   const isCloser = can ? can('manage_closings') : false;
 
+  // Clear the sticky warning when the FILE changes — ClosingPanel is mounted
+  // without a key, so navigating A -> B re-runs load() without remounting and a
+  // warning raised on A would otherwise sit on screen while viewing B.
+  useEffect(() => { setWarn(''); }, [appId]);
   const load = useCallback(() => api.closingWorkspace(appId).then((d) => { setWs(d); setErr(''); }).catch((e) => setErr((e && e.message) || 'Could not load the closing view.')), [appId]);
   useEffect(() => { load(); }, [load]);
   const say = (m) => { setFlash(m); setTimeout(() => setFlash(''), 5000); };
@@ -72,6 +80,7 @@ export default function ClosingPanel({ appId, app, can, onDownloadDoc, onPreview
     <div className="closing-workspace">
       {flash && <div className="notice ok" style={{ marginBottom: 10 }}>{flash}</div>}
       {err && <div role="alert" className="notice err" style={{ marginBottom: 10 }}>{err}<button className="btn link small" onClick={() => setErr('')}>Dismiss</button></div>}
+      {warn && <div role="alert" className="notice warn" style={{ marginBottom: 10 }}>{warn}<button className="btn link small" onClick={() => setWarn('')}>Dismiss</button></div>}
 
       {/* Stage + shared answers */}
       <div className="panel" style={{ marginBottom: 14 }}>
@@ -144,7 +153,7 @@ export default function ClosingPanel({ appId, app, can, onDownloadDoc, onPreview
       <ChecklistsSection appId={appId} checklists={ws.checklists || []} isCloser={isCloser} onChanged={refresh} setErr={setErr} />
 
       {/* Sign-offs + reconciliation */}
-      <SignoffSection appId={appId} cw={cw} rec={rec} isCloser={isCloser} busy={busy} run={run} />
+      <SignoffSection appId={appId} cw={cw} rec={rec} isCloser={isCloser} busy={busy} run={run} setWarn={setWarn} />
 
       {/* Notes */}
       <NotesSection appId={appId} notes={ws.notes || []} onChanged={refresh} setErr={setErr} />
@@ -460,7 +469,7 @@ function AddItem({ onAdd }) {
   );
 }
 
-function SignoffSection({ appId, cw, rec, isCloser, busy, run }) {
+function SignoffSection({ appId, cw, rec, isCloser, busy, run, setWarn }) {
   const recOk = rec && rec.ok;
   return (
     <div className="panel" style={{ marginBottom: 14 }}>
@@ -525,7 +534,19 @@ function SignoffSection({ appId, cw, rec, isCloser, busy, run }) {
               a button that 422s. */}
           {isCloser && cw.stage === 'fully_reconciled' && !cw.table_funded && (
             <button className="btn primary small" style={{ marginTop: 8 }} disabled={busy === 'purch' || !cw.investor_delivery_signed_off_at}
-              onClick={() => run('purch', () => api.advanceClosing(appId, 'in_purchasing'), 'Sent to purchasing.')}>
+              onClick={() => run('purch', async () => {
+                const r = await api.advanceClosing(appId, 'in_purchasing');
+                // The server drives the matching ClickUp status, but that push
+                // goes through the funded-bucket gate and is REFUSED unless the
+                // actor is an admin — a closer is not. It reports statusBlocked
+                // and nothing used to read it, so the closer saw a plain success
+                // while the card never moved. Say so instead.
+                // Deliberately vague about the CAUSE: the server sends only the
+                // boolean, and a block can come from an outstanding condition, a
+                // gate, or the issuance backstop. Naming the wrong one is worse
+                // than naming none.
+                if (r && r.statusBlocked) setWarn('Sent to purchasing in PILOT — but the ClickUp card was NOT moved (the status change was refused for this file). Ask an admin to move the card.');
+              }, 'Sent to purchasing.')}>
               Send to purchasing
             </button>
           )}
