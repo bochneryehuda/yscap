@@ -3460,6 +3460,46 @@ details[open]>.appr-sec-sum .appr-sec-chev{transform:rotate(180deg)}
   .cond-more-menu{position:static;min-width:0;max-width:none;box-shadow:none;margin-top:6px}
 }
 
+/* ── WHO SEES IT — one stamp instead of four raw-database chips ────────
+   Owner-directed 2026-07-28. Explicit dark text on white — never a --ink*
+   token, those are LIGHT in this palette. */
+.aud{display:inline-flex;align-items:center;gap:5px;flex:none;
+  padding:2px 9px;border-radius:999px;font-size:11px;font-weight:700;
+  letter-spacing:.03em;white-space:nowrap;border:1px solid}
+.aud::before{content:'';width:5px;height:5px;border-radius:50%;background:currentColor}
+.aud-internal{color:#4B585C;border-color:rgba(75,88,92,.35);background:#F4F1EA}
+.aud-external{color:#256168;border-color:rgba(47,127,134,.45);background:rgba(47,127,134,.09)}
+.aud-both{color:#8A6D3B;border-color:rgba(174,135,70,.5);background:rgba(174,135,70,.10)}
+
+/* ── THE COMPACT CONDITION LINE ──────────────────────────────────
+   Owner-directed 2026-07-28: "one compact line each, click to open the one
+   you're working". 24 conditions came to 8,116px — over seven screens —
+   because every one rendered fully expanded. Now each is a line you scan and
+   open. Nothing is removed: opening a row shows exactly what it did before. */
+.cnd{display:flex;align-items:center;gap:10px;width:100%;min-width:0;
+  padding:9px 2px;cursor:pointer;text-align:left;background:none;border:0;font:inherit}
+.cnd:hover .cnd-name{color:var(--teal-br)}
+.cnd-name{flex:1 1 auto;min-width:0;font-weight:600;color:#141B22;
+  overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.cnd-meta{flex:none;font-size:12px;color:#4B585C;white-space:nowrap}
+.cnd-chev{flex:none;color:#4B585C;font-size:10px;transition:transform .15s ease}
+.cnd-chev.open{transform:rotate(90deg)}
+/* The one next action, reachable WITHOUT opening the row — that is what makes
+   a list of forty workable. It must not also toggle the row. */
+.cnd-do{flex:none}
+.cnd-done .cnd-name{color:#4B585C;font-weight:500}
+@media(max-width:720px){
+  .cnd{flex-wrap:wrap;gap:6px}
+  .cnd-name{flex:1 1 100%;white-space:normal}
+}
+
+/* An internal note: shown when there IS one, a quiet link when there is not.
+   It used to render an empty box + Save button on every single condition —
+   about a full screen of blank boxes down a 24-condition list. */
+.cnd-note{font-size:12.5px;color:#141B22;background:#F4F1EA;border-radius:8px;
+  padding:7px 10px;white-space:pre-wrap;word-break:break-word}
+.cnd-note-add{align-self:flex-start;padding:0;font-size:12.5px}
+
 /* ── A section filling the screen (owner-directed 2026-07-27) ──────────────
    "there should also be a button by the conditions section to open the
    conditions section on a full screen so you can work in a big screen."

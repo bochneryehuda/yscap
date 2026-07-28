@@ -106,3 +106,45 @@ export function loanConditionStatusLabel(status) {
   const s = LOAN_CONDITION_STATE[String(status || '').trim()];
   return s ? s.label : LOAN_CONDITION_STATE.open.label;
 }
+
+/* ---------------------------------------------------------------------------
+ * 4. WHO SEES IT — one stamp, replacing four raw-database chips.
+ *
+ * Owner-directed 2026-07-28, looking at a live condition: "you don't need to
+ * have so much information, but maybe we can replace that into a nice modern
+ * stamp saying if it's external, if it's external plus internal, or if it's
+ * internal only — so we can track which condition is which. Externals would be
+ * the borrower can also see it on their end; internal means only the staff
+ * sees it."
+ *
+ * Every condition row used to carry up to four grey chips — Staff, Processor,
+ * Document, Condition — which are the stored `audience`, `role_scope` and
+ * `item_kind` columns printed verbatim. 46 of them across 24 conditions, none
+ * of which changes what a person does next. This replaces the ONE that does
+ * matter (can the borrower see this?) with a single stamp, and the other three
+ * move into the condition's own detail where they cost nothing.
+ *
+ * Keyed on the stored `audience` values, which are unchanged — this is wording
+ * and colour only.
+ * ------------------------------------------------------------------------ */
+export const CONDITION_AUDIENCE = {
+  // Only the team. The borrower has no idea this condition exists.
+  staff:    { label: 'Internal', cls: 'aud-internal',
+              title: 'Internal only — the borrower never sees this condition' },
+  // The borrower's own list. This is what they are being asked for.
+  borrower: { label: 'External', cls: 'aud-external',
+              title: 'External — the borrower sees this condition on their side too' },
+  // Both lists at once: the borrower is asked for it AND the team works it.
+  both:     { label: 'External + internal', cls: 'aud-both',
+              title: 'External and internal — the borrower sees it, and the team works it too' },
+};
+
+export const CONDITION_AUDIENCES = ['staff', 'borrower', 'both'];
+
+/* Unknown/blank falls back to INTERNAL — the safe direction. Claiming a
+   condition is external when we are not sure would tell someone the borrower
+   can see it when they cannot. */
+export function audienceStamp(audience) {
+  return CONDITION_AUDIENCE[String(audience || '').trim()] || CONDITION_AUDIENCE.staff;
+}
+export const audienceLabel = (a) => audienceStamp(a).label;
