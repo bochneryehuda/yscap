@@ -3,10 +3,25 @@ import { Link } from 'react-router-dom';
 import { api } from '../lib/api.js';
 
 /* ════════════════════════════════════════════════════════════════════════════
-   ORDERS QUEUE — every title & insurance order across the files the viewer can
-   see, in one place. Files with documents waiting to be classified float to the
-   top. Each order links straight into its file's Orders section.
+   ORDERS QUEUE — every title, insurance & attorney closing-prep order across the
+   files the viewer can see, in one place. Files with documents waiting to be
+   classified float to the top. Each order links straight into its file's Orders
+   section.
+
+   THE THREE ORDER KINDS ARE LISTED ONCE, HERE. `GET /orders` returns one
+   sub-object per kind (title / insurance / attorney) and this screen is the only
+   consumer — so a fourth kind is one entry in KINDS, never a fourth hand-written
+   column plus three filter predicates that each have to remember it. The attorney
+   order shipped server-side (and tested) while this screen still rendered two
+   columns, which is exactly the drift a list prevents.
    ════════════════════════════════════════════════════════════════════════════ */
+
+const KINDS = [
+  { key: 'title', label: 'Title order' },
+  { key: 'insurance', label: 'Insurance order' },
+  { key: 'attorney', label: 'Attorney closing prep' },
+];
+const orderOf = (f) => KINDS.map(k => f[k.key]).filter(Boolean);
 
 const STATUS_LABEL = {
   not_ordered: 'Not ordered', ordered: 'Ordered', documents_in: 'Documents in',
@@ -47,14 +62,19 @@ export default function StaffOrders() {
 
   useEffect(() => { api.staffAllOrders().then(setRows).catch(e => setErr((e && e.message) || 'Could not load orders.')); }, []);
 
+  // "Needs classifying" counts VENDOR documents nobody has filed yet. The server
+  // deliberately reports 0 for the attorney order (a closing-chain document needs
+  // no classification), so summing every kind is both correct and future-proof.
   const filtered = useMemo(() => {
     const list = rows || [];
-    if (filter === 'to_assign') return list.filter(f => (f.title && f.title.unassignedDocs > 0) || (f.insurance && f.insurance.unassignedDocs > 0));
-    if (filter === 'open') return list.filter(f => [f.title, f.insurance].some(o => o && (o.status === 'ordered' || o.status === 'documents_in')));
+    if (filter === 'to_assign') return list.filter(f => orderOf(f).some(o => o.unassignedDocs > 0));
+    if (filter === 'open') return list.filter(f => orderOf(f).some(o => o.status === 'ordered' || o.status === 'documents_in'));
     return list;
   }, [rows, filter]);
 
-  const toAssign = useMemo(() => (rows || []).reduce((n, f) => n + ((f.title && f.title.unassignedDocs) || 0) + ((f.insurance && f.insurance.unassignedDocs) || 0), 0), [rows]);
+  const toAssign = useMemo(
+    () => (rows || []).reduce((n, f) => n + orderOf(f).reduce((m, o) => m + (o.unassignedDocs || 0), 0), 0),
+    [rows]);
 
   if (err) return <div className="notice err">{err}</div>;
   if (!rows) return <div className="panel"><p className="muted small">Loading orders…</p></div>;
@@ -66,7 +86,7 @@ export default function StaffOrders() {
         <div className="spacer" />
         {toAssign > 0 && <span className="pill" style={{ color: 'var(--gold)', borderColor: 'var(--gold)' }}>{toAssign} document{toAssign === 1 ? '' : 's'} to classify</span>}
       </div>
-      <p className="muted small" style={{ marginTop: 0 }}>Every title and insurance order across your files. Open a file to order, follow up, or classify what came back.</p>
+      <p className="muted small" style={{ marginTop: 0 }}>Every title, insurance and attorney closing-prep order across your files. Open a file to order, follow up, or classify what came back.</p>
 
       <div className="cond-tabs" role="tablist" style={{ marginBottom: 10 }}>
         {[{ k: 'all', label: 'All' }, { k: 'open', label: 'In progress' }, { k: 'to_assign', label: `Needs classifying${toAssign ? ` (${toAssign})` : ''}` }].map(t => (
@@ -79,12 +99,11 @@ export default function StaffOrders() {
         ? <div className="panel"><p className="muted small">No orders match.</p></div>
         : (
           <div className="panel" style={{ overflowX: 'auto' }}>
-            <table className="table" style={{ width: '100%', minWidth: 720 }}>
+            <table className="table" style={{ width: '100%', minWidth: 880 }}>
               <thead>
                 <tr>
                   <th style={{ textAlign: 'left' }}>File</th>
-                  <th style={{ textAlign: 'left' }}>Title order</th>
-                  <th style={{ textAlign: 'left' }}>Insurance order</th>
+                  {KINDS.map(k => <th key={k.key} style={{ textAlign: 'left' }}>{k.label}</th>)}
                   <th />
                 </tr>
               </thead>
@@ -95,8 +114,7 @@ export default function StaffOrders() {
                       <div style={{ fontWeight: 600 }}>{f.loanNumber || 'Loan # pending'}</div>
                       <div className="muted small">{f.borrowerName || '—'} · {addrLine(f.propertyAddress)}</div>
                     </td>
-                    <td><OrderCell o={f.title} /></td>
-                    <td><OrderCell o={f.insurance} /></td>
+                    {KINDS.map(k => <td key={k.key}><OrderCell o={f[k.key]} /></td>)}
                     <td style={{ textAlign: 'right' }}>
                       <Link className="btn ghost small" to={`/internal/app/${f.applicationId}#sec-orders`}>Open</Link>
                     </td>

@@ -43,7 +43,7 @@ const cfg = require('../config');
 const db = require('../db');
 const email = require('./email');
 const notify = require('./notify');
-const { fileReplyTo, applicationIdFromRecipient, orderRefFromRecipient } = require('./file-address');
+const { fileReplyTo, applicationIdFromRecipient, orderRefFromRecipient, closingTokenFromRecipient } = require('./file-address');
 
 const RESEND_BASE = 'https://api.resend.com';
 // Attachment forwarding is best-effort + bounded so a huge or broken attachment
@@ -393,6 +393,25 @@ async function processReceivedEvent(event) {
   }
   const chatKey = chatKeyFromRecipients(recips);
 
+  // THE CLOSING CHAIN (closing+<token>@). Unlike every other family here, the token
+  // is opaque, so resolving it takes a lookup — one indexed read per delivery.
+  //
+  // This is the address a closing attorney is asked to keep on the chain THEY start,
+  // which is why it is resolved from the full recipient list (To + Cc + Bcc +
+  // envelope) and not just from a Reply-To: on that chain we are usually a Cc, and
+  // frequently not even addressed directly. The file is added to applicationIds so
+  // the message forwards to the team exactly like any other file reply.
+  const closingRefs = [];
+  for (const r of recips) {
+    const token = closingTokenFromRecipient(r);
+    if (!token || closingRefs.some((c) => c.token === token)) continue;
+    let ref = null;
+    try { ref = await require('./closing-thread').resolveByToken(token); } catch (_) { ref = null; }
+    if (!ref || ref.archived) continue;      // unknown or retired token — silently ignored
+    closingRefs.push(ref);
+    if (!applicationIds.includes(ref.applicationId)) applicationIds.push(ref.applicationId);
+  }
+
   // Idempotency claim — keyed on the Resend email_id. A fresh insert wins the
   // claim; on conflict, a RETRYABLE prior outcome (or a claim stuck 'received'
   // from a crashed run) is atomically reclaimed so the redelivery can finish the
@@ -503,17 +522,33 @@ async function processReceivedEvent(event) {
 
   // An order reply (title+/insurance+) is tagged so the order-scoped Email Center
   // shows the vendor's reply directly (belt on top of subject threading).
+  // orderRefFromRecipient matches only title|insurance, so those are the only two
+  // cases here — the attorney order has no vendor reply-to of its own; its inbound
+  // side is the CLOSING CHAIN below.
   const orderMsgType = orderRefs.length
     ? (orderRefs[0].orderType === 'title' ? 'title_message' : 'insurance_message')
     : undefined;
+  // A closing-chain message is tagged and — crucially — PINNED to the chain's STORED
+  // thread key. The attorney chose their own subject and may change it mid-chain, so
+  // the usual subject-derived key would scatter one closing across many threads.
+  // The closing tag wins over an order tag: an email carrying both addresses is part
+  // of the closing conversation.
+  const closingMsgType = closingRefs.length ? 'closing_message' : undefined;
+  const closingThreadKey = closingRefs.length ? closingRefs[0].threadKey : undefined;
 
   // Persist the inbound reply into the Email Center (the actual body + who/when),
   // so the file's email history shows the reply itself — not just that one arrived.
   // Best-effort; the final status is refined by the aggregate-outcome capture below.
   try {
     const emailLog = require('./email-log');
-    await emailLog.captureInbound({ inboundId: rowId, applicationId: applicationIds[0] || null,
-      from: fromEmail, subject, html: full.html, text: full.text, status: 'received', msgType: orderMsgType });
+    await emailLog.captureInbound({ inboundId: rowId,
+      applicationId: (closingRefs.length ? closingRefs[0].applicationId : applicationIds[0]) || null,
+      from: fromEmail, subject, html: full.html, text: full.text, status: 'received',
+      msgType: closingMsgType || orderMsgType,
+      threadKey: closingThreadKey,
+      // WHO ELSE is on the chain, and WHAT came with it — on a chain we don't own,
+      // this is the only record of either.
+      toEmails: recips, attachments: full.attachments });
   } catch (_) { /* best-effort */ }
 
   // Auto-generated mail (auto-acks, OOO, bounces) is recorded, never forwarded —
@@ -528,6 +563,23 @@ async function processReceivedEvent(event) {
   let forwardedTotal = 0;
   let retryableFailure = null;   // { status } of the first transient failure
 
+  // Retrieve the attachment BYTES at most once per delivery. Up to three consumers
+  // want them (an order's returned documents, the closing chain's documents, and the
+  // forward itself) and each full download is two HTTP hops per file — a closing
+  // package would have been fetched three times over.
+  // An EMPTY result is deliberately NOT memoized: retrieval can fail transiently
+  // (a signed download URL, two HTTP hops per file), and caching that failure would
+  // make one blip empty-handed for all three consumers at once — where previously
+  // each retrieved independently. A successful retrieval is cached; a failed one is
+  // simply retried by the next consumer.
+  let _attsOnce = null;
+  const attachmentsOnce = async () => {
+    if (_attsOnce) return _attsOnce;
+    const got = await retrieveAttachmentsSafe(emailId, full.attachments).catch(() => []);
+    if (got.length) _attsOnce = got;
+    return got;
+  };
+
   // ---- returned documents (#orders): save the vendor's attachments back onto
   // the order(s) as UNASSIGNED documents for the team to classify. Runs AFTER the
   // auto-reply return (an auto-ack never files docs) and is IDEMPOTENT across
@@ -539,7 +591,7 @@ async function processReceivedEvent(event) {
     const pending = orderRefs.filter((ref) => appResults['__order_' + ref.orderType] !== 'saved');
     if (pending.length) {
       try {
-        const orderAtts = await retrieveAttachmentsSafe(emailId, full.attachments).catch(() => []);
+        const orderAtts = await attachmentsOnce();
         // Never a SILENT cap: retrieveAttachmentsSafe bounds count/size, so a large
         // title package (11+ files, or big binders under the Graph budget) may drop
         // the overflow from the returned-docs save — say so (the reply + all files
@@ -560,6 +612,64 @@ async function processReceivedEvent(event) {
           }
         }
       } catch (_) { /* best-effort — never fail the webhook over doc capture */ }
+    }
+  }
+
+  // ---- closing chain documents: everything that goes back and forth on the
+  // attorney's chain files into the loan file's CLOSING CORRESPONDENCE package
+  // (doc_kind 'closing_correspondence', attached to NO condition — see
+  // closing-inbox.js for why that separation is deliberate).
+  //
+  // Same idempotency shape as the order block above: a persisted per-thread marker,
+  // because the 120s doc-dedup window is not enough when a retryable failure
+  // redelivers minutes later. Best-effort — the message still forwards regardless.
+  // ONE MESSAGE, ONE CLOSING. A reply-all that carries TWO of our closing addresses
+  // used to file every attachment onto BOTH loans — so one borrower's settlement
+  // statement landed in another borrower's file, and the Email Center row was pinned
+  // to whichever address the provider happened to list first. We cannot know which
+  // closing a document belongs to, so we file it to NEITHER and say so; the chain
+  // activity is still recorded on both, and the message still forwards to both teams.
+  if (closingRefs.length > 1 && Array.isArray(full.attachments) && full.attachments.length) {
+    console.warn(`[closing-inbox] a message carried ${closingRefs.length} closing addresses (${closingRefs.map((r) => r.applicationId).join(', ')}) — attachments were NOT auto-filed to either file, because there is no way to tell which closing they belong to.`);
+  }
+  if (closingRefs.length === 1 && Array.isArray(full.attachments) && full.attachments.length) {
+    const pending = closingRefs.filter((ref) => appResults['__closing_' + ref.token] !== 'saved');
+    for (const ref of pending) {
+      try {
+        const atts = await attachmentsOnce();
+        // NEVER a silent cap. retrieveAttachmentsSafe bounds count and size, and a
+        // real closing package can exceed them — say so loudly, because a closing
+        // document quietly missing from the file is the expensive failure here.
+        if (atts.length < full.attachments.length) {
+          console.warn(`[closing-inbox] ${full.attachments.length - atts.length} of ${full.attachments.length} closing attachment(s) exceeded the retrieval caps and were NOT filed to the loan file (they still forwarded to the team).`);
+        }
+        if (!atts.length) continue;
+        const closingInbox = require('./closing-inbox');
+        const res = await closingInbox.saveChainDocs({
+          applicationId: ref.applicationId, attachments: atts, fromEmail, subject,
+        });
+        // ONLY MARK THE CHAIN DONE WHEN EVERY ATTACHMENT WAS ACTUALLY FILED.
+        //
+        // `saveChainDocs` catches per-attachment failures so one bad file cannot lose
+        // the rest — which meant it could never throw, so this marker was written
+        // unconditionally and the `catch` below was unreachable for a storage or DB
+        // failure. Two of six PDFs would vanish and the webhook redelivery, the one
+        // thing that could have recovered them, skipped the chain as already handled.
+        if (res.failed) {
+          console.warn(`[closing-inbox] ${res.failed} closing attachment(s) could not be filed for ${ref.applicationId} — leaving the chain unmarked so a redelivery retries.`);
+        } else {
+          appResults['__closing_' + ref.token] = 'saved';   // persisted below → a redelivery skips it
+        }
+        try { await require('./closing-thread').noteInbound(ref.threadId, { docs: res.saved }); } catch (_) {}
+      } catch (_) { /* leave unmarked so a redelivery retries this chain */ }
+    }
+  } else if (closingRefs.length) {
+    // A message with no attachments still counts as chain activity, so the file can
+    // show that the closing is moving. Marked so a redelivery doesn't recount it.
+    for (const ref of closingRefs) {
+      if (appResults['__closing_seen_' + ref.token] === 'yes') continue;
+      appResults['__closing_seen_' + ref.token] = 'yes';
+      try { await require('./closing-thread').noteInbound(ref.threadId, { docs: 0 }); } catch (_) {}
     }
   }
 
@@ -635,7 +745,7 @@ async function processReceivedEvent(event) {
       continue;
     }
 
-    const attachments = await retrieveAttachmentsSafe(emailId, full.attachments).catch(() => []);
+    const attachments = await attachmentsOnce();
     try {
       await forwardToAssignees({
         applicationId, fromEmail, subject,
@@ -674,8 +784,12 @@ async function processReceivedEvent(event) {
   // Refine the Email Center row with the final outcome + who it was forwarded to
   // (the body was already stored above; ON CONFLICT keeps it). Best-effort.
   try {
-    require('./email-log').captureInbound({ inboundId: rowId, applicationId: applicationIds[0] || null,
+    require('./email-log').captureInbound({ inboundId: rowId,
+      applicationId: (closingRefs.length ? closingRefs[0].applicationId : applicationIds[0]) || null,
       from: fromEmail, subject, status: finalStatus,
+      // Re-pass the closing tag + pinned thread key: this UPSERT must not let the
+      // refinement pass demote the row back to a subject-derived thread.
+      msgType: closingMsgType || orderMsgType, threadKey: closingThreadKey,
       forwardedTo: forwardedRecipients.length ? forwardedRecipients : null });
   } catch (_) { /* best-effort */ }
   return { status: finalStatus, count: forwardedTotal };
