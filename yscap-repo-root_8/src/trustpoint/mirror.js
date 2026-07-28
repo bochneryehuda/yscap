@@ -19,6 +19,13 @@ const notify = require('../lib/notify');
 const usd = (c) => c == null ? '—' : '$' + Math.floor(Number(c) / 100).toLocaleString('en-US');
 // money-leg amounts keep their cents (a mirrored wire is exact, never floored)
 const usd2 = (c) => c == null ? '—' : '$' + (Number(c) / 100).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+const { drawTeamBcc } = require('../lib/draw-recipients');
+
+// " #2" for the borrower's SUBJECT LINE (owner-directed 2026-07-27: "in the subject line write
+// draw 1 draw 2, how many draw it is"). The email subject is built as `title · <file tag>`, so
+// the draw number belongs in the title. Blank when the administrator gave the draw no number —
+// never a guessed "#1".
+const drawNo = (row) => (row && row.number != null ? ` #${row.number}` : '');
 
 async function audit(appId, tpDrawId, entity, entityId, field, oldV, newV, reacted) {
   try {
@@ -182,12 +189,27 @@ async function linkToSitewireIntake(appId, tpDrawRow) {
 // point PILOT's fetch elsewhere). Sends the Api-Key — the spec doesn't say whether
 // document file URLs are pre-signed or key-authenticated (sandbox item Q-C), and the
 // header is harmless on a pre-signed URL. 20s cap, 25MB cap.
+// TrustPoint serves document BYTES from its S3 evidence bucket, not from the API host —
+// e.g. https://tp-backend-evidence-prod-us-west-2.s3.amazonaws.com/media/private/documents/…
+// The original pin accepted ONLY the API host, so EVERY report download threw before it
+// began ("report url host … is not the TrustPoint host") and was swallowed by the
+// best-effort catch — no inspection report has ever actually been archived to a file
+// (owner-reported 2026-07-27: the reports are not on the draws). Verified against the live
+// /report/ response. The allow-list stays tight and explicit: the API host, or TrustPoint's
+// own evidence bucket. Every hop is still re-checked by assertPublicHttps/isPrivateIp, and
+// the Api-Key is sent ONLY to the API host (a pre-signed S3 URL carries its own auth and
+// must never receive our key).
+function isTrustpointDocHost(host, apiHost) {
+  if (host === apiHost) return true;
+  return /^tp-[a-z0-9-]+\.s3[.-][a-z0-9-]*\.?amazonaws\.com$/.test(host);
+}
+
 async function fetchReportBytes(fileUrl) {
   const cfg = require('../config');
   const media = require('../sitewire/media-archive');
   const baseHost = new URL(cfg.trustpointBaseUrl).host;
   const u = new URL(fileUrl);
-  if (u.host !== baseHost) throw new Error(`report url host ${u.host} is not the TrustPoint host`);
+  if (!isTrustpointDocHost(u.host, baseHost)) throw new Error(`report url host ${u.host} is not a TrustPoint document host`);
   await media.assertPublicHttps(fileUrl);
   const ac = new AbortController();
   const t = setTimeout(() => ac.abort(), 20000);
@@ -195,8 +217,10 @@ async function fetchReportBytes(fileUrl) {
     let current = fileUrl;
     for (let hop = 0; hop <= 3; hop++) {
       await media.assertPublicHttps(current);
-      const hostOk = new URL(current).host === baseHost;
-      const r = await fetch(current, { signal: ac.signal, redirect: 'manual', headers: hostOk ? { Authorization: `Api-Key ${cfg.trustpointApiKey}` } : {} });
+      const hop_ = new URL(current).host;
+      if (!isTrustpointDocHost(hop_, baseHost)) throw new Error(`redirect left the TrustPoint document hosts (${hop_})`);
+      // the API key goes to the API host ONLY — never appended to a pre-signed S3 URL
+      const r = await fetch(current, { signal: ac.signal, redirect: 'manual', headers: hop_ === baseHost ? { Authorization: `Api-Key ${cfg.trustpointApiKey}` } : {} });
       if (r.status >= 300 && r.status < 400) {
         const loc = r.headers.get('location');
         if (!loc) throw new Error(`redirect ${r.status} with no location`);
@@ -292,7 +316,26 @@ function nyDay(ts) {
 async function mirrorDisbursement(appId, row, { baseline = false, addr = 'the property' } = {}) {
   try {
     const disbursedCents = row.disbursed_cents != null ? Number(row.disbursed_cents) : null;
-    if (!(row.disbursed_at != null || (disbursedCents != null && disbursedCents > 0))) return { skipped: 'not_disbursed' };
+    // ---- PROOF-OF-PAYMENT GATE (owner-reported 2026-07-27; file YSCAP258134754) ----
+    // A borrower was told "your construction draw of $49,750.00 is on its way" on a draw
+    // that had only just been SUBMITTED — inspection merely scheduled, nothing approved,
+    // no wire. Root cause, verified against TrustPoint's live records for that draw
+    // (483ed3a0…, status IN_REVIEW): **`disbursed_amount` is NOT a record of money that
+    // moved.** TrustPoint pre-populates it at submission with the PROJECTED net —
+    // requested minus the draw fee ($50,000 − $250 = the $49,750 the borrower was told
+    // was on its way) — while `approved_amount`, `approved_at` and `disbursed_at` were
+    // all still null. The old gate treated a positive `disbursed_amount` as sufficient
+    // on its own, so it fired the moment the draw was keyed in.
+    //
+    // The ONLY field that records an actual disbursement is `disbursed_at` — a date
+    // TrustPoint sets when the wire goes out (null on every un-wired draw, set on both
+    // genuinely completed ones). So: require the wire DATE, and require the draw to have
+    // been decided. Never infer a release from an amount alone.
+    // Under-announcing is safe — `drawReleaseOverdueOnce` already alerts the team when an
+    // accepted draw's wire has not been recorded in time.
+    const wired = row.disbursed_at != null;
+    const decided = row.status === 'APPROVED' || row.status === 'COMPLETED';
+    if (!wired || !decided) return { skipped: 'not_disbursed' };
     // the Sitewire draw this money belongs to: the live intake tie, or the portal close-out
     let swDrawId = row.sitewire_draw_id != null ? Number(row.sitewire_draw_id) : null;
     if (swDrawId == null && row.portal_draw_request_id != null) {
@@ -302,10 +345,16 @@ async function mirrorDisbursement(appId, row, { baseline = false, addr = 'the pr
     const feeList = feeLinesCents(row.fees);
     const feeSum = feeList ? feeList.reduce((s, c) => s + c, 0) : 0;
     const approved = row.approved_cents != null ? Number(row.approved_cents) : 0;
-    // NET precedence: the administrator's own to_disburse; else what it says went out;
-    // else approved − fees. Their numbers, mirrored — never re-derived when they speak.
+    // NET: what the administrator says actually went out. Now that a real wire DATE is
+    // required above, `disbursed_amount` is a settled figure and is already net of the
+    // draw fee (verified on the wired draws: $21,000 approved → $20,750 disbursed, and
+    // $10,687.50 → $10,437.50 — each exactly the $250 fee). `amount_to_disburse` is not a
+    // field TrustPoint publishes (absent from their OpenAPI spec), so `to_disburse_cents`
+    // is only ever populated by a future/other source; it stays first if it appears.
+    // The approved−fees arithmetic is a LAST resort, never the basis of an announcement
+    // on its own — deriving a "released" amount that way is what mis-stated the $49,750.
     const net = row.to_disburse_cents != null ? Number(row.to_disburse_cents)
-      : (disbursedCents != null && disbursedCents > 0 ? disbursedCents : Math.max(0, approved - feeSum));
+      : (disbursedCents != null ? disbursedCents : Math.max(0, approved - feeSum));
     const relDate = row.disbursed_at ? nyDay(row.disbursed_at) : null;
     const feesJson = row.fees == null ? null : ((x) => (x && x.length <= 20000 ? x : null))(JSON.stringify(row.fees));
     // Go-forward (audit-5 #2): a wire that went out well before PILOT was watching this
@@ -376,12 +425,13 @@ async function mirrorDisbursement(appId, row, { baseline = false, addr = 'the pr
     const shown = Math.max(0, net - markup);
     if (shown > 0) {
       await notify.notifyAppBorrowers(appId, {
-        type: 'draw', title: 'Your construction draw has been released',
+        type: 'draw', title: `Your construction draw${drawNo(row)} has been released`,
         hero: { label: 'Released to you', value: usd2(shown), sub: 'typically arrives in 1–2 business days', tone: 'positive' },
         badge: { text: 'Draw released', tone: 'positive' },
         body: `Your construction draw of ${usd2(shown)} is on its way. Depending on your bank, funds typically take 1–2 business days to arrive.`,
         lines: ['Questions about this draw? Just reply to this email or reach your loan officer.'],
         applicationId: appId, link: `/app/${appId}`, ctaLabel: 'View your draws',
+        bccExtra: await drawTeamBcc(),
       }).catch(() => {});
     }
     await notify.notifyAppStaff(appId, {
@@ -480,9 +530,9 @@ async function reactDraw(appId, row, prev, { baseline = false, addrText = null }
     // Borrower milestone (single voice — borrower-safe wording, no platform names; the
     // 'draw' type is registered + BORROWER_MAJOR_EMAIL; notifyBorrower scrubs partners).
     await notify.notifyAppBorrowers(appId, {
-      type: 'draw', title: 'Your draw was approved',
+      type: 'draw', title: `Your draw${drawNo(row)} was approved`,
       body: `Good news — your draw request for ${addr} was approved: ${usd(row.approved_cents)} of the ${usd(row.requested_cents)} you requested. The release is being processed; we'll confirm the exact amount when the funds are sent.`,
-      applicationId: appId, link: `/app/${appId}`,
+      applicationId: appId, link: `/app/${appId}`, bccExtra: await drawTeamBcc(),
     }).catch(() => {});
     await archiveReport(appId, row.tp_project_id, tpDrawId).catch(() => {});
     // §5E: the once-per-draw fee check runs at approval (the NET depends on the fee).
@@ -514,14 +564,14 @@ async function reactReturned(appId, row, addrText) {
     badge: { text: 'Returned', tone: 'gold' }, applicationId: appId, link: `/internal/app/${appId}/draws`,
   }).catch(() => {});
   await notify.notifyAppBorrowers(appId, {
-    type: 'draw', title: 'Your draw needs attention',
+    type: 'draw', title: `Your draw${drawNo(row)} needs attention`,
     body: `Your draw request for ${addr} needs a little more before it can be approved. Your loan team will reach out with exactly what's needed.`,
-    applicationId: appId, link: `/app/${appId}`,
+    applicationId: appId, link: `/app/${appId}`, bccExtra: await drawTeamBcc(),
   }).catch(() => {});
 }
 
 // ---- service orders ----
-async function upsertServiceOrder(appId, so) {
+async function upsertServiceOrder(appId, so, { baseline = false } = {}) {
   const prev = (await db.query(`SELECT status, status_synced FROM trustpoint_service_orders WHERE tp_service_order_id=$1`, [so.id])).rows[0] || null;
   await db.query(
     `INSERT INTO trustpoint_service_orders (tp_service_order_id, application_id, tp_project_id, tp_draw_id, service_type, status,
@@ -542,8 +592,30 @@ async function upsertServiceOrder(appId, so) {
      so.service_number || null, so.ordered_at || null, so.scheduled_at || null, so.completed_at || null, so.cancelled_at || null,
      so.inspector_allowance_rate != null && Number.isFinite(Number(so.inspector_allowance_rate)) ? Number(so.inspector_allowance_rate) : null,
      ((x) => x.length > 20000 ? null : x)(JSON.stringify(so))]);
-  // Silent by default (in-app timeline data); a COMPLETED inspection gets one in-app staff note.
-  if (so.status === 'COMPLETED' && (!prev || prev.status !== 'COMPLETED')) {
+  // Silent by default (in-app timeline data); a COMPLETED inspection gets ONE in-app staff note.
+  //
+  // ---- ONE NOTICE PER INSPECTION, AND ONLY GOING FORWARD (owner-reported 2026-07-27) ----
+  // File YSCAP258134727 produced THREE "inspection completed" notices for TWO real
+  // inspections. Verified against TrustPoint's records, both causes were here:
+  //   (1) NO BASELINE. Draws hydrate a just-linked project's history silently (reactDraw's
+  //       `baseline`), but service orders had no such notion — so linking this project on
+  //       Jul 26 announced its Jul 20 inspection (8.55%) as if it had just happened.
+  //   (2) NO FORWARD-ONLY CLAIM. The dedupe was a non-atomic read of `status`, so any
+  //       regression-then-re-advance re-armed it: the draw-2 inspection (23.66%) was
+  //       completed, revised, and completed again, and was announced BOTH times. Draws are
+  //       protected by an atomic `status_synced` claim + a forward-only RANK; the
+  //       `status_synced` column existed on this table but was read and never written.
+  // The claim below is a single atomic UPDATE, so overlapping webhook drains and polls
+  // cannot both win, and a completed inspection can never be announced a second time.
+  if (so.status === 'COMPLETED') {
+    const won = (await db.query(
+      `UPDATE trustpoint_service_orders SET status_synced='COMPLETED', updated_at=now()
+        WHERE tp_service_order_id=$1 AND status_synced IS DISTINCT FROM 'COMPLETED'
+        RETURNING tp_service_order_id`, [so.id])).rowCount === 1;
+    if (!won) return;
+    await audit(appId, so.draw_request_id || null, 'service_order', String(so.id), 'completed',
+      prev && prev.status, 'COMPLETED', !baseline);
+    if (baseline) return;   // history for a project we had not started watching yet
     await notify.notifyAppStaff(appId, {
       type: 'draw_inbound', title: `${so.service_type === 'INSPECTION' ? 'Inspection' : (so.service_type || 'Service order')} completed`,
       body: `TrustPoint marked the ${String(so.service_type || 'service order').toLowerCase().replace(/_/g, ' ')} complete${so.inspector_allowance_rate != null ? ` — overall progress ${so.inspector_allowance_rate}%` : ''}.`,
@@ -568,7 +640,9 @@ async function hydrateProject(appId, tpProjectId, { baseline = false } = {}) {
   }
   try {
     const sos = await client.listServiceOrders({ project_id: tpProjectId });
-    for (const so of sos) await upsertServiceOrder(appId, { ...so, project_id: tpProjectId });
+    // Service orders baseline with the project, exactly like its draws — a just-linked
+    // project's finished inspections are HISTORY, never fresh news (owner-reported 2026-07-27).
+    for (const so of sos) await upsertServiceOrder(appId, { ...so, project_id: tpProjectId }, { baseline });
   } catch (_) {}
   return { draws: n };
 }
@@ -630,7 +704,7 @@ async function processEvent(evt) {
   if (SO_EVENTS.has(evt.event)) {
     const soId = String(evt.tp_service_order_id || p.service_order_id || '');
     if (!soId) return { skipped: 'no_service_order' };
-    await upsertServiceOrder(appId, { ...p, id: soId, project_id: tpProjectId });
+    await upsertServiceOrder(appId, { ...p, id: soId, project_id: tpProjectId }, { baseline: !link.baselined_at });
     return { ok: true };
   }
   if (evt.event === 'PROJECT_CHANGED') {

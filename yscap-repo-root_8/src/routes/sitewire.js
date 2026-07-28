@@ -1151,7 +1151,7 @@ router.post('/disbursements', requirePermission('manage_draws'), async (req, res
   if (sitewire_draw_id == null || sitewire_draw_id === '') return res.status(400).json({ error: 'Select which draw this release is for.' });
   if (!/^\d+$/.test(String(sitewire_draw_id))) return res.status(400).json({ error: 'invalid draw id' });
   // it must belong to THIS file (never store a draw id from another file — the lien gate reads that draw's waivers).
-  const own = (await db.query(`SELECT total_approved_cents FROM sitewire_draws WHERE sitewire_draw_id=$1 AND application_id=$2`, [sitewire_draw_id, application_id])).rows[0];
+  const own = (await db.query(`SELECT total_approved_cents, number FROM sitewire_draws WHERE sitewire_draw_id=$1 AND application_id=$2`, [sitewire_draw_id, application_id])).rows[0];
   if (!own) return res.status(400).json({ error: 'that draw is not on this file' });
   const drawId = sitewire_draw_id;
   // M1: don't record a release larger than what the lender actually approved on this draw. Owner-directed
@@ -1208,7 +1208,10 @@ router.post('/disbursements', requirePermission('manage_draws'), async (req, res
         const amt = '$' + (split.net_release_cents / 100).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
         await notify.notifyAppBorrowers(application_id, {
           type: 'draw',
-          title: `Your construction draw has been released`,
+          // Draw number in the SUBJECT + the draw desk looped in (owner-directed 2026-07-27),
+          // matching the TrustPoint-mirrored release email in src/trustpoint/mirror.js.
+          bccExtra: await require('../lib/draw-recipients').drawTeamBcc(),
+          title: `Your construction draw${own.number != null ? ` #${own.number}` : ''} has been released`,
           hero: { label: 'Released to you', value: amt, sub: 'typically arrives in 1–2 business days', tone: 'positive' },
           badge: { text: 'Draw released', tone: 'positive' },
           body: `Your loan team has released a construction draw of ${amt} on your file. Depending on your bank, funds typically take 1–2 business days to arrive.`,
