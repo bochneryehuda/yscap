@@ -1224,12 +1224,18 @@ function DrawMessages({ messages }) {
   const [open, setOpen] = React.useState(false);
   if (!list.length) return null;
   const total = list.reduce((n, m) => n + 1 + (m.replies ? m.replies.length : 0), 0);
+  // A bare new Date(x).toISOString() THROWS RangeError on an unparseable value, and a throw
+  // during render takes the whole file screen down through the ErrorBoundary. Never render an
+  // external timestamp without this guard.
+  const day = (v) => {
+    if (!v) return null;
+    const d = new Date(v);
+    return Number.isNaN(d.getTime()) ? null : d.toISOString().slice(0, 10);
+  };
   const line = (m, depth) => (
     <div key={m.tp_comment_id} style={{ marginTop: 8, marginLeft: depth * 16 }}>
       <div style={{ display: 'flex', gap: 8, alignItems: 'baseline', flexWrap: 'wrap' }}>
-        <span style={{ fontSize: 11.5, color: '#4B585C' }}>
-          {m.commented_at ? String(new Date(m.commented_at).toISOString()).slice(0, 10) : 'date not given'}
-        </span>
+        <span style={{ fontSize: 11.5, color: '#4B585C' }}>{day(m.commented_at) || 'date not given'}</span>
         {m.author ? <span style={{ fontSize: 11.5, fontWeight: 600, color: '#141B22' }}>{m.author}</span> : null}
         {m.is_pinned ? <span style={{ fontSize: 11, color: '#7A5E2E' }}>pinned</span> : null}
       </div>
