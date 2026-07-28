@@ -203,7 +203,11 @@ function buildDrawReport({ app = {}, rollup = null, sections = [], scope = 'draw
 
   // ---- Schedule of values (project-wide progress) ----
   if (rollup && rollup.project) {
-    band('Schedule of values — construction progress');
+    // The heading keeps "Schedule of values" in both shapes — it is the term the desk and the
+    // existing report contract use — and only says what the extra columns add.
+    band(scope !== 'project' && sections[0] && Array.isArray(sections[0].lines) && sections[0].lines.length
+      ? 'Schedule of values — full budget, with this draw on every line'
+      : 'Schedule of values — construction progress');
     const p = rollup.project;
     // headline tiles row
     brk(52);
@@ -223,37 +227,99 @@ function buildDrawReport({ app = {}, rollup = null, sections = [], scope = 'draw
       doc.text(pdfSafe(fit(t[1], 14)), x + 8, y + 34);
     });
     y += 54;
-    // line table
-    const cols = [
+    // ---- THE WHOLE BUDGET, WITH THIS DRAW'S ACTIVITY ON EVERY LINE (owner-directed 2026-07-27:
+    // "include the entire budget with all the details — how much was budgeted, how much requested
+    // and how much was approved from that line at this time"). When we hold per-line inspection
+    // detail for the draw, two extra columns are folded into the SAME schedule of values, so one
+    // table answers both questions: where the whole project stands, and what this draw did to it.
+    // Every budget line is listed either way — a line with no activity this draw shows "—", so a
+    // reader can see what was NOT drawn against just as clearly as what was.
+    const drawLines = (scope !== 'project' && sections[0] && Array.isArray(sections[0].lines)) ? sections[0].lines : [];
+    // Match on the line NAME — the inspection finding and the budget line are the same SOW line,
+    // and the name is the only key both sides carry (Sitewire binds its job items by name too).
+    const activity = new Map();
+    for (const l of drawLines) {
+      const key = String(l.name || '').trim().toLowerCase();
+      if (!key) continue;
+      const prev = activity.get(key) || { req: 0, appr: 0 };
+      activity.set(key, { req: prev.req + (Number(l.requested_cents) || 0), appr: prev.appr + (Number(l.approved_cents) || 0) });
+    }
+    const withDraw = activity.size > 0;
+    const cols = withDraw ? [
+      { t: 'Line item', w: 0.26, a: 'left' },
+      { t: 'Budget', w: 0.126, a: 'right' },
+      { t: 'Drawn', w: 0.126, a: 'right' },
+      { t: 'Requested', w: 0.132, a: 'right' },
+      { t: 'Approved', w: 0.132, a: 'right' },
+      { t: 'Remaining', w: 0.132, a: 'right' },
+      { t: '% done', w: 0.092, a: 'right' },
+    ] : [
       { t: 'Line item', w: 0.34, a: 'left' },
       { t: 'Budget', w: 0.16, a: 'right' },
       { t: 'Drawn', w: 0.16, a: 'right' },
       { t: 'Remaining', w: 0.18, a: 'right' },
       { t: '% done', w: 0.16, a: 'right' },
     ];
+    // one row builder for both shapes — the draw columns slot in only when we have them
+    const actFor = (label) => activity.get(String(label || '').trim().toLowerCase()) || null;
+    const row = (label, budgeted, drawn, remaining, pct, act) => (withDraw
+      ? [label, usd(budgeted), usd(drawn), act ? usd(act.req) : '—', act ? usd(act.appr) : '—', usd(remaining), pctStr(pct)]
+      : [label, usd(budgeted), usd(drawn), usd(remaining), pctStr(pct)]);
     const iw = W - 2 * M;
     function rowCells(cells, isHead) {
       brk(15);
-      if (isHead) { doc.setFont('helvetica', 'bold'); doc.setFontSize(7.6); doc.setTextColor.apply(doc, GRAY); }
-      else { doc.setFont('helvetica', 'normal'); doc.setFontSize(8); doc.setTextColor.apply(doc, DARK); }
+      // The 7-column (with-draw) shape is tighter, so it steps the type down and clips the line
+      // NAME harder — the money columns must never be the thing that gets truncated.
+      const wide = cols.length > 5;
+      if (isHead) { doc.setFont('helvetica', 'bold'); doc.setFontSize(wide ? 6.9 : 7.6); doc.setTextColor.apply(doc, GRAY); }
+      else { doc.setFont('helvetica', 'normal'); doc.setFontSize(wide ? 7.4 : 8); doc.setTextColor.apply(doc, DARK); }
       let x = M + 3;
       cols.forEach((c, i) => {
         const cw = c.w * iw;
         const tx = c.a === 'right' ? x + cw - 6 : x;
-        doc.text(pdfSafe(fit(String(cells[i] == null ? '' : cells[i]), c.a === 'left' ? 46 : 16)), tx, y + 9, { align: c.a });
+        const cap = c.a === 'left' ? (wide ? 34 : 46) : 16;
+        doc.text(pdfSafe(fit(String(cells[i] == null ? '' : cells[i]), cap)), tx, y + 9, { align: c.a });
         x += cw;
       });
       y += 14; doc.setDrawColor.apply(doc, LINE); doc.setLineWidth(0.4); doc.line(M + 3, y - 3, W - M - 3, y - 3);
     }
     rowCells(cols.map((c) => c.t), true);
+    const seen = new Set();
     const shown = rollup.lines.filter((l) => l.kind === 'line');
-    for (const l of shown) rowCells([clean(l.label), usd(l.budgeted), usd(l.drawn), usd(l.remaining), pctStr(l.pct_complete)]);
+    for (const l of shown) {
+      const act = actFor(l.label);
+      if (act) seen.add(String(l.label || '').trim().toLowerCase());
+      rowCells(row(clean(l.label), l.budgeted, l.drawn, l.remaining, l.pct_complete, act));
+    }
     for (const l of rollup.lines.filter((l) => l.kind === 'contingency' || l.kind === 'gc')) {
-      rowCells([l.kind === 'gc' ? 'General conditions' : 'Contingency', usd(l.budgeted), usd(l.drawn), usd(l.remaining), pctStr(l.pct_complete)]);
+      const label = l.kind === 'gc' ? 'General conditions' : 'Contingency';
+      const act = actFor(l.label) || actFor(label);
+      if (act) seen.add(String((actFor(l.label) ? l.label : label) || '').trim().toLowerCase());
+      rowCells(row(label, l.budgeted, l.drawn, l.remaining, l.pct_complete, act));
+    }
+    // An inspected line that is not on the budget rollup must never vanish from the table — it is
+    // exactly the case a reader would ask about (work drawn against something not budgeted).
+    for (const l of drawLines) {
+      const key = String(l.name || '').trim().toLowerCase();
+      if (!key || seen.has(key)) continue;
+      seen.add(key);
+      const act = activity.get(key);
+      rowCells(withDraw
+        ? [clean(l.name), '—', '—', usd(act.req), usd(act.appr), '—', '—']
+        : [clean(l.name), '—', '—', '—', '—']);
     }
     // totals
     doc.setFont('helvetica', 'bold'); doc.setFontSize(8); doc.setTextColor.apply(doc, TEAL);
-    rowCells(['Total', usd(p.budget), usd(p.drawn), usd(p.remaining), pctStr(p.pct_complete)]);
+    // The DRAW's own stated totals win over the sum of its lines. Per-line detail can legitimately
+    // fall short of the draw total (an unallocated amount, a rounding difference, a line the
+    // administrator did not itemize), and if the total row disagreed with the headline panel the
+    // report would show two different "approved" numbers on one page — the fastest way to lose a
+    // borrower's trust in the whole document. The line sum is used only when the draw is silent.
+    const sum = (k) => [...activity.values()].reduce((s, a) => s + a[k], 0);
+    const s0 = sections[0] || {};
+    const totReq = s0.requested_cents != null ? Number(s0.requested_cents) : sum('req');
+    const totAppr = s0.approved_cents != null ? Number(s0.approved_cents) : sum('appr');
+    rowCells(row('Total', p.budget, p.drawn, p.remaining, p.pct_complete, withDraw ? { req: totReq, appr: totAppr } : null));
   }
 
   // ---- Per-draw inspection sections ----
