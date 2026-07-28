@@ -77,7 +77,7 @@ function extractJpegs(buf, { max = MAX_PHOTOS_PER_DOC, minBytes = MIN_PHOTO_BYTE
 /** The application + TrustPoint ids for a draw we already mirror (null when unknown). */
 async function drawContext(tpDrawId) {
   const r = await lazy.db.query(
-    `SELECT application_id, tp_project_id, tp_draw_id, number,
+    `SELECT application_id, tp_project_id, tp_draw_id, number, status,
             GREATEST(COALESCE(approved_at, to_timestamp(0)), COALESCE(completed_at, to_timestamp(0)),
                      COALESCE(submitted_at, to_timestamp(0)), COALESCE(tp_created_at, to_timestamp(0))) AS activity_at
        FROM trustpoint_draws WHERE tp_draw_id=$1`,
@@ -228,6 +228,9 @@ async function archiveDrawIfIncomplete(tpDrawId) {
   if (!enabled()) return { skipped: 'off' };
   const ctx = await drawContext(tpDrawId);
   if (!ctx || !ctx.application_id) return { skipped: 'unknown_draw' };
+  // Only the two states where the archive actually fires. A DRAFT or IN_REVIEW draw has no
+  // inspection paperwork by definition, so retrying one is pure API burn.
+  if (ctx.status !== 'APPROVED' && ctx.status !== 'COMPLETED') return { skipped: 'not_ready' };
   // Already have something for this draw — the archive landed, nothing to redo.
   if ((await documentsFor(ctx.application_id, tpDrawId, ctx.number)).length) return { skipped: 'archived' };
   const at = ctx.activity_at ? new Date(ctx.activity_at).getTime() : NaN;
@@ -236,7 +239,26 @@ async function archiveDrawIfIncomplete(tpDrawId) {
   // Past the window the links are dead, so a retry would only burn API calls forever. A draw
   // dated in the FUTURE (a clock skew) is treated as current rather than skipped.
   if (ageDays > ARCHIVE_RETRY_DAYS) return { skipped: 'too_old' };
-  return archiveDrawEverything(tpDrawId);
+
+  // HOURLY BACK-OFF. The draw poll runs every 5 minutes, so an approved draw whose documents
+  // TrustPoint has genuinely not produced yet would otherwise be re-listed ~860 times across
+  // the window. The claim is a single conditional UPDATE, so two overlapping passes cannot
+  // both win it, and the row is written before the attempt — a crash mid-pull costs one hour,
+  // never a hot loop.
+  const key = `tp_archive_retry:${tpDrawId}`;
+  const claimed = (await lazy.db.query(
+    `INSERT INTO sync_runtime_state (key, value, updated_at) VALUES ($1, '{}'::jsonb, now())
+     ON CONFLICT (key) DO UPDATE SET updated_at = now()
+      WHERE sync_runtime_state.updated_at < now() - interval '1 hour'
+     RETURNING key`, [key])).rowCount === 1;
+  if (!claimed) return { skipped: 'backoff' };
+
+  const r = await archiveDrawEverything(tpDrawId);
+  // Nothing left to retry — drop the marker so these rows cannot accumulate for ever.
+  if (r && r.ok && r.documents > 0) {
+    await lazy.db.query(`DELETE FROM sync_runtime_state WHERE key=$1`, [key]).catch(() => {});
+  }
+  return r;
 }
 
 /** The archived photos for a TrustPoint draw, newest document first (for the branded report). */
