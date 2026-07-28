@@ -156,7 +156,15 @@ const DATA = {
 {
   const { to, cc } = cp.recipientsFor(DATA, { extraEmails: ['extra@x.test', 'LO@YS.TEST'] });
   assert(to.includes('teamag@privatelenderlaw.com'), 'the attorney GROUP inbox is a To recipient');
-  assert(to.includes('abe@law.test'), "an attorney contact on the file is a To recipient");
+  // THE BORROWER'S ATTORNEY IS NEVER A RECIPIENT. This module labels that contact
+  // "Borrower's attorney" and prints it in the body under "we have deliberately not
+  // copied them here" — putting it in To made that line false and, with the group
+  // inbox unset (a supported setting), made the borrower's own lawyer the SOLE
+  // recipient of the driver's licences, the entity file and the pricing.
+  assert(!to.includes('abe@law.test'),
+    "the BORROWER'S attorney is never a recipient of the lender-to-counsel package");
+  assert(to.length === 1 && to[0] === 'teamag@privatelenderlaw.com',
+    'our closing attorney is the only recipient');
   assert(cc.includes('lo@ys.test') && cc.includes('proc@ys.test') && cc.includes('closer@ys.test'),
     'the loan officer, the processor AND our closer are copied');
   assert(cc.includes('extra@x.test'), 'the sender can loop in more addresses');
@@ -232,9 +240,35 @@ const ATTACH = {
 {
   // The executed-term-sheet wording flips when the file already holds the signed one.
   const pkg = { ...PKG_FULL, termSheetExecuted: true };
-  const h = cp.buildClosingPrepEmail(DATA, pkg, { address: ADDRESS, attach: ATTACH, senderName: 'X' }).html;
-  assert(/FULLY EXECUTED/.test(h), 'an already-executed term sheet is described as executed');
+  // WHAT WAS ATTACHED decides the sentence, not what the file holds. Reading it off
+  // the package claimed "the term sheet attached is the FULLY EXECUTED version" even
+  // when that copy was skipped for size and the INITIAL sheet went instead — routine
+  // on Graph, whose raw budget is ~1.9 MB — so the attorney drafted from the draft
+  // believing it final.
+  const execAttach = { attached: [{ group: 'term_sheet', doc_kind: 'term_sheet_signed' }],
+    attachments: [{ filename: 'Term Sheet EXECUTED.pdf' }], skipped: [] };
+  const h = cp.buildClosingPrepEmail(DATA, pkg, { address: ADDRESS, attach: execAttach, senderName: 'X' }).html;
+  assert(/FULLY EXECUTED/.test(h), 'an EXECUTED copy that was actually attached is described as executed');
   assert(!/not final until it is executed/i.test(h), 'and is NOT described as a draft');
+  // The executed copy exists on the file but was skipped — the INITIAL one went.
+  const draftAttach = { attached: [{ group: 'term_sheet', doc_kind: 'term_sheet' }],
+    attachments: [{ filename: 'Term Sheet.pdf' }],
+    skipped: [{ filename: 'Term Sheet EXECUTED.pdf', reason: 'too large to email' }] };
+  const h2 = cp.buildClosingPrepEmail(DATA, pkg, { address: ADDRESS, attach: draftAttach, senderName: 'X' }).html;
+  assert(!/FULLY EXECUTED/.test(h2) && /not final until it is executed/i.test(h2),
+    'but when the executed copy could NOT be attached, the email says the attached one is the draft');
+  // NOTHING attached at all — both branches above would have claimed "the term sheet
+  // attached is …", and the intro would have promised a complete package. On Graph
+  // (raw budget ~1.9 MB) a 3 MB signed package attaches nothing at all.
+  const noneAttach = { attached: [], attachments: [],
+    skipped: [{ filename: 'Term Sheet EXECUTED.pdf', reason: 'over the email size limit' }] };
+  const h3 = cp.buildClosingPrepEmail(DATA, pkg, { address: ADDRESS, attach: noneAttach, senderName: 'X' }).html;
+  assert(/term sheet is NOT attached/i.test(h3),
+    'with NO term sheet attached the email says so plainly, rather than describing one');
+  assert(!/attached is the FULLY EXECUTED/.test(h3) && !/attached is the INITIAL/.test(h3),
+    'and never describes a term sheet it did not send');
+  assert(!/Everything you need to start drafting is attached/.test(h3),
+    'nor promises a complete package when something was held back');
 }
 {
   // Nothing missing is ever silent.
@@ -417,6 +451,34 @@ assert(ct.EVENT_KINDS.join(',') === 'order,followup,executed_term_sheet,closing_
       'a pasted mail-client contact is unwrapped to the bare address');
     const bad = cp.recipientsFor({ ...DATA, attorneyGroupEmail: 'not-an-address' }, {});
     assert(!bad.to.some((e) => e === 'not-an-address'), 'and junk is refused rather than sent');
+  }
+
+  // (h) THE EXECUTED-TERM-SHEET UPDATE STATES THE TRUE REASON THE COPY IS MISSING.
+  //     "Too large to attach here" was asserted for EVERY missing attachment — an
+  //     unreadable file, an empty one, no stored copy at all — which told counsel
+  //     something false about our own file and sent them to ask for a document
+  //     nobody can produce. The three branches must read differently.
+  {
+    const attached = cp.buildAutoEmail('executed_term_sheet', DATA, { files: ['signed.pdf'] });
+    assert(/executed copy is attached/i.test(attached.html),
+      'when the signed copy really went out, the email says it is attached');
+
+    const big = cp.buildAutoEmail('executed_term_sheet', DATA, { files: [], attachSkipReason: 'too large to email' });
+    assert(/too large to attach here/i.test(big.html),
+      'a copy withheld for SIZE still reads "too large" — tell us and we will send it over');
+    const overBudget = cp.buildAutoEmail('executed_term_sheet', DATA, { files: [], attachSkipReason: 'over the email size limit' });
+    assert(/too large to attach here/i.test(overBudget.html),
+      'and so does one that did not fit the whole-email budget');
+
+    for (const reason of ['could not be read', 'empty file', 'no stored copy', null]) {
+      const other = cp.buildAutoEmail('executed_term_sheet', DATA, { files: [], attachSkipReason: reason });
+      assert(!/too large/i.test(other.html) && !/is attached/i.test(other.html)
+        && /could not be attached/i.test(other.html),
+        `a copy missing because it ${reason || 'was never found'} never claims it was too large`);
+    }
+    assert(cp.isSizeSkip('too large to email') && !cp.isSizeSkip('could not be read')
+      && !cp.isSizeSkip(undefined),
+      'the size test reads buildAttachments’ own vocabulary, and nothing else');
   }
 
   console.log(failures ? `\n${failures} FAILURE(S)` : '\nAll closing-prep pure checks passed.');

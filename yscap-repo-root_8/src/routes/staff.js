@@ -3758,6 +3758,8 @@ router.get('/applications/:id/emails', async (req, res) => {
     // closing conversation, both directions, whatever anyone called it.
     const closingScope = rawScope === 'closing';
     let scopeSql = '';
+    // Extra bind values a scope needs beyond $1 (the application id).
+    let scopeArgs = [];
     if (drawScope) {
       scopeSql = `AND (em.msg_type LIKE 'draw%' OR em.msg_type LIKE 'sow_%'
              OR (em.thread_key IS NOT NULL AND em.thread_key IN (
@@ -3771,9 +3773,20 @@ router.get('/applications/:id/emails', async (req, res) => {
                     WHERE application_id = $1 AND thread_key IS NOT NULL
                       AND msg_type LIKE '${orderScope}\\_%')))`;
     } else if (closingScope) {
-      scopeSql = `AND (em.msg_type LIKE 'closing\\_%'
+      // THE STORED THREAD KEY IS THE REAL MEMBERSHIP TEST; the msg_type list beside
+      // it is an EXPLICIT allowlist, never a prefix match.
+      //
+      // `LIKE 'closing\_%'` also matched `closing_date` — the BORROWER's own
+      // "your estimated closing date" notification (staff.js sends it with
+      // type:'closing_date', which email-log stores as the msg_type). So the
+      // borrower's private email, with their address and body, appeared inside the
+      // attorney's closing chain — and it is the message a staffer is most likely
+      // to hit Reply on, which the closing reply branch then sends to outside
+      // counsel. `closing_docs_in` (an in-app row) landed there for the same reason.
+      scopeSql = `AND (em.msg_type = ANY($2::text[])
              OR (em.thread_key IS NOT NULL AND em.thread_key IN (
                    SELECT thread_key FROM closing_threads WHERE application_id = $1)))`;
+      scopeArgs = [CLOSING_CHAIN_MSG_TYPES];
     }
     const r = await db.query(
       `SELECT em.id, em.direction, em.msg_type, em.category, em.subject, em.preview,
@@ -3790,7 +3803,7 @@ router.get('/applications/:id/emails', async (req, res) => {
          LEFT JOIN borrowers   bo ON bo.id = n.borrower_id
         WHERE em.application_id = $1 ${scopeSql}
         ORDER BY em.occurred_at DESC
-        LIMIT 500`, [req.params.id]);
+        LIMIT 500`, [req.params.id, ...scopeArgs]);
     let out = consolidateEmailRows(r.rows);
     if (drawScope) {
       // Fold in the DocuSign wire-form lifecycle + Sitewire's own activity events, newest first,
@@ -3963,6 +3976,15 @@ router.post('/applications/:id/emails/reply', async (req, res) => {
       {
         const last = await closingPrep.lastRecipients(thread.id);
         if (!last.to.length) return res.status(400).json({ error: 'Send the closing-prep request first — there is no closing chain to reply on yet.', code: 'not_ordered' });
+        // THE SAME ENGAGEMENT TEST THE FOLLOW-UP DOOR USES. Two doors to one action
+        // (write to closing counsel on this chain) must agree, and a chain row is NOT
+        // proof anyone is engaged: `sendOnThread` opens the chain BEFORE it sends, and
+        // CANCELLING an order deliberately LEAVES the chain intact so the attorney's
+        // own correspondence stays on the file. Without this, Follow-up correctly
+        // refused a cancelled order while this door still emailed outside counsel.
+        if (!(await closingPrep.orderIsLive(appId))) {
+          return res.status(400).json({ error: 'This closing-prep order is not open — reopen it before writing to the attorney.', code: 'not_ordered' });
+        }
         const data = await closingPrep.getClosingPrepData(appId);
         if (!data) return res.status(404).json({ error: 'not found' });
         const senderName = meRow.full_name || meRow.email || '';
@@ -4285,6 +4307,16 @@ const closingThread = require('../lib/closing-thread');
 // happened, a human still signs it off.
 const CLOSING_PREP_CONDITIONS = ['rtl_p5_atty', 'rtl_p5_titleinfo'];
 
+// EXACTLY the message types that ride a closing chain — an allowlist, never a
+// prefix. `closing_date` is the BORROWER's own notification and must never appear
+// in the attorney's inbox; a `LIKE 'closing\_%'` match swept it in. Every entry
+// here corresponds to a real `msgType:` passed to sendOnThread / the inbound
+// capture. Adding a chain message means adding its type here too.
+const CLOSING_CHAIN_MSG_TYPES = [
+  'closing_order', 'closing_followup', 'closing_message',
+  'closing_executed_term_sheet', 'closing_closing_date', 'closing_clear_to_close',
+];
+
 function cleanEmailList(v, max = 10) {
   const raw = Array.isArray(v) ? v : String(v || '').split(/[,;\s]+/);
   const out = [];
@@ -4407,7 +4439,7 @@ router.post('/applications/:id/closing-prep/place', async (req, res) => {
     if (blk.includes('not_registered')) return res.status(400).json({ error: 'Register the product first. The attorney needs a term sheet to draft from — register the file, then send this.', code: 'not_registered' });
     if (blk.includes('documents_unavailable')) return res.status(503).json({ error: 'We could not read this file’s documents just now, so nothing was sent. Try again in a moment.', code: 'documents_unavailable' });
     if (blk.includes('term_sheet')) return res.status(400).json({ error: 'There is no term sheet on the file yet. Generate the term sheet, then send the closing-prep request.', code: 'term_sheet' });
-    if (blk.includes('attorney')) return res.status(400).json({ error: 'There is nowhere to send this — add an attorney contact to the file (or set the attorney group inbox).', code: 'attorney' });
+    if (blk.includes('attorney')) return res.status(400).json({ error: 'There is nowhere to send this — the closing attorney’s group inbox is not set up yet. Ask an admin to set it (ATTORNEY_GROUP_EMAIL); adding an attorney contact to the file will not help, because that contact is the borrower’s own lawyer and is never copied on this email.', code: 'attorney' });
 
     const force = req.body && (req.body.force === true || req.body.force === 'true');
     const existing = (await db.query(
@@ -4447,16 +4479,25 @@ router.post('/applications/:id/closing-prep/place', async (req, res) => {
       return res.status(409).json({ error: 'Closing prep was already sent for this file. Use Follow-up, or force a re-send.', code: 'already_ordered' });
     }
 
-    await db.query(
-      `INSERT INTO file_orders (application_id, order_type, status, vendor_email, vendor_name, subject,
-                                ordered_at, ordered_by, send_count, meta)
-       VALUES ($1,'attorney','ordered',$2,$3,$4,now(),$5,1,$6::jsonb)
-       ON CONFLICT (application_id, order_type)
-       DO UPDATE SET status='ordered', vendor_email=EXCLUDED.vendor_email, vendor_name=EXCLUDED.vendor_name,
-                     subject=EXCLUDED.subject, ordered_at=now(), ordered_by=EXCLUDED.ordered_by,
-                     send_count=file_orders.send_count+1, meta=EXCLUDED.meta, updated_at=now()`,
-      [appId, to[0] || null, 'Closing attorney', sent.subject, req.actor.id,
-       JSON.stringify({ extraEmails, attached: attach.attached.length, skipped: attach.skipped.length })]);
+    // THE EMAIL HAS ALREADY GONE. Everything from here is bookkeeping, so a failure
+    // must not answer "Could not send the closing-prep request" — counsel HAS the
+    // package, and telling the operator otherwise invites a second ~20 MB send to
+    // the whole recipient list. Recorded loudly instead; `orderIsLive` treats the
+    // delivered order message as proof so the file is not silenced meanwhile.
+    try {
+      await db.query(
+        `INSERT INTO file_orders (application_id, order_type, status, vendor_email, vendor_name, subject,
+                                  ordered_at, ordered_by, send_count, meta)
+         VALUES ($1,'attorney','ordered',$2,$3,$4,now(),$5,1,$6::jsonb)
+         ON CONFLICT (application_id, order_type)
+         DO UPDATE SET status='ordered', vendor_email=EXCLUDED.vendor_email, vendor_name=EXCLUDED.vendor_name,
+                       subject=EXCLUDED.subject, ordered_at=now(), ordered_by=EXCLUDED.ordered_by,
+                       send_count=file_orders.send_count+1, meta=EXCLUDED.meta, updated_at=now()`,
+        [appId, to[0] || null, 'Closing attorney', sent.subject, req.actor.id,
+         JSON.stringify({ extraEmails, attached: attach.attached.length, skipped: attach.skipped.length })]);
+    } catch (e) {
+      console.error(`[closing-prep] the request WAS sent for ${appId} but the order row failed to write:`, (e && e.message) || e);
+    }
 
     // Record that the two manual steps this replaces actually happened. Never
     // downgrades a signed-off/waived condition, never signs one off.
@@ -4493,9 +4534,11 @@ router.post('/applications/:id/closing-prep/followup', async (req, res) => {
   const appId = req.params.id;
   if (!(await canTouchApp(req, appId))) return res.status(403).json({ error: 'forbidden' });
   try {
-    const row = (await db.query(
-      `SELECT status FROM file_orders WHERE application_id=$1 AND order_type='attorney'`, [appId])).rows[0];
-    if (!row || row.status === 'not_ordered' || row.status === 'cancelled') {
+    // ONE definition of "an attorney is engaged on this file", shared with the
+    // automatic updates — so an order whose row failed to write after a SUCCESSFUL
+    // send can still be followed up on, instead of being refused here as never
+    // ordered while the re-send door refuses it as already sent.
+    if (!(await closingPrep.orderIsLive(appId))) {
       return res.status(400).json({ error: 'Send the closing-prep request before following up.', code: 'not_ordered' });
     }
     const data = await closingPrep.getClosingPrepData(appId);
@@ -4531,11 +4574,25 @@ router.post('/applications/:id/closing-prep/cancel', async (req, res) => {
   if (!(await canTouchApp(req, appId))) return res.status(403).json({ error: 'forbidden' });
   try {
     const reopen = req.body && (req.body.reopen === true || req.body.reopen === 'true');
+    // UPSERT, never a bare UPDATE. The order row is written AFTER the send, so a DB
+    // blip leaves a file whose request genuinely went out with no row — and then
+    // Cancel 404'd ("Closing prep has not been requested yet"), Send answered 409
+    // "already sent", and the chain kept emailing outside counsel with no way to
+    // stop it short of re-sending the whole package. Cancelling is the one action
+    // that must always be reachable once an attorney has been written to.
+    const engaged = await closingPrep.orderIsLive(appId);
     const upd = await db.query(
       `UPDATE file_orders SET status=$2, updated_at=now()
         WHERE application_id=$1 AND order_type='attorney' RETURNING status`,
       [appId, reopen ? 'ordered' : 'cancelled']);
-    if (!upd.rows[0]) return res.status(404).json({ error: 'Closing prep has not been requested yet.' });
+    if (!upd.rows[0]) {
+      if (!engaged) return res.status(404).json({ error: 'Closing prep has not been requested yet.' });
+      await db.query(
+        `INSERT INTO file_orders (application_id, order_type, status)
+         VALUES ($1,'attorney',$2)
+         ON CONFLICT (application_id, order_type) DO UPDATE SET status=EXCLUDED.status, updated_at=now()`,
+        [appId, reopen ? 'ordered' : 'cancelled']);
+    }
     await audit(req, reopen ? 'closing_prep_reopened' : 'closing_prep_cancelled', 'application', appId, {});
     res.json({ ok: true, status: upd.rows[0].status });
   } catch (e) { res.status(500).json({ error: 'server error' }); }
@@ -4551,7 +4608,7 @@ router.get('/orders', async (req, res) => {
     if (!seesAll(req)) { params.push(req.actor.id); scopeSql = `AND ${VISIBLE_OFFICERS_SQL('a', '$1')}`; }
     const r = await db.query(
       `SELECT a.id AS application_id, a.ys_loan_number, a.property_address, a.status AS file_status,
-              b.first_name, b.last_name,
+              b.first_name, b.last_name, b.full_name,
               o.order_type, o.status, o.vendor_name, o.ordered_at, o.last_followup_at, o.followup_count,
               COALESCE(dc.unassigned, 0)::int AS unassigned_docs, COALESCE(dc.total, 0)::int AS returned_docs
          FROM file_orders o
