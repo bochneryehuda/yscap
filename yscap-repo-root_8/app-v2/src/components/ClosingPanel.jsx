@@ -476,8 +476,31 @@ function SignoffSection({ appId, cw, rec, isCloser, busy, run }) {
             <SignRow label="TPR signed off" done={!!cw.tpr_signed_off_at} isCloser={isCloser} busy={busy === 'tpr'}
               onSign={(on) => run('tpr', () => api.closingSignOff(appId, 'tpr', on))} />
           </>}
+          {/* TABLE FUNDING sits directly ABOVE the investor-delivery sign-off,
+              because it is the question you answer BEFORE you sign it off. It is
+              READ-ONLY here: the WAREHOUSE decides it (owner-directed) — funding
+              on the Table Funding line means the loan was sold at closing, so it
+              skips the purchasing desk. One control, in Funding, so the two can
+              never disagree. */}
+          <div className="cl-signrow cl-tf">
+            <span className="cl-tf-main">
+              <b>{cw.table_funded ? '✓ Table funded — sold at closing' : 'Not table funded'}</b>
+              <span className="cl-tf-hint">
+                {cw.table_funded
+                  ? 'Funded on the Table Funding warehouse, so this loan was sold at closing and does not go to purchasing.'
+                  : 'Signing off investor delivery sends this file to the purchasing desk to be sold. If it was sold at closing, set the warehouse to “Table Funding” in Funding above first.'}
+              </span>
+            </span>
+          </div>
           <SignRow label="Investor delivery signed off" done={!!cw.investor_delivery_signed_off_at} isCloser={isCloser} busy={busy === 'inv'}
             onSign={(on) => run('inv', () => api.closingSignOff(appId, 'investor_delivery', on))} />
+          {!!cw.investor_delivery_signed_off_at && (
+            <div className="muted small" style={{ paddingTop: 2 }}>
+              {cw.table_funded
+                ? 'Sold at closing — this file is not on the purchasing desk.'
+                : 'This file is on the purchasing desk.'}
+            </div>
+          )}
         </div>
 
         <div className="cl-recon" style={{ marginTop: 12 }}>
@@ -497,11 +520,19 @@ function SignoffSection({ appId, cw, rec, isCloser, busy, run }) {
               Mark file reconciled
             </button>
           )}
-          {isCloser && cw.stage === 'fully_reconciled' && (
+          {/* A table-funded loan was sold at closing — it must never be pushed to
+              purchasing (the server refuses it too). Say so instead of offering
+              a button that 422s. */}
+          {isCloser && cw.stage === 'fully_reconciled' && !cw.table_funded && (
             <button className="btn primary small" style={{ marginTop: 8 }} disabled={busy === 'purch' || !cw.investor_delivery_signed_off_at}
               onClick={() => run('purch', () => api.advanceClosing(appId, 'in_purchasing'), 'Sent to purchasing.')}>
               Send to purchasing
             </button>
+          )}
+          {isCloser && cw.stage === 'fully_reconciled' && !!cw.table_funded && (
+            <div className="muted small" style={{ marginTop: 8 }}>
+              Table funded — this loan was sold at closing, so it does not go to purchasing.
+            </div>
           )}
         </div>
       </div>
