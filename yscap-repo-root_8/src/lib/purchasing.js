@@ -57,7 +57,9 @@ async function withdrawFromPurchasing(client, appId) {
  *   3. the STAGE steps back off 'in_purchasing' — `stage` is sticky, so the desk's
  *      retirement rule otherwise still reads the file as finished and it sits on
  *      NEITHER desk, which is the exact failure (2) exists to prevent.
- * Returns whether the stage was stepped back, so the caller can resync ClickUp. */
+ * Returns whether the stage was stepped back. NOTE: no caller consumes this
+ * today — the ClickUp resync that did was removed (see the sign-off route for
+ * why). Kept because a correct, bidirectional card-status write will need it. */
 async function unwindInvestorDelivery(client, appId, actorId) {
   const c = client || db;
   const workflow = require('./workflow');
