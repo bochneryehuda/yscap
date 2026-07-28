@@ -163,6 +163,11 @@ function CreditImportModal({ appId, onClose, onDone, scopeBorrowerId }) {
   // A reissue reference identifies ONE report at Xactus, so each borrower has their
   // own box. Keyed by borrowerId.
   const [reissueRefs, setReissueRefs] = useState({});
+  // How a LIVE order for several borrowers goes out to Xactus:
+  //   'joint'    — ONE order covering everybody, ONE reference number
+  //   'separate' — one order per borrower, each with its own reference
+  const [orderShape, setOrderShape] = useState('joint');
+  const [jointRef, setJointRef] = useState('');
   const [consent, setConsent] = useState(false);
   const [showUpload, setShowUpload] = useState(false);
   const [xmlFile, setXmlFile] = useState(null);
@@ -189,6 +194,10 @@ function CreditImportModal({ appId, onClose, onDone, scopeBorrowerId }) {
           const refs = {};
           list.forEach((b) => { refs[b.borrowerId] = b.reissueReportId || ''; });
           setReissueRefs(refs);
+          setJointRef(d.jointReissueReportId || '');
+          // Default to the shape the file already used: a joint reference on file
+          // means this file's credit is ordered jointly.
+          setOrderShape(d.jointReissueReportId ? 'joint' : (list.length > 1 ? 'joint' : 'separate'));
           // Default: every borrower on the file in one action — unless this condition
           // is one borrower's own, in which case only they are imported.
           const inScope = scopeBorrowerId && list.some((b) => b.borrowerId === scopeBorrowerId);
@@ -221,13 +230,18 @@ function CreditImportModal({ appId, onClose, onDone, scopeBorrowerId }) {
   const selMissing = Array.from(new Set(selBorrowers.flatMap((x) => x.missing || [])));
   // A co-borrower on the file who is NOT selected: they'll get their own condition.
   const droppedCo = hasMulti && !mergedMode && roster.some((x) => x.role === 'co' && !isSel(x.borrowerId));
+  // A JOINT order is only on the table for a live order covering 2+ borrowers.
+  const jointMode = !showUpload && hasMulti && orderShape === 'joint';
   const refOf = (id) => String(reissueRefs[id] || '').trim();
   const setRef = (id, v) => setReissueRefs((prev) => ({ ...prev, [id]: v }));
   const fileOf = (id) => perFiles[id] || {};
   const setPerFile = (id, key, f) => setPerFiles((prev) => ({ ...prev, [id]: { ...(prev[id] || {}), [key]: f } }));
   const perFileCount = roster.filter((b) => fileOf(b.borrowerId).xml || fileOf(b.borrowerId).pdf).length;
   // Borrowers selected for a reissue with no reference number to reissue against.
-  const needRef = requestType === 'reissue' ? selBorrowers.filter((b) => !refOf(b.borrowerId)) : [];
+  // A JOINT reissue needs exactly ONE reference for the whole order.
+  const jointJoined = jointMode && selBorrowers.length > 1;
+  const needRef = requestType !== 'reissue' ? []
+    : (jointJoined ? (jointRef.trim() ? [] : [{ name: 'the joint report' }]) : selBorrowers.filter((b) => !refOf(b.borrowerId)));
 
   async function runImport(kind) {
     setErr(''); setBusy(true);
@@ -236,8 +250,12 @@ function CreditImportModal({ appId, onClose, onDone, scopeBorrowerId }) {
       if (kind === 'live') {
         body.consent = consent;    // permissible-purpose attestation (server enforces too)
         body.borrowerIds = selBorrowers.map((x) => x.borrowerId);   // which borrowers to pull
-        if (requestType === 'reissue') {
-          // Each borrower reissues THEIR OWN report reference.
+        if (jointJoined) {
+          // ONE joint order covering everybody, with ONE reference number.
+          body.joint = true;
+          if (requestType === 'reissue') body.jointReissueReportId = jointRef.trim();
+        } else if (requestType === 'reissue') {
+          // A separate order per borrower — each reissues THEIR OWN reference.
           const map = {};
           selBorrowers.forEach((b) => { if (refOf(b.borrowerId)) map[b.borrowerId] = refOf(b.borrowerId); });
           body.reissueReportIds = map;
@@ -299,7 +317,9 @@ function CreditImportModal({ appId, onClose, onDone, scopeBorrowerId }) {
   const reissueReady = needRef.length === 0;
   const canLive = providerReady && consent && selBorrowers.length > 0 && selBorrowers.every((x) => (x.missing || []).length === 0) && reissueReady;
   const liveLabel = requestType === 'new' ? 'Order & import' : 'Reissue & import';
-  const liveLabelN = hasMulti && selBorrowers.length > 1 ? `${liveLabel} (${selBorrowers.length})` : liveLabel;
+  const liveLabelN = hasMulti && selBorrowers.length > 1
+    ? (jointJoined ? `${liveLabel} (joint · ${selBorrowers.length})` : `${liveLabel} (${selBorrowers.length})`)
+    : liveLabel;
   const uploadReady = uploadMode === 'separate'
     ? perFileCount > 0
     : !!((xmlFile || pdfFile) && (uploadMode === 'merged' ? hasMulti : selBorrowers.length === 1));
@@ -322,7 +342,9 @@ function CreditImportModal({ appId, onClose, onDone, scopeBorrowerId }) {
     else if (selMissing.length) footerHint = `Add the ${selMissing.join(', ')} to pull the selected borrower${selBorrowers.length > 1 ? 's' : ''}.`;
     else if (!consent) footerHint = 'Check the authorization box above to enable the pull.';
     else if (needRef.length) {
-      footerHint = `Enter the reissue reference number for ${needRef.map((b) => b.name).join(' and ')}, or switch to “Brand-new” for a first report.`;
+      footerHint = jointJoined
+        ? 'Enter the joint report’s reference number, or switch to “Brand-new” for a fresh joint order.'
+        : `Enter the reissue reference number for ${needRef.map((b) => b.name).join(' and ')}, or switch to “Brand-new” for a first report.`;
     }
   }
 
@@ -354,7 +376,7 @@ function CreditImportModal({ appId, onClose, onDone, scopeBorrowerId }) {
                 const addrLine = [addr.line1, addr.line2, [addr.city, addr.state].filter(Boolean).join(', '), addr.zip].filter(Boolean).join(' · ');
                 const on = isSel(bb.borrowerId);
                 return (
-                  <div key={bb.borrowerId} className={'crx-recip-card' + (hasMulti && !on ? ' off' : '')}>
+                  <div key={bb.borrowerId} className={'crx-recip-card' + (hasMulti && !on ? ' crx-off' : '')}>
                     <div className="crx-recip-head">
                       {hasMulti && (
                         <input type="checkbox" className="crx-recip-check" checked={on} disabled={mergedMode}
@@ -365,9 +387,12 @@ function CreditImportModal({ appId, onClose, onDone, scopeBorrowerId }) {
                       <span className="crx-mono" aria-hidden="true">{initials(bb.firstName, bb.lastName)}</span>
                       <div>
                         <div className="crx-recip-name">{bb.name || (bb.role === 'co' ? 'Co-borrower' : 'Borrower')}
-                          {hasMulti && <span className={'crx-role-tag' + (bb.role === 'co' ? ' co' : '')}>{bb.role === 'co' ? 'Co-borrower' : 'Primary'}</span>}
-                          {hasMulti && !on && <span className="crx-role-tag off">Not in this import</span>}</div>
-                        <div className="crx-recip-eyebrow">{bb.canPull ? 'Ready to pull' : 'Missing info for a live pull'}</div>
+                          {hasMulti && <span className={'crx-role-tag' + (bb.role === 'co' ? ' co' : '')}>{bb.role === 'co' ? 'Co-borrower' : 'Primary'}</span>}</div>
+                        {/* The un-ticked state goes HERE, not on the name line: a long
+                            name plus two tags pushed the card wider than the screen and
+                            made the whole panel scroll sideways (owner-reported). */}
+                        <div className={'crx-recip-eyebrow' + (hasMulti && !on ? ' crx-off' : '')}>
+                          {hasMulti && !on ? 'Not in this import' : (bb.canPull ? 'Ready to pull' : 'Missing info for a live pull')}</div>
                       </div>
                     </div>
                     <div className="crx-recip-grid">
@@ -407,6 +432,22 @@ function CreditImportModal({ appId, onClose, onDone, scopeBorrowerId }) {
                   : 'A soft inquiry — a pre-application check that does not affect the score.'}</div>
               </div>
 
+              {/* With more than one borrower, Xactus takes EITHER one joint order
+                  covering both (a single reference number) OR a separate order per
+                  borrower (a reference each). Both are real — this is the choice. */}
+              {hasMulti && !showUpload && selBorrowers.length > 1 && (
+                <div className="crx-opt">
+                  <label className="crx-opt-label">How to order for {selBorrowers.length} borrowers</label>
+                  <Seg value={orderShape} onChange={setOrderShape} options={[
+                    { value: 'joint', label: 'One joint order', sub: 'One reference #' },
+                    { value: 'separate', label: 'Separate orders', sub: 'A reference # each' },
+                  ]} />
+                  <div className="crx-opt-hint">{orderShape === 'joint'
+                    ? 'One request carrying both borrowers, and one report reference covering them both. PILOT reads each borrower out of the report and gives each their own scores.'
+                    : 'One request per borrower — each is its own report with its own reference number.'}</div>
+                </div>
+              )}
+
               <div className="crx-opt">
                 <label className="crx-opt-label">Order</label>
                 <Seg value={requestType} onChange={setRequestType} options={[
@@ -420,7 +461,17 @@ function CreditImportModal({ appId, onClose, onDone, scopeBorrowerId }) {
                   // made importing the co-borrower on their own impossible.
                   <div className="crx-reissue">
                     {selBorrowers.length === 0 && <div className="crx-opt-hint">Tick a borrower above to enter their reissue reference.</div>}
-                    {selBorrowers.map((bb) => (
+                    {/* A JOINT report has ONE reference number covering both borrowers. */}
+                    {jointJoined ? (
+                      <div className="crx-reissue-row">
+                        <label className="crx-opt-label">Joint report reference #</label>
+                        <input className="crx-input" value={jointRef} onChange={(e) => setJointRef(e.target.value)}
+                          placeholder="Xactus joint report reference" />
+                        <div className="crx-opt-hint">{pre.jointReissueReportId
+                          ? 'Pre-filled from the last joint report on this file — one reference covers both borrowers.'
+                          : 'One reference number for the joint report covering both borrowers. If each borrower has their own report instead, switch to “Separate orders” above.'}</div>
+                      </div>
+                    ) : selBorrowers.map((bb) => (
                       <div key={bb.borrowerId} className="crx-reissue-row">
                         {hasMulti && <label className="crx-opt-label">{bb.name}’s reissue reference #</label>}
                         {!hasMulti && <label className="crx-opt-label">Reissue reference #</label>}
@@ -796,8 +847,11 @@ export function CreditCondition({ appId, canPull, onChanged, fieldKey }) {
       if (out.coConditionClosed) bits.push('both borrowers are now on the one credit condition');
       const tone = (failed.length || pdfOnly.length || out.ficoMismatch || out.ficoUnverified
         || (mergedOut && ((mergedOut.unmatchedInReport || []).length || (mergedOut.unmatchedOnFile || []).length))) ? 'warn' : 'ok';
-      const msg = out.importMode === 'merged' && multi
-        ? `Imported one merged report for ${withData.length} borrowers ✓`
+      if (out.joint && out.joint.reference) bits.push(`joint report ${out.joint.reference}`);
+      const msg = out.importMode === 'joint'
+        ? `Ordered ONE joint report for ${withData.length} borrowers ✓`
+        : out.importMode === 'merged' && multi
+          ? `Imported one merged report for ${withData.length} borrowers ✓`
         : out.importMode === 'separate'
           ? `Imported a separate report for ${withData.length} of ${results.length} borrowers ✓`
           : (multi ? `Imported credit for ${withData.length} of ${results.length} borrowers ✓` : 'Credit report imported successfully ✓');

@@ -159,7 +159,11 @@ assert.strictEqual(t.borrowers[1].liabilities.length, 1, 'RELATIONSHIP arc attri
 assert.strictEqual(t.borrowers[1].liabilities[0].creditor, 'DISCOVER');
 assert.strictEqual(t.borrowers[0].liabilities.length, 0, 'the other party does not get it');
 
-// ── An UNLABELLED score on a merged file is never given to anyone ─────────────
+// ── Two people but NOBODY's scores labelled → read whole-document, and SAY SO ──
+// Splitting here would hand BOTH borrowers a blank score — strictly worse than the
+// plain read. (This is the guard for the live regression of 2026-07-27: a real
+// Xactus 3.4 file repeats one borrower per bureau file, and treating those repeats
+// as separate people blanked a report that plainly had a 573.)
 const AMBIGUOUS = `<?xml version="1.0"?><CREDIT_RESPONSE>
   <BORROWER _ID="B1" _FirstName="Pat" _LastName="Nguyen" _SSN="123121234"/>
   <BORROWER _ID="B2" _FirstName="Robin" _LastName="Nguyen" _SSN="555443333"/>
@@ -167,10 +171,69 @@ const AMBIGUOUS = `<?xml version="1.0"?><CREDIT_RESPONSE>
   <CREDIT_SCORE _Value="700" CreditRepositorySourceType="Experian"/>
 </CREDIT_RESPONSE>`;
 const amb = parseCreditXml(AMBIGUOUS);
-assert.strictEqual(amb.isMerged, true, 'two borrowers named → still a merged file');
-assert.strictEqual(amb.borrowers[0].middleScore, null, 'an unlabelled score is NOT given to borrower 1');
-assert.strictEqual(amb.borrowers[1].middleScore, null, 'an unlabelled score is NOT given to borrower 2');
-assert.strictEqual(amb.mergedUnattributedScores.length, 2, 'the unattributable scores are reported, not guessed');
+assert.strictEqual(amb.isMerged, false, 'unlabelled scores → NOT split per borrower');
+assert.strictEqual(amb.mergedAmbiguous, true, '…but the file is flagged as naming several people');
+assert.deepStrictEqual(amb.mergedBorrowerNames, ['Pat Nguyen', 'Robin Nguyen'], 'and it names them');
+assert.strictEqual(amb.middleScore, 640, 'the whole-document score still reads (lower of two) — never blanked');
+assert.deepStrictEqual(amb.borrowers, [], 'no per-borrower roster is offered when it cannot be trusted');
+
+// ── ONE person written several ways is ONE borrower, not a merged report ──────
+// A real MISMO 3.4 file repeats the borrower once per bureau file (and again at the
+// deal level), sometimes with the name reversed. The scores sit at the document
+// level, so reading those repeats as separate people attributed the scores to
+// NOBODY and blanked the report's middle score (live regression, 2026-07-27).
+const REPEATED = `<?xml version="1.0"?>
+<MESSAGE xmlns:xlink="http://www.w3.org/1999/xlink"><CREDIT_RESPONSE>
+  <CREDIT_FILES>
+    <CREDIT_FILE><PARTY xlink:label="F1">
+      <INDIVIDUAL><NAME><FirstName>PATRICK</FirstName><LastName>KAMARA</LastName></NAME></INDIVIDUAL>
+      <TAXPAYER_IDENTIFIERS><TAXPAYER_IDENTIFIER><TaxpayerIdentifierValue>111228028</TaxpayerIdentifierValue></TAXPAYER_IDENTIFIER></TAXPAYER_IDENTIFIERS>
+      <ROLES><ROLE><BORROWER/></ROLE></ROLES>
+    </PARTY></CREDIT_FILE>
+    <CREDIT_FILE><PARTY xlink:label="F2">
+      <INDIVIDUAL><NAME><FirstName>KAMARA</FirstName><LastName>PATRICK</LastName></NAME></INDIVIDUAL>
+      <TAXPAYER_IDENTIFIERS><TAXPAYER_IDENTIFIER><TaxpayerIdentifierValue>111228028</TaxpayerIdentifierValue></TAXPAYER_IDENTIFIER></TAXPAYER_IDENTIFIERS>
+      <ROLES><ROLE><BORROWER/></ROLE></ROLES>
+    </PARTY></CREDIT_FILE>
+    <CREDIT_FILE><PARTY xlink:label="F3">
+      <INDIVIDUAL><NAME><FirstName>PATRICK</FirstName><LastName>KAMARA</LastName></NAME></INDIVIDUAL>
+      <ROLES><ROLE><BORROWER/></ROLE></ROLES>
+    </PARTY></CREDIT_FILE>
+  </CREDIT_FILES>
+  <PARTIES><PARTY xlink:label="P1">
+    <INDIVIDUAL><NAME><FirstName>PATRICK</FirstName><LastName>KAMARA</LastName></NAME></INDIVIDUAL>
+    <TAXPAYER_IDENTIFIERS><TAXPAYER_IDENTIFIER><TaxpayerIdentifierValue>111228028</TaxpayerIdentifierValue></TAXPAYER_IDENTIFIER></TAXPAYER_IDENTIFIERS>
+    <ROLES><ROLE><BORROWER/></ROLE></ROLES>
+  </PARTY></PARTIES>
+  <CREDIT_SCORES>
+    <CREDIT_SCORE><CREDIT_SCORE_DETAIL>
+      <CreditRepositorySourceType>TransUnion</CreditRepositorySourceType><CreditScoreValue>576</CreditScoreValue>
+    </CREDIT_SCORE_DETAIL></CREDIT_SCORE>
+    <CREDIT_SCORE><CREDIT_SCORE_DETAIL>
+      <CreditRepositorySourceType>Equifax</CreditRepositorySourceType><CreditScoreValue>573</CreditScoreValue>
+    </CREDIT_SCORE_DETAIL></CREDIT_SCORE>
+    <CREDIT_SCORE><CREDIT_SCORE_DETAIL>
+      <CreditRepositorySourceType>Experian</CreditRepositorySourceType><CreditScoreValue>561</CreditScoreValue>
+    </CREDIT_SCORE_DETAIL></CREDIT_SCORE>
+  </CREDIT_SCORES>
+</CREDIT_RESPONSE></MESSAGE>`;
+const rep = parseCreditXml(REPEATED);
+assert.strictEqual(rep.isMerged, false, 'four records of ONE person is not a merged report');
+assert.strictEqual(rep.mergedAmbiguous, false, 'and it is not ambiguous either — there is one borrower');
+assert.strictEqual(rep.middleScore, 573, 'the middle score reads normally (576/573/561 → 573)');
+assert.strictEqual(rep.scores.length, 3, 'all three bureau scores are kept');
+assert.strictEqual(rep.borrower.firstName, 'PATRICK', 'the identity comes off the deal-level party (MISMO 3.x)');
+assert.strictEqual(rep.borrower.ssnLast4, '8028', 'including the SSN last-4 that verifies the FICO write-back');
+
+// The same de-duplication must NOT collapse two genuinely different people who
+// happen to share a surname.
+const TWO_REAL = REPEATED
+  .replace('<FirstName>KAMARA</FirstName><LastName>PATRICK</LastName>', '<FirstName>DENISE</FirstName><LastName>KAMARA</LastName>')
+  .replace(/<TaxpayerIdentifierValue>111228028<\/TaxpayerIdentifierValue>\s*<\/TAXPAYER_IDENTIFIER><\/TAXPAYER_IDENTIFIERS>\s*<ROLES><ROLE><BORROWER\/><\/ROLE><\/ROLES>\s*<\/PARTY><\/CREDIT_FILE>\s*<CREDIT_FILE><PARTY xlink:label="F3">/,
+    '<TaxpayerIdentifierValue>999887777</TaxpayerIdentifierValue></TAXPAYER_IDENTIFIER></TAXPAYER_IDENTIFIERS><ROLES><ROLE><BORROWER/></ROLE></ROLES></PARTY></CREDIT_FILE><CREDIT_FILE><PARTY xlink:label="F3">');
+const two = parseCreditXml(TWO_REAL);
+assert.strictEqual(two.mergedAmbiguous, true, 'two DIFFERENT people (different SSNs) are still recognised as two');
+assert.strictEqual(two.middleScore, 573, '…and their unlabelled scores still read whole-document, never blanked');
 
 // ── A single-borrower report is NOT a merged one (no behaviour change) ────────
 const SINGLE = `<?xml version="1.0"?><CREDIT_RESPONSE>

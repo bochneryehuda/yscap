@@ -151,6 +151,9 @@ async function preview(appId) {
     });
   }
   const primary = shaped[0] || {};
+  // A JOINT order is ONE request with ONE reference covering everybody on it, so a
+  // joint reissue pre-fills from the last reference shared by two borrowers here.
+  const jointPrior = shaped.length > 1 ? await jointPriorReportId(appId) : null;
   // The order ALWAYS defaults to Reissue (owner-directed). On a file's first pull
   // there is no prior reference to pre-fill — the reference field is then empty and
   // the screen guides the user to type it or switch to brand-new (a reissue with no
@@ -160,6 +163,10 @@ async function preview(appId) {
     // and pulls all by default; a per-borrower toggle drops one from this pull.
     borrowers: shaped,
     hasCoBorrower: shaped.length > 1,
+    // With several borrowers the order can go out as ONE joint request (a single
+    // reference covering both) or as a separate request per borrower.
+    jointAvailable: shaped.length > 1,
+    jointReissueReportId: jointPrior,
     // Back-compat single-borrower fields (the primary) — the review card + the
     // gates below still read these.
     borrower: {
@@ -425,6 +432,126 @@ async function importMerged({ file, parsed, borrowers, opts, pullType, requestTy
   };
 }
 
+/**
+ * ONE JOINT ORDER for several borrowers — one request, ONE reference number, both
+ * people on it (Xactus SupplementX 3.4: `CreditRequestType=Joint`, one
+ * CREDIT_REQUEST_DATA, an arc per borrower). The response is a joint report, which
+ * is split per borrower exactly like an uploaded merged file: a report row EACH,
+ * their own scores and FICO, one filed copy of the one document.
+ *
+ * The alternative — a separate order per borrower, each with its OWN reference — is
+ * the loop in importCredit. Which one runs is the caller's choice.
+ */
+async function importJointLive({ file, targets, opts, pullType, requestType, version }) {
+  const bureaus = provider.ALL_BUREAUS;
+  const packets = [];
+  for (const t of targets) {
+    const b = borrowerToSend(t.row, { includeSsn: true });
+    const miss = missingForPull(b);
+    if (miss.length) throw userError(`Can’t order a joint report yet — this file is missing the ${roleWord(t.role)} ${miss.join(', ')}.`);
+    if (!b.ssn) throw userError(`The ${roleWord(t.role)} Social Security number couldn’t be read for this order.`);
+    packets.push(b);
+  }
+
+  // ONE reference for the whole joint report — not one per borrower.
+  let reissueReportId = (opts.jointReissueReportId && String(opts.jointReissueReportId).trim())
+    || (opts.reissueReportId && String(opts.reissueReportId).trim()) || null;
+  if (requestType === 'reissue' && !reissueReportId) reissueReportId = await jointPriorReportId(file.id);
+
+  const res = await provider.pull({
+    borrowers: packets, pullType, requestType, bureaus, version, reissueReportId, loanNumber: file.ys_loan_number,
+  });
+  if (!res.xml && !res.pdfBase64) throw userError('Xactus returned nothing for this joint request.');
+
+  const full = res.xml ? parseCreditXml(res.xml) : emptyParse('no data file returned', res.vendorReportId);
+  if (res.vendorReportId && !full.reportId) full.reportId = res.vendorReportId;
+
+  const roster = targets.map((t) => ({
+    borrowerId: t.borrowerId, role: t.role,
+    firstName: t.row && t.row.first_name, lastName: t.row && t.row.last_name, ssnLast4: t.row && t.row.ssn_last4,
+  }));
+  const matched = full.isMerged ? matchSegments(full.borrowers, roster) : { pairs: [], unmatchedSegments: [], unmatchedBorrowers: roster };
+
+  const results = [];
+  let reuseDocs = null;
+  const filenames = {
+    xml: 'credit-report-joint.xml', pdf: 'credit-report-joint.pdf',
+    xmlLabel: 'Credit report — joint, both borrowers (data)',
+    pdfLabel: 'Credit report — joint, both borrowers',
+  };
+
+  for (const t of targets) {
+    const pair = matched.pairs.find((p) => String(p.borrower.borrowerId) === String(t.borrowerId));
+    // A joint response that PILOT can split gives each borrower their own slice;
+    // one it can't is stored whole for each, with the parse note saying why.
+    const parsed = pair ? sliceForSegment(full, pair.segment) : { ...full };
+    if (!pair && full.isMerged) {
+      parsed.parseError = parsed.parseError || `the joint report does not name ${nameOfRow(t.row, t.role)}`;
+    }
+    const empty = !parsed.parseError && (!parsed.scores || !parsed.scores.length) && (!parsed.liabilities || !parsed.liabilities.length);
+    if (empty) {
+      parsed.parseError = full.rootTag && full.rootTag !== 'CREDIT_RESPONSE'
+        ? `no credit data recognized in the response (it came back as <${full.rootTag}>${full.documentHint ? ` — it said: “${full.documentHint}”` : ''})`
+        : 'no credit data recognized in the response';
+    }
+    try {
+      const stored = await store.storeImport({
+        file,
+        borrower: { id: t.borrowerId, ssn_last4: (t.row && t.row.ssn_last4) || null, isCo: false },
+        parsed, xml: res.xml || null, pdfBase64: res.pdfBase64 || null,
+        request: { pullType, requestType, bureaus, version },
+        actorId: opts.actorId, source: 'api', consentAttested: opts.consent === true,
+        reuseDocs, filenames,
+      });
+      if (!reuseDocs && (stored.xmlDocId || stored.pdfDocId)) {
+        reuseDocs = { xmlDocId: stored.xmlDocId || null, pdfDocId: stored.pdfDocId || null };
+      }
+      results.push({
+        borrowerId: t.borrowerId, role: t.role, name: nameOfRow(t.row, t.role),
+        ok: true, source: 'api',
+        creditReportId: stored.creditReportId,
+        middleScore: parsed.middleScore,
+        ficoWritten: stored.ficoWritten, ficoMismatch: stored.ficoMismatch, ficoUnverified: stored.ficoUnverified,
+        parseError: parsed.parseError || null,
+        hasPdf: !!stored.pdfDocId, hasXml: !!stored.xmlDocId, pdfMissing: !stored.pdfDocId,
+        summary: parsed.summary || null,
+        bureausReturned: parsed.bureausReturned || [],
+        scores: parsed.scores || [],
+        fromMergedReport: pair ? { borrowerName: pair.segment.name, matchedBy: pair.matchedBy, borrowerCount: full.borrowers.length } : null,
+      });
+    } catch (e) {
+      results.push({
+        borrowerId: t.borrowerId, role: t.role, name: nameOfRow(t.row, t.role),
+        ok: false, error: e.userMessage || e.message || 'Could not import for this borrower.',
+      });
+    }
+  }
+
+  return {
+    results,
+    joint: {
+      ordered: true,
+      reference: full.reportId || res.vendorReportId || null,
+      borrowerCount: targets.length,
+      split: matched.pairs.length,
+      unmatchedOnFile: matched.unmatchedBorrowers.map((b) => [b.firstName, b.lastName].filter(Boolean).join(' ') || 'borrower'),
+    },
+  };
+}
+
+// The reference of a prior JOINT report on this file — one reference shared by two
+// or more borrowers is exactly what a joint order produced.
+async function jointPriorReportId(appId) {
+  const r = await db.query(
+    `SELECT vendor_report_id
+       FROM credit_reports
+      WHERE application_id=$1 AND vendor_report_id IS NOT NULL AND status='completed'
+      GROUP BY vendor_report_id
+     HAVING COUNT(DISTINCT borrower_id) > 1
+      ORDER BY MAX(pulled_at) DESC LIMIT 1`, [appId]);
+  return r.rows[0] ? r.rows[0].vendor_report_id : null;
+}
+
 // The per-borrower downloaded files of a SPLIT import ("two separate reports"),
 // normalized and validated against the borrowers actually on the file.
 function normalizeFiles(list, borrowers) {
@@ -493,13 +620,22 @@ async function importCredit(appId, opts = {}) {
   // merged report whether or not anyone ticked a box. `merged:false` forces the old
   // single-borrower behaviour.
   let mergedInfo = null;
+  let jointInfo = null;            // ONE live order covering several borrowers
   let mergedDocument = false;      // one uploaded document imported for several borrowers
   let results = [];
   const singleUpload = !splitFiles.length && isUpload;
+  // A LIVE order for several borrowers can go out ONE of two ways (owner-directed
+  // 2026-07-27): as one JOINT order carrying a single reference number, or as a
+  // separate order per borrower each with its own reference. `joint` is the toggle.
+  const wantJoint = !isUpload && opts.joint === true && targets.length > 1;
   const mergedParse = (singleUpload && opts.merged !== false && typeof opts.xml === 'string' && opts.xml.trim())
     ? parseCreditXml(opts.xml) : null;
 
-  if (mergedParse && mergedParse.isMerged && borrowers.length > 1) {
+  if (wantJoint) {
+    const out = await importJointLive({ file, targets, opts, pullType, requestType, version });
+    results = out.results;
+    jointInfo = out.joint;
+  } else if (mergedParse && mergedParse.isMerged && borrowers.length > 1) {
     const out = await importMerged({ file, parsed: mergedParse, borrowers, opts, pullType, requestType, version });
     results = out.results;
     mergedInfo = out.merged;
@@ -513,6 +649,12 @@ async function importCredit(appId, opts = {}) {
       // plainly when it can't rather than importing something misleading.
       if (borrowers.length < 2) {
         throw userError('This file has only one borrower, so there is nobody to split a merged report between. Import it for that borrower instead.');
+      }
+      if (mergedParse && mergedParse.mergedAmbiguous) {
+        // It names several people but never says whose scores are whose — splitting
+        // it would give both borrowers a blank score.
+        const names = (mergedParse.mergedBorrowerNames || []).filter(Boolean).join(' and ');
+        throw userError(`This file names ${names || 'more than one person'} but doesn’t label whose scores are whose, so it can’t be split between them. Import each borrower’s own report instead (“a separate file for each borrower”).`);
       }
       if (mergedParse && !mergedParse.isMerged && !mergedParse.parseError && (mergedParse.scores || []).length) {
         const who = mergedParse.borrower && [mergedParse.borrower.firstName, mergedParse.borrower.lastName].filter(Boolean).join(' ');
@@ -595,8 +737,10 @@ async function importCredit(appId, opts = {}) {
     // How the file(s) were read: one merged report split between the borrowers, two
     // separate reports imported together, or a single borrower's report.
     merged: mergedInfo,
-    importMode: (mergedInfo || mergedDocument) ? 'merged'
-      : (splitFiles.length > 1 ? 'separate' : (splitFiles.length === 1 ? 'one' : (isUpload ? 'one' : 'live'))),
+    joint: jointInfo,
+    importMode: jointInfo ? 'joint'
+      : ((mergedInfo || mergedDocument) ? 'merged'
+        : (splitFiles.length > 1 ? 'separate' : (splitFiles.length === 1 ? 'one' : (isUpload ? 'one' : 'live')))),
     // Back-compat single-result fields (the primary / first successful pull) so the
     // existing success message keeps working for a single-borrower file.
     creditReportId: primaryResult.creditReportId,
