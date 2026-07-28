@@ -3,8 +3,8 @@ import { Link } from 'react-router-dom';
 import { api } from '../lib/api.js';
 import { fmtDay, dayInputValue } from '../lib/dates.js';
 import { PhoneInput, ZipInput, EmailInput } from './FormattedInputs.jsx';
-import { CITIZENSHIP, MARITAL, CONTACT_TYPE, HOUSING, withCurrent } from '../lib/enums.js';
-import { formatSSN } from '../lib/validators.js';
+import { CITIZENSHIP, MARITAL, CONTACT_TYPE, HOUSING, EMPLOYMENT, withCurrent } from '../lib/enums.js';
+import { formatSSN, cleanFICO, ficoValid } from '../lib/validators.js';
 import { fullNameOf, splitName, rejoin, nameChanged } from '../lib/personName.js';
 
 /* THE BORROWER'S OWN RECORD — editable wherever the person appears
@@ -105,6 +105,7 @@ export function BorrowerProfileForm({ b, onSaved, onCancel }) {
     nameSuffix: b.name_suffix || '',
     email: b.email || '', cellPhone: b.cell_phone || '', contactType: b.contact_type || '',
     maritalStatus: b.marital_status || '', citizenship: b.citizenship || '',
+    fico: b.fico == null ? '' : String(b.fico),
     dob: dayInputValue(b.date_of_birth) || '',
     primaryOfficerId: b.primary_officer_id || '',
     housingStatus: b.housing_status || '', housingPayment: b.housing_payment ?? '',
@@ -115,6 +116,9 @@ export function BorrowerProfileForm({ b, onSaved, onCancel }) {
   }));
 
   async function save(allowSharedEmail = false) {
+    // A FICO that is not a real 3-digit score never leaves the browser — the
+    // server refuses it anyway, and refusing here names the field.
+    if (f.fico !== '' && !ficoValid(f.fico)) { setErr('FICO must be a 3-digit score between 300 and 850.'); return; }
     setBusy(true); setErr('');
     try {
       await api.staffUpdateBorrower(b.id, {
@@ -127,6 +131,11 @@ export function BorrowerProfileForm({ b, onSaved, onCancel }) {
         } : {}),
         email: f.email, cellPhone: f.cellPhone, contactType: f.contactType,
         maritalStatus: f.maritalStatus, citizenship: f.citizenship,
+        // FICO is editable here as of 2026-07-27 (owner-directed: EVERY field on
+        // the borrower section, for every borrower). A credit pull still
+        // overwrites it — this is for the score the team already has on paper,
+        // and for correcting a wrong one. '' clears it; the server range-checks.
+        fico: f.fico,
         // Send the DOB only when it actually changed — setting it applies to
         // the profile AND every linked ClickUp task (audited + journaled).
         ...(f.dob && f.dob !== (dayInputValue(b.date_of_birth) || '') ? { dob: f.dob } : {}),
@@ -197,6 +206,10 @@ export function BorrowerProfileForm({ b, onSaved, onCancel }) {
         <label><span>Date of birth</span><input className="input" type="date" value={f.dob}
           onChange={e => setF({ ...f, dob: e.target.value })}
           title="Saving applies to the borrower profile and every linked ClickUp task (audited)" /></label>
+        <label><span>FICO</span><input className="input" inputMode="numeric" maxLength={3}
+          placeholder="300–850" value={f.fico}
+          onChange={e => setF({ ...f, fico: cleanFICO(e.target.value) })}
+          title="Normally comes from the credit pull — enter it when you have the score before the pull, or to correct a wrong one." /></label>
         <label><span>Primary officer</span>
           <select className="input" value={f.primaryOfficerId} onChange={e => setF({ ...f, primaryOfficerId: e.target.value })}>
             <option value="">—</option>
@@ -236,8 +249,10 @@ export function BorrowerProfileForm({ b, onSaved, onCancel }) {
           <input className="input" inputMode="numeric" value={f.monthsAtResidence}
             onChange={e => setF({ ...f, monthsAtResidence: e.target.value })} /></label>
         <label><span>Employment</span>
-          <input className="input" value={f.employmentType} placeholder="W-2 / 1099 / Self employed"
-            onChange={e => setF({ ...f, employmentType: e.target.value })} /></label>
+          <select className="input" value={f.employmentType} onChange={e => setF({ ...f, employmentType: e.target.value })}
+            title="A two-way ClickUp field — a spelling it cannot translate is dropped from the push in silence, so this is a fixed list.">
+            <option value="">Select…</option>{withCurrent(EMPLOYMENT, f.employmentType).map(c => <option key={c} value={c}>{c}</option>)}
+          </select></label>
         <label><span>Employer</span>
           <input className="input" value={f.employer} onChange={e => setF({ ...f, employer: e.target.value })} /></label>
         <label><span>Dependents</span>
@@ -417,6 +432,7 @@ export default function BorrowerProfilePanel({ borrowerId, heading = 'Borrower p
           <Row k="Cell phone" v={b.cell_phone} />
           <Row k="Date of birth" v={fmtDay(b.date_of_birth)} />
           <BorrowerSsnRow b={b} onChanged={afterSave} />
+          <Row k="FICO" v={b.fico} />
           <Row k="Citizenship" v={b.citizenship} />
           <Row k="Marital status" v={b.marital_status} />
           <Row k="Home address" v={addrLine(b.current_address)} />
