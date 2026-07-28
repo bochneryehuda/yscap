@@ -1,6 +1,7 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { api } from '../lib/api.js';
 import { dealPurchase } from '../lib/dealPrice.js';
+import { onFilesDropped } from '../lib/drop-files.js';
 
 /* THE CLOSING WORKSPACE (owner-directed 2026-07-26). The closer's desk inside a
    loan file: deal details, the actual cash-to-close money gate against verified
@@ -301,15 +302,23 @@ function Tile({ k, v, sub, accent }) {
   return <div className={`cl-tile${accent ? ' accent' : ''}`}><div className="cl-tile-k">{k}</div><div className="cl-tile-v">{v}</div>{sub && <div className="cl-tile-sub muted small">{sub}</div>}</div>;
 }
 
+/* The three closing conditions (HUD / closed package / tracking label). Each row
+   is its own drop target as well as an Upload button — including for a document
+   dragged straight out of the Outlook desktop app, which is what
+   lib/drop-files.js exists to read (owner-directed 2026-07-28). */
 function ConditionsSection({ appId, conditions, isCloser, onPreview, onDownloadDoc, onUploaded, setErr }) {
   const refs = useRef({});
   const [busy, setBusy] = useState('');
-  async function upload(itemId, file) {
-    if (!file) return;
+  const [over, setOver] = useState('');
+  async function upload(itemId, fileList) {
+    const files = Array.from(fileList || []);
+    if (!files.length) return;
     setBusy(itemId);
     try {
-      const dataBase64 = await fileToBase64(file);
-      await api.staffUploadAppDoc(appId, { checklistItemId: itemId, filename: file.name, contentType: file.type || 'application/octet-stream', dataBase64 });
+      for (const file of files) {
+        const dataBase64 = await fileToBase64(file);
+        await api.staffUploadAppDoc(appId, { checklistItemId: itemId, filename: file.name, contentType: file.type || 'application/octet-stream', dataBase64 });
+      }
       await onUploaded();
     } catch (e) { setErr((e && e.message) || 'Upload failed.'); }
     finally { setBusy(''); }
@@ -317,25 +326,33 @@ function ConditionsSection({ appId, conditions, isCloser, onPreview, onDownloadD
   return (
     <div className="panel" style={{ marginBottom: 14 }}>
       <div className="panel-h"><h3 style={{ margin: 0 }}>Closing conditions</h3>
-        <span className="muted small">Upload the balanced final HUD, the closed package, and the tracking label.</span></div>
+        <span className="muted small">Upload the balanced final HUD, the closed package, and the tracking label — or drop the file straight onto the line.</span></div>
       <div className="panel-b">
         {conditions.length === 0 ? <div className="muted small">These appear once the file is submitted to closing.</div>
-          : conditions.map((c) => (
-            <div key={c.id} className="cl-cond">
-              <div className="cl-cond-main">
-                <div><b>{c.label}</b> {c.signed_off_at ? <span className="pill ok">Signed off</span> : c.documents.length ? <span className="pill">Uploaded</span> : <span className="pill warn">Needed</span>}</div>
-                {c.documents.map((d) => (
-                  <button key={d.id} className="btn link small" onClick={() => (onPreview ? onPreview(d) : onDownloadDoc && onDownloadDoc(d))}>{d.filename}</button>
-                ))}
-              </div>
-              {isCloser && (
-                <div>
-                  <input type="file" hidden ref={(el) => { refs.current[c.id] = el; }} onChange={(e) => upload(c.id, e.target.files && e.target.files[0])} />
-                  <button className="btn ghost small" disabled={busy === c.id} onClick={() => refs.current[c.id] && refs.current[c.id].click()}>{busy === c.id ? 'Uploading…' : 'Upload'}</button>
+          : conditions.map((c) => {
+            const drop = isCloser ? {
+              onDragOver: (e) => { e.preventDefault(); if (over !== c.id) setOver(c.id); },
+              onDragLeave: (e) => { if (e.currentTarget === e.target) setOver(''); },
+              onDrop: (e) => { e.preventDefault(); setOver(''); onFilesDropped(e, (files) => upload(c.id, files)); },
+            } : {};
+            return (
+              <div key={c.id} className={`cl-cond${isCloser ? ' cond-drop' : ''}${over === c.id ? ' drop-over' : ''}`} {...drop}>
+                {over === c.id && <div className="drop-hint">Drop file to upload</div>}
+                <div className="cl-cond-main">
+                  <div><b>{c.label}</b> {c.signed_off_at ? <span className="pill ok">Signed off</span> : c.documents.length ? <span className="pill">Uploaded</span> : <span className="pill warn">Needed</span>}</div>
+                  {c.documents.map((d) => (
+                    <button key={d.id} className="btn link small" onClick={() => (onPreview ? onPreview(d) : onDownloadDoc && onDownloadDoc(d))}>{d.filename}</button>
+                  ))}
                 </div>
-              )}
-            </div>
-          ))}
+                {isCloser && (
+                  <div>
+                    <input type="file" hidden multiple ref={(el) => { refs.current[c.id] = el; }} onChange={(e) => upload(c.id, e.target.files)} />
+                    <button className="btn ghost small" disabled={busy === c.id} onClick={() => refs.current[c.id] && refs.current[c.id].click()}>{busy === c.id ? 'Uploading…' : 'Upload'}</button>
+                  </div>
+                )}
+              </div>
+            );
+          })}
       </div>
     </div>
   );
