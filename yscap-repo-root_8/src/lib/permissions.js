@@ -47,6 +47,11 @@ const CAPABILITIES = [
   { key: 'manage_pricing', label: 'Manage company pricing', hint: 'Set company-wide markup, origination and fee defaults for all not-yet-registered files.' },
   { key: 'manage_draws', label: 'Manage construction draws', hint: 'Review draw requests, set approved amounts, approve/amend/reopen draws, and record releases (the Sitewire draw desk).' },
   { key: 'manage_closings', label: 'Manage closings', hint: 'Run the closing workspace: warehouse + collateral tracking, the actual cash-to-close check, HUD/ALTA, checklists, TPR / investor-delivery sign-off, and reconcile (the closer desk).' },
+  // The Purchasing desk (owner-directed 2026-07-26): every file that moved to
+  // purchasing after investor delivery (a table-funded loan is sold at closing and
+  // never lands here). Admins + closers hold it today; an admin can grant it to a
+  // dedicated post-closer per-person from the Team screen.
+  { key: 'manage_purchasing', label: 'Manage purchasing', hint: 'Run the purchasing desk: files outstanding in purchasing after investor delivery, with per-file notes and tasks.' },
   { key: 'waive_conditions', label: 'Waive conditions', hint: 'Waive a condition with a reason instead of clearing it.' },
   { key: 'delete_files', label: 'Delete / restore files', hint: 'Soft-delete a loan file and restore it.' },
   { key: 'manage_vendors', label: 'Manage the vendor directory', hint: 'Title & insurance vendor list.' },
@@ -65,7 +70,7 @@ const CAP_KEYS = CAPABILITIES.map((c) => c.key);
 // too by default but is still a distinct, revocable role.
 const ROLE_DEFAULTS = {
   super_admin: CAP_KEYS.slice(),
-  admin: ['see_all_files', 'review_conditions', 'sign_off_conditions', 'pull_credit', 'manage_conditions', 'manage_pricing', 'manage_draws', 'manage_closings', 'waive_conditions', 'delete_files', 'manage_vendors', 'export_data_tapes', 'manage_team', 'platform_setup', 'view_audit_log'],
+  admin: ['see_all_files', 'review_conditions', 'sign_off_conditions', 'pull_credit', 'manage_conditions', 'manage_pricing', 'manage_draws', 'manage_closings', 'manage_purchasing', 'waive_conditions', 'delete_files', 'manage_vendors', 'export_data_tapes', 'manage_team', 'platform_setup', 'view_audit_log'],
   // Underwriters run per-file conditions + sign-off + waive; the GLOBAL studio
   // (manage_conditions) is admin/software-setup by default but an admin can
   // grant it to a specific underwriter from the Team screen. They also export
@@ -96,7 +101,7 @@ const ROLE_DEFAULTS = {
   // can review + sign off closing conditions on the files handed to them, plus run
   // the closing desk (manage_closings) and pull credit. An admin can widen/narrow
   // per-person from the Team screen.
-  closer: ['see_all_files', 'review_conditions', 'sign_off_conditions', 'pull_credit', 'manage_closings'],
+  closer: ['see_all_files', 'review_conditions', 'sign_off_conditions', 'pull_credit', 'manage_closings', 'manage_purchasing'],
   software_setup: ['manage_conditions', 'platform_setup'],
 };
 

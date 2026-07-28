@@ -401,8 +401,31 @@ function SignoffSection({ appId, cw, rec, isCloser, busy, run }) {
             <SignRow label="TPR signed off" done={!!cw.tpr_signed_off_at} isCloser={isCloser} busy={busy === 'tpr'}
               onSign={(on) => run('tpr', () => api.closingSignOff(appId, 'tpr', on))} />
           </>}
+          {/* TABLE FUNDING sits directly ABOVE the investor-delivery sign-off,
+              because it is the question you answer BEFORE you sign it off: a
+              table-funded loan was sold right at closing, so it skips the
+              purchasing desk entirely. */}
+          <label className="cl-signrow cl-tf">
+            <input type="checkbox" checked={!!cw.table_funded} disabled={!isCloser || busy === 'tf'}
+              onChange={(e) => run('tf', () => api.closingUpdate(appId, { tableFunded: e.target.checked }))} />
+            <span className="cl-tf-main">
+              <b>Table funded — sold at closing</b>
+              <span className="cl-tf-hint">
+                {cw.table_funded
+                  ? 'This loan was sold at closing, so it will not go to purchasing.'
+                  : 'Tick this before you sign off investor delivery if the loan was sold right at closing. Otherwise the file goes to the purchasing desk.'}
+              </span>
+            </span>
+          </label>
           <SignRow label="Investor delivery signed off" done={!!cw.investor_delivery_signed_off_at} isCloser={isCloser} busy={busy === 'inv'}
             onSign={(on) => run('inv', () => api.closingSignOff(appId, 'investor_delivery', on))} />
+          {!!cw.investor_delivery_signed_off_at && (
+            <div className="muted small" style={{ paddingTop: 2 }}>
+              {cw.table_funded
+                ? 'Sold at closing — this file is not on the purchasing desk.'
+                : 'This file is on the purchasing desk.'}
+            </div>
+          )}
         </div>
 
         <div className="cl-recon" style={{ marginTop: 12 }}>

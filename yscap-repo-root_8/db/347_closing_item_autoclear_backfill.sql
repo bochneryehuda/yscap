@@ -28,6 +28,13 @@ WITH cleared AS (
      AND cw.stage = 'in_purchasing'
      AND w.submission_type = 'closing'
      AND w.status IN ('open', 'in_progress')
+     -- Only hand-offs that PREDATE the purchasing hand-off. Every numbered
+     -- migration re-runs on every boot, and `stage` is sticky (openClosing does
+     -- not reset it), so without this a file that was completed and then
+     -- legitimately RE-SUBMITTED to closing would have its NEW live hand-off
+     -- silently cleared on the next deploy. purchasing_at is always stamped
+     -- alongside stage='in_purchasing' by advanceClosing.
+     AND w.received_at <= COALESCE(cw.purchasing_at, now())
   RETURNING w.id, w.application_id, w.from_staff_id, w.submission_type, w.outcome_label
 )
 INSERT INTO workflow_events

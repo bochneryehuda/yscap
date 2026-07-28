@@ -29,6 +29,7 @@ const termOpts = require('../lib/term-options');
 const workflow = require('../lib/workflow');
 const workflowAuto = require('../lib/workflow-automation');
 const closing = require('../lib/closing');
+const purchasing = require('../lib/purchasing');
 const { syncExperienceChecklistForApplication, RECENT_EXIT_SQL, EXIT_DATE_SQL } = require('../lib/experience');
 const { enqueueClickupPush, enqueueChecklistStatusPush } = require('../clickup/enqueue');
 const statusMap = require('../clickup/status');
@@ -8660,10 +8661,11 @@ router.post('/applications/:id/closing-workflow', async (req, res) => {
       await client.query('BEGIN');
       out = await workflow.advanceClosing(client, req.params.id, stage, req.actor.id);
       if (stage === 'fully_reconciled') await client.query(`UPDATE closing_workflow SET reconciled_ok=true WHERE application_id=$1`, [req.params.id]);
-      // COMPLETED (reconciled + investor-delivered → purchasing): the closer is
-      // done, so clear the file off their Workflow automatically. Same transaction
-      // as the stage move, so the queue can never disagree with the stage.
-      if (stage === 'in_purchasing') await workflow.resolveClosingItem(client, req.params.id, req.actor.id);
+      // The closer is done once the file is RECONCILED + investor-delivered — so
+      // clear it off their Workflow automatically, EITHER WAY (table funded = sold
+      // at closing, or handed to purchasing). Same transaction as the stage move,
+      // so the queue can never disagree with the stage. Idempotent.
+      await workflow.maybeFinishClosing(client, req.params.id, req.actor.id);
       await client.query('COMMIT');
     }
     catch (e) { await client.query('ROLLBACK').catch(() => {}); throw e; } finally { client.release(); }
@@ -8740,6 +8742,28 @@ router.patch('/applications/:id/closing', async (req, res) => {
       }
       // Closer-only fields.
       if (isCloser) {
+        // TABLE FUNDING (owner-directed 2026-07-26) — ticked BEFORE the investor
+        // delivery sign-off: the loan is sold right at closing, so it never goes to
+        // the purchasing desk. Turning it ON also pulls the file back out of
+        // purchasing if it is still outstanding there (a completed purchasing
+        // record is history and is left alone).
+        if ('tableFunded' in b) {
+          const tf = b.tableFunded === true;
+          const tfRow = (await client.query(
+            `UPDATE closing_workflow
+                SET table_funded=$2,
+                    table_funded_at = CASE WHEN $2 THEN COALESCE(table_funded_at, now()) ELSE NULL END,
+                    table_funded_by = CASE WHEN $2 THEN $3::uuid ELSE NULL END,
+                    updated_by=$3::uuid, updated_at=now()
+              WHERE application_id=$1
+          RETURNING investor_delivery_signed_off_at`, [appId, tf, req.actor.id])).rows[0];
+          if (tf) await purchasing.withdrawFromPurchasing(client, appId);
+          // Un-ticking it AFTER the delivery sign-off means the loan was NOT sold
+          // at closing after all, so it belongs on the purchasing desk — the same
+          // fork the sign-off route runs, just reached from the other side.
+          else if (tfRow && tfRow.investor_delivery_signed_off_at)
+            await purchasing.enterPurchasing(client, appId, req.actor.id);
+        }
         if ('warehouse' in b) {
           const wh = b.warehouse ? String(b.warehouse) : null;
           if (wh && !closing.WAREHOUSES.includes(wh)) { await client.query('ROLLBACK'); client.release(); return res.status(400).json({ error: 'Unknown warehouse.' }); }
@@ -8827,6 +8851,21 @@ router.post('/applications/:id/closing/sign-off', async (req, res) => {
       await client.query(
         `UPDATE closing_workflow SET ${atCol}=${on ? 'now()' : 'NULL'}, ${byCol}=${on ? '$2' : 'NULL'}, updated_by=$2, updated_at=now() WHERE application_id=$1`,
         [req.params.id, req.actor.id]);
+
+      // INVESTOR DELIVERY is the fork (owner-directed 2026-07-26). Signing it off
+      // sends the file to the PURCHASING desk as "outstanding" — UNLESS the closer
+      // ticked TABLE FUNDING first, which means the loan was sold right at closing
+      // and never needs purchasing. Un-signing pulls it back out (only while it is
+      // still outstanding — a completed purchasing record is history).
+      if (kind === 'investor_delivery') {
+        const cw = (await client.query(
+          `SELECT table_funded FROM closing_workflow WHERE application_id=$1`, [req.params.id])).rows[0];
+        if (on && !(cw && cw.table_funded)) await purchasing.enterPurchasing(client, req.params.id, req.actor.id);
+        if (!on) await purchasing.withdrawFromPurchasing(client, req.params.id);
+      }
+      // Reconciled + investor-delivered = the closer is done; clear the file off
+      // their Workflow either way (table funded or purchasing).
+      await workflow.maybeFinishClosing(client, req.params.id, req.actor.id);
       await client.query('COMMIT');
     } catch (e) { await client.query('ROLLBACK').catch(() => {}); client.release(); throw e; }
     client.release();
@@ -8941,6 +8980,118 @@ router.get('/closing/count', async (req, res) => {
          JOIN applications a ON a.id = cw.application_id AND a.deleted_at IS NULL
         WHERE cw.stage <> 'in_purchasing' ${scope}`, params);
     res.json({ count: r.rows[0].n });
+  } catch (e) { res.status(500).json({ error: 'server error' }); }
+});
+
+// ===========================================================================
+// THE PURCHASING DESK (owner-directed 2026-07-26). Every file that moved to
+// purchasing after investor delivery. A TABLE-FUNDED loan was sold right at
+// closing and never lands here. Admins + closers hold `manage_purchasing`.
+// ===========================================================================
+const purchasingGate = (req, res, next) =>
+  (can(req.actor, 'manage_purchasing') ? next()
+    : res.status(403).json({ error: 'You do not have access to the purchasing desk.' }));
+
+// The queue. ?status=outstanding (default) | complete | all
+router.get('/purchasing', purchasingGate, async (req, res) => {
+  try {
+    const params = [];
+    let scope = '';
+    if (!seesAll(req)) { params.push(req.actor.id); scope = ` AND ${VISIBLE_OFFICERS_SQL('a', '$' + params.length)}`; }
+    let statusClause = ` AND p.status='outstanding'`;
+    if (req.query.status === 'complete') statusClause = ` AND p.status='complete'`;
+    else if (req.query.status === 'all') statusClause = '';
+    const r = await db.query(
+      `SELECT p.application_id AS id, p.status, p.entered_at, p.completed_at,
+              a.ys_loan_number, a.property_address, a.status AS app_status, a.lender, a.funded_date,
+              b.first_name, b.last_name,
+              cw.table_funded, cw.investor_delivery_signed_off_at, cw.stage AS closing_stage,
+              s.full_name AS closer_name,
+              (SELECT count(*)::int FROM purchasing_tasks t
+                WHERE t.application_id = p.application_id AND t.done = false) AS open_tasks,
+              (SELECT count(*)::int FROM purchasing_notes n
+                WHERE n.application_id = p.application_id) AS note_count
+         FROM purchasing_workflow p
+         JOIN applications a ON a.id = p.application_id AND a.deleted_at IS NULL
+         JOIN borrowers b ON b.id = a.borrower_id
+         LEFT JOIN closing_workflow cw ON cw.application_id = p.application_id
+         LEFT JOIN staff_users s ON s.id = a.closer_id
+        WHERE 1=1 ${statusClause} ${scope}
+        ORDER BY p.entered_at DESC`, params);
+    res.json(r.rows);
+  } catch (e) { console.warn('[purchasing] queue error:', db.describeError(e)); res.status(500).json({ error: 'server error' }); }
+});
+
+// Nav badge — files still OUTSTANDING in purchasing.
+router.get('/purchasing/count', purchasingGate, async (req, res) => {
+  try {
+    const params = [];
+    let scope = '';
+    if (!seesAll(req)) { params.push(req.actor.id); scope = ` AND ${VISIBLE_OFFICERS_SQL('a', '$' + params.length)}`; }
+    const r = await db.query(
+      `SELECT count(*)::int AS n FROM purchasing_workflow p
+         JOIN applications a ON a.id = p.application_id AND a.deleted_at IS NULL
+        WHERE p.status='outstanding' ${scope}`, params);
+    res.json({ count: r.rows[0].n });
+  } catch (e) { res.status(500).json({ error: 'server error' }); }
+});
+
+// Per-file purchasing detail (status + notes + tasks). File-scoped by the
+// /applications/:id path middleware.
+router.get('/applications/:id/purchasing', purchasingGate, async (req, res) => {
+  try { res.json(await purchasing.getPurchasingWorkspace(req.params.id)); }
+  catch (e) { console.warn('[purchasing] read error:', db.describeError(e)); res.status(500).json({ error: 'server error' }); }
+});
+
+// Mark the file's purchasing outstanding / complete.
+router.post('/applications/:id/purchasing/status', purchasingGate, async (req, res) => {
+  const status = req.body && req.body.status === 'complete' ? 'complete' : 'outstanding';
+  try {
+    const row = await purchasing.setPurchasingStatus(db, req.params.id, status, req.actor.id);
+    if (!row) return res.status(404).json({ error: 'This file is not in purchasing.' });
+    await audit(req, 'purchasing_status', 'application', req.params.id, { status });
+    res.json({ ok: true, purchasing: row });
+  } catch (e) { res.status(500).json({ error: 'server error' }); }
+});
+
+// Notes — "what you're still missing".
+router.post('/applications/:id/purchasing/notes', purchasingGate, async (req, res) => {
+  const body = req.body && req.body.body;
+  if (!body || !String(body).trim()) return res.status(400).json({ error: 'Write a note first.' });
+  try {
+    await purchasing.addNote(db, req.params.id, String(body).trim(), req.actor.id);
+    res.json({ ok: true, notes: await purchasing.readNotes(req.params.id) });
+  } catch (e) { res.status(500).json({ error: 'server error' }); }
+});
+
+// Tasks.
+router.post('/applications/:id/purchasing/tasks', purchasingGate, async (req, res) => {
+  const label = req.body && req.body.label;
+  if (!label || !String(label).trim()) return res.status(400).json({ error: 'Name the task first.' });
+  try {
+    await purchasing.addTask(db, req.params.id, String(label).trim(), req.actor.id, req.body && req.body.sortOrder);
+    res.json({ ok: true, tasks: await purchasing.readTasks(req.params.id) });
+  } catch (e) { res.status(500).json({ error: 'server error' }); }
+});
+
+router.patch('/applications/:id/purchasing/tasks/:tid', purchasingGate, async (req, res) => {
+  try {
+    // IDOR guard: the task must belong to THIS file.
+    const own = (await db.query(
+      `SELECT id FROM purchasing_tasks WHERE id=$1 AND application_id=$2`, [req.params.tid, req.params.id])).rows[0];
+    if (!own) return res.status(404).json({ error: 'task not found' });
+    await purchasing.setTaskDone(db, req.params.tid, !!(req.body && req.body.done), req.actor.id);
+    res.json({ ok: true, tasks: await purchasing.readTasks(req.params.id) });
+  } catch (e) { res.status(500).json({ error: 'server error' }); }
+});
+
+router.delete('/applications/:id/purchasing/tasks/:tid', purchasingGate, async (req, res) => {
+  try {
+    const own = (await db.query(
+      `SELECT id FROM purchasing_tasks WHERE id=$1 AND application_id=$2`, [req.params.tid, req.params.id])).rows[0];
+    if (!own) return res.status(404).json({ error: 'task not found' });
+    await purchasing.deleteTask(db, req.params.tid);
+    res.json({ ok: true, tasks: await purchasing.readTasks(req.params.id) });
   } catch (e) { res.status(500).json({ error: 'server error' }); }
 });
 

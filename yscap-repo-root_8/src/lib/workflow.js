@@ -289,6 +289,37 @@ async function resolveClosingItem(client, appId, actorId, outcomeLabel) {
 }
 
 // ---------------------------------------------------------------------------
+// IS the closing finished? The closer's work ends when the file is RECONCILED
+// and investor delivery is signed off — "and stuff is reconciled that should go
+// off of the closing workflow EITHER WAY" (owner-directed 2026-07-26): whether
+// the loan was TABLE FUNDED (sold at closing, no purchasing) or handed to the
+// purchasing desk, the closing hand-off is done at that same point.
+//
+// Deliberately NOT reconciled-alone: at that moment the closer still owes the
+// investor-delivery sign-off, and clearing then would take the file off their
+// desk mid-task.
+// ---------------------------------------------------------------------------
+function closingIsFinished(cw) {
+  return !!(cw && cw.fully_reconciled_at && cw.investor_delivery_signed_off_at);
+}
+
+// The ONE chokepoint every closing-completion surface calls (stage advance,
+// investor-delivery sign-off). Clears the closer's hand-off once — and only
+// once — the closing is genuinely finished. Idempotent + safe to call on every
+// closing write.
+async function maybeFinishClosing(client, appId, actorId) {
+  const c = client || db;
+  const cw = (await c.query(
+    `SELECT fully_reconciled_at, investor_delivery_signed_off_at, table_funded
+       FROM closing_workflow WHERE application_id=$1`, [appId])).rows[0];
+  if (!closingIsFinished(cw)) return [];
+  const label = cw.table_funded
+    ? 'Closing complete — table funded (sold at closing)'
+    : 'Closing complete — sent to purchasing';
+  return resolveClosingItem(c, appId, actorId, label);
+}
+
+// ---------------------------------------------------------------------------
 // The personal queue. tab: 'next' (live, ordered) | 'history' (what I did).
 // sort: 'received' (default) | 'priority' | 'aging'. Scoped to a single staffer
 // (routed to me by to_staff_id). The route wraps this — it never leaks another
@@ -512,6 +543,6 @@ module.exports = {
   TYPES, TYPE_KEYS, typeConfig, OUTCOME_LABELS, SLA_HOURS, slaHoursFor,
   candidatesForRole, allActiveStaff,
   conditionsClearedPct, fileLiveItems, fileTimeline,
-  submitItem, pickItem, returnItem, resolveClosingItem, listQueue, listByRole, WORKFLOW_ROLES, queueCounts, overdueByRecipient,
+  submitItem, pickItem, returnItem, resolveClosingItem, maybeFinishClosing, closingIsFinished, listQueue, listByRole, WORKFLOW_ROLES, queueCounts, overdueByRecipient,
   CLOSING_STAGES, getClosing, openClosing, advanceClosing,
 };

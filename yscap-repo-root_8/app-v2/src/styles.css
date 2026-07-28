@@ -3416,3 +3416,25 @@ details[open]>.appr-sec-sum .appr-sec-chev{transform:rotate(180deg)}
 .cond-filter > span{font-size:11px;font-weight:700;letter-spacing:.08em;
   text-transform:uppercase;color:#4B585C}
 .cond-filter .input{width:100%}
+
+/* ── The purchasing desk (owner-directed 2026-07-26) ───────────────────────
+   Every file that moved to purchasing after investor delivery. Text is
+   explicit dark on white — never a --ink* token (those are LIGHT). */
+.pu-detail{padding:12px 10px}
+.pu-cols{display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:14px}
+.pu-col{border:1px solid var(--line);border-radius:var(--radius);padding:10px;background:#FFFFFF}
+.pu-h{font-size:11px;font-weight:700;letter-spacing:.08em;text-transform:uppercase;
+  color:#4B585C;margin-bottom:8px}
+.pu-note{border-bottom:1px solid var(--line);padding:6px 0}
+.pu-note:last-child{border-bottom:none}
+.pu-note-body{color:#141B22;white-space:pre-wrap;word-break:break-word}
+.pu-task{display:flex;gap:8px;align-items:center;padding:4px 0;color:#141B22}
+.pu-task-done{text-decoration:line-through;color:#4B585C}
+/* Table funding — the question the closer answers BEFORE signing off investor
+   delivery. Explicit dark text on white (never an --ink* token, those are LIGHT). */
+/* .cl-signrow is space-between (label left / button right); with only a checkbox
+   and its text here that would shove them to opposite edges. */
+.cl-tf{align-items:flex-start;justify-content:flex-start;gap:9px}
+.cl-tf input{margin-top:3px;flex:0 0 auto}
+.cl-tf-main{display:flex;flex-direction:column;gap:2px;min-width:0;color:#141B22}
+.cl-tf-hint{font-size:12px;color:#4B585C}
