@@ -535,6 +535,10 @@ async function reactDraw(appId, row, prev, { baseline = false, addrText = null }
       applicationId: appId, link: `/app/${appId}`, bccExtra: await drawTeamBcc(),
     }).catch(() => {});
     await archiveReport(appId, row.tp_project_id, tpDrawId).catch(() => {});
+    // Owner-directed 2026-07-27: pull EVERYTHING TrustPoint holds for this draw — the draw
+    // report, the inspection paperwork, and the inspector's photos — the moment we hear about
+    // it. Their links are pre-signed and expire in about a day, so a late pull is a lost one.
+    try { await require('./documents').archiveDrawEverything(tpDrawId); } catch (_) {}
     // §5E: the once-per-draw fee check runs at approval (the NET depends on the fee).
     try { await verifyPartnerFee(appId, row); } catch (_) {}
     // Phase 3 §5A/§6: POST-approval snapshot → per-line derivation → Sitewire write-back.
@@ -615,6 +619,12 @@ async function upsertServiceOrder(appId, so, { baseline = false } = {}) {
     if (!won) return;
     await audit(appId, so.draw_request_id || null, 'service_order', String(so.id), 'completed',
       prev && prev.status, 'COMPLETED', !baseline);
+    // The inspection paperwork + the inspector's photos land WITH the completion, on
+    // pre-signed links that expire in about a day — pull them now, even on a baseline pass
+    // (the documents are worth having whether or not the completion is announced).
+    if (so.draw_request_id) {
+      try { await require('./documents').archiveDrawEverything(String(so.draw_request_id)); } catch (_) {}
+    }
     if (baseline) return;   // history for a project we had not started watching yet
     await notify.notifyAppStaff(appId, {
       type: 'draw_inbound', title: `${so.service_type === 'INSPECTION' ? 'Inspection' : (so.service_type || 'Service order')} completed`,
@@ -739,4 +749,4 @@ async function drainInbox(limit = 50) {
   return { ok, failed, drained: rows.length };
 }
 
-module.exports = { upsertDraw, reactDraw, reactReturned, upsertServiceOrder, hydrateProject, processEvent, drainInbox, archiveReport, linkedAppFor, linkFor, linkToSitewireIntake, mirrorDisbursement, verifyPartnerFee, _drawRow: drawRow, _feeLinesCents: feeLinesCents };
+module.exports = { upsertDraw, reactDraw, reactReturned, upsertServiceOrder, hydrateProject, processEvent, drainInbox, archiveReport, linkedAppFor, linkFor, linkToSitewireIntake, mirrorDisbursement, verifyPartnerFee, _drawRow: drawRow, _feeLinesCents: feeLinesCents, _fetchDocumentBytes: fetchReportBytes, _isTrustpointDocHost: isTrustpointDocHost };
