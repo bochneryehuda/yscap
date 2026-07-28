@@ -4418,6 +4418,25 @@ router.get('/applications/:id/closing-prep', async (req, res) => {
         lastActivityAt: thread.last_activity_at,
         messages: chainMsgs,
         documents: chainDocs,
+        // INBOUND MAIL THAT THE SENDING DOMAIN DID NOT VOUCH FOR (db/366).
+        //
+        // The webhook proves the delivery came from Resend; nothing proved the
+        // SENDER. This address is designed to be broadcast — title, the settlement
+        // agent, the realtor, counsel — so its value travels well beyond us, and
+        // whatever arrives on it is filed as closing correspondence. A spoofed From
+        // carrying wiring instructions would look exactly like the real thing.
+        //
+        // Reported, never blocked: legitimate mail relayed through a list or an
+        // assistant's rule fails SPF routinely, and refusing it would lose real
+        // closing documents. The point is that the person about to open the
+        // attachment sees it FIRST.
+        unauthenticated: (await db.query(
+          `SELECT from_email, subject, occurred_at, sender_auth
+             FROM email_messages
+            WHERE application_id = $1 AND direction = 'inbound'
+              AND sender_auth->>'verdict' = 'fail'
+            -- id breaks the tie so a capped list is stable across reloads.
+            ORDER BY occurred_at DESC, id DESC LIMIT 10`, [appId])).rows,
       } : null,
     });
   } catch (e) { res.status(500).json({ error: 'server error' }); }
@@ -4628,7 +4647,13 @@ router.get('/orders', async (req, res) => {
                                  WHEN 'insurance' THEN 'insurance_order_return'
                                  ELSE 'closing_correspondence' END
          ) dc ON true
-        WHERE o.status <> 'cancelled' ${scopeSql}
+        -- A FINISHED ORDER IS NOT WORK. 'completed' was in the status vocabulary from
+        -- day one but nothing ever wrote it for an attorney order, so every deal that
+        -- ever closed stayed on this desk looking outstanding — which is how a queue
+        -- stops being read. closing-prep.retireClosedOrdersOnce now retires them, and
+        -- this is what makes that visible. Cancelled was already hidden for the same
+        -- reason; the file's own card still shows either state in full.
+        WHERE o.status NOT IN ('cancelled','completed') ${scopeSql}
         ORDER BY (COALESCE(dc.unassigned, 0) > 0) DESC, o.ordered_at DESC NULLS LAST`, params);
     // Group into one row per file with a title + insurance sub-object.
     const byFile = new Map();

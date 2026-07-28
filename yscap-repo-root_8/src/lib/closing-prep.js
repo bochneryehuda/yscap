@@ -975,6 +975,20 @@ function buildAutoEmail(eventKind, data, extra = {}) {
  * cancelled? The one thing that proves an attorney is expecting to hear from us.
  * Fails CLOSED — an unreadable answer must never become an email to outside counsel.
  */
+/**
+ * THE FILE STATUSES ON WHICH THIS DEAL IS OVER — ONE definition, used by the live
+ * gate below AND by the backstop sweep's SQL.
+ *
+ * They must not drift. `announce()` refuses these files, so a sweep that still
+ * SELECTS them keeps re-asking a question whose answer can never change: its
+ * oldest-first `LIMIT` fills with permanently-refused rows and starves the live
+ * file it exists to recover. Keeping the list here means the sweep's WHERE clause
+ * and the gate can only ever agree.
+ */
+const DEAD_DEAL_STATUSES = ['funded', 'declined', 'withdrawn', 'cancelled'];
+/** The same list as a SQL literal, built from the array so the two cannot diverge. */
+const DEAD_DEAL_SQL = `(${DEAD_DEAL_STATUSES.map((s) => `'${s}'`).join(',')})`;
+
 async function attorneyEngaged(applicationId) {
   try {
     const r = await db.query(
@@ -987,7 +1001,7 @@ async function attorneyEngaged(applicationId) {
          -- COALESCEs one in — emailed the law firm "the expected closing date for
          -- this file is now …" weeks after the money moved, on a deal that was
          -- withdrawn, under the closing-prep subject.
-         (SELECT status NOT IN ('funded','declined','withdrawn','cancelled')
+         (SELECT status NOT IN ${DEAD_DEAL_SQL}
             FROM applications WHERE id = $1 AND deleted_at IS NULL)         AS deal_live,
          EXISTS (SELECT 1 FROM file_orders
                   WHERE application_id = $1 AND order_type = 'attorney'
@@ -1058,6 +1072,23 @@ async function mayAnnounce(applicationId) {
  * move back and forth between two candidates while a closing is being scheduled, so
  * the key carries the announcement's ordinal and is unique by construction.
  */
+/**
+ * The expected closing date the FILE holds right now, as 'YYYY-MM-DD'.
+ *
+ * Same COALESCE the backstop sweep uses, so "what the file says" cannot mean two
+ * different things in two places. Returns null when it cannot be read — deliberately
+ * indistinguishable from "no date", because every caller must treat an unknown as a
+ * reason to carry on rather than to go silent.
+ */
+async function currentClosingDay(applicationId) {
+  try {
+    const r = await db.query(
+      `SELECT to_char(COALESCE(expected_closing, est_closing_date), 'YYYY-MM-DD') AS day
+         FROM applications WHERE id = $1 AND deleted_at IS NULL`, [applicationId]);
+    return (r.rows[0] && r.rows[0].day) || null;
+  } catch (_) { return null; }
+}
+
 async function lastClosingDateAnnouncement(threadId) {
   try {
     const r = await db.query(
@@ -1122,6 +1153,27 @@ async function announce({ applicationId, eventKind, dedupeKey, extra = {}, attac
 
   const data = await getClosingPrepData(applicationId).catch(() => null);
   if (!data) return { ok: false, reason: 'no_file' };
+
+  // A STALE DATE MUST NEVER BE THE LAST THING COUNSEL HEARS.
+  //
+  // `prev` above is read outside any lock, so two date changes landing together both
+  // see the same previous announcement, mint DIFFERENT keys (their target days
+  // differ, so the partial unique index cannot collapse them) and both send — in
+  // whichever order the two sends happen to complete. Half the time that leaves the
+  // attorney holding the date the file no longer has.
+  //
+  // Re-reading the file's CURRENT date immediately before the send settles it without
+  // a lock: announce() is always called after the write it is announcing has
+  // committed, so the loser of the race sees the winner's date here and stands down.
+  // The winner matches and sends. Two changes that genuinely happen in sequence still
+  // announce twice, which is correct — the attorney needs to know it moved twice.
+  if (eventKind === 'closing_date') {
+    const day = String((extra && extra.date) || '').slice(0, 10);
+    const now = await currentClosingDay(applicationId);
+    // `null` means we could not read it — do NOT stand down on an unknown, or a
+    // database blip would silently drop a real announcement.
+    if (now && now !== day) return { ok: true, skipped: true, reason: 'superseded' };
+  }
 
   const address = closingThread.addressFor(thread);
   const last = await lastRecipients(thread.id);
@@ -1216,8 +1268,68 @@ async function lastRecipients(threadId) {
   } catch (_) { return { to: [], cc: [] }; }
 }
 
+/**
+ * RETIRE THE ATTORNEY ORDERS ON FILES WHOSE DEAL IS OVER.
+ *
+ * Nothing ever wrote `completed`, so an attorney order stayed on the Orders desk for
+ * the life of the file. Every deal PILOT has ever closed was still sitting there
+ * looking like outstanding work, which is exactly how a desk stops being read.
+ *
+ * `completed` — never `cancelled`. The two are not interchangeable here:
+ * `attorneyEngaged` treats `cancelled` as an explicit STAND-DOWN and reports the
+ * attorney as no longer engaged, which would shut the Follow-up and reply doors on
+ * every funded file. Correspondence with closing counsel AFTER funding is the normal
+ * case (the recorded mortgage, the final title policy, a payoff letter), and that
+ * exact mistake was the round-5 regression. `completed` is outside
+ * ('not_ordered','cancelled'), so a human can still write; only the AUTOMATIC
+ * updates stop, which `mayAnnounce` already handles via the same status list.
+ *
+ * Idempotent (it only moves rows that are still in an active state), bounded, and
+ * never throws — a sweep that can break a boot is worse than a cluttered desk.
+ */
+async function retireClosedOrdersOnce({ limit = 500 } = {}) {
+  try {
+    const r = await db.query(
+      `UPDATE file_orders o
+          SET status = 'completed', updated_at = now(),
+              -- ONCE PER ORDER. A human who deliberately REOPENS a retired order on a
+              -- funded file (there is still work with counsel — a payoff letter, the
+              -- recorded mortgage) must not watch a sweep close it again half an hour
+              -- later. The stamp is what makes the reopen stick; it is deliberately
+              -- separate from status, which the reopen resets.
+              meta = COALESCE(o.meta,'{}'::jsonb) || jsonb_build_object('auto_retired_at', now())
+         FROM applications a
+        WHERE a.id = o.application_id
+          AND o.order_type = 'attorney'
+          -- Only from an ACTIVE state: never revive a cancelled order, never
+          -- re-stamp one that is already completed (that is what makes re-running
+          -- this every tick free).
+          AND o.status IN ('ordered','documents_in')
+          AND NOT (COALESCE(o.meta,'{}'::jsonb) ? 'auto_retired_at')
+          AND a.deleted_at IS NULL
+          AND a.status IN ${DEAD_DEAL_SQL}
+          AND o.id IN (
+            SELECT o2.id FROM file_orders o2
+              JOIN applications a2 ON a2.id = o2.application_id
+             WHERE o2.order_type = 'attorney' AND o2.status IN ('ordered','documents_in')
+               AND NOT (COALESCE(o2.meta,'{}'::jsonb) ? 'auto_retired_at')
+               AND a2.deleted_at IS NULL AND a2.status IN ${DEAD_DEAL_SQL}
+             -- Deterministic under the cap, so a big backlog drains in a stable
+             -- order instead of re-picking an arbitrary slice each tick.
+             ORDER BY o2.updated_at ASC, o2.id ASC
+             LIMIT ${Math.min(2000, Math.max(1, Number(limit) || 500))})
+      RETURNING o.application_id`);
+    if (r.rows.length) console.log(`[closing-prep] retired ${r.rows.length} attorney order(s) on files whose deal is over`);
+    return r.rows.length;
+  } catch (e) {
+    console.error('[closing-prep] could not retire closed attorney orders:', (e && e.message) || e);
+    return 0;
+  }
+}
+
 module.exports = {
-  GROUPS, GROUP_KEYS, AUTO_EVENTS, FROZEN_KINDS,
+  GROUPS, GROUP_KEYS, AUTO_EVENTS, FROZEN_KINDS, DEAD_DEAL_STATUSES, DEAD_DEAL_SQL,
+  retireClosedOrdersOnce,
   SHARE_CONTACT_TYPES, NEVER_SHARE_CONTACT_TYPES, CONTACT_LABEL, CLOSING_PREP_TITLE,
   gatherPackage, groupOf, isFrozenOut, insuranceSlots, buildAttachments, attachBudget,
   attachBudgetRawBytes, predictSkips, encodedLen, attachName,
