@@ -10118,7 +10118,12 @@ router.post('/applications/:id/documents', async (req, res) => {
   }
   // Internal (staff-audience) conditions like Insurance / Title never leak to the
   // borrower: store the document staff-only and skip the borrower notification.
-  const staffOnly = itemAudience === 'staff';
+  // A caller may ask for STAFF-ONLY explicitly — never for borrower-visible. This
+  // is how a document with no staff-audience condition to hang on (the purchase
+  // advice, which names the note buyer and the sale price) can be uploaded
+  // without being borrower-visible for the window before it is designated. The
+  // request can only ever RESTRICT, so no caller can widen a document's reach.
+  const staffOnly = itemAudience === 'staff' || b.staffOnly === true;
   const docVisibility = staffOnly ? 'staff_only' : 'borrower';
   let buf;   // strict decode — a data: prefix / non-base64 junk 400s instead of garbling bytes
   try { ({ buf } = decodeUploadBase64(b.dataBase64)); }

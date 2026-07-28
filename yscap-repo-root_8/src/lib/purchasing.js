@@ -290,12 +290,18 @@ async function readAdvice(appId, client) {
  * permanently, with no undo anywhere in the codebase. */
 async function setPurchaseAdvice(client, appId, patch, actorId) {
   const c = client || db;
-  let prior = null;   // never mutate the caller's patch — see the upsert below
+  let prior = null;      // never mutate the caller's patch — see the upsert below
+  let sameDoc = false;   // is the incoming document the one already pointed at?
   if ('documentId' in patch) {
     if (patch.documentId) {
       const doc = (await c.query(
         `SELECT visibility, doc_kind FROM documents WHERE id=$1 AND application_id=$2`,
         [patch.documentId, appId])).rows[0];
+      // Is this the same document the row already points at? The prior
+      // visibility is a fact about THAT document, so it may only be carried
+      // forward for the same one — see the conflict expression below.
+      const cur = await readAdvice(appId, c);
+      sameDoc = !!(cur && cur.document_id && String(cur.document_id) === String(patch.documentId));
       if (doc && doc.visibility !== 'staff_only') {
         // Record what it was — an admin can use this to undo a mis-pick. Only
         // stamp it when we ACTUALLY changed something, and never overwrite an
@@ -303,10 +309,15 @@ async function setPurchaseAdvice(client, appId, patch, actorId) {
         prior = doc.visibility;
         await c.query(`UPDATE documents SET visibility='staff_only' WHERE id=$1`, [patch.documentId]);
       }
-      // Tag it, so the advice is identifiable afterwards — by the picker, by
-      // db/359, and by anything that must never hand it back.
-      if (doc && doc.doc_kind !== 'purchase_advice')
-        await c.query(`UPDATE documents SET doc_kind='purchase_advice' WHERE id=$1`, [patch.documentId]);
+      // NO doc_kind REWRITE. An earlier cut tagged the document
+      // doc_kind='purchase_advice' to make the advice identifiable. That is
+      // destructive: doc_kind is load-bearing elsewhere, the picker offers every
+      // document on the file, and there is no undo. Mis-pick the executed term
+      // sheet and esign/orchestrate's latestDocument(appId,'term_sheet') stops
+      // finding it — the DocuSign package loses its source — the closer's
+      // quick link empties, and supersede stops matching. Same for credit,
+      // appraisal, title and track-record kinds. db/359 scopes on the advice
+      // POINTER, not on doc_kind, so nothing needed the tag.
     }
     // DELIBERATELY NO AUTOMATIC RESTORE of the outgoing document.
     //
@@ -334,7 +345,12 @@ async function setPurchaseAdvice(client, appId, patch, actorId) {
     // reference is not valid inside VALUES.
     vals.push(prior);
     cols.push(['document_prior_visibility', `$${vals.length}::text`,
-      `COALESCE($${vals.length}::text, purchasing_advice.document_prior_visibility)`]);
+      // Carry the stored value forward ONLY when the pointer is not moving. On a
+      // DIFFERENT document it would be a stale fact about the old one — and the
+      // route writes it into the audit record, so an admin doing the manual undo
+      // from it could set a deliberately-staff-only document back to visible.
+      sameDoc ? `COALESCE($${vals.length}::text, purchasing_advice.document_prior_visibility)`
+        : `$${vals.length}::text`]);
   }
   if (!cols.length) return readAdvice(appId, c);
   vals.push(actorId || null);

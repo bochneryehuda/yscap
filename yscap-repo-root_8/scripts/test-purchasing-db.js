@@ -374,8 +374,18 @@ const uniq = (p) => p + Buffer.from(String(process.pid)).toString('hex') + Math.
         WHERE id=$1 AND visibility='borrower' AND source_type <> 'chat_attachment'`, [leaky.id])).rows[0].n;
     ok(inBorrowerList === 0, 'so it is out of the borrower documents list AND the mentionables list');
 
-    ok((await client.query(`SELECT doc_kind FROM documents WHERE id=$1`, [leaky.id])).rows[0].doc_kind === 'purchase_advice',
-      'and it is tagged as the advice, so nothing can hand it back by accident');
+    // Designation must NOT rewrite doc_kind. An earlier cut did, to make the
+    // advice identifiable — but doc_kind is load-bearing (esign picks the term
+    // sheet by it, quick links and supersede match on it) and the picker offers
+    // every document on the file, with no undo. Mis-picking the executed term
+    // sheet would have emptied the DocuSign package.
+    const ts = (await client.query(
+      `INSERT INTO documents (application_id, filename, content_type, doc_kind, visibility)
+       VALUES ($1,'term-sheet-signed.pdf','application/pdf','term_sheet_signed','borrower') RETURNING id`, [N.appId])).rows[0];
+    await purchasing.setPurchaseAdvice(client, N.appId, { documentId: ts.id }, N.closerId);
+    ok((await client.query(`SELECT doc_kind FROM documents WHERE id=$1`, [ts.id])).rows[0].doc_kind === 'term_sheet_signed',
+      'designating a document NEVER rewrites its doc_kind — a mis-pick cannot empty the e-sign package');
+    await purchasing.setPurchaseAdvice(client, N.appId, { documentId: leaky.id }, N.closerId);
 
     // THE SUPERSEDE CASE — the documented normal workflow: the advice is
     // re-issued post closing and again post purchase. An earlier version of this
@@ -392,10 +402,25 @@ const uniq = (p) => p + Buffer.from(String(process.pid)).toString('hex') + Math.
     ok((await client.query(`SELECT visibility FROM documents WHERE id=$1`, [v2.id])).rows[0].visibility === 'staff_only',
       'and the re-issued advice is hidden too');
 
-    // A repeat designation must not destroy the recorded undo.
+    // A REPEAT designation of the same document must not destroy the recorded
+    // undo by overwriting it with NULL (nothing changed the second time).
     await purchasing.setPurchaseAdvice(client, N.appId, { documentId: v2.id }, N.closerId);
     ok((await purchasing.readAdvice(N.appId, client)).document_prior_visibility === 'borrower',
       're-designating the same document keeps the recorded prior visibility (the undo survives)');
+
+    // The recorded prior visibility is a fact about THE CURRENT document. Moving
+    // to a document that was ALREADY staff-only for its own reasons must not
+    // carry the old value forward — the route writes it into the audit record,
+    // and an admin undoing from a stale 'borrower' would un-hide a document that
+    // was deliberately hidden.
+    const alreadyHidden = (await client.query(
+      `INSERT INTO documents (application_id, filename, content_type, visibility)
+       VALUES ($1,'already-internal.pdf','application/pdf','staff_only') RETURNING id`, [N.appId])).rows[0];
+    await purchasing.setPurchaseAdvice(client, N.appId, { documentId: alreadyHidden.id }, N.closerId);
+    ok((await purchasing.readAdvice(N.appId, client)).document_prior_visibility === null,
+      'pointing at an already-hidden document records NO prior visibility (no stale value carried over)');
+    await purchasing.setPurchaseAdvice(client, N.appId, { documentId: leaky.id }, N.closerId);
+
     await purchasing.setPurchaseAdvice(client, N.appId, { documentId: leaky.id }, N.closerId);
 
     // db/359 does the same for files that already had one (previous AND future).
