@@ -1468,7 +1468,67 @@ async function runDue() {
     // The expiry sweep runs through the business day so a lapsed approval flips
     // within hours (the flip is once-per-row by construction — status change).
     await exceptionExpirySweepOnce().catch((e) => console.error('[digests] exception-expiry', e && e.message));
+    // The closing-chain backstop runs through the business day so a date a
+    // non-announcing door introduced reaches the attorney the same day — and never
+    // at 3am. Its dedupe keys make every re-run a no-op.
+    await closingChainCatchupOnce().catch((e) => console.error('[digests] closing-chain', e && e.message));
   }
+}
+
+/**
+ * CLOSING-CHAIN BACKSTOP (owner-directed 2026-07-28).
+ *
+ * The three automatic closing-chain updates are fired from the doors that make each
+ * fact true — the closing-date route, the workflow hand-off, the ClickUp inbound
+ * sync, the status transition, the e-sign completion. This sweep catches whatever
+ * those doors miss: `product-registration` can introduce a file's FIRST expected
+ * closing date through a COALESCE (it is not a "closing date" route and has no
+ * business announcing one), a door could fail mid-request after the UPDATE
+ * committed, and a door added next year will not know about any of this.
+ *
+ * It is safe to run repeatedly precisely BECAUSE the announcement is claimed under a
+ * dedupe key: a date already announced costs one refused insert. Bounded to files
+ * that HAVE a closing chain, so it touches nothing on the rest of the book.
+ */
+async function closingChainCatchupOnce() {
+  let sent = 0;
+  try {
+    const closingPrep = require('./closing-prep');
+    const rows = (await db.query(
+      `SELECT ct.application_id,
+              to_char(COALESCE(a.expected_closing, a.est_closing_date), 'YYYY-MM-DD') AS day,
+              a.status
+         FROM closing_threads ct
+         JOIN applications a ON a.id = ct.application_id AND a.deleted_at IS NULL
+        WHERE COALESCE(a.expected_closing, a.est_closing_date) IS NOT NULL
+           OR a.status = 'clear_to_close'
+        -- ORDERED because it is CAPPED: the quietest chains come first, so a large
+        -- book can never leave the same tail of files permanently unexamined. A chain
+        -- that actually receives an update has its last_activity_at bumped and moves
+        -- to the back on its own.
+        -- …and it ends on the row's own id, so chains that TIE on both timestamps
+        -- still come back in a stable order rather than an arbitrary one.
+        ORDER BY ct.last_activity_at ASC NULLS FIRST, ct.created_at ASC, ct.id ASC
+        LIMIT 500`)).rows;
+    for (const r of rows) {
+      if (r.day) {
+        const res = await closingPrep.announce({
+          applicationId: r.application_id, eventKind: 'closing_date',
+          dedupeKey: `closing_date:${r.day}`, extra: { date: r.day },
+        }).catch(() => null);
+        if (res && res.ok && !res.skipped) sent += 1;
+      }
+      if (r.status === 'clear_to_close') {
+        const res = await closingPrep.announce({
+          applicationId: r.application_id, eventKind: 'clear_to_close',
+          dedupeKey: 'clear_to_close', extra: { closingDate: r.day || null },
+        }).catch(() => null);
+        if (res && res.ok && !res.skipped) sent += 1;
+      }
+    }
+  } catch (_) { return 0; }
+  if (sent) console.log(`[digests] closing-chain catch-up sent ${sent} update(s)`);
+  return sent;
 }
 
 let started = false;
@@ -1489,5 +1549,5 @@ module.exports = {
   drawFindingsAwaitingBorrowerOnce, drawReleaseOverdueOnce, trustpointUnreleasedOnce, workflowAgingOnce, conditionFreshnessReopenOnce,
   trainingRunOnce, certificateSurveyOnce, autoCommitteeReviewOnce, directSourceSweepOnce, autoReadSweepOnce, unfundedRereadSweepOnce, section1071SweepOnce,
   aiCrossdocSweepOnce, weeklyAdminAiQuestionsOnce, weeklyTopRiskyFilesOnce, weeklyLoAiDigestOnce,
-  qaDeskAuditOnce, exceptionAgingOnce, exceptionExpirySweepOnce,
+  qaDeskAuditOnce, exceptionAgingOnce, exceptionExpirySweepOnce, closingChainCatchupOnce,
 };

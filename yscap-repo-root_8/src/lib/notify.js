@@ -63,6 +63,9 @@ const KICKER_OF = {
   // personal work queue, or a file you submitted was finished + sent back.
   workflow_submitted: 'Workflow', workflow_returned: 'Workflow', workflow_ready: 'Workflow',
   order_docs_in: 'Order documents',
+  // The closing email chain (owner-directed 2026-07-28): documents arrived on the
+  // chain the closing attorney is running.
+  closing_docs_in: 'Closing documents',
   // API Health monitor (owner-directed 2026-07-21): an integration went down or came back.
   integration_alert: 'System health',
   // Finding escalation (owner-directed 2026-07-21): a finding was routed to your workload,
@@ -434,6 +437,10 @@ const CATEGORY_OF = {
   workflow_submitted: 'status_updates', workflow_returned: 'status_updates', workflow_ready: 'status_updates',
   // Orders desk — a staff-facing "documents came back" nudge.
   order_docs_in: 'documents',
+  // The closing chain — documents arrived on it. Passed inAppOnly:true by its one
+  // caller (closing-inbox), because the chain email ITSELF already forwards to every
+  // assignee: emailing again about the same message would be double-notifying.
+  closing_docs_in: 'documents',
   // Finding escalation (owner-directed 2026-07-21) — action-bearing staff events, so
   // NOT added to STAFF_INAPP_TYPES: the reviewer/escalator is emailed (unless muted).
   finding_escalation: 'conditions', finding_escalation_decided: 'conditions',

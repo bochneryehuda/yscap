@@ -337,6 +337,12 @@ const TPR_DOC_SELECT = `
      -- never happen. Keep this list in step with sharepoint-backup.isRegenKind.
      AND COALESCE(d.doc_kind,'') NOT IN ('track_record_html','tpr_export','draw_inspection_report')
      AND COALESCE(d.doc_kind,'') NOT LIKE '%\\_export'
+     -- Closing-chain CORRESPONDENCE (whatever the attorney's chain mailed us) is a
+     -- running record, not a source document, and much of it is drafts and internal
+     -- back-and-forth. It has its own package on the file and its own SharePoint
+     -- folder; the real closing documents reach the investor through the closer's
+     -- own conditions after a human has reviewed them. Never in an investor package.
+     AND COALESCE(d.doc_kind,'') <> 'closing_correspondence'
      -- HARD FREEZE (owner-directed): the Heter Iska — unsigned AND signed — is
      -- NEVER in the TPR export (kept only in-system + on DocuSign). THREE guards:
      --   (a) rtl_cond_iska.tpr_exclude=true (the condition exclusion above),

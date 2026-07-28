@@ -13,6 +13,10 @@ const TYPES = [
   ['realtor', 'Realtor / agent'],
   ['attorney', 'Attorney'],
   ['title_company', 'Title company'],
+  // Added 2026-07-28: the attorney closing-prep email shares the settlement agent's
+  // details, and there was no contact type that meant it. Keep in step with
+  // FILE_CONTACT_TYPES in routes/staff.js and routes/borrower.js.
+  ['settlement_agent', 'Settlement agent'],
   ['insurance_agent', 'Insurance company'],
   ['flood_insurance', 'Flood insurance'],
   ['contractor', 'Contractor'],

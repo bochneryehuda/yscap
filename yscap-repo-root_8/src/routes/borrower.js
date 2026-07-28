@@ -2098,9 +2098,14 @@ router.post('/contacts', async (req, res) => {
   }
   if (b.applicationId) {
     await db.query(
+      // ON CONFLICT names (application_id, service_contact_id) — the unique key that
+      // actually exists. db/078 DROPPED the old (application_id, contact_type) PK to
+      // allow MANY contacts of one type per file, so the previous spec matched no
+      // index and this INSERT raised Postgres 42P10 on every borrower submission of
+      // the title / insurance contact form. Same spec the staff route uses.
       `INSERT INTO application_service_contacts (application_id,service_contact_id,contact_type)
-       VALUES ($1,$2,$3) ON CONFLICT (application_id,contact_type)
-       DO UPDATE SET service_contact_id=EXCLUDED.service_contact_id, created_at=now()`,
+       VALUES ($1,$2,$3) ON CONFLICT (application_id,service_contact_id)
+       DO UPDATE SET contact_type=EXCLUDED.contact_type`,
       [b.applicationId, contactId, type]);
   }
   // Submitting the contact form satisfies its checklist task (moves to review).
@@ -2122,7 +2127,9 @@ router.post('/contacts', async (req, res) => {
 // Any party can add any kind of vendor to a file; contacts live in
 // service_contacts (=> company-wide vendor management) and link to the file via
 // application_service_contacts (MANY per file). Shared across the file.
-const FILE_CONTACT_TYPES = ['realtor', 'attorney', 'title_company', 'insurance_agent', 'flood_insurance', 'contractor', 'appraiser', 'lender', 'escrow', 'other'];
+// Keep in step with the copy in routes/staff.js and the TYPES list in
+// app-v2/src/components/FileContacts.jsx — an unlisted type is coerced to 'other'.
+const FILE_CONTACT_TYPES = ['realtor', 'attorney', 'title_company', 'settlement_agent', 'insurance_agent', 'flood_insurance', 'contractor', 'appraiser', 'lender', 'escrow', 'other'];
 router.get('/applications/:id/file-contacts', async (req, res) => {
   const o = await db.query(`SELECT 1 FROM applications WHERE id=$1 AND (${OWN_FILE_SQL("", "$2")})`, [req.params.id, me(req)]);
   if (!o.rows[0]) return res.status(404).json({ error: 'application not found' });

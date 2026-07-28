@@ -148,6 +148,20 @@ module.exports = {
   // the officer's address isn't exposed. On by default; set CC_LO_ON_BORROWER=0
   // to turn off.
   ccLoanOfficerOnBorrowerEmail: process.env.CC_LO_ON_BORROWER !== '0',
+  // The closing-attorney GROUP inbox the "file ready for closing prep" order is
+  // addressed to (owner-directed 2026-07-28; the same address the rtl_p5_atty
+  // condition has named by hand since db/005). Env-backed rather than a literal
+  // so a firm change is a config edit, not a deploy — set ATTORNEY_GROUP_EMAIL="" to
+  // require an attorney contact on the file instead. A routing address, not a secret.
+  attorneyGroupEmail: (process.env.ATTORNEY_GROUP_EMAIL != null
+    ? process.env.ATTORNEY_GROUP_EMAIL : 'teamag@privatelenderlaw.com').trim().toLowerCase() || null,
+  // Total attachment budget for one closing-prep email. Resend accepts ~40 MB per
+  // message; Microsoft Graph rejects inline attachments over ~3 MB (it needs an
+  // upload session we don't implement), so the Graph budget is deliberately tiny.
+  // Nothing is ever silently dropped — whatever doesn't fit is NAMED in the email
+  // and reported back to the sender.
+  closingAttachBudgetBytes: Math.max(1, Number(process.env.CLOSING_ATTACH_BUDGET_MB || 20)) * 1024 * 1024,
+  closingAttachBudgetGraphBytes: Math.max(1, Number(process.env.CLOSING_ATTACH_BUDGET_GRAPH_MB || 2.5) * 1024 * 1024),
   // #75 external chat guests: the domain a unique per-participant reply-to is
   // built on (e.g. "reply.yscapgroup.com" → chat+<key>@reply.yscapgroup.com).
   // When UNSET, external guests still receive chat emails but with no reply-to,
