@@ -440,7 +440,7 @@ async function mirrorDisbursement(appId, row, { baseline = false, addr = 'the pr
         body: `Your construction draw of ${usd2(shown)} is on its way. Depending on your bank, funds typically take 1–2 business days to arrive.`,
         lines: ['Questions about this draw? Just reply to this email or reach your loan officer.'],
         applicationId: appId, link: `/app/${appId}`, ctaLabel: 'View your draws',
-        bccExtra: await drawTeamBcc(),
+        bccExtra: await drawTeamBcc(appId),
       }).catch(() => {});
     }
     await notify.notifyAppStaff(appId, {
@@ -541,7 +541,7 @@ async function reactDraw(appId, row, prev, { baseline = false, addrText = null }
     await notify.notifyAppBorrowers(appId, {
       type: 'draw', title: `Your draw${drawNo(row)} was approved`,
       body: `Good news — your draw request for ${addr} was approved: ${usd(row.approved_cents)} of the ${usd(row.requested_cents)} you requested. The release is being processed; we'll confirm the exact amount when the funds are sent.`,
-      applicationId: appId, link: `/app/${appId}`, bccExtra: await drawTeamBcc(),
+      applicationId: appId, link: `/app/${appId}`, bccExtra: await drawTeamBcc(appId),
     }).catch(() => {});
     await archiveReport(appId, row.tp_project_id, tpDrawId).catch(() => {});
     // Owner-directed 2026-07-27: pull EVERYTHING TrustPoint holds for this draw — the draw
@@ -582,7 +582,7 @@ async function reactReturned(appId, row, addrText) {
   await notify.notifyAppBorrowers(appId, {
     type: 'draw', title: `Your draw${drawNo(row)} needs attention`,
     body: `Your draw request for ${addr} needs a little more before it can be approved. Your loan team will reach out with exactly what's needed.`,
-    applicationId: appId, link: `/app/${appId}`, bccExtra: await drawTeamBcc(),
+    applicationId: appId, link: `/app/${appId}`, bccExtra: await drawTeamBcc(appId),
   }).catch(() => {});
 }
 
