@@ -52,7 +52,11 @@ const costMeter = require('../ai/cost-meter');
 // The reader generation this build ships. BUMP by 1 whenever a reader/extraction fix ships that
 // needs the whole un-funded book re-read (and say so in the commit). Generation 1 covers the
 // 2026-07-27 findings-cleanup reader fixes (liquidity / credit / appraisal / OFAC+fraud deep reads).
-const REREAD_GENERATION = 1;
+// Generation 2 covers the 2026-07-27 Coretex-file cleanup — the deterministic CHECK fixes that need
+// a re-read to clear stale findings on existing files: co-borrower ID awareness (id-checks /
+// identity-chain / file-view), whitespace-insensitive entity matching (compare.entityMatch), the
+// assignment-fee total-as-fee guard (facts / tieout), and the per-entity bank-finding collapse.
+const REREAD_GENERATION = 2;
 
 const STATE_KEY = 'underwriting_reread_sweep';
 // A small default slice per tick — the sweep is a slow background catch-up, not a race. Bounded so a

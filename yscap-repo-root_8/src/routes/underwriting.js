@@ -1010,6 +1010,29 @@ router.get('/:appId', async (req, res, next) => {
       }
     } catch (_) { /* additive rollup — a failure here never affects the finding list */ }
 
+    // FILE-LEVEL bank-entity dedup (owner-reported 2026-07-27: "the same business account flagged 4
+    // times"). computeBankFindings runs PER STATEMENT, so N statements under the SAME entity each
+    // raise their own bank_business_entity_unverified / bank_account_other_entity — one real issue
+    // shown N times. Collapse the same-holder duplicates to ONE surviving card (the smallest
+    // document_id — a stable identity across re-reads). This is DISPLAY-ONLY: the folded stored rows
+    // are left OPEN, NOT auto-resolved here, because a display-time resolve records nothing in the
+    // durable ledger and the siblings would simply re-open on the next re-read (the rotating-survivor
+    // reappear the ledger exists to prevent). The human's decision on the surviving card is applied
+    // to every folded sibling — and RECORDED in the ledger for each — by the holder cascade in
+    // store.resolveFinding, so one dismiss keeps them all gone across re-reads. Advisory WARNINGS
+    // only: the clear-to-close fatal count (file-review.fileFatalCount, from stored fatals) is
+    // untouched, and every downstream count reads this post-splice list.
+    try {
+      const { resolvedIds } = require('../lib/underwriting/bank-entity-dedup').collapseBankEntityDuplicates(openRaw);
+      if (resolvedIds.length) {
+        const drop = new Set(resolvedIds.map(String));
+        for (let i = openRaw.length - 1; i >= 0; i--) {
+          const f = openRaw[i];
+          if (f && f.id != null && drop.has(String(f.id))) openRaw.splice(i, 1);
+        }
+      }
+    } catch (_) { /* advisory dedup — a failure here never affects the finding list */ }
+
     // ONE finding per real-world ISSUE (owner-reported 2026-07-26: the contract-buyer/vesting
     // mismatch appeared SIX times on one file, the entity-OFAC gap three times).
     //

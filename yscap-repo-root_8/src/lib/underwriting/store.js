@@ -457,6 +457,56 @@ async function resolveFinding(client, { findingId, action, note, value, by } = {
       applicationId: updated.application_id, code: updated.code,
       documentId: updated.document_id, action: v.action, by,
     });
+    // BANK-ENTITY HOLDER CASCADE (owner-reported 2026-07-27, "the same business account flagged 4
+    // times"). The entity-ownership warnings are raised once PER STATEMENT, but they are ONE issue
+    // about ONE account holder, and the desk collapses them to a single surviving card
+    // (bank-entity-dedup). So a decision on that card must apply to EVERY folded sibling — and be
+    // RECORDED in the durable ledger for each — or the un-funded re-read sweep rotates a fresh
+    // survivor back onto the desk (the sibling's own document identity was never settled). Apply the
+    // SAME action to every OTHER open bank-entity finding on the file whose holder matches
+    // (entityMatch, re-spacing aware), mirroring the primary resolve exactly. Best-effort: a failure
+    // here never undoes the resolution the human just made.
+    // SAVEPOINT-wrapped so a transient PG fault on the cascade's own SELECT/UPDATE can NEVER leave the
+    // transaction aborted and silently roll back the primary resolve the human just made (the trap the
+    // whole codebase savepoints these best-effort passes against). The inner fdec.record + mirror close
+    // are already savepoint-safe; this covers the sibling SELECT + UPDATE.
+    try {
+      let csp = false;
+      try { await client.query('SAVEPOINT bank_cascade'); csp = true; } catch (_) { csp = false; }
+      try {
+        const { BANK_ENTITY_CODES } = require('./bank-entity-dedup');
+        const holder = updated.doc_value;
+        if (holder && BANK_ENTITY_CODES.has(updated.code)) {
+          const { entityMatch } = require('./compare');
+          const sibs = await client.query(
+            `SELECT * FROM document_findings
+               WHERE application_id = $1 AND status = 'open' AND code = ANY($2::text[]) AND id <> $3`,
+            [updated.application_id, [...BANK_ENTITY_CODES], updated.id]);
+          for (const s of sibs.rows) {
+            if (entityMatch(holder, s.doc_value) !== true) continue;
+            const sr = await client.query(
+              `UPDATE document_findings
+                  SET status = $2, resolution = $3, resolution_note = $4, resolution_value = $5,
+                      resolved_by = CASE WHEN $6 THEN $7 ELSE resolved_by END,
+                      resolved_at = CASE WHEN $6 THEN now() ELSE resolved_at END
+                WHERE id = $1 AND status = 'open' RETURNING *`,
+              [s.id, status, v.action, note || null, value != null ? String(value) : null, terminal, by || null]);
+            const su = sr.rows[0];
+            if (!su) continue;
+            await fdec.record(client, {
+              applicationId: su.application_id, finding: su, origin: 'document_finding',
+              decision: v.action, suppress: terminal && fdec.suppresses(v.action), note, decidedBy: by || null,
+            });
+            await closeMirroredSuggestions(client, {
+              applicationId: su.application_id, code: su.code, documentId: su.document_id, action: v.action, by,
+            });
+          }
+        }
+        if (csp) await client.query('RELEASE SAVEPOINT bank_cascade').catch(() => {});
+      } catch (_) {
+        if (csp) await client.query('ROLLBACK TO SAVEPOINT bank_cascade').catch(() => {});
+      }
+    } catch (_) { /* holder cascade is best-effort — never undoes the primary resolution */ }
   }
   // Self-training capture (Sovereign 4/4, owner-directed 2026-07-21): every
   // resolve is a labeled example — dismiss = false-positive candidate, grant/
@@ -493,19 +543,32 @@ async function closeMirroredSuggestions(client, { applicationId, code, documentI
   try {
     if (!applicationId || !code) return 0;
     if (!require('./finding-decisions').suppresses(action)) return 0;
-    const r = await client.query(
-      `UPDATE ai_suggestions
-          SET status = 'dismissed',
-              status_reason = COALESCE(status_reason, $4),
-              decided_by_staff_id = COALESCE($5, decided_by_staff_id),
-              decided_at = now()
-        WHERE application_id = $1
-          AND status IN ('open','escalated','marked_important','asked_admin')
-          AND COALESCE(evidence->>'code', proposed_action->'fields'->>'code') = $2
-          AND ($3::uuid IS NULL OR document_id IS NULL OR document_id = $3)`,
-      [applicationId, code, documentId || null,
-       `Closed with the finding on the Document Review desk (${String(action || 'resolved')}).`, by || null]);
-    return r.rowCount || 0;
+    // SAVEPOINT-guarded (matches finding-decisions._guarded): this runs inside the caller's resolve
+    // transaction, so a swallowed PG error on this UPDATE would otherwise leave the transaction
+    // ABORTED and silently roll back the human's resolve on COMMIT — while the API still returns 200.
+    // The savepoint rolls back ONLY this mirror close. Outside a transaction, SAVEPOINT itself errors;
+    // there is nothing to poison, so we fall back to running the statement directly.
+    let sp = false;
+    try { await client.query('SAVEPOINT close_mirror'); sp = true; } catch (_) { sp = false; }
+    try {
+      const r = await client.query(
+        `UPDATE ai_suggestions
+            SET status = 'dismissed',
+                status_reason = COALESCE(status_reason, $4),
+                decided_by_staff_id = COALESCE($5, decided_by_staff_id),
+                decided_at = now()
+          WHERE application_id = $1
+            AND status IN ('open','escalated','marked_important','asked_admin')
+            AND COALESCE(evidence->>'code', proposed_action->'fields'->>'code') = $2
+            AND ($3::uuid IS NULL OR document_id IS NULL OR document_id = $3)`,
+        [applicationId, code, documentId || null,
+         `Closed with the finding on the Document Review desk (${String(action || 'resolved')}).`, by || null]);
+      if (sp) await client.query('RELEASE SAVEPOINT close_mirror').catch(() => {});
+      return r.rowCount || 0;
+    } catch (_) {
+      if (sp) await client.query('ROLLBACK TO SAVEPOINT close_mirror').catch(() => {});
+      return 0;
+    }
   } catch (_) { return 0; }
 }
 
