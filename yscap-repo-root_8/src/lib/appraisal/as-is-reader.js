@@ -55,13 +55,68 @@ const MONEY_TEST = new RegExp(MONEY_SRC);
 const ARV_LINE = /as[\s-]*repaired|as[\s-]*complete|subject[\s-]*to|after[\s-]*repair|upon\s+completion|hypothetical|prospective/i;
 // After-repair synonyms that LABEL the amount that follows them, inside a line that also says "as is".
 const ARV_LABEL = /renovated|stabiliz|as[\s-]*complet|as[\s-]*improv|after\s+renovation|\barv\b/i;
+// A dollar amount can sit beside the words "as is" without being the APPRAISER'S OPINION OF THE
+// SUBJECT'S VALUE: a comparable's sale price ("Comparable 3 sold as is for $430,000"), an asking
+// price, a tax assessment, a rent, an insurance replacement cost. Reading one of those as the As-Is
+// would put a stranger's number on the loan, so the whole line is dropped.
+// `\blist(ed|ing)\b` (not bare "list") so "the list of repairs" is untouched. A reconciliation
+// sentence that happens to mention a listing is dropped too — that is the SAFE direction: the value
+// becomes a candidate a human confirms, instead of an asking price written onto the loan.
+//
+// `site improvement` earns its place the hard way: **`"As-is" Value of Site Improvements` is a
+// PRE-PRINTED line on Fannie Mae Forms 1004 / 1025 / 1073 / 2055.** It is on essentially every
+// appraisal that fills the cost approach, it is labelled "Value", it is a plausible five-figure
+// amount below the ARV, and on a plain 1004 it is frequently the ONLY as-is-labelled money line in
+// the entire report — because the real opinion of value is written "my opinion of the market value
+// … is $430,000", with no "as is" on the line at all. Without this exclusion a $15,000 driveway
+// becomes the property's As-Is. The neighbouring cost-approach terms go with it.
+const NOT_OPINION = /comparable|\bcomp\s*[#\d]|\blist(ed|ing)\b|assess|rent\b|insur|replacement\s+cost|site\s*improvement|depreciat|cost[-\s]*new|reproduction|\b(land|site)\s+value/i;
+// A RATE is not a value. A Form 1025 (2–4 unit) prints per-unit / per-room / per-bedroom figures
+// (`SalesPricePerUnitAmount` and friends), and "As-is value per unit: $150,000" on a 4-family is
+// PLAUSIBLE, is BELOW the ARV, and is not a ten-fold slip — so every other guard passes it, and a
+// quarter of the property's value would be written onto the loan. Dropped whole.
+const PER_UNIT_RATE = /\bper\s+(unit|room|bed(room)?s?|sq(uare)?\s*f(oo)?t|sf|s\.f\.)\b|\/\s*(unit|sf|sq\s*ft)\b/i;
+// A LABELLED hit must read as a statement of VALUE, not as incidental "as is" prose. This is what
+// separates "the 'as is' market value is $430,000" from "…inspected as is; the rehab budget is
+// $85,000". Terser phrasings ("as-is: $430,000") still surface — as a weak candidate that needs the
+// AI or a human to confirm, which is the safe failure direction.
+const VALUE_WORD = /value|opinion|apprais|market|worth|estimat|indicat/i;
+// The MISMO `_CONDITION_OF_APPRAISAL/@_Type` values that say, explicitly, what the appraisal's one
+// headline value MEANS. Anything else (blank, or a spelling the parser does not know) leaves the
+// basis INFERRED — see the guard in step 1 of readAsIs.
+const EXPLICIT_BASIS = /^(AsIs|SubjectToRepairs|SubjectToCompletion|SubjectToInspection)$/i;
 
 function toAmount(tok) {
   const n = Number(String(tok).replace(/[$,\s]/g, ''));
   return Number.isFinite(n) ? n : null;
 }
 
+// A money token immediately preceded by a minus or an opening bracket is a NEGATIVE (an adjustment,
+// a depreciation line) — never a property value. MONEY_SRC carries no sign, so `-$312,500` would
+// otherwise read as a positive 312,500.
+function signedNegative(line, idx) { return /[-(]\s?$/.test(String(line).slice(Math.max(0, idx - 2), idx)); }
+
 function plausible(n) { return n != null && n >= MIN_VALUE && n <= MAX_VALUE; }
+
+/**
+ * The classic OCR digit slip: `$430,000` read as `$43,000` (a dropped zero) or `$4,300,000` (a
+ * doubled one). It is invisible to every other check — the number is plausible, it is below the ARV,
+ * it sits on a properly labelled line — and it is exactly the kind of mistake that must never be
+ * written onto a loan on its own. A candidate that lands within 1% of ANY number we already trust
+ * (the ARV, the purchase price, the file's own As-Is) after being multiplied or divided by 10 or 100
+ * is treated as a misread and can never be CONFIDENT. It is still reported, so a human decides.
+ */
+function scaleSlip(v, refs = []) {
+  for (const raw of refs) {
+    const r = Number(raw);
+    if (!Number.isFinite(r) || r <= 0) continue;
+    if (Math.abs(v - r) <= r * 0.01) continue;            // it simply agrees — not a slip
+    for (const f of [10, 100, 0.1, 0.01]) {
+      if (Math.abs(v * f - r) <= r * 0.01) return true;
+    }
+  }
+  return false;
+}
 
 /**
  * Scan ONE line of text for an As-Is amount.
@@ -83,6 +138,8 @@ function scanLine(raw) {
   // could mine a fabricated value (the same guard extract.js applies to the XML narrative sweep).
   if (tok.index > 0 && /[a-z]/i.test(ln[tok.index - 1])) return null;
   if (ARV_LINE.test(ln)) return null;              // the whole line speaks to the after-repair value
+  if (NOT_OPINION.test(ln)) return null;           // a comp / asking price / assessment / rent — not our subject's value
+  if (PER_UNIT_RATE.test(ln)) return null;         // a per-unit / per-sq-ft RATE, not the property's value
   const asIdx = tok.index, tokEnd = asIdx + tok[0].length;
 
   let best = null, bestDist = Infinity;
@@ -95,6 +152,7 @@ function scanLine(raw) {
     prevEnd = mEnd;
     const n = toAmount(m[0]);
     if (!plausible(n)) continue;
+    if (signedNegative(ln, mi)) continue;
     if (ARV_LABEL.test(pre)) continue;              // this amount is labelled as the after-repair value
     // Prefer the amount that FOLLOWS the token, and heavily penalise one that precedes it.
     const follows = mi >= tokEnd;
@@ -109,7 +167,10 @@ function scanLine(raw) {
       // as-is. A sentence boundary is the honest line, because that is where the subject changes.
       const gap = follows ? ln.slice(tokEnd, mi) : '';
       const sameClause = follows && gap.length <= 80 && !/[.;!?]\s/.test(gap);
-      best = { amount: n, strength: sameClause ? 'labeled' : 'near', snippet: ln.slice(0, 220) };
+      // …and it must read as a statement of VALUE. `ln.slice(0, mi)` (not just the gap) so the word
+      // counts wherever it sits in the clause — "As-Is Value: $X" puts it BEFORE the token.
+      const saysValue = VALUE_WORD.test(ln.slice(0, mi));
+      best = { amount: n, strength: sameClause && saysValue ? 'labeled' : 'near', snippet: ln.slice(0, 220) };
     }
   }
   return best;
@@ -138,6 +199,17 @@ function scanAsIs(text) {
     // Only worth joining when the label is on the first line and the amount is not.
     if (!/as[\s-]*is/i.test(a)) continue;
     if (MONEY_TEST.test(a)) continue;
+    // A STACKED LABEL BLOCK is not a wrap. Layout OCR of a two-column value box routinely emits all
+    // the labels and then all the amounts:
+    //     As Repaired Value / As Is Value / $450,000 / $312,500
+    // Joining blindly pairs "As Is Value" with the ARV's $450,000 — the one outcome this whole
+    // feature exists to prevent, and the ARV ceiling only catches it when the ARV is known (it is
+    // NULL on every straight purchase and on any file whose ARV extraction failed). When the
+    // PREVIOUS line is a rival as-is/after-repair label carrying no money, which amount belongs to
+    // which label is genuinely unknowable from the text — so we do not guess. A section HEADING
+    // ("OPINION OF VALUE") is not a rival label and still allows the wrap.
+    const prev = i > 0 ? String(lines[i - 1] || '').trim() : '';
+    if (prev && !MONEY_TEST.test(prev) && (ARV_LINE.test(prev) || /as[\s-]*is/i.test(prev))) continue;
     const joined = `${a} ${b}`;
     const h = scanLine(joined);
     if (h && h.strength === 'labeled') hits.push({ ...h, strength: 'labeled', snippet: joined.slice(0, 220), line: i, wrapped: true });
@@ -184,6 +256,46 @@ amount). If you cannot find an as-is value, return found=false with value=null a
 // Normalize for a substring check that survives OCR whitespace/line-break noise.
 const squash = (s) => String(s || '').replace(/\s+/g, ' ').trim().toLowerCase();
 
+// The analyzer truncates its input HEAD-FIRST. On a 40-page appraisal that is exactly backwards:
+// the As-Is, when it is not in a labelled box, is a sentence in the RECONCILIATION or the ADDENDUM —
+// at the END of the report (the owner's "a lot of times it's just a note on the appraisal report").
+// Sending the first N characters would drop the very pages we need.
+//
+// So send WINDOWS instead of a prefix: ±1,500 characters around every mention of "as is",
+// "reconcil", "addend", "opinion of value" or "market value", merged where they overlap, in document
+// order, separated by an ellipsis so the model can see the cuts. Better recall AND fewer tokens.
+// A document that already fits is passed through untouched.
+const AI_ANCHORS = /as[\s-]*is|reconcil|addend|opinion\s+of\s+value|market\s+value/gi;
+const AI_WINDOW = 1500;
+
+function aiExcerpt(text, maxChars = 120000) {
+  const s = String(text || '');
+  if (s.length <= maxChars) return s;
+  const spans = [];
+  AI_ANCHORS.lastIndex = 0;
+  let m;
+  while ((m = AI_ANCHORS.exec(s)) !== null) {
+    const from = Math.max(0, m.index - AI_WINDOW);
+    const to = Math.min(s.length, m.index + m[0].length + AI_WINDOW);
+    const last = spans[spans.length - 1];
+    if (last && from <= last[1]) last[1] = Math.max(last[1], to);   // merge overlapping windows
+    else spans.push([from, to]);
+    if (spans.length > 400) break;                                   // pathological input guard
+  }
+  AI_ANCHORS.lastIndex = 0;
+  // No anchor anywhere: the report almost certainly does not state an As-Is at all. Send the TAIL,
+  // not the head — the addendum is where a stray note would be.
+  if (!spans.length) return s.slice(-maxChars);
+  let out = '', used = 0;
+  for (const [a, b] of spans) {
+    const piece = s.slice(a, b);
+    if (used + piece.length > maxChars) break;
+    out += (out ? '\n…\n' : '') + piece;
+    used += piece.length;
+  }
+  return out || s.slice(-maxChars);
+}
+
 /**
  * Ask the analyzer to LOCATE the As-Is, then VERIFY its answer against the OCR text.
  * A value survives only when (a) the quote really appears in the OCR text, and (b) our own
@@ -202,7 +314,7 @@ async function aiLocate(text, deps = {}) {
       system: AI_SYSTEM,
       instructions: AI_INSTRUCTION,
       schema: AI_SCHEMA,
-      ocrText: text,
+      ocrText: aiExcerpt(text),
       ocrCharLimit: 120000,
       maxTokens: 900,
       traceMeta: { opName: 'appraisal-as-is-locate' },
@@ -221,9 +333,13 @@ async function aiLocate(text, deps = {}) {
   if (!needle || needle.length < 8 || !hay.includes(needle)) {
     return { ok: true, found: false, grounded: false, value, quote, reason: 'the AI reader\'s quote could not be found in the report text' };
   }
-  // GROUNDING GATE 2 — our own scanner must read the same As-Is amount out of that quote.
+  // GROUNDING GATE 2 — our own scanner must read the same As-Is amount out of that quote, AS A
+  // LABELLED as-is. A `near` hit is deliberately NOT enough: "The subject sold as is on 05/2019 for
+  // $215,000" is a real sentence, genuinely in the document, that the AI will happily hand back —
+  // and it is the PRIOR SALE PRICE, not today's value. `near` means "an amount sits beside the words
+  // as-is", which is exactly what that sentence is.
   const scan = scanAsIs(quote);
-  const confirmed = scan.labeled.includes(value) || scan.near.includes(value);
+  const confirmed = scan.labeled.includes(value);
   if (!confirmed) {
     return { ok: true, found: false, grounded: false, value, quote, reason: 'the AI reader\'s quote does not read as an as-is value' };
   }
@@ -280,6 +396,8 @@ async function readPdfText({ pdfBuffer, pdfBase64 }, deps = {}) {
  *   xmlAsIs, xmlAsIsConfidence  what extract() already resolved from the MISMO data file
  *   pdfBuffer | pdfBase64       the appraisal report PDF (optional — no PDF just means no step 2/3)
  *   arv                         the appraisal's ARV, when known (sanity ceiling)
+ *   fileAsIs, purchasePrice     the file's own numbers — used for SANITY ONLY (the digit-slip check),
+ *                               never to decide what the appraisal says
  * @param {{ocrRouter?, legacyOcr?, analyzer?}} deps  injectable; defaults are the real modules
  * @returns {Promise<{found:boolean, value:number|null, source:string|null, confidence:string|null,
  *                    confident:boolean, quote:string|null, engine:string|null, candidates:number[],
@@ -294,12 +412,36 @@ async function readAsIs(args = {}, deps = {}) {
   const out = {
     found: false, value: null, source: null, confidence: null, confident: false,
     quote: null, engine: null, candidates: [], reason: null, steps: [],
+    // TRUE only when the READ ITSELF failed and a later attempt could genuinely do better. "The
+    // report has no As-Is" is a settled answer, not a retry.
+    retryable: false,
   };
   const arv = Number.isFinite(Number(args.arv)) && Number(args.arv) > 0 ? Number(args.arv) : null;
 
   // ---- 1. the XML data file ------------------------------------------------
   const xmlVal = Number(args.xmlAsIs);
   if (args.xmlAsIs != null && Number.isFinite(xmlVal) && args.xmlAsIsConfidence === 'definite' && plausible(xmlVal)) {
+    // ONE case has to be held back, and it is the most dangerous number in the whole feature: the
+    // appraisal's HEADLINE value adopted as the As-Is by INFERENCE. A MISMO appraisal has a single
+    // "opinion of value" box; what it MEANS is set by `_CONDITION_OF_APPRAISAL/@_Type` (AsIs vs
+    // SubjectToRepairs/Completion/Inspection). When that enum is missing or unrecognised, extract.js
+    // falls back to inferring the basis from narrative language — and on a renovation appraisal whose
+    // wording it does not recognise, the AFTER-REPAIR value is what would land here marked `definite`.
+    // Writing an ARV into the As-Is would overstate the collateral by the whole rehab, and now that a
+    // confident reading is written in EITHER direction, nothing downstream would catch it.
+    // So: the headline number (`as_is_value === appraised_value`) is trusted only on an EXPLICIT
+    // basis enum. A value MINED FROM THE NARRATIVE is untouched by this — a sentence that literally
+    // says "the as is value is $430,000" needs no enum to be believed.
+    const structural = args.appraisedValue != null && Number.isFinite(Number(args.appraisedValue))
+      && Math.abs(xmlVal - Number(args.appraisedValue)) < 0.005;
+    const explicitBasis = EXPLICIT_BASIS.test(String(args.xmlBasis || '').trim());
+    if (structural && !explicitBasis) {
+      out.steps.push({ step: 'xml', ok: false, value: xmlVal, reason: 'the appraisal does not state whether its headline value is as-is or after-repair' });
+      return {
+        ...out, found: true, value: xmlVal, source: 'xml', confidence: 'low', confident: false, candidates: [xmlVal],
+        reason: 'the appraisal data file does not say whether its value is "as is" or "after repair", so PILOT will not use it on its own',
+      };
+    }
     out.steps.push({ step: 'xml', ok: true, value: xmlVal });
     return { ...out, found: true, value: xmlVal, source: 'xml', confidence: 'definite', confident: true, candidates: [xmlVal] };
   }
@@ -313,21 +455,78 @@ async function readAsIs(args = {}, deps = {}) {
   }
   const read = await readPdfText(args, d);
   if (!read.ok) {
+    // RETRYABLE: the reader was unreachable / errored. The caller must NOT stamp this file as read,
+    // or an OCR outage would drain it out of the "previous AND future" sweep permanently — the same
+    // discipline the comp-split backfill documents ("a TRANSIENT storage hiccup self-heals").
     out.reason = `the appraisal PDF could not be read (${read.reason})`;
+    out.retryable = true;
     out.steps.push({ step: 'pdf', ok: false, reason: read.reason });
     return out;
   }
   out.engine = read.engine;
   out.steps.push({ step: 'pdf', ok: true, engine: read.engine, pageCount: read.pageCount || null, chars: read.text.length });
 
+  // ABSTAIN when the read itself failed. "The reader came back with 40 characters of noise" and "the
+  // report genuinely does not state an As-Is" are completely different messages to an officer: one
+  // means re-scan the PDF, the other means type the value in. Same discipline as
+  // src/lib/underwriting/grounding.js ("a near-empty read is illegible, not proof of absence"), and
+  // calibrated the same way as ocr-router's own `primaryLooksEmpty` — a MEANINGFULLY LARGE document
+  // that produced almost no text clearly failed OCR, while a genuinely tiny one may just be short.
+  const chars = read.text.replace(/\s+/g, '').length;
+  const bytes = args.pdfBuffer ? args.pdfBuffer.length
+    : (args.pdfBase64 ? Math.floor((String(args.pdfBase64).length * 3) / 4) : null);
+  // 24 is grounding.js's own "too little text to judge" floor — reused so the two readers agree
+  // on what counts as illegible. The byte-relative rule below it is what does the real work in
+  // production, where any genuine appraisal read is thousands of characters.
+  if (chars < 24 || (bytes != null && bytes >= 250 * 1024 && chars < 500)) {
+    out.reason = 'the appraisal PDF did not read properly (almost no text came back) — it may be a poor scan, so it needs re-scanning or reading by hand';
+    out.retryable = true;   // a different engine, or the same one on a better day, may do better
+    out.steps.push({ step: 'ctrl_f', ok: false, reason: 'illegible', chars, bytes });
+    return out;
+  }
+
   const scan = scanAsIs(read.text);
-  // Sanity-filter EVERY candidate before it can influence the verdict: an "As-Is" at or above the
-  // ARV is the ARV misread, not an as-is opinion.
-  const ok = (n) => plausible(n) && (arv == null || n < arv);
+  // Sanity-filter EVERY candidate before it can influence the verdict.
+  //  • The ARV CEILING — an "As-Is" at or above the after-repair value is the ARV misread. On a
+  //    CONDO (Form 1073) there is normally no ARV at all, which would silently disarm the single
+  //    most effective guard here, so fall back to the appraisal's own headline value.
+  //  • The APPROACH DECOYS — a subject-to appraisal also prints a cost-approach value, an
+  //    income-approach value and a site (land) value. Every one is a plausible dollar amount on a
+  //    page that says "as is", and the income approach can even sit BELOW the ARV, so the ceiling
+  //    misses it. A candidate that IS one of those figures is the wrong number, not the As-Is.
+  //    Only applied on an after-repair basis: on a straight as-is report the As-Is legitimately
+  //    EQUALS the sales-comparison and appraised value, and vetoing there would break every
+  //    as-is-basis and condo file.
+  const ceiling = arv != null ? arv
+    : (Number(args.appraisedValue) > 0 ? Number(args.appraisedValue) : null);
+  const arvBasis = arv != null || /^SubjectTo/i.test(String(args.xmlBasis || '').trim());
+  const decoys = arvBasis
+    ? [args.valueCostApproach, args.valueIncomeApproach, args.siteValue, args.valueSalesApproach, args.appraisedValue]
+      .map(Number).filter((n) => Number.isFinite(n) && n > 0)
+    : [];
+  const isDecoy = (n) => decoys.some((d) => Math.abs(n - d) <= d * 0.005);
+  //  • A FLOOR relative to what the file already knows. A cost-approach line item, a fee, an
+  //    allowance — any of these can be a plausible five-figure amount on an "as is" line. No
+  //    residential property's as-is value is under 15% of its after-repair value, its purchase price
+  //    or the value already on the file. 15% is deliberately loose: a gut rehab legitimately values
+  //    at 25–40% of ARV, and this must never veto a real one. With no reference at all there is
+  //    nothing to measure against, so the floor simply does not apply.
+  const refs = [ceiling, args.purchasePrice, args.fileAsIs].map(Number).filter((n) => Number.isFinite(n) && n > 0);
+  const floor = refs.length ? Math.max(...refs) * 0.15 : 0;
+  const ok = (n) => plausible(n) && n >= floor && (ceiling == null || n < ceiling) && !isDecoy(n);
   const labeled = scan.labeled.filter(ok);
   const near = scan.near.filter(ok);
   out.candidates = [...new Set([...labeled, ...near])].sort((a, b) => a - b);
   out.steps.push({ step: 'ctrl_f', ok: true, labeled, near, dropped: [...scan.labeled, ...scan.near].filter((n) => !ok(n)) });
+
+  // A candidate that is 10× or 100× off a number we already trust is a misread, not a valuation.
+  // It stays a CANDIDATE (a human may confirm it is real) but can never be written automatically.
+  const slipRefs = [arv, args.fileAsIs, args.purchasePrice];
+  const slipped = (n) => scaleSlip(n, slipRefs);
+  const demote = (v, base) => (slipped(v)
+    ? { ...base, confidence: 'low', confident: false,
+        reason: 'the amount looks like a misread of a number already on the file (out by a factor of ten), so it needs a human' }
+    : base);
 
   const snippetFor = (amount) => {
     const h = scan.hits.find((x) => x.amount === amount);
@@ -345,25 +544,27 @@ async function readAsIs(args = {}, deps = {}) {
     ai = await aiLocate(read.text, d);
     out.steps.push({ step: 'ai', ok: !!(ai && ai.ok), found: !!(ai && ai.found), value: (ai && ai.value) || null, reason: (ai && ai.reason) || null });
     if (ai && ai.found && !ok(ai.value)) {
-      out.steps.push({ step: 'ai_sanity', ok: false, reason: 'the AI reader\'s amount is above the ARV or out of range' });
-      ai = { ...ai, found: false, reason: 'the amount is above the ARV or out of range' };
+      out.steps.push({ step: 'ai_sanity', ok: false, reason: 'the AI reader\'s amount is above the after-repair value, is one of the appraisal\'s other figures, or is out of range' });
+      ai = { ...ai, found: false, reason: 'the amount is above the after-repair value, is one of the appraisal\'s other figures, or is out of range' };
     }
   }
 
   // ---- verdict -------------------------------------------------------------
   if (deterministicClean) {
-    return { ...out, found: true, value: labeled[0], source: 'pdf_text', confidence: 'high', confident: true, quote: snippetFor(labeled[0]) };
+    return demote(labeled[0], { ...out, found: true, value: labeled[0], source: 'pdf_text', confidence: 'high', confident: true, quote: snippetFor(labeled[0]) });
   }
   if (ai && ai.found) {
-    const corroborated = labeled.includes(ai.value) || near.includes(ai.value);
+    // Corroboration means a LABELLED deterministic hit. A `near`-only agreement is two weak signals
+    // pointing at the same weak thing (see gate 2 above) — it stays a candidate for a human.
+    const corroborated = labeled.includes(ai.value);
     // The AI's own quote re-read as a LABELLED as-is by our scanner is itself corroboration — that is
     // the page-break case, where the whole-document line scan could never have seen it.
     const selfLabeled = !!ai.labeled;
     if (corroborated || selfLabeled) {
-      return {
+      return demote(ai.value, {
         ...out, found: true, value: ai.value, source: corroborated ? 'pdf_text' : 'pdf_ai',
         confidence: 'high', confident: true, quote: ai.quote || snippetFor(ai.value),
-      };
+      });
     }
     return {
       ...out, found: true, value: ai.value, source: 'pdf_ai', confidence: 'low', confident: false,
@@ -412,41 +613,58 @@ async function readAsIs(args = {}, deps = {}) {
 /**
  * PURE. Decides whether a reading may be applied to `applications.as_is_value`.
  *
- * The owner's rule (2026-07-28): *"if he's confident that he found that as is value AND the as is
- * value is less than the final purchase price he should overwrite the as is value in the file and
- * post the condition that he REDUCED the asset's value."*
+ * THE RULE IS CONFIDENCE, AND ONLY CONFIDENCE (owner-directed 2026-07-28, correcting the first cut):
+ * *"As long as you're confident you can write it no matter what it was — I just made a mistake when
+ * I said that only if it's a reduction. As long as you're confident you should write it as this
+ * value, and if you're not confident you should always ask in the condition for the loan officer to
+ * look on the appraisal and enter it."*
  *
- * Two guards are ours, and both exist so an automatic write can only ever be the CAUTIOUS direction:
- *   • REDUCTION ONLY — a reading is never written over a HIGHER human value. Writing a bigger As-Is
- *     off a machine read would raise leverage (As-Is drives the As-Is LTV and LTC caps) on the
- *     strength of an OCR pass, which is the opposite of what "he reduced the asset's value" means.
- *     A blank As-Is is still filled — there is nothing to raise.
+ * So a confident reading is written whether it LOWERS or RAISES the file's As-Is, and whether or not
+ * it lands below the purchase price. That is the right rule: the appraisal is the authority on what
+ * the property is worth today, and this is exactly the "replace" action a human was already doing by
+ * hand on the `asis_mismatch` finding. Below-the-purchase-price is still REPORTED (`belowPrice`) —
+ * it is what the condition's wording and the existing `asis_below_price` finding turn on — but it is
+ * no longer a gate on the write.
+ *
+ * What still stops a write is only ever about whether the number can be TRUSTED, or whether anyone
+ * is allowed to write at all — never about which direction it moves:
+ *   • CONFIDENCE — a `definite` data-file value, or a PDF read our own scanner and the AI agree on.
+ *     Anything less is reported to a human and never written. `readAsIs` additionally refuses a value
+ *     at or above the ARV, and one that looks like a ten-fold digit slip of a number already on file.
  *   • THE FILE MUST NOT BE FROZEN — a term-sheet-sent / clear-to-close / funded file has its
  *     economics locked for everyone (src/lib/file-lock.js). PILOT does not get a private door
  *     through that; on a frozen file the reading is recorded and the condition explains it so a
  *     human decides.
+ *   • IT MUST BE A REAL CHANGE — rewriting the value the file already shows would churn the reprice
+ *     trigger for nothing.
  *
- * @returns {{apply:boolean, value:number|null, kind:'reduced'|'filled'|'none', why:string}}
+ * Because ANY change to `as_is_value` reopens Products & Pricing (db/071/072), a RAISE can never
+ * quietly increase a loan: it forces a human to re-register the product on the new number.
+ *
+ * @returns {{apply:boolean, value:number|null, kind:'reduced'|'raised'|'filled'|'none',
+ *            why:string, belowPrice:boolean|null}}
  */
 function decideAsIsApply({ read, fileAsIs, purchasePrice, lockReason = null, autoEnabled = true } = {}) {
-  const none = (why) => ({ apply: false, value: null, kind: 'none', why });
+  const pp = Number(purchasePrice);
+  const priced = Number.isFinite(pp) && pp > 0;
+  const none = (why, belowPrice = null) => ({ apply: false, value: null, kind: 'none', why, belowPrice });
   if (!read || !read.found || read.value == null) return none('no_value');
   if (!autoEnabled) return none('auto_off');
   if (!read.confident) return none('not_confident');
 
   const v = Number(read.value);
   if (!plausible(v)) return none('implausible');
-
-  const pp = Number(purchasePrice);
-  if (!Number.isFinite(pp) || pp <= 0) return none('no_purchase_price');
-  if (!(v < pp)) return none('not_below_price');
+  const belowPrice = priced ? v < pp : null;
 
   const cur = fileAsIs == null || fileAsIs === '' ? null : Number(fileAsIs);
-  if (cur != null && Number.isFinite(cur) && !(v < cur)) return none('not_a_reduction');
+  const has = cur != null && Number.isFinite(cur);
+  // Already agrees — nothing to write. Compared with a cent tolerance because the column is
+  // numeric(14,2) while the reading is a plain JS number.
+  if (has && Math.abs(cur - v) < 0.005) return none('same_value', belowPrice);
 
-  if (lockReason) return none('file_locked');
+  if (lockReason) return none('file_locked', belowPrice);
 
-  return { apply: true, value: v, kind: cur == null ? 'filled' : 'reduced', why: 'ok' };
+  return { apply: true, value: v, kind: !has ? 'filled' : (v < cur ? 'reduced' : 'raised'), why: 'ok', belowPrice };
 }
 
 // ---------------------------------------------------------------------------
@@ -475,23 +693,30 @@ function buildAsIsNote({ read, decision, fileAsIsBefore, purchasePrice } = {}) {
   const quote = r.quote ? ` It was read from: “${String(r.quote).replace(/\s+/g, ' ').trim().slice(0, 220)}”.` : '';
 
   if (dec.apply) {
-    const lead = dec.kind === 'reduced'
-      ? `PILOT lowered the As-Is value on this file from ${money(fileAsIsBefore)} to ${money(dec.value)}.`
-      : `PILOT set the As-Is value on this file to ${money(dec.value)}.`;
-    return `${P}${lead} It read that value from ${where}, and it is below the purchase price of ${money(purchasePrice)}.${quote}`
-      + ' The loan has to be re-priced on the lower value, so the Products & Pricing condition has reopened.'
+    const lead = {
+      reduced: `PILOT LOWERED the As-Is value on this file from ${money(fileAsIsBefore)} to ${money(dec.value)}.`,
+      raised: `PILOT RAISED the As-Is value on this file from ${money(fileAsIsBefore)} to ${money(dec.value)}.`,
+      filled: `PILOT set the As-Is value on this file to ${money(dec.value)}.`,
+    }[dec.kind] || `PILOT set the As-Is value on this file to ${money(dec.value)}.`;
+    // Below the purchase price is the one that needs saying out loud — the borrower would be paying
+    // over the as-is collateral value, and there is a fatal finding on the desk about it.
+    const price = dec.belowPrice === true
+      ? ` That is BELOW the purchase price of ${money(purchasePrice)} — the borrower would be paying more than the property is worth as it stands today, so check the appraisal finding about it.`
+      : (purchasePrice != null ? ` The purchase price on the file is ${money(purchasePrice)}.` : '');
+    return `${P}${lead} It read that value from ${where}.${quote}${price}`
+      + ' The loan has to be re-priced on the new value, so the Products & Pricing condition has reopened — nothing about the loan amount changes until someone re-registers the product.'
       + ' Please re-review this against the appraisal report: if PILOT read it wrong, type the correct As-Is value in the box on this condition and it will replace what PILOT entered.'
       + ' Sign this condition off once you have confirmed the As-Is value is right.';
   }
 
   if (r.found && r.value != null) {
     const why = {
-      not_below_price: `it is not below the purchase price of ${money(purchasePrice)}, so nothing on the file was changed`,
-      not_a_reduction: `the file already shows a lower As-Is value (${money(fileAsIsBefore)}), so nothing was changed`,
+      same_value: 'that is exactly what the file already shows, so nothing needed changing',
       file_locked: 'this file\'s figures are locked (the term sheet has gone out, or the file is clear-to-close / funded), so nothing was changed automatically',
+      appraisal_identity_mismatch: 'this appraisal does not match the property on the file (address, unit count or property type), so nothing was taken from it — sort that out first',
+      human_decided: 'someone has already decided this file\'s As-Is value by hand, so PILOT left it alone — a person\'s decision about this number is final',
       not_confident: 'PILOT is NOT confident enough in that reading to use it, so nothing on the file was changed',
       auto_off: 'the automatic As-Is update is switched off, so nothing on the file was changed',
-      no_purchase_price: 'there is no purchase price on the file to compare it against, so nothing was changed',
       implausible: 'the amount does not look like a property value, so nothing was changed',
       value_changed_underneath: 'the As-Is value on the file changed while PILOT was reading, so it did not overwrite it',
       no_value: 'nothing on the file was changed',
@@ -509,8 +734,19 @@ function buildAsIsNote({ read, decision, fileAsIsBefore, purchasePrice } = {}) {
 
 /** PURE. The per-instance hint (the one-line "what is this condition about") for each state. */
 function buildAsIsHint(decision) {
-  if (decision && decision.apply) {
-    return 'PILOT lowered this file\'s As-Is value from what it read on the appraisal. Re-review it against the report — you can overwrite it here — then sign off.';
+  const d = decision || {};
+  if (d.apply) {
+    const verb = d.kind === 'reduced' ? 'lowered' : (d.kind === 'raised' ? 'raised' : 'set');
+    return `PILOT ${verb} this file's As-Is value from what it read on the appraisal. Re-review it against the report — you can overwrite it here — then sign off.`;
+  }
+  if (d.why === 'file_locked') {
+    return 'PILOT read an As-Is value off the appraisal but this file\'s figures are locked, so it changed nothing. Check the reading and decide.';
+  }
+  if (d.why === 'appraisal_identity_mismatch') {
+    return 'This appraisal does not match the property on the file, so PILOT took nothing from it. Sort out the mismatch, then confirm the As-Is value here.';
+  }
+  if (d.why === 'human_decided') {
+    return 'The As-Is value on this file was decided by hand, so PILOT left it alone. Check what it read against the report, then sign off.';
   }
   return 'PILOT could not confidently read the As-Is value from the appraisal. Read it off the report and enter it here to clear this condition.';
 }

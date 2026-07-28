@@ -9,8 +9,12 @@
  * ./as-is-reader.js — this module is the database half).
  *
  * NON-NEGOTIABLES, all enforced here:
- *   • The write is ONE-DIRECTIONAL. `decideAsIsApply` only ever fills a blank As-Is or LOWERS an
- *     existing one, only below the purchase price, only on a confident reading.
+ *   • CONFIDENCE IS THE RULE. `decideAsIsApply` writes a confident reading in either direction; a
+ *     reading we are not confident in is never written, only reported.
+ *   • A HUMAN'S DECISION IS FINAL. A value someone typed on the condition, or an `asis_mismatch`
+ *     finding they resolved with keep/custom, is never re-litigated by a later read.
+ *   • THE APPRAISAL MUST BE ABOUT THIS PROPERTY. An open fatal address / units / property-type
+ *     finding stops the write — we may be holding a report for someone else's house.
  *   • The FILE FREEZE wins. A term-sheet-sent / clear-to-close / funded file is locked for everyone
  *     (src/lib/file-lock.js); PILOT has no private door through it. On a frozen file the reading is
  *     still recorded and the condition explains it, so a human decides.
@@ -26,6 +30,14 @@ const switches = require('../integrations/switches');
 const { readAsIs, decideAsIsApply, buildAsIsNote, buildAsIsHint } = require('./as-is-reader');
 
 const CONDITION_CODE = 'appraisal_as_is_verify';
+
+// Fed to `decideAsIsApply` as a lock reason when the appraisal may not be describing this property.
+// It reads as a lock because that is exactly what it is: nobody — PILOT least of all — should adopt a
+// number off a report whose address / unit count / property type disagrees with the file.
+const IDENTITY_LOCK = 'this appraisal does not match the property on the file (address, unit count or property type), so nothing was taken from it automatically';
+// Fed the same way when a person has already settled the As-Is by hand. PILOT reports what it read
+// and changes nothing — a human's decision about this number is final.
+const HUMAN_LOCK = 'someone has already decided this file\'s As-Is value by hand, so PILOT did not change it';
 
 const num = (v) => {
   if (v == null || v === '') return null;
@@ -87,8 +99,11 @@ async function retireAnsweredFindings(appId, appliedValue, sourceWord) {
               resolution_note=$3, resolved_at=now()
         WHERE application_id=$1 AND status='open'
           AND (code = 'asis_unreadable'
+               -- Compared NUMERICALLY: appraisal_value is free text and shows up as "312500",
+               -- "$ 312,500" and "312500.00" depending on who wrote it, so a string compare would
+               -- silently leave the fatal finding open after PILOT did exactly what "replace" does.
                OR (code = 'asis_mismatch'
-                   AND replace(replace(coalesce(appraisal_value,''),',',''),'$','') = $2))`,
+                   AND NULLIF(regexp_replace(coalesce(appraisal_value,''), '[^0-9.]', '', 'g'), '')::numeric = $2::numeric))`,
       [appId, String(appliedValue), `PILOT read the As-Is value (${sourceWord}) and applied it to the file — see the "Confirm the As-Is value" condition.`]);
   } catch (e) { console.error('[appraisal] as-is finding retire failed (non-fatal):', e && e.message); }
 }
@@ -109,7 +124,10 @@ async function settleAsIs(appId, opts = {}) {
   if (!appId) return { ran: false, reason: 'no application id' };
   try {
     const appr = (await db.query(
-      `SELECT id, as_is_value, as_is_confidence, arv_value, pdf_document_id, source_xml_document_id
+      `SELECT id, as_is_value, as_is_confidence, arv_value, appraised_value, condition_of_appraisal,
+              value_cost_approach, value_income_approach, value_sales_approach, site_value,
+              as_is_confirmed_value, as_is_confirmed_at,
+              pdf_document_id, source_xml_document_id
          FROM appraisals
         WHERE application_id=$1 AND superseded=false
         ORDER BY imported_at DESC NULLS LAST LIMIT 1`, [appId])).rows[0];
@@ -139,19 +157,96 @@ async function settleAsIs(appId, opts = {}) {
     const read = await readAsIs({
       xmlAsIs: appr.as_is_value, xmlAsIsConfidence: appr.as_is_confidence,
       arv: num(appr.arv_value), pdfBase64, useAi,
+      // What the appraisal's ONE headline value means (AsIs vs SubjectTo…) and what that value is —
+      // together these let the reader refuse to adopt an INFERRED basis, which is the one way an
+      // after-repair value could be written into the As-Is.
+      xmlBasis: appr.condition_of_appraisal, appraisedValue: num(appr.appraised_value),
+      // The appraisal's OTHER figures — on a subject-to report each of these is a plausible dollar
+      // amount printed near "as is" wording, and the income approach can even sit below the ARV.
+      valueCostApproach: num(appr.value_cost_approach), valueIncomeApproach: num(appr.value_income_approach),
+      valueSalesApproach: num(appr.value_sales_approach), siteValue: num(appr.site_value),
+      // SANITY ONLY — the file's own numbers let the reader spot a ten-fold digit slip. They never
+      // influence WHAT the appraisal is read to say.
+      fileAsIs: num(file.as_is_value), purchasePrice: num(file.purchase_price),
     }, opts.deps || {});
 
-    // The file freeze is checked with NO actor — this is PILOT writing, not a person, so it can
-    // never inherit a super-admin's unlock.
+    // The file freeze, checked with NO actor — this is PILOT writing, not a person, so it can never
+    // inherit a super-admin's unlock.
+    //
+    // Deliberately NOT `structuralLockReason`: that helper swallows every error and returns null
+    // ("if we can't read status, don't hard-block"), which is right for a human's edit — a 500 is
+    // worse than a permitted write — and exactly wrong for an unattended writer. A statement timeout
+    // during the boot sweep would make PILOT read a funded, term-sheet-sent file as UNLOCKED and
+    // write to it. Same two halves, composed here so a failed read FAILS CLOSED.
     let lockReason = null;
-    try { lockReason = await require('../file-lock').structuralLockReason(appId, db, {}); }
-    catch (_) { lockReason = 'this file\'s figures could not be confirmed as unlocked'; }
+    try {
+      const FL = require('../file-lock');
+      const row = await FL._internals.lockInputs(appId, db);
+      lockReason = row
+        ? (FL._internals.statusFreezeReason(row, {}) || FL._internals.termSheetFreezeReason(row, {}) || null)
+        : 'this file could not be found to confirm its figures are unlocked';
+    } catch (_) { lockReason = 'this file\'s figures could not be confirmed as unlocked'; }
+
+    // IS THIS APPRAISAL EVEN ABOUT THIS PROPERTY? The desk already raises a FATAL finding when the
+    // appraisal's address, unit count or property type disagrees with the file — every one of which
+    // means we may be holding a report for a different property or a different deal. Adopting a
+    // number off it would put a stranger's valuation on the loan, so no automatic write happens while
+    // one is open. (The As-Is findings themselves — asis_mismatch / asis_below_price — are
+    // deliberately NOT in this list: resolving those is the entire point.) Fails CLOSED: if we cannot
+    // read the findings we do not write.
+    let identityIssue = null;
+    try {
+      const bad = (await db.query(
+        `SELECT code FROM appraisal_findings
+          WHERE application_id=$1 AND status='open' AND severity='fatal'
+            AND code = ANY($2::text[]) LIMIT 1`,
+        [appId, ['address_mismatch', 'units_mismatch', 'property_type_mismatch']])).rows[0];
+      if (bad) identityIssue = bad.code;
+    } catch (_) { identityIssue = 'unknown'; }
+
+    // A HUMAN'S DECISION ABOUT THE As-Is IS FINAL, and PILOT never re-litigates it. Two ways a person
+    // can have already settled this number, and both must win:
+    //   • they TYPED it on the condition (`as_is_confirmed_*`, and the file still shows what they
+    //     typed) — the override path's own promise; without this, the "Read the appraisal again"
+    //     button sitting one control away would overwrite them on the next click;
+    //   • they resolved the `asis_mismatch` finding with KEEP or CUSTOM — an underwriter looking at
+    //     the same two numbers and deciding the file's value stands. Re-reading the same appraisal
+    //     must not quietly undo that, on this file or across the whole book in the boot sweep.
+    // A DISMISS is not in that list on purpose: dismissing a finding sets it aside, it does not
+    // choose a value. Fails CLOSED — an unreadable ledger means we do not write.
+    let humanSettled = null;
+    try {
+      if (appr.as_is_confirmed_at && appr.as_is_confirmed_value != null
+          && file.as_is_value != null
+          && Math.abs(Number(file.as_is_value) - Number(appr.as_is_confirmed_value)) < 0.005) {
+        humanSettled = 'entered_by_hand';
+      } else {
+        const kept = (await db.query(
+          `SELECT 1 FROM appraisal_findings
+            WHERE application_id=$1 AND code='asis_mismatch'
+              AND status IN ('resolved','dismissed') AND resolution IN ('keep','custom') LIMIT 1`,
+          [appId])).rows[0];
+        if (kept) humanSettled = 'finding_resolved_by_hand';
+      }
+    } catch (_) { humanSettled = 'unknown'; }
 
     const fileAsIsBefore = num(file.as_is_value);
     const purchasePrice = num(file.purchase_price);
     const decision = decideAsIsApply({
-      read, fileAsIs: fileAsIsBefore, purchasePrice, lockReason, autoEnabled: autoEnabled(),
+      read, fileAsIs: fileAsIsBefore, purchasePrice,
+      // A human's settled decision and an identity mismatch are both treated exactly like a lock: the
+      // reading is kept and explained, the file is not touched, and a human decides. A human's
+      // decision outranks the identity mismatch — it is the more specific reason.
+      lockReason: lockReason || (humanSettled ? HUMAN_LOCK : null) || (identityIssue ? IDENTITY_LOCK : null),
+      autoEnabled: autoEnabled(),
     });
+    // Relabel ONLY when one of these locks is what actually stopped it. A reading that was already
+    // refused for a better reason (we are not confident in it, the switch is off, the file agrees)
+    // must keep saying so — hiding the real reason behind this one would send a human hunting for a
+    // mismatch that is not what held it up.
+    if (decision.why === 'file_locked' && !lockReason) {
+      decision.why = humanSettled ? 'human_decided' : 'appraisal_identity_mismatch';
+    }
 
     // ---- apply (the owner's rule) ------------------------------------------
     let applied = false;
@@ -184,27 +279,38 @@ async function settleAsIs(appId, opts = {}) {
       await db.query(
         `UPDATE appraisals
             SET as_is_read_value=$2, as_is_read_source=$3, as_is_read_confidence=$4,
-                as_is_read_quote=$5, as_is_read_engine=$6, as_is_read_at=now(), as_is_read_detail=$7,
-                as_is_applied=$8, as_is_applied_value=$9, as_is_file_value_before=$10, as_is_skip_reason=$11
-          WHERE id=$1`,
+                as_is_read_quote=$5, as_is_read_engine=$6, as_is_read_detail=$7,
+                -- Only STAMP a read that reached a verdict. A reader outage is retryable, and
+                -- stamping it would drain this file out of the "previous AND future" sweep forever
+                -- (the sweep selects rows whose as_is_read_at is NULL) — the same self-healing discipline the
+                -- comp-split backfill documents.
+                as_is_read_at = CASE WHEN $12::boolean THEN as_is_read_at ELSE now() END,
+                -- NEVER DOWNGRADE THE APPLIED STAMP. A second read of a file PILOT already wrote
+                -- returns same_value, and blindly writing applied=false here would erase the record
+                -- that undoAppraisalImport relies on to take a PDF-read value back off the loan.
+                as_is_applied           = CASE WHEN $8::boolean THEN true          ELSE as_is_applied END,
+                as_is_applied_value     = CASE WHEN $8::boolean THEN $9::numeric   ELSE as_is_applied_value END,
+                as_is_file_value_before = CASE WHEN $8::boolean THEN $10::numeric  ELSE as_is_file_value_before END,
+                as_is_skip_reason=$11
+          WHERE id=$1 AND superseded=false`,
         [appr.id, read.value, read.source, read.confidence,
          read.quote ? String(read.quote).slice(0, 1000) : null, read.engine,
          JSON.stringify({ steps: read.steps || [], candidates: read.candidates || [], reason: read.reason || null }),
          applied, applied ? decision.value : null, fileAsIsBefore,
-         applied ? null : (decision.why || null)]);
+         applied ? null : (decision.why || null), !!read.retryable]);
     } catch (e) { console.error('[appraisal] as-is read record failed (non-fatal):', e && e.message); }
 
     // ---- the human-facing condition ----------------------------------------
-    // Needed whenever a person still has something to do:
-    //   • PILOT changed the file's As-Is → this condition IS the re-review the owner asked for;
-    //   • the data file never stated a definite As-Is → the historical trigger, preserved exactly,
-    //     so nothing that used to raise this condition stops raising it;
-    //   • PILOT read a value confidently but could NOT act on it (the file is frozen, the automatic
-    //     update is switched off, there is no purchase price to measure against, or the value moved
-    //     underneath us) → a human has to make that call.
-    const xmlDefinite = read.source === 'xml' && read.confidence === 'definite';
-    const NEEDS_HUMAN = new Set(['file_locked', 'auto_off', 'no_purchase_price', 'value_changed_underneath']);
-    const needsCondition = applied || !xmlDefinite || NEEDS_HUMAN.has(decision.why);
+    // The owner's rule, both halves: a write gets a RE-REVIEW, and a reading PILOT is not confident
+    // in must ALWAYS ask a human ("if you're not confident you should always ask in the condition
+    // for the loan officer to look on the appraisal and enter it").
+    //
+    // So the ONLY state with no condition is the settled one: PILOT is confident AND the file already
+    // shows exactly that value — the appraisal and the loan file agree, confirmed from two sides,
+    // with nothing for anyone to do. Everything else raises it, including a confident reading it
+    // could not act on (a frozen file, the switch off, the value moving underneath us).
+    const settled = read.confident && !applied && decision.why === 'same_value';
+    const needsCondition = !settled;
     if (needsCondition && typeof opts.ensureCondition === 'function') {
       try { await opts.ensureCondition(appId); }
       catch (e) { console.error('[appraisal] as-is condition attach failed (non-fatal):', e && e.message); }

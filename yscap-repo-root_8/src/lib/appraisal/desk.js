@@ -50,10 +50,10 @@ async function ensureAppraisalCondition(appId, code) {
  * THE As-Is READ (owner-directed 2026-07-28) — replaces the old advisory-note-only OCR pass.
  *
  * The reader ladder (./as-is-reader.js) resolves the As-Is from the data file first, then the report
- * PDF with the strongest OCR + AI. When it is CONFIDENT and the value is BELOW the purchase price it
- * LOWERS the file's As-Is (never raises one, never on a frozen file) and this condition becomes the
- * human's re-review; when it cannot read one confidently, nothing is filled in and the condition asks
- * an officer to read it off the report and enter it. ./as-is-desk.js owns both halves.
+ * PDF with the strongest OCR + AI. When it is CONFIDENT it writes that value onto the file — lower or
+ * higher — and this condition becomes the human's re-review; when it is not confident, nothing is
+ * filled in and the condition asks an officer to read it off the report and enter it.
+ * ./as-is-desk.js owns both halves.
  *
  * The condition is materialized HERE (this module is the reviewed appraisal-desk condition writer)
  * BEFORE the settle runs, so the settle always has an instance whose note/hint it can refresh — and
@@ -214,8 +214,7 @@ async function runAppraisalImport(args) {
     } catch (_) { /* best-effort: no PDF bytes → no photos, never a hard fail */ }
   }
   // THE As-Is READ runs on EVERY import, not only when the data file was silent (owner-directed
-  // 2026-07-28). Even a definite XML As-Is has to be measured against the purchase price, because
-  // that is what decides whether the file's value has to come down.
+  // 2026-07-28) — a definite XML As-Is still has to be compared with what the file currently says.
   fireAsIsRead(appId, pdfB64, importedBy);
   firePhotoExtraction(out.appraisalId, appId, pdfB64, importedBy);
   fireFloodCheck(out.appraisalId, appId);
@@ -456,9 +455,15 @@ async function undoAppraisalImport(appId, { actor = null } = {}) {
 // Both stamp `as_is_read_at`, which is what drains each row out of the query, so this self-terminates
 // and is safe to run on every boot. Terminal / deleted files are skipped (their As-Is is settled, and
 // the file freeze would refuse the write anyway). Best-effort, never throws.
-const ASIS_SWEEP_STATUSES = ['file_intake', 'new', 'in_review', 'processing', 'underwriting', 'approved', 'clear_to_close', 'on_hold'];
+// Deliberately EARLY-STAGE ONLY. `approved` and `clear_to_close` are excluded because on those files
+// the write would be refused by the freeze anyway, but the CONDITION would still attach — a fresh,
+// required, uncleared item lands in `advancementBlockers` and would block clear-to-close and funding
+// on files that were ready to fund, for a reading nobody asked for. `on_hold` is paused by
+// definition. A file that comes back to life gets read on its next import or on demand.
+const ASIS_SWEEP_STATUSES = ['file_intake', 'new', 'in_review', 'processing', 'underwriting'];
 
-async function backfillAsIsReadsOnce({ freeLimit = 300, pdfLimit = null } = {}) {
+async function backfillAsIsReadsOnce({ freeLimit = null, pdfLimit = null } = {}) {
+  const free = freeLimit == null ? cfg.appraisalAsIsSweepFiles : freeLimit;
   const paid = pdfLimit == null ? cfg.appraisalAsIsBackfillFiles : pdfLimit;
   const out = { free: 0, paid: 0, applied: 0 };
   const sweep = async (definite, limit) => {
@@ -473,7 +478,10 @@ async function backfillAsIsReadsOnce({ freeLimit = 300, pdfLimit = null } = {}) 
             AND a.as_is_read_at IS NULL
             AND app.deleted_at IS NULL
             AND app.status = ANY($2::text[])
-            AND (a.as_is_value IS NOT NULL AND a.as_is_confidence = 'definite') = $3
+            -- COALESCE: with as_is_value set but as_is_confidence NULL the bare expression is SQL
+            -- NULL, which equals neither true nor false, so the row would fall out of BOTH tiers and
+            -- never be swept. The exact three-valued-logic trap CLAUDE.md documents for doc_kind.
+            AND COALESCE(a.as_is_value IS NOT NULL AND a.as_is_confidence = 'definite', false) = $3
           ORDER BY a.imported_at DESC NULLS LAST
           LIMIT $1`, [limit, ASIS_SWEEP_STATUSES, definite])).rows;
     } catch (_) { return; }                       // pre-migration boot: the columns aren't there yet
@@ -485,7 +493,7 @@ async function backfillAsIsReadsOnce({ freeLimit = 300, pdfLimit = null } = {}) 
       } catch (_) { /* per-file best-effort */ }
     }
   };
-  await sweep(true, freeLimit);
+  await sweep(true, free);
   await sweep(false, paid);
   return out;
 }

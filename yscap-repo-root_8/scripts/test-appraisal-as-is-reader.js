@@ -71,6 +71,80 @@ const assert = (c, m) => { console.log(`${c ? 'PASS' : 'FAIL'} ${m}`); if (!c) f
   assert(s.labeled.length === 1 && s.labeled[0] === 430000, 'on a shared line the amount AFTER "as is" wins, never the reno figure');
 }
 
+// A dollar amount can sit beside "as is" without being the appraiser's opinion of OUR subject.
+// Writing one of these onto the loan would put a stranger's number on the file — now that a
+// confident read is written in EITHER direction, these must never even be candidates.
+{
+  assert(R.scanAsIs('Comparable 3 sold as is for a value of $430,000').hits.length === 0, "a COMPARABLE's as-is sale price is not the subject's as-is value");
+  assert(R.scanAsIs('Comp #2 as is market value $412,000').hits.length === 0, 'a comp line is dropped whole');
+  assert(R.scanAsIs('The subject is currently listed as is at a price of $455,000').hits.length === 0, 'an asking / listing price is not an opinion of value');
+  assert(R.scanAsIs('Tax assessed value as is: $180,000').hits.length === 0, 'a tax assessment is not the appraiser’s opinion');
+  assert(R.scanAsIs('Annual rent as is, market value $48,000').hits.length === 0, 'a rent figure is not a property value');
+  assert(R.scanAsIs('Insurable replacement cost as is value $390,000').hits.length === 0, 'an insurance replacement cost is not a market value');
+}
+
+// THE PRE-PRINTED FORM LINE. `"As-is" Value of Site Improvements` is printed on Fannie Mae Forms
+// 1004 / 1025 / 1073 / 2055 and is filled on essentially every appraisal with a cost approach. It is
+// labelled "Value", it is a plausible amount below the ARV — and on a plain 1004 it is often the ONLY
+// as-is-labelled money line in the whole report, because the real opinion of value is written "my
+// opinion of the market value … is $430,000" with no "as is" on the line at all. Unguarded, a
+// driveway becomes the property's As-Is.
+{
+  for (const line of [
+    '"As-is" Value of Site Improvements ....... = $15,000',
+    '"As-is" Value of Site Improvements: $15,000',
+    'As-is Value of Site Improvements  $15,000',
+    'Depreciated Cost of Improvements as is $185,000',
+    'Estimated Reproduction Cost-New as is $340,000',
+  ]) {
+    assert(R.scanAsIs(line).hits.length === 0, `the pre-printed cost-approach line is never a candidate: ${line.slice(0, 42)}…`);
+  }
+  assert(R.scanAsIs('As Is Land Value: $150,000').hits.length === 0, 'a LAND value is not the property’s as-is value');
+  assert(R.scanAsIs('As-Is Site Value $95,000').hits.length === 0, 'a SITE value is not the property’s as-is value');
+}
+
+// A per-something RATE on a 2-4 unit is a quarter of the property's value and passes every other
+// guard — plausible, below the ARV, not a ten-fold slip.
+{
+  assert(R.scanAsIs('As-is value per unit: $150,000').hits.length === 0, 'a per-UNIT rate is never a candidate');
+  assert(R.scanAsIs('As is market value per square foot $185,000').hits.length === 0, 'a per-square-foot rate is never a candidate');
+  assert(R.scanAsIs('As-is value / unit $150,000').hits.length === 0, 'the slash form of a per-unit rate is caught too');
+}
+
+// A STACKED LABEL BLOCK is not a wrap. Layout OCR of a two-column value box emits all the labels
+// then all the amounts; joining blindly pairs the As-Is label with the ARV's amount — and the ARV
+// ceiling only catches that when the ARV is known, which it is not on a straight purchase.
+{
+  const s = R.scanAsIs(['As Repaired Value', 'As Is Value', '$450,000', '$312,500'].join('\n'));
+  assert(!s.labeled.includes(450000), 'a stacked label block never pairs the As-Is label with the ARV amount');
+  assert(s.labeled.length === 0, 'when which amount belongs to which label is unknowable, nothing is claimed');
+}
+{
+  // …but an ordinary section HEADING above the label must still allow the wrap.
+  const s = R.scanAsIs(['OPINION OF VALUE', 'As-Is Value:', '$312,500'].join('\n'));
+  assert(s.labeled.includes(312500), 'a heading above the label does not block the wrap');
+}
+
+// A negative amount is an adjustment, never a value.
+{
+  assert(!R.scanAsIs('As-Is Value adjustment: -$312,500').labeled.includes(312500), 'a minus-signed amount is not read as a value');
+  assert(!R.scanAsIs('As-Is Value ($312,500)').labeled.includes(312500), 'a bracketed (negative) amount is not read as a value');
+}
+
+// A LABELLED hit has to read as a statement of VALUE, not as incidental "as is" prose.
+{
+  const s = R.scanAsIs('The property was accepted as is and the rehab budget is $85,000');
+  assert(!s.labeled.includes(85000), 'a budget on an "as is" line is not a LABELLED as-is value');
+}
+{
+  assert(R.scanAsIs('As-Is Value: $312,500').labeled.includes(312500), '"Value" makes it labelled');
+  assert(R.scanAsIs('Opinion of value, as is: $312,500').labeled.includes(312500), '"Opinion of value" makes it labelled');
+  assert(R.scanAsIs('Appraised as is at $312,500').labeled.includes(312500), '"Appraised" makes it labelled');
+  const terse = R.scanAsIs('as-is: $312,500');
+  assert(!terse.labeled.includes(312500) && terse.near.includes(312500),
+    'a terse "as-is: $X" with no value word is a WEAK candidate — surfaced for a human, never written alone');
+}
+
 // ===========================================================================
 // 2. The ladder — XML first
 // ===========================================================================
@@ -91,6 +165,31 @@ const never = {
     // and the reader must not promote it either.
     const r = await R.readAsIs({ xmlAsIs: 308567, xmlAsIsConfidence: 'estimate' }, never);
     assert(!r.found && !r.confident, 'a non-definite XML as-is is NOT used (never estimate-store)');
+  }
+  // THE INFERRED-BASIS TRAP. A MISMO appraisal has ONE "opinion of value" box; what it means is set
+  // by _CONDITION_OF_APPRAISAL. With that enum missing, extract.js infers the basis from narrative
+  // wording — and on a renovation report whose wording it does not recognise, the AFTER-REPAIR value
+  // is what lands as a "definite" As-Is. Writing that would overstate the collateral by the whole
+  // rehab. Now that a confident read is written in either direction, nothing downstream would catch
+  // it, so the headline number is only trusted on an EXPLICIT basis.
+  {
+    const r = await R.readAsIs({ xmlAsIs: 620000, xmlAsIsConfidence: 'definite', appraisedValue: 620000, xmlBasis: null }, never);
+    assert(r.found && r.value === 620000 && !r.confident, 'the HEADLINE value with NO basis enum is reported but never confident');
+    assert(/as is.*after repair|"as is" or "after repair"/i.test(r.reason || ''), 'the reason says the appraisal never stated which kind of value it is');
+  }
+  {
+    const r = await R.readAsIs({ xmlAsIs: 430000, xmlAsIsConfidence: 'definite', appraisedValue: 430000, xmlBasis: 'AsIs' }, never);
+    assert(r.confident && r.value === 430000, 'the headline value WITH an explicit AsIs basis is confident');
+  }
+  {
+    // The common renovation case: the headline number is the ARV, and the As-Is was mined from a
+    // sentence in the narrative. That sentence needs no enum to be believed.
+    const r = await R.readAsIs({ xmlAsIs: 430000, xmlAsIsConfidence: 'definite', appraisedValue: 575000, xmlBasis: null }, never);
+    assert(r.confident && r.value === 430000, 'a NARRATIVE-mined As-Is is unaffected by the basis guard');
+  }
+  {
+    const r = await R.readAsIs({ xmlAsIs: 620000, xmlAsIsConfidence: 'definite', appraisedValue: 620000, xmlBasis: 'SubjectToAlterations' }, never);
+    assert(!r.confident, 'an UNRECOGNISED basis enum is treated as inferred, not as permission');
   }
   {
     const r = await R.readAsIs({ xmlAsIs: null, xmlAsIsConfidence: 'missing' }, never);
@@ -129,9 +228,44 @@ const never = {
     assert(!r.found && /no as-is value could be read/i.test(r.reason || ''), 'a PDF with no as-is wording reads as nothing');
   }
   {
+    // THE DIGIT SLIP. $430,000 read as $43,000 is plausible, is below the ARV, and sits on a
+    // properly labelled line — every other check passes it. Now that a confident read is written in
+    // either direction, this is the one misread that could quietly wreck a file, so it can never be
+    // confident. It is still REPORTED, because occasionally it is the real number.
+    // A dropped zero lands BELOW the floor (15% of the biggest number the file already trusts), so it
+    // never even becomes a candidate — the safest possible outcome.
+    const r = await R.readAsIs(
+      { arv: 620000, fileAsIs: 430000, pdfBase64: 'x' },
+      pdfDeps('The as is market value is $43,000.'));
+    assert(!r.confident && r.value !== 43000, 'a dropped-zero misread is filtered out — never written, never offered as the answer');
+  }
+  {
+    // A DOUBLED zero on a file with no ARV is where the digit-slip guard earns its keep: there is no
+    // ceiling to catch it and it is far above the floor, so only the ×10 relationship gives it away.
+    const r = await R.readAsIs(
+      { fileAsIs: 430000, purchasePrice: 450000, pdfBase64: 'x' },
+      pdfDeps('The as is market value is $4,300,000.'));
+    assert(r.found && r.value === 4300000 && !r.confident, 'a doubled-zero misread is reported but NEVER confident');
+    assert(/factor of ten/i.test(r.reason || ''), 'the reason names the digit slip so a human knows what to check');
+  }
+  {
+    // A five-figure cost-approach line item on a file with real numbers can never be the As-Is.
+    const r = await R.readAsIs(
+      { arv: 620000, purchasePrice: 450000, pdfBase64: 'x' },
+      pdfDeps('The as is market value of the garage is $18,000 per the cost estimate.'));
+    assert(!r.confident, 'an amount under 15% of every number the file trusts is not a property value');
+  }
+  {
+    // …but a genuinely different number that merely happens to be small is untouched by the guard.
+    const r = await R.readAsIs(
+      { arv: 620000, fileAsIs: 430000, pdfBase64: 'x' },
+      pdfDeps('The as is market value is $385,000.'));
+    assert(r.confident && r.value === 385000, 'an ordinary reading is not caught by the digit-slip guard');
+  }
+  {
     const deps = {
       ocrRouter: { configured: () => true, read: async () => ({ ok: false, reason: 'service unavailable' }) },
-      legacyOcr: { ocrSpaceText: async () => ({ ok: true, text: 'as is value is $250,000' }) },
+      legacyOcr: { ocrSpaceText: async () => ({ ok: true, text: 'Reconciliation. The as is value of the subject is $250,000 as of the effective date.' }) },
       analyzer: { available: () => false, extract: async () => ({ ok: false }) },
     };
     const r = await R.readAsIs({ pdfBase64: 'x' }, deps);
@@ -180,6 +314,19 @@ const never = {
     assert(!r.confident, 'a real quote that does not read as an as-is is refused (the ARV can never sneak in)');
   }
   {
+    // THE PRIOR SALE PRICE. "The subject sold as is on 05/2019 for $215,000" is a real sentence,
+    // genuinely in the document, that the AI will happily hand back — and it is a number from years
+    // ago, not today's value. Both grounding gates would pass it if a `near` re-read counted, which
+    // is why gate 2 requires a LABELLED one.
+    const text = 'RECONCILIATION. The subject sold as is on 05/2019 for $215,000 in an arm\'s length transaction. The market value of the subject is $430,000.';
+    const ai = {
+      available: () => true,
+      extract: async () => ({ ok: true, data: { found: true, value: 215000, quote: 'The subject sold as is on 05/2019 for $215,000', reason: 'x' } }),
+    };
+    const r = await R.readAsIs({ arv: 620000, pdfBase64: 'x' }, pdfDeps(text, ai));
+    assert(!r.confident, 'a PRIOR SALE PRICE the AI points at is never confident — a `near` re-read is not grounding');
+  }
+  {
     const ai = { available: () => true, extract: async () => { throw new Error('gpt down'); } };
     const r = await R.readAsIs({ pdfBase64: 'x' }, pdfDeps('as is value $250,000\nand as is $260,000', ai));
     assert(!r.confident && r.found, 'the AI throwing degrades to the deterministic (not-confident) candidate');
@@ -190,29 +337,41 @@ const never = {
   // =========================================================================
   const confident = (v) => ({ found: true, value: v, confident: true, confidence: 'high', source: 'pdf_text' });
 
+  // THE RULE IS CONFIDENCE, AND ONLY CONFIDENCE (owner-directed 2026-07-28, correcting the first
+  // cut): "as long as you're confident you can write it no matter what it was". Direction and the
+  // purchase price are no longer gates — only trust in the number, and the file freeze, are.
   {
     const d = R.decideAsIsApply({ read: confident(430000), fileAsIs: 500000, purchasePrice: 450000 });
-    assert(d.apply && d.value === 430000 && d.kind === 'reduced', 'confident + below the purchase price + a reduction → APPLY');
+    assert(d.apply && d.value === 430000 && d.kind === 'reduced', 'confident + lower → APPLY (reduced)');
+    assert(d.belowPrice === true, 'below the purchase price is REPORTED, so the wording can say so');
+  }
+  {
+    const d = R.decideAsIsApply({ read: confident(440000), fileAsIs: 400000, purchasePrice: 450000 });
+    assert(d.apply && d.value === 440000 && d.kind === 'raised', 'confident + HIGHER than the file → APPLY (raised) — the reduction-only guard is gone');
+  }
+  {
+    const d = R.decideAsIsApply({ read: confident(460000), fileAsIs: 400000, purchasePrice: 450000 });
+    assert(d.apply && d.kind === 'raised' && d.belowPrice === false, 'confident + ABOVE the purchase price → APPLY; below-price is reported, not required');
   }
   {
     const d = R.decideAsIsApply({ read: confident(430000), fileAsIs: null, purchasePrice: 450000 });
     assert(d.apply && d.kind === 'filled', 'a blank As-Is is filled');
   }
   {
-    const d = R.decideAsIsApply({ read: confident(460000), fileAsIs: 400000, purchasePrice: 450000 });
-    assert(!d.apply && d.why === 'not_below_price', 'at or above the purchase price → never written');
-  }
-  {
-    const d = R.decideAsIsApply({ read: confident(440000), fileAsIs: 400000, purchasePrice: 450000 });
-    assert(!d.apply && d.why === 'not_a_reduction', 'a HIGHER value than the file already shows is never written (leverage can only go down)');
+    const d = R.decideAsIsApply({ read: confident(430000), fileAsIs: 500000, purchasePrice: null });
+    assert(d.apply && d.belowPrice === null, 'no purchase price no longer blocks the write — it just cannot be reported');
   }
   {
     const d = R.decideAsIsApply({ read: confident(430000), fileAsIs: 430000, purchasePrice: 450000 });
-    assert(!d.apply && d.why === 'not_a_reduction', 'the same value is not rewritten');
+    assert(!d.apply && d.why === 'same_value', 'the value the file already shows is not rewritten (no pointless reprice churn)');
+  }
+  {
+    const d = R.decideAsIsApply({ read: confident(430000), fileAsIs: 430000.004, purchasePrice: 450000 });
+    assert(!d.apply && d.why === 'same_value', 'a sub-cent difference is the same value (the column is numeric(14,2))');
   }
   {
     const d = R.decideAsIsApply({ read: { found: true, value: 430000, confident: false, confidence: 'low' }, fileAsIs: 500000, purchasePrice: 450000 });
-    assert(!d.apply && d.why === 'not_confident', 'a NOT-confident reading is never written');
+    assert(!d.apply && d.why === 'not_confident', 'a NOT-confident reading is never written — in EITHER direction');
   }
   {
     const d = R.decideAsIsApply({ read: confident(430000), fileAsIs: 500000, purchasePrice: 450000, lockReason: 'the term sheet has been sent' });
@@ -221,10 +380,6 @@ const never = {
   {
     const d = R.decideAsIsApply({ read: confident(430000), fileAsIs: 500000, purchasePrice: 450000, autoEnabled: false });
     assert(!d.apply && d.why === 'auto_off', 'the kill switch stops the write');
-  }
-  {
-    const d = R.decideAsIsApply({ read: confident(430000), fileAsIs: 500000, purchasePrice: null });
-    assert(!d.apply && d.why === 'no_purchase_price', 'with no purchase price the rule cannot be evaluated, so nothing is written');
   }
   {
     const d = R.decideAsIsApply({ read: confident(500), fileAsIs: null, purchasePrice: 450000 });
@@ -255,8 +410,24 @@ const never = {
     const read = { ...confident(460000), quote: 'as is value $460,000' };
     const dec = R.decideAsIsApply({ read, fileAsIs: 400000, purchasePrice: 450000 });
     const note = R.buildAsIsNote({ read, decision: dec, fileAsIsBefore: 400000, purchasePrice: 450000 });
-    assert(/not below the purchase price/i.test(note) && /nothing on the file was changed/i.test(note),
-      'a read that does not meet the rule says plainly that nothing was changed, and why');
+    assert(/RAISED/.test(note) && /\$400,000/.test(note) && /\$460,000/.test(note), 'a RAISE says so plainly and names both numbers');
+    assert(/re-priced/i.test(note) && /nothing about the loan amount changes until/i.test(note),
+      'a raise makes clear the loan amount does not move until a human re-registers the product');
+    assert(!/BELOW the purchase price/.test(note), 'a value above the purchase price does not claim to be below it');
+  }
+  {
+    const read = { ...confident(430000), quote: 'as is value $430,000' };
+    const dec = R.decideAsIsApply({ read, fileAsIs: 430000, purchasePrice: 450000 });
+    const note = R.buildAsIsNote({ read, decision: dec, fileAsIsBefore: 430000, purchasePrice: 450000 });
+    assert(/already shows/i.test(note) && /nothing needed changing/i.test(note),
+      'an agreeing reading says the file already matches, so nothing needed doing');
+  }
+  {
+    const read = { ...confident(430000), quote: 'as is value $430,000' };
+    const dec = R.decideAsIsApply({ read, fileAsIs: 500000, purchasePrice: 450000, lockReason: 'the term sheet has been sent' });
+    const note = R.buildAsIsNote({ read, decision: dec, fileAsIsBefore: 500000, purchasePrice: 450000 });
+    assert(/locked/i.test(note) && /type it in the box/i.test(note),
+      'a frozen file explains the lock and still offers the human the box');
   }
 
   console.log(failures ? `\n${failures} assertion(s) FAILED` : '\nALL As-Is reader assertions passed');

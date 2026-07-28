@@ -141,20 +141,54 @@ is the ARV misread, and is dropped.
 
 ---
 
-## 5. The write rule
+## 5. The write rule — confidence, and only confidence
 
-Only a `definite` / `high` reading is eligible, and then
-(`as-is-reader.js decideAsIsApply`) it is written **only** when:
+> *"As long as you're confident you can write it no matter what it was — I just made a mistake when
+> I said that only if it's a reduction. As long as you're confident you should write it as this
+> value, and if you're not confident you should always ask in the condition for the loan officer to
+> look on the appraisal and enter it."* — owner, 2026-07-28
 
-* it is **below the purchase price** — the owner's rule, and the case that matters, because it means
-  the borrower is paying over the as-is collateral value; **and**
-* it **lowers** the file's As-Is, or fills a blank one — never raises it. A machine read may not
-  increase leverage; and
+A `definite` / `high` reading is written **whichever direction it moves** the file's As-Is, and
+whether or not it lands below the purchase price. That is the right rule: the appraisal is the
+authority on what the property is worth today, and this is exactly the "replace" action a human was
+already doing by hand on the `asis_mismatch` finding.
+
+What still stops a write is only ever about whether the number can be **trusted**, or whether anyone
+is allowed to write at all — never about direction (`as-is-reader.js decideAsIsApply`):
+
+* **confidence** — anything below `high` is reported to a human and never written;
 * the file is **not frozen** (term sheet sent / clear-to-close / funded). PILOT gets no private door
-  through a freeze that binds every human.
+  through a freeze that binds every human;
+* it is a **real change** — rewriting the value already on file would churn the reprice trigger for
+  nothing.
 
-A write reopens the Products & Pricing condition through the existing reprice trigger (`db/071`) —
-the loan has to be re-priced on the lower value — and raises the
-`Confirm the As-Is value` condition, which carries the internal read-out (what came in, from where,
-the exact words) and a box to type over it. Nothing is ever silent, and nothing is ever final: a
-human can overwrite it, and must sign the condition off.
+Being below the purchase price is still *reported*: it is what the condition's wording says out loud
+(the borrower would be paying more than the property is worth as it stands) and what the existing
+fatal `asis_below_price` finding turns on.
+
+**A raise can never quietly increase a loan.** Any change to `as_is_value` reopens the Products &
+Pricing condition through the reprice trigger (`db/071`/`db/072`), so the loan amount does not move
+until a human re-registers the product on the new number.
+
+**And a reading we are not confident in always asks.** The `Confirm the As-Is value` condition
+carries the internal read-out (what came in, from where, the exact words, what the file said before
+and now) and a box to type over it. The only state that raises no condition at all is the settled
+one: PILOT is confident **and** the file already shows exactly that value — the appraisal and the
+loan file agree, confirmed from two sides. `signOffGate` refuses to clear the condition while the
+file has no As-Is on it.
+
+### The guards that make "confident" mean something
+
+Because a confident reading is now written in either direction, precision matters more than recall.
+Beyond the ARV ceiling and the $10k–$100M bounds:
+
+* **a line that is not about our subject's value is dropped whole** — a comparable's sale price
+  (`Comparable 3 sold as is for $430,000`), an asking/listing price, a tax assessment, a rent, an
+  insurance replacement cost;
+* **a LABELLED hit must read as a statement of value** — the clause has to carry
+  *value / opinion / apprais* / market / worth / estimat / indicat*. A terse `as-is: $430,000` still
+  surfaces, as a weak candidate a human or the AI confirms;
+* **the ten-fold digit slip is caught** — `$430,000` OCR'd as `$43,000` is plausible, below the ARV,
+  and properly labelled; every other check passes it. A candidate within 1% of the ARV, the purchase
+  price or the file's own As-Is after ×10, ×100, ÷10 or ÷100 is treated as a misread and can never be
+  confident.

@@ -126,7 +126,7 @@ const pdfDeps = (text) => ({
 
       // Idempotent: reading again changes nothing (it is no longer a reduction).
       const again = await desk.runAsIsRead(appId, {});
-      assert(!again.applied && again.why === 'not_a_reduction', 're-reading the same appraisal does not write again');
+      assert(!again.applied && again.why === 'same_value', 're-reading the same appraisal does not write again (the file already agrees)');
       assert((await fileAsIs(appId)) === 430000, 'the value is unchanged by a second read');
     }
 
@@ -134,16 +134,34 @@ const pdfDeps = (text) => ({
     // 2. Every refusal path leaves the file ALONE.
     // =====================================================================
     {
+      // The owner's correction (2026-07-28): confidence is the whole rule. An appraisal that reads
+      // ABOVE the purchase price is still the appraisal — it gets written.
       const appId = await mkFile({ purchasePrice: 400000, fileAsIs: 500000, arv: 620000, xmlAsIs: 460000 });
       const out = await desk.runAsIsRead(appId, {});
-      assert(!out.applied && out.why === 'not_below_price', 'an As-Is at/above the purchase price is not written');
-      assert((await fileAsIs(appId)) === 500000, 'the file value is untouched');
+      assert(out.applied && (await fileAsIs(appId)) === 460000, 'an As-Is ABOVE the purchase price is written (below-price is no longer a gate)');
     }
     {
+      // …and so is one that RAISES the file's value. The reduction-only guard is gone.
       const appId = await mkFile({ purchasePrice: 500000, fileAsIs: 400000, arv: 620000, xmlAsIs: 440000 });
+      const priceItem = (await db.query(
+        `INSERT INTO checklist_items (scope, application_id, label, status, item_kind, tool_key, signed_off_by, signed_off_at)
+         VALUES ('application',$1,'Products & Pricing','satisfied','condition','product_pricing',$2,now()) RETURNING id`,
+        [appId, adminId])).rows[0].id;
       const out = await desk.runAsIsRead(appId, {});
-      assert(!out.applied && out.why === 'not_a_reduction', 'a HIGHER reading than the file already carries is never written');
-      assert((await fileAsIs(appId)) === 400000, 'leverage can only ever go down automatically');
+      assert(out.applied && (await fileAsIs(appId)) === 440000, 'a HIGHER confident reading IS written now');
+      const c = await cond(appId);
+      assert(/RAISED/.test(c.notes), 'the condition says plainly that PILOT raised the value');
+      const pr = (await db.query(`SELECT status, signed_off_at FROM checklist_items WHERE id=$1`, [priceItem])).rows[0];
+      assert(pr.status === 'received' && pr.signed_off_at == null,
+        'a RAISE also reopens Products & Pricing — the loan amount cannot move until a human re-registers');
+    }
+    {
+      // The appraisal agrees with the file: nothing written, and NO condition raised. This is the
+      // only settled state, and it is what keeps the conditions list quiet on a clean file.
+      const appId = await mkFile({ purchasePrice: 450000, fileAsIs: 430000, arv: 620000, xmlAsIs: 430000 });
+      const out = await desk.runAsIsRead(appId, {});
+      assert(!out.applied && out.why === 'same_value', 'a reading the file already matches is not rewritten');
+      assert((await cond(appId)) === null, 'an agreeing, confident reading raises NO condition — nothing for anyone to do');
     }
     {
       // A funded file is structurally locked for everyone — PILOT included.
@@ -207,6 +225,31 @@ const pdfDeps = (text) => ({
     }
 
     // =====================================================================
+    // 2b. An appraisal that may not even be about THIS property is never
+    //     adopted from — the desk already raises a fatal identity finding.
+    // =====================================================================
+    {
+      const appId = await mkFile({ purchasePrice: 450000, fileAsIs: 500000, arv: 620000, xmlAsIs: 430000 });
+      const appraisalId = (await db.query(
+        `SELECT id FROM appraisals WHERE application_id=$1 AND superseded=false`, [appId])).rows[0].id;
+      await db.query(
+        `INSERT INTO appraisal_findings (appraisal_id, application_id, source, code, severity, field, title, how_to, blocks_ctc, status)
+         VALUES ($1,$2,'appraisal','address_mismatch','fatal','address','Address differs from the file','Check the report',true,'open')`,
+        [appraisalId, appId]);
+      const out = await desk.runAsIsRead(appId, {});
+      assert(!out.applied && out.why === 'appraisal_identity_mismatch',
+        'a fatal address mismatch stops the automatic write — we may be holding a report for another property');
+      assert((await fileAsIs(appId)) === 500000, 'the file value is untouched while the appraisal identity is in doubt');
+      const c = await cond(appId);
+      assert(!!c && /does not match the property/i.test(c.notes), 'the condition explains the mismatch so a human sorts it out first');
+
+      // Resolve the mismatch and the same reading goes through.
+      await db.query(`UPDATE appraisal_findings SET status='resolved' WHERE application_id=$1 AND code='address_mismatch'`, [appId]);
+      const after = await desk.runAsIsRead(appId, {});
+      assert(after.applied && (await fileAsIs(appId)) === 430000, 'once the identity finding is resolved the reading is applied');
+    }
+
+    // =====================================================================
     // 3b. Undoing a WRONG appraisal must take its As-Is back off the file —
     //     including one PILOT read off the PDF, which lives nowhere else.
     // =====================================================================
@@ -258,6 +301,71 @@ const pdfDeps = (text) => ({
       assert(set.status === 200 && (await fileAsIs(appId)) === 470000, 'a human can overwrite PILOT’s value, up or down');
       const st = await call(server, 'GET', `/api/appraisal/${appId}/as-is`, token);
       assert(st.json.confirmed && Number(st.json.confirmed.value) === 470000, 'the human confirmation is recorded and shown');
+    }
+
+    // =====================================================================
+    // 4b. A HUMAN'S DECISION IS FINAL — the audit's sharpest finding. The
+    //     "Read the appraisal again" button sits one control from the box the
+    //     officer types in; it must never undo them.
+    // =====================================================================
+    {
+      const appId = await mkFile({ purchasePrice: 450000, fileAsIs: null, arv: 620000, xmlAsIs: 312500 });
+      await desk.runAsIsRead(appId, {});
+      assert((await fileAsIs(appId)) === 312500, 'PILOT filled the blank As-Is');
+      // The officer reads the report and types the real number.
+      const set = await call(server, 'POST', `/api/appraisal/${appId}/as-is`, token, { value: 470000 });
+      assert(set.status === 200 && (await fileAsIs(appId)) === 470000, 'the officer’s value is on the file');
+      // …and now clicks "Read the appraisal again".
+      const again = await call(server, 'POST', `/api/appraisal/${appId}/as-is/read`, token);
+      assert(again.status === 200 && again.json.applied === false && again.json.why === 'human_decided',
+        'a re-read REFUSES to overwrite a value a human typed');
+      assert((await fileAsIs(appId)) === 470000, 'the officer’s value survives the re-read');
+      const c = await cond(appId);
+      assert(/by hand/i.test(c.notes) && /left it alone/i.test(c.notes), 'the condition says PILOT left the human’s value alone');
+    }
+    {
+      // The same protection for an underwriter who resolved the asis_mismatch finding with KEEP —
+      // they looked at both numbers and decided the file's value stands.
+      const appId = await mkFile({ purchasePrice: 450000, fileAsIs: 500000, arv: 620000, xmlAsIs: 430000 });
+      const appraisalId = (await db.query(`SELECT id FROM appraisals WHERE application_id=$1 AND superseded=false`, [appId])).rows[0].id;
+      await db.query(
+        `INSERT INTO appraisal_findings (appraisal_id, application_id, source, code, severity, field, appraisal_value, file_value, title, how_to, blocks_ctc, status, resolution, resolved_at)
+         VALUES ($1,$2,'appraisal','asis_mismatch','fatal','as_is_value','430000','500000','As-Is differs','x',true,'resolved','keep',now())`,
+        [appraisalId, appId]);
+      const out = await desk.runAsIsRead(appId, {});
+      assert(!out.applied && out.why === 'human_decided', 'a KEEP resolution of the As-Is finding stops the automatic write');
+      assert((await fileAsIs(appId)) === 500000, 'the underwriter’s decision stands');
+    }
+
+    // =====================================================================
+    // 4c. A FAILED read must not drain the file out of the sweep, and a
+    //     second read must not erase the record undo depends on.
+    // =====================================================================
+    {
+      const appId = await mkFile({ purchasePrice: 450000, fileAsIs: 500000, arv: 620000, xmlAsIs: null });
+      const down = {
+        ocrRouter: { configured: () => true, read: async () => ({ ok: false, reason: 'service unavailable' }) },
+        legacyOcr: { ocrSpaceText: async () => ({ ok: false, reason: 'down too' }) },
+        analyzer: { available: () => false, extract: async () => ({ ok: false }) },
+      };
+      await asIsDesk.settleAsIs(appId, { pdfBase64: 'x', deps: down, ensureCondition: (id) => desk.ensureAppraisalCondition(id, 'appraisal_as_is_verify') });
+      const a = (await db.query(`SELECT as_is_read_at FROM appraisals WHERE application_id=$1 AND superseded=false`, [appId])).rows[0];
+      assert(a.as_is_read_at == null, 'an OCR OUTAGE does not stamp the file as read — the sweep will retry it');
+    }
+    {
+      const appId = await mkFile({ purchasePrice: 450000, fileAsIs: null, arv: 620000, xmlAsIs: null });
+      const deps = pdfDeps("RECONCILIATION. The 'as is' market value of the subject property is $402,000 as of the effective date.");
+      const ec = (id) => desk.ensureAppraisalCondition(id, 'appraisal_as_is_verify');
+      await asIsDesk.settleAsIs(appId, { pdfBase64: 'x', deps, ensureCondition: ec });
+      assert((await fileAsIs(appId)) === 402000, 'the PDF read was applied');
+      // A SECOND read of the same file now returns same_value — it must not erase the applied stamp.
+      await asIsDesk.settleAsIs(appId, { pdfBase64: 'x', deps, ensureCondition: ec });
+      const a = (await db.query(
+        `SELECT as_is_applied, as_is_applied_value FROM appraisals WHERE application_id=$1 AND superseded=false`, [appId])).rows[0];
+      assert(a.as_is_applied === true && Number(a.as_is_applied_value) === 402000,
+        'a second read does NOT downgrade the applied stamp');
+      await desk.undoAppraisalImport(appId, {});
+      assert((await fileAsIs(appId)) === null, 'undo still takes the PDF-read value back off the file after a second read');
     }
 
     // =====================================================================

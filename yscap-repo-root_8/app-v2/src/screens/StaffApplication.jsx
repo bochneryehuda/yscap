@@ -235,12 +235,12 @@ function CondAsIsEntry({ appId, onSaved }) {
     pdf_ai: 'the appraisal report PDF, read with OCR and located by AI',
   };
   const WHY = {
-    not_below_price: 'it is not below the purchase price, so the file was left alone',
-    not_a_reduction: 'the file already shows a lower As-Is value, so it was left alone',
+    same_value: 'that is exactly what the file already shows, so nothing needed changing',
+    appraisal_identity_mismatch: 'this appraisal does not match the property on the file (address, unit count or property type), so nothing was taken from it — sort that out first',
+    human_decided: 'someone has already decided this file’s As-Is value by hand, so PILOT left it alone — a person’s decision about this number is final',
     file_locked: 'this file’s figures are locked (the term sheet has gone out, or it is clear-to-close / funded), so nothing was changed automatically',
-    not_confident: 'PILOT is not confident enough in that reading to use it',
+    not_confident: 'PILOT is not confident enough in that reading to use it — please read it off the report and enter it',
     auto_off: 'the automatic As-Is update is switched off',
-    no_purchase_price: 'there is no purchase price on the file to compare it against',
     no_value: 'PILOT could not read an As-Is value',
     implausible: 'the amount does not look like a property value',
     value_changed_underneath: 'the As-Is value on the file changed while PILOT was reading, so it did not overwrite it',
@@ -262,9 +262,17 @@ function CondAsIsEntry({ appId, onSaved }) {
         </div>
         {r.value == null && r.reason && <div style={cell}><span style={lbl} /> {r.reason}.</div>}
         <div style={cell}><span style={lbl}>As-Is on the file now</span><b>{m(st.file.asIs)}</b>
-          {r.applied && r.fileValueBefore != null && <> (PILOT lowered it from {m(r.fileValueBefore)})</>}
+          {r.applied && r.fileValueBefore != null && (
+            <> (PILOT {Number(r.appliedValue) < Number(r.fileValueBefore) ? 'lowered' : 'raised'} it from {m(r.fileValueBefore)})</>
+          )}
           {r.applied && r.fileValueBefore == null && <> (PILOT filled it in)</>}
         </div>
+        {r.applied && (
+          <div style={{ ...cell, color: '#8A6D3B' }}>
+            The loan has to be re-priced on this value — Products &amp; Pricing has reopened. Nothing about the loan
+            amount changes until someone re-registers the product.
+          </div>
+        )}
         <div style={cell}><span style={lbl}>Purchase price</span>{m(st.file.purchasePrice)}</div>
         {st.xml && st.xml.arv != null && <div style={cell}><span style={lbl}>ARV on the appraisal</span>{m(st.xml.arv)}</div>}
         {!r.applied && r.skipReason && (

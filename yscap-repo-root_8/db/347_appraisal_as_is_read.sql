@@ -18,10 +18,16 @@
 -- surface; it reads these columns through GET /api/appraisal/:id/as-is.
 --
 -- NOTHING here changes a value on its own. The write rule lives in
--- src/lib/appraisal/as-is-reader.js `decideAsIsApply` and is deliberately
--- one-directional: a reading may FILL a blank As-Is or LOWER an existing one,
--- never raise it, never on a frozen (term-sheet-sent / clear-to-close / funded)
--- file, and never when the reading is not confident.
+-- src/lib/appraisal/as-is-reader.js `decideAsIsApply`, and it is CONFIDENCE and
+-- only confidence (owner-directed 2026-07-28, correcting the first cut: "as long
+-- as you're confident you can write it no matter what it was — I just made a
+-- mistake when I said that only if it's a reduction"). A confident reading is
+-- written whether it lowers or raises the file's As-Is. What still stops a write
+-- is never direction: the reading must be confident, the file must not be frozen
+-- (term-sheet-sent / clear-to-close / funded), a human must not have already
+-- settled the number by hand, the appraisal must actually match the property, and
+-- it must be a real change. Any write reopens Products & Pricing, so a raise can
+-- never quietly increase a loan.
 --
 -- Idempotent (ADD COLUMN IF NOT EXISTS + a guarded template re-assert).
 -- ============================================================================
@@ -67,9 +73,10 @@ CREATE INDEX IF NOT EXISTS idx_appraisals_as_is_unread
 UPDATE checklist_templates
    SET label = 'Confirm the As-Is value on the appraisal',
        hint  = 'PILOT reads the As-Is value from the appraisal — first the data file (XML), then the '
-               || 'report PDF with OCR and AI. If it read one confidently and it is below the purchase '
-               || 'price, it lowered the As-Is on the file and this condition is your re-review. If it '
-               || 'could not read one confidently, nothing was filled in — read the As-Is off the report '
-               || 'and enter it here to clear this condition.',
-       is_active = true
+               || 'report PDF with OCR and AI. If it read one confidently it updated the As-Is on the '
+               || 'file, and this condition is your re-review. If it could not read one confidently, '
+               || 'nothing was filled in — read the As-Is off the report and enter it here to clear '
+               || 'this condition.'
+ -- Deliberately does NOT touch is_active: an admin who deactivates this template
+ -- must not have it silently switched back on by the next deploy.
  WHERE code = 'appraisal_as_is_verify';
