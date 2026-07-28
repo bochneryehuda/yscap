@@ -171,7 +171,7 @@ const notesFor = async (app, kind) => (await db.query(
   }
 
   // ============ 5. THE DEPLOY ITSELF MUST NOT RE-ANNOUNCE FINISHED INSPECTIONS ============
-  // db/363. The `status_synced` watermark on trustpoint_service_orders existed since db/297 but
+  // db/364. The `status_synced` watermark on trustpoint_service_orders existed since db/297 but
   // was read and never written, so every row in a live database carries NULL. Without the
   // baseline, the very deploy that fixes the duplicate inspection notices would win the claim on
   // the entire back book and announce every historic inspection at once. The one-shot design is
@@ -183,7 +183,7 @@ const notesFor = async (app, kind) => (await db.query(
       `INSERT INTO trustpoint_service_orders (tp_service_order_id, application_id, tp_project_id, service_type, status, status_synced)
        VALUES ($1,$3,'tp-proj5','INSPECTION','COMPLETED',NULL), ($2,$3,'tp-proj5','INSPECTION','ORDERED',NULL)`,
       [soDone, soLive, app]);
-    // Replay the CUTOVER. db/363 is one-shot, so on any database that has already booted once
+    // Replay the CUTOVER. db/364 is one-shot, so on any database that has already booted once
     // the marker is set and the statement is correctly a no-op — clearing it is what lets this
     // test reproduce the single deploy that matters. (Dropping this line makes the test pass on
     // a virgin database and fail on every run after, which is how the one-shot proved itself.)

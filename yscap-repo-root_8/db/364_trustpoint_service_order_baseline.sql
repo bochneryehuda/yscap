@@ -1,4 +1,4 @@
--- 363_trustpoint_service_order_baseline.sql
+-- 364_trustpoint_service_order_baseline.sql
 -- Idempotent, and deliberately ONE-SHOT.
 --
 -- THE DEPLOY THAT FIXES THE DUPLICATE INSPECTION NOTICES WOULD HAVE SENT ONE MORE ROUND.
@@ -54,5 +54,5 @@ BEGIN
   ON CONFLICT (key) DO UPDATE
     SET value = EXCLUDED.value, updated_at = now();
 
-  RAISE NOTICE '363: baselined % already-completed inspection(s) — they will not be re-announced', n;
+  RAISE NOTICE '364: baselined % already-completed inspection(s) — they will not be re-announced', n;
 END $$;
