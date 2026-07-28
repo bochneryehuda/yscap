@@ -75,7 +75,18 @@ function resolve(map, raw, extra) {
 function serviceStatus(so) {
   const row = so || {};
   const base = resolve(SERVICE, row.status);
-  const day = (v) => (v ? String(v).slice(0, 10) : null);
+  // Only OID 1082 (`date`) is string-parsed by src/db.js; every column read here is
+  // TIMESTAMPTZ and arrives as a JS Date, so String(v).slice(0,10) produced a weekday
+  // fragment ("Mon Jul 27") with no year — and in LOCAL time, so a near-midnight UTC
+  // stamp printed the wrong day. toISOString is UTC-stable and always YYYY-MM-DD.
+  const day = (v) => {
+    if (!v) return null;
+    if (v instanceof Date) return Number.isNaN(v.getTime()) ? null : v.toISOString().slice(0, 10);
+    const t = String(v);
+    if (/^\d{4}-\d{2}-\d{2}/.test(t)) return t.slice(0, 10);   // already a calendar string
+    const d = new Date(t);
+    return Number.isNaN(d.getTime()) ? null : d.toISOString().slice(0, 10);
+  };
   const scheduled = day(row.scheduled_at);
   const out = {
     ...base,
@@ -103,7 +114,18 @@ function serviceStatus(so) {
 function drawStatus(draw) {
   const row = draw || {};
   const base = resolve(DRAW, row.status);
-  const day = (v) => (v ? String(v).slice(0, 10) : null);
+  // Only OID 1082 (`date`) is string-parsed by src/db.js; every column read here is
+  // TIMESTAMPTZ and arrives as a JS Date, so String(v).slice(0,10) produced a weekday
+  // fragment ("Mon Jul 27") with no year — and in LOCAL time, so a near-midnight UTC
+  // stamp printed the wrong day. toISOString is UTC-stable and always YYYY-MM-DD.
+  const day = (v) => {
+    if (!v) return null;
+    if (v instanceof Date) return Number.isNaN(v.getTime()) ? null : v.toISOString().slice(0, 10);
+    const t = String(v);
+    if (/^\d{4}-\d{2}-\d{2}/.test(t)) return t.slice(0, 10);   // already a calendar string
+    const d = new Date(t);
+    return Number.isNaN(d.getTime()) ? null : d.toISOString().slice(0, 10);
+  };
   return {
     ...base,
     submittedOn: day(row.submitted_at),
@@ -120,12 +142,25 @@ function drawStatus(draw) {
  * inspection over a settled draw status, because an inspection in motion is the thing anyone
  * looking at the file wants to know about.
  */
+// A PROBLEM at the inspector outranks progress. These sit OFF the track (step === null), so a
+// headline that only considered on-track steps could never surface them — which meant the one
+// state the desk most needs to see ("The inspection company reported a problem") was the one
+// state the headline structurally could not say. CANCELLED is deliberately NOT here: a
+// cancelled inspection is settled, not an open problem, so the draw's own status leads.
+const SERVICE_ALARM = ['ERROR', 'CANCEL_REQUESTED'];
+
 function headline(draw, serviceOrders) {
   const sos = Array.isArray(serviceOrders) ? serviceOrders : [];
   const d = drawStatus(draw);
-  const live = sos
-    .map(serviceStatus)
-    .filter((s) => s.known && s.step != null && s.code !== 'COMPLETED')
+  const resolved = sos.map(serviceStatus).filter((s) => s.known);
+  // 1) anything wrong, worst first
+  const alarm = resolved
+    .filter((s) => SERVICE_ALARM.includes(s.code))
+    .sort((a, b) => SERVICE_ALARM.indexOf(a.code) - SERVICE_ALARM.indexOf(b.code))[0];
+  if (alarm) return { label: alarm.label, tone: alarm.tone, meaning: alarm.meaning, from: 'inspection' };
+  // 2) otherwise the inspection furthest along the track that is still moving
+  const live = resolved
+    .filter((s) => s.step != null && s.code !== 'COMPLETED')
     .sort((a, b) => b.step - a.step)[0];
   if (live) return { label: live.label, tone: live.tone, meaning: live.meaning, from: 'inspection' };
   return { label: d.label, tone: d.tone, meaning: d.meaning, from: 'draw' };

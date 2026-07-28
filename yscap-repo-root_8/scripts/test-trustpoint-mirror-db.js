@@ -31,6 +31,10 @@ client.getDraw = async (pk, dpk) => stub.drawDetail[`${pk}:${dpk}`] || null;
 client.getDrawReport = async () => null;   // report archive path exercised as no_report
 client.listMilestones = async (pk) => stub.milestones[pk] || [];
 client.listServiceOrders = async () => stub.serviceOrders;
+// The draw-comment mirror now runs on EVERY pass of a live draw (it used to fire only at
+// approval, which meant a draw stuck in review — the one whose messages matter — was never
+// synced). Stub the generic call so this suite exercises the mirror, not the conversation.
+client.call = async () => ({ results: [] });
 
 async function seedFile() {
   const email = 'tm' + crypto.randomBytes(5).toString('hex') + '@example.com';
@@ -163,6 +167,111 @@ const notesFor = async (app, kind) => (await db.query(
     ok('baseline sent NO borrower email', (await notesFor(app, 'borrower')).length === 0);
     ok('baseline audited as baseline', (await db.query(
       `SELECT count(*)::int c FROM trustpoint_pull_field_change WHERE tp_draw_id=$1 AND field='baseline'`, [drawId])).rows[0].c === 1);
+    await cleanup(app, bor, lo);
+  }
+
+  // ============ 5. THE DEPLOY ITSELF MUST NOT RE-ANNOUNCE FINISHED INSPECTIONS ============
+  // db/364. The `status_synced` watermark on trustpoint_service_orders existed since db/297 but
+  // was read and never written, so every row in a live database carries NULL. Without the
+  // baseline, the very deploy that fixes the duplicate inspection notices would win the claim on
+  // the entire back book and announce every historic inspection at once. The one-shot design is
+  // what makes it safe: a completion that lands moments before a restart must still announce.
+  {
+    const { app, bor, lo } = await seedFile();
+    const soDone = `tp-so5a-${tag}`, soLive = `tp-so5b-${tag}`;
+    await db.query(
+      `INSERT INTO trustpoint_service_orders (tp_service_order_id, application_id, tp_project_id, service_type, status, status_synced)
+       VALUES ($1,$3,'tp-proj5','INSPECTION','COMPLETED',NULL), ($2,$3,'tp-proj5','INSPECTION','ORDERED',NULL)`,
+      [soDone, soLive, app]);
+    // Replay the CUTOVER. db/364 is one-shot, so on any database that has already booted once
+    // the marker is set and the statement is correctly a no-op — clearing it is what lets this
+    // test reproduce the single deploy that matters. (Dropping this line makes the test pass on
+    // a virgin database and fail on every run after, which is how the one-shot proved itself.)
+    await db.query(`DELETE FROM sync_runtime_state WHERE key='trustpoint_service_order_baseline'`);
+
+    await require('../src/migrate-boot').ensureSchema();   // the deploy
+
+    const wm = async (id) => (await db.query(
+      `SELECT status_synced FROM trustpoint_service_orders WHERE tp_service_order_id=$1`, [id])).rows[0].status_synced;
+    ok('a finished inspection is baselined by the deploy', await wm(soDone) === 'COMPLETED');
+    ok('an inspection still running is untouched', await wm(soLive) === null);
+
+    // …and the backlog is stamped ONCE. A version that re-ran on every boot would swallow a real
+    // announcement: an inspection completing seconds before a restart is COMPLETED but unclaimed.
+    await db.query(`UPDATE trustpoint_service_orders SET status='COMPLETED' WHERE tp_service_order_id=$1`, [soLive]);
+    await require('../src/migrate-boot').ensureSchema();   // a restart before the poll claims it
+    ok('a fresh completion survives a restart and can still announce', await wm(soLive) === null);
+
+    await db.query(`DELETE FROM trustpoint_service_orders WHERE tp_service_order_id = ANY($1)`, [[soDone, soLive]]);
+    await cleanup(app, bor, lo);
+  }
+
+  // ============ 6. AN ARCHIVE THAT NEVER LANDED IS RETRIED — but not forever ============
+  // archiveDrawEverything fires once, on the APPROVED transition, and TrustPoint's document
+  // links expire in about a day: one blip at that moment lost the inspection report and its
+  // photographs permanently. The retry reads "incomplete" from the DATA (no archived document)
+  // so nothing has to be migrated, and it is bounded by the draw's own age so it can never
+  // loop on an old draw forever.
+  {
+    const { app, bor, lo } = await seedFile();
+    const docs = require('../src/trustpoint/documents');
+    // DISTINCT NUMBERS, not distinct ids: storeDocument names the file after the draw NUMBER
+    // (`trustpoint-draw-2-…`), so three draws sharing a number would share their paperwork.
+    const mk = async (id, number, approvedAt) => db.query(
+      `INSERT INTO trustpoint_draws (tp_draw_id, application_id, tp_project_id, number, status, approved_at, tp_created_at)
+       VALUES ($1,$2,'tp-proj6',$3,'APPROVED',$4,$4)`, [id, app, number, approvedAt]);
+
+    const fresh = `tp-draw6a-${tag}`, old = `tp-draw6b-${tag}`, done = `tp-draw6c-${tag}`;
+    await mk(fresh, 1, new Date().toISOString());
+    await mk(old, 2, new Date(Date.now() - 9 * 86400000).toISOString());
+    await mk(done, 3, new Date().toISOString());
+
+    await db.query(`DELETE FROM sync_runtime_state WHERE key LIKE 'tp_archive_retry:%'`);
+
+    // a recent APPROVED draw with nothing archived → really attempts the pull
+    const a = await docs.archiveDrawIfIncomplete(fresh);
+    ok('a recent draw with nothing archived is retried', a && a.ok === true);
+    // …but the 5-minute poll must not re-list it 860 times across the window
+    ok('a second pass minutes later backs off',
+      (await docs.archiveDrawIfIncomplete(fresh)).skipped === 'backoff');
+    // …and the back-off releases on its own an hour later
+    await db.query(
+      `UPDATE sync_runtime_state SET updated_at = now() - interval '2 hours' WHERE key=$1`,
+      [`tp_archive_retry:${fresh}`]);
+    ok('the back-off releases after an hour', (await docs.archiveDrawIfIncomplete(fresh)).ok === true);
+
+    // a draw that has not been approved has no paperwork to pull — never retried
+    const early = `tp-draw6d-${tag}`;
+    await db.query(
+      `INSERT INTO trustpoint_draws (tp_draw_id, application_id, tp_project_id, number, status, tp_created_at)
+       VALUES ($1,$2,'tp-proj6',4,'IN_REVIEW',now())`, [early, app]);
+    ok('a draw still in review is never retried',
+      (await docs.archiveDrawIfIncomplete(early)).skipped === 'not_ready');
+    await db.query(`DELETE FROM trustpoint_draws WHERE tp_draw_id=$1`, [early]);
+
+    // …a draw whose paperwork already landed → never re-pulled
+    await db.query(
+      `INSERT INTO documents (application_id, filename, doc_kind, storage_provider, storage_ref,
+                              content_type, size_bytes, visibility, source_type, is_current)
+       VALUES ($1, 'trustpoint-draw-3-inspection-result-document-2026-07-27-abc.pdf',
+               'draw_inspection_report','local','ref/x','application/pdf',10,'staff_only','system',true)`,
+      [app]);
+    ok('a draw that already has its paperwork is left alone',
+      (await docs.archiveDrawIfIncomplete(done)).skipped === 'archived');
+    // …and that document belongs to draw 3 ONLY — the anchored match must not leak to its
+    // neighbours, which is exactly what the old id-prefix predicate did.
+    ok('one draw\'s paperwork is not credited to another',
+      (await docs.documentsFor(app, fresh, 1)).length === 0);
+    ok('the archived document IS found for its own draw',
+      (await docs.documentsFor(app, done, 3)).length === 1);
+
+    // …and a draw old enough that the links are dead stops being retried at all
+    ok('an old draw stops being retried (the links are gone)',
+      (await docs.archiveDrawIfIncomplete(old)).skipped === 'too_old');
+
+    await db.query(`DELETE FROM sync_runtime_state WHERE key LIKE 'tp_archive_retry:%'`);
+    await db.query(`DELETE FROM documents WHERE application_id=$1`, [app]);
+    await db.query(`DELETE FROM trustpoint_draws WHERE tp_draw_id = ANY($1)`, [[fresh, old, done]]);
     await cleanup(app, bor, lo);
   }
 
