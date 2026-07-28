@@ -1,4 +1,4 @@
--- 352_bluelake_draw_defaults.sql
+-- 357_bluelake_draw_defaults.sql
 -- Idempotent. Owner-reported 2026-07-27: "Blue Lake should be defaulted to physical and to
 -- TrustPoint and the fee should be $250 in default … maybe it's not backdated."
 --
