@@ -510,6 +510,47 @@ const BORROWER_MAJOR_EMAIL = new Set([
 ]);
 
 /**
+ * The BCC list for a borrower email — the monitoring copies, computed in ONE place.
+ *
+ * The base is unchanged: an explicit `opts.bcc` wins, otherwise the file's assigned loan
+ * officer (cfg.ccLoanOfficerOnBorrowerEmail) plus any caller-supplied `bccExtra`, and the
+ * whole thing is skipped on the co-borrower fan-out (`_skipOfficerBcc`) so no monitor gets
+ * two near-identical copies.
+ *
+ * ON TOP of that: EVERY email about the DRAW PROCESS that goes to a borrower loops in the
+ * file's DRAW COORDINATOR and its LOAN OFFICER — always (owner-directed 2026-07-28: "on
+ * every email that is going out to the borrower about the draw process the draw coordinator
+ * and the loan officer should always be looped into that email"). This is done HERE, at the
+ * single borrower fan-out chokepoint, keyed on the notification's own CATEGORY ('draws' —
+ * CATEGORY_OF already buckets every draw type: draw, draw_setup, draw_findings, draw_message,
+ * draw_dispute_resolved, draw_request, …), rather than as a `bccExtra` each call site has to
+ * remember. That is what makes it true for the fifteen draw emails that exist today AND for
+ * every one added later — the class of bug where a new draw email silently ships without the
+ * desk on it cannot recur. Deliberately NOT gated on cfg.ccLoanOfficerOnBorrowerEmail: that
+ * switch governs routine borrower mail, and the owner's rule for draws is unconditional.
+ * Best-effort — a lookup failure leaves the base list untouched and never stops the email.
+ */
+async function _borrowerBcc(opts) {
+  const base = opts.bcc || (function () {
+    if (opts._skipOfficerBcc) return undefined;
+    const list = [];
+    if (cfg.ccLoanOfficerOnBorrowerEmail && opts.officer && opts.officer.email) list.push(opts.officer.email);
+    if (Array.isArray(opts.bccExtra)) for (const e of opts.bccExtra) if (e) list.push(e);
+    const uniq = [...new Set(list.map((e) => String(e).trim().toLowerCase()).filter(Boolean))];
+    return uniq.length ? uniq : undefined;
+  })();
+  // The draw loop-in rides the PRIMARY borrower only — same rule as the officer copy.
+  if (opts._skipOfficerBcc || !opts.applicationId || categoryOf(opts.type) !== 'draws') return base;
+  let loopIn = [];
+  try { loopIn = await require('./draw-recipients').drawLoopInBcc(opts.applicationId); }
+  catch (_) { /* best-effort: the borrower's email still goes out */ }
+  if (!loopIn.length) return base;
+  const merged = [...new Set([...[].concat(base || []), ...loopIn]
+    .map((e) => String(e).trim().toLowerCase()).filter(Boolean))];
+  return merged.length ? merged : undefined;
+}
+
+/**
  * Prepare a borrower opts payload the way the SEND path would: enrich the
  * file identity (subject tag, borrower meta, officer contact card, CTA link/
  * label) and scrub any partner names from staff-typed text. Extracted out of
@@ -544,14 +585,8 @@ async function _prepareBorrowerOpts(opts) {
         : (typeof s.body === 'string' ? scrubTextExcept(s.body, protect) : s.body);
       return { ...s, title: typeof s.title === 'string' ? scrubTextExcept(s.title, protect) : s.title, body };
     }) : opts.sections,
-    bcc: opts.bcc || (function () {
-      if (opts._skipOfficerBcc) return undefined;
-      const list = [];
-      if (cfg.ccLoanOfficerOnBorrowerEmail && opts.officer && opts.officer.email) list.push(opts.officer.email);
-      if (Array.isArray(opts.bccExtra)) for (const e of opts.bccExtra) if (e) list.push(e);
-      const uniq = [...new Set(list.map((e) => String(e).trim().toLowerCase()).filter(Boolean))];
-      return uniq.length ? uniq : undefined;
-    })(),
+    bcc: await _borrowerBcc(opts),
+    _bccResolved: true,   // EMAIL-ONLY marker (never written to the notifications row)
   };
 }
 
@@ -653,17 +688,13 @@ async function notifyBorrower(borrowerId, opts) {
     // received. The officer comes from enrichFileOpts (fileContext) — their own
     // business contact. An explicit opts.bcc wins; the provider drops any BCC that
     // is already a To recipient, so no self-duplicate.
-    // The officer BCC (monitoring copy) plus any caller-supplied `bccExtra` (e.g. the
-    // draw-coordinator desk draws@ on a draw email) — both ride the PRIMARY borrower only
-    // (skipped on co-borrower fan-out via _skipOfficerBcc) so no monitor gets two copies.
-    bcc: opts.bcc || (function () {
-      if (opts._skipOfficerBcc) return undefined;
-      const list = [];
-      if (cfg.ccLoanOfficerOnBorrowerEmail && opts.officer && opts.officer.email) list.push(opts.officer.email);
-      if (Array.isArray(opts.bccExtra)) for (const e of opts.bccExtra) if (e) list.push(e);
-      const uniq = [...new Set(list.map((e) => String(e).trim().toLowerCase()).filter(Boolean))];
-      return uniq.length ? uniq : undefined;
-    })(),
+    // The officer BCC (monitoring copy), any caller-supplied `bccExtra`, and the always-on
+    // draw-process loop-in (coordinator + officer) are ONE definition — `_borrowerBcc`. All
+    // of them ride the PRIMARY borrower only (skipped on the co-borrower fan-out via
+    // _skipOfficerBcc) so no monitor gets two copies. A file-scoped notification already
+    // resolved this in _prepareBorrowerOpts; re-resolving here would only repeat its
+    // lookups, so that result is reused and this call covers the file-less path.
+    bcc: opts._bccResolved ? opts.bcc : await _borrowerBcc(opts),
   };
   const { rows } = await db.query(
     `INSERT INTO notifications (recipient_kind,borrower_id,type,title,body,application_id,link)

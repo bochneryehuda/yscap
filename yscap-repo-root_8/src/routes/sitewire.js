@@ -1210,7 +1210,7 @@ router.post('/disbursements', requirePermission('manage_draws'), async (req, res
           type: 'draw',
           // Draw number in the SUBJECT + the draw desk looped in (owner-directed 2026-07-27),
           // matching the TrustPoint-mirrored release email in src/trustpoint/mirror.js.
-          bccExtra: await require('../lib/draw-recipients').drawTeamBcc(),
+          bccExtra: await require('../lib/draw-recipients').drawTeamBcc(application_id),
           title: `Your construction draw${own.number != null ? ` #${own.number}` : ''} has been released`,
           hero: { label: 'Released to you', value: amt, sub: 'typically arrives in 1–2 business days', tone: 'positive' },
           badge: { text: 'Draw released', tone: 'positive' },
@@ -2284,7 +2284,7 @@ router.post('/files/:id/findings/:drawId/deliver', requirePermission('manage_dra
         applicationId: appId, link: acceptLink, ctaLabel: 'Review & accept',
         cta2Label: 'Push back on a line', cta2Link: disputeLink,
         attachments: findingAttachments,
-        bccExtra: await require('../lib/draw-recipients').drawTeamBcc() }).catch(() => {});
+        bccExtra: await require('../lib/draw-recipients').drawTeamBcc(appId) }).catch(() => {});
     }
     // In-app only (owner-directed 2026-07-20): a confirmation that the coordinator
     // just delivered findings is not a whole-team EMAIL — the borrower's own
