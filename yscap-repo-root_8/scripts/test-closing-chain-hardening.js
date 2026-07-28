@@ -158,6 +158,26 @@ noop.sendMail = async (opts) => { sends.push(opts); return { ok: true, id: `stub
     assert(auth({ headers: [{ name: 'Authentication-Results', value: 'mx; dkim=pass' }] }).verdict === 'pass',
       'and the array-shaped headers some providers return are read identically');
 
+    // ROUND 7: a NON-DEFINITIVE DMARC result must not override a passing SPF/DKIM.
+    // dmarc=none (the sender publishes no DMARC policy — the norm for the small title
+    // companies, settlement agents and realtors a closing chain reaches) and
+    // temperror/permerror (the receiver could not evaluate DMARC) are NOT forgery
+    // signals. Scoring them 'fail' cried wolf on ordinary legitimate mail and trained
+    // staff to dismiss the banner — so the one real spoof it exists to catch gets
+    // dismissed with the rest.
+    assert(auth(hdrs('mx.test; spf=pass smtp.mailfrom=law.test; dkim=pass header.d=law.test; dmarc=none')).verdict === 'pass',
+      'a title firm with SPF+DKIM passing but NO DMARC record reads as a pass, not a forgery');
+    assert(auth(hdrs('mx.test; spf=pass; dkim=pass; dmarc=temperror')).verdict === 'pass',
+      'a transient DMARC lookup error does not turn a passing message into a warning');
+    assert(auth(hdrs('mx.test; spf=pass; dkim=pass; dmarc=permerror')).verdict === 'pass',
+      'a malformed DMARC record on the sender does not make them a forger');
+    assert(auth(hdrs('mx.test; spf=fail; dkim=fail; dmarc=none')).verdict === 'fail',
+      'but with no DMARC AND both SPF and DKIM failing, it is still a fail');
+    assert(auth(hdrs('mx.test; spf=pass header.d=other.test; dkim=pass header.d=other.test; dmarc=fail')).verdict === 'fail',
+      'a definitive dmarc=fail still wins even when SPF/DKIM pass — that is the alignment forgery DMARC exists to catch');
+    assert(auth(hdrs('mx.test; dmarc=none')).verdict === 'unknown',
+      'dmarc=none with nothing else to go on is honestly unknown, never a pass');
+
     // It reaches the database, which is what the card renders from.
     await emailLog.captureInbound({
       inboundId: 900000 + (process.pid % 1000), applicationId: appA, from: 'spoof@law.test',
@@ -169,6 +189,32 @@ noop.sendMail = async (opts) => { sends.push(opts); return { ok: true, id: `stub
         AND sender_auth->>'verdict'='fail' LIMIT 1`, [appA])).rows[0];
     assert(!!row && row.sender_auth.spf === 'fail',
       'an unauthenticated message is recorded on the file, so the card can warn before anyone opens the attachment');
+  }
+
+  /* ══ C2. the chain's "received" counter counts MESSAGES, not delivery attempts ══ */
+  {
+    // A transient save failure leaves the chain UNMARKED so Resend redelivers, and
+    // that block re-runs noteInbound each time. Counting the message every pass showed
+    // "4 received" for one email retried three times. countMessage gates the message
+    // tally to the terminal pass while docs still accumulate every pass.
+    const t = await closingThread.ensureThread(appA, { subject: 'Counter test' });
+    const before = (await db.query(`SELECT inbound_count, docs_count FROM closing_threads WHERE id=$1`, [t.id])).rows[0];
+
+    // Two transient-failure passes for ONE message: docs land as they recover, but the
+    // message must not be counted yet.
+    await closingThread.noteInbound(t.id, { docs: 1, countMessage: false });
+    await closingThread.noteInbound(t.id, { docs: 1, countMessage: false });
+    let now = (await db.query(`SELECT inbound_count, docs_count FROM closing_threads WHERE id=$1`, [t.id])).rows[0];
+    assert(now.inbound_count === before.inbound_count,
+      'a redelivered message that keeps hitting a transient failure is NOT counted as N separate received messages');
+    assert(now.docs_count === before.docs_count + 2,
+      'but the documents that landed on each pass DO accumulate');
+
+    // The terminal pass: the message is finally handled → counted exactly once.
+    await closingThread.noteInbound(t.id, { docs: 1, countMessage: true });
+    now = (await db.query(`SELECT inbound_count, docs_count FROM closing_threads WHERE id=$1`, [t.id])).rows[0];
+    assert(now.inbound_count === before.inbound_count + 1,
+      'the message is counted once, on the pass that finally handles it');
   }
 
   /* ══════════════ D. a closing date that loses a race stands down ══════════ */
