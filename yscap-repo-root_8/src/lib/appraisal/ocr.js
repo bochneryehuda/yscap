@@ -80,15 +80,17 @@ function findAsIs(text) {
 }
 
 /**
- * Attempt an advisory As-Is read of the appraisal PDF.
- * @param {{ pdfBase64?: string, byteLength?: number }} args
- * @returns {Promise<{attempted:boolean, candidate?:number, confidence?:string, snippet?:string, allAmounts?:number[], reason?:string}>}
+ * Read the PDF's TEXT with the hosted OCR.space service. Split out of ocrAsIsCandidate (2026-07-28)
+ * so the As-Is reader ladder (src/lib/appraisal/as-is-reader.js) can use this as its LAST-RESORT
+ * text source when the strong multi-engine router (Azure Document Intelligence → Google Document AI
+ * → Mistral) is not configured. Same limits, same never-throws contract.
+ * @returns {Promise<{ok:boolean, text?:string, reason?:string}>}
  */
-async function ocrAsIsCandidate({ pdfBase64, byteLength } = {}) {
-  if (!pdfBase64) return { attempted: false, reason: 'no appraisal PDF was available to read' };
+async function ocrSpaceText(pdfBase64, byteLength) {
+  if (!pdfBase64) return { ok: false, reason: 'no appraisal PDF was available to read' };
   const size = byteLength || Math.floor((String(pdfBase64).length * 3) / 4);
   if (size > MAX_OCR_PDF_BYTES) {
-    return { attempted: false, reason: 'the appraisal PDF is too large for the OCR service — please read the As-Is off the report' };
+    return { ok: false, tooLarge: true, reason: 'the appraisal PDF is too large for the OCR service — please read the As-Is off the report' };
   }
 
   const key = cfg.ocrSpaceApiKey || 'helloworld';
@@ -111,17 +113,33 @@ async function ocrAsIsCandidate({ pdfBase64, byteLength } = {}) {
     // slow/large body can't hang past the timeout (clearing the timer before this left it uncovered).
     j = await r.json().catch(() => ({}));
   } catch (e) {
-    return { attempted: true, reason: e.name === 'AbortError' ? 'the OCR service timed out' : `the OCR service could not be reached (${e.message})` };
+    return { ok: false, reason: e.name === 'AbortError' ? 'the OCR service timed out' : `the OCR service could not be reached (${e.message})` };
   } finally {
     clearTimeout(timer);
   }
 
   if (!r.ok || j.IsErroredOnProcessing) {
     const msg = j.ErrorMessage ? [].concat(j.ErrorMessage).join('; ') : `HTTP ${r.status}`;
-    return { attempted: true, reason: `the OCR service reported an error (${msg})` };
+    return { ok: false, reason: `the OCR service reported an error (${msg})` };
   }
 
-  const text = (j.ParsedResults || []).map((p) => p.ParsedText || '').join('\n');
+  return { ok: true, text: (j.ParsedResults || []).map((p) => p.ParsedText || '').join('\n') };
+}
+
+/**
+ * Attempt an advisory As-Is read of the appraisal PDF.
+ * @param {{ pdfBase64?: string, byteLength?: number }} args
+ * @returns {Promise<{attempted:boolean, candidate?:number, confidence?:string, snippet?:string, allAmounts?:number[], reason?:string}>}
+ */
+async function ocrAsIsCandidate({ pdfBase64, byteLength } = {}) {
+  const read = await ocrSpaceText(pdfBase64, byteLength);
+  if (!read.ok) {
+    // "Nothing to read" / "too big to send" were never an ATTEMPT; a service error was.
+    const attempted = !(read.tooLarge || !pdfBase64);
+    return { attempted, reason: read.reason };
+  }
+
+  const text = read.text;
   const hits = findAsIs(text);
   if (!hits.length) return { attempted: true, reason: 'no confident As-Is value could be read from the PDF' };
 
@@ -155,4 +173,4 @@ function buildOcrNote(adv) {
   return `${stamp} ${adv.reason ? adv.reason.charAt(0).toUpperCase() + adv.reason.slice(1) : 'No confident value was found'}. Please enter the As-Is value from the report — it is never filled in automatically.`;
 }
 
-module.exports = { ocrAsIsCandidate, findAsIs, buildOcrNote, MAX_OCR_PDF_BYTES };
+module.exports = { ocrAsIsCandidate, ocrSpaceText, findAsIs, buildOcrNote, MAX_OCR_PDF_BYTES };
