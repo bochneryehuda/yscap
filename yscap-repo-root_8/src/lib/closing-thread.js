@@ -50,12 +50,18 @@
 const crypto = require('crypto');
 const db = require('../db');
 const cfg = require('../config');
-const { closingReplyTo, UUID_RE } = require('./file-address');
+const { closingReplyTo, UUID_RE, CLOSING_TOKEN_RE } = require('./file-address');
 
 // 10 bytes = 20 lowercase hex chars = 80 bits. Short enough for an attorney to
 // retype off the page, far too large to guess.
 const TOKEN_BYTES = 10;
 const MAX_TOKEN_TRIES = 5;
+
+/** How long a claimed-but-unsent message may sit before it is treated as
+    abandoned. Well above any provider timeout (Resend aborts at 15s, Graph far
+    sooner) and above the slowest realistic 20 MB upload, so this can only ever
+    catch a process that died mid-send — never a message still on its way. */
+const CLAIM_STALE_MIN = 15;
 
 /** The system messages that may ride this chain. Adding another one is a single
     entry here plus the migration's CHECK — the send path itself is generic, which
@@ -159,7 +165,10 @@ async function ensureThread(applicationId, { staffId = null, subject = null } = 
 /** Resolve an inbound `closing+<token>@` address to its file. */
 async function resolveByToken(token) {
   const t = String(token || '').trim().toLowerCase();
-  if (!/^[0-9a-f]{16,40}$/.test(t)) return null;
+  // The SHARED pattern that mints and parses these addresses — never a second copy.
+  // A private duplicate here would let a widened token format build addresses that
+  // resolve nowhere, so a whole closing chain would go quietly uncaptured.
+  if (!CLOSING_TOKEN_RE.test(t)) return null;
   try {
     const r = await db.query(
       `SELECT ct.*, a.deleted_at
@@ -197,46 +206,80 @@ function addressFor(thread) {
 async function claimMessage({ threadId, applicationId, eventKind, dedupeKey = null, subject = null, staffId = null }) {
   if (!threadId || !isAppId(applicationId)) return null;
   if (!EVENT_KINDS.includes(eventKind)) return null;
-  try {
-    const seq = await db.query(
-      `SELECT COALESCE(MAX(seq),0) + 1 AS n FROM closing_thread_messages WHERE thread_id=$1`, [threadId]);
-    const r = await db.query(
-      `INSERT INTO closing_thread_messages
-         (thread_id, application_id, seq, event_kind, dedupe_key, subject, status, sent_by)
-       VALUES ($1,$2,$3,$4,$5,$6,'claimed',$7)
-       ON CONFLICT (thread_id, dedupe_key) WHERE dedupe_key IS NOT NULL DO NOTHING
-       RETURNING *`,
-      [threadId, applicationId, seq.rows[0].n, eventKind, dedupeKey,
-       subject ? String(subject).slice(0, 500) : null, staffId]);
-    return r.rows[0] || null;
-  } catch (_) { return null; }
+
+  // RELEASE AN ABANDONED CLAIM FIRST.
+  //
+  // A claim is committed BEFORE the send, so a process killed between the two
+  // (Render redeploys on every merge) leaves a 'claimed' row holding the key with
+  // nothing on its way. Nothing else in the system would ever touch that row: the
+  // backstop sweep re-selects the event, re-claims, loses to the held key and
+  // reports `already_sent` — forever. The executed term sheet would simply never
+  // reach the attorney, and the desk would show a healthy chain.
+  //
+  // A claim older than CLAIM_STALE_MIN cannot still be in flight (the provider
+  // clients cap out far below it), so it is demoted to a permanent 'abandoned' row
+  // — kept for the audit trail, key freed — and this attempt takes the event.
+  if (dedupeKey) {
+    try {
+      await db.query(
+        `UPDATE closing_thread_messages
+            SET status='abandoned', dedupe_key=NULL,
+                error=COALESCE(error,'claimed but never sent (process ended mid-send)')
+          WHERE thread_id=$1 AND dedupe_key=$2 AND status='claimed'
+            AND created_at < now() - ($3 || ' minutes')::interval`,
+        [threadId, dedupeKey, String(CLAIM_STALE_MIN)]);
+    } catch (_) { /* best-effort: the claim below still decides the outcome */ }
+  }
+
+  // A DB failure here must NOT read as "already sent" — see the throw below.
+  const seq = await db.query(
+    `SELECT COALESCE(MAX(seq),0) + 1 AS n FROM closing_thread_messages WHERE thread_id=$1`, [threadId]);
+  const r = await db.query(
+    `INSERT INTO closing_thread_messages
+       (thread_id, application_id, seq, event_kind, dedupe_key, subject, status, sent_by)
+     VALUES ($1,$2,$3,$4,$5,$6,'claimed',$7)
+     ON CONFLICT (thread_id, dedupe_key) WHERE dedupe_key IS NOT NULL DO NOTHING
+     RETURNING *`,
+    [threadId, applicationId, seq.rows[0].n, eventKind, dedupeKey,
+     subject ? String(subject).slice(0, 500) : null, staffId]);
+  // null ONLY ever means "the unique index refused it — somebody already sent this".
+  // Every other failure THROWS, because swallowing it here told the operator their
+  // closing-prep request had already gone out when in fact nothing was sent.
+  return r.rows[0] || null;
 }
 
 /** Finish a claimed message: record what was actually sent, advance the chain's
     reference point, and bump the thread's counters. Best-effort. */
-async function settleMessage(msgId, { messageId, inReplyTo, to = [], cc = [], attachments = [], status = 'sent', error = null } = {}) {
+async function settleMessage(msgId, { messageId, inReplyTo, to = [], cc = [], attachments = [], status = 'sent', error = null, releaseKey = null } = {}) {
   if (!msgId) return;
+  // A DEFINITELY-FAILED send RELEASES THE DEDUPE KEY while keeping the row.
+  //
+  // This is load-bearing, not tidiness. The key is the "already sent" proof, so a
+  // failed row that keeps it makes one two-second provider blip permanent: every
+  // later attempt at that event, from any door and from the backstop sweep,
+  // answers `already_sent` and the closing attorney is never told the term sheet
+  // was executed. The row stays for the audit trail; only its claim is freed.
+  //
+  // BUT AN AMBIGUOUS FAILURE MUST NOT RELEASE IT. `email.sendMail` also rethrows on
+  // a client-side ABORT — Resend gives up at 15 seconds, and the default closing
+  // package is 20 MB raw (~27 MB base64), which routinely takes longer than that to
+  // push. The provider may well have accepted it. Releasing there means the next
+  // attempt re-sends the entire package to outside counsel and everyone they have
+  // copied, twice. So an ambiguous failure is settled 'unknown' and KEEPS the key;
+  // the card shows it as needing a human decision, and the operator's explicit
+  // "force re-send" (dedupeKey null) is the deliberate way through.
+  const release = releaseKey === null ? (status === 'error') : !!releaseKey;
   try {
-    // A FAILED send RELEASES THE DEDUPE KEY while keeping the row.
-    //
-    // This is load-bearing, not tidiness. The key is the "already sent" proof, and
-    // `email.sendMail` rethrows only when the provider REJECTED the message — so a
-    // failed row is a message nobody received. Leaving its key in place made one
-    // two-second provider blip permanent: every later attempt at that event, from
-    // any door and from the backstop sweep, answered `already_sent` and the closing
-    // attorney was never told the term sheet was executed. The row stays for the
-    // audit trail (status='error' + the reason); only its claim on the event is
-    // freed, so the next attempt can take it.
     await db.query(
       `UPDATE closing_thread_messages
           SET message_id=$2, in_reply_to=$3, to_emails=$4::jsonb, cc_emails=$5::jsonb,
               attachments=$6::jsonb, status=$7, error=$8, sent_at=now(),
-              dedupe_key = CASE WHEN $7 = 'error' THEN NULL ELSE dedupe_key END
+              dedupe_key = CASE WHEN $9 THEN NULL ELSE dedupe_key END
         WHERE id=$1`,
       [msgId, messageId || null, inReplyTo || null,
        JSON.stringify((to || []).slice(0, 100)), JSON.stringify((cc || []).slice(0, 100)),
        JSON.stringify((attachments || []).slice(0, 50)), status,
-       error ? String(error).slice(0, 400) : null]);
+       error ? String(error).slice(0, 400) : null, release]);
   } catch (_) { /* best-effort */ }
   if (status !== 'sent' || !messageId) return;
   try {
@@ -252,6 +295,19 @@ async function settleMessage(msgId, { messageId, inReplyTo, to = [], cc = [], at
         WHERE id = (SELECT thread_id FROM closing_thread_messages WHERE id=$1)`,
       [msgId, messageId]);
   } catch (_) { /* best-effort */ }
+}
+
+/**
+ * Did this send fail in a way that leaves it UNKNOWN whether the provider took the
+ * message? A refusal (bad address, 4xx, rejected payload) is definite: nothing was
+ * delivered, so the event is safe to retry. A client-side abort/timeout/socket
+ * error is not — the request may have been fully received and queued. On a message
+ * carrying the whole closing package to outside counsel, re-sending on a maybe is
+ * the worse mistake, so these are settled 'unknown' and keep their claim.
+ */
+function isAmbiguousSendFailure(err) {
+  const s = `${(err && err.message) || ''} ${(err && err.code) || ''} ${(err && err.name) || ''}`.toLowerCase();
+  return /timed out|timeout|abort|econnreset|econnaborted|etimedout|epipe|socket hang up|network|fetch failed/.test(s);
 }
 
 /** Drop a claim that never went out, so a later retry can claim the event again.
@@ -316,10 +372,17 @@ async function sendOnThread(p = {}) {
   const isFirst = !thread.root_message_id;
   const address = addressFor(thread);
 
-  const claim = await claimMessage({
-    threadId: thread.id, applicationId: appId, eventKind: p.eventKind,
-    dedupeKey: p.dedupeKey || null, staffId: p.staffId || null,
-  });
+  // A DB failure while claiming must never be reported as "already sent" — that
+  // told the operator their closing-prep request had gone out when nothing had.
+  let claim;
+  try {
+    claim = await claimMessage({
+      threadId: thread.id, applicationId: appId, eventKind: p.eventKind,
+      dedupeKey: p.dedupeKey || null, staffId: p.staffId || null,
+    });
+  } catch (e) {
+    return { ok: false, reason: 'claim_failed', error: e && e.message, thread, address };
+  }
   if (!claim) return { ok: true, skipped: true, reason: 'already_sent', thread, address };
 
   let built;
@@ -365,8 +428,9 @@ async function sendOnThread(p = {}) {
     return { ok: false, reason: 'no_recipient', thread, address };
   }
 
+  let res;
   try {
-    await email.sendMail({
+    res = await email.sendMail({
       to, cc,
       subject, html: built.html, text: built.text,
       // The chain's own address is the Reply-To, so a reply that DOES come back
@@ -386,8 +450,38 @@ async function sendOnThread(p = {}) {
       },
     });
   } catch (e) {
-    await settleMessage(claim.id, { messageId, inReplyTo, to, cc, attachments: attachMeta, status: 'error', error: e && e.message });
-    return { ok: false, reason: 'send_failed', error: e && e.message, thread, address, to, cc, subject };
+    // Ambiguous (timed out / aborted mid-upload) → the provider may have taken it,
+    // so keep the key and let a human decide. Definite rejection → free the key so
+    // the next attempt, or the backstop sweep, can retry on its own.
+    const ambiguous = isAmbiguousSendFailure(e);
+    await settleMessage(claim.id, {
+      messageId, inReplyTo, to, cc, attachments: attachMeta,
+      status: ambiguous ? 'unknown' : 'error', error: e && e.message, releaseKey: !ambiguous,
+    });
+    return {
+      ok: false, reason: ambiguous ? 'send_unconfirmed' : 'send_failed',
+      error: e && e.message, thread, address, to, cc, subject,
+    };
+  }
+
+  // THE PROVIDER'S ANSWER DECIDES, not the absence of a throw. `email/noop.js`
+  // returns {ok:false, skipped:true} WITHOUT throwing, and the provider silently
+  // falls back to 'none' when its API key is missing — so recording 'sent' here
+  // meant a rotated key turned every closing update into a delivered-and-deduped
+  // message that no attorney ever received, with the desk showing a healthy chain.
+  if (!res || res.ok !== true) {
+    const skipped = !!(res && res.skipped);
+    await settleMessage(claim.id, {
+      messageId, inReplyTo, to, cc, attachments: attachMeta,
+      status: skipped ? 'skipped' : 'error',
+      error: skipped ? 'email sending is turned off in this environment' : 'the email provider did not accept the message',
+      // Not delivered and worth retrying once email is working again.
+      releaseKey: true,
+    });
+    return {
+      ok: false, reason: skipped ? 'email_disabled' : 'send_failed',
+      thread, address, to, cc, subject,
+    };
   }
 
   await settleMessage(claim.id, { messageId, inReplyTo, to, cc, attachments: attachMeta, status: 'sent' });

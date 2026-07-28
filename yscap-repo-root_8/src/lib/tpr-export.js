@@ -361,8 +361,14 @@ const TPR_DOC_SELECT = `
      -- iska/heter where the boundary IS kept on purpose so a "Siska Ave" or an
      -- "Iskander" is never silently dropped. Keep in step with
      -- closing-prep.FROZEN_NAME_RE.
+     -- slot_label is the THIRD field and is not optional: a document uploaded into
+     -- an entity's own library has no doc_kind, no condition and no template code,
+     -- so the slot the uploader typed is its only identity. A signed Heter Iska
+     -- scanned as scan_0042.pdf under the slot "Heter Iska" cleared every other
+     -- guard here and shipped in the investor package.
      AND COALESCE(ci.label,'') !~* 'heter[[:space:]_.-]*iska|(^|[^a-z0-9])(iska|heter)([^a-z0-9]|$)'
      AND COALESCE(d.filename,'') !~* 'heter[[:space:]_.-]*iska|(^|[^a-z0-9])(iska|heter)([^a-z0-9]|$)'
+     AND COALESCE(d.slot_label,'') !~* 'heter[[:space:]_.-]*iska|(^|[^a-z0-9])(iska|heter)([^a-z0-9]|$)'
      -- #83: an EXPIRED Certificate of Good Standing behaves like empty
      -- everywhere, so it must not ship as if it were a live document. Guard the
      -- template_id IS NOT NULL first: a loose/profile/entity doc has NULL

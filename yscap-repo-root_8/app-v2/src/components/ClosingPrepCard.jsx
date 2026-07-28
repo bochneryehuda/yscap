@@ -23,6 +23,24 @@ import EmailCenter from './EmailCenter.jsx';
 const INK = '#141B22';
 const MUTED = '#4B585C';
 const GOLD = 'var(--gold,#AE8746)';
+// `.notice` in styles.css carries ONLY padding/radius/font-size — border and
+// background live on its `.err`/`.ok`/`.info`/`.warn` variants. Setting borderColor
+// on a bare `.notice` therefore drew nothing at all, so every gold callout on this
+// card rendered as unboxed body text. These are the surface a callout needs.
+const CALLOUT = { border: `1px solid ${GOLD}`, background: 'var(--paper,#F6F3EC)' };
+
+/** Who is ACTUALLY copied, counted rather than assumed — the old wording asserted a
+    loan officer even on an unassigned file and read "The loan officer are copied." */
+function copiedLine(team = {}) {
+  const who = [];
+  if (team.officer) who.push('the loan officer');
+  if (team.processor) who.push('the processor');
+  if (team.closer) who.push('our closer');
+  if (!who.length) return 'Nobody from the team is copied — this file has no loan officer, processor or closer assigned.';
+  const list = who.length === 1 ? who[0] : `${who.slice(0, -1).join(', ')} and ${who[who.length - 1]}`;
+  const verb = who.length === 1 ? 'is' : 'are';
+  return `${list.charAt(0).toUpperCase()}${list.slice(1)} ${verb} copied.`;
+}
 const TEAL = 'var(--teal,#2F7F86)';
 
 const STATUS_LABEL = {
@@ -48,6 +66,7 @@ const when = (ts) => (ts ? new Date(ts).toLocaleString([], { dateStyle: 'medium'
 /* The unique closing address, front and centre — it is the whole feature. */
 function ChainAddress({ chain }) {
   const [copied, setCopied] = useState(false);
+  const [copyFailed, setCopyFailed] = useState(false);
   // No chain at all = closing prep has not been sent yet. The address is minted on
   // the first send, so say that rather than implying something is misconfigured.
   if (!chain) {
@@ -61,7 +80,7 @@ function ChainAddress({ chain }) {
   const address = chain.address;
   if (!address) {
     return (
-      <div className="notice" style={{ marginTop: 10, borderColor: GOLD }}>
+      <div className="notice" style={{ marginTop: 10, ...CALLOUT }}>
         <b style={{ color: INK }}>No inbound email domain is set up yet.</b>
         <div className="small" style={{ color: MUTED, marginTop: 3 }}>
           The request still sends, but there is no unique closing address to put on it — so the
@@ -71,9 +90,15 @@ function ChainAddress({ chain }) {
       </div>
     );
   }
-  const copy = () => {
-    try { navigator.clipboard.writeText(address); setCopied(true); setTimeout(() => setCopied(false), 1800); }
-    catch (_) { /* clipboard blocked — the address is selectable on screen */ }
+  const copy = async () => {
+    // writeText returns a promise, so a blocked clipboard (denied permission, or any
+    // non-secure context) rejects AFTER a plain try block has already said "Copied".
+    // On the one address the whole feature depends on, a false success is the worst
+    // possible answer — so the tick only appears once the copy really happened.
+    try {
+      await navigator.clipboard.writeText(address);
+      setCopied(true); setTimeout(() => setCopied(false), 1800);
+    } catch (_) { setCopyFailed(true); setTimeout(() => setCopyFailed(false), 4000); }
   };
   return (
     <div className="panel" style={{ marginTop: 10, background: 'var(--paper,#f6f3ec)', borderColor: GOLD }}>
@@ -89,6 +114,11 @@ function ChainAddress({ chain }) {
         </code>
         <button className="btn ghost small" onClick={copy}>{copied ? 'Copied' : 'Copy'}</button>
       </div>
+      {copyFailed && (
+        <div className="small" style={{ color: 'var(--danger,#8C2F2F)', marginTop: 4 }}>
+          Your browser blocked the copy — select the address above and copy it by hand.
+        </div>
+      )}
       {chain && (
         <div className="small" style={{ color: MUTED, marginTop: 8 }}>
           {chain.outboundCount || 0} sent · {chain.inboundCount || 0} received · {chain.docsCount || 0} document{(chain.docsCount || 0) === 1 ? '' : 's'} saved
@@ -158,11 +188,25 @@ function DocumentPreview({ documents, isAssignment }) {
       )}
 
       {missing.length > 0 && (
-        <div className="notice" style={{ marginTop: 8, borderColor: GOLD }}>
+        <div className="notice" style={{ marginTop: 8, ...CALLOUT }}>
           <b style={{ color: INK }}>Not on the file yet:</b>{' '}
           <span style={{ color: MUTED }}>{missing.map((m) => m.label).join(' · ')}</span>
           <div className="small" style={{ color: MUTED, marginTop: 3 }}>
             The email says these are coming. You can send now and they follow later, or add them first.
+          </div>
+        </div>
+      )}
+
+      {(documents.willSkip || []).length > 0 && (
+        <div className="notice" style={{ marginTop: 8, ...CALLOUT }}>
+          <b style={{ color: INK }}>These cannot be attached:</b>
+          <ul style={{ margin: '3px 0 0 18px', padding: 0, color: MUTED }}>
+            {(documents.willSkip || []).map((d, i) => (
+              <li key={i} className="small">{d.filename} — {d.reason === 'too large to email' ? 'too big to email on its own' : 'we have no stored copy of it'}</li>
+            ))}
+          </ul>
+          <div className="small" style={{ color: MUTED, marginTop: 3 }}>
+            The email names them so the attorney knows to ask, but it is better to send them another way.
           </div>
         </div>
       )}
@@ -192,9 +236,7 @@ function Recipients({ recipients, team, contacts, extra, setExtra, disabled }) {
         <div className="small" style={{ marginTop: 5, color: MUTED }}>
           <div><b style={{ color: INK }}>To:</b> {recipients.to.join(', ') || '— nobody yet'}</div>
           <div><b style={{ color: INK }}>Cc:</b> {recipients.cc.join(', ') || '—'} <span>(visible to everyone)</span></div>
-          <div style={{ marginTop: 4 }}>
-            The loan officer{team.processor ? ', the processor' : ''}{team.closer ? ' and our closer' : ''} are copied.
-          </div>
+          <div style={{ marginTop: 4 }}>{copiedLine(team)}</div>
           {team.closerAmbiguous && (
             <div style={{ color: 'var(--danger)', marginTop: 3 }}>
               No closer is assigned to this file and there is more than one closer on the team — assign
@@ -354,6 +396,13 @@ export default function ClosingPrepCard({ appId }) {
   const order = data.order || {};
   const blockers = order.blockers || [];
   const placed = order.status !== 'not_ordered' && order.status !== 'cancelled';
+  // A CANCELLED order still leaves its 'order' message on the chain (cancelling
+  // deliberately keeps everything the attorney already sent). So plain "send" would
+  // lose to that message's claim and answer 409 "use Follow-up, or force a re-send"
+  // — while Follow up is hidden in exactly this state. Sending from here IS a
+  // re-send, so it goes down the re-send path and says so.
+  const orderOnChain = ((data.chain && data.chain.messages) || [])
+    .some((m) => m.event_kind === 'order' && (m.status === 'sent' || m.status === 'carried'));
   const isAssignment = !!(data.file || {}).isAssignment;
   const ready = blockers.length === 0;
 
@@ -401,14 +450,17 @@ export default function ClosingPrepCard({ appId }) {
 
       {/* What still has to happen first — each with the action, never a silently
           greyed-out button (a loan officer reads a disabled button as "not allowed"). */}
-      {!placed && !ready && (
-        <div className="notice" style={{ marginTop: 10, borderColor: GOLD }}>
-          <div style={{ fontWeight: 600, marginBottom: 4, color: INK }}>To send this, first:</div>
+      {!ready && (
+        <div className="notice" style={{ marginTop: 10, ...CALLOUT }}>
+          <div style={{ fontWeight: 600, marginBottom: 4, color: INK }}>
+            {placed ? 'Before you can send this again:' : 'To send this, first:'}
+          </div>
           <ul style={{ margin: '0 0 2px 18px', padding: 0, color: MUTED }}>
             {blockers.includes('loan_number') && <li>Add the file's loan number — the box at the top of this section.</li>}
             {blockers.includes('not_registered') && <li>Register the product in Products &amp; Pricing. The attorney needs a term sheet to draft from.</li>}
             {blockers.includes('term_sheet') && <li>Generate the term sheet, so there is one to attach.</li>}
             {blockers.includes('attorney') && <li>Add an attorney contact to the file — there is nowhere to send this yet.</li>}
+            {blockers.includes('documents_unavailable') && <li>We could not read this file's documents just now. Try again in a moment.</li>}
           </ul>
         </div>
       )}
@@ -423,16 +475,19 @@ export default function ClosingPrepCard({ appId }) {
 
       <div className="row" style={{ gap: 8, flexWrap: 'wrap', marginTop: 10 }}>
         {!placed && (
-          <button className="btn primary small" disabled={!!busy || !ready} onClick={() => place(false)}
-            title={ready ? 'Send the closing-prep request to the attorney' : 'Finish the steps listed above first'}>
-            {busy === 'place' ? 'Sending…' : 'Send closing prep request'}
+          <button className="btn primary small" disabled={!!busy || !ready} onClick={() => place(orderOnChain)}
+            title={ready
+              ? (orderOnChain ? 'Send the closing-prep request again, with the documents as they stand now'
+                : 'Send the closing-prep request to the attorney')
+              : 'Finish the steps listed above first'}>
+            {busy === 'place' ? 'Sending…' : (orderOnChain ? 'Send closing prep request again' : 'Send closing prep request')}
           </button>
         )}
         {placed && (
           <>
             <button className="btn primary small" disabled={!!busy} onClick={() => setFollowOpen((o) => !o)}>Follow up</button>
             <button className="btn ghost small" disabled={!!busy || !ready} onClick={() => place(true)}
-              title="Send the whole request again, with the documents as they stand now">
+              title={ready ? 'Send the whole request again, with the documents as they stand now' : 'Finish the steps listed above first'}>
               {busy === 'place' ? 'Sending…' : 'Re-send request'}
             </button>
             <button className="btn ghost small" disabled={!!busy} style={{ color: 'var(--danger)' }} onClick={() => cancel(false)}>

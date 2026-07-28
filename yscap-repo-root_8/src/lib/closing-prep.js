@@ -103,11 +103,20 @@ const GROUP_KEYS = GROUPS.map((g) => g.key);
 //   · a STANDALONE `iska` / `heter`, where the boundary IS kept deliberately: a
 //     street called "Siska Ave" or a surname like "Iskander" must not silently
 //     disappear from a package.
+//
+// AND IT MUST READ `slot_label` TOO — that was the second audited leak. A document
+// uploaded into an ENTITY's own library carries no `doc_kind`, no condition and no
+// template code; `slot_label` is the only human-readable identity it has, and it is
+// free text the uploader types. So a signed Heter Iska scanned as `scan_0042.pdf`
+// into the vesting entity under the slot "Heter Iska" passed every other guard and
+// was filed as an ENTITY DOCUMENT — attached to the email to the outside law firm,
+// and shipped in the investor TPR export. The mirrored SQL predicate in
+// `tpr-export.TPR_DOC_SELECT` reads the same three fields; keep the two in step.
 const FROZEN_KINDS = new Set(['heter_iska', 'heter_iska_signed', 'esign_certificate']);
 const FROZEN_NAME_RE = /heter[\s_.\-]*iska|(?:^|[^a-z0-9])(?:iska|heter)(?:[^a-z0-9]|$)/i;
 function isFrozenOut(d) {
   if (FROZEN_KINDS.has(d.doc_kind)) return true;
-  return FROZEN_NAME_RE.test(`${d.filename || ''} ${d.item_label || ''}`);
+  return FROZEN_NAME_RE.test(`${d.filename || ''} ${d.item_label || ''} ${d.slot_label || ''}`);
 }
 
 /** Which group a document belongs to, or null when it is not part of this package.
@@ -140,7 +149,18 @@ function groupOf(d) {
 async function gatherPackage(applicationId) {
   const tprExport = require('./tpr-export');
   let rows = [];
-  try { rows = await tprExport.selectTprDocuments(applicationId); } catch (_) { rows = []; }
+  // Fail CLOSED (never attach a half-read package) but never fail SILENTLY. An empty
+  // result read as "this file has no term sheet", which the card printed as
+  // "Generate the term sheet, then send the closing-prep request" — advice nobody
+  // could act on, on a file whose term sheet was sitting right there. The flag turns
+  // it into an honest "we could not read the file's documents just now".
+  let unavailable = false;
+  try {
+    rows = await tprExport.selectTprDocuments(applicationId);
+  } catch (e) {
+    unavailable = true;
+    console.error('[closing-prep] could not read the file documents:', (e && e.message) || e);
+  }
 
   const groups = {};
   for (const k of GROUP_KEYS) groups[k] = [];
@@ -163,6 +183,7 @@ async function gatherPackage(applicationId) {
   return {
     groups,
     ordered,
+    unavailable,
     counts: Object.fromEntries(GROUP_KEYS.map((k) => [k, groups[k].length])),
     // Which of the owner's named document sets are EMPTY. Never a blocker — a
     // straight (non-assignment) purchase legitimately has no assignment — but the
@@ -191,20 +212,70 @@ function insuranceSlots(docs) {
 
 /** The per-message attachment budget for the ACTIVE provider. Graph rejects inline
     attachments past ~3 MB (it needs an upload session we do not implement), so it
-    gets its own much smaller budget rather than failing the whole send. */
+    gets its own much smaller budget rather than failing the whole send.
+    Returns `{ cap, encoded }` — see `encodedLen` for why the unit matters. */
 function attachBudget() {
   let provider = '';
   try { provider = String(require('./email').name || cfg.emailProvider || '').toLowerCase(); } catch (_) { provider = ''; }
-  return provider === 'graph' ? cfg.closingAttachBudgetGraphBytes : cfg.closingAttachBudgetBytes;
+  return provider === 'graph'
+    ? { cap: cfg.closingAttachBudgetGraphBytes, encoded: true }
+    : { cap: cfg.closingAttachBudgetBytes, encoded: false };
+}
+
+/**
+ * What one attachment actually COSTS against the budget.
+ *
+ * Both providers carry attachment bytes base64-encoded — 4 characters per 3 bytes,
+ * a 33% expansion — and the Graph ceiling (~3 MB) is a limit on the REQUEST, not on
+ * the decoded file. Measuring raw bytes against it meant a package that looked like
+ * it just fit (2.5 MB raw) went out as 3.33 MB on the wire, Graph rejected the whole
+ * `sendMail`, and the entire closing-prep order 500'd with nothing delivered. The
+ * generous Resend budget is a soft self-limit, so it stays in raw bytes.
+ */
+function encodedLen(rawLen) { return Math.ceil(rawLen / 3) * 4; }
+
+/** The budget expressed in RAW document bytes, for the card's "these add up to more
+    than one email can carry" warning — the card compares stored file sizes, so it
+    must be told the capacity in the same unit it is measuring. */
+function attachBudgetRawBytes() {
+  const b = attachBudget();
+  return b.encoded ? Math.floor(b.cap * 3 / 4) : b.cap;
+}
+
+/** What we can tell WILL be skipped without reading a single byte, so the card can
+    say so before the send rather than the email saying so after it. Deliberately
+    only the two certainties (`size_bytes` over the single-attachment ceiling, and no
+    stored copy) — an unreadable or empty file can only be discovered by reading it,
+    and `buildAttachments` still reports those. */
+function predictSkips(orderedDocs) {
+  const out = [];
+  for (const d of orderedDocs || []) {
+    if (!d.storage_ref) out.push({ id: d.id, filename: d.filename, reason: 'no stored copy' });
+    else if (Number(d.size_bytes) > MAX_ONE_ATTACHMENT) out.push({ id: d.id, filename: d.filename, reason: 'too large to email' });
+  }
+  return out;
 }
 
 const MAX_ONE_ATTACHMENT = 10 * 1024 * 1024;
 
 /** A filename an outside law firm can read at a glance, with the group named when
     the document's own name doesn't say what it is. */
-function attachName(doc) {
-  const raw = String(doc.filename || 'document').replace(/[\r\n"\\/]+/g, '_').trim().slice(0, 180);
-  return raw || 'document';
+function attachName(doc, usedNames = null) {
+  const raw = String(doc.filename || 'document').replace(/[\r\n"\\/]+/g, '_').trim().slice(0, 180) || 'document';
+  if (!usedNames) return raw;
+  // Two conditions can both hold a file called `scan.pdf`. Attaching both under the
+  // same name leaves the attorney unable to tell which is the contract and which is
+  // the operating agreement — so a COLLIDING name (only a colliding one) is
+  // qualified with the group it came from, then numbered if that still collides.
+  if (!usedNames.has(raw)) { usedNames.add(raw); return raw; }
+  const dot = raw.lastIndexOf('.');
+  const stem = dot > 0 ? raw.slice(0, dot) : raw;
+  const ext = dot > 0 ? raw.slice(dot) : '';
+  const group = doc.groupLabel ? String(doc.groupLabel).replace(/[\r\n"\\/]+/g, ' ').trim() : '';
+  let candidate = group ? `${stem} (${group})${ext}` : `${stem} (2)${ext}`;
+  for (let n = 2; usedNames.has(candidate); n++) candidate = `${stem} (${group || 'copy'} ${n})${ext}`;
+  usedNames.add(candidate);
+  return candidate;
 }
 
 /**
@@ -218,11 +289,17 @@ function attachName(doc) {
  * feature exists to prevent.
  */
 async function buildAttachments(orderedDocs, { budget = null } = {}) {
-  const cap = budget || attachBudget();
+  const b = budget != null
+    ? (typeof budget === 'object' ? budget : { cap: budget, encoded: false })
+    : attachBudget();
+  const cap = b.cap;
+  const cost = (len) => (b.encoded ? encodedLen(len) : len);
   const attachments = [];
   const attached = [];
   const skipped = [];
-  let total = 0;
+  const usedNames = new Set();
+  let total = 0;   // raw bytes, for reporting
+  let spent = 0;   // budget units (raw or base64), for the cap
   for (const d of orderedDocs || []) {
     if (!d.storage_ref) { skipped.push({ ...d, reason: 'no stored copy' }); continue; }
     if (Number(d.size_bytes) > MAX_ONE_ATTACHMENT) {
@@ -234,16 +311,17 @@ async function buildAttachments(orderedDocs, { budget = null } = {}) {
     catch (_) { skipped.push({ ...d, reason: 'could not be read' }); continue; }
     if (!buf || !buf.length) { skipped.push({ ...d, reason: 'empty file' }); continue; }
     if (buf.length > MAX_ONE_ATTACHMENT) { skipped.push({ ...d, reason: 'too large to email' }); continue; }
-    if (total + buf.length > cap) { skipped.push({ ...d, reason: 'over the email size limit' }); continue; }
+    if (spent + cost(buf.length) > cap) { skipped.push({ ...d, reason: 'over the email size limit' }); continue; }
+    spent += cost(buf.length);
     total += buf.length;
     attachments.push({
-      filename: attachName(d),
+      filename: attachName(d, usedNames),
       contentType: d.content_type || 'application/octet-stream',
       content: buf.toString('base64'),
     });
     attached.push({ ...d, bytes: buf.length });
   }
-  return { attachments, attached, skipped, totalBytes: total, budget: cap };
+  return { attachments, attached, skipped, totalBytes: total, budget: cap, encodedBudget: !!b.encoded };
 }
 
 /* ──────────────────────────────── the file data ─────────────────────────────── */
@@ -328,7 +406,7 @@ async function getClosingPrepData(applicationId) {
             pr.phone AS proc_phone, pr.cell AS proc_cell,
             cl.full_name AS closer_name, cl.email AS closer_email, cl.title AS closer_title,
             cl.phone AS closer_phone, cl.cell AS closer_cell,
-            reg.note_rate, reg.total_loan, reg.product_label, reg.program AS reg_program
+            reg.note_rate, reg.total_loan, reg.product_label, reg.program AS reg_program, reg.quote
        FROM applications a
        JOIN borrowers b ON b.id = a.borrower_id
        LEFT JOIN borrowers cb ON cb.id = a.co_borrower_id
@@ -337,7 +415,7 @@ async function getClosingPrepData(applicationId) {
        LEFT JOIN staff_users pr ON pr.id = a.processor_id AND pr.is_active = true
        LEFT JOIN staff_users cl ON cl.id = a.closer_id AND cl.is_active = true
        LEFT JOIN LATERAL (
-         SELECT note_rate, total_loan, product_label, program
+         SELECT note_rate, total_loan, product_label, program, quote
            FROM product_registrations
           WHERE application_id = a.id AND is_current = true
           ORDER BY created_at DESC LIMIT 1
@@ -400,13 +478,26 @@ async function getClosingPrepData(applicationId) {
   }
 
   const borrowers = [a.borrower_name, a.co_borrower_name].filter(Boolean);
-  const effectivePrice = a.is_assignment && a.underlying_contract_price != null
-    ? Number(a.underlying_contract_price) + Math.min(
-        Number(a.assignment_fee || 0),
-        // The FROZEN financeable-fee cap: 15% of the seller's original contract
-        // price. Displayed only — no engine number is computed or changed here.
-        0.15 * Number(a.underlying_contract_price))
-    : null;
+
+  // THE EFFECTIVE PRICE IS READ FROM THE REGISTRATION, NEVER RECOMPUTED.
+  //
+  // This used to hand-roll "seller price + min(fee, 15% of seller price)". That is
+  // only half the frozen rule: Gold caps the financeable fee at the LESSER of
+  // $75,000 or 15%, and a super-admin may have set an approved effective price
+  // (ovrEffPrice) that overrides both. So on a Gold assignment with a $600k contract
+  // and a $100k fee it printed $690,000 to the closing attorney while the term sheet
+  // ATTACHED TO THE SAME EMAIL said $675,000 — the exact "we should not sound like
+  // fools from the attorney" failure, and a number the loan is not sized on.
+  //
+  // `product_registrations.quote.assignment.recognizedPrice` is the value the engine
+  // actually sized the loan on — the same field `whole-loan-context` and the
+  // Encompass reconcile read. Displayed only; nothing is computed here. With no
+  // registration (blocked earlier anyway) or no assignment block, we say nothing
+  // rather than guess a number for outside counsel.
+  const asg = (a.quote && a.quote.assignment) || null;
+  const recognized = asg && Number.isFinite(Number(asg.recognizedPrice)) ? Number(asg.recognizedPrice) : null;
+  const effectivePrice = a.is_assignment ? recognized : null;
+  const effectivePriceOverridden = !!(asg && asg.overridden);
 
   return {
     appId: a.id,
@@ -431,6 +522,7 @@ async function getClosingPrepData(applicationId) {
     underlyingPrice: a.underlying_contract_price != null ? Number(a.underlying_contract_price) : null,
     assignmentFee: a.assignment_fee != null ? Number(a.assignment_fee) : null,
     effectivePrice: effectivePrice,
+    effectivePriceOverridden,
     asIsValue: a.as_is_value != null ? Number(a.as_is_value) : null,
     arv: a.arv != null ? Number(a.arv) : null,
     rehabBudget: a.rehab_budget != null ? Number(a.rehab_budget) : null,
@@ -473,7 +565,10 @@ function blockers(data, pkg) {
   if (!data) { out.push('file'); return out; }
   if (!data.hasLoanNumber) out.push('loan_number');
   if (!data.isRegistered) out.push('not_registered');
-  if (!pkg || !pkg.counts.term_sheet) out.push('term_sheet');
+  // A read failure is NOT "there is no term sheet" — telling someone to generate a
+  // term sheet that already exists sends them somewhere they cannot fix anything.
+  if (pkg && pkg.unavailable) out.push('documents_unavailable');
+  else if (!pkg || !pkg.counts.term_sheet) out.push('term_sheet');
   const to = recipientsFor(data, {}).to;
   if (!to.length) out.push('attorney');
   return out;
@@ -486,8 +581,16 @@ function recipientsFor(data, { extraEmails = [] } = {}) {
   const to = [];
   const seen = new Set();
   const push = (list, e) => {
-    const k = String(e || '').trim().toLowerCase();
-    if (!k || !k.includes('@') || seen.has(k)) return;
+    // SAME hardening the route applies to typed addresses, because these come from
+    // places nobody validated: `ATTORNEY_GROUP_EMAIL` in the environment, a vendor
+    // row in the contacts directory, a staff profile. A pasted "Bob <bob@x.com>"
+    // rides the angle brackets into the Cc and Microsoft Graph rejects the WHOLE
+    // send — and `blockers()` sees a non-empty To, so the only symptom was a 500 at
+    // send time with nothing delivered and nothing explaining why.
+    const k = String(e || '').replace(/^[^<]*<([^>]+)>\s*$/, '$1').trim().toLowerCase();
+    if (!k || seen.has(k)) return;
+    if (/["'<>()[\],:;\\]/.test(k)) return;
+    if (!/^[^@\s]+@[^@\s.]+\.[^@\s]+$/.test(k)) return;
     seen.add(k); list.push(k);
   };
   push(to, data.attorneyGroupEmail);
@@ -530,7 +633,13 @@ function dealMeta(data) {
     // nothing at all.
     if (data.effectivePrice > 0 && data.underlyingPrice > 0 && data.purchasePrice != null
         && Math.round(data.effectivePrice) !== Math.round(data.purchasePrice)) {
-      add('Effective purchase price', `${money(data.effectivePrice)} (the financeable assignment fee is capped at 15% of the original contract price)`);
+      // The reason differs by how the number was arrived at, and an approved
+      // exception must say so — a capped figure and an admin-approved one are not
+      // the same fact, and counsel drafting off the wrong one is the whole risk.
+      const why = data.effectivePriceOverridden
+        ? 'an approved exception sets the effective price the loan is sized on'
+        : 'only part of the assignment fee is financeable, so this is the price the loan is sized on';
+      add('Effective purchase price', `${money(data.effectivePrice)} (${why})`);
     }
   } else {
     add('Purchase price', money(data.purchasePrice));
@@ -595,7 +704,15 @@ function bodySections(data, pkg, attach, address) {
   if (data.officer) team.push(`Loan officer — ${data.officer.name}${data.officer.title ? `, ${data.officer.title}` : ''}${data.officer.email ? ` · ${data.officer.email}` : ''}${data.officer.phone ? ` · ${data.officer.phone}` : ''}`);
   if (data.processor) team.push(`Processor — ${data.processor.name}${data.processor.email ? ` · ${data.processor.email}` : ''}${data.processor.phone ? ` · ${data.processor.phone}` : ''}`);
   if (data.closer) team.push(`Closer — ${data.closer.name}${data.closer.email ? ` · ${data.closer.email}` : ''}${data.closer.phone ? ` · ${data.closer.phone}` : ''}`);
-  if (team.length) sections.push({ title: 'YS Capital team on this file', body: team.concat(['All three are copied on this email.']) });
+  // Say who is ACTUALLY copied, counted from the Cc that was built — "All three are
+  // copied" was printed whenever any one of them existed, so a file with only a loan
+  // officer told outside counsel there were three people on the email.
+  if (team.length) {
+    const copied = team.length === 1 ? 'They are copied on this email.'
+      : team.length === 2 ? 'Both are copied on this email.'
+        : 'All three are copied on this email.';
+    sections.push({ title: 'YS Capital team on this file', body: team.concat([copied]) });
+  }
 
   return sections;
 }
@@ -711,7 +828,15 @@ function buildFollowupEmail(data, { note = '', address = null, senderName = '' }
 const AUTO_EVENTS = {
   executed_term_sheet: {
     kicker: 'Executed term sheet',
-    intro: (d) => `The term sheet for this file is now FULLY EXECUTED — signed by all parties. The executed copy is attached. `
+    // NEVER claim an attachment that is not there. The executed copy can legitimately
+    // be withheld — a 4 MB signed package against the Microsoft Graph budget is
+    // skipped, not attached — and saying "the executed copy is attached" over an
+    // empty email is the precise failure this module exists to prevent. The wording
+    // follows what actually went out.
+    intro: (d, x) => `The term sheet for this file is now FULLY EXECUTED — signed by all parties. `
+      + ((x && Array.isArray(x.files) && x.files.length)
+        ? `The executed copy is attached. `
+        : `The executed copy was too large to attach here — tell us and we will send it straight over. `)
       + `These are the final terms; please draft from this version and disregard the earlier initial term sheet.`,
   },
   closing_date: {
@@ -776,6 +901,23 @@ function buildAutoEmail(eventKind, data, extra = {}) {
  * @param p.extra       { date, closingDate, files }
  * @param p.attachments provider attachments (the executed term sheet)
  */
+/**
+ * The closing date the chain was LAST told about — the suffix of the most recent
+ * delivered `closing_date:<from>-><to>` claim. Null when we have never announced one.
+ */
+async function lastAnnouncedClosingDate(threadId) {
+  try {
+    const r = await db.query(
+      `SELECT split_part(dedupe_key, '->', 2) AS day
+         FROM closing_thread_messages
+        WHERE thread_id = $1 AND event_kind = 'closing_date'
+          AND status IN ('sent','carried') AND dedupe_key IS NOT NULL
+        ORDER BY sent_at DESC NULLS LAST, id DESC
+        LIMIT 1`, [threadId]);
+    return (r.rows[0] && r.rows[0].day) || null;
+  } catch (_) { return null; }
+}
+
 async function announce({ applicationId, eventKind, dedupeKey, extra = {}, attachments = [] } = {}) {
   if (!AUTO_EVENTS[eventKind]) return { ok: false, reason: 'unknown_event' };
   const thread = await closingThread.threadFor(applicationId);
@@ -783,6 +925,22 @@ async function announce({ applicationId, eventKind, dedupeKey, extra = {}, attac
   // nobody to tell, and opening a chain here would email an attorney who was never
   // engaged. Silent, by design.
   if (!thread) return { ok: true, skipped: true, reason: 'no_closing_chain' };
+
+  // A CLOSING DATE IS KEYED ON THE MOVE, NOT ON THE VALUE.
+  //
+  // Keyed on the value alone, a date could only ever be announced once in the life of
+  // the chain — so Aug 14 → Aug 20 → back to Aug 14 told the attorney about the slip
+  // and then went silent, leaving them holding Aug 20 for a closing that had moved
+  // back. Keying on `<from>-><to>` makes the return trip a genuinely new event while
+  // a repeat of the SAME move still dedupes exactly as before.
+  let key = dedupeKey;
+  if (eventKind === 'closing_date') {
+    const day = String((extra && extra.date) || '').slice(0, 10);
+    if (!day) return { ok: true, skipped: true, reason: 'no_date' };
+    const prev = await lastAnnouncedClosingDate(thread.id);
+    if (prev === day) return { ok: true, skipped: true, reason: 'already_sent' };
+    key = `closing_date:${prev || 'none'}->${day}`;
+  }
 
   const data = await getClosingPrepData(applicationId).catch(() => null);
   if (!data) return { ok: false, reason: 'no_file' };
@@ -798,7 +956,7 @@ async function announce({ applicationId, eventKind, dedupeKey, extra = {}, attac
   return closingThread.sendOnThread({
     applicationId,
     eventKind,
-    dedupeKey,
+    dedupeKey: key,
     to, cc,
     attachments,
     msgType: `closing_${eventKind}`,
@@ -842,8 +1000,11 @@ async function markCarriedByOrder(applicationId, thread, pkg) {
               a.status
          FROM applications a WHERE a.id=$1`, [applicationId]);
     const row = r.rows[0] || {};
-    // The order email prints the expected closing date in its deal block.
-    if (row.day) await carry('closing_date', `closing_date:${row.day}`);
+    // The order email prints the expected closing date in its deal block. Keyed in
+    // the SAME `<from>-><to>` shape `announce` uses, or the carry would not match
+    // and the order would be followed by a phantom "the closing date is now …".
+    // 'none' is right here: the order is the first thing the attorney ever receives.
+    if (row.day) await carry('closing_date', `closing_date:none->${row.day}`);
     // A file already clear to close needs no separate "we are clear to close".
     if (row.status === 'clear_to_close') await carry('clear_to_close', 'clear_to_close');
   } catch (_) { /* best-effort */ }
@@ -867,7 +1028,9 @@ async function lastRecipients(threadId) {
   try {
     const r = await db.query(
       `SELECT to_emails, cc_emails FROM closing_thread_messages
-        WHERE thread_id=$1 AND status='sent' ORDER BY sent_at DESC LIMIT 1`, [threadId]);
+        WHERE thread_id=$1 AND status='sent'
+         -- id breaks a sent_at tie so "who did we last write to" is never arbitrary.
+         ORDER BY sent_at DESC NULLS LAST, id DESC LIMIT 1`, [threadId]);
     const row = r.rows[0];
     if (!row) return { to: [], cc: [] };
     const arr = (v) => (Array.isArray(v) ? v.filter((x) => typeof x === 'string') : []);
@@ -879,6 +1042,7 @@ module.exports = {
   GROUPS, GROUP_KEYS, AUTO_EVENTS, FROZEN_KINDS,
   SHARE_CONTACT_TYPES, NEVER_SHARE_CONTACT_TYPES, CONTACT_LABEL, CLOSING_PREP_TITLE,
   gatherPackage, groupOf, isFrozenOut, insuranceSlots, buildAttachments, attachBudget,
+  attachBudgetRawBytes, predictSkips, encodedLen, attachName,
   getClosingPrepData, blockers, recipientsFor,
   buildClosingPrepEmail, buildFollowupEmail, buildAutoEmail,
   announce, lastRecipients, markCarriedByOrder,

@@ -350,7 +350,9 @@ noop.sendMail = async (opts) => { sends.push(opts); return { ok: true, id: `stub
       `SELECT event_kind, dedupe_key, status FROM closing_thread_messages
         WHERE thread_id=(SELECT id FROM closing_threads WHERE application_id=$1)
           AND status='carried' ORDER BY event_kind`, [appId])).rows;
-    assert(carried.some((r) => r.event_kind === 'closing_date' && r.dedupe_key === 'closing_date:2026-08-14'),
+    // Keyed on the MOVE, not the value ('none' -> the date), so a date that later
+    // moves away and moves BACK is a genuinely new thing to tell the attorney.
+    assert(carried.some((r) => r.event_kind === 'closing_date' && r.dedupe_key === 'closing_date:none->2026-08-14'),
       'placing the order claims the closing date it already stated');
     sends.length = 0;
     const swept = await require('../src/lib/notification-digests').closingChainCatchupOnce();
@@ -434,7 +436,11 @@ noop.sendMail = async (opts) => { sends.push(opts); return { ok: true, id: `stub
       attachments: [{ filename: 'Draft Settlement Statement.pdf', contentType: 'application/pdf', content: Buffer.alloc(3000, 3).toString('base64') }],
       fromEmail: `${uniq}-abe@law.test`,
     });
-    assert(again.saved === 1, 'a redelivery reports the document as handled');
+    // A duplicate is HANDLED but is NOT a newly saved document. Counting it as
+    // `saved` overstated what arrived and fed a wrong number into the chain's
+    // docs_count and the team's "N closing documents arrived" notice.
+    assert(again.saved === 0 && again.deduped === 1 && again.failed === 0,
+      'a redelivery reports the document as handled, without counting it again');
     const n = Number((await db.query(
       `SELECT count(*) c FROM documents WHERE application_id=$1 AND doc_kind='closing_correspondence' AND filename='Draft Settlement Statement.pdf'`,
       [appId])).rows[0].c);

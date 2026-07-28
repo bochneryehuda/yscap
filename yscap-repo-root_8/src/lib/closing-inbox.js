@@ -53,25 +53,30 @@ async function saveChainDocs({ applicationId, attachments, fromEmail, subject } 
   const list = (Array.isArray(attachments) ? attachments : [])
     .filter((a) => a && a.filename && a.content)
     .slice(0, MAX_DOCS_PER_EMAIL);
-  if (!list.length) return { saved: 0, suspect: 0, names: [] };
+  if (!list.length) return { saved: 0, deduped: 0, failed: 0, suspect: 0, names: [] };
 
   let borrowerId = null;
   try {
     const a = await db.query(`SELECT borrower_id FROM applications WHERE id=$1 AND deleted_at IS NULL`, [applicationId]);
-    if (!a.rows[0]) return { saved: 0, suspect: 0, names: [] };   // unknown / archived file
+    if (!a.rows[0]) return { saved: 0, deduped: 0, failed: 0, suspect: 0, names: [] };   // unknown / archived file
     borrowerId = a.rows[0].borrower_id;
-  } catch (_) { return { saved: 0, suspect: 0, names: [] }; }
+  } catch (_) { return { saved: 0, deduped: 0, failed: list.length, suspect: 0, names: [] }; }
 
   const dedup = require('./doc-dedup');
   let saved = 0;
+  let deduped = 0;
+  let failed = 0;
   let suspect = 0;
   const names = [];
   for (const a of list) {
     try {
       let buf, sha256;
       try { ({ buf, sha256 } = decodeUploadBase64(String(a.content))); }
-      catch (_) { continue; }   // undecodable — skip, never store garbage
-      if (!buf.length) continue;
+      // Undecodable bytes are not a transient failure — retrying cannot fix them —
+      // but they are still a document the attorney believes we received, so they are
+      // COUNTED. Silently returning "0 problems" is how six PDFs became four.
+      catch (_) { failed += 1; console.error('[closing-inbox] undecodable attachment', String(a.filename || '')); continue; }
+      if (!buf.length) { failed += 1; continue; }
       const want = expectedKind(a.filename, a.contentType);
       const got = sniffKind(buf);
       if (want && got && got !== want) suspect += 1;
@@ -82,7 +87,10 @@ async function saveChainDocs({ applicationId, attachments, fromEmail, subject } 
         filename: a.filename, sizeBytes: buf.length, uploadedByKind: 'staff', uploadedById: null,
         applicationId, checklistItemId: null, docKind: DOC_KIND,
       }).catch(() => null);
-      if (dupId) { saved += 1; names.push(String(a.filename)); continue; }
+      // A duplicate is already on the file — success, but NOT a new document. Counting
+      // it as `saved` overstated what arrived and fed a wrong number into the chain's
+      // docs_count and the team's "N closing documents arrived" notice.
+      if (dupId) { deduped += 1; names.push(String(a.filename)); continue; }
       const { ref, provider } = await storage.save(buf, { filename: a.filename });
       await db.query(
         `INSERT INTO documents
@@ -94,11 +102,29 @@ async function saveChainDocs({ applicationId, attachments, fromEmail, subject } 
          a.contentType || 'application/octet-stream', buf.length, provider, ref, DOC_KIND, sha256 || null]);
       saved += 1;
       names.push(String(a.filename));
-    } catch (_) { /* skip this attachment, keep going */ }
+    } catch (e) {
+      // A storage or DB failure IS transient and IS recoverable — but only if
+      // somebody knows. Swallowed and uncounted, the caller marked the whole chain
+      // handled and the webhook redelivery skipped it, so the documents were gone
+      // with no log line and no sign on the file.
+      failed += 1;
+      console.error('[closing-inbox] could not file a closing-chain attachment:', (e && e.message) || e);
+    }
   }
 
   if (saved) {
     try { require('./sharepoint-backup').kick(); } catch (_) { /* best-effort */ }
+    // Move the order to 'documents_in', exactly as the Orders desk does when a title
+    // or insurance vendor returns something (order-inbox.js). Only from an ACTIVE
+    // state, so this can never revive a cancelled order. Without it the attorney
+    // order sat on 'ordered' for the life of the file and the desk's own
+    // 'documents_in' label was unreachable, however much came back on the chain.
+    try {
+      await db.query(
+        `UPDATE file_orders SET status='documents_in', updated_at=now()
+          WHERE application_id=$1 AND order_type='attorney' AND status IN ('ordered','documents_in')`,
+        [applicationId]);
+    } catch (_) { /* best-effort — the documents are filed either way */ }
     // IN-APP ONLY. The chain email itself already forwards to every assignee through
     // the normal inbound path, so emailing again about the same message would be the
     // "bombardment" the standing notification rule forbids.
@@ -119,7 +145,7 @@ async function saveChainDocs({ applicationId, attachments, fromEmail, subject } 
       });
     } catch (_) { /* best-effort */ }
   }
-  return { saved, suspect, names };
+  return { saved, deduped, failed, suspect, names };
 }
 
 /** The file's closing-correspondence package, newest first. */
@@ -129,7 +155,9 @@ async function listChainDocs(applicationId, { limit = 100 } = {}) {
       `SELECT id, filename, content_type, size_bytes, created_at, review_status, sha256
          FROM documents
         WHERE application_id=$1 AND doc_kind=$2 AND is_current = true
-        ORDER BY created_at DESC LIMIT $3`,
+        -- id breaks a created_at tie: a capped list must be deterministic or the
+        -- same document can appear on one page load and vanish on the next.
+        ORDER BY created_at DESC, id DESC LIMIT $3`,
       [applicationId, DOC_KIND, Math.min(500, Math.max(1, Number(limit) || 100))]);
     return r.rows;
   } catch (_) { return []; }

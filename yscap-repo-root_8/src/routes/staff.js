@@ -4366,8 +4366,13 @@ router.get('/applications/:id/closing-prep', async (req, res) => {
         insurance: closingPrep.insuranceSlots(pkg.groups.insurance),
         // The byte budget the ACTIVE provider allows, so the card can warn BEFORE a
         // send that something will not fit — never after.
-        budgetBytes: closingPrep.attachBudget(),
+        budgetBytes: closingPrep.attachBudgetRawBytes(),
         totalBytes: (pkg.ordered || []).reduce((n, d) => n + (Number(d.size_bytes) || 0), 0),
+        // Documents we can already tell will not go: one that is too big on its own,
+        // or that has no stored copy. The total-vs-budget warning alone missed both —
+        // a single 12 MB survey on a 15 MB file is under the budget and still cannot
+        // be attached, and the sender only found out from the sent email.
+        willSkip: closingPrep.predictSkips(pkg.ordered),
       },
       chain: thread ? {
         address: closingThread.addressFor(thread),
@@ -4398,6 +4403,7 @@ router.post('/applications/:id/closing-prep/place', async (req, res) => {
     const blk = closingPrep.blockers(data, pkg);
     if (blk.includes('loan_number')) return res.status(400).json({ error: 'Add the file’s loan number first — it identifies the file on every closing email.', code: 'loan_number' });
     if (blk.includes('not_registered')) return res.status(400).json({ error: 'Register the product first. The attorney needs a term sheet to draft from — register the file, then send this.', code: 'not_registered' });
+    if (blk.includes('documents_unavailable')) return res.status(503).json({ error: 'We could not read this file’s documents just now, so nothing was sent. Try again in a moment.', code: 'documents_unavailable' });
     if (blk.includes('term_sheet')) return res.status(400).json({ error: 'There is no term sheet on the file yet. Generate the term sheet, then send the closing-prep request.', code: 'term_sheet' });
     if (blk.includes('attorney')) return res.status(400).json({ error: 'There is nowhere to send this — add an attorney contact to the file (or set the attorney group inbox).', code: 'attorney' });
 

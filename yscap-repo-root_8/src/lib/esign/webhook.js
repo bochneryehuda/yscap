@@ -405,7 +405,7 @@ async function announceExecutedTermSheet(db, envelopeRow) {
 
   // Nothing to do unless this file actually has a closing chain.
   const thread = await closingThread.threadFor(appId);
-  if (!thread) return;
+  if (!thread) return { ok: true, skipped: true, reason: 'no_closing_chain' };
 
   // The signed term sheet THIS envelope produced, via the envelope↔document link.
   let attachments = [];
@@ -425,7 +425,9 @@ async function announceExecutedTermSheet(db, envelopeRow) {
     }
   } catch (_) { /* the update is worth sending even without the attachment */ }
 
-  await closingPrep.announce({
+  // RETURNED so the recovery sweep can count what actually went out rather than
+  // assuming every call it makes was a real send.
+  return closingPrep.announce({
     applicationId: appId,
     eventKind: 'executed_term_sheet',
     // Keyed on the ENVELOPE, so a re-issued and re-executed term sheet is a genuinely

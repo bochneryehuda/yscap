@@ -623,7 +623,16 @@ async function processReceivedEvent(event) {
   // Same idempotency shape as the order block above: a persisted per-thread marker,
   // because the 120s doc-dedup window is not enough when a retryable failure
   // redelivers minutes later. Best-effort — the message still forwards regardless.
-  if (closingRefs.length && Array.isArray(full.attachments) && full.attachments.length) {
+  // ONE MESSAGE, ONE CLOSING. A reply-all that carries TWO of our closing addresses
+  // used to file every attachment onto BOTH loans — so one borrower's settlement
+  // statement landed in another borrower's file, and the Email Center row was pinned
+  // to whichever address the provider happened to list first. We cannot know which
+  // closing a document belongs to, so we file it to NEITHER and say so; the chain
+  // activity is still recorded on both, and the message still forwards to both teams.
+  if (closingRefs.length > 1 && Array.isArray(full.attachments) && full.attachments.length) {
+    console.warn(`[closing-inbox] a message carried ${closingRefs.length} closing addresses (${closingRefs.map((r) => r.applicationId).join(', ')}) — attachments were NOT auto-filed to either file, because there is no way to tell which closing they belong to.`);
+  }
+  if (closingRefs.length === 1 && Array.isArray(full.attachments) && full.attachments.length) {
     const pending = closingRefs.filter((ref) => appResults['__closing_' + ref.token] !== 'saved');
     for (const ref of pending) {
       try {
@@ -639,7 +648,18 @@ async function processReceivedEvent(event) {
         const res = await closingInbox.saveChainDocs({
           applicationId: ref.applicationId, attachments: atts, fromEmail, subject,
         });
-        appResults['__closing_' + ref.token] = 'saved';   // persisted below → a redelivery skips it
+        // ONLY MARK THE CHAIN DONE WHEN EVERY ATTACHMENT WAS ACTUALLY FILED.
+        //
+        // `saveChainDocs` catches per-attachment failures so one bad file cannot lose
+        // the rest — which meant it could never throw, so this marker was written
+        // unconditionally and the `catch` below was unreachable for a storage or DB
+        // failure. Two of six PDFs would vanish and the webhook redelivery, the one
+        // thing that could have recovered them, skipped the chain as already handled.
+        if (res.failed) {
+          console.warn(`[closing-inbox] ${res.failed} closing attachment(s) could not be filed for ${ref.applicationId} — leaving the chain unmarked so a redelivery retries.`);
+        } else {
+          appResults['__closing_' + ref.token] = 'saved';   // persisted below → a redelivery skips it
+        }
         try { await require('./closing-thread').noteInbound(ref.threadId, { docs: res.saved }); } catch (_) {}
       } catch (_) { /* leave unmarked so a redelivery retries this chain */ }
     }
