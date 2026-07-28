@@ -648,6 +648,29 @@ async function verifyPrimaryAddress(dbc, borrowerId, addr, meta) {
   // still flags a different house number, street, ZIP, state or unit.
   if (normAddr(curStr) === encKey || ADDR.sameAddress(curStr, encStr)) return { checked: true, agrees: true };
 
+  const taskKey = `encompass:${(meta && meta.loanGuid) || 'unknown'}`;
+
+  // A human already DECIDED this exact disagreement — do not raise it AGAIN for
+  // the SAME Encompass value (owner-reported 2026-07-27: "if I click dismiss it's
+  // coming back again" — a dismissed / kept-PILOT Encompass address review kept
+  // re-appearing on the next pass). The pass re-produces the SAME conflict every
+  // run while the two sides differ, so without this the reviewer's decision was
+  // silently overwritten by a fresh open row. What each decision means here:
+  //   • DISMISS (status='rejected')                → "ignore this",
+  //   • KEEP PILOT (status='resolved', winner='portal') → PILOT stays, so the two
+  //     still differ, but the human decided PILOT is right — must not nag again,
+  //   • USE ENCOMPASS / typed (winner='encompass'/'custom') → the data now agrees
+  //     so we never reach here; if it somehow still differs the decision holds.
+  // It is keyed on the proposed value, so a genuinely NEW Encompass address (a
+  // different proposal) DOES surface — only the already-judged value is silenced.
+  const decided = await dbc.query(
+    `SELECT 1 FROM sync_review_queue
+       WHERE task_id=$1 AND field_key='current_address' AND source='encompass'
+         AND status IN ('rejected','resolved')
+         AND coalesce(proposed_value,'') = coalesce($2,'') LIMIT 1`,
+    [taskKey, encStr]);
+  if (decided.rows[0]) return { checked: true, alreadyDecided: true, portal: curStr, encompass: encStr };
+
   const queued = await require('../lib/sync-review').queueReview({
     // Queue on the SAME connection the pass is using — inside a transaction the
     // pool would not yet see the rows this pass created.
@@ -657,7 +680,7 @@ async function verifyPrimaryAddress(dbc, borrowerId, addr, meta) {
     // Namespaced so the queue's one-open-row-per-(task, field, proposal) rule
     // dedupes per Encompass LOAN. `source` is what tells every consumer this is
     // NOT a ClickUp task id — nothing may hand this string to the ClickUp client.
-    taskId: `encompass:${(meta && meta.loanGuid) || 'unknown'}`,
+    taskId: taskKey,
     source: 'encompass',
     direction: 'inbound',
     fieldKey: 'current_address',
