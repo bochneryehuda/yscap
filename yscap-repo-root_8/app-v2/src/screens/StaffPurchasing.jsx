@@ -1,6 +1,7 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { api } from '../lib/api.js';
+import { fullNameOf } from '../lib/personName.js';
 
 /* THE PURCHASING DESK (owner-directed 2026-07-26).
 
@@ -90,7 +91,7 @@ export default function StaffPurchasing() {
                     <React.Fragment key={r.id}>
                       <tr>
                         <td>
-                          <Link to={`/internal/app/${r.id}`}>{r.first_name} {r.last_name}</Link>
+                          <Link to={`/internal/app/${r.id}`}>{fullNameOf(r) || '—'}</Link>
                           <div className="muted small">{addrLine(r.property_address) || '—'}</div>
                         </td>
                         <td className="mono">{r.ys_loan_number || '—'}</td>

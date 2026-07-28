@@ -8653,14 +8653,31 @@ router.post('/applications/:id/closing-workflow', async (req, res) => {
       const cw = await workflow.getClosing(req.params.id);
       if (!cw || !cw.fully_reconciled_at) return res.status(422).json({ error: 'not_reconciled', reason: 'Mark the file fully reconciled first.' });
       if (!cw.investor_delivery_signed_off_at) return res.status(422).json({ error: 'investor_delivery_required', reason: 'Sign off investor delivery before moving the file to purchasing.' });
+      // A TABLE FUNDED loan was sold right at closing — it must never be pushed to
+      // purchasing. Without this the stage moved anyway, ClickUp was told "in
+      // purchase review", the file dropped off the closing badge, and the
+      // purchasing desk (which correctly excludes table-funded files) stayed
+      // empty — leaving it on neither desk.
+      if (cw.table_funded) return res.status(422).json({ error: 'table_funded', reason: 'This loan was table funded — it was sold at closing, so it does not go to purchasing. Untick table funding first if that was a mistake.' });
     }
 
     const client = await db.getClient();
     let out;
     try {
       await client.query('BEGIN');
+      // Take the closing hand-off lock BEFORE closing_workflow — the submit route
+      // locks them in that order (workflow_items -> closing_workflow) and cannot be
+      // reordered, so without this a concurrent re-submit deadlocks this action.
+      await workflow.lockClosingItems(client, req.params.id);
       out = await workflow.advanceClosing(client, req.params.id, stage, req.actor.id);
       if (stage === 'fully_reconciled') await client.query(`UPDATE closing_workflow SET reconciled_ok=true WHERE application_id=$1`, [req.params.id]);
+      // The manual "Send to purchasing" button must ENROL the file on the desk.
+      // The sign-off route already does this automatically; without the same call
+      // here the closer pressed the button, the file left the closing badge, and
+      // the purchasing desk showed nothing until the next deploy re-ran the
+      // backfill. Idempotent (ON CONFLICT DO NOTHING) — table funding is refused
+      // above, so reaching this line always means the file belongs on the desk.
+      if (stage === 'in_purchasing') await purchasing.enterPurchasing(client, req.params.id, req.actor.id);
       // The closer is done once the file is RECONCILED + investor-delivered — so
       // clear it off their Workflow automatically, EITHER WAY (table funded = sold
       // at closing, or handed to purchasing). Same transaction as the stage move,
@@ -8847,6 +8864,9 @@ router.post('/applications/:id/closing/sign-off', async (req, res) => {
     const client = await db.getClient();
     try {
       await client.query('BEGIN');
+      // Same lock order as the stage route: the closing hand-off first, THEN
+      // closing_workflow (ensureClosingRow upserts it). See lockClosingItems.
+      await workflow.lockClosingItems(client, req.params.id);
       await ensureClosingRow(client, req.params.id, req.actor.id);
       await client.query(
         `UPDATE closing_workflow SET ${atCol}=${on ? 'now()' : 'NULL'}, ${byCol}=${on ? '$2' : 'NULL'}, updated_by=$2, updated_at=now() WHERE application_id=$1`,
@@ -8861,7 +8881,13 @@ router.post('/applications/:id/closing/sign-off', async (req, res) => {
         const cw = (await client.query(
           `SELECT table_funded FROM closing_workflow WHERE application_id=$1`, [req.params.id])).rows[0];
         if (on && !(cw && cw.table_funded)) await purchasing.enterPurchasing(client, req.params.id, req.actor.id);
-        if (!on) await purchasing.withdrawFromPurchasing(client, req.params.id);
+        // Un-signing means the closing is NOT finished any more: the file comes
+        // back OFF the purchasing desk, so the closer's hand-off has to come back
+        // too or the file sits on neither queue.
+        if (!on) {
+          await purchasing.withdrawFromPurchasing(client, req.params.id);
+          await workflow.reopenClosingItem(client, req.params.id, req.actor.id);
+        }
       }
       // Reconciled + investor-delivered = the closer is done; clear the file off
       // their Workflow either way (table funded or purchasing).
@@ -9004,7 +9030,7 @@ router.get('/purchasing', purchasingGate, async (req, res) => {
     const r = await db.query(
       `SELECT p.application_id AS id, p.status, p.entered_at, p.completed_at,
               a.ys_loan_number, a.property_address, a.status AS app_status, a.lender, a.funded_date,
-              b.first_name, b.last_name,
+              b.first_name, b.last_name, NULLIF(b.full_name,'') AS full_name,
               cw.table_funded, cw.investor_delivery_signed_off_at, cw.stage AS closing_stage,
               s.full_name AS closer_name,
               (SELECT count(*)::int FROM purchasing_tasks t
@@ -9059,7 +9085,9 @@ router.post('/applications/:id/purchasing/notes', purchasingGate, async (req, re
   const body = req.body && req.body.body;
   if (!body || !String(body).trim()) return res.status(400).json({ error: 'Write a note first.' });
   try {
+    if (!(await purchasing.getPurchasing(req.params.id))) return res.status(404).json({ error: 'This file is not in purchasing.' });
     await purchasing.addNote(db, req.params.id, String(body).trim(), req.actor.id);
+    await audit(req, 'purchasing_note', 'application', req.params.id, {});
     res.json({ ok: true, notes: await purchasing.readNotes(req.params.id) });
   } catch (e) { res.status(500).json({ error: 'server error' }); }
 });
@@ -9069,7 +9097,9 @@ router.post('/applications/:id/purchasing/tasks', purchasingGate, async (req, re
   const label = req.body && req.body.label;
   if (!label || !String(label).trim()) return res.status(400).json({ error: 'Name the task first.' });
   try {
+    if (!(await purchasing.getPurchasing(req.params.id))) return res.status(404).json({ error: 'This file is not in purchasing.' });
     await purchasing.addTask(db, req.params.id, String(label).trim(), req.actor.id, req.body && req.body.sortOrder);
+    await audit(req, 'purchasing_task', 'application', req.params.id, { label: String(label).trim().slice(0, 120) });
     res.json({ ok: true, tasks: await purchasing.readTasks(req.params.id) });
   } catch (e) { res.status(500).json({ error: 'server error' }); }
 });

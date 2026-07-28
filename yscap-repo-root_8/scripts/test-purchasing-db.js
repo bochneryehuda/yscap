@@ -17,6 +17,8 @@
  */
 if (!process.env.DATABASE_URL) { console.log('SKIP test-purchasing-db (no DATABASE_URL)'); process.exit(0); }
 const assert = require('assert');
+const fs = require('fs');
+const path = require('path');
 const { Pool } = require('pg');
 const purchasing = require('../src/lib/purchasing');
 const workflow = require('../src/lib/workflow');
@@ -154,6 +156,44 @@ const uniq = (p) => p + Buffer.from(String(process.pid)).toString('hex') + Math.
     await setTableFunded(E.appId, E.closerId, true);
     ok(!(await purchasing.getPurchasing(E.appId, client)), 're-ticking table funded pulls it back off the purchasing desk');
     ok(!(await inQueue(E.closerId, E.appId)), 'file E stays off the closer\'s Workflow throughout');
+
+    // ---- The db/348 §5 backfill enrols PREVIOUS files by the RUNTIME rule ----
+    // It used to key on stage='in_purchasing', which nothing sets automatically —
+    // so every file already delivered before this shipped was invisible on the
+    // desk forever, and a deliberately WITHDRAWN file was resurrected each boot.
+    const backfill = fs.readFileSync(path.join(__dirname, '..', 'db', '348_purchasing_workflow.sql'), 'utf8')
+      .split('INSERT INTO purchasing_workflow').slice(-1)[0];
+    const runBackfill = () => client.query('INSERT INTO purchasing_workflow' + backfill);
+
+    const P = await makeFile();                        // delivered, never "sent to purchasing"
+    await client.query(
+      `UPDATE closing_workflow SET investor_delivery_signed_off_at=now() WHERE application_id=$1`, [P.appId]);
+    await client.query(`DELETE FROM purchasing_workflow WHERE application_id=$1`, [P.appId]);
+    await runBackfill();
+    ok(!!(await purchasing.getPurchasing(P.appId, client)),
+      'the backfill enrols a PREVIOUS file that was delivered but never sent to purchasing');
+
+    const Q = await makeFile();                        // table funded → sold at closing
+    await client.query(
+      `UPDATE closing_workflow SET investor_delivery_signed_off_at=now(), table_funded=true,
+              stage='in_purchasing', purchasing_at=now() WHERE application_id=$1`, [Q.appId]);
+    await runBackfill();
+    ok(!(await purchasing.getPurchasing(Q.appId, client)),
+      'and never enrols a TABLE FUNDED file, even one stuck at stage=in_purchasing');
+
+    const R = await makeFile();                        // withdrawn on purpose (delivery un-signed)
+    await client.query(
+      `UPDATE closing_workflow SET investor_delivery_signed_off_at=NULL, stage='in_purchasing',
+              purchasing_at=now() WHERE application_id=$1`, [R.appId]);
+    await runBackfill();
+    ok(!(await purchasing.getPurchasing(R.appId, client)),
+      'a deliberately WITHDRAWN file is not resurrected by the next boot');
+
+    const beforeStatus = (await purchasing.getPurchasing(P.appId, client)).status;
+    await purchasing.setPurchasingStatus(client, P.appId, 'complete', P.closerId);
+    await runBackfill();
+    ok((await purchasing.getPurchasing(P.appId, client)).status === 'complete' && beforeStatus === 'outstanding',
+      'and a COMPLETED purchasing record is never reopened by a re-run');
 
     // ---- Idempotency ----
     const D = await makeFile();

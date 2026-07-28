@@ -445,11 +445,19 @@ function SignoffSection({ appId, cw, rec, isCloser, busy, run }) {
               Mark file reconciled
             </button>
           )}
-          {isCloser && cw.stage === 'fully_reconciled' && (
+          {/* A table-funded loan was sold at closing — it must never be pushed to
+              purchasing (the server refuses it too). Say so instead of offering
+              a button that 422s. */}
+          {isCloser && cw.stage === 'fully_reconciled' && !cw.table_funded && (
             <button className="btn primary small" style={{ marginTop: 8 }} disabled={busy === 'purch' || !cw.investor_delivery_signed_off_at}
               onClick={() => run('purch', () => api.advanceClosing(appId, 'in_purchasing'), 'Sent to purchasing.')}>
               Send to purchasing
             </button>
+          )}
+          {isCloser && cw.stage === 'fully_reconciled' && !!cw.table_funded && (
+            <div className="muted small" style={{ marginTop: 8 }}>
+              Table funded — this loan was sold at closing, so it does not go to purchasing.
+            </div>
           )}
         </div>
       </div>

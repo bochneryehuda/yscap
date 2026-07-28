@@ -294,12 +294,18 @@ export default function StaffLayout({ children }) {
       api.workflowCount().then(r => { if (alive) setWfCount((r && r.total) || 0); }).catch(() => {});
       api.myExceptionsCount().then(r => { if (alive) setMyExcCount((r && r.openCount) || 0); }).catch(() => {});
       api.closingCount().then(r => { if (alive) setClosingCount((r && r.count) || 0); }).catch(() => {});
-      api.purchasingCount().then(r => { if (alive) setPurchasingCount((r && r.count) || 0); }).catch(() => {});
+      // Gated: unlike /closing/count this endpoint is capability-gated, so polling
+      // it for everyone would 403 on load and again every 2 minutes for every LO,
+      // processor and underwriter in the company.
+      if (can('manage_purchasing')) api.purchasingCount().then(r => { if (alive) setPurchasingCount((r && r.count) || 0); }).catch(() => {});
     };
     poll();
     const t = setInterval(poll, 120000);
     return () => { alive = false; clearInterval(t); };
-  }, []);
+    // `can` is memoized on the permission list, so this re-runs once when perms
+    // arrive — without it the capability check would be frozen at its mount-time
+    // value (false) and the purchasing badge would never appear.
+  }, [can]);
   useEffect(() => {
     let alive = true;
     const poll = () => api.get('/api/staff/sync-reviews/count')

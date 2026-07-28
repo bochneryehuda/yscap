@@ -135,7 +135,11 @@ async function deleteTask(client, taskId) {
 async function getPurchasingWorkspace(appId, client) {
   const c = client || db;
   const safe = async (fn, fallback) => { try { return await fn(); } catch (_) { return fallback; } };
-  const row = await safe(() => getPurchasing(appId, c), null);
+  // The STATUS read is deliberately NOT swallowed: returning inPurchasing:false on
+  // a transient DB error would tell the desk this file is not in purchasing, which
+  // is a lie the caller cannot tell apart from the truth. Notes/tasks may degrade
+  // to empty — a missing list reads as "nothing yet", which is survivable.
+  const row = await getPurchasing(appId, c);
   const notes = await safe(() => readNotes(appId, c), []);
   const tasks = await safe(() => readTasks(appId, c), []);
   return {

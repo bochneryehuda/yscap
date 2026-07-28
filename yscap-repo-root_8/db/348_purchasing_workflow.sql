@@ -70,14 +70,32 @@ CREATE TABLE IF NOT EXISTS purchasing_tasks (
 CREATE INDEX IF NOT EXISTS idx_purchasing_tasks_app ON purchasing_tasks(application_id, sort_order, created_at);
 
 -- ---------------------------------------------------------------------------
--- (5) PREVIOUS files — a file already handed to purchasing (closing stage
---     'in_purchasing') belongs in the new purchasing workflow. Deterministic +
---     idempotent; a table-funded file is excluded (sold at closing).
+-- (5) PREVIOUS files — enrol them with the SAME rule the runtime uses.
+--
+--     investor_delivery_signed_off_at IS NOT NULL AND NOT table_funded
+--
+--     NOT `stage = 'in_purchasing'`, which was the first cut of this backfill and
+--     was wrong twice over. Nothing moves a file to that stage automatically —
+--     "Send to purchasing" is a manual button — so every file whose investor
+--     delivery was signed off before this shipped would have been invisible on
+--     the purchasing desk permanently, with no remedy short of un-signing and
+--     re-signing ("previous AND future" is a standing rule, not a nice-to-have).
+--     And because `stage` is sticky while the purchasing row is DELETED by
+--     withdrawFromPurchasing, a file whose closer deliberately un-signed investor
+--     delivery had its row RESURRECTED on the next boot — back on the desk while
+--     the closing panel showed the delivery unsigned. Un-signing clears
+--     investor_delivery_signed_off_at, so this predicate leaves it withdrawn.
+--
+--     Deterministic + idempotent: NOT EXISTS means a file that already has a
+--     purchasing row is never touched, so a COMPLETED record is never reopened
+--     and an outstanding one is never re-stamped. A table-funded loan was sold at
+--     closing and is excluded.
 -- ---------------------------------------------------------------------------
 INSERT INTO purchasing_workflow (application_id, status, entered_at)
-SELECT cw.application_id, 'outstanding', COALESCE(cw.purchasing_at, now())
+SELECT cw.application_id, 'outstanding',
+       COALESCE(cw.purchasing_at, cw.investor_delivery_signed_off_at, now())
   FROM closing_workflow cw
   JOIN applications a ON a.id = cw.application_id AND a.deleted_at IS NULL
- WHERE cw.stage = 'in_purchasing'
+ WHERE cw.investor_delivery_signed_off_at IS NOT NULL
    AND COALESCE(cw.table_funded, false) = false
    AND NOT EXISTS (SELECT 1 FROM purchasing_workflow p WHERE p.application_id = cw.application_id);
