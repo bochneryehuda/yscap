@@ -20,7 +20,7 @@
 INSERT INTO sitewire_inspection_rules
   (capital_partner_id, program, draw_platform, inspection_method,
    allow_virtual, allow_physical, fee_cents_virtual, fee_cents_physical)
-SELECT 41, NULL, 'trustpoint', 'traditional', true, true, 29900, 25000
+SELECT 41::bigint, NULL::text, 'trustpoint', 'traditional', true, true, 29900::bigint, 25000::bigint
  WHERE NOT EXISTS (
    SELECT 1 FROM sitewire_inspection_rules WHERE capital_partner_id = 41 AND program IS NULL);
 
