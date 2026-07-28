@@ -46,9 +46,12 @@ WITH cleared AS (
      -- a file that was completed and then legitimately RE-SUBMITTED to closing
      -- would have its NEW live hand-off silently cleared on the next deploy.
      -- Anchor on the earliest moment the file could be called finished.
-     AND w.received_at <= COALESCE(
-           cw.purchasing_at,
-           GREATEST(cw.fully_reconciled_at, cw.investor_delivery_signed_off_at))
+     -- GREATEST of all three, NOT COALESCE(purchasing_at, ...): purchasing_at is
+     -- sticky, so preferring it would freeze the anchor at the first "Send to
+     -- purchasing" and a re-submitted file could never clear again. GREATEST
+     -- ignores NULLs, so a file that never reached purchasing is unaffected.
+     AND w.received_at <= GREATEST(
+           cw.purchasing_at, cw.fully_reconciled_at, cw.investor_delivery_signed_off_at)
   RETURNING w.id, w.application_id, w.from_staff_id, w.submission_type, w.outcome_label
 )
 INSERT INTO workflow_events

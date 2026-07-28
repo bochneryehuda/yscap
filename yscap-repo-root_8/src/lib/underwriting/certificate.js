@@ -40,6 +40,12 @@ async function buildDigest(client, appId) {
        FROM document_findings
       WHERE application_id=$1
       ORDER BY status, created_at`, [appId]);
+  // A can't-read / can't-extract finding is not a finding (owner-directed 2026-07-28) — keep it out of
+  // the attestation too, so the certificate matches the desk. Respects the same switch. NEW
+  // certificates only: an already-issued certificate is verified against its OWN stored hash
+  // (verifyDigestIntegrity re-hashes cert.digest_json, never re-derives from the live DB), so filtering
+  // here can never break an existing certificate's integrity check.
+  const findingRows = require('./unreadable-findings').partition(findings.rows).kept;
   const exceptions = await client.query(
     `SELECT id, code, resolved_by AS granted_by, resolved_at AS granted_at, resolution_note AS note
        FROM document_findings
@@ -85,11 +91,11 @@ async function buildDigest(client, appId) {
       status: f.status,
       consensus_score: f.consensus_score != null ? Number(f.consensus_score) : null,
     })),
-    open_findings: findings.rows.filter((f) => f.status === 'open').map((f) => ({
+    open_findings: findingRows.filter((f) => f.status === 'open').map((f) => ({
       id: f.id, code: f.code, severity: f.severity,
       doc_value: f.doc_value, file_value: f.file_value, blocks_ctc: !!f.blocks_ctc,
     })),
-    resolved_findings: findings.rows.filter((f) => f.status !== 'open').map((f) => ({
+    resolved_findings: findingRows.filter((f) => f.status !== 'open').map((f) => ({
       id: f.id, code: f.code, severity: f.severity, action: f.resolution,
       resolved_at: f.resolved_at, resolved_by: f.resolved_by,
     })),

@@ -154,10 +154,16 @@ async function getPurchasingWorkspace(appId, client) {
   // The file's current documents, so the desk can point at which one IS the
   // purchase advice without a second round trip. Newest first — the advice is
   // re-issued post closing and again post purchase, so the newest is usually it.
+  // The document currently POINTED AT is always included even if it has since
+  // been superseded — otherwise the picker would show "none selected" while the
+  // line beneath it still named the old file.
   const documents = await safe(async () => (await c.query(
-    `SELECT id, filename, doc_kind, created_at FROM documents
-      WHERE application_id=$1 AND COALESCE(is_current, true) = true
-      ORDER BY created_at DESC LIMIT 200`, [appId])).rows, []);
+    `SELECT d.id, d.filename, d.doc_kind, d.created_at, d.is_current FROM documents d
+      WHERE d.application_id=$1
+        AND (COALESCE(d.is_current, true) = true
+             OR d.id = (SELECT p.purchase_advice_document_id FROM purchasing_workflow p
+                         WHERE p.application_id=$1))
+      ORDER BY d.created_at DESC LIMIT 200`, [appId])).rows, []);
   return {
     application_id: appId,
     purchasing: row,

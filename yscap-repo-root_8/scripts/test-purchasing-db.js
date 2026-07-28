@@ -67,7 +67,13 @@ const uniq = (p) => p + Buffer.from(String(process.pid)).toString('hex') + Math.
         WHERE application_id=$1`, [appId, actorId]);
     const cw = (await client.query(`SELECT table_funded FROM closing_workflow WHERE application_id=$1`, [appId])).rows[0];
     if (on && !(cw && cw.table_funded)) await purchasing.enterPurchasing(client, appId, actorId);
-    if (!on) await purchasing.withdrawFromPurchasing(client, appId);
+    // The route also REOPENS the closer's hand-off on an un-sign — without this
+    // line the mirror would stay green even if that fix were deleted from the
+    // route, which is the whole point of mirroring it faithfully.
+    if (!on) {
+      await purchasing.withdrawFromPurchasing(client, appId);
+      await workflow.reopenClosingItem(client, appId, actorId);
+    }
     await workflow.maybeFinishClosing(client, appId, actorId);
   }
 
@@ -277,6 +283,16 @@ const uniq = (p) => p + Buffer.from(String(process.pid)).toString('hex') + Math.
     const wsN = await purchasing.getPurchasingWorkspace(N.appId, client);
     ok(wsN.openConditions === 1 && wsN.documents.some((d) => String(d.id) === String(advDoc2.id)),
       'the workspace carries the open-condition count and the file documents to pick the advice from');
+
+    // A superseded advice document must STILL be listed while it is the one being
+    // pointed at, or the picker would read "none selected" while the line beneath
+    // it named the old file.
+    await client.query(`UPDATE documents SET is_current=false WHERE id=$1`, [advDoc2.id]);
+    const wsSup = await purchasing.getPurchasingWorkspace(N.appId, client);
+    ok(wsSup.documents.some((d) => String(d.id) === String(advDoc2.id)),
+      'the pointed-at advice document stays listed even once it is superseded');
+    ok(wsSup.purchasing.purchase_advice_filename === 'purchase-advice-final.pdf',
+      'and the desk still names it');
 
     // ---- Idempotency ----
     const D = await makeFile();

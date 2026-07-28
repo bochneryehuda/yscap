@@ -109,13 +109,22 @@ const ROLE_LABEL = {
 function analyzeParties(parties, opts = {}) {
   try {
     const min = Number.isFinite(opts && opts.minConfidence) ? opts.minConfidence : 0.30;
+    // On a REFINANCE the borrower legitimately IS the owner of record — that is what refinancing means
+    // — so the owner_of_record↔borrower "buying from the party you're vesting into" pair is EXPECTED,
+    // not a straw-buyer signal. Left in, it fired a FATAL "conflict of interest" on essentially every
+    // refi (owner-reported garbage 2026-07-28). We skip only THAT pair; every other independence pair
+    // still runs — including owner_of_record↔appraiser, which on a refi is equivalent to
+    // borrower↔appraiser (also a pair) and so stays fully checked.
+    const isRefinance = !!(opts && opts.isRefinance);
     const list = (Array.isArray(parties) ? parties : []).filter((p) => p && p.role && p.name);
     const out = [];
     for (let i = 0; i < list.length; i++) {
       for (let j = i + 1; j < list.length; j++) {
         const A = list[i], B = list[j];
         if (A.role === B.role) continue;                       // same role never collusion
-        if (!PAIR_SET.has([A.role, B.role].slice().sort().join('|'))) continue;
+        const pairKey = [A.role, B.role].slice().sort().join('|');
+        if (!PAIR_SET.has(pairKey)) continue;
+        if (isRefinance && pairKey === 'borrower|owner_of_record') continue;
         const { signals, weight } = sharedIdentitySignals(A, B);
         const confidence = Math.min(1, weight);
         if (signals.length && confidence >= min) {
@@ -160,21 +169,26 @@ function normPropertyKey(addr) {
 }
 
 /**
- * matchDoublePledge(subjectAddress, otherLoans) → { matches:[...], hasDoublePledge } (PURE)
+ * matchDoublePledge(subjectAddress, otherLoans, opts?) → { matches:[...], hasDoublePledge } (PURE)
  *   subjectAddress: this file's property_address jsonb
- *   otherLoans: [{ appId, address, status, borrowerName?, loanNumber? }]
+ *   otherLoans: [{ appId, address, status, borrowerId?, borrowerName?, loanNumber? }]
+ *   opts.excludeBorrowerId: on a REFINANCE, the borrower's OWN prior loan on this property is the lien
+ *     being paid off — not a double pledge. Set to the subject's borrower_id to drop those matches; a
+ *     DIFFERENT borrower on the same property still matches (a real red flag).
  * A match = another loan whose normalized property key equals the subject's AND
  * whose lien is live (non-terminal). NEVER THROWS.
  */
-function matchDoublePledge(subjectAddress, otherLoans) {
+function matchDoublePledge(subjectAddress, otherLoans, opts = {}) {
   try {
     const key = normPropertyKey(subjectAddress);
     if (!key) return { matches: [], hasDoublePledge: false };
+    const excludeBorrowerId = opts && opts.excludeBorrowerId != null ? String(opts.excludeBorrowerId) : null;
     const matches = [];
     for (const o of (Array.isArray(otherLoans) ? otherLoans : [])) {
       if (!o || !o.appId) continue;
       if (!isLiveLien(o.status)) continue;
       if (normPropertyKey(o.address) !== key) continue;
+      if (excludeBorrowerId && String(o.borrowerId || '') === excludeBorrowerId) continue;
       matches.push({
         appId: o.appId, status: o.status || null,
         borrowerName: o.borrowerName || null, loanNumber: o.loanNumber || null,
@@ -184,6 +198,17 @@ function matchDoublePledge(subjectAddress, otherLoans) {
   } catch (_e) {
     return { matches: [], hasDoublePledge: false };
   }
+}
+
+// Is this a REFINANCE? On a refi the borrower legitimately owns the property, so (a) the
+// owner_of_record↔borrower collusion pair is expected, not a straw-buyer signal, and (b) the prior
+// lien on the same property (for the SAME borrower) is the one being paid off, not a double pledge.
+// PURE given the loan_type text. Best-effort — an unrecognized value is not a refinance.
+function isRefinancePurpose(loanType) {
+  try {
+    const p = require('../conditions/field-registry').normLoanPurpose(loanType);
+    return /^refinance/.test(String(p == null ? '' : p));
+  } catch (_e) { return false; }
 }
 
 // ---- DB: gather the file's parties from its current extractions --------------
@@ -231,7 +256,14 @@ function gatherParties(input = {}) {
 async function analyzeAndRecord(client, { applicationId, extractions, fileCtx, traceUrl } = {}) {
   if (!aiSug || !applicationId) return { ok: false, hasCollusion: false, recorded: 0 };
   const parties = gatherParties({ extractions, fileCtx });
-  const v = analyzeParties(parties);
+  // Read the loan purpose so the owner_of_record↔borrower pair is skipped on a refinance (below).
+  // Best-effort — a read failure leaves isRefinance false (never suppress a real signal on a guess).
+  let isRefinance = false;
+  try {
+    const lt = await client.query(`SELECT loan_type FROM applications WHERE id=$1 AND deleted_at IS NULL`, [applicationId]);
+    isRefinance = isRefinancePurpose(lt.rows[0] && lt.rows[0].loan_type);
+  } catch (_e) { isRefinance = false; }
+  const v = analyzeParties(parties, { isRefinance });
   if (!v.hasCollusion) return { ok: true, hasCollusion: false, recorded: 0 };
   let recorded = 0;
   for (const p of v.pairs) {
@@ -263,10 +295,16 @@ async function analyzeAndRecord(client, { applicationId, extractions, fileCtx, t
 async function checkDoublePledgeAndRecord(client, { applicationId, traceUrl } = {}) {
   if (!aiSug || !applicationId) return { ok: false, hasDoublePledge: false, recorded: 0 };
   const me = await client.query(
-    `SELECT property_address FROM applications WHERE id = $1 AND deleted_at IS NULL`, [applicationId]);
+    `SELECT property_address, loan_type, borrower_id FROM applications WHERE id = $1 AND deleted_at IS NULL`, [applicationId]);
   const subject = me.rows[0] && me.rows[0].property_address;
   const key = normPropertyKey(subject);
   if (!key) return { ok: true, hasDoublePledge: false, recorded: 0 };
+  // On a REFINANCE, a prior loan on THIS property for the SAME borrower is the lien being paid off by
+  // this refinance — not a double pledge. A DIFFERENT borrower on the same property is still a real
+  // red flag and still fires. (Firing "property on two active loans" on every refi-of-a-PILOT-purchase
+  // was owner-reported garbage 2026-07-28.)
+  const isRefinance = isRefinancePurpose(me.rows[0] && me.rows[0].loan_type);
+  const subjectBorrowerId = (me.rows[0] && me.rows[0].borrower_id) || null;
 
   // Candidate scan: bound it by the same 5-digit zip when the subject has one,
   // else the same city — then confirm the exact normalized key in JS. Excludes
@@ -274,7 +312,7 @@ async function checkDoublePledgeAndRecord(client, { applicationId, traceUrl } = 
   const zip5 = key.split('|')[3];
   const city = key.split('|')[1];
   const cand = await client.query(
-    `SELECT a.id, a.status, a.property_address,
+    `SELECT a.id, a.status, a.property_address, a.borrower_id,
             b.first_name, b.last_name, a.ys_loan_number AS loan_number
        FROM applications a LEFT JOIN borrowers b ON b.id = a.borrower_id
       WHERE a.id <> $1 AND a.deleted_at IS NULL
@@ -284,10 +322,12 @@ async function checkDoublePledgeAndRecord(client, { applicationId, traceUrl } = 
       LIMIT 200`, [applicationId, zip5, city]);
   const others = cand.rows.map((r) => ({
     appId: r.id, status: r.status, address: r.property_address,
+    borrowerId: r.borrower_id || null,
     borrowerName: require('../person-name').displayName(r).trim() || null,
     loanNumber: r.loan_number || null,
   }));
-  const v = matchDoublePledge(subject, others);
+  // Refinance carve-out: drop a same-borrower prior loan on this property (the lien being refinanced).
+  const v = matchDoublePledge(subject, others, { excludeBorrowerId: isRefinance ? subjectBorrowerId : null });
   if (!v.hasDoublePledge) return { ok: true, hasDoublePledge: false, recorded: 0 };
 
   const lines = v.matches.map((m, i) => `  ${i + 1}. Loan ${m.loanNumber || '(no #)'}${m.borrowerName ? ` — ${m.borrowerName}` : ''} (status: ${m.status || 'unknown'})`).join('\n');
@@ -309,5 +349,5 @@ async function checkDoublePledgeAndRecord(client, { applicationId, traceUrl } = 
 module.exports = {
   analyzeParties, matchDoublePledge, gatherParties, sharedIdentitySignals, normPropertyKey,
   analyzeAndRecord, checkDoublePledgeAndRecord,
-  COLLUSION_PAIRS, _internals: { isLiveLien, normAddr },
+  COLLUSION_PAIRS, _internals: { isLiveLien, normAddr, isRefinancePurpose },
 };

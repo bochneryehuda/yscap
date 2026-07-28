@@ -27,6 +27,18 @@ ok(closing.sameDay('2026-07-10', '2026-07-10 00:00:00'), 'sameDay across formats
 ok(!closing.sameDay('2026-07-10', '2026-07-11'), 'sameDay different days');
 ok(!closing.sameDay(null, '2026-07-11'), 'sameDay null is never equal');
 
+// ── credit-report quick link: the readable report, never the XML data file ──
+ok(closing.isCreditReportDoc({ doc_kind: 'credit_pdf' }), 'the imported credit PDF is a quick-link');
+ok(!closing.isCreditReportDoc({ doc_kind: 'credit_xml' }), 'the machine-readable XML is NOT a quick-link');
+// The importer files with checklist_item_id NULL when the file has no credit
+// condition — doc_kind alone must still identify the report.
+ok(closing.isCreditReportDoc({ doc_kind: 'credit_pdf', template_code: null }), 'a credit PDF with no condition still surfaces');
+ok(!closing.isCreditReportDoc({ doc_kind: 'credit_xml', template_code: 'rtl_cond_credit' }), 'the XML is excluded even on the credit condition');
+ok(closing.isCreditReportDoc({ doc_kind: null, template_code: 'rtl_cond_credit' }), 'a report dropped straight onto the credit condition surfaces');
+ok(!closing.isCreditReportDoc({ doc_kind: null, template_code: 'rtl_p3_assets' }), 'a bank statement is not a credit report');
+ok(!closing.isCreditReportDoc({ doc_kind: 'term_sheet_signed' }), 'a term sheet is not a credit report');
+ok(!closing.isCreditReportDoc(null), 'a missing row is never a credit report');
+
 // ── money gate: verified >= actual CTC + reserves ───────────────────────────
 // Covered: exactly enough (with $1 tolerance).
 let d = closing.decideCashToClose({ verified: 120000, reserve: 20000, actualCashToClose: 100000, haveCountable: true });

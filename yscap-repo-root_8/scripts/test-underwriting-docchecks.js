@@ -138,6 +138,12 @@ assert.strictEqual(C.computeInsuranceFindings({ ...insGood, mortgageeClausePrese
   assert.ok(!withBr.some((f) => f.code === 'insurance_no_builders_risk'), 'a builders-risk policy on a rehab deal is clean');
   const noRehab = C.computeInsuranceFindings({ ...insGood, buildersRisk: false }, { loan_amount: 300000 }, { today: TODAY });
   assert.ok(!noRehab.some((f) => f.code === 'insurance_no_builders_risk'), 'no rehab budget → builders-risk not required');
+  // 2026-07-28: fire ONLY on an affirmative NOT-builders-risk. An UNCONFIRMED coverage form
+  // (buildersRisk null/absent) is no longer a finding — "only flag what you KNOW is wrong".
+  const brUnknown = C.computeInsuranceFindings({ ...insGood, buildersRisk: null }, sub, { today: TODAY });
+  assert.ok(!brUnknown.some((f) => f.code === 'insurance_no_builders_risk'), 'an UNCONFIRMED builders-risk form is not flagged');
+  const brAbsent = C.computeInsuranceFindings({ ...insGood }, sub, { today: TODAY });
+  assert.ok(!brAbsent.some((f) => f.code === 'insurance_no_builders_risk'), 'an ABSENT builders-risk flag is not flagged');
 }
 assert.ok(C.computeInsuranceFindings({ ...insGood, policyExpiration: '2026-01-01' }, { loan_amount: 300000 }, { today: TODAY }).some((f) => f.code === 'insurance_expired'));
 // Mortgagee-clause TEXT + loan number must be the lender's (owner-directed 2026-07-20).

@@ -307,7 +307,16 @@ async function lockClosingItems(client, appId) {
  * The anchor is computed in SQL, never handed in as a JS value: a timestamptz is
  * microsecond-precision and a JS Date is only millisecond, so round-tripping it
  * truncates the anchor BACKWARDS and a hand-off received in the same microsecond
- * window would silently fail to clear. */
+ * window would silently fail to clear.
+ *
+ * It is GREATEST of all three, NOT COALESCE(purchasing_at, GREATEST(...)).
+ * `purchasing_at` is STICKY (advanceClosing writes COALESCE(purchasing_at, now())),
+ * so a COALESCE that prefers it freezes the anchor at the FIRST "Send to
+ * purchasing" forever: a file re-submitted later could never clear again, however
+ * genuinely it was re-completed — the exact "completed file stuck on the closer's
+ * Workflow" bug this whole mechanism exists to fix, displaced onto re-submits.
+ * Postgres GREATEST ignores NULLs, so a file that never reached purchasing is
+ * unaffected. */
 async function resolveClosingItem(client, appId, actorId, outcomeLabel, guardResubmit) {
   const label = String(outcomeLabel || 'Closing complete — sent to purchasing').slice(0, 120);
   const r = await client.query(
@@ -316,8 +325,8 @@ async function resolveClosingItem(client, appId, actorId, outcomeLabel, guardRes
       WHERE application_id=$1 AND submission_type='closing'
         AND status IN ('open','in_progress')
         AND ($3::boolean IS NOT TRUE OR received_at <= (
-              SELECT COALESCE(cw.purchasing_at,
-                              GREATEST(cw.fully_reconciled_at, cw.investor_delivery_signed_off_at))
+              SELECT GREATEST(cw.purchasing_at, cw.fully_reconciled_at,
+                              cw.investor_delivery_signed_off_at)
                 FROM closing_workflow cw WHERE cw.application_id = $1))
       RETURNING *`,
     [appId, label, guardResubmit === true]);

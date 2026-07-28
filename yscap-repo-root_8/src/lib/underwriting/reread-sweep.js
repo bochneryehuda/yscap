@@ -56,7 +56,10 @@ const costMeter = require('../ai/cost-meter');
 // a re-read to clear stale findings on existing files: co-borrower ID awareness (id-checks /
 // identity-chain / file-view), whitespace-insensitive entity matching (compare.entityMatch), the
 // assignment-fee total-as-fee guard (facts / tieout), and the per-entity bank-finding collapse.
-const REREAD_GENERATION = 2;
+// Generation 3 covers the 2026-07-28 "if PILOT can't read it, don't give a finding" cleanup: the
+// persist chokepoint now drops the can't-read / can't-extract findings (unreadable-findings.js), so
+// re-reading the un-funded book supersedes the stale ones already stored and never re-persists them.
+const REREAD_GENERATION = 3;
 
 const STATE_KEY = 'underwriting_reread_sweep';
 // A small default slice per tick — the sweep is a slow background catch-up, not a race. Bounded so a

@@ -3239,6 +3239,12 @@ details[open]>.appr-sec-sum .appr-sec-chev{transform:rotate(180deg)}
 .cl-tile{background:var(--ink-2);border:1px solid var(--line);border-radius:var(--radius);padding:12px}
 .cl-tile-k{color:var(--muted);font-size:12px;text-transform:uppercase;letter-spacing:.06em}
 .cl-tile-v{font-size:20px;font-weight:700;margin-top:3px}
+/* The purchase price band under Deal details. auto-fit keeps ONE tile (a
+   straight purchase) full width and lays an assignment's final / original /
+   fee side by side in that order — and collapses on a phone with no extra
+   breakpoint, so both shapes read the same way at every width. */
+.cl-price-band{display:grid;grid-template-columns:repeat(auto-fit,minmax(190px,1fr));gap:12px;margin-top:12px}
+.cl-tile.accent{border-color:var(--gold)}
 .cl-actual{display:flex;gap:12px;align-items:flex-end;margin-top:12px;flex-wrap:wrap}
 .cl-table-wrap{overflow-x:auto}
 .cl-table{width:100%;border-collapse:collapse;font-size:14px}
@@ -3260,6 +3266,9 @@ details[open]>.appr-sec-sum .appr-sec-chev{transform:rotate(180deg)}
    colored pill, not body text. */
 .cl-ts-tag{flex:0 0 auto;display:inline-block;padding:0 6px;border-radius:999px;font-size:11px;font-weight:600;border:1px solid var(--line);color:#4B585C;background:#FFFFFF}
 .cl-ts-tag.on{color:#FFFFFF;background:#2F7F86;border-color:#2F7F86}
+/* A borrower-name tag (whose credit report this is) can be long — unlike the
+   fixed Executed/Draft tag it may shrink and ellipsize rather than overflow. */
+.cl-ts-tag.cl-ql-who{flex:0 1 auto;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .cl-cond{display:flex;justify-content:space-between;gap:12px;align-items:flex-start;border-bottom:1px solid var(--line);padding:10px 0}
 .cl-cond:last-child{border-bottom:none}
 .cl-cond-main{display:flex;flex-direction:column;gap:4px;min-width:0}

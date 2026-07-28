@@ -762,12 +762,18 @@ router.get('/:appId', async (req, res, next) => {
     // readiness (clean / issues / blocked) from its own findings — so every document ties back to
     // the actual checklist. And a file-level coverage rollup: per document-condition, is it
     // analyzed and ready to clear?
+    // A funded file that never re-reads still carries any can't-read finding stored before this rule.
+    // The readiness badge + coverage rollup are computed off the stored findings, so filter them here
+    // too — otherwise a document/condition shows a yellow "issues" badge for a warning that no longer
+    // appears anywhere on the desk. (Completeness at line ~942 deliberately keeps the raw list — it
+    // reacts only to a FATAL finding / confidence='unreadable', never to a can't-read warning.)
+    const ffReadable = require('../lib/underwriting/unreadable-findings').partition(ff.findings).kept;
     const extractions = exts.rows.map((e) => Object.assign({}, e, {
       conditions: conditionsForDoc(e.doc_type),
       purpose: purposeForDoc(e.doc_type),
-      readiness: docReadiness(ff.findings.filter((f) => f.document_id === e.document_id || f.source === e.doc_type)),
+      readiness: docReadiness(ffReadable.filter((f) => f.document_id === e.document_id || f.source === e.doc_type)),
     }));
-    const conditionCoverage = fileConditionCoverage({ conditions: conds.rows, extractions: exts.rows, findings: ff.findings });
+    const conditionCoverage = fileConditionCoverage({ conditions: conds.rows, extractions: exts.rows, findings: ffReadable });
 
     // Staleness / re-verification: project every dated document to the file's target closing
     // date (from the current purchase contract) and surface a freshness board + the forward-
@@ -1067,6 +1073,19 @@ router.get('/:appId', async (req, res, next) => {
       // regardless. So only a row that merged with nothing — one that exists purely
       // because of the fold — is held back.
       .filter(module.exports._foldFilter);
+    // "IF PILOT CAN'T READ IT, DON'T GIVE A FINDING" — DISPLAY belt-and-suspenders (owner-directed
+    // 2026-07-28). The persist chokepoint (store.saveAnalysis) stops any NEW or re-read analysis from
+    // ever BORN a can't-read / can't-extract finding, but a FUNDED file that never re-reads still
+    // carries the ones already stored. Filter them off the desk here too, so previous files are clean
+    // immediately without a costly forced re-read. Returned as `unreadableSuppressed` (auditable, off
+    // the main desk — not swallowed). The document is still chased for a clearer copy via its
+    // `confidence='unreadable'` completeness signal, untouched. Runs BEFORE the ledger + AI gates so
+    // every downstream count is over the findings a human actually sees. Reversible with the same
+    // switch as the persist filter: UW_UNREADABLE_FINDINGS_SHOW=1. FAILS OPEN (never throws).
+    const unreadableFindings = require('../lib/underwriting/unreadable-findings');
+    const readableSplit = unreadableFindings.partition(dedupedAll);
+    const readableAll = readableSplit.kept;
+    const unreadableSuppressed = readableSplit.suppressed.map(decorate);
     // A FINDING A HUMAN ALREADY SETTLED DOES NOT COME BACK (owner-reported
     // 2026-07-27: "I dismiss it, or the super-admin grants an exception, and it
     // keeps popping up again").
@@ -1084,7 +1103,7 @@ router.get('/:appId', async (req, res, next) => {
     // swallowing work. FAILS OPEN: an unreadable ledger hides nothing.
     const fdec = require('../lib/underwriting/finding-decisions');
     const settledKeys = await fdec.suppressedKeys(db, app.id);
-    const split = fdec.filterSuppressed(settledKeys, dedupedAll);
+    const split = fdec.filterSuppressed(settledKeys, readableAll);
     const openAllUngated = split.kept;
     const settledFindings = split.suppressed.map(decorate);
 
@@ -1346,7 +1365,10 @@ router.get('/:appId', async (req, res, next) => {
     // then enriches each survivor with its AI review — so a suppressed finding can't linger in a
     // sub-panel and every section carries the same AI suggestion the main list does.
     const live = (arr) => {
-      const kept = fdec.filterSuppressed(settledKeys, (arr || []).filter(Boolean)).kept;
+      // Drop the can't-read findings from the sub-panel too (same switch + predicate as the
+      // consolidated list) so one can't linger in a section after being filtered off the main desk.
+      const readable = unreadableFindings.partition((arr || []).filter(Boolean)).kept;
+      const kept = fdec.filterSuppressed(settledKeys, readable).kept;
       return findingAiReview.annotateFindings(kept, aiReviewMem).shown.map(decorate);
     };
 
@@ -1360,6 +1382,11 @@ router.get('/:appId', async (req, res, next) => {
       // the source document) — kept out of the live list, returned so the desk can show "PILOT
       // flagged this; the AI thinks it's not a real concern" and offer to put one back.
       aiSuppressedFindings,
+      // Findings PILOT raised only to say it could not READ a document or EXTRACT a value — the
+      // owner's "if they can't read it they should not give a finding" rule. Kept off every live list
+      // above, returned here so the desk can still show "PILOT couldn't read these" if it wants to.
+      // The documents themselves stay in the "still to read" queue via their completeness signal.
+      unreadableSuppressed,
       fraudBanner,
       verdict,
       rootCauses,
@@ -1509,7 +1536,10 @@ async function analyzeOneDocument(app, doc, docType, opts = {}) {
         analyzerVersion: ANALYZER_VERSION, subjectHash: subjHash,
       });
       if (cached) {
-        const findings = await store.findingsForExtraction(db, cached.id);
+        // Same as the fresh path: a cached extraction persisted BEFORE this rule may still carry a
+        // can't-read finding row, so filter it out of the analyze response too (same switch).
+        const findings = require('../lib/underwriting/unreadable-findings')
+          .partition(await store.findingsForExtraction(db, cached.id)).kept;
         if (actorId) await audit(actorId, 'underwriting_analyze', app.id, { documentId: doc.id, docType, ok: true, cached: true });
         return { ...base, ok: true, cached: true, extractionId: cached.id, status: cached.status, confidence: cached.confidence, findings };
       }
@@ -1648,7 +1678,11 @@ async function analyzeOneDocument(app, doc, docType, opts = {}) {
       ...base, ok: result.ok, cached: false, extractionId: saved.extractionId,
       status: result.extraction && result.extraction.status,
       confidence: result.extraction && result.extraction.confidence,
-      findings: result.findings || [], reason: result.reason || null,
+      // The analyze response returned the RAW engine output, which still holds a can't-read finding
+      // that saveAnalysis just dropped from persistence — so it could flash on the desk until the next
+      // file-view fetch. Filter it here too (same switch), so "never on the desk" holds on every path.
+      findings: require('../lib/underwriting/unreadable-findings').partition(result.findings || []).kept,
+      reason: result.reason || null,
     };
   } catch (e) {
     // Keep the ORIGINAL error object (with .code/.status) so the manual endpoint can propagate it to

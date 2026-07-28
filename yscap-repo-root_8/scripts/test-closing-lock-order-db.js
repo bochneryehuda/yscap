@@ -188,6 +188,40 @@ const uniq = (p) => p + process.pid.toString(36) + Math.random().toString(36).sl
       ok((await workflow.maybeFinishClosing(c2, F.appId, F.closerId)).length === 1,
         'genuinely re-completing the file clears the new hand-off too');
 
+      // ---- (C2) …and a file that ALREADY WENT TO PURCHASING can re-complete ----
+      // `purchasing_at` is STICKY, so an anchor of COALESCE(purchasing_at, …)
+      // freezes at the first "Send to purchasing" and a re-submitted file could
+      // never clear again — permanently stuck on the closer's Workflow, the exact
+      // bug this mechanism exists to fix. This case fails on that anchor and
+      // passes on GREATEST-of-all-three.
+      const G = await makeFile(c2, { purchasing: true });
+      // Round 1 happened days ago: the hand-off arrived BEFORE the completion,
+      // exactly as it does in life.
+      await c2.query(
+        `UPDATE closing_workflow
+            SET purchasing_at = now() - interval '3 days',
+                fully_reconciled_at = now() - interval '3 days',
+                investor_delivery_signed_off_at = now() - interval '3 days'
+          WHERE application_id=$1`, [G.appId]);
+      await c2.query(
+        `UPDATE workflow_items SET received_at = now() - interval '4 days'
+          WHERE application_id=$1 AND submission_type='closing'`, [G.appId]);
+      ok((await workflow.maybeFinishClosing(c2, G.appId, G.closerId)).length === 1,
+        'a file that went to purchasing clears its original hand-off');
+      await workflow.submitItem(c2, {
+        appId: G.appId, submissionType: 'closing', fromStaffId: G.loId, toStaffId: G.closerId,
+        toRole: 'closer', note: 're-submitted after purchasing', priority: 2, estClosingDate: '2026-10-31',
+      });
+      ok((await workflow.maybeFinishClosing(c2, G.appId, G.closerId)).length === 0,
+        'its re-submitted hand-off survives while the closing is not re-completed');
+      // The closer genuinely re-completes it (a fresh investor-delivery sign-off).
+      await c2.query(
+        `UPDATE closing_workflow SET investor_delivery_signed_off_at=now() WHERE application_id=$1`, [G.appId]);
+      ok((await workflow.maybeFinishClosing(c2, G.appId, G.closerId)).length === 1,
+        'and re-completing it DOES clear — a sticky purchasing_at never strands the file');
+      ok((await liveItems(c2, G.appId)).length === 0,
+        'so it really does leave the closer\'s Workflow the second time too');
+
       // ---- (D) un-signing investor delivery reopens the hand-off ----
       // Otherwise the file is on NEITHER queue: withdrawn from purchasing and
       // already returned off the closer's Workflow.

@@ -57,6 +57,34 @@ const CLAIM_FAMILIES = [
     ],
   },
   {
+    claim: 'seller_vs_owner_of_record',
+    // The SELLER side of the same "six times" problem. The BUYER side got a family above
+    // (vesting_entity_vs_contract_buyer, 2026-07-27); the seller side — "the contract seller is not
+    // the property's recorded owner" — never did, so a wholesale/assignment file where the seller
+    // isn't on title showed it up to FOUR times: the tie-out's FATAL, the chain-of-title's warning,
+    // and two public-records restatements on the AI panel. They are one fact reconciled from three
+    // owner-of-record sources (title vestedOwners, the appraisal's current owner, the public-records
+    // grantor), with one fix (confirm the seller holds title / get the missing deed). The FATAL
+    // tie-out card survives (worst-wins); the two `chain_seller_vs_*` AI-panel restatements now share
+    // its claim, so the panel hides them as "already shown."
+    //
+    // DELIBERATELY NOT included (each is a genuinely DIFFERENT fact, not a restatement of this one):
+    //   • cot_assignment_seller_mismatch — the ASSIGNMENT document's own underlying seller disagrees
+    //     with the contract seller (a different pair on a different document).
+    //   • chain_title_vs_appraisal_owner — the title and the appraisal disagree with EACH OTHER about
+    //     the owner (the seller is not involved; both may match the seller yet disagree here).
+    //   • cot_assignor_never_held_title — a broken assignment HOP, not a seller-vs-owner question.
+    codes: [
+      'tieout_seller_name',              // tie-out FATAL: contract seller ≠ title/appraisal owner (survives)
+      'cot_seller_not_owner_of_record',  // chain-of-title: contract seller ≠ owner of record
+      'chain_seller_vs_title_grantor',   // public-records: contract seller ≠ title grantor
+      'chain_seller_vs_appraisal_owner', // public-records: contract seller ≠ appraisal's current owner
+    ],
+    // NOT fileLevel: all four are DERIVED (no document_findings id), so the two-persisted-merge guard
+    // never applies, and the fatal is preserved as the survivor — merging is safe without the
+    // fileLevel exemption (which only exists to let two PERSISTED non-blocking rows merge).
+  },
+  {
     claim: 'borrowing_entity_not_screened',
     // The background/OFAC desk and the entity desk both report "the LLC itself was never screened".
     codes: ['background_entity_not_screened', 'entity_not_screened'],

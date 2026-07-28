@@ -114,11 +114,65 @@ const subject = { address: '123 Main St.', city: 'Lakewood', state: 'NJ', zip: '
   ok('normPropertyKey is stable across formatting differences');
 }
 
+// ---- refinance carve-out (owner-reported garbage 2026-07-28) -----------------
+// On a refinance the borrower legitimately IS the owner of record, so the owner_of_record↔borrower
+// "self-deal" pair fired a FATAL on essentially every refi. It is skipped on a refi — and ONLY it.
+{
+  const parties = [
+    { role: 'owner_of_record', name: 'Maple Holdings LLC' },
+    { role: 'borrower', name: 'Maple Holdings LLC' },
+  ];
+  assert.strictEqual(pc.analyzeParties(parties).hasCollusion, true,
+    'on a PURCHASE, owner-of-record == borrower is a real self-deal signal');
+  assert.strictEqual(pc.analyzeParties(parties, { isRefinance: true }).hasCollusion, false,
+    'on a REFINANCE, owner-of-record == borrower is expected, not collusion');
+  ok('refinance skips the owner-of-record↔borrower pair; a purchase still flags it');
+}
+// The carve-out is SURGICAL — every other independence pair still fires on a refinance.
+{
+  const parties = [
+    { role: 'owner_of_record', name: 'Maple Holdings LLC' },
+    { role: 'borrower', name: 'Maple Holdings LLC' },
+    { role: 'appraiser', name: 'Maple Holdings LLC' },   // borrower == appraiser: a real valuation conflict
+  ];
+  const v = pc.analyzeParties(parties, { isRefinance: true });
+  assert.strictEqual(v.hasCollusion, true, 'borrower↔appraiser still fires on a refinance');
+  const hasOwnerBorrower = v.pairs.some((p) =>
+    [p.roleA, p.roleB].sort().join('|') === 'borrower|owner_of_record');
+  assert.strictEqual(hasOwnerBorrower, false, 'only the owner-of-record↔borrower pair is dropped');
+  ok('the refinance carve-out never drops another collusion pair');
+}
+// isRefinancePurpose reads the loan_type text.
+{
+  const isRefi = pc._internals.isRefinancePurpose;
+  assert.strictEqual(isRefi('Refinance — Cash-Out'), true);
+  assert.strictEqual(isRefi('refi rate & term'), true);
+  assert.strictEqual(isRefi('Purchase'), false);
+  assert.strictEqual(isRefi(null), false);
+  assert.strictEqual(isRefi(''), false);
+  ok('isRefinancePurpose recognizes refinance loan types and defaults false');
+}
+// double-pledge refinance carve-out: the borrower's OWN prior loan on this property (the refinanced
+// lien) is dropped; a DIFFERENT borrower's loan on the same property still fires.
+{
+  const others = [
+    { appId: 'mine', address: subject, status: 'funded', borrowerId: 'B1', borrowerName: 'Me' },        // the loan being refinanced
+    { appId: 'theirs', address: subject, status: 'funded', borrowerId: 'B2', borrowerName: 'Someone' }, // a real double pledge
+  ];
+  const purchase = pc.matchDoublePledge(subject, others);
+  assert.strictEqual(purchase.matches.length, 2, 'without the carve-out, both same-address loans match');
+  const refi = pc.matchDoublePledge(subject, others, { excludeBorrowerId: 'B1' });
+  assert.strictEqual(refi.matches.length, 1, 'on a refi, only the OTHER borrower remains a double-pledge');
+  assert.strictEqual(refi.matches[0].appId, 'theirs');
+  ok('double-pledge refinance carve-out drops the same-borrower refinanced lien, keeps a different borrower');
+}
+
 // 10. Hostile input never throws.
 {
   for (const bad of [null, undefined, 42, 'x', {}, [1, 2]]) {
     assert.doesNotThrow(() => pc.analyzeParties(bad));
     assert.doesNotThrow(() => pc.matchDoublePledge(bad, bad));
+    assert.doesNotThrow(() => pc.matchDoublePledge(bad, bad, { excludeBorrowerId: 'x' }));
   }
   ok('hostile input degrades safely (never throws)');
 }

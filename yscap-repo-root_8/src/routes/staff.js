@@ -8658,7 +8658,7 @@ router.post('/applications/:id/closing-workflow', async (req, res) => {
       // purchase review", the file dropped off the closing badge, and the
       // purchasing desk (which correctly excludes table-funded files) stayed
       // empty — leaving it on neither desk.
-      if (cw.table_funded) return res.status(422).json({ error: 'table_funded', reason: 'This loan was table funded — it was sold at closing, so it does not go to purchasing. Untick table funding first if that was a mistake.' });
+      if (cw.table_funded) return res.status(422).json({ error: 'table_funded', reason: 'This loan was table funded — it was sold at closing, so it does not go to purchasing. If that was a mistake, change the warehouse off “Table Funding” in Funding first.' });
     }
 
     const client = await db.getClient();

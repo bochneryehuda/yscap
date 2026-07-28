@@ -49,6 +49,28 @@ const QUICKLINK_GROUPS = {
   title: ['rtl_cond_title'],
 };
 
+// The credit condition both borrowers' reports file onto (the co-borrower's own
+// split-out condition uses the same template code, so this covers both).
+const CREDIT_CONDITION_CODES = ['rtl_cond_credit'];
+
+// THE CREDIT REPORT quick-link (owner-directed 2026-07-28). Kept OUT of
+// QUICKLINK_GROUPS because it is not a plain code match:
+//   • the importer files the readable report as doc_kind='credit_pdf' — that is
+//     the identity, and it holds even if the condition itself is missing from
+//     the file (storeImport files with checklist_item_id NULL in that case);
+//   • it also files the machine-readable source as 'credit_xml' — the closer
+//     cannot read XML, so the data file is never a quick-link;
+//   • a report a human dropped straight onto the credit condition carries
+//     doc_kind NULL, so the condition code is the fallback identity.
+// Both borrowers' reports (and a merged/joint report, which is ONE stored
+// document shared by both credit_reports rows) surface here.
+function isCreditReportDoc(d) {
+  if (!d) return false;
+  if (d.doc_kind === 'credit_xml') return false;
+  if (d.doc_kind === 'credit_pdf') return true;
+  return CREDIT_CONDITION_CODES.includes(d.template_code);
+}
+
 // ---------------------------------------------------------------------------
 // Calendar-string date equality (null-safe). Dates flow as 'YYYY-MM-DD' strings
 // end-to-end (pg OID 1082); never a JS Date mid-pipeline.
@@ -247,15 +269,39 @@ async function readQuickLinks(appId, llcId, client) {
   // copy (term_sheet_signed, filed by the e-sign integration) and the draft
   // (term_sheet). The closer needs a direct link to the executed final sheet.
   groups.term_sheet = [];
+  // The credit report is keyed by doc_kind / its own condition (see
+  // isCreditReportDoc) — likewise not a plain QUICKLINK_GROUPS code match.
+  groups.credit_report = [];
   const codeToGroup = {};
   for (const [group, codes] of Object.entries(QUICKLINK_GROUPS)) for (const code of codes) codeToGroup[code] = group;
   for (const d of r.rows) {
     const g = d.template_code && codeToGroup[d.template_code];
     if (g) groups[g].push(d);
     if (d.doc_kind === 'term_sheet_signed' || d.doc_kind === 'term_sheet') groups.term_sheet.push(d);
+    if (isCreditReportDoc(d)) groups.credit_report.push(d);
   }
   // Executed copy first, then draft, newest within each (each already newest-first).
   groups.term_sheet.sort((a, b) => (a.doc_kind === 'term_sheet_signed' ? 0 : 1) - (b.doc_kind === 'term_sheet_signed' ? 0 : 1));
+  // WHOSE credit report — both borrowers' reports file on the same condition and
+  // the importer names them all 'credit-report.pdf', so without this a two-borrower
+  // file shows two identical links. Read from credit_reports (the system of record)
+  // rather than the document's own borrower_id: a MERGED/joint report is ONE stored
+  // document shared by both rows, so it correctly reports BOTH names. Best-effort —
+  // a failure here only costs the label, never the links.
+  if (groups.credit_report.length) {
+    try {
+      const owners = await c.query(
+        `SELECT doc_id, string_agg(name, ', ' ORDER BY name) AS names FROM (
+           SELECT DISTINCT cr.pdf_document_id AS doc_id, NULLIF(b.full_name,'') AS name
+             FROM credit_reports cr JOIN borrowers b ON b.id = cr.borrower_id
+            WHERE cr.application_id = $1 AND cr.pdf_document_id IS NOT NULL AND NULLIF(b.full_name,'') IS NOT NULL
+         ) s GROUP BY doc_id`, [appId]);
+      const byDoc = new Map(owners.rows.map((o) => [String(o.doc_id), o.names]));
+      for (const d of groups.credit_report) d.credit_for = byDoc.get(String(d.id)) || null;
+    } catch (e) {
+      console.error('[closing] credit-report owner lookup failed (links still returned):', (e && e.message) || e);
+    }
+  }
   return groups;
 }
 
@@ -362,6 +408,8 @@ module.exports = {
   TABLE_FUNDING,
   CLOSING_CONDITION_CODES,
   QUICKLINK_GROUPS,
+  CREDIT_CONDITION_CODES,
+  isCreditReportDoc,
   dayStr,
   sameDay,
   decideCashToClose,

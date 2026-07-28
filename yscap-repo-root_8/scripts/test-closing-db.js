@@ -142,6 +142,24 @@ const ok = (c, n) => { assert.ok(c, n); console.log(`  ok  ${n}`); passed++; };
     ok(Array.isArray(ql.term_sheet) && ql.term_sheet.length === 2, 'term-sheet quick-link groups the executed sheet + the draft');
     ok(ql.term_sheet[0].doc_kind === 'term_sheet_signed', 'the executed (signed) term sheet is listed first');
 
+    // Credit-report quick-link (owner-directed 2026-07-28): the readable report
+    // surfaces, the machine-readable XML never does, and the box says WHOSE
+    // report it is (both borrowers' file under the same condition with the same
+    // filename). Exercises the REAL query + the credit_reports owner lookup.
+    const credDocs = (await client.query(
+      `INSERT INTO documents (application_id, borrower_id, filename, doc_kind, is_current, visibility) VALUES
+         ($1,$2,'credit-report.pdf','credit_pdf',true,'staff_only'),
+         ($1,$2,'credit-report.xml','credit_xml',true,'staff_only')
+       RETURNING id, doc_kind`, [appId, b.id])).rows;
+    const credPdfId = credDocs.find((d) => d.doc_kind === 'credit_pdf').id;
+    await client.query(
+      `INSERT INTO credit_reports (application_id,borrower_id,vendor,status,source,pdf_document_id)
+         VALUES ($1,$2,'xactus','completed','api',$3)`, [appId, b.id, credPdfId]);
+    const ql2 = await closing.readQuickLinks(appId, null, client);
+    ok(Array.isArray(ql2.credit_report) && ql2.credit_report.length === 1, 'credit-report quick-link surfaces exactly the readable report');
+    ok(ql2.credit_report[0].doc_kind === 'credit_pdf', 'the credit XML data file is never a quick-link');
+    ok(ql2.credit_report[0].credit_for === 'Close Test', 'the credit report says whose it is (from credit_reports, so a joint report names both)');
+
     // ---- COMPLETED closings drop off the closer's Workflow automatically ----
     // (owner-directed 2026-07-26). Submit the file to closing so the closer has a
     // LIVE hand-off, then complete it and confirm the hand-off resolves itself.
