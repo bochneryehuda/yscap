@@ -339,6 +339,86 @@ assert(ct.EVENT_KINDS.join(',') === 'order,followup,executed_term_sheet,closing_
     'nowhere to send it → blocked');
   assert(cp.blockers(DATA, PKG_FULL).length === 0, 'a registered file with a term sheet and an attorney is ready to send');
 
+
+  /* ────────────────── 10. AUDIT ROUND 2 — regressions, each proven ───────────
+     Every assertion below fails on the code as it stood before the second audit
+     round; they exist so those defects cannot come back. */
+
+  // (a) THE HETER ISKA VIA `slot_label`. A document in an entity's own library has
+  //     no doc_kind, no condition and no template code — the typed slot is its only
+  //     identity, and it was the one field neither guard read. This exact row was
+  //     reproduced against a real database being filed as an ENTITY DOCUMENT and
+  //     attached to the outside law firm's email.
+  assert(cp.isFrozenOut({ filename: 'scan_0042.pdf', slot_label: 'Heter Iska' }),
+    'a Heter Iska scanned under a typed slot label can NEVER leave the building');
+  assert(cp.isFrozenOut({ filename: 'scan.pdf', slot_label: 'HETERISKA' }),
+    'nor spelled without the separator');
+  assert(cp.groupOf({ filename: 'scan_0042.pdf', slot_label: 'Heter Iska', llc_id: 'x' }) === null,
+    'and it is not filed as an entity document either');
+  assert(!cp.isFrozenOut({ filename: 'deed.pdf', slot_label: 'Siska Ave' })
+      && !cp.isFrozenOut({ filename: 'oa.pdf', slot_label: 'Iskander Holdings' }),
+    'while an innocent slot ("Siska Ave", "Iskander Holdings") is still included');
+
+  // (b) THE GRAPH BUDGET IS A LIMIT ON THE REQUEST, and attachments travel base64.
+  //     Measured in raw bytes, a package that looked like it just fit went out 33%
+  //     larger, Graph rejected the whole sendMail, and the order 500'd.
+  assert(cp.encodedLen(3) === 4 && cp.encodedLen(2621440) === 3495256,
+    'an attachment costs 4 base64 characters for every 3 bytes');
+  assert(cp.attachBudgetRawBytes() > 0,
+    'the card is told the budget in the same unit it measures documents in');
+
+  // (c) TWO DOCUMENTS CALLED scan.pdf must not arrive under one name — the attorney
+  //     cannot tell the contract from the operating agreement.
+  {
+    const used = new Set();
+    const a = cp.attachName({ filename: 'scan.pdf', groupLabel: 'Purchase contract' }, used);
+    const b = cp.attachName({ filename: 'scan.pdf', groupLabel: 'Entity documents' }, used);
+    assert(a === 'scan.pdf' && b !== a && /Entity documents/.test(b),
+      'a colliding filename is qualified with the group it came from');
+  }
+
+  // (d) WHAT CANNOT BE ATTACHED IS KNOWN BEFORE THE SEND, not reported after it.
+  {
+    const skips = cp.predictSkips([
+      { id: 1, filename: 'survey.pdf', storage_ref: 'r1', size_bytes: 12 * 1024 * 1024 },
+      { id: 2, filename: 'gone.pdf', storage_ref: null, size_bytes: 10 },
+      { id: 3, filename: 'fine.pdf', storage_ref: 'r3', size_bytes: 1000 },
+    ]);
+    assert(skips.length === 2 && skips.some((x) => x.reason === 'too large to email')
+      && skips.some((x) => x.reason === 'no stored copy'),
+      'an oversized document and one with no stored copy are named BEFORE the send');
+  }
+
+  // (e) A TIMEOUT IS NOT A REJECTION. Resend aborts at 15s and the default package is
+  //     20 MB raw, so treating an abort as "definitely not delivered" re-sent the
+  //     whole package to counsel and everyone copied.
+  assert(ct._internals.isAmbiguousSendFailure(new Error('Resend request timed out after 15s')),
+    'a timeout is ambiguous — the provider may well have taken the message');
+  assert(ct._internals.isAmbiguousSendFailure(new Error('socket hang up')),
+    'so is a dropped socket');
+  assert(!ct._internals.isAmbiguousSendFailure(new Error('422 invalid recipient')),
+    'but a refusal is definite, and its event must be retryable');
+
+  // (f) SAY WHO IS ACTUALLY COPIED. "All three are copied" was printed whenever any
+  //     one of officer/processor/closer existed.
+  {
+    const one = cp.buildClosingPrepEmail({ ...DATA, processor: null, closer: null }, PKG_FULL, {});
+    assert(!/All three are copied/.test(one.html) && !/All three are copied/.test(one.text || ''),
+      'a file with only a loan officer does not tell outside counsel there are three of us');
+  }
+
+  // (g) ADDRESSES FROM CONFIG / THE DIRECTORY GET THE SAME HARDENING AS TYPED ONES.
+  //     A pasted "Name <addr>" rides its angle brackets into the Cc and Graph rejects
+  //     the WHOLE send — with blockers() seeing a non-empty To, the only symptom was
+  //     a 500 at send time.
+  {
+    const r = cp.recipientsFor({ ...DATA, attorneyGroupEmail: 'Team AG <teamag@privatelenderlaw.com>' }, {});
+    assert(r.to.includes('teamag@privatelenderlaw.com'),
+      'a pasted mail-client contact is unwrapped to the bare address');
+    const bad = cp.recipientsFor({ ...DATA, attorneyGroupEmail: 'not-an-address' }, {});
+    assert(!bad.to.some((e) => e === 'not-an-address'), 'and junk is refused rather than sent');
+  }
+
   console.log(failures ? `\n${failures} FAILURE(S)` : '\nAll closing-prep pure checks passed.');
   process.exit(failures ? 1 : 0);
 })();

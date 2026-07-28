@@ -494,4 +494,6 @@ module.exports = {
   threadKeyOf, newMessageId, newToken, headersFor, replySubject,
   claimMessage, settleMessage, releaseClaim, noteInbound,
   sendOnThread,
+  // exported for tests — the rules that decide whether a failed send may be retried
+  _internals: { isAmbiguousSendFailure, CLAIM_STALE_MIN },
 };

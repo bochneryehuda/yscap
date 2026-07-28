@@ -479,7 +479,12 @@ noop.sendMail = async (opts) => { sends.push(opts); return { ok: true, id: `stub
     assert(r.body.chain.address === chainAddress, 'with the same unique address');
     assert((r.body.chain.messages || []).length >= 5, 'and the history of what the system sent on it');
     assert((r.body.chain.documents || []).length === 2, 'and the closing correspondence saved from it');
-    assert(r.body.order.status === 'ordered', 'the order reads as requested');
+    // Documents have come back on the chain by this point, so the order has moved on
+    // from 'ordered' exactly as a title or insurance order does when its vendor
+    // returns something. Leaving it on 'ordered' for the life of the file made the
+    // desk's own 'documents_in' label unreachable however much arrived.
+    assert(r.body.order.status === 'documents_in',
+      'the order moves to documents-in once the chain sends something back');
     assert(r.body.file.isAssignment === true, 'the card knows this is an assignment');
     const dealLabels = (r.body.deal || []).map((d) => d.label);
     assert(dealLabels.includes('Underlying contract price') && dealLabels.includes('Assignment fee')
