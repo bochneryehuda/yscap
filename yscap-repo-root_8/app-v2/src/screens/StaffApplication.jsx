@@ -34,11 +34,12 @@ import ToolModal from '../components/ToolModal.jsx';
 import FileSections, { Section, InfoTip, subscribeConditionsTab, goToSection, requestOpenSection } from '../components/FileSections.jsx';
 import { captureScrollAnchor, restoreScrollAnchor } from '../lib/keep-scroll.js';
 import BorrowerProfilePanel from '../components/BorrowerProfilePanel.jsx';
-import { CONDITION_TIMINGS, conditionStatusLabel, conditionStatusClass, timingLabel, loanConditionStatusLabel } from '../lib/conditions-vocab.js';
+import { CONDITION_TIMINGS, conditionStatusLabel, conditionStatusClass, timingLabel, loanConditionStatusLabel, audienceStamp } from '../lib/conditions-vocab.js';
 import { severityCount } from '../lib/findings-vocab.js';
 import { groupBySubject } from '../lib/condition-subjects.js';
 import { isWorkflowStep } from '../lib/condition-workflow-steps.js';
 import ConditionActions, { DocActions } from '../components/ConditionActions.jsx';
+import ConditionLine, { ConditionNote } from '../components/ConditionLine.jsx';
 import { canComplete } from '../lib/condition-actions.js';
 import EsignFileSection from '../components/EsignFileSection.jsx';
 import ExceptionRegisterCard from '../components/ExceptionRegisterCard.jsx';
@@ -867,54 +868,51 @@ function useStickyFilter(key, fallback) {
 
 function Item({ it, team, onPatch, role, docs, onUploadTo, onDropTo, onReviewDoc, onDownloadDoc, dlBusy, onPreview, appId, onChanged, canImportCredit }) {
   const [open, setOpen] = useState(false);
-  const [notes, setNotes] = useState(it.notes || '');
-  // Collapse-when-complete: once YOUR role-action is done the row renders as a
-  // one-line summary; expand/collapse is a per-item manual override on top.
-  const [expandOverride, setExpandOverride] = useState(null);   // null = automatic
+  // EVERY condition is a compact line until you open it (owner-directed
+  // 2026-07-28: "one compact line each, click to open the one you're working").
+  // It used to collapse only once YOUR role-action was done, so a file's whole
+  // list rendered fully expanded — 24 conditions measured 8,116px, over seven
+  // screens. `expandOverride` is still the per-row manual override on top.
+  const [expandOverride, setExpandOverride] = useState(null);   // null = automatic (shut)
   const signed = !!it.signed_off_at;
   // No `completer` here any more — who may do what is decided inside the shared
   // action bar (components/ConditionActions), so this row cannot answer that
   // question differently from the borrower-facing one.
   const myDone = roleDone(it, role);
-  const collapsed = expandOverride === null ? myDone : !expandOverride;
-  if (collapsed) {
-    return (
-      // data-keep-scroll: a stable handle so a refresh can put this row back
-      // exactly where it was on screen (lib/keep-scroll.js).
-      <div className="checkitem" data-keep-scroll={`item-${it.id}`} style={{ alignItems: 'center', gap: 8, cursor: 'pointer', opacity: .8 }}
-        onClick={() => setExpandOverride(true)} title="Show the full condition">
-        <span className={`dot ${signed ? 'cond-satisfied' : conditionStatusClass(it.status)}`} />
-        <div style={{ flex: 1, minWidth: 0, fontWeight: 600, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{it.label}</div>
-        {it.override_at && <Badge tone="gold" title={overrideLine(it)}>admin override</Badge>}
-        {it.waived_at ? <Badge>not required</Badge>
-          : signed ? <Badge tone="gold">signed off</Badge>
-          : it.status === 'satisfied' ? <Badge tone="gold">{conditionStatusLabel(it.status)}</Badge>
-          : it.reviewed_at ? <Badge>done ✓ awaiting sign-off</Badge>
-          : <Badge>{conditionStatusLabel(it.status)}</Badge>}
-        <PilotAdvice it={it} />
-        <button className="btn link small" onClick={(e) => { e.stopPropagation(); setExpandOverride(true); }}>Expand</button>
-      </div>
-    );
-  }
-  // Staff-only DOCUMENT conditions (e.g. Insurance, Title) get an upload area in
-  // the internal checklist, mirroring the borrower-conditions document block.
-  // `it.slots` is a FIXED named-slot array (Insurance → binder + invoice) or
-  // null/absent for a FREE-FORM multi-document condition (Title).
   const isDoc = it.item_kind === 'document';
   const slots = Array.isArray(it.slots) && it.slots.length ? it.slots : null;
   const itemDocs = (isDoc && docs)
     ? docs.filter(d => d.checklist_item_id === it.id && d.is_current && d.source_type !== 'chat_attachment')
     : [];
+  const collapsed = expandOverride === null ? true : !expandOverride;
+  if (collapsed) {
+    return (
+      // data-keep-scroll: a stable handle so a refresh can put this row back
+      // exactly where it was on screen (lib/keep-scroll.js).
+      <div className="checkitem" data-keep-scroll={`item-${it.id}`} style={{ padding: '2px 10px' }}>
+        <ConditionLine it={it} role={role} docs={itemDocs} open={false} done={myDone}
+          onToggle={() => setExpandOverride(true)} onPatch={onPatch} />
+      </div>
+    );
+  }
+  // isDoc / slots / itemDocs are computed above the collapse guard — the compact
+  // line needs itemDocs too, to say how many documents are waiting.
+  // `it.slots` is a FIXED named-slot array (Insurance → binder + invoice) or
+  // null/absent for a FREE-FORM multi-document condition (Title).
   return (
     <div className="checkitem" data-keep-scroll={`item-${it.id}`} style={{ alignItems: 'flex-start', flexDirection: 'column', gap: 8 }}>
       <div className="row" style={{ width: '100%', gap: 8, alignItems: 'flex-start' }}>
         <span className={`dot ${signed ? 'cond-satisfied' : conditionStatusClass(it.status)}`} style={{ marginTop: 4 }} />
         <div style={{ flex: 1 }}>
           <div style={{ fontWeight: 600 }}>{it.label}</div>
+          {/* ONE stamp for who sees it, replacing the four raw-database chips
+              (audience, role_scope, item_kind) that were printed verbatim on
+              every row — owner-directed 2026-07-28. The rest stays only where
+              it changes what you do: a gate, an optional condition, a borrower
+              task, work awaiting sign-off. */}
           <div className="row" style={{ gap: 6, flexWrap: 'wrap', marginTop: 4 }}>
-            <Badge>{it.audience}</Badge>
-            {it.role_scope && <Badge>{it.role_scope}</Badge>}
-            <Badge>{it.item_kind}</Badge>
+            <span className={`aud ${audienceStamp(it.audience).cls}`}
+              title={audienceStamp(it.audience).title}>{audienceStamp(it.audience).label}</span>
             {it.is_required === false && <Badge>optional</Badge>}
             {it.is_gate && <Badge tone="gold">gate</Badge>}
             {it.is_milestone && <Badge tone="gold">milestone</Badge>}
@@ -1053,10 +1051,7 @@ function Item({ it, team, onPatch, role, docs, onUploadTo, onDropTo, onReviewDoc
         {myDone && <button className="btn link small" style={{ marginLeft: 'auto', flex: 'none' }}
           onClick={() => setExpandOverride(false)}>Collapse</button>}
       </div>
-      <div className="row" style={{ width: '100%', gap: 8 }}>
-        <input className="input" placeholder="Add a note…" value={notes} onChange={e => setNotes(e.target.value)} />
-        <button className="btn ghost" onClick={() => onPatch(it.id, { notes })}>Save note</button>
-      </div>
+      <ConditionNote it={it} onPatch={onPatch} />
     </div>
   );
 }
@@ -1740,16 +1735,15 @@ function StaffTrackRecordPanel({ app, role }) {
    notes to every condition on the borrower-conditions view too (#126). Notes are
    staff-only (ci.notes is never sent to the borrower). */
 
+/* Now a thin wrapper over the shared ConditionNote, so both row shapes get the
+   SAME behaviour: an existing note is shown, and with no note there is a quiet
+   "add" link instead of an empty box. The private copy that lived here rendered
+   an input and a Save button on every condition whether or not one was ever
+   written — about a full screen of blank boxes down a 24-condition list. */
 function CondNote({ item, onPatch }) {
-  const [v, setV] = useState(item.notes || '');
-  const [saved, setSaved] = useState(false);
   return (
-    <div className="row" style={{ width: '100%', gap: 8, paddingLeft: 20, marginTop: 4 }}>
-      <input className="input small" placeholder="Internal note (staff-only)…" value={v} style={{ flex: 1 }}
-        onChange={(e) => { setV(e.target.value); setSaved(false); }} />
-      <button className="btn ghost small" onClick={async () => { await onPatch(item.id, { notes: v }); setSaved(true); }}>
-        {saved ? 'Saved ✓' : 'Save note'}
-      </button>
+    <div style={{ width: '100%', paddingLeft: 20, marginTop: 4 }}>
+      <ConditionNote it={item} onPatch={onPatch} />
     </div>
   );
 }
@@ -2212,6 +2206,11 @@ function BorrowerConditions({ appId, app, items, docs, onPatch, onReviewDoc, onD
     status: app.entity_verified ? 'satisfied' : (app.llc_id ? 'received' : 'outstanding'),
     signed_off_at: app.entity_verified ? 'x' : null };
   const llcShown = !!llcCondItem && matchFilter(llcPseudo);
+  // Compact until opened, like every other condition (owner-directed
+  // 2026-07-28). It used to open itself whenever the entity was NOT yet
+  // verified — which is most of a file's life, and the entity panel is the
+  // tallest thing in the list.
+  const llcOpen = expandedConds.has('__llc');
 
   if (ordered.length === 0 && !llcCondItem) return null;
   return (
@@ -2263,14 +2262,23 @@ function BorrowerConditions({ appId, app, items, docs, onPatch, onReviewDoc, onD
         // just noise, so it auto-collapses to a one-line header (owner-directed
         // 2026-07-20). Expand to reopen it. Unverified, it stays open (there's work
         // to do). '__llc' in expandedConds forces it open.
-        (app.entity_verified && !expandedConds.has('__llc'))
+        !llcOpen
           ? (
-            <div className="checkitem" data-keep-scroll="cond-llc" style={{ alignItems: 'center', gap: 8, cursor: 'pointer', opacity: .8, borderColor: 'var(--gold)' }}
-              onClick={() => toggleCond('__llc')} title="Show the full entity condition">
-              <span className="dot done" />
-              <div style={{ flex: 1, minWidth: 0, fontWeight: 600, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{llcCondItem.label || 'LLC (vesting entity)'}</div>
-              <span className="pill ok">Verified ✓</span>
-              <button className="btn link small" onClick={(e) => { e.stopPropagation(); toggleCond('__llc'); }}>Expand</button>
+            <div className="checkitem" data-keep-scroll="cond-llc" style={{ padding: '2px 10px', borderColor: 'var(--gold)' }}>
+              <div className="cnd" role="button" tabIndex={0} aria-expanded={false}
+                onClick={() => toggleCond('__llc')}
+                onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); toggleCond('__llc'); } }}
+                title="Open the entity condition">
+                <span className="cnd-chev" aria-hidden="true">▶</span>
+                <span className={`dot ${app.entity_verified ? 'cond-satisfied' : conditionStatusClass(llcPseudo.status)}`} />
+                <span className="cnd-name">{llcCondItem.label || 'LLC (vesting entity)'}</span>
+                <span className={`aud ${audienceStamp(llcCondItem.audience).cls}`}
+                  title={audienceStamp(llcCondItem.audience).title}>{audienceStamp(llcCondItem.audience).label}</span>
+                <span className="pill" style={{ borderColor: 'var(--gold)', color: '#8A6D3B', flex: 'none' }}>gate</span>
+                <span className="cnd-meta">
+                  {app.entity_verified ? 'Verified' : app.llc_id ? 'In progress' : 'No entity linked'}
+                </span>
+              </div>
             </div>
           ) : (
             <div className="checkitem" data-keep-scroll="cond-llc" style={{ flexDirection: 'column', alignItems: 'stretch', gap: 8, borderColor: 'var(--gold)' }}>
@@ -2278,11 +2286,13 @@ function BorrowerConditions({ appId, app, items, docs, onPatch, onReviewDoc, onD
                 <span className={`dot ${app.entity_verified ? 'done' : 'outstanding'}`} />
                 <strong>{llcCondItem.label || 'LLC (vesting entity)'}</strong>
                 <Badge tone="gold">gate</Badge>
-                <Badge>{llcCondItem.audience}</Badge>
+                <span className={`aud ${audienceStamp(llcCondItem.audience).cls}`}
+                  title={audienceStamp(llcCondItem.audience).title}>{audienceStamp(llcCondItem.audience).label}</span>
                 {app.entity_verified
                   ? <span className="pill ok">Verified ✓</span>
                   : <span className="pill">{app.llc_id ? 'In progress' : 'No entity linked'}</span>}
-                {app.entity_verified && <><div className="spacer" /><button className="btn link small" onClick={() => toggleCond('__llc')}>Collapse</button></>}
+                <div className="spacer" />
+                <button className="btn link small" onClick={() => toggleCond('__llc')}>Collapse</button>
               </div>
               <div className="muted small">Condition to close — the borrower fills this too. Verifying the entity (below or here) satisfies and signs it off.</div>
               {app.llc_id
@@ -2323,19 +2333,16 @@ function BorrowerConditions({ appId, app, items, docs, onPatch, onReviewDoc, onD
         const itemDocs = docsFor(it.id);
         const signed = !!it.signed_off_at;
         const done = signed || it.status === 'satisfied' || it.status === 'received';
-        // Collapse to a one-line header once the condition is SATISFIED and/or
-        // SIGNED OFF (owner-directed 2026-07-20) — in the "All conditions" list you
-        // scan headers, not full slots. Click Expand to open the full condition.
+        // EVERY condition is a compact line until you open it (owner-directed
+        // 2026-07-28). It used to collapse only once SATISFIED or SIGNED OFF, so
+        // everything still being worked rendered in full — which is what made
+        // this list over seven screens tall on a real file.
         const rowDone = it.status === 'satisfied' || signed;
-        if (rowDone && !expandedConds.has(it.id)) {
+        if (!expandedConds.has(it.id)) {
           return (
-            <div className="checkitem" key={it.id} data-keep-scroll={`cond-${it.id}`} style={{ alignItems: 'center', gap: 8, cursor: 'pointer', opacity: .8 }}
-              onClick={() => toggleCond(it.id)} title="Show the full condition">
-              <span className="dot done" />
-              <div style={{ flex: 1, minWidth: 0, fontWeight: 600, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{it.label}</div>
-              {signed ? <Badge tone="gold">signed off</Badge> : <Badge tone="gold">satisfied</Badge>}
-              <PilotAdvice it={it} />
-              <button className="btn link small" onClick={(e) => { e.stopPropagation(); toggleCond(it.id); }}>Expand</button>
+            <div className="checkitem" key={it.id} data-keep-scroll={`cond-${it.id}`} style={{ padding: '2px 10px' }}>
+              <ConditionLine it={it} role={role} docs={itemDocs} open={false} done={rowDone}
+                onToggle={() => toggleCond(it.id)} onPatch={onPatch} />
             </div>
           );
         }
@@ -2357,7 +2364,8 @@ function BorrowerConditions({ appId, app, items, docs, onPatch, onReviewDoc, onD
                     <span className="pill" style={{ marginLeft: 8, borderColor: 'var(--gold)', color: 'var(--gold)' }}
                       title={(it.origin_detail && it.origin_detail.rule) ? `Added automatically — applies when: ${it.origin_detail.rule}` : 'Added automatically by a condition rule'}>Auto</span>
                   )}
-                  {rowDone && <button className="btn link small" style={{ marginLeft: 8 }} onClick={() => toggleCond(it.id)}>Collapse</button>}
+                  {/* Always offered — every row opens now, so every row must close. */}
+                  <button className="btn link small" style={{ marginLeft: 8 }} onClick={() => toggleCond(it.id)}>Collapse</button>
                 </div>
                 {it.pilot_advice && (
                   <div style={{ marginTop: 5 }}><PilotAdvice it={it} /></div>
