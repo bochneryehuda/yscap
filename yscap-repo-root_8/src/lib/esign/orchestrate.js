@@ -228,8 +228,24 @@ async function loadApplication(db, applicationId) {
  * de-duplicated { email, name } (one per distinct email). Owner-directed 2026-07-20:
  * "add the loan officer and the processor as viewers for every envelope … so they can
  * see everything happens in real life."
+ *
+ * THE WIRE REQUEST FORM ALSO COPIES THE DRAW COORDINATOR (owner-directed 2026-07-28:
+ * "the draw coordinator assigned to a file should always be added as a viewer on the
+ * DocuSign package that goes out for the wire request form … receiving notifications when
+ * it's being signed"). The coordinator is NOT an `application_assignees` row — that table
+ * models only loan_officer / processor (db/103) — so the assignment is resolved by the one
+ * shared definition in draw-recipients (`drawEnvelopeViewers`: whoever started this file's
+ * draw process, else whoever holds its live draw hand-off, else the desk, plus the shared
+ * draws@ inbox so the envelope is never uncovered). A DocuSign carbon copy is a real
+ * recipient — DocuSign notifies them as the envelope is sent/viewed/signed and delivers the
+ * executed copy + Certificate of Completion, which is exactly what was asked for.
+ *
+ * Scoped to `draw_request` on purpose: the coordinator has no part in an origination
+ * package (term sheet / Heter Iska), and copying them there would leak servicing staff onto
+ * the borrower's loan documents. Best-effort — a lookup failure sends without them and
+ * never blocks the borrower's form.
  */
-async function loadCcViewers(db, applicationId) {
+async function loadCcViewers(db, applicationId, purpose) {
   if (!applicationId) return [];
   const r = await db.query(
     `SELECT DISTINCT ON (lower(su.email)) su.email, su.full_name
@@ -237,7 +253,19 @@ async function loadCcViewers(db, applicationId) {
       WHERE aa.application_id = $1 AND aa.removed_at IS NULL AND su.is_active = true
         AND su.email IS NOT NULL AND su.email <> ''
       ORDER BY lower(su.email)`, [applicationId]);
-  return r.rows.map((x) => ({ email: x.email, name: x.full_name || x.email }));
+  const out = r.rows.map((x) => ({ email: x.email, name: x.full_name || x.email }));
+  if (purpose === 'draw_request') {
+    try {
+      const seen = new Set(out.map((v) => String(v.email).trim().toLowerCase()));
+      for (const v of await require('../draw-recipients').drawEnvelopeViewers(applicationId)) {
+        const key = String(v.email).trim().toLowerCase();
+        if (!key || seen.has(key)) continue;
+        seen.add(key);
+        out.push({ email: v.email, name: v.name || v.email });
+      }
+    } catch (e) { console.warn('[esign] draw-coordinator viewers load failed (sending without them):', e.message); }
+  }
+  return out;
 }
 
 /** Resolve the checklist_item id for a template code on this application (or null). */
@@ -878,14 +906,15 @@ async function buildDefinition(row, { db = dbDefault, storage = storageDefault }
 
   // Copy the file's team (loan officer + processor + assistants) as VIEWERS on every
   // envelope so they receive the completed, signed copy from DocuSign and can watch it
-  // in real time (owner-directed 2026-07-20). Best-effort: deduped against the signer
-  // emails, with recipientIds + routing order AFTER the signers so they receive the
-  // fully-executed copy. A bad/missing officer email is dropped and NEVER blocks the
-  // borrower's send (buildEnvelopeDefinition also filters invalid CC entries).
+  // in real time (owner-directed 2026-07-20) — plus, on the WIRE REQUEST FORM, the file's
+  // DRAW COORDINATOR (owner-directed 2026-07-28; see loadCcViewers). Best-effort: deduped
+  // against the signer emails, with recipientIds + routing order AFTER the signers so they
+  // receive the fully-executed copy. A bad/missing officer email is dropped and NEVER
+  // blocks the borrower's send (buildEnvelopeDefinition also filters invalid CC entries).
   let carbonCopies = [];
   try {
     const seen = new Set(signers.map((s) => String(s.email || '').toLowerCase()));
-    const viewers = await loadCcViewers(db, row.application_id);
+    const viewers = await loadCcViewers(db, row.application_id, row.purpose);
     let nextId = Math.max(0, ...signers.map((s) => Number(s.recipientId) || 0));
     const ccOrder = Math.max(1, ...signers.map((s) => Number(s.routingOrder) || 1));
     for (const v of viewers) {
@@ -1000,6 +1029,6 @@ async function sendPackage(applicationId, purpose, actor, opts = {}) {
 
 module.exports = {
   PACKAGES, packageSpec, buildDefinition, sendPackage,
-  createOrClaimEnvelope, buildRoster, resolveRecipientIdentity, tabsFor, resolveConditionItem, latestDocument, loadApplication,
+  createOrClaimEnvelope, buildRoster, resolveRecipientIdentity, tabsFor, resolveConditionItem, latestDocument, loadApplication, loadCcViewers,
   loadDocGenData, validateGenerated, subjectAddress, subjectSuffix, composeSubject, fitAddress,
 };

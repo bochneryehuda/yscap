@@ -277,7 +277,12 @@ function _sanitizeOpts(opts) {
   if (!opts || typeof opts !== 'object') return {};
   const out = {};
   for (const k of Object.keys(opts)) {
-    if (k === '_fileCtx' || k === '_enriched' || k === '_skipOfficerBcc' || k === '_bypassLoGate') continue;
+    // Internal EMAIL-ONLY markers — never part of the draft's stored content. `_bccResolved`
+    // in particular must not persist: it means "the BCC was already computed for THIS send",
+    // so a replayed draft re-runs `notify._borrowerBcc` and picks up whoever the file's draw
+    // coordinator / officer is at SEND time on top of the stored list.
+    if (k === '_fileCtx' || k === '_enriched' || k === '_skipOfficerBcc' || k === '_bypassLoGate'
+        || k === '_bccResolved') continue;
     const v = opts[k];
     if (typeof v === 'function') continue;
     out[k] = v;

@@ -82,6 +82,14 @@ async function notifyReadyToSign(envelopeRowId, opts = {}) {
       // signing link) instead of the generic ready-to-sign one, and is recorded to the file's
       // DRAW email section (msg_type 'draw_request') carrying the per-file reply-to that monitors
       // replies. The magic signUrl authenticates AS this borrower — sent to the borrower only.
+      //
+      // THIS IS THE ONE DRAW EMAIL THE COORDINATOR/OFFICER LOOP-IN DELIBERATELY SKIPS, and it
+      // must stay that way: the body carries a magic link that signs the borrower IN AS THEM
+      // and drops them straight into the DocuSign ceremony, so BCC'ing staff would hand a
+      // staffer the ability to sign the wire form in the borrower's legal identity. The
+      // coordinator is looped into this exact step the correct way instead — as a DocuSign CC
+      // VIEWER on the envelope itself (orchestrate.loadCcViewers, owner-directed 2026-07-28),
+      // which is what gives them the sent/viewed/signed notifications and the executed copy.
       const isDrawWire = r.purpose === 'draw_request';
       const res = isDrawWire
         ? await mail.send('drawWireReadyToSign', r.email, {

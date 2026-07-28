@@ -31,23 +31,155 @@ async function drawRecipients(appId) {
  * monitoring copy, the same shape the assigned loan officer already rides on (notify.js), so
  * the borrower's email stays clean and no internal address is exposed to them.
  *
- * The loan officer is NOT included here — notify.js already BCCs the file's assigned officer
- * on every borrower email. This adds the draw desk: every active draw coordinator, plus the
- * shared draws@ inbox so the hand-off is covered when no coordinator is assigned.
  * Best-effort by design: a lookup failure returns just the shared inbox, never throws into a
  * notification path.
  */
 const DRAW_DESK_INBOX = 'draws@yscapgroup.com';
 
-async function drawTeamBcc() {
-  const list = [DRAW_DESK_INBOX];
-  try {
-    const r = await db.query(
-      `SELECT email FROM staff_users
-        WHERE is_active = true AND role = 'draw_coordinator' AND NULLIF(btrim(email),'') IS NOT NULL`);
-    for (const row of r.rows) list.push(row.email);
-  } catch (_) { /* the shared desk inbox alone still reaches the coordinator */ }
-  return [...new Set(list.map((e) => String(e).trim().toLowerCase()).filter(Boolean))];
+/** Lowercase + trim + de-duplicate an email list, dropping blanks. */
+function uniqEmails(list) {
+  return [...new Set((list || []).map((e) => String(e == null ? '' : e).trim().toLowerCase()).filter(Boolean))];
 }
 
-module.exports = { drawRecipients, drawTeamBcc, DRAW_DESK_INBOX };
+/**
+ * THE FILE'S OWN draw coordinator — one definition, used by every surface that has to reach
+ * "the draw coordinator assigned to THIS file" (owner-directed 2026-07-28). PILOT has no
+ * `applications.draw_coordinator_id` pointer (`application_assignees` carries only
+ * loan_officer / processor — db/103), so the assignment is expressed by what the coordinator
+ * actually DID on the file, in this precedence:
+ *
+ *   1. `sitewire_property_links.draw_setup_started_by` — whoever pressed "Start the draw
+ *      process". Written COALESCE-style (fill-only, routes/sitewire.js), so it is the durable
+ *      per-file record of who owns this file's draws.
+ *   2. A LIVE draw hand-off in their Workflow — `workflow_items` routed `to_role =
+ *      'draw_coordinator'` with a resolved `to_staff_id` (portal-draws, trustpoint-intake,
+ *      workflow-automation all route this way). Keyed on the ROLE, not on a submission-type
+ *      list, so a hand-off type added later is covered without touching this.
+ *
+ * Deactivated staff and blank emails are excluded (they can't receive anything). Returns
+ * `[{ id, full_name, email, src }]`, most-specific first, deterministic. NEVER throws — an
+ * empty list simply means "nobody is assigned yet", and every caller falls back to the desk.
+ */
+async function drawCoordinatorsForFile(appId) {
+  if (!appId) return [];
+  try {
+    const r = await db.query(
+      `WITH cand AS (
+            SELECT pl.draw_setup_started_by AS staff_id, 'started_draw'::text AS src, 1 AS pref
+              FROM sitewire_property_links pl
+             WHERE pl.application_id = $1 AND pl.draw_setup_started_by IS NOT NULL
+            UNION ALL
+            SELECT wi.to_staff_id, 'workflow'::text AS src, 2 AS pref
+              FROM workflow_items wi
+             WHERE wi.application_id = $1 AND wi.to_role = 'draw_coordinator'
+               AND wi.to_staff_id IS NOT NULL AND wi.status IN ('open','in_progress')
+          ),
+          pick AS (
+            SELECT DISTINCT ON (su.id) su.id, su.full_name, su.email, c.src, c.pref
+              FROM cand c JOIN staff_users su ON su.id = c.staff_id
+             WHERE su.is_active = true AND NULLIF(btrim(su.email),'') IS NOT NULL
+             ORDER BY su.id, c.pref
+          )
+       SELECT id, full_name, email, src FROM pick ORDER BY pref, lower(email)`, [appId]);
+    return r.rows;
+  } catch (_) { return []; }   // never throw into a notification / e-sign path
+}
+
+/** Every ACTIVE draw coordinator on the team — the desk-wide fallback when a file has none. */
+async function drawDeskCoordinators() {
+  try {
+    const r = await db.query(
+      `SELECT id, full_name, email FROM staff_users
+        WHERE is_active = true AND role = 'draw_coordinator' AND NULLIF(btrim(email),'') IS NOT NULL
+        ORDER BY lower(email)`);
+    return r.rows.map((x) => ({ ...x, src: 'desk' }));
+  } catch (_) { return []; }
+}
+
+/**
+ * WHO to reach for a file's draws: its own coordinator(s) when one is assigned, else the
+ * whole active desk — so a draw message is never uncovered. The one place that fallback is
+ * decided; every caller below uses it.
+ */
+async function coordinatorsOrDesk(appId) {
+  const people = await drawCoordinatorsForFile(appId);
+  return people.length ? people : await drawDeskCoordinators();
+}
+
+/**
+ * The draw DESK for a file, as a BCC list: the shared draws@ inbox plus the coordinator(s)
+ * above. Called with no `appId` it is exactly the old desk-wide behavior (back-compat for
+ * callers that have no file in hand).
+ */
+async function drawTeamBcc(appId) {
+  const people = await coordinatorsOrDesk(appId);
+  return uniqEmails([DRAW_DESK_INBOX, ...people.map((p) => p.email)]);
+}
+
+/**
+ * The file's LOAN OFFICER(s) — the primary plus any full-access assistant officer (#113
+ * `application_assignees`), with the denormalized `applications.loan_officer_id` pointer as a
+ * belt-and-suspenders second source (the db/103 trigger keeps them in lock-step, but a file
+ * that somehow carries only the pointer must still reach its officer).
+ */
+async function fileLoanOfficerEmails(appId) {
+  if (!appId) return [];
+  try {
+    const r = await db.query(
+      `SELECT su.email
+         FROM application_assignees aa JOIN staff_users su ON su.id = aa.staff_id
+        WHERE aa.application_id = $1 AND aa.removed_at IS NULL AND aa.role = 'loan_officer'
+          AND su.is_active = true AND NULLIF(btrim(su.email),'') IS NOT NULL
+        UNION
+       SELECT su.email
+         FROM applications a JOIN staff_users su ON su.id = a.loan_officer_id
+        WHERE a.id = $1 AND su.is_active = true AND NULLIF(btrim(su.email),'') IS NOT NULL`, [appId]);
+    return uniqEmails(r.rows.map((x) => x.email));
+  } catch (_) { return []; }
+}
+
+/**
+ * THE LOOP-IN for every borrower draw email (owner-directed 2026-07-28: "on every email that
+ * is going out to the borrower about the draw process the draw coordinator and the loan
+ * officer should always be looped into that email"). The file's draw coordinator(s) + the
+ * draws@ desk + the file's loan officer(s), as a BCC list. Applied at the ONE borrower
+ * fan-out chokepoint (`notify.js`, keyed on the notification's 'draws' category), so every
+ * draw email — the ones that exist today and the ones added later — carries it without each
+ * call site remembering to. Never throws.
+ */
+async function drawLoopInBcc(appId) {
+  const [team, officers] = await Promise.all([drawTeamBcc(appId), fileLoanOfficerEmails(appId)]);
+  return uniqEmails([...team, ...officers]);
+}
+
+/**
+ * The draw coordinator as DocuSign CC VIEWERS on the wire-request package (owner-directed
+ * 2026-07-28: "the draw coordinator assigned to a file should always be added as a viewer on
+ * the DocuSign package that goes out for the wire request form … receiving notifications when
+ * it's being signed"). A DocuSign carbon copy is a real recipient: they get the sent/viewed/
+ * signed/completed notifications and the executed copy + Certificate of Completion.
+ *
+ * Returns `[{ email, name }]` — the file's coordinator(s), or the desk when none is assigned,
+ * PLUS the shared draws@ inbox so the envelope is covered either way. Never throws; the
+ * caller de-dupes against the signers and drops anything DocuSign would reject.
+ */
+async function drawEnvelopeViewers(appId) {
+  const people = await coordinatorsOrDesk(appId);
+  const candidates = people.map((p) => ({ email: p.email, name: p.full_name || p.email }));
+  candidates.push({ email: DRAW_DESK_INBOX, name: 'YS Capital Draw Desk' });
+  const out = [];
+  const seen = new Set();
+  for (const c of candidates) {
+    const key = String(c.email || '').trim().toLowerCase();
+    if (!key || seen.has(key)) continue;
+    seen.add(key);
+    out.push({ email: key, name: c.name || key });
+  }
+  return out;
+}
+
+module.exports = {
+  drawRecipients, drawTeamBcc, DRAW_DESK_INBOX,
+  drawCoordinatorsForFile, drawDeskCoordinators, coordinatorsOrDesk,
+  fileLoanOfficerEmails, drawLoopInBcc, drawEnvelopeViewers,
+};
