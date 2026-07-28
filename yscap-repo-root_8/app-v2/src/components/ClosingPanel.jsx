@@ -1,5 +1,6 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { api } from '../lib/api.js';
+import { dealPurchase } from '../lib/dealPrice.js';
 
 /* THE CLOSING WORKSPACE (owner-directed 2026-07-26). The closer's desk inside a
    loan file: deal details, the actual cash-to-close money gate against verified
@@ -31,7 +32,10 @@ const STAGE_LABEL = {
 };
 const QUICKLINK_LABEL = {
   term_sheet: 'Term sheet', insurance: 'Insurance', contract: 'Purchase contract',
-  assignment: 'Assignment of contract', llc: 'LLC documents', bank_statement: 'Bank statements', title: 'Title',
+  assignment: 'Assignment of contract', llc: 'LLC documents', bank_statement: 'Bank statements',
+  // The readable credit report (both borrowers'); the machine-readable XML data
+  // file is deliberately excluded server-side — see closing.isCreditReportDoc.
+  credit_report: 'Credit report', title: 'Title',
 };
 // The signed/executed final term sheet vs the draft — labeled so the closer can
 // tell which link is the executed one.
@@ -89,24 +93,7 @@ export default function ClosingPanel({ appId, app, can, onDownloadDoc, onPreview
       </div>
 
       {/* Deal details */}
-      <div className="panel" style={{ marginBottom: 14 }}>
-        <div className="panel-h"><h3 style={{ margin: 0 }}>Deal details</h3>
-          {app && <a className="btn ghost small" href={`#/internal/app/${appId}`}>Open full file</a>}</div>
-        <div className="panel-b">
-          <div className="cl-facts">
-            <Fact k="Borrower" v={app ? `${app.first_name || app.borrower_first_name || ''} ${app.last_name || app.borrower_last_name || ''}`.trim() || '—' : '—'} />
-            <Fact k="Property" v={fmtAddr(app && app.property_address)} />
-            <Fact k="Investor (note buyer)" v={(app && app.lender) || '—'} />
-            <Fact k="Program" v={(app && (app.registered_program || app.program)) || '—'} />
-            <Fact k="Loan amount" v={money0(app && app.loan_amount)} />
-            <Fact k="Original purchase price" v={money0(app && (app.underlying_contract_price || app.purchase_price))} />
-            <Fact k="Assignment fee" v={app && app.is_assignment ? money0(app.assignment_fee) : '—'} />
-            <Fact k="Rehab budget" v={money0(app && app.rehab_budget)} />
-            <Fact k="Financed interest reserve" v={money0(app && (app.requested_ir_amount))} />
-            <Fact k="Loan coordinator" v={(app && app.loan_officer_name) || '—'} />
-          </div>
-        </div>
-      </div>
+      <DealDetails appId={appId} app={app} />
 
       {/* Money: estimate + actual cash-to-close + verified liquidity */}
       <MoneySection appId={appId} money={money} isCloser={isCloser} busy={busy} run={run}
@@ -130,6 +117,12 @@ export default function ClosingPanel({ appId, app, can, onDownloadDoc, onPreview
                         <span className="cl-ql-name">{d.filename}</span>
                         {k === 'term_sheet' && tsTag(d)
                           ? <span className={`cl-ts-tag ${d.doc_kind === 'term_sheet_signed' ? 'on' : ''}`}>{tsTag(d)}</span>
+                          : null}
+                        {/* Both borrowers' reports file under one condition with
+                            the same filename — say whose this is (a joint report
+                            names both). */}
+                        {k === 'credit_report' && d.credit_for
+                          ? <span className="cl-ts-tag cl-ql-who">{d.credit_for}</span>
                           : null}</button>
                     ))}
                 </div>
@@ -167,6 +160,71 @@ function fmtAddr(a) {
 
 function Fact({ k, v }) {
   return <div className="cl-fact"><span className="cl-fact-k">{k}</span><span className="cl-fact-v">{v}</span></div>;
+}
+
+/* DEAL DETAILS — the file's facts, with the purchase price given its own band
+   (owner-directed 2026-07-28).
+
+   The price was one "Original purchase price" row that showed the seller's
+   contract on an assignment, so the closer could not see what the borrower
+   actually pays; the assignment fee sat in the NEXT grid row, which the
+   two-column layout put diagonally opposite it rather than beside it.
+
+   Now the price is a band of its own, directly under the facts, so it reads the
+   same way in both shapes: a straight purchase shows ONE number; an assignment
+   shows final → original → fee in that order, side by side. The band is the
+   only place the layout differs, so neither shape looks like the other with a
+   hole in it. Figures come from the ONE shared derivation (lib/dealPrice.js). */
+function DealDetails({ appId, app }) {
+  const price = dealPurchase(app);
+  return (
+    <div className="panel" style={{ marginBottom: 14 }}>
+      <div className="panel-h"><h3 style={{ margin: 0 }}>Deal details</h3>
+        {app && <a className="btn ghost small" href={`#/internal/app/${appId}`}>Open full file</a>}</div>
+      <div className="panel-b">
+        <div className="cl-facts">
+          <Fact k="Borrower" v={app ? `${app.first_name || app.borrower_first_name || ''} ${app.last_name || app.borrower_last_name || ''}`.trim() || '—' : '—'} />
+          <Fact k="Property" v={fmtAddr(app && app.property_address)} />
+          <Fact k="Investor (note buyer)" v={(app && app.lender) || '—'} />
+          <Fact k="Program" v={(app && (app.registered_program || app.program)) || '—'} />
+          <Fact k="Loan amount" v={money0(app && app.loan_amount)} />
+          <Fact k="Rehab budget" v={money0(app && app.rehab_budget)} />
+          <Fact k="Financed interest reserve" v={money0(app && app.requested_ir_amount)} />
+          <Fact k="Loan coordinator" v={(app && app.loan_officer_name) || '—'} />
+        </div>
+
+        <div className={`cl-price-band${price.isAssignment ? ' asg' : ''}`}>
+          {price.isAssignment ? (
+            <>
+              {/* "Purchase price" always means the REAL total paid (frozen
+                  display rule) — the seller's contract plus the FULL fee. */}
+              <Tile k="Final purchase price" v={money0(price.total)} sub="What the borrower pays" accent />
+              <Tile k="Original purchase price" v={money0(price.original)} sub="Seller's contract" />
+              <Tile k="Assignment fee" v={money0(price.fee)} sub="Paid to the wholesaler" />
+              {/* The capped basis gets its OWN label and shows only when the fee
+                  is over the 15% cap, so it can never be read as the price. */}
+              {price.effective != null && (
+                <Tile k="Effective purchase price" v={money0(price.effective)}
+                  sub={`The loan sizes on this — the fee counts up to 15% of the original contract price${
+                    price.excessOutOfPocket ? `; ${money0(price.excessOutOfPocket)} is extra cash at closing` : ''}`} />
+              )}
+            </>
+          ) : (
+            <>
+              <Tile k="Purchase price" v={money0(price.total)} />
+              {/* Flagged as an assignment but the original contract price has
+                  not been captured, so the split can't be shown — say so
+                  rather than pass the entered price off as the seller's. */}
+              {app && app.is_assignment && (
+                <Tile k="Assignment fee" v={money0(app.assignment_fee)}
+                  sub="Add the original contract price on the file to see the final price" />
+              )}
+            </>
+          )}
+        </div>
+      </div>
+    </div>
+  );
 }
 
 function ToggleRow({ label, hint, on, busy, onToggle }) {
@@ -239,8 +297,8 @@ function MoneySection({ appId, money, isCloser, busy, run, onDownloadDoc }) {
   );
 }
 
-function Tile({ k, v, sub }) {
-  return <div className="cl-tile"><div className="cl-tile-k">{k}</div><div className="cl-tile-v">{v}</div>{sub && <div className="cl-tile-sub muted small">{sub}</div>}</div>;
+function Tile({ k, v, sub, accent }) {
+  return <div className={`cl-tile${accent ? ' accent' : ''}`}><div className="cl-tile-k">{k}</div><div className="cl-tile-v">{v}</div>{sub && <div className="cl-tile-sub muted small">{sub}</div>}</div>;
 }
 
 function ConditionsSection({ appId, conditions, isCloser, onPreview, onDownloadDoc, onUploaded, setErr }) {
