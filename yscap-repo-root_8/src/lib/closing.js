@@ -35,6 +35,31 @@ const WAREHOUSES = [
   TABLE_FUNDING,
 ];
 
+// ---------------------------------------------------------------------------
+// IS THIS CLOSING RETIRED FROM THE DESK? One definition, shared by the desk
+// queue, the nav badge and (mirrored) the screen — they must never disagree.
+//
+// A closing leaves the desk once it is FINISHED — reconciled AND investor
+// delivered — "EITHER WAY" (owner-directed 2026-07-26): handed to purchasing, or
+// TABLE FUNDED. Keying on stage='in_purchasing' alone was wrong: a table-funded
+// loan is sold at closing and is structurally BARRED from that stage (the route
+// 422s it and the button is hidden), so it would have sat on the desk and kept
+// the badge incremented forever, with no action available to clear it.
+//
+// The stage test is kept as well, purely for legacy rows that reached purchasing
+// before the sign-off stamps were recorded.
+// ---------------------------------------------------------------------------
+const CLOSING_RETIRED_SQL = (a = 'cw') =>
+  `(${a}.stage = 'in_purchasing'
+    OR (${a}.fully_reconciled_at IS NOT NULL AND ${a}.investor_delivery_signed_off_at IS NOT NULL))`;
+
+/** JS mirror of CLOSING_RETIRED_SQL, for a row off the closing queue. */
+function closingRetired(row) {
+  if (!row) return false;
+  return row.closing_stage === 'in_purchasing'
+    || !!(row.fully_reconciled_at && row.investor_delivery_signed_off_at);
+}
+
 // The closing document conditions the closer uploads into (seeded by db/315).
 const CLOSING_CONDITION_CODES = ['closing_hud_final', 'closing_pkg_signed', 'closing_tracking_label'];
 
@@ -406,6 +431,8 @@ async function getClosingWorkspace(appId, client) {
 module.exports = {
   WAREHOUSES,
   TABLE_FUNDING,
+  CLOSING_RETIRED_SQL,
+  closingRetired,
   CLOSING_CONDITION_CODES,
   QUICKLINK_GROUPS,
   CREDIT_CONDITION_CODES,

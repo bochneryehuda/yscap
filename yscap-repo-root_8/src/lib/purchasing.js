@@ -48,15 +48,7 @@ async function withdrawFromPurchasing(client, appId) {
 
 async function getPurchasing(appId, client) {
   const c = client || db;
-  // The advice document's filename rides along so the desk can link it without a
-  // second round trip. LEFT JOIN — the pointer may be null, or point at a document
-  // that was since deleted (the FK is ON DELETE SET NULL, but a stale read is
-  // still possible mid-transaction).
-  const r = await c.query(
-    `SELECT p.*, d.filename AS purchase_advice_filename, d.created_at AS purchase_advice_uploaded_at
-       FROM purchasing_workflow p
-       LEFT JOIN documents d ON d.id = p.purchase_advice_document_id
-      WHERE p.application_id=$1`, [appId]);
+  const r = await c.query(`SELECT * FROM purchasing_workflow WHERE application_id=$1`, [appId]);
   return r.rows[0] || null;
 }
 
@@ -161,9 +153,12 @@ async function getPurchasingWorkspace(appId, client) {
     `SELECT d.id, d.filename, d.doc_kind, d.created_at, d.is_current FROM documents d
       WHERE d.application_id=$1
         AND (COALESCE(d.is_current, true) = true
-             OR d.id = (SELECT p.purchase_advice_document_id FROM purchasing_workflow p
-                         WHERE p.application_id=$1))
+             OR d.id = (SELECT a.document_id FROM purchasing_advice a
+                         WHERE a.application_id=$1))
       ORDER BY d.created_at DESC LIMIT 200`, [appId])).rows, []);
+  // Advice is read separately and OUTLIVES a withdrawal — it is a fact about the
+  // loan, not about the file's current membership of the desk.
+  const advice = await safe(() => readAdvice(appId, c), null);
   return {
     application_id: appId,
     purchasing: row,
@@ -172,6 +167,7 @@ async function getPurchasingWorkspace(appId, client) {
     tasks,
     conditions,
     documents,
+    advice,
     openTasks: tasks.filter((t) => !t.done).length,
     openConditions: conditions.filter((x) => x.status === 'open').length,
   };
@@ -226,26 +222,49 @@ async function deleteCondition(client, condId) {
   return (await c.query(`DELETE FROM purchasing_conditions WHERE id=$1 RETURNING id`, [condId])).rows[0] || null;
 }
 
-/* PURCHASE ADVICE — a date and the current advice document. Re-issued post
- * closing and again post purchase, so this is an ordinary update, not a
- * write-once. Only keys actually present in `patch` are touched, so setting the
- * date never clears the document and vice versa. */
+/* PURCHASE ADVICE — a date and the current advice document. Lives in its OWN
+ * table keyed on application_id (db/351), NOT on the purchasing_workflow row:
+ * that row is DELETED by withdrawFromPurchasing, which runs when the warehouse
+ * moves to Table Funding or investor delivery is un-signed, and the advice would
+ * have vanished with it while the notes/tasks/conditions beside it survived.
+ *
+ * Re-issued post closing and again post purchase, so this is an ordinary upsert,
+ * never a write-once. Only keys actually present in `patch` are touched, so
+ * setting the date never clears the document and vice versa. */
+async function readAdvice(appId, client) {
+  const c = client || db;
+  return (await c.query(
+    `SELECT a.*, d.filename AS document_filename, d.created_at AS document_uploaded_at,
+            u.full_name AS updated_by_name
+       FROM purchasing_advice a
+       LEFT JOIN documents d ON d.id = a.document_id
+       LEFT JOIN staff_users u ON u.id = a.updated_by
+      WHERE a.application_id=$1`, [appId])).rows[0] || null;
+}
+
 async function setPurchaseAdvice(client, appId, patch, actorId) {
   const c = client || db;
-  const sets = [];
+  const cols = [];
   const vals = [appId];
-  if ('date' in patch) { vals.push(patch.date || null); sets.push(`purchase_advice_date=$${vals.length}::date`); }
-  if ('documentId' in patch) { vals.push(patch.documentId || null); sets.push(`purchase_advice_document_id=$${vals.length}::uuid`); }
-  if (!sets.length) return getPurchasing(appId, c);
+  if ('date' in patch) { vals.push(patch.date || null); cols.push(['advice_date', `$${vals.length}::date`]); }
+  if ('documentId' in patch) { vals.push(patch.documentId || null); cols.push(['document_id', `$${vals.length}::uuid`]); }
+  if (!cols.length) return readAdvice(appId, c);
   vals.push(actorId || null);
-  return (await c.query(
-    `UPDATE purchasing_workflow
-        SET ${sets.join(', ')}, purchase_advice_updated_at=now(), purchase_advice_updated_by=$${vals.length}::uuid
-      WHERE application_id=$1 RETURNING *`, vals)).rows[0] || null;
+  const actor = `$${vals.length}::uuid`;
+  const names = cols.map(([n]) => n).join(', ');
+  const values = cols.map(([, v]) => v).join(', ');
+  const updates = cols.map(([n, v]) => `${n}=${v}`).join(', ');
+  await c.query(
+    `INSERT INTO purchasing_advice (application_id, ${names}, updated_at, updated_by)
+     VALUES ($1, ${values}, now(), ${actor})
+     ON CONFLICT (application_id) DO UPDATE
+        SET ${updates}, updated_at=now(), updated_by=${actor}`, vals);
+  return readAdvice(appId, c);
 }
 
 module.exports = {
   CONDITION_STATUSES,
+  readAdvice,
   readConditions,
   addCondition,
   setConditionStatus,
