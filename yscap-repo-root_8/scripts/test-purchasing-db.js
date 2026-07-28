@@ -374,18 +374,28 @@ const uniq = (p) => p + Buffer.from(String(process.pid)).toString('hex') + Math.
         WHERE id=$1 AND visibility='borrower' AND source_type <> 'chat_attachment'`, [leaky.id])).rows[0].n;
     ok(inBorrowerList === 0, 'so it is out of the borrower documents list AND the mentionables list');
 
-    // REVERSIBLE: pointing the advice at a DIFFERENT document restores what the
-    // outgoing one used to be. The picker offers every document on the file, so
-    // without this a mis-pick would hide a borrower's own insurance permanently —
-    // `UPDATE documents SET visibility` exists nowhere else in the codebase.
-    const other = (await client.query(
+    ok((await client.query(`SELECT doc_kind FROM documents WHERE id=$1`, [leaky.id])).rows[0].doc_kind === 'purchase_advice',
+      'and it is tagged as the advice, so nothing can hand it back by accident');
+
+    // THE SUPERSEDE CASE — the documented normal workflow: the advice is
+    // re-issued post closing and again post purchase. An earlier version of this
+    // RESTORED the outgoing document's visibility on the reasoning that a
+    // mis-pick must be undoable — which handed the PREVIOUS ADVICE, a real one
+    // naming the note buyer and the sale price, straight back to the borrower.
+    // Once hidden, it stays hidden.
+    const v2 = (await client.query(
       `INSERT INTO documents (application_id, filename, content_type, visibility)
-       VALUES ($1,'some-other.pdf','application/pdf','borrower') RETURNING id`, [N.appId])).rows[0];
-    await purchasing.setPurchaseAdvice(client, N.appId, { documentId: other.id }, N.closerId);
-    ok((await client.query(`SELECT visibility FROM documents WHERE id=$1`, [leaky.id])).rows[0].visibility === 'borrower',
-      'moving the advice pointer away RESTORES the old document\'s visibility — a mis-pick is undoable');
-    ok((await client.query(`SELECT visibility FROM documents WHERE id=$1`, [other.id])).rows[0].visibility === 'staff_only',
-      'and the newly-designated one is forced staff-only');
+       VALUES ($1,'purchase-advice-v2.pdf','application/pdf','borrower') RETURNING id`, [N.appId])).rows[0];
+    await purchasing.setPurchaseAdvice(client, N.appId, { documentId: v2.id }, N.closerId);
+    ok((await client.query(`SELECT visibility FROM documents WHERE id=$1`, [leaky.id])).rows[0].visibility === 'staff_only',
+      'superseding the advice does NOT hand the previous one back to the borrower');
+    ok((await client.query(`SELECT visibility FROM documents WHERE id=$1`, [v2.id])).rows[0].visibility === 'staff_only',
+      'and the re-issued advice is hidden too');
+
+    // A repeat designation must not destroy the recorded undo.
+    await purchasing.setPurchaseAdvice(client, N.appId, { documentId: v2.id }, N.closerId);
+    ok((await purchasing.readAdvice(N.appId, client)).document_prior_visibility === 'borrower',
+      're-designating the same document keeps the recorded prior visibility (the undo survives)');
     await purchasing.setPurchaseAdvice(client, N.appId, { documentId: leaky.id }, N.closerId);
 
     // db/359 does the same for files that already had one (previous AND future).

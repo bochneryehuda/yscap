@@ -53,6 +53,10 @@ export default function ClosingPanel({ appId, app, can, onDownloadDoc, onPreview
   const [warn, setWarn] = useState('');
   const isCloser = can ? can('manage_closings') : false;
 
+  // Clear the sticky warning when the FILE changes — ClosingPanel is mounted
+  // without a key, so navigating A -> B re-runs load() without remounting and a
+  // warning raised on A would otherwise sit on screen while viewing B.
+  useEffect(() => { setWarn(''); }, [appId]);
   const load = useCallback(() => api.closingWorkspace(appId).then((d) => { setWs(d); setErr(''); }).catch((e) => setErr((e && e.message) || 'Could not load the closing view.')), [appId]);
   useEffect(() => { load(); }, [load]);
   const say = (m) => { setFlash(m); setTimeout(() => setFlash(''), 5000); };

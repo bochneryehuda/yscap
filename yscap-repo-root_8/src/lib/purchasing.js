@@ -182,7 +182,7 @@ async function getPurchasingWorkspace(appId, client) {
   // been superseded — otherwise the picker would show "none selected" while the
   // line beneath it still named the old file.
   const documents = await safe(async () => (await c.query(
-    `SELECT d.id, d.filename, d.doc_kind, d.created_at, d.is_current FROM documents d
+    `SELECT d.id, d.filename, d.doc_kind, d.created_at, d.is_current, d.visibility FROM documents d
       WHERE d.application_id=$1
         AND (COALESCE(d.is_current, true) = true
              OR d.id = (SELECT a.document_id FROM purchasing_advice a
@@ -290,36 +290,60 @@ async function readAdvice(appId, client) {
  * permanently, with no undo anywhere in the codebase. */
 async function setPurchaseAdvice(client, appId, patch, actorId) {
   const c = client || db;
+  let prior = null;   // never mutate the caller's patch — see the upsert below
   if ('documentId' in patch) {
-    const prev = await readAdvice(appId, c);
-    // Restore whatever the outgoing document used to be, if we changed it.
-    if (prev && prev.document_id && String(prev.document_id) !== String(patch.documentId || '')
-        && prev.document_prior_visibility) {
-      await c.query(`UPDATE documents SET visibility=$2 WHERE id=$1`,
-        [prev.document_id, prev.document_prior_visibility]);
-    }
     if (patch.documentId) {
       const doc = (await c.query(
-        `SELECT visibility FROM documents WHERE id=$1 AND application_id=$2`, [patch.documentId, appId])).rows[0];
+        `SELECT visibility, doc_kind FROM documents WHERE id=$1 AND application_id=$2`,
+        [patch.documentId, appId])).rows[0];
       if (doc && doc.visibility !== 'staff_only') {
-        patch.priorVisibility = doc.visibility;
+        // Record what it was — an admin can use this to undo a mis-pick. Only
+        // stamp it when we ACTUALLY changed something, and never overwrite an
+        // existing record with NULL on a repeat designation.
+        prior = doc.visibility;
         await c.query(`UPDATE documents SET visibility='staff_only' WHERE id=$1`, [patch.documentId]);
       }
+      // Tag it, so the advice is identifiable afterwards — by the picker, by
+      // db/359, and by anything that must never hand it back.
+      if (doc && doc.doc_kind !== 'purchase_advice')
+        await c.query(`UPDATE documents SET doc_kind='purchase_advice' WHERE id=$1`, [patch.documentId]);
     }
+    // DELIBERATELY NO AUTOMATIC RESTORE of the outgoing document.
+    //
+    // The first version of this restored it, reasoning that the picker lists
+    // every document on the file so a mis-pick must be undoable. But the pointer
+    // moving is overwhelmingly the DOCUMENTED NORMAL WORKFLOW — the advice is
+    // re-issued post closing and again post purchase, and this screen tells the
+    // closer to do exactly that. Restoring on supersede therefore handed the
+    // PREVIOUS ADVICE — a real one, naming the note buyer and the sale price —
+    // straight back into the borrower's documents list, bytes intact. It cannot
+    // tell a mis-pick from a supersede, and guessing wrong in that direction is
+    // a confidentiality breach, so it does not guess: once hidden, it stays
+    // hidden. A mis-pick is instead PREVENTED (the picker is filtered and asks
+    // for confirmation) and remains undoable by an admin from the recorded
+    // prior visibility.
   }
   const cols = [];
   const vals = [appId];
   if ('date' in patch) { vals.push(patch.date || null); cols.push(['advice_date', `$${vals.length}::date`]); }
   if ('documentId' in patch) {
     vals.push(patch.documentId || null); cols.push(['document_id', `$${vals.length}::uuid`]);
-    vals.push(patch.priorVisibility || null); cols.push(['document_prior_visibility', `$${vals.length}::text`]);
+    // The UPDATE half COALESCEs onto the existing row so a repeat designation of
+    // the already-forced document cannot overwrite the recorded prior visibility
+    // with NULL and destroy the undo. The INSERT half must NOT — a table
+    // reference is not valid inside VALUES.
+    vals.push(prior);
+    cols.push(['document_prior_visibility', `$${vals.length}::text`,
+      `COALESCE($${vals.length}::text, purchasing_advice.document_prior_visibility)`]);
   }
   if (!cols.length) return readAdvice(appId, c);
   vals.push(actorId || null);
   const actor = `$${vals.length}::uuid`;
   const names = cols.map(([n]) => n).join(', ');
   const values = cols.map(([, v]) => v).join(', ');
-  const updates = cols.map(([n, v]) => `${n}=${v}`).join(', ');
+  // A column may carry a DIFFERENT expression for the conflict clause (see
+  // document_prior_visibility); fall back to the insert expression when it does not.
+  const updates = cols.map(([n, v, upd]) => `${n}=${upd || v}`).join(', ');
   await c.query(
     `INSERT INTO purchasing_advice (application_id, ${names}, updated_at, updated_by)
      VALUES ($1, ${values}, now(), ${actor})

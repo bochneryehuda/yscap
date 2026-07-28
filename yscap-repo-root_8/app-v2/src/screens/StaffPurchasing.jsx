@@ -278,9 +278,25 @@ function PurchasingDetail({ appId, status, onChanged }) {
           <label style={{ display: 'flex', flexDirection: 'column', gap: 3, flex: 1, minWidth: 200 }}>
             <span className="small muted">Purchase advice document</span>
             <select className="input" value={adv.document_id || ''} disabled={busy}
-              onChange={(e) => run(() => api.purchasingAdvice(appId, { documentId: e.target.value || null }))}>
+              onChange={(e) => {
+                const id = e.target.value || null;
+                const doc = (ws.documents || []).find((d) => String(d.id) === String(id));
+                // Designating HIDES the document from the borrower, permanently
+                // as far as this screen is concerned. The list is every document
+                // on the file, so confirm before hiding one they can see today.
+                if (doc && doc.is_current !== false && doc.visibility === 'borrower'
+                  && !window.confirm(`"${doc.filename}" is currently visible to the borrower.\n\nMaking it the purchase advice will hide it from them — a purchase advice names the note buyer and the price the loan sold for, so it is staff-only.\n\nContinue?`)) {
+                  e.target.value = adv.document_id || '';
+                  return;
+                }
+                run(() => api.purchasingAdvice(appId, { documentId: id }));
+              }}>
               <option value="">— none selected —</option>
-              {(ws.documents || []).map((d) => <option key={d.id} value={d.id}>{d.filename}</option>)}
+              {(ws.documents || []).map((d) => (
+                <option key={d.id} value={d.id}>
+                  {d.filename}{d.doc_kind === 'purchase_advice' ? ' — advice' : d.visibility === 'borrower' ? ' (borrower can see)' : ''}
+                </option>
+              ))}
             </select>
           </label>
         </div>

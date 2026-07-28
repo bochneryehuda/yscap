@@ -9262,8 +9262,23 @@ router.post('/applications/:id/purchasing/advice', purchasingGate, async (req, r
     const live = (await db.query(
       `SELECT 1 FROM applications WHERE id=$1 AND deleted_at IS NULL`, [req.params.id])).rows[0];
     if (!live) return res.status(404).json({ error: 'file not found' });
-    const advice = await purchasing.setPurchaseAdvice(db, req.params.id, patch, req.actor.id);
+    // ONE transaction: the forcing, the doc_kind tag and the upsert must not be
+    // able to half-apply — a partial failure would leave a designated advice
+    // still borrower-visible, or hidden with nothing pointing at it.
+    const client = await db.getClient();
+    let advice;
+    try {
+      await client.query('BEGIN');
+      advice = await purchasing.setPurchaseAdvice(client, req.params.id, patch, req.actor.id);
+      await client.query('COMMIT');
+    } catch (e) { await client.query('ROLLBACK').catch(() => {}); client.release(); throw e; }
+    client.release();
     await audit(req, 'purchasing_advice', 'application', req.params.id, patch);
+    // A confidentiality-critical write deserves its own record naming the
+    // DOCUMENT, not just the file.
+    if (patch.documentId)
+      await audit(req, 'purchasing_advice_restricted', 'document', patch.documentId,
+        { now: 'staff_only', priorVisibility: advice && advice.document_prior_visibility, applicationId: req.params.id });
     res.json({ ok: true, advice });
   } catch (e) { console.warn('[purchasing] advice error:', db.describeError(e)); res.status(500).json({ error: 'server error' }); }
 });
@@ -10116,7 +10131,7 @@ router.post('/applications/:id/documents', async (req, res) => {
     filename: b.filename, sizeBytes: buf.length, uploadedByKind: 'staff', uploadedById: req.actor.id,
     applicationId: llcId ? null : req.params.id, checklistItemId: b.checklistItemId || null,
     llcId: llcId || null, trackRecordId: itemTrackRecordId, slotLabel: slot, docKind });
-  if (dupApp) return res.status(201).json({ ok: true, documentId: dupApp, deduped: true });
+  if (dupApp) return res.status(201).json({ ok: true, documentId: dupApp, deduped: true, visibility: docVisibility });
   const { ref, provider } = await storage.save(buf, { filename: b.filename });
   const r = await db.query(
     `INSERT INTO documents (application_id,checklist_item_id,borrower_id,llc_id,track_record_id,filename,content_type,size_bytes,storage_provider,storage_ref,
