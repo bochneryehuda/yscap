@@ -29,6 +29,9 @@ const SWITCHES = [
   { key: 'SHAREPOINT_MIRROR_FSM_ON', integration: 'sharepoint', label: 'SharePoint mirror — new engine LIVE (cutover)', dangerous: true, resume: true, envDefault: () => String(process.env.SHAREPOINT_MIRROR_FSM || '').toLowerCase().trim() === 'on' },
   { key: 'DOCUSIGN_SEND_ENABLED', integration: 'docusign', label: 'E-signature sending', dangerous: true, envDefault: () => !!(cfg.docusign && cfg.docusign.sendEnabled) },
   { key: 'APPRAISAL_FLOOD_CHECK_ENABLED', integration: 'fema_flood', label: 'Flood-zone check', dangerous: false, envDefault: () => cfg.appraisalFloodCheckEnabled },
+  // Dangerous: this one WRITES a loan value. Off = PILOT still reads the As-Is off the appraisal and
+  // still shows it on the "Confirm the As-Is value" condition; it just never changes the file itself.
+  { key: 'APPRAISAL_ASIS_AUTO_ENABLED', integration: 'azure_docint', label: 'Lower the As-Is value automatically when the appraisal reads lower than the purchase price', dangerous: true, envDefault: () => cfg.appraisalAsIsAutoEnabled },
 ];
 const BY_KEY = Object.create(null);
 for (const s of SWITCHES) BY_KEY[s.key] = s;

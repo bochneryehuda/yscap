@@ -4728,6 +4728,24 @@ async function signOffGate(itemId, actor) {
     } catch (_) { /* fall through to the normal gate */ }
   }
 
+  // CONFIRM THE As-Is VALUE (owner-directed 2026-07-28). Two ways this condition lands on a file:
+  // PILOT lowered the As-Is from what it read on the appraisal (this is the re-review), or PILOT
+  // could not confidently read one at all. Either way the owner's rule for clearing it is the same —
+  // *"a human should read the AS IS and enter the as is value to clear the condition"* — so it can
+  // never be signed off while the file has no As-Is value on it. A super-admin override (db/344) is
+  // still the deliberate way through, as on every other condition.
+  if (code === 'appraisal_as_is_verify') {
+    // An OPTIONAL instance may still be completed empty, exactly like every other condition here —
+    // "optional" is a deliberate human decision that the file can complete without it.
+    if (item.is_required === false) return null;
+    const f = (await db.query(`SELECT as_is_value FROM applications WHERE id=$1`, [item.application_id])).rows[0] || {};
+    const v = f.as_is_value == null ? null : Number(f.as_is_value);
+    if (v == null || !Number.isFinite(v) || v <= 0) {
+      return 'Enter the As-Is value from the appraisal before signing this off — read it off the report and type it in the box on this condition. It is never filled in by guessing.';
+    }
+    return null;
+  }
+
   // Doc-gate: a REQUIRED document-upload condition can never be signed off with
   // ZERO documents on it — the sign-off would attest to a file that isn't there.
   // Applies to EVERYONE with no exception (owner-directed 2026-07-20: an admin
