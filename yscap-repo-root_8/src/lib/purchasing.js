@@ -302,7 +302,15 @@ async function setPurchaseAdvice(client, appId, patch, actorId) {
       // forward for the same one — see the conflict expression below.
       const cur = await readAdvice(appId, c);
       sameDoc = !!(cur && cur.document_id && String(cur.document_id) === String(patch.documentId));
-      if (doc && doc.visibility !== 'staff_only') {
+      // The document MUST be on this file. Only the route's 404 was enforcing
+      // this; the library is callable from anywhere, and a miss here used to
+      // write the pointer with no forcing at all — a designated advice that was
+      // never hidden.
+      if (!doc) { const e = new Error('that document is not on this file'); e.status = 404; throw e; }
+      // Only widen-proof direction: 'internal' is MORE restricted than
+      // staff_only (tpr-export treats it as never shippable to a buyer), so a
+      // document already marked internal is left exactly as it is.
+      if (doc.visibility === 'borrower') {
         // Record what it was — an admin can use this to undo a mis-pick. Only
         // stamp it when we ACTUALLY changed something, and never overwrite an
         // existing record with NULL on a repeat designation.

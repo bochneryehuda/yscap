@@ -220,6 +220,42 @@ const parkCount = async (app) => (await db.query(`SELECT count(*)::int c FROM sy
     ok('10b status shows appraisal available', st.slots.find((s) => s.which === 'appraisal_pdf').available === true);
     await cleanup(app, bor); }
 
+  // 10c) THE PURCHASE ADVICE NEVER RIDES OUT AS THE APPRAISAL. Sitewire is where the borrower submits
+  // draws and the capital partner reads the file; the advice names the note buyer and the price the loan
+  // sold for. The condition-slot arm matches ANY current PDF on the appraisal-documents condition, so an
+  // advice mis-filed there was picked up and uploaded labelled "Appraisal.pdf". It cannot be excluded by
+  // visibility (a real appraisal PDF is staff_only too) or by doc_kind (designation never rewrites it) —
+  // only the advice POINTER identifies it.
+  { const tid = (await db.query(`SELECT id FROM checklist_templates WHERE code='rtl_cond_appraisaldocs' LIMIT 1`)).rows[0].id;
+    const { app, bor } = await seed({ appraisal: false, xlsx: false, pdf: false });
+    const ci = (await db.query(`INSERT INTO checklist_items(application_id,template_id,item_kind,status,scope,label) VALUES($1,$2,'document','received','application','Appraisal documents') RETURNING id`, [app, tid])).rows[0].id;
+    const advId = (await db.query(`INSERT INTO documents(application_id,borrower_id,checklist_item_id,filename,content_type,size_bytes,storage_provider,storage_ref,uploaded_by_kind,uploaded_by_id,doc_kind,slot_label,is_current,visibility,source_type)
+      VALUES($1,$2,$3,'purchase-advice.pdf','application/pdf',10,'local','ref/adv','staff',NULL,NULL,'PDF',true,'staff_only','staff_upload') RETURNING id`, [app, bor, ci])).rows[0].id;
+    ok('10c the advice IS picked while nothing marks it as the advice (the door that existed)',
+      (await docPush._internal.gatherAppraisalPdf(app)).sourceDocId === advId);
+    await db.query(`INSERT INTO purchasing_advice(application_id, document_id) VALUES($1,$2)
+                    ON CONFLICT (application_id) DO UPDATE SET document_id=EXCLUDED.document_id`, [app, advId]);
+    const g2 = await docPush._internal.gatherAppraisalPdf(app);
+    ok('10c once designated the purchase advice, it is NOT pushed as the appraisal', !!g2.missing);
+    ok('10c and the slot honestly reports no appraisal rather than a wrong one',
+      (await docPush.status(app)).slots.find((s) => s.which === 'appraisal_pdf').available === false);
+    // A REAL appraisal PDF beside it is still found — the exclusion is the advice, not the condition.
+    await db.query(`INSERT INTO documents(application_id,borrower_id,filename,content_type,size_bytes,storage_provider,storage_ref,uploaded_by_kind,uploaded_by_id,doc_kind,is_current,visibility,source_type)
+      VALUES($1,$2,'appraisal.pdf','application/pdf',10,'local','ref/real-appr','staff',NULL,'appraisal_pdf',true,'staff_only','staff_upload')`, [app, bor]);
+    const g3 = await docPush._internal.gatherAppraisalPdf(app);
+    ok('10c a real staff_only appraisal PDF is still pushed (the exclusion is narrow)',
+      !g3.missing && g3.sourceDocId !== advId);
+    await db.query(`DELETE FROM purchasing_advice WHERE application_id=$1`, [app]);
+    // 10d) AND ARM (1) REALLY IS PREFERRED. The ORDER BY that expresses that compared a BARE doc_kind,
+    // which is NULL on every condition-slot upload — and `NULL='appraisal_pdf'` is NULL, which DESC sorts
+    // FIRST. So on the common file that has BOTH (the importer wrote the appraisal_pdf, the officer also
+    // dropped a PDF on the condition) the preference was inverted and Sitewire received whatever
+    // unlabelled PDF sat on the condition, labelled "Appraisal.pdf".
+    const g4 = await docPush._internal.gatherAppraisalPdf(app);
+    ok('10d the explicit appraisal_pdf beats an unlabelled PDF on the condition slot',
+      !g4.missing && g4.sourceDocId !== advId);
+    await cleanup(app, bor); }
+
   // 11) status() — metadata-only availability (no bytes read), reflects managed + push state
   { storage.read = async () => { throw new Error('status() must NOT read bytes'); }; // prove no byte read
     const { app, bor } = await seed({ pdf: false }); // appraisal + xlsx available, sow_pdf missing

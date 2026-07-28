@@ -423,11 +423,63 @@ const uniq = (p) => p + Buffer.from(String(process.pid)).toString('hex') + Math.
 
     await purchasing.setPurchaseAdvice(client, N.appId, { documentId: leaky.id }, N.closerId);
 
-    // db/359 does the same for files that already had one (previous AND future).
+    // db/360 does the same for files that already had one (previous AND future).
     await client.query(`UPDATE documents SET visibility='borrower' WHERE id=$1`, [leaky.id]);
-    await client.query(fs.readFileSync(path.join(__dirname, '..', 'db', '359_purchase_advice_staff_only.sql'), 'utf8'));
+    await client.query(fs.readFileSync(path.join(__dirname, '..', 'db', '360_purchase_advice_staff_only.sql'), 'utf8'));
     ok((await client.query(`SELECT visibility FROM documents WHERE id=$1`, [leaky.id])).rows[0].visibility === 'staff_only',
-      'db/359 shuts the same door on a file that already had a borrower-visible advice');
+      'db/360 shuts the same door on a file that already had a borrower-visible advice');
+
+    // A DOCUMENT FROM ANOTHER FILE IS REFUSED. Only the route's own existence
+    // check was enforcing this; the library is callable from anywhere (the boot
+    // migrations, a future screen, a script), and a miss wrote the pointer with
+    // NO forcing at all — a designated advice that was never hidden, on a file
+    // whose desk would then name a document belonging to a different borrower.
+    const OTHER = await makeFile();
+    const foreign = (await client.query(
+      `INSERT INTO documents (application_id, filename, content_type, visibility)
+       VALUES ($1,'someone-elses.pdf','application/pdf','borrower') RETURNING id`, [OTHER.appId])).rows[0];
+    const beforeForeign = await purchasing.readAdvice(N.appId, client);
+    let refused = null;
+    try { await purchasing.setPurchaseAdvice(client, N.appId, { documentId: foreign.id }, N.closerId); }
+    catch (e) { refused = e; }
+    ok(refused && refused.status === 404, 'designating a document that is not on this file is REFUSED');
+    ok((await client.query(`SELECT visibility FROM documents WHERE id=$1`, [foreign.id])).rows[0].visibility === 'borrower',
+      'and the other file\'s document is left exactly as it was');
+    ok(String((await purchasing.readAdvice(N.appId, client)).document_id) === String(beforeForeign.document_id),
+      'and the advice still points where it did (nothing was written)');
+
+    // 'internal' IS MORE RESTRICTED THAN staff_only — tpr-export treats an
+    // internal document as never shippable to a buyer — so forcing one DOWN to
+    // staff_only would WIDEN it. The rule is one-directional: hide a
+    // borrower-visible document, never touch anything already tighter.
+    const internalDoc = (await client.query(
+      `INSERT INTO documents (application_id, filename, content_type, visibility)
+       VALUES ($1,'advice-internal.pdf','application/pdf','internal') RETURNING id`, [N.appId])).rows[0];
+    await purchasing.setPurchaseAdvice(client, N.appId, { documentId: internalDoc.id }, N.closerId);
+    ok((await client.query(`SELECT visibility FROM documents WHERE id=$1`, [internalDoc.id])).rows[0].visibility === 'internal',
+      'designating an INTERNAL document leaves it internal — the forcing never widens');
+    ok((await purchasing.readAdvice(N.appId, client)).document_prior_visibility === null,
+      'and records no prior visibility, because nothing was changed');
+
+    // db/360 RE-RUNS ON EVERY BOOT, so it must not fight an admin's undo. The
+    // recorded prior visibility is the marker that the live code already owns
+    // this row; without that guard the migration silently re-hid, on the next
+    // deploy, a document an admin had deliberately restored — making the
+    // documented undo impossible to keep.
+    const UNDO = await makeFile();
+    const restored = (await client.query(
+      `INSERT INTO documents (application_id, filename, content_type, visibility)
+       VALUES ($1,'advice-restored.pdf','application/pdf','borrower') RETURNING id`, [UNDO.appId])).rows[0];
+    await purchasing.setPurchaseAdvice(client, UNDO.appId, { documentId: restored.id }, UNDO.closerId);
+    ok((await purchasing.readAdvice(UNDO.appId, client)).document_prior_visibility === 'borrower',
+      'the forcing records the prior visibility that makes the undo possible');
+    await client.query(`UPDATE documents SET visibility='borrower' WHERE id=$1`, [restored.id]);
+
+    await client.query(fs.readFileSync(path.join(__dirname, '..', 'db', '360_purchase_advice_staff_only.sql'), 'utf8'));
+    ok((await client.query(`SELECT visibility FROM documents WHERE id=$1`, [restored.id])).rows[0].visibility === 'borrower',
+      'db/360 does NOT re-hide a document an admin deliberately restored');
+    ok((await client.query(`SELECT visibility FROM documents WHERE id=$1`, [internalDoc.id])).rows[0].visibility === 'internal',
+      'and db/360 never downgrades an internal document to staff_only either');
 
     // ---- Idempotency ----
     const D = await makeFile();
