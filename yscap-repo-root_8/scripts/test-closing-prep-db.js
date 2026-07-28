@@ -365,6 +365,22 @@ noop.sendMail = async (opts) => { sends.push(opts); return { ok: true, id: `stub
       'a chain with no placed order is NOT announced to — the order row is the only proof an attorney is expecting us');
     assert(sends.length === before, 'and nothing at all was put on the wire');
 
+    // THE OWNER'S RULE, STATED WHOLE (owner-directed 2026-07-28): "if the estimated
+    // closing date is switched again and again BEFORE the closing was set on the
+    // closing workflow then it should not get a notification". A date being shopped
+    // around during underwriting is not news to anybody — the attorney has not been
+    // engaged yet, and the order email is what first tells them the date.
+    for (const day of ['2026-09-02', '2026-09-09', '2026-09-16', '2026-09-02']) {
+      const q = await closingPrep.announce({
+        applicationId: other, eventKind: 'closing_date',
+        dedupeKey: 'ignored', extra: { date: day },
+      });
+      assert(q.skipped && q.reason === 'no_live_order',
+        `changing the estimated date to ${day} before closing prep is ordered tells nobody`);
+    }
+    assert(sends.length === before,
+      'a date shopped around all through underwriting sends the attorney NOTHING');
+
     // Now a CANCELLED order — the chain is deliberately kept, the attorney is not ours to email.
     await db.query(
       `INSERT INTO file_orders (application_id, order_type, status) VALUES ($1,'attorney','cancelled')
