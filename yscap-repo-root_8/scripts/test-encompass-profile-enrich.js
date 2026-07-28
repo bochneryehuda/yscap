@@ -118,10 +118,25 @@ const I = enrich._internals;
   ok(!/encompass\/client|_fetchGuarded|require\('\.\/client'\)/.test(src),
     'it never talks to Encompass at all — it reads the mirror table we already pulled');
   // Every borrower write must be additive or fill-only. An unguarded UPDATE of a
-  // populated column is exactly the regression this line is here to catch.
-  const updates = src.match(/UPDATE borrowers SET [^`]*/g) || [];
-  ok(updates.length === 1 && /current_address IS NULL OR current_address::text IN/.test(updates[0]),
-    'the ONLY borrowers UPDATE is the fill-only home address — enrichment never overwrites a populated field');
+  // populated column is exactly the regression these lines are here to catch.
+  //
+  // There are exactly THREE, and each one's WHERE clause is what proves it:
+  //   1. the home address, only when the profile has none;
+  //   2. the middle name (db/345), only when the profile has none;
+  //   3. clearing the "please confirm this name split" prompt once Encompass has
+  //      independently confirmed our split — a flag, never a name.
+  // If a fourth appears, this test must be read and the new WHERE clause proved
+  // fill-only before the count is raised.
+  const updates = src.match(/UPDATE borrowers[\s\S]*?(?=`)/g) || [];
+  ok(updates.length === 3, `enrichment makes exactly 3 borrower writes, all fill-only (found ${updates.length})`);
+  ok(updates.some((u) => /current_address IS NULL OR current_address::text IN/.test(u)),
+    'the home-address write only ever FILLS a profile that has none');
+  ok(updates.some((u) => /middle_name\s*=\s*\$2/.test(u) && /middle_name IS NULL OR btrim\(middle_name\) = ''/.test(u)),
+    'the middle-name write only ever FILLS a profile that has none — it can never overwrite one');
+  ok(updates.every((u) => !/first_name\s*=/.test(u) && !/last_name\s*=/.test(u)),
+    'enrichment NEVER rewrites a first or last name — a disagreement is a review, not a write');
+  ok(/fieldKey: 'middle_name'/.test(src) && /queueReview/.test(src),
+    'a middle name that DISAGREES goes to manual review instead of being overwritten');
 
   // main's rule (#800): what we STORE is the mailing one-line ClickUp's picker
   // shows, never a geocoder display name. Encompass gives structured fields so

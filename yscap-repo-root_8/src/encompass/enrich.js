@@ -109,11 +109,16 @@ function collectParties(raw) {
 }
 
 // The parties on a loan (borrower + co-borrower across applications[]).
+// Encompass models a person as THREE fields — firstName / middleName / lastName
+// (+ suffixToName) — which is exactly the shape PILOT now stores (db/345), so
+// the middle name is carried through and can fill a blank on our side.
 function extractParties(raw) {
   return collectParties(raw).map((p) => {
     const first = String(p.firstName || '').trim();
+    const middle = String(p.middleName || '').trim();
     const last = String(p.lastName || '').trim();
-    return { first, last, dob: normDob(p.birthDate), nameKey: normName(`${first} ${last}`) };
+    const suffix = String(p.suffixToName || '').trim();
+    return { first, middle, last, suffix, dob: normDob(p.birthDate), nameKey: normName(`${first} ${last}`) };
   });
 }
 
@@ -665,6 +670,90 @@ async function verifyPrimaryAddress(dbc, borrowerId, addr, meta) {
   return { checked: true, conflict: true, queued: !!queued, portal: curStr, encompass: encStr };
 }
 
+/**
+ * verifyMiddleName — Encompass keeps a person's middle name in its OWN field, so
+ * a loan copy is the best source PILOT has for the one part of a name that a
+ * ClickUp one-liner usually leaves out (owner-directed 2026-07-27).
+ *
+ * Same discipline as the home address above — ADD-ONLY, three outcomes and only
+ * one of them writes:
+ *   • we have NO middle name on file            → FILL it (pure gain, audited);
+ *   • the two agree (an initial vs the full word
+ *     counts as agreement)                      → nothing is written, and any
+ *     earlier "please confirm this name split" prompt is cleared, because
+ *     Encompass has now independently confirmed it;
+ *   • the two DISAGREE                          → NEVER overwrite. It goes to the
+ *     manual review queue with both values and a human picks.
+ *
+ * Nothing is EVER written back to Encompass — this reads the mirror table only.
+ */
+async function verifyMiddleName(dbc, borrowerId, party, meta) {
+  const PN = require('../lib/person-name');
+  const encMiddle = String((party && party.middle) || '').trim();
+  if (!encMiddle) return { checked: false, reason: 'no_middle_name' };
+  const b = (await dbc.query(
+    `SELECT first_name, middle_name, last_name, name_suffix FROM borrowers WHERE id=$1`, [borrowerId])).rows[0];
+  if (!b) return { checked: false, reason: 'no_borrower' };
+
+  // Only ever act when the two records are the SAME PERSON. `matchBorrower` has
+  // already proved that by name + DOB, but this is a WRITE path, so it is
+  // re-checked here rather than trusted.
+  if (!PN.sameName({ first: b.first_name, middle: b.middle_name, last: b.last_name },
+    { first: party.first, middle: party.middle, last: party.last })) {
+    return { checked: false, reason: 'not_the_same_person' };
+  }
+
+  const cur = String(b.middle_name || '').trim();
+  if (!cur) {
+    // FILL-ONLY: the WHERE clause re-asserts the column is still empty, so a human
+    // typing a middle name at this exact moment is never clobbered.
+    const w = await dbc.query(
+      `UPDATE borrowers
+          SET middle_name = $2,
+              name_suffix = COALESCE(name_suffix, NULLIF($3,'')),
+              name_review_needed = false,
+              name_review_reason = NULL,
+              updated_at = now()
+        WHERE id = $1 AND (middle_name IS NULL OR btrim(middle_name) = '')`,
+      [borrowerId, encMiddle, String((party && party.suffix) || '').trim()]);
+    if (!w.rowCount) return { checked: true, filled: false, reason: 'filled_by_someone_else' };
+    try {
+      await dbc.query('SAVEPOINT enrich_mid');
+      await dbc.query(
+        `INSERT INTO audit_log (actor_kind, action, entity_type, entity_id, detail)
+         VALUES ('system','encompass_middle_name_filled','borrower',$1,$2::jsonb)`,
+        [borrowerId, JSON.stringify({ middleName: encMiddle, loan: (meta && meta.loanGuid) || null })]);
+      await dbc.query('RELEASE SAVEPOINT enrich_mid');
+    } catch (_) { await dbc.query('ROLLBACK TO SAVEPOINT enrich_mid').catch(() => {}); }
+    return { checked: true, filled: true, middleName: encMiddle };
+  }
+
+  // Both sides carry one. An INITIAL against the full word is agreement, not a
+  // conflict ("A." vs "Andrew") — the same tolerance the file comparison uses.
+  if (PN.compareNames({ first: b.first_name, middle: cur, last: b.last_name },
+    { first: party.first, middle: encMiddle, last: party.last }).status !== 'mismatch') {
+    await dbc.query(
+      `UPDATE borrowers SET name_review_needed=false, name_review_reason=NULL, updated_at=now()
+        WHERE id=$1 AND name_review_needed = true`, [borrowerId]).catch(() => {});
+    return { checked: true, agrees: true };
+  }
+
+  const queued = await require('../lib/sync-review').queueReview({
+    borrowerId,
+    applicationId: (meta && meta.applicationId) || null,
+    taskId: `encompass:${(meta && meta.loanGuid) || 'unknown'}`,
+    source: 'encompass',
+    direction: 'inbound',
+    fieldKey: 'middle_name',
+    currentValue: cur,
+    proposedValue: encMiddle,
+    portalValue: cur,
+    clickupValue: encMiddle,
+    reason: 'encompass_middle_name_differs: the most recent Encompass file has a different middle name for this borrower',
+  });
+  return { checked: true, conflict: true, queued: !!queued, portal: cur, encompass: encMiddle };
+}
+
 // Match a snapshot loan's party to exactly ONE of our borrowers. Conservative —
 // never guesses. Returns { borrowerId, how } or null.
 async function matchBorrower(dbc, party, snapshotAppId) {
@@ -715,6 +804,7 @@ async function enrichAllOnce(opts) {
     loans: 0, matched: 0, addressesAdded: 0, llcsAdded: 0,
     emailsAdded: 0, phonesAdded: 0,
     addressesVerified: 0, addressesFilled: 0, addressConflicts: 0,
+    middleNamesVerified: 0, middleNamesFilled: 0, middleNameConflicts: 0,
     // Properties held back / taken back because their loan has not closed, and a
     // tally of WHY. Watch that tally in the log: this gate is deliberately
     // conservative, so an unexpectedly large `no_closing_evidence` would mean the
@@ -803,6 +893,17 @@ async function enrichAllOnce(opts) {
         for (const e of emails) { const c = await addContactIfAbsent(dbc, m.borrowerId, 'email', e, sourceTag); if (c.added) summary.emailsAdded += 1; }
         for (const p of phones) { const c = await addContactIfAbsent(dbc, m.borrowerId, 'phone', p, sourceTag); if (c.added) summary.phonesAdded += 1; }
 
+        // The MIDDLE NAME — Encompass carries it in its own field, which is the
+        // one part of a person's name a ClickUp one-liner usually omits. Add-only:
+        // it fills a blank, agrees silently, or queues a disagreement for a human.
+        try {
+          const mn = await verifyMiddleName(dbc, m.borrowerId, parties[i],
+            { loanGuid: row.encompass_loan_guid, applicationId: row.application_id || null });
+          if (mn.filled) summary.middleNamesFilled += 1;
+          else if (mn.conflict) summary.middleNameConflicts += 1;
+          else if (mn.agrees) summary.middleNamesVerified += 1;
+        } catch (_e) { summary.errors += 1; }
+
         const home = partyAddress(rawParties[i]);
         if (home) {
           const key = String(m.borrowerId);
@@ -844,6 +945,7 @@ module.exports = {
   addTrackRecordIfAbsent,
   removeInferredTrackRecord,
   addLlcIfAbsent,
+  verifyMiddleName,
   addContactIfAbsent,
   verifyPrimaryAddress,
   matchBorrower,

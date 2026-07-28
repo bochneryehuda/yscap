@@ -155,7 +155,7 @@ function sharepointDocEmail({ borrowerName, portalValue } = {}) {
 
 async function notifyLoanOfficer(reviewId) {
   const r = await db.query(
-    `SELECT q.*, b.first_name || ' ' || b.last_name AS borrower_name
+    `SELECT q.*, NULLIF(b.full_name,'') AS borrower_name
        FROM sync_review_queue q LEFT JOIN borrowers b ON b.id = q.borrower_id
       WHERE q.id=$1 AND q.status='open' AND q.notified_at IS NULL`, [reviewId]);
   const row = r.rows[0];
@@ -307,7 +307,7 @@ async function remindStaleReviewsOnce() {
       } catch (_) { /* per-row best-effort */ }
     }
     const esc = await db.query(
-      `SELECT q.id, q.field_key, b.first_name || ' ' || b.last_name AS borrower_name
+      `SELECT q.id, q.field_key, NULLIF(b.full_name,'') AS borrower_name
          FROM sync_review_queue q LEFT JOIN borrowers b ON b.id=q.borrower_id
         WHERE q.status='open' AND q.escalated_at IS NULL AND q.created_at < now() - interval '7 days'
         ORDER BY q.created_at ASC LIMIT 25`);

@@ -370,8 +370,8 @@ async function applyFileReviewAction({ row, action, targetApplicationId, targetT
     await audit('borrower_split', app.id, actorId, {
       reviewId: row.id, role, taskId: taskKey,
       oldBorrowerId: row.borrower_id, newBorrowerId: newId,
-      newName: [person.first_name, person.last_name].filter(Boolean).join(' '),
-      keptName: [old.first_name, old.last_name].filter(Boolean).join(' '),
+      newName: require('./person-name').displayName(person),
+      keptName: require('./person-name').displayName(old),
       possiblyPolluted: possiblyPolluted.length ? possiblyPolluted : undefined });
     // The cross-person "mismatch" rows for this task were artifacts of the
     // merge — close them; the next audit pass compares the right people.
@@ -386,11 +386,11 @@ async function applyFileReviewAction({ row, action, targetApplicationId, targetT
     try { await require('../sync/clickup-sync').ingestOne(taskKey); } catch (e) { console.warn('[sync-file-review] post-split ingest failed:', e.message); }
     const newLabel = person.first_name === 'Co-Borrower' && !person.last_name
       ? 'the co-borrower (name pending — it fills in from ClickUp once the subtask carries it, or type it on the new profile)'
-      : `“${[person.first_name, person.last_name].filter(Boolean).join(' ')}”`;
+      : `“${require('./person-name').displayName(person)}”`;
     return {
       note: `split into two people: the file's ${role === 'co_borrower' ? 'co-borrower' : 'borrower'} ` +
         `${newLabel} now has their own profile (${newId}); ` +
-        `“${[old.first_name, old.last_name].filter(Boolean).join(' ')}” keeps the original profile untouched` +
+        `“${require('./person-name').displayName(old)}” keeps the original profile untouched` +
         (possiblyPolluted.length ? ` — REVIEW the original profile's ${possiblyPolluted.join(', ')}: those values match the split-off person and may have been synced in by the merge` : ''),
       applicationId: app.id };
   }
@@ -417,7 +417,7 @@ async function applyFileReviewAction({ row, action, targetApplicationId, targetT
         WHERE status='open'
           AND ((borrower_id=$1 AND matched_borrower_id=$2) OR (borrower_id=$2 AND matched_borrower_id=$1))`,
       [b1, b2, actorId || null]).catch(() => {});
-    const names = both.map((x) => [x.first_name, x.last_name].filter(Boolean).join(' ')).join(' and ');
+    const names = both.map((x) => require('./person-name').displayName(x)).join(' and ');
     await audit('shared_email_allowed', row.application_id, actorId, { reviewId: row.id, borrowerIds: [b1, b2] });
     return { note: `shared email allowed for ${names} — the profiles are linked; a login on either now sees both people's files (nothing was merged; each keeps their own profile and officer)`, applicationId: row.application_id };
   }

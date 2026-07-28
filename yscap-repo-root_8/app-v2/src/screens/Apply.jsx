@@ -9,6 +9,7 @@ import AddressAutocomplete from '../components/AddressAutocomplete.jsx';
 import LlcPicker from '../components/LlcPicker.jsx';
 import { US_STATES } from '../components/LlcManager.jsx';
 import { MoneyInput, PhoneInput, ZipInput, EmailInput } from '../components/FormattedInputs.jsx';
+import { fullNameOf } from '../lib/personName.js';
 import TermSheetStudio, {
   buildStudioState, portalLoanType, portalProgram, selectionFromSnapshot, blobToBase64, rehabTypePatch,
 } from '../components/TermSheetStudio.jsx';
@@ -131,7 +132,7 @@ export default function Apply() {
           // #104: the individual applicant's name prefills the term sheet's
           // Borrower slot (separate from the vesting entity, which comes from the
           // LlcPicker into form.entityName).
-          if (!data.applicantName) data.applicantName = [p.first_name, p.last_name].filter(Boolean).join(' ');
+          if (!data.applicantName) data.applicantName = fullNameOf(p);
           // #98 LO stickiness: prefill the borrower's OWNING officer (loan
           // officer of record) so a returning borrower's new file stays tied to
           // their LO, and default the "work with an officer?" answer to Yes.
@@ -393,7 +394,7 @@ export default function Apply() {
     return buildStudioState({
       entityName: form.entityName || '',
       borrowerName: form.applicantName || '',
-      coBorrowerName: form.hasCoBorrower ? ([co.firstName, co.lastName].filter(Boolean).join(' ') || '') : '',
+      coBorrowerName: form.hasCoBorrower ? (fullNameOf(co) || '') : '',
       address: pa.oneLine || '',
       state: pa.state || '',
       loanType: form.loanType, program: form.program,
@@ -768,8 +769,8 @@ export default function Apply() {
                     <span className="muted small">Reuse a partner:</span>
                     {partners.map(pt => (
                       <button key={pt.id} type="button" className="btn ghost small"
-                        onClick={() => setForm(f => { const co = { firstName: pt.first_name || '', lastName: pt.last_name || '', email: pt.email || '', phone: pt.phone || '' }; save({ data: { coBorrower: co } }); return { ...(f || {}), coBorrower: co }; })}>
-                        {[pt.first_name, pt.last_name].filter(Boolean).join(' ') || pt.email}
+                        onClick={() => setForm(f => { const co = { firstName: pt.first_name || '', middleName: pt.middle_name || '', lastName: pt.last_name || '', email: pt.email || '', phone: pt.phone || '' }; save({ data: { coBorrower: co } }); return { ...(f || {}), coBorrower: co }; })}>
+                        {fullNameOf(pt) || pt.email}
                       </button>
                     ))}
                   </div>
@@ -781,6 +782,10 @@ export default function Apply() {
                 <div className="grid cols-2">
                   <div className="field"><label>First name</label>
                     <input className="input" autoComplete="off" value={c.firstName || ''} onChange={e => setCo('firstName', e.target.value)} /></div>
+                  {/* Optional middle name (db/345) — a co-borrower is a person like
+                      anyone else, so their whole legal name is captured here. */}
+                  <div className="field"><label>Middle name <span className="muted">(optional)</span></label>
+                    <input className="input" autoComplete="off" value={c.middleName || ''} onChange={e => setCo('middleName', e.target.value)} /></div>
                   <div className="field"><label>Last name</label>
                     <input className="input" autoComplete="off" value={c.lastName || ''} onChange={e => setCo('lastName', e.target.value)} /></div>
                 </div>

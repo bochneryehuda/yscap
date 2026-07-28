@@ -2,6 +2,7 @@ import React, { useEffect, useMemo, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { api } from '../lib/api.js';
 import { passwordProblem, PASSWORD_HINT } from '../lib/password.js';
+import { fullNameOf } from '../lib/personName.js';
 
 // #83 — the loan officer's book of borrowers. Everyone on a file they run (or,
 // for staff who see all files, everyone), with portal-account state and last
@@ -138,7 +139,7 @@ export default function StaffBorrowers() {
             </thead>
             <tbody>
               {filtered.map(b => {
-                const name = `${b.first_name || ''} ${b.last_name || ''}`.trim() || '(no name)';
+                const name = fullNameOf(b) || '(no name)';
                 const ini = `${(b.first_name || ' ')[0] || ''}${(b.last_name || ' ')[0] || ''}`.trim().toUpperCase() || '—';
                 const last = ago(b.last_login_at);
                 return (

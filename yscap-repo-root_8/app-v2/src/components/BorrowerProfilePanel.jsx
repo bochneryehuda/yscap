@@ -5,6 +5,7 @@ import { fmtDay, dayInputValue } from '../lib/dates.js';
 import { PhoneInput, ZipInput, EmailInput } from './FormattedInputs.jsx';
 import { CITIZENSHIP, MARITAL, CONTACT_TYPE, HOUSING, withCurrent } from '../lib/enums.js';
 import { formatSSN } from '../lib/validators.js';
+import { fullNameOf, splitName, rejoin, nameChanged } from '../lib/personName.js';
 
 /* THE BORROWER'S OWN RECORD — editable wherever the person appears
    (owner-directed 2026-07-27: "when we edit the application we can only edit the
@@ -39,7 +40,53 @@ function addrLine(a) {
   const s = [a.line1 || a.street, a.unit, a.city, [a.state, a.zip].filter(Boolean).join(' ')].filter(Boolean).join(', ');
   return s || null;
 }
-const fullName = (b) => [b && b.first_name, b && b.last_name].filter(Boolean).join(' ').trim();
+// THE ONE BIG NAME FIELD (db/346) — the whole name, middle name and suffix
+// included, falling back to the parts so an older response still renders.
+const fullName = (b) => fullNameOf(b);
+
+// "Please check this name" — PILOT had to make a judgement call about where a
+// borrower's name splits (db/345 `name_review_needed`), so it asks a human once.
+// It is a PROMPT, never a gate: nothing on the file waits for it. One click
+// confirms; editing the name clears it too, because typing the parts IS the answer.
+const NAME_SPLIT_HELP = {
+  only_one_word: 'Only one word was given, so we could not tell the first name from the last name.',
+  three_words: 'Three words — we made the middle word the middle name. Please check that is right.',
+  four_or_more_words: 'More than three words — please check we picked the right first, middle and last name.',
+  surname_particle: 'The last name looks like it has a small word in it (like "van" or "de la"). Please check.',
+  comma_form: 'The name was written last-name-first, so please check we read it the right way round.',
+  surname_only: 'This looks like a last name with no first name. Please check.',
+};
+export function NameSplitPrompt({ b, onChanged }) {
+  const [busy, setBusy] = useState(false);
+  const [gone, setGone] = useState(false);
+  if (!b || !b.name_review_needed || gone) return null;
+  const why = NAME_SPLIT_HELP[b.name_review_reason] || 'Please check this name is split correctly.';
+  const confirm = async () => {
+    setBusy(true);
+    try { await api.staffUpdateBorrower(b.id, { confirmNameSplit: true }); setGone(true); onChanged(); }
+    catch (_) { setBusy(false); }
+  };
+  return (
+    <div className="notice" style={{ borderLeft: '4px solid #AE8746', background: '#FFFDF7', color: '#141B22' }}>
+      <b style={{ color: '#141B22' }}>Please check this name</b>
+      <div style={{ marginTop: 4, color: '#4B585C' }}>{why}</div>
+      <div style={{ marginTop: 8, color: '#141B22' }}>
+        First <b>{b.first_name || '—'}</b>
+        {'  ·  '}Middle <b>{b.middle_name || 'none'}</b>
+        {'  ·  '}Last <b>{b.last_name || '—'}</b>
+        {b.name_suffix ? <>{'  ·  '}Suffix <b>{b.name_suffix}</b></> : null}
+      </div>
+      <div style={{ marginTop: 10, display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+        <button className="btn primary small" onClick={confirm} disabled={busy}>
+          {busy ? 'Saving…' : 'Yes, that is right'}
+        </button>
+        <span className="small" style={{ color: '#4B585C', alignSelf: 'center' }}>
+          Not right? Use <b>Edit</b> below and fix the boxes — that clears this too.
+        </span>
+      </div>
+    </div>
+  );
+}
 
 /* ---------------------------------------------------------------- the form ---
    Every field on the person's record. Extracted verbatim from the profile
@@ -53,7 +100,9 @@ export function BorrowerProfileForm({ b, onSaved, onCancel }) {
   const [shareOffer, setShareOffer] = useState(false);
   useEffect(() => { api.staffTeam().then(setTeam).catch(() => {}); }, []);
   const [f, setF] = useState(() => ({
-    firstName: b.first_name || '', lastName: b.last_name || '',
+    fullName: fullNameOf(b),
+    firstName: b.first_name || '', middleName: b.middle_name || '', lastName: b.last_name || '',
+    nameSuffix: b.name_suffix || '',
     email: b.email || '', cellPhone: b.cell_phone || '', contactType: b.contact_type || '',
     maritalStatus: b.marital_status || '', citizenship: b.citizenship || '',
     dob: dayInputValue(b.date_of_birth) || '',
@@ -72,8 +121,10 @@ export function BorrowerProfileForm({ b, onSaved, onCancel }) {
         // Send the NAME only when it actually changed — a correction here is a
         // deliberate human decision, so it also goes out to every ClickUp card
         // (otherwise the next sync would read the old name straight back).
-        ...(f.firstName !== (b.first_name || '') ? { firstName: f.firstName } : {}),
-        ...(f.lastName !== (b.last_name || '') ? { lastName: f.lastName } : {}),
+        ...(nameChanged(f, b) ? {
+          firstName: f.firstName, middleName: f.middleName,
+          lastName: f.lastName, nameSuffix: f.nameSuffix,
+        } : {}),
         email: f.email, cellPhone: f.cellPhone, contactType: f.contactType,
         maritalStatus: f.maritalStatus, citizenship: f.citizenship,
         // Send the DOB only when it actually changed — setting it applies to
@@ -107,12 +158,28 @@ export function BorrowerProfileForm({ b, onSaved, onCancel }) {
       <div className="ts-inputs">
         {/* The legal name is correctable here (owner-directed 2026-07-26): a file
             opened under a nickname created the profile under that nickname, and
-            there was nowhere to fix it. Saving pushes it to ClickUp too. */}
+            there was nowhere to fix it. Saving pushes it to ClickUp too.
+
+            THE ONE BIG NAME FIELD stays (owner-directed 2026-07-27): typing the
+            whole name in the big box splits it into the parts below as you type,
+            and typing a part rebuilds the big box. Either way the same four
+            fields are saved, so nothing that reads a name changes. */}
+        <label style={{ gridColumn: '1 / -1' }}><span>Full name</span>
+          <input className="input" value={f.fullName}
+            onChange={e => setF({ ...f, fullName: e.target.value, ...splitName(e.target.value) })}
+            title="Their whole legal name. This is what every screen, email, term sheet and ClickUp card shows." /></label>
         <label><span>First name</span><input className="input" value={f.firstName}
-          onChange={e => setF({ ...f, firstName: e.target.value })}
+          onChange={e => setF(s => rejoin({ ...s, firstName: e.target.value }))}
           title="Their real legal first name. Saving updates the profile and every linked ClickUp card." /></label>
+        <label><span>Middle name <span style={{ color: '#4B585C', fontWeight: 400 }}>(optional)</span></span>
+          <input className="input" value={f.middleName}
+            onChange={e => setF(s => rejoin({ ...s, middleName: e.target.value }))}
+            title="Leave empty if they do not have one." /></label>
         <label><span>Last name</span><input className="input" value={f.lastName}
-          onChange={e => setF({ ...f, lastName: e.target.value })} /></label>
+          onChange={e => setF(s => rejoin({ ...s, lastName: e.target.value }))} /></label>
+        <label><span>Suffix <span style={{ color: '#4B585C', fontWeight: 400 }}>(optional)</span></span>
+          <input className="input" placeholder="Jr., III" value={f.nameSuffix}
+            onChange={e => setF(s => rejoin({ ...s, nameSuffix: e.target.value }))} /></label>
         <label><span>Email</span><EmailInput value={f.email} onChange={v => setF({ ...f, email: v })} /></label>
         <label><span>Cell phone</span><PhoneInput value={f.cellPhone} onChange={v => setF({ ...f, cellPhone: v })} /></label>
         <label><span>Contact type</span>
@@ -337,6 +404,9 @@ export default function BorrowerProfilePanel({ borrowerId, heading = 'Borrower p
       </div>
       {err && <div role="alert" className="notice err" style={{ marginTop: 8 }}>{err}</div>}
       {msg && <div className="notice ok" style={{ marginTop: 8 }}>{msg}</div>}
+      {/* PILOT had to judge where this person's name splits — ask right here, where
+          the record is edited, rather than only on the separate profile screen. */}
+      {b && <div style={{ marginTop: 8 }}><NameSplitPrompt b={b} onChanged={afterSave} /></div>}
       {!b && !err && <div className="muted small" style={{ marginTop: 8 }}>Loading…</div>}
       {b && (editing ? (
         <div style={{ marginTop: 10 }}><BorrowerProfileForm b={b} onSaved={afterSave} onCancel={() => setEditing(false)} /></div>

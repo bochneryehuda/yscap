@@ -6,7 +6,8 @@ import { fmtDay } from '../lib/dates.js';
 import LlcManager from '../components/LlcManager.jsx';
 import BorrowerViewButton from '../components/BorrowerViewButton.jsx';
 import { passwordProblem } from '../lib/password.js';
-import { BorrowerProfileForm, BorrowerSsnRow } from '../components/BorrowerProfilePanel.jsx';
+import { BorrowerProfileForm, BorrowerSsnRow, NameSplitPrompt } from '../components/BorrowerProfilePanel.jsx';
+import { fullNameOf } from '../lib/personName.js';
 
 // Borrower CRM hub — the single place staff see everything about a person:
 // personal info + editable CRM fields, their loan files ("mortgages with us"),
@@ -55,10 +56,13 @@ export default function StaffBorrowerDetail() {
   if (err) return <><div role="alert" className="notice err">{err}</div><p><Link to="/internal/borrowers">← Back to borrowers</Link></p></>;
   if (!b) return <p className="muted">Loading…</p>;
 
-  const name = `${b.first_name || ''} ${b.last_name || ''}`.trim() || '(no name)';
+  // THE ONE BIG NAME FIELD (db/346) — the whole name, middle name and suffix
+  // included. Falls back to the parts so nothing breaks on an older response.
+  const name = fullNameOf(b) || '(no name)';
   return (
     <>
       <p style={{ marginTop: 0 }}><Link to="/internal/borrowers" className="small">← Borrowers</Link></p>
+      <NameSplitPrompt b={b} onChanged={load} />
       <Header b={b} name={name} onChanged={load} />
       <div className="tabs" style={{ margin: '18px 0 14px' }}>
         {TABS.map(t => (

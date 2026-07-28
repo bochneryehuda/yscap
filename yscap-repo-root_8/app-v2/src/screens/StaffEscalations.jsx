@@ -2,6 +2,7 @@ import React, { useEffect, useRef, useState } from 'react';
 import { Link, useLocation } from 'react-router-dom';
 import { api } from '../lib/api.js';
 import { useAuth } from '../lib/auth.jsx';
+import { fullNameOf } from '../lib/personName.js';
 
 /* Manual Program admin + the super-admin ESCALATION box (owner-directed
  * 2026-07-20; page redesign 2026-07-26).
@@ -367,7 +368,7 @@ export default function StaffEscalations() {
                 <div className="esc-row-top">
                   <div className="esc-row-id">
                     <a href={`#/internal/app/${r.application_id}`}><strong>{r.ys_loan_number || 'File'}</strong></a>
-                    {' · '}<span className="esc-row-name">{[r.first_name, r.last_name].filter(Boolean).join(' ')}</span>
+                    {' · '}<span className="esc-row-name">{fullNameOf(r)}</span>
                     {r.property_address ? <><span style={{ color: 'var(--text-soft)' }}> · </span><span className="esc-row-addr">{fmtAddr(r.property_address)}</span></> : null}
                   </div>
                   <span className={`ts-badge ${badgeCls}`}>{r.status}</span>

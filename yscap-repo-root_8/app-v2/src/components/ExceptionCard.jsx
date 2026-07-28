@@ -3,6 +3,7 @@ import { Link } from 'react-router-dom';
 import ExceptionComments from './ExceptionComments.jsx';
 import ExceptionConditions from './ExceptionConditions.jsx';
 import EsignGatePanel from './EsignGatePanel.jsx';
+import { fullNameOf } from '../lib/personName.js';
 
 /* One exception row, shared by the super-admin Exceptions box (StaffExceptions),
    the loan-officer "My exceptions" queue (StaffMyExceptions), and the file's
@@ -81,7 +82,7 @@ export default function ExceptionCard({ r, reasonCodes = {}, compFactors = {}, h
   const type = r.type || r.exception_type || 'guaranty_waiver';
   const meta = TYPE_META[type] || TYPE_META.guaranty_waiver;
   const subject = [r.subject_first, r.subject_last].filter(Boolean).join(' ') || 'the co-borrower';
-  const borrower = [r.first_name, r.last_name].filter(Boolean).join(' ');
+  const borrower = fullNameOf(r);
   // Prefer the server-computed per-type reason label; fall back to the passed map.
   const reasonLabel = r.reason_label || reasonCodes[r.reason_code] || r.reason_code || '—';
   const appId = r.application_id;

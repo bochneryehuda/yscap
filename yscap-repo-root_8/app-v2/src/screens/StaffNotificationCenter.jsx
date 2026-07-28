@@ -1,6 +1,7 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { NavLink } from 'react-router-dom';
 import { api } from '../lib/api.js';
+import { fullNameOf } from '../lib/personName.js';
 
 /* ═══════════════════════════════════════════════════════════════════════════
    LOAN OFFICER — NOTIFICATION CENTER (major product)
@@ -410,7 +411,7 @@ function ComposeModal({ open, onClose, onSent }) {
     if (!appId) { setBorrower(null); setTeam({ loanOfficer: null, processor: null }); setRecipientId(''); return; }
     api.staffApplication(appId).then((detail) => {
       if (!detail) return;
-      const bName = [detail.first_name, detail.last_name].filter(Boolean).join(' ')
+      const bName = fullNameOf(detail)
         || detail.borrower_name || detail.email || 'borrower';
       if (detail.borrower_id) {
         setBorrower({ id: detail.borrower_id, name: bName });

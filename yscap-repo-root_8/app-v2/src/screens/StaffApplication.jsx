@@ -50,6 +50,7 @@ import FileContacts from '../components/FileContacts.jsx';
 import DocPreview from '../components/DocPreview.jsx';
 import ReminderModal from '../components/ReminderModal.jsx';
 import LlcManager, { US_STATES } from '../components/LlcManager.jsx';
+import { fullNameOf } from '../lib/personName.js';
 
 /* A closing-date <input type="date"> that DOESN'T fight the typist.
  * The old input saved on every onChange and reloaded the file — but a date
@@ -1181,7 +1182,7 @@ function LlcReview({ appId, app, onReviewDoc, onDownloadDoc, dlBusy, onChanged, 
                             {/* #102 — one click adds the file's co-borrower to the ownership
                                 structure with their details pre-filled; just enter their %. */}
                             {app.co_borrower_id && (() => {
-                              const coName = `${app.co_first_name || ''} ${app.co_last_name || ''}`.trim();
+                              const coName = fullNameOf(app, 'co_');
                               const already = coName && (em || []).some(m => (m.fullName || '').trim().toLowerCase() === coName.toLowerCase());
                               return coName && !already ? (
                                 <button className="btn ghost small"
@@ -1643,7 +1644,7 @@ function VestingLlcOwners({ appId, app }) {
           </p>
           {(data.owners || []).map(o => (
             <div className="row" key={o.borrower_id} style={{ gap: 8, alignItems: 'center', margin: '6px 0' }}>
-              <span style={{ minWidth: 200 }}>{`${o.first_name || ''} ${o.last_name || ''}`.trim() || '(borrower)'}
+              <span style={{ minWidth: 200 }}>{fullNameOf(o) || '(borrower)'}
                 {o.is_primary ? <span className="muted small"> · primary</span> : <span className="muted small"> · co-borrower</span>}</span>
               <input className="input" type="number" min="0" max="100" step="0.01" style={{ maxWidth: 110 }}
                 value={pcts[o.borrower_id] ?? ''} onChange={e => setPcts(p => ({ ...p, [o.borrower_id]: e.target.value }))} />
@@ -1734,7 +1735,7 @@ function TeamAssignees({ appId, officers, processors, onChanged }) {
 function CoBorrowerBlock({ appId, app, onChanged }) {
   const has = !!app.co_borrower_id;
   const [adding, setAdding] = useState(false);
-  const [f, setF] = useState({ firstName: '', lastName: '', email: '', phone: '', dob: '', ssn: '' });
+  const [f, setF] = useState({ firstName: '', middleName: '', lastName: '', email: '', phone: '', dob: '', ssn: '' });
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState('');
   const [coSsn, setCoSsn] = useState('');
@@ -1766,8 +1767,8 @@ function CoBorrowerBlock({ appId, app, onChanged }) {
   async function save() {
     setBusy(true); setErr('');
     try {
-      await api.staffSetCoBorrower(appId, { firstName: f.firstName, lastName: f.lastName, email: f.email, phone: f.phone || undefined, dob: f.dob || undefined, ssn: f.ssn || undefined });
-      setAdding(false); setF({ firstName: '', lastName: '', email: '', phone: '', dob: '', ssn: '' }); setQ(''); setMatches(null); await onChanged();
+      await api.staffSetCoBorrower(appId, { firstName: f.firstName, middleName: f.middleName || undefined, lastName: f.lastName, email: f.email, phone: f.phone || undefined, dob: f.dob || undefined, ssn: f.ssn || undefined });
+      setAdding(false); setF({ firstName: '', middleName: '', lastName: '', email: '', phone: '', dob: '', ssn: '' }); setQ(''); setMatches(null); await onChanged();
     } catch (e) { setErr(e.message || 'Could not save the co-borrower'); } finally { setBusy(false); }
   }
   async function remove() {
@@ -1853,6 +1854,8 @@ function CoBorrowerBlock({ appId, app, onChanged }) {
         </div>
         <div className="ts-inputs" style={{ marginTop: 6 }}>
           <label><span>First name</span><input className="input" value={f.firstName} onChange={e => setF({ ...f, firstName: e.target.value })} /></label>
+          <label><span>Middle name <span style={{ color: '#4B585C', fontWeight: 400 }}>(optional)</span></span>
+            <input className="input" value={f.middleName} onChange={e => setF({ ...f, middleName: e.target.value })} /></label>
           <label><span>Last name</span><input className="input" value={f.lastName} onChange={e => setF({ ...f, lastName: e.target.value })} /></label>
           <label style={{ gridColumn: '1 / -1' }}><span>Email</span><EmailInput value={f.email} onChange={v => setF({ ...f, email: v })} /></label>
           <label><span>Phone</span><PhoneInput value={f.phone} onChange={v => setF({ ...f, phone: v })} /></label>
@@ -2132,7 +2135,7 @@ function BorrowerConditions({ appId, app, items, docs, onPatch, onReviewDoc, onD
               {app.llc_id
                 ? <LlcManager llcId={app.llc_id} staff compactHeader
                     coBorrower={app.co_borrower_id
-                      ? { fullName: `${app.co_first_name || ''} ${app.co_last_name || ''}`.trim(), email: app.co_email || '' }
+                      ? { fullName: fullNameOf(app, 'co_'), email: app.co_email || '' }
                       : null} />
                 : <p className="muted small" style={{ margin: 0 }}>No vesting entity linked yet — link or create one in the “Vesting entity (LLC)” section above.</p>}
             </div>
@@ -3307,7 +3310,7 @@ export default function StaffApplication() {
             borrower's portal straight from their file, landing on THIS loan, so
             you can walk them through a condition while looking at their screen. */}
         <BorrowerViewButton applicationId={id} borrowerId={app.borrower_id}
-          borrowerName={`${app.first_name || ''} ${app.last_name || ''}`.trim()} />
+          borrowerName={fullNameOf(app)} />
         {canDelete && (app.deleted_at
           ? <span className="row" style={{ gap: 8, flex: 'none' }}>
               <span className="pill" style={{ borderColor: 'var(--gold)', color: 'var(--gold)' }} title="This file is archived">Archived</span>
@@ -3566,7 +3569,7 @@ export default function StaffApplication() {
       {app.borrower_id && (
         <PrimaryAddressPanel borrowerId={app.borrower_id}
           address={borrower && borrower.current_address}
-          name={`${app.first_name || ''} ${app.last_name || ''}`.trim() || 'Borrower'} onSaved={load} />
+          name={fullNameOf(app) || 'Borrower'} onSaved={load} />
       )}
       <CoBorrowerCompleteness app={app} appId={app.id} onSaved={load} />
       {app.co_borrower_id && (
@@ -3575,7 +3578,7 @@ export default function StaffApplication() {
       {app.co_borrower_id && (
         <PrimaryAddressPanel borrowerId={app.co_borrower_id}
           address={app.co_current_address}
-          name={`${app.co_first_name || ''} ${app.co_last_name || ''}`.trim() || 'Co-borrower'} onSaved={load} />
+          name={fullNameOf(app, 'co_') || 'Co-borrower'} onSaved={load} />
       )}
       {/* The structural lock/unlock banner used to render here; it now sits at
           the top of the file (above the collapsible sections) so it is visible

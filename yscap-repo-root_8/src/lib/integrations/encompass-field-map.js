@@ -188,7 +188,21 @@ const KNOWN_FIELD_IDS = (() => {
 const IDENTITY_MAP = Object.freeze([
   Object.freeze({ key: 'first_name', our: 'borrowers.first_name', enc: 'applications[].{party}.firstName', stdFieldId: { borrower: '4000', coBorrower: '4004' }, match: 'nameEquals' }),
   Object.freeze({ key: 'last_name', our: 'borrowers.last_name', enc: 'applications[].{party}.lastName', stdFieldId: { borrower: '4002', coBorrower: '4006' }, match: 'nameEquals' }),
-  Object.freeze({ key: 'middle_suffix', our: '(no column)', enc: 'applications[].{party}.middleName / .suffixToName', match: 'findingOnly', note: 'No home in our schema — finding only (drop/append), never a block' }),
+  // MIDDLE NAME + SUFFIX now have a real home (db/345, owner-directed 2026-07-27).
+  // They used to be "finding only" because PILOT stored a person as first + last
+  // and a one-line ClickUp name was cut with lastIndexOf(' ') — so Encompass's
+  // correctly-split middleName had nowhere to land, and the borrower-name compare
+  // (which joined first+last on both sides) read our merged "Issac Michael" +
+  // "Grunzweig" as a MISMATCH against their "Issac" + "Grunzweig". That mismatch
+  // is BLOCK-gated, so it held term sheets on files where nothing was wrong.
+  //
+  // `nameEqualsLoose`: the name comparison is middle-name TOLERANT — a side that
+  // simply omits the middle name, or carries an initial where the other has the
+  // full word, is the SAME person (see lib/person-name.compareNames). A genuinely
+  // different middle name is still a mismatch. Compared, never written back:
+  // Encompass stays read-only forever.
+  Object.freeze({ key: 'middle_name', our: 'borrowers.middle_name', enc: 'applications[].{party}.middleName', stdFieldId: { borrower: '4001', coBorrower: '4005' }, match: 'nameEqualsLoose', note: 'Middle name — optional on our side; a blank on either side is not a disagreement' }),
+  Object.freeze({ key: 'name_suffix', our: 'borrowers.name_suffix', enc: 'applications[].{party}.suffixToName', match: 'nameEqualsLoose', note: 'Generational/professional suffix (Jr., III). Kept OUT of last_name so the surname compares cleanly' }),
   Object.freeze({ key: 'date_of_birth', our: 'borrowers.date_of_birth', enc: 'applications[].{party}.birthDate', stdFieldId: { borrower: '1402', coBorrower: '1403' }, match: 'dateEquals', sensitive: true, note: 'Respect sanitizeDob + DOB-review rules' }),
   Object.freeze({ key: 'ssn', our: 'borrowers.ssn_hash / ssn_last4', enc: 'applications[].{party}.taxIdentificationIdentifier', stdFieldId: { borrower: '65', coBorrower: '97' }, match: 'ssnHash', sensitive: true, note: 'Compare by HMAC hash / last-4 ONLY; reveal stays behind the audited view_ssn gate; never fetch-print-store plaintext' }),
   Object.freeze({ key: 'current_address', our: 'borrowers.current_address (jsonb)', enc: 'applications[].{party}.residences[] (current) / mailing', match: 'addressCanon', note: 'Canonicalize with address-canon.samePlace' }),

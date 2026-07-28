@@ -2330,7 +2330,7 @@ router.post('/:appId/findings/:fid/committee-review', requirePermission('sign_of
       [req.params.fid, app.id])).rows[0];
     if (!fnd) return res.status(404).json({ error: 'finding not found or already resolved' });
     const context = {
-      borrowerName: [fnd.first_name, fnd.last_name].filter(Boolean).join(' ') || null,
+      borrowerName: require('../lib/person-name').displayName(fnd) || null,
       entityName:   fnd.entity_name || null,
       propertyAddress: fnd.property_address && (fnd.property_address.line1 || fnd.property_address.address) || null,
       program:      fnd.program || null,

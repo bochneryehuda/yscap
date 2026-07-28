@@ -33,7 +33,10 @@ ok(/export function BorrowerProfileForm\(/.test(panel), 'the shared edit form is
 ok(/export function BorrowerSsnRow\(/.test(panel), 'the shared SSN row is exported');
 ok(/export default function BorrowerProfilePanel\(/.test(panel), 'the loan-file panel is the default export');
 
-ok(/import \{ BorrowerProfileForm, BorrowerSsnRow \} from '\.\.\/components\/BorrowerProfilePanel\.js/.test(screen),
+// Both must come FROM the shared component — the point of the guard. The name
+// list is matched loosely so importing a third shared piece alongside them (the
+// name-split prompt, for one) does not read as a regression.
+ok(/import \{[^}]*\bBorrowerProfileForm\b[^}]*\bBorrowerSsnRow\b[^}]*\} from '\.\.\/components\/BorrowerProfilePanel\.js/.test(screen),
   'the profile screen imports the shared form + SSN row');
 ok(!/^function SsnRow\(/m.test(screen), 'the profile screen no longer keeps its own copy of the SSN row');
 ok(!/staffUpdateBorrower/.test(screen), 'the profile screen no longer saves the profile itself — the shared form does');

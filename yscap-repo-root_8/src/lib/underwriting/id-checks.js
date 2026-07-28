@@ -21,9 +21,14 @@ const { norm, addrMatches, addrLine, daysBetween, namesMatchLoose, toISODate } =
 
 // Raw-ish name strings (NOT normalized here — namesMatchLoose needs the comma/order to
 // detect "LAST, FIRST"). Prefer first+last; fall back to fullName.
+// THE WHOLE name on file, middle name and suffix included (db/345 + db/346) — the
+// same value the display line below shows, so the comparison and what a reviewer
+// reads can never disagree. `namesMatchLoose` is already middle-name and
+// suffix-tolerant, so carrying the middle name here cannot manufacture a
+// mismatch against an ID that only prints first + last.
 function fileName(b) {
-  const fn = (b && b.first_name) || '', ln = (b && b.last_name) || '';
-  return (norm(fn) || norm(ln)) ? `${fn} ${ln}`.trim() : null;
+  const full = require('../person-name').displayName(b);
+  return full || null;
 }
 function idName(id) {
   const fn = (id && id.firstName) || '', ln = (id && id.lastName) || '';
@@ -72,7 +77,10 @@ function toPeopleSet(subject) {
 // The name we'd show as "the file" when an ID matches nobody. For ONE person this is byte-identical
 // to the old `${first} ${last}`; for several it lists them so the reviewer sees who we expected.
 function peopleLabel(people) {
-  return (people || []).map((p) => `${(p && p.first_name) || ''} ${(p && p.last_name) || ''}`.trim())
+  // The WHOLE name of each person on the file (db/345 + db/346) — the same string
+  // `fileName` compares the ID against, so what a reviewer reads and what the check
+  // decided can never disagree.
+  return (people || []).map((p) => require('../person-name').displayName(p))
     .filter(Boolean).join(' / ');
 }
 

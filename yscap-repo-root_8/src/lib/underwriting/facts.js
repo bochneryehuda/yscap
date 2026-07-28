@@ -58,7 +58,7 @@ function canonOccupancy(v) {
 
 function borrowerName(b) {
   if (!b) return null;
-  const n = `${b.first_name || ''} ${b.last_name || ''}`.trim();
+  const n = require('../person-name').displayName(b);
   return n || null;
 }
 const dateStr = (v) => (v == null ? null : String(v).slice(0, 10));

@@ -142,7 +142,7 @@ async function storeToolAttachments({ req, appId, borrowerId, itemId, toolKey, a
 // ---------------- PROFILE (canonical PII, shared across applications) ----------------
 router.get('/profile', async (req, res) => {
   const r = await db.query(
-    `SELECT b.id,b.first_name,b.last_name,b.email,b.cell_phone,b.date_of_birth,b.ssn_last4,b.fico,
+    `SELECT b.id,b.first_name,b.last_name,b.middle_name,b.name_suffix,b.full_name,b.email,b.cell_phone,b.date_of_birth,b.ssn_last4,b.fico,
             b.current_address,b.mailing_address,b.years_at_residence,b.months_at_residence,b.residence_since,
             b.housing_status,b.housing_payment,b.citizenship,b.marital_status,
             b.photo_id_document_id,b.contact_type,b.tier,
@@ -175,11 +175,32 @@ router.get('/profile', async (req, res) => {
 // only stored when it differs (mailingDifferent:false clears it). Employment is
 // intentionally NOT collected — this is a no-doc / no-income lender.
 router.put('/profile', async (req, res) => {
-  const b = req.body || {};
+  let b = req.body || {};
   const clean = (v) => (v === '' ? null : v);
   const fields = {};
+  // THE ONE BIG NAME FIELD (owner-directed 2026-07-27): the borrower may type
+  // their whole name into one box. It is SPLIT into the parts here, because the
+  // parts are what get stored — `borrowers.full_name` (db/346) is generated from
+  // them, so the big field always shows exactly what the pieces say.
+  if (b.fullName !== undefined && b.firstName === undefined && b.lastName === undefined
+      && b.middleName === undefined && b.nameSuffix === undefined) {
+    const PN = require('../lib/person-name');
+    const sp = PN.splitFullName(b.fullName);
+    if (sp.first) {
+      b = Object.assign({}, b, {
+        firstName: sp.first,
+        ...(sp.last ? { lastName: sp.last } : {}),
+        middleName: sp.middle,
+        nameSuffix: sp.suffix,
+      });
+    }
+  }
   if (b.firstName !== undefined && String(b.firstName).trim()) fields.first_name = String(b.firstName).trim();
   if (b.lastName !== undefined && String(b.lastName).trim()) fields.last_name = String(b.lastName).trim();
+  // MIDDLE NAME + SUFFIX (db/345) — optional, so unlike the first/last name an
+  // EMPTY value is a real answer ("I have none") and clears the column.
+  if (b.middleName !== undefined) fields.middle_name = clean(String(b.middleName).trim());
+  if (b.nameSuffix !== undefined) fields.name_suffix = clean(String(b.nameSuffix).trim());
   if (b.cellPhone !== undefined) fields.cell_phone = clean(b.cellPhone);
   if (b.dateOfBirth !== undefined) fields.date_of_birth = clean(b.dateOfBirth);
   if (b.fico !== undefined) fields.fico = require('../lib/fields').sanitizeFico(b.fico);  // #90: 3-digit, 300–850
@@ -498,7 +519,7 @@ router.post('/applications/:id/request-draw', async (req, res) => {
   // Self-gated (no-op unless SITEWIRE_ENABLED) so it's inert until turned on.
   enqueueSitewirePush(a.id, 'push_file').catch(() => {});
   const addr = (a.property_address && (a.property_address.oneLine || a.property_address.line1 || a.property_address.street)) || 'your property';
-  const borrowerName = `${a.first_name || ''} ${a.last_name || ''}`.trim();
+  const borrowerName = require('../lib/person-name').displayName(a);
   try {
     await notify.notifyAppStaff(a.id, {   // #113: whole team (primary + assistants)
         type: 'draw_request', title: 'Draw setup requested',
@@ -1410,7 +1431,7 @@ router.post('/applications/:id/checklist/:itemId/info', async (req, res) => {
          FROM applications a JOIN borrowers b ON b.id=a.borrower_id WHERE a.id=$1`, [req.params.id]);
     const row = a.rows[0];
     if (row) {
-      const who = [row.first_name, row.last_name].filter(Boolean).join(' ') || 'The borrower';
+      const who = require('../lib/person-name').displayName(row) || 'The borrower';
       const ctx = await notify.fileContext(req.params.id);
       await notify.notifyAppStaff(req.params.id, {   // #113: whole team (primary + assistants)
           type: 'tool_submitted', title: `${who} answered "${item.borrower_label || item.label}"`,
@@ -1517,7 +1538,7 @@ router.post('/applications/:id/checklist/:itemId/tool', async (req, res) => {
          FROM applications a JOIN borrowers b ON b.id=a.borrower_id WHERE a.id=$1`, [req.params.id]);
     const row = a.rows[0];
     if (row) {
-      const who = [row.first_name, row.last_name].filter(Boolean).join(' ') || 'The borrower';
+      const who = require('../lib/person-name').displayName(row) || 'The borrower';
       const label = it.rows[0].tool_key === 'rehab_budget' ? 'rehab budget / scope of work' : 'task';
       const extra = it.rows[0].tool_key === 'rehab_budget' && isFinite(Number(payload.total))
         ? ` — total $${Math.round(Number(payload.total)).toLocaleString('en-US')}` : '';
@@ -1778,7 +1799,7 @@ async function notifyAppraisalCardAdded(appId, brand, last4) {
          FROM applications a JOIN borrowers b ON b.id=a.borrower_id WHERE a.id=$1`, [appId]);
     const row = a.rows[0];
     if (!row) return;
-    const who = [row.first_name, row.last_name].filter(Boolean).join(' ') || 'The borrower';
+    const who = require('../lib/person-name').displayName(row) || 'The borrower';
     const ctxCard = await notify.fileContext(appId);
     await notify.notifyAppStaff(appId, {   // #113: whole team (primary + assistants)
         type: 'condition_added', title: `${who} added the appraisal card`,
@@ -1993,7 +2014,7 @@ async function notifyTeamOfChangeRequests(appId, requested) {
       `SELECT a.loan_officer_id, a.processor_id, b.first_name, b.last_name
          FROM applications a JOIN borrowers b ON b.id=a.borrower_id WHERE a.id=$1`, [appId]);
     const row = a.rows[0]; if (!row) return;
-    const who = [row.first_name, row.last_name].filter(Boolean).join(' ') || 'The borrower';
+    const who = require('../lib/person-name').displayName(row) || 'The borrower';
     const fields = requested.map((r) => r.field_label).join(', ');
     // Before → after for each requested field, so the team sees exactly what is
     // being asked without opening the file.
@@ -2650,7 +2671,7 @@ router.post('/documents', async (req, res) => {
            FROM llcs l JOIN borrowers b ON b.id=l.borrower_id WHERE l.id=$1`, [b.llcId]);
       const row = info.rows[0];
       if (row) {
-        const who = `${row.first_name || ''} ${row.last_name || ''}`.trim() || 'A borrower';
+        const who = require('../lib/person-name').displayName(row) || 'A borrower';
         const apps = await db.query(
           `SELECT id FROM applications
             WHERE llc_id=$1 AND deleted_at IS NULL
@@ -2692,7 +2713,7 @@ router.post('/documents', async (req, res) => {
            FROM applications a JOIN borrowers b ON b.id=a.borrower_id WHERE a.id=$1`, [b.applicationId]);
       const row = a.rows[0];
       if (row) {
-        const who = `${row.first_name || ''} ${row.last_name || ''}`.trim() || 'A borrower';
+        const who = require('../lib/person-name').displayName(row) || 'A borrower';
         // Say WHERE the document landed, not just its filename: the condition
         // it was uploaded to and, when the condition has several slots, which.
         let where = '', condLabel = '';
@@ -3228,7 +3249,7 @@ async function inviteCoBorrower(appId, primaryName, co) {
         `INSERT INTO audit_log (actor_kind, action, entity_type, entity_id, detail)
          VALUES ('system', 'coborrower_email_conflict_blocked', 'application', $1, $2)`,
         [appId, JSON.stringify({ email: em, typed: `${co.firstName || ''} ${co.lastName || ''}`.trim(),
-          onFile: `${ex.first_name || ''} ${ex.last_name || ''}`.trim() })]).catch(() => {});
+          onFile: require('../lib/person-name').displayName(ex) })]).catch(() => {});
       return null;
     }
   }
@@ -3238,11 +3259,14 @@ async function inviteCoBorrower(appId, primaryName, co) {
   // borrower shared by email), so a primary borrower's guess never overwrites a
   // co-borrower's real score, and a blank never wipes one either.
   const cb = await db.query(
-    `INSERT INTO borrowers (first_name,last_name,email,cell_phone,fico)
-     VALUES ($1,$2,$3,$4,$5)
-     ON CONFLICT (email) WHERE shares_email = false DO UPDATE SET updated_at=now(), fico=COALESCE(borrowers.fico, EXCLUDED.fico) RETURNING id`,
+    `INSERT INTO borrowers (first_name,last_name,email,cell_phone,fico,middle_name)
+     VALUES ($1,$2,$3,$4,$5,NULLIF($6,''))
+     ON CONFLICT (email) WHERE shares_email = false DO UPDATE SET updated_at=now(),
+       fico=COALESCE(borrowers.fico, EXCLUDED.fico),
+       -- Optional middle name (db/345) — fill-only, never over a stored one.
+       middle_name=COALESCE(borrowers.middle_name, EXCLUDED.middle_name) RETURNING id`,
     [co.firstName || 'Co-Borrower', co.lastName || '', co.email, co.phone || null,
-     require('../lib/fields').sanitizeFico(co.fico)]);
+     require('../lib/fields').sanitizeFico(co.fico), String(co.middleName || '').trim()]);
   const coId = cb.rows[0].id;
   // Claim the co-borrower slot ATOMICALLY (audit F-LOW-1): the caller's 409 guard
   // reads co_borrower_id in a separate statement, so two concurrent invites from
@@ -3589,7 +3613,7 @@ router.get('/pricing/prefill', async (req, res) => {
     res.json({
       exp,
       fico: row.fico || null,
-      borrowerName: [row.first_name, row.last_name].filter(Boolean).join(' ') || null,
+      borrowerName: require('../lib/person-name').displayName(row) || null,
     });
   } catch (e) { res.status(500).json({ error: 'server error' }); }
 });

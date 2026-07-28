@@ -25,7 +25,7 @@ const db = require('../../db');
 // sign-off gate (which requires the co-borrower's report on it).
 const CO_CREDIT_MARKER = 'cob_credit';
 
-function nameOf(row) { return row ? `${row.first_name || ''} ${row.last_name || ''}`.trim() : ''; }
+function nameOf(row) { return row ? require('../person-name').displayName(row) : ''; }
 
 /**
  * Ensure the co-borrower's own Credit report condition exists on the file

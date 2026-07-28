@@ -572,7 +572,7 @@ async function notifyBorrower(borrowerId, opts) {
         try {
           const r = await db.query(`SELECT first_name, last_name, email FROM borrowers WHERE id=$1`, [borrowerId]);
           const b = r.rows[0];
-          if (b) label = [b.first_name, b.last_name].filter(Boolean).join(' ') || b.email || null;
+          if (b) label = require('./person-name').displayName(b) || b.email || null;
         } catch (_) { /* label is optional */ }
         await loGate.recordDraft({ officerId: decision.officerId, key: decision.key, audience: 'borrower',
           recipientKind: 'borrower', recipientId: borrowerId, applicationId: opts.applicationId,
@@ -769,7 +769,7 @@ async function fileContext(appId, extraMeta = []) {
     const pa = a.property_address || {};
     const street = pa.street || pa.line1 || (typeof pa.oneLine === 'string' ? pa.oneLine.split(',')[0] : '') || '';
     const addr = pa.oneLine || [pa.street || pa.line1, pa.city, pa.state].filter(Boolean).join(', ') || '(no address yet)';
-    const borrowerName = [a.first_name, a.last_name].filter(Boolean).join(' ') || a.email || 'Borrower';
+    const borrowerName = require('./person-name').displayName(a) || a.email || 'Borrower';
     // Always show the loan number capitalized ("YSCAP…") on every email/subject
     // tag, even for a legacy row not yet normalized in storage (belt-and-suspenders
     // on top of the write-path + backfill normalization).

@@ -673,7 +673,7 @@ async function weeklyLoAiDigestOnce() {
     const lines = files.rows.map((r) => {
       const addr = (r.property_address && (r.property_address.line1 || r.property_address.address || r.property_address.oneLine)) || String(r.id).slice(0, 8);
       const bucket = r.score >= 80 ? 'CRITICAL' : r.score >= 50 ? 'ELEVATED' : 'moderate';
-      const who = `${r.first_name || ''} ${r.last_name || ''}`.trim();
+      const who = require('./person-name').displayName(r);
       return `• ${addr}${who ? ` — ${who}` : ''} · score ${r.score} (${bucket}) · ${r.open_findings} open${r.fatals ? ` · ${r.fatals} fatal` : ''}`;
     });
     try {
@@ -1204,7 +1204,7 @@ async function autoCommitteeReviewOnce() {
     for (const f of q.rows) {
       try {
         const context = {
-          borrowerName: [f.first_name, f.last_name].filter(Boolean).join(' ') || null,
+          borrowerName: require('./person-name').displayName(f) || null,
           entityName:   f.entity_name || null,
           propertyAddress: f.property_address && (f.property_address.line1 || f.property_address.address) || null,
           program:      f.program || null,

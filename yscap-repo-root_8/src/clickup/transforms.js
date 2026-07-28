@@ -9,6 +9,19 @@
  */
 
 // ---- names ----------------------------------------------------------------
+// ClickUp holds a person's whole name in ONE text field; PILOT (like Encompass,
+// MISMO and every closing document) holds first / middle / last / suffix. The
+// splitter that understands that — suffixes, courtesy titles, surname particles,
+// middle initials, and the owner's "two words split in half" rule — lives in the
+// shared `lib/person-name`. Use `splitPersonName` on every path that stores a
+// name; `splitName` below is the LEGACY two-part cut, kept only for callers that
+// genuinely want first+last and nothing else.
+const personName = require('../lib/person-name');
+const splitPersonName = personName.splitFullName;
+
+// LEGACY: everything before the last space is the "first" name, so a middle name
+// ends up inside it ("Issac Michael" / "Grunzweig"). Do NOT use this on a new
+// storage path — that merge is exactly what db/345 + lib/name-heal had to undo.
 function splitName(full) {
   const s = String(full || '').trim().replace(/\s+/g, ' ');
   if (!s) return { first: '', last: '' };
@@ -16,16 +29,19 @@ function splitName(full) {
   if (i < 0) return { first: s, last: '' };
   return { first: s.slice(0, i), last: s.slice(i + 1) };
 }
-const joinName = (first, last) => [first, last].map((x) => String(x || '').trim()).filter(Boolean).join(' ');
+// joinName(first, last) — kept for the many callers that only hold two parts.
+// A THIRD argument is the middle name and a FOURTH the suffix, so the same
+// helper writes the full line ClickUp's single field expects.
+const joinName = (first, last, middle, suffix) => personName.joinFullName({ first, middle, last, suffix });
 
 // 'Unknown' / 'Co-Borrower' are OUR OWN placeholders (the NOT NULL name columns
 // need something at insert time) — they are never real data. Every store/heal
 // path must treat them as ABSENT, exactly like the push side already blanks
 // 'Unknown' before writing ClickUp. Root fix 2026-07-14: the pull/store side
 // treating placeholders as data is what froze co-borrowers as
-// "Unknown Unknown" forever.
-const PLACEHOLDER_NAMES = new Set(['', 'unknown', 'co-borrower', 'n/a', 'na', 'tbd', '-', '--']);
-const isPlaceholderName = (v) => v == null || PLACEHOLDER_NAMES.has(String(v).trim().toLowerCase());
+// "Unknown Unknown" forever. ONE definition, in lib/person-name.
+const PLACEHOLDER_NAMES = personName.PLACEHOLDER_NAMES;
+const isPlaceholderName = personName.isPlaceholderName;
 // Synthetic no-email shadow addresses minted by the sync (never user data).
 const isShadowEmail = (v) => /@clickup\.local$/i.test(String(v || '').trim());
 
@@ -309,7 +325,7 @@ function maskCard(number) {
 }
 
 module.exports = {
-  splitName, joinName, isPlaceholderName, isShadowEmail,
+  splitName, splitPersonName, joinName, isPlaceholderName, isShadowEmail,
   toEpochMs, fromEpochMs, epochToDayLoose, dateOnlyToClickUpEpoch, epochAtZonedTime, zonedYmd, pivotSuspectYear,
   parseMoney, numToString,
   normalizePhone, phoneDigits,

@@ -133,7 +133,7 @@ async function loadContext(client, appId) {
 
 function borrowerName(b) {
   if (!b) return null;
-  const n = `${b.first_name || ''} ${b.last_name || ''}`.trim();
+  const n = require('../person-name').displayName(b);
   return n || null;
 }
 

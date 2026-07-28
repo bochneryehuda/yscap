@@ -1,6 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import { api } from '../lib/api.js';
 import { useAuth } from '../lib/auth.jsx';
+import { fullNameOf } from '../lib/personName.js';
 
 /* ClickUp Control Center (admin / platform_setup).
    Lets an admin validate and drive the ClickUp ⇄ portal sync without a
@@ -161,7 +162,7 @@ export default function StaffClickup() {
                       : '—';
                     return (
                       <tr key={r.id}>
-                        <td>{[r.first_name, r.last_name].filter(Boolean).join(' ') || '—'}</td>
+                        <td>{fullNameOf(r) || '—'}</td>
                         <td>{addrLine(r.property_address)}</td>
                         <td>{r.ys_loan_number || '—'}</td>
                         <td className="muted small">{r.clickup_pipeline_task_id || '—'}</td>

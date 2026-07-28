@@ -154,7 +154,7 @@ router.get('/export.xlsx', requirePermission('manage_pricing'), async (req, res)
       labels[r.exception_type] || r.exception_type,
       r.status,
       r.severity || 'standard',
-      [r.first_name, r.last_name].filter(Boolean).join(' '),
+      require('../lib/person-name').displayName(r),
       r.ys_loan_number || '',
       addr(r.property_address),
       r.loan_amount != null ? Number(r.loan_amount) : '',

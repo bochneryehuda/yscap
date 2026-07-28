@@ -77,7 +77,7 @@ async function resolveRecipients(app, actorId, tokens, client = db) {
       const isCo = app.co_borrower_id && b.id === app.co_borrower_id;
       out.push({
         kind: 'borrower', id: b.id,
-        name: [b.first_name, b.last_name].filter(Boolean).join(' ') || b.email || 'Borrower',
+        name: require('./person-name').displayName(b) || b.email || 'Borrower',
         email: b.email || null, role: isCo ? 'co_borrower' : 'borrower',
       });
     }

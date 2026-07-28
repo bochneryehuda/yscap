@@ -6,6 +6,7 @@ import DocPreview from '../components/DocPreview.jsx';
 // and had already drifted — this one said "Dealbreaker" for the same finding the
 // escalations screen called something else. See lib/findings-vocab.js.
 import { FINDING_SEVERITY as SEV } from '../lib/findings-vocab.js';
+import { fullNameOf } from '../lib/personName.js';
 
 /* The finding-escalation WORKLOAD (owner-directed 2026-07-21, Items 7 + 12;
  * reworked into a full action desk 2026-07-26).
@@ -209,7 +210,7 @@ export default function StaffFindingEscalations() {
                 <div style={{ minWidth: 0 }}>
                   <div>
                     <a href={fileDeepLink}><strong>{r.ys_loan_number || 'File'}</strong></a>
-                    {' · '}{[r.first_name, r.last_name].filter(Boolean).join(' ')}
+                    {' · '}{fullNameOf(r)}
                     {r.property_address ? ` · ${fmtAddr(r.property_address)}` : ''}
                   </div>
                   <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 6, flexWrap: 'wrap' }}>

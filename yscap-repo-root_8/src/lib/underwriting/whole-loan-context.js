@@ -290,7 +290,7 @@ async function buildWholeLoanContext(applicationId, db, opts) {
             -- staff_users). The old b.full_name threw "column does not exist" on EVERY
             -- buildWholeLoanContext call — silently caught upstream, so the whole-loan
             -- run returned null every time. Compose the name the way the rest of the repo does.
-            NULLIF(TRIM(COALESCE(b.first_name,'') || ' ' || COALESCE(b.last_name,'')), '') AS borrower_name,
+            NULLIF(b.full_name,'') AS borrower_name,
             -- Fix 2026-07-23 (#209): registered_program is a JOIN alias everywhere
             -- in this codebase, never an applications column. Without it the
             -- assembler fell back to a.program (STRATEGY text like "Fix & Flip

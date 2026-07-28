@@ -332,7 +332,7 @@ async function loadReportMeta(appId, { sitewireDrawId = null, mode = 'staff' } =
     loanNo: a.ys_loan_number || '',
     address: a.address_one || '',
     csz: csz.trim(),
-    borrowerName: [a.first_name, a.last_name].filter(Boolean).join(' '),
+    borrowerName: require('../lib/person-name').displayName(a),
     program: /gold/i.test(String(a.program || '')) ? 'Gold Standard program' : (a.program ? 'Standard Program' : ''),
   };
 

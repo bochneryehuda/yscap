@@ -284,7 +284,7 @@ async function checkDoublePledgeAndRecord(client, { applicationId, traceUrl } = 
       LIMIT 200`, [applicationId, zip5, city]);
   const others = cand.rows.map((r) => ({
     appId: r.id, status: r.status, address: r.property_address,
-    borrowerName: [r.first_name, r.last_name].filter(Boolean).join(' ').trim() || null,
+    borrowerName: require('../person-name').displayName(r).trim() || null,
     loanNumber: r.loan_number || null,
   }));
   const v = matchDoublePledge(subject, others);

@@ -56,7 +56,15 @@ function identityFrom(read) {
   const b = read.borrower || {}, a = read.app || {};
   const addr = a.property_address && (a.property_address.formatted_address || a.property_address.oneLine);
   return {
-    address: addr, loanNumber: a.ys_loan_number, borrowerName: [b.first_name, b.last_name].filter(Boolean).join(' '),
+    address: addr, loanNumber: a.ys_loan_number,
+    // DELIBERATELY first + last, NOT the full name. This is the task↔file
+    // identity graph: `identity.countMatches` compares this string EXACTLY
+    // against identities recorded on earlier syncs, which predate the middle-name
+    // column (db/345). Adding the middle name here would make every stored
+    // identity stop agreeing on `borrowerName` overnight — a silently weaker
+    // match on the very workflow (duplicate-a-task) the graph exists to protect.
+    // The middle name adds nothing to matching; it is stored on the profile.
+    borrowerName: require('../lib/person-name').displayName(b),
     dob: b.date_of_birth, email: b.email, ssn: b.ssn, phone: b.cell_phone, purchasePrice: a.purchase_price,
   };
 }
@@ -343,24 +351,33 @@ async function healBorrowerFields(borrowerId, b, taskId) {
   // Our own pushes can't trip this: we push the name we already store, so the
   // stored name equals the new one and nothing fires.
   try {
+    const PN = require('../lib/person-name');
     const first = name(b.first_name), last = name(b.last_name);
-    const newFull = [first, last].filter(Boolean).join(' ').trim();
+    // The whole name, MIDDLE NAME INCLUDED (db/345). Comparing first+last only
+    // would read a middle name arriving from ClickUp as a full rename and either
+    // adopt it as a "nickname correction" or queue a pointless review.
+    const newFull = PN.joinFullName({ first, middle: name(b.middle_name), last, suffix: name(b.name_suffix) });
     if (taskId && newFull && first) {
-      const cur = (await db.query(`SELECT first_name, last_name FROM borrowers WHERE id=$1`, [borrowerId])).rows[0] || {};
-      const curFull = [cur.first_name, cur.last_name].filter(Boolean).join(' ').trim();
+      const cur = (await db.query(`SELECT first_name, middle_name, last_name, name_suffix FROM borrowers WHERE id=$1`, [borrowerId])).rows[0] || {};
+      const curFull = PN.joinFullName(cur);
       const norm = (v) => String(v || '').trim().toLowerCase().replace(/\s+/g, ' ');
       const isPlaceholder = ['', 'unknown', 'co-borrower', 'unknown unknown'].includes(norm(curFull));
-      if (curFull && !isPlaceholder && norm(curFull) !== norm(newFull)) {
+      // Same person, only the level of name DETAIL differs (one side carries the
+      // middle name, or an initial vs the full word) — never a rename.
+      const sameHuman = !isPlaceholder && curFull && PN.sameName(curFull, newFull);
+      if (curFull && !isPlaceholder && !sameHuman && norm(curFull) !== norm(newFull)) {
         const prev = (await db.query(`SELECT snapshot FROM clickup_task_index WHERE task_id=$1`, [taskId])).rows[0];
         const sb = prev && prev.snapshot && prev.snapshot.borrower ? prev.snapshot.borrower : null;
-        const prevFull = sb ? [sb.first_name, sb.last_name].filter(Boolean).join(' ').trim() : null;
+        const prevFull = sb ? PN.joinFullName({ first: sb.first_name, middle: sb.middle_name, last: sb.last_name, suffix: sb.name_suffix }) : null;
         // A real rename AT THE SOURCE: the card said something else last time.
         if (prevFull && norm(prevFull) !== norm(newFull)) {
           const sameSurname = last && cur.last_name && norm(last) === norm(cur.last_name);
           if (sameSurname) {
             await db.query(
-              `UPDATE borrowers SET first_name=$2, last_name=$3, updated_at=now() WHERE id=$1`,
-              [borrowerId, first, last]);
+              `UPDATE borrowers SET first_name=$2, last_name=$3,
+                      middle_name=NULLIF($4,''), name_suffix=NULLIF($5,''), updated_at=now()
+                WHERE id=$1`,
+              [borrowerId, first, last, name(b.middle_name) || '', name(b.name_suffix) || '']);
             await db.query(
               `INSERT INTO audit_log (actor_kind, actor_id, action, entity_type, entity_id, detail)
                VALUES ('system',NULL,'clickup_name_edited_at_source','borrower',$1,$2)`,
@@ -383,11 +400,31 @@ async function healBorrowerFields(borrowerId, b, taskId) {
     }
   } catch (e) { console.warn('[ingest] name-change check skipped:', e.message); }
 
+  // THE NAME SPLIT (owner-directed 2026-07-27). ClickUp holds the whole name in
+  // one field; PILOT holds first / middle / last / suffix. The mapper split it
+  // and told us how sure it was — a judgement call is recorded so a human can
+  // confirm it (never a block). FILL-ONLY like every other field here: the flag
+  // is only raised on a profile that has no middle name yet AND has never been
+  // looked at, so re-syncing a card can't re-nag about a name staff already
+  // confirmed.
+  try {
+    const split = b._nameSplit;
+    if (split && split.needsReview && !transforms.isPlaceholderName(b.first_name)) {
+      await db.query(
+        `UPDATE borrowers
+            SET name_review_needed = true, name_review_reason = $2, updated_at = now()
+          WHERE id = $1 AND middle_name IS NULL AND name_split_checked_at IS NULL`,
+        [borrowerId, split.reason || null]);
+    }
+  } catch (e) { console.warn('[ingest] name-split review flag skipped:', e.message); }
+
   try {
     await db.query(
       `UPDATE borrowers SET
           first_name      = CASE WHEN $2::text IS NOT NULL AND lower(btrim(coalesce(first_name,''))) IN ('','unknown','co-borrower') THEN $2 ELSE first_name END,
           last_name       = CASE WHEN $3::text IS NOT NULL AND lower(btrim(coalesce(last_name ,''))) IN ('','unknown','co-borrower') THEN $3 ELSE last_name  END,
+          middle_name     = COALESCE(middle_name, $12),
+          name_suffix     = COALESCE(name_suffix, $13),
           cell_phone      = COALESCE(cell_phone, $4),
           date_of_birth   = COALESCE(date_of_birth, $5::date),
           citizenship     = COALESCE(citizenship, $6),
@@ -401,7 +438,8 @@ async function healBorrowerFields(borrowerId, b, taskId) {
       [borrowerId, name(b.first_name), name(b.last_name), nn(b.cell_phone), dobIn,
        nn(b.citizenship), require('../lib/fields').sanitizeFico(b.fico),   // #90: never persist an out-of-range FICO from ClickUp
        b.current_address ? JSON.stringify(b.current_address) : null,
-       nn(b.marital_status), nn(b.employment_type), nn(b.employer)]);
+       nn(b.marital_status), nn(b.employment_type), nn(b.employer),
+       name(b.middle_name), name(b.name_suffix)]);
   } catch (e) { console.warn('[ingest] borrower heal skipped:', e.message); }
 }
 
@@ -565,7 +603,7 @@ async function resolveBorrower(read, taskId) {
         suppressIfRejected: true,
         rawValue: JSON.stringify({ b1: borrowerId, b2: possibleDupOfId, sourceTask: taskId }).slice(0, 300),
         clickupValue: String(b.email || '').toLowerCase().trim().slice(0, 160),
-        portalValue: `${[first, last].filter(Boolean).join(' ')} AND ${[other.first_name, other.last_name].filter(Boolean).join(' ')}`.slice(0, 160) });
+        portalValue: `${[first, last].filter(Boolean).join(' ')} AND ${require('../lib/person-name').displayName(other)}`.slice(0, 160) });
     } catch (_) { /* the card is best-effort; the boot sweep re-produces it */ }
   }
   return { borrowerId, created: true };
@@ -1040,7 +1078,7 @@ async function ingestTask(task, options = {}, opts = {}) {
       const withSubs = (task.subtasks && task.subtasks.length) ? task : await client.getTask(task.id, { includeSubtasks: true });
       const subs = (withSubs && withSubs.subtasks) || [];
       if (subs.length) {
-        const coName = read.coBorrower ? `${read.coBorrower.first_name || ''} ${read.coBorrower.last_name || ''}`.trim().toLowerCase() : '';
+        const coName = read.coBorrower ? require('../lib/person-name').displayName(read.coBorrower).toLowerCase() : '';
         const byName = coName && subs.find((s) => String(s.name || '').toLowerCase().includes(coName));
         const byLabel = subs.find((s) => /co.?borrow|borrower\s*2|second\s*borrow|guarantor/i.test(String(s.name || '')));
         // A lone subtask MIGHT be the co-borrower, but its title is unreliable

@@ -256,7 +256,7 @@ router.get('/applications/export', async (req, res) => {
              a.property_address->>'zip'   AS zip,
              b.first_name, b.last_name, b.email AS borrower_email, b.cell_phone AS borrower_phone,
              b.fico AS borrower_fico, b.tier AS borrower_tier,
-             (cb.first_name || ' ' || cb.last_name) AS co_borrower_name, cb.email AS co_borrower_email,
+             NULLIF(cb.full_name,'') AS co_borrower_name, cb.email AS co_borrower_email,
              COALESCE(lo.full_name, a.loan_officer_name) AS loan_officer, pr.full_name AS processor,
              uw.full_name AS underwriter,
              a.purchase_price, a.as_is_value, a.arv, a.rehab_budget, a.loan_amount, a.ltv, a.rate_pct,
@@ -675,7 +675,7 @@ function buildPipelineFilter(req, q) {
     if (q.q !== undefined && String(q.q).trim() !== '') {
       const like = `%${String(q.q).trim().slice(0, 80)}%`;
       const p = add(like);
-      where.push(`((b.first_name || ' ' || b.last_name) ILIKE ${p}
+      where.push(`(COALESCE(b.full_name,'') ILIKE ${p}
                    OR a.ys_loan_number ILIKE ${p}
                    OR COALESCE(a.property_address->>'oneLine','') ILIKE ${p})`);
     }
@@ -823,7 +823,7 @@ router.get('/search', async (req, res) => {
               b.first_name, b.last_name
          FROM applications a JOIN borrowers b ON b.id=a.borrower_id
         WHERE a.deleted_at IS NULL ${loanScope}
-          AND ((b.first_name||' '||b.last_name) ILIKE $1
+          AND (NULLIF(b.full_name,'') ILIKE $1
                OR a.ys_loan_number ILIKE $1
                OR COALESCE(a.property_address->>'oneLine','') ILIKE $1)
         ORDER BY a.created_at DESC LIMIT 6`, loanParams);
@@ -839,7 +839,7 @@ router.get('/search', async (req, res) => {
       `SELECT b.id, b.first_name, b.last_name, b.email, b.cell_phone
          FROM borrowers b
         WHERE (b.first_name ILIKE $1 OR b.last_name ILIKE $1
-               OR (b.first_name||' '||b.last_name) ILIKE $1
+               OR NULLIF(b.full_name,'') ILIKE $1
                OR COALESCE(b.email,'') ILIKE $1)
           ${bScope}
         ORDER BY b.last_name, b.first_name LIMIT 6`, bParams);
@@ -1028,7 +1028,7 @@ async function emailAdoptionConflict(email, firstName, lastName) {
   return ex;
 }
 function emailAdoptionError(res, ex, email, { canShare = true } = {}) {
-  const who = [ex.first_name, ex.last_name].filter(Boolean).join(' ') || 'another person';
+  const who = require('../lib/person-name').displayName(ex) || 'another person';
   return res.status(409).json({
     // Owner-directed 2026-07-26: a shared mailbox is a NORMAL situation (husband
     // and wife), so opening a FILE on one is now a choice, not a dead end. The
@@ -1417,9 +1417,10 @@ router.post('/applications/:id/invite-borrower', async (req, res) => {
 
 router.get('/applications/:id', async (req, res) => {
   const r = await db.query(
-    `SELECT a.*, b.first_name,b.last_name,b.email,b.cell_phone,b.fico,
+    `SELECT a.*, b.first_name,b.last_name,b.middle_name,b.name_suffix,b.full_name,b.name_review_needed,b.name_review_reason,b.email,b.cell_phone,b.fico,
             l.llc_name AS entity_name, l.is_verified AS entity_verified,
             cb.first_name AS co_first_name, cb.last_name AS co_last_name,
+            cb.middle_name AS co_middle_name, cb.name_suffix AS co_name_suffix, cb.full_name AS co_full_name,
             cb.email AS co_email, cb.cell_phone AS co_cell_phone,
             cb.date_of_birth AS co_date_of_birth, cb.ssn_last4 AS co_ssn_last4,
             cb.fico AS co_fico, cb.current_address AS co_current_address,
@@ -1471,6 +1472,11 @@ async function attachCoBorrowerToApp(appId, primaryBorrowerId, b) {
   if (!coId) {
     const first = String(b.firstName || '').trim();
     const last = String(b.lastName || '').trim();
+    // Optional (db/345) — a co-borrower is a person like any other, so their
+    // middle name and suffix get their own fields rather than being crammed into
+    // the first name.
+    const middle = String(b.middleName || '').trim();
+    const suffix = String(b.nameSuffix || '').trim();
     const email = String(b.email || '').trim().toLowerCase();
     if (!first || !last) { const e = new Error('co-borrower first and last name are required'); e.status = 400; throw e; }
     if (!email) { const e = new Error('co-borrower email is required'); e.status = 400; throw e; }
@@ -1498,9 +1504,11 @@ async function attachCoBorrowerToApp(appId, primaryBorrowerId, b) {
         e.status = 409; throw e;
       }
       const ins = await db.query(
-        `INSERT INTO borrowers (first_name,last_name,email,cell_phone,date_of_birth,ssn_encrypted,ssn_last4,ssn_hash,origin)
-         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,'co_borrower')
+        `INSERT INTO borrowers (first_name,last_name,email,cell_phone,date_of_birth,ssn_encrypted,ssn_last4,ssn_hash,middle_name,name_suffix,origin)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,NULLIF($9,''),NULLIF($10,''),'co_borrower')
          ON CONFLICT (email) WHERE shares_email = false DO UPDATE SET
+           middle_name=COALESCE(borrowers.middle_name,EXCLUDED.middle_name),
+           name_suffix=COALESCE(borrowers.name_suffix,EXCLUDED.name_suffix),
            -- Staff-typed identity beats a PLACEHOLDER ('Unknown'/'Co-Borrower' are
            -- our own not-null fillers, never data) — but never a real stored name.
            first_name=CASE WHEN lower(btrim(coalesce(borrowers.first_name,''))) IN ('','unknown','co-borrower')
@@ -1516,7 +1524,7 @@ async function attachCoBorrowerToApp(appId, primaryBorrowerId, b) {
          RETURNING id`,
         [first, last, email, b.phone || null,
          require('../lib/fields').sanitizeDob(b.dob),   // typed '26' resolves to the real year; garbage never persists
-         ssnEnc, ssnLast4, ssnHash]);
+         ssnEnc, ssnLast4, ssnHash, middle, suffix]);
       coId = ins.rows[0].id;
     }
   }
@@ -1591,12 +1599,21 @@ router.post('/applications/:id/co-borrower-fields', async (req, res) => {
     const vals = [coId]; const sets = [];
     const put = (col, v) => { vals.push(v); sets.push(`${col}=$${vals.length}`); };
     if (typeof b.co_name === 'string' && b.co_name.trim()) {
-      const parts = b.co_name.trim().split(/\s+/);
-      put('first_name', parts.shift());
-      // Only set last_name when a second token was actually given — a single-word
+      // ONE line in, three fields out (db/345) — the same splitter every other
+      // door uses, so a co-borrower typed here is stored exactly like one that
+      // arrives from ClickUp or Encompass.
+      const p = require('../lib/person-name').splitFullName(b.co_name);
+      put('first_name', p.first);
+      // Only set last_name when a surname was actually given — a single-word
       // entry shouldn't duplicate the first name into the last (it would falsely
       // read as a complete name; leaving last_name keeps completeness flagging it).
-      if (parts.length) put('last_name', parts.join(' '));
+      if (p.last) put('last_name', p.last);
+      if (p.middle) put('middle_name', p.middle);
+      if (p.suffix) put('name_suffix', p.suffix);
+      // A judgement call gets the "please check this" prompt on the profile.
+      put('name_review_needed', !!p.needsReview);
+      put('name_review_reason', p.needsReview ? p.reason : null);
+      put('name_split_checked_at', new Date());
     }
     if (typeof b.co_phone === 'string' && b.co_phone.trim()) put('cell_phone', b.co_phone.trim());
     if (b.co_dob) {
@@ -3754,7 +3771,7 @@ router.get('/applications/:id/emails', async (req, res) => {
               (em.body_html IS NOT NULL) AS has_body, em.thread_key, em.occurred_at, em.application_id,
               eo.first_opened_at AS opened_at, eo.open_count,
               COALESCE(su.full_name,
-                       NULLIF(TRIM(COALESCE(bo.first_name,'') || ' ' || COALESCE(bo.last_name,'')), '')) AS recipient_name
+                       NULLIF(bo.full_name,'')) AS recipient_name
          FROM email_messages em
          LEFT JOIN email_opens eo ON eo.notification_id = em.notification_id
          LEFT JOIN notifications n ON n.id = em.notification_id
@@ -3782,7 +3799,7 @@ router.get('/applications/:id/emails/reply-recipients', async (req, res) => {
   try {
     const meEmail = String(((await db.query(`SELECT lower(email) AS email FROM staff_users WHERE id=$1`, [req.actor.id])).rows[0] || {}).email || '').toLowerCase();
     const r = await db.query(
-      `SELECT lower(bo.email) AS email, NULLIF(TRIM(COALESCE(bo.first_name,'')||' '||COALESCE(bo.last_name,'')),'') AS name, 'borrower' AS kind
+      `SELECT lower(bo.email) AS email, NULLIF(bo.full_name,'') AS name, 'borrower' AS kind
          FROM applications a JOIN borrowers bo ON bo.id IN (a.borrower_id, a.co_borrower_id)
         WHERE a.id=$1 AND bo.email IS NOT NULL AND btrim(bo.email)<>''
        UNION
@@ -3802,7 +3819,7 @@ router.get('/applications/:id/emails/:msgId', async (req, res) => {
     const r = await db.query(
       `SELECT em.*, (em.body_html IS NOT NULL) AS has_body,
               COALESCE(su.full_name,
-                       NULLIF(TRIM(COALESCE(bo.first_name,'') || ' ' || COALESCE(bo.last_name,'')), '')) AS recipient_name
+                       NULLIF(bo.full_name,'')) AS recipient_name
          FROM email_messages em
          LEFT JOIN notifications n ON n.id = em.notification_id
          LEFT JOIN staff_users su ON su.id = n.staff_id
@@ -4230,7 +4247,7 @@ router.get('/orders', async (req, res) => {
         byFile.set(row.application_id, {
           applicationId: row.application_id, loanNumber: row.ys_loan_number,
           propertyAddress: row.property_address, fileStatus: row.file_status,
-          borrowerName: [row.first_name, row.last_name].filter(Boolean).join(' '),
+          borrowerName: require('../lib/person-name').displayName(row),
           title: null, insurance: null,
         });
       }
@@ -4315,7 +4332,7 @@ router.get('/emails', async (req, res) => {
               eo.first_opened_at AS opened_at, eo.open_count,
               a.ys_loan_number, a.property_address, b.first_name AS b_first, b.last_name AS b_last,
               COALESCE(su.full_name,
-                       NULLIF(TRIM(COALESCE(bo.first_name,'') || ' ' || COALESCE(bo.last_name,'')), '')) AS recipient_name
+                       NULLIF(bo.full_name,'')) AS recipient_name
          FROM email_messages em
          LEFT JOIN applications a ON a.id = em.application_id
          LEFT JOIN borrowers   b ON b.id = a.borrower_id
@@ -4337,7 +4354,7 @@ router.get('/emails/:msgId', async (req, res) => {
     const r = await db.query(
       `SELECT em.*, a.ys_loan_number, a.property_address, b.first_name AS b_first, b.last_name AS b_last,
               COALESCE(su.full_name,
-                       NULLIF(TRIM(COALESCE(bo.first_name,'') || ' ' || COALESCE(bo.last_name,'')), '')) AS recipient_name
+                       NULLIF(bo.full_name,'')) AS recipient_name
          FROM email_messages em
          LEFT JOIN applications a ON a.id = em.application_id
          LEFT JOIN borrowers   b ON b.id = a.borrower_id
@@ -5539,7 +5556,7 @@ router.get('/borrowers/search', async (req, res) => {
                  WHERE t.borrower_id=b.id AND t.kind='data_only') AS other_deals
          FROM borrowers b
         WHERE (b.first_name ILIKE $1 OR b.last_name ILIKE $1
-               OR (b.first_name||' '||b.last_name) ILIKE $1
+               OR NULLIF(b.full_name,'') ILIKE $1
                OR COALESCE(b.email,'') ILIKE $1)
           ${scope}
         ORDER BY b.last_name, b.first_name
@@ -5612,7 +5629,7 @@ async function sharedEmailLoginBlock(borrowerId) {
       LIMIT 1`, [borrowerId]).catch(() => ({ rows: [] }));
   const other = r.rows[0];
   if (!other) return null;
-  const who = [other.first_name, other.last_name].filter(Boolean).join(' ') || 'another borrower';
+  const who = require('../lib/person-name').displayName(other) || 'another borrower';
   return `${who} already signs in with this email address. Two people can share a mailbox on their profiles, `
     + `but only one of them can have the portal login. Give this person their own email address first.`;
 }
@@ -5694,6 +5711,7 @@ router.get('/borrowers/:id', async (req, res) => {
     if (!(await canSeeBorrower(req))) return res.status(403).json({ error: 'forbidden' });
     const r = await db.query(
       `SELECT b.id, b.first_name, b.last_name, b.email, b.cell_phone, b.date_of_birth,
+              b.middle_name, b.name_suffix, b.full_name, b.name_review_needed, b.name_review_reason,
               b.ssn_last4, b.fico, b.citizenship, b.marital_status, b.dependents_count, b.tier,
               b.current_address, b.mailing_address, b.prior_address,
               b.years_at_residence, b.months_at_residence, b.residence_since,
@@ -5754,12 +5772,37 @@ router.get('/borrowers/:id', async (req, res) => {
 router.patch('/borrowers/:id', async (req, res) => {
   try {
     if (!(await canSeeBorrower(req))) return res.status(403).json({ error: 'forbidden' });
-    const b = req.body || {};
+    let b = req.body || {};
     const sets = [], vals = [req.params.id];
     const put = (col, val) => { vals.push(val); sets.push(`${col}=$${vals.length}`); };
+    // Set when the whole name was typed into ONE box and PILOT had to judge where
+    // it splits — the "please check this" prompt is kept in that case.
+    let nameSplitFromFullName = null;
     // A name correction must be a real name — never a placeholder, never blank
     // (that would erase the person's identity on every surface at once).
-    if (b.firstName != null || b.lastName != null) {
+    // THE ONE BIG NAME FIELD (owner-directed 2026-07-27). A caller may send the
+    // whole name as `fullName` — which is what the "Full name" box on every screen
+    // sends — or the individual parts. Either way the PARTS are what get stored and
+    // `borrowers.full_name` (db/346, a generated column) recomputes itself, so the
+    // big field and the pieces can never disagree.
+    if (b.fullName !== undefined && b.firstName == null && b.lastName == null
+        && b.middleName === undefined && b.nameSuffix === undefined) {
+      const PN = require('../lib/person-name');
+      const typed = String(b.fullName == null ? '' : b.fullName).trim();
+      if (!typed || PN.isPlaceholderName(typed)) return res.status(400).json({ error: 'a real name is required' });
+      const sp = PN.splitFullName(typed);
+      if (!sp.first) return res.status(400).json({ error: 'a real name is required' });
+      b = Object.assign({}, b, {
+        firstName: sp.first,
+        lastName: sp.last || undefined,
+        middleName: sp.middle,
+        nameSuffix: sp.suffix,
+      });
+      // Typing the whole name into one box is exactly the case where PILOT has to
+      // decide where it splits — so an uncertain split still asks for a look.
+      if (sp.needsReview) nameSplitFromFullName = sp.reason;
+    }
+    if (b.firstName != null || b.lastName != null || b.middleName !== undefined || b.nameSuffix !== undefined) {
       const T = require('../clickup/transforms');
       const first = b.firstName != null ? String(b.firstName).trim() : null;
       const last = b.lastName != null ? String(b.lastName).trim() : null;
@@ -5771,6 +5814,30 @@ router.patch('/borrowers/:id', async (req, res) => {
         if (T.isPlaceholderName(last)) return res.status(400).json({ error: 'that is not a usable last name' });
         put('last_name', last || null);
       }
+      // MIDDLE NAME + SUFFIX (db/345). Both are OPTIONAL — an empty string is a
+      // deliberate "this person has none", so it clears the column rather than
+      // being ignored (that is what makes a wrong split fixable from here).
+      if (b.middleName !== undefined) {
+        const mid = b.middleName == null ? '' : String(b.middleName).trim();
+        if (mid && T.isPlaceholderName(mid)) return res.status(400).json({ error: 'that is not a usable middle name' });
+        put('middle_name', mid || null);
+      }
+      if (b.nameSuffix !== undefined) {
+        const sfx = b.nameSuffix == null ? '' : String(b.nameSuffix).trim();
+        put('name_suffix', sfx || null);
+      }
+      // Typing the PARTS separately IS the confirmation PILOT was asking for, so
+      // the "please check this split" prompt retires itself. Typing ONE big name
+      // that PILOT then had to split is not — that verdict is carried through.
+      put('name_review_needed', !!nameSplitFromFullName);
+      put('name_review_reason', nameSplitFromFullName);
+      put('name_split_checked_at', new Date());
+    } else if (b.confirmNameSplit) {
+      // "Yes, that split is right" — the one-click answer to the prompt, with no
+      // edit. It only ever clears the flag; it never touches the name itself.
+      put('name_review_needed', false);
+      put('name_review_reason', null);
+      put('name_split_checked_at', new Date());
     }
     if (b.email != null) put('email', String(b.email).trim().toLowerCase() || null);
     if (b.cellPhone != null) put('cell_phone', String(b.cellPhone).trim() || null);
@@ -5835,7 +5902,7 @@ router.patch('/borrowers/:id', async (req, res) => {
               [String(b.email || '').trim().toLowerCase(), req.params.id]).catch(() => ({ rows: [] }))).rows[0];
             return res.status(409).json({
               error: other
-                ? `${[other.first_name, other.last_name].filter(Boolean).join(' ')} already uses that email address. If these are two different people who share one mailbox (a husband and wife, for example), save again to keep both.`
+                ? `${require('../lib/person-name').displayName(other)} already uses that email address. If these are two different people who share one mailbox (a husband and wife, for example), save again to keep both.`
                 : 'that email is already in use by another borrower',
               sharedEmail: { canShare: true, otherBorrowerId: other ? other.id : null },
             });
@@ -5864,7 +5931,7 @@ router.patch('/borrowers/:id', async (req, res) => {
     if (b.currentAddress !== undefined) pushKeys.push('current_address');
     // A corrected name goes OUT to ClickUp too — otherwise the next inbound pull
     // would read the old card value straight back over the fix.
-    if (b.firstName != null || b.lastName != null) pushKeys.push('first_name');
+    if (b.firstName != null || b.lastName != null || b.middleName !== undefined || b.nameSuffix !== undefined) pushKeys.push('first_name');
     // Housing / employment are BOTH-way mapped ClickUp fields, so a profile edit
     // must reach the ClickUp cards too — otherwise the next inbound pull would
     // read the old ClickUp value back over what was just typed here.
@@ -5880,7 +5947,12 @@ router.patch('/borrowers/:id', async (req, res) => {
         const apps = (await db.query(
           `SELECT id FROM applications WHERE borrower_id=$1 AND deleted_at IS NULL AND clickup_pipeline_task_id IS NOT NULL`,
           [req.params.id])).rows;
-        for (const a of apps) enqueueClickupPush(a.id, pushKeys).catch(() => {});
+        // A typed name is a DELIBERATE human edit: `humanEditKeys` tells the
+        // outbound no-op check to compare the name STRICTLY, so adding or fixing
+        // a middle name actually reaches the ClickUp card instead of being
+        // suppressed as "the same person, written with less detail".
+        const humanEditKeys = pushKeys.filter((k) => k === 'first_name');
+        for (const a of apps) enqueueClickupPush(a.id, pushKeys, humanEditKeys.length ? { humanEditKeys } : undefined).catch(() => {});
       } catch (_) { /* best-effort */ }
     }
     await audit(req, 'update_borrower', 'borrower', req.params.id, {
@@ -6376,7 +6448,7 @@ router.post('/borrowers/:id/ssn', async (req, res) => {
       const sameLast = String(clash.last_name || '').trim().toLowerCase() === String(me.last_name || '').trim().toLowerCase()
         && String(me.last_name || '').trim() !== '';
       const visible = await canSeeBorrowerId(req, clash.id);
-      const otherName = [clash.first_name, clash.last_name].filter(Boolean).join(' ').trim() || 'an unnamed profile';
+      const otherName = require('../lib/person-name').displayName(clash).trim() || 'an unnamed profile';
       if (!(req.body || {}).resolveConflict) {
         return res.status(409).json({
           error: visible
@@ -7760,7 +7832,10 @@ const COMPLETE_APP_FIELDS = { program: 'text', loan_type: 'text', property_type:
   // it's part of application completeness (owner-directed 2026-07-20). STAFF-ONLY;
   // never offered on the borrower completeness panel.
   lender: 'text' };
-const COMPLETE_BORROWER_FIELDS = { cell_phone: 'text', date_of_birth: 'date', fico: 'int', citizenship: 'text' };
+// `middle_name` (db/345) is here so staff can fill or correct the optional middle
+// name inline from the file, without opening the borrower profile. It is not part
+// of the completeness CHECK — a person may genuinely have no middle name.
+const COMPLETE_BORROWER_FIELDS = { cell_phone: 'text', date_of_birth: 'date', fico: 'int', citizenship: 'text', middle_name: 'text' };
 async function completeFields(req, res, borrowerScoped) {
   const b = req.body || {};
   // What the condition engine did as a RESULT of this save (see the evaluate call
@@ -10252,7 +10327,7 @@ router.get('/vendors', async (req, res) => {
             sc.email, sc.phone, sc.emails, sc.phones, sc.address,
             sc.notes, sc.created_at, sc.updated_at, sc.last_used_at,
             sc.merged_into_id, sc.merged_at,
-            b.first_name || ' ' || b.last_name AS added_by_borrower,
+            NULLIF(b.full_name,'') AS added_by_borrower,
             s.full_name AS added_by_staff,
             (SELECT count(*)::int FROM application_service_contacts x WHERE x.service_contact_id=sc.id) AS files_used
        FROM service_contacts sc
@@ -10459,7 +10534,7 @@ router.get('/applications/:id/file-contacts', async (req, res) => {
     `SELECT l.id AS link_id, sc.id AS contact_id, sc.contact_type, sc.custom_type,
             sc.company_name, sc.contact_name, sc.email, sc.phone, sc.address, sc.notes,
             l.added_by_kind, l.created_at,
-            s.full_name AS added_by_staff, (b.first_name||' '||b.last_name) AS added_by_borrower
+            s.full_name AS added_by_staff, NULLIF(b.full_name,'') AS added_by_borrower
        FROM application_service_contacts l
        JOIN service_contacts sc ON sc.id = l.service_contact_id
        LEFT JOIN staff_users s ON s.id = l.added_by_id AND l.added_by_kind='staff'
@@ -10768,7 +10843,7 @@ router.get('/request-audit', async (req, res) => {
                     OR ra.user_agent ILIKE ${like} OR ra.referer ILIKE ${like}
                     OR ra.actor_email ILIKE ${like} OR ra.error ILIKE ${like}
                     OR s.full_name ILIKE ${like}
-                    OR (bo.first_name || ' ' || bo.last_name) ILIKE ${like})`);
+                    OR COALESCE(bo.full_name,'') ILIKE ${like})`);
     }
 
     const whereSql = where.length ? 'WHERE ' + where.join(' AND ') : '';
@@ -10900,7 +10975,7 @@ router.get('/applications/:id/observability', async (req, res) => {
       // names this application (many writes stamp detail.applicationId).
       want('portal') ? db.query(
         `SELECT al.created_at AS ts, al.actor_kind, al.action, al.detail,
-                COALESCE(su.full_name, bo.first_name || ' ' || bo.last_name, 'System') AS actor
+                COALESCE(su.full_name, NULLIF(bo.full_name,''), 'System') AS actor
            FROM audit_log al
            LEFT JOIN staff_users su ON su.id = al.actor_id AND al.actor_kind = 'staff'
            LEFT JOIN borrowers bo   ON bo.id = al.actor_id AND al.actor_kind = 'borrower'
@@ -10996,7 +11071,7 @@ router.get('/sync-reviews', async (req, res) => {
     // (pre-merge audit: the old scope hid application-less rows from LOs).
     const r = await db.query(
       `SELECT q.*, a.deleted_at,
-              b.first_name || ' ' || b.last_name AS borrower_name,
+              NULLIF(b.full_name,'') AS borrower_name,
               COALESCE(a.property_address->>'oneLine', a.property_address->>'line1') AS property
          FROM sync_review_queue q
          LEFT JOIN applications a ON a.id = q.application_id
