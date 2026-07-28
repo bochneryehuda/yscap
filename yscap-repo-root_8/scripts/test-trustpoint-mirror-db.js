@@ -206,6 +206,55 @@ const notesFor = async (app, kind) => (await db.query(
     await cleanup(app, bor, lo);
   }
 
+  // ============ 6. AN ARCHIVE THAT NEVER LANDED IS RETRIED — but not forever ============
+  // archiveDrawEverything fires once, on the APPROVED transition, and TrustPoint's document
+  // links expire in about a day: one blip at that moment lost the inspection report and its
+  // photographs permanently. The retry reads "incomplete" from the DATA (no archived document)
+  // so nothing has to be migrated, and it is bounded by the draw's own age so it can never
+  // loop on an old draw forever.
+  {
+    const { app, bor, lo } = await seedFile();
+    const docs = require('../src/trustpoint/documents');
+    // DISTINCT NUMBERS, not distinct ids: storeDocument names the file after the draw NUMBER
+    // (`trustpoint-draw-2-…`), so three draws sharing a number would share their paperwork.
+    const mk = async (id, number, approvedAt) => db.query(
+      `INSERT INTO trustpoint_draws (tp_draw_id, application_id, tp_project_id, number, status, approved_at, tp_created_at)
+       VALUES ($1,$2,'tp-proj6',$3,'APPROVED',$4,$4)`, [id, app, number, approvedAt]);
+
+    const fresh = `tp-draw6a-${tag}`, old = `tp-draw6b-${tag}`, done = `tp-draw6c-${tag}`;
+    await mk(fresh, 1, new Date().toISOString());
+    await mk(old, 2, new Date(Date.now() - 9 * 86400000).toISOString());
+    await mk(done, 3, new Date().toISOString());
+
+    // a recent draw with nothing archived → really attempts the pull
+    const a = await docs.archiveDrawIfIncomplete(fresh);
+    ok('a recent draw with nothing archived is retried', a && a.ok === true);
+
+    // …a draw whose paperwork already landed → never re-pulled
+    await db.query(
+      `INSERT INTO documents (application_id, filename, doc_kind, storage_provider, storage_ref,
+                              content_type, size_bytes, visibility, source_type, is_current)
+       VALUES ($1, 'trustpoint-draw-3-inspection-result-document-2026-07-27-abc.pdf',
+               'draw_inspection_report','local','ref/x','application/pdf',10,'staff_only','system',true)`,
+      [app]);
+    ok('a draw that already has its paperwork is left alone',
+      (await docs.archiveDrawIfIncomplete(done)).skipped === 'archived');
+    // …and that document belongs to draw 3 ONLY — the anchored match must not leak to its
+    // neighbours, which is exactly what the old id-prefix predicate did.
+    ok('one draw\'s paperwork is not credited to another',
+      (await docs.documentsFor(app, fresh, 1)).length === 0);
+    ok('the archived document IS found for its own draw',
+      (await docs.documentsFor(app, done, 3)).length === 1);
+
+    // …and a draw old enough that the links are dead stops being retried at all
+    ok('an old draw stops being retried (the links are gone)',
+      (await docs.archiveDrawIfIncomplete(old)).skipped === 'too_old');
+
+    await db.query(`DELETE FROM documents WHERE application_id=$1`, [app]);
+    await db.query(`DELETE FROM trustpoint_draws WHERE tp_draw_id = ANY($1)`, [[fresh, old, done]]);
+    await cleanup(app, bor, lo);
+  }
+
   console.log(`test-trustpoint-mirror-db: ${pass} passed, ${fail} failed`);
   process.exit(fail ? 1 : 0);
 })().catch((e) => { console.error('test-trustpoint-mirror-db crashed:', e); process.exit(1); });

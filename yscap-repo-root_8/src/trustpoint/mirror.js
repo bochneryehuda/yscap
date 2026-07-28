@@ -519,6 +519,15 @@ async function reactDraw(appId, row, prev, { baseline = false, addrText = null }
     try { await require('./comments').syncDrawComments(appId, row.tp_project_id, tpDrawId); } catch (_) {}
   }
 
+  // RETRY an archive that never landed. The pull below fires once, on the APPROVED transition,
+  // and TrustPoint's links expire in about a day — so one blip at that exact moment lost the
+  // inspection report and its photographs for good. This re-attempts only while the draw is
+  // recent AND has nothing archived, so it self-limits; re-running is safe (the store dedupes
+  // on content hash and the photo insert is ON CONFLICT DO NOTHING).
+  if (newStatus !== 'DELETED') {
+    try { await require('./documents').archiveDrawIfIncomplete(tpDrawId); } catch (_) {}
+  }
+
   // Atomic watermark claim (same shape as the Sitewire reconcile) — one reactor wins.
   const won = (await db.query(
     `UPDATE trustpoint_draws SET status_synced=$2 WHERE tp_draw_id=$1 AND status_synced IS DISTINCT FROM $2 RETURNING tp_draw_id`,
