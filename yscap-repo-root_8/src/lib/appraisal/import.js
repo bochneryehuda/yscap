@@ -202,11 +202,30 @@ async function importAppraisalTx(db, {
 
   // 7. fill the file from DEFINITE values ONLY, ONLY when currently empty (overwrite-shield).
   //    A differing human value is never overwritten — it is one of the findings above.
+  // A fill RECORDS ITSELF on the appraisal row, in the same columns the As-Is/ARV desk uses
+  // (db/351, db/352). Before this, an undo had to GUESS that a file value equal to the appraisal's
+  // must have been filled by the import — and since the desk's whole job is now to make the file
+  // agree with the appraisal, "equal" is the normal state, so that guess deleted values humans had
+  // typed. Recording the fill gives undo exactly one thing to reverse: what PILOT actually wrote.
   if (v.asIs != null && v.asIsConfidence === 'definite') {
-    await db.query(`UPDATE applications SET as_is_value = $2 WHERE id = $1 AND as_is_value IS NULL`, [applicationId, v.asIs]);
+    const r = await db.query(`UPDATE applications SET as_is_value = $2 WHERE id = $1 AND as_is_value IS NULL`, [applicationId, v.asIs]);
+    if (r.rowCount > 0) {
+      try {
+        await db.query(
+          `UPDATE appraisals SET as_is_applied = true, as_is_applied_value = $2, as_is_file_value_before = NULL WHERE id = $1`,
+          [appraisalId, v.asIs]);
+      } catch (_) { /* the fill itself already happened; the stamp is best-effort */ }
+    }
   }
   if (v.arv != null && v.arvConfidence === 'definite') {
-    await db.query(`UPDATE applications SET arv = $2 WHERE id = $1 AND arv IS NULL`, [applicationId, v.arv]);
+    const r = await db.query(`UPDATE applications SET arv = $2 WHERE id = $1 AND arv IS NULL`, [applicationId, v.arv]);
+    if (r.rowCount > 0) {
+      try {
+        await db.query(
+          `UPDATE appraisals SET arv_applied = true, arv_applied_value = $2, arv_file_value_before = NULL WHERE id = $1`,
+          [appraisalId, v.arv]);
+      } catch (_) { /* best-effort stamp */ }
+    }
   }
   // Fill the file's appraiser name (blank-only) so the MISMO 3.4 loan export
   // (src/lib/mismo) carries the real appraiser — synergy, same overwrite-shield posture.

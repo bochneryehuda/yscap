@@ -380,45 +380,87 @@ const never = {
   // 2d. The ARV's own write rule — no ladder, no OCR, straight from the data file
   // =========================================================================
   {
-    const d = R.decideArvApply({ arv: 620000, arvConfidence: 'definite', fileArv: 575000, asIs: 430000 });
+    const d = R.decideArvApply({ arv: 620000, arvConfidence: 'definite', arvBasis: 'SubjectToRepairs', appraisedValue: 620000, fileArv: 575000, asIs: 430000 });
     assert(d.apply && d.value === 620000 && d.kind === 'raised', 'a definite XML ARV is written over the file’s');
   }
   {
-    const d = R.decideArvApply({ arv: 560000, arvConfidence: 'definite', fileArv: 620000, asIs: 430000 });
+    const d = R.decideArvApply({ arv: 560000, arvConfidence: 'definite', arvBasis: 'SubjectToCompletion', appraisedValue: 560000, fileArv: 620000, asIs: 430000 });
     assert(d.apply && d.kind === 'lowered', 'the ARV is written downward too — the appraisal is the authority');
   }
   {
-    const d = R.decideArvApply({ arv: 620000, arvConfidence: 'definite', fileArv: null, asIs: 430000 });
+    const d = R.decideArvApply({ arv: 620000, arvConfidence: 'definite', arvBasis: 'SubjectToRepairs', appraisedValue: 620000, fileArv: null, asIs: 430000 });
     assert(d.apply && d.kind === 'filled', 'a blank ARV is filled');
   }
   {
-    const d = R.decideArvApply({ arv: 620000, arvConfidence: 'missing', fileArv: 575000, asIs: 430000 });
+    const d = R.decideArvApply({ arv: 620000, arvConfidence: 'missing', arvBasis: 'SubjectToRepairs', appraisedValue: 620000, fileArv: 575000, asIs: 430000 });
     assert(!d.apply && d.why === 'not_confident', 'a NON-definite ARV is never written — there is no OCR fallback for the ARV');
   }
   {
-    const d = R.decideArvApply({ arv: 400000, arvConfidence: 'definite', fileArv: 620000, asIs: 430000 });
+    const d = R.decideArvApply({ arv: 400000, arvConfidence: 'definite', arvBasis: 'SubjectToRepairs', appraisedValue: 400000, fileArv: 620000, asIs: 430000 });
     assert(!d.apply && d.why === 'not_above_as_is', 'an ARV at or below the As-Is is the two values swapped — never written');
   }
   {
-    const d = R.decideArvApply({ arv: 620000, arvConfidence: 'definite', fileArv: 620000, asIs: 430000 });
+    const d = R.decideArvApply({ arv: 620000, arvConfidence: 'definite', arvBasis: 'SubjectToRepairs', appraisedValue: 620000, fileArv: 620000, asIs: 430000 });
     assert(!d.apply && d.why === 'same_value', 'the ARV the file already shows is not rewritten');
   }
   {
-    const d = R.decideArvApply({ arv: 620000, arvConfidence: 'definite', fileArv: 575000, asIs: 430000, lockReason: 'frozen' });
+    const d = R.decideArvApply({ arv: 620000, arvConfidence: 'definite', arvBasis: 'SubjectToRepairs', appraisedValue: 620000, fileArv: 575000, asIs: 430000, lockReason: 'frozen' });
     assert(!d.apply && d.why === 'file_locked', 'a frozen file’s ARV is never rewritten automatically');
   }
   {
-    const d = R.decideArvApply({ arv: 620000, arvConfidence: 'definite', fileArv: 575000, asIs: 430000, autoEnabled: false });
+    const d = R.decideArvApply({ arv: 620000, arvConfidence: 'definite', arvBasis: 'SubjectToRepairs', appraisedValue: 620000, fileArv: 575000, asIs: 430000, autoEnabled: false });
     assert(!d.apply && d.why === 'auto_off', 'the kill switch stops the ARV write too');
+  }
+  // THE PROSE-ARV TRAP. `arvConfidence === 'definite'` is set in TWO places: the structured headline
+  // value on a subject-to report, and — on an AS-IS-basis report — a number mined out of the report's
+  // WORDING with no ceiling and no cross-check. That second branch will hand back a borrower's quoted
+  // estimate, a neighbouring project's figure or a comp's as-repaired price, and writing one would
+  // RAISE the cap the loan is sized against. Only the headline value is ever written.
+  {
+    const d = R.decideArvApply({ arv: 700000, arvConfidence: 'definite', arvBasis: 'AsIs', appraisedValue: 430000, fileArv: 500000, asIs: 430000 });
+    assert(!d.apply && d.why === 'not_the_headline_value', 'an ARV read out of PROSE on an as-is-basis report is never written');
+  }
+  {
+    const d = R.decideArvApply({ arv: 700000, arvConfidence: 'definite', arvBasis: 'SubjectToRepairs', appraisedValue: 620000, fileArv: 500000, asIs: 430000 });
+    assert(!d.apply && d.why === 'not_the_headline_value', 'even on a subject-to report, a value that is NOT the headline figure is never written');
+  }
+  {
+    const d = R.decideArvApply({ arv: 620000, arvConfidence: 'definite', arvBasis: null, appraisedValue: 620000, fileArv: 500000, asIs: 430000 });
+    assert(!d.apply && d.why === 'not_the_headline_value', 'with no basis enum we cannot know the headline value is the ARV — never written');
   }
   {
     const read = { found: false, value: null, confident: false, confidence: null, reason: 'nothing readable' };
     const dec = R.decideAsIsApply({ read, fileAsIs: null, purchasePrice: 450000 });
-    const arvDec = R.decideArvApply({ arv: 620000, arvConfidence: 'definite', fileArv: 575000, asIs: null });
+    const arvDec = R.decideArvApply({ arv: 620000, arvConfidence: 'definite', arvBasis: 'SubjectToRepairs', appraisedValue: 620000, fileArv: 575000, asIs: null });
     const note = R.buildAsIsNote({ read, decision: dec, fileAsIsBefore: null, purchasePrice: 450000, arvDecision: arvDec, fileArvBefore: 575000 });
     assert(/ARV/.test(note) && /\$620,000/.test(note) && /\$575,000/.test(note),
       'the note reports the ARV change even when the As-Is could not be read');
     assert(/no OCR was involved/i.test(note), 'the note says the ARV came straight from the data file');
+  }
+
+  {
+    // MAJOR 5 — the AI must not walk around the stacked-label guard by quoting two lines out of it.
+    const text = ['OPINION OF VALUE', 'As Repaired Value', 'As Is Value', '$450,000', '$312,500'].join('\n');
+    const ai = {
+      available: () => true,
+      extract: async () => ({ ok: true, data: { found: true, value: 450000, quote: 'As Is Value\n$450,000', reason: 'x' } }),
+    };
+    const r = await R.readAsIs({ fileArv: 600000, pdfBase64: 'x' }, pdfDeps(text, ai));
+    assert(!r.confident, 'the AI cannot bypass the stacked-label guard by quoting the pair out of context');
+    assert(r.value !== 450000 || !r.confident, 'the after-repair amount is never written through the AI path');
+  }
+  {
+    // MAJOR 6 — the FILE's own ARV must not CREATE the renovation test. A no-rehab deal whose ARV is
+    // stale, low, or equal to the As-Is used to block a perfectly good read forever.
+    for (const fileArv of [430000, 400000]) {
+      const r = await R.readAsIs({ xmlAsIs: 430000, xmlAsIsConfidence: 'definite', xmlBasis: 'AsIs', appraisedValue: 430000, fileArv }, never);
+      assert(r.confident && r.value === 430000, `a straight deal with a file ARV of ${fileArv} still reads confidently`);
+    }
+    // …but real renovation evidence still triggers it, and the file's ARV can still SATISFY it.
+    const blocked = await R.readAsIs({ xmlAsIs: 430000, xmlAsIsConfidence: 'definite', xmlBasis: 'AsIs', appraisedValue: 430000, rehabBudget: 90000, fileArv: 400000 }, never);
+    assert(!blocked.confident, 'a construction budget with a file ARV BELOW the candidate still blocks');
+    const okNow = await R.readAsIs({ xmlAsIs: 430000, xmlAsIsConfidence: 'definite', xmlBasis: 'AsIs', appraisedValue: 430000, rehabBudget: 90000, fileArv: 620000 }, never);
+    assert(okNow.confident, 'the file’s ARV can still SATISFY the rule when real renovation evidence triggered it');
   }
 
   // =========================================================================

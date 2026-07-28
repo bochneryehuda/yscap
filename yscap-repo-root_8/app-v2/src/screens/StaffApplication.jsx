@@ -187,6 +187,7 @@ function CondLoanNumberEntry({ appId, onSaved }) {
 function CondAsIsEntry({ appId, onSaved }) {
   const [st, setSt] = useState(null);
   const [draft, setDraft] = useState('');
+  const [arvDraft, setArvDraft] = useState('');
   const [busy, setBusy] = useState(false);
   const [reading, setReading] = useState(false);
   const [err, setErr] = useState('');
@@ -207,6 +208,19 @@ function CondAsIsEntry({ appId, onSaved }) {
       const r = await api.appraisalSetAsIs(appId, { value: v });
       setOk(`Saved — the As-Is value on this file is now ${m(r.value)}.`);
       setDraft('');
+      await load();
+      if (onSaved) await onSaved();
+    } catch (e) { setErr(e.message || 'Could not save'); } finally { setBusy(false); }
+  }
+
+  async function saveArv() {
+    const v = Number(String(arvDraft).replace(/[,$\s]/g, ''));
+    if (!Number.isFinite(v) || v <= 0) { setErr('Enter the ARV as a number.'); return; }
+    setBusy(true); setErr(''); setOk('');
+    try {
+      const r = await api.appraisalSetArv(appId, { value: v });
+      setOk(`Saved — the ARV on this file is now ${m(r.value)}.`);
+      setArvDraft('');
       await load();
       if (onSaved) await onSaved();
     } catch (e) { setErr(e.message || 'Could not save'); } finally { setBusy(false); }
@@ -239,6 +253,9 @@ function CondAsIsEntry({ appId, onSaved }) {
   const WHY = {
     same_value: 'that is exactly what the file already shows, so nothing needed changing',
     not_above_as_is: 'it is not above the As-Is value, so the two figures would be the wrong way round',
+    not_the_headline_value: 'it was read out of the report’s wording rather than being the appraisal’s own headline figure, so PILOT will not use it on its own',
+    as_is_changed_underneath: 'the As-Is changed on the file while PILOT was reading, so the two could not be compared safely',
+    write_failed: 'the update did not go through',
     appraisal_identity_mismatch: 'this appraisal does not match the property on the file (address, unit count or property type), so nothing was taken from it — sort that out first',
     human_decided: 'someone has already decided this file’s As-Is value by hand, so PILOT left it alone — a person’s decision about this number is final',
     file_locked: 'this file’s figures are locked (the term sheet has gone out, or it is clear-to-close / funded), so nothing was changed automatically',
@@ -297,7 +314,10 @@ function CondAsIsEntry({ appId, onSaved }) {
           <div style={{ ...cell, marginTop: 6, color: '#3A4550', fontStyle: 'italic' }}>“{r.quote}”</div>
         )}
         {st.confirmed && (
-          <div style={{ ...cell, marginTop: 4, color: '#256168' }}>An officer entered {m(st.confirmed.value)} by hand.</div>
+          <div style={{ ...cell, marginTop: 4, color: '#256168' }}>An officer entered the As-Is of {m(st.confirmed.value)} by hand.</div>
+        )}
+        {av.confirmed && (
+          <div style={{ ...cell, color: '#256168' }}>An officer entered the ARV of {m(av.confirmed.value)} by hand.</div>
         )}
       </div>
 
@@ -311,6 +331,16 @@ function CondAsIsEntry({ appId, onSaved }) {
         </button>
         <button className="btn small" onClick={reread} disabled={reading} title="Read the appraisal again — useful if the report PDF arrived after the data file">
           {reading ? 'Reading…' : 'Read the appraisal again'}
+        </button>
+      </div>
+      {/* The ARV gets its own box: PILOT can rewrite it, so there has to be somewhere to correct it. */}
+      <div className="row" style={{ gap: 6, alignItems: 'center', flexWrap: 'wrap', marginTop: 6 }}>
+        <input className="input small" style={{ maxWidth: 180 }} inputMode="decimal"
+          placeholder={st.file.arv != null ? `Overwrite ARV ${m(st.file.arv)}…` : 'Enter the ARV…'}
+          value={arvDraft} disabled={busy}
+          onChange={(e) => setArvDraft(e.target.value)} onKeyDown={(e) => { if (e.key === 'Enter') saveArv(); }} />
+        <button className="btn small" onClick={saveArv} disabled={busy || !String(arvDraft).trim()}>
+          {busy ? '…' : 'Save ARV'}
         </button>
       </div>
       {st.locked && <div className="small" style={{ marginTop: 4, color: '#8A6D3B' }}>{st.locked}</div>}

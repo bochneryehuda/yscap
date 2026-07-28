@@ -127,6 +127,7 @@ async function settleAsIs(appId, opts = {}) {
       `SELECT id, as_is_value, as_is_confidence, arv_value, arv_confidence, appraised_value, condition_of_appraisal,
               value_cost_approach, value_income_approach, value_sales_approach, site_value,
               as_is_confirmed_value, as_is_confirmed_at, arv_applied, arv_applied_value,
+              arv_confirmed_value, arv_confirmed_at,
               pdf_document_id, source_xml_document_id
          FROM appraisals
         WHERE application_id=$1 AND superseded=false
@@ -218,9 +219,21 @@ async function settleAsIs(appId, opts = {}) {
     //     must not quietly undo that, on this file or across the whole book in the boot sweep.
     // A DISMISS is not in that list on purpose: dismissing a finding sets it aside, it does not
     // choose a value. Fails CLOSED — an unreadable ledger means we do not write.
+    // MOVED AFTER WE WROTE IT = a human's correction, whatever door they used. This is the guard that
+    // actually holds in practice: `as_is_confirmed_*` only knows about the box on the condition, and
+    // an officer can equally fix the number on the application form. If PILOT wrote X and the file no
+    // longer says X, somebody changed it on purpose — and re-reading the same appraisal must never
+    // put PILOT's number back. Without this the "Read the appraisal again" button, which sits one
+    // control away from the box they typed in, silently undoes them.
+    const movedSinceWrite = (applied, appliedValue, current) =>
+      !!applied && appliedValue != null && (current == null
+        || Math.abs(Number(current) - Number(appliedValue)) >= 0.005);
+
     let humanSettled = null;
     try {
-      if (appr.as_is_confirmed_at && appr.as_is_confirmed_value != null
+      if (movedSinceWrite(appr.as_is_applied, appr.as_is_applied_value, file.as_is_value)) {
+        humanSettled = 'corrected_after_write';
+      } else if (appr.as_is_confirmed_at && appr.as_is_confirmed_value != null
           && file.as_is_value != null
           && Math.abs(Number(file.as_is_value) - Number(appr.as_is_confirmed_value)) < 0.005) {
         humanSettled = 'entered_by_hand';
@@ -239,7 +252,15 @@ async function settleAsIs(appId, opts = {}) {
     // Kept separate from the As-Is: deciding one value says nothing about the other.
     let arvHumanSettled = null;
     try {
-      const kept = (await db.query(
+      if (movedSinceWrite(appr.arv_applied, appr.arv_applied_value, file.arv)) {
+        arvHumanSettled = 'corrected_after_write';
+      }
+      if (!arvHumanSettled && appr.arv_confirmed_at && appr.arv_confirmed_value != null
+          && file.arv != null
+          && Math.abs(Number(file.arv) - Number(appr.arv_confirmed_value)) < 0.005) {
+        arvHumanSettled = 'entered_by_hand';
+      }
+      const kept = arvHumanSettled ? null : (await db.query(
         `SELECT 1 FROM appraisal_findings
           WHERE application_id=$1 AND code='arv_mismatch'
             AND status IN ('resolved','dismissed') AND resolution IN ('keep','custom') LIMIT 1`,
@@ -296,12 +317,27 @@ async function settleAsIs(appId, opts = {}) {
     // on a subject-to report, extract.js already marked it `definite`, and it was recovered from all
     // 33 files in the research corpus. Same guards as the As-Is, and the same value-pinned write.
     const fileArvBefore = num(file.arv);
-    const arvDecision = decideArvApply({
+    // The As-Is is RE-READ from the file, not taken from the snapshot: the OCR + AI round trip above
+    // can take a minute, and if the As-Is moved underneath us in that window (`value_changed_
+    // underneath`) then `fileAsIsBefore` is stale. Judging the ARV against a stale As-Is is how you
+    // end up writing an ARV BELOW the As-Is — exactly what `not_above_as_is` exists to prevent.
+    let asIsNow = applied ? decision.value : fileAsIsBefore;
+    let asIsRaced = false;
+    try {
+      const fresh = (await db.query(`SELECT as_is_value FROM applications WHERE id=$1`, [appId])).rows[0];
+      const v = fresh ? num(fresh.as_is_value) : null;
+      if (v != null || fresh) asIsNow = v;
+      asIsRaced = decision.why === 'value_changed_underneath';
+    } catch (_) { asIsRaced = true; }   // could not confirm → do not risk the comparison
+    const arvDecision = asIsRaced
+      ? { apply: false, value: null, kind: 'none', why: 'as_is_changed_underneath' }
+      : decideArvApply({
       arv: num(appr.arv_value), arvConfidence: appr.arv_confidence,
+      // What the appraisal's headline value IS and what its basis enum SAYS that value means — the
+      // two things that separate the structured after-repair figure from a number read out of prose.
+      arvBasis: appr.condition_of_appraisal, appraisedValue: num(appr.appraised_value),
       fileArv: fileArvBefore,
-      // Compared against the As-Is the file will END UP with, so a fresh As-Is write in the same pass
-      // is what the ARV is checked against — never a value we just replaced.
-      asIs: applied ? decision.value : fileAsIsBefore,
+      asIs: asIsNow,
       lockReason: lockReason || (arvHumanSettled ? HUMAN_LOCK : null) || (identityIssue ? IDENTITY_LOCK : null),
       autoEnabled: autoEnabled(),
     });
@@ -393,7 +429,12 @@ async function settleAsIs(appId, opts = {}) {
     // could not act on (a frozen file, the switch off, the value moving underneath us).
     // …and an ARV write is its own reason to raise it: PILOT just changed a number the loan is sized
     // on, so a person re-reviews that too.
-    const settled = read.confident && !applied && decision.why === 'same_value' && !arvApplied;
+    // "Settled" means BOTH values are where they should be. A refused ARV that DIFFERS from the file
+    // is not settled — the appraisal and the loan disagree about the number the ARV-LTV cap is
+    // measured against, and nobody has been told. The two silent whys are the same two the note
+    // stays quiet about: the file already matches, or there was no ARV to read.
+    const arvQuiet = arvDecision.why === 'same_value' || arvDecision.why === 'no_value';
+    const settled = read.confident && !applied && decision.why === 'same_value' && !arvApplied && arvQuiet;
     const needsCondition = !settled;
     if (needsCondition && typeof opts.ensureCondition === 'function') {
       try { await opts.ensureCondition(appId); }
@@ -457,6 +498,41 @@ async function setAsIsByHuman(appId, value, { actorId, actor = null, note = null
 }
 
 /**
+ * A human types the ARV on the condition — the twin of setAsIsByHuman, and the reason PILOT's ARV
+ * write is safe to leave on: there is now a place to correct it. Their value always wins, and the
+ * stamp (plus the "moved since we wrote it" check in settleAsIs) stops a later re-read undoing them.
+ */
+async function setArvByHuman(appId, value, { actorId, actor = null, note = null } = {}) {
+  const v = Number(String(value == null ? '' : value).replace(/[,$\s]/g, ''));
+  if (!Number.isFinite(v) || v <= 0) return { ok: false, status: 400, error: 'Enter the ARV as a number.' };
+  if (v < 1000 || v > 100000000) return { ok: false, status: 400, error: 'That does not look like a property value — check the amount and try again.' };
+
+  const lock = await require('../file-lock').structuralLockReason(appId, db, { actor });
+  if (lock) return { ok: false, status: 409, error: lock, locked: true };
+
+  const before = (await db.query(`SELECT arv, as_is_value FROM applications WHERE id=$1 AND deleted_at IS NULL`, [appId])).rows[0];
+  if (!before) return { ok: false, status: 404, error: 'not found' };
+  // The same sanity the automatic write obeys: an ARV at or below the As-Is means the two figures are
+  // the wrong way round, and a typo here re-prices the loan.
+  const asIs = num(before.as_is_value);
+  if (asIs != null && v <= asIs) {
+    return { ok: false, status: 400, error: `The ARV has to be above the As-Is value of $${asIs.toLocaleString('en-US')} — check which figure is which.` };
+  }
+
+  await db.query(`UPDATE applications SET arv=$2, updated_at=now() WHERE id=$1`, [appId, v]);
+  try {
+    await db.query(
+      `UPDATE appraisals SET arv_confirmed_value=$2, arv_confirmed_by=$3, arv_confirmed_at=now()
+        WHERE application_id=$1 AND superseded=false`, [appId, v, actorId || null]);
+  } catch (_) { /* the confirmation stamp is a record, not the write itself */ }
+
+  await audit(actorId || null, 'appraisal_arv_entered', appId, {
+    from: num(before.arv), to: v, note: note ? String(note).slice(0, 300) : null,
+  });
+  return { ok: true, value: v, previous: num(before.arv) };
+}
+
+/**
  * The read + the file's numbers, for the condition's internal field and the appraisal desk.
  * `actor` is passed through to the file-freeze check so the panel shows THIS person's own lock
  * state (a super-admin on an unlocked file sees none, and the wording is the staff wording).
@@ -468,6 +544,7 @@ async function asIsState(appId, actor = null) {
             as_is_read_engine, as_is_read_at, as_is_read_detail,
             as_is_applied, as_is_applied_value, as_is_file_value_before, as_is_skip_reason,
             arv_applied, arv_applied_value, arv_file_value_before, arv_skip_reason,
+            arv_confirmed_value, arv_confirmed_at,
             as_is_confirmed_value, as_is_confirmed_at, as_is_confirmed_by
        FROM appraisals
       WHERE application_id=$1 AND superseded=false
@@ -494,10 +571,11 @@ async function asIsState(appId, actor = null) {
       applied: !!appr.arv_applied, appliedValue: num(appr.arv_applied_value),
       fileValueBefore: num(appr.arv_file_value_before), skipReason: appr.arv_skip_reason,
       fromAppraisal: num(appr.arv_value),
+      confirmed: appr.arv_confirmed_at ? { value: num(appr.arv_confirmed_value), at: appr.arv_confirmed_at } : null,
     } : null,
     locked: lock || null,
     autoEnabled: autoEnabled(),
   };
 }
 
-module.exports = { settleAsIs, setAsIsByHuman, asIsState, refreshCondition, autoEnabled, CONDITION_CODE };
+module.exports = { settleAsIs, setAsIsByHuman, setArvByHuman, asIsState, refreshCondition, autoEnabled, CONDITION_CODE };

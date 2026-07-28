@@ -392,24 +392,30 @@ async function undoAppraisalImport(appId, { actor = null } = {}) {
     //    NULL only where the file still shows exactly what THIS appraisal imported
     //    (nothing else changed it since; the import only ever fills a blank, so the
     //    previous value was NULL).
-    //     …EXCEPT where the appraisal desk RECORDED what it wrote (db/351/348). Since 2026-07-28 the
+    //     …EXCEPT where the appraisal desk RECORDED what it wrote (db/351 + db/352). Since 2026-07-28 the
     //     As-Is and the ARV are not blank-filled but REWRITTEN, so `as_is_applied_value` /
     //     `arv_applied_value` carry the truth: what PILOT put there, and what the file showed before.
     //     That record wins — blanking the field instead would throw away the value it replaced. Each
     //     restore is pinned to the exact value PILOT wrote, so a human's later correction is kept.
+    //     A VALUE PILOT DID NOT WRITE IS NOT PILOT'S TO REMOVE. The old rule — "blank it when the file
+    //     equals the appraisal, because the import only ever filled a blank" — stopped being true the
+    //     day the desk started making the file AGREE with the appraisal: equal became the normal
+    //     state, so that rule deleted As-Is and ARV values officers had typed by hand, including on
+    //     the very condition that asked them to. Both the desk's writes and the import's blank-fill
+    //     now record themselves in these columns, so there is exactly one thing to reverse.
+    //     Appraisals imported BEFORE that recording existed carry no record, so db/354 writes the
+    //     one they never got — ONCE, and only where the old rule would have fired (the file still
+    //     shows exactly what the appraisal imported and the desk has never touched the row), which
+    //     keeps the undo behaving identically on the back book.
     if (cur.as_is_applied && cur.as_is_applied_value != null) {
       await client.query(
         `UPDATE applications SET as_is_value=$3, updated_at=now() WHERE id=$1 AND as_is_value=$2`,
         [appId, cur.as_is_applied_value, cur.as_is_file_value_before]);
-    } else if (cur.as_is_value != null) {
-      await client.query(`UPDATE applications SET as_is_value=NULL, updated_at=now() WHERE id=$1 AND as_is_value=$2`, [appId, cur.as_is_value]);
     }
     if (cur.arv_applied && cur.arv_applied_value != null) {
       await client.query(
         `UPDATE applications SET arv=$3, updated_at=now() WHERE id=$1 AND arv=$2`,
         [appId, cur.arv_applied_value, cur.arv_file_value_before]);
-    } else if (cur.arv_value != null) {
-      await client.query(`UPDATE applications SET arv=NULL, updated_at=now() WHERE id=$1 AND arv=$2`, [appId, cur.arv_value]);
     }
     if (cur.appraiser_name) await client.query(`UPDATE applications SET appraiser_name=NULL, updated_at=now() WHERE id=$1 AND appraiser_name=$2`, [appId, cur.appraiser_name]);
 

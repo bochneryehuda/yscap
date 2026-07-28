@@ -338,7 +338,17 @@ async function aiLocate(text, deps = {}) {
   // $215,000" is a real sentence, genuinely in the document, that the AI will happily hand back —
   // and it is the PRIOR SALE PRICE, not today's value. `near` means "an amount sits beside the words
   // as-is", which is exactly what that sentence is.
-  const scan = scanAsIs(quote);
+  //
+  // The re-scan runs over a WINDOW OF THE DOCUMENT around the quote, never the quote alone. The
+  // scanner's stacked-label guard looks at the line BEFORE a wrapped label — and that line does not
+  // exist inside a two-line quote, so scanning the quote by itself hands the AI a way around the one
+  // guard built for exactly this shape ("As Repaired Value / As Is Value / $450,000 / $312,500", the
+  // ARV pairing with the As-Is label). Widening the scan to the surrounding text restores it.
+  const at = hay.indexOf(needle);
+  const ratio = hay.length ? text.length / hay.length : 1;      // squashed → original offsets
+  const from = Math.max(0, Math.floor(at * ratio) - 400);
+  const to = Math.min(text.length, Math.ceil((at + needle.length) * ratio) + 400);
+  const scan = scanAsIs(text.slice(from, to));
   const confirmed = scan.labeled.includes(value);
   if (!confirmed) {
     return { ok: true, found: false, grounded: false, value, quote, reason: 'the AI reader\'s quote does not read as an as-is value' };
@@ -438,8 +448,13 @@ async function readAsIs(args = {}, deps = {}) {
   // has no ARV by definition, and the rule correctly does not apply to it.
   const bestArv = arv != null ? arv
     : (Number(args.fileArv) > 0 ? Number(args.fileArv) : null);
+  // The file's OWN ARV may SATISFY the rule but must never CREATE it. Letting it trigger the test is
+  // circular — the same number both raises the requirement and is the only thing that can meet it —
+  // so a file carrying a stale, low, or as-is-equal ARV on a deal with no renovation at all would
+  // block a perfectly good read forever. Only real renovation evidence starts the test: the MISMO
+  // basis enum, an ARV on the APPRAISAL, or a construction budget.
   const isReno = /^SubjectTo/i.test(String(args.xmlBasis || '').trim())
-    || bestArv != null
+    || arv != null
     || Number(args.rehabBudget) > 0;
   const aboveArvOk = (n) => !isReno || (bestArv != null && bestArv > n);
   const NO_ARV_ABOVE = 'no after-repair value above it could be found on this renovation file, so this may be the ARV itself rather than the as-is value';
@@ -725,11 +740,25 @@ function decideAsIsApply({ read, fileAsIs, purchasePrice, lockReason = null, aut
  *
  * @returns {{apply:boolean, value:number|null, kind:'raised'|'lowered'|'filled'|'none', why:string}}
  */
-function decideArvApply({ arv, arvConfidence, fileArv, asIs, lockReason = null, autoEnabled = true } = {}) {
+function decideArvApply({ arv, arvConfidence, arvBasis, appraisedValue, fileArv, asIs, lockReason = null, autoEnabled = true } = {}) {
   const none = (why) => ({ apply: false, value: null, kind: 'none', why });
   const v = Number(arv);
   if (arv == null || !Number.isFinite(v)) return none('no_value');
   if (arvConfidence !== 'definite') return none('not_confident');
+  // `arvConfidence === 'definite'` is NOT the same as "this is the appraisal's headline value".
+  // extract.js marks a `definite` ARV in TWO places: the structured `PropertyAppraisedValueAmount`
+  // on a subject-to report (what the owner meant by *"we don't even need OCR for it"*), and — on an
+  // AS-IS-basis report — a number MINED OUT OF PROSE with no ceiling and no cross-check. That second
+  // branch will happily hand back a borrower's quoted estimate ("the borrower reports an as
+  // completed value of $700,000"), a neighbouring project's figure, or a comp's as-repaired price,
+  // and writing one of those would RAISE the file's ARV — the cap the loan is sized against.
+  // So the write is restricted to the case the owner actually described: the appraisal's own
+  // headline number, on a report whose MISMO basis enum says that number is the after-repair value.
+  // A prose ARV is still parsed, still shown, and still raises the `arv_mismatch` finding for a
+  // human — it just never writes itself onto the loan.
+  const structural = appraisedValue != null && Number.isFinite(Number(appraisedValue))
+    && Math.abs(v - Number(appraisedValue)) < 0.005;
+  if (!/^SubjectTo/i.test(String(arvBasis || '').trim()) || !structural) return none('not_the_headline_value');
   if (!autoEnabled) return none('auto_off');
   if (!plausible(v)) return none('implausible');
   // An ARV at or below the As-Is is the two values swapped, or one of them misread. Never written.
@@ -771,9 +800,29 @@ function buildAsIsNote({ read, decision, fileAsIsBefore, purchasePrice, arvDecis
 
   // The ARV rides on the SAME condition — it is the same question ("do the appraisal's values match
   // the file?") and one condition beats two. Appended to whatever the As-Is half says.
+  const ARV_WHY = {
+    not_the_headline_value: 'it is not the appraisal\'s own headline figure (it was read out of the report\'s wording), so PILOT will not use it on its own',
+    not_above_as_is: 'it is not above the As-Is value, so the two figures would be the wrong way round',
+    not_confident: 'the appraisal data file does not state it definitely',
+    same_value: 'the file already shows it',
+    file_locked: 'this file\'s figures are locked',
+    human_decided: 'someone has already decided it by hand',
+    appraisal_identity_mismatch: 'this appraisal does not match the property on the file',
+    auto_off: 'the automatic update is switched off',
+    value_changed_underneath: 'it changed on the file while PILOT was reading',
+    as_is_changed_underneath: 'the As-Is changed on the file while PILOT was reading, so the two could not be compared safely',
+    write_failed: 'the update did not go through',
+    implausible: 'the amount does not look like a property value',
+  };
   const arvLine = (() => {
     const a = arvDecision || {};
-    if (!a.apply) return '';
+    // A REFUSED ARV has to be said out loud too — the panel shows it, and a printed or emailed
+    // condition would otherwise hide that the appraisal and the file disagree on the ARV.
+    if (!a.apply) {
+      if (!a.why || a.why === 'no_value' || a.why === 'same_value') return '';
+      const w = ARV_WHY[a.why];
+      return w ? ` PILOT did not change the ARV (after-repair value): ${w}.` : '';
+    }
     const verb = a.kind === 'raised' ? 'raised' : (a.kind === 'lowered' ? 'lowered' : 'set');
     return ` PILOT also ${verb} the ARV (after-repair value) on this file`
       + (fileArvBefore != null ? ` from ${money(fileArvBefore)}` : '')

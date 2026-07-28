@@ -54,12 +54,18 @@ const pdfDeps = (text) => ({
        VALUES ($1,$2,$3,$4,$5,$6,$7,'rtl') RETURNING id`,
       [borrowerId, adminId, opts.status || 'processing', opts.purchasePrice, opts.fileAsIs == null ? null : opts.fileAsIs,
        opts.arv == null ? null : opts.arv, JSON.stringify({ line1: '12 Test St', city: 'Lakewood', state: 'NJ' })])).rows[0].id;
+    const apprArv = opts.apprArv === undefined ? (opts.arv == null ? null : opts.arv) : opts.apprArv;
     await db.query(
-      `INSERT INTO appraisals (application_id, form_type, as_is_value, as_is_confidence, arv_value, arv_confidence, condition_of_appraisal, superseded, imported_at)
-       VALUES ($1,'FNM1004',$2,$3,$4,$5,$6,false,now())`,
+      `INSERT INTO appraisals (application_id, form_type, as_is_value, as_is_confidence, arv_value, arv_confidence, appraised_value, condition_of_appraisal, superseded, imported_at)
+       VALUES ($1,'FNM1004',$2,$3,$4,$5,$6,$7,false,now())`,
       [appId, opts.xmlAsIs == null ? null : opts.xmlAsIs, opts.xmlAsIs == null ? 'missing' : 'definite',
-       opts.apprArv === undefined ? (opts.arv == null ? null : opts.arv) : opts.apprArv,
-       opts.apprArvConfidence || 'definite', opts.basis || 'SubjectToRepairs']);
+       apprArv, opts.apprArvConfidence || 'definite',
+       // A real appraisal has ONE headline value: on a subject-to report it IS the ARV, on an
+       // as-is-basis report it is the As-Is. The ARV write is gated on exactly that, so the fixture
+       // has to model it — an appraisal row with a null appraised_value is not a real appraisal.
+       opts.appraisedValue !== undefined ? opts.appraisedValue
+         : (String(opts.basis || 'SubjectToRepairs').startsWith('SubjectTo') ? apprArv : (opts.xmlAsIs == null ? null : opts.xmlAsIs)),
+       opts.basis || 'SubjectToRepairs']);
     return appId;
   };
   const fileArv = async (appId) => {
@@ -426,6 +432,66 @@ const pdfDeps = (text) => ({
       assert((await fileArv(appId)) === 620000, 'the ARV was written');
       await desk.undoAppraisalImport(appId, {});
       assert((await fileArv(appId)) === 575000, 'undo put the ARV back to what the file said before');
+    }
+
+    // =====================================================================
+    // 4e. THE AUDIT'S BLOCKERS — each one reproduced before the fix.
+    // =====================================================================
+    {
+      // BLOCKER 1: an ARV read out of the report's WORDING (an as-is-basis appraisal) must never be
+      // written. The reproduction was a borrower-quoted estimate raising the file's ARV by $200k.
+      const appId = await mkFile({ purchasePrice: 450000, fileAsIs: 430000, arv: 500000, apprArv: 700000, xmlAsIs: 430000, basis: 'AsIs' });
+      const out = await desk.runAsIsRead(appId, {});
+      assert(!out.arvApplied && out.arvWhy === 'not_the_headline_value',
+        'a prose-mined ARV on an as-is-basis report is NEVER written onto the file');
+      assert((await fileArv(appId)) === 500000, 'the file’s ARV is untouched by a number read out of wording');
+      const c = await cond(appId);
+      assert(/did not change the ARV/i.test(c.notes), 'the condition says out loud that the ARV was left alone, and why');
+    }
+    {
+      // BLOCKER 2: a human's correction, made through ANY door, survives the next re-read.
+      const appId = await mkFile({ purchasePrice: 450000, fileAsIs: 430000, arv: 500000, apprArv: 620000, xmlAsIs: 430000 });
+      await desk.runAsIsRead(appId, {});
+      assert((await fileArv(appId)) === 620000, 'PILOT wrote the ARV');
+      // The officer corrects it — through the new box.
+      const set = await call(server, 'POST', `/api/appraisal/${appId}/arv`, token, { value: 585000 });
+      assert(set.status === 200 && (await fileArv(appId)) === 585000, 'an officer can type the ARV');
+      const again = await call(server, 'POST', `/api/appraisal/${appId}/as-is/read`, token);
+      assert(again.status === 200 && again.json.arvApplied === false && again.json.arvWhy === 'human_decided',
+        'a re-read REFUSES to put PILOT’s ARV back over the officer’s');
+      assert((await fileArv(appId)) === 585000, 'the officer’s ARV survives the re-read');
+      // The protection is specifically "a value PILOT WROTE that has since MOVED", plus the box's own
+      // stamp. A bare edit on a value PILOT never wrote is NOT protected, and that is the designed
+      // behaviour under the owner's confidence-only rule — the appraisal is the authority, and the
+      // human's recourse is the box (which stamps) or resolving the finding as keep. What must never
+      // happen is it going by unannounced, so assert the re-review condition is raised.
+      await db.query(`UPDATE applications SET as_is_value=402000 WHERE id=$1`, [appId]);
+      await db.query(`UPDATE checklist_items ci SET notes=NULL FROM checklist_templates t
+                       WHERE ci.template_id=t.id AND t.code='appraisal_as_is_verify' AND ci.application_id=$1`, [appId]);
+      const third = await desk.runAsIsRead(appId, {});
+      assert(third.applied && (await fileAsIs(appId)) === 430000,
+        'a bare edit PILOT never wrote to is re-asserted from the appraisal (the appraisal is the authority)');
+      const c3 = await cond(appId);
+      assert(c3 && c3.status === 'outstanding' && /re-review/i.test(c3.notes),
+        '…and it is never silent: the condition reopens for a human to re-review');
+    }
+    {
+      // An ARV at or below the As-Is is the two values swapped — refused at the human door too.
+      const appId = await mkFile({ purchasePrice: 450000, fileAsIs: 430000, arv: 620000, apprArv: 620000, xmlAsIs: 430000 });
+      const bad = await call(server, 'POST', `/api/appraisal/${appId}/arv`, token, { value: 400000 });
+      assert(bad.status === 400 && /above the As-Is/i.test(bad.body), 'an ARV below the As-Is is refused with a reason');
+      assert((await fileArv(appId)) === 620000, 'the file is untouched by the refused entry');
+    }
+    {
+      // MAJOR 4: undo must never delete a value PILOT did not write.
+      const appId = await mkFile({ purchasePrice: 450000, fileAsIs: null, arv: null, apprArv: null, xmlAsIs: null, apprArvConfidence: 'missing' });
+      await desk.runAsIsRead(appId, {});
+      await call(server, 'POST', `/api/appraisal/${appId}/as-is`, token, { value: 312500 });
+      await call(server, 'POST', `/api/appraisal/${appId}/arv`, token, { value: 450000 });
+      assert((await fileAsIs(appId)) === 312500 && (await fileArv(appId)) === 450000, 'the officer entered both values by hand');
+      await desk.undoAppraisalImport(appId, {});
+      assert((await fileAsIs(appId)) === 312500, 'undo does NOT delete the As-Is the officer typed');
+      assert((await fileArv(appId)) === 450000, 'undo does NOT delete the ARV the officer typed');
     }
 
     // =====================================================================

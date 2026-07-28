@@ -51,4 +51,8 @@ UPDATE checklist_templates
                || 'in the report PDF with OCR and AI — and it is only written when PILOT is confident. '
                || 'If it could not read the As-Is confidently, nothing was filled in: read it off the '
                || 'report and enter it here to clear this condition.'
- WHERE code = 'appraisal_as_is_verify';
+ WHERE code = 'appraisal_as_is_verify'
+   -- …and only while the template still carries the wording a previous deploy wrote. Without this
+   -- the re-assert silently reverts an admin's edit to the label or hint on every single boot.
+   AND (label IS DISTINCT FROM 'Confirm the appraisal''s values (As-Is and ARV)'
+        OR hint NOT LIKE 'PILOT reads the appraisal%');

@@ -256,6 +256,21 @@ router.post('/:appId/as-is', requirePermission('sign_off_conditions'), async (re
   } catch (e) { next(e); }
 });
 
+// The ARV's own entry — the twin of the As-Is box. Without it PILOT could rewrite the ARV and the
+// officer had nowhere to correct it (the only other door, PATCH /details, is frozen once the term
+// sheet is sent). Same gate as the As-Is write: it re-prices the loan.
+router.post('/:appId/arv', requirePermission('sign_off_conditions'), async (req, res, next) => {
+  try {
+    const app = await fileFor(req, req.params.appId);
+    if (!app) return res.status(404).json({ error: 'not found' });
+    const out = await require('../lib/appraisal/as-is-desk').setArvByHuman(app.id, (req.body || {}).value, {
+      actorId: req.actor.id, actor: req.actor, note: (req.body || {}).note,
+    });
+    if (!out.ok) return res.status(out.status || 400).json({ error: out.error, locked: out.locked });
+    res.json({ ok: true, value: out.value, previous: out.previous });
+  } catch (e) { next(e); }
+});
+
 // Re-run the read on demand (the PDF arrived after the XML, or the OCR service was down at import).
 // Reading is free of side effects beyond the same owner-directed rule the import applies, so it is
 // gated at the same level as entering the value by hand.

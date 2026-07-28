@@ -871,6 +871,7 @@ export const api = {
   // The As-Is value PILOT read off the appraisal, and the officer's own entry (2026-07-28).
   appraisalAsIs:           (appId) => req('GET', `/api/appraisal/${appId}/as-is`),
   appraisalSetAsIs:        (appId, b) => req('POST', `/api/appraisal/${appId}/as-is`, b),
+  appraisalSetArv:         (appId, b) => req('POST', `/api/appraisal/${appId}/arv`, b),
   appraisalRereadAsIs:     (appId) => req('POST', `/api/appraisal/${appId}/as-is/read`, {}),
   // Borrower READ-ONLY view of the same appraisal report + findings (no actions).
   appraisalGetBorrower:    (appId) => req('GET', `/api/borrower/applications/${appId}/appraisal`),
