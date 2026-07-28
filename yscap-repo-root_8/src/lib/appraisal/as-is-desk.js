@@ -27,7 +27,7 @@
  */
 const db = require('../../db');
 const switches = require('../integrations/switches');
-const { readAsIs, decideAsIsApply, buildAsIsNote, buildAsIsHint } = require('./as-is-reader');
+const { readAsIs, decideAsIsApply, decideArvApply, buildAsIsNote, buildAsIsHint } = require('./as-is-reader');
 
 const CONDITION_CODE = 'appraisal_as_is_verify';
 
@@ -124,9 +124,9 @@ async function settleAsIs(appId, opts = {}) {
   if (!appId) return { ran: false, reason: 'no application id' };
   try {
     const appr = (await db.query(
-      `SELECT id, as_is_value, as_is_confidence, arv_value, appraised_value, condition_of_appraisal,
+      `SELECT id, as_is_value, as_is_confidence, arv_value, arv_confidence, appraised_value, condition_of_appraisal,
               value_cost_approach, value_income_approach, value_sales_approach, site_value,
-              as_is_confirmed_value, as_is_confirmed_at,
+              as_is_confirmed_value, as_is_confirmed_at, arv_applied, arv_applied_value,
               pdf_document_id, source_xml_document_id
          FROM appraisals
         WHERE application_id=$1 AND superseded=false
@@ -134,7 +134,7 @@ async function settleAsIs(appId, opts = {}) {
     if (!appr) return { ran: false, reason: 'no current appraisal on this file' };
 
     const file = (await db.query(
-      `SELECT as_is_value, purchase_price FROM applications WHERE id=$1 AND deleted_at IS NULL`, [appId])).rows[0];
+      `SELECT as_is_value, purchase_price, arv, rehab_budget FROM applications WHERE id=$1 AND deleted_at IS NULL`, [appId])).rows[0];
     if (!file) return { ran: false, reason: 'file not found' };
 
     // The PDF bytes: whatever the caller already had in hand, else recovered from what the import
@@ -165,6 +165,10 @@ async function settleAsIs(appId, opts = {}) {
       // amount printed near "as is" wording, and the income approach can even sit below the ARV.
       valueCostApproach: num(appr.value_cost_approach), valueIncomeApproach: num(appr.value_income_approach),
       valueSalesApproach: num(appr.value_sales_approach), siteValue: num(appr.site_value),
+      // The file's own after-repair value and construction budget: what tells the reader this is a
+      // RENOVATION deal, and therefore that an ARV must sit ABOVE any candidate As-Is — the owner's
+      // "if you can't find another ARV higher than it, your value is probably the ARV".
+      fileArv: num(file.arv), rehabBudget: num(file.rehab_budget),
       // SANITY ONLY — the file's own numbers let the reader spot a ten-fold digit slip. They never
       // influence WHAT the appraisal is read to say.
       fileAsIs: num(file.as_is_value), purchasePrice: num(file.purchase_price),
@@ -230,6 +234,19 @@ async function settleAsIs(appId, opts = {}) {
       }
     } catch (_) { humanSettled = 'unknown'; }
 
+    // The ARV has its OWN human decision — an underwriter who resolved `arv_mismatch` with keep or
+    // custom chose the file's after-repair value deliberately, and a re-import must not undo them.
+    // Kept separate from the As-Is: deciding one value says nothing about the other.
+    let arvHumanSettled = null;
+    try {
+      const kept = (await db.query(
+        `SELECT 1 FROM appraisal_findings
+          WHERE application_id=$1 AND code='arv_mismatch'
+            AND status IN ('resolved','dismissed') AND resolution IN ('keep','custom') LIMIT 1`,
+        [appId])).rows[0];
+      if (kept) arvHumanSettled = 'finding_resolved_by_hand';
+    } catch (_) { arvHumanSettled = 'unknown'; }
+
     const fileAsIsBefore = num(file.as_is_value);
     const purchasePrice = num(file.purchase_price);
     const decision = decideAsIsApply({
@@ -274,6 +291,62 @@ async function settleAsIs(appId, opts = {}) {
       }
     }
 
+    // ---- the ARV (owner-directed 2026-07-28) --------------------------------
+    // No ladder, no OCR, no AI: the appraisal's structured headline value IS the after-repair value
+    // on a subject-to report, extract.js already marked it `definite`, and it was recovered from all
+    // 33 files in the research corpus. Same guards as the As-Is, and the same value-pinned write.
+    const fileArvBefore = num(file.arv);
+    const arvDecision = decideArvApply({
+      arv: num(appr.arv_value), arvConfidence: appr.arv_confidence,
+      fileArv: fileArvBefore,
+      // Compared against the As-Is the file will END UP with, so a fresh As-Is write in the same pass
+      // is what the ARV is checked against — never a value we just replaced.
+      asIs: applied ? decision.value : fileAsIsBefore,
+      lockReason: lockReason || (arvHumanSettled ? HUMAN_LOCK : null) || (identityIssue ? IDENTITY_LOCK : null),
+      autoEnabled: autoEnabled(),
+    });
+    if (arvDecision.why === 'file_locked' && !lockReason) {
+      arvDecision.why = arvHumanSettled ? 'human_decided' : 'appraisal_identity_mismatch';
+    }
+    let arvApplied = false;
+    if (arvDecision.apply) {
+      const upd = await db.query(
+        `UPDATE applications SET arv=$2, updated_at=now()
+          WHERE id=$1 AND arv IS NOT DISTINCT FROM $3::numeric`,
+        [appId, arvDecision.value, fileArvBefore]);
+      arvApplied = upd.rowCount > 0;
+      if (arvApplied) {
+        await audit(opts.actorId || null, 'appraisal_arv_auto_applied', appId, {
+          from: fileArvBefore, to: arvDecision.value, kind: arvDecision.kind, source: 'xml',
+        });
+        // The `arv_mismatch` finding asked for exactly this — retire it when we wrote the value it
+        // proposed. Numeric compare, for the same reason as the As-Is one.
+        try {
+          await db.query(
+            `UPDATE appraisal_findings
+                SET status='resolved', resolution='replace', resolution_value=$2,
+                    resolution_note=$3, resolved_at=now()
+              WHERE application_id=$1 AND status='open' AND code='arv_mismatch'
+                AND NULLIF(regexp_replace(coalesce(appraisal_value,''), '[^0-9.]', '', 'g'), '')::numeric = $2::numeric`,
+            [appId, String(arvDecision.value), 'PILOT took the ARV straight from the appraisal data file and applied it — see the "Confirm the appraisal\'s values" condition.']);
+        } catch (e) { console.error('[appraisal] arv finding retire failed (non-fatal):', e && e.message); }
+      } else {
+        arvDecision.apply = false;
+        arvDecision.why = 'value_changed_underneath';
+      }
+    }
+    try {
+      await db.query(
+        `UPDATE appraisals
+            SET arv_applied           = CASE WHEN $2::boolean THEN true         ELSE arv_applied END,
+                arv_applied_value     = CASE WHEN $2::boolean THEN $3::numeric  ELSE arv_applied_value END,
+                arv_file_value_before = CASE WHEN $2::boolean THEN $4::numeric  ELSE arv_file_value_before END,
+                arv_skip_reason=$5
+          WHERE id=$1 AND superseded=false`,
+        [appr.id, arvApplied, arvApplied ? arvDecision.value : null, fileArvBefore,
+         arvApplied ? null : (arvDecision.why || null)]);
+    } catch (e) { console.error('[appraisal] arv record failed (non-fatal):', e && e.message); }
+
     // ---- record the reading on the appraisal --------------------------------
     try {
       await db.query(
@@ -309,7 +382,9 @@ async function settleAsIs(appId, opts = {}) {
     // shows exactly that value — the appraisal and the loan file agree, confirmed from two sides,
     // with nothing for anyone to do. Everything else raises it, including a confident reading it
     // could not act on (a frozen file, the switch off, the value moving underneath us).
-    const settled = read.confident && !applied && decision.why === 'same_value';
+    // …and an ARV write is its own reason to raise it: PILOT just changed a number the loan is sized
+    // on, so a person re-reviews that too.
+    const settled = read.confident && !applied && decision.why === 'same_value' && !arvApplied;
     const needsCondition = !settled;
     if (needsCondition && typeof opts.ensureCondition === 'function') {
       try { await opts.ensureCondition(appId); }
@@ -318,13 +393,14 @@ async function settleAsIs(appId, opts = {}) {
     // The wording is refreshed UNCONDITIONALLY. When no instance exists the UPDATE simply matches
     // nothing; when one DOES exist — attached by an earlier read that could not find the value, say —
     // it must never be left showing a stale explanation of a reading that has since changed.
-    const note = buildAsIsNote({ read, decision, fileAsIsBefore, purchasePrice });
+    const note = buildAsIsNote({ read, decision, fileAsIsBefore, purchasePrice, arvDecision, fileArvBefore });
     const hint = buildAsIsHint(decision);
-    await refreshCondition(appId, { note, hint, reopen: applied });
+    await refreshCondition(appId, { note, hint, reopen: applied || arvApplied });
 
     return {
       ran: true, applied, value: read.value, confidence: read.confidence, source: read.source,
       why: decision.why, appliedValue: applied ? decision.value : null, needsCondition,
+      arvApplied, arvValue: arvApplied ? arvDecision.value : null, arvWhy: arvDecision.why,
     };
   } catch (e) {
     console.error('[appraisal] as-is settle failed (non-fatal):', e && e.message);
@@ -382,6 +458,7 @@ async function asIsState(appId, actor = null) {
             as_is_read_value, as_is_read_source, as_is_read_confidence, as_is_read_quote,
             as_is_read_engine, as_is_read_at, as_is_read_detail,
             as_is_applied, as_is_applied_value, as_is_file_value_before, as_is_skip_reason,
+            arv_applied, arv_applied_value, arv_file_value_before, arv_skip_reason,
             as_is_confirmed_value, as_is_confirmed_at, as_is_confirmed_by
        FROM appraisals
       WHERE application_id=$1 AND superseded=false
@@ -403,6 +480,12 @@ async function asIsState(appId, actor = null) {
     confirmed: appr && appr.as_is_confirmed_at
       ? { value: num(appr.as_is_confirmed_value), at: appr.as_is_confirmed_at } : null,
     xml: appr ? { asIs: num(appr.as_is_value), confidence: appr.as_is_confidence, arv: num(appr.arv_value) } : null,
+    // What PILOT did with the appraisal's ARV — no ladder, straight from the data file.
+    arv: appr ? {
+      applied: !!appr.arv_applied, appliedValue: num(appr.arv_applied_value),
+      fileValueBefore: num(appr.arv_file_value_before), skipReason: appr.arv_skip_reason,
+      fromAppraisal: num(appr.arv_value),
+    } : null,
     locked: lock || null,
     autoEnabled: autoEnabled(),
   };

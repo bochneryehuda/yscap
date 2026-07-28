@@ -396,6 +396,9 @@ async function readPdfText({ pdfBuffer, pdfBase64 }, deps = {}) {
  *   xmlAsIs, xmlAsIsConfidence  what extract() already resolved from the MISMO data file
  *   pdfBuffer | pdfBase64       the appraisal report PDF (optional — no PDF just means no step 2/3)
  *   arv                         the appraisal's ARV, when known (sanity ceiling)
+ *   fileArv, rehabBudget        the file's own after-repair value and construction budget — what
+ *                               decides whether this is a RENOVATION deal, and therefore whether an
+ *                               ARV must exist ABOVE the candidate (see aboveArvOk)
  *   fileAsIs, purchasePrice     the file's own numbers — used for SANITY ONLY (the digit-slip check),
  *                               never to decide what the appraisal says
  * @param {{ocrRouter?, legacyOcr?, analyzer?}} deps  injectable; defaults are the real modules
@@ -417,6 +420,29 @@ async function readAsIs(args = {}, deps = {}) {
     retryable: false,
   };
   const arv = Number.isFinite(Number(args.arv)) && Number(args.arv) > 0 ? Number(args.arv) : null;
+
+  // ---- THE ARV MUST SIT ABOVE IT (owner-directed 2026-07-28) -----------------
+  // *"Never use the ARV value for the as is value … if you can't find another ARV value that is
+  //  higher than the value you think the as is value is, then probably your value that you found IS
+  //  the ARV."*
+  //
+  // On a RENOVATION deal there are two values and the after-repair one is always the larger. So a
+  // candidate As-Is is only believable when we can point at an ARV strictly above it. If we cannot
+  // find one anywhere — not on the appraisal, not on the file — then the number in our hand is very
+  // likely the ARV itself wearing the wrong label, and it must never be written. It is still
+  // REPORTED, so a human decides.
+  //
+  // "Renovation deal" is read from the same signals the rest of the appraisal desk uses: the MISMO
+  // basis enum extract.js already resolved (`SubjectTo*` means the headline value is after-repair),
+  // an ARV on the appraisal, an ARV on the file, or a construction budget. A STRAIGHT as-is purchase
+  // has no ARV by definition, and the rule correctly does not apply to it.
+  const bestArv = arv != null ? arv
+    : (Number(args.fileArv) > 0 ? Number(args.fileArv) : null);
+  const isReno = /^SubjectTo/i.test(String(args.xmlBasis || '').trim())
+    || bestArv != null
+    || Number(args.rehabBudget) > 0;
+  const aboveArvOk = (n) => !isReno || (bestArv != null && bestArv > n);
+  const NO_ARV_ABOVE = 'no after-repair value above it could be found on this renovation file, so this may be the ARV itself rather than the as-is value';
 
   // ---- 1. the XML data file ------------------------------------------------
   const xmlVal = Number(args.xmlAsIs);
@@ -440,6 +466,14 @@ async function readAsIs(args = {}, deps = {}) {
       return {
         ...out, found: true, value: xmlVal, source: 'xml', confidence: 'low', confident: false, candidates: [xmlVal],
         reason: 'the appraisal data file does not say whether its value is "as is" or "after repair", so PILOT will not use it on its own',
+      };
+    }
+    // …and the same number must have an ARV ABOVE it on a renovation file, or it is probably the ARV.
+    if (!aboveArvOk(xmlVal)) {
+      out.steps.push({ step: 'xml', ok: false, value: xmlVal, reason: 'no ARV above it' });
+      return {
+        ...out, found: true, value: xmlVal, source: 'xml', confidence: 'low', confident: false,
+        candidates: [xmlVal], reason: NO_ARV_ABOVE,
       };
     }
     out.steps.push({ step: 'xml', ok: true, value: xmlVal });
@@ -523,10 +557,16 @@ async function readAsIs(args = {}, deps = {}) {
   // It stays a CANDIDATE (a human may confirm it is real) but can never be written automatically.
   const slipRefs = [arv, args.fileAsIs, args.purchasePrice];
   const slipped = (n) => scaleSlip(n, slipRefs);
-  const demote = (v, base) => (slipped(v)
-    ? { ...base, confidence: 'low', confident: false,
-        reason: 'the amount looks like a misread of a number already on the file (out by a factor of ten), so it needs a human' }
-    : base);
+  const demote = (v, base) => {
+    if (slipped(v)) {
+      return { ...base, confidence: 'low', confident: false,
+        reason: 'the amount looks like a misread of a number already on the file (out by a factor of ten), so it needs a human' };
+    }
+    // The owner's rule, applied to the PDF path too: on a renovation file an As-Is must have an ARV
+    // above it. Without one, the amount we are holding is probably the after-repair value.
+    if (!aboveArvOk(v)) return { ...base, confidence: 'low', confident: false, reason: NO_ARV_ABOVE };
+    return base;
+  };
 
   const snippetFor = (amount) => {
     const h = scan.hits.find((x) => x.amount === amount);
@@ -667,6 +707,43 @@ function decideAsIsApply({ read, fileAsIs, purchasePrice, lockReason = null, aut
   return { apply: true, value: v, kind: !has ? 'filled' : (v < cur ? 'reduced' : 'raised'), why: 'ok', belowPrice };
 }
 
+/**
+ * PURE. The ARV's own write rule (owner-directed 2026-07-28): *"once the appraisal is being imported
+ * we also want you to add that the ARV value should be rewritten in our file according to the
+ * appraisal — we already have logic and XML of the appraisal finding that reads the ARV value that
+ * I'm much more highly confident about, and we don't even need OCR for it."*
+ *
+ * The ARV is the EASY one, and that is exactly why it is treated differently from the As-Is: a MISMO
+ * appraisal has one structured `PropertyAppraisedValueAmount`, and on a subject-to (renovation)
+ * report that figure IS the after-repair value. `extract.js` already resolves it and marks it
+ * `definite` — it was recovered from all 33 files in the research corpus. So there is no ladder, no
+ * OCR and no AI here: a `definite` XML ARV is written, anything else is left alone.
+ *
+ * The same three things stop it as stop the As-Is, and none of them is about direction: the file must
+ * not be frozen, a human must not have already settled the number, and it must be a real change.
+ * A write reopens Products & Pricing, so the loan is re-sized by a person, never by this.
+ *
+ * @returns {{apply:boolean, value:number|null, kind:'raised'|'lowered'|'filled'|'none', why:string}}
+ */
+function decideArvApply({ arv, arvConfidence, fileArv, asIs, lockReason = null, autoEnabled = true } = {}) {
+  const none = (why) => ({ apply: false, value: null, kind: 'none', why });
+  const v = Number(arv);
+  if (arv == null || !Number.isFinite(v)) return none('no_value');
+  if (arvConfidence !== 'definite') return none('not_confident');
+  if (!autoEnabled) return none('auto_off');
+  if (!plausible(v)) return none('implausible');
+  // An ARV at or below the As-Is is the two values swapped, or one of them misread. Never written.
+  const a = Number(asIs);
+  if (Number.isFinite(a) && a > 0 && v <= a) return none('not_above_as_is');
+
+  const cur = fileArv == null || fileArv === '' ? null : Number(fileArv);
+  const has = cur != null && Number.isFinite(cur);
+  if (has && Math.abs(cur - v) < 0.005) return none('same_value');
+  if (lockReason) return none('file_locked');
+
+  return { apply: true, value: v, kind: !has ? 'filled' : (v > cur ? 'raised' : 'lowered'), why: 'ok' };
+}
+
 // ---------------------------------------------------------------------------
 // The wording an officer reads on the condition
 // ---------------------------------------------------------------------------
@@ -684,13 +761,24 @@ const SOURCE_WORDS = {
  * read by staff, not developers — and it always says (a) what PILOT did, (b) what the numbers are,
  * and (c) that a human can re-review and overwrite it.
  */
-function buildAsIsNote({ read, decision, fileAsIsBefore, purchasePrice } = {}) {
+function buildAsIsNote({ read, decision, fileAsIsBefore, purchasePrice, arvDecision, fileArvBefore } = {}) {
   // `[auto]` marks the note as system-written so a re-read never clobbers a note an officer typed
   // (every write guards on `notes IS NULL OR notes LIKE '[auto]%'`).
   const P = '[auto] ';
   const r = read || {}, dec = decision || {};
   const where = SOURCE_WORDS[r.source] || 'the appraisal';
   const quote = r.quote ? ` It was read from: “${String(r.quote).replace(/\s+/g, ' ').trim().slice(0, 220)}”.` : '';
+
+  // The ARV rides on the SAME condition — it is the same question ("do the appraisal's values match
+  // the file?") and one condition beats two. Appended to whatever the As-Is half says.
+  const arvLine = (() => {
+    const a = arvDecision || {};
+    if (!a.apply) return '';
+    const verb = a.kind === 'raised' ? 'raised' : (a.kind === 'lowered' ? 'lowered' : 'set');
+    return ` PILOT also ${verb} the ARV (after-repair value) on this file`
+      + (fileArvBefore != null ? ` from ${money(fileArvBefore)}` : '')
+      + ` to ${money(a.value)}, straight from the appraisal data file — that figure is the appraisal's own headline value, so no OCR was involved.`;
+  })();
 
   if (dec.apply) {
     const lead = {
@@ -705,6 +793,7 @@ function buildAsIsNote({ read, decision, fileAsIsBefore, purchasePrice } = {}) {
       : (purchasePrice != null ? ` The purchase price on the file is ${money(purchasePrice)}.` : '');
     return `${P}${lead} It read that value from ${where}.${quote}${price}`
       + ' The loan has to be re-priced on the new value, so the Products & Pricing condition has reopened — nothing about the loan amount changes until someone re-registers the product.'
+      + arvLine
       + ' Please re-review this against the appraisal report: if PILOT read it wrong, type the correct As-Is value in the box on this condition and it will replace what PILOT entered.'
       + ' Sign this condition off once you have confirmed the As-Is value is right.';
   }
@@ -723,12 +812,14 @@ function buildAsIsNote({ read, decision, fileAsIsBefore, purchasePrice } = {}) {
     }[dec.why] || 'nothing on the file was changed';
     const extra = r.reason ? ` (${r.reason})` : '';
     return `${P}PILOT read a possible As-Is value of ${money(r.value)} from ${where}${extra}, but ${why}.${quote}`
+      + arvLine
       + ' Please confirm the As-Is value against the appraisal report and, if it needs changing, type it in the box on this condition.';
   }
 
   return `${P}PILOT could not confidently read the As-Is value — it checked the appraisal data file and then read the appraisal report PDF with OCR${r.engine ? ` (${r.engine})` : ''} and AI.`
     + `${r.reason ? ` ${r.reason.charAt(0).toUpperCase()}${r.reason.slice(1)}.` : ''}`
     + ' Nothing has been filled in automatically — a value is never guessed.'
+    + arvLine
     + ' Please open the appraisal report, read the As-Is value, and type it in the box on this condition to clear this condition.';
 }
 
@@ -752,7 +843,7 @@ function buildAsIsHint(decision) {
 }
 
 module.exports = {
-  readAsIs, decideAsIsApply, buildAsIsNote, buildAsIsHint,
+  readAsIs, decideAsIsApply, decideArvApply, buildAsIsNote, buildAsIsHint,
   scanAsIs, scanLine, aiLocate, readPdfText,
   MIN_VALUE, MAX_VALUE,
 };

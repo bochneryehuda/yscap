@@ -370,7 +370,8 @@ async function undoAppraisalImport(appId, { actor = null } = {}) {
   try {
     await client.query('BEGIN');
     const cur = (await client.query(
-      `SELECT id, as_is_value, arv_value, appraiser_name, as_is_applied, as_is_applied_value, as_is_file_value_before
+      `SELECT id, as_is_value, arv_value, appraiser_name, as_is_applied, as_is_applied_value, as_is_file_value_before,
+              arv_applied, arv_applied_value, arv_file_value_before
          FROM appraisals
         WHERE application_id=$1 AND superseded=false ORDER BY imported_at DESC NULLS LAST LIMIT 1`, [appId])).rows[0];
     if (!cur) { await client.query('ROLLBACK'); return { ok: false, error: 'no active appraisal to remove' }; }
@@ -391,18 +392,25 @@ async function undoAppraisalImport(appId, { actor = null } = {}) {
     //    NULL only where the file still shows exactly what THIS appraisal imported
     //    (nothing else changed it since; the import only ever fills a blank, so the
     //    previous value was NULL).
-    if (cur.as_is_value != null) await client.query(`UPDATE applications SET as_is_value=NULL, updated_at=now() WHERE id=$1 AND as_is_value=$2`, [appId, cur.as_is_value]);
-    // 2b. Undo the As-Is READ's write too (2026-07-28). The blank-fill above only covers a value that
-    //     came from the data file; an As-Is PILOT read off the report PDF with OCR/AI lives only in
-    //     as_is_applied_value, so without this an undone appraisal would leave its machine-read value
-    //     on the loan. Restored to whatever the file showed BEFORE the read (usually NULL), and only
-    //     while the file still shows exactly what the read wrote — a human's later correction wins.
+    //     …EXCEPT where the appraisal desk RECORDED what it wrote (db/347/348). Since 2026-07-28 the
+    //     As-Is and the ARV are not blank-filled but REWRITTEN, so `as_is_applied_value` /
+    //     `arv_applied_value` carry the truth: what PILOT put there, and what the file showed before.
+    //     That record wins — blanking the field instead would throw away the value it replaced. Each
+    //     restore is pinned to the exact value PILOT wrote, so a human's later correction is kept.
     if (cur.as_is_applied && cur.as_is_applied_value != null) {
       await client.query(
         `UPDATE applications SET as_is_value=$3, updated_at=now() WHERE id=$1 AND as_is_value=$2`,
         [appId, cur.as_is_applied_value, cur.as_is_file_value_before]);
+    } else if (cur.as_is_value != null) {
+      await client.query(`UPDATE applications SET as_is_value=NULL, updated_at=now() WHERE id=$1 AND as_is_value=$2`, [appId, cur.as_is_value]);
     }
-    if (cur.arv_value != null) await client.query(`UPDATE applications SET arv=NULL, updated_at=now() WHERE id=$1 AND arv=$2`, [appId, cur.arv_value]);
+    if (cur.arv_applied && cur.arv_applied_value != null) {
+      await client.query(
+        `UPDATE applications SET arv=$3, updated_at=now() WHERE id=$1 AND arv=$2`,
+        [appId, cur.arv_applied_value, cur.arv_file_value_before]);
+    } else if (cur.arv_value != null) {
+      await client.query(`UPDATE applications SET arv=NULL, updated_at=now() WHERE id=$1 AND arv=$2`, [appId, cur.arv_value]);
+    }
     if (cur.appraiser_name) await client.query(`UPDATE applications SET appraiser_name=NULL, updated_at=now() WHERE id=$1 AND appraiser_name=$2`, [appId, cur.appraiser_name]);
 
     // 3. Delete findings first (the db/154 guard blocks satisfying the review condition
@@ -445,8 +453,14 @@ async function undoAppraisalImport(appId, { actor = null } = {}) {
   }
 }
 
-// Previous AND future (owner rule): every appraisal already on file is read for its As-Is too, not
-// only the ones imported from today on. Two tiers, cheapest first:
+// GOING FORWARD ONLY (owner-directed 2026-07-28: *"Only make this going forward"*) — a DELIBERATE,
+// owner-granted exception to the standing "previous AND future" rule, for one reason: this sweep
+// WRITES loan values, and re-reading the whole back book would rewrite numbers on files people have
+// already worked, all at once, with nobody watching. New imports get read; old appraisals are left
+// alone unless someone asks. It is therefore OFF by default (`APPRAISAL_ASIS_SWEEP_FILES=0`) and is
+// no longer called at boot; set that env var and call it to run a bounded pass by hand.
+//
+// Two tiers, cheapest first:
 //   1. FREE — the appraisal's data file already states a definite As-Is. No OCR, no AI, no storage
 //      read: just measure it against the purchase price and apply the owner's rule. Unbounded-ish.
 //   2. PAID — the data file was silent, so the report PDF has to be read with OCR (and possibly AI).

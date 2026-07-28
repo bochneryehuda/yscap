@@ -210,11 +210,11 @@ module.exports = {
   // path (the free XML-only tier is unbounded). Small on purpose — reading a 30 MB appraisal PDF
   // costs real money, and the sweep drains a little on every deploy.
   appraisalAsIsBackfillFiles: Math.max(0, parseInt(process.env.APPRAISAL_ASIS_BACKFILL_FILES || '5', 10) || 0),
-  // How many previously-imported appraisals the FREE tier of the sweep may read per boot (the data
-  // file already states the As-Is, so there is no OCR/AI cost — but it can still WRITE, so the
-  // blast radius per deploy stays small and reviewable). `APPRAISAL_ASIS_SWEEP_FILES=0` turns the
-  // sweep off entirely for previously-imported files.
-  appraisalAsIsSweepFiles: Math.max(0, parseInt(process.env.APPRAISAL_ASIS_SWEEP_FILES || '25', 10) || 0),
+  // GOING FORWARD ONLY (owner-directed 2026-07-28). Reading the back book WRITES loan values, so the
+  // retroactive sweep is OFF by default and is not called at boot at all — new appraisal imports are
+  // read, previously-imported ones are left alone. Set APPRAISAL_ASIS_SWEEP_FILES to a small number
+  // and invoke desk.backfillAsIsReadsOnce() by hand to run a bounded pass deliberately.
+  appraisalAsIsSweepFiles: Math.max(0, parseInt(process.env.APPRAISAL_ASIS_SWEEP_FILES || '0', 10) || 0),
 
   // Auto-clear the "Credit report" condition once every borrower on the file has a
   // report imported AND its PDF filed (never a false-clear — see src/lib/credit/completeness.js).

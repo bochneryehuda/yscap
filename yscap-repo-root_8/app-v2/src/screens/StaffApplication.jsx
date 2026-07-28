@@ -229,6 +229,7 @@ function CondAsIsEntry({ appId, onSaved }) {
   }
 
   const r = st.read || {};
+  const av = st.arv || {};
   const WHERE = {
     xml: 'the appraisal data file (XML)',
     pdf_text: 'the appraisal report PDF, read with OCR',
@@ -236,6 +237,7 @@ function CondAsIsEntry({ appId, onSaved }) {
   };
   const WHY = {
     same_value: 'that is exactly what the file already shows, so nothing needed changing',
+    not_above_as_is: 'it is not above the As-Is value, so the two figures would be the wrong way round',
     appraisal_identity_mismatch: 'this appraisal does not match the property on the file (address, unit count or property type), so nothing was taken from it — sort that out first',
     human_decided: 'someone has already decided this file’s As-Is value by hand, so PILOT left it alone — a person’s decision about this number is final',
     file_locked: 'this file’s figures are locked (the term sheet has gone out, or it is clear-to-close / funded), so nothing was changed automatically',
@@ -251,7 +253,7 @@ function CondAsIsEntry({ appId, onSaved }) {
   return (
     <div style={{ marginTop: 8, padding: '10px 12px', border: '1px solid rgba(174,135,70,.35)', borderRadius: 8, background: '#FFFFFF' }}>
       <div className="small" style={{ fontWeight: 600, color: '#141B22', marginBottom: 6 }}>
-        Internal — what PILOT read for the As-Is value
+        Internal — what PILOT read off the appraisal
       </div>
 
       <div className="small">
@@ -267,14 +269,23 @@ function CondAsIsEntry({ appId, onSaved }) {
           )}
           {r.applied && r.fileValueBefore == null && <> (PILOT filled it in)</>}
         </div>
-        {r.applied && (
+        {(r.applied || av.applied) && (
           <div style={{ ...cell, color: '#8A6D3B' }}>
-            The loan has to be re-priced on this value — Products &amp; Pricing has reopened. Nothing about the loan
-            amount changes until someone re-registers the product.
+            The loan has to be re-priced on {r.applied && av.applied ? 'these values' : 'this value'} — Products &amp; Pricing
+            has reopened. Nothing about the loan amount changes until someone re-registers the product.
           </div>
         )}
         <div style={cell}><span style={lbl}>Purchase price</span>{m(st.file.purchasePrice)}</div>
-        {st.xml && st.xml.arv != null && <div style={cell}><span style={lbl}>ARV on the appraisal</span>{m(st.xml.arv)}</div>}
+        {/* The ARV — no ladder, no OCR: the appraisal's own headline figure. */}
+        <div style={cell}><span style={lbl}>ARV on the file now</span><b>{m(st.file.arv)}</b>
+          {av.applied && av.fileValueBefore != null && (
+            <> (PILOT {Number(av.appliedValue) > Number(av.fileValueBefore) ? 'raised' : 'lowered'} it from {m(av.fileValueBefore)}, straight from the data file)</>
+          )}
+          {av.applied && av.fileValueBefore == null && <> (PILOT filled it in from the data file)</>}
+          {!av.applied && av.fromAppraisal != null && Number(av.fromAppraisal) !== Number(st.file.arv) && (
+            <> — the appraisal says {m(av.fromAppraisal)}{av.skipReason ? `; ${WHY[av.skipReason] || av.skipReason}` : ''}</>
+          )}
+        </div>
         {!r.applied && r.skipReason && (
           <div style={{ ...cell, marginTop: 4 }}><span style={lbl}>Nothing was changed because</span>{WHY[r.skipReason] || r.skipReason}</div>
         )}

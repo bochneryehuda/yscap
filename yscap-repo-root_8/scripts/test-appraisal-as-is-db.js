@@ -55,10 +55,16 @@ const pdfDeps = (text) => ({
       [borrowerId, adminId, opts.status || 'processing', opts.purchasePrice, opts.fileAsIs == null ? null : opts.fileAsIs,
        opts.arv == null ? null : opts.arv, JSON.stringify({ line1: '12 Test St', city: 'Lakewood', state: 'NJ' })])).rows[0].id;
     await db.query(
-      `INSERT INTO appraisals (application_id, form_type, as_is_value, as_is_confidence, arv_value, arv_confidence, superseded, imported_at)
-       VALUES ($1,'FNM1004',$2,$3,$4,'definite',false,now())`,
-      [appId, opts.xmlAsIs == null ? null : opts.xmlAsIs, opts.xmlAsIs == null ? 'missing' : 'definite', opts.arv == null ? null : opts.arv]);
+      `INSERT INTO appraisals (application_id, form_type, as_is_value, as_is_confidence, arv_value, arv_confidence, condition_of_appraisal, superseded, imported_at)
+       VALUES ($1,'FNM1004',$2,$3,$4,$5,$6,false,now())`,
+      [appId, opts.xmlAsIs == null ? null : opts.xmlAsIs, opts.xmlAsIs == null ? 'missing' : 'definite',
+       opts.apprArv === undefined ? (opts.arv == null ? null : opts.arv) : opts.apprArv,
+       opts.apprArvConfidence || 'definite', opts.basis || 'SubjectToRepairs']);
     return appId;
+  };
+  const fileArv = async (appId) => {
+    const r = (await db.query(`SELECT arv FROM applications WHERE id=$1`, [appId])).rows[0];
+    return r.arv == null ? null : Number(r.arv);
   };
   const fileAsIs = async (appId) => {
     const r = (await db.query(`SELECT as_is_value FROM applications WHERE id=$1`, [appId])).rows[0];
@@ -366,6 +372,60 @@ const pdfDeps = (text) => ({
         'a second read does NOT downgrade the applied stamp');
       await desk.undoAppraisalImport(appId, {});
       assert((await fileAsIs(appId)) === null, 'undo still takes the PDF-read value back off the file after a second read');
+    }
+
+    // =====================================================================
+    // 4d. THE ARV IS WRITTEN TOO (owner-directed 2026-07-28) — straight from the
+    //     data file, no OCR, on the same import.
+    // =====================================================================
+    {
+      const appId = await mkFile({ purchasePrice: 450000, fileAsIs: 500000, arv: 575000, apprArv: 620000, xmlAsIs: 430000 });
+      const priceItem = (await db.query(
+        `INSERT INTO checklist_items (scope, application_id, label, status, item_kind, tool_key, signed_off_by, signed_off_at)
+         VALUES ('application',$1,'Products & Pricing','satisfied','condition','product_pricing',$2,now()) RETURNING id`,
+        [appId, adminId])).rows[0].id;
+
+      const out = await desk.runAsIsRead(appId, {});
+      assert(out.arvApplied && (await fileArv(appId)) === 620000, 'the appraisal’s ARV was written onto the file (575,000 → 620,000)');
+      assert(out.applied && (await fileAsIs(appId)) === 430000, 'the As-Is was written in the same pass');
+      const c = await cond(appId);
+      assert(/ARV/.test(c.notes) && /620,000/.test(c.notes), 'the condition reports the ARV change');
+      assert(/no OCR was involved/i.test(c.notes), 'the condition says the ARV came straight from the data file');
+      const aud = (await db.query(`SELECT detail FROM audit_log WHERE action='appraisal_arv_auto_applied' AND entity_id=$1`, [appId])).rows[0];
+      assert(!!aud && Number(aud.detail.to) === 620000, 'the ARV write is audited');
+      const pr = (await db.query(`SELECT status FROM checklist_items WHERE id=$1`, [priceItem])).rows[0];
+      assert(pr.status === 'received', 'the ARV write reopened Products & Pricing too');
+
+      // Idempotent.
+      const again = await desk.runAsIsRead(appId, {});
+      assert(!again.arvApplied && again.arvWhy === 'same_value', 'a second read does not rewrite the same ARV');
+    }
+    {
+      // A NON-definite ARV is never written — there is no OCR fallback for the ARV.
+      const appId = await mkFile({ purchasePrice: 450000, fileAsIs: 430000, arv: 575000, apprArv: 620000, apprArvConfidence: 'missing', xmlAsIs: 430000 });
+      const out = await desk.runAsIsRead(appId, {});
+      assert(!out.arvApplied && out.arvWhy === 'not_confident', 'a non-definite ARV is left alone');
+      assert((await fileArv(appId)) === 575000, 'the file’s ARV is untouched');
+    }
+    {
+      // An underwriter who resolved arv_mismatch with KEEP has decided; a re-read must not undo it.
+      const appId = await mkFile({ purchasePrice: 450000, fileAsIs: 430000, arv: 575000, apprArv: 620000, xmlAsIs: 430000 });
+      const appraisalId = (await db.query(`SELECT id FROM appraisals WHERE application_id=$1 AND superseded=false`, [appId])).rows[0].id;
+      await db.query(
+        `INSERT INTO appraisal_findings (appraisal_id, application_id, source, code, severity, field, appraisal_value, file_value, title, how_to, blocks_ctc, status, resolution, resolved_at)
+         VALUES ($1,$2,'appraisal','arv_mismatch','fatal','arv','620000','575000','ARV differs','x',true,'resolved','keep',now())`,
+        [appraisalId, appId]);
+      const out = await desk.runAsIsRead(appId, {});
+      assert(!out.arvApplied && out.arvWhy === 'human_decided', 'a KEEP resolution of the ARV finding stops the ARV write');
+      assert((await fileArv(appId)) === 575000, 'the underwriter’s ARV stands');
+    }
+    {
+      // Undo takes the written ARV back off the file.
+      const appId = await mkFile({ purchasePrice: 450000, fileAsIs: 430000, arv: 575000, apprArv: 620000, xmlAsIs: 430000 });
+      await desk.runAsIsRead(appId, {});
+      assert((await fileArv(appId)) === 620000, 'the ARV was written');
+      await desk.undoAppraisalImport(appId, {});
+      assert((await fileArv(appId)) === 575000, 'undo put the ARV back to what the file said before');
     }
 
     // =====================================================================

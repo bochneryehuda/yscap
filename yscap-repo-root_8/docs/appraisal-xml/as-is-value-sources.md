@@ -170,12 +170,45 @@ fatal `asis_below_price` finding turns on.
 Pricing condition through the reprice trigger (`db/071`/`db/072`), so the loan amount does not move
 until a human re-registers the product on the new number.
 
+**This applies going forward only** (owner-directed): a new appraisal import is read; previously
+imported appraisals are left alone. The sweep exists behind `APPRAISAL_ASIS_SWEEP_FILES` (default 0)
+for a deliberate, bounded, hand-run pass — it is not booted, because it writes loan values and
+re-reading the back book would change numbers on files people have already worked, unwatched.
+
 **And a reading we are not confident in always asks.** The `Confirm the As-Is value` condition
 carries the internal read-out (what came in, from where, the exact words, what the file said before
 and now) and a box to type over it. The only state that raises no condition at all is the settled
 one: PILOT is confident **and** the file already shows exactly that value — the appraisal and the
 loan file agree, confirmed from two sides. `signOffGate` refuses to clear the condition while the
 file has no As-Is on it.
+
+### The ARV is written too — and can never become the As-Is
+
+**The ARV is the easy one.** A MISMO appraisal has one structured
+`VALUATION/@PropertyAppraisedValueAmount`, and on a subject-to (renovation) report that figure *is*
+the after-repair value. `extract.js` already resolves it and marks it `definite` — it was recovered
+from **33 / 33** files in the corpus. So the ARV gets no ladder at all: a `definite` XML ARV is
+written onto the file on every import, no OCR and no AI. A non-definite one is left alone.
+
+Same guards as the As-Is, plus one of its own: **the ARV must sit above the As-Is** (at or below means
+the two values are swapped, or one of them is misread).
+
+**And the As-Is can never be the ARV.** Four independent guards, because this is the expensive
+mistake:
+
+1. **The ARV ceiling** — a candidate at or above the after-repair value is dropped.
+2. **`EXPLICIT_BASIS`** — the appraisal's headline number is only taken as the As-Is when the MISMO
+   `_CONDITION_OF_APPRAISAL` enum says so explicitly. With that enum missing, `extract.js` *infers*
+   the basis from narrative wording, and on a renovation report it does not recognise, the ARV is what
+   would land marked `definite`.
+3. **`ARV_LINE` / `ARV_LABEL`** — as-repaired / as-completed / subject-to / upon-completion wording
+   drops the line or the amount it labels.
+4. **`aboveArvOk`** — the owner's own rule: *"if you can't find another ARV value that is higher than
+   the value you think the as is value is, then probably your value that you found is the ARV."* On a
+   renovation deal there are two values and the after-repair one is always larger, so a candidate is
+   only believable when an ARV can be pointed at above it — the appraisal's, or the file's. With none
+   anywhere, the number is reported and never written. A straight as-is purchase has no ARV by
+   definition, and the rule correctly does not apply to it.
 
 ### The guards that make "confident" mean something
 

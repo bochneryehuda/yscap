@@ -558,13 +558,12 @@ if (require.main === module) {
         require('./lib/appraisal/desk').backfillAppraisalCompSplitOnce()
           .then((r) => r && r.split && console.log('[boot] appraisal comp-split backfill:', JSON.stringify(r)))
           .catch((e) => console.error('[boot] appraisal comp-split backfill failed:', e.message));
-        // Previous-files fix (owner-directed 2026-07-28): appraisals imported before the As-Is read
-        // have never been measured against the purchase price. Read each one — free XML tier first,
-        // then a hard-bounded paid OCR/AI tier — and apply the same one-directional rule (lower or
-        // fill only, never on a frozen file). Self-draining, bounded, fire-and-forget.
-        require('./lib/appraisal/desk').backfillAsIsReadsOnce()
-          .then((r) => r && (r.free || r.paid) && console.log('[boot] appraisal as-is backfill:', JSON.stringify(r)))
-          .catch((e) => console.error('[boot] appraisal as-is backfill failed:', e.message));
+        // NOTE: the As-Is / ARV read is GOING FORWARD ONLY (owner-directed 2026-07-28) — a deliberate
+        // exception to the previous-AND-future rule, because that sweep WRITES loan values and
+        // re-reading the back book would rewrite numbers on files people have already worked, all at
+        // once, unwatched. New appraisal imports are read; old ones are left alone. The sweep still
+        // exists (desk.backfillAsIsReadsOnce) behind APPRAISAL_ASIS_SWEEP_FILES for a deliberate,
+        // bounded, hand-run pass — it is intentionally NOT booted here.
         // Email Center history (owner-directed 2026-07-20): mirror the prior
         // notification + inbound-reply history into the email_messages store so
         // every file's new Email Center shows its BACKDATED history. Lightweight
