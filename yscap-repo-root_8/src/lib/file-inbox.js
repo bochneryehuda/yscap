@@ -200,11 +200,25 @@ function senderAuth(full) {
     if (m) spf = m[1].toLowerCase();
   }
   if (!spf && !dkim && !dmarc) return { spf: null, dkim: null, dmarc: null, verdict: 'unknown' };
-  // DMARC is the aligned verdict and wins outright when present. Otherwise EITHER of
-  // SPF or DKIM passing is the ordinary bar for "this really is them" — requiring both
-  // would mark most legitimate mail suspicious and train people to ignore the flag.
+  // Only a DEFINITIVE DMARC result is decisive; a non-definitive one falls through to
+  // SPF/DKIM rather than being read as forgery. RFC 8601 makes the DMARC method one of
+  // pass | fail | none | temperror | permerror, and only `fail` is evidence of a
+  // problem: `none` means the sender publishes no DMARC policy — the NORM for the
+  // small title companies, settlement agents and realtors a closing chain reaches —
+  // and temperror/permerror mean the receiver could not evaluate DMARC (a DNS timeout,
+  // a malformed record), not that the sender is a forger. Treating those three as
+  // `fail` overrode a passing SPF AND DKIM and cried wolf on ordinary legitimate mail,
+  // which trains staff to dismiss the banner — so the ONE real spoofed wiring email it
+  // exists to catch gets dismissed with the rest.
+  //
+  // A definitive `dmarc=fail` still wins even when SPF/DKIM pass: that is precisely the
+  // alignment forgery DMARC catches and raw SPF/DKIM miss (the message authenticates as
+  // some other domain, not the From). Otherwise EITHER of SPF or DKIM passing is the
+  // ordinary bar for "this really is them" — requiring both would mark most legitimate
+  // mail suspicious for the same reason.
   let verdict;
-  if (dmarc) verdict = dmarc === 'pass' ? 'pass' : 'fail';
+  if (dmarc === 'pass') verdict = 'pass';
+  else if (dmarc === 'fail') verdict = 'fail';
   else if (spf === 'pass' || dkim === 'pass') verdict = 'pass';
   else if (spf === 'fail' || dkim === 'fail' || spf === 'softfail') verdict = 'fail';
   else verdict = 'unknown';
@@ -791,7 +805,11 @@ async function processReceivedEvent(event) {
             });
           } catch (_) { /* the filing is what matters */ }
         }
-        try { await require('./closing-thread').noteInbound(ref.threadId, { docs: res.saved }); } catch (_) {}
+        // Count the DOCUMENTS every pass (dedupe means each pass adds only what newly
+        // landed), but count the MESSAGE only on the terminal pass — the same pass that
+        // set the marker. A transient-failure redelivery re-runs this block, and
+        // bumping the message tally each time inflated the chain's "received" count.
+        try { await require('./closing-thread').noteInbound(ref.threadId, { docs: res.saved, countMessage: !res.failedTransient }); } catch (_) {}
       } catch (_) { /* leave unmarked so a redelivery retries this chain */ }
     }
   } else if (closingRefs.length) {
