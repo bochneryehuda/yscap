@@ -3,6 +3,7 @@ import { useParams, Link, useNavigate, useLocation } from 'react-router-dom';
 import { api, saveBlob } from '../lib/api.js';
 import { useSubmitGate } from '../lib/useSubmitGate.js';
 import { fileToBase64 } from '../lib/files.js';
+import { onFilesDropped } from '../lib/drop-files.js';
 import { fmtDay, dayInputValue } from '../lib/dates.js';
 import { formatSSN, cleanFICO, ficoValid } from '../lib/validators.js';
 import { useAuth } from '../lib/auth.jsx';
@@ -902,7 +903,7 @@ function Item({ it, team, onPatch, role, docs, onUploadTo, onDropTo, onReviewDoc
           className={(!slots && onDropTo) ? 'cond-drop' : undefined}
           onDragOver={(!slots && onDropTo) ? (e) => { e.preventDefault(); e.currentTarget.classList.add('drop-over'); } : undefined}
           onDragLeave={(!slots && onDropTo) ? (e) => { e.currentTarget.classList.remove('drop-over'); } : undefined}
-          onDrop={(!slots && onDropTo) ? (e) => { e.preventDefault(); e.currentTarget.classList.remove('drop-over'); const f = Array.from(e.dataTransfer.files || []); if (f.length) onDropTo(f, { itemId: it.id, slotBase: itemDocs.length }); } : undefined}>
+          onDrop={(!slots && onDropTo) ? (e) => { e.preventDefault(); e.currentTarget.classList.remove('drop-over'); onFilesDropped(e, (files) => onDropTo(files, { itemId: it.id, slotBase: itemDocs.length })); } : undefined}>
           {slots ? (
             /* Fixed named slots (e.g. Insurance → binder + invoice) — each slot is
                its own drop target so a dropped file lands in the right slot. */
@@ -914,7 +915,7 @@ function Item({ it, team, onPatch, role, docs, onUploadTo, onDropTo, onReviewDoc
                 <div className={`row${onDropTo ? ' cond-drop' : ''}`} key={slot.key || slot.label} style={{ gap: 8, flexWrap: 'wrap', padding: '3px 0' }}
                   onDragOver={onDropTo ? (e) => { e.preventDefault(); e.currentTarget.classList.add('drop-over'); } : undefined}
                   onDragLeave={onDropTo ? (e) => { e.currentTarget.classList.remove('drop-over'); } : undefined}
-                  onDrop={onDropTo ? (e) => { e.preventDefault(); e.currentTarget.classList.remove('drop-over'); const f = Array.from(e.dataTransfer.files || []); if (f.length) onDropTo(f, slotTarget); } : undefined}>
+                  onDrop={onDropTo ? (e) => { e.preventDefault(); e.currentTarget.classList.remove('drop-over'); onFilesDropped(e, (files) => onDropTo(files, slotTarget)); } : undefined}>
                   <span className="muted small" style={{ minWidth: 140 }}>{slot.label}</span>
                   {doc ? (
                     <>
@@ -1366,7 +1367,7 @@ function LlcReview({ appId, app, onReviewDoc, onDownloadDoc, dlBusy, onChanged, 
                       <div className={`row${canDropSlot ? ' cond-drop' : ''}`} key={s.item_id} style={{ gap: 8, flexWrap: 'wrap', padding: '3px 0', alignItems: 'center' }}
                         onDragOver={canDropSlot ? (e) => { e.preventDefault(); e.currentTarget.classList.add('drop-over'); } : undefined}
                         onDragLeave={canDropSlot ? (e) => { e.currentTarget.classList.remove('drop-over'); } : undefined}
-                        onDrop={canDropSlot ? (e) => { e.preventDefault(); e.currentTarget.classList.remove('drop-over'); const f = Array.from(e.dataTransfer.files || []); if (f.length) uploadLlcFiles(f, slotTarget); } : undefined}>
+                        onDrop={canDropSlot ? (e) => { e.preventDefault(); e.currentTarget.classList.remove('drop-over'); onFilesDropped(e, (files) => uploadLlcFiles(files, slotTarget)); } : undefined}>
                         <span className="muted small" style={{ minWidth: 170 }}>{s.label}{s.is_required === false ? ' (optional)' : ''}</span>
                         {toggleable && (
                           <button className="btn link small" disabled={!!busy}
@@ -2299,7 +2300,7 @@ function BorrowerConditions({ appId, app, items, docs, onPatch, onReviewDoc, onD
         const dropProps = canDrop ? {
           onDragOver: (e) => { e.preventDefault(); e.currentTarget.classList.add('drop-over'); },
           onDragLeave: (e) => { e.currentTarget.classList.remove('drop-over'); },
-          onDrop: (e) => { e.preventDefault(); e.currentTarget.classList.remove('drop-over'); const f = Array.from(e.dataTransfer.files || []); if (f.length) onDropTo(f, { itemId: it.id, slotBase: itemDocs.length }); },
+          onDrop: (e) => { e.preventDefault(); e.currentTarget.classList.remove('drop-over'); onFilesDropped(e, (files) => onDropTo(files, { itemId: it.id, slotBase: itemDocs.length })); },
         } : {};
         return (
           <div className={`checkitem${canDrop ? ' cond-drop' : ''}`} key={it.id} data-keep-scroll={`cond-${it.id}`} style={{ alignItems: 'flex-start', flexDirection: 'column', gap: 6 }} {...dropProps}>

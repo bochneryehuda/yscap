@@ -56,6 +56,7 @@ import StaffApiHealth from './screens/StaffApiHealth.jsx';
 import StaffPipelineShadow from './screens/StaffPipelineShadow.jsx';
 import StaffDraws from './screens/StaffDraws.jsx';
 import StaffClosing from './screens/StaffClosing.jsx';
+import StaffPurchasing from './screens/StaffPurchasing.jsx';
 import StaffFileDraws from './screens/StaffFileDraws.jsx';
 import StaffDrawRules from './screens/StaffDrawRules.jsx';
 import StaffTapes from './screens/StaffTapes.jsx';
@@ -176,6 +177,7 @@ export default function App() {
           <Route path="/internal/clickup" element={<StaffPrivate><StaffClickup /></StaffPrivate>} />
           <Route path="/internal/draws" element={<StaffPrivate><StaffDraws /></StaffPrivate>} />
           <Route path="/internal/closing" element={<StaffPrivate><StaffClosing /></StaffPrivate>} />
+          <Route path="/internal/purchasing" element={<StaffPrivate><StaffPurchasing /></StaffPrivate>} />
           <Route path="/internal/draw-rules" element={<StaffPrivate><StaffDrawRules /></StaffPrivate>} />
           <Route path="/internal/tapes" element={<StaffPrivate><StaffTapes /></StaffPrivate>} />
           <Route path="/internal/audit" element={<StaffPrivate><StaffAuditLog /></StaffPrivate>} />

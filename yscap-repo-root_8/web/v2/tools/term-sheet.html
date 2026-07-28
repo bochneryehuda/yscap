@@ -129,6 +129,10 @@
   .ts-assign.ok{ color:var(--muted); border-color:rgba(47,127,134,.35); background:rgba(47,127,134,.07); }
   .ts-assign.warn{ color:var(--ivory-soft); border-color:rgba(201,168,106,.5); background:rgba(201,168,106,.1); }
   .ts-assign b{ color:var(--ivory); }
+  /* Why the initial advance is smaller than "max % x purchase price" — sits directly under that row. */
+  .ts-why{ margin:-.1rem 0 .5rem; padding:.5rem .7rem; border-radius:8px; font-size:.76rem; line-height:1.5;
+           color:var(--muted); border:1px solid rgba(201,168,106,.45); border-left-width:3px; background:rgba(201,168,106,.08); }
+  .ts-why b{ color:var(--ivory); }
   /* leverage slider */
   .ts-lev{ margin:1.1rem 0 .2rem; padding:.85rem 1rem 1rem; border:1px solid var(--line-2); border-left:3px solid var(--gold); border-radius:10px; background:rgba(201,168,106,.05); }
   .ts-lev-head{ display:flex; align-items:baseline; justify-content:space-between; gap:1rem; margin-bottom:.6rem; }
@@ -677,6 +681,7 @@
             <div class="ts-line cond" data-cond="hasRehab"><span class="k">Financed interest reserve<span class="tip" tabindex="0" role="note" aria-label="Interest payments rolled into the loan so the project pays its own carrying cost during the term. You don’t bring this to closing.">i<span class="tip-bub">Interest payments rolled into the loan so the project pays its own carrying cost during the term. You don’t bring this to closing.</span></span></span><span class="v" id="rIR">—</span></div>
             <div class="ts-line em cond" data-cond="hasRehab"><span class="k">Total project cost<span class="tip" tabindex="0" role="note" aria-label="The purchase price (on a capped assignment, the effective purchase price) plus the full rehab budget, plus any financed reserve. Your loan-to-cost is measured against this number.">i<span class="tip-bub">The purchase price (on a capped assignment, the effective purchase price) plus the full rehab budget, plus any financed reserve. Your loan-to-cost is measured against this number.</span></span></span><span class="v" id="rCost">$0</span></div>
             <div class="ts-line cond" data-cond="hasRehab"><span class="k">Initial advance (at closing)<span class="tip" tabindex="0" role="note" aria-label="The part of the loan released at closing to help you buy the property. The rest of the loan is the construction holdback.">i<span class="tip-bub">The part of the loan released at closing to help you buy the property. The rest of the loan is the construction holdback.</span></span></span><span class="v" id="rAdvance">$0</span><span class="v-ltv" id="rAdvanceLtv"></span></div>
+            <div class="ts-why" id="rAdvanceWhy" style="display:none"></div>
             <div class="ts-line cond" data-cond="hasRehab"><span class="k">Construction holdback <em style="font-style:normal;color:var(--muted-2)" id="rHoldbackTag">(= rehab, in draws)</em><span class="tip" tabindex="0" role="note" aria-label="Your renovation funds, held by the lender and released in stages (“draws”) as each phase of work is finished and inspected — not handed over up front.">i<span class="tip-bub">Your renovation funds, held by the lender and released in stages (“draws”) as each phase of work is finished and inspected — not handed over up front.</span></span></span><span class="v" id="rHoldback">$0</span></div>
             <div class="ts-line em gold"><span class="k">Total loan amount</span><span class="v" id="rLoan2">$0</span></div>
             <div class="ts-assign" id="rAssignNote" style="display:none"></div>
@@ -789,7 +794,7 @@
 <script src="gold-standard.js?v=asgseller19"></script>
 <script src="title-cost.js?v=admin8"></script>
 <script src="address-autocomplete.js?v=admin9"></script>
-<script src="termsheet.js?v=termopts2-pilotirlink20-esign-exc-pgwaiver-salesnotify2"></script>
+<script src="termsheet.js?v=termopts2-pilotirlink20-esign-exc-pgwaiver-salesnotify2-advbasis"></script>
 <script src="../float-actions.js?v=admin10-applyfix"></script>
 <script>
 /* Property-address autocomplete (owner-directed 2026-07-17): same shared YSAddr

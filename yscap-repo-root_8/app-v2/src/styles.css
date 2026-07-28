@@ -3239,6 +3239,12 @@ details[open]>.appr-sec-sum .appr-sec-chev{transform:rotate(180deg)}
 .cl-tile{background:var(--ink-2);border:1px solid var(--line);border-radius:var(--radius);padding:12px}
 .cl-tile-k{color:var(--muted);font-size:12px;text-transform:uppercase;letter-spacing:.06em}
 .cl-tile-v{font-size:20px;font-weight:700;margin-top:3px}
+/* The purchase price band under Deal details. auto-fit keeps ONE tile (a
+   straight purchase) full width and lays an assignment's final / original /
+   fee side by side in that order — and collapses on a phone with no extra
+   breakpoint, so both shapes read the same way at every width. */
+.cl-price-band{display:grid;grid-template-columns:repeat(auto-fit,minmax(190px,1fr));gap:12px;margin-top:12px}
+.cl-tile.accent{border-color:var(--gold)}
 .cl-actual{display:flex;gap:12px;align-items:flex-end;margin-top:12px;flex-wrap:wrap}
 .cl-table-wrap{overflow-x:auto}
 .cl-table{width:100%;border-collapse:collapse;font-size:14px}
@@ -3260,6 +3266,9 @@ details[open]>.appr-sec-sum .appr-sec-chev{transform:rotate(180deg)}
    colored pill, not body text. */
 .cl-ts-tag{flex:0 0 auto;display:inline-block;padding:0 6px;border-radius:999px;font-size:11px;font-weight:600;border:1px solid var(--line);color:#4B585C;background:#FFFFFF}
 .cl-ts-tag.on{color:#FFFFFF;background:#2F7F86;border-color:#2F7F86}
+/* A borrower-name tag (whose credit report this is) can be long — unlike the
+   fixed Executed/Draft tag it may shrink and ellipsize rather than overflow. */
+.cl-ts-tag.cl-ql-who{flex:0 1 auto;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .cl-cond{display:flex;justify-content:space-between;gap:12px;align-items:flex-start;border-bottom:1px solid var(--line);padding:10px 0}
 .cl-cond:last-child{border-bottom:none}
 .cl-cond-main{display:flex;flex-direction:column;gap:4px;min-width:0}
@@ -3416,3 +3425,30 @@ details[open]>.appr-sec-sum .appr-sec-chev{transform:rotate(180deg)}
 .cond-filter > span{font-size:11px;font-weight:700;letter-spacing:.08em;
   text-transform:uppercase;color:#4B585C}
 .cond-filter .input{width:100%}
+
+/* ── The purchasing desk (owner-directed 2026-07-26) ───────────────────────
+   Every file that moved to purchasing after investor delivery. Text is
+   explicit dark on white — never a --ink* token (those are LIGHT). */
+.pu-detail{padding:12px 10px}
+.pu-cols{display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:14px}
+.pu-col{border:1px solid var(--line);border-radius:var(--radius);padding:10px;background:#FFFFFF}
+.pu-h{font-size:11px;font-weight:700;letter-spacing:.08em;text-transform:uppercase;
+  color:#4B585C;margin-bottom:8px}
+.pu-note{border-bottom:1px solid var(--line);padding:6px 0}
+.pu-note:last-child{border-bottom:none}
+.pu-note-body{color:#141B22;white-space:pre-wrap;word-break:break-word}
+.pu-task{display:flex;gap:8px;align-items:center;padding:4px 0;color:#141B22}
+.pu-task-done{text-decoration:line-through;color:#4B585C}
+/* Table funding — the question the closer answers BEFORE signing off investor
+   delivery. Explicit dark text on white (never an --ink* token, those are LIGHT). */
+/* .cl-signrow is space-between (label left / button right); with only a checkbox
+   and its text here that would shove them to opposite edges. */
+.cl-tf{align-items:flex-start;justify-content:flex-start;gap:9px}
+.cl-tf input{margin-top:3px;flex:0 0 auto}
+.cl-tf-main{display:flex;flex-direction:column;gap:2px;min-width:0;color:#141B22}
+.cl-tf-hint{font-size:12px;color:#4B585C}
+/* Purchasing conditions — what the buyer still needs before they will purchase. */
+.pu-cond{display:flex;gap:12px;justify-content:space-between;align-items:flex-start;
+  border-bottom:1px solid var(--line);padding:7px 0;color:#141B22}
+.pu-cond:last-child{border-bottom:none}
+.pu-cond-main{display:flex;flex-direction:column;gap:2px;min-width:0}

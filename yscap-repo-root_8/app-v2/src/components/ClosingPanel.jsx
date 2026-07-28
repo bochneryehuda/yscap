@@ -1,5 +1,7 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { api } from '../lib/api.js';
+import { dealPurchase } from '../lib/dealPrice.js';
+import { onFilesDropped } from '../lib/drop-files.js';
 
 /* THE CLOSING WORKSPACE (owner-directed 2026-07-26). The closer's desk inside a
    loan file: deal details, the actual cash-to-close money gate against verified
@@ -31,7 +33,10 @@ const STAGE_LABEL = {
 };
 const QUICKLINK_LABEL = {
   term_sheet: 'Term sheet', insurance: 'Insurance', contract: 'Purchase contract',
-  assignment: 'Assignment of contract', llc: 'LLC documents', bank_statement: 'Bank statements', title: 'Title',
+  assignment: 'Assignment of contract', llc: 'LLC documents', bank_statement: 'Bank statements',
+  // The readable credit report (both borrowers'); the machine-readable XML data
+  // file is deliberately excluded server-side — see closing.isCreditReportDoc.
+  credit_report: 'Credit report', title: 'Title',
 };
 // The signed/executed final term sheet vs the draft — labeled so the closer can
 // tell which link is the executed one.
@@ -89,24 +94,7 @@ export default function ClosingPanel({ appId, app, can, onDownloadDoc, onPreview
       </div>
 
       {/* Deal details */}
-      <div className="panel" style={{ marginBottom: 14 }}>
-        <div className="panel-h"><h3 style={{ margin: 0 }}>Deal details</h3>
-          {app && <a className="btn ghost small" href={`#/internal/app/${appId}`}>Open full file</a>}</div>
-        <div className="panel-b">
-          <div className="cl-facts">
-            <Fact k="Borrower" v={app ? `${app.first_name || app.borrower_first_name || ''} ${app.last_name || app.borrower_last_name || ''}`.trim() || '—' : '—'} />
-            <Fact k="Property" v={fmtAddr(app && app.property_address)} />
-            <Fact k="Investor (note buyer)" v={(app && app.lender) || '—'} />
-            <Fact k="Program" v={(app && (app.registered_program || app.program)) || '—'} />
-            <Fact k="Loan amount" v={money0(app && app.loan_amount)} />
-            <Fact k="Original purchase price" v={money0(app && (app.underlying_contract_price || app.purchase_price))} />
-            <Fact k="Assignment fee" v={app && app.is_assignment ? money0(app.assignment_fee) : '—'} />
-            <Fact k="Rehab budget" v={money0(app && app.rehab_budget)} />
-            <Fact k="Financed interest reserve" v={money0(app && (app.requested_ir_amount))} />
-            <Fact k="Loan coordinator" v={(app && app.loan_officer_name) || '—'} />
-          </div>
-        </div>
-      </div>
+      <DealDetails appId={appId} app={app} />
 
       {/* Money: estimate + actual cash-to-close + verified liquidity */}
       <MoneySection appId={appId} money={money} isCloser={isCloser} busy={busy} run={run}
@@ -130,6 +118,12 @@ export default function ClosingPanel({ appId, app, can, onDownloadDoc, onPreview
                         <span className="cl-ql-name">{d.filename}</span>
                         {k === 'term_sheet' && tsTag(d)
                           ? <span className={`cl-ts-tag ${d.doc_kind === 'term_sheet_signed' ? 'on' : ''}`}>{tsTag(d)}</span>
+                          : null}
+                        {/* Both borrowers' reports file under one condition with
+                            the same filename — say whose this is (a joint report
+                            names both). */}
+                        {k === 'credit_report' && d.credit_for
+                          ? <span className="cl-ts-tag cl-ql-who">{d.credit_for}</span>
                           : null}</button>
                     ))}
                 </div>
@@ -167,6 +161,71 @@ function fmtAddr(a) {
 
 function Fact({ k, v }) {
   return <div className="cl-fact"><span className="cl-fact-k">{k}</span><span className="cl-fact-v">{v}</span></div>;
+}
+
+/* DEAL DETAILS — the file's facts, with the purchase price given its own band
+   (owner-directed 2026-07-28).
+
+   The price was one "Original purchase price" row that showed the seller's
+   contract on an assignment, so the closer could not see what the borrower
+   actually pays; the assignment fee sat in the NEXT grid row, which the
+   two-column layout put diagonally opposite it rather than beside it.
+
+   Now the price is a band of its own, directly under the facts, so it reads the
+   same way in both shapes: a straight purchase shows ONE number; an assignment
+   shows final → original → fee in that order, side by side. The band is the
+   only place the layout differs, so neither shape looks like the other with a
+   hole in it. Figures come from the ONE shared derivation (lib/dealPrice.js). */
+function DealDetails({ appId, app }) {
+  const price = dealPurchase(app);
+  return (
+    <div className="panel" style={{ marginBottom: 14 }}>
+      <div className="panel-h"><h3 style={{ margin: 0 }}>Deal details</h3>
+        {app && <a className="btn ghost small" href={`#/internal/app/${appId}`}>Open full file</a>}</div>
+      <div className="panel-b">
+        <div className="cl-facts">
+          <Fact k="Borrower" v={app ? `${app.first_name || app.borrower_first_name || ''} ${app.last_name || app.borrower_last_name || ''}`.trim() || '—' : '—'} />
+          <Fact k="Property" v={fmtAddr(app && app.property_address)} />
+          <Fact k="Investor (note buyer)" v={(app && app.lender) || '—'} />
+          <Fact k="Program" v={(app && (app.registered_program || app.program)) || '—'} />
+          <Fact k="Loan amount" v={money0(app && app.loan_amount)} />
+          <Fact k="Rehab budget" v={money0(app && app.rehab_budget)} />
+          <Fact k="Financed interest reserve" v={money0(app && app.requested_ir_amount)} />
+          <Fact k="Loan coordinator" v={(app && app.loan_officer_name) || '—'} />
+        </div>
+
+        <div className={`cl-price-band${price.isAssignment ? ' asg' : ''}`}>
+          {price.isAssignment ? (
+            <>
+              {/* "Purchase price" always means the REAL total paid (frozen
+                  display rule) — the seller's contract plus the FULL fee. */}
+              <Tile k="Final purchase price" v={money0(price.total)} sub="What the borrower pays" accent />
+              <Tile k="Original purchase price" v={money0(price.original)} sub="Seller's contract" />
+              <Tile k="Assignment fee" v={money0(price.fee)} sub="Paid to the wholesaler" />
+              {/* The capped basis gets its OWN label and shows only when the fee
+                  is over the 15% cap, so it can never be read as the price. */}
+              {price.effective != null && (
+                <Tile k="Effective purchase price" v={money0(price.effective)}
+                  sub={`The loan sizes on this — the fee counts up to 15% of the original contract price${
+                    price.excessOutOfPocket ? `; ${money0(price.excessOutOfPocket)} is extra cash at closing` : ''}`} />
+              )}
+            </>
+          ) : (
+            <>
+              <Tile k="Purchase price" v={money0(price.total)} />
+              {/* Flagged as an assignment but the original contract price has
+                  not been captured, so the split can't be shown — say so
+                  rather than pass the entered price off as the seller's. */}
+              {app && app.is_assignment && (
+                <Tile k="Assignment fee" v={money0(app.assignment_fee)}
+                  sub="Add the original contract price on the file to see the final price" />
+              )}
+            </>
+          )}
+        </div>
+      </div>
+    </div>
+  );
 }
 
 function ToggleRow({ label, hint, on, busy, onToggle }) {
@@ -239,19 +298,27 @@ function MoneySection({ appId, money, isCloser, busy, run, onDownloadDoc }) {
   );
 }
 
-function Tile({ k, v, sub }) {
-  return <div className="cl-tile"><div className="cl-tile-k">{k}</div><div className="cl-tile-v">{v}</div>{sub && <div className="cl-tile-sub muted small">{sub}</div>}</div>;
+function Tile({ k, v, sub, accent }) {
+  return <div className={`cl-tile${accent ? ' accent' : ''}`}><div className="cl-tile-k">{k}</div><div className="cl-tile-v">{v}</div>{sub && <div className="cl-tile-sub muted small">{sub}</div>}</div>;
 }
 
+/* The three closing conditions (HUD / closed package / tracking label). Each row
+   is its own drop target as well as an Upload button — including for a document
+   dragged straight out of the Outlook desktop app, which is what
+   lib/drop-files.js exists to read (owner-directed 2026-07-28). */
 function ConditionsSection({ appId, conditions, isCloser, onPreview, onDownloadDoc, onUploaded, setErr }) {
   const refs = useRef({});
   const [busy, setBusy] = useState('');
-  async function upload(itemId, file) {
-    if (!file) return;
+  const [over, setOver] = useState('');
+  async function upload(itemId, fileList) {
+    const files = Array.from(fileList || []);
+    if (!files.length) return;
     setBusy(itemId);
     try {
-      const dataBase64 = await fileToBase64(file);
-      await api.staffUploadAppDoc(appId, { checklistItemId: itemId, filename: file.name, contentType: file.type || 'application/octet-stream', dataBase64 });
+      for (const file of files) {
+        const dataBase64 = await fileToBase64(file);
+        await api.staffUploadAppDoc(appId, { checklistItemId: itemId, filename: file.name, contentType: file.type || 'application/octet-stream', dataBase64 });
+      }
       await onUploaded();
     } catch (e) { setErr((e && e.message) || 'Upload failed.'); }
     finally { setBusy(''); }
@@ -259,25 +326,33 @@ function ConditionsSection({ appId, conditions, isCloser, onPreview, onDownloadD
   return (
     <div className="panel" style={{ marginBottom: 14 }}>
       <div className="panel-h"><h3 style={{ margin: 0 }}>Closing conditions</h3>
-        <span className="muted small">Upload the balanced final HUD, the closed package, and the tracking label.</span></div>
+        <span className="muted small">Upload the balanced final HUD, the closed package, and the tracking label — or drop the file straight onto the line.</span></div>
       <div className="panel-b">
         {conditions.length === 0 ? <div className="muted small">These appear once the file is submitted to closing.</div>
-          : conditions.map((c) => (
-            <div key={c.id} className="cl-cond">
-              <div className="cl-cond-main">
-                <div><b>{c.label}</b> {c.signed_off_at ? <span className="pill ok">Signed off</span> : c.documents.length ? <span className="pill">Uploaded</span> : <span className="pill warn">Needed</span>}</div>
-                {c.documents.map((d) => (
-                  <button key={d.id} className="btn link small" onClick={() => (onPreview ? onPreview(d) : onDownloadDoc && onDownloadDoc(d))}>{d.filename}</button>
-                ))}
-              </div>
-              {isCloser && (
-                <div>
-                  <input type="file" hidden ref={(el) => { refs.current[c.id] = el; }} onChange={(e) => upload(c.id, e.target.files && e.target.files[0])} />
-                  <button className="btn ghost small" disabled={busy === c.id} onClick={() => refs.current[c.id] && refs.current[c.id].click()}>{busy === c.id ? 'Uploading…' : 'Upload'}</button>
+          : conditions.map((c) => {
+            const drop = isCloser ? {
+              onDragOver: (e) => { e.preventDefault(); if (over !== c.id) setOver(c.id); },
+              onDragLeave: (e) => { if (e.currentTarget === e.target) setOver(''); },
+              onDrop: (e) => { e.preventDefault(); setOver(''); onFilesDropped(e, (files) => upload(c.id, files)); },
+            } : {};
+            return (
+              <div key={c.id} className={`cl-cond${isCloser ? ' cond-drop' : ''}${over === c.id ? ' drop-over' : ''}`} {...drop}>
+                {over === c.id && <div className="drop-hint">Drop file to upload</div>}
+                <div className="cl-cond-main">
+                  <div><b>{c.label}</b> {c.signed_off_at ? <span className="pill ok">Signed off</span> : c.documents.length ? <span className="pill">Uploaded</span> : <span className="pill warn">Needed</span>}</div>
+                  {c.documents.map((d) => (
+                    <button key={d.id} className="btn link small" onClick={() => (onPreview ? onPreview(d) : onDownloadDoc && onDownloadDoc(d))}>{d.filename}</button>
+                  ))}
                 </div>
-              )}
-            </div>
-          ))}
+                {isCloser && (
+                  <div>
+                    <input type="file" hidden multiple ref={(el) => { refs.current[c.id] = el; }} onChange={(e) => upload(c.id, e.target.files)} />
+                    <button className="btn ghost small" disabled={busy === c.id} onClick={() => refs.current[c.id] && refs.current[c.id].click()}>{busy === c.id ? 'Uploading…' : 'Upload'}</button>
+                  </div>
+                )}
+              </div>
+            );
+          })}
       </div>
     </div>
   );
@@ -401,8 +476,31 @@ function SignoffSection({ appId, cw, rec, isCloser, busy, run }) {
             <SignRow label="TPR signed off" done={!!cw.tpr_signed_off_at} isCloser={isCloser} busy={busy === 'tpr'}
               onSign={(on) => run('tpr', () => api.closingSignOff(appId, 'tpr', on))} />
           </>}
+          {/* TABLE FUNDING sits directly ABOVE the investor-delivery sign-off,
+              because it is the question you answer BEFORE you sign it off. It is
+              READ-ONLY here: the WAREHOUSE decides it (owner-directed) — funding
+              on the Table Funding line means the loan was sold at closing, so it
+              skips the purchasing desk. One control, in Funding, so the two can
+              never disagree. */}
+          <div className="cl-signrow cl-tf">
+            <span className="cl-tf-main">
+              <b>{cw.table_funded ? '✓ Table funded — sold at closing' : 'Not table funded'}</b>
+              <span className="cl-tf-hint">
+                {cw.table_funded
+                  ? 'Funded on the Table Funding warehouse, so this loan was sold at closing and does not go to purchasing.'
+                  : 'Signing off investor delivery sends this file to the purchasing desk to be sold. If it was sold at closing, set the warehouse to “Table Funding” in Funding above first.'}
+              </span>
+            </span>
+          </div>
           <SignRow label="Investor delivery signed off" done={!!cw.investor_delivery_signed_off_at} isCloser={isCloser} busy={busy === 'inv'}
             onSign={(on) => run('inv', () => api.closingSignOff(appId, 'investor_delivery', on))} />
+          {!!cw.investor_delivery_signed_off_at && (
+            <div className="muted small" style={{ paddingTop: 2 }}>
+              {cw.table_funded
+                ? 'Sold at closing — this file is not on the purchasing desk.'
+                : 'This file is on the purchasing desk.'}
+            </div>
+          )}
         </div>
 
         <div className="cl-recon" style={{ marginTop: 12 }}>
@@ -422,11 +520,19 @@ function SignoffSection({ appId, cw, rec, isCloser, busy, run }) {
               Mark file reconciled
             </button>
           )}
-          {isCloser && cw.stage === 'fully_reconciled' && (
+          {/* A table-funded loan was sold at closing — it must never be pushed to
+              purchasing (the server refuses it too). Say so instead of offering
+              a button that 422s. */}
+          {isCloser && cw.stage === 'fully_reconciled' && !cw.table_funded && (
             <button className="btn primary small" style={{ marginTop: 8 }} disabled={busy === 'purch' || !cw.investor_delivery_signed_off_at}
               onClick={() => run('purch', () => api.advanceClosing(appId, 'in_purchasing'), 'Sent to purchasing.')}>
               Send to purchasing
             </button>
+          )}
+          {isCloser && cw.stage === 'fully_reconciled' && !!cw.table_funded && (
+            <div className="muted small" style={{ marginTop: 8 }}>
+              Table funded — this loan was sold at closing, so it does not go to purchasing.
+            </div>
           )}
         </div>
       </div>

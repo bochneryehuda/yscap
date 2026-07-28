@@ -392,7 +392,7 @@ async function undoAppraisalImport(appId, { actor = null } = {}) {
     //    NULL only where the file still shows exactly what THIS appraisal imported
     //    (nothing else changed it since; the import only ever fills a blank, so the
     //    previous value was NULL).
-    //     …EXCEPT where the appraisal desk RECORDED what it wrote (db/347/348). Since 2026-07-28 the
+    //     …EXCEPT where the appraisal desk RECORDED what it wrote (db/351/348). Since 2026-07-28 the
     //     As-Is and the ARV are not blank-filled but REWRITTEN, so `as_is_applied_value` /
     //     `arv_applied_value` carry the truth: what PILOT put there, and what the file showed before.
     //     That record wins — blanking the field instead would throw away the value it replaced. Each

@@ -1,5 +1,5 @@
 -- ============================================================================
--- 348 — The ARV is written onto the file from the appraisal, and the condition
+-- 352 — The ARV is written onto the file from the appraisal, and the condition
 --       now covers BOTH values (owner-directed 2026-07-28).
 --
 -- The owner: *"once the appraisal is being imported we also want you to add that
@@ -28,7 +28,7 @@
 
 -- ---------------------------------------------------------------------------
 -- (1) What PILOT did with the appraisal's ARV, on the appraisal it came from —
---     mirroring the As-Is columns in db/347 so both values read the same way.
+--     mirroring the As-Is columns in db/351 so both values read the same way.
 -- ---------------------------------------------------------------------------
 ALTER TABLE appraisals ADD COLUMN IF NOT EXISTS arv_applied           boolean NOT NULL DEFAULT false;
 ALTER TABLE appraisals ADD COLUMN IF NOT EXISTS arv_applied_value     numeric(14,2);

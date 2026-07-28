@@ -1698,6 +1698,45 @@ async function linkOrCreateApplication(task, read, borrowerId, llcId, ctx = {}) 
     }
   }
 
+  // A STREET IS NOT AN ADDRESS — refuse an inbound subject address that lost the
+  // house number (owner-reported 2026-07-28, YSCAP258134762).
+  //
+  // Our OWN push put a road-level geocode result on the card ("2nd St, Piscataway,
+  // NJ 07063" for the real "1727 S 2nd St, …, 08854" — see orchestrator.withCoords,
+  // now fixed). That value is still sitting in ClickUp, and `property_address`
+  // COALESCE-overwrites on every pull — so each time the address was corrected in
+  // PILOT the next reconcile read the corrupted one straight back over it. That is
+  // the loop: "even after I changed the address several times it messes up again".
+  //
+  // The refusal is deliberately NARROW so a human editing the address in ClickUp is
+  // never blocked: it fires ONLY when the pulled value carries NO house number while
+  // the one we hold DOES. Every real property address has a number (ClickUp's own
+  // location picker always returns one), so a street-only value is machine garbage,
+  // not somebody's correction — a house-number CHANGE ("1727" → "1725") still flows
+  // in untouched. Same idiom as the guard below: cols[field]=null → COALESCE keeps
+  // the portal value, audited, and the good value is re-pushed to repair the card.
+  if (targetId && cols.property_address) {
+    try {
+      const ADDR = require('../lib/address');
+      const cur = (await db.query(
+        `SELECT property_address FROM applications WHERE id=$1`, [targetId])).rows[0];
+      const oursText = _addrOf(cur && cur.property_address);
+      const theirsText = _addrOf(a.property_address);
+      const ourHouse = oursText ? ADDR.houseNumberOf(ADDR.parseAddress(oursText).line1) : '';
+      const theirHouse = theirsText ? ADDR.houseNumberOf(ADDR.parseAddress(theirsText).line1) : '';
+      if (ourHouse && !theirHouse) {
+        cols.property_address = null;   // COALESCE keeps the real address
+        try { await require('./enqueue').enqueueClickupPush(targetId, ['property_address']); } catch (_) {}
+        try {
+          await db.query(
+            `INSERT INTO audit_log (actor_kind, actor_id, action, entity_type, entity_id, detail)
+             VALUES ('system', NULL, 'clickup_pull_address_no_house_number', 'application', $1, $2)`,
+            [targetId, JSON.stringify({ taskId: task && task.id, kept: oursText, refused: theirsText })]);
+        } catch (_) {}
+      }
+    } catch (_) { /* best-effort — a guard failure must never break the inbound pull */ }
+  }
+
   // #86 — protect a freshly-APPROVED economics change from a STALE ClickUp pull.
   // When a locked file's economics change is approved in the portal, the value is
   // written to `applications` and an outbound push is enqueued. If an inbound pull

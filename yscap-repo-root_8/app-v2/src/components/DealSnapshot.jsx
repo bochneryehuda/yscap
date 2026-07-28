@@ -1,5 +1,6 @@
 import React from 'react';
 import { fullNameOf } from '../lib/personName.js';
+import { dealPurchase } from '../lib/dealPrice.js';
 
 /* Staff "cockpit" band at the top of a loan file — the facts an officer wants
    without scrolling: borrower/entity, property, program, the registered terms
@@ -22,9 +23,9 @@ const addrLine = (a) => !a ? '—' : (a.oneLine || [a.line1 || a.street, a.city,
 
 export default function DealSnapshot({ app, gating }) {
   if (!app) return null;
-  const purchase = app.is_assignment && app.underlying_contract_price != null
-    ? Number(app.underlying_contract_price) + Number(app.assignment_fee || 0)
-    : app.purchase_price;
+  // The REAL total paid (seller's contract + the FULL fee on an assignment) —
+  // the one shared derivation, so this and the closing desk can never disagree.
+  const purchase = dealPurchase(app).total;
   const basis = (Number(purchase) || 0) + (Number(app.rehab_budget) || 0);
   const quote = app.registered_quote || null;
   // Fallback ratios (no registered quote) use simple display math on raw columns —

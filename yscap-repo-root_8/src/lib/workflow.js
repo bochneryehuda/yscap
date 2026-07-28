@@ -255,6 +255,160 @@ async function returnItem(client, itemId, actorId, outcomeLabel, note) {
 }
 
 // ---------------------------------------------------------------------------
+// AUTO-CLEAR the closer's hand-off when the closing is COMPLETED (owner-directed
+// 2026-07-26: "once the reconciliation of a file is done and it's marked as
+// completed that file should automatically disappear from the closing workflow").
+//
+// The closing DESK already hides a completed file, but the closer's WORKFLOW
+// queue is driven by `workflow_items`, and nothing ever resolved that row — so a
+// finished file sat in their "up next" list forever until someone manually sent
+// it back. This resolves the live closing hand-off(s) for the file the same way a
+// manual send-back does (status='returned' + a `workflow_events` row), so the
+// history still shows what happened and the live queue drops it.
+//
+// Idempotent: only touches open/in_progress rows, so re-running is a no-op.
+// Returns the resolved items (possibly []).
+// ---------------------------------------------------------------------------
+/* LOCK ORDER (proven by a real-Postgres deadlock probe, 2026-07-26).
+ *
+ * The submit-to-closing route takes its locks `workflow_items` -> `closing_workflow`
+ * (submitItem supersedes the prior live hand-off, THEN openClosing upserts the
+ * closing row — and openClosing needs the new item's id, so it cannot be reordered).
+ * The completion paths (the stage route and the investor-delivery sign-off) used to
+ * take them the other way round: closing_workflow first, then workflow_items via
+ * resolveClosingItem. A loan officer re-submitting a file at the same moment the
+ * closer completed THAT SAME file deadlocked — Postgres aborted one side (40P01),
+ * failing the closer's action. Before the auto-clear the completion paths never
+ * touched workflow_items at all, so this inversion was new.
+ *
+ * Every transaction that will resolve the closing hand-off therefore takes this
+ * lock FIRST, before touching closing_workflow, so all paths agree on the order.
+ * ORDER BY id makes multi-row acquisition deterministic too. Locking nothing (no
+ * live hand-off) is fine — that is the common case and it is a no-op. */
+async function lockClosingItems(client, appId) {
+  await client.query(
+    `SELECT id FROM workflow_items
+      WHERE application_id=$1 AND submission_type='closing'
+        AND status IN ('open','in_progress')
+      ORDER BY id
+      FOR UPDATE`, [appId]);
+}
+
+/* With `guardResubmit`, only hand-offs that PREDATE the moment this closing became
+ * finished are resolved — the SAME guard db/347 and db/349 apply, and it is needed
+ * just as much at runtime: `fully_reconciled_at` is sticky (COALESCE) and
+ * `investor_delivery_signed_off_at` only clears on an investor-delivery un-sign, so
+ * on a file that was completed once `closingIsFinished` stays true FOREVER. Without
+ * it, a file legitimately RE-SUBMITTED to closing had its brand-new hand-off
+ * silently returned the moment the closer touched anything at all — a TPR tick, an
+ * un-sign, any stage move. Without the flag it resolves unconditionally (the manual
+ * send-back semantics).
+ *
+ * The anchor is computed in SQL, never handed in as a JS value: a timestamptz is
+ * microsecond-precision and a JS Date is only millisecond, so round-tripping it
+ * truncates the anchor BACKWARDS and a hand-off received in the same microsecond
+ * window would silently fail to clear.
+ *
+ * It is GREATEST of all three, NOT COALESCE(purchasing_at, GREATEST(...)).
+ * `purchasing_at` is STICKY (advanceClosing writes COALESCE(purchasing_at, now())),
+ * so a COALESCE that prefers it freezes the anchor at the FIRST "Send to
+ * purchasing" forever: a file re-submitted later could never clear again, however
+ * genuinely it was re-completed — the exact "completed file stuck on the closer's
+ * Workflow" bug this whole mechanism exists to fix, displaced onto re-submits.
+ * Postgres GREATEST ignores NULLs, so a file that never reached purchasing is
+ * unaffected. */
+async function resolveClosingItem(client, appId, actorId, outcomeLabel, guardResubmit) {
+  const label = String(outcomeLabel || 'Closing complete — sent to purchasing').slice(0, 120);
+  const r = await client.query(
+    `UPDATE workflow_items
+        SET status='returned', outcome_label=$2, returned_at=now(), updated_at=now()
+      WHERE application_id=$1 AND submission_type='closing'
+        AND status IN ('open','in_progress')
+        AND ($3::boolean IS NOT TRUE OR received_at <= (
+              SELECT GREATEST(cw.purchasing_at, cw.fully_reconciled_at,
+                              cw.investor_delivery_signed_off_at)
+                FROM closing_workflow cw WHERE cw.application_id = $1))
+      RETURNING *`,
+    [appId, label, guardResubmit === true]);
+  for (const item of r.rows) {
+    await client.query(
+      `INSERT INTO workflow_events (workflow_item_id, application_id, event_type, actor_staff_id, from_staff_id, to_staff_id, submission_type, outcome_label, note)
+       VALUES ($1,$2,'returned',$3,$4,$5,$6,$7,$8)`,
+      [item.id, item.application_id, actorId || null, actorId || null, item.from_staff_id,
+       item.submission_type, item.outcome_label, 'Closed out automatically when the file was marked complete.']);
+  }
+  return r.rows;
+}
+
+// ---------------------------------------------------------------------------
+// IS the closing finished? The closer's work ends when the file is RECONCILED
+// and investor delivery is signed off — "and stuff is reconciled that should go
+// off of the closing workflow EITHER WAY" (owner-directed 2026-07-26): whether
+// the loan was TABLE FUNDED (sold at closing, no purchasing) or handed to the
+// purchasing desk, the closing hand-off is done at that same point.
+//
+// Deliberately NOT reconciled-alone: at that moment the closer still owes the
+// investor-delivery sign-off, and clearing then would take the file off their
+// desk mid-task.
+// ---------------------------------------------------------------------------
+function closingIsFinished(cw) {
+  return !!(cw && cw.fully_reconciled_at && cw.investor_delivery_signed_off_at);
+}
+
+// The ONE chokepoint every closing-completion surface calls (stage advance,
+// investor-delivery sign-off). Clears the closer's hand-off once — and only
+// once — the closing is genuinely finished. Idempotent + safe to call on every
+// closing write.
+async function maybeFinishClosing(client, appId, actorId) {
+  const c = client || db;
+  const cw = (await c.query(
+    `SELECT fully_reconciled_at, investor_delivery_signed_off_at, table_funded
+       FROM closing_workflow WHERE application_id=$1`, [appId])).rows[0];
+  if (!closingIsFinished(cw)) return [];
+  const label = cw.table_funded
+    ? 'Closing complete — table funded (sold at closing)'
+    : 'Closing complete — sent to purchasing';
+  // Guarded: a hand-off received AFTER this closing was finished is a genuine
+  // RE-SUBMIT and must survive. Same anchor as db/349, evaluated in SQL.
+  return resolveClosingItem(c, appId, actorId, label, true);
+}
+
+/* The mirror of the auto-clear. Un-signing investor delivery means the closing is
+ * no longer finished — the file is pulled back out of purchasing, so without this
+ * it would sit on NEITHER queue (off the closer's Workflow because the auto-clear
+ * returned it, and off the purchasing desk because it was withdrawn). Reopens the
+ * hand-off this same mechanism closed, and ONLY that one: an item a human sent
+ * back by hand carries a different outcome label and is left alone. */
+async function reopenClosingItem(client, appId, actorId) {
+  const r = await client.query(
+    `UPDATE workflow_items
+        SET status='open', returned_at=NULL, outcome_label=NULL, updated_at=now()
+      WHERE id = (
+        -- EXACTLY ONE: uq_wf_live is a partial unique index on
+        -- (application_id, submission_type) over the live statuses, so reopening
+        -- two of a file's historic completions would violate it. Newest wins.
+        SELECT w.id FROM workflow_items w
+         WHERE w.application_id=$1 AND w.submission_type='closing' AND w.status='returned'
+           AND w.outcome_label LIKE 'Closing complete —%'
+           AND NOT EXISTS (
+             SELECT 1 FROM workflow_items live
+              WHERE live.application_id = w.application_id
+                AND live.submission_type = 'closing'
+                AND live.status IN ('open','in_progress'))
+         ORDER BY w.returned_at DESC NULLS LAST, w.id DESC
+         LIMIT 1)
+      RETURNING *`, [appId]);
+  for (const item of r.rows) {
+    await client.query(
+      `INSERT INTO workflow_events (workflow_item_id, application_id, event_type, actor_staff_id, from_staff_id, to_staff_id, submission_type, note)
+       VALUES ($1,$2,'submitted',$3,$3,$4,$5,$6)`,
+      [item.id, item.application_id, actorId || null, item.to_staff_id, item.submission_type,
+       'Reopened — investor delivery was un-signed, so the closing is not finished.']);
+  }
+  return r.rows;
+}
+
+// ---------------------------------------------------------------------------
 // The personal queue. tab: 'next' (live, ordered) | 'history' (what I did).
 // sort: 'received' (default) | 'priority' | 'aging'. Scoped to a single staffer
 // (routed to me by to_staff_id). The route wraps this — it never leaks another
@@ -478,6 +632,6 @@ module.exports = {
   TYPES, TYPE_KEYS, typeConfig, OUTCOME_LABELS, SLA_HOURS, slaHoursFor,
   candidatesForRole, allActiveStaff,
   conditionsClearedPct, fileLiveItems, fileTimeline,
-  submitItem, pickItem, returnItem, listQueue, listByRole, WORKFLOW_ROLES, queueCounts, overdueByRecipient,
+  submitItem, pickItem, returnItem, lockClosingItems, resolveClosingItem, reopenClosingItem, maybeFinishClosing, closingIsFinished, listQueue, listByRole, WORKFLOW_ROLES, queueCounts, overdueByRecipient,
   CLOSING_STAGES, getClosing, openClosing, advanceClosing,
 };

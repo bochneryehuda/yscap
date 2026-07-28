@@ -7,6 +7,7 @@ import Entities from '../components/Entities.jsx';
 import { BorrowerContacts } from '../components/FileContacts.jsx';
 import TwoFactorPanel from '../components/TwoFactorPanel.jsx';
 import { fileToBase64 } from '../lib/files.js';
+import { onFilesDropped } from '../lib/drop-files.js';
 import { formatSSN, cleanFICO, ficoValid } from '../lib/validators.js';
 import { CITIZENSHIP, MARITAL } from '../lib/enums.js';
 import { Link } from 'react-router-dom';
@@ -213,7 +214,7 @@ export default function Profile() {
       <div className="panel dropzone"
         onDragOver={e => { e.preventDefault(); e.currentTarget.classList.add('drop-over'); }}
         onDragLeave={e => { e.currentTarget.classList.remove('drop-over'); }}
-        onDrop={e => { e.preventDefault(); e.currentTarget.classList.remove('drop-over'); const f = e.dataTransfer.files && e.dataTransfer.files[0]; if (f) uploadPhotoIdFile(f); }}>
+        onDrop={e => { e.preventDefault(); e.currentTarget.classList.remove('drop-over'); onFilesDropped(e, (files) => uploadPhotoIdFile(files[0])); }}>
         <div className="row" style={{ marginBottom: 6 }}>
           <h3>Government photo ID</h3>
           <div className="spacer" />
