@@ -27,6 +27,7 @@ prototype parser and `per-file-extraction-proof.md` cover all 33.)
 | `field-reliability.md` | Every field + how often it's present across all 33 (ALWAYS/USUALLY/SOMETIMES/RARELY) + borrower/LLC matching rule + error-handling principles. |
 | `placement-variability.md` | The "can't use one-size-fits-all" map: which fields are ONE-WAY (safe) vs NEEDS-FALLBACK (same field, different spot/format — error-prone) vs SOMETIMES-MISSING. |
 | `per-file-extraction-proof.md` | The prototype parser's output for **every one of the 33 files** — evidence placement was verified per file. |
+| `as-is-value-sources.md` | **Which XMLs give the As-Is and which cannot** (measured: 64% narrative / 21% comp-estimate-only / 15% absent), the decoy attributes, and the OCR + AI ladder + write rule that takes over when the data file is silent. |
 | `prototype/` | Runnable prototype scripts (`strip.py`, `extract2.py`, `asis_miner.py`, `value_engine.py`). |
 
 ## The two logics (why the form split matters)

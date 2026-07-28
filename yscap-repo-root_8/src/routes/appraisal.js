@@ -228,6 +228,48 @@ router.post('/:appId/undo-import', requirePermission('sign_off_conditions'), asy
   } catch (e) { next(e); }
 });
 
+// ---- As-Is value: what PILOT read, and the officer's own entry --------------
+// The internal field the owner asked for (2026-07-28): "a field … where you can see how much data's
+// value came in and you can overwrite". GET is the read (staff-only, like everything on this
+// router); POST is the human's answer — it always wins over anything PILOT read.
+
+router.get('/:appId/as-is', async (req, res, next) => {
+  try {
+    const app = await fileFor(req, req.params.appId);
+    if (!app) return res.status(404).json({ error: 'not found' });
+    res.json(await require('../lib/appraisal/as-is-desk').asIsState(app.id, req.actor));
+  } catch (e) { next(e); }
+});
+
+// Entering the As-Is re-prices the loan (As-Is drives the As-Is LTV and LTC caps), so it is gated
+// exactly like resolving a finding with "replace" — sign_off_conditions, i.e. processor /
+// underwriter / admin / super_admin. A loan officer can SEE the reading but not write it.
+router.post('/:appId/as-is', requirePermission('sign_off_conditions'), async (req, res, next) => {
+  try {
+    const app = await fileFor(req, req.params.appId);
+    if (!app) return res.status(404).json({ error: 'not found' });
+    const out = await require('../lib/appraisal/as-is-desk').setAsIsByHuman(app.id, (req.body || {}).value, {
+      actorId: req.actor.id, actor: req.actor, note: (req.body || {}).note,
+    });
+    if (!out.ok) return res.status(out.status || 400).json({ error: out.error, locked: out.locked });
+    res.json({ ok: true, value: out.value, previous: out.previous });
+  } catch (e) { next(e); }
+});
+
+// Re-run the read on demand (the PDF arrived after the XML, or the OCR service was down at import).
+// Reading is free of side effects beyond the same owner-directed rule the import applies, so it is
+// gated at the same level as entering the value by hand.
+router.post('/:appId/as-is/read', requirePermission('sign_off_conditions'), async (req, res, next) => {
+  try {
+    const app = await fileFor(req, req.params.appId);
+    if (!app) return res.status(404).json({ error: 'not found' });
+    const out = await require('../lib/appraisal/desk').runAsIsRead(app.id, { actorId: req.actor.id });
+    if (!out.ran) return res.status(422).json({ error: out.reason || 'the As-Is could not be read' });
+    await audit(req.actor.id, 'appraisal_as_is_reread', app.id, { applied: !!out.applied, value: out.value, confidence: out.confidence, source: out.source, why: out.why });
+    res.json({ ok: true, ...out, state: await require('../lib/appraisal/as-is-desk').asIsState(app.id, req.actor) });
+  } catch (e) { next(e); }
+});
+
 // ---- POST /:appId/photos/refresh -------------------------------------------
 // Re-pull the property photos for the current appraisal from its stored PDF (embedded in the XML
 // or the uploaded PDF slot), on demand. For files imported before the photo feature, or where the

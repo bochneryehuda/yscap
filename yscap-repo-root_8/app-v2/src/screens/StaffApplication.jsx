@@ -178,6 +178,128 @@ function CondLoanNumberEntry({ appId, onSaved }) {
   );
 }
 
+/* INTERNAL As-Is panel ON the "Confirm the As-Is value" condition (owner-directed 2026-07-28).
+   Shows exactly what came in — the value PILOT read, where it read it, the words it read it from,
+   what the file said before and what it says now — and lets an officer type over it. Staff-only:
+   this condition is audience='staff', so nothing here is ever borrower-facing.
+   Every text colour is an explicit dark hex — `var(--ink*)` is a LIGHT token in this palette. */
+function CondAsIsEntry({ appId, onSaved }) {
+  const [st, setSt] = useState(null);
+  const [draft, setDraft] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [reading, setReading] = useState(false);
+  const [err, setErr] = useState('');
+  const [ok, setOk] = useState('');
+
+  const load = useCallback(async () => {
+    try { setSt(await api.appraisalAsIs(appId)); } catch (e) { setErr(e.message || 'Could not load the As-Is reading'); }
+  }, [appId]);
+  useEffect(() => { load(); }, [load]);
+
+  const m = (n) => (n == null ? '—' : '$' + Number(n).toLocaleString('en-US', { maximumFractionDigits: 0 }));
+
+  async function save() {
+    const v = Number(String(draft).replace(/[,$\s]/g, ''));
+    if (!Number.isFinite(v) || v <= 0) { setErr('Enter the As-Is value as a number.'); return; }
+    setBusy(true); setErr(''); setOk('');
+    try {
+      const r = await api.appraisalSetAsIs(appId, { value: v });
+      setOk(`Saved — the As-Is value on this file is now ${m(r.value)}.`);
+      setDraft('');
+      await load();
+      if (onSaved) await onSaved();
+    } catch (e) { setErr(e.message || 'Could not save'); } finally { setBusy(false); }
+  }
+
+  async function reread() {
+    setReading(true); setErr(''); setOk('');
+    try {
+      const r = await api.appraisalRereadAsIs(appId);
+      setSt(r.state || null);
+      setOk(r.applied
+        ? `PILOT read the appraisal again and set the As-Is value to ${m(r.appliedValue)}.`
+        : 'PILOT read the appraisal again — nothing on the file was changed.');
+      if (onSaved) await onSaved();
+    } catch (e) { setErr(e.message || 'Could not read the appraisal again'); } finally { setReading(false); }
+  }
+
+  if (!st) return <div className="small" style={{ marginTop: 8, color: '#4B585C' }}>{err || 'Loading the As-Is reading…'}</div>;
+  if (!st.hasAppraisal) {
+    return <div className="small" style={{ marginTop: 8, color: '#4B585C' }}>This becomes active once the appraisal has been uploaded and read.</div>;
+  }
+
+  const r = st.read || {};
+  const WHERE = {
+    xml: 'the appraisal data file (XML)',
+    pdf_text: 'the appraisal report PDF, read with OCR',
+    pdf_ai: 'the appraisal report PDF, read with OCR and located by AI',
+  };
+  const WHY = {
+    not_below_price: 'it is not below the purchase price, so the file was left alone',
+    not_a_reduction: 'the file already shows a lower As-Is value, so it was left alone',
+    file_locked: 'this file’s figures are locked (the term sheet has gone out, or it is clear-to-close / funded), so nothing was changed automatically',
+    not_confident: 'PILOT is not confident enough in that reading to use it',
+    auto_off: 'the automatic As-Is update is switched off',
+    no_purchase_price: 'there is no purchase price on the file to compare it against',
+    no_value: 'PILOT could not read an As-Is value',
+    implausible: 'the amount does not look like a property value',
+    value_changed_underneath: 'the As-Is value on the file changed while PILOT was reading, so it did not overwrite it',
+  };
+  const cell = { padding: '2px 0', color: '#141B22' };
+  const lbl = { color: '#4B585C', minWidth: 190, display: 'inline-block' };
+
+  return (
+    <div style={{ marginTop: 8, padding: '10px 12px', border: '1px solid rgba(174,135,70,.35)', borderRadius: 8, background: '#FFFFFF' }}>
+      <div className="small" style={{ fontWeight: 600, color: '#141B22', marginBottom: 6 }}>
+        Internal — what PILOT read for the As-Is value
+      </div>
+
+      <div className="small">
+        <div style={cell}><span style={lbl}>PILOT read</span>
+          <b>{m(r.value)}</b>
+          {r.value != null && <> — from {WHERE[r.source] || 'the appraisal'}{r.engine ? ` (${r.engine})` : ''}</>}
+          {r.value != null && <> · {r.confidence === 'definite' || r.confidence === 'high' ? 'confident' : 'not confident'}</>}
+        </div>
+        {r.value == null && r.reason && <div style={cell}><span style={lbl} /> {r.reason}.</div>}
+        <div style={cell}><span style={lbl}>As-Is on the file now</span><b>{m(st.file.asIs)}</b>
+          {r.applied && r.fileValueBefore != null && <> (PILOT lowered it from {m(r.fileValueBefore)})</>}
+          {r.applied && r.fileValueBefore == null && <> (PILOT filled it in)</>}
+        </div>
+        <div style={cell}><span style={lbl}>Purchase price</span>{m(st.file.purchasePrice)}</div>
+        {st.xml && st.xml.arv != null && <div style={cell}><span style={lbl}>ARV on the appraisal</span>{m(st.xml.arv)}</div>}
+        {!r.applied && r.skipReason && (
+          <div style={{ ...cell, marginTop: 4 }}><span style={lbl}>Nothing was changed because</span>{WHY[r.skipReason] || r.skipReason}</div>
+        )}
+        {Array.isArray(r.candidates) && r.candidates.length > 1 && (
+          <div style={cell}><span style={lbl}>Other amounts seen</span>{r.candidates.map((n) => m(n)).join(', ')}</div>
+        )}
+        {r.quote && (
+          <div style={{ ...cell, marginTop: 6, color: '#3A4550', fontStyle: 'italic' }}>“{r.quote}”</div>
+        )}
+        {st.confirmed && (
+          <div style={{ ...cell, marginTop: 4, color: '#256168' }}>An officer entered {m(st.confirmed.value)} by hand.</div>
+        )}
+      </div>
+
+      <div className="row" style={{ gap: 6, alignItems: 'center', flexWrap: 'wrap', marginTop: 10 }}>
+        <input className="input small" style={{ maxWidth: 180 }} inputMode="decimal"
+          placeholder={st.file.asIs != null ? `Overwrite ${m(st.file.asIs)}…` : 'Enter the As-Is value…'}
+          value={draft} disabled={busy}
+          onChange={(e) => setDraft(e.target.value)} onKeyDown={(e) => { if (e.key === 'Enter') save(); }} />
+        <button className="btn primary small" onClick={save} disabled={busy || !String(draft).trim()}>
+          {busy ? '…' : 'Save As-Is value'}
+        </button>
+        <button className="btn small" onClick={reread} disabled={reading} title="Read the appraisal again — useful if the report PDF arrived after the data file">
+          {reading ? 'Reading…' : 'Read the appraisal again'}
+        </button>
+      </div>
+      {st.locked && <div className="small" style={{ marginTop: 4, color: '#8A6D3B' }}>{st.locked}</div>}
+      {err && <div className="small" style={{ color: 'var(--danger)', marginTop: 4 }}>{err}</div>}
+      {ok && <div className="small" style={{ color: '#256168', marginTop: 4 }}>{ok}</div>}
+    </div>
+  );
+}
+
 // The SSN reveal eye lives with the SSN row itself, in the shared
 // BorrowerProfilePanel — this screen no longer renders one of its own.
 
@@ -2252,6 +2374,7 @@ function BorrowerConditions({ appId, app, items, docs, onPatch, onReviewDoc, onD
                 )}
                 {it.template_code === 'cond_note_buyer_missing' && <CondNoteBuyerEntry appId={appId} onSaved={onChanged} />}
                 {it.template_code === 'cond_loan_number_missing' && <CondLoanNumberEntry appId={appId} onSaved={onChanged} />}
+                {it.template_code === 'appraisal_as_is_verify' && <CondAsIsEntry appId={appId} onSaved={onChanged} />}
                 {it.template_code === 'rtl_p3_assets' && it.hint && (
                   <div className="muted small" style={{ whiteSpace: 'pre-line', marginTop: 6, padding: '8px 10px', border: '1px solid rgba(127,169,176,.3)', borderRadius: 8 }}>
                     {it.hint}

@@ -198,6 +198,19 @@ module.exports = {
   // to geocoding.geo.census.gov + hazards.fema.gov.
   appraisalFloodCheckEnabled: process.env.APPRAISAL_FLOOD_CHECK_ENABLED === '1',
 
+  // Automatic As-Is update from the appraisal (owner-directed 2026-07-28): PILOT reads the As-Is —
+  // the data file first, then the report PDF with the strongest OCR + AI — and, when it is CONFIDENT
+  // and the value is BELOW the purchase price, lowers the file's As-Is and opens the "Confirm the
+  // As-Is value" condition for a human to re-review. ON by default because the owner asked for it;
+  // `APPRAISAL_ASIS_AUTO=0` (or the switch on the API Health page) turns the WRITE off instantly
+  // without a deploy — the reading still runs and still surfaces on the condition, it just never
+  // touches the file.
+  appraisalAsIsAutoEnabled: process.env.APPRAISAL_ASIS_AUTO !== '0',
+  // How many previously-imported appraisals the boot sweep may read per boot with the paid OCR/AI
+  // path (the free XML-only tier is unbounded). Small on purpose — reading a 30 MB appraisal PDF
+  // costs real money, and the sweep drains a little on every deploy.
+  appraisalAsIsBackfillFiles: Math.max(0, parseInt(process.env.APPRAISAL_ASIS_BACKFILL_FILES || '5', 10) || 0),
+
   // Auto-clear the "Credit report" condition once every borrower on the file has a
   // report imported AND its PDF filed (never a false-clear — see src/lib/credit/completeness.js).
   // OFF by default: clearing a condition without a human sign-off is a sensitive action,
