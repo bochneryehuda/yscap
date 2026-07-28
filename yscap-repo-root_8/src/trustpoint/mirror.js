@@ -210,7 +210,12 @@ function isTrustpointDocHost(host, apiHost) {
   if (host === apiHost) return true;
   const extra = String(process.env.TRUSTPOINT_DOC_HOSTS || '').split(',').map((h) => h.trim().toLowerCase()).filter(Boolean);
   if (extra.includes(String(host).toLowerCase())) return true;
-  return /^tp-backend-evidence-[a-z0-9-]+\.s3[.-][a-z0-9-]*\.?amazonaws\.com$/.test(host);
+  // The `.amazonaws.com` suffix is LITERAL and dot-anchored. An earlier form wrote
+  // `[a-z0-9-]*\.?amazonaws\.com`, whose OPTIONAL dot let the character class run straight
+  // into the suffix — so `tp-backend-evidence-x.s3.notamazonaws.com` and
+  // `…s3-evilamazonaws.com` (ordinary registrable domains) both passed and the pin did not
+  // keep the fetch inside AWS at all.
+  return /^tp-backend-evidence-[a-z0-9-]+\.s3(?:[.-][a-z0-9-]+)?\.amazonaws\.com$/.test(host);
 }
 
 async function fetchReportBytes(fileUrl) {
@@ -504,6 +509,16 @@ async function reactDraw(appId, row, prev, { baseline = false, addrText = null }
   // can land with no status change, and the mirror row has its own insert-once claim.
   try { await mirrorDisbursement(appId, row, { baseline, addr }); } catch (_) {}
 
+  // The conversation on the draw is the answer to "why did this move / why is it STUCK?",
+  // so it must be mirrored on EVERY pass — not on a transition. This used to sit in the
+  // APPROVED branch, below the watermark claim, which meant a draw sitting in IN_REVIEW was
+  // never synced at all: precisely the draw whose messages matter ("Please update the ZIP
+  // code … therefore the draw request has failed" is on an un-approved draw). A settled draw
+  // is skipped so a finished project stops costing an API call on every poll.
+  if (newStatus !== 'COMPLETED' && newStatus !== 'DELETED') {
+    try { await require('./comments').syncDrawComments(appId, row.tp_project_id, tpDrawId); } catch (_) {}
+  }
+
   // Atomic watermark claim (same shape as the Sitewire reconcile) — one reactor wins.
   const won = (await db.query(
     `UPDATE trustpoint_draws SET status_synced=$2 WHERE tp_draw_id=$1 AND status_synced IS DISTINCT FROM $2 RETURNING tp_draw_id`,
@@ -548,9 +563,7 @@ async function reactDraw(appId, row, prev, { baseline = false, addrText = null }
     // report, the inspection paperwork, and the inspector's photos — the moment we hear about
     // it. Their links are pre-signed and expire in about a day, so a late pull is a lost one.
     try { await require('./documents').archiveDrawEverything(tpDrawId); } catch (_) {}
-    // The conversation on the draw is the answer to "why did this move / why is it stuck?" —
-    // mirror it whenever the draw transitions so the desk has the reason, not just the state.
-    try { await require('./comments').syncDrawComments(appId, row.tp_project_id, tpDrawId); } catch (_) {}
+    // (the conversation mirror runs on every pass, above the watermark — see reactDraw's head)
     // §5E: the once-per-draw fee check runs at approval (the NET depends on the fee).
     try { await verifyPartnerFee(appId, row); } catch (_) {}
     // Phase 3 §5A/§6: POST-approval snapshot → per-line derivation → Sitewire write-back.

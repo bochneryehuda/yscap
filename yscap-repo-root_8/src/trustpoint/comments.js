@@ -31,6 +31,14 @@ const PREFIX = () => String(process.env.TRUSTPOINT_PATH_PREFIX || '/public-api')
 function toPlainText(html) {
   let s = String(html == null ? '' : html);
   if (!s) return '';
+  // HARD LENGTH CAP FIRST. The tag regexes below are lazy scans that degrade to O(n^2) on a
+  // body containing `<` with no closing `>` — measured at ~10 SECONDS on a 175KB paste. This
+  // runs inside the webhook drain on the same process that serves the API, and a CPU stall
+  // is not catchable by the try/catch around the caller. A draw comment is a message, not a
+  // document; anything past the cap is truncated with a visible marker.
+  const CAP = 20000;
+  let truncated = false;
+  if (s.length > CAP) { s = s.slice(0, CAP); truncated = true; }
   s = s.replace(/<\s*(script|style)[^>]*>[\s\S]*?<\s*\/\s*\1\s*>/gi, ' '); // drop script/style CONTENT
   s = s.replace(/<\s*br\s*\/?\s*>/gi, '\n');
   s = s.replace(/<\s*\/\s*(p|div|li|tr|h[1-6])\s*>/gi, '\n');
@@ -38,11 +46,27 @@ function toPlainText(html) {
   s = s.replace(/&nbsp;/gi, ' ').replace(/&amp;/gi, '&').replace(/&lt;/gi, '<')
        .replace(/&gt;/gi, '>').replace(/&quot;/gi, '"').replace(/&#39;/gi, "'")
        .replace(/&#(\d{1,6});/g, (m, d) => { const n = Number(d); return n > 0 && n < 0x110000 ? String.fromCodePoint(n) : ' '; });
+  // STRIP TAGS AGAIN — the decode above MANUFACTURES them. `&lt;script&gt;alert(1)&lt;/script&gt;`
+  // sails through the first strip untouched (it contains no `<` yet), then becomes live
+  // `<script>` markup right here, and THAT is what gets stored and displayed. This second pass
+  // is deliberately NARROWER than the first: it requires a letter or `/` immediately after the
+  // `<`, so a real tag is removed while ordinary prose ("10 < 20 and 30 > 25") is left intact.
+  s = s.replace(/<\s*\/?\s*[a-zA-Z][^>]*>/g, ' ');
   s = s.replace(/[ \t ]+/g, ' ').replace(/\s*\n\s*/g, '\n').replace(/\n{3,}/g, '\n\n');
+  if (truncated) s += '\n[message truncated]';
   return s.trim();
 }
 
-/** A display name from whatever author shape TrustPoint sends (they vary). Never guesses. */
+/**
+ * A display name from whatever author shape TrustPoint sends.
+ *
+ * IN PRACTICE THIS RETURNS NULL, AND THAT IS THE TRUTH, NOT A BUG: `PublicCommentResponse` in
+ * the vendored spec publishes exactly nine fields — message, message_updated_at, id, created_at,
+ * object_id, content_type, tags, parent_id, is_pinned — and NONE of them names a person. So the
+ * thread is faithfully "what was said and when", never "who said it", and the desk must not
+ * print an empty byline. Kept as a reader (rather than dropped) because it costs nothing and
+ * lights up on its own the day TrustPoint adds the field; it NEVER guesses one.
+ */
 function authorOf(c) {
   const a = c && (c.author || c.created_by || c.user || c.commented_by);
   if (!a) return null;

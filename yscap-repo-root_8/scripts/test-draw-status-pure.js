@@ -103,11 +103,60 @@ function headlineAndFallback() {
   console.log('  ✓ headline picks the live inspection; unknown and junk statuses stay readable');
 }
 
+// A PROBLEM AT THE INSPECTOR MUST REACH THE HEADLINE. ERROR and CANCEL_REQUESTED sit OFF the
+// ordered→done track (step === null) — exactly like an unknown status — so a headline that only
+// considered on-track steps could never say the one thing the desk most needs to hear.
+function headlineSurfacesAProblem() {
+  const draw = { status: 'IN_REVIEW' };
+
+  const err = ds.headline(draw, [{ status: 'ERROR' }]);
+  assert.strictEqual(err.from, 'inspection', 'an inspector ERROR must lead the headline');
+  assert.strictEqual(err.tone, 'bad');
+  assert.ok(/problem/i.test(err.label), `got "${err.label}"`);
+
+  // …and it OUTRANKS work in motion: a second inspection progressing does not bury the failure.
+  const both = ds.headline(draw, [{ status: 'ORDERED', scheduled_at: '2026-08-01' }, { status: 'ERROR' }]);
+  assert.strictEqual(both.tone, 'bad', 'a problem outranks progress');
+  assert.ok(/problem/i.test(both.label), `got "${both.label}"`);
+
+  // ERROR outranks a merely-requested cancellation.
+  const rank = ds.headline(draw, [{ status: 'CANCEL_REQUESTED' }, { status: 'ERROR' }]);
+  assert.ok(/problem/i.test(rank.label), `got "${rank.label}"`);
+  assert.ok(/Cancellation requested/.test(ds.headline(draw, [{ status: 'CANCEL_REQUESTED' }]).label));
+
+  // A CANCELLED inspection is SETTLED, not an open problem — the draw's own status leads.
+  assert.strictEqual(ds.headline(draw, [{ status: 'CANCELLED' }]).from, 'draw');
+  // An UNKNOWN status is not an alarm either (it would cry wolf on every new TrustPoint state).
+  assert.strictEqual(ds.headline(draw, [{ status: 'SOME_NEW_STATE' }]).from, 'draw');
+  console.log('  ✓ an inspector problem reaches the headline and outranks progress');
+}
+
+// TIMESTAMPTZ columns arrive as JS Date objects (only OID 1082 `date` is string-parsed by
+// src/db.js), so a naive String(v).slice(0,10) printed a weekday fragment with no year.
+function datesAreCalendarDays() {
+  const iso = /^\d{4}-\d{2}-\d{2}$/;
+  const d = ds.serviceStatus({ status: 'ORDERED', scheduled_at: new Date('2026-07-27T14:00:00Z') });
+  assert.ok(iso.test(d.scheduledOn), `a Date must render YYYY-MM-DD, got "${d.scheduledOn}"`);
+  assert.strictEqual(d.scheduledOn, '2026-07-27');
+  // near-midnight UTC must not slip a day through a local-time read
+  assert.strictEqual(ds.serviceStatus({ status: 'ORDERED', scheduled_at: new Date('2026-07-27T23:59:00Z') }).scheduledOn, '2026-07-27');
+  assert.strictEqual(ds.serviceStatus({ status: 'ORDERED', scheduled_at: new Date('2026-07-27T00:01:00Z') }).scheduledOn, '2026-07-27');
+  // a plain calendar string still passes through untouched
+  assert.strictEqual(ds.serviceStatus({ status: 'ORDERED', scheduled_at: '2026-07-27' }).scheduledOn, '2026-07-27');
+  assert.strictEqual(ds.drawStatus({ status: 'COMPLETED', disbursed_at: new Date('2026-07-27T14:00:00Z') }).wiredOn, '2026-07-27');
+  // an unparseable / invalid value is null, never a garbage fragment
+  assert.strictEqual(ds.serviceStatus({ status: 'ORDERED', scheduled_at: new Date('nope') }).scheduledOn, null);
+  assert.strictEqual(ds.serviceStatus({ status: 'ORDERED', scheduled_at: 'not a date' }).scheduledOn, null);
+  console.log('  ✓ every date reads as a UTC-stable YYYY-MM-DD calendar day');
+}
+
 (function () {
   console.log('draw + inspection status vocabulary (pure)');
   coversTheSpec();
   realRecords();
   moneyDiscipline();
   headlineAndFallback();
+  headlineSurfacesAProblem();
+  datesAreCalendarDays();
   console.log('All draw-status tests passed.');
 })();
