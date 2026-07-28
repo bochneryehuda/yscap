@@ -56,10 +56,20 @@ const cnt = async (sql, p) => (await db.query(sql, p)).rows[0].n;
     assert(up.body.appraisal && up.body.appraisal.ok === false, 'a non-appraisal XML reports the import problem (never silent)');
 
     // ---- (8) undo: seed a real appraisal + findings + conditions + filled fields ----
+    // The appraisal row carries the RECORD of what the import wrote (db/353 + db/354):
+    // as_is_applied / arv_applied + the value written + the value the file showed
+    // before (NULL — a blank-fill only ever fills a blank). That record is what the
+    // undo reverses. A real importAppraisal() writes these stamps itself; this fixture
+    // stands in for one. Case (8b) below covers the opposite: a value a HUMAN typed,
+    // which carries no stamp and must survive the undo untouched.
     await db.query(`UPDATE applications SET as_is_value=430000, arv=560000, appraiser_name='Jane Appraiser' WHERE id=$1`, [appId]);
     const apprId = (await db.query(
-      `INSERT INTO appraisals (application_id, as_is_value, arv_value, appraiser_name, superseded, imported_at)
-       VALUES ($1,430000,560000,'Jane Appraiser',false, now()) RETURNING id`, [appId])).rows[0].id;
+      `INSERT INTO appraisals (application_id, as_is_value, arv_value, appraiser_name, superseded, imported_at,
+                               as_is_applied, as_is_applied_value, as_is_file_value_before,
+                               arv_applied, arv_applied_value, arv_file_value_before)
+       VALUES ($1,430000,560000,'Jane Appraiser',false, now(),
+               true, 430000, NULL,
+               true, 560000, NULL) RETURNING id`, [appId])).rows[0].id;
     await db.query(`INSERT INTO appraisal_findings (appraisal_id, application_id, code, severity, status, title, blocks_ctc) VALUES ($1,$2,'x','fatal','open','t',true)`, [apprId, appId]);
     // the two internal conditions
     for (const code of ['appraisal_review_cleared', 'appraisal_as_is_verify']) {
@@ -76,6 +86,23 @@ const cnt = async (sql, p) => (await db.query(sql, p)).rows[0].n;
     assert(await cnt(`SELECT count(*)::int n FROM checklist_items ci JOIN checklist_templates t ON t.id=ci.template_id WHERE ci.application_id=$1 AND t.code IN ('appraisal_review_cleared','appraisal_as_is_verify')`, [appId]) === 0, 'the two internal appraisal conditions are reset');
     const a = (await db.query(`SELECT as_is_value, arv, appraiser_name FROM applications WHERE id=$1`, [appId])).rows[0];
     assert(a.as_is_value == null && a.arv == null && a.appraiser_name == null, 'the file fields the import blank-filled are restored (back to empty)');
+
+    // ---- (8b) A VALUE PILOT DID NOT WRITE IS NOT PILOT'S TO REMOVE ----
+    // The appraisal desk now makes the file AGREE with the appraisal, so "the file
+    // equals the appraisal" is the NORMAL state of a healthy file — and very often a
+    // number an officer typed by hand on the As-Is condition. The old rule ("blank it
+    // when it equals the appraisal") deleted those. With no applied stamp the undo
+    // must leave the file's own values exactly where they are.
+    const appId2 = (await db.query(`INSERT INTO applications (borrower_id,loan_officer_id,status) VALUES ($1,$2,'processing') RETURNING id`, [borrowerId, adminId])).rows[0].id;
+    await db.query(`UPDATE applications SET as_is_value=430000, arv=560000 WHERE id=$1`, [appId2]);
+    await db.query(
+      `INSERT INTO appraisals (application_id, as_is_value, arv_value, superseded, imported_at)
+       VALUES ($1,430000,560000,false, now())`, [appId2]);
+    const undo2 = await call(server, 'POST', `/api/appraisal/${appId2}/undo-import`, token);
+    assert(undo2.status === 200 && undo2.body && undo2.body.ok, 'undo-import succeeds on the hand-typed file too');
+    const a2 = (await db.query(`SELECT as_is_value, arv FROM applications WHERE id=$1`, [appId2])).rows[0];
+    assert(Number(a2.as_is_value) === 430000 && Number(a2.arv) === 560000,
+      'a value PILOT never recorded writing survives the undo (a human typed it)');
 
     console.log(failures ? `\n${failures} assertion(s) failed` : '\nALL appraisal auto-import + undo assertions passed');
   } catch (e) { console.error('ERROR', e); failures++; }

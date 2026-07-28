@@ -4728,6 +4728,24 @@ async function signOffGate(itemId, actor) {
     } catch (_) { /* fall through to the normal gate */ }
   }
 
+  // CONFIRM THE As-Is VALUE (owner-directed 2026-07-28). Two ways this condition lands on a file:
+  // PILOT lowered the As-Is from what it read on the appraisal (this is the re-review), or PILOT
+  // could not confidently read one at all. Either way the owner's rule for clearing it is the same —
+  // *"a human should read the AS IS and enter the as is value to clear the condition"* — so it can
+  // never be signed off while the file has no As-Is value on it. A super-admin override (db/344) is
+  // still the deliberate way through, as on every other condition.
+  if (code === 'appraisal_as_is_verify') {
+    // An OPTIONAL instance may still be completed empty, exactly like every other condition here —
+    // "optional" is a deliberate human decision that the file can complete without it.
+    if (item.is_required === false) return null;
+    const f = (await db.query(`SELECT as_is_value FROM applications WHERE id=$1`, [item.application_id])).rows[0] || {};
+    const v = f.as_is_value == null ? null : Number(f.as_is_value);
+    if (v == null || !Number.isFinite(v) || v <= 0) {
+      return 'Enter the As-Is value from the appraisal before signing this off — read it off the report and type it in the box on this condition. It is never filled in by guessing.';
+    }
+    return null;
+  }
+
   // Doc-gate: a REQUIRED document-upload condition can never be signed off with
   // ZERO documents on it — the sign-off would attest to a file that isn't there.
   // Applies to EVERYONE with no exception (owner-directed 2026-07-20: an admin
@@ -8183,25 +8201,48 @@ router.patch('/applications/:id', async (req, res) => {
   if (!status || !APP_STATUS.includes(status)) return res.status(400).json({ error: 'bad status' });
   try {
     const cur = await db.query(
-      `SELECT status, borrower_id, loan_officer_id, processor_id FROM applications WHERE id=$1`, [req.params.id]);
+      `SELECT status, internal_status, borrower_id, loan_officer_id, processor_id FROM applications WHERE id=$1`, [req.params.id]);
     if (!cur.rows[0]) return res.status(404).json({ error: 'not found' });
     if (cur.rows[0].status === status) return res.json({ ok: true, unchanged: true, status });
-    // ON HOLD is the one borrower-facing status that maps 1:1 onto a single
-    // ClickUp status, so parking a file here must park the ClickUp card too
-    // (owner-directed 2026-07-26: "the entire status of the file should be an
-    // on-hold file in our system as well, not only in ClickUp" — and the reverse
-    // has to hold, or the two sides drift straight back apart). Delegating to the
-    // shared internal-status door gives the ClickUp push, the file timeline entry
-    // and the notification handling in one place instead of a second copy here.
-    if (status === 'on_hold') {
-      const r = await applyInternalStatus(req.params.id, statusMap.ON_HOLD_INTERNAL, {
+    // REVERSE STATUS MAP (owner-directed 2026-07-28). Picking a borrower-facing
+    // word also drives the ClickUp CARD to a representative stage for that word —
+    // BUT only when the file is genuinely CHANGING phase. If the card already
+    // sits at a stage that means this word, keep that exact stage (never drag the
+    // team's precise ClickUp stage backward) and just move the borrower-facing
+    // word + its mirror field. The landing stage (clickup/status.js
+    // LANDING_INTERNAL) is chosen to keep the word correct AND to avoid ClickUp's
+    // email-triggering stages ("(#-em)") — except the CTC + funded emails the
+    // owner wants. ON HOLD rides this same path now ('inactive / on hold' is its
+    // landing), replacing the earlier on-hold-only special case.
+    const landing = statusMap.landingInternalFor(status);
+    const alreadyInPhase = !!cur.rows[0].internal_status
+      && statusMap.externalFor(cur.rows[0].internal_status) === status;
+    if (landing && !alreadyInPhase) {
+      // The shared internal-status door does everything: sets internal_status,
+      // re-derives the SAME word, gates decisions/CTC/funding + the issuance
+      // backstop, pushes the card status (+ the mirror field), records history,
+      // seeds post-closing on funded, re-runs conditions, and announces the move.
+      const r = await applyInternalStatus(req.params.id, landing, {
         actorId: req.actor.id, canDecide: seesAll(req), actorRole: req.actor.role,
+        force, allowForce: isAdmin(req), overrideReason: req.body && req.body.overrideReason,
       });
       if (r.forbidden) return res.status(403).json({ error: r.reason });
+      if (r.blocked) return res.status(409).json({ error: 'blocked', target: r.target, blockers: r.blockers });
+      if (r.unchanged) return res.json({ ok: true, unchanged: true, status: r.status });
       await audit(req, 'status_change', 'application', req.params.id,
-        { from: cur.rows[0].status, to: 'on_hold', internal: statusMap.ON_HOLD_INTERNAL });
-      return res.json({ ok: true, status: r.status, internal_status: r.internal_status });
+        { from: cur.rows[0].status, to: status, internal: landing, forced: r.forced || undefined });
+      // R6.18 (#202) — record a super-admin proceeding past a confirmed-fatal
+      // issuance hard warning (parity with the internal-status door).
+      if (r.issuance && r.issuance.override && r.issuance.override.applied) {
+        await audit(req, 'issuance_override', 'application', req.params.id,
+          { action: r.issuance.action, tier: r.issuance.tier, reason: r.issuance.override.reason });
+        await loanExceptions.recordIssuanceOverride({ appId: req.params.id, staffId: req.actor.id, note: `${r.issuance.action}: ${r.issuance.override.reason || 'no reason given'}`, snapshot: { action: r.issuance.action, tier: r.issuance.tier || null, at: new Date().toISOString() } });
+      }
+      return res.json({ ok: true, status: r.status, internal_status: r.internal_status, issuance: r.issuance || undefined });
     }
+    // No landing stage ('new'/Submitted has no matching ClickUp stage), or the
+    // card is already in this phase → move only the borrower-facing word + its
+    // mirror field, exactly as before (never touch the ClickUp task stage).
     if (DECISION_STATUSES.has(status) && !seesAll(req))
       return res.status(403).json({ error: 'Only an underwriter or admin can move a file to this status.' });
     // Gate the underwriting-critical transitions on conditions-to-close + gate items.
@@ -8865,6 +8906,7 @@ router.post('/applications/:id/closing/sign-off', async (req, res) => {
   const [atCol, byCol] = COL[kind];
   try {
     const client = await db.getClient();
+    let unwound = null;
     try {
       await client.query('BEGIN');
       // Same lock order as the stage route: the closing hand-off first, THEN
@@ -8884,22 +8926,11 @@ router.post('/applications/:id/closing/sign-off', async (req, res) => {
         const cw = (await client.query(
           `SELECT table_funded FROM closing_workflow WHERE application_id=$1`, [req.params.id])).rows[0];
         if (on && !(cw && cw.table_funded)) await purchasing.enterPurchasing(client, req.params.id, req.actor.id);
-        // Un-signing means the closing is NOT finished any more: the file comes
-        // back OFF the purchasing desk, so the closer's hand-off has to come back
-        // too or the file sits on neither queue.
-        if (!on) {
-          await purchasing.withdrawFromPurchasing(client, req.params.id);
-          await workflow.reopenClosingItem(client, req.params.id, req.actor.id);
-          // …and step the STAGE back off 'in_purchasing'. Un-signing means the
-          // closing is not finished, but `stage` is sticky, so without this the
-          // desk's retirement predicate (which keeps a legacy stage test) still
-          // read the file as done: off the closing desk AND off the purchasing
-          // desk, i.e. on neither — the very failure the two lines above exist to
-          // prevent, reached through the desk instead of the Workflow queue.
-          await client.query(
-            `UPDATE closing_workflow SET stage='fully_reconciled', updated_at=now()
-              WHERE application_id=$1 AND stage='in_purchasing'`, [req.params.id]);
-        }
+        // Un-signing means the closing is NOT finished any more. Everything that
+        // has to come back is ONE function (purchasing.unwindInvestorDelivery) —
+        // off the purchasing desk, the closer's hand-off reopened, and the sticky
+        // stage stepped back so the desk stops reading the file as done.
+        if (!on) unwound = await purchasing.unwindInvestorDelivery(client, req.params.id, req.actor.id);
       }
       // Reconciled + investor-delivered = the closer is done; clear the file off
       // their Workflow either way (table funded or purchasing).
@@ -8907,6 +8938,13 @@ router.post('/applications/:id/closing/sign-off', async (req, res) => {
       await client.query('COMMIT');
     } catch (e) { await client.query('ROLLBACK').catch(() => {}); client.release(); throw e; }
     client.release();
+    // The stage route tells ClickUp "in purchase review" when a file is sent to
+    // purchasing. Stepping the stage back must undo that, or the two systems
+    // actively disagree. Best-effort, outside the transaction, like every other
+    // ClickUp push — it must never fail or reverse the closer's action.
+    if (unwound && unwound.stageSteppedBack) {
+      try { await applyInternalStatus(req.params.id, 'closed reconciled', { actorId: req.actor.id, canDecide: true, force: isAdmin(req), allowForce: isAdmin(req) }); } catch (_) {}
+    }
     await audit(req, 'closing_signoff', 'application', req.params.id, { kind, on });
     res.json({ ok: true, closing: await workflow.getClosing(req.params.id) });
   } catch (e) { res.status(500).json({ error: 'server error' }); }

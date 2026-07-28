@@ -58,6 +58,21 @@ ok(!/closing_stage\s*(===|!==)\s*'in_purchasing'/.test(screen),
 ok(/'Completed'/.test(screen),
   'the finished tab is labelled "Completed" — a table-funded loan was never in purchasing');
 
+// ── the UN-SIGN unwind is one shipped function, and the route calls it ───────
+// All three steps must happen together; the route used to inline them and the DB
+// test mirrored them, so the mirror stayed green while the route lost a step.
+const purchasing = require('../src/lib/purchasing');
+ok(typeof purchasing.unwindInvestorDelivery === 'function',
+  'unwindInvestorDelivery is the one shipped definition of the un-sign unwind');
+const signOff = staff.slice(staff.indexOf("router.post('/applications/:id/closing/sign-off'"),
+                            staff.indexOf("// --- Closer checklists"));
+ok(/unwindInvestorDelivery\(/.test(signOff),
+  'the sign-off route calls it rather than inlining the steps');
+ok(!/UPDATE closing_workflow SET stage='fully_reconciled'/.test(signOff),
+  'the route no longer carries its own copy of the stage step-back');
+ok(/stageSteppedBack/.test(staff),
+  'and it resyncs ClickUp when the stage really did step back');
+
 // ── exactly ONE definition of the rule ───────────────────────────────────────
 // A JS mirror was deleted precisely because nothing pinned it to the SQL.
 ok(closing.closingRetired === undefined,
