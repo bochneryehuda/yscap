@@ -37,6 +37,7 @@ import BorrowerProfilePanel from '../components/BorrowerProfilePanel.jsx';
 import { CONDITION_STATUSES, CONDITION_TIMINGS, conditionStatusLabel, conditionStatusClass, timingLabel, loanConditionStatusLabel } from '../lib/conditions-vocab.js';
 import { severityCount } from '../lib/findings-vocab.js';
 import { groupBySubject } from '../lib/condition-subjects.js';
+import { isWorkflowStep } from '../lib/condition-workflow-steps.js';
 import EsignFileSection from '../components/EsignFileSection.jsx';
 import ExceptionRegisterCard from '../components/ExceptionRegisterCard.jsx';
 import OrdersPanel from '../components/OrdersPanel.jsx';
@@ -348,6 +349,30 @@ function CondAsIsEntry({ appId, onSaved }) {
       {ok && <div className="small" style={{ color: '#256168', marginTop: 4 }}>{ok}</div>}
     </div>
   );
+}
+
+/* THE INLINE SLOT — ONE definition, rendered by BOTH condition row shapes.
+ *
+ * Some conditions are answered by TYPING the answer, not by uploading anything:
+ * the note buyer, the YS loan number, the As-Is value off the appraisal. The box
+ * belongs ON the condition — that is the owner's rule ("it should have a slot in
+ * the condition itself to enter the loan number").
+ *
+ * It lives here because the conditions list renders two row shapes — the
+ * borrower-facing row and `Item` for an internal one — and all three of these
+ * conditions are audience='staff'. Written into one branch only, the box
+ * silently disappeared the moment a row changed shape. One definition, called
+ * from both, is what makes that impossible rather than merely fixed.
+ */
+function CondInlineEntry({ it, appId, onChanged, indent }) {
+  let box = null;
+  switch (it.template_code) {
+    case 'cond_note_buyer_missing':  box = <CondNoteBuyerEntry appId={appId} onSaved={onChanged} />; break;
+    case 'cond_loan_number_missing': box = <CondLoanNumberEntry appId={appId} onSaved={onChanged} />; break;
+    case 'appraisal_as_is_verify':   box = <CondAsIsEntry appId={appId} onSaved={onChanged} />; break;
+    default: return null;   // never an empty wrapper — Item is a gapped flex column
+  }
+  return indent ? <div style={{ width: '100%', paddingLeft: 20 }}>{box}</div> : box;
 }
 
 // The SSN reveal eye lives with the SSN row itself, in the shared
@@ -924,6 +949,12 @@ function Item({ it, team, onPatch, role, docs, onUploadTo, onDropTo, onReviewDoc
         <CreditCondition appId={appId} canPull={canImportCredit} onChanged={onChanged} fieldKey={it.field_key} />
       )}
 
+      {/* The typed answer, for the conditions that ARE a typed answer — the note
+          buyer, the YS loan number, the As-Is value. All three are internal, so
+          this row shape is where they actually land. Same component the
+          borrower-facing rows use; see CondInlineEntry. */}
+      <CondInlineEntry it={it} appId={appId} onChanged={onChanged} indent />
+
       {/* The credit condition's PDF/XML are managed by <CreditCondition> above
           (download there). Suppress the generic free-form doc block for it so the
           same files don't render twice with destructive Delete/Reject/+Add
@@ -975,7 +1006,11 @@ function Item({ it, team, onPatch, role, docs, onUploadTo, onDropTo, onReviewDoc
                 const rs = d.review_status || 'pending';
                 return (
                   <div className="row" key={d.id} style={{ gap: 8, flexWrap: 'wrap', padding: '3px 0' }}>
-                    <span className="muted small" style={{ minWidth: 90 }}>{d.slot_label || `Document ${i + 1}`}</span>
+                    {/* 140, matching the fixed-slot rows above — a free-form
+                        condition (Title) sat on a narrower label column, so its
+                        filename and buttons started at a different x than every
+                        other condition on the file. Owner-reported 2026-07-27. */}
+                    <span className="muted small" style={{ minWidth: 140 }}>{d.slot_label || `Document ${i + 1}`}</span>
                     <span className="small" style={{ flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{d.filename}</span>
                     <span className="pill" style={rs === 'accepted' ? { borderColor: 'var(--ok)', color: 'var(--ok)' } : rs === 'rejected' ? { borderColor: 'var(--danger)', color: 'var(--danger)' } : undefined}>{rs}</span>
                     {onPreview && <button className="btn ghost small" title="Preview without downloading" onClick={() => onPreview(d)}>Preview</button>}
@@ -989,12 +1024,20 @@ function Item({ it, team, onPatch, role, docs, onUploadTo, onDropTo, onReviewDoc
                 );
               })}
               {onUploadTo && (
-                <div style={{ padding: '3px 0' }}>
+                /* Same labelled-row shape as a fixed slot, so the button starts
+                   where every other condition's controls start. With nothing
+                   uploaded it used to be a bare button floating in the indent,
+                   which is what made Title look unlike the rest of the list. */
+                <div className="row" style={{ gap: 8, flexWrap: 'wrap', padding: '3px 0' }}>
+                  <span className="muted small" style={{ minWidth: 140 }}>
+                    {itemDocs.length ? 'Another document' : 'Documents'}
+                  </span>
                   <button className="btn ghost small"
                     title="Upload documents into this condition (multiple at once supported)"
                     onClick={() => onUploadTo({ itemId: it.id, slotBase: itemDocs.length })}>
                     {itemDocs.length ? '+ Add another document' : 'Upload'}
                   </button>
+                  {!itemDocs.length && <span className="muted small">or drop files anywhere in this box</span>}
                 </div>
               )}
             </>
@@ -2152,8 +2195,15 @@ function BorrowerConditions({ appId, app, items, docs, onPatch, onReviewDoc, onD
   // the assignee picker, the status control and the phase) — folding them in
   // must not cost them a control, so the list carries two row shapes rather
   // than flattening both into one and losing the difference.
+  // ...EXCEPT the handful that are stored as conditions but are really WORKFLOW
+  // STEPS (LTC/LTV/ARV/interest-reserve checks). Phase 5a moved them here off
+  // their item_kind, which records how a row is STORED, not what it means — the
+  // owner reads them as the checklist they asked to have taken off the file, and
+  // they are right. See lib/condition-workflow-steps.js for why the three
+  // clear-to-close gates are deliberately NOT on that list yet.
   const staffConds = items.filter(it => it.audience === 'staff'
-    && (it.item_kind === 'document' || it.item_kind === 'condition'));
+    && (it.item_kind === 'document' || it.item_kind === 'condition')
+    && !isWorkflowStep(it));
   const ordered = [...lead, ...rest, ...staffConds];
 
   async function revealCard() {
@@ -2422,9 +2472,7 @@ function BorrowerConditions({ appId, app, items, docs, onPatch, onReviewDoc, onD
                 {it.override_at && (
                   <div className="small" style={{ marginTop: 2, color: 'var(--gold, #AE8746)' }}>{overrideLine(it)}</div>
                 )}
-                {it.template_code === 'cond_note_buyer_missing' && <CondNoteBuyerEntry appId={appId} onSaved={onChanged} />}
-                {it.template_code === 'cond_loan_number_missing' && <CondLoanNumberEntry appId={appId} onSaved={onChanged} />}
-                {it.template_code === 'appraisal_as_is_verify' && <CondAsIsEntry appId={appId} onSaved={onChanged} />}
+                <CondInlineEntry it={it} appId={appId} onChanged={onChanged} />
                 {it.template_code === 'rtl_p3_assets' && it.hint && (
                   <div className="muted small" style={{ whiteSpace: 'pre-line', marginTop: 6, padding: '8px 10px', border: '1px solid rgba(127,169,176,.3)', borderRadius: 8 }}>
                     {it.hint}
