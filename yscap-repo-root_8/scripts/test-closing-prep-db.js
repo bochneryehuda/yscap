@@ -197,7 +197,11 @@ noop.sendMail = async (opts) => { sends.push(opts); return { ok: true, id: `stub
     assert(sends.length === 1, 'exactly ONE email went out');
     const s = sends[0];
     assert(s.to.includes('teamag@privatelenderlaw.com'), 'To: the attorney group inbox');
-    assert(s.to.includes(`${uniq}-abe@law.test`), "To: the file's attorney contact");
+    // The borrower's attorney is a CONTACT WE HAND OVER, never a recipient — the
+    // body says so in as many words, and this package carries the borrowers'
+    // driver's licences, the whole entity file and the pricing.
+    assert(!s.to.includes(`${uniq}-abe@law.test`) && !s.cc.includes(`${uniq}-abe@law.test`),
+      "the BORROWER'S attorney is NOT copied on the lender-to-counsel package");
     assert(s.cc.includes(`${uniq}-lo@example.test`), 'Cc: the loan officer');
     assert(s.cc.includes(`${uniq}-proc@example.test`), 'Cc: the processor');
     assert(s.cc.includes(`${uniq}-closer@example.test`), 'Cc: OUR CLOSER');
@@ -480,6 +484,41 @@ noop.sendMail = async (opts) => { sends.push(opts); return { ok: true, id: `stub
       'but CANCELLING still silences the chain — an explicit stand-down beats the delivered message');
     await db.query(
       `UPDATE file_orders SET status='ordered' WHERE application_id=$1 AND order_type='attorney'`, [appId]);
+  }
+
+  /* ── 5b6. AUDIT ROUND 4: THE CHAIN HAS AN END. Nothing here is a fact an
+     attorney needs once the money has moved or the deal died. With no status
+     filter, a funded file whose closing date was corrected in ClickUp emailed the
+     law firm "the expected closing date is now …" weeks after funding, and a
+     WITHDRAWN deal did the same. */
+  {
+    const before = sends.length;
+    const orig = (await db.query(`SELECT status FROM applications WHERE id=$1`, [appId])).rows[0].status;
+    for (const dead of ['funded', 'declined', 'withdrawn']) {
+      await db.query(`UPDATE applications SET status=$2 WHERE id=$1`, [appId, dead]);
+      assert(!(await closingPrep.orderIsLive(appId)), `a ${dead} file is no longer a live closing`);
+      const r = await closingPrep.announce({
+        applicationId: appId, eventKind: 'closing_date',
+        dedupeKey: 'ignored', extra: { date: '2026-12-25' },
+      });
+      assert(r.skipped && r.reason === 'no_live_order',
+        `a ${dead} loan sends the attorney NOTHING`);
+    }
+    assert(sends.length === before, 'not one email went out on a closed or dead deal');
+    await db.query(`UPDATE applications SET status=$2 WHERE id=$1`, [appId, orig]);
+    assert(await closingPrep.orderIsLive(appId), 'and a live file is unaffected');
+  }
+
+  /* ── 5b7. AUDIT ROUND 4: the unique address must be in the PLAIN-TEXT part too.
+     It was rendered only in the HTML alternative, so a firm reading text/plain —
+     common — never saw the one thing the whole feature asks them to do. */
+  {
+    const order = sends.find((x) => /closing prep/i.test(String(x.subject || '')));
+    assert(order && typeof order.text === 'string', 'the closing-prep email has a plain-text part');
+    assert(order.text.includes(chainAddress),
+      'and the unique closing address is IN it — not HTML-only');
+    assert(/keep this address/i.test(order.text) || /same email chain/i.test(order.text),
+      'along with the ask to keep it on the chain');
   }
 
   /* ── 5c. AUDITED: the order claims what it already told them ─────────────── */

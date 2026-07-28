@@ -593,8 +593,21 @@ function recipientsFor(data, { extraEmails = [] } = {}) {
     if (!/^[^@\s]+@[^@\s.]+\.[^@\s]+$/.test(k)) return;
     seen.add(k); list.push(k);
   };
+  // THE ONLY RECIPIENT IS OUR CLOSING ATTORNEY — the group inbox.
+  //
+  // The `attorney` service contact is the BORROWER'S counsel: that is what this
+  // module labels it ("Borrower's attorney"), what the owner asked for ("the title
+  // company contact; also realtor, borrower's attorney, settlement agent if on
+  // file"), and it is listed in the BODY as a contact to hand over, under the line
+  // "we have deliberately not copied them here".
+  //
+  // It used to be pushed into To as well, which made that line FALSE and — with the
+  // group inbox unset, an explicitly supported configuration — made the borrower's
+  // own lawyer the SOLE recipient of the borrowers' driver's licences, the whole
+  // entity file, the estimated loan amount and rate, and on an assignment the
+  // underlying price, the fee and the effective price. That is precisely the
+  // disclosure this module exists to avoid.
   push(to, data.attorneyGroupEmail);
-  for (const c of data.attorneyContacts || []) push(to, c.email);
   const cc = [];
   if (data.officer) push(cc, data.officer.email);
   if (data.processor) push(cc, data.processor.email);
@@ -756,7 +769,19 @@ function officerCard(data) {
  * @param p.senderName  the portal user sending it — this email is from a person
  */
 function buildClosingPrepEmail(data, pkg, { address = null, attach = null, note = '', senderName = '' } = {}) {
-  const executed = pkg.termSheetExecuted;
+  // WHAT WAS ACTUALLY ATTACHED decides this sentence, not what the file HOLDS.
+  //
+  // Reading it off the package claimed "the term sheet attached is the FULLY
+  // EXECUTED version" whenever an executed copy existed anywhere on the file — even
+  // when that copy was skipped for size and the INITIAL sheet went instead. On the
+  // Graph provider that is routine, not exotic: the raw budget is ~1.9 MB, so most
+  // real signed packages are skipped while the smaller initial sheet fits. The
+  // attorney would then draft from the draft, told it was final. When we have no
+  // attachment list at all (the card's preview) fall back to the package, which is
+  // what the preview is describing.
+  const executed = attach
+    ? (attach.attached || []).some((d) => d.group === 'term_sheet' && d.doc_kind === 'term_sheet_signed')
+    : pkg.termSheetExecuted;
   const signOff = senderName
     ? `Thank you,\n${senderName}\nYS Capital Group`
     : (data.officer ? `Thank you,\n${data.officer.name}\nYS Capital Group` : 'Thank you,\nYS Capital Group');
@@ -910,6 +935,16 @@ async function orderIsLive(applicationId) {
   try {
     const r = await db.query(
       `SELECT
+         -- THE DEAL MUST STILL BE LIVE. Nothing here is a fact an attorney needs
+         -- once the loan has FUNDED (the closing already happened) or the file is
+         -- DECLINED / WITHDRAWN (there is no closing). Without this the chain had no
+         -- end at all: a funded file whose expected closing date is corrected in
+         -- ClickUp — or picked up by the backstop sweep after product-registration
+         -- COALESCEs one in — emailed the law firm "the expected closing date for
+         -- this file is now …" weeks after the money moved, on a deal that was
+         -- withdrawn, under the closing-prep subject.
+         (SELECT status NOT IN ('funded','declined','withdrawn','cancelled')
+            FROM applications WHERE id = $1 AND deleted_at IS NULL)         AS deal_live,
          EXISTS (SELECT 1 FROM file_orders
                   WHERE application_id = $1 AND order_type = 'attorney'
                     AND status NOT IN ('not_ordered','cancelled'))          AS live_order,
@@ -924,6 +959,8 @@ async function orderIsLive(applicationId) {
                     AND m.status = 'sent')                                  AS order_delivered`,
       [applicationId]);
     const row = r.rows[0] || {};
+    // A deleted file answers NULL here, which is correctly not true.
+    if (row.deal_live !== true) return false;
     if (row.live_order) return true;
     // THE ORDER ROW IS THE USUAL PROOF, NOT THE ONLY ONE.
     //

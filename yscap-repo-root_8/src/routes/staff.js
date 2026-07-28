@@ -3758,6 +3758,8 @@ router.get('/applications/:id/emails', async (req, res) => {
     // closing conversation, both directions, whatever anyone called it.
     const closingScope = rawScope === 'closing';
     let scopeSql = '';
+    // Extra bind values a scope needs beyond $1 (the application id).
+    let scopeArgs = [];
     if (drawScope) {
       scopeSql = `AND (em.msg_type LIKE 'draw%' OR em.msg_type LIKE 'sow_%'
              OR (em.thread_key IS NOT NULL AND em.thread_key IN (
@@ -3771,9 +3773,20 @@ router.get('/applications/:id/emails', async (req, res) => {
                     WHERE application_id = $1 AND thread_key IS NOT NULL
                       AND msg_type LIKE '${orderScope}\\_%')))`;
     } else if (closingScope) {
-      scopeSql = `AND (em.msg_type LIKE 'closing\\_%'
+      // THE STORED THREAD KEY IS THE REAL MEMBERSHIP TEST; the msg_type list beside
+      // it is an EXPLICIT allowlist, never a prefix match.
+      //
+      // `LIKE 'closing\_%'` also matched `closing_date` — the BORROWER's own
+      // "your estimated closing date" notification (staff.js sends it with
+      // type:'closing_date', which email-log stores as the msg_type). So the
+      // borrower's private email, with their address and body, appeared inside the
+      // attorney's closing chain — and it is the message a staffer is most likely
+      // to hit Reply on, which the closing reply branch then sends to outside
+      // counsel. `closing_docs_in` (an in-app row) landed there for the same reason.
+      scopeSql = `AND (em.msg_type = ANY($2::text[])
              OR (em.thread_key IS NOT NULL AND em.thread_key IN (
                    SELECT thread_key FROM closing_threads WHERE application_id = $1)))`;
+      scopeArgs = [CLOSING_CHAIN_MSG_TYPES];
     }
     const r = await db.query(
       `SELECT em.id, em.direction, em.msg_type, em.category, em.subject, em.preview,
@@ -3790,7 +3803,7 @@ router.get('/applications/:id/emails', async (req, res) => {
          LEFT JOIN borrowers   bo ON bo.id = n.borrower_id
         WHERE em.application_id = $1 ${scopeSql}
         ORDER BY em.occurred_at DESC
-        LIMIT 500`, [req.params.id]);
+        LIMIT 500`, [req.params.id, ...scopeArgs]);
     let out = consolidateEmailRows(r.rows);
     if (drawScope) {
       // Fold in the DocuSign wire-form lifecycle + Sitewire's own activity events, newest first,
@@ -4284,6 +4297,16 @@ const closingThread = require('../lib/closing-thread');
 // the Orders desk and the e-sign completion use: the system records that the thing
 // happened, a human still signs it off.
 const CLOSING_PREP_CONDITIONS = ['rtl_p5_atty', 'rtl_p5_titleinfo'];
+
+// EXACTLY the message types that ride a closing chain — an allowlist, never a
+// prefix. `closing_date` is the BORROWER's own notification and must never appear
+// in the attorney's inbox; a `LIKE 'closing\_%'` match swept it in. Every entry
+// here corresponds to a real `msgType:` passed to sendOnThread / the inbound
+// capture. Adding a chain message means adding its type here too.
+const CLOSING_CHAIN_MSG_TYPES = [
+  'closing_order', 'closing_followup', 'closing_message',
+  'closing_executed_term_sheet', 'closing_closing_date', 'closing_clear_to_close',
+];
 
 function cleanEmailList(v, max = 10) {
   const raw = Array.isArray(v) ? v : String(v || '').split(/[,;\s]+/);
