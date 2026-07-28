@@ -185,6 +185,34 @@ function writeValue(f, val, options) {
   }
 }
 
+/**
+ * Is a ClickUp custom-field value EMPTY? The fill-only guards (the PII overwrite
+ * shield, and the address backfill sweep) decide "may I write here?" off this, so
+ * it has to recognise every shape an unset field comes back as — including a
+ * `location` field, which arrives as null, as `{}`, or as an object carrying a
+ * blank formatted_address and no coordinates. Reading one of those as OCCUPIED is
+ * what leaves a blank card permanently un-fillable. Pure.
+ */
+function isBlankClickupValue(v) {
+  if (v == null || v === '') return true;
+  if (Array.isArray(v)) return v.length === 0;
+  if (typeof v !== 'object') return false;
+  const loc = v.location || v.position || v.geolocation || null;
+  const looksLocationish = loc != null || 'formatted_address' in v || 'formattedAddress' in v;
+  if (looksLocationish) {
+    const lat = loc ? (loc.lat != null ? loc.lat : loc.latitude) : null;
+    const lng = loc ? (loc.lng != null ? loc.lng : loc.longitude) : null;
+    // Reject null explicitly BEFORE Number(): Number(null) is 0, which is finite,
+    // so a coordinate-less location would otherwise read as occupied and the card
+    // could never be filled (the same trap addressField() guards on the write side).
+    const hasCoords = lat != null && lng != null
+      && Number.isFinite(Number(lat)) && Number.isFinite(Number(lng));
+    const text = String(v.formatted_address || v.formattedAddress || v.value || '').trim();
+    return !hasCoords && !text;
+  }
+  return Object.keys(v).length === 0;
+}
+
 function addressField(id, addr) {
   // Only emit a location field when we have REAL coordinates (ClickUp requires
   // lat/lng). Reject null AND non-finite (NaN/Infinity) explicitly: Number(null)
@@ -697,4 +725,4 @@ function isSuspectDobShift(fieldId, oldVal, newVal) {
   return diff === 86400000;
 }
 
-module.exports = { FIELD_MAP, KNOWN, buildTaskFields, readTaskFields, writeValue, readValue, normalizeClickupLocation, resolveOnly, fieldValueEquivalent, isSuspectDobShift, isDobChange };
+module.exports = { FIELD_MAP, KNOWN, buildTaskFields, readTaskFields, writeValue, readValue, normalizeClickupLocation, resolveOnly, fieldValueEquivalent, isSuspectDobShift, isDobChange, isBlankClickupValue };

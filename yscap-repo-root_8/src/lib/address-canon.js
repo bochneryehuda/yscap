@@ -49,29 +49,101 @@ function parseGeocodeResult(json) {
   };
 }
 
+// ---------------------------------------------------------------------------
+// NEVER CACHE A TRANSIENT FAILURE (owner-reported 2026-07-28: a subject property
+// address typed in PILOT that never reached the ClickUp card).
+//
+// This cache is PERMANENT by design, and a row with a NULL place_id means "we
+// asked, and there is no such place" — every later lookup short-circuits on it.
+// Both providers used to write that row for ANY answer that wasn't a match,
+// INCLUDING answers that were never about the address at all: an OSM 429/403
+// (Nominatim rate-limits hard), or a Google `OVER_QUERY_LIMIT` / `REQUEST_DENIED`
+// / `UNKNOWN_ERROR` — all of which arrive as an HTTP 200 body, not an exception.
+// One such blip marked a perfectly real property UNRESOLVABLE FOREVER, and
+// because a ClickUp `location` field REQUIRES coordinates (mapper.addressField
+// correctly refuses to write one without them), the subject property and the
+// borrower's home address could then never reach the card again — no matter how
+// many times the file was re-pushed. The catch below already knew the rule
+// ("network failure: DON'T cache — retry later"); it just never covered a
+// failure that arrives as a RESPONSE instead of a thrown error.
+//
+// So: only a DEFINITIVE provider answer ("we looked; there is no such place") is
+// cached as unresolvable, and even that is re-checked after NEGATIVE_TTL_DAYS —
+// new construction does get added to the map. A RESOLVED row is never rewritten:
+// `samePlace` compares place_id identity, so a resolved place_id stays stable
+// forever, exactly as before.
+// ---------------------------------------------------------------------------
+const NEGATIVE_TTL_DAYS = Math.max(1, parseInt(process.env.GEOCODE_NEGATIVE_TTL_DAYS || '30', 10) || 30);
+
+/** Google Geocoding: was that answer about the ADDRESS, or about our quota/key? */
+function googleDefinitive(httpOk, json) {
+  if (!httpOk) return false;                        // 4xx/5xx — the provider, not the address
+  const s = json && json.status;
+  return s === 'OK' || s === 'ZERO_RESULTS';        // anything else = quota / denied / unknown
+}
+/** Nominatim: a results ARRAY on a 200 is a real answer (empty = no such place). */
+function osmDefinitive(httpOk, json) { return !!httpOk && Array.isArray(json); }
+
+/** Is a cached "unresolvable" row old enough to ask the provider again? */
+function negativeExpired(resolvedAt, nowMs = Date.now()) {
+  const t = Date.parse(resolvedAt instanceof Date ? resolvedAt.toISOString() : String(resolvedAt || ''));
+  if (!Number.isFinite(t)) return true;             // no timestamp we can trust → re-check
+  return (nowMs - t) > NEGATIVE_TTL_DAYS * 24 * 3600 * 1000;
+}
+
+/**
+ * Cache read. Three distinct answers, which is the whole point:
+ *   row       — resolved; use it (permanent)
+ *   null      — cached "unresolvable" and still fresh; the caller returns null
+ *   undefined — nothing usable cached; the caller asks the provider
+ */
+async function cacheGet(key) {
+  try {
+    const hit = (await db.query(
+      `SELECT place_id, formatted, lat, lng, zip, resolved_at FROM address_canon_cache WHERE input_key=$1`,
+      [key])).rows[0];
+    if (!hit) return undefined;
+    if (hit.place_id) return hit;
+    return negativeExpired(hit.resolved_at) ? undefined : null;
+  } catch (_) { return undefined; }   // cache is an optimization
+}
+
+/**
+ * Cache write. A RESOLVED row is immutable (place_id identity is what samePlace
+ * compares); a negative row may be refreshed, or upgraded to a real resolution.
+ */
+async function cachePut(key, parsed) {
+  try {
+    await db.query(
+      `INSERT INTO address_canon_cache (input_key, place_id, formatted, lat, lng, zip, resolved_at)
+       VALUES ($1,$2,$3,$4,$5,$6, now())
+       ON CONFLICT (input_key) DO UPDATE
+          SET place_id=EXCLUDED.place_id, formatted=EXCLUDED.formatted,
+              lat=EXCLUDED.lat, lng=EXCLUDED.lng, zip=EXCLUDED.zip, resolved_at=now()
+        WHERE address_canon_cache.place_id IS NULL`,
+      [key, parsed && parsed.place_id, parsed && parsed.formatted,
+       parsed && parsed.lat, parsed && parsed.lng, parsed && parsed.zip]);
+  } catch (_) { /* best-effort */ }
+}
+
 /** Resolve free text → { place_id, formatted, lat, lng, zip } | null. Cached. */
 async function canonicalize(text) {
   const key = inputKey(text);
   if (!key || key.length < 8) return null;
-  try {
-    const hit = (await db.query(`SELECT place_id, formatted, lat, lng, zip FROM address_canon_cache WHERE input_key=$1`, [key])).rows[0];
-    if (hit) return hit.place_id ? hit : null;   // cached "unresolvable" too
-  } catch (_) { /* cache is an optimization */ }
+  const cached = await cacheGet(key);
+  if (cached !== undefined) return cached;   // resolved row, or a still-fresh "unresolvable"
   if (!cfg.googlePlacesKey) return null;
-  let parsed = null;
+  let parsed = null, definitive = false;
   try {
     const url = 'https://maps.googleapis.com/maps/api/geocode/json?components=country:US'
       + '&address=' + encodeURIComponent(key) + '&key=' + encodeURIComponent(cfg.googlePlacesKey);
     const r = await fetch(url, { signal: AbortSignal.timeout(6000) });
-    if (r.ok) parsed = parseGeocodeResult(await r.json());
+    const j = r.ok ? await r.json() : null;
+    definitive = googleDefinitive(r.ok, j);
+    if (definitive) parsed = parseGeocodeResult(j);
   } catch (_) { return null; }   // network failure: DON'T cache — retry later
-  try {
-    await db.query(
-      `INSERT INTO address_canon_cache (input_key, place_id, formatted, lat, lng, zip)
-       VALUES ($1,$2,$3,$4,$5,$6) ON CONFLICT (input_key) DO NOTHING`,
-      [key, parsed && parsed.place_id, parsed && parsed.formatted,
-       parsed && parsed.lat, parsed && parsed.lng, parsed && parsed.zip]);
-  } catch (_) { /* best-effort */ }
+  if (!definitive) return null;  // quota / denied / unknown: about US, not the address
+  await cachePut(key, parsed);
   return parsed;
 }
 
@@ -161,22 +233,21 @@ function parseOsmResult(m) {
 
 async function osmGeocode(text) {
   const key = OSM_PREFIX + inputKey(text);
-  try {
-    const hit = (await db.query(`SELECT place_id, formatted, lat, lng FROM address_canon_cache WHERE input_key=$1`, [key])).rows[0];
+  const cached = await cacheGet(key);
+  if (cached !== undefined) {
     // Compact on READ too: rows cached before the formatting fix below still
-    // hold a raw display_name, and this cache is permanent.
-    // `precision` is derived rather than stored (the table has no such column):
-    // after parseOsmResult, a row with no `formatted` IS a road-level match — that
-    // is the only way one is now written, and it is also what address-heal leaves
-    // behind when it strips a downgraded row. Deriving it here keeps a CACHE HIT
-    // behaving exactly like a fresh lookup for callers that check precision.
-    if (hit) {
-      if (!hit.place_id) return null;
-      const formatted = ADDR.compactFormattedAddress(hit.formatted) || null;
-      return { ...hit, formatted, precision: formatted ? 'rooftop' : 'road' };
-    }
-  } catch (_) { /* cache is an optimization */ }
-  let parsed = null;
+    // hold a raw display_name, and a resolved row is permanent.
+    // `precision` is DERIVED rather than stored (the table has no such column):
+    // after parseOsmResult, a resolved row with no `formatted` IS a road-level
+    // match — that is the only way one is now written, and it is also what
+    // address-heal leaves behind when it strips a downgraded row. Deriving it here
+    // keeps a CACHE HIT behaving exactly like a fresh lookup for callers that check
+    // precision (orchestrator.withCoords).
+    if (!cached) return null;
+    const formatted = ADDR.compactFormattedAddress(cached.formatted) || null;
+    return { ...cached, formatted, precision: formatted ? 'rooftop' : 'road' };
+  }
+  let parsed = null, definitive = false;
   try {
     // addressdetails=1 so we can build the MAILING form from real components
     // rather than shortening Nominatim's display_name after the fact.
@@ -186,17 +257,17 @@ async function osmGeocode(text) {
       signal: AbortSignal.timeout(6000),
       headers: { 'User-Agent': `YSCapitalPortal/1.0 (${cfg.osmContact || 'admin@yscapgroup.com'})`, accept: 'application/json' },
     }));
-    if (r && r.ok) {
-      const j = await r.json();
-      parsed = parseOsmResult(Array.isArray(j) ? j[0] : null);
-    }
+    const j = (r && r.ok) ? await r.json() : null;
+    definitive = osmDefinitive(r && r.ok, j);
+    // Only a DEFINITIVE answer is parsed (and therefore cached). parseOsmResult
+    // then decides PRECISION — a road-level match keeps its coordinates but offers
+    // no text, so a downgrade can never be cached as this property's address.
+    if (definitive) parsed = parseOsmResult(j[0] || null);
   } catch (_) { return null; }   // network failure: DON'T cache — retry later
-  try {
-    await db.query(
-      `INSERT INTO address_canon_cache (input_key, place_id, formatted, lat, lng, zip)
-       VALUES ($1,$2,$3,$4,$5,$6) ON CONFLICT (input_key) DO NOTHING`,
-      [key, parsed && parsed.place_id, parsed && parsed.formatted, parsed && parsed.lat, parsed && parsed.lng, parsed && parsed.zip]);
-  } catch (_) { /* best-effort */ }
+  // A 429 / 403 / 5xx is Nominatim throttling US, not a statement about the
+  // property. Caching it would blank this address on the ClickUp card forever.
+  if (!definitive) return null;
+  await cachePut(key, parsed);
   return parsed;
 }
 
@@ -219,4 +290,8 @@ async function geocode(text) {
   try { return await osmGeocode(q); } catch (_) { return null; }
 }
 
-module.exports = { canonicalize, samePlace, geocode, parseGeocodeResult, parseOsmResult, inputKey };
+module.exports = {
+  canonicalize, samePlace, geocode, parseGeocodeResult, parseOsmResult, inputKey,
+  // Pure — exported for the never-cache-a-transient-failure test.
+  googleDefinitive, osmDefinitive, negativeExpired, NEGATIVE_TTL_DAYS,
+};
