@@ -459,7 +459,12 @@ export default function ClosingPrepCard({ appId }) {
             {blockers.includes('loan_number') && <li>Add the file's loan number — the box at the top of this section.</li>}
             {blockers.includes('not_registered') && <li>Register the product in Products &amp; Pricing. The attorney needs a term sheet to draft from.</li>}
             {blockers.includes('term_sheet') && <li>Generate the term sheet, so there is one to attach.</li>}
-            {blockers.includes('attorney') && <li>Add an attorney contact to the file — there is nowhere to send this yet.</li>}
+            {/* NOT "add an attorney contact to the file" — that contact is the
+                BORROWER'S own lawyer, who is deliberately never a recipient here
+                (they are handed over in the body instead). Adding one changes
+                nothing, so the old wording sent people to do something that could
+                not work. Same words the server answers with. */}
+            {blockers.includes('attorney') && <li>Ask an admin to set up the closing attorney's group inbox — there is nowhere to send this yet. Adding an attorney contact to the file will not help: that contact is the borrower's own lawyer and is never copied on this email.</li>}
             {blockers.includes('documents_unavailable') && <li>We could not read this file's documents just now. Try again in a moment.</li>}
           </ul>
         </div>

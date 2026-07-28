@@ -160,8 +160,15 @@ module.exports = {
   // The closing-attorney GROUP inbox the "file ready for closing prep" order is
   // addressed to (owner-directed 2026-07-28; the same address the rtl_p5_atty
   // condition has named by hand since db/005). Env-backed rather than a literal
-  // so a firm change is a config edit, not a deploy — set ATTORNEY_GROUP_EMAIL="" to
-  // require an attorney contact on the file instead. A routing address, not a secret.
+  // so a firm change is a config edit, not a deploy. A routing address, not a secret.
+  //
+  // THIS IS THE ONLY RECIPIENT of a closing-prep order, so it must be set for the
+  // feature to work. It used to say `ATTORNEY_GROUP_EMAIL=""` would "require an
+  // attorney contact on the file instead" — that stopped being true the moment the
+  // file's `attorney` contact was correctly removed from the recipient list (it is
+  // the BORROWER'S counsel, handed over in the body, never copied). Blanking this
+  // now blocks every closing-prep order with a message no staffer can act on, so
+  // the guidance is gone rather than left as a trap.
   attorneyGroupEmail: (process.env.ATTORNEY_GROUP_EMAIL != null
     ? process.env.ATTORNEY_GROUP_EMAIL : 'teamag@privatelenderlaw.com').trim().toLowerCase() || null,
   // Total attachment budget for one closing-prep email. Resend accepts ~40 MB per
