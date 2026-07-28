@@ -72,9 +72,14 @@ const soStart = staff.indexOf("router.post('/applications/:id/closing/sign-off'"
 ok(soStart > 0, 'the sign-off route still exists (the slice has a start)');
 const soEnd = staff.indexOf('\nrouter.', soStart + 10);
 ok(soEnd > soStart, 'the sign-off route has a following route (the slice has an end)');
-const signOff = staff.slice(soStart, soEnd);
-ok(signOff.length > 400 && signOff.length < 12000,
-  `the sliced handler is a plausible size (${signOff.length} chars) — a bad slice would make every assertion below vacuous`);
+const signOffRaw = staff.slice(soStart, soEnd);
+// Match against a COMMENT-STRIPPED projection. The handler's own comments
+// describe the forbidden call in prose, so a plain text match passes today only
+// because the shipped wording happens to wrap mid-phrase — re-flowing that
+// paragraph would fail CI on a comment alone. Assert on code, not prose.
+const signOff = signOffRaw.replace(/\/\*[\s\S]*?\*\//g, ' ').replace(/^\s*\/\/.*$/gm, ' ');
+ok(signOffRaw.length > 400 && signOffRaw.length < 12000,
+  `the sliced handler is a plausible size (${signOffRaw.length} chars) — a bad slice would make every assertion below vacuous`);
 ok(/unwindInvestorDelivery\(/.test(signOff),
   'the sign-off route calls it rather than inlining the steps');
 ok(!/UPDATE closing_workflow SET stage='fully_reconciled'/.test(signOff),
@@ -83,8 +88,8 @@ ok(!/UPDATE closing_workflow SET stage='fully_reconciled'/.test(signOff),
 // silently no-opped for a non-admin closer and, when it did apply, un-parked an
 // on-hold file and emailed the borrower. Pin its ABSENCE so it cannot be
 // reinstated as a bolt-on without a deliberate change here.
-ok(!/applyInternalStatus\([^)]*closed reconciled/.test(signOff),
-  'the sign-off route does NOT drive the funded-bucket status door on an un-sign');
+ok(!/applyInternalStatus\(/.test(signOff),
+  'the sign-off route does NOT drive the status door at all — ANY status, not just the one that shipped');
 
 // ── exactly ONE definition of the rule ───────────────────────────────────────
 // A JS mirror was deleted precisely because nothing pinned it to the SQL.
