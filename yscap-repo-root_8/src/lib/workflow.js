@@ -255,6 +255,40 @@ async function returnItem(client, itemId, actorId, outcomeLabel, note) {
 }
 
 // ---------------------------------------------------------------------------
+// AUTO-CLEAR the closer's hand-off when the closing is COMPLETED (owner-directed
+// 2026-07-26: "once the reconciliation of a file is done and it's marked as
+// completed that file should automatically disappear from the closing workflow").
+//
+// The closing DESK already hides a completed file, but the closer's WORKFLOW
+// queue is driven by `workflow_items`, and nothing ever resolved that row — so a
+// finished file sat in their "up next" list forever until someone manually sent
+// it back. This resolves the live closing hand-off(s) for the file the same way a
+// manual send-back does (status='returned' + a `workflow_events` row), so the
+// history still shows what happened and the live queue drops it.
+//
+// Idempotent: only touches open/in_progress rows, so re-running is a no-op.
+// Returns the resolved items (possibly []).
+// ---------------------------------------------------------------------------
+async function resolveClosingItem(client, appId, actorId, outcomeLabel) {
+  const label = String(outcomeLabel || 'Closing complete — sent to purchasing').slice(0, 120);
+  const r = await client.query(
+    `UPDATE workflow_items
+        SET status='returned', outcome_label=$2, returned_at=now(), updated_at=now()
+      WHERE application_id=$1 AND submission_type='closing'
+        AND status IN ('open','in_progress')
+      RETURNING *`,
+    [appId, label]);
+  for (const item of r.rows) {
+    await client.query(
+      `INSERT INTO workflow_events (workflow_item_id, application_id, event_type, actor_staff_id, from_staff_id, to_staff_id, submission_type, outcome_label, note)
+       VALUES ($1,$2,'returned',$3,$4,$5,$6,$7,$8)`,
+      [item.id, item.application_id, actorId || null, actorId || null, item.from_staff_id,
+       item.submission_type, item.outcome_label, 'Closed out automatically when the file was marked complete.']);
+  }
+  return r.rows;
+}
+
+// ---------------------------------------------------------------------------
 // The personal queue. tab: 'next' (live, ordered) | 'history' (what I did).
 // sort: 'received' (default) | 'priority' | 'aging'. Scoped to a single staffer
 // (routed to me by to_staff_id). The route wraps this — it never leaks another
@@ -478,6 +512,6 @@ module.exports = {
   TYPES, TYPE_KEYS, typeConfig, OUTCOME_LABELS, SLA_HOURS, slaHoursFor,
   candidatesForRole, allActiveStaff,
   conditionsClearedPct, fileLiveItems, fileTimeline,
-  submitItem, pickItem, returnItem, listQueue, listByRole, WORKFLOW_ROLES, queueCounts, overdueByRecipient,
+  submitItem, pickItem, returnItem, resolveClosingItem, listQueue, listByRole, WORKFLOW_ROLES, queueCounts, overdueByRecipient,
   CLOSING_STAGES, getClosing, openClosing, advanceClosing,
 };

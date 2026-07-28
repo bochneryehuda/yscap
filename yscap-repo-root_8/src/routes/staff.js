@@ -8660,6 +8660,10 @@ router.post('/applications/:id/closing-workflow', async (req, res) => {
       await client.query('BEGIN');
       out = await workflow.advanceClosing(client, req.params.id, stage, req.actor.id);
       if (stage === 'fully_reconciled') await client.query(`UPDATE closing_workflow SET reconciled_ok=true WHERE application_id=$1`, [req.params.id]);
+      // COMPLETED (reconciled + investor-delivered → purchasing): the closer is
+      // done, so clear the file off their Workflow automatically. Same transaction
+      // as the stage move, so the queue can never disagree with the stage.
+      if (stage === 'in_purchasing') await workflow.resolveClosingItem(client, req.params.id, req.actor.id);
       await client.query('COMMIT');
     }
     catch (e) { await client.query('ROLLBACK').catch(() => {}); throw e; } finally { client.release(); }
