@@ -189,12 +189,27 @@ async function linkToSitewireIntake(appId, tpDrawRow) {
 // point PILOT's fetch elsewhere). Sends the Api-Key — the spec doesn't say whether
 // document file URLs are pre-signed or key-authenticated (sandbox item Q-C), and the
 // header is harmless on a pre-signed URL. 20s cap, 25MB cap.
+// TrustPoint serves document BYTES from its S3 evidence bucket, not from the API host —
+// e.g. https://tp-backend-evidence-prod-us-west-2.s3.amazonaws.com/media/private/documents/…
+// The original pin accepted ONLY the API host, so EVERY report download threw before it
+// began ("report url host … is not the TrustPoint host") and was swallowed by the
+// best-effort catch — no inspection report has ever actually been archived to a file
+// (owner-reported 2026-07-27: the reports are not on the draws). Verified against the live
+// /report/ response. The allow-list stays tight and explicit: the API host, or TrustPoint's
+// own evidence bucket. Every hop is still re-checked by assertPublicHttps/isPrivateIp, and
+// the Api-Key is sent ONLY to the API host (a pre-signed S3 URL carries its own auth and
+// must never receive our key).
+function isTrustpointDocHost(host, apiHost) {
+  if (host === apiHost) return true;
+  return /^tp-[a-z0-9-]+\.s3[.-][a-z0-9-]*\.?amazonaws\.com$/.test(host);
+}
+
 async function fetchReportBytes(fileUrl) {
   const cfg = require('../config');
   const media = require('../sitewire/media-archive');
   const baseHost = new URL(cfg.trustpointBaseUrl).host;
   const u = new URL(fileUrl);
-  if (u.host !== baseHost) throw new Error(`report url host ${u.host} is not the TrustPoint host`);
+  if (!isTrustpointDocHost(u.host, baseHost)) throw new Error(`report url host ${u.host} is not a TrustPoint document host`);
   await media.assertPublicHttps(fileUrl);
   const ac = new AbortController();
   const t = setTimeout(() => ac.abort(), 20000);
@@ -202,8 +217,10 @@ async function fetchReportBytes(fileUrl) {
     let current = fileUrl;
     for (let hop = 0; hop <= 3; hop++) {
       await media.assertPublicHttps(current);
-      const hostOk = new URL(current).host === baseHost;
-      const r = await fetch(current, { signal: ac.signal, redirect: 'manual', headers: hostOk ? { Authorization: `Api-Key ${cfg.trustpointApiKey}` } : {} });
+      const hop_ = new URL(current).host;
+      if (!isTrustpointDocHost(hop_, baseHost)) throw new Error(`redirect left the TrustPoint document hosts (${hop_})`);
+      // the API key goes to the API host ONLY — never appended to a pre-signed S3 URL
+      const r = await fetch(current, { signal: ac.signal, redirect: 'manual', headers: hop_ === baseHost ? { Authorization: `Api-Key ${cfg.trustpointApiKey}` } : {} });
       if (r.status >= 300 && r.status < 400) {
         const loc = r.headers.get('location');
         if (!loc) throw new Error(`redirect ${r.status} with no location`);
