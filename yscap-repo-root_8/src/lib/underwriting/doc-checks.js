@@ -393,9 +393,14 @@ function computeInsuranceFindings(ins, subject, opts = {}) {
   // 2026-07-20). When the file carries a rehab budget and the policy isn't marked builders-risk,
   // flag it to confirm the correct coverage form.
   const rehab = subject && num(subject.rehab_budget);
-  if (rehab != null && rehab > 0 && ins.buildersRisk !== true) {
+  // Fire ONLY when the policy AFFIRMATIVELY is NOT a builders-risk form (owner-directed 2026-07-28:
+  // "only flag what you KNOW is wrong, not what you couldn't read"). The old `!== true` also fired
+  // whenever the coverage form simply could not be read (buildersRisk null/absent) — a can't-confirm
+  // nag on a large share of rehab files. A null/absent flag is now left alone; the insurance condition
+  // still gets the policy reviewed by a human. Mirrors this module's own provenAbsent doctrine.
+  if (rehab != null && rehab > 0 && ins.buildersRisk === false) {
     out.push(mk('insurance', { code: 'insurance_no_builders_risk', severity: 'warning', field: 'builders_risk',
-      docValue: ins.buildersRisk === false ? 'not builders-risk' : 'builders-risk not confirmed', fileValue: `${money(rehab)} rehab budget`,
+      docValue: 'not builders-risk', fileValue: `${money(rehab)} rehab budget`,
       title: 'Confirm builders-risk coverage for the renovation',
       howTo: 'This is a construction/rehab loan — the property is vacant and under renovation, which a standard homeowner\'s policy typically excludes. Confirm the policy is a builders-risk / vacant-under-renovation form (or request a corrected binder) before closing.',
       actions: ['request_document', 'post_condition', 'dismiss'] }));
