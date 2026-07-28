@@ -99,7 +99,8 @@ const ok = (c, n) => { assert.ok(c, n); console.log(`  ok  ${n}`); passed++; };
 
     // Workspace payload is coherent.
     const ws = await closing.getClosingWorkspace(appId, client);
-    ok(ws && ws.warehouses && ws.warehouses.length === 6, 'workspace returns the 6 warehouses');
+    ok(ws && ws.warehouses && ws.warehouses.length === 7 && ws.warehouses.includes('Table Funding'),
+      'workspace returns the 7 warehouses, Table Funding among them');
     ok(ws.conditions.length === 3, 'workspace returns the 3 closing conditions');
     ok(ws.reconciliation && ws.reconciliation.ok === true, 'workspace reconciliation reflects current state');
     ok(ws.money && ws.money.ok === false, 'workspace money gate not ok before an actual cash-to-close is entered');
@@ -158,6 +159,31 @@ const ok = (c, n) => { assert.ok(c, n); console.log(`  ok  ${n}`); passed++; };
     ok(Array.isArray(ql2.credit_report) && ql2.credit_report.length === 1, 'credit-report quick-link surfaces exactly the readable report');
     ok(ql2.credit_report[0].doc_kind === 'credit_pdf', 'the credit XML data file is never a quick-link');
     ok(ql2.credit_report[0].credit_for === 'Close Test', 'the credit report says whose it is (from credit_reports, so a joint report names both)');
+
+    // ---- COMPLETED closings drop off the closer's Workflow automatically ----
+    // (owner-directed 2026-07-26). Submit the file to closing so the closer has a
+    // LIVE hand-off, then complete it and confirm the hand-off resolves itself.
+    const closerB = (await client.query(
+      `INSERT INTO staff_users (email,full_name,role,is_active)
+         VALUES ($1,'Queue Closer','closer',true) RETURNING id`,
+      ['queuecloser+' + Buffer.from(String(process.pid)).toString('hex') + '@example.com'])).rows[0];
+    const item = await workflow.submitItem(client, {
+      appId, submissionType: 'closing', fromStaffId: actor.id, toStaffId: closerB.id,
+      toRole: 'closer', note: 'to closing', priority: 2, estClosingDate: '2026-08-15',
+    });
+    let live = await workflow.listQueue(closerB.id, { tab: 'next' }, client);
+    ok(live.some((r) => String(r.application_id) === String(appId)), 'the file sits in the closer\'s Workflow while closing is open');
+
+    const resolved = await workflow.resolveClosingItem(client, appId, actor.id);
+    ok(resolved.length === 1 && String(resolved[0].id) === String(item.id), 'completing the closing resolves the closer hand-off');
+    live = await workflow.listQueue(closerB.id, { tab: 'next' }, client);
+    ok(!live.some((r) => String(r.application_id) === String(appId)), 'the completed file DISAPPEARS from the closer\'s Workflow');
+    const hist = (await client.query(
+      `SELECT event_type FROM workflow_events WHERE workflow_item_id=$1 AND event_type='returned'`, [item.id])).rows;
+    ok(hist.length === 1, 'the auto-clear is recorded in Workflow history (one returned event)');
+    // Idempotent — a second completion (or the backfill re-running) is a no-op.
+    const again = await workflow.resolveClosingItem(client, appId, actor.id);
+    ok(again.length === 0, 'resolving an already-completed closing is a no-op (idempotent)');
 
     await client.query('ROLLBACK');
     console.log(`test-closing-db: ${passed} checks passed`);

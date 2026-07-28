@@ -286,17 +286,26 @@ export default function StaffLayout({ children }) {
   const [notifDraftCount, setNotifDraftCount] = useState(0);
   const [myExcCount, setMyExcCount] = useState(0);
   const [closingCount, setClosingCount] = useState(0);
+  // Files still OUTSTANDING on the purchasing desk (admins + closers).
+  const [purchasingCount, setPurchasingCount] = useState(0);
   useEffect(() => {
     let alive = true;
     const poll = () => {
       api.workflowCount().then(r => { if (alive) setWfCount((r && r.total) || 0); }).catch(() => {});
       api.myExceptionsCount().then(r => { if (alive) setMyExcCount((r && r.openCount) || 0); }).catch(() => {});
       api.closingCount().then(r => { if (alive) setClosingCount((r && r.count) || 0); }).catch(() => {});
+      // Gated: unlike /closing/count this endpoint is capability-gated, so polling
+      // it for everyone would 403 on load and again every 2 minutes for every LO,
+      // processor and underwriter in the company.
+      if (can('manage_purchasing')) api.purchasingCount().then(r => { if (alive) setPurchasingCount((r && r.count) || 0); }).catch(() => {});
     };
     poll();
     const t = setInterval(poll, 120000);
     return () => { alive = false; clearInterval(t); };
-  }, []);
+    // `can` is memoized on the permission list, so this re-runs once when perms
+    // arrive — without it the capability check would be frozen at its mount-time
+    // value (false) and the purchasing badge would never appear.
+  }, [can]);
   useEffect(() => {
     let alive = true;
     const poll = () => api.get('/api/staff/sync-reviews/count')
@@ -379,6 +388,7 @@ export default function StaffLayout({ children }) {
   const canManageVendors = can('manage_vendors');
   const canManageDraws = can('manage_draws');
   const canManageClosings = can('manage_closings');
+  const canManagePurchasing = can('manage_purchasing');
   const canExportTapes = can('export_data_tapes');
   const canDeleteFiles = can('delete_files');
   const canPlatformSetup = can('platform_setup');
@@ -433,6 +443,8 @@ export default function StaffLayout({ children }) {
         {canExportTapes && <NavLink className="sb-link" to="/internal/tapes" title="Data Tapes — export each capital provider's loan tape (their Excel workbook, filled with the loan's figures). One loan at a time or in bulk by provider."><NavIcon name="pipeline" />Data tapes</NavLink>}
         {(canManageClosings || role === 'loan_officer' || role === 'processor') && <NavLink className="sb-link" to="/internal/closing" title="Closing — files submitted to closing: cash-to-close checks, warehouse & collateral, closing conditions, reconciliation."><NavIcon name="pipeline" />Closing
           {closingCount > 0 && <span className="sb-badge">{closingCount > 99 ? '99+' : closingCount}</span>}</NavLink>}
+        {canManagePurchasing && <NavLink className="sb-link" to="/internal/purchasing" title="Purchasing — every file that moved to purchasing after investor delivery: what's still missing, notes and tasks. A table-funded loan was sold at closing and never lands here."><NavIcon name="pipeline" />Purchasing
+          {purchasingCount > 0 && <span className="sb-badge">{purchasingCount > 99 ? '99+' : purchasingCount}</span>}</NavLink>}
         {canManageDraws && <NavLink className="sb-link" to="/internal/draws" title="Draw Management — the post-funding phase: every draw, approvals, inspector photos, releases, and reports"><NavIcon name="pipeline" />Draw Management</NavLink>}
         {canManageConditions && <NavLink className="sb-link" to="/internal/conditions" title="Condition Center — the global condition library & rules"><NavIcon name="conditions" />Conditions</NavLink>}
         {canManageVendors && <NavLink className="sb-link" to="/internal/vendors" title="Title & insurance vendor directory"><NavIcon name="vendors" />Vendors</NavLink>}
