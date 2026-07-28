@@ -48,7 +48,15 @@ async function withdrawFromPurchasing(client, appId) {
 
 async function getPurchasing(appId, client) {
   const c = client || db;
-  const r = await c.query(`SELECT * FROM purchasing_workflow WHERE application_id=$1`, [appId]);
+  // The advice document's filename rides along so the desk can link it without a
+  // second round trip. LEFT JOIN — the pointer may be null, or point at a document
+  // that was since deleted (the FK is ON DELETE SET NULL, but a stale read is
+  // still possible mid-transaction).
+  const r = await c.query(
+    `SELECT p.*, d.filename AS purchase_advice_filename, d.created_at AS purchase_advice_uploaded_at
+       FROM purchasing_workflow p
+       LEFT JOIN documents d ON d.id = p.purchase_advice_document_id
+      WHERE p.application_id=$1`, [appId]);
   return r.rows[0] || null;
 }
 
@@ -142,17 +150,101 @@ async function getPurchasingWorkspace(appId, client) {
   const row = await getPurchasing(appId, c);
   const notes = await safe(() => readNotes(appId, c), []);
   const tasks = await safe(() => readTasks(appId, c), []);
+  const conditions = await safe(() => readConditions(appId, c), []);
+  // The file's current documents, so the desk can point at which one IS the
+  // purchase advice without a second round trip. Newest first — the advice is
+  // re-issued post closing and again post purchase, so the newest is usually it.
+  const documents = await safe(async () => (await c.query(
+    `SELECT id, filename, doc_kind, created_at FROM documents
+      WHERE application_id=$1 AND COALESCE(is_current, true) = true
+      ORDER BY created_at DESC LIMIT 200`, [appId])).rows, []);
   return {
     application_id: appId,
     purchasing: row,
     inPurchasing: !!row,
     notes,
     tasks,
+    conditions,
+    documents,
     openTasks: tasks.filter((t) => !t.done).length,
+    openConditions: conditions.filter((x) => x.status === 'open').length,
   };
 }
 
+// ---------------------------------------------------------------------------
+// PURCHASING CONDITIONS — what the buyer still needs before they will purchase.
+// Post-closing and desk-owned: never borrower-visible, which is exactly why they
+// live in their own table instead of checklist_items (see db/350).
+// ---------------------------------------------------------------------------
+const CONDITION_STATUSES = ['open', 'cleared', 'waived'];
+
+async function readConditions(appId, client) {
+  const c = client || db;
+  return (await c.query(
+    `SELECT pc.*, cb.full_name AS created_by_name, rb.full_name AS resolved_by_name
+       FROM purchasing_conditions pc
+       LEFT JOIN staff_users cb ON cb.id = pc.created_by
+       LEFT JOIN staff_users rb ON rb.id = pc.resolved_by
+      WHERE pc.application_id=$1
+      ORDER BY (pc.status = 'open') DESC, pc.sort_order, pc.created_at`, [appId])).rows;
+}
+
+async function addCondition(client, appId, label, detail, actorId, sortOrder) {
+  const c = client || db;
+  return (await c.query(
+    `INSERT INTO purchasing_conditions (application_id, label, detail, created_by, sort_order)
+     VALUES ($1,$2,$3,$4::uuid,$5) RETURNING *`,
+    [appId, String(label).slice(0, 300), detail ? String(detail).slice(0, 2000) : null,
+     actorId || null, Number.isFinite(sortOrder) ? Math.round(sortOrder) : 0])).rows[0];
+}
+
+/* Resolving is reversible: setting it back to 'open' CLEARS who resolved it, so a
+ * reopened condition never keeps a stale signature — the same discipline the
+ * platform's other sign-off surfaces use. */
+async function setConditionStatus(client, condId, status, actorId, note) {
+  const c = client || db;
+  if (!CONDITION_STATUSES.includes(status)) throw new Error('unknown purchasing condition status');
+  const done = status !== 'open';
+  return (await c.query(
+    `UPDATE purchasing_conditions
+        SET status=$2,
+            resolved_at     = CASE WHEN $4 THEN now()      ELSE NULL END,
+            resolved_by     = CASE WHEN $4 THEN $3::uuid   ELSE NULL END,
+            resolution_note = CASE WHEN $4 THEN $5         ELSE NULL END
+      WHERE id=$1 RETURNING *`,
+    [condId, status, actorId || null, done, note ? String(note).slice(0, 2000) : null])).rows[0] || null;
+}
+
+async function deleteCondition(client, condId) {
+  const c = client || db;
+  return (await c.query(`DELETE FROM purchasing_conditions WHERE id=$1 RETURNING id`, [condId])).rows[0] || null;
+}
+
+/* PURCHASE ADVICE — a date and the current advice document. Re-issued post
+ * closing and again post purchase, so this is an ordinary update, not a
+ * write-once. Only keys actually present in `patch` are touched, so setting the
+ * date never clears the document and vice versa. */
+async function setPurchaseAdvice(client, appId, patch, actorId) {
+  const c = client || db;
+  const sets = [];
+  const vals = [appId];
+  if ('date' in patch) { vals.push(patch.date || null); sets.push(`purchase_advice_date=$${vals.length}::date`); }
+  if ('documentId' in patch) { vals.push(patch.documentId || null); sets.push(`purchase_advice_document_id=$${vals.length}::uuid`); }
+  if (!sets.length) return getPurchasing(appId, c);
+  vals.push(actorId || null);
+  return (await c.query(
+    `UPDATE purchasing_workflow
+        SET ${sets.join(', ')}, purchase_advice_updated_at=now(), purchase_advice_updated_by=$${vals.length}::uuid
+      WHERE application_id=$1 RETURNING *`, vals)).rows[0] || null;
+}
+
 module.exports = {
+  CONDITION_STATUSES,
+  readConditions,
+  addCondition,
+  setConditionStatus,
+  deleteCondition,
+  setPurchaseAdvice,
   enterPurchasing,
   withdrawFromPurchasing,
   getPurchasing,

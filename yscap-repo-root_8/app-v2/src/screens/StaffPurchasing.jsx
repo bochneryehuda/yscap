@@ -133,11 +133,22 @@ function PurchasingDetail({ appId, status, onChanged }) {
   const [ws, setWs] = useState(null);
   const [note, setNote] = useState('');
   const [task, setTask] = useState('');
+  const [cond, setCond] = useState('');
+  const [condDetail, setCondDetail] = useState('');
+  const [advice, setAdvice] = useState('');
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState('');
 
   const load = useCallback(() => {
-    api.purchasingGet(appId).then(setWs).catch((e) => setErr((e && e.message) || 'Could not load this file.'));
+    api.purchasingGet(appId)
+      .then((d) => {
+        setWs(d);
+        // Re-seed the date input from the server, so a save is reflected and a
+        // concurrent edit by someone else is not silently overwritten by a stale
+        // local value.
+        setAdvice(((d && d.purchasing && d.purchasing.purchase_advice_date) || '').slice(0, 10));
+      })
+      .catch((e) => setErr((e && e.message) || 'Could not load this file.'));
   }, [appId]);
   useEffect(() => { load(); }, [load]);
 
@@ -150,6 +161,7 @@ function PurchasingDetail({ appId, status, onChanged }) {
   };
 
   if (!ws) return <div className="muted small" style={{ padding: 10 }}>Loading…</div>;
+  const p = ws.purchasing || {};
 
   return (
     <div className="pu-detail">
@@ -200,6 +212,81 @@ function PurchasingDetail({ appId, status, onChanged }) {
                   onClick={() => run(() => api.purchasingTaskDelete(appId, t.id))}>Remove</button>
               </div>
             ))}
+        </div>
+      </div>
+
+      {/* Conditions — what the buyer still needs before they will purchase. */}
+      <div className="pu-col" style={{ marginTop: 14 }}>
+        <div className="pu-h">Conditions to purchase</div>
+        <div className="row" style={{ gap: 8, marginBottom: 8, flexWrap: 'wrap' }}>
+          <input className="input" style={{ flex: 2, minWidth: 180 }} placeholder="e.g. recorded mortgage returned from the county"
+            value={cond} onChange={(e) => setCond(e.target.value)} />
+          <input className="input" style={{ flex: 3, minWidth: 180 }} placeholder="Detail (optional)"
+            value={condDetail} onChange={(e) => setCondDetail(e.target.value)} />
+          <button className="btn primary small" disabled={busy || !cond.trim()}
+            onClick={() => run(async () => {
+              await api.purchasingAddCondition(appId, cond.trim(), condDetail.trim() || null);
+              setCond(''); setCondDetail('');
+            })}>Add condition</button>
+        </div>
+        {(ws.conditions || []).length === 0 ? <div className="muted small">No conditions yet.</div>
+          : (ws.conditions || []).map((x) => (
+            <div key={x.id} className="pu-cond">
+              <div className="pu-cond-main">
+                <span className={x.status === 'open' ? '' : 'pu-task-done'}>{x.label}</span>
+                {x.detail && <span className="muted small">{x.detail}</span>}
+                {x.status !== 'open' && (
+                  <span className="muted small">
+                    {x.status === 'waived' ? 'Waived' : 'Cleared'}
+                    {x.resolved_by_name ? ` by ${x.resolved_by_name}` : ''} · {day(x.resolved_at)}
+                    {x.resolution_note ? ` — ${x.resolution_note}` : ''}
+                  </span>
+                )}
+              </div>
+              <div className="row" style={{ gap: 6, flex: '0 0 auto' }}>
+                {x.status === 'open' ? (
+                  <>
+                    <button className="btn ghost small" disabled={busy}
+                      onClick={() => run(() => api.purchasingConditionStatus(appId, x.id, 'cleared'))}>Clear</button>
+                    <button className="btn link small" disabled={busy}
+                      onClick={() => run(() => api.purchasingConditionStatus(appId, x.id, 'waived'))}>Waive</button>
+                  </>
+                ) : (
+                  <button className="btn ghost small" disabled={busy}
+                    onClick={() => run(() => api.purchasingConditionStatus(appId, x.id, 'open'))}>Re-open</button>
+                )}
+                <button className="btn link small" disabled={busy}
+                  onClick={() => run(() => api.purchasingConditionDelete(appId, x.id))}>Remove</button>
+              </div>
+            </div>
+          ))}
+      </div>
+
+      {/* Purchase advice — the date, and the advice document (re-issued post
+          closing and again post purchase, so it is an ordinary update). */}
+      <div className="pu-col" style={{ marginTop: 14 }}>
+        <div className="pu-h">Purchase advice</div>
+        <div className="row" style={{ gap: 8, alignItems: 'flex-end', flexWrap: 'wrap' }}>
+          <label style={{ display: 'flex', flexDirection: 'column', gap: 3 }}>
+            <span className="small muted">Purchase advice date</span>
+            <input className="input" type="date" value={advice} disabled={busy}
+              onChange={(e) => setAdvice(e.target.value)} />
+          </label>
+          <button className="btn primary small" disabled={busy || advice === (p.purchase_advice_date || '').slice(0, 10)}
+            onClick={() => run(() => api.purchasingAdvice(appId, { date: advice || null }))}>Save date</button>
+          <label style={{ display: 'flex', flexDirection: 'column', gap: 3, flex: 1, minWidth: 200 }}>
+            <span className="small muted">Purchase advice document</span>
+            <select className="input" value={p.purchase_advice_document_id || ''} disabled={busy}
+              onChange={(e) => run(() => api.purchasingAdvice(appId, { documentId: e.target.value || null }))}>
+              <option value="">— none selected —</option>
+              {(ws.documents || []).map((d) => <option key={d.id} value={d.id}>{d.filename}</option>)}
+            </select>
+          </label>
+        </div>
+        <div className="muted small" style={{ marginTop: 6 }}>
+          {p.purchase_advice_filename
+            ? <>Current: <b>{p.purchase_advice_filename}</b> · uploaded {day(p.purchase_advice_uploaded_at)}. Upload a newer copy on the file, then pick it here to update it post purchase.</>
+            : <>Upload the advice on the file, then pick it here. It can be replaced post closing and again post purchase.</>}
         </div>
       </div>
 

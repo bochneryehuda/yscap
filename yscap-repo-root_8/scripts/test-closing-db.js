@@ -99,7 +99,8 @@ const ok = (c, n) => { assert.ok(c, n); console.log(`  ok  ${n}`); passed++; };
 
     // Workspace payload is coherent.
     const ws = await closing.getClosingWorkspace(appId, client);
-    ok(ws && ws.warehouses && ws.warehouses.length === 6, 'workspace returns the 6 warehouses');
+    ok(ws && ws.warehouses && ws.warehouses.length === 7 && ws.warehouses.includes('Table Funding'),
+      'workspace returns the 7 warehouses, Table Funding among them');
     ok(ws.conditions.length === 3, 'workspace returns the 3 closing conditions');
     ok(ws.reconciliation && ws.reconciliation.ok === true, 'workspace reconciliation reflects current state');
     ok(ws.money && ws.money.ok === false, 'workspace money gate not ok before an actual cash-to-close is entered');

@@ -8759,32 +8759,35 @@ router.patch('/applications/:id/closing', async (req, res) => {
       }
       // Closer-only fields.
       if (isCloser) {
-        // TABLE FUNDING (owner-directed 2026-07-26) — ticked BEFORE the investor
-        // delivery sign-off: the loan is sold right at closing, so it never goes to
-        // the purchasing desk. Turning it ON also pulls the file back out of
-        // purchasing if it is still outstanding there (a completed purchasing
-        // record is history and is left alone).
-        if ('tableFunded' in b) {
-          const tf = b.tableFunded === true;
-          const tfRow = (await client.query(
-            `UPDATE closing_workflow
-                SET table_funded=$2,
-                    table_funded_at = CASE WHEN $2 THEN COALESCE(table_funded_at, now()) ELSE NULL END,
-                    table_funded_by = CASE WHEN $2 THEN $3::uuid ELSE NULL END,
-                    updated_by=$3::uuid, updated_at=now()
-              WHERE application_id=$1
-          RETURNING investor_delivery_signed_off_at`, [appId, tf, req.actor.id])).rows[0];
-          if (tf) await purchasing.withdrawFromPurchasing(client, appId);
-          // Un-ticking it AFTER the delivery sign-off means the loan was NOT sold
-          // at closing after all, so it belongs on the purchasing desk — the same
-          // fork the sign-off route runs, just reached from the other side.
-          else if (tfRow && tfRow.investor_delivery_signed_off_at)
-            await purchasing.enterPurchasing(client, appId, req.actor.id);
-        }
+        // NOTE: there is deliberately NO separate `tableFunded` switch. Table
+        // funding is decided by the WAREHOUSE (owner-directed 2026-07-26) — a
+        // second independently-settable flag could disagree with the warehouse
+        // the file actually funded on, and the fork that skips the purchasing
+        // desk must never be ambiguous.
         if ('warehouse' in b) {
           const wh = b.warehouse ? String(b.warehouse) : null;
           if (wh && !closing.WAREHOUSES.includes(wh)) { await client.query('ROLLBACK'); client.release(); return res.status(400).json({ error: 'Unknown warehouse.' }); }
-          await client.query(`UPDATE closing_workflow SET warehouse=$2, updated_by=$3, updated_at=now() WHERE application_id=$1`, [appId, wh, req.actor.id]);
+          // THE WAREHOUSE IS WHAT DECIDES TABLE FUNDING (owner-directed
+          // 2026-07-26). Funding on the Table Funding line means the loan was sold
+          // at closing, so table_funded — the flag every downstream fork reads —
+          // is written from the warehouse here rather than kept as a second,
+          // independently-settable switch that could disagree with it.
+          const tf = wh === closing.TABLE_FUNDING;
+          const whRow = (await client.query(
+            `UPDATE closing_workflow
+                SET warehouse=$2, table_funded=$4,
+                    table_funded_at = CASE WHEN $4 THEN COALESCE(table_funded_at, now()) ELSE NULL END,
+                    table_funded_by = CASE WHEN $4 THEN COALESCE(table_funded_by, $3::uuid) ELSE NULL END,
+                    updated_by=$3::uuid, updated_at=now()
+              WHERE application_id=$1
+          RETURNING investor_delivery_signed_off_at`, [appId, wh, req.actor.id, tf])).rows[0];
+          // Moving ONTO Table Funding pulls the file back off the purchasing desk
+          // (only while outstanding — a completed record is history). Moving OFF it
+          // after the delivery sign-off hands the file over, because it now does
+          // need to be sold.
+          if (tf) await purchasing.withdrawFromPurchasing(client, appId);
+          else if (whRow && whRow.investor_delivery_signed_off_at)
+            await purchasing.enterPurchasing(client, appId, req.actor.id);
         }
         if ('collateralTrackingNumber' in b)
           await client.query(`UPDATE closing_workflow SET collateral_tracking_number=$2, updated_by=$3, updated_at=now() WHERE application_id=$1`, [appId, b.collateralTrackingNumber ? String(b.collateralTrackingNumber).slice(0, 120) : null, req.actor.id]);
@@ -9123,6 +9126,77 @@ router.delete('/applications/:id/purchasing/tasks/:tid', purchasingGate, async (
     await purchasing.deleteTask(db, req.params.tid);
     res.json({ ok: true, tasks: await purchasing.readTasks(req.params.id) });
   } catch (e) { res.status(500).json({ error: 'server error' }); }
+});
+
+// PURCHASING CONDITIONS — what the buyer still needs before they will purchase.
+// Desk-owned and never borrower-visible (see db/350). Same file scoping as the
+// rest of this block: the /applications/:id middleware, plus an explicit
+// belongs-to-this-file check on every per-condition route (IDOR).
+router.post('/applications/:id/purchasing/conditions', purchasingGate, async (req, res) => {
+  const label = req.body && req.body.label;
+  if (!label || !String(label).trim()) return res.status(400).json({ error: 'Name the condition first.' });
+  try {
+    if (!(await purchasing.getPurchasing(req.params.id))) return res.status(404).json({ error: 'This file is not in purchasing.' });
+    await purchasing.addCondition(db, req.params.id, String(label).trim(),
+      req.body.detail, req.actor.id, req.body.sortOrder);
+    await audit(req, 'purchasing_condition_added', 'application', req.params.id, { label: String(label).trim().slice(0, 120) });
+    res.json({ ok: true, conditions: await purchasing.readConditions(req.params.id) });
+  } catch (e) { console.warn('[purchasing] condition add error:', db.describeError(e)); res.status(500).json({ error: 'server error' }); }
+});
+
+router.patch('/applications/:id/purchasing/conditions/:cid', purchasingGate, async (req, res) => {
+  const status = req.body && req.body.status;
+  if (!purchasing.CONDITION_STATUSES.includes(status))
+    return res.status(400).json({ error: 'unknown condition status' });
+  try {
+    const own = (await db.query(
+      `SELECT id FROM purchasing_conditions WHERE id=$1 AND application_id=$2`, [req.params.cid, req.params.id])).rows[0];
+    if (!own) return res.status(404).json({ error: 'condition not found' });
+    await purchasing.setConditionStatus(db, req.params.cid, status, req.actor.id, req.body.note);
+    await audit(req, 'purchasing_condition_status', 'application', req.params.id, { conditionId: req.params.cid, status });
+    res.json({ ok: true, conditions: await purchasing.readConditions(req.params.id) });
+  } catch (e) { res.status(500).json({ error: 'server error' }); }
+});
+
+router.delete('/applications/:id/purchasing/conditions/:cid', purchasingGate, async (req, res) => {
+  try {
+    const own = (await db.query(
+      `SELECT id FROM purchasing_conditions WHERE id=$1 AND application_id=$2`, [req.params.cid, req.params.id])).rows[0];
+    if (!own) return res.status(404).json({ error: 'condition not found' });
+    await purchasing.deleteCondition(db, req.params.cid);
+    await audit(req, 'purchasing_condition_removed', 'application', req.params.id, { conditionId: req.params.cid });
+    res.json({ ok: true, conditions: await purchasing.readConditions(req.params.id) });
+  } catch (e) { res.status(500).json({ error: 'server error' }); }
+});
+
+// PURCHASE ADVICE — the expected/actual purchase date and the current advice
+// DOCUMENT. Re-issued post closing and again post purchase, so this is an
+// ordinary update. The document must already exist on THIS file (IDOR) — it is
+// uploaded through the normal document endpoint, which owns storage, the
+// SharePoint mirror and the download authorization check.
+router.post('/applications/:id/purchasing/advice', purchasingGate, async (req, res) => {
+  const b = req.body || {};
+  const patch = {};
+  if ('date' in b) {
+    const d = b.date ? require('../lib/fields').normalizeTypedDate(b.date, 'closing') : null;
+    if (b.date && !d) return res.status(400).json({ error: 'That purchase advice date is not a real date.' });
+    patch.date = d;
+  }
+  if ('documentId' in b) {
+    if (b.documentId) {
+      const own = (await db.query(
+        `SELECT id FROM documents WHERE id=$1 AND application_id=$2`, [b.documentId, req.params.id])).rows[0];
+      if (!own) return res.status(404).json({ error: 'That document is not on this file.' });
+    }
+    patch.documentId = b.documentId || null;
+  }
+  if (!Object.keys(patch).length) return res.status(400).json({ error: 'Nothing to update.' });
+  try {
+    if (!(await purchasing.getPurchasing(req.params.id))) return res.status(404).json({ error: 'This file is not in purchasing.' });
+    const row = await purchasing.setPurchaseAdvice(db, req.params.id, patch, req.actor.id);
+    await audit(req, 'purchasing_advice', 'application', req.params.id, patch);
+    res.json({ ok: true, purchasing: row });
+  } catch (e) { console.warn('[purchasing] advice error:', db.describeError(e)); res.status(500).json({ error: 'server error' }); }
 });
 
 // #84 — super-admin STRUCTURAL UNLOCK. A clear-to-close / funded file's loan

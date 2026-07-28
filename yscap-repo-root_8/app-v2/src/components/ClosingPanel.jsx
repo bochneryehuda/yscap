@@ -402,21 +402,21 @@ function SignoffSection({ appId, cw, rec, isCloser, busy, run }) {
               onSign={(on) => run('tpr', () => api.closingSignOff(appId, 'tpr', on))} />
           </>}
           {/* TABLE FUNDING sits directly ABOVE the investor-delivery sign-off,
-              because it is the question you answer BEFORE you sign it off: a
-              table-funded loan was sold right at closing, so it skips the
-              purchasing desk entirely. */}
-          <label className="cl-signrow cl-tf">
-            <input type="checkbox" checked={!!cw.table_funded} disabled={!isCloser || busy === 'tf'}
-              onChange={(e) => run('tf', () => api.closingUpdate(appId, { tableFunded: e.target.checked }))} />
+              because it is the question you answer BEFORE you sign it off. It is
+              READ-ONLY here: the WAREHOUSE decides it (owner-directed) — funding
+              on the Table Funding line means the loan was sold at closing, so it
+              skips the purchasing desk. One control, in Funding, so the two can
+              never disagree. */}
+          <div className="cl-signrow cl-tf">
             <span className="cl-tf-main">
-              <b>Table funded — sold at closing</b>
+              <b>{cw.table_funded ? '✓ Table funded — sold at closing' : 'Not table funded'}</b>
               <span className="cl-tf-hint">
                 {cw.table_funded
-                  ? 'This loan was sold at closing, so it will not go to purchasing.'
-                  : 'Tick this before you sign off investor delivery if the loan was sold right at closing. Otherwise the file goes to the purchasing desk.'}
+                  ? 'Funded on the Table Funding warehouse, so this loan was sold at closing and does not go to purchasing.'
+                  : 'Signing off investor delivery sends this file to the purchasing desk to be sold. If it was sold at closing, set the warehouse to “Table Funding” in Funding above first.'}
               </span>
             </span>
-          </label>
+          </div>
           <SignRow label="Investor delivery signed off" done={!!cw.investor_delivery_signed_off_at} isCloser={isCloser} busy={busy === 'inv'}
             onSign={(on) => run('inv', () => api.closingSignOff(appId, 'investor_delivery', on))} />
           {!!cw.investor_delivery_signed_off_at && (

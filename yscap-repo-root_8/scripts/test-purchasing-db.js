@@ -22,6 +22,7 @@ const path = require('path');
 const { Pool } = require('pg');
 const purchasing = require('../src/lib/purchasing');
 const workflow = require('../src/lib/workflow');
+const closing = require('../src/lib/closing');
 
 let passed = 0;
 const ok = (c, n) => { assert.ok(c, n); console.log(`  ok  ${n}`); passed++; };
@@ -70,19 +71,24 @@ const uniq = (p) => p + Buffer.from(String(process.pid)).toString('hex') + Math.
     await workflow.maybeFinishClosing(client, appId, actorId);
   }
 
-  // Mirrors the closer-only `tableFunded` block of PATCH /applications/:id/closing.
-  async function setTableFunded(appId, actorId, on) {
+  /* Mirrors the closer-only `warehouse` block of PATCH /applications/:id/closing.
+     THE WAREHOUSE is what decides table funding — there is no separate switch. */
+  async function setWarehouse(appId, actorId, warehouse) {
+    assert.ok(warehouse === null || closing.WAREHOUSES.includes(warehouse), 'warehouse must be a real one');
+    const tf = warehouse === closing.TABLE_FUNDING;
     const row = (await client.query(
       `UPDATE closing_workflow
-          SET table_funded=$2,
-              table_funded_at = CASE WHEN $2 THEN COALESCE(table_funded_at, now()) ELSE NULL END,
-              table_funded_by = CASE WHEN $2 THEN $3::uuid ELSE NULL END,
+          SET warehouse=$2, table_funded=$4,
+              table_funded_at = CASE WHEN $4 THEN COALESCE(table_funded_at, now()) ELSE NULL END,
+              table_funded_by = CASE WHEN $4 THEN COALESCE(table_funded_by, $3::uuid) ELSE NULL END,
               updated_by=$3::uuid, updated_at=now()
         WHERE application_id=$1
-    RETURNING investor_delivery_signed_off_at`, [appId, on, actorId])).rows[0];
-    if (on) await purchasing.withdrawFromPurchasing(client, appId);
+    RETURNING investor_delivery_signed_off_at`, [appId, warehouse, actorId, tf])).rows[0];
+    if (tf) await purchasing.withdrawFromPurchasing(client, appId);
     else if (row && row.investor_delivery_signed_off_at) await purchasing.enterPurchasing(client, appId, actorId);
   }
+  const setTableFunded = (appId, actorId, on) =>
+    setWarehouse(appId, actorId, on ? closing.TABLE_FUNDING : 'Stride Bank');
 
   try {
     await client.query('BEGIN');
@@ -194,6 +200,83 @@ const uniq = (p) => p + Buffer.from(String(process.pid)).toString('hex') + Math.
     await runBackfill();
     ok((await purchasing.getPurchasing(P.appId, client)).status === 'complete' && beforeStatus === 'outstanding',
       'and a COMPLETED purchasing record is never reopened by a re-run');
+
+    // ---- THE WAREHOUSE decides table funding (owner-directed 2026-07-26) ----
+    ok(closing.WAREHOUSES.includes(closing.TABLE_FUNDING),
+      '"Table Funding" is one of the warehouse lines the closer can pick');
+    const W = await makeFile();
+    await setWarehouse(W.appId, W.closerId, closing.TABLE_FUNDING);
+    let cwW = (await client.query(
+      `SELECT warehouse, table_funded, table_funded_at FROM closing_workflow WHERE application_id=$1`, [W.appId])).rows[0];
+    ok(cwW.table_funded === true && !!cwW.table_funded_at,
+      'picking the Table Funding warehouse marks the file table funded');
+    await signOffInvestorDelivery(W.appId, W.closerId, true);
+    ok(!(await purchasing.getPurchasing(W.appId, client)),
+      'so investor delivery does NOT send it to purchasing — it was sold at closing');
+
+    // Moving it to a real warehouse afterwards means it DOES need to be sold.
+    await setWarehouse(W.appId, W.closerId, 'Northpointe');
+    cwW = (await client.query(
+      `SELECT warehouse, table_funded, table_funded_at FROM closing_workflow WHERE application_id=$1`, [W.appId])).rows[0];
+    ok(cwW.table_funded === false && cwW.table_funded_at === null,
+      'moving off the Table Funding warehouse clears the table-funded mark');
+    ok(!!(await purchasing.getPurchasing(W.appId, client)),
+      'and the already-delivered file is handed to the purchasing desk');
+
+    // ---- A file enters purchasing at DELIVERY, before reconciliation ----
+    // "even if it's not removed yet from the closing workload because it's
+    // waiting for reconciliation".
+    const N = await makeFile();
+    await client.query(
+      `UPDATE closing_workflow SET fully_reconciled_at=NULL, stage='wire_sent' WHERE application_id=$1`, [N.appId]);
+    await signOffInvestorDelivery(N.appId, N.closerId, true);
+    ok(!!(await purchasing.getPurchasing(N.appId, client)),
+      'an UNRECONCILED file still enters purchasing the moment investor delivery is signed off');
+    ok(await inQueue(N.closerId, N.appId),
+      'and it stays on the closer\'s Workflow until it is reconciled — on both desks at once');
+
+    // ---- Purchasing CONDITIONS ----
+    const c1 = await purchasing.addCondition(client, N.appId, 'Recorded mortgage from the county', 'Ordered 07/20', N.closerId);
+    await purchasing.addCondition(client, N.appId, 'Final title policy', null, N.closerId);
+    let conds = await purchasing.readConditions(N.appId, client);
+    ok(conds.length === 2 && conds.every((x) => x.status === 'open'), 'purchasing conditions can be added per file');
+    const cleared = await purchasing.setConditionStatus(client, c1.id, 'cleared', N.closerId, 'Came back recorded');
+    ok(cleared.status === 'cleared' && String(cleared.resolved_by) === String(N.closerId) && cleared.resolution_note === 'Came back recorded',
+      'a condition clears and records who + why (no uuid/text error)');
+    const reopened = await purchasing.setConditionStatus(client, c1.id, 'open', N.closerId);
+    ok(reopened.status === 'open' && reopened.resolved_by === null && reopened.resolution_note === null,
+      're-opening a condition clears the stale signature');
+    await purchasing.setConditionStatus(client, c1.id, 'waived', N.closerId, 'Buyer waived');
+    ok((await purchasing.readConditions(N.appId, client)).find((x) => String(x.id) === String(c1.id)).status === 'waived',
+      'a condition that will never be met can be waived');
+    await purchasing.deleteCondition(client, c1.id);
+    ok((await purchasing.readConditions(N.appId, client)).length === 1, 'a condition can be removed');
+
+    // ---- PURCHASE ADVICE (date + document, re-issued post closing/post purchase) ----
+    const advDoc = (await client.query(
+      `INSERT INTO documents (application_id, filename, content_type, doc_kind)
+       VALUES ($1,'purchase-advice.pdf','application/pdf','purchase_advice') RETURNING id`, [N.appId])).rows[0];
+    await purchasing.setPurchaseAdvice(client, N.appId, { date: '2026-08-20' }, N.closerId);
+    let pa = await purchasing.getPurchasing(N.appId, client);
+    ok(String(pa.purchase_advice_date).slice(0, 10) === '2026-08-20' && !!pa.purchase_advice_updated_at,
+      'a purchase advice date can be recorded');
+    await purchasing.setPurchaseAdvice(client, N.appId, { documentId: advDoc.id }, N.closerId);
+    pa = await purchasing.getPurchasing(N.appId, client);
+    ok(String(pa.purchase_advice_document_id) === String(advDoc.id) && pa.purchase_advice_filename === 'purchase-advice.pdf',
+      'the advice document is pointed at, and its filename rides along for the desk');
+    ok(String(pa.purchase_advice_date).slice(0, 10) === '2026-08-20',
+      'and setting the document did NOT clear the date (only keys present are touched)');
+
+    const advDoc2 = (await client.query(
+      `INSERT INTO documents (application_id, filename, content_type, doc_kind)
+       VALUES ($1,'purchase-advice-final.pdf','application/pdf','purchase_advice') RETURNING id`, [N.appId])).rows[0];
+    await purchasing.setPurchaseAdvice(client, N.appId, { documentId: advDoc2.id }, N.closerId);
+    ok((await purchasing.getPurchasing(N.appId, client)).purchase_advice_filename === 'purchase-advice-final.pdf',
+      'the advice document can be UPDATED post purchase — it is not write-once');
+
+    const wsN = await purchasing.getPurchasingWorkspace(N.appId, client);
+    ok(wsN.openConditions === 1 && wsN.documents.some((d) => String(d.id) === String(advDoc2.id)),
+      'the workspace carries the open-condition count and the file documents to pick the advice from');
 
     // ---- Idempotency ----
     const D = await makeFile();

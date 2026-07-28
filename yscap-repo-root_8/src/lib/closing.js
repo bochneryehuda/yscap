@@ -19,6 +19,12 @@ const db = require('../db');
 
 // The warehouse lines the loan can fund off. App-level so adding one later is a
 // one-line change, not a migration (owner: "later we're going to add another").
+// TABLE_FUNDING is a warehouse line like any other on this list, but it carries
+// meaning downstream (owner-directed 2026-07-26): a loan funded on it was SOLD
+// AT CLOSING, so it must never enter the purchasing workflow — there is nothing
+// left to sell. Setting it is what marks a file table funded; everything else on
+// this list sends the file to purchasing at the investor-delivery sign-off.
+const TABLE_FUNDING = 'Table Funding';
 const WAREHOUSES = [
   'Stride Bank',
   'Bank of the Sierra',
@@ -26,6 +32,7 @@ const WAREHOUSES = [
   'Northpointe',
   'Fidelis',
   'CorrFirst',
+  TABLE_FUNDING,
 ];
 
 // The closing document conditions the closer uploads into (seeded by db/315).
@@ -352,6 +359,7 @@ async function getClosingWorkspace(appId, client) {
 
 module.exports = {
   WAREHOUSES,
+  TABLE_FUNDING,
   CLOSING_CONDITION_CODES,
   QUICKLINK_GROUPS,
   dayStr,

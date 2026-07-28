@@ -81,9 +81,15 @@ r = closing.decideReconcile({ ours: '2026-07-10', clickup: '2026-07-10', encompa
 ok(!r.ok && r.encStatus === 'mismatch', 'Encompass disagreement blocks');
 
 // ── warehouses ──────────────────────────────────────────────────────────────
-for (const w of ['Stride Bank', 'Bank of the Sierra', 'Banc of California', 'Northpointe', 'Fidelis', 'CorrFirst'])
+for (const w of ['Stride Bank', 'Bank of the Sierra', 'Banc of California', 'Northpointe', 'Fidelis', 'CorrFirst', 'Table Funding'])
   ok(closing.WAREHOUSES.includes(w), `warehouse present: ${w}`);
-eq(closing.WAREHOUSES.length, 6, 'exactly the 6 owner-named warehouses');
+eq(closing.WAREHOUSES.length, 7, 'exactly the 7 owner-named warehouses');
+// TABLE FUNDING is a warehouse line that carries meaning downstream: a loan
+// funded on it was sold at closing, so it never enters the purchasing workflow.
+// It must BE in the list (the closer picks it like any other line) and the
+// constant must match the string exactly, or the fork silently never fires.
+eq(closing.TABLE_FUNDING, 'Table Funding', 'the table-funding warehouse is named exactly');
+ok(closing.WAREHOUSES.includes(closing.TABLE_FUNDING), 'and it is a pickable warehouse line');
 
 // ── role + capability ───────────────────────────────────────────────────────
 ok(perms.CAPABILITIES.some((c) => c.key === 'manage_closings'), 'manage_closings capability exists');
