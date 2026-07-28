@@ -82,6 +82,8 @@ function documentHosts() {
   for (const bad of [
     'evil.com',
     'tp-evil.s3.amazonaws.com.attacker.net',   // suffix smuggling
+    'tp-evil.s3.us-east-1.amazonaws.com',      // any tp-* bucket is registrable by anyone
+    'tp-a.s3.anything.amazonaws.com',
     's3.amazonaws.com',                        // bare S3 — anyone can put a bucket there
     'api.trustpoint.ai.attacker.net',
     'notap-backend.s3.amazonaws.com',          // must start with the tp- prefix
