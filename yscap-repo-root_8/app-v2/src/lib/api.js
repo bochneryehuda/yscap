@@ -720,6 +720,11 @@ export const api = {
   purchasingConditionStatus: (appId, cid, status, note) => req('PATCH', `/api/staff/applications/${appId}/purchasing/conditions/${cid}`, { status, note }),
   purchasingConditionDelete: (appId, cid) => req('DELETE', `/api/staff/applications/${appId}/purchasing/conditions/${cid}`),
   purchasingAdvice:        (appId, patch) => req('POST', `/api/staff/applications/${appId}/purchasing/advice`, patch),
+  // Uploads the advice STAFF-ONLY from the outset — there is no borrower-visible
+  // window to designate away, which is the root cause the designation-time
+  // forcing could only mitigate.
+  purchasingAdviceUpload:  (appId, file) => req('POST', `/api/staff/applications/${appId}/documents`,
+    normalizeUpload({ ...file, staffOnly: true, slot: 'Purchase advice' })),
   staffStatusHistory: (appId) => req('GET', `/api/staff/applications/${appId}/status-history`),
   staffSetClosingDate: (appId, b) => req('POST', `/api/staff/applications/${appId}/closing-date`, b),
   staffEditApplication: (appId, b) => req('PATCH', `/api/staff/applications/${appId}/details`, b),

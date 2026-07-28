@@ -41,19 +41,36 @@ async function readDoc(row) {
 //       'rtl_cond_appraisaldocs', slot_label like "PDF", doc_kind NULL) — the common case when an officer
 //       just uploads the appraisal PDF to the condition. Matching only (1) wrongly reported "not available"
 //       for a file whose appraisal PDF sits on the condition slot. Prefer (1); exclude the XML slot + rejected.
+// Arm (2) matches ANY current PDF on the appraisal-documents condition regardless of doc_kind, so a
+// document that merely got FILED there rides out to Sitewire — where the borrower submits draws and the
+// capital partner reads the file — labelled "Appraisal.pdf". Two exclusions, both applied to the WHOLE
+// predicate (not just arm 2) so no future arm can reopen the hole:
+//   - the file's DESIGNATED PURCHASE ADVICE. It names the note buyer and the price the loan sold for, and
+//     the standing rule is that a capital-partner name never reaches a borrower-facing surface. Excluded by
+//     the advice POINTER, not by doc_kind or visibility: the appraisal PDF is itself normally staff_only
+//     (so visibility cannot tell the two apart) and designation deliberately never rewrites doc_kind.
+//   - anything marked 'internal', which tpr-export defines as never shippable to a buyer.
 const APPRAISAL_PDF_WHERE = `d.application_id=$1 AND d.is_current=true AND COALESCE(d.review_status,'') <> 'rejected'
-    AND ( d.doc_kind='appraisal_pdf'
+    AND COALESCE(d.visibility,'') <> 'internal'
+    AND d.id IS DISTINCT FROM (SELECT a.document_id FROM purchasing_advice a WHERE a.application_id=$1)
+    AND ( COALESCE(d.doc_kind,'')='appraisal_pdf'
        OR ( (d.content_type='application/pdf' OR lower(d.filename) LIKE '%.pdf')
             AND lower(COALESCE(d.slot_label,'')) NOT LIKE '%xml%'
             AND d.checklist_item_id IN (
               SELECT ci.id FROM checklist_items ci JOIN checklist_templates t ON t.id=ci.template_id
                WHERE ci.application_id=$1 AND t.code='rtl_cond_appraisaldocs') ) )`;
 
+// The ORDER BY is what expresses "prefer arm (1)", and it must COALESCE rather than compare a bare
+// doc_kind. doc_kind is NULL on every condition-slot upload (arm 2), a NULL comparison yields NULL, and
+// Postgres sorts NULLs FIRST under DESC — so the preference was INVERTED whenever both shapes sat on one
+// file. That is the common case (the MISMO importer writes the explicit appraisal_pdf while the officer
+// also drops a PDF on the condition), and it meant Sitewire received whichever unlabelled PDF happened to
+// be filed on the appraisal condition, uploaded as "Appraisal.pdf".
 async function gatherAppraisalPdf(appId) {
   const row = (await db.query(
     `SELECT d.id, d.filename, d.content_type, d.storage_ref FROM documents d
        WHERE ${APPRAISAL_PDF_WHERE}
-       ORDER BY (d.doc_kind='appraisal_pdf') DESC, d.created_at DESC LIMIT 1`, [appId])).rows[0];
+       ORDER BY (COALESCE(d.doc_kind,'')='appraisal_pdf') DESC, d.created_at DESC LIMIT 1`, [appId])).rows[0];
   if (!row) return { which: 'appraisal_pdf', missing: 'no_appraisal_pdf' };
   const bytes = await readDoc(row);
   if (!bytes) return { which: 'appraisal_pdf', missing: 'appraisal_pdf_bytes_unreadable' };
