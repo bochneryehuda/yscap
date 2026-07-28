@@ -648,27 +648,40 @@ async function processReceivedEvent(event) {
         const res = await closingInbox.saveChainDocs({
           applicationId: ref.applicationId, attachments: atts, fromEmail, subject,
         });
-        // ONLY MARK THE CHAIN DONE WHEN EVERY ATTACHMENT WAS ACTUALLY FILED.
+        // THE MARKER IS WRITTEN WHENEVER WE FILED WHAT WE COULD REACH — and what we
+        // could NOT reach is REPORTED TO A HUMAN, never retried.
         //
-        // `saveChainDocs` catches per-attachment failures so one bad file cannot lose
-        // the rest — which meant it could never throw, so this marker was written
-        // unconditionally and the `catch` below was unreachable for a storage or DB
-        // failure. Two of six PDFs would vanish and the webhook redelivery, the one
-        // thing that could have recovered them, skipped the chain as already handled.
-        // A RETRIEVAL SHORTFALL COUNTS AS A FAILURE TOO.
+        // The marker's job is to stop a webhook redelivery double-filing; it is the
+        // ONLY thing that does. An earlier attempt to withhold it on a shortfall was
+        // wrong twice over. (a) It recovers nothing: `retrieveAttachmentsSafe` caps
+        // deterministically at MAX_ATTACH_COUNT and a byte ceiling, so a 12-document
+        // package yields the SAME first 10 on every attempt — documents 11 and 12 are
+        // unreachable by any retry. (b) Because the shortfall is therefore permanent,
+        // the marker was withheld permanently, so any OTHER retryable failure in the
+        // same delivery (a `forwardToAssignees` throw answers 503 and Resend redelivers
+        // up to 8 times) re-ran this block and re-filed all 10 as DUPLICATES once past
+        // doc-dedup's 120-second window. Withholding it turned two missing documents
+        // into ten duplicated ones.
         //
-        // retrieveAttachmentsSafe caps at MAX_ATTACH_COUNT and a total byte ceiling
-        // (much lower on Graph), so a 12-document draft package hands `saveChainDocs`
-        // only the first 10. It files all 10 perfectly and reports failed:0 — so the
-        // marker was written and the redelivery, the one thing that could have gone
-        // back for the rest, skipped the chain. The two missing documents existed
-        // only as a console line. Anything the caps held back is a reason to leave
-        // the chain open.
+        // So: file what arrived, mark the chain, and tell the team what did not come —
+        // a human asks counsel to resend the overflow, which is the only thing that
+        // can actually retrieve it. Matches the sibling order block above, which has
+        // always logged its shortfall and still written its marker.
         const shortfall = Math.max(0, full.attachments.length - atts.length);
+        appResults['__closing_' + ref.token] = 'saved';   // persisted below → a redelivery skips it
         if (res.failed || shortfall) {
-          console.warn(`[closing-inbox] ${res.failed + shortfall} of ${full.attachments.length} closing attachment(s) were not filed for ${ref.applicationId} (${res.failed} failed, ${shortfall} over the retrieval caps) — leaving the chain unmarked so a redelivery retries.`);
-        } else {
-          appResults['__closing_' + ref.token] = 'saved';   // persisted below → a redelivery skips it
+          const missed = res.failed + shortfall;
+          console.warn(`[closing-inbox] ${missed} of ${full.attachments.length} closing attachment(s) were NOT filed for ${ref.applicationId} (${res.failed} failed to save, ${shortfall} over the retrieval caps) — the team is being told to ask for them again.`);
+          // Best-effort and non-blocking: the documents that DID arrive are already
+          // filed, and a notify failure must never undo that or re-open the chain.
+          try {
+            await require('./notify').notifyAppStaff(ref.applicationId, {
+              type: 'closing_docs_in',
+              title: `${missed} closing document${missed === 1 ? '' : 's'} did not save`,
+              body: `${atts.length - res.failed} of ${full.attachments.length} document(s) from the closing chain were filed. ${missed} could not be — ask the closing attorney to send ${missed === 1 ? 'it' : 'them'} again, on the same email chain.`,
+              inAppOnly: false,
+            });
+          } catch (_) { /* the filing is what matters */ }
         }
         try { await require('./closing-thread').noteInbound(ref.threadId, { docs: res.saved }); } catch (_) {}
       } catch (_) { /* leave unmarked so a redelivery retries this chain */ }

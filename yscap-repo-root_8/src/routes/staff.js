@@ -4447,16 +4447,25 @@ router.post('/applications/:id/closing-prep/place', async (req, res) => {
       return res.status(409).json({ error: 'Closing prep was already sent for this file. Use Follow-up, or force a re-send.', code: 'already_ordered' });
     }
 
-    await db.query(
-      `INSERT INTO file_orders (application_id, order_type, status, vendor_email, vendor_name, subject,
-                                ordered_at, ordered_by, send_count, meta)
-       VALUES ($1,'attorney','ordered',$2,$3,$4,now(),$5,1,$6::jsonb)
-       ON CONFLICT (application_id, order_type)
-       DO UPDATE SET status='ordered', vendor_email=EXCLUDED.vendor_email, vendor_name=EXCLUDED.vendor_name,
-                     subject=EXCLUDED.subject, ordered_at=now(), ordered_by=EXCLUDED.ordered_by,
-                     send_count=file_orders.send_count+1, meta=EXCLUDED.meta, updated_at=now()`,
-      [appId, to[0] || null, 'Closing attorney', sent.subject, req.actor.id,
-       JSON.stringify({ extraEmails, attached: attach.attached.length, skipped: attach.skipped.length })]);
+    // THE EMAIL HAS ALREADY GONE. Everything from here is bookkeeping, so a failure
+    // must not answer "Could not send the closing-prep request" — counsel HAS the
+    // package, and telling the operator otherwise invites a second ~20 MB send to
+    // the whole recipient list. Recorded loudly instead; `orderIsLive` treats the
+    // delivered order message as proof so the file is not silenced meanwhile.
+    try {
+      await db.query(
+        `INSERT INTO file_orders (application_id, order_type, status, vendor_email, vendor_name, subject,
+                                  ordered_at, ordered_by, send_count, meta)
+         VALUES ($1,'attorney','ordered',$2,$3,$4,now(),$5,1,$6::jsonb)
+         ON CONFLICT (application_id, order_type)
+         DO UPDATE SET status='ordered', vendor_email=EXCLUDED.vendor_email, vendor_name=EXCLUDED.vendor_name,
+                       subject=EXCLUDED.subject, ordered_at=now(), ordered_by=EXCLUDED.ordered_by,
+                       send_count=file_orders.send_count+1, meta=EXCLUDED.meta, updated_at=now()`,
+        [appId, to[0] || null, 'Closing attorney', sent.subject, req.actor.id,
+         JSON.stringify({ extraEmails, attached: attach.attached.length, skipped: attach.skipped.length })]);
+    } catch (e) {
+      console.error(`[closing-prep] the request WAS sent for ${appId} but the order row failed to write:`, (e && e.message) || e);
+    }
 
     // Record that the two manual steps this replaces actually happened. Never
     // downgrades a signed-off/waived condition, never signs one off.
@@ -4493,9 +4502,11 @@ router.post('/applications/:id/closing-prep/followup', async (req, res) => {
   const appId = req.params.id;
   if (!(await canTouchApp(req, appId))) return res.status(403).json({ error: 'forbidden' });
   try {
-    const row = (await db.query(
-      `SELECT status FROM file_orders WHERE application_id=$1 AND order_type='attorney'`, [appId])).rows[0];
-    if (!row || row.status === 'not_ordered' || row.status === 'cancelled') {
+    // ONE definition of "an attorney is engaged on this file", shared with the
+    // automatic updates — so an order whose row failed to write after a SUCCESSFUL
+    // send can still be followed up on, instead of being refused here as never
+    // ordered while the re-send door refuses it as already sent.
+    if (!(await closingPrep.orderIsLive(appId))) {
       return res.status(400).json({ error: 'Send the closing-prep request before following up.', code: 'not_ordered' });
     }
     const data = await closingPrep.getClosingPrepData(appId);

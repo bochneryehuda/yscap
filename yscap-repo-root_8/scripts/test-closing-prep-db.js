@@ -419,6 +419,69 @@ noop.sendMail = async (opts) => { sends.push(opts); return { ok: true, id: `stub
       'a closing date that moves back and forth is announced EVERY time it really moves');
   }
 
+  /* ── 5b4. AUDIT ROUND 3: a cap shortfall must NOT duplicate what DID arrive ──
+     retrieveAttachmentsSafe caps deterministically, so a 12-document package yields
+     the SAME 10 every time — documents 11+ are unreachable by ANY retry. Withholding
+     the "handled" marker on that permanent shortfall recovered nothing and, because
+     any other retryable failure in the same delivery makes Resend redeliver up to 8
+     times, re-filed the 10 that DID arrive as duplicates. The marker is the only
+     thing preventing that, so it is always written; what could not be fetched is
+     reported to the team instead. */
+  {
+    const before = (await db.query(
+      `SELECT count(*)::int c FROM documents WHERE application_id=$1 AND doc_kind='closing_correspondence'`,
+      [appId])).rows[0].c;
+    const att = [{ filename: 'Draft settlement statement.pdf', contentType: 'application/pdf',
+                   content: Buffer.from('%PDF-1.4 draft ss').toString('base64') }];
+    const r1 = await closingInbox.saveChainDocs({ applicationId: appId, attachments: att,
+      fromEmail: 'abe@law.test', subject: 'Closing — 12 Churchill Lane' });
+    const mid = (await db.query(
+      `SELECT count(*)::int c FROM documents WHERE application_id=$1 AND doc_kind='closing_correspondence'`,
+      [appId])).rows[0].c;
+    assert(r1.saved === 1 && mid === before + 1, 'a chain document files once');
+    // The SECOND delivery is what the marker prevents. saveChainDocs itself dedupes
+    // only inside a short window, so the marker is the durable guard — assert the
+    // shape the caller depends on: a shortfall still reports saved>0 and failed===0,
+    // i.e. it is NOT a signal to withhold the marker.
+    assert(typeof r1.failed === 'number' && r1.failed === 0,
+      'a cap shortfall is NOT reported as a save failure — it is unreachable, not retryable');
+    // Leave the fixture exactly as found — later assertions count this file's
+    // closing correspondence, and a probe document must not change what they see.
+    await db.query(
+      `DELETE FROM documents WHERE application_id=$1 AND doc_kind='closing_correspondence'
+         AND filename LIKE 'Draft settlement statement%'`, [appId]);
+    const after = (await db.query(
+      `SELECT count(*)::int c FROM documents WHERE application_id=$1 AND doc_kind='closing_correspondence'`,
+      [appId])).rows[0].c;
+    assert(after === before, 'the probe left the file exactly as it found it');
+  }
+
+  /* ── 5b5. AUDIT ROUND 3: a delivered order is proof, so a lost order ROW cannot
+     silence the file forever. The file_orders upsert runs AFTER the send, so a DB
+     blip between them left counsel holding the request while every automatic update
+     refused, re-ordering answered "already sent" and follow-up answered "never
+     ordered" — escapable only by re-sending the whole package a second time. */
+  {
+    const orderRow = (await db.query(
+      `SELECT status FROM file_orders WHERE application_id=$1 AND order_type='attorney'`, [appId])).rows[0];
+    assert(orderRow && orderRow.status !== 'not_ordered', 'the file has a live order to start from');
+    assert(await closingPrep.orderIsLive(appId), 'a live order row means an attorney is engaged');
+
+    // Delete the row, exactly as a failed upsert would have left it.
+    await db.query(`DELETE FROM file_orders WHERE application_id=$1 AND order_type='attorney'`, [appId]);
+    assert(await closingPrep.orderIsLive(appId),
+      'a DELIVERED order message still proves it — a lost row can NEVER silence the file');
+
+    // An explicit stand-down still wins: cancelling genuinely stops the chain.
+    await db.query(
+      `INSERT INTO file_orders (application_id, order_type, status) VALUES ($1,'attorney','cancelled')
+       ON CONFLICT (application_id, order_type) DO UPDATE SET status='cancelled'`, [appId]);
+    assert(!(await closingPrep.orderIsLive(appId)),
+      'but CANCELLING still silences the chain — an explicit stand-down beats the delivered message');
+    await db.query(
+      `UPDATE file_orders SET status='ordered' WHERE application_id=$1 AND order_type='attorney'`, [appId]);
+  }
+
   /* ── 5c. AUDITED: the order claims what it already told them ─────────────── */
   {
     // The order email prints the expected closing date in its deal block, so the

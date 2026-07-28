@@ -909,12 +909,37 @@ function buildAutoEmail(eventKind, data, extra = {}) {
 async function orderIsLive(applicationId) {
   try {
     const r = await db.query(
-      `SELECT 1 FROM file_orders
-        WHERE application_id = $1 AND order_type = 'attorney'
-          AND status NOT IN ('not_ordered','cancelled')
-        LIMIT 1`, [applicationId]);
-    return r.rows.length > 0;
-  } catch (_) { return false; }
+      `SELECT
+         EXISTS (SELECT 1 FROM file_orders
+                  WHERE application_id = $1 AND order_type = 'attorney'
+                    AND status NOT IN ('not_ordered','cancelled'))          AS live_order,
+         EXISTS (SELECT 1 FROM file_orders
+                  WHERE application_id = $1 AND order_type = 'attorney'
+                    AND status IN ('not_ordered','cancelled'))              AS stood_down,
+         -- A DELIVERED order message is equally hard proof that counsel was engaged.
+         EXISTS (SELECT 1
+                   FROM closing_thread_messages m
+                   JOIN closing_threads t ON t.id = m.thread_id
+                  WHERE t.application_id = $1 AND m.event_kind = 'order'
+                    AND m.status = 'sent')                                  AS order_delivered`,
+      [applicationId]);
+    const row = r.rows[0] || {};
+    if (row.live_order) return true;
+    // THE ORDER ROW IS THE USUAL PROOF, NOT THE ONLY ONE.
+    //
+    // The `file_orders` upsert runs AFTER the send has already succeeded, so a DB
+    // blip between the two leaves counsel holding the request with no row on the
+    // file. Keyed on the row alone that silenced the file permanently — every
+    // automatic update refused, the backstop sweep's JOIN excluding it, re-ordering
+    // refused as already sent and follow-up refused as never ordered. The only way
+    // out was force-re-sending the whole ~20 MB package to counsel a second time.
+    //
+    // A DELIVERED 'order' message proves exactly what the row is meant to prove.
+    // An explicit stand-down (cancelled / not_ordered) still WINS over it, so
+    // cancelling an order genuinely silences the chain — which is the case this
+    // guard exists for.
+    return !!row.order_delivered && !row.stood_down;
+  } catch (_) { return false; }   // fails CLOSED — never email counsel on a bad read
 }
 
 /**
@@ -1093,7 +1118,7 @@ module.exports = {
   attachBudgetRawBytes, predictSkips, encodedLen, attachName,
   getClosingPrepData, blockers, recipientsFor,
   buildClosingPrepEmail, buildFollowupEmail, buildAutoEmail,
-  announce, lastRecipients, markCarriedByOrder,
+  announce, lastRecipients, markCarriedByOrder, orderIsLive,
   // exported for tests
   money, pct, propertyLine, transactionType, dayText, dealMeta, chainCallout, subjectTagFor,
 };
