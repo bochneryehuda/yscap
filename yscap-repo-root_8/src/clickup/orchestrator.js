@@ -474,7 +474,14 @@ async function pushApplication(appId, opts = {}) {
       // ever contain their own scoped fields, so they never trip this), and a
       // queued review's approval re-pushes with opts.approvedReview. DOB is
       // governed by the dedicated day-shift guard above, not this shield.
-      const oldBlank = old == null || old === '' || (Array.isArray(old) && !old.length);
+      const oldBlank = mapper.isBlankClickupValue(old);
+      // FILL-ONLY (the address backfill sweep, 2026-07-28). A repair pass NOBODY
+      // asked for may only ADD a value ClickUp does not have — never replace one.
+      // This is the same guarantee the PII shield gives a full repush, extended to
+      // a scoped push that no human initiated. With no before-image we cannot
+      // prove the field is blank, so we don't write (a scoped push already fails
+      // closed on a failed pre-read; this is belt-and-suspenders).
+      if (opts.fillOnly && (before == null || !oldBlank)) { journalStats.suppressed++; continue; }
       if (!scoped && !opts.approvedReview && PII_OVERWRITE_SHIELD.has(c.id) && (before == null || !oldBlank)) {
         journalStats.blocked++;
         await journalFieldWrite(appId, id, c.id, old, c.value, source, { blocked: true });

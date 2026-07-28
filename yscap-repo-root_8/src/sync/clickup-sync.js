@@ -1502,6 +1502,22 @@ function start() {
     // drain runs, so nothing reaches ClickUp unless a human changed it in the portal.
     console.log('[clickup-sync] outbound writes ENABLED — enqueue-on-write ONLY (no auto-sweep)');
     setInterval(() => tick(pushOutboxOnce, 'push'), 3000);
+    // ADDRESS BACKFILL (owner-reported 2026-07-28, card FILLE-1990). Enqueue-on-
+    // write means a field re-pushes when a HUMAN edits it — and nobody edits an
+    // address that is already right in PILOT. So every file pushed while the
+    // geocoder was broken (before 2026-07-26) keeps a blank "*Subject Property
+    // Address" / "*Borrower Address" on its card forever. This slow, resumable,
+    // FILL-ONLY sweep reads each linked card and pushes the two location fields
+    // only where the card has none — the "previous AND future" half of that fix.
+    // Off-switch: CLICKUP_ADDRESS_BACKFILL_DISABLED=1.
+    {
+      const addressBackfill = require('../clickup/address-backfill');
+      const addrTick = () => addressBackfill.sweepOnce()
+        .then((r) => { if (r && !r.idle && !r.skipped) console.log('[clickup-address-backfill]', JSON.stringify(r)); })
+        .catch((e) => console.error('[clickup-sync] address-backfill', e && e.message));
+      setTimeout(addrTick, 120 * 1000).unref();          // let boot settle first
+      setInterval(addrTick, 60 * 1000).unref();
+    }
   } else {
     console.log('[clickup-sync] outbound writes DISABLED (CLICKUP_OUTBOUND_ENABLED!=1) — inbound/reconcile only');
   }
