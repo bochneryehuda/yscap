@@ -105,7 +105,20 @@ router.get('/files/:id/overview', requirePermission('manage_draws'), async (req,
     // the desk renders a label + tone + meaning rather than a lower-cased database value, and a
     // status TrustPoint adds tomorrow degrades to something readable instead of a blank chip.
     const ds = require('../lib/draw-status');
-    const draws2 = draws.map((d) => ({ ...d, status_info: ds.drawStatus(d) }));
+    // The per-draw CONVERSATION, attached to the draw it belongs to (owner-directed 2026-07-27:
+    // "we should also be able to see the real messages in our system related to each and every
+    // draw"). Mirrored read-only; a reply belongs in TrustPoint where the administrator sees it.
+    // Best-effort — the desk must still render if the thread read fails.
+    let threads = new Map();
+    if (link && draws.length) {
+      try {
+        const comments = require('../trustpoint/comments');
+        for (const d of draws) threads.set(d.tp_draw_id, await comments.threadFor(appId, d.tp_draw_id));
+      } catch (e) { console.warn('[trustpoint] thread read failed:', e && e.message); threads = new Map(); }
+    }
+    const draws2 = draws.map((d) => ({
+      ...d, status_info: ds.drawStatus(d), messages: threads.get(d.tp_draw_id) || [],
+    }));
     const sos2 = serviceOrders.map((s) => ({ ...s, status_info: ds.serviceStatus(s) }));
     // The newest draw is the one the file is "on" — its headline answers "what's happening now?"
     const newest = draws2[draws2.length - 1] || null;

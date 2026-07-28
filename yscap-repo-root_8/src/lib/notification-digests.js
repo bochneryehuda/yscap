@@ -1472,6 +1472,13 @@ async function runDue() {
     // non-announcing door introduced reaches the attorney the same day — and never
     // at 3am. Its dedupe keys make every re-run a no-op.
     await closingChainCatchupOnce().catch((e) => console.error('[digests] closing-chain', e && e.message));
+    // Take the finished deals off the Orders desk. Emails nobody — it is desk
+    // hygiene — but it runs here because the sweep already holds the once-per-tick
+    // cadence and re-running it is free (it only moves rows still in an active
+    // state). Ordered AFTER the catch-up on purpose: the catch-up already ignores a
+    // dead deal, and retiring first would make the ordering look load-bearing when
+    // it is not.
+    await require('./closing-prep').retireClosedOrdersOnce().catch((e) => console.error('[digests] closing-orders-retire', e && e.message));
   }
 }
 
@@ -1535,8 +1542,13 @@ async function closingChainCatchupOnce() {
          JOIN file_orders fo ON fo.application_id = ct.application_id
                             AND fo.order_type = 'attorney'
                             AND fo.status NOT IN ('not_ordered','cancelled')
-        WHERE COALESCE(a.expected_closing, a.est_closing_date) IS NOT NULL
-           OR a.status = 'clear_to_close'
+        -- AND THE DEAL MUST STILL BE LIVE. announce() refuses a funded / declined /
+        -- withdrawn file outright, so selecting one here can only ever burn a slot
+        -- under the cap on a question whose answer cannot change. Same list as the
+        -- gate itself (closing-prep.DEAD_DEAL_SQL) so the two can never disagree.
+        WHERE a.status NOT IN ${closingPrep.DEAD_DEAL_SQL}
+          AND (COALESCE(a.expected_closing, a.est_closing_date) IS NOT NULL
+               OR a.status = 'clear_to_close')
         -- ORDERED because it is CAPPED: the quietest chains come first, so a large
         -- book can never leave the same tail of files permanently unexamined. A chain
         -- that actually receives an update has its last_activity_at bumped and moves
@@ -1567,14 +1579,23 @@ async function closingChainCatchupOnce() {
     // moment a term sheet finished signing left the attorney drafting from the
     // initial terms forever. Re-driven through the e-sign module's OWN announcer so
     // it attaches the document THAT envelope produced, never a second guess at it.
+    const TERM_SHEET_RECOVERY_CAP = 50;
     const stale = (await db.query(
       `SELECT e.*
          FROM esign_envelopes e
          JOIN closing_threads ct ON ct.application_id = e.application_id
+         JOIN applications a ON a.id = e.application_id AND a.deleted_at IS NULL
          JOIN file_orders fo ON fo.application_id = e.application_id
                             AND fo.order_type = 'attorney'
                             AND fo.status NOT IN ('not_ordered','cancelled')
-        WHERE e.purpose = 'term_sheet_package' AND e.status = 'completed'
+        -- THE DEAL MUST STILL BE LIVE — this arm is where the starvation actually
+        -- bit. announce() refuses a funded / declined / withdrawn file, so those
+        -- envelopes could never gain a 'sent' row and never left this result set;
+        -- ordered oldest-first under a LIMIT of 50, a handful of long-closed deals
+        -- permanently crowded out the live file whose announcement had failed —
+        -- which is the ONLY thing this query exists to recover.
+        WHERE a.status NOT IN ${closingPrep.DEAD_DEAL_SQL}
+          AND e.purpose = 'term_sheet_package' AND e.status = 'completed'
           AND COALESCE(e.is_test,false) = false
           -- KEYED ON THE ENVELOPE, matching the announcement's own dedupe key. Keyed
           -- on the thread instead, the first executed term sheet excluded the file
@@ -1586,7 +1607,13 @@ async function closingChainCatchupOnce() {
                AND m.dedupe_key = 'executed_term_sheet:' || e.id::text
                AND m.status IN ('sent','carried'))
         ORDER BY e.completed_at ASC NULLS FIRST, e.id ASC
-        LIMIT 50`)).rows;
+        LIMIT ${TERM_SHEET_RECOVERY_CAP}`)).rows;
+    // NO SILENT CAPS. With the deal-live filter above, every row here is one a retry
+    // can genuinely settle — so a full page means real backlog, not silt. Saying so
+    // is what makes a future starvation visible instead of looking like calm.
+    if (stale.length >= TERM_SHEET_RECOVERY_CAP) {
+      console.warn(`[digests] executed-term-sheet recovery hit its cap of ${TERM_SHEET_RECOVERY_CAP} — more may be waiting; the next tick continues from the oldest.`);
+    }
     for (const env of stale) {
       try {
         // Count what was actually sent — an unconditional bump made the log line

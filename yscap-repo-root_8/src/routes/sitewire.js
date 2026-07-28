@@ -2104,6 +2104,20 @@ function withBudget(p, ms) {
  */
 const FINDING_ATTACH_MAX_BYTES = 18 * 1024 * 1024;   // keep the whole email deliverable
 
+/**
+ * A borrower-facing attachment NAME. Never leaks the administrator's name (the filename is
+ * rendered in the email body and shown in the recipient's mail client), and never invents a
+ * fact — it says only which draw it is and what kind of document it is.
+ */
+function borrowerSafeAttachmentName(filename, drawNo) {
+  const f = String(filename || '');
+  const n = drawNo != null ? `-draw-${drawNo}` : '';
+  if (f.startsWith('pilot-')) return `inspection-report${n}.pdf`;          // our own branded report
+  if (/-inspection-result-document-/.test(f)) return `inspection-findings${n}.pdf`;
+  if (/-draw-report-/.test(f)) return `draw-summary${n}.pdf`;
+  return `draw-document${n}.pdf`;
+}
+
 async function borrowerFindingAttachments(appId, sitewireDrawId) {
   const storage = require('../lib/storage');
   const out = [];
@@ -2147,7 +2161,10 @@ async function borrowerFindingAttachments(appId, sitewireDrawId) {
           -- the administrator's reviewed paperwork, by draw number AND document type
           OR ($3::text IS NOT NULL AND EXISTS (
                 SELECT 1 FROM unnest($4::text[]) t
-                 WHERE d.filename LIKE 'trustpoint-draw-' || $3 || '-' || t || '-%'))
+                 -- ANCHORED on the date+id tail storeDocument always appends, so a document
+                 -- type that merely STARTS WITH an allowed one ("Inspection Result Document
+                 -- and Service Invoice") can never satisfy a prefix match and ride along.
+                 WHERE d.filename LIKE 'trustpoint-draw-' || $3 || '-' || t || '-____-__-__-%'))
         )
       ORDER BY d.created_at DESC`,
     [appId, drawNo, tpNo && tpNo.number != null ? String(tpNo.number) : null, TP_BORROWER_SAFE])).rows;
@@ -2162,7 +2179,14 @@ async function borrowerFindingAttachments(appId, sitewireDrawId) {
     try {
       const content = await storage.read(r.storage_ref);
       if (!content || !content.length || content.length > budget) continue;
-      out.push({ filename: r.filename, content, contentType: 'application/pdf' });
+      // S1 — THE FILENAME IS BORROWER-FACING. notify.js derives `files` from
+      // attachments[].filename and template.js renders them as visible chips AND a plaintext
+      // "Attachments:" line; the borrower scrub covers title/body/meta/… but never attachments.
+      // So `trustpoint-draw-2-…pdf` printed the draw administrator's name to the borrower twice
+      // in the body plus on the file in their mail client — the frozen never-name-the-note-buyer
+      // rule (borrower-safe.js lists "trust point" explicitly). Renamed to a neutral, factual
+      // name; the stored document keeps its own filename for staff.
+      out.push({ filename: borrowerSafeAttachmentName(r.filename, drawNo), content, contentType: 'application/pdf' });
       seen.add(kind);
       budget -= content.length;
     } catch (e) { /* a missing file never blocks the findings email */ }
