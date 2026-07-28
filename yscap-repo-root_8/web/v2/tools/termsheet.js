@@ -708,6 +708,32 @@
   // keeps both places) — never rounded to a whole number. Display only.
   function pcFull(x) { var v = Math.round((x || 0) * 100 * 100) / 100; var s = v.toFixed(2).replace(/\.?0+$/, ""); return s + "%"; }
 
+  /* ---- why the initial advance is smaller than "max % x purchase price" ----
+     On a PURCHASE the engine sizes the acquisition advance on the LOWER of the
+     (effective) purchase price and the as-is value — standard-program.js sizeLoan's
+     `acqDenom`, which the Gold engine reuses, which is why this reads identically on
+     both programs. When the appraised as-is value comes in under the price THAT is the
+     base, so the advance lands well below "max % x price" with nothing on screen saying
+     why (owner-reported 2026-07-28: 90% read as 90% of $545,600 = $491,040, not 90% of
+     the $515,000 as-is = $463,500). Returns "" when there is nothing to explain — the
+     price is the base, a refinance (always sized on the as-is value by definition), or a
+     figure is missing. PURE DISPLAY: every number is read back out of the engine's own
+     sizing result; nothing is computed, rounded or re-derived here. */
+  function advanceBasisNote(d) {
+    var s = (d && d.R && d.R.sizing) || null;
+    if (!s || !s.purchase) return "";
+    var aiv = +s.aiv || 0, price = +s.pp || 0;
+    if (!(aiv > 0) || !(price > 0) || aiv >= price - 0.5) return "";
+    var capPct = (d.caps && d.caps.maxAcqLTV > 0) ? pcFull(d.caps.maxAcqLTV) : "";
+    // On a capped assignment `s.pp` IS the effective price the engine sized on — label it
+    // as such so this never contradicts the "Effective purchase price" row above it.
+    var priceLbl = (d.asg && d.asg.overLimit) ? "effective purchase price" : "purchase price";
+    return "<b>Sized on the as-is value, not the price.</b> The appraised as-is value (" + YS.fmtUSD(aiv) +
+      ") came in below the " + priceLbl + " (" + YS.fmtUSD(price) + "), and the initial advance is capped at " +
+      (capPct ? capPct : "the program maximum") + " of the <b>lower</b> of the two — so it is " +
+      (capPct ? capPct : "that maximum") + " of the as-is value, not of the price.";
+  }
+
   /* ---- estimated key dates (interest-only fix & flip convention) ----
      First payment = the 1st of the SECOND month after closing (close anytime in
      July -> first payment Sept 1; the stub/per-diem interest from closing to
@@ -800,7 +826,19 @@
     YS.put("rIR", d.financedIR > 0 ? YS.fmtUSD(d.financedIR) : EM);
     YS.put("rCost", YS.fmtUSD(d.totalCost));
     YS.put("rAdvance", sized ? YS.fmtUSD(d.initialAdvance) : EM);
-    var advLtvEl = el("rAdvanceLtv"); if (advLtvEl) advLtvEl.textContent = (sized && d.pricingReady && d.ltvPct > 0 && d.initialAdvance > 0) ? (pcFull(d.ltvPct) + " LTV") : "";
+    // The initial advance is capped at the program's max as-is % of the LOWER of the (effective)
+    // purchase price and the as-is value. When the as-is value is the lower one the advance reads
+    // far below "max % x price" and nothing on the row said why (owner-reported 2026-07-28) — so
+    // the badge names the base and a short note explains it. Display only: every figure is read
+    // back out of the engine's own sizing result; no number is computed or changed here.
+    var advWhy = advanceBasisNote(d);
+    var advLtvEl = el("rAdvanceLtv"); if (advLtvEl) advLtvEl.textContent = (sized && d.pricingReady && d.ltvPct > 0 && d.initialAdvance > 0) ? (pcFull(d.ltvPct) + (advWhy ? " of as-is value" : " LTV")) : "";
+    var advWhyEl = el("rAdvanceWhy");
+    if (advWhyEl) {
+      var showWhy = sized && d.pricingReady && d.initialAdvance > 0 && !!advWhy;
+      advWhyEl.style.display = showWhy ? "" : "none";
+      advWhyEl.innerHTML = showWhy ? advWhy : "";
+    }
     YS.put("rHoldback", sized ? YS.fmtUSD(d.rehabHoldback) : EM);
     var hbTag = el("rHoldbackTag"); if (hbTag) hbTag.textContent = (d.R && d.R.sizing && d.R.sizing.rehabOverCap) ? "(capped \u2014 see eligibility)" : "(= rehab, in draws)";
     YS.put("rRate", (sized && d.rate > 0) ? d.rate.toFixed(2) + "%" : EM);
