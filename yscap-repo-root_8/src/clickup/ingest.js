@@ -1838,6 +1838,10 @@ async function linkOrCreateApplication(task, read, borrowerId, llcId, ctx = {}) 
 
   const vals = Object.values(cols);
   const set = Object.keys(cols).map((k, i) => `${k}=COALESCE($${i + 2}, ${k})`).join(', ');
+  // Set when THIS pull moves the expected closing date, so the closing chain can be
+  // told after the UPDATE lands. Declared out here because the diff is computed in
+  // the audit block below, which is deliberately its own swallowing try/catch.
+  let closingDateMoved = null;
   if (targetId) {
     // INBOUND CHANGE AUDIT (2026-07-15 date incident; broadened to ALL mapped
     // fields owner-directed the same day): whenever this pull is about to CHANGE
@@ -1862,6 +1866,12 @@ async function linkOrCreateApplication(task, read, borrowerId, llcId, ctx = {}) 
             `INSERT INTO audit_log (actor_kind, actor_id, action, entity_type, entity_id, detail)
              VALUES ('system', NULL, 'clickup_pull_field_change', 'application', $1, $2)`,
             [targetId, JSON.stringify({ taskId: task.id, changes: diffs })]);
+        }
+        // The team moves closing dates in ClickUp as often as in PILOT, so this is a
+        // real door for "there is a new expected closing date" — and the closing
+        // attorney needs to hear it wherever it was changed.
+        if (diffs.expected_closing && diffs.expected_closing.to) {
+          closingDateMoved = String(diffs.expected_closing.to).slice(0, 10);
         }
       }
     } catch (_) { /* audit is best-effort — never blocks the pull */ }
@@ -1892,6 +1902,18 @@ async function linkOrCreateApplication(task, read, borrowerId, llcId, ctx = {}) 
     // staff notification routes to the new LO's prefs + drafts (mirrors the
     // /assign path in staff.js — same class of cache invalidation).
     try { require('../lib/lo-notification-gate').invalidateFile(targetId); } catch (_) { /* best-effort */ }
+    // A closing date changed IN CLICKUP goes out on the file's closing chain, exactly
+    // like one changed in PILOT. Silent when the file has no chain; keyed on the date,
+    // so a ClickUp echo of a date we already announced sends nothing. Never blocks
+    // the pull.
+    if (closingDateMoved && /^\d{4}-\d{2}-\d{2}$/.test(closingDateMoved)) {
+      try {
+        await require('../lib/closing-prep').announce({
+          applicationId: targetId, eventKind: 'closing_date',
+          dedupeKey: `closing_date:${closingDateMoved}`, extra: { date: closingDateMoved },
+        });
+      } catch (_) { /* best-effort */ }
+    }
     // Two-field PROCESSOR conflict → the ClickUp processor signal is untrustworthy
     // (the stale-duplicate case). Clear any portal processor so the file returns to
     // "no processor" per the agreement rule (owner-directed 2026-07-19). The COALESCE

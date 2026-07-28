@@ -2098,10 +2098,39 @@ router.post('/contacts', async (req, res) => {
   }
   if (b.applicationId) {
     await db.query(
-      `INSERT INTO application_service_contacts (application_id,service_contact_id,contact_type)
-       VALUES ($1,$2,$3) ON CONFLICT (application_id,contact_type)
-       DO UPDATE SET service_contact_id=EXCLUDED.service_contact_id, created_at=now()`,
-      [b.applicationId, contactId, type]);
+      // ON CONFLICT names (application_id, service_contact_id) — the unique key that
+      // actually exists. db/078 DROPPED the old (application_id, contact_type) PK to
+      // allow MANY contacts of one type per file, so the previous spec matched no
+      // index and this INSERT raised Postgres 42P10 on every borrower submission of
+      // the title / insurance contact form. Same spec the staff route uses.
+      `INSERT INTO application_service_contacts (application_id,service_contact_id,contact_type,added_by_kind,added_by_id)
+       VALUES ($1,$2,$3,'borrower',$4) ON CONFLICT (application_id,service_contact_id)
+       DO UPDATE SET contact_type=EXCLUDED.contact_type`,
+      [b.applicationId, contactId, type, me(req)]);
+    // …and this form REPLACES, it does not accumulate. That is what the old
+    // (application_id, contact_type) key enforced structurally, and this is the ONE
+    // form where it is the right behaviour: it asks "who is your title company?", so
+    // answering it twice means the borrower CHANGED their answer, not that the file
+    // now has two. Without this the old contact stays linked, and every later reader
+    // has two candidates — including the closing-prep email, which would hand the
+    // attorney both title companies. The staff route deliberately keeps appending;
+    // there, adding a second contact of a type is a real thing to want.
+    //
+    // SCOPED TO THIS BORROWER'S OWN CONTACTS, and that scope is the whole safety of
+    // it. `application_service_contacts` is the SHARED file-contacts table, and
+    // db/078 re-keyed it precisely so a file can carry several contacts of one type.
+    // Deleting by (application, contact_type) alone therefore reached far past this
+    // form: a staff-added title company was hard-deleted the next time the borrower
+    // saved their title contact, and because `CONTACT_TYPES` coerces anything
+    // unrecognised to 'other', one save could wipe every free-text vendor on the
+    // file (surveyor, HOA, property manager). Restricting it to service_contacts the
+    // borrower themself owns replaces exactly their own previous answer and can
+    // never touch a vendor the team added.
+    await db.query(
+      `DELETE FROM application_service_contacts
+        WHERE application_id=$1 AND contact_type=$2 AND service_contact_id <> $3
+          AND service_contact_id IN (SELECT id FROM service_contacts WHERE borrower_id=$4)`,
+      [b.applicationId, type, contactId, me(req)]);
   }
   // Submitting the contact form satisfies its checklist task (moves to review).
   if (b.checklistItemId) {
@@ -2122,7 +2151,9 @@ router.post('/contacts', async (req, res) => {
 // Any party can add any kind of vendor to a file; contacts live in
 // service_contacts (=> company-wide vendor management) and link to the file via
 // application_service_contacts (MANY per file). Shared across the file.
-const FILE_CONTACT_TYPES = ['realtor', 'attorney', 'title_company', 'insurance_agent', 'flood_insurance', 'contractor', 'appraiser', 'lender', 'escrow', 'other'];
+// Keep in step with the copy in routes/staff.js and the TYPES list in
+// app-v2/src/components/FileContacts.jsx — an unlisted type is coerced to 'other'.
+const FILE_CONTACT_TYPES = ['realtor', 'attorney', 'title_company', 'settlement_agent', 'insurance_agent', 'flood_insurance', 'contractor', 'appraiser', 'lender', 'escrow', 'other'];
 router.get('/applications/:id/file-contacts', async (req, res) => {
   const o = await db.query(`SELECT 1 FROM applications WHERE id=$1 AND (${OWN_FILE_SQL("", "$2")})`, [req.params.id, me(req)]);
   if (!o.rows[0]) return res.status(404).json({ error: 'application not found' });

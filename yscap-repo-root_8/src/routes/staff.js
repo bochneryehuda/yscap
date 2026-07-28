@@ -3751,6 +3751,12 @@ router.get('/applications/:id/emails', async (req, res) => {
     const rawScope = String(req.query.scope || '');
     const drawScope = rawScope === 'draw';
     const orderScope = (rawScope === 'title' || rawScope === 'insurance') ? rawScope : null;
+    // scope=closing → the CLOSING CHAIN inbox. Keyed on the chain's STORED thread key
+    // rather than on a subject or a msg_type prefix, because the whole point of that
+    // chain is that an outside attorney chose the subject: every message carrying the
+    // file's closing address is filed under that one key, so this returns the entire
+    // closing conversation, both directions, whatever anyone called it.
+    const closingScope = rawScope === 'closing';
     let scopeSql = '';
     if (drawScope) {
       scopeSql = `AND (em.msg_type LIKE 'draw%' OR em.msg_type LIKE 'sow_%'
@@ -3764,6 +3770,10 @@ router.get('/applications/:id/emails', async (req, res) => {
                    SELECT thread_key FROM email_messages
                     WHERE application_id = $1 AND thread_key IS NOT NULL
                       AND msg_type LIKE '${orderScope}\\_%')))`;
+    } else if (closingScope) {
+      scopeSql = `AND (em.msg_type LIKE 'closing\\_%'
+             OR (em.thread_key IS NOT NULL AND em.thread_key IN (
+                   SELECT thread_key FROM closing_threads WHERE application_id = $1)))`;
     }
     const r = await db.query(
       `SELECT em.id, em.direction, em.msg_type, em.category, em.subject, em.preview,
@@ -3932,6 +3942,42 @@ router.post('/applications/:id/emails/reply', async (req, res) => {
     const ctx = await notify.fileContext(appId).catch(() => null);
     // The acting staffer's own email/name (req.actor carries only id/role/perms).
     const meRow = (await db.query(`SELECT lower(email) AS email, full_name FROM staff_users WHERE id=$1`, [req.actor.id])).rows[0] || {};
+
+    // A reply typed in the CLOSING CHAIN inbox goes ON THAT CHAIN — to the attorney
+    // and everyone else already on it — not to the file-party fan-out below.
+    //
+    // This branch is not a convenience; without it the reply box in that inbox is a
+    // trap. The default fan-out includes the BORROWER, so a staffer answering the
+    // closing attorney would have sent lender-to-counsel correspondence (pricing, the
+    // whole entity file) to the borrower instead, and the attorney would never have
+    // received it. Recipients here come from the chain PILOT itself sent — never from
+    // the request body — and the send is threaded so it lands inside the conversation.
+    if (String((req.body && req.body.scope) || '') === 'closing') {
+      const thread = await closingThread.threadFor(appId);
+      // FAIL CLOSED. Falling through to the default fan-out here would send a
+      // closing reply to the BORROWER — the exact outcome this branch exists to
+      // prevent — so a scope the file cannot honour is refused, never redirected.
+      if (!thread) {
+        return res.status(400).json({ error: 'Send the closing-prep request first — there is no closing chain to reply on yet.', code: 'not_ordered' });
+      }
+      {
+        const last = await closingPrep.lastRecipients(thread.id);
+        if (!last.to.length) return res.status(400).json({ error: 'Send the closing-prep request first — there is no closing chain to reply on yet.', code: 'not_ordered' });
+        const data = await closingPrep.getClosingPrepData(appId);
+        if (!data) return res.status(404).json({ error: 'not found' });
+        const senderName = meRow.full_name || meRow.email || '';
+        const sent = await closingThread.sendOnThread({
+          applicationId: appId, eventKind: 'followup', dedupeKey: null,
+          to: last.to, cc: last.cc, fromName: senderName, staffId: req.actor.id,
+          msgType: 'closing_followup',
+          build: ({ address }) => closingPrep.buildFollowupEmail(data, { note: bodyText, address, senderName }),
+        });
+        if (!sent.ok) return res.status(500).json({ error: 'Could not send on the closing chain.', code: sent.reason });
+        await audit(req, 'closing_prep_followup', 'application', appId, { to: sent.to.length, via: 'email_center' });
+        return res.json({ ok: true, sent_to: sent.to, cc: sent.cc });
+      }
+    }
+
     // Recipient set: an explicit list (validated as file parties) or the default
     // fan-out = borrower(s) + active assignees, minus the acting staffer.
     const partyRows = await db.query(
@@ -4217,6 +4263,282 @@ router.post('/applications/:id/orders/:kind/cancel', async (req, res) => {
   } catch (e) { res.status(500).json({ error: 'server error' }); }
 });
 
+/* ═══════════════ ATTORNEY CLOSING PREP — the THIRD order ═══════════════════════
+   "File ready for closing prep": the closing attorney gets the term sheet, the
+   contract and assignments, the entity documents, the insurance binder + invoice
+   and the borrower's ID, plus the deal in words and the title company's details IN
+   THE BODY (never as a Cc — the attorney opens their own chain with title). It also
+   opens the file's CLOSING EMAIL CHAIN, whose unique address is printed in the email
+   so the chain the attorney starts comes back into the file.
+
+   It reuses the Orders desk's file_orders row (order_type='attorney') for state and
+   the global queue, but has its OWN routes: the recipients, the attachments and the
+   threading have nothing in common with a title/insurance vendor order, and folding
+   them into that route would have meant per-kind branches through all of it.
+   ═══════════════════════════════════════════════════════════════════════════════ */
+const closingPrep = require('../lib/closing-prep');
+const closingThread = require('../lib/closing-thread');
+
+// The two conditions this order fulfils, both shipped in db/005 describing this
+// exact manual step. Nudged to 'received' (never 'satisfied') — the same discipline
+// the Orders desk and the e-sign completion use: the system records that the thing
+// happened, a human still signs it off.
+const CLOSING_PREP_CONDITIONS = ['rtl_p5_atty', 'rtl_p5_titleinfo'];
+
+function cleanEmailList(v, max = 10) {
+  const raw = Array.isArray(v) ? v : String(v || '').split(/[,;\s]+/);
+  const out = [];
+  const seen = new Set();
+  for (const e of raw) {
+    // Unwrap a pasted mail-client contact ("Bob Smith <bob@x.com>") to the bare
+    // address. Left as-is, the angle brackets ride into the Cc and Microsoft Graph
+    // rejects the WHOLE send — one pasted contact and nothing reaches the attorney.
+    const s = String(e || '').replace(/^[^<]*<([^>]+)>\s*$/, '$1').trim().toLowerCase();
+    // A real address: one @, no whitespace, and none of the punctuation a mail
+    // server treats as structure. A typo is refused at the door rather than
+    // silently dropped from the send or breaking it.
+    if (/["'<>()[\],:;\\]/.test(s)) continue;
+    if (!/^[^@\s]+@[^@\s.]+\.[^@\s]+$/.test(s)) continue;
+    if (seen.has(s)) continue;
+    seen.add(s); out.push(s);
+    if (out.length >= max) break;
+  }
+  return out;
+}
+
+// Everything the closing-prep card needs: the deal, the documents we WOULD attach
+// (and what is missing), the recipients, the chain's address and its history.
+router.get('/applications/:id/closing-prep', async (req, res) => {
+  const appId = req.params.id;
+  if (!(await canTouchApp(req, appId))) return res.status(403).json({ error: 'forbidden' });
+  try {
+    const data = await closingPrep.getClosingPrepData(appId);
+    if (!data) return res.status(404).json({ error: 'not found' });
+    const pkg = await closingPrep.gatherPackage(appId);
+    const row = (await db.query(
+      `SELECT status, vendor_name, vendor_email, ordered_at, last_followup_at, followup_count,
+              send_count, meta
+         FROM file_orders WHERE application_id=$1 AND order_type='attorney'`, [appId])).rows[0] || null;
+    const thread = await closingThread.threadFor(appId);
+    const extraEmails = (row && row.meta && Array.isArray(row.meta.extraEmails)) ? row.meta.extraEmails : [];
+    const { to, cc } = closingPrep.recipientsFor(data, { extraEmails });
+    const chainDocs = thread ? await require('../lib/closing-inbox').listChainDocs(appId, { limit: 50 }) : [];
+    const chainMsgs = thread ? (await db.query(
+      `SELECT event_kind, subject, sent_at, status, to_emails, cc_emails, attachments
+         FROM closing_thread_messages
+        WHERE thread_id=$1 AND status <> 'claimed'
+        ORDER BY sent_at DESC LIMIT 25`, [thread.id])).rows : [];
+
+    res.json({
+      file: {
+        loanNumber: data.loanNumber, hasLoanNumber: data.hasLoanNumber,
+        propertyLine: data.propertyLine, borrowerName: data.borrowerName,
+        borrowers: data.borrowers, entityName: data.entityName,
+        isRegistered: data.isRegistered, status: data.status,
+        expectedClosing: data.expectedClosing,
+        // Drives whether the card treats a missing assignment as a real gap — a
+        // straight purchase has no assignment and must not be nagged for one.
+        isAssignment: data.isAssignment,
+      },
+      deal: closingPrep.dealMeta(data),
+      order: {
+        status: row ? row.status : 'not_ordered',
+        blockers: closingPrep.blockers(data, pkg),
+        orderedAt: row ? row.ordered_at : null,
+        lastFollowupAt: row ? row.last_followup_at : null,
+        followupCount: row ? row.followup_count : 0,
+        sendCount: row ? row.send_count : 0,
+      },
+      recipients: { to, cc, extraEmails },
+      team: { officer: data.officer, processor: data.processor, closer: data.closer, closerAmbiguous: data.closerAmbiguous },
+      contacts: { title: data.titleContacts, other: data.otherContacts },
+      documents: {
+        groups: closingPrep.GROUPS.map((g) => ({
+          key: g.key, label: g.label,
+          docs: (pkg.groups[g.key] || []).map((d) => ({
+            id: d.id, filename: d.filename, size_bytes: d.size_bytes,
+            slot_label: d.slot_label, review_status: d.review_status, created_at: d.created_at,
+          })),
+        })),
+        counts: pkg.counts,
+        missing: pkg.missing,
+        termSheetExecuted: pkg.termSheetExecuted,
+        insurance: closingPrep.insuranceSlots(pkg.groups.insurance),
+        // The byte budget the ACTIVE provider allows, so the card can warn BEFORE a
+        // send that something will not fit — never after.
+        budgetBytes: closingPrep.attachBudgetRawBytes(),
+        totalBytes: (pkg.ordered || []).reduce((n, d) => n + (Number(d.size_bytes) || 0), 0),
+        // Documents we can already tell will not go: one that is too big on its own,
+        // or that has no stored copy. The total-vs-budget warning alone missed both —
+        // a single 12 MB survey on a 15 MB file is under the budget and still cannot
+        // be attached, and the sender only found out from the sent email.
+        willSkip: closingPrep.predictSkips(pkg.ordered),
+      },
+      chain: thread ? {
+        address: closingThread.addressFor(thread),
+        subject: thread.subject,
+        openedAt: thread.opened_at,
+        inboundCount: thread.inbound_count,
+        outboundCount: thread.outbound_count,
+        docsCount: thread.docs_count,
+        lastActivityAt: thread.last_activity_at,
+        messages: chainMsgs,
+        documents: chainDocs,
+      } : null,
+    });
+  } catch (e) { res.status(500).json({ error: 'server error' }); }
+});
+
+// Send the closing-prep request. Gated on the loan number, a REGISTERED product
+// (there must be a term sheet for the attorney to draft from — the owner's rule) and
+// somewhere to send it. A re-send needs {force:true}, so a double-click can never
+// blast the attorney and the whole Cc chain twice.
+router.post('/applications/:id/closing-prep/place', async (req, res) => {
+  const appId = req.params.id;
+  if (!(await canTouchApp(req, appId))) return res.status(403).json({ error: 'forbidden' });
+  try {
+    const data = await closingPrep.getClosingPrepData(appId);
+    if (!data) return res.status(404).json({ error: 'not found' });
+    const pkg = await closingPrep.gatherPackage(appId);
+    const blk = closingPrep.blockers(data, pkg);
+    if (blk.includes('loan_number')) return res.status(400).json({ error: 'Add the file’s loan number first — it identifies the file on every closing email.', code: 'loan_number' });
+    if (blk.includes('not_registered')) return res.status(400).json({ error: 'Register the product first. The attorney needs a term sheet to draft from — register the file, then send this.', code: 'not_registered' });
+    if (blk.includes('documents_unavailable')) return res.status(503).json({ error: 'We could not read this file’s documents just now, so nothing was sent. Try again in a moment.', code: 'documents_unavailable' });
+    if (blk.includes('term_sheet')) return res.status(400).json({ error: 'There is no term sheet on the file yet. Generate the term sheet, then send the closing-prep request.', code: 'term_sheet' });
+    if (blk.includes('attorney')) return res.status(400).json({ error: 'There is nowhere to send this — add an attorney contact to the file (or set the attorney group inbox).', code: 'attorney' });
+
+    const force = req.body && (req.body.force === true || req.body.force === 'true');
+    const existing = (await db.query(
+      `SELECT status FROM file_orders WHERE application_id=$1 AND order_type='attorney'`, [appId])).rows[0];
+    if (existing && existing.status !== 'not_ordered' && existing.status !== 'cancelled' && !force) {
+      return res.status(409).json({ error: 'Closing prep was already requested for this file. Use Follow-up, or force a re-send.', code: 'already_ordered' });
+    }
+
+    const extraEmails = cleanEmailList(req.body && req.body.extraEmails);
+    const note = String((req.body && req.body.note) || '').trim().slice(0, 4000);
+    const { to, cc } = closingPrep.recipientsFor(data, { extraEmails });
+    const attach = await closingPrep.buildAttachments(pkg.ordered);
+    const meRow = (await db.query(`SELECT full_name, email FROM staff_users WHERE id=$1`, [req.actor.id])).rows[0] || {};
+    const senderName = meRow.full_name || meRow.email || '';
+
+    const sent = await closingThread.sendOnThread({
+      applicationId: appId,
+      eventKind: 'order',
+      // The first send claims 'order' so a double-click is impossible; a deliberate
+      // re-send passes no key and is always allowed.
+      dedupeKey: force ? null : 'order',
+      to, cc,
+      attachments: attach.attachments,
+      fromName: senderName,
+      staffId: req.actor.id,
+      msgType: 'closing_order',
+      subject: closingPrep.CLOSING_PREP_TITLE,
+      build: ({ address }) => closingPrep.buildClosingPrepEmail(data, pkg, { address, attach, note, senderName }),
+    });
+    if (!sent.ok) {
+      const msg = sent.reason === 'no_recipient' ? 'There is nowhere to send this.'
+        : sent.reason === 'no_thread' ? 'Could not open the closing email chain for this file.'
+          : 'Could not send the closing-prep request.';
+      return res.status(500).json({ error: msg, code: sent.reason });
+    }
+    if (sent.skipped) {
+      return res.status(409).json({ error: 'Closing prep was already sent for this file. Use Follow-up, or force a re-send.', code: 'already_ordered' });
+    }
+
+    await db.query(
+      `INSERT INTO file_orders (application_id, order_type, status, vendor_email, vendor_name, subject,
+                                ordered_at, ordered_by, send_count, meta)
+       VALUES ($1,'attorney','ordered',$2,$3,$4,now(),$5,1,$6::jsonb)
+       ON CONFLICT (application_id, order_type)
+       DO UPDATE SET status='ordered', vendor_email=EXCLUDED.vendor_email, vendor_name=EXCLUDED.vendor_name,
+                     subject=EXCLUDED.subject, ordered_at=now(), ordered_by=EXCLUDED.ordered_by,
+                     send_count=file_orders.send_count+1, meta=EXCLUDED.meta, updated_at=now()`,
+      [appId, to[0] || null, 'Closing attorney', sent.subject, req.actor.id,
+       JSON.stringify({ extraEmails, attached: attach.attached.length, skipped: attach.skipped.length })]);
+
+    // Record that the two manual steps this replaces actually happened. Never
+    // downgrades a signed-off/waived condition, never signs one off.
+    try {
+      await db.query(
+        `UPDATE checklist_items ci SET status='received', updated_at=now()
+          WHERE ci.application_id=$1
+            AND ci.template_id IN (SELECT id FROM checklist_templates WHERE code = ANY($2::text[]))
+            AND ci.status NOT IN ('satisfied','waived')`,
+        [appId, CLOSING_PREP_CONDITIONS]);
+    } catch (_) { /* best-effort — the email is what matters */ }
+
+    // Everything the request itself just TOLD the attorney is claimed as already
+    // communicated, so the backstop sweep can never re-announce it as news (a file at
+    // closing-prep stage almost always already has a closing date, and the order email
+    // prints it in its deal block).
+    try { await closingPrep.markCarriedByOrder(appId, sent.thread, pkg); } catch (_) { /* best-effort */ }
+
+    await audit(req, 'closing_prep_ordered', 'application', appId, {
+      to: to.length, cc: cc.length, extra: extraEmails.length,
+      attached: attach.attached.length, skipped: attach.skipped.length, force: !!force,
+    });
+    res.json({
+      ok: true, sent_to: to, cc, subject: sent.subject,
+      address: sent.address,
+      attached: attach.attached.map((d) => ({ filename: d.filename, group: d.group, bytes: d.bytes })),
+      skipped: attach.skipped.map((d) => ({ filename: d.filename, reason: d.reason })),
+    });
+  } catch (e) { res.status(500).json({ error: 'Could not send the closing-prep request.' }); }
+});
+
+// A human follow-up ON THE SAME CHAIN. Never the first contact.
+router.post('/applications/:id/closing-prep/followup', async (req, res) => {
+  const appId = req.params.id;
+  if (!(await canTouchApp(req, appId))) return res.status(403).json({ error: 'forbidden' });
+  try {
+    const row = (await db.query(
+      `SELECT status FROM file_orders WHERE application_id=$1 AND order_type='attorney'`, [appId])).rows[0];
+    if (!row || row.status === 'not_ordered' || row.status === 'cancelled') {
+      return res.status(400).json({ error: 'Send the closing-prep request before following up.', code: 'not_ordered' });
+    }
+    const data = await closingPrep.getClosingPrepData(appId);
+    if (!data) return res.status(404).json({ error: 'not found' });
+    const note = String((req.body && req.body.message) || '').trim().slice(0, 4000);
+    const last = await closingPrep.lastRecipients((await closingThread.threadFor(appId) || {}).id);
+    const extraEmails = cleanEmailList(req.body && req.body.extraEmails);
+    const base = closingPrep.recipientsFor(data, { extraEmails });
+    const to = last.to.length ? last.to : base.to;
+    const cc = Array.from(new Set((last.cc.length ? last.cc : base.cc).concat(extraEmails)));
+    const meRow = (await db.query(`SELECT full_name, email FROM staff_users WHERE id=$1`, [req.actor.id])).rows[0] || {};
+    const senderName = meRow.full_name || meRow.email || '';
+
+    const sent = await closingThread.sendOnThread({
+      applicationId: appId, eventKind: 'followup',
+      dedupeKey: null,                       // a human follow-up may be sent again
+      to, cc, fromName: senderName, staffId: req.actor.id, msgType: 'closing_followup',
+      build: ({ address }) => closingPrep.buildFollowupEmail(data, { note, address, senderName }),
+    });
+    if (!sent.ok) return res.status(500).json({ error: 'Could not send the follow-up.', code: sent.reason });
+    await db.query(
+      `UPDATE file_orders SET followup_count=followup_count+1, last_followup_at=now(), updated_at=now()
+        WHERE application_id=$1 AND order_type='attorney'`, [appId]);
+    await audit(req, 'closing_prep_followup', 'application', appId, { to: to.length });
+    res.json({ ok: true, sent_to: to, cc });
+  } catch (e) { res.status(500).json({ error: 'Could not send the follow-up.' }); }
+});
+
+// Cancel (or reopen) the closing-prep order. Emails nobody. The closing CHAIN is
+// deliberately left intact — anything the attorney already sent stays on the file.
+router.post('/applications/:id/closing-prep/cancel', async (req, res) => {
+  const appId = req.params.id;
+  if (!(await canTouchApp(req, appId))) return res.status(403).json({ error: 'forbidden' });
+  try {
+    const reopen = req.body && (req.body.reopen === true || req.body.reopen === 'true');
+    const upd = await db.query(
+      `UPDATE file_orders SET status=$2, updated_at=now()
+        WHERE application_id=$1 AND order_type='attorney' RETURNING status`,
+      [appId, reopen ? 'ordered' : 'cancelled']);
+    if (!upd.rows[0]) return res.status(404).json({ error: 'Closing prep has not been requested yet.' });
+    await audit(req, reopen ? 'closing_prep_reopened' : 'closing_prep_cancelled', 'application', appId, {});
+    res.json({ ok: true, status: upd.rows[0].status });
+  } catch (e) { res.status(500).json({ error: 'server error' }); }
+});
+
 // GLOBAL ORDERS QUEUE — every title/insurance order across the files the viewer
 // can see, so a processor can track all orders (and what's waiting to be
 // classified) in one place. Scoped like every other cross-file view.
@@ -4234,10 +4556,18 @@ router.get('/orders', async (req, res) => {
          JOIN applications a ON a.id = o.application_id AND a.deleted_at IS NULL
          JOIN borrowers b ON b.id = a.borrower_id
          LEFT JOIN LATERAL (
-           SELECT count(*) FILTER (WHERE slot_label IS NULL) AS unassigned, count(*) AS total
+           -- "unassigned" means a returned VENDOR document nobody has classified yet
+           -- (binder / invoice / commitment). A closing-chain document needs no
+           -- classification, so the attorney order never reports any — without that
+           -- guard every chain document would show up as work waiting to be done.
+           SELECT count(*) FILTER (WHERE slot_label IS NULL AND o.order_type <> 'attorney') AS unassigned,
+                  count(*) AS total
              FROM documents d
             WHERE d.application_id = o.application_id AND d.is_current = true
-              AND d.doc_kind = CASE o.order_type WHEN 'title' THEN 'title_order_return' ELSE 'insurance_order_return' END
+              AND d.doc_kind = CASE o.order_type
+                                 WHEN 'title' THEN 'title_order_return'
+                                 WHEN 'insurance' THEN 'insurance_order_return'
+                                 ELSE 'closing_correspondence' END
          ) dc ON true
         WHERE o.status <> 'cancelled' ${scopeSql}
         ORDER BY (COALESCE(dc.unassigned, 0) > 0) DESC, o.ordered_at DESC NULLS LAST`, params);
@@ -4249,7 +4579,7 @@ router.get('/orders', async (req, res) => {
           applicationId: row.application_id, loanNumber: row.ys_loan_number,
           propertyAddress: row.property_address, fileStatus: row.file_status,
           borrowerName: require('../lib/person-name').displayName(row),
-          title: null, insurance: null,
+          title: null, insurance: null, attorney: null,
         });
       }
       const f = byFile.get(row.application_id);
@@ -7160,7 +7490,57 @@ async function notifyStatusTransition(appId, fromStatus, toStatus, opts = {}) {
           .ingestStatusOutcome(db, { applicationId: appId, status: toStatus });
       } catch (_) { /* additive, never blocks */ }
     }
+    // CLEAR TO CLOSE goes out on the CLOSING CHAIN (owner-directed 2026-07-28) — the
+    // attorney is told, on the same email chain, that our side is done and they can
+    // proceed with the closing package.
+    //
+    // This is the shared announcement point for BOTH portal doors (the direct PATCH
+    // and the internal-status route), and it only runs when the external bucket really
+    // changed. The ClickUp-originated door does NOT come through here, so it is hooked
+    // separately in lib/inbound-ctc-confirm.js — announce()'s dedupe key means the two
+    // can safely both fire. Silent when the file has no closing chain.
+    if (toStatus === 'clear_to_close' && fromStatus !== 'clear_to_close') {
+      try { await announceClearToClose(appId); } catch (_) { /* best-effort */ }
+    }
   } catch (_) { /* notify best-effort */ }
+}
+
+/** Tell the closing chain the file is clear to close. Idempotent per file. */
+async function announceClearToClose(appId) {
+  const row = (await db.query(`SELECT expected_closing, est_closing_date FROM applications WHERE id=$1`, [appId])).rows[0] || {};
+  await require('../lib/closing-prep').announce({
+    applicationId: appId,
+    eventKind: 'clear_to_close',
+    // One per file. A file that bounces out of clear-to-close and back has not become
+    // clear to close twice, and the attorney does not need to hear it twice.
+    dedupeKey: 'clear_to_close',
+    extra: { closingDate: row.expected_closing || row.est_closing_date || null },
+  });
+}
+
+/**
+ * Tell the closing chain about a NEW expected closing date.
+ *
+ * Keyed on the DATE, so it announces once per distinct date: moving a closing from
+ * the 14th to the 21st is real news the attorney must have, while re-saving the same
+ * date (a ClickUp echo, a re-register writing the value it already held) says nothing
+ * and sends nothing. Silent when the file has no closing chain.
+ *
+ * Called from every door that can move the date — the closing-date route, the
+ * workflow hand-off, and the ClickUp inbound sync. Calling it from several places is
+ * deliberate and safe: the dedupe key, not the caller, is what guarantees one email.
+ */
+async function announceClosingDate(appId, date) {
+  const day = date ? String(date).slice(0, 10) : null;
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(day || '')) return;
+  try {
+    await require('../lib/closing-prep').announce({
+      applicationId: appId,
+      eventKind: 'closing_date',
+      dedupeKey: `closing_date:${day}`,
+      extra: { date: day },
+    });
+  } catch (_) { /* best-effort — a closing date must still save */ }
 }
 // Conditions-to-close gating. Reaching "clear to close" requires every open
 // prior-to-docs (and standard) condition cleared/waived and every gate item
@@ -7873,6 +8253,13 @@ router.post('/applications/:id/closing-date', async (req, res) => {
           applicationId: req.params.id, link: `/app/${req.params.id}`, ctaLabel: 'View your file' });
       }
     }
+    // …and tell the closing chain, on the same email chain the closing-prep request
+    // went out on. Keyed on the date, so only a genuinely NEW date sends. Fires only
+    // when the date actually MOVED, so re-saving the form is silent.
+    if ('expectedClosing' in b && normExpected
+        && String(beforeRow.expected_closing || '').slice(0, 10) !== normExpected) {
+      await announceClosingDate(req.params.id, normExpected);
+    }
     res.json({ ok: true });
   } catch (e) { res.status(500).json({ error: 'server error' }); }
 });
@@ -8524,6 +8911,10 @@ router.post('/applications/:id/workflow/submit', async (req, res) => {
     // Closing writes the estimated closing date onto the file too (borrower-facing).
     if (b.submissionType === 'closing' && estClosing) {
       try { await db.query(`UPDATE applications SET expected_closing=$2, updated_at=now() WHERE id=$1`, [appId, estClosing]); enqueueClickupPush(appId, ['expected_closing']).catch(() => {}); } catch (_) {}
+      // The closing hand-off is one of the doors that can introduce or move the
+      // expected closing date, so the closing chain hears about it here too. The
+      // dedupe key (not the caller) is what stops a duplicate email.
+      await announceClosingDate(appId, estClosing);
     }
     // DRIVE the status automatically (the workflow drives the status). The
     // workflow is the authorized path, so it may set decision-grade statuses
@@ -10894,7 +11285,12 @@ router.post('/vendors/merge', async (req, res) => {
 // Any staff on the file can add any kind of vendor. The contact is tied to the
 // file's borrower (so it shows on the borrower profile) AND flows into the
 // company-wide vendor directory (service_contacts). Many contacts per file.
-const FILE_CONTACT_TYPES = ['realtor', 'attorney', 'title_company', 'insurance_agent', 'flood_insurance', 'contractor', 'appraiser', 'lender', 'escrow', 'other'];
+// `settlement_agent` added 2026-07-28 for the attorney closing-prep order: the
+// owner asked for the settlement agent's details in that email, and there was no
+// contact type that meant it (only the broader `escrow` / `title_company`).
+// Keep this list in step with the copy in routes/borrower.js and the TYPES list in
+// app-v2/src/components/FileContacts.jsx — an unlisted type is coerced to 'other'.
+const FILE_CONTACT_TYPES = ['realtor', 'attorney', 'title_company', 'settlement_agent', 'insurance_agent', 'flood_insurance', 'contractor', 'appraiser', 'lender', 'escrow', 'other'];
 router.get('/applications/:id/file-contacts', async (req, res) => {
   if (!(await canTouchApp(req, req.params.id))) return res.status(403).json({ error: 'forbidden' });
   const r = await db.query(

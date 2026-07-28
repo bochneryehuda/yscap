@@ -6,9 +6,28 @@
  */
 const cfg = require('../../config');
 
+/** Custom internet headers, sanitized. Used for real email-client THREADING
+    (In-Reply-To / References / Message-ID) so a system follow-up lands INSIDE the
+    conversation it belongs to instead of starting a new one — see
+    src/lib/closing-thread.js. A header name Resend would reject (or that could
+    inject a second header via CRLF) is dropped rather than sent. */
+function cleanHeaders(headers) {
+  const out = {};
+  if (!headers || typeof headers !== 'object') return out;
+  for (const [k, v] of Object.entries(headers)) {
+    if (!k || v == null) continue;
+    if (!/^[A-Za-z0-9-]+$/.test(k)) continue;                 // no folding, no injection
+    const val = String(v).replace(/[\r\n]+/g, ' ').trim();
+    if (!val) continue;
+    out[k] = val.slice(0, 998);                               // RFC 5322 line limit
+  }
+  return out;
+}
+
 module.exports = {
   name: 'resend',
-  async sendMail({ to, subject, text, html, attachments, replyTo, from, bcc, cc }) {
+  cleanHeaders,
+  async sendMail({ to, subject, text, html, attachments, replyTo, from, bcc, cc, headers }) {
     if (!cfg.resendApiKey) {
       throw new Error('RESEND_API_KEY is not set — add it in the Render environment to send email.');
     }
@@ -30,6 +49,8 @@ module.exports = {
     const atts = (Array.isArray(attachments) ? attachments : [])
       .filter((a) => a && a.filename && a.content)
       .map((a) => ({ filename: String(a.filename), content: String(a.content) }));
+
+    const hdrs = cleanHeaders(headers);
 
     // Bound the request so a hung network call can't wedge the send path.
     const ac = new AbortController();
@@ -57,7 +78,12 @@ module.exports = {
            bccList.length ? { bcc: bccList } : {},
            // #75: a unique reply-to lets an external chat guest reply by email and
            // have it land back in the conversation (routed via the inbound webhook).
-           replyTo ? { reply_to: replyTo } : {})),
+           replyTo ? { reply_to: replyTo } : {},
+           // Threading headers (In-Reply-To / References / Message-ID). Resend may
+           // assign its own Message-ID, in which case our reference points at an
+           // id the recipient never saw — harmless: every threaded sender here ALSO
+           // reuses the original subject, which is what Gmail/Outlook fall back to.
+           Object.keys(hdrs).length ? { headers: hdrs } : {})),
         signal: ac.signal,
       });
     } catch (e) {

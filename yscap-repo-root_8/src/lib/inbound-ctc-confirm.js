@@ -179,6 +179,26 @@ async function confirmCtc({ appId, actorId = null, internalStatus = null, taskId
      VALUES ($1,$2,'clickup_pull_ctc_confirmed','application',$3,$4)`,
     [actorId ? 'staff' : 'system', actorId, appId, JSON.stringify({ fromStatus })]).catch(() => {});
 
+  // The closing attorney is told, on the file's closing chain, that we are clear to
+  // close (owner-directed 2026-07-28). This door is hooked SEPARATELY from the portal
+  // one because it deliberately bypasses `notifyStatusTransition` — a ClickUp-driven
+  // change is announced from here. Both call the same `announce()`, whose dedupe key
+  // is what guarantees exactly one email however the file got here.
+  // Silent when the file has no closing chain; never blocks the confirm.
+  try {
+    // Carry the closing date like the portal door does. Both share the dedupe key
+    // `clear_to_close`, so whichever fires first is the ONE email the attorney gets —
+    // and without this the ClickUp-originated route won a race by sending the poorer
+    // version, silently dropping the expected-closing line from it.
+    const cd = (await client.query(
+      `SELECT to_char(COALESCE(expected_closing, est_closing_date),'YYYY-MM-DD') AS day
+         FROM applications WHERE id=$1`, [appId])).rows[0] || {};
+    await require('./closing-prep').announce({
+      applicationId: appId, eventKind: 'clear_to_close', dedupeKey: 'clear_to_close',
+      extra: { closingDate: cd.day || null },
+    });
+  } catch (_) { /* best-effort */ }
+
   return { fromStatus, alreadyThere: false };
 }
 

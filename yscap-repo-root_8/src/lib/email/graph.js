@@ -35,7 +35,7 @@ async function getToken() {
 
 module.exports = {
   name: 'graph',
-  async sendMail({ to, subject, text, html, attachments, replyTo, bcc, cc }) {
+  async sendMail({ to, subject, text, html, attachments, replyTo, bcc, cc, headers }) {
     const token = await getToken();
     // NOTIFY_FROM may be a display-name form ("YS Capital <noreply@ys.com>"); the
     // Graph /users/{id} path needs a BARE address/UPN or every send fails with 400.
@@ -70,6 +70,17 @@ module.exports = {
       .filter((a) => a && a.filename && a.content)
       .map((a) => ({ '@odata.type': '#microsoft.graph.fileAttachment', name: String(a.filename), contentType: a.contentType || 'application/octet-stream', contentBytes: String(a.content) }));
     if (atts.length) message.attachments = atts;
+    // Custom internet headers. Graph's `internetMessageHeaders` accepts ONLY
+    // `X-`-prefixed names — it silently rejects the standard threading headers
+    // (In-Reply-To / References / Message-ID), which Exchange owns. So a threaded
+    // send (src/lib/closing-thread.js) keeps its conversation on this provider
+    // through the reused SUBJECT, which is what Outlook threads on anyway; the
+    // X- headers still ride along so the chain is traceable in a raw message.
+    const xh = Object.entries(headers && typeof headers === 'object' ? headers : {})
+      .filter(([k, v]) => /^x-[A-Za-z0-9-]+$/i.test(String(k)) && v != null && String(v).trim())
+      .slice(0, 5)
+      .map(([k, v]) => ({ name: String(k), value: String(v).replace(/[\r\n]+/g, ' ').trim().slice(0, 995) }));
+    if (xh.length) message.internetMessageHeaders = xh;
     const r = await fetchWithTimeout(url, {
       method: 'POST',
       headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },

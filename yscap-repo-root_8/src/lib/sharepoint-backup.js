@@ -333,6 +333,10 @@ function categoryPathFor(row) {
   // Draw Management phase 2b — the PILOT-branded inspection reports get their own category so their
   // frequent version-hashed supersedes never shuffle other (uncategorized) file documents.
   if (row.doc_kind === 'draw_inspection_report') return ['Draw Reports'];
+  // Everything that arrives on the closing email chain — its own folder, so the
+  // team's drive mirrors the same separation the file makes: the running closing
+  // correspondence is NOT the final executed closing package.
+  if (row.doc_kind === 'closing_correspondence') return ['Closing', 'Correspondence'];
   // The autosaved track-record HTML gets its own category so its frequent
   // supersede-driven versions never shuffle the per-project verification docs.
   if (row.doc_kind === 'track_record_html') return ['REO', 'Track Record Saved Copy'];

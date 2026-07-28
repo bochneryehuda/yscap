@@ -1468,7 +1468,136 @@ async function runDue() {
     // The expiry sweep runs through the business day so a lapsed approval flips
     // within hours (the flip is once-per-row by construction — status change).
     await exceptionExpirySweepOnce().catch((e) => console.error('[digests] exception-expiry', e && e.message));
+    // The closing-chain backstop runs through the business day so a date a
+    // non-announcing door introduced reaches the attorney the same day — and never
+    // at 3am. Its dedupe keys make every re-run a no-op.
+    await closingChainCatchupOnce().catch((e) => console.error('[digests] closing-chain', e && e.message));
   }
+}
+
+/**
+ * CLOSING-CHAIN BACKSTOP (owner-directed 2026-07-28).
+ *
+ * The three automatic closing-chain updates are fired from the doors that make each
+ * fact true — the closing-date route, the workflow hand-off, the ClickUp inbound
+ * sync, the status transition, the e-sign completion. This sweep catches whatever
+ * those doors miss: `product-registration` can introduce a file's FIRST expected
+ * closing date through a COALESCE (it is not a "closing date" route and has no
+ * business announcing one), a door could fail mid-request after the UPDATE
+ * committed, and a door added next year will not know about any of this.
+ *
+ * It is safe to run repeatedly precisely BECAUSE the announcement is claimed under a
+ * dedupe key: a date already announced costs one refused insert. Bounded to files
+ * that HAVE a closing chain, so it touches nothing on the rest of the book.
+ */
+async function closingChainCatchupOnce() {
+  let sent = 0;
+  try {
+    const closingPrep = require('./closing-prep');
+    const rows = (await db.query(
+      // ALREADY-ANNOUNCED ROWS ARE EXCLUDED IN SQL, not by calling announce() and
+      // letting the dedupe key refuse it. Each announce() costs ~8 round trips
+      // (thread + file data + recipients + ensureThread + seq + the claim) BEFORE the
+      // key is consulted, and this runs every 30 minutes over the whole book — so the
+      // steady state was thousands of queries per tick to send nothing. The claim is
+      // still the guarantee; this is just not asking it the same question all day.
+      `SELECT ct.application_id,
+              to_char(COALESCE(a.expected_closing, a.est_closing_date), 'YYYY-MM-DD') AS day,
+              a.status,
+              -- The date the chain was LAST told, compared to the date the file now
+              -- holds. A plain "has this exact date ever been announced" test would
+              -- stay silent when a date moves and then moves BACK, leaving the
+              -- attorney holding the superseded day.
+              (SELECT split_part(m.dedupe_key, '->', 2)
+                 FROM closing_thread_messages m
+                WHERE m.thread_id = ct.id AND m.event_kind = 'closing_date'
+                  AND m.status IN ('sent','carried') AND m.dedupe_key IS NOT NULL
+                ORDER BY m.sent_at DESC NULLS LAST, m.id DESC LIMIT 1)
+                IS DISTINCT FROM to_char(COALESCE(a.expected_closing, a.est_closing_date), 'YYYY-MM-DD')
+              AS needs_date,
+              NOT EXISTS (
+                SELECT 1 FROM closing_thread_messages m
+                 WHERE m.thread_id = ct.id AND m.status IN ('sent','carried')
+                   AND m.dedupe_key = 'clear_to_close'
+              ) AS needs_ctc
+         FROM closing_threads ct
+         JOIN applications a ON a.id = ct.application_id AND a.deleted_at IS NULL
+         -- ONLY A FILE WHOSE ORDER ACTUALLY WENT OUT.
+         --
+         -- sendOnThread opens the chain BEFORE it sends, so a closing-prep order
+         -- that failed (provider down, nothing built) still leaves a closing_threads
+         -- row behind — and cancelling an order deliberately keeps the chain intact.
+         -- Without this join the sweep found those chains, fell back to the default
+         -- attorney group inbox because no recipient had ever been recorded, and made
+         -- FIRST CONTACT with the outside law firm by telling them the closing date
+         -- had moved on a deal they had never heard of. The order row is the proof
+         -- that a human deliberately engaged this attorney.
+         JOIN file_orders fo ON fo.application_id = ct.application_id
+                            AND fo.order_type = 'attorney'
+                            AND fo.status NOT IN ('not_ordered','cancelled')
+        WHERE COALESCE(a.expected_closing, a.est_closing_date) IS NOT NULL
+           OR a.status = 'clear_to_close'
+        -- ORDERED because it is CAPPED: the quietest chains come first, so a large
+        -- book can never leave the same tail of files permanently unexamined. A chain
+        -- that actually receives an update has its last_activity_at bumped and moves
+        -- to the back on its own.
+        -- …and it ends on the row's own id, so chains that TIE on both timestamps
+        -- still come back in a stable order rather than an arbitrary one.
+        ORDER BY ct.last_activity_at ASC NULLS FIRST, ct.created_at ASC, ct.id ASC
+        LIMIT 500`)).rows;
+    for (const r of rows) {
+      if (r.day && r.needs_date) {
+        const res = await closingPrep.announce({
+          applicationId: r.application_id, eventKind: 'closing_date',
+          dedupeKey: `closing_date:${r.day}`, extra: { date: r.day },
+        }).catch(() => null);
+        if (res && res.ok && !res.skipped) sent += 1;
+      }
+      if (r.status === 'clear_to_close' && r.needs_ctc) {
+        const res = await closingPrep.announce({
+          applicationId: r.application_id, eventKind: 'clear_to_close',
+          dedupeKey: 'clear_to_close', extra: { closingDate: r.day || null },
+        }).catch(() => null);
+        if (res && res.ok && !res.skipped) sent += 1;
+      }
+    }
+    // THE EXECUTED TERM SHEET needs its own recovery, because it is the one update
+    // whose fact does not live on the applications row — it lives on the envelope,
+    // so the loop above cannot see it. Without this, a provider blip at the exact
+    // moment a term sheet finished signing left the attorney drafting from the
+    // initial terms forever. Re-driven through the e-sign module's OWN announcer so
+    // it attaches the document THAT envelope produced, never a second guess at it.
+    const stale = (await db.query(
+      `SELECT e.*
+         FROM esign_envelopes e
+         JOIN closing_threads ct ON ct.application_id = e.application_id
+         JOIN file_orders fo ON fo.application_id = e.application_id
+                            AND fo.order_type = 'attorney'
+                            AND fo.status NOT IN ('not_ordered','cancelled')
+        WHERE e.purpose = 'term_sheet_package' AND e.status = 'completed'
+          AND COALESCE(e.is_test,false) = false
+          -- KEYED ON THE ENVELOPE, matching the announcement's own dedupe key. Keyed
+          -- on the thread instead, the first executed term sheet excluded the file
+          -- forever — so a re-issued and re-executed package whose announcement
+          -- failed could never be recovered, which is the one job of this sweep.
+          AND NOT EXISTS (
+            SELECT 1 FROM closing_thread_messages m
+             WHERE m.thread_id = ct.id
+               AND m.dedupe_key = 'executed_term_sheet:' || e.id::text
+               AND m.status IN ('sent','carried'))
+        ORDER BY e.completed_at ASC NULLS FIRST, e.id ASC
+        LIMIT 50`)).rows;
+    for (const env of stale) {
+      try {
+        // Count what was actually sent — an unconditional bump made the log line
+        // report recoveries that never happened.
+        const res = await require('./esign/webhook').announceExecutedTermSheet(db, env);
+        if (res && res.ok && !res.skipped) sent += 1;
+      } catch (_) { /* next tick tries again */ }
+    }
+  } catch (_) { return 0; }
+  if (sent) console.log(`[digests] closing-chain catch-up sent ${sent} update(s)`);
+  return sent;
 }
 
 let started = false;
@@ -1489,5 +1618,5 @@ module.exports = {
   drawFindingsAwaitingBorrowerOnce, drawReleaseOverdueOnce, trustpointUnreleasedOnce, workflowAgingOnce, conditionFreshnessReopenOnce,
   trainingRunOnce, certificateSurveyOnce, autoCommitteeReviewOnce, directSourceSweepOnce, autoReadSweepOnce, unfundedRereadSweepOnce, section1071SweepOnce,
   aiCrossdocSweepOnce, weeklyAdminAiQuestionsOnce, weeklyTopRiskyFilesOnce, weeklyLoAiDigestOnce,
-  qaDeskAuditOnce, exceptionAgingOnce, exceptionExpirySweepOnce,
+  qaDeskAuditOnce, exceptionAgingOnce, exceptionExpirySweepOnce, closingChainCatchupOnce,
 };

@@ -3399,7 +3399,7 @@ export default function StaffApplication() {
     { id: 'sec-esign', label: 'E-signatures', group: 'Signing & documents' },
     // Same count the section's own summary line uses — derived once above, so the
     // rail and the header can't drift the way the badges once did.
-    { id: 'sec-orders', label: 'Orders (title & insurance)', group: 'Signing & documents',
+    { id: 'sec-orders', label: 'Orders (title, insurance & closing prep)', group: 'Signing & documents',
       badge: nOrdersToAssign ? `${nOrdersToAssign} to assign` : '' },
     { id: 'sec-documents', label: 'Documents & exports', group: 'Signing & documents', badge: badges.documents.short },
     // Data tapes are visible only to staff who may export them (processor /
@@ -3823,7 +3823,7 @@ export default function StaffApplication() {
       <EsignFileSection appId={id} role={role} onChanged={load} />
       </Section>
 
-      <Section id="sec-orders" summary={summaries['sec-orders']} title="Orders (title &amp; insurance)" defaultOpen={false}
+      <Section id="sec-orders" summary={summaries['sec-orders']} title="Orders (title, insurance &amp; closing prep)" defaultOpen={false}
         info="Order title and insurance from the vendor on the file. Each order emails the vendor with the borrower, loan officer and processor copied, tracks its own thread, and files the documents the vendor sends back here for you to classify.">
       <OrdersPanel appId={id} canAccept={canComplete(role)} />
       </Section>
