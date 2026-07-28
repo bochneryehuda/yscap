@@ -67,19 +67,10 @@ const uniq = (p) => p + Buffer.from(String(process.pid)).toString('hex') + Math.
         WHERE application_id=$1`, [appId, actorId]);
     const cw = (await client.query(`SELECT table_funded FROM closing_workflow WHERE application_id=$1`, [appId])).rows[0];
     if (on && !(cw && cw.table_funded)) await purchasing.enterPurchasing(client, appId, actorId);
-    // The route also REOPENS the closer's hand-off on an un-sign — without this
-    // line the mirror would stay green even if that fix were deleted from the
-    // route, which is the whole point of mirroring it faithfully.
-    if (!on) {
-      await purchasing.withdrawFromPurchasing(client, appId);
-      await workflow.reopenClosingItem(client, appId, actorId);
-      // The route also steps the STAGE back off 'in_purchasing' — `stage` is
-      // sticky, so without it the desk still reads the file as finished and it
-      // sits on neither desk.
-      await client.query(
-        `UPDATE closing_workflow SET stage='fully_reconciled', updated_at=now()
-          WHERE application_id=$1 AND stage='in_purchasing'`, [appId]);
-    }
+    // Calls the SHIPPED helper, not a copy of it. A mirror of these steps is what
+    // let the previous version of this test stay green while the route silently
+    // lost one — there is deliberately nothing to mirror any more.
+    if (!on) await purchasing.unwindInvestorDelivery(client, appId, actorId);
     await workflow.maybeFinishClosing(client, appId, actorId);
   }
 

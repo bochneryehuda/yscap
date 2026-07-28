@@ -8865,6 +8865,7 @@ router.post('/applications/:id/closing/sign-off', async (req, res) => {
   const [atCol, byCol] = COL[kind];
   try {
     const client = await db.getClient();
+    let unwound = null;
     try {
       await client.query('BEGIN');
       // Same lock order as the stage route: the closing hand-off first, THEN
@@ -8884,22 +8885,11 @@ router.post('/applications/:id/closing/sign-off', async (req, res) => {
         const cw = (await client.query(
           `SELECT table_funded FROM closing_workflow WHERE application_id=$1`, [req.params.id])).rows[0];
         if (on && !(cw && cw.table_funded)) await purchasing.enterPurchasing(client, req.params.id, req.actor.id);
-        // Un-signing means the closing is NOT finished any more: the file comes
-        // back OFF the purchasing desk, so the closer's hand-off has to come back
-        // too or the file sits on neither queue.
-        if (!on) {
-          await purchasing.withdrawFromPurchasing(client, req.params.id);
-          await workflow.reopenClosingItem(client, req.params.id, req.actor.id);
-          // …and step the STAGE back off 'in_purchasing'. Un-signing means the
-          // closing is not finished, but `stage` is sticky, so without this the
-          // desk's retirement predicate (which keeps a legacy stage test) still
-          // read the file as done: off the closing desk AND off the purchasing
-          // desk, i.e. on neither — the very failure the two lines above exist to
-          // prevent, reached through the desk instead of the Workflow queue.
-          await client.query(
-            `UPDATE closing_workflow SET stage='fully_reconciled', updated_at=now()
-              WHERE application_id=$1 AND stage='in_purchasing'`, [req.params.id]);
-        }
+        // Un-signing means the closing is NOT finished any more. Everything that
+        // has to come back is ONE function (purchasing.unwindInvestorDelivery) —
+        // off the purchasing desk, the closer's hand-off reopened, and the sticky
+        // stage stepped back so the desk stops reading the file as done.
+        if (!on) unwound = await purchasing.unwindInvestorDelivery(client, req.params.id, req.actor.id);
       }
       // Reconciled + investor-delivered = the closer is done; clear the file off
       // their Workflow either way (table funded or purchasing).
@@ -8907,6 +8897,13 @@ router.post('/applications/:id/closing/sign-off', async (req, res) => {
       await client.query('COMMIT');
     } catch (e) { await client.query('ROLLBACK').catch(() => {}); client.release(); throw e; }
     client.release();
+    // The stage route tells ClickUp "in purchase review" when a file is sent to
+    // purchasing. Stepping the stage back must undo that, or the two systems
+    // actively disagree. Best-effort, outside the transaction, like every other
+    // ClickUp push — it must never fail or reverse the closer's action.
+    if (unwound && unwound.stageSteppedBack) {
+      try { await applyInternalStatus(req.params.id, 'closed reconciled', { actorId: req.actor.id, canDecide: true, force: isAdmin(req), allowForce: isAdmin(req) }); } catch (_) {}
+    }
     await audit(req, 'closing_signoff', 'application', req.params.id, { kind, on });
     res.json({ ok: true, closing: await workflow.getClosing(req.params.id) });
   } catch (e) { res.status(500).json({ error: 'server error' }); }
