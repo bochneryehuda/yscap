@@ -496,7 +496,14 @@ noop.sendMail = async (opts) => { sends.push(opts); return { ok: true, id: `stub
     const orig = (await db.query(`SELECT status FROM applications WHERE id=$1`, [appId])).rows[0].status;
     for (const dead of ['funded', 'declined', 'withdrawn']) {
       await db.query(`UPDATE applications SET status=$2 WHERE id=$1`, [appId, dead]);
-      assert(!(await closingPrep.orderIsLive(appId)), `a ${dead} file is no longer a live closing`);
+      assert(!(await closingPrep.mayAnnounce(appId)), `a ${dead} file gets no AUTOMATIC updates`);
+      // …but a HUMAN must still be able to write to counsel. Post-funding
+      // correspondence (recorded mortgage, final title policy, payoff letter) is
+      // normal, and telling a WITHDRAWN deal's counsel to stop work has to be
+      // possible. Folding the deal-live test into orderIsLive killed the Follow-up
+      // button on every one of these files, with a message that was flatly untrue.
+      assert(await closingPrep.orderIsLive(appId),
+        `but the team can still follow up with the attorney on a ${dead} file`);
       const r = await closingPrep.announce({
         applicationId: appId, eventKind: 'closing_date',
         dedupeKey: 'ignored', extra: { date: '2026-12-25' },
@@ -506,7 +513,7 @@ noop.sendMail = async (opts) => { sends.push(opts); return { ok: true, id: `stub
     }
     assert(sends.length === before, 'not one email went out on a closed or dead deal');
     await db.query(`UPDATE applications SET status=$2 WHERE id=$1`, [appId, orig]);
-    assert(await closingPrep.orderIsLive(appId), 'and a live file is unaffected');
+    assert(await closingPrep.mayAnnounce(appId), 'and a live file is unaffected');
   }
 
   /* ── 5b7. AUDIT ROUND 4: the unique address must be in the PLAIN-TEXT part too.
@@ -725,8 +732,31 @@ noop.sendMail = async (opts) => { sends.push(opts); return { ok: true, id: `stub
     assert(c.status === 200 && c.body.status === 'cancelled', 'the order can be cancelled');
     const t = await closingThread.threadFor(appId);
     assert(!!t, 'cancelling does NOT destroy the chain — what the attorney already sent stays on the file');
+
+    // AUDITED: TWO DOORS TO ONE ACTION MUST AGREE. Because cancelling deliberately
+    // LEAVES the chain intact, the Email-Center reply door — which checked only that
+    // a chain existed — kept emailing outside counsel on an order the desk had stood
+    // down, while Follow-up correctly refused it. Both are checked here, on the same
+    // cancelled file, so they can never drift apart again.
+    sends.length = 0;
+    const fu = await call('POST', `/api/staff/applications/${appId}/closing-prep/followup`, { message: 'still there?' });
+    assert(fu.status === 400 && fu.body.code === 'not_ordered',
+      'a cancelled order refuses a follow-up');
+    const rep = await call('POST', `/api/staff/applications/${appId}/emails/reply`,
+      { body: 'still there?', scope: 'closing' });
+    assert(rep.status === 400 && rep.body.code === 'not_ordered',
+      'and refuses a closing-scoped reply for the SAME reason — the two doors agree');
+    assert(sends.length === 0, 'a cancelled order emails outside counsel through NEITHER door');
+
     const re = await call('POST', `/api/staff/applications/${appId}/closing-prep/cancel`, { reopen: true });
     assert(re.status === 200 && re.body.status === 'ordered', 'and can be reopened');
+
+    // Reopening restores BOTH doors — a stand-down must be reversible, not a trap.
+    sends.length = 0;
+    const rep2 = await call('POST', `/api/staff/applications/${appId}/emails/reply`,
+      { body: 'we are back on.', scope: 'closing' });
+    assert(rep2.status === 200 && sends.length === 1 && sends[0].to.includes('teamag@privatelenderlaw.com'),
+      'a reopened order lets the reply door reach the attorney again');
   }
 
   /* ───────────────── 10. the global orders queue sees it ─────────────────── */
