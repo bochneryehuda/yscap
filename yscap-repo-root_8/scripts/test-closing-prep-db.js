@@ -342,6 +342,83 @@ noop.sendMail = async (opts) => { sends.push(opts); return { ok: true, id: `stub
     assert(third.ok && third.skipped, 'and once it HAS sent, it still cannot send twice');
   }
 
+  /* ── 5b2. POST-MERGE AUDIT: an update NEVER reaches an attorney nobody engaged ──
+     `sendOnThread` opens the chain BEFORE it sends, so a failed order leaves one
+     behind — and cancelling deliberately keeps it. A chain row is therefore NOT
+     proof anyone was engaged. This guard used to live only in the backstop sweep,
+     so all five direct callers walked past it and a closing-date change cold-emailed
+     the outside law firm about a deal they had never heard of. */
+  {
+    const other = (await db.query(
+      `INSERT INTO applications (borrower_id, ys_loan_number, property_address, status)
+       VALUES ($1,$2,$3,'underwriting') RETURNING id`,
+      [borrower, `YSNOORD${String(process.pid).slice(-5)}`,
+       JSON.stringify({ oneLine: '9 Nowhere Rd, Lakewood, NJ 08701' })])).rows[0].id;
+    // A chain with NO file_orders row at all — exactly what a failed send leaves.
+    await closingThread.ensureThread(other, {});
+    const before = sends.length;
+    const r = await closingPrep.announce({
+      applicationId: other, eventKind: 'closing_date',
+      dedupeKey: 'closing_date:x', extra: { date: '2026-09-01' },
+    });
+    assert(r.skipped && r.reason === 'no_live_order',
+      'a chain with no placed order is NOT announced to — the order row is the only proof an attorney is expecting us');
+    assert(sends.length === before, 'and nothing at all was put on the wire');
+
+    // THE OWNER'S RULE, STATED WHOLE (owner-directed 2026-07-28): "if the estimated
+    // closing date is switched again and again BEFORE the closing was set on the
+    // closing workflow then it should not get a notification". A date being shopped
+    // around during underwriting is not news to anybody — the attorney has not been
+    // engaged yet, and the order email is what first tells them the date.
+    for (const day of ['2026-09-02', '2026-09-09', '2026-09-16', '2026-09-02']) {
+      const q = await closingPrep.announce({
+        applicationId: other, eventKind: 'closing_date',
+        dedupeKey: 'ignored', extra: { date: day },
+      });
+      assert(q.skipped && q.reason === 'no_live_order',
+        `changing the estimated date to ${day} before closing prep is ordered tells nobody`);
+    }
+    assert(sends.length === before,
+      'a date shopped around all through underwriting sends the attorney NOTHING');
+
+    // Now a CANCELLED order — the chain is deliberately kept, the attorney is not ours to email.
+    await db.query(
+      `INSERT INTO file_orders (application_id, order_type, status) VALUES ($1,'attorney','cancelled')
+       ON CONFLICT (application_id, order_type) DO UPDATE SET status='cancelled'`, [other]);
+    const r2 = await closingPrep.announce({
+      applicationId: other, eventKind: 'clear_to_close', dedupeKey: 'clear_to_close',
+    });
+    assert(r2.skipped && r2.reason === 'no_live_order',
+      'and a CANCELLED order is never announced to either');
+    assert(sends.length === before, 'still nothing on the wire');
+    await db.query(`DELETE FROM applications WHERE id=$1`, [other]).catch(() => {});
+  }
+
+  /* ── 5b3. POST-MERGE AUDIT: a closing date may oscillate FOREVER ─────────────
+     Keying on `<from>-><to>` alone survives exactly one round trip: A→B→A→B
+     regenerates the first key, the unique index refuses it, and the attorney is
+     left holding a date the file no longer has. The key carries the announcement's
+     ordinal so it is unique by construction; "nothing changed" is decided by
+     comparing to what we last SAID, not by the key. */
+  {
+    const seen = [];
+    for (const day of ['2026-08-20', '2026-08-14', '2026-08-20', '2026-08-14']) {
+      const r = await closingPrep.announce({
+        applicationId: appId, eventKind: 'closing_date',
+        dedupeKey: 'ignored', extra: { date: day },
+      });
+      seen.push(r.ok && !r.skipped);
+      // The same date twice in a row is still refused — that IS a duplicate.
+      const again = await closingPrep.announce({
+        applicationId: appId, eventKind: 'closing_date',
+        dedupeKey: 'ignored', extra: { date: day },
+      });
+      assert(again.skipped, `announcing ${day} twice in a row is refused`);
+    }
+    assert(seen.every(Boolean),
+      'a closing date that moves back and forth is announced EVERY time it really moves');
+  }
+
   /* ── 5c. AUDITED: the order claims what it already told them ─────────────── */
   {
     // The order email prints the expected closing date in its deal block, so the
@@ -350,9 +427,10 @@ noop.sendMail = async (opts) => { sends.push(opts); return { ok: true, id: `stub
       `SELECT event_kind, dedupe_key, status FROM closing_thread_messages
         WHERE thread_id=(SELECT id FROM closing_threads WHERE application_id=$1)
           AND status='carried' ORDER BY event_kind`, [appId])).rows;
-    // Keyed on the MOVE, not the value ('none' -> the date), so a date that later
-    // moves away and moves BACK is a genuinely new thing to tell the attorney.
-    assert(carried.some((r) => r.event_kind === 'closing_date' && r.dedupe_key === 'closing_date:none->2026-08-14'),
+    // Keyed on the announcement ORDINAL and the move, never on the value alone —
+    // so a date that moves away and back, repeatedly, keeps being announced. The
+    // order is the chain's first word, hence ordinal 0 from 'none'.
+    assert(carried.some((r) => r.event_kind === 'closing_date' && r.dedupe_key === 'closing_date:0:none->2026-08-14'),
       'placing the order claims the closing date it already stated');
     sends.length = 0;
     const swept = await require('../src/lib/notification-digests').closingChainCatchupOnce();

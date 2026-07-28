@@ -902,20 +902,47 @@ function buildAutoEmail(eventKind, data, extra = {}) {
  * @param p.attachments provider attachments (the executed term sheet)
  */
 /**
- * The closing date the chain was LAST told about — the suffix of the most recent
- * delivered `closing_date:<from>-><to>` claim. Null when we have never announced one.
+ * Is there a closing-prep order on this file that actually went out and has not been
+ * cancelled? The one thing that proves an attorney is expecting to hear from us.
+ * Fails CLOSED — an unreadable answer must never become an email to outside counsel.
  */
-async function lastAnnouncedClosingDate(threadId) {
+async function orderIsLive(applicationId) {
   try {
     const r = await db.query(
-      `SELECT split_part(dedupe_key, '->', 2) AS day
-         FROM closing_thread_messages
-        WHERE thread_id = $1 AND event_kind = 'closing_date'
-          AND status IN ('sent','carried') AND dedupe_key IS NOT NULL
-        ORDER BY sent_at DESC NULLS LAST, id DESC
-        LIMIT 1`, [threadId]);
-    return (r.rows[0] && r.rows[0].day) || null;
-  } catch (_) { return null; }
+      `SELECT 1 FROM file_orders
+        WHERE application_id = $1 AND order_type = 'attorney'
+          AND status NOT IN ('not_ordered','cancelled')
+        LIMIT 1`, [applicationId]);
+    return r.rows.length > 0;
+  } catch (_) { return false; }
+}
+
+/**
+ * What the chain was LAST told about the closing date, and how many times we have
+ * told it anything. Both come from the same row so they can never disagree.
+ *
+ * The COUNT is what makes the key safe under repeated oscillation. Keying only on
+ * `<from>-><to>` survives one round trip and no more: Aug 14 → Aug 20 → Aug 14 →
+ * Aug 20 regenerates the first key exactly, the unique index refuses the claim, and
+ * the attorney is left holding a date the file no longer has. A date genuinely can
+ * move back and forth between two candidates while a closing is being scheduled, so
+ * the key carries the announcement's ordinal and is unique by construction.
+ */
+async function lastClosingDateAnnouncement(threadId) {
+  try {
+    const r = await db.query(
+      `SELECT
+         (SELECT split_part(dedupe_key, '->', 2)
+            FROM closing_thread_messages
+           WHERE thread_id = $1 AND event_kind = 'closing_date'
+             AND status IN ('sent','carried') AND dedupe_key IS NOT NULL
+           ORDER BY sent_at DESC NULLS LAST, id DESC LIMIT 1) AS day,
+         (SELECT count(*) FROM closing_thread_messages
+           WHERE thread_id = $1 AND event_kind = 'closing_date'
+             AND status IN ('sent','carried')) AS n`, [threadId]);
+    const row = r.rows[0] || {};
+    return { day: row.day || null, n: Number(row.n) || 0 };
+  } catch (_) { return { day: null, n: 0 }; }
 }
 
 async function announce({ applicationId, eventKind, dedupeKey, extra = {}, attachments = [] } = {}) {
@@ -925,6 +952,24 @@ async function announce({ applicationId, eventKind, dedupeKey, extra = {}, attac
   // nobody to tell, and opening a chain here would email an attorney who was never
   // engaged. Silent, by design.
   if (!thread) return { ok: true, skipped: true, reason: 'no_closing_chain' };
+
+  // …AND A CHAIN ROW IS NOT PROOF THAT ANYONE WAS ENGAGED.
+  //
+  // `sendOnThread` calls ensureThread BEFORE it sends, so an order that failed to
+  // send still leaves a chain behind — and CANCELLING an order deliberately keeps
+  // the chain, because what the attorney already sent stays on the file. Either
+  // way there is a `closing_threads` row and no attorney expecting to hear from us.
+  //
+  // This guard used to live only in the backstop sweep, which meant the sweep
+  // correctly declined while all five direct callers (the closing-date route, the
+  // workflow hand-off, the status transition, the ClickUp pull, the inbound CTC
+  // confirm) walked straight past it — and a closing-date change on such a file
+  // emailed the outside law firm, under the closing-prep subject, about a deal they
+  // had never heard of. The order row is the only real proof, so the test belongs
+  // HERE, at the one chokepoint every automatic update goes through.
+  if (!(await orderIsLive(applicationId))) {
+    return { ok: true, skipped: true, reason: 'no_live_order' };
+  }
 
   // A CLOSING DATE IS KEYED ON THE MOVE, NOT ON THE VALUE.
   //
@@ -937,9 +982,12 @@ async function announce({ applicationId, eventKind, dedupeKey, extra = {}, attac
   if (eventKind === 'closing_date') {
     const day = String((extra && extra.date) || '').slice(0, 10);
     if (!day) return { ok: true, skipped: true, reason: 'no_date' };
-    const prev = await lastAnnouncedClosingDate(thread.id);
-    if (prev === day) return { ok: true, skipped: true, reason: 'already_sent' };
-    key = `closing_date:${prev || 'none'}->${day}`;
+    const prev = await lastClosingDateAnnouncement(thread.id);
+    // "Nothing has changed" is decided HERE, by comparing to what we last said —
+    // not by the dedupe key. That leaves the key free to be unique per
+    // announcement, which is what makes a date that oscillates keep working.
+    if (prev.day === day) return { ok: true, skipped: true, reason: 'already_sent' };
+    key = `closing_date:${prev.n}:${prev.day || 'none'}->${day}`;
   }
 
   const data = await getClosingPrepData(applicationId).catch(() => null);
@@ -1004,7 +1052,7 @@ async function markCarriedByOrder(applicationId, thread, pkg) {
     // the SAME `<from>-><to>` shape `announce` uses, or the carry would not match
     // and the order would be followed by a phantom "the closing date is now …".
     // 'none' is right here: the order is the first thing the attorney ever receives.
-    if (row.day) await carry('closing_date', `closing_date:none->${row.day}`);
+    if (row.day) await carry('closing_date', `closing_date:0:none->${row.day}`);
     // A file already clear to close needs no separate "we are clear to close".
     if (row.status === 'clear_to_close') await carry('clear_to_close', 'clear_to_close');
   } catch (_) { /* best-effort */ }

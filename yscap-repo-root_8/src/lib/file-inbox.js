@@ -655,8 +655,18 @@ async function processReceivedEvent(event) {
         // unconditionally and the `catch` below was unreachable for a storage or DB
         // failure. Two of six PDFs would vanish and the webhook redelivery, the one
         // thing that could have recovered them, skipped the chain as already handled.
-        if (res.failed) {
-          console.warn(`[closing-inbox] ${res.failed} closing attachment(s) could not be filed for ${ref.applicationId} — leaving the chain unmarked so a redelivery retries.`);
+        // A RETRIEVAL SHORTFALL COUNTS AS A FAILURE TOO.
+        //
+        // retrieveAttachmentsSafe caps at MAX_ATTACH_COUNT and a total byte ceiling
+        // (much lower on Graph), so a 12-document draft package hands `saveChainDocs`
+        // only the first 10. It files all 10 perfectly and reports failed:0 — so the
+        // marker was written and the redelivery, the one thing that could have gone
+        // back for the rest, skipped the chain. The two missing documents existed
+        // only as a console line. Anything the caps held back is a reason to leave
+        // the chain open.
+        const shortfall = Math.max(0, full.attachments.length - atts.length);
+        if (res.failed || shortfall) {
+          console.warn(`[closing-inbox] ${res.failed + shortfall} of ${full.attachments.length} closing attachment(s) were not filed for ${ref.applicationId} (${res.failed} failed, ${shortfall} over the retrieval caps) — leaving the chain unmarked so a redelivery retries.`);
         } else {
           appResults['__closing_' + ref.token] = 'saved';   // persisted below → a redelivery skips it
         }

@@ -4327,7 +4327,9 @@ router.get('/applications/:id/closing-prep', async (req, res) => {
       `SELECT event_kind, subject, sent_at, status, to_emails, cc_emails, attachments
          FROM closing_thread_messages
         WHERE thread_id=$1 AND status <> 'claimed'
-        ORDER BY sent_at DESC LIMIT 25`, [thread.id])).rows : [];
+        -- id breaks a sent_at tie, like every other capped query in this feature:
+        -- without it the card's chain history can reorder between page loads.
+        ORDER BY sent_at DESC NULLS LAST, id DESC LIMIT 25`, [thread.id])).rows : [];
 
     res.json({
       file: {
