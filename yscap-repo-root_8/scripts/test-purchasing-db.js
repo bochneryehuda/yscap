@@ -362,9 +362,9 @@ const uniq = (p) => p + Buffer.from(String(process.pid)).toString('hex') + Math.
          FROM applications a WHERE a.id=$1 RETURNING id, visibility`, [N.appId])).rows[0];
     ok(leaky.visibility === 'borrower', 'a purchase advice can be uploaded borrower-visible (the door that existed)');
 
-    // Designating it as the advice is the chokepoint — mirrors the route.
+    // Designating it calls the SHIPPED library, which owns the forcing — no
+    // mirrored UPDATE here, or deleting the real one would leave this green.
     await purchasing.setPurchaseAdvice(client, N.appId, { documentId: leaky.id }, N.closerId);
-    await client.query(`UPDATE documents SET visibility='staff_only' WHERE id=$1 AND visibility <> 'staff_only'`, [leaky.id]);
     const shut = (await client.query(`SELECT visibility FROM documents WHERE id=$1`, [leaky.id])).rows[0];
     ok(shut.visibility === 'staff_only', 'designating it as the purchase advice forces it staff-only');
 
@@ -373,6 +373,20 @@ const uniq = (p) => p + Buffer.from(String(process.pid)).toString('hex') + Math.
       `SELECT count(*)::int n FROM documents
         WHERE id=$1 AND visibility='borrower' AND source_type <> 'chat_attachment'`, [leaky.id])).rows[0].n;
     ok(inBorrowerList === 0, 'so it is out of the borrower documents list AND the mentionables list');
+
+    // REVERSIBLE: pointing the advice at a DIFFERENT document restores what the
+    // outgoing one used to be. The picker offers every document on the file, so
+    // without this a mis-pick would hide a borrower's own insurance permanently —
+    // `UPDATE documents SET visibility` exists nowhere else in the codebase.
+    const other = (await client.query(
+      `INSERT INTO documents (application_id, filename, content_type, visibility)
+       VALUES ($1,'some-other.pdf','application/pdf','borrower') RETURNING id`, [N.appId])).rows[0];
+    await purchasing.setPurchaseAdvice(client, N.appId, { documentId: other.id }, N.closerId);
+    ok((await client.query(`SELECT visibility FROM documents WHERE id=$1`, [leaky.id])).rows[0].visibility === 'borrower',
+      'moving the advice pointer away RESTORES the old document\'s visibility — a mis-pick is undoable');
+    ok((await client.query(`SELECT visibility FROM documents WHERE id=$1`, [other.id])).rows[0].visibility === 'staff_only',
+      'and the newly-designated one is forced staff-only');
+    await purchasing.setPurchaseAdvice(client, N.appId, { documentId: leaky.id }, N.closerId);
 
     // db/359 does the same for files that already had one (previous AND future).
     await client.query(`UPDATE documents SET visibility='borrower' WHERE id=$1`, [leaky.id]);

@@ -47,6 +47,10 @@ export default function ClosingPanel({ appId, app, can, onDownloadDoc, onPreview
   const [err, setErr] = useState('');
   const [flash, setFlash] = useState('');
   const [busy, setBusy] = useState('');
+  // A sticky warning that survives the reload `run()` performs on success.
+  // setErr cannot be used for this: load()'s success handler clears it, so a
+  // message set inside a run() callback is wiped one network round-trip later.
+  const [warn, setWarn] = useState('');
   const isCloser = can ? can('manage_closings') : false;
 
   const load = useCallback(() => api.closingWorkspace(appId).then((d) => { setWs(d); setErr(''); }).catch((e) => setErr((e && e.message) || 'Could not load the closing view.')), [appId]);
@@ -72,6 +76,7 @@ export default function ClosingPanel({ appId, app, can, onDownloadDoc, onPreview
     <div className="closing-workspace">
       {flash && <div className="notice ok" style={{ marginBottom: 10 }}>{flash}</div>}
       {err && <div role="alert" className="notice err" style={{ marginBottom: 10 }}>{err}<button className="btn link small" onClick={() => setErr('')}>Dismiss</button></div>}
+      {warn && <div role="alert" className="notice warn" style={{ marginBottom: 10 }}>{warn}<button className="btn link small" onClick={() => setWarn('')}>Dismiss</button></div>}
 
       {/* Stage + shared answers */}
       <div className="panel" style={{ marginBottom: 14 }}>
@@ -144,7 +149,7 @@ export default function ClosingPanel({ appId, app, can, onDownloadDoc, onPreview
       <ChecklistsSection appId={appId} checklists={ws.checklists || []} isCloser={isCloser} onChanged={refresh} setErr={setErr} />
 
       {/* Sign-offs + reconciliation */}
-      <SignoffSection appId={appId} cw={cw} rec={rec} isCloser={isCloser} busy={busy} run={run} setErr={setErr} />
+      <SignoffSection appId={appId} cw={cw} rec={rec} isCloser={isCloser} busy={busy} run={run} setWarn={setWarn} />
 
       {/* Notes */}
       <NotesSection appId={appId} notes={ws.notes || []} onChanged={refresh} setErr={setErr} />
@@ -460,7 +465,7 @@ function AddItem({ onAdd }) {
   );
 }
 
-function SignoffSection({ appId, cw, rec, isCloser, busy, run, setErr }) {
+function SignoffSection({ appId, cw, rec, isCloser, busy, run, setWarn }) {
   const recOk = rec && rec.ok;
   return (
     <div className="panel" style={{ marginBottom: 14 }}>
@@ -532,7 +537,11 @@ function SignoffSection({ appId, cw, rec, isCloser, busy, run, setErr }) {
                 // actor is an admin — a closer is not. It reports statusBlocked
                 // and nothing used to read it, so the closer saw a plain success
                 // while the card never moved. Say so instead.
-                if (r && r.statusBlocked) setErr('Sent to purchasing in PILOT — but the ClickUp card was NOT moved, because this file still has conditions outstanding. Ask an admin to move the card, or clear the conditions.');
+                // Deliberately vague about the CAUSE: the server sends only the
+                // boolean, and a block can come from an outstanding condition, a
+                // gate, or the issuance backstop. Naming the wrong one is worse
+                // than naming none.
+                if (r && r.statusBlocked) setWarn('Sent to purchasing in PILOT — but the ClickUp card was NOT moved (the status change was refused for this file). Ask an admin to move the card.');
               }, 'Sent to purchasing.')}>
               Send to purchasing
             </button>

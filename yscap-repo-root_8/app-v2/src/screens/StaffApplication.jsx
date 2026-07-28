@@ -3070,7 +3070,9 @@ export default function StaffApplication() {
         // The server is the only thing that knows: visibility is derived from the
         // TARGET CONDITION's audience, not from anything this screen chose.
         const vis = resp && (resp.visibility || (resp.document && resp.document.visibility));
-        if (vis) borrowerVisible = borrowerVisible === true || vis === 'borrower';
+        // ALL, not ANY: "the borrower sees them too" must not be said when only
+        // one of three landed borrower-visible.
+        if (vis) borrowerVisible = (borrowerVisible === null ? true : borrowerVisible) && vis === 'borrower';
       }
       // An appraisal XML on the appraisal-documents condition builds the findings
       // right there — surface that and refresh the appraisal panel so the findings

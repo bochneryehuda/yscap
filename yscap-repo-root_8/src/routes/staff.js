@@ -9247,24 +9247,10 @@ router.post('/applications/:id/purchasing/advice', purchasingGate, async (req, r
   if ('documentId' in b) {
     if (b.documentId) {
       const own = (await db.query(
-        `SELECT id, visibility FROM documents WHERE id=$1 AND application_id=$2`, [b.documentId, req.params.id])).rows[0];
+        `SELECT id FROM documents WHERE id=$1 AND application_id=$2`, [b.documentId, req.params.id])).rows[0];
       if (!own) return res.status(404).json({ error: 'That document is not on this file.' });
-      // A PURCHASE ADVICE IS NEVER BORROWER-VISIBLE. It names the note buyer and
-      // the price the loan sold for — the standing rule is that a capital-partner
-      // name never reaches a borrower-facing surface. The upload endpoint derives
-      // visibility from the CONDITION it was filed against (staff_only only when
-      // that condition's audience is exactly 'staff'), and the purchasing screen
-      // has no upload slot of its own, so an advice filed against any ordinary
-      // borrower-facing condition lands visibility='borrower' — straight into the
-      // borrower's Documents list, downloadable with the bytes intact.
-      // Designating a document as the advice is therefore the chokepoint: force
-      // it staff-only here. Both borrower doors (the documents list and the
-      // mentionables list) gate on visibility='borrower', so this closes both.
-      if (own.visibility !== 'staff_only') {
-        await db.query(`UPDATE documents SET visibility='staff_only' WHERE id=$1`, [b.documentId]);
-        await audit(req, 'purchasing_advice_restricted', 'document', b.documentId,
-          { was: own.visibility, now: 'staff_only', reason: 'purchase advice is staff-only' });
-      }
+      // Visibility is forced staff-only by purchasing.setPurchaseAdvice — in the
+      // LIBRARY, so the DB test exercises the real thing rather than a copy.
     }
     patch.documentId = b.documentId || null;
   }
@@ -10290,7 +10276,7 @@ router.post('/applications/:id/documents', async (req, res) => {
   // eligible staff upload feeds the shadow line (not just the docs V1 auto-reads). Inert unless the
   // shadow flag is on (zero db work when off), idempotent, never throws — it can't affect this upload.
   try { await require('../pipeline/enqueue-on-upload').enqueueUploadedDocument(db, { documentId: uploadedDocId, loanId: appIdForAi, checklistItemId: b.checklistItemId || null, docKind }); } catch (_) { /* advisory only */ }
-  res.status(201).json({ ok: true, documentId: r.rows[0].id, ...(apprImport ? { appraisal: apprImport } : {}) });
+  res.status(201).json({ ok: true, documentId: r.rows[0].id, visibility: docVisibility, ...(apprImport ? { appraisal: apprImport } : {}) });
 });
 
 // Approve or reject an uploaded document. Rejection requires a reason, keeps the

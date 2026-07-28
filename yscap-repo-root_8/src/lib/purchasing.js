@@ -274,12 +274,46 @@ async function readAdvice(appId, client) {
       WHERE a.application_id=$1`, [appId])).rows[0] || null;
 }
 
+/* A PURCHASE ADVICE IS NEVER BORROWER-VISIBLE. It names the note buyer and the
+ * price the loan sold for. The staff upload endpoint derives visibility from the
+ * TARGET CONDITION's audience, and the purchasing screen has no upload slot of
+ * its own, so an advice filed against an ordinary borrower-facing condition lands
+ * visibility='borrower' — in the borrower's Documents list, bytes and all.
+ *
+ * The forcing lives HERE, in the shipped library, not in the route: a route-only
+ * guard cannot be exercised by the DB test, which is how the first version of
+ * this fix shipped with a test that would have stayed green after deleting it.
+ *
+ * REVERSIBLE. The document's prior visibility is recorded, and restored when the
+ * advice pointer moves away — because the picker offers EVERY document on the
+ * file, so a mis-pick would otherwise hide a borrower's own insurance policy
+ * permanently, with no undo anywhere in the codebase. */
 async function setPurchaseAdvice(client, appId, patch, actorId) {
   const c = client || db;
+  if ('documentId' in patch) {
+    const prev = await readAdvice(appId, c);
+    // Restore whatever the outgoing document used to be, if we changed it.
+    if (prev && prev.document_id && String(prev.document_id) !== String(patch.documentId || '')
+        && prev.document_prior_visibility) {
+      await c.query(`UPDATE documents SET visibility=$2 WHERE id=$1`,
+        [prev.document_id, prev.document_prior_visibility]);
+    }
+    if (patch.documentId) {
+      const doc = (await c.query(
+        `SELECT visibility FROM documents WHERE id=$1 AND application_id=$2`, [patch.documentId, appId])).rows[0];
+      if (doc && doc.visibility !== 'staff_only') {
+        patch.priorVisibility = doc.visibility;
+        await c.query(`UPDATE documents SET visibility='staff_only' WHERE id=$1`, [patch.documentId]);
+      }
+    }
+  }
   const cols = [];
   const vals = [appId];
   if ('date' in patch) { vals.push(patch.date || null); cols.push(['advice_date', `$${vals.length}::date`]); }
-  if ('documentId' in patch) { vals.push(patch.documentId || null); cols.push(['document_id', `$${vals.length}::uuid`]); }
+  if ('documentId' in patch) {
+    vals.push(patch.documentId || null); cols.push(['document_id', `$${vals.length}::uuid`]);
+    vals.push(patch.priorVisibility || null); cols.push(['document_prior_visibility', `$${vals.length}::text`]);
+  }
   if (!cols.length) return readAdvice(appId, c);
   vals.push(actorId || null);
   const actor = `$${vals.length}::uuid`;
