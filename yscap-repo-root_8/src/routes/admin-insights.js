@@ -30,11 +30,16 @@ router.get('/', requireRole('admin'), async (req, res) => {
       acceptanceRate,
     ] = await Promise.all([
       db.query(
+        // A can't-read / can't-extract finding is not a finding (owner-directed 2026-07-28) — keep it
+        // out of the dashboard's open-findings count too, so the number matches the desk. Gated on the
+        // same switch (JS side), one source of truth for the predicate (unreadable-findings.sqlIsCantRead).
         `SELECT severity, COUNT(*)::int AS n
            FROM document_findings df
            JOIN applications a ON a.id = df.application_id
           WHERE df.status='open' AND a.deleted_at IS NULL
-            AND a.status NOT IN ('withdrawn','cancelled')
+            AND a.status NOT IN ('withdrawn','cancelled')${
+  require('../lib/underwriting/unreadable-findings').suppressing()
+    ? ` AND NOT ${require('../lib/underwriting/unreadable-findings').sqlIsCantRead('df')}` : ''}
           GROUP BY severity`),
       db.query(
         `SELECT source, COUNT(*)::int AS n

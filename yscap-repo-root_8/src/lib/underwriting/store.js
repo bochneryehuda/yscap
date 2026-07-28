@@ -127,7 +127,15 @@ async function saveAnalysis(client, { documentId, applicationId, borrowerId, doc
   // upgrade_severity) actually change how findings enter the file. Best-
   // effort — a rules-loading failure keeps every original finding untouched.
   const rulesRes = await require('./promoted-rules').applyPromotedRules(client, findings || []);
-  const effectiveFindings = rulesRes.findings;
+  // "IF PILOT CAN'T READ IT, DON'T GIVE A FINDING" (owner-directed 2026-07-28). Drop the can't-read /
+  // can't-extract findings at the persist chokepoint so they are never BORN: they never reach the
+  // desk, the AI panel, any roll-up, or a fatal-finding email, and a re-read cannot resurrect them.
+  // The document is STILL chased for a clearer copy — that nudge rides on the extraction's
+  // confidence='unreadable' signal (set at store.js:74-95 above, untouched here), not on a finding.
+  // Reversible: UW_UNREADABLE_FINDINGS_SHOW=1 re-persists them everywhere. Never throws.
+  const unreadableSplit = require('./unreadable-findings').partition(rulesRes.findings || []);
+  const effectiveFindings = unreadableSplit.kept;
+  const suppressedUnreadable = unreadableSplit.suppressed.length;
   // A HUMAN'S DECISION SURVIVES A RE-ANALYSIS (owner-reported 2026-07-27: "I
   // dismiss it and it keeps popping up again"). Re-reading a document inserts a
   // FRESH row for every finding, with no memory of the dismissal / exception a
@@ -397,7 +405,7 @@ async function saveAnalysis(client, { documentId, applicationId, borrowerId, doc
     }
   }
 
-  return { extractionId, findingIds };
+  return { extractionId, findingIds, suppressedUnreadable };
 }
 
 // fatal-first roll-up for the badge + the clear-to-close gate (matches appraisal summarize()).

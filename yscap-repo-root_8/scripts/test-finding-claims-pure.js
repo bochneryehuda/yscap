@@ -268,5 +268,39 @@ const reEmit = FC.dedupeByClaim([
 ]);
 ok(reEmit.length === 1, `the identical finding raised twice is still one (got ${reEmit.length})`);
 
+// ---------- the SELLER side of the "six times" problem (2026-07-28) ----------
+// The buyer side got a family; the seller side — "the contract seller is not the property's recorded
+// owner" — never did, so a wholesale/assignment file showed it up to four times. All four are DERIVED
+// (no id), so the FATAL tie-out survives and the merge is safe without the fileLevel exemption.
+ok(FC.claimOf({ code: 'tieout_seller_name' }) === 'claim:seller_vs_owner_of_record',
+  'tieout_seller_name maps to the seller family claim');
+ok(FC.claimOf({ code: 'chain_seller_vs_appraisal_owner' }) === 'claim:seller_vs_owner_of_record',
+  'the AI-panel restatement shares the claim, so the panel hides it once the desk card shows');
+const sellerCluster = FC.dedupeByClaim([
+  { code: 'tieout_seller_name', severity: 'fatal', field: 'seller' },
+  { code: 'cot_seller_not_owner_of_record', severity: 'warning', field: 'seller' },
+  { code: 'chain_seller_vs_title_grantor', severity: 'warning', field: 'seller' },
+  { code: 'chain_seller_vs_appraisal_owner', severity: 'info', field: 'seller' },
+]);
+ok(sellerCluster.length === 1, `the four seller-vs-owner findings collapse to one (got ${sellerCluster.length})`);
+ok(sellerCluster[0].code === 'tieout_seller_name' && sellerCluster[0].severity === 'fatal',
+  'the FATAL tie-out card survives as the one shown');
+ok(Array.isArray(sellerCluster[0].mergedFrom) && sellerCluster[0].mergedFrom.length === 3,
+  'the three restatements are recorded in mergedFrom');
+
+// The three DELIBERATELY-EXCLUDED codes are DIFFERENT facts and must stay their own cards.
+const sellerExcluded = FC.dedupeByClaim([
+  { code: 'tieout_seller_name', severity: 'fatal', field: 'seller' },
+  { code: 'cot_assignment_seller_mismatch', severity: 'warning', field: 'seller', docValue: 'A1' }, // the ASSIGNMENT doc's own seller
+  { code: 'chain_title_vs_appraisal_owner', severity: 'info', field: 'owner' },                      // title vs appraisal, not the seller
+  { code: 'cot_assignor_never_held_title', severity: 'warning', field: 'assignor', docValue: 'h1' }, // a broken assignment hop
+]);
+ok(sellerExcluded.length === 4,
+  `the three genuinely-different facts never merge into the seller card (got ${sellerExcluded.length})`);
+
+// A standalone seller-vs-owner finding (no shown tie-out) still surfaces — nothing is lost.
+ok(FC.dedupeByClaim([{ code: 'chain_seller_vs_title_grantor', severity: 'warning', field: 'seller' }]).length === 1,
+  'a lone seller-vs-owner finding still shows when no tie-out card is present');
+
 console.log(`test-finding-claims-pure: ${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);
