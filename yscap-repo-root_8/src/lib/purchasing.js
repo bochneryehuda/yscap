@@ -46,6 +46,29 @@ async function withdrawFromPurchasing(client, appId) {
   return r.rows[0] || null;
 }
 
+/* UNWIND an investor-delivery sign-off — the ONE definition of everything that
+ * has to come back when a closer un-signs. Extracted deliberately: the route
+ * used to inline these three steps and the DB test mirrored them, so the mirror
+ * stayed green while the route lost a step. There is nothing left to mirror.
+ *
+ * All three are needed together, and each was a real bug on its own:
+ *   1. off the purchasing desk — the loan is not ready to be sold;
+ *   2. the closer's Workflow hand-off REOPENS — else the file is on no queue;
+ *   3. the STAGE steps back off 'in_purchasing' — `stage` is sticky, so the desk's
+ *      retirement rule otherwise still reads the file as finished and it sits on
+ *      NEITHER desk, which is the exact failure (2) exists to prevent.
+ * Returns whether the stage was stepped back, so the caller can resync ClickUp. */
+async function unwindInvestorDelivery(client, appId, actorId) {
+  const c = client || db;
+  const workflow = require('./workflow');
+  await withdrawFromPurchasing(c, appId);
+  await workflow.reopenClosingItem(c, appId, actorId);
+  const stepped = await c.query(
+    `UPDATE closing_workflow SET stage='fully_reconciled', updated_at=now()
+      WHERE application_id=$1 AND stage='in_purchasing' RETURNING application_id`, [appId]);
+  return { stageSteppedBack: stepped.rowCount > 0 };
+}
+
 async function getPurchasing(appId, client) {
   const c = client || db;
   // Explicit column list, NOT `SELECT *`: db/350's purchase_advice_* columns are
@@ -271,6 +294,7 @@ async function setPurchaseAdvice(client, appId, patch, actorId) {
 
 module.exports = {
   CONDITION_STATUSES,
+  unwindInvestorDelivery,
   readAdvice,
   readConditions,
   addCondition,
