@@ -56,7 +56,7 @@ const cnt = async (sql, p) => (await db.query(sql, p)).rows[0].n;
     assert(up.body.appraisal && up.body.appraisal.ok === false, 'a non-appraisal XML reports the import problem (never silent)');
 
     // ---- (8) undo: seed a real appraisal + findings + conditions + filled fields ----
-    // The appraisal row carries the RECORD of what the import wrote (db/351 + db/352):
+    // The appraisal row carries the RECORD of what the import wrote (db/352 + db/353):
     // as_is_applied / arv_applied + the value written + the value the file showed
     // before (NULL — a blank-fill only ever fills a blank). That record is what the
     // undo reverses. A real importAppraisal() writes these stamps itself; this fixture

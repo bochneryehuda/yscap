@@ -1,10 +1,10 @@
 -- ============================================================================
--- 353 — An officer can enter the ARV by hand, and that decision is recorded
+-- 354 — An officer can enter the ARV by hand, and that decision is recorded
 --       (owner-directed 2026-07-28, closing an audit finding).
 --
--- db/352 gave PILOT the ability to rewrite `applications.arv` from the
+-- db/353 gave PILOT the ability to rewrite `applications.arv` from the
 -- appraisal, but gave a human no matching way to correct it and no place to
--- record that they had. The As-Is has had both since db/351
+-- record that they had. The As-Is has had both since db/352
 -- (`as_is_confirmed_*` + the box on the condition); these are its ARV twin, so
 -- the two values are protected the same way and the condition can offer both.
 --
