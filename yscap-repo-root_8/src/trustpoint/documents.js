@@ -77,7 +77,10 @@ function extractJpegs(buf, { max = MAX_PHOTOS_PER_DOC, minBytes = MIN_PHOTO_BYTE
 /** The application + TrustPoint ids for a draw we already mirror (null when unknown). */
 async function drawContext(tpDrawId) {
   const r = await lazy.db.query(
-    `SELECT application_id, tp_project_id, tp_draw_id, number FROM trustpoint_draws WHERE tp_draw_id=$1`,
+    `SELECT application_id, tp_project_id, tp_draw_id, number, status,
+            GREATEST(COALESCE(approved_at, to_timestamp(0)), COALESCE(completed_at, to_timestamp(0)),
+                     COALESCE(submitted_at, to_timestamp(0)), COALESCE(tp_created_at, to_timestamp(0))) AS activity_at
+       FROM trustpoint_draws WHERE tp_draw_id=$1`,
     [tpDrawId]);
   return r.rows[0] || null;
 }
@@ -199,6 +202,65 @@ async function archiveDrawEverything(tpDrawId, { includePhotos = true } = {}) {
   return { ok: true, documents: docs, photos, failed, seen: items.length };
 }
 
+// How long after a draw last moved a retry is still worth attempting. TrustPoint's document
+// links are pre-signed and expire in about a day; the window is deliberately a little wider so
+// a service outage spanning a night is still covered, and it is what makes the retry
+// SELF-LIMITING — no counter, no schema, and it can never loop on an old draw forever.
+const ARCHIVE_RETRY_DAYS = 3;
+
+/**
+ * RETRY an archive that never landed.
+ *
+ * archiveDrawEverything fires exactly once — on the APPROVED transition and on the inspection's
+ * COMPLETED claim — and it counts a failed pull into `failed` and moves on. Since the links
+ * expire in about a day, one network blip or one TrustPoint hiccup at that moment lost the
+ * inspection report AND its photographs permanently, with nothing to notice or repair it. The
+ * owner asked for the reports to save themselves and for the photos to be pulled in; a
+ * one-shot pull does not deliver that.
+ *
+ * "Incomplete" is read from the DATA (this draw has no archived document) rather than from a
+ * stored attempt counter, so nothing has to be migrated and the state can never drift from
+ * reality. Re-running is safe by construction: storeDocument dedupes on the content hash and
+ * storePhotos is ON CONFLICT DO NOTHING, so a retry that races the original stores nothing
+ * twice. Best-effort and silent — it must never delay or break a mirror pass.
+ */
+async function archiveDrawIfIncomplete(tpDrawId) {
+  if (!enabled()) return { skipped: 'off' };
+  const ctx = await drawContext(tpDrawId);
+  if (!ctx || !ctx.application_id) return { skipped: 'unknown_draw' };
+  // Only the two states where the archive actually fires. A DRAFT or IN_REVIEW draw has no
+  // inspection paperwork by definition, so retrying one is pure API burn.
+  if (ctx.status !== 'APPROVED' && ctx.status !== 'COMPLETED') return { skipped: 'not_ready' };
+  // Already have something for this draw — the archive landed, nothing to redo.
+  if ((await documentsFor(ctx.application_id, tpDrawId, ctx.number)).length) return { skipped: 'archived' };
+  const at = ctx.activity_at ? new Date(ctx.activity_at).getTime() : NaN;
+  if (!Number.isFinite(at)) return { skipped: 'no_date' };
+  const ageDays = (Date.now() - at) / 86400000;
+  // Past the window the links are dead, so a retry would only burn API calls forever. A draw
+  // dated in the FUTURE (a clock skew) is treated as current rather than skipped.
+  if (ageDays > ARCHIVE_RETRY_DAYS) return { skipped: 'too_old' };
+
+  // HOURLY BACK-OFF. The draw poll runs every 5 minutes, so an approved draw whose documents
+  // TrustPoint has genuinely not produced yet would otherwise be re-listed ~860 times across
+  // the window. The claim is a single conditional UPDATE, so two overlapping passes cannot
+  // both win it, and the row is written before the attempt — a crash mid-pull costs one hour,
+  // never a hot loop.
+  const key = `tp_archive_retry:${tpDrawId}`;
+  const claimed = (await lazy.db.query(
+    `INSERT INTO sync_runtime_state (key, value, updated_at) VALUES ($1, '{}'::jsonb, now())
+     ON CONFLICT (key) DO UPDATE SET updated_at = now()
+      WHERE sync_runtime_state.updated_at < now() - interval '1 hour'
+     RETURNING key`, [key])).rowCount === 1;
+  if (!claimed) return { skipped: 'backoff' };
+
+  const r = await archiveDrawEverything(tpDrawId);
+  // Nothing left to retry — drop the marker so these rows cannot accumulate for ever.
+  if (r && r.ok && r.documents > 0) {
+    await lazy.db.query(`DELETE FROM sync_runtime_state WHERE key=$1`, [key]).catch(() => {});
+  }
+  return r;
+}
+
 /** The archived photos for a TrustPoint draw, newest document first (for the branded report). */
 async function photosFor(tpDrawId, limit = 40) {
   const r = await lazy.db.query(
@@ -210,17 +272,32 @@ async function photosFor(tpDrawId, limit = 40) {
   return r.rows;
 }
 
-/** The archived staff documents for a TrustPoint draw, newest first. */
-async function documentsFor(appId, tpDrawId) {
+/**
+ * The archived staff documents for a TrustPoint draw, newest first.
+ *
+ * The predicate MUST mirror storeDocument's own naming, and it did not: it searched for the
+ * draw's UUID prefix, while storeDocument names a numbered draw `trustpoint-draw-2-…` and only
+ * falls back to the id for a draw with no number. So on every ordinary draw this matched
+ * nothing at all — it had no callers, so nobody saw it, and it would have silently reported
+ * "nothing archived" the moment one was added. The tag is now built the same way in both
+ * places, and the LIKE is ANCHORED with the trailing `-` so draw 1 cannot swallow draw 10.
+ */
+async function documentsFor(appId, tpDrawId, drawNumber) {
+  let n = drawNumber;
+  if (n === undefined) {
+    const c = await drawContext(tpDrawId);
+    n = c ? c.number : null;
+  }
+  const tag = n != null ? `draw-${n}` : `draw-${String(tpDrawId).slice(0, 8)}`;
   const r = await lazy.db.query(
     `SELECT id, filename, size_bytes, created_at FROM documents
       WHERE application_id=$1 AND is_current AND doc_kind='draw_inspection_report'
-        AND filename LIKE 'trustpoint-%' AND filename LIKE '%' || $2 || '%'
-      ORDER BY created_at DESC`, [appId, String(tpDrawId).slice(0, 8)]);
+        AND filename LIKE 'trustpoint-' || $2 || '-%'
+      ORDER BY created_at DESC`, [appId, tag]);
   return r.rows;
 }
 
 module.exports = {
-  archiveDrawEverything, extractJpegs, photosFor, documentsFor,
+  archiveDrawEverything, archiveDrawIfIncomplete, extractJpegs, photosFor, documentsFor,
   _storeDocument: storeDocument, _storePhotos: storePhotos, _drawContext: drawContext,
 };

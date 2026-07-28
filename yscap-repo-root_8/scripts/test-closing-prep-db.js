@@ -300,7 +300,13 @@ noop.sendMail = async (opts) => { sends.push(opts); return { ok: true, id: `stub
     assert(a.ok && a.skipped && b.ok && b.skipped,
       'the date the ORDER already stated is never re-announced (however many doors fire it)');
     assert(sends.length === 0, 'and no email goes out for it');
-    // A genuinely NEW date is real news.
+    // A genuinely NEW date is real news — MOVE THE FILE FIRST, because that is what
+    // every door actually does (write the date, then announce it). announce() now
+    // re-reads the file's current date immediately before sending and stands down if
+    // it no longer matches, so that two same-instant changes cannot leave counsel
+    // holding the stale one; announcing a date the file never took is not a case any
+    // caller can produce.
+    await db.query(`UPDATE applications SET expected_closing='2026-08-21' WHERE id=$1`, [appId]);
     await closingPrep.announce({ applicationId: appId, eventKind: 'closing_date', dedupeKey: 'closing_date:2026-08-21', extra: { date: '2026-08-21' } });
     await closingPrep.announce({ applicationId: appId, eventKind: 'closing_date', dedupeKey: 'closing_date:2026-08-21', extra: { date: '2026-08-21' } });
     assert(await chainMsgCount('closing_date') === 1, 'a genuinely NEW closing date is announced — exactly once');
@@ -407,6 +413,10 @@ noop.sendMail = async (opts) => { sends.push(opts); return { ok: true, id: `stub
   {
     const seen = [];
     for (const day of ['2026-08-20', '2026-08-14', '2026-08-20', '2026-08-14']) {
+      // The file MOVES, then we announce — the order every door uses. announce() now
+      // re-reads the file's date immediately before sending so a change that lost a
+      // same-instant race stands down instead of leaving counsel on the stale day.
+      await db.query(`UPDATE applications SET expected_closing=$2 WHERE id=$1`, [appId, day]);
       const r = await closingPrep.announce({
         applicationId: appId, eventKind: 'closing_date',
         dedupeKey: 'ignored', extra: { date: day },

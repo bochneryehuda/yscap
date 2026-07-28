@@ -125,6 +125,30 @@ function ChainAddress({ chain }) {
           {chain.lastActivityAt ? ` · last activity ${when(chain.lastActivityAt)}` : ''}
         </div>
       )}
+      {/* SPOOFED SENDER WARNING — deliberately here, in the always-visible part of
+          the card, NOT inside the collapsed chain history. This address is handed to
+          title, the settlement agent, the realtor and counsel, so it travels; anything
+          arriving on it is filed automatically. The one moment this warning is worth
+          anything is BEFORE somebody opens the attachment and acts on it. */}
+      {chain && Array.isArray(chain.unauthenticated) && chain.unauthenticated.length > 0 && (
+        <div className="notice" style={{ marginTop: 8, background: '#FBF3F3', border: '1px solid #8C2F2F', borderRadius: 8, padding: '8px 10px' }}>
+          <div style={{ fontWeight: 700, color: '#8C2F2F' }}>
+            Check who really sent {chain.unauthenticated.length === 1 ? 'this message' : 'these messages'}
+          </div>
+          <div className="small" style={{ color: INK, margin: '3px 0 5px' }}>
+            {chain.unauthenticated.length === 1 ? 'A message' : `${chain.unauthenticated.length} messages`} on this
+            chain did not pass the sending domain's own checks, so the "from" name may not be who it says.
+            This happens innocently when mail is forwarded — but confirm by phone, on a number you already
+            have, before acting on anything {chain.unauthenticated.length === 1 ? 'it' : 'they'} asked for,
+            especially wiring instructions.
+          </div>
+          {chain.unauthenticated.map((m, i) => (
+            <div key={i} className="small" style={{ color: MUTED }}>
+              {m.from_email || 'unknown sender'} · {when(m.occurred_at)}{m.subject ? ` · "${m.subject}"` : ''}
+            </div>
+          ))}
+        </div>
+      )}
     </div>
   );
 }
