@@ -309,6 +309,11 @@ async function settleAsIs(appId, opts = {}) {
       arvDecision.why = arvHumanSettled ? 'human_decided' : 'appraisal_identity_mismatch';
     }
     let arvApplied = false;
+    // Wrapped on its own: the As-Is has ALREADY been written and audited by this point, so a failure
+    // here must not abort the rest of the pass — without this, one bad query would leave the file
+    // with a changed As-Is, no reading recorded and no condition raised, which is the one state
+    // nobody could explain afterwards.
+    try {
     if (arvDecision.apply) {
       const upd = await db.query(
         `UPDATE applications SET arv=$2, updated_at=now()
@@ -334,6 +339,10 @@ async function settleAsIs(appId, opts = {}) {
         arvDecision.apply = false;
         arvDecision.why = 'value_changed_underneath';
       }
+    }
+    } catch (e) {
+      console.error('[appraisal] arv write failed (non-fatal):', e && e.message);
+      arvApplied = false; arvDecision.apply = false; arvDecision.why = 'write_failed';
     }
     try {
       await db.query(
