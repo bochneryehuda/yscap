@@ -44,9 +44,15 @@ const LENDER = { name: 'YS Capital Group', nmls: '2609746', addr: '5 New Montros
 
 // Embedding budgets — keep the PDF a sane size without a native image resizer (jsPDF embeds JPEG bytes
 // as-is). Bound by count AND total embedded bytes; anything past the budget is summarized, not dropped.
-const MAX_PHOTOS_PER_LINE = 4;
-const MAX_PHOTOS_TOTAL = 32;
-const EMBED_BYTE_BUDGET = 18 * 1024 * 1024; // ~18 MB of image bytes per report
+// EVERY photo goes in the report (owner-directed 2026-07-27: "all pictures"). A single draw's
+// inspection carries ~100 photos (99 on the 105-107 N 10th St draw #2), so the old 4-per-line /
+// 32-per-report caps silently dropped roughly two thirds of them. These are now SAFETY ceilings,
+// not editorial limits — high enough that a real inspection never reaches them, low enough that a
+// runaway archive can't build a PDF nobody can open. Anything beyond is REPORTED at the end of the
+// report, never silently missing.
+const MAX_PHOTOS_PER_LINE = 250;
+const MAX_PHOTOS_TOTAL = 400;
+const EMBED_BYTE_BUDGET = 60 * 1024 * 1024;
 
 const usd = (cents) => '$' + (Math.round(Number(cents) || 0) / 100).toLocaleString('en-US', { minimumFractionDigits: 0, maximumFractionDigits: 0 });
 const pctStr = (n) => (Number.isFinite(n) ? (Math.round(Number(n) * 10) / 10) + '%' : '0%');
@@ -132,8 +138,59 @@ function buildDrawReport({ app = {}, rollup = null, sections = [], scope = 'draw
     doc.text(ls, M + 3, y + 8); y += ls.length * 10.5 + 8;
   }
 
+  /**
+   * THE MONEY ANSWER, FIRST (owner-directed 2026-07-27). The report used to open with the
+   * property/loan header and bury "how much was approved" partway down the second band — so the
+   * one question the borrower opens this PDF to answer was the hardest thing on the page to find.
+   * A per-draw report now leads with a single panel: what was approved, of what was requested,
+   * how much was not, and what it means. Everything else follows underneath, unchanged.
+   */
+  function moneyHero(s) {
+    const req = Number(s.requested_cents || 0);
+    const appr = Number(s.approved_cents || 0);
+    const notAppr = s.not_approved_cents != null ? Number(s.not_approved_cents) : Math.max(0, req - appr);
+    const full = notAppr <= 0 && req > 0;
+    const H0 = 96;
+    brk(H0 + 10);
+    doc.setFillColor(246, 243, 236); doc.roundedRect(M, y, W - 2 * M, H0, 4, 4, 'F');
+    doc.setFillColor.apply(doc, full ? TEAL : GOLD); doc.roundedRect(M, y, 4.5, H0, 2, 2, 'F');
+
+    doc.setFont('helvetica', 'bold'); doc.setFontSize(7.4); doc.setTextColor.apply(doc, GRAY);
+    doc.text(pdfSafe('APPROVED FOR RELEASE'), M + 18, y + 20);
+    // the headline number, as large as the panel allows
+    doc.setFont('times', 'bold'); doc.setFontSize(34); doc.setTextColor.apply(doc, full ? TEAL : DARK);
+    doc.text(pdfSafe(usd(appr)), M + 18, y + 52);
+    doc.setFont('helvetica', 'normal'); doc.setFontSize(9); doc.setTextColor.apply(doc, GRAY);
+    doc.text(pdfSafe('of ' + usd(req) + ' requested'), M + 18, y + 70);
+
+    // the right-hand rail: what was held back, and the plain-language meaning
+    const rx = W - M - 18;
+    if (notAppr > 0) {
+      doc.setFont('helvetica', 'bold'); doc.setFontSize(7.4); doc.setTextColor.apply(doc, GRAY);
+      doc.text(pdfSafe('NOT APPROVED THIS INSPECTION'), rx, y + 20, { align: 'right' });
+      doc.setFont('times', 'bold'); doc.setFontSize(18); doc.setTextColor.apply(doc, BAD);
+      doc.text(pdfSafe(usd(notAppr)), rx, y + 42, { align: 'right' });
+    } else if (full) {
+      doc.setFont('helvetica', 'bold'); doc.setFontSize(9); doc.setTextColor.apply(doc, TEAL);
+      doc.text(pdfSafe('Everything requested was approved'), rx, y + 30, { align: 'right' });
+    }
+    const meaning = borrower
+      ? (notAppr > 0
+        ? 'The lines below show what the inspector approved on each item. Anything not approved stays\nin your budget for a future draw once that work is complete.'
+        : 'The lines below show what the inspector approved on each item.')
+      : ((s.net_release_cents != null ? 'Net release ' + usd(s.net_release_cents) + (s.fee_cents != null ? ' (after the ' + usd(s.fee_cents) + ' draw fee)' : '') + '. ' : '') +
+         'Status: ' + STATUS_LABEL(s.status, false) + '.');
+    doc.setFont('helvetica', 'normal'); doc.setFontSize(7.8); doc.setTextColor.apply(doc, [70, 78, 82]);
+    doc.text(pdfSafe(meaning), M + 18, y + 84, { maxWidth: W - 2 * M - 36 });
+    y += H0 + 14;
+  }
+
   header();
   y = 96;
+
+  // The money answer leads a PER-DRAW report; a whole-project report leads with the schedule of
+  // values instead (there is no single draw for a headline to be about).
+  if (scope !== 'project' && sections[0]) moneyHero(sections[0]);
 
   // ---- File header ----
   band('Property & loan');
@@ -203,16 +260,22 @@ function buildDrawReport({ app = {}, rollup = null, sections = [], scope = 'draw
   let embeddedBytes = 0, embeddedCount = 0, skippedPhotos = 0;
   for (const s of sections) {
     band((scope === 'project' ? 'Draw #' + (s.number != null ? s.number : '—') : 'This draw') + ' — inspection findings');
-    // money summary line
+    // money summary line — the requested/approved pair is the HERO on a per-draw report, so it is
+    // not repeated here; a whole-project report has no hero and still needs it per draw.
+    const heroShown = scope !== 'project' && sections[0] === s;
     if (borrower) {
-      kv('Requested', usd(s.requested_cents));
-      kv('Approved', usd(s.approved_cents), { accent: true });
-      if (Number(s.not_approved_cents) > 0) kv('Not approved (this inspection)', usd(s.not_approved_cents));
+      if (!heroShown) {
+        kv('Requested', usd(s.requested_cents));
+        kv('Approved', usd(s.approved_cents), { accent: true });
+        if (Number(s.not_approved_cents) > 0) kv('Not approved (this inspection)', usd(s.not_approved_cents));
+      }
       kv('Status', STATUS_LABEL(s.status, true));
     } else {
-      kv('Requested', usd(s.requested_cents));
-      kv('Approved', usd(s.approved_cents), { accent: true });
-      if (Number(s.not_approved_cents) > 0) kv('Not approved', usd(s.not_approved_cents));
+      if (!heroShown) {
+        kv('Requested', usd(s.requested_cents));
+        kv('Approved', usd(s.approved_cents), { accent: true });
+        if (Number(s.not_approved_cents) > 0) kv('Not approved', usd(s.not_approved_cents));
+      }
       if (s.fee_cents != null) kv('Draw fee', usd(s.fee_cents));
       if (s.net_release_cents != null) kv('Net release', usd(s.net_release_cents), { accent: true });
       kv('Release date', s.release_date ? String(s.release_date).slice(0, 10) : (s.released ? '(released)' : ''));
@@ -276,7 +339,7 @@ function buildDrawReport({ app = {}, rollup = null, sections = [], scope = 'draw
           y += cellH + 16;
         }
       } else if (photos.length) {
-        para('Photos for this line are saved in PILOT but not shown here (report photo limit reached).', 7.6, GRAY);
+        para('Photos for this line are saved in PILOT but could not be embedded here.', 7.6, GRAY);
       }
       y += 4;
     }
