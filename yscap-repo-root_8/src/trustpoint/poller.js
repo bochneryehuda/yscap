@@ -66,12 +66,14 @@ async function pollDraws() {
 async function pollServiceOrders() {
   if (!client.available() || !client.enabled()) return { skipped: 'off' };
   const linked = (await db.query(
-    `SELECT tp_project_id, application_id FROM trustpoint_project_links WHERE application_id IS NOT NULL AND discarded=false`)).rows;
+    `SELECT tp_project_id, application_id, baselined_at FROM trustpoint_project_links WHERE application_id IS NOT NULL AND discarded=false`)).rows;
   let n = 0;
   for (const l of linked) {
     try {
       const sos = await client.listServiceOrders({ project_id: l.tp_project_id });
-      for (const so of sos) { await mirror.upsertServiceOrder(l.application_id, { ...so, project_id: l.tp_project_id }); n++; }
+      // Same go-forward discipline as pollDraws: a link whose silent history baseline
+      // hasn't completed claims its inspections quietly instead of announcing them.
+      for (const so of sos) { await mirror.upsertServiceOrder(l.application_id, { ...so, project_id: l.tp_project_id }, { baseline: !l.baselined_at }); n++; }
     } catch (e) { console.warn(`[trustpoint] service-order poll ${l.tp_project_id} failed: ${e && e.message}`); }
   }
   return { orders: n, projects: linked.length };

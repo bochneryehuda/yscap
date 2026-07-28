@@ -24,4 +24,30 @@ async function drawRecipients(appId) {
   };
 }
 
-module.exports = { drawRecipients };
+/**
+ * The internal people who must be looped in on EVERY borrower draw email (owner-directed
+ * 2026-07-27: "in the email that the borrowers are receiving loop always in the loan officer
+ * and the draw coordinator"). Returned as `bccExtra` for the notify helpers — a silent
+ * monitoring copy, the same shape the assigned loan officer already rides on (notify.js), so
+ * the borrower's email stays clean and no internal address is exposed to them.
+ *
+ * The loan officer is NOT included here — notify.js already BCCs the file's assigned officer
+ * on every borrower email. This adds the draw desk: every active draw coordinator, plus the
+ * shared draws@ inbox so the hand-off is covered when no coordinator is assigned.
+ * Best-effort by design: a lookup failure returns just the shared inbox, never throws into a
+ * notification path.
+ */
+const DRAW_DESK_INBOX = 'draws@yscapgroup.com';
+
+async function drawTeamBcc() {
+  const list = [DRAW_DESK_INBOX];
+  try {
+    const r = await db.query(
+      `SELECT email FROM staff_users
+        WHERE is_active = true AND role = 'draw_coordinator' AND NULLIF(btrim(email),'') IS NOT NULL`);
+    for (const row of r.rows) list.push(row.email);
+  } catch (_) { /* the shared desk inbox alone still reaches the coordinator */ }
+  return [...new Set(list.map((e) => String(e).trim().toLowerCase()).filter(Boolean))];
+}
+
+module.exports = { drawRecipients, drawTeamBcc, DRAW_DESK_INBOX };
