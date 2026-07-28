@@ -20,16 +20,23 @@ const { sellerNames: contractSellers } = require('./purchase-contract-checks');
 // The columns each subject needs — fetched once by the route, sliced here.
 async function loadContext(client, appId) {
   const app = (await client.query(
-    `SELECT id, borrower_id, llc_id, property_address, purchase_price, loan_amount,
+    `SELECT id, borrower_id, co_borrower_id, llc_id, property_address, purchase_price, loan_amount,
             as_is_value, arv, rehab_budget, program, property_type, units,
             ys_loan_number, is_assignment, assignment_fee, underlying_contract_price
        FROM applications WHERE id = $1`, [appId])).rows[0] || null;
   if (!app) return null;
-  const borrower = app.borrower_id
+  const loadBorrower = async (id) => (id
     ? (await client.query(
         `SELECT id, first_name, last_name, date_of_birth, current_address, prior_address, fico
-           FROM borrowers WHERE id = $1`, [app.borrower_id])).rows[0] || null
-    : null;
+           FROM borrowers WHERE id = $1`, [id])).rows[0] || null
+    : null);
+  const borrower = await loadBorrower(app.borrower_id);
+  // The CO-BORROWER is a second real person on the file (owner-directed 2026-07-27): a
+  // government ID belonging to them was being compared to the PRIMARY borrower and false-flagged
+  // as a fatal name/DOB mismatch. Load them so the ID checks know the whole set of people who may
+  // legitimately have an ID on file.
+  const coBorrower = app.co_borrower_id && app.co_borrower_id !== app.borrower_id
+    ? await loadBorrower(app.co_borrower_id) : null;
   // The vesting entity on the file + every LLC the borrower is on record for (assets).
   const vesting = app.llc_id
     ? (await client.query(`SELECT llc_name, ein, is_verified FROM llcs WHERE id = $1`, [app.llc_id])).rows[0] || null
@@ -95,29 +102,51 @@ async function loadContext(client, appId) {
           AND NULLIF(TRIM(COALESCE(fields->>'entityLegalName','')),'') IS NOT NULL`, [appId]);
     entityDocNames = ed.rows.map((r) => r.name).filter(Boolean);
   } catch (_) { entityDocNames = []; }
+  // Names of every individual PILOT has read off an operating agreement on the file (members +
+  // managing member). A ≥25% LLC owner may legitimately put their own government ID on the file
+  // (KYC) — that ID is NOT the borrower, so its name must NOT be flagged as a borrower name
+  // mismatch. Best-effort: a read failure leaves the set empty (the ID check just won't recognize
+  // an owner-only name, which is the safe direction). Read-only.
+  let ownerNames = [];
+  try {
+    const oa = await client.query(
+      `SELECT fields FROM document_extractions
+        WHERE application_id = $1 AND is_current AND doc_type = 'operating_agreement'`, [appId]);
+    for (const r of oa.rows) {
+      const f = (r && r.fields) || {};
+      if (Array.isArray(f.members)) for (const m of f.members) { if (m && m.name) ownerNames.push(m.name); }
+      if (f.managingMember) ownerNames.push(f.managingMember);
+    }
+    ownerNames = [...new Set(ownerNames.filter(Boolean))];
+  } catch (_) { ownerNames = []; }
   return {
-    app, borrower,
+    app, borrower, coBorrower,
     vestingName: vesting && vesting.llc_name,
     ein: vesting && vesting.ein,
     entityNames: entities.map((r) => r.llc_name).filter(Boolean),
     verifiedEntityNames,
     entityDocNames,
+    ownerNames,
     registration,
   };
 }
 
 function borrowerName(b) {
   if (!b) return null;
-  const n = `${b.first_name || ''} ${b.last_name || ''}`.trim();
+  const n = require('../person-name').displayName(b);
   return n || null;
 }
 
 // Build the subject a given document type's check compares against.
 function subjectFor(docType, ctx) {
-  const { app, borrower, vestingName, entityNames, verifiedEntityNames, entityDocNames } = ctx || {};
+  const { app, borrower, coBorrower, vestingName, entityNames, verifiedEntityNames, entityDocNames, ownerNames } = ctx || {};
   switch (docType) {
     case 'government_id':
-      return borrower; // the borrowers row (name / DOB / address)
+      // The whole SET of people who may legitimately have an ID on this file — the primary
+      // borrower, the co-borrower, and (name-only) any LLC owner read off an operating agreement.
+      // The ID check matches an ID to ANY of them, so a co-borrower's ID is no longer flagged as a
+      // fatal name/DOB mismatch against the primary borrower (owner-directed 2026-07-27).
+      return { people: [borrower, coBorrower].filter(Boolean), ownerNames: ownerNames || [] };
     case 'purchase_contract':
     case 'title':
       return {

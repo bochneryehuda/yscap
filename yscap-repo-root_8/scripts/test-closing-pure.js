@@ -27,6 +27,18 @@ ok(closing.sameDay('2026-07-10', '2026-07-10 00:00:00'), 'sameDay across formats
 ok(!closing.sameDay('2026-07-10', '2026-07-11'), 'sameDay different days');
 ok(!closing.sameDay(null, '2026-07-11'), 'sameDay null is never equal');
 
+// ── credit-report quick link: the readable report, never the XML data file ──
+ok(closing.isCreditReportDoc({ doc_kind: 'credit_pdf' }), 'the imported credit PDF is a quick-link');
+ok(!closing.isCreditReportDoc({ doc_kind: 'credit_xml' }), 'the machine-readable XML is NOT a quick-link');
+// The importer files with checklist_item_id NULL when the file has no credit
+// condition — doc_kind alone must still identify the report.
+ok(closing.isCreditReportDoc({ doc_kind: 'credit_pdf', template_code: null }), 'a credit PDF with no condition still surfaces');
+ok(!closing.isCreditReportDoc({ doc_kind: 'credit_xml', template_code: 'rtl_cond_credit' }), 'the XML is excluded even on the credit condition');
+ok(closing.isCreditReportDoc({ doc_kind: null, template_code: 'rtl_cond_credit' }), 'a report dropped straight onto the credit condition surfaces');
+ok(!closing.isCreditReportDoc({ doc_kind: null, template_code: 'rtl_p3_assets' }), 'a bank statement is not a credit report');
+ok(!closing.isCreditReportDoc({ doc_kind: 'term_sheet_signed' }), 'a term sheet is not a credit report');
+ok(!closing.isCreditReportDoc(null), 'a missing row is never a credit report');
+
 // ── money gate: verified >= actual CTC + reserves ───────────────────────────
 // Covered: exactly enough (with $1 tolerance).
 let d = closing.decideCashToClose({ verified: 120000, reserve: 20000, actualCashToClose: 100000, haveCountable: true });
@@ -81,9 +93,15 @@ r = closing.decideReconcile({ ours: '2026-07-10', clickup: '2026-07-10', encompa
 ok(!r.ok && r.encStatus === 'mismatch', 'Encompass disagreement blocks');
 
 // ── warehouses ──────────────────────────────────────────────────────────────
-for (const w of ['Stride Bank', 'Bank of the Sierra', 'Banc of California', 'Northpointe', 'Fidelis', 'CorrFirst'])
+for (const w of ['Stride Bank', 'Bank of the Sierra', 'Banc of California', 'Northpointe', 'Fidelis', 'CorrFirst', 'Table Funding'])
   ok(closing.WAREHOUSES.includes(w), `warehouse present: ${w}`);
-eq(closing.WAREHOUSES.length, 6, 'exactly the 6 owner-named warehouses');
+eq(closing.WAREHOUSES.length, 7, 'exactly the 7 owner-named warehouses');
+// TABLE FUNDING is a warehouse line that carries meaning downstream: a loan
+// funded on it was sold at closing, so it never enters the purchasing workflow.
+// It must BE in the list (the closer picks it like any other line) and the
+// constant must match the string exactly, or the fork silently never fires.
+eq(closing.TABLE_FUNDING, 'Table Funding', 'the table-funding warehouse is named exactly');
+ok(closing.WAREHOUSES.includes(closing.TABLE_FUNDING), 'and it is a pickable warehouse line');
 
 // ── role + capability ───────────────────────────────────────────────────────
 ok(perms.CAPABILITIES.some((c) => c.key === 'manage_closings'), 'manage_closings capability exists');

@@ -326,7 +326,7 @@ async function mintBorrowerSession(borrowerId) {
 
 // ---------------- borrower register / login ----------------
 router.post('/borrower/register', async (req, res) => {
-  const { email, password, firstName, lastName, cellPhone } = req.body || {};
+  const { email, password, firstName, lastName, middleName, cellPhone } = req.body || {};
   if (!email || !password) return res.status(400).json({ error: 'email + password required' });
   { const w = C.passwordProblem(password, [email, firstName, lastName]); if (w) return res.status(400).json({ error: w }); }
   let client;
@@ -364,9 +364,11 @@ router.post('/borrower/register', async (req, res) => {
         message: 'We found an existing record for this email. Check your email to activate your account.' });
     }
     const b = await client.query(
-      `INSERT INTO borrowers (first_name,last_name,email,cell_phone)
-       VALUES ($1,$2,$3,$4)
+      `INSERT INTO borrowers (first_name,last_name,email,cell_phone,middle_name)
+       VALUES ($1,$2,$3,$4,NULLIF($5,''))
        ON CONFLICT (email) WHERE shares_email = false DO UPDATE SET
+         -- Optional middle name (db/345) — fill-only, never over a stored one.
+         middle_name=COALESCE(borrowers.middle_name,EXCLUDED.middle_name),
          -- The person typing their OWN name beats a placeholder row (e.g. a
          -- sync-created 'Unknown Unknown') — never a real stored name.
          first_name=CASE WHEN lower(btrim(coalesce(borrowers.first_name,''))) IN ('','unknown','co-borrower')
@@ -375,7 +377,8 @@ router.post('/borrower/register', async (req, res) => {
                         THEN EXCLUDED.last_name ELSE borrowers.last_name END,
          cell_phone=COALESCE(borrowers.cell_phone,EXCLUDED.cell_phone),
          updated_at=now() RETURNING id`,
-      [firstName || 'Unknown', lastName || 'Unknown', email, cellPhone || null]);
+      [firstName || 'Unknown', lastName || 'Unknown', email, cellPhone || null,
+       String(middleName || '').trim()]);
     const id = b.rows[0].id;
     const exists = await client.query(`SELECT 1 FROM borrower_auth WHERE borrower_id=$1`, [id]);
     if (exists.rows[0]) { await client.query('ROLLBACK'); return res.status(409).json({ error: 'account exists — log in' }); }

@@ -118,10 +118,25 @@ const I = enrich._internals;
   ok(!/encompass\/client|_fetchGuarded|require\('\.\/client'\)/.test(src),
     'it never talks to Encompass at all — it reads the mirror table we already pulled');
   // Every borrower write must be additive or fill-only. An unguarded UPDATE of a
-  // populated column is exactly the regression this line is here to catch.
-  const updates = src.match(/UPDATE borrowers SET [^`]*/g) || [];
-  ok(updates.length === 1 && /current_address IS NULL OR current_address::text IN/.test(updates[0]),
-    'the ONLY borrowers UPDATE is the fill-only home address — enrichment never overwrites a populated field');
+  // populated column is exactly the regression these lines are here to catch.
+  //
+  // There are exactly THREE, and each one's WHERE clause is what proves it:
+  //   1. the home address, only when the profile has none;
+  //   2. the middle name (db/345), only when the profile has none;
+  //   3. clearing the "please confirm this name split" prompt once Encompass has
+  //      independently confirmed our split — a flag, never a name.
+  // If a fourth appears, this test must be read and the new WHERE clause proved
+  // fill-only before the count is raised.
+  const updates = src.match(/UPDATE borrowers[\s\S]*?(?=`)/g) || [];
+  ok(updates.length === 3, `enrichment makes exactly 3 borrower writes, all fill-only (found ${updates.length})`);
+  ok(updates.some((u) => /current_address IS NULL OR current_address::text IN/.test(u)),
+    'the home-address write only ever FILLS a profile that has none');
+  ok(updates.some((u) => /middle_name\s*=\s*\$2/.test(u) && /middle_name IS NULL OR btrim\(middle_name\) = ''/.test(u)),
+    'the middle-name write only ever FILLS a profile that has none — it can never overwrite one');
+  ok(updates.every((u) => !/first_name\s*=/.test(u) && !/last_name\s*=/.test(u)),
+    'enrichment NEVER rewrites a first or last name — a disagreement is a review, not a write');
+  ok(/fieldKey: 'middle_name'/.test(src) && /queueReview/.test(src),
+    'a middle name that DISAGREES goes to manual review instead of being overwritten');
 
   // main's rule (#800): what we STORE is the mailing one-line ClickUp's picker
   // shows, never a geocoder display name. Encompass gives structured fields so
@@ -191,8 +206,11 @@ const { Pool } = require('pg');
       `INSERT INTO encompass_loan_snapshot (encompass_loan_guid, loan_number, raw, last_modified, pulled_at)
        VALUES ($1,$1,$2::jsonb,$3, now())`, [guid, JSON.stringify(raw), when]);
 
+    // `closing` is the day the loan FUNDED — these stand for closed deals, which
+    // is what puts a property on the track record. A loan with no `closing` is
+    // still in flight (owner-directed 2026-07-27: its property stays off).
     const loan = ({ first, last, dob, home, subject, llc1859, email, mobile, work, closing }) => ({
-      closingDocument: closing ? { closingDate: closing } : undefined,
+      closingDocument: closing ? { closingDate: closing, fundingDate: closing } : undefined,
       applications: [{
         borrower: {
           firstName: first, lastName: last, birthDate: dob,
@@ -234,12 +252,24 @@ const { Pool } = require('pg');
       closing: '2024-05-01',
     }), '2024-05-02T00:00:00Z');
 
+    // THE FILE HE IS IN THE MIDDLE OF: a live Encompass loan, no funding yet. Its
+    // subject property must NOT reach his track record (owner-reported 2026-07-27),
+    // while everything else on it — his entity, his phone — still counts.
+    await snap(`enr-live-${sfx}`, loan({
+      first: 'Shulem', last: 'Weiss', dob: '1979-11-05',
+      subject: { street: '500 In Progress Ave', city: 'Newark', state: 'NJ', zip: '07102' },
+      llc1859: 'Weiss Live Deal LLC',
+      mobile: '(845) 777-6666',
+    }), '2026-07-01T00:00:00Z');
+
     const s = await enrich.enrichAllOnce({ dbc: client });
-    okd(s.loans === 3 && s.matched === 3, 'every loan in the mirror is read and matched to its person');
+    okd(s.loans === 4 && s.matched === 4, 'every loan in the mirror is read and matched to its person');
 
     // ── Entities add up, including everything field 1859 named ──────────────
     const llcs = (await client.query(`SELECT llc_name, origin, is_verified FROM llcs WHERE borrower_id=$1 ORDER BY llc_name`, [bId])).rows;
-    okd(llcs.length === 3, 'field 1859 across BOTH files yields three distinct entities');
+    okd(llcs.length === 4, 'field 1859 across the files yields four distinct entities');
+    okd(llcs.some((l) => /Weiss Live Deal/i.test(l.llc_name)),
+      'the entity on the file he is in the MIDDLE of still counts — an entity is his whether or not the deal closed');
     okd(llcs.some((l) => /Weiss Ventures/i.test(l.llc_name)) && llcs.some((l) => /Weiss Capital/i.test(l.llc_name)),
       'the entities only one file named are both picked up');
     okd(llcs.filter((l) => /Weiss Equities/i.test(l.llc_name)).length === 1,
@@ -247,17 +277,20 @@ const { Pool } = require('pg');
     okd(llcs.every((l) => l.origin === 'encompass' && l.is_verified === false),
       'everything Encompass contributes is tagged and UNVERIFIED — it never inflates experience');
 
-    // ── Properties add up ──────────────────────────────────────────────────
+    // ── Properties add up — but only the ones that CLOSED ──────────────────
     const trs = (await client.query(`SELECT property_address FROM track_records WHERE borrower_id=$1`, [bId])).rows;
-    okd(trs.length === 2, 'each file\'s subject property lands in the track record');
+    okd(trs.length === 2, 'each CLOSED file\'s subject property lands in the track record');
+    okd(!/In Progress Ave/.test(JSON.stringify(trs)),
+      'the property he has not closed yet is NOT on his track record');
+    okd(s.addressesSkippedNotClosed === 1, 'and the pass reports holding it back');
 
     // ── Phones and emails add up ───────────────────────────────────────────
     const contacts = (await client.query(`SELECT kind, value, source FROM borrower_contacts WHERE borrower_id=$1`, [bId])).rows;
     const hasC = (k, v) => contacts.some((c) => c.kind === k && String(c.value).toLowerCase() === v.toLowerCase());
     okd(hasC('email', `enr-old-${sfx}@test.local`) && hasC('email', `enr-new-${sfx}@test.local`),
       'every email address across the files accumulates on the profile');
-    okd(hasC('phone', '(718) 333-4444') && hasC('phone', '(845) 999-8888'),
-      'as does every phone number');
+    okd(hasC('phone', '(718) 333-4444') && hasC('phone', '(845) 999-8888') && hasC('phone', '(845) 777-6666'),
+      'as does every phone number — including the one on the file still in flight');
     okd(!contacts.some((c) => c.kind === 'phone' && c.value.includes('111-2222')),
       'the number that is ALREADY the profile\'s primary is not re-added as an extra');
     okd(contacts.every((c) => /^encompass:/.test(c.source || '')),
@@ -333,6 +366,56 @@ const { Pool } = require('pg');
         'and "adopt ClickUp" is REFUSED on an Encompass row — there is no ClickUp task behind it');
     } finally {
       await client.query(`DELETE FROM borrowers WHERE id=$1`, [rId]).catch(() => {});
+    }
+
+    // ── STICKY-REVIEW GUARD (owner-reported 2026-07-27: "if I click dismiss it's
+    //    coming back again"). A DECIDED Encompass address review must NOT be
+    //    re-queued for the SAME value on the next pass — but a genuinely NEW
+    //    address must still surface. Runs in AUTOCOMMIT (the enclosing txn was
+    //    already rolled back above), so its fixtures are cleaned up explicitly in
+    //    the finally below.
+    {
+      const { verifyPrimaryAddress } = require('../src/encompass/enrich');
+      const sfx2 = `${process.pid}-${Math.floor(Math.random() * 1e6)}`;
+      const loanG = `stick-${sfx2}`, taskK = `encompass:${loanG}`;
+      const sbId = (await client.query(
+        `INSERT INTO borrowers (first_name,last_name,email,current_address)
+         VALUES ('Yuda','Elbaum',$1,$2::jsonb) RETURNING id`,
+        [`enr-stick-${sfx2}@test.local`,
+         JSON.stringify({ formatted_address: 'Parkview Dr, Spring Valley, NY 10977, USA', oneLine: 'Parkview Dr, Spring Valley, NY 10977, USA' })])).rows[0].id;
+      try {
+        // Encompass has the full address (with the house number PILOT is missing).
+        const enc = { street: '3210 Parkview Dr', city: 'Spring Valley', state: 'NY', zip: '10977', formatted_address: '3210 Parkview DR, spring valley, NY 10977' };
+        const openN = async () => (await client.query(
+          `SELECT id, proposed_value FROM sync_review_queue WHERE task_id=$1 AND field_key='current_address' AND status='open'`, [taskK])).rows;
+
+        const r1 = await verifyPrimaryAddress(client, sbId, enc, { loanGuid: loanG });
+        okd(r1.conflict && r1.queued, 'sticky: a real address disagreement is queued for review');
+        const open1 = await openN();
+        okd(open1.length === 1, 'sticky: exactly one OPEN review row');
+
+        // DISMISS → the SAME value must not re-queue on the next pass (the fix).
+        await client.query(`UPDATE sync_review_queue SET status='rejected', resolved_at=now() WHERE id=$1`, [open1[0].id]);
+        const r2 = await verifyPrimaryAddress(client, sbId, enc, { loanGuid: loanG });
+        okd(r2.alreadyDecided === true, 'sticky: after DISMISS the same value is alreadyDecided (it does NOT come back)');
+        okd((await openN()).length === 0, 'sticky: no fresh open row after a dismiss');
+
+        // KEEP PILOT (resolved, winner=portal) → also must not re-queue (data still
+        // differs, but the human decided PILOT is right).
+        await client.query(`UPDATE sync_review_queue SET status='resolved', winner='portal' WHERE task_id=$1`, [taskK]);
+        const r3 = await verifyPrimaryAddress(client, sbId, enc, { loanGuid: loanG });
+        okd(r3.alreadyDecided === true, 'sticky: after KEEP-PILOT the same value is alreadyDecided');
+        okd((await openN()).length === 0, 'sticky: still no open row after keep-PILOT');
+
+        // A genuinely DIFFERENT Encompass address DOES surface (never silenced).
+        const enc2 = { street: '99 Other St', city: 'Spring Valley', state: 'NY', zip: '10977', formatted_address: '99 Other St, Spring Valley, NY 10977' };
+        const r4 = await verifyPrimaryAddress(client, sbId, enc2, { loanGuid: loanG });
+        okd(r4.conflict && r4.queued, 'sticky: a NEW Encompass address re-surfaces (a fresh disagreement)');
+        okd((await openN()).some((o) => /99 other/i.test(o.proposed_value)), 'sticky: the open row is the NEW value');
+      } finally {
+        await client.query(`DELETE FROM sync_review_queue WHERE task_id=$1`, [taskK]).catch(() => {});
+        await client.query(`DELETE FROM borrowers WHERE id=$1`, [sbId]).catch(() => {});
+      }
     }
   } catch (e) {
     dbFail++; console.log('FAIL threw:', e && e.stack ? e.stack.split('\n').slice(0, 4).join(' | ') : e);

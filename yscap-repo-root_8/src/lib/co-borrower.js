@@ -22,7 +22,7 @@ const MARKER = 'cob_gov_id';
 const PRIMARY_ID_DEFAULT_LABEL = 'Borrower photo ID (government-issued)';
 
 function nameOf(row) {
-  return row ? `${row.first_name || ''} ${row.last_name || ''}`.trim() : '';
+  return row ? require('./person-name').displayName(row) : '';
 }
 
 // Load the file's PRIMARY gov-ID condition (template rtl_p1_id) with the primary

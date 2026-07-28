@@ -64,7 +64,7 @@ router.get('/diag', async (req, res) => {
            FROM applications a
            JOIN borrowers b ON b.id=a.borrower_id
            LEFT JOIN llcs l ON l.id=a.llc_id
-          WHERE (b.first_name||' '||b.last_name ILIKE $1 OR a.property_address->>'oneLine' ILIKE $1)
+          WHERE (NULLIF(b.full_name,'') ILIKE $1 OR a.property_address->>'oneLine' ILIKE $1)
           ORDER BY a.created_at DESC LIMIT 25`, [like])).rows;
       const bids = [...new Set(out.apps.map((a) => a.borrower_id).filter(Boolean))];
       if (bids.length) {

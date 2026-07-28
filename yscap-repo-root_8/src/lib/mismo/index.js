@@ -33,7 +33,13 @@ function mapBorrowerRow(b) {
   if (!b) return null;
   return {
     firstName: b.first_name || null,
+    // MISMO's <NAME> block has always emitted <MiddleName> (build.js) but nothing
+    // ever supplied one — PILOT had no column for it until db/345. Now it does, so
+    // the export carries the borrower's full legal name, which is what the
+    // investor's system and the closing documents expect.
+    middleName: b.middle_name || null,
     lastName: b.last_name || null,
+    suffix: b.name_suffix || null,   // build.js emits this as <SuffixName>
     email: b.email || null,
     phone: b.cell_phone || null,
     ssn: crypto.decryptSSN(b.ssn_encrypted),
@@ -159,9 +165,15 @@ async function upsertBorrower(client, p, opts = {}) {
   const email = p.email || syntheticEmail(p);
   const b = await client.query(
     `INSERT INTO borrowers (first_name, last_name, email, cell_phone, citizenship, marital_status,
-                            dependents_count, current_address, prior_address, years_at_residence, employer)
-     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)
+                            dependents_count, current_address, prior_address, years_at_residence, employer,
+                            middle_name, name_suffix)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)
      ON CONFLICT (email) WHERE shares_email = false DO UPDATE SET
+       -- A MISMO file carries the name properly split, so it can FILL a middle
+       -- name / suffix we do not have (db/345) — fill-only, like every other
+       -- column here: an existing value is never overwritten by an import.
+       middle_name = COALESCE(borrowers.middle_name, EXCLUDED.middle_name),
+       name_suffix = COALESCE(borrowers.name_suffix, EXCLUDED.name_suffix),
        first_name = CASE WHEN lower(btrim(coalesce(borrowers.first_name,''))) IN ('','unknown','co-borrower')
                           AND coalesce(btrim(EXCLUDED.first_name),'') <> '' THEN EXCLUDED.first_name ELSE borrowers.first_name END,
        last_name  = CASE WHEN lower(btrim(coalesce(borrowers.last_name,''))) IN ('','unknown','co-borrower')
@@ -182,7 +194,8 @@ async function upsertBorrower(client, p, opts = {}) {
      p.currentAddress ? JSON.stringify(p.currentAddress) : null,
      p.priorAddress ? JSON.stringify(p.priorAddress) : null,
      p.yearsAtResidence != null ? num(p.yearsAtResidence) : null,
-     p.employer || null]);
+     p.employer || null,
+     p.middleName || null, p.suffix || null]);
   const id = b.rows[0].id;
   // Persist a full 9-digit SSN through the canonical chokepoint only.
   if (p.ssn) {

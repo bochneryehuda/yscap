@@ -176,6 +176,46 @@ const APP_DATE_FIELDS = {
 // user out of PILOT. Routes map non-expose statuses to 502.
 function httpError(status, message) { const e = new Error(message); e.status = status; e.expose = true; return e; }
 
+// HONEST OUTBOUND FEEDBACK (owner-reported 2026-07-27: "I pushed our address to
+// ClickUp and ClickUp didn't update — it sounds like the actions aren't really
+// firing"). A scoped push can legitimately write NOTHING — most often a ClickUp
+// LOCATION field (the borrower home / subject property address) that PILOT could
+// not place on the map (mapper.addressField drops it without lat/lng), or a value
+// ClickUp already holds. Either way the push returned success, so the review read
+// as done while ClickUp stayed unchanged. This turns pushApplication's own return
+// (`fields`/`written`/`suppressed`/`blocked`/`failed`/`skipped`) into a plain
+// outcome the review card SHOWS, so a no-op is never silent. Pure — the caller
+// passes the field key so an address gets the map-pin explanation.
+function pushSummary(pr, fieldKey) {
+  const written = (pr && pr.written) || 0;
+  const suppressed = (pr && pr.suppressed) || 0;
+  const blocked = (pr && pr.blocked) || 0;
+  const failed = (pr && pr.failed) || 0;
+  const fields = pr && typeof pr.fields === 'number' ? pr.fields : null;
+  const skipped = pr && pr.skipped ? String(pr.skipped) : null;
+  let outcome;
+  if (skipped) outcome = 'skipped';                 // sync disabled / unlinked / deleted — pushApplication short-circuit
+  else if (written > 0) outcome = 'written';        // ClickUp updated
+  else if (suppressed > 0) outcome = 'already_matched';  // ClickUp already had this value
+  else if (blocked > 0) outcome = 'blocked';        // a guard held it (PII shield / DOB gate)
+  else if (failed > 0) outcome = 'failed';          // ClickUp rejected the write
+  else if (fields === 0) outcome = 'nothing_to_write';  // the field produced no writable value (e.g. an address with no map coordinates)
+  else outcome = 'no_change';
+  return { outcome, written, suppressed, blocked, failed, skipped, fieldKey: fieldKey || null };
+}
+
+// When the WHOLE point of the action was to push PILOT's value TO ClickUp
+// (winner='portal') and the push produced no write, keep the review OPEN and say
+// WHY — never mark it resolved with ClickUp still wrong. The address case is the
+// common one: a ClickUp location field can't be written without map coordinates.
+function assertPushEffective(pushed) {
+  if (!pushed || pushed.outcome !== 'nothing_to_write') return;
+  if (pushed.fieldKey === 'current_address') {
+    throw httpError(422, 'PILOT could not send this address to ClickUp: ClickUp stores the address as a map location (a pin), and this address could not be placed on the map. Check/fix the address on the file (and confirm its map location), then try again — nothing was changed in ClickUp.');
+  }
+  throw httpError(422, 'Nothing was written to ClickUp — the value could not be sent. Check it on the file and try again; nothing was changed in ClickUp.');
+}
+
 async function journalResolveWrite(appId, taskId, fieldId, fieldKey, oldVal, newVal, masked) {
   await db.query(
     `INSERT INTO clickup_write_log (application_id, task_id, field_id, field_key, old_value, new_value, changed, source)
@@ -397,8 +437,10 @@ async function applyReviewWinner(row, winner, customValue) {
     if (!borrowerId) throw httpError(422, 'no borrower on this review');
     if (winner === 'portal') {
       if (!appId) throw httpError(422, 'no application on this review');
-      await require('../clickup/orchestrator').pushApplication(appId, { only: [fieldKey], approvedReview: true, force: true });
-      return { fieldKey, winner };
+      const pr = await require('../clickup/orchestrator').pushApplication(appId, { only: [fieldKey], approvedReview: true, force: true });
+      const pushed = pushSummary(pr, fieldKey);
+      assertPushEffective(pushed);   // keeps the row OPEN + explains when nothing reached ClickUp
+      return { fieldKey, winner, pushed };
     }
     // ONE applier for both adopt-ClickUp and reviewer-typed custom values —
     // identical validation, identical portal write.
@@ -417,14 +459,28 @@ async function applyReviewWinner(row, winner, customValue) {
         return phone;
       }
       if (fieldKey === 'first_name') {
-        const parts = String(v).trim().split(/\s+/);
-        if (!parts[0] || require('../clickup/transforms').isPlaceholderName(String(v))) {
+        // ClickUp's name field is ONE line; PILOT stores first / middle / last /
+        // suffix (db/345). Split it the same way every other door does, so
+        // resolving a review can never re-merge a middle name back into the first
+        // name — and record whether the split was a judgement call so the person's
+        // profile keeps asking a human to confirm it.
+        const PN = require('./person-name');
+        const p = PN.splitFullName(v);
+        if (!p.first || PN.isPlaceholderName(String(v))) {
           throw httpError(422, `${sourceLabel} is not a usable name`);
         }
-        const first = parts.shift(), last = parts.join(' ') || null;
         await db.query(
-          `UPDATE borrowers SET first_name=$2, last_name=COALESCE($3, last_name), updated_at=now() WHERE id=$1`,
-          [borrowerId, first, last]);
+          `UPDATE borrowers
+              SET first_name=$2,
+                  last_name=COALESCE(NULLIF($3,''), last_name),
+                  middle_name=NULLIF($4,''),
+                  name_suffix=COALESCE(NULLIF($5,''), name_suffix),
+                  name_review_needed=$6,
+                  name_review_reason=$7,
+                  updated_at=now()
+            WHERE id=$1`,
+          [borrowerId, p.first, p.last || '', p.middle || '', p.suffix || '',
+            !!p.needsReview, p.needsReview ? p.reason : null]);
         return String(v).trim();
       }
       // current_address: object (ClickUp location) or typed text → jsonb shape.
@@ -440,11 +496,12 @@ async function applyReviewWinner(row, winner, customValue) {
       const value = await applyIdentityValue(custom, 'that value');
       // The typed value is now the PORTAL's value — push it out scoped with
       // the review bypass so BOTH systems carry it.
+      let pushed = null;
       if (appId) {
-        try { await require('../clickup/orchestrator').pushApplication(appId, { only: [fieldKey], approvedReview: true, force: true }); }
-        catch (e) { console.warn('[sync-autoresolve] custom-value push failed (portal applied):', e.message); }
+        try { pushed = pushSummary(await require('../clickup/orchestrator').pushApplication(appId, { only: [fieldKey], approvedReview: true, force: true }), fieldKey); }
+        catch (e) { console.warn('[sync-autoresolve] custom-value push failed (portal applied):', e.message); pushed = { outcome: 'failed', fieldKey }; }
       }
-      return { fieldKey, winner, value };
+      return { fieldKey, winner, value, ...(pushed ? { pushed } : {}) };
     }
     if (!taskId) throw httpError(422, 'no ClickUp task on this review');
     const task = await clickup.getTask(taskId);
@@ -458,4 +515,4 @@ async function applyReviewWinner(row, winner, customValue) {
   throw httpError(422, `resolving '${fieldKey}' two-sided is not supported yet — use approve/reject`);
 }
 
-module.exports = { decideDob, isArtifactDay, adoptDobEverywhere, applyReviewWinner };
+module.exports = { decideDob, isArtifactDay, adoptDobEverywhere, applyReviewWinner, pushSummary };

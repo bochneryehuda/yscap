@@ -66,13 +66,25 @@ function notConfiguredError() {
 function mismoNow() { return new Date().toISOString().replace(/\.\d+Z$/, 'Z'); }
 
 // ── PACKET SEAM #1: the MISMO 3.4 credit request MESSAGE ──────────────────────
-// Built with the mismo/xml writer (leaf() omits blank values). Mirrors the
-// Xactus CRx/PQx examples 1:1; the product/action mapping is the only variance.
-function buildRequestBody({ borrower, pullType, requestType, bureaus, version: v, reissueReportId, loanNumber, company }) {
+// Built with the mismo/xml writer (leaf() omits blank values). Mirrors the Xactus
+// CRx/PQx examples 1:1; the product/action mapping is the only variance.
+//
+// INDIVIDUAL vs JOINT (Xactus SupplementX 3.4 collection, "Test Individual - CRx"
+// vs "Test Joint - CRx — Wanna & Needa House"). The two requests differ in exactly
+// three places, and NOTHING else:
+//   1. one borrower PARTY (`Borrower01`) vs TWO (`Borrower01` + `Borrower02`);
+//   2. one RELATIONSHIP arc from the request to the borrower role, vs one PER borrower;
+//   3. `CreditRequestType` — `Individual` vs `Joint`.
+// There is still exactly ONE `CREDIT_REQUEST_DATA` and ONE `CreditReportIdentifier`,
+// which is why a joint report has a SINGLE reference number covering both borrowers
+// (owner-directed 2026-07-27: "not always it requires two separate reference numbers").
+// Pass `borrowers: [primary, co]` to order jointly; `borrower` stays the one-borrower
+// form and is byte-identical to what it always sent.
+function buildRequestBody({ borrower, borrowers, pullType, requestType, bureaus, version: v, reissueReportId, loanNumber, company }) {
   const { el, leaf } = X;
-  const b = borrower || {};
-  const addr = b.address || {};
-  const fullName = [b.firstName, b.middleName, b.lastName].filter(Boolean).join(' ');
+  const people = (Array.isArray(borrowers) && borrowers.length ? borrowers : [borrower || {}]).filter(Boolean);
+  const joint = people.length > 1;
+  const roleLabel = (i) => `Borrower${String(i + 1).padStart(2, '0')}`;
 
   // product → CreditReportType
   const reportTypeEls = pullType === 'hard'
@@ -110,40 +122,47 @@ function buildRequestBody({ borrower, pullType, requestType, bureaus, version: v
           ])]),
           el('TERMS_OF_LOAN', {}, [leaf('MortgageType', 'Conventional')]),
         ])]),
-        el('PARTIES', {}, [el('PARTY', { SequenceNumber: '1' }, [
-          el('INDIVIDUAL', {}, [el('NAME', {}, [
-            leaf('FirstName', b.firstName),
-            leaf('FullName', fullName),
-            leaf('LastName', b.lastName),
-            leaf('MiddleName', b.middleName),
-          ])]),
-          el('ROLES', {}, [el('ROLE', { 'xlink:label': 'Borrower01' }, [
-            el('BORROWER', {}, [
-              // Date of birth (standard MISMO 3.4 location) — the bureaus resolve
-              // identity on name + SSN + DOB + address; the review screen also
-              // shows the DOB as "what we'll send", so it must actually be sent.
-              ...(b.dob ? [el('BORROWER_DETAIL', {}, [leaf('BorrowerBirthDate', b.dob)])] : []),
-              el('RESIDENCES', {}, [el('RESIDENCE', { SequenceNumber: '1' }, [
-                el('ADDRESS', {}, [
-                  leaf('AddressLineText', addr.line1),
-                  leaf('CityName', addr.city),
-                  leaf('PostalCode', addr.zip),
-                  leaf('StateCode', addr.state),
-                ]),
-                el('RESIDENCE_DETAIL', {}, [leaf('BorrowerResidencyType', 'Current')]),
-              ])]),
-            ]),
-            el('ROLE_DETAIL', {}, [leaf('PartyRoleType', 'Borrower')]),
-          ])]),
-          el('TAXPAYER_IDENTIFIERS', {}, [el('TAXPAYER_IDENTIFIER', {}, [
-            leaf('TaxpayerIdentifierType', 'SocialSecurityNumber'),
-            leaf('TaxpayerIdentifierValue', b.ssn),
-          ])]),
-        ])]),
-        el('RELATIONSHIPS', {}, [el('RELATIONSHIP', {
-          'xlink:from': 'CreditRequestData001', 'xlink:to': 'Borrower01',
+        // One PARTY per borrower — the ONLY structural difference between an
+        // individual and a joint order (plus the arcs + CreditRequestType below).
+        el('PARTIES', {}, people.map((p, i) => {
+          const addr = p.address || {};
+          const fullName = [p.firstName, p.middleName, p.lastName].filter(Boolean).join(' ');
+          return el('PARTY', { SequenceNumber: String(i + 1) }, [
+            el('INDIVIDUAL', {}, [el('NAME', {}, [
+              leaf('FirstName', p.firstName),
+              leaf('FullName', fullName),
+              leaf('LastName', p.lastName),
+              leaf('MiddleName', p.middleName),
+            ])]),
+            el('ROLES', {}, [el('ROLE', { 'xlink:label': roleLabel(i) }, [
+              el('BORROWER', {}, [
+                // Date of birth (standard MISMO 3.4 location) — the bureaus resolve
+                // identity on name + SSN + DOB + address; the review screen also
+                // shows the DOB as "what we'll send", so it must actually be sent.
+                ...(p.dob ? [el('BORROWER_DETAIL', {}, [leaf('BorrowerBirthDate', p.dob)])] : []),
+                el('RESIDENCES', {}, [el('RESIDENCE', { SequenceNumber: '1' }, [
+                  el('ADDRESS', {}, [
+                    leaf('AddressLineText', addr.line1),
+                    leaf('CityName', addr.city),
+                    leaf('PostalCode', addr.zip),
+                    leaf('StateCode', addr.state),
+                  ]),
+                  el('RESIDENCE_DETAIL', {}, [leaf('BorrowerResidencyType', 'Current')]),
+                ])]),
+              ]),
+              el('ROLE_DETAIL', {}, [leaf('PartyRoleType', 'Borrower')]),
+            ])]),
+            el('TAXPAYER_IDENTIFIERS', {}, [el('TAXPAYER_IDENTIFIER', {}, [
+              leaf('TaxpayerIdentifierType', 'SocialSecurityNumber'),
+              leaf('TaxpayerIdentifierValue', p.ssn),
+            ])]),
+          ]);
+        })),
+        // …and ONE arc per borrower, all pointing at the single credit request.
+        el('RELATIONSHIPS', {}, people.map((p, i) => el('RELATIONSHIP', {
+          'xlink:from': 'CreditRequestData001', 'xlink:to': roleLabel(i),
           'xlink:arcrole': 'urn:fdc:mismo.org:2009:residential/CREDIT_REQUEST_DATA_IsAssociatedWith_ROLE',
-        })]),
+        }))),
         el('SERVICES', {}, [el('SERVICE', {}, [el('CREDIT', {}, [el('CREDIT_REQUEST', {}, [
           el('CREDIT_REQUEST_DATAS', {}, [el('CREDIT_REQUEST_DATA', { 'xlink:label': 'CreditRequestData001' }, [
             el('CREDIT_REPOSITORY_INCLUDED', {}, [
@@ -156,7 +175,7 @@ function buildRequestBody({ borrower, pullType, requestType, bureaus, version: v
               leaf('CreditReportRequestActionType', action),
               ...reportTypeEls,
               leaf('CreditRequestDatetime', mismoNow()),
-              leaf('CreditRequestType', 'Individual'),
+              leaf('CreditRequestType', joint ? 'Joint' : 'Individual'),
             ]),
           ])]),
         ])])])]),
@@ -217,17 +236,22 @@ function xmlReportId(xml) {
  * Order (or reissue) a tri-merge credit report through the shared login.
  * @returns {Promise<{xml:string|null, pdfBase64:string|null, vendorReportId:string|null}>}
  */
-async function pull({ borrower, pullType = 'soft', requestType = 'reissue', bureaus = ALL_BUREAUS, version: v, reissueReportId, loanNumber, company } = {}) {
+async function pull({ borrower, borrowers, pullType = 'soft', requestType = 'reissue', bureaus = ALL_BUREAUS, version: v, reissueReportId, loanNumber, company } = {}) {
   if (!configured()) throw notConfiguredError();
-  if (!borrower) throw new Error('pull: borrower required');
+  // `borrowers` (2+) orders a JOINT report: ONE request, ONE reference number,
+  // both people on it. `borrower` is the single-borrower form.
+  const people = (Array.isArray(borrowers) && borrowers.length ? borrowers : (borrower ? [borrower] : [])).filter(Boolean);
+  if (!people.length) throw new Error('pull: borrower required');
   if (requestType === 'reissue' && !reissueReportId) {
     const e = new Error('reissue requires a prior report id');
     e.status = 422;
-    e.userMessage = 'A reissue needs the reference number of the credit report already on file. Enter it, or switch to “Order brand-new”.';
+    e.userMessage = people.length > 1
+      ? 'A joint reissue needs the reference number of the joint report already on file. Enter it, or switch to “Order brand-new”.'
+      : 'A reissue needs the reference number of the credit report already on file. Enter it, or switch to “Order brand-new”.';
     throw e;
   }
   v = v || version();
-  const req = buildRequestBody({ borrower, pullType, requestType, bureaus, version: v, reissueReportId, loanNumber, company });
+  const req = buildRequestBody({ borrowers: people, pullType, requestType, bureaus, version: v, reissueReportId, loanNumber, company });
 
   let url = cfg.endpoint.replace(/\/+$/, '') + req.path;
   const headers = { 'Content-Type': req.contentType, Accept: 'application/xml, text/xml' };

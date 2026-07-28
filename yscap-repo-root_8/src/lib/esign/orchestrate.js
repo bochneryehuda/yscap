@@ -322,7 +322,7 @@ async function loadDocGenData(db, applicationId) {
     `SELECT a.ys_loan_number,
             COALESCE(a.submitted_at, a.created_at)              AS application_date,
             a.loan_amount, a.purchase_price,
-            a.as_is_value, a.arv, a.rehab_budget, a.term,
+            a.as_is_value, a.arv, a.rehab_budget, a.rehab_type, a.term,
             a.program, a.loan_type, a.occupancy, a.property_type, a.units,
             a.requested_ir_months, a.requested_ir_amount,
             a.is_assignment, a.underlying_contract_price, a.assignment_fee,
@@ -445,6 +445,10 @@ async function loadDocGenData(db, applicationId) {
       asis: fmtUSD(a.as_is_value),
       arv: fmtUSD(a.arv),
       rehab: fmtUSD(a.rehab_budget),
+      // The scope of the work, alongside its cost — the registration writes it
+      // onto the file (product-registration.rehabTypeWriteback), so the signed
+      // application states what kind of rehab it is, not just how much it costs.
+      rehabType: a.rehab_type || '',
       ltc: sizing ? fmtPct(sizing.ltcPct) : '',
       ltv: sizing ? fmtPct(sizing.arvPct) : '',   // loan-to-ARV
       ir: irDisplay,

@@ -390,7 +390,9 @@ export const api = {
   encompassRaw:      (id) => req('GET', `/api/staff/applications/${id}/encompass/raw`),
   encompassReplace:  (id, fieldKey) => req('POST', `/api/staff/applications/${id}/encompass/replace`, { fieldKey }),
   // Credit report (Xactus import) — the internal Credit report condition.
-  staffCredit:        (id) => req('GET', `/api/staff/applications/${id}/credit`),
+  // `scope` = 'co' | 'primary' narrows the credit section to ONE borrower, so a
+  // co-borrower's own credit condition shows their report instead of the file's.
+  staffCredit:        (id, scope) => req('GET', `/api/staff/applications/${id}/credit${scope && scope !== 'file' ? `?scope=${encodeURIComponent(scope)}` : ''}`),
   staffCreditPreview: (id) => req('GET', `/api/staff/applications/${id}/credit/preview`),
   staffCreditImport:  (id, b) => req('POST', `/api/staff/applications/${id}/credit/import`, b),
   // #147 — the cross-system observability timeline for a file (portal + ClickUp +
@@ -652,8 +654,12 @@ export const api = {
   },
   staffUploadAppDoc: (appId, b) => coalesceUpload('appDoc:' + appId, b, () => req('POST', `/api/staff/applications/${appId}/documents`, normalizeUpload(b))),
   staffAddLoanCondition: (appId, b) => req('POST', `/api/staff/applications/${appId}/loan-conditions`, b),
-  staffClearCondition:   (cid) => req('POST', `/api/staff/loan-conditions/${cid}/clear`),
-  staffWaiveCondition:   (cid, reason) => req('POST', `/api/staff/loan-conditions/${cid}/waive`, { reason }),
+  // `override` (optional) = { adminOverride:true, overrideReason } from
+  // lib/condition-override.askOverride — a super-admin clearing/waiving a
+  // condition without meeting its requirement. The server refuses it for anyone
+  // else and requires the reason; omitting it is an ordinary clear/waive.
+  staffClearCondition:   (cid, override) => req('POST', `/api/staff/loan-conditions/${cid}/clear`, override || undefined),
+  staffWaiveCondition:   (cid, reason, override) => req('POST', `/api/staff/loan-conditions/${cid}/waive`, { reason, ...(override || {}) }),
   staffReviewCondition:  (cid, reviewed) => req('POST', `/api/staff/loan-conditions/${cid}/review`, { reviewed }),
   // Borrower change-request sandbox (S5-03) — staff review side.
   staffChangeRequests:       (appId) => req('GET', `/api/staff/applications/${appId}/change-requests`),
@@ -693,6 +699,20 @@ export const api = {
   closingToggleChecklistItem: (appId, iid, checked) => req('PATCH', `/api/staff/applications/${appId}/closing/checklist-items/${iid}`, { checked }),
   closingQueue:      (params) => req('GET', `/api/staff/closing${params ? '?' + new URLSearchParams(params).toString() : ''}`),
   closingCount:      () => req('GET', '/api/staff/closing/count'),
+  // The purchasing desk — where a file lands after investor delivery (unless it
+  // was table funded, i.e. sold right at closing).
+  purchasingQueue:   (params) => req('GET', `/api/staff/purchasing${params ? '?' + new URLSearchParams(params).toString() : ''}`),
+  purchasingCount:   () => req('GET', '/api/staff/purchasing/count'),
+  purchasingGet:     (appId) => req('GET', `/api/staff/applications/${appId}/purchasing`),
+  purchasingStatus:  (appId, status) => req('POST', `/api/staff/applications/${appId}/purchasing/status`, { status }),
+  purchasingAddNote: (appId, body) => req('POST', `/api/staff/applications/${appId}/purchasing/notes`, { body }),
+  purchasingAddTask: (appId, label) => req('POST', `/api/staff/applications/${appId}/purchasing/tasks`, { label }),
+  purchasingTaskDone: (appId, taskId, done) => req('PATCH', `/api/staff/applications/${appId}/purchasing/tasks/${taskId}`, { done }),
+  purchasingTaskDelete: (appId, taskId) => req('DELETE', `/api/staff/applications/${appId}/purchasing/tasks/${taskId}`),
+  purchasingAddCondition:  (appId, label, detail) => req('POST', `/api/staff/applications/${appId}/purchasing/conditions`, { label, detail }),
+  purchasingConditionStatus: (appId, cid, status, note) => req('PATCH', `/api/staff/applications/${appId}/purchasing/conditions/${cid}`, { status, note }),
+  purchasingConditionDelete: (appId, cid) => req('DELETE', `/api/staff/applications/${appId}/purchasing/conditions/${cid}`),
+  purchasingAdvice:        (appId, patch) => req('POST', `/api/staff/applications/${appId}/purchasing/advice`, patch),
   staffStatusHistory: (appId) => req('GET', `/api/staff/applications/${appId}/status-history`),
   staffSetClosingDate: (appId, b) => req('POST', `/api/staff/applications/${appId}/closing-date`, b),
   staffEditApplication: (appId, b) => req('PATCH', `/api/staff/applications/${appId}/details`, b),
@@ -848,6 +868,11 @@ export const api = {
   appraisalUndoImport:     (appId) => req('POST', `/api/appraisal/${appId}/undo-import`),
   appraisalResolveFinding: (appId, fid, b) => req('POST', `/api/appraisal/${appId}/findings/${fid}/resolve`, b),
   appraisalRefreshPhotos:  (appId) => req('POST', `/api/appraisal/${appId}/photos/refresh`, {}),
+  // The As-Is value PILOT read off the appraisal, and the officer's own entry (2026-07-28).
+  appraisalAsIs:           (appId) => req('GET', `/api/appraisal/${appId}/as-is`),
+  appraisalSetAsIs:        (appId, b) => req('POST', `/api/appraisal/${appId}/as-is`, b),
+  appraisalSetArv:         (appId, b) => req('POST', `/api/appraisal/${appId}/arv`, b),
+  appraisalRereadAsIs:     (appId) => req('POST', `/api/appraisal/${appId}/as-is/read`, {}),
   // Borrower READ-ONLY view of the same appraisal report + findings (no actions).
   appraisalGetBorrower:    (appId) => req('GET', `/api/borrower/applications/${appId}/appraisal`),
   // Fetch an appraisal photo's bytes (blob) for inline display — staff vs borrower channel.

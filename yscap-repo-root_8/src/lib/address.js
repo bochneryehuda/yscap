@@ -218,6 +218,135 @@ function canonicalOneLine(a, { country = false } = {}) {
 }
 
 /**
+ * Strip an apartment/suite/unit suffix for a GEOCODER lookup. A geocoder resolves
+ * a BUILDING, not an apartment — and a unit token ("Apartment 6B", "Unit 4D",
+ * "#3") makes some providers (notably the keyless OSM Nominatim fallback) return
+ * NO MATCH for an address that resolves cleanly without it (owner-reported
+ * 2026-07-27: the borrower home address "1254 42nd St Apartment 6B, Brooklyn, NY
+ * 11219" could not be placed on the map, so it never reached ClickUp). The
+ * coordinates are building-level regardless of the unit, so dropping it for the
+ * lookup loses nothing. Only strips when a unit is actually DETECTED — otherwise
+ * the input is returned unchanged. Returns the clean mailing one-line (same form
+ * we push).
+ */
+function withoutUnit(text) {
+  const s = String(text || '').trim();
+  if (!s) return s;
+  const p = parseAddress(s);
+  if (!p || !p.unit || !p.line1) return s;   // no unit found → leave the input untouched
+  // Guard a FALSE unit-detection: a street whose NAME is a unit keyword ("5 Floor
+  // Ave", "100 Lot 5") makes parseAddress swallow the street into `unit`, leaving
+  // line1 as just the house number. Stripping then yields a wrong geocode query
+  // ("5, Nowhere, NY …"), reintroducing the very failure this fixes. If the parse
+  // ate the street, don't strip — geocode the full text as before.
+  if (isHouseNumber(p.line1.trim())) return s;
+  const rebuilt = canonicalOneLine({ line1: p.line1, city: p.city, state: p.state, zip: p.zip });
+  return rebuilt || s;
+}
+
+/**
+ * Re-insert a unit into a mailing one-line after the street (the first comma
+ * part), unless the line already carries it. Pairs with withoutUnit: we geocode
+ * the BUILDING (unit stripped so it resolves) but keep the apartment on the value
+ * we STORE and DISPLAY — "1254 42nd St, Brooklyn, NY 11219" + "Apt 6B" →
+ * "1254 42nd St Apt 6B, Brooklyn, NY 11219". Idempotent (a line that already
+ * names the unit is returned unchanged).
+ */
+function withUnit(oneLine, unit) {
+  const line = String(oneLine || '').trim();
+  const u = String(unit || '').trim();
+  if (!line || !u) return line;
+  const i = line.indexOf(',');
+  const street = i === -1 ? line : line.slice(0, i);
+  const compact = (s) => String(s).toLowerCase().replace(/[^a-z0-9]/g, '');
+  const cs = compact(street), cu = compact(u);
+  // Already carries the unit only when the STREET segment (where withUnit puts it)
+  // ENDS with it — anchoring on the street end, not a whole-line substring, so a
+  // bare-numeric unit ("6") is never falsely matched by a digit elsewhere in the
+  // address (a house number / ZIP), which would drop it.
+  if (cu && (cs === cu || cs.endsWith(cu))) return line;
+  return i === -1 ? `${line} ${u}` : `${line.slice(0, i)} ${u}${line.slice(i)}`;
+}
+
+/** The house number a street line STARTS with ("1727 S 2nd St" -> "1727"), or ''. */
+function houseNumberOf(line1) {
+  const t = String(line1 || '').trim().split(' ').filter(Boolean)[0];
+  return isHouseNumber(t) ? String(t).toUpperCase() : '';
+}
+
+/**
+ * The leading directional on a street ("1727 S 2nd St" -> "S"), or ''.
+ *
+ * Threshold note: `abbreviateStreet` needs THREE tokens before it will shorten a
+ * directional ("26 West St" must stay "26 West St", because "26 W St" reads as
+ * gibberish). Here TWO is right, because this is only ever used to compare two
+ * spellings of the same address and it is applied to BOTH sides — so "26 West St"
+ * and "26 W St" both report 'W' and still match, while a genuinely dropped
+ * directional ("5 S Main" -> "5 Main") is still caught.
+ */
+function leadingDirectionalOf(line1) {
+  const toks = String(line1 || '').trim().split(' ').filter(Boolean);
+  if (!toks.length) return '';
+  const i = isHouseNumber(toks[0]) ? 1 : 0;
+  if (toks.length - i < 2) return '';   // a one-word street IS the name, not a directional
+  return DIRECTIONALS[wordKey(toks[i])] || '';
+}
+
+/**
+ * May a GEOCODER's answer REPLACE our own address text?
+ *
+ * Owner-reported 2026-07-28: the subject address on YSCAP258134762 was rewritten
+ * by our own ClickUp push, over and over, from
+ *   "1727 S 2nd St, Piscataway, NJ 08854"   (the real property)
+ * to
+ *   "2nd St, Piscataway, NJ 07063"          (a DIFFERENT street, in Plainfield)
+ * — and the corrupted value then came back INBOUND from the card, so correcting
+ * it in PILOT never stuck.
+ *
+ * ROOT CAUSE: a geocode is a request for COORDINATES, but `withCoords` adopted the
+ * provider's `formatted_address` unconditionally. Nominatim (and Google) answer a
+ * house number they cannot place with the ROAD it sits on — a match with no
+ * `house_number` and the ROAD's own postcode. Verified live: querying that exact
+ * address returns `addresstype: "road"`, `display_name: "2nd Street, Piscataway
+ * Township, …, 07063"`. So the "answer" silently dropped the house number AND
+ * re-ZIPped the property, and we wrote it to the card as fact.
+ *
+ * This is the guard that makes the class impossible, whatever the provider: a
+ * geocoder may only RESTYLE an address (abbreviate, add a missing ZIP, fix the
+ * city), never contradict it. Refuses when the provider
+ *   - dropped or changed the HOUSE NUMBER   ("1727 S 2nd St" -> "2nd St")
+ *   - disagrees on a ZIP we already hold    (08854 -> 07063)
+ *   - dropped a leading DIRECTIONAL we had  ("S 2nd St" -> "2nd St" is another street)
+ * Everything a good geocode legitimately does still passes: "26 South 10th Street,
+ * Brooklyn, NY 11249" -> "26 S 10th St, Brooklyn, NY 11249" is safe, and so is
+ * filling in a ZIP we never had. Pure: no DB, no network.
+ */
+function geocodeRewriteIsSafe(ours, provider) {
+  const p = String(provider || '').trim();
+  if (!p) return false;                 // nothing offered
+  const o = String(ours || '').trim();
+  if (!o) return true;                  // nothing of ours to lose
+
+  const a = parseAddress(o), b = parseAddress(p);
+
+  // 1. the house number identifies the PROPERTY — it may never be dropped or moved
+  const ha = houseNumberOf(a.line1);
+  if (ha && ha !== houseNumberOf(b.line1)) return false;
+
+  // 2. never silently re-ZIP a property (only compare when BOTH sides state one,
+  //    so a provider FILLING a missing ZIP is still welcome)
+  const five = (z) => String(z || '').trim().slice(0, 5);
+  const za = five(a.zip), zb = five(b.zip);
+  if (za && zb && za !== zb) return false;
+
+  // 3. "S 2nd St" and "2nd St" are two different streets in the same town
+  const da = leadingDirectionalOf(a.line1);
+  if (da && da !== leadingDirectionalOf(b.line1)) return false;
+
+  return true;
+}
+
+/**
  * Does this string look like a raw geocoder display name rather than a mailing
  * address? Signatures, any one of which is conclusive:
  *   - the house number sits in its OWN comma part  ("26, South 10th Street, …")
@@ -564,6 +693,7 @@ module.exports = {
   parseAddress, normalizeAddress, splitUnit, stateAbbr, stateCompareKey,
   parseAddressParts, sameAddress, addressCompareKey, addressTextOf,
   abbreviateStreet, normalizeCityName, preferBorough, osmComponentsToAddress,
-  canonicalOneLine, looksLikeProviderLongForm, parseProviderLongForm,
+  canonicalOneLine, withoutUnit, withUnit, looksLikeProviderLongForm, parseProviderLongForm,
   compactFormattedAddress, canonicalizeAddressValue,
+  geocodeRewriteIsSafe, houseNumberOf, leadingDirectionalOf,
 };

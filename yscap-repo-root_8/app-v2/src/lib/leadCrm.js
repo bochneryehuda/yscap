@@ -1,3 +1,4 @@
+import { fullNameOf } from '../lib/personName.js';
 // Shared Lead-CRM vocabulary so the board, list, and detail screens stay in
 // lockstep (owner-directed full CRM, 2026-07-14).
 
@@ -37,7 +38,7 @@ export const ACTIVITY_TYPES = [
 ];
 
 export const leadName = (l) =>
-  ([l.first_name, l.last_name].filter(Boolean).join(' ') || l.name || l.email || l.phone || 'Unnamed lead');
+  (fullNameOf(l) || l.name || l.email || l.phone || 'Unnamed lead');
 
 export const initials = (s) =>
   (String(s || '').trim().split(/\s+/).map(w => w[0] || '').join('').slice(0, 2).toUpperCase()) || '—';

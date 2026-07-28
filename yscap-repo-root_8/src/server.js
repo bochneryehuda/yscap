@@ -558,6 +558,12 @@ if (require.main === module) {
         require('./lib/appraisal/desk').backfillAppraisalCompSplitOnce()
           .then((r) => r && r.split && console.log('[boot] appraisal comp-split backfill:', JSON.stringify(r)))
           .catch((e) => console.error('[boot] appraisal comp-split backfill failed:', e.message));
+        // NOTE: the As-Is / ARV read is GOING FORWARD ONLY (owner-directed 2026-07-28) — a deliberate
+        // exception to the previous-AND-future rule, because that sweep WRITES loan values and
+        // re-reading the back book would rewrite numbers on files people have already worked, all at
+        // once, unwatched. New appraisal imports are read; old ones are left alone. The sweep still
+        // exists (desk.backfillAsIsReadsOnce) behind APPRAISAL_ASIS_SWEEP_FILES for a deliberate,
+        // bounded, hand-run pass — it is intentionally NOT booted here.
         // Email Center history (owner-directed 2026-07-20): mirror the prior
         // notification + inbound-reply history into the email_messages store so
         // every file's new Email Center shows its BACKDATED history. Lightweight
@@ -583,9 +589,28 @@ if (require.main === module) {
         require('./lib/address-review-close').closeEquivalentAddressReviewsOnce()
           .then((r) => r && r.closed && console.log('[boot] address reviews auto-closed:', JSON.stringify(r)))
           .catch((e) => console.error('[boot] address review close failed:', e.message));
+        // Owner-reported 2026-07-28: rows a reviewer had ALREADY dismissed came
+        // back, and one conflict could hold two open cards, because the guard was
+        // keyed on the Encompass LOAN the conflict arrived on rather than on the
+        // person + the address. The producer is fixed; this retires the rows that
+        // already piled up. Exactly one card per question always survives.
+        require('./lib/address-review-close').closeSupersededAddressReviewsOnce()
+          .then((r) => r && (r.closedDecided || r.closedDuplicate)
+            && console.log('[boot] superseded address reviews retired:', JSON.stringify(r)))
+          .catch((e) => console.error('[boot] superseded address review close failed:', e.message));
         require('./lib/address-heal').healProviderLongAddressesOnce()
           .then((r) => r && r.fixed && console.log('[boot] address format repair:', JSON.stringify(r)))
           .catch((e) => console.error('[boot] address format repair failed:', e.message));
+        // Previous-files fix (owner-directed 2026-07-27): a borrower's name is now
+        // THREE fields (first / middle / last, + suffix) so it lines up with the way
+        // Encompass, MISMO and every closing document model a person. This splits the
+        // names already stored merged by the old one-line ClickUp splitter
+        // ("Issac Michael" / "Grunzweig" -> "Issac" / "Michael" / "Grunzweig"). It only
+        // ever REARRANGES a name, never restates one, and flags the judgement calls for
+        // a human to confirm. Bounded, resumable, idempotent; never blocks boot.
+        require('./lib/name-heal').healBorrowerNamesOnce()
+          .then((r) => r && r.split && console.log('[boot] borrower name split:', JSON.stringify(r)))
+          .catch((e) => console.error('[boot] borrower name split failed:', e.message));
         require('./lib/underwriting/investor-guidelines/seed').seedNoteBuyerConditions()
           .then((r) => r && r.ok && console.log('[boot] note-buyer conditions seed:', JSON.stringify(r)))
           .catch((e) => console.error('[boot] note-buyer conditions seed failed:', e.message));

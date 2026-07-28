@@ -5,6 +5,7 @@ import TermSheetStudio, {
   buildStudioState, scenarioFromEngineInputs, adminStateFromEngineInputs, blobToBase64,
 } from './TermSheetStudio.jsx';
 import GuarantyWaiverCard from './GuarantyWaiverCard.jsx';
+import { fullNameOf } from '../lib/personName.js';
 
 /* Product registration on a loan file — borrower AND staff logins. The panel
    shows the registered product; "Reprice / re-register" opens the real static
@@ -37,6 +38,22 @@ function shortReason(reasons, status) {
   return m;
 }
 const statusWord = (st) => (st === 'MANUAL' ? 'manual-review exception' : st === 'INELIGIBLE' ? 'not eligible' : String(st || '').toLowerCase());
+
+// The rehab SCOPE a registered scenario describes, in the loan application's own
+// words. Mirrors the server's rehabTypeFromInputs (src/lib/product-registration.js),
+// which writes this same label onto the file's Rehab type on register — so the
+// registered product visibly carries what kind of rehab was priced, not just its
+// budget. Null (a bridge deal, or a renovation strategy with no rehab money)
+// renders no row at all.
+function registeredRehabType(inp) {
+  const i = inp || {};
+  if (/ground/i.test(String(i.strategy || ''))) return 'Ground-up construction';
+  if (/bridge|stabil/i.test(String(i.strategy || ''))) return null;
+  if (i.sqftAddition) return 'Adding square footage';
+  if (i.heavyRehab) return 'Heavy / gut rehab';
+  if (!(Number(i.rehabBudget) > 0)) return null;
+  return 'Light / moderate';
+}
 
 function addrLine(a) {
   if (!a) return '';
@@ -261,6 +278,7 @@ export function RegisteredProductDetails({ reg, compactView = false, showAdmin =
             <Row k={`Effective purchase price ${q.assignment.overridden ? '(admin exception)' : q.assignment.dollarCap ? '(fee capped at the program limit)' : '(fee capped at 15%)'}`} v={money(q.assignment.recognizedPrice)} />}
           <Row k="As-is value / ARV" v={`${money(inp.asIsValue)}${inp.asIsDefaulted ? ' (= purchase, defaulted)' : ''} / ${money(inp.arv)}`} />
           <Row k="Rehab budget" v={money(inp.rehabBudget)} />
+          {registeredRehabType(inp) && <Row k="Rehab scope" v={registeredRehabType(inp)} />}
           <Row k="FICO / experience" v={`${inp.fico || '—'} · ${inp.expFlips || 0} flips / ${inp.expHolds || 0} holds / ${inp.expGround || 0} ground-up`} />
           <Row k="Requested interest reserve" v={`${inp.irAmount ? money(inp.irAmount) : `${inp.irMonths || 0} months`}${(inp.irAmount > 0 || inp.irMonths > 0) ? ` · financed: ${money(s.financedReserve || 0)}` : ''}`} />
           {showAdmin && q.adminPricing && (q.adminPricing.markupPct != null || q.adminPricing.manualPricing) && (
@@ -308,12 +326,22 @@ function studioStateFromFields(f) {
 
 const ProductStudioPanel = forwardRef(function ProductStudioPanel({ appId, app, mode = 'borrower', onRegistered, toolItemId, staffRole }, ref) {
   const isStaff = mode === 'staff';
-  // The admin pricing zone (manual rate/leverage basis, experience overrides)
-  // only renders for roles the SERVER will honor (root-caused 2026-07-16,
-  // Pinchus Wieder: every other staff role had those knobs silently stripped
-  // on register — the studio displayed terms the file never got). Non-admin
-  // staff never see knobs their register would now be refused for.
-  const staffAdmin = isStaff && ['admin', 'super_admin'].includes(staffRole || '');
+  // The studio's admin PRICING ZONE (markup, origination points, closing-cost
+  // fees, the approved effective price, and the manual LTV/LTC/ARV/rate basis) is
+  // open to EVERY staff role again — owner-directed 2026-07-27, after a loan
+  // officer reported "the admin section at the bottom is gone, I can't override
+  // the pricing or create a manual program to send for an exception anymore".
+  // This SUPERSEDES the 2026-07-16 rule that hid the zone from non-admins because
+  // the server stripped those keys: the server no longer strips or refuses
+  // anything — a knob moved off the company default makes the registration an
+  // EXCEPTION that an admin approves in the Escalations box before the borrower
+  // is sent terms or any term sheet can be sent.
+  const staffAdmin = isStaff;
+  // Is this staffer an ADMIN who could otherwise approve such an exception? Used
+  // only to warn them that they can't approve their OWN request (a super_admin
+  // is exempt from that control — see mayDecide in admin-manual-programs.js).
+  // Never used to hide a control.
+  const isApprover = isStaff && staffRole === 'admin';
   const [data, setData] = useState(null);       // { current, history }
   const [profile, setProfile] = useState(null); // borrower profile (name + fico)
   const [snap, setSnap] = useState(null);       // live studio state
@@ -515,6 +543,10 @@ const ProductStudioPanel = forwardRef(function ProductStudioPanel({ appId, app, 
       }
       const c = { ...savedStudio.c };
       if ('isAssignment' in ae) c.isAssign = st2.c.isAssign;
+      // NOTE: a resumed draft keeps its manual-scenario flag for EVERY staff role
+      // now (it used to be force-cleared for non-admins — the #148 "invisible
+      // re-armed knob" guard). The zone is visible to everyone, so nothing is
+      // hidden state anymore, and a manual basis simply routes to approval.
       // The property ADDRESS (and its state) is file-owned exactly like the
       // economics above (owner-reported 2026-07-24: the file's corrected
       // "392-394 Columbia Ave" never reached the term sheet — a draft/registered
@@ -524,13 +556,10 @@ const ProductStudioPanel = forwardRef(function ProductStudioPanel({ appId, app, 
       if (fileAddr) { v.propAddr = fileAddr; c.addrTBD = false; }
       const fileState = app.property_address && app.property_address.state;
       if (fileState) v.propState = String(fileState).toUpperCase();
-      // A pre-fix autosave could carry an invisibly restored manual-pricing
-      // flag (the #148 LO-403 poison) — non-admin staff never resume it.
-      if (isStaff && !staffAdmin) c.tsManualOn = false;
       return { v, c };
     }
     const name = isStaff
-      ? ([app.first_name, app.last_name].filter(Boolean).join(' ') || '')
+      ? (fullNameOf(app) || '')
       : ([profile && profile.first_name, profile && profile.last_name].filter(Boolean).join(' ') || '');
     // #104: the borrowing ENTITY (vesting name) prefills its own slot, separate
     // from the individual borrower name — no longer folded into borrowerName.
@@ -538,7 +567,7 @@ const ProductStudioPanel = forwardRef(function ProductStudioPanel({ appId, app, 
     // Co-borrower name (staff view has it on the app) → prefills the term
     // sheet's second signature line (#137).
     const coName = (isStaff && app.co_borrower_id)
-      ? ([app.co_first_name, app.co_last_name].filter(Boolean).join(' ') || '')
+      ? (fullNameOf(app, 'co_') || '')
       : '';
     // #143 — the stored engine inputs ARE the exact registered scenario, but
     // older registrations / server quotes sometimes omit an economics field (most
@@ -574,18 +603,11 @@ const ProductStudioPanel = forwardRef(function ProductStudioPanel({ appId, app, 
       // registration-era address on the term sheet forever after a correction.
       st = buildStudioState(scenarioFromEngineInputs(inp, { entityName: entity, borrowerName: name, coBorrowerName: coName, address: addrLine(app.property_address) || inp.address, state: (app.property_address && app.property_address.state) || inp.state, estClosingDate: app.est_closing_date || app.expected_closing, coBorrowerPgWaived: app.co_borrower_pg_waived, ...econFallback(inp), ...fileEcon() }));
       if (isStaff) {
-        // Admin knobs restore ONLY for roles the server will honor. The zone is
-        // already hidden for non-admin staff (Pinchus), but the RESTORE used to
-        // run for all staff — so a previously admin-manual-priced file silently
-        // re-armed manualPricing/ovrRate* inside the hidden zone and every LO
-        // re-register was refused 403 with a remedy the LO couldn't perform
-        // (#148 root). Fees/markups still restore for all staff (the server
-        // accepts those and they're the registered fee structure).
+        // The registered scenario's admin knobs (markup, points, fees, and any
+        // manual LTV/LTC/ARV/rate basis) restore for EVERY staff role — the zone
+        // is visible to everyone now, so nothing is re-armed invisibly and no
+        // register can be refused for a knob its owner couldn't see (#148).
         const adm = adminStateFromEngineInputs(inp);
-        if (!staffAdmin) {
-          for (const k of ['tsMLtv', 'tsMArv', 'tsMLtc', 'tsMRate', 'tsMIr']) delete adm.v[k];
-          delete adm.c.tsManualOn;
-        }
         st = { v: { ...st.v, ...adm.v }, c: { ...st.c, ...adm.c } };
       }
     } else if (data.quote && data.quote.inputs) {
@@ -697,7 +719,7 @@ const ProductStudioPanel = forwardRef(function ProductStudioPanel({ appId, app, 
       const months = Number(assetMonths);
       if (manual && !(Number.isFinite(months) && months >= 1 && months <= 24)) {
         // The finally block clears busy + releases the submit gate on return.
-        setErr('This is a manual product — you changed the LTV, LTC or ARV. Enter how many months of assets/liquidity this file must show (1–24) below, then register. It will go to a super-admin for approval.');
+        setErr('This is a manual product — you changed the LTV, LTC or ARV. Enter how many months of assets/liquidity this file must show (1–24) below, then register. It will go to an admin for approval.');
         return;
       }
       // econVersion: the file-basis fingerprint this studio session prefilled
@@ -712,9 +734,12 @@ const ProductStudioPanel = forwardRef(function ProductStudioPanel({ appId, app, 
         : await api.borrowerRegisterProduct(appId, s.program, overrides, adminKey || undefined, econVersion, submitException, termOptions);
       setExceptionInfo(null);
       const pendingApproval = !!(resp && resp.pendingApproval);
+      const changed = (resp && Array.isArray(resp.overrideLines)) ? resp.overrideLines : [];
       let note = pendingApproval
         ? (isStaff
-            ? 'Exception request submitted — it’s waiting for super-admin approval in the Escalations box. The borrower is NOT sent terms until it’s approved.'
+            ? (resp && resp.pendingReason === 'pricing_override'
+                ? `Registered and sent to an admin for approval — you changed the pricing defaults${changed.length ? ` (${changed.join('; ')})` : ''}. It’s waiting in the Escalations box; the borrower is NOT sent terms and no term sheet can go out until it’s approved.`
+                : `Exception request submitted — it’s waiting for approval in the Escalations box${changed.length ? ` (${changed.join('; ')})` : ''}. The borrower is NOT sent terms until it’s approved.`)
             : 'Exception request submitted — your loan team will review it. You won’t receive terms unless it’s approved.')
         : 'Product registered — the loan file now carries these terms, the liquidity requirement and the term sheet.';
       if (pdf && pdf.blob) {
@@ -816,13 +841,49 @@ const ProductStudioPanel = forwardRef(function ProductStudioPanel({ appId, app, 
     : !snap.program ? 'Choose a product — tap the Standard or Gold Standard card in the studio.'
     : (d && d.status === 'INELIGIBLE') ? "This scenario isn't eligible as entered — adjust it in the studio, or contact your loan team for a manual review."
     : (d && !(d.totalLoan > 0)) ? "This scenario didn't size a loan yet — check the purchase price, ARV / as-is value and rehab budget in the studio."
-    : scenarioManual ? `This scenario isn’t eligible as-is on the ${snap.program === 'gold' ? 'Gold Standard' : 'Standard'} program — it needs a manual-review exception. Submit an exception request${isStaff ? ' — a super-admin reviews it and the borrower isn’t sent terms unless it’s approved.' : ' and your loan team will review it.'}`
+    : scenarioManual ? `This scenario isn’t eligible as-is on the ${snap.program === 'gold' ? 'Gold Standard' : 'Standard'} program — it needs a manual-review exception. Submit an exception request${isStaff ? ' — an admin reviews it and the borrower isn’t sent terms unless it’s approved.' : ' and your loan team will review it.'}`
     : '';
 
-  // Is the LIVE studio scenario a manual product (LTV/LTC/ARV override)? Only
-  // admin staff can enter those knobs, so only they ever see the manual UI.
+  // Is the LIVE studio scenario a manual product (LTV/LTC/ARV override)? Every
+  // staff role can enter those knobs now, so every staff role sees the manual UI
+  // (and must state the liquidity months before it can register).
   let manualLive = false;
-  try { manualLive = staffAdmin && snap && overridesAreManual(overridesFromSnapshot(snap, 'staff')); } catch (_) { manualLive = false; }
+  try { manualLive = isStaff && snap && overridesAreManual(overridesFromSnapshot(snap, 'staff')); } catch (_) { manualLive = false; }
+  // Is the LIVE scenario carrying an admin-zone knob that is OFF the company
+  // default (and therefore needs an admin's approval)? Compared against the real
+  // company defaults the server sends on the pricing load — the SAME numbers the
+  // register re-checks with, so the warning can never claim a change that isn't
+  // one. Without defaults (older bundle / cold cache) it stays quiet and lets the
+  // register be the authority.
+  const liveOverrideKeys = useMemo(() => {
+    if (!isStaff || !snap) return [];
+    const cd = data && data.pricingDefaults;
+    let ov = {};
+    try { ov = overridesFromSnapshot(snap, 'staff') || {}; } catch (_) { return []; }
+    const DEFAULTED = {
+      markupStdPct: 'rate markup (Standard)', markupGoldPct: 'rate markup (Gold)',
+      origStdPct: 'origination points (Standard)', origGoldPct: 'origination points (Gold)',
+      lenderFee: 'underwriting / legal fee', creditFee: 'credit-report fee',
+      appraisalFee: 'appraisal fee', titleFee: 'title / escrow fee',
+    };
+    const NO_DEFAULT = { ovrEffPrice: 'effective purchase price', manualPricing: 'manual scenario' };
+    const out = [];
+    if (cd) {
+      for (const k of Object.keys(DEFAULTED)) {
+        const raw = ov[k];
+        if (raw == null || raw === '') continue;              // blank = "use the company default"
+        const v = Number(raw);
+        if (!Number.isFinite(v)) continue;
+        const d = cd[k] == null || cd[k] === '' ? null : Number(cd[k]);
+        if (d != null && Math.abs(v - d) < 0.0001) continue;  // typed the default back
+        out.push(DEFAULTED[k]);
+      }
+    }
+    const engagedVal = (v) => v === true || (v != null && v !== '' && v !== false && Number(v) !== 0);
+    for (const k of Object.keys(NO_DEFAULT)) if (engagedVal(ov[k])) out.push(NO_DEFAULT[k]);
+    return out;
+  }, [isStaff, snap, data]);
+  const liveNeedsApproval = manualLive || liveOverrideKeys.length > 0;
   // A plain MANUAL scenario (NOT a manual LTV/LTC/ARV product — that has its own
   // asset-months flow) registers via the "Submit exception request" action, which
   // opens a super-admin escalation and withholds borrower terms until approved.
@@ -868,22 +929,32 @@ const ProductStudioPanel = forwardRef(function ProductStudioPanel({ appId, app, 
             : 'A pricing input changed since this product was registered — re-register so the structure and loan amount match the new numbers.'}
         </div>
       )}
-      {/* Escalation state — a registered file that needs super-admin approval
-          (a Manual Program OR any Standard/Gold manual-review exception — below the
-          minimum, over the maximum, etc.). The borrower is NOT sent terms until it's
-          approved (owner-directed 2026-07-20 / 2026-07-21). A COUNTER-OFFER state
-          (2026-07-21) surfaces the super-admin's proposed terms with a one-click
-          Accept button that re-registers the file at those terms. */}
+      {/* Escalation state — a registered file that needs an admin's approval
+          (a Manual Program, any Standard/Gold manual-review exception — below the
+          minimum, over the maximum — OR a pricing override off the company
+          defaults, owner-directed 2026-07-27). The borrower is NOT sent terms
+          until it's approved. A COUNTER-OFFER state (2026-07-21) surfaces the
+          proposed terms with a one-click Accept that re-registers at them. */}
       {cur && esc && (
         <div className={`notice ${escCountered ? 'warn' : escPending ? 'warn' : esc.status === 'approved' ? 'ok' : 'err'}`} style={{ marginTop: 10 }}>
-          <strong>{escCountered ? 'Counter-offer from a super-admin.' : (cur.program === 'manual' ? 'Manual Program.' : 'Manual-review exception.')}</strong>{' '}
+          <strong>{escCountered ? 'Counter-offer from an admin.'
+            : cur.program === 'manual' ? 'Manual Program.'
+            : (esc.summary && esc.summary.kind === 'pricing_override') ? 'Pricing changed from the defaults.'
+            : 'Manual-review exception.'}</strong>{' '}
           {escCountered
-            ? 'A super-admin proposed different terms they would accept. Review the terms below and accept them to re-register at the countered numbers, or open the studio and adjust the scenario for a fresh exception.'
+            ? 'An admin proposed different terms they would accept. Review the terms below and accept them to re-register at the countered numbers, or open the studio and adjust the scenario for a fresh exception.'
             : escPending
-              ? `Registered but NOT confirmed — waiting for super-admin approval in the Escalations box${esc.asset_months ? ` (${esc.asset_months} month${esc.asset_months === 1 ? '' : 's'} of liquidity required)` : ''}. The borrower isn’t sent terms until it’s approved.`
+              ? `Registered but NOT confirmed — waiting for an admin to approve it in the Escalations box${esc.asset_months ? ` (${esc.asset_months} month${esc.asset_months === 1 ? '' : 's'} of liquidity required)` : ''}. The borrower isn’t sent terms until it’s approved.`
               : esc.status === 'approved'
-                ? `Approved by a super-admin${esc.asset_months ? ` · ${esc.asset_months} month${esc.asset_months === 1 ? '' : 's'} of liquidity required` : ''}.`
-                : `Declined by a super-admin${esc.decision_note ? ` — ${esc.decision_note}` : ''}. Adjust the scenario and re-register, or re-submit the exception.`}
+                ? `Approved${esc.asset_months ? ` · ${esc.asset_months} month${esc.asset_months === 1 ? '' : 's'} of liquidity required` : ''}.`
+                : `Declined${esc.decision_note ? ` — ${esc.decision_note}` : ''}. Adjust the scenario and re-register, or re-submit the exception.`}
+          {/* Exactly WHAT was moved off the company defaults (db/343), so the
+              file itself always shows what is being approved. */}
+          {Array.isArray(esc.summary && esc.summary.overrideLines) && esc.summary.overrideLines.length > 0 && (
+            <div className="muted small" style={{ marginTop: 6 }}>
+              Changed from the defaults: {esc.summary.overrideLines.join(' · ')}
+            </div>
+          )}
           {escCountered && (
             <div style={{ marginTop: 8, padding: 10, background: 'rgba(174,135,70,0.10)', border: '1px solid #AE8746', borderRadius: 8 }}>
               {esc.counter_note && <div style={{ fontSize: 13, whiteSpace: 'pre-wrap', marginBottom: 8, color: 'var(--ivory,#141B22)' }}>{esc.counter_note}</div>}
@@ -911,11 +982,12 @@ const ProductStudioPanel = forwardRef(function ProductStudioPanel({ appId, app, 
         </div>
       )}
       {/* Manual product — the registrant must state months of liquidity before
-          registering. Only admin staff can reach the LTV/LTC/ARV knobs. */}
+          registering. Every staff role can reach the LTV/LTC/ARV knobs now
+          (owner-directed 2026-07-27); the approval is what governs. */}
       {manualLive && (
         <div className="notice" style={{ marginTop: 10 }}>
-          <strong>Manual product (custom LTV / LTC / ARV).</strong> This registers as a Manual Program and goes to a
-          super-admin for approval. Enter how many months of assets/liquidity this file must show:
+          <strong>Manual product (custom LTV / LTC / ARV).</strong> This registers as a Manual Program and goes to an
+          admin for approval. Enter how many months of assets/liquidity this file must show:
           <div className="row" style={{ gap: 8, alignItems: 'center', marginTop: 8 }}>
             <input type="number" min="1" max="24" step="1" value={assetMonths}
               onChange={(e) => setAssetMonths(e.target.value)} style={{ width: 90 }}
@@ -995,21 +1067,6 @@ const ProductStudioPanel = forwardRef(function ProductStudioPanel({ appId, app, 
           )}
         </div>
       )}
-      {/* #148: the current terms carry an admin manual-pricing basis this role
-          cannot re-register. Say so UPFRONT — the old behavior silently
-          re-armed the admin knobs and refused the register after the fact. */}
-      {isStaff && !staffAdmin && cur && (() => {
-        try {
-          const inp = typeof cur.inputs === 'string' ? JSON.parse(cur.inputs) : (cur.inputs || {});
-          return inp.manualPricing ? (
-            <div className="notice" style={{ marginTop: 10 }}>
-              The current registered terms use an admin manual-pricing basis (negotiated rate/leverage).
-              Re-registering under your role prices on the standard engine basis — ask an admin to
-              re-register if the negotiated terms must be preserved.
-            </div>
-          ) : null;
-        } catch { return null; }
-      })()}
 
       {!cur && data && (
         <p className="muted small" style={{ margin: '10px 0 0' }}>
@@ -1063,10 +1120,33 @@ const ProductStudioPanel = forwardRef(function ProductStudioPanel({ appId, app, 
                       ? { name: app.loan_officer_name || '', email: app.loan_officer_email || '', nmls: app.loan_officer_nmls || '', role: 'Loan officer' }
                       : null} />
                 : <p className="muted small">Loading your scenario…</p>}
+              {/* Pricing controls are open to every staff role again, and every
+                  change to them goes for approval (owner-directed 2026-07-27).
+                  Say it BEFORE they register, not after. */}
+              {isStaff && (
+                <div className={`notice${liveNeedsApproval ? ' warn' : ''}`} style={{ margin: '10px 0' }}>
+                  {liveNeedsApproval ? (
+                    <>
+                      <strong>This goes to an admin for approval.</strong>{' '}
+                      You changed the pricing defaults{liveOverrideKeys.length ? ` — ${liveOverrideKeys.join(', ')}` : ''}
+                      {manualLive ? `${liveOverrideKeys.length ? ', and' : ' —'} the LTV / LTC / ARV basis` : ''}.
+                      {' '}Registering files it as an exception: the file carries the new terms, but the borrower isn’t
+                      sent them and the term sheet can’t be sent until an admin approves it in the Escalations box.
+                      {isApprover ? ' Someone other than you has to approve it.' : ''}
+                    </>
+                  ) : (
+                    <>
+                      <strong>Pricing controls</strong> are at the bottom of the form — rate markup, origination points,
+                      closing-cost fees, and a manual LTV / LTC / ARV / rate basis. Anything you change there goes to an
+                      admin for approval before the borrower gets terms. Leave them alone and the deal registers as usual.
+                    </>
+                  )}
+                </div>
+              )}
               {manualLive && (
                 <div className="notice" style={{ margin: '10px 0' }}>
                   <strong>Manual product (custom LTV / LTC / ARV).</strong> This registers as a Manual Program and needs
-                  super-admin approval. Enter how many months of assets/liquidity this file must show before registering:
+                  an admin’s approval. Enter how many months of assets/liquidity this file must show before registering:
                   <div className="row" style={{ gap: 8, alignItems: 'center', marginTop: 8 }}>
                     <input type="number" min="1" max="24" step="1" value={assetMonths}
                       onChange={(e) => setAssetMonths(e.target.value)} style={{ width: 90 }}

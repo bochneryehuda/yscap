@@ -8,6 +8,12 @@
 export const CITIZENSHIP = ['US Citizen', 'Permanent Resident', 'Foreign National'];
 export const MARITAL = ['Single', 'Married', 'Separated', 'Divorced', 'Widowed'];
 export const HOUSING = ['Rent', 'Own with mortgage', 'Own free and clear', 'Live with family', 'Other'];
+// How the borrower earns. THE VALUES MUST BE THE SPELLINGS THE CLICKUP
+// CROSSWALK KNOWS (`employment_type` in src/clickup/crosswalk.js) — this is a
+// two-way mapped dropdown, so a value it can't translate is dropped from the
+// push in silence and the next inbound pull reads ClickUp's old value straight
+// back over the edit (the same trap the PROGRAMS list fell into, see below).
+export const EMPLOYMENT = ['W-2', '1099', 'K1 - S CORP', 'C CORP', 'Self employed'];
 // Contact type = the CRM relationship/role of this person on the deal.
 export const CONTACT_TYPE = ['Investor', 'Primary', 'Co-Borrower', 'Guarantor', 'Referral Partner', 'Other'];
 

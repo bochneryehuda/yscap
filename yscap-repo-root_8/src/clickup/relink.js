@@ -132,7 +132,7 @@ async function resolveTask(ref) {
 async function fileSummary(appId) {
   const r = await db.query(
     `SELECT a.id, a.property_address->>'oneLine' AS address, a.status, a.sync_state,
-            (b.first_name || ' ' || b.last_name) AS borrower
+            NULLIF(b.full_name,'') AS borrower
        FROM applications a LEFT JOIN borrowers b ON b.id=a.borrower_id
       WHERE a.id=$1`, [appId]).catch(() => ({ rows: [] }));
   return r.rows[0] || null;
@@ -142,7 +142,7 @@ async function fileSummary(appId) {
 async function currentHolder(taskId, exceptAppId) {
   const r = await db.query(
     `SELECT a.id, a.property_address->>'oneLine' AS address, a.status, a.sync_state,
-            (b.first_name || ' ' || b.last_name) AS borrower
+            NULLIF(b.full_name,'') AS borrower
        FROM applications a LEFT JOIN borrowers b ON b.id=a.borrower_id
       WHERE a.clickup_pipeline_task_id=$1 AND a.deleted_at IS NULL
         AND ($2::uuid IS NULL OR a.id <> $2::uuid)

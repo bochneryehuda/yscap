@@ -457,7 +457,7 @@ async function loadCureContext(appId, client) {
   // clearance preview reported it satisfied and the weak-proof sign-off warning, which exists to
   // catch exactly this, stayed silent. `a.lender` is the note buyer (field-registry.normNoteBuyer).
   const requiredMonths = program ? bankStatementMonths(program, null, row.lender) : null;
-  const borrowerName = [row.first_name, row.last_name].filter(Boolean).join(' ').trim() || null;
+  const borrowerName = require('../person-name').displayName(row).trim() || null;
   const entityName = row.llc_name || null;
   const expected = {
     programMinFico: null,

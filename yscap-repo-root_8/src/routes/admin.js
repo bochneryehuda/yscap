@@ -386,7 +386,7 @@ router.get('/staff/:id/file-grants', async (req, res) => {
       ysLoanNumber: row.ys_loan_number,
       status: row.status,
       address: (row.property_address && row.property_address.oneLine) || null,
-      borrowerName: `${row.first_name || ''} ${row.last_name || ''}`.trim(),
+      borrowerName: require('../lib/person-name').displayName(row),
     })));
   } catch (e) { res.status(500).json({ error: 'could not load file grants' }); }
 });

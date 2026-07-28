@@ -60,22 +60,34 @@ function isManualProduct(overrides) {
 }
 
 /**
- * Does a registration require super-admin escalation before its terms may be
- * CONFIRMED to the borrower? (owner-directed 2026-07-21.)
+ * Does a registration require an ADMIN approval before its terms may be
+ * CONFIRMED to the borrower? (owner-directed 2026-07-21; widened 2026-07-27.)
  *
  * TRUE for:
  *   • every Manual Program (a structural LTV/LTC/ARV override — program 'manual'),
- *     which is manual by definition and has no min/max but still must be approved; and
+ *     which is manual by definition and has no min/max but still must be approved;
  *   • ANY Standard/Gold registration the frozen engine returns as MANUAL — i.e.
  *     below the $100,000 program minimum, over the program maximum, or any other
- *     manual-review reason the guideline engine raises.
+ *     manual-review reason the guideline engine raises; and
+ *   • ANY registration that moved a knob in the studio's admin pricing zone away
+ *     from the company default — a reduced rate markup, reduced origination
+ *     points, a discounted/waived closing fee, an approved effective purchase
+ *     price, a manual basis (owner-directed 2026-07-27: "every single time
+ *     somebody is changing the defaults … this should be sent to the admin for
+ *     approval, no matter if it's reducing the rate, reducing the fee, or manual
+ *     programs"). The caller passes the deviations it detected with the shared
+ *     pricing-overrides.pricingOverridesEngaged(); `needsApproval` is the already
+ *     -resolved boolean form a stored registration row carries.
  *
- * A clean ELIGIBLE Standard/Gold registration needs no approval (it confirms to
- * the borrower immediately, as before). Centralized here so both register routes
- * and any future caller share ONE definition of "needs super-admin sign-off".
+ * A clean ELIGIBLE Standard/Gold registration priced on the company defaults
+ * needs no approval (it confirms to the borrower immediately, as before).
+ * Centralized here so both register routes, the e-sign issuance gate and any
+ * future caller share ONE definition of "needs sign-off".
  */
-function needsSuperAdminApproval({ program, status } = {}) {
-  return program === 'manual' || status === 'MANUAL';
+function needsSuperAdminApproval({ program, status, pricingOverrides, needsApproval } = {}) {
+  if (program === 'manual' || status === 'MANUAL') return true;
+  if (needsApproval === true) return true;
+  return Array.isArray(pricingOverrides) && pricingOverrides.length > 0;
 }
 
 /**
@@ -176,7 +188,7 @@ async function saveSettings(patch, by, client = db) {
  * the partial-unique index (one pending per app) holds. Runs inside the caller's
  * transaction client. Returns the new escalation id.
  */
-async function openEscalation(client, { appId, registrationId, assetMonths, overrides, summary, requestedBy }) {
+async function openEscalation(client, { appId, registrationId, assetMonths, overrides, pricingOverrides, summary, requestedBy }) {
   // Supersede any OPEN escalation on the file — a plain pending row OR a
   // countered row awaiting the loan officer's action. The re-register replaces
   // both; the queue never shows a stale prior counter.
@@ -185,9 +197,17 @@ async function openEscalation(client, { appId, registrationId, assetMonths, over
         SET status='declined', decided_at=now(), updated_at=now(),
             decision_note=COALESCE(decision_note,'Superseded by a newer manual registration')
       WHERE application_id=$1 AND status IN ('pending','countered')`, [appId]);
+  // Record the numbers the approver is being asked to bless: the structural
+  // leverage keys (a Manual Program) AND every admin-zone knob moved off the
+  // company default (owner-directed 2026-07-27) — a reduced rate, a discounted
+  // fee, an approved effective price. The accept-counter path replays this blob
+  // as its override base, so it must stay a plain key→value map.
   const structural = structuralOverridesEngaged(overrides);
   const slim = {};
   for (const k of structural) slim[k] = overrides[k];
+  for (const c of (Array.isArray(pricingOverrides) ? pricingOverrides : [])) {
+    if (c && c.key && !(c.key in slim) && overrides && c.key in overrides) slim[c.key] = overrides[c.key];
+  }
   const ins = await client.query(
     `INSERT INTO manual_program_escalations
        (application_id, registration_id, status, asset_months, overrides, summary, requested_by)

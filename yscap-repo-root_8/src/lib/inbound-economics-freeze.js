@@ -173,4 +173,140 @@ async function applyInboundEconomicsFreeze({ appId, cols, taskId, borrowerId, cl
   return changed.map((c) => c.field);
 }
 
-module.exports = { FROZEN_ECON_FIELDS, FROZEN_KEYS, sameValue, fieldSame, changedFrozenFields, summarize, applyInboundEconomicsFreeze };
+// Build an `incoming` frozen-economics object from a review row's STORED diffs
+// (raw_value.changes = [{field,label,from,to}] — what the freeze captured when it
+// parked the row). Re-runs the SAME two sanitizers the live path uses so a bad
+// loan_type/property_type is refused identically. Returns null when there's
+// nothing usable.
+function incomingFromStoredChanges(changes) {
+  if (!Array.isArray(changes)) return null;
+  const { sanitizeLoanType } = require('./fields');
+  const { sanitizePropertyType } = require('./property-type');
+  const out = {};
+  for (const c of changes) {
+    if (!c || !FROZEN_KEYS.includes(c.field) || c.to == null) continue;
+    let v = c.to;
+    if (c.field === 'loan_type') v = sanitizeLoanType(v);
+    else if (c.field === 'property_type') v = sanitizePropertyType(v);
+    if (v == null) continue;
+    out[c.field] = v;
+  }
+  return Object.keys(out).length ? out : null;
+}
+
+// LIVE re-read of ClickUp → the same `incoming` shape the inbound pull builds.
+// Returns null when the task can't be read at all OR no frozen-economics value
+// could be extracted (a mapping gap / emptied task) — so the caller falls back to
+// the stored base rather than treating an extraction gap as "nothing changed".
+// May throw the ClickUp client's HTTP error (the caller catches it).
+async function readLiveIncoming(tid) {
+  const clickup = require('../clickup/client');
+  const mapper = require('../clickup/mapper');
+  const registry = require('../clickup/registry');
+  const { sanitizeLoanType } = require('./fields');
+  const { sanitizePropertyType } = require('./property-type');
+  const task = await clickup.getTask(tid);
+  if (!task) return null;
+  // The per-file ClickUp list id is NOT stored on `applications` (there is no
+  // clickup_list_id column — reading it is what threw the "server error"), so use
+  // the sync's warm dropdown-option cache (`optionMap(null)` returns it without a
+  // fetch); a cold cache just falls back to the task's own embedded option list in
+  // readTaskFields, and the stored base below is the reliable path regardless.
+  let options = {};
+  try { options = await registry.optionMap(null); }
+  catch (_) { try { options = registry.peek(); } catch (_2) { options = {}; } }
+  const a = (mapper.readTaskFields(task, options).app) || {};
+  const incoming = {
+    loan_amount: a.loan_amount, purchase_price: a.purchase_price, as_is_value: a.as_is_value, arv: a.arv,
+    rehab_budget: a.rehab_budget, program: a.program,
+    loan_type: sanitizeLoanType(a.loan_type),
+    property_type: sanitizePropertyType(a.property_type),
+    units: a.units, term: a.term, is_assignment: a.is_assignment,
+    underlying_contract_price: a.underlying_contract_price, assignment_fee: a.assignment_fee,
+  };
+  return FROZEN_KEYS.some((k) => incoming[k] != null) ? incoming : null;
+}
+
+/**
+ * ACCEPT the held ClickUp economics change on a FROZEN file — the deliberate
+ * human override of the freeze (owner-directed 2026-07-27: "we always also need
+ * the option to keep ClickUp's figure and update our system … in the manual
+ * review to approve that the changes may happen to a locked file").
+ *
+ * This is the mirror of the KEEP-PILOT'S-FIGURES action: instead of pushing the
+ * file's frozen figures back to ClickUp, it pulls ClickUp's figures INTO the
+ * frozen file. It is used for reconciled/closed files that were finished in
+ * ClickUp and whose figures PILOT should now match.
+ *
+ * Robust by construction (owner-reported 2026-07-27: the button "does not update
+ * anything and it still stays" — the first version HARD-DEPENDED on a live ClickUp
+ * re-read, so a momentarily-unreachable/deleted task or a mapping gap made the
+ * action throw or silently no-op):
+ *   • RELIABLE BASE — the review row's stored `changes` (what the freeze captured
+ *     when it parked the row) are the offline source of truth, so the accept can
+ *     never be a silent no-op just because ClickUp can't be reached right now.
+ *   • FRESHEST OVERLAY — it ALSO re-reads ClickUp live (like every other review
+ *     resolver) and lets a value that changed AGAIN since the freeze win; a read
+ *     failure just falls through to the base.
+ *   • It reuses the EXACT inbound mapping + sanitizers (`readTaskFields`,
+ *     `sanitizeLoanType`, `sanitizePropertyType`) and the SAME `changedFrozenFields`
+ *     comparison the freeze uses — so what it writes is byte-for-byte what a normal
+ *     inbound pull WOULD have written if the file weren't frozen.
+ *   • It only ever writes the FROZEN economics fields that genuinely differ from
+ *     the file now, and a blank value never clears a real figure (changedFrozenFields
+ *     skips null-incoming).
+ *   • NEVER SILENT — if neither ClickUp nor the stored row carries any figure to
+ *     apply, it throws a clear, human-readable error instead of doing nothing.
+ *   • Writing the economics reopens the pricing/SOW conditions through the normal
+ *     db/071/072 trigger (the registered product no longer matches the new
+ *     numbers) — the intended, honest consequence; ClickUp already holds these
+ *     values, so nothing is pushed back.
+ *
+ * @param fallbackChanges the review row's raw_value.changes (offline base)
+ * @returns {Promise<{applied:Array, upToDate:boolean, taskId?:string, source:string}>}
+ */
+async function acceptInboundEconomicsChange({ appId, actorId = null, taskId = null, fallbackChanges = null, client = db }) {
+  if (!appId) { const e = new Error('no application on this review'); e.status = 422; e.expose = true; throw e; }
+  const appRow = (await client.query(
+    `SELECT clickup_pipeline_task_id, ${FROZEN_KEYS.join(', ')} FROM applications WHERE id=$1`, [appId])).rows[0];
+  if (!appRow) { const e = new Error('the file no longer exists'); e.status = 404; e.expose = true; throw e; }
+  const tid = taskId || appRow.clickup_pipeline_task_id;
+
+  // Reliable, offline base: the figures the freeze captured on this row.
+  const base = incomingFromStoredChanges(fallbackChanges);
+
+  // Freshest overlay: re-read ClickUp live. Best-effort — a ClickUp outage /
+  // deleted task / mapping gap falls through to the base rather than stranding
+  // the accept. (When there's NO base at all, a live-read error is surfaced so
+  // the reviewer isn't left with a silent failure.)
+  let live = null;
+  if (tid && !String(tid).startsWith('app:')) {
+    try { live = await readLiveIncoming(tid); }
+    catch (e) { if (!base) throw e; live = null; }
+  }
+
+  const incoming = { ...(base || {}) };
+  if (live) for (const k of FROZEN_KEYS) if (live[k] != null) incoming[k] = live[k];
+
+  if (!Object.keys(incoming).length) {
+    const e = new Error('could not read the ClickUp figures to apply — nothing was changed. Press “Sync my files” and try again.');
+    e.status = 409; e.expose = true; throw e;
+  }
+
+  const changed = changedFrozenFields(incoming, appRow);
+  const source = live ? 'live' : 'stored';
+  if (!changed.length) return { applied: [], upToDate: true, taskId: tid, source };
+
+  // Apply the ClickUp values to the file — the override. One UPDATE, the typed
+  // values the inbound pull itself would have written.
+  const set = changed.map((c, i) => `${c.field} = $${i + 2}`).join(', ');
+  const vals = changed.map((c) => incoming[c.field]);
+  await client.query(`UPDATE applications SET ${set}, updated_at=now() WHERE id=$1`, [appId, ...vals]);
+  await client.query(
+    `INSERT INTO audit_log (actor_kind, actor_id, action, entity_type, entity_id, detail)
+     VALUES ($1,$2,'clickup_pull_economics_accepted','application',$3,$4)`,
+    [actorId ? 'staff' : 'system', actorId, appId, JSON.stringify({ taskId: tid, changes: changed, source })]);
+  return { applied: changed, upToDate: false, taskId: tid, source };
+}
+
+module.exports = { FROZEN_ECON_FIELDS, FROZEN_KEYS, sameValue, fieldSame, changedFrozenFields, summarize, applyInboundEconomicsFreeze, acceptInboundEconomicsChange, incomingFromStoredChanges };

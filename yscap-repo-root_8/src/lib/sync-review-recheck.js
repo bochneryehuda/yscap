@@ -77,7 +77,16 @@ function loanNumberOf(row) {
 function valuesAgree(fieldKey, clickupVal, portalVal) {
   if (fieldKey === 'email') { const a = canonEmail(clickupVal), b = canonEmail(portalVal); return !!a && a === b; }
   if (fieldKey === 'cell_phone') { const a = canonPhone(clickupVal), b = canonPhone(portalVal); return a.length >= 10 && a === b; }
-  if (fieldKey === 'first_name') { const a = canonName(clickupVal), b = canonName(portalVal); return !!a && a === b; }
+  // A NAME agrees when it describes the same person, not only when it is spelled
+  // identically: PILOT now stores the middle name separately (db/345) and joins it
+  // back for ClickUp, so "Issac Grunzweig" on the card and "Issac Michael
+  // Grunzweig" in PILOT must settle the review rather than keep it open forever.
+  // The letters-only key stays as the fast path.
+  if (fieldKey === 'first_name') {
+    const a = canonName(clickupVal), b = canonName(portalVal);
+    if (!!a && a === b) return true;
+    try { return require('./person-name').sameName(clickupVal, portalVal); } catch (_) { return false; }
+  }
   // Addresses compare by MEANING (lib/address.sameAddress) — a trailing
   // ", USA", a unit KEYWORD, an abbreviation or the municipality-vs-mailing
   // city is not a disagreement. The letters-only key stays as a fast path.
@@ -480,8 +489,10 @@ async function computeRecheck(row, opts) {
       if (b && b.ssn_encrypted) { try { portalVal = require('./crypto').decryptSSN(b.ssn_encrypted); } catch (_) { portalVal = null; } }
     } else {
       if (!borrowerId) return { outcome: 'unsupported', reason: 'no_borrower' };
+      // The full name PILOT holds, middle name and suffix included (db/345) —
+      // the same line the ClickUp push writes, so the two sides are comparable.
       const col = fieldKey === 'first_name'
-        ? `trim(coalesce(first_name,'') || ' ' || coalesce(last_name,'')) AS v`
+        ? `trim(regexp_replace(concat_ws(' ', nullif(btrim(coalesce(first_name,'')),''), nullif(btrim(coalesce(middle_name,'')),''), nullif(btrim(coalesce(last_name,'')),''), nullif(btrim(coalesce(name_suffix,'')),'')), '\\s+', ' ', 'g')) AS v`
         : fieldKey === 'current_address' ? `current_address AS v` : `${fieldKey} AS v`;
       const b = (await db.query(`SELECT ${col} FROM borrowers WHERE id=$1`, [borrowerId])).rows[0];
       portalVal = b ? b.v : null;

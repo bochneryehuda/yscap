@@ -468,7 +468,7 @@ router.get('/files/:id/notifications', requirePermission('manage_draws'), async 
   try {
     const sent = (await db.query(
       `SELECT n.id, n.recipient_kind, n.type, n.title, n.body, n.link, n.read_at, n.email_status, n.emailed_at, n.created_at,
-              COALESCE(s.full_name, NULLIF(TRIM(COALESCE(b.first_name,'') || ' ' || COALESCE(b.last_name,'')), '')) AS recipient_name,
+              COALESCE(s.full_name, NULLIF(b.full_name,'')) AS recipient_name,
               COALESCE(s.email, b.email) AS recipient_email,
               se.id IS NOT NULL AS has_full_email,
               COALESCE(array_length(se.to_emails,1),0) AS recipient_count,
@@ -1151,7 +1151,7 @@ router.post('/disbursements', requirePermission('manage_draws'), async (req, res
   if (sitewire_draw_id == null || sitewire_draw_id === '') return res.status(400).json({ error: 'Select which draw this release is for.' });
   if (!/^\d+$/.test(String(sitewire_draw_id))) return res.status(400).json({ error: 'invalid draw id' });
   // it must belong to THIS file (never store a draw id from another file — the lien gate reads that draw's waivers).
-  const own = (await db.query(`SELECT total_approved_cents FROM sitewire_draws WHERE sitewire_draw_id=$1 AND application_id=$2`, [sitewire_draw_id, application_id])).rows[0];
+  const own = (await db.query(`SELECT total_approved_cents, number FROM sitewire_draws WHERE sitewire_draw_id=$1 AND application_id=$2`, [sitewire_draw_id, application_id])).rows[0];
   if (!own) return res.status(400).json({ error: 'that draw is not on this file' });
   const drawId = sitewire_draw_id;
   // M1: don't record a release larger than what the lender actually approved on this draw. Owner-directed
@@ -1208,7 +1208,10 @@ router.post('/disbursements', requirePermission('manage_draws'), async (req, res
         const amt = '$' + (split.net_release_cents / 100).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
         await notify.notifyAppBorrowers(application_id, {
           type: 'draw',
-          title: `Your construction draw has been released`,
+          // Draw number in the SUBJECT + the draw desk looped in (owner-directed 2026-07-27),
+          // matching the TrustPoint-mirrored release email in src/trustpoint/mirror.js.
+          bccExtra: await require('../lib/draw-recipients').drawTeamBcc(),
+          title: `Your construction draw${own.number != null ? ` #${own.number}` : ''} has been released`,
           hero: { label: 'Released to you', value: amt, sub: 'typically arrives in 1–2 business days', tone: 'positive' },
           badge: { text: 'Draw released', tone: 'positive' },
           body: `Your loan team has released a construction draw of ${amt} on your file. Depending on your bank, funds typically take 1–2 business days to arrive.`,
@@ -2074,6 +2077,79 @@ router.post('/files/:id/coordinator', requirePermission('platform_setup'), async
 // ===================================================================================
 
 // ---- POST /files/:id/findings/:drawId/deliver — persist + send findings to the borrower ----
+/** Await `p`, but never longer than `ms` — past the budget the work keeps running to
+ *  completion in the background (every step is idempotent + independently caught) and we
+ *  carry on. `.unref()` so the timer can't hold the event loop open on the fast path. */
+function withBudget(p, ms) {
+  return Promise.race([p, new Promise((r) => {
+    const t = setTimeout(() => r({ archived: 0, reports: [], pending: true }), ms);
+    if (t.unref) t.unref();
+  })]);
+}
+
+/**
+ * The PDFs that ride along with the borrower's findings email (owner-directed 2026-07-27:
+ * "he should receive two PDF attachments in the findings email"):
+ *   1. OUR branded borrower report — photos + totals, partner-scrubbed by construction;
+ *   2. the ADMINISTRATOR's own inspection paperwork for the same draw.
+ *
+ * Both are checked against the frozen rule that a note-buyer name must never reach a
+ * borrower. The administrator's PDFs were decoded and scanned during the build: they name
+ * the lender as "YS Capital Group" and the inspector as "Trinity" — the note buyer does not
+ * appear in them. Only the BORROWER-visibility copy of our own report is ever eligible, so a
+ * staff-only report can never be attached by mistake.
+ *
+ * Best-effort: any failure returns fewer attachments, never an exception — the findings email
+ * must go out even when a PDF is missing (it still links to the full results page).
+ */
+const FINDING_ATTACH_MAX_BYTES = 18 * 1024 * 1024;   // keep the whole email deliverable
+
+async function borrowerFindingAttachments(appId, sitewireDrawId) {
+  const storage = require('../lib/storage');
+  const out = [];
+  // Report filenames are keyed on the draw NUMBER (`pilot-draw-2-report-borrower-…`,
+  // `trustpoint-draw-2-…`), which is NOT the internal sitewire_draw_id. Resolve it first —
+  // preferring the administrator's number when the draws are tied, since both filename
+  // families are built from the same number.
+  const num = (await db.query(
+    `SELECT COALESCE(t.number, s.number) AS n
+       FROM sitewire_draws s
+       LEFT JOIN trustpoint_draws t ON t.sitewire_draw_id = s.sitewire_draw_id
+      WHERE s.sitewire_draw_id = $1::bigint AND s.application_id = $2`,
+    [String(sitewireDrawId), appId])).rows[0];
+  if (!num || num.n == null) return out;
+  const drawNo = String(num.n);
+
+  const rows = (await db.query(
+    `SELECT d.id, d.filename, d.storage_ref, d.size_bytes
+       FROM documents d
+      WHERE d.application_id = $1 AND d.is_current AND d.doc_kind = 'draw_inspection_report'
+        AND (
+          -- our own BORROWER-safe report for this draw (a staff copy can never match)
+          (d.visibility = 'borrower' AND d.filename LIKE 'pilot-draw-' || $2 || '-report-borrower-%')
+          -- the administrator's paperwork filed against the same draw number
+          OR d.filename LIKE 'trustpoint-draw-' || $2 || '-%'
+        )
+      ORDER BY d.created_at DESC`, [appId, drawNo])).rows;
+
+  const seen = new Set();
+  let budget = FINDING_ATTACH_MAX_BYTES;
+  for (const r of rows) {
+    // one per KIND — the newest wins, so a re-inspection's latest report is the one sent
+    const kind = r.filename.startsWith('pilot-') ? 'pilot' : r.filename.replace(/-\d{4}-\d{2}-\d{2}-[^.]*\.pdf$/, '');
+    if (seen.has(kind)) continue;
+    if (Number(r.size_bytes) > budget) continue;
+    try {
+      const content = await storage.read(r.storage_ref);
+      if (!content || !content.length || content.length > budget) continue;
+      out.push({ filename: r.filename, content, contentType: 'application/pdf' });
+      seen.add(kind);
+      budget -= content.length;
+    } catch (e) { /* a missing file never blocks the findings email */ }
+  }
+  return out;
+}
+
 router.post('/files/:id/findings/:drawId/deliver', requirePermission('manage_draws'), async (req, res) => {
   const appId = req.params.id, drawId = req.params.drawId;
   if (!/^\d+$/.test(drawId)) return res.status(404).json({ error: 'draw not found' });
@@ -2116,6 +2192,17 @@ router.post('/files/:id/findings/:drawId/deliver', requirePermission('manage_dra
     // straight from the email, or sign in there to dispute a line (research doc §14).
     const addr = f.address || 'your property';
     const acceptLink = result.reply_token ? `/draw-accept/${result.reply_token}` : `/app/${appId}`;
+    // ---- BUILD THE ARTIFACTS BEFORE THE BORROWER EMAIL (owner-directed 2026-07-27) ----
+    // The borrower must receive TWO PDFs with the findings: the administrator's own
+    // inspection report and OUR branded report (photos + totals). Both used to be produced
+    // AFTER this email was sent, so there was nothing to attach. The archive+build now runs
+    // first, under the same bounded budget that already protected this route — if it does not
+    // finish in time the email still goes out on schedule, just with links instead of files.
+    // Nothing here can fail the delivery: every step is independently caught.
+    const artifacts = await withBudget(
+      drawReport.autoDeliverArtifacts(appId, drawId).catch(() => ({ archived: 0, reports: [] })),
+      Number(process.env.DRAW_AUTODELIVER_BUDGET_MS) || 20000);
+    const findingAttachments = await borrowerFindingAttachments(appId, drawId).catch(() => []);
     // notifyAppBorrowers (not notifyBorrower) so a co-borrower who can see the file
     // ALSO gets the "results ready" email — the primary-only send made the
     // co-borrower first hear of it via the later reminder (owner-reported audit).
@@ -2151,7 +2238,9 @@ router.post('/files/:id/findings/:drawId/deliver', requirePermission('manage_dra
         meta,
         callout: { title: 'What happens when you accept', body: 'Accepting releases your draw — your funds are typically wired within a day or two. Want to look first? Open the results to see every photo and download your inspection report (PDF).', tone: 'action' },
         applicationId: appId, link: acceptLink, ctaLabel: 'Review & accept',
-        cta2Label: 'Push back on a line', cta2Link: disputeLink }).catch(() => {});
+        cta2Label: 'Push back on a line', cta2Link: disputeLink,
+        attachments: findingAttachments,
+        bccExtra: await require('../lib/draw-recipients').drawTeamBcc() }).catch(() => {});
     }
     // In-app only (owner-directed 2026-07-20): a confirmation that the coordinator
     // just delivered findings is not a whole-team EMAIL — the borrower's own
@@ -2166,12 +2255,8 @@ router.post('/files/:id/findings/:drawId/deliver', requirePermission('manage_dra
     // "reports ready", but a slow/unreachable media CDN can NEVER hang this delivery request (the archive is
     // a sequential per-item fetch with only a per-item timeout). Past the budget the work keeps running in the
     // background to completion (every step is idempotent + independently caught) — we just answer promptly.
-    const work = drawReport.autoDeliverArtifacts(appId, drawId).catch(() => ({ archived: 0, reports: [] }));
-    const budgetMs = Number(process.env.DRAW_AUTODELIVER_BUDGET_MS) || 20000;
-    // .unref() so the budget timer never keeps the event loop alive on the fast path (work wins → the timer
-    // is still armed but must not hold the process); it only resolves an already-settled race if it fires.
-    const artifacts = await Promise.race([work, new Promise((r) => { const t = setTimeout(() => r({ archived: 0, reports: [], pending: true }), budgetMs); if (t.unref) t.unref(); })]);
-    res.json({ ok: true, ...result, media_archived: artifacts.archived, reports_ready: artifacts.reports, reports_pending: !!artifacts.pending });
+    res.json({ ok: true, ...result, media_archived: artifacts.archived, reports_ready: artifacts.reports,
+      reports_pending: !!artifacts.pending, attachments_sent: findingAttachments.map((a) => a.filename) });
   } catch (e) { console.warn('[sitewire] upstream error:', e && e.message); res.status(502).json({ error: 'the draw service is temporarily unavailable — nothing was changed; try again shortly' }); }
 });
 

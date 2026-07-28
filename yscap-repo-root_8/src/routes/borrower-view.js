@@ -35,7 +35,7 @@ async function audit(req, action, detail, entityId) {
   }
 }
 
-const borrowerName = (b) => [b.first_name, b.last_name].filter(Boolean).join(' ').trim() || b.email || 'Borrower';
+const borrowerName = (b) => require('../lib/person-name').displayName(b).trim() || b.email || 'Borrower';
 
 // ---- the picker: which borrowers may I step into --------------------------
 router.get('/eligible', requireStaff, async (req, res) => {

@@ -17,6 +17,8 @@ import ToolModal from '../components/ToolModal.jsx';
 import LlcPicker from '../components/LlcPicker.jsx';
 import LlcManager from '../components/LlcManager.jsx';
 import FileSections, { Section, InfoTip } from '../components/FileSections.jsx';
+import { captureScrollAnchor, restoreScrollAnchor } from '../lib/keep-scroll.js';
+import { onFilesDropped } from '../lib/drop-files.js';
 import EsignBorrowerCard from '../components/EsignBorrowerCard.jsx';
 import { MoneyInput, PhoneInput, ZipInput , EmailInput} from '../components/FormattedInputs.jsx';
 import DocPreview from '../components/DocPreview.jsx';
@@ -25,6 +27,7 @@ import ChangeRequestPanel from '../components/ChangeRequestPanel.jsx';
 import BorrowerDraws from '../components/BorrowerDraws.jsx';
 import AppraisalPanel from '../components/AppraisalPanel.jsx';
 import { fileToBase64 } from '../lib/files.js';
+import { fullNameOf } from '../lib/personName.js';
 
 const kb = (n) => n == null ? '' : (n < 1024 ? n + ' B' : n < 1048576 ? (n / 1024).toFixed(0) + ' KB' : (n / 1048576).toFixed(1) + ' MB');
 const money = (n) => n == null ? '—' : '$' + Number(n).toLocaleString('en-US', { maximumFractionDigits: 0 });
@@ -199,11 +202,7 @@ function ConditionRow({ done, issue, title, subtitle, status, action, children, 
   const dropProps = onDropFiles ? {
     onDragOver: (e) => { e.preventDefault(); if (!over) setOver(true); },
     onDragLeave: (e) => { if (e.currentTarget === e.target) setOver(false); },
-    onDrop: (e) => {
-      e.preventDefault(); setOver(false);
-      const f = Array.from(e.dataTransfer.files || []);
-      if (f.length) onDropFiles(f);
-    },
+    onDrop: (e) => { e.preventDefault(); setOver(false); onFilesDropped(e, onDropFiles); },
   } : {};
   return (
     <div className={`checkitem${onDropFiles ? ' cond-drop' : ''}${over ? ' drop-over' : ''}`}
@@ -589,15 +588,24 @@ export default function Application() {
 
   const activityFetcher = useCallback(() => api.activity(id), [id]);
   const idRef = useRef(id); idRef.current = id;
+  // Every load after the first is a refresh caused by something the borrower just
+  // did (or by the window regaining focus) — it must leave them exactly where they
+  // were reading, even though rows collapse and drop out of the "Open" filter.
+  const firstLoad = useRef(true);
   const load = () => {
     const forId = id;   // drop late responses after navigating to another file
+    const isFirst = firstLoad.current;
+    firstLoad.current = false;
     return Promise.all([
       api.application(id), api.checklist(id), api.documents(id).catch(() => []),
       api.conditions(id).catch(() => []), api.profile().catch(() => null),
       api.trackRecords().catch(() => []), api.trackRecordSnapshot().catch(() => null),
     ]).then(([a, c, d, cn, p, tr, ts]) => {
       if (idRef.current !== forId) return;
+      // Captured right before the re-render, restored once it has painted.
+      const anchor = isFirst ? null : captureScrollAnchor();
       setApp(a); setItems(c || []); setUploads(d || []); setConds(cn || []); setProfile(p); setTrRows(tr || []); setTrSnap(ts || null);
+      restoreScrollAnchor(anchor);
     }).catch(e => { if (idRef.current === forId) setErr(e.message); });
   };
 
@@ -620,6 +628,7 @@ export default function Application() {
     setApp(null); setItems([]); setUploads([]); setConds([]); setErr(''); setMsg('');
     setSowOpen(false); setTarget(null);   // else the Scope-of-Work modal carries over to the next file
     setJustTouched(new Set()); setOfficer(null);
+    firstLoad.current = true;   // a new file opens fresh — nothing to hold
     load();
     api.fileOfficer(id).then(r => setOfficer((r && r.officer) || null)).catch(() => setOfficer(null));
     /* eslint-disable-next-line */
@@ -634,14 +643,24 @@ export default function Application() {
   }, [id]);
   // Chat deep-link (…?chat=<id>): once the file has painted, bring the Messages
   // section into view so the recipient lands on the conversation.
+  //
+  // ONCE PER FILE — this is a LANDING, not something that happens while you work
+  // (same fix as the staff file, owner-reported 2026-07-27). `app` is a brand-new
+  // object after every refresh — an upload, and the window-focus refresh above —
+  // so this used to yank the borrower back to Messages mid-task.
+  const landedChat = useRef(false);
+  useEffect(() => { landedChat.current = false; }, [id]);
   useEffect(() => {
-    if (!wantsChat || !app) return undefined;
+    // `app` still holds the PREVIOUS file for one render after the url changes,
+    // so match it to the url or the landing burns itself on the old file.
+    if (!wantsChat || !app || String(app.id) !== String(id) || landedChat.current) return undefined;
+    landedChat.current = true;
     const t = setTimeout(() => {
       const el = document.getElementById('sec-messages');
       if (el) el.scrollIntoView({ behavior: 'smooth', block: 'start' });
     }, 350);
     return () => clearTimeout(t);
-  }, [wantsChat, app]);
+  }, [wantsChat, app, id]);
 
   const readB64 = fileToBase64;   // shared reader (lib/files.js)
 
@@ -830,7 +849,7 @@ export default function Application() {
       <div className="grid cols-2">
         <div className="panel" style={{ marginTop: 0 }}>
           <h3 style={{ marginBottom: 12 }}>Borrower</h3>
-          <div className="metrow"><span className="k">Name</span><span className="v">{profile ? `${profile.first_name || ''} ${profile.last_name || ''}`.trim() || '—' : '—'}</span></div>
+          <div className="metrow"><span className="k">Name</span><span className="v">{profile ? fullNameOf(profile) || '—' : '—'}</span></div>
           <div className="metrow"><span className="k">Email</span><span className="v">{(profile && profile.email) || '—'}</span></div>
           <div className="metrow"><span className="k">Phone</span><span className="v">{(profile && profile.cell_phone) || '—'}</span></div>
           <SsnRow profile={profile} onSaved={load} />
@@ -1378,7 +1397,7 @@ function CoBorrowerRail({ app, onChanged }) {
   const { actor } = useAuth();
   const isPrimary = actor?.id && app.borrower_id === actor.id;
   const [open, setOpen] = useState(false);
-  const [f, setF] = useState({ firstName: '', lastName: '', email: '', phone: '' });
+  const [f, setF] = useState({ firstName: '', middleName: '', lastName: '', email: '', phone: '' });
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState('');
   const coName = [app.co_borrower_first_name, app.co_borrower_last_name].filter(Boolean).join(' ');
@@ -1386,7 +1405,7 @@ function CoBorrowerRail({ app, onChanged }) {
     if (busy) return; setErr('');
     if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test((f.email || '').trim())) { setErr('Enter a valid email address.'); return; }
     setBusy(true);
-    try { await api.inviteCoBorrowerToFile(app.id, f); setOpen(false); setF({ firstName: '', lastName: '', email: '', phone: '' }); await onChanged(); }
+    try { await api.inviteCoBorrowerToFile(app.id, f); setOpen(false); setF({ firstName: '', middleName: '', lastName: '', email: '', phone: '' }); await onChanged(); }
     catch (e) { setErr(e.message || 'Could not invite the co-borrower.'); }
     finally { setBusy(false); }
   }
@@ -1413,6 +1432,7 @@ function CoBorrowerRail({ app, onChanged }) {
         <>
           <div className="grid cols-2" style={{ gap: 8 }}>
             <input className="input" placeholder="First name" value={f.firstName} onChange={e => setF(s => ({ ...s, firstName: e.target.value }))} />
+            <input className="input" placeholder="Middle name (optional)" value={f.middleName} onChange={e => setF(s => ({ ...s, middleName: e.target.value }))} />
             <input className="input" placeholder="Last name" value={f.lastName} onChange={e => setF(s => ({ ...s, lastName: e.target.value }))} />
           </div>
           <EmailInput style={{ marginTop: 8 }} placeholder="Email" value={f.email} onChange={v => setF(s => ({ ...s, email: v }))} />

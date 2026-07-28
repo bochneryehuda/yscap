@@ -36,7 +36,7 @@ async function expectHttp(status, fn) {
       'file_unlinked_no_task', 'file_dead_unlinked', 'push_dead_lettered', 'task_deleted_needs_decision',
       'sharepoint_match_uncertain', 'sharepoint_mirror_failed', 'borrower_identity_conflict',
       'shared_email_needs_reassignment', 'copied_loan_number_needs_assignment',
-      'economics_frozen_conflict'].sort());
+      'economics_frozen_conflict', 'ctc_confirm_needed'].sort());
     for (const k of keys) assert.ok(SFR.REASON_ACTIONS[k].length >= 1, `${k} has at least one action`);
   });
   await ta('allow_shared_email without the pair reference → 409', () =>
@@ -205,11 +205,14 @@ async function expectHttp(status, fn) {
   await ta('loan_number_keep_other without a file → 409', () =>
     expectHttp(409, () => SFR.applyFileReviewAction({
       row: { reason: 'copied_loan_number_needs_assignment', application_id: null }, action: 'loan_number_keep_other' })));
-  // economics-frozen conflict: keep-frozen-figures validates BEFORE any write.
-  t('economics_frozen_conflict offers ONLY keep_frozen_figures', () => {
+  // economics-frozen conflict: BOTH keep-frozen-figures AND the admin override
+  // (accept ClickUp's figures onto the locked file) validate BEFORE any write.
+  t('economics_frozen_conflict offers keep_frozen_figures + accept_clickup_figures', () => {
     assert.strictEqual(SFR.isActionAllowed('economics_frozen_conflict', 'keep_frozen_figures'), true);
+    assert.strictEqual(SFR.isActionAllowed('economics_frozen_conflict', 'accept_clickup_figures'), true);
     assert.strictEqual(SFR.isActionAllowed('economics_frozen_conflict', 'retry_push'), false);
     assert.strictEqual(SFR.isActionAllowed('push_dead_lettered', 'keep_frozen_figures'), false, 'keep_frozen_figures never leaks onto other reasons');
+    assert.strictEqual(SFR.isActionAllowed('push_dead_lettered', 'accept_clickup_figures'), false, 'accept_clickup_figures never leaks onto other reasons');
   });
   await ta('keep_frozen_figures without a file → 409', () =>
     expectHttp(409, () => SFR.applyFileReviewAction({
@@ -217,6 +220,24 @@ async function expectHttp(status, fn) {
   await ta('keep_frozen_figures with no listed frozen fields → 409', () =>
     expectHttp(409, () => SFR.applyFileReviewAction({
       row: { reason: 'economics_frozen_conflict', application_id: 'a1', raw_value: 'not-json' }, action: 'keep_frozen_figures' })));
+  // accept_clickup_figures is the ADMIN-only lock override — the role gate fires
+  // FIRST (the review-queue route is LO-reachable for keep_frozen_figures), before
+  // any file/DB work, so a non-admin is refused even with a valid file.
+  await ta('accept_clickup_figures as a NON-admin → 403 (before any work)', () =>
+    expectHttp(403, () => SFR.applyFileReviewAction({
+      row: { reason: 'economics_frozen_conflict', application_id: 'a1', task_id: '868xyz' }, action: 'accept_clickup_figures', isAdmin: false })));
+  await ta('accept_clickup_figures without a file → 409 (admin)', () =>
+    expectHttp(409, () => SFR.applyFileReviewAction({
+      row: { reason: 'economics_frozen_conflict', application_id: null, task_id: '868xyz' }, action: 'accept_clickup_figures', isAdmin: true })));
+  // Clear-to-Close confirm: the single confirm_ctc action validates BEFORE any write.
+  t('ctc_confirm_needed offers ONLY confirm_ctc', () => {
+    assert.strictEqual(SFR.isActionAllowed('ctc_confirm_needed', 'confirm_ctc'), true);
+    assert.strictEqual(SFR.isActionAllowed('ctc_confirm_needed', 'accept_clickup_figures'), false);
+    assert.strictEqual(SFR.isActionAllowed('economics_frozen_conflict', 'confirm_ctc'), false, 'confirm_ctc never leaks onto other reasons');
+  });
+  await ta('confirm_ctc without a file → 409', () =>
+    expectHttp(409, () => SFR.applyFileReviewAction({
+      row: { reason: 'ctc_confirm_needed', application_id: null }, action: 'confirm_ctc' })));
   // relink_task is ADMIN-ONLY — the authorization check fires FIRST, before any
   // field validation (pre-merge audit B1: the review-queue route is LO-reachable,
   // so the action layer must refuse a non-admin even with valid inputs).
@@ -259,6 +280,16 @@ async function expectHttp(status, fn) {
     for (const marker of ['push_dead_lettered', 'task_deleted_needs_decision', 'file_unlinked_no_task',
       'file_dead_unlinked', 'relink_task', 'clickup/unlink', 'resolve-file']) {
       assert.ok(js.includes(marker), `built bundle missing '${marker}' — run: cd app-v2 && npm run build`);
+    }
+    // Every reason + action from the server contract must ALSO be in the built
+    // bundle — so a forgotten `npm run build` after adding a reason/action is
+    // caught, not just a missing source edit (audit N2 coverage gap).
+    for (const reason of Object.keys(SFR.REASON_ACTIONS)) {
+      assert.ok(js.includes(reason), `built bundle missing reason '${reason}' — run: cd app-v2 && npm run build`);
+      for (const action of SFR.REASON_ACTIONS[reason]) {
+        assert.ok(js.includes(`'${action}'`) || js.includes(`"${action}"`),
+          `built bundle missing action '${action}' — run: cd app-v2 && npm run build`);
+      }
     }
   });
 

@@ -85,4 +85,50 @@ ok('vestingLlc extracts the LLC name/state, null when absent (never invents one)
 assert.strictEqual(normName('ABC Holdings, LLC'), 'abc holdings llc');
 ok('normName lowercases + strips punctuation for matching');
 
+// ── CLOSED DEALS ONLY (owner-directed 2026-07-27) ──────────────────────────
+// The gate that keeps a property OFF the track record until the deal is done.
+const closed = (input) => enrich.loanClosed(input).closed;
+
+// THE REPORTED BUG: the file the borrower is in the middle of right now. Our own
+// status says it has not closed, and nothing in Encompass may overrule that.
+assert.strictEqual(closed({ raw, app: { status: 'underwriting' } }), false, 'a file in underwriting has not closed');
+assert.strictEqual(closed({ raw, app: { status: 'clear_to_close' } }), false, 'cleared to close is still not closed');
+assert.strictEqual(closed({ raw, app: { status: 'on_hold' } }), false, 'a parked file has not closed');
+assert.strictEqual(closed({ raw, app: { status: 'declined' } }), false, 'a declined file never closed');
+ok('our own file decides: anything short of funded means the property does NOT go on the track record');
+
+// With no file of ours to ask, Encompass has to SHOW a closing.
+assert.strictEqual(closed({ raw }), false, 'silence is not a closing — the default is no');
+assert.strictEqual(closed({ raw: { milestoneCurrentName: 'LO Prep', milestoneStage: 'PREQUAL' } }), false,
+  'an early milestone is not a closing');
+assert.strictEqual(closed({ raw: { milestoneCurrentName: 'Clear to Close' } }), false, '"Clear to Close" is not closed');
+assert.strictEqual(closed({ raw: { milestoneCurrentName: 'Active Closing' } }), false, '"Active Closing" is on the WAY to closed');
+assert.strictEqual(closed({ raw: { milestoneCurrentName: 'Scheduling Closing' } }), false, 'a scheduled closing is not a closing');
+assert.strictEqual(closed({ raw: { milestoneCurrentName: 'Funding' } }), false, 'sitting AT funding is not funded');
+assert.strictEqual(closed({ raw: { closingDocument: { fundingDate: '2099-04-01' } } }), false,
+  'a funding date in the FUTURE is a plan, not a closing');
+assert.strictEqual(closed({ raw: { customFields: [{ fieldName: '1401', value: '525450' }] } }), false,
+  'a number that is not a date never reads as a funded date');
+ok('nothing in flight counts — early milestone, clear-to-close, active closing, a future funding date, a non-date');
+
+// A deal that DIED is not experience, however far it got.
+assert.strictEqual(closed({ raw: {}, loanFolder: 'Adverse' }), false, 'an adverse file is not experience');
+assert.strictEqual(closed({ raw: { closingDocument: { fundingDate: '2024-02-01' } }, loanFolder: 'Cancelled' }), false,
+  'cancelled beats a stale funding date');
+ok('a dead deal (adverse / cancelled / withdrawn / trash) never lands on the track record');
+
+// The real closings — read whichever way this tenant records them.
+assert.strictEqual(closed({ raw: {}, app: { status: 'funded' } }), true, 'our file marked funded');
+assert.strictEqual(closed({ raw: {}, app: { status: 'processing', fundedDate: '2025-01-02' } }), true,
+  'our file carries a funded date');
+assert.strictEqual(closed({ raw: { closingDocument: { fundingDate: '2024-02-01T00:00:00Z' } } }), true, 'the money went out');
+assert.strictEqual(closed({ raw: { customFields: [{ fieldName: '1999', value: '2023-06-15' }] } }), true, 'funds released (field 1999)');
+assert.strictEqual(closed({ raw: { milestoneCurrentName: 'Funded' } }), true, 'the milestone says funded');
+assert.strictEqual(closed({ raw: {}, loanFolder: 'Closed Loans' }), true, 'the loan lives in a closed folder');
+assert.strictEqual(closed({ raw: { milestones: [{ milestoneName: 'Funding', doneIndicator: true }] } }), true,
+  'a COMPLETED funding milestone is a closing');
+assert.strictEqual(closed({ raw: { loanFolder: 'Pipeline', milestoneCurrentName: 'Completion' } }), true,
+  'a closed loan still sitting in the pipeline folder still counts');
+ok('a real closing is recognized from our file, a funding date, a milestone, a completed milestone, or the folder');
+
 console.log(`\nPart 2 Encompass enrichment pure — ${passed} checks passed`);

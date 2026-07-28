@@ -2,10 +2,17 @@
  * Condition sign-off gate (src/routes/staff.js signOffGate + PATCH /checklist/:id).
  *
  * Owner-directed 2026-07-20 ("major fatal"): a REQUIRED condition can never be
- * signed off until it is FULFILLED — no role bypasses it (the old super_admin
- * override is gone), and the structured-DATA conditions (appraisal credit card,
- * title contact, insurance contact) are gated on their data, not just documents.
- * Only an OPTIONAL condition (is_required=false) may be completed empty.
+ * signed off until it is FULFILLED — no role bypasses it, and the structured-DATA
+ * conditions (appraisal credit card, title contact, insurance contact) are gated
+ * on their data, not just documents. Only an OPTIONAL condition
+ * (is_required=false) may be completed empty.
+ *
+ * That rule is UNCHANGED by the 2026-07-27 super-admin override: this suite runs
+ * as a SUPER_ADMIN and every gate below still refuses it, because the override is
+ * a separate, explicitly-requested, reasoned action (`adminOverride`) and is never
+ * inferred from the actor's role. Holding the role clears nothing — which is the
+ * whole point, and is why these assertions must keep passing as written. The
+ * override's own behavior is covered by test-condition-admin-override-db.js.
  *
  * Boots the real Express app and drives the real endpoint as a SUPER_ADMIN.
  * Requires DATABASE_URL with migrations applied; skips cleanly otherwise.

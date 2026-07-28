@@ -261,7 +261,7 @@ async function listEligible(actor, { q = '', limit = 60 } = {}, dbc) {
   if (term.length >= 2) {
     params.push('%' + term + '%');
     search = `AND (b.first_name ILIKE $${params.length} OR b.last_name ILIKE $${params.length}
-                   OR (b.first_name || ' ' || b.last_name) ILIKE $${params.length}
+                   OR NULLIF(b.full_name,'') ILIKE $${params.length}
                    OR COALESCE(b.email,'') ILIKE $${params.length})`;
   }
   params.push(Math.min(200, Math.max(1, parseInt(limit, 10) || 60)));

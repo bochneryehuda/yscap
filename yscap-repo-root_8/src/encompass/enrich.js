@@ -12,6 +12,17 @@
  * `inferred=true`, so it never inflates VERIFIED experience or changes pricing.
  * Nothing is ever written to Encompass.
  *
+ * CLOSED DEALS ONLY (owner-directed 2026-07-27): "the subject property, even
+ * before it's closed, is going on the track record automatically… the subject
+ * property or any other property that is not closed yet should not go
+ * automatically on the track record." A track record is a record of deals DONE,
+ * so the address write is gated on real evidence that the Encompass loan closed
+ * (`loanClosed` below), and the DEFAULT — no evidence either way — is NO. This
+ * matches the ClickUp profile builder, which has always gated its track-record
+ * write on a funded status (`CLOSED_STATUSES` in src/clickup/ingest.js). Entities,
+ * emails and phone numbers are NOT gated: those are facts about the PERSON, just
+ * as true on a live file as on a closed one.
+ *
  * Matching is CONSERVATIVE (never guess a borrower): a snapshot loan attaches to
  * a borrower only when (a) that loan is already linked to one of our applications
  * (the borrower is known), or (b) it matches EXACTLY ONE of our borrowers by
@@ -98,11 +109,16 @@ function collectParties(raw) {
 }
 
 // The parties on a loan (borrower + co-borrower across applications[]).
+// Encompass models a person as THREE fields — firstName / middleName / lastName
+// (+ suffixToName) — which is exactly the shape PILOT now stores (db/345), so
+// the middle name is carried through and can fill a blank on our side.
 function extractParties(raw) {
   return collectParties(raw).map((p) => {
     const first = String(p.firstName || '').trim();
+    const middle = String(p.middleName || '').trim();
     const last = String(p.lastName || '').trim();
-    return { first, last, dob: normDob(p.birthDate), nameKey: normName(`${first} ${last}`) };
+    const suffix = String(p.suffixToName || '').trim();
+    return { first, middle, last, suffix, dob: normDob(p.birthDate), nameKey: normName(`${first} ${last}`) };
   });
 }
 
@@ -147,10 +163,16 @@ function splitEntityNames(v) {
     // "N/A", "none", a bare "LLC" left over from a bad split: not an entity.
     .filter((s) => s.length >= 3 && !/^(n\/?a|none|tbd|unknown|llc|inc)$/i.test(s));
 }
-function vestingLlcs(raw) {
+// `customFields[]` → { fieldName: value }. The VALUE lives under `value` (not
+// `stringValue`/`numericValue`) — see docs/ENCOMPASS-FIXFLIP-MASTER-MAPPING.md §2.
+function customFieldMap(raw) {
   const cf = Array.isArray(raw && raw.customFields) ? raw.customFields : [];
   const by = {};
   for (const c of cf) if (c && c.fieldName) by[c.fieldName] = c.value;
+  return by;
+}
+function vestingLlcs(raw) {
+  const by = customFieldMap(raw);
   const state = (by['CX.LLCSTATE'] && String(by['CX.LLCSTATE']).trim()) || null;
   // Order matters: the FIRST name is what `vestingLlc` still returns, so the
   // dedicated vesting fields stay ahead of the free-text 1859 list.
@@ -251,6 +273,170 @@ function loanDateMs(raw, fallback) {
   return 0;
 }
 
+// ── Did this loan actually CLOSE? ──────────────────────────────────────────
+// The gate on the track-record write (owner-directed 2026-07-27). Pure: it reads
+// the loan JSON, the snapshot's loan folder, and — when the loan is linked to one
+// of our files — that file's own status. It NEVER guesses "yes": with no evidence
+// of a closing, the answer is no, and the property waits.
+
+// A read of a dotted path off the loan JSON ('closingDocument.fundingDate').
+function pathOf(obj, path) {
+  let cur = obj;
+  for (const seg of String(path).split('.')) {
+    if (cur == null || typeof cur !== 'object') return undefined;
+    cur = cur[seg];
+  }
+  return cur;
+}
+
+// A date value → 'YYYY-MM-DD', or null when it is not a date at all. Deliberately
+// strict: a bare number (a field id, an amount) must never parse as a year.
+function dayOf(v) {
+  if (v == null || v === '') return null;
+  // A `date` column read back through pg arrives as a Date, not a string.
+  if (v instanceof Date) return Number.isFinite(v.getTime()) ? v.toISOString().slice(0, 10) : null;
+  const s = String(v).trim();
+  const iso = s.match(/^(\d{4})-(\d{2})-(\d{2})/);
+  if (iso) return `${iso[1]}-${iso[2]}-${iso[3]}`;
+  if (!/^\d{1,4}[-/]\d{1,2}[-/]\d{1,4}/.test(s)) return null;
+  const t = Date.parse(s);
+  if (!Number.isFinite(t)) return null;
+  const d = new Date(t).toISOString().slice(0, 10);
+  const year = Number(d.slice(0, 4));
+  return year >= 1900 && year <= 2100 ? d : null;
+}
+const todayDay = () => new Date().toISOString().slice(0, 10);
+
+// THE MONEY MOVED. Any of these carrying a real, non-future date means the loan
+// funded — the strongest evidence there is, and enough on its own. Both shapes
+// are read because the tenant populates one or the other per loan: the V3 loan
+// entity paths, and the classic funding-entity field ids (1401 the funded date
+// the closing reconciliation already reads, 1997 funds SENT, 1999 funds RELEASED).
+// A SCHEDULED/estimated date in the future is not a closing — hence the day test.
+const FUNDED_DATE_PATHS = [
+  'closingDocument.fundingDate', 'closingDocument.disbursementDate',
+  'fundingDate', 'fundedDate', 'closedDate', 'disbursementDate',
+  'milestoneFundedDate', 'milestoneFundedDateUtc',
+  'funding.fundsSentDate', 'funding.fundsReleasedDate', 'funding.disbursementDate',
+  'currentLoanStatus.fundsSentDate', 'currentLoanStatus.fundsReleasedDate',
+];
+const FUNDED_FIELD_IDS = ['1401', '1997', '1999'];
+function fundedDay(raw, cf, today) {
+  const now = today || todayDay();
+  const cands = FUNDED_DATE_PATHS.map((p) => pathOf(raw, p))
+    .concat(FUNDED_FIELD_IDS.map((id) => (cf || {})[id]));
+  for (const c of cands) {
+    const d = dayOf(c);
+    if (d && d <= now) return d;
+  }
+  return null;
+}
+
+// Lifecycle WORDS, matched against the loan folder, the current milestone/stage
+// and the completed-milestone names. The core Encompass milestone buckets are
+// Started / Sent to processing / Submitted / Approved / Doc signed / Funded /
+// Completed, but every tenant renames them (this one shows "LO Prep" / "PREQUAL"),
+// so this reads meaning rather than an exact list.
+//   CLOSED — the deal is done. Note none of these match "closing": "Active
+//            Closing", "Scheduling Closing", "Clear to Close" are a file ON ITS
+//            WAY to a closing, which is exactly what must NOT count.
+//   OPEN   — an in-flight phrase; it suppresses a CLOSED match in the same string
+//            ("not closed", "to be closed").
+//   DEAD   — the deal died. A dead file is not experience however far it got, and
+//            this beats every other Encompass-side signal.
+const CLOSED_WORDS = /(\bfunded\b|funding complete|\bcompleted\b|\bcompletion\b|\bclosed\b|post[ -]?clos|\bpurchased\b|purchase review|purchase conditions|\bshipped\b|\bshipping\b|\bservicing\b|paid[ -]?off|final docs|\breconciled\b)/i;
+const OPEN_WORDS = /(clear to close|ready to close|to be closed|not closed|scheduling|pre[ -]?clos|closing prep|in closing|active closing|doc signing|docs out)/i;
+const DEAD_WORDS = /(adverse|declin|denied|withdraw|cancel|trash|rejected|fallout|\bdead\b|\blost\b|\bexpired\b)/i;
+// A milestone the loan has FINISHED says more than the same word would as a
+// current stage: "Funding" as the CURRENT milestone means the file is sitting at
+// funding, but a COMPLETED "Funding" means the money went out. So the done-list
+// gets the extra word, and the current-stage list never does.
+const DONE_CLOSED_WORDS = new RegExp(`\\bfunding\\b|${CLOSED_WORDS.source}`, 'i');
+const closedWord = (s) => {
+  const t = String(s == null ? '' : s).trim();
+  if (!t || DEAD_WORDS.test(t) || OPEN_WORDS.test(t)) return null;
+  return CLOSED_WORDS.test(t) ? t : null;
+};
+const doneClosedWord = (s) => {
+  const t = String(s == null ? '' : s).trim();
+  if (!t || DEAD_WORDS.test(t)) return null;
+  return DONE_CLOSED_WORDS.test(t) ? t : null;
+};
+const deadWord = (s) => {
+  const t = String(s == null ? '' : s).trim();
+  return t && DEAD_WORDS.test(t) ? t : null;
+};
+
+// The loan's CURRENT lifecycle strings — where it lives and what stage it is at,
+// each labelled so the verdict can say WHICH one decided it.
+function currentLifecycle(raw, cf, loanFolder) {
+  const st = raw.currentLoanStatus && typeof raw.currentLoanStatus === 'object' ? raw.currentLoanStatus : {};
+  return [
+    ['folder', loanFolder], ['folder', raw.loanFolder], ['folder', cf['CX.LOAN.FOLDER.CURRENT']],
+    ['milestone', raw.milestoneCurrentName], ['stage', raw.milestoneStage],
+    ['milestone', raw.currentMilestoneName], ['milestone', st.currentMilestoneName],
+    ['status', st.loanStatus], ['status', st.archiveStatus],
+  ].filter(([, s]) => typeof s === 'string' && s.trim());
+}
+
+// The names of milestones the loan has COMPLETED.
+function doneMilestoneNames(raw) {
+  const ms = Array.isArray(raw && raw.milestones) ? raw.milestones : [];
+  const out = [];
+  for (const m of ms) {
+    if (!m || typeof m !== 'object') continue;
+    const done = m.doneIndicator === true || m.done === true || m.isDone === true
+      || !!dayOf(m.completedDate || m.doneDate || m.milestoneCompletedDate);
+    if (!done) continue;
+    const name = m.milestoneName || m.name || m.milestone;
+    if (typeof name === 'string' && name.trim()) out.push(name.trim());
+  }
+  return out;
+}
+
+/**
+ * loanClosed({ raw, loanFolder, app, today }) → { closed, why }
+ *
+ * `app` is OUR linked file when the loan has one: { status, fundedDate }.
+ *
+ * Order of authority:
+ *   1. OUR OWN FILE. PILOT (with ClickUp) is authoritative for a deal we are
+ *      running — the whole registry is `authoritative:'pilot'`. If the team has
+ *      not marked it funded, it has NOT closed, and no Encompass field overrules
+ *      that. This is the owner's exact case: the live file's subject property.
+ *   2. A DEAD Encompass state — never experience.
+ *   3. The money moved (a funded / funds-released / disbursement date).
+ *   4. A closed lifecycle word on the folder, the current milestone, or a
+ *      completed milestone.
+ *   5. Otherwise NO. Silence is not a closing.
+ */
+function loanClosed(input) {
+  const o = input || {};
+  const raw = o.raw && typeof o.raw === 'object' ? o.raw : {};
+  const cf = customFieldMap(raw);
+
+  const app = o.app || null;
+  if (app) {
+    if (app.fundedDate || String(app.status || '').trim().toLowerCase() === 'funded') {
+      return { closed: true, why: 'pilot_funded' };
+    }
+    if (String(app.status || '').trim()) return { closed: false, why: `pilot_status:${String(app.status).trim()}` };
+  }
+
+  const current = currentLifecycle(raw, cf, o.loanFolder);
+  for (const [label, s] of current) { const d = deadWord(s); if (d) return { closed: false, why: `dead_${label}:${d}` }; }
+
+  const funded = fundedDay(raw, cf, o.today);
+  if (funded) return { closed: true, why: `funded_date:${funded}` };
+
+  for (const [label, s] of current) { const c = closedWord(s); if (c) return { closed: true, why: `${label}:${c}` }; }
+  for (const s of doneMilestoneNames(raw)) {
+    const c = doneClosedWord(s);
+    if (c) return { closed: true, why: `milestone_done:${c}` };
+  }
+  return { closed: false, why: 'no_closing_evidence' };
+}
+
 // ── DB writes (into OUR tables only — add-only-if-absent) ───────────────────
 
 // Add the subject address to the borrower's track record IF that address is not
@@ -292,6 +478,66 @@ async function addTrackRecordIfAbsent(dbc, borrowerId, addr) {
     [borrowerId, JSON.stringify(addr), encKey, 'Added from Encompass history; unverified']);
   if (!r.rows[0]) return { added: false, reason: 'already_present' };
   return { added: true, id: r.rows[0].id };
+}
+
+// The MIRROR IMAGE of the add: a property this enrichment already put on a
+// borrower's track record for a loan that has NOT closed comes back off (owner-
+// directed 2026-07-27 — the in-flight subject properties are on the record today
+// and must not stay there, so the fix has to undo itself, not just stop).
+//
+// Only a PRISTINE enrichment row is ever removed: origin 'encompass', still
+// unverified/inferred, carrying nothing but the address and this pass's own note,
+// with no entity, no economics, no documents and no condition hanging off it. The
+// moment a human (or ClickUp) touches the line it is theirs and this leaves it
+// alone — a deletion must never destroy someone's work. It is also why the
+// documents check matters: `documents.track_record_id` cascades on delete.
+const PRISTINE_ENRICHMENT_ROW = `
+      AND tr.origin = 'encompass'
+      AND tr.is_verified = false AND tr.verified_at IS NULL AND tr.verified_by IS NULL
+      AND COALESCE(tr.verification_status, 'pending') = 'pending'
+      AND COALESCE(tr.inferred, false) = true
+      AND tr.notes LIKE 'Added from Encompass history%'
+      AND COALESCE(tr.docs_status, 'outstanding') = 'outstanding'
+      AND tr.client_row_id IS NULL AND tr.source_task_id IS NULL
+      AND tr.llc_id IS NULL AND tr.entity_name IS NULL AND tr.lo_notes IS NULL
+      AND COALESCE(tr.owned_personally, false) = false
+      AND tr.deal_type IS NULL AND tr.property_type IS NULL
+      AND tr.purchase_price IS NULL AND tr.sale_price IS NULL AND tr.rehab_amount IS NULL
+      AND tr.purchase_date IS NULL AND tr.sale_date IS NULL
+      AND tr.rent_amount IS NULL AND tr.rent_date IS NULL
+      AND tr.refi_amount IS NULL AND tr.refi_date IS NULL AND tr.current_value IS NULL
+      AND NOT EXISTS (SELECT 1 FROM documents d WHERE d.track_record_id = tr.id)
+      AND NOT EXISTS (SELECT 1 FROM checklist_items ci WHERE ci.track_record_id = tr.id)`;
+
+async function removeInferredTrackRecord(dbc, borrowerId, addr) {
+  const encKey = normAddr(addr);
+  if (!encKey) return { removed: false, reason: 'no_address' };
+  const rows = (await dbc.query(
+    `SELECT id, property_address, address_key FROM track_records WHERE borrower_id=$1 AND origin='encompass'`,
+    [borrowerId])).rows;
+  for (const row of rows) {
+    const exStr = addrString(row.property_address || {});
+    const same = (row.address_key && row.address_key === encKey) || (exStr && normAddr(exStr) === encKey);
+    if (!same) continue;
+    const gone = await dbc.query(`DELETE FROM track_records tr WHERE tr.id=$1${PRISTINE_ENRICHMENT_ROW} RETURNING tr.id`, [row.id]);
+    if (!gone.rows[0]) return { removed: false, id: row.id, reason: 'touched' };
+    // Leave a trail — the row is gone from the profile, so the audit line is the
+    // only record that it was ever there. Best-effort behind a SAVEPOINT: a bad
+    // audit insert must not poison an enclosing transaction (same as the
+    // address-fill audit above).
+    try {
+      await dbc.query('SAVEPOINT enrich_tr_audit');
+      await dbc.query(
+        `INSERT INTO audit_log (actor_kind, action, entity_type, entity_id, detail)
+         VALUES ('system','encompass_track_record_removed_not_closed','borrower',$1,$2::jsonb)`,
+        [borrowerId, JSON.stringify({ trackRecordId: row.id, address: addrString(addr) })]);
+      await dbc.query('RELEASE SAVEPOINT enrich_tr_audit');
+    } catch (_) {
+      await dbc.query('ROLLBACK TO SAVEPOINT enrich_tr_audit').catch(() => {});
+    }
+    return { removed: true, id: row.id };
+  }
+  return { removed: false, reason: 'not_present' };
 }
 
 // Add the LLC to the borrower's library IF not already there (deduped by name).
@@ -402,6 +648,68 @@ async function verifyPrimaryAddress(dbc, borrowerId, addr, meta) {
   // still flags a different house number, street, ZIP, state or unit.
   if (normAddr(curStr) === encKey || ADDR.sameAddress(curStr, encStr)) return { checked: true, agrees: true };
 
+  const taskKey = `encompass:${(meta && meta.loanGuid) || 'unknown'}`;
+
+  // NEITHER SIDE IS READABLE → we cannot claim a disagreement (owner-reported
+  // 2026-07-28). `sameAddress` answers FALSE whenever it cannot read a house
+  // number and street on BOTH sides — deliberately, because it also backs the
+  // queue CLOSER, where "I can't read this" must keep a row open. Here it is the
+  // opposite: a false from an UNREADABLE pair became a review row asserting the
+  // two addresses differ, when the truth is we could not read either one. A PO
+  // box on both sides ("PO Box 123, Brooklyn, New York 11219" vs "PO Box 123,
+  // Brooklyn, NY 11219") is the common shape. We only stay silent when NEITHER
+  // side can be read — one readable side against an unreadable one is still a
+  // real question for a human, and the pass counts what it held back so the
+  // suppression is never invisible to the system.
+  const readable = (v) => { try { const p = ADDR.parseAddressParts(v); return !!(p.house && p.street); } catch (_) { return false; } };
+  if (!readable(curStr) && !readable(encStr)) {
+    return { checked: true, unreadable: true, portal: curStr, encompass: encStr };
+  }
+
+  // A CONFLICT IS IDENTIFIED BY THE PERSON AND THE ADDRESS — never by the
+  // Encompass loan it happened to arrive on (owner-reported 2026-07-28: rows a
+  // human had already settled kept coming back, week after week).
+  //
+  // The 2026-07-27 guard was keyed on `task_id` (this borrower's LATEST loan)
+  // plus the proposed string EXACTLY, and both halves of that key move on their
+  // own: the pass picks whichever mirrored loan ranks newest, so one newly
+  // pulled loan re-keys the same conflict onto a new `encompass:<guid>`; and the
+  // proposed string is regenerated by the address canonicalizer, which changed
+  // twice in three days — so the same home rendered as a new string. Either
+  // shift slipped past the guard AND past the queue's own one-open-row-per-
+  // (task, field, proposal) rule, so the reviewer's decision was quietly
+  // replaced by a fresh open row — sometimes a second one alongside the first.
+  //
+  // Keyed on the borrower and compared by MEANING, both moving parts drop out.
+  // What each prior outcome means:
+  //   • DISMISS (rejected)                          → "ignore this",
+  //   • KEEP PILOT (resolved, winner='portal')      → the two still differ, but a
+  //     human decided PILOT is right — never nag again,
+  //   • USE ENCOMPASS / typed                       → the data now agrees, so we
+  //     never reach here; if it somehow still differs the decision holds,
+  //   • STILL OPEN                                  → it is already on the queue;
+  //     a second card for one question is noise.
+  // A genuinely NEW address (they moved) is a different place, so `sameAddress`
+  // says so and it DOES surface.
+  const prior = await dbc.query(
+    `SELECT status, proposed_value FROM sync_review_queue
+       WHERE borrower_id=$1 AND field_key='current_address' AND source='encompass'
+         AND status IN ('open','approved','rejected','resolved')
+       ORDER BY created_at DESC LIMIT 100`, [borrowerId]);
+  const asked = prior.rows.filter((p) => {
+    if (!p.proposed_value) return false;
+    if (p.proposed_value === encStr) return true;
+    try { return ADDR.sameAddress(p.proposed_value, encStr); } catch (_) { return false; }
+  });
+  if (asked.length) {
+    // An OPEN card outranks a closed one for LABELLING: the card is still on the
+    // queue, so "already queued" is the honest counter even when a superseded
+    // duplicate of it was closed later. Either way nothing new is raised.
+    return asked.some((p) => p.status === 'open')
+      ? { checked: true, alreadyQueued: true, portal: curStr, encompass: encStr }
+      : { checked: true, alreadyDecided: true, portal: curStr, encompass: encStr };
+  }
+
   const queued = await require('../lib/sync-review').queueReview({
     // Queue on the SAME connection the pass is using — inside a transaction the
     // pool would not yet see the rows this pass created.
@@ -411,7 +719,7 @@ async function verifyPrimaryAddress(dbc, borrowerId, addr, meta) {
     // Namespaced so the queue's one-open-row-per-(task, field, proposal) rule
     // dedupes per Encompass LOAN. `source` is what tells every consumer this is
     // NOT a ClickUp task id — nothing may hand this string to the ClickUp client.
-    taskId: `encompass:${(meta && meta.loanGuid) || 'unknown'}`,
+    taskId: taskKey,
     source: 'encompass',
     direction: 'inbound',
     fieldKey: 'current_address',
@@ -422,6 +730,90 @@ async function verifyPrimaryAddress(dbc, borrowerId, addr, meta) {
     reason: 'encompass_address_differs: the most recent Encompass file has a different home address for this borrower',
   });
   return { checked: true, conflict: true, queued: !!queued, portal: curStr, encompass: encStr };
+}
+
+/**
+ * verifyMiddleName — Encompass keeps a person's middle name in its OWN field, so
+ * a loan copy is the best source PILOT has for the one part of a name that a
+ * ClickUp one-liner usually leaves out (owner-directed 2026-07-27).
+ *
+ * Same discipline as the home address above — ADD-ONLY, three outcomes and only
+ * one of them writes:
+ *   • we have NO middle name on file            → FILL it (pure gain, audited);
+ *   • the two agree (an initial vs the full word
+ *     counts as agreement)                      → nothing is written, and any
+ *     earlier "please confirm this name split" prompt is cleared, because
+ *     Encompass has now independently confirmed it;
+ *   • the two DISAGREE                          → NEVER overwrite. It goes to the
+ *     manual review queue with both values and a human picks.
+ *
+ * Nothing is EVER written back to Encompass — this reads the mirror table only.
+ */
+async function verifyMiddleName(dbc, borrowerId, party, meta) {
+  const PN = require('../lib/person-name');
+  const encMiddle = String((party && party.middle) || '').trim();
+  if (!encMiddle) return { checked: false, reason: 'no_middle_name' };
+  const b = (await dbc.query(
+    `SELECT first_name, middle_name, last_name, name_suffix FROM borrowers WHERE id=$1`, [borrowerId])).rows[0];
+  if (!b) return { checked: false, reason: 'no_borrower' };
+
+  // Only ever act when the two records are the SAME PERSON. `matchBorrower` has
+  // already proved that by name + DOB, but this is a WRITE path, so it is
+  // re-checked here rather than trusted.
+  if (!PN.sameName({ first: b.first_name, middle: b.middle_name, last: b.last_name },
+    { first: party.first, middle: party.middle, last: party.last })) {
+    return { checked: false, reason: 'not_the_same_person' };
+  }
+
+  const cur = String(b.middle_name || '').trim();
+  if (!cur) {
+    // FILL-ONLY: the WHERE clause re-asserts the column is still empty, so a human
+    // typing a middle name at this exact moment is never clobbered.
+    const w = await dbc.query(
+      `UPDATE borrowers
+          SET middle_name = $2,
+              name_suffix = COALESCE(name_suffix, NULLIF($3,'')),
+              name_review_needed = false,
+              name_review_reason = NULL,
+              updated_at = now()
+        WHERE id = $1 AND (middle_name IS NULL OR btrim(middle_name) = '')`,
+      [borrowerId, encMiddle, String((party && party.suffix) || '').trim()]);
+    if (!w.rowCount) return { checked: true, filled: false, reason: 'filled_by_someone_else' };
+    try {
+      await dbc.query('SAVEPOINT enrich_mid');
+      await dbc.query(
+        `INSERT INTO audit_log (actor_kind, action, entity_type, entity_id, detail)
+         VALUES ('system','encompass_middle_name_filled','borrower',$1,$2::jsonb)`,
+        [borrowerId, JSON.stringify({ middleName: encMiddle, loan: (meta && meta.loanGuid) || null })]);
+      await dbc.query('RELEASE SAVEPOINT enrich_mid');
+    } catch (_) { await dbc.query('ROLLBACK TO SAVEPOINT enrich_mid').catch(() => {}); }
+    return { checked: true, filled: true, middleName: encMiddle };
+  }
+
+  // Both sides carry one. An INITIAL against the full word is agreement, not a
+  // conflict ("A." vs "Andrew") — the same tolerance the file comparison uses.
+  if (PN.compareNames({ first: b.first_name, middle: cur, last: b.last_name },
+    { first: party.first, middle: encMiddle, last: party.last }).status !== 'mismatch') {
+    await dbc.query(
+      `UPDATE borrowers SET name_review_needed=false, name_review_reason=NULL, updated_at=now()
+        WHERE id=$1 AND name_review_needed = true`, [borrowerId]).catch(() => {});
+    return { checked: true, agrees: true };
+  }
+
+  const queued = await require('../lib/sync-review').queueReview({
+    borrowerId,
+    applicationId: (meta && meta.applicationId) || null,
+    taskId: `encompass:${(meta && meta.loanGuid) || 'unknown'}`,
+    source: 'encompass',
+    direction: 'inbound',
+    fieldKey: 'middle_name',
+    currentValue: cur,
+    proposedValue: encMiddle,
+    portalValue: cur,
+    clickupValue: encMiddle,
+    reason: 'encompass_middle_name_differs: the most recent Encompass file has a different middle name for this borrower',
+  });
+  return { checked: true, conflict: true, queued: !!queued, portal: cur, encompass: encMiddle };
 }
 
 // Match a snapshot loan's party to exactly ONE of our borrowers. Conservative —
@@ -452,7 +844,11 @@ async function matchBorrower(dbc, party, snapshotAppId) {
  * For every loan, EVERY party on it (borrower and co-borrower, across all
  * application pairs) is matched to one of our borrowers conservatively, and what
  * the file knows is added to that person's profile:
- *   • the subject property   → their track record (unverified, inferred)
+ *   • the subject property   → their track record (unverified, inferred) — ONLY
+ *                              when the loan actually CLOSED; an in-flight or
+ *                              dead file contributes no experience, and a
+ *                              property this pass previously added for a loan
+ *                              that has not closed is taken back off
  *   • every entity named     → their entity library (incl. the free-text 1859 list)
  *   • every email and phone  → their accumulated contact list
  * and then, ONCE per borrower and only from their MOST RECENT file, their
@@ -470,17 +866,41 @@ async function enrichAllOnce(opts) {
     loans: 0, matched: 0, addressesAdded: 0, llcsAdded: 0,
     emailsAdded: 0, phonesAdded: 0,
     addressesVerified: 0, addressesFilled: 0, addressConflicts: 0,
+    // Home-address disagreements the pass deliberately did NOT queue. Watch these
+    // in the log: `addressesAlreadyDecided` is a human's earlier decision holding
+    // (healthy); a climbing `addressesUnreadable` means a lot of profiles carry
+    // something the address reader can't parse and is worth a look.
+    addressesAlreadyDecided: 0, addressesAlreadyQueued: 0, addressesUnreadable: 0,
+    middleNamesVerified: 0, middleNamesFilled: 0, middleNameConflicts: 0,
+    // Properties held back / taken back because their loan has not closed, and a
+    // tally of WHY. Watch that tally in the log: this gate is deliberately
+    // conservative, so an unexpectedly large `no_closing_evidence` would mean the
+    // tenant records its closings some way `loanClosed` does not read yet.
+    addressesSkippedNotClosed: 0, addressesRemovedNotClosed: 0, notClosedWhy: {},
     skippedNoMatch: 0, errors: 0,
   };
   const rows = (await dbc.query(
-    `SELECT encompass_loan_guid, application_id, raw, last_modified
-       FROM encompass_loan_snapshot WHERE raw IS NOT NULL
-      ORDER BY pulled_at DESC NULLS LAST LIMIT $1`, [limit])).rows;
+    `SELECT s.encompass_loan_guid, s.application_id, s.raw, s.last_modified, s.loan_folder,
+            a.status AS app_status, a.funded_date AS app_funded_date
+       FROM encompass_loan_snapshot s
+       LEFT JOIN applications a ON a.id = s.application_id AND a.deleted_at IS NULL
+      WHERE s.raw IS NOT NULL
+      ORDER BY s.pulled_at DESC NULLS LAST LIMIT $1`, [limit])).rows;
 
   // The primary-address check must run against THE LAST FILE, so it cannot be
   // decided inside the loop — a borrower's newest loan may be read after an older
   // one. Collect the best candidate per borrower and settle it at the end.
   const latestByBorrower = new Map();
+
+  // Same reason the removals are settled at the end: a borrower can hold the SAME
+  // property twice — a purchase that CLOSED and a refinance still in flight. Read
+  // in mirror order the open loan could land after the closed one and delete the
+  // row the closed one just earned. So every (borrower, property) a CLOSED loan
+  // supports is remembered, and only the addresses no closed loan backs are
+  // removed, whatever order the loans were read in.
+  const closedKeys = new Set();
+  const openAddresses = new Map();
+  const trKey = (borrowerId, addr) => `${borrowerId}|${normAddr(addr) || ''}`;
 
   /* eslint-disable no-await-in-loop */
   for (const row of rows) {
@@ -495,6 +915,13 @@ async function enrichAllOnce(opts) {
       const llcs = vestingLlcs(raw);
       const when = loanDateMs(raw, row.last_modified);
       const sourceTag = `encompass:${row.encompass_loan_guid}`;
+      // The property is EXPERIENCE, so it waits for the deal to be done. The
+      // entities/emails/phones below are facts about the person and are not gated.
+      const closed = loanClosed({
+        raw,
+        loanFolder: row.loan_folder,
+        app: row.application_id ? { status: row.app_status, fundedDate: row.app_funded_date } : null,
+      });
 
       // Raw party objects, index-aligned with `extractParties`, so a matched
       // party's contacts and residence are read off the RIGHT person. The skip
@@ -514,7 +941,17 @@ async function enrichAllOnce(opts) {
         if (!m) continue;
         anyMatched = true;
 
-        if (addr) { const t = await addTrackRecordIfAbsent(dbc, m.borrowerId, addr); if (t.added) summary.addressesAdded += 1; }
+        if (addr && closed.closed) {
+          closedKeys.add(trKey(m.borrowerId, addr));
+          const t = await addTrackRecordIfAbsent(dbc, m.borrowerId, addr);
+          if (t.added) summary.addressesAdded += 1;
+        } else if (addr) {
+          summary.addressesSkippedNotClosed += 1;
+          const tag = String(closed.why || 'unknown').split(':')[0];
+          summary.notClosedWhy[tag] = (summary.notClosedWhy[tag] || 0) + 1;
+          const k = trKey(m.borrowerId, addr);
+          if (!openAddresses.has(k)) openAddresses.set(k, { borrowerId: m.borrowerId, addr, why: closed.why });
+        }
         for (const llc of llcs) {
           const l = await addLlcIfAbsent(dbc, m.borrowerId, llc.name, llc.state);
           if (l.added) summary.llcsAdded += 1;
@@ -522,6 +959,17 @@ async function enrichAllOnce(opts) {
         const { emails, phones } = partyContacts(rawParties[i]);
         for (const e of emails) { const c = await addContactIfAbsent(dbc, m.borrowerId, 'email', e, sourceTag); if (c.added) summary.emailsAdded += 1; }
         for (const p of phones) { const c = await addContactIfAbsent(dbc, m.borrowerId, 'phone', p, sourceTag); if (c.added) summary.phonesAdded += 1; }
+
+        // The MIDDLE NAME — Encompass carries it in its own field, which is the
+        // one part of a person's name a ClickUp one-liner usually omits. Add-only:
+        // it fills a blank, agrees silently, or queues a disagreement for a human.
+        try {
+          const mn = await verifyMiddleName(dbc, m.borrowerId, parties[i],
+            { loanGuid: row.encompass_loan_guid, applicationId: row.application_id || null });
+          if (mn.filled) summary.middleNamesFilled += 1;
+          else if (mn.conflict) summary.middleNameConflicts += 1;
+          else if (mn.agrees) summary.middleNamesVerified += 1;
+        } catch (_e) { summary.errors += 1; }
 
         const home = partyAddress(rawParties[i]);
         if (home) {
@@ -536,6 +984,15 @@ async function enrichAllOnce(opts) {
     } catch (_e) { summary.errors += 1; }
   }
 
+  // ── Take back the properties that were added before the deal closed ───────
+  for (const [key, item] of openAddresses) {
+    if (closedKeys.has(key)) continue;          // a CLOSED loan backs this property
+    try {
+      const r = await removeInferredTrackRecord(dbc, item.borrowerId, item.addr);
+      if (r.removed) summary.addressesRemovedNotClosed += 1;
+    } catch (_e) { summary.errors += 1; }
+  }
+
   // ── The primary address, from each borrower's most recent file only ────────
   for (const [borrowerId, best] of latestByBorrower) {
     try {
@@ -544,6 +1001,9 @@ async function enrichAllOnce(opts) {
       if (v.filled) summary.addressesFilled += 1;
       else if (v.conflict) summary.addressConflicts += 1;
       else if (v.agrees) summary.addressesVerified += 1;
+      else if (v.alreadyDecided) summary.addressesAlreadyDecided += 1;
+      else if (v.alreadyQueued) summary.addressesAlreadyQueued += 1;
+      else if (v.unreadable) summary.addressesUnreadable += 1;
     } catch (_e) { summary.errors += 1; }
   }
   /* eslint-enable no-await-in-loop */
@@ -553,13 +1013,17 @@ async function enrichAllOnce(opts) {
 module.exports = {
   enrichAllOnce,
   addTrackRecordIfAbsent,
+  removeInferredTrackRecord,
   addLlcIfAbsent,
+  verifyMiddleName,
   addContactIfAbsent,
   verifyPrimaryAddress,
   matchBorrower,
+  loanClosed,
   _internals: {
     normName, normDob, addrKey, normAddr, addrString, extractParties, collectParties, subjectAddress,
-    vestingLlc, vestingLlcs, splitEntityNames, partyContacts, partyAddress,
+    vestingLlc, vestingLlcs, splitEntityNames, customFieldMap, partyContacts, partyAddress,
     cleanEmail, cleanPhone, loanDateMs,
+    loanClosed, dayOf, fundedDay, doneMilestoneNames, currentLifecycle, pathOf,
   },
 };

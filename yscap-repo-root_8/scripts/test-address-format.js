@@ -108,6 +108,35 @@ eq(ADDR.canonicalOneLine(comp), '26 S 10th St, Brooklyn, NY 11249',
 eq(ADDR.canonicalOneLine(comp, { country: true }), '26 S 10th St, Brooklyn, NY 11249',
   'the country is NEVER appended, even when a caller asks (owner-directed 2026-07-26 evening)');
 
+// ── 5b. withoutUnit — strip an apartment/suite for the GEOCODER lookup ──────
+// Owner-reported 2026-07-27: a home address with an apartment ("1254 42nd St
+// Apartment 6B, Brooklyn, NY 11219") "could not be placed on the map" so it never
+// reached ClickUp — the keyless OSM fallback returns NO MATCH with the unit, and a
+// clean match without it (verified live). withoutUnit strips ONLY when a unit is
+// detected; a unit-less address is returned untouched.
+eq(ADDR.withoutUnit('1254 42nd St Apartment 6B, Brooklyn, NY 11219'), '1254 42nd St, Brooklyn, NY 11219', 'Apartment 6B is stripped for geocoding');
+eq(ADDR.withoutUnit('100 Main St Unit 4D, Lakewood, NJ 08701'), '100 Main St, Lakewood, NJ 08701', 'Unit 4D is stripped');
+eq(ADDR.withoutUnit('55 Broadway #12, New York, NY 10006'), '55 Broadway, New York, NY 10006', '#12 is stripped');
+eq(ADDR.withoutUnit('829 Duncan Bypass, Union, SC 29379'), '829 Duncan Bypass, Union, SC 29379', 'a unit-less address is unchanged');
+eq(ADDR.withoutUnit('3545 12th Ave, Brooklyn, NY 11218'), '3545 12th Ave, Brooklyn, NY 11218', 'a plain avenue is unchanged (no false unit)');
+eq(ADDR.withoutUnit(''), '', 'empty stays empty');
+eq(ADDR.withoutUnit(null), '', 'null -> empty string');
+// FALSE unit-detection guard: a street NAMED with a unit keyword must NOT be stripped
+eq(ADDR.withoutUnit('5 Floor Ave, Nowhere, NY 11111'), '5 Floor Ave, Nowhere, NY 11111', 'a street named "Floor" keeps its street (parse ate it -> no strip)');
+eq(ADDR.withoutUnit('100 Lot 5, Town, NJ 08701'), '100 Lot 5, Town, NJ 08701', 'a street named "Lot" is not stripped to just the house number');
+
+// withUnit — re-attach the apartment to the value we STORE/DISPLAY (the geocoder
+// resolved the building with the unit stripped, but the mailing address keeps it).
+eq(ADDR.withUnit('1254 42nd St, Brooklyn, NY 11219', 'Apt 6B'), '1254 42nd St Apt 6B, Brooklyn, NY 11219', 'the apartment is re-inserted after the street');
+eq(ADDR.withUnit('1254 42nd St, Brooklyn, NY 11219', ''), '1254 42nd St, Brooklyn, NY 11219', 'no unit -> unchanged');
+eq(ADDR.withUnit('1254 42nd St Apt 6B, Brooklyn, NY 11219', 'Apt 6B'), '1254 42nd St Apt 6B, Brooklyn, NY 11219', 'idempotent when the unit is already present');
+eq(ADDR.withUnit('55 Broadway', '#12'), '55 Broadway #12', 'no comma -> appended to the end');
+// a BARE-NUMERIC unit is not falsely "already present" because a digit appears in the house number / zip
+eq(ADDR.withUnit('1600 Pennsylvania Ave, Washington, DC 20500', '6'), '1600 Pennsylvania Ave 6, Washington, DC 20500', 'a bare-numeric unit "6" is re-attached even though the address has a 6 elsewhere');
+eq(ADDR.withUnit('1254 42nd St 6, Brooklyn, NY 11219', '6'), '1254 42nd St 6, Brooklyn, NY 11219', 'a bare-numeric unit already on the street is not duplicated');
+// round-trip: strip for the geocode, re-attach for the stored value
+eq(ADDR.withUnit(ADDR.withoutUnit('100 Main St Unit 4D, Lakewood, NJ 08701'), 'Unit 4D'), '100 Main St Unit 4D, Lakewood, NJ 08701', 'withoutUnit -> withUnit round-trips to the mailing form');
+
 (async () => {
   // ── 6. DB: previous files are repaired ───────────────────────────────────
   if (process.env.DATABASE_URL) {

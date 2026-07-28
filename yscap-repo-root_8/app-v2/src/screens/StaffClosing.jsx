@@ -2,6 +2,7 @@ import React, { useEffect, useMemo, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { api } from '../lib/api.js';
 import { useAuth } from '../lib/auth.jsx';
+import { fullNameOf } from '../lib/personName.js';
 
 /* THE CLOSING QUEUE (owner-directed 2026-07-26). Every file in the closing
    workflow, for the closer + the file's officer. Closers land here on login. */
@@ -33,9 +34,14 @@ export default function StaffClosing() {
 
   const shown = useMemo(() => {
     const all = rows || [];
-    if (filter === 'purchasing') return all.filter((r) => r.closing_stage === 'in_purchasing');
+    // `closing_retired` is computed SERVER-side by the one shared predicate
+    // (closing.CLOSING_RETIRED_SQL), so this screen, the desk query and the nav
+    // badge can never disagree. Re-deriving it here from the stage alone is what
+    // left every TABLE FUNDED file on the desk permanently: a loan sold at
+    // closing is barred from stage='in_purchasing', so it never looked done.
+    if (filter === 'purchasing') return all.filter((r) => r.closing_retired);
     if (filter === 'all') return all;
-    return all.filter((r) => r.closing_stage !== 'in_purchasing');
+    return all.filter((r) => !r.closing_retired);
   }, [rows, filter]);
 
   const canManage = can('manage_closings');
@@ -50,7 +56,10 @@ export default function StaffClosing() {
         <div className="row" style={{ gap: 6 }}>
           {['active', 'purchasing', 'all'].map((f) => (
             <button key={f} className={`btn small ${filter === f ? 'primary' : 'ghost'}`} onClick={() => setFilter(f)}>
-              {f === 'active' ? 'In closing' : f === 'purchasing' ? 'In purchasing' : 'All'}
+              {/* "Completed", not "In purchasing": this tab holds every finished
+                  closing, and a TABLE FUNDED loan was sold at closing and never
+                  goes to purchasing at all. */}
+              {f === 'active' ? 'In closing' : f === 'purchasing' ? 'Completed' : 'All'}
             </button>
           ))}
         </div>
@@ -72,7 +81,7 @@ export default function StaffClosing() {
             <tbody>
               {shown.map((r) => (
                 <tr key={r.id}>
-                  <td><b>{`${r.first_name || ''} ${r.last_name || ''}`.trim() || '—'}</b><div className="muted small">{fmtAddr(r.property_address)}</div></td>
+                  <td><b>{fullNameOf(r) || '—'}</b><div className="muted small">{fmtAddr(r.property_address)}</div></td>
                   <td>{r.ys_loan_number || '—'}</td>
                   <td>{r.lender || '—'}</td>
                   <td>{day(r.est_closing_date || r.expected_closing)}</td>

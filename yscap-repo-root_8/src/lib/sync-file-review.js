@@ -75,11 +75,16 @@ const REASON_ACTIONS = {
   // copy on the LOSING file's ClickUp card (PILOT never erases a ClickUp box — the hard no-clear rule).
   copied_loan_number_needs_assignment: ['loan_number_assign_here', 'loan_number_keep_other'],
   // ClickUp changed a loan FIGURE while the file is FROZEN (a sent term sheet,
-  // or Clear-to-Close / Funded), so it was not applied. Keep PILOT's frozen
-  // figures and push them back to ClickUp so the two agree; the other option
-  // (accept the change) is the human clearing the term-sheet package / a
-  // super-admin unlock + re-register, which lifts the freeze on its own.
-  economics_frozen_conflict: ['keep_frozen_figures'],
+  // or Clear-to-Close / Funded), so it was not applied. TWO decisions:
+  //   • keep_frozen_figures  — keep PILOT's frozen figures and push them back to
+  //     ClickUp so the two agree (any staffer on the file), OR
+  //   • accept_clickup_figures — ADMIN-only override: pull ClickUp's figures INTO
+  //     the locked file (owner-directed 2026-07-27, the reconciled-closed-file
+  //     case). No more "clear the term sheet + re-register" just to accept a change.
+  economics_frozen_conflict: ['keep_frozen_figures', 'accept_clickup_figures'],
+  // ClickUp moved a PRE-Clear-to-Close file to Clear to Close; PILOT held the
+  // status change and asks a human to CONFIRM the move (owner-directed 2026-07-27).
+  ctc_confirm_needed: ['confirm_ctc'],
 };
 
 // The OTHER bumping file, read out of the review's forensic raw_value (queued by the ingest layer as
@@ -365,8 +370,8 @@ async function applyFileReviewAction({ row, action, targetApplicationId, targetT
     await audit('borrower_split', app.id, actorId, {
       reviewId: row.id, role, taskId: taskKey,
       oldBorrowerId: row.borrower_id, newBorrowerId: newId,
-      newName: [person.first_name, person.last_name].filter(Boolean).join(' '),
-      keptName: [old.first_name, old.last_name].filter(Boolean).join(' '),
+      newName: require('./person-name').displayName(person),
+      keptName: require('./person-name').displayName(old),
       possiblyPolluted: possiblyPolluted.length ? possiblyPolluted : undefined });
     // The cross-person "mismatch" rows for this task were artifacts of the
     // merge — close them; the next audit pass compares the right people.
@@ -381,11 +386,11 @@ async function applyFileReviewAction({ row, action, targetApplicationId, targetT
     try { await require('../sync/clickup-sync').ingestOne(taskKey); } catch (e) { console.warn('[sync-file-review] post-split ingest failed:', e.message); }
     const newLabel = person.first_name === 'Co-Borrower' && !person.last_name
       ? 'the co-borrower (name pending — it fills in from ClickUp once the subtask carries it, or type it on the new profile)'
-      : `“${[person.first_name, person.last_name].filter(Boolean).join(' ')}”`;
+      : `“${require('./person-name').displayName(person)}”`;
     return {
       note: `split into two people: the file's ${role === 'co_borrower' ? 'co-borrower' : 'borrower'} ` +
         `${newLabel} now has their own profile (${newId}); ` +
-        `“${[old.first_name, old.last_name].filter(Boolean).join(' ')}” keeps the original profile untouched` +
+        `“${require('./person-name').displayName(old)}” keeps the original profile untouched` +
         (possiblyPolluted.length ? ` — REVIEW the original profile's ${possiblyPolluted.join(', ')}: those values match the split-off person and may have been synced in by the merge` : ''),
       applicationId: app.id };
   }
@@ -412,7 +417,7 @@ async function applyFileReviewAction({ row, action, targetApplicationId, targetT
         WHERE status='open'
           AND ((borrower_id=$1 AND matched_borrower_id=$2) OR (borrower_id=$2 AND matched_borrower_id=$1))`,
       [b1, b2, actorId || null]).catch(() => {});
-    const names = both.map((x) => [x.first_name, x.last_name].filter(Boolean).join(' ')).join(' and ');
+    const names = both.map((x) => require('./person-name').displayName(x)).join(' and ');
     await audit('shared_email_allowed', row.application_id, actorId, { reviewId: row.id, borrowerIds: [b1, b2] });
     return { note: `shared email allowed for ${names} — the profiles are linked; a login on either now sees both people's files (nothing was merged; each keeps their own profile and officer)`, applicationId: row.application_id };
   }
@@ -528,7 +533,70 @@ async function applyFileReviewAction({ row, action, targetApplicationId, targetT
     await audit('sync_review_keep_frozen_figures', row.application_id, actorId, { fields, reviewId: row.id });
     return {
       note: `kept the file's frozen figures and re-pushed them to ClickUp so the two agree (${fields.join(', ')}). ` +
-        `To accept the ClickUp change instead, clear the term-sheet package (or have a super-admin unlock a Clear-to-Close / Funded file) and re-register.`,
+        `To accept the ClickUp change instead, use “Use ClickUp's figures” (admin) — or clear the term-sheet package / have a super-admin unlock a Clear-to-Close / Funded file and re-register.`,
+      applicationId: row.application_id };
+  }
+
+  if (action === 'accept_clickup_figures') {
+    // The OVERRIDE (owner-directed 2026-07-27): pull ClickUp's economics INTO the
+    // FROZEN file — for a reconciled/closed file whose figures PILOT should now
+    // match. ADMIN ONLY: overriding the term-sheet / Clear-to-Close-Funded freeze
+    // is the same privileged class as unlocking a locked file (relink_task is
+    // gated the same way). The review-queue route is LO-reachable for the
+    // non-privileged action (keep_frozen_figures), so the gate lives HERE, fed
+    // the caller's real admin role, and is checked FIRST. The figures applied come
+    // from the row's stored diffs (the reliable offline base) refreshed by a
+    // best-effort live ClickUp re-read — see acceptInboundEconomicsChange.
+    if (!isAdmin) throw httpError(403, 'Only an admin can accept a ClickUp change on a locked file.');
+    if (!row.application_id) throw httpError(409, 'this row has no portal file');
+    const { acceptInboundEconomicsChange } = require('./inbound-economics-freeze');
+    // The row's stored diffs are the RELIABLE offline base — so the accept still
+    // works when ClickUp is momentarily unreachable / the task was deleted / a
+    // live read extracts nothing (owner-reported: the button "does not update
+    // anything and it still stays"). The live re-read is layered on top for
+    // freshness inside the accept function.
+    let fallbackChanges = null;
+    try {
+      const raw = row.raw_value ? JSON.parse(row.raw_value) : null;
+      fallbackChanges = (raw && Array.isArray(raw.changes)) ? raw.changes : null;
+    } catch (_) { /* raw_value is forensic — unparseable falls through to the live read */ }
+    const out = await acceptInboundEconomicsChange({
+      appId: row.application_id, actorId: actorId || null, fallbackChanges,
+      taskId: (row.task_id && !String(row.task_id).startsWith('app:')) ? row.task_id : null });
+    if (out.upToDate) {
+      return {
+        note: 'ClickUp already matches the file — nothing needed changing (the change may have been reverted in ClickUp since this review was raised).',
+        applicationId: row.application_id };
+    }
+    const labels = out.applied.map((c) => `${c.label}: ${c.from == null ? '—' : c.from} → ${c.to}`).join('; ');
+    return {
+      note: `updated the file from ClickUp, overriding the lock — ${labels}. ` +
+        `The pricing/Scope-of-Work conditions reopen because the registered numbers changed; re-register or sign them off when ready.`,
+      applicationId: row.application_id };
+  }
+
+  if (action === 'confirm_ctc') {
+    // Confirm the held Clear-to-Close move (owner-directed 2026-07-27): advance
+    // PILOT to Clear to Close so it matches ClickUp, and notify the borrower.
+    // Available to any staffer who can resolve the file's reviews (moving a file
+    // to Clear to Close is a normal status action, not an admin-only override).
+    if (!row.application_id) throw httpError(409, 'this row has no portal file');
+    let internalStatus = null;
+    try {
+      const raw = row.raw_value ? JSON.parse(row.raw_value) : null;
+      internalStatus = (raw && raw.internalStatus) || null;
+    } catch (_) { /* raw_value is forensic — unparseable falls through */ }
+    const { confirmCtc } = require('./inbound-ctc-confirm');
+    const out = await confirmCtc({
+      appId: row.application_id, actorId: actorId || null, internalStatus,
+      taskId: (row.task_id && !String(row.task_id).startsWith('app:')) ? row.task_id : null });
+    await audit('sync_review_confirm_ctc', row.application_id, actorId, { reviewId: row.id, fromStatus: out.fromStatus, reverted: !!out.reverted });
+    return {
+      note: out.reverted
+        ? 'ClickUp is no longer Clear to Close (it changed back since this review was raised), so PILOT was NOT moved. This review is now cleared.'
+        : out.alreadyThere
+          ? 'the file is already Clear to Close / Funded — nothing to change.'
+          : 'confirmed — the file is now Clear to Close in PILOT (it matches ClickUp), and the borrower was notified.',
       applicationId: row.application_id };
   }
 

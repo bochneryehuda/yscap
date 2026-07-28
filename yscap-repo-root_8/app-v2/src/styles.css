@@ -2878,7 +2878,12 @@ details[open]>.appr-sec-sum .appr-sec-chev{transform:rotate(180deg)}
 .crx-link:hover { text-decoration:underline; }
 
 /* Alerts ----------------------------------------------------------------- */
-.crx-alert { border-radius:10px; padding:11px 14px; font-size:.88rem; margin-top:10px; border:1px solid; }
+/* Base = a neutral, readable note (an alert with no tone must never render as a
+   bare border-coloured box). Never use a --ink* token for text here: they are all
+   LIGHT in this palette. */
+.crx-alert { border-radius:10px; padding:11px 14px; font-size:.88rem; margin-top:10px;
+  border:1px solid var(--border); background:var(--surface-soft); color:var(--text); }
+.crx-alert.info { background:var(--primary-soft); color:var(--text); border-color:var(--teal); }
 .crx-alert.danger { background:var(--danger-soft); color:var(--danger); border-color:var(--danger); }
 .crx-alert.warn   { background:var(--warning-soft); color:var(--warning); border-color:var(--warning); }
 .crx-alert.ok     { background:var(--success-soft); color:var(--ok); border-color:var(--ok); }
@@ -2913,11 +2918,30 @@ details[open]>.appr-sec-sum .appr-sec-chev{transform:rotate(180deg)}
 .crx-recipient { border:1px solid var(--border); border-radius:14px; background:var(--surface);
   padding:16px 18px; box-shadow:0 1px 2px rgba(20,27,34,.04); }
 /* One card per borrower (co-borrower support): a stack of borrower cards, each
-   with an include checkbox. An unchecked (dropped) card dims + dashes. */
+   with an include checkbox. Un-ticking a borrower must NOT resize the card or wash
+   the text out — the half-opacity version read as blurry, shrunken and broken
+   (owner-reported 2026-07-27). The dropped card keeps its exact size and readable
+   text; only the surface recedes and an "Not in this import" tag explains it. */
 .crx-recip-card { border:1px solid var(--border); border-radius:12px; padding:13px 14px; margin-top:12px;
-  transition:opacity .15s ease, border-color .15s ease; }
+  background:var(--surface); transition:background-color .15s ease, border-color .15s ease; }
 .crx-recip-card:first-of-type { margin-top:10px; }
-.crx-recip-card.off { opacity:.5; border-style:dashed; }
+.crx-recip-card.crx-off { background:var(--surface-soft); border-style:dashed; }
+.crx-recip-card.crx-off .crx-mono { background:var(--surface-soft); color:var(--muted); box-shadow:0 0 0 1px var(--border) inset; }
+.crx-recip-eyebrow.crx-off { color:var(--gold); }
+/* NOTHING in a borrower card may push the panel wider than the modal — a long name
+   plus its role tag used to force the whole screen to scroll sideways, cutting the
+   card off (owner-reported 2026-07-27). The text block must be allowed to SHRINK
+   (a flex item defaults to min-width:auto = its content's min-content width) and the
+   name must be allowed to WRAP. */
+.crx-recipient, .crx-recip-card, .crx-recip-grid, .crx-field { min-width:0; }
+.crx-recip-head > div { min-width:0; flex:1 1 auto; }
+.crx-recip-name { display:flex; flex-wrap:wrap; align-items:baseline; gap:6px; overflow-wrap:anywhere; }
+.crx-recip-name .crx-role-tag { margin-left:0; }
+/* Belt-and-braces: the modal body scrolls vertically only, never sideways. */
+.crx-modal-body { overflow-x:hidden; }
+/* The note under the borrower cards changes wording as you tick borrowers on and
+   off — a fixed slot keeps the screen from jumping while you do it. */
+.crx-note-slot { min-height:52px; }
 .crx-recip-card .crx-recip-head { margin-bottom:12px; }
 .crx-recip-check { flex:none; width:18px; height:18px; accent-color:var(--teal); cursor:pointer; }
 .crx-role-tag { display:inline-block; margin-left:8px; font-size:.62rem; font-weight:700; text-transform:uppercase;
@@ -2934,10 +2958,14 @@ details[open]>.appr-sec-sum .appr-sec-chev{transform:rotate(180deg)}
 .crx-field-wide { grid-column:1 / -1; }
 .crx-field > span { font-size:.68rem; text-transform:uppercase; letter-spacing:.07em; color:var(--muted); font-weight:600; }
 .crx-field > b { font-size:.94rem; color:var(--text); font-weight:600; overflow-wrap:anywhere; }
-.crx-note { margin-top:13px; padding-top:12px; border-top:1px dashed var(--border); font-size:.82rem; display:flex; gap:6px; align-items:baseline; }
+/* A NOTE IS A SENTENCE, not a row of boxes: as a flex container every inline <b>
+   became its own flex item and the sentence broke into columns. Plain block flow
+   keeps the emphasis inline where it belongs; the lock glyph just sits inline. */
+.crx-note { margin-top:13px; padding-top:12px; border-top:1px dashed var(--border); font-size:.82rem;
+  display:block; line-height:1.45; }
 .crx-note.secure { color:var(--teal-br); }
 .crx-note.warn { color:var(--warning); }
-.crx-lock { font-size:.85rem; }
+.crx-lock { font-size:.85rem; margin-right:4px; }
 
 /* Options ---------------------------------------------------------------- */
 .crx-options { display:flex; flex-direction:column; gap:16px; }
@@ -2955,6 +2983,8 @@ details[open]>.appr-sec-sum .appr-sec-chev{transform:rotate(180deg)}
 .crx-seg-btn.on .crx-seg-sub { color:rgba(255,255,255,.82); }
 .crx-seg-btn:focus-visible { outline:2px solid var(--focus); outline-offset:1px; }
 .crx-reissue { margin-top:11px; }
+/* One reissue reference PER BORROWER — each report has its own reference number. */
+.crx-reissue-row + .crx-reissue-row { margin-top:12px; padding-top:12px; border-top:1px dashed var(--border); }
 .crx-input { width:100%; box-sizing:border-box; padding:10px 12px; border:1px solid var(--border); border-radius:10px;
   background:var(--surface); color:var(--text); font:inherit; font-size:.92rem; }
 .crx-input:focus { outline:none; border-color:var(--teal); box-shadow:0 0 0 3px var(--primary-soft); }
@@ -2977,6 +3007,12 @@ details[open]>.appr-sec-sum .appr-sec-chev{transform:rotate(180deg)}
 /* Actions + upload ------------------------------------------------------- */
 .crx-upload { border:1px dashed var(--border); border-radius:12px; background:var(--surface-soft); padding:15px 16px; }
 .crx-upload-title { font-weight:700; font-size:.85rem; color:var(--text); margin-bottom:10px; }
+/* Merged / a-file-each / one-borrower chooser + the per-borrower file rows. */
+.crx-upload-mode { margin-bottom:12px; }
+.crx-upload-mode .crx-opt-hint { margin-top:7px; }
+.crx-upload-person { border:1px solid var(--border); border-radius:10px; padding:10px 12px; margin-bottom:10px;
+  background:var(--surface); }
+.crx-upload-person-name { font-weight:700; font-size:.9rem; color:var(--text); margin-bottom:6px; }
 .crx-upload-row { display:flex; gap:10px; align-items:center; flex-wrap:wrap; padding:4px 0; font-size:.86rem; }
 .crx-upload-row > span { min-width:118px; color:var(--muted); font-size:.78rem; text-transform:uppercase; letter-spacing:.05em; font-weight:600; }
 .crx-upload-hint { margin:6px 0 12px; color:var(--muted); font-size:.8rem; }
@@ -3203,6 +3239,12 @@ details[open]>.appr-sec-sum .appr-sec-chev{transform:rotate(180deg)}
 .cl-tile{background:var(--ink-2);border:1px solid var(--line);border-radius:var(--radius);padding:12px}
 .cl-tile-k{color:var(--muted);font-size:12px;text-transform:uppercase;letter-spacing:.06em}
 .cl-tile-v{font-size:20px;font-weight:700;margin-top:3px}
+/* The purchase price band under Deal details. auto-fit keeps ONE tile (a
+   straight purchase) full width and lays an assignment's final / original /
+   fee side by side in that order — and collapses on a phone with no extra
+   breakpoint, so both shapes read the same way at every width. */
+.cl-price-band{display:grid;grid-template-columns:repeat(auto-fit,minmax(190px,1fr));gap:12px;margin-top:12px}
+.cl-tile.accent{border-color:var(--gold)}
 .cl-actual{display:flex;gap:12px;align-items:flex-end;margin-top:12px;flex-wrap:wrap}
 .cl-table-wrap{overflow-x:auto}
 .cl-table{width:100%;border-collapse:collapse;font-size:14px}
@@ -3224,6 +3266,9 @@ details[open]>.appr-sec-sum .appr-sec-chev{transform:rotate(180deg)}
    colored pill, not body text. */
 .cl-ts-tag{flex:0 0 auto;display:inline-block;padding:0 6px;border-radius:999px;font-size:11px;font-weight:600;border:1px solid var(--line);color:#4B585C;background:#FFFFFF}
 .cl-ts-tag.on{color:#FFFFFF;background:#2F7F86;border-color:#2F7F86}
+/* A borrower-name tag (whose credit report this is) can be long — unlike the
+   fixed Executed/Draft tag it may shrink and ellipsize rather than overflow. */
+.cl-ts-tag.cl-ql-who{flex:0 1 auto;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .cl-cond{display:flex;justify-content:space-between;gap:12px;align-items:flex-start;border-bottom:1px solid var(--line);padding:10px 0}
 .cl-cond:last-child{border-bottom:none}
 .cl-cond-main{display:flex;flex-direction:column;gap:4px;min-width:0}
@@ -3352,3 +3397,58 @@ details[open]>.appr-sec-sum .appr-sec-chev{transform:rotate(180deg)}
   .nx-age,.nx-go{align-self:flex-start;margin-left:21px}
   .nx-go{margin-left:auto}
 }
+
+/* =====================================================================
+   Conditions grouped by subject (blueprint Move 4b) — the one list.
+   A group header is a button: it says what the group is and how much of it
+   is done, and it collapses. Quiet by design; the ROWS are the content, and
+   a header that shouted would compete with the state dots that matter.
+   Dark text on white throughout (--ink* tokens are LIGHT — never for text).
+   ===================================================================== */
+.cond-group{margin-top:10px}
+.cond-group:first-of-type{margin-top:2px}
+.cond-group-h{display:flex;align-items:center;gap:9px;width:100%;
+  background:none;border:0;border-bottom:1px solid var(--line);
+  padding:9px 2px 7px;margin-bottom:2px;cursor:pointer;font:inherit;text-align:left}
+.cond-group-h:hover .cond-group-name{color:var(--teal-br)}
+.cond-group-chev{flex:none;color:var(--muted);font-size:10px;transition:transform .15s ease}
+.cond-group-chev.open{transform:rotate(90deg)}
+.cond-group-name{font-weight:700;font-size:11.5px;letter-spacing:.09em;
+  text-transform:uppercase;color:#4B585C}
+.cond-group-count{margin-left:auto;flex:none;font-size:12px;color:#4B585C;
+  font-variant-numeric:tabular-nums}
+@media(max-width:720px){.cond-group-name{letter-spacing:.05em}}
+/* The conditions filter row — two labelled controls, not two bare dropdowns
+   squeezed onto the title line (where both truncated and said nothing). */
+.cond-filters{display:flex;gap:14px;flex-wrap:wrap;align-items:flex-end;margin:2px 0 10px}
+.cond-filter{display:flex;flex-direction:column;gap:3px;min-width:170px;flex:1 1 170px;max-width:250px}
+.cond-filter > span{font-size:11px;font-weight:700;letter-spacing:.08em;
+  text-transform:uppercase;color:#4B585C}
+.cond-filter .input{width:100%}
+
+/* ── The purchasing desk (owner-directed 2026-07-26) ───────────────────────
+   Every file that moved to purchasing after investor delivery. Text is
+   explicit dark on white — never a --ink* token (those are LIGHT). */
+.pu-detail{padding:12px 10px}
+.pu-cols{display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:14px}
+.pu-col{border:1px solid var(--line);border-radius:var(--radius);padding:10px;background:#FFFFFF}
+.pu-h{font-size:11px;font-weight:700;letter-spacing:.08em;text-transform:uppercase;
+  color:#4B585C;margin-bottom:8px}
+.pu-note{border-bottom:1px solid var(--line);padding:6px 0}
+.pu-note:last-child{border-bottom:none}
+.pu-note-body{color:#141B22;white-space:pre-wrap;word-break:break-word}
+.pu-task{display:flex;gap:8px;align-items:center;padding:4px 0;color:#141B22}
+.pu-task-done{text-decoration:line-through;color:#4B585C}
+/* Table funding — the question the closer answers BEFORE signing off investor
+   delivery. Explicit dark text on white (never an --ink* token, those are LIGHT). */
+/* .cl-signrow is space-between (label left / button right); with only a checkbox
+   and its text here that would shove them to opposite edges. */
+.cl-tf{align-items:flex-start;justify-content:flex-start;gap:9px}
+.cl-tf input{margin-top:3px;flex:0 0 auto}
+.cl-tf-main{display:flex;flex-direction:column;gap:2px;min-width:0;color:#141B22}
+.cl-tf-hint{font-size:12px;color:#4B585C}
+/* Purchasing conditions — what the buyer still needs before they will purchase. */
+.pu-cond{display:flex;gap:12px;justify-content:space-between;align-items:flex-start;
+  border-bottom:1px solid var(--line);padding:7px 0;color:#141B22}
+.pu-cond:last-child{border-bottom:none}
+.pu-cond-main{display:flex;flex-direction:column;gap:2px;min-width:0}

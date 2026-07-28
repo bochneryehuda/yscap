@@ -161,6 +161,31 @@ async function attachSignedArtifacts(db, envelopes) {
   }
 }
 
+/**
+ * The SECOND gate on a term-sheet send (owner-reported 2026-07-27). The e-sign
+ * send-gate above only knows the appraisal/P&P/closing prerequisites; the
+ * Encompass match gate blocks the term-sheet package independently, at the send
+ * route. Because the panel never READ that gate, a file with every condition
+ * signed off rendered "All prerequisites met" with no escape hatch on screen —
+ * and then the send came back "Encompass has 7 unmatched field(s)", with no way
+ * to act on it. Reading it here is what lets the panel show the real blocker AND
+ * the override that clears it. Best-effort: `issuanceGate` already fails OPEN
+ * (dormant with no Encompass loan, block:false on any error) and this extra
+ * try/catch guarantees a reconcile problem can never break the e-sign panel.
+ */
+async function encompassSendBlock(applicationId) {
+  try {
+    const g = await require('../../encompass/reconcile').issuanceGate(applicationId);
+    return {
+      block: !!g.block, hasLoan: !!g.hasLoan,
+      openBlocking: g.openBlocking || 0,
+      openBlockingKeys: g.openBlockingKeys || [],
+    };
+  } catch (_) {
+    return { block: false, hasLoan: false, openBlocking: 0, openBlockingKeys: [] };
+  }
+}
+
 /** Per-file: the send-gate + the two packages' envelopes (with signed-doc links). */
 async function fileEsign(db, applicationId) {
   const g = await gate.esignSendGate(applicationId, { db });
@@ -176,7 +201,11 @@ async function fileEsign(db, applicationId) {
   // The reason options for the "request an exception to send before clear-to-close"
   // form (one source of truth — the server validates against the same set).
   const exceptionReasonCodes = require('../loan-exceptions').reasonCodesFor('esign_before_ctc');
-  return { gate: g, packages: byPurpose, envelopes, loanNumber: meta.ys_loan_number || null, exceptionReasonCodes };
+  // The Encompass match gate — a SEPARATE reason the term-sheet package can't
+  // send, enforced at the send route. The panel needs it to tell the truth about
+  // readiness and to offer the admin override instead of a dead end.
+  const encompass = await encompassSendBlock(applicationId);
+  return { gate: g, packages: byPurpose, envelopes, loanNumber: meta.ys_loan_number || null, exceptionReasonCodes, encompass };
 }
 
-module.exports = { esignPhase, waitingOn, dashboard, fileEsign };
+module.exports = { esignPhase, waitingOn, dashboard, fileEsign, encompassSendBlock };

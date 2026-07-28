@@ -542,7 +542,7 @@ router.post('/notification-center/compose', async (req, res) => {
     if (recipientKind === 'borrower') {
       try {
         const rr = await db.query(`SELECT first_name, last_name, email FROM borrowers WHERE id=$1`, [recipientId]);
-        const bb = rr.rows[0]; if (bb) label = [bb.first_name, bb.last_name].filter(Boolean).join(' ') || bb.email || null;
+        const bb = rr.rows[0]; if (bb) label = require('../lib/person-name').displayName(bb) || bb.email || null;
       } catch (_) { /* label optional */ }
     }
     await gate.recordDraft({ officerId: req.actor.id, key, audience: recipientKind,
