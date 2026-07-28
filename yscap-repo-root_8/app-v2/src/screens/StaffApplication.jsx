@@ -34,10 +34,12 @@ import ToolModal from '../components/ToolModal.jsx';
 import FileSections, { Section, InfoTip, subscribeConditionsTab, goToSection, requestOpenSection } from '../components/FileSections.jsx';
 import { captureScrollAnchor, restoreScrollAnchor } from '../lib/keep-scroll.js';
 import BorrowerProfilePanel from '../components/BorrowerProfilePanel.jsx';
-import { CONDITION_STATUSES, CONDITION_TIMINGS, conditionStatusLabel, conditionStatusClass, timingLabel, loanConditionStatusLabel } from '../lib/conditions-vocab.js';
+import { CONDITION_TIMINGS, conditionStatusLabel, conditionStatusClass, timingLabel, loanConditionStatusLabel } from '../lib/conditions-vocab.js';
 import { severityCount } from '../lib/findings-vocab.js';
 import { groupBySubject } from '../lib/condition-subjects.js';
 import { isWorkflowStep } from '../lib/condition-workflow-steps.js';
+import ConditionActions, { DocActions } from '../components/ConditionActions.jsx';
+import { canComplete } from '../lib/condition-actions.js';
 import EsignFileSection from '../components/EsignFileSection.jsx';
 import ExceptionRegisterCard from '../components/ExceptionRegisterCard.jsx';
 import OrdersPanel from '../components/OrdersPanel.jsx';
@@ -762,7 +764,8 @@ function sowUrl(appId, itemId, app) {
   if (/gold/i.test(String(a.registered_program || ''))) p.set('program', 'gold');
   return `/tools/rehab-budget.html?${p.toString()}`;
 }
-const STATUSES = CONDITION_STATUSES;   // one list, from lib/conditions-vocab.js
+// The status list moved with the status dropdown into components/ConditionActions
+// — it reads CONDITION_STATUSES from lib/conditions-vocab.js directly.
 const APP_STATUSES = ['file_intake', 'new', 'in_review', 'processing', 'underwriting', 'approved', 'clear_to_close', 'funded', 'declined', 'withdrawn'];
 const APP_STATUS_LABEL = { file_intake: 'File intake', new: 'Submitted', in_review: 'In review', processing: 'Processing', underwriting: 'Underwriting', approved: 'Approved', clear_to_close: 'Clear to close', funded: 'Funded', declined: 'Declined', withdrawn: 'Withdrawn' };
 const PHASE_LABEL = {
@@ -831,7 +834,9 @@ function PilotAdviceNote({ it }) {
 // officer marks conditions REVIEWED instead — mirrored server-side. This is a
 // UI hint by role default; the server enforces the sign_off_conditions
 // capability (incl. the loan-coordinator persona and per-user overrides).
-const canComplete = (role) => ['processor', 'admin', 'super_admin', 'underwriter', 'loan_coordinator'].includes(role);
+// canComplete moved to lib/condition-actions.js — the action ladder owns its own
+// role rules, so "who may sign off" has one definition rather than one here and
+// one implied by whichever buttons a row happened to render.
 
 /* SUPER-ADMIN CONDITION OVERRIDE (owner-directed 2026-07-27): "if we're unable
    to clear it, the admin should be able to overwrite and clear the condition
@@ -867,7 +872,9 @@ function Item({ it, team, onPatch, role, docs, onUploadTo, onDropTo, onReviewDoc
   // one-line summary; expand/collapse is a per-item manual override on top.
   const [expandOverride, setExpandOverride] = useState(null);   // null = automatic
   const signed = !!it.signed_off_at;
-  const completer = canComplete(role);
+  // No `completer` here any more — who may do what is decided inside the shared
+  // action bar (components/ConditionActions), so this row cannot answer that
+  // question differently from the borrower-facing one.
   const myDone = roleDone(it, role);
   const collapsed = expandOverride === null ? myDone : !expandOverride;
   if (collapsed) {
@@ -982,13 +989,9 @@ function Item({ it, team, onPatch, role, docs, onUploadTo, onDropTo, onReviewDoc
                     <>
                       <span className="small" style={{ flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{doc.filename}</span>
                       <span className="pill" style={rs === 'accepted' ? { borderColor: 'var(--ok)', color: 'var(--ok)' } : rs === 'rejected' ? { borderColor: 'var(--danger)', color: 'var(--danger)' } : undefined}>{rs}</span>
-                      {onPreview && <button className="btn ghost small" title="Preview without downloading" onClick={() => onPreview(doc)}>Preview</button>}
-                      <button className="btn ghost small" disabled={dlBusy === doc.id} onClick={() => onDownloadDoc(doc)}>{dlBusy === doc.id ? '…' : 'Download'}</button>
-                      {onUploadTo && <button className="btn link small" title="Replace this document with a new version" onClick={() => onUploadTo({ itemId: it.id, slot: slot.label, replaceDocumentId: doc.id })}>Replace</button>}
-                      {completer && rs !== 'accepted' && <button className="btn primary small" onClick={() => onReviewDoc(doc, 'accept')}>Accept</button>}
-                      {completer && <button className="btn ghost small" title="Accept this document but keep the condition open — ask the borrower for one more" onClick={() => onReviewDoc(doc, 'accept_more')}>Accept +1 more</button>}
-                      {rs !== 'rejected' && <button className="btn link small" onClick={() => onReviewDoc(doc, 'reject')}>Reject</button>}
-                      {completer && <button className="btn link small" style={{ color: 'var(--danger)' }} title="Permanently delete — for a mistake upload (never synced to SharePoint)" onClick={() => onReviewDoc(doc, 'delete')}>Delete</button>}
+                      <DocActions doc={doc} role={role} onReviewDoc={onReviewDoc}
+                        onDownloadDoc={onDownloadDoc} onPreview={onPreview} dlBusy={dlBusy}
+                        onReplace={onUploadTo ? () => onUploadTo({ itemId: it.id, slot: slot.label, replaceDocumentId: doc.id }) : null} />
                     </>
                   ) : (
                     <>
@@ -1013,13 +1016,10 @@ function Item({ it, team, onPatch, role, docs, onUploadTo, onDropTo, onReviewDoc
                     <span className="muted small" style={{ minWidth: 140 }}>{d.slot_label || `Document ${i + 1}`}</span>
                     <span className="small" style={{ flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{d.filename}</span>
                     <span className="pill" style={rs === 'accepted' ? { borderColor: 'var(--ok)', color: 'var(--ok)' } : rs === 'rejected' ? { borderColor: 'var(--danger)', color: 'var(--danger)' } : undefined}>{rs}</span>
-                    {onPreview && <button className="btn ghost small" title="Preview without downloading" onClick={() => onPreview(d)}>Preview</button>}
-                    <button className="btn ghost small" disabled={dlBusy === d.id} onClick={() => onDownloadDoc(d)}>{dlBusy === d.id ? '…' : 'Download'}</button>
-                    {onUploadTo && d.source_type !== 'system' && <button className="btn link small" title="Replace this document with a new version" onClick={() => onUploadTo({ itemId: it.id, slot: d.slot_label || undefined, replaceDocumentId: d.id })}>Replace</button>}
-                    {completer && rs !== 'accepted' && <button className="btn primary small" onClick={() => onReviewDoc(d, 'accept')}>Accept</button>}
-                    {completer && <button className="btn ghost small" title="Accept this document but keep the condition open — ask the borrower for one more" onClick={() => onReviewDoc(d, 'accept_more')}>Accept +1 more</button>}
-                    {rs !== 'rejected' && <button className="btn link small" onClick={() => onReviewDoc(d, 'reject')}>Reject</button>}
-                    {completer && <button className="btn link small" style={{ color: 'var(--danger)' }} title="Permanently delete — for a mistake upload (never synced to SharePoint)" onClick={() => onReviewDoc(d, 'delete')}>Delete</button>}
+                    <DocActions doc={d} role={role} onReviewDoc={onReviewDoc}
+                      onDownloadDoc={onDownloadDoc} onPreview={onPreview} dlBusy={dlBusy}
+                      onReplace={(onUploadTo && d.source_type !== 'system')
+                        ? () => onUploadTo({ itemId: it.id, slot: d.slot_label || undefined, replaceDocumentId: d.id }) : null} />
                   </div>
                 );
               })}
@@ -1045,49 +1045,13 @@ function Item({ it, team, onPatch, role, docs, onUploadTo, onDropTo, onReviewDoc
         </div>
       )}
 
-      <div className="row" style={{ width: '100%', gap: 8, flexWrap: 'wrap' }}>
-        <select className="input" style={{ maxWidth: 150 }} value={it.status}
-          onChange={e => onPatch(it.id, { status: e.target.value })}>
-          {STATUSES.filter(s => completer || s !== 'satisfied' || it.status === 'satisfied').map(s => <option key={s} value={s}>{conditionStatusLabel(s)}</option>)}
-        </select>
-        <select className="input" style={{ maxWidth: 180 }} value={it.assignee_staff_id || ''}
-          onChange={e => onPatch(it.id, { assigneeStaffId: e.target.value || null })}>
-          <option value="">Unassigned</option>
-          {team.map(m => <option key={m.id} value={m.id}>{m.full_name} ({m.role})</option>)}
-        </select>
-        {/* LO "Done": marks the condition completed/submitted from the loan
-            officer's side (owner-directed #133). It clears off the LO's default
-            filter but the processor's list keeps it until SHE signs off. */}
-        {it.reviewed_at
-          ? <button className="btn ghost" title="You marked this done — undo to put it back on your list" onClick={() => onPatch(it.id, { reviewed: false })}>Undo done</button>
-          : <button className="btn ghost" title="Mark this condition done (loan-officer step). The processor still signs it off." onClick={() => onPatch(it.id, { reviewed: true })}>Done</button>}
-        {completer && (signed
-          ? <button className="btn ghost" onClick={() => onPatch(it.id, it.waived_at ? { waived: false } : { signedOff: false })}>{it.waived_at ? 'Undo not-required' : 'Undo sign-off'}</button>
-          : <>
-              <button className="btn primary" title="Sign off = the whole condition is complete (processor step). This is what removes it from the list for everyone." onClick={() => onPatch(it.id, { signedOff: true })}>Sign off</button>
-              {it.is_required === false && <button className="btn ghost" title="This optional condition doesn't apply to this file — clear it without a document (waive). Optional conditions only." onClick={() => onPatch(it.id, { waived: true })}>Not required</button>}
-              {/* Super admin only: clear this condition without what it asks for.
-                  Offered up-front as well as after a refusal, so it never takes a
-                  failed attempt to find it. */}
-              {canOverride(role) && (
-                <button className="btn ghost" style={{ color: 'var(--gold, #AE8746)' }}
-                  title="Super admin: clear this condition WITHOUT a document / without meeting its requirement. Your reason is saved on the file."
-                  onClick={() => { const x = askOverride(it.label); if (x) onPatch(it.id, { signedOff: true, ...x }); }}>Override</button>
-              )}
-            </>)}
-        {it.audience !== 'staff' && (
-          <button className="btn ghost" title="Send this condition back to the borrower with a reason (reopens it, clears any sign-off)"
-            onClick={() => {
-              const reason = window.prompt(signed || it.status === 'satisfied'
-                ? 'Reopen and send this back to the borrower — what needs to change? (they will see this)'
-                : 'Send this back to the borrower — what needs to change? (they will see this)');
-              if (reason == null || !reason.trim()) return;
-              onPatch(it.id, { pushBack: true, issueReason: reason.trim() });
-            }}>{signed || it.status === 'satisfied' ? 'Reopen / send back' : 'Send back'}</button>
-        )}
-        {!completer && !it.reviewed_at &&
-          <span className="muted small" style={{ alignSelf: 'center' }}>Done records your completion — the back office signs off after you.</span>}
-        {myDone && <button className="btn link small" style={{ marginLeft: 'auto' }} onClick={() => setExpandOverride(false)}>Collapse</button>}
+      {/* ONE next step, everything else behind More — the shared bar, so this
+          row and the borrower-facing one can never drift again. */}
+      <div className="row" style={{ width: '100%', gap: 8, alignItems: 'flex-start' }}>
+        <ConditionActions it={it} role={role} team={team} onPatch={onPatch}
+          docs={itemDocs} size="" />
+        {myDone && <button className="btn link small" style={{ marginLeft: 'auto', flex: 'none' }}
+          onClick={() => setExpandOverride(false)}>Collapse</button>}
       </div>
       <div className="row" style={{ width: '100%', gap: 8 }}>
         <input className="input" placeholder="Add a note…" value={notes} onChange={e => setNotes(e.target.value)} />
@@ -2555,29 +2519,12 @@ function BorrowerConditions({ appId, app, items, docs, onPatch, onReviewDoc, onD
                   {itemDocs.length ? '+ Add doc' : 'Upload'}
                 </button>
               )}
-              {it.reviewed_at
-                ? <button className="btn ghost small" title={`Marked done by ${it.reviewed_by_name || 'staff'} — undo to put it back on your list`} onClick={() => onPatch(it.id, { reviewed: false })}>Done ✓</button>
-                : <button className="btn ghost small" title="Mark this condition done (loan-officer step). The processor still signs it off." onClick={() => onPatch(it.id, { reviewed: true })}>Done</button>}
-              {completer && (signed
-                ? <button className="btn ghost small" onClick={() => onPatch(it.id, it.waived_at ? { waived: false } : { signedOff: false })}>{it.waived_at ? 'Undo waive' : 'Undo sign-off'}</button>
-                : <>
-                    <button className="btn primary small" onClick={() => onPatch(it.id, { signedOff: true })}>Sign off</button>
-                    {it.is_required === false && <button className="btn ghost small" title="Waive this optional condition (clear without a document)" onClick={() => onPatch(it.id, { waived: true })}>Waive</button>}
-                    {/* Super admin only — same override as the internal list. */}
-                    {canOverride(role) && (
-                      <button className="btn ghost small" style={{ color: 'var(--gold, #AE8746)' }}
-                        title="Super admin: clear this condition WITHOUT a document / without meeting its requirement. Your reason is saved on the file."
-                        onClick={() => { const x = askOverride(it.label); if (x) onPatch(it.id, { signedOff: true, ...x }); }}>Override</button>
-                    )}
-                  </>)}
-              <button className="btn ghost small" title="Send this condition back to the borrower with a reason (reopens it, clears any sign-off)"
-                onClick={() => {
-                  const reason = window.prompt(signed || it.status === 'satisfied'
-                    ? 'Reopen and send this back to the borrower — what needs to change? (they will see this)'
-                    : 'Send this back to the borrower — what needs to change? (they will see this)');
-                  if (reason == null || !reason.trim()) return;
-                  onPatch(it.id, { pushBack: true, issueReason: reason.trim() });
-                }}>{signed || it.status === 'satisfied' ? 'Reopen' : 'Send back'}</button>
+              {/* ONE next step, everything else behind More — the SAME bar the
+                  internal rows use, so the two shapes can never drift again.
+                  canSendBack is forced on: these rows are the borrower's list,
+                  so sending one back is always a real option here. */}
+              <ConditionActions it={it} role={role} team={team} onPatch={onPatch}
+                docs={itemDocs} canSendBack />
             </div>
             {(it.issue_reason || it.rejection_reason) && (
               <div className="small" style={{ color: 'var(--danger)', paddingLeft: 20 }}>Sent back: {it.issue_reason || it.rejection_reason}</div>
@@ -2592,23 +2539,13 @@ function BorrowerConditions({ appId, app, items, docs, onPatch, onReviewDoc, onD
                   const rs = d.review_status || 'pending';
                   return (
                     <div className="row" key={d.id} style={{ gap: 8, flexWrap: 'wrap', padding: '3px 0' }}>
-                      <span className="muted small" style={{ minWidth: 90 }}>{d.slot_label || (d.source_type === 'system' ? 'Tool export' : `Document ${i + 1}`)}</span>
+                      <span className="muted small" style={{ minWidth: 140 }}>{d.slot_label || (d.source_type === 'system' ? 'Tool export' : `Document ${i + 1}`)}</span>
                       <span className="small" style={{ flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{d.filename}</span>
                       <span className="pill" style={rs === 'accepted' ? { borderColor: 'var(--ok)', color: 'var(--ok)' } : rs === 'rejected' ? { borderColor: 'var(--danger)', color: 'var(--danger)' } : undefined}>{rs}</span>
-                      {onPreview && <button className="btn ghost small" title="Preview without downloading" onClick={() => onPreview(d)}>Preview</button>}
-                      <button className="btn ghost small" disabled={dlBusy === d.id} onClick={() => onDownloadDoc(d)}>{dlBusy === d.id ? '…' : 'Download'}</button>
-                      {onUploadTo && d.source_type !== 'system' && (
-                        <button className="btn link small" title="Replace this document with a new version (the old one is kept in the trash)"
-                          onClick={() => onUploadTo({ itemId: it.id, slot: d.slot_label || undefined, replaceDocumentId: d.id })}>Replace</button>
-                      )}
-                      {completer && rs !== 'accepted' && <button className="btn primary small" onClick={() => onReviewDoc(d, 'accept')}>Accept</button>}
-                      {completer && rs !== 'accepted' && (
-                        <button className="btn ghost small"
-                          title="Accept this document but keep the condition open and ask the borrower for one more document"
-                          onClick={() => onReviewDoc(d, 'accept_more')}>Accept +1 more</button>
-                      )}
-                      {rs !== 'rejected' && <button className="btn link small" onClick={() => onReviewDoc(d, 'reject')}>Reject</button>}
-                      {completer && <button className="btn link small" style={{ color: 'var(--danger)' }} title="Permanently delete — for a mistake upload (never synced to SharePoint)" onClick={() => onReviewDoc(d, 'delete')}>Delete</button>}
+                      <DocActions doc={d} role={role} onReviewDoc={onReviewDoc}
+                        onDownloadDoc={onDownloadDoc} onPreview={onPreview} dlBusy={dlBusy}
+                        onReplace={(onUploadTo && d.source_type !== 'system')
+                          ? () => onUploadTo({ itemId: it.id, slot: d.slot_label || undefined, replaceDocumentId: d.id }) : null} />
                     </div>
                   );
                 })}
@@ -3804,9 +3741,11 @@ export default function StaffApplication() {
           conditions, the underwriting conditions, the internal staff conditions +
           checklist, and the LLC used to be four separate sections — they're now one
           section you switch between with tabs, so there's a single place to look. */}
+      {/* fullscreenable: owner-directed — the conditions list is the one section
+          you sit and work through, so it gets a button to fill the screen. */}
       <Section id="sec-conditions" summary={summaries['sec-conditions']} title="Conditions" defaultOpen={false}
-        info="Everything to clear on this file — the borrower's conditions, your underwriting conditions, internal staff conditions and checklist, and the LLC. Switch with the tabs."
-        badge={nCondOpen || ''}>
+        info="Everything to clear on this file — the borrower's conditions, your underwriting conditions, internal staff conditions, and the LLC. Switch with the tabs."
+        badge={nCondOpen || ''} fullscreenable>
 
       <input ref={staffFileRef} type="file" multiple style={{ display: 'none' }} onChange={onStaffFile} />
       {(() => {
