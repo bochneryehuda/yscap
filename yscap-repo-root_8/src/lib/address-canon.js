@@ -17,14 +17,27 @@ const ADDR = require('./address');   // canonical one-line formatting (pure)
 
 const inputKey = (t) => String(t || '').trim().toLowerCase().replace(/\s+/g, ' ').slice(0, 300);
 
+// A match that resolves only to a STREET (or coarser) is not this property.
+// `route` is the dangerous one and was previously accepted: Google answers a
+// house number it cannot place with the road it sits on, and that road carries
+// its OWN postcode — which is how "1727 S 2nd St, Piscataway, NJ 08854" became
+// "2nd St, Piscataway, NJ 07063" (see address.geocodeRewriteIsSafe). It matters
+// twice over here, because `canonicalize` also backs `samePlace`: a road-level
+// place_id would make every house on one street compare as the SAME property.
+const IMPRECISE_TYPES = new Set([
+  'route', 'intersection', 'postal_code', 'postal_code_prefix',
+  'neighborhood', 'sublocality', 'locality', 'administrative_area_level_1',
+  'administrative_area_level_2', 'administrative_area_level_3', 'country',
+]);
+
 // Pure parser (unit-tested): Google Geocoding JSON → our cache row shape.
 function parseGeocodeResult(json) {
   const r = json && Array.isArray(json.results) ? json.results[0] : null;
   if (!r || !r.place_id) return null;
-  // Reject wildly-imprecise matches: a street address should geocode to at
-  // least street level, never a bare locality/state centroid.
+  // Reject imprecise matches: a street address must geocode to the ADDRESS, never
+  // to the road it sits on nor a locality/ZIP centroid.
   const types = r.types || [];
-  if (types.includes('locality') || types.includes('administrative_area_level_1') || types.includes('country')) return null;
+  if (types.some((t) => IMPRECISE_TYPES.has(t))) return null;
   const comp = (r.address_components || []).find((c) => (c.types || []).includes('postal_code'));
   const loc = r.geometry && r.geometry.location;
   return {
@@ -108,13 +121,60 @@ function osmPolite(fn) {
   return run;
 }
 
+/**
+ * Pure (unit-tested): one Nominatim match → our cache row shape, or null.
+ *
+ * PRECISION IS THE WHOLE POINT. Nominatim answers a house number it cannot place
+ * with the ROAD — `addresstype: "road"`, no `address.house_number`, and the road's
+ * OWN postcode (verified live on the owner's file: "1727 S 2nd St, Piscataway, NJ
+ * 08854" → "2nd Street, Piscataway Township, …, 07063"). Such a match is still
+ * worth its COORDINATES (the pin lands on the right street, which is what lets the
+ * address reach the ClickUp location field at all), but its TEXT is a different
+ * address and must never be offered: `formatted` and `zip` are left NULL so no
+ * caller — and no permanently-cached row — can adopt them.
+ */
+function parseOsmResult(m) {
+  if (!m) return null;
+  const lat = Number(m.lat), lng = Number(m.lon);
+  if (!Number.isFinite(lat) || !Number.isFinite(lng)) return null;
+  const comp = m.address ? ADDR.osmComponentsToAddress(m.address) : null;
+  // House-level only, keyed on `house_number` — the one unambiguous signal.
+  // (`addresstype` is deliberately NOT trusted: "place" covers a hamlet as well as
+  // a house, and without a house_number there is no property address to build —
+  // `osmComponentsToAddress` composes line1 from [house_number, road].)
+  const houseLevel = !!(m.address && m.address.house_number);
+  // NEVER store `display_name` — that raw string ("26, South 10th Street,
+  // Williamsburg, Brooklyn, Kings County, New York, 11249, United States") is what
+  // leaked onto files and ClickUp cards as the address. Build the mailing form
+  // Google/ClickUp show, from the components; fall back to compacting display_name
+  // when components are missing.
+  const formatted = houseLevel
+    ? ((comp && ADDR.canonicalOneLine(comp)) || ADDR.compactFormattedAddress(m.display_name) || null)
+    : null;
+  return {
+    place_id: OSM_PREFIX + (m.osm_id != null ? m.osm_id : m.place_id),
+    formatted, lat, lng,
+    zip: (houseLevel && comp && comp.zip) || null,
+    precision: houseLevel ? 'rooftop' : 'road',
+  };
+}
+
 async function osmGeocode(text) {
   const key = OSM_PREFIX + inputKey(text);
   try {
     const hit = (await db.query(`SELECT place_id, formatted, lat, lng FROM address_canon_cache WHERE input_key=$1`, [key])).rows[0];
     // Compact on READ too: rows cached before the formatting fix below still
     // hold a raw display_name, and this cache is permanent.
-    if (hit) return hit.place_id ? { ...hit, formatted: ADDR.compactFormattedAddress(hit.formatted) || null } : null;
+    // `precision` is derived rather than stored (the table has no such column):
+    // after parseOsmResult, a row with no `formatted` IS a road-level match — that
+    // is the only way one is now written, and it is also what address-heal leaves
+    // behind when it strips a downgraded row. Deriving it here keeps a CACHE HIT
+    // behaving exactly like a fresh lookup for callers that check precision.
+    if (hit) {
+      if (!hit.place_id) return null;
+      const formatted = ADDR.compactFormattedAddress(hit.formatted) || null;
+      return { ...hit, formatted, precision: formatted ? 'rooftop' : 'road' };
+    }
   } catch (_) { /* cache is an optimization */ }
   let parsed = null;
   try {
@@ -128,23 +188,7 @@ async function osmGeocode(text) {
     }));
     if (r && r.ok) {
       const j = await r.json();
-      const m = Array.isArray(j) ? j[0] : null;
-      const lat = m && Number(m.lat), lng = m && Number(m.lon);
-      if (m && Number.isFinite(lat) && Number.isFinite(lng)) {
-        // NEVER store `display_name` — that raw string ("26, South 10th Street,
-        // Williamsburg, Brooklyn, Kings County, New York, 11249, United States")
-        // is what leaked onto files and ClickUp cards as the address. Build the
-        // mailing form Google/ClickUp show, from the components; fall back to
-        // compacting display_name when components are missing.
-        const comp = m.address ? ADDR.osmComponentsToAddress(m.address) : null;
-        const formatted = (comp && ADDR.canonicalOneLine(comp))
-          || ADDR.compactFormattedAddress(m.display_name) || null;
-        parsed = {
-          place_id: OSM_PREFIX + (m.osm_id != null ? m.osm_id : m.place_id),
-          formatted, lat, lng,
-          zip: (comp && comp.zip) || null,
-        };
-      }
+      parsed = parseOsmResult(Array.isArray(j) ? j[0] : null);
     }
   } catch (_) { return null; }   // network failure: DON'T cache — retry later
   try {
@@ -175,4 +219,4 @@ async function geocode(text) {
   try { return await osmGeocode(q); } catch (_) { return null; }
 }
 
-module.exports = { canonicalize, samePlace, geocode, parseGeocodeResult, inputKey };
+module.exports = { canonicalize, samePlace, geocode, parseGeocodeResult, parseOsmResult, inputKey };

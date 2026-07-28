@@ -72,9 +72,20 @@ async function withCoords(addr) {
       // provider now returns the mailing form; `compactFormattedAddress` is the
       // belt-and-suspenders (a permanently-cached old row, a future provider).
       const ADDR = require('../lib/address');
-      const base = ADDR.compactFormattedAddress(hit.formatted)
-        || ADDR.canonicalOneLine({ ...addr })
+      // OUR address, in the mailing form — the value to beat.
+      const ours = ADDR.canonicalOneLine({ ...addr })
         || ADDR.compactFormattedAddress(addr.formatted_address || line);
+      const theirs = ADDR.compactFormattedAddress(hit.formatted);
+      // A GEOCODE IS A REQUEST FOR COORDINATES. Adopt the provider's text only when
+      // it is the SAME property better spelled — never when it contradicts ours.
+      // Owner-reported 2026-07-28 (YSCAP258134762): this line adopted `hit.formatted`
+      // unconditionally, so a road-level match rewrote the subject property from
+      // "1727 S 2nd St, Piscataway, NJ 08854" to "2nd St, Piscataway, NJ 07063" —
+      // pushed to the card AND written back onto the file below, so every correction
+      // was undone by the next push. `geocodeRewriteIsSafe` refuses a dropped house
+      // number, a changed ZIP, or a dropped directional; the provider is still free
+      // to abbreviate the street, fix the city, or fill a ZIP we never had.
+      const base = (theirs && ADDR.geocodeRewriteIsSafe(ours || line, theirs)) ? theirs : (ours || line);
       // Keep the apartment on the value we store/show: the geocoder resolved the
       // BUILDING (the unit was stripped so it would place on the map — see
       // address-canon.geocode), but the mailing address still names the unit.
@@ -83,7 +94,10 @@ async function withCoords(addr) {
         ...addr,
         lat: Number(hit.lat), lng: Number(hit.lng),
         formatted_address: formatted || addr.formatted_address || line,
-        place_id: hit.place_id || addr.place_id || undefined,
+        // The provider's place_id identifies what IT matched. On a road-level match
+        // that is the STREET, not this property — adopting it would make every house
+        // on the street compare as the same place (address-canon.samePlace).
+        place_id: (hit.precision === 'road' ? addr.place_id : (hit.place_id || addr.place_id)) || undefined,
       };
     }
   } catch (_) { /* best effort — an unresolvable address just isn't pushed */ }
@@ -703,6 +717,7 @@ async function createForNewFile(appId) {
 module.exports = {
   pushApplication, createForNewFile, loadPushContext, resolveTargetList, firstListId, logSync,
   PII_OVERWRITE_SHIELD, PII_REVIEW_KEY, // exported for the write-safety tests
+  withCoords, // exported for the address-downgrade regression test
   circuitCheck, // the ONE shared volume breaker — every ClickUp write path counts into it (audit fix)
   seedBreakerFromDb, // WO-4b (F-M16): prime the breaker window from the journal on boot
   recordFieldFailure, assertPushComplete, // WO-1: exported for the push-failure regression test
