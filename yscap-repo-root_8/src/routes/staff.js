@@ -8201,25 +8201,48 @@ router.patch('/applications/:id', async (req, res) => {
   if (!status || !APP_STATUS.includes(status)) return res.status(400).json({ error: 'bad status' });
   try {
     const cur = await db.query(
-      `SELECT status, borrower_id, loan_officer_id, processor_id FROM applications WHERE id=$1`, [req.params.id]);
+      `SELECT status, internal_status, borrower_id, loan_officer_id, processor_id FROM applications WHERE id=$1`, [req.params.id]);
     if (!cur.rows[0]) return res.status(404).json({ error: 'not found' });
     if (cur.rows[0].status === status) return res.json({ ok: true, unchanged: true, status });
-    // ON HOLD is the one borrower-facing status that maps 1:1 onto a single
-    // ClickUp status, so parking a file here must park the ClickUp card too
-    // (owner-directed 2026-07-26: "the entire status of the file should be an
-    // on-hold file in our system as well, not only in ClickUp" — and the reverse
-    // has to hold, or the two sides drift straight back apart). Delegating to the
-    // shared internal-status door gives the ClickUp push, the file timeline entry
-    // and the notification handling in one place instead of a second copy here.
-    if (status === 'on_hold') {
-      const r = await applyInternalStatus(req.params.id, statusMap.ON_HOLD_INTERNAL, {
+    // REVERSE STATUS MAP (owner-directed 2026-07-28). Picking a borrower-facing
+    // word also drives the ClickUp CARD to a representative stage for that word —
+    // BUT only when the file is genuinely CHANGING phase. If the card already
+    // sits at a stage that means this word, keep that exact stage (never drag the
+    // team's precise ClickUp stage backward) and just move the borrower-facing
+    // word + its mirror field. The landing stage (clickup/status.js
+    // LANDING_INTERNAL) is chosen to keep the word correct AND to avoid ClickUp's
+    // email-triggering stages ("(#-em)") — except the CTC + funded emails the
+    // owner wants. ON HOLD rides this same path now ('inactive / on hold' is its
+    // landing), replacing the earlier on-hold-only special case.
+    const landing = statusMap.landingInternalFor(status);
+    const alreadyInPhase = !!cur.rows[0].internal_status
+      && statusMap.externalFor(cur.rows[0].internal_status) === status;
+    if (landing && !alreadyInPhase) {
+      // The shared internal-status door does everything: sets internal_status,
+      // re-derives the SAME word, gates decisions/CTC/funding + the issuance
+      // backstop, pushes the card status (+ the mirror field), records history,
+      // seeds post-closing on funded, re-runs conditions, and announces the move.
+      const r = await applyInternalStatus(req.params.id, landing, {
         actorId: req.actor.id, canDecide: seesAll(req), actorRole: req.actor.role,
+        force, allowForce: isAdmin(req), overrideReason: req.body && req.body.overrideReason,
       });
       if (r.forbidden) return res.status(403).json({ error: r.reason });
+      if (r.blocked) return res.status(409).json({ error: 'blocked', target: r.target, blockers: r.blockers });
+      if (r.unchanged) return res.json({ ok: true, unchanged: true, status: r.status });
       await audit(req, 'status_change', 'application', req.params.id,
-        { from: cur.rows[0].status, to: 'on_hold', internal: statusMap.ON_HOLD_INTERNAL });
-      return res.json({ ok: true, status: r.status, internal_status: r.internal_status });
+        { from: cur.rows[0].status, to: status, internal: landing, forced: r.forced || undefined });
+      // R6.18 (#202) — record a super-admin proceeding past a confirmed-fatal
+      // issuance hard warning (parity with the internal-status door).
+      if (r.issuance && r.issuance.override && r.issuance.override.applied) {
+        await audit(req, 'issuance_override', 'application', req.params.id,
+          { action: r.issuance.action, tier: r.issuance.tier, reason: r.issuance.override.reason });
+        await loanExceptions.recordIssuanceOverride({ appId: req.params.id, staffId: req.actor.id, note: `${r.issuance.action}: ${r.issuance.override.reason || 'no reason given'}`, snapshot: { action: r.issuance.action, tier: r.issuance.tier || null, at: new Date().toISOString() } });
+      }
+      return res.json({ ok: true, status: r.status, internal_status: r.internal_status, issuance: r.issuance || undefined });
     }
+    // No landing stage ('new'/Submitted has no matching ClickUp stage), or the
+    // card is already in this phase → move only the borrower-facing word + its
+    // mirror field, exactly as before (never touch the ClickUp task stage).
     if (DECISION_STATUSES.has(status) && !seesAll(req))
       return res.status(403).json({ error: 'Only an underwriter or admin can move a file to this status.' });
     // Gate the underwriting-critical transitions on conditions-to-close + gate items.
