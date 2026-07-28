@@ -3976,6 +3976,15 @@ router.post('/applications/:id/emails/reply', async (req, res) => {
       {
         const last = await closingPrep.lastRecipients(thread.id);
         if (!last.to.length) return res.status(400).json({ error: 'Send the closing-prep request first — there is no closing chain to reply on yet.', code: 'not_ordered' });
+        // THE SAME ENGAGEMENT TEST THE FOLLOW-UP DOOR USES. Two doors to one action
+        // (write to closing counsel on this chain) must agree, and a chain row is NOT
+        // proof anyone is engaged: `sendOnThread` opens the chain BEFORE it sends, and
+        // CANCELLING an order deliberately LEAVES the chain intact so the attorney's
+        // own correspondence stays on the file. Without this, Follow-up correctly
+        // refused a cancelled order while this door still emailed outside counsel.
+        if (!(await closingPrep.orderIsLive(appId))) {
+          return res.status(400).json({ error: 'This closing-prep order is not open — reopen it before writing to the attorney.', code: 'not_ordered' });
+        }
         const data = await closingPrep.getClosingPrepData(appId);
         if (!data) return res.status(404).json({ error: 'not found' });
         const senderName = meRow.full_name || meRow.email || '';

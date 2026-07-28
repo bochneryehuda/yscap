@@ -871,6 +871,16 @@ function buildFollowupEmail(data, { note = '', address = null, senderName = '' }
 /* ───────────────── the automatic updates that ride the same chain ───────────── */
 
 /**
+ * Was this attachment withheld because of its SIZE, as opposed to being unreadable,
+ * empty, or never stored at all? The two read identically to the caller (no file on
+ * the email) but mean opposite things to the person reading it: one is "ask us and we
+ * will send it another way", the other is "the file itself is a problem on our side".
+ * The vocabulary is `buildAttachments`/`predictSkips`' own — keep them in step.
+ */
+const SIZE_SKIP_REASONS = new Set(['too large to email', 'over the email size limit']);
+function isSizeSkip(reason) { return SIZE_SKIP_REASONS.has(String(reason || '')); }
+
+/**
  * The system messages that go out on the closing chain by themselves. Each is a
  * pure builder plus the wording; the send, the threading and the never-twice
  * guarantee all live in closing-thread.sendOnThread.
@@ -881,15 +891,21 @@ function buildFollowupEmail(data, { note = '', address = null, senderName = '' }
 const AUTO_EVENTS = {
   executed_term_sheet: {
     kicker: 'Executed term sheet',
-    // NEVER claim an attachment that is not there. The executed copy can legitimately
-    // be withheld — a 4 MB signed package against the Microsoft Graph budget is
-    // skipped, not attached — and saying "the executed copy is attached" over an
-    // empty email is the precise failure this module exists to prevent. The wording
-    // follows what actually went out.
+    // NEVER claim an attachment that is not there, and never claim a REASON that is
+    // not the real one. The executed copy can legitimately be withheld — a 4 MB signed
+    // package against the Microsoft Graph budget is skipped, not attached — and saying
+    // "the executed copy is attached" over an empty email is the precise failure this
+    // module exists to prevent. But "too large to attach here" was asserted for EVERY
+    // missing attachment, including bytes that could not be read, an empty file, or no
+    // stored copy at all — telling counsel something false about our own file and
+    // sending them off to ask for a document nobody can send. The wording follows what
+    // actually happened: attached, withheld for SIZE, or unavailable.
     intro: (d, x) => `The term sheet for this file is now FULLY EXECUTED — signed by all parties. `
       + ((x && Array.isArray(x.files) && x.files.length)
         ? `The executed copy is attached. `
-        : `The executed copy was too large to attach here — tell us and we will send it straight over. `)
+        : (isSizeSkip(x && x.attachSkipReason)
+          ? `The executed copy was too large to attach here — tell us and we will send it straight over. `
+          : `The executed copy could not be attached to this email — tell us and we will send it straight over. `))
       + `These are the final terms; please draft from this version and disregard the earlier initial term sheet.`,
   },
   closing_date: {
@@ -1210,4 +1226,5 @@ module.exports = {
   announce, lastRecipients, markCarriedByOrder, orderIsLive, mayAnnounce, attorneyEngaged,
   // exported for tests
   money, pct, propertyLine, transactionType, dayText, dealMeta, chainCallout, subjectTagFor,
+  isSizeSkip,
 };

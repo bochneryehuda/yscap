@@ -410,6 +410,11 @@ async function announceExecutedTermSheet(db, envelopeRow) {
   // The signed term sheet THIS envelope produced, via the envelope↔document link.
   let attachments = [];
   let files = [];
+  // WHY the copy is missing, in `buildAttachments`' own vocabulary. The wording on the
+  // email branches on it: withheld for SIZE reads "tell us and we will send it over",
+  // anything else reads "could not be attached" — asserting the size reason for an
+  // unreadable or never-stored document told counsel something false about our file.
+  let attachSkipReason = null;
   try {
     const d = await db.query(
       `SELECT doc.filename, doc.content_type, doc.storage_ref, doc.size_bytes
@@ -422,6 +427,7 @@ async function announceExecutedTermSheet(db, envelopeRow) {
       const built = await closingPrep.buildAttachments([doc]);
       attachments = built.attachments;
       files = built.attachments.map((a) => a.filename);
+      attachSkipReason = (built.skipped[0] && built.skipped[0].reason) || null;
     }
   } catch (_) { /* the update is worth sending even without the attachment */ }
 
@@ -433,7 +439,7 @@ async function announceExecutedTermSheet(db, envelopeRow) {
     // Keyed on the ENVELOPE, so a re-issued and re-executed term sheet is a genuinely
     // new event and does go out again — while this one can never repeat.
     dedupeKey: `executed_term_sheet:${envelopeRow.id}`,
-    extra: { files },
+    extra: { files, attachSkipReason },
     attachments,
   });
 }

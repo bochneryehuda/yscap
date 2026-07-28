@@ -453,6 +453,34 @@ assert(ct.EVENT_KINDS.join(',') === 'order,followup,executed_term_sheet,closing_
     assert(!bad.to.some((e) => e === 'not-an-address'), 'and junk is refused rather than sent');
   }
 
+  // (h) THE EXECUTED-TERM-SHEET UPDATE STATES THE TRUE REASON THE COPY IS MISSING.
+  //     "Too large to attach here" was asserted for EVERY missing attachment — an
+  //     unreadable file, an empty one, no stored copy at all — which told counsel
+  //     something false about our own file and sent them to ask for a document
+  //     nobody can produce. The three branches must read differently.
+  {
+    const attached = cp.buildAutoEmail('executed_term_sheet', DATA, { files: ['signed.pdf'] });
+    assert(/executed copy is attached/i.test(attached.html),
+      'when the signed copy really went out, the email says it is attached');
+
+    const big = cp.buildAutoEmail('executed_term_sheet', DATA, { files: [], attachSkipReason: 'too large to email' });
+    assert(/too large to attach here/i.test(big.html),
+      'a copy withheld for SIZE still reads "too large" — tell us and we will send it over');
+    const overBudget = cp.buildAutoEmail('executed_term_sheet', DATA, { files: [], attachSkipReason: 'over the email size limit' });
+    assert(/too large to attach here/i.test(overBudget.html),
+      'and so does one that did not fit the whole-email budget');
+
+    for (const reason of ['could not be read', 'empty file', 'no stored copy', null]) {
+      const other = cp.buildAutoEmail('executed_term_sheet', DATA, { files: [], attachSkipReason: reason });
+      assert(!/too large/i.test(other.html) && !/is attached/i.test(other.html)
+        && /could not be attached/i.test(other.html),
+        `a copy missing because it ${reason || 'was never found'} never claims it was too large`);
+    }
+    assert(cp.isSizeSkip('too large to email') && !cp.isSizeSkip('could not be read')
+      && !cp.isSizeSkip(undefined),
+      'the size test reads buildAttachments’ own vocabulary, and nothing else');
+  }
+
   console.log(failures ? `\n${failures} FAILURE(S)` : '\nAll closing-prep pure checks passed.');
   process.exit(failures ? 1 : 0);
 })();

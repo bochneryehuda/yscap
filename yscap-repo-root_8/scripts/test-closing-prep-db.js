@@ -732,8 +732,31 @@ noop.sendMail = async (opts) => { sends.push(opts); return { ok: true, id: `stub
     assert(c.status === 200 && c.body.status === 'cancelled', 'the order can be cancelled');
     const t = await closingThread.threadFor(appId);
     assert(!!t, 'cancelling does NOT destroy the chain — what the attorney already sent stays on the file');
+
+    // AUDITED: TWO DOORS TO ONE ACTION MUST AGREE. Because cancelling deliberately
+    // LEAVES the chain intact, the Email-Center reply door — which checked only that
+    // a chain existed — kept emailing outside counsel on an order the desk had stood
+    // down, while Follow-up correctly refused it. Both are checked here, on the same
+    // cancelled file, so they can never drift apart again.
+    sends.length = 0;
+    const fu = await call('POST', `/api/staff/applications/${appId}/closing-prep/followup`, { message: 'still there?' });
+    assert(fu.status === 400 && fu.body.code === 'not_ordered',
+      'a cancelled order refuses a follow-up');
+    const rep = await call('POST', `/api/staff/applications/${appId}/emails/reply`,
+      { body: 'still there?', scope: 'closing' });
+    assert(rep.status === 400 && rep.body.code === 'not_ordered',
+      'and refuses a closing-scoped reply for the SAME reason — the two doors agree');
+    assert(sends.length === 0, 'a cancelled order emails outside counsel through NEITHER door');
+
     const re = await call('POST', `/api/staff/applications/${appId}/closing-prep/cancel`, { reopen: true });
     assert(re.status === 200 && re.body.status === 'ordered', 'and can be reopened');
+
+    // Reopening restores BOTH doors — a stand-down must be reversible, not a trap.
+    sends.length = 0;
+    const rep2 = await call('POST', `/api/staff/applications/${appId}/emails/reply`,
+      { body: 'we are back on.', scope: 'closing' });
+    assert(rep2.status === 200 && sends.length === 1 && sends[0].to.includes('teamag@privatelenderlaw.com'),
+      'a reopened order lets the reply door reach the attorney again');
   }
 
   /* ───────────────── 10. the global orders queue sees it ─────────────────── */
