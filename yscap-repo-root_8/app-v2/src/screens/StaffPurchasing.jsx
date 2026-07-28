@@ -146,7 +146,7 @@ function PurchasingDetail({ appId, status, onChanged }) {
         // Re-seed the date input from the server, so a save is reflected and a
         // concurrent edit by someone else is not silently overwritten by a stale
         // local value.
-        setAdvice(((d && d.purchasing && d.purchasing.purchase_advice_date) || '').slice(0, 10));
+        setAdvice(((d && d.advice && d.advice.advice_date) || '').slice(0, 10));
       })
       .catch((e) => setErr((e && e.message) || 'Could not load this file.'));
   }, [appId]);
@@ -161,7 +161,8 @@ function PurchasingDetail({ appId, status, onChanged }) {
   };
 
   if (!ws) return <div className="muted small" style={{ padding: 10 }}>Loading…</div>;
-  const p = ws.purchasing || {};
+  // Advice lives in its OWN record and OUTLIVES a withdrawal from the desk.
+  const adv = ws.advice || {};
 
   return (
     <div className="pu-detail">
@@ -272,11 +273,11 @@ function PurchasingDetail({ appId, status, onChanged }) {
             <input className="input" type="date" value={advice} disabled={busy}
               onChange={(e) => setAdvice(e.target.value)} />
           </label>
-          <button className="btn primary small" disabled={busy || advice === (p.purchase_advice_date || '').slice(0, 10)}
+          <button className="btn primary small" disabled={busy || advice === (adv.advice_date || '').slice(0, 10)}
             onClick={() => run(() => api.purchasingAdvice(appId, { date: advice || null }))}>Save date</button>
           <label style={{ display: 'flex', flexDirection: 'column', gap: 3, flex: 1, minWidth: 200 }}>
             <span className="small muted">Purchase advice document</span>
-            <select className="input" value={p.purchase_advice_document_id || ''} disabled={busy}
+            <select className="input" value={adv.document_id || ''} disabled={busy}
               onChange={(e) => run(() => api.purchasingAdvice(appId, { documentId: e.target.value || null }))}>
               <option value="">— none selected —</option>
               {(ws.documents || []).map((d) => <option key={d.id} value={d.id}>{d.filename}</option>)}
@@ -284,8 +285,8 @@ function PurchasingDetail({ appId, status, onChanged }) {
           </label>
         </div>
         <div className="muted small" style={{ marginTop: 6 }}>
-          {p.purchase_advice_filename
-            ? <>Current: <b>{p.purchase_advice_filename}</b> · uploaded {day(p.purchase_advice_uploaded_at)}. Upload a newer copy on the file, then pick it here to update it post purchase.</>
+          {adv.document_filename
+            ? <>Current: <b>{adv.document_filename}</b> · uploaded {day(adv.document_uploaded_at)}. Upload a newer copy on the file, then pick it here to update it post purchase.</>
             : <>Upload the advice on the file, then pick it here. It can be replaced post closing and again post purchase.</>}
         </div>
       </div>

@@ -73,6 +73,12 @@ const uniq = (p) => p + Buffer.from(String(process.pid)).toString('hex') + Math.
     if (!on) {
       await purchasing.withdrawFromPurchasing(client, appId);
       await workflow.reopenClosingItem(client, appId, actorId);
+      // The route also steps the STAGE back off 'in_purchasing' — `stage` is
+      // sticky, so without it the desk still reads the file as finished and it
+      // sits on neither desk.
+      await client.query(
+        `UPDATE closing_workflow SET stage='fully_reconciled', updated_at=now()
+          WHERE application_id=$1 AND stage='in_purchasing'`, [appId]);
     }
     await workflow.maybeFinishClosing(client, appId, actorId);
   }
@@ -263,22 +269,38 @@ const uniq = (p) => p + Buffer.from(String(process.pid)).toString('hex') + Math.
       `INSERT INTO documents (application_id, filename, content_type, doc_kind)
        VALUES ($1,'purchase-advice.pdf','application/pdf','purchase_advice') RETURNING id`, [N.appId])).rows[0];
     await purchasing.setPurchaseAdvice(client, N.appId, { date: '2026-08-20' }, N.closerId);
-    let pa = await purchasing.getPurchasing(N.appId, client);
-    ok(String(pa.purchase_advice_date).slice(0, 10) === '2026-08-20' && !!pa.purchase_advice_updated_at,
+    let pa = await purchasing.readAdvice(N.appId, client);
+    ok(String(pa.advice_date).slice(0, 10) === '2026-08-20' && !!pa.updated_at,
       'a purchase advice date can be recorded');
     await purchasing.setPurchaseAdvice(client, N.appId, { documentId: advDoc.id }, N.closerId);
-    pa = await purchasing.getPurchasing(N.appId, client);
-    ok(String(pa.purchase_advice_document_id) === String(advDoc.id) && pa.purchase_advice_filename === 'purchase-advice.pdf',
+    pa = await purchasing.readAdvice(N.appId, client);
+    ok(String(pa.document_id) === String(advDoc.id) && pa.document_filename === 'purchase-advice.pdf',
       'the advice document is pointed at, and its filename rides along for the desk');
-    ok(String(pa.purchase_advice_date).slice(0, 10) === '2026-08-20',
+    ok(String(pa.advice_date).slice(0, 10) === '2026-08-20',
       'and setting the document did NOT clear the date (only keys present are touched)');
 
     const advDoc2 = (await client.query(
       `INSERT INTO documents (application_id, filename, content_type, doc_kind)
        VALUES ($1,'purchase-advice-final.pdf','application/pdf','purchase_advice') RETURNING id`, [N.appId])).rows[0];
     await purchasing.setPurchaseAdvice(client, N.appId, { documentId: advDoc2.id }, N.closerId);
-    ok((await purchasing.getPurchasing(N.appId, client)).purchase_advice_filename === 'purchase-advice-final.pdf',
+    ok((await purchasing.readAdvice(N.appId, client)).document_filename === 'purchase-advice-final.pdf',
       'the advice document can be UPDATED post purchase — it is not write-once');
+
+    // THE ADVICE SURVIVES A WITHDRAWAL. withdrawFromPurchasing DELETEs the
+    // purchasing_workflow row, and it runs on two ordinary closer actions
+    // (warehouse -> Table Funding, and un-signing investor delivery). While the
+    // advice lived on that row it was silently destroyed, with no warning, while
+    // the notes/tasks/conditions beside it survived — so nothing looked wrong.
+    await purchasing.withdrawFromPurchasing(client, N.appId);
+    ok(!(await purchasing.getPurchasing(N.appId, client)), 'the file is withdrawn from the purchasing desk');
+    const paAfter = await purchasing.readAdvice(N.appId, client);
+    ok(paAfter && String(paAfter.advice_date).slice(0, 10) === '2026-08-20'
+       && paAfter.document_filename === 'purchase-advice-final.pdf',
+      'and the purchase advice date + document SURVIVE the withdrawal');
+    ok((await purchasing.readConditions(N.appId, client)).length === 1
+       && (await purchasing.readNotes(N.appId, client)).length >= 0,
+      'as do the conditions beside it (they always did — the advice now matches)');
+    await purchasing.enterPurchasing(client, N.appId, N.closerId);
 
     const wsN = await purchasing.getPurchasingWorkspace(N.appId, client);
     ok(wsN.openConditions === 1 && wsN.documents.some((d) => String(d.id) === String(advDoc2.id)),
@@ -291,8 +313,51 @@ const uniq = (p) => p + Buffer.from(String(process.pid)).toString('hex') + Math.
     const wsSup = await purchasing.getPurchasingWorkspace(N.appId, client);
     ok(wsSup.documents.some((d) => String(d.id) === String(advDoc2.id)),
       'the pointed-at advice document stays listed even once it is superseded');
-    ok(wsSup.purchasing.purchase_advice_filename === 'purchase-advice-final.pdf',
+    ok(wsSup.advice.document_filename === 'purchase-advice-final.pdf',
       'and the desk still names it');
+
+    // ---- A FINISHED closing leaves the desk + the nav badge, EITHER WAY ----
+    // The desk retired a file only at stage='in_purchasing'. A TABLE FUNDED loan
+    // is structurally barred from that stage (the route 422s it, the button is
+    // hidden), so every table-funded file sat on the desk and kept the badge
+    // incremented forever with no action available to clear it — half of the
+    // owner's "once reconciled it should go off the closing workflow either way".
+    const deskRetired = async (appId) => (await client.query(
+      `SELECT ${closing.CLOSING_RETIRED_SQL('cw')} AS retired
+         FROM closing_workflow cw WHERE cw.application_id=$1`, [appId])).rows[0].retired;
+
+    const TF = await makeFile();
+    await setWarehouse(TF.appId, TF.closerId, closing.TABLE_FUNDING);
+    ok((await deskRetired(TF.appId)) === false, 'a table-funded file is still ON the closing desk before it is finished');
+    await signOffInvestorDelivery(TF.appId, TF.closerId, true);
+    const tfRow = (await client.query(
+      `SELECT stage, table_funded FROM closing_workflow WHERE application_id=$1`, [TF.appId])).rows[0];
+    ok(tfRow.table_funded === true && tfRow.stage !== 'in_purchasing',
+      'it is finished WITHOUT ever reaching stage=in_purchasing (it was sold at closing)');
+    ok((await deskRetired(TF.appId)) === true,
+      'and it STILL leaves the closing desk and its badge — retirement is "finished", not the stage');
+
+    const PU = await makeFile();
+    await signOffInvestorDelivery(PU.appId, PU.closerId, true);
+    ok((await deskRetired(PU.appId)) === true, 'a purchasing-bound file leaves the desk too');
+    const OPEN = await makeFile();
+    ok((await deskRetired(OPEN.appId)) === false, 'a file still working through closing stays on the desk');
+
+    // ---- UN-SIGNING a file that already went to purchasing returns it ----
+    // `stage` is sticky, so the desk's legacy stage test still read such a file
+    // as finished after an un-sign: off the closing desk AND off the purchasing
+    // desk — on NEITHER, the exact hazard the reopen exists to prevent, reached
+    // through the desk instead of the Workflow queue.
+    const UN = await makeFile();
+    await signOffInvestorDelivery(UN.appId, UN.closerId, true);
+    await client.query(
+      `UPDATE closing_workflow SET stage='in_purchasing', purchasing_at=now() WHERE application_id=$1`, [UN.appId]);
+    ok((await deskRetired(UN.appId)) === true, 'a file handed to purchasing is off the closing desk');
+    await signOffInvestorDelivery(UN.appId, UN.closerId, false);
+    ok(!(await purchasing.getPurchasing(UN.appId, client)), 'un-signing pulls it off the purchasing desk');
+    ok((await deskRetired(UN.appId)) === false,
+      'and it comes BACK onto the closing desk — never on neither');
+    ok(await inQueue(UN.closerId, UN.appId), 'and back onto the closer\'s Workflow too');
 
     // ---- Idempotency ----
     const D = await makeFile();

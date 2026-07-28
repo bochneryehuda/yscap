@@ -8890,6 +8890,15 @@ router.post('/applications/:id/closing/sign-off', async (req, res) => {
         if (!on) {
           await purchasing.withdrawFromPurchasing(client, req.params.id);
           await workflow.reopenClosingItem(client, req.params.id, req.actor.id);
+          // …and step the STAGE back off 'in_purchasing'. Un-signing means the
+          // closing is not finished, but `stage` is sticky, so without this the
+          // desk's retirement predicate (which keeps a legacy stage test) still
+          // read the file as done: off the closing desk AND off the purchasing
+          // desk, i.e. on neither — the very failure the two lines above exist to
+          // prevent, reached through the desk instead of the Workflow queue.
+          await client.query(
+            `UPDATE closing_workflow SET stage='fully_reconciled', updated_at=now()
+              WHERE application_id=$1 AND stage='in_purchasing'`, [req.params.id]);
         }
       }
       // Reconciled + investor-delivered = the closer is done; clear the file off
@@ -8986,6 +8995,8 @@ router.get('/closing', async (req, res) => {
               cw.stage AS closing_stage, cw.est_closing_date, cw.investor_ctc, cw.closing_date_confirmed,
               cw.warehouse, cw.actual_cash_to_close, cw.liquidity_ok, cw.tpr_required, cw.tpr_signed_off_at,
               cw.investor_delivery_signed_off_at, cw.reconciled_ok, cw.collateral_tracking_number,
+              cw.fully_reconciled_at, cw.table_funded,
+              ${closing.CLOSING_RETIRED_SQL('cw')} AS closing_retired,
               s.full_name AS closer_name
          FROM closing_workflow cw
          JOIN applications a ON a.id = cw.application_id AND a.deleted_at IS NULL
@@ -9007,7 +9018,7 @@ router.get('/closing/count', async (req, res) => {
     const r = await db.query(
       `SELECT count(*)::int AS n FROM closing_workflow cw
          JOIN applications a ON a.id = cw.application_id AND a.deleted_at IS NULL
-        WHERE cw.stage <> 'in_purchasing' ${scope}`, params);
+        WHERE NOT ${closing.CLOSING_RETIRED_SQL('cw')} ${scope}`, params);
     res.json({ count: r.rows[0].n });
   } catch (e) { res.status(500).json({ error: 'server error' }); }
 });
@@ -9113,7 +9124,9 @@ router.patch('/applications/:id/purchasing/tasks/:tid', purchasingGate, async (r
     const own = (await db.query(
       `SELECT id FROM purchasing_tasks WHERE id=$1 AND application_id=$2`, [req.params.tid, req.params.id])).rows[0];
     if (!own) return res.status(404).json({ error: 'task not found' });
-    await purchasing.setTaskDone(db, req.params.tid, !!(req.body && req.body.done), req.actor.id);
+    const done = !!(req.body && req.body.done);
+    await purchasing.setTaskDone(db, req.params.tid, done, req.actor.id);
+    await audit(req, 'purchasing_task_done', 'application', req.params.id, { taskId: req.params.tid, done });
     res.json({ ok: true, tasks: await purchasing.readTasks(req.params.id) });
   } catch (e) { res.status(500).json({ error: 'server error' }); }
 });
@@ -9124,6 +9137,7 @@ router.delete('/applications/:id/purchasing/tasks/:tid', purchasingGate, async (
       `SELECT id FROM purchasing_tasks WHERE id=$1 AND application_id=$2`, [req.params.tid, req.params.id])).rows[0];
     if (!own) return res.status(404).json({ error: 'task not found' });
     await purchasing.deleteTask(db, req.params.tid);
+    await audit(req, 'purchasing_task_removed', 'application', req.params.id, { taskId: req.params.tid });
     res.json({ ok: true, tasks: await purchasing.readTasks(req.params.id) });
   } catch (e) { res.status(500).json({ error: 'server error' }); }
 });
@@ -9192,10 +9206,15 @@ router.post('/applications/:id/purchasing/advice', purchasingGate, async (req, r
   }
   if (!Object.keys(patch).length) return res.status(400).json({ error: 'Nothing to update.' });
   try {
-    if (!(await purchasing.getPurchasing(req.params.id))) return res.status(404).json({ error: 'This file is not in purchasing.' });
-    const row = await purchasing.setPurchaseAdvice(db, req.params.id, patch, req.actor.id);
+    // Advice may be recorded on a file that is not (or no longer) on the desk —
+    // it is a fact about the loan. But the file must EXIST: without this the FK
+    // rejects an unknown id as a 500 instead of a plain 404.
+    const live = (await db.query(
+      `SELECT 1 FROM applications WHERE id=$1 AND deleted_at IS NULL`, [req.params.id])).rows[0];
+    if (!live) return res.status(404).json({ error: 'file not found' });
+    const advice = await purchasing.setPurchaseAdvice(db, req.params.id, patch, req.actor.id);
     await audit(req, 'purchasing_advice', 'application', req.params.id, patch);
-    res.json({ ok: true, purchasing: row });
+    res.json({ ok: true, advice });
   } catch (e) { console.warn('[purchasing] advice error:', db.describeError(e)); res.status(500).json({ error: 'server error' }); }
 });
 
