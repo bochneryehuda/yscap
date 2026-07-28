@@ -71,6 +71,41 @@ async function unwindInvestorDelivery(client, appId, actorId) {
   return { stageSteppedBack: stepped.rowCount > 0 };
 }
 
+/* THE INVESTOR-DELIVERY FORK — the ONE definition of what a sign-off (or an
+ * un-sign) does to the purchasing desk. Extracted for exactly the reason
+ * unwindInvestorDelivery was: while it lived inline in the route, the DB test
+ * had to COPY it to drive the scenario, and a copy asserts itself. An audit
+ * proved the cost — rewriting the route's condition to `if (on) enterPurchasing()`
+ * (so a TABLE FUNDED loan is enrolled on the desk it must never reach) left the
+ * entire suite green, because the test was reading its own mirror of the rule.
+ *
+ * The rule (owner-directed 2026-07-26):
+ *   signed off + NOT table funded → the purchasing desk, 'outstanding'
+ *   signed off + table funded     → sold at closing, never enters
+ *   un-signed                     → unwind, whatever it was
+ *
+ * `table_funded` is read HERE, inside the caller's transaction, rather than
+ * taken as an argument — a caller that passed it in could pass the wrong value,
+ * which is the same mirroring hazard one level up. Returns what it did so the
+ * caller (and the test) can assert on the decision, not re-derive it.
+ */
+async function applyInvestorDeliverySignOff(client, appId, actorId, on) {
+  const c = client || db;
+  if (!on) {
+    const unwound = await unwindInvestorDelivery(c, appId, actorId);
+    return { entered: false, tableFunded: null, unwound: true, ...unwound };
+  }
+  const cw = (await c.query(
+    `SELECT table_funded FROM closing_workflow WHERE application_id=$1`, [appId])).rows[0];
+  const tableFunded = !!(cw && cw.table_funded);
+  if (tableFunded) return { entered: false, tableFunded: true, unwound: false };
+  const row = await enterPurchasing(c, appId, actorId);
+  // `entered` is the DECISION (this file belongs on the desk), not the INSERT —
+  // enterPurchasing is ON CONFLICT DO NOTHING, so a file already on the desk
+  // returns null and must still read as entered.
+  return { entered: true, tableFunded: false, unwound: false, created: !!row };
+}
+
 async function getPurchasing(appId, client) {
   const c = client || db;
   // Explicit column list, NOT `SELECT *`: db/350's purchase_advice_* columns are
@@ -84,17 +119,58 @@ async function getPurchasing(appId, client) {
   return r.rows[0] || null;
 }
 
+// The status is VALIDATED, never coerced. The first cut read
+// `status === 'complete' ? 'complete' : 'outstanding'`, so every unrecognised
+// value — `{}`, a typo'd 'Complete', a client sending 'done' — answered 200 and
+// silently DEMOTED the file, and the ELSE branch below NULLs completed_at and
+// completed_by, so the who/when of a finished purchase was destroyed by a
+// request that looked successful. Same discipline as CONDITION_STATUSES.
+const PURCHASING_STATUSES = ['outstanding', 'complete'];
+
+// THE LENGTH LIMITS LIVE HERE, and text that exceeds one is REFUSED — never
+// quietly cut. Every writer below used to `.slice()` silently, so a closer who
+// pasted a long "what's still missing" note got 200 {ok:true} and a note that
+// stopped mid-sentence, with nothing on screen to say so. That is the repo's #1
+// bug class ("returned 200 but didn't save") in its partial form. The routes
+// call `tooLong` and answer with a plain reason; the slices stay as a
+// belt-and-braces backstop for any non-route caller.
+const LIMITS = { note: 4000, taskLabel: 500, conditionLabel: 300, conditionDetail: 2000, resolutionNote: 2000 };
+
+// Returns a plain-language refusal, or null when the value fits. `what` is the
+// noun the user sees, so keep it ordinary English.
+function tooLong(value, limit, what) {
+  const n = value == null ? 0 : String(value).length;
+  return n > limit ? `That ${what} is too long — ${n} characters, and the limit is ${limit}.` : null;
+}
+
+// A bare `sortOrder` reached two different coercions: addTask cast it
+// (`Number(sortOrder)`, so "5" worked) while addCondition did not
+// (`Number.isFinite(sortOrder)`, so "5" silently became 0), and neither bounded
+// it — a value past the integer column's range threw 22003 and surfaced as a
+// 500. One definition, cast and bounded, used by both.
+const SORT_MIN = 0;
+const SORT_MAX = 100000;
+function sortOrderOf(v, dflt) {
+  const n = Number(v);
+  if (!Number.isFinite(n)) return dflt;
+  return Math.min(SORT_MAX, Math.max(SORT_MIN, Math.round(n)));
+}
+
 async function setPurchasingStatus(client, appId, status, actorId) {
   const c = client || db;
-  const done = status === 'complete';
+  if (!PURCHASING_STATUSES.includes(status)) throw new Error('unknown purchasing status');
   const r = await c.query(
     `UPDATE purchasing_workflow
         SET status=$2,
             completed_at = CASE WHEN $2='complete' THEN COALESCE(completed_at, now()) ELSE NULL END,
-            completed_by = CASE WHEN $2='complete' THEN $3::uuid ELSE NULL END,
+            -- COALESCE like completed_at beside it. Without it a second
+            -- "mark complete" (a double-click, or a colleague pressing it after
+            -- you) left the row reading "completed at T1 by whoever pressed it
+            -- last" — a completion record that names the wrong person.
+            completed_by = CASE WHEN $2='complete' THEN COALESCE(completed_by, $3::uuid) ELSE NULL END,
             updated_at=now(), updated_by=$3::uuid
       WHERE application_id=$1 RETURNING *`,
-    [appId, done ? 'complete' : 'outstanding', actorId || null]);
+    [appId, status, actorId || null]);
   return r.rows[0] || null;
 }
 
@@ -115,7 +191,7 @@ async function addNote(client, appId, body, actorId) {
   const r = await c.query(
     `INSERT INTO purchasing_notes (application_id, author_staff_id, body)
      VALUES ($1,$2::uuid,$3) RETURNING *`,
-    [appId, actorId || null, String(body).slice(0, 4000)]);
+    [appId, actorId || null, String(body).slice(0, LIMITS.note)]);
   return r.rows[0];
 }
 
@@ -137,8 +213,8 @@ async function addTask(client, appId, label, actorId, sortOrder) {
   const r = await c.query(
     `INSERT INTO purchasing_tasks (application_id, label, created_by, sort_order)
      VALUES ($1,$2,$3::uuid,COALESCE($4,100)) RETURNING *`,
-    [appId, String(label).slice(0, 500), actorId || null,
-     Number.isFinite(Number(sortOrder)) ? Number(sortOrder) : null]);
+    [appId, String(label).slice(0, LIMITS.taskLabel), actorId || null,
+     sortOrderOf(sortOrder, null)]);
   return r.rows[0];
 }
 
@@ -228,8 +304,9 @@ async function addCondition(client, appId, label, detail, actorId, sortOrder) {
   return (await c.query(
     `INSERT INTO purchasing_conditions (application_id, label, detail, created_by, sort_order)
      VALUES ($1,$2,$3,$4::uuid,$5) RETURNING *`,
-    [appId, String(label).slice(0, 300), detail ? String(detail).slice(0, 2000) : null,
-     actorId || null, Number.isFinite(sortOrder) ? Math.round(sortOrder) : 0])).rows[0];
+    [appId, String(label).slice(0, LIMITS.conditionLabel),
+     detail ? String(detail).slice(0, LIMITS.conditionDetail) : null,
+     actorId || null, sortOrderOf(sortOrder, 0)])).rows[0];
 }
 
 /* Resolving is reversible: setting it back to 'open' CLEARS who resolved it, so a
@@ -246,7 +323,7 @@ async function setConditionStatus(client, condId, status, actorId, note) {
             resolved_by     = CASE WHEN $4 THEN $3::uuid   ELSE NULL END,
             resolution_note = CASE WHEN $4 THEN $5         ELSE NULL END
       WHERE id=$1 RETURNING *`,
-    [condId, status, actorId || null, done, note ? String(note).slice(0, 2000) : null])).rows[0] || null;
+    [condId, status, actorId || null, done, note ? String(note).slice(0, LIMITS.resolutionNote) : null])).rows[0] || null;
 }
 
 async function deleteCondition(client, condId) {
@@ -324,7 +401,7 @@ async function setPurchaseAdvice(client, appId, patch, actorId) {
       // sheet and esign/orchestrate's latestDocument(appId,'term_sheet') stops
       // finding it — the DocuSign package loses its source — the closer's
       // quick link empties, and supersede stops matching. Same for credit,
-      // appraisal, title and track-record kinds. db/359 scopes on the advice
+      // appraisal, title and track-record kinds. db/362 scopes on the advice
       // POINTER, not on doc_kind, so nothing needed the tag.
     }
     // DELIBERATELY NO AUTOMATIC RESTORE of the outgoing document.
@@ -378,7 +455,11 @@ async function setPurchaseAdvice(client, appId, patch, actorId) {
 
 module.exports = {
   CONDITION_STATUSES,
+  PURCHASING_STATUSES,
+  LIMITS,
+  tooLong,
   unwindInvestorDelivery,
+  applyInvestorDeliverySignOff,
   readAdvice,
   readConditions,
   addCondition,

@@ -240,20 +240,67 @@ const parkCount = async (app) => (await db.query(`SELECT count(*)::int c FROM sy
     ok('10c and the slot honestly reports no appraisal rather than a wrong one',
       (await docPush.status(app)).slots.find((s) => s.which === 'appraisal_pdf').available === false);
     // A REAL appraisal PDF beside it is still found — the exclusion is the advice, not the condition.
-    await db.query(`INSERT INTO documents(application_id,borrower_id,filename,content_type,size_bytes,storage_provider,storage_ref,uploaded_by_kind,uploaded_by_id,doc_kind,is_current,visibility,source_type)
-      VALUES($1,$2,'appraisal.pdf','application/pdf',10,'local','ref/real-appr','staff',NULL,'appraisal_pdf',true,'staff_only','staff_upload')`, [app, bor]);
+    // created_at is set EXPLICITLY throughout this block: the ORDER BY has two
+    // terms and a fixture that happens to insert rows in the convenient order
+    // makes the FIRST term vacuous (an audit proved it — deleting the doc_kind
+    // preference entirely still passed, because created_at DESC alone was picking
+    // the right row).
+    const insCond = (name, ct, vis, when, kind, slot) => db.query(
+      `INSERT INTO documents(application_id,borrower_id,checklist_item_id,filename,content_type,size_bytes,storage_provider,storage_ref,uploaded_by_kind,doc_kind,slot_label,is_current,visibility,source_type,created_at)
+       VALUES($1,$2,$3,$4,$5,10,'local',$6,'staff',$7,$8,true,$9,'staff_upload',$10) RETURNING id`,
+      [app, bor, ci, name, ct, 'ref/' + name, kind, slot, vis, when]).then((r) => r.rows[0].id);
+
+    const realAppr = (await db.query(
+      `INSERT INTO documents(application_id,borrower_id,filename,content_type,size_bytes,storage_provider,storage_ref,uploaded_by_kind,doc_kind,is_current,visibility,source_type,created_at)
+       VALUES($1,$2,'appraisal.pdf','application/pdf',10,'local','ref/real-appr','staff','appraisal_pdf',true,'staff_only','staff_upload','2026-01-01') RETURNING id`,
+      [app, bor])).rows[0].id;
     const g3 = await docPush._internal.gatherAppraisalPdf(app);
     ok('10c a real staff_only appraisal PDF is still pushed (the exclusion is narrow)',
-      !g3.missing && g3.sourceDocId !== advId);
+      !g3.missing && g3.sourceDocId === realAppr);
     await db.query(`DELETE FROM purchasing_advice WHERE application_id=$1`, [app]);
-    // 10d) AND ARM (1) REALLY IS PREFERRED. The ORDER BY that expresses that compared a BARE doc_kind,
-    // which is NULL on every condition-slot upload — and `NULL='appraisal_pdf'` is NULL, which DESC sorts
-    // FIRST. So on the common file that has BOTH (the importer wrote the appraisal_pdf, the officer also
-    // dropped a PDF on the condition) the preference was inverted and Sitewire received whatever
-    // unlabelled PDF sat on the condition, labelled "Appraisal.pdf".
+
+    // 10d) ARM (1) IS GENUINELY PREFERRED. The explicit appraisal_pdf is the
+    // OLDEST row here and the unlabelled condition PDF the NEWEST, so created_at
+    // cannot decide this — only the doc_kind preference can. That preference
+    // compared a BARE d.doc_kind, which is NULL on every condition-slot upload;
+    // NULL comparisons yield NULL and Postgres sorts NULLs FIRST under DESC, so
+    // the preference was INVERTED on the common file carrying both shapes.
+    const newerPlain = await insCond('later-upload.pdf', 'application/pdf', 'staff_only', '2026-06-01', null, 'PDF');
     const g4 = await docPush._internal.gatherAppraisalPdf(app);
-    ok('10d the explicit appraisal_pdf beats an unlabelled PDF on the condition slot',
-      !g4.missing && g4.sourceDocId !== advId);
+    ok('10d the explicit appraisal_pdf beats a NEWER unlabelled PDF on the condition slot',
+      !g4.missing && g4.sourceDocId === realAppr);
+
+    // 10e) 'internal' is never shipped. tpr-export defines it as never shippable
+    // to a buyer, and Sitewire is where the borrower and the capital partner both
+    // read the file. Newest row + on the condition, so only the exclusion can
+    // keep it out.
+    // It must be the document that WOULD otherwise be chosen, or the case proves
+    // nothing: an internal document sitting behind a real appraisal_pdf loses on
+    // the doc_kind preference anyway, so deleting the exclusion still passed.
+    // Here it carries doc_kind='appraisal_pdf' AND is the newest row — it wins on
+    // both ORDER BY terms, so ONLY the exclusion can keep it out.
+    await db.query(`DELETE FROM documents WHERE id = ANY($1::uuid[])`, [[newerPlain, advId]]);
+    const internalDoc = await insCond('internal-only.pdf', 'application/pdf', 'internal', '2026-06-02', 'appraisal_pdf', 'PDF');
+    const g5 = await docPush._internal.gatherAppraisalPdf(app);
+    ok('10e an internal document is never pushed as the appraisal', g5.sourceDocId === realAppr);
+    ok('10e and it really was the row that would otherwise have won',
+      (await db.query(`SELECT created_at > (SELECT created_at FROM documents WHERE id=$2) AS newer, doc_kind FROM documents WHERE id=$1`,
+        [internalDoc, realAppr])).rows[0].newer === true);
+    await db.query(`DELETE FROM documents WHERE id=$1`, [internalDoc]);
+
+    // 10f) The XML SLOT is excluded by slot_label, not merely by file type. A
+    // MISMO data file uploaded with a PDF content type (or a .pdf name) would
+    // otherwise be pushed to Sitewire as the appraisal report.
+    // Clear the file down to ONE candidate so "missing" is unambiguous — advId is
+    // still eligible here (its purchasing_advice row was deleted above), and
+    // leaving it in made this case pass for the wrong reason.
+    await db.query(`DELETE FROM documents WHERE id=$1`, [realAppr]);
+    const xmlSlotPdf = await insCond('appraisal-data.pdf', 'application/pdf', 'staff_only', '2026-06-03', null, 'XML');
+    ok('10f the XML-slot document is the only candidate left (the case is not vacuous)',
+      (await db.query(`SELECT count(*)::int c FROM documents WHERE application_id=$1 AND is_current`, [app])).rows[0].c === 1);
+    const g6 = await docPush._internal.gatherAppraisalPdf(app);
+    ok('10f a document on the XML slot is excluded even when it looks like a PDF', !!g6.missing);
+    await db.query(`DELETE FROM documents WHERE id=$1`, [xmlSlotPdf]);
     await cleanup(app, bor); }
 
   // 11) status() — metadata-only availability (no bytes read), reflects managed + push state

@@ -8808,12 +8808,9 @@ router.patch('/applications/:id/closing', async (req, res) => {
         if ('warehouse' in b) {
           const wh = b.warehouse ? String(b.warehouse) : null;
           if (wh && !closing.WAREHOUSES.includes(wh)) { await client.query('ROLLBACK'); client.release(); return res.status(400).json({ error: 'Unknown warehouse.' }); }
-          // THE WAREHOUSE IS WHAT DECIDES TABLE FUNDING (owner-directed
-          // 2026-07-26). Funding on the Table Funding line means the loan was sold
-          // at closing, so table_funded — the flag every downstream fork reads —
-          // is written from the warehouse here rather than kept as a second,
-          // independently-settable switch that could disagree with it.
-          const tf = wh === closing.TABLE_FUNDING;
+          // The warehouse decides table funding — ONE definition, in closing.js,
+          // so the DB test has nothing to copy (see tableFundedFor).
+          const tf = closing.tableFundedFor(wh);
           const whRow = (await client.query(
             `UPDATE closing_workflow
                 SET warehouse=$2, table_funded=$4,
@@ -8841,7 +8838,12 @@ router.patch('/applications/:id/closing', async (req, res) => {
           if (b.fundedDate && !fd) { await client.query('ROLLBACK'); client.release(); return res.status(400).json({ error: 'Enter a real funded date (YYYY-MM-DD).' }); }
           await client.query(`UPDATE applications SET funded_date=$2, updated_at=now() WHERE id=$1`, [appId, fd]);
         }
-      } else if ('warehouse' in b || 'collateralTrackingNumber' in b || 'fundedDate' in b || 'tprRequired' in b) {
+      // Every field written inside the closer-only block above must appear here,
+      // or a non-closer sending it gets 200 {ok} and nothing is saved — the
+      // repo's "returned 200 but didn't save" class. `collateralTrackingCarrier`
+      // was written at :8836 but missing from this list, so a processor setting
+      // the carrier was told it worked and silently wasn't.
+      } else if (closing.CLOSER_ONLY_CLOSING_FIELDS.some((k) => k in b)) {
         await client.query('ROLLBACK'); client.release();
         return res.status(403).json({ error: 'Only the closer (or an admin) can set the warehouse, collateral tracking, or funded date.' });
       }
@@ -8921,16 +8923,17 @@ router.post('/applications/:id/closing/sign-off', async (req, res) => {
       // ticked TABLE FUNDING first, which means the loan was sold right at closing
       // and never needs purchasing. Un-signing pulls it back out (only while it is
       // still outstanding — a completed purchasing record is history).
-      if (kind === 'investor_delivery') {
-        const cw = (await client.query(
-          `SELECT table_funded FROM closing_workflow WHERE application_id=$1`, [req.params.id])).rows[0];
-        if (on && !(cw && cw.table_funded)) await purchasing.enterPurchasing(client, req.params.id, req.actor.id);
-        // Un-signing means the closing is NOT finished any more. Everything that
-        // has to come back is ONE function (purchasing.unwindInvestorDelivery) —
-        // off the purchasing desk, the closer's hand-off reopened, and the sticky
-        // stage stepped back so the desk stops reading the file as done.
-        if (!on) await purchasing.unwindInvestorDelivery(client, req.params.id, req.actor.id);
-      }
+      // BOTH directions are ONE function (purchasing.applyInvestorDeliverySignOff):
+      // it reads table_funded itself and either enters the desk or unwinds
+      // (off the purchasing desk, the closer's hand-off reopened, and the sticky
+      // stage stepped back so the desk stops reading the file as done).
+      // The table-funded test used to be written out here, and the DB test had to
+      // COPY it to drive the scenario — so an audit could rewrite this to
+      // `if (on) enterPurchasing()`, enrolling a table-funded loan on the desk it
+      // must never reach, with the whole suite still green. There is now nothing
+      // left to mirror, which is the same reason unwindInvestorDelivery exists.
+      if (kind === 'investor_delivery')
+        await purchasing.applyInvestorDeliverySignOff(client, req.params.id, req.actor.id, on);
       // Reconciled + investor-delivered = the closer is done; clear the file off
       // their Workflow either way (table funded or purchasing).
       await workflow.maybeFinishClosing(client, req.params.id, req.actor.id);
@@ -9076,6 +9079,12 @@ router.get('/closing/count', async (req, res) => {
 // purchasing after investor delivery. A TABLE-FUNDED loan was sold right at
 // closing and never lands here. Admins + closers hold `manage_purchasing`.
 // ===========================================================================
+// A uuid-shaped id check so a malformed one answers 404 rather than reaching
+// Postgres, throwing 22P02 and surfacing as a 500 — which reads to the user as
+// "PILOT is broken" when the real answer is "no such task". Reuses the module's
+// existing UUID_RE (the document-download route already guards this way).
+const looksLikeId = (v) => typeof v === 'string' && UUID_RE.test(v.trim());
+
 const purchasingGate = (req, res, next) =>
   (can(req.actor, 'manage_purchasing') ? next()
     : res.status(403).json({ error: 'You do not have access to the purchasing desk.' }));
@@ -9094,6 +9103,15 @@ router.get('/purchasing', purchasingGate, async (req, res) => {
               a.ys_loan_number, a.property_address, a.status AS app_status, a.lender, a.funded_date,
               b.first_name, b.last_name, NULLIF(b.full_name,'') AS full_name,
               cw.table_funded, cw.investor_delivery_signed_off_at, cw.stage AS closing_stage,
+              cw.fully_reconciled_at,
+              -- A file enters purchasing at the delivery sign-off, which can be
+              -- BEFORE reconciliation finishes — "even if it's not removed yet
+              -- from the closing workload because it's waiting for
+              -- reconciliation". So it is legitimately on both desks, and the
+              -- desk says which ones. Uses the SHARED retirement predicate, not a
+              -- second reading of it, so the two desks can never disagree about
+              -- whether a file has left closing.
+              ${closing.CLOSING_RETIRED_SQL('cw')} AS closing_retired,
               s.full_name AS closer_name,
               (SELECT count(*)::int FROM purchasing_tasks t
                 WHERE t.application_id = p.application_id AND t.done = false) AS open_tasks,
@@ -9133,7 +9151,13 @@ router.get('/applications/:id/purchasing', purchasingGate, async (req, res) => {
 
 // Mark the file's purchasing outstanding / complete.
 router.post('/applications/:id/purchasing/status', purchasingGate, async (req, res) => {
-  const status = req.body && req.body.status === 'complete' ? 'complete' : 'outstanding';
+  // VALIDATED, not coerced. `=== 'complete' ? 'complete' : 'outstanding'` meant
+  // an empty body or a typo'd 'Complete' answered 200 and DEMOTED the file,
+  // NULLing completed_at/completed_by — destroying the record of who finished
+  // the purchase, through a request that reported success.
+  const status = req.body && req.body.status;
+  if (!purchasing.PURCHASING_STATUSES.includes(status))
+    return res.status(400).json({ error: 'unknown purchasing status' });
   try {
     const row = await purchasing.setPurchasingStatus(db, req.params.id, status, req.actor.id);
     if (!row) return res.status(404).json({ error: 'This file is not in purchasing.' });
@@ -9146,6 +9170,8 @@ router.post('/applications/:id/purchasing/status', purchasingGate, async (req, r
 router.post('/applications/:id/purchasing/notes', purchasingGate, async (req, res) => {
   const body = req.body && req.body.body;
   if (!body || !String(body).trim()) return res.status(400).json({ error: 'Write a note first.' });
+  { const e = purchasing.tooLong(body, purchasing.LIMITS.note, 'note');
+    if (e) return res.status(400).json({ error: e }); }
   try {
     if (!(await purchasing.getPurchasing(req.params.id))) return res.status(404).json({ error: 'This file is not in purchasing.' });
     await purchasing.addNote(db, req.params.id, String(body).trim(), req.actor.id);
@@ -9158,6 +9184,8 @@ router.post('/applications/:id/purchasing/notes', purchasingGate, async (req, re
 router.post('/applications/:id/purchasing/tasks', purchasingGate, async (req, res) => {
   const label = req.body && req.body.label;
   if (!label || !String(label).trim()) return res.status(400).json({ error: 'Name the task first.' });
+  { const e = purchasing.tooLong(label, purchasing.LIMITS.taskLabel, 'task name');
+    if (e) return res.status(400).json({ error: e }); }
   try {
     if (!(await purchasing.getPurchasing(req.params.id))) return res.status(404).json({ error: 'This file is not in purchasing.' });
     await purchasing.addTask(db, req.params.id, String(label).trim(), req.actor.id, req.body && req.body.sortOrder);
@@ -9169,6 +9197,7 @@ router.post('/applications/:id/purchasing/tasks', purchasingGate, async (req, re
 router.patch('/applications/:id/purchasing/tasks/:tid', purchasingGate, async (req, res) => {
   try {
     // IDOR guard: the task must belong to THIS file.
+    if (!looksLikeId(req.params.tid)) return res.status(404).json({ error: 'task not found' });
     const own = (await db.query(
       `SELECT id FROM purchasing_tasks WHERE id=$1 AND application_id=$2`, [req.params.tid, req.params.id])).rows[0];
     if (!own) return res.status(404).json({ error: 'task not found' });
@@ -9181,6 +9210,7 @@ router.patch('/applications/:id/purchasing/tasks/:tid', purchasingGate, async (r
 
 router.delete('/applications/:id/purchasing/tasks/:tid', purchasingGate, async (req, res) => {
   try {
+    if (!looksLikeId(req.params.tid)) return res.status(404).json({ error: 'task not found' });
     const own = (await db.query(
       `SELECT id FROM purchasing_tasks WHERE id=$1 AND application_id=$2`, [req.params.tid, req.params.id])).rows[0];
     if (!own) return res.status(404).json({ error: 'task not found' });
@@ -9197,6 +9227,9 @@ router.delete('/applications/:id/purchasing/tasks/:tid', purchasingGate, async (
 router.post('/applications/:id/purchasing/conditions', purchasingGate, async (req, res) => {
   const label = req.body && req.body.label;
   if (!label || !String(label).trim()) return res.status(400).json({ error: 'Name the condition first.' });
+  { const e = purchasing.tooLong(label, purchasing.LIMITS.conditionLabel, 'condition name')
+         || purchasing.tooLong(req.body.detail, purchasing.LIMITS.conditionDetail, 'condition detail');
+    if (e) return res.status(400).json({ error: e }); }
   try {
     if (!(await purchasing.getPurchasing(req.params.id))) return res.status(404).json({ error: 'This file is not in purchasing.' });
     await purchasing.addCondition(db, req.params.id, String(label).trim(),
@@ -9210,7 +9243,10 @@ router.patch('/applications/:id/purchasing/conditions/:cid', purchasingGate, asy
   const status = req.body && req.body.status;
   if (!purchasing.CONDITION_STATUSES.includes(status))
     return res.status(400).json({ error: 'unknown condition status' });
+  { const e = purchasing.tooLong(req.body.note, purchasing.LIMITS.resolutionNote, 'note');
+    if (e) return res.status(400).json({ error: e }); }
   try {
+    if (!looksLikeId(req.params.cid)) return res.status(404).json({ error: 'condition not found' });
     const own = (await db.query(
       `SELECT id FROM purchasing_conditions WHERE id=$1 AND application_id=$2`, [req.params.cid, req.params.id])).rows[0];
     if (!own) return res.status(404).json({ error: 'condition not found' });
@@ -9222,6 +9258,7 @@ router.patch('/applications/:id/purchasing/conditions/:cid', purchasingGate, asy
 
 router.delete('/applications/:id/purchasing/conditions/:cid', purchasingGate, async (req, res) => {
   try {
+    if (!looksLikeId(req.params.cid)) return res.status(404).json({ error: 'condition not found' });
     const own = (await db.query(
       `SELECT id FROM purchasing_conditions WHERE id=$1 AND application_id=$2`, [req.params.cid, req.params.id])).rows[0];
     if (!own) return res.status(404).json({ error: 'condition not found' });
@@ -9246,6 +9283,7 @@ router.post('/applications/:id/purchasing/advice', purchasingGate, async (req, r
   }
   if ('documentId' in b) {
     if (b.documentId) {
+      if (!looksLikeId(b.documentId)) return res.status(404).json({ error: 'That document is not on this file.' });
       const own = (await db.query(
         `SELECT id FROM documents WHERE id=$1 AND application_id=$2`, [b.documentId, req.params.id])).rows[0];
       if (!own) return res.status(404).json({ error: 'That document is not on this file.' });

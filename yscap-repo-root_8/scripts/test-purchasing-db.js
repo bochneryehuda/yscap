@@ -65,12 +65,12 @@ const uniq = (p) => p + Buffer.from(String(process.pid)).toString('hex') + Math.
               investor_delivery_signed_off_by=${on ? '$2::uuid' : 'NULL'},
               updated_by=$2::uuid, updated_at=now()
         WHERE application_id=$1`, [appId, actorId]);
-    const cw = (await client.query(`SELECT table_funded FROM closing_workflow WHERE application_id=$1`, [appId])).rows[0];
-    if (on && !(cw && cw.table_funded)) await purchasing.enterPurchasing(client, appId, actorId);
-    // Calls the SHIPPED helper, not a copy of it. A mirror of these steps is what
-    // let the previous version of this test stay green while the route silently
-    // lost one — there is deliberately nothing to mirror any more.
-    if (!on) await purchasing.unwindInvestorDelivery(client, appId, actorId);
+    // Calls the SHIPPED fork, not a copy of it. This block used to re-implement
+    // the table-funded test the route makes, so every assertion about the fork
+    // was asserting the TEST: an audit rewrote the route to `if (on) enter()` —
+    // enrolling a table-funded loan on the desk it must never reach — and the
+    // whole suite stayed green. There is deliberately nothing left to mirror.
+    await purchasing.applyInvestorDeliverySignOff(client, appId, actorId, on);
     await workflow.maybeFinishClosing(client, appId, actorId);
   }
 
@@ -78,7 +78,11 @@ const uniq = (p) => p + Buffer.from(String(process.pid)).toString('hex') + Math.
      THE WAREHOUSE is what decides table funding — there is no separate switch. */
   async function setWarehouse(appId, actorId, warehouse) {
     assert.ok(warehouse === null || closing.WAREHOUSES.includes(warehouse), 'warehouse must be a real one');
-    const tf = warehouse === closing.TABLE_FUNDING;
+    // The SHIPPED derivation — not `warehouse === closing.TABLE_FUNDING` written
+    // out again here, which made "picking Table Funding marks the file table
+    // funded" a tautology (the helper wrote the value the assertion read back)
+    // and let `const tf = false` ship with the suite green.
+    const tf = closing.tableFundedFor(warehouse);
     const row = (await client.query(
       `UPDATE closing_workflow
           SET warehouse=$2, table_funded=$4,
@@ -423,11 +427,26 @@ const uniq = (p) => p + Buffer.from(String(process.pid)).toString('hex') + Math.
 
     await purchasing.setPurchaseAdvice(client, N.appId, { documentId: leaky.id }, N.closerId);
 
-    // db/360 does the same for files that already had one (previous AND future).
+    // db/362 does the same for files that already had one (previous AND future).
     await client.query(`UPDATE documents SET visibility='borrower' WHERE id=$1`, [leaky.id]);
-    await client.query(fs.readFileSync(path.join(__dirname, '..', 'db', '360_purchase_advice_staff_only.sql'), 'utf8'));
+    await client.query(fs.readFileSync(path.join(__dirname, '..', 'db', '362_purchase_advice_staff_only.sql'), 'utf8'));
     ok((await client.query(`SELECT visibility FROM documents WHERE id=$1`, [leaky.id])).rows[0].visibility === 'staff_only',
-      'db/360 shuts the same door on a file that already had a borrower-visible advice');
+      'db/362 shuts the same door on a file that already had a borrower-visible advice');
+
+    // AND IT RECORDS WHAT IT HID. Without this the back-date left previous files
+    // in exactly the state its own guard exists to prevent: nothing for an admin
+    // to read to undo a wrong hide, and — because the guard keys on this column
+    // being NULL — an admin who DID restore one had it silently re-hidden on the
+    // very next boot, forever. Previous files must not get a worse guarantee
+    // than new ones.
+    ok((await purchasing.readAdvice(N.appId, client)).document_prior_visibility === 'borrower',
+      'and db/362 STAMPS the prior visibility on the rows it forced (the undo exists for previous files too)');
+    await client.query(`UPDATE documents SET visibility='borrower' WHERE id=$1`, [leaky.id]);
+    await client.query(fs.readFileSync(path.join(__dirname, '..', 'db', '362_purchase_advice_staff_only.sql'), 'utf8'));
+    ok((await client.query(`SELECT visibility FROM documents WHERE id=$1`, [leaky.id])).rows[0].visibility === 'borrower',
+      'so a SECOND boot leaves an admin\'s restore of a back-dated document alone');
+    // Put it back the way the rest of this section expects to find it.
+    await client.query(`UPDATE documents SET visibility='staff_only' WHERE id=$1`, [leaky.id]);
 
     // A DOCUMENT FROM ANOTHER FILE IS REFUSED. Only the route's own existence
     // check was enforcing this; the library is callable from anywhere (the boot
@@ -461,7 +480,7 @@ const uniq = (p) => p + Buffer.from(String(process.pid)).toString('hex') + Math.
     ok((await purchasing.readAdvice(N.appId, client)).document_prior_visibility === null,
       'and records no prior visibility, because nothing was changed');
 
-    // db/360 RE-RUNS ON EVERY BOOT, so it must not fight an admin's undo. The
+    // db/362 RE-RUNS ON EVERY BOOT, so it must not fight an admin's undo. The
     // recorded prior visibility is the marker that the live code already owns
     // this row; without that guard the migration silently re-hid, on the next
     // deploy, a document an admin had deliberately restored — making the
@@ -475,11 +494,74 @@ const uniq = (p) => p + Buffer.from(String(process.pid)).toString('hex') + Math.
       'the forcing records the prior visibility that makes the undo possible');
     await client.query(`UPDATE documents SET visibility='borrower' WHERE id=$1`, [restored.id]);
 
-    await client.query(fs.readFileSync(path.join(__dirname, '..', 'db', '360_purchase_advice_staff_only.sql'), 'utf8'));
+    await client.query(fs.readFileSync(path.join(__dirname, '..', 'db', '362_purchase_advice_staff_only.sql'), 'utf8'));
     ok((await client.query(`SELECT visibility FROM documents WHERE id=$1`, [restored.id])).rows[0].visibility === 'borrower',
-      'db/360 does NOT re-hide a document an admin deliberately restored');
+      'db/362 does NOT re-hide a document an admin deliberately restored');
     ok((await client.query(`SELECT visibility FROM documents WHERE id=$1`, [internalDoc.id])).rows[0].visibility === 'internal',
-      'and db/360 never downgrades an internal document to staff_only either');
+      'and db/362 never downgrades an internal document to staff_only either');
+
+    // ---- AN UN-SIGN NEVER REOPENS A MANUAL SEND-BACK ----
+    // reopenClosingItem matches on outcome_label LIKE 'Closing complete —%' —
+    // i.e. ONLY a hand-off the system itself auto-cleared. Without that the
+    // un-sign grabs the newest 'returned' row of any kind, so a closing a human
+    // deliberately pushed back to the loan officer (with their reason recorded)
+    // silently reappears as an open closing hand-off, and their send-back is
+    // erased: outcome_label is set to NULL by the same UPDATE.
+    const SB = await makeFile();
+    await client.query(
+      `UPDATE workflow_items SET status='returned', returned_at=now(),
+              outcome_label='Sent back — the HUD does not match the wire.'
+        WHERE application_id=$1 AND submission_type='closing'`, [SB.appId]);
+    await signOffInvestorDelivery(SB.appId, SB.closerId, true);
+    await signOffInvestorDelivery(SB.appId, SB.closerId, false);
+    const sbRow = (await client.query(
+      `SELECT status, outcome_label FROM workflow_items
+        WHERE application_id=$1 AND submission_type='closing'`, [SB.appId])).rows[0];
+    ok(sbRow.status === 'returned' && /HUD does not match/.test(sbRow.outcome_label || ''),
+      'un-signing leaves a MANUAL send-back alone — its status and the reason survive');
+
+    // ---- SUPERSEDED advice documents (db/362, the one-shot half) ----
+    // The per-pointer half only ever reaches the document the advice CURRENTLY
+    // names. But re-pointing is the documented normal workflow, and before the
+    // designation code forced anything, every PREVIOUS advice stayed
+    // borrower-visible — the same breach, on the same kind of document. The
+    // route has always recorded each designation in audit_log, so the sweep is
+    // deterministic rather than inferred from doc_kind or filename.
+    const SUP = await makeFile();
+    const mkAdv = async (name) => (await client.query(
+      `INSERT INTO documents (application_id, borrower_id, filename, content_type, visibility)
+       SELECT $1, a.borrower_id, $2, 'application/pdf', 'borrower' FROM applications a WHERE a.id=$1
+       RETURNING id`, [SUP.appId, name])).rows[0].id;
+    const oldAdv = await mkAdv('advice-v1.pdf');
+    const newAdv = await mkAdv('advice-v2.pdf');
+    const unrelated = await mkAdv('borrower-insurance.pdf');
+    // How production got here: designations recorded, no forcing (main's
+    // setPurchaseAdvice had none), then the pointer moved on.
+    for (const d of [oldAdv, newAdv])
+      await client.query(
+        `INSERT INTO audit_log (actor_kind, action, entity_type, entity_id, detail)
+         VALUES ('staff','purchasing_advice','application',$1,jsonb_build_object('documentId',$2::text))`, [SUP.appId, d]);
+    await client.query(
+      `INSERT INTO purchasing_advice (application_id, document_id) VALUES ($1,$2)`, [SUP.appId, newAdv]);
+    await client.query(`DELETE FROM sync_runtime_state WHERE key='purchase_advice_superseded_hide'`);
+
+    const vis = async (id) => (await client.query(`SELECT visibility FROM documents WHERE id=$1`, [id])).rows[0].visibility;
+    ok(await vis(oldAdv) === 'borrower', 'a superseded advice starts borrower-visible (the door that existed)');
+    const m362 = fs.readFileSync(path.join(__dirname, '..', 'db', '362_purchase_advice_staff_only.sql'), 'utf8');
+    await client.query(m362);
+    ok(await vis(oldAdv) === 'staff_only', 'db/362 also hides the SUPERSEDED advice, not only the current pointer');
+    ok(await vis(newAdv) === 'staff_only', 'and the current one');
+    ok(await vis(unrelated) === 'borrower',
+      'and touches NOTHING else on the file — only a document a designation actually named');
+
+    // ONE-SHOT: a superseded document has no per-document place to record its
+    // prior visibility (purchasing_advice holds one row per FILE, describing the
+    // current pointer), so re-running would re-hide an admin's restore with no
+    // way to tell the two states apart. The marker is what prevents that.
+    await client.query(`UPDATE documents SET visibility='borrower' WHERE id=$1`, [oldAdv]);
+    await client.query(m362);
+    ok(await vis(oldAdv) === 'borrower',
+      'and the sweep is ONE-SHOT — a second boot never re-hides an admin\'s restore');
 
     // ---- Idempotency ----
     const D = await makeFile();

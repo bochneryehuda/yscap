@@ -35,6 +35,36 @@ const WAREHOUSES = [
   TABLE_FUNDING,
 ];
 
+// THE WAREHOUSE IS WHAT DECIDES TABLE FUNDING (owner-directed 2026-07-26).
+// Funding on the Table Funding line means the loan was sold at closing, so
+// `table_funded` — the flag every downstream fork reads — is DERIVED from the
+// warehouse rather than kept as a second, independently-settable switch that
+// could disagree with it.
+//
+// It is a function here, not a comparison written out at the call site, for the
+// same reason applyInvestorDeliverySignOff is: the DB test used to copy the
+// comparison to drive its scenario, so an audit could replace the route's line
+// with `const tf = false` — no file ever marked table funded, the entire fork
+// dead — and the whole suite stayed green, because the test was asserting its
+// own copy. There is nothing left to copy.
+const tableFundedFor = (warehouse) => warehouse === TABLE_FUNDING;
+
+// THE CLOSER-ONLY FIELDS ON PATCH /applications/:id/closing — one list, used to
+// WRITE them (inside the closer branch) and to REFUSE them (the else branch).
+// They were two hand-maintained lists and they drifted: `collateralTrackingCarrier`
+// was written but never refused, so a processor who set the carrier got
+// 200 {ok} and nothing saved — the repo's "returned 200 but didn't save" class,
+// in the form that is hardest to notice because the request looks successful.
+// scripts/test-closing-retirement-contract.js reads the route source and pins
+// this list to the fields the route actually writes, so it cannot drift again.
+const CLOSER_ONLY_CLOSING_FIELDS = [
+  'warehouse',
+  'collateralTrackingNumber',
+  'collateralTrackingCarrier',
+  'fundedDate',
+  'tprRequired',
+];
+
 // ---------------------------------------------------------------------------
 // IS THIS CLOSING RETIRED FROM THE DESK? One definition, shared by the desk
 // queue, the nav badge and (mirrored) the screen — they must never disagree.
@@ -423,6 +453,8 @@ async function getClosingWorkspace(appId, client) {
 }
 
 module.exports = {
+  CLOSER_ONLY_CLOSING_FIELDS,
+  tableFundedFor,
   WAREHOUSES,
   TABLE_FUNDING,
   CLOSING_RETIRED_SQL,

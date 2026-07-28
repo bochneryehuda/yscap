@@ -101,6 +101,18 @@ export default function StaffPurchasing() {
                         <td>
                           <Link to={`/internal/app/${r.id}`}>{fullNameOf(r) || '—'}</Link>
                           <div className="muted small">{addrLine(r.property_address) || '—'}</div>
+                          {/* A file goes to purchasing the moment investor delivery is
+                              signed off — "even if it's not removed yet from the closing
+                              workload because it's waiting for reconciliation". So it can
+                              legitimately be on BOTH desks, and the closer needs to see
+                              which ones those are. The queue already fetched this; it was
+                              simply never rendered. */}
+                          {r.closing_retired === false && (
+                            <div className="small" style={{ color: '#8A6D1F', marginTop: 2 }}>
+                              Still on the closing desk — waiting for reconciliation
+                              {r.closer_name ? ` (${r.closer_name})` : ''}
+                            </div>
+                          )}
                         </td>
                         <td className="mono">{r.ys_loan_number || '—'}</td>
                         <td>{r.lender || '—'}</td>

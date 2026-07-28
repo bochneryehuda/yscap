@@ -1,4 +1,4 @@
--- 359 — Remember what a purchase advice document's visibility USED to be.
+-- 361 — Remember what a purchase advice document's visibility USED to be.
 --
 -- Designating a document as the purchase advice forces it staff-only (it names
 -- the note buyer and the price the loan sold for). But the picker offers EVERY
@@ -16,7 +16,7 @@
 -- a real one naming the note buyer and the sale price, straight back to the
 -- borrower. It cannot tell a mis-pick from a re-issue, so it does not guess.
 --
--- This column is ALSO the marker that the live code owns a row — see db/360,
+-- This column is ALSO the marker that the live code owns a row — see db/362,
 -- which must not fight an admin's undo — so it has to exist BEFORE that
 -- back-date runs. That is why it is numbered first.
 --
