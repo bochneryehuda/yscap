@@ -220,6 +220,89 @@ const parkCount = async (app) => (await db.query(`SELECT count(*)::int c FROM sy
     ok('10b status shows appraisal available', st.slots.find((s) => s.which === 'appraisal_pdf').available === true);
     await cleanup(app, bor); }
 
+  // 10c) THE PURCHASE ADVICE NEVER RIDES OUT AS THE APPRAISAL. Sitewire is where the borrower submits
+  // draws and the capital partner reads the file; the advice names the note buyer and the price the loan
+  // sold for. The condition-slot arm matches ANY current PDF on the appraisal-documents condition, so an
+  // advice mis-filed there was picked up and uploaded labelled "Appraisal.pdf". It cannot be excluded by
+  // visibility (a real appraisal PDF is staff_only too) or by doc_kind (designation never rewrites it) —
+  // only the advice POINTER identifies it.
+  { const tid = (await db.query(`SELECT id FROM checklist_templates WHERE code='rtl_cond_appraisaldocs' LIMIT 1`)).rows[0].id;
+    const { app, bor } = await seed({ appraisal: false, xlsx: false, pdf: false });
+    const ci = (await db.query(`INSERT INTO checklist_items(application_id,template_id,item_kind,status,scope,label) VALUES($1,$2,'document','received','application','Appraisal documents') RETURNING id`, [app, tid])).rows[0].id;
+    const advId = (await db.query(`INSERT INTO documents(application_id,borrower_id,checklist_item_id,filename,content_type,size_bytes,storage_provider,storage_ref,uploaded_by_kind,uploaded_by_id,doc_kind,slot_label,is_current,visibility,source_type)
+      VALUES($1,$2,$3,'purchase-advice.pdf','application/pdf',10,'local','ref/adv','staff',NULL,NULL,'PDF',true,'staff_only','staff_upload') RETURNING id`, [app, bor, ci])).rows[0].id;
+    ok('10c the advice IS picked while nothing marks it as the advice (the door that existed)',
+      (await docPush._internal.gatherAppraisalPdf(app)).sourceDocId === advId);
+    await db.query(`INSERT INTO purchasing_advice(application_id, document_id) VALUES($1,$2)
+                    ON CONFLICT (application_id) DO UPDATE SET document_id=EXCLUDED.document_id`, [app, advId]);
+    const g2 = await docPush._internal.gatherAppraisalPdf(app);
+    ok('10c once designated the purchase advice, it is NOT pushed as the appraisal', !!g2.missing);
+    ok('10c and the slot honestly reports no appraisal rather than a wrong one',
+      (await docPush.status(app)).slots.find((s) => s.which === 'appraisal_pdf').available === false);
+    // A REAL appraisal PDF beside it is still found — the exclusion is the advice, not the condition.
+    // created_at is set EXPLICITLY throughout this block: the ORDER BY has two
+    // terms and a fixture that happens to insert rows in the convenient order
+    // makes the FIRST term vacuous (an audit proved it — deleting the doc_kind
+    // preference entirely still passed, because created_at DESC alone was picking
+    // the right row).
+    const insCond = (name, ct, vis, when, kind, slot) => db.query(
+      `INSERT INTO documents(application_id,borrower_id,checklist_item_id,filename,content_type,size_bytes,storage_provider,storage_ref,uploaded_by_kind,doc_kind,slot_label,is_current,visibility,source_type,created_at)
+       VALUES($1,$2,$3,$4,$5,10,'local',$6,'staff',$7,$8,true,$9,'staff_upload',$10) RETURNING id`,
+      [app, bor, ci, name, ct, 'ref/' + name, kind, slot, vis, when]).then((r) => r.rows[0].id);
+
+    const realAppr = (await db.query(
+      `INSERT INTO documents(application_id,borrower_id,filename,content_type,size_bytes,storage_provider,storage_ref,uploaded_by_kind,doc_kind,is_current,visibility,source_type,created_at)
+       VALUES($1,$2,'appraisal.pdf','application/pdf',10,'local','ref/real-appr','staff','appraisal_pdf',true,'staff_only','staff_upload','2026-01-01') RETURNING id`,
+      [app, bor])).rows[0].id;
+    const g3 = await docPush._internal.gatherAppraisalPdf(app);
+    ok('10c a real staff_only appraisal PDF is still pushed (the exclusion is narrow)',
+      !g3.missing && g3.sourceDocId === realAppr);
+    await db.query(`DELETE FROM purchasing_advice WHERE application_id=$1`, [app]);
+
+    // 10d) ARM (1) IS GENUINELY PREFERRED. The explicit appraisal_pdf is the
+    // OLDEST row here and the unlabelled condition PDF the NEWEST, so created_at
+    // cannot decide this — only the doc_kind preference can. That preference
+    // compared a BARE d.doc_kind, which is NULL on every condition-slot upload;
+    // NULL comparisons yield NULL and Postgres sorts NULLs FIRST under DESC, so
+    // the preference was INVERTED on the common file carrying both shapes.
+    const newerPlain = await insCond('later-upload.pdf', 'application/pdf', 'staff_only', '2026-06-01', null, 'PDF');
+    const g4 = await docPush._internal.gatherAppraisalPdf(app);
+    ok('10d the explicit appraisal_pdf beats a NEWER unlabelled PDF on the condition slot',
+      !g4.missing && g4.sourceDocId === realAppr);
+
+    // 10e) 'internal' is never shipped. tpr-export defines it as never shippable
+    // to a buyer, and Sitewire is where the borrower and the capital partner both
+    // read the file. Newest row + on the condition, so only the exclusion can
+    // keep it out.
+    // It must be the document that WOULD otherwise be chosen, or the case proves
+    // nothing: an internal document sitting behind a real appraisal_pdf loses on
+    // the doc_kind preference anyway, so deleting the exclusion still passed.
+    // Here it carries doc_kind='appraisal_pdf' AND is the newest row — it wins on
+    // both ORDER BY terms, so ONLY the exclusion can keep it out.
+    await db.query(`DELETE FROM documents WHERE id = ANY($1::uuid[])`, [[newerPlain, advId]]);
+    const internalDoc = await insCond('internal-only.pdf', 'application/pdf', 'internal', '2026-06-02', 'appraisal_pdf', 'PDF');
+    const g5 = await docPush._internal.gatherAppraisalPdf(app);
+    ok('10e an internal document is never pushed as the appraisal', g5.sourceDocId === realAppr);
+    ok('10e and it really was the row that would otherwise have won',
+      (await db.query(`SELECT created_at > (SELECT created_at FROM documents WHERE id=$2) AS newer, doc_kind FROM documents WHERE id=$1`,
+        [internalDoc, realAppr])).rows[0].newer === true);
+    await db.query(`DELETE FROM documents WHERE id=$1`, [internalDoc]);
+
+    // 10f) The XML SLOT is excluded by slot_label, not merely by file type. A
+    // MISMO data file uploaded with a PDF content type (or a .pdf name) would
+    // otherwise be pushed to Sitewire as the appraisal report.
+    // Clear the file down to ONE candidate so "missing" is unambiguous — advId is
+    // still eligible here (its purchasing_advice row was deleted above), and
+    // leaving it in made this case pass for the wrong reason.
+    await db.query(`DELETE FROM documents WHERE id=$1`, [realAppr]);
+    const xmlSlotPdf = await insCond('appraisal-data.pdf', 'application/pdf', 'staff_only', '2026-06-03', null, 'XML');
+    ok('10f the XML-slot document is the only candidate left (the case is not vacuous)',
+      (await db.query(`SELECT count(*)::int c FROM documents WHERE application_id=$1 AND is_current`, [app])).rows[0].c === 1);
+    const g6 = await docPush._internal.gatherAppraisalPdf(app);
+    ok('10f a document on the XML slot is excluded even when it looks like a PDF', !!g6.missing);
+    await db.query(`DELETE FROM documents WHERE id=$1`, [xmlSlotPdf]);
+    await cleanup(app, bor); }
+
   // 11) status() — metadata-only availability (no bytes read), reflects managed + push state
   { storage.read = async () => { throw new Error('status() must NOT read bytes'); }; // prove no byte read
     const { app, bor } = await seed({ pdf: false }); // appraisal + xlsx available, sow_pdf missing

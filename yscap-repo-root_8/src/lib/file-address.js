@@ -83,4 +83,53 @@ function orderRefFromRecipient(addr) {
   return UUID_RE.test(id) ? { applicationId: id, orderType } : null;
 }
 
-module.exports = { fileReplyTo, applicationIdFromRecipient, orderReplyTo, orderRefFromRecipient, UUID_RE };
+/* ══════════════════════════ THE CLOSING CHAIN ADDRESS ═══════════════════════
+   A per-CLOSING address, and the one address family here whose local part is NOT
+   the application id:
+       closing+<token>@<domain>
+   Three reasons the token is a random opaque value instead of the file id:
+     · it is PRINTED IN THE EMAIL BODY and typed by an outside closing attorney,
+       so it has to be short and must not publish an internal identifier;
+     · an attorney does not reply to our order — they open a BRAND-NEW chain with
+       the title company, the settlement agent and our team. Everything on that
+       chain reaches the file only because they kept this address on it, so the
+       address is the file's identity to the outside world and is rotatable;
+     · a leaked file id would be guessable across addresses (file+/title+/…);
+       a rotated token invalidates only the closing chain.
+
+   LOWERCASE HEX on purpose. The chat+ family is base64url and therefore
+   CASE-SENSITIVE, which has already caused one live regression (see
+   file-inbox.chatKeyFromRecipients) — a hex token can be lowercased wholesale
+   like file+/title+, and a human can retype it without ambiguity.
+   ════════════════════════════════════════════════════════════════════════════ */
+// 16–40 hex chars: today's tokens are 20 (80 bits); the range leaves room to
+// lengthen or shorten later without breaking addresses already in the wild.
+const CLOSING_TOKEN_RE = /^[0-9a-f]{16,40}$/;
+
+/** Build `closing+<token>@<domain>`, or null when the inbound domain is unset or
+    the token isn't well-formed (the caller then simply has no closing address). */
+function closingReplyTo(token) {
+  if (!cfg.chatReplyDomain) return null;
+  const t = String(token || '').trim().toLowerCase();
+  if (!CLOSING_TOKEN_RE.test(t)) return null;
+  return `closing+${t}@${cfg.chatReplyDomain}`;
+}
+
+/** Extract the closing token from a recipient address, case-insensitively.
+    Returns null for anything that isn't a well-formed closing address on the
+    configured reply domain. Pure — resolving the token to a file is
+    closing-thread.resolveByToken's job (this module stays DB-free). */
+function closingTokenFromRecipient(addr) {
+  if (!cfg.chatReplyDomain) return null;
+  const m = String(addr || '').trim().toLowerCase().match(/^closing\+([^@\s]+)@([^@\s]+)$/);
+  if (!m) return null;
+  if (m[2] !== cfg.chatReplyDomain) return null;
+  return CLOSING_TOKEN_RE.test(m[1]) ? m[1] : null;
+}
+
+module.exports = {
+  fileReplyTo, applicationIdFromRecipient,
+  orderReplyTo, orderRefFromRecipient,
+  closingReplyTo, closingTokenFromRecipient,
+  UUID_RE, CLOSING_TOKEN_RE,
+};

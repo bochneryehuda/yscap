@@ -199,9 +199,23 @@ async function linkToSitewireIntake(appId, tpDrawRow) {
 // own evidence bucket. Every hop is still re-checked by assertPublicHttps/isPrivateIp, and
 // the Api-Key is sent ONLY to the API host (a pre-signed S3 URL carries its own auth and
 // must never receive our key).
+// S3 bucket names are GLOBALLY unique but an unclaimed one is registrable by anyone, so a `tp-*`
+// prefix is not proof of TrustPoint — `tp-evil.s3.us-east-1.amazonaws.com` would have passed.
+// Pinned to the bucket TrustPoint actually serves from (verified live on the /report/ response:
+// tp-backend-evidence-prod-us-west-2), with the region/stage segment left open so a regional
+// failover or a sandbox bucket still downloads. `TRUSTPOINT_DOC_HOSTS` (comma-separated exact
+// hosts) is the escape hatch if they ever move, so this never needs loosening under pressure.
 function isTrustpointDocHost(host, apiHost) {
+  if (!host) return false;
   if (host === apiHost) return true;
-  return /^tp-[a-z0-9-]+\.s3[.-][a-z0-9-]*\.?amazonaws\.com$/.test(host);
+  const extra = String(process.env.TRUSTPOINT_DOC_HOSTS || '').split(',').map((h) => h.trim().toLowerCase()).filter(Boolean);
+  if (extra.includes(String(host).toLowerCase())) return true;
+  // The `.amazonaws.com` suffix is LITERAL and dot-anchored. An earlier form wrote
+  // `[a-z0-9-]*\.?amazonaws\.com`, whose OPTIONAL dot let the character class run straight
+  // into the suffix — so `tp-backend-evidence-x.s3.notamazonaws.com` and
+  // `…s3-evilamazonaws.com` (ordinary registrable domains) both passed and the pin did not
+  // keep the fetch inside AWS at all.
+  return /^tp-backend-evidence-[a-z0-9-]+\.s3(?:[.-][a-z0-9-]+)?\.amazonaws\.com$/.test(host);
 }
 
 async function fetchReportBytes(fileUrl) {
@@ -431,7 +445,7 @@ async function mirrorDisbursement(appId, row, { baseline = false, addr = 'the pr
         body: `Your construction draw of ${usd2(shown)} is on its way. Depending on your bank, funds typically take 1–2 business days to arrive.`,
         lines: ['Questions about this draw? Just reply to this email or reach your loan officer.'],
         applicationId: appId, link: `/app/${appId}`, ctaLabel: 'View your draws',
-        bccExtra: await drawTeamBcc(),
+        bccExtra: await drawTeamBcc(appId),
       }).catch(() => {});
     }
     await notify.notifyAppStaff(appId, {
@@ -495,6 +509,25 @@ async function reactDraw(appId, row, prev, { baseline = false, addrText = null }
   // can land with no status change, and the mirror row has its own insert-once claim.
   try { await mirrorDisbursement(appId, row, { baseline, addr }); } catch (_) {}
 
+  // The conversation on the draw is the answer to "why did this move / why is it STUCK?",
+  // so it must be mirrored on EVERY pass — not on a transition. This used to sit in the
+  // APPROVED branch, below the watermark claim, which meant a draw sitting in IN_REVIEW was
+  // never synced at all: precisely the draw whose messages matter ("Please update the ZIP
+  // code … therefore the draw request has failed" is on an un-approved draw). A settled draw
+  // is skipped so a finished project stops costing an API call on every poll.
+  if (newStatus !== 'COMPLETED' && newStatus !== 'DELETED') {
+    try { await require('./comments').syncDrawComments(appId, row.tp_project_id, tpDrawId); } catch (_) {}
+  }
+
+  // RETRY an archive that never landed. The pull below fires once, on the APPROVED transition,
+  // and TrustPoint's links expire in about a day — so one blip at that exact moment lost the
+  // inspection report and its photographs for good. This re-attempts only while the draw is
+  // recent AND has nothing archived, so it self-limits; re-running is safe (the store dedupes
+  // on content hash and the photo insert is ON CONFLICT DO NOTHING).
+  if (newStatus !== 'DELETED') {
+    try { await require('./documents').archiveDrawIfIncomplete(tpDrawId); } catch (_) {}
+  }
+
   // Atomic watermark claim (same shape as the Sitewire reconcile) — one reactor wins.
   const won = (await db.query(
     `UPDATE trustpoint_draws SET status_synced=$2 WHERE tp_draw_id=$1 AND status_synced IS DISTINCT FROM $2 RETURNING tp_draw_id`,
@@ -532,13 +565,14 @@ async function reactDraw(appId, row, prev, { baseline = false, addrText = null }
     await notify.notifyAppBorrowers(appId, {
       type: 'draw', title: `Your draw${drawNo(row)} was approved`,
       body: `Good news — your draw request for ${addr} was approved: ${usd(row.approved_cents)} of the ${usd(row.requested_cents)} you requested. The release is being processed; we'll confirm the exact amount when the funds are sent.`,
-      applicationId: appId, link: `/app/${appId}`, bccExtra: await drawTeamBcc(),
+      applicationId: appId, link: `/app/${appId}`, bccExtra: await drawTeamBcc(appId),
     }).catch(() => {});
     await archiveReport(appId, row.tp_project_id, tpDrawId).catch(() => {});
     // Owner-directed 2026-07-27: pull EVERYTHING TrustPoint holds for this draw — the draw
     // report, the inspection paperwork, and the inspector's photos — the moment we hear about
     // it. Their links are pre-signed and expire in about a day, so a late pull is a lost one.
     try { await require('./documents').archiveDrawEverything(tpDrawId); } catch (_) {}
+    // (the conversation mirror runs on every pass, above the watermark — see reactDraw's head)
     // §5E: the once-per-draw fee check runs at approval (the NET depends on the fee).
     try { await verifyPartnerFee(appId, row); } catch (_) {}
     // Phase 3 §5A/§6: POST-approval snapshot → per-line derivation → Sitewire write-back.
@@ -570,7 +604,7 @@ async function reactReturned(appId, row, addrText) {
   await notify.notifyAppBorrowers(appId, {
     type: 'draw', title: `Your draw${drawNo(row)} needs attention`,
     body: `Your draw request for ${addr} needs a little more before it can be approved. Your loan team will reach out with exactly what's needed.`,
-    applicationId: appId, link: `/app/${appId}`, bccExtra: await drawTeamBcc(),
+    applicationId: appId, link: `/app/${appId}`, bccExtra: await drawTeamBcc(appId),
   }).catch(() => {});
 }
 

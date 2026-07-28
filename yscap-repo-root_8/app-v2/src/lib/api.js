@@ -478,6 +478,13 @@ export const api = {
   staffClassifyOrderDoc: (appId, kind, docId, slot) => req('POST', `/api/staff/applications/${appId}/orders/${kind}/documents/${docId}/classify`, { slot }),
   staffCancelOrder:   (appId, kind, reopen) => req('POST', `/api/staff/applications/${appId}/orders/${kind}/cancel`, reopen ? { reopen: true } : {}),
   staffAllOrders:     () => req('GET', '/api/staff/orders'),   // global orders queue (all visible files)
+  // Attorney closing prep — the third order. Its own routes: the recipients, the
+  // document package and the closing email chain have nothing in common with a
+  // title/insurance vendor order.
+  staffClosingPrep:         (appId) => req('GET', `/api/staff/applications/${appId}/closing-prep`),
+  staffPlaceClosingPrep:    (appId, body) => req('POST', `/api/staff/applications/${appId}/closing-prep/place`, body || {}),
+  staffClosingPrepFollowup: (appId, body) => req('POST', `/api/staff/applications/${appId}/closing-prep/followup`, body || {}),
+  staffCancelClosingPrep:   (appId, reopen) => req('POST', `/api/staff/applications/${appId}/closing-prep/cancel`, reopen ? { reopen: true } : {}),
   staffSetLoanNumber: (appId, loanNumber) => req('POST', `/api/staff/applications/${appId}/loan-number`, { loanNumber }),
   staffPostClosing: (appId) => req('GET', `/api/staff/applications/${appId}/post-closing`),
   staffSeedPostClosing: (appId) => req('POST', `/api/staff/applications/${appId}/post-closing/seed`),
@@ -713,6 +720,11 @@ export const api = {
   purchasingConditionStatus: (appId, cid, status, note) => req('PATCH', `/api/staff/applications/${appId}/purchasing/conditions/${cid}`, { status, note }),
   purchasingConditionDelete: (appId, cid) => req('DELETE', `/api/staff/applications/${appId}/purchasing/conditions/${cid}`),
   purchasingAdvice:        (appId, patch) => req('POST', `/api/staff/applications/${appId}/purchasing/advice`, patch),
+  // Uploads the advice STAFF-ONLY from the outset — there is no borrower-visible
+  // window to designate away, which is the root cause the designation-time
+  // forcing could only mitigate.
+  purchasingAdviceUpload:  (appId, file) => req('POST', `/api/staff/applications/${appId}/documents`,
+    normalizeUpload({ ...file, staffOnly: true, slot: 'Purchase advice' })),
   staffStatusHistory: (appId) => req('GET', `/api/staff/applications/${appId}/status-history`),
   staffSetClosingDate: (appId, b) => req('POST', `/api/staff/applications/${appId}/closing-date`, b),
   staffEditApplication: (appId, b) => req('PATCH', `/api/staff/applications/${appId}/details`, b),

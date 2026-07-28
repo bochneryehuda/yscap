@@ -1210,7 +1210,7 @@ router.post('/disbursements', requirePermission('manage_draws'), async (req, res
           type: 'draw',
           // Draw number in the SUBJECT + the draw desk looped in (owner-directed 2026-07-27),
           // matching the TrustPoint-mirrored release email in src/trustpoint/mirror.js.
-          bccExtra: await require('../lib/draw-recipients').drawTeamBcc(),
+          bccExtra: await require('../lib/draw-recipients').drawTeamBcc(application_id),
           title: `Your construction draw${own.number != null ? ` #${own.number}` : ''} has been released`,
           hero: { label: 'Released to you', value: amt, sub: 'typically arrives in 1–2 business days', tone: 'positive' },
           badge: { text: 'Draw released', tone: 'positive' },
@@ -2104,6 +2104,20 @@ function withBudget(p, ms) {
  */
 const FINDING_ATTACH_MAX_BYTES = 18 * 1024 * 1024;   // keep the whole email deliverable
 
+/**
+ * A borrower-facing attachment NAME. Never leaks the administrator's name (the filename is
+ * rendered in the email body and shown in the recipient's mail client), and never invents a
+ * fact — it says only which draw it is and what kind of document it is.
+ */
+function borrowerSafeAttachmentName(filename, drawNo) {
+  const f = String(filename || '');
+  const n = drawNo != null ? `-draw-${drawNo}` : '';
+  if (f.startsWith('pilot-')) return `inspection-report${n}.pdf`;          // our own branded report
+  if (/-inspection-result-document-/.test(f)) return `inspection-findings${n}.pdf`;
+  if (/-draw-report-/.test(f)) return `draw-summary${n}.pdf`;
+  return `draw-document${n}.pdf`;
+}
+
 async function borrowerFindingAttachments(appId, sitewireDrawId) {
   const storage = require('../lib/storage');
   const out = [];
@@ -2112,13 +2126,29 @@ async function borrowerFindingAttachments(appId, sitewireDrawId) {
   // preferring the administrator's number when the draws are tied, since both filename
   // families are built from the same number.
   const num = (await db.query(
-    `SELECT COALESCE(t.number, s.number) AS n
-       FROM sitewire_draws s
-       LEFT JOIN trustpoint_draws t ON t.sitewire_draw_id = s.sitewire_draw_id
-      WHERE s.sitewire_draw_id = $1::bigint AND s.application_id = $2`,
+    `SELECT number AS n FROM sitewire_draws WHERE sitewire_draw_id = $1::bigint AND application_id = $2`,
     [String(sitewireDrawId), appId])).rows[0];
-  if (!num || num.n == null) return out;
-  const drawNo = String(num.n);
+  const drawNo = num && num.n != null ? String(num.n) : null;
+
+  // The two filename families are keyed on DIFFERENT numbers and must be matched separately.
+  // OUR report is named from the SITEWIRE draw number; the administrator's paperwork from the
+  // TRUSTPOINT one, and the two systems number draws independently (they are tied by AMOUNT in
+  // mirror.linkToSitewireIntake, never by number). Resolving one number for both meant that the
+  // moment they disagreed our borrower-safe report silently dropped out and ONLY the
+  // administrator's staff-sourced PDFs were sent — the exact inverse of what this is for.
+  const tpNo = (await db.query(
+    `SELECT number FROM trustpoint_draws WHERE sitewire_draw_id = $1::bigint AND application_id = $2`,
+    [String(sitewireDrawId), appId])).rows[0];
+
+  // ONLY these two administrator documents may reach a borrower. The allow-list is by DOCUMENT
+  // TYPE, not by draw prefix: `/draw_requests/{id}/documents/` also returns a "Service Invoice"
+  // (the inspection vendor's bill) and anything else TrustPoint chooses to file there, all named
+  // with the same prefix and all stored `visibility='staff_only'`. Only the inspection report and
+  // the draw report were decoded and keyword-scanned for a note-buyer name before #876 shipped;
+  // sending an unreviewed vendor invoice puts the frozen never-name-a-note-buyer rule on an
+  // assumption about a document set TrustPoint controls. Widening this list requires checking the
+  // new type the same way.
+  const TP_BORROWER_SAFE = ['inspection-result-document', 'draw-report'];
 
   const rows = (await db.query(
     `SELECT d.id, d.filename, d.storage_ref, d.size_bytes
@@ -2126,11 +2156,18 @@ async function borrowerFindingAttachments(appId, sitewireDrawId) {
       WHERE d.application_id = $1 AND d.is_current AND d.doc_kind = 'draw_inspection_report'
         AND (
           -- our own BORROWER-safe report for this draw (a staff copy can never match)
-          (d.visibility = 'borrower' AND d.filename LIKE 'pilot-draw-' || $2 || '-report-borrower-%')
-          -- the administrator's paperwork filed against the same draw number
-          OR d.filename LIKE 'trustpoint-draw-' || $2 || '-%'
+          (d.visibility = 'borrower' AND $2::text IS NOT NULL
+             AND d.filename LIKE 'pilot-draw-' || $2 || '-report-borrower-%')
+          -- the administrator's reviewed paperwork, by draw number AND document type
+          OR ($3::text IS NOT NULL AND EXISTS (
+                SELECT 1 FROM unnest($4::text[]) t
+                 -- ANCHORED on the date+id tail storeDocument always appends, so a document
+                 -- type that merely STARTS WITH an allowed one ("Inspection Result Document
+                 -- and Service Invoice") can never satisfy a prefix match and ride along.
+                 WHERE d.filename LIKE 'trustpoint-draw-' || $3 || '-' || t || '-____-__-__-%'))
         )
-      ORDER BY d.created_at DESC`, [appId, drawNo])).rows;
+      ORDER BY d.created_at DESC`,
+    [appId, drawNo, tpNo && tpNo.number != null ? String(tpNo.number) : null, TP_BORROWER_SAFE])).rows;
 
   const seen = new Set();
   let budget = FINDING_ATTACH_MAX_BYTES;
@@ -2142,7 +2179,14 @@ async function borrowerFindingAttachments(appId, sitewireDrawId) {
     try {
       const content = await storage.read(r.storage_ref);
       if (!content || !content.length || content.length > budget) continue;
-      out.push({ filename: r.filename, content, contentType: 'application/pdf' });
+      // S1 — THE FILENAME IS BORROWER-FACING. notify.js derives `files` from
+      // attachments[].filename and template.js renders them as visible chips AND a plaintext
+      // "Attachments:" line; the borrower scrub covers title/body/meta/… but never attachments.
+      // So `trustpoint-draw-2-…pdf` printed the draw administrator's name to the borrower twice
+      // in the body plus on the file in their mail client — the frozen never-name-the-note-buyer
+      // rule (borrower-safe.js lists "trust point" explicitly). Renamed to a neutral, factual
+      // name; the stored document keeps its own filename for staff.
+      out.push({ filename: borrowerSafeAttachmentName(r.filename, drawNo), content, contentType: 'application/pdf' });
       seen.add(kind);
       budget -= content.length;
     } catch (e) { /* a missing file never blocks the findings email */ }
@@ -2240,7 +2284,7 @@ router.post('/files/:id/findings/:drawId/deliver', requirePermission('manage_dra
         applicationId: appId, link: acceptLink, ctaLabel: 'Review & accept',
         cta2Label: 'Push back on a line', cta2Link: disputeLink,
         attachments: findingAttachments,
-        bccExtra: await require('../lib/draw-recipients').drawTeamBcc() }).catch(() => {});
+        bccExtra: await require('../lib/draw-recipients').drawTeamBcc(appId) }).catch(() => {});
     }
     // In-app only (owner-directed 2026-07-20): a confirmation that the coordinator
     // just delivered findings is not a whole-team EMAIL — the borrower's own

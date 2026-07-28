@@ -1087,7 +1087,10 @@ function TrustpointPanel({ appId }) {
     } catch (e) { setMsg(e?.data?.error || e.message); }
     finally { setBusy(false); }
   }
-  const STATUS_LABEL = { DRAFT: 'Draft', IN_REVIEW: 'In review', APPROVED: 'Approved', COMPLETED: 'Completed', DELETED: 'Deleted' };
+  // NOTE: there is deliberately NO status-label map here. Every label/tone/meaning comes from
+  // `status_info` / `headline`, resolved on the SERVER by src/lib/draw-status.js — a second copy
+  // in the client is exactly how the two drift and a status TrustPoint adds tomorrow renders as
+  // a raw database value in one place and a friendly label in the other.
   return (
     <div className="dd-card" style={{ marginTop: 12 }}>
       <div className="dd-card-h" style={{ justifyContent: 'space-between' }}>
@@ -1101,12 +1104,31 @@ function TrustpointPanel({ appId }) {
         <span className="dd-chip warn"><span className="dot" />TrustPoint</span>
       </div>
       {msg && <div className="small" style={{ marginTop: 8, fontWeight: 600 }}>{msg}</div>}
+      {/* WHAT IS HAPPENING RIGHT NOW, in one sentence — the server picks it (a problem at the
+          inspector beats progress, progress beats a settled draw status). */}
+      {ov.headline ? (
+        <div style={{
+          marginTop: 10, padding: '10px 12px', borderRadius: 8, background: '#FFFFFF',
+          border: `1px solid ${(SO_TONE[ov.headline.tone] || SO_TONE.neutral).bd}`,
+        }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+            <span style={{ fontSize: 11, fontWeight: 700, letterSpacing: '.06em', textTransform: 'uppercase', color: '#4B585C' }}>Right now</span>
+            <StatusChip info={ov.headline} />
+            <span style={{ fontSize: 11.5, color: '#4B585C' }}>
+              {ov.headline.from === 'inspection' ? 'from the inspection' : 'from the draw'}
+            </span>
+          </div>
+          {ov.headline.meaning ? (
+            <div style={{ marginTop: 4, fontSize: 12, color: '#4B585C' }}>{ov.headline.meaning}</div>
+          ) : null}
+        </div>
+      ) : null}
       {(ov.draws || []).length === 0 && <div className="muted small" style={{ marginTop: 10 }}>No draws mirrored yet.</div>}
       {(ov.draws || []).map((d) => (
         <div key={d.tp_draw_id} style={{ marginTop: 10, padding: '10px 12px', border: '1px solid var(--line)', borderRadius: 10 }}>
           <div className="row" style={{ gap: 10, flexWrap: 'wrap', alignItems: 'center' }}>
             <b>Draw #{d.number == null ? '—' : d.number}</b>
-            <span className="pill sw-insp">{STATUS_LABEL[d.status] || d.status || '—'}</span>
+            <StatusChip info={d.status_info} />
             <span className="small muted">Requested {usd(d.requested_cents)} · Approved {usd(d.approved_cents)}{d.to_disburse_cents != null ? ` · Net ${usd(d.to_disburse_cents)}` : ''}</span>
             {(d.disbursed_at || Number(d.disbursed_cents) > 0) && (
               <span className="small" style={{ color: 'var(--success)' }}>✓ Released{Number(d.disbursed_cents) > 0 ? ` ${usd(d.disbursed_cents)}` : ''}</span>
@@ -1123,6 +1145,7 @@ function TrustpointPanel({ appId }) {
             )}
             <button className="btn btn-sm ghost" disabled={busy} onClick={() => { const w = window.open('', '_blank'); api.trustpointDrawReport(appId, d.tp_draw_id, 'staff', w).catch((e) => setMsg(e?.data?.error || e.message)); }}>Report (PDF)</button>
           </div>
+          <DrawMessages messages={d.messages} />
           {openLines === d.tp_draw_id && lineData && (
             <div style={{ marginTop: 10, padding: '10px 12px', background: 'var(--ink-2)', borderRadius: 8 }}>
               <div className="small" style={{ fontWeight: 600 }}>Copy the approved amount per line from TrustPoint (must add up to {usd(lineData.draw.approved_cents)} exactly):</div>
@@ -1143,16 +1166,149 @@ function TrustpointPanel({ appId }) {
         </div>
       ))}
       {(ov.service_orders || []).length > 0 && (
-        <div style={{ marginTop: 12 }}>
+        <div style={{ marginTop: 14 }}>
           <div className="dd-field-l" style={{ textTransform: 'uppercase', letterSpacing: '.06em', fontSize: 11 }}>Inspections &amp; services</div>
           {(ov.service_orders || []).slice(0, 8).map((so) => (
-            <div key={so.tp_service_order_id} className="small muted" style={{ marginTop: 4 }}>
-              {(so.service_type || 'service').toLowerCase().replace(/_/g, ' ')} · {(so.status || '—').toLowerCase().replace(/_/g, ' ')}
-              {so.scheduled_at ? ` · scheduled ${String(so.scheduled_at).slice(0, 10)}` : ''}{so.completed_at ? ` · completed ${String(so.completed_at).slice(0, 10)}` : ''}
-            </div>
+            <InspectionRow key={so.tp_service_order_id} so={so} />
           ))}
         </div>
       )}
+    </div>
+  );
+}
+
+/**
+ * ONE inspection, told properly (owner-directed 2026-07-27 — the old row printed a lower-cased
+ * database value: "inspection · ready_for_review · scheduled 2026-07-24").
+ *
+ * Everything here comes from `so.status_info`, resolved on the SERVER by src/lib/draw-status.js, so
+ * the wording lives in one place and a status TrustPoint adds tomorrow still renders. Text colours
+ * are explicit darks — never a `--ink*` token, which is a LIGHT paper colour in this palette and
+ * renders white-on-white (the standing hard rule).
+ */
+const SO_TONE = {
+  neutral:  { fg: '#4B585C', bg: '#F1EFE9', bd: '#E4E0D6' },
+  gold:     { fg: '#7A5E2E', bg: '#F8F1E1', bd: '#E8D9B5' },
+  teal:     { fg: '#245F66', bg: '#E7F1F2', bd: '#C7DFE1' },
+  positive: { fg: '#1E6B50', bg: '#E6F3ED', bd: '#C3E2D5' },
+  bad:      { fg: '#8E3A31', bg: '#FBEBE9', bd: '#F0CFCA' },
+};
+
+/** ONE status pill, from the server-resolved `{label, tone}` shape. The only place a tone
+ *  becomes a colour, so the draw chip, the headline and the inspection row can never disagree. */
+function StatusChip({ info }) {
+  const i = info || {};
+  const t = SO_TONE[i.tone] || SO_TONE.neutral;
+  return (
+    <span
+      title={i.meaning || undefined}
+      style={{
+        fontSize: 11, fontWeight: 700, letterSpacing: '.02em', padding: '2px 8px', borderRadius: 999,
+        color: t.fg, background: t.bg, border: `1px solid ${t.bd}`,
+      }}
+    >{i.label || '—'}</span>
+  );
+}
+
+/**
+ * THE CONVERSATION ON ONE DRAW (owner-directed 2026-07-27: "we should also be able to see the
+ * real messages in our system related to each and every draw — all the messages going back and
+ * forth"). Read-only on purpose: a reply belongs in TrustPoint, where the administrator will
+ * actually see it, and a one-way mirror can never put words in our coordinator's mouth.
+ *
+ * There is NO byline, and that is the truth rather than an omission — TrustPoint's comment
+ * response publishes the message, when it was written, and nothing that names a person.
+ */
+function DrawMessages({ messages }) {
+  const list = Array.isArray(messages) ? messages : [];
+  const [open, setOpen] = React.useState(false);
+  if (!list.length) return null;
+  const total = list.reduce((n, m) => n + 1 + (m.replies ? m.replies.length : 0), 0);
+  // A bare new Date(x).toISOString() THROWS RangeError on an unparseable value, and a throw
+  // during render takes the whole file screen down through the ErrorBoundary. Never render an
+  // external timestamp without this guard.
+  const day = (v) => {
+    if (!v) return null;
+    const d = new Date(v);
+    return Number.isNaN(d.getTime()) ? null : d.toISOString().slice(0, 10);
+  };
+  const line = (m, depth) => (
+    <div key={m.tp_comment_id} style={{ marginTop: 8, marginLeft: depth * 16 }}>
+      <div style={{ display: 'flex', gap: 8, alignItems: 'baseline', flexWrap: 'wrap' }}>
+        <span style={{ fontSize: 11.5, color: '#4B585C' }}>{day(m.commented_at) || 'date not given'}</span>
+        {m.author ? <span style={{ fontSize: 11.5, fontWeight: 600, color: '#141B22' }}>{m.author}</span> : null}
+        {m.is_pinned ? <span style={{ fontSize: 11, color: '#7A5E2E' }}>pinned</span> : null}
+      </div>
+      <div style={{ fontSize: 12.5, color: '#141B22', whiteSpace: 'pre-wrap', marginTop: 2 }}>{m.body}</div>
+      {(m.replies || []).map((r) => line(r, depth + 1))}
+    </div>
+  );
+  return (
+    <div style={{ marginTop: 10, borderTop: '1px solid #E4E0D6', paddingTop: 8 }}>
+      <button
+        className="btn btn-sm ghost"
+        onClick={() => setOpen(!open)}
+        style={{ padding: '2px 8px', fontSize: 12 }}
+      >{open ? 'Hide' : 'Show'} messages ({total})</button>
+      {open ? (
+        <div style={{ marginTop: 4 }}>
+          {list.map((m) => line(m, 0))}
+          <div style={{ marginTop: 10, fontSize: 11, color: '#4B585C' }}>
+            Copied from the draw administrator. To reply, write back on their system — messages
+            typed here would not reach them.
+          </div>
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+function InspectionRow({ so }) {
+  const i = so.status_info || {};
+  const t = SO_TONE[i.tone] || SO_TONE.neutral;
+  const steps = Number(i.steps) || 0;
+  const step = i.step == null ? null : Number(i.step);
+  const facts = [
+    i.number ? ['Order #', i.number] : null,
+    i.orderedOn ? ['Ordered', i.orderedOn] : null,
+    i.scheduledOn ? ['Visit booked', i.scheduledOn] : null,
+    i.completedOn ? ['Completed', i.completedOn] : null,
+    i.cancelledOn ? ['Cancelled', i.cancelledOn] : null,
+    i.progressPct != null ? ['Progress found', `${i.progressPct}%`] : null,
+  ].filter(Boolean);
+
+  return (
+    <div style={{ marginTop: 8, padding: '10px 12px', border: `1px solid ${t.bd}`, borderRadius: 8, background: '#FFFFFF' }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+        <span style={{ fontWeight: 600, fontSize: 13, color: '#141B22', textTransform: 'capitalize' }}>{i.kind || 'service'}</span>
+        <span style={{
+          fontSize: 11, fontWeight: 700, letterSpacing: '.02em', padding: '2px 8px', borderRadius: 999,
+          color: t.fg, background: t.bg, border: `1px solid ${t.bd}`,
+        }}>{i.label || '—'}</span>
+      </div>
+      {i.meaning ? (
+        <div style={{ marginTop: 4, fontSize: 12, color: '#4B585C' }}>{i.meaning}</div>
+      ) : null}
+      {/* where it sits on the track from ordered to done — cancelled/failed sit OFF the track */}
+      {step != null && steps > 0 ? (
+        <div style={{ display: 'flex', gap: 3, marginTop: 8 }} aria-hidden="true">
+          {Array.from({ length: steps }).map((_, n) => (
+            <span key={n} style={{
+              height: 3, flex: 1, borderRadius: 2,
+              background: n <= step ? t.fg : '#E4E0D6',
+            }} />
+          ))}
+        </div>
+      ) : null}
+      {facts.length ? (
+        <div style={{ display: 'flex', flexWrap: 'wrap', gap: '2px 14px', marginTop: 8 }}>
+          {facts.map(([k, v]) => (
+            <span key={k} style={{ fontSize: 11.5, color: '#4B585C' }}>
+              {k} <strong style={{ color: '#141B22', fontWeight: 600 }}>{v}</strong>
+            </span>
+          ))}
+        </div>
+      ) : null}
     </div>
   );
 }

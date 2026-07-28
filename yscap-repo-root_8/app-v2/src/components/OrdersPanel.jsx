@@ -2,6 +2,7 @@ import React, { useCallback, useEffect, useState } from 'react';
 import { api, saveBlob } from '../lib/api.js';
 import { PhoneInput, EmailInput } from './FormattedInputs.jsx';
 import EmailCenter from './EmailCenter.jsx';
+import ClosingPrepCard from './ClosingPrepCard.jsx';
 
 /* ════════════════════════════════════════════════════════════════════════════
    ORDERS DESK (#orders) — order TITLE and INSURANCE for a file, and track each
@@ -343,13 +344,18 @@ export default function OrdersPanel({ appId, canAccept = false }) {
   return (
     <div>
       <p className="muted small" style={{ marginTop: 0 }}>
-        Order title and insurance from here. Each order emails the vendor with the borrower, loan officer and processor copied,
-        and comes back to its own thread — the documents they send back land below for you to classify.
+        Order title and insurance from here, and send the closing attorney the file for closing prep.
+        Each order emails its recipient with the right people copied and comes back to its own thread —
+        the documents they send back land below.
       </p>
       {!data.file.hasLoanNumber && <LoanNumberEntry appId={appId} onSaved={load} />}
       <div style={{ display: 'grid', gap: 14 }}>
         <OrderCard appId={appId} kind="title" order={data.orders.title} file={data.file} canAccept={canAccept} onChanged={load} />
         <OrderCard appId={appId} kind="insurance" order={data.orders.insurance} file={data.file} canAccept={canAccept} onChanged={load} />
+        {/* The attorney closing-prep order. Its own card + its own routes — the
+            recipients, the document package and the closing email chain share
+            nothing with a title/insurance vendor order. */}
+        <ClosingPrepCard appId={appId} />
       </div>
     </div>
   );

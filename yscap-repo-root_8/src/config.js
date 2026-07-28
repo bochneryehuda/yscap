@@ -51,6 +51,15 @@ function resolveSecret(name) {
 
 // Choose the email provider from env. An explicit EMAIL_PROVIDER wins; otherwise
 // infer from whichever credential set is present so a single env var is enough.
+/** A megabyte env value as bytes, with a real fallback. A blank/typo'd/non-finite
+    or non-positive value falls back to the DEFAULT rather than to NaN (which would
+    disable every size comparison that reads it) or to a near-zero floor. */
+function mbBytes(v, defaultMb) {
+  const n = Number(String(v == null ? '' : v).trim());
+  const mb = Number.isFinite(n) && n > 0 ? n : defaultMb;
+  return Math.max(1, Math.round(mb * 1024 * 1024));
+}
+
 function resolveEmailProvider() {
   const explicit = (process.env.EMAIL_PROVIDER || '').trim().toLowerCase();
   if (explicit && explicit !== 'auto') return explicit;   // honor an explicit choice
@@ -148,6 +157,31 @@ module.exports = {
   // the officer's address isn't exposed. On by default; set CC_LO_ON_BORROWER=0
   // to turn off.
   ccLoanOfficerOnBorrowerEmail: process.env.CC_LO_ON_BORROWER !== '0',
+  // The closing-attorney GROUP inbox the "file ready for closing prep" order is
+  // addressed to (owner-directed 2026-07-28; the same address the rtl_p5_atty
+  // condition has named by hand since db/005). Env-backed rather than a literal
+  // so a firm change is a config edit, not a deploy. A routing address, not a secret.
+  //
+  // THIS IS THE ONLY RECIPIENT of a closing-prep order, so it must be set for the
+  // feature to work. It used to say `ATTORNEY_GROUP_EMAIL=""` would "require an
+  // attorney contact on the file instead" — that stopped being true the moment the
+  // file's `attorney` contact was correctly removed from the recipient list (it is
+  // the BORROWER'S counsel, handed over in the body, never copied). Blanking this
+  // now blocks every closing-prep order with a message no staffer can act on, so
+  // the guidance is gone rather than left as a trap.
+  attorneyGroupEmail: (process.env.ATTORNEY_GROUP_EMAIL != null
+    ? process.env.ATTORNEY_GROUP_EMAIL : 'teamag@privatelenderlaw.com').trim().toLowerCase() || null,
+  // Total attachment budget for one closing-prep email. Resend accepts ~40 MB per
+  // message; Microsoft Graph rejects inline attachments over ~3 MB (it needs an
+  // upload session we don't implement), so the Graph budget is deliberately tiny.
+  // Nothing is ever silently dropped — whatever doesn't fit is NAMED in the email
+  // and reported back to the sender.
+  // Both parsed through one helper: a typo'd value used to become NaN, and
+  // `total + len > NaN` is always false — which silently turned the budget OFF
+  // instead of falling back to the default. The megabyte multiply is inside the
+  // clamp for both, so a 0 can never mean "one byte" (every document skipped).
+  closingAttachBudgetBytes: mbBytes(process.env.CLOSING_ATTACH_BUDGET_MB, 20),
+  closingAttachBudgetGraphBytes: mbBytes(process.env.CLOSING_ATTACH_BUDGET_GRAPH_MB, 2.5),
   // #75 external chat guests: the domain a unique per-participant reply-to is
   // built on (e.g. "reply.yscapgroup.com" → chat+<key>@reply.yscapgroup.com).
   // When UNSET, external guests still receive chat emails but with no reply-to,
