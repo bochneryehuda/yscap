@@ -257,6 +257,18 @@ const ATTACH = {
   const h2 = cp.buildClosingPrepEmail(DATA, pkg, { address: ADDRESS, attach: draftAttach, senderName: 'X' }).html;
   assert(!/FULLY EXECUTED/.test(h2) && /not final until it is executed/i.test(h2),
     'but when the executed copy could NOT be attached, the email says the attached one is the draft');
+  // NOTHING attached at all — both branches above would have claimed "the term sheet
+  // attached is …", and the intro would have promised a complete package. On Graph
+  // (raw budget ~1.9 MB) a 3 MB signed package attaches nothing at all.
+  const noneAttach = { attached: [], attachments: [],
+    skipped: [{ filename: 'Term Sheet EXECUTED.pdf', reason: 'over the email size limit' }] };
+  const h3 = cp.buildClosingPrepEmail(DATA, pkg, { address: ADDRESS, attach: noneAttach, senderName: 'X' }).html;
+  assert(/term sheet is NOT attached/i.test(h3),
+    'with NO term sheet attached the email says so plainly, rather than describing one');
+  assert(!/attached is the FULLY EXECUTED/.test(h3) && !/attached is the INITIAL/.test(h3),
+    'and never describes a term sheet it did not send');
+  assert(!/Everything you need to start drafting is attached/.test(h3),
+    'nor promises a complete package when something was held back');
 }
 {
   // Nothing missing is ever silent.

@@ -4430,7 +4430,7 @@ router.post('/applications/:id/closing-prep/place', async (req, res) => {
     if (blk.includes('not_registered')) return res.status(400).json({ error: 'Register the product first. The attorney needs a term sheet to draft from — register the file, then send this.', code: 'not_registered' });
     if (blk.includes('documents_unavailable')) return res.status(503).json({ error: 'We could not read this file’s documents just now, so nothing was sent. Try again in a moment.', code: 'documents_unavailable' });
     if (blk.includes('term_sheet')) return res.status(400).json({ error: 'There is no term sheet on the file yet. Generate the term sheet, then send the closing-prep request.', code: 'term_sheet' });
-    if (blk.includes('attorney')) return res.status(400).json({ error: 'There is nowhere to send this — add an attorney contact to the file (or set the attorney group inbox).', code: 'attorney' });
+    if (blk.includes('attorney')) return res.status(400).json({ error: 'There is nowhere to send this — the closing attorney’s group inbox is not set up yet. Ask an admin to set it (ATTORNEY_GROUP_EMAIL); adding an attorney contact to the file will not help, because that contact is the borrower’s own lawyer and is never copied on this email.', code: 'attorney' });
 
     const force = req.body && (req.body.force === true || req.body.force === 'true');
     const existing = (await db.query(
@@ -4565,11 +4565,25 @@ router.post('/applications/:id/closing-prep/cancel', async (req, res) => {
   if (!(await canTouchApp(req, appId))) return res.status(403).json({ error: 'forbidden' });
   try {
     const reopen = req.body && (req.body.reopen === true || req.body.reopen === 'true');
+    // UPSERT, never a bare UPDATE. The order row is written AFTER the send, so a DB
+    // blip leaves a file whose request genuinely went out with no row — and then
+    // Cancel 404'd ("Closing prep has not been requested yet"), Send answered 409
+    // "already sent", and the chain kept emailing outside counsel with no way to
+    // stop it short of re-sending the whole package. Cancelling is the one action
+    // that must always be reachable once an attorney has been written to.
+    const engaged = await closingPrep.orderIsLive(appId);
     const upd = await db.query(
       `UPDATE file_orders SET status=$2, updated_at=now()
         WHERE application_id=$1 AND order_type='attorney' RETURNING status`,
       [appId, reopen ? 'ordered' : 'cancelled']);
-    if (!upd.rows[0]) return res.status(404).json({ error: 'Closing prep has not been requested yet.' });
+    if (!upd.rows[0]) {
+      if (!engaged) return res.status(404).json({ error: 'Closing prep has not been requested yet.' });
+      await db.query(
+        `INSERT INTO file_orders (application_id, order_type, status)
+         VALUES ($1,'attorney',$2)
+         ON CONFLICT (application_id, order_type) DO UPDATE SET status=EXCLUDED.status, updated_at=now()`,
+        [appId, reopen ? 'ordered' : 'cancelled']);
+    }
     await audit(req, reopen ? 'closing_prep_reopened' : 'closing_prep_cancelled', 'application', appId, {});
     res.json({ ok: true, status: upd.rows[0].status });
   } catch (e) { res.status(500).json({ error: 'server error' }); }
@@ -4585,7 +4599,7 @@ router.get('/orders', async (req, res) => {
     if (!seesAll(req)) { params.push(req.actor.id); scopeSql = `AND ${VISIBLE_OFFICERS_SQL('a', '$1')}`; }
     const r = await db.query(
       `SELECT a.id AS application_id, a.ys_loan_number, a.property_address, a.status AS file_status,
-              b.first_name, b.last_name,
+              b.first_name, b.last_name, b.full_name,
               o.order_type, o.status, o.vendor_name, o.ordered_at, o.last_followup_at, o.followup_count,
               COALESCE(dc.unassigned, 0)::int AS unassigned_docs, COALESCE(dc.total, 0)::int AS returned_docs
          FROM file_orders o

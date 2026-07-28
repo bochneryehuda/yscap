@@ -496,7 +496,14 @@ noop.sendMail = async (opts) => { sends.push(opts); return { ok: true, id: `stub
     const orig = (await db.query(`SELECT status FROM applications WHERE id=$1`, [appId])).rows[0].status;
     for (const dead of ['funded', 'declined', 'withdrawn']) {
       await db.query(`UPDATE applications SET status=$2 WHERE id=$1`, [appId, dead]);
-      assert(!(await closingPrep.orderIsLive(appId)), `a ${dead} file is no longer a live closing`);
+      assert(!(await closingPrep.mayAnnounce(appId)), `a ${dead} file gets no AUTOMATIC updates`);
+      // …but a HUMAN must still be able to write to counsel. Post-funding
+      // correspondence (recorded mortgage, final title policy, payoff letter) is
+      // normal, and telling a WITHDRAWN deal's counsel to stop work has to be
+      // possible. Folding the deal-live test into orderIsLive killed the Follow-up
+      // button on every one of these files, with a message that was flatly untrue.
+      assert(await closingPrep.orderIsLive(appId),
+        `but the team can still follow up with the attorney on a ${dead} file`);
       const r = await closingPrep.announce({
         applicationId: appId, eventKind: 'closing_date',
         dedupeKey: 'ignored', extra: { date: '2026-12-25' },
@@ -506,7 +513,7 @@ noop.sendMail = async (opts) => { sends.push(opts); return { ok: true, id: `stub
     }
     assert(sends.length === before, 'not one email went out on a closed or dead deal');
     await db.query(`UPDATE applications SET status=$2 WHERE id=$1`, [appId, orig]);
-    assert(await closingPrep.orderIsLive(appId), 'and a live file is unaffected');
+    assert(await closingPrep.mayAnnounce(appId), 'and a live file is unaffected');
   }
 
   /* ── 5b7. AUDIT ROUND 4: the unique address must be in the PLAIN-TEXT part too.

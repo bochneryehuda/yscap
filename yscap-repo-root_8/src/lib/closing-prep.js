@@ -37,8 +37,9 @@
  *  · The unique closing address, with a plain-language ask to keep it on the chain.
  *
  * WHO IS ON IT
- *  · To: the attorney group inbox (cfg.attorneyGroupEmail) plus any `attorney`
- *    contact on the file.
+ *  · To: the attorney group inbox (cfg.attorneyGroupEmail) — OUR closing attorney,
+ *    and the only recipient. The file's `attorney` service contact is the
+ *    BORROWER'S counsel; it is handed over in the body as a contact, never copied.
  *  · Cc: the loan officer, the processor, our closer, and any extra addresses the
  *    sender typed. Visible Cc, not Bcc — everyone on a closing should see who else
  *    is on it. (That visible Cc is also why this sends through `email.sendMail`
@@ -692,7 +693,16 @@ function bodySections(data, pkg, attach, address) {
       body: attach.skipped.map((d) => `${d.filename}${d.reason ? ` (${d.reason})` : ''}`),
     });
   }
-  const missing = (pkg.missing || []).filter((m) => !(m.key === 'assignment' && !data.isAssignment));
+  // Only promise what this deal will ACTUALLY have. An individual-borrower file
+  // (no vesting entity) was told "Not yet on file: Entity documents … we will send
+  // these as soon as we have them" — documents that will never exist, and an
+  // implication the deal is entity-vested, on an email whose own deal block prints
+  // no vesting entity at all. Same for an assignment group on a straight purchase.
+  const missing = (pkg.missing || []).filter((m) => {
+    if (m.key === 'assignment' && !data.isAssignment) return false;
+    if (m.key === 'llc' && !data.entityName) return false;
+    return true;
+  });
   if (missing.length) {
     sections.push({
       title: 'Not yet on file',
@@ -786,12 +796,30 @@ function buildClosingPrepEmail(data, pkg, { address = null, attach = null, note 
     ? `Thank you,\n${senderName}\nYS Capital Group`
     : (data.officer ? `Thank you,\n${data.officer.name}\nYS Capital Group` : 'Thank you,\nYS Capital Group');
 
-  const intro = `This file is ready for closing prep. Everything you need to start drafting is attached, and the details are below.`;
+  // The intro must not promise a complete package when the send is short of one —
+  // whatever was held back is listed further down, and a promise contradicted two
+  // paragraphs later is exactly the "sounding like fools" failure.
+  const anySkipped = !!(attach && (attach.skipped || []).length);
+  const intro = anySkipped
+    ? `This file is ready for closing prep. The details are below, and most of the paperwork is attached — anything we could not fit on this email is listed further down, and we will send it the moment you ask.`
+    : `This file is ready for closing prep. Everything you need to start drafting is attached, and the details are below.`;
   const lines = [];
   if (note && String(note).trim()) lines.push(String(note).trim());
-  lines.push(executed
-    ? `The term sheet attached is the FULLY EXECUTED version — signed by all parties. You can draft from these terms.`
-    : `The term sheet attached is the INITIAL term sheet. The terms are not final until it is executed by all parties — we will send the executed version on this same email chain the moment it is signed, so please treat what is attached as the working draft.`);
+  // NO TERM SHEET ATTACHED AT ALL is its own sentence. Both branches below say
+  // "the term sheet attached is …", which is a plain untruth when the only copy was
+  // skipped for size or could not be read — and the intro above has already said
+  // "everything you need to start drafting is attached". On the Graph provider,
+  // whose raw budget is ~1.9 MB, a 3 MB signed package attaches NOTHING and the
+  // email still described what it had sent. The order email is the one that matters
+  // most; `AUTO_EVENTS.executed_term_sheet` has carried this guard from the start.
+  const termSheetSent = attach
+    ? (attach.attached || []).some((d) => d.group === 'term_sheet')
+    : (pkg.counts && pkg.counts.term_sheet > 0);
+  lines.push(!termSheetSent
+    ? `The term sheet is NOT attached — it was too large to send by email. Tell us and we will get it straight over to you; please do not draft until you have it.`
+    : executed
+      ? `The term sheet attached is the FULLY EXECUTED version — signed by all parties. You can draft from these terms.`
+      : `The term sheet attached is the INITIAL term sheet. The terms are not final until it is executed by all parties — we will send the executed version on this same email chain the moment it is signed, so please treat what is attached as the working draft.`);
   lines.push(`Please confirm receipt and let us know what else you need.`);
   lines.push('', signOff);
 
@@ -931,7 +959,7 @@ function buildAutoEmail(eventKind, data, extra = {}) {
  * cancelled? The one thing that proves an attorney is expecting to hear from us.
  * Fails CLOSED — an unreadable answer must never become an email to outside counsel.
  */
-async function orderIsLive(applicationId) {
+async function attorneyEngaged(applicationId) {
   try {
     const r = await db.query(
       `SELECT
@@ -959,9 +987,10 @@ async function orderIsLive(applicationId) {
                     AND m.status = 'sent')                                  AS order_delivered`,
       [applicationId]);
     const row = r.rows[0] || {};
-    // A deleted file answers NULL here, which is correctly not true.
-    if (row.deal_live !== true) return false;
-    if (row.live_order) return true;
+    // A DELETED file answers NULL here — correctly not true, for either question.
+    if (row.deal_live === null || row.deal_live === undefined) return { engaged: false, dealLive: false };
+    const dealLive = row.deal_live === true;
+    if (row.live_order) return { engaged: true, dealLive };
     // THE ORDER ROW IS THE USUAL PROOF, NOT THE ONLY ONE.
     //
     // The `file_orders` upsert runs AFTER the send has already succeeded, so a DB
@@ -975,8 +1004,31 @@ async function orderIsLive(applicationId) {
     // An explicit stand-down (cancelled / not_ordered) still WINS over it, so
     // cancelling an order genuinely silences the chain — which is the case this
     // guard exists for.
-    return !!row.order_delivered && !row.stood_down;
-  } catch (_) { return false; }   // fails CLOSED — never email counsel on a bad read
+    return { engaged: !!row.order_delivered && !row.stood_down, dealLive };
+  } catch (_) { return { engaged: false, dealLive: false }; }   // fails CLOSED
+}
+
+/**
+ * Is an attorney ENGAGED on this file — i.e. may a HUMAN write to them?
+ *
+ * Deliberately independent of whether the deal is still live. Correspondence with
+ * closing counsel AFTER funding is the normal case (the recorded mortgage, the
+ * final title policy, a payoff letter), and telling a WITHDRAWN deal's counsel to
+ * stop work is something the desk must be able to do. Folding the deal-live test
+ * into this one killed the Follow-up button on every funded/declined/withdrawn
+ * file — with the message "Send the closing-prep request before following up",
+ * which was flatly untrue — while the Email Center reply door to the same action
+ * kept working, so two doors to one action disagreed.
+ */
+async function orderIsLive(applicationId) {
+  return (await attorneyEngaged(applicationId)).engaged;
+}
+
+/** May an AUTOMATIC update go out? Engaged AND the deal still live. Nothing here is
+    a fact counsel needs once the money has moved or the deal died. */
+async function mayAnnounce(applicationId) {
+  const r = await attorneyEngaged(applicationId);
+  return r.engaged && r.dealLive;
 }
 
 /**
@@ -1029,7 +1081,7 @@ async function announce({ applicationId, eventKind, dedupeKey, extra = {}, attac
   // emailed the outside law firm, under the closing-prep subject, about a deal they
   // had never heard of. The order row is the only real proof, so the test belongs
   // HERE, at the one chokepoint every automatic update goes through.
-  if (!(await orderIsLive(applicationId))) {
+  if (!(await mayAnnounce(applicationId))) {
     return { ok: true, skipped: true, reason: 'no_live_order' };
   }
 
@@ -1155,7 +1207,7 @@ module.exports = {
   attachBudgetRawBytes, predictSkips, encodedLen, attachName,
   getClosingPrepData, blockers, recipientsFor,
   buildClosingPrepEmail, buildFollowupEmail, buildAutoEmail,
-  announce, lastRecipients, markCarriedByOrder, orderIsLive,
+  announce, lastRecipients, markCarriedByOrder, orderIsLive, mayAnnounce, attorneyEngaged,
   // exported for tests
   money, pct, propertyLine, transactionType, dayText, dealMeta, chainCallout, subjectTagFor,
 };
