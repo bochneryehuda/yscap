@@ -58,6 +58,39 @@ ok(!/closing_stage\s*(===|!==)\s*'in_purchasing'/.test(screen),
 ok(/'Completed'/.test(screen),
   'the finished tab is labelled "Completed" — a table-funded loan was never in purchasing');
 
+// ── the UN-SIGN unwind is one shipped function, and the route calls it ───────
+// All three steps must happen together; the route used to inline them and the DB
+// test mirrored them, so the mirror stayed green while the route lost a step.
+const purchasing = require('../src/lib/purchasing');
+ok(typeof purchasing.unwindInvestorDelivery === 'function',
+  'unwindInvestorDelivery is the one shipped definition of the un-sign unwind');
+// Slice the sign-off handler out by its OWN boundaries. `indexOf` returning -1
+// on a moved end-marker would make slice() hand back the whole file and turn
+// every assertion below into a silent no-op — so both ends are asserted, and the
+// slice is sanity-checked for a plausible size.
+const soStart = staff.indexOf("router.post('/applications/:id/closing/sign-off'");
+ok(soStart > 0, 'the sign-off route still exists (the slice has a start)');
+const soEnd = staff.indexOf('\nrouter.', soStart + 10);
+ok(soEnd > soStart, 'the sign-off route has a following route (the slice has an end)');
+const signOffRaw = staff.slice(soStart, soEnd);
+// Match against a COMMENT-STRIPPED projection. The handler's own comments
+// describe the forbidden call in prose, so a plain text match passes today only
+// because the shipped wording happens to wrap mid-phrase — re-flowing that
+// paragraph would fail CI on a comment alone. Assert on code, not prose.
+const signOff = signOffRaw.replace(/\/\*[\s\S]*?\*\//g, ' ').replace(/^\s*\/\/.*$/gm, ' ');
+ok(signOffRaw.length > 400 && signOffRaw.length < 12000,
+  `the sliced handler is a plausible size (${signOffRaw.length} chars) — a bad slice would make every assertion below vacuous`);
+ok(/unwindInvestorDelivery\(/.test(signOff),
+  'the sign-off route calls it rather than inlining the steps');
+ok(!/UPDATE closing_workflow SET stage='fully_reconciled'/.test(signOff),
+  'the route no longer carries its own copy of the stage step-back');
+// The ClickUp resync that used to live here was REMOVED (see the route): it
+// silently no-opped for a non-admin closer and, when it did apply, un-parked an
+// on-hold file and emailed the borrower. Pin its ABSENCE so it cannot be
+// reinstated as a bolt-on without a deliberate change here.
+ok(!/applyInternalStatus\(/.test(signOff),
+  'the sign-off route does NOT drive the status door at all — ANY status, not just the one that shipped');
+
 // ── exactly ONE definition of the rule ───────────────────────────────────────
 // A JS mirror was deleted precisely because nothing pinned it to the SQL.
 ok(closing.closingRetired === undefined,

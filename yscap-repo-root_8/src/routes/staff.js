@@ -9293,22 +9293,11 @@ router.post('/applications/:id/closing/sign-off', async (req, res) => {
         const cw = (await client.query(
           `SELECT table_funded FROM closing_workflow WHERE application_id=$1`, [req.params.id])).rows[0];
         if (on && !(cw && cw.table_funded)) await purchasing.enterPurchasing(client, req.params.id, req.actor.id);
-        // Un-signing means the closing is NOT finished any more: the file comes
-        // back OFF the purchasing desk, so the closer's hand-off has to come back
-        // too or the file sits on neither queue.
-        if (!on) {
-          await purchasing.withdrawFromPurchasing(client, req.params.id);
-          await workflow.reopenClosingItem(client, req.params.id, req.actor.id);
-          // …and step the STAGE back off 'in_purchasing'. Un-signing means the
-          // closing is not finished, but `stage` is sticky, so without this the
-          // desk's retirement predicate (which keeps a legacy stage test) still
-          // read the file as done: off the closing desk AND off the purchasing
-          // desk, i.e. on neither — the very failure the two lines above exist to
-          // prevent, reached through the desk instead of the Workflow queue.
-          await client.query(
-            `UPDATE closing_workflow SET stage='fully_reconciled', updated_at=now()
-              WHERE application_id=$1 AND stage='in_purchasing'`, [req.params.id]);
-        }
+        // Un-signing means the closing is NOT finished any more. Everything that
+        // has to come back is ONE function (purchasing.unwindInvestorDelivery) —
+        // off the purchasing desk, the closer's hand-off reopened, and the sticky
+        // stage stepped back so the desk stops reading the file as done.
+        if (!on) await purchasing.unwindInvestorDelivery(client, req.params.id, req.actor.id);
       }
       // Reconciled + investor-delivered = the closer is done; clear the file off
       // their Workflow either way (table funded or purchasing).
@@ -9316,6 +9305,24 @@ router.post('/applications/:id/closing/sign-off', async (req, res) => {
       await client.query('COMMIT');
     } catch (e) { await client.query('ROLLBACK').catch(() => {}); client.release(); throw e; }
     client.release();
+    // NO ClickUp resync here — REMOVED after it shipped (#870), because it did
+    // not work and could do harm. It called applyInternalStatus('closed
+    // reconciled'), which lands in the `funded` bucket and therefore runs
+    // advancementBlockers; that refuses unless the actor is an admin forcing it.
+    // A CLOSER holds manage_closings WITHOUT being an admin, so on any file with
+    // one uncleared condition — the normal case — it silently did nothing and
+    // still answered {ok:true}. Worse, when it DID apply it drove the external
+    // status to `funded`, which on a file parked ON HOLD un-parked it and fired a
+    // borrower milestone email, and on an already-completed purchase rewound the
+    // card for a loan that really was purchased.
+    //
+    // KNOWN, ACCEPTED GAP: after an un-sign the ClickUp card can still read "in
+    // purchase review" while PILOT has the file back in closing. That is a
+    // display disagreement only — PILOT is authoritative for the desks and the
+    // Workflow queue, and the file is correctly on both. Closing it properly
+    // needs a card-status write that does not travel through the funded-bucket
+    // status door (which exists to gate real funding), plus the reverse push when
+    // delivery is re-signed. That is a design change, not a bolt-on.
     await audit(req, 'closing_signoff', 'application', req.params.id, { kind, on });
     res.json({ ok: true, closing: await workflow.getClosing(req.params.id) });
   } catch (e) { res.status(500).json({ error: 'server error' }); }
