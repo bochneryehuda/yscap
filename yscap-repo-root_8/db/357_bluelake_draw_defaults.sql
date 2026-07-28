@@ -36,7 +36,10 @@ SELECT 'Blue Lake', 41::bigint, NULL::text, 'trustpoint', 'traditional',
 UPDATE sitewire_inspection_rules
    SET inspection_method = CASE WHEN inspection_method = 'mobile'   THEN 'traditional' ELSE inspection_method END,
        draw_platform     = CASE WHEN draw_platform     = 'sitewire' THEN 'trustpoint'  ELSE draw_platform     END,
-       allow_physical    = true,
+       -- physical must be ALLOWED for the traditional method this sets; only forced on a row
+       -- still at the untouched default, never re-enabled against a deliberate admin choice
+       -- (that would contradict this file's own "a deliberate choice always wins" rule).
+       allow_physical    = CASE WHEN inspection_method = 'mobile' THEN true ELSE allow_physical END,
        fee_cents_physical = CASE WHEN fee_cents_physical IS NULL
                                    OR fee_cents_physical = 49900 THEN 25000 ELSE fee_cents_physical END,
        updated_at = now()
@@ -45,7 +48,6 @@ UPDATE sitewire_inspection_rules
         OR capital_partner_id = 41)
    AND (inspection_method = 'mobile'
         OR draw_platform = 'sitewire'
-        OR allow_physical = false
         OR fee_cents_physical IS NULL
         OR fee_cents_physical = 49900);
 

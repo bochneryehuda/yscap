@@ -199,9 +199,18 @@ async function linkToSitewireIntake(appId, tpDrawRow) {
 // own evidence bucket. Every hop is still re-checked by assertPublicHttps/isPrivateIp, and
 // the Api-Key is sent ONLY to the API host (a pre-signed S3 URL carries its own auth and
 // must never receive our key).
+// S3 bucket names are GLOBALLY unique but an unclaimed one is registrable by anyone, so a `tp-*`
+// prefix is not proof of TrustPoint — `tp-evil.s3.us-east-1.amazonaws.com` would have passed.
+// Pinned to the bucket TrustPoint actually serves from (verified live on the /report/ response:
+// tp-backend-evidence-prod-us-west-2), with the region/stage segment left open so a regional
+// failover or a sandbox bucket still downloads. `TRUSTPOINT_DOC_HOSTS` (comma-separated exact
+// hosts) is the escape hatch if they ever move, so this never needs loosening under pressure.
 function isTrustpointDocHost(host, apiHost) {
+  if (!host) return false;
   if (host === apiHost) return true;
-  return /^tp-[a-z0-9-]+\.s3[.-][a-z0-9-]*\.?amazonaws\.com$/.test(host);
+  const extra = String(process.env.TRUSTPOINT_DOC_HOSTS || '').split(',').map((h) => h.trim().toLowerCase()).filter(Boolean);
+  if (extra.includes(String(host).toLowerCase())) return true;
+  return /^tp-backend-evidence-[a-z0-9-]+\.s3[.-][a-z0-9-]*\.?amazonaws\.com$/.test(host);
 }
 
 async function fetchReportBytes(fileUrl) {
@@ -539,6 +548,9 @@ async function reactDraw(appId, row, prev, { baseline = false, addrText = null }
     // report, the inspection paperwork, and the inspector's photos — the moment we hear about
     // it. Their links are pre-signed and expire in about a day, so a late pull is a lost one.
     try { await require('./documents').archiveDrawEverything(tpDrawId); } catch (_) {}
+    // The conversation on the draw is the answer to "why did this move / why is it stuck?" —
+    // mirror it whenever the draw transitions so the desk has the reason, not just the state.
+    try { await require('./comments').syncDrawComments(appId, row.tp_project_id, tpDrawId); } catch (_) {}
     // §5E: the once-per-draw fee check runs at approval (the NET depends on the fee).
     try { await verifyPartnerFee(appId, row); } catch (_) {}
     // Phase 3 §5A/§6: POST-approval snapshot → per-line derivation → Sitewire write-back.

@@ -474,6 +474,16 @@ function render(p) {
     if (s.link && s.link.url) t.push((s.link.label || 'Learn more') + ': ' + s.link.url);
     t.push('');
   });
+  // The CALLOUT was rendered in HTML only, so a recipient reading text/plain never
+  // saw it. On the closing-prep email the callout IS the ask — it carries the
+  // unique address the attorney must keep on the chain they start — so its absence
+  // silently defeated the whole feature for any firm on a plaintext client. Emitted
+  // in the same position as the HTML (after the sections, before the attachments).
+  if (callout) {
+    if (callout.title) t.push(String(callout.title).toUpperCase());
+    if (callout.body) t.push(String(callout.body).replace(/<[^>]+>/g, ''));
+    t.push('');
+  }
   if (code) t.push('Code: ' + code, '');
   if (files.length) { t.push((files.length === 1 ? 'Attached: ' : 'Attachments: ') + files.join(', '), ''); }
   if (meta.length) { meta.forEach(function (m) { t.push(m.label + ': ' + m.value); }); t.push(''); }

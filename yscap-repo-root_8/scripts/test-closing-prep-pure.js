@@ -156,7 +156,15 @@ const DATA = {
 {
   const { to, cc } = cp.recipientsFor(DATA, { extraEmails: ['extra@x.test', 'LO@YS.TEST'] });
   assert(to.includes('teamag@privatelenderlaw.com'), 'the attorney GROUP inbox is a To recipient');
-  assert(to.includes('abe@law.test'), "an attorney contact on the file is a To recipient");
+  // THE BORROWER'S ATTORNEY IS NEVER A RECIPIENT. This module labels that contact
+  // "Borrower's attorney" and prints it in the body under "we have deliberately not
+  // copied them here" — putting it in To made that line false and, with the group
+  // inbox unset (a supported setting), made the borrower's own lawyer the SOLE
+  // recipient of the driver's licences, the entity file and the pricing.
+  assert(!to.includes('abe@law.test'),
+    "the BORROWER'S attorney is never a recipient of the lender-to-counsel package");
+  assert(to.length === 1 && to[0] === 'teamag@privatelenderlaw.com',
+    'our closing attorney is the only recipient');
   assert(cc.includes('lo@ys.test') && cc.includes('proc@ys.test') && cc.includes('closer@ys.test'),
     'the loan officer, the processor AND our closer are copied');
   assert(cc.includes('extra@x.test'), 'the sender can loop in more addresses');
@@ -232,9 +240,23 @@ const ATTACH = {
 {
   // The executed-term-sheet wording flips when the file already holds the signed one.
   const pkg = { ...PKG_FULL, termSheetExecuted: true };
-  const h = cp.buildClosingPrepEmail(DATA, pkg, { address: ADDRESS, attach: ATTACH, senderName: 'X' }).html;
-  assert(/FULLY EXECUTED/.test(h), 'an already-executed term sheet is described as executed');
+  // WHAT WAS ATTACHED decides the sentence, not what the file holds. Reading it off
+  // the package claimed "the term sheet attached is the FULLY EXECUTED version" even
+  // when that copy was skipped for size and the INITIAL sheet went instead — routine
+  // on Graph, whose raw budget is ~1.9 MB — so the attorney drafted from the draft
+  // believing it final.
+  const execAttach = { attached: [{ group: 'term_sheet', doc_kind: 'term_sheet_signed' }],
+    attachments: [{ filename: 'Term Sheet EXECUTED.pdf' }], skipped: [] };
+  const h = cp.buildClosingPrepEmail(DATA, pkg, { address: ADDRESS, attach: execAttach, senderName: 'X' }).html;
+  assert(/FULLY EXECUTED/.test(h), 'an EXECUTED copy that was actually attached is described as executed');
   assert(!/not final until it is executed/i.test(h), 'and is NOT described as a draft');
+  // The executed copy exists on the file but was skipped — the INITIAL one went.
+  const draftAttach = { attached: [{ group: 'term_sheet', doc_kind: 'term_sheet' }],
+    attachments: [{ filename: 'Term Sheet.pdf' }],
+    skipped: [{ filename: 'Term Sheet EXECUTED.pdf', reason: 'too large to email' }] };
+  const h2 = cp.buildClosingPrepEmail(DATA, pkg, { address: ADDRESS, attach: draftAttach, senderName: 'X' }).html;
+  assert(!/FULLY EXECUTED/.test(h2) && /not final until it is executed/i.test(h2),
+    'but when the executed copy could NOT be attached, the email says the attached one is the draft');
 }
 {
   // Nothing missing is ever silent.
