@@ -73,6 +73,12 @@ const uniq = (p) => p + Buffer.from(String(process.pid)).toString('hex') + Math.
     if (!on) {
       await purchasing.withdrawFromPurchasing(client, appId);
       await workflow.reopenClosingItem(client, appId, actorId);
+      // The route also steps the STAGE back off 'in_purchasing' — `stage` is
+      // sticky, so without it the desk still reads the file as finished and it
+      // sits on neither desk.
+      await client.query(
+        `UPDATE closing_workflow SET stage='fully_reconciled', updated_at=now()
+          WHERE application_id=$1 AND stage='in_purchasing'`, [appId]);
     }
     await workflow.maybeFinishClosing(client, appId, actorId);
   }
@@ -336,6 +342,22 @@ const uniq = (p) => p + Buffer.from(String(process.pid)).toString('hex') + Math.
     ok((await deskRetired(PU.appId)) === true, 'a purchasing-bound file leaves the desk too');
     const OPEN = await makeFile();
     ok((await deskRetired(OPEN.appId)) === false, 'a file still working through closing stays on the desk');
+
+    // ---- UN-SIGNING a file that already went to purchasing returns it ----
+    // `stage` is sticky, so the desk's legacy stage test still read such a file
+    // as finished after an un-sign: off the closing desk AND off the purchasing
+    // desk — on NEITHER, the exact hazard the reopen exists to prevent, reached
+    // through the desk instead of the Workflow queue.
+    const UN = await makeFile();
+    await signOffInvestorDelivery(UN.appId, UN.closerId, true);
+    await client.query(
+      `UPDATE closing_workflow SET stage='in_purchasing', purchasing_at=now() WHERE application_id=$1`, [UN.appId]);
+    ok((await deskRetired(UN.appId)) === true, 'a file handed to purchasing is off the closing desk');
+    await signOffInvestorDelivery(UN.appId, UN.closerId, false);
+    ok(!(await purchasing.getPurchasing(UN.appId, client)), 'un-signing pulls it off the purchasing desk');
+    ok((await deskRetired(UN.appId)) === false,
+      'and it comes BACK onto the closing desk — never on neither');
+    ok(await inQueue(UN.closerId, UN.appId), 'and back onto the closer\'s Workflow too');
 
     // ---- Idempotency ----
     const D = await makeFile();

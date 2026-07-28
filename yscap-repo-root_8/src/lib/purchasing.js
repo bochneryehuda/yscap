@@ -48,7 +48,14 @@ async function withdrawFromPurchasing(client, appId) {
 
 async function getPurchasing(appId, client) {
   const c = client || db;
-  const r = await c.query(`SELECT * FROM purchasing_workflow WHERE application_id=$1`, [appId]);
+  // Explicit column list, NOT `SELECT *`: db/350's purchase_advice_* columns are
+  // still on this table (db/351 left them in place rather than dropping them) but
+  // are dead. Shipping them alongside the live `advice` record would put two
+  // disagreeing values in front of the caller.
+  const r = await c.query(
+    `SELECT p.application_id, p.status, p.entered_at, p.entered_by,
+            p.completed_at, p.completed_by, p.updated_at, p.updated_by
+       FROM purchasing_workflow p WHERE p.application_id=$1`, [appId]);
   return r.rows[0] || null;
 }
 

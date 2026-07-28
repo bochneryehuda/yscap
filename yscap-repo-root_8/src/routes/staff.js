@@ -8890,6 +8890,15 @@ router.post('/applications/:id/closing/sign-off', async (req, res) => {
         if (!on) {
           await purchasing.withdrawFromPurchasing(client, req.params.id);
           await workflow.reopenClosingItem(client, req.params.id, req.actor.id);
+          // …and step the STAGE back off 'in_purchasing'. Un-signing means the
+          // closing is not finished, but `stage` is sticky, so without this the
+          // desk's retirement predicate (which keeps a legacy stage test) still
+          // read the file as done: off the closing desk AND off the purchasing
+          // desk, i.e. on neither — the very failure the two lines above exist to
+          // prevent, reached through the desk instead of the Workflow queue.
+          await client.query(
+            `UPDATE closing_workflow SET stage='fully_reconciled', updated_at=now()
+              WHERE application_id=$1 AND stage='in_purchasing'`, [req.params.id]);
         }
       }
       // Reconciled + investor-delivered = the closer is done; clear the file off
@@ -9197,6 +9206,12 @@ router.post('/applications/:id/purchasing/advice', purchasingGate, async (req, r
   }
   if (!Object.keys(patch).length) return res.status(400).json({ error: 'Nothing to update.' });
   try {
+    // Advice may be recorded on a file that is not (or no longer) on the desk —
+    // it is a fact about the loan. But the file must EXIST: without this the FK
+    // rejects an unknown id as a 500 instead of a plain 404.
+    const live = (await db.query(
+      `SELECT 1 FROM applications WHERE id=$1 AND deleted_at IS NULL`, [req.params.id])).rows[0];
+    if (!live) return res.status(404).json({ error: 'file not found' });
     const advice = await purchasing.setPurchaseAdvice(db, req.params.id, patch, req.actor.id);
     await audit(req, 'purchasing_advice', 'application', req.params.id, patch);
     res.json({ ok: true, advice });

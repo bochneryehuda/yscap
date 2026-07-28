@@ -32,6 +32,7 @@ BEGIN
   IF EXISTS (
     SELECT 1 FROM information_schema.columns
      WHERE table_name = 'purchasing_workflow' AND column_name = 'purchase_advice_date'
+       AND table_schema = current_schema()
   ) THEN
     INSERT INTO purchasing_advice (application_id, advice_date, document_id, updated_at, updated_by)
     SELECT p.application_id, p.purchase_advice_date, p.purchase_advice_document_id,

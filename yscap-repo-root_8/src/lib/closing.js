@@ -53,12 +53,6 @@ const CLOSING_RETIRED_SQL = (a = 'cw') =>
   `(${a}.stage = 'in_purchasing'
     OR (${a}.fully_reconciled_at IS NOT NULL AND ${a}.investor_delivery_signed_off_at IS NOT NULL))`;
 
-/** JS mirror of CLOSING_RETIRED_SQL, for a row off the closing queue. */
-function closingRetired(row) {
-  if (!row) return false;
-  return row.closing_stage === 'in_purchasing'
-    || !!(row.fully_reconciled_at && row.investor_delivery_signed_off_at);
-}
 
 // The closing document conditions the closer uploads into (seeded by db/315).
 const CLOSING_CONDITION_CODES = ['closing_hud_final', 'closing_pkg_signed', 'closing_tracking_label'];
@@ -432,7 +426,6 @@ module.exports = {
   WAREHOUSES,
   TABLE_FUNDING,
   CLOSING_RETIRED_SQL,
-  closingRetired,
   CLOSING_CONDITION_CODES,
   QUICKLINK_GROUPS,
   CREDIT_CONDITION_CODES,

@@ -161,7 +161,6 @@ function PurchasingDetail({ appId, status, onChanged }) {
   };
 
   if (!ws) return <div className="muted small" style={{ padding: 10 }}>Loading…</div>;
-  const p = ws.purchasing || {};
   // Advice lives in its OWN record and OUTLIVES a withdrawal from the desk.
   const adv = ws.advice || {};
 

@@ -18,6 +18,7 @@ import LlcPicker from '../components/LlcPicker.jsx';
 import LlcManager from '../components/LlcManager.jsx';
 import FileSections, { Section, InfoTip } from '../components/FileSections.jsx';
 import { captureScrollAnchor, restoreScrollAnchor } from '../lib/keep-scroll.js';
+import { onFilesDropped } from '../lib/drop-files.js';
 import EsignBorrowerCard from '../components/EsignBorrowerCard.jsx';
 import { MoneyInput, PhoneInput, ZipInput , EmailInput} from '../components/FormattedInputs.jsx';
 import DocPreview from '../components/DocPreview.jsx';
@@ -201,11 +202,7 @@ function ConditionRow({ done, issue, title, subtitle, status, action, children, 
   const dropProps = onDropFiles ? {
     onDragOver: (e) => { e.preventDefault(); if (!over) setOver(true); },
     onDragLeave: (e) => { if (e.currentTarget === e.target) setOver(false); },
-    onDrop: (e) => {
-      e.preventDefault(); setOver(false);
-      const f = Array.from(e.dataTransfer.files || []);
-      if (f.length) onDropFiles(f);
-    },
+    onDrop: (e) => { e.preventDefault(); setOver(false); onFilesDropped(e, onDropFiles); },
   } : {};
   return (
     <div className={`checkitem${onDropFiles ? ' cond-drop' : ''}${over ? ' drop-over' : ''}`}
