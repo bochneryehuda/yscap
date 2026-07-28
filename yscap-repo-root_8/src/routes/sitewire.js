@@ -2112,13 +2112,29 @@ async function borrowerFindingAttachments(appId, sitewireDrawId) {
   // preferring the administrator's number when the draws are tied, since both filename
   // families are built from the same number.
   const num = (await db.query(
-    `SELECT COALESCE(t.number, s.number) AS n
-       FROM sitewire_draws s
-       LEFT JOIN trustpoint_draws t ON t.sitewire_draw_id = s.sitewire_draw_id
-      WHERE s.sitewire_draw_id = $1::bigint AND s.application_id = $2`,
+    `SELECT number AS n FROM sitewire_draws WHERE sitewire_draw_id = $1::bigint AND application_id = $2`,
     [String(sitewireDrawId), appId])).rows[0];
-  if (!num || num.n == null) return out;
-  const drawNo = String(num.n);
+  const drawNo = num && num.n != null ? String(num.n) : null;
+
+  // The two filename families are keyed on DIFFERENT numbers and must be matched separately.
+  // OUR report is named from the SITEWIRE draw number; the administrator's paperwork from the
+  // TRUSTPOINT one, and the two systems number draws independently (they are tied by AMOUNT in
+  // mirror.linkToSitewireIntake, never by number). Resolving one number for both meant that the
+  // moment they disagreed our borrower-safe report silently dropped out and ONLY the
+  // administrator's staff-sourced PDFs were sent — the exact inverse of what this is for.
+  const tpNo = (await db.query(
+    `SELECT number FROM trustpoint_draws WHERE sitewire_draw_id = $1::bigint AND application_id = $2`,
+    [String(sitewireDrawId), appId])).rows[0];
+
+  // ONLY these two administrator documents may reach a borrower. The allow-list is by DOCUMENT
+  // TYPE, not by draw prefix: `/draw_requests/{id}/documents/` also returns a "Service Invoice"
+  // (the inspection vendor's bill) and anything else TrustPoint chooses to file there, all named
+  // with the same prefix and all stored `visibility='staff_only'`. Only the inspection report and
+  // the draw report were decoded and keyword-scanned for a note-buyer name before #876 shipped;
+  // sending an unreviewed vendor invoice puts the frozen never-name-a-note-buyer rule on an
+  // assumption about a document set TrustPoint controls. Widening this list requires checking the
+  // new type the same way.
+  const TP_BORROWER_SAFE = ['inspection-result-document', 'draw-report'];
 
   const rows = (await db.query(
     `SELECT d.id, d.filename, d.storage_ref, d.size_bytes
@@ -2126,11 +2142,15 @@ async function borrowerFindingAttachments(appId, sitewireDrawId) {
       WHERE d.application_id = $1 AND d.is_current AND d.doc_kind = 'draw_inspection_report'
         AND (
           -- our own BORROWER-safe report for this draw (a staff copy can never match)
-          (d.visibility = 'borrower' AND d.filename LIKE 'pilot-draw-' || $2 || '-report-borrower-%')
-          -- the administrator's paperwork filed against the same draw number
-          OR d.filename LIKE 'trustpoint-draw-' || $2 || '-%'
+          (d.visibility = 'borrower' AND $2::text IS NOT NULL
+             AND d.filename LIKE 'pilot-draw-' || $2 || '-report-borrower-%')
+          -- the administrator's reviewed paperwork, by draw number AND document type
+          OR ($3::text IS NOT NULL AND EXISTS (
+                SELECT 1 FROM unnest($4::text[]) t
+                 WHERE d.filename LIKE 'trustpoint-draw-' || $3 || '-' || t || '-%'))
         )
-      ORDER BY d.created_at DESC`, [appId, drawNo])).rows;
+      ORDER BY d.created_at DESC`,
+    [appId, drawNo, tpNo && tpNo.number != null ? String(tpNo.number) : null, TP_BORROWER_SAFE])).rows;
 
   const seen = new Set();
   let budget = FINDING_ATTACH_MAX_BYTES;
