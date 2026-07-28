@@ -203,7 +203,7 @@ async function importAppraisalTx(db, {
   // 7. fill the file from DEFINITE values ONLY, ONLY when currently empty (overwrite-shield).
   //    A differing human value is never overwritten — it is one of the findings above.
   // A fill RECORDS ITSELF on the appraisal row, in the same columns the As-Is/ARV desk uses
-  // (db/352, db/353). Before this, an undo had to GUESS that a file value equal to the appraisal's
+  // (db/353, db/354). Before this, an undo had to GUESS that a file value equal to the appraisal's
   // must have been filled by the import — and since the desk's whole job is now to make the file
   // agree with the appraisal, "equal" is the normal state, so that guess deleted values humans had
   // typed. Recording the fill gives undo exactly one thing to reverse: what PILOT actually wrote.

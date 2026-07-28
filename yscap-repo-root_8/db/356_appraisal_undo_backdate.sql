@@ -1,5 +1,5 @@
 -- ============================================================================
--- 355 — Back-date the undo record for appraisals imported BEFORE the As-Is /
+-- 356 — Back-date the undo record for appraisals imported BEFORE the As-Is /
 --       ARV write recorded itself (owner-directed 2026-07-28, previous AND
 --       future).
 --
@@ -10,7 +10,7 @@
 --    appraisal imported — the import only ever fills a blank, so the previous
 --    value must have been NULL."
 -- That rule stopped being true the day the appraisal desk started making the
--- file AGREE with the appraisal (db/352 + db/353): "equal" became the NORMAL
+-- file AGREE with the appraisal (db/353 + db/354): "equal" became the NORMAL
 -- state of a healthy file, so the rule deleted As-Is and ARV values officers
 -- had typed by hand — including on the very condition that asked them to type
 -- one. The undo now reverses only what PILOT RECORDED writing
@@ -88,5 +88,5 @@ BEGIN
   ON CONFLICT (key) DO UPDATE
     SET value = EXCLUDED.value, updated_at = now();
 
-  RAISE NOTICE '355: back-dated undo record on % As-Is and % ARV appraisal row(s)', n_asis, n_arv;
+  RAISE NOTICE '356: back-dated undo record on % As-Is and % ARV appraisal row(s)', n_asis, n_arv;
 END $$;

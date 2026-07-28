@@ -392,7 +392,7 @@ async function undoAppraisalImport(appId, { actor = null } = {}) {
     //    NULL only where the file still shows exactly what THIS appraisal imported
     //    (nothing else changed it since; the import only ever fills a blank, so the
     //    previous value was NULL).
-    //     …EXCEPT where the appraisal desk RECORDED what it wrote (db/352 + db/353). Since 2026-07-28 the
+    //     …EXCEPT where the appraisal desk RECORDED what it wrote (db/353 + db/354). Since 2026-07-28 the
     //     As-Is and the ARV are not blank-filled but REWRITTEN, so `as_is_applied_value` /
     //     `arv_applied_value` carry the truth: what PILOT put there, and what the file showed before.
     //     That record wins — blanking the field instead would throw away the value it replaced. Each
@@ -403,7 +403,7 @@ async function undoAppraisalImport(appId, { actor = null } = {}) {
     //     state, so that rule deleted As-Is and ARV values officers had typed by hand, including on
     //     the very condition that asked them to. Both the desk's writes and the import's blank-fill
     //     now record themselves in these columns, so there is exactly one thing to reverse.
-    //     Appraisals imported BEFORE that recording existed carry no record, so db/355 writes the
+    //     Appraisals imported BEFORE that recording existed carry no record, so db/356 writes the
     //     one they never got — ONCE, and only where the old rule would have fired (the file still
     //     shows exactly what the appraisal imported and the desk has never touched the row), which
     //     keeps the undo behaving identically on the back book.

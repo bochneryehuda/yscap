@@ -589,6 +589,15 @@ if (require.main === module) {
         require('./lib/address-review-close').closeEquivalentAddressReviewsOnce()
           .then((r) => r && r.closed && console.log('[boot] address reviews auto-closed:', JSON.stringify(r)))
           .catch((e) => console.error('[boot] address review close failed:', e.message));
+        // Owner-reported 2026-07-28: rows a reviewer had ALREADY dismissed came
+        // back, and one conflict could hold two open cards, because the guard was
+        // keyed on the Encompass LOAN the conflict arrived on rather than on the
+        // person + the address. The producer is fixed; this retires the rows that
+        // already piled up. Exactly one card per question always survives.
+        require('./lib/address-review-close').closeSupersededAddressReviewsOnce()
+          .then((r) => r && (r.closedDecided || r.closedDuplicate)
+            && console.log('[boot] superseded address reviews retired:', JSON.stringify(r)))
+          .catch((e) => console.error('[boot] superseded address review close failed:', e.message));
         require('./lib/address-heal').healProviderLongAddressesOnce()
           .then((r) => r && r.fixed && console.log('[boot] address format repair:', JSON.stringify(r)))
           .catch((e) => console.error('[boot] address format repair failed:', e.message));
