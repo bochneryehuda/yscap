@@ -103,6 +103,60 @@ async function healGeocodeCache(limit) {
 }
 
 /**
+ * Purge geocode-cache rows whose match was DOWNGRADED to the street.
+ *
+ * Owner-reported 2026-07-28: the subject address on YSCAP258134762 was rewritten
+ * to a different street on EVERY push, no matter how many times it was corrected.
+ * `address_canon_cache` is permanent BY DESIGN, so once a road-level answer
+ * ("2nd St, Piscataway, NJ 07063" for "1727 S 2nd St, …, 08854") was cached, every
+ * later correction re-derived the same wrong text instantly, with no network call.
+ * The cache row is what made a one-off bad match a permanent, self-reinforcing loop.
+ *
+ * A row is provably downgraded when the QUERY named a house number and the cached
+ * answer doesn't carry it (or disagrees on the ZIP) — `geocodeRewriteIsSafe`, the
+ * same judgement the live push now makes. The repair differs by provider:
+ *   osm:*  → blank `formatted`/`zip`, KEEP the coordinates. That is exactly what the
+ *            fixed parser caches for a road-level match, so the row becomes correct
+ *            rather than absent, and no re-query is needed.
+ *   google → DELETE. Its `place_id` is the ROAD's identity, which `samePlace` would
+ *            read as "these two houses are the same property"; the fixed
+ *            `parseGeocodeResult` now rejects a route-level match outright, so the
+ *            row re-resolves honestly on next use.
+ * Self-draining (a repaired row stops matching), bounded, and never throws.
+ */
+async function healDowngradedGeocodeCache(limit) {
+  let fixed = 0;
+  let rows;
+  try {
+    rows = (await db.query(
+      // Loose prefilter only — the query text must have started with a house
+      // number for a downgrade to be possible. JS is the authority below.
+      `SELECT input_key, formatted FROM address_canon_cache
+        WHERE formatted IS NOT NULL AND input_key ~ '^(osm:)?[0-9]'
+        LIMIT $1`, [limit])).rows;
+  } catch (_) { return 0; }
+  for (const r of rows) {
+    const isOsm = /^osm:/.test(r.input_key);
+    const query = r.input_key.replace(/^osm:/, '');
+    let downgraded = false;
+    try { downgraded = !ADDR.geocodeRewriteIsSafe(query, r.formatted); } catch (_) { downgraded = false; }
+    if (!downgraded) continue;
+    try {
+      // Re-check `formatted` inside the write so a concurrent refresh is never clobbered.
+      const w = isOsm
+        ? await db.query(
+          `UPDATE address_canon_cache SET formatted=NULL, zip=NULL
+            WHERE input_key=$1 AND formatted=$2`, [r.input_key, r.formatted])
+        : await db.query(
+          `DELETE FROM address_canon_cache WHERE input_key=$1 AND formatted=$2`,
+          [r.input_key, r.formatted]);
+      fixed += w.rowCount || 0;
+    } catch (_) { /* best effort, row by row */ }
+  }
+  return fixed;
+}
+
+/**
  * One bounded pass. Idempotent and self-draining: repaired rows stop matching
  * the prefilter, so a backlog larger than `limit` finishes over later boots.
  */
@@ -114,7 +168,12 @@ async function healProviderLongAddressesOnce({ limit = 2000 } = {}) {
   }
   const cache = await healGeocodeCache(limit);
   if (cache) { out.byColumn['address_canon_cache.formatted'] = cache; out.fixed += cache; }
+  const downgraded = await healDowngradedGeocodeCache(limit);
+  if (downgraded) { out.byColumn['address_canon_cache.downgraded'] = downgraded; out.fixed += downgraded; }
   return out;
 }
 
-module.exports = { healProviderLongAddressesOnce, healColumn, healGeocodeCache, TARGETS };
+module.exports = {
+  healProviderLongAddressesOnce, healColumn, healGeocodeCache,
+  healDowngradedGeocodeCache, TARGETS,
+};
