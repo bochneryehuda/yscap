@@ -64,14 +64,27 @@ ok(/'Completed'/.test(screen),
 const purchasing = require('../src/lib/purchasing');
 ok(typeof purchasing.unwindInvestorDelivery === 'function',
   'unwindInvestorDelivery is the one shipped definition of the un-sign unwind');
-const signOff = staff.slice(staff.indexOf("router.post('/applications/:id/closing/sign-off'"),
-                            staff.indexOf("// --- Closer checklists"));
+// Slice the sign-off handler out by its OWN boundaries. `indexOf` returning -1
+// on a moved end-marker would make slice() hand back the whole file and turn
+// every assertion below into a silent no-op — so both ends are asserted, and the
+// slice is sanity-checked for a plausible size.
+const soStart = staff.indexOf("router.post('/applications/:id/closing/sign-off'");
+ok(soStart > 0, 'the sign-off route still exists (the slice has a start)');
+const soEnd = staff.indexOf('\nrouter.', soStart + 10);
+ok(soEnd > soStart, 'the sign-off route has a following route (the slice has an end)');
+const signOff = staff.slice(soStart, soEnd);
+ok(signOff.length > 400 && signOff.length < 12000,
+  `the sliced handler is a plausible size (${signOff.length} chars) — a bad slice would make every assertion below vacuous`);
 ok(/unwindInvestorDelivery\(/.test(signOff),
   'the sign-off route calls it rather than inlining the steps');
 ok(!/UPDATE closing_workflow SET stage='fully_reconciled'/.test(signOff),
   'the route no longer carries its own copy of the stage step-back');
-ok(/stageSteppedBack/.test(staff),
-  'and it resyncs ClickUp when the stage really did step back');
+// The ClickUp resync that used to live here was REMOVED (see the route): it
+// silently no-opped for a non-admin closer and, when it did apply, un-parked an
+// on-hold file and emailed the borrower. Pin its ABSENCE so it cannot be
+// reinstated as a bolt-on without a deliberate change here.
+ok(!/applyInternalStatus\([^)]*closed reconciled/.test(signOff),
+  'the sign-off route does NOT drive the funded-bucket status door on an un-sign');
 
 // ── exactly ONE definition of the rule ───────────────────────────────────────
 // A JS mirror was deleted precisely because nothing pinned it to the SQL.

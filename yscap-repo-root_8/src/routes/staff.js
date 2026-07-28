@@ -8906,7 +8906,6 @@ router.post('/applications/:id/closing/sign-off', async (req, res) => {
   const [atCol, byCol] = COL[kind];
   try {
     const client = await db.getClient();
-    let unwound = null;
     try {
       await client.query('BEGIN');
       // Same lock order as the stage route: the closing hand-off first, THEN
@@ -8930,7 +8929,7 @@ router.post('/applications/:id/closing/sign-off', async (req, res) => {
         // has to come back is ONE function (purchasing.unwindInvestorDelivery) —
         // off the purchasing desk, the closer's hand-off reopened, and the sticky
         // stage stepped back so the desk stops reading the file as done.
-        if (!on) unwound = await purchasing.unwindInvestorDelivery(client, req.params.id, req.actor.id);
+        if (!on) await purchasing.unwindInvestorDelivery(client, req.params.id, req.actor.id);
       }
       // Reconciled + investor-delivered = the closer is done; clear the file off
       // their Workflow either way (table funded or purchasing).
@@ -8938,13 +8937,24 @@ router.post('/applications/:id/closing/sign-off', async (req, res) => {
       await client.query('COMMIT');
     } catch (e) { await client.query('ROLLBACK').catch(() => {}); client.release(); throw e; }
     client.release();
-    // The stage route tells ClickUp "in purchase review" when a file is sent to
-    // purchasing. Stepping the stage back must undo that, or the two systems
-    // actively disagree. Best-effort, outside the transaction, like every other
-    // ClickUp push — it must never fail or reverse the closer's action.
-    if (unwound && unwound.stageSteppedBack) {
-      try { await applyInternalStatus(req.params.id, 'closed reconciled', { actorId: req.actor.id, canDecide: true, force: isAdmin(req), allowForce: isAdmin(req) }); } catch (_) {}
-    }
+    // NO ClickUp resync here — REMOVED after it shipped (#870), because it did
+    // not work and could do harm. It called applyInternalStatus('closed
+    // reconciled'), which lands in the `funded` bucket and therefore runs
+    // advancementBlockers; that refuses unless the actor is an admin forcing it.
+    // A CLOSER holds manage_closings WITHOUT being an admin, so on any file with
+    // one uncleared condition — the normal case — it silently did nothing and
+    // still answered {ok:true}. Worse, when it DID apply it drove the external
+    // status to `funded`, which on a file parked ON HOLD un-parked it and fired a
+    // borrower milestone email, and on an already-completed purchase rewound the
+    // card for a loan that really was purchased.
+    //
+    // KNOWN, ACCEPTED GAP: after an un-sign the ClickUp card can still read "in
+    // purchase review" while PILOT has the file back in closing. That is a
+    // display disagreement only — PILOT is authoritative for the desks and the
+    // Workflow queue, and the file is correctly on both. Closing it properly
+    // needs a card-status write that does not travel through the funded-bucket
+    // status door (which exists to gate real funding), plus the reverse push when
+    // delivery is re-signed. That is a design change, not a bolt-on.
     await audit(req, 'closing_signoff', 'application', req.params.id, { kind, on });
     res.json({ ok: true, closing: await workflow.getClosing(req.params.id) });
   } catch (e) { res.status(500).json({ error: 'server error' }); }
