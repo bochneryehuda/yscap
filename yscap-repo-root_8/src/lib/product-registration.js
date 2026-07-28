@@ -6,6 +6,16 @@ const { termWritebackText } = require('./term-text');
 const { sqftForType } = require('./fields');
 
 function num(v) { const n = Number(v); return isFinite(n) ? n : 0; }
+// The EXPLICIT experience claim a register carried for one bucket, or null when
+// none was carried (so the SET clause falls back to GREATEST — never zeroing a
+// real claim from an absent value; #121). A real number — INCLUDING 0 — is a
+// deliberate claim and is written verbatim (this is what lets a studio-typed 0
+// finally stick). A negative/NaN is clamped to a non-negative integer.
+function claimExpVal(claimedExp, key) {
+  if (!claimedExp || claimedExp[key] == null) return null;
+  const n = Number(claimedExp[key]);
+  return Number.isFinite(n) ? Math.max(0, Math.round(n)) : null;
+}
 function money(v) { return '$' + Math.round(num(v)).toLocaleString('en-US'); }
 function pct(v, digits = 1) { return num(v) > 0 ? (num(v) * 100).toFixed(digits) + '%' : 'n/a'; }
 function productName(quote) {
@@ -180,7 +190,7 @@ function rehabTypeWriteback(current, inputs) {
   return derived;
 }
 
-async function persistProductRegistration(client, { appId, program, inputs, quote, registeredByStaffId, isManual, assetMonths, termOptions, needsApproval, overrideChanges }) {
+async function persistProductRegistration(client, { appId, program, inputs, quote, registeredByStaffId, isManual, assetMonths, termOptions, needsApproval, overrideChanges, claimedExp }) {
   const s = quote.sizing || {};
   const total = num(s.totalLoan);
   // Term-sheet options (owner-directed 2026-07-22) — DISPLAY / record only,
@@ -272,17 +282,26 @@ async function persistProductRegistration(client, { appId, program, inputs, quot
             rate_pct=$3,
             ltv=$4,
             -- requested_exp_* is the borrower's CLAIMED experience (what the
-            -- experience condition requires). Sizing now prices off the CLAIMED
-            -- count (loadFileForPricing.exp = requested_exp ?? verified, #85), so
-            -- for a non-admin inputs.exp* equals the stored claim and this GREATEST
-            -- is a no-op; for an admin who RAISED experience in the studio it pushes
-            -- the claim up. Never LOWER the claim on register — GREATEST preserves
-            -- what the borrower entered (a stripped/zeroed override could otherwise
-            -- revert the condition to "No experience required", #121). The claim is
-            -- otherwise owned by the application form / details edit.
-            requested_exp_flips=GREATEST(COALESCE(requested_exp_flips,0), $5),
-            requested_exp_holds=GREATEST(COALESCE(requested_exp_holds,0), $6),
-            requested_exp_ground=GREATEST(COALESCE(requested_exp_ground,0), $7),
+            -- experience condition requires). Sizing prices off the CLAIMED count
+            -- (loadFileForPricing.exp = requested_exp ?? verified, #85).
+            --
+            -- Owner-directed 2026-07-28 ("no matter how many times I remove the 5
+            -- and put 0 it comes back"): a staffer who EXPLICITLY types an
+            -- experience count in the Term Sheet Studio may set it to ANY value —
+            -- including LOWERING it — and it must stick. The studio always sends
+            -- the field's current value (it prefills it), so claimedExp carries a
+            -- per-field number ONLY when the register explicitly provided one
+            -- ($20/$21/$22); that value wins verbatim (COALESCE picks it even when
+            -- it is 0). When it is NULL — no experience was carried on this
+            -- register path — the old, conservative GREATEST($5/$6/$7) is kept, so
+            -- a path that never touches experience can never zero a real claim and
+            -- revert the condition to "No experience required" (#121). Clearing the
+            -- studio field to BLANK sends nothing → NULL → GREATEST (a blank is not
+            -- a deliberate zero). The claim is otherwise owned by the application
+            -- form / details edit, which has always been able to lower it directly.
+            requested_exp_flips=COALESCE($20::int, GREATEST(COALESCE(requested_exp_flips,0), $5)),
+            requested_exp_holds=COALESCE($21::int, GREATEST(COALESCE(requested_exp_holds,0), $6)),
+            requested_exp_ground=COALESCE($22::int, GREATEST(COALESCE(requested_exp_ground,0), $7)),
             rehab_budget=$8,
             term=$9,
             requested_ir_months=$10,
@@ -322,6 +341,12 @@ async function persistProductRegistration(client, { appId, program, inputs, quot
       num(inputs.irAmount) || null,                   // $16 — exact interest-reserve amount (null = months path)
       rehabType || null,                              // $17 — registered rehab scope (unchanged unless it moved)
       sqf.sqftPre, sqf.sqftPost,                      // $18/$19 — kept in step with $17
+      // $20/$21/$22 — the EXPLICIT experience claim from the studio (a real
+      // number, incl. 0, wins verbatim so it can be lowered); NULL keeps the
+      // conservative GREATEST above. See the SET clause note.
+      claimExpVal(claimedExp, 'flips'),
+      claimExpVal(claimedExp, 'holds'),
+      claimExpVal(claimedExp, 'ground'),
     ]);
   // Term-sheet options onto the file (owner-directed 2026-07-22) — only when the
   // caller supplied them, so a path that doesn't touch them leaves the file's

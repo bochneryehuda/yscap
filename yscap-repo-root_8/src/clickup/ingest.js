@@ -1836,6 +1836,24 @@ async function linkOrCreateApplication(task, read, borrowerId, llcId, ctx = {}) 
     } catch (_) { /* best-effort — never breaks the inbound pull */ }
   }
 
+  // PORTAL-EDIT GUARD (owner-directed 2026-07-28: "anything you change that
+  // bounces back must tell you or go to manual review — never do it by itself").
+  // The everyday case the two guards above miss: an un-frozen file with a
+  // mappable value that a HUMAN just edited in the portal, which the COALESCE
+  // pull silently reverts if the reconcile runs before the outbound push lands.
+  // Using ClickUp's last-seen snapshot (still the PREVIOUS values here — the
+  // snapshot is rewritten after this returns), it keeps the file's value and
+  // either re-pushes it (the edit hadn't reached ClickUp yet — silent) or parks a
+  // review (both sides changed — a real conflict). Runs LAST so anything an
+  // earlier guard already stripped is skipped. No-op when ClickUp matches the
+  // file, or when there is no snapshot to prove a portal-side edit.
+  if (targetId && task) {
+    try {
+      await require('../lib/inbound-portal-edit-guard')
+        .applyInboundPortalEditGuard({ appId: targetId, cols, taskId: task.id, borrowerId });
+    } catch (_) { /* best-effort — never breaks the inbound pull */ }
+  }
+
   const vals = Object.values(cols);
   const set = Object.keys(cols).map((k, i) => `${k}=COALESCE($${i + 2}, ${k})`).join(', ');
   // Set when THIS pull moves the expected closing date, so the closing chain can be

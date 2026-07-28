@@ -1843,6 +1843,17 @@ function overrideChangesFor(raw) {
   try { defaults = pricingSettings.current(); } catch (_) { defaults = null; }
   return pricingOverridesEngaged(raw, defaults);
 }
+// The EXPLICIT experience claim the studio carried on a register (owner-directed
+// 2026-07-28 — "it keeps coming back to 5"). A real number in an override —
+// INCLUDING 0 — is a deliberate claim the staffer typed and must stick (raise OR
+// lower); a MISSING or blank field is not a zero and returns null so persist
+// keeps its conservative never-lower GREATEST. Mirrors the studio's `compact()`,
+// which drops '' / null but keeps a typed 0.
+function explicitClaimedExp(overrides) {
+  const o = overrides || {};
+  const pick = (k) => (o[k] != null && o[k] !== '' ? o[k] : null);
+  return { flips: pick('expFlips'), holds: pick('expHolds'), ground: pick('expGround') };
+}
 
 // Fresh quote for both programs (no persistence). Body: { program?, overrides? }.
 router.post('/applications/:id/pricing/quote', async (req, res) => {
@@ -2084,6 +2095,14 @@ router.post('/applications/:id/pricing/register', async (req, res) => {
         appId, program, inputs, quote, registeredByStaffId: req.actor.id,
         isManual, assetMonths, termOptions: resolvedTermOptions,
         needsApproval: needsEscalation, overrideChanges,
+        // Owner-directed 2026-07-28: a staffer may LOWER the experience count
+        // from the studio and have it stick. The studio always sends the field's
+        // current value, so an explicit number here (incl. 0) is a deliberate
+        // claim that overrides the never-lower GREATEST; a BLANK field sends
+        // nothing → null → GREATEST is kept (a blank is not a zero). Staff only —
+        // the borrower register (borrower.js) never passes this, so a borrower's
+        // locked experience keeps its old GREATEST behavior exactly.
+        claimedExp: explicitClaimedExp(overrides),
       });
       regId = reg.id;
       economicsChanged = reg.economicsChanged;
