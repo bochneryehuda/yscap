@@ -31,6 +31,10 @@ client.getDraw = async (pk, dpk) => stub.drawDetail[`${pk}:${dpk}`] || null;
 client.getDrawReport = async () => null;   // report archive path exercised as no_report
 client.listMilestones = async (pk) => stub.milestones[pk] || [];
 client.listServiceOrders = async () => stub.serviceOrders;
+// The draw-comment mirror now runs on EVERY pass of a live draw (it used to fire only at
+// approval, which meant a draw stuck in review — the one whose messages matter — was never
+// synced). Stub the generic call so this suite exercises the mirror, not the conversation.
+client.call = async () => ({ results: [] });
 
 async function seedFile() {
   const email = 'tm' + crypto.randomBytes(5).toString('hex') + '@example.com';
@@ -163,6 +167,42 @@ const notesFor = async (app, kind) => (await db.query(
     ok('baseline sent NO borrower email', (await notesFor(app, 'borrower')).length === 0);
     ok('baseline audited as baseline', (await db.query(
       `SELECT count(*)::int c FROM trustpoint_pull_field_change WHERE tp_draw_id=$1 AND field='baseline'`, [drawId])).rows[0].c === 1);
+    await cleanup(app, bor, lo);
+  }
+
+  // ============ 5. THE DEPLOY ITSELF MUST NOT RE-ANNOUNCE FINISHED INSPECTIONS ============
+  // db/363. The `status_synced` watermark on trustpoint_service_orders existed since db/297 but
+  // was read and never written, so every row in a live database carries NULL. Without the
+  // baseline, the very deploy that fixes the duplicate inspection notices would win the claim on
+  // the entire back book and announce every historic inspection at once. The one-shot design is
+  // what makes it safe: a completion that lands moments before a restart must still announce.
+  {
+    const { app, bor, lo } = await seedFile();
+    const soDone = `tp-so5a-${tag}`, soLive = `tp-so5b-${tag}`;
+    await db.query(
+      `INSERT INTO trustpoint_service_orders (tp_service_order_id, application_id, tp_project_id, service_type, status, status_synced)
+       VALUES ($1,$3,'tp-proj5','INSPECTION','COMPLETED',NULL), ($2,$3,'tp-proj5','INSPECTION','ORDERED',NULL)`,
+      [soDone, soLive, app]);
+    // Replay the CUTOVER. db/363 is one-shot, so on any database that has already booted once
+    // the marker is set and the statement is correctly a no-op — clearing it is what lets this
+    // test reproduce the single deploy that matters. (Dropping this line makes the test pass on
+    // a virgin database and fail on every run after, which is how the one-shot proved itself.)
+    await db.query(`DELETE FROM sync_runtime_state WHERE key='trustpoint_service_order_baseline'`);
+
+    await require('../src/migrate-boot').ensureSchema();   // the deploy
+
+    const wm = async (id) => (await db.query(
+      `SELECT status_synced FROM trustpoint_service_orders WHERE tp_service_order_id=$1`, [id])).rows[0].status_synced;
+    ok('a finished inspection is baselined by the deploy', await wm(soDone) === 'COMPLETED');
+    ok('an inspection still running is untouched', await wm(soLive) === null);
+
+    // …and the backlog is stamped ONCE. A version that re-ran on every boot would swallow a real
+    // announcement: an inspection completing seconds before a restart is COMPLETED but unclaimed.
+    await db.query(`UPDATE trustpoint_service_orders SET status='COMPLETED' WHERE tp_service_order_id=$1`, [soLive]);
+    await require('../src/migrate-boot').ensureSchema();   // a restart before the poll claims it
+    ok('a fresh completion survives a restart and can still announce', await wm(soLive) === null);
+
+    await db.query(`DELETE FROM trustpoint_service_orders WHERE tp_service_order_id = ANY($1)`, [[soDone, soLive]]);
     await cleanup(app, bor, lo);
   }
 

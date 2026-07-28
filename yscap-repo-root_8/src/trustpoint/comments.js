@@ -112,6 +112,10 @@ async function upsertComment(appId, tpProjectId, tpDrawId, c) {
 /** Mirror the whole conversation on one draw. Safe to call repeatedly. */
 async function syncDrawComments(appId, tpProjectId, tpDrawId) {
   if (!enabled()) return { skipped: 'off' };
+  // No API key configured — there is nothing to call, so don't call it. Since this now runs on
+  // EVERY mirror pass of every live draw (rather than once at approval), the un-guarded version
+  // logged a warning per draw per poll on any environment without a key.
+  if (!lazy.client.available()) return { skipped: 'no_key' };
   try {
     const res = await lazy.client.call(
       `${PREFIX()}/projects/${tpProjectId}/draw_requests/${tpDrawId}/comments/`, { query: { limit: 100 } });
