@@ -68,6 +68,33 @@ Two things worth flagging from the live document list on draw #2:
   The endpoint *accepts* a `milestone` filter, but TrustPoint's actual usage on these files
   is a draw-level thread, so per-line inspector commentary is not there either.
 
+## 3b. I downloaded both PDFs and looked inside them
+
+Not a guess — the actual bytes, for draw #2 on 105-107 N 10th St:
+
+| File | Source | Size |
+|---|---|---|
+| Draw Report | `/draw_requests/{pk}/report/` → `document_type: "Draw Report"` | 1.49 MB |
+| Inspection Result | `/draw_requests/{pk}/documents/` (the later of the two) | 6.70 MB |
+
+`/report/` returns **only a link to that PDF** — no structured body, no line array. Same for the
+individual service-order detail (`/service_orders/{pk}/`): identical fields to the list, nothing
+per-line.
+
+Inside the PDFs, the text is drawn as **subsetted embedded fonts, one glyph at a time**:
+
+```
+BT /F5 12 Tf  1 0 0 -1 861.46875 51 Tm
+<0103> Tj   5.1499329 0 Td <0102> Tj   8.1499329 0 Td <0107> Tj  …
+```
+
+Each character is a glyph id positioned individually. There is no readable text layer. The files
+*do* carry `ToUnicode` CMaps (4 in the draw report, 3 in the inspection report), so glyph ids
+**can** be mapped back to characters — extraction is technically possible. But recovering *which
+amount belongs to which line item* means rebuilding table columns from per-character x/y
+coordinates. That is layout guesswork, and it would be guesswork sitting directly upstream of a
+borrower's wire amount.
+
 ## 4. Recommended path (in order of value per unit of risk)
 
 1. **Ask TrustPoint to expose per-milestone draw amounts.** This is the only route to
