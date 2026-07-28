@@ -242,8 +242,9 @@ noop.sendMail = async (opts) => { sends.push(opts); return { ok: true, id: `stub
     assert(Number(em.natt) === 9, 'the Email Center records what was attached');
 
     const msg = (await db.query(
-      `SELECT event_kind, dedupe_key, message_id, status FROM closing_thread_messages WHERE thread_id=$1`, [t.id])).rows;
-    assert(msg.length === 1 && msg[0].event_kind === 'order' && msg[0].dedupe_key === 'order' && msg[0].status === 'sent',
+      `SELECT event_kind, dedupe_key, message_id, status FROM closing_thread_messages
+        WHERE thread_id=$1 AND event_kind='order'`, [t.id])).rows;
+    assert(msg.length === 1 && msg[0].dedupe_key === 'order' && msg[0].status === 'sent',
       'the chain records the order message with its dedupe key');
 
     const fo = (await db.query(`SELECT status, send_count FROM file_orders WHERE application_id=$1 AND order_type='attorney'`, [appId])).rows[0];
@@ -288,13 +289,19 @@ noop.sendMail = async (opts) => { sends.push(opts); return { ok: true, id: `stub
   }
   {
     sends.length = 0;
-    await closingPrep.announce({ applicationId: appId, eventKind: 'closing_date', dedupeKey: 'closing_date:2026-08-14', extra: { date: '2026-08-14' } });
-    await closingPrep.announce({ applicationId: appId, eventKind: 'closing_date', dedupeKey: 'closing_date:2026-08-14', extra: { date: '2026-08-14' } });
-    assert(await chainMsgCount('closing_date') === 1, 'the SAME closing date is announced once, however many doors fire');
+    // The file's date is 2026-08-14 and the ORDER email already stated it, so
+    // announcing that date must send NOTHING — no matter how many doors fire it.
+    const a = await closingPrep.announce({ applicationId: appId, eventKind: 'closing_date', dedupeKey: 'closing_date:2026-08-14', extra: { date: '2026-08-14' } });
+    const b = await closingPrep.announce({ applicationId: appId, eventKind: 'closing_date', dedupeKey: 'closing_date:2026-08-14', extra: { date: '2026-08-14' } });
+    assert(a.ok && a.skipped && b.ok && b.skipped,
+      'the date the ORDER already stated is never re-announced (however many doors fire it)');
+    assert(sends.length === 0, 'and no email goes out for it');
+    // A genuinely NEW date is real news.
     await closingPrep.announce({ applicationId: appId, eventKind: 'closing_date', dedupeKey: 'closing_date:2026-08-21', extra: { date: '2026-08-21' } });
-    assert(await chainMsgCount('closing_date') === 2, 'a genuinely NEW closing date is announced again');
-    assert(sends.length === 2, 'two emails for two distinct dates');
-    assert(/August 21, 2026/.test(sends[1].html), 'the second names the new date');
+    await closingPrep.announce({ applicationId: appId, eventKind: 'closing_date', dedupeKey: 'closing_date:2026-08-21', extra: { date: '2026-08-21' } });
+    assert(await chainMsgCount('closing_date') === 1, 'a genuinely NEW closing date is announced — exactly once');
+    assert(sends.length === 1, 'one email for the one new date');
+    assert(/August 21, 2026/.test(sends[0].html), 'and it names the new date');
   }
   {
     sends.length = 0;
@@ -302,6 +309,55 @@ noop.sendMail = async (opts) => { sends.push(opts); return { ok: true, id: `stub
     await closingPrep.announce({ applicationId: appId, eventKind: 'clear_to_close', dedupeKey: 'clear_to_close' });
     assert(await chainMsgCount('clear_to_close') === 1, 'clear-to-close is announced exactly once per file');
     assert(sends.length === 1 && /CLEAR TO CLOSE/.test(sends[0].html), 'and says so plainly');
+  }
+
+  /* ── 5b. AUDITED: a transient send failure must NOT kill the event forever ── */
+  {
+    // The dedupe key is the "already sent" proof. Before the fix a failed row kept
+    // it, so one two-second provider blip meant the closing attorney was NEVER told
+    // the term sheet was executed — by any door, and the backstop could not help.
+    const realNoopSend = noop.sendMail;
+    noop.sendMail = async () => { throw new Error('provider down'); };
+    const failed = await closingPrep.announce({
+      applicationId: appId, eventKind: 'executed_term_sheet', dedupeKey: 'executed_term_sheet:env-blip',
+    });
+    noop.sendMail = realNoopSend;
+    assert(!failed.ok && failed.reason === 'send_failed', 'a provider failure is reported, not swallowed');
+    const row = (await db.query(
+      `SELECT status, error, dedupe_key FROM closing_thread_messages
+        WHERE thread_id=(SELECT id FROM closing_threads WHERE application_id=$1)
+          AND event_kind='executed_term_sheet' AND status='error'`, [appId])).rows[0];
+    assert(!!row && row.error, 'the failed attempt is KEPT for the audit trail, with its reason');
+    assert(row.dedupe_key === null,
+      'but its claim on the event is RELEASED, so the update is not lost forever');
+    sends.length = 0;
+    const retried = await closingPrep.announce({
+      applicationId: appId, eventKind: 'executed_term_sheet', dedupeKey: 'executed_term_sheet:env-blip',
+    });
+    assert(retried.ok && !retried.skipped && sends.length === 1,
+      'the very next attempt actually sends it');
+    const third = await closingPrep.announce({
+      applicationId: appId, eventKind: 'executed_term_sheet', dedupeKey: 'executed_term_sheet:env-blip',
+    });
+    assert(third.ok && third.skipped, 'and once it HAS sent, it still cannot send twice');
+  }
+
+  /* ── 5c. AUDITED: the order claims what it already told them ─────────────── */
+  {
+    // The order email prints the expected closing date in its deal block, so the
+    // backstop must not follow it minutes later with "the closing date is NOW …".
+    const carried = (await db.query(
+      `SELECT event_kind, dedupe_key, status FROM closing_thread_messages
+        WHERE thread_id=(SELECT id FROM closing_threads WHERE application_id=$1)
+          AND status='carried' ORDER BY event_kind`, [appId])).rows;
+    assert(carried.some((r) => r.event_kind === 'closing_date' && r.dedupe_key === 'closing_date:2026-08-14'),
+      'placing the order claims the closing date it already stated');
+    sends.length = 0;
+    const swept = await require('../src/lib/notification-digests').closingChainCatchupOnce();
+    const phantom = sends.filter((x) => /expected closing date is now/i.test(String(x.html || '')));
+    assert(phantom.length === 0,
+      'so the backstop sends NO phantom "there is a new closing date" for a date the order carried');
+    assert(typeof swept === 'number', 'the backstop sweep completes and reports');
   }
 
   /* ─── 6. a file with NO closing chain is silent (nobody was ever engaged) ── */
@@ -442,6 +498,36 @@ noop.sendMail = async (opts) => { sends.push(opts); return { ok: true, id: `stub
     assert(sends[0].to.includes('teamag@privatelenderlaw.com'), 'to the attorney');
     assert(!sends[0].to.includes(`${uniq}-bo@example.test`) && !(sends[0].cc || []).includes(`${uniq}-bo@example.test`),
       'and NEVER to the borrower — a lender-to-counsel chain stays lender-to-counsel');
+  }
+  {
+    // AUDITED: with no chain this branch used to FALL THROUGH to the default fan-out,
+    // which includes the borrower — the exact outcome it exists to prevent.
+    const bare = (await db.query(
+      `INSERT INTO applications (borrower_id, loan_officer_id, ys_loan_number, property_address, status)
+       VALUES ($1,$2,$3,$4,'processing') RETURNING id`,
+      [borrower, officer, `YSNOCHAIN2${String(process.pid).slice(-4)}`, JSON.stringify({ oneLine: '9 Nowhere St' })])).rows[0].id;
+    await db.query(`INSERT INTO application_assignees (application_id, staff_id, role) VALUES ($1,$2,'loan_officer')
+                    ON CONFLICT DO NOTHING`, [bare, officer]);
+    sends.length = 0;
+    const r = await call('POST', `/api/staff/applications/${bare}/emails/reply`,
+      { body: 'hello', scope: 'closing' });
+    assert(r.status === 400 && r.body.code === 'not_ordered',
+      'a closing-scoped reply on a file with NO chain is REFUSED, not redirected');
+    assert(sends.length === 0, 'and the borrower is not emailed');
+    await db.query(`DELETE FROM applications WHERE id=$1`, [bare]);
+  }
+  {
+    // AUDITED: the exclusion keyed only on the DIRECTORY row's type, which a vendor
+    // edit or a merge can change. The per-file link records what it really is.
+    const ins = (await db.query(
+      `SELECT sc.id FROM application_service_contacts l JOIN service_contacts sc ON sc.id=l.service_contact_id
+        WHERE l.application_id=$1 AND l.contact_type='insurance_agent' LIMIT 1`, [appId])).rows[0];
+    await db.query(`UPDATE service_contacts SET contact_type='title_company' WHERE id=$1`, [ins.id]);
+    const data = await closingPrep.getClosingPrepData(appId);
+    const emails = data.contacts.map((c) => c.email);
+    assert(!emails.includes(`${uniq}-ins@shield.test`),
+      'retyping an insurance contact in the vendor directory does NOT sneak it into the closing email');
+    await db.query(`UPDATE service_contacts SET contact_type='insurance_agent' WHERE id=$1`, [ins.id]);
   }
   {
     const c = await call('POST', `/api/staff/applications/${appId}/closing-prep/cancel`, {});

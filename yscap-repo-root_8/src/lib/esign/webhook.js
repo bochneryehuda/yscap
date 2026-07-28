@@ -516,4 +516,8 @@ async function drainInbox(opts = {}) {
 module.exports = {
   drainInbox, processInboxRow, reconcileEnvelope, handleCompletion, applyRecipients,
   storeSignedDocument, recipientStatus, noteCompletionFailure,
+  // exported so the closing-chain backstop sweep can re-drive an executed-term-sheet
+  // announcement that failed to send — reusing this exact logic rather than a second
+  // copy that could pick the wrong signed document.
+  announceExecutedTermSheet,
 };

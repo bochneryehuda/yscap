@@ -217,10 +217,21 @@ async function claimMessage({ threadId, applicationId, eventKind, dedupeKey = nu
 async function settleMessage(msgId, { messageId, inReplyTo, to = [], cc = [], attachments = [], status = 'sent', error = null } = {}) {
   if (!msgId) return;
   try {
+    // A FAILED send RELEASES THE DEDUPE KEY while keeping the row.
+    //
+    // This is load-bearing, not tidiness. The key is the "already sent" proof, and
+    // `email.sendMail` rethrows only when the provider REJECTED the message — so a
+    // failed row is a message nobody received. Leaving its key in place made one
+    // two-second provider blip permanent: every later attempt at that event, from
+    // any door and from the backstop sweep, answered `already_sent` and the closing
+    // attorney was never told the term sheet was executed. The row stays for the
+    // audit trail (status='error' + the reason); only its claim on the event is
+    // freed, so the next attempt can take it.
     await db.query(
       `UPDATE closing_thread_messages
           SET message_id=$2, in_reply_to=$3, to_emails=$4::jsonb, cc_emails=$5::jsonb,
-              attachments=$6::jsonb, status=$7, error=$8, sent_at=now()
+              attachments=$6::jsonb, status=$7, error=$8, sent_at=now(),
+              dedupe_key = CASE WHEN $7 = 'error' THEN NULL ELSE dedupe_key END
         WHERE id=$1`,
       [msgId, messageId || null, inReplyTo || null,
        JSON.stringify((to || []).slice(0, 100)), JSON.stringify((cc || []).slice(0, 100)),

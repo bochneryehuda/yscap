@@ -51,6 +51,15 @@ function resolveSecret(name) {
 
 // Choose the email provider from env. An explicit EMAIL_PROVIDER wins; otherwise
 // infer from whichever credential set is present so a single env var is enough.
+/** A megabyte env value as bytes, with a real fallback. A blank/typo'd/non-finite
+    or non-positive value falls back to the DEFAULT rather than to NaN (which would
+    disable every size comparison that reads it) or to a near-zero floor. */
+function mbBytes(v, defaultMb) {
+  const n = Number(String(v == null ? '' : v).trim());
+  const mb = Number.isFinite(n) && n > 0 ? n : defaultMb;
+  return Math.max(1, Math.round(mb * 1024 * 1024));
+}
+
 function resolveEmailProvider() {
   const explicit = (process.env.EMAIL_PROVIDER || '').trim().toLowerCase();
   if (explicit && explicit !== 'auto') return explicit;   // honor an explicit choice
@@ -160,8 +169,12 @@ module.exports = {
   // upload session we don't implement), so the Graph budget is deliberately tiny.
   // Nothing is ever silently dropped — whatever doesn't fit is NAMED in the email
   // and reported back to the sender.
-  closingAttachBudgetBytes: Math.max(1, Number(process.env.CLOSING_ATTACH_BUDGET_MB || 20)) * 1024 * 1024,
-  closingAttachBudgetGraphBytes: Math.max(1, Number(process.env.CLOSING_ATTACH_BUDGET_GRAPH_MB || 2.5) * 1024 * 1024),
+  // Both parsed through one helper: a typo'd value used to become NaN, and
+  // `total + len > NaN` is always false — which silently turned the budget OFF
+  // instead of falling back to the default. The megabyte multiply is inside the
+  // clamp for both, so a 0 can never mean "one byte" (every document skipped).
+  closingAttachBudgetBytes: mbBytes(process.env.CLOSING_ATTACH_BUDGET_MB, 20),
+  closingAttachBudgetGraphBytes: mbBytes(process.env.CLOSING_ATTACH_BUDGET_GRAPH_MB, 2.5),
   // #75 external chat guests: the domain a unique per-participant reply-to is
   // built on (e.g. "reply.yscapgroup.com" → chat+<key>@reply.yscapgroup.com).
   // When UNSET, external guests still receive chat emails but with no reply-to,

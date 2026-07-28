@@ -91,15 +91,23 @@ const GROUP_KEYS = GROUPS.map((g) => g.key);
 // building. `selectTprDocuments` already excludes it five ways; this is a sixth,
 // local check, because THIS package goes to an outside law firm.
 //
-// Two tests, not one, for the same reason the TPR selector uses two: a doc_kind is
-// snake_case (`heter_iska_signed`), and `_` is a WORD character — so a word-boundary
-// regex finds no boundary inside it and would let the signed Iska straight through.
-// Kinds are matched exactly; the word-boundary regex is for the human-written
-// filename and condition label, where real separators exist.
+// Two tests, not one: a doc_kind is snake_case (`heter_iska_signed`) and is matched
+// EXACTLY, because `_` is a word character so no boundary regex finds a word inside
+// it. The name test then covers the human-written filename and condition label.
+//
+// THE NAME TEST IS NOT `\b(iska|heter)\b` — that was an audited leak. A word
+// boundary needs a non-word character on both sides, so `HeterIska_Signed.pdf` and
+// `HETERISKA.PDF` matched NOTHING and would have been attached. Two branches instead:
+//   · `heter…iska` adjacent in any casing, with or without a separator — nothing
+//     else in a loan file spells that, so it needs no boundary at all;
+//   · a STANDALONE `iska` / `heter`, where the boundary IS kept deliberately: a
+//     street called "Siska Ave" or a surname like "Iskander" must not silently
+//     disappear from a package.
 const FROZEN_KINDS = new Set(['heter_iska', 'heter_iska_signed', 'esign_certificate']);
+const FROZEN_NAME_RE = /heter[\s_.\-]*iska|(?:^|[^a-z0-9])(?:iska|heter)(?:[^a-z0-9]|$)/i;
 function isFrozenOut(d) {
   if (FROZEN_KINDS.has(d.doc_kind)) return true;
-  return /\b(iska|heter)\b/i.test(`${d.filename || ''} ${d.item_label || ''}`);
+  return FROZEN_NAME_RE.test(`${d.filename || ''} ${d.item_label || ''}`);
 }
 
 /** Which group a document belongs to, or null when it is not part of this package.
@@ -347,7 +355,14 @@ async function getClosingPrepData(applicationId) {
        JOIN service_contacts sc ON sc.id = l.service_contact_id
       WHERE l.application_id = $1
         AND sc.contact_type = ANY($2::text[])
+        -- The exclusion tests BOTH the directory row's type AND the per-file link's
+        -- own copy of it. Retyping a vendor row (the vendor edit + the merge route
+        -- both can) would otherwise walk an insurance contact straight past a filter
+        -- that only ever read the mutable side, while the link still recorded what it
+        -- really is. "The insurance contact is never included" is a hard rule, so it
+        -- takes the stricter of the two.
         AND NOT (sc.contact_type = ANY($3::text[]))
+        AND NOT (COALESCE(l.contact_type,'') = ANY($3::text[]))
       ORDER BY sc.last_used_at DESC NULLS LAST, sc.updated_at DESC NULLS LAST`,
     [applicationId, SHARE_CONTACT_TYPES, NEVER_SHARE_CONTACT_TYPES]);
 
@@ -509,7 +524,11 @@ function dealMeta(data) {
     add('Underlying contract price', money(data.underlyingPrice));
     add('Assignment fee', money(data.assignmentFee));
     add('Total purchase price', money(data.purchasePrice));
-    if (data.effectivePrice != null && data.purchasePrice != null
+    // Requires a real underlying price: an assignment flagged before the underlying
+    // contract price is filled in computes an effective price of 0, and printing
+    // "Effective purchase price: $0" to outside counsel is worse than printing
+    // nothing at all.
+    if (data.effectivePrice > 0 && data.underlyingPrice > 0 && data.purchasePrice != null
         && Math.round(data.effectivePrice) !== Math.round(data.purchasePrice)) {
       add('Effective purchase price', `${money(data.effectivePrice)} (the financeable assignment fee is capped at 15% of the original contract price)`);
     }
@@ -790,6 +809,59 @@ async function announce({ applicationId, eventKind, dedupeKey, extra = {}, attac
   });
 }
 
+/**
+ * Claim, as ALREADY COMMUNICATED, everything the closing-prep request itself just
+ * told the attorney. Called once after a successful order send.
+ *
+ * Without this the backstop sweep re-announces facts the order email already
+ * stated — and it would do so on essentially EVERY order, because a file at
+ * closing-prep stage almost always already has an expected closing date. The
+ * attorney would get "the expected closing date is NOW August 14" minutes after an
+ * email that said the closing date is August 14.
+ *
+ * The rows are recorded with status `'carried'` rather than `'sent'`: they hold the
+ * event's dedupe key (so nothing re-announces it) while staying honest that no
+ * separate email went out — `lastRecipients` looks only at `'sent'`, so they never
+ * become a recipient source either. Best-effort; a failure here can only cause one
+ * redundant email later, never a missing one.
+ */
+async function markCarriedByOrder(applicationId, thread, pkg) {
+  if (!thread) return;
+  const carry = async (eventKind, dedupeKey) => {
+    try {
+      const claim = await closingThread.claimMessage({
+        threadId: thread.id, applicationId, eventKind, dedupeKey,
+        subject: 'Included in the closing prep request',
+      });
+      if (claim) await closingThread.settleMessage(claim.id, { status: 'carried' });
+    } catch (_) { /* best-effort */ }
+  };
+  try {
+    const r = await db.query(
+      `SELECT to_char(COALESCE(a.expected_closing, a.est_closing_date),'YYYY-MM-DD') AS day,
+              a.status
+         FROM applications a WHERE a.id=$1`, [applicationId]);
+    const row = r.rows[0] || {};
+    // The order email prints the expected closing date in its deal block.
+    if (row.day) await carry('closing_date', `closing_date:${row.day}`);
+    // A file already clear to close needs no separate "we are clear to close".
+    if (row.status === 'clear_to_close') await carry('clear_to_close', 'clear_to_close');
+  } catch (_) { /* best-effort */ }
+  // If the package already contained the EXECUTED term sheet, the "here is the
+  // executed version" follow-up is redundant — key it exactly the way the e-sign
+  // hook would, so neither that hook nor the backstop re-sends it.
+  if (pkg && pkg.termSheetExecuted) {
+    try {
+      const e = await db.query(
+        `SELECT id FROM esign_envelopes
+          WHERE application_id=$1 AND purpose='term_sheet_package' AND status='completed'
+            AND COALESCE(is_test,false) = false
+          ORDER BY completed_at DESC NULLS LAST, id ASC LIMIT 1`, [applicationId]);
+      if (e.rows[0]) await carry('executed_term_sheet', `executed_term_sheet:${e.rows[0].id}`);
+    } catch (_) { /* best-effort */ }
+  }
+}
+
 /** The To/Cc the chain was last sent to. */
 async function lastRecipients(threadId) {
   try {
@@ -809,7 +881,7 @@ module.exports = {
   gatherPackage, groupOf, isFrozenOut, insuranceSlots, buildAttachments, attachBudget,
   getClosingPrepData, blockers, recipientsFor,
   buildClosingPrepEmail, buildFollowupEmail, buildAutoEmail,
-  announce, lastRecipients,
+  announce, lastRecipients, markCarriedByOrder,
   // exported for tests
   money, pct, propertyLine, transactionType, dayText, dealMeta, chainCallout, subjectTagFor,
 };

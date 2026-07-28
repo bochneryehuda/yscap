@@ -3954,7 +3954,13 @@ router.post('/applications/:id/emails/reply', async (req, res) => {
     // the request body — and the send is threaded so it lands inside the conversation.
     if (String((req.body && req.body.scope) || '') === 'closing') {
       const thread = await closingThread.threadFor(appId);
-      if (thread) {
+      // FAIL CLOSED. Falling through to the default fan-out here would send a
+      // closing reply to the BORROWER — the exact outcome this branch exists to
+      // prevent — so a scope the file cannot honour is refused, never redirected.
+      if (!thread) {
+        return res.status(400).json({ error: 'Send the closing-prep request first — there is no closing chain to reply on yet.', code: 'not_ordered' });
+      }
+      {
         const last = await closingPrep.lastRecipients(thread.id);
         if (!last.to.length) return res.status(400).json({ error: 'Send the closing-prep request first — there is no closing chain to reply on yet.', code: 'not_ordered' });
         const data = await closingPrep.getClosingPrepData(appId);
@@ -4284,9 +4290,14 @@ function cleanEmailList(v, max = 10) {
   const out = [];
   const seen = new Set();
   for (const e of raw) {
-    const s = String(e || '').trim().toLowerCase();
-    // Deliberately simple: a real address, one @, no whitespace. A typo is refused
-    // at the door rather than silently dropped from the send.
+    // Unwrap a pasted mail-client contact ("Bob Smith <bob@x.com>") to the bare
+    // address. Left as-is, the angle brackets ride into the Cc and Microsoft Graph
+    // rejects the WHOLE send — one pasted contact and nothing reaches the attorney.
+    const s = String(e || '').replace(/^[^<]*<([^>]+)>\s*$/, '$1').trim().toLowerCase();
+    // A real address: one @, no whitespace, and none of the punctuation a mail
+    // server treats as structure. A typo is refused at the door rather than
+    // silently dropped from the send or breaking it.
+    if (/["'<>()[\],:;\\]/.test(s)) continue;
     if (!/^[^@\s]+@[^@\s.]+\.[^@\s]+$/.test(s)) continue;
     if (seen.has(s)) continue;
     seen.add(s); out.push(s);
@@ -4449,6 +4460,12 @@ router.post('/applications/:id/closing-prep/place', async (req, res) => {
             AND ci.status NOT IN ('satisfied','waived')`,
         [appId, CLOSING_PREP_CONDITIONS]);
     } catch (_) { /* best-effort — the email is what matters */ }
+
+    // Everything the request itself just TOLD the attorney is claimed as already
+    // communicated, so the backstop sweep can never re-announce it as news (a file at
+    // closing-prep stage almost always already has a closing date, and the order email
+    // prints it in its deal block).
+    try { await closingPrep.markCarriedByOrder(appId, sent.thread, pkg); } catch (_) { /* best-effort */ }
 
     await audit(req, 'closing_prep_ordered', 'application', appId, {
       to: to.length, cc: cc.length, extra: extraEmails.length,

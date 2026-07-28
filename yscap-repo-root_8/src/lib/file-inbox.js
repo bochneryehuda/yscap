@@ -522,9 +522,11 @@ async function processReceivedEvent(event) {
 
   // An order reply (title+/insurance+) is tagged so the order-scoped Email Center
   // shows the vendor's reply directly (belt on top of subject threading).
+  // orderRefFromRecipient matches only title|insurance, so those are the only two
+  // cases here — the attorney order has no vendor reply-to of its own; its inbound
+  // side is the CLOSING CHAIN below.
   const orderMsgType = orderRefs.length
-    ? (orderRefs[0].orderType === 'title' ? 'title_message'
-      : orderRefs[0].orderType === 'attorney' ? 'attorney_message' : 'insurance_message')
+    ? (orderRefs[0].orderType === 'title' ? 'title_message' : 'insurance_message')
     : undefined;
   // A closing-chain message is tagged and — crucially — PINNED to the chain's STORED
   // thread key. The attorney chose their own subject and may change it mid-chain, so
@@ -565,10 +567,17 @@ async function processReceivedEvent(event) {
   // want them (an order's returned documents, the closing chain's documents, and the
   // forward itself) and each full download is two HTTP hops per file — a closing
   // package would have been fetched three times over.
+  // An EMPTY result is deliberately NOT memoized: retrieval can fail transiently
+  // (a signed download URL, two HTTP hops per file), and caching that failure would
+  // make one blip empty-handed for all three consumers at once — where previously
+  // each retrieved independently. A successful retrieval is cached; a failed one is
+  // simply retried by the next consumer.
   let _attsOnce = null;
-  const attachmentsOnce = () => {
-    if (!_attsOnce) _attsOnce = retrieveAttachmentsSafe(emailId, full.attachments).catch(() => []);
-    return _attsOnce;
+  const attachmentsOnce = async () => {
+    if (_attsOnce) return _attsOnce;
+    const got = await retrieveAttachmentsSafe(emailId, full.attachments).catch(() => []);
+    if (got.length) _attsOnce = got;
+    return got;
   };
 
   // ---- returned documents (#orders): save the vendor's attachments back onto

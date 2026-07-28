@@ -2107,6 +2107,18 @@ router.post('/contacts', async (req, res) => {
        VALUES ($1,$2,$3) ON CONFLICT (application_id,service_contact_id)
        DO UPDATE SET contact_type=EXCLUDED.contact_type`,
       [b.applicationId, contactId, type]);
+    // …and this form REPLACES, it does not accumulate. That is what the old
+    // (application_id, contact_type) key enforced structurally, and this is the ONE
+    // form where it is the right behaviour: it asks "who is your title company?", so
+    // answering it twice means the borrower CHANGED their answer, not that the file
+    // now has two. Without this the old contact stays linked, and every later reader
+    // has two candidates — including the closing-prep email, which would hand the
+    // attorney both title companies. The staff route deliberately keeps appending;
+    // there, adding a second contact of a type is a real thing to want.
+    await db.query(
+      `DELETE FROM application_service_contacts
+        WHERE application_id=$1 AND contact_type=$2 AND service_contact_id <> $3`,
+      [b.applicationId, type, contactId]);
   }
   // Submitting the contact form satisfies its checklist task (moves to review).
   if (b.checklistItemId) {

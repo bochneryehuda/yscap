@@ -98,6 +98,23 @@ assert(cp.isFrozenOut({ doc_kind: 'esign_certificate' }), 'a DocuSign completion
 assert(G({ template_code: 'rtl_cond_signedts', filename: 'heter iska.pdf' }) === null,
   'the freeze beats a group match — an Iska attached to any condition still cannot leave');
 
+// AUDITED LEAK (2026-07-28): `\b(iska|heter)\b` needs a non-word character on BOTH
+// sides, so a SMASHED filename matched nothing and a hard-frozen document would have
+// been attached. Every one of these reached the attorney before the fix.
+for (const f of ['HeterIska_Signed.pdf', 'HETERISKA.PDF', 'HeterIska.pdf',
+                 'heter_iska.pdf', 'heter-iska.pdf', 'heter.iska.pdf',
+                 'Heter Iska signed.pdf', 'heter-iska.pdf', 'Iska.pdf', 'ISKA - 12 Main.pdf']) {
+  assert(cp.isFrozenOut({ filename: f }), `the freeze catches "${f}"`);
+  assert(G({ template_code: 'rtl_p1_contract', filename: f }) === null,
+    `and "${f}" cannot ride in on the contract condition`);
+}
+// …while the boundary is deliberately KEPT for a standalone word, so a real address
+// or surname is never silently dropped from a package.
+for (const f of ['Siska Ave contract.pdf', 'Iskander Purchase Contract.pdf',
+                 'Whiskey Road appraisal.pdf', 'Heather Lane deed.pdf', 'Term Sheet.pdf']) {
+  assert(!cp.isFrozenOut({ filename: f }), `the freeze does NOT over-block "${f}"`);
+}
+
 /* ── 4. the insurance binder/invoice are matched by SUBSTRING, never equality ── */
 {
   // Two writers produce two spellings: the condition UI stores the slot LABEL
@@ -239,6 +256,15 @@ const ATTACH = {
   assert(!blank.some((r) => r.value === '' || r.value == null || r.value === '—'),
     'a value the file does not have is OMITTED, never printed as a dash');
   assert(blank.some((r) => r.label === 'Borrower'), 'a single borrower reads "Borrower", not "Borrowers (1)"');
+  // An assignment flagged before the underlying price is filled in computes an
+  // effective price of 0 — printing "Effective purchase price: $0" to outside
+  // counsel is worse than printing nothing.
+  const zero = cp.dealMeta({ ...DATA, underlyingPrice: 0, assignmentFee: 0, effectivePrice: 0 });
+  assert(!zero.some((r) => r.label === 'Effective purchase price'),
+    'a $0 effective price is omitted, not printed to the attorney');
+  const real = cp.dealMeta(DATA);
+  assert(real.some((r) => r.label === 'Effective purchase price'),
+    'a real effective price is still stated');
 }
 
 /* ───────────────── 7. the automatic updates ride the SAME chain ────────────── */

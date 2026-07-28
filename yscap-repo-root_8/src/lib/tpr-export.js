@@ -352,8 +352,17 @@ const TPR_DOC_SELECT = `
      -- DocuSign completion certificates are excluded too: one belongs to the
      -- Iska envelope and would reveal it. See docs/DOCUSIGN…-SPEC Addendum A.9.
      AND COALESCE(d.doc_kind,'') NOT IN ('heter_iska','heter_iska_signed','esign_certificate')
-     AND COALESCE(ci.label,'') !~* '\\y(iska|heter)\\y'
-     AND COALESCE(d.filename,'') !~* '\\y(iska|heter)\\y'
+     -- The name test is NOT a plain word-boundary match (audited leak, 2026-07-28):
+     -- a word boundary needs a non-word character on BOTH sides, so a smashed
+     -- filename -- HeterIska_Signed.pdf, HETERISKA.PDF -- matched nothing and a
+     -- HARD-FROZEN document shipped in the investor package. Two branches now:
+     -- heter...iska adjacent in any casing with or without a separator (nothing else
+     -- in a loan file spells that, so it needs no boundary), and a STANDALONE
+     -- iska/heter where the boundary IS kept on purpose so a "Siska Ave" or an
+     -- "Iskander" is never silently dropped. Keep in step with
+     -- closing-prep.FROZEN_NAME_RE.
+     AND COALESCE(ci.label,'') !~* 'heter[[:space:]_.-]*iska|(^|[^a-z0-9])(iska|heter)([^a-z0-9]|$)'
+     AND COALESCE(d.filename,'') !~* 'heter[[:space:]_.-]*iska|(^|[^a-z0-9])(iska|heter)([^a-z0-9]|$)'
      -- #83: an EXPIRED Certificate of Good Standing behaves like empty
      -- everywhere, so it must not ship as if it were a live document. Guard the
      -- template_id IS NOT NULL first: a loose/profile/entity doc has NULL

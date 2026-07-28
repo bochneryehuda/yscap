@@ -1526,6 +1526,30 @@ async function closingChainCatchupOnce() {
         if (res && res.ok && !res.skipped) sent += 1;
       }
     }
+    // THE EXECUTED TERM SHEET needs its own recovery, because it is the one update
+    // whose fact does not live on the applications row — it lives on the envelope,
+    // so the loop above cannot see it. Without this, a provider blip at the exact
+    // moment a term sheet finished signing left the attorney drafting from the
+    // initial terms forever. Re-driven through the e-sign module's OWN announcer so
+    // it attaches the document THAT envelope produced, never a second guess at it.
+    const stale = (await db.query(
+      `SELECT e.*
+         FROM esign_envelopes e
+         JOIN closing_threads ct ON ct.application_id = e.application_id
+        WHERE e.purpose = 'term_sheet_package' AND e.status = 'completed'
+          AND COALESCE(e.is_test,false) = false
+          AND NOT EXISTS (
+            SELECT 1 FROM closing_thread_messages m
+             WHERE m.thread_id = ct.id AND m.event_kind = 'executed_term_sheet'
+               AND m.status IN ('sent','carried'))
+        ORDER BY e.completed_at ASC NULLS FIRST, e.id ASC
+        LIMIT 50`)).rows;
+    for (const env of stale) {
+      try {
+        await require('./esign/webhook').announceExecutedTermSheet(db, env);
+        sent += 1;
+      } catch (_) { /* next tick tries again */ }
+    }
   } catch (_) { return 0; }
   if (sent) console.log(`[digests] closing-chain catch-up sent ${sent} update(s)`);
   return sent;

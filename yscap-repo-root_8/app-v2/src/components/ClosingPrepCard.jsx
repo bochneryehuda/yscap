@@ -240,7 +240,12 @@ function ChainHistory({ appId, chain, onDownload }) {
               {msgs.map((m, i) => (
                 <div key={i} className="small" style={{ color: MUTED }}>
                   {EVENT_LABEL[m.event_kind] || m.event_kind} · {when(m.sent_at)}
-                  {m.status !== 'sent' ? ` · ${m.status}` : ''}
+                  {/* 'carried' is not a send — the closing-prep request already told
+                      them this, so it is recorded to stop a duplicate going out
+                      later. Saying "sent" here would be untrue. */}
+                  {m.status === 'carried' ? ' · included in the request above'
+                    : m.status === 'error' ? ' · did not send — will be retried'
+                      : m.status !== 'sent' ? ` · ${m.status}` : ''}
                   {Array.isArray(m.attachments) && m.attachments.length ? ` · ${m.attachments.length} attachment${m.attachments.length === 1 ? '' : 's'}` : ''}
                 </div>
               ))}
