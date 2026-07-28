@@ -4418,7 +4418,7 @@ router.get('/applications/:id/closing-prep', async (req, res) => {
         lastActivityAt: thread.last_activity_at,
         messages: chainMsgs,
         documents: chainDocs,
-        // INBOUND MAIL THAT THE SENDING DOMAIN DID NOT VOUCH FOR (db/364).
+        // INBOUND MAIL THAT THE SENDING DOMAIN DID NOT VOUCH FOR (db/366).
         //
         // The webhook proves the delivery came from Resend; nothing proved the
         // SENDER. This address is designed to be broadcast — title, the settlement

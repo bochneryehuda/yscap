@@ -594,7 +594,7 @@ async function processReceivedEvent(event) {
   // both files — but the message itself was pinned to closingRefs[0], so the SECOND
   // file's team watched its closing counter tick up with nothing to read. A phantom
   // bump is worse than silence: it says something arrived and offers no way to see
-  // what. db/363 widened the uniqueness to (message, file) to make this expressible.
+  // what. db/365 widened the uniqueness to (message, file) to make this expressible.
   //
   // Each target carries its OWN pinned thread key, or the second file's copy would be
   // filed under the first file's chain. Non-closing mail is a single target and is
@@ -635,7 +635,7 @@ async function processReceivedEvent(event) {
     // THE SAME TARGETS the row(s) were created under. Using applicationIds[0] here
     // while the row above was filed under a CLOSING ref addressed a different file:
     // harmless only because the old index made it an update-by-inbound_id no-op.
-    // Now that uniqueness includes the file (db/363) it would insert a stray row, so
+    // Now that uniqueness includes the file (db/365) it would insert a stray row, so
     // the refinement has to follow the same list — which is what it always meant to do.
     try { for (const t of captureTargets) require('./email-log').captureInbound({ inboundId: rowId, applicationId: t.applicationId, threadKey: t.threadKey, msgType: closingMsgType || orderMsgType, from: fromEmail, subject, status: 'auto_reply', senderAuth: auth }); } catch (_) {}
     return { status: 'auto_reply' };

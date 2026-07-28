@@ -256,7 +256,7 @@ async function captureInbound(p = {}) {
     // only record of who else is on it.
     const to = toRecipients(p.toEmails);
     const cc = toRecipients(p.ccEmails);
-    // Did the sending domain vouch for this? {spf,dkim,dmarc,verdict} — db/364.
+    // Did the sending domain vouch for this? {spf,dkim,dmarc,verdict} — db/366.
     // NULL (no headers, or a row predating the column) reads as 'unknown' and must
     // never be rendered as a pass. COALESCEd on update so a refinement pass that
     // does not re-derive it cannot erase what the first capture recorded.
@@ -267,7 +267,7 @@ async function captureInbound(p = {}) {
           from_email, to_emails, cc_emails, subject, preview, body_html, body_text,
           recipient_kind, provider, provider_message_id, status, meta, attachments, reconstructed, sender_auth, occurred_at)
        VALUES ($1,$2,'inbound',$3,$14,$15,$4,$16,$17,$5,$6,$7,$8,'external',$9,$10,$11,$12,$18,$13,$19, now())
-       -- Keyed on (message, FILE) — db/363. An inbound message that carries two of
+       -- Keyed on (message, FILE) — db/365. An inbound message that carries two of
        -- our closing addresses belongs to two files and needs a row on each; keyed on
        -- inbound_id alone the second file silently got nothing. The COALESCE matches
        -- the index expression exactly, or Postgres cannot infer it.

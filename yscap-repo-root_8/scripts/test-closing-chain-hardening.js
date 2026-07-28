@@ -204,7 +204,7 @@ noop.sendMail = async (opts) => { sends.push(opts); return { ok: true, id: `stub
   /* ══════════════ E. one message, two closings, two records ═══════════════ */
   {
     const inboundId = 950000 + (process.pid % 1000);
-    // The Email Center row is keyed on (message, FILE) — db/363. Before that a
+    // The Email Center row is keyed on (message, FILE) — db/365. Before that a
     // reply-all carrying two closing addresses recorded on the first file only, and
     // the second file's team watched its counter tick up with nothing to read.
     for (const appId of [appA, appB]) {

@@ -3426,6 +3426,56 @@ details[open]>.appr-sec-sum .appr-sec-chev{transform:rotate(180deg)}
   text-transform:uppercase;color:#4B585C}
 .cond-filter .input{width:100%}
 
+/* ── The condition action bar — one next step, everything else behind More ──
+   Owner-directed 2026-07-27: after a document is uploaded the row carried Accept,
+   Done and Sign off all at one weight, plus five more controls. Nothing was
+   removed; what was missing was a hierarchy. Text is explicit dark on white —
+   never a --ink* token, those are LIGHT in this palette. */
+.cond-act{display:flex;flex-direction:column;gap:4px;width:100%;min-width:0}
+.cond-act-row{display:flex;gap:8px;flex-wrap:wrap;align-items:center;min-width:0}
+.cond-act-hint{font-size:12px;color:#4B585C;line-height:1.4}
+
+/* "More" is a native <details> so it needs no click-outside handling, no focus
+   trap and no portal, and is keyboard-accessible for free. */
+.cond-more{position:relative;display:inline-block}
+.cond-more > summary{list-style:none;cursor:pointer;user-select:none}
+.cond-more > summary::-webkit-details-marker{display:none}
+.cond-more > summary::marker{content:''}
+.cond-more[open] > summary{border-color:var(--teal)}
+.cond-more-menu{position:absolute;z-index:40;top:calc(100% + 4px);left:0;
+  min-width:230px;max-width:min(320px,calc(100vw - 32px));
+  display:flex;flex-direction:column;gap:6px;align-items:stretch;
+  padding:10px;background:#FFFFFF;border:1px solid var(--line);
+  border-radius:var(--radius);box-shadow:0 8px 24px rgba(20,27,34,.14)}
+.cond-more-menu .btn{justify-content:flex-start;text-align:left;width:100%}
+.cond-more-sep{border-top:1px solid var(--line);margin:2px 0}
+.cond-more-field{display:flex;flex-direction:column;gap:3px}
+.cond-more-field > span{font-size:11px;font-weight:700;letter-spacing:.08em;
+  text-transform:uppercase;color:#4B585C}
+.cond-more-field .input{width:100%}
+/* A menu that opens near the right edge of a narrow card would otherwise run
+   off it; on a phone it becomes a full-width block under the button instead. */
+@media(max-width:720px){
+  .cond-more{display:block;width:100%}
+  .cond-more-menu{position:static;min-width:0;max-width:none;box-shadow:none;margin-top:6px}
+}
+
+/* ── A section filling the screen (owner-directed 2026-07-27) ──────────────
+   "there should also be a button by the conditions section to open the
+   conditions section on a full screen so you can work in a big screen."
+   A CSS overlay, not the browser Fullscreen API — that one needs a gesture it
+   can still refuse, paints onto a black backdrop and removes the browser
+   chrome. This keeps the app's own look and closes on Esc. */
+.file-section.sec-full{position:fixed;inset:0;z-index:70;margin:0;
+  background:var(--paper,#F6F3EC);overflow-y:auto;overflow-x:hidden;
+  padding:0 max(14px,env(safe-area-inset-left)) max(20px,env(safe-area-inset-bottom));
+  border-radius:0;border:0}
+/* The header stays put while you scroll forty conditions — it carries the way
+   out, so it must never be scrolled off. */
+.file-section.sec-full > .sec-head{position:sticky;top:0;z-index:2;
+  background:var(--paper,#F6F3EC);padding-top:max(12px,env(safe-area-inset-top));
+  border-bottom:1px solid var(--line);margin-bottom:8px}
+
 /* ── The purchasing desk (owner-directed 2026-07-26) ───────────────────────
    Every file that moved to purchasing after investor delivery. Text is
    explicit dark on white — never a --ink* token (those are LIGHT). */
