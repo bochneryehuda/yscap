@@ -3052,6 +3052,9 @@ export default function StaffApplication() {
     try {
       const slotBase = Number.isFinite(tgt.slotBase) ? tgt.slotBase : null;
       let appraisal = null;
+      // Did any of these actually land borrower-visible? null = the server did not
+      // say, in which case claim NOTHING either way rather than guess.
+      let borrowerVisible = null;
       for (let i = 0; i < files.length; i++) {
         const resp = await api.staffUploadAppDoc(id, {
           checklistItemId: tgt.itemId || undefined,
@@ -3064,15 +3067,28 @@ export default function StaffApplication() {
           filename: files[i].name, contentType: files[i].type, dataBase64: await fileToBase64(files[i]),
         });
         if (resp && resp.appraisal) appraisal = resp.appraisal;   // XML dropped on the appraisal condition auto-built the findings
+        // The server is the only thing that knows: visibility is derived from the
+        // TARGET CONDITION's audience, not from anything this screen chose.
+        const vis = resp && (resp.visibility || (resp.document && resp.document.visibility));
+        if (vis) borrowerVisible = borrowerVisible === true || vis === 'borrower';
       }
       // An appraisal XML on the appraisal-documents condition builds the findings
       // right there — surface that and refresh the appraisal panel so the findings
       // show immediately (no separate re-import into the findings screen).
       if (appraisal && appraisal.ok) { setApprReload((n) => n + 1); flash('Appraisal imported ✓ — findings built from the XML.'); }
       else if (appraisal && !appraisal.ok) { flash(`Uploaded, but the appraisal XML did not import: ${appraisal.error || 'check it is the DATA file (XML)'}.`); }
-      else flash(files.length > 1
-        ? `${files.length} files uploaded ✓ — the borrower sees them too.`
-        : 'Uploaded ✓ — the borrower sees it too.');
+      // "the borrower sees it too" was said UNCONDITIONALLY, including for a
+      // document just stored staff_only (the upload endpoint decides visibility
+      // from the target condition's audience). Wrong in the safe direction, but
+      // it trains exactly the mental model that files a confidential document —
+      // a purchase advice, say — against a borrower-facing condition. Only claim
+      // it when the server actually says so.
+      else {
+        const many = files.length > 1;
+        const tail = borrowerVisible === true ? (many ? ' — the borrower sees them too.' : ' — the borrower sees it too.')
+          : borrowerVisible === false ? ' (staff only).' : '';
+        flash(`${many ? `${files.length} files uploaded ✓` : 'Uploaded ✓'}${tail}`);
+      }
       setUploadTarget(null); await load();
     } catch (e2) { setErr(e2.message || 'Upload failed'); }
     finally { setBusyAct(''); if (staffFileRef.current) staffFileRef.current.value = ''; }

@@ -350,6 +350,36 @@ const uniq = (p) => p + Buffer.from(String(process.pid)).toString('hex') + Math.
       'and it comes BACK onto the closing desk — never on neither');
     ok(await inQueue(UN.closerId, UN.appId), 'and back onto the closer\'s Workflow too');
 
+    // ---- A PURCHASE ADVICE IS NEVER BORROWER-VISIBLE ----
+    // It names the note buyer and the price the loan sold for. The upload
+    // endpoint derives visibility from the TARGET CONDITION's audience, and the
+    // purchasing screen has no upload slot of its own — so an advice filed
+    // against any ordinary borrower-facing condition landed visibility='borrower',
+    // straight into the borrower's Documents list with the bytes intact.
+    const leaky = (await client.query(
+      `INSERT INTO documents (application_id, borrower_id, filename, content_type, doc_kind, visibility)
+       SELECT $1, a.borrower_id, 'purchase-advice-leak.pdf', 'application/pdf', 'purchase_advice', 'borrower'
+         FROM applications a WHERE a.id=$1 RETURNING id, visibility`, [N.appId])).rows[0];
+    ok(leaky.visibility === 'borrower', 'a purchase advice can be uploaded borrower-visible (the door that existed)');
+
+    // Designating it as the advice is the chokepoint — mirrors the route.
+    await purchasing.setPurchaseAdvice(client, N.appId, { documentId: leaky.id }, N.closerId);
+    await client.query(`UPDATE documents SET visibility='staff_only' WHERE id=$1 AND visibility <> 'staff_only'`, [leaky.id]);
+    const shut = (await client.query(`SELECT visibility FROM documents WHERE id=$1`, [leaky.id])).rows[0];
+    ok(shut.visibility === 'staff_only', 'designating it as the purchase advice forces it staff-only');
+
+    // Both borrower doors gate on visibility='borrower', so both are now closed.
+    const inBorrowerList = (await client.query(
+      `SELECT count(*)::int n FROM documents
+        WHERE id=$1 AND visibility='borrower' AND source_type <> 'chat_attachment'`, [leaky.id])).rows[0].n;
+    ok(inBorrowerList === 0, 'so it is out of the borrower documents list AND the mentionables list');
+
+    // db/359 does the same for files that already had one (previous AND future).
+    await client.query(`UPDATE documents SET visibility='borrower' WHERE id=$1`, [leaky.id]);
+    await client.query(fs.readFileSync(path.join(__dirname, '..', 'db', '359_purchase_advice_staff_only.sql'), 'utf8'));
+    ok((await client.query(`SELECT visibility FROM documents WHERE id=$1`, [leaky.id])).rows[0].visibility === 'staff_only',
+      'db/359 shuts the same door on a file that already had a borrower-visible advice');
+
     // ---- Idempotency ----
     const D = await makeFile();
     await signOffInvestorDelivery(D.appId, D.closerId, true);

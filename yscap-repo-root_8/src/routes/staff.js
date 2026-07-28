@@ -9247,8 +9247,24 @@ router.post('/applications/:id/purchasing/advice', purchasingGate, async (req, r
   if ('documentId' in b) {
     if (b.documentId) {
       const own = (await db.query(
-        `SELECT id FROM documents WHERE id=$1 AND application_id=$2`, [b.documentId, req.params.id])).rows[0];
+        `SELECT id, visibility FROM documents WHERE id=$1 AND application_id=$2`, [b.documentId, req.params.id])).rows[0];
       if (!own) return res.status(404).json({ error: 'That document is not on this file.' });
+      // A PURCHASE ADVICE IS NEVER BORROWER-VISIBLE. It names the note buyer and
+      // the price the loan sold for — the standing rule is that a capital-partner
+      // name never reaches a borrower-facing surface. The upload endpoint derives
+      // visibility from the CONDITION it was filed against (staff_only only when
+      // that condition's audience is exactly 'staff'), and the purchasing screen
+      // has no upload slot of its own, so an advice filed against any ordinary
+      // borrower-facing condition lands visibility='borrower' — straight into the
+      // borrower's Documents list, downloadable with the bytes intact.
+      // Designating a document as the advice is therefore the chokepoint: force
+      // it staff-only here. Both borrower doors (the documents list and the
+      // mentionables list) gate on visibility='borrower', so this closes both.
+      if (own.visibility !== 'staff_only') {
+        await db.query(`UPDATE documents SET visibility='staff_only' WHERE id=$1`, [b.documentId]);
+        await audit(req, 'purchasing_advice_restricted', 'document', b.documentId,
+          { was: own.visibility, now: 'staff_only', reason: 'purchase advice is staff-only' });
+      }
     }
     patch.documentId = b.documentId || null;
   }

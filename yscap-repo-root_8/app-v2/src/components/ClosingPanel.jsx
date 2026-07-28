@@ -144,7 +144,7 @@ export default function ClosingPanel({ appId, app, can, onDownloadDoc, onPreview
       <ChecklistsSection appId={appId} checklists={ws.checklists || []} isCloser={isCloser} onChanged={refresh} setErr={setErr} />
 
       {/* Sign-offs + reconciliation */}
-      <SignoffSection appId={appId} cw={cw} rec={rec} isCloser={isCloser} busy={busy} run={run} />
+      <SignoffSection appId={appId} cw={cw} rec={rec} isCloser={isCloser} busy={busy} run={run} setErr={setErr} />
 
       {/* Notes */}
       <NotesSection appId={appId} notes={ws.notes || []} onChanged={refresh} setErr={setErr} />
@@ -460,7 +460,7 @@ function AddItem({ onAdd }) {
   );
 }
 
-function SignoffSection({ appId, cw, rec, isCloser, busy, run }) {
+function SignoffSection({ appId, cw, rec, isCloser, busy, run, setErr }) {
   const recOk = rec && rec.ok;
   return (
     <div className="panel" style={{ marginBottom: 14 }}>
@@ -525,7 +525,15 @@ function SignoffSection({ appId, cw, rec, isCloser, busy, run }) {
               a button that 422s. */}
           {isCloser && cw.stage === 'fully_reconciled' && !cw.table_funded && (
             <button className="btn primary small" style={{ marginTop: 8 }} disabled={busy === 'purch' || !cw.investor_delivery_signed_off_at}
-              onClick={() => run('purch', () => api.advanceClosing(appId, 'in_purchasing'), 'Sent to purchasing.')}>
+              onClick={() => run('purch', async () => {
+                const r = await api.advanceClosing(appId, 'in_purchasing');
+                // The server drives the matching ClickUp status, but that push
+                // goes through the funded-bucket gate and is REFUSED unless the
+                // actor is an admin — a closer is not. It reports statusBlocked
+                // and nothing used to read it, so the closer saw a plain success
+                // while the card never moved. Say so instead.
+                if (r && r.statusBlocked) setErr('Sent to purchasing in PILOT — but the ClickUp card was NOT moved, because this file still has conditions outstanding. Ask an admin to move the card, or clear the conditions.');
+              }, 'Sent to purchasing.')}>
               Send to purchasing
             </button>
           )}
