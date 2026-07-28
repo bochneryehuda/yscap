@@ -85,6 +85,16 @@ const REASON_ACTIONS = {
   // ClickUp moved a PRE-Clear-to-Close file to Clear to Close; PILOT held the
   // status change and asks a human to CONFIRM the move (owner-directed 2026-07-27).
   ctc_confirm_needed: ['confirm_ctc'],
+  // A two-way deal field (program / loan type / property type / term / economics)
+  // was changed on BOTH sides — the portal AND ClickUp — to different values, so
+  // the inbound pull HELD the file's value instead of silently reverting the edit
+  // (owner-directed 2026-07-28). TWO decisions, no lock involved (an ordinary
+  // un-frozen file):
+  //   • keep_portal_value   — keep the file's value and push it to ClickUp so the
+  //     two agree, OR
+  //   • accept_clickup_value — take ClickUp's value onto the file (the pricing /
+  //     Scope-of-Work conditions reopen if a priced number changed).
+  portal_edit_conflict: ['keep_portal_value', 'accept_clickup_value'],
 };
 
 // The OTHER bumping file, read out of the review's forensic raw_value (queued by the ingest layer as
@@ -597,6 +607,60 @@ async function applyFileReviewAction({ row, action, targetApplicationId, targetT
         : out.alreadyThere
           ? 'the file is already Clear to Close / Funded — nothing to change.'
           : 'confirmed — the file is now Clear to Close in PILOT (it matches ClickUp), and the borrower was notified.',
+      applicationId: row.application_id };
+  }
+
+  // ---- PORTAL-EDIT CONFLICT (owner-directed 2026-07-28) — a two-way deal field
+  // changed on BOTH sides. PILOT kept the file's value; the reviewer decides.
+  if (action === 'keep_portal_value') {
+    // Keep the file's value and push it BACK to ClickUp so the two agree — a
+    // no-op if ClickUp already matches. Any staffer on the file may do this (an
+    // ordinary field edit, not a lock override). The fields to push come from the
+    // row's stored diffs (what the guard captured when it parked the row).
+    if (!row.application_id) throw httpError(409, 'this row has no portal file');
+    const { PROTECTED_KEYS } = require('./inbound-portal-edit-guard');
+    let fields = [];
+    try {
+      const raw = row.raw_value ? JSON.parse(row.raw_value) : null;
+      fields = ((raw && raw.changes) || []).map((c) => c && c.field).filter(Boolean);
+    } catch (_) { /* raw_value is forensic — unparseable falls through */ }
+    fields = [...new Set(fields)].filter((f) => PROTECTED_KEYS.includes(f));
+    if (!fields.length) throw httpError(409, 'this row does not list the fields to restore');
+    try { await require('../clickup/enqueue').enqueueClickupPush(row.application_id, fields); } catch (_) { /* re-sync ClickUp; no-op if already equal */ }
+    await audit('sync_review_keep_portal_value', row.application_id, actorId, { fields, reviewId: row.id });
+    return {
+      note: `kept the file's value and re-pushed it to ClickUp so the two agree (${fields.join(', ')}). ` +
+        'To take ClickUp’s value instead, use “Use ClickUp’s value”.',
+      applicationId: row.application_id };
+  }
+
+  if (action === 'accept_clickup_value') {
+    // Take ClickUp's value onto the file. Reuses the SAME apply path as the frozen
+    // accept (acceptInboundEconomicsChange) — it re-reads ClickUp live, falls back
+    // to the row's stored diffs when ClickUp is unreachable, runs the identical
+    // sanitizers, and only writes the deal fields that genuinely differ. NOT
+    // admin-gated: this is an un-frozen file, so accepting a change is the normal
+    // inbound behavior the guard merely paused for a human — no lock is overridden.
+    if (!row.application_id) throw httpError(409, 'this row has no portal file');
+    const { acceptInboundEconomicsChange } = require('./inbound-economics-freeze');
+    let fallbackChanges = null;
+    try {
+      const raw = row.raw_value ? JSON.parse(row.raw_value) : null;
+      fallbackChanges = (raw && Array.isArray(raw.changes)) ? raw.changes : null;
+    } catch (_) { /* raw_value is forensic — unparseable falls through to the live read */ }
+    const out = await acceptInboundEconomicsChange({
+      appId: row.application_id, actorId: actorId || null, fallbackChanges,
+      taskId: (row.task_id && !String(row.task_id).startsWith('app:')) ? row.task_id : null });
+    await audit('sync_review_accept_clickup_value', row.application_id, actorId, { reviewId: row.id, applied: out.applied, source: out.source });
+    if (out.upToDate) {
+      return {
+        note: 'ClickUp already matches the file — nothing needed changing (the value may have been changed back in ClickUp since this review was raised).',
+        applicationId: row.application_id };
+    }
+    const labels = out.applied.map((c) => `${c.label}: ${c.from == null ? '—' : c.from} → ${c.to}`).join('; ');
+    return {
+      note: `updated the file from ClickUp — ${labels}. ` +
+        'If a priced number changed, the pricing / Scope-of-Work conditions reopen; re-register or sign them off when ready.',
       applicationId: row.application_id };
   }
 
