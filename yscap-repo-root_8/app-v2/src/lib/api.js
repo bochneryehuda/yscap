@@ -395,6 +395,10 @@ export const api = {
   staffCredit:        (id, scope) => req('GET', `/api/staff/applications/${id}/credit${scope && scope !== 'file' ? `?scope=${encodeURIComponent(scope)}` : ''}`),
   staffCreditPreview: (id) => req('GET', `/api/staff/applications/${id}/credit/preview`),
   staffCreditImport:  (id, b) => req('POST', `/api/staff/applications/${id}/credit/import`, b),
+  // #16 — reuse a borrower's existing (<120-day) report from another of their files,
+  // no new inquiry; and the borrower profile's credit history across all their files.
+  staffCreditReuse:   (id, b) => req('POST', `/api/staff/applications/${id}/credit/reuse`, b),
+  staffBorrowerCredit:(borrowerId) => req('GET', `/api/staff/borrowers/${borrowerId}/credit`),
   // #147 — the cross-system observability timeline for a file (portal + ClickUp +
   // SharePoint + sync-review events, time-ordered). Scoped by the file's access.
   staffObservability: (id, opts = {}) => req('GET', `/api/staff/applications/${id}/observability`

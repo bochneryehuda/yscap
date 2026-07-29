@@ -1,5 +1,6 @@
 import React, { useEffect, useState, useCallback, useRef } from 'react';
 import { api } from '../lib/api.js';
+import { fmtDate } from '../lib/dates.js';
 // Severity words + colours: ONE shared map. Three screens each kept a private copy
 // and had already drifted — this one said "Fatal" for the same finding the
 // escalations screen called something else. See lib/findings-vocab.js.
@@ -1178,7 +1179,7 @@ export default function AppraisalPanel({ appId, readOnly = false, onSummary, rel
               {undoing ? 'Removing…' : 'Remove / undo this appraisal'}
             </button>
           )}
-          {a && <span style={{ fontSize: 12.5, color: 'var(--muted,#4B585C)' }}>Form {or(a.form_type)} · effective {or(a.effective_date)} · imported {a.imported_at ? String(a.imported_at).slice(0, 10) : '—'}</span>}
+          {a && <span style={{ fontSize: 12.5, color: 'var(--muted,#4B585C)' }}>Form {or(a.form_type)} · effective {a.effective_date ? fmtDate(a.effective_date) : '—'} · imported {a.imported_at ? fmtDate(a.imported_at) : '—'}</span>}
           {a && !expanded && <button onClick={() => setExpanded(true)} style={OPEN_BTN} title="Open the full property report">⤢ Open full report</button>}
         </div>
       ) : (

@@ -21,7 +21,12 @@ const centsOrNull = (v) => {
   const n = Math.round(Number(s.replace(/[^0-9.]/g, '')) * 100);
   return Number.isFinite(n) && n >= 0 ? n : null;
 };
-const fmtDay = (v) => (v ? String(v).slice(0, 10) : '—');
+const fmtDay = (v) => {   // MM/DD/YYYY (industry standard), shift-free for date-only values
+  if (!v) return '—';
+  const m = /^(\d{4})-(\d{2})-(\d{2})/.exec(String(v));
+  const d = m ? new Date(+m[1], +m[2] - 1, +m[3]) : new Date(v);
+  return Number.isNaN(d.getTime()) ? '—' : d.toLocaleDateString('en-US', { month: '2-digit', day: '2-digit', year: 'numeric' });
+};
 const STATUS = {
   drafting: 'Drafting', pending_borrower: 'With borrower', inspecting: 'Inspecting',
   pending: 'Awaiting your approval', pending_capital_partner: 'With capital partner', approved: 'Approved',

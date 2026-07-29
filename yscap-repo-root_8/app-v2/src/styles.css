@@ -2965,6 +2965,9 @@ details[open]>.appr-sec-sum .appr-sec-chev{transform:rotate(180deg)}
   display:block; line-height:1.45; }
 .crx-note.secure { color:var(--teal-br); }
 .crx-note.warn { color:var(--warning); }
+.crx-note.reuse { color:#141B22; background:var(--primary-soft); border-top:none;
+  margin-top:10px; padding:10px 12px; border-radius:10px; border:1px solid var(--border); }
+.crx-note.reuse .crx-btn.ghost { white-space:nowrap; }
 .crx-lock { font-size:.85rem; margin-right:4px; }
 
 /* Options ---------------------------------------------------------------- */
@@ -3418,6 +3421,14 @@ details[open]>.appr-sec-sum .appr-sec-chev{transform:rotate(180deg)}
 .cond-group-count{margin-left:auto;flex:none;font-size:12px;color:#4B585C;
   font-variant-numeric:tabular-nums}
 @media(max-width:720px){.cond-group-name{letter-spacing:.05em}}
+/* Full-screen conditions: the old internal/external split banner (owner-directed 2026-07-29). */
+.cond-section-banner{display:flex;align-items:baseline;gap:10px;flex-wrap:wrap;
+  margin:22px 0 4px;padding:9px 12px;border-radius:10px;background:var(--primary-soft);
+  border:1px solid var(--gold)}
+.cond-section-banner:first-of-type{margin-top:6px}
+.cond-section-title{font-family:var(--serif,inherit);font-weight:700;font-size:15px;color:#141B22}
+.cond-section-sub{font-size:12px;color:#4B585C}
+.cond-section-count{margin-left:auto;font-size:12px;color:#4B585C;white-space:nowrap}
 /* The conditions filter row — two labelled controls, not two bare dropdowns
    squeezed onto the title line (where both truncated and said nothing). */
 .cond-filters{display:flex;gap:14px;flex-wrap:wrap;align-items:flex-end;margin:2px 0 10px}
@@ -3542,3 +3553,25 @@ details[open]>.appr-sec-sum .appr-sec-chev{transform:rotate(180deg)}
   border-bottom:1px solid var(--line);padding:7px 0;color:#141B22}
 .pu-cond:last-child{border-bottom:none}
 .pu-cond-main{display:flex;flex-direction:column;gap:2px;min-width:0}
+
+/* Investor Suite inside PILOT (owner-directed 2026-07-29) — the staff-side host
+   for the marketing tools. White-first, dark text on the paper canvas. */
+.isuite-group-h{margin:0 0 10px}
+.isuite-group-title{font-family:var(--serif,inherit);font-weight:700;font-size:17px;color:#141B22}
+.isuite-group-sub{font-size:13px;color:#4B585C;margin-top:2px}
+.isuite-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(240px,1fr));gap:12px}
+.isuite-card{display:flex;flex-direction:column;align-items:flex-start;gap:4px;
+  text-align:left;padding:16px;border:1px solid var(--border);border-radius:14px;
+  background:var(--surface,#fff);cursor:pointer;transition:border-color .15s ease,box-shadow .15s ease,transform .15s ease;color:#141B22}
+.isuite-card:hover{border-color:var(--gold);box-shadow:0 6px 20px rgba(20,27,34,.08);transform:translateY(-1px)}
+.isuite-card:focus-visible{outline:2px solid var(--focus,#2F7F86);outline-offset:2px}
+.isuite-card-icon{font-size:22px;line-height:1}
+.isuite-card-name{font-weight:700;font-size:15px;color:#141B22}
+.isuite-card-desc{font-size:12.5px;color:#4B585C;line-height:1.4;flex:1}
+.isuite-card-cta{font-size:12.5px;font-weight:600;color:var(--teal-br,#256168);margin-top:4px}
+/* Full-screen tool host */
+.isuite-full{position:fixed;inset:0;z-index:60;display:flex;flex-direction:column;background:#F4F0E7}
+.isuite-full-head{display:flex;align-items:center;gap:12px;padding:10px 14px;
+  background:#fff;border-bottom:1px solid var(--border);
+  padding-top:calc(10px + env(safe-area-inset-top,0px))}
+.isuite-full-body{flex:1;min-height:0;display:flex}

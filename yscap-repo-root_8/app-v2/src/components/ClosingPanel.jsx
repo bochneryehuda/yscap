@@ -2,6 +2,7 @@ import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { api } from '../lib/api.js';
 import { dealPurchase } from '../lib/dealPrice.js';
 import { onFilesDropped } from '../lib/drop-files.js';
+import { fmtDate } from '../lib/dates.js';
 
 /* THE CLOSING WORKSPACE (owner-directed 2026-07-26). The closer's desk inside a
    loan file: deal details, the actual cash-to-close money gate against verified
@@ -16,7 +17,7 @@ import { onFilesDropped } from '../lib/drop-files.js';
 
 const money0 = (v) => (v == null || v === '' ? '—' : '$' + Number(v).toLocaleString(undefined, { maximumFractionDigits: 0 }));
 const money2 = (v) => (v == null || v === '' ? '—' : '$' + Number(v).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 }));
-const day = (v) => (v ? String(v).slice(0, 10) : '—');
+const day = (v) => fmtDate(v);   // MM/DD/YYYY (industry standard), shift-free
 
 function fileToBase64(file) {
   return new Promise((resolve, reject) => {

@@ -2331,6 +2331,28 @@ function BorrowerConditions({ appId, app, items, docs, onPatch, onReviewDoc, onD
   // "Done" here is the same role-aware rule the rest of this list uses, so a
   // group header can never disagree with the rows under it.
   const groups = groupBySubject(visible, offMyPlate);
+  // FULL SCREEN restores the OLD split layout (owner-directed 2026-07-29): before
+  // the merge, internal (staff) and external (borrower) conditions each lived in
+  // their own section. The regular screen keeps the merged, subject-grouped list;
+  // ONLY full screen splits back into "Borrower conditions" and "Internal
+  // conditions" so you can view each side on its own. The subject grouping is
+  // kept WITHIN each side, so nothing else about the list changes.
+  const countTotal = (gs) => gs.reduce((n, g) => n + g.total, 0);
+  const extGroups = fullscreen ? groupBySubject(visible.filter((it) => !isInternal(it)), offMyPlate) : [];
+  const intGroups = fullscreen ? groupBySubject(visible.filter((it) => isInternal(it)), offMyPlate) : [];
+  const sectionBanner = (label, sub, count) => (
+    <div className="cond-section-banner">
+      <div className="cond-section-title">{label}</div>
+      <div className="cond-section-sub">{sub}</div>
+      <span className="cond-section-count">{count} condition{count === 1 ? '' : 's'}</span>
+    </div>
+  );
+  const sections = fullscreen
+    ? [
+        { key: 'ext', banner: extGroups.length ? sectionBanner('Borrower conditions', 'What the borrower sees and uploads', countTotal(extGroups)) : null, groups: extGroups },
+        { key: 'int', banner: intGroups.length ? sectionBanner('Internal conditions', 'Staff-only — never shown to the borrower', countTotal(intGroups)) : null, groups: intGroups },
+      ]
+    : [{ key: 'all', banner: null, groups }];
   // The LLC condition renders as its own row; drive its visibility off a
   // synthesized status so it honors the same filters.
   const llcPseudo = { id: '__llc', tool_key: null, reviewed_at: null,
@@ -2469,7 +2491,10 @@ function BorrowerConditions({ appId, app, items, docs, onPatch, onReviewDoc, onD
           scan. Each header carries its own count, so "is the title work done?"
           is answerable without reading the rows. Groups collapse and the choice
           sticks. A group with nothing in it is not rendered at all. */}
-      {groups.map(g => (
+      {sections.map(sec => (
+        <React.Fragment key={sec.key}>
+          {sec.banner}
+          {sec.groups.map(g => (
         <div className="cond-group" key={g.key}>
           <button type="button" className="cond-group-h" aria-expanded={!shut.has(g.key)}
             onClick={() => toggleGroup(g.key)}>
@@ -2720,6 +2745,8 @@ function BorrowerConditions({ appId, app, items, docs, onPatch, onReviewDoc, onD
         );
           })}
         </div>
+          ))}
+        </React.Fragment>
       ))}
       {sowOpen && (
         <ToolModal

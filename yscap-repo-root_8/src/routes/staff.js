@@ -1094,24 +1094,41 @@ router.post('/applications', async (req, res) => {
   if (!addr || !(addr.oneLine || addr.street || addr.line1))
     return res.status(400).json({ error: 'property address required' });
   try {
-    // Same email + a DIFFERENT person's name → refuse the silent merge (409).
-    const exConflict = await emailAdoptionConflict(email, firstName, lastName);
-    if (exConflict && !b.allowSharedEmail) return emailAdoptionError(res, exConflict, email);
-    // Match-or-create the borrower. Never overwrite existing PII — only fill
-    // blank fields — so an existing borrower record is preserved intact. When the
-    // staffer has confirmed a genuinely shared mailbox, the second person gets
-    // their OWN profile on the same address instead of being refused.
-    const br = exConflict
-      ? { rows: [{ id: await createSharedEmailBorrower({
-          firstName, lastName, email, phone: bo.phone, ownerId: exConflict.id, actorId: req.actor.id }), created: true }] }
-      : await db.query(
-        `INSERT INTO borrowers (first_name,last_name,email,cell_phone)
-       VALUES ($1,$2,$3,$4)
-       ON CONFLICT (email) WHERE shares_email = false DO UPDATE SET
-         cell_phone = COALESCE(borrowers.cell_phone, EXCLUDED.cell_phone),
-         updated_at = now()
-       RETURNING id, (xmax=0) AS created`,
-        [firstName, lastName || '', email, bo.phone || null]);
+    // WHEN THE STAFFER EXPLICITLY PICKED AN EXISTING BORROWER, LINK TO THAT PROFILE
+    // — authoritatively, never a match-or-create off the email (owner-reported
+    // 2026-07-29: "starting a new file for an existing borrower doesn't always
+    // populate / let you select who you're starting for"). The route used to ignore
+    // the picked borrowerId entirely and rely on the email `ON CONFLICT` match, so a
+    // changed/blank/shared email minted a brand-new duplicate profile instead of
+    // linking the one the staffer chose. Opening a file for an existing borrower is
+    // a legitimate origination action for any staffer, and every later SSN reveal /
+    // document read stays separately authorized + audited — so we honor the pick.
+    let br;
+    if (b.borrowerId) {
+      const ex = await db.query(`SELECT id FROM borrowers WHERE id=$1`, [b.borrowerId]);
+      if (!ex.rows[0]) return res.status(404).json({ error: 'that borrower profile was not found — pick again or leave it blank to create a new one' });
+      // Fill a blank phone only; never overwrite the existing profile's PII.
+      if (bo.phone) {
+        await db.query(`UPDATE borrowers SET cell_phone=COALESCE(cell_phone,$2), updated_at=now() WHERE id=$1`, [b.borrowerId, bo.phone]);
+      }
+      br = { rows: [{ id: ex.rows[0].id, created: false }] };
+    } else {
+      // No explicit pick — match-or-create off the email (the original behavior).
+      // Same email + a DIFFERENT person's name → refuse the silent merge (409).
+      const exConflict = await emailAdoptionConflict(email, firstName, lastName);
+      if (exConflict && !b.allowSharedEmail) return emailAdoptionError(res, exConflict, email);
+      br = exConflict
+        ? { rows: [{ id: await createSharedEmailBorrower({
+            firstName, lastName, email, phone: bo.phone, ownerId: exConflict.id, actorId: req.actor.id }), created: true }] }
+        : await db.query(
+          `INSERT INTO borrowers (first_name,last_name,email,cell_phone)
+         VALUES ($1,$2,$3,$4)
+         ON CONFLICT (email) WHERE shares_email = false DO UPDATE SET
+           cell_phone = COALESCE(borrowers.cell_phone, EXCLUDED.cell_phone),
+           updated_at = now()
+         RETURNING id, (xmax=0) AS created`,
+          [firstName, lastName || '', email, bo.phone || null]);
+    }
     const borrowerId = br.rows[0].id;
 
     // A borrower may have MANY files (one per property) and any staffer may open
@@ -3579,6 +3596,29 @@ router.post('/applications/:id/credit/import', async (req, res) => {
   }
 });
 
+// Reuse a borrower's existing (<120-day) credit report from another of their files
+// onto THIS file — no new Xactus inquiry. Same permission as a live pull; the
+// report is re-filed on this file's credit condition carrying its original date.
+router.post('/applications/:id/credit/reuse', async (req, res) => {
+  if (!can(req.actor, 'pull_credit')) return res.status(403).json({ error: 'You don’t have permission to pull credit on this file.' });
+  const b = req.body || {};
+  try {
+    const out = await require('../lib/credit').reuseFromProfile(req.params.id, {
+      borrowerId: typeof b.borrowerId === 'string' ? b.borrowerId : undefined,
+      sourceReportId: typeof b.sourceReportId === 'string' ? b.sourceReportId : undefined,
+      actorId: req.actor.id,
+    });
+    await audit(req, 'credit_reuse', 'application', req.params.id, {
+      borrowerId: b.borrowerId, fromApplicationId: out.fromApplicationId,
+      reportDate: out.reportDate, ageDays: out.ageDays, middleScore: out.middleScore,
+      ficoWritten: out.ficoWritten, ficoMismatch: out.ficoMismatch || undefined,
+    });
+    res.json(out);
+  } catch (e) {
+    res.status(e.status || 422).json({ error: e.userMessage || 'Could not reuse the credit report.' });
+  }
+});
+
 // Full file activity feed (staff sees everything, including internal).
 router.get('/applications/:id/activity', async (req, res) => {
   try { res.json(await require('../lib/activity').fileActivity(req.params.id, false)); }
@@ -5161,6 +5201,24 @@ async function signOffGate(itemId, actor) {
     } catch (_) { /* fall through to the normal gate */ }
   }
 
+  // THE SIGNED TERM SHEET is only signable once the FULLY EXECUTED DocuSign package
+  // has come back (owner-directed 2026-07-29: "you should not be able to sign it off
+  // till it's fully executed through the DocuSign system"). The unsigned term sheet
+  // from the last registration stays previewable/downloadable on the Products &
+  // Pricing condition at any time; this gate only governs SIGNING THIS condition
+  // off, so it can never be marked done on the strength of the unsigned copy. A
+  // super-admin override (db/344) can still clear it with a recorded reason.
+  if (code === 'rtl_cond_signedts') {
+    try {
+      const done = (await db.query(
+        `SELECT 1 FROM esign_envelopes
+          WHERE application_id=$1 AND purpose='term_sheet_package' AND status='completed' LIMIT 1`,
+        [item.application_id])).rows[0];
+      if (!done) return 'The term sheet can only be signed off once the FULLY EXECUTED DocuSign package (borrower, loan officer and lender) has come back. Send the term-sheet package for signature and wait for it to complete — the unsigned copy on Products & Pricing is for preview only.';
+    } catch (_) { /* on a read error, fall through rather than hard-block */ }
+    return null;
+  }
+
   // CONFIRM THE As-Is VALUE (owner-directed 2026-07-28). Two ways this condition lands on a file:
   // PILOT lowered the As-Is from what it read on the appraisal (this is the re-review), or PILOT
   // could not confidently read one at all. Either way the owner's rule for clearing it is the same —
@@ -6114,31 +6172,38 @@ router.get('/borrowers/search', async (req, res) => {
   try {
     const q = String(req.query.q || '').trim();
     if (q.length < 2) return res.json([]);
-    const params = ['%' + q + '%'];
-    let scope = '';
-    if (!seesAll(req)) {
-      params.push(req.actor.id);
-      scope = `AND ${VISIBLE_BORROWER_SQL('b', '$2')}`;
-    }
-    // Matching on EMAIL too (owner-directed 2026-07-26): the typeahead is what
-    // stops a second profile being typed for someone we already have, and an
-    // officer very often starts from the borrower's email rather than a name
-    // whose spelling varies ("Leib"/"Leibish"/"Leon"). `prior_files` counts the
-    // person's loan files; `other_deals` counts their non-RTL ClickUp cards, so
-    // a DSCR-only client no longer looks brand new.
+    // The new-file typeahead is what lets a staffer SELECT an existing borrower and
+    // is the one thing that stops a duplicate profile being typed. It must find any
+    // existing borrower, not only the ones already in the searcher's book (owner-
+    // reported 2026-07-29: "they should be able to select who they're starting a
+    // new file for"). Origination legitimately opens a file for anyone; this returns
+    // only name/email/phone to internal staff, and every later SSN reveal / document
+    // read stays separately authorized + audited. The searcher's OWN borrowers rank
+    // first so their book stays at the top.
+    const params = ['%' + q + '%', req.actor.id];
+    // Matching on EMAIL too (owner-directed 2026-07-26): an officer very often starts
+    // from the borrower's email rather than a name whose spelling varies. Tokenized
+    // AND-match so "John Smith" still finds "John Michael Smith" (a stored middle
+    // name would otherwise drop the row the moment the last name is typed).
+    const tokens = q.split(/\s+/).filter((t) => t.length >= 2).slice(0, 4);
+    const tokenClauses = tokens.map((_, i) => {
+      const p = params.length + 1; params.push('%' + tokens[i] + '%');
+      return `(b.first_name ILIKE $${p} OR b.last_name ILIKE $${p} OR NULLIF(b.full_name,'') ILIKE $${p})`;
+    });
+    const nameMatch = tokens.length
+      ? `(${tokenClauses.join(' AND ')})`
+      : `(b.first_name ILIKE $1 OR b.last_name ILIKE $1 OR NULLIF(b.full_name,'') ILIKE $1)`;
     const r = await db.query(
       `SELECT b.id, b.first_name, b.last_name, b.email, b.cell_phone,
               (SELECT count(*)::int FROM applications
                  WHERE borrower_id=b.id AND deleted_at IS NULL) AS prior_files,
               (SELECT count(*)::int FROM clickup_task_index t
-                 WHERE t.borrower_id=b.id AND t.kind='data_only') AS other_deals
+                 WHERE t.borrower_id=b.id AND t.kind='data_only') AS other_deals,
+              (${VISIBLE_BORROWER_SQL('b', '$2')}) AS mine
          FROM borrowers b
-        WHERE (b.first_name ILIKE $1 OR b.last_name ILIKE $1
-               OR NULLIF(b.full_name,'') ILIKE $1
-               OR COALESCE(b.email,'') ILIKE $1)
-          ${scope}
-        ORDER BY b.last_name, b.first_name
-        LIMIT 10`, params);
+        WHERE (${nameMatch} OR COALESCE(b.email,'') ILIKE $1)
+        ORDER BY mine DESC, b.last_name, b.first_name
+        LIMIT 12`, params);
     res.json(r.rows);
   } catch (e) { res.status(500).json({ error: 'server error' }); }
 });
@@ -6631,6 +6696,26 @@ router.get('/borrowers/:id/conditions', async (req, res) => {
           AND c.status IN ('open','borrower_responded') ${scope}
         ORDER BY c.created_at DESC`, params);
     res.json(r.rows);
+  } catch (e) { console.warn('[staff] handler error:', db.describeError(e)); res.status(500).json({ error: 'server error' }); }
+});
+
+// Every credit report ON THE BORROWER'S PROFILE (across all their files), newest
+// first, with a per-report freshness flag. This is the person's credit history —
+// a report pulled on one file is the borrower's and shows on every file for them
+// (owner-directed #16). `latest`/`fresh` summarise the most recent one within the
+// 120-day window (the reusable-without-a-new-inquiry report).
+router.get('/borrowers/:id/credit', async (req, res) => {
+  try {
+    if (!(await canSeeBorrower(req))) return res.status(403).json({ error: 'forbidden' });
+    const credit = require('../lib/credit');
+    const reports = await credit.borrowerCreditReports(req.params.id);
+    const fresh = reports.find((r) => r.status === 'completed' && r.fresh) || null;
+    res.json({
+      reports,
+      latest: reports[0] || null,
+      fresh,   // the most-recent completed report still inside 120 days (reusable)
+      freshDays: 120,
+    });
   } catch (e) { console.warn('[staff] handler error:', db.describeError(e)); res.status(500).json({ error: 'server error' }); }
 });
 

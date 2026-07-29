@@ -429,6 +429,7 @@ export default function StaffLayout({ children }) {
           {unread > 0 && <span className="sb-badge">{unread > 99 ? '99+' : unread}</span>}
         </NavLink>
         <NavLink className="sb-link" to="/internal/leads"><NavIcon name="leads" />Leads</NavLink>
+        <NavLink className="sb-link" to="/internal/investor-suite" title="Investor Suite — build a term sheet, a scope of work, a track record, or run any deal analyzer, right inside PILOT"><NavIcon name="pricing" />Investor Suite</NavLink>
 
         <div className="sb-sec">Files</div>
         <NavLink className="sb-link" to="/internal/borrowers" title="Your borrowers — invite to PILOT, reset or set a password, see last login"><NavIcon name="borrowers" />Borrowers</NavLink>

@@ -1320,12 +1320,27 @@ async function conditionFreshnessReopenOnce() {
   const freshness = require('./underwriting/condition-freshness');
   const { reopenConditionEvidence } = require('./checklist-evidence');
   const codes = Object.keys(freshness.KIND_BY_TEMPLATE_CODE);
+  // For credit conditions the freshness clock runs off the report's OWN
+  // effective date (credit_reports.report_date), not the staff sign-off date —
+  // a 120-day-old report signed off yesterday is already stale. We take the
+  // LATEST report_date attached to the condition item (reissues supersede) and
+  // pass it as effective_at; planFreshnessReopens falls back to signed_off_at
+  // for every other kind (no separate evidence date is tracked).
   const rows = await db.query(
     `SELECT ci.id, ci.application_id, ci.status, ci.signed_off_at, ci.waived_at,
-            ct.code AS template_code
+            ct.code AS template_code,
+            cr.report_date AS effective_at
        FROM checklist_items ci
        JOIN checklist_templates ct ON ct.id = ci.template_id
        JOIN applications a ON a.id = ci.application_id
+       LEFT JOIN LATERAL (
+         SELECT r.report_date
+           FROM credit_reports r
+          WHERE r.checklist_item_id = ci.id
+            AND r.report_date IS NOT NULL
+          ORDER BY r.report_date DESC
+          LIMIT 1
+       ) cr ON true
       WHERE ct.code = ANY($1)
         AND ci.signed_off_at IS NOT NULL
         AND ci.waived_at IS NULL

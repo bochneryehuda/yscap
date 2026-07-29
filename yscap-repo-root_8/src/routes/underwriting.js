@@ -832,6 +832,11 @@ router.get('/:appId', async (req, res, next) => {
       loanAmount: a.loan_amount, initialAdvance: reg ? reg.initialAdvance : null,
       purchasePrice: a.purchase_price,
       asIsValue: a.as_is_value, arv: a.arv, rehabBudget: a.rehab_budget,
+      // Feed the SAME financed interest reserve the frozen engine sized the loan on,
+      // so the AI review's LTC cost basis matches the engine's (Standard includes it;
+      // Gold reno/bridge finance zero, so this is a no-op for them). Fixes the wrong
+      // ~95% LTC the AI review reported by omitting the reserve from the cost.
+      financedReserve: reg ? reg.financedReserve : null,
     }, capsFromRegistration(reg ? reg.caps : null, reg ? reg.program : null));
 
     // Entity-resolution chain: only meaningful for an entity (LLC) borrower — an individual file

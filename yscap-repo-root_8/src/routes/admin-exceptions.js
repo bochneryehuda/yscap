@@ -409,10 +409,17 @@ router.post('/:id/comments', async (req, res) => {
       const notifType = exc.exception_type === 'guaranty_waiver' ? 'guaranty_exception_comment' : 'exception_comment';
       for (const sid of participants) {
         // The requester reads their queue; a reviewer reads the box.
-        const link = exc.requested_by && sid === exc.requested_by ? '/internal/my-exceptions' : '/internal/exceptions';
+        const isRequester = !!(exc.requested_by && sid === exc.requested_by);
+        const link = isRequester ? '/internal/my-exceptions' : '/internal/exceptions';
+        // A reply TO THE REQUESTER on their OWN exception is FORCED (owner-directed
+        // 2026-07-29) — the loan officer who raised it can never turn this one off,
+        // so a super-admin's "why do you need this exception?" always reaches them.
+        // Everyone else on the thread gets the ordinary (disableable) comment type.
         await notify.notifyStaff(sid, {
-          type: notifType,
-          title: `New comment on a ${typeLabel.toLowerCase()} exception`,
+          type: isRequester ? 'exception_request_reply' : notifType,
+          title: isRequester
+            ? `Reply on your ${typeLabel.toLowerCase()} exception request`
+            : `New comment on a ${typeLabel.toLowerCase()} exception`,
           body: `${req.actor.name || 'A team member'} commented on ${what} on ${ctx ? ctx.label : 'a file'}:\n\n${body.slice(0, 600)}`,
           meta: (ctx && ctx.meta) || undefined, applicationId: exc.application_id,
           link, ctaLabel: 'Open the exception',
