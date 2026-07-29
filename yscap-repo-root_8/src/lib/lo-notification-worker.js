@@ -18,6 +18,9 @@
 'use strict';
 const db = require('../db');
 const notify = require('./notify');
+const email = require('./email');
+const cfg = require('../config');
+const { fileReplyTo } = require('./file-address');
 const catalog = require('./notification-catalog');
 const gate = require('./lo-notification-gate');
 
@@ -107,6 +110,123 @@ async function drainScheduledSends() {
   return claimed.rows.length;
 }
 
+// ---- LO SELF batch drainer -------------------------------------------------
+// Releases held emails from lo_batched_emails. Groups the due rows by
+// (staff_id, batch_key) and sends ONE digest email per group — so a batched
+// window (or a vacation ending) produces "N updates on your files" instead of
+// N separate emails. Every batched notification's email_status is then flipped
+// to 'sent' so the individual audit trail shows delivery. Non-throwing.
+const SELF_BATCH_LIMIT = Math.max(1, parseInt(process.env.NOTIFY_WORKER_SELF_BATCH, 10) || 200);
+
+function _digestSubject(rows) {
+  if (rows.length === 1) return rows[0].subject || 'Update on your files';
+  return `${rows.length} updates on your files`;
+}
+function _digestOpts(rows, staffEmail) {
+  const first = rows[0] || {};
+  const lines = rows.map((r) => {
+    const s = String(r.subject || '').trim() || 'Update';
+    return r.body_preview ? `• ${s} — ${String(r.body_preview).slice(0, 160)}` : `• ${s}`;
+  });
+  const withApp = rows.find((r) => r.application_id);
+  return {
+    type: 'digest',
+    title: rows.length === 1 ? (first.subject || 'Update on your files') : `${rows.length} updates on your files`,
+    body:  rows.length === 1
+      ? (first.body_preview || 'A batched update from your files.')
+      : 'A quick roll-up of updates from your files while you were away/quiet.',
+    lines,
+    applicationId: withApp ? withApp.application_id : null,
+    ctaLabel: 'Open your inbox',
+    link: '/internal/notification-center',
+    emailTo: staffEmail || null,
+    _bypassLoGate: true,
+    _bypassLoSelfGate: true,
+  };
+}
+
+async function _staffEmailFor(id) {
+  try {
+    const r = await db.query(`SELECT email FROM staff_users WHERE id=$1`, [id]);
+    return r.rows[0] && r.rows[0].email ? r.rows[0].email : null;
+  } catch (_) { return null; }
+}
+
+async function drainBatchedEmails() {
+  // Atomic claim: flip due 'pending' rows to 'released' in one UPDATE so no two
+  // workers grab the same batch. GROUP-preserving: we claim EVERYTHING due for
+  // any (staff, batch_key) that has ≥1 due row — so a bundle isn't split.
+  const claimed = await db.query(
+    `WITH due AS (
+        SELECT id FROM lo_batched_emails
+         WHERE status='pending' AND release_at <= now()
+         ORDER BY release_at ASC
+         LIMIT $1
+         FOR UPDATE SKIP LOCKED
+      )
+      UPDATE lo_batched_emails b SET status='released', released_at=now()
+        FROM due WHERE b.id=due.id
+       RETURNING b.*`, [SELF_BATCH_LIMIT]);
+  if (!claimed.rows.length) return 0;
+  // Group by (staff_id, batch_key). batch_key='drop' isn't emitted (vacation
+  // drop returns channel='inapp'), but guard anyway.
+  const groups = new Map();
+  for (const r of claimed.rows) {
+    if (r.batch_key === 'drop') continue;
+    const k = `${r.staff_id}|${r.batch_key || 'default'}`;
+    if (!groups.has(k)) groups.set(k, []);
+    groups.get(k).push(r);
+  }
+  let sent = 0;
+  for (const [, rows] of groups) {
+    const staffId = rows[0].staff_id;
+    const to = await _staffEmailFor(staffId);
+    if (!to) {
+      await db.query(
+        `UPDATE notifications SET email_status='skipped'
+          WHERE id = ANY($1::uuid[])`,
+        [rows.map((r) => r.notification_id).filter(Boolean)]).catch(() => {});
+      continue;
+    }
+    try {
+      const digestOpts = _digestOpts(rows, to);
+      const msg = notify.buildEmail(digestOpts, 'staff');
+      const replyTo = fileReplyTo(digestOpts.applicationId) || cfg.replyToDefault || null;
+      const res = await email.sendMail({
+        to: [to], subject: msg.subject, text: msg.text, html: msg.html, replyTo,
+        _ctx: { applicationId: digestOpts.applicationId || null, notificationId: null,
+                type: 'digest', audience: 'staff', subjectTag: digestOpts.subjectTag,
+                kicker: 'Digest', bodyHtml: msg.html },
+      });
+      const ok = res && res.ok;
+      // Mark each batched notification's row so the LO's Sent tab reflects
+      // delivery. On error, mark 'error' so the notif can be inspected.
+      const ids = rows.map((r) => r.notification_id).filter(Boolean);
+      if (ids.length) {
+        await db.query(
+          `UPDATE notifications
+              SET email_status=$2,
+                  emailed_at=CASE WHEN $2='sent' THEN now() ELSE emailed_at END
+            WHERE id = ANY($1::uuid[])`,
+          [ids, ok ? 'sent' : 'error']).catch(() => {});
+      }
+      sent += rows.length;
+    } catch (e) {
+      console.warn('[notif-worker] batched digest failed:', e && e.message);
+      // Best-effort recovery: mark 'error' so we don't retry-storm; the LO
+      // still has the in-app rows.
+      const ids = rows.map((r) => r.notification_id).filter(Boolean);
+      if (ids.length) {
+        await db.query(
+          `UPDATE notifications SET email_status='error', email_error=$2
+            WHERE id = ANY($1::uuid[])`,
+          [ids, String(e.message || 'digest failed').slice(0, 400)]).catch(() => {});
+      }
+    }
+  }
+  return sent;
+}
+
 async function wakeSnoozed() {
   // Snooze is purely a UX transition — a snoozed draft is hidden from the
   // Pending list until the timestamp passes. No DB update is strictly needed
@@ -124,6 +244,7 @@ async function tick() {
   try {
     await wakeSnoozed();
     await drainScheduledSends();
+    await drainBatchedEmails();
   } catch (e) {
     console.warn('[notif-worker] tick failed:', e && e.message);
   } finally {
@@ -146,4 +267,4 @@ function stop() {
   timer = null;
 }
 
-module.exports = { start, stop, tick, drainScheduledSends, wakeSnoozed };
+module.exports = { start, stop, tick, drainScheduledSends, wakeSnoozed, drainBatchedEmails };

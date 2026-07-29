@@ -19,6 +19,12 @@ const { fileReplyTo } = require('./file-address');   // #68 per-file shared repl
 // notification OFF, or park it as a draft for hand-review, EXCEPT DocuSign /
 // security / account traffic (always sends). See notification-catalog.js.
 const loGate = require('./lo-notification-gate');
+// Loan-officer SELF gate — the LO's OWN inbox controls (channel + frequency +
+// batching + vacation + quiet hours + muted files). Runs on notifyStaff for
+// every staff recipient, in addition to (not replacing) the borrower LO gate
+// above. See src/lib/lo-self-gate.js + db/246_lo_self_notification_prefs.sql.
+const loSelfGate = require('./lo-self-gate');
+const notifCatalog = require('./notification-catalog');
 
 // A small upper-case eyebrow rendered above each email's headline so the reader
 // can classify it before reading the title. Keyed by notification `type`;
@@ -294,6 +300,9 @@ const STAFF_INAPP_TYPES = new Set(['tool_submitted', 'doc_uploaded', 'condition_
 // the LO gate for this single call so a hand-reviewed draft actually goes out.
 // The caller passes opts._bypassLoGate=true.
 function _bypassLoGate(opts) { return !!(opts && opts._bypassLoGate); }
+// Same escape hatch for the LO SELF gate — used by the batch drainer so a
+// deferred email that reaches its release time actually goes out.
+function _bypassLoSelfGate(opts) { return !!(opts && opts._bypassLoSelfGate); }
 
 /** Notify one staff user. opts: {type,title,body,applicationId,link,emailTo,meta,lines,ctaLabel,greeting,note} */
 async function notifyStaff(staffId, opts) {
@@ -325,6 +334,26 @@ async function notifyStaff(staffId, opts) {
       }
     } catch (_) { /* fall through and send */ }
   }
+  // LO SELF gate — the LO's OWN inbox controls. Decides channel (both/email/
+  // inapp/off) + whether to defer to a batch window. Bypassable via
+  // opts._bypassLoSelfGate=true so the batch drainer can release a held email.
+  // Never throws — a broken table returns default {channel:'both',defer:false}.
+  let selfChannel = 'both';
+  let selfDefer = null;
+  let selfKey = null;
+  if (!_bypassLoSelfGate(opts) && staffId) {
+    try {
+      const d = await loSelfGate.decideForSelf(staffId, opts);
+      selfChannel = d.channel || 'both';
+      selfDefer = d.defer || null;
+      selfKey = d.key || null;
+      // channel='off' = user explicitly muted this file or set this notif to
+      // OFF — drop entirely (no in-app row, no email). Forced entries are
+      // detected inside the gate and never return 'off'.
+      if (selfChannel === 'off') return null;
+    } catch (_) { /* best-effort; keep going with defaults */ }
+  }
+
   // S1-01 control center: a manager can switch a member's notifications OFF. When
   // off, we still write the in-app row (so their in-app queue keeps working and
   // nothing is lost) but skip the EMAIL. On by default; unknown column / missing
@@ -350,6 +379,8 @@ async function notifyStaff(staffId, opts) {
   // in-app-only. Mirrors the #88 borrower policy where only MAJOR moments email.
   const inAppOnly = (opts.inAppOnly !== undefined) ? opts.inAppOnly : STAFF_INAPP_TYPES.has(opts.type);
   if (inAppOnly) emailOn = false;
+  // Self gate: 'inapp' forces in-app-only for the LO's own inbox.
+  if (selfChannel === 'inapp') emailOn = false;
   // Auto-attach the file's identity (subject tag + detail block + default
   // link/CTA) so every staff file email says WHICH file, without every call
   // site building it. No-op when there's no applicationId. (#88/#150 unchanged.)
@@ -359,6 +390,30 @@ async function notifyStaff(staffId, opts) {
      VALUES ('staff',$1,$2,$3,$4,$5,$6) RETURNING id`,
     [staffId, opts.type, opts.title, opts.body || null, opts.applicationId || null, opts.link || null]);
   const id = rows[0].id;
+  // Self-gate deferred: park the email in the batch queue instead of sending it
+  // live. The in-app row is already written above; the drainer will render a
+  // single digest per (staff_id, batch_key) at release_at, send it once, and
+  // mark each queued notification 'sent'. Vacation-drop returns channel='inapp'
+  // rather than a defer, so it never reaches this branch. On queue-failure we
+  // fall through and send live (never lose the notification).
+  if (emailOn && selfDefer && selfDefer.at) {
+    let queued = false;
+    try {
+      await loSelfGate.queueBatchedEmail({
+        staffId, notificationId: id,
+        notifKey: selfKey || notifCatalog.keyForType(opts.type, opts),
+        notifType: opts.type,
+        applicationId: opts.applicationId || null,
+        subject: opts.title || null,
+        bodyPreview: opts.body || null,
+        opts,
+        releaseAt: selfDefer.at,
+        batchKey: selfDefer.key || 'default',
+      });
+      queued = true;
+    } catch (_) { /* fall through to live send */ }
+    if (queued) return id;
+  }
   const to = emailOn ? (opts.emailTo ? [].concat(opts.emailTo) : await _staffEmail(staffId)) : [];
   _emailRow(id, to, opts, 'staff');   // fire-and-forget (marks 'skipped' when `to` is empty)
   return id;

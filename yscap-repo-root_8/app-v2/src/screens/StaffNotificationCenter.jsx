@@ -1157,6 +1157,369 @@ function RulesTab({ showToast }) {
 }
 
 /* ---- ANALYTICS TAB ---- */
+/* ================================================================
+   FOR ME — the LO's OWN inbox controls.
+   Distinct from the Catalog tab (which controls what BORROWERS receive).
+   This tab lets the LO turn down their OWN email volume: choose channel
+   (email + in-app / email only / in-app only / off) + frequency per
+   notification, plus delivery rules like batching, vacation, quiet hours,
+   weekend hold, presence-aware, and per-file mute/star.
+   ================================================================ */
+function ForMeTab({ showToast }) {
+  const [catalogItems, setCatalogItems] = useState([]);
+  const [prefs, setPrefs] = useState({});   // key → {channel, frequency}
+  const [rules, setRules] = useState(null);
+  const [rulesDirty, setRulesDirty] = useState(false);
+  const [savingRules, setSavingRules] = useState(false);
+  const [muted, setMuted] = useState([]);
+  const [starred, setStarred] = useState([]);
+  const [volume, setVolume] = useState(null);
+  const [err, setErr] = useState('');
+  const [q, setQ] = useState('');
+  const [category, setCategory] = useState('all');
+
+  const load = useCallback(async () => {
+    try {
+      const [c, p, r, mf, sf, v] = await Promise.all([
+        api.loNotifCatalog(),
+        api.loNotifSelfPrefs(),
+        api.loNotifDeliveryRules(),
+        api.loNotifMutedFiles().catch(() => ({ files: [] })),
+        api.loNotifStarredFiles().catch(() => ({ files: [] })),
+        api.loNotifSelfVolume(7).catch(() => null),
+      ]);
+      setCatalogItems(c.items || []);
+      const map = {};
+      for (const row of (p.prefs || [])) map[row.notif_key] = { channel: row.channel, frequency: row.frequency };
+      setPrefs(map);
+      setRules(r.rules || {});
+      setMuted(mf.files || []);
+      setStarred(sf.files || []);
+      setVolume(v);
+      setErr('');
+    } catch (e) { setErr(e.message || String(e)); }
+  }, []);
+  useEffect(() => { load(); }, [load]);
+
+  const savePref = async (key, patch) => {
+    const cur = prefs[key] || { channel: 'both', frequency: 'instant' };
+    const next = { ...cur, ...patch };
+    setPrefs({ ...prefs, [key]: next });
+    try {
+      await api.loNotifSelfSavePref(key, next);
+    } catch (e) { showToast?.('Save failed: ' + e.message); load(); }
+  };
+
+  const saveRules = async () => {
+    if (!rules) return;
+    setSavingRules(true);
+    try {
+      await api.loNotifDeliveryRulesPut(rules);
+      setRulesDirty(false);
+      showToast?.('Delivery rules saved.');
+    } catch (e) { showToast?.('Save failed: ' + e.message); }
+    setSavingRules(false);
+  };
+
+  const updateRules = (patch) => { setRules({ ...(rules || {}), ...patch }); setRulesDirty(true); };
+
+  const bulkSetChannel = async (ch) => {
+    const items = catalogItems.filter((it) => !it.forced).map((it) => {
+      const cur = prefs[it.key] || { channel: 'both', frequency: 'instant' };
+      return { key: it.key, channel: ch, frequency: cur.frequency };
+    });
+    try {
+      await api.loNotifSelfBulkSave(items);
+      const map = { ...prefs };
+      for (const it of items) map[it.key] = { channel: it.channel, frequency: it.frequency };
+      setPrefs(map);
+      showToast?.(`Set ${items.length} to ${labelForChannel(ch)}.`);
+    } catch (e) { showToast?.('Bulk save failed: ' + e.message); }
+  };
+
+  const filtered = catalogItems.filter((it) => {
+    if (category !== 'all' && it.category !== category) return false;
+    if (q) {
+      const s = (it.label + ' ' + it.description + ' ' + it.key).toLowerCase();
+      if (!s.includes(q.toLowerCase())) return false;
+    }
+    return true;
+  });
+
+  const cats = ['all', ...new Set(catalogItems.map((i) => i.category))];
+
+  if (err) return <div className="notice err">{err}</div>;
+  if (!rules) return <div className="panel muted">Loading…</div>;
+
+  return (
+    <>
+      {/* Volume summary */}
+      {volume && (
+        <div className="panel" style={{ marginBottom: 14, display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(140px, 1fr))', gap: 12 }}>
+          <Stat label="In-app · 7d" value={volume.inApp} sub="rows in your center" />
+          <Stat label="Emails · 7d" value={volume.emailed} sub="delivered to you" />
+          <Stat label="Suppressed" value={volume.suppressed} sub="in-app only" />
+          <Stat label="Held" value={volume.batchedPending} sub="awaiting a batch" tone={volume.batchedPending ? 'danger' : 'muted'} />
+        </div>
+      )}
+
+      {/* Master mode strip */}
+      <div className="panel" style={{ marginBottom: 14 }}>
+        <div style={{ fontWeight: 600, marginBottom: 4 }}>How email leaves the system for you</div>
+        <div className="muted small" style={{ marginBottom: 10 }}>
+          A master switch on top of your per-notification choices. In-app rows are always written — this only changes what EMAIL you get.
+        </div>
+        <div className="row" style={{ gap: 6, flexWrap: 'wrap' }}>
+          {[
+            { id: 'instant', label: 'Instant', hint: 'Each email as it fires' },
+            { id: 'batched', label: 'Batched', hint: 'One digest every N minutes' },
+            { id: 'digest_only', label: 'Digest only', hint: 'Only the scheduled digests' },
+            { id: 'off', label: 'No email', hint: 'In-app only, forever' },
+          ].map((m) => (
+            <button key={m.id} type="button"
+              onClick={() => updateRules({ master_mode: m.id })}
+              title={m.hint}
+              style={{
+                padding: '10px 14px', border: '1px solid var(--line)', borderRadius: 8,
+                background: rules.master_mode === m.id ? 'var(--gold, #AE8746)' : 'transparent',
+                color: rules.master_mode === m.id ? 'white' : 'var(--ivory)',
+                fontWeight: rules.master_mode === m.id ? 600 : 400, cursor: 'pointer',
+              }}>
+              {m.label}
+              <div className="muted small" style={{ marginTop: 2, color: rules.master_mode === m.id ? 'rgba(255,255,255,.85)' : 'var(--muted)' }}>{m.hint}</div>
+            </button>
+          ))}
+        </div>
+        {rules.master_mode === 'batched' && (
+          <div className="row" style={{ marginTop: 12, gap: 8, alignItems: 'center' }}>
+            <label className="muted small">Batch window</label>
+            <select value={rules.batch_minutes} onChange={(e) => updateRules({ batch_minutes: parseInt(e.target.value, 10) })}
+              style={{ padding: '4px 8px', border: '1px solid var(--line)', borderRadius: 4 }}>
+              <option value={15}>Every 15 min</option>
+              <option value={30}>Every 30 min</option>
+              <option value={60}>Every hour</option>
+              <option value={240}>Every 4 hours</option>
+            </select>
+          </div>
+        )}
+      </div>
+
+      {/* Delivery rules grid */}
+      <div className="panel" style={{ marginBottom: 14 }}>
+        <div style={{ fontWeight: 600, marginBottom: 4 }}>Quiet hours, weekends & vacation</div>
+        <div className="muted small" style={{ marginBottom: 10 }}>
+          Hold non-urgent email during hours you're not working. DocuSign, security and account emails always come through.
+        </div>
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(230px, 1fr))', gap: 14 }}>
+          <Field label="Time zone">
+            <input value={rules.timezone || ''} onChange={(e) => updateRules({ timezone: e.target.value })}
+              placeholder="America/New_York" style={inp} />
+          </Field>
+          <Field label="Quiet hours start">
+            <input type="time" value={rules.quiet_hours_start || ''}
+              onChange={(e) => updateRules({ quiet_hours_start: e.target.value || null })} style={inp} />
+          </Field>
+          <Field label="Quiet hours end">
+            <input type="time" value={rules.quiet_hours_end || ''}
+              onChange={(e) => updateRules({ quiet_hours_end: e.target.value || null })} style={inp} />
+          </Field>
+          <Field label="Weekend hold">
+            <label className="row" style={{ gap: 8, alignItems: 'center' }}>
+              <input type="checkbox" checked={!!rules.weekend_hold} onChange={(e) => updateRules({ weekend_hold: e.target.checked })} />
+              <span>Hold Sat/Sun → Monday morning</span>
+            </label>
+          </Field>
+          <Field label="Workdays">
+            <WorkDayMask mask={rules.work_days_mask || 127} onChange={(m) => updateRules({ work_days_mask: m })} />
+          </Field>
+          <Field label="Daily digest at (hour)">
+            <input type="number" min={0} max={23} value={rules.daily_digest_hour}
+              onChange={(e) => updateRules({ daily_digest_hour: parseInt(e.target.value, 10) })} style={inp} />
+          </Field>
+          <Field label="Weekly digest day">
+            <select value={rules.weekly_digest_dow} onChange={(e) => updateRules({ weekly_digest_dow: parseInt(e.target.value, 10) })} style={inp}>
+              <option value={1}>Monday</option><option value={2}>Tuesday</option>
+              <option value={3}>Wednesday</option><option value={4}>Thursday</option>
+              <option value={5}>Friday</option><option value={6}>Saturday</option>
+              <option value={7}>Sunday</option>
+            </select>
+          </Field>
+          <Field label="Presence-aware (mins)" hint="Skip live email if you were in the portal recently. 0 = off.">
+            <input type="number" min={0} max={1440} value={rules.presence_hold_minutes}
+              onChange={(e) => updateRules({ presence_hold_minutes: parseInt(e.target.value, 10) || 0 })} style={inp} />
+          </Field>
+          <Field label="Volume cap / hour" hint="Extra emails go to the next batch. 0 = no cap.">
+            <input type="number" min={0} max={1000} value={rules.volume_cap_per_hour}
+              onChange={(e) => updateRules({ volume_cap_per_hour: parseInt(e.target.value, 10) || 0 })} style={inp} />
+          </Field>
+          <Field label="Vacation from">
+            <input type="datetime-local" value={fmtDT(rules.vacation_from)}
+              onChange={(e) => updateRules({ vacation_from: e.target.value || null })} style={inp} />
+          </Field>
+          <Field label="Vacation to">
+            <input type="datetime-local" value={fmtDT(rules.vacation_to)}
+              onChange={(e) => updateRules({ vacation_to: e.target.value || null })} style={inp} />
+          </Field>
+          <Field label="Vacation action">
+            <label className="row" style={{ gap: 8, alignItems: 'center' }}>
+              <input type="checkbox" checked={!!rules.vacation_drop} onChange={(e) => updateRules({ vacation_drop: e.target.checked })} />
+              <span>Drop non-urgent (else deliver on return)</span>
+            </label>
+          </Field>
+        </div>
+        <div className="row" style={{ gap: 8, marginTop: 12, justifyContent: 'flex-end' }}>
+          {rulesDirty && <span className="muted small">Unsaved changes</span>}
+          <button className="btn btn-gold" disabled={!rulesDirty || savingRules} onClick={saveRules}>
+            {savingRules ? 'Saving…' : 'Save rules'}
+          </button>
+        </div>
+      </div>
+
+      {/* Per-notification channel + frequency table */}
+      <div className="panel" style={{ marginBottom: 14 }}>
+        <div className="row" style={{ marginBottom: 10, gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+          <div style={{ fontWeight: 600, flex: 1 }}>Per-notification: how you receive each one</div>
+          <input placeholder="Search…" value={q} onChange={(e) => setQ(e.target.value)}
+            style={{ ...inp, width: 180 }} />
+          <select value={category} onChange={(e) => setCategory(e.target.value)} style={inp}>
+            {cats.map((c) => <option key={c} value={c}>{c === 'all' ? 'All categories' : c}</option>)}
+          </select>
+        </div>
+        <div className="row" style={{ marginBottom: 10, gap: 6, flexWrap: 'wrap' }}>
+          <span className="muted small" style={{ marginRight: 6 }}>Set all to:</span>
+          {['both', 'email', 'inapp', 'off'].map((c) => (
+            <button key={c} onClick={() => bulkSetChannel(c)} className="btn"
+              style={{ padding: '4px 10px', fontSize: 12 }}>{labelForChannel(c)}</button>
+          ))}
+        </div>
+        <div style={{ maxHeight: 520, overflowY: 'auto' }}>
+          <table style={{ width: '100%', borderCollapse: 'collapse' }}>
+            <thead>
+              <tr style={{ borderBottom: '1px solid var(--line)', textAlign: 'left' }}>
+                <th style={{ padding: 8 }}>Notification</th>
+                <th style={{ padding: 8 }}>Where</th>
+                <th style={{ padding: 8 }}>When (email)</th>
+              </tr>
+            </thead>
+            <tbody>
+              {filtered.map((it) => {
+                const p = prefs[it.key] || { channel: 'both', frequency: 'instant' };
+                const forced = it.forced;
+                return (
+                  <tr key={it.key} style={{ borderBottom: '1px solid var(--line)' }}>
+                    <td style={{ padding: 8 }}>
+                      <div>{it.label}
+                        {forced && <span className="ec-pill ec-pill-ok" style={{ marginLeft: 6, fontSize: 10 }}>required</span>}
+                      </div>
+                      <div className="muted small">{it.description}</div>
+                    </td>
+                    <td style={{ padding: 8 }}>
+                      <select disabled={forced} value={p.channel}
+                        onChange={(e) => savePref(it.key, { channel: e.target.value })} style={inp}>
+                        <option value="both">Email + in-app</option>
+                        <option value="email">Email only</option>
+                        <option value="inapp">In-app only</option>
+                        <option value="off">Off</option>
+                      </select>
+                    </td>
+                    <td style={{ padding: 8 }}>
+                      <select disabled={forced || p.channel === 'inapp' || p.channel === 'off'} value={p.frequency}
+                        onChange={(e) => savePref(it.key, { frequency: e.target.value })} style={inp}>
+                        <option value="instant">Instant</option>
+                        <option value="hourly">Hourly digest</option>
+                        <option value="daily">Daily digest</option>
+                        <option value="weekly">Weekly digest</option>
+                      </select>
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      {/* Muted + starred files */}
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(340px, 1fr))', gap: 14 }}>
+        <div className="panel">
+          <div style={{ fontWeight: 600, marginBottom: 6 }}>Muted files ({muted.length})</div>
+          <div className="muted small" style={{ marginBottom: 8 }}>You get NO email or in-app rows from these files. DocuSign / security / account still send.</div>
+          {muted.length === 0 && <div className="muted small">No files muted.</div>}
+          {muted.map((f) => (
+            <div key={f.application_id} className="row" style={{ padding: '6px 0', borderTop: '1px solid var(--line)', gap: 8, alignItems: 'center' }}>
+              <div style={{ flex: 1 }}>
+                <div>{f.ys_loan_number || 'Loan #—'}</div>
+                <div className="muted small">{fileAddr(f.property_address)}</div>
+                {f.mute_until && <div className="muted small">Until {new Date(f.mute_until).toLocaleString()}</div>}
+              </div>
+              <button className="btn" onClick={() => api.loNotifUnmuteFile(f.application_id).then(() => load())}>Unmute</button>
+            </div>
+          ))}
+        </div>
+        <div className="panel">
+          <div style={{ fontWeight: 600, marginBottom: 6 }}>Starred files ({starred.length})</div>
+          <div className="muted small" style={{ marginBottom: 8 }}>Priority follow — starred files bypass batching, quiet hours, and weekend holds so their emails come through immediately.</div>
+          {starred.length === 0 && <div className="muted small">No files starred.</div>}
+          {starred.map((f) => (
+            <div key={f.application_id} className="row" style={{ padding: '6px 0', borderTop: '1px solid var(--line)', gap: 8, alignItems: 'center' }}>
+              <div style={{ flex: 1 }}>
+                <div>{f.ys_loan_number || 'Loan #—'}</div>
+                <div className="muted small">{fileAddr(f.property_address)}</div>
+              </div>
+              <button className="btn" onClick={() => api.loNotifUnstarFile(f.application_id).then(() => load())}>Unstar</button>
+            </div>
+          ))}
+        </div>
+      </div>
+    </>
+  );
+}
+
+const inp = { padding: '6px 8px', border: '1px solid var(--line)', borderRadius: 4, background: 'var(--ink-2, var(--paper, #fff))', color: 'var(--ivory)', width: '100%' };
+
+function Field({ label, hint, children }) {
+  return (
+    <div>
+      <div className="muted small" style={{ marginBottom: 4 }}>{label}</div>
+      {children}
+      {hint && <div className="muted small" style={{ marginTop: 2, fontSize: 11 }}>{hint}</div>}
+    </div>
+  );
+}
+function WorkDayMask({ mask, onChange }) {
+  const days = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
+  return (
+    <div className="row" style={{ gap: 4, flexWrap: 'wrap' }}>
+      {days.map((d, i) => {
+        const bit = 1 << i;
+        const on = (mask & bit) !== 0;
+        return (
+          <button key={d} type="button" onClick={() => onChange(mask ^ bit)}
+            style={{
+              padding: '4px 8px', border: '1px solid var(--line)', borderRadius: 4,
+              background: on ? 'var(--gold, #AE8746)' : 'transparent',
+              color: on ? 'white' : 'var(--ivory)', fontSize: 12, cursor: 'pointer',
+            }}>{d}</button>
+        );
+      })}
+    </div>
+  );
+}
+function fmtDT(ts) {
+  if (!ts) return '';
+  const d = new Date(ts);
+  if (isNaN(d.getTime())) return '';
+  const pad = (n) => String(n).padStart(2, '0');
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
+}
+function labelForChannel(c) {
+  return c === 'both' ? 'Email + in-app' : c === 'email' ? 'Email only' : c === 'inapp' ? 'In-app only' : 'Off';
+}
+function fileAddr(a) {
+  if (!a || typeof a !== 'object') return '';
+  return a.oneLine || [a.street || a.line1, a.city, a.state].filter(Boolean).join(', ') || '';
+}
+
 function AnalyticsTab() {
   const [days, setDays] = useState(30);
   const [data, setData] = useState(null);
@@ -1274,12 +1637,14 @@ export default function StaffNotificationCenter() {
         <Tab active={tab === 'catalog'} onClick={() => setTab('catalog')}>Catalog</Tab>
         <Tab active={tab === 'drafts'} onClick={() => setTab('drafts')} badge={pendingCount}>Drafts</Tab>
         <Tab active={tab === 'rules'} onClick={() => setTab('rules')}>Rules</Tab>
+        <Tab active={tab === 'forme'} onClick={() => setTab('forme')}>For me</Tab>
         <Tab active={tab === 'analytics'} onClick={() => setTab('analytics')}>Analytics</Tab>
       </div>
 
       {tab === 'catalog'   && <CatalogTab />}
       {tab === 'drafts'    && <DraftsTab onCountChange={setPendingCount} showToast={showToast} />}
       {tab === 'rules'     && <RulesTab showToast={showToast} />}
+      {tab === 'forme'     && <ForMeTab showToast={showToast} />}
       {tab === 'analytics' && <AnalyticsTab />}
 
       <ComposeModal open={composeOpen} onClose={() => setComposeOpen(false)}
