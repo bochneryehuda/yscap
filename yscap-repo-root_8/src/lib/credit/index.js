@@ -1116,7 +1116,77 @@ async function reuseFromProfile(appId, opts = {}) {
   };
 }
 
+// Does THIS file already carry a completed credit report for this borrower?
+// If so, auto-reuse must NOT run again (the reuse itself creates one, so this is
+// also what makes the auto-import fire exactly ONCE per borrower per file).
+async function fileHasBorrowerReport(appId, borrowerId) {
+  const r = await db.query(
+    `SELECT 1 FROM credit_reports
+      WHERE application_id=$1 AND borrower_id=$2 AND status='completed' LIMIT 1`,
+    [appId, borrowerId]);
+  return r.rowCount > 0;
+}
+
+// Statuses where auto-importing credit is pointless or unwanted. Terminal files
+// are already refused by ensureFileConditions; a funded/closed file is past the
+// point where a fresh credit condition matters. Early-stage files (intake →
+// underwriting → approved) are exactly where a new file for an existing borrower
+// should already have their credit.
+const AUTO_REUSE_SKIP_STATUS = new Set([
+  'declined', 'withdrawn', 'cancelled', 'funded', 'closed',
+]);
+
+/**
+ * #16 — the credit report is saved to the BORROWER, so a NEW file for the same
+ * borrower within the 120-day window should ALREADY have the credit info without
+ * anyone re-pulling or clicking "reuse". This is the AUTOMATIC half of the manual
+ * reuse button: called at the ensureFileConditions chokepoint (every creation
+ * path + key-field change), it silently clones each borrower's freshest on-record
+ * report onto this file when the file doesn't already have one.
+ *
+ * HARD rules: best-effort (NEVER throws — a credit hiccup must not break file
+ * creation), per-borrower (never crosses borrowers — scoped by borrower_id),
+ * fires at most once per borrower per file (the fileHasBorrowerReport pre-check),
+ * respects the 120-day window (via latestBorrowerReport/reuseFromProfile), and is
+ * kill-switchable without a deploy (CREDIT_AUTO_REUSE_DISABLED=1).
+ */
+async function autoReuseCreditForFile(appId, { status = null } = {}) {
+  if (process.env.CREDIT_AUTO_REUSE_DISABLED === '1') return { ok: false, skipped: 'disabled' };
+  if (status && AUTO_REUSE_SKIP_STATUS.has(String(status))) return { ok: false, skipped: 'status' };
+  const out = { ok: true, reused: [], skipped: [] };
+  let borrowers;
+  try {
+    ({ borrowers } = await fileBorrowers(appId));
+  } catch (_) { return { ok: false, skipped: 'no-file' }; }
+  for (const bb of borrowers) {
+    try {
+      if (!bb.borrowerId) { out.skipped.push({ role: bb.role, why: 'no-borrower' }); continue; }
+      // Already has credit on THIS file for this borrower → nothing to do (also the
+      // idempotency guard: a reuse creates a completed row, so re-running skips).
+      if (await fileHasBorrowerReport(appId, bb.borrowerId)) {
+        out.skipped.push({ borrowerId: bb.borrowerId, why: 'already-on-file' }); continue;
+      }
+      const src = await latestBorrowerReport(bb.borrowerId, { withinDays: FRESH_DAYS, excludeAppId: appId });
+      if (!src) { out.skipped.push({ borrowerId: bb.borrowerId, why: 'none-on-record' }); continue; }
+      // A source with no stored data file can only be cloned as an 'error' row,
+      // which never satisfies the completed-report idempotency guard above — so it
+      // would re-fire on EVERY ensure. Skip it (a degenerate legacy row); the
+      // manual reuse button still surfaces it for a human to decide.
+      if (!src.parsed) { out.skipped.push({ borrowerId: bb.borrowerId, why: 'source-no-data' }); continue; }
+      const res = await reuseFromProfile(appId, {
+        borrowerId: bb.borrowerId, sourceReportId: src.id, actorId: null,
+      });
+      out.reused.push({ borrowerId: bb.borrowerId, creditReportId: res.creditReportId, fromApplicationId: res.fromApplicationId });
+    } catch (e) {
+      // Never let one borrower's failure abort the rest or the caller.
+      out.skipped.push({ borrowerId: bb.borrowerId, why: 'error', error: (e && e.message) || String(e) });
+    }
+  }
+  return out;
+}
+
 module.exports = {
   preview, importCredit, fileCredit, borrowerScore, PULL_TYPES, REQUEST_TYPES,
   latestBorrowerReport, borrowerCreditReports, reuseFromProfile, ageDaysOf,
+  autoReuseCreditForFile,
 };

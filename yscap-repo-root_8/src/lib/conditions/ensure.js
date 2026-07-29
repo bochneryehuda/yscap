@@ -50,6 +50,18 @@ async function ensureFileConditions(appId, { reason = 'ensure' } = {}) {
         [a.id, JSON.stringify({ reason })]);
     } catch (_) { /* audit is best-effort */ }
   }
+  // #16 — a credit report is saved to the BORROWER's profile, so a NEW file for
+  // the same borrower within 120 days should ALREADY have the credit info with
+  // NO one re-pulling or clicking "reuse". This is the automatic import: it fires
+  // at most once per borrower per file (it skips a borrower already carrying a
+  // report here), respects the freshness window, and is fully best-effort — a
+  // credit hiccup must never break file/condition creation.
+  try {
+    const credit = require('../credit');
+    await credit.autoReuseCreditForFile(a.id, { status: a.status });
+  } catch (e) {
+    console.warn(`[conditions] auto credit reuse skipped for ${a.id}: ${(e && e.message) || e}`);
+  }
   return { ok: true, items: n };
 }
 
