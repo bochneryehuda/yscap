@@ -128,6 +128,101 @@ await (async () => {
 })();
 
 
+// 6. autoReuseCreditForFile — automatically reuses a fresh cross-file report for a
+//    borrower who has NONE on this file yet (#16 automatic import).
+await (async () => {
+  const calls = { store: 0 };
+  db.query = async (sql, params) => {
+    if (/FROM applications a\b/i.test(sql) && /a\.borrower_id/i.test(sql) && /co_borrower_id/i.test(sql)) {
+      return { rows: [{ id: 'appNew', borrower_id: 'b1', co_borrower_id: null, property_address: {}, ys_loan_number: 'YSNEW' }] };
+    }
+    if (/FROM borrowers WHERE id/i.test(sql)) {
+      return { rows: [{ id: 'b1', first_name: 'Ada', last_name: 'Lovelace', ssn_last4: '1234', current_address: {}, fico: null }] };
+    }
+    // fileHasBorrowerReport → nothing on this file yet.
+    if (/SELECT 1 FROM credit_reports/i.test(sql) && /application_id=\$1 AND borrower_id=\$2/i.test(sql)) {
+      return { rows: [], rowCount: 0 };
+    }
+    // Both the windowed lookup (latestBorrowerReport) and the pinned lookup
+    // (reuseFromProfile with sourceReportId) resolve to the same source report.
+    if (/FROM credit_reports cr/i.test(sql)) {
+      return { rows: [{ id: 'srcRep', application_id: 'appOld', borrower_id: 'b1', report_date: daysAgo(20),
+        middle_score: 705, vendor_report_id: 'V9', xml_document_id: 'xd', pdf_document_id: 'pd',
+        parsed: { middleScore: 705, reportId: 'V9', borrower: { ssnLast4: '1234' } },
+        interface_version: '3.4', bureaus: ['Equifax'], pull_type: 'soft', request_type: 'reissue',
+        ys_loan_number: 'YSOLD', property_address: {} }] };
+    }
+    if (/FROM documents WHERE id/i.test(sql)) return { rows: [{ storage_ref: 'ref/' + params[0] }] };
+    return { rows: [], rowCount: 0 };
+  };
+  storage.read = async (ref) => Buffer.from(ref.endsWith('xd') ? '<xml/>' : '%PDF-1.4');
+  store.storeImport = async () => { calls.store++; return { creditReportId: 'newRep', ficoWritten: 705 }; };
+
+  const out = await credit.autoReuseCreditForFile('appNew', { status: 'file_intake' });
+  restore();
+  assert.strictEqual(out.ok, true);
+  assert.strictEqual(out.reused.length, 1, 'one borrower auto-reused');
+  assert.strictEqual(out.reused[0].borrowerId, 'b1');
+  assert.strictEqual(calls.store, 1, 'storeImport fired once');
+  ok('autoReuseCreditForFile auto-imports a fresh cross-file report');
+})();
+
+
+// 7. autoReuseCreditForFile — SKIPS a borrower who already has a report on this file
+//    (idempotent: it never re-imports on a re-sync).
+await (async () => {
+  let storeCalled = false;
+  db.query = async (sql) => {
+    if (/FROM applications a\b/i.test(sql) && /co_borrower_id/i.test(sql)) {
+      return { rows: [{ id: 'appNew', borrower_id: 'b1', co_borrower_id: null, property_address: {} }] };
+    }
+    if (/FROM borrowers WHERE id/i.test(sql)) return { rows: [{ id: 'b1', ssn_last4: '1234', current_address: {} }] };
+    if (/SELECT 1 FROM credit_reports/i.test(sql) && /application_id=\$1 AND borrower_id=\$2/i.test(sql)) {
+      return { rows: [{ '?column?': 1 }], rowCount: 1 };   // already on file
+    }
+    return { rows: [], rowCount: 0 };
+  };
+  store.storeImport = async () => { storeCalled = true; return {}; };
+  const out = await credit.autoReuseCreditForFile('appNew', { status: 'file_intake' });
+  restore();
+  assert.strictEqual(out.reused.length, 0, 'nothing reused');
+  assert.strictEqual(storeCalled, false, 'storeImport never fired');
+  assert.ok(out.skipped.some((s) => s.why === 'already-on-file'));
+  ok('autoReuseCreditForFile skips a borrower already carrying a report here');
+})();
+
+
+// 8. autoReuseCreditForFile — no-ops on a funded/terminal status and when disabled.
+await (async () => {
+  const funded = await credit.autoReuseCreditForFile('appX', { status: 'funded' });
+  assert.strictEqual(funded.skipped, 'status');
+  process.env.CREDIT_AUTO_REUSE_DISABLED = '1';
+  const off = await credit.autoReuseCreditForFile('appX', { status: 'file_intake' });
+  delete process.env.CREDIT_AUTO_REUSE_DISABLED;
+  assert.strictEqual(off.skipped, 'disabled');
+  ok('autoReuseCreditForFile no-ops on funded status and when kill-switched off');
+})();
+
+
+// 9. autoReuseCreditForFile — never throws; a per-borrower error is captured, not raised.
+await (async () => {
+  db.query = async (sql) => {
+    if (/FROM applications a\b/i.test(sql) && /co_borrower_id/i.test(sql)) {
+      return { rows: [{ id: 'appNew', borrower_id: 'b1', co_borrower_id: null, property_address: {} }] };
+    }
+    if (/FROM borrowers WHERE id/i.test(sql)) return { rows: [{ id: 'b1', ssn_last4: '1234', current_address: {} }] };
+    if (/SELECT 1 FROM credit_reports/i.test(sql)) throw new Error('db blew up');
+    return { rows: [], rowCount: 0 };
+  };
+  let threw = null; let out = null;
+  try { out = await credit.autoReuseCreditForFile('appNew', { status: 'file_intake' }); } catch (e) { threw = e; }
+  restore();
+  assert.strictEqual(threw, null, 'it never throws');
+  assert.ok(out.skipped.some((s) => s.why === 'error'), 'the error was captured');
+  ok('autoReuseCreditForFile never throws — a per-borrower failure is captured');
+})();
+
+
 }
 main().then(()=>{}).catch((e)=>{console.error(e);process.exit(1)});
 process.on('exit', () => console.log(`\ncredit profile/reuse pure — ${passed} checks passed`));
