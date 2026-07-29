@@ -1,6 +1,6 @@
--- 278_staff_last_active_and_batch_retry.sql
+-- 369_staff_last_active_and_batch_retry.sql
 --
--- Two tiny follow-ups for the "For me" work in db/277:
+-- Two tiny follow-ups for the "For me" work in db/368:
 --
 --   (a) staff_users.last_active_at — a lightweight presence stamp so the LO's
 --       "presence-aware" rule (skip live email when the LO was just in the

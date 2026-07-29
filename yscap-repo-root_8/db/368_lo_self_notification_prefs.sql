@@ -1,4 +1,4 @@
--- 246_lo_self_notification_prefs.sql — the loan-officer's OWN inbox.
+-- 368_lo_self_notification_prefs.sql — the loan-officer's OWN inbox.
 --
 -- Companion to lo_notification_prefs (which controls what BORROWERS on the
 -- LO's files receive). This set controls what THE LO THEMSELVES receives —

@@ -22,7 +22,7 @@ const loGate = require('./lo-notification-gate');
 // Loan-officer SELF gate — the LO's OWN inbox controls (channel + frequency +
 // batching + vacation + quiet hours + muted files). Runs on notifyStaff for
 // every staff recipient, in addition to (not replacing) the borrower LO gate
-// above. See src/lib/lo-self-gate.js + db/246_lo_self_notification_prefs.sql.
+// above. See src/lib/lo-self-gate.js + db/368_lo_self_notification_prefs.sql.
 const loSelfGate = require('./lo-self-gate');
 const notifCatalog = require('./notification-catalog');
 
