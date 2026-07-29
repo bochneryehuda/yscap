@@ -764,12 +764,14 @@ router.put('/notification-center/delivery-rules', async (req, res) => {
   const daily_digest_hour = num(b.daily_digest_hour, 8, 0, 23);
   const weekly_digest_enabled = b.weekly_digest_enabled !== false;
   const weekly_digest_dow = num(b.weekly_digest_dow, 1, 1, 7);
-  const vacation_from = wallInTz(b.vacation_from, b.timezone || timezone);
-  const vacation_to = wallInTz(b.vacation_to, b.timezone || timezone);
+  // Resolve the timezone FIRST so vacation_from/to can be parsed as wall-time
+  // in it (else a TDZ read below crashes the whole PUT — audit-caught).
+  const timezone = b.timezone && String(b.timezone).length < 64 ? String(b.timezone) : 'America/New_York';
+  const vacation_from = wallInTz(b.vacation_from, timezone);
+  const vacation_to = wallInTz(b.vacation_to, timezone);
   const vacation_drop = !!b.vacation_drop;
   const vacation_note = b.vacation_note ? String(b.vacation_note).slice(0, 400) : null;
   const weekend_hold = !!b.weekend_hold;
-  const timezone = b.timezone && String(b.timezone).length < 64 ? String(b.timezone) : 'America/New_York';
   const quiet_hours_start = HH_MM.test(String(b.quiet_hours_start || '')) ? b.quiet_hours_start : null;
   const quiet_hours_end = HH_MM.test(String(b.quiet_hours_end || '')) ? b.quiet_hours_end : null;
   const work_days_mask = num(b.work_days_mask, 127, 0, 127);

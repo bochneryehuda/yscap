@@ -455,6 +455,10 @@ const rulesRow = async (staffId) => (await db.query(
 
     // ── "FOR ME" — the LO's OWN inbox controls ──────────────────────────
     H('FOR ME — self gate');
+    // The CACHE INVALIDATION section above reassigned appId's officer to
+    // loId2 — reassign back to loId so this section's mute-file/star-file
+    // team-membership check passes (`_staffOnFile` reads application_assignees).
+    await call(server, 'POST', `/api/staff/applications/${appId}/assign`, adminTok, { loanOfficerId: loId });
     const selfGate = require('../src/lib/lo-self-gate');
 
     // Default: no prefs, no rules → channel='both', not deferred.
