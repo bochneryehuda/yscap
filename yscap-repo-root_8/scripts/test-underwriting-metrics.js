@@ -27,6 +27,26 @@ const { computeMetrics, capsFromRegistration, DEFAULT_CAPS } = require('../src/l
   assert.strictEqual(partial.ltc.cap, DEFAULT_CAPS.ltc.cap, 'missing maxLtc keeps the generic LTC cap');
 }
 
+// ---- Financed interest reserve in the LTC cost basis (owner-reported 2026-07-29): the AI review
+//      reported a wrong ~95% LTC because it left the financed interest reserve OUT of the cost. The
+//      cost basis must match the frozen engine: purchase + rehab + financed reserve. ----
+{
+  // Total loan 100k, cost = 90k purchase + 10k rehab = 100k → 100% WITHOUT the reserve, but the loan
+  // was sized with a 5k financed reserve in the cost, so the real basis is 105k → 95.24%.
+  const noReserve = computeMetrics({ loanAmount: 100000, purchasePrice: 90000, rehabBudget: 10000 });
+  assert.strictEqual(noReserve.metrics.find((m) => m.key === 'ltc').baseAmount, 100000,
+    'without a financed reserve the cost basis is purchase + rehab');
+  const withReserve = computeMetrics({ loanAmount: 100000, purchasePrice: 90000, rehabBudget: 10000, financedReserve: 5000 });
+  const ltc = withReserve.metrics.find((m) => m.key === 'ltc');
+  assert.strictEqual(ltc.baseAmount, 105000, 'the financed reserve is added to the LTC cost basis');
+  assert.ok(/interest reserve/i.test(ltc.baseLabel), 'the basis label says the reserve is included');
+  assert.strictEqual(ltc.value, 0.95, 'LTC drops from 100% to 95% once the reserve is in cost (rounded to 2dp)');
+  // Gold reno/bridge finance ZERO reserve → passing 0 is a no-op (basis unchanged).
+  const goldReno = computeMetrics({ loanAmount: 100000, purchasePrice: 90000, rehabBudget: 10000, financedReserve: 0 });
+  assert.strictEqual(goldReno.metrics.find((m) => m.key === 'ltc').baseAmount, 100000,
+    'a zero financed reserve (Gold reno/bridge) leaves the cost basis unchanged');
+}
+
 // ---- Per-program CEILING fallback (owner-directed 2026-07-21): when the registration stored no
 //      caps (old file / rare engine path) BUT we know the registered program name, use the loosest
 //      per-tier cap the frozen engine ever applies for that program — never the generic 90% default

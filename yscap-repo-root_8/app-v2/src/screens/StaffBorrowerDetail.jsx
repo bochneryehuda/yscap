@@ -8,6 +8,7 @@ import BorrowerViewButton from '../components/BorrowerViewButton.jsx';
 import { passwordProblem } from '../lib/password.js';
 import { BorrowerProfileForm, BorrowerSsnRow, NameSplitPrompt } from '../components/BorrowerProfilePanel.jsx';
 import { fullNameOf } from '../lib/personName.js';
+import { BorrowerContacts } from '../components/FileContacts.jsx';
 
 // Borrower CRM hub — the single place staff see everything about a person:
 // personal info + editable CRM fields, their loan files ("mortgages with us"),
@@ -30,7 +31,7 @@ function ago(iso) {
   const mo = Math.floor(d / 30); if (mo < 12) return `${mo}mo ago`;
   return `${Math.floor(mo / 12)}y ago`;
 }
-const fmtDate = (iso) => (fmtDay(iso, { year: 'numeric', month: 'short', day: 'numeric' }, 'en-US') || '—');
+const fmtDate = (iso) => (fmtDay(iso) || '—');   // MM/DD/YYYY (industry standard)
 const fmtDateTime = (iso) => (iso ? new Date(iso).toLocaleString('en-US', { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' }) : '');
 function addr(a) {
   if (!a) return '—';
@@ -217,6 +218,10 @@ function Overview({ b, onChanged }) {
         <Row k="In system since" v={fmtDate(b.created_at)} />
       </div>
       <ContactBook b={b} onChanged={onChanged} />
+      {/* Vendors (title, insurance, attorney, realtor…) this borrower has used
+          across ALL their files — one place to see who's been released for them
+          (owner-directed). Read-only aggregate keyed on the borrower. */}
+      <BorrowerContacts borrowerId={b.id} isStaff />
       {(b.sharing || []).length > 0 && (
         <div className="notice" style={{ marginTop: 12, color: '#141B22' }}>
           <strong>This email is shared.</strong>{' '}
