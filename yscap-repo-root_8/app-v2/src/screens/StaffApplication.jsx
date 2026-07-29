@@ -866,7 +866,7 @@ function useStickyFilter(key, fallback) {
   return [v, set];
 }
 
-function Item({ it, team, onPatch, role, docs, onUploadTo, onDropTo, onReviewDoc, onDownloadDoc, dlBusy, onPreview, appId, onChanged, canImportCredit }) {
+function Item({ it, team, onPatch, role, docs, onUploadTo, onDropTo, onReviewDoc, onDownloadDoc, dlBusy, onPreview, appId, onChanged, canImportCredit, fullscreen = false }) {
   const [open, setOpen] = useState(false);
   // EVERY condition is a compact line until you open it (owner-directed
   // 2026-07-28: "one compact line each, click to open the one you're working").
@@ -884,7 +884,9 @@ function Item({ it, team, onPatch, role, docs, onUploadTo, onDropTo, onReviewDoc
   const itemDocs = (isDoc && docs)
     ? docs.filter(d => d.checklist_item_id === it.id && d.is_current && d.source_type !== 'chat_attachment')
     : [];
-  const collapsed = expandOverride === null ? true : !expandOverride;
+  // In full screen everything opens by default (owner-directed); the per-row
+  // manual override still wins, so you can collapse an internal condition by hand.
+  const collapsed = expandOverride === null ? !fullscreen : !expandOverride;
   if (collapsed) {
     return (
       // data-keep-scroll: a stable handle so a refresh can put this row back
@@ -999,7 +1001,7 @@ function Item({ it, team, onPatch, role, docs, onUploadTo, onDropTo, onReviewDoc
                             <div className="row" key={doc.id} style={{ gap: 8, flexWrap: 'wrap' }}>
                               <span className="small" style={{ flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{doc.filename}</span>
                               <span className="pill" style={rs === 'accepted' ? { borderColor: 'var(--ok)', color: 'var(--ok)' } : rs === 'rejected' ? { borderColor: 'var(--danger)', color: 'var(--danger)' } : undefined}>{rs}</span>
-                              <DocActions doc={doc} role={role} onReviewDoc={onReviewDoc}
+                              <DocActions doc={doc} role={role} onReviewDoc={onReviewDoc} fullscreen={fullscreen}
                                 onDownloadDoc={onDownloadDoc} onPreview={onPreview} dlBusy={dlBusy}
                                 onReplace={onUploadTo ? () => onUploadTo({ itemId: it.id, slot: slot.label, replaceDocumentId: doc.id }) : null} />
                             </div>
@@ -1030,7 +1032,7 @@ function Item({ it, team, onPatch, role, docs, onUploadTo, onDropTo, onReviewDoc
                     <span className="muted small" style={{ minWidth: 140 }}>{d.slot_label || `Document ${i + 1}`}</span>
                     <span className="small" style={{ flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{d.filename}</span>
                     <span className="pill" style={rs === 'accepted' ? { borderColor: 'var(--ok)', color: 'var(--ok)' } : rs === 'rejected' ? { borderColor: 'var(--danger)', color: 'var(--danger)' } : undefined}>{rs}</span>
-                    <DocActions doc={d} role={role} onReviewDoc={onReviewDoc}
+                    <DocActions doc={d} role={role} onReviewDoc={onReviewDoc} fullscreen={fullscreen}
                       onDownloadDoc={onDownloadDoc} onPreview={onPreview} dlBusy={dlBusy}
                       onReplace={(onUploadTo && d.source_type !== 'system')
                         ? () => onUploadTo({ itemId: it.id, slot: d.slot_label || undefined, replaceDocumentId: d.id }) : null} />
@@ -2105,7 +2107,7 @@ function StaffContactEntry({ appId, toolKey, current, onSaved }) {
   );
 }
 
-function BorrowerConditions({ appId, app, items, docs, onPatch, onReviewDoc, onDownloadDoc, dlBusy, role, onUploadTo, onDropTo, onChanged, onPreview, onOpenStudio, team, canImportCredit }) {
+function BorrowerConditions({ appId, app, items, docs, onPatch, onReviewDoc, onDownloadDoc, dlBusy, role, onUploadTo, onDropTo, onChanged, onPreview, onOpenStudio, team, canImportCredit, fullscreen = false }) {
   const completer = canComplete(role);
   const [sowOpen, setSowOpen] = useState(null);   // itemId of the SOW being edited
   const [trOpen, setTrOpen] = useState(null);    // track record open full-screen (staff): holds the borrower id, or null
@@ -2228,6 +2230,32 @@ function BorrowerConditions({ appId, app, items, docs, onPatch, onReviewDoc, onD
   // tallest thing in the list.
   const llcOpen = expandedConds.has('__llc');
 
+  // FULL SCREEN opens EVERYTHING (owner-directed 2026-07-28): when you fill the
+  // screen to work through the file, the categories, the conditions and the LLC
+  // row should all be open — not auto-collapsed the way they are in the normal
+  // (space-saving) view. You can still collapse any of them by hand. On entering
+  // full screen we snapshot the normal collapse state and open everything; on
+  // leaving we put the normal state back, so day-to-day collapses aren't lost.
+  const prevFullRef = useRef(false);
+  const fsSnapRef = useRef(null);
+  useEffect(() => {
+    if (fullscreen && !prevFullRef.current) {
+      fsSnapRef.current = { shut: shutGroups, expanded: expandedConds };
+      setShutGroups('');                                        // every category open
+      const allIds = new Set(visible.map((v) => v.id));         // every condition open
+      allIds.add('__llc');
+      setExpandedConds(allIds);
+    } else if (!fullscreen && prevFullRef.current) {
+      const snap = fsSnapRef.current;
+      if (snap) { setShutGroups(snap.shut); setExpandedConds(snap.expanded); }
+      fsSnapRef.current = null;
+    }
+    prevFullRef.current = fullscreen;
+    // Only react to the full-screen transition; the collapse state it reads is the
+    // live value at that moment (opening full screen always re-renders first).
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [fullscreen]);
+
   if (ordered.length === 0 && !llcCondItem) return null;
   return (
     <div className="panel" style={{ marginTop: 18, borderColor: 'var(--gold)' }}>
@@ -2344,7 +2372,7 @@ function BorrowerConditions({ appId, app, items, docs, onPatch, onReviewDoc, onD
               <Item key={it.id} it={it} team={team} onPatch={onPatch} role={role}
                 docs={docs} onUploadTo={onUploadTo} onDropTo={onDropTo} onReviewDoc={onReviewDoc}
                 onDownloadDoc={onDownloadDoc} dlBusy={dlBusy} onPreview={onPreview} appId={appId}
-                onChanged={onChanged} canImportCredit={canImportCredit} />
+                onChanged={onChanged} canImportCredit={canImportCredit} fullscreen={fullscreen} />
             );
         const itemDocs = docsFor(it.id);
         const signed = !!it.signed_off_at;
@@ -2566,7 +2594,7 @@ function BorrowerConditions({ appId, app, items, docs, onPatch, onReviewDoc, onD
                       <span className="muted small" style={{ minWidth: 140 }}>{d.slot_label || (d.source_type === 'system' ? 'Tool export' : `Document ${i + 1}`)}</span>
                       <span className="small" style={{ flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{d.filename}</span>
                       <span className="pill" style={rs === 'accepted' ? { borderColor: 'var(--ok)', color: 'var(--ok)' } : rs === 'rejected' ? { borderColor: 'var(--danger)', color: 'var(--danger)' } : undefined}>{rs}</span>
-                      <DocActions doc={d} role={role} onReviewDoc={onReviewDoc}
+                      <DocActions doc={d} role={role} onReviewDoc={onReviewDoc} fullscreen={fullscreen}
                         onDownloadDoc={onDownloadDoc} onPreview={onPreview} dlBusy={dlBusy}
                         onReplace={(onUploadTo && d.source_type !== 'system')
                           ? () => onUploadTo({ itemId: it.id, slot: d.slot_label || undefined, replaceDocumentId: d.id }) : null} />
@@ -3771,6 +3799,7 @@ export default function StaffApplication() {
         info="Everything to clear on this file — the borrower's conditions, your underwriting conditions, internal staff conditions, and the LLC. Switch with the tabs."
         badge={nCondOpen || ''} fullscreenable>
 
+      {({ full }) => (<>
       <input ref={staffFileRef} type="file" multiple style={{ display: 'none' }} onChange={onStaffFile} />
       {(() => {
         const uwOpen = conds.filter(c => c.status === 'open' || c.status === 'borrower_responded').length;
@@ -3793,7 +3822,7 @@ export default function StaffApplication() {
 
       {condTab === 'borrower' && <>
         <BorrowerConditions appId={id} app={app} items={items} docs={docs} role={role}
-          team={team} canImportCredit={can('pull_credit')}
+          team={team} canImportCredit={can('pull_credit')} fullscreen={full}
           onPatch={patch} onReviewDoc={reviewDoc} onDownloadDoc={downloadDoc} dlBusy={dlBusy}
           onUploadTo={pickUpload} onDropTo={uploadStaffFiles} onChanged={load} onPreview={openPreview}
           onOpenStudio={() => { studioRef.current ? studioRef.current.openStudio() : document.getElementById('sec-pricing')?.scrollIntoView({ behavior: 'smooth', block: 'start' }); }} />
@@ -3834,6 +3863,7 @@ export default function StaffApplication() {
           dlBusy={dlBusy} onChanged={load} reviewBusy={busyAct === 'review'} onPreview={openPreview} />
         <VestingLlcOwners appId={id} app={app} />
       </>}
+      </>)}
       </Section>
 
       {/* The standalone "Investor guidelines" section was RETIRED (owner-directed 2026-07-24):
