@@ -2616,8 +2616,13 @@ router.post('/documents', async (req, res) => {
   // the previous term sheet so exactly one is current on the file.
   const docKind = b.docKind === 'term_sheet' ? 'term_sheet' : null;
   // Optional slot: a condition holds several coexisting documents, each in its
-  // own named slot. Re-uploading a slot supersedes only that slot's versions.
-  const slot = b.slot ? String(b.slot).trim().slice(0, 80) : null;
+  // own named slot. Every slot keeps EVERY document — a plain add never replaces.
+  let slot = b.slot ? String(b.slot).trim().slice(0, 80) : null;
+  // On a plain add, keep the label unique among the item's current documents so
+  // two never display under one identical label (mirror of the staff route).
+  if (slot && b.checklistItemId && !b.replaceDocumentId) {
+    slot = await require('../lib/slot-label').uniqueSlotLabel(b.checklistItemId, slot);
+  }
   // Idempotency (#87): a double-submitted upload (React double-invoke, a drop
   // firing twice, a client retry) must not create a second document row + a
   // second "New document uploaded" email. Collapse a byte-identical re-upload to
@@ -2647,13 +2652,16 @@ router.post('/documents', async (req, res) => {
       [b.applicationId, r.rows[0].id]);
   }
   if (b.checklistItemId) {
-    // A re-upload supersedes the borrower's prior versions so a rejected/old
-    // document never stays part of the file. With a slot (or an explicit
-    // replaceDocumentId), only THAT slot's versions are superseded — the
-    // condition's other documents coexist. Documents dropped STRAIGHT on a
-    // track-record card (doc_kind='track_record_doc') attach to the same
-    // request condition but are line-item evidence — a condition-row upload
-    // must never supersede them off the card.
+    // EVERY document slot keeps EVERY document (owner-directed): a plain ADD never
+    // deletes what's already there. Only an EXPLICIT replace (replaceDocumentId,
+    // the borrower clicked "Replace" on one document) supersedes — and only that
+    // one document, never its siblings or the whole slot. This is the borrower
+    // mirror of the staff fix for the "upload a 2nd document and the 1st
+    // disappears" bug: the old blanket supersede matched every current document on
+    // the condition whenever the slot was null/collided or the same fixed slot was
+    // re-filled, so a second upload wiped the first. Documents dropped straight on
+    // a track-record card (doc_kind='track_record_doc') were already spared and
+    // stay so.
     if (b.replaceDocumentId) {
       await db.query(
         `UPDATE documents SET is_current=false,
@@ -2661,14 +2669,6 @@ router.post('/documents', async (req, res) => {
           WHERE id=$1 AND checklist_item_id=$2 AND borrower_id=$3`,
         [b.replaceDocumentId, b.checklistItemId, me(req)]);
     }
-    await db.query(
-      `UPDATE documents SET is_current=false,
-          review_status=CASE WHEN review_status IN ('pending','rejected') THEN 'superseded' ELSE review_status END
-        WHERE checklist_item_id=$1 AND borrower_id=$2 AND id<>$3 AND is_current=true
-          AND COALESCE(doc_kind,'') <> 'track_record_doc'
-          AND ($4::text IS NOT NULL OR $5::uuid IS NULL)
-          AND ($4::text IS NULL OR slot_label IS NOT DISTINCT FROM $4)`,
-      [b.checklistItemId, me(req), r.rows[0].id, slot, b.replaceDocumentId || null]);
     // S2-09: only a BORROWER-FACING item may be flipped by a borrower — never a
     // staff-only condition (the id is borrower-supplied, so ownership alone is not
     // enough). Mirrors the audience guard on the tool/info endpoints.

@@ -7668,6 +7668,15 @@ const AI_BLOCKER_SOURCES = new Set(['ai_suggestion', 'ai_advisory']);
 // The two checklist conditions whose ONLY job is to record "PILOT's findings are
 // cleared" (db/137, db/200). In advisory mode they are shown but never gate.
 const AI_REVIEW_CONDITION_CODES = ['appraisal_review_cleared', 'underwriting_review_cleared'];
+// The four conditions that are really internal WORKFLOW STEPS (LTC/LTV/ARV checked
+// against guidelines + interest reserves). The client HIDES these from the
+// conditions list (`app-v2/src/lib/condition-workflow-steps.js`); this list is the
+// server's twin so the readiness / "Go fix" aggregator stops counting them as
+// outstanding — otherwise a hidden row shows as a "Go fix →" item that lands on a
+// conditions hub that filtered it out. Kept in sync by
+// `scripts/test-workflow-step-codes-parity.js`. They are always excluded (not
+// gated behind AI_FINDINGS_ENFORCE): they are workflow, not a finding.
+const { WORKFLOW_STEP_CODES } = require('../lib/conditions/workflow-step-codes');
 const CLOSING_STAGE_CATEGORIES = ['prior_to_closing', 'prior_to_funding', 'at_closing', 'post_closing'];
 const SEV_LABEL = { standard: 'Standard', prior_to_docs: 'Prior to docs', prior_to_funding: 'Prior to funding', post_closing: 'Post-closing' };
 // Which file SECTION resolves a given blocker — so the "clear to close"
@@ -7754,9 +7763,15 @@ async function advancementBlockers(appId, target) {
         -- and are returned under "advisories"; they simply don't gate. Re-armed by
         -- AI_FINDINGS_ENFORCE=1.
         AND ($4::boolean = false OR COALESCE(t.code,'') <> ALL($5::text[]))
+        -- The four internal WORKFLOW STEPS (LTC/LTV/ARV checked + interest reserves)
+        -- are hidden from the conditions list on the client. Exclude them here too so
+        -- the readiness / "Go fix" aggregator and the conditions hub agree — otherwise
+        -- a hidden row shows as outstanding with a "Go fix →" that leads nowhere.
+        -- Always excluded (they are workflow, not a finding — not AI_FINDINGS_ENFORCE-gated).
+        AND COALESCE(t.code,'') <> ALL($6::text[])
       ORDER BY ci.sort_order, ci.created_at`,
     [appId, CLOSING_STAGE_CATEGORIES, excludeClosingStage,
-     advisoryPolicy.advisoryOnly(), AI_REVIEW_CONDITION_CODES]);
+     advisoryPolicy.advisoryOnly(), AI_REVIEW_CONDITION_CODES, WORKFLOW_STEP_CODES]);
   // The same two conditions, pulled separately so they can be SHOWN (as advisory)
   // rather than silently vanish off the readiness view.
   const aiReviewConds = advisoryPolicy.advisoryOnly() ? (await db.query(
@@ -10663,7 +10678,14 @@ router.post('/applications/:id/documents', async (req, res) => {
   const maxBytes = cfg.maxUploadMb * 1024 * 1024;
   if (buf.length > maxBytes) return res.status(413).json({ error: `file too large (max ${cfg.maxUploadMb} MB)` });
   const docKind = b.docKind === 'term_sheet' ? 'term_sheet' : null;
-  const slot = b.slot ? String(b.slot).trim().slice(0, 80) : null;
+  let slot = b.slot ? String(b.slot).trim().slice(0, 80) : null;
+  // Every slot keeps every document. On a plain ADD (not an explicit replace),
+  // if the slot label collides with a document already on the item, make it
+  // unique so the two never display under one identical label — a fixed slot
+  // becomes "Insurance binder (2)", a free-form add "Document 3", etc.
+  if (slot && b.checklistItemId && !b.replaceDocumentId) {
+    slot = await require('../lib/slot-label').uniqueSlotLabel(b.checklistItemId, slot);
+  }
   const dupApp = await require('../lib/doc-dedup').recentDuplicateDocId({   // idempotency (#87)
     filename: b.filename, sizeBytes: buf.length, uploadedByKind: 'staff', uploadedById: req.actor.id,
     applicationId: llcId ? null : req.params.id, checklistItemId: b.checklistItemId || null,
@@ -10691,8 +10713,17 @@ router.post('/applications/:id/documents', async (req, res) => {
       [req.params.id, r.rows[0].id]);
   }
   if (b.checklistItemId) {
-    // Mirror the borrower upload rules: replacing a document (or re-filling a
-    // slot) supersedes only that slot's versions; other slots coexist.
+    // EVERY document slot keeps EVERY document (owner-directed): a plain ADD never
+    // deletes what's already there. Only an EXPLICIT replace (the user clicked
+    // "Replace" on one document, sending replaceDocumentId) supersedes — and it
+    // supersedes ONLY that one document, never its siblings or the whole slot.
+    //
+    // This fixes the "upload a 2nd document and the 1st disappears" bug at its
+    // root: the old blanket supersede matched every current document on the
+    // condition whenever the slot label was null or collided (a free-form add) and
+    // matched the same-labelled document on a fixed slot (appraisal xml/pdf,
+    // insurance binder/invoice), so a second upload wiped the first. Now a fixed
+    // slot accumulates just like a free-form one, and nothing is ever lost on add.
     if (b.replaceDocumentId) {
       await db.query(
         `UPDATE documents SET is_current=false,
@@ -10700,14 +10731,6 @@ router.post('/applications/:id/documents', async (req, res) => {
           WHERE id=$1 AND checklist_item_id=$2`,
         [b.replaceDocumentId, b.checklistItemId]);
     }
-    await db.query(
-      `UPDATE documents SET is_current=false,
-          review_status=CASE WHEN review_status IN ('pending','rejected') THEN 'superseded' ELSE review_status END
-        WHERE checklist_item_id=$1 AND id<>$2 AND is_current=true
-          AND COALESCE(doc_kind,'') <> 'track_record_doc'
-          AND ($3::text IS NOT NULL OR $4::uuid IS NULL)
-          AND ($3::text IS NULL OR slot_label IS NOT DISTINCT FROM $3)`,
-      [b.checklistItemId, r.rows[0].id, slot, b.replaceDocumentId || null]);
     // A superseding upload replaces the reviewed evidence with a new UNREVIEWED
     // file, so a prior sign-off no longer matches what's on the item — drop it so
     // the new version is re-reviewed before the file can clear-to-close.

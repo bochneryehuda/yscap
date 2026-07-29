@@ -133,12 +133,20 @@ async function allActiveStaff(client = db) {
 // 0 conditions → 100% (nothing to clear).
 // ---------------------------------------------------------------------------
 async function conditionsClearedPct(appId, client = db) {
+  // The four internal WORKFLOW STEPS (LTC/LTV/ARV checked + interest reserves) are
+  // hidden from the conditions list, so a human can't sign them off — counting them
+  // would peg this percentage below 100% forever. Exclude them here for the same
+  // reason `advancementBlockers` does. Kept in sync by the parity test.
+  const { WORKFLOW_STEP_CODES } = require('./conditions/workflow-step-codes');
   const ci = await client.query(
     `SELECT
-        count(*) FILTER (WHERE item_kind IN ('document','condition') AND COALESCE(is_required,true) = true) AS total,
-        count(*) FILTER (WHERE item_kind IN ('document','condition') AND COALESCE(is_required,true) = true
-                         AND (signed_off_at IS NOT NULL OR status = 'satisfied')) AS cleared
-       FROM checklist_items WHERE application_id = $1`, [appId]);
+        count(*) FILTER (WHERE ci.item_kind IN ('document','condition') AND COALESCE(ci.is_required,true) = true) AS total,
+        count(*) FILTER (WHERE ci.item_kind IN ('document','condition') AND COALESCE(ci.is_required,true) = true
+                         AND (ci.signed_off_at IS NOT NULL OR ci.status = 'satisfied')) AS cleared
+       FROM checklist_items ci
+       LEFT JOIN checklist_templates t ON t.id = ci.template_id
+      WHERE ci.application_id = $1
+        AND COALESCE(t.code,'') <> ALL($2::text[])`, [appId, WORKFLOW_STEP_CODES]);
   const uw = await client.query(
     `SELECT count(*) AS total,
             count(*) FILTER (WHERE status NOT IN ('open','borrower_responded')) AS cleared

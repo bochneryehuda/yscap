@@ -972,31 +972,47 @@ function Item({ it, team, onPatch, role, docs, onUploadTo, onDropTo, onReviewDoc
           onDrop={(!slots && onDropTo) ? (e) => { e.preventDefault(); e.currentTarget.classList.remove('drop-over'); onFilesDropped(e, (files) => onDropTo(files, { itemId: it.id, slotBase: itemDocs.length })); } : undefined}>
           {slots ? (
             /* Fixed named slots (e.g. Insurance → binder + invoice) — each slot is
-               its own drop target so a dropped file lands in the right slot. */
+               its own drop target so a dropped file lands in the right slot. Every
+               slot KEEPS EVERY document dropped in it (owner-directed): uploading a
+               second file ADDS it, it never replaces the first. "Replace" is an
+               explicit per-document action; the slot's Upload/drop always adds. */
             slots.map(slot => {
-              const doc = itemDocs.find(d => (d.slot_label || '') === slot.label);
-              const rs = doc ? (doc.review_status || 'pending') : null;
-              const slotTarget = doc ? { itemId: it.id, slot: slot.label, replaceDocumentId: doc.id } : { itemId: it.id, slot: slot.label };
+              const slotDocs = itemDocs.filter(d => (d.slot_label || '') === slot.label);
+              const addTarget = { itemId: it.id, slot: slot.label };   // no replaceDocumentId → additive
               return (
-                <div className={`row${onDropTo ? ' cond-drop' : ''}`} key={slot.key || slot.label} style={{ gap: 8, flexWrap: 'wrap', padding: '3px 0' }}
+                <div className={`row${onDropTo ? ' cond-drop' : ''}`} key={slot.key || slot.label} style={{ gap: 8, flexWrap: 'wrap', padding: '3px 0', alignItems: 'flex-start' }}
                   onDragOver={onDropTo ? (e) => { e.preventDefault(); e.currentTarget.classList.add('drop-over'); } : undefined}
                   onDragLeave={onDropTo ? (e) => { e.currentTarget.classList.remove('drop-over'); } : undefined}
-                  onDrop={onDropTo ? (e) => { e.preventDefault(); e.currentTarget.classList.remove('drop-over'); onFilesDropped(e, (files) => onDropTo(files, slotTarget)); } : undefined}>
+                  onDrop={onDropTo ? (e) => { e.preventDefault(); e.currentTarget.classList.remove('drop-over'); onFilesDropped(e, (files) => onDropTo(files, addTarget)); } : undefined}>
                   <span className="muted small" style={{ minWidth: 140 }}>{slot.label}</span>
-                  {doc ? (
-                    <>
-                      <span className="small" style={{ flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{doc.filename}</span>
-                      <span className="pill" style={rs === 'accepted' ? { borderColor: 'var(--ok)', color: 'var(--ok)' } : rs === 'rejected' ? { borderColor: 'var(--danger)', color: 'var(--danger)' } : undefined}>{rs}</span>
-                      <DocActions doc={doc} role={role} onReviewDoc={onReviewDoc}
-                        onDownloadDoc={onDownloadDoc} onPreview={onPreview} dlBusy={dlBusy}
-                        onReplace={onUploadTo ? () => onUploadTo({ itemId: it.id, slot: slot.label, replaceDocumentId: doc.id }) : null} />
-                    </>
-                  ) : (
-                    <>
-                      <span className="small muted" style={{ flex: 1 }}>not uploaded</span>
-                      {onUploadTo && <button className="btn ghost small" onClick={() => onUploadTo({ itemId: it.id, slot: slot.label })}>Upload</button>}
-                    </>
-                  )}
+                  <div style={{ flex: 1, display: 'flex', flexDirection: 'column', gap: 4, minWidth: 0 }}>
+                    {slotDocs.length === 0 ? (
+                      <div className="row" style={{ gap: 8 }}>
+                        <span className="small muted" style={{ flex: 1 }}>not uploaded</span>
+                        {onUploadTo && <button className="btn ghost small" onClick={() => onUploadTo(addTarget)}>Upload</button>}
+                      </div>
+                    ) : (
+                      <>
+                        {slotDocs.map((doc) => {
+                          const rs = doc.review_status || 'pending';
+                          return (
+                            <div className="row" key={doc.id} style={{ gap: 8, flexWrap: 'wrap' }}>
+                              <span className="small" style={{ flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{doc.filename}</span>
+                              <span className="pill" style={rs === 'accepted' ? { borderColor: 'var(--ok)', color: 'var(--ok)' } : rs === 'rejected' ? { borderColor: 'var(--danger)', color: 'var(--danger)' } : undefined}>{rs}</span>
+                              <DocActions doc={doc} role={role} onReviewDoc={onReviewDoc}
+                                onDownloadDoc={onDownloadDoc} onPreview={onPreview} dlBusy={dlBusy}
+                                onReplace={onUploadTo ? () => onUploadTo({ itemId: it.id, slot: slot.label, replaceDocumentId: doc.id }) : null} />
+                            </div>
+                          );
+                        })}
+                        {onUploadTo && (
+                          <div className="row" style={{ gap: 8 }}>
+                            <button className="btn ghost small" onClick={() => onUploadTo(addTarget)}>+ Add another</button>
+                          </div>
+                        )}
+                      </>
+                    )}
+                  </div>
                 </div>
               );
             })
