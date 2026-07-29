@@ -978,6 +978,19 @@ export const api = {
   loNotifClearOverride:(appId, key) => req('DELETE', `/api/staff/notification-center/overrides?applicationId=${encodeURIComponent(appId)}&key=${encodeURIComponent(key)}`),
   loNotifCompose:      (b) => req('POST', '/api/staff/notification-center/compose', b),
   loNotifAnalytics:    (days) => req('GET',  `/api/staff/notification-center/analytics${days ? `?days=${days}` : ''}`),
+  // ---- "For me" — the LO's OWN inbox controls ----
+  loNotifSelfPrefs:        () => req('GET',  '/api/staff/notification-center/self-prefs'),
+  loNotifSelfSavePref:     (key, body) => req('PUT', `/api/staff/notification-center/self-prefs/${encodeURIComponent(key)}`, body),
+  loNotifSelfBulkSave:     (items) => req('POST', '/api/staff/notification-center/self-prefs/bulk', { items }),
+  loNotifDeliveryRules:    () => req('GET',  '/api/staff/notification-center/delivery-rules'),
+  loNotifDeliveryRulesPut: (b) => req('PUT',  '/api/staff/notification-center/delivery-rules', b),
+  loNotifMuteFile:         (b) => req('POST', '/api/staff/notification-center/mute-file', b),
+  loNotifUnmuteFile:       (appId) => req('DELETE', `/api/staff/notification-center/mute-file?applicationId=${encodeURIComponent(appId)}`),
+  loNotifMutedFiles:       () => req('GET',  '/api/staff/notification-center/muted-files'),
+  loNotifStarFile:         (appId) => req('POST', '/api/staff/notification-center/star-file', { applicationId: appId }),
+  loNotifUnstarFile:       (appId) => req('DELETE', `/api/staff/notification-center/star-file?applicationId=${encodeURIComponent(appId)}`),
+  loNotifStarredFiles:     () => req('GET',  '/api/staff/notification-center/starred-files'),
+  loNotifSelfVolume:       (days) => req('GET',  `/api/staff/notification-center/self-volume${days ? `?days=${days}` : ''}`),
 
   // ---- Borrower view: stand inside a borrower's portal (owner-directed 2026-07-26) ----
   // The flow itself lives in lib/auth.jsx (startBorrowerView / exitBorrowerView),
