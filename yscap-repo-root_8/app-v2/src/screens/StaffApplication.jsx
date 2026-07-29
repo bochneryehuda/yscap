@@ -4070,6 +4070,7 @@ export default function StaffApplication() {
           title={previewDoc.item_label || previewDoc.slot_label || 'Document preview'}
           filename={previewDoc.filename} contentType={previewDoc.content_type}
           load={() => api.staffDownloadDoc(previewDoc.id)}
+          ocr={() => api.staffOcrDoc(previewDoc.id)}
           onDownload={() => downloadDoc(previewDoc)}
           onClose={() => setPreviewDoc(null)} />
       )}

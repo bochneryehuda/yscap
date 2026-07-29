@@ -11214,6 +11214,45 @@ router.get('/documents/:id/download', async (req, res) => {
   } catch (e) { res.status(500).json({ error: 'server error' }); }
 });
 
+// Read the text off a document with OCR so the in-viewer search can find text in
+// a SCANNED (image-only) PDF (owner-directed 2026-07-29: "when the document is
+// not a searchable document try to attach OCR for them to be able to search text
+// within the document"). User-initiated from the preview's Find bar. Returns
+// per-page recognized text; the client searches it and jumps to the page.
+//
+// Reuses the existing multi-engine OCR router (Azure → Google → Mistral). It is
+// env-gated: with no engine configured it returns a shaped {ok:false} the UI
+// explains, never a 500. Never mutates the document or the file.
+router.post('/documents/:id/ocr', async (req, res) => {
+  try {
+    const r = await db.query(
+      `SELECT id,filename,content_type,storage_ref,size_bytes,application_id,borrower_id,llc_id FROM documents WHERE id=$1`,
+      [req.params.id]);
+    const doc = r.rows[0];
+    if (!doc) return res.status(404).json({ error: 'not found' });
+    if (!(await canSeeDocument(req, doc))) return res.status(403).json({ error: 'forbidden' });
+    const ocr = require('../lib/ai/ocr-router');
+    if (!ocr.configured()) return res.json({ ok: false, reason: 'ocr_not_configured' });
+    let buf;
+    try { buf = await storage.read(doc.storage_ref); }
+    catch (_) { return res.json({ ok: false, reason: 'read_failed' }); }
+    if (!buf || !buf.length) return res.json({ ok: false, reason: 'read_failed' });
+    const out = await ocr.read({ buffer: buf, mimeType: doc.content_type || 'application/pdf' });
+    if (!out || !out.ok) return res.json({ ok: false, reason: (out && out.reason) || 'ocr_failed' });
+    // Prefer per-page text; fall back to the whole-document text on page 1 when an
+    // engine doesn't segment pages (so search still finds it and jumps to page 1).
+    let pages = [];
+    if (Array.isArray(out.pages) && out.pages.some((p) => p && typeof p.text === 'string' && p.text.trim())) {
+      pages = out.pages.map((p, i) => ({ page: Number(p && p.pageNumber) || (i + 1), text: String((p && p.text) || '') }));
+    } else if (out.text && String(out.text).trim()) {
+      pages = [{ page: 1, text: String(out.text) }];
+    }
+    if (!pages.length) return res.json({ ok: false, reason: 'no_text' });
+    await audit(req, 'ocr_document', 'document', doc.id, { engine: out.engine || null, pageCount: pages.length });
+    return res.json({ ok: true, pages, engine: out.engine || null, pageCount: out.pageCount || pages.length });
+  } catch (e) { res.status(500).json({ error: 'server error' }); }
+});
+
 // ---------------- notifications ----------------
 router.get('/notifications', async (req, res) => {
   const r = await db.query(

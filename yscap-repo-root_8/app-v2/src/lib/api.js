@@ -405,6 +405,10 @@ export const api = {
   // syncs to SharePoint. Reopens the condition if nothing accepted remains.
   staffDeleteDoc:   (id) => req('DELETE', `/api/staff/documents/${id}`),
   staffDownloadDoc: (id) => download(`/api/staff/documents/${id}/download`),
+  // Read the text off a scanned document so the in-viewer search can find it.
+  // Returns { ok, pages:[{page,text}], engine, reason }. Never throws for the
+  // caller's UX — a not-configured / failed read is a shaped { ok:false }.
+  staffOcrDoc:      (id) => req('POST', `/api/staff/documents/${id}/ocr`, {}),
   staffBorrowerSearch: (q) => req('GET', '/api/staff/borrowers/search?q=' + encodeURIComponent(q)),
   // #83 — loan-officer borrower management
   staffBorrowers:   () => req('GET', '/api/staff/borrowers'),
