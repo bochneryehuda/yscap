@@ -866,7 +866,113 @@ function useStickyFilter(key, fallback) {
   return [v, set];
 }
 
-function Item({ it, team, onPatch, role, docs, onUploadTo, onDropTo, onReviewDoc, onDownloadDoc, dlBusy, onPreview, appId, onChanged, canImportCredit }) {
+// The appraisal "no XML available" control on the appraisal-documents condition.
+// Waives ONLY the XML upload (the PDF stays required), collects the ARV + As-Is by
+// hand (usually read off the XML), and routes the reason: a transferred appraisal
+// auto-waives and asks for a transfer-letter PDF; any other reason needs a note
+// and opens an admin exception.
+const APPR_XML_REASONS = [
+  { v: 'transferred_appraisal', label: 'Transferred appraisal (from another lender)' },
+  { v: 'appraiser_no_xml', label: 'Appraiser did not provide the XML data file' },
+  { v: 'desk_or_manual', label: 'Desk / manual / older appraisal (no MISMO XML)' },
+  { v: 'other', label: 'Other (explain in the note)' },
+];
+function AppraisalXmlWaiver({ appId, onChanged }) {
+  const [state, setState] = useState(null);     // { waiver, exception } | null
+  const [open, setOpen] = useState(false);
+  const [reason, setReason] = useState('transferred_appraisal');
+  const [note, setNote] = useState('');
+  const [arv, setArv] = useState('');
+  const [asIs, setAsIs] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState('');
+  const load = useCallback(() => api.appraisalXmlWaiverGet(appId).then(setState).catch(() => setState(null)), [appId]);
+  useEffect(() => { load(); }, [load]);
+  const isTransfer = reason === 'transferred_appraisal';
+
+  async function submit() {
+    setErr('');
+    if (!(Number(String(arv).replace(/[,$\s]/g, '')) > 0) || !(Number(String(asIs).replace(/[,$\s]/g, '')) > 0)) {
+      setErr('Enter both the ARV and the As-Is value.'); return;
+    }
+    if (!isTransfer && !note.trim()) { setErr('Add a short note — it goes to an admin for an exception.'); return; }
+    setBusy(true);
+    try {
+      await api.appraisalXmlWaiverSet(appId, { reason, note: note.trim() || undefined, arv, asIs });
+      setOpen(false); setNote('');
+      await load();
+      onChanged && onChanged();
+    } catch (e) { setErr(e.message || 'Could not save the waiver.'); }
+    finally { setBusy(false); }
+  }
+  async function remove() {
+    setBusy(true); setErr('');
+    try { await api.appraisalXmlWaiverRemove(appId); await load(); onChanged && onChanged(); }
+    catch (e) { setErr(e.message || 'Could not remove the waiver.'); }
+    finally { setBusy(false); }
+  }
+
+  const w = state && state.waiver;
+  if (w) {
+    const ex = state.exception;
+    return (
+      <div className="small" style={{ marginTop: 8, padding: '8px 10px', border: '1px solid var(--gold)', borderRadius: 8, background: 'rgba(174,135,70,0.06)' }}>
+        <div style={{ fontWeight: 600, color: '#141B22' }}>No XML on this appraisal — XML waived</div>
+        <div style={{ color: '#4B585C', marginTop: 2 }}>
+          Reason: {(APPR_XML_REASONS.find(r => r.v === w.reason) || {}).label || w.reason}.
+          {w.requires_transfer_letter
+            ? ' Upload the transfer letter in the PDF slot above; no exception is needed.'
+            : ex
+              ? ` This waiver ${ex.status === 'approved' ? 'was APPROVED' : ex.status === 'denied' ? 'was DENIED' : 'is waiting for an admin to approve it'} on the Exceptions screen${ex.exception_seq ? ` (EX-${ex.exception_seq})` : ''}.`
+              : ''}
+        </div>
+        <div style={{ color: '#4B585C', marginTop: 2 }}>ARV ${Number(w.arv || 0).toLocaleString('en-US')} · As-Is ${Number(w.as_is_value || 0).toLocaleString('en-US')} — entered by hand.</div>
+        <button className="btn ghost small" style={{ marginTop: 6 }} disabled={busy} onClick={remove}>Remove waiver (XML is available)</button>
+        {err && <div className="notice err" style={{ marginTop: 6 }}>{err}</div>}
+      </div>
+    );
+  }
+  if (!open) {
+    return (
+      <button className="btn ghost small" style={{ marginTop: 6 }} onClick={() => setOpen(true)}>
+        No XML available?
+      </button>
+    );
+  }
+  return (
+    <div className="small" style={{ marginTop: 8, padding: '10px', border: '1px solid var(--line, #d9d3c6)', borderRadius: 8, display: 'flex', flexDirection: 'column', gap: 8 }}>
+      <div style={{ fontWeight: 600, color: '#141B22' }}>No appraisal XML available</div>
+      <div style={{ color: '#4B585C' }}>The PDF report is still required. Enter the ARV and As-Is by hand (we normally read these off the XML).</div>
+      <label style={{ color: '#141B22' }}>Why is there no XML?
+        <select className="input" value={reason} onChange={(e) => setReason(e.target.value)} style={{ marginTop: 4 }}>
+          {APPR_XML_REASONS.map(r => <option key={r.v} value={r.v}>{r.label}</option>)}
+        </select>
+      </label>
+      <div className="row" style={{ gap: 8, flexWrap: 'wrap' }}>
+        <label style={{ color: '#141B22', flex: 1, minWidth: 140 }}>ARV
+          <input className="input" inputMode="decimal" placeholder="$" value={arv} onChange={(e) => setArv(e.target.value)} style={{ marginTop: 4 }} />
+        </label>
+        <label style={{ color: '#141B22', flex: 1, minWidth: 140 }}>As-Is value
+          <input className="input" inputMode="decimal" placeholder="$" value={asIs} onChange={(e) => setAsIs(e.target.value)} style={{ marginTop: 4 }} />
+        </label>
+      </div>
+      {!isTransfer && (
+        <label style={{ color: '#141B22' }}>Note (goes to an admin for an exception)
+          <textarea className="input" rows={2} value={note} onChange={(e) => setNote(e.target.value)} style={{ marginTop: 4 }} />
+        </label>
+      )}
+      {isTransfer && <div style={{ color: '#4B585C' }}>A transferred appraisal waives automatically — just upload the transfer letter in the PDF slot above. No exception needed.</div>}
+      <div className="row" style={{ gap: 8 }}>
+        <button className="btn primary small" disabled={busy} onClick={submit}>{busy ? 'Saving…' : (isTransfer ? 'Waive XML (transferred)' : 'Waive XML & request exception')}</button>
+        <button className="btn ghost small" disabled={busy} onClick={() => { setOpen(false); setErr(''); }}>Cancel</button>
+      </div>
+      {err && <div className="notice err">{err}</div>}
+      <div style={{ color: '#4B585C' }}>Changing the ARV / As-Is re-opens Products &amp; Pricing so the loan is re-priced on the new numbers.</div>
+    </div>
+  );
+}
+
+function Item({ it, team, onPatch, role, docs, onUploadTo, onDropTo, onReviewDoc, onDownloadDoc, dlBusy, onPreview, appId, onChanged, canImportCredit, fullscreen = false }) {
   const [open, setOpen] = useState(false);
   // EVERY condition is a compact line until you open it (owner-directed
   // 2026-07-28: "one compact line each, click to open the one you're working").
@@ -884,7 +990,9 @@ function Item({ it, team, onPatch, role, docs, onUploadTo, onDropTo, onReviewDoc
   const itemDocs = (isDoc && docs)
     ? docs.filter(d => d.checklist_item_id === it.id && d.is_current && d.source_type !== 'chat_attachment')
     : [];
-  const collapsed = expandOverride === null ? true : !expandOverride;
+  // In full screen everything opens by default (owner-directed); the per-row
+  // manual override still wins, so you can collapse an internal condition by hand.
+  const collapsed = expandOverride === null ? !fullscreen : !expandOverride;
   if (collapsed) {
     return (
       // data-keep-scroll: a stable handle so a refresh can put this row back
@@ -972,31 +1080,47 @@ function Item({ it, team, onPatch, role, docs, onUploadTo, onDropTo, onReviewDoc
           onDrop={(!slots && onDropTo) ? (e) => { e.preventDefault(); e.currentTarget.classList.remove('drop-over'); onFilesDropped(e, (files) => onDropTo(files, { itemId: it.id, slotBase: itemDocs.length })); } : undefined}>
           {slots ? (
             /* Fixed named slots (e.g. Insurance → binder + invoice) — each slot is
-               its own drop target so a dropped file lands in the right slot. */
+               its own drop target so a dropped file lands in the right slot. Every
+               slot KEEPS EVERY document dropped in it (owner-directed): uploading a
+               second file ADDS it, it never replaces the first. "Replace" is an
+               explicit per-document action; the slot's Upload/drop always adds. */
             slots.map(slot => {
-              const doc = itemDocs.find(d => (d.slot_label || '') === slot.label);
-              const rs = doc ? (doc.review_status || 'pending') : null;
-              const slotTarget = doc ? { itemId: it.id, slot: slot.label, replaceDocumentId: doc.id } : { itemId: it.id, slot: slot.label };
+              const slotDocs = itemDocs.filter(d => (d.slot_label || '') === slot.label);
+              const addTarget = { itemId: it.id, slot: slot.label };   // no replaceDocumentId → additive
               return (
-                <div className={`row${onDropTo ? ' cond-drop' : ''}`} key={slot.key || slot.label} style={{ gap: 8, flexWrap: 'wrap', padding: '3px 0' }}
+                <div className={`row${onDropTo ? ' cond-drop' : ''}`} key={slot.key || slot.label} style={{ gap: 8, flexWrap: 'wrap', padding: '3px 0', alignItems: 'flex-start' }}
                   onDragOver={onDropTo ? (e) => { e.preventDefault(); e.currentTarget.classList.add('drop-over'); } : undefined}
                   onDragLeave={onDropTo ? (e) => { e.currentTarget.classList.remove('drop-over'); } : undefined}
-                  onDrop={onDropTo ? (e) => { e.preventDefault(); e.currentTarget.classList.remove('drop-over'); onFilesDropped(e, (files) => onDropTo(files, slotTarget)); } : undefined}>
+                  onDrop={onDropTo ? (e) => { e.preventDefault(); e.currentTarget.classList.remove('drop-over'); onFilesDropped(e, (files) => onDropTo(files, addTarget)); } : undefined}>
                   <span className="muted small" style={{ minWidth: 140 }}>{slot.label}</span>
-                  {doc ? (
-                    <>
-                      <span className="small" style={{ flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{doc.filename}</span>
-                      <span className="pill" style={rs === 'accepted' ? { borderColor: 'var(--ok)', color: 'var(--ok)' } : rs === 'rejected' ? { borderColor: 'var(--danger)', color: 'var(--danger)' } : undefined}>{rs}</span>
-                      <DocActions doc={doc} role={role} onReviewDoc={onReviewDoc}
-                        onDownloadDoc={onDownloadDoc} onPreview={onPreview} dlBusy={dlBusy}
-                        onReplace={onUploadTo ? () => onUploadTo({ itemId: it.id, slot: slot.label, replaceDocumentId: doc.id }) : null} />
-                    </>
-                  ) : (
-                    <>
-                      <span className="small muted" style={{ flex: 1 }}>not uploaded</span>
-                      {onUploadTo && <button className="btn ghost small" onClick={() => onUploadTo({ itemId: it.id, slot: slot.label })}>Upload</button>}
-                    </>
-                  )}
+                  <div style={{ flex: 1, display: 'flex', flexDirection: 'column', gap: 4, minWidth: 0 }}>
+                    {slotDocs.length === 0 ? (
+                      <div className="row" style={{ gap: 8 }}>
+                        <span className="small muted" style={{ flex: 1 }}>not uploaded</span>
+                        {onUploadTo && <button className="btn ghost small" onClick={() => onUploadTo(addTarget)}>Upload</button>}
+                      </div>
+                    ) : (
+                      <>
+                        {slotDocs.map((doc) => {
+                          const rs = doc.review_status || 'pending';
+                          return (
+                            <div className="row" key={doc.id} style={{ gap: 8, flexWrap: 'wrap' }}>
+                              <span className="small" style={{ flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{doc.filename}</span>
+                              <span className="pill" style={rs === 'accepted' ? { borderColor: 'var(--ok)', color: 'var(--ok)' } : rs === 'rejected' ? { borderColor: 'var(--danger)', color: 'var(--danger)' } : undefined}>{rs}</span>
+                              <DocActions doc={doc} role={role} onReviewDoc={onReviewDoc} fullscreen={fullscreen}
+                                onDownloadDoc={onDownloadDoc} onPreview={onPreview} dlBusy={dlBusy}
+                                onReplace={onUploadTo ? () => onUploadTo({ itemId: it.id, slot: slot.label, replaceDocumentId: doc.id }) : null} />
+                            </div>
+                          );
+                        })}
+                        {onUploadTo && (
+                          <div className="row" style={{ gap: 8 }}>
+                            <button className="btn ghost small" onClick={() => onUploadTo(addTarget)}>+ Add another</button>
+                          </div>
+                        )}
+                      </>
+                    )}
+                  </div>
                 </div>
               );
             })
@@ -1014,7 +1138,7 @@ function Item({ it, team, onPatch, role, docs, onUploadTo, onDropTo, onReviewDoc
                     <span className="muted small" style={{ minWidth: 140 }}>{d.slot_label || `Document ${i + 1}`}</span>
                     <span className="small" style={{ flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{d.filename}</span>
                     <span className="pill" style={rs === 'accepted' ? { borderColor: 'var(--ok)', color: 'var(--ok)' } : rs === 'rejected' ? { borderColor: 'var(--danger)', color: 'var(--danger)' } : undefined}>{rs}</span>
-                    <DocActions doc={d} role={role} onReviewDoc={onReviewDoc}
+                    <DocActions doc={d} role={role} onReviewDoc={onReviewDoc} fullscreen={fullscreen}
                       onDownloadDoc={onDownloadDoc} onPreview={onPreview} dlBusy={dlBusy}
                       onReplace={(onUploadTo && d.source_type !== 'system')
                         ? () => onUploadTo({ itemId: it.id, slot: d.slot_label || undefined, replaceDocumentId: d.id }) : null} />
@@ -1041,6 +1165,13 @@ function Item({ it, team, onPatch, role, docs, onUploadTo, onDropTo, onReviewDoc
             </>
           )}
         </div>
+      )}
+
+      {/* Appraisal condition: "No XML available" — waive the XML slot (PDF stays
+          required), type the ARV + As-Is by hand, and route the reason to a
+          transfer letter or an admin exception. */}
+      {it.template_code === 'rtl_cond_appraisaldocs' && (
+        <AppraisalXmlWaiver appId={appId} onChanged={onChanged} />
       )}
 
       {/* ONE next step, everything else behind More — the shared bar, so this
@@ -2089,7 +2220,7 @@ function StaffContactEntry({ appId, toolKey, current, onSaved }) {
   );
 }
 
-function BorrowerConditions({ appId, app, items, docs, onPatch, onReviewDoc, onDownloadDoc, dlBusy, role, onUploadTo, onDropTo, onChanged, onPreview, onOpenStudio, team, canImportCredit }) {
+function BorrowerConditions({ appId, app, items, docs, onPatch, onReviewDoc, onDownloadDoc, dlBusy, role, onUploadTo, onDropTo, onChanged, onPreview, onOpenStudio, team, canImportCredit, fullscreen = false }) {
   const completer = canComplete(role);
   const [sowOpen, setSowOpen] = useState(null);   // itemId of the SOW being edited
   const [trOpen, setTrOpen] = useState(null);    // track record open full-screen (staff): holds the borrower id, or null
@@ -2212,6 +2343,32 @@ function BorrowerConditions({ appId, app, items, docs, onPatch, onReviewDoc, onD
   // tallest thing in the list.
   const llcOpen = expandedConds.has('__llc');
 
+  // FULL SCREEN opens EVERYTHING (owner-directed 2026-07-28): when you fill the
+  // screen to work through the file, the categories, the conditions and the LLC
+  // row should all be open — not auto-collapsed the way they are in the normal
+  // (space-saving) view. You can still collapse any of them by hand. On entering
+  // full screen we snapshot the normal collapse state and open everything; on
+  // leaving we put the normal state back, so day-to-day collapses aren't lost.
+  const prevFullRef = useRef(false);
+  const fsSnapRef = useRef(null);
+  useEffect(() => {
+    if (fullscreen && !prevFullRef.current) {
+      fsSnapRef.current = { shut: shutGroups, expanded: expandedConds };
+      setShutGroups('');                                        // every category open
+      const allIds = new Set(visible.map((v) => v.id));         // every condition open
+      allIds.add('__llc');
+      setExpandedConds(allIds);
+    } else if (!fullscreen && prevFullRef.current) {
+      const snap = fsSnapRef.current;
+      if (snap) { setShutGroups(snap.shut); setExpandedConds(snap.expanded); }
+      fsSnapRef.current = null;
+    }
+    prevFullRef.current = fullscreen;
+    // Only react to the full-screen transition; the collapse state it reads is the
+    // live value at that moment (opening full screen always re-renders first).
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [fullscreen]);
+
   if (ordered.length === 0 && !llcCondItem) return null;
   return (
     <div className="panel" style={{ marginTop: 18, borderColor: 'var(--gold)' }}>
@@ -2328,7 +2485,7 @@ function BorrowerConditions({ appId, app, items, docs, onPatch, onReviewDoc, onD
               <Item key={it.id} it={it} team={team} onPatch={onPatch} role={role}
                 docs={docs} onUploadTo={onUploadTo} onDropTo={onDropTo} onReviewDoc={onReviewDoc}
                 onDownloadDoc={onDownloadDoc} dlBusy={dlBusy} onPreview={onPreview} appId={appId}
-                onChanged={onChanged} canImportCredit={canImportCredit} />
+                onChanged={onChanged} canImportCredit={canImportCredit} fullscreen={fullscreen} />
             );
         const itemDocs = docsFor(it.id);
         const signed = !!it.signed_off_at;
@@ -2550,7 +2707,7 @@ function BorrowerConditions({ appId, app, items, docs, onPatch, onReviewDoc, onD
                       <span className="muted small" style={{ minWidth: 140 }}>{d.slot_label || (d.source_type === 'system' ? 'Tool export' : `Document ${i + 1}`)}</span>
                       <span className="small" style={{ flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{d.filename}</span>
                       <span className="pill" style={rs === 'accepted' ? { borderColor: 'var(--ok)', color: 'var(--ok)' } : rs === 'rejected' ? { borderColor: 'var(--danger)', color: 'var(--danger)' } : undefined}>{rs}</span>
-                      <DocActions doc={d} role={role} onReviewDoc={onReviewDoc}
+                      <DocActions doc={d} role={role} onReviewDoc={onReviewDoc} fullscreen={fullscreen}
                         onDownloadDoc={onDownloadDoc} onPreview={onPreview} dlBusy={dlBusy}
                         onReplace={(onUploadTo && d.source_type !== 'system')
                           ? () => onUploadTo({ itemId: it.id, slot: d.slot_label || undefined, replaceDocumentId: d.id }) : null} />
@@ -3755,6 +3912,7 @@ export default function StaffApplication() {
         info="Everything to clear on this file — the borrower's conditions, your underwriting conditions, internal staff conditions, and the LLC. Switch with the tabs."
         badge={nCondOpen || ''} fullscreenable>
 
+      {({ full }) => (<>
       <input ref={staffFileRef} type="file" multiple style={{ display: 'none' }} onChange={onStaffFile} />
       {(() => {
         const uwOpen = conds.filter(c => c.status === 'open' || c.status === 'borrower_responded').length;
@@ -3777,7 +3935,7 @@ export default function StaffApplication() {
 
       {condTab === 'borrower' && <>
         <BorrowerConditions appId={id} app={app} items={items} docs={docs} role={role}
-          team={team} canImportCredit={can('pull_credit')}
+          team={team} canImportCredit={can('pull_credit')} fullscreen={full}
           onPatch={patch} onReviewDoc={reviewDoc} onDownloadDoc={downloadDoc} dlBusy={dlBusy}
           onUploadTo={pickUpload} onDropTo={uploadStaffFiles} onChanged={load} onPreview={openPreview}
           onOpenStudio={() => { studioRef.current ? studioRef.current.openStudio() : document.getElementById('sec-pricing')?.scrollIntoView({ behavior: 'smooth', block: 'start' }); }} />
@@ -3818,6 +3976,7 @@ export default function StaffApplication() {
           dlBusy={dlBusy} onChanged={load} reviewBusy={busyAct === 'review'} onPreview={openPreview} />
         <VestingLlcOwners appId={id} app={app} />
       </>}
+      </>)}
       </Section>
 
       {/* The standalone "Investor guidelines" section was RETIRED (owner-directed 2026-07-24):
@@ -4024,6 +4183,7 @@ export default function StaffApplication() {
           title={previewDoc.item_label || previewDoc.slot_label || 'Document preview'}
           filename={previewDoc.filename} contentType={previewDoc.content_type}
           load={() => api.staffDownloadDoc(previewDoc.id)}
+          ocr={() => api.staffOcrDoc(previewDoc.id)}
           onDownload={() => downloadDoc(previewDoc)}
           onClose={() => setPreviewDoc(null)} />
       )}
