@@ -47,6 +47,7 @@ import StaffLeadDetail from './screens/StaffLeadDetail.jsx';
 import StaffBorrowers from './screens/StaffBorrowers.jsx';
 import StaffEmails from './screens/StaffEmails.jsx';
 import StaffOrders from './screens/StaffOrders.jsx';
+import StaffInvestorSuite from './screens/StaffInvestorSuite.jsx';
 import StaffBorrowerDetail from './screens/StaffBorrowerDetail.jsx';
 import StaffBorrowerView from './screens/StaffBorrowerView.jsx';
 import StaffVendors from './screens/StaffVendors.jsx';
@@ -166,6 +167,8 @@ export default function App() {
           <Route path="/internal/leads/:id" element={<StaffPrivate><StaffLeadDetail /></StaffPrivate>} />
           <Route path="/internal/emails" element={<StaffPrivate><StaffEmails /></StaffPrivate>} />
           <Route path="/internal/orders" element={<StaffPrivate><StaffOrders /></StaffPrivate>} />
+          {/* Investor Suite — every marketing tool (term sheet, rehab budget, analyzers) inside PILOT. */}
+          <Route path="/internal/investor-suite" element={<StaffPrivate><StaffInvestorSuite /></StaffPrivate>} />
           <Route path="/internal/borrowers" element={<StaffPrivate><StaffBorrowers /></StaffPrivate>} />
           <Route path="/internal/borrowers/:id" element={<StaffPrivate><StaffBorrowerDetail /></StaffPrivate>} />
           {/* Borrower view — pick a borrower and see PILOT as they see it. */}
