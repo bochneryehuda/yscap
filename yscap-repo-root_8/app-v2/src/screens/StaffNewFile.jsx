@@ -38,6 +38,18 @@ function readNewFileDraft() {
   try { const d = JSON.parse(localStorage.getItem(DRAFT_KEY) || 'null'); return (d && typeof d === 'object') ? d : null; }
   catch (_) { return null; }
 }
+// The borrower named in the "+ New mortgage" deep link (#/internal/new?borrowerId=…).
+// Read synchronously at mount so a stale draft for a DIFFERENT borrower can't
+// hijack an explicit "start a file for THIS borrower" (owner-reported 2026-07-29:
+// starting a new file for an existing borrower didn't always load them).
+function readUrlBorrowerId() {
+  try {
+    const hash = String((typeof window !== 'undefined' && window.location && window.location.hash) || '');
+    const q = hash.indexOf('?');
+    if (q < 0) return '';
+    return new URLSearchParams(hash.slice(q + 1)).get('borrowerId') || '';
+  } catch (_) { return ''; }
+}
 
 /* Optional co-borrower at file creation (#98). Internal-only borrower-name
    typeahead (same guarded endpoint as elsewhere) so a co-borrower on record
@@ -241,7 +253,13 @@ export default function StaffNewFile() {
   // processor/underwriter opener isn't a valid LO, so their default stays blank.
   const selfOfficerId = (['loan_officer', 'admin', 'super_admin'].includes(role) && actor && actor.id) ? actor.id : '';
   const [team, setTeam] = useState([]);
-  const _d = readNewFileDraft();   // restore any in-progress draft (lazy, once, pre-persist)
+  const _rawDraft = readNewFileDraft();   // restore any in-progress draft (lazy, once, pre-persist)
+  const _urlBorrowerId = readUrlBorrowerId();
+  // A stale draft must NOT hijack "+ New mortgage" for a specific borrower: if the
+  // deep link names a borrower the draft isn't for, ignore the draft and start
+  // fresh so the ?borrowerId prefill effect below actually loads them.
+  const _d = (_urlBorrowerId && _rawDraft && (_rawDraft.borrowerId || '') !== _urlBorrowerId) ? null : _rawDraft;
+  if (_d !== _rawDraft) { try { localStorage.removeItem(DRAFT_KEY); } catch (_) { /* ignore */ } }
   const [f, setF] = useState({
     firstName: '', lastName: '', email: '', phone: '',
     program: '', loanType: '', propertyType: '', units: '', entityName: '', llcId: '',
@@ -299,7 +317,7 @@ export default function StaffNewFile() {
     api.staffBorrower(bid).then((bo) => {
       if (!live || !bo) return;
       pickBorrower({ id: bo.id, first_name: bo.first_name, last_name: bo.last_name, email: bo.email, cell_phone: bo.cell_phone });
-    }).catch(() => {});
+    }).catch(() => { if (live) setErr('Could not load that borrower automatically — search their name below to link them.'); });
     return () => { live = false; };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
