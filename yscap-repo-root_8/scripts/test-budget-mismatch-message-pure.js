@@ -46,12 +46,13 @@ ok(msg.includes('$0.01 lower'), 'the message names the exact gap');
 ok(msg.includes('Scope of Work line-item total'), 'the message names WHICH number is off');
 ok(!/\$120,000(?!\.\d\d)/.test(msg), 'no dollar-rounded "$120,000" (without cents) appears anywhere in the message');
 
-// ---- each pair is named individually ----
+// ---- each pair is named individually, by the SOURCE the owner recognizes ----
 msg = RB.budgetSignoffCheck(payload(120000, 120000), 120000, { rehabBudget: 121000 });
-ok(msg.includes('registered product budget $121,000.00') && msg.includes('$1,000.00 lower'), 'a registered-product disagreement is named with its gap');
+ok(msg.includes('Products & Pricing / Term Sheet budget $121,000.00') && msg.includes('$1,000.00 lower'), 'a Products & Pricing / Term Sheet disagreement is named with its gap');
 ok(msg.includes('re-register the product'), 'the fix instruction still tells them how to resolve it');
+ok(/Encompass/.test(msg) && /ClickUp/.test(msg) && /Application/.test(msg), 'the message names the real sources: Application, Encompass, ClickUp, Products & Pricing / Term Sheet');
 msg = RB.budgetSignoffCheck(payload(120000, 119000), 120000, { rehabBudget: 120000 });
-ok(msg.includes('first-page construction budget $119,000.00') && msg.includes('$1,000.00 lower'), 'a first-page disagreement is named with its gap');
+ok(msg.includes('Scope of Work starting budget (first page) $119,000.00') && msg.includes('$1,000.00 lower'), 'a first-page (starting budget) disagreement is named with its gap');
 
 // ---- parser unification: comma/"$"-formatted stored values never false-fire ----
 ok(RB.budgetSignoffCheck(payload('120,000.00', '$120,000'), 120000, { rehabBudget: '120,000' }) === null, 'comma/"$" formatted payload + registration values parse (toNum) — no false fire');
