@@ -562,7 +562,7 @@ that removing it is safe, and the reason is precise.
 | | Count | What they are |
 |---|---|---|
 | `task` | **23** | Genuine staff workflow steps — "SharePoint folders built", "ClickUp task created", "USPS address verification", "Soft credit pull run in Xactus", "Attorney email sent" |
-| `condition` | **7** | LTC / LTV / ARV / interest-reserve checks, Term sheet generated, Final review requested, CTC received |
+| `condition` | **7** | LTC / LTV / ARV / interest-reserve checks, Term sheet generated, Investor final review, Investor Clear to Close (both relabelled by db/367) |
 
 **The 7 conditions leave first, and this is what makes removal safe.** Under the
 `item_kind` split they move to the conditions list — including **all three gates
@@ -571,8 +571,8 @@ that exist in the entire system**:
 | Gate | Kind |
 |---|---|
 | `rtl_p4_ts` — Term sheet generated | `condition` |
-| `rtl_f_review` — Final review requested | `condition` |
-| `rtl_f_ctc` — CTC received | `condition` |
+| `rtl_f_review` — Investor final review | `condition` |
+| `rtl_f_ctc` — Investor Clear to Close (CTC) | `condition` |
 
 **Not one gate is a `task`** (verified across every migration). So deleting the
 tasks removes nothing that holds a file back.
