@@ -93,9 +93,16 @@ const closingSrc = read('closing-inbox.js');
 const inboxSrc = read('file-inbox.js');
 assert.ok(/classifyReturnAttachment/.test(orderSrc), 'order-inbox runs the filter');
 assert.ok(/classifyReturnAttachment/.test(closingSrc), 'closing-inbox runs the filter');
-// The filter must run BEFORE the document INSERT in both sinks.
-assert.ok(orderSrc.indexOf('classifyReturnAttachment(') < orderSrc.indexOf('INSERT INTO documents'), 'order filter runs before the insert');
-assert.ok(closingSrc.indexOf('classifyReturnAttachment(') < closingSrc.indexOf('INSERT INTO documents'), 'closing filter runs before the insert');
+// The filter must run BEFORE the document INSERT in both sinks. Both indexes
+// must be REAL hits (>= 0): with only the < comparison, removing the CALL while
+// keeping the import would pass vacuously (-1 < any positive index).
+const callBeforeInsert = (src, label) => {
+  const call = src.indexOf('classifyReturnAttachment(');
+  const ins = src.indexOf('INSERT INTO documents');
+  assert.ok(call >= 0 && ins >= 0 && call < ins, `${label} runs the filter before the insert`);
+};
+callBeforeInsert(orderSrc, 'order-inbox');
+callBeforeInsert(closingSrc, 'closing-inbox');
 // The retrieval path passes the inline/Content-ID metadata through so the
 // embedded-image tell actually reaches the classifier.
 assert.ok(/contentDisposition:/.test(inboxSrc) && /contentId:/.test(inboxSrc), 'file-inbox forwards disposition + content-id metadata');
