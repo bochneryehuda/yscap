@@ -38,10 +38,18 @@ const KIND_BY_TEMPLATE_CODE = Object.freeze({
 
 /**
  * planFreshnessReopens(rows, { now, limit }) → [{ id, applicationId, kind,
- *   trigger, reason, clearedAt, daysStale }]
+ *   trigger, reason, basisAt, basisKind, daysStale }]
  * rows: [{ id, application_id?, template_code, status, signed_off_at,
- *          waived_at }] — cleared checklist items (the caller pre-filters to
- * active files). Oldest-cleared first; capped at `limit` (default 25).
+ *          waived_at, effective_at? }] — cleared checklist items (the caller
+ * pre-filters to active files). Oldest-basis first; capped at `limit` (25).
+ *
+ * FRESHNESS BASIS (owner-directed 2026-07-29): the window is measured from the
+ * date the EVIDENCE is effective, not the date staff happened to sign it off.
+ * For a credit report that is the report's own "ready to report" / effective
+ * date (credit_reports.report_date), passed in as `effective_at` — a 120-day-old
+ * report signed off yesterday is already stale. When no `effective_at` is
+ * supplied (bank statements, title, insurance, flood — we don't track a separate
+ * evidence date), the sign-off date remains the basis, byte-identical to before.
  */
 function planFreshnessReopens(rows, opts = {}) {
   const now = opts.now || new Date();
@@ -53,31 +61,39 @@ function planFreshnessReopens(rows, opts = {}) {
     if (!r.signed_off_at) continue;                  // only signed-off clearances age
     const kind = KIND_BY_TEMPLATE_CODE[String(r.template_code || '')];
     if (!kind) continue;
+    // Prefer the evidence's own effective date; fall back to the sign-off date.
+    const usingEffective = !!r.effective_at;
+    const basisAt = r.effective_at || r.signed_off_at;
     const decision = conditionReopen.decide(
-      { cleared: true, kind, clearedAt: r.signed_off_at },
+      { cleared: true, kind, clearedAt: basisAt },
       { asOf: now });
     if (!decision || !decision.reopen) continue;
-    const clearedMs = new Date(r.signed_off_at).getTime();
-    const daysStale = Number.isFinite(clearedMs)
-      ? Math.floor((now.getTime() - clearedMs) / 86400000) : null;
+    const basisMs = new Date(basisAt).getTime();
+    const daysStale = Number.isFinite(basisMs)
+      ? Math.floor((now.getTime() - basisMs) / 86400000) : null;
     out.push({
       id: r.id,
       applicationId: r.application_id || null,
       kind,
       trigger: decision.trigger,
       reason: decision.reason,
-      clearedAt: r.signed_off_at,
+      basisAt,
+      basisKind: usingEffective ? 'effective_date' : 'signed_off',
+      clearedAt: basisAt,          // back-compat alias for existing callers
       daysStale,
     });
   }
-  // Oldest clearance first so the most-stale evidence reopens soonest.
-  out.sort((a, b) => new Date(a.clearedAt) - new Date(b.clearedAt));
+  // Oldest basis first so the most-stale evidence reopens soonest.
+  out.sort((a, b) => new Date(a.basisAt) - new Date(b.basisAt));
   return out.slice(0, limit);
 }
 
 /** The borrower/staff-safe [auto] note the sweep writes on a reopened item. */
 function autoNoteFor(plan) {
   const days = plan && Number.isFinite(plan.daysStale) ? `${plan.daysStale} days ago` : 'a while ago';
+  if (plan && plan.kind === 'credit') {
+    return `[auto] The credit report on file is dated ${days} and has passed its 120-day freshness window — please pull a current credit report. The prior report is saved; nothing is lost.`;
+  }
   return `[auto] The document that cleared this condition was accepted ${days} and has passed its freshness window — please provide a current version. Your earlier upload is saved; nothing is lost.`;
 }
 
