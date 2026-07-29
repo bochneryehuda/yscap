@@ -38,6 +38,7 @@ const db = require('../db');
 const storage = require('./storage');
 const notify = require('./notify');
 const { decodeUploadBase64, sniffKind, expectedKind } = require('./upload-bytes');
+const { classifyReturnAttachment } = require('./order-return-filter');
 
 const DOC_KIND = 'closing_correspondence';
 // A closing chain genuinely carries big multi-document sends (a full draft package),
@@ -94,10 +95,10 @@ async function alreadyFiled({ applicationId, sha256, filename }) {
  * unchanged.
  *
  * @param p {applicationId, attachments:[{filename,contentType,content(base64)}], fromEmail, subject}
- * @returns {Promise<{saved:number, deduped:number, failed:number, failedPermanent:number, failedTransient:number, suspect:number, names:string[]}>}
+ * @returns {Promise<{saved:number, deduped:number, failed:number, failedPermanent:number, failedTransient:number, suspect:number, skipped:number, names:string[]}>}
  */
 async function saveChainDocs({ applicationId, attachments, fromEmail, subject } = {}) {
-  const empty = { saved: 0, deduped: 0, failed: 0, failedPermanent: 0, failedTransient: 0, suspect: 0, names: [] };
+  const empty = { saved: 0, deduped: 0, failed: 0, failedPermanent: 0, failedTransient: 0, suspect: 0, skipped: 0, names: [] };
   const list = (Array.isArray(attachments) ? attachments : [])
     .filter((a) => a && a.filename && a.content)
     .slice(0, MAX_DOCS_PER_EMAIL);
@@ -120,6 +121,7 @@ async function saveChainDocs({ applicationId, attachments, fromEmail, subject } 
   let failedPermanent = 0;
   let failedTransient = 0;
   let suspect = 0;
+  let skipped = 0;   // email-signature/logo images — never closing documents
   const names = [];
   for (const a of list) {
     try {
@@ -130,6 +132,19 @@ async function saveChainDocs({ applicationId, attachments, fromEmail, subject } 
       // COUNTED. Silently returning "0 problems" is how six PDFs became four.
       catch (_) { failedPermanent += 1; console.error('[closing-inbox] undecodable attachment', String(a.filename || '')); continue; }
       if (!buf.length) { failedPermanent += 1; continue; }
+      // An email-SIGNATURE image (inline/Content-ID, or a small standalone image —
+      // the sender's logo/headshot) is part of the MESSAGE, not a closing document.
+      // On a chain where every reply carries the attorney's signature images, filing
+      // them buried the real correspondence and bumped "N closing documents arrived"
+      // on messages that attached nothing. NOT counted as failed — skipping one is
+      // the correct outcome, not a shortfall a retry should chase. See
+      // order-return-filter.js (shared with the Orders desk's returned documents).
+      const cls = classifyReturnAttachment({ ...a, buf });
+      if (!cls.file) {
+        skipped += 1;
+        console.log(`[closing-inbox] skipped a ${cls.reason} attachment ("${String(a.filename).slice(0, 80)}", ${buf.length} bytes) — not filed as closing correspondence.`);
+        continue;
+      }
       const want = expectedKind(a.filename, a.contentType);
       const got = sniffKind(buf);
       if (want && got && got !== want) suspect += 1;
@@ -205,7 +220,7 @@ async function saveChainDocs({ applicationId, attachments, fromEmail, subject } 
       });
     } catch (_) { /* best-effort */ }
   }
-  return { saved, deduped, failed, failedPermanent, failedTransient, suspect, names };
+  return { saved, deduped, failed, failedPermanent, failedTransient, suspect, skipped, names };
 }
 
 /** The file's closing-correspondence package, newest first. */
