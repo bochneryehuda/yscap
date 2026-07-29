@@ -19,9 +19,9 @@
  * see. Adding a row to this list is a decision, not an inference.
  *
  * WHAT IS DELIBERATELY *NOT* HERE — the three clear-to-close GATES.
- * rtl_p4_ts (Term sheet generated), rtl_f_review (Final review requested) and
- * rtl_f_ctc (CTC received) are the same shape and the owner named them too, but
- * the system CHECKS them before it will let a file clear to close
+ * rtl_p4_ts (Term sheet generated), rtl_f_review (Investor final review) and
+ * rtl_f_ctc (Investor Clear to Close) are the same shape and the owner named
+ * them too, but the system CHECKS them before it will let a file clear to close
  * (`advancementBlockers`, `WHERE ci.is_gate=true AND NOT signed off`). Hiding
  * them without moving what they enforce would block every file from closing with
  * no way left on screen to sign them off. They are being replaced by real
