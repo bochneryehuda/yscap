@@ -43,6 +43,7 @@ const { parseCreditXml, sliceForSegment } = require('./parse');
 const { matchSegments } = require('./match');
 const store = require('./store');
 const coCondition = require('./co-condition');
+const storage = require('../storage');
 
 const PULL_TYPES = ['soft', 'hard'];
 const REQUEST_TYPES = ['reissue', 'new'];
@@ -138,6 +139,9 @@ async function preview(appId) {
     const b = borrowerToSend(bb.row, { includeSsn: false });
     const miss = missingForPull(b);
     const prior = await priorReportId(appId, bb.borrowerId);
+    // A report already on record for this borrower on ANOTHER file, still inside the
+    // 120-day window, can be reused here without a fresh inquiry (#16).
+    const reusable = await latestBorrowerReport(bb.borrowerId, { withinDays: FRESH_DAYS, excludeAppId: appId }).catch(() => null);
     shaped.push({
       borrowerId: bb.borrowerId, role: bb.role,
       name: nameOfRow(bb.row, bb.role),
@@ -148,6 +152,13 @@ async function preview(appId) {
       missing: miss,
       canPull: miss.length === 0,
       reissueReportId: prior,
+      profileReport: reusable ? {
+        sourceReportId: reusable.id,
+        reportDate: reusable.report_date,
+        ageDays: ageDaysOf(reusable.report_date),
+        middleScore: reusable.middle_score,
+        fromLoanNumber: reusable.ys_loan_number || null,
+      } : null,
     });
   }
   const primary = shaped[0] || {};
@@ -927,4 +938,185 @@ async function fileCredit(appId, opts = {}) {
   };
 }
 
-module.exports = { preview, importCredit, fileCredit, borrowerScore, PULL_TYPES, REQUEST_TYPES };
+// ────────────────────────────────────────────────────────────────────────────
+// #16 — the credit report is the BORROWER's, not the file's. A report pulled on
+// one file is auto-reusable on the borrower's other files for 120 days (by the
+// report's own effective date), so we never re-issue a fresh Xactus inquiry for
+// a report we already hold. credit_reports.borrower_id already ties every report
+// to the person; these helpers surface it on the profile and clone it forward.
+// ────────────────────────────────────────────────────────────────────────────
+
+const FRESH_DAYS = 120;   // matches the credit freshness window (condition-reopen.js)
+
+// Days between a 'YYYY-MM-DD' report date and now (calendar days, tz-safe).
+function ageDaysOf(reportDate) {
+  if (!reportDate) return null;
+  const s = String(reportDate).slice(0, 10);
+  const d = new Date(s + 'T00:00:00Z');
+  if (Number.isNaN(d.getTime())) return null;
+  const today = new Date();
+  const todayUtc = Date.UTC(today.getUTCFullYear(), today.getUTCMonth(), today.getUTCDate());
+  return Math.floor((todayUtc - d.getTime()) / 86400000);
+}
+
+// The freshest completed report ON RECORD for a borrower, across ALL their files.
+// `withinDays` bounds it to the freshness window (null = any age); `excludeAppId`
+// omits the current file so "reuse from another file" never offers this file's own
+// report back to itself.
+async function latestBorrowerReport(borrowerId, { withinDays = FRESH_DAYS, excludeAppId = null } = {}) {
+  if (!borrowerId) return null;
+  const params = [borrowerId, excludeAppId];
+  let ageClause = '';
+  if (Number.isFinite(withinDays)) { params.push(Math.max(0, Math.floor(withinDays))); ageClause = `AND cr.report_date >= (CURRENT_DATE - $3::int)`; }
+  const r = await db.query(
+    `SELECT cr.id, cr.application_id, cr.borrower_id, cr.report_date, cr.middle_score,
+            cr.vendor_report_id, cr.xml_document_id, cr.pdf_document_id, cr.parsed,
+            cr.interface_version, cr.bureaus, cr.pull_type, cr.request_type,
+            a.ys_loan_number, a.property_address
+       FROM credit_reports cr
+       JOIN applications a ON a.id = cr.application_id
+      WHERE cr.borrower_id = $1 AND cr.status='completed' AND cr.report_date IS NOT NULL
+        AND ($2::uuid IS NULL OR cr.application_id <> $2::uuid)
+        AND a.deleted_at IS NULL
+        ${ageClause}
+      ORDER BY cr.report_date DESC, cr.pulled_at DESC
+      LIMIT 1`, params);
+  return r.rows[0] || null;
+}
+
+// Every credit report on a borrower's profile (across all their files), newest
+// first — the profile's credit history + the "reuse this" source list.
+async function borrowerCreditReports(borrowerId, { limit = 25 } = {}) {
+  if (!borrowerId) return [];
+  const r = await db.query(
+    `SELECT cr.id, cr.application_id, cr.report_date, cr.middle_score, cr.status,
+            cr.source, cr.pull_type, cr.request_type, cr.interface_version,
+            cr.vendor_report_id, cr.pulled_at, cr.pdf_document_id, cr.xml_document_id,
+            a.ys_loan_number, a.property_address
+       FROM credit_reports cr
+       JOIN applications a ON a.id = cr.application_id
+      WHERE cr.borrower_id = $1 AND a.deleted_at IS NULL
+      ORDER BY cr.report_date DESC NULLS LAST, cr.pulled_at DESC
+      LIMIT $2`, [borrowerId, Math.max(1, Math.min(100, limit))]);
+  const today = new Date();
+  return r.rows.map((row) => {
+    const age = ageDaysOf(row.report_date);
+    const addr = row.property_address || {};
+    return {
+      id: row.id,
+      applicationId: row.application_id,
+      loanNumber: row.ys_loan_number || null,
+      propertyLine: addr.line1 ? [addr.line1, addr.city, addr.state].filter(Boolean).join(', ') : null,
+      reportDate: row.report_date,
+      ageDays: age,
+      fresh: age != null && age <= FRESH_DAYS,
+      middleScore: row.middle_score,
+      status: row.status,
+      source: row.source,
+      version: row.interface_version,
+      vendorReportId: row.vendor_report_id,
+      pulledAt: row.pulled_at,
+      hasPdf: !!row.pdf_document_id,
+      hasXml: !!row.xml_document_id,
+    };
+  });
+}
+
+// Read a stored report's source bytes back (best-effort). Returns the XML as a
+// utf8 string and the PDF as base64 so storeImport can re-file them on the new file.
+async function loadReportSourceBytes(src) {
+  let xml = null, pdfBase64 = null;
+  const readRef = async (docId) => {
+    if (!docId) return null;
+    const d = (await db.query('SELECT storage_ref FROM documents WHERE id=$1', [docId])).rows[0];
+    if (!d || !d.storage_ref) return null;
+    try { return await storage.read(d.storage_ref); } catch (_) { return null; }
+  };
+  const xb = await readRef(src.xml_document_id);
+  if (xb) xml = xb.toString('utf8');
+  const pb = await readRef(src.pdf_document_id);
+  if (pb) pdfBase64 = pb.toString('base64');
+  return { xml, pdfBase64 };
+}
+
+/**
+ * Reuse a borrower's existing credit report onto THIS file — no new Xactus inquiry.
+ * Clones the freshest completed report (<120 days by report_date) from another of
+ * the borrower's files onto this file's credit condition: re-files the same stored
+ * PDF/XML, inserts a fresh credit_reports row carrying the ORIGINAL report_date
+ * forward (the freshness clock is NOT reset), and writes the FICO back exactly like
+ * a normal import. sourceReportId pins a specific report; absent = the freshest.
+ */
+async function reuseFromProfile(appId, opts = {}) {
+  const { file, borrowers } = await fileBorrowers(appId);
+  const target = borrowers.find((b) => String(b.borrowerId) === String(opts.borrowerId));
+  if (!target) throw userError('That borrower is not on this file.', 404);
+
+  let src;
+  if (opts.sourceReportId) {
+    src = (await db.query(
+      `SELECT cr.id, cr.application_id, cr.borrower_id, cr.report_date, cr.middle_score,
+              cr.vendor_report_id, cr.xml_document_id, cr.pdf_document_id, cr.parsed,
+              cr.interface_version, cr.bureaus, cr.pull_type, cr.request_type
+         FROM credit_reports cr JOIN applications a ON a.id=cr.application_id
+        WHERE cr.id=$1 AND cr.borrower_id=$2 AND cr.status='completed' AND a.deleted_at IS NULL`,
+      [opts.sourceReportId, target.borrowerId])).rows[0];
+    if (!src) throw userError('That credit report can’t be reused (not found for this borrower).', 404);
+  } else {
+    src = await latestBorrowerReport(target.borrowerId, { withinDays: FRESH_DAYS, excludeAppId: appId });
+    if (!src) throw userError('This borrower has no recent credit report on file to reuse. Pull a new report instead.', 404);
+  }
+
+  const age = ageDaysOf(src.report_date);
+  if (age == null || age > FRESH_DAYS) {
+    throw userError(`The most recent report on file is ${age == null ? 'undated' : age + ' days old'} — past the 120-day window. Pull a fresh report instead.`);
+  }
+  if (String(src.application_id) === String(appId)) {
+    throw userError('That report is already on this file.');
+  }
+
+  const bytes = await loadReportSourceBytes(src);
+  if (!bytes.xml && !bytes.pdfBase64) {
+    throw userError('The stored copy of that report could not be read. Pull a fresh report instead.');
+  }
+
+  const parsed = src.parsed || emptyParse('Reused from profile; no data file stored.', src.vendor_report_id);
+  const res = await store.storeImport({
+    file,
+    borrower: { id: target.borrowerId, ssn_last4: target.row.ssn_last4, isCo: target.role === 'co' },
+    parsed,
+    xml: bytes.xml || undefined,
+    pdfBase64: bytes.pdfBase64 || undefined,
+    request: {
+      pullType: src.pull_type || 'soft',
+      requestType: 'reissue',
+      bureaus: src.bureaus || provider.ALL_BUREAUS,
+      version: src.interface_version || provider.version(),
+    },
+    actorId: opts.actorId || null,
+    source: 'reuse',
+    filenames: {
+      xml: 'credit-report-reused.xml', pdf: 'credit-report-reused.pdf',
+      xmlLabel: 'Credit report (data) — reused', pdfLabel: 'Credit report — reused',
+    },
+  });
+
+  return {
+    ok: true,
+    reused: true,
+    creditReportId: res.creditReportId,
+    fromApplicationId: src.application_id,
+    reportDate: src.report_date,
+    ageDays: age,
+    middleScore: src.middle_score != null ? src.middle_score : (parsed.middleScore != null ? parsed.middleScore : null),
+    ficoWritten: res.ficoWritten,
+    ficoMismatch: res.ficoMismatch,
+    ficoUnverified: res.ficoUnverified,
+    hasPdf: !!bytes.pdfBase64, hasXml: !!bytes.xml,
+  };
+}
+
+module.exports = {
+  preview, importCredit, fileCredit, borrowerScore, PULL_TYPES, REQUEST_TYPES,
+  latestBorrowerReport, borrowerCreditReports, reuseFromProfile, ageDaysOf,
+};

@@ -43,7 +43,7 @@ const statusPill = (s) => {
   return <span className={`pill ${cls}`}>{(s || '—').replace(/_/g, ' ')}</span>;
 };
 
-const TABS = ['Overview', 'Files', 'Entities', 'Track record', 'Conditions', 'Tasks', 'Documents', 'Duplicates', 'Activity', 'Notes'];
+const TABS = ['Overview', 'Files', 'Entities', 'Track record', 'Credit', 'Conditions', 'Tasks', 'Documents', 'Duplicates', 'Activity', 'Notes'];
 
 export default function StaffBorrowerDetail() {
   const { id } = useParams();
@@ -74,6 +74,7 @@ export default function StaffBorrowerDetail() {
       {tab === 'Files' && <Files id={id} />}
       {tab === 'Entities' && <Entities id={id} />}
       {tab === 'Track record' && <TrackRecord id={id} />}
+      {tab === 'Credit' && <Credit id={id} />}
       {tab === 'Conditions' && <Conditions id={id} />}
       {tab === 'Tasks' && <Tasks id={id} />}
       {tab === 'Documents' && <Documents id={id} />}
@@ -465,6 +466,55 @@ function TrackRecord({ id }) {
           ))}
         </tbody>
       </table>
+    </div>
+  );
+}
+
+/* ---------------- credit history (the person's reports across all files) ---------------- */
+// A credit report is the BORROWER's, not the file's: every report pulled on any of
+// their files shows here, newest first, with a freshness flag. A report still inside
+// the 120-day window can be reused on a new file with no fresh inquiry (from the
+// file's own credit condition — this is the read-only history of the person).
+function Credit({ id }) {
+  const [data, err] = useLoad(() => api.staffBorrowerCredit(id), [id]);
+  if (err) return <div className="notice err">{err}</div>;
+  if (!data) return <Empty t="Loading…" />;
+  const reports = data.reports || [];
+  if (!reports.length) return <div className="panel"><Empty t="No credit reports on this borrower’s profile yet. Import one from a loan file’s Credit condition." /></div>;
+  const fresh = data.fresh;
+  return (
+    <div className="panel">
+      {fresh && (
+        <div className="notice ok" style={{ marginBottom: 12 }}>
+          Current report on file — dated <b>{fresh.reportDate ? fmtDay(fresh.reportDate) : '—'}</b>
+          {fresh.ageDays != null ? <> ({fresh.ageDays} days ago)</> : null}
+          {fresh.middleScore != null ? <>, middle score <b>{fresh.middleScore}</b></> : null}.
+          {' '}It can be reused on a new file without a fresh pull (within {data.freshDays} days).
+        </div>
+      )}
+      <div style={{ overflowX: 'auto' }}>
+        <table className="tbl" style={{ width: '100%', borderCollapse: 'collapse' }}>
+          <thead><tr style={{ textAlign: 'left' }}>
+            {['Report date', 'Age', 'Middle score', 'Loan #', 'Property', 'Source', 'Status'].map(h => <th key={h} style={{ padding: '10px 12px' }}>{h}</th>)}
+          </tr></thead>
+          <tbody>
+            {reports.map(r => (
+              <tr key={r.id} style={{ borderTop: '1px solid var(--line, rgba(127,169,176,.2))' }}>
+                <td style={{ padding: '10px 12px' }}>{r.reportDate ? fmtDay(r.reportDate) : '—'}</td>
+                <td style={{ padding: '10px 12px' }}>
+                  {r.ageDays != null ? `${r.ageDays}d` : '—'}
+                  {' '}<span className={'pill ' + (r.fresh ? 'ok' : '')}>{r.fresh ? 'current' : 'expired'}</span>
+                </td>
+                <td style={{ padding: '10px 12px' }}>{r.middleScore != null ? <b>{r.middleScore}</b> : <span className="muted">no score</span>}</td>
+                <td style={{ padding: '10px 12px' }} className="small">{r.loanNumber || '—'}</td>
+                <td style={{ padding: '10px 12px' }} className="small">{r.propertyLine || '—'}</td>
+                <td style={{ padding: '10px 12px' }} className="small">{r.source === 'reuse' ? 'reused' : (r.source || '—')}</td>
+                <td style={{ padding: '10px 12px' }}>{r.status === 'completed' ? <span className="pill ok">✓</span> : <span className="pill">{r.status}</span>}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
     </div>
   );
 }

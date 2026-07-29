@@ -2965,6 +2965,9 @@ details[open]>.appr-sec-sum .appr-sec-chev{transform:rotate(180deg)}
   display:block; line-height:1.45; }
 .crx-note.secure { color:var(--teal-br); }
 .crx-note.warn { color:var(--warning); }
+.crx-note.reuse { color:#141B22; background:var(--primary-soft); border-top:none;
+  margin-top:10px; padding:10px 12px; border-radius:10px; border:1px solid var(--border); }
+.crx-note.reuse .crx-btn.ghost { white-space:nowrap; }
 .crx-lock { font-size:.85rem; margin-right:4px; }
 
 /* Options ---------------------------------------------------------------- */

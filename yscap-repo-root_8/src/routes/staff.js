@@ -3596,6 +3596,29 @@ router.post('/applications/:id/credit/import', async (req, res) => {
   }
 });
 
+// Reuse a borrower's existing (<120-day) credit report from another of their files
+// onto THIS file — no new Xactus inquiry. Same permission as a live pull; the
+// report is re-filed on this file's credit condition carrying its original date.
+router.post('/applications/:id/credit/reuse', async (req, res) => {
+  if (!can(req.actor, 'pull_credit')) return res.status(403).json({ error: 'You don’t have permission to pull credit on this file.' });
+  const b = req.body || {};
+  try {
+    const out = await require('../lib/credit').reuseFromProfile(req.params.id, {
+      borrowerId: typeof b.borrowerId === 'string' ? b.borrowerId : undefined,
+      sourceReportId: typeof b.sourceReportId === 'string' ? b.sourceReportId : undefined,
+      actorId: req.actor.id,
+    });
+    await audit(req, 'credit_reuse', 'application', req.params.id, {
+      borrowerId: b.borrowerId, fromApplicationId: out.fromApplicationId,
+      reportDate: out.reportDate, ageDays: out.ageDays, middleScore: out.middleScore,
+      ficoWritten: out.ficoWritten, ficoMismatch: out.ficoMismatch || undefined,
+    });
+    res.json(out);
+  } catch (e) {
+    res.status(e.status || 422).json({ error: e.userMessage || 'Could not reuse the credit report.' });
+  }
+});
+
 // Full file activity feed (staff sees everything, including internal).
 router.get('/applications/:id/activity', async (req, res) => {
   try { res.json(await require('../lib/activity').fileActivity(req.params.id, false)); }
@@ -6673,6 +6696,26 @@ router.get('/borrowers/:id/conditions', async (req, res) => {
           AND c.status IN ('open','borrower_responded') ${scope}
         ORDER BY c.created_at DESC`, params);
     res.json(r.rows);
+  } catch (e) { console.warn('[staff] handler error:', db.describeError(e)); res.status(500).json({ error: 'server error' }); }
+});
+
+// Every credit report ON THE BORROWER'S PROFILE (across all their files), newest
+// first, with a per-report freshness flag. This is the person's credit history —
+// a report pulled on one file is the borrower's and shows on every file for them
+// (owner-directed #16). `latest`/`fresh` summarise the most recent one within the
+// 120-day window (the reusable-without-a-new-inquiry report).
+router.get('/borrowers/:id/credit', async (req, res) => {
+  try {
+    if (!(await canSeeBorrower(req))) return res.status(403).json({ error: 'forbidden' });
+    const credit = require('../lib/credit');
+    const reports = await credit.borrowerCreditReports(req.params.id);
+    const fresh = reports.find((r) => r.status === 'completed' && r.fresh) || null;
+    res.json({
+      reports,
+      latest: reports[0] || null,
+      fresh,   // the most-recent completed report still inside 120 days (reusable)
+      freshDays: 120,
+    });
   } catch (e) { console.warn('[staff] handler error:', db.describeError(e)); res.status(500).json({ error: 'server error' }); }
 });
 
