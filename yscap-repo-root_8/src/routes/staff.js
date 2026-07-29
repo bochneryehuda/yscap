@@ -5275,8 +5275,32 @@ async function signOffGate(itemId, actor) {
       return null;
     }
     if (isAppraisalDocs) {
+      // "No XML available" waiver (owner-directed 2026-07-29): the XML requirement
+      // is lifted, the PDF is STILL required, and the ARV + As-Is must be on file
+      // (typed by hand — there is no XML to read them from). A transferred
+      // appraisal needs the transfer letter in the PDF slot; any other reason must
+      // have its policy exception APPROVED first.
+      const waiver = (await db.query(
+        `SELECT reason, requires_transfer_letter, exception_id FROM appraisal_xml_waivers WHERE application_id=$1`,
+        [item.application_id])).rows[0];
+      if (waiver) {
+        if (!hasSlot('pdf')) {
+          return waiver.requires_transfer_letter
+            ? 'Upload the appraisal TRANSFER LETTER (PDF) before signing off — a transferred appraisal still needs the transfer letter in the PDF slot.'
+            : 'Upload the appraisal report (PDF) before signing off — the XML is waived, but the PDF is still required.';
+        }
+        const av = (await db.query(`SELECT as_is_value, arv FROM applications WHERE id=$1`, [item.application_id])).rows[0] || {};
+        if (!(Number(av.as_is_value) > 0) || !(Number(av.arv) > 0))
+          return 'Enter the ARV and the As-Is value by hand before signing off — with no XML there is nothing to read them from (use “No XML available”).';
+        if (!waiver.requires_transfer_letter && waiver.exception_id) {
+          const ex = (await db.query(`SELECT status FROM loan_exceptions WHERE id=$1`, [waiver.exception_id])).rows[0];
+          if (!ex || ex.status !== 'approved')
+            return 'This “no appraisal XML” waiver is waiting for an admin to approve it on the Exceptions screen. It can be signed off once approved.';
+        }
+        return null;   // XML waived — PDF + hand-entered values (+ approval / transfer letter) satisfy it.
+      }
       if (!hasSlot('xml') || !hasSlot('pdf'))
-        return 'Upload BOTH the appraisal data file (XML) and the appraisal report (PDF) before signing off — this condition cannot be completed without both.';
+        return 'Upload BOTH the appraisal data file (XML) and the appraisal report (PDF) before signing off — this condition cannot be completed without both. If there is no XML, use “No XML available” on the condition.';
       // The XML must have actually IMPORTED. If PILOT could not read the dropped file as a valid
       // appraisal, no `appraisal_review_cleared` condition is ever materialized — and without it the
       // whole PILOT findings engine (the fatal-finding clear-to-close gate) is silently skipped for
@@ -5958,6 +5982,108 @@ router.get('/applications/:id/appraisal-card', async (req, res) => {
     });
   } catch (e) { res.status(500).json({ error: 'server error' }); }
 });
+// ---- Appraisal "no XML available" waiver (owner-directed 2026-07-29) ----------
+// The appraisal-documents condition needs an XML data file + a PDF report + a
+// successful MISMO import. Sometimes there is NO XML (a transferred appraisal, a
+// desk/manual appraisal, an appraiser who won't send the data file). This lets a
+// reviewer waive ONLY the XML — the PDF stays required — after typing the ARV +
+// As-Is by hand. A TRANSFERRED appraisal auto-waives and asks for a transfer
+// letter PDF (no exception); any other reason needs a note and opens a policy
+// exception for an admin to approve.
+const APPRAISAL_XML_WAIVE_REASONS = { transferred_appraisal: 1, appraiser_no_xml: 1, desk_or_manual: 1, other: 1 };
+
+router.get('/applications/:id/appraisal-xml-waiver', async (req, res) => {
+  if (!(await canTouchApp(req, req.params.id))) return res.status(403).json({ error: 'forbidden' });
+  try {
+    const w = (await db.query(`SELECT * FROM appraisal_xml_waivers WHERE application_id=$1`, [req.params.id])).rows[0] || null;
+    let exception = null;
+    if (w && w.exception_id) {
+      exception = (await db.query(
+        `SELECT id, status, reason_code, reason_note, exception_seq, decided_at FROM loan_exceptions WHERE id=$1`,
+        [w.exception_id])).rows[0] || null;
+    }
+    res.json({ waiver: w, exception });
+  } catch (e) { res.status(500).json({ error: 'server error' }); }
+});
+
+router.post('/applications/:id/appraisal-xml-waiver', async (req, res) => {
+  if (!(await canTouchApp(req, req.params.id))) return res.status(403).json({ error: 'forbidden' });
+  const b = req.body || {};
+  const reason = String(b.reason || '').trim();
+  if (!APPRAISAL_XML_WAIVE_REASONS[reason]) return res.status(400).json({ error: 'Pick a reason for waiving the appraisal XML.' });
+  const isTransfer = reason === 'transferred_appraisal';
+  const note = b.note ? String(b.note).slice(0, 2000) : null;
+  if (!isTransfer && !note) return res.status(400).json({ error: 'Add a short note explaining why there is no XML — it goes to an admin for an exception.' });
+  const app = (await db.query(`SELECT id, borrower_id FROM applications WHERE id=$1 AND deleted_at IS NULL`, [req.params.id])).rows[0];
+  if (!app) return res.status(404).json({ error: 'not found' });
+
+  // The values usually read off the XML must be entered by hand. Reuse the shared
+  // human-entry writers — they validate, respect the file freeze, write onto the
+  // file (reopening Products & Pricing), stamp + audit. Set As-Is first so the
+  // ARV-above-As-Is check runs against it.
+  const desk = require('../lib/appraisal/as-is-desk');
+  const asIsRes = await desk.setAsIsByHuman(req.params.id, b.asIs, { actorId: req.actor.id, actor: req.actor, note: 'No-XML appraisal waiver' });
+  if (!asIsRes.ok) return res.status(asIsRes.status || 400).json({ error: asIsRes.error });
+  const arvRes = await desk.setArvByHuman(req.params.id, b.arv, { actorId: req.actor.id, actor: req.actor, note: 'No-XML appraisal waiver' });
+  if (!arvRes.ok) return res.status(arvRes.status || 400).json({ error: arvRes.error });
+
+  const LE = require('../lib/loan-exceptions');
+  const client = await db.getClient();
+  let exceptionRow = null;
+  try {
+    await client.query('BEGIN');
+    if (!isTransfer) {
+      exceptionRow = await LE.requestAppraisalXmlWaiver(client, {
+        appId: req.params.id, reasonCode: reason, reasonNote: note, requestedBy: req.actor.id,
+      });
+    }
+    await client.query(
+      `INSERT INTO appraisal_xml_waivers
+         (application_id, reason, note, arv, as_is_value, requires_transfer_letter, exception_id, waived_by, updated_at)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8, now())
+       ON CONFLICT (application_id) DO UPDATE SET
+         reason=$2, note=$3, arv=$4, as_is_value=$5, requires_transfer_letter=$6, exception_id=$7, waived_by=$8, updated_at=now()`,
+      [req.params.id, reason, note, arvRes.value, asIsRes.value, isTransfer, exceptionRow ? exceptionRow.id : null, req.actor.id]);
+    // Nudge the appraisal-docs condition so it reads "in progress", not outstanding.
+    await client.query(
+      `UPDATE checklist_items SET status=CASE WHEN status='outstanding' THEN 'received' ELSE status END, updated_at=now()
+        WHERE application_id=$1 AND template_id IN (SELECT id FROM checklist_templates WHERE code='rtl_cond_appraisaldocs')`,
+      [req.params.id]);
+    await client.query('COMMIT');
+  } catch (e) {
+    try { await client.query('ROLLBACK'); } catch (_) {}
+    return res.status(500).json({ error: 'could not save the waiver' });
+  } finally { client.release(); }
+
+  await audit(req, 'appraisal_xml_waiver', 'application', req.params.id,
+    { reason, exceptionId: exceptionRow ? exceptionRow.id : null, arv: arvRes.value, asIs: asIsRes.value });
+  if (exceptionRow) {
+    try {
+      const ctx = await notify.fileContext(req.params.id);
+      await notify.notifyAdmins({
+        type: 'appraisal_xml_waiver', title: 'Appraisal with no XML — waiver needs approval',
+        body: `An appraisal was submitted with no XML data file${ctx ? ` on ${ctx.label}` : ''} (reason: ${reason.replace(/_/g, ' ')}). Approve or deny it on the Exceptions screen.`,
+        applicationId: req.params.id, link: `/internal/exceptions?app=${req.params.id}`,
+        meta: ctx ? ctx.meta : undefined,
+      });
+    } catch (_) { /* best-effort */ }
+  }
+  res.json({ ok: true, requiresTransferLetter: isTransfer, exception: exceptionRow ? { id: exceptionRow.id, status: exceptionRow.status } : null });
+});
+
+router.delete('/applications/:id/appraisal-xml-waiver', async (req, res) => {
+  if (!(await canTouchApp(req, req.params.id))) return res.status(403).json({ error: 'forbidden' });
+  try {
+    const w = (await db.query(`SELECT exception_id FROM appraisal_xml_waivers WHERE application_id=$1`, [req.params.id])).rows[0];
+    if (w && w.exception_id) {
+      try { await require('../lib/loan-exceptions').withdrawException(w.exception_id, req.actor.id); } catch (_) {}
+    }
+    await db.query(`DELETE FROM appraisal_xml_waivers WHERE application_id=$1`, [req.params.id]);
+    await audit(req, 'appraisal_xml_waiver_removed', 'application', req.params.id, {});
+    res.json({ ok: true });
+  } catch (e) { res.status(500).json({ error: 'server error' }); }
+});
+
 // #107: the LO / processor / admin can ENTER the appraisal payment card on the
 // borrower's behalf (some borrowers give it over the phone). Same validation +
 // at-rest encryption + condition completion as the borrower route, through the

@@ -90,6 +90,15 @@ const PRICING_EXCEPTION_REASONS = Object.freeze({
   other:            'Other (see note)',
 });
 
+// A "no appraisal XML available" waiver. 'transferred_appraisal' auto-waives and
+// asks for a transfer-letter PDF instead (no exception is raised for it); every
+// other reason needs a note and comes here as a real exception for approval.
+const APPRAISAL_XML_WAIVER_REASONS = Object.freeze({
+  appraiser_no_xml: 'The appraiser did not provide the XML (data) file',
+  desk_or_manual:   'Desk / manual / older appraisal with no MISMO XML',
+  other:            'Other (see note)',
+});
+
 // An issuance override is recorded, not requested — one catch-all code.
 const ISSUANCE_OVERRIDE_REASONS = Object.freeze({
   other: 'Super-admin override past a fatal hard-warning (see note)',
@@ -172,6 +181,14 @@ const EXCEPTION_TYPES = Object.freeze({
     expirable: false,
     recordOnly: true,
     slaHours: null,
+  }),
+  appraisal_xml_waiver: Object.freeze({
+    label: 'Appraisal — no XML available',
+    reasonCodes: APPRAISAL_XML_WAIVER_REASONS,
+    subject: 'file',
+    expirable: false,
+    recordOnly: false,
+    slaHours: 48,
   }),
 });
 function isExceptionType(t) { return !!t && Object.prototype.hasOwnProperty.call(EXCEPTION_TYPES, t); }
@@ -382,6 +399,19 @@ async function requestPricingException(client, { appId, reasonCode, reasonNote, 
     type: 'pricing_exception', appId, reasonCode, reasonNote, requestedBy,
     requestedByKind, requestedByBorrowerId, compensatingFactors, reRequestOf,
     dealSnapshot: await dealSnapshotFor(appId), // pool, never the tx client (25P02)
+  });
+}
+
+/**
+ * Request an APPRAISAL "no XML available" exception (a non-transfer reason). The
+ * waiver row itself is written by the appraisal route; this is the reviewable
+ * register entry an admin approves.
+ */
+async function requestAppraisalXmlWaiver(client, { appId, reasonCode, reasonNote, requestedBy, reRequestOf }) {
+  return requestException(client, {
+    type: 'appraisal_xml_waiver', appId, reasonCode, reasonNote, requestedBy,
+    dealSnapshot: await dealSnapshotFor(appId), // pool, never the tx client (25P02)
+    reRequestOf,
   });
 }
 
@@ -883,11 +913,13 @@ module.exports = {
   REASON_CODES, isReasonCode,
   ESIGN_BEFORE_CTC_REASONS, isEsignReasonCode,
   PRICING_EXCEPTION_REASONS, ISSUANCE_OVERRIDE_REASONS, CONDITION_OVERRIDE_REASONS,
+  APPRAISAL_XML_WAIVER_REASONS,
   COMPENSATING_FACTORS, sanitizeCompensatingFactors,
   EXCEPTION_TYPES, isExceptionType, typeConfig,
   reasonCodesFor, reasonLabelFor, isReasonCodeFor,
   dealSnapshotFor, dueAtFor, dealDrift, presentExpiry,
   requestException, requestGuarantyWaiver, requestEsignBeforeCtc, requestPricingException,
+  requestAppraisalXmlWaiver,
   recordIssuanceOverride, recordConditionOverride, latestEsignBeforeCtc,
   decideException, withdrawException, clearException,
   expireDueApprovals, agingOpen,

@@ -876,6 +876,10 @@ export const api = {
   staffBorrowerMerge:      (id, body) => req('POST', `/api/staff/borrowers/${id}/merge`, body),
   staffBorrowerMerges:     (id) => req('GET', `/api/staff/borrowers/${id}/merges`),
   staffAppraisalCard:(appId) => req('GET', `/api/staff/applications/${appId}/appraisal-card`),
+  // Appraisal "no XML available" waiver.
+  appraisalXmlWaiverGet:    (appId) => req('GET', `/api/staff/applications/${appId}/appraisal-xml-waiver`),
+  appraisalXmlWaiverSet:    (appId, body) => req('POST', `/api/staff/applications/${appId}/appraisal-xml-waiver`, body),
+  appraisalXmlWaiverRemove: (appId) => req('DELETE', `/api/staff/applications/${appId}/appraisal-xml-waiver`),
   staffSaveAppraisalCard:(appId, b) => req('POST', `/api/staff/applications/${appId}/appraisal-card`, b),
 
   // ---- Appraisal desk: import the appraisal XML, read the property profile, resolve findings ----
