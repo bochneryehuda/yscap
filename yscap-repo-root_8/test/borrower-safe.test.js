@@ -31,6 +31,22 @@ eq(scrubText(''), '', 'empty');
 eq(scrubText(null), null, 'null passthrough');
 eq(scrubText(42), 42, 'number passthrough');
 
+// --- audit HIGH fix 2026-07-23: staff-named FILENAMES join partner names with
+// underscores / camelCase / dots — the old \b boundaries missed all of these.
+eq(scrubText('BlueLake_terms.pdf'), `${PROGRAM}_terms.pdf`, 'underscore-joined filename');
+eq(scrubText('RCN_invoice.pdf'), `${PROGRAM}_invoice.pdf`, 'acronym + underscore');
+eq(scrubText('Churchill_appraisal.pdf'), `${PROGRAM}_appraisal.pdf`, 'single-word + underscore');
+eq(scrubText('TempleView_docs.pdf'), `${PROGRAM}_docs.pdf`, 'camel two-word + underscore');
+eq(scrubText('Fidelis_note.pdf'), `${PROGRAM}_note.pdf`, 'fidelis + underscore');
+eq(scrubText('CorrFirst_emd.pdf'), `${PROGRAM}_emd.pdf`, 'corrfirst + underscore');
+eq(scrubText('BlueLakeTerms.pdf'), `${PROGRAM}Terms.pdf`, 'camelCase-joined filename');
+eq(scrubText('blue.lake.terms.pdf'), `${PROGRAM}.terms.pdf`, 'dot-joined');
+eq(scrubText('ROC_fees.xlsx'), `${PROGRAM}_fees.xlsx`, 'ROC + underscore');
+// …while mid-word / all-caps-word false positives stay untouched:
+eq(scrubText('ROCK_CREEK_appraisal.pdf'), 'ROCK_CREEK_appraisal.pdf', 'ROCK is not ROC');
+eq(scrubText('rocket_budget.pdf'), 'rocket_budget.pdf', 'rocket is not roc');
+eq(scrubText('My_Concrete_quote.pdf'), 'My_Concrete_quote.pdf', 'rcn inside a word is not RCN');
+
 // --- hasPartnerName ---
 eq(hasPartnerName('BlueLake x'), true, 'hasPartnerName true');
 eq(hasPartnerName('clean text'), false, 'hasPartnerName false');

@@ -69,9 +69,12 @@ d = dec.decide({ engineStatus: 'ELIGIBLE', findings: [{ code: 'x', severity: 'fa
 assert.strictEqual(d.status, 'ELIGIBLE', 'status still eligible…');
 assert.strictEqual(d.ctcEligible, false, '…but a fatal finding blocks CTC');
 assert.strictEqual(d.fundingEligible, false);
-assert.strictEqual(d.termSheetEligible, true, 'a fatal finding that does not block the term sheet still lets it issue');
+// Fix 2026-07-23: a FATAL blocks the term sheet too (mirrors issuance-gate,
+// which already treated any fatal as a term-sheet blocker — the old asymmetry
+// let a fatal appraisal finding leave termSheetEligible true).
+assert.strictEqual(d.termSheetEligible, false, 'a fatal finding blocks the term sheet as well');
 assert.ok(d.blockingFindings.length >= 1);
-ok('a fatal finding blocks CTC + funding even under ELIGIBLE');
+ok('a fatal finding blocks term sheet + CTC + funding even under ELIGIBLE');
 
 // funding from a stale RUN is blocked.
 d = dec.decide({ engineStatus: 'ELIGIBLE', staleRun: true, findings: [] });
@@ -84,5 +87,44 @@ d = dec.decide({ engineStatus: 'ELIGIBLE', staleRegistration: true, findings: []
 assert.strictEqual(d.status, 'STALE');
 assert.strictEqual(d.termSheetEligible, false);
 ok('a stale registration → STALE, not issuable');
+
+
+// --- fix 2026-07-23: a FATAL finding blocks the TERM SHEET too (mirrors CTC/funding) ---
+{
+  const reg = require('../src/lib/underwriting/finding-registry');
+  const sum = reg.summarize(reg.consolidate([
+    { code: 'appraisal_as_is_below_sizing', subject: 'as_is', severity: 'fatal', title: 'x' }, // fatal, no blocks_term_sheet flag
+  ]));
+  assert.strictEqual(sum.blocksTermSheet, true, 'a fatal finding blocks the term sheet even without the explicit flag');
+  assert.strictEqual(sum.blocksCtc, true);
+  assert.strictEqual(sum.blocksFunding, true);
+  ok('summarize: a fatal finding blocks term sheet + CTC + funding consistently');
+}
+
+// --- 2026-07-27: decide() claim-dedupes BEFORE the code+subject consolidate, so the persisted run
+// registry (and the cockpit / digest / diff / export that read it back) show ONE row per real-world
+// issue even when several desks named it with DIFFERENT codes — the same "six times" collapse the
+// file-view open-findings list already does. code+subject consolidate alone cannot see across codes.
+{
+  const findings = [
+    // one real issue — "the contract buyer is not the vesting entity" — reached by three desks under
+    // three different codes (the vesting_entity_vs_contract_buyer claim family).
+    { code: 'contract_buyer_mismatch', subject: 'buyer', severity: 'fatal', source: 'contract', title: 'Contract buyer is not the vesting entity', blocks_ctc: true },
+    { code: 'cot_final_buyer_not_vesting', subject: 'chain', severity: 'warning', source: 'chain_of_title', title: 'Final buyer in the chain is not the vesting entity' },
+    { code: 'chain_vesting_not_reached', subject: 'entity', severity: 'warning', source: 'entity_chain', title: 'Vesting entity never reached in the chain' },
+    // an unrelated finding that must NOT be folded in.
+    { code: 'price_mismatch', subject: 'purchase', severity: 'warning', source: 'tieout', title: 'Purchase price differs' },
+  ];
+  // consolidate alone keys on code::subject, so the three vesting rows stay separate (4 rows).
+  assert.strictEqual(reg.consolidate(findings).length, 4, 'code+subject consolidate cannot merge across different codes');
+  // decide() runs dedupeByClaim first → the three vesting rows collapse to one; price stays.
+  const d = dec.decide({ engineStatus: 'ELIGIBLE', findings });
+  assert.strictEqual(d.registry.length, 2, 'decide() collapses the one issue reached under 3 codes into a single row (+ the unrelated price row)');
+  const vesting = d.registry.filter((f) => /buyer_mismatch|vesting/.test(f.code));
+  assert.strictEqual(vesting.length, 1, 'exactly one vesting/contract-buyer row survives');
+  assert.strictEqual(vesting[0].severity, 'fatal', 'the survivor keeps the MAX severity (the fatal representative)');
+  assert.strictEqual(d.summary.blocksCtc, true, 'the fatal still blocks CTC — dedupe removed a duplicate, never the dealbreaker');
+  ok('decide() claim-dedupes cross-code same-issue findings into one run-registry row without changing the gate');
+}
 
 console.log(`\nR6.9 + R6.14 decision + registry pure — ${passed} checks passed`);

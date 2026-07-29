@@ -15,6 +15,50 @@
  * Output: { columns, matrix, discrepancies, summary }
  */
 const { FACTS, factMatch, display, present, claimsFor, carries } = require('./facts');
+const { num } = require('./compare');
+const { gateClaims } = require('./comparison-gate');
+
+// On an ASSIGNMENT deal a document may legitimately report the seller's underlying price OR the
+// fee-inclusive total the borrower pays — both tie out to the file. So for the purchase_price fact
+// on an assignment file, a document value that matches EITHER the file total OR the seller's
+// underlying price is AGREEMENT, not a mismatch (owner-directed 2026-07-24 — this is what fired a
+// false tie-out fatal from the appraisal/settlement, which report the seller price). Returns the
+// same true/false/null contract as factMatch. Only special-cases purchase_price on an assignment;
+// every other fact and a straight purchase are unchanged.
+function priceAwareMatch(ctx, kind, factKey, fileVal, docVal) {
+  const base = factMatch(kind, fileVal, docVal);
+  if (base === true) return true;
+  const app = ctx && ctx.app;
+  if (factKey === 'purchase_price' && app && app.is_assignment) {
+    // The underlying seller price is on file → a document that reports it is AGREEMENT (both the
+    // fee-inclusive total and the seller's original price legitimately tie out on an assignment).
+    if (num(app.underlying_contract_price) != null) {
+      const mUnder = factMatch('money', app.underlying_contract_price, docVal);
+      if (mUnder === true) return true;
+      // Agreement with neither KNOWN price → a real mismatch; uncomparable (missing) → null.
+      if (base === false && mUnder === false) return false;
+      return null;
+    }
+    // The seller's underlying price is NOT yet captured (owner 2026-07-27): the document
+    // legitimately shows a price we don't have on file, so we CANNOT call it a mismatch. Never fire
+    // the tie-out fatal — return null ("could not confirm"). reasonability.assignment_fields_missing
+    // already nudges to capture the seller price + fee, so the price still gets reconciled without a
+    // false "purchase price doesn't match" fatal blocking the file.
+    return null;
+  }
+  // A document "assignment fee" that equals the WHOLE purchase price (or the seller's underlying
+  // price) is the total MISLABELED as the fee (owner-reported 2026-07-27, a $325k "assignment fee").
+  // facts.js already quarantines it when the DOC itself carries the total; this catches the other
+  // shape — the doc gives only a fee that matches the FILE's total. Never a mismatch against the real
+  // fee on file → null ("could not confirm"), never a false fatal. A plausible fee is unchanged.
+  if (factKey === 'assignment_fee' && app) {
+    const dv = num(docVal), total = num(app.purchase_price), under = num(app.underlying_contract_price);
+    if (dv != null && ((total != null && (dv >= total || Math.abs(dv - total) <= 1)) || (under != null && Math.abs(dv - under) <= 1))) {
+      return null;
+    }
+  }
+  return base;
+}
 
 const LABEL = {
   government_id: 'ID', purchase_contract: 'Purchase contract', title: 'Title report', appraisal: 'Appraisal',
@@ -75,10 +119,30 @@ function consensus(kind, claims) {
 function buildTieout(fileCtx, sources = []) {
   const ctx = fileCtx || {};
   const isAssignment = !!(ctx.app && ctx.app.is_assignment);
-  const srcs = (sources || []).filter((s) => s && s.docType).map((s, i) => ({
-    id: s.id || `${s.docType}_${i}`, docType: s.docType, label: s.label || lbl(s.docType),
-    claims: claimsFor(s.docType, s.fields),
-  }));
+  const srcs = (sources || []).filter((s) => s && s.docType).map((s, i) => {
+    let claims = claimsFor(s.docType, s.fields);
+    // On an ASSIGNMENT / wholesale deal the purchase CONTRACT names the WHOLESALER as its buyer — the
+    // entity we actually vest into appears on the ASSIGNMENT (assigneeName), not the underlying
+    // contract. Comparing the wholesaler to our vesting LLC is a guaranteed-nonsense fatal "mismatch"
+    // on a perfectly normal wholesale deal (owner-reported 2026-07-27, the contract-buyer class), so
+    // drop the contract's buyer→entity_name claim here; the assignment's assignee still ties out to
+    // the vesting entity, so a genuine wrong final buyer is still caught.
+    if (isAssignment && s.docType === 'purchase_contract' && claims && claims.entity_name != null) {
+      delete claims.entity_name;
+    }
+    // The comparison-gate (advisory, reasoning-driven): when a per-document REASONING pass understood
+    // that this document names parties on the OPPOSITE side of the deal from a party fact — e.g. a
+    // tax certificate filed under the title slot whose only named party is the CURRENT owner (the
+    // seller, pre-close) — drop that fact's claim so it is never compared to the vesting entity. This
+    // generalizes the assignment-specific delete above to ANY mis-classified document, keyed on the
+    // document's actual nature rather than a hardcoded doc-type list. No reasoning / low confidence /
+    // same-side → claims untouched, so a file with the reasoning layer OFF is byte-identical.
+    if (s.reasoning) claims = gateClaims(claims, s.reasoning).claims;
+    return {
+      id: s.id || `${s.docType}_${i}`, documentId: s.documentId != null ? s.documentId : null,
+      docType: s.docType, label: s.label || lbl(s.docType), claims,
+    };
+  });
 
   const columns = [{ id: 'file', label: 'Loan file', kind: 'file' }]
     .concat(srcs.map((s) => ({ id: s.id, label: s.label, docType: s.docType })));
@@ -89,7 +153,7 @@ function buildTieout(fileCtx, sources = []) {
   for (const fact of FACTS) {
     const fileVal = fact.file(ctx);
     const fileHas = present(fileVal);
-    const claims = srcs.map((s) => ({ id: s.id, label: s.label, docType: s.docType, value: s.claims[fact.key] }));
+    const claims = srcs.map((s) => ({ id: s.id, documentId: s.documentId, label: s.label, docType: s.docType, value: s.claims[fact.key] }));
     const withVal = claims.filter((c) => present(c.value));
 
     // Truth = the file value if the file stores this fact, else the documents' consensus.
@@ -108,12 +172,16 @@ function buildTieout(fileCtx, sources = []) {
       if (!present(v)) { cells.push({ source: s.id, label: s.label, status: 'missing', value: null }); continue; }
       let status = 'noref';
       if (conflictNoTruth) { status = 'disagree'; }               // docs disagree, no file anchor → flag each
-      else if (hasRef && present(truth)) { const m = factMatch(fact.kind, truth, v); status = m === true ? 'agree' : m === false ? 'disagree' : 'unknown'; }
+      else if (hasRef && present(truth)) { const m = priceAwareMatch(ctx, fact.kind, fact.key, truth, v); status = m === true ? 'agree' : m === false ? 'disagree' : 'unknown'; }
       cells.push({ source: s.id, label: s.label, status, value: display(fact.kind, v) });
     }
 
-    // Row status.
-    const anyDisagree = cells.some((c) => c.status === 'disagree') || cons.conflict;
+    // Row status. For the purchase_price fact on an assignment, documents legitimately differ
+    // (seller's underlying price vs the fee-inclusive total) — the price-aware cell statuses above
+    // already flag any GENUINE disagreement, so a raw doc-vs-doc consensus conflict here is not a
+    // real mismatch and must not turn the row red.
+    const asgPriceFact = fact.key === 'purchase_price' && isAssignment;
+    const anyDisagree = cells.some((c) => c.status === 'disagree') || (cons.conflict && !asgPriceFact);
     const rowStatus = anyDisagree ? 'mismatch'
       : (withVal.length === 0 ? 'none'
         : (fileHas || withVal.length > 1 ? 'ok' : 'single'));
@@ -124,7 +192,7 @@ function buildTieout(fileCtx, sources = []) {
       // A source whose own per-document check already compares this fact to the file is EXCLUDED
       // here — that mismatch is raised once by the per-doc check; the tie-out avoids the duplicate
       // (the matrix cell still shows the disagreement). Sources with no dedicated check stay.
-      const bad = withVal.filter((c) => factMatch(fact.kind, fileVal, c.value) === false && !perDocCovers(c.docType, fact.key, isAssignment));
+      const bad = withVal.filter((c) => priceAwareMatch(ctx, fact.kind, fact.key, fileVal, c.value) === false && !perDocCovers(c.docType, fact.key, isAssignment));
       if (bad.length) {
         discrepancies.push(finding({
           code: `tieout_${fact.key}`, severity: fact.severity, field: fact.key,
@@ -132,6 +200,12 @@ function buildTieout(fileCtx, sources = []) {
           fileValue: display(fact.kind, fileVal),
           title: `${fact.label} doesn't match the file`,
           howTo: `The loan file shows ${display(fact.kind, fileVal)}, but the ${bad.map((c) => c.label).join(', ')} show${bad.length === 1 ? 's' : ''} a different value. Reconcile — a fact that appears on more than one document must agree everywhere.`,
+          // The specific sources that disagree — the loan file plus each conflicting
+          // document, with its document id so the desk can open them side by side
+          // ("this document vs. that document"). documentId is null for the loan
+          // file (no PDF) and for the appraisal source (it's its own table).
+          sources: [{ kind: 'file', label: 'Loan file', value: display(fact.kind, fileVal), documentId: null }]
+            .concat(bad.map((c) => ({ kind: 'document', label: c.label, value: display(fact.kind, c.value), documentId: c.documentId || null }))),
         }));
       }
     } else if (cons.conflict) {
@@ -142,6 +216,9 @@ function buildTieout(fileCtx, sources = []) {
         fileValue: null,
         title: `${fact.label} differs between documents`,
         howTo: `The documents don't agree on the ${fact.label.toLowerCase()}: ${withVal.map((c) => `${c.label} = ${display(fact.kind, c.value)}`).join('; ')}. This must be reconciled — a mismatched ${fact.label.toLowerCase()} across documents is a top fraud/misrepresentation signal.`,
+        // The documents that disagree with each other — "this document vs. that
+        // document" — each with its id so the desk can open them side by side.
+        sources: withVal.map((c) => ({ kind: 'document', label: c.label, value: display(fact.kind, c.value), documentId: c.documentId || null })),
       }));
     }
   }

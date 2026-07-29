@@ -249,6 +249,16 @@ async function noteCompletionFailure(db, envelopeRow, err) {
 
 // ---- reconcile ONE tracked envelope to DocuSign truth -----------------------
 async function reconcileEnvelope(db, docusign, storage, envelopeRow) {
+  // A deliberately CLEARED package — or any locally-voided envelope — is TERMINAL
+  // on our side and must never be resurrected by a late/replayed DocuSign event.
+  // A cleared COMPLETED envelope is never voided at DocuSign (clear.js clears our
+  // side only), so DocuSign keeps reporting it 'completed' forever; without this
+  // guard an inbox event would re-run handleCompletion — re-linking the superseded
+  // signed doc, re-closing the reopened condition, and flipping status
+  // voided→completed (re-engaging the term-sheet freeze). Skip it: our clear/void
+  // is the final word. (The poller's stale scans are already status-gated to
+  // sent/delivered/completed, so this only ever fires on the inbox drain path.)
+  if (envelopeRow.cleared_at || envelopeRow.status === 'voided') return envelopeRow.status;
   const envelope = await docusign.getEnvelope(envelopeRow.envelope_id, { include: 'recipients' });
   const status = String((envelope && envelope.status) || '').toLowerCase();
   const map = ENV_STATUS[status];
@@ -354,6 +364,84 @@ async function notifyTerminal(db, envelopeRow, status, voidReason) {
   };
   const sent = await notify.notifyAppStaff(envelopeRow.application_id, opts);
   if (!sent || !sent.length) await notify.notifyAdmins(opts);   // unassigned file → admins
+
+  // THE EXECUTED TERM SHEET GOES OUT ON THE CLOSING CHAIN (owner-directed 2026-07-28).
+  // The closing-prep request could only ever attach the INITIAL term sheet; the moment
+  // the real one finishes its circuit of signatures, the attorney is sent the executed
+  // copy on the SAME email chain — not a new one — so they draft from final terms.
+  //
+  // This is the right hook and no other will do:
+  //  · it runs only for the WINNER of the terminal claim in reconcileEnvelope (the
+  //    `${map.col} IS NULL RETURNING` update), so a redelivered webhook and a poller
+  //    tick racing each other cannot both send;
+  //  · handleCompletion has ALREADY filed the signed PDF by this point, so the
+  //    document exists to attach;
+  //  · a counter-signed package reaches 'completed' only after the lender's admin
+  //    signs, so 'completed' here genuinely means executed by ALL parties.
+  // Belt on top of all that: announce() claims a dedupe key, so it is idempotent even
+  // if this function is ever reached twice.
+  if (status === 'completed' && envelopeRow.purpose === 'term_sheet_package'
+      && !envelopeRow.is_test && envelopeRow.application_id) {
+    try { await announceExecutedTermSheet(db, envelopeRow); }
+    catch (e) { console.warn('[esign] executed term sheet not announced on the closing chain:', e && e.message); }
+  }
+}
+
+/**
+ * Send the executed term sheet on the file's closing chain. Silent no-op when the
+ * file has no chain (closing prep was never ordered) — there is nobody to tell, and
+ * opening a chain here would email an attorney who was never engaged.
+ *
+ * Best-effort throughout: this must never be able to reverse or re-drive a completed
+ * envelope. It reads the signed document THIS envelope produced (never "the newest
+ * signed term sheet on the file", which on a re-issued package could be a different
+ * one); if the bytes can't be read the update still goes out, saying the copy is on
+ * the file.
+ */
+async function announceExecutedTermSheet(db, envelopeRow) {
+  const closingPrep = require('../closing-prep');
+  const closingThread = require('../closing-thread');
+  const appId = envelopeRow.application_id;
+
+  // Nothing to do unless this file actually has a closing chain.
+  const thread = await closingThread.threadFor(appId);
+  if (!thread) return { ok: true, skipped: true, reason: 'no_closing_chain' };
+
+  // The signed term sheet THIS envelope produced, via the envelope↔document link.
+  let attachments = [];
+  let files = [];
+  // WHY the copy is missing, in `buildAttachments`' own vocabulary. The wording on the
+  // email branches on it: withheld for SIZE reads "tell us and we will send it over",
+  // anything else reads "could not be attached" — asserting the size reason for an
+  // unreadable or never-stored document told counsel something false about our file.
+  let attachSkipReason = null;
+  try {
+    const d = await db.query(
+      `SELECT doc.filename, doc.content_type, doc.storage_ref, doc.size_bytes
+         FROM esign_envelope_docs ed
+         JOIN documents doc ON doc.id = ed.completed_document_id
+        WHERE ed.envelope_row_id = $1 AND ed.doc_kind = 'term_sheet_signed'
+        ORDER BY doc.created_at DESC LIMIT 1`, [envelopeRow.id]);
+    const doc = d.rows[0];
+    if (doc && doc.storage_ref) {
+      const built = await closingPrep.buildAttachments([doc]);
+      attachments = built.attachments;
+      files = built.attachments.map((a) => a.filename);
+      attachSkipReason = (built.skipped[0] && built.skipped[0].reason) || null;
+    }
+  } catch (_) { /* the update is worth sending even without the attachment */ }
+
+  // RETURNED so the recovery sweep can count what actually went out rather than
+  // assuming every call it makes was a real send.
+  return closingPrep.announce({
+    applicationId: appId,
+    eventKind: 'executed_term_sheet',
+    // Keyed on the ENVELOPE, so a re-issued and re-executed term sheet is a genuinely
+    // new event and does go out again — while this one can never repeat.
+    dedupeKey: `executed_term_sheet:${envelopeRow.id}`,
+    extra: { files, attachSkipReason },
+    attachments,
+  });
 }
 
 /**
@@ -436,4 +524,8 @@ async function drainInbox(opts = {}) {
 module.exports = {
   drainInbox, processInboxRow, reconcileEnvelope, handleCompletion, applyRecipients,
   storeSignedDocument, recipientStatus, noteCompletionFailure,
+  // exported so the closing-chain backstop sweep can re-drive an executed-term-sheet
+  // announcement that failed to send — reusing this exact logic rather than a second
+  // copy that could pick the wrong signed document.
+  announceExecutedTermSheet,
 };

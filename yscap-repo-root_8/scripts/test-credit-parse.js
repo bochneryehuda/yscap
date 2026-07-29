@@ -32,6 +32,16 @@ assert.strictEqual(_internal.representative([{ value: 720 }, { value: 690 }, { v
 assert.strictEqual(_internal.representative([{ value: 720 }, { value: 690 }]), 690, 'lower of 2');
 assert.strictEqual(_internal.representative([{ value: 700 }]), 700, 'single');
 assert.strictEqual(_internal.representative([]), null, 'none');
+// pollution guard: a supplementary / unclassifiable score must NOT enter the
+// median when the three real bureaus are present (else a wrong FICO reprices).
+assert.strictEqual(_internal.representative([
+  { value: 720, bureau: 'Equifax' }, { value: 690, bureau: 'Experian' },
+  { value: 705, bureau: 'TransUnion' }, { value: 600, bureau: null }]),
+  705, 'unclassifiable extra ignored when real bureaus present → true middle 705 (not 690)');
+// …but when NOTHING classifies (numeric-code repositories), fall back to all.
+assert.strictEqual(_internal.representative([
+  { value: 600, bureau: null }, { value: 500, bureau: null }, { value: 700, bureau: null }]),
+  600, 'all-unclassifiable → true middle over all scores');
 
 // --- full document -------------------------------------------------------------
 const XML = `<?xml version="1.0" encoding="UTF-8"?>

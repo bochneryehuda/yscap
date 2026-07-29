@@ -54,7 +54,7 @@ function str(v) {
  * findings, insert the new extraction, then its findings. Returns the new ids.
  * @param {import('pg').ClientBase} client
  */
-async function saveAnalysis(client, { documentId, applicationId, borrowerId, docType, extraction, findings, analyzedSha256, analyzerVersion, subjectHash } = {}) {
+async function saveAnalysis(client, { documentId, applicationId, borrowerId, docType, extraction, findings, analyzedSha256, analyzerVersion, subjectHash, suppressNotify } = {}) {
   if (!documentId) throw new Error('saveAnalysis requires a documentId');
   const appId = applicationId || null;
   const borId = borrowerId || null;
@@ -80,15 +80,20 @@ async function saveAnalysis(client, { documentId, applicationId, borrowerId, doc
   // 2. Insert the new extraction (PII-masked fields) + the idempotency fingerprint (the inputs
   // that determined this result: content hash, analyzer version, and the file-state hash).
   const safeFields = maskFields(ext.fields || {});
+  // The advisory per-document reasoning (document-reasoning.js) — what this document ACTUALLY is
+  // and who each party is — stored so the tie-out's comparison-gate can refuse a cross-side
+  // comparison (owner-directed 2026-07-27). NULL when the reasoning layer is off. It carries no
+  // sensitive identifier (only party names + roles + a plain purpose), so it is stored as-is.
+  const reasoningJson = ext.reasoning && typeof ext.reasoning === 'object' ? JSON.stringify(ext.reasoning) : null;
   const { rows } = await client.query(
     `INSERT INTO document_extractions
        (document_id, application_id, borrower_id, doc_type, fields, ocr_engine, ai_model, page_count, confidence, status, reason,
-        analyzed_sha256, analyzer_version, subject_hash, second_look)
-     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15) RETURNING id`,
+        analyzed_sha256, analyzer_version, subject_hash, second_look, reasoning)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16) RETURNING id`,
     [documentId, appId, borId, docType, JSON.stringify(safeFields),
      ext.ocrEngine || null, ext.aiModel || null, ext.pageCount || null,
      ext.confidence || null, ext.status || 'analyzed', ext.reason || null,
-     analyzedSha256 || null, analyzerVersion || null, subjectHash || null, !!ext.secondLook]);
+     analyzedSha256 || null, analyzerVersion || null, subjectHash || null, !!ext.secondLook, reasoningJson]);
   const extractionId = rows[0].id;
 
   // 2b. Loan Digital Twin (owner-directed 2026-07-21, Sovereign 1/4): for every
@@ -98,13 +103,14 @@ async function saveAnalysis(client, { documentId, applicationId, borrowerId, doc
   // canonical fact. Best-effort — twin recording never blocks an extraction
   // from persisting. Uses the ORIGINAL unmasked fields (safeFields is masked
   // for storage; the twin records the real values behind its own audit trail).
+  let factObservations = [];
   try {
     // R5.3 — resolve the source page of each field from the OCR page text, so
     // fact_observations record page_number (was always null). Heuristic text
     // match; a miss stays null (never a wrong page).
     const { makeFieldPager } = require('./evidence-page');
     const pageNumberFor = makeFieldPager(ext.fields || {}, ext.ocrPages || null);
-    await require('./twin').recordFactsFromExtraction(client, {
+    const twinRes = await require('./twin').recordFactsFromExtraction(client, {
       appId, documentId, docType, extractionId,
       fields: ext.fields || {},
       ocrEngine: ext.ocrEngine || null,
@@ -112,6 +118,7 @@ async function saveAnalysis(client, { documentId, applicationId, borrowerId, doc
       confidence: ext.confidence || null,
       pageNumberFor,
     });
+    factObservations = Array.isArray(twinRes && twinRes.observations) ? twinRes.observations : [];
   } catch (_) { /* twin is additive — never blocks the extraction */ }
 
   // 3. Insert findings. Runs through the promoted-rules applier FIRST
@@ -120,7 +127,26 @@ async function saveAnalysis(client, { documentId, applicationId, borrowerId, doc
   // upgrade_severity) actually change how findings enter the file. Best-
   // effort — a rules-loading failure keeps every original finding untouched.
   const rulesRes = await require('./promoted-rules').applyPromotedRules(client, findings || []);
-  const effectiveFindings = rulesRes.findings;
+  // "IF PILOT CAN'T READ IT, DON'T GIVE A FINDING" (owner-directed 2026-07-28). Drop the can't-read /
+  // can't-extract findings at the persist chokepoint so they are never BORN: they never reach the
+  // desk, the AI panel, any roll-up, or a fatal-finding email, and a re-read cannot resurrect them.
+  // The document is STILL chased for a clearer copy — that nudge rides on the extraction's
+  // confidence='unreadable' signal (set at store.js:74-95 above, untouched here), not on a finding.
+  // Reversible: UW_UNREADABLE_FINDINGS_SHOW=1 re-persists them everywhere. Never throws.
+  const unreadableSplit = require('./unreadable-findings').partition(rulesRes.findings || []);
+  const effectiveFindings = unreadableSplit.kept;
+  const suppressedUnreadable = unreadableSplit.suppressed.length;
+  // A HUMAN'S DECISION SURVIVES A RE-ANALYSIS (owner-reported 2026-07-27: "I
+  // dismiss it and it keeps popping up again"). Re-reading a document inserts a
+  // FRESH row for every finding, with no memory of the dismissal / exception a
+  // human recorded on the previous row — so the finding came straight back as
+  // OPEN. The durable ledger (db/333) is keyed on the finding's IDENTITY, not on
+  // the row, so we can carry the decision forward onto the new row: it is still
+  // inserted (the audit trail and the "show dismissed" view need it) but it is
+  // born already-resolved instead of re-opening settled work.
+  // FAILS OPEN — an unreadable ledger just means every finding lands open.
+  const decided = await require('./finding-decisions').suppressedKeys(client, appId).catch(() => new Set());
+  let carriedForward = 0;
   const suppressedByRules = rulesRes.suppressed;
   const protectedFatalByRules = rulesRes.protectedFatal || [];
   // R5.3 — resolve a source page for each finding: prefer a page the check
@@ -134,16 +160,85 @@ async function saveAnalysis(client, { documentId, applicationId, borrowerId, doc
     if (pageNumber == null && ext.ocrPages && f.docValue != null) {
       pageNumber = pageNumberForValue(f.docValue, ext.ocrPages);
     }
+    // Carry a prior human decision forward onto this fresh row (see the note
+    // above): the identity is computed on the row we're ABOUT to write, so the
+    // key matches what the desk and the ledger use everywhere else.
+    let bornStatus = 'open';
+    if (decided.size) {
+      const fdec = require('./finding-decisions');
+      const shape = { code: f.code, field: f.field || null, document_id: documentId,
+        extraction_id: extractionId, docValue: str(f.docValue) };
+      if (fdec.isSuppressed(decided, shape)) { bornStatus = 'dismissed'; carriedForward += 1; }
+    }
     const { rows: fr } = await client.query(
       `INSERT INTO document_findings
-         (application_id, borrower_id, document_id, extraction_id, source, code, severity, field, doc_value, file_value, title, how_to, blocks_ctc, suggested_actions, opens_condition, page_number)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16) RETURNING id`,
+         (application_id, borrower_id, document_id, extraction_id, source, code, severity, field, doc_value, file_value, title, how_to, blocks_ctc, suggested_actions, opens_condition, page_number, status, resolution, resolution_note)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19) RETURNING id`,
       [appId, borId, documentId, extractionId, f.source || docType, f.code,
        f.severity || 'warning', f.field || null, str(f.docValue), str(f.fileValue),
        f.title || null, f.howTo || null, !!f.blocksCtc, actions, f.opensCondition || null,
-       pageNumber != null ? pageNumber : null]);
+       pageNumber != null ? pageNumber : null,
+       bornStatus,
+       bornStatus === 'dismissed' ? 'carried_forward' : null,
+       bornStatus === 'dismissed' ? 'A reviewer already decided this finding on this file — carried forward from their decision.' : null]);
     findingIds.push(fr[0].id);
   }
+  if (carriedForward) {
+    try {
+      await client.query(
+        `INSERT INTO audit_log (actor_kind, action, entity_type, entity_id, detail)
+         VALUES ('system','pilot_carried_forward_decisions','application',$1,$2::jsonb)`,
+        [appId, JSON.stringify({ documentId, extractionId, carriedForward })]);
+    } catch (_) { /* audit best-effort */ }
+  }
+
+  // 3b. Evidence ledger (R5.17 wiring, 2026-07-23): ground each recorded fact
+  // observation and each finding's doc-side value to the exact OCR page LINE it
+  // came from — recordSpan (quote + page, polygon null until R5.15 layout
+  // capture) + linkFact/linkFinding. This is what makes "click a fact → see the
+  // snippet" and the certificate's evidence-linked invariant possible. Runs
+  // inside the caller's transaction under a SAVEPOINT so ANY failure here rolls
+  // back only the evidence pass — it can never poison the enclosing COMMIT or
+  // block the extraction/findings from persisting. Best-effort by design.
+  try {
+    await client.query('SAVEPOINT evidence_pass');
+    try {
+      const aligner = require('./field-aligner');
+      const ledger = require('./evidence-ledger');
+      const lines = aligner.pagesToLines(ext.ocrPages);
+      if (lines.length && appId) {
+        const spanBase = {
+          applicationId: appId, documentId,
+          ocrEngine: ext.ocrEngine || null,
+          extractorEngine: ext.aiModel || null,
+          sourceSha256: analyzedSha256 || null,
+          analyzerVersion: analyzerVersion || null,
+        };
+        // facts → spans
+        for (const ob of factObservations) {
+          const value = (ext.fields || {})[ob.extractedField];
+          if (value == null || value === '' || typeof value === 'object') continue;
+          const span = aligner.alignToSpan(value, lines);
+          if (!span) continue; // no confident match — never a guessed citation
+          const row = await ledger.recordSpan(client, { ...spanBase, ...span, meta: { factKey: ob.factKey, field: ob.extractedField } });
+          await ledger.linkFact(client, { factObservationId: ob.observationId, evidenceSpanId: row.id, supportType: 'direct', applicationId: appId });
+        }
+        // findings with a doc-side value → spans (findingIds is 1:1 with effectiveFindings)
+        for (let i = 0; i < findingIds.length; i++) {
+          const f = (effectiveFindings || [])[i];
+          if (!f || f.docValue == null || f.docValue === '' || typeof f.docValue === 'object') continue;
+          const span = aligner.alignToSpan(f.docValue, lines);
+          if (!span) continue;
+          const row = await ledger.recordSpan(client, { ...spanBase, ...span, meta: { code: f.code || null, field: f.field || null } });
+          await ledger.linkFinding(client, { findingId: findingIds[i], evidenceSpanId: row.id, role: 'supports', applicationId: appId });
+        }
+      }
+      await client.query('RELEASE SAVEPOINT evidence_pass');
+    } catch (_) {
+      await client.query('ROLLBACK TO SAVEPOINT evidence_pass').catch(() => {});
+    }
+  } catch (_) { /* SAVEPOINT itself unavailable (no tx) — skip the evidence pass */ }
+
   // Audit-log the suppressed set so a reviewer can inspect exactly what a
   // promoted 'suppress_finding' rule dropped (best-effort — never blocks).
   if (suppressedByRules && suppressedByRules.length) {
@@ -227,6 +322,13 @@ async function saveAnalysis(client, { documentId, applicationId, borrowerId, doc
             intentId: intent.id,
             documentId, extractionId,
             analysis,
+            // The ONE branch that still bombarded (post-merge audit 2026-07-27). Its sibling
+            // af.analyzeAndRecord below threads this; persistProof did not — and cure.js emits
+            // `flood_policy_missing` at severity 'fatal'. Because record() dedupes only on OPEN
+            // rows, the un-funded re-read sweep re-fired the fatal notify for exactly the findings
+            // a human had already dismissed: one pass over the book re-emailed the LO, the
+            // processor and every admin for every flood-zone file.
+            suppressNotify,
           });
         }
       }
@@ -243,17 +345,23 @@ async function saveAnalysis(client, { documentId, applicationId, borrowerId, doc
     if (docType === 'assignment' && appId && ext.fields) {
       const af = require('./assignment-fraud');
       // Pull sibling extractions to enrich the parties.
+      // Fix 2026-07-23: extraction status is 'analyzed' (db/200), never 'ok' —
+      // the OA/EIN sibling enrichment never found its documents.
       const sib = await client.query(
         `SELECT doc_type, fields FROM document_extractions
-          WHERE application_id=$1 AND status='ok' AND (doc_type='operating_agreement' OR doc_type='ein_letter')
+          WHERE application_id=$1 AND is_current AND status='analyzed' AND (doc_type='operating_agreement' OR doc_type='ein_letter')
           ORDER BY created_at DESC LIMIT 4`, [appId]);
       const oa = (sib.rows.find((r) => r.doc_type === 'operating_agreement') || {}).fields || {};
       const ein = (sib.rows.find((r) => r.doc_type === 'ein_letter') || {}).fields || {};
       const assignor = { name: ext.fields.assignorName };
+      // Fix 2026-07-23 (#211): the OA schema now actually extracts ein /
+      // principalOfficeAddress / registeredAgent (they were read here but
+      // never in the schema — always null). entityAddress kept as a legacy
+      // fallback for any older extraction that carried it.
       const assignee = {
         name: ext.fields.assigneeName,
         ein: oa.ein || ein.ein || null,
-        address: oa.entityAddress || null,
+        address: oa.principalOfficeAddress || oa.entityAddress || null,
         registeredAgent: oa.registeredAgent || null,
       };
       await af.analyzeAndRecord(client, {
@@ -261,11 +369,43 @@ async function saveAnalysis(client, { documentId, applicationId, borrowerId, doc
         assignor, assignee,
         contractPrice: ext.fields.originalPurchasePrice,
         assignmentFee: ext.fields.assignmentFee,
+        suppressNotify,   // the re-read sweep re-records without re-alerting staff
       });
     }
   } catch (_) { /* assignment fraud is additive — never blocks the extraction */ }
 
-  return { extractionId, findingIds };
+  // Steps 6–9 RETIRED (owner-directed 2026-07-24). PILOT used to auto-SIGN-OFF the
+  // gov-ID / background-OFAC / liquid-assets / purchase-contract conditions once its
+  // AI read them clean (gated OFF by default via the *_AUTOCLEAR_ENABLED flags). The
+  // owner reversed that design: PILOT must NEVER sign off a Condition Center condition
+  // — a human always clears it. The per-domain auto-clear passes are no longer called
+  // from here, so the sign-off can never fire even if a flag were flipped. Their
+  // read-only *Completeness() helpers survive and now feed the ADVISORY overlay below
+  // (Step 10), which lays a "ready / agrees / revisit" stamp on the human layer without
+  // ever touching status or sign-off. (A follow-up removes the now-dead sign-off
+  // functions + their config flags entirely; the completeness helpers stay.)
+
+  // Step 10 (owner-directed 2026-07-24): refresh PILOT's ADVISORY on every Condition
+  // Center condition. PILOT never signs a condition off itself — it only lays a "ready /
+  // agrees / revisit" advisory on top of the human layer (pilot-advice-engine + db/295).
+  // Runs after ANY document is read so the advisory reflects the fresh file state.
+  // Gated ON by default (PILOT_READY_STAMP) inside the engine; best-effort — the advisory
+  // clears nothing and must never block the extraction from persisting.
+  // SAVEPOINT-wrapped (mirrors the evidence-ledger pass above): runFileAdvice swallows its
+  // own errors, but a swallowed PG error would leave THIS transaction aborted and silently
+  // roll back the whole document analysis on COMMIT. The savepoint contains any such abort
+  // so the extraction always persists — honouring "the advisory never blocks the extraction".
+  if (appId) {
+    try {
+      await client.query('SAVEPOINT pilot_advice');
+      await require('./pilot-advice-engine').runFileAdvice(client, appId);
+      await client.query('RELEASE SAVEPOINT pilot_advice');
+    } catch (_) {
+      await client.query('ROLLBACK TO SAVEPOINT pilot_advice').catch(() => {});
+    }
+  }
+
+  return { extractionId, findingIds, suppressedUnreadable };
 }
 
 // fatal-first roll-up for the badge + the clear-to-close gate (matches appraisal summarize()).
@@ -304,6 +444,78 @@ async function resolveFinding(client, { findingId, action, note, value, by } = {
       RETURNING *`,
     [findingId, status, v.action, note || null, value != null ? String(value) : null, terminal, by || null]);
   const updated = rows[0] || null;
+  // THE DECISION IS DURABLE (owner-reported 2026-07-27). Record it against the
+  // finding's stable IDENTITY (db/333), not just on this row — the row is
+  // re-created by the next analysis and the derived desks have no row at all, so
+  // without this the dismissal / exception evaporated and the finding "kept
+  // popping up again". Also closes the AI-panel MIRROR of the same finding, which
+  // is the other surface it was reappearing on. Both best-effort: a ledger or
+  // mirror failure must never undo a resolution the human just made.
+  if (updated) {
+    const fdec = require('./finding-decisions');
+    await fdec.record(client, {
+      applicationId: updated.application_id,
+      finding: updated,
+      origin: 'document_finding',
+      decision: v.action,
+      suppress: terminal && fdec.suppresses(v.action),
+      note, decidedBy: by || null,
+    });
+    await closeMirroredSuggestions(client, {
+      applicationId: updated.application_id, code: updated.code,
+      documentId: updated.document_id, action: v.action, by,
+    });
+    // BANK-ENTITY HOLDER CASCADE (owner-reported 2026-07-27, "the same business account flagged 4
+    // times"). The entity-ownership warnings are raised once PER STATEMENT, but they are ONE issue
+    // about ONE account holder, and the desk collapses them to a single surviving card
+    // (bank-entity-dedup). So a decision on that card must apply to EVERY folded sibling — and be
+    // RECORDED in the durable ledger for each — or the un-funded re-read sweep rotates a fresh
+    // survivor back onto the desk (the sibling's own document identity was never settled). Apply the
+    // SAME action to every OTHER open bank-entity finding on the file whose holder matches
+    // (entityMatch, re-spacing aware), mirroring the primary resolve exactly. Best-effort: a failure
+    // here never undoes the resolution the human just made.
+    // SAVEPOINT-wrapped so a transient PG fault on the cascade's own SELECT/UPDATE can NEVER leave the
+    // transaction aborted and silently roll back the primary resolve the human just made (the trap the
+    // whole codebase savepoints these best-effort passes against). The inner fdec.record + mirror close
+    // are already savepoint-safe; this covers the sibling SELECT + UPDATE.
+    try {
+      let csp = false;
+      try { await client.query('SAVEPOINT bank_cascade'); csp = true; } catch (_) { csp = false; }
+      try {
+        const { BANK_ENTITY_CODES } = require('./bank-entity-dedup');
+        const holder = updated.doc_value;
+        if (holder && BANK_ENTITY_CODES.has(updated.code)) {
+          const { entityMatch } = require('./compare');
+          const sibs = await client.query(
+            `SELECT * FROM document_findings
+               WHERE application_id = $1 AND status = 'open' AND code = ANY($2::text[]) AND id <> $3`,
+            [updated.application_id, [...BANK_ENTITY_CODES], updated.id]);
+          for (const s of sibs.rows) {
+            if (entityMatch(holder, s.doc_value) !== true) continue;
+            const sr = await client.query(
+              `UPDATE document_findings
+                  SET status = $2, resolution = $3, resolution_note = $4, resolution_value = $5,
+                      resolved_by = CASE WHEN $6 THEN $7 ELSE resolved_by END,
+                      resolved_at = CASE WHEN $6 THEN now() ELSE resolved_at END
+                WHERE id = $1 AND status = 'open' RETURNING *`,
+              [s.id, status, v.action, note || null, value != null ? String(value) : null, terminal, by || null]);
+            const su = sr.rows[0];
+            if (!su) continue;
+            await fdec.record(client, {
+              applicationId: su.application_id, finding: su, origin: 'document_finding',
+              decision: v.action, suppress: terminal && fdec.suppresses(v.action), note, decidedBy: by || null,
+            });
+            await closeMirroredSuggestions(client, {
+              applicationId: su.application_id, code: su.code, documentId: su.document_id, action: v.action, by,
+            });
+          }
+        }
+        if (csp) await client.query('RELEASE SAVEPOINT bank_cascade').catch(() => {});
+      } catch (_) {
+        if (csp) await client.query('ROLLBACK TO SAVEPOINT bank_cascade').catch(() => {});
+      }
+    } catch (_) { /* holder cascade is best-effort — never undoes the primary resolution */ }
+  }
   // Self-training capture (Sovereign 4/4, owner-directed 2026-07-21): every
   // resolve is a labeled example — dismiss = false-positive candidate, grant/
   // clear/decline = confirmed / condition / etc. Also compares the committee's
@@ -318,6 +530,54 @@ async function resolveFinding(client, { findingId, action, note, value, by } = {
     } catch (_) { /* learning capture is additive */ }
   }
   return updated;
+}
+
+/**
+ * ONE FINDING, ONE DECISION — across BOTH surfaces (owner-reported 2026-07-27).
+ *
+ * The same issue is carried by two rows: the `document_findings` row the Document
+ * Review desk resolves, and its `ai_suggestions` mirror on the AI Findings panel
+ * (written by the bank / chain / cross-doc bridges). Resolving one left the other
+ * sitting there open, so the finding visibly "did not disappear" even though it
+ * had been dealt with. Close the mirror in the same breath.
+ *
+ * Matched on the file + the finding CODE (+ the document when both carry one), which
+ * is exactly what the bridges put in `evidence.code` when they mirror a finding.
+ * Only ever closes rows that are still OPEN, and only when the verb SETTLES the
+ * finding — a posted condition / requested document deliberately keeps both live.
+ * Best-effort: never throws.
+ */
+async function closeMirroredSuggestions(client, { applicationId, code, documentId, action, by } = {}) {
+  try {
+    if (!applicationId || !code) return 0;
+    if (!require('./finding-decisions').suppresses(action)) return 0;
+    // SAVEPOINT-guarded (matches finding-decisions._guarded): this runs inside the caller's resolve
+    // transaction, so a swallowed PG error on this UPDATE would otherwise leave the transaction
+    // ABORTED and silently roll back the human's resolve on COMMIT — while the API still returns 200.
+    // The savepoint rolls back ONLY this mirror close. Outside a transaction, SAVEPOINT itself errors;
+    // there is nothing to poison, so we fall back to running the statement directly.
+    let sp = false;
+    try { await client.query('SAVEPOINT close_mirror'); sp = true; } catch (_) { sp = false; }
+    try {
+      const r = await client.query(
+        `UPDATE ai_suggestions
+            SET status = 'dismissed',
+                status_reason = COALESCE(status_reason, $4),
+                decided_by_staff_id = COALESCE($5, decided_by_staff_id),
+                decided_at = now()
+          WHERE application_id = $1
+            AND status IN ('open','escalated','marked_important','asked_admin')
+            AND COALESCE(evidence->>'code', proposed_action->'fields'->>'code') = $2
+            AND ($3::uuid IS NULL OR document_id IS NULL OR document_id = $3)`,
+        [applicationId, code, documentId || null,
+         `Closed with the finding on the Document Review desk (${String(action || 'resolved')}).`, by || null]);
+      if (sp) await client.query('RELEASE SAVEPOINT close_mirror').catch(() => {});
+      return r.rowCount || 0;
+    } catch (_) {
+      if (sp) await client.query('ROLLBACK TO SAVEPOINT close_mirror').catch(() => {});
+      return 0;
+    }
+  } catch (_) { return 0; }
 }
 
 /**
@@ -365,4 +625,5 @@ async function getFileFindings(client, applicationId) {
 }
 
 module.exports = { saveAnalysis, resolveFinding, getFileFindings, rollup, maskFields,
-  findReusableExtraction, findingsForExtraction, _internals: { maskValue } };
+  findReusableExtraction, findingsForExtraction, closeMirroredSuggestions,
+  _internals: { maskValue } };

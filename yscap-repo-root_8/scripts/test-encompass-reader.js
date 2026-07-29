@@ -96,6 +96,11 @@ require.cache[clientPath] = {
       }],
       customFields: [{ fieldName: 'CX.ARV', numericValue: 750000 }],
     }),
+    // fieldReader mock — returns field 364 (loan number) so the SAME-LOAN guard is exercised.
+    readFields: async (guid) => {
+      const l = await mockClient.getLoan(guid);
+      return { '364': l && l.loanNumber, '1859': 'MW TRADING LLC', '388': '1.000' };
+    },
     getMilestones: async () => [{ name: 'Approval', date: '2026-06-01' }],
     getMilestoneLog: async () => [],
   }),
@@ -154,6 +159,22 @@ async function main() {
   assert.strictEqual(stored.applications[0].borrower.taxIdentificationIdentifier, undefined, 'borrower SSN scrubbed');
   assert.strictEqual(stored.applications[0].coBorrower.taxIdentificationIdentifier, undefined, 'coBorrower SSN scrubbed');
   assert.strictEqual(stored.applications[0].borrower.firstName, 'Jane', 'non-PII borrower data kept');
+  // Values read BY FIELD NUMBER are stashed for the extract (authoritative over paths).
+  assert.strictEqual(stored._fieldValues['1859'], 'MW TRADING LLC', 'field 1859 read by number');
+  assert.strictEqual(stored._fieldValues['388'], '1.000', 'field 388 read by number');
+  // The plaintext SSN is replaced by a PII-safe keyed HMAC + last-4 so the
+  // per-file screen can COMPARE the SSN without ever storing the raw number.
+  {
+    const idn = require('../src/clickup/identity');
+    const cfg2 = require('../src/config');
+    assert.strictEqual(stored.applications[0].borrower._ssnHash, idn.ssnHash('111-22-3333', cfg2.ssnMatchKey), 'borrower SSN stored as the keyed HMAC hash');
+    assert.strictEqual(stored.applications[0].borrower._ssnLast4, '3333', 'borrower SSN last-4 stored for masked display');
+    assert.strictEqual(stored.applications[0].coBorrower._ssnHash, idn.ssnHash('444-55-6666', cfg2.ssnMatchKey), 'coBorrower SSN stored as the keyed HMAC hash');
+    assert.strictEqual(stored.applications[0].coBorrower._ssnLast4, '6666', 'coBorrower SSN last-4 stored');
+    const storedStr = JSON.stringify(stored);
+    assert.ok(!storedStr.includes('111-22-3333') && !storedStr.includes('111223333'), 'the raw borrower SSN is never stored (any format)');
+    assert.ok(!storedStr.includes('444-55-6666') && !storedStr.includes('444556666'), 'the raw coBorrower SSN is never stored (any format)');
+  }
 
   // (4) pullLoanForApplication with a cached GUID skips the search.
   mockDb._appRows = [{ id: 'app-2', ys_loan_number: 'YS-888', encompass_loan_guid: 'guid-xyz-456' }];
@@ -319,6 +340,49 @@ async function main() {
     if (cachedMock) require.cache[realClientPath] = cachedMock;
     Object.assign(process.env, savedEnv);
   }
+
+  // (11) Regression (2026-07-26 live): the REAL Encompass v3 pipeline row is
+  // { loanId, fields:{ "Loan.Guid":..., "Loan.LoanNumber":... } } — NOT { loanGuid }
+  // with the field values flattened onto the row. Such a row must still yield its
+  // GUID on the per-file pull (the live symptom was "pipeline search returned a row
+  // without a GUID" even though a matching loan came back).
+  mockDb._appRows = [{ id: 'app-real', ys_loan_number: 'YS-777', encompass_loan_guid: null }];
+  mockClient.findLoanByLoanNumber = async () => [{ loanId: 'guid-real-1', fields: { 'Loan.Guid': 'guid-real-1', 'Loan.LoanNumber': 'YS-777' } }];
+  mockClient.getLoan = async (guid) => ({ guid, loanNumber: 'YS-777', applications: [{ borrower: { firstName: 'Re', lastName: 'Al' } }] });
+  queries.length = 0;
+  const rReal = await reader.pullLoanForApplication('app-real');
+  assert.strictEqual(rReal.ok, true, 'real Encompass row shape {loanId,fields} yields ok (no "row without a GUID")');
+  assert.strictEqual(rReal.guid, 'guid-real-1', 'GUID pulled from loanId / fields[Loan.Guid]');
+  const adoptReal = queries.find((q) => /UPDATE applications SET encompass_loan_guid=\$1/.test(q.sql));
+  assert.ok(adoptReal && adoptReal.params[0] === 'guid-real-1', 'adopts the GUID from the nested-shape row');
+
+  // (12) Regression: the bulk pull reads the SAME nested shape — GUID from loanId,
+  // field values from `fields` (a flattened-only read would store null loan numbers
+  // and break loan-number → application matching / enrichment).
+  mockClient._pipelineHits = [
+    { loanId: 'guid-N', fields: { 'Loan.Guid': 'guid-N', 'Loan.LoanNumber': 'YS-N', 'Loan.LoanFolder': 'Active', 'Loan.LoanAmount': 321, 'Loan.BorrowerLastName': 'Nest', 'Loan.LastModified': '2026-07-21T00:00:00Z' } },
+  ];
+  mockDb._appsByLoanNumber = {};
+  mockClient.getLoan = async (guid) => ({ guid, applications: [{ borrower: { firstName: 'N' } }] });
+  queries.length = 0;
+  const bulkN = await reader.bulkPullAllLoans({ perRequestDelayMs: 0, pageSize: 100 });
+  assert.strictEqual(bulkN.pulled, 1, 'nested-shape row pulled');
+  const snapN = queries.find((q) => /INSERT INTO encompass_loan_snapshot\s+\(encompass_loan_guid/.test(q.sql));
+  assert.ok(snapN, 'nested-shape row upserted to snapshot');
+  assert.strictEqual(snapN.params[0], 'guid-N', 'snapshot GUID from loanId');
+  assert.strictEqual(snapN.params[1], 'YS-N', 'snapshot loan_number from fields[Loan.LoanNumber]');
+
+  // (13) SAME-LOAN GUARD — a cached GUID that points at a DIFFERENT loan must be
+  // REFUSED: nothing stored, the stale link cleared, a plain-language error stamped.
+  mockDb._appRows = [{ id: 'app-wrong', ys_loan_number: 'YS-111', encompass_loan_guid: 'guid-someone-else' }];
+  mockClient.getLoan = async (guid) => ({ guid, loanNumber: 'YS-222', applications: [{ borrower: { firstName: 'Other', lastName: 'Person' } }] });
+  queries.length = 0;
+  const rWrong = await reader.pullLoanForApplication('app-wrong');
+  assert.strictEqual(rWrong.ok, false, 'a loan whose number does not match this file is REFUSED');
+  const wrongMsg = rWrong.reason || rWrong.error || '';
+  assert.ok(/YS-222/.test(wrongMsg) && /YS-111/.test(wrongMsg), 'the error names both loan numbers');
+  assert.ok(!queries.some((q) => /encompass_extra=\$1::jsonb/.test(q.sql)), 'NOTHING from the wrong loan is stored');
+  assert.ok(queries.some((q) => /SET encompass_loan_guid=NULL/.test(q.sql)), 'the stale GUID is cleared so the next pull re-searches');
 
   console.log('OK — Encompass reader unit tests pass (includes super-dump + bulk-pull + client-contract check).');
 }

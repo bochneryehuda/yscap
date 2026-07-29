@@ -18,8 +18,18 @@
  * own deal numbers, and the notify chokepoint scrubs note-buyer names again.
  */
 
-async function sendBorrowerTerms(appId, { quote, total, termMonths } = {}) {
+async function sendBorrowerTerms(appId, { quote, total, termMonths, encompassOverride } = {}) {
   if (!appId || !quote) return;
+  // WO-E — the term-sheet issuance gate, at the CHOKEPOINT: withhold the "your
+  // terms are ready" email while the file has OPEN blocking Encompass mismatches,
+  // so EVERY issuance path (register, accept-counter, AND the super-admin
+  // escalation approval) is covered at one point — fail-safe for any future
+  // caller too. An explicit `encompassOverride` (an admin who already overrode at
+  // the register route) bypasses it. Dormant until Encompass is live + a loan is
+  // pulled; fails OPEN (never withholds) on any reconcile error.
+  // Owner-directed 2026-07-26 (CORRECTION): the borrower's term sheet is NOT withheld
+  // on an Encompass mismatch any more. Issuing terms stays open; the ONLY thing the
+  // match gates is SENDING the DocuSign term-sheet package (staff.js esign/send).
   const db = require('../db');
   const notify = require('./notify');
   const email = require('./email');

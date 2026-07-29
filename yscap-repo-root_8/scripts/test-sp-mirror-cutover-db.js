@@ -48,10 +48,21 @@ const st = async (id) => (await db.query(
   // ---- 2. transient failure → FAILED + backoff, DEAD at the cap --------------
   backup.mirrorRow = async () => { const e = new Error('graph 503'); e.status = 503; throw e; };
   const tDoc = await seed({ status: 'PENDING' });
+  // Baseline the DB clock BEFORE the drain. The transient backoff is AWS full
+  // jitter (state.backoffMs = floor(random()*ceiling), deliberately [0,ceiling)
+  // to spread retries), so on a first attempt it can legitimately land at ~now
+  // (jitter≈0ms). Asserting next_attempt_at is strictly GREATER than a wall clock
+  // read AFTER the drain round-trip races that read latency and flakes; the real
+  // invariant is only that a retry was scheduled AT/AFTER the failure instant.
+  // Compare against the DB's own pre-drain now() (same timestamptz source as the
+  // column, written as now()+interval), which is monotonic and never races.
+  const beforeDrain = (await db.query('SELECT now() AS t')).rows[0].t;
   await q.drainClaimed(50, { holder: 'D2' });
   const a2 = await st(tDoc);
-  assert.strictEqual(a2.s, 'FAILED'); assert.ok(new Date(a2.na) > new Date(), 'backoff scheduled');
-  ok('drainClaimed: a transient (503) mirror failure → FAILED with a future next_attempt_at');
+  assert.strictEqual(a2.s, 'FAILED');
+  assert.ok(a2.na != null, 'a transient failure scheduled a retry (next_attempt_at set)');
+  assert.ok(new Date(a2.na) >= new Date(beforeDrain), 'retry scheduled at/after the failure instant');
+  ok('drainClaimed: a transient (503) mirror failure → FAILED with a scheduled next_attempt_at');
 
   const tCap = await seed({ status: 'FAILED', attempts: 7 });   // claim → attempts 8 = cap
   await q.drainClaimed(50, { holder: 'D2b' });

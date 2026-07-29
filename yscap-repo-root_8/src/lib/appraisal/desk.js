@@ -17,7 +17,6 @@ const switches = require('../integrations/switches'); // runtime on/off (env def
 const storage = require('../storage');
 const { importAppraisal } = require('./import');
 const { extract } = require('./extract');
-const { ocrAsIsCandidate, buildOcrNote } = require('./ocr');
 const { extractPhotos } = require('./photos');
 const { crossCheckFlood } = require('./flood');
 const X = require('./xml');
@@ -47,28 +46,36 @@ async function ensureAppraisalCondition(appId, code) {
     [appId, code]);
 }
 
-// Fire-and-forget advisory OCR: read a candidate As-Is off the PDF and attach it to the
-// verify-As-Is condition as an [auto]-guarded note. Never writes the loan file, never throws.
-function fireOcrAdvisory(appId, pdfB64, importedBy) {
-  if (!pdfB64) return;
-  ocrAsIsCandidate({ pdfBase64: pdfB64 })
-    .then(async (adv) => {
-      await db.query(
-        `UPDATE checklist_items ci
-            SET notes = CASE WHEN ci.notes IS NULL OR ci.notes LIKE '[auto]%' THEN $2 ELSE ci.notes END
-           FROM checklist_templates t
-          WHERE ci.template_id = t.id AND t.code = 'appraisal_as_is_verify' AND ci.application_id = $1`,
-        [appId, buildOcrNote(adv)]);
-      if (importedBy) {
-        try {
-          await db.query(
-            `INSERT INTO audit_log (actor_kind, actor_id, action, entity_type, entity_id, detail)
-             VALUES ('staff',$1,'appraisal_ocr_advisory','application',$2,$3)`,
-            [importedBy, appId, JSON.stringify({ attempted: !!adv.attempted, candidate: adv.candidate != null ? adv.candidate : null, confidence: adv.confidence || null })]);
-        } catch (_) { /* audit best-effort */ }
-      }
-    })
-    .catch((e) => console.error('[appraisal] OCR advisory failed (non-fatal):', e && e.message));
+/**
+ * THE As-Is READ (owner-directed 2026-07-28) — replaces the old advisory-note-only OCR pass.
+ *
+ * The reader ladder (./as-is-reader.js) resolves the As-Is from the data file first, then the report
+ * PDF with the strongest OCR + AI. When it is CONFIDENT it writes that value onto the file — lower or
+ * higher — and this condition becomes the human's re-review; when it is not confident, nothing is
+ * filled in and the condition asks an officer to read it off the report and enter it.
+ * ./as-is-desk.js owns both halves.
+ *
+ * The condition is materialized HERE (this module is the reviewed appraisal-desk condition writer)
+ * BEFORE the settle runs, so the settle always has an instance whose note/hint it can refresh — and
+ * only ever after an appraisal actually exists on the file, which is the owner's "this condition
+ * should only be relevant after the appraisal has been uploaded".
+ *
+ * Fire-and-forget: the officer's import never waits on it, and a failure can never break the import.
+ */
+function fireAsIsRead(appId, pdfB64, importedBy) {
+  runAsIsRead(appId, { pdfBase64: pdfB64 || null, actorId: importedBy || null })
+    .catch((e) => console.error('[appraisal] as-is read failed (non-fatal):', e && e.message));
+}
+
+// Awaitable form (used by fireAsIsRead, the route's "re-read" action and the boot sweep). The
+// condition CREATOR is handed to the settle as a callback so the INSERT stays in this module — the
+// reviewed appraisal-desk condition writer — while the decision about whether one is needed stays
+// with the settle that made it.
+function runAsIsRead(appId, opts = {}) {
+  return require('./as-is-desk').settleAsIs(appId, {
+    ...opts,
+    ensureCondition: (id) => ensureAppraisalCondition(id, 'appraisal_as_is_verify'),
+  });
 }
 
 // Extract the subject + comp photos from the PDF, store each as a borrower-visible image
@@ -114,6 +121,24 @@ async function extractAndStorePhotos(appraisalId, appId, pdfB64, importedBy) {
   return stored;
 }
 
+// Fidelis flood-zone advisory (owner-directed 2026-07-27). On a Fidelis file the flood cert is
+// absent until a flood zone is proven, at which point it is REQUIRED (db/335) — the engine
+// re-evaluated just above normally attaches it. This is the BACKSTOP for the two states the engine
+// cannot fix itself: a flood zone known with no condition on the file, and a flood zone known while
+// the existing condition is still marked optional by db/335 §3 (duplicate suppression means the
+// engine neither re-issues it nor rewrites is_required). It records an ADVISORY on the file's AI
+// Findings panel and WITHDRAWS itself when it stops being true, which is why it is safe (and
+// correct) to call on every import — a re-imported appraisal that no longer shows a flood zone
+// closes the old advisory.
+// Best-effort and never throws: it uses the pool directly (no transaction of its own) and a
+// failure must never affect the appraisal import that triggered it.
+async function fireFidelisFloodAdvisory(appId) {
+  if (!appId) return;
+  try {
+    await require('../underwriting/fidelis-flood-advisory').syncFidelisFloodAdvisory(db, appId);
+  } catch (e) { console.error('[appraisal] fidelis flood advisory (non-fatal):', e && e.message); }
+}
+
 // Fire-and-forget wrapper: runs AFTER the import returns so it never slows the officer down.
 // FEMA flood cross-check (fire-and-forget, gated by APPRAISAL_FLOOD_CHECK_ENABLED). Geocodes the
 // subject address, reads the official FEMA zone, stores the comparison on the appraisals row, and
@@ -147,6 +172,11 @@ function fireFloodCheck(appraisalId, appId) {
     // required on EVERY program — re-run the Condition Center so it attaches now
     // rather than waiting for the next file edit (db/207 + engine.in_flood_zone).
     try { await require('../conditions/engine').evaluateApplication(appId, { reason: 'appraisal_flood_check', notify: false }); } catch (_) {}
+    // On a FIDELIS file the evaluate above is what FORCES the cert on (db/335: a proven
+    // flood zone requires it regardless of the capital partner). This lays the advisory
+    // for the two cases it can't fix — no condition on the file, or an existing one still
+    // marked optional — right now rather than on the next staff file view (owner 2026-07-27).
+    await fireFidelisFloodAdvisory(appId);
   })().catch(() => { /* best-effort advisory — never breaks the import */ });
 }
 
@@ -183,12 +213,18 @@ async function runAppraisalImport(args) {
       if (d && d.storage_ref) { const buf = await storage.read(d.storage_ref); if (buf && buf.length) pdfB64 = buf.toString('base64'); }
     } catch (_) { /* best-effort: no PDF bytes → no photos, never a hard fail */ }
   }
-  if (out.needsAsIsCondition) {
-    await ensureAppraisalCondition(appId, 'appraisal_as_is_verify');
-    fireOcrAdvisory(appId, pdfB64, importedBy);
-  }
+  // THE As-Is READ runs on EVERY import, not only when the data file was silent (owner-directed
+  // 2026-07-28) — a definite XML As-Is still has to be compared with what the file currently says.
+  fireAsIsRead(appId, pdfB64, importedBy);
   firePhotoExtraction(out.appraisalId, appId, pdfB64, importedBy);
   fireFloodCheck(out.appraisalId, appId);
+  // The appraiser's OWN stated flood zone is on the row the moment the XML is parsed, with no
+  // FEMA call involved — so the Fidelis advisory must also run here, not only inside
+  // fireFloodCheck. fireFloodCheck is gated on APPRAISAL_FLOOD_CHECK_ENABLED and returns early
+  // when the geocode/FEMA lookup is unreachable, which would otherwise leave an appraisal that
+  // plainly states zone AE raising nothing at all. Fire-and-forget for the same reason as the
+  // others: the officer's import never waits on an advisory.
+  fireFidelisFloodAdvisory(appId).catch(() => { /* best-effort */ });
   return out;
 }
 
@@ -334,7 +370,9 @@ async function undoAppraisalImport(appId, { actor = null } = {}) {
   try {
     await client.query('BEGIN');
     const cur = (await client.query(
-      `SELECT id, as_is_value, arv_value, appraiser_name FROM appraisals
+      `SELECT id, as_is_value, arv_value, appraiser_name, as_is_applied, as_is_applied_value, as_is_file_value_before,
+              arv_applied, arv_applied_value, arv_file_value_before
+         FROM appraisals
         WHERE application_id=$1 AND superseded=false ORDER BY imported_at DESC NULLS LAST LIMIT 1`, [appId])).rows[0];
     if (!cur) { await client.query('ROLLBACK'); return { ok: false, error: 'no active appraisal to remove' }; }
 
@@ -354,8 +392,31 @@ async function undoAppraisalImport(appId, { actor = null } = {}) {
     //    NULL only where the file still shows exactly what THIS appraisal imported
     //    (nothing else changed it since; the import only ever fills a blank, so the
     //    previous value was NULL).
-    if (cur.as_is_value != null) await client.query(`UPDATE applications SET as_is_value=NULL, updated_at=now() WHERE id=$1 AND as_is_value=$2`, [appId, cur.as_is_value]);
-    if (cur.arv_value != null) await client.query(`UPDATE applications SET arv=NULL, updated_at=now() WHERE id=$1 AND arv=$2`, [appId, cur.arv_value]);
+    //     …EXCEPT where the appraisal desk RECORDED what it wrote (db/353 + db/354). Since 2026-07-28 the
+    //     As-Is and the ARV are not blank-filled but REWRITTEN, so `as_is_applied_value` /
+    //     `arv_applied_value` carry the truth: what PILOT put there, and what the file showed before.
+    //     That record wins — blanking the field instead would throw away the value it replaced. Each
+    //     restore is pinned to the exact value PILOT wrote, so a human's later correction is kept.
+    //     A VALUE PILOT DID NOT WRITE IS NOT PILOT'S TO REMOVE. The old rule — "blank it when the file
+    //     equals the appraisal, because the import only ever filled a blank" — stopped being true the
+    //     day the desk started making the file AGREE with the appraisal: equal became the normal
+    //     state, so that rule deleted As-Is and ARV values officers had typed by hand, including on
+    //     the very condition that asked them to. Both the desk's writes and the import's blank-fill
+    //     now record themselves in these columns, so there is exactly one thing to reverse.
+    //     Appraisals imported BEFORE that recording existed carry no record, so db/356 writes the
+    //     one they never got — ONCE, and only where the old rule would have fired (the file still
+    //     shows exactly what the appraisal imported and the desk has never touched the row), which
+    //     keeps the undo behaving identically on the back book.
+    if (cur.as_is_applied && cur.as_is_applied_value != null) {
+      await client.query(
+        `UPDATE applications SET as_is_value=$3, updated_at=now() WHERE id=$1 AND as_is_value=$2`,
+        [appId, cur.as_is_applied_value, cur.as_is_file_value_before]);
+    }
+    if (cur.arv_applied && cur.arv_applied_value != null) {
+      await client.query(
+        `UPDATE applications SET arv=$3, updated_at=now() WHERE id=$1 AND arv=$2`,
+        [appId, cur.arv_applied_value, cur.arv_file_value_before]);
+    }
     if (cur.appraiser_name) await client.query(`UPDATE applications SET appraiser_name=NULL, updated_at=now() WHERE id=$1 AND appraiser_name=$2`, [appId, cur.appraiser_name]);
 
     // 3. Delete findings first (the db/154 guard blocks satisfying the review condition
@@ -398,4 +459,63 @@ async function undoAppraisalImport(appId, { actor = null } = {}) {
   }
 }
 
-module.exports = { ensureAppraisalCondition, runAppraisalImport, undoAppraisalImport, extractAndStorePhotos, repullAppraisalPhotos, backfillAppraisalPhotosOnce, backfillAppraisalCompSplitOnce, todayNY };
+// GOING FORWARD ONLY (owner-directed 2026-07-28: *"Only make this going forward"*) — a DELIBERATE,
+// owner-granted exception to the standing "previous AND future" rule, for one reason: this sweep
+// WRITES loan values, and re-reading the whole back book would rewrite numbers on files people have
+// already worked, all at once, with nobody watching. New imports get read; old appraisals are left
+// alone unless someone asks. It is therefore OFF by default (`APPRAISAL_ASIS_SWEEP_FILES=0`) and is
+// no longer called at boot; set that env var and call it to run a bounded pass by hand.
+//
+// Two tiers, cheapest first:
+//   1. FREE — the appraisal's data file already states a definite As-Is. No OCR, no AI, no storage
+//      read: just measure it against the purchase price and apply the owner's rule. Unbounded-ish.
+//   2. PAID — the data file was silent, so the report PDF has to be read with OCR (and possibly AI).
+//      Bounded hard per boot (APPRAISAL_ASIS_BACKFILL_FILES, default 5) because reading a 30 MB
+//      appraisal costs real money; the queue drains a little on every deploy.
+// Both stamp `as_is_read_at`, which is what drains each row out of the query, so this self-terminates
+// and is safe to run on every boot. Terminal / deleted files are skipped (their As-Is is settled, and
+// the file freeze would refuse the write anyway). Best-effort, never throws.
+// Deliberately EARLY-STAGE ONLY. `approved` and `clear_to_close` are excluded because on those files
+// the write would be refused by the freeze anyway, but the CONDITION would still attach — a fresh,
+// required, uncleared item lands in `advancementBlockers` and would block clear-to-close and funding
+// on files that were ready to fund, for a reading nobody asked for. `on_hold` is paused by
+// definition. A file that comes back to life gets read on its next import or on demand.
+const ASIS_SWEEP_STATUSES = ['file_intake', 'new', 'in_review', 'processing', 'underwriting'];
+
+async function backfillAsIsReadsOnce({ freeLimit = null, pdfLimit = null } = {}) {
+  const free = freeLimit == null ? cfg.appraisalAsIsSweepFiles : freeLimit;
+  const paid = pdfLimit == null ? cfg.appraisalAsIsBackfillFiles : pdfLimit;
+  const out = { free: 0, paid: 0, applied: 0 };
+  const sweep = async (definite, limit) => {
+    if (!limit) return;
+    let rows = [];
+    try {
+      rows = (await db.query(
+        `SELECT a.application_id
+           FROM appraisals a
+           JOIN applications app ON app.id = a.application_id
+          WHERE a.superseded = false
+            AND a.as_is_read_at IS NULL
+            AND app.deleted_at IS NULL
+            AND app.status = ANY($2::text[])
+            -- COALESCE: with as_is_value set but as_is_confidence NULL the bare expression is SQL
+            -- NULL, which equals neither true nor false, so the row would fall out of BOTH tiers and
+            -- never be swept. The exact three-valued-logic trap CLAUDE.md documents for doc_kind.
+            AND COALESCE(a.as_is_value IS NOT NULL AND a.as_is_confidence = 'definite', false) = $3
+          ORDER BY a.imported_at DESC NULLS LAST
+          LIMIT $1`, [limit, ASIS_SWEEP_STATUSES, definite])).rows;
+    } catch (_) { return; }                       // pre-migration boot: the columns aren't there yet
+    for (const r of rows) {
+      try {
+        const res = await runAsIsRead(r.application_id, {});
+        if (definite) out.free++; else out.paid++;
+        if (res && res.applied) out.applied++;
+      } catch (_) { /* per-file best-effort */ }
+    }
+  };
+  await sweep(true, free);
+  await sweep(false, paid);
+  return out;
+}
+
+module.exports = { ensureAppraisalCondition, runAppraisalImport, undoAppraisalImport, extractAndStorePhotos, repullAppraisalPhotos, backfillAppraisalPhotosOnce, backfillAppraisalCompSplitOnce, backfillAsIsReadsOnce, runAsIsRead, pdfBytesForAppraisal, xmlForAppraisal, todayNY };

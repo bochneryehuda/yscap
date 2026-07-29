@@ -43,6 +43,13 @@ const KICKER_OF = {
   // to review, and the decision sent back to the file's team.
   guaranty_exception: 'Guaranty exception', guaranty_exception_decided: 'Guaranty exception',
   guaranty_exception_comment: 'Exception comment',
+  esign_before_ctc_exception: 'Send-before-CTC exception', esign_before_ctc_exception_decided: 'Send-before-CTC exception',
+  // Exception-workflow redesign (2026-07-24): the pricing/guideline exception is
+  // a first-class register record; comments got a type-generic kicker; the aging
+  // + expiry digests nudge the reviewers/team.
+  pricing_exception: 'Pricing exception', pricing_exception_decided: 'Pricing exception',
+  exception_comment: 'Exception comment',
+  exception_aging: 'Exceptions waiting', exception_expired: 'Exception expired',
   message: 'New message', mention: 'You were mentioned', reminder: 'Reminder',
   llc_verified: 'Your entity', llc_unverified: 'Your entity',
   track_record_unverified: 'Track record',
@@ -50,6 +57,7 @@ const KICKER_OF = {
   draw_setup: 'Construction draws are open',
   draw_accepted: 'Construction draw', draw_disputed: 'Construction draw', draw_dispute_resolved: 'Draw inspection',
   draw_message: 'Message from your loan team', draw_started: 'Construction draw', draw_inbound: 'Construction draw',
+  trustpoint_import: 'Construction draw',
   sow_reallocation: 'Budget change', sow_change_request: 'Budget change',
   change_request: 'Change request', assignment: 'File assignment',
   new_application: 'New application', unassigned_application: 'Needs assignment',
@@ -61,6 +69,9 @@ const KICKER_OF = {
   // personal work queue, or a file you submitted was finished + sent back.
   workflow_submitted: 'Workflow', workflow_returned: 'Workflow', workflow_ready: 'Workflow',
   order_docs_in: 'Order documents',
+  // The closing email chain (owner-directed 2026-07-28): documents arrived on the
+  // chain the closing attorney is running.
+  closing_docs_in: 'Closing documents',
   // API Health monitor (owner-directed 2026-07-21): an integration went down or came back.
   integration_alert: 'System health',
   // Finding escalation (owner-directed 2026-07-21): a finding was routed to your workload,
@@ -166,6 +177,32 @@ function injectOpenPixel(html, notifId) {
   } catch (_) { return html; }
 }
 
+// In-flight email fan-out promises. Email delivery is fire-and-forget in production
+// (the call sites below don't await it, so a web request never waits on an email).
+// We track those promises here ONLY so a test harness can await them before it tears
+// down the shared DB pool: without a drain, the detached sent_emails INSERT / status
+// UPDATE can lose the race with the test's pool.end() ("Cannot use a pool after
+// calling end") or a cleanup DELETE (a sent_emails → notifications foreign-key error).
+// Production never calls drainEmails(); the Set self-empties as each send settles.
+const _inflight = new Set();
+function _track(p) {
+  _inflight.add(p);
+  const done = () => _inflight.delete(p);
+  // then(done, done): remove on BOTH fulfill and reject, and never re-throw here — the
+  // original promise `p` is returned so the call site's own .catch() still applies.
+  p.then(done, done);
+  return p;
+}
+// Test-only: resolve once every currently in-flight email fan-out has fully settled
+// (including its sent_emails capture). Loops so a send that spawns a follow-up is
+// still awaited; bounded so it can never hang. A no-op when nothing is in flight.
+async function drainEmails() {
+  for (let i = 0; i < 50 && _inflight.size; i++) {
+    // eslint-disable-next-line no-await-in-loop
+    await Promise.allSettled([..._inflight]);
+  }
+}
+
 async function _emailRow(id, to, opts, audience) {
   if (!to || !to.length) {
     await _mark(id, 'skipped');
@@ -225,11 +262,20 @@ async function _emailRow(id, to, opts, audience) {
     }
     // #442 draw email center: also persist the rendered email + attachment BYTES to the
     // sent_emails store that the Draw Management email view reads. Best-effort + caught.
-    _captureSentEmail(id, to, opts, audience, msg, replyTo, attachments, status).catch(() => {});
+    await _captureSentEmail(id, to, opts, audience, msg, replyTo, attachments, status).catch(() => {});
   } catch (e) {
-    await db.query(`UPDATE notifications SET email_status='error', email_error=$2 WHERE id=$1`, [id, String(e.message).slice(0, 400)]);
+    // This whole function is fire-and-forget (call sites at #364/#616 don't await it),
+    // so ANY throw here becomes an unhandled rejection that crashes the process (the two
+    // fire-and-forget call sites below both attach .catch()). In tests
+    // that close the pool at teardown, an in-flight send can lose the race and land here
+    // AFTER pool.end() — the error-status write would then throw "Cannot use a pool after
+    // calling end on the pool" and take the process down. Guard the best-effort write so
+    // this handler can never itself throw. (Prod is unaffected; the pool stays open there.)
+    try {
+      await db.query(`UPDATE notifications SET email_status='error', email_error=$2 WHERE id=$1`, [id, String(e.message).slice(0, 400)]);
+    } catch (_) { /* pool closed / DB unreachable — nothing more we can do here */ }
     // still capture what we tried to send (the reader shows why it failed) — best-effort.
-    try { const msg = buildEmail(opts, audience); _captureSentEmail(id, to, opts, audience, msg, opts.replyTo || null, [], 'error').catch(() => {}); } catch (_) { /* ignore */ }
+    try { const msg = buildEmail(opts, audience); await _captureSentEmail(id, to, opts, audience, msg, opts.replyTo || null, [], 'error').catch(() => {}); } catch (_) { /* ignore */ }
   }
 }
 
@@ -415,7 +461,7 @@ async function notifyStaff(staffId, opts) {
     if (queued) return id;
   }
   const to = emailOn ? (opts.emailTo ? [].concat(opts.emailTo) : await _staffEmail(staffId)) : [];
-  _emailRow(id, to, opts, 'staff');   // fire-and-forget (marks 'skipped' when `to` is empty)
+  _track(_emailRow(id, to, opts, 'staff')).catch(() => {});   // fire-and-forget (marks 'skipped' when `to` is empty); never let a stray rejection crash the process
   return id;
 }
 
@@ -434,6 +480,9 @@ const CATEGORY_OF = {
   // Sitewire draw-management events (findings delivery, accept/dispute, SOW reallocations)
   draw_findings: 'draws', draw_accepted: 'draws', draw_disputed: 'draws', draw_dispute_resolved: 'draws',
   draw_message: 'draws', draw_started: 'draws', draw_inbound: 'draws',
+  // Action-needed (a submitted draw must be hand-entered into TrustPoint) — deliberately
+  // NOT in STAFF_INAPP_TYPES, so it emails the coordinator.
+  trustpoint_import: 'draws',
   sow_reallocation: 'draws', sow_change_request: 'draws',
   // New borrower touchpoints (owner-directed 2026-07-20)
   officer_assigned: 'status_updates', all_caught_up: 'status_updates',
@@ -443,6 +492,10 @@ const CATEGORY_OF = {
   workflow_submitted: 'status_updates', workflow_returned: 'status_updates', workflow_ready: 'status_updates',
   // Orders desk — a staff-facing "documents came back" nudge.
   order_docs_in: 'documents',
+  // The closing chain — documents arrived on it. Passed inAppOnly:true by its one
+  // caller (closing-inbox), because the chain email ITSELF already forwards to every
+  // assignee: emailing again about the same message would be double-notifying.
+  closing_docs_in: 'documents',
   // Finding escalation (owner-directed 2026-07-21) — action-bearing staff events, so
   // NOT added to STAFF_INAPP_TYPES: the reviewer/escalator is emailed (unless muted).
   finding_escalation: 'conditions', finding_escalation_decided: 'conditions',
@@ -450,6 +503,13 @@ const CATEGORY_OF = {
   // events (super-admin review request + decision), so they email the recipient.
   guaranty_exception: 'conditions', guaranty_exception_decided: 'conditions',
   guaranty_exception_comment: 'conditions',
+  esign_before_ctc_exception: 'conditions', esign_before_ctc_exception_decided: 'conditions',
+  // Exception-workflow redesign (2026-07-24) — action-bearing staff events (a
+  // super-admin review request, the decision back to the team, thread comments,
+  // the aging/expiry digests), so they email like the guaranty/esign ones.
+  pricing_exception: 'conditions', pricing_exception_decided: 'conditions',
+  exception_comment: 'conditions',
+  exception_aging: 'conditions', exception_expired: 'conditions',
   // Major-fraud / authenticity alert (R3.14, owner-directed 2026-07-22).
   // Action-bearing — admins ARE emailed (owner explicitly asked).
   workflow_alert: 'conditions',
@@ -505,6 +565,47 @@ const BORROWER_MAJOR_EMAIL = new Set([
 ]);
 
 /**
+ * The BCC list for a borrower email — the monitoring copies, computed in ONE place.
+ *
+ * The base is unchanged: an explicit `opts.bcc` wins, otherwise the file's assigned loan
+ * officer (cfg.ccLoanOfficerOnBorrowerEmail) plus any caller-supplied `bccExtra`, and the
+ * whole thing is skipped on the co-borrower fan-out (`_skipOfficerBcc`) so no monitor gets
+ * two near-identical copies.
+ *
+ * ON TOP of that: EVERY email about the DRAW PROCESS that goes to a borrower loops in the
+ * file's DRAW COORDINATOR and its LOAN OFFICER — always (owner-directed 2026-07-28: "on
+ * every email that is going out to the borrower about the draw process the draw coordinator
+ * and the loan officer should always be looped into that email"). This is done HERE, at the
+ * single borrower fan-out chokepoint, keyed on the notification's own CATEGORY ('draws' —
+ * CATEGORY_OF already buckets every draw type: draw, draw_setup, draw_findings, draw_message,
+ * draw_dispute_resolved, draw_request, …), rather than as a `bccExtra` each call site has to
+ * remember. That is what makes it true for the fifteen draw emails that exist today AND for
+ * every one added later — the class of bug where a new draw email silently ships without the
+ * desk on it cannot recur. Deliberately NOT gated on cfg.ccLoanOfficerOnBorrowerEmail: that
+ * switch governs routine borrower mail, and the owner's rule for draws is unconditional.
+ * Best-effort — a lookup failure leaves the base list untouched and never stops the email.
+ */
+async function _borrowerBcc(opts) {
+  const base = opts.bcc || (function () {
+    if (opts._skipOfficerBcc) return undefined;
+    const list = [];
+    if (cfg.ccLoanOfficerOnBorrowerEmail && opts.officer && opts.officer.email) list.push(opts.officer.email);
+    if (Array.isArray(opts.bccExtra)) for (const e of opts.bccExtra) if (e) list.push(e);
+    const uniq = [...new Set(list.map((e) => String(e).trim().toLowerCase()).filter(Boolean))];
+    return uniq.length ? uniq : undefined;
+  })();
+  // The draw loop-in rides the PRIMARY borrower only — same rule as the officer copy.
+  if (opts._skipOfficerBcc || !opts.applicationId || categoryOf(opts.type) !== 'draws') return base;
+  let loopIn = [];
+  try { loopIn = await require('./draw-recipients').drawLoopInBcc(opts.applicationId); }
+  catch (_) { /* best-effort: the borrower's email still goes out */ }
+  if (!loopIn.length) return base;
+  const merged = [...new Set([...[].concat(base || []), ...loopIn]
+    .map((e) => String(e).trim().toLowerCase()).filter(Boolean))];
+  return merged.length ? merged : undefined;
+}
+
+/**
  * Prepare a borrower opts payload the way the SEND path would: enrich the
  * file identity (subject tag, borrower meta, officer contact card, CTA link/
  * label) and scrub any partner names from staff-typed text. Extracted out of
@@ -539,14 +640,8 @@ async function _prepareBorrowerOpts(opts) {
         : (typeof s.body === 'string' ? scrubTextExcept(s.body, protect) : s.body);
       return { ...s, title: typeof s.title === 'string' ? scrubTextExcept(s.title, protect) : s.title, body };
     }) : opts.sections,
-    bcc: opts.bcc || (function () {
-      if (opts._skipOfficerBcc) return undefined;
-      const list = [];
-      if (cfg.ccLoanOfficerOnBorrowerEmail && opts.officer && opts.officer.email) list.push(opts.officer.email);
-      if (Array.isArray(opts.bccExtra)) for (const e of opts.bccExtra) if (e) list.push(e);
-      const uniq = [...new Set(list.map((e) => String(e).trim().toLowerCase()).filter(Boolean))];
-      return uniq.length ? uniq : undefined;
-    })(),
+    bcc: await _borrowerBcc(opts),
+    _bccResolved: true,   // EMAIL-ONLY marker (never written to the notifications row)
   };
 }
 
@@ -574,7 +669,7 @@ async function notifyBorrower(borrowerId, opts) {
         try {
           const r = await db.query(`SELECT first_name, last_name, email FROM borrowers WHERE id=$1`, [borrowerId]);
           const b = r.rows[0];
-          if (b) label = [b.first_name, b.last_name].filter(Boolean).join(' ') || b.email || null;
+          if (b) label = require('./person-name').displayName(b) || b.email || null;
         } catch (_) { /* label is optional */ }
         await loGate.recordDraft({ officerId: decision.officerId, key: decision.key, audience: 'borrower',
           recipientKind: 'borrower', recipientId: borrowerId, applicationId: opts.applicationId,
@@ -648,17 +743,13 @@ async function notifyBorrower(borrowerId, opts) {
     // received. The officer comes from enrichFileOpts (fileContext) — their own
     // business contact. An explicit opts.bcc wins; the provider drops any BCC that
     // is already a To recipient, so no self-duplicate.
-    // The officer BCC (monitoring copy) plus any caller-supplied `bccExtra` (e.g. the
-    // draw-coordinator desk draws@ on a draw email) — both ride the PRIMARY borrower only
-    // (skipped on co-borrower fan-out via _skipOfficerBcc) so no monitor gets two copies.
-    bcc: opts.bcc || (function () {
-      if (opts._skipOfficerBcc) return undefined;
-      const list = [];
-      if (cfg.ccLoanOfficerOnBorrowerEmail && opts.officer && opts.officer.email) list.push(opts.officer.email);
-      if (Array.isArray(opts.bccExtra)) for (const e of opts.bccExtra) if (e) list.push(e);
-      const uniq = [...new Set(list.map((e) => String(e).trim().toLowerCase()).filter(Boolean))];
-      return uniq.length ? uniq : undefined;
-    })(),
+    // The officer BCC (monitoring copy), any caller-supplied `bccExtra`, and the always-on
+    // draw-process loop-in (coordinator + officer) are ONE definition — `_borrowerBcc`. All
+    // of them ride the PRIMARY borrower only (skipped on the co-borrower fan-out via
+    // _skipOfficerBcc) so no monitor gets two copies. A file-scoped notification already
+    // resolved this in _prepareBorrowerOpts; re-resolving here would only repeat its
+    // lookups, so that result is reused and this call covers the file-less path.
+    bcc: opts._bccResolved ? opts.bcc : await _borrowerBcc(opts),
   };
   const { rows } = await db.query(
     `INSERT INTO notifications (recipient_kind,borrower_id,type,title,body,application_id,link)
@@ -666,7 +757,7 @@ async function notifyBorrower(borrowerId, opts) {
     [borrowerId, opts.type, sopts.title, sopts.body || null, opts.applicationId || null, opts.link || null]);
   const id = rows[0].id;
   const to = pref.email ? (opts.emailTo ? [].concat(opts.emailTo) : await _borrowerEmail(borrowerId)) : [];
-  _emailRow(id, to, sopts, 'borrower');
+  _track(_emailRow(id, to, sopts, 'borrower')).catch(() => {});   // fire-and-forget; swallow any stray rejection so it can't crash the process
   return id;
 }
 
@@ -674,8 +765,17 @@ async function notifyBorrower(borrowerId, opts) {
     Use for file-wide events (status change, closing date, conditions) so an
     invited co-borrower who can see the file also hears about it. */
 async function notifyAppBorrowers(appId, opts) {
-  const { rows } = await db.query(`SELECT borrower_id, co_borrower_id FROM applications WHERE id=$1`, [appId]);
+  const { rows } = await db.query(`SELECT borrower_id, co_borrower_id, status FROM applications WHERE id=$1`, [appId]);
   const a = rows[0]; if (!a) return [];
+  // ON HOLD = the file is PARKED (owner-directed 2026-07-26). A held file must
+  // "stop sending out notification emails" — it is not being worked, so every
+  // borrower-facing message from it (status moves, document nudges, condition
+  // notices) would be noise about a loan nobody is touching. This is the single
+  // borrower fan-out chokepoint, so gating here silences all of them at once.
+  // Staff notifications are deliberately NOT gated: the team still needs to know
+  // when something happens on a parked file. `opts.evenIfOnHold` is the escape
+  // hatch for the rare message that must go out anyway.
+  if (a.status === 'on_hold' && !(opts && opts.evenIfOnHold)) return [];
   const ids = [...new Set([a.borrower_id, a.co_borrower_id].filter(Boolean))];
   // Fetch the file's identity ONCE and hand it to each recipient's notify so we
   // don't re-query per borrower; also default applicationId so enrichment fires.
@@ -723,8 +823,11 @@ async function notifyAdmins(opts) {
     `SELECT id, email FROM staff_users WHERE role IN ('admin','super_admin') AND is_active = true`);
   const ids = [];
   for (const a of rows) ids.push(await notifyStaff(a.id, { ...opts, emailTo: a.email }));
-  // also copy the configured NOTIFY_ADMINS inbox list, if any (branded)
-  if (cfg.notifyAdmins.length) {
+  // also copy the configured NOTIFY_ADMINS inbox list, if any (branded).
+  // An explicitly in-app-only fan-out (e.g. an unrouted marketing lead whose
+  // email went to the sales desk) must not email this list either — the whole
+  // point of inAppOnly is "rows yes, emails no" (audit 2026-07-24).
+  if (cfg.notifyAdmins.length && opts.inAppOnly !== true) {
     const msg = buildEmail(opts, 'staff');
     email.sendMail({ to: cfg.notifyAdmins, subject: msg.subject, text: msg.text, html: msg.html,
       replyTo: opts.replyTo || fileReplyTo(opts.applicationId) || cfg.replyToDefault || null }).catch(() => {});
@@ -759,7 +862,7 @@ async function fileContext(appId, extraMeta = []) {
     const pa = a.property_address || {};
     const street = pa.street || pa.line1 || (typeof pa.oneLine === 'string' ? pa.oneLine.split(',')[0] : '') || '';
     const addr = pa.oneLine || [pa.street || pa.line1, pa.city, pa.state].filter(Boolean).join(', ') || '(no address yet)';
-    const borrowerName = [a.first_name, a.last_name].filter(Boolean).join(' ') || a.email || 'Borrower';
+    const borrowerName = require('./person-name').displayName(a) || a.email || 'Borrower';
     // Always show the loan number capitalized ("YSCAP…") on every email/subject
     // tag, even for a legacy row not yet normalized in storage (belt-and-suspenders
     // on top of the write-path + backfill normalization).
@@ -826,4 +929,4 @@ async function fileContext(appId, extraMeta = []) {
   } catch (_) { return null; }
 }
 
-module.exports = { notifyStaff, notifyBorrower, notifyAppBorrowers, notifyAppStaff, notifyAdmins, buildEmail, fileContext, injectOpenPixel, NOTIFY_CATEGORIES, ALWAYS_IN_APP, categoryEmailsByDefault };
+module.exports = { notifyStaff, notifyBorrower, notifyAppBorrowers, notifyAppStaff, notifyAdmins, buildEmail, fileContext, injectOpenPixel, NOTIFY_CATEGORIES, ALWAYS_IN_APP, categoryEmailsByDefault, drainEmails };

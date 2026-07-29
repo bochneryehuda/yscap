@@ -71,6 +71,7 @@ const FAMILY_PROFILES = Object.freeze({
   cpl:               { materiality: 'high',   numericCritical: false, tables: false, signatures: true,  handwriting: false },
   appraisal_revision:{ materiality: 'high',   numericCritical: true,  tables: true,  signatures: true,  handwriting: false, preferAppraisalXml: true },
   lease:             { materiality: 'high',   numericCritical: true,  tables: false, signatures: true,  handwriting: true  },
+  rent_roll:         { materiality: 'high',   numericCritical: true,  tables: true,  signatures: false, handwriting: false },
   mortgage_statement:{ materiality: 'high',   numericCritical: true,  tables: true,  signatures: false, handwriting: false },
   entity_resolution: { materiality: 'high',   numericCritical: false, tables: false, signatures: true,  handwriting: true  },
   draw_request:      { materiality: 'high',   numericCritical: true,  tables: true,  signatures: true,  handwriting: true  },

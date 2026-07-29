@@ -462,8 +462,8 @@ async function auditIdentityMismatchesOnce() {
           suppressIfRejected: true,
           rawValue: JSON.stringify({ role: 'borrower', mergedBorrowerId: row.borrower_id,
             evidence: { firstDiffer, ssnDiffer, phoneDiffer } }).slice(0, 300),
-          clickupValue: [sb.first_name, sb.last_name].filter(Boolean).join(' ').slice(0, 160),
-          portalValue: [row.first_name, row.last_name].filter(Boolean).join(' ').slice(0, 160) });
+          clickupValue: require('../lib/person-name').displayName(sb).slice(0, 160),
+          portalValue: require('../lib/person-name').displayName(row).slice(0, 160) });
         queued++;
       } catch (_) { /* best-effort */ }
       for (const fk of ['first_name', 'email', 'cell_phone', 'ssn', 'current_address']) {
@@ -494,10 +494,10 @@ async function auditIdentityMismatchesOnce() {
     }
     if (!mainMerged && namesComparable) {
       checks.push({ key: 'first_name', differ: firstDiffer,
-        cu: [sb.first_name, sb.last_name].filter(Boolean).join(' '), p: [row.first_name, row.last_name].filter(Boolean).join(' ') });
+        cu: require('../lib/person-name').displayName(sb), p: require('../lib/person-name').displayName(row) });
       // A same-person verdict clears any earlier merge-suspicion card.
       checks.push({ key: 'borrower_identity', differ: false,
-        cu: [sb.first_name, sb.last_name].filter(Boolean).join(' '), p: [row.first_name, row.last_name].filter(Boolean).join(' ') });
+        cu: require('../lib/person-name').displayName(sb), p: require('../lib/person-name').displayName(row) });
     }
     let same = mainMerged ? null : sameStreet(addrText(sb.current_address), addrText(row.current_address));
     // CANONICAL fallback (owner-directed: Google Maps decides "technically the
@@ -570,7 +570,7 @@ async function auditIdentityMismatchesOnce() {
         checks.push({ key: 'co_borrower_identity', reason: 'borrower_identity_conflict', bId: row.co_borrower_id, differ: true,
           raw: { role: 'co_borrower', mergedBorrowerId: row.co_borrower_id,
             evidence: { coNameDiffer, coPhoneDiffer } },
-          cu: [sco.first_name, sco.last_name].filter(Boolean).join(' ') || ('…' + scoP4),
+          cu: require('../lib/person-name').displayName(sco) || ('…' + scoP4),
           p: [row.co_first, row.co_last].filter(Boolean).join(' ') || ('…' + pcoP4) });
         for (const fk of ['co_first_name', 'co_cell_phone']) {
           try {
@@ -580,7 +580,7 @@ async function auditIdentityMismatchesOnce() {
       } else {
         if (coNamesComparable) {
           checks.push({ key: 'co_first_name', bId: row.co_borrower_id, differ: coNameDiffer,
-            cu: [sco.first_name, sco.last_name].filter(Boolean).join(' '), p: [row.co_first, row.co_last].filter(Boolean).join(' ') });
+            cu: require('../lib/person-name').displayName(sco), p: [row.co_first, row.co_last].filter(Boolean).join(' ') });
         }
         if (coPhonesComparable) {
           checks.push({ key: 'co_cell_phone', bId: row.co_borrower_id, differ: coPhoneDiffer,
@@ -588,7 +588,7 @@ async function auditIdentityMismatchesOnce() {
         }
         // A same-person verdict clears any earlier merge-suspicion card.
         checks.push({ key: 'co_borrower_identity', bId: row.co_borrower_id, differ: false,
-          cu: [sco.first_name, sco.last_name].filter(Boolean).join(' '), p: [row.co_first, row.co_last].filter(Boolean).join(' ') });
+          cu: require('../lib/person-name').displayName(sco), p: [row.co_first, row.co_last].filter(Boolean).join(' ') });
       }
     }
     for (const c of checks) {
@@ -1008,6 +1008,10 @@ async function resolveOrphans(orphans, liveTaskIds) {
 // paces the ClickUp calls.
 const RECON_PROGRAMS_LIMIT = Math.max(1, parseInt(process.env.CLICKUP_RECONCILE_PROGRAMS_LIMIT || '150', 10) || 150);
 const RECON_PROGRAMS_INTERVAL_SEC = Math.max(0, parseInt(process.env.CLICKUP_RECONCILE_PROGRAMS_INTERVAL_SEC || '900', 10) || 900); // 0 disables the periodic tick
+// How often the borrower-profile sweep takes its next bounded slice. Frequent
+// enough to work through the whole workspace in hours, slow enough to stay a
+// background task behind the live reconcile/webhook loops.
+const PROFILE_SWEEP_INTERVAL_SEC = Math.max(30, parseInt(process.env.CLICKUP_PROFILE_SWEEP_INTERVAL_SEC || '120', 10) || 120);
 
 /** Orphan-resolution safety breaker (preserves the prior inline semantics): a
  *  large 404 fraction — or NOTHING resolving live — is almost certainly an
@@ -1297,7 +1301,7 @@ async function dryRunBackfill({ samplePerFolder = 8 } = {}) {
           task: full.id, status: read.internalStatus, external: statusMap.externalFor(read.internalStatus),
           program: read.app.program, loan_type: read.app.loan_type, property_type: read.app.property_type,
           loan_amount: read.app.loan_amount, arv: read.app.arv, ys_loan: read.app.ys_loan_number,
-          borrower: `${read.borrower.first_name || ''} ${read.borrower.last_name || ''}`.trim(),
+          borrower: require('../lib/person-name').displayName(read.borrower),
           hasSSN: !!read.borrower.ssn, llc: read.llc.llc_name || null, lender: read.app.lender || null,
           extraKeys: Object.keys(read.extra).length,
         });
@@ -1469,6 +1473,22 @@ function start() {
   if (RECON_PROGRAMS_INTERVAL_SEC > 0) {
     setInterval(() => { reconcileLinkedProgramsOnce().catch((e) => console.error('[clickup-sync] reconcile-programs (periodic)', e.message)); }, RECON_PROGRAMS_INTERVAL_SEC * 1000).unref();
   }
+  // BORROWER-PROFILE SWEEP (owner-directed 2026-07-26). The reconcile above is
+  // windowed on `date_updated`, so a deal that CLOSED months ago is never read
+  // again — which is why an officer's DSCR clients were missing from his
+  // borrower list entirely. This third loop walks EVERY card in EVERY status
+  // with no date window, a few pages at a time, resuming from a durable cursor,
+  // and cycles again a week after it finishes. Inbound + profile-only: it can
+  // never create a loan file, write to ClickUp, or delete anything.
+  // Off-switch: CLICKUP_PROFILE_SWEEP_DISABLED=1.
+  {
+    const profileSweep = require('./profile-sweep');
+    const sweepTick = () => profileSweep.sweepOnce()
+      .then((r) => { if (r && r.tasks && !r.idle && !r.skipped) console.log('[profile-sweep]', JSON.stringify(r)); })
+      .catch((e) => console.error('[clickup-sync] profile-sweep', e && e.message));
+    setTimeout(sweepTick, 90 * 1000).unref();                                   // let boot settle first
+    setInterval(sweepTick, PROFILE_SWEEP_INTERVAL_SEC * 1000).unref();
+  }
 
   // Stage 2 — outbound loops (portal → ClickUp writes) are gated separately so
   // inbound/backfill can run and be validated first, before the portal is
@@ -1482,12 +1502,29 @@ function start() {
     // drain runs, so nothing reaches ClickUp unless a human changed it in the portal.
     console.log('[clickup-sync] outbound writes ENABLED — enqueue-on-write ONLY (no auto-sweep)');
     setInterval(() => tick(pushOutboxOnce, 'push'), 3000);
+    // ADDRESS BACKFILL (owner-reported 2026-07-28, card FILLE-1990). Enqueue-on-
+    // write means a field re-pushes when a HUMAN edits it — and nobody edits an
+    // address that is already right in PILOT. So every file pushed while the
+    // geocoder was broken (before 2026-07-26) keeps a blank "*Subject Property
+    // Address" / "*Borrower Address" on its card forever. This slow, resumable,
+    // FILL-ONLY sweep reads each linked card and pushes the two location fields
+    // only where the card has none — the "previous AND future" half of that fix.
+    // Off-switch: CLICKUP_ADDRESS_BACKFILL_DISABLED=1.
+    {
+      const addressBackfill = require('../clickup/address-backfill');
+      const addrTick = () => addressBackfill.sweepOnce()
+        .then((r) => { if (r && !r.idle && !r.skipped) console.log('[clickup-address-backfill]', JSON.stringify(r)); })
+        .catch((e) => console.error('[clickup-sync] address-backfill', e && e.message));
+      setTimeout(addrTick, 120 * 1000).unref();          // let boot settle first
+      setInterval(addrTick, 60 * 1000).unref();
+    }
   } else {
     console.log('[clickup-sync] outbound writes DISABLED (CLICKUP_OUTBOUND_ENABLED!=1) — inbound/reconcile only');
   }
 }
 
 module.exports = { start, pushOutboxOnce, sweepDirtyOnce, processInboxOnce, redriveInboxErrorsOnce, ingestOne, reconcileOnce, reconcileLinkedProgramsOnce, recoverUnlinkedFilesOnce, retryStuckTasksOnce, flagUnsyncableFilesOnce, flagDeadUnlinkedFilesOnce, auditIdentityMismatchesOnce, sharedEmailReviewSweepOnce, runBackfill, dryRunBackfill, auditData, auditFieldDiff, backfillMemberLinksOnce, canMaterialize, PIPELINE_FOLDERS,
+  optionMapForSweep: optionMap,   // the profile sweep reuses the warmed dropdown-option cache
   reconcileSince, nextWatermark, // WO-4: exported for the durable-watermark test
   isTaskDeletedError, // WO-6: exported for the token-rotation-safety test
   shouldSkipOrphanResolution }; // WO-4b: exported for the orphan-breaker test

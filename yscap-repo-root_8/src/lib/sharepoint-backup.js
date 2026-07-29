@@ -333,6 +333,10 @@ function categoryPathFor(row) {
   // Draw Management phase 2b — the PILOT-branded inspection reports get their own category so their
   // frequent version-hashed supersedes never shuffle other (uncategorized) file documents.
   if (row.doc_kind === 'draw_inspection_report') return ['Draw Reports'];
+  // Everything that arrives on the closing email chain — its own folder, so the
+  // team's drive mirrors the same separation the file makes: the running closing
+  // correspondence is NOT the final executed closing package.
+  if (row.doc_kind === 'closing_correspondence') return ['Closing', 'Correspondence'];
   // The autosaved track-record HTML gets its own category so its frequent
   // supersede-driven versions never shuffle the per-project verification docs.
   if (row.doc_kind === 'track_record_html') return ['REO', 'Track Record Saved Copy'];
@@ -756,6 +760,63 @@ async function shuffleRootIntoVersion1(driveId, row, stateKey, conditionFolder) 
   return v1;
 }
 
+// The web export tools PREPEND the property address (Scope of Work) or the
+// borrower name (term sheet, track record) to every generated filename — e.g.
+// "62_Highland_Street_Wethersfield_CT_06109_SOW_2026-07-26.pdf". That prefix is
+// 100% redundant because the mirror files the document INTO a folder already
+// named for that officer / borrower / address, and the extra ~40 characters
+// pushed the full Windows/OneDrive LOCAL path past the 259-char limit, which
+// makes Office/Acrobat refuse to OPEN the synced copy ("the file path is more
+// than 259 characters"). This removes any whole "_"-delimited run in the name
+// that equals a slug of the address / borrower / officer / LLC already present
+// in the path, leaving the meaningful suffix ("SOW_2026-07-26.pdf"). It is
+// deterministic (same row → same name, so a re-mirror/adopt stays consistent)
+// and ECHO-ONLY: a name that contains none of those slugs is returned UNCHANGED,
+// so an ordinary upload ("bank statement.pdf") keeps its exact name. Only the
+// SharePoint copy is affected; the portal keeps the descriptive filename.
+const _slug = (s) => String(s == null ? '' : s).replace(/[^\w]+/g, '_').replace(/^_+|_+$/g, '');
+
+function stripPathEchoes(filename, row) {
+  const name = String(filename == null ? '' : filename);
+  const dot = name.lastIndexOf('.');
+  const ext = (dot > 0 && name.length - dot <= 13) ? name.slice(dot) : '';
+  const base = ext ? name.slice(0, -ext.length) : name;
+  if (!base) return name;
+
+  const addr = _slug((row && (row.address_one_line || row.tr_address)) || '');
+  const cands = [
+    addr,
+    addr.slice(0, 40),                                            // the tools slice(0,40) the address slug
+    _slug([row && row.borrower_first, row && row.borrower_last].filter(Boolean).join(' ')),
+    _slug(row && row.borrower_last),
+    _slug(row && row.officer_name),
+    _slug(row && row.llc_name),
+    // A MULTI-token slug (address, "First_Last") is safe at >=4 chars — it can't
+    // collide with a real title. A SINGLE-token slug (a bare last name / one-word
+    // LLC) needs >=6 so a common 4-letter surname ("Park", "Note") can't strip a
+    // legitimate word out of an unrelated filename (audit finding, low/cosmetic).
+  ].filter((s) => s && (s.includes('_') ? s.length >= 4 : s.length >= 6));
+
+  // Cut ONLY the echo span out of the ORIGINAL name — the rest (e.g. the
+  // hyphenated "_2026-07-26" date) is preserved byte-for-byte. Each "_" in the
+  // slug matches ANY non-alphanumeric run, so the underscore-joined tool slug
+  // also matches a space-separated upload ("Aron Goldman …"). The echo is
+  // removed with exactly one bounding separator so tokens never fuse.
+  let out = base, stripped = false;
+  for (const slug of cands) {
+    const body = slug.split('_')
+      .map((t) => t.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'))
+      .join('[^A-Za-z0-9]+');
+    const re = new RegExp(`(^|[^A-Za-z0-9])(?:${body})([^A-Za-z0-9]|$)`, 'i');
+    const next = out.replace(re, (m, lead, trail) => (lead && trail ? lead : ''));
+    if (next !== out) { out = next; stripped = true; }
+  }
+  if (!stripped) return name;                                     // no echo found → leave the name exactly as-is
+  out = out.replace(/^[^A-Za-z0-9]+|[^A-Za-z0-9]+$/g, '');        // trim any separator left at the seam
+  if (!out) return name;                                          // never collapse to an empty name
+  return out + ext;
+}
+
 // --------------------------------------------------------------------- mirror
 // Upload `bytes` for `row` into `parentId` and record the mirror on the
 // document row. On a name conflict it first checks whether the existing item
@@ -765,7 +826,10 @@ async function shuffleRootIntoVersion1(driveId, row, stateKey, conditionFolder) 
 // different same-named file uniquifies (append-only, nothing overwritten).
 async function uploadAndRecord({ row, driveId, parentId, version, bytes, contentSha, nameSuffix, pathBudget }) {
   const localQx = sp.quickXorHash(bytes);
-  let cleanName = sp.seg(row.filename || 'document');
+  // Drop the redundant address/borrower echo the export tools bake into the
+  // filename BEFORE sanitizing (keeps the SharePoint/OneDrive path short enough
+  // for Windows/Office to open it); echo-only, so ordinary names are untouched.
+  let cleanName = sp.seg(stripPathEchoes(row.filename || 'document', row));
   // SharePoint's full decoded path limit is ~400 characters. Deep chains
   // (officer/borrower/long address/condition/Version N) + a long filename can
   // exceed it and fail every upload for that document forever. When the caller
@@ -2407,4 +2471,6 @@ module.exports = {
   // instead of re-deriving it. These are the historically divergence-prone bits;
   // one definition keeps the FSM claim and the legacy drain forever in agreement.
   REGEN_KIND_SQL, NEVER_MIRROR_SQL, snapshotSettleSec, DEFAULT_BATCH,
+  // Exported for the pure unit test (scripts/test-sharepoint-shortpath.js).
+  stripPathEchoes,
 };

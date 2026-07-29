@@ -13,9 +13,29 @@ export function actorFromToken(t) {
       atob(b64).split('').map(c => '%' + ('00' + c.charCodeAt(0).toString(16)).slice(-2)).join('')
     );
     const p = JSON.parse(json);
-    return { id: p.sub, kind: p.kind, role: p.role };
+    return {
+      id: p.sub, kind: p.kind, role: p.role,
+      // BORROWER VIEW envelope (see src/lib/borrower-view.js). Present only on a
+      // "viewing as a borrower" token. Decoding it here — rather than waiting on
+      // a round-trip — means the banner renders on the FIRST paint, so a staffer
+      // is never looking at a borrower's screen without knowing it.
+      impersonation: p.imp ? {
+        staffId: p.impBy || null,
+        staffRole: p.impRole || null,
+        sessionId: p.impSid || null,
+        startedAt: (Number(p.impAt) || 0) * 1000,
+      } : null,
+    };
   } catch { return null; }
 }
+
+/* Where a staffer's OWN console token is parked while they are inside a
+   borrower view, so "back to my console" is instant and works offline. The
+   server also mints a fresh one on exit — that is the authoritative path; this
+   is the fallback for when the network is down. */
+const STAFF_TOKEN_KEY = 'ys_portal_staff_token';
+const stashStaffToken = (t) => { try { t ? sessionStorage.setItem(STAFF_TOKEN_KEY, t) : sessionStorage.removeItem(STAFF_TOKEN_KEY); } catch { /* private mode */ } };
+const readStaffToken = () => { try { return sessionStorage.getItem(STAFF_TOKEN_KEY) || ''; } catch { return ''; } };
 
 const Ctx = createContext(null);
 
@@ -25,6 +45,10 @@ export function AuthProvider({ children }) {
   // only carries the role; permissions are resolved server-side, so we fetch
   // them and expose can(cap) for nav/screen gating that mirrors the API gates.
   const [perms, setPerms] = useState([]);
+  // Who the borrower view is being viewed AS + who is really looking. Filled
+  // from /auth/me the moment a borrower-view token is in play, so the banner can
+  // name the borrower rather than just saying "a borrower".
+  const [viewingAs, setViewingAs] = useState(null);
   const signIn  = useCallback((t) => { setToken(t); setTok(t); }, []);
   const signOut = useCallback(() => {
     // Revoke server-side first (bumps token_version, killing every copy of the
@@ -50,16 +74,64 @@ export function AuthProvider({ children }) {
   }, []);
   const actor = actorFromToken(token);
   const isStaff = actor?.kind === 'staff';
+  const impersonation = actor?.impersonation || null;
   useEffect(() => {
     let live = true;
     if (isStaff) {
       api.me().then((r) => { if (live) setPerms(Array.isArray(r?.permissions) ? r.permissions : []); }).catch(() => {});
+      setViewingAs(null);
     } else {
       setPerms([]);
+      if (impersonation) {
+        // Name the borrower + the real staffer for the banner. `me` carries the
+        // impersonation block for exactly this.
+        api.me().then((r) => {
+          if (!live) return;
+          setViewingAs({
+            borrowerName: [r?.first_name, r?.last_name].filter(Boolean).join(' ').trim() || r?.email || 'this borrower',
+            borrowerEmail: r?.email || null,
+            staffName: r?.impersonation?.staffName || null,
+            staffRole: r?.impersonation?.staffRole || impersonation.staffRole,
+            expiresAt: r?.impersonation?.expiresAt || null,
+          });
+        }).catch(() => {});
+      } else {
+        setViewingAs(null);
+      }
     }
     return () => { live = false; };
-  }, [token, isStaff]);
+  }, [token, isStaff, impersonation?.sessionId]);   // eslint-disable-line react-hooks/exhaustive-deps
   const can = useCallback((cap) => perms.includes(cap), [perms]);
+
+  /* Step INTO a borrower's portal. Parks the staff token, swaps in the
+     borrower-view token, and hands back where to land. */
+  const startBorrowerView = useCallback(async (borrowerId, applicationId) => {
+    const r = await api.borrowerViewStart(borrowerId, applicationId);
+    stashStaffToken(getToken());          // park my own console session
+    setToken(r.token); setTok(r.token);
+    return r;
+  }, []);
+
+  /* Step back OUT. The server mints a fresh staff token (authoritative — it
+     works even if the parked one expired while we were inside); the parked copy
+     is the offline fallback so a network blip can never strand someone inside
+     another person's portal. */
+  const exitBorrowerView = useCallback(async () => {
+    let staffToken = '';
+    try {
+      const r = await api.borrowerViewExit();
+      staffToken = r?.token || '';
+    } catch { /* fall through to the parked token */ }
+    if (!staffToken) staffToken = readStaffToken();
+    stashStaffToken('');
+    if (staffToken) { setToken(staffToken); setTok(staffToken); return true; }
+    // Neither path produced a session: the staff account was deactivated or
+    // revoked while they were inside. Drop the borrower token and make them
+    // sign in — never leave the borrower session in place.
+    clearToken(); setTok('');
+    return false;
+  }, []);
+
   return (
     <Ctx.Provider value={{
       token,
@@ -72,6 +144,12 @@ export function AuthProvider({ children }) {
       permissions: perms,
       can,
       signIn, signOut,
+      // Borrower view: truthy whenever this session is a staffer standing
+      // inside a borrower's portal.
+      impersonation,
+      isBorrowerView: !!impersonation,
+      viewingAs,
+      startBorrowerView, exitBorrowerView,
     }}>
       {children}
     </Ctx.Provider>

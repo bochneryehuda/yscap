@@ -156,9 +156,12 @@ const BANK_STATEMENT = {
   docType: 'bank_statement',
   instructions:
     "You are reviewing a bank statement for a loan file (assets / proof of funds). Extract the exact " +
-    "account-holder name as printed, whether the holder is a person or a business/LLC, the bank name, " +
-    "the account number, the statement period, and the opening balance, closing balance, total deposits, " +
-    "and total withdrawals as printed. Also capture the SINGLE LARGEST individual deposit/credit in the " +
+    "account-holder name as printed (the FIRST/primary name if several are shown), whether the holder is a " +
+    "person or a business/LLC, the bank name, the account number, the statement period, and the opening " +
+    "balance, closing balance, total deposits, and total withdrawals as printed. If the account is held " +
+    "JOINTLY by more than one named person (e.g. \"John Smith and Jane Smith\", \"John Smith OR Jane Doe\"), " +
+    "list every ADDITIONAL account holder beyond the primary in additionalHolders (an empty array if the " +
+    "account has a single holder). Also capture the SINGLE LARGEST individual deposit/credit in the " +
     "period (the amount) if the transaction detail is shown. Use null for anything absent/unreadable — do " +
     "NOT guess or compute values that aren't printed. Amounts as plain numbers. Set readable=false if poor.",
   schema: {
@@ -167,6 +170,7 @@ const BANK_STATEMENT = {
     properties: {
       accountHolderName: { type: ['string', 'null'] },
       holderIsBusiness:  { type: ['boolean', 'null'] },   // true if the holder is an LLC/entity
+      additionalHolders: { type: ['array', 'null'], items: { type: 'string' } }, // co-owners beyond the primary (joint accounts)
       bankName:          { type: ['string', 'null'] },
       accountNumber:     { type: ['string', 'null'] },     // masked to last-4 on storage
       statementPeriod:   { type: ['string', 'null'] },
@@ -178,7 +182,7 @@ const BANK_STATEMENT = {
       readable:          { type: 'boolean' },
       notes:             { type: ['string', 'null'] },
     },
-    required: ['accountHolderName', 'holderIsBusiness', 'bankName', 'accountNumber', 'statementPeriod', 'openingBalance', 'closingBalance', 'totalDeposits', 'totalWithdrawals', 'largestDeposit', 'readable', 'notes'],
+    required: ['accountHolderName', 'holderIsBusiness', 'additionalHolders', 'bankName', 'accountNumber', 'statementPeriod', 'openingBalance', 'closingBalance', 'totalDeposits', 'totalWithdrawals', 'largestDeposit', 'readable', 'notes'],
   },
 };
 
@@ -203,17 +207,23 @@ const ASSIGNMENT = {
     "assigns the purchase contract to a new buyer for a fee). Extract the assignor (original " +
     "buyer/wholesaler), the assignee (the NEW buyer — usually the borrowing LLC), the seller's " +
     "ORIGINAL purchase price, the assignment fee, and the total price to the assignee if stated. " +
-    "Capture the property address and whether both parties signed. Also note if the assignee is named " +
-    "as a person 'OR an LLC to be formed' / 'or assignee's nominee' (assigneeIsEntityToBeFormed=true) " +
-    "— i.e. the final vesting entity does not exist yet. Use null for anything absent or unreadable — " +
-    "do NOT guess. Prices as plain numbers, dates YYYY-MM-DD. readable=false if poor.",
+    "CRITICAL — do NOT confuse the fee with a price: the assignmentFee is ONLY the wholesaler's " +
+    "markup (the DIFFERENCE the new buyer pays on top of the seller's price), a small fraction of the " +
+    "price, NEVER the whole purchase price. If the document shows a single dollar amount, that is a " +
+    "PRICE (the original or the total), NOT the fee — leave assignmentFee null unless a separate, " +
+    "explicitly-labeled fee amount is stated. Where possible: totalPriceToAssignee = " +
+    "originalPurchasePrice + assignmentFee. Capture the property address and whether both parties " +
+    "signed. Also note if the assignee is named as a person 'OR an LLC to be formed' / 'or assignee's " +
+    "nominee' (assigneeIsEntityToBeFormed=true) — i.e. the final vesting entity does not exist yet. " +
+    "Use null for anything absent or unreadable — do NOT guess. Prices as plain numbers, dates " +
+    "YYYY-MM-DD. readable=false if poor.",
   schema: obj({
     assignorName: { type: ['string', 'null'] },
     assigneeName: { type: ['string', 'null'] },            // the borrowing entity
     assigneeIsEntityToBeFormed: { type: ['boolean', 'null'] }, // "X or an LLC to be formed"
-    originalPurchasePrice: { type: ['number', 'null'] },   // seller -> assignor
-    assignmentFee: { type: ['number', 'null'] },
-    totalPriceToAssignee: { type: ['number', 'null'] },
+    originalPurchasePrice: { type: ['number', 'null'], description: "The seller's ORIGINAL contract price to the assignor/wholesaler (not the fee)." },
+    assignmentFee: { type: ['number', 'null'], description: "ONLY the wholesaler's markup/fee — the difference on top of the seller's price. A fraction of the price, NEVER the whole purchase price. Null unless a distinct fee is explicitly stated." },
+    totalPriceToAssignee: { type: ['number', 'null'], description: 'The new buyer\'s total price = originalPurchasePrice + assignmentFee.' },
     sellerName: { type: ['string', 'null'] },
     propertyAddress: addr(),
     assignmentDate: { type: ['string', 'null'] },
@@ -232,7 +242,9 @@ const OPERATING_AGREEMENT = {
     "name, whether it is member-managed or manager-managed, the managing member / authorized signer, " +
     "every member with their ownership percentage AND whether that member is a natural PERSON, another " +
     "ENTITY (an LLC/corp), or a TRUST (member type: individual | entity | trust), whether the agreement " +
-    "authorizes the entity to borrow money and encumber real property, and whether it is signed. Use " +
+    "authorizes the entity to borrow money and encumber real property, and whether it is signed. Also " +
+    "extract the entity's EIN if stated, the principal office / business address, and the registered " +
+    "agent's name (fraud cross-checks compare these against the assignment parties). Use " +
     "null for anything absent or unreadable — do NOT guess. Percentages as plain numbers (e.g. 50 for " +
     "50%). readable=false if poor.",
   schema: obj({
@@ -247,6 +259,12 @@ const OPERATING_AGREEMENT = {
     authorizesBorrowing: { type: ['boolean', 'null'] },     // clause authorizing debt/encumbrance
     signed: { type: ['boolean', 'null'] },
     effectiveDate: { type: ['string', 'null'] },
+    // Fix 2026-07-23 (#211): the assignment-fraud enrichment reads these —
+    // they were never in the schema, so shared-EIN / shared-address /
+    // shared-agent signals could not fire off the OA. Additive + nullable.
+    ein: { type: ['string', 'null'] },
+    principalOfficeAddress: { type: ['string', 'null'] },
+    registeredAgent: { type: ['string', 'null'] },
     readable: { type: 'boolean' },
     notes: { type: ['string', 'null'] },
   }),
@@ -444,8 +462,17 @@ const CREDIT_REPORT = {
     "and Equifax (a tri-merge shows one FICO per bureau; capture each as printed, null for a bureau not " +
     "reported). Also give the representative/middle FICO score if the report states one. Extract the number " +
     "of open mortgage tradelines, whether there are any 30/60/90-day mortgage lates, and whether there are " +
-    "any bankruptcies, foreclosures, judgments, or tax liens. Do NOT extract the full SSN. Use null for " +
-    "anything absent or unreadable — do NOT guess. readable=false if poor.",
+    "any bankruptcies, foreclosures, judgments, or tax liens. " +
+    "When there ARE mortgage lates, also fill mortgageLateDetails: one entry per MORTGAGE tradeline that " +
+    "shows a late, with the creditor name as printed, the last 4 of the account number if shown, the counts " +
+    "of 30/60/90-day lates on that tradeline, the WORST late (30, 60, or 90), and the month the MOST RECENT " +
+    "late occurred, written as YYYY-MM. Read the payment-history grid, not just the summary. " +
+    "Leave the array EMPTY unless you can read an individual tradeline and name its creditor. Empty is the " +
+    "right answer whenever the report only summarises lates without saying which account, the payment grid " +
+    "is illegible or cut off, or you cannot tell which tradelines are mortgages — an underwriter is told to " +
+    "go find these accounts in the report, so an invented creditor or account number is worse than nothing. " +
+    "Do NOT extract the full SSN. Use null for anything absent or unreadable — do NOT guess. " +
+    "readable=false if poor.",
   schema: obj({
     subjectName: { type: ['string', 'null'] },
     dob: { type: ['string', 'null'] },
@@ -456,6 +483,28 @@ const CREDIT_REPORT = {
     ficoEquifax: { type: ['number', 'null'] },
     openMortgageCount: { type: ['number', 'null'] },
     mortgageLates: { type: ['boolean', 'null'] },
+    // WHICH mortgage, WHEN, and how bad — a bare "there are lates somewhere" is not something an
+    // underwriter can act on or explain to a note buyer (owner-reported 2026-07-26).
+    //
+    // `creditorName`, not `creditor`: grounding.js's CRITICAL fragment list keys on `name`, so the
+    // shorter spelling meant a model-invented servicer was never graded and never quarantined — it
+    // reached the desk as fact (audit 2026-07-26). The name is the one field an underwriter uses to
+    // go find the tradeline, so it is exactly the field that must be checkable against the OCR text.
+    //
+    // There is deliberately NO `page`. The extractor is handed flat OCR text with no page markers
+    // (engine.js passes `ocr.text`, truncated), so a page number here could only ever be guessed —
+    // and every other page number in the system comes from evidence-page.js, which promises never a
+    // wrong page. A citation that sends an underwriter to the wrong page of a 40-page report is
+    // worse than no citation at all.
+    mortgageLateDetails: { type: 'array', items: obj({
+      creditorName: { type: ['string', 'null'] },
+      accountLast4: { type: ['string', 'null'] },
+      count30: { type: ['number', 'null'] },
+      count60: { type: ['number', 'null'] },
+      count90: { type: ['number', 'null'] },
+      worstLate: { type: ['number', 'null'] },        // 30 | 60 | 90
+      mostRecentLate: { type: ['string', 'null'] },   // 'YYYY-MM'
+    }) },
     hasBankruptcy: { type: ['boolean', 'null'] },
     hasForeclosure: { type: ['boolean', 'null'] },
     hasJudgmentOrLien: { type: ['boolean', 'null'] },
@@ -471,16 +520,46 @@ const BACKGROUND_REPORT = {
     "You are reviewing a background / OFAC / fraud screening report for a loan file. Extract the subject " +
     "name and (if present) the entity name screened, the screen date, the OFAC/sanctions result " +
     "(clear / potential_match / confirmed_match), whether there is a PEP hit, and whether there are any " +
-    "criminal records or fraud flags. Use null for anything absent or unreadable — do NOT guess. " +
-    "readable=false if poor.",
+    "criminal records or fraud flags. " +
+    // READ THE WHOLE REPORT, NOT THE FIRST PAGE (owner-reported 2026-07-26). PILOT told the owner
+    // the borrowing entity was never screened while the report's own WATCH LIST section listed it by
+    // name. The old schema had ONE `entityName` slot, so a report that screens a person plus several
+    // entities could not be represented — the reader answered about the header and the rest of the
+    // document was invisible. Same for alerts an admin had already cleared, with the reason printed
+    // on the following page: PILOT kept demanding they be cleared.
+    "IMPORTANT — these reports list MANY parties and their sections are not in a fixed order. " +
+    "Search the ENTIRE document, including any 'Watch List', 'Screened Parties', 'Subjects Searched' " +
+    "or similar table (often deep in the report), and return EVERY name that was screened in " +
+    "`screenedParties` — people AND businesses, exactly as printed. Set `screenedPartiesComplete` to " +
+    "true ONLY if you actually found and read such a list; false if you could not locate one (then an " +
+    "absent name proves nothing). " +
+    "Also look for a 'Cleared Variance' / 'Resolved' / 'Adjudicated' section — alerts a reviewer has " +
+    "ALREADY dispositioned, usually with a written reason such as 'the borrower is a professional " +
+    "investor'. Return those in `clearedVariances` with the alert text and the reason given, and do " +
+    "NOT repeat them in `fraudFlags`; `fraudFlags` is for alerts that are still OPEN. " +
+    "Use null for anything absent or unreadable — do NOT guess. readable=false if poor.",
   schema: obj({
     subjectName: { type: ['string', 'null'] },
     entityName: { type: ['string', 'null'] },
+    // Every party the report actually screened, from wherever in the document it is listed.
+    screenedParties: { type: 'array', items: { type: 'string' } },
+    // Whether a screened-parties list was FOUND. Without it, a name's absence is not evidence.
+    screenedPartiesComplete: { type: ['boolean', 'null'] },
     screenDate: { type: ['string', 'null'] },
     ofacResult: { type: ['string', 'null'] },               // clear | potential_match | confirmed_match
     pepHit: { type: ['boolean', 'null'] },
     hasCriminalRecord: { type: ['boolean', 'null'] },
-    fraudFlags: { type: 'array', items: { type: 'string' } },
+    fraudFlags: { type: 'array', items: { type: 'string' } },   // still OPEN alerts only
+    // Alerts a reviewer already dispositioned, with the reason they gave.
+    clearedVariances: {
+      type: 'array',
+      items: obj({
+        alert: { type: ['string', 'null'] },
+        reason: { type: ['string', 'null'] },
+        clearedBy: { type: ['string', 'null'] },
+        clearedDate: { type: ['string', 'null'] },
+      }),
+    },
     readable: { type: 'boolean' },
     notes: { type: ['string', 'null'] },
   }),

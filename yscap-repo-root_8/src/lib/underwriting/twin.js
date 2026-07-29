@@ -228,6 +228,18 @@ const SOURCE_HIERARCHY = Object.freeze({
 const stripNonAlnum = (s) => String(s || '').toLowerCase().replace(/[^a-z0-9]/g, '');
 const stripNonDigits = (s) => String(s || '').replace(/\D+/g, '');
 const trimLower = (s) => String(s || '').trim().toLowerCase().replace(/\s+/g, ' ');
+// Property type is a RANGE category on the file (SFR/Multi 2–4/Condo…) but the appraisal
+// records a SPECIFIC type ("Two Family"/"Duplex"/"Attached"). A raw string compare marks
+// the fact `disputed` on every multi-family file (owner-reported 2026-07-24 — the same
+// class as the appraisal finding fix). Bucket BOTH sides to the same canonical property
+// class (reusing facts.canonPropertyType — lazy-required to avoid any load-order cycle;
+// null → uncanonicalizable → fall back to the raw normalized string, never a guess) so an
+// in-range appraisal type agrees with the file's range category.
+const bucketPropType = (v) => {
+  let bucket = null;
+  try { bucket = require('./facts').canonPropertyType(v); } catch (_) { bucket = null; }
+  return bucket || trimLower(v);
+};
 const asCents = (v) => {
   const n = typeof v === 'number' ? v : parseFloat(String(v).replace(/[^0-9.\-]/g, ''));
   if (!isFinite(n)) return null;
@@ -301,7 +313,7 @@ const NORMALIZERS = Object.freeze({
   [FACT_KEYS.ENTITY_FORMATION_DATE]:  asIsoDate,
   [FACT_KEYS.ENTITY_GOOD_STANDING]:   normalizeBool,
   [FACT_KEYS.PROPERTY_ADDRESS]:       normalizeAddress,
-  [FACT_KEYS.PROPERTY_TYPE]:          trimLower,
+  [FACT_KEYS.PROPERTY_TYPE]:          bucketPropType,
   [FACT_KEYS.PROPERTY_UNITS]:         normalizeInteger,
   [FACT_KEYS.PROPERTY_YEAR_BUILT]:    normalizeInteger,
   [FACT_KEYS.PROPERTY_ZONING]:        trimLower,
@@ -737,11 +749,14 @@ async function recordFactsFromExtraction(client, opts = {}) {
   if (!map) return { recorded: 0 };
   const pageNumberFor = typeof opts.pageNumberFor === 'function' ? opts.pageNumberFor : () => null;
   let recorded = 0;
+  // Evidence-ledger wiring (2026-07-23): return WHICH observation row each
+  // extracted field produced so the caller can link an evidence span to it.
+  const observations = [];
   for (const [extractedField, factKey] of Object.entries(map)) {
     const value = fields[extractedField];
     if (value == null || value === '') continue;
     try {
-      await recordObservation(client, {
+      const ob = await recordObservation(client, {
         appId, factKey,
         sourceType: 'document', sourceId: docType,
         documentId, extractionId,
@@ -754,9 +769,10 @@ async function recordFactsFromExtraction(client, opts = {}) {
         reason: `${docType} extraction`,
       });
       recorded += 1;
+      if (ob && ob.observationId) observations.push({ extractedField, factKey, observationId: ob.observationId });
     } catch (_) { /* one bad field never blocks the rest */ }
   }
-  return { recorded };
+  return { recorded, observations };
 }
 
 function confidenceToNumber(v) {

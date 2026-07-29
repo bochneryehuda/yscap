@@ -25,6 +25,7 @@ const rollupMod = require('../sitewire/rollup');
 const { planReallocation } = require('../sitewire/reallocation');
 const M = require('../sitewire/mapper');
 const T = require('../sitewire/transforms');
+const routing = require('../sitewire/routing');
 const rehab = require('../lib/rehab-budget');
 const { sanitizeDateOnly } = require('../lib/fields'); // strict YYYY-MM-DD validation for date inputs
 const notify = require('../lib/notify');
@@ -54,6 +55,13 @@ const drawWire = require('../lib/esign/draw-wire');
 // Clamped to [0,100] so a nonsensical setting can't distort the client-side net preview either.
 async function retainagePctFor(appId) {
   try {
+    // D7 (phase 5): on a TrustPoint-administered file the ADMINISTRATOR owns retainage —
+    // PILOT holding its own % on top would double-withhold from the borrower. Zero here
+    // kills the computation at the one chokepoint every caller (release + overview) uses.
+    // FAIL CLOSED on an unresolvable platform (resolved:false): holding too little on one
+    // manual release is recoverable; double-withholding takes the borrower's money.
+    const rp = await require('../sitewire/routing').resolveFilePlatform(appId);
+    if (rp && (rp.platform === 'trustpoint' || rp.resolved === false)) return 0;
     const clamp = (n) => Math.min(100, Math.max(0, Number(n) || 0));
     const link = (await db.query(`SELECT retainage_pct FROM sitewire_property_links WHERE application_id=$1`, [appId])).rows[0];
     if (link && link.retainage_pct != null) return clamp(link.retainage_pct);
@@ -460,7 +468,7 @@ router.get('/files/:id/notifications', requirePermission('manage_draws'), async 
   try {
     const sent = (await db.query(
       `SELECT n.id, n.recipient_kind, n.type, n.title, n.body, n.link, n.read_at, n.email_status, n.emailed_at, n.created_at,
-              COALESCE(s.full_name, NULLIF(TRIM(COALESCE(b.first_name,'') || ' ' || COALESCE(b.last_name,'')), '')) AS recipient_name,
+              COALESCE(s.full_name, NULLIF(b.full_name,'')) AS recipient_name,
               COALESCE(s.email, b.email) AS recipient_email,
               se.id IS NOT NULL AS has_full_email,
               COALESCE(array_length(se.to_emails,1),0) AS recipient_count,
@@ -677,11 +685,15 @@ router.get('/files/:id/draw-setup', requirePermission('manage_draws'), async (re
       requires: { sitewire_inspector: !!(rule && rule.require_sitewire_inspector), capital_partner_approval: !!(rule && rule.require_capital_partner_approval) },
       // disagree only once a SOW exists (before that, sowUnits defaults to 1 and would falsely flag)
       units: { file: fileUnits || null, sow: hasSow ? sowUnits : null, physical: physicalUnits, disagree: hasSow && fileUnits > 0 && fileUnits !== sowUnits },
+      // Routing (phase 1, 2026-07-24): which platform administers this file's draws.
+      // 'external' = the legacy handled-externally semantics (PILOT does nothing);
+      // 'trustpoint' = full Sitewire setup as intake+mirror, approvals run in TrustPoint.
+      draw_platform: routing.platformOf(rule),
       // handled externally = this capital partner runs draws in its own system; PILOT never pushes it.
-      handled_externally: !!(rule && rule.handled_externally),
+      handled_externally: routing.isExternal(rule),
       prereqs,
       open_reviews: openReviews,
-      can_start: !(rule && rule.handled_externally) && Object.values(prereqs).every(Boolean),
+      can_start: !routing.isExternal(rule) && Object.values(prereqs).every(Boolean),
       switches: { enabled: switches.on('SITEWIRE_ENABLED'), outbound: switches.on('SITEWIRE_OUTBOUND_ENABLED'), dryrun: cfg.sitewireDryrun },
     });
   } catch (e) { console.warn('[sitewire] route error:', e && e.message); res.status(500).json({ error: 'server error' }); }
@@ -701,9 +713,10 @@ router.post('/files/:id/start-draw', requirePermission('manage_draws'), async (r
     const program = /gold/i.test(String(a.registered_program || '')) ? 'gold' : 'standard';
     const cp = await orchestrator.resolveCapitalPartnerId(a.lender);
     const rule = await orchestrator.resolveRule(a.lender, cp.id, program);
-    // HANDLED EXTERNALLY: this capital partner runs its draws in its own system — the file is never
-    // pushed to Sitewire, so there is nothing to start here (never guess around the owner's rule).
-    if (rule && rule.handled_externally) {
+    // Routing (phase 1, 2026-07-24): only the legacy 'external' platform blocks the start —
+    // a 'trustpoint' file gets the FULL Sitewire setup (Sitewire is its borrower intake +
+    // mirror; approvals run in TrustPoint via the coordinator import-task flow).
+    if (routing.isExternal(rule)) {
       return res.status(422).json({ error: 'This capital partner is handled externally — its draws run in the partner\'s own system and are not pushed to Sitewire.' });
     }
     // validate a coordinator-chosen method against what the file's rule allows (never guess)
@@ -774,6 +787,105 @@ router.post('/files/:id/start-draw', requirePermission('manage_draws'), async (r
       return res.status(202).json({ ok: true, started: true, queued: true, note: 'Draw setup saved. Sitewire is briefly unavailable — the push will retry automatically.' });
     }
   } catch (e) { if (e.status === 422) return res.status(422).json({ error: e.message }); console.warn('[sitewire] start-draw error:', e && e.message); res.status(500).json({ error: 'server error' }); }
+});
+
+// ---- Portal draw requests (phase 4 — blueprint §2 Path B/C, §5B): the staff composer + desk ----
+// A PORTAL request is a draw cycle born on OUR website (staff here; the borrower on their
+// draws screen) on a physical-inspection file. GET = composer state + pickable lines +
+// history + Trinity orders; POST = create (staff may deliberately pass allow_over /
+// allow_parallel); then cancel / close-out retry / Trinity actions are the desk's levers.
+const intId = (v) => { const n = Number(v); return Number.isInteger(n) && n > 0 ? n : null; };
+router.get('/files/:id/portal-draws', requirePermission('manage_draws'), async (req, res) => {
+  const appId = req.params.id;
+  if (!(await canSeeFile(req, appId))) return res.status(403).json({ error: 'forbidden' });
+  try {
+    const portalDraws = require('../lib/portal-draws');
+    const state = await portalDraws.composerState(appId);
+    const lines = state.set_up ? await portalDraws.composerLines(appId) : [];
+    const history = (await db.query(
+      `SELECT id, source, status, platform, lines, total_requested_cents, approved_cents, note,
+              tp_draw_id, sitewire_draw_id, cancelled_reason, created_at, updated_at
+         FROM portal_draw_requests WHERE application_id=$1 ORDER BY created_at DESC LIMIT 50`, [appId])).rows;
+    const trinity = (await db.query(
+      `SELECT id, portal_draw_request_id, sitewire_draw_id, status, ordered_at, note, created_at
+         FROM trinity_inspection_orders WHERE application_id=$1 ORDER BY created_at DESC LIMIT 50`, [appId])).rows;
+    res.json({ state, lines, history, trinity_orders: trinity });
+  } catch (e) { console.warn('[sitewire] portal-draws error:', e && e.message); res.status(500).json({ error: 'server error' }); }
+});
+
+router.post('/files/:id/portal-draws', requirePermission('manage_draws'), async (req, res) => {
+  const appId = req.params.id;
+  if (!(await canSeeFile(req, appId))) return res.status(403).json({ error: 'forbidden' });
+  try {
+    const portalDraws = require('../lib/portal-draws');
+    const b = req.body || {};
+    const row = await portalDraws.createRequest(appId, Array.isArray(b.entries) ? b.entries : [], {
+      source: 'staff', staffId: req.actor.id,
+      allowOver: b.allow_over === true, allowParallel: b.allow_parallel === true,
+      note: b.note ? String(b.note) : null,
+    });
+    res.json({ ok: true, request: row });
+  } catch (e) {
+    if (e && e.status) return res.status(e.status).json({ error: e.message });
+    console.warn('[sitewire] portal-draw create error:', e && e.message); res.status(500).json({ error: 'server error' });
+  }
+});
+
+router.post('/files/:id/portal-draws/:prId/cancel', requirePermission('manage_draws'), async (req, res) => {
+  const appId = req.params.id, prId = intId(req.params.prId);
+  if (!(await canSeeFile(req, appId))) return res.status(403).json({ error: 'forbidden' });
+  if (!prId) return res.status(400).json({ error: 'bad request id' });
+  try {
+    const row = await require('../lib/portal-draws').cancelRequest(appId, prId, {
+      staffId: req.actor.id, reason: req.body && req.body.reason ? String(req.body.reason) : null,
+    });
+    res.json({ ok: true, request: row });
+  } catch (e) {
+    if (e && e.status) return res.status(e.status).json({ error: e.message });
+    console.warn('[sitewire] portal-draw cancel error:', e && e.message); res.status(500).json({ error: 'server error' });
+  }
+});
+
+// Retry the historical close-out (it also runs by itself on the TrustPoint approval).
+router.post('/files/:id/portal-draws/:prId/close-out', requirePermission('manage_draws'), async (req, res) => {
+  const appId = req.params.id, prId = intId(req.params.prId);
+  if (!(await canSeeFile(req, appId))) return res.status(403).json({ error: 'forbidden' });
+  if (!prId) return res.status(400).json({ error: 'bad request id' });
+  try {
+    const r = await require('../lib/portal-draws').historicalCloseOut(appId, prId);
+    res.json({ ok: !!r.ok, ...r });
+  } catch (e) { console.warn('[sitewire] portal-draw close-out error:', e && e.message); res.status(500).json({ error: 'server error' }); }
+});
+
+// The Trinity decision: per-line approved amounts → approved + close-out attempt.
+router.post('/files/:id/portal-draws/:prId/approve-trinity', requirePermission('manage_draws'), async (req, res) => {
+  const appId = req.params.id, prId = intId(req.params.prId);
+  if (!(await canSeeFile(req, appId))) return res.status(403).json({ error: 'forbidden' });
+  if (!prId) return res.status(400).json({ error: 'bad request id' });
+  try {
+    const b = req.body || {};
+    const r = await require('../lib/portal-draws').approveTrinityRequest(appId, prId, Array.isArray(b.entries) ? b.entries : [], { staffId: req.actor.id });
+    res.json({ ok: true, ...r });
+  } catch (e) {
+    if (e && e.status) return res.status(e.status).json({ error: e.message });
+    console.warn('[sitewire] trinity approve error:', e && e.message); res.status(500).json({ error: 'server error' });
+  }
+});
+
+router.post('/files/:id/trinity-orders/:orderId/advance', requirePermission('manage_draws'), async (req, res) => {
+  const appId = req.params.id, orderId = intId(req.params.orderId);
+  if (!(await canSeeFile(req, appId))) return res.status(403).json({ error: 'forbidden' });
+  if (!orderId) return res.status(400).json({ error: 'bad order id' });
+  try {
+    const b = req.body || {};
+    const row = await require('../lib/portal-draws').advanceTrinityOrder(appId, orderId, String(b.action || ''), {
+      staffId: req.actor.id, note: b.note ? String(b.note) : null,
+    });
+    res.json({ ok: true, order: row });
+  } catch (e) {
+    if (e && e.status) return res.status(e.status).json({ error: e.message });
+    console.warn('[sitewire] trinity advance error:', e && e.message); res.status(500).json({ error: 'server error' });
+  }
 });
 
 // ---- GET /files/:id/draw-request — draw-request form status + captured wire instructions ----
@@ -1039,7 +1151,7 @@ router.post('/disbursements', requirePermission('manage_draws'), async (req, res
   if (sitewire_draw_id == null || sitewire_draw_id === '') return res.status(400).json({ error: 'Select which draw this release is for.' });
   if (!/^\d+$/.test(String(sitewire_draw_id))) return res.status(400).json({ error: 'invalid draw id' });
   // it must belong to THIS file (never store a draw id from another file — the lien gate reads that draw's waivers).
-  const own = (await db.query(`SELECT total_approved_cents FROM sitewire_draws WHERE sitewire_draw_id=$1 AND application_id=$2`, [sitewire_draw_id, application_id])).rows[0];
+  const own = (await db.query(`SELECT total_approved_cents, number FROM sitewire_draws WHERE sitewire_draw_id=$1 AND application_id=$2`, [sitewire_draw_id, application_id])).rows[0];
   if (!own) return res.status(400).json({ error: 'that draw is not on this file' });
   const drawId = sitewire_draw_id;
   // M1: don't record a release larger than what the lender actually approved on this draw. Owner-directed
@@ -1064,6 +1176,14 @@ router.post('/disbursements', requirePermission('manage_draws'), async (req, res
   // belt-and-suspenders). A duplicate would double-count into the retainage pool.
   const dup = await db.query(`SELECT 1 FROM draw_disbursements WHERE sitewire_draw_id=$1 AND kind='draw'`, [drawId]);
   if (dup.rowCount) return res.status(409).json({ error: 'A release is already recorded for this draw — correct the existing entry instead of adding another.' });
+  // Phase 5 (audit-5 #1b): the administrator's observed release may have mirrored BEFORE
+  // the draw tie landed — that row carries the TrustPoint draw id but no sitewire_draw_id
+  // yet. A hand-recorded second row for the same wire would double-count the ledger.
+  const dupTp = await db.query(
+    `SELECT 1 FROM draw_disbursements dd JOIN trustpoint_draws t ON t.tp_draw_id = dd.trustpoint_draw_id
+      WHERE dd.kind='draw' AND (t.sitewire_draw_id=$1
+         OR t.portal_draw_request_id IN (SELECT id FROM portal_draw_requests WHERE sitewire_draw_id=$1))`, [drawId]);
+  if (dupTp.rowCount) return res.status(409).json({ error: 'This draw\'s release was already recorded automatically from the draw administrator — there is nothing to enter by hand.' });
   try {
     // retainage: hold a % of the approved amount; net = approved − fee − retainage held
     const pct = await retainagePctFor(application_id);
@@ -1088,7 +1208,10 @@ router.post('/disbursements', requirePermission('manage_draws'), async (req, res
         const amt = '$' + (split.net_release_cents / 100).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
         await notify.notifyAppBorrowers(application_id, {
           type: 'draw',
-          title: `Your construction draw has been released`,
+          // Draw number in the SUBJECT + the draw desk looped in (owner-directed 2026-07-27),
+          // matching the TrustPoint-mirrored release email in src/trustpoint/mirror.js.
+          bccExtra: await require('../lib/draw-recipients').drawTeamBcc(application_id),
+          title: `Your construction draw${own.number != null ? ` #${own.number}` : ''} has been released`,
           hero: { label: 'Released to you', value: amt, sub: 'typically arrives in 1–2 business days', tone: 'positive' },
           badge: { text: 'Draw released', tone: 'positive' },
           body: `Your loan team has released a construction draw of ${amt} on your file. Depending on your bank, funds typically take 1–2 business days to arrive.`,
@@ -1288,23 +1411,38 @@ router.post('/rules', requirePermission('platform_setup'), async (req, res) => {
   if (partnerLabel && !cpId) {
     try { const m = await orchestrator.resolveCapitalPartnerId(partnerLabel); cpId = m.id || null; } catch (_) { cpId = null; }
   }
-  const handledExternally = !!b.handled_externally;
-  // "Handled externally" must NAME a partner. A global-default rule (no partner_label) marked
-  // handled-externally would make resolveRule's last-resort fallback return handled_externally for
-  // EVERY unmatched file — silently stopping all Sitewire pushes portfolio-wide with no park/alert.
-  // Never allow that (owner's never-guess / never-silently-drop rule); reject it up front.
-  if (handledExternally && !partnerLabel) {
-    return res.status(400).json({ error: 'Pick a specific capital partner before marking a rule “handled externally” — the global default can’t be handled externally.' });
+  // Routing (phase 1, 2026-07-24): the rule now names WHICH PLATFORM administers the
+  // partner's draws — 'sitewire' (default), 'trustpoint' (Blue Lake physical: full
+  // Sitewire setup as intake+mirror, approvals in TrustPoint), or 'external' (the legacy
+  // handled_externally semantics). Back-compat: an absent draw_platform falls back to the
+  // old handled_externally checkbox; handled_externally is derived and kept in lock-step.
+  const rawPlatform = b.draw_platform != null ? String(b.draw_platform).trim() : null;
+  if (rawPlatform && !['sitewire', 'trustpoint', 'external'].includes(rawPlatform)) {
+    return res.status(400).json({ error: 'draw_platform must be sitewire, trustpoint, or external' });
+  }
+  const drawPlatform = rawPlatform || (b.handled_externally ? 'external' : 'sitewire');
+  const handledExternally = drawPlatform === 'external';
+  // A NON-Sitewire platform must NAME a partner. A global-default rule (no partner_label)
+  // marked external/trustpoint would make resolveRule's last-resort fallback apply it to
+  // EVERY unmatched file — silently rerouting/stopping all Sitewire pushes portfolio-wide
+  // with no park/alert. Never allow that (owner's never-guess / never-silently-drop rule).
+  if (drawPlatform !== 'sitewire' && !partnerLabel) {
+    return res.status(400).json({ error: 'Pick a specific capital partner before routing a rule to TrustPoint or marking it “handled externally” — the global default must stay on Sitewire.' });
   }
   // Audit finding B-9 (2026-07-21): a rule for a partner_label that DOESN'T map to a Sitewire
-  // capital_partner_id (either directory-exact or an owner-confirmed link) AND isn't marked
-  // handled_externally used to save cp_id=NULL. Every push for that label then paused at bind-time
-  // with `sitewire_capital_partner_unmatched` — a silent trap. Reject at POST time so the coordinator
-  // fixes it here: either pick a partner from the directory / confirm a link on the /partners page,
-  // or mark the rule handled externally. Global defaults (no partner_label) don't need a cp_id.
+  // capital_partner_id (either directory-exact or an owner-confirmed link) AND isn't external
+  // used to save cp_id=NULL. Every push for that label then paused at bind-time with
+  // `sitewire_capital_partner_unmatched` — a silent trap. Reject at POST time so the coordinator
+  // fixes it here. This applies to 'trustpoint' rules too — those files STILL push to Sitewire,
+  // so the partner must resolve. Only 'external' rules (no push at all) skip the requirement.
   if (partnerLabel && !cpId && !handledExternally) {
-    return res.status(400).json({ error: `We couldn't find "${partnerLabel}" in the Sitewire capital-partner directory. Either link it to a Sitewire partner on the Partners page, or check "Handled externally" if this partner isn't in Sitewire.` });
+    return res.status(400).json({ error: `We couldn't find "${partnerLabel}" in the Sitewire capital-partner directory. Either link it to a Sitewire partner on the Partners page, or set the "Draws administered on" choice to External if this partner isn't in Sitewire.` });
   }
+  // Dormant markup knob (owner D9 2026-07-24): stored only; no code charges it yet. Integer
+  // cents 0..$100k; blank/garbage → null (no markup), matching the physical-fee handling.
+  const mkRaw = b.markup_cents;
+  const mkNum = Number(mkRaw);
+  const markupCents = mkRaw == null || mkRaw === '' || !Number.isFinite(mkNum) || mkNum < 0 || mkNum > 10000000 ? null : Math.round(mkNum);
   const method = b.inspection_method === 'traditional' ? 'traditional' : 'mobile';
   // allow_virtual / allow_physical say which methods this program MAY use (both = coordinator can switch).
   // Default each to true when absent. Never let a rule forbid its own default method — that would leave a
@@ -1326,11 +1464,11 @@ router.post('/rules', requirePermission('platform_setup'), async (req, res) => {
   const feePhysical = pRaw == null || pRaw === '' || !Number.isFinite(pFee) || pFee < 0 ? null : Math.round(pFee);
   try {
     const row = (await db.query(
-      `INSERT INTO sitewire_inspection_rules (capital_partner_id, partner_label, program, inspection_method, require_sitewire_inspector, require_capital_partner_approval, allow_reallocation, fee_cents_virtual, fee_cents_physical, allow_virtual, allow_physical, handled_externally)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)
-       ON CONFLICT (regexp_replace(lower(COALESCE(partner_label,'')), '[^a-z0-9]+', '', 'g'), COALESCE(program,'')) DO UPDATE SET capital_partner_id=EXCLUDED.capital_partner_id, partner_label=COALESCE(EXCLUDED.partner_label, sitewire_inspection_rules.partner_label), inspection_method=EXCLUDED.inspection_method, require_sitewire_inspector=EXCLUDED.require_sitewire_inspector, require_capital_partner_approval=EXCLUDED.require_capital_partner_approval, allow_reallocation=EXCLUDED.allow_reallocation, fee_cents_virtual=EXCLUDED.fee_cents_virtual, fee_cents_physical=EXCLUDED.fee_cents_physical, allow_virtual=EXCLUDED.allow_virtual, allow_physical=EXCLUDED.allow_physical, handled_externally=EXCLUDED.handled_externally, updated_at=now()
+      `INSERT INTO sitewire_inspection_rules (capital_partner_id, partner_label, program, inspection_method, require_sitewire_inspector, require_capital_partner_approval, allow_reallocation, fee_cents_virtual, fee_cents_physical, allow_virtual, allow_physical, handled_externally, draw_platform, markup_cents)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)
+       ON CONFLICT (regexp_replace(lower(COALESCE(partner_label,'')), '[^a-z0-9]+', '', 'g'), COALESCE(program,'')) DO UPDATE SET capital_partner_id=EXCLUDED.capital_partner_id, partner_label=COALESCE(EXCLUDED.partner_label, sitewire_inspection_rules.partner_label), inspection_method=EXCLUDED.inspection_method, require_sitewire_inspector=EXCLUDED.require_sitewire_inspector, require_capital_partner_approval=EXCLUDED.require_capital_partner_approval, allow_reallocation=EXCLUDED.allow_reallocation, fee_cents_virtual=EXCLUDED.fee_cents_virtual, fee_cents_physical=EXCLUDED.fee_cents_physical, allow_virtual=EXCLUDED.allow_virtual, allow_physical=EXCLUDED.allow_physical, handled_externally=EXCLUDED.handled_externally, draw_platform=EXCLUDED.draw_platform, markup_cents=EXCLUDED.markup_cents, updated_at=now()
        RETURNING *`,
-      [cpId, partnerLabel, b.program || null, method, b.require_sitewire_inspector !== false, !!b.require_capital_partner_approval, !!b.allow_reallocation, feeVirtual, feePhysical, allowVirtual, allowPhysical, handledExternally])).rows[0];
+      [cpId, partnerLabel, b.program || null, method, b.require_sitewire_inspector !== false, !!b.require_capital_partner_approval, !!b.allow_reallocation, feeVirtual, feePhysical, allowVirtual, allowPhysical, handledExternally, drawPlatform, markupCents])).rows[0];
     res.json({ ok: true, rule: row });
   } catch (e) { console.warn('[sitewire] route error:', e && e.message); res.status(500).json({ error: 'server error' }); }
 });
@@ -1939,6 +2077,123 @@ router.post('/files/:id/coordinator', requirePermission('platform_setup'), async
 // ===================================================================================
 
 // ---- POST /files/:id/findings/:drawId/deliver — persist + send findings to the borrower ----
+/** Await `p`, but never longer than `ms` — past the budget the work keeps running to
+ *  completion in the background (every step is idempotent + independently caught) and we
+ *  carry on. `.unref()` so the timer can't hold the event loop open on the fast path. */
+function withBudget(p, ms) {
+  return Promise.race([p, new Promise((r) => {
+    const t = setTimeout(() => r({ archived: 0, reports: [], pending: true }), ms);
+    if (t.unref) t.unref();
+  })]);
+}
+
+/**
+ * The PDFs that ride along with the borrower's findings email (owner-directed 2026-07-27:
+ * "he should receive two PDF attachments in the findings email"):
+ *   1. OUR branded borrower report — photos + totals, partner-scrubbed by construction;
+ *   2. the ADMINISTRATOR's own inspection paperwork for the same draw.
+ *
+ * Both are checked against the frozen rule that a note-buyer name must never reach a
+ * borrower. The administrator's PDFs were decoded and scanned during the build: they name
+ * the lender as "YS Capital Group" and the inspector as "Trinity" — the note buyer does not
+ * appear in them. Only the BORROWER-visibility copy of our own report is ever eligible, so a
+ * staff-only report can never be attached by mistake.
+ *
+ * Best-effort: any failure returns fewer attachments, never an exception — the findings email
+ * must go out even when a PDF is missing (it still links to the full results page).
+ */
+const FINDING_ATTACH_MAX_BYTES = 18 * 1024 * 1024;   // keep the whole email deliverable
+
+/**
+ * A borrower-facing attachment NAME. Never leaks the administrator's name (the filename is
+ * rendered in the email body and shown in the recipient's mail client), and never invents a
+ * fact — it says only which draw it is and what kind of document it is.
+ */
+function borrowerSafeAttachmentName(filename, drawNo) {
+  const f = String(filename || '');
+  const n = drawNo != null ? `-draw-${drawNo}` : '';
+  if (f.startsWith('pilot-')) return `inspection-report${n}.pdf`;          // our own branded report
+  if (/-inspection-result-document-/.test(f)) return `inspection-findings${n}.pdf`;
+  if (/-draw-report-/.test(f)) return `draw-summary${n}.pdf`;
+  return `draw-document${n}.pdf`;
+}
+
+async function borrowerFindingAttachments(appId, sitewireDrawId) {
+  const storage = require('../lib/storage');
+  const out = [];
+  // Report filenames are keyed on the draw NUMBER (`pilot-draw-2-report-borrower-…`,
+  // `trustpoint-draw-2-…`), which is NOT the internal sitewire_draw_id. Resolve it first —
+  // preferring the administrator's number when the draws are tied, since both filename
+  // families are built from the same number.
+  const num = (await db.query(
+    `SELECT number AS n FROM sitewire_draws WHERE sitewire_draw_id = $1::bigint AND application_id = $2`,
+    [String(sitewireDrawId), appId])).rows[0];
+  const drawNo = num && num.n != null ? String(num.n) : null;
+
+  // The two filename families are keyed on DIFFERENT numbers and must be matched separately.
+  // OUR report is named from the SITEWIRE draw number; the administrator's paperwork from the
+  // TRUSTPOINT one, and the two systems number draws independently (they are tied by AMOUNT in
+  // mirror.linkToSitewireIntake, never by number). Resolving one number for both meant that the
+  // moment they disagreed our borrower-safe report silently dropped out and ONLY the
+  // administrator's staff-sourced PDFs were sent — the exact inverse of what this is for.
+  const tpNo = (await db.query(
+    `SELECT number FROM trustpoint_draws WHERE sitewire_draw_id = $1::bigint AND application_id = $2`,
+    [String(sitewireDrawId), appId])).rows[0];
+
+  // ONLY these two administrator documents may reach a borrower. The allow-list is by DOCUMENT
+  // TYPE, not by draw prefix: `/draw_requests/{id}/documents/` also returns a "Service Invoice"
+  // (the inspection vendor's bill) and anything else TrustPoint chooses to file there, all named
+  // with the same prefix and all stored `visibility='staff_only'`. Only the inspection report and
+  // the draw report were decoded and keyword-scanned for a note-buyer name before #876 shipped;
+  // sending an unreviewed vendor invoice puts the frozen never-name-a-note-buyer rule on an
+  // assumption about a document set TrustPoint controls. Widening this list requires checking the
+  // new type the same way.
+  const TP_BORROWER_SAFE = ['inspection-result-document', 'draw-report'];
+
+  const rows = (await db.query(
+    `SELECT d.id, d.filename, d.storage_ref, d.size_bytes
+       FROM documents d
+      WHERE d.application_id = $1 AND d.is_current AND d.doc_kind = 'draw_inspection_report'
+        AND (
+          -- our own BORROWER-safe report for this draw (a staff copy can never match)
+          (d.visibility = 'borrower' AND $2::text IS NOT NULL
+             AND d.filename LIKE 'pilot-draw-' || $2 || '-report-borrower-%')
+          -- the administrator's reviewed paperwork, by draw number AND document type
+          OR ($3::text IS NOT NULL AND EXISTS (
+                SELECT 1 FROM unnest($4::text[]) t
+                 -- ANCHORED on the date+id tail storeDocument always appends, so a document
+                 -- type that merely STARTS WITH an allowed one ("Inspection Result Document
+                 -- and Service Invoice") can never satisfy a prefix match and ride along.
+                 WHERE d.filename LIKE 'trustpoint-draw-' || $3 || '-' || t || '-____-__-__-%'))
+        )
+      ORDER BY d.created_at DESC`,
+    [appId, drawNo, tpNo && tpNo.number != null ? String(tpNo.number) : null, TP_BORROWER_SAFE])).rows;
+
+  const seen = new Set();
+  let budget = FINDING_ATTACH_MAX_BYTES;
+  for (const r of rows) {
+    // one per KIND — the newest wins, so a re-inspection's latest report is the one sent
+    const kind = r.filename.startsWith('pilot-') ? 'pilot' : r.filename.replace(/-\d{4}-\d{2}-\d{2}-[^.]*\.pdf$/, '');
+    if (seen.has(kind)) continue;
+    if (Number(r.size_bytes) > budget) continue;
+    try {
+      const content = await storage.read(r.storage_ref);
+      if (!content || !content.length || content.length > budget) continue;
+      // S1 — THE FILENAME IS BORROWER-FACING. notify.js derives `files` from
+      // attachments[].filename and template.js renders them as visible chips AND a plaintext
+      // "Attachments:" line; the borrower scrub covers title/body/meta/… but never attachments.
+      // So `trustpoint-draw-2-…pdf` printed the draw administrator's name to the borrower twice
+      // in the body plus on the file in their mail client — the frozen never-name-the-note-buyer
+      // rule (borrower-safe.js lists "trust point" explicitly). Renamed to a neutral, factual
+      // name; the stored document keeps its own filename for staff.
+      out.push({ filename: borrowerSafeAttachmentName(r.filename, drawNo), content, contentType: 'application/pdf' });
+      seen.add(kind);
+      budget -= content.length;
+    } catch (e) { /* a missing file never blocks the findings email */ }
+  }
+  return out;
+}
+
 router.post('/files/:id/findings/:drawId/deliver', requirePermission('manage_draws'), async (req, res) => {
   const appId = req.params.id, drawId = req.params.drawId;
   if (!/^\d+$/.test(drawId)) return res.status(404).json({ error: 'draw not found' });
@@ -1981,6 +2236,17 @@ router.post('/files/:id/findings/:drawId/deliver', requirePermission('manage_dra
     // straight from the email, or sign in there to dispute a line (research doc §14).
     const addr = f.address || 'your property';
     const acceptLink = result.reply_token ? `/draw-accept/${result.reply_token}` : `/app/${appId}`;
+    // ---- BUILD THE ARTIFACTS BEFORE THE BORROWER EMAIL (owner-directed 2026-07-27) ----
+    // The borrower must receive TWO PDFs with the findings: the administrator's own
+    // inspection report and OUR branded report (photos + totals). Both used to be produced
+    // AFTER this email was sent, so there was nothing to attach. The archive+build now runs
+    // first, under the same bounded budget that already protected this route — if it does not
+    // finish in time the email still goes out on schedule, just with links instead of files.
+    // Nothing here can fail the delivery: every step is independently caught.
+    const artifacts = await withBudget(
+      drawReport.autoDeliverArtifacts(appId, drawId).catch(() => ({ archived: 0, reports: [] })),
+      Number(process.env.DRAW_AUTODELIVER_BUDGET_MS) || 20000);
+    const findingAttachments = await borrowerFindingAttachments(appId, drawId).catch(() => []);
     // notifyAppBorrowers (not notifyBorrower) so a co-borrower who can see the file
     // ALSO gets the "results ready" email — the primary-only send made the
     // co-borrower first hear of it via the later reminder (owner-reported audit).
@@ -2016,7 +2282,9 @@ router.post('/files/:id/findings/:drawId/deliver', requirePermission('manage_dra
         meta,
         callout: { title: 'What happens when you accept', body: 'Accepting releases your draw — your funds are typically wired within a day or two. Want to look first? Open the results to see every photo and download your inspection report (PDF).', tone: 'action' },
         applicationId: appId, link: acceptLink, ctaLabel: 'Review & accept',
-        cta2Label: 'Push back on a line', cta2Link: disputeLink }).catch(() => {});
+        cta2Label: 'Push back on a line', cta2Link: disputeLink,
+        attachments: findingAttachments,
+        bccExtra: await require('../lib/draw-recipients').drawTeamBcc(appId) }).catch(() => {});
     }
     // In-app only (owner-directed 2026-07-20): a confirmation that the coordinator
     // just delivered findings is not a whole-team EMAIL — the borrower's own
@@ -2031,12 +2299,8 @@ router.post('/files/:id/findings/:drawId/deliver', requirePermission('manage_dra
     // "reports ready", but a slow/unreachable media CDN can NEVER hang this delivery request (the archive is
     // a sequential per-item fetch with only a per-item timeout). Past the budget the work keeps running in the
     // background to completion (every step is idempotent + independently caught) — we just answer promptly.
-    const work = drawReport.autoDeliverArtifacts(appId, drawId).catch(() => ({ archived: 0, reports: [] }));
-    const budgetMs = Number(process.env.DRAW_AUTODELIVER_BUDGET_MS) || 20000;
-    // .unref() so the budget timer never keeps the event loop alive on the fast path (work wins → the timer
-    // is still armed but must not hold the process); it only resolves an already-settled race if it fires.
-    const artifacts = await Promise.race([work, new Promise((r) => { const t = setTimeout(() => r({ archived: 0, reports: [], pending: true }), budgetMs); if (t.unref) t.unref(); })]);
-    res.json({ ok: true, ...result, media_archived: artifacts.archived, reports_ready: artifacts.reports, reports_pending: !!artifacts.pending });
+    res.json({ ok: true, ...result, media_archived: artifacts.archived, reports_ready: artifacts.reports,
+      reports_pending: !!artifacts.pending, attachments_sent: findingAttachments.map((a) => a.filename) });
   } catch (e) { console.warn('[sitewire] upstream error:', e && e.message); res.status(502).json({ error: 'the draw service is temporarily unavailable — nothing was changed; try again shortly' }); }
 });
 
@@ -2352,3 +2616,5 @@ router.get('/change-requests/:crId/export', requirePermission('manage_draws'), a
 });
 
 module.exports = router;
+// test hook (never used by production code): the D7 retainage chokepoint
+module.exports._retainagePctFor = retainagePctFor;

@@ -167,20 +167,35 @@ function Card({ it, onTest, testing, onToggle, onReset, switchBusy }) {
   );
 }
 
-/* Sitewire capability explorer (super_admin). Reads the Sitewire TEST system (never writes, never
-   prod) and lists every field it exposes — the ones we already control vs the ones we could add
-   next. This is how we turn "everything Sitewire can do" into PILOT buttons with confirmed field
-   names. Needs the SITEWIRE_TEST_* keys in Render; values are redacted (names/types only). */
+/* Sitewire field explorer (super_admin). An OPTIONAL, behind-the-scenes helper: it READS the
+   Sitewire TEST system (never writes, never the live account) and lists every field it exposes —
+   the ones PILOT already controls vs the ones we could add next — so new Sitewire features are built
+   on confirmed field names instead of guesses. It is NOT required for construction draws to work.
+   Needs the SITEWIRE_TEST_* keys in Render; values are redacted (names/types only).
+
+   IMPORTANT (plain English, never a raw code): when the test login isn't set up, the backend replies
+   with a non-OK status, which the api helper turns into a thrown error whose text is the bare code
+   `test_creds_missing`. So we read the STRUCTURED body off the error (e.data) and always show a
+   friendly amber note — the raw code must never reach the owner. */
 function SitewireExplorer() {
   const [running, setRunning] = useState(false);
   const [rep, setRep] = useState(null);
-  const [err, setErr] = useState('');
+  // A single, always-plain-English problem: { notSetUp:true } OR { message:'…' }. Never a raw code.
+  const [problem, setProblem] = useState(null);
 
   const run = async () => {
-    setRunning(true); setErr(''); setRep(null);
-    try { setRep(await api.sitewireExplore({})); }
-    catch (e) { setErr(e.message || 'Could not reach the Sitewire test environment.'); }
-    finally { setRunning(false); }
+    setRunning(true); setProblem(null); setRep(null);
+    try {
+      const r = await api.sitewireExplore({});
+      // The explorer can also hand back a structured "not set up" result on a 200.
+      if (r && r.error === 'test_creds_missing') setProblem({ notSetUp: true });
+      else setRep(r);
+    } catch (e) {
+      // A non-2xx (400 not-set-up, 502 unreachable, 403 …) throws with the structured body on e.data.
+      const data = (e && e.data) || {};
+      if (data.error === 'test_creds_missing') setProblem({ notSetUp: true });
+      else setProblem({ message: data.message || data.error || 'Could not reach the Sitewire test system — please try again in a moment.' });
+    } finally { setRunning(false); }
   };
 
   const types = rep && rep.catalog ? Object.keys(rep.catalog) : [];
@@ -188,21 +203,39 @@ function SitewireExplorer() {
 
   return (
     <section style={{ marginTop: 22 }}>
-      <h3 style={{ fontFamily: 'var(--serif,Georgia,serif)', margin: '0 0 2px' }}>Sitewire capability explorer</h3>
-      <p className="muted small" style={{ margin: '0 0 12px', maxWidth: 720 }}>
-        Reads the Sitewire <b>test</b> system and lists every field it has — the ones PILOT already controls, and the
-        ones we could add next — so nothing is guessed. It only ever <b>reads</b> (never changes anything), and uses a
-        separate test key set in the hosting settings (<code style={{ fontFamily: 'ui-monospace,Menlo,monospace' }}>SITEWIRE_TEST_…</code>), never your live key.
-      </p>
-      <button className="btn" disabled={running} onClick={run}>{running ? 'Reading Sitewire…' : 'Discover Sitewire fields'}</button>
-      {err && <p style={{ color: 'var(--crit,#B4483C)', fontSize: 13, marginTop: 10 }}>{err}</p>}
+      <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap', marginBottom: 2 }}>
+        <h3 style={{ fontFamily: 'var(--serif,Georgia,serif)', margin: 0 }}>Sitewire field explorer</h3>
+        <span style={{ fontSize: 11, fontWeight: 800, letterSpacing: '.04em', textTransform: 'uppercase', color: '#8A7A55',
+          background: '#F3EEE0', borderRadius: 999, padding: '3px 10px' }}>Optional helper</span>
+      </div>
+      {/* Same card shell as every integration above, so it reads as "a card like everything else". */}
+      <div style={{ border: '1px solid var(--line,#E7E1D3)', borderLeft: '4px solid #8A7A55', borderRadius: 12,
+        background: 'var(--card,#fff)', padding: '14px 16px', marginTop: 8 }}>
+        <p className="muted small" style={{ margin: '0 0 12px', maxWidth: 720 }}>
+          A behind-the-scenes helper for building new Sitewire features. It peeks at Sitewire’s own <b>test</b> system and
+          lists the field names their system uses, so anything we add later uses the exact right names instead of a guess.
+          You don’t need this for construction draws to work. It only ever <b>reads</b> — it never changes anything, never
+          touches your real Sitewire account, and never shows a borrower’s information. It uses a separate test login kept in
+          the hosting settings (<code style={{ fontFamily: 'ui-monospace,Menlo,monospace' }}>SITEWIRE_TEST_…</code>), never your live key.
+        </p>
+        <button className="btn" disabled={running} onClick={run}>{running ? 'Reading Sitewire…' : 'Discover Sitewire fields'}</button>
 
-      {rep && rep.error === 'test_creds_missing' && (
-        <div style={{ marginTop: 12, fontSize: 12.5, color: 'var(--amber,#B7791F)', background: 'var(--amber-bg,#F6EEDD)',
-          border: '1px solid var(--line,#E7E1D3)', borderRadius: 8, padding: '10px 12px' }}>
-          Add the test key in the hosting settings (Render → Environment) as <code>SITEWIRE_TEST_ACCESS_TOKEN</code>, <code>SITEWIRE_TEST_CLIENT</code>, <code>SITEWIRE_TEST_UID</code> (and <code>SITEWIRE_TEST_BASE_URL</code> if the test site uses a different address), then try again. Never paste the key here.
-        </div>
-      )}
+        {problem && problem.notSetUp && (
+          <div style={{ marginTop: 12, fontSize: 12.5, color: 'var(--amber,#B7791F)', background: 'var(--amber-bg,#F6EEDD)',
+            border: '1px solid var(--line,#E7E1D3)', borderRadius: 8, padding: '10px 12px' }}>
+            This helper isn’t set up yet — and that’s fine, it’s optional. Construction draws still work normally without it.
+            To turn it on, a developer adds a separate Sitewire <b>test</b> login in the hosting settings (Render → Environment)
+            as <code>SITEWIRE_TEST_ACCESS_TOKEN</code>, <code>SITEWIRE_TEST_CLIENT</code>, and <code>SITEWIRE_TEST_UID</code>
+            (plus <code>SITEWIRE_TEST_BASE_URL</code> if the test site uses a different address). It never uses your live
+            Sitewire key. Never paste a key here.
+          </div>
+        )}
+        {problem && !problem.notSetUp && (
+          <div style={{ marginTop: 12, fontSize: 12.5, color: 'var(--amber,#B7791F)', background: 'var(--amber-bg,#F6EEDD)',
+            border: '1px solid var(--line,#E7E1D3)', borderRadius: 8, padding: '10px 12px' }}>
+            {problem.message}
+          </div>
+        )}
 
       {rep && rep.catalog && (
         <div style={{ marginTop: 14 }}>
@@ -234,6 +267,7 @@ function SitewireExplorer() {
           <p className="muted small" style={{ marginTop: 4 }}>Green = PILOT already controls it · Red ＋ = available to add. Only field names/types shown (no borrower data).</p>
         </div>
       )}
+      </div>
     </section>
   );
 }
@@ -309,9 +343,18 @@ export default function StaffApiHealth() {
     } : prev);
   };
 
+  // After a switch actually changes, re-run that integration's live check so its status light AND
+  // plain-English detail reflect the new state right away. Without this they stay stale (still say
+  // "Switched off" / "…is off") until the next full refresh — which reads as "I turned it on but it
+  // still says off". Find the owning card by which one carries this switch (membership is stable).
+  const reprobeOwnerOf = (switchName) => {
+    const owner = ((data && data.integrations) || []).find((it) => (it.switches || []).some((s) => s.name === switchName));
+    if (owner) testOne(owner.key);
+  };
+
   const applyToggle = async (sw, enabled, confirm) => {
     setSwitchBusy(sw.name); setErr('');
-    try { const d = await api.integrationToggleSwitch(sw.name, enabled, confirm); mergeSwitch(d.switch); }
+    try { const d = await api.integrationToggleSwitch(sw.name, enabled, confirm); mergeSwitch(d.switch); reprobeOwnerOf(sw.name); }
     catch (e) { setErr(e.message || 'Could not change that switch.'); }
     finally { setSwitchBusy(null); }
   };
@@ -324,7 +367,7 @@ export default function StaffApiHealth() {
 
   const onReset = async (sw) => {
     setSwitchBusy(sw.name); setErr('');
-    try { const d = await api.integrationResetSwitch(sw.name); mergeSwitch(d.switch); }
+    try { const d = await api.integrationResetSwitch(sw.name); mergeSwitch(d.switch); reprobeOwnerOf(sw.name); }
     catch (e) { setErr(e.message || 'Could not reset that switch.'); }
     finally { setSwitchBusy(null); }
   };

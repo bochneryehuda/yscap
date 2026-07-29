@@ -17,14 +17,18 @@
 const aiSug = require('./ai-suggestions');
 
 // Which entity-set condition templates does the "different-LLC" case cascade to?
-// Prefer the borrower's vesting/operating-agreement template first — a follow-up
-// migration adds a dedicated "operating agreement for bank-account entity" template
-// (owner-specific ask) but the borrower-owned entity condition here covers today's
-// checklist vocabulary. Ordered by priority.
+// `firstAvailable` takes the HEAD of this list as the template the AI-panel
+// "Convert to condition" button materializes, so the head MUST be a real live
+// template code. FIX 2026-07-23 (same stale-code class as wrong-condition.js): the
+// previous heads (`llc_operating_agreement`, `rtl_p2_vesting`, `entity_vesting`)
+// are NOT seeded anywhere in db/*.sql — the suggestion pointed at a template that
+// can't materialize. Real codes, ordered most-specific first (verified in
+// db/005_rtl_workflow.sql): the LLC operating-agreement condition, then the entity
+// (LLC) umbrella. Legacy strings kept only as trailing fallbacks.
 const OA_CASCADE_TEMPLATE_CODES = [
-  'llc_operating_agreement',    // if the file exposes one
-  'rtl_p2_vesting',             // fallback: vesting/entity-verification condition
-  'entity_vesting',
+  'rtl_llc_opagmt',             // the LLC operating-agreement condition (db/005:114)
+  'rtl_p1_llc',                 // fallback: the entity/LLC umbrella condition (db/005:61)
+  'llc_operating_agreement', 'rtl_p2_vesting', 'entity_vesting',  // legacy aliases (not live)
 ];
 
 /**
@@ -39,10 +43,16 @@ const OA_CASCADE_TEMPLATE_CODES = [
  * @returns {Promise<{recorded:number, deduped:number, failed:number}>}
  */
 async function syncBankFindingsToSuggestions(client, appId, documentId, bankFindings = []) {
-  if (!appId || !documentId || !Array.isArray(bankFindings) || !bankFindings.length) {
+  if (!appId || !Array.isArray(bankFindings) || !bankFindings.length) {
     return { recorded: 0, deduped: 0, failed: 0 };
   }
-  const suggestions = bankFindings.map((f) => build(appId, documentId, f)).filter(Boolean);
+  // Fix 2026-07-23 (#211): documentId is OPTIONAL. The file-view roll-up
+  // findings (liquidity short / no ending balance) are file-level, not
+  // per-document — the old caller passed app.id here, which violated the
+  // ai_suggestions.document_id FK (23503) and aborted the WHOLE file-view
+  // sync transaction. A null documentId records an app-level suggestion with
+  // an app-scoped dedupe key instead.
+  const suggestions = bankFindings.map((f) => build(appId, documentId || null, f)).filter(Boolean);
   return aiSug.recordMany(client, suggestions);
 }
 
@@ -59,7 +69,9 @@ function build(appId, documentId, f) {
       code: f.code, field: f.field, docValue: f.docValue, fileValue: f.fileValue,
       source: 'bank_statement',
     },
-    dedupeKey: `bank:${documentId}:${f.code}`,
+    // Dedupe scopes to the document when one is known, else to the file
+    // ('file' — dedupe keys already pair with application_id in record()).
+    dedupeKey: `bank:${documentId || 'file'}:${f.code}`,
   };
 
   // Special case: different-entity ownership → propose an operating-agreement
@@ -76,6 +88,38 @@ function build(appId, documentId, f) {
         // Kept for downstream `create_finding` fallback if the human prefers a finding.
         code: f.code, severity: f.severity, title: f.title, howTo: f.howTo, source: 'bank_statement',
         opensCondition: firstAvailable(OA_CASCADE_TEMPLATE_CODES),
+      },
+    };
+    base.body = f.howTo;
+    return base;
+  }
+
+  // Business account under a KNOWN-but-UNVERIFIED entity → same LLC-section cascade as the
+  // different-entity case, but advisory: the funds already count; the condition just finishes
+  // establishing the entity (operating agreement + formation + EIN).
+  if (f.code === 'bank_business_entity_unverified') {
+    base.proposedAction = {
+      type: 'create_condition',
+      cascade: 'on_liquidity',
+      templateCode: firstAvailable(OA_CASCADE_TEMPLATE_CODES),
+      entityName: f.entityName || null,
+      fields: {
+        code: f.code, severity: f.severity, title: f.title, howTo: f.howTo, source: 'bank_statement',
+        opensCondition: firstAvailable(OA_CASCADE_TEMPLATE_CODES),
+      },
+    };
+    base.body = f.howTo;
+    return base;
+  }
+
+  // Joint/shared personal account → request an ACCESS LETTER from the co-owner(s).
+  if (f.code === 'bank_account_shared') {
+    base.proposedAction = {
+      type: 'request_document',
+      reason: 'joint_account_access_letter',
+      fields: {
+        code: f.code, severity: f.severity, title: f.title, howTo: f.howTo, source: 'bank_statement',
+        opensCondition: f.opensCondition || 'underwriting_review_cleared',
       },
     };
     base.body = f.howTo;

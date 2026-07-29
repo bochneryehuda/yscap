@@ -64,7 +64,7 @@ function assessPortfolioAlerts(files, opts = {}) {
     if (f.wire_overdue) add('wire_overdue', 'high', 'The borrower accepted a draw but its release is past the wire deadline and hasn’t been funded yet.');
 
     // OVERDRAWN — money out has passed the budget (guards should prevent it; flag if it slips).
-    if (budget > 0 && drawn > budget) add('overdrawn', 'high', `Drawn ${fmt(drawn)} exceeds the ${fmt(budget)} construction budget by ${fmt(drawn - budget)}.`);
+    if (budget > 0 && drawn > budget) { const fx = require('./transforms').usdExact; add('overdrawn', 'high', `Drawn ${fx(drawn)} exceeds the ${fx(budget)} construction budget by ${fx(drawn - budget)}.`); }
 
     // NO DRAW SINCE FUNDING — funded a while ago, borrower hasn't requested a draw yet.
     if (drawCount === 0 && fundedMs != null && nowMs > 0) {

@@ -2,6 +2,7 @@ import React, { useEffect, useRef, useState } from 'react';
 import { api, saveBlob } from '../lib/api.js';
 import DocPreview from './DocPreview.jsx';
 import { fileToBase64 } from '../lib/files.js';
+import { onFilesDropped } from '../lib/drop-files.js';
 import { EmailInput } from './FormattedInputs.jsx';
 
 /* One LLC, fully managed: entity details, ownership structure (the borrower's
@@ -35,7 +36,7 @@ function SlotRow({ llc, slot, onPick, onDownload, onPreview, dlBusy, uploading, 
   const drop = canDrop ? {
     onDragOver: (e) => { e.preventDefault(); if (!over) setOver(true); },
     onDragLeave: (e) => { if (e.currentTarget === e.target) setOver(false); },
-    onDrop: (e) => { e.preventDefault(); setOver(false); const f = Array.from(e.dataTransfer.files || []); if (f.length) onDropFiles(f); },
+    onDrop: (e) => { e.preventDefault(); setOver(false); onFilesDropped(e, onDropFiles); },
   } : {};
   const d = slot.document_id ? slot : null;
   const rs = d ? slot.review_status : null;

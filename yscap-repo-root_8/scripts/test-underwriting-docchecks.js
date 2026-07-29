@@ -138,6 +138,12 @@ assert.strictEqual(C.computeInsuranceFindings({ ...insGood, mortgageeClausePrese
   assert.ok(!withBr.some((f) => f.code === 'insurance_no_builders_risk'), 'a builders-risk policy on a rehab deal is clean');
   const noRehab = C.computeInsuranceFindings({ ...insGood, buildersRisk: false }, { loan_amount: 300000 }, { today: TODAY });
   assert.ok(!noRehab.some((f) => f.code === 'insurance_no_builders_risk'), 'no rehab budget → builders-risk not required');
+  // 2026-07-28: fire ONLY on an affirmative NOT-builders-risk. An UNCONFIRMED coverage form
+  // (buildersRisk null/absent) is no longer a finding — "only flag what you KNOW is wrong".
+  const brUnknown = C.computeInsuranceFindings({ ...insGood, buildersRisk: null }, sub, { today: TODAY });
+  assert.ok(!brUnknown.some((f) => f.code === 'insurance_no_builders_risk'), 'an UNCONFIRMED builders-risk form is not flagged');
+  const brAbsent = C.computeInsuranceFindings({ ...insGood }, sub, { today: TODAY });
+  assert.ok(!brAbsent.some((f) => f.code === 'insurance_no_builders_risk'), 'an ABSENT builders-risk flag is not flagged');
 }
 assert.ok(C.computeInsuranceFindings({ ...insGood, policyExpiration: '2026-01-01' }, { loan_amount: 300000 }, { today: TODAY }).some((f) => f.code === 'insurance_expired'));
 // Mortgagee-clause TEXT + loan number must be the lender's (owner-directed 2026-07-20).
@@ -201,8 +207,26 @@ assert.deepStrictEqual(codes(C.computeBackgroundFindings({ subjectName: 'John Sm
   assert.deepStrictEqual(codes(C.computeBackgroundFindings({ readable: true, subjectName: 'Michael Goldberg', ofacResult: 'clear', entityName: 'Maple Grove Holdings LLC', fraudFlags: [], pepHit: false }, subj)), []);
   // Wrong subject name → the clear result can't be trusted for this borrower.
   assert.ok(C.computeBackgroundFindings({ readable: true, subjectName: 'Michael Goldman', ofacResult: 'clear' }, subj).some((f) => f.code === 'background_subject_mismatch'));
-  // Entity deal but no entity screened → flagged.
-  assert.ok(C.computeBackgroundFindings({ readable: true, subjectName: 'Michael Goldberg', ofacResult: 'clear', entityName: null }, subj).some((f) => f.code === 'background_entity_not_screened'));
+  // Entity deal, and the report's own screened-party list DOESN'T include the entity → flagged.
+  assert.ok(C.computeBackgroundFindings({ readable: true, subjectName: 'Michael Goldberg', ofacResult: 'clear',
+    entityName: null, screenedParties: ['Michael Goldberg'], screenedPartiesComplete: true }, subj)
+    .some((f) => f.code === 'background_entity_not_screened'));
+  // …and with NO list found at all it is UNKNOWN, not absent (owner 2026-07-26: the entity WAS
+  // screened, in a Watch List table ~23 pages in that PILOT never read). Saying "not screened" off a
+  // single header field was the false finding.
+  const noList = C.computeBackgroundFindings({ readable: true, subjectName: 'Michael Goldberg', ofacResult: 'clear', entityName: null }, subj);
+  assert.ok(!noList.some((f) => f.code === 'background_entity_not_screened'));
+  assert.ok(noList.some((f) => f.code === 'background_screened_parties_unreadable' && f.severity === 'info'));
+  // …and when the entity IS in the list, nothing is raised at all.
+  assert.deepStrictEqual(codes(C.computeBackgroundFindings({ readable: true, subjectName: 'Michael Goldberg',
+    ofacResult: 'clear', entityName: null, screenedPartiesComplete: true,
+    screenedParties: ['Michael Goldberg', 'Maple Grove Holdings LLC'], fraudFlags: [], pepHit: false }, subj)), []);
+  // A CLEARED alert is finished work, not an open item (owner 2026-07-26).
+  assert.deepStrictEqual(codes(C.computeBackgroundFindings({ readable: true, subjectName: 'Michael Goldberg',
+    ofacResult: 'clear', entityName: 'Maple Grove Holdings LLC', pepHit: false,
+    fraudFlags: ['POTENTIAL STRAW BUYER ISSUE'],
+    clearedVariances: [{ alert: 'Potential straw-buyer issue.', reason: 'The borrower is a professional investor.' }],
+  }, subj)), []);
   // Entity screened but a DIFFERENT entity → flagged.
   assert.ok(C.computeBackgroundFindings({ readable: true, subjectName: 'Michael Goldberg', ofacResult: 'clear', entityName: 'Other Holdings LLC' }, subj).some((f) => f.code === 'background_entity_mismatch'));
   // High fraud alerts + PEP → both surface, both warning (never a silent accept).

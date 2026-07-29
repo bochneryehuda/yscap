@@ -20,22 +20,29 @@ const { sellerNames: contractSellers } = require('./purchase-contract-checks');
 // The columns each subject needs — fetched once by the route, sliced here.
 async function loadContext(client, appId) {
   const app = (await client.query(
-    `SELECT id, borrower_id, llc_id, property_address, purchase_price, loan_amount,
+    `SELECT id, borrower_id, co_borrower_id, llc_id, property_address, purchase_price, loan_amount,
             as_is_value, arv, rehab_budget, program, property_type, units,
             ys_loan_number, is_assignment, assignment_fee, underlying_contract_price
        FROM applications WHERE id = $1`, [appId])).rows[0] || null;
   if (!app) return null;
-  const borrower = app.borrower_id
+  const loadBorrower = async (id) => (id
     ? (await client.query(
         `SELECT id, first_name, last_name, date_of_birth, current_address, prior_address, fico
-           FROM borrowers WHERE id = $1`, [app.borrower_id])).rows[0] || null
-    : null;
+           FROM borrowers WHERE id = $1`, [id])).rows[0] || null
+    : null);
+  const borrower = await loadBorrower(app.borrower_id);
+  // The CO-BORROWER is a second real person on the file (owner-directed 2026-07-27): a
+  // government ID belonging to them was being compared to the PRIMARY borrower and false-flagged
+  // as a fatal name/DOB mismatch. Load them so the ID checks know the whole set of people who may
+  // legitimately have an ID on file.
+  const coBorrower = app.co_borrower_id && app.co_borrower_id !== app.borrower_id
+    ? await loadBorrower(app.co_borrower_id) : null;
   // The vesting entity on the file + every LLC the borrower is on record for (assets).
   const vesting = app.llc_id
-    ? (await client.query(`SELECT llc_name, ein FROM llcs WHERE id = $1`, [app.llc_id])).rows[0] || null
+    ? (await client.query(`SELECT llc_name, ein, is_verified FROM llcs WHERE id = $1`, [app.llc_id])).rows[0] || null
     : null;
   const entities = app.borrower_id
-    ? (await client.query(`SELECT llc_name FROM llcs WHERE borrower_id = $1 ORDER BY llc_name`, [app.borrower_id])).rows
+    ? (await client.query(`SELECT llc_name, is_verified FROM llcs WHERE borrower_id = $1 ORDER BY llc_name`, [app.borrower_id])).rows
     : [];
   // The current registered product breakdown — the engine's own SIZED figures. The leverage metrics
   // need the INITIAL ADVANCE (acquisition portion), NOT the total loan, to check loan-to-purchase /
@@ -50,7 +57,11 @@ async function loadContext(client, appId) {
   if (typeof quoteObj === 'string') { try { quoteObj = JSON.parse(quoteObj); } catch (_) { quoteObj = null; } }
   const sizing = quoteObj && quoteObj.sizing ? quoteObj.sizing : null;
   const numOrNull = (v) => (v == null || !isFinite(Number(v)) ? null : Number(v));
-  const qcaps = quoteObj && quoteObj.caps ? quoteObj.caps : null;
+  // Fix 2026-07-23 (#209): persisted quotes carry the caps at guidelines.caps —
+  // a top-level quote.caps never exists on a real registration, so the metrics
+  // silently fell back to the loosest per-program ceiling instead of the file's
+  // ACTUAL registered tier caps.
+  const qcaps = (quoteObj && (quoteObj.caps || (quoteObj.guidelines && quoteObj.guidelines.caps))) || null;
   const registration = reg ? {
     program: reg.program || null,
     totalLoan: numOrNull(reg.total_loan),
@@ -66,27 +77,76 @@ async function loadContext(client, appId) {
       maxLtc: numOrNull(qcaps.maxLtc),
     } : null,
   } : null;
+  // Which of the borrower's entities are VERIFIED (LLC section complete: formation + OA + EIN
+  // reviewed, is_verified=true). A business bank account under an entity that is on file but NOT
+  // verified should still prompt "finish setting up that entity" (owner-directed 2026-07-24) —
+  // the bank check needs the verified subset to tell "known & verified" from "named but unverified".
+  const verifiedEntityNames = [
+    ...(vesting && vesting.is_verified ? [vesting.llc_name] : []),
+    ...entities.filter((r) => r.is_verified).map((r) => r.llc_name),
+  ].filter(Boolean);
+  // Entity legal names PILOT has already READ off an entity document uploaded to the file — an
+  // operating agreement, articles of formation, or EIN letter (owner 2026-07-27: "a lot of times
+  // the operating agreement is uploaded WITH the bank statements — look for it before raising
+  // fraud"). So a bank statement under a different LLC can point at the OA that is ALREADY on file
+  // and ask the underwriter to verify + add the entity, instead of screaming for a document that is
+  // sitting right there. Best-effort — a read failure leaves the set empty (the check just won't
+  // find an on-file doc, which is the safe direction).
+  let entityDocNames = [];
+  try {
+    const ed = await client.query(
+      `SELECT DISTINCT fields->>'entityLegalName' AS name
+         FROM document_extractions
+        WHERE application_id = $1 AND is_current
+          AND doc_type IN ('operating_agreement','llc_formation','ein_letter','good_standing')
+          AND NULLIF(TRIM(COALESCE(fields->>'entityLegalName','')),'') IS NOT NULL`, [appId]);
+    entityDocNames = ed.rows.map((r) => r.name).filter(Boolean);
+  } catch (_) { entityDocNames = []; }
+  // Names of every individual PILOT has read off an operating agreement on the file (members +
+  // managing member). A ≥25% LLC owner may legitimately put their own government ID on the file
+  // (KYC) — that ID is NOT the borrower, so its name must NOT be flagged as a borrower name
+  // mismatch. Best-effort: a read failure leaves the set empty (the ID check just won't recognize
+  // an owner-only name, which is the safe direction). Read-only.
+  let ownerNames = [];
+  try {
+    const oa = await client.query(
+      `SELECT fields FROM document_extractions
+        WHERE application_id = $1 AND is_current AND doc_type = 'operating_agreement'`, [appId]);
+    for (const r of oa.rows) {
+      const f = (r && r.fields) || {};
+      if (Array.isArray(f.members)) for (const m of f.members) { if (m && m.name) ownerNames.push(m.name); }
+      if (f.managingMember) ownerNames.push(f.managingMember);
+    }
+    ownerNames = [...new Set(ownerNames.filter(Boolean))];
+  } catch (_) { ownerNames = []; }
   return {
-    app, borrower,
+    app, borrower, coBorrower,
     vestingName: vesting && vesting.llc_name,
     ein: vesting && vesting.ein,
     entityNames: entities.map((r) => r.llc_name).filter(Boolean),
+    verifiedEntityNames,
+    entityDocNames,
+    ownerNames,
     registration,
   };
 }
 
 function borrowerName(b) {
   if (!b) return null;
-  const n = `${b.first_name || ''} ${b.last_name || ''}`.trim();
+  const n = require('../person-name').displayName(b);
   return n || null;
 }
 
 // Build the subject a given document type's check compares against.
 function subjectFor(docType, ctx) {
-  const { app, borrower, vestingName, entityNames } = ctx || {};
+  const { app, borrower, coBorrower, vestingName, entityNames, verifiedEntityNames, entityDocNames, ownerNames } = ctx || {};
   switch (docType) {
     case 'government_id':
-      return borrower; // the borrowers row (name / DOB / address)
+      // The whole SET of people who may legitimately have an ID on this file — the primary
+      // borrower, the co-borrower, and (name-only) any LLC owner read off an operating agreement.
+      // The ID check matches an ID to ANY of them, so a co-borrower's ID is no longer flagged as a
+      // fatal name/DOB mismatch against the primary borrower (owner-directed 2026-07-27).
+      return { people: [borrower, coBorrower].filter(Boolean), ownerNames: ownerNames || [] };
     case 'purchase_contract':
     case 'title':
       return {
@@ -105,7 +165,15 @@ function subjectFor(docType, ctx) {
       };
     case 'bank_statement':
     case 'voided_check':
-      return { borrower_name: borrowerName(borrower), entity_names: entityNames || [] };
+      // verified_entity_names lets the bank check tell a KNOWN & VERIFIED entity (funds count,
+      // no flag) from one that is merely named on file (advisory: finish the LLC section). Always
+      // an array here (loadContext returns [] when nothing is verified) — so the check's
+      // never-fabricate guard is satisfied and the advisory actually evaluates in production.
+      return { borrower_name: borrowerName(borrower), entity_names: entityNames || [],
+        verified_entity_names: verifiedEntityNames || [],
+        // entity docs (OA / formation / EIN) already read on the file, so a different-entity account
+        // can point at the ownership proof that is ALREADY here rather than demand a fresh one.
+        entity_docs_on_file: entityDocNames || [] };
     case 'assignment':
       return {
         entity_name: vestingName || null, is_assignment: !!(app && app.is_assignment),

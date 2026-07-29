@@ -34,21 +34,96 @@ const docint = require('../lib/ai/ocr-router');
 const azureOpenai = require('../lib/ai/azure-openai');
 const engine = require('../lib/underwriting/engine');
 const store = require('../lib/underwriting/store');
+const documentReasoning = require('../lib/underwriting/document-reasoning');
+const findingAiReview = require('../lib/underwriting/finding-ai-review');
+const findingsTriage = require('../lib/underwriting/findings-triage');
 const registry = require('../lib/underwriting/registry');
 const fileView = require('../lib/underwriting/file-view');
 const { tieoutForFile } = require('../lib/underwriting/file-review');
-const { underwriterActions } = require('../lib/underwriting/actions');
+const actionCatalog = require('../lib/underwriting/actions');
+const { underwriterActions, validateResolution } = actionCatalog;
 const { falseAlarmReport, readabilityReport } = require('../lib/underwriting/feedback');
 const { programGuidelineSnapshot } = require('../lib/underwriting/program-guidelines');
 const { classify } = require('../lib/underwriting/classify');
 const { conditionsForDoc, purposeForDoc, docReadiness, fileConditionCoverage, docTypesForCode, expectedDocTypeForCode } = require('../lib/underwriting/condition-map');
 const { selectAutoReadQueue } = require('../lib/underwriting/auto-read');
+// Pipeline V2 (owner-directed 2026-07-26) — the SHADOW feed. maybeEnqueueUpload is a guarded
+// no-op unless UW_PIPELINE_V2_SHADOW is on AND the family is enrolled; it enqueues a durable V2
+// job that the background worker drains through the packet-control processor, BESIDE Pipeline V1.
+const { maybeEnqueueUpload } = require('../pipeline/enqueue-on-upload');
 const { ANALYZER_VERSION, subjectHash } = require('../lib/underwriting/fingerprint');
 const { assessFile: assessStaleness } = require('../lib/underwriting/staleness');
 const { computeMetrics, capsFromRegistration } = require('../lib/underwriting/metrics');
 const { buildChain } = require('../lib/underwriting/entity-chain');
 const { buildSellerChain } = require('../lib/underwriting/seller-chain');
+const { buildChainOfTitle } = require('../lib/underwriting/chain-of-title');
 const { assessBankLiquidity, readRequiredLiquidity } = require('../lib/underwriting/bank-liquidity');
+// Loaded at module scope, not at the call site: a lazy require inside the handler is OUTSIDE the
+// `.catch()` that guards the desk run, so a load-time error there would 500 the whole file view —
+// an endpoint that previously could not fail from this code (audit 2026-07-27).
+const investorDeskMod = require('../lib/underwriting/investor-guidelines/desk');
+const deskFindings = require('../lib/underwriting/investor-guidelines/desk-findings');
+const SEVERITY_RANK = { fatal: 3, warning: 2, info: 1 };
+// The suggestion statuses that mean "still needs handling" — the SAME set the escalation and
+// silenced-code queries in this file use. `escalated` and `marked_important` are emphasis, not
+// resolutions, so a guideline finding in either state keeps its card.
+const ISG_OPEN_STATUSES = new Set(['open', 'asked_admin', 'escalated', 'marked_important']);
+const investorReview = require('../lib/underwriting/investor-guideline-review');
+// Hoisted for the one advisory-source filter shared by every scoring/ranking query (audit 2026-07-27).
+const aiSuggestions = require('../lib/underwriting/ai-suggestions');
+
+/**
+ * loadRunGuidelineFindings(db, appId) → the CURRENT run's note-buyer findings, in the openRaw shape.
+ *
+ * Reads the newest non-superseded run and returns only its `investor_guideline` findings, so the
+ * ONE findings list shows the same note-buyer facts the run cockpit shows, deduped against the
+ * desk's own rows instead of repeated beside them.
+ *
+ * ADVISORY: every returned finding is `blocksCtc:false` and carries NO id, so it renders read-only
+ * and the real clear-to-close gate (`file-review.fileFatalCount`, which counts stored
+ * `document_findings`) cannot see it. Best-effort — a failure here returns [] and the file view
+ * renders exactly as it did before, never a 500.
+ */
+async function loadRunGuidelineFindings(db, appId) {
+  if (!db || !appId) return [];
+  try {
+    const r = await db.query(
+      `SELECT f.code, f.severity, f.title, f.explanation, f.governing_rule,
+              f.expected_value, f.actual_value
+         FROM underwriting_run_findings f
+         JOIN underwriting_runs r ON r.id = f.run_id
+        WHERE r.application_id = $1 AND r.superseded_at IS NULL
+          AND f.category = $2
+        ORDER BY r.created_at DESC, f.created_at`,
+      [appId, investorReview.CATEGORY]);
+    const rows = (r && r.rows) || [];
+    return rows.map((row) => ({
+      source: investorReview.SOURCE,
+      category: investorReview.CATEGORY,
+      code: row.code,
+      // Rebuilt from the rule table — see investor-guideline-review.claimKeyForCode.
+      factKey: investorReview.claimKeyForCode(row.code) || undefined,
+      // Pass the run's OWN severity through a whitelist rather than collapsing everything
+      // that is not fatal to `warning` — the first `info` rule added to the table would
+      // otherwise be silently promoted to a warning chip and counted as one.
+      severity: ['fatal', 'warning', 'info'].includes(String(row.severity || '').toLowerCase())
+        ? String(row.severity).toLowerCase() : 'warning',
+      status: 'open',
+      blocksCtc: false,
+      title: row.title || row.code,
+      howTo: row.explanation || null,
+      governingRule: row.governing_rule || null,
+      expectedValue: row.expected_value != null ? String(row.expected_value) : null,
+      actualValue: row.actual_value != null ? String(row.actual_value) : null,
+      // A run finding is an ESCALATION or a file-quality call, not a document to chase: the useful
+      // human moves are to record a decision or quiet it, not to "post a condition".
+      actions: ['clear', 'dismiss'],
+    }));
+  } catch (_e) { return []; }
+}
+// Fix 2026-07-23 (#211): similar-open + bulk-resolve referenced seesAll() without
+// defining it in this file (staff.js has its own copy) — ReferenceError → 500.
+const seesAll = (req) => can(req.actor, 'see_all_files');
 const { assessExperienceForFile } = require('../lib/underwriting/experience');
 const { assessCompleteness } = require('../lib/underwriting/completeness');
 const { computeRiskScore } = require('../lib/underwriting/risk-score');
@@ -101,11 +176,14 @@ router.use(requireAuth, requireStaff);
 // Authorization: the file must exist AND the staffer must see it (see_all or assigned).
 async function fileFor(req, appId) {
   if (!isUuid(appId)) return null;
+  // llc_id comes back so `fileDoc` can resolve the file's OWN vesting-entity documents — see the
+  // note there. Without it a file whose LLC is filed under a different borrower record could never
+  // read its own operating agreement / EIN / articles.
   if (can(req.actor, 'see_all_files')) {
-    return (await db.query(`SELECT id, borrower_id FROM applications WHERE id=$1 AND deleted_at IS NULL`, [appId])).rows[0] || null;
+    return (await db.query(`SELECT id, borrower_id, llc_id FROM applications WHERE id=$1 AND deleted_at IS NULL`, [appId])).rows[0] || null;
   }
   return (await db.query(
-    `SELECT a.id, a.borrower_id FROM applications a WHERE a.id=$1 AND a.deleted_at IS NULL AND ${assigneeExistsSql('a', '$2')}`,
+    `SELECT a.id, a.borrower_id, a.llc_id FROM applications a WHERE a.id=$1 AND a.deleted_at IS NULL AND ${assigneeExistsSql('a', '$2')}`,
     [appId, req.actor.id])).rows[0] || null;
 }
 
@@ -144,7 +222,101 @@ async function audit(actorId, action, entityId, detail) {
 function decorate(f) {
   const actions = Array.isArray(f.actions) ? f.actions
     : (Array.isArray(f.suggested_actions) ? f.suggested_actions : undefined);
-  return Object.assign({}, f, { availableActions: underwriterActions(actions ? { ...f, actions } : f) });
+  // Stamp the CLAIM KEY (the semantic key dedupeByClaim already grouped on) so the AI Findings
+  // panel can hide any raw ai_suggestion whose claim is already shown in THIS one deduped list —
+  // the fix for the owner's "same finding six times" across the three surfaces (2026-07-27).
+  let claimKey = null;
+  try { claimKey = require('../lib/underwriting/finding-claims').claimOf(f); } catch (_) { claimKey = null; }
+  // "Open the source document" for a DERIVED finding (owner-reported 2026-07-27: "every finding
+  // needs a direct link to the document — open me to the exact spot"). A tie-out discrepancy is not
+  // a stored row, so it carries no `document_id`; it carries the specific conflicting `sources`
+  // instead. When exactly ONE of those sources is an openable document, surface it as the finding's
+  // source document so the card shows the same "Open the source document" link every stored finding
+  // has. When TWO OR MORE are openable, the card already offers the richer side-by-side "this
+  // document vs. that document" compare, so we leave `documentId` unset and let that win — stamping
+  // one of several conflicting docs as "the" source would be arbitrary and misleading. Only ever
+  // ADDS a link (never overrides a real per-document finding's own `document_id`).
+  const extra = { claimKey, availableActions: underwriterActions(actions ? { ...f, actions } : f) };
+  if (f.document_id == null && f.documentId == null && Array.isArray(f.sources)) {
+    const openable = f.sources.filter((s) => s && s.documentId != null);
+    if (openable.length === 1) extra.documentId = openable[0].documentId;
+  }
+  return Object.assign({}, f, extra);
+}
+
+/**
+ * Apply an underwriter ACTION to one stored finding — the single implementation behind
+ * BOTH doors that resolve a finding: the file's own finding card
+ * (POST /:appId/findings/:fid/resolve) and the "Findings to review" queue
+ * (POST /escalations/:id/apply). Extracted 2026-07-26 so the queue can't drift into a
+ * weaker version of the desk: same tiered exception authority, same "fix the file"
+ * write-back, same store call, same audit.
+ *
+ * Returns `{ ok:false, status, body }` for every refusal (the caller just relays it), or
+ * `{ ok:true, updated, fileFix, auth }` on success.
+ */
+async function applyFindingResolution({ actor, appId, finding, action, note, value }) {
+  // Tiered exception authority: granting an exception on a fatal, clear-to-close-blocking
+  // finding — approving the loan despite an unmet hard requirement — needs senior authority
+  // (waive_conditions) above the base sign_off_conditions gate. The reason is still recorded on
+  // the finding for the audit trail. Everything else clears under the base permission.
+  const auth = exceptions.canApply(actor, action, finding, can);
+  if (!auth.ok) return { ok: false, status: 403, body: { error: auth.reason, requiredPermission: auth.requiredPermission } };
+
+  // "Fix the file": when the corrected value maps to a real application column
+  // (purchase price / as-is / ARV / rehab budget), APPLY it to the loan file —
+  // not just record it on the finding. Honors the economics freeze: a frozen
+  // file returns 409 and the finding is NOT resolved (clear the freeze / term-
+  // sheet package first). A field with no application column stays records-only.
+  let fileFix = null;
+  if (action === 'fix_file' && value != null) {
+    const applyFix = require('../lib/underwriting/apply-fix');
+    if (applyFix.fixableColumn(finding.field)) {
+      try {
+        fileFix = await applyFix.applyFindingFixToFile({ appId, field: finding.field, value, actor, db });
+      } catch (e) {
+        if (e && e.status === 409 && e.expose) return { ok: false, status: 409, body: { error: e.message, locked: true } };
+        throw e;
+      }
+    }
+  }
+
+  let updated;
+  const client = await db.pool.connect();
+  try {
+    await client.query('BEGIN');
+    try {
+      updated = await store.resolveFinding(client, { findingId: finding.id, action, note, value, by: actor.id });
+    } catch (e) {
+      await client.query('ROLLBACK').catch(() => {});
+      // validateResolution throws a plain Error with a safe, user-facing reason (unknown action /
+      // missing required note or value). A DB error carries a pg SQLSTATE in e.code — never leak
+      // its internals (column/constraint names) to the client; hand it to the global handler.
+      if (e && e.code) throw e;
+      return { ok: false, status: 400, body: { error: e.message } };
+    }
+    await client.query('COMMIT');
+  } finally {
+    client.release();
+  }
+  if (!updated) return { ok: false, status: 409, body: { error: 'finding was already resolved' } };
+
+  await audit(actor.id, 'underwriting_finding_resolve', appId,
+    { finding: finding.code, action, status: updated.status, note: String(note || '').slice(0, 300),
+      elevated: auth.elevated || null,
+      appliedToFile: fileFix && fileFix.applied ? { field: fileFix.field, column: fileFix.column, value: fileFix.value } : undefined });
+
+  return { ok: true, updated, fileFix, auth };
+}
+
+/** Remaining open fatal findings + derived tie-out fatals — the clear-to-close gate. */
+async function ctcGateCounts(appId) {
+  const openFatal = (await db.query(
+    `SELECT count(*)::int n FROM document_findings
+      WHERE application_id=$1 AND status='open' AND severity='fatal' AND blocks_ctc=true`, [appId])).rows[0].n;
+  const tieout = await tieoutForFile(db, appId);
+  const crossFatal = tieout.discrepancies.filter((f) => f.severity === 'fatal' && f.blocksCtc).length;
+  return { openFatal, crossFatal, blocksCtc: (openFatal + crossFatal) > 0 };
 }
 
 // The file's data-comparison (tie-out) is computed by the shared lib (src/lib/underwriting/
@@ -174,6 +346,43 @@ router.get('/insights/feedback', async (req, res, next) => {
   } catch (e) { next(e); }
 });
 
+// ---- Reliability / calibration report (#194): how trustworthy is the AI? ------
+// Closes the calibration loop: over the shadow decisions whose REAL outcome is now
+// known, how often the AI's would-be verdict matched reality, how well-calibrated
+// its stated confidence is (accuracy, Brier score, per-confidence-bucket calibration
+// + ECE), and the dangerous-miss (confirmed false-clear) rate — plus per-component
+// slices. ADVISORY / measurement only: read-only, changes no decision, promotes
+// nothing (the release gate is what would CONSUME this signal). Portfolio-wide, so
+// see-all staff only; best-effort (empty report until outcomes are ingested).
+// Registered BEFORE '/:appId' so 'insights' isn't read as an application id.
+router.get('/insights/reliability', async (req, res, next) => {
+  try {
+    if (!can(req.actor, 'see_all_files')) return res.status(403).json({ error: 'this report needs access to every file' });
+    const days = Number(req.query.sinceDays);
+    const report = await require('../lib/underwriting/reliability')
+      .loadReliabilityReport(db, { sinceDays: Number.isFinite(days) && days > 0 ? days : 180 });
+    res.json({ ok: true, report });
+  } catch (e) { next(e); }
+});
+
+// #218 — STRICT production-metrics dashboard. Same scored outcomes as the
+// reliability report, but the two SAFETY numbers a lender running an AI
+// underwriter live actually cares about are the HEADLINE: the FALSE-CLEAR rate (a
+// real problem waved through — the release bar is ZERO) and the MISSED-MATERIAL
+// rate (a material finding the AI omitted). Returns a blunt production-readiness
+// status (green / amber / red / insufficient_data) + the blockers. ADVISORY /
+// measurement only — read-only, promotes nothing, gates nothing. Portfolio-wide,
+// so see-all staff only; best-effort (insufficient_data until outcomes accrue).
+router.get('/insights/production-metrics', async (req, res, next) => {
+  try {
+    if (!can(req.actor, 'see_all_files')) return res.status(403).json({ error: 'this report needs access to every file' });
+    const days = Number(req.query.sinceDays);
+    const metrics = await require('../lib/underwriting/production-metrics')
+      .loadProductionMetrics(db, { sinceDays: Number.isFinite(days) && days > 0 ? days : 180 });
+    res.json({ ok: true, metrics, generatedAt: new Date().toISOString() });
+  } catch (e) { next(e); }
+});
+
 // ---- Finding-escalation WORKLOAD (owner-directed 2026-07-21, Items 7 + 12) -----------------
 // A staffer who can't decide a finding escalates it to a super-admin / processor / underwriter,
 // creating a workload item that carries the file link, the finding, its explanation, and the
@@ -185,46 +394,152 @@ router.get('/insights/feedback', async (req, res, next) => {
 router.get('/escalations', async (req, res, next) => {
   try {
     const seeAll = can(req.actor, 'see_all_files');
+    // A staffer who SIGNS OFF conditions sees every escalation on the files they are on —
+    // not only the ones addressed to their own role (owner-directed 2026-07-26). That is what
+    // lets a processor / underwriter pick up a finding someone sent to a super-admin.
+    const anyOnFile = can(req.actor, 'sign_off_conditions');
     const status = ['open', 'resolved', 'dismissed', 'all'].includes(req.query.status) ? req.query.status : 'open';
-    const rows = await escalations.listEscalations({ status, viewer: req.actor, seeAll });
-    const pendingCount = await escalations.pendingCount({ viewer: req.actor, seeAll });
-    // Who may DECIDE an escalation: a super-admin, or the person it was routed to
-    // (their role / assigned to them). The client uses this to show the decide controls.
-    res.json({ escalations: rows, pendingCount, canDecideAll: req.actor.role === 'super_admin' });
+    const rows = await escalations.listEscalations({ status, viewer: req.actor, seeAll, anyOnFile });
+    const pendingCount = await escalations.pendingCount({ viewer: req.actor, seeAll, anyOnFile });
+    // Who may DECIDE each row is now answered PER ROW by the shared rule (escalations.mayDecide)
+    // instead of the client re-deriving it — one definition, no drift. Every row the list query
+    // returned is one the viewer can reach (it scopes on file access), so hasFileAccess is true.
+    const decorated = rows.map((r) => ({
+      ...r,
+      canDecide: escalations.mayDecide({ viewer: req.actor, row: r, can, hasFileAccess: true }).ok,
+    }));
+    res.json({
+      escalations: decorated,
+      pendingCount,
+      // Kept for older clients; the per-row `canDecide` above is what the screen uses.
+      canDecideAll: req.actor.role === 'super_admin' || req.actor.role === 'admin',
+      // May this reviewer APPLY an underwriting action (resolve the finding itself), and may
+      // they clear a fatal clear-to-close-blocking dealbreaker? The screen hides buttons that
+      // would 403 rather than letting the reviewer discover it by clicking.
+      canApplyActions: can(req.actor, 'sign_off_conditions'),
+      canWaive: can(req.actor, 'waive_conditions'),
+    });
   } catch (e) { next(e); }
 });
 
 router.get('/escalations/count', async (req, res, next) => {
   try {
     const seeAll = can(req.actor, 'see_all_files');
-    res.json({ pendingCount: await escalations.pendingCount({ viewer: req.actor, seeAll }) });
+    const anyOnFile = can(req.actor, 'sign_off_conditions');
+    res.json({ pendingCount: await escalations.pendingCount({ viewer: req.actor, seeAll, anyOnFile }) });
   } catch (e) { next(e); }
 });
 
-// Decide (advise + close) an escalation. The person it was routed to may act on it — a
-// super-admin always, or a staffer whose role matches target_role or who it's assigned to.
-// Raising a finding does NOT let you decide your own escalation (that would defeat the point).
+// Load an OPEN escalation and check the caller may decide it. Shared by the plain
+// decide door and the take-the-action door below, so the two can never drift apart.
+// Returns `{ ok:false, status, body }` or `{ ok:true, row }`.
+async function openEscalationFor(req, id) {
+  if (!isUuid(id)) return { ok: false, status: 404, body: { error: 'not found' } };
+  const row = (await db.query(`SELECT * FROM finding_escalations WHERE id=$1`, [id])).rows[0];
+  if (!row) return { ok: false, status: 404, body: { error: 'not found' } };
+  if (row.status !== 'open') return { ok: false, status: 409, body: { error: 'this escalation was already handled' } };
+  // File access is checked for real here (the list query scopes, a direct POST does not):
+  // a super-admin/see-all staffer passes, anyone else must actually be on the file.
+  const hasFileAccess = can(req.actor, 'see_all_files') ? true : !!(await fileFor(req, row.application_id));
+  const verdict = escalations.mayDecide({ viewer: req.actor, row, can, hasFileAccess });
+  if (!verdict.ok) return { ok: false, status: 403, body: { error: verdict.reason } };
+  return { ok: true, row };
+}
+
+// Tell the person who raised the escalation that it was handled (in-app; email only if
+// they turned it on). Best-effort — the decision is already recorded.
+function notifyRaiser(row, actorId, decision, note) {
+  if (!row.requested_by || row.requested_by === actorId) return;
+  notify.notifyStaff(row.requested_by, {
+    type: 'finding_escalation_decided', applicationId: row.application_id,
+    title: `Your escalated finding was ${decision === 'dismissed' ? 'dismissed' : 'resolved'}`,
+    body: `${row.title || 'A finding'} — ${note ? note : (decision === 'dismissed' ? 'no action needed.' : 'handled.')}`,
+    link: `/internal/app/${row.application_id}`,
+  }).catch(() => {});
+}
+
+/**
+ * The finding an escalation is ABOUT, in the shape the decision ledger keys on.
+ *
+ * The escalation carries a SNAPSHOT of the finding (code / field / doc_value /
+ * document_id) taken when it was raised — deliberately, so the queue item stays
+ * readable after the finding is superseded. That snapshot is exactly what the
+ * ledger needs, and it is the ONLY thing available for a DERIVED finding (tie-out,
+ * chain, experience, guideline), which has no row at all.
+ */
+function escalationFindingShape(row) {
+  return {
+    code: row.code, field: row.field || null,
+    document_id: row.document_id || null,
+    docValue: row.doc_value != null ? String(row.doc_value) : null,
+  };
+}
+
+// Decide (advise + close) an escalation.
+//
+// "NO ACTION NEEDED" NOW ACTUALLY SETTLES THE FINDING (owner-reported 2026-07-27:
+// "I escalate the finding to review and then the Super Admin clicks that it's OK …
+// and the finding keeps popping up again"). This door used to close the QUEUE ITEM
+// and leave the finding untouched — which is defensible for "close with advice
+// only" (decision:'resolved', the reviewer has advised, the work remains) but is
+// plainly wrong for "no action needed" (decision:'dismissed'): the reviewer has
+// judged there is nothing to do, and the finding then came straight back on the
+// next view because a derived finding is recomputed every time and a stored one is
+// re-inserted by the next re-read.
+//
+// So a DISMISS here records the decision in the durable ledger (db/333), keyed on
+// the finding's identity, which stops every producer re-raising it — and, when a
+// live stored row exists and the reviewer holds the authority for it, closes that
+// row too so the desk and the count agree. `resolved` still changes nothing about
+// the finding (use POST /escalations/:id/apply for that).
+//
+// Who may decide: see escalations.mayDecide — a super-admin, the person it was routed to, or
+// (owner-directed 2026-07-26) any admin / processor / underwriter who can sign off conditions
+// on that file. You still can't decide an escalation you raised yourself.
 router.post('/escalations/:id/decide', async (req, res, next) => {
   try {
-    if (!isUuid(req.params.id)) return res.status(404).json({ error: 'not found' });
-    const row = (await db.query(`SELECT * FROM finding_escalations WHERE id=$1`, [req.params.id])).rows[0];
-    if (!row) return res.status(404).json({ error: 'not found' });
-    if (row.status !== 'open') return res.status(409).json({ error: 'this escalation was already handled' });
-    const isSuper = req.actor.role === 'super_admin';
-    if (!isSuper) {
-      // The person who RAISED it can't also decide it — that would defeat the purpose (and the
-      // audit trail would show the same staffer raised + resolved). A super-admin is exempt.
-      if (row.requested_by === req.actor.id) return res.status(403).json({ error: 'you raised this finding — another reviewer must decide it' });
-      // Otherwise: it was assigned to me personally (a deliberate hand-off), OR routed to my role
-      // AND I actually have access to the file (never let a scoped staffer decide on a file they
-      // can't see — same per-file scope as everywhere else).
-      let mayDecide = row.assigned_to === req.actor.id;
-      if (!mayDecide && row.target_role === req.actor.role) mayDecide = !!(await fileFor(req, row.application_id));
-      if (!mayDecide) return res.status(403).json({ error: 'this escalation was routed to someone else' });
-    }
+    const got = await openEscalationFor(req, req.params.id);
+    if (!got.ok) return res.status(got.status).json(got.body);
+    const row = got.row;
     const b = req.body || {};
     const decision = b.decision === 'dismissed' ? 'dismissed' : 'resolved';
     const note = (b.note || '').slice(0, 1000);
+
+    // "No action needed" → settle the finding for good, not just the queue item.
+    // The live stored row (if any) is closed through the SAME shared path the desk
+    // uses, so the tiered authority, the audit and the AI-panel mirror all behave
+    // identically. If the reviewer lacks that authority we still record the
+    // decision in the ledger — a super-admin saying "this is fine" must at minimum
+    // stop it being re-raised — and say plainly that the row itself stayed open.
+    let findingSettled = false;
+    let findingNote = null;
+    if (decision === 'dismissed') {
+      const live = row.finding_id
+        ? (await db.query(
+          `SELECT id, code, severity, blocks_ctc, field FROM document_findings
+            WHERE id=$1 AND application_id=$2 AND status='open'`, [row.finding_id, row.application_id])).rows[0]
+        : null;
+      if (live) {
+        const applied = await applyFindingResolution({
+          actor: req.actor, appId: row.application_id, finding: live, action: 'dismiss',
+          note: note || 'No action needed (decided on the findings review queue).',
+        });
+        findingSettled = !!applied.ok;
+        if (!applied.ok) findingNote = applied.body && applied.body.error;
+      }
+      // Always record the identity-level decision: it is the ONLY thing that stops
+      // a DERIVED finding (recomputed on every file view) coming back, and it is
+      // what a re-read carries forward onto the next stored row.
+      const client2 = await db.pool.connect();
+      try {
+        await require('../lib/underwriting/finding-decisions').record(client2, {
+          applicationId: row.application_id, finding: escalationFindingShape(row),
+          origin: 'escalation', decision: 'dismissed',
+          note: note || 'No action needed (findings review queue).', decidedBy: req.actor.id,
+        });
+      } finally { client2.release(); }
+    }
+
     let updated;
     const client = await db.pool.connect();
     try {
@@ -234,17 +549,114 @@ router.post('/escalations/:id/decide', async (req, res, next) => {
     } catch (e) { await client.query('ROLLBACK').catch(() => {}); throw e; } finally { client.release(); }
     if (!updated) return res.status(409).json({ error: 'this escalation was already handled' });
     await audit(req.actor.id, 'underwriting_finding_escalation_decide', row.application_id,
-      { escalation: row.id, finding: row.code, decision, note: note.slice(0, 300) });
-    // Let the person who raised it know it was handled (in-app; email only if they turned it on).
-    if (row.requested_by && row.requested_by !== req.actor.id) {
-      notify.notifyStaff(row.requested_by, {
-        type: 'finding_escalation_decided', applicationId: row.application_id,
-        title: `Your escalated finding was ${decision === 'dismissed' ? 'dismissed' : 'resolved'}`,
-        body: `${row.title || 'A finding'} — ${note ? note : (decision === 'dismissed' ? 'no action needed.' : 'handled.')}`,
-        link: `/internal/app/${row.application_id}`,
-      }).catch(() => {});
+      { escalation: row.id, finding: row.code, decision, note: note.slice(0, 300),
+        findingSettled: decision === 'dismissed' ? findingSettled : undefined });
+    notifyRaiser(row, req.actor.id, decision, note);
+    res.json({ ok: true, escalation: updated, findingSettled, findingNote });
+  } catch (e) { next(e); }
+});
+
+// ---- POST /escalations/:id/apply : take the REAL underwriting action from the queue ----------
+// Owner-directed 2026-07-26. The review screen used to offer only "Mark resolved", which closed
+// the QUEUE ITEM and left the finding sitting open on the loan file — the reviewer thought they
+// had handled it and they hadn't. This door does the whole job in ONE call: it applies the chosen
+// action to the finding through the SAME path as the file's own finding card (applyFindingResolution
+// — same tiered authority, same "fix the file" write-back, same audit), and then closes the queue
+// item. Every action the desk offers is available here.
+//
+// A DERIVED finding (escalated with no stored row — a tie-out/cross-document advisory) has nothing
+// to resolve; "fix the file" still writes the corrected value onto the loan file (which is what
+// makes the discrepancy go away on the next pass) and the queue item closes with the action on
+// record. We say plainly which of the two happened rather than implying the finding was cleared.
+router.post('/escalations/:id/apply', requirePermission('sign_off_conditions'), async (req, res, next) => {
+  try {
+    const got = await openEscalationFor(req, req.params.id);
+    if (!got.ok) return res.status(got.status).json(got.body);
+    const row = got.row;
+    const b = req.body || {};
+    const action = String(b.action || '');
+    const note = (b.note || '').slice(0, 2000);
+    const value = b.value != null ? String(b.value).slice(0, 500) : null;
+    // Validate the action + its required note/value BEFORE anything is written, so a missing
+    // note can't close the queue item while leaving the finding untouched.
+    const v = validateResolution(action, { note, value });
+    if (!v.ok) return res.status(400).json({ error: v.reason });
+
+    // The live finding row, when this escalation points at one that is still open.
+    const fnd = row.finding_id
+      ? (await db.query(
+        `SELECT id, code, severity, blocks_ctc, field FROM document_findings
+          WHERE id=$1 AND application_id=$2 AND status='open'`, [row.finding_id, row.application_id])).rows[0]
+      : null;
+
+    let findingResolved = false;
+    let fileFix = null;
+    let reason = null;
+    if (fnd) {
+      const applied = await applyFindingResolution({
+        actor: req.actor, appId: row.application_id, finding: fnd, action, note, value,
+      });
+      if (!applied.ok) return res.status(applied.status).json(applied.body);
+      findingResolved = applied.updated && applied.updated.status !== 'open';
+      fileFix = applied.fileFix;
+      if (!findingResolved) reason = 'stays_open';   // post_condition / request_document / severity note
+    } else {
+      // No live open finding: either a derived advisory, or it was already resolved elsewhere.
+      reason = row.finding_id ? 'already_resolved' : 'derived';
+      // A DERIVED finding has no row to close, so without this the reviewer's
+      // decision evaporated: the desk recomputes the finding from the file on the
+      // very next view and it is back, which is exactly the owner's report. Record
+      // it against the finding's identity (db/333) so every desk honours it.
+      // Only for the verbs that SETTLE it — post-a-condition / request-a-document
+      // deliberately leave the finding live until the follow-up lands.
+      const client0 = await db.pool.connect();
+      try {
+        await require('../lib/underwriting/finding-decisions').record(client0, {
+          applicationId: row.application_id, finding: escalationFindingShape(row),
+          origin: 'escalation', decision: action, note, decidedBy: req.actor.id,
+        });
+      } finally { client0.release(); }
+      // A corrected value is still worth writing to the loan file — that is the actual fix.
+      if (action === 'fix_file' && value != null && row.field) {
+        const applyFix = require('../lib/underwriting/apply-fix');
+        if (applyFix.fixableColumn(row.field)) {
+          try {
+            fileFix = await applyFix.applyFindingFixToFile({
+              appId: row.application_id, field: row.field, value, actor: req.actor, db,
+            });
+          } catch (e) {
+            if (e && e.status === 409 && e.expose) return res.status(409).json({ error: e.message, locked: true });
+            throw e;
+          }
+        }
+      }
     }
-    res.json({ ok: true, escalation: updated });
+
+    // Close the queue item, recording WHAT was done (not just "resolved"). `dismiss` on the
+    // finding closes the escalation as dismissed so the two agree.
+    const decision = action === 'dismiss' ? 'dismissed' : 'resolved';
+    const label = ((actionCatalog.ACTIONS[actionCatalog.canon(action)] || {}).label) || action.replace(/_/g, ' ');
+    const decisionNote = [label, note].filter(Boolean).join(' — ').slice(0, 1000);
+    let updated;
+    const client = await db.pool.connect();
+    try {
+      await client.query('BEGIN');
+      updated = await escalations.decideEscalation(client, {
+        id: row.id, decision, staffId: req.actor.id, note: decisionNote,
+      });
+      await client.query('COMMIT');
+    } catch (e) { await client.query('ROLLBACK').catch(() => {}); throw e; } finally { client.release(); }
+    // The finding action already succeeded; a lost race on the queue row is not a failure of
+    // the work that was done, so report it rather than 409-ing the whole call.
+    const escalationClosed = !!updated;
+
+    await audit(req.actor.id, 'underwriting_finding_escalation_apply', row.application_id,
+      { escalation: row.id, finding: row.code, action, decision, findingResolved, reason,
+        escalationClosed, note: note.slice(0, 300) });
+    if (escalationClosed) notifyRaiser(row, req.actor.id, decision, decisionNote);
+
+    const gate = await ctcGateCounts(row.application_id);
+    res.json({ ok: true, escalation: updated || null, escalationClosed, action, findingResolved, reason, fileFix, ...gate });
   } catch (e) { next(e); }
 });
 
@@ -258,7 +670,7 @@ router.get('/:appId', async (req, res, next) => {
     // the required-liquidity dollar (read off the assets condition, for the bank-liquidity view).
     const [exts, ff, conds, requiredLiquidity] = await Promise.all([
       db.query(
-        `SELECT id, document_id, doc_type, fields, ocr_engine, ai_model, page_count, confidence, status, reason, created_at
+        `SELECT id, document_id, doc_type, fields, reasoning, ocr_engine, ai_model, page_count, confidence, status, reason, created_at
            FROM document_extractions WHERE application_id=$1 AND is_current ORDER BY created_at`, [app.id]),
       store.getFileFindings(db, app.id),
       db.query(
@@ -287,7 +699,7 @@ router.get('/:appId', async (req, res, next) => {
     // own (application_id), OR filed under one of THIS file's conditions (ci.application_id — catches
     // any doc whose denormalized owner differs), OR one of this file's ENTITY's documents (llc_id).
     const docsOnFile = await db.query(
-      `SELECT d.id, d.filename, d.doc_kind, d.checklist_item_id, t.code AS condition_code,
+      `SELECT d.id, d.filename, d.doc_kind, d.slot_label, d.checklist_item_id, t.code AS condition_code,
               COALESCE(t.label, t.code) AS condition_label, d.page_bounded,
               d.authenticity_score, d.authenticity_level, d.authenticity_signals
          FROM documents d
@@ -314,8 +726,13 @@ router.get('/:appId', async (req, res, next) => {
       // it's a real readable type, so a photo_id / term sheet never pollutes the on-file type set.
       // (A condition-derived type is kept as-is even if the reader doesn't own it — e.g. 'appraisal'
       // stays in the on-file set for completeness but is excluded from the read queue below.)
+      // …then the SLOT it was filed into — the LLC section can attach a document with a slot label
+      // and no checklist item, which leaves it with no condition and no doc_kind. Kept in lock-step
+      // with selectAutoReadQueue; if these two derivations drift, the desk's "documents on file"
+      // count and its read queue disagree and the count never clears.
       const expectedType = expectedDocTypeForCode(d.condition_code) ||
-        (d.doc_kind && registry.get(d.doc_kind) ? d.doc_kind : null);
+        (d.doc_kind && registry.get(d.doc_kind) ? d.doc_kind : null) ||
+        expectedDocTypeForCode(d.slot_label);
       const analyzed = analyzedDocIds.has(d.id);
       if (expectedType) attached.add(expectedType);
       const row = { documentId: d.id, filename: d.filename, conditionCode: d.condition_code || null,
@@ -345,12 +762,18 @@ router.get('/:appId', async (req, res, next) => {
     // readiness (clean / issues / blocked) from its own findings — so every document ties back to
     // the actual checklist. And a file-level coverage rollup: per document-condition, is it
     // analyzed and ready to clear?
+    // A funded file that never re-reads still carries any can't-read finding stored before this rule.
+    // The readiness badge + coverage rollup are computed off the stored findings, so filter them here
+    // too — otherwise a document/condition shows a yellow "issues" badge for a warning that no longer
+    // appears anywhere on the desk. (Completeness at line ~942 deliberately keeps the raw list — it
+    // reacts only to a FATAL finding / confidence='unreadable', never to a can't-read warning.)
+    const ffReadable = require('../lib/underwriting/unreadable-findings').partition(ff.findings).kept;
     const extractions = exts.rows.map((e) => Object.assign({}, e, {
       conditions: conditionsForDoc(e.doc_type),
       purpose: purposeForDoc(e.doc_type),
-      readiness: docReadiness(ff.findings.filter((f) => f.document_id === e.document_id || f.source === e.doc_type)),
+      readiness: docReadiness(ffReadable.filter((f) => f.document_id === e.document_id || f.source === e.doc_type)),
     }));
-    const conditionCoverage = fileConditionCoverage({ conditions: conds.rows, extractions: exts.rows, findings: ff.findings });
+    const conditionCoverage = fileConditionCoverage({ conditions: conds.rows, extractions: exts.rows, findings: ffReadable });
 
     // Staleness / re-verification: project every dated document to the file's target closing
     // date (from the current purchase contract) and surface a freshness board + the forward-
@@ -403,7 +826,7 @@ router.get('/:appId', async (req, res, next) => {
       const contReq = await require('../lib/rehab-budget').sowContingencyRequired(app.id);
       sowContingencyReq = contReq && contReq.required;
     } catch (_) { sowContingencyReq = undefined; }
-    const programGuidelines = programGuidelineSnapshot(uwProgram, { assetMonths, sowContingencyRequired: sowContingencyReq });
+    const programGuidelines = programGuidelineSnapshot(uwProgram, { assetMonths, sowContingencyRequired: sowContingencyReq, noteBuyer: a.lender });
 
     const metrics = computeMetrics({
       loanAmount: a.loan_amount, initialAdvance: reg ? reg.initialAdvance : null,
@@ -419,6 +842,7 @@ router.get('/:appId', async (req, res, next) => {
       exts.rows.some((e) => e.doc_type === 'operating_agreement'));
     const entityChain = isEntity ? buildChain(
       { vestingName: mctx && mctx.vestingName, borrowerName: fileView.borrowerName(mctx && mctx.borrower),
+        isAssignment: !!(a && a.is_assignment),
         // The beneficial-owner verification threshold is program-dependent (Standard 15% / Manual 20%
         // / Gold 25%) — prefer the REGISTERED program, falling back to the application's program.
         program: (reg && reg.program) || (a && a.program) || null }, exts.rows) : null;
@@ -429,6 +853,13 @@ router.get('/:appId', async (req, res, next) => {
     // the borrower's PERSONAL name, suggest the final-assignment-to-LLC condition. Non-duplicative:
     // the seller/buyer FATAL mismatch stays the tie-out's; this adds the view + that condition.
     const sellerChain = buildSellerChain(mctx || {}, exts.rows);
+
+    // CHAIN OF TITLE / ownership trace: the ORDERED, MULTI-HOP reconciliation seller-chain can't
+    // express — owner of record → contract seller → contract buyer → assignor/assignee (every
+    // assignment hop) → vesting entity, confirming each adjacent same-party link. Advisory only
+    // (contract seller ≠ record owner, an assignor who never held the contract, the final buyer ≠
+    // the vesting entity). The personal-name→LLC case is deferred to seller-chain (no duplicate).
+    const chainOfTitle = buildChainOfTitle(mctx || {}, exts.rows);
 
     // Bank LIQUIDITY aggregation: sum every current bank statement's ending balance across the
     // borrower's / verified-entity accounts and compare to the file's required liquidity (read off
@@ -442,6 +873,75 @@ router.get('/:appId', async (req, res, next) => {
     // or unverified anchor is a DEALBREAKER that blocks clear-to-close (owner-directed) — enforced at
     // the gate via fileFatalCount (file-review.js), surfaced here for the desk.
     const experience = await assessExperienceForFile(db, app.id, { today: todayISO() });
+
+    // The note-buyer guideline OVERLAY, run here rather than only in the post-response sync so its
+    // "not happy" items can join the ONE findings list below (owner-directed 2026-07-27: the same
+    // guideline issue was on the screen three times, in three different-looking cards — "merge the
+    // three type of findings… everything should be the same type which is the middle one").
+    // Deterministic and DB-only: no AI call, no cost. Best-effort — a failure here degrades to no
+    // guideline findings, never a broken file view. The SAME desk result is handed to the
+    // post-response ai_suggestions sync so the desk is computed once per view, not twice.
+    const investorDesk = await investorDeskMod.runInvestorGuidelineDesk(app.id, db).catch(() => null);
+    // A HUMAN'S DECISION ON A GUIDELINE ITEM STILL COUNTS (audit 2026-07-27 — this was the one
+    // defect that made the merge worse than what it replaced).
+    //
+    // The desk is a pure function of the file: it re-raises an unhappy item on EVERY view, forever.
+    // The only record that someone already dealt with one lives on its `ai_suggestions` mirror —
+    // the surface that used to carry the Dismiss / Escalate / Convert buttons, and which this change
+    // hides as a repeat. Read that mirror back and honour it, or an underwriter who dismisses "Blue
+    // Lake requires a feasibility report" on a light-rehab file watches it reappear every time they
+    // open the loan, with nothing to click. Retracting nothing and hiding the buttons is strictly
+    // worse than the duplication it replaced.
+    //
+    //   closed (dismissed / converted / noted …) → drop the finding; the decision stands, and the
+    //                                              row is still there under "Show dismissed".
+    //   open / asked_admin                       → carry the suggestion id so the merged card can
+    //                                              act through the SAME endpoints the AI card used.
+    //   no row yet (first view — the sync writes  → show it read-only; it becomes actionable on the
+    //   after the response)                        next view.
+    // Best-effort: a failed read leaves every finding read-only, never hides one.
+    // One key can legitimately own SEVERAL rows over a file's life: the desk retracts a rule, later
+    // raises it again, and `record()` inserts a fresh row each time rather than reviving the closed
+    // one. So the pick has to be deliberate, not "whichever row the scan happened to return last":
+    // an OPEN row wins (there is live work), then a decision a HUMAN made (it should still suppress
+    // the finding), and only then the desk's own automatic withdrawal.
+    const isgRows = await db.query(
+      // ORDERED so the pick is a RULE, not an accident of the scan (re-audit 2026-07-27). Two rows
+      // for one key can tie on `isgRank`; today the right one wins only because an index happens to
+      // return it first, and a planner that seq-scans would silently flip the card's state. Newest
+      // first is the tie-break: a later row is the later truth about that key.
+      `SELECT id, dedupe_key, status, important, decided_by_staff_id FROM ai_suggestions
+        WHERE application_id=$1 AND source=$2
+        ORDER BY created_at DESC, id DESC`, [app.id, deskFindings.SOURCE])
+      .then((r) => r.rows).catch(() => []);
+    const isgRank = (r) => ISG_OPEN_STATUSES.has(r.status) ? 3 : (r.decided_by_staff_id ? 2 : 1);
+    const isgByKey = new Map();
+    for (const r of isgRows) {
+      const k = String(r.dedupe_key == null ? '' : r.dedupe_key).trim().toLowerCase();
+      if (!k) continue;
+      const prev = isgByKey.get(k);
+      if (!prev || isgRank(r) > isgRank(prev)) isgByKey.set(k, r);
+    }
+    const investorDeskFindings = deskFindings.deskToFindings(investorDesk).map((f) => {
+      // EVERY kind is mirrored now — all five flags go through deskToSuggestions, so every finding
+      // carries an isgKey (pre-merge audit 2026-07-27: this guard's old comment claimed the exact
+      // opposite and named the two kinds that had just been wired IN). Kept only as a defensive
+      // floor: a keyless finding renders read-only rather than looking up the string "undefined".
+      if (!f.isgKey) return f;
+      const row = isgByKey.get(String(f.isgKey).trim().toLowerCase());
+      if (!row) return f;
+      // THE OPEN SET IS THE ONE THIS FILE ALREADY USES EVERYWHERE ELSE (re-audit 2026-07-27).
+      // `escalated` and `marked_important` are not decisions, they are ways of saying "this still
+      // needs handling, louder" — every other query here counts them as open (see the escalation and
+      // silenced-code queries below). Dropping them made "Mark important" DELETE the card the
+      // staffer had just flagged, and made the card's own "Already escalated" hint unreachable.
+      if (!ISG_OPEN_STATUSES.has(row.status)) return null;
+      return Object.assign({}, f, {
+        suggestionId: row.id,
+        suggestionStatus: row.status,
+        important: !!row.important,
+      });
+    }).filter(Boolean);
 
     // File completeness / stipulations: diff the required-document matrix (adapted to this deal)
     // against what's analyzed on file → outstanding-items list + a completeness %. A VIEW only.
@@ -458,7 +958,8 @@ router.get('/:appId', async (req, res, next) => {
     const reasonability = assessReasonability({
       extractions: exts.rows, today: todayISO(),
       economics: { purchasePrice: a.purchase_price, loanAmount: a.loan_amount, asIsValue: a.as_is_value,
-        arv: a.arv, rehabBudget: a.rehab_budget, assignmentFee: a.assignment_fee, underlyingPrice: a.underlying_contract_price },
+        arv: a.arv, rehabBudget: a.rehab_budget, assignmentFee: a.assignment_fee, underlyingPrice: a.underlying_contract_price,
+        isAssignment: a.is_assignment },
     });
 
     const perDoc = ff.findings.map(decorate);
@@ -466,19 +967,167 @@ router.get('/:appId', async (req, res, next) => {
     // metric warnings + reasonability data-integrity flags + seller-chain advisories into the same
     // fatal/warning gate (all warning-only → never change the CTC-blocking fatal count, but they
     // surface in the roll-up).
+    const cotFindings = (chainOfTitle.findings || []).filter(Boolean);
+    const sellerChainFindings = (sellerChain.findings || []).filter(Boolean);
+    // THE 4th GUIDELINE SURFACE (owner-reported 2026-07-27). The whole-loan run's note-buyer rule
+    // table (investor-guideline-review) wrote its findings ONLY to `underwriting_run_findings`,
+    // read back by the run cockpit. They never reached `openRaw`, so they never passed through the
+    // one deduped registry — and a rural / New York / transferred-appraisal file asserted the same
+    // fact TWICE, in two places, at two severities: a read-only warning in Open findings (from the
+    // desk) and a dealbreaker in the cockpit (from the run). Folding them in here is what makes it
+    // ONE list; `claimKey` (declared by both producers off the shared signal name) is what lets
+    // dedupeByClaim see they are one fact, and its existing worst-wins rule keeps the dealbreaker.
+    //
+    // ADVISORY, exactly like the desk's: `blocksCtc:false` and NO stored id, so the card renders
+    // read-only and `file-review.fileFatalCount` (the real CTC gate) never counts it. The run's own
+    // R6.18 issuance backstop is untouched — this changes WHERE the fact is shown, never gating.
+    const investorRunFindings = await loadRunGuidelineFindings(db, app.id);
     const openRaw = [...perDoc, ...cross, ...staleness.findings, ...metrics.findings, ...amendments.findings,
-      ...(entityChain ? entityChain.findings : []), ...reasonability.findings, ...sellerChain.findings,
-      ...bankLiquidity.findings, ...(experience ? experience.findings : [])];
-    // De-duplicate the few FILE-economic findings that legitimately appear on more than one document
-    // — the assignment fee over the cap shows on BOTH the purchase contract and the assignment, but
-    // the desk should count/show it ONCE.
-    const DEDUP_ONCE = new Set(['assignment_fee_over_cap']);
-    const seenDup = new Set();
-    const openAll = openRaw.filter((f) => {
-      if (!f || !DEDUP_ONCE.has(f.code)) return true;
-      if (seenDup.has(f.code)) return false;
-      seenDup.add(f.code); return true;
-    });
+      ...(entityChain ? entityChain.findings : []), ...reasonability.findings, ...sellerChainFindings,
+      ...cotFindings, ...bankLiquidity.findings, ...(experience ? experience.findings : []),
+      ...investorDeskFindings, ...investorRunFindings];
+
+    // FILE-LEVEL entity-screening rollup (owner-reported 2026-07-26/27: "this entity WAS screened —
+    // look on the watch list — you just don't look deep enough"). computeBackgroundFindings runs PER
+    // report and can only see one document, so on a two-report file the report that did not carry the
+    // borrowing entity raises "entity not screened" even though ANOTHER report DID screen it. Ask the
+    // question across EVERY background extraction; when at least one screened the entity, drop the
+    // stale per-report finding here AND resolve its stored row so the fraud/OFAC condition can clear
+    // (fraud-autoclear gates on NOT EXISTS an open background_report finding). Only ever SUPPRESSES a
+    // false positive — if NO report screened the entity the finding stands.
+    try {
+      const vestingEntity = mctx && mctx.vestingName;
+      if (vestingEntity) {
+        const bgFields = exts.rows.filter((e) => e.doc_type === 'background_report').map((e) => e.fields || {});
+        const screenedFileWide = require('../lib/underwriting/doc-checks').entityScreenedAcrossReports(bgFields, vestingEntity);
+        if (screenedFileWide === true) {
+          const NOT_SCREENED = new Set(['background_entity_not_screened', 'entity_not_screened']);
+          for (let i = openRaw.length - 1; i >= 0; i--) {
+            if (openRaw[i] && NOT_SCREENED.has(openRaw[i].code)) openRaw.splice(i, 1);
+          }
+          // Resolve the stored finding so fraud-autoclear's NOT-EXISTS gate can clear the condition.
+          // Best-effort, fire-and-forget — never blocks or fails the file view.
+          db.query(
+            `UPDATE document_findings SET status='resolved', updated_at=now()
+              WHERE application_id=$1 AND source='background_report'
+                AND code IN ('background_entity_not_screened','entity_not_screened')
+                AND COALESCE(status,'open') NOT IN ('resolved','dismissed')`, [app.id]).catch(() => {});
+        }
+      }
+    } catch (_) { /* additive rollup — a failure here never affects the finding list */ }
+
+    // FILE-LEVEL bank-entity dedup (owner-reported 2026-07-27: "the same business account flagged 4
+    // times"). computeBankFindings runs PER STATEMENT, so N statements under the SAME entity each
+    // raise their own bank_business_entity_unverified / bank_account_other_entity — one real issue
+    // shown N times. Collapse the same-holder duplicates to ONE surviving card (the smallest
+    // document_id — a stable identity across re-reads). This is DISPLAY-ONLY: the folded stored rows
+    // are left OPEN, NOT auto-resolved here, because a display-time resolve records nothing in the
+    // durable ledger and the siblings would simply re-open on the next re-read (the rotating-survivor
+    // reappear the ledger exists to prevent). The human's decision on the surviving card is applied
+    // to every folded sibling — and RECORDED in the ledger for each — by the holder cascade in
+    // store.resolveFinding, so one dismiss keeps them all gone across re-reads. Advisory WARNINGS
+    // only: the clear-to-close fatal count (file-review.fileFatalCount, from stored fatals) is
+    // untouched, and every downstream count reads this post-splice list.
+    try {
+      const { resolvedIds } = require('../lib/underwriting/bank-entity-dedup').collapseBankEntityDuplicates(openRaw);
+      if (resolvedIds.length) {
+        const drop = new Set(resolvedIds.map(String));
+        for (let i = openRaw.length - 1; i >= 0; i--) {
+          const f = openRaw[i];
+          if (f && f.id != null && drop.has(String(f.id))) openRaw.splice(i, 1);
+        }
+      }
+    } catch (_) { /* advisory dedup — a failure here never affects the finding list */ }
+
+    // ONE finding per real-world ISSUE (owner-reported 2026-07-26: the contract-buyer/vesting
+    // mismatch appeared SIX times on one file, the entity-OFAC gap three times).
+    //
+    // Several desks independently and correctly notice the same fact and each names it with its own
+    // code, so keying on the code — which is all the old one-entry DEDUP_ONCE set and the bespoke
+    // chain-of-title-vs-seller-chain suppression did — never collapsed them. Dedupe now keys on the
+    // CLAIM (what the finding asserts), so every desk that agrees merges into the single most
+    // informative finding, carrying `mergedFrom` so nothing is lost. Adding a desk that re-notices an
+    // existing fact means adding its code to a family in finding-claims.js — never another
+    // hand-written suppression here.
+    const dedupedAll = require('../lib/underwriting/finding-claims').dedupeByClaim(openRaw)
+      // A FOLDED RUN FINDING ONLY EARNS A PLACE ON THIS DESK IF IT MERGED WITH SOMETHING
+      // ACTIONABLE (pre-merge audit 2026-07-27, second pass). The run's rule table emits no
+      // `id` and no `suggestionId`, and most of its rules declare no shared signal, so a
+      // rule like `isg_bl_ny_loan` folds in, merges with nothing, inherits no handle — and
+      // the AI panel renders an action menu only on `id`/`suggestionId`. The result was a
+      // permanent FATAL card with zero buttons, on every view, forever, directly under copy
+      // promising "a finding you dismiss stays gone". Its `actions: ['clear','dismiss']` were
+      // dead: `decorate()` computes them, but the render is gated on the handles.
+      //
+      // So a handle-less run finding stays where it already lived — the run cockpit, which
+      // is exactly as visible as before this change. What the fold is FOR is the collapse:
+      // when the desk has already raised the same fact, the run's dealbreaker severity wins
+      // and the merged card keeps the desk row's handle, so it is fully actionable. Nothing
+      // is hidden and nothing becomes un-dismissable.
+      //
+      // `mergedFrom` is part of the test on purpose (re-audit 2026-07-27). A desk finding
+      // carries no handle either until its `ai_suggestions` mirror exists, and that sync
+      // runs AFTER the response — so on the view where a desk warning and the run's fatal
+      // first meet, the survivor can be handle-less through no fault of the run. Dropping
+      // it there would swallow the DESK's finding, which would have been on this list
+      // regardless. So only a row that merged with nothing — one that exists purely
+      // because of the fold — is held back.
+      .filter(module.exports._foldFilter);
+    // "IF PILOT CAN'T READ IT, DON'T GIVE A FINDING" — DISPLAY belt-and-suspenders (owner-directed
+    // 2026-07-28). The persist chokepoint (store.saveAnalysis) stops any NEW or re-read analysis from
+    // ever BORN a can't-read / can't-extract finding, but a FUNDED file that never re-reads still
+    // carries the ones already stored. Filter them off the desk here too, so previous files are clean
+    // immediately without a costly forced re-read. Returned as `unreadableSuppressed` (auditable, off
+    // the main desk — not swallowed). The document is still chased for a clearer copy via its
+    // `confidence='unreadable'` completeness signal, untouched. Runs BEFORE the ledger + AI gates so
+    // every downstream count is over the findings a human actually sees. Reversible with the same
+    // switch as the persist filter: UW_UNREADABLE_FINDINGS_SHOW=1. FAILS OPEN (never throws).
+    const unreadableFindings = require('../lib/underwriting/unreadable-findings');
+    const readableSplit = unreadableFindings.partition(dedupedAll);
+    const readableAll = readableSplit.kept;
+    const unreadableSuppressed = readableSplit.suppressed.map(decorate);
+    // A FINDING A HUMAN ALREADY SETTLED DOES NOT COME BACK (owner-reported
+    // 2026-07-27: "I dismiss it, or the super-admin grants an exception, and it
+    // keeps popping up again").
+    //
+    // The DERIVED desks above (tie-out, entity/seller chain, chain of title, bank
+    // liquidity, experience, reasonability, metrics, staleness, note-buyer
+    // guidelines) are pure functions of the file: they re-raise their findings on
+    // EVERY view, forever, and have no stored row for a Dismiss to attach to. The
+    // durable ledger (db/332) is keyed on the finding's identity rather than a row,
+    // so a decision taken anywhere — this desk, the "Findings to review" queue, the
+    // AI panel — removes it from every one of them.
+    //
+    // The settled ones are still RETURNED (as `settledFindings`) so the desk can
+    // show "already dealt with" and offer to re-open one, rather than silently
+    // swallowing work. FAILS OPEN: an unreadable ledger hides nothing.
+    const fdec = require('../lib/underwriting/finding-decisions');
+    const settledKeys = await fdec.suppressedKeys(db, app.id);
+    const split = fdec.filterSuppressed(settledKeys, readableAll);
+    const openAllUngated = split.kept;
+    const settledFindings = split.suppressed.map(decorate);
+
+    // AI FINDING-REVIEW GATE — the DISPLAY pass (owner-directed 2026-07-27: "don't post a finding as
+    // real unless it passed the AI"). Synchronous, no GPT: it reads the remembered AI verdicts
+    // (finding_ai_reviews, db/338) and DROPS any finding the AI confidently judged a false alarm —
+    // exactly like a human dismissal above — while ENRICHING every survivor with the AI's suggested
+    // resolution/document (so suggestions are built on top of findings). The verdicts are filled by
+    // the background review pass in the setImmediate block below. Advisory + FAIL-OPEN: no verdict
+    // yet / AI off / memory unreadable → the finding shows exactly as before. `aiReviewMem` is read
+    // once and reused for the per-section `live()` helper so a suppressed finding can't reappear in
+    // a sub-panel.
+    let aiReviewMem = new Map();
+    try { aiReviewMem = await findingAiReview.memoryAllForFile(db, app.id); } catch (_) { aiReviewMem = new Map(); }
+    const aiGate = findingAiReview.annotateFindings(openAllUngated, aiReviewMem);
+    const aiSuppressedFindings = aiGate.suppressed.map(decorate);
+    // FINDINGS TRIAGE (owner-directed 2026-07-27) — re-order the shown findings into the AI's
+    // worklist ("look here first") and annotate each with its priority (primary / secondary / noise)
+    // + a one-line why. DISPLAY-ONLY + best-effort: no ranking yet / AI off → the plain list order is
+    // kept. The downstream stable severity sort preserves this order WITHIN each severity band, so a
+    // dealbreaker is never sorted below noise. The background pass (setImmediate) fills the rankings.
+    let triageMem = new Map();
+    try { triageMem = await findingsTriage.readMemory(db, app.id); } catch (_) { triageMem = new Map(); }
+    const openAll = findingsTriage.applyTriage(aiGate.shown, triageMem);
 
     // Sync computed chain + bank findings → ai_suggestions (owner-directed 2026-07-22,
     // HARD RULE). Best-effort, fired AFTER the response so file view stays fast; dedupe
@@ -490,41 +1139,144 @@ router.get('/:appId', async (req, res, next) => {
     setImmediate(() => {
       (async () => {
         const c = await db.pool.connect();
+        // Fix 2026-07-23 (#211): each step runs under its OWN SAVEPOINT. Before
+        // this, one failing step aborted the shared transaction (25P02) — every
+        // later step silently no-oped AND the rollback wiped the earlier steps'
+        // suggestions. The concrete trigger: app.id was passed as the bank
+        // bridge's documentId, violating the ai_suggestions.document_id FK
+        // (23503) on ANY file with a bank finding — so the whole post-view
+        // detector sync recorded NOTHING on those files, every render.
+        // Returns what `fn` returned, so a step whose RESULT matters (the guideline sync reports
+        // whether it had to skip its retraction) can actually be inspected. It awaited but discarded
+        // the value before — which silently made that inspection dead code, the very same
+        // "return value goes nowhere" defect it was added to fix, one layer up. On a failed step the
+        // return is undefined, which every caller must tolerate.
+        const step = async (fn) => {
+          try {
+            await c.query('SAVEPOINT view_sync');
+            const out = await fn();
+            await c.query('RELEASE SAVEPOINT view_sync');
+            return out;
+          } catch (_) { await c.query('ROLLBACK TO SAVEPOINT view_sync').catch(() => {}); return undefined; }
+        };
         try {
           await c.query('BEGIN');
-          if (entityChain || sellerChain) {
-            await syncEntityChain.syncChainsToSuggestions(c, app.id, { entityChain, sellerChain });
+          if (entityChain || sellerChain || chainOfTitle) {
+            await step(() => syncEntityChain.syncChainsToSuggestions(c, app.id, { entityChain, sellerChain, chainOfTitle }));
           }
           if (bankFindingsFlat.length) {
-            // Bank-statement findings live per-document; group them under a synthetic doc id
-            // (the first per-doc source we can identify) — sync bridges accept a documentId.
-            await syncBankBridge.syncBankFindingsToSuggestions(c, app.id, app.id, bankFindingsFlat);
+            // These liquidity roll-up findings are FILE-level (no single source
+            // document) — documentId null records an app-level suggestion.
+            await step(() => syncBankBridge.syncBankFindingsToSuggestions(c, app.id, null, bankFindingsFlat));
           }
           // R3.18 — Bad-clearance scan: for every satisfied condition on the file,
           // run the classifier on its attached doc and post a "may have been cleared
           // with the wrong document" suggestion when the type doesn't match.
           // Dormant when the classifier isn't configured; capped per run.
-          try { await require('../lib/underwriting/bad-clearance').scanFile(c, app.id, { maxConditions: 15 }); } catch (_) { /* additive */ }
+          await step(() => require('../lib/underwriting/bad-clearance').scanFile(c, app.id, { maxConditions: 15 }));
           // R4.2 — Identity chain deep check: SSN/DOB/name mismatches across
           // every borrower-carrying doc → ai_suggestions. Best-effort.
-          try {
-            await require('../lib/underwriting/identity-chain').analyzeAndRecord(c, {
-              applicationId: app.id, extractions: exts.rows,
-            });
-          } catch (_) { /* additive */ }
+          await step(() => require('../lib/underwriting/identity-chain').analyzeAndRecord(c, {
+            applicationId: app.id, extractions: exts.rows,
+            people: [fileView.borrowerName(mctx && mctx.borrower), fileView.borrowerName(mctx && mctx.coBorrower)]
+              .filter(Boolean).concat((mctx && mctx.ownerNames) || []),
+          }));
           // R3.23 — Public-records cross-check (advisory): seller/grantor/appraisal
           // owner + vesting/buyer chain mismatches → ai_suggestions. Best-effort.
-          try {
-            await require('../lib/underwriting/public-records-crosscheck').analyzeAndRecord(c, {
-              applicationId: app.id,
-              fileCtx: { vestingName: mctx && mctx.vestingName },
-              extractions: exts.rows,
-            });
-          } catch (_) { /* additive */ }
+          await step(() => require('../lib/underwriting/public-records-crosscheck').analyzeAndRecord(c, {
+            applicationId: app.id,
+            fileCtx: { vestingName: mctx && mctx.vestingName },
+            extractions: exts.rows,
+          }));
+          // ISG overlay (owner-directed 2026-07-23): forward the note buyer's
+          // "not happy" items — a MISSING required condition (FATAL for a
+          // construction feasibility report on a ground-up / heavy rehab file) or
+          // a value that CONFLICTS with the guideline — into the finding surface
+          // so they actually surface (a fatal notifies the LO/processor). The
+          // desk stays quiet on OPEN conditions. Advisory: records ai_suggestions,
+          // posts/clears nothing, touches no frozen number.
+          // The desk was already computed above (its unhappy items now join the ONE findings list),
+          // so hand that SAME result over rather than re-running it — one view, one desk run. A
+          // failed desk read passes null, which makes the sync load its own exactly as before.
+          const isgSync = await step(() => require('../lib/underwriting/investor-guidelines/desk-sync')
+            .syncInvestorGuidelineFindings(c, app.id, { desk: investorDesk || undefined }));
+          // A SKIPPED RETRACTION MUST LEAVE A TRACE (audit 2026-07-26). The retraction is what keeps
+          // a corrected rule from leaving stale notices open forever — the owner's original
+          // complaint — and it is now gated on the desk having read the file cleanly. That gate is
+          // the right call, but silent: if a loader started failing on every run, retraction would
+          // be globally dead and the owner would see the exact same stale findings again with
+          // nothing anywhere saying why. One line turns a silent regression into a visible one.
+          if (isgSync && isgSync.degraded) {
+            console.warn('[isg] retraction skipped for %s — the guideline desk could not read: %s',
+              app.id, (isgSync.degradedSources || []).join(', ') || 'unknown');
+          }
+          // #199 — party collusion (independence-required parties sharing an
+          // identity) + double-pledged collateral (this property on another live
+          // loan). Advisory — records ai_suggestions, never auto-blocks.
+          await step(() => require('../lib/underwriting/party-collusion').analyzeAndRecord(c, {
+            applicationId: app.id,
+            fileCtx: { vestingName: mctx && mctx.vestingName },
+            extractions: exts.rows,
+          }));
+          await step(() => require('../lib/underwriting/party-collusion').checkDoublePledgeAndRecord(c, {
+            applicationId: app.id,
+          }));
+          // PILOT advisory overlay (owner-directed 2026-07-24): lay PILOT's "ready /
+          // agrees / revisit" advisory on top of the human layer for every Condition
+          // Center condition it can judge. Never signs anything off — advisory only.
+          await step(() => require('../lib/underwriting/pilot-advice-engine').runFileAdvice(c, app.id));
+          // Fidelis flood zone (owner-directed 2026-07-27): on a Fidelis file the flood cert
+          // is absent until a flood zone is proven, then REQUIRED (db/335). This is the
+          // backstop for the two states the conditions engine cannot fix — a flood zone with
+          // no condition on the file, or one still marked optional by db/335 §3. Withdraws
+          // itself when it stops being true. Advisory — records an ai_suggestion, posts nothing.
+          await step(() => require('../lib/underwriting/fidelis-flood-advisory')
+            .syncFidelisFloodAdvisory(c, app.id));
+          // Mis-filed document heads-up (owner-directed 2026-07-27): PILOT's own AI reasoning already
+          // worked out what each document ACTUALLY is; when it's confident a document doesn't match the
+          // slot it was filed under, raise a plain-language "re-read / move it" advisory. Advisory
+          // only — records an ai_suggestion, re-classifies nothing, blocks nothing.
+          await step(() => require('../lib/underwriting/misfiled-document-advisory')
+            .syncMisfiledDocumentAdvisory(c, app.id));
           await c.query('COMMIT');
         } catch (_) { await c.query('ROLLBACK').catch(() => {}); }
         finally { c.release(); }
       })().catch(() => {});
+      // Keep the file's whole-loan RUN fresh on every staff view so the run
+      // cockpit / "why this decision" / investor-guideline escalations reflect
+      // the current file (R6.14/R6.15). Its OWN connection + transaction (never
+      // the `c` above); deduped so it only writes a new immutable run when a real
+      // input moved; best-effort — a run must never break or slow the file view
+      // (advisory only, records nothing a human must act on).
+      require('../lib/underwriting/run').maybeRunWholeLoan(app.id, db, 'file_view').catch(() => {});
+
+      // AI FINDING-REVIEW GATE — the BACKGROUND pass (owner-directed 2026-07-27). Send each
+      // currently-shown finding to the AI grounded on the WHOLE loan file + its source document, ask
+      // whether it is a real concern or a misunderstanding, and REMEMBER the verdict + the AI's
+      // suggested resolution/document (finding_ai_reviews). The next view's display pass reads those
+      // verdicts to suppress false alarms + enrich real ones. Its OWN pool connection, off the hot
+      // path; deduped by fingerprint (a reviewed finding is never re-billed) + cost-capped +
+      // best-effort — a finding it can't reach just stays shown (fail-open). Never blocks/changes a
+      // number. Reviews the UNGATED list so a finding gets a verdict even on its first appearance.
+      try {
+        const sourceDocsById = new Map();
+        for (const e of (exts.rows || [])) {
+          if (e && e.document_id != null) sourceDocsById.set(String(e.document_id), { docType: e.doc_type, fields: e.fields, reasoning: e.reasoning });
+        }
+        findingAiReview.reviewFindings({ client: db, appId: app.id, findings: openAllUngated, db, sourceDocsById }).catch(() => {});
+      } catch (_) { /* background review never affects the response */ }
+
+      // FINDINGS TRIAGE — the BACKGROUND pass (owner-directed 2026-07-27): rank the shown findings
+      // into a worklist (primary/secondary/noise) against the whole file, so the next view can show
+      // "look here first". Memoized by the finding SET (re-runs only when it changes), cost-capped,
+      // best-effort — display-only, never blocks/changes a number.
+      findingsTriage.reviewTriage({ client: db, appId: app.id, findings: openAll, db }).catch(() => {});
+
+      // WHOLE-FILE NARRATIVE COHERENCE — the BACKGROUND pass (owner-directed 2026-07-27): read the
+      // whole loan file as a story and record advisory "does this hold together?" concerns
+      // (ai_suggestions). Memoized by the file-state hash (re-runs only when the file changes), so it
+      // is not billed on every view. Best-effort; records advice only, never blocks/changes a number.
+      require('../lib/underwriting/ai-narrative').analyzeFile(db, app.id, db).catch(() => {});
     });
 
     // Fraud / red-flag score: aggregate every open signal above + the economic red flags into one
@@ -534,11 +1286,35 @@ router.get('/:appId', async (req, res, next) => {
       economics: { purchasePrice: a.purchase_price, asIsValue: a.as_is_value, arv: a.arv } });
     const openWithRisk = risk.finding ? [...openAll, risk.finding] : openAll;
 
+    // THE COUNTS ARE THE RESOLVABLE WORK — the note-buyer guideline notes are counted SEPARATELY
+    // (audit 2026-07-27). `summary.fatal` feeds the section badge AND `computeVerdict`'s reason[0],
+    // which renders as "N fatal findings to resolve". A guideline note is not one of those: it is a
+    // read of a DIFFERENT buyer's rulebook, it never blocks clear-to-close, and the real gate
+    // (file-review.fileFatalCount) does not count it. Folding them into `fatal` would make the
+    // headline say "3 fatal findings to resolve" on a file the gate reports as 1 — the exact
+    // desk-disagrees-with-the-gate hazard finding-claims.js was written to prevent, arriving through
+    // a different door. They still render in the ONE list below with their real severity chip; only
+    // the counter distinguishes them.
+    // KEYED ON THE CATEGORY, not the source (pre-merge audit 2026-07-27). The folded run findings
+    // carry source 'investor_guideline' while the desk's carry 'investor_guideline_desk' — a
+    // DIFFERENT string — so every one of them escaped this filter and landed in `summary.fatal`,
+    // which `file-review.fileFatalCount` (the real gate) cannot see. That is exactly the
+    // desk-disagrees-with-the-gate hazard the note above says must never happen. It also survives
+    // the merge: when the run's fatal wins, the survivor's SOURCE flips but its category does not.
+    const isgOnly = (f) => module.exports._isgOnly(f);
+    const countable = openWithRisk.filter((f) => !isgOnly(f));
+    const guidelineNotes = openWithRisk.filter(isgOnly);
     const summary = {
-      fatal: openWithRisk.filter((f) => f.severity === 'fatal').length,
-      warning: openWithRisk.filter((f) => f.severity === 'warning').length,
-      info: openWithRisk.filter((f) => f.severity === 'info').length,
-      blocksCtc: openWithRisk.some((f) => f.severity === 'fatal' && (f.blocks_ctc ?? f.blocksCtc)),
+      fatal: countable.filter((f) => f.severity === 'fatal').length,
+      warning: countable.filter((f) => f.severity === 'warning').length,
+      info: countable.filter((f) => f.severity === 'info').length,
+      blocksCtc: countable.some((f) => f.severity === 'fatal' && (f.blocks_ctc ?? f.blocksCtc)),
+      // What the note buyer is unhappy about, counted on its own so the desk can say so without
+      // claiming it is clear-to-close work.
+      guideline: {
+        fatal: guidelineNotes.filter((f) => f.severity === 'fatal').length,
+        warning: guidelineNotes.filter((f) => f.severity === 'warning').length,
+      },
     };
     // One plain-English headline tying every roll-up together — the owner's at-a-glance read.
     const verdict = computeVerdict({ summary, risk, completeness, entityChain, extractionsCount: exts.rows.length });
@@ -581,34 +1357,69 @@ router.get('/:appId', async (req, res, next) => {
       }))).rootCauses;
     } catch (_) { rootCauses = []; }
 
+    // Each panel section renders its OWN findings array as well as the consolidated
+    // list, so a settled finding has to be dropped from BOTH or it stays visible in
+    // its section — which is exactly the "it didn't actually disappear" report. One
+    // helper, applied to every section, so a new section can't quietly skip it.
+    // Drops a human-settled finding AND an AI-rejected one (same memory as the consolidated list),
+    // then enriches each survivor with its AI review — so a suppressed finding can't linger in a
+    // sub-panel and every section carries the same AI suggestion the main list does.
+    const live = (arr) => {
+      // Drop the can't-read findings from the sub-panel too (same switch + predicate as the
+      // consolidated list) so one can't linger in a section after being filtered off the main desk.
+      const readable = unreadableFindings.partition((arr || []).filter(Boolean)).kept;
+      const kept = fdec.filterSuppressed(settledKeys, readable).kept;
+      return findingAiReview.annotateFindings(kept, aiReviewMem).shown.map(decorate);
+    };
+
     res.json({
       escalatedFindings: escalatedByFinding,
+      // Findings a human already dismissed / cleared / granted an exception on. They
+      // are NOT re-raised anywhere above; returned so the desk can show "already
+      // dealt with" and offer to put one back, instead of silently swallowing work.
+      settledFindings,
+      // Findings the AI review confidently judged a false alarm (grounded on the whole loan file +
+      // the source document) — kept out of the live list, returned so the desk can show "PILOT
+      // flagged this; the AI thinks it's not a real concern" and offer to put one back.
+      aiSuppressedFindings,
+      // Findings PILOT raised only to say it could not READ a document or EXTRACT a value — the
+      // owner's "if they can't read it they should not give a finding" rule. Kept off every live list
+      // above, returned here so the desk can still show "PILOT couldn't read these" if it wants to.
+      // The documents themselves stay in the "still to read" queue via their completeness signal.
+      unreadableSuppressed,
       fraudBanner,
       verdict,
       rootCauses,
       // AUS: which program this file is underwritten against + that program's governing thresholds.
       programGuidelines,
       extractions,
-      findings: perDoc,
+      findings: live(ff.findings),
       tieout: { columns: tieout.columns, matrix: tieout.matrix, summary: tieout.summary },
-      crossDocument: cross,
+      crossDocument: live(cross),
       conditionCoverage,
-      staleness: { closingDate, board: staleness.board, findings: staleness.findings.map(decorate) },
+      staleness: { closingDate, board: staleness.board, findings: live(staleness.findings) },
       metrics: { loanAmount: metrics.loanAmount, maxLoan: metrics.maxLoan, binding: metrics.binding,
-        rows: metrics.metrics, findings: metrics.findings.map(decorate) },
+        rows: metrics.metrics, findings: live(metrics.findings) },
       entityChain: entityChain ? { status: entityChain.status, edges: entityChain.edges, owners: entityChain.owners,
-        vestingName: entityChain.vestingName, findings: entityChain.findings.map(decorate) } : null,
+        vestingName: entityChain.vestingName, findings: live(entityChain.findings) } : null,
       sellerChain: { status: sellerChain.status, nodes: sellerChain.nodes, edges: sellerChain.edges,
         finalHolder: sellerChain.finalHolder, reachesVesting: sellerChain.reachesVesting,
-        findings: sellerChain.findings.map(decorate) },
+        findings: live(sellerChain.findings) },
+      chainOfTitle: { status: chainOfTitle.status, hops: chainOfTitle.hops, ownershipPath: chainOfTitle.ownershipPath,
+        finalBuyer: chainOfTitle.finalBuyer, reachesVesting: chainOfTitle.reachesVesting,
+        findings: live(cotFindings) },
       bankLiquidity: { requiredLiquidity: bankLiquidity.requiredLiquidity, qualifyingTotal: bankLiquidity.qualifyingTotal,
         excludedTotal: bankLiquidity.excludedTotal, shortfall: bankLiquidity.shortfall,
         accounts: bankLiquidity.accounts, statementsCount: bankLiquidity.statementsCount,
-        findings: bankLiquidity.findings.map(decorate) },
+        // Statements recognized as an account already on the table. Without this the assets table
+        // just quietly loses a row and the total drops with no stated reason — which is as confusing
+        // as the double-count it replaced, and on the very screen where the owner found that bug.
+        notCountedTwice: bankLiquidity.notCountedTwice,
+        findings: live(bankLiquidity.findings) },
       experience: experience ? { demandTier: experience.demandTier, demandLabel: experience.demandLabel,
         requiredLabel: experience.requiredLabel, gated: experience.gated, hasVerifiedAnchor: experience.hasVerifiedAnchor,
         exceptionGranted: experience.exceptionGranted, anchors: experience.anchors, trackRecordCount: experience.trackRecordCount,
-        findings: experience.findings.map(decorate) } : null,
+        findings: live(experience.findings) } : null,
       completeness: { completenessPct: completeness.completenessPct, counts: completeness.counts,
         stipulations: completeness.stipulations, outstanding: completeness.outstanding,
         ctcBlockers: completeness.ctcBlockers, docsComplete: completeness.docsComplete,
@@ -621,15 +1432,22 @@ router.get('/:appId', async (req, res, next) => {
         reasons: risk.reasons, finding: risk.finding ? decorate(risk.finding) : null },
       amendments: { effective: amendments.effective, provenance: amendments.provenance,
         hasAmendments: amendments.hasAmendments, unexecuted: amendments.unexecuted,
-        findings: amendments.findings.map(decorate) },
-      reasonability: { checks: reasonability.checks, findings: reasonability.findings.map(decorate) },
+        findings: live(amendments.findings) },
+      reasonability: { checks: reasonability.checks, findings: live(reasonability.findings) },
       // ONE consolidated list of every open finding the summary counts — so "2 warnings" maps to a
       // visible list of exactly 2 items (owner-reported: "it says 2 warnings and I can't see them").
       // It's the same de-duplicated roll-up (openWithRisk) the counts come from, decorated so each is
       // actionable; the desk shows it once at the top instead of scattering findings across sections.
       // A persisted per-document finding (has an id) is resolvable; a derived advisory (tie-out /
       // metric / staleness) is display-only and clears when its underlying data changes.
-      allFindings: openWithRisk.map(decorate),
+      // WORST FIRST (audit 2026-07-27). The list is built by concatenating ~12 desks in source
+      // order, and the guideline desk is appended last — so on a Blue Lake ground-up file the FATAL
+      // "no feasibility condition on the file" rendered BELOW every info-level note, in the one list
+      // the owner asked to be the single place to look. Sorted by severity, stable within a band
+      // (Array.prototype.sort is stable in Node ≥ 11), so each desk's own ordering is preserved.
+      allFindings: [...openWithRisk]
+        .sort((x, y) => (SEVERITY_RANK[y && y.severity] || 0) - (SEVERITY_RANK[x && x.severity] || 0))
+        .map(decorate),
       summary,
       docTypes: registry.docTypes(),
       analyzers: { reader: docint.configured(), ai: azureOpenai.available() },
@@ -664,12 +1482,24 @@ router.get('/:appId', async (req, res, next) => {
 // — otherwise file B's document could be analyzed and mis-filed onto file A (same borrower). Only
 // the borrower is matched, not the file's LLC — the staff document picker is scoped the same way.
 async function fileDoc(app, documentId) {
+  // THE FILE'S OWN VESTING ENTITY IS A THIRD DOOR (owner-reported 2026-07-26, reproduced on a real
+  // database). The LLC section's documents carry `application_id NULL` + `llc_id`, and were resolved
+  // only through the borrower branch — so whenever the entity is filed under a DIFFERENT borrower
+  // record (a co-borrower's profile, a layered owning entity), all three LLC documents were queued
+  // for reading and then failed to resolve, every time. Nothing was ever read, so the desk reported
+  // "no operating agreement on file", "no EIN letter on file", "no good-standing certificate on
+  // file" while all of them sat in their slots. That is exactly what the owner saw.
+  //
+  // Scoped to THIS file's own llc_id — not the borrower's entities generally — so it opens nothing
+  // wider than the vesting entity the loan is actually closing into.
   return (await db.query(
     `SELECT id, application_id, borrower_id, filename, content_type, storage_provider, storage_ref, sha256, page_bounded
        FROM documents
       WHERE id=$1 AND is_current
-        AND (application_id=$2 OR (application_id IS NULL AND borrower_id IS NOT NULL AND borrower_id=$3))`,
-    [documentId, app.id, app.borrower_id])).rows[0] || null;
+        AND (application_id=$2
+             OR (application_id IS NULL AND borrower_id IS NOT NULL AND borrower_id=$3)
+             OR (application_id IS NULL AND llc_id IS NOT NULL AND llc_id=$4))`,
+    [documentId, app.id, app.borrower_id, app.llc_id || null])).rows[0] || null;
 }
 
 // Read + check ONE document — the SHARED core of the manual /analyze endpoint AND the auto-reader.
@@ -681,6 +1511,12 @@ async function fileDoc(app, documentId) {
 async function analyzeOneDocument(app, doc, docType, opts = {}) {
   const actorId = opts.actorId || null;
   const force = !!opts.force;
+  // The un-funded re-read sweep re-reads OLD documents across the whole book. Its findings are not
+  // new to the humans, so it re-records WITHOUT re-firing the "new fatal AI finding" staff/admin
+  // email — otherwise a portfolio-wide re-read would bombard every file's team (and re-alert a
+  // fatal a human already dismissed). Threaded into saveAnalysis (→ assignment-fraud) and the
+  // authenticity record below. Interactive reads (a real actorId) always notify.
+  const suppressNotify = !!opts.suppressNotify;
   const base = { documentId: doc.id, filename: doc.filename, docType };
   try {
     if (!doc.storage_ref) return { ...base, ok: false, error: 'no_stored_file' };
@@ -700,7 +1536,10 @@ async function analyzeOneDocument(app, doc, docType, opts = {}) {
         analyzerVersion: ANALYZER_VERSION, subjectHash: subjHash,
       });
       if (cached) {
-        const findings = await store.findingsForExtraction(db, cached.id);
+        // Same as the fresh path: a cached extraction persisted BEFORE this rule may still carry a
+        // can't-read finding row, so filter it out of the analyze response too (same switch).
+        const findings = require('../lib/underwriting/unreadable-findings')
+          .partition(await store.findingsForExtraction(db, cached.id)).kept;
         if (actorId) await audit(actorId, 'underwriting_analyze', app.id, { documentId: doc.id, docType, ok: true, cached: true });
         return { ...base, ok: true, cached: true, extractionId: cached.id, status: cached.status, confidence: cached.confidence, findings };
       }
@@ -722,14 +1561,62 @@ async function analyzeOneDocument(app, doc, docType, opts = {}) {
       subject, today: todayISO(),
     });
 
+    // CREDIT XML wins over the AI read of the PDF (owner 2026-07-27: "we have an XML — learn to read
+    // it"). The credit report is parsed on import into credit_reports.parsed (structured, authoritative
+    // — scores + every tradeline). When a completed parse exists for this document's borrower, use it
+    // to build the credit finding instead of the OCR/AI read, so the desk never says "could not be
+    // read with confidence" while a parsed report sits on the file, and lists per-mortgage late detail
+    // from the XML. Best-effort + guarded: only for credit_report, only when the XML has real data,
+    // and it re-runs the SAME computeCreditFindings on the XML-derived fields (no new finding logic).
+    if (docType === 'credit_report' && result && result.extraction) {
+      try {
+        const borrowerId = doc.borrower_id || app.borrower_id || null;
+        if (borrowerId) {
+          const cr = await db.query(
+            `SELECT parsed FROM credit_reports
+              WHERE borrower_id = $1 AND COALESCE(status,'') = 'completed' AND parsed IS NOT NULL
+              ORDER BY (application_id = $2) DESC, COALESCE(report_date, created_at) DESC
+              LIMIT 1`, [borrowerId, app.id]);
+          let parsed = cr.rows[0] && cr.rows[0].parsed;
+          if (typeof parsed === 'string') { try { parsed = JSON.parse(parsed); } catch (_) { parsed = null; } }
+          const xmlFields = parsed && require('../lib/underwriting/credit-from-xml').creditFieldsFromParsed(parsed);
+          if (xmlFields) {
+            result.extraction.fields = Object.assign({}, result.extraction.fields, xmlFields);
+            result.extraction.status = 'analyzed';
+            result.extraction.confidence = 'definite';
+            result.extraction.reason = null;
+            result.findings = (registry.get('credit_report').check(result.extraction.fields, subject)) || [];
+            result.ok = true;
+          }
+        }
+      } catch (_) { /* additive — a failure leaves the AI read + its findings untouched */ }
+    }
+
+    // PER-DOCUMENT REASONING (owner-directed 2026-07-27, the tax-cert incident): before we persist,
+    // let the AI work out what this document ACTUALLY is and who each party is (their role/side), so
+    // the tie-out can refuse a cross-side comparison (the vesting LLC vs a tax-cert owner). OFF unless
+    // UW_DOC_REASONING_ENABLED=1 + Azure configured; cost-capped per file; best-effort — a null result
+    // leaves the tie-out behaving exactly as before. Never blocks, never changes a number.
+    if (result && result.ok && result.extraction) {
+      try {
+        const reasoning = await documentReasoning.reasonAboutDocument({
+          client: db, appId: app.id, documentId: doc.id, docType,
+          fields: result.extraction.fields, ocrText: result.extraction.ocrText,
+        });
+        if (reasoning) result.extraction.reasoning = reasoning;
+      } catch (_) { /* additive — reasoning never breaks an analysis */ }
+    }
+
     const client = await db.pool.connect();
     let saved;
+    let authFatalSignal = null; // set inside the tx, recorded AFTER COMMIT (audit M2)
     try {
       await client.query('BEGIN');
       saved = await store.saveAnalysis(client, {
         documentId: doc.id, applicationId: app.id, borrowerId: doc.borrower_id || app.borrower_id,
         docType, extraction: result.extraction, findings: result.findings,
         analyzedSha256: doc.sha256 || null, analyzerVersion: ANALYZER_VERSION, subjectHash: subjHash,
+        suppressNotify,
       });
       // Authenticity scoring (Sovereign, blueprint 2026-07-22): score the PDF
       // bytes for tampering signals + stash on the documents row. If the score
@@ -751,12 +1638,37 @@ async function analyzeOneDocument(app, doc, docType, opts = {}) {
             [app.id, doc.borrower_id || app.borrower_id, doc.id, saved.extractionId,
              'This document shows signs of tampering',
              `Signals: ${signalsFired || 'metadata anomalies'}. Ask the borrower for a fresh copy sent DIRECTLY by the source (bank, insurance carrier, appraiser). Do not act on the extracted values until a clean copy is on file.`]);
+          // R3.14 fix (2026-07-23): the major-fraud banner reads ai_suggestions
+          // (source='authenticity', severity='fatal') — the document_findings row
+          // above never reaches it, so the banner's authenticity branch was dead
+          // code. Stash the high-alert signal and record it AFTER COMMIT (audit
+          // M2: an in-transaction record() failure — e.g. a dedupe-race 23505 —
+          // would abort/poison the tx and silently roll back the whole analysis).
+          authFatalSignal = { docType, score: auth.score, signalsFired: signalsFired || null };
         }
       } catch (_) { /* authenticity is additive */ }
       await client.query('COMMIT');
     } catch (e) { await client.query('ROLLBACK').catch(() => {}); throw e; }
     finally { client.release(); }
 
+    // R3.14 fix (2026-07-23): record the low-authenticity high-alert signal as
+    // an ai_suggestion AFTER the analyze tx committed — an in-tx record()
+    // failure (dedupe-race 23505 etc.) would have poisoned the transaction and
+    // silently rolled back the whole analysis (pre-merge audit M2). Advisory
+    // only — the banner blocks nothing; deduped per document.
+    if (authFatalSignal) {
+      try {
+        await require('../lib/underwriting/ai-suggestions').record(null, {
+          applicationId: app.id, documentId: doc.id,
+          source: 'authenticity', kind: 'finding', severity: 'fatal',
+          title: 'A key document shows strong signs of tampering',
+          body: `Signals: ${authFatalSignal.signalsFired || 'metadata anomalies'}. The AI changed nothing — review the document and request a fresh copy directly from the source.`,
+          evidence: { code: 'doc_low_authenticity', docType: authFatalSignal.docType, score: authFatalSignal.score, signals: authFatalSignal.signalsFired },
+          dedupeKey: `doc_low_authenticity:${doc.id}`,
+          suppressNotify,
+        });
+      } catch (_) { /* additive — never fails the analyze result */ }
+    }
     if (actorId) await audit(actorId, 'underwriting_analyze', app.id, { documentId: doc.id, docType, ok: result.ok, findings: (result.findings || []).map((f) => f.code), reason: result.reason || null });
     // Materialize the CTC gate condition when analysis produced a blocking fatal (mirrors the manual path).
     if ((result.findings || []).some((f) => f.severity === 'fatal' && f.blocksCtc)) {
@@ -766,7 +1678,11 @@ async function analyzeOneDocument(app, doc, docType, opts = {}) {
       ...base, ok: result.ok, cached: false, extractionId: saved.extractionId,
       status: result.extraction && result.extraction.status,
       confidence: result.extraction && result.extraction.confidence,
-      findings: result.findings || [], reason: result.reason || null,
+      // The analyze response returned the RAW engine output, which still holds a can't-read finding
+      // that saveAnalysis just dropped from persistence — so it could flash on the desk until the next
+      // file-view fetch. Filter it here too (same switch), so "never on the desk" holds on every path.
+      findings: require('../lib/underwriting/unreadable-findings').partition(result.findings || []).kept,
+      reason: result.reason || null,
     };
   } catch (e) {
     // Keep the ORIGINAL error object (with .code/.status) so the manual endpoint can propagate it to
@@ -857,11 +1773,18 @@ const AUTOREAD_MAX_PER_CALL = Math.max(1, parseInt(process.env.UNDERWRITING_AUTO
 // document filed under a condition mapped to a readable document type, that has no current
 // extraction yet. Pulls this file's own docs, its entity's LLC docs, and anything under its
 // conditions (mirrors the GET's documentsOnFile query).
-async function buildAutoReadQueue(app) {
+//
+// `opts.includeAnalyzed` — when true, keep documents that ALREADY have a current extraction in the
+// queue instead of skipping them. The normal auto-reader skips analyzed docs (an unchanged re-read
+// would just hit the cache); the un-funded RE-READ sweep needs the opposite — it re-reads the
+// already-analyzed documents with the improved reader (via analyzeOneDocument's `force`), because a
+// reader fix does not retroactively touch a file that was read once. Everything else is identical.
+async function buildAutoReadQueue(app, opts = {}) {
+  const includeAnalyzed = !!opts.includeAnalyzed;
   const a0 = (await db.query(`SELECT llc_id FROM applications WHERE id=$1`, [app.id])).rows[0] || {};
   const [docs, exts] = await Promise.all([
     db.query(
-      `SELECT d.id, d.filename, d.doc_kind, d.page_bounded, t.code AS condition_code
+      `SELECT d.id, d.filename, d.doc_kind, d.slot_label, d.page_bounded, t.code AS condition_code
          FROM documents d
          LEFT JOIN checklist_items ci ON ci.id = d.checklist_item_id
          LEFT JOIN checklist_templates t ON t.id = ci.template_id
@@ -870,7 +1793,9 @@ async function buildAutoReadQueue(app) {
           AND COALESCE(d.source_type, '') <> 'chat_attachment'
           AND ( d.application_id = $1 OR ci.application_id = $1 OR (d.llc_id IS NOT NULL AND d.llc_id = $2) )
         ORDER BY d.created_at`, [app.id, a0.llc_id || null]),
-    db.query(`SELECT document_id FROM document_extractions WHERE application_id=$1 AND is_current AND document_id IS NOT NULL`, [app.id]),
+    includeAnalyzed
+      ? Promise.resolve({ rows: [] })
+      : db.query(`SELECT document_id FROM document_extractions WHERE application_id=$1 AND is_current AND document_id IS NOT NULL`, [app.id]),
   ]);
   return selectAutoReadQueue({
     documents: docs.rows,
@@ -896,6 +1821,10 @@ router.post('/:appId/auto-read', async (req, res, next) => {
     const results = [];
     let read = 0, cached = 0, unreadable = 0;
     for (const item of batch) {
+      // Pipeline V2 SHADOW feed: also queue this document into the durable V2 pipeline when the
+      // shadow gate is open for its family. Best-effort + never throws + no-op by default, so it
+      // can never affect the V1 auto-read below or any borrower/staff-facing result.
+      await maybeEnqueueUpload(db, { documentId: item.id, loanId: app.id, family: item.expectedType });
       const doc = await fileDoc(app, item.id);
       if (!doc) { results.push({ documentId: item.id, filename: item.filename, docType: item.expectedType, ok: false, error: 'not_found', unreadable: false, findings: 0 }); continue; }
       const r = await analyzeOneDocument(app, doc, item.expectedType, { actorId: req.actor.id });
@@ -948,6 +1877,202 @@ router.post('/:appId/avm-consensus/verify', requirePermission('sign_off_conditio
   } catch (e) { next(e); }
 });
 
+// #192 — advisory guideline evaluation. Runs the file's flat rule CONTEXT (the
+// same one the conditions engine builds) through the active knowledge-graph rules
+// (registered program + any note-buyer investor), returning per-rule verdicts +
+// plain citations + an investor-fit ranking. READ-ONLY and advisory — it changes
+// no decision, clears no condition, sizes no loan, and touches NO frozen pricing/
+// guideline number; it explains the frozen baselines db/260 recorded as data.
+// Staff-only (inherits requireAuth+requireStaff on the router); best-effort — an
+// unseeded knowledge graph returns an empty-but-valid report, never an error.
+router.get('/:appId/guideline-evaluation', async (req, res, next) => {
+  try {
+    const app = await fileFor(req, req.params.appId);
+    if (!app) return res.status(404).json({ error: 'not found' });
+    const gi = require('../lib/underwriting/guideline-intelligence');
+    const report = await gi.evaluateApplicationGuidelines(app.id);
+    if (report) report.generatedAt = new Date().toISOString();
+    res.json({ ok: true, report: report || { empty: true, applicationId: app.id, sets: [], fit: { ranked: [], best: null, anyFit: false, comparison: [] } } });
+  } catch (e) { next(e); }
+});
+
+// ISG-3 — Investor-Specific Soft Guidelines desk. For the file's NOTE BUYER, works out
+// which note-buyer condition guidelines apply, then judges each against the file: satisfied
+// (the mapped PILOT condition is cleared), outstanding, or CONFLICTS with the guideline
+// (a value contradicts the buyer's limit), plus which applicable-but-unmapped conditions to
+// suggest posting, and the deferred (attorney-hold / post-closing) set shown separately.
+// READ-ONLY / advisory — it posts nothing, blocks nothing, clears no condition, and touches
+// NO frozen number; it explains the note buyer's own guidelines against this file. Staff-only
+// (inherits requireAuth+requireStaff); best-effort — a file with no note-buyer guidelines
+// returns a valid empty result, never an error.
+router.get('/:appId/investor-guidelines', async (req, res, next) => {
+  try {
+    const app = await fileFor(req, req.params.appId);
+    if (!app) return res.status(404).json({ error: 'not found' });
+    const deskMod = require('../lib/underwriting/investor-guidelines/desk');
+    const desk = await deskMod.runInvestorGuidelineDesk(app.id, db);
+    if (desk) desk.generatedAt = new Date().toISOString();
+    res.json({ ok: true, desk });
+  } catch (e) { next(e); }
+});
+
+// Document-reviewer guidance — "what to look for on this document." Projects the note
+// buyer's condition checklist (required_evidence + specific checks) onto a document TYPE,
+// so when staff (or the AI read) open, say, an insurance policy, they see exactly what
+// this note buyer needs confirmed on it (dwelling coverage = replacement cost, mortgagee
+// clause ISAOA/ATIMA, premium paid, ...). Reads the file's note buyer to filter; advisory /
+// read-only. Staff-only (router guard). Query: ?docType=insurance
+router.get('/:appId/document-review-guide', async (req, res, next) => {
+  try {
+    const app = await fileFor(req, req.params.appId);
+    if (!app) return res.status(404).json({ error: 'not found' });
+    const docType = String(req.query.docType || '').slice(0, 60);
+    let noteBuyer = null;
+    try {
+      noteBuyer = (await db.query('SELECT lender FROM applications WHERE id=$1', [app.id])).rows[0]?.lender || null;
+    } catch (_e) { /* best-effort — an unknown note buyer just returns every buyer's checklist */ }
+    const guide = require('../lib/underwriting/document-review-guide')
+      .reviewGuideForDocType(docType, { noteBuyerKey: noteBuyer });
+    res.json({ ok: true, noteBuyer, ...guide });
+  } catch (e) { next(e); }
+});
+
+// ISG AI satisfaction-quality check (owner-directed: "each investor guideline built
+// in an AI way to understand documents / conditions / the file"). For the file's
+// SATISFIED note-buyer conditions, asks the grounded GPT brain (grounded on the
+// canonical Loan File Primer) whether the CLEARED evidence actually meets the
+// investor's EXACT rule, and records an advisory if not. ON DEMAND only (a human
+// clicks) so GPT spend stays controlled; env-gated (Azure OpenAI) + per-file
+// cost-capped; ADVISORY only — records ai_suggestions, blocks/clears nothing.
+// Returns immediately and runs the (bounded) checks in the background; the
+// advisories appear in the AI panel on its next refresh. Best-effort.
+router.post('/:appId/investor-guidelines/ai-verify', async (req, res, next) => {
+  try {
+    const app = await fileFor(req, req.params.appId);
+    if (!app) return res.status(404).json({ error: 'not found' });
+    if (!require('../lib/ai/azure-openai').available()) {
+      return res.json({ ok: false, reason: 'AI analyzer not configured', started: false });
+    }
+    const deskMod = require('../lib/underwriting/investor-guidelines/desk');
+    const desk = await deskMod.runInvestorGuidelineDesk(app.id, db).catch(() => null);
+    const satisfied = ((desk && Array.isArray(desk.verdicts)) ? desk.verdicts : [])
+      .filter((v) => v && v.verdict === 'satisfied');
+    res.json({ ok: true, started: true, satisfiedTotal: satisfied.length });
+    setImmediate(() => {
+      (async () => {
+        const verify = require('../lib/underwriting/investor-guidelines/ai-guideline-verify');
+        // Load the file's current per-document extracted fields ONCE so the grounded
+        // check can read the specific document numbers (e.g. a hazard policy's dwelling
+        // coverage), reused across every condition — best-effort, {} on any error.
+        const docFields = await verify.loadFileExtractedFields(db, app.id).catch(() => ({}));
+        for (const v of satisfied.slice(0, 12)) {
+          const r = await verify.verifySatisfiedCondition(db, {
+            applicationId: app.id,
+            condition: { name: v.name, required_evidence: v.required_evidence, checks: v.checks, cond_no: v.cond_no },
+            docFields,
+            db,
+          }).catch(() => null);
+          if (r && r.reason === 'cost cap reached') break;   // stop at the per-file spend cap
+        }
+      })().catch(() => { /* additive best-effort — never affects the request */ });
+    });
+  } catch (e) { next(e); }
+});
+
+// #197 — whole-loan run cockpit. Reads the latest immutable underwriting run
+// (schema db/266) for the file and folds it into ONE staff panel: the current
+// decision (status + the three gates), what CHANGED since the previous run
+// (run-diff), the ordered "what to do next" worklist (next-actions), and the
+// findings rolled up by category (findings-digest). READ-ONLY / advisory — it
+// summarizes an already-computed, already-persisted run; it runs nothing, decides
+// nothing, clears no condition, and touches NO frozen pricing number. Staff-only
+// (inherits requireAuth+requireStaff on the router); best-effort — a file that has
+// never been run returns a valid hasRun:false payload, never an error.
+router.get('/:appId/underwriting-run', async (req, res, next) => {
+  try {
+    const app = await fileFor(req, req.params.appId);
+    if (!app) return res.status(404).json({ error: 'not found' });
+    const cockpit = await require('../lib/underwriting/run-cockpit').loadRunCockpit(app.id, db);
+    if (cockpit) cockpit.generatedAt = new Date().toISOString();
+    res.json({ ok: true, cockpit: cockpit || { hasRun: false } });
+  } catch (e) { next(e); }
+});
+
+// #179 (R6.16) — "Why this decision?" — a plain-language explanation of the file's
+// latest whole-loan run: what the verdict IS in everyday words, which of the three
+// gates (term sheet / CTC / funding) are blocked and by what, and what to do next.
+// It reads the latest immutable run + its findings, reconstructs the decision, and
+// runs the deterministic decision-explainer. READ-ONLY / advisory — it formats an
+// already-computed run; it decides nothing, clears no condition, touches NO frozen
+// number. Staff-only (router requireAuth+requireStaff). A file with no run returns a
+// valid hasRun:false payload, never an error.
+router.get('/:appId/underwriting-run/why', async (req, res, next) => {
+  try {
+    const app = await fileFor(req, req.params.appId);
+    if (!app) return res.status(404).json({ error: 'not found' });
+    const decision = await require('../lib/underwriting/run-cockpit').loadCurrentDecision(app.id, db);
+    if (!decision) return res.json({ ok: true, hasRun: false });
+    const explanation = require('../lib/underwriting/decision-explainer').explainDecision(decision);
+    res.json({
+      ok: true,
+      hasRun: true,
+      runId: decision.runId || null,
+      asOf: decision.asOf || null,
+      explanation,
+      generatedAt: new Date().toISOString(),
+    });
+  } catch (e) { next(e); }
+});
+
+// #179 (R6.16) — findings EXPORT. Streams the file's latest whole-loan run findings
+// as a CSV an underwriter or examiner can open in a spreadsheet (a one-line status
+// summary, a header row, one row per finding, CSV-injection-safe). READ-ONLY /
+// advisory — it serializes an already-computed run; it decides nothing and touches NO
+// frozen number. Staff-only (router requireAuth+requireStaff). A file with no run
+// returns a valid header-only CSV (200), never an error.
+router.get('/:appId/underwriting-run/findings.csv', async (req, res, next) => {
+  try {
+    const app = await fileFor(req, req.params.appId);
+    if (!app) return res.status(404).json({ error: 'not found' });
+    const decision = await require('../lib/underwriting/run-cockpit').loadCurrentDecision(app.id, db);
+    const csv = require('../lib/underwriting/findings-export').toCSV(decision || {});
+    const safeId = String(app.id).replace(/[^A-Za-z0-9._-]/g, '');
+    res.setHeader('Content-Type', 'text/csv; charset=utf-8');
+    res.setHeader('Content-Disposition', `attachment; filename="whole-loan-findings_${safeId}.csv"`);
+    res.setHeader('Cache-Control', 'no-store');
+    res.send(csv);
+  } catch (e) { next(e); }
+});
+
+// #217 — the never-block ISSUANCE verdict at every issuance point. For each action
+// (term sheet / CTC / funding) it returns the two-tier answer from the shared
+// issuance POLICY (issuance-policy.js): CLEAR (proceed, no warning), ADVISORY (any
+// staff member proceeds — a heads-up, not a gate), or FATAL (a super-admin-
+// overridable HARD WARNING — a super-admin can ALWAYS proceed). It NEVER returns an
+// un-overridable block: the AI never hard-blocks a loan (owner-directed). READ-ONLY
+// / advisory — it reads the latest run's issuance gate and applies policy; it
+// decides nothing, clears nothing, and touches NO frozen pricing number. Best-effort:
+// a file with no run, or any read error, degrades to a non-blocking advisory (the
+// policy fails OPEN), never a 500. The UI's term-sheet / CTC / funding actions
+// consult this so a genuine fatal shows as a super-admin-overridable warning and
+// everything else is a proceed-past advisory. Staff-only (router requireAuth+requireStaff).
+router.get('/:appId/issuance-check', async (req, res, next) => {
+  try {
+    const app = await fileFor(req, req.params.appId);
+    if (!app) return res.status(404).json({ error: 'not found' });
+    const policy = require('../lib/underwriting/issuance-policy');
+    const gate = require('../lib/underwriting/issuance-gate');
+    const actorRole = (req.actor && req.actor.role) || null;
+    const only = String((req.query && req.query.action) || '').trim();
+    const actions = gate.ACTIONS.includes(only) ? [only] : gate.ACTIONS;
+    const issuance = {};
+    for (const a of actions) {
+      issuance[a] = await policy.resolveFromLatestRun(app.id, a, db, { actorRole });
+    }
+    res.json({ ok: true, actorRole, issuance, generatedAt: new Date().toISOString() });
+  } catch (e) { next(e); }
+});
+
 // ---- Section 1071 coverage classifier (R2.10, blueprint compliance) ------
 // The CFPB Section 1071 small-business lending data-collection rule takes
 // effect January 1, 2028. This endpoint tells staff whether PILOT is on the
@@ -992,6 +2117,27 @@ router.get('/:appId/twin/fact/:factKey', async (req, res, next) => {
     if (!factKey) return res.status(400).json({ error: 'fact key required' });
     const twin = require('../lib/underwriting/twin');
     const history = await twin.factWithHistory(app.id, factKey, db);
+    // R5.17 — attach each observation's grounded evidence span(s): the exact OCR
+    // quote + page it came from, so the UI can show "click a fact → here's where
+    // we saw it". Best-effort, bounded to the first 25 observations to avoid an
+    // N+1 blowup; a load failure just leaves that observation without a snippet.
+    try {
+      const ledger = require('../lib/underwriting/evidence-ledger');
+      const obs = Array.isArray(history.observations) ? history.observations : [];
+      await Promise.all(obs.slice(0, 25).map(async (o) => {
+        if (!o || !o.id) return;
+        const spans = await ledger.spansForFact(db, o.id).catch(() => []);
+        o.evidenceSpans = (spans || []).map((s) => ({
+          quote: s.quote != null ? String(s.quote).slice(0, 400) : null,
+          pageNumber: s.page_number != null ? s.page_number : null,
+          spanType: s.span_type || null,
+          supportType: s.support_type || null,
+          documentId: s.document_id || null,
+          // R5.17 — precise normalized 0..1 box for the page overlay (null → text fallback).
+          polygon: Array.isArray(s.polygon) && s.polygon.length ? s.polygon : null,
+        }));
+      }));
+    } catch (_e) { /* evidence enrichment is additive — never breaks the drilldown */ }
     res.json({ ok: true, factKey, ...history });
   } catch (e) { next(e); }
 });
@@ -1143,6 +2289,39 @@ router.get('/:appId/findings/:fid/similar-open', async (req, res, next) => {
   } catch (e) { next(e); }
 });
 
+// R5.17 — on-demand: the grounded evidence behind ONE finding (the exact OCR
+// quote + page it was raised from). Fetched only when an underwriter expands
+// "where we saw this", so the big desk read stays lean. Staff-only (router
+// guard) + IDOR-checked (finding must belong to this file). Read-only.
+router.get('/:appId/findings/:fid/evidence', async (req, res, next) => {
+  try {
+    const app = await fileFor(req, req.params.appId);
+    if (!app) return res.status(404).json({ error: 'not found' });
+    if (!isUuid(req.params.fid)) return res.status(404).json({ error: 'finding not found' });
+    const f = (await db.query(
+      `SELECT id FROM document_findings WHERE id=$1 AND application_id=$2`,
+      [req.params.fid, app.id])).rows[0];
+    if (!f) return res.status(404).json({ error: 'finding not found' });
+    let spans = [];
+    try {
+      const ledger = require('../lib/underwriting/evidence-ledger');
+      const rows = await ledger.spansForFinding(db, f.id).catch(() => []);
+      spans = (rows || []).map((s) => ({
+        quote: s.quote != null ? String(s.quote).slice(0, 400) : null,
+        pageNumber: s.page_number != null ? s.page_number : null,
+        spanType: s.span_type || null,
+        role: s.role || null,
+        documentId: s.document_id || null,
+        // R5.17 — the exact normalized 0..1 bounding polygon so the viewer can
+        // draw the precise box on the page (null → the UI falls back to a
+        // text-search highlight of the quote).
+        polygon: Array.isArray(s.polygon) && s.polygon.length ? s.polygon : null,
+      })).filter((s) => s.quote);
+    } catch (_e) { /* evidence is additive — return an empty list, never an error */ }
+    res.json({ ok: true, findingId: f.id, spans });
+  } catch (e) { next(e); }
+});
+
 router.post('/:appId/findings/similar/bulk-resolve', requirePermission('sign_off_conditions'), async (req, res, next) => {
   try {
     const app = await fileFor(req, req.params.appId);
@@ -1208,7 +2387,7 @@ router.post('/:appId/findings/:fid/committee-review', requirePermission('sign_of
       [req.params.fid, app.id])).rows[0];
     if (!fnd) return res.status(404).json({ error: 'finding not found or already resolved' });
     const context = {
-      borrowerName: [fnd.first_name, fnd.last_name].filter(Boolean).join(' ') || null,
+      borrowerName: require('../lib/person-name').displayName(fnd) || null,
       entityName:   fnd.entity_name || null,
       propertyAddress: fnd.property_address && (fnd.property_address.line1 || fnd.property_address.address) || null,
       program:      fnd.program || null,
@@ -1266,55 +2445,25 @@ router.post('/:appId/findings/:fid/resolve', requirePermission('sign_off_conditi
     const note = (b.note || '').slice(0, 2000);
     const value = b.value != null ? String(b.value).slice(0, 500) : null;
 
-    // The finding must be open and belong to this file.
+    // The finding must be open and belong to this file. `field` is the canonical
+    // fact key (purchase_price / arv / …) — used to APPLY a "fix the file" value
+    // to the real application column below.
     const fnd = (await db.query(
-      `SELECT id, code, severity, blocks_ctc FROM document_findings WHERE id=$1 AND application_id=$2 AND status='open'`,
+      `SELECT id, code, severity, blocks_ctc, field FROM document_findings WHERE id=$1 AND application_id=$2 AND status='open'`,
       [req.params.fid, app.id])).rows[0];
     if (!fnd) return res.status(404).json({ error: 'finding not found or already resolved' });
 
-    // Tiered exception authority: granting an exception on a fatal, clear-to-close-blocking
-    // finding — approving the loan despite an unmet hard requirement — needs senior authority
-    // (waive_conditions) above the base sign_off_conditions gate. The reason is still recorded on
-    // the finding for the audit trail. Everything else clears under the base permission.
-    const auth = exceptions.canApply(req.actor, action, fnd, can);
-    if (!auth.ok) return res.status(403).json({ error: auth.reason, requiredPermission: auth.requiredPermission });
-
-    let updated;
-    const client = await db.pool.connect();
-    try {
-      await client.query('BEGIN');
-      try {
-        updated = await store.resolveFinding(client, {
-          findingId: fnd.id, action, note, value, by: req.actor.id,
-        });
-      } catch (e) {
-        await client.query('ROLLBACK').catch(() => {});
-        // validateResolution throws a plain Error with a safe, user-facing reason (unknown action /
-        // missing required note or value). A DB error carries a pg SQLSTATE in e.code — never leak
-        // its internals (column/constraint names) to the client; hand it to the global handler.
-        if (e && e.code) throw e;
-        return res.status(400).json({ error: e.message });
-      }
-      await client.query('COMMIT');
-    } finally {
-      client.release();
-    }
-    if (!updated) return res.status(409).json({ error: 'finding was already resolved' });
-
-    await audit(req.actor.id, 'underwriting_finding_resolve', app.id,
-      { finding: fnd.code, action, status: updated.status, note: note.slice(0, 300),
-        elevated: auth.elevated || null });
+    const applied = await applyFindingResolution({
+      actor: req.actor, appId: app.id, finding: fnd, action, note, value,
+    });
+    if (!applied.ok) return res.status(applied.status).json(applied.body);
 
     // Remaining open fatal findings gate clear-to-close — the stored per-document fatals AND
     // the derived tie-out fatals (which have no stored row but still block). Both are folded in
     // so this gate matches exactly what GET reports.
-    const openFatal = (await db.query(
-      `SELECT count(*)::int n FROM document_findings
-        WHERE application_id=$1 AND status='open' AND severity='fatal' AND blocks_ctc=true`, [app.id])).rows[0].n;
-    const tieout = await tieoutForFile(db, app.id);
-    const crossFatal = tieout.discrepancies.filter((f) => f.severity === 'fatal' && f.blocksCtc).length;
+    const gate = await ctcGateCounts(app.id);
 
-    res.json({ ok: true, finding: decorate(updated), openFatal, crossFatal, blocksCtc: (openFatal + crossFatal) > 0 });
+    res.json({ ok: true, finding: decorate(applied.updated), ...gate, fileFix: applied.fileFix });
   } catch (e) { next(e); }
 });
 
@@ -1444,10 +2593,12 @@ router.post('/:appId/ai-crossdoc', requirePermission('sign_off_conditions'), asy
     const app = await fileFor(req, req.params.appId);
     if (!app) return res.status(404).json({ error: 'not found' });
     // Pull current extractions on the file.
+    // Fix 2026-07-23: extraction status is 'analyzed' (db/200) — a status='ok'
+    // filter matched NOTHING, so this ran on zero extractions every time.
     const exts = await db.query(
       `SELECT doc_type, document_id, fields
          FROM document_extractions
-        WHERE application_id=$1 AND status='ok'
+        WHERE application_id=$1 AND is_current AND status='analyzed'
         ORDER BY created_at DESC LIMIT 40`, [app.id]);
     const client = await db.pool.connect();
     let result;
@@ -1512,26 +2663,68 @@ router.post('/:appId/ai-suggestions/rerun-checks', requirePermission('sign_off_c
     const ran = { entity_chain: 0, bank: 0, bad_clearance: 0, public_records: 0, identity_chain: 0 };
     try {
       await client.query('BEGIN');
+      // Fix 2026-07-23: same dead status='ok' filter — the "Re-run AI checks"
+      // button fed every detector an EMPTY extraction set.
       const exts = await client.query(
         `SELECT doc_type, document_id, fields FROM document_extractions
-          WHERE application_id=$1 AND status='ok' ORDER BY created_at DESC LIMIT 60`, [app.id]);
+          WHERE application_id=$1 AND is_current AND status='analyzed' ORDER BY created_at DESC LIMIT 60`, [app.id]);
       const mctx = await fileView.loadContext(client, app.id).catch(() => ({}));
+      // Fix 2026-07-23 (#211): entity-chain and bank-statement-checks never
+      // exported analyzeAndRecord — both arms were dead TypeErrors swallowed by
+      // the per-bridge catch, so "Re-run AI checks" silently skipped them. Use
+      // the REAL file-view pipeline: build the chains / liquidity, then sync
+      // through the same suggestion bridges the file view uses.
+      const requiredLiquidity = await readRequiredLiquidity(client, app.id).catch(() => null);
       const bridges = [
-        ['entity_chain',    () => require('../lib/underwriting/entity-chain').analyzeAndRecord(client, { applicationId: app.id, fileCtx: mctx, extractions: exts.rows })],
-        ['bank',            () => require('../lib/underwriting/bank-statement-checks').analyzeAndRecord(client, { applicationId: app.id, extractions: exts.rows })],
+        ['entity_chain', () => {
+          const a2 = (mctx && mctx.app) || {};
+          const isEntity = !!((mctx && mctx.vestingName) || a2.llc_id ||
+            exts.rows.some((e) => e.doc_type === 'operating_agreement'));
+          const entityChain = isEntity ? buildChain(
+            { vestingName: mctx && mctx.vestingName,
+              borrowerName: fileView.borrowerName(mctx && mctx.borrower),
+              isAssignment: !!(a2 && a2.is_assignment),
+              program: (mctx.registration && mctx.registration.program) || a2.program || null },
+            exts.rows) : null;
+          const sellerChain = buildSellerChain(mctx || {}, exts.rows);
+          const chainOfTitle = buildChainOfTitle(mctx || {}, exts.rows);
+          if (!entityChain && !sellerChain && !chainOfTitle) return { recorded: 0 };
+          return require('../lib/underwriting/entity-chain-suggestions')
+            .syncChainsToSuggestions(client, app.id, { entityChain, sellerChain, chainOfTitle });
+        }],
+        ['bank', () => {
+          const bl = assessBankLiquidity(mctx || {}, exts.rows, { requiredLiquidity });
+          const findings = (bl && bl.findings) || [];
+          if (!findings.length) return { recorded: 0 };
+          return require('../lib/underwriting/bank-statement-suggestions')
+            .syncBankFindingsToSuggestions(client, app.id, null, findings);
+        }],
         ['bad_clearance',   () => require('../lib/underwriting/bad-clearance').scanFile(client, app.id, { maxConditions: 15 })],
         ['public_records',  () => require('../lib/underwriting/public-records-crosscheck').analyzeAndRecord(client, { applicationId: app.id, fileCtx: { vestingName: mctx && mctx.vestingName }, extractions: exts.rows })],
-        ['identity_chain',  () => require('../lib/underwriting/identity-chain').analyzeAndRecord(client, { applicationId: app.id, extractions: exts.rows })],
+        ['identity_chain',  () => require('../lib/underwriting/identity-chain').analyzeAndRecord(client, { applicationId: app.id, extractions: exts.rows,
+          people: [fileView.borrowerName(mctx && mctx.borrower), fileView.borrowerName(mctx && mctx.coBorrower)].filter(Boolean).concat((mctx && mctx.ownerNames) || []) })],
+        // #199 — party collusion (independence-required parties sharing an identity)
+        // + double-pledged collateral (this property on another live loan). Advisory.
+        ['party_collusion', () => require('../lib/underwriting/party-collusion').analyzeAndRecord(client, { applicationId: app.id, extractions: exts.rows, fileCtx: { vestingName: mctx && mctx.vestingName } })],
+        ['double_pledge',   () => require('../lib/underwriting/party-collusion').checkDoublePledgeAndRecord(client, { applicationId: app.id })],
       ];
       for (const [k, fn] of bridges) {
-        try { const r = await fn(); ran[k] = (r && r.recorded) || 0; } catch (_) { /* additive */ }
+        // SAVEPOINT per bridge — one failure must never abort the shared tx and
+        // silently no-op the remaining bridges (the poisoned-tx class).
+        try {
+          await client.query('SAVEPOINT rerun_bridge');
+          const r = await fn();
+          await client.query('RELEASE SAVEPOINT rerun_bridge');
+          // bad-clearance reports {scanned, flagged}; the sync bridges {recorded}.
+          ran[k] = (r && (r.recorded != null ? r.recorded : r.flagged)) || 0;
+        } catch (_) { await client.query('ROLLBACK TO SAVEPOINT rerun_bridge').catch(() => {}); }
       }
       // R4.16 — stamp the file so the AI Findings panel can show a 'Last re-run' time.
       try {
         await client.query(
           `INSERT INTO audit_log (actor_kind, actor_id, action, entity_type, entity_id, detail)
            VALUES ('staff',$1,'ai_checks_rerun','application',$2,$3::jsonb)`,
-          [req.actor.staffId, app.id, JSON.stringify({ ran, at: new Date().toISOString() })]);
+          [req.actor.id, app.id, JSON.stringify({ ran, at: new Date().toISOString() })]);
       } catch (_) { /* additive */ }
       await client.query('COMMIT');
     } catch (e) { await client.query('ROLLBACK').catch(() => {}); throw e; }
@@ -1557,7 +2750,7 @@ router.post('/:appId/ai-suggestions/dismiss-all', requirePermission('sign_off_co
       const aiSug = require('../lib/underwriting/ai-suggestions');
       for (const row of open.rows) {
         try {
-          await aiSug.decide(client, row.id, { action: 'dismiss', reason, staffId: req.actor.staffId });
+          await aiSug.decide(client, row.id, { action: 'dismiss', reason, staffId: req.actor.id });
           dismissed += 1;
         } catch (_) { /* one bad row doesn't stop the batch */ }
       }
@@ -1581,7 +2774,8 @@ router.get('/:appId/ai-risk-score', async (req, res, next) => {
          EXTRACT(EPOCH FROM (now() - MIN(created_at) FILTER (WHERE severity='fatal')))/86400 AS oldest_fatal_days
         FROM ai_suggestions
        WHERE application_id=$1
-         AND status IN ('open','marked_important','escalated','asked_admin')`,
+         AND status IN ('open','marked_important','escalated','asked_admin')
+         AND ${aiSuggestions.notScoredSql()}`,
       [app.id]);
     const c = r.rows[0] || { fatal: 0, warning: 0, info: 0, other: 0 };
     const raw = (c.fatal * 25) + (c.warning * 8) + (c.info * 2) + (c.other * 4);
@@ -1600,6 +2794,7 @@ router.get('/:appId/ai-risk-score', async (req, res, next) => {
            FROM ai_suggestions
           WHERE application_id=$1
             AND status IN ('open','marked_important','escalated','asked_admin')
+            AND ${aiSuggestions.notScoredSql()}
           ORDER BY CASE severity WHEN 'fatal' THEN 0 WHEN 'warning' THEN 1 WHEN 'info' THEN 2 ELSE 3 END,
                    created_at DESC
           LIMIT 1`, [app.id]);
@@ -1697,7 +2892,7 @@ router.post('/:appId/ai-suggestions/:id/decide', async (req, res, next) => {
 
       // Special path — "convert to condition" from a proposedAction can create
       // the checklist_items row in the same tx and link it back on the suggestion.
-      let opts = { action, staffId: req.actor.staffId, reason: body.reason, note: body.note };
+      let opts = { action, staffId: req.actor.id, reason: body.reason, note: body.note };
       if (action === 'convert_to_condition' && !body.conditionId) {
         const sug = (await client.query(`SELECT * FROM ai_suggestions WHERE id=$1`, [req.params.id])).rows[0];
         const pa = sug && sug.proposed_action || {};
@@ -1717,7 +2912,13 @@ router.post('/:appId/ai-suggestions/:id/decide', async (req, res, next) => {
                   COALESCE(t.is_gate,false), COALESCE(t.is_milestone,false),
                   COALESCE(t.sort_order,900), t.tool_key, t.clickup_field_id,
                   COALESCE(t.tpr_exclude,false), 'system', COALESCE(t.is_required,true), $1,
-                  'issue', $3
+                  -- A condition created from an AI suggestion starts NORMAL, like any
+                  -- other new condition (owner-directed 2026-07-27). It used to be born
+                  -- 'issue' — the red "Needs attention" bucket, which means "we sent this
+                  -- BACK to the borrower because something was wrong". Nothing was ever
+                  -- rejected here: PILOT noticed the file needs this, and a human agreed.
+                  -- Starting it red mislabelled a brand-new ask as a rejection.
+                  'outstanding', $3
              FROM checklist_templates t
             WHERE t.code = $2 AND t.scope = 'application'
             RETURNING id`,
@@ -1813,7 +3014,7 @@ router.post('/:appId/ai-suggestions/:id/split-and-file', requirePermission('sign
            RETURNING id`,
           [app.id, seg.checklistItemId, src.borrower_id, `${(seg.docType || 'part')}—${src.filename}`,
            (pageBounded ? 'application/pdf' : src.content_type), childBytes, childProvider, childRef,
-           req.actor.staffId, slotLabel, src.id, recordedPages, pageBounded, childSha]);
+           req.actor.id, slotLabel, src.id, recordedPages, pageBounded, childSha]);
         created.push({ id: ins.rows[0].id, checklistItemId: seg.checklistItemId, pages, pageBounded });
       }
 
@@ -1821,7 +3022,7 @@ router.post('/:appId/ai-suggestions/:id/split-and-file', requirePermission('sign
       await require('../lib/underwriting/ai-suggestions').decide(client, req.params.id, {
         action: 'dismiss',
         reason: `Split into ${created.length} child document(s) via the splitter suggestion.`,
-        staffId: req.actor.staffId,
+        staffId: req.actor.id,
       });
       await client.query('COMMIT');
       res.json({ ok: true, created });
@@ -1842,8 +3043,120 @@ router.post('/:appId/ai-suggestions/:id/note', async (req, res, next) => {
     // Same scope guard as decide.
     const sc = await db.query(`SELECT application_id FROM ai_suggestions WHERE id=$1`, [req.params.id]);
     if (!sc.rows[0] || sc.rows[0].application_id !== app.id) return res.status(404).json({ error: 'not found on this file' });
-    await aiSug.addNote(db, req.params.id, { staffId: req.actor.staffId, text: String(req.body && req.body.text || '') });
+    await aiSug.addNote(db, req.params.id, { staffId: req.actor.id, text: String(req.body && req.body.text || '') });
     res.json({ ok: true });
+  } catch (e) { next(e); }
+});
+
+// -------------------------------------------------------------------------
+// #191 activation 1 — CLEARANCE PREVIEW (read-only, ADVISORY).
+// "Would the documents on this condition clear it?" — runs the SAME
+// deterministic cure analysis the extraction pipeline records proofs with
+// (condition intent → cure.analyze per current document → clearance-outcome
+// aggregation) but WRITES NOTHING: no proof row, no status change, no
+// suggestion, no notification. Sign-off still goes ONLY through staff.js
+// signOffGate — this endpoint is a preview beside that gate, never a way
+// around it. First reader of checklist_items.intent_override (db/233).
+// -------------------------------------------------------------------------
+router.get('/:appId/checklist/:itemId/clearance-preview', async (req, res, next) => {
+  try {
+    const app = await fileFor(req, req.params.appId);
+    if (!app) return res.status(404).json({ error: 'not found' });
+    if (!isUuid(req.params.itemId)) return res.status(404).json({ error: 'condition not found' });
+    const itemQ = await db.query(
+      `SELECT ci.id, ci.status, ci.intent_override,
+              ct.code, COALESCE(ct.label, ct.code) AS label
+         FROM checklist_items ci
+         LEFT JOIN checklist_templates ct ON ct.id = ci.template_id
+        WHERE ci.id = $1 AND ci.application_id = $2`, [req.params.itemId, app.id]);
+    const item = itemQ.rows[0];
+    if (!item) return res.status(404).json({ error: 'condition not found' });
+
+    const cure = require('../lib/underwriting/cure');
+    const twin = require('../lib/underwriting/twin');
+    const preview = require('../lib/underwriting/clearance-preview');
+
+    const intent = (item.intent_override && typeof item.intent_override === 'object')
+      ? item.intent_override
+      : (item.code ? await cure.intentForCode(item.code, db) : null);
+    if (!intent) {
+      return res.json({ ok: true, available: false, advisory: true,
+        reason: 'This condition has no registered intent — the preview covers intent-backed conditions only.',
+        item: { id: item.id, code: item.code, label: item.label, status: item.status } });
+    }
+
+    // The item's CURRENT analyzed documents (extraction status is 'analyzed' —
+    // db/200). Audit F2: a staff-REJECTED document is a recorded human decision
+    // — it must not feed a "would clear" preview (same filter signOffGate uses).
+    const exts = await db.query(
+      `SELECT de.document_id, de.doc_type, de.fields, d.filename
+         FROM document_extractions de
+         JOIN documents d ON d.id = de.document_id
+        WHERE d.checklist_item_id = $1 AND d.is_current
+          AND COALESCE(d.review_status, '') <> 'rejected'
+          AND de.is_current AND de.status = 'analyzed'
+        ORDER BY de.created_at DESC LIMIT 12`, [item.id]);
+
+    const twinRows = await twin.factsForFile(app.id, db).catch(() => []);
+    const twinFacts = Object.fromEntries((twinRows || []).map((r) => [r.fact_key, r]));
+    const { subject, expected } = await cure.loadCureContext(app.id, db);
+
+    const { documents, overall } = preview.previewDocuments({
+      intent,
+      documents: exts.rows.map((r) => ({ documentId: r.document_id, docType: r.doc_type, filename: r.filename, fields: r.fields })),
+      twinFacts, subject, expected,
+    });
+
+    // Audit F1: signOffGate is per-SLOT on four template codes (staff.js
+    // signOffGate is the AUTHORITY — this only mirrors its presence check so
+    // the preview never says "would clear" while the gate still wants another
+    // slot's document). Missing slots force overall.clears=false with the gap
+    // named; the analysis sections above stay as-is.
+    const SLOT_REQUIREMENTS = {
+      rtl_cond_insurance: ['binder', 'invoice'],
+      rtl_cond_appraisaldocs: ['xml', 'pdf'],
+      rtl_cond_fraud: ['background'],           // + 'criminal' on a Gold file (below)
+      rtl_cond_title: [],                        // any one document; presence handled by no_documents
+    };
+    if (Object.prototype.hasOwnProperty.call(SLOT_REQUIREMENTS, String(item.code))) {
+      const required = [...SLOT_REQUIREMENTS[item.code]];
+      if (item.code === 'rtl_cond_fraud') {
+        const gp = await db.query(
+          `SELECT program FROM product_registrations WHERE application_id=$1 AND is_current LIMIT 1`, [app.id]);
+        if (gp.rows[0] && /gold/i.test(String(gp.rows[0].program || ''))) required.push('criminal');
+      }
+      const missingSlots = [];
+      if (required.length) {
+        const slotRows = await db.query(
+          `SELECT lower(coalesce(slot_label,'')) AS slot FROM documents
+            WHERE checklist_item_id=$1 AND is_current AND COALESCE(review_status,'') <> 'rejected'`, [item.id]);
+        const have = slotRows.rows.map((r) => r.slot);
+        for (const need of required) if (!have.some((s) => s.includes(need))) missingSlots.push(need);
+      }
+      // Appraisal docs: signOffGate additionally requires a non-superseded
+      // appraisals row (the XML actually IMPORTED), not merely an uploaded file
+      // slot — mirror that so the preview can't report "would clear" before the
+      // import lands. Defense-in-depth: unreachable today (no seeded intent for
+      // this code → available:false above), but a future intent-seed or a manual
+      // intent_override would otherwise let the preview overstate clearance.
+      if (item.code === 'rtl_cond_appraisaldocs') {
+        const appr = await db.query(
+          `SELECT 1 FROM appraisals WHERE application_id=$1 AND superseded=false LIMIT 1`, [app.id]);
+        if (!appr.rows.length) missingSlots.push('imported appraisal (XML)');
+      }
+      if (missingSlots.length) {
+        overall.clears = false;
+        overall.slotsIncomplete = true;
+        overall.missingSlots = missingSlots;
+        overall.reason = `The sign-off gate also requires: ${missingSlots.join(', ')} — this condition needs every required document slot filled, not just one clearing document.`;
+      }
+    }
+    res.json({
+      ok: true, available: true, advisory: true,
+      item: { id: item.id, code: item.code, label: item.label, status: item.status },
+      intent: { code: item.code, version: intent.version || null, primaryGoal: intent.primary_goal || null },
+      documents, overall,
+    });
   } catch (e) { next(e); }
 });
 
@@ -1863,7 +3176,7 @@ router.post('/:appId/fraud-banner/snooze', requirePermission('sign_off_condition
     await db.query(
       `INSERT INTO audit_log (actor_kind, actor_id, action, entity_type, entity_id, detail)
        VALUES ('staff',$1,'fraud_banner_snoozed','application',$2,$3::jsonb)`,
-      [req.actor.staffId, app.id, JSON.stringify({ until, hours, note: (req.body && req.body.note) || null })]);
+      [req.actor.id, app.id, JSON.stringify({ until, hours, note: (req.body && req.body.note) || null })]);
     res.json({ ok: true, until });
   } catch (e) { next(e); }
 });
@@ -1887,12 +3200,66 @@ router.post('/:appId/ask-admin', async (req, res, next) => {
       const r = await aiSug.askAdmin(client, {
         applicationId: app.id, agent: 'staff_request',
         question,
-        context: { asked_by_staff_id: req.actor.staffId, at: new Date().toISOString() },
+        context: { asked_by_staff_id: req.actor.id, at: new Date().toISOString() },
       });
       await client.query('COMMIT');
       res.json({ ok: true, ...r });
     } catch (e) { await client.query('ROLLBACK').catch(() => {}); throw e; }
     finally { client.release(); }
+  } catch (e) { next(e); }
+});
+
+// Grounded back-and-forth reasoning chat (owner-directed 2026-07-24, AI Command Center phase 2):
+// a staff underwriter asks PILOT "why did you flag this?" / "what does the file say about X?" and
+// gets an answer grounded ONLY on the loan-file primer (the canonical facts) — never a fabricated
+// number. Ephemeral: the client holds the transcript and sends it back each turn (no thread table).
+// Non-authoritative + advisory (it explains; a human decides), env-gated (azureOpenai.available())
+// and per-file cost-capped (costMeter.allowSpend). NEVER throws — always returns a shaped result.
+router.post('/:appId/reason', async (req, res, next) => {
+  try {
+    const app = await fileFor(req, req.params.appId);
+    if (!app) return res.status(404).json({ error: 'not found' });
+    const question = String((req.body && req.body.question) || '').trim().slice(0, 2000);
+    if (!question) return res.status(400).json({ error: 'Ask a question.' });
+    // Last 12 turns only (bound the prompt). Each: { role:'user'|'assistant', text }.
+    const history = Array.isArray(req.body && req.body.history) ? req.body.history.slice(-12) : [];
+
+    const azureOpenai = require('../lib/ai/azure-openai');
+    if (!azureOpenai.available()) {
+      return res.json({ available: false, answer: null,
+        reason: 'PILOT\'s reasoning assistant is not turned on for this workspace yet.' });
+    }
+    const costMeter = require('../lib/ai/cost-meter');
+    const under = await costMeter.allowSpend(app.id, db).catch(() => true); // fail-open on a meter hiccup
+    if (!under) {
+      return res.json({ available: true, answer: null,
+        reason: 'This file has reached its AI spending limit for now — try again later or ask an admin to raise it.' });
+    }
+
+    const primer = require('../lib/underwriting/loan-primer');
+    // Staff surface → full grounding (do NOT scrub the note buyer; this never reaches a borrower).
+    const grounding = await primer.groundingBlock(app.id, db).catch(() => '');
+    const system =
+      'You are PILOT, a mortgage-underwriting assistant explaining your reasoning to a STAFF underwriter. '
+      + 'Answer ONLY from the loan-file facts below. If a fact is missing, say "the file doesn\'t show that" — '
+      + 'NEVER invent or estimate a number. Be concise and plain-language, and name the specific fields you used. '
+      + 'You are NON-AUTHORITATIVE: you explain and suggest; the underwriter decides. Do not claim to change or '
+      + 'clear anything.\n\n' + grounding;
+    const transcript = history
+      .filter((m) => m && m.text)
+      .map((m) => `${m.role === 'assistant' ? 'PILOT' : 'Underwriter'}: ${String(m.text).slice(0, 2000)}`)
+      .join('\n');
+    const userContent = (transcript ? `Conversation so far:\n${transcript}\n\n` : '') + `Underwriter asks: ${question}`;
+
+    const r = await azureOpenai.complete({
+      system, userContent, maxTokens: 700,
+      traceMeta: { name: 'ai-reason', opName: 'reason', appId: app.id, staffId: req.actor && req.actor.id, tags: ['reason'] },
+    });
+    if (!r || !r.ok) {
+      return res.json({ available: true, answer: null,
+        reason: (r && r.reason) || 'PILOT couldn\'t answer just now — try again in a moment.' });
+    }
+    return res.json({ available: true, answer: r.text || '' });
   } catch (e) { next(e); }
 });
 
@@ -1906,7 +3273,14 @@ router.get('/ai-admin/questions', requirePermission('promote_training'), async (
     const aiSug = require('../lib/underwriting/ai-suggestions');
     const rows = await aiSug.listOpenAdminQuestions({ appId: req.query.appId || undefined,
       limit: Number(req.query.limit) || undefined }, db);
-    res.json({ ok: true, questions: rows });
+    // #200 — attach an SLA clock to each open question (how long it's waited, when
+    // it's due, whether it's overdue) + a roll-up, and surface the most overdue
+    // first. Advisory / read-only — computed from asked_at + the agent's SLA (no
+    // schema change); an explicit decision_deadline wins when set.
+    const aged = require('../lib/underwriting/admin-question-sla').ageQuestions(rows, {});
+    aged.rows.sort((a, b) => (Number(b._sla && b._sla.overdue) - Number(a._sla && a._sla.overdue))
+      || ((b._sla && b._sla.hoursOpen || 0) - (a._sla && a._sla.hoursOpen || 0)));
+    res.json({ ok: true, questions: aged.rows, sla: aged.summary });
   } catch (e) { next(e); }
 });
 router.post('/ai-admin/questions/:id/answer', requirePermission('promote_training'), async (req, res, next) => {
@@ -1916,7 +3290,7 @@ router.post('/ai-admin/questions/:id/answer', requirePermission('promote_trainin
     try {
       await client.query('BEGIN');
       await aiSug.answerAdminQuestion(client, req.params.id, {
-        staffId: req.actor.staffId,
+        staffId: req.actor.id,
         answer: String((req.body && req.body.answer) || ''),
       });
       await client.query('COMMIT');
@@ -1943,3 +3317,28 @@ module.exports.fileForById = async function fileForById(appId) {
 module.exports.fileDocById = fileDoc;
 module.exports.AUTOREAD_ENABLED = AUTOREAD_ENABLED;
 module.exports.AUTOREAD_MAX_PER_CALL = AUTOREAD_MAX_PER_CALL;
+// Exported for unit testing the finding decoration (claim-key stamp + the derived "open the source
+// document" link a tie-out discrepancy gets from its single openable source).
+module.exports._decorate = decorate;
+// Exported so a DB-gated test can actually EXECUTE the run-findings query. Every column it
+// names is unverified until something runs it — the repo has been bitten twice by a phantom
+// column sitting behind a swallowing catch (`b.full_name`, `is_current`/`created_at`).
+module.exports._loadRunGuidelineFindings = loadRunGuidelineFindings;
+// The post-dedupe fold filter, as a named predicate so a test can drive every branch.
+// KEEPS everything except a run finding that merged with nothing and inherited no handle.
+// A merge partner only makes a handle-less run finding worth listing if that partner was
+// a DESK finding — which would have been on this list anyway, and whose ai_suggestions
+// mirror is what eventually makes the card actionable. `mergedFrom.length` alone was a
+// proxy for that and not the same thing: two handle-less RUN rules sharing a signal would
+// merge into each other and sail through, producing exactly the permanent un-actionable
+// FATAL card this filter exists to prevent. Unreachable today only because the two rules
+// that share a signal are mutually exclusive by note buyer — i.e. safe by luck, which is
+// how the last four of these started (fifth audit pass).
+const DESK_CODE = /^isg_(?:gap|conflict|concern|info_missing|appraisal_review)_/;
+module.exports._foldFilter = (f) => !(f && f.source === investorReview.SOURCE
+  && !f.id && !f.suggestionId
+  && !((f.mergedFrom || []).some((c) => DESK_CODE.test(String(c || '')))));
+module.exports._escalationFindingShape = escalationFindingShape;
+// The predicate that keeps note-buyer findings OUT of summary.fatal/warning/info, so the
+// advisory desk can never disagree with the clear-to-close gate.
+module.exports._isgOnly = (f) => !!(f && (f.category === 'investor_guideline' || f.source === deskFindings.SOURCE));

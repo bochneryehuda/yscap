@@ -56,12 +56,21 @@ const LOAN_PURPOSE = {
   'Purchase': 'Purchase',
   'Refinance — Rate & Term': 'Refinance',
   'Refinance — Cash-Out': 'Refinance',
+  // MISMO's LoanPurposeType has no "delayed financing" value. The borrower has
+  // ALREADY bought the property (with cash), so the new loan is secured against
+  // one they own — which is a Refinance in MISMO terms — and it returns their
+  // own purchase funds, so it carries CashOut below. Mapping it is deliberate:
+  // an unmapped value exports a NULL loan purpose, which is worse than the
+  // standard's closest true value. This is the EXPORT vocabulary only — it does
+  // not change how PILOT sizes the loan (see the note in field-registry.js).
+  'Delayed Purchase Financing': 'Refinance',
 };
 // Cash-out vs rate/term is carried separately in MISMO (RefinanceCashOutDetermination-
 // Type); remember which refinance flavor produced "Refinance" so import restores it.
 const REFI_CASHOUT = {
   'Refinance — Cash-Out': 'CashOut',
   'Refinance — Rate & Term': 'NoCashOut',
+  'Delayed Purchase Financing': 'CashOut',
 };
 
 // ---- PropertyUsageType (from occupancy) -------------------------------------
@@ -108,6 +117,25 @@ function unitsHint(propertyType) {
   if (s.includes('mixed')) return 1;
   return null;
 }
+// The UNIT-COUNT RANGE a portal property_type implies. Our property_type is a CATEGORY
+// (SFR = 1 unit, Multi 2–4, Multi 5+, Condo = 1, …), NOT a specific unit count — while an
+// appraisal reports a SPECIFIC count. So a check must judge the appraisal's real unit
+// count AGAINST this range, never string-compare our range category to the appraisal's
+// specific type (that false-"disagrees" on every multi-family file — owner-reported
+// 2026-07-24: 'Multi 2–4' vs an appraisal's 2-unit). Returns {min,max} (max may be
+// Infinity) or null when the type is unknown OR unbounded (mixed-use) — callers MUST
+// treat null as "no unit constraint" and never guess.
+function propertyTypeUnitRange(propertyType) {
+  const s = norm(propertyType);
+  if (!s) return null;
+  if (s.startsWith('sfr') || s.includes('singlefamily')) return { min: 1, max: 1 };
+  if (s.includes('condo')) return { min: 1, max: 1 };
+  if (s.includes('town')) return { min: 1, max: 1 };
+  if (s.includes('multi54') || s.includes('multi5')) return { min: 5, max: Infinity };
+  if (s.includes('multi24') || s.includes('multi2')) return { min: 2, max: 4 };
+  if (s.includes('mixed')) return null;   // mixed-use: no unit-count constraint — never guess
+  return null;
+}
 function toMismoAttachment(propertyType) {
   const s = norm(propertyType);
   if (!s) return null;
@@ -126,6 +154,7 @@ module.exports = {
   toMismoMarital: makeForward(MARITAL),
   toMismoAttachment,
   unitsHint,
+  propertyTypeUnitRange,
   DEFAULT_MORTGAGE_TYPE,
   DEFAULT_AMORTIZATION_TYPE,
   // reverse (MISMO -> ours), used by the importer

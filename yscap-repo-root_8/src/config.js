@@ -51,6 +51,15 @@ function resolveSecret(name) {
 
 // Choose the email provider from env. An explicit EMAIL_PROVIDER wins; otherwise
 // infer from whichever credential set is present so a single env var is enough.
+/** A megabyte env value as bytes, with a real fallback. A blank/typo'd/non-finite
+    or non-positive value falls back to the DEFAULT rather than to NaN (which would
+    disable every size comparison that reads it) or to a near-zero floor. */
+function mbBytes(v, defaultMb) {
+  const n = Number(String(v == null ? '' : v).trim());
+  const mb = Number.isFinite(n) && n > 0 ? n : defaultMb;
+  return Math.max(1, Math.round(mb * 1024 * 1024));
+}
+
 function resolveEmailProvider() {
   const explicit = (process.env.EMAIL_PROVIDER || '').trim().toLowerCase();
   if (explicit && explicit !== 'auto') return explicit;   // honor an explicit choice
@@ -95,11 +104,21 @@ module.exports = {
   // is missing and sessions/SSNs won't survive a restart. Fix the env.
   jwtSecretGenerated: generatedSecrets.has('JWT_SECRET'),
   ssnKeyGenerated:    generatedSecrets.has('SSN_ENCRYPTION_KEY'),
-  // Session lifetime. Tokens slide: any authenticated request past the halfway
-  // point returns a fresh token in X-Refresh-Token (picked up by the SPA), so
-  // this is effectively an IDLE timeout, not an absolute one. Revocation still
-  // works instantly via token_version (logout / password reset).
-  accessTtlSec:  parseInt(process.env.ACCESS_TTL_SEC || '604800', 10),    // 7d idle timeout
+  // Session lifetime. Tokens SLIDE: an authenticated request on a token older
+  // than sessionRefreshAfterSec hands back a fresh one in X-Refresh-Token
+  // (picked up by the SPA), so this is an IDLE timeout, not an absolute one —
+  // someone who uses PILOT at least once a month is never signed out by the
+  // clock. Raised 7d -> 30d (owner-directed 2026-07-26: "we need longer
+  // sessions available; it should not automatically log out once you're logged
+  // in"). Revocation is unaffected and still instant: per-device via the token's
+  // sid (db/318, plain sign-out) and account-wide via token_version (password
+  // change/reset, admin deactivation, "sign out everywhere").
+  accessTtlSec:  parseInt(process.env.ACCESS_TTL_SEC || '2592000', 10),   // 30d idle timeout
+  // How stale a token may get before an authenticated request renews it. Small
+  // enough that an active user always rides a fresh token; large enough that we
+  // aren't re-signing a JWT on every single request. Also capped at half the
+  // token's life, so a deliberately SHORT ACCESS_TTL_SEC still slides properly.
+  sessionRefreshAfterSec: parseInt(process.env.SESSION_REFRESH_AFTER_SEC || '43200', 10),  // 12h
   refreshTtlSec: parseInt(process.env.REFRESH_TTL_SEC || '2592000', 10),  // 30d
 
   // --- site integration ---
@@ -124,12 +143,45 @@ module.exports = {
   // "just hit reply" always reach a human, so no email is ever a dead end.
   // Defaults to the company sales inbox; override with REPLY_TO.
   replyToDefault: (process.env.REPLY_TO || 'sales@yscapgroup.com').trim() || null,
+  // The SALES desk inbox — the To: recipient for every marketing-site
+  // submission that has NO routed loan officer (owner-directed 2026-07-24: a
+  // branded ?lo= link or an explicit pick always goes to that officer INSTEAD;
+  // nothing picked → sales). Covers applications, term-sheet events, track
+  // record, rehab budget, quote/contact. A plain routing address like
+  // SUBSCRIBE_NOTIFY_TO, not a secret; set SALES_NOTIFY_TO="" to fall back to
+  // the admin desk fan-out instead.
+  salesNotifyTo: (process.env.SALES_NOTIFY_TO != null ? process.env.SALES_NOTIFY_TO : 'sales@yscapgroup.com').trim() || null,
   // Owner-directed 2026-07-20: silently BCC the file's assigned loan officer on
   // every BORROWER notification email, so the LO sees in real time exactly what
   // their borrower received. BCC (not CC) — the borrower's inbox stays clean and
   // the officer's address isn't exposed. On by default; set CC_LO_ON_BORROWER=0
   // to turn off.
   ccLoanOfficerOnBorrowerEmail: process.env.CC_LO_ON_BORROWER !== '0',
+  // The closing-attorney GROUP inbox the "file ready for closing prep" order is
+  // addressed to (owner-directed 2026-07-28; the same address the rtl_p5_atty
+  // condition has named by hand since db/005). Env-backed rather than a literal
+  // so a firm change is a config edit, not a deploy. A routing address, not a secret.
+  //
+  // THIS IS THE ONLY RECIPIENT of a closing-prep order, so it must be set for the
+  // feature to work. It used to say `ATTORNEY_GROUP_EMAIL=""` would "require an
+  // attorney contact on the file instead" — that stopped being true the moment the
+  // file's `attorney` contact was correctly removed from the recipient list (it is
+  // the BORROWER'S counsel, handed over in the body, never copied). Blanking this
+  // now blocks every closing-prep order with a message no staffer can act on, so
+  // the guidance is gone rather than left as a trap.
+  attorneyGroupEmail: (process.env.ATTORNEY_GROUP_EMAIL != null
+    ? process.env.ATTORNEY_GROUP_EMAIL : 'teamag@privatelenderlaw.com').trim().toLowerCase() || null,
+  // Total attachment budget for one closing-prep email. Resend accepts ~40 MB per
+  // message; Microsoft Graph rejects inline attachments over ~3 MB (it needs an
+  // upload session we don't implement), so the Graph budget is deliberately tiny.
+  // Nothing is ever silently dropped — whatever doesn't fit is NAMED in the email
+  // and reported back to the sender.
+  // Both parsed through one helper: a typo'd value used to become NaN, and
+  // `total + len > NaN` is always false — which silently turned the budget OFF
+  // instead of falling back to the default. The megabyte multiply is inside the
+  // clamp for both, so a 0 can never mean "one byte" (every document skipped).
+  closingAttachBudgetBytes: mbBytes(process.env.CLOSING_ATTACH_BUDGET_MB, 20),
+  closingAttachBudgetGraphBytes: mbBytes(process.env.CLOSING_ATTACH_BUDGET_GRAPH_MB, 2.5),
   // #75 external chat guests: the domain a unique per-participant reply-to is
   // built on (e.g. "reply.yscapgroup.com" → chat+<key>@reply.yscapgroup.com).
   // When UNSET, external guests still receive chat emails but with no reply-to,
@@ -180,12 +232,94 @@ module.exports = {
   // to geocoding.geo.census.gov + hazards.fema.gov.
   appraisalFloodCheckEnabled: process.env.APPRAISAL_FLOOD_CHECK_ENABLED === '1',
 
+  // Automatic As-Is update from the appraisal (owner-directed 2026-07-28): PILOT reads the As-Is —
+  // the data file first, then the report PDF with the strongest OCR + AI — and, when it is CONFIDENT
+  // and the value is BELOW the purchase price, lowers the file's As-Is and opens the "Confirm the
+  // As-Is value" condition for a human to re-review. ON by default because the owner asked for it;
+  // `APPRAISAL_ASIS_AUTO=0` (or the switch on the API Health page) turns the WRITE off instantly
+  // without a deploy — the reading still runs and still surfaces on the condition, it just never
+  // touches the file.
+  appraisalAsIsAutoEnabled: process.env.APPRAISAL_ASIS_AUTO !== '0',
+  // How many previously-imported appraisals the boot sweep may read per boot with the paid OCR/AI
+  // path (the free XML-only tier is unbounded). Small on purpose — reading a 30 MB appraisal PDF
+  // costs real money, and the sweep drains a little on every deploy.
+  appraisalAsIsBackfillFiles: Math.max(0, parseInt(process.env.APPRAISAL_ASIS_BACKFILL_FILES || '5', 10) || 0),
+  // GOING FORWARD ONLY (owner-directed 2026-07-28). Reading the back book WRITES loan values, so the
+  // retroactive sweep is OFF by default and is not called at boot at all — new appraisal imports are
+  // read, previously-imported ones are left alone. Set APPRAISAL_ASIS_SWEEP_FILES to a small number
+  // and invoke desk.backfillAsIsReadsOnce() by hand to run a bounded pass deliberately.
+  appraisalAsIsSweepFiles: Math.max(0, parseInt(process.env.APPRAISAL_ASIS_SWEEP_FILES || '0', 10) || 0),
+
+  // Auto-clear the "Credit report" condition once every borrower on the file has a
+  // report imported AND its PDF filed (never a false-clear — see src/lib/credit/completeness.js).
+  // OFF by default: clearing a condition without a human sign-off is a sensitive action,
+  // so it stays a deliberate opt-in per environment.
+  creditAutoclearEnabled: process.env.CREDIT_AUTOCLEAR_ENABLED === '1',
+
+  // Auto-clear the "Government-issued ID" condition once PILOT has AI-READ the ID on
+  // this file and every checked field lines up (no open ID finding). Never a
+  // false-clear — see src/lib/underwriting/gov-id-autoclear.js. OFF by default:
+  // clearing an identity condition without a human is sensitive, so it's opt-in.
+  govIdAutoclearEnabled: process.env.GOVID_AUTOCLEAR_ENABLED === '1',
+
+  // Auto-clear the "Background check / OFAC" condition once PILOT has AI-read the
+  // background report on the file and it comes back clean (no open background/OFAC
+  // finding). Never a false-clear — see src/lib/underwriting/fraud-autoclear.js.
+  // OFF by default: OFAC/BSA-AML is compliance-sensitive, so it's opt-in.
+  fraudAutoclearEnabled: process.env.FRAUD_AUTOCLEAR_ENABLED === '1',
+
+  // Auto-clear the "Bank statements / liquid assets" condition once PILOT has AI-read
+  // the statements on the file AND the borrower's (and verified entity's) liquid assets
+  // provably cover what the registered deal requires — stricter than the human gate,
+  // never a false-clear. See src/lib/underwriting/assets-autoclear.js. OFF by default.
+  assetsAutoclearEnabled: process.env.ASSETS_AUTOCLEAR_ENABLED === '1',
+
+  // Auto-clear the "SSN verification" condition (rtl_p1_ssn) — CorrFirst note buyer ONLY —
+  // once an imported credit report's SSN provably matches the SSN on file for every
+  // borrower. Note-buyer-specific (CorrFirst verifies the SSN off the credit report),
+  // stricter than a blind clear, never a false-clear. See src/lib/underwriting/ssn-autoclear.js.
+  // OFF by default.
+  ssnAutoclearEnabled: process.env.SSN_AUTOCLEAR_ENABLED === '1',
+
+  // "PILOT verified — ready to clear" advisory STAMP (owner-directed 2026-07-24). When a
+  // per-domain completeness check (credit / gov-ID / SSN / assets / purchase-contract /
+  // background) verifies a Condition Center condition is met, PILOT does NOT sign it off —
+  // it puts an advisory stamp on the condition (the pilot_advice / pilot_advice_note /
+  // pilot_advice_at columns, db/295) and a human still clears it. The stamp is safe (it never
+  // clears anything), so it is ON by default; set PILOT_READY_STAMP=0 to turn the advisory off
+  // entirely. This is the go-forward replacement for the old per-domain *_AUTOCLEAR_ENABLED
+  // flags below, which stay OFF by default (=== '1'); a follow-up removes those sign-off paths.
+  pilotReadyStampEnabled: process.env.PILOT_READY_STAMP !== '0',
+
+  // Auto-clear the "Executed purchase contract" condition (rtl_p1_contract) once PILOT has
+  // read the purchase contract (and, on an assignment, the assignment agreement) on this file
+  // AND its economics reconcile — no open FATAL contract/assignment finding remains (price,
+  // address, buyer entity, assignment fee, and seller/underlying price all tie out to the loan).
+  // Stricter than a blind clear, symmetric (self-reopens when a re-read or an economics change
+  // no longer reconciles), never a false-clear. See src/lib/underwriting/contract-autoclear.js.
+  // OFF by default.
+  contractAutoclearEnabled: process.env.CONTRACT_AUTOCLEAR_ENABLED === '1',
+
   // --- document storage ---
   storageProvider: process.env.STORAGE_PROVIDER || 'local', // 'local' | 's3' | 'sharepoint'
   // On Render, set STORAGE_DIR to a mounted persistent disk (e.g. /var/data/uploads)
   // so documents survive deploys — the default filesystem is ephemeral.
   storageDir:      process.env.STORAGE_DIR || 'uploads',
   maxUploadMb:     parseInt(process.env.MAX_UPLOAD_MB || '20', 10),   // per-file cap
+  // S3-compatible object storage (AWS S3 / Cloudflare R2 / Backblaze B2 / …). Used only when
+  // STORAGE_PROVIDER=s3. Credentials come from Render env ONLY (never source). The adapter signs
+  // requests itself (AWS SigV4, Node crypto — no SDK, no new deps). `region` defaults to 'auto'
+  // (R2 uses 'auto'); `forcePathStyle` defaults ON (bucket in the URL path — what R2 + most
+  // S3-compatibles want). With STORAGE_PROVIDER unset (=local) every S3 var is ignored.
+  s3: {
+    bucket:         (process.env.S3_BUCKET || '').trim(),
+    endpoint:       (process.env.S3_ENDPOINT || '').trim(),   // e.g. https://<acct>.r2.cloudflarestorage.com
+    accessKeyId:    (process.env.S3_ACCESS_KEY_ID || '').trim(),
+    secretAccessKey:(process.env.S3_SECRET_ACCESS_KEY || '').trim(),
+    region:         (process.env.S3_REGION || 'auto').trim() || 'auto',
+    forcePathStyle: (process.env.S3_FORCE_PATH_STYLE == null) ? true
+                      : /^(1|true|yes)$/i.test(String(process.env.S3_FORCE_PATH_STYLE).trim()),
+  },
 
   // --- SharePoint document sync (one-way mirror into Pipeline Drive) ---
   // Owner-directed design (2026-07-13): every document saved on the server is
@@ -287,6 +421,21 @@ module.exports = {
   // "website robot"): it authenticates, does the confirmed 3-step upload, and attaches the blob.
   // Staged like every other write: OFF by default, still gated by SITEWIRE_OUTBOUND_ENABLED +
   // SITEWIRE_DRYRUN. Credentials live in Render env ONLY, never committed, never pasted in chat.
+  // ---- TrustPoint (the note buyer's draw administrator — Blue Lake physical files; ----
+  // ---- blueprint docs/TRUSTPOINT-PHYSICAL-DRAW-WORKFLOW-BLUEPRINT.md). Read-mostly:  ----
+  // ---- phase 2 is a mirror (GET + webhooks); the ONLY write is webhook registration. ----
+  trustpointEnabled:    process.env.TRUSTPOINT_ENABLED === '1',       // master switch (default off)
+  trustpointDryrun:     process.env.TRUSTPOINT_DRYRUN === '1',        // log intended calls, send nothing
+  trustpointApiKey:     process.env.TRUSTPOINT_API_KEY || null,       // 'Authorization: Api-Key <key>' — Render env ONLY
+  trustpointBaseUrl:    (process.env.TRUSTPOINT_BASE_URL || 'https://api.trustpoint.ai').replace(/\/+$/, ''),
+  // Spec paths use /public-api/, prose uses /v1/ — verify on sandbox; configurable so a flip is env-only.
+  trustpointPathPrefix: process.env.TRUSTPOINT_PATH_PREFIX || '/public-api',
+  trustpointPollSec:    parseInt(process.env.TRUSTPOINT_POLL_SEC || '300', 10),      // draw watermark poll
+  trustpointSweepSec:   parseInt(process.env.TRUSTPOINT_SWEEP_SEC || '1800', 10),    // project discovery sweep
+  // The shared token PILOT issues to TrustPoint at webhook registration; inbound deliveries
+  // must present it (Authorization: Bearer <token> or X-Api-Key). Render env ONLY.
+  trustpointWebhookToken: process.env.TRUSTPOINT_WEBHOOK_TOKEN || null,
+
   sitewireDocsEnabled:  process.env.SITEWIRE_DOCS_ENABLED === '1',   // master switch for the doc-push workaround (default off)
   sitewireWebBaseUrl:   (process.env.SITEWIRE_WEB_BASE_URL || process.env.SITEWIRE_BASE_URL || 'https://app.sitewire.co').replace(/\/+$/, ''),
   // Preferred (durable): PILOT logs itself in and refreshes its own session — a lender_owner web login.
@@ -421,6 +570,18 @@ module.exports = {
     // hidden reasoning from consuming the output budget; raise only if accuracy needs it.
     reasoningEffort: (process.env.AZURE_OPENAI_REASONING_EFFORT || 'low').trim(),
   },
+  // Anthropic Claude — the INDEPENDENT SECOND reasoning provider for the review
+  // committee (#215). A committee that verifies a finding with the SAME model that
+  // produced it is not truly independent; a different provider catches what the
+  // first one's blind spots miss. OFF until ANTHROPIC_API_KEY is set (Render env
+  // only, never source) — the committee runs all-Azure until then, unchanged. Raw
+  // HTTPS via fetch (no SDK), same as every other integration.
+  anthropic: {
+    key: process.env.ANTHROPIC_API_KEY,
+    model: (process.env.ANTHROPIC_MODEL || 'claude-sonnet-5').trim(),
+    apiVersion: (process.env.ANTHROPIC_API_VERSION || '2023-06-01').trim(),
+    baseUrl: (process.env.ANTHROPIC_BASE_URL || 'https://api.anthropic.com').trim().replace(/\/+$/, ''),
+  },
   // Google Cloud Document AI — the INDEPENDENT SECOND OCR engine (owner-directed
   // 2026-07-21). Runs as a fallback when Azure Document Intelligence returns no
   // text / very short text / an error. Different failure modes than Azure, so it
@@ -476,7 +637,9 @@ module.exports = {
   // per-user credential. This block is deliberately SEPARATE from the two legacy
   // `xactus` blocks above (the per-user framework), which are left in place and
   // dormant in case we return to that model. Consumed by src/lib/credit/provider.js.
-  //   XACTUS_API_URL          your assigned Xactus PRODUCTION base URL
+  //   XACTUS_API_URL          the FULL Credit ReportX request URL Xactus gave you
+  //                           to POST reports to (the exact endpoint, NOT a base
+  //                           host — the code POSTs to this address verbatim)
   //   XACTUS_API_USERNAME     the one shared login user
   //   XACTUS_API_PASSWORD     the one shared login password
   //   XACTUS_API_ACCOUNT      optional account / subscriber id (if Xactus needs it)
@@ -502,12 +665,15 @@ module.exports = {
     secret:   process.env.HOUSECANARY_SECRET || '',
     endpoint: (process.env.HOUSECANARY_ENDPOINT || 'https://api.housecanary.com').trim().replace(/\/+$/, ''),
   },
-  //   Clear Capital ClearAVM — second AVM source
+  //   Clear Capital ClearAVM — third independent AVM source (ATTOM + HouseCanary + Clear Capital → real triangulation)
   clearCapital: {
     key:      process.env.CLEARCAPITAL_KEY || '',
     endpoint: (process.env.CLEARCAPITAL_ENDPOINT || 'https://api.clearcapital.com').trim().replace(/\/+$/, ''),
+    // The ClearAVM value endpoint PATH — env-overridable so the exact contract path
+    // can be confirmed against Clear Capital's docs at onboarding without a code change.
+    avmPath:  (process.env.CLEARCAPITAL_AVM_PATH || '/uve/v1.0.0/avm').trim(),
   },
-  //   ATTOM Data Solutions — third AVM source + property intelligence
+  //   ATTOM Data Solutions — AVM source + property intelligence
   attom: {
     key:      process.env.ATTOM_API_KEY || '',
     endpoint: (process.env.ATTOM_ENDPOINT || 'https://api.gateway.attomdata.com').trim().replace(/\/+$/, ''),
@@ -541,7 +707,13 @@ module.exports = {
     publicKey: (process.env.LANGFUSE_PUBLIC_KEY || '').trim(),
     secretKey: (process.env.LANGFUSE_SECRET_KEY || '').trim(),
     host:      (process.env.LANGFUSE_HOST || 'https://us.cloud.langfuse.com').trim().replace(/\/+$/, ''),
+    // A human-readable LABEL only — attached to trace metadata so traces are easy to find.
     project:   (process.env.LANGFUSE_PROJECT || 'pilot-underwriting').trim(),
+    // The OPAQUE project identifier Langfuse itself generates, which its web URLs are addressed by.
+    // Optional: when unset it is looked up from Langfuse's own API using the keys above. Never
+    // guessed from the label — building a link out of the label is what made every "AI reasoning
+    // trace" link 404 (owner-reported 2026-07-26).
+    projectId: (process.env.LANGFUSE_PROJECT_ID || '').trim(),
   },
 
   // --- Azure Document Intelligence Custom models (owner-directed 2026-07-22).
@@ -571,4 +743,42 @@ module.exports = {
     labelStorageSasToken:    (process.env.AZURE_DOCAI_LABEL_SAS_TOKEN || '').trim(),
     labelStorageAccountKey:  (process.env.AZURE_DOCAI_LABEL_ACCOUNT_KEY || '').trim(),
   },
+
+  // ── Pipeline V2 (owner-directed 2026-07-26) — the durable, evidence-first document
+  // pipeline restructure. ADDITIVE + OFF by default: with these env vars unset, everyone
+  // stays on Pipeline V1 and the background worker does nothing. The owner flips them on in
+  // Render one document family at a time after shadow testing proves the new path is better.
+  // Accepts '1' or 'true' (the owner's Render checklist uses =true).
+  pipeline: (() => {
+    const on = (v) => { const s = String(v || '').trim().toLowerCase(); return s === '1' || s === 'true'; };
+    const csv = (v) => String(v || '').split(',').map((s) => s.trim().toLowerCase()).filter(Boolean);
+    return {
+      // There is intentionally NO `version` / UNDERWRITING_PIPELINE_VERSION selector (VSLICE-8):
+      // Pipeline V2 is ADVISORY-ONLY, so V1 is ALWAYS the exposed pipeline and V2 only ever runs in
+      // shadow. A settable "exposed pipeline = v1|v2" flag implied a V2-exposure capability that does
+      // not (and must not yet) exist — flipping it changed nothing, which was the defect. The real
+      // switches below are the only controls; the go-live exposure switch will be introduced
+      // deliberately as part of the eventual cutover, never left as a dead knob.
+      v2Enabled:         on(process.env.UW_PIPELINE_V2_ENABLED),   // build/run v2 at all (default OFF)
+      v2Shadow:          on(process.env.UW_PIPELINE_V2_SHADOW),    // run v2 beside v1, never expose (default OFF)
+      v2Families:        csv(process.env.UW_PIPELINE_V2_FAMILIES), // families promoted to v2, e.g. bank_statement,insurance ('all'/'*' = every family)
+      // Phase 3b — actually READ the shadow documents (load real bytes → primary OCR adapter).
+      // Default OFF: even with the worker + shadow on, the shadow line only PLANS a route until
+      // this is set. ADVISORY — a real read still writes ONLY the V2 audit tables, never a loan
+      // file. Turning it on spends real vendor OCR budget on every shadow document, so it is a
+      // deliberate, separate switch (UW_PIPELINE_V2_READ=1).
+      v2ReadEnabled:     on(process.env.UW_PIPELINE_V2_READ),
+      // RS-2 — CLASSIFY the shadow documents (a SECOND full-document Azure Document Intelligence
+      // call, on top of the OCR read above). Default OFF, and deliberately its own switch for the
+      // same reason `v2ReadEnabled` is: without it, an owner who has trained the classifier for
+      // V1's package splitter (AZURE_DOCINT_CLASSIFIER_ID) would silently start paying for a
+      // second vendor call on every shadow document, having opted into nothing. ADVISORY either
+      // way — the classification writes only V2 audit tables and never gates a job.
+      v2ClassifyEnabled: on(process.env.UW_PIPELINE_V2_CLASSIFY),
+      workerEnabled:     on(process.env.UW_WORKER_ENABLED),        // start the durable-job background worker (default OFF)
+      workerConcurrency: Math.max(1, parseInt(process.env.UW_WORKER_CONCURRENCY || '2', 10) || 2),
+      jobMaxAttempts:    Math.max(1, parseInt(process.env.UW_JOB_MAX_ATTEMPTS || '5', 10) || 5),
+      jobLeaseSeconds:   Math.max(30, parseInt(process.env.UW_JOB_LEASE_SECONDS || '300', 10) || 300),
+    };
+  })(),
 };

@@ -185,8 +185,9 @@
     return "";
   }
 
-  // Build a prefilled manual-review email to YS so an ineligible/edge scenario can be desk-reviewed.
-  function manualReviewMailto(d) {
+  // Build the manual-review request text (sent to our team THROUGH THE BACKEND —
+  // no mail client) so an ineligible/edge scenario can be desk-reviewed.
+  function manualReviewText(d) {
     var L = [];
     L.push("Please review the following scenario for manual underwriting:");
     L.push("");
@@ -211,7 +212,7 @@
     if (probs.length) { L.push("Flagged:"); L.push(probs.join("\n")); L.push(""); }
     L.push("Please advise on options. Thank you.");
     var subj = "Manual review request — " + (dealType() || "scenario") + (val("propState") ? " (" + val("propState") + ")" : "");
-    return "mailto:" + LENDER.email + "?subject=" + encodeURIComponent(subj) + "&body=" + encodeURIComponent(L.join("\n"));
+    return { subject: subj, body: L.join("\n") };
   }
 
   /* ---------------- conditionals ---------------- */
@@ -707,6 +708,32 @@
   // keeps both places) — never rounded to a whole number. Display only.
   function pcFull(x) { var v = Math.round((x || 0) * 100 * 100) / 100; var s = v.toFixed(2).replace(/\.?0+$/, ""); return s + "%"; }
 
+  /* ---- why the initial advance is smaller than "max % x purchase price" ----
+     On a PURCHASE the engine sizes the acquisition advance on the LOWER of the
+     (effective) purchase price and the as-is value — standard-program.js sizeLoan's
+     `acqDenom`, which the Gold engine reuses, which is why this reads identically on
+     both programs. When the appraised as-is value comes in under the price THAT is the
+     base, so the advance lands well below "max % x price" with nothing on screen saying
+     why (owner-reported 2026-07-28: 90% read as 90% of $545,600 = $491,040, not 90% of
+     the $515,000 as-is = $463,500). Returns "" when there is nothing to explain — the
+     price is the base, a refinance (always sized on the as-is value by definition), or a
+     figure is missing. PURE DISPLAY: every number is read back out of the engine's own
+     sizing result; nothing is computed, rounded or re-derived here. */
+  function advanceBasisNote(d) {
+    var s = (d && d.R && d.R.sizing) || null;
+    if (!s || !s.purchase) return "";
+    var aiv = +s.aiv || 0, price = +s.pp || 0;
+    if (!(aiv > 0) || !(price > 0) || aiv >= price - 0.5) return "";
+    var capPct = (d.caps && d.caps.maxAcqLTV > 0) ? pcFull(d.caps.maxAcqLTV) : "";
+    // On a capped assignment `s.pp` IS the effective price the engine sized on — label it
+    // as such so this never contradicts the "Effective purchase price" row above it.
+    var priceLbl = (d.asg && d.asg.overLimit) ? "effective purchase price" : "purchase price";
+    return "<b>Sized on the as-is value, not the price.</b> The appraised as-is value (" + YS.fmtUSD(aiv) +
+      ") came in below the " + priceLbl + " (" + YS.fmtUSD(price) + "), and the initial advance is capped at " +
+      (capPct ? capPct : "the program maximum") + " of the <b>lower</b> of the two — so it is " +
+      (capPct ? capPct : "that maximum") + " of the as-is value, not of the price.";
+  }
+
   /* ---- estimated key dates (interest-only fix & flip convention) ----
      First payment = the 1st of the SECOND month after closing (close anytime in
      July -> first payment Sept 1; the stub/per-diem interest from closing to
@@ -799,7 +826,19 @@
     YS.put("rIR", d.financedIR > 0 ? YS.fmtUSD(d.financedIR) : EM);
     YS.put("rCost", YS.fmtUSD(d.totalCost));
     YS.put("rAdvance", sized ? YS.fmtUSD(d.initialAdvance) : EM);
-    var advLtvEl = el("rAdvanceLtv"); if (advLtvEl) advLtvEl.textContent = (sized && d.pricingReady && d.ltvPct > 0 && d.initialAdvance > 0) ? (pcFull(d.ltvPct) + " LTV") : "";
+    // The initial advance is capped at the program's max as-is % of the LOWER of the (effective)
+    // purchase price and the as-is value. When the as-is value is the lower one the advance reads
+    // far below "max % x price" and nothing on the row said why (owner-reported 2026-07-28) — so
+    // the badge names the base and a short note explains it. Display only: every figure is read
+    // back out of the engine's own sizing result; no number is computed or changed here.
+    var advWhy = advanceBasisNote(d);
+    var advLtvEl = el("rAdvanceLtv"); if (advLtvEl) advLtvEl.textContent = (sized && d.pricingReady && d.ltvPct > 0 && d.initialAdvance > 0) ? (pcFull(d.ltvPct) + (advWhy ? " of as-is value" : " LTV")) : "";
+    var advWhyEl = el("rAdvanceWhy");
+    if (advWhyEl) {
+      var showWhy = sized && d.pricingReady && d.initialAdvance > 0 && !!advWhy;
+      advWhyEl.style.display = showWhy ? "" : "none";
+      advWhyEl.innerHTML = showWhy ? advWhy : "";
+    }
     YS.put("rHoldback", sized ? YS.fmtUSD(d.rehabHoldback) : EM);
     var hbTag = el("rHoldbackTag"); if (hbTag) hbTag.textContent = (d.R && d.R.sizing && d.R.sizing.rehabOverCap) ? "(capped \u2014 see eligibility)" : "(= rehab, in draws)";
     YS.put("rRate", (sized && d.rate > 0) ? d.rate.toFixed(2) + "%" : EM);
@@ -928,7 +967,9 @@
     var sn = el("rStateNote");
     if (sn) { var snt = ready ? stateOverlayNote(d) : ""; if (snt) { sn.style.display = ""; sn.textContent = snt; } else { sn.style.display = "none"; sn.textContent = ""; } }
 
-    // ---- manual-review email button (ineligible scenario or pricing problem) ----
+    // ---- exception / manual-review request (ineligible scenario or pricing
+    // problem) — collects the visitor's contact info and submits straight to
+    // our team through the backend; never opens the visitor's mail client ----
     var needsManual = ready && (d.status === "INELIGIBLE" || (d.status === "MANUAL"));
     var mbtn = el("rManualWrap");
     if (mbtn) {
@@ -937,8 +978,14 @@
         var lead = d.status === "INELIGIBLE"
           ? "This scenario falls outside the standard program as entered."
           : "This scenario needs a manual underwrite.";
-        mbtn.innerHTML = "<p class=\"tmv-lead\">" + lead + " You can send it to our team for a manual review.</p>" +
-          "<a class=\"btn btn-outline\" id=\"rManualBtn\" href=\"" + manualReviewMailto(d) + "\">Submit for manual review ✉</a>";
+        if (!mbtn.querySelector("#rManualBtn")) {
+          mbtn.innerHTML = "<p class=\"tmv-lead\">" + lead + " You can send it to our team for a manual review.</p>" +
+            "<button class=\"btn btn-outline\" id=\"rManualBtn\" type=\"button\">Request an exception / manual review</button>";
+        } else {
+          var mlead = mbtn.querySelector(".tmv-lead");
+          if (mlead) mlead.textContent = lead + " You can send it to our team for a manual review.";
+        }
+        var mb = el("rManualBtn"); if (mb) mb.onclick = function () { openExceptionAsk(d); };
       } else { mbtn.style.display = "none"; mbtn.innerHTML = ""; }
     }
 
@@ -1157,6 +1204,21 @@
       wb.Workbook = { Sheets: [{ Hidden: 0 }, { Hidden: 2 }] };
       X.writeFile(wb, fileStem() + ".xlsx");
       flash("Excel exported.");
+      // Same sales/officer heads-up as the PDF download — an Excel term sheet is
+      // a generated term sheet too. Only for a priced deal (no noise for a
+      // half-filled scenario); best-effort, never blocks the export.
+      try {
+        // Skip entirely in the embedded portal studio (notifyGeneration would
+        // refuse anyway — this just avoids serializing the workbook for nothing).
+        var dX = EMBEDDED ? null : ((chosenProgram === "gold") ? (calcGold() || calc()) : calc());
+        if (dX && (dX.pricingReady || dX.totalLoan > 0)) {
+          notifyGeneration(dX, "Term sheet (Excel)", {
+            dataBase64: X.write(wb, { bookType: "xlsx", type: "base64" }),
+            filename: fileStem() + ".xlsx",
+            contentType: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+          });
+        }
+      } catch (e) {}
     } catch (e) { flash("Excel export needs an internet connection (loads the spreadsheet engine)."); }
     finally { if (btn) { btn.textContent = o; btn.disabled = false; } }
   }
@@ -1586,6 +1648,9 @@
       if (returnBlob) { if (btn) { btn.textContent = label; btn.disabled = false; } return doc.output("blob"); }
       doc.save(fileStem() + ".pdf");
       flash("Term sheet downloaded.");
+      // Sales-desk heads-up with the exact generated sheet (best-effort,
+      // never blocks or delays the download).
+      try { notifyGeneration(d, "Term sheet", doc.output("blob")); } catch (e) {}
     } catch (e) {
       flash("Term sheet export needs an internet connection (loads the PDF engine).");
     } finally { if (btn) { btn.textContent = label; btn.disabled = false; } }
@@ -1746,25 +1811,167 @@
       drawDerivationPage(doc, d, "Basis for This Proof of Funds", "The figures in the preceding letter were generated from the inputs below, provided by the applicant through the YS Capital Term Sheet Studio. This page shows what was entered and how the financing amount was determined.");
       doc.save("YS-Capital-Proof-of-Funds-" + borrower.replace(/[^A-Za-z0-9]+/g, "_").replace(/^_+|_+$/g, "") + ".pdf");
       flash("Proof-of-funds letter downloaded.");
+      // Sales-desk heads-up with the exact generated letter (best-effort).
+      try { notifyGeneration(d, "Proof of funds letter", doc.output("blob")); } catch (e) {}
     } catch (e) {
       flash("Letter export needs an internet connection (loads the PDF engine).");
     } finally { if (btn) { btn.textContent = label; btn.disabled = false; } }
   }
 
   // ---- soft lead capture on the happy path ----
-  function leadMailto(s) {
-    var subj = "Term sheet request \u2014 " + (s.borrower || s.program);
-    var L = ["New term sheet request from the Term Sheet Studio:", "",
-      "Borrower / entity: " + (s.borrower || "(not provided)"),
-      "Reply-to: " + s.email, "Program: " + s.program,
-      "Property: " + (s.property || "TBD") + (s.state ? ", " + s.state : ""),
-      "Loan amount: " + (s.loanAmount ? YS.fmtUSD(s.loanAmount) : "\u2014"),
-      "Note rate: " + (s.rate ? s.rate.toFixed(2) + "%" : "\u2014"),
-      "Term: " + (s.term ? s.term + " months" : "\u2014"),
-      "Eligibility: " + (s.status || "\u2014"), "", "Please send the full term sheet and follow up."];
-    return "mailto:" + LENDER.email + "?subject=" + encodeURIComponent(subj) + "&body=" + encodeURIComponent(L.join("\n"));
-  }
   function blobToB64(blob) { return new Promise(function (res, rej) { var r = new FileReader(); r.onload = function () { var s = String(r.result); res(s.slice(s.indexOf(",") + 1)); }; r.onerror = rej; r.readAsDataURL(blob); }); }
+
+  /* ---- sales-desk notification on every GENERATED document (owner-directed
+     2026-07-24) + the optional "want a follow-up?" contact ask ----
+     When a visitor downloads a term sheet or proof-of-funds letter, the sales
+     desk is told server-side EXACTLY what was generated (figures + the PDF
+     itself). No contact info is required for that; we ask for it right after,
+     and it is never a requirement. The anti-bot form token is fetched at page
+     load so it carries the human dwell the server checks. */
+  var FORM_TOKEN = { t: null, at: 0 };
+  // The server accepts a token for ~2h; a studio tab often stays open longer.
+  // Treat a held token older than ~100 minutes as stale and re-fetch.
+  var TOKEN_FRESH_MS = 100 * 60 * 1000;
+  // The SAME page is embedded inside the PILOT portal (TermSheetStudio iframe)
+  // for staff/borrower work — those internal generations must NOT ping the
+  // sales desk as "a visitor generated a term sheet." Public visitors open the
+  // tool directly (never in a frame), so frame-embedding is the reliable tell.
+  var EMBEDDED = (function () { try { return window.self !== window.top; } catch (e) { return true; } })();
+  function fetchFormToken() {
+    return fetch("/api/leads/token").then(function (r) { return r.ok ? r.json() : null; })
+      .then(function (d) { if (d && d.t) { FORM_TOKEN.t = d.t; FORM_TOKEN.at = Date.now(); } return FORM_TOKEN.t; })
+      .catch(function () { return null; });
+  }
+  function dealMetaRows(d, kind) {
+    return [
+      { label: "Document", value: kind },
+      { label: "Program", value: (chosenProgram === "gold") ? "Gold Standard Program" : "Standard Program" },
+      { label: "Borrower / entity", value: (borrowerOfRecord() || "").trim() },
+      { label: "Property", value: (chk("addrTBD") ? "TBD" : (val("propAddr") || "")) + (val("propState") ? ", " + val("propState") : "") },
+      { label: "Loan amount", value: (d && d.totalLoan) ? YS.fmtUSD(d.totalLoan) : "" },
+      { label: "Note rate", value: (d && d.pricingReady && d.rate) ? d.rate.toFixed(2) + "%" : "" },
+      { label: "Term", value: (d && d.term) ? d.term + " months" : "" },
+      { label: "Purchase price", value: num("price") ? YS.fmtUSD(num("price")) : "" },
+      { label: "Rehab budget", value: num("construction") ? YS.fmtUSD(num("construction")) : "" },
+      { label: "ARV", value: num("arv") ? YS.fmtUSD(num("arv")) : "" },
+      { label: "Eligibility", value: (d && d.status) || "" }
+    ];
+  }
+  var _lastGen = null;   // {leadId, contactToken} \u2192 lets the optional contact ask attach to the same lead
+  // fileArg: a Blob (PDF path) OR a ready {dataBase64, filename, contentType}
+  // (the Excel path) OR null \u2014 the notification sends with whatever it gets.
+  function notifyGeneration(d, kind, fileArg) {
+    if (EMBEDDED) return;   // internal portal studio \u2014 not a marketing-site visitor
+    try {
+      var doSend = function () {
+        if (!FORM_TOKEN.t) return;
+        var addr = chk("addrTBD") ? "TBD" : (val("propAddr") || val("propState") || "");
+        var subject = kind + " generated \u2014 " + ((chosenProgram === "gold") ? "Gold Standard" : "Standard") +
+          (d && d.totalLoan ? " \u2014 " + YS.fmtUSD(d.totalLoan) : "") + (addr ? " \u2014 " + addr : "");
+        var ob = window.YSBRAND || {};
+        var code = ob.email ? String(ob.email).split("@")[0].toLowerCase().replace(/[^a-z0-9._-]/g, "") : "";
+        var attsP;
+        if (fileArg && typeof fileArg === "object" && fileArg.dataBase64) {
+          attsP = Promise.resolve([{ filename: fileArg.filename || (fileStem() + ".pdf"),
+            contentType: fileArg.contentType || "application/octet-stream", dataBase64: fileArg.dataBase64 }]);
+        } else if (fileArg) {
+          attsP = blobToB64(fileArg).then(function (b64) { return [{ filename: fileStem() + ".pdf", contentType: "application/pdf", dataBase64: b64 }]; }).catch(function () { return []; });
+        } else {
+          attsP = Promise.resolve([]);
+        }
+        attsP.then(function (atts) {
+          return fetch("/api/leads", { method: "POST", headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ tool: "term_sheet_generated", formToken: FORM_TOKEN.t,
+              officerCode: code || undefined, subject: subject,
+              message: "A visitor generated a " + kind.toLowerCase() + " in the Term Sheet Studio. The exact figures are below" + (atts.length ? " and the PDF is attached." : "."),
+              attachments: atts,
+              payload: { kind: kind, metaRows: dealMetaRows(d, kind), loanAmount: (d && d.totalLoan) || 0, program: chosenProgram } }) });
+        }).then(function (r) { return (r && r.ok) ? r.json() : null; })
+          .then(function (resp) {
+            if (resp && resp.leadId && resp.contactToken) { _lastGen = { leadId: resp.leadId, contactToken: resp.contactToken }; offerContactAsk(); }
+          }).catch(function () {});
+      };
+      if (FORM_TOKEN.t && (Date.now() - FORM_TOKEN.at) < TOKEN_FRESH_MS) doSend();
+      else fetchFormToken().then(function (t) { if (t) setTimeout(doSend, 3400); });
+    } catch (e) {}
+  }
+  function offerContactAsk() {
+    if (document.getElementById("tsContactAsk")) return;
+    var box = document.createElement("div");
+    box.id = "tsContactAsk";
+    box.style.cssText = "position:fixed;right:18px;bottom:18px;z-index:230;background:var(--card,#fff);border:1px solid var(--line,#d8d2c4);border-radius:12px;box-shadow:0 12px 32px rgba(10,14,17,.18);padding:14px 16px;max-width:340px";
+    box.innerHTML = '<button type="button" id="tsAskX" aria-label="Close" style="position:absolute;top:6px;right:9px;border:0;background:none;cursor:pointer;font-size:1rem">\u2715</button>' +
+      '<p style="margin:0 24px 8px 0;font-weight:600">Want us to follow up on this term sheet?</p>' +
+      '<p style="margin:0 0 10px;font-size:.85rem;opacity:.75">Optional \u2014 leave an email or phone number and a YS Capital specialist will reach out.</p>' +
+      '<input id="tsAskEmail" type="email" placeholder="Email" autocomplete="email" style="width:100%;margin:0 0 6px;padding:9px 11px;border:1px solid var(--line,#d8d2c4);border-radius:8px;font-size:16px">' +
+      '<input id="tsAskPhone" type="tel" placeholder="Phone (optional)" autocomplete="tel" style="width:100%;margin:0 0 8px;padding:9px 11px;border:1px solid var(--line,#d8d2c4);border-radius:8px;font-size:16px">' +
+      '<button type="button" id="tsAskSend" class="btn btn-solid" style="width:100%">Request a follow-up</button>' +
+      '<p id="tsAskNote" style="display:none;margin:8px 0 0;font-size:.85rem"></p>';
+    document.body.appendChild(box);
+    document.getElementById("tsAskX").onclick = function () { box.remove(); };
+    document.getElementById("tsAskSend").onclick = function () {
+      var em = (document.getElementById("tsAskEmail").value || "").trim();
+      var ph = (document.getElementById("tsAskPhone").value || "").trim();
+      var noteEl = document.getElementById("tsAskNote");
+      var warn = function (t) { noteEl.style.display = ""; noteEl.textContent = t; noteEl.style.color = "#b8604a"; };
+      if (!em && !ph) return warn("Add an email or phone number first.");
+      if (em && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(em)) return warn("That email doesn't look right.");
+      if (!_lastGen) { box.remove(); return; }
+      fetch("/api/leads/contact", { method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ leadId: _lastGen.leadId, contactToken: _lastGen.contactToken, email: em || undefined, phone: ph || undefined }) })
+        .then(function (r) { return r.ok ? r.json() : Promise.reject(r.status); })
+        .then(function () { box.innerHTML = '<p style="margin:0;font-weight:600">Thanks \u2014 we\u2019ll be in touch shortly.</p>'; setTimeout(function () { box.remove(); }, 3800); })
+        .catch(function () { warn("Couldn\u2019t save right now \u2014 you can also call 718-831-2168."); });
+    };
+  }
+  /* ---- exception / manual-review ask (contact info + scenario \u2192 sales desk) ---- */
+  function openExceptionAsk(d) {
+    var old = document.getElementById("tsExcOv"); if (old) old.remove();
+    var ov = document.createElement("div"); ov.id = "tsExcOv";
+    ov.style.cssText = "position:fixed;inset:0;background:rgba(10,14,17,.55);z-index:240;display:flex;align-items:center;justify-content:center;padding:16px";
+    ov.innerHTML = '<div style="background:var(--card,#fff);max-width:520px;width:100%;max-height:88vh;overflow:auto;border-radius:14px;padding:18px 20px;position:relative">' +
+      '<button type="button" id="tsExcX" aria-label="Close" style="position:absolute;top:10px;right:12px;border:0;background:none;font-size:1.05rem;cursor:pointer">\u2715</button>' +
+      '<h3 style="margin:0 0 6px">Request an exception / manual review</h3>' +
+      '<p style="margin:0 0 12px;opacity:.8">We\u2019ll send this exact scenario to our team. Leave your contact info and a specialist will get back to you with options.</p>' +
+      '<input id="tsExcName" placeholder="Your name" autocomplete="name" style="width:100%;margin:0 0 6px;padding:10px 12px;border:1px solid var(--line,#d8d2c4);border-radius:8px;font-size:16px">' +
+      '<input id="tsExcEmail" type="email" placeholder="Your email" autocomplete="email" style="width:100%;margin:0 0 6px;padding:10px 12px;border:1px solid var(--line,#d8d2c4);border-radius:8px;font-size:16px">' +
+      '<input id="tsExcPhone" type="tel" placeholder="Your phone" autocomplete="tel" style="width:100%;margin:0 0 6px;padding:10px 12px;border:1px solid var(--line,#d8d2c4);border-radius:8px;font-size:16px">' +
+      '<textarea id="tsExcNote" placeholder="Anything we should know? (optional)" rows="3" style="width:100%;margin:0 0 8px;padding:10px 12px;border:1px solid var(--line,#d8d2c4);border-radius:8px;font-size:16px"></textarea>' +
+      '<p id="tsExcErr" style="display:none;color:#b8604a;margin:0 0 8px"></p>' +
+      '<button type="button" id="tsExcSend" class="btn btn-solid" style="width:100%">Send to our team \u2192</button></div>';
+    document.body.appendChild(ov); document.body.style.overflow = "hidden";
+    var close = function () { ov.remove(); document.body.style.overflow = ""; };
+    ov.addEventListener("click", function (e) { if (e.target === ov) close(); });
+    document.getElementById("tsExcX").onclick = close;
+    document.getElementById("tsExcSend").onclick = function () {
+      var nm = (document.getElementById("tsExcName").value || "").trim();
+      var em = (document.getElementById("tsExcEmail").value || "").trim();
+      var ph = (document.getElementById("tsExcPhone").value || "").trim();
+      var extra = (document.getElementById("tsExcNote").value || "").trim();
+      var err = document.getElementById("tsExcErr");
+      var warn = function (t) { err.style.display = ""; err.textContent = t; };
+      if (!em && !ph) return warn("Add your email or phone so we can get back to you.");
+      if (em && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(em)) return warn("That email doesn\u2019t look right.");
+      var sum = manualReviewText(d);
+      var ob = window.YSBRAND || {};
+      var code = ob.email ? String(ob.email).split("@")[0].toLowerCase().replace(/[^a-z0-9._-]/g, "") : "";
+      var sbtn = document.getElementById("tsExcSend");
+      sbtn.disabled = true; sbtn.textContent = "Sending\u2026";
+      fetch("/api/leads", { method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ tool: "term_sheet_exception", officerCode: code || undefined,
+          name: nm || undefined, email: em || undefined, phone: ph || undefined,
+          subject: "Exception request \u2014 " + (sum.subject.replace(/^Manual review request \u2014 /, "")),
+          message: sum.body + (extra ? "\n\nVisitor note:\n" + extra : ""),
+          formToken: FORM_TOKEN.t || undefined,
+          payload: { kind: "exception_request", metaRows: dealMetaRows(d, "Exception request") } }) })
+        .then(function (r) { return r.ok ? r.json() : Promise.reject(r.status); })
+        .then(function () {
+          ov.firstChild.innerHTML = '<h3 style="margin:0 0 6px">Sent \u2713</h3><p style="margin:0;opacity:.8">Our team has your scenario and contact details \u2014 a specialist will reach out shortly.</p>';
+          setTimeout(close, 3200);
+        })
+        .catch(function () { warn("We couldn\u2019t send this right now \u2014 please try again in a moment, or call 718-831-2168."); sbtn.disabled = false; sbtn.textContent = "Send to our team \u2192"; });
+    };
+  }
   function leadBody(s) {
     return ["New term sheet request from the Term Sheet Studio:", "",
       "Borrower / entity: " + (s.borrower || "(not provided)"),
@@ -1776,8 +1983,8 @@
       "Eligibility: " + (s.status || "\u2014"), "", "The term sheet PDF is attached. Please follow up."].join("\n");
   }
   // #99: send the term sheet straight to the branded officer SERVER-SIDE (a real
-  // branded email with the PDF attached) \u2014 no .eml the visitor has to open. Falls
-  // back to the mailto draft only if the backend send fails / is offline.
+  // branded email with the PDF attached) \u2014 no .eml the visitor has to open. With
+  // no branded officer the backend routes it to the sales desk.
   async function sendTermSheetToOfficer(summary) {
     var ob = window.YSBRAND || {};
     var code = ob.email ? String(ob.email).split("@")[0].toLowerCase().replace(/[^a-z0-9._-]/g, "") : "";
@@ -1815,12 +2022,17 @@
       if (note) { note.textContent = "Thanks \u2014 your term sheet is on its way to your YS Capital officer, who will follow up shortly."; note.style.color = ""; }
       if (btn) { btn.textContent = "Sent \u2713"; setTimeout(function () { btn.textContent = "Send it \u2192"; btn.disabled = false; }, 3200); }
     }).catch(function () {
-      // Backend unreachable (offline) \u2192 transparent mailto/CRM fallback, unchanged.
+      // Backend unreachable \u2192 tell the truth and let them retry (a CRM hook may
+      // still capture it). No mail-client hand-off.
       var sent = false;
       if (typeof window.YS_CAPTURE_LEAD === "function") { try { window.YS_CAPTURE_LEAD(summary); sent = true; } catch (e) {} }
-      if (!sent) { try { window.location.href = leadMailto(summary); } catch (e) {} }
-      if (note) { note.textContent = "Thanks \u2014 a YS Capital specialist will email your term sheet and follow up shortly."; note.style.color = ""; }
-      if (btn) { btn.textContent = "Sent \u2713"; setTimeout(function () { btn.textContent = "Send it \u2192"; btn.disabled = false; }, 3200); }
+      if (sent) {
+        if (note) { note.textContent = "Thanks \u2014 a YS Capital specialist will email your term sheet and follow up shortly."; note.style.color = ""; }
+        if (btn) { btn.textContent = "Sent \u2713"; setTimeout(function () { btn.textContent = "Send it \u2192"; btn.disabled = false; }, 3200); }
+        return;
+      }
+      if (note) { note.textContent = "We couldn\u2019t send this right now \u2014 please try again in a moment, or call 718-831-2168."; note.style.color = "#b8604a"; }
+      if (btn) { btn.textContent = "Send it \u2192"; btn.disabled = false; }
     });
   }
 
@@ -2027,9 +2239,12 @@
       if (isGold) goldChosenLTC = chosen; else chosenLTC = chosen;
       recompute();
     });
+    // Fetch the anti-bot form token at load — by the time a sheet is generated
+    // it carries the human dwell the sales-desk notification endpoint checks.
+    try { fetchFormToken(); } catch (e) {}
     var pdf = el("tsPdf"); if (pdf) pdf.addEventListener("click", function () {
       if (!readyToPrice()) { flash("Add the required fields (state, FICO, price and ARV) to download your term sheet."); return; }
-      if (!canIssue(issueDeal())) { flash("This scenario isn't eligible as entered, so a term sheet can't be issued \u2014 use \u201CSubmit for manual review\u201D and our team will take a look."); return; }
+      if (!canIssue(issueDeal())) { flash("This scenario isn't eligible as entered, so a term sheet can't be issued \u2014 use \u201CRequest an exception / manual review\u201D and our team will take a look."); return; }
       if (validateAssign()) exportPdf(pdf); else flash("The seller's contract price can't be more than the purchase price.");
     });
     var lt = el("tsLetter"); if (lt) lt.addEventListener("click", function () { exportLetter(lt); });

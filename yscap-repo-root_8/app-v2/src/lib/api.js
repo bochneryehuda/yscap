@@ -29,13 +29,53 @@ function friendlyError(status, data) {
   return `Something went wrong (HTTP ${status}) — please try again.`;
 }
 
-// Session expired mid-use: clear the token ONCE, remember why, and let the
-// router (which watches ys:auth-changed) bounce to the correct login screen.
-function sessionExpired() {
+// Session ended mid-use: clear the token ONCE, remember WHY, and let the router
+// (which watches ys:auth-changed) bounce to the correct login screen.
+//
+// `reason` is the server's own words when it gave us one (the 401 body carries a
+// `code` + message — see sessionDenied() in src/auth/index.js), so the login
+// screen can say "this account has been turned off" instead of the catch-all
+// "your session expired", which sent people re-typing a password that was never
+// the problem (owner-reported 2026-07-26).
+const DEFAULT_NOTICE = 'You were signed out because your session expired. Please sign in again.';
+function sessionExpired(reason) {
   if (!getToken()) return;
   clearToken();
-  try { sessionStorage.setItem(NOTICE_KEY, 'You were signed out because your session expired. Please sign in again.'); } catch { /* private mode */ }
+  try { sessionStorage.setItem(NOTICE_KEY, reason || DEFAULT_NOTICE); } catch { /* private mode */ }
   window.dispatchEvent(new Event('ys:auth-changed'));
+}
+
+/* Is the session REALLY dead, or was that one 401 about something else?
+   Signing someone out is destructive (it drops every open tab on the device —
+   the token lives in localStorage), so we never do it on the strength of a
+   single response. We ask /auth/me, which answers for the SESSION and nothing
+   else. Plain fetch, so this can never recurse back into the 401 handling.
+   Anything other than a clean 401 (a network blip, a 502 from an upstream
+   vendor, a 500) means KEEP the session. */
+async function confirmSessionDead(token) {
+  try {
+    const res = await fetch('/auth/me', { headers: { Authorization: `Bearer ${token}` } });
+    if (res.status !== 401) return null;
+    let data = null; try { data = await res.json(); } catch { /* empty */ }
+    return { dead: true, reason: (data && data.error) || '' };
+  } catch { return null; }   // couldn't reach the server — not proof of anything
+}
+
+// Only one confirmation probe in flight at a time: a screen that fires six
+// parallel calls must not fire six probes (and must not race six sign-outs).
+let deadCheck = null;
+async function handle401(data) {
+  const token = getToken();
+  if (!token) return;
+  // The server marks a genuine session rejection with `session:'invalid'`.
+  // A 401 WITHOUT that marker is not ours to act on — it came from something
+  // else on the way (a proxy, a CDN, an older build) and must never sign
+  // anyone out on its own; we confirm it against /auth/me first either way.
+  if (!deadCheck) deadCheck = confirmSessionDead(token).finally(() => { deadCheck = null; });
+  const verdict = await deadCheck;
+  if (!verdict || !verdict.dead) return;               // session is fine — leave it alone
+  if (getToken() !== token) return;                    // someone already signed in again
+  sessionExpired(verdict.reason || (data && data.error) || DEFAULT_NOTICE);
 }
 
 // One fetch with retry-on-transient-failure (only for GETs — retrying a write
@@ -60,7 +100,11 @@ async function resilientFetch(path, opts, { isAuthCall = false } = {}) {
     }
     const fresh = res.headers.get('X-Refresh-Token');
     if (fresh && getToken()) setToken(fresh);
-    if (res.status === 401 && !isAuthCall && getToken()) sessionExpired();
+    if (res.status === 401 && !isAuthCall && getToken()) {
+      // Read the reason without consuming the body the caller still needs.
+      let data = null; try { data = await res.clone().json(); } catch { /* empty */ }
+      handle401(data);   // deliberately not awaited — the caller's error path shouldn't wait on the probe
+    }
     return res;
   }
 }
@@ -73,6 +117,26 @@ async function download(path) {
   if (!res.ok) {
     let data = null; try { data = await res.json(); } catch { /* empty */ }
     const err = new Error(friendlyError(res.status, data));
+    err.status = res.status; err.data = data;
+    throw err;
+  }
+  const cd = res.headers.get('Content-Disposition') || '';
+  const m = /filename="([^"]+)"/.exec(cd);
+  return { blob: await res.blob(), filename: m ? m[1] : 'document' };
+}
+// Like download(), but POSTs a JSON body first (for exports that take a selection,
+// e.g. a bulk tape). On error the server's JSON `{error,message,...}` rides along
+// on err.data so the caller can show the exact reason (e.g. a buyer mismatch).
+async function downloadPost(path, body) {
+  const t = getToken();
+  const res = await resilientFetch(path, {
+    method: 'POST',
+    headers: Object.assign({ 'Content-Type': 'application/json' }, t ? { Authorization: `Bearer ${t}` } : {}),
+    body: body != null ? JSON.stringify(body) : undefined,
+  });
+  if (!res.ok) {
+    let data = null; try { data = await res.json(); } catch { /* empty */ }
+    const err = new Error((data && data.message) || friendlyError(res.status, data));
     err.status = res.status; err.data = data;
     throw err;
   }
@@ -315,8 +379,20 @@ export const api = {
   staffVestingLlcOwners: (id) => req('GET', `/api/staff/applications/${id}/vesting-llc-owners`),
   staffSetVestingLlcOwners: (id, owners) => req('POST', `/api/staff/applications/${id}/vesting-llc-owners`, { owners }),
   staffChecklist:   (id) => req('GET', `/api/staff/applications/${id}/checklist`),
+
+  // Encompass sync (READ-ONLY per-file reconcile). status = summary; findings =
+  // the full field-by-field comparison (live data); refresh = re-pull read-only;
+  // replace = pull one Encompass value into our column (any assigned staff).
+  encompassStatus:   (id) => req('GET', `/api/staff/applications/${id}/encompass/status`),
+  encompassFindings: (id) => req('GET', `/api/staff/applications/${id}/encompass/findings`),
+  encompassRefresh:  (id) => req('POST', `/api/staff/applications/${id}/encompass/refresh`),
+  // Super-admin only: the raw Encompass troubleshooting view.
+  encompassRaw:      (id) => req('GET', `/api/staff/applications/${id}/encompass/raw`),
+  encompassReplace:  (id, fieldKey) => req('POST', `/api/staff/applications/${id}/encompass/replace`, { fieldKey }),
   // Credit report (Xactus import) — the internal Credit report condition.
-  staffCredit:        (id) => req('GET', `/api/staff/applications/${id}/credit`),
+  // `scope` = 'co' | 'primary' narrows the credit section to ONE borrower, so a
+  // co-borrower's own credit condition shows their report instead of the file's.
+  staffCredit:        (id, scope) => req('GET', `/api/staff/applications/${id}/credit${scope && scope !== 'file' ? `?scope=${encodeURIComponent(scope)}` : ''}`),
   staffCreditPreview: (id) => req('GET', `/api/staff/applications/${id}/credit/preview`),
   staffCreditImport:  (id, b) => req('POST', `/api/staff/applications/${id}/credit/import`, b),
   // #147 — the cross-system observability timeline for a file (portal + ClickUp +
@@ -351,6 +427,13 @@ export const api = {
   staffAddBorrowerNote:      (id, body) => req('POST', `/api/staff/borrowers/${id}/notes`, { body }),
   staffDeleteBorrowerNote:   (id, nid) => req('DELETE', `/api/staff/borrowers/${id}/notes/${nid}`),
   staffBorrowerSsn: (id) => req('GET', `/api/staff/borrowers/${id}/ssn`),
+  // Set / correct the SSN on the PROFILE (owner-directed 2026-07-26 — it was
+  // only settable from inside a loan file). `resolveConflict:'same_person'`
+  // moves the number off a duplicate profile that is already holding it; the
+  // 409 that comes back without it names that profile so the staffer can look.
+  staffSetBorrowerSsn: (id, ssn, opts = {}) => req('POST', `/api/staff/borrowers/${id}/ssn`, { ssn, ...opts }),
+  staffAddBorrowerContact:     (id, b) => req('POST', `/api/staff/borrowers/${id}/contacts`, b),
+  staffSetPrimaryContact:      (id, b) => req('POST', `/api/staff/borrowers/${id}/contacts/primary`, b),
   staffBorrowerTrackRecords: (id) => req('GET', `/api/staff/borrowers/${id}/track-records`),
   staffTrackRecordSnapshot:  (id) => req('GET', `/api/staff/borrowers/${id}/track-record/snapshot`),
   staffBorrowerLlcs: (id) => req('GET', `/api/staff/borrowers/${id}/llcs`),
@@ -395,6 +478,13 @@ export const api = {
   staffClassifyOrderDoc: (appId, kind, docId, slot) => req('POST', `/api/staff/applications/${appId}/orders/${kind}/documents/${docId}/classify`, { slot }),
   staffCancelOrder:   (appId, kind, reopen) => req('POST', `/api/staff/applications/${appId}/orders/${kind}/cancel`, reopen ? { reopen: true } : {}),
   staffAllOrders:     () => req('GET', '/api/staff/orders'),   // global orders queue (all visible files)
+  // Attorney closing prep — the third order. Its own routes: the recipients, the
+  // document package and the closing email chain have nothing in common with a
+  // title/insurance vendor order.
+  staffClosingPrep:         (appId) => req('GET', `/api/staff/applications/${appId}/closing-prep`),
+  staffPlaceClosingPrep:    (appId, body) => req('POST', `/api/staff/applications/${appId}/closing-prep/place`, body || {}),
+  staffClosingPrepFollowup: (appId, body) => req('POST', `/api/staff/applications/${appId}/closing-prep/followup`, body || {}),
+  staffCancelClosingPrep:   (appId, reopen) => req('POST', `/api/staff/applications/${appId}/closing-prep/cancel`, reopen ? { reopen: true } : {}),
   staffSetLoanNumber: (appId, loanNumber) => req('POST', `/api/staff/applications/${appId}/loan-number`, { loanNumber }),
   staffPostClosing: (appId) => req('GET', `/api/staff/applications/${appId}/post-closing`),
   staffSeedPostClosing: (appId) => req('POST', `/api/staff/applications/${appId}/post-closing/seed`),
@@ -423,6 +513,12 @@ export const api = {
     try { const { blob, filename } = await download(`/api/sitewire/files/${appId}/report${mode === 'borrower' ? '?mode=borrower' : ''}`); openBlob(blob, filename, win); }
     catch (e) { try { if (win && !win.closed) win.close(); } catch { /* ignore */ } throw e; }
   },
+  // PILOT-branded report for a TrustPoint-administered draw (staff; mode borrower = the
+  // borrower-safe copy). Opens in a tab (win pre-opened in the click handler).
+  trustpointDrawReport: async (appId, tpDrawId, mode, win) => {
+    try { const { blob, filename } = await download(`/api/trustpoint/files/${appId}/draws/${tpDrawId}/report${mode === 'borrower' ? '?mode=borrower' : ''}`); openBlob(blob, filename, win); }
+    catch (e) { try { if (win && !win.closed) win.close(); } catch { /* ignore */ } throw e; }
+  },
   // Borrower's OWN branded inspection report (always borrower-safe; server enforces own-file). drawId
   // optional → that draw; omitted → whole-project. Opens in a tab (win pre-opened in the click handler).
   borrowerDrawReport: async (appId, drawId, win) => {
@@ -436,13 +532,25 @@ export const api = {
   staffExportMismo:  (appId) => download(`/api/staff/applications/${appId}/export/mismo`),
   staffMismoPreview: (xml) => req('POST', '/api/staff/mismo/preview', { xml }),
   staffMismoCreate:  (xml) => req('POST', '/api/staff/mismo/create', { xml }),
+  // Capital-provider data tapes. A loan can only export the tape of the provider
+  // it is currently assigned to (staffTapesForApp says which, and why not).
+  staffTapesList:    () => req('GET', '/api/staff/tapes'),
+  staffTapesForApp:  (appId) => req('GET', `/api/staff/applications/${appId}/tapes`),
+  // Extra questions a loan needs before its tape can fill (e.g. New-Construction
+  // fields). Empty for most loans.
+  staffTapeQuestions:(appId, tapeKey) => req('GET', `/api/staff/applications/${appId}/export/tape/${tapeKey}/questions`),
+  staffTapeExport:   (appId, tapeKey, answers) => download(`/api/staff/applications/${appId}/export/tape/${tapeKey}${qs(answers)}`),
+  staffTapeLoans:    (tapeKey) => req('GET', `/api/staff/tapes/${tapeKey}/loans`),
+  staffTapeBulkExport: (tapeKey, applicationIds, encompassOverrideReason) => downloadPost(`/api/staff/tapes/${tapeKey}/export/bulk${encompassOverrideReason ? qs({ encompassOverrideReason }) : ''}`, { applicationIds }),
   staffSaveRehabBudget: (appId, payload) => req('POST', `/api/staff/applications/${appId}/rehab-budget`, { payload }),
   // #152 — export the current pipeline VIEW (same filter params as staffApplications).
   staffExportPipeline: (params) => download(`/api/staff/applications/export${qs(params)}`),
   staffPricing:      (appId) => req('GET', `/api/staff/applications/${appId}/pricing`),
   staffPricingQuote: (appId, overrides) => req('POST', `/api/staff/applications/${appId}/pricing/quote`, { overrides }),
-  staffRegisterProduct: (appId, program, overrides, econVersion, assetMonths, submitException, termOptions) => req('POST', `/api/staff/applications/${appId}/pricing/register`, { program, overrides, econVersion, assetMonths, submitException, termOptions }),
-  staffRequestException: (appId, note) => req('POST', `/api/staff/applications/${appId}/pricing/request-exception`, { note }),
+  staffRegisterProduct: (appId, program, overrides, econVersion, assetMonths, submitException, termOptions, encompassOverrideReason) => req('POST', `/api/staff/applications/${appId}/pricing/register`, { program, overrides, econVersion, assetMonths, submitException, termOptions, encompassOverrideReason }),
+  // Redesign 2026-07-24: the pricing exception is a first-class register record —
+  // the request now carries an optional structured reason + compensating factors.
+  staffRequestException: (appId, note, reasonCode, compensatingFactors) => req('POST', `/api/staff/applications/${appId}/pricing/request-exception`, { note, reasonCode, compensatingFactors }),
   // Manual Program admin config + the super-admin escalation box.
   manualProgramSettings:     () => req('GET', '/api/admin/manual-programs/settings'),
   saveManualProgramSettings: (b) => req('PUT', '/api/admin/manual-programs/settings', b),
@@ -455,11 +563,21 @@ export const api = {
   // request/withdraw/state (any staff) + the super-admin review box (decide = super-admin).
   fileExceptions:            (appId) => req('GET', `/api/staff/applications/${appId}/exceptions`),
   requestGuarantyWaiver:     (appId, body) => req('POST', `/api/staff/applications/${appId}/exceptions/guaranty-waiver`, body || {}),
+  requestEsignBeforeCtc:     (appId, body) => req('POST', `/api/staff/applications/${appId}/exceptions/esign-before-ctc`, body || {}),
   withdrawException:         (appId, eid) => req('POST', `/api/staff/applications/${appId}/exceptions/${eid}/withdraw`, {}),
-  loanExceptions:            (status) => req('GET', `/api/admin/exceptions${status ? `?status=${status}` : ''}`),
+  loanExceptions:            (status, type) => req('GET', `/api/admin/exceptions${qs({ status, type })}`),
   loanExceptionsCount:       () => req('GET', '/api/admin/exceptions/count'),
-  decideLoanException:       (id, decision, note) => req('POST', `/api/admin/exceptions/${id}/decide`, { decision, note }),
+  // The register report (counts, approval rate, time-to-decision, aging) and the
+  // diligence-ready xlsx export of the register (redesign 2026-07-24).
+  loanExceptionMetrics:      () => req('GET', '/api/admin/exceptions/metrics'),
+  exportExceptionRegister:   async (status, type) => { const { blob, filename } = await download(`/api/admin/exceptions/export.xlsx${qs({ status, type })}`); saveBlob(blob, filename); },
+  // decide: `waivedCodes` (esign_before_ctc approvals, 2026-07-24) names EXACTLY
+  // which outstanding requirements the super-admin waives; omitted → legacy meaning.
+  // `expiresAt` (redesign) sets an approval validity on expirable types.
+  decideLoanException:       (id, decision, note, waivedCodes, expiresAt) => req('POST', `/api/admin/exceptions/${id}/decide`, { decision, note, ...(waivedCodes ? { waivedCodes } : {}), ...(expiresAt ? { expiresAt } : {}) }),
   clearLoanException:        (id, note) => req('POST', `/api/admin/exceptions/${id}/clear`, { note }),
+  // The esign exception's clear view: live ✓/✗ requirements + request snapshot + waived codes.
+  exceptionGate:             (id) => req('GET', `/api/admin/exceptions/${id}/gate`),
   exceptionComments:         (id) => req('GET', `/api/admin/exceptions/${id}/comments`),
   addExceptionComment:       (id, body) => req('POST', `/api/admin/exceptions/${id}/comments`, { body }),
   exceptionConditions:       (id) => req('GET', `/api/admin/exceptions/${id}/conditions`),
@@ -483,8 +601,29 @@ export const api = {
   factHistory:               (appId, factKey) => req('GET', `/api/underwriting/${appId}/twin/fact/${encodeURIComponent(factKey)}`),
   confirmFact:               (appId, factKey, value, reason) => req('POST', `/api/underwriting/${appId}/twin/fact/${encodeURIComponent(factKey)}/confirm`, { value, reason: reason || undefined }),
   similarOpenFindings:       (appId, findingId) => req('GET', `/api/underwriting/${appId}/findings/${findingId}/similar-open`),
+  // R5.17 — the grounded evidence behind one finding (exact OCR quote + page), fetched on demand.
+  findingEvidence:           (appId, findingId) => req('GET', `/api/underwriting/${appId}/findings/${findingId}/evidence`),
+  // Grounded back-and-forth reasoning chat: ask PILOT "why?" about a file; history is client-held.
+  aiReason:                  (appId, question, history) => req('POST', `/api/underwriting/${appId}/reason`, { question, history: history || [] }),
+  // "What to look for" — the note-buyer checklist for a document type (fetched on demand).
+  documentReviewGuide:       (appId, docType) => req('GET', `/api/underwriting/${appId}/document-review-guide?docType=${encodeURIComponent(docType || '')}`),
   bulkResolveFindings:       (appId, findingIds, action, note) => req('POST', `/api/underwriting/${appId}/findings/similar/bulk-resolve`, { findingIds, action, note: note || undefined }),
   fileAvmConsensus:          (appId) => req('GET', `/api/underwriting/${appId}/avm-consensus`),
+  // #197 — whole-loan run cockpit (decision + run-diff + next-actions + findings digest).
+  fileUnderwritingRun:       (appId) => req('GET', `/api/underwriting/${appId}/underwriting-run`),
+  // #179 (R6.16) — plain-language "Why this decision?" explanation of the latest whole-loan run.
+  fileUnderwritingWhy:       (appId) => req('GET', `/api/underwriting/${appId}/underwriting-run/why`),
+  // #179 (R6.16) — download the latest whole-loan run findings as a CSV (auth'd fetch → browser save).
+  fileUnderwritingFindingsCsv: async (appId) => { const { blob, filename } = await download(`/api/underwriting/${appId}/underwriting-run/findings.csv`); saveBlob(blob, filename); },
+  // #136 (R5.39) — advisory guideline evaluation (per-rule verdicts + plain citations + investor-fit "A vs B").
+  fileGuidelineEvaluation:   (appId) => req('GET', `/api/underwriting/${appId}/guideline-evaluation`),
+  // ISG — Investor-Specific Soft Guidelines desk (per note-buyer condition verdicts + conflicts).
+  fileInvestorGuidelines:    (appId) => req('GET', `/api/underwriting/${appId}/investor-guidelines`),
+  // ISG AI satisfaction-quality check — asks the grounded GPT brain whether each SATISFIED
+  // note-buyer condition's cleared evidence actually meets the investor's exact rule. On-demand
+  // (staff clicks), env-gated + cost-capped, advisory only. Returns immediately; advisories land
+  // in the AI suggestions panel on its next refresh.
+  aiVerifyInvestorGuidelines: (appId) => req('POST', `/api/underwriting/${appId}/investor-guidelines/ai-verify`, {}),
   fileAvmConsensusVerify:    (appId) => req('POST', `/api/underwriting/${appId}/avm-consensus/verify`, {}),
   // AI Suggestions panel (R3.5/R3.6 — owner-directed 2026-07-22).
   aiSuggestionsList:      (appId, params = {}) => {
@@ -511,14 +650,23 @@ export const api = {
   aiSilencedCodesAdd:     (code, reason) => req('POST', '/api/admin/insights/silenced-codes', { code, reason }),
   aiSilencedCodesRemove:  (code) => req('DELETE', `/api/admin/insights/silenced-codes/${encodeURIComponent(code)}`),
   aiSilencedCodesHistory: () => req('GET', '/api/admin/insights/silenced-codes/history'),
+
+  // Pipeline V2 (shadow) — vendor health + the staff-only shadow comparison (V2 vs V1).
+  pipelineHealth:      () => req('GET', '/api/admin/pipeline/health'),
+  pipelineShadow:      (loanId) => req('GET', '/api/admin/pipeline/shadow' + (loanId ? `?loanId=${encodeURIComponent(loanId)}` : '')),
+  pipelineShadowJob:   (jobId) => req('GET', `/api/admin/pipeline/shadow/${encodeURIComponent(jobId)}`),
   insightsFilesWithSuggestion: (params = {}) => {
     const qs = new URLSearchParams(params).toString();
     return req('GET', `/api/admin/insights/files-with-suggestion${qs ? '?' + qs : ''}`);
   },
   staffUploadAppDoc: (appId, b) => coalesceUpload('appDoc:' + appId, b, () => req('POST', `/api/staff/applications/${appId}/documents`, normalizeUpload(b))),
   staffAddLoanCondition: (appId, b) => req('POST', `/api/staff/applications/${appId}/loan-conditions`, b),
-  staffClearCondition:   (cid) => req('POST', `/api/staff/loan-conditions/${cid}/clear`),
-  staffWaiveCondition:   (cid, reason) => req('POST', `/api/staff/loan-conditions/${cid}/waive`, { reason }),
+  // `override` (optional) = { adminOverride:true, overrideReason } from
+  // lib/condition-override.askOverride — a super-admin clearing/waiving a
+  // condition without meeting its requirement. The server refuses it for anyone
+  // else and requires the reason; omitting it is an ordinary clear/waive.
+  staffClearCondition:   (cid, override) => req('POST', `/api/staff/loan-conditions/${cid}/clear`, override || undefined),
+  staffWaiveCondition:   (cid, reason, override) => req('POST', `/api/staff/loan-conditions/${cid}/waive`, { reason, ...(override || {}) }),
   staffReviewCondition:  (cid, reviewed) => req('POST', `/api/staff/loan-conditions/${cid}/review`, { reviewed }),
   // Borrower change-request sandbox (S5-03) — staff review side.
   staffChangeRequests:       (appId) => req('GET', `/api/staff/applications/${appId}/change-requests`),
@@ -540,11 +688,43 @@ export const api = {
   workflowTimeline:  (appId) => req('GET', `/api/staff/applications/${appId}/workflow/timeline`),
   workflowSubmit:    (appId, b) => req('POST', `/api/staff/applications/${appId}/workflow/submit`, b),
   workflowQueue:     (params) => req('GET', `/api/staff/workflow${params ? '?' + new URLSearchParams(params).toString() : ''}`),
+  workflowRoster:    () => req('GET', '/api/staff/workflow/roster'),
   workflowCount:     () => req('GET', '/api/staff/workflow/count'),
   workflowPickup:    (itemId) => req('POST', `/api/staff/workflow/${itemId}/pickup`),
   workflowReturn:    (itemId, outcomeLabel, note) => req('POST', `/api/staff/workflow/${itemId}/return`, { outcomeLabel, note }),
   closingWorkflow:   (appId) => req('GET', `/api/staff/applications/${appId}/closing-workflow`),
   advanceClosing:    (appId, stage) => req('POST', `/api/staff/applications/${appId}/closing-workflow`, { stage }),
+  // The closing workspace (the closer's desk).
+  closingWorkspace:  (appId) => req('GET', `/api/staff/applications/${appId}/closing`),
+  closingUpdate:     (appId, b) => req('PATCH', `/api/staff/applications/${appId}/closing`, b),
+  closingAddNote:    (appId, body) => req('POST', `/api/staff/applications/${appId}/closing/notes`, { body }),
+  closingCashToClose:(appId, actualCashToClose, docId) => req('POST', `/api/staff/applications/${appId}/closing/cash-to-close`, { actualCashToClose, docId }),
+  closingSignOff:    (appId, kind, on) => req('POST', `/api/staff/applications/${appId}/closing/sign-off`, { kind, on }),
+  closingChecklistTemplates: (appId) => req('GET', `/api/staff/applications/${appId}/closing/checklist-templates`),
+  closingCreateChecklist: (appId, b) => req('POST', `/api/staff/applications/${appId}/closing/checklists`, b),
+  closingAddChecklistItem: (appId, cid, label) => req('POST', `/api/staff/applications/${appId}/closing/checklists/${cid}/items`, { label }),
+  closingToggleChecklistItem: (appId, iid, checked) => req('PATCH', `/api/staff/applications/${appId}/closing/checklist-items/${iid}`, { checked }),
+  closingQueue:      (params) => req('GET', `/api/staff/closing${params ? '?' + new URLSearchParams(params).toString() : ''}`),
+  closingCount:      () => req('GET', '/api/staff/closing/count'),
+  // The purchasing desk — where a file lands after investor delivery (unless it
+  // was table funded, i.e. sold right at closing).
+  purchasingQueue:   (params) => req('GET', `/api/staff/purchasing${params ? '?' + new URLSearchParams(params).toString() : ''}`),
+  purchasingCount:   () => req('GET', '/api/staff/purchasing/count'),
+  purchasingGet:     (appId) => req('GET', `/api/staff/applications/${appId}/purchasing`),
+  purchasingStatus:  (appId, status) => req('POST', `/api/staff/applications/${appId}/purchasing/status`, { status }),
+  purchasingAddNote: (appId, body) => req('POST', `/api/staff/applications/${appId}/purchasing/notes`, { body }),
+  purchasingAddTask: (appId, label) => req('POST', `/api/staff/applications/${appId}/purchasing/tasks`, { label }),
+  purchasingTaskDone: (appId, taskId, done) => req('PATCH', `/api/staff/applications/${appId}/purchasing/tasks/${taskId}`, { done }),
+  purchasingTaskDelete: (appId, taskId) => req('DELETE', `/api/staff/applications/${appId}/purchasing/tasks/${taskId}`),
+  purchasingAddCondition:  (appId, label, detail) => req('POST', `/api/staff/applications/${appId}/purchasing/conditions`, { label, detail }),
+  purchasingConditionStatus: (appId, cid, status, note) => req('PATCH', `/api/staff/applications/${appId}/purchasing/conditions/${cid}`, { status, note }),
+  purchasingConditionDelete: (appId, cid) => req('DELETE', `/api/staff/applications/${appId}/purchasing/conditions/${cid}`),
+  purchasingAdvice:        (appId, patch) => req('POST', `/api/staff/applications/${appId}/purchasing/advice`, patch),
+  // Uploads the advice STAFF-ONLY from the outset — there is no borrower-visible
+  // window to designate away, which is the root cause the designation-time
+  // forcing could only mitigate.
+  purchasingAdviceUpload:  (appId, file) => req('POST', `/api/staff/applications/${appId}/documents`,
+    normalizeUpload({ ...file, staffOnly: true, slot: 'Purchase advice' })),
   staffStatusHistory: (appId) => req('GET', `/api/staff/applications/${appId}/status-history`),
   staffSetClosingDate: (appId, b) => req('POST', `/api/staff/applications/${appId}/closing-date`, b),
   staffEditApplication: (appId, b) => req('PATCH', `/api/staff/applications/${appId}/details`, b),
@@ -616,6 +796,10 @@ export const api = {
   clickupRepush:    (appId) => req('POST', `/api/admin/clickup/file/${appId}/repush`),
   clickupRepull:    (appId) => req('POST', `/api/admin/clickup/file/${appId}/repull`),
   clickupSyncFolder:(folderId, createFiles) => req('POST', '/api/admin/clickup/sync-folder', { folderId, createFiles }),
+  // The borrower-profile sweep — reads every ClickUp card in every status to
+  // build PEOPLE (profile, entities, track record, officer link), never files.
+  clickupProfileSweep:      () => req('GET', '/api/admin/clickup/profile-sweep'),
+  clickupStartProfileSweep: (opts) => req('POST', '/api/admin/clickup/profile-sweep', opts || {}),
   clickupAudit:     () => req('GET', '/api/admin/clickup/audit'),
   clickupManualReview:        () => req('GET', '/api/admin/clickup/manual-review'),
   clickupResolveManualReview: (appId, action) => req('POST', `/api/admin/clickup/manual-review/${appId}/resolve`, { action }),
@@ -680,6 +864,13 @@ export const api = {
   staffEditFileContact:(linkId, b) => req('PATCH', `/api/staff/file-contacts/${linkId}`, b),
   staffDelFileContact: (linkId) => req('DELETE', `/api/staff/file-contacts/${linkId}`),
   staffBorrowerContacts: (borrowerId) => req('GET', `/api/staff/borrowers/${borrowerId}/contacts`),
+  // Duplicate borrower profiles: find, compare side by side, merge into one
+  // (owner-directed 2026-07-26). `choices` names the winning side for every field
+  // the two disagree on — the server REFUSES (409) a merge with any left undecided.
+  staffBorrowerDuplicates: (id) => req('GET', `/api/staff/borrowers/${id}/duplicates`),
+  staffBorrowerCompare:    (id, otherId) => req('GET', `/api/staff/borrowers/${id}/compare/${otherId}`),
+  staffBorrowerMerge:      (id, body) => req('POST', `/api/staff/borrowers/${id}/merge`, body),
+  staffBorrowerMerges:     (id) => req('GET', `/api/staff/borrowers/${id}/merges`),
   staffAppraisalCard:(appId) => req('GET', `/api/staff/applications/${appId}/appraisal-card`),
   staffSaveAppraisalCard:(appId, b) => req('POST', `/api/staff/applications/${appId}/appraisal-card`, b),
 
@@ -689,6 +880,11 @@ export const api = {
   appraisalUndoImport:     (appId) => req('POST', `/api/appraisal/${appId}/undo-import`),
   appraisalResolveFinding: (appId, fid, b) => req('POST', `/api/appraisal/${appId}/findings/${fid}/resolve`, b),
   appraisalRefreshPhotos:  (appId) => req('POST', `/api/appraisal/${appId}/photos/refresh`, {}),
+  // The As-Is value PILOT read off the appraisal, and the officer's own entry (2026-07-28).
+  appraisalAsIs:           (appId) => req('GET', `/api/appraisal/${appId}/as-is`),
+  appraisalSetAsIs:        (appId, b) => req('POST', `/api/appraisal/${appId}/as-is`, b),
+  appraisalSetArv:         (appId, b) => req('POST', `/api/appraisal/${appId}/arv`, b),
+  appraisalRereadAsIs:     (appId) => req('POST', `/api/appraisal/${appId}/as-is/read`, {}),
   // Borrower READ-ONLY view of the same appraisal report + findings (no actions).
   appraisalGetBorrower:    (appId) => req('GET', `/api/borrower/applications/${appId}/appraisal`),
   // Fetch an appraisal photo's bytes (blob) for inline display — staff vs borrower channel.
@@ -707,6 +903,10 @@ export const api = {
   findingEscalations:         (status) => req('GET', `/api/underwriting/escalations${status ? `?status=${status}` : ''}`),
   findingEscalationsCount:    () => req('GET', '/api/underwriting/escalations/count'),
   decideFindingEscalation:    (id, decision, note) => req('POST', `/api/underwriting/escalations/${id}/decide`, { decision, note }),
+  // Take a REAL underwriting action (post a condition / request a document / fix the file /
+  // grant an exception / clear / dismiss / decline …) straight from the review queue: it
+  // resolves the finding ON THE FILE and closes the queue item in one call.
+  applyFindingEscalation:     (id, b) => req('POST', `/api/underwriting/escalations/${id}/apply`, b),
   // Portfolio-wide "training" report: which finding types turned out real vs false alarms.
   underwritingFeedback:       () => req('GET', '/api/underwriting/insights/feedback'),
 
@@ -783,4 +983,13 @@ export const api = {
   loNotifUnstarFile:       (appId) => req('DELETE', `/api/staff/notification-center/star-file?applicationId=${encodeURIComponent(appId)}`),
   loNotifStarredFiles:     () => req('GET',  '/api/staff/notification-center/starred-files'),
   loNotifSelfVolume:       (days) => req('GET',  `/api/staff/notification-center/self-volume${days ? `?days=${days}` : ''}`),
+
+  // ---- Borrower view: stand inside a borrower's portal (owner-directed 2026-07-26) ----
+  // The flow itself lives in lib/auth.jsx (startBorrowerView / exitBorrowerView),
+  // which swaps the stored token — screens should call THOSE, not these directly.
+  borrowerViewEligible: (q) => req('GET', '/api/borrower-view/eligible' + qs({ q })),
+  borrowerViewStart:    (borrowerId, applicationId) => req('POST', '/api/borrower-view/start', { borrowerId, applicationId: applicationId || null }),
+  borrowerViewSession:  () => req('GET', '/api/borrower-view/session'),
+  borrowerViewExit:     () => req('POST', '/api/borrower-view/exit'),
+  borrowerViewHistory:  (limit) => req('GET', '/api/borrower-view/history' + qs({ limit })),
 };

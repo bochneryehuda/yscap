@@ -12,9 +12,16 @@
 const assert = require('assert');
 
 // ---- Minimal in-memory pg client ----
+// Statuses that still need handling — escalating or flagging a finding is not a
+// DECISION about it, so record() refreshes those rows instead of stacking a copy.
+const LIVE_STATUSES = new Set(['open', 'escalated', 'marked_important', 'asked_admin']);
+// 'answered' is the super-admin REPLYING to a question the AI asked — an answer, not a
+// judgement that the issue is closed — so it never blocks the agent asking again.
+const SETTLED_EXEMPT = new Set([...LIVE_STATUSES, 'answered']);
+
 class Store {
   constructor() {
-    this.rows = []; this.qs = []; this.aq = [];
+    this.rows = []; this.qs = []; this.aq = []; this.decisions = [];
     this.nextId = 1;
   }
   id() { return String(this.nextId++); }
@@ -42,9 +49,37 @@ function mkClient(store) {
         store.rows.push(row);
         return { rows: [{ id: row.id }] };
       }
-      if (/^SELECT id FROM ai_suggestions WHERE application_id=\$1 AND source=\$2 AND dedupe_key=\$3 AND status='open'/.test(s)) {
-        const hit = store.rows.find(r => r.application_id === params[0] && r.source === params[1] && r.dedupe_key === params[2] && r.status === 'open');
-        return { rows: hit ? [{ id: hit.id }] : [] };
+      // A DECIDED row is the last word — record() must not re-raise it (the
+      // 2026-07-27 "I dismiss it and it keeps popping up again" root cause).
+      if (/^SELECT id, status FROM ai_suggestions WHERE application_id=\$1 AND source=\$2 AND dedupe_key=\$3/.test(s)) {
+        const hit = store.rows.find(r => r.application_id === params[0] && r.source === params[1]
+          && r.dedupe_key === params[2] && !SETTLED_EXEMPT.has(r.status) && r.decided_by_staff_id != null);
+        return { rows: hit ? [{ id: hit.id, status: hit.status }] : [] };
+      }
+      // The refresh-in-place pick. "Live" spans open/escalated/marked_important/
+      // asked_admin (all still need handling); a plain 'open' row wins.
+      if (/^SELECT id FROM ai_suggestions WHERE application_id=\$1 AND source=\$2 AND dedupe_key=\$3/.test(s)) {
+        const hits = store.rows.filter(r => r.application_id === params[0] && r.source === params[1]
+          && r.dedupe_key === params[2] && LIVE_STATUSES.has(r.status));
+        hits.sort((a, b) => (b.status === 'open') - (a.status === 'open'));
+        return { rows: hits[0] ? [{ id: hits[0].id }] : [] };
+      }
+      // The per-finding decision ledger (db/333) + the savepoint it runs inside.
+      if (/^(SAVEPOINT|RELEASE SAVEPOINT|ROLLBACK TO SAVEPOINT) finding_decision$/i.test(s)) return { rows: [] };
+      if (/^SELECT finding_key FROM finding_decisions/i.test(s)) {
+        return { rows: store.decisions.filter(d => d.application_id === params[0] && d.suppressed).map(d => ({ finding_key: d.finding_key })) };
+      }
+      if (/^INSERT INTO finding_decisions/i.test(s)) {
+        const [appId2, key, code, origin, decision, suppressed, note, by] = params;
+        const prev = store.decisions.find(d => d.application_id === appId2 && d.finding_key === key);
+        if (prev) Object.assign(prev, { code, origin, decision, suppressed, note, decided_by: by });
+        else store.decisions.push({ application_id: appId2, finding_key: key, code, origin, decision, suppressed, note, decided_by: by });
+        return { rows: [] };
+      }
+      if (/^UPDATE finding_decisions/i.test(s)) {
+        const hit = store.decisions.find(d => d.application_id === params[0] && d.finding_key === params[1]);
+        if (hit) hit.suppressed = false;
+        return { rowCount: hit ? 1 : 0, rows: [] };
       }
       if (/^UPDATE ai_suggestions SET document_id=/.test(s)) {
         const [id, docId, ciId, kind, title, body, evidence, action, severity, confidence, traceUrl, important] = params;
@@ -53,7 +88,7 @@ function mkClient(store) {
         row.kind = kind; row.title = title; row.body = body;
         row.evidence = JSON.parse(evidence); row.proposed_action = JSON.parse(action);
         row.severity = severity; row.confidence = confidence; row.trace_url = traceUrl;
-        row.important = !!important;
+        row.important = row.important || !!important;   // never un-flag what a human flagged
         return { rows: [] };
       }
       if (/^SELECT \* FROM ai_suggestions WHERE id=\$1$/.test(s)) {
@@ -91,11 +126,22 @@ function mkClient(store) {
         return { rows: filtered };
       }
       if (/^INSERT INTO ai_admin_questions/i.test(s)) {
-        const [sugId, appId, agent, question, context] = params;
-        const row = { id: store.id(), suggestion_id: sugId, application_id: appId, agent, question, context: JSON.parse(context), asked_at: new Date().toISOString(), answered_at: null };
+        const [sugId, appId, agent, question, context, dedupeKey] = params;
+        const row = { id: store.id(), suggestion_id: sugId, application_id: appId, agent, question, context: JSON.parse(context), dedupe_key: dedupeKey || null, asked_at: new Date().toISOString(), answered_at: null };
         store.aq.push(row);
         return { rows: [row] };
       }
+      // Fix 2026-07-23 (#208): askAdmin's unanswered-question dedupe pre-check
+      // (and its 23505 race re-select share this SELECT-list prefix). The
+      // legacy (agent+question) match only applies when $5 says file-scoped.
+      if (/^SELECT id, suggestion_id FROM ai_admin_questions/i.test(s)) {
+        const legacyOk = params.length > 4 ? !!params[4] : false;
+        const hit = store.aq.find(r => r.application_id === params[0] && !r.answered_at &&
+          (r.dedupe_key === params[1] || (legacyOk && r.dedupe_key == null && r.agent === params[2] && r.question === params[3])));
+        return { rows: hit ? [{ id: hit.id, suggestion_id: hit.suggestion_id }] : [] };
+      }
+      // askAdmin's best-effort savepoint around the inbox INSERT.
+      if (/^(SAVEPOINT|RELEASE SAVEPOINT|ROLLBACK TO SAVEPOINT) ask_admin$/i.test(s)) return { rows: [] };
       if (/^UPDATE ai_admin_questions SET learning_captured=true/i.test(s)) return { rows: [] };
       if (/^UPDATE ai_admin_questions SET answered_by_staff_id/i.test(s)) {
         const [id, staffId, ans] = params;
@@ -193,6 +239,34 @@ const aiSug = require('../src/lib/underwriting/ai-suggestions');
   const sug = store.rows.find(r => r.id === q.suggestionId);
   assert.strictEqual(sug.status, 'asked_admin');
   assert.strictEqual(sug.kind, 'question');
+  // Fix 2026-07-23 (#208): re-asking while the question is still UNANSWERED
+  // dedupes to the SAME inbox row (before the fix it stacked a duplicate —
+  // the suggestion's 'asked_admin' status hid it from record()'s open-only dedupe).
+  const qDup = await aiSug.askAdmin(c, {
+    applicationId: appId, agent: 'cure', question: 'The insurance dec page is 4-family but the file says 3-family. Which is the truth?',
+  });
+  assert.strictEqual(qDup.deduped, true, 'unanswered repeat ask is deduped');
+  assert.strictEqual(qDup.questionId, q.questionId, 'same inbox question returned');
+  assert.strictEqual(store.aq.length, 1, 'no duplicate inbox row stacked');
+  // Audit fix 2026-07-23: the SAME question text about a DIFFERENT document is a
+  // DIFFERENT escalation — the scope is part of the dedupe key, so doc B's ask
+  // must NOT be swallowed by doc A's unanswered question.
+  const qDocA = await aiSug.askAdmin(c, {
+    applicationId: appId, agent: 'cure', documentId: 'doc-A',
+    question: 'The cure engine could not verify this document. Review?',
+  });
+  const qDocB = await aiSug.askAdmin(c, {
+    applicationId: appId, agent: 'cure', documentId: 'doc-B',
+    question: 'The cure engine could not verify this document. Review?',
+  });
+  assert.ok(!qDocB.deduped, 'a different document is a different escalation');
+  assert.notStrictEqual(qDocB.questionId, qDocA.questionId, 'doc B gets its own inbox question');
+  const qDocA2 = await aiSug.askAdmin(c, {
+    applicationId: appId, agent: 'cure', documentId: 'doc-A',
+    question: 'The cure engine could not verify this document. Review?',
+  });
+  assert.strictEqual(qDocA2.deduped, true, 'the SAME document re-ask still dedupes');
+  assert.strictEqual(qDocA2.questionId, qDocA.questionId);
   await aiSug.answerAdminQuestion(c, q.questionId, { staffId: 's3', answer: 'File says 3 — appraiser to confirm.' });
   const aq = store.aq.find(r => r.id === q.questionId);
   assert.ok(aq.answered_at);

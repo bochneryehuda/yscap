@@ -8,8 +8,12 @@
  *      signed_off_at >= the appraisal-back time. A P&P sign-off from BEFORE the
  *      appraisal does NOT count (enforces "re-registered on the appraised value").
  *
- * Returns { ready, outstanding:[{code,label,reason}] } for the staff UI. The
- * server re-checks this on the actual send — the client is never trusted.
+ * Returns the full disposition (see gate-disposition.js): { ready, sendAllowed,
+ * outstanding:[{code,label,reason,tier,waived}], checks:[the ✓/✗ clear view],
+ * floorMet, exception, canRequestException, … } for the staff UI. The server
+ * re-checks this on the actual send — the client is never trusted. A super-admin
+ * exception may waive SPECIFIC named blockers (owner-directed 2026-07-24);
+ * everything not waived is always enforced.
  * No-guessing: if the appraisal has no sign-off timestamp to compare against, the
  * "re-signed after" test cannot be proven, so P&P is treated as NOT ready.
  *
@@ -17,6 +21,10 @@
  */
 const dbDefault = require('../../db');
 const manualProgram = require('../manual-program');
+const loanExceptions = require('../loan-exceptions');
+// PURE tiering + send-disposition (floor vs. clear-to-close readiness, the
+// send-before-CTC exception math). Kept require-free so it unit-tests without a DB.
+const { WAIVABLE_CODES, tierOf, gateDisposition } = require('./gate-disposition');
 
 const APPRAISAL_BACK = 'rtl_cond_appraisaldocs';
 const APPRAISAL_REVIEW = 'rtl_p3_apprreview';
@@ -39,7 +47,8 @@ async function registrationIssuabilityBlockers(applicationId, db) {
   let reg;
   try {
     reg = (await db.query(
-      `SELECT status, is_manual, stale, stale_reason
+      `SELECT status, is_manual, stale, stale_reason,
+              COALESCE(needs_approval, false) AS needs_approval
          FROM product_registrations
         WHERE application_id = $1 AND is_current
         ORDER BY created_at DESC LIMIT 1`, [applicationId])).rows[0] || null;
@@ -55,16 +64,23 @@ async function registrationIssuabilityBlockers(applicationId, db) {
       reason: reg.stale_reason || 'The registered terms were priced on inputs that have since changed — re-register on the current inputs and issue a new term sheet.' });
   }
 
-  // MANUAL / Manual-Program requires a recorded super-admin approval. It is
-  // approved only when there is NO open/countered escalation for the file.
-  const isManual = manualProgram.needsSuperAdminApproval({ program: reg.is_manual ? 'manual' : undefined, status: reg.status });
-  if (isManual) {
+  // MANUAL / Manual-Program / an admin-zone PRICING OVERRIDE (db/343 —
+  // owner-directed 2026-07-27) requires a recorded approval. It is approved only
+  // when there is NO open/countered escalation for the file.
+  const needsApproval = manualProgram.needsSuperAdminApproval({
+    program: reg.is_manual ? 'manual' : undefined,
+    status: reg.status,
+    needsApproval: reg.needs_approval === true,
+  });
+  if (needsApproval) {
     let pending = null;
     try { pending = await manualProgram.pendingForApp(applicationId, db); }
     catch (_) { pending = { unknown: true }; }
     if (pending) {
-      out.push({ code: 'manual_approval', label: 'Super-admin exception approval',
-        reason: 'This is a manual-review structure. A super-admin must approve the exception before a term sheet can be issued.' });
+      out.push({ code: 'manual_approval', label: 'Exception approval',
+        reason: reg.needs_approval === true && !reg.is_manual && reg.status !== 'MANUAL'
+          ? 'These terms were priced off the company defaults. An admin must approve the exception in the Escalations box before a term sheet can be issued.'
+          : 'This is a manual-review structure. An admin must approve the exception before a term sheet can be issued.' });
     }
   }
   return out;
@@ -137,7 +153,50 @@ async function esignSendGate(applicationId, { db = dbDefault, purpose } = {}) {
   const regBlockers = await registrationIssuabilityBlockers(applicationId, db);
   for (const b of regBlockers) outstanding.push(b);
 
-  return { ready: apprOk && reviewOk && ppOk && closingOk && regBlockers.length === 0, outstanding };
+  // A super-admin may approve a "send before clear-to-close" exception so a file
+  // that isn't fully ready can still send the term-sheet package. The approval
+  // names EXACTLY which outstanding requirements it waives (per-requirement
+  // waivers, owner-directed 2026-07-24) — everything not named stays enforced;
+  // a legacy approval (no waived codes) keeps waiving only the clear-to-close
+  // readiness tier with the floor enforced. Fails CLOSED: an unreadable
+  // exception is treated as none (never grants an early send).
+  let exception = null;
+  try { exception = await loanExceptions.latestEsignBeforeCtc(applicationId, db); }
+  catch (_) { exception = null; }
+
+  const dispo = gateDisposition(outstanding, exception);
+  // The CLEAR VIEW (owner-directed 2026-07-24): every requirement with a ✓/✗ —
+  // what is already DONE and what is still outstanding — so the requester and
+  // the reviewing super-admin both see the whole picture, not just the misses.
+  dispo.checks = buildChecks(dispo.outstanding, purpose);
+  return dispo;
+}
+
+// The full requirements catalog for the ✓/✗ view. Outstanding entries carry
+// their live label/reason/tier/waived flags; satisfied ones render with the
+// catalog label. Blockers outside the catalog (manual_approval / an unreadable
+// registration) appear only when outstanding — appended at the end.
+function buildChecks(outstanding, purpose) {
+  const catalog = [
+    { code: APPRAISAL_BACK, label: 'Appraisal documents received' },
+    { code: APPRAISAL_REVIEW, label: 'Appraisal review cleared' },
+    { code: PRODUCT_PRICING, label: 'Product & pricing registered after the appraisal' },
+    ...(purpose !== 'heter_iska' ? [{ code: 'expected_closing', label: 'Estimated closing date' }] : []),
+    { code: 'registration_stale', label: 'Registration is current' },
+  ];
+  const byCode = {};
+  for (const o of outstanding || []) if (!(o.code in byCode)) byCode[o.code] = o;
+  const checks = catalog.map((c) => {
+    const o = byCode[c.code];
+    delete byCode[c.code];
+    return o
+      ? { code: o.code, label: o.label, ok: false, reason: o.reason, tier: o.tier, waived: !!o.waived, waiveWarning: o.waiveWarning }
+      : { code: c.code, label: c.label, ok: true, tier: tierOf(c.code) };
+  });
+  for (const o of Object.values(byCode)) {
+    checks.push({ code: o.code, label: o.label, ok: false, reason: o.reason, tier: o.tier, waived: !!o.waived, waiveWarning: o.waiveWarning });
+  }
+  return checks;
 }
 
 /**
@@ -159,4 +218,4 @@ async function appraisalBackAt(applicationId, { db = dbDefault } = {}) {
   return at ? new Date(at) : null;
 }
 
-module.exports = { esignSendGate, registrationIssuabilityBlockers, appraisalBackAt, APPRAISAL_BACK, APPRAISAL_REVIEW, PRODUCT_PRICING };
+module.exports = { esignSendGate, gateDisposition, tierOf, WAIVABLE_CODES, registrationIssuabilityBlockers, appraisalBackAt, APPRAISAL_BACK, APPRAISAL_REVIEW, PRODUCT_PRICING };

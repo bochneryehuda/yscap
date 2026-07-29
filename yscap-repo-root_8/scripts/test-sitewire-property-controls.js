@@ -183,13 +183,19 @@ const cleanup = async (app, bor) => { await db.query(`DELETE FROM applications W
     await cleanup(app, bor);
   }
 
-  // ============ 6b. verify GET absent field → unverified (not proof), still ok, method still persisted ============
+  // ============ 6b. verify GET absent field → unverified (not proof), still ok, FAIL-CLOSED persist ============
+  // Contract updated 2026-07-23 to the audited orchestrator behavior (audit
+  // finding 2026-07-21): on 'unverified' the PILOT-side shadow is NOT updated —
+  // the write may have taken but we couldn't confirm, so fail closed rather
+  // than record a value we can't trust (mirrors lifecycle-actions case 4c).
+  // This suite is DB-gated and first ran in CI on 2026-07-23, which is when
+  // the stale pre-audit assertion surfaced.
   {
     updateImpl = async (id, body) => ({ id, ...body }); getImpl = async (id) => ({ id }); // no fields back
     const { app, bor } = await seedManaged({ method: 'mobile' });
     const r = await orch.updatePropertyControls(app, { inspection_method: 'traditional' }, null);
     ok('verify-absent: unverified, not parked', r.ok === true && r.sitewire === 'unverified');
-    ok('verify-absent: still persisted PILOT-side', (await methodOf(app)) === 'traditional');
+    ok('verify-absent: fail-closed — unconfirmed method NOT persisted PILOT-side', (await methodOf(app)) === 'mobile');
     await cleanup(app, bor);
   }
 

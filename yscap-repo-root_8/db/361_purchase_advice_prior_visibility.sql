@@ -1,0 +1,24 @@
+-- 361 — Remember what a purchase advice document's visibility USED to be.
+--
+-- Designating a document as the purchase advice forces it staff-only (it names
+-- the note buyer and the price the loan sold for). But the picker offers EVERY
+-- document on the file, and before this column there was no way back: `UPDATE
+-- documents SET visibility` existed in exactly ONE place in the whole codebase —
+-- the forcing itself. A single mis-pick permanently hid a borrower's own
+-- insurance policy or photo ID from their Documents list, their downloads and
+-- their mentionables, recoverable only by hand-written SQL.
+--
+-- Recording the prior value is what makes that recoverable: an admin can read
+-- what the document was and put it back. The designation code deliberately does
+-- NOT restore it automatically when the pointer moves away — moving the pointer
+-- is the DOCUMENTED NORMAL WORKFLOW (the advice is re-issued post closing and
+-- again post purchase), so an automatic restore would hand the PREVIOUS advice,
+-- a real one naming the note buyer and the sale price, straight back to the
+-- borrower. It cannot tell a mis-pick from a re-issue, so it does not guess.
+--
+-- This column is ALSO the marker that the live code owns a row — see db/362,
+-- which must not fight an admin's undo — so it has to exist BEFORE that
+-- back-date runs. That is why it is numbered first.
+--
+-- Idempotent.
+ALTER TABLE purchasing_advice ADD COLUMN IF NOT EXISTS document_prior_visibility text;

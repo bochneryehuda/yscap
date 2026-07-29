@@ -2,7 +2,14 @@ import React, { useEffect, useState, useCallback, useRef } from 'react';
 import { useLocation } from 'react-router-dom';
 import { api } from '../lib/api.js';
 import { AppraisalFinding } from './AppraisalPanel.jsx';
+import DocCompare from './DocCompare.jsx';
+import DocPreview from './DocPreview.jsx';
+import AiReasoningChat from './AiReasoningChat.jsx';
 import { useAuth } from '../lib/auth.jsx';
+// Severity words + colours: ONE shared map. Three screens each kept a private copy
+// and had already drifted — this one said "Fatal" for the same finding the
+// escalations screen called something else. See lib/findings-vocab.js.
+import { FINDING_SEVERITY as SEV, severityCount, severityLabel } from '../lib/findings-vocab.js';
 
 /* The PILOT document-underwriting desk. For each uploaded document PILOT reads it (best-in-class
    OCR), understands it (AI, constrained to the document type's fields), and checks it against the
@@ -21,6 +28,10 @@ const DOC_LABEL = {
   contract_amendment: 'Contract amendment', scope_of_work: 'Scope of work', payoff_statement: 'Payoff statement',
   voided_check: 'Voided check', plans_permits: 'Plans & permits', signed_term_sheet: 'Signed term sheet',
   signed_application: 'Signed application', investor_structure: 'Investor structure',
+  // Investor-specific guideline findings (folded into this ONE review, owner-directed 2026-07-24)
+  // carry these sources — label them clearly so they read as "investor-specific" in the one list.
+  investor_guideline: 'Investor-specific guideline', investor_guideline_desk: 'Investor-specific guideline',
+  investor_guideline_ai: 'Investor-specific guideline (AI)',
 };
 const label = (t) => DOC_LABEL[t] || String(t || '').replace(/_/g, ' ');
 
@@ -39,11 +50,6 @@ function fmtAgo(iso) {
   return `${d}d ago`;
 }
 
-const SEV = {
-  fatal: { bg: 'var(--crit-bg,#F6E7E4)', fg: 'var(--crit,#B4483C)', label: 'Fatal' },
-  warning: { bg: 'var(--amber-bg,#F6EEDD)', fg: 'var(--amber,#B7791F)', label: 'Warning' },
-  info: { bg: 'rgba(47,127,134,.14)', fg: 'var(--teal-deep,#256168)', label: 'Info' },
-};
 
 function btn(primary, danger) {
   return {
@@ -71,10 +77,86 @@ const ESCALATE_TARGETS = [
   { key: 'processor', label: 'Processor' },
   { key: 'underwriter', label: 'Underwriter' },
 ];
-function Finding({ appId, f, onChange, resolvable, canWaive = true, canEscalate = false, escalated = null, highlighted = false, cardRef = null }) {
+/**
+ * The action row for a finding whose decision is recorded on an `ai_suggestions` row rather than a
+ * stored `document_findings` row — today, the note-buyer guideline items (owner-directed 2026-07-27:
+ * everything in ONE list, in this card).
+ *
+ * It drives the SAME endpoints the AI Findings card drives, so nothing a staffer could do before the
+ * merge was lost: dismiss with a reason, escalate, add a note, mark important,
+ * and — where the guideline names a PILOT condition — create that condition. The server drops the
+ * finding from the list once the row is no longer open, so acting here actually clears it.
+ */
+function SuggestionActions({ appId, suggestionId, status, important, templateCode, onChange }) {
+  const [busy, setBusy] = useState(false);
+  const [pending, setPending] = useState(null);   // 'dismiss' | 'note' — the one awaiting its text
+  const [text, setText] = useState('');
+  const run = async (fn, label) => {
+    setBusy(true);
+    try { await fn(); onChange && onChange(); }
+    catch (e) { alert(`Could not ${label}: ${(e && e.message) || 'error'}`); }
+    finally { setBusy(false); }
+  };
+  const decide = (action, extra) => run(() => api.aiSuggestionsDecide(appId, suggestionId, { action, ...(extra || {}) }), action.replace(/_/g, ' '));
+  const confirm = () => {
+    const t = text.trim();
+    if (!t) return;
+    const p = pending;
+    setPending(null); setText('');
+    if (p === 'dismiss') return decide('dismiss', { reason: t });
+    return run(() => api.aiSuggestionAddNote(appId, suggestionId, t), 'add the note');
+  };
+  return (
+    <div style={{ marginTop: 4 }}>
+      <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
+        {templateCode && (
+          <button disabled={busy} style={btn(true)}
+            title={`Create the "${templateCode}" condition on this file`}
+            onClick={() => { if (window.confirm(`Create the "${templateCode}" condition on this file?`)) decide('convert_to_condition', { templateCode }); }}>
+            Post the condition
+          </button>
+        )}
+        <button disabled={busy} style={btn()} onClick={() => { setPending('note'); setText(''); }}>Add a note</button>
+        {status !== 'escalated' && (
+          <button disabled={busy} style={btn()} title="Hand this to a super-admin to decide"
+            onClick={() => decide('escalate')}>Escalate for review</button>
+        )}
+        <button disabled={busy} style={btn()}
+          onClick={() => decide(important ? 'unmark_important' : 'mark_important')}>
+          {important ? 'Unmark important' : 'Mark important'}
+        </button>
+        <button disabled={busy} style={btn(false, true)} onClick={() => { setPending('dismiss'); setText(''); }}>
+          Dismiss (not an issue)
+        </button>
+      </div>
+      {status && status !== 'open' && (
+        <div style={{ fontSize: 11.5, color: 'var(--muted,#4B585C)', marginTop: 6 }}>
+          {status === 'escalated' ? 'Already escalated — a super-admin has this.'
+            : status === 'asked_admin' ? 'Waiting on a super-admin’s answer.'
+              : `Status: ${String(status).replace(/_/g, ' ')}.`}
+        </div>
+      )}
+      {pending && (
+        <div style={{ display: 'flex', gap: 8, marginTop: 10, flexWrap: 'wrap' }}>
+          <input autoFocus value={text} onChange={(e) => setText(e.target.value)}
+            onKeyDown={(e) => { if (e.key === 'Enter') confirm(); }}
+            placeholder={pending === 'dismiss' ? 'why this is not an issue' : 'note'}
+            style={{ flex: 1, minWidth: 180, padding: '7px 10px', border: '1px solid var(--line,#E7E1D3)', borderRadius: 8, fontSize: 14 }} />
+          <button disabled={busy || !text.trim()} onClick={confirm} style={btn(true)}>
+            {pending === 'dismiss' ? 'Dismiss' : 'Add note'}
+          </button>
+          <button disabled={busy} onClick={() => { setPending(null); setText(''); }} style={btn()}>Cancel</button>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function Finding({ appId, f, onChange, resolvable, canAct = false, canWaive = true, canEscalate = false, escalated = null, highlighted = false, cardRef = null }) {
   const [busy, setBusy] = useState(false);
   const [pending, setPending] = useState(null); // the action awaiting its note/value
   const [text, setText] = useState('');
+  const [compare, setCompare] = useState(null); // the "this document vs. that document" side-by-side
   const [escOpen, setEscOpen] = useState(false);
   const [escRole, setEscRole] = useState('super_admin');
   const [escNote, setEscNote] = useState('');
@@ -86,6 +168,37 @@ function Finding({ appId, f, onChange, resolvable, canWaive = true, canEscalate 
   const [simPicked, setSimPicked] = useState({});
   const [simAction, setSimAction] = useState('dismiss');
   const [simNote, setSimNote] = useState('');
+  const [evidence, setEvidence] = useState(null); // R5.17: { loading, spans } | null — grounded quote(s) behind this finding
+  // R5.17 — the in-place document viewer, opened to the page + exact box where a
+  // value was read. `{ docId, page, quote, polygon }` | null. Replaces the old
+  // dead `#/staff/documents/:id` hash link (there is no such route).
+  const [preview, setPreview] = useState(null);
+  // Memoized so an unrelated parent re-render while a preview is open doesn't
+  // hand PdfViewer a brand-new array each time (its render effect keys on this),
+  // which would needlessly re-rasterize every page.
+  const previewBoxes = React.useMemo(
+    () => (preview?.polygon ? [{ page: preview.page || 1, polygon: preview.polygon }] : undefined),
+    [preview],
+  );
+  const openEvidence = (sp) => {
+    const d = (sp && sp.documentId) || docId;
+    if (!d) return;
+    setPreview({
+      docId: d,
+      page: sp && sp.pageNumber != null ? sp.pageNumber : (pageNumber != null ? pageNumber : 1),
+      quote: sp && sp.quote ? String(sp.quote) : null,
+      polygon: sp && Array.isArray(sp.polygon) && sp.polygon.length ? sp.polygon : null,
+    });
+  };
+  const loadEvidence = async () => {
+    if (!f.id) return;
+    if (evidence) { setEvidence(null); return; }   // toggle closed
+    setEvidence({ loading: true, spans: [] });
+    try {
+      const r = await api.findingEvidence(appId, f.id);
+      setEvidence({ loading: false, spans: (r && r.spans) || [] });
+    } catch (_e) { setEvidence({ loading: false, spans: [] }); }
+  };
   const loadSimilar = async () => {
     if (!f.id) return;
     setSimBusy(true); setSimOpen(true);
@@ -128,6 +241,11 @@ function Finding({ appId, f, onChange, resolvable, canWaive = true, canEscalate 
   // prebuilt-layout switch land and a document is re-analyzed; existing rows are NULL and the link
   // just says "Open source document" without the page hint.
   const docId = f.document_id || f.documentId || null;
+  // Tie-out discrepancies carry the specific conflicting `sources`; when two of
+  // them have a real source PDF, offer the side-by-side "this document vs. that
+  // document" compare (a single-doc conflict already has "Open the source doc").
+  const compareSources = Array.isArray(f.sources) ? f.sources : [];
+  const openableCompare = compareSources.filter((s) => s && s.documentId);
   const pageNumber = f.page_number != null ? f.page_number : (f.pageNumber != null ? f.pageNumber : null);
   const allActions = Array.isArray(f.availableActions) ? f.availableActions : [];
   const isFatalBlocking = f.severity === 'fatal' && (f.blocks_ctc != null ? f.blocks_ctc : (f.blocksCtc != null ? f.blocksCtc : false));
@@ -143,7 +261,11 @@ function Finding({ appId, f, onChange, resolvable, canWaive = true, canEscalate 
     finally { setBusy(false); }
   };
   const click = (a) => {
-    if (a.needs === 'note' || a.needs === 'value') { setPending(a); setText(''); return; }
+    // "Fix the file" (needs a value): pre-fill with what the DOCUMENT says (the
+    // suggested correction) so the underwriter just confirms; for price / as-is /
+    // ARV / rehab budget the server writes it straight onto the loan file.
+    if (a.needs === 'value') { setPending(a); setText(docVal != null ? String(docVal) : ''); return; }
+    if (a.needs === 'note') { setPending(a); setText(''); return; }
     if (a.key === 'decline' && !window.confirm('Decline this file on this finding?')) return;
     submit(a.key);
   };
@@ -198,6 +320,19 @@ function Finding({ appId, f, onChange, resolvable, canWaive = true, canEscalate 
     }}>
       <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 6, flexWrap: 'wrap' }}>
         <span style={{ fontSize: 11, fontWeight: 800, textTransform: 'uppercase', letterSpacing: '.06em', color: s.fg, background: s.bg, padding: '3px 8px', borderRadius: 6 }}>{s.label}</span>
+        {/* AI TRIAGE priority chip (owner-directed 2026-07-27) — the AI's "look here first" ranking.
+            Display-only; the finding's real severity badge (above) is unchanged. Dark text. */}
+        {f.aiTriage && (
+          <span title={f.aiTriage.why || ''} style={{ fontSize: 10, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '.05em',
+            padding: '3px 8px', borderRadius: 6,
+            color: f.aiTriage.bucket === 'noise' ? '#4B585C' : '#256168',
+            background: f.aiTriage.bucket === 'noise' ? '#EFEFEA' : '#E4F0F0',
+            border: `1px solid ${f.aiTriage.bucket === 'noise' ? '#D9D9CF' : '#CBE0E0'}` }}>
+            {f.aiTriage.bucket === 'noise' ? 'Low signal'
+              : f.aiTriage.rank === 1 ? 'Look here first'
+              : f.aiTriage.bucket === 'primary' ? `Priority ${f.aiTriage.rank}` : `#${f.aiTriage.rank}`}
+          </span>
+        )}
         <strong style={{ fontSize: 14 }}>{f.title}</strong>
         {(f.source || f.doc_type) && <span style={{ fontSize: 11, color: 'var(--muted,#4B585C)' }}>· {label(f.source || f.doc_type)}</span>}
       </div>
@@ -208,13 +343,118 @@ function Finding({ appId, f, onChange, resolvable, canWaive = true, canEscalate 
         </div>
       )}
       {docId && (
-        <div style={{ fontSize: 12, margin: '4px 0 6px' }}>
+        <div style={{ fontSize: 12, margin: '4px 0 6px', display: 'flex', gap: 14, flexWrap: 'wrap' }}>
           <a href="#" onClick={openSourceDoc} style={{ color: 'var(--teal-deep,#256168)', textDecoration: 'underline' }}>
             Open the source document{pageNumber ? ` (page ${pageNumber})` : ''}
           </a>
+          {/* "Where we saw this" reads the exact recorded quote + page for a STORED finding
+              (needs f.id to look up the evidence ledger). A derived finding — a tie-out
+              discrepancy that now carries a source document but no persisted row — has no ledger
+              entry, so the link would silently do nothing; show it only when there's evidence to
+              fetch, and let the "Open the source document" link stand on its own otherwise. */}
+          {f.id && (
+            <a href="#" onClick={(e) => { e.preventDefault(); loadEvidence(); }} style={{ color: 'var(--teal-deep,#256168)', textDecoration: 'underline' }}>
+              {evidence ? 'Hide where we saw this' : 'Where we saw this'}
+            </a>
+          )}
         </div>
       )}
-      {howTo && <div style={{ fontSize: 12.5, color: 'var(--muted,#4B585C)', marginBottom: resolvable ? 10 : 0 }}>{howTo}</div>}
+      {evidence && (
+        <div style={{ margin: '2px 0 8px' }}>
+          {evidence.loading && <div className="muted" style={{ fontSize: 11.5 }}>Loading…</div>}
+          {!evidence.loading && evidence.spans.length === 0 && (
+            <div className="muted" style={{ fontSize: 11.5 }}>No exact quote was recorded for this finding.</div>
+          )}
+          {!evidence.loading && evidence.spans.slice(0, 4).map((sp, i) => (
+            <div key={i} style={{ fontSize: 11.5, color: 'var(--muted,#4B585C)', borderLeft: '2px solid var(--gold,#AE8746)', paddingLeft: 8, marginTop: 3 }}>
+              <span style={{ fontStyle: 'italic', overflowWrap: 'anywhere' }}>“{sp.quote}”</span>
+              {sp.pageNumber != null && (
+                <span> · {(sp.documentId || docId)
+                  // R5.17 — open the document IN PLACE, scrolled to this page with the
+                  // exact box drawn where we read the quote (was a dead #/staff/documents link).
+                  ? <a href="#" onClick={(e) => { e.preventDefault(); openEvidence(sp); }} style={{ color: 'var(--teal-deep,#256168)', textDecoration: 'underline' }}>page {sp.pageNumber}</a>
+                  : `page ${sp.pageNumber}`}</span>
+              )}
+            </div>
+          ))}
+        </div>
+      )}
+      {preview && (
+        <DocPreview
+          title={`Source document${preview.page ? ` · page ${preview.page}` : ''}`}
+          load={() => api.staffDownloadDoc(preview.docId)}
+          initialPage={preview.page || 1}
+          highlight={preview.quote || undefined}
+          highlightBoxes={previewBoxes}
+          onClose={() => setPreview(null)}
+          onDownload={openSourceDoc}
+        />
+      )}
+      {openableCompare.length >= 2 && (
+        <div style={{ fontSize: 12, margin: '4px 0 6px' }}>
+          <a href="#" onClick={(e) => { e.preventDefault(); setCompare(compareSources); }}
+            style={{ color: 'var(--teal-deep,#256168)', textDecoration: 'underline' }}>
+            ⇆ Compare the documents side by side
+          </a>
+        </div>
+      )}
+      {compare && <DocCompare title={f.title} field={f.field} sources={compare} onClose={() => setCompare(null)} />}
+      {/* pre-wrap, like the suggestion body below: several findings write howTo as a LIST — the risk
+          score's per-signal arithmetic, the per-tradeline mortgage lates — and without this the
+          newlines collapse and the whole point of breaking them out is lost on screen. */}
+      {howTo && <div style={{ fontSize: 12.5, color: 'var(--muted,#4B585C)', marginBottom: resolvable ? 10 : 0, whiteSpace: 'pre-wrap' }}>{howTo}</div>}
+      {/* THE AI REVIEW (owner-directed 2026-07-27): before this finding was shown as real, it was
+          passed to the AI with the whole loan file + its source document; a false alarm was already
+          filtered out upstream, so anything here the AI confirmed (or couldn't rule out) — and the
+          AI's suggested next step / document to request, built on top of the finding. Dark text on
+          the light card per the palette rule (never a var(--ink*) token for text). */}
+      {f.aiReview && (
+        <div style={{ marginTop: 2, marginBottom: resolvable ? 10 : 0, padding: '8px 10px', borderRadius: 8,
+          background: '#F1F6F6', border: '1px solid #CBE0E0' }}>
+          <div style={{ fontSize: 10.5, fontWeight: 700, color: '#256168', marginBottom: 3, textTransform: 'uppercase', letterSpacing: 0.3 }}>
+            {f.aiReview.verdict === 'confirmed' ? 'AI checked this — confirmed a real concern'
+              : f.aiReview.verdict === 'uncertain' ? 'AI checked this — could not fully confirm'
+              : 'AI checked this'}
+          </div>
+          {f.aiReview.reasoning && (
+            <div style={{ fontSize: 12.5, color: '#141B22', whiteSpace: 'pre-wrap',
+              marginBottom: (f.aiReview.suggestedResolution || f.aiReview.suggestedDocument) ? 6 : 0 }}>{f.aiReview.reasoning}</div>
+          )}
+          {f.aiReview.suggestedResolution && (
+            <div style={{ fontSize: 12.5, color: '#141B22' }}><strong>Suggested next step:</strong> {f.aiReview.suggestedResolution}</div>
+          )}
+          {f.aiReview.suggestedDocument && (
+            <div style={{ fontSize: 12.5, color: '#141B22', marginTop: 2 }}><strong>Document to request:</strong> {f.aiReview.suggestedDocument}</div>
+          )}
+          {/* AI-drafted borrower-facing wording (owner-directed 2026-07-27), already scrubbed of any
+              capital-partner name — ready to use when converting this to a condition. */}
+          {f.aiReview.borrowerLabel && (
+            <div style={{ fontSize: 12.5, color: '#141B22', marginTop: 6, paddingTop: 6, borderTop: '1px solid #CBE0E0' }}>
+              <strong>Borrower wording (ready to use):</strong> {f.aiReview.borrowerLabel}
+              {f.aiReview.borrowerHint && <div style={{ color: '#3A4550', marginTop: 2 }}>{f.aiReview.borrowerHint}</div>}
+            </div>
+          )}
+          {/* The SECOND, independent AI's take when it weighed in (owner-directed 2026-07-27). When
+              the two models disagree, this finding was deliberately kept visible for a human. */}
+          {f.aiReview.secondModel && (
+            <div style={{ fontSize: 12, color: f.aiReview.secondModel.agrees ? '#3A4550' : '#8A5A00', marginTop: 6,
+              paddingTop: 6, borderTop: '1px solid #CBE0E0' }}>
+              <strong>{f.aiReview.secondModel.agrees ? 'A second AI agrees.' : 'A second AI disagrees — kept visible for you to decide.'}</strong>
+              {f.aiReview.secondModel.reasoning && <span> {f.aiReview.secondModel.reasoning}</span>}
+            </div>
+          )}
+        </div>
+      )}
+      {/* When several reviews independently reached the same conclusion, this is the ONE item they
+          collapsed into (finding-claims.dedupeByClaim). Saying so turns the merge from something
+          invisible into something an underwriter can weigh — three desks agreeing is a stronger
+          signal than one — and leaves an auditor able to see nothing was quietly dropped. */}
+      {Array.isArray(f.mergedFrom) && f.mergedFrom.length > 0 && (
+        <div style={{ fontSize: 11.5, color: 'var(--muted,#4B585C)', marginBottom: resolvable ? 10 : 0 }}>
+          Also reached by {f.mergedFrom.length} other review{f.mergedFrom.length === 1 ? '' : 's'} of this file
+          — shown once here instead of repeated.
+        </div>
+      )}
       {resolvable && actions.length > 0 && (
         <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
           {actions.map((a) => (
@@ -226,6 +466,17 @@ function Finding({ appId, f, onChange, resolvable, canWaive = true, canEscalate 
       {resolvable && actions.length === 0 && allActions.length > 0 && (
         <div style={{ fontSize: 12, color: 'var(--muted,#4B585C)' }}>An underwriter or admin can clear this dealbreaker.</div>
       )}
+      {/* A NOTE-BUYER GUIDELINE ITEM IS STILL ACTIONABLE HERE (audit 2026-07-27). It has no stored
+          finding row, so `resolvable` is false and the normal button row above never renders — but
+          its decision lives on the ai_suggestions mirror, which this merge hides as a repeat. Losing
+          the buttons would leave an item that reappears on every file view with nothing to click, so
+          the merged card drives the SAME endpoints the AI card used. The server drops the finding
+          entirely once that row is no longer open, so acting here really does make it go away. */}
+      {f.suggestionId && canAct && (
+        <SuggestionActions appId={appId} suggestionId={f.suggestionId}
+          status={f.suggestionStatus} important={f.important}
+          templateCode={f.opensCondition || null} onChange={onChange} />
+      )}
       {resolvable && pending && (
         <div style={{ display: 'flex', gap: 8, marginTop: 10, flexWrap: 'wrap' }}>
           <input autoFocus value={text} onChange={(e) => setText(e.target.value)}
@@ -234,6 +485,11 @@ function Finding({ appId, f, onChange, resolvable, canWaive = true, canEscalate 
             style={{ flex: 1, minWidth: 180, padding: '7px 10px', border: '1px solid var(--line,#E7E1D3)', borderRadius: 8, fontSize: 14 }} />
           <button disabled={busy || !text.trim()} onClick={confirmPending} style={btn(true)}>{pending.label}</button>
           <button disabled={busy} onClick={() => setPending(null)} style={btn()}>Cancel</button>
+        </div>
+      )}
+      {resolvable && pending && pending.needs === 'value' && (
+        <div style={{ fontSize: 12, color: 'var(--muted,#4B585C)', marginTop: 4 }}>
+          A purchase-price, as-is, ARV or rehab-budget correction is written straight onto the loan file (the pricing conditions reopen so it's re-registered). If the file is locked, clear the term-sheet package or unlock it first.
         </div>
       )}
       {/* Escalate — hand a finding you can't decide to the super-admin / processor / underwriter
@@ -562,7 +818,47 @@ const AUTH_STYLES = {
   unreadable:  { color: 'var(--muted,#4B585C)', bg: 'var(--paper,#F6F3EC)', label: 'Not readable as PDF' },
 };
 
-function Completeness({ completeness, documentsOnFile = [] }) {
+// The note-buyer "what to look for on this document" checklist, fetched on demand for
+// one document type. Advisory guidance from the investor-guideline specs (CorrFirst /
+// Blue Lake) — what this note buyer needs confirmed on that kind of document.
+function DocReviewGuide({ appId, docType, label, onClose }) {
+  const [state, setState] = useState({ loading: true, items: [], noteBuyer: null });
+  useEffect(() => {
+    let live = true;
+    if (!appId || !docType) return undefined;
+    api.documentReviewGuide(appId, docType)
+      .then((r) => { if (live) setState({ loading: false, items: (r && r.items) || [], noteBuyer: (r && r.noteBuyer) || null }); })
+      .catch(() => { if (live) setState({ loading: false, items: [], noteBuyer: null }); });
+    return () => { live = false; };
+  }, [appId, docType]);
+  return (
+    <div style={{ marginTop: 10, border: '1px solid var(--gold,#AE8746)', borderRadius: 10, background: 'rgba(174,135,70,.06)', padding: '10px 14px' }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 6 }}>
+        <span style={{ fontSize: 12.5, fontWeight: 800 }}>What to look for on the {label || String(docType).replace(/_/g, ' ')}</span>
+        {state.noteBuyer && <span style={{ fontSize: 11, color: 'var(--muted,#4B585C)' }}>· {state.noteBuyer}</span>}
+        <button className="btn ghost small" style={{ marginLeft: 'auto' }} onClick={onClose}>Hide</button>
+      </div>
+      {state.loading && <div className="muted" style={{ fontSize: 12 }}>Loading…</div>}
+      {!state.loading && state.items.length === 0 && (
+        <div className="muted" style={{ fontSize: 12 }}>No note-buyer checklist applies to this document type.</div>
+      )}
+      {!state.loading && state.items.map((it, i) => (
+        <div key={i} style={{ marginBottom: 8 }}>
+          <div style={{ fontSize: 12.5, fontWeight: 700 }}>{it.condition}{it.noteBuyerSpecific ? <span style={{ fontSize: 10.5, color: 'var(--gold,#AE8746)', fontWeight: 800 }}> · this buyer</span> : null}</div>
+          {it.required_evidence && <div style={{ fontSize: 11.5, color: 'var(--muted,#4B585C)', marginTop: 1 }}>{it.required_evidence}</div>}
+          {Array.isArray(it.checks) && it.checks.length > 0 && (
+            <ul style={{ margin: '4px 0 0', paddingLeft: 18 }}>
+              {it.checks.map((c, j) => <li key={j} style={{ fontSize: 11.5, marginBottom: 2 }}>{c}</li>)}
+            </ul>
+          )}
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function Completeness({ completeness, documentsOnFile = [], appId = null }) {
+  const [openGuideType, setOpenGuideType] = useState(null);
   if (!completeness || !completeness.stipulations || !completeness.stipulations.length) return null;
   const c = completeness;
   // docType -> full doc rows on file, so a stipulation that's "on file" can
@@ -582,7 +878,11 @@ function Completeness({ completeness, documentsOnFile = [] }) {
         {c.counts.received ? <span> · {c.counts.received} in review</span> : null}
         {c.counts.insufficient ? <span> · {c.counts.insufficient} not usable</span> : null}
         {c.counts.missing ? <span> · {c.counts.missing} not uploaded</span> : null}
-        {c.ctcBlockers && c.ctcBlockers.length ? <span style={{ color: 'var(--crit,#B4483C)' }}> · {c.ctcBlockers.length} block clear-to-close</span> : null}
+        {/* ADVISORY (owner-directed 2026-07-27). This read "N block clear-to-close" —
+            PILOT's own panel asserting it can hold the file. The real clear-to-close
+            list is the Conditions section; this is PILOT's read of which documents it
+            still expects. Same count, honest framing. */}
+        {c.ctcBlockers && c.ctcBlockers.length ? <span style={{ color: 'var(--amber,#B7791F)' }}> · {c.ctcBlockers.length} PILOT expects before closing</span> : null}
       </div>
       <div style={{ height: 7, borderRadius: 999, background: 'var(--paper,#F6F3EC)', overflow: 'hidden', marginBottom: 12 }}>
         <div style={{ width: `${c.completenessPct}%`, height: '100%', background: 'var(--good,#3F7A5B)' }} />
@@ -597,6 +897,12 @@ function Completeness({ completeness, documentsOnFile = [] }) {
                 <span style={{ fontSize: 10, fontWeight: 800, letterSpacing: '.04em', textTransform: 'uppercase', color: st.fg, background: st.bg, padding: '2px 7px', borderRadius: 6 }}>{st.label}</span>
                 <span style={{ fontSize: 10.5, color: 'var(--muted,#4B585C)' }}>{OWNER_LABEL[s.owner] || s.owner} · {s.gating}</span>
               </div>
+              {appId && (
+                <button onClick={() => setOpenGuideType((t) => t === s.docType ? null : s.docType)}
+                  style={{ background: 'none', border: 'none', color: 'var(--teal-deep,#256168)', cursor: 'pointer', fontSize: 10.5, padding: '3px 0 0', textDecoration: 'underline' }}>
+                  {openGuideType === s.docType ? 'Hide what to check' : 'What to look for'}
+                </button>
+              )}
               {(filesByType[s.docType] || []).length > 0 && s.status !== 'missing' && (
                 <div style={{ fontSize: 10.5, color: 'var(--muted,#4B585C)', marginTop: 4, overflowWrap: 'anywhere' }} title={filesByType[s.docType].join(', ')}>
                   📎 {filesByType[s.docType][0]}{filesByType[s.docType].length > 1 ? ` +${filesByType[s.docType].length - 1}` : ''}
@@ -622,6 +928,11 @@ function Completeness({ completeness, documentsOnFile = [] }) {
           );
         })}
       </div>
+      {openGuideType && appId && (
+        <DocReviewGuide appId={appId} docType={openGuideType}
+          label={(c.stipulations.find((s) => s.docType === openGuideType) || {}).label}
+          onClose={() => setOpenGuideType(null)} />
+      )}
     </div>
   );
 }
@@ -763,6 +1074,49 @@ function SellerChain({ sellerChain }) {
   );
 }
 
+// CHAIN OF TITLE — the ordered, multi-hop ownership trace: owner of record → contract seller →
+// contract buyer → each assignment's assignor/assignee → the vesting entity. Each connector is
+// colored by whether that same-party link reconciled (ok) or broke, or is a legitimate transfer.
+const COT_HOP = {
+  ok: { fg: 'var(--good,#3F7A5B)', arrow: '→', title: 'names match' },
+  break: { fg: 'var(--crit,#B4483C)', arrow: '⤫', title: 'names do NOT match' },
+  transfer: { fg: 'var(--muted,#4B585C)', arrow: '⇒', title: 'ownership transfer' },
+  unknown: { fg: 'var(--amber,#B7791F)', arrow: '⋯', title: 'could not confirm' },
+};
+function ChainOfTitle({ chainOfTitle }) {
+  if (!chainOfTitle || !(chainOfTitle.ownershipPath || []).length) return null;
+  const st = CHAIN[chainOfTitle.status] || CHAIN.incomplete;
+  const path = chainOfTitle.ownershipPath || [];
+  const hops = chainOfTitle.hops || [];
+  return (
+    <div style={{ marginBottom: 22 }}>
+      <h4 style={{ fontFamily: 'var(--serif,Georgia,serif)', margin: '0 0 4px' }}>Chain of title — does ownership line up at every step?</h4>
+      <div style={{ marginBottom: 10 }}>
+        <span style={{ fontSize: 11, fontWeight: 800, letterSpacing: '.05em', textTransform: 'uppercase', color: st.fg }}>{st.label}</span>
+        {chainOfTitle.reachesVesting === true ? <span style={{ marginLeft: 10, fontSize: 11.5, color: 'var(--good,#3F7A5B)' }}>reaches the vesting entity</span> : null}
+      </div>
+      <div style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: 4, overflowX: 'auto' }}>
+        {path.map((n, i) => {
+          // Pair each node with the hop that ENDS at it (hops are in path order).
+          const h = i > 0 ? (hops[i - 1] || {}) : null;
+          const kindKey = h ? (h.kind === 'transfer' ? 'transfer' : (h.verdict === 'ok' ? 'ok' : h.verdict === 'break' ? 'break' : 'unknown')) : null;
+          const g = kindKey ? COT_HOP[kindKey] : null;
+          return (
+            <div key={`${n.role}-${i}`} style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
+              {i > 0 && g ? <span title={g.title} style={{ color: g.fg, fontWeight: 800, fontSize: 17, minWidth: 18, textAlign: 'center' }}>{g.arrow}</span> : null}
+              <div style={{ border: '1px solid var(--line,#E4DECF)', borderRadius: 8, padding: '7px 10px', minWidth: 118, background: 'var(--card,#fff)' }}>
+                <div style={{ fontSize: 10, fontWeight: 800, letterSpacing: '.04em', textTransform: 'uppercase', color: 'var(--muted,#4B585C)' }}>{n.role}</div>
+                <div style={{ fontSize: 13, fontWeight: 700 }}>{n.name || '—'}</div>
+                {n.source ? <div style={{ fontSize: 10.5, color: 'var(--muted,#4B585C)' }}>{n.source}</div> : null}
+              </div>
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
 // Bank liquidity — sum every account's ending balance and show it against the cash this deal needs.
 // The per-account table makes clear WHAT was counted (and what was excluded because it sits in an
 // account that isn't the borrower's / a verified entity's).
@@ -797,7 +1151,9 @@ function BankLiquidity({ bankLiquidity }) {
           <thead>
             <tr style={{ textAlign: 'left', color: 'var(--muted,#4B585C)' }}>
               <th style={{ padding: '4px 8px', fontWeight: 700 }}>Account holder</th>
+              <th style={{ padding: '4px 8px', fontWeight: 700 }}>Type</th>
               <th style={{ padding: '4px 8px', fontWeight: 700 }}>Bank</th>
+              <th style={{ padding: '4px 8px', fontWeight: 700 }}>Account #</th>
               <th style={{ padding: '4px 8px', fontWeight: 700, textAlign: 'right' }}>Ending balance</th>
               <th style={{ padding: '4px 8px', fontWeight: 700 }}>Counts?</th>
             </tr>
@@ -805,8 +1161,10 @@ function BankLiquidity({ bankLiquidity }) {
           <tbody>
             {accounts.map((a, i) => (
               <tr key={i} style={{ borderTop: '1px solid var(--line,#EEE8DA)' }}>
-                <td style={{ padding: '4px 8px' }}>{a.holder || '—'}{a.statementCount > 1 ? <span style={{ color: 'var(--muted,#4B585C)' }}> · {a.statementCount} statements</span> : null}</td>
+                <td style={{ padding: '4px 8px' }}>{a.holder || '—'}{a.statementCount > 1 ? <span style={{ color: 'var(--muted,#4B585C)' }}> · latest of {a.statementCount} statements</span> : null}</td>
+                <td style={{ padding: '4px 8px' }}>{a.holderIsBusiness ? 'Business' : 'Individual'}</td>
                 <td style={{ padding: '4px 8px' }}>{a.bankName || '—'}</td>
+                <td style={{ padding: '4px 8px', fontVariantNumeric: 'tabular-nums' }}>{a.accountNumber || '—'}</td>
                 <td style={{ padding: '4px 8px', textAlign: 'right' }}>{money(a.ending)}</td>
                 <td style={{ padding: '4px 8px', color: a.tied ? 'var(--good,#3F7A5B)' : 'var(--muted,#4B585C)' }}>{a.tied ? 'yes' : 'not counted — needs entity docs'}</td>
               </tr>
@@ -814,6 +1172,28 @@ function BankLiquidity({ bankLiquidity }) {
           </tbody>
         </table>
       </div>
+      {/* A statement recognized as an account already listed above. Shown because otherwise a row
+          simply disappears from this table and the total drops with no stated reason — which is as
+          confusing as the double-count it replaced, and this is the exact table where that was
+          found. It also gives the underwriter the one thing PILOT cannot decide for them: whether an
+          unnumbered statement really is a separate account. */}
+      {/* becameRepresentative means this statement ended up BEING the month counted in the table
+          above — its balance is in the total, so listing it here would tell the owner the very
+          number they are looking at was not counted. The server's own shortfall text already
+          filters on this flag; the table must agree with it. */}
+      {(bankLiquidity.notCountedTwice || []).filter((n) => !n.becameRepresentative).length > 0 && (
+        <div style={{ marginTop: 10, fontSize: 12, color: 'var(--muted,#4B585C)' }}>
+          <div style={{ fontWeight: 700, marginBottom: 3 }}>Not counted again</div>
+          {(bankLiquidity.notCountedTwice || []).filter((n) => !n.becameRepresentative).map((n, i) => (
+            <div key={i} style={{ padding: '2px 0' }}>
+              {n.holder}{n.bankName ? ` (${n.bankName})` : ''}: {money(n.ending)} —{' '}
+              {n.ambiguous
+                ? `this statement carries no readable account number and could be either ${(n.matchedAccounts || []).join(' or ') || 'of two accounts above'}, so it was not added. Attribute it by hand if it is a separate account.`
+                : `read as the same account as ${(n.matchedAccounts || []).join(', ') || 'one above'} — its own number was not legible, so it is not added again. If it is a separate account, add it by hand.`}
+            </div>
+          ))}
+        </div>
+      )}
     </div>
   );
 }
@@ -936,6 +1316,22 @@ function SovereignCockpit({ twinFacts, cureProofs, appId, canIssueCerts, canConf
   const [factHistory, setFactHistory] = useState({});   // fact_key → { loading, canonical, observations, events }
   const [confirmInputs, setConfirmInputs] = useState({}); // fact_key → { value, reason }
   const [confirmBusy, setConfirmBusy] = useState(null);
+  // R5.17 — in-place evidence viewer for a fact's observation span (was a dead
+  // #/staff/documents link). { docId, page, quote, polygon } | null.
+  const [factPreview, setFactPreview] = useState(null);
+  const factPreviewBoxes = React.useMemo(
+    () => (factPreview?.polygon ? [{ page: factPreview.page || 1, polygon: factPreview.polygon }] : undefined),
+    [factPreview],
+  );
+  const openFactSpan = (s) => {
+    if (!s || !s.documentId) return;
+    setFactPreview({
+      docId: s.documentId,
+      page: s.pageNumber != null ? s.pageNumber : 1,
+      quote: s.quote ? String(s.quote) : null,
+      polygon: Array.isArray(s.polygon) && s.polygon.length ? s.polygon : null,
+    });
+  };
   const toggleFact = async (factKey) => {
     if (expandedFact === factKey) { setExpandedFact(null); return; }
     setExpandedFact(factKey);
@@ -1053,6 +1449,16 @@ function SovereignCockpit({ twinFacts, cureProofs, appId, canIssueCerts, canConf
                                         {' said '}
                                         <span style={{ overflowWrap: 'anywhere' }}>{stringifyValue(o.value_json && (o.value_json.value != null ? o.value_json.value : o.value_json)) || o.raw_value || '—'}</span>
                                         <span className="muted"> · {new Date(o.created_at).toLocaleString()}</span>
+                                        {Array.isArray(o.evidenceSpans) && o.evidenceSpans.filter((s) => s && s.quote).slice(0, 3).map((s, si) => (
+                                          <div key={si} style={{ marginTop: 3, marginLeft: 20, fontSize: 11.5, color: 'var(--muted,#4B585C)', borderLeft: '2px solid var(--gold,#AE8746)', paddingLeft: 8 }}>
+                                            <span style={{ fontStyle: 'italic', overflowWrap: 'anywhere' }}>“{s.quote}”</span>
+                                            {s.pageNumber != null && (
+                                              <span> · {s.documentId
+                                                ? <a href="#" onClick={(e) => { e.preventDefault(); e.stopPropagation(); openFactSpan(s); }} style={{ color: 'var(--teal-deep,#256168)', textDecoration: 'underline' }}>page {s.pageNumber}</a>
+                                                : `page ${s.pageNumber}`}</span>
+                                            )}
+                                          </div>
+                                        ))}
                                       </li>
                                     ))}
                                   </ul>
@@ -1157,6 +1563,16 @@ function SovereignCockpit({ twinFacts, cureProofs, appId, canIssueCerts, canConf
       {appId && <SovereignAiCostSection appId={appId} />}
       {appId && <SovereignKnowledgeGraphSection appId={appId} />}
       {appId && <SovereignAskAdminSection appId={appId} />}
+      {factPreview && (
+        <DocPreview
+          title={`Source document${factPreview.page ? ` · page ${factPreview.page}` : ''}`}
+          load={() => api.staffDownloadDoc(factPreview.docId)}
+          initialPage={factPreview.page || 1}
+          highlight={factPreview.quote || undefined}
+          highlightBoxes={factPreviewBoxes}
+          onClose={() => setFactPreview(null)}
+        />
+      )}
     </div>
   );
 }
@@ -1167,6 +1583,442 @@ function SovereignCockpit({ twinFacts, cureProofs, appId, canIssueCerts, canConf
 // every configured AVM provider via /verify (fires the hub with kind='avm'
 // → feeds api_verification observations → re-analyzes). Empty when no AVMs
 // are configured (all three today are stubs).
+// #197 — Whole-loan run cockpit. Reads the latest immutable underwriting run
+// (schema db/266) and folds it into ONE at-a-glance panel: the current decision
+// (status + the three gates term-sheet / clear-to-close / funding), what CHANGED
+// since the previous run, the ordered "what to do next" worklist, and the findings
+// rolled up by category. READ-ONLY / advisory — it summarizes an already-computed,
+// already-persisted run; it runs nothing, decides nothing, and clears no
+// condition. A file that has never been run shows a quiet "not run yet" note.
+// #136 (R5.39) — Guideline fit panel. Reads /guideline-evaluation (the advisory
+// composition layer over the R5.32–39 knowledge graph): per-rule verdicts + plain
+// citations for the registered program and any note-buyer investor, plus the
+// investor-fit ranking with an "A vs B" differentiator (the exact rules that
+// separate one investor from another). READ-ONLY / advisory — it explains the
+// frozen guideline baselines against this file; it changes no decision, clears no
+// condition, sizes no loan, and touches no frozen number. An unseeded knowledge
+// graph shows a quiet "nothing to compare yet" note.
+function GuidelineFitPanel({ appId }) {
+  const [open, setOpen] = useState(false);
+  const [loading, setLoading] = useState(false);
+  const [report, setReport] = useState(null);
+  const [showContext, setShowContext] = useState(false);
+  const [showAllRules, setShowAllRules] = useState(false);
+  const load = useCallback(() => {
+    if (!appId) return Promise.resolve();
+    setLoading(true);
+    return api.fileGuidelineEvaluation(appId)
+      .then((d) => setReport((d && d.report) || { empty: true, sets: [], fit: { ranked: [], best: null, anyFit: false, comparison: [] } }))
+      .catch(() => setReport({ empty: true, sets: [], fit: { ranked: [], best: null, anyFit: false, comparison: [] } }))
+      .finally(() => setLoading(false));
+  }, [appId]);
+  useEffect(() => { if (open && appId) load(); }, [open, appId, load]);
+
+  // Neutral verdict styling. not_applicable rules are never shown.
+  const VERDICT = {
+    met:           { fg: 'var(--good,#3F7A5B)', bg: 'rgba(63,122,91,.10)', label: 'Meets' },
+    violated:      { fg: 'var(--crit,#B4483C)', bg: 'var(--crit-bg,#F6E7E4)', label: 'Does not meet' },
+    indeterminate: { fg: 'var(--amber,#B7791F)', bg: 'var(--amber-bg,#F6EEDD)', label: 'Need more info' },
+    noted:         { fg: 'var(--muted,#4B585C)', bg: 'var(--paper,#F6F3EC)', label: 'Noted' },
+  };
+  const verdictChip = (v, excepted) => {
+    const s = VERDICT[v] || VERDICT.noted;
+    return (
+      <span style={{ fontSize: 10.5, fontWeight: 800, color: s.fg, background: s.bg, border: `1px solid ${s.fg}44`, borderRadius: 999, padding: '2px 9px', whiteSpace: 'nowrap' }}>
+        {excepted && v === 'violated' ? 'Exception applies' : s.label}
+      </span>
+    );
+  };
+  // one plain line for a rule: its reasons (if it doesn't meet) else its recorded requirement.
+  const ruleText = (r) => {
+    const cit = r && r.citation;
+    const reasons = cit && Array.isArray(cit.reasons) ? cit.reasons.filter(Boolean) : [];
+    if (reasons.length) return reasons.join('; ');
+    if (r && r.outcome != null && typeof r.outcome !== 'object') return String(r.outcome);
+    if (r && r.outcome && typeof r.outcome === 'object') {
+      const parts = Object.entries(r.outcome).map(([k, v]) => `${k}: ${v}`);
+      if (parts.length) return parts.join(', ');
+    }
+    return r && r.ruleKey ? r.ruleKey : 'Recorded guideline';
+  };
+
+  const rpt = report;
+  const sets = (rpt && Array.isArray(rpt.sets)) ? rpt.sets : [];
+  const fit = (rpt && rpt.fit) || { ranked: [], best: null, anyFit: false, comparison: [] };
+  const ranked = Array.isArray(fit.ranked) ? fit.ranked : [];
+  const comparison = Array.isArray(fit.comparison) ? fit.comparison : [];
+  const ctx = (rpt && rpt.context) || {};
+  const ctxKeys = Object.keys(ctx);
+  const isEmpty = !rpt || rpt.empty || sets.length === 0;
+
+  return (
+    <div style={{ border: '1px solid var(--line,#E7E1D3)', borderRadius: 12, padding: '12px 16px', marginBottom: 18 }}>
+      <button onClick={() => setOpen((v) => !v)} style={{ display: 'flex', alignItems: 'center', gap: 8, background: 'none', border: 'none', cursor: 'pointer', padding: 0, textAlign: 'left', width: '100%' }}>
+        <span style={{ fontSize: 14, fontWeight: 700 }}>Guideline fit — which program &amp; investor this loan meets, and why</span>
+        <span style={{ marginLeft: 'auto', fontSize: 12, color: 'var(--muted,#4B585C)' }}>{open ? 'hide' : 'show'}</span>
+      </button>
+      {open && (
+        <div style={{ marginTop: 12 }}>
+          <p style={{ fontSize: 12, color: 'var(--muted,#4B585C)', margin: '0 0 12px' }}>
+            How this file measures up against the program and any note-buyer guidelines — rule by rule,
+            in plain terms, with the reasons cited. This is a read-out; it decides nothing on its own.
+          </p>
+          {loading && <div className="muted" style={{ fontSize: 12 }}>Loading…</div>}
+          {!loading && isEmpty && (
+            <div className="muted" style={{ fontSize: 12.5 }}>
+              There are no guideline sets to compare on this file yet. Fit reasoning appears once a program is
+              registered and its guideline rules are on file.
+            </div>
+          )}
+          {!loading && !isEmpty && (
+            <>
+              {/* investor fit — best fit + the ranking */}
+              <div style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: 10, marginBottom: 12 }}>
+                {fit.anyFit ? (
+                  <span style={{ fontSize: 12.5, fontWeight: 800, color: 'var(--good,#3F7A5B)', background: 'rgba(63,122,91,.10)', border: '1px solid var(--good,#3F7A5B)44', borderRadius: 999, padding: '4px 12px' }}>
+                    Best fit: {fit.best}
+                  </span>
+                ) : (
+                  <span style={{ fontSize: 12.5, fontWeight: 800, color: 'var(--amber,#B7791F)', background: 'var(--amber-bg,#F6EEDD)', border: '1px solid var(--amber,#B7791F)44', borderRadius: 999, padding: '4px 12px' }}>
+                    No clean fit yet
+                  </span>
+                )}
+                {rpt.generatedAt && (
+                  <span style={{ marginLeft: 'auto', fontSize: 11, color: 'var(--muted,#4B585C)' }}>as of {fmtAgo(rpt.generatedAt)}</span>
+                )}
+              </div>
+
+              {ranked.length > 0 && (
+                <div style={{ marginBottom: 14 }}>
+                  {ranked.map((r, i) => {
+                    const fits = r.eligible;
+                    const fg = fits ? 'var(--good,#3F7A5B)' : 'var(--crit,#B4483C)';
+                    const blockers = Array.isArray(r.blockers) ? r.blockers : [];
+                    const notes = Array.isArray(r.notes) ? r.notes : [];
+                    return (
+                      <div key={i} style={{ padding: '7px 0', borderTop: i === 0 ? 'none' : '1px solid var(--line,#E7E1D3)' }}>
+                        <div style={{ display: 'flex', alignItems: 'baseline', gap: 8 }}>
+                          <span style={{ fontSize: 10.5, fontWeight: 800, color: fg, minWidth: 34 }}>{fits ? 'FITS' : 'FAILS'}</span>
+                          <span style={{ fontSize: 13, fontWeight: 700 }}>{r.investor}</span>
+                        </div>
+                        {blockers.length > 0 && (
+                          <ul style={{ margin: '4px 0 0 42px', padding: 0, listStyle: 'disc' }}>
+                            {blockers.slice(0, 6).map((b, j) => (
+                              <li key={j} style={{ fontSize: 12, color: 'var(--crit,#B4483C)' }}>{b.reason || b.ruleId}</li>
+                            ))}
+                          </ul>
+                        )}
+                        {notes.length > 0 && (
+                          <ul style={{ margin: '4px 0 0 42px', padding: 0, listStyle: 'disc' }}>
+                            {notes.slice(0, 4).map((n, j) => (
+                              <li key={j} style={{ fontSize: 11.5, color: 'var(--muted,#4B585C)' }}>{n}</li>
+                            ))}
+                          </ul>
+                        )}
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+
+              {/* A vs B differentiators */}
+              {comparison.length > 0 && (
+                <div style={{ marginBottom: 14 }}>
+                  <div style={{ fontSize: 12, fontWeight: 800, textTransform: 'uppercase', letterSpacing: '.05em', color: 'var(--muted,#4B585C)', marginBottom: 6 }}>What separates them</div>
+                  {comparison.map((cmp, i) => {
+                    const diffs = Array.isArray(cmp.differentiators) ? cmp.differentiators : [];
+                    return (
+                      <div key={i} style={{ fontSize: 12.5, marginBottom: 8, padding: '8px 12px', background: 'var(--paper,#F6F3EC)', borderRadius: 8, border: '1px solid var(--line,#E7E1D3)' }}>
+                        <div style={{ fontWeight: 700, marginBottom: diffs.length ? 4 : 0 }}>{cmp.a} vs {cmp.b}</div>
+                        {diffs.length === 0 ? (
+                          <div className="muted" style={{ fontSize: 12 }}>Same guideline outcome on this file — nothing separates them.</div>
+                        ) : (
+                          <ul style={{ margin: 0, paddingLeft: 18 }}>
+                            {diffs.map((d, j) => (
+                              <li key={j} style={{ fontSize: 12 }}><strong>Only {d.onlyOn}:</strong> {d.reason || d.ruleId}</li>
+                            ))}
+                          </ul>
+                        )}
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+
+              {/* per-set rule verdicts + citations */}
+              {sets.map((set, si) => {
+                const sm = set.summary || {};
+                const rules = Array.isArray(set.rules) ? set.rules : [];
+                // applicable rules only; violated + indeterminate first (the ones a human needs).
+                const applicable = rules.filter((r) => r.applicable && r.verdict !== 'not_applicable');
+                const order = { violated: 0, indeterminate: 1, met: 2, noted: 3 };
+                const sorted = applicable.slice().sort((a, b) => (order[a.verdict] ?? 4) - (order[b.verdict] ?? 4));
+                const primary = sorted.filter((r) => r.verdict === 'violated' || r.verdict === 'indeterminate');
+                const rest = sorted.filter((r) => r.verdict === 'met' || r.verdict === 'noted');
+                const shown = showAllRules ? sorted : (primary.length ? primary : sorted.slice(0, 4));
+                return (
+                  <div key={si} style={{ marginBottom: 14 }}>
+                    <div style={{ display: 'flex', alignItems: 'baseline', gap: 10, flexWrap: 'wrap', marginBottom: 6 }}>
+                      <span style={{ fontSize: 13, fontWeight: 800 }}>{set.label || 'Guideline set'}</span>
+                      <span style={{ fontSize: 11.5, fontWeight: 700, color: set.eligible ? 'var(--good,#3F7A5B)' : 'var(--crit,#B4483C)' }}>
+                        {set.eligible ? 'Eligible' : `${sm.blockers || 0} blocking`}
+                      </span>
+                      <span style={{ fontSize: 11, color: 'var(--muted,#4B585C)' }}>
+                        {sm.met || 0} meet · {sm.violated || 0} don't · {sm.indeterminate || 0} need info · {sm.noted || 0} noted
+                      </span>
+                    </div>
+                    {shown.length === 0 && (
+                      <div className="muted" style={{ fontSize: 12 }}>No rules apply to this file in this set.</div>
+                    )}
+                    {shown.map((r, ri) => {
+                      const cit = r.citation || {};
+                      return (
+                        <div key={ri} style={{ display: 'flex', alignItems: 'flex-start', gap: 8, padding: '6px 0', borderTop: ri === 0 ? 'none' : '1px solid var(--line,#E7E1D3)' }}>
+                          <span style={{ marginTop: 1 }}>{verdictChip(r.verdict, r.excepted)}</span>
+                          <div style={{ flex: 1, minWidth: 0 }}>
+                            <div style={{ fontSize: 12.5 }}>{ruleText(r)}</div>
+                            {cit.citation && (
+                              <div style={{ fontSize: 11, color: 'var(--muted,#4B585C)', marginTop: 2 }}>{cit.citation}</div>
+                            )}
+                          </div>
+                        </div>
+                      );
+                    })}
+                    {rest.length > 0 && primary.length > 0 && !showAllRules && (
+                      <button onClick={() => setShowAllRules(true)} style={{ background: 'none', border: 'none', color: 'var(--teal,#2F7F86)', cursor: 'pointer', fontSize: 11.5, padding: '4px 0' }}>
+                        Show {rest.length} rule{rest.length === 1 ? '' : 's'} this file already meets
+                      </button>
+                    )}
+                  </div>
+                );
+              })}
+
+              {/* what the check saw — the exact context values, echoed */}
+              {ctxKeys.length > 0 && (
+                <div style={{ marginTop: 6 }}>
+                  <button onClick={() => setShowContext((v) => !v)} style={{ background: 'none', border: 'none', color: 'var(--teal,#2F7F86)', cursor: 'pointer', fontSize: 11.5, padding: 0 }}>
+                    {showContext ? 'Hide' : 'Show'} what the check looked at
+                  </button>
+                  {showContext && (
+                    <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, marginTop: 8 }}>
+                      {ctxKeys.map((k) => (
+                        <span key={k} style={{ fontSize: 11, color: 'var(--muted,#4B585C)', background: 'var(--paper,#F6F3EC)', border: '1px solid var(--line,#E7E1D3)', borderRadius: 6, padding: '2px 8px' }}>
+                          {k.replace(/_/g, ' ')}: <strong>{String(ctx[k])}</strong>
+                        </span>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              )}
+            </>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function WholeLoanRunPanel({ appId }) {
+  const [open, setOpen] = useState(false);
+  const [loading, setLoading] = useState(false);
+  const [cockpit, setCockpit] = useState(null);
+  // #179 — "Why this decision?" explanation + findings CSV export.
+  const [whyOpen, setWhyOpen] = useState(false);
+  const [whyLoading, setWhyLoading] = useState(false);
+  const [why, setWhy] = useState(null);
+  const [exporting, setExporting] = useState(false);
+  const [exportMsg, setExportMsg] = useState(null);
+  const load = useCallback(() => {
+    if (!appId) return Promise.resolve();
+    setLoading(true);
+    return api.fileUnderwritingRun(appId)
+      .then((d) => setCockpit((d && d.cockpit) || { hasRun: false }))
+      .catch(() => setCockpit({ hasRun: false }))
+      .finally(() => setLoading(false));
+  }, [appId]);
+  useEffect(() => { if (open && appId) load(); }, [open, appId, load]);
+
+  const loadWhy = useCallback(() => {
+    if (!appId) return Promise.resolve();
+    setWhyLoading(true);
+    return api.fileUnderwritingWhy(appId)
+      .then((d) => setWhy(d && d.hasRun ? (d.explanation || { headline: 'No explanation available.' }) : { empty: true }))
+      .catch(() => setWhy({ empty: true }))
+      .finally(() => setWhyLoading(false));
+  }, [appId]);
+  const toggleWhy = useCallback(() => {
+    setWhyOpen((v) => { const nv = !v; if (nv && !why) loadWhy(); return nv; });
+  }, [why, loadWhy]);
+
+  async function exportCsv() {
+    if (exporting) return;
+    setExporting(true); setExportMsg(null);
+    try { await api.fileUnderwritingFindingsCsv(appId); }
+    catch (_e) { setExportMsg('Could not build the findings file.'); setTimeout(() => setExportMsg(null), 6000); }
+    finally { setExporting(false); }
+  }
+
+  const STATUS_STYLE = {
+    ELIGIBLE: { fg: 'var(--good,#3F7A5B)', bg: 'rgba(63,122,91,.10)', label: 'Eligible' },
+    MANUAL_APPROVED: { fg: 'var(--good,#3F7A5B)', bg: 'rgba(63,122,91,.10)', label: 'Manually approved' },
+    MANUAL_PENDING: { fg: 'var(--amber,#B7791F)', bg: 'var(--amber-bg,#F6EEDD)', label: 'Manual review' },
+    NOT_READY: { fg: 'var(--muted,#4B585C)', bg: 'var(--paper,#F6F3EC)', label: 'Not ready' },
+    DATA_CONFLICT: { fg: 'var(--amber,#B7791F)', bg: 'var(--amber-bg,#F6EEDD)', label: 'Data conflict' },
+    STALE: { fg: 'var(--amber,#B7791F)', bg: 'var(--amber-bg,#F6EEDD)', label: 'Stale — re-run needed' },
+    INELIGIBLE: { fg: 'var(--crit,#B4483C)', bg: 'var(--crit-bg,#F6E7E4)', label: 'Ineligible' },
+  };
+  const gateChip = (label, on) => (
+    <span style={{ display: 'inline-flex', alignItems: 'center', gap: 5, fontSize: 11.5, fontWeight: 700,
+      color: on ? 'var(--good,#3F7A5B)' : 'var(--muted,#4B585C)',
+      background: on ? 'rgba(63,122,91,.10)' : 'var(--paper,#F6F3EC)',
+      border: `1px solid ${on ? 'rgba(63,122,91,.35)' : 'var(--line,#E7E1D3)'}`,
+      borderRadius: 999, padding: '3px 10px' }}>
+      {on ? '✓' : '—'} {label}
+    </span>
+  );
+  const c = cockpit;
+  const dec = c && c.decision;
+  const st = dec && (STATUS_STYLE[dec.status] || { fg: 'var(--muted,#4B585C)', bg: 'var(--paper,#F6F3EC)', label: dec.status || 'Unknown' });
+
+  return (
+    <div style={{ border: '1px solid var(--line,#E7E1D3)', borderRadius: 12, padding: '12px 16px', marginBottom: 18 }}>
+      <button onClick={() => setOpen((v) => !v)} style={{ display: 'flex', alignItems: 'center', gap: 8, background: 'none', border: 'none', cursor: 'pointer', padding: 0, textAlign: 'left', width: '100%' }}>
+        <span style={{ fontSize: 14, fontWeight: 700 }}>Whole-loan underwriting run — where the whole file stands</span>
+        <span style={{ marginLeft: 'auto', fontSize: 12, color: 'var(--muted,#4B585C)' }}>{open ? 'hide' : 'show'}</span>
+      </button>
+      {open && (
+        <div style={{ marginTop: 12 }}>
+          <p style={{ fontSize: 12, color: 'var(--muted,#4B585C)', margin: '0 0 12px' }}>
+            One snapshot of the loan as a whole — the current standing, what changed since the last check,
+            what to work next, and the kinds of issues on file. This is a read-out; it decides nothing on its own.
+          </p>
+          {loading && <div className="muted" style={{ fontSize: 12 }}>Loading…</div>}
+          {!loading && (!c || !c.hasRun) && (
+            <div className="muted" style={{ fontSize: 12.5 }}>This file hasn't been run through the whole-loan review yet. It runs on its own as documents and terms come in.</div>
+          )}
+          {!loading && c && c.hasRun && (
+            <>
+              {/* current standing + the three gates */}
+              <div style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: 10, marginBottom: 12 }}>
+                {st && (
+                  <span style={{ fontSize: 12.5, fontWeight: 800, color: st.fg, background: st.bg, border: `1px solid ${st.fg}44`, borderRadius: 999, padding: '4px 12px' }}>{st.label}</span>
+                )}
+                {dec && dec.gates && (
+                  <>
+                    {gateChip('Term sheet', dec.gates.termSheet)}
+                    {gateChip('Clear to close', dec.gates.ctc)}
+                    {gateChip('Funding', dec.gates.funding)}
+                    {/* These are PILOT's OPINION of each step, not permission to take it
+                        (owner-directed 2026-07-27). A grey "— Clear to close" chip used to
+                        read as "the system won't let you"; nothing here gates anything. */}
+                    <span style={{ fontSize: 11, color: 'var(--muted,#4B585C)' }}>
+                      PILOT&apos;s read — advisory, none of these hold up the file
+                    </span>
+                  </>
+                )}
+                {c.current && c.current.asOf && (
+                  <span style={{ marginLeft: 'auto', fontSize: 11, color: 'var(--muted,#4B585C)' }}>as of {fmtAgo(c.current.asOf)}</span>
+                )}
+              </div>
+
+              {/* #179 — Why this decision? + Export findings (CSV) */}
+              <div style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: 8, marginBottom: 12 }}>
+                <button className="btn ghost small" onClick={toggleWhy}>{whyOpen ? 'Hide why' : 'Why this decision?'}</button>
+                <button className="btn ghost small" disabled={exporting} onClick={exportCsv}>{exporting ? 'Preparing…' : 'Export findings (CSV)'}</button>
+                {exportMsg && <span style={{ fontSize: 11.5, color: 'var(--crit,#B4483C)' }}>{exportMsg}</span>}
+              </div>
+
+              {whyOpen && (
+                <div style={{ marginBottom: 14, padding: '10px 14px', background: 'var(--paper,#F6F3EC)', border: '1px solid var(--line,#E7E1D3)', borderRadius: 10 }}>
+                  {whyLoading && <div className="muted" style={{ fontSize: 12 }}>Loading…</div>}
+                  {!whyLoading && why && why.empty && (
+                    <div className="muted" style={{ fontSize: 12.5 }}>No explanation is available for this file yet.</div>
+                  )}
+                  {!whyLoading && why && !why.empty && (
+                    <>
+                      {why.headline && <div style={{ fontSize: 13, fontWeight: 700, marginBottom: 6 }}>{why.headline}</div>}
+                      {why.plain && why.plain !== why.headline && (
+                        <p style={{ fontSize: 12.5, color: 'var(--muted,#4B585C)', margin: '0 0 8px' }}>{why.plain}</p>
+                      )}
+                      {Array.isArray(why.blockers) && why.blockers.length > 0 && (
+                        <div style={{ marginBottom: 8 }}>
+                          <div style={{ fontSize: 11, fontWeight: 800, textTransform: 'uppercase', letterSpacing: '.05em', color: 'var(--muted,#4B585C)', marginBottom: 3 }}>What's blocking</div>
+                          <ul style={{ margin: 0, paddingLeft: 18 }}>
+                            {why.blockers.map((b, i) => (
+                              <li key={i} style={{ fontSize: 12, marginBottom: 3 }}>
+                                <span style={{ fontWeight: 600 }}>{b.title}</span>
+                                {b.howTo && <span style={{ color: 'var(--muted,#4B585C)' }}> — {b.howTo}</span>}
+                              </li>
+                            ))}
+                          </ul>
+                        </div>
+                      )}
+                      {Array.isArray(why.nextSteps) && why.nextSteps.length > 0 && (
+                        <div>
+                          <div style={{ fontSize: 11, fontWeight: 800, textTransform: 'uppercase', letterSpacing: '.05em', color: 'var(--muted,#4B585C)', marginBottom: 3 }}>What to do next</div>
+                          <ul style={{ margin: 0, paddingLeft: 18 }}>
+                            {why.nextSteps.map((s, i) => <li key={i} style={{ fontSize: 12, marginBottom: 3 }}>{s}</li>)}
+                          </ul>
+                        </div>
+                      )}
+                    </>
+                  )}
+                </div>
+              )}
+
+              {/* what changed since the previous run */}
+              {c.diff && c.diff.changed && (
+                <div style={{ fontSize: 12.5, marginBottom: 12, padding: '8px 12px', background: 'var(--paper,#F6F3EC)', borderRadius: 8, border: '1px solid var(--line,#E7E1D3)' }}>
+                  <span style={{ fontWeight: 700 }}>Since the last check: </span>{c.diff.headline}
+                </div>
+              )}
+
+              {/* what to do next — the ordered worklist */}
+              {c.nextActions && Array.isArray(c.nextActions.actions) && c.nextActions.actions.length > 0 && (
+                <div style={{ marginBottom: 14 }}>
+                  <div style={{ fontSize: 12, fontWeight: 800, textTransform: 'uppercase', letterSpacing: '.05em', color: 'var(--muted,#4B585C)', marginBottom: 6 }}>What to work next</div>
+                  {c.nextActions.actions.slice(0, 8).map((a, i) => (
+                    <div key={i} style={{ display: 'flex', alignItems: 'baseline', gap: 8, padding: '5px 0', borderTop: i === 0 ? 'none' : '1px solid var(--line,#E7E1D3)' }}>
+                      <span style={{ fontSize: 10.5, fontWeight: 800, minWidth: 62, color: a.blocking ? 'var(--crit,#B4483C)' : (a.overdue ? 'var(--amber,#B7791F)' : 'var(--muted,#4B585C)') }}>
+                        {a.blocking ? 'BLOCKING' : (a.overdue ? 'OVERDUE' : (a.kind === 'condition' ? 'CONDITION' : 'REVIEW'))}
+                      </span>
+                      <span style={{ fontSize: 13, fontWeight: 600 }}>{a.title}</span>
+                      <span style={{ fontSize: 11.5, color: 'var(--muted,#4B585C)' }}>{a.why}</span>
+                    </div>
+                  ))}
+                  {c.nextActions.actions.length > 8 && (
+                    <div className="muted" style={{ fontSize: 11.5, marginTop: 4 }}>+{c.nextActions.actions.length - 8} more below.</div>
+                  )}
+                </div>
+              )}
+
+              {/* findings rolled up by category */}
+              {c.findingsDigest && Array.isArray(c.findingsDigest.categories) && c.findingsDigest.categories.length > 0 && (
+                <div>
+                  <div style={{ fontSize: 12, fontWeight: 800, textTransform: 'uppercase', letterSpacing: '.05em', color: 'var(--muted,#4B585C)', marginBottom: 6 }}>Issues by kind</div>
+                  <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
+                    {c.findingsDigest.categories.map((g, i) => {
+                      const crit = g.worstSeverity === 'fatal';
+                      const warn = g.worstSeverity === 'warning';
+                      const fg = crit ? 'var(--crit,#B4483C)' : (warn ? 'var(--amber,#B7791F)' : 'var(--muted,#4B585C)');
+                      const bg = crit ? 'var(--crit-bg,#F6E7E4)' : (warn ? 'var(--amber-bg,#F6EEDD)' : 'var(--paper,#F6F3EC)');
+                      return (
+                        <span key={i} title={g.blocking ? 'Includes a blocking item' : ''} style={{ fontSize: 12, fontWeight: 700, color: fg, background: bg, border: `1px solid ${fg}33`, borderRadius: 8, padding: '4px 10px' }}>
+                          {g.label}: {g.count}{g.blocking ? ' ⛔' : ''}
+                        </span>
+                      );
+                    })}
+                  </div>
+                </div>
+              )}
+            </>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
 function SovereignAVMSection({ appId, canRefresh }) {
   const [open, setOpen] = useState(false);
   const [rpt, setRpt] = useState(null);
@@ -1476,12 +2328,12 @@ function SovereignAiRiskSection({ appId }) {
         <div style={{ minWidth: 0 }}>
           <div style={{ fontSize: 11, textTransform: 'uppercase', letterSpacing: '.06em', color: 'var(--muted,#4B585C)', fontWeight: 700 }}>File AI risk score</div>
           <div style={{ fontSize: 13, color: 'var(--ivory,#141B22)', marginTop: 2 }}>
-            {bd.fatal > 0 ? `${bd.fatal} fatal` : ''}
+            {bd.fatal > 0 ? severityCount(bd.fatal, 'fatal') : ''}
             {bd.fatal > 0 && (bd.warning > 0 || bd.info > 0) ? ' · ' : ''}
             {bd.warning > 0 ? `${bd.warning} warning` : ''}
             {bd.warning > 0 && bd.info > 0 ? ' · ' : ''}
             {bd.info > 0 ? `${bd.info} info` : ''}
-            {data.oldestFatalDays >= 1 ? ` · oldest fatal ${Math.floor(data.oldestFatalDays)}d` : ''}
+            {data.oldestFatalDays >= 1 ? ` · oldest ${severityLabel('fatal').toLowerCase()} ${Math.floor(data.oldestFatalDays)}d` : ''}
           </div>
           {/* R4.19 — one-line triage: the single worst open finding. */}
           {data.topFinding && data.topFinding.title && (
@@ -1628,7 +2480,7 @@ function SovereignKnowledgeGraphSection({ appId }) {
               <div style={{ fontSize: 11, fontWeight: 700, color: 'var(--ivory,#141B22)', marginBottom: 4 }}>Other files on this borrower</div>
               {siblings.slice(0, 8).map((s) => (
                 <div key={s.id} style={{ fontSize: 12, padding: '2px 0' }}>
-                  <a href={`#/staff/applications/${s.id}`} style={{ color: 'var(--teal-deep,#256168)' }}>
+                  <a href={`#/internal/app/${s.id}`} style={{ color: 'var(--teal-deep,#256168)' }}>
                     {(s.property_address && (s.property_address.line1 || s.property_address.address)) || s.id.slice(0, 8)}
                   </a>
                   {' · '}<span style={{ color: 'var(--muted,#4B585C)' }}>{s.program || 'no program'} · {s.status}</span>
@@ -1734,6 +2586,11 @@ const SOURCE_LABEL = {
   wrong_condition: 'Wrong condition',
   ask_admin: 'Ask super-admin',
   splitter: 'Document splitter',
+  party_collusion: 'Party conflict',
+  double_pledge: 'Double-pledged',
+  public_records: 'Public records',
+  identity_chain: 'Identity chain',
+  independent_verification: 'Independent check',
 };
 const SOURCE_TINT = {
   cure_analysis: { fg: 'var(--teal-deep,#256168)', bg: 'rgba(47,127,134,.12)' },
@@ -1744,13 +2601,16 @@ const SOURCE_TINT = {
   ask_admin:     { fg: 'var(--teal-deep,#256168)', bg: 'rgba(47,127,134,.12)' },
   splitter:      { fg: 'var(--gold,#AE8746)', bg: 'rgba(174,135,70,.14)' },
   committee:     { fg: 'var(--teal-deep,#256168)', bg: 'rgba(47,127,134,.12)' },
+  party_collusion: { fg: 'var(--crit,#B4483C)', bg: 'var(--crit-bg,#F6E7E4)' },
+  double_pledge:   { fg: 'var(--crit,#B4483C)', bg: 'var(--crit-bg,#F6E7E4)' },
 };
 
-function AISuggestionsSection({ appId, readOnly = false, canResolve = true }) {
+function AISuggestionsSection({ appId, readOnly = false, canResolve = true, shownFindingCodes = null, shownClaimKeys = null, shownFindingKeys = null }) {
   const [rows, setRows] = React.useState(null);
   const [err, setErr] = React.useState('');
   const [busy, setBusy] = React.useState(false);
   const [showDismissed, setShowDismissed] = React.useState(false);
+  const [showDupes, setShowDupes] = React.useState(false);
   const [expanded, setExpanded] = React.useState(true);
   const [sourceFilter, setSourceFilter] = React.useState('all');
   const [sevFilter, setSevFilter] = React.useState('all');
@@ -1780,9 +2640,50 @@ function AISuggestionsSection({ appId, readOnly = false, canResolve = true }) {
   }, [appId, load]);
 
   if (rows == null && !err) return null;
+  // A suggestion is a "repeat" when the SAME underlying issue is already shown in the "Open findings"
+  // list below (the chain / bank / tie-out / guideline desks surface there AND bridge into this panel).
+  // Matched two ways so the owner's "same finding six times" collapses to ONE (2026-07-27):
+  //   • by CLAIM KEY — the semantic key the Open-findings list is deduped by (server-stamped on both
+  //     surfaces), so a fact reached under DIFFERENT codes by different desks (the vesting mismatch,
+  //     the entity-not-screened rollup) is recognized as the same issue and hidden here, and
+  //   • by raw CODE — the original exact-code match, kept as a belt-and-suspenders fallback.
+  // Hidden by default so the same issue isn't shown twice; a toggle brings them back. Nothing is lost
+  // — each repeat stays fully actionable in the one Open-findings list.
+  const dupCodes = shownFindingCodes instanceof Set ? shownFindingCodes : null;
+  const dupClaims = shownClaimKeys instanceof Set ? shownClaimKeys : null;
+  // The guideline-desk key set (dedupe key + condition template code) catches a note-buyer
+  // guideline row: its `evidence.code` is a CONDITION TEMPLATE code and its `dedupe_key` is the
+  // desk's own one-per-issue key — neither of which lives in the finding-CODE namespace, so the
+  // code-only check could never recognize it and the same item showed twice.
+  const dupKeys = shownFindingKeys instanceof Set ? shownFindingKeys : null;
+  const rowCode = (r) => { const c = r && r.evidence && r.evidence.code; return c ? String(c).trim().toLowerCase() : null; };
+  const rowClaim = (r) => (r && r.claim_key) ? String(r.claim_key) : null;
+  const rowKey = (r) => { const k = r && r.dedupe_key; return k ? String(k).trim().toLowerCase() : null; };
+  const isRepeat = (r) => {
+    // 1) CLAIM KEY — the semantic key the Open-findings list is deduped by (server-stamped on both
+    //    surfaces), so a fact reached under DIFFERENT codes by different desks (the vesting mismatch,
+    //    the entity-not-screened rollup) is recognized as the same issue and hidden here.
+    const ck = rowClaim(r);
+    if (dupClaims && ck && dupClaims.has(ck)) return true;
+    // 2) raw CODE — the original exact-code match, kept as a belt-and-suspenders fallback.
+    const c = rowCode(r);
+    if (dupCodes && c && dupCodes.has(c)) return true;
+    // 3) GUIDELINE-DESK dedupe / template key, SCOPED to that source on purpose. `dupKeys` holds
+    //    CONDITION TEMPLATE codes, a different namespace from the finding codes every other producer
+    //    puts in `evidence.code`. That separation is convention, not enforcement — one detector
+    //    deciding to put a template code in `evidence.code` would silently vanish from this panel.
+    //    Matching only rows from the source that actually shares this namespace makes that impossible.
+    if (!dupKeys) return false;
+    if (r && r.source !== 'investor_guideline_desk') return false;
+    const k = rowKey(r);
+    return !!((k && dupKeys.has(k)) || (c && dupKeys.has(c)));
+  };
+  const isHiddenRepeat = (r) => !showDupes && isRepeat(r);
   const openRows = (rows || []).filter((r) => r.status !== 'dismissed');
-  const importantCount = openRows.filter((r) => r.important).length;
-  const total = openRows.length;
+  const repeatCount = openRows.filter(isRepeat).length;
+  const visibleOpen = openRows.filter((r) => !isHiddenRepeat(r));
+  const importantCount = visibleOpen.filter((r) => r.important).length;
+  const total = visibleOpen.length;
 
   return (
     <div id="ai-findings" style={{ marginBottom: 22, border: '1px solid var(--paper,#E9E4D3)', borderRadius: 12, background: 'var(--card,#fff)', scrollMarginTop: 80 }}>
@@ -1794,7 +2695,8 @@ function AISuggestionsSection({ appId, readOnly = false, canResolve = true }) {
             </span>
           </h4>
           <div style={{ fontSize: 12, color: 'var(--muted,#4B585C)', marginTop: 3 }}>
-            {total === 0 ? 'Nothing to review right now.' : `${total} open${importantCount ? ` · ${importantCount} marked important` : ''}`}
+            {total === 0 ? (repeatCount && !showDupes ? 'Nothing new here — everything is already listed in Open findings below.' : 'Nothing to review right now.') : `${total} open${importantCount ? ` · ${importantCount} marked important` : ''}`}
+            {repeatCount > 0 && !showDupes && <span style={{ marginLeft: 8 }}>· {repeatCount} repeat{repeatCount === 1 ? '' : 's'} of Open findings hidden</span>}
             {/* R4.16 — Last re-run stamp, so a re-audit trail is visible on the header. */}
             {lastRerunAt && (
               <span style={{ marginLeft: 8 }}>· Last re-run: {fmtAgo(lastRerunAt)}</span>
@@ -1805,6 +2707,8 @@ function AISuggestionsSection({ appId, readOnly = false, canResolve = true }) {
       </div>
       {expanded && (
         <div style={{ padding: '10px 14px' }}>
+          {/* AI Command Center phase 2 — ask PILOT "why?" grounded on this file's facts. */}
+          <AiReasoningChat appId={appId} />
           {err && <div className="error" style={{ marginBottom: 8 }}>{err}</div>}
           <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 10, fontSize: 12, flexWrap: 'wrap' }}>
             <button className="btn ghost" onClick={load} disabled={busy} style={{ padding: '3px 9px', fontSize: 11 }}>{busy ? '…' : '↻ Refresh'}</button>
@@ -1823,6 +2727,13 @@ function AISuggestionsSection({ appId, readOnly = false, canResolve = true }) {
               <input type="checkbox" checked={showDismissed} onChange={(e) => setShowDismissed(e.target.checked)} />
               Show dismissed
             </label>
+            {repeatCount > 0 && (
+              <label style={{ display: 'inline-flex', alignItems: 'center', gap: 5, color: 'var(--muted,#4B585C)' }}
+                title="These are the same items already listed in Open findings below — hidden here so nothing shows twice.">
+                <input type="checkbox" checked={showDupes} onChange={(e) => setShowDupes(e.target.checked)} />
+                Show {repeatCount} also in Open findings
+              </label>
+            )}
             {(rows || []).some(r => r.status !== 'dismissed') && !readOnly && canResolve && (
               <button className="btn ghost" style={{ padding: '3px 9px', fontSize: 11, color: 'var(--crit,#B4483C)', borderColor: 'var(--crit,#B4483C)' }}
                 onClick={async () => {
@@ -1857,11 +2768,15 @@ function AISuggestionsSection({ appId, readOnly = false, canResolve = true }) {
             })()}
           </div>
           {(() => {
-            const filtered = (rows || []).filter((r) => (sourceFilter === 'all' || r.source === sourceFilter) && (sevFilter === 'all' || r.severity === sevFilter));
+            const filtered = (rows || []).filter((r) => (sourceFilter === 'all' || r.source === sourceFilter) && (sevFilter === 'all' || r.severity === sevFilter) && !isHiddenRepeat(r));
             if (filtered.length === 0 && !busy) {
               return (
                 <div style={{ fontSize: 12.5, color: 'var(--muted,#4B585C)', padding: '10px 0' }}>
-                  {(rows || []).length ? 'No suggestions match the current filter.' : 'The AI has no suggestions on this file yet. When it reads a document or spots something odd, you\'ll see it here as a suggestion you can act on.'}
+                  {(rows || []).length
+                    ? (repeatCount > 0 && !showDupes
+                      ? 'Everything here is already listed in Open findings below — nothing extra to review. Tick the box above to see the repeats.'
+                      : 'No suggestions match the current filter.')
+                    : 'The AI has no suggestions on this file yet. When it reads a document or spots something odd, you\'ll see it here as a suggestion you can act on.'}
                 </div>
               );
             }
@@ -1886,10 +2801,20 @@ function AISuggestionCard({ appId, suggestion, onChanged, disabled }) {
   const [noteText, setNoteText] = React.useState('');
   const [dismissOpen, setDismissOpen] = React.useState(false);
   const [dismissReason, setDismissReason] = React.useState('');
+  const [preview, setPreview] = React.useState(null);
   const tint = SOURCE_TINT[suggestion.source] || { fg: 'var(--muted,#4B585C)', bg: 'var(--paper,#F6F3EC)' };
   const sourceLabel = SOURCE_LABEL[suggestion.source] || suggestion.source;
   const evidence = suggestion.evidence || {};
   const pages = Array.isArray(evidence.pages) ? evidence.pages : null;
+  const evDocId = suggestion.document_id || evidence.sourceDocumentId || null;
+  const evPage = (pages && pages.length ? pages[0] : (evidence.pageNumber ?? evidence.page ?? 1)) || 1;
+  // Same in-place evidence viewer R5.17 gave the Finding + fact rows: open the
+  // source document scrolled to the page (exact box if the span carries one),
+  // instead of the dead #/staff/documents/:id hash link.
+  const previewBoxes = React.useMemo(
+    () => (Array.isArray(evidence.polygon) && evidence.polygon.length ? [{ page: evPage, polygon: evidence.polygon }] : undefined),
+    [evidence.polygon, evPage],
+  );
   const isClosed = suggestion.status !== 'open' && suggestion.status !== 'asked_admin';
 
   const doAction = React.useCallback(async (action, extra = {}) => {
@@ -1958,13 +2883,23 @@ function AISuggestionCard({ appId, suggestion, onChanged, disabled }) {
       {suggestion.body && <div style={{ fontSize: 12.5, color: 'var(--ivory,#141B22)', marginBottom: 6, whiteSpace: 'pre-wrap' }}>{suggestion.body}</div>}
       {(pages || evidence.sourceDocumentId || suggestion.document_id || suggestion.trace_url) && (
         <div style={{ fontSize: 11.5, color: 'var(--muted,#4B585C)', marginBottom: 6 }}>
-          {(suggestion.document_id || evidence.sourceDocumentId) && (
-            <span>Document: <a href={`#/staff/documents/${suggestion.document_id || evidence.sourceDocumentId}`} style={{ color: 'var(--teal-deep,#256168)' }}>open</a>{pages ? ` · page(s) ${pages.join(', ')}` : ''}</span>
+          {evDocId && (
+            <span>Document: <a href="#" onClick={(e) => { e.preventDefault(); setPreview({ docId: evDocId, page: evPage, quote: evidence.quote || undefined }); }} style={{ color: 'var(--teal-deep,#256168)' }}>open</a>{pages ? ` · page(s) ${pages.join(', ')}` : ''}</span>
           )}
           {suggestion.trace_url && (
             <> · <a href={suggestion.trace_url} target="_blank" rel="noreferrer" style={{ color: 'var(--teal-deep,#256168)' }}>AI reasoning trace →</a></>
           )}
         </div>
+      )}
+      {preview && (
+        <DocPreview
+          title={`Source document${preview.page ? ` · page ${preview.page}` : ''}`}
+          load={() => api.staffDownloadDoc(preview.docId)}
+          initialPage={preview.page || 1}
+          highlight={preview.quote || undefined}
+          highlightBoxes={previewBoxes}
+          onClose={() => setPreview(null)}
+        />
       )}
       {Array.isArray(suggestion.notes) && suggestion.notes.length > 0 && (
         <div style={{ borderTop: '1px dashed var(--paper,#E9E4D3)', marginTop: 6, paddingTop: 6, fontSize: 11.5, color: 'var(--muted,#4B585C)' }}>
@@ -2129,10 +3064,18 @@ export default function UnderwritingPanel({ appId, docs = [], readOnly = false, 
 
   // Deep-link scroll (Rules of Hooks — must run every render, so it stays ABOVE the early return).
   // When we arrive with ?finding=<id> AND the findings have loaded, scroll the matching card into
-  // view and pulse it for ~3s. Re-runs after each load so a resolve → re-load lands on the right card.
+  // view and pulse it for ~3s.
+  //
+  // ONCE PER DEEP LINK, never again (owner-reported 2026-07-27: "it should never fly you
+  // somewhere else"). It used to re-fire whenever the findings COUNT moved — which happens on
+  // any reload, including one caused by an accept or a sign-off somewhere else on the file — so
+  // a reviewer who arrived here from the queue kept being dragged back to that one card.
   const _allFindingsForFocus = (data && data.allFindings) || [];
+  const focusedFinding = useRef('');
   useEffect(() => {
     if (!focusFindingId || !_allFindingsForFocus.length) return;
+    if (focusedFinding.current === focusFindingId) return;
+    focusedFinding.current = focusFindingId;
     const el = findingRefs.current[focusFindingId];
     if (el && typeof el.scrollIntoView === 'function') {
       try { el.scrollIntoView({ behavior: 'smooth', block: 'center' }); } catch (_) {}
@@ -2143,6 +3086,48 @@ export default function UnderwritingPanel({ appId, docs = [], readOnly = false, 
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [focusFindingId, _allFindingsForFocus.length]);
 
+  // The set of finding CODES already shown in the "Open findings" list below. Detectors like the
+  // chain-of-title / seller-chain / bank / tie-out desks surface here AND get bridged into the AI
+  // Findings panel (same evidence.code), so the identical issue was appearing twice (owner-reported
+  // 2026-07-24: "so many duplicates"). We pass these codes into the AI panel so it hides the bridged
+  // repeats by default — nothing is lost, each is still fully actionable in "Open findings".
+  //
+  // THIS HOOK MUST STAY ABOVE THE `loading` EARLY RETURN. A hook after a conditional return runs on
+  // some renders and not others, and React aborts the whole tree the moment the count changes
+  // ("Rendered more hooks than during the previous render"). That is exactly what crashed this
+  // section for every user: first paint returned early at `loading`, the second paint reached the
+  // useMemo, and the file page died in the ErrorBoundary. Every hook in this component belongs
+  // before the first `return`.
+  const _allFindings = (data && data.allFindings) || [];
+  const shownFindingCodes = React.useMemo(() => {
+    const s = new Set();
+    for (const f of _allFindings) { if (f && f.code) s.add(String(f.code).trim().toLowerCase()); }
+    return s;
+  }, [_allFindings]);
+  // The CLAIM KEYS already shown in Open findings — so the AI panel hides a suggestion that is the
+  // SAME issue reached under a different code (the "six times" fix, 2026-07-27).
+  const shownClaimKeys = React.useMemo(() => {
+    const s = new Set();
+    for (const f of _allFindings) { if (f && f.claimKey) s.add(String(f.claimKey)); }
+    return s;
+  }, [_allFindings]);
+  // The SAME issue, keyed the way the AI panel can recognize it (owner-reported 2026-07-27: the
+  // same guideline item was on the screen three times). A note-buyer guideline finding is also
+  // mirrored into `ai_suggestions` by the desk sync, but the two sides never matched on `code` —
+  // a suggestion's `evidence.code` is a CONDITION TEMPLATE code (`rtl_cond_feasibility`) while a
+  // finding's `code` is a finding code, two namespaces that can never collide. So the finding now
+  // carries the suggestion's own dedupe key (`isgKey`) and its template code, and both go into this
+  // set so the AI panel hides its copy and the item shows ONCE, in the Open-findings layout.
+  const shownFindingKeys = React.useMemo(() => {
+    const s = new Set();
+    for (const f of _allFindings) {
+      if (!f) continue;
+      if (f.isgKey) s.add(String(f.isgKey).trim().toLowerCase());
+      if (f.templateCode) s.add(String(f.templateCode).trim().toLowerCase());
+    }
+    return s;
+  }, [_allFindings]);
+
   if (loading) return <p style={{ color: 'var(--muted,#4B585C)' }}>Loading the underwriting review…</p>;
 
   const sum = (data && data.summary) || { fatal: 0, warning: 0, info: 0, blocksCtc: false };
@@ -2152,6 +3137,7 @@ export default function UnderwritingPanel({ appId, docs = [], readOnly = false, 
   const metrics = data && data.metrics;
   const entityChain = data && data.entityChain;
   const sellerChain = data && data.sellerChain;
+  const chainOfTitle = data && data.chainOfTitle;
   const bankLiquidity = data && data.bankLiquidity;
   const experience = data && data.experience;
   const completeness = data && data.completeness;
@@ -2163,7 +3149,7 @@ export default function UnderwritingPanel({ appId, docs = [], readOnly = false, 
   // Every open finding across the WHOLE file in one list — the exact set the summary counts, so the
   // "2 warnings" chip maps to two visible items (owner-reported: "it says 2 warnings and I can't see
   // them"). Shown once, at the top; the per-section finding lists below were removed so nothing repeats.
-  const allFindings = (data && data.allFindings) || [];
+  const allFindings = _allFindings;   // hoisted above the early return with its memo (see above)
   const apprFindings = (appr && appr.findings) || [];
   const apprSum = (appr && appr.summary) || { fatal: 0, warning: 0, info: 0 };
   const exts = (data && data.extractions) || [];
@@ -2228,11 +3214,34 @@ export default function UnderwritingPanel({ appId, docs = [], readOnly = false, 
       )}
 
       {/* roll-up */}
+      {/* The note-buyer chip is separate from fatal/warning on purpose — those two are
+          clear-to-close work and this is a different buyer's rulebook — but it MUST be here, or a
+          file whose only open item is a guideline dealbreaker shows no chip at all while a red fatal
+          card sits below (re-audit 2026-07-27). */}
+      {(sum.guideline && (sum.guideline.fatal > 0 || sum.guideline.warning > 0)) && (
+        <div style={{ display: 'flex', gap: 10, marginBottom: 10, flexWrap: 'wrap' }}>
+          <span style={{ fontWeight: 700, color: sum.guideline.fatal > 0 ? SEV.fatal.fg : SEV.warning.fg,
+            background: sum.guideline.fatal > 0 ? SEV.fatal.bg : SEV.warning.bg,
+            borderRadius: 999, padding: '4px 12px', fontSize: 12.5 }}>
+            {sum.guideline.fatal > 0
+              ? `${sum.guideline.fatal} note-buyer dealbreaker${sum.guideline.fatal === 1 ? '' : 's'}`
+              : `${sum.guideline.warning} note-buyer guideline note${sum.guideline.warning === 1 ? '' : 's'}`}
+          </span>
+        </div>
+      )}
       {(sum.fatal > 0 || sum.warning > 0) && (
         <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 12, flexWrap: 'wrap' }}>
-          {sum.fatal > 0 && <span style={{ fontWeight: 700, color: SEV.fatal.fg, background: SEV.fatal.bg, borderRadius: 999, padding: '4px 12px', fontSize: 12.5 }}>{sum.fatal} fatal</span>}
+          {sum.fatal > 0 && <span style={{ fontWeight: 700, color: SEV.fatal.fg, background: SEV.fatal.bg, borderRadius: 999, padding: '4px 12px', fontSize: 12.5 }}>{severityCount(sum.fatal, 'fatal')}</span>}
           {sum.warning > 0 && <span style={{ fontWeight: 700, color: SEV.warning.fg, background: SEV.warning.bg, borderRadius: 999, padding: '4px 12px', fontSize: 12.5 }}>{sum.warning} warning</span>}
-          {sum.blocksCtc && <span style={{ fontSize: 12.5, color: SEV.fatal.fg }}>Clear-to-close is blocked until every fatal is resolved.</span>}
+          {/* ADVISORY ONLY (owner-directed 2026-07-27). This line used to read
+              "Clear-to-close is blocked until every fatal is resolved" — which is no
+              longer true and was the loudest place the screen claimed PILOT could
+              hold a file. Nothing here blocks anything; say so plainly instead. */}
+          {sum.fatal > 0 && (
+            <span style={{ fontSize: 12.5, color: 'var(--muted,#4B585C)' }}>
+              Advisory — worth resolving, but this does not hold up clear-to-close, signing off a condition, or sending a package.
+            </span>
+          )}
         </div>
       )}
 
@@ -2316,6 +3325,9 @@ export default function UnderwritingPanel({ appId, docs = [], readOnly = false, 
         const V = {
           clear: { fg: 'var(--good,#3F7A5B)', bg: 'rgba(63,122,91,.10)' },
           review: { fg: 'var(--amber,#B7791F)', bg: 'var(--amber-bg,#F6EEDD)' },
+          // 'attention' is the advisory-only twin of 'blocked' — same red, because
+          // PILOT really is unhappy; the headline itself says it isn't a gate.
+          attention: { fg: 'var(--crit,#B4483C)', bg: 'var(--crit-bg,#F6E7E4)' },
           blocked: { fg: 'var(--crit,#B4483C)', bg: 'var(--crit-bg,#F6E7E4)' },
           pending: { fg: 'var(--muted,#4B585C)', bg: 'var(--paper,#F6F3EC)' },
         }[verdict.status] || { fg: 'var(--muted,#4B585C)', bg: 'var(--paper,#F6F3EC)' };
@@ -2326,6 +3338,17 @@ export default function UnderwritingPanel({ appId, docs = [], readOnly = false, 
           </div>
         );
       })()}
+
+      {/* Whole-loan run cockpit (#197) — the latest immutable run folded into one
+          read-out: current standing + the three gates, what changed since the last
+          run, the ordered worklist, and findings by kind. Read-only / advisory. */}
+      <WholeLoanRunPanel appId={appId} />
+
+      {/* Guideline fit (#136 / R5.39) — per-rule verdicts + plain citations for the
+          registered program and any note-buyer investor, plus the investor-fit
+          ranking with an "Investor A vs B" differentiator. Read-only / advisory —
+          it explains the frozen guideline baselines against this file. */}
+      <GuidelineFitPanel appId={appId} />
 
       {/* Sovereign Cockpit — Canonical facts (twin) + Condition cure proofs
           (Sovereign 1/4 + 2/4, owner-directed 2026-07-21). These two collapsible
@@ -2342,19 +3365,27 @@ export default function UnderwritingPanel({ appId, docs = [], readOnly = false, 
           AI agent posts here — the AI never writes on the file itself. A human
           clicks Escalate / Add note / Convert to condition / Convert to task /
           Mark important / Dismiss / Ask super-admin. */}
-      <AISuggestionsSection appId={appId} readOnly={readOnly} canResolve={canResolve} />
+      <AISuggestionsSection appId={appId} readOnly={readOnly} canResolve={canResolve}
+        shownFindingCodes={shownFindingCodes} shownClaimKeys={shownClaimKeys} shownFindingKeys={shownFindingKeys} />
 
 
-      {/* ALL open findings, in ONE place — exactly the set the roll-up counts, so the "2 warnings"
-          chip maps to two visible, actionable items. A persisted per-document finding (has an id) is
+      {/* ALL open findings, in ONE place. The chips above count them in TWO buckets, not one: the
+          fatal/warning chips are the clear-to-close work, and the note-buyer chip is the investor's
+          own guideline read (which never gates closing). So "1 fatal" plus "2 note-buyer
+          dealbreakers" maps to the three cards below — every counted item is visible, but the count
+          the file is judged on stays the one the clear-to-close gate agrees with.
+          A persisted per-document finding (has an id) is
           resolvable here; a derived advisory (tie-out / metric / staleness / liquidity / experience /
           entity chain) shows read-only and clears when its underlying data changes. Each finding
           appears once — the old per-section finding lists were removed so nothing is repeated. */}
       {allFindings.length > 0 && (
         <div style={{ marginBottom: 22 }}>
-          <h4 style={{ fontFamily: 'var(--serif,Georgia,serif)', margin: '0 0 4px' }}>Open findings ({allFindings.length}) — everything that needs a look</h4>
+          <h4 style={{ fontFamily: 'var(--serif,Georgia,serif)', margin: '0 0 4px', color: '#141B22' }}>Open findings ({allFindings.length}) — everything that needs a look</h4>
           <p style={{ fontSize: 12, color: 'var(--muted,#4B585C)', margin: '0 0 12px' }}>
             Every open item across the whole file, in one list — the same items the counts above refer to.
+            {' '}<strong style={{ color: '#141B22' }}>These are advisory:</strong> read them, act on the ones you agree with,
+            and dismiss the ones you don&apos;t. None of them holds up a condition sign-off, clear-to-close, funding, or sending a package.
+            A finding you dismiss (or that a reviewer says is fine) stays gone — it will not come back on the next read.
           </p>
           {!readOnly && !canResolve && (
             <div className="notice" style={{ margin: '0 0 12px', fontSize: 12.5 }}>
@@ -2369,7 +3400,8 @@ export default function UnderwritingPanel({ appId, docs = [], readOnly = false, 
               <Finding key={key} appId={appId} f={f}
                 cardRef={(el) => { if (f.id) findingRefs.current[f.id] = el; }}
                 highlighted={isFocused && highlightPulse}
-                onChange={load} resolvable={!readOnly && canResolve && !!f.id} canWaive={canWaive}
+                onChange={load} resolvable={!readOnly && canResolve && !!f.id}
+                canAct={!readOnly && canResolve} canWaive={canWaive}
                 canEscalate={!readOnly} escalated={f.id ? (data && data.escalatedFindings && data.escalatedFindings[f.id]) : null} />
             );
           })}
@@ -2389,7 +3421,7 @@ export default function UnderwritingPanel({ appId, docs = [], readOnly = false, 
           </p>
           {(apprSum.fatal > 0 || apprSum.warning > 0) && (
             <div style={{ display: 'flex', gap: 8, marginBottom: 10, flexWrap: 'wrap' }}>
-              {apprSum.fatal > 0 && <span style={{ fontWeight: 700, color: SEV.fatal.fg, background: SEV.fatal.bg, borderRadius: 999, padding: '3px 11px', fontSize: 12 }}>{apprSum.fatal} fatal</span>}
+              {apprSum.fatal > 0 && <span style={{ fontWeight: 700, color: SEV.fatal.fg, background: SEV.fatal.bg, borderRadius: 999, padding: '3px 11px', fontSize: 12 }}>{severityCount(apprSum.fatal, 'fatal')}</span>}
               {apprSum.warning > 0 && <span style={{ fontWeight: 700, color: SEV.warning.fg, background: SEV.warning.bg, borderRadius: 999, padding: '3px 11px', fontSize: 12 }}>{apprSum.warning} warning</span>}
             </div>
           )}
@@ -2406,7 +3438,7 @@ export default function UnderwritingPanel({ appId, docs = [], readOnly = false, 
       <RiskScore risk={risk} />
 
       {/* file completeness — what's still needed to close */}
-      <Completeness completeness={completeness} documentsOnFile={documentsOnFile} />
+      <Completeness completeness={completeness} documentsOnFile={documentsOnFile} appId={appId} />
 
       {/* conditions coverage — ties every document back to the checklist */}
       <ConditionCoverage coverage={coverage} />
@@ -2419,6 +3451,7 @@ export default function UnderwritingPanel({ appId, docs = [], readOnly = false, 
 
       {/* entity-resolution chain */}
       <SellerChain sellerChain={sellerChain} />
+      <ChainOfTitle chainOfTitle={chainOfTitle} />
       <EntityChain entityChain={entityChain} />
       <BankLiquidity bankLiquidity={bankLiquidity} />
       <Experience experience={experience} appId={appId} onChange={load} readOnly={readOnly || !canWaive} />
@@ -2441,3 +3474,4 @@ export default function UnderwritingPanel({ appId, docs = [], readOnly = false, 
 }
 
 const sel = { padding: '7px 10px', border: '1px solid var(--line,#E7E1D3)', borderRadius: 8, fontSize: 13.5, background: 'var(--card,#fff)', color: 'var(--ivory,#141B22)', maxWidth: 280 };
+

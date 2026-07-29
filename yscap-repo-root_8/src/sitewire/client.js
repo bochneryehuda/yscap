@@ -189,10 +189,21 @@ function drawTransition(id, action) {
 }
 const createQuickNotifyStatus = (lenderId, name) => call(`/api/v2/quick_notify_statuses?lender_id=${lenderId}`, { method: 'POST', body: { quick_notify_status: { name } } });
 
+// HISTORICAL draw create (phase 4 §5B — the ONLY draw-create Sitewire's API supports;
+// swagger: POST /api/v2/draws requires historical:true and takes ONLY property_id +
+// requests_attributes[{job_item_id, requested_cents, pending_approved_cents}] — no
+// dates, no fees, no status; the draw lands in 'pending' and is approved by a follow-up
+// transition). Portal-originated draws only, after full approval (owner rule). POSTs are
+// never retried in-call; the caller owns the single-flight + cent-exact pre-gate.
+const createHistoricalDraw = (propertyId, requests) => call('/api/v2/draws', {
+  method: 'POST',
+  body: { draw: { property_id: Number(propertyId), historical: true, requests_attributes: requests } },
+});
+
 module.exports = {
   call, isRetryableStatus, backoffMs, httpError, guardNoUnsafeWrite,
   listProperties, getProperty, getBudget, listDraws, getDraw, getRequest,
   listCapitalPartners, getLender, listQuickNotifyStatuses,
   createProperty, updateProperty, assignBorrower, updateBudget, updateRequest,
-  updateDraw, drawTransition, createQuickNotifyStatus, DRAW_TRANSITIONS,
+  updateDraw, drawTransition, createQuickNotifyStatus, createHistoricalDraw, DRAW_TRANSITIONS,
 };

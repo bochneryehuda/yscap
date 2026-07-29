@@ -51,9 +51,40 @@ export function InfoTip({ tip }) {
 
 /* EVERY section is collapsible from its header row. Most start open
    (defaultOpen) — long, low-urgency ones (Document history, Activity) pass
-   defaultOpen={false} and start collapsed. */
-export function Section({ id, title, info, badge, children, style, collapsible = true, defaultOpen = true, action = null }) {
+   defaultOpen={false} and start collapsed.
+
+   `summary` is one plain line shown ONLY while the section is shut — blueprint
+   Move 3, "make every closed section worth judging". With fourteen collapsed
+   headers down the page, a title alone tells you nothing about whether it is
+   worth opening; a badge tells you a number without telling you what it means.
+   The line says it in words ("3 need your sign-off · 1 sent back"). It comes
+   from figures the page has already computed — a section with nothing truthful
+   to say passes nothing and shows nothing, which is better than a guess. It
+   disappears when the section opens, because the real content is then right
+   there and repeating it would be noise. */
+export function Section({ id, title, info, badge, children, style, collapsible = true, defaultOpen = true, action = null, summary = null, fullscreenable = false }) {
   const [open, setOpen] = useState(defaultOpen);
+  /* FULL SCREEN — owner-directed 2026-07-27: "there should also be a button by
+     the conditions section to open the conditions section on a full screen so
+     you can work in a big screen on all the conditions."
+     Opt-in per section (default off), so adding it here changes nothing for the
+     other fifteen. It is a CSS overlay rather than the browser Fullscreen API:
+     that API needs a user gesture it can still refuse, paints the page onto a
+     black backdrop, and takes the browser chrome away — none of which is wanted
+     for "give me more room to work". Esc closes it, and the page behind is
+     stopped from scrolling so it does not drift underneath. */
+  const [full, setFull] = useState(false);
+  useEffect(() => {
+    if (!full) return undefined;
+    const onKey = (e) => { if (e.key === 'Escape') setFull(false); };
+    document.addEventListener('keydown', onKey);
+    const prev = document.body.style.overflow;
+    document.body.style.overflow = 'hidden';
+    return () => {
+      document.removeEventListener('keydown', onKey);
+      document.body.style.overflow = prev;
+    };
+  }, [full]);
   // Listen for an "open this section" request from anywhere on the page — the
   // left rail, the clear-to-close outstanding list, a re-register prompt — so a
   // click that points at this section EXPANDS it (never collapses it) and the
@@ -71,10 +102,22 @@ export function Section({ id, title, info, badge, children, style, collapsible =
     if (e && e.target && e.target.closest && (e.target.closest('.info-tip') || e.target.closest('.sec-action'))) return;
     setOpen(o => !o);
   };
+  // Full screen implies open — there would be nothing to fill the screen with.
+  const showSummary = collapsible && !open && !full && summary;
+  const fullBtn = fullscreenable ? (
+    <button type="button" className="btn ghost small"
+      title={full ? 'Back to the file (Esc)' : 'Open this section full screen so you can work through it on a big screen'}
+      onClick={(e) => { e.stopPropagation(); if (!full) setOpen(true); setFull(f => !f); }}>
+      {full ? 'Exit full screen' : 'Full screen'}
+    </button>
+  ) : null;
+  const headAction = (fullBtn || action)
+    ? <>{action}{fullBtn}</>
+    : null;
   return (
-    <section id={id} className="file-section" style={style}>
+    <section id={id} className={`file-section${full ? ' sec-full' : ''}`} style={style}>
       <div
-        className={`sec-head${collapsible ? ' collapsible' : ''}`}
+        className={`sec-head${collapsible ? ' collapsible' : ''}${showSummary ? ' has-summary' : ''}`}
         onClick={toggle}
         role={collapsible ? 'button' : undefined}
         tabIndex={collapsible ? 0 : undefined}
@@ -84,10 +127,12 @@ export function Section({ id, title, info, badge, children, style, collapsible =
         {collapsible && <span className={`sec-chevron${open ? ' open' : ''}`} aria-hidden="true">▶</span>}
         <h2 className="sec-title">{title}{info ? <InfoTip tip={info} /> : null}</h2>
         {badge != null && <span className="sec-badge">{badge}</span>}
-        {action && <span className="sec-action" style={{ marginLeft: badge != null ? 12 : 'auto' }} onClick={(e) => e.stopPropagation()}>{action}</span>}
-        {collapsible && <span className="muted small" style={{ flex: 'none', marginLeft: (badge != null || action) ? 12 : 'auto' }}>{open ? 'Hide' : 'Show'}</span>}
+        {headAction && <span className="sec-action" style={{ marginLeft: badge != null ? 12 : 'auto', display: 'inline-flex', gap: 8, alignItems: 'center' }} onClick={(e) => e.stopPropagation()}>{headAction}</span>}
+        {/* Hide/Show is meaningless while the section IS the screen. */}
+        {collapsible && !full && <span className="muted small" style={{ flex: 'none', marginLeft: (badge != null || headAction) ? 12 : 'auto' }}>{open ? 'Hide' : 'Show'}</span>}
       </div>
-      {(!collapsible || open) && children}
+      {showSummary && <div className="sec-summary">{summary}</div>}
+      {(!collapsible || open || full) && children}
     </section>
   );
 }

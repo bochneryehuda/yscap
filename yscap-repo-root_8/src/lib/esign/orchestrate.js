@@ -67,6 +67,64 @@ function subjectSuffix(loan, address) {
   if (address) parts.push(address);
   return parts.length ? ` — ${parts.join(' · ')}` : '';
 }
+
+/**
+ * Shorten a property address to fit `budget` characters, dropping its LEAST identifying
+ * end first — the ZIP, then the state, then the city — because a canonical address is
+ * "street, city, ST zip" (src/lib/address.js canonicalOneLine). So "129 Carlisle St,
+ * Wilkes-Barre, PA 18702" degrades to "129 Carlisle St, Wilkes-Barre" (still obviously
+ * that property) instead of being chopped mid-word into "…Wilkes-Barre, PA 187". Only
+ * when even the street alone doesn't fit is it clipped with an ellipsis. Returns '' when
+ * there is no usable room at all. Never throws.
+ */
+function fitAddress(address, budget) {
+  const addr = String(address || '').trim();
+  if (!addr || budget <= 0) return '';
+  if (addr.length <= budget) return addr;
+  const parts = addr.split(',').map((p) => p.trim()).filter(Boolean);
+  const candidates = [];
+  if (parts.length > 1) {
+    // Same address minus the trailing ZIP ("…, PA 18702" -> "…, PA"), keeping the state.
+    const tail = parts[parts.length - 1].replace(/\s+\d{5}(?:-\d{4})?$/, '').trim();
+    candidates.push(parts.slice(0, -1).concat(tail ? [tail] : []).join(', '));
+    // Then progressively drop whole trailing parts: "street, city", then "street".
+    for (let n = parts.length - 1; n >= 1; n--) candidates.push(parts.slice(0, n).join(', '));
+  }
+  for (const c of candidates) if (c && c.length <= budget) return c;
+  if (budget < 2) return '';
+  return (parts[0] || addr).slice(0, budget - 1).trimEnd() + '…';
+}
+
+/**
+ * Compose an envelope subject that can NEVER exceed DocuSign's 100-character
+ * `emailSubject` limit. Over the limit DocuSign does not truncate — it rejects the whole
+ * create with a 400 and nothing is sent (owner-reported 2026-07-27: an entirely ordinary
+ * address, "129 Carlisle St, Wilkes-Barre, PA 18702", pushed the term-sheet subject to
+ * 102 characters and every send for that file failed).
+ *
+ * ROOT CAUSE this guards: the subject is assembled by string concatenation from a fixed
+ * 24–37-character package wording + "Loan #" + a 14-character YS loan number, which
+ * spends ~60 characters before the address is even appended — so barely 37 characters
+ * are left for the property. Nothing knew the provider's limit existed. The address is
+ * the ONLY variable-length part, so that is what gives: the wording and the loan number
+ * (what the signer and the admin counter-signer identify the request by) are always kept
+ * whole, and `fitAddress` shortens the property from its least-identifying end. A subject
+ * that already fits is returned byte-identical to before.
+ */
+const SUBJECT_MAX = docusignDefault.EMAIL_SUBJECT_MAX;
+function composeSubject(prefix, loan, address) {
+  const head = String(prefix || '').trim();
+  const full = `${head}${subjectSuffix(loan, address)}`;
+  if (full.length <= SUBJECT_MAX) return full;
+  // Room left for the address = the budget minus everything else, measured directly off
+  // subjectSuffix (with a 1-character stand-in address) so this can never drift if the
+  // separators change.
+  const room = SUBJECT_MAX - (`${head}${subjectSuffix(loan, 'x')}`.length - 1);
+  const short = fitAddress(address, room);
+  if (short) return `${head}${subjectSuffix(loan, short)}`;
+  // Not even one character of address fits — fall back to the wording + loan number.
+  return docusignDefault.capEmailSubject(`${head}${subjectSuffix(loan, '')}`);
+}
 const PACKAGES = {
   term_sheet_package: {
     label: 'Term-sheet package',
@@ -76,7 +134,7 @@ const PACKAGES = {
     // as lender) at routingOrder 2. The LO signature is ADDITIVE — an unassigned file falls
     // back to the previous "borrower + admin" shape (see buildRoster).
     loanOfficerRequired: true,
-    subject: (loan, addr) => `Your loan documents are ready to sign${subjectSuffix(loan, addr)}`,
+    subject: (loan, addr) => composeSubject('Your loan documents are ready to sign', loan, addr),
     blurb: 'Please review and sign your term sheet, application, and business-purpose disclosure.',
     // doc_kind (unsigned source) -> anchor prefix + signed doc_kind + condition it clears.
     // `generate:true` docs are BUILT on our server from a stored Word template
@@ -97,7 +155,7 @@ const PACKAGES = {
   heter_iska: {
     label: 'Heter Iska',
     countersignRequired: false,
-    subject: (loan, addr) => `Heter Iska ready to sign${subjectSuffix(loan, addr)}`,
+    subject: (loan, addr) => composeSubject('Heter Iska ready to sign', loan, addr),
     blurb: 'Please review and sign the Heter Iska.',
     docs: [
       // BUILT on our server as a real PDF (iska-pdf.js) and uploaded AS PDF (genExt) —
@@ -120,7 +178,7 @@ const PACKAGES = {
     // gate (term-sheet origination) does not apply. Its own prerequisites (funded +
     // loan number + property) are enforced by the route + validateGenerated.
     skipAppraisalGate: true,
-    subject: (loan, addr) => `Your draw request & wire instructions${subjectSuffix(loan, addr)}`,
+    subject: (loan, addr) => composeSubject('Your draw request & wire instructions', loan, addr),
     blurb: 'Please review your draw request, enter your bank wire instructions, and sign.',
     docs: [
       { kind: 'draw_request', prefix: 'dr', signedKind: 'draw_request_signed', condition: 'draw_cond_signed_request', name: 'Draw Request & Wire Instructions', generate: true, genExt: 'pdf', wireForm: true },
@@ -170,8 +228,24 @@ async function loadApplication(db, applicationId) {
  * de-duplicated { email, name } (one per distinct email). Owner-directed 2026-07-20:
  * "add the loan officer and the processor as viewers for every envelope … so they can
  * see everything happens in real life."
+ *
+ * THE WIRE REQUEST FORM ALSO COPIES THE DRAW COORDINATOR (owner-directed 2026-07-28:
+ * "the draw coordinator assigned to a file should always be added as a viewer on the
+ * DocuSign package that goes out for the wire request form … receiving notifications when
+ * it's being signed"). The coordinator is NOT an `application_assignees` row — that table
+ * models only loan_officer / processor (db/103) — so the assignment is resolved by the one
+ * shared definition in draw-recipients (`drawEnvelopeViewers`: whoever started this file's
+ * draw process, else whoever holds its live draw hand-off, else the desk, plus the shared
+ * draws@ inbox so the envelope is never uncovered). A DocuSign carbon copy is a real
+ * recipient — DocuSign notifies them as the envelope is sent/viewed/signed and delivers the
+ * executed copy + Certificate of Completion, which is exactly what was asked for.
+ *
+ * Scoped to `draw_request` on purpose: the coordinator has no part in an origination
+ * package (term sheet / Heter Iska), and copying them there would leak servicing staff onto
+ * the borrower's loan documents. Best-effort — a lookup failure sends without them and
+ * never blocks the borrower's form.
  */
-async function loadCcViewers(db, applicationId) {
+async function loadCcViewers(db, applicationId, purpose) {
   if (!applicationId) return [];
   const r = await db.query(
     `SELECT DISTINCT ON (lower(su.email)) su.email, su.full_name
@@ -179,7 +253,19 @@ async function loadCcViewers(db, applicationId) {
       WHERE aa.application_id = $1 AND aa.removed_at IS NULL AND su.is_active = true
         AND su.email IS NOT NULL AND su.email <> ''
       ORDER BY lower(su.email)`, [applicationId]);
-  return r.rows.map((x) => ({ email: x.email, name: x.full_name || x.email }));
+  const out = r.rows.map((x) => ({ email: x.email, name: x.full_name || x.email }));
+  if (purpose === 'draw_request') {
+    try {
+      const seen = new Set(out.map((v) => String(v.email).trim().toLowerCase()));
+      for (const v of await require('../draw-recipients').drawEnvelopeViewers(applicationId)) {
+        const key = String(v.email).trim().toLowerCase();
+        if (!key || seen.has(key)) continue;
+        seen.add(key);
+        out.push({ email: v.email, name: v.name || v.email });
+      }
+    } catch (e) { console.warn('[esign] draw-coordinator viewers load failed (sending without them):', e.message); }
+  }
+  return out;
 }
 
 /** Resolve the checklist_item id for a template code on this application (or null). */
@@ -264,7 +350,7 @@ async function loadDocGenData(db, applicationId) {
     `SELECT a.ys_loan_number,
             COALESCE(a.submitted_at, a.created_at)              AS application_date,
             a.loan_amount, a.purchase_price,
-            a.as_is_value, a.arv, a.rehab_budget, a.term,
+            a.as_is_value, a.arv, a.rehab_budget, a.rehab_type, a.term,
             a.program, a.loan_type, a.occupancy, a.property_type, a.units,
             a.requested_ir_months, a.requested_ir_amount,
             a.is_assignment, a.underlying_contract_price, a.assignment_fee,
@@ -387,6 +473,10 @@ async function loadDocGenData(db, applicationId) {
       asis: fmtUSD(a.as_is_value),
       arv: fmtUSD(a.arv),
       rehab: fmtUSD(a.rehab_budget),
+      // The scope of the work, alongside its cost — the registration writes it
+      // onto the file (product-registration.rehabTypeWriteback), so the signed
+      // application states what kind of rehab it is, not just how much it costs.
+      rehabType: a.rehab_type || '',
       ltc: sizing ? fmtPct(sizing.ltcPct) : '',
       ltv: sizing ? fmtPct(sizing.arvPct) : '',   // loan-to-ARV
       ir: irDisplay,
@@ -816,14 +906,15 @@ async function buildDefinition(row, { db = dbDefault, storage = storageDefault }
 
   // Copy the file's team (loan officer + processor + assistants) as VIEWERS on every
   // envelope so they receive the completed, signed copy from DocuSign and can watch it
-  // in real time (owner-directed 2026-07-20). Best-effort: deduped against the signer
-  // emails, with recipientIds + routing order AFTER the signers so they receive the
-  // fully-executed copy. A bad/missing officer email is dropped and NEVER blocks the
-  // borrower's send (buildEnvelopeDefinition also filters invalid CC entries).
+  // in real time (owner-directed 2026-07-20) — plus, on the WIRE REQUEST FORM, the file's
+  // DRAW COORDINATOR (owner-directed 2026-07-28; see loadCcViewers). Best-effort: deduped
+  // against the signer emails, with recipientIds + routing order AFTER the signers so they
+  // receive the fully-executed copy. A bad/missing officer email is dropped and NEVER
+  // blocks the borrower's send (buildEnvelopeDefinition also filters invalid CC entries).
   let carbonCopies = [];
   try {
     const seen = new Set(signers.map((s) => String(s.email || '').toLowerCase()));
-    const viewers = await loadCcViewers(db, row.application_id);
+    const viewers = await loadCcViewers(db, row.application_id, row.purpose);
     let nextId = Math.max(0, ...signers.map((s) => Number(s.recipientId) || 0));
     const ccOrder = Math.max(1, ...signers.map((s) => Number(s.routingOrder) || 1));
     for (const v of viewers) {
@@ -885,8 +976,19 @@ async function sendPackage(applicationId, purpose, actor, opts = {}) {
   // are enforced by the route + validateGenerated.
   if (!spec.skipAppraisalGate) {
     const g = await gate.esignSendGate(applicationId, { db, purpose });
-    if (!g.ready) {
-      const e = new Error(`Not ready to send: ${g.outstanding.map((o) => o.label).join('; ')}`);
+    // sendAllowed honors an APPROVED "send before clear-to-close" exception, which
+    // waives EXACTLY the blocker codes the super-admin named (legacy approvals:
+    // the readiness tier only) — every requirement NOT waived is still enforced
+    // here. If it's not allowed, report precisely the blockers that still apply
+    // (never the waived ones) plus the right next step.
+    if (!g.sendAllowed) {
+      const blockers = g.unwaivedOutstanding && g.unwaivedOutstanding.length ? g.unwaivedOutstanding : g.outstanding;
+      const list = blockers.map((o) => o.label).join('; ');
+      const approved = !!(g.exception && g.exception.status === 'approved');
+      const hint = approved
+        ? ' The approved exception does not cover these — complete them or request a fresh exception.'
+        : ' A super-admin can approve an exception that waives specific requirements.';
+      const e = new Error(`Not ready to send: ${list}.${hint}`);
       e.code = 'DOCUSIGN_GATE_NOT_READY'; e.retryable = false; e.outstanding = g.outstanding; throw e;
     }
   }
@@ -927,6 +1029,6 @@ async function sendPackage(applicationId, purpose, actor, opts = {}) {
 
 module.exports = {
   PACKAGES, packageSpec, buildDefinition, sendPackage,
-  createOrClaimEnvelope, buildRoster, resolveRecipientIdentity, tabsFor, resolveConditionItem, latestDocument, loadApplication,
-  loadDocGenData, validateGenerated, subjectAddress, subjectSuffix,
+  createOrClaimEnvelope, buildRoster, resolveRecipientIdentity, tabsFor, resolveConditionItem, latestDocument, loadApplication, loadCcViewers,
+  loadDocGenData, validateGenerated, subjectAddress, subjectSuffix, composeSubject, fitAddress,
 };

@@ -2,8 +2,20 @@
 
 const PRODUCT_CONDITION_TYPE = 'product_registration';
 const { syncExperienceChecklistForApplication } = require('./experience');
+const { termWritebackText } = require('./term-text');
+const { sqftForType } = require('./fields');
 
 function num(v) { const n = Number(v); return isFinite(n) ? n : 0; }
+// The EXPLICIT experience claim a register carried for one bucket, or null when
+// none was carried (so the SET clause falls back to GREATEST — never zeroing a
+// real claim from an absent value; #121). A real number — INCLUDING 0 — is a
+// deliberate claim and is written verbatim (this is what lets a studio-typed 0
+// finally stick). A negative/NaN is clamped to a non-negative integer.
+function claimExpVal(claimedExp, key) {
+  if (!claimedExp || claimedExp[key] == null) return null;
+  const n = Number(claimedExp[key]);
+  return Number.isFinite(n) ? Math.max(0, Math.round(n)) : null;
+}
 function money(v) { return '$' + Math.round(num(v)).toLocaleString('en-US'); }
 function pct(v, digits = 1) { return num(v) > 0 ? (num(v) * 100).toFixed(digits) + '%' : 'n/a'; }
 function productName(quote) {
@@ -96,7 +108,89 @@ function borrowerTermsKey({ program, productLabel, noteRate, totalLoan, quote, i
   ]);
 }
 
-async function persistProductRegistration(client, { appId, program, inputs, quote, registeredByStaffId, isManual, assetMonths, termOptions }) {
+/* ---- rehab type: the scope the studio priced, written back onto the file ----
+ *
+ * The Term Sheet Studio makes the registrant state the rehab SCOPE ("Light /
+ * moderate" vs "Heavy rehab (full gut / structural)", plus "Adding square
+ * footage") and prices off it — a heavy rehab carries a rate add-on, a
+ * footprint expansion caps LTC at 87.5%. That choice reached the registration
+ * row (inputs.heavyRehab / inputs.sqftAddition) and nothing else: the write-back
+ * below never touched `applications.rehab_type`. So a file created without a
+ * rehab type (staff New File, a ClickUp-originated file) still read "Rehab type
+ * —" on the loan application after the officer registered it as, say, a
+ * cosmetic/light rehab, and everything downstream that keys off the column — the
+ * ClickUp "Rehab Type" dropdown, the Encompass map, the Sitewire construction
+ * type, the ground-up checklist reconcile, the investor tapes — stayed blank
+ * too (owner-reported 2026-07-27).
+ */
+
+// The five canonical labels: the loan application's own dropdown (Apply /
+// StaffNewFile / EditFileDetails REHAB_TYPES) and exactly the keys the ClickUp
+// "Rehab Type" crosswalk maps, so a written value always has a ClickUp twin.
+const REHAB_TYPE = {
+  cosmetic: 'Cosmetic',
+  moderate: 'Moderate',
+  heavy: 'Heavy / gut rehab',
+  sqft: 'Adding square footage',
+  groundUp: 'Ground-up construction',
+};
+
+// The (heavy, sq-ft) pair a rehab-type LABEL implies — the same two regexes
+// pricing.js buildInputs runs on `applications.rehab_type`, so the comparison
+// below is on exactly the basis the frozen engines see.
+function scopeOfRehabType(label) {
+  const s = String(label || '');
+  return { heavy: /heavy|gut|ground/i.test(s), sqft: /square|sf|addition|ground/i.test(s) };
+}
+
+// The rehab type the REGISTERED scenario describes, or null when the scenario
+// has no opinion (a bridge / stabilized deal has no rehab scope; neither does a
+// renovation strategy priced with no rehab money) — null always leaves the
+// file's own value alone.
+function rehabTypeFromInputs(inputs) {
+  const i = inputs || {};
+  const strategy = String(i.strategy || '');
+  if (/ground/i.test(strategy)) return REHAB_TYPE.groundUp;
+  if (/bridge|stabil/i.test(strategy)) return null;
+  if (i.sqftAddition) return REHAB_TYPE.sqft;
+  if (i.heavyRehab) return REHAB_TYPE.heavy;
+  if (!(num(i.rehabBudget) > 0)) return null;
+  // The studio's option reads "Light / moderate rehab" — Moderate is its label.
+  return REHAB_TYPE.moderate;
+}
+
+/**
+ * PURE — the rehab type this registration should write onto the file, or null
+ * for "leave it exactly as it is". Exported for the unit test.
+ *
+ * Deliberately conservative in one direction: the label is only rewritten when
+ * the registered scope genuinely DIFFERS from what the file was already pricing
+ * as. `rehab_type` → (heavy, sq-ft) is lossy — Cosmetic and Moderate both price
+ * as a light rehab — so a borrower's "Cosmetic" must never be flattened to
+ * "Moderate" just because the officer re-registered the same scenario. The
+ * file's side of that comparison uses BOTH signals buildInputs reads (the label
+ * AND an actual footprint increase), so a legacy file carrying stale sq ft isn't
+ * relabelled behind the registrant's back either.
+ *
+ * @param current {{rehabType, sqftPre, sqftPost}} the file's values today
+ * @param inputs  the frozen-engine inputs being registered
+ */
+function rehabTypeWriteback(current, inputs) {
+  const derived = rehabTypeFromInputs(inputs);
+  if (!derived) return null;
+  const cur = String((current && current.rehabType) || '').trim();
+  if (!cur) return derived;                       // the blank file the owner reported
+  const was = scopeOfRehabType(cur);
+  const fileScope = {
+    heavy: was.heavy,
+    sqft: was.sqft || num(current && current.sqftPost) > num(current && current.sqftPre),
+  };
+  const now = scopeOfRehabType(derived);
+  if (fileScope.heavy === now.heavy && fileScope.sqft === now.sqft) return null;  // same scope
+  return derived;
+}
+
+async function persistProductRegistration(client, { appId, program, inputs, quote, registeredByStaffId, isManual, assetMonths, termOptions, needsApproval, overrideChanges, claimedExp }) {
   const s = quote.sizing || {};
   const total = num(s.totalLoan);
   // Term-sheet options (owner-directed 2026-07-22) — DISPLAY / record only,
@@ -109,6 +203,13 @@ async function persistProductRegistration(client, { appId, program, inputs, quot
   const prev = (await client.query(
     `SELECT program, product_label, note_rate, total_loan, quote, inputs
        FROM product_registrations WHERE application_id=$1 AND is_current LIMIT 1`, [appId])).rows[0] || null;
+  // Capture the loan amount BEFORE this registration overwrites it — the caller
+  // auto-clears a signed Heter Iska when the loan amount actually moves (the ISKA
+  // is tied to the loan amount). owner-directed 2026-07-22. Also capture the
+  // file's current TERM text so the write-back below can preserve its spelling.
+  const prevLoanRow = (await client.query(
+    `SELECT loan_amount, term, rehab_type, sqft_pre, sqft_post FROM applications WHERE id=$1`, [appId])).rows[0];
+  const prevLoanAmount = prevLoanRow ? Number(prevLoanRow.loan_amount) : null;
   const newKey = borrowerTermsKey({ program, productLabel: quote.productLabel, noteRate: quote.noteRate, totalLoan: total, quote, inputs });
   const prevKey = prev ? borrowerTermsKey({ program: prev.program, productLabel: prev.product_label, noteRate: prev.note_rate, totalLoan: prev.total_loan, quote: prev.quote, inputs: prev.inputs }) : null;
   // First registration (no prev) always notifies; a re-register notifies only
@@ -117,8 +218,8 @@ async function persistProductRegistration(client, { appId, program, inputs, quot
   await client.query(`UPDATE product_registrations SET is_current=false WHERE application_id=$1 AND is_current`, [appId]);
   const ins = await client.query(
     `INSERT INTO product_registrations
-       (application_id, program, product_label, status, note_rate, total_loan, target_ltc, inputs, quote, is_current, registered_by, is_manual, asset_months, term_options)
-     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,true,$10,$11,$12,$13) RETURNING id`,
+       (application_id, program, product_label, status, note_rate, total_loan, target_ltc, inputs, quote, is_current, registered_by, is_manual, asset_months, term_options, needs_approval, override_changes)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,true,$10,$11,$12,$13,$14,$15) RETURNING id`,
     [
       appId,
       program,
@@ -133,6 +234,11 @@ async function persistProductRegistration(client, { appId, program, inputs, quot
       !!isManual || program === 'manual',
       (assetMonths != null && isFinite(Number(assetMonths))) ? Math.round(Number(assetMonths)) : null,
       to ? JSON.stringify(to) : null,
+      // db/343 — these terms may not be confirmed to the borrower (and no
+      // DocuSign term sheet may issue) until an admin approves the escalation.
+      // A caller that doesn't compute it falls back to the pre-343 meaning.
+      needsApproval != null ? !!needsApproval : (!!isManual || program === 'manual' || quote.status === 'MANUAL'),
+      (Array.isArray(overrideChanges) && overrideChanges.length) ? JSON.stringify(overrideChanges) : null,
     ]);
   const registrationId = ins.rows[0].id;
   // Registration COMMITS the priced scenario onto the file. Beyond loan amount /
@@ -153,23 +259,49 @@ async function persistProductRegistration(client, { appId, program, inputs, quot
   // application form. The assignment split still flows via underlying/fee below.
   const ratePct = quote.noteRate != null ? (quote.noteRate * 100) : null;
   const isAssign = !!inputs.isAssignment;
+  // The rehab SCOPE the studio priced, onto the file (see rehabTypeWriteback).
+  // null = the registration has no opinion, or the file already says the same
+  // thing in its own words — write the existing values back unchanged so the
+  // IS DISTINCT FROM change triggers (db/096/145/190) stay quiet. When the scope
+  // DID move, sqft_pre/sqft_post ride through the same sqftForType coupling
+  // every other write path uses, so a type that isn't an addition can't leave
+  // stale square footage behind to flip sqftAddition back on in the next quote.
+  const wasRehab = {
+    rehabType: (prevLoanRow && prevLoanRow.rehab_type) || null,
+    sqftPre: (prevLoanRow && prevLoanRow.sqft_pre) != null ? prevLoanRow.sqft_pre : null,
+    sqftPost: (prevLoanRow && prevLoanRow.sqft_post) != null ? prevLoanRow.sqft_post : null,
+  };
+  const newRehabType = rehabTypeWriteback(wasRehab, inputs);
+  const rehabType = newRehabType || wasRehab.rehabType;
+  const sqf = newRehabType
+    ? sqftForType(rehabType, wasRehab.sqftPre, wasRehab.sqftPost)
+    : { sqftPre: wasRehab.sqftPre, sqftPost: wasRehab.sqftPost };
   await client.query(
     `UPDATE applications
         SET loan_amount=$2,
             rate_pct=$3,
             ltv=$4,
             -- requested_exp_* is the borrower's CLAIMED experience (what the
-            -- experience condition requires). Sizing now prices off the CLAIMED
-            -- count (loadFileForPricing.exp = requested_exp ?? verified, #85), so
-            -- for a non-admin inputs.exp* equals the stored claim and this GREATEST
-            -- is a no-op; for an admin who RAISED experience in the studio it pushes
-            -- the claim up. Never LOWER the claim on register — GREATEST preserves
-            -- what the borrower entered (a stripped/zeroed override could otherwise
-            -- revert the condition to "No experience required", #121). The claim is
-            -- otherwise owned by the application form / details edit.
-            requested_exp_flips=GREATEST(COALESCE(requested_exp_flips,0), $5),
-            requested_exp_holds=GREATEST(COALESCE(requested_exp_holds,0), $6),
-            requested_exp_ground=GREATEST(COALESCE(requested_exp_ground,0), $7),
+            -- experience condition requires). Sizing prices off the CLAIMED count
+            -- (loadFileForPricing.exp = requested_exp ?? verified, #85).
+            --
+            -- Owner-directed 2026-07-28 ("no matter how many times I remove the 5
+            -- and put 0 it comes back"): a staffer who EXPLICITLY types an
+            -- experience count in the Term Sheet Studio may set it to ANY value —
+            -- including LOWERING it — and it must stick. The studio always sends
+            -- the field's current value (it prefills it), so claimedExp carries a
+            -- per-field number ONLY when the register explicitly provided one
+            -- ($20/$21/$22); that value wins verbatim (COALESCE picks it even when
+            -- it is 0). When it is NULL — no experience was carried on this
+            -- register path — the old, conservative GREATEST($5/$6/$7) is kept, so
+            -- a path that never touches experience can never zero a real claim and
+            -- revert the condition to "No experience required" (#121). Clearing the
+            -- studio field to BLANK sends nothing → NULL → GREATEST (a blank is not
+            -- a deliberate zero). The claim is otherwise owned by the application
+            -- form / details edit, which has always been able to lower it directly.
+            requested_exp_flips=COALESCE($20::int, GREATEST(COALESCE(requested_exp_flips,0), $5)),
+            requested_exp_holds=COALESCE($21::int, GREATEST(COALESCE(requested_exp_holds,0), $6)),
+            requested_exp_ground=COALESCE($22::int, GREATEST(COALESCE(requested_exp_ground,0), $7)),
             rehab_budget=$8,
             term=$9,
             requested_ir_months=$10,
@@ -179,6 +311,9 @@ async function persistProductRegistration(client, { appId, program, inputs, quot
             assignment_fee            = CASE WHEN $12 THEN $14 ELSE assignment_fee END,
             desired_rate=$15,
             requested_ir_amount=$16,
+            rehab_type=$17,
+            sqft_pre=$18,
+            sqft_post=$19,
             updated_at=now()
       WHERE id=$1`,
     [
@@ -190,7 +325,13 @@ async function persistProductRegistration(client, { appId, program, inputs, quot
       num(inputs.expHolds),
       num(inputs.expGround),
       num(inputs.rehabBudget),
-      inputs.term ? String(inputs.term) : null,
+      // Preserve the file's existing term SPELLING when it already means the
+      // registered month count ("12 Months" stays "12 Months", never rewritten to
+      // the bare "12") — the cosmetic rewrite is what kept re-tripping the
+      // pricing-change detectors on every ClickUp echo (owner-reported
+      // 2026-07-24, "Term: 12 → 12 Months"). A REAL term change still writes
+      // the new value, in the ClickUp-friendly "<n> Months" form.
+      termWritebackText(prevLoanRow && prevLoanRow.term, inputs.term),
       num(inputs.irMonths),
       num(inputs.arv) || null,
       isAssign,
@@ -198,6 +339,14 @@ async function persistProductRegistration(client, { appId, program, inputs, quot
       isAssign ? Math.max(0, num(inputs.purchasePrice) - num(inputs.sellerPrice)) : null,
       ratePct != null ? ratePct.toFixed(3) : null,   // desired_rate is TEXT; mirror the registered rate
       num(inputs.irAmount) || null,                   // $16 — exact interest-reserve amount (null = months path)
+      rehabType || null,                              // $17 — registered rehab scope (unchanged unless it moved)
+      sqf.sqftPre, sqf.sqftPost,                      // $18/$19 — kept in step with $17
+      // $20/$21/$22 — the EXPLICIT experience claim from the studio (a real
+      // number, incl. 0, wins verbatim so it can be lowered); NULL keeps the
+      // conservative GREATEST above. See the SET clause note.
+      claimExpVal(claimedExp, 'flips'),
+      claimExpVal(claimedExp, 'holds'),
+      claimExpVal(claimedExp, 'ground'),
     ]);
   // Term-sheet options onto the file (owner-directed 2026-07-22) — only when the
   // caller supplied them, so a path that doesn't touch them leaves the file's
@@ -239,7 +388,12 @@ async function persistProductRegistration(client, { appId, program, inputs, quot
   // fatality guard, which filters `is_current AND NOT stale` (audit #4/#9/#13).
   await client.query(
     `UPDATE product_registrations SET stale=false, stale_reason=NULL WHERE id=$1`, [registrationId]);
-  return { id: registrationId, economicsChanged };
+  // Did the loan amount actually move? Compare on the EXACT stored value vs the
+  // value we just wrote — the same basis as the db/280 trigger's IS DISTINCT
+  // FROM — so the app-layer auto-clear can never lag the trigger's condition
+  // reopen. In practice both are whole dollars (the engine floors the loan).
+  const loanAmountChanged = Number(prevLoanAmount || 0) !== Number(total);
+  return { id: registrationId, economicsChanged, loanAmountChanged };
 }
 
 /**
@@ -321,4 +475,7 @@ function borrowerTermsEmail({ ctx, quote, total, termMonths, officer, termOption
   };
 }
 
-module.exports = { persistProductRegistration, borrowerTermsEmail, borrowerTermsKey, money, productName };
+module.exports = {
+  persistProductRegistration, borrowerTermsEmail, borrowerTermsKey, money, productName,
+  rehabTypeWriteback, rehabTypeFromInputs, REHAB_TYPE,
+};

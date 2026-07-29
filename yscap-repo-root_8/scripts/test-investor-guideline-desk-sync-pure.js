@@ -1,0 +1,152 @@
+'use strict';
+
+/**
+ * Pure test for src/lib/underwriting/investor-guidelines/desk-sync.js (no DB).
+ * Proves the overlay's `unhappy[]` maps to the right ai-suggestions payloads:
+ * a construction-feasibility coverage gap is a FATAL attach_condition, a plain
+ * coverage gap is a warning, a conflict is a fatal finding, and a happy desk
+ * produces nothing.
+ */
+
+const assert = require('assert');
+const ds = require('../src/lib/underwriting/investor-guidelines/desk-sync');
+
+let n = 0;
+function check(name, fn) { fn(); n++; console.log('  ok -', name); }
+
+console.log('desk-sync pure tests');
+
+// 1 — happy / empty / malformed desk → no suggestions, never throws.
+check('happy or empty desk raises nothing', () => {
+  assert.deepStrictEqual(ds.deskToSuggestions(null), []);
+  assert.deepStrictEqual(ds.deskToSuggestions({}), []);
+  assert.deepStrictEqual(ds.deskToSuggestions({ unhappy: [] }), []);
+  assert.deepStrictEqual(ds.deskToSuggestions({ unhappy: 'nope' }), []);
+});
+
+// 2 — a construction-feasibility coverage gap is a FATAL attach_condition suggestion.
+check('missing feasibility condition → fatal attach_condition', () => {
+  const desk = {
+    noteBuyer: { name: 'Blue Lake Capital' },
+    unhappy: [{
+      cond_no: 200, name: 'CONSTRUCTION FEASIBILITY REPORT (GROUND-UP / HEAVY REHAB)',
+      domain: 'construction_feasibility', flag: 'coverage_gap', severity: 'fatal',
+      pilot_template_code: 'rtl_cond_feasibility',
+      required_evidence: 'A third-party feasibility report from an approved vendor.',
+    }],
+  };
+  const [s] = ds.deskToSuggestions(desk);
+  assert.strictEqual(s.source, 'investor_guideline_desk');
+  assert.strictEqual(s.kind, 'condition');
+  assert.strictEqual(s.severity, 'fatal');
+  assert.strictEqual(s.important, true);
+  assert.match(s.title, /Blue Lake Capital requires/);
+  assert.match(s.title, /no condition on the file/);
+  assert.match(s.body, /Post one now/);
+  assert.match(s.body, /Needs: A third-party feasibility/);
+  assert.strictEqual(s.proposedAction.type, 'attach_condition');
+  assert.strictEqual(s.proposedAction.fields.code, 'rtl_cond_feasibility');
+  assert.strictEqual(s.evidence.code, 'rtl_cond_feasibility');
+  assert.strictEqual(s.evidence.domain, 'construction_feasibility');
+  assert.strictEqual(s.dedupeKey, 'isg-gap:rtl_cond_feasibility');
+});
+
+// 3 — a non-feasibility coverage gap is a WARNING (not fatal).
+check('other missing condition → warning attach_condition', () => {
+  const [s] = ds.deskToSuggestions({
+    noteBuyer: { name: 'CorrFirst' },
+    unhappy: [{ cond_no: 12, name: 'FLOOD CERT', domain: 'flood', flag: 'coverage_gap', severity: 'warning', pilot_template_code: 'rtl_cond_flood' }],
+  });
+  assert.strictEqual(s.severity, 'warning');
+  assert.strictEqual(s.important, false);
+  assert.ok(!/Post one now/.test(s.body), 'no urgent line for a warning gap');
+  assert.strictEqual(s.dedupeKey, 'isg-gap:rtl_cond_flood');
+});
+
+// 4 — a conflict is a FATAL finding carrying the conflicting check details.
+check('guideline conflict → fatal finding', () => {
+  const [s] = ds.deskToSuggestions({
+    noteBuyer: { name: 'Blue Lake Capital' },
+    unhappy: [{
+      cond_no: 3035, name: 'SELLER CONCESSION', domain: 'concessions', flag: 'conflict', severity: 'fatal',
+      reason: 'The seller concession exceeds 6% of the sale price.',
+      checks: [
+        { status: 'conflict', detail: 'Concession 8% exceeds the 6% cap.' },
+        { status: 'ok', detail: 'ignored' },
+      ],
+    }],
+  });
+  assert.strictEqual(s.kind, 'finding');
+  assert.strictEqual(s.severity, 'fatal');
+  assert.match(s.title, /conflicts with Blue Lake Capital's guideline/);
+  assert.strictEqual(s.body, 'The seller concession exceeds 6% of the sale price.');
+  assert.deepStrictEqual(s.evidence.conflicts, ['Concession 8% exceeds the 6% cap.']);
+  assert.strictEqual(s.proposedAction.type, 'review_guideline_conflict');
+  assert.strictEqual(s.dedupeKey, 'isg-conflict:3035');
+});
+
+// 5 — falls back to a generic note-buyer label and skips malformed rows.
+check('missing noteBuyer name + malformed row are handled', () => {
+  const out = ds.deskToSuggestions({
+    unhappy: [
+      { flag: 'coverage_gap', severity: 'fatal' },           // no cond_no → skipped
+      { cond_no: 7, name: 'X', flag: 'coverage_gap', severity: 'warning' },
+    ],
+  });
+  assert.strictEqual(out.length, 1, 'malformed row skipped');
+  assert.match(out[0].title, /the note buyer requires/i);
+});
+
+// 6 — a COLLAPSED gap (many note-buyer requirements → one missing PILOT condition) is
+// ONE suggestion, keyed on the PILOT code, listing every requirement it covers.
+check('collapsed coverage gap → one suggestion keyed on the PILOT code', () => {
+  const out = ds.deskToSuggestions({
+    noteBuyer: { name: 'Blue Lake Capital' },
+    unhappy: [{
+      cond_no: 1001, name: 'TITLE COMMITMENT', domain: 'title', flag: 'coverage_gap', severity: 'warning',
+      pilot_template_code: 'rtl_cond_title', gapKey: 'rtl_cond_title', coveredCount: 3,
+      coveredConditions: ['TITLE COMMITMENT', 'PAYOFF/PRELIM', 'VESTING CHECK'],
+    }],
+  });
+  assert.strictEqual(out.length, 1, 'the collapsed gap is a single suggestion');
+  const s = out[0];
+  assert.strictEqual(s.dedupeKey, 'isg-gap:rtl_cond_title', 'keyed on the collapsed PILOT code, not cond_no');
+  assert.match(s.title, /3 requirements/, 'title states how many requirements ride on the one condition');
+  assert.match(s.body, /TITLE COMMITMENT, PAYOFF\/PRELIM, VESTING CHECK/, 'body lists every covered requirement');
+  assert.strictEqual(s.evidence.coveredCount, 3);
+  assert.deepStrictEqual(s.evidence.coveredConditions, ['TITLE COMMITMENT', 'PAYOFF/PRELIM', 'VESTING CHECK']);
+});
+
+// 7 — a disposition:'concern' item (e.g. non-arms-length, IG-W17) maps to an advisory
+// warning FINDING (never a coverage_gap — there is nothing to post), keyed isg-concern.
+check('concern flag → advisory finding (never a coverage gap)', () => {
+  const out = ds.deskToSuggestions({
+    noteBuyer: { name: 'CorrFirst' },
+    unhappy: [{
+      cond_no: 3333, name: 'NON ARMS LENGTH TRANSACTION', domain: 'non_arms_length',
+      flag: 'concern', severity: 'warning', concern_field: 'non_arms_length_concern',
+      required_evidence: 'Underwriter verifies the relationship between the parties.',
+    }],
+  });
+  assert.strictEqual(out.length, 1, 'the concern surfaces as one suggestion');
+  const s = out[0];
+  assert.strictEqual(s.kind, 'finding', 'a concern is a finding, not a condition to post');
+  assert.strictEqual(s.severity, 'warning', 'concern is advisory (warning), never fatal here');
+  assert.strictEqual(s.dedupeKey, 'isg-concern:3333', 'keyed isg-concern:<cond_no>');
+  assert.strictEqual(s.proposedAction.type, 'review_guideline_concern', 'action is review, not attach_condition');
+  assert.strictEqual(s.evidence.flag, 'concern');
+  assert.strictEqual(s.evidence.concern_field, 'non_arms_length_concern');
+  assert.match(s.body, /verifies the relationship/i, 'body carries what to confirm');
+});
+
+// 8 — a concern item is NEVER produced without the concern flag: a plain unhappy row with
+// no recognized flag yields nothing (the desk only surfaces a concern when its signal fired).
+check('an unhappy row with no recognized flag yields no suggestion', () => {
+  const out = ds.deskToSuggestions({
+    noteBuyer: { name: 'CorrFirst' },
+    unhappy: [{ cond_no: 3333, name: 'NON ARMS LENGTH TRANSACTION', domain: 'non_arms_length' }],
+  });
+  assert.strictEqual(out.length, 0, 'no flag → nothing surfaces');
+});
+
+console.log(`\ndesk-sync: ${n} checks passed`);

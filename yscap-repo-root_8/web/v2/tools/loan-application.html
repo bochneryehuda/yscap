@@ -1018,8 +1018,10 @@ html:has(.la-scope),body:has(.la-scope){background:#F4F0E7;}
         <div class="check"><svg viewBox="0 0 24 24"><path d="M20 6L9 17l-5-5"></path></svg></div>
         <h2>Application received</h2>
         <p id="doneMsg">Thank you — your application is on its way to our team. A YS Capital loan officer will reach out shortly to confirm details and walk you through next steps.</p>
+        <!-- Create-your-login panel: the server's response to the submit says which
+             offer applies (brand-new account / existing login / email claim). -->
+        <div id="acctPanel" style="display:none;max-width:560px;margin:1.1rem auto 0;text-align:left;border:1px solid var(--line,#d8d2c4);border-radius:12px;padding:1.1rem 1.2rem;background:var(--card,#fff)"></div>
         <div class="done-actions">
-            <a class="btn btn-solid btn-lg" href="https://yscapgroup.mymortgage-online.com/loan-app/?siteId=5722777381&amp;lar=admin&amp;workFlowId=241919" target="_blank" rel="noopener">Complete formal application →</a>
             <button class="btn btn-line btn-lg" type="button" onclick="APP.exportPdf(this)">Download my copy (PDF) ⤓</button>
             <a class="btn btn-line btn-lg" href="../suite.html">Back to tools</a>
         </div>
@@ -1060,8 +1062,8 @@ html:has(.la-scope),body:has(.la-scope){background:#F4F0E7;}
 
   /* ---------------- CONFIG (edit these) ---------------- */
   /* leverage, pricing & eligibility now come from the shared engine (window.YSP / standard-program.js) */
-  var SUBMIT_ENDPOINT = "";                       // POST URL (Formspree/Netlify/your API). Blank = email handoff.
-  var SALES_EMAIL = "sales@yscapgroup.com";       // always CC'd as a backstop
+  /* Submits go to our own backend: /api/apply (real file + login offer), with
+   * /api/leads as the capture fallback. No email-client handoff exists. */
   // Loan-officer roster — mirrors the team directory shown on the home page.
   var OFFICER_GROUPS = [
     { group: "Sales & Loan Coordinators", people: [
@@ -1196,7 +1198,29 @@ html:has(.la-scope),body:has(.la-scope){background:#F4F0E7;}
         .catch(function () {});
     } catch (e) {}
   })();
+  // A loan-officer-branded link (?lo=) LOCKS the recipient: the application
+  // always routes to that officer and no other choice is offered at all
+  // (owner-directed 2026-07-24). The whole officer panel collapses to a
+  // "goes straight to <name>" note; every submit path reads selectedOfficer(),
+  // so the lock covers the application, the manual-review request, the review
+  // screen and the confirmation copy in one place.
+  var BRANDED_OFFICER = null;
+  (function lockBrandedOfficer() {
+    var ob = window.YSBRAND || null;
+    if (!ob || !ob.email) return;
+    BRANDED_OFFICER = { name: ob.name || ob.email, title: ob.role || "", email: ob.email };
+    var sel = el("loOfficerSel");
+    var panel = sel && sel.closest(".panel");
+    if (!panel) return;
+    var tog = el("hasOfficer"), togCard = tog && tog.closest(".toggle-card");
+    if (togCard) togCard.style.display = "none";
+    var fld = sel.closest(".field"); if (fld) { fld.classList.add("hidden"); fld.removeAttribute("data-cond"); }
+    var note = panel.querySelector(".panel-note");
+    if (note) note.innerHTML = "This application goes straight to <b>" + esc(BRANDED_OFFICER.name) +
+      (BRANDED_OFFICER.title ? " — " + esc(BRANDED_OFFICER.title) : "") + "</b>, who will follow up with you personally.";
+  })();
   function selectedOfficer() {
+    if (BRANDED_OFFICER) return BRANDED_OFFICER;
     var i = parseInt(val("loOfficer"), 10);
     return (i >= 0 && CURRENT_OFFICERS[i]) ? CURRENT_OFFICERS[i] : null;
   }
@@ -1355,7 +1379,8 @@ html:has(.la-scope),body:has(.la-scope){background:#F4F0E7;}
     }
     return "";
   }
-  function appManualMailto(R, s, inp, totalLoan) {
+  var LAST_ELIG = null;   // latest eligibility snapshot (feeds the manual-review submit)
+  function appManualSummary(R, s, inp, totalLoan) {
     var L = [];
     L.push("Please review the following scenario for manual underwriting:");
     L.push("");
@@ -1375,7 +1400,33 @@ html:has(.la-scope),body:has(.la-scope){background:#F4F0E7;}
     if (probs.length) { L.push("Flagged:"); L.push(probs.join("\n")); L.push(""); }
     L.push("Please advise on options. Thank you.");
     var subj = "Manual review request \u2014 " + (snStrategy() || "scenario") + (val("pState") ? " (" + val("pState") + ")" : "");
-    return "mailto:sales@yscapgroup.com?subject=" + encodeURIComponent(subj) + "&body=" + encodeURIComponent(L.join("\n"));
+    return { subject: subj, body: L.join("\n") };
+  }
+  // Sends the manual-review request THROUGH THE BACKEND to the sales desk (and
+  // the branded officer, if any) \u2014 the old mailto: draft is gone. Uses the
+  // borrower's contact info from Step 1; asks for it if the form is too early.
+  function manualReviewSubmit(btn) {
+    if (!LAST_ELIG) return;
+    var vEmail = val("b1Email"), vPhone = val("b1Phone");
+    var msgEl = el("snManualMsg");
+    function say(t, isErr) { if (msgEl) { msgEl.style.display = ""; msgEl.textContent = t; msgEl.style.color = isErr ? "#a33" : ""; } }
+    if (!vEmail && !vPhone) { say("Add your email or phone in Step 1 first, so our team can reach you.", true); return; }
+    var sum = appManualSummary(LAST_ELIG.R, LAST_ELIG.s, LAST_ELIG.inp, LAST_ELIG.totalLoan);
+    var off = selectedOfficer();
+    var officerCode = (off && off.email) ? off.email.split("@")[0].toLowerCase()
+      : ((new URLSearchParams(location.search).get("lo")) || "");
+    var o = btn ? btn.textContent : ""; if (btn) { btn.textContent = "Sending\u2026"; btn.disabled = true; }
+    fetch("/api/leads", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({
+      tool: "term_sheet_exception",
+      name: bName(1) || null, email: vEmail || null, phone: vPhone || null,
+      officerCode: officerCode, subject: sum.subject, message: sum.body,
+      formToken: FORM_TOKEN.t || undefined,
+      payload: { kind: "loan_application_manual_review", state: YS.collectState() }
+    }) })
+      .then(function (r) { return r.ok ? r.json() : Promise.reject(r.status); })
+      .then(function () { say("Sent \u2014 our team has your scenario and will get back to you shortly."); if (btn) btn.style.display = "none"; })
+      .catch(function () { say("We couldn't send this right now \u2014 please try again in a moment, or call us at 718-831-2168.", true); if (btn) { btn.textContent = o; btn.disabled = false; } })
+      .finally(function () { if (btn && btn.style.display !== "none") { btn.textContent = o || "Submit for manual review"; btn.disabled = false; } });
   }
 
   /* ---------------- admin pricing overrides (soft-gated; Standard-only page) ---------------- */
@@ -1555,15 +1606,24 @@ html:has(.la-scope),body:has(.la-scope){background:#F4F0E7;}
     var sStateN = el("snStateNote");
     if (sStateN) { var snt = ready ? appStateOverlayNote(inp.state) : ""; if (snt) { sStateN.style.display = ""; sStateN.textContent = snt; } else { sStateN.style.display = "none"; sStateN.textContent = ""; } }
 
-    // ----- manual-review email (ineligible or manual underwrite) -----
+    // ----- manual review (ineligible or manual underwrite) \u2014 submits straight
+    // to our team through the backend; never opens the visitor's mail client -----
     var mwrap = el("snManualWrap");
     if (mwrap) {
       var needsManual = ready && (R.status === "INELIGIBLE" || R.status === "MANUAL");
       if (needsManual) {
+        LAST_ELIG = { R: R, s: s, inp: inp, totalLoan: totalLoan };
+        var alreadyOpen = mwrap.style.display !== "none" && mwrap.querySelector("button");
         mwrap.style.display = "";
-        var lead = R.status === "INELIGIBLE" ? "This scenario falls outside the standard program as entered." : "This scenario needs a manual underwrite.";
-        mwrap.innerHTML = "<p class=\"tmv-lead\">" + lead + " Send it to our team for a manual review.</p>" +
-          "<a class=\"btn btn-line\" href=\"" + appManualMailto(R, s, inp, totalLoan) + "\">Submit for manual review \u2709</a>";
+        if (!alreadyOpen) {
+          var lead = R.status === "INELIGIBLE" ? "This scenario falls outside the standard program as entered." : "This scenario needs a manual underwrite.";
+          mwrap.innerHTML = "<p class=\"tmv-lead\">" + lead + " Send it to our team for a manual review.</p>" +
+            "<button type=\"button\" class=\"btn btn-line\" onclick=\"APP.manualReview(this)\">Submit for manual review</button>" +
+            "<p class=\"tmv-lead\" id=\"snManualMsg\" style=\"display:none;margin-top:.5rem\"></p>";
+        } else {
+          var lead2 = R.status === "INELIGIBLE" ? "This scenario falls outside the standard program as entered." : "This scenario needs a manual underwrite.";
+          var pEl = mwrap.querySelector(".tmv-lead"); if (pEl) pEl.textContent = lead2 + " Send it to our team for a manual review.";
+        }
       } else { mwrap.style.display = "none"; mwrap.innerHTML = ""; }
     }
 
@@ -1904,6 +1964,54 @@ html:has(.la-scope),body:has(.la-scope){background:#F4F0E7;}
   }
 
   /* ===================== SUBMIT ===================== */
+  /* The application submits DIRECTLY to our backend (/api/apply): it creates the
+   * real loan file, routes the officer, and emails everyone server-side \u2014 then
+   * offers the borrower a portal login so the file is theirs right away and the
+   * Track Record is next. If /api/apply is unreachable we fall back to the
+   * /api/leads capture (still fully server-side). There is NO mail-client
+   * handoff anywhere anymore \u2014 a failure shows a clear retry message instead. */
+  var FORM_TOKEN = { t: null, at: 0 };
+  // The server accepts a token for ~2 hours. This long form is often filled
+  // slowly (or resumed the next morning from the autosaved state), so treat a
+  // token older than ~100 minutes as stale and fetch a fresh one before
+  // submitting — otherwise the server would drop the submission as bot-like.
+  var TOKEN_FRESH_MS = 100 * 60 * 1000;
+  function fetchFormToken() {
+    return fetch("/api/leads/token").then(function (r) { return r.ok ? r.json() : null; })
+      .then(function (d) { if (d && d.t) { FORM_TOKEN.t = d.t; FORM_TOKEN.at = Date.now(); } return FORM_TOKEN.t; })
+      .catch(function () { return null; });
+  }
+  function applyBody() {
+    var off = selectedOfficer();
+    var assign = !isRefi() && el("isAssign").checked;
+    return {
+      formToken: FORM_TOKEN.t,
+      firstName: val("b1First"), middleName: val("b1Middle"), lastName: val("b1Last"),
+      email: val("b1Email"), cellPhone: val("b1Phone"),
+      citizenship: val("b1Citizen"), ssn: val("b1Ssn"), dob: val("b1Dob"),
+      fico: val("fico"),
+      b2First: val("b2First"), b2Middle: val("b2Middle"), b2Last: val("b2Last"), b2Email: val("b2Email"),
+      b2Phone: val("b2Phone"), b2Citizen: val("b2Citizen"), b2Ssn: val("b2Ssn"), b2Dob: val("b2Dob"),
+      loOfficerEmail: off ? off.email : null,
+      program: val("dealType"), loanType: purpose(),
+      propertyAddress: { line1: (val("pStreet") + (val("pUnit") ? " " + val("pUnit") : "")).trim(), city: val("pCity"), state: val("pState"), zip: val("pZip") },
+      propertyType: val("propType"), units: unitsVal(),
+      purchasePrice: isRefi() ? null : val("price"),
+      asIsValue: val("asIs"), arv: val("arv"), rehabBudget: val("rehab"),
+      isAssignment: assign,
+      underlyingContractPrice: assign ? val("origPrice") : null,
+      assignmentFee: assign ? val("assignFee") : null,
+      rehabType: val("rehabType"),
+      sqftPre: val("sqftPre") || val("sqftCurrent"), sqftPost: val("sqftPost"),
+      requestedIrMonths: el("finReserve").checked ? val("resMonths") : null,
+      requestedIrAmount: el("finReserve").checked ? val("resAmount") : null,
+      expFlips: val("expFlips"), expHolds: val("expBrrrr"), expGround: val("expGround"),
+      eName: el("vestEntity").checked ? val("eName") : null,
+      eState: el("vestEntity").checked ? val("eState") : null,
+      eEin: el("vestEntity").checked ? val("eEin") : null,
+      payload: YS.collectState()
+    };
+  }
   function doSubmit() {
     if (!el("consent").checked) {
       el("consentErr").style.display = "block";
@@ -1911,51 +2019,120 @@ html:has(.la-scope),body:has(.la-scope){background:#F4F0E7;}
       return;
     }
     el("consentErr").style.display = "none";
-    var summary = buildSummary();
-    var subject = "New Loan Application \u2014 " + bName(1) + " \u2014 " + addrJoin("pStreet", null, "pCity", "pState", null);
     var off = selectedOfficer();
-    var to = off ? off.email : SALES_EMAIL;
-    var cc = (off && off.email !== SALES_EMAIL) ? SALES_EMAIL : "";
-    var officerCode = (off && off.email) ? off.email.split("@")[0].toLowerCase()
-      : ((new URLSearchParams(location.search).get("lo")) || "");
-    var lead = {
-      tool: "loan_application",
-      name: bName(1),
-      email: val("b1Email"),
-      phone: val("b1Phone"),
-      officerCode: officerCode,
-      subject: subject,
-      message: summary,
-      payload: YS.collectState()
-    };
     var btn = el("submitBtn"), oo = btn ? btn.textContent : "";
     if (btn) { btn.textContent = "Submitting\u2026"; btn.disabled = true; }
-    // Submit to the BACKEND: it saves the application and emails the routed
-    // officer (and a confirmation to the borrower) server-side. Only if the
-    // server is unreachable do we fall back to the legacy email handoff so a
-    // submission is never lost.
-    fetch("/api/leads", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(lead) })
+    var tokenFresh = FORM_TOKEN.t && (Date.now() - FORM_TOKEN.at) < TOKEN_FRESH_MS;
+    var haveToken = tokenFresh ? Promise.resolve(FORM_TOKEN.t)
+      // Token missing (page loaded offline?) or stale (form filled over hours)
+      // \u2014 fetch a fresh one and give it the human dwell the server checks for.
+      : fetchFormToken().then(function (t) { return t ? new Promise(function (res) { setTimeout(function () { res(t); }, 3400); }) : null; });
+    haveToken
+      .then(function () {
+        return fetch("/api/apply", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(applyBody()) });
+      })
       .then(function (r) { return r.ok ? r.json() : Promise.reject(r.status); })
-      .then(function () { finish(off, true); })
-      .catch(function () { mailto(to, cc, subject, summary); finish(off, false); })
+      .then(function (resp) {
+        // A response WITHOUT an applicationId means the server dropped the
+        // submission as bot-like (its anti-bot answers look like success on
+        // purpose). For a real visitor that must never become a false
+        // "received" screen \u2014 hand the submission to the lead pipeline, which
+        // needs no token and still lands + emails server-side.
+        if (resp && resp.applicationId) finish(off, resp);
+        else return legacyLeadSubmit(off, btn, oo);
+      })
+      .catch(function () { return legacyLeadSubmit(off, btn, oo); })
+      // Returning the fallback's promise above means this runs only after the
+      // WHOLE submission (primary or fallback) settled — the button can't
+      // re-enable while a fallback POST is still in flight (audit finding).
       .finally(function () { if (btn) { btn.textContent = oo; btn.disabled = false; } });
   }
-  function mailto(to, cc, subject, body) {
-    var href = "mailto:" + to + "?" + (cc ? "cc=" + encodeURIComponent(cc) + "&" : "") + "subject=" + encodeURIComponent(subject) + "&body=" + encodeURIComponent(body);
-    window.location.href = href;
+  // Fallback capture \u2014 the older lead pipeline (also server-side; no mail client).
+  function legacyLeadSubmit(off, btn, oo) {
+    var subject = "New Loan Application \u2014 " + bName(1) + " \u2014 " + addrJoin("pStreet", null, "pCity", "pState", null);
+    var officerCode = (off && off.email) ? off.email.split("@")[0].toLowerCase()
+      : ((new URLSearchParams(location.search).get("lo")) || "");
+    return fetch("/api/leads", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({
+      tool: "loan_application", name: bName(1), email: val("b1Email"), phone: val("b1Phone"),
+      officerCode: officerCode, subject: subject, message: buildSummary(), payload: YS.collectState()
+    }) })
+      .then(function (r) { return r.ok ? r.json() : Promise.reject(r.status); })
+      .then(function () { finish(off, null); })
+      .catch(function () {
+        flash("We couldn't submit right now \u2014 please check your connection and try again. If it keeps failing, call 718-831-2168.");
+      })
+      .finally(function () { if (btn) { btn.textContent = oo; btn.disabled = false; } });
   }
-  function finish(off, backendOk) {
+  function finish(off, resp) {
     var name = val("b1First");
     var base = (name ? name + ", thank you \u2014 " : "Thank you \u2014 ") +
-      "your application has been " + (backendOk ? "received by" : "sent to") + " YS Capital Group" +
+      "your application has been received by YS Capital Group" +
       (off ? " and routed to " + off.name : "") + ". A loan officer will reach out shortly to confirm details and walk you through next steps.";
-    if (backendOk) base += " A confirmation is on its way to your email.";
     el("doneMsg").textContent = base;
+    renderAcctPanel(resp && resp.account);
     setStep(4, {});
+  }
+  /* ------- create-your-login panel on the confirmation screen ------- */
+  function renderAcctPanel(account) {
+    var panel = el("acctPanel");
+    if (!panel) return;
+    if (!account || account.mode === "review") { panel.style.display = "none"; panel.innerHTML = ""; return; }
+    panel.style.display = "";
+    var vEmail = esc(val("b1Email"));
+    if (account.mode === "login") {
+      panel.innerHTML =
+        "<h3 style=\"margin:0 0 .35rem\">Your file is in your PILOT portal</h3>" +
+        "<p style=\"margin:0 0 .8rem\">This application was added to your existing account (" + vEmail + "). Log in to track it, upload documents, and complete your Track Record.</p>" +
+        "<a class=\"btn btn-solid\" href=\"/portal/\">Log in to PILOT \u2192</a>";
+      return;
+    }
+    var isClaim = account.mode === "claim";
+    panel.innerHTML =
+      "<h3 style=\"margin:0 0 .35rem\">Create your account \u2014 finish the next step online</h3>" +
+      "<p style=\"margin:0 0 .8rem\">" + (isClaim
+        ? "Good news \u2014 we already have a record for " + vEmail + ". Choose a password and we'll email you a secure activation link."
+        : "Set a password for " + vEmail + " and your loan file is yours online: track status, upload documents, and complete your <strong>Track Record</strong> right away.") + "</p>" +
+      "<div class=\"field\"><label for=\"acctPass\">Password</label><div class=\"input\"><input id=\"acctPass\" type=\"password\" autocomplete=\"new-password\" minlength=\"8\" placeholder=\"At least 8 characters\"></div></div>" +
+      "<div class=\"field\"><label for=\"acctPass2\">Confirm password</label><div class=\"input\"><input id=\"acctPass2\" type=\"password\" autocomplete=\"new-password\" minlength=\"8\"></div></div>" +
+      "<p id=\"acctErr\" style=\"display:none;color:#a33;margin:.4rem 0\"></p>" +
+      "<button type=\"button\" class=\"btn btn-solid\" id=\"acctBtn\">Create my account \u2192</button>";
+    var btn = el("acctBtn");
+    btn.addEventListener("click", function () {
+      var p1 = el("acctPass").value, p2 = el("acctPass2").value, err = el("acctErr");
+      function fail(t) { err.style.display = ""; err.textContent = t; }
+      err.style.display = "none";
+      if (!p1 || p1.length < 8) return fail("Please choose a password of at least 8 characters.");
+      if (p1 !== p2) return fail("The two passwords don't match.");
+      btn.disabled = true; var o = btn.textContent; btn.textContent = "Creating\u2026";
+      var req = isClaim
+        ? fetch("/auth/borrower/register", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({
+            email: val("b1Email"), password: p1, firstName: val("b1First"), middleName: val("b1Middle"), lastName: val("b1Last"), cellPhone: val("b1Phone") }) })
+        : fetch("/api/apply/account", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ token: account.token, password: p1 }) });
+      req.then(function (r) { return r.json().then(function (d) { return { ok: r.ok, status: r.status, d: d }; }); })
+        .then(function (res) {
+          if (res.ok || res.status === 202) {
+            panel.innerHTML =
+              "<h3 style=\"margin:0 0 .35rem\">Almost done \u2014 check your inbox</h3>" +
+              "<p style=\"margin:0 0 .8rem\">We sent an activation link to <strong>" + vEmail + "</strong>. Click it and you'll land in your portal with this loan file ready. First step inside: complete your <strong>Track Record</strong>.</p>" +
+              "<a class=\"btn btn-line\" href=\"/portal/\">Open PILOT portal</a>";
+          } else if (res.status === 409) {
+            panel.innerHTML =
+              "<p style=\"margin:0 0 .8rem\">An account already exists for " + vEmail + " \u2014 just log in.</p>" +
+              "<a class=\"btn btn-solid\" href=\"/portal/\">Log in to PILOT \u2192</a>";
+          } else {
+            fail((res.d && res.d.error) || "We couldn't create the account \u2014 please try again.");
+            btn.disabled = false; btn.textContent = o;
+          }
+        })
+        .catch(function () { fail("We couldn't reach the server \u2014 please try again."); btn.disabled = false; btn.textContent = o; });
+    });
   }
 
   /* ===================== WIRING ===================== */
   function wire() {
+    // Grab the anti-bot form token as soon as the page loads — by submit time
+    // it carries the human dwell the server checks for.
+    try { fetchFormToken(); } catch (e) {}
     (function () { try { fetch("/api/pricing-defaults").then(function (r) { return r.ok ? r.json() : null; }).then(function (d) {
       if (d && typeof d === "object") {
         if (d.origStdPct != null) CO.origStd = Number(d.origStdPct);
@@ -2045,12 +2222,12 @@ html:has(.la-scope),body:has(.la-scope){background:#F4F0E7;}
     $$('input[name="b' + n + 'Housing"]').forEach(function (r) { r.checked = false; });
   }
 
-  window.APP = { share: function (b) { try { YS.shareLink(b); } catch (e) {} }, exportXlsx: exportXlsx, importXlsx: importXlsx, exportPdf: exportPdf };
+  window.APP = { share: function (b) { try { YS.shareLink(b); } catch (e) {} }, exportXlsx: exportXlsx, importXlsx: importXlsx, exportPdf: exportPdf, manualReview: manualReviewSubmit };
 
   if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", wire); else wire();
 })();
 
 </script>
-<script src="../float-actions.js?v=admin8"></script>
+<script src="../float-actions.js?v=admin10-applyfix"></script>
 </body>
 </html>

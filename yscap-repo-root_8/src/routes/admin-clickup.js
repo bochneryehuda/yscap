@@ -64,7 +64,7 @@ router.get('/diag', async (req, res) => {
            FROM applications a
            JOIN borrowers b ON b.id=a.borrower_id
            LEFT JOIN llcs l ON l.id=a.llc_id
-          WHERE (b.first_name||' '||b.last_name ILIKE $1 OR a.property_address->>'oneLine' ILIKE $1)
+          WHERE (NULLIF(b.full_name,'') ILIKE $1 OR a.property_address->>'oneLine' ILIKE $1)
           ORDER BY a.created_at DESC LIMIT 25`, [like])).rows;
       const bids = [...new Set(out.apps.map((a) => a.borrower_id).filter(Boolean))];
       if (bids.length) {
@@ -110,6 +110,32 @@ router.post('/backfill', async (req, res) => {
   const createFiles = mode === 'full';
   sync.runBackfill({ createFiles }).then((n) => console.log('[backfill] ingested', n)).catch((e) => console.error('[backfill]', e.message));
   res.json({ mode, started: true, note: 'running in background; watch /activity + /health' });
+});
+
+// ---- borrower-profile sweep (owner-directed 2026-07-26) --------------------
+// The reconcile poll is windowed on `date_updated`, so a deal that CLOSED months
+// ago is never read again and its borrower never reaches the officer's list. The
+// sweep walks EVERY card in EVERY status with no date window, building PEOPLE
+// (profile, entities, track record, officer link) and never loan files. These
+// two routes let an admin watch it and re-run it on demand instead of waiting
+// for the weekly cycle.
+router.get('/profile-sweep', async (req, res) => {
+  try { res.json(await require('../sync/profile-sweep').status()); }
+  catch (e) { fail(res, 500, e, 'server error'); }
+});
+router.post('/profile-sweep', async (req, res) => {
+  if (!cfg.clickupToken) return res.status(400).json({ error: 'CLICKUP_API_TOKEN not set' });
+  const sweep = require('../sync/profile-sweep');
+  try {
+    // `restart` clears the cursor so the next slice begins a brand-new pass over
+    // the whole workspace; the slices then run in the background on their timer.
+    if (!(req.body && req.body.resume)) await sweep.restart();
+    // Kick the first slice immediately so an admin sees progress right away.
+    sweep.sweepOnce({ pages: Number(req.body && req.body.pages) || undefined })
+      .then((r) => console.log('[profile-sweep] admin kick', JSON.stringify(r)))
+      .catch((e) => console.error('[profile-sweep] admin kick', e && e.message));
+    res.json({ started: true, note: 'reading every ClickUp card in every status; watch GET /profile-sweep' });
+  } catch (e) { fail(res, 500, e, 'server error'); }
 });
 
 // Materialize/refresh a specific pipeline folder (or all when folderId omitted),

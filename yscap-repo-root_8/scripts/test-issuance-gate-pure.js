@@ -28,13 +28,15 @@ for (const a of ['term_sheet', 'ctc', 'funding']) {
 }
 ok('MANUAL_PENDING denies every issuance action (the critical stop)');
 
-// --- fatal finding under ELIGIBLE → CTC + funding denied, term sheet still ok ---
+// --- fatal finding under ELIGIBLE → every issuance action denied ---
+// (fix 2026-07-23: summarize now blocks the term sheet on any fatal, matching
+// blockersFor which already listed a fatal as a term-sheet blocker.)
 d = dec.decide({ engineStatus: 'ELIGIBLE', findings: [{ code: 'x', severity: 'fatal', source: 'appraisal' }] });
 assert.strictEqual(gate.gateFor(d, 'ctc').allowed, false, 'a fatal finding blocks CTC');
 assert.strictEqual(gate.gateFor(d, 'funding').allowed, false, 'a fatal finding blocks funding');
-assert.strictEqual(gate.gateFor(d, 'term_sheet').allowed, true, 'a non-term-sheet fatal still lets the sheet issue');
+assert.strictEqual(gate.gateFor(d, 'term_sheet').allowed, false, 'a fatal finding blocks the term sheet too');
 assert.ok(gate.gateFor(d, 'ctc').blockers.length >= 1, 'the blocking finding is surfaced');
-ok('a fatal finding blocks CTC + funding (with the blocker surfaced) but not an otherwise-clean term sheet');
+ok('a fatal finding blocks term sheet + CTC + funding (with the blocker surfaced)');
 
 // --- DATA_CONFLICT → CTC + funding denied ---
 d = dec.decide({ engineStatus: 'ELIGIBLE', discrepancies: [{ field: 'loan_amount' }], findings: [] });

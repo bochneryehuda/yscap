@@ -177,6 +177,24 @@ const INTEGRATIONS = [
     },
   },
   {
+    key: 'trustpoint', name: 'TrustPoint (administered draws)', group: 'workflow',
+    purpose: 'Follows the note buyer’s draw administrator on Blue Lake physical files — draw statuses, inspections, approvals, and releases are mirrored into PILOT (read-only; PILOT never moves this money).',
+    direction: 'One-way (read + webhooks in)', auth: 'Api-Key',
+    env: [{ name: 'TRUSTPOINT_API_KEY', required: true }, { name: 'TRUSTPOINT_BASE_URL', required: false },
+      { name: 'TRUSTPOINT_WEBHOOK_TOKEN', required: false }],
+    switches: [{ name: 'TRUSTPOINT_ENABLED', label: 'Mirroring' }],
+    liveProbe: true,
+    async probe() {
+      if (!cfg.trustpointApiKey) return { configured: false, live: null, detail: 'The TrustPoint API key is not set.' };
+      if (!require('./switches').on('TRUSTPOINT_ENABLED')) return { configured: true, enabled: false, live: null, detail: 'The key is set, but the master switch (TRUSTPOINT_ENABLED) is off, so nothing mirrors yet.' };
+      try {
+        const c = require('../../trustpoint/client');
+        await timebox(c.call('/projects/', { query: { page_size: 1 } }));
+        return { configured: true, enabled: true, live: true, detail: 'Reached TrustPoint.' };
+      } catch (e) { return { configured: true, enabled: true, live: false, detail: e.message === 'timed out' ? 'Timed out reaching TrustPoint.' : (e.message || 'Not reachable — the key may be wrong.') }; }
+    },
+  },
+  {
     key: 'clickup', name: 'ClickUp (pipeline / CRM)', group: 'workflow',
     purpose: 'Keeps loan-file data (status, borrower details, dates) in sync with the team’s ClickUp pipeline.',
     direction: 'Two-way', auth: 'API token',
@@ -187,6 +205,59 @@ const INTEGRATIONS = [
       if (!cfg.clickupToken) return { configured: false, live: null, detail: 'The ClickUp API token is not set.' };
       try { const c = require('../../clickup/client'); await timebox(c.getTeams()); return { configured: true, live: true, detail: 'Reached ClickUp with the token.' }; }
       catch (e) { return { configured: true, live: false, detail: e.message === 'timed out' ? 'Timed out reaching ClickUp.' : (e.message || 'Not reachable — the token may be wrong.') }; }
+    },
+  },
+  {
+    key: 'object_storage',
+    // Provider-aware: on the server disk the four S3 vars are IGNORED (config.js reads them only
+    // when STORAGE_PROVIDER=s3), so naming the card after R2 and marking them "required" would tell
+    // an admin to go set credentials that nothing would read.
+    name: cfg.storageProvider === 's3' ? 'Cloudflare R2 (document storage)' : 'Document storage (server disk)',
+    group: 'workflow',
+    purpose: 'Where every uploaded document actually lives. Shared storage is what lets the website and the background document reader reach the same files.',
+    direction: 'Outbound', auth: 'S3 access key + secret',
+    env: [{ name: 'STORAGE_PROVIDER', required: false },
+      { name: 'S3_BUCKET', required: cfg.storageProvider === 's3' },
+      { name: 'S3_ENDPOINT', required: cfg.storageProvider === 's3' },
+      { name: 'S3_ACCESS_KEY_ID', required: cfg.storageProvider === 's3' },
+      { name: 'S3_SECRET_ACCESS_KEY', required: cfg.storageProvider === 's3' },
+      { name: 'S3_REGION', required: false }],
+    switches: [], liveProbe: true,
+    async probe() {
+      // Delegates to the shared storage-health reader, so this card and /api/health can never
+      // disagree. `fresh:true` — a human pressing "Test now" wants a real round-trip, not the
+      // few-second cache that keeps the public /api/health endpoint cheap.
+      try {
+        const storage = require('../storage');
+        const card = await timebox(require('../storage-health').readStorageHealth(storage, cfg.storageProvider, { fresh: true }));
+        if (!card.configured) {
+          return { configured: false, live: null, detail: card.reason || 'Bucket, endpoint, or access keys are not set.' };
+        }
+        // The local disk has no remote endpoint — report it honestly rather than as "reachable".
+        // But NOT persistent means the storage fell back to a TEMPORARY folder (storage.js does
+        // that, loudly, when STORAGE_DIR can't be written). Every uploaded document is then wiped
+        // on the next deploy. That is the single most urgent thing this card can say, so it must
+        // never render as a calm "configured" — it reports NOT LIVE with the consequence spelled out.
+        if (card.reachable === null) {
+          if (card.persistent === false) {
+            return { configured: true, live: false, detail: `Documents are being saved to a TEMPORARY folder (${card.base || 'unknown'}) — the permanent disk is not mounted, so every uploaded document is LOST on the next deploy.` };
+          }
+          return { configured: true, live: null, detail: `Documents are stored on the server disk (${card.base || 'local'}) — there is nothing remote to reach.` };
+        }
+        if (card.reachable === true) {
+          return { configured: true, live: true, detail: `Reached the document bucket (${card.base || 'object storage'}) and it answered.` };
+        }
+        return { configured: true, live: false, detail: card.reason || 'The document bucket did not answer — new uploads would fail.' };
+      } catch (e) {
+        // The reader never got far enough to say whether storage is configured, so don't ASSERT it
+        // is (a hardcoded `configured: true` would paint a green-ish "Configured" card for an
+        // account with nothing set up at all). Fall back to the one thing knowable without the
+        // probe: whether the object-store settings are actually present in the environment.
+        const configured = cfg.storageProvider === 's3'
+          ? !!(cfg.s3 && cfg.s3.bucket && cfg.s3.endpoint && cfg.s3.accessKeyId && cfg.s3.secretAccessKey)
+          : null;
+        return { configured, live: configured === false ? null : false, detail: e.message === 'timed out' ? 'Timed out reaching the document bucket.' : (e.message || 'Not reachable.') };
+      }
     },
   },
   {
@@ -304,14 +375,14 @@ const INTEGRATIONS = [
     },
   },
   {
-    key: 'ocr_space', name: 'OCR.space (general OCR)', group: 'data',
-    purpose: 'A lightweight OCR used for the credit-card scan and an advisory read of appraisal PDFs.',
+    key: 'ocr_space', name: 'OCR.space (fallback OCR)', group: 'data',
+    purpose: 'A lightweight FALLBACK reader for the credit-card scan and an advisory read of appraisal PDFs. The credit-card scan now reads primarily with the Azure OpenAI vision model; this runs only when that reader is off or can’t read the photo.',
     direction: 'Outbound', auth: 'API key (free demo key as fallback)',
     env: [{ name: 'OCR_SPACE_API_KEY', required: false }], switches: [], liveProbe: false,
     async probe() {
       return cfg.ocrSpaceApiKey
-        ? { configured: true, live: null, detail: 'Your own OCR.space key is set.' }
-        : { configured: true, live: null, detail: 'No key set — using OCR.space’s free shared demo key (rate-limited). Add OCR_SPACE_API_KEY for reliable use.' };
+        ? { configured: true, live: null, detail: 'Your own OCR.space key is set (used as the fallback reader).' }
+        : { configured: true, live: null, detail: 'No key set — the credit-card scan reads with the Azure OpenAI vision model; this fallback uses OCR.space’s free shared demo key (rate-limited). Add OCR_SPACE_API_KEY to make the fallback reliable.' };
     },
   },
   {
@@ -335,8 +406,12 @@ const INTEGRATIONS = [
     purpose: 'The "Import credit" button on the internal Credit report condition — pull/reissue a tri-merge report using ONE shared company login (not per-user), file the PDF + data file, and build the credit-details section.',
     direction: 'Outbound', auth: 'Shared username + password',
     env: [{ name: 'XACTUS_API_URL', required: true }, { name: 'XACTUS_API_USERNAME', required: true }, { name: 'XACTUS_API_PASSWORD', required: true }],
-    switches: [], liveProbe: false,
-    async probe() { const m = require('../credit/provider'); return m.configured() ? { configured: true, live: null, detail: 'Shared Xactus login is set — the Import credit button can pull. The exact request/response format is finalized against the Xactus setup guide.' } : { configured: false, live: null, detail: 'Not connected — add the shared Xactus web address, username and password (XACTUS_API_URL / XACTUS_API_USERNAME / XACTUS_API_PASSWORD) to turn on live pulls. Reports downloaded from Xactus can still be imported.' }; },
+    switches: [], liveProbe: true,
+    async probe() { const m = require('../credit/provider'); return m.configured() ? { configured: true, live: null, detail: 'Shared Xactus login is set — the Import credit button can pull. Press “Test now” to check the connection. XACTUS_API_URL must be the EXACT Credit ReportX request URL Xactus gave you (the full endpoint reports are POSTed to, not just a base host).' } : { configured: false, live: null, detail: 'Not connected — add the FULL Xactus Credit ReportX request URL, username and password (XACTUS_API_URL / XACTUS_API_USERNAME / XACTUS_API_PASSWORD) to turn on live pulls. Reports downloaded from Xactus can still be imported.' }; },
+    // "Test now" runs a real, SAFE connection check (a HEAD reach — no credit pull,
+    // no borrower data). Only fires on the button (probeOne); page-load probeAll()
+    // stays cheap via probe().
+    async test() { const m = require('../credit/provider'); return m.testConnection(); },
   },
   {
     key: 'usps', name: 'USPS (address validation)', group: 'data',
@@ -369,9 +444,16 @@ const INTEGRATIONS = [
 
 // Turn a probe result + descriptor into the resolved shape the page renders. `state` is the single
 // status word the light is keyed on. Never throws.
-function computeState(entry, r) {
+function computeState(entry, r, tested) {
   if (entry.notBuilt) return 'planned';
-  if (entry.group === 'framework') return r.configured ? 'configured' : 'framework';
+  if (entry.group === 'framework') {
+    // A framework integration normally shows only presence ("configured"). But when
+    // an explicit "Test now" (tested) ran a live reach, reflect its verdict so the
+    // status light turns green/red with the result — not only the detail text.
+    if (tested && r.live === true) return 'live';
+    if (tested && r.live === false) return 'unreachable';
+    return r.configured ? 'configured' : 'framework';
+  }
   if (!r.configured) return 'not_configured';
   if (r.enabled === false) return 'disabled';
   if (r.live === true) return 'live';
@@ -379,25 +461,36 @@ function computeState(entry, r) {
   return 'configured'; // configured but no live confirmation available
 }
 
-async function resolveOne(entry) {
+async function resolveOne(entry, opts) {
   let r;
-  try { r = await entry.probe(); } catch (e) { r = { configured: false, live: false, detail: e && e.message ? e.message : 'probe failed' }; }
+  // On the explicit "Test now" button (live), run the entry's on-demand test() if
+  // it has one (a real connection reach); otherwise, and on every page load, run
+  // the cheap probe() so probeAll never hammers external services.
+  const useTest = opts && opts.live && typeof entry.test === 'function';
+  try { r = useTest ? await entry.test() : await entry.probe(); }
+  catch (e) { r = { configured: false, live: false, detail: e && e.message ? e.message : 'probe failed' }; }
   r = r || {};
+  // The RUNTIME on/off switches for this integration (from src/lib/integrations/switches.js) — each
+  // is the effective value (admin override ?? env default), plus whether it's dangerous (needs a
+  // typed confirm), currently overridden, and `resume` (a background poller that only resumes on the
+  // next restart). Toggled live from the API Health page.
+  const runtimeSwitches = require('./switches').list().filter((s) => s.integration === entry.key)
+    .map((s) => ({ name: s.key, label: s.label, on: s.on, dangerous: s.dangerous, overridden: s.overridden, resume: s.resume, envDefault: s.envDefault, toggleable: true }));
+  const runtimeNames = new Set(runtimeSwitches.map((s) => s.name));
   return {
     key: entry.key, name: entry.name, group: entry.group, purpose: entry.purpose,
     direction: entry.direction, auth: entry.auth, liveProbe: !!entry.liveProbe, notBuilt: !!entry.notBuilt,
     env: (entry.env || []).map((e) => ({ name: e.name, required: !!e.required, set: envSet(e.name) })),
-    // The RUNTIME on/off switches for this integration (from src/lib/integrations/switches.js) — each
-    // is the effective value (admin override ?? env default), plus whether it's dangerous (needs a
-    // typed confirm), currently overridden, and `resume` (a background poller that only resumes on the
-    // next restart). Toggled live from the API Health page. Any DOCUSIGN_TEST_MODE-style display-only
-    // env flags stay on `entry.switches` for read-only rendering.
-    switches: require('./switches').list().filter((s) => s.integration === entry.key)
-      .map((s) => ({ name: s.key, label: s.label, on: s.on, dangerous: s.dangerous, overridden: s.overridden, resume: s.resume, envDefault: s.envDefault, toggleable: true })),
-    displaySwitches: (entry.switches || []).map((s) => ({ name: s.name, label: s.label, on: envSet(s.name), invert: !!s.invert })),
+    switches: runtimeSwitches,
+    // Read-only env pills are ONLY for flags that are NOT already a live toggle above (e.g.
+    // DOCUSIGN_TEST_MODE, which has no runtime switch). A flag that HAS a runtime switch must never
+    // also render as a display pill: the pill reads the raw env var, so it stays "off" even after an
+    // admin flips the live toggle on — the exact source of "I turned it on but it still says off".
+    displaySwitches: (entry.switches || []).filter((s) => !runtimeNames.has(s.name))
+      .map((s) => ({ name: s.name, label: s.label, on: envSet(s.name), invert: !!s.invert })),
     configured: !!r.configured, enabled: r.enabled === undefined ? null : r.enabled,
     live: r.live === undefined ? null : r.live, detail: r.detail || '',
-    state: computeState(entry, r),
+    state: computeState(entry, r, useTest),
   };
 }
 
@@ -409,7 +502,7 @@ async function probeAll() {
 async function probeOne(key) {
   const entry = INTEGRATIONS.find((e) => e.key === key);
   if (!entry) return null;
-  return resolveOne(entry);
+  return resolveOne(entry, { live: true });
 }
 
 module.exports = { INTEGRATIONS, probeAll, probeOne, _internals: { computeState, envSet } };

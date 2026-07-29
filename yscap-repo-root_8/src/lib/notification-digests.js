@@ -22,8 +22,11 @@
 const db = require('../db');
 const notify = require('./notify');
 const workflow = require('./workflow');
+const loanExceptions = require('./loan-exceptions');
 const { outstandingItems } = require('./reminders');
 const { claimOncePerPeriod } = require('./throttle-claim');
+// Advisory-only sources must never score or notify — one shared filter (audit 2026-07-27).
+const aiSuggestions = require('./underwriting/ai-suggestions');
 
 const STATUS_LABEL = {
   file_intake: 'File intake', new: 'Submitted', in_review: 'In review', processing: 'Processing',
@@ -31,6 +34,59 @@ const STATUS_LABEL = {
   funded: 'Funded', declined: 'Declined', withdrawn: 'Withdrawn',
 };
 const TERMINAL = ['funded', 'declined', 'withdrawn'];
+
+/* ── The throttle belongs in the QUERY, not only in the loop (audit finding, 2026-07-26) ──
+ *
+ * Ordering a capped batch was only half the fix. Every one of these digests sorts by a "how long
+ * has this been waiting" timestamp that SENDING DOES NOT ADVANCE — the delivered_at of an
+ * un-accepted finding, the wire_due_at of an unpaid release, the status_changed_at of a stalled
+ * file. So the same rows sort to the front on every single pass, the batch's membership never
+ * rotates, and past the cap a file waits not on a queue but on an EVENT THE DIGEST ITSELF CANNOT
+ * CAUSE (the borrower accepting, the wire going out, the file moving stage). Deterministic, and
+ * still starved — for the tail, strictly worse than the arbitrary batch it replaced.
+ *
+ * The real fix is to stop already-notified rows from consuming a slot at all. Each digest is
+ * self-gated to at most one send per file per period; expressing that SAME throttle in the WHERE
+ * clause means the cap now bounds only rows that still NEED work. With 200 slots × 8 passes/day ×
+ * a 3-day gate, every waiting file is reached long before its next send is even due — so the cap
+ * genuinely delays a file instead of hiding it, which is what the ordering was for.
+ *
+ * `_gate` remains the authority (it is atomic across instances and fails closed); this predicate is
+ * a cheap pre-filter over the same audit_log stamp, never a replacement for it.
+ */
+const DIGEST_ACTION = Object.freeze({
+  BORROWER_OUTSTANDING: 'borrower_outstanding_digest',
+  STALE_FILE: 'stale_file_alert',
+  DRAW_FINDINGS_REMINDER: 'draw_findings_reminder',
+  TRUSTPOINT_UNRELEASED: 'trustpoint_unreleased',
+  DRAW_RELEASE_OVERDUE: 'draw_release_overdue',
+  // Per-FILE stamp for the direct-source sweep (the sweep's other stamp,
+  // `direct_source_sweep_daily`, is global and only prevents overlapping runs).
+  DIRECT_SOURCE_FILE: 'direct_source_file_verified',
+});
+
+/**
+ * SQL fragment: this file has NOT been stamped with `action` inside `intervalSql`.
+ * @param {string} idExpr      the application-id expression in the outer query (e.g. 'a.id')
+ * @param {string} action      a DIGEST_ACTION value — an internal constant, never user input
+ * @param {string} intervalSql an interval expression (e.g. `interval '3 days'`, `($1||' hours')::interval`)
+ */
+function notThrottled(idExpr, action, intervalSql) {
+  // The action names are module constants, inlined so each caller keeps its own $-numbering. This
+  // assertion is the guard that keeps it that way: anything but a bare identifier is a programming
+  // error here, and must never become a path for interpolated input.
+  if (!/^[a-z][a-z0-9_]*$/.test(String(action))) throw new Error(`notThrottled: unsafe action ${action}`);
+  // `entity_type` is pinned even though `action` already implies it: without the LEADING column of
+  // the existing (entity_type, entity_id) index, Postgres cannot use that index at all and falls
+  // back to scanning the whole action partition once PER CANDIDATE ROW (measured at 7.7x on a tiny
+  // local table — and audit_log is append-only, never pruned, so it only gets worse). Every
+  // per-file gate stamp is written with entity_type='application' (it is `claimOncePerPeriod`'s
+  // default and no digest overrides it), so this narrows nothing and unlocks the index.
+  return `NOT EXISTS (SELECT 1 FROM audit_log l
+                       WHERE l.entity_type = 'application' AND l.action = '${action}'
+                         AND l.entity_id = ${idExpr}
+                         AND l.created_at > now() - ${intervalSql})`;
+}
 
 // Current hour + weekday in the team's timezone (America/New_York, matching the
 // ClickUp date convention) so digests land in the morning / on Monday, not 3am.
@@ -55,7 +111,40 @@ function nyParts(now = new Date()) {
 // check and both send, the owner-reported duplicate sweep 2026-07-20). Fails
 // closed. entityId null = a global (non-file-scoped) digest.
 async function _gate(action, entityId, interval) {
-  return (await claimOncePerPeriod({ action, entityId: entityId || null, interval })) != null;
+  return (await _claim(action, entityId, interval)) != null;
+}
+// Same claim, but returns the audit_log ROW ID rather than a boolean.
+//
+// A caller that may need to RELEASE its claim (the direct-source sweep claims before spending money
+// on vendor calls) must be able to delete the exact row it wrote. Releasing by (action, entity) plus
+// a time window instead — which is what this did — is a statement whose safety rests on an argument
+// about every other writer of that action rather than on the statement itself, and it silently
+// matches nothing if the work outlasts the window. Pinning the id removes the argument.
+async function _claim(action, entityId, interval) {
+  return claimOncePerPeriod({ action, entityId: entityId || null, interval });
+}
+/**
+ * The SAME claim, for a throttle keyed on the RECIPIENT rather than on a file.
+ *
+ * There are two shapes here and conflating them made the fairness guard unable to tell them apart.
+ * A PER-FILE throttle ("this file was nudged, don't nudge it again for 3 days") governs the rows a
+ * capped work query returns, so it MUST also appear in that query's WHERE or an already-notified
+ * file keeps taking a slot. A PER-RECIPIENT throttle ("this officer got their daily pipeline note")
+ * governs the EMAIL, not the rows: the officer's file list is a top-N summary, and filtering it by
+ * the officer's own stamp would be meaningless.
+ *
+ * Saying which is which in the CODE — rather than keeping a list of exceptions in the test — is what
+ * lets the guard demand the SQL throttle from every per-file digest without a whitelist to fall out
+ * of date. Use `_gate`/`_claim` for a file; `_gateRecipient` for a person.
+ */
+async function _gateRecipient(action, staffId, interval) {
+  return _gate(action, staffId, interval);
+}
+// Give back a claim this pass made and did not use. Best-effort BY ID, so it can only ever remove
+// the row this caller just wrote — never an older legitimate stamp and never another file's.
+async function _releaseClaim(claimId) {
+  if (!claimId) return;
+  await db.query(`DELETE FROM audit_log WHERE id = $1`, [claimId]).catch(() => {});
 }
 // The claim row is already written by _gate; _stamp now just enriches it with the
 // digest's stats for the audit trail (best-effort — never a second throttle row).
@@ -76,10 +165,82 @@ const addrOf = (pa) => { pa = pa || {}; return pa.oneLine || pa.street || pa.lin
 /* 1) Weekly "what's still needed" — per borrower file with open items. */
 async function weeklyBorrowerOutstandingOnce() {
   let sent = 0;
+  // ORDER BY, not just LIMIT (found 2026-07-26). A bare `LIMIT 500` lets Postgres return ANY 500
+  // rows, and a DIFFERENT 500 on the next run. Past 500 open files that means each run digests an
+  // arbitrary, unstable subset — a borrower can be skipped over and over and simply never receive
+  // the "here's what's still needed" email, with nothing anywhere saying so. The 6-day throttle
+  // made it worse rather than better: the files that DID get picked burned their gate, so the
+  // rotation was not even fair by accident.
+  //
+  // Ordering by the file's LAST digest (never-digested first, then longest-ago) makes the queue
+  // both deterministic and fair: whoever has waited longest goes first, and every file comes up
+  // eventually. `id` breaks ties so two files stamped in the same instant still have a stable order.
+  //
+  // AUDIT FIX (2026-07-26) — ordering alone made this WORSE, and could zero the digest entirely.
+  // The sort key is the file's last digest stamp, written by `_gate` — which is claimed only AFTER
+  // the open-item list comes back non-empty (deliberately: a file with nothing outstanding must not
+  // burn its 6-day throttle, owner audit 2026-07-20). So a file that has never had an open item
+  // NEVER gets a stamp, keeps last_digest NULL forever, and `NULLS FIRST` pins it at the head of
+  // every pass for the life of the file. With 500+ such files — new applications, files whose items
+  // were all satisfied before a digest ran — the whole batch is files with nothing to say, the loop
+  // sends ZERO emails, and the truncation warning below reports a perfectly healthy-looking pass.
+  //
+  // So the candidate set is now narrowed in SQL to files that actually HAVE something outstanding
+  // (mirroring reminders.outstandingItems) and are not already inside their 6-day throttle. The JS
+  // `if (!items.length) continue` guard stays: this predicate is a superset (outstandingItems also
+  // drops entries that format to nothing), so SQL narrows, JS decides.
+  const hasOpenBorrowerItem = `(
+       EXISTS (SELECT 1 FROM checklist_items ci
+                WHERE ci.application_id = a.id AND ci.audience IN ('borrower','both')
+                  AND ci.status IN ('outstanding','requested','issue'))
+    OR EXISTS (SELECT 1 FROM conditions c
+                WHERE c.application_id = a.id AND c.audience IN ('borrower','both')
+                  AND NULLIF(TRIM(c.borrower_title), '') IS NOT NULL AND c.status IN ('open','borrower_responded')))`;
+/* NULLIF, not a bare IS NOT NULL (audit 2026-07-26). `IS NOT NULL` admits the EMPTY STRING, and
+   `reminders.outstandingItems` — the function that actually builds the email body — formats a
+   condition with an empty title to '' and drops it with `.filter(Boolean)`. So a file whose only
+   open borrower item was a condition titled '' passed this predicate, came back with an empty item
+   list, hit the `continue` below, and therefore never claimed its throttle stamp. Its `last_digest`
+   stayed NULL forever, and `NULLS FIRST` pinned it to the head of every single pass for the life of
+   the file — occupying a slot in the cap permanently and sending nothing. That is the exact
+   residual shape of the bug this predicate was written to close, narrowed to one column. The
+   checklist half above already guards its label with COALESCE/NULLIF; this makes the two halves
+   agree, which is the property that matters: the SQL must select exactly the population the body
+   builder reports as non-empty. */
   const apps = await db.query(
-    `SELECT id FROM applications
-      WHERE deleted_at IS NULL AND borrower_id IS NOT NULL
-        AND status <> ALL($1) LIMIT 500`, [TERMINAL]);
+    // The last-digest stamp is read ONCE in a LATERAL and used for BOTH the throttle and the sort,
+    // so the fair-rotation key and the "already sent recently" test can never disagree.
+    `SELECT a.id, d.at AS last_digest
+       FROM applications a
+       LEFT JOIN LATERAL (
+         SELECT max(l.created_at) AS at FROM audit_log l
+          WHERE l.entity_type = 'application' AND l.action = '${DIGEST_ACTION.BORROWER_OUTSTANDING}' AND l.entity_id = a.id
+       ) d ON true
+      WHERE a.deleted_at IS NULL AND a.borrower_id IS NOT NULL
+        AND a.status <> ALL($1)
+        AND (d.at IS NULL OR d.at < now() - interval '6 days')
+        AND ${hasOpenBorrowerItem}
+      ORDER BY last_digest ASC NULLS FIRST, a.id
+      LIMIT 500`, [TERMINAL]);
+  // Say so when the cap truncates. A silently-dropped tail is what made this invisible for so long;
+  // an operator can now see that the portfolio has outgrown one pass.
+  if (apps.rows.length >= 500) {
+    try {
+      // Count the SAME population the batch was drawn from (due + something outstanding), not every
+      // eligible file — a total that counts files with nothing to send would overstate the backlog
+      // and make an ordinary pass look like a truncated one.
+      const total = (await db.query(
+        `SELECT count(*)::int AS n
+           FROM applications a
+          WHERE a.deleted_at IS NULL AND a.borrower_id IS NOT NULL AND a.status <> ALL($1)
+            AND ${notThrottled('a.id', DIGEST_ACTION.BORROWER_OUTSTANDING, "interval '6 days'")}
+            AND ${hasOpenBorrowerItem}`, [TERMINAL])).rows[0];
+      if (total && total.n > apps.rows.length) {
+        console.warn(`[digests] borrower digest considered ${apps.rows.length} of ${total.n} eligible files this pass `
+          + '(oldest-waiting first; the rest come up on following passes)');
+      }
+    } catch (_) { /* the count is only for visibility — never block the digest on it */ }
+  }
   for (const a of apps.rows) {
     try {
       // Compute content FIRST, then claim the gate — otherwise a file with zero
@@ -87,7 +248,7 @@ async function weeklyBorrowerOutstandingOnce() {
       // rest of the window once it gains an item (owner-reported audit 2026-07-20).
       const items = await outstandingItems(a.id);
       if (!items.length) continue;
-      if (!(await _gate('borrower_outstanding_digest', a.id, '6 days'))) continue;
+      if (!(await _gate(DIGEST_ACTION.BORROWER_OUTSTANDING, a.id, '6 days'))) continue;
       const shown = items.slice(0, 12);
       const lines = shown.map((l, i) => `${i + 1}. ${l}`);
       if (items.length > shown.length) lines.push(`…and ${items.length - shown.length} more, all listed in your portal.`);
@@ -110,7 +271,7 @@ async function weeklyBorrowerOutstandingOnce() {
         progress: progress || undefined,
         lines,
         applicationId: a.id, link: `/app/${a.id}`, ctaLabel: 'Complete your items' });
-      await _stamp('borrower_outstanding_digest', a.id, { open: items.length });
+      await _stamp(DIGEST_ACTION.BORROWER_OUTSTANDING, a.id, { open: items.length });
       sent++;
     } catch (e) { console.error('[digest] borrower-outstanding', a.id, e && e.message); }
   }
@@ -136,12 +297,16 @@ async function dailyPipelineDigestOnce() {
            FROM applications a
            JOIN application_assignees aa ON aa.application_id=a.id AND aa.staff_id=$1 AND aa.removed_at IS NULL
           WHERE a.deleted_at IS NULL AND a.status <> ALL($2)
-          ORDER BY a.status_changed_at ASC NULLS FIRST
+          -- a.id is the TIE-BREAK, not decoration: status_changed_at is far from unique (a bulk
+          -- status move stamps many files the same second, and NULLs all tie), so without it the
+          -- officer's 40-file snapshot still varies run to run among tied rows. An ORDER BY that
+          -- does not end in a unique column is not a total order (audit finding 2026-07-26).
+          ORDER BY a.status_changed_at ASC NULLS FIRST, a.id
           LIMIT 40`, [st.id, TERMINAL]);
       if (!files.rows.length) continue;
       // Claim the once-per-day gate only once we know there's content to send
       // (don't burn the window on an empty pass).
-      if (!(await _gate('pipeline_digest_daily', st.id, '20 hours'))) continue;
+      if (!(await _gateRecipient('pipeline_digest_daily', st.id, '20 hours'))) continue;
       const lines = files.rows.map((f) => {
         const d = daysAt(f.status_changed_at);
         return `${f.ys_loan_number || 'Loan # pending'} · ${addrOf(f.property_address)} — ${STATUS_LABEL[f.status] || f.status}`
@@ -171,13 +336,27 @@ async function staleFileAlertsOnce() {
     `SELECT a.id, a.status, a.status_changed_at
        FROM applications a
       WHERE a.deleted_at IS NULL AND a.status <> ALL($1) AND a.status <> 'file_intake'
+        -- A PAUSED file is not a stalled one. on_hold is inactive everywhere else in the system
+        -- (INACTIVE_FILE_STATUSES: KPIs, tasks, reminders, borrower notifications) and it was the
+        -- one place still alerting on it — so a deliberately-parked file emailed its team "stalled
+        -- for 380 days" every 3 days. Worse, db/319 preserves the ORIGINAL status_changed_at when
+        -- it heals an on-hold file, so those ancient timestamps sort to the very front and would
+        -- occupy the cap ahead of every genuinely stuck live file.
+        AND a.status <> 'on_hold'
         AND a.status_changed_at IS NOT NULL
         AND a.status_changed_at < now() - ($2 || ' days')::interval
         AND EXISTS (SELECT 1 FROM application_assignees aa WHERE aa.application_id=a.id AND aa.removed_at IS NULL)
+        -- Already alerted inside the 3-day gate → do not consume a slot (see notThrottled).
+        -- status_changed_at does NOT advance when the alert is sent, so without this the same 200
+        -- files sort to the front of every pass forever and file 201 is never reached at all.
+        AND ${notThrottled('a.id', DIGEST_ACTION.STALE_FILE, "interval '3 days'")}
+      -- STALEST FIRST is both deterministic and the right priority here — the file that has waited
+      -- longest is the one most worth telling somebody about.
+      ORDER BY a.status_changed_at ASC, a.id
       LIMIT 200`, [TERMINAL, String(staleDays)]);
   for (const f of files.rows) {
     try {
-      if (!(await _gate('stale_file_alert', f.id, '3 days'))) continue;
+      if (!(await _gate(DIGEST_ACTION.STALE_FILE, f.id, '3 days'))) continue;
       const d = daysAt(f.status_changed_at);
       await notify.notifyAppStaff(f.id, {
         type: 'digest',
@@ -185,7 +364,7 @@ async function staleFileAlertsOnce() {
         badge: { text: 'Needs attention', tone: 'action' },
         body: `This file hasn’t changed stages in ${d} days. A quick check-in may be needed to keep it on track — the file details are below.`,
         applicationId: f.id, link: `/internal/app/${f.id}`, ctaLabel: 'Open the loan file' });
-      await _stamp('stale_file_alert', f.id, { days: d, status: f.status });
+      await _stamp(DIGEST_ACTION.STALE_FILE, f.id, { days: d, status: f.status });
       sent++;
     } catch (e) { console.error('[digest] stale', f.id, e && e.message); }
   }
@@ -247,10 +426,11 @@ async function weeklyTopRiskyFilesOnce() {
          LEFT JOIN borrowers b ON b.id = a.borrower_id
         WHERE a.deleted_at IS NULL AND a.status NOT IN ('withdrawn','cancelled','declined','funded')
           AND s.status IN ('open','marked_important','escalated','asked_admin')
+          AND ${aiSuggestions.notScoredSql('s')}
         GROUP BY a.id, a.ys_loan_number, a.property_address, a.status, a.program,
                  u.full_name, u.email, b.first_name, b.last_name
        HAVING COUNT(*) > 0
-        ORDER BY score DESC
+        ORDER BY score DESC, a.id
         LIMIT 5`);
   } catch (_) { return 0; }
   if (!top.rows.length) { await _stamp('admin_weekly_top_risky', null, { none: true }); return 0; }
@@ -298,8 +478,14 @@ async function qaDeskAuditOnce() {
   try {
     [dupes, noEvidence, openFatal] = await Promise.all([
       // 1) same condition template open ≥2× on one active file.
-      db.query(
-        `SELECT a.id AS application_id, a.property_address, t.code, COUNT(*)::int AS n
+        /* ORDER BY … a.id is a TOTAL order (audit 2026-07-26: `t.code` alone is not — the query
+           groups by a.id as WELL as t.code, so two different files carrying the same code and the
+           same count tie and come back in whatever order the plan happens to produce).
+           `count(*) OVER ()` reports how many groups matched IN TOTAL, so a truncated batch says so
+           instead of reading as the whole answer — see the note on the sibling queries below. */
+        db.query(
+        `SELECT a.id AS application_id, a.property_address, t.code, COUNT(*)::int AS n,
+                count(*) OVER ()::int AS total_matches
            FROM checklist_items ci
            JOIN applications a ON a.id = ci.application_id AND a.deleted_at IS NULL
            JOIN checklist_templates t ON t.id = ci.template_id
@@ -307,11 +493,25 @@ async function qaDeskAuditOnce() {
             AND ci.status IN ('outstanding','requested','received','issue')
           GROUP BY a.id, a.property_address, t.code
          HAVING COUNT(*) > 1
-          ORDER BY n DESC
+          ORDER BY n DESC, t.code, a.id
           LIMIT 25`),
       // 2) a document condition cleared with no current document attached.
-      db.query(
-        `SELECT a.id AS application_id, a.property_address, ci.label
+        /* NEWEST CLEARANCE FIRST, and the total is reported (audit 2026-07-26).
+           This was `ORDER BY a.id LIMIT 25` — ordered, and totally ordered, and STILL an instance of
+           the exact starvation this session set out to kill. A file's id is a UUID that never
+           changes, and this audit writes nothing that removes a row from the set, so the same lowest
+           25 ids were reported to the super-admins every night for the life of the deployment and a
+           file whose id sorted 26th was permanently invisible. Ordering a capped batch is only a fix
+           when the sort key ADVANCES.
+           The key that advances here is the CLEARANCE itself: a condition signed off today is a
+           mistake worth catching today, so newest-first is both the right audit semantics and a
+           moving key. `count(*) OVER ()` then makes the cap honest — the digest can say "25 of 340"
+           rather than presenting a truncated sample as the whole finding. A historical backlog is a
+           one-off cleanup, which the total makes visible; it is not something a nightly note should
+           silently pretend does not exist. */
+        db.query(
+        `SELECT a.id AS application_id, a.property_address, ci.label,
+                count(*) OVER ()::int AS total_matches
            FROM checklist_items ci
            JOIN applications a ON a.id = ci.application_id AND a.deleted_at IS NULL
           WHERE a.status NOT IN ('withdrawn','cancelled','declined')
@@ -321,58 +521,106 @@ async function qaDeskAuditOnce() {
               SELECT 1 FROM documents d
                WHERE d.checklist_item_id = ci.id AND d.is_current = true
                  AND COALESCE(d.review_status,'') <> 'rejected')
-          ORDER BY a.id
+          ORDER BY COALESCE(ci.signed_off_at, ci.updated_at, ci.created_at) DESC NULLS LAST, ci.id
           LIMIT 25`),
       // 3) a file advanced to approved/CTC/funded with an OPEN fatal AI suggestion.
-      db.query(
+        /* Same treatment: severity first (a file with six open fatals outranks one with a single
+           fatal), then the MOST RECENT fatal — an advancing key, so a newly raised fatal on a file
+           that already advanced to CTC surfaces at once instead of queueing behind an untouched
+           backlog. a.id remains only as the final tie-break, never as the whole order. */
+        db.query(
         `SELECT a.id AS application_id, a.property_address, a.status AS app_status,
-                COUNT(*)::int AS open_fatal
+                COUNT(*)::int AS open_fatal, max(s.created_at) AS newest_fatal_at,
+                count(*) OVER ()::int AS total_matches
            FROM ai_suggestions s
            JOIN applications a ON a.id = s.application_id AND a.deleted_at IS NULL
           WHERE s.severity = 'fatal'
             AND s.status IN ('open','marked_important','escalated','asked_admin')
+            AND ${aiSuggestions.notScoredSql('s')}
             AND a.status IN ('approved','clear_to_close','funded')
           GROUP BY a.id, a.property_address, a.status
-          ORDER BY open_fatal DESC
+          ORDER BY open_fatal DESC, max(s.created_at) DESC NULLS LAST, a.id
           LIMIT 25`),
     ]);
   } catch (_) { await _stamp('qa_desk_audit', null, { error: true }); return 0; }
 
-  const total = dupes.rows.length + noEvidence.rows.length + openFatal.rows.length;
-  if (total === 0) { await _stamp('qa_desk_audit', null, { clean: true }); return 0; }
+  // The count that goes in the SUBJECT and the tile is the REAL one. Each query is capped at 25, so
+  // summing `rows.length` announced "12 quality items to review" for a backlog of 340 — the exact
+  // defect the body fix addressed, surviving on the most prominent surface of all (audit
+  // 2026-07-27). `shownTotal` stays only to decide whether there is anything at all to send.
+  const shownTotal = dupes.rows.length + noEvidence.rows.length + openFatal.rows.length;
+  if (shownTotal === 0) { await _stamp('qa_desk_audit', null, { clean: true }); return 0; }
 
   const admins = await db.query(
     `SELECT id, email FROM staff_users WHERE role IN ('admin','super_admin') AND is_active=true`);
   if (!admins.rows.length) return 0;
 
   const addr = (pa, id) => (pa && (pa.line1 || pa.address || pa.oneLine)) || String(id).slice(0, 8);
+  /* NO SILENT CAPS (audit 2026-07-26). Each of these three queries is capped at 25 and the note then
+     printed the SHOWN count as if it were the finding. "12 conditions cleared with no document"
+     read as twelve when it could have been the first 25 of three hundred, and an admin who worked
+     all twelve would reasonably believe the queue was empty. `count(*) OVER ()` rides back on the
+     row, so the count says how many there really are and names the cap when one applied. */
+  // How many there really are, regardless of what the cap returned.
+  const realTotal = (rows) => ((rows[0] && Number.isFinite(rows[0].total_matches)) ? rows[0].total_matches : rows.length);
+  const BULLETS = 8;                       // how many the body actually prints
+  const headline = (rows, one, many, ranked) => {
+    const total = realTotal(rows);
+    const listed = Math.min(rows.length, BULLETS);
+    const noun = total === 1 ? one : many;
+    // Say the number the reader can actually SEE, and say honestly HOW those were chosen. The first
+    // version claimed "showing the 25 most recent" while printing 8 bullets, and said "most recent"
+    // for two tiles whose queries lead on severity, not on recency (audit 2026-07-27).
+    return total > listed ? `${total} ${noun} (listing ${listed}, ${ranked})` : `${total} ${noun}`;
+  };
+  // The real, uncapped total across all three checks — the number the subject line and the tile
+  // must carry, so nobody works a "12-item" queue that is actually 340.
+  const grandTotal = realTotal(dupes.rows) + realTotal(noEvidence.rows) + realTotal(openFatal.rows);
   const lines = [];
+  // ADVISORY ONLY (owner-directed 2026-07-27). Advancing past an open PILOT fatal is
+  // NORMAL now — findings do not gate clear-to-close, so "⛔ advanced with an OPEN
+  // fatal" would fire on ordinary files every single night, read as a policy breach,
+  // and re-frame findings as something that should have blocked. Kept as genuinely
+  // useful information (PILOT was unhappy on a file that closed — worth a look), but
+  // stated as a note, and it no longer drives the digest's alarm tone.
+  const aiAdvisory = require('../lib/underwriting/advisory-policy').advisoryOnly();
   if (openFatal.rows.length) {
-    lines.push(`⛔ ${openFatal.rows.length} file(s) advanced with an OPEN fatal AI finding:`);
-    for (const r of openFatal.rows.slice(0, 8)) lines.push(`   • ${addr(r.property_address, r.application_id)} — ${r.app_status} · ${r.open_fatal} fatal`);
+    lines.push(aiAdvisory
+      ? `👀 ${headline(openFatal.rows, 'file', 'file(s)', 'most findings first')} moved ahead with a serious PILOT finding still open (advisory — worth a look, nothing was bypassed):`
+      : `⛔ ${headline(openFatal.rows, 'file', 'file(s)', 'most fatals first')} advanced with an OPEN fatal AI finding:`);
+    for (const r of openFatal.rows.slice(0, 8)) lines.push(`   • ${addr(r.property_address, r.application_id)} — ${r.app_status} · ${r.open_fatal} ${aiAdvisory ? 'serious' : 'fatal'}`);
   }
   if (noEvidence.rows.length) {
-    lines.push(`📄 ${noEvidence.rows.length} condition(s) cleared with no document attached:`);
+    lines.push(`📄 ${headline(noEvidence.rows, 'condition', 'condition(s)', 'most recently cleared first')} cleared with no document attached:`);
     for (const r of noEvidence.rows.slice(0, 8)) lines.push(`   • ${addr(r.property_address, r.application_id)} — "${String(r.label || '').slice(0, 60)}"`);
   }
   if (dupes.rows.length) {
-    lines.push(`🔁 ${dupes.rows.length} duplicate open condition(s):`);
+    lines.push(`🔁 ${headline(dupes.rows, 'duplicate open condition', 'duplicate open condition(s)', 'most copies first')}:`);
     for (const r of dupes.rows.slice(0, 8)) lines.push(`   • ${addr(r.property_address, r.application_id)} — ${r.code} ×${r.n}`);
   }
 
+  const alarmTone = (aiAdvisory
+    ? (noEvidence.rows.length || dupes.rows.length)
+    : openFatal.rows.length) ? 'crit' : 'gold';
   for (const ad of admins.rows) {
     try {
       await notify.notifyStaff(ad.id, {
         type: 'digest',
-        title: `AI QA — ${total} quality item${total === 1 ? '' : 's'} to review`,
-        badge: { text: 'QA', tone: openFatal.rows.length ? 'crit' : 'gold' },
-        hero: { label: 'To review', value: String(total), sub: `${openFatal.rows.length} fatal-advanced · ${noEvidence.rows.length} no-evidence · ${dupes.rows.length} duplicate`, tone: openFatal.rows.length ? 'crit' : 'gold' },
+        title: `AI QA — ${grandTotal} quality item${grandTotal === 1 ? '' : 's'} to review`,
+        // The RED tone belongs to the two real data-quality problems (a condition
+        // cleared with no document, a duplicated condition). An advisory finding on
+        // an advanced file is a note, not an alarm — see the aiAdvisory block above.
+        badge: { text: 'QA', tone: alarmTone },
+        hero: { label: 'To review', value: String(grandTotal), sub: `${realTotal(openFatal.rows)} ${aiAdvisory ? 'advisory' : 'fatal-advanced'} · ${realTotal(noEvidence.rows)} no-evidence · ${realTotal(dupes.rows)} duplicate`, tone: alarmTone },
         body: 'PILOT reviewed the desk overnight and found the items below worth a look. These are quality signals, not automatic changes — open each file and decide.',
         lines,
         link: '/internal/insights', ctaLabel: 'Open Insights', emailTo: ad.email });
     } catch (e) { console.error('[digest] qa-desk-audit', ad.id, e && e.message); }
   }
-  await _stamp('qa_desk_audit', null, { total, dupes: dupes.rows.length, noEvidence: noEvidence.rows.length, openFatal: openFatal.rows.length });
+  await _stamp('qa_desk_audit', null, {
+    total: grandTotal, shown: shownTotal,
+    dupes: realTotal(dupes.rows), noEvidence: realTotal(noEvidence.rows), openFatal: realTotal(openFatal.rows),
+  });
   return admins.rows.length;
 }
 
@@ -394,11 +642,12 @@ async function weeklyLoAiDigestOnce() {
           AND u.role IN ('loan_officer','processor','admin','super_admin')
           AND a.deleted_at IS NULL
           AND a.status NOT IN ('withdrawn','cancelled','declined','funded')
-          AND s.status IN ('open','marked_important','escalated','asked_admin')`);
+          AND s.status IN ('open','marked_important','escalated','asked_admin')
+          AND ${aiSuggestions.notScoredSql('s')}`);
   } catch (_) { return 0; }
   let sent = 0;
   for (const lo of officers.rows) {
-    if (!(await _gate('lo_weekly_ai_digest', lo.id, '6 days'))) continue;
+    if (!(await _gateRecipient('lo_weekly_ai_digest', lo.id, '6 days'))) continue;
     let files;
     try {
       files = await db.query(
@@ -414,8 +663,9 @@ async function weeklyLoAiDigestOnce() {
             AND a.deleted_at IS NULL
             AND a.status NOT IN ('withdrawn','cancelled','declined','funded')
             AND s.status IN ('open','marked_important','escalated','asked_admin')
+            AND ${aiSuggestions.notScoredSql('s')}
           GROUP BY a.id, a.property_address, b.first_name, b.last_name
-          ORDER BY score DESC
+          ORDER BY score DESC, a.id
           LIMIT 10`, [lo.id]);
     } catch (_) { continue; }
     if (!files.rows.length) { await _stamp('lo_weekly_ai_digest', lo.id, { files: 0 }); continue; }
@@ -423,7 +673,7 @@ async function weeklyLoAiDigestOnce() {
     const lines = files.rows.map((r) => {
       const addr = (r.property_address && (r.property_address.line1 || r.property_address.address || r.property_address.oneLine)) || String(r.id).slice(0, 8);
       const bucket = r.score >= 80 ? 'CRITICAL' : r.score >= 50 ? 'ELEVATED' : 'moderate';
-      const who = `${r.first_name || ''} ${r.last_name || ''}`.trim();
+      const who = require('./person-name').displayName(r);
       return `• ${addr}${who ? ` — ${who}` : ''} · score ${r.score} (${bucket}) · ${r.open_findings} open${r.fatals ? ` · ${r.fatals} fatal` : ''}`;
     });
     try {
@@ -460,7 +710,7 @@ async function weeklyAdminAiQuestionsOnce() {
          JOIN applications a ON a.id = q.application_id AND a.deleted_at IS NULL
          LEFT JOIN borrowers b ON b.id = a.borrower_id
         WHERE q.answered_at IS NULL
-        ORDER BY q.asked_at ASC
+        ORDER BY q.asked_at ASC, q.id
         LIMIT 50`);
   } catch (_) { return 0; }   // schema not present yet on this deploy
   if (!pending.rows.length) { await _stamp('admin_weekly_ai_questions', null, { pending: 0 }); return 0; }
@@ -516,13 +766,21 @@ async function drawFindingsAwaitingBorrowerOnce() {
         AND f.delivered_at < now() - ($1 || ' hours')::interval
         AND EXISTS (SELECT 1 FROM sitewire_property_links pl WHERE pl.application_id=f.application_id
                       AND pl.matched_by='created' AND COALESCE(pl.lifecycle_state,'active')='active')
+        -- Nudged inside the last waitHours → not due, so it must not consume a slot. delivered_at
+        -- only moves when the BORROWER acts, so without this the longest-stuck borrowers hold the
+        -- front of the queue indefinitely and a newer delivery past the cap is never nudged at all.
+        AND ${notThrottled('f.application_id', DIGEST_ACTION.DRAW_FINDINGS_REMINDER, "($1 || ' hours')::interval")}
       GROUP BY f.application_id
+      -- Deterministic order (same defect class as the borrower digest): an unordered LIMIT lets
+      -- Postgres return an arbitrary 300 of the waiting files, so past the cap a borrower could be
+      -- skipped on every single pass and never nudged. Oldest-waiting first, id as the tie-break.
+      ORDER BY oldest ASC, f.application_id
       LIMIT 300`, [String(waitHours)])).rows;
   for (const r of rows) {
     try {
       // At most one nudge per `waitHours` per file (the atomic gate), so within the
       // business-hours window the borrower is reminded every few hours until they act.
-      if (!(await _gate('draw_findings_reminder', r.application_id, `${waitHours} hours`))) continue;
+      if (!(await _gate(DIGEST_ACTION.DRAW_FINDINGS_REMINDER, r.application_id, `${waitHours} hours`))) continue;
       await notify.notifyAppBorrowers(r.application_id, {
         type: 'draw_findings',
         title: r.n === 1 ? 'Your draw inspection result is waiting for you' : `${r.n} draw inspection results are waiting for you`,
@@ -530,7 +788,7 @@ async function drawFindingsAwaitingBorrowerOnce() {
         body: `Your inspection result${r.n === 1 ? ' is' : 's are'} ready and waiting for you. Your draw is released once you review and accept ${r.n === 1 ? 'it' : 'them'} — please take a moment to review ${r.n === 1 ? 'it' : 'them'} (or dispute a line) in your portal.`,
         callout: { title: 'Why this matters', body: 'The release clock for your draw only starts once you accept — reviewing promptly gets your money to you sooner.', tone: 'action' },
         applicationId: r.application_id, link: `/app/${r.application_id}`, ctaLabel: 'Review your draw' });
-      await _stamp('draw_findings_reminder', r.application_id, { awaiting: r.n, hours: waitHours });
+      await _stamp(DIGEST_ACTION.DRAW_FINDINGS_REMINDER, r.application_id, { awaiting: r.n, hours: waitHours });
       sent++;
     } catch (e) { console.error('[digest] draw-findings-await', r.application_id, e && e.message); }
   }
@@ -545,6 +803,54 @@ async function drawFindingsAwaitingBorrowerOnce() {
    (The portfolio monitor flags this passively; this is the active push.) Staff surface — not borrower-safe-gated.
    The active-link EXISTS mirrors the passive monitor (rule 10): a finished/paid-off project is excluded, so an
    accepted finding whose wire was handled outside PILOT on a closed loan never alerts the team forever. */
+/* TrustPoint phase 5 (§5C, D2 — the SLA inverts): on an ADMINISTERED file the note
+   buyer wires the draw, not PILOT. An APPROVED TrustPoint draw with no observed
+   release after N days (TRUSTPOINT_UNRELEASED_DAYS, default 5) means someone should
+   chase the administrator so the borrower isn't left waiting. Self-gated per file,
+   at most every 2 days; the moment the poll observes the disbursement it stops. */
+async function trustpointUnreleasedOnce() {
+  let sent = 0;
+  const days = Math.max(1, Math.round(Number(process.env.TRUSTPOINT_UNRELEASED_DAYS) || 5));
+  let rows = [];
+  try {
+    rows = (await db.query(
+      `SELECT t.application_id, count(*)::int AS n, min(COALESCE(t.approved_at, t.first_seen_at)) AS oldest
+         FROM trustpoint_draws t
+         JOIN applications a ON a.id=t.application_id AND a.deleted_at IS NULL AND a.status NOT IN ('withdrawn','declined','on_hold')
+        WHERE t.status='APPROVED' AND t.disbursed_at IS NULL
+          -- first_seen_at, never updated_at: PILOT's own stamps (fee check, write-back)
+          -- bump updated_at and would keep restarting the clock (audit-5 #9)
+          AND COALESCE(t.approved_at, t.first_seen_at) < now() - ($1 || ' days')::interval
+          AND NOT EXISTS (SELECT 1 FROM draw_disbursements dd WHERE dd.trustpoint_draw_id = t.tp_draw_id)
+          -- a finished / paid-off project is intentionally done — no chasing (audit-5 #6)
+          AND NOT EXISTS (SELECT 1 FROM sitewire_property_links pl
+                            WHERE pl.application_id = t.application_id
+                              AND COALESCE(pl.lifecycle_state,'active') <> 'active')
+          -- Chased inside the 2-day gate → not due; do not consume a slot. approved_at/first_seen_at
+          -- never advance from chasing, so the same files would otherwise hold the front forever.
+          AND ${notThrottled('t.application_id', DIGEST_ACTION.TRUSTPOINT_UNRELEASED, "interval '2 days'")}
+        GROUP BY t.application_id
+        -- Deterministic order: an unordered LIMIT could skip the same waiting file forever.
+        ORDER BY oldest ASC, t.application_id
+        LIMIT 200`, [String(days)])).rows;
+  } catch (_) { return 0; }
+  for (const r of rows) {
+    try {
+      if (!(await _gate(DIGEST_ACTION.TRUSTPOINT_UNRELEASED, r.application_id, '2 days'))) continue;
+      const d = daysAt(r.oldest);
+      await notify.notifyAppStaff(r.application_id, {
+        type: 'draw',
+        title: r.n === 1 ? 'Approved draw not released yet' : `${r.n} approved draws not released yet`,
+        badge: { text: 'Chase release', tone: 'action' },
+        body: `${r.n === 1 ? 'A draw' : `${r.n} draws`} on this file ${r.n === 1 ? 'was' : 'were'} approved by the draw administrator ${d != null && d > 0 ? `${d} day${d === 1 ? '' : 's'} ago ` : ''}but no funds release has been observed yet. The wire comes from the note buyer's side — please follow up with them so the borrower isn't left waiting.`,
+        applicationId: r.application_id, link: `/internal/app/${r.application_id}/draws`, ctaLabel: 'Open the draw desk' });
+      await _stamp(DIGEST_ACTION.TRUSTPOINT_UNRELEASED, r.application_id, { unreleased: r.n, days: d });
+      sent++;
+    } catch (e) { console.error('[digest] trustpoint-unreleased', r.application_id, e && e.message); }
+  }
+  return sent;
+}
+
 async function drawReleaseOverdueOnce() {
   let sent = 0;
   const rows = (await db.query(
@@ -557,11 +863,16 @@ async function drawReleaseOverdueOnce() {
                             AND dd.sitewire_draw_id = f.sitewire_draw_id)
         AND EXISTS (SELECT 1 FROM sitewire_property_links pl WHERE pl.application_id=f.application_id
                       AND pl.matched_by='created' AND COALESCE(pl.lifecycle_state,'active')='active')
+        -- Alerted inside the 2-day gate → not due; do not consume a slot. wire_due_at is a fixed
+        -- date that never advances, so the most-overdue files would otherwise hold every slot.
+        AND ${notThrottled('f.application_id', DIGEST_ACTION.DRAW_RELEASE_OVERDUE, "interval '2 days'")}
       GROUP BY f.application_id
+      -- Deterministic order: most-overdue wire first, so the cap can never hide the same file forever.
+      ORDER BY due ASC, f.application_id
       LIMIT 300`)).rows;
   for (const r of rows) {
     try {
-      if (!(await _gate('draw_release_overdue', r.application_id, '2 days'))) continue;
+      if (!(await _gate(DIGEST_ACTION.DRAW_RELEASE_OVERDUE, r.application_id, '2 days'))) continue;
       const d = daysAt(r.due);
       await notify.notifyAppStaff(r.application_id, {
         type: 'draw',
@@ -569,7 +880,7 @@ async function drawReleaseOverdueOnce() {
         badge: { text: 'Overdue', tone: 'action' },
         body: `The borrower accepted ${r.n === 1 ? 'a draw' : `${r.n} draws`} and the release ${d != null && d > 0 ? `is ${d} day${d === 1 ? '' : 's'} past the target` : 'is now due'}, but no release has been recorded in PILOT yet. Please confirm the wire and record the release.`,
         applicationId: r.application_id, link: `/internal/app/${r.application_id}/draws`, ctaLabel: 'Open the draw desk' });
-      await _stamp('draw_release_overdue', r.application_id, { overdue: r.n, days: d });
+      await _stamp(DIGEST_ACTION.DRAW_RELEASE_OVERDUE, r.application_id, { overdue: r.n, days: d });
       sent++;
     } catch (e) { console.error('[digest] draw-release-overdue', r.application_id, e && e.message); }
   }
@@ -585,7 +896,7 @@ async function workflowAgingOnce() {
   try { rows = await workflow.overdueByRecipient(); } catch (_) { return 0; }
   for (const r of rows) {
     try {
-      if (!r.to_staff_id || !(await _gate('workflow_overdue', r.to_staff_id, '20 hours'))) continue;
+      if (!r.to_staff_id || !(await _gateRecipient('workflow_overdue', r.to_staff_id, '20 hours'))) continue;
       await notify.notifyStaff(r.to_staff_id, {
         type: 'workflow_ready',
         title: r.overdue === 1 ? 'A file in your Workflow is overdue' : `${r.overdue} files in your Workflow are overdue`,
@@ -640,7 +951,7 @@ async function section1071SweepOnce() {
     const targets = await db.query(
       `SELECT id FROM applications
         WHERE deleted_at IS NULL AND status NOT IN ('withdrawn','cancelled','declined')
-        ORDER BY updated_at DESC`);
+        ORDER BY updated_at DESC, id`);
     for (const row of targets.rows) {
       try {
         const client = await db.getClient();
@@ -682,7 +993,7 @@ async function autoReadSweepOnce() {
     // document uploaded in the last 24h that has no current extraction and whose
     // application is active. Cheap indexed query.
     const targets = await db.query(
-      `SELECT DISTINCT a.id
+      `SELECT a.id, min(d.created_at) AS oldest_doc
          FROM applications a
          JOIN documents d ON (d.application_id = a.id
                               OR EXISTS (SELECT 1 FROM checklist_items ci WHERE ci.id = d.checklist_item_id AND ci.application_id = a.id))
@@ -695,6 +1006,11 @@ async function autoReadSweepOnce() {
             SELECT 1 FROM document_extractions ex
              WHERE ex.document_id = d.id AND ex.application_id = a.id AND ex.is_current
           )
+        GROUP BY a.id
+        -- GROUP BY (not DISTINCT) so the batch can be ORDERED: an unordered LIMIT let Postgres
+        -- return an arbitrary BATCH of the waiting files, so with more than BATCH files waiting a
+        -- document could be passed over on every sweep and never read. Longest-waiting first.
+        ORDER BY oldest_doc ASC, a.id
         LIMIT $1`, [BATCH]);
     for (const row of targets.rows) {
       try {
@@ -716,6 +1032,21 @@ async function autoReadSweepOnce() {
     await _stamp('auto_read_sweep_hourly', null, { filesRead, totalDocs });
     return filesRead;
   } catch (e) { console.error('[digests] auto-read-sweep', e && e.message); return filesRead; }
+}
+
+/* UN-FUNDED RE-READ SWEEP (owner decision 2026-07-27). One bounded slice per
+   tick: re-read a few alive, not-yet-funded files whose stored reads predate
+   the current reader generation, so the findings-cleanup extraction fixes
+   (liquidity / credit / appraisal / OFAC+fraud deep reads) reach files that
+   were already analysed. All the safety — bounded batch, per-file cost cap,
+   generation-stamp idempotency, off-switch, reader-off no-op, re-reads-only
+   (never clears a condition / moves a status / notifies) — lives in the sweep
+   module. Best-effort; a failure here never disturbs the rest of the dispatch. */
+async function unfundedRereadSweepOnce() {
+  try {
+    const r = await require('./underwriting/reread-sweep').sweepOnce();
+    return (r && r.filesRead) || 0;
+  } catch (e) { console.error('[digests] reread-sweep', e && e.message); return 0; }
 }
 
 /* R2.8 — Nightly direct-source verification sweep (Sovereign extension,
@@ -741,22 +1072,60 @@ async function directSourceSweepOnce() {
     const configuredCount = Object.values(hub.CONNECTORS || {}).filter((c) => { try { return c.configured(); } catch { return false; } }).length;
     if (configuredCount === 0) { await _stamp('direct_source_sweep_daily', null, { skipped: 'no vendor keys configured' }); return 0; }
     const targets = await db.query(
-      `SELECT id FROM applications
-        WHERE deleted_at IS NULL AND status NOT IN ('withdrawn','cancelled','funded','declined')
-          AND status IS DISTINCT FROM 'file_intake'
-        ORDER BY updated_at DESC
+      // AUDIT FIX (2026-07-26) — this was the worst instance of the whole class. `ORDER BY
+      // updated_at DESC LIMIT 40` means the sweep re-verifies the 40 most RECENTLY TOUCHED files,
+      // over and over, and a file outside that window is never direct-source verified at all — not
+      // "eventually", never. Busy files were being re-checked daily while quiet ones went unchecked
+      // for their entire life, and each re-check is a paid vendor call.
+      //
+      // Now it is a real queue: LEAST-RECENTLY-VERIFIED first (never-verified first), with files
+      // verified inside the last 7 days excluded so they do not consume a slot. Every active file
+      // is reached, none is re-billed within the week, and the batch rotates on its own.
+      `SELECT a.id, v.at AS last_verified
+         FROM applications a
+         LEFT JOIN LATERAL (
+           SELECT max(l.created_at) AS at FROM audit_log l
+            WHERE l.entity_type = 'application' AND l.action = '${DIGEST_ACTION.DIRECT_SOURCE_FILE}' AND l.entity_id = a.id
+         ) v ON true
+        WHERE a.deleted_at IS NULL AND a.status NOT IN ('withdrawn','cancelled','funded','declined')
+          AND a.status IS DISTINCT FROM 'file_intake'
+          AND (v.at IS NULL OR v.at < now() - interval '7 days')
+        ORDER BY last_verified ASC NULLS FIRST, a.id
         LIMIT $1`, [BATCH]);
     for (const row of targets.rows) {
       try {
-        const client = await db.getClient();
+        // Claim the per-file slot BEFORE spending money on vendor calls. This is the same atomic
+        // claim every other digest uses, and it is what makes the ordering above a real rotation:
+        // the stamp it writes is the sort key, so a verified file moves to the back of the queue.
+        const claimId = await _claim(DIGEST_ACTION.DIRECT_SOURCE_FILE, row.id, '7 days');
+        if (!claimId) continue;
+        let verified = false;
+        // RELEASE ON EVERY PATH THAT VERIFIED NOTHING — including a THROW (audit 2026-07-26).
+        //
+        // The first version released only when `verifyFile` returned cleanly with no ok result, and
+        // rethrew on an exception. That covered the least likely failure and missed the most likely
+        // ones: `getClient()` exhausting the pool, BEGIN/COMMIT failing, or a connector throwing
+        // rather than reporting `{ok:false}`. Any of those escaped past the release, so the file
+        // kept a "verified" stamp and sat out of the queue for seven days having been verified by
+        // nobody — the precise outcome the release exists to prevent, reached by the more common
+        // route. The `finally` makes the property structural: nothing verified, claim goes back.
         try {
-          await client.query('BEGIN');
-          const r = await hub.verifyFile(client, row.id, {});
-          await client.query('COMMIT');
-          files += 1;
-          calls += (r && r.results ? r.results.filter((x) => x.ok || x.reason).length : 0);
-        } catch (e) { await client.query('ROLLBACK').catch(() => {}); throw e; }
-        finally { client.release(); }
+          const client = await db.getClient();
+          try {
+            await client.query('BEGIN');
+            const r = await hub.verifyFile(client, row.id, {});
+            await client.query('COMMIT');
+            files += 1;
+            calls += (r && r.results ? r.results.filter((x) => x.ok || x.reason).length : 0);
+            // Did ANY connector actually return something? `verifyFile` swallows connector errors
+            // and reports them as {ok:false, reason}, so a vendor outage or a rotated key does not
+            // throw — it comes back as a full set of failures.
+            verified = !!(r && Array.isArray(r.results) && r.results.some((x) => x && x.ok));
+          } catch (e) { await client.query('ROLLBACK').catch(() => {}); throw e; }
+          finally { client.release(); }
+        } finally {
+          if (!verified) await _releaseClaim(claimId);
+        }
       } catch (e) { console.error('[digests] direct-source-sweep', row.id, e && e.message); }
     }
     await _stamp('direct_source_sweep_daily', null, { files, calls, configuredCount });
@@ -830,12 +1199,12 @@ async function autoCommitteeReviewOnce() {
         WHERE df.status='open' AND df.severity='fatal'
           AND df.committee_reviewed_at IS NULL
           AND a.deleted_at IS NULL AND a.status NOT IN ('withdrawn','cancelled','funded')
-        ORDER BY df.created_at DESC
+        ORDER BY df.created_at DESC, df.id
         LIMIT $1`, [BATCH_LIMIT]);
     for (const f of q.rows) {
       try {
         const context = {
-          borrowerName: [f.first_name, f.last_name].filter(Boolean).join(' ') || null,
+          borrowerName: require('./person-name').displayName(f) || null,
           entityName:   f.entity_name || null,
           propertyAddress: f.property_address && (f.property_address.line1 || f.property_address.address) || null,
           program:      f.program || null,
@@ -899,15 +1268,17 @@ async function aiCrossdocSweepOnce() {
                             WHERE al.entity_type='application' AND al.entity_id=a.id
                               AND al.action='ai_crossdoc_sweep_ran'
                               AND al.created_at > now() - interval '30 days')
-        ORDER BY a.updated_at DESC
+        ORDER BY a.updated_at DESC, a.id
         LIMIT $1`, [BATCH]);
     for (const row of q.rows) {
       const c = await db.getClient();
       try {
         await c.query('BEGIN');
+        // Fix 2026-07-23: extraction status is 'analyzed' (db/200), never 'ok' —
+        // the nightly cross-doc sweep saw zero extractions on every file.
         const exts = await c.query(
           `SELECT doc_type, document_id, fields FROM document_extractions
-            WHERE application_id=$1 AND status='ok' ORDER BY created_at DESC LIMIT 40`, [row.id]);
+            WHERE application_id=$1 AND is_current AND status='analyzed' ORDER BY created_at DESC, document_id LIMIT 40`, [row.id]);
         if (exts.rows.length >= 2) {
           await require('./underwriting/ai-cross-doc').analyzeFile(c, {
             applicationId: row.id, extractions: exts.rows,
@@ -931,13 +1302,152 @@ async function aiCrossdocSweepOnce() {
 
 /* Time-gated dispatcher — morning window for staff/admin, business hours for the
    borrower digest; each function's own audit-gate enforces the true frequency. */
+// -------------------------------------------------------------------------
+// #191 activation 3 — condition FRESHNESS reopen sweep (daily, capped).
+// Cleared conditions whose evidence has outlived its freshness window
+// (bank statements 60d, credit 120d, title 120d, insurance/flood 365d —
+// windows live in condition-reopen.js, never here) reopen through the SAME
+// audited path every automated reopen uses: checklist-evidence.
+// reopenConditionEvidence + an [auto] note + an audit_log row. Waived
+// conditions never reopen (human decision); the frozen SOW gates are
+// structurally out of scope (their codes aren't in the freshness map);
+// capped per run so a first activation drains a backlog gradually.
+// Kill switch: CONDITION_FRESHNESS_ENABLED=0.
+// -------------------------------------------------------------------------
+async function conditionFreshnessReopenOnce() {
+  if (process.env.CONDITION_FRESHNESS_ENABLED === '0') return;
+  if (!(await _gate('condition_freshness_reopen', null, '20 hours'))) return;
+  const freshness = require('./underwriting/condition-freshness');
+  const { reopenConditionEvidence } = require('./checklist-evidence');
+  const codes = Object.keys(freshness.KIND_BY_TEMPLATE_CODE);
+  const rows = await db.query(
+    `SELECT ci.id, ci.application_id, ci.status, ci.signed_off_at, ci.waived_at,
+            ct.code AS template_code
+       FROM checklist_items ci
+       JOIN checklist_templates ct ON ct.id = ci.template_id
+       JOIN applications a ON a.id = ci.application_id
+      WHERE ct.code = ANY($1)
+        AND ci.signed_off_at IS NOT NULL
+        AND ci.waived_at IS NULL
+        AND a.deleted_at IS NULL
+        AND a.status NOT IN ('funded','declined','withdrawn')
+      ORDER BY ci.signed_off_at ASC, ci.id
+      LIMIT 400`, [codes]);
+  const plans = freshness.planFreshnessReopens(rows.rows, { now: new Date(), limit: 25 });
+  let reopened = 0;
+  for (const plan of plans) {
+    const c = await db.pool.connect();
+    try {
+      await c.query('BEGIN');
+      // Re-check under the tx so a just-refreshed condition isn't clobbered.
+      const cur = (await c.query(
+        `SELECT signed_off_at, waived_at FROM checklist_items WHERE id=$1 FOR UPDATE`, [plan.id])).rows[0];
+      // `continue` still runs the finally{} below, which releases — a second
+      // c.release() here would throw synchronously in pg-pool and abort the
+      // whole run mid-plan. ROLLBACK only; the finally releases exactly once.
+      if (!cur || !cur.signed_off_at || cur.waived_at) { await c.query('ROLLBACK'); continue; }
+      await reopenConditionEvidence(c, plan.id, 'outstanding');
+      await c.query(
+        `UPDATE checklist_items
+            SET notes = CASE WHEN notes IS NULL OR notes LIKE '[auto]%' THEN $2 ELSE notes END,
+                updated_at = now()
+          WHERE id = $1`, [plan.id, freshness.autoNoteFor(plan)]);
+      await c.query(
+        `INSERT INTO audit_log (actor_kind, action, entity_type, entity_id, detail)
+         VALUES ('system','condition_freshness_reopened','checklist_item',$1,$2::jsonb)`,
+        [plan.id, JSON.stringify({ applicationId: plan.applicationId, kind: plan.kind,
+          trigger: plan.trigger, daysStale: plan.daysStale, clearedAt: plan.clearedAt })]);
+      await c.query('COMMIT');
+      reopened += 1;
+    } catch (e) {
+      await c.query('ROLLBACK').catch(() => {});
+      console.error('[digests] freshness-reopen', plan.id, e && e.message);
+    } finally { c.release(); }
+  }
+  if (reopened) console.log(`[digests] freshness reopened ${reopened} condition(s)`);
+}
+
+/* ── Exception-workflow redesign (2026-07-24): the register's two clocks ──
+   (1) exceptionAgingOnce — open exception requests past their review SLA
+       (due_at) nudge every super-admin once a day: an unanswered exception is
+       a stalled file, and the requester can't move it themselves.
+   (2) exceptionExpirySweepOnce — flips approved, TIME-BOXED exceptions past
+       their expires_at to 'expired' (the e-sign gate honors only
+       status='approved', so an expired one fails CLOSED on its own) and tells
+       the file's team. Only expirable types are swept — a guaranty waiver can
+       never be flipped by a clock (engine-enforced too). The flip itself is
+       once-per-row by construction (status change), so no extra gate. */
+async function exceptionAgingOnce() {
+  let rows = [];
+  try { rows = await loanExceptions.agingOpen(); } catch (_) { return 0; }
+  if (!rows.length) return 0;
+  if (!(await _gate('exception_aging_digest', null, '20 hours'))) return 0;
+  const labels = Object.fromEntries(Object.entries(loanExceptions.EXCEPTION_TYPES).map(([k, v]) => [k, v.label]));
+  const lines = rows.slice(0, 10).map((r) => {
+    const days = Math.floor(Number(r.open_hours || 0) / 24);
+    const age = days >= 1 ? `${days}d` : `${Math.round(Number(r.open_hours || 0))}h`;
+    const a = r.property_address;
+    const addr1 = !a ? '' : (typeof a === 'string' ? a : [a.line1 || a.address, a.city].filter(Boolean).join(', '));
+    return `• ${labels[r.exception_type] || r.exception_type} — ${addr1 || r.ys_loan_number || 'a file'} · waiting ${age}`;
+  });
+  if (rows.length > 10) lines.push(`…and ${rows.length - 10} more.`);
+  const supers = await db.query(`SELECT id FROM staff_users WHERE role='super_admin' AND is_active=true`);
+  let sent = 0;
+  for (const su of supers.rows) {
+    try {
+      await notify.notifyStaff(su.id, {
+        type: 'exception_aging',
+        title: rows.length === 1 ? 'An exception request is waiting past its review target'
+          : `${rows.length} exception requests are waiting past their review target`,
+        badge: { text: 'Review due', tone: 'action' },
+        body: `These policy-exception requests have been open longer than the review target. The requester can’t move them — only a super-admin can approve or deny:\n\n${lines.join('\n')}`,
+        link: '/internal/exceptions', ctaLabel: 'Open the Exceptions box',
+      });
+      sent++;
+    } catch (e) { console.error('[digest] exception-aging', su.id, e && e.message); }
+  }
+  await _stamp('exception_aging_digest', null, { open: rows.length, notified: sent });
+  return sent;
+}
+
+async function exceptionExpirySweepOnce() {
+  let flipped = [];
+  try { flipped = await loanExceptions.expireDueApprovals(); } catch (_) { return 0; }
+  let sent = 0;
+  for (const r of flipped) {
+    try {
+      await db.query(
+        `INSERT INTO audit_log (actor_kind, action, entity_type, entity_id, detail)
+         VALUES ('system','loan_exception_expired','application',$1,$2::jsonb)`,
+        [r.application_id, JSON.stringify({ exceptionId: r.id, exceptionType: r.exception_type, expiresAt: r.expires_at })]).catch(() => {});
+      const labels = Object.fromEntries(Object.entries(loanExceptions.EXCEPTION_TYPES).map(([k, v]) => [k, v.label]));
+      await notify.notifyAppStaff(r.application_id, {
+        type: 'exception_expired',
+        title: `An approved exception expired (${labels[r.exception_type] || r.exception_type})`,
+        body: `The approved "${labels[r.exception_type] || r.exception_type}" exception (EX-${r.exception_seq}) on this file passed its validity date and has EXPIRED — it no longer grants anything. If it's still needed, request it again so a super-admin can re-approve it against the current state of the deal.`,
+        applicationId: r.application_id,
+        link: `/internal/app/${r.application_id}`, ctaLabel: 'Open the loan file',
+      });
+      sent++;
+    } catch (e) { console.error('[digest] exception-expiry', r.id, e && e.message); }
+  }
+  return sent;
+}
+
 async function runDue() {
   const { hour, weekday } = nyParts();
+  // The un-funded re-read sweep runs on EVERY tick, around the clock: it sends nothing to anyone
+  // (re-reads + re-records only), so the time of day does not matter, and a steady slice each tick
+  // is what keeps the existing book moving onto the corrected reads. Its own generation stamp makes
+  // it a no-op once the book is caught up.
+  await unfundedRereadSweepOnce().catch((e) => console.error('[digests] reread-sweep', e && e.message));
   if (hour >= 7 && hour < 11) {
     await dailyPipelineDigestOnce().catch((e) => console.error('[digests] pipeline', e && e.message));
     await staleFileAlertsOnce().catch((e) => console.error('[digests] stale', e && e.message));
     await workflowAgingOnce().catch((e) => console.error('[digests] workflow-aging', e && e.message));
+    await exceptionAgingOnce().catch((e) => console.error('[digests] exception-aging', e && e.message));
     await drawReleaseOverdueOnce().catch((e) => console.error('[digests] draw-release', e && e.message));
+    await trustpointUnreleasedOnce().catch((e) => console.error('[digests] trustpoint-unreleased', e && e.message));
     await trainingRunOnce().catch((e) => console.error('[digests] training-run', e && e.message));
     await certificateSurveyOnce().catch((e) => console.error('[digests] cert-survey', e && e.message));
     await directSourceSweepOnce().catch((e) => console.error('[digests] direct-source-sweep', e && e.message));
@@ -946,6 +1456,7 @@ async function runDue() {
     await autoCommitteeReviewOnce().catch((e) => console.error('[digests] auto-committee', e && e.message));
     await aiCrossdocSweepOnce().catch((e) => console.error('[digests] ai-crossdoc-sweep', e && e.message));
     await qaDeskAuditOnce().catch((e) => console.error('[digests] qa-desk-audit', e && e.message));
+    await conditionFreshnessReopenOnce().catch((e) => console.error('[digests] freshness-reopen', e && e.message));
     if (weekday === 'Mon') await weeklyAdminSummaryOnce().catch((e) => console.error('[digests] admin', e && e.message));
     if (weekday === 'Mon') await weeklyAdminAiQuestionsOnce().catch((e) => console.error('[digests] admin-ai-questions', e && e.message));
     if (weekday === 'Mon') await weeklyTopRiskyFilesOnce().catch((e) => console.error('[digests] admin-top-risky', e && e.message));
@@ -954,7 +1465,166 @@ async function runDue() {
   if (hour >= 8 && hour < 18) {
     await weeklyBorrowerOutstandingOnce().catch((e) => console.error('[digests] borrower', e && e.message));
     await drawFindingsAwaitingBorrowerOnce().catch((e) => console.error('[digests] draw-findings', e && e.message));
+    // The expiry sweep runs through the business day so a lapsed approval flips
+    // within hours (the flip is once-per-row by construction — status change).
+    await exceptionExpirySweepOnce().catch((e) => console.error('[digests] exception-expiry', e && e.message));
+    // The closing-chain backstop runs through the business day so a date a
+    // non-announcing door introduced reaches the attorney the same day — and never
+    // at 3am. Its dedupe keys make every re-run a no-op.
+    await closingChainCatchupOnce().catch((e) => console.error('[digests] closing-chain', e && e.message));
+    // Take the finished deals off the Orders desk. Emails nobody — it is desk
+    // hygiene — but it runs here because the sweep already holds the once-per-tick
+    // cadence and re-running it is free (it only moves rows still in an active
+    // state). Ordered AFTER the catch-up on purpose: the catch-up already ignores a
+    // dead deal, and retiring first would make the ordering look load-bearing when
+    // it is not.
+    await require('./closing-prep').retireClosedOrdersOnce().catch((e) => console.error('[digests] closing-orders-retire', e && e.message));
   }
+}
+
+/**
+ * CLOSING-CHAIN BACKSTOP (owner-directed 2026-07-28).
+ *
+ * The three automatic closing-chain updates are fired from the doors that make each
+ * fact true — the closing-date route, the workflow hand-off, the ClickUp inbound
+ * sync, the status transition, the e-sign completion. This sweep catches whatever
+ * those doors miss: `product-registration` can introduce a file's FIRST expected
+ * closing date through a COALESCE (it is not a "closing date" route and has no
+ * business announcing one), a door could fail mid-request after the UPDATE
+ * committed, and a door added next year will not know about any of this.
+ *
+ * It is safe to run repeatedly precisely BECAUSE the announcement is claimed under a
+ * dedupe key: a date already announced costs one refused insert. Bounded to files
+ * that HAVE a closing chain, so it touches nothing on the rest of the book.
+ */
+async function closingChainCatchupOnce() {
+  let sent = 0;
+  try {
+    const closingPrep = require('./closing-prep');
+    const rows = (await db.query(
+      // ALREADY-ANNOUNCED ROWS ARE EXCLUDED IN SQL, not by calling announce() and
+      // letting the dedupe key refuse it. Each announce() costs ~8 round trips
+      // (thread + file data + recipients + ensureThread + seq + the claim) BEFORE the
+      // key is consulted, and this runs every 30 minutes over the whole book — so the
+      // steady state was thousands of queries per tick to send nothing. The claim is
+      // still the guarantee; this is just not asking it the same question all day.
+      `SELECT ct.application_id,
+              to_char(COALESCE(a.expected_closing, a.est_closing_date), 'YYYY-MM-DD') AS day,
+              a.status,
+              -- The date the chain was LAST told, compared to the date the file now
+              -- holds. A plain "has this exact date ever been announced" test would
+              -- stay silent when a date moves and then moves BACK, leaving the
+              -- attorney holding the superseded day.
+              (SELECT split_part(m.dedupe_key, '->', 2)
+                 FROM closing_thread_messages m
+                WHERE m.thread_id = ct.id AND m.event_kind = 'closing_date'
+                  AND m.status IN ('sent','carried') AND m.dedupe_key IS NOT NULL
+                ORDER BY m.sent_at DESC NULLS LAST, m.id DESC LIMIT 1)
+                IS DISTINCT FROM to_char(COALESCE(a.expected_closing, a.est_closing_date), 'YYYY-MM-DD')
+              AS needs_date,
+              NOT EXISTS (
+                SELECT 1 FROM closing_thread_messages m
+                 WHERE m.thread_id = ct.id AND m.status IN ('sent','carried')
+                   AND m.dedupe_key = 'clear_to_close'
+              ) AS needs_ctc
+         FROM closing_threads ct
+         JOIN applications a ON a.id = ct.application_id AND a.deleted_at IS NULL
+         -- ONLY A FILE WHOSE ORDER ACTUALLY WENT OUT.
+         --
+         -- sendOnThread opens the chain BEFORE it sends, so a closing-prep order
+         -- that failed (provider down, nothing built) still leaves a closing_threads
+         -- row behind — and cancelling an order deliberately keeps the chain intact.
+         -- Without this join the sweep found those chains, fell back to the default
+         -- attorney group inbox because no recipient had ever been recorded, and made
+         -- FIRST CONTACT with the outside law firm by telling them the closing date
+         -- had moved on a deal they had never heard of. The order row is the proof
+         -- that a human deliberately engaged this attorney.
+         JOIN file_orders fo ON fo.application_id = ct.application_id
+                            AND fo.order_type = 'attorney'
+                            AND fo.status NOT IN ('not_ordered','cancelled')
+        -- AND THE DEAL MUST STILL BE LIVE. announce() refuses a funded / declined /
+        -- withdrawn file outright, so selecting one here can only ever burn a slot
+        -- under the cap on a question whose answer cannot change. Same list as the
+        -- gate itself (closing-prep.DEAD_DEAL_SQL) so the two can never disagree.
+        WHERE a.status NOT IN ${closingPrep.DEAD_DEAL_SQL}
+          AND (COALESCE(a.expected_closing, a.est_closing_date) IS NOT NULL
+               OR a.status = 'clear_to_close')
+        -- ORDERED because it is CAPPED: the quietest chains come first, so a large
+        -- book can never leave the same tail of files permanently unexamined. A chain
+        -- that actually receives an update has its last_activity_at bumped and moves
+        -- to the back on its own.
+        -- …and it ends on the row's own id, so chains that TIE on both timestamps
+        -- still come back in a stable order rather than an arbitrary one.
+        ORDER BY ct.last_activity_at ASC NULLS FIRST, ct.created_at ASC, ct.id ASC
+        LIMIT 500`)).rows;
+    for (const r of rows) {
+      if (r.day && r.needs_date) {
+        const res = await closingPrep.announce({
+          applicationId: r.application_id, eventKind: 'closing_date',
+          dedupeKey: `closing_date:${r.day}`, extra: { date: r.day },
+        }).catch(() => null);
+        if (res && res.ok && !res.skipped) sent += 1;
+      }
+      if (r.status === 'clear_to_close' && r.needs_ctc) {
+        const res = await closingPrep.announce({
+          applicationId: r.application_id, eventKind: 'clear_to_close',
+          dedupeKey: 'clear_to_close', extra: { closingDate: r.day || null },
+        }).catch(() => null);
+        if (res && res.ok && !res.skipped) sent += 1;
+      }
+    }
+    // THE EXECUTED TERM SHEET needs its own recovery, because it is the one update
+    // whose fact does not live on the applications row — it lives on the envelope,
+    // so the loop above cannot see it. Without this, a provider blip at the exact
+    // moment a term sheet finished signing left the attorney drafting from the
+    // initial terms forever. Re-driven through the e-sign module's OWN announcer so
+    // it attaches the document THAT envelope produced, never a second guess at it.
+    const TERM_SHEET_RECOVERY_CAP = 50;
+    const stale = (await db.query(
+      `SELECT e.*
+         FROM esign_envelopes e
+         JOIN closing_threads ct ON ct.application_id = e.application_id
+         JOIN applications a ON a.id = e.application_id AND a.deleted_at IS NULL
+         JOIN file_orders fo ON fo.application_id = e.application_id
+                            AND fo.order_type = 'attorney'
+                            AND fo.status NOT IN ('not_ordered','cancelled')
+        -- THE DEAL MUST STILL BE LIVE — this arm is where the starvation actually
+        -- bit. announce() refuses a funded / declined / withdrawn file, so those
+        -- envelopes could never gain a 'sent' row and never left this result set;
+        -- ordered oldest-first under a LIMIT of 50, a handful of long-closed deals
+        -- permanently crowded out the live file whose announcement had failed —
+        -- which is the ONLY thing this query exists to recover.
+        WHERE a.status NOT IN ${closingPrep.DEAD_DEAL_SQL}
+          AND e.purpose = 'term_sheet_package' AND e.status = 'completed'
+          AND COALESCE(e.is_test,false) = false
+          -- KEYED ON THE ENVELOPE, matching the announcement's own dedupe key. Keyed
+          -- on the thread instead, the first executed term sheet excluded the file
+          -- forever — so a re-issued and re-executed package whose announcement
+          -- failed could never be recovered, which is the one job of this sweep.
+          AND NOT EXISTS (
+            SELECT 1 FROM closing_thread_messages m
+             WHERE m.thread_id = ct.id
+               AND m.dedupe_key = 'executed_term_sheet:' || e.id::text
+               AND m.status IN ('sent','carried'))
+        ORDER BY e.completed_at ASC NULLS FIRST, e.id ASC
+        LIMIT ${TERM_SHEET_RECOVERY_CAP}`)).rows;
+    // NO SILENT CAPS. With the deal-live filter above, every row here is one a retry
+    // can genuinely settle — so a full page means real backlog, not silt. Saying so
+    // is what makes a future starvation visible instead of looking like calm.
+    if (stale.length >= TERM_SHEET_RECOVERY_CAP) {
+      console.warn(`[digests] executed-term-sheet recovery hit its cap of ${TERM_SHEET_RECOVERY_CAP} — more may be waiting; the next tick continues from the oldest.`);
+    }
+    for (const env of stale) {
+      try {
+        // Count what was actually sent — an unconditional bump made the log line
+        // report recoveries that never happened.
+        const res = await require('./esign/webhook').announceExecutedTermSheet(db, env);
+        if (res && res.ok && !res.skipped) sent += 1;
+      } catch (_) { /* next tick tries again */ }
+    }
+  } catch (_) { return 0; }
+  if (sent) console.log(`[digests] closing-chain catch-up sent ${sent} update(s)`);
+  return sent;
 }
 
 let started = false;
@@ -972,8 +1642,8 @@ function start() {
 module.exports = {
   start, runDue, nyParts,
   weeklyBorrowerOutstandingOnce, dailyPipelineDigestOnce, staleFileAlertsOnce, weeklyAdminSummaryOnce,
-  drawFindingsAwaitingBorrowerOnce, drawReleaseOverdueOnce, workflowAgingOnce,
-  trainingRunOnce, certificateSurveyOnce, autoCommitteeReviewOnce, directSourceSweepOnce, autoReadSweepOnce, section1071SweepOnce,
+  drawFindingsAwaitingBorrowerOnce, drawReleaseOverdueOnce, trustpointUnreleasedOnce, workflowAgingOnce, conditionFreshnessReopenOnce,
+  trainingRunOnce, certificateSurveyOnce, autoCommitteeReviewOnce, directSourceSweepOnce, autoReadSweepOnce, unfundedRereadSweepOnce, section1071SweepOnce,
   aiCrossdocSweepOnce, weeklyAdminAiQuestionsOnce, weeklyTopRiskyFilesOnce, weeklyLoAiDigestOnce,
-  qaDeskAuditOnce,
+  qaDeskAuditOnce, exceptionAgingOnce, exceptionExpirySweepOnce, closingChainCatchupOnce,
 };

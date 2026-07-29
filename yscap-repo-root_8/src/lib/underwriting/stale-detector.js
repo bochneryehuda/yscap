@@ -16,6 +16,14 @@
  * Pure: no DB, no AI.
  */
 
+// Free-TEXT pricing inputs whose SPELLING differs by door but whose MEANING is
+// what a re-price actually depends on. Comparing them raw made a cosmetic echo
+// look like a changed input, which is the db/288 ("12" vs "12 Months") and
+// db/322 ("Multi 2-4" vs "Multi 2–4" vs "multi_2_4") re-register loop. Both
+// helpers are pure, so this module stays pure.
+const { termKey } = require('../term-text');
+const { propertyTypeCompareKey, isAppraisalFormCode } = require('../property-type');
+
 // The inputs a registration is priced on. A change to any → stale.
 const PRICING_INPUT_KEYS = Object.freeze([
   'loan_amount', 'purchase_price', 'as_is_value', 'arv', 'rehab_budget',
@@ -28,7 +36,14 @@ const PRICING_INPUT_KEYS = Object.freeze([
 // Two values are "the same" for staleness if they're equal after light
 // normalization (numbers within a cent; strings case/space-insensitive; null and
 // undefined both mean "absent").
-function same(a, b) {
+function same(a, b, key) {
+  if (key === 'term') return termKey(a) === termKey(b);
+  if (key === 'property_type') {
+    // A registration snapshot holding an appraisal FORM number was never priced
+    // on a property type at all — correcting the file is a repair, not drift.
+    if (isAppraisalFormCode(b)) return true;
+    return propertyTypeCompareKey(a) === propertyTypeCompareKey(b);
+  }
   if (a == null && b == null) return true;
   if (a == null || b == null) return false;
   const na = Number(a), nb = Number(b);
@@ -52,7 +67,7 @@ function detectStale(current, registered, keys) {
   for (const k of compareKeys) {
     if (!(k in reg)) continue;            // registration didn't price on this key
     if (reg[k] == null) continue;         // no registered value → nothing to drift from
-    if (!same(cur[k], reg[k])) {
+    if (!same(cur[k], reg[k], k)) {
       changed.push({ key: k, from: reg[k], to: (k in cur ? cur[k] : null) });
     }
   }

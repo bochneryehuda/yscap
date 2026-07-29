@@ -1,10 +1,14 @@
 /**
- * Intake — the site's loan application POSTs here (guarded by x-intake-key).
- * Creates/updates the borrower, creates the application (each a distinct
- * property address), auto-generates the checklist, and routes a notification
- * to the selected loan officer — or to the admins (Lead Capture) if none.
- * The pricing/guideline engines are NOT invoked here; economics arrive as a
- * snapshot in the payload.
+ * Intake — turning a public website loan application into a REAL borrower +
+ * application file (checklist auto-generated, officer routed, ClickUp task
+ * created). The pricing/guideline engines are NOT invoked here; economics
+ * arrive as a snapshot in the payload.
+ *
+ * TWO doors share the ONE core (`siteIntake`):
+ *   POST /api/intake  — server-to-server, guarded by x-intake-key (unchanged).
+ *   POST /api/apply   — the site's own submit (routes/apply.js), bot-defended
+ *                       with the shared form token + honeypot instead of a key,
+ *                       and optionally followed by account creation.
  */
 const express = require('express');
 const router = require('../lib/safe-router')();
@@ -12,35 +16,47 @@ const db = require('../db');
 const C = require('../lib/crypto');
 const notify = require('../lib/notify');
 const cfg = require('../config');
+const F = require('../lib/fields');
 const { redactPII } = require('../lib/redact');
 // (checklist generation now flows through the ensureFileConditions chokepoint)
 
-router.post('/', async (req, res) => {
-  // Fail CLOSED: with no key configured this endpoint would accept anonymous
-  // writes (spoofed borrowers/applications). Allow that only outside production.
-  if (!cfg.intakeApiKey) {
-    if (cfg.env === 'production')
-      return res.status(503).json({ error: 'intake not configured (INTAKE_API_KEY unset)' });
-  } else {
-    // Constant-time compare (matches the webhook verifiers) — a plain !== leaks
-    // the key byte-by-byte via response timing. Hash both sides to a fixed
-    // length first so the comparison is also independent of the key length.
-    const crypto = require('crypto');
-    const h = (s) => crypto.createHash('sha256').update(String(s == null ? '' : s), 'utf8').digest();
-    if (!crypto.timingSafeEqual(h(req.get('x-intake-key')), h(cfg.intakeApiKey))) {
-      return res.status(401).json({ error: 'bad intake key' });
-    }
-  }
-  const p = req.body || {};
+// The public site sends money/units as formatted strings ("$500,000", "1,200").
+// Coerce to plain numbers or NULL before they hit typed numeric columns —
+// inserting "$500,000" raw throws a Postgres 22P02 and 500s a real submission.
+const num = (v) => { if (v == null || v === '') return null; const n = Number(String(v).replace(/[^0-9.\-]/g, '')); return isFinite(n) ? n : null; };
+const int = (v) => { const n = num(v); return n == null ? null : Math.round(n); };
+
+/**
+ * The intake core. Creates/updates the borrower and creates the application in
+ * ONE transaction, then returns `{ borrowerId, applicationId, assigned, dup,
+ * borrowerExisted, hasAuth, followUp }`. The caller responds to the client
+ * FIRST and then runs `followUp()` (checklist, ClickUp, notifications,
+ * co-borrower/vesting) — a follow-up failure must never turn into a 500 that
+ * makes the website resubmit the form and create a DUPLICATE application.
+ */
+async function siteIntake(p, opts = {}) {
+  const source = opts.source || 'website_form';
   const email = p.email || p.b1Email;
-  if (!email) return res.status(400).json({ error: 'borrower email required' });
-  // The public site sends money/units as formatted strings ("$500,000", "1,200").
-  // Coerce to plain numbers or NULL before they hit typed numeric columns —
-  // inserting "$500,000" raw throws a Postgres 22P02 and 500s a real submission.
-  const num = (v) => { if (v == null || v === '') return null; const n = Number(String(v).replace(/[^0-9.\-]/g, '')); return isFinite(n) ? n : null; };
-  const int = (v) => { const n = num(v); return n == null ? null : Math.round(n); };
+  if (!email) { const e = new Error('borrower email required'); e.status = 400; throw e; }
   const client = await db.getClient();
   let dupOfBorrowerId = null;   // set when a shared email hit a DIFFERENT person's row
+  let borrowerExisted = false;  // a borrowers row already carried this email (same person)
+  let hasAuth = false;          // ...and that row already has portal credentials
+  let borrowerId, appId, officerId = null, officerName = p.loOfficer || p.loanOfficerName || null;
+  const submittedFirst = p.firstName || p.b1First || 'Unknown';
+  const submittedLast = p.lastName || p.b1Last || 'Unknown';
+  // MIDDLE NAME (db/345) — optional on the public form. If the applicant did not
+  // get a middle-name box (an older cached page) but typed their whole name into
+  // the first-name box, split it here rather than storing "Issac Michael" as a
+  // first name: this is the door most legacy merged names came through.
+  const PN = require('../lib/person-name');
+  let submittedMiddle = String(p.middleName || p.b1Middle || '').trim();
+  let submittedSuffix = String(p.nameSuffix || p.b1Suffix || '').trim();
+  let nameSplitReason = null;
+  if (!submittedMiddle && submittedFirst.trim().includes(' ')) {
+    const sp = PN.splitStoredName({ first: submittedFirst, last: submittedLast });
+    if (sp.changed) { submittedMiddle = sp.middle; submittedSuffix = submittedSuffix || sp.suffix; nameSplitReason = sp.needsReview ? sp.reason : null; }
+  }
   try {
     await client.query('BEGIN');
     // SAME-EMAIL, DIFFERENT-PERSON guard (owner incident 2026-07-15 night): a
@@ -51,23 +67,26 @@ router.post('/', async (req, res) => {
     // here to answer a 409 — so the submission gets a DISTINCT profile with a
     // placeholder email instead; the real email is preserved as an additional
     // contact, the pair is queued for human dedup review, and admins are told.
-    const submittedFirst = p.firstName || p.b1First || 'Unknown';
-    const submittedLast = p.lastName || p.b1Last || 'Unknown';
     const identity = require('../clickup/identity');
     const exRow = (await client.query(`SELECT id, first_name, last_name FROM borrowers WHERE email=$1 LIMIT 1`,
       [String(email).toLowerCase().trim()])).rows[0];
     if (exRow && identity.nameConflict(submittedFirst, submittedLast, exRow.first_name, exRow.last_name)) {
       dupOfBorrowerId = exRow.id;
     }
+    borrowerExisted = !!exRow && !dupOfBorrowerId;
     // 1) upsert borrower (canonical profile) — or a DISTINCT profile when the
     // email already belongs to a different person (never a silent merge).
     const emailForRow = dupOfBorrowerId
       ? `noemail+intake-${require('crypto').randomBytes(6).toString('hex')}@clickup.local`
       : email;
     const b = await client.query(
-      `INSERT INTO borrowers (first_name,last_name,email,cell_phone,citizenship)
-       VALUES ($1,$2,$3,$4,$5)
-       ON CONFLICT (email) DO UPDATE SET
+      `INSERT INTO borrowers (first_name,last_name,email,cell_phone,citizenship,middle_name,name_suffix,name_review_needed,name_review_reason)
+       VALUES ($1,$2,$3,$4,$5,NULLIF($6,''),NULLIF($7,''),$8,$9)
+       ON CONFLICT (email) WHERE shares_email = false DO UPDATE SET
+         -- Fill-only, like the name columns below: a submission may ADD a middle
+         -- name we do not have, but never overwrite one already on the profile.
+         middle_name=COALESCE(borrowers.middle_name,EXCLUDED.middle_name),
+         name_suffix=COALESCE(borrowers.name_suffix,EXCLUDED.name_suffix),
          -- A real submitted name heals a placeholder row; never a real one.
          first_name=CASE WHEN lower(btrim(coalesce(borrowers.first_name,''))) IN ('','unknown','co-borrower')
                           AND lower(btrim(EXCLUDED.first_name)) NOT IN ('','unknown')
@@ -79,8 +98,9 @@ router.post('/', async (req, res) => {
          citizenship=COALESCE(borrowers.citizenship,EXCLUDED.citizenship),
          updated_at=now() RETURNING id`,
       [submittedFirst, submittedLast, emailForRow,
-       p.cellPhone || p.b1Phone || null, p.citizenship || p.b1Citizen || null]);
-    const borrowerId = b.rows[0].id;
+       p.cellPhone || p.b1Phone || null, p.citizenship || p.b1Citizen || null,
+       submittedMiddle, submittedSuffix, !!nameSplitReason, nameSplitReason]);
+    borrowerId = b.rows[0].id;
     if (p.ssn || p.b1Ssn) {
       // #91/#92: only persist a real 9-digit SSN, canonically (digits only). A
       // partial/garbage value from the public form is skipped, never stored.
@@ -88,10 +108,27 @@ router.post('/', async (req, res) => {
       if (s) await client.query(`UPDATE borrowers SET ssn_encrypted=$2, ssn_last4=$3 WHERE id=$1`,
         [borrowerId, s.encrypted, s.last4]);
     }
+    // Self-attested DOB / estimated FICO from the form FILL A BLANK only — they
+    // never overwrite a value already on the profile (a real credit pull or a
+    // staff-entered DOB always wins). DOB goes through the mandatory
+    // sanitizeDob chokepoint (real calendar date + adult plausibility).
+    {
+      const dob = F.sanitizeDob(p.dob || p.b1Dob);
+      const fico = F.sanitizeFico(int(p.fico || p.estFico));
+      if (dob || fico) {
+        await client.query(
+          `UPDATE borrowers SET date_of_birth=COALESCE(date_of_birth,$2), fico=COALESCE(fico,$3), updated_at=now() WHERE id=$1`,
+          [borrowerId, dob || null, fico || null]);
+      }
+    }
+    if (borrowerExisted) {
+      hasAuth = !!(await client.query(`SELECT 1 FROM borrower_auth WHERE borrower_id=$1`, [borrowerId])).rows[0];
+    }
     // 2) resolve loan officer (by email or name) -> may be null (Lead Capture)
-    let officerId = null, officerName = p.loOfficer || p.loanOfficerName || null;
     if (p.loOfficerEmail || p.loanOfficerEmail) {
-      const o = await client.query(`SELECT id,full_name FROM staff_users WHERE email=$1 AND is_active=true`,
+      // Case-insensitive: the site's branded links carry "Yehuda@…"-style
+      // casing; the routing must not silently fall to Lead Capture over case.
+      const o = await client.query(`SELECT id,full_name FROM staff_users WHERE lower(email)=lower($1) AND is_active=true`,
         [p.loOfficerEmail || p.loanOfficerEmail]);
       if (o.rows[0]) { officerId = o.rows[0].id; officerName = o.rows[0].full_name; }
     } else if (officerName) {
@@ -104,37 +141,52 @@ router.post('/', async (req, res) => {
     // Same shared invariant as every other create path (#96): the ticked flag is
     // truth, underlying/fee hard-null off a non-assignment, purchase = underlying
     // + fee. The public form uses looser key names, so normalize them first.
-    const asg = require('../lib/fields').assignmentFields({
+    const asg = F.assignmentFields({
       isAssignment: !!(p.isAssignment || p.assignment),
       underlyingContractPrice: num(p.underlyingContractPrice || p.underlyingPrice),
       assignmentFee: num(p.assignmentFee),
       purchasePrice: num(p.purchasePrice || p.price),
     });
+    // Interest-reserve request: months (0..24 per the column CHECK) or an exact
+    // dollar amount — both optional; display/record only, engines stay frozen.
+    let irMonths = int(p.requestedIrMonths != null ? p.requestedIrMonths : p.resMonths);
+    if (irMonths != null) irMonths = Math.max(0, Math.min(24, irMonths));
+    let irAmount = num(p.requestedIrAmount != null ? p.requestedIrAmount : p.resAmount);
+    if (irAmount != null && !(irAmount > 0)) irAmount = null;
     const a = await client.query(
       `INSERT INTO applications
          (borrower_id,loan_officer_id,loan_officer_name,program,loan_type,property_address,property_type,units,
           purchase_price,as_is_value,arv,rehab_budget,loan_amount,ltv,
-          is_assignment,underlying_contract_price,assignment_fee,source,raw_intake,status,submitted_at)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,'website_form',$18,'new',now()) RETURNING id`,
-      [borrowerId, officerId, officerName, p.program || p.dealType || null, require('../lib/fields').sanitizeLoanType(p.loanType || p.purpose),   // #95: public form can't persist a program as a loan type
+          is_assignment,underlying_contract_price,assignment_fee,
+          rehab_type,sqft_pre,sqft_post,requested_ir_months,requested_ir_amount,
+          requested_exp_flips,requested_exp_holds,requested_exp_ground,
+          source,raw_intake,status,submitted_at)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,'new',now()) RETURNING id`,
+      [borrowerId, officerId, officerName, p.program || p.dealType || null, F.sanitizeLoanType(p.loanType || p.purpose),   // #95: public form can't persist a program as a loan type
        JSON.stringify(p.propertyAddress || { line1: p.pStreet, city: p.pCity, state: p.pState, zip: p.pZip }),
        p.propertyType || p.propType || null, int(p.units || p.units24 || p.unitsN),
        asg.purchasePrice, num(p.asIsValue || p.asIs), num(p.arv),
        num(p.rehabBudget || p.rehab), num(p.loanAmount), num(p.ltv),
        asg.isAssignment, asg.underlying, asg.assignFee,
-       JSON.stringify(redactPII(p))]);
-    const appId = a.rows[0].id;
+       p.rehabType || null, int(p.sqftPre || p.sqftCurrent), int(p.sqftPost),
+       irMonths, irAmount,
+       int(p.expFlips) || 0, int(p.expHolds != null ? p.expHolds : p.expBrrrr) || 0, int(p.expGround) || 0,
+       source, JSON.stringify(redactPII(p))]);
+    appId = a.rows[0].id;
     await client.query('COMMIT');
+  } catch (e) {
+    await client.query('ROLLBACK').catch(() => {});
+    throw e;
+  } finally { client.release(); }
 
-    // The borrower + application are now saved. Respond success IMMEDIATELY — the
-    // checklist + routing below are best-effort follow-ups, and a failure there
-    // must never turn into a 500 that makes the website resubmit the form and
-    // create a DUPLICATE application.
-    res.status(201).json({ ok: true, borrowerId, applicationId: appId, assigned: !!officerId });
-    // Shared-email dedup bookkeeping (post-commit, best-effort): keep the REAL
-    // email on the new profile as an additional contact so it is never lost
-    // (the primary email slot holds the placeholder to avoid the unique-email
-    // collision), record the pair for human dedup review, and tell the admins.
+  // Everything below runs AFTER the caller has already responded 201 — each
+  // block is best-effort and independently caught, so a hiccup here can never
+  // resubmit-loop the website into duplicate applications.
+  async function followUp() {
+    // Shared-email dedup bookkeeping: keep the REAL email on the new profile as
+    // an additional contact so it is never lost (the primary email slot holds
+    // the placeholder to avoid the unique-email collision), record the pair for
+    // human dedup review, and tell the admins.
     if (dupOfBorrowerId) {
       try {
         await db.query(
@@ -162,8 +214,69 @@ router.post('/', async (req, res) => {
           suppressIfRejected: true,
           rawValue: JSON.stringify({ b1: borrowerId, b2: dupOfBorrowerId, source: 'intake' }).slice(0, 300),
           clickupValue: String(email).toLowerCase().trim().slice(0, 160),
-          portalValue: `${[submittedFirst, submittedLast].filter(Boolean).join(' ')} AND ${[other.first_name, other.last_name].filter(Boolean).join(' ')}`.slice(0, 160) });
+          portalValue: `${[submittedFirst, submittedLast].filter(Boolean).join(' ')} AND ${require('../lib/person-name').displayName(other)}`.slice(0, 160) });
       } catch (dupErr) { console.error('[intake] dedup bookkeeping failed:', db.describeError(dupErr)); }
+    }
+    // CO-BORROWER from the same submission (map the whole form, not just the
+    // primary): a lean version of the staff attach — heal-only upsert + link,
+    // guarded by the SAME same-email-different-person rule. Never on the dup
+    // path (that whole submission is already under human review).
+    if (!dupOfBorrowerId) {
+      try {
+        const coFirst = p.coFirstName || p.b2First || null;
+        const coLast = p.coLastName || p.b2Last || null;
+        const coMiddle = String(p.coMiddleName || p.b2Middle || '').trim();   // optional (db/345)
+        const coEmail = String(p.coEmail || p.b2Email || '').toLowerCase().trim();
+        if (coEmail && coEmail !== String(email).toLowerCase().trim() && (coFirst || coLast)) {
+          const identity = require('../clickup/identity');
+          const ex2 = (await db.query(`SELECT id, first_name, last_name FROM borrowers WHERE email=$1 LIMIT 1`, [coEmail])).rows[0];
+          if (ex2 && identity.nameConflict(coFirst || 'Unknown', coLast || 'Unknown', ex2.first_name, ex2.last_name)) {
+            // The co-borrower email belongs to a DIFFERENT person's profile —
+            // never adopt it silently; the full details stay in raw_intake for
+            // staff to attach deliberately.
+            console.warn(`[intake] co-borrower email matches a different person — left unlinked (app ${appId})`);
+          } else {
+            const cb = await db.query(
+              `INSERT INTO borrowers (first_name,last_name,email,cell_phone,citizenship,middle_name)
+               VALUES ($1,$2,$3,$4,$5,NULLIF($6,''))
+               ON CONFLICT (email) WHERE shares_email = false DO UPDATE SET
+                 middle_name=COALESCE(borrowers.middle_name,EXCLUDED.middle_name),
+                 first_name=CASE WHEN lower(btrim(coalesce(borrowers.first_name,''))) IN ('','unknown','co-borrower')
+                                  AND lower(btrim(EXCLUDED.first_name)) NOT IN ('','unknown')
+                                 THEN EXCLUDED.first_name ELSE borrowers.first_name END,
+                 last_name=CASE WHEN lower(btrim(coalesce(borrowers.last_name,''))) IN ('','unknown','co-borrower')
+                                 AND lower(btrim(EXCLUDED.last_name)) NOT IN ('','unknown')
+                                THEN EXCLUDED.last_name ELSE borrowers.last_name END,
+                 cell_phone=COALESCE(borrowers.cell_phone,EXCLUDED.cell_phone),
+                 citizenship=COALESCE(borrowers.citizenship,EXCLUDED.citizenship),
+                 updated_at=now() RETURNING id`,
+              [coFirst || 'Co-borrower', coLast || 'Unknown', coEmail, p.b2Phone || null, p.b2Citizen || null, coMiddle]);
+            const coId = cb.rows[0].id;
+            if (p.b2Ssn) {
+              const s2 = C.ssnForStorage(p.b2Ssn);
+              if (s2) await db.query(
+                `UPDATE borrowers SET ssn_encrypted=COALESCE(ssn_encrypted,$2), ssn_last4=COALESCE(ssn_last4,$3) WHERE id=$1`,
+                [coId, s2.encrypted, s2.last4]);
+            }
+            const coDob = F.sanitizeDob(p.b2Dob);
+            if (coDob) await db.query(`UPDATE borrowers SET date_of_birth=COALESCE(date_of_birth,$2) WHERE id=$1`, [coId, coDob]);
+            await db.query(`UPDATE applications SET co_borrower_id=$2 WHERE id=$1 AND co_borrower_id IS NULL`, [appId, coId]);
+          }
+        }
+      } catch (coErr) { console.error('[intake] co-borrower attach failed:', db.describeError(coErr)); }
+      // VESTING ENTITY from the form — resolved-or-created on the borrower and
+      // wired through the vesting chokepoint (llc_id + LLC docs checklist +
+      // condition + re-eval), same as the staff origination path.
+      try {
+        const entityName = String(p.entityName || p.eName || '').trim();
+        if (entityName) {
+          const ex = await db.query(`SELECT id FROM llcs WHERE borrower_id=$1 AND lower(llc_name)=lower($2) LIMIT 1`, [borrowerId, entityName]);
+          const llcId = ex.rows[0] ? ex.rows[0].id
+            : (await db.query(`INSERT INTO llcs (borrower_id, llc_name, ein, formation_state) VALUES ($1,$2,$3,$4) RETURNING id`,
+                [borrowerId, entityName, (p.eEin || p.entityEin || null), (p.eState || p.entityState || null)])).rows[0].id;
+          await require('../lib/vesting').setVestingLlc(appId, llcId, { source: 'intake' });
+        }
+      } catch (vestErr) { console.error('[intake] vesting wiring failed:', db.describeError(vestErr)); }
     }
     try {
       // Invariant chokepoint (root fix 2026-07-14): derives program/loan
@@ -181,18 +294,67 @@ router.post('/', async (req, res) => {
           body: `${p.firstName || p.b1First || 'A borrower'} — ${addr}`, applicationId: appId,
           link: `/internal/app/${appId}` });
       } else {
-        await notify.notifyAdmins({
+        // No officer picked (owner-directed 2026-07-24): the SALES desk inbox
+        // gets the email; admins keep their in-app rows (no email blast). The
+        // file still lands in Lead Capture for assignment exactly as before.
+        // With no sales inbox configured, the legacy admin fan-out applies.
+        const unassignedOpts = {
           type: 'unassigned_application', title: 'New application needs assignment (Lead Capture)',
           body: `${p.firstName || p.b1First || 'A borrower'} — ${addr}`, applicationId: appId,
-          link: `/internal` });
+          link: `/internal` };
+        if (cfg.salesNotifyTo) {
+          // Same file-identity subject suffix the admin emails get via enrichment.
+          const built = notify.buildEmail({
+            ...unassignedOpts,
+            subjectTag: [`${p.firstName || p.b1First || ''} ${p.lastName || p.b1Last || ''}`.trim(), addr].filter(Boolean).join(' · '),
+          }, 'staff');
+          await require('../lib/email').sendMail({
+            to: [cfg.salesNotifyTo], subject: built.subject, text: built.text, html: built.html,
+            replyTo: (p.email || p.b1Email || null), _ctx: { type: 'unassigned_application', audience: 'staff' },
+          }).catch(() => {});
+          await notify.notifyAdmins({ ...unassignedOpts, inAppOnly: true });
+        } else {
+          await notify.notifyAdmins(unassignedOpts);
+        }
       }
-    } catch (followUp) { console.error('[intake] post-commit follow-up failed:', db.describeError(followUp)); }
+    } catch (followUpErr) { console.error('[intake] post-commit follow-up failed:', db.describeError(followUpErr)); }
+  }
+  return { borrowerId, applicationId: appId, assigned: !!officerId, officerId,
+           dup: !!dupOfBorrowerId, borrowerExisted, hasAuth, followUp };
+}
+
+router.post('/', async (req, res) => {
+  // Fail CLOSED: with no key configured this endpoint would accept anonymous
+  // writes (spoofed borrowers/applications). Allow that only outside production.
+  if (!cfg.intakeApiKey) {
+    if (cfg.env === 'production')
+      return res.status(503).json({ error: 'intake not configured (INTAKE_API_KEY unset)' });
+  } else {
+    // Constant-time compare (matches the webhook verifiers) — a plain !== leaks
+    // the key byte-by-byte via response timing. Hash both sides to a fixed
+    // length first so the comparison is also independent of the key length.
+    const crypto = require('crypto');
+    const h = (s) => crypto.createHash('sha256').update(String(s == null ? '' : s), 'utf8').digest();
+    if (!crypto.timingSafeEqual(h(req.get('x-intake-key')), h(cfg.intakeApiKey))) {
+      return res.status(401).json({ error: 'bad intake key' });
+    }
+  }
+  const p = req.body || {};
+  if (!(p.email || p.b1Email)) return res.status(400).json({ error: 'borrower email required' });
+  try {
+    const out = await siteIntake(p, { source: 'website_form' });
+    // The borrower + application are now saved. Respond success IMMEDIATELY — the
+    // checklist + routing are best-effort follow-ups, and a failure there
+    // must never turn into a 500 that makes the website resubmit the form and
+    // create a DUPLICATE application.
+    res.status(201).json({ ok: true, borrowerId: out.borrowerId, applicationId: out.applicationId, assigned: out.assigned });
+    out.followUp().catch((e) => console.error('[intake] post-commit follow-up failed:', db.describeError(e)));
   } catch (e) {
-    await client.query('ROLLBACK').catch(() => {});
     // Never leak raw DB error strings to the public endpoint.
     console.error('[intake] failed:', db.describeError(e));
     if (!res.headersSent) res.status(500).json({ error: 'could not save the application — please try again' });
-  } finally { client.release(); }
+  }
 });
 
 module.exports = router;
+module.exports.siteIntake = siteIntake;

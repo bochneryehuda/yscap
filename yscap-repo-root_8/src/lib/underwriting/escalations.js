@@ -18,6 +18,7 @@
  */
 const db = require('../../db');
 const { assigneeExistsSql } = require('../permissions');
+const { underwriterActions } = require('./actions');
 
 const TARGET_ROLES = ['super_admin', 'processor', 'underwriter'];
 const TARGET_LABEL = {
@@ -105,9 +106,18 @@ async function openEscalation(client, { appId, findingId, finding, targetRole, a
 // shadowing of e.page_number); listEscalations coalesces the two in JS so the
 // effective page doesn't depend on SQL column ordering. This fixes escalations
 // created before the snapshot was plumbed, and any the analyzer paged afterward.
+//
+// The other `finding_*` aliases are the LIVE state of the underlying finding, so the
+// review screen can (a) offer the SAME action menu the file's own finding card offers
+// and (b) say plainly whether the finding itself is still open. Same distinct-alias
+// discipline as the page: never shadow an e.* column.
 const LIST_SELECT = `
   SELECT e.*,
          df.page_number AS finding_page,
+         df.status AS finding_status,
+         df.severity AS finding_severity,
+         df.blocks_ctc AS finding_blocks_ctc,
+         df.suggested_actions AS finding_suggested_actions,
          a.ys_loan_number, a.property_address, a.loan_amount, a.status AS file_status,
          b.first_name, b.last_name,
          rq.full_name AS requested_by_name, rq.role AS requested_by_role,
@@ -123,33 +133,123 @@ const LIST_SELECT = `
 
 // The effective source page = the escalation's own snapshot, else the finding's
 // live page. Explicit JS coalesce (not a shadowed SQL column) + drop the helper.
+//
+// The same pass decorates the row with the REVIEWER'S FULL ACTION MENU (owner-directed
+// 2026-07-26). Before this, the review screen only rendered buttons when the escalation's
+// stored `suggested_actions` snapshot happened to be non-empty — so most rows showed only
+// "Mark resolved", which closes the QUEUE ITEM and leaves the finding sitting open on the
+// file. The menu is now computed by the SAME `underwriterActions()` the file's own finding
+// card is decorated with (src/routes/underwriting.js `decorate`), fed the LIVE finding's
+// verbs/severity when the finding row still exists and the snapshot otherwise — so every
+// escalation offers exactly what the desk offers, including legacy rows with a NULL snapshot.
 function withEffectivePage(row) {
   const page = row.page_number != null ? row.page_number : (row.finding_page != null ? row.finding_page : null);
-  const { finding_page, ...rest } = row;   // eslint-disable-line no-unused-vars
-  return { ...rest, page_number: page };
+  const {
+    finding_page, finding_status, finding_severity, finding_blocks_ctc, finding_suggested_actions,
+    ...rest
+  } = row;   // eslint-disable-line no-unused-vars
+  // Prefer the LIVE finding (it is the thing the action is applied to); fall back to the
+  // snapshot for a derived finding, which has no stored row at all.
+  const severity = finding_severity || rest.severity || 'warning';
+  const verbs = Array.isArray(finding_suggested_actions) ? finding_suggested_actions
+    : (Array.isArray(rest.suggested_actions) ? rest.suggested_actions : undefined);
+  return {
+    ...rest,
+    page_number: page,
+    severity,
+    // Live finding state: 'open' | 'resolved' | 'dismissed', or null when the escalation
+    // carries a DERIVED finding (no stored row) — the screen says so instead of pretending.
+    finding_status: rest.finding_id ? (finding_status || null) : null,
+    finding_open: rest.finding_id ? finding_status === 'open' : false,
+    // Fatal + CTC-blocking is the tier that needs senior authority to CLEAR (exceptions.js).
+    finding_blocks_ctc: finding_blocks_ctc == null ? null : !!finding_blocks_ctc,
+    availableActions: underwriterActions(verbs ? { severity, actions: verbs } : { severity }),
+  };
 }
 
 /**
- * List escalations for the workload surface. When `viewer` is passed (a non-super
- * staffer), the list is scoped to what they should act on: rows routed to their
- * ROLE, rows assigned to them personally, or rows they raised. A super-admin (or a
- * caller passing seeAll) sees everything. status: 'open'|'resolved'|'dismissed'|'all'.
+ * May `viewer` DECIDE this escalation? (owner-directed widening 2026-07-26.)
+ *
+ * The old rule was: a super-admin, the person it was routed to by role, or a personal
+ * assignee. That forced ordinary findings to wait on a super-admin even when the admin
+ * or processor already looking at the file could handle them. Now any staffer who can
+ * SIGN OFF conditions and can see the file may take it — the queue is a work list, not
+ * a super-admin-only inbox.
+ *
+ * The one control kept: you may not decide an escalation YOU raised (a super-admin is
+ * exempt, as before) — the whole point of escalating is a second pair of eyes.
+ *
+ * `can(actor, permission)` is the permission predicate; `hasFileAccess` says whether the
+ * viewer can reach the escalation's file (the list query already scopes to that, so the
+ * caller passes true for rows it returned).
+ *
+ * @returns {{ok:true} | {ok:false, reason:string}}
  */
-async function listEscalations({ status = 'open', limit = 200, viewer = null, seeAll = false } = {}, client = db) {
+function mayDecide({ viewer, row, can, hasFileAccess = true } = {}) {
+  const v = viewer || {};
+  const isSuper = v.role === 'super_admin';
+  if (isSuper) return { ok: true };
+  if (!row) return { ok: false, reason: 'not found' };
+  if (row.requested_by && row.requested_by === v.id) {
+    return { ok: false, reason: 'you raised this finding — another reviewer must decide it' };
+  }
+  if (row.assigned_to && row.assigned_to === v.id) return { ok: true };
+  if (!hasFileAccess) return { ok: false, reason: 'this escalation is on a file you do not have access to' };
+  if (row.target_role && row.target_role === v.role) return { ok: true };
+  // The widening: an admin / processor / underwriter (anyone who signs off conditions on
+  // this file) may clear the queue item without bouncing it to a super-admin.
+  if (typeof can === 'function' && can(v, 'sign_off_conditions')) return { ok: true };
+  return { ok: false, reason: 'this escalation was routed to someone else' };
+}
+
+/**
+ * The per-viewer scope fragment, as SQL. ONE definition used by both the list and the
+ * badge count so the two can never disagree about what a staffer is looking at.
+ *
+ * Assigned to me (a deliberate personal hand-off grants me the context), raised by me, OR
+ * on a file I am actually on. Every branch stays inside the existing per-file scope
+ * (CLAUDE.md: non-see-all staff are scoped to their assigned files) — a role-routed row
+ * never leaks a borrower/file identity to someone who isn't on that file.
+ *
+ * `anyOnFile` (owner-directed 2026-07-26) is what lets a processor / underwriter clear a
+ * finding that was escalated to a SUPER-ADMIN: a signer who is on the file sees every
+ * escalation on that file, not only the ones addressed to their own role. Without it the
+ * old rule applies — the row must ALSO be routed to my role.
+ *
+ * @param {string} meParam    the placeholder holding the viewer's staff id
+ * @param {string} roleParam  the placeholder holding the viewer's role
+ * @param {boolean} anyOnFile viewer signs off conditions → any escalation on their files
+ */
+// NOTE the params discipline: the role placeholder is only ADDED when the SQL actually
+// references it. An unreferenced placeholder is not harmless in Postgres — it fails the
+// bind ("supplies N parameters, but prepared statement requires N-1"), the same class of
+// bug the borrower-view scope hit. So this returns BOTH the fragment and its params.
+function viewerScope(viewer, anyOnFile, startAt = 0) {
+  const params = [viewer.id];
+  const me = `$${startAt + 1}`;
+  let onFile;
+  if (anyOnFile) {
+    onFile = assigneeExistsSql('a', me);
+  } else {
+    params.push(viewer.role || '');
+    onFile = `(e.target_role = $${startAt + 2} AND ${assigneeExistsSql('a', me)})`;
+  }
+  return { sql: `(e.assigned_to = ${me} OR e.requested_by = ${me} OR ${onFile})`, params };
+}
+
+/**
+ * List escalations for the workload surface. When `viewer` is passed (a non-see-all
+ * staffer), the list is scoped by viewerScopeSql above. A super-admin (or a caller
+ * passing seeAll) sees everything. status: 'open'|'resolved'|'dismissed'|'all'.
+ */
+async function listEscalations({ status = 'open', limit = 200, viewer = null, seeAll = false, anyOnFile = false } = {}, client = db) {
   const where = [];
   const params = [];
   if (status && status !== 'all') { params.push(status); where.push(`e.status = $${params.length}`); }
   if (viewer && !seeAll) {
-    const role = viewer.role || '';
-    params.push(viewer.id);
-    const meParam = `$${params.length}`;
-    params.push(role);
-    const roleParam = `$${params.length}`;
-    // Assigned to me (a deliberate personal hand-off grants me the context), raised by me, OR
-    // routed to my role AND I actually have access to the file. Role-routing must NOT leak a
-    // file's borrower/identity to a scoped staffer who isn't on that file — it stays inside the
-    // existing per-file scope (CLAUDE.md: non-see-all staff are scoped to their assigned files).
-    where.push(`(e.assigned_to = ${meParam} OR e.requested_by = ${meParam} OR (e.target_role = ${roleParam} AND ${assigneeExistsSql('a', meParam)}))`);
+    const scope = viewerScope(viewer, anyOnFile, params.length);
+    params.push(...scope.params);
+    where.push(scope.sql);
   }
   const clause = where.length ? `WHERE ${where.join(' AND ')}` : '';
   const lim = Math.min(500, Math.max(1, Number(limit) || 200));
@@ -170,18 +270,18 @@ async function forFile(appId, client = db) {
  * Count of OPEN escalations for the nav badge, scoped to what the viewer acts on
  * (their role / assigned / raised), or all for a super-admin.
  */
-async function pendingCount({ viewer = null, seeAll = false } = {}, client = db) {
+async function pendingCount({ viewer = null, seeAll = false, anyOnFile = false } = {}, client = db) {
   try {
     if (seeAll || !viewer) {
       const r = await client.query(`SELECT count(*)::int AS n FROM finding_escalations WHERE status='open'`);
       return r.rows[0] ? r.rows[0].n : 0;
     }
+    const scope = viewerScope(viewer, anyOnFile, 0);
     const r = await client.query(
       `SELECT count(*)::int AS n FROM finding_escalations e
          JOIN applications a ON a.id = e.application_id
-        WHERE e.status='open'
-          AND (e.assigned_to=$2 OR e.requested_by=$2 OR (e.target_role=$1 AND ${assigneeExistsSql('a', '$2')}))`,
-      [viewer.role || '', viewer.id]);
+        WHERE e.status='open' AND ${scope.sql}`,
+      scope.params);
     return r.rows[0] ? r.rows[0].n : 0;
   } catch (_) { return 0; }
 }
@@ -201,5 +301,6 @@ async function decideEscalation(client, { id, decision, staffId, note } = {}) {
 
 module.exports = {
   TARGET_ROLES, TARGET_LABEL, normTargetRole,
-  openEscalation, listEscalations, forFile, pendingCount, decideEscalation,
+  openEscalation, listEscalations, forFile, pendingCount, decideEscalation, mayDecide,
+  _internals: { withEffectivePage, viewerScope },
 };

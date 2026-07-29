@@ -2,6 +2,7 @@ import React, { useEffect, useMemo, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { api } from '../lib/api.js';
 import { passwordProblem, PASSWORD_HINT } from '../lib/password.js';
+import { fullNameOf } from '../lib/personName.js';
 
 // #83 — the loan officer's book of borrowers. Everyone on a file they run (or,
 // for staff who see all files, everyone), with portal-account state and last
@@ -138,7 +139,7 @@ export default function StaffBorrowers() {
             </thead>
             <tbody>
               {filtered.map(b => {
-                const name = `${b.first_name || ''} ${b.last_name || ''}`.trim() || '(no name)';
+                const name = fullNameOf(b) || '(no name)';
                 const ini = `${(b.first_name || ' ')[0] || ''}${(b.last_name || ' ')[0] || ''}`.trim().toUpperCase() || '—';
                 const last = ago(b.last_login_at);
                 return (
@@ -151,7 +152,7 @@ export default function StaffBorrowers() {
                         </span>
                       </td>
                       <td>
-                        <div className="small">{b.email || '—'}</div>
+                        <div className="small">{b.email && !/@clickup\.local$/i.test(b.email) ? b.email : '—'}</div>
                         <div className="muted small">{b.cell_phone || ''}</div>
                       </td>
                       <td className="mut">{b.loan_officer_name || <span className="muted">—</span>}</td>
@@ -159,6 +160,14 @@ export default function StaffBorrowers() {
                         {b.latest_file_id
                           ? <Link to={`/internal/app/${b.latest_file_id}`} title="Open the most recent file">{b.files}</Link>
                           : b.files}
+                        {/* DSCR / long-term deals never become loan files here, so a client
+                            who has only ever done that business would read as "0 files" and
+                            look like an empty record (owner-directed 2026-07-26). */}
+                        {b.other_deals ? (
+                          <div className="muted small" title="DSCR / long-term deals from ClickUp — not fix-and-flip loan files">
+                            +{b.other_deals} other
+                          </div>
+                        ) : null}
                       </td>
                       <td>
                         {b.has_account

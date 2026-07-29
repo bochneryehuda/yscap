@@ -72,4 +72,19 @@ r = uw.underwriteAppraisal({ appraisal: appr, context: ctx });
 assert.ok(r.findings.some((f) => f.code === 'appraisal_arv_missing' && f.blocks_ctc));
 ok('a rehab loan with no ARV on the appraisal is flagged (blocks CTC)');
 
+
+// --- fix 2026-07-23: no appraisal blocks FUNDING too; collateral fatals block the term sheet ---
+r = uw.underwriteAppraisal({ appraisal: null, context: ctx });
+{
+  const m = r.findings.find((f) => f.code === 'appraisal_missing');
+  assert.ok(m && m.blocks_ctc && m.blocks_funding, 'a missing appraisal blocks CTC AND funding');
+}
+appr = { as_is_value: 100000, arv_value: null, property_type: 'sfr', units: 1, condition_of_appraisal: 'AsIs' };
+r = uw.underwriteAppraisal({ appraisal: appr, context: { values: { as_is_value: 500000 } } });
+{
+  const f = r.findings.find((x) => x.code === 'appraisal_as_is_below_sizing');
+  assert.ok(f && f.blocks_term_sheet && f.blocks_ctc && f.blocks_funding, 'a below-sizing fatal blocks all three gates');
+}
+ok('appraisal_missing blocks funding; collateral fatals carry blocks_term_sheet');
+
 console.log(`\nR6.8 appraisal-underwriter pure — ${passed} checks passed`);

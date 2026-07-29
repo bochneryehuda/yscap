@@ -126,6 +126,13 @@ const CATEGORY_OF = {
   // cleanly (the order Email Center scopes on the msg_type 'title_%' / 'insurance_%').
   title_order: 'orders', title_followup: 'orders', title_message: 'orders',
   insurance_order: 'orders', insurance_followup: 'orders', insurance_message: 'orders',
+  attorney_order: 'orders', attorney_followup: 'orders', attorney_message: 'orders',
+  // The CLOSING CHAIN (src/lib/closing-thread.js) — the closing-prep request, the
+  // automatic updates that ride the same chain, and every message the attorney's own
+  // chain sends us. Its own bucket: this is the closing conversation, not an order.
+  closing_order: 'closing', closing_followup: 'closing', closing_message: 'closing',
+  closing_executed_term_sheet: 'closing', closing_closing_date: 'closing',
+  closing_clear_to_close: 'closing',
   security: 'account', account: 'account',
 };
 const categoryOf = (type) => CATEGORY_OF[type] || 'other';
@@ -136,7 +143,13 @@ const categoryOf = (type) => CATEGORY_OF[type] || 'other';
  * Record an outbound email. Best-effort; never throws.
  * @param send {to, subject, html, text, replyTo, from, attachments}
  * @param ctx  {applicationId, notificationId, type, audience, status, providerId,
- *              error, subjectTag, kicker, recipientKind}
+ *              error, subjectTag, kicker, recipientKind, threadKey}
+ *
+ * `ctx.threadKey` PINS the row to a specific conversation instead of deriving one
+ * from the subject. Only the closing chain uses it, and it has to: an outside
+ * attorney picks their own subject and may change it mid-chain, so a
+ * subject-derived key would scatter one closing across many threads. Everything
+ * else keeps the subject-derived key and is unaffected.
  */
 async function captureOutbound(send = {}, ctx = {}) {
   try {
@@ -180,7 +193,7 @@ async function captureOutbound(send = {}, ctx = {}) {
                      body_html = COALESCE(EXCLUDED.body_html, email_messages.body_html),
                      body_text = COALESCE(EXCLUDED.body_text, email_messages.body_text),
                      to_emails = CASE WHEN jsonb_array_length(EXCLUDED.to_emails) > 0 THEN EXCLUDED.to_emails ELSE email_messages.to_emails END`,
-      [applicationId, threadKeyFor(applicationId, subject), ctx.notificationId || null,
+      [applicationId, ctx.threadKey || threadKeyFor(applicationId, subject), ctx.notificationId || null,
        ctx.type || null, categoryOf(ctx.type),
        (send.from ? bareAddress(send.from) : cfg.notifyFrom ? bareAddress(cfg.notifyFrom) : null),
        (send.from && /"?([^"<]+)"?\s*</.test(String(send.from)) ? String(send.from).replace(/\s*<.*$/, '').replace(/"/g, '').trim() : null),
@@ -197,9 +210,23 @@ async function captureOutbound(send = {}, ctx = {}) {
   }
 }
 
+// Inbound msg types that are allowed to carry their own scope tag instead of the
+// generic 'inbound_reply'. Each one is what makes a SCOPED inbox (an order's thread,
+// the closing chain) pick the message up directly rather than inferring it.
+const INBOUND_MSG_TYPES = new Set([
+  'title_message', 'insurance_message', 'attorney_message', 'closing_message',
+]);
+
 /**
  * Record an inbound reply. Best-effort; never throws.
- * @param p {inboundId, applicationId, from, subject, html, text, status, forwardedTo, providerId}
+ * @param p {inboundId, applicationId, from, subject, html, text, status, forwardedTo,
+ *           providerId, msgType, threadKey, attachments, toEmails, ccEmails}
+ *
+ * `p.threadKey` pins the message to a stored conversation (the closing chain) rather
+ * than deriving one from the subject — see captureOutbound.
+ * `p.attachments` records WHAT came in. Inbound rows used to store no attachment
+ * metadata at all, so a closing email arriving with five documents read, in the
+ * portal, as a message with nothing on it.
  */
 async function captureInbound(p = {}) {
   try {
@@ -213,26 +240,57 @@ async function captureInbound(p = {}) {
     // An order vendor's reply (#orders) is tagged 'title_message' / 'insurance_message'
     // so the order-scoped Email Center picks it up directly (belt-and-suspenders on
     // top of the subject-thread linkage). A normal file reply stays 'inbound_reply'.
-    const msgType = (p.msgType === 'title_message' || p.msgType === 'insurance_message') ? p.msgType : 'inbound_reply';
+    const msgType = INBOUND_MSG_TYPES.has(p.msgType) ? p.msgType : 'inbound_reply';
     const category = categoryOf(msgType) === 'other' ? 'messages' : categoryOf(msgType);
+    // Attachment METADATA only (never bytes) — the same shape captureOutbound stores,
+    // so the Email Center renders an inbound message's files identically.
+    const attachments = Array.isArray(p.attachments)
+      ? p.attachments.filter(Boolean).slice(0, 25).map((a) => ({
+          filename: String(a.filename || a.name || 'attachment').slice(0, 200),
+          contentType: a.contentType || a.content_type || null,
+          size: a.size != null ? Number(a.size)
+            : (typeof a.content === 'string' ? Math.round(a.content.length * 0.75) : null),
+        }))
+      : null;
+    // WHO the outside sender addressed. On a chain the attorney runs, this is the
+    // only record of who else is on it.
+    const to = toRecipients(p.toEmails);
+    const cc = toRecipients(p.ccEmails);
+    // Did the sending domain vouch for this? {spf,dkim,dmarc,verdict} — db/366.
+    // NULL (no headers, or a row predating the column) reads as 'unknown' and must
+    // never be rendered as a pass. COALESCEd on update so a refinement pass that
+    // does not re-derive it cannot erase what the first capture recorded.
+    const senderAuth = (p.senderAuth && typeof p.senderAuth === 'object') ? p.senderAuth : null;
     await db.query(
       `INSERT INTO email_messages
          (application_id, thread_key, direction, inbound_id, msg_type, category,
-          from_email, to_emails, subject, preview, body_html, body_text,
-          recipient_kind, provider, provider_message_id, status, meta, reconstructed, occurred_at)
-       VALUES ($1,$2,'inbound',$3,$14,$15,$4,'[]'::jsonb,$5,$6,$7,$8,'external',$9,$10,$11,$12,$13, now())
-       ON CONFLICT (inbound_id) WHERE inbound_id IS NOT NULL
+          from_email, to_emails, cc_emails, subject, preview, body_html, body_text,
+          recipient_kind, provider, provider_message_id, status, meta, attachments, reconstructed, sender_auth, occurred_at)
+       VALUES ($1,$2,'inbound',$3,$14,$15,$4,$16,$17,$5,$6,$7,$8,'external',$9,$10,$11,$12,$18,$13,$19, now())
+       -- Keyed on (message, FILE) — db/365. An inbound message that carries two of
+       -- our closing addresses belongs to two files and needs a row on each; keyed on
+       -- inbound_id alone the second file silently got nothing. The COALESCE matches
+       -- the index expression exactly, or Postgres cannot infer it.
+       ON CONFLICT (inbound_id, COALESCE(application_id::text, '')) WHERE inbound_id IS NOT NULL
        DO UPDATE SET status = EXCLUDED.status,
                      body_html = COALESCE(EXCLUDED.body_html, email_messages.body_html),
                      body_text = COALESCE(EXCLUDED.body_text, email_messages.body_text),
                      subject = COALESCE(NULLIF(EXCLUDED.subject,''), email_messages.subject),
                      from_email = COALESCE(EXCLUDED.from_email, email_messages.from_email),
-                     meta = COALESCE(EXCLUDED.meta, email_messages.meta)`,
-      [applicationId, threadKeyFor(applicationId, subject), p.inboundId || null,
+                     meta = COALESCE(EXCLUDED.meta, email_messages.meta),
+                     attachments = COALESCE(EXCLUDED.attachments, email_messages.attachments),
+                     to_emails = CASE WHEN jsonb_array_length(EXCLUDED.to_emails) > 0
+                                      THEN EXCLUDED.to_emails ELSE email_messages.to_emails END,
+                     cc_emails = COALESCE(EXCLUDED.cc_emails, email_messages.cc_emails),
+                     sender_auth = COALESCE(EXCLUDED.sender_auth, email_messages.sender_auth)`,
+      [applicationId, p.threadKey || threadKeyFor(applicationId, subject), p.inboundId || null,
        from, subject, previewOf(text, html), html, text,
        (cfg.emailProvider || null), p.providerId || null, p.status || 'received',
        Object.keys(meta).length ? JSON.stringify(meta) : null,
-       p.reconstructed === true, msgType, category]);
+       p.reconstructed === true, msgType, category,
+       JSON.stringify(to), cc.length ? JSON.stringify(cc) : null,
+       attachments ? JSON.stringify(attachments) : null,
+       senderAuth ? JSON.stringify(senderAuth) : null]);
   } catch (e) {
     if (process.env.EMAIL_LOG_DEBUG) console.warn('[email-log] captureInbound failed:', e.message);
   }
@@ -371,4 +429,5 @@ module.exports = {
   captureOutbound, captureInbound, renderHistoricalBody,
   ensureFileBackfilled, backfillEmailHistoryOnce,
   normalizeSubject, threadKeyFor, toRecipients, categoryOf, previewOf,
+  INBOUND_MSG_TYPES,
 };

@@ -59,7 +59,7 @@ router.get('/conversations', async (req, res) => {
                   'name', x.name, 'roleLabel', x.role_label)
                 ORDER BY x.member_kind DESC, x.added_at) AS members
            FROM (SELECT cm2.member_kind, cm2.member_id, cm2.role_label, cm2.added_at,
-                        COALESCE(s2.full_name, b3.first_name || ' ' || b3.last_name) AS name
+                        COALESCE(s2.full_name, NULLIF(b3.full_name,'')) AS name
                    FROM conversation_members cm2
                    LEFT JOIN staff_users s2 ON s2.id=cm2.member_id AND cm2.member_kind='staff'
                    LEFT JOIN borrowers b3 ON b3.id=cm2.member_id AND cm2.member_kind='borrower'
@@ -89,7 +89,7 @@ router.get('/conversations/:cid', async (req, res) => {
   const [members, pinned, myDraft] = await Promise.all([
     chat.membersOf(conv.id),
     db.query(`SELECT m.id, m.seq, m.body, m.created_at, m.attachment_kind,
-                     CASE WHEN m.sender_kind='staff' THEN s.full_name ELSE (b.first_name || ' ' || b.last_name) END AS sender_name
+                     CASE WHEN m.sender_kind='staff' THEN s.full_name ELSE NULLIF(b.full_name,'') END AS sender_name
                 FROM messages m
                 LEFT JOIN staff_users s ON s.id=m.sender_id AND m.sender_kind='staff'
                 LEFT JOIN borrowers b ON b.id=m.sender_id AND m.sender_kind='borrower'
@@ -120,6 +120,9 @@ router.get('/conversations/:cid/messages', async (req, res) => {
       m.reply_snippet = { ...m.reply_snippet, body: scrubText(m.reply_snippet.body) };
     if (Array.isArray(m.entity_refs))
       m.entity_refs = m.entity_refs.map(r => (r && typeof r.label === 'string') ? { ...r, label: scrubText(r.label) } : r);
+    // staff-named attachment filenames are a partner-name vector too — the
+    // email path already scrubs them ("BlueLake_terms.pdf"; leak fix 2026-07-23)
+    if (typeof m.attachment_name === 'string') m.attachment_name = scrubText(m.attachment_name);
   }
   res.json({ messages: msgs, members: await chat.membersOf(conv.id) });
 });
@@ -155,6 +158,11 @@ router.post('/conversations/:cid/read', async (req, res) => {
   const conv = await loadConv(req, res); if (!conv) return;
   const seq = Number((req.body || {}).seq);
   if (!isFinite(seq) || seq < 0) return res.status(400).json({ error: 'seq required' });
+  // Inside a BORROWER VIEW the staffer is looking at the borrower's thread —
+  // they must not consume the borrower's unread state on their behalf (same
+  // rule as the legacy /messages read stamp in borrower.js). The thread renders
+  // identically; only the receipt write is skipped.
+  if (req.impersonation) return res.json({ ok: true, skipped: 'borrower_view' });
   res.json({ ok: true, ...(await chat.markRead(conv, borrowerActor(req), seq) || { skipped: true }) });
 });
 router.post('/conversations/:cid/unread', async (req, res) => {
@@ -205,16 +213,19 @@ router.get('/conversations/:cid/shared', async (req, res) => {
   const files = await db.query(
     `SELECT m.id AS message_id, m.seq, m.created_at, m.attachment_kind,
             d.id AS document_id, d.filename, d.content_type, d.size_bytes,
-            CASE WHEN m.sender_kind='staff' THEN s.full_name ELSE (b.first_name || ' ' || b.last_name) END AS sender_name
+            CASE WHEN m.sender_kind='staff' THEN s.full_name ELSE NULLIF(b.full_name,'') END AS sender_name
        FROM messages m
        JOIN documents d ON d.id=m.attachment_document_id
        LEFT JOIN staff_users s ON s.id=m.sender_id AND m.sender_kind='staff'
        LEFT JOIN borrowers b ON b.id=m.sender_id AND m.sender_kind='borrower'
       WHERE m.conversation_id=$1 AND m.deleted_at IS NULL
       ORDER BY m.seq DESC LIMIT 200`, [conv.id]);
+  // staff-named filenames are a partner-name vector (leak fix 2026-07-23 —
+  // same class as /messages above)
+  const safe = files.rows.map(f => ({ ...f, filename: typeof f.filename === 'string' ? scrubText(f.filename) : f.filename, seq: Number(f.seq) }));
   res.json({
-    media: files.rows.filter(f => ['image', 'video', 'audio'].includes(f.attachment_kind)).map(f => ({ ...f, seq: Number(f.seq) })),
-    files: files.rows.filter(f => !['image', 'video', 'audio'].includes(f.attachment_kind)).map(f => ({ ...f, seq: Number(f.seq) })),
+    media: safe.filter(f => ['image', 'video', 'audio'].includes(f.attachment_kind)),
+    files: safe.filter(f => !['image', 'video', 'audio'].includes(f.attachment_kind)),
     links: [],
   });
 });

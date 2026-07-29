@@ -98,4 +98,50 @@ assert.deepStrictEqual(codes(idFindings({ address: { line1: '9 Oak Ave', city: '
   assert.ok(!computeIdFindings({ ...goodId, dateOfBirth: '2012-06-01' }, borrower, {}).some((f) => f.code === 'id_underage'), 'no today → no age flag');
 }
 
+// --- CO-BORROWER AWARENESS (owner-directed 2026-07-27) ---
+// The file has TWO people. An ID belonging to EITHER is legitimate — never a fatal mismatch.
+{
+  const co = {
+    first_name: 'Jane', last_name: 'Doe', date_of_birth: '1985-09-20',
+    current_address: { line1: '77 Elm St', city: 'Austin', state: 'TX', zip: '78704' }, prior_address: null,
+  };
+  const set = { people: [borrower, co], ownerNames: [] };
+  const coId = {
+    documentType: 'driver_license', firstName: 'Jane', lastName: 'Doe', fullName: 'Jane Doe',
+    dateOfBirth: '1985-09-20', address: { line1: '77 Elm St', city: 'Austin', state: 'TX', zip: '78704' },
+    documentNumber: 'TX7654321', expirationDate: '2028-01-01', readable: true,
+  };
+  // The co-borrower's own ID → clean (previously a DOUBLE fatal against the primary borrower).
+  assert.deepStrictEqual(codes(computeIdFindings(coId, set, { today: TODAY })), [], "a co-borrower's ID matches the file → no findings");
+  // The primary's ID → still clean against the same set.
+  assert.deepStrictEqual(codes(computeIdFindings(goodId, set, { today: TODAY })), [], "the primary borrower's ID matches the set → no findings");
+  // An ID matching NOBODY on the 2-person file → ONE name mismatch, no phantom DOB against an arbitrary person.
+  const stranger = { ...coId, firstName: 'Robert', lastName: 'Jones', fullName: 'Robert Jones',
+    dateOfBirth: '1970-01-01', address: { line1: '1 Nowhere Rd', city: 'X', state: 'TX', zip: '70000' } };
+  const sf = computeIdFindings(stranger, set, { today: TODAY });
+  assert.deepStrictEqual(codes(sf), ['id_name_mismatch'], 'an ID matching nobody → name mismatch only (no phantom DOB)');
+  assert.strictEqual(summarize(sf).fatal, 1, 'exactly one fatal, not two');
+  // A matched co-borrower's REAL DOB typo is still caught.
+  assert.deepStrictEqual(codes(computeIdFindings({ ...coId, dateOfBirth: '1985-09-21' }, set, { today: TODAY })),
+    ['id_dob_mismatch'], "a matched co-borrower's DOB typo is still caught");
+  // A matched co-borrower's address is compared against the CO-borrower (not the primary).
+  assert.deepStrictEqual(codes(computeIdFindings({ ...coId, address: { line1: '999 Far Ave', city: 'Y', state: 'TX', zip: '79999' } }, set, { today: TODAY })),
+    ['id_address_mismatch'], 'address compared against the matched co-borrower');
+}
+
+// --- LLC OWNER NAME accepted (name-only; no DOB/address held for them) ---
+{
+  const set = { people: [borrower], ownerNames: ['Aaron Green'] };
+  const ownerId = { ...goodId, firstName: 'Aaron', lastName: 'Green', fullName: 'Aaron Green',
+    dateOfBirth: '1975-03-03', address: { line1: '5 Owner Ln', city: 'Z', state: 'TX', zip: '70001' } };
+  // A named LLC owner's ID is legitimate → no name mismatch, and NO DOB/address compare against the borrower.
+  assert.deepStrictEqual(codes(computeIdFindings(ownerId, set, { today: TODAY })), [], "a named LLC owner's ID is accepted with no phantom mismatches");
+}
+
+// --- Back-compat: a one-person people-set behaves exactly like the bare borrowers row ---
+assert.deepStrictEqual(
+  codes(computeIdFindings({ ...goodId, firstName: 'Jon', fullName: 'Jon Smith', dateOfBirth: '1980-05-16' }, { people: [borrower], ownerNames: [] }, { today: TODAY })),
+  ['id_dob_mismatch', 'id_name_mismatch'],
+  'a single-person people-set still compounds name + DOB like the bare-row subject');
+
 console.log('✓ test-underwriting-id: all government-ID findings cases pass');

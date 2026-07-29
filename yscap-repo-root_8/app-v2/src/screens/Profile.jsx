@@ -7,6 +7,7 @@ import Entities from '../components/Entities.jsx';
 import { BorrowerContacts } from '../components/FileContacts.jsx';
 import TwoFactorPanel from '../components/TwoFactorPanel.jsx';
 import { fileToBase64 } from '../lib/files.js';
+import { onFilesDropped } from '../lib/drop-files.js';
 import { formatSSN, cleanFICO, ficoValid } from '../lib/validators.js';
 import { CITIZENSHIP, MARITAL } from '../lib/enums.js';
 import { Link } from 'react-router-dom';
@@ -76,6 +77,9 @@ export default function Profile() {
     const currentAddress = phys.line1 || phys.city ? { ...phys, oneLine: addrOneLine(phys) } : undefined;
     const payload = {
       firstName: p.first_name, lastName: p.last_name,
+      // Optional middle name (db/345) — sent as '' when cleared, which is a real
+      // answer ("I have none"), not a missing field.
+      middleName: p.middle_name ?? '', nameSuffix: p.name_suffix ?? '',
       cellPhone: p.cell_phone ?? '', dateOfBirth: p.date_of_birth ? String(p.date_of_birth).slice(0, 10) : '',
       fico: p.fico ?? '', citizenship: p.citizenship ?? '', maritalStatus: p.marital_status ?? '',
       yearsAtResidence: p.years_at_residence ?? '', monthsAtResidence: p.months_at_residence ?? '',
@@ -160,8 +164,13 @@ export default function Profile() {
         <div className="grid cols-2">
           <div className="field"><label>First name</label>
             <input className="input" autoComplete="off" value={p.first_name || ''} onChange={e => set('first_name', e.target.value)} /></div>
+          <div className="field"><label>Middle name <span style={{ color: '#4B585C', fontWeight: 400 }}>(optional)</span></label>
+            <input className="input" autoComplete="off" value={p.middle_name || ''} onChange={e => set('middle_name', e.target.value)} />
+            <span className="hint" style={{ color: '#4B585C' }}>Leave this empty if you do not have one.</span></div>
           <div className="field"><label>Last name</label>
             <input className="input" autoComplete="off" value={p.last_name || ''} onChange={e => set('last_name', e.target.value)} /></div>
+          <div className="field"><label>Suffix <span style={{ color: '#4B585C', fontWeight: 400 }}>(optional)</span></label>
+            <input className="input" autoComplete="off" placeholder="Jr., III" value={p.name_suffix || ''} onChange={e => set('name_suffix', e.target.value)} /></div>
           <div className="field"><label>Email</label>
             <input className="input" value={p.email || ''} disabled title="Contact us to change your account email" /></div>
           <div className="field"><label>Cell phone</label>
@@ -205,7 +214,7 @@ export default function Profile() {
       <div className="panel dropzone"
         onDragOver={e => { e.preventDefault(); e.currentTarget.classList.add('drop-over'); }}
         onDragLeave={e => { e.currentTarget.classList.remove('drop-over'); }}
-        onDrop={e => { e.preventDefault(); e.currentTarget.classList.remove('drop-over'); const f = e.dataTransfer.files && e.dataTransfer.files[0]; if (f) uploadPhotoIdFile(f); }}>
+        onDrop={e => { e.preventDefault(); e.currentTarget.classList.remove('drop-over'); onFilesDropped(e, (files) => uploadPhotoIdFile(files[0])); }}>
         <div className="row" style={{ marginBottom: 6 }}>
           <h3>Government photo ID</h3>
           <div className="spacer" />

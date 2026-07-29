@@ -3,6 +3,7 @@ import { api } from '../lib/api.js';
 import { PhoneInput , EmailInput} from '../components/FormattedInputs.jsx';
 import { useAuth } from '../lib/auth.jsx';
 import { passwordProblem, PASSWORD_HINT } from '../lib/password.js';
+import { fullNameOf } from '../lib/personName.js';
 
 // Fallback role list (replaced live by GET /permissions-meta).
 const FALLBACK_ROLES = [
@@ -71,7 +72,7 @@ function FileGrants({ staffer, flash, onError }) {
   }
 
   const loanLabel = (loan) => {
-    const nm = `${loan.first_name || ''} ${loan.last_name || ''}`.trim();
+    const nm = fullNameOf(loan);
     const addr = (loan.property_address && loan.property_address.oneLine) || loan.ys_loan_number || '';
     return { nm: nm || 'Borrower', addr };
   };

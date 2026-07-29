@@ -118,6 +118,9 @@ h1{font-size:26px} h2{font-size:20px} h3{font-size:16px}
 .grid.cols-2{grid-template-columns:minmax(0,1fr) minmax(0,1fr)}
 .grid.cols-3{grid-template-columns:repeat(3,minmax(0,1fr))}
 @media(max-width:720px){.grid.cols-2,.grid.cols-3{grid-template-columns:1fr}.nav{gap:12px}}
+/* Two-document contradiction compare (DocCompare): two PDF panes side by side on
+   a desk screen, stacked on a phone so each stays readable. */
+@media(max-width:720px){.doc-compare-panes{flex-direction:column}}
 /* Draw-desk stat tiles: a FIXED column count (never auto-fit) so every box is exactly the same
    width and a partial last row can't stretch. 4 across → the 8 tiles form two even rows of four;
    steps to 2 then 1 on narrower screens, always balanced. Equal height comes from the tile itself. */
@@ -272,6 +275,16 @@ textarea{min-height:90px;resize:vertical}
 .checkitem{display:flex;align-items:center;gap:12px;padding:12px 0;border-top:1px solid var(--line)}
 .dot{width:9px;height:9px;border-radius:50%;background:var(--muted);flex:none}
 .dot.done{background:var(--ok)} .dot.outstanding{background:var(--gold)}
+/* ONE dot colour per condition state, matching the five words in
+   app-v2/src/lib/conditions-vocab.js — apply with conditionStatusClass().
+   Before this, five states shared two colours plus a red inline override, so
+   "asked for" and "in review" looked identical in a list of forty rows. The
+   colours are the brand tokens, so the dictionary and the stylesheet agree. */
+.dot.cond-outstanding{background:var(--muted)}
+.dot.cond-requested{background:var(--teal)}
+.dot.cond-received{background:var(--gold)}
+.dot.cond-issue{background:var(--danger)}
+.dot.cond-satisfied{background:var(--ok)}
 /* drag-and-drop target on a condition / upload row (and generic upload cards) */
 .dropzone{transition:border-color .12s,background .12s}
 .dropzone.drop-over{border-color:var(--teal);background:rgba(127,169,176,.10);border-style:dashed}
@@ -1026,6 +1039,14 @@ input[type=checkbox],input[type=radio]{width:16px;height:16px;accent-color:var(-
 .sec-head.collapsible:hover .sec-title{color:var(--teal-br)}
 .sec-chevron{flex:none;color:var(--muted);font-size:12px;transition:transform .15s ease}
 .sec-chevron.open{transform:rotate(90deg)}
+/* One plain line under a SHUT section header, so a closed section can be judged
+   without opening it (blueprint Move 3). It sits below the rule rather than on
+   the header row, so a long line wraps under the title instead of squeezing it.
+   Quiet by design — it is context, not a heading; the section's own content is
+   what earns attention once it is open, and this line is gone by then. */
+.sec-head.has-summary{margin-bottom:0}
+.sec-summary{margin:7px 0 12px 15px;font-size:12.5px;line-height:1.5;color:#4B585C;overflow-wrap:anywhere}
+@media(max-width:720px){.sec-summary{margin-left:0}}
 .file-section .panel{margin-top:0}
 .file-section .panel + .panel{margin-top:14px}
 
@@ -1105,6 +1126,12 @@ input[type=checkbox],input[type=radio]{width:16px;height:16px;accent-color:var(-
   text-overflow:ellipsis;white-space:nowrap}
 .toolsheet-titles .small{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .toolsheet-done{flex:none}
+/* The always-available way out of a tool sheet (owner-directed 2026-07-26): a
+   refused save keeps the user in the tool on purpose, so there must be one
+   click that just LEAVES. Never hidden, never disabled — sized down on a phone
+   so the header still fits back-arrow + Leave + Done. */
+.toolsheet-exit{flex:none;white-space:nowrap}
+.toolsheet-exit-short{display:none}
 .toolsheet-body{flex:1;min-height:0;position:relative;display:flex;flex-direction:column;
   padding-bottom:env(safe-area-inset-bottom)}
 .toolsheet-savewash{position:absolute;inset:0;z-index:5;display:flex;flex-direction:column;
@@ -1127,6 +1154,9 @@ input[type=checkbox],input[type=radio]{width:16px;height:16px;accent-color:var(-
   .toolsheet-titles .small{display:none}
   .toolsheet-titles strong{font-size:15px}
   .toolsheet-done{padding:9px 16px}
+  .toolsheet-exit{padding:9px 10px}
+  .toolsheet-exit-long{display:none}
+  .toolsheet-exit-short{display:inline}
 }
 @media(prefers-reduced-motion:reduce){.toolsheet{animation:none}}
 
@@ -2816,41 +2846,699 @@ details[open]>.appr-sec-sum .appr-sec-chev{transform:rotate(180deg)}
   padding:6px 12px; font:inherit; font-size:.85rem; cursor:pointer; }
 .seg-btn:last-child { border-right:0; }
 .seg-btn.on { background:var(--primary); color:var(--on-accent); font-weight:600; }
-.cr-wrap { margin-top:6px; }
-.cr-alert { border-radius:var(--radius); padding:8px 10px; font-size:.85rem; }
-.cr-alert.danger { background:var(--danger-soft); color:var(--danger); border:1px solid var(--danger); }
-.cr-alert.warn   { background:var(--warning-soft); color:var(--warning); border:1px solid var(--warning); }
-.cr-alert.ok     { background:var(--success-soft); color:var(--ok); border:1px solid var(--ok); }
-.cr-card { border:1px solid var(--border); border-radius:var(--radius); background:var(--surface-soft); padding:10px 12px; margin:8px 0; }
-.cr-card-title { font-weight:700; font-size:.82rem; text-transform:uppercase; letter-spacing:.05em; color:var(--muted); margin-bottom:6px; }
-.cr-kv { display:flex; gap:10px; align-items:baseline; padding:2px 0; font-size:.9rem; flex-wrap:wrap; }
-.cr-kv > span { min-width:130px; color:var(--muted); font-size:.82rem; }
-.cr-kv > b { flex:1; min-width:0; }
-.cr-opts { margin:8px 0; }
-.cr-opt-label { font-size:.78rem; text-transform:uppercase; letter-spacing:.05em; color:var(--muted); margin-top:6px; display:block; }
-.cr-consent { display:flex; gap:8px; align-items:flex-start; margin:10px 0; font-size:.88rem; cursor:pointer; }
-.cr-consent input { margin-top:3px; }
-.cr-report { border:1px solid var(--border); border-radius:var(--radius); padding:12px; background:var(--surface); }
-.cr-head { display:flex; gap:16px; align-items:center; flex-wrap:wrap; }
-.cr-mid { text-align:center; padding:6px 14px; border-right:1px solid var(--border); }
-.cr-mid-num { font-size:2rem; font-weight:800; line-height:1; color:var(--gold); }
-.cr-mid-lbl { font-size:.72rem; text-transform:uppercase; letter-spacing:.05em; color:var(--muted); margin-top:3px; }
-.cr-scores { display:flex; gap:8px; flex-wrap:wrap; }
-.cr-score { border:1px solid var(--border); border-radius:var(--radius); padding:6px 10px; min-width:88px; text-align:center; background:var(--surface-soft); }
-.cr-score-bureau { font-size:.72rem; text-transform:uppercase; letter-spacing:.04em; color:var(--muted); }
-.cr-score-val { font-size:1.3rem; font-weight:700; color:var(--text); }
-.cr-score-model { font-size:.66rem; color:var(--text-soft); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; max-width:110px; }
-.cr-summary-grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(96px,1fr)); gap:8px; margin:10px 0; }
-.cr-stat { border:1px solid var(--border); border-radius:var(--radius); padding:8px; text-align:center; background:var(--surface-soft); }
-.cr-stat-num { font-size:1.05rem; font-weight:700; color:var(--text); }
-.cr-stat-lbl { font-size:.7rem; text-transform:uppercase; letter-spacing:.04em; color:var(--muted); margin-top:2px; }
-.cr-details { margin-top:8px; }
-.cr-sec { border:1px solid var(--border); border-radius:var(--radius); margin:6px 0; background:var(--surface); }
-.cr-sec > summary { cursor:pointer; padding:8px 10px; font-weight:600; font-size:.9rem; }
-.cr-table-wrap { overflow-x:auto; }
-.cr-table { width:100%; border-collapse:collapse; font-size:.82rem; }
-.cr-table th, .cr-table td { text-align:left; padding:5px 8px; border-top:1px solid var(--border); white-space:nowrap; }
-.cr-table th { color:var(--muted); font-weight:600; font-size:.74rem; text-transform:uppercase; letter-spacing:.03em; }
-.cr-table td.r, .cr-table th.r { text-align:right; }
-.cr-table tr.cr-bad td { background:var(--danger-soft); }
-.cr-table tr.cr-warn td { background:var(--warning-soft); }
+/* Semantic tone tokens (score bands) — kept separate from the teal/gold accent. */
+.crx-wrap .tone-good { --crx-tone:var(--success); --crx-tone-soft:var(--success-soft); }
+.crx-wrap .tone-ok   { --crx-tone:var(--teal);    --crx-tone-soft:var(--primary-soft); }
+.crx-wrap .tone-fair { --crx-tone:var(--warning); --crx-tone-soft:var(--warning-soft); }
+.crx-wrap .tone-poor { --crx-tone:var(--danger);  --crx-tone-soft:var(--danger-soft); }
+.crx-wrap .tone-none { --crx-tone:var(--muted);   --crx-tone-soft:var(--surface-soft); }
+.crx-modal .tone-good{ --crx-tone:var(--success); } .crx-modal .tone-ok{ --crx-tone:var(--teal); }
+.crx-modal .tone-fair{ --crx-tone:var(--warning); } .crx-modal .tone-poor{ --crx-tone:var(--danger); }
+
+.crx-wrap { margin-top:8px; font-family:var(--sans); }
+.crx-muted { color:var(--muted); font-size:.86rem; }
+.crx-bar { display:flex; gap:8px; align-items:center; flex-wrap:wrap; }
+.crx-bar-spacer { flex:1 1 auto; }
+.crx-pill { display:inline-flex; align-items:center; font-size:.72rem; font-weight:600; padding:3px 10px;
+  border-radius:999px; border:1px solid var(--warning); background:var(--warning-soft); color:var(--warning); }
+
+/* Buttons ---------------------------------------------------------------- */
+.crx-btn { display:inline-flex; align-items:center; justify-content:center; gap:6px; font-family:var(--sans);
+  font-size:.92rem; font-weight:600; line-height:1; padding:11px 18px; border-radius:10px; border:1px solid transparent;
+  cursor:pointer; transition:transform .08s ease, box-shadow .15s ease, background .15s ease; }
+.crx-btn.sm { padding:8px 14px; font-size:.85rem; }
+.crx-btn.primary { background:var(--teal); color:var(--on-accent); box-shadow:0 1px 2px rgba(20,27,34,.12); }
+.crx-btn.primary:hover:not(:disabled) { background:var(--teal-br); box-shadow:0 4px 14px rgba(47,127,134,.28); transform:translateY(-1px); }
+.crx-btn.ghost { background:var(--surface); color:var(--teal-br); border-color:var(--border); }
+.crx-btn.ghost:hover:not(:disabled) { border-color:var(--teal); background:var(--primary-soft); }
+.crx-btn:disabled { opacity:.5; cursor:not-allowed; }
+.crx-btn:focus-visible { outline:2px solid var(--focus); outline-offset:2px; }
+.crx-link { background:none; border:0; padding:6px 0; margin-top:8px; color:var(--teal-br); font-family:var(--sans);
+  font-size:.9rem; font-weight:600; cursor:pointer; }
+.crx-link:hover { text-decoration:underline; }
+
+/* Alerts ----------------------------------------------------------------- */
+/* Base = a neutral, readable note (an alert with no tone must never render as a
+   bare border-coloured box). Never use a --ink* token for text here: they are all
+   LIGHT in this palette. */
+.crx-alert { border-radius:10px; padding:11px 14px; font-size:.88rem; margin-top:10px;
+  border:1px solid var(--border); background:var(--surface-soft); color:var(--text); }
+.crx-alert.info { background:var(--primary-soft); color:var(--text); border-color:var(--teal); }
+.crx-alert.danger { background:var(--danger-soft); color:var(--danger); border-color:var(--danger); }
+.crx-alert.warn   { background:var(--warning-soft); color:var(--warning); border-color:var(--warning); }
+.crx-alert.ok     { background:var(--success-soft); color:var(--ok); border-color:var(--ok); }
+
+/* Modal ------------------------------------------------------------------ */
+.crx-back { backdrop-filter:blur(3px); }
+/* Flex column: fixed header, scrollable body, fixed footer — so the primary
+   action never gets clipped and is always reachable on short screens. */
+.cv-modal.crx-modal { max-width:620px; max-height:90dvh; padding:0; border-radius:18px;
+  overflow:hidden; display:flex; flex-direction:column; }
+.crx-modal-head { flex:none; display:flex; align-items:flex-start; justify-content:space-between; gap:12px;
+  padding:22px 24px 16px; border-bottom:1px solid var(--border);
+  background:linear-gradient(180deg,#fff,var(--surface-soft)); position:relative; }
+.crx-modal-head::after { content:""; position:absolute; left:24px; right:24px; bottom:-1px; height:2px;
+  background:linear-gradient(90deg,var(--gold),transparent 70%); }
+.crx-modal-title { margin:0; font-family:var(--serif); font-size:1.5rem; font-weight:600; color:var(--text); letter-spacing:-.01em; }
+.crx-modal-sub { margin:3px 0 0; color:var(--muted); font-size:.9rem; }
+.crx-x { flex:none; width:34px; height:34px; border-radius:10px; border:1px solid var(--border); background:var(--surface);
+  color:var(--muted); font-size:15px; line-height:1; cursor:pointer; }
+.crx-x:hover { color:var(--text); border-color:var(--muted); }
+.crx-modal-body { flex:1 1 auto; min-height:0; overflow-y:auto; overscroll-behavior:contain;
+  padding:20px 24px; display:flex; flex-direction:column; gap:18px; }
+.crx-modal-foot { flex:none; display:flex; flex-direction:column; gap:8px;
+  padding:14px 24px calc(14px + env(safe-area-inset-bottom)); border-top:1px solid var(--border);
+  background:linear-gradient(0deg,var(--surface-soft),#fff); }
+.crx-foot-hint { font-size:.8rem; color:var(--muted); line-height:1.35; }
+.crx-foot-actions { display:flex; gap:10px; flex-wrap:wrap; }
+.crx-foot-actions .crx-btn.primary { flex:1 1 auto; min-width:180px; }
+.crx-loading { padding:26px 24px; color:var(--muted); font-size:.92rem; }
+
+/* Recipient card --------------------------------------------------------- */
+.crx-recipient { border:1px solid var(--border); border-radius:14px; background:var(--surface);
+  padding:16px 18px; box-shadow:0 1px 2px rgba(20,27,34,.04); }
+/* One card per borrower (co-borrower support): a stack of borrower cards, each
+   with an include checkbox. Un-ticking a borrower must NOT resize the card or wash
+   the text out — the half-opacity version read as blurry, shrunken and broken
+   (owner-reported 2026-07-27). The dropped card keeps its exact size and readable
+   text; only the surface recedes and an "Not in this import" tag explains it. */
+.crx-recip-card { border:1px solid var(--border); border-radius:12px; padding:13px 14px; margin-top:12px;
+  background:var(--surface); transition:background-color .15s ease, border-color .15s ease; }
+.crx-recip-card:first-of-type { margin-top:10px; }
+.crx-recip-card.crx-off { background:var(--surface-soft); border-style:dashed; }
+.crx-recip-card.crx-off .crx-mono { background:var(--surface-soft); color:var(--muted); box-shadow:0 0 0 1px var(--border) inset; }
+.crx-recip-eyebrow.crx-off { color:var(--gold); }
+/* NOTHING in a borrower card may push the panel wider than the modal — a long name
+   plus its role tag used to force the whole screen to scroll sideways, cutting the
+   card off (owner-reported 2026-07-27). The text block must be allowed to SHRINK
+   (a flex item defaults to min-width:auto = its content's min-content width) and the
+   name must be allowed to WRAP. */
+.crx-recipient, .crx-recip-card, .crx-recip-grid, .crx-field { min-width:0; }
+.crx-recip-head > div { min-width:0; flex:1 1 auto; }
+.crx-recip-name { display:flex; flex-wrap:wrap; align-items:baseline; gap:6px; overflow-wrap:anywhere; }
+.crx-recip-name .crx-role-tag { margin-left:0; }
+/* Belt-and-braces: the modal body scrolls vertically only, never sideways. */
+.crx-modal-body { overflow-x:hidden; }
+/* The note under the borrower cards changes wording as you tick borrowers on and
+   off — a fixed slot keeps the screen from jumping while you do it. */
+.crx-note-slot { min-height:52px; }
+.crx-recip-card .crx-recip-head { margin-bottom:12px; }
+.crx-recip-check { flex:none; width:18px; height:18px; accent-color:var(--teal); cursor:pointer; }
+.crx-role-tag { display:inline-block; margin-left:8px; font-size:.62rem; font-weight:700; text-transform:uppercase;
+  letter-spacing:.07em; vertical-align:middle; padding:2px 7px; border-radius:999px; background:var(--gold-soft); color:var(--gold); }
+.crx-role-tag.co { background:rgba(47,127,134,.12); color:var(--teal); }
+.crx-recip-head { display:flex; align-items:center; gap:13px; margin-bottom:14px; }
+.crx-mono { flex:none; width:46px; height:46px; border-radius:50%; display:grid; place-items:center;
+  font-family:var(--serif); font-size:1.15rem; font-weight:600; color:var(--gold);
+  background:var(--gold-soft); box-shadow:0 0 0 1px var(--gold) inset; }
+.crx-recip-name { font-size:1.05rem; font-weight:700; color:var(--text); line-height:1.2; }
+.crx-recip-eyebrow { font-size:.7rem; text-transform:uppercase; letter-spacing:.09em; color:var(--muted); font-weight:600; margin-top:3px; }
+.crx-recip-grid { display:grid; grid-template-columns:1fr 1fr; gap:10px 18px; }
+.crx-field { display:flex; flex-direction:column; gap:2px; min-width:0; }
+.crx-field-wide { grid-column:1 / -1; }
+.crx-field > span { font-size:.68rem; text-transform:uppercase; letter-spacing:.07em; color:var(--muted); font-weight:600; }
+.crx-field > b { font-size:.94rem; color:var(--text); font-weight:600; overflow-wrap:anywhere; }
+/* A NOTE IS A SENTENCE, not a row of boxes: as a flex container every inline <b>
+   became its own flex item and the sentence broke into columns. Plain block flow
+   keeps the emphasis inline where it belongs; the lock glyph just sits inline. */
+.crx-note { margin-top:13px; padding-top:12px; border-top:1px dashed var(--border); font-size:.82rem;
+  display:block; line-height:1.45; }
+.crx-note.secure { color:var(--teal-br); }
+.crx-note.warn { color:var(--warning); }
+.crx-lock { font-size:.85rem; margin-right:4px; }
+
+/* Options ---------------------------------------------------------------- */
+.crx-options { display:flex; flex-direction:column; gap:16px; }
+.crx-opt { min-width:0; }
+.crx-meta { display:flex; flex-direction:column; min-width:0; }
+.crx-opt-label { display:block; font-size:.7rem; text-transform:uppercase; letter-spacing:.08em; color:var(--muted); font-weight:700; margin-bottom:7px; }
+.crx-opt-hint { margin-top:7px; font-size:.8rem; color:var(--muted); line-height:1.4; }
+.crx-seg { display:flex; gap:5px; padding:4px; background:var(--surface-soft); border:1px solid var(--border); border-radius:12px; }
+.crx-seg-btn { flex:1; display:flex; flex-direction:column; align-items:center; gap:1px; padding:9px 10px;
+  border:0; background:transparent; border-radius:9px; cursor:pointer; color:var(--text-muted); font-family:var(--sans);
+  transition:background .15s ease, color .15s ease, box-shadow .15s ease; }
+.crx-seg-btn .crx-seg-lbl { font-size:.92rem; font-weight:600; }
+.crx-seg-btn .crx-seg-sub { font-size:.68rem; color:var(--muted); }
+.crx-seg-btn.on { background:var(--teal); color:var(--on-accent); box-shadow:0 2px 8px rgba(47,127,134,.3); }
+.crx-seg-btn.on .crx-seg-sub { color:rgba(255,255,255,.82); }
+.crx-seg-btn:focus-visible { outline:2px solid var(--focus); outline-offset:1px; }
+.crx-reissue { margin-top:11px; }
+/* One reissue reference PER BORROWER — each report has its own reference number. */
+.crx-reissue-row + .crx-reissue-row { margin-top:12px; padding-top:12px; border-top:1px dashed var(--border); }
+.crx-input { width:100%; box-sizing:border-box; padding:10px 12px; border:1px solid var(--border); border-radius:10px;
+  background:var(--surface); color:var(--text); font:inherit; font-size:.92rem; }
+.crx-input:focus { outline:none; border-color:var(--teal); box-shadow:0 0 0 3px var(--primary-soft); }
+.crx-meta-row { display:flex; gap:22px; align-items:flex-start; flex-wrap:wrap; }
+.crx-tri { display:flex; gap:6px; flex-wrap:wrap; }
+.crx-tri-chip { display:inline-flex; align-items:center; gap:6px; font-size:.78rem; font-weight:600; color:var(--text);
+  padding:6px 11px; border-radius:999px; border:1px solid var(--border); background:var(--surface); }
+.crx-tri-dot { width:7px; height:7px; border-radius:50%; background:var(--success); box-shadow:0 0 0 3px var(--success-soft); }
+.crx-frozen { background:var(--surface-soft); color:var(--muted); cursor:default; gap:5px; }
+.crx-meta-ver { margin-left:auto; }
+
+/* Consent ---------------------------------------------------------------- */
+.crx-consent { display:flex; gap:11px; align-items:flex-start; padding:13px 15px; border-radius:12px;
+  border:1px solid var(--border); background:var(--surface-soft); font-size:.88rem; color:var(--text); cursor:pointer;
+  transition:border-color .15s ease, background .15s ease; }
+.crx-consent.on { border-color:var(--teal); background:var(--primary-soft); }
+.crx-consent input { margin-top:2px; width:17px; height:17px; accent-color:var(--teal); flex:none; cursor:pointer; }
+.crx-consent b { font-weight:700; }
+
+/* Actions + upload ------------------------------------------------------- */
+.crx-upload { border:1px dashed var(--border); border-radius:12px; background:var(--surface-soft); padding:15px 16px; }
+.crx-upload-title { font-weight:700; font-size:.85rem; color:var(--text); margin-bottom:10px; }
+/* Merged / a-file-each / one-borrower chooser + the per-borrower file rows. */
+.crx-upload-mode { margin-bottom:12px; }
+.crx-upload-mode .crx-opt-hint { margin-top:7px; }
+.crx-upload-person { border:1px solid var(--border); border-radius:10px; padding:10px 12px; margin-bottom:10px;
+  background:var(--surface); }
+.crx-upload-person-name { font-weight:700; font-size:.9rem; color:var(--text); margin-bottom:6px; }
+.crx-upload-row { display:flex; gap:10px; align-items:center; flex-wrap:wrap; padding:4px 0; font-size:.86rem; }
+.crx-upload-row > span { min-width:118px; color:var(--muted); font-size:.78rem; text-transform:uppercase; letter-spacing:.05em; font-weight:600; }
+.crx-upload-hint { margin:6px 0 12px; color:var(--muted); font-size:.8rem; }
+
+/* Report — hero ---------------------------------------------------------- */
+.crx-hero { display:flex; gap:22px; align-items:stretch; flex-wrap:wrap; padding:20px 22px; border-radius:16px;
+  border:1px solid var(--border); background:linear-gradient(135deg,#fff,var(--surface-soft));
+  box-shadow:0 1px 3px rgba(20,27,34,.05); position:relative; overflow:hidden; }
+.crx-hero::before { content:""; position:absolute; left:0; top:0; bottom:0; width:5px; background:var(--crx-tone); }
+.crx-hero-main { display:flex; align-items:center; gap:20px; padding-left:6px; }
+.crx-hero-score { font-family:var(--serif); font-size:4rem; font-weight:600; line-height:.9; color:var(--crx-tone);
+  font-variant-numeric:tabular-nums; letter-spacing:-.02em; }
+.crx-hero-meta { display:flex; flex-direction:column; gap:5px; min-width:190px; }
+.crx-band { align-self:flex-start; font-size:.74rem; font-weight:700; text-transform:uppercase; letter-spacing:.05em;
+  color:var(--crx-tone); background:var(--crx-tone-soft); padding:3px 10px; border-radius:999px; }
+.crx-hero-lbl { font-size:.72rem; text-transform:uppercase; letter-spacing:.08em; color:var(--muted); font-weight:600; }
+.crx-gauge { margin-top:5px; }
+.crx-gauge-track { position:relative; height:8px; border-radius:999px; overflow:visible;
+  background:linear-gradient(90deg,var(--danger) 0%,var(--warning) 34%,var(--teal) 60%,var(--success) 100%); opacity:.9; }
+.crx-gauge-track > i { display:block; height:100%; border-radius:999px; background:transparent; }
+.crx-gauge-mark { position:absolute; top:50%; width:14px; height:14px; border-radius:50%; background:#fff;
+  border:3px solid var(--crx-tone); transform:translate(-50%,-50%); box-shadow:0 1px 3px rgba(20,27,34,.3); transition:left .5s ease; }
+.crx-gauge-scale { display:flex; justify-content:space-between; font-size:.62rem; color:var(--muted); margin-top:4px; font-variant-numeric:tabular-nums; }
+.crx-hero-bureaus { display:grid; grid-template-columns:repeat(auto-fit,minmax(112px,1fr)); gap:9px; flex:1 1 300px; align-content:center; }
+.crx-bureau { border:1px solid var(--border); border-radius:12px; background:var(--surface); padding:10px 12px; }
+.crx-bureau-top { display:flex; justify-content:space-between; align-items:baseline; gap:6px; }
+.crx-bureau-name { font-size:.68rem; text-transform:uppercase; letter-spacing:.04em; color:var(--muted); font-weight:600; }
+.crx-bureau-val { font-size:1.3rem; font-weight:700; color:var(--text); font-variant-numeric:tabular-nums; }
+.crx-bureau-bar { height:5px; border-radius:999px; background:var(--surface-soft); overflow:hidden; margin-top:7px; }
+.crx-bureau-bar > i { display:block; height:100%; border-radius:999px; background:var(--crx-tone); transition:width .5s ease; }
+.crx-bureau-model { font-size:.64rem; color:var(--text-soft); margin-top:5px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.crx-sub { margin-top:11px; font-size:.82rem; color:var(--muted); }
+
+/* KPI tiles -------------------------------------------------------------- */
+.crx-kpis { display:grid; grid-template-columns:repeat(auto-fit,minmax(118px,1fr)); gap:10px; margin:14px 0; }
+.crx-kpi { display:flex; align-items:center; gap:10px; border:1px solid var(--border); border-radius:12px;
+  background:var(--surface); padding:12px 13px; }
+.crx-kpi-ic { flex:none; width:32px; height:32px; border-radius:9px; display:grid; place-items:center;
+  background:var(--primary-soft); color:var(--teal-br); }
+.crx-kpi-ic.danger { background:var(--danger-soft); color:var(--danger); }
+.crx-kpi-body { min-width:0; }
+.crx-kpi-num { font-size:1.12rem; font-weight:700; color:var(--text); line-height:1.1; font-variant-numeric:tabular-nums; overflow-wrap:anywhere; }
+.crx-kpi-lbl { font-size:.68rem; text-transform:uppercase; letter-spacing:.04em; color:var(--muted); font-weight:600; margin-top:2px; }
+
+/* Collapsible sections + tables ------------------------------------------ */
+.crx-details { margin-top:10px; }
+.crx-sec { border:1px solid var(--border); border-radius:12px; margin:8px 0; background:var(--surface); overflow:hidden; }
+.crx-sec > summary { cursor:pointer; padding:11px 14px; font-weight:600; font-size:.9rem; color:var(--text);
+  list-style:none; display:flex; align-items:center; gap:8px; }
+.crx-sec > summary::-webkit-details-marker { display:none; }
+.crx-sec > summary::before { content:"▸"; color:var(--gold); font-size:.8rem; transition:transform .15s ease; }
+.crx-sec[open] > summary::before { transform:rotate(90deg); }
+.crx-count { display:inline-flex; align-items:center; justify-content:center; min-width:20px; height:20px; padding:0 6px;
+  border-radius:999px; background:var(--surface-soft); border:1px solid var(--border); font-size:.72rem; font-weight:700; color:var(--muted); }
+.crx-id { display:grid; grid-template-columns:1fr 1fr; gap:9px 18px; padding:4px 14px 14px; }
+.crx-table-wrap { overflow-x:auto; }
+.crx-table { width:100%; border-collapse:collapse; font-size:.83rem; }
+.crx-table th, .crx-table td { text-align:left; padding:8px 12px; border-top:1px solid var(--border); white-space:nowrap; }
+.crx-table thead th { color:var(--muted); font-weight:700; font-size:.68rem; text-transform:uppercase; letter-spacing:.05em;
+  background:var(--surface-soft); border-top:0; position:sticky; top:0; }
+.crx-table td.r, .crx-table th.r { text-align:right; font-variant-numeric:tabular-nums; }
+.crx-table tbody tr:hover td { background:var(--surface-soft); }
+.crx-table tr.crx-bad td { background:var(--danger-soft); }
+.crx-table tr.crx-warn td { background:var(--warning-soft); }
+.crx-empty { margin-top:8px; padding:16px; border:1px dashed var(--border); border-radius:12px;
+  background:var(--surface-soft); color:var(--muted); font-size:.9rem; }
+
+/* Condition compact summary — the score(s) that always sit at the bottom of the
+   credit condition, + the "open full report" action. No big inline section. */
+.crx-cond-summary { margin-top:10px; }
+.crx-scoreline { display:flex; gap:12px; flex-wrap:wrap; align-items:stretch; }
+.crx-scorecell { flex:1 1 130px; min-width:130px; border:1px solid var(--border); border-radius:12px;
+  background:var(--surface); padding:12px 14px; border-left:4px solid var(--crx-tone,var(--muted)); }
+.crx-scorecell.emphasis { background:linear-gradient(135deg,#fff,var(--crx-tone-soft,var(--surface-soft))); }
+.crx-scorecell-num { font-family:var(--serif); font-size:2.1rem; font-weight:600; line-height:1;
+  color:var(--crx-tone,var(--text)); font-variant-numeric:tabular-nums; letter-spacing:-.01em; }
+.crx-scorecell.emphasis .crx-scorecell-num { font-size:2.6rem; }
+.crx-scorecell-lbl { margin-top:5px; font-size:.72rem; text-transform:uppercase; letter-spacing:.04em; color:var(--muted); font-weight:600; }
+.crx-summary-actions { margin-top:12px; display:flex; gap:8px; flex-wrap:wrap; }
+
+/* Full-screen report overlay — the whole report, laid out with the entire screen. */
+.crx-overlay-back { position:fixed; inset:0; z-index:220; background:rgba(20,27,34,.5); backdrop-filter:blur(3px);
+  display:flex; align-items:center; justify-content:center; padding:24px; }
+.crx-overlay { width:100%; max-width:1120px; max-height:92dvh; display:flex; flex-direction:column;
+  background:var(--surface); border-radius:18px; overflow:hidden; box-shadow:0 30px 70px rgba(20,27,34,.35); }
+.crx-overlay-head { flex:none; display:flex; align-items:flex-start; justify-content:space-between; gap:12px;
+  padding:20px 24px 16px; border-bottom:1px solid var(--border);
+  background:linear-gradient(180deg,#fff,var(--surface-soft)); position:relative; }
+.crx-overlay-head::after { content:""; position:absolute; left:24px; right:24px; bottom:-1px; height:2px;
+  background:linear-gradient(90deg,var(--gold),transparent 70%); }
+.crx-overlay-title { min-width:0; }
+.crx-overlay-tools { display:flex; gap:8px; align-items:center; flex-wrap:wrap; flex:none; }
+.crx-overlay-body { flex:1 1 auto; min-height:0; overflow-y:auto; overscroll-behavior:contain; padding:20px 24px 26px; }
+
+@media (max-width:640px) {
+  .crx-recip-grid, .crx-id { grid-template-columns:1fr; }
+  .crx-hero-main { gap:14px; }
+  .crx-hero-score { font-size:3.1rem; }
+  .cv-modal.crx-modal { border-radius:18px 18px 0 0; }
+  .crx-overlay-back { padding:0; align-items:stretch; }
+  .crx-overlay { max-width:100%; max-height:100dvh; border-radius:0; }
+  .crx-scorecell-num { font-size:1.8rem; }
+  .crx-scorecell.emphasis .crx-scorecell-num { font-size:2.1rem; }
+}
+@media (prefers-reduced-motion:reduce) {
+  .crx-btn, .crx-gauge-mark, .crx-bureau-bar > i { transition:none; }
+}
+
+/* ===== Manual programs & escalations — page redesign (2026-07-26) ===== */
+/* Reuses the draws-dashboard card house style (.dd-card / .dd-card-h) plus a
+   small set of page-scoped primitives so the settings form and escalation
+   queue have real hierarchy: layered cards, sized headings, aligned fields,
+   metric chips, a proper switch, and a segmented filter. */
+
+/* callout — an explanatory band with a gold spine */
+.esc-callout{display:flex;gap:12px;align-items:flex-start;background:var(--surface-soft);
+  border:1px solid var(--line);border-left:3px solid var(--gold);border-radius:10px;
+  padding:13px 15px;font-size:13.5px;line-height:1.55;color:var(--text-muted)}
+.esc-callout.sm{padding:10px 12px;font-size:13px;margin-top:12px;border-left-color:var(--primary-border)}
+.esc-callout .ic{flex:0 0 auto;width:26px;height:26px;border-radius:8px;display:grid;place-items:center;
+  background:var(--gold-soft);color:var(--gold)}
+.esc-callout.sm .ic{background:var(--primary-soft);color:var(--teal-br)}
+.esc-callout .ic svg{width:15px;height:15px}
+.esc-callout b,.esc-callout strong{color:var(--text)}
+
+/* subsection label + the required primary setting card */
+.esc-sublabel{font-size:11.5px;text-transform:uppercase;letter-spacing:.08em;color:var(--muted);
+  font-weight:700;margin:22px 0 12px}
+.esc-primary-field{background:linear-gradient(180deg,#fff,#fcfaf4);border:1px solid var(--line);
+  border-radius:12px;padding:16px 18px;margin-top:16px}
+.esc-ceilings{display:grid;grid-template-columns:repeat(auto-fit,minmax(168px,1fr));gap:14px}
+
+/* input with a trailing unit adornment (%, months) */
+.inp-suffix{position:relative;display:block}
+.inp-suffix > .input{padding-right:48px}
+.inp-suffix > .sfx{position:absolute;right:13px;top:50%;transform:translateY(-50%);
+  color:var(--text-soft);font-size:13px;font-weight:600;pointer-events:none}
+
+/* availability switch + its bar (namespaced — .switch is too generic) */
+.esc-switch{display:inline-flex;align-items:center;gap:12px;cursor:pointer;user-select:none}
+.esc-switch input{position:absolute;opacity:0;width:0;height:0}
+.esc-switch .track{width:46px;height:27px;border-radius:999px;background:var(--border-strong);
+  transition:background .18s ease;flex:none;position:relative}
+.esc-switch .track::after{content:"";position:absolute;top:3px;left:3px;width:21px;height:21px;border-radius:50%;
+  background:#fff;box-shadow:0 1px 3px rgba(20,27,34,.3);transition:transform .18s ease}
+.esc-switch input:checked + .track{background:var(--teal)}
+.esc-switch input:checked + .track::after{transform:translateX(19px)}
+.esc-switch input:focus-visible + .track{box-shadow:0 0 0 3px rgba(127,169,176,.35)}
+.esc-switch .switch-txt{font-weight:600;font-size:14px;color:var(--text)}
+.esc-availability{display:flex;align-items:center;justify-content:space-between;gap:16px;flex-wrap:wrap;
+  margin-top:20px;padding:15px 17px;border:1px solid var(--line);border-radius:12px;background:var(--surface-soft)}
+
+/* segmented filter control (namespaced — .seg already exists elsewhere) */
+.esc-seg{display:inline-flex;background:var(--surface-soft);border:1px solid var(--line);border-radius:10px;
+  padding:3px;gap:2px;flex-wrap:wrap}
+.esc-seg > button{border:none;background:none;padding:6px 12px;border-radius:7px;font:inherit;font-size:13px;
+  font-weight:600;color:var(--text-muted);cursor:pointer;transition:background .14s,color .14s}
+.esc-seg > button:hover{color:var(--text)}
+.esc-seg > button.on{background:#fff;color:var(--teal-br);box-shadow:0 1px 2px rgba(20,27,34,.1)}
+
+/* escalation card */
+.esc-row{border:1px solid var(--line);border-radius:12px;padding:16px 18px;background:#fff;
+  transition:box-shadow .3s ease,border-color .3s ease}
+.esc-row + .esc-row{margin-top:12px}
+.esc-row:hover{border-color:var(--border-strong)}
+.esc-row.hl{border-color:var(--gold);box-shadow:0 0 0 3px rgba(174,135,70,.28)}
+.esc-row-top{display:flex;justify-content:space-between;align-items:flex-start;gap:12px}
+.esc-row-id{font-size:15px;min-width:0;line-height:1.5;overflow-wrap:anywhere}
+.esc-row-id a{color:var(--teal-br);text-decoration:none;font-weight:700}
+.esc-row-id a:hover{text-decoration:underline}
+.esc-row-name{color:var(--text);font-weight:600}
+.esc-row-addr{color:var(--text-muted)}
+.esc-row-sub{color:var(--text-muted);font-size:13px;margin-top:6px;line-height:1.5}
+
+/* leverage metric chips */
+.esc-metrics{display:flex;gap:8px;flex-wrap:wrap;margin-top:12px}
+.esc-metric{display:inline-flex;flex-direction:column;gap:1px;background:var(--surface-soft);
+  border:1px solid var(--line);border-radius:9px;padding:7px 13px;min-width:84px}
+.esc-metric .k{font-size:10px;text-transform:uppercase;letter-spacing:.05em;color:var(--muted);font-weight:700}
+.esc-metric .v{font-size:15px;font-weight:700;color:var(--text);font-variant-numeric:tabular-nums}
+
+/* small pill tags (min interest / accrual) */
+.esc-pills{display:flex;gap:7px;flex-wrap:wrap;margin-top:10px}
+.esc-tag{display:inline-flex;align-items:center;gap:6px;font-size:12px;font-weight:600;padding:4px 11px;
+  border-radius:999px;border:1px solid var(--line);background:var(--surface-soft);color:var(--text-muted)}
+.esc-tag.ok{color:var(--success);border-color:rgba(46,122,94,.35);background:var(--success-soft)}
+.esc-tag .dot{width:7px;height:7px;border-radius:50%;background:currentColor;flex:none}
+
+/* action row + counter surfaces */
+.esc-actions{display:flex;gap:8px;align-items:center;margin-top:14px;flex-wrap:wrap}
+.esc-counter{margin-top:12px;padding:12px 14px;background:var(--gold-soft);border:1px solid var(--gold);border-radius:10px}
+.esc-counter-form{margin-top:12px;padding:14px;background:var(--surface-soft);border:1px solid var(--line);border-radius:10px}
+
+/* empty state */
+.esc-empty{text-align:center;padding:36px 16px;color:var(--text-muted)}
+.esc-empty .ic{width:46px;height:46px;border-radius:13px;display:grid;place-items:center;margin:0 auto 12px;
+  background:var(--surface-soft);color:var(--text-soft)}
+.esc-empty .ic svg{width:23px;height:23px}
+
+@media (max-width:720px){
+  .esc-metric{flex:1 1 auto}
+  .esc-actions .input{width:100%;flex:1 1 100% !important}
+  .esc-availability .btn{width:100%}
+}
+
+/* page eyebrow — gold, sits on paper (not the dark auth bg) */
+.esc-eyebrow{font-size:12px;letter-spacing:.14em;text-transform:uppercase;font-weight:700;color:var(--gold);margin-bottom:7px}
+
+/* ── Closing workspace (owner-directed 2026-07-26) ─────────────────────────
+   The closer's desk + the closing queue. White-first, theme-aware via tokens. */
+.screen{display:block}
+.screen-head{display:flex;justify-content:space-between;align-items:flex-end;gap:12px;margin-bottom:14px;flex-wrap:wrap}
+.pill.err{background:var(--danger-soft);color:var(--danger);border-color:var(--danger)}
+.closing-workspace{display:block}
+.cl-grid{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+.cl-toggle{display:flex;gap:8px;align-items:flex-start;cursor:pointer;padding:6px 0}
+.cl-toggle input{margin-top:3px}
+.cl-toggle-text{line-height:1.35}
+.cl-facts{display:grid;grid-template-columns:1fr 1fr;gap:8px 22px}
+.cl-fact{display:flex;justify-content:space-between;gap:12px;border-bottom:1px solid var(--line);padding:5px 0}
+.cl-fact-k{color:var(--muted);font-size:13px}
+.cl-fact-v{font-weight:600;text-align:right}
+.cl-money-tiles{display:grid;grid-template-columns:repeat(3,1fr);gap:12px}
+.cl-tile{background:var(--ink-2);border:1px solid var(--line);border-radius:var(--radius);padding:12px}
+.cl-tile-k{color:var(--muted);font-size:12px;text-transform:uppercase;letter-spacing:.06em}
+.cl-tile-v{font-size:20px;font-weight:700;margin-top:3px}
+/* The purchase price band under Deal details. auto-fit keeps ONE tile (a
+   straight purchase) full width and lays an assignment's final / original /
+   fee side by side in that order — and collapses on a phone with no extra
+   breakpoint, so both shapes read the same way at every width. */
+.cl-price-band{display:grid;grid-template-columns:repeat(auto-fit,minmax(190px,1fr));gap:12px;margin-top:12px}
+.cl-tile.accent{border-color:var(--gold)}
+.cl-actual{display:flex;gap:12px;align-items:flex-end;margin-top:12px;flex-wrap:wrap}
+.cl-table-wrap{overflow-x:auto}
+.cl-table{width:100%;border-collapse:collapse;font-size:14px}
+.cl-table th{text-align:left;color:var(--muted);font-weight:600;font-size:12px;padding:6px 8px;border-bottom:1px solid var(--line);white-space:nowrap}
+.cl-table td{padding:7px 8px;border-bottom:1px solid var(--line);vertical-align:top}
+.cl-row-muted{color:var(--muted)}
+.cl-quicklinks{display:grid;grid-template-columns:repeat(auto-fit,minmax(300px,1fr));gap:12px}
+.cl-ql-group{border:1px solid var(--line);border-radius:var(--radius);padding:10px;background:var(--ink-1)}
+.cl-ql-head{font-weight:600;margin-bottom:5px}
+/* Flex row so ONLY the filename ellipsizes — the Executed/Draft tag must never
+   be clipped (an e-sign filename is ~58 chars and would swallow it). */
+/* justify-content:flex-start is REQUIRED: .btn sets justify-content:center,
+   which was inert while this was display:block but goes live under flex and
+   would center short filenames. */
+.cl-ql-doc{display:flex;align-items:center;justify-content:flex-start;gap:6px;text-align:left;max-width:100%}
+.cl-ql-name{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+/* Explicit dark text on white (portal is white-first — never rely on a var()
+   that might resolve light). The .on badge is white on solid teal, which is a
+   colored pill, not body text. */
+.cl-ts-tag{flex:0 0 auto;display:inline-block;padding:0 6px;border-radius:999px;font-size:11px;font-weight:600;border:1px solid var(--line);color:#4B585C;background:#FFFFFF}
+.cl-ts-tag.on{color:#FFFFFF;background:#2F7F86;border-color:#2F7F86}
+/* A borrower-name tag (whose credit report this is) can be long — unlike the
+   fixed Executed/Draft tag it may shrink and ellipsize rather than overflow. */
+.cl-ts-tag.cl-ql-who{flex:0 1 auto;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.cl-cond{display:flex;justify-content:space-between;gap:12px;align-items:flex-start;border-bottom:1px solid var(--line);padding:10px 0}
+.cl-cond:last-child{border-bottom:none}
+.cl-cond-main{display:flex;flex-direction:column;gap:4px;min-width:0}
+.cl-checklist{border:1px solid var(--line);border-radius:var(--radius);padding:10px;margin-bottom:10px;background:var(--ink-1)}
+.cl-checklist-h{display:flex;gap:8px;align-items:center;margin-bottom:6px}
+.cl-check-item{display:flex;gap:8px;align-items:center;padding:3px 0}
+.cl-checked{text-decoration:line-through;color:var(--muted)}
+.cl-add-item{display:flex;gap:6px;margin-top:6px}
+.cl-new-checklist{display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-top:8px;padding-top:10px;border-top:1px solid var(--line)}
+.cl-signoffs{display:flex;flex-direction:column;gap:4px}
+.cl-signrow{display:flex;gap:10px;align-items:center;justify-content:space-between;padding:5px 0;border-bottom:1px solid var(--line)}
+.cl-recon{border:1px solid var(--line);border-radius:var(--radius);padding:12px;background:var(--ink-2)}
+.cl-recon-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:10px;margin-top:8px}
+.cl-recon-cell{background:var(--ink-1);border:1px solid var(--line);border-radius:var(--radius);padding:8px 10px}
+.cl-recon-cell.ok{border-color:var(--ok)}
+.cl-recon-cell.err{border-color:var(--danger);background:var(--danger-soft)}
+.cl-recon-v{font-weight:700;font-size:16px}
+.cl-notes{display:flex;flex-direction:column;gap:8px;margin-top:10px}
+.cl-note{border-left:3px solid var(--gold);padding:4px 10px;background:var(--ink-2)}
+.cl-note-body{white-space:pre-wrap}
+.cl-note-add{display:flex;gap:8px}
+.wf-closing-qs{display:flex;flex-direction:column;gap:4px;margin-top:4px}
+@media(max-width:720px){
+  .cl-grid,.cl-facts,.cl-money-tiles,.cl-quicklinks,.cl-recon-grid{grid-template-columns:1fr}
+}
+/* Closing workspace — spacing polish for a few companion labels (audit follow-up) */
+.cl-dates{margin-top:8px}
+.cl-recon-head{margin-bottom:2px}
+.cl-tile-sub{margin-top:3px}
+
+/* ── BORROWER VIEW (owner-directed 2026-07-26) ────────────────────────────
+   The pinned "you are inside <borrower>'s portal" bar + the staff picker.
+   Deliberately loud: it is the ONE thing separating "I am looking at my own
+   console" from "I am about to press Upload inside somebody else's account."
+   All text is explicit dark ink or white-on-gold (never a var() that might
+   resolve light) per the dark-text-on-white house rule. */
+.bview-bar{position:sticky;top:0;z-index:900;display:flex;align-items:center;gap:12px;
+  flex-wrap:wrap;padding:9px 16px;background:#AE8746;color:#fff;
+  font-size:14px;line-height:1.35;box-shadow:0 1px 0 rgba(20,27,34,.14)}
+.bview-bar strong{color:#fff;font-weight:700}
+.bview-dot{flex:none;width:9px;height:9px;border-radius:50%;background:#fff;
+  box-shadow:0 0 0 3px rgba(255,255,255,.35);animation:bview-pulse 2.4s ease-in-out infinite}
+@keyframes bview-pulse{0%,100%{opacity:1}50%{opacity:.45}}
+@media(prefers-reduced-motion:reduce){.bview-dot{animation:none}}
+.bview-text{flex:1 1 320px;min-width:0;color:#fff}
+.bview-sep{margin:0 6px;opacity:.7}
+.bview-clock{flex:none;font-size:12px;padding:3px 9px;border-radius:999px;
+  background:rgba(255,255,255,.2);color:#fff;font-variant-numeric:tabular-nums}
+.bview-exit{flex:none;cursor:pointer;border:0;border-radius:8px;padding:7px 14px;
+  background:#fff;color:#141B22;font-weight:600;font-size:13px;font-family:inherit}
+.bview-exit:hover:not(:disabled){background:#F6F3EC}
+.bview-exit:disabled{opacity:.65;cursor:default}
+/* The whole borrower shell gets a gold hairline while a view is active, so even
+   a screenshot of the middle of a page reads as "this is a borrower view". */
+.shell-bview{box-shadow:inset 0 0 0 2px #AE8746}
+
+/* Staff picker list */
+.bview-list{display:flex;flex-direction:column}
+.bview-row{display:flex;align-items:center;gap:14px;flex-wrap:wrap;
+  padding:13px 2px;border-bottom:1px solid var(--line)}
+.bview-row:last-child{border-bottom:0}
+.bview-who{flex:1 1 260px;min-width:0}
+.bview-name{font-weight:600;color:#141B22;font-size:15px}
+.bview-meta{margin-top:2px;font-size:13px;color:#4B585C}
+.bview-open{color:#8A5A00;font-weight:600}
+.bview-nologin{color:#8A5A00}
+@media(max-width:720px){
+  .bview-bar{font-size:13px;padding:8px 12px}
+  .bview-exit{width:100%}
+}
+
+/* =====================================================================
+   "What needs you next" — the loan file's front door (NextUpPanel.jsx).
+   Move 1 of docs/LOAN-FILE-SIMPLICITY-BLUEPRINT.md.
+
+   Design brief, owner-directed 2026-07-27: simple, modern, easy to scan.
+   So: one card, one row shape, one weight of type per line, and colour used
+   ONLY where it means something — an overdue item, and nothing else. A calm
+   card is what lets the two rows that matter stand out.
+
+   Every text colour here is DARK on white. Never reach for a --ink* token for
+   text: --ink is #F6F3EC, the LIGHT paper. See the note at the top of this file.
+   ===================================================================== */
+.nx-panel{margin-bottom:18px;border-left:4px solid var(--gold);padding:20px 22px}
+.nx-panel.nx-clear{border-left-color:var(--ok)}
+.nx-tick{flex:none;width:32px;height:32px;border-radius:50%;display:inline-flex;
+  align-items:center;justify-content:center;background:var(--ok);color:#fff;font-weight:800}
+
+.nx-head{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+.nx-title{margin:0;font-size:19px;line-height:1.2;color:#141B22}
+.nx-sub{margin:4px 0 12px;font-size:13px;color:#4B585C}
+
+/* Counts read as quiet facts, not alarms — only "overdue" is allowed to shout. */
+.nx-count{flex:none;font-size:12px;font-weight:600;padding:3px 10px;border-radius:999px;
+  background:var(--surface-soft);color:#4B585C;border:1px solid var(--line)}
+.nx-count.holding{background:var(--gold-soft);color:#8A5A00;border-color:rgba(174,135,70,.45)}
+.nx-count.late{background:var(--danger-soft);color:var(--danger);border-color:rgba(163,42,42,.45)}
+
+.nx-list{display:flex;flex-direction:column}
+.nx-item{display:flex;align-items:flex-start;gap:12px;padding:11px 6px;
+  border-top:1px solid var(--line);border-radius:6px;transition:background .12s ease}
+.nx-item:first-child{border-top:none}
+.nx-item:hover{background:var(--surface-soft)}
+.nx-item .dot{margin-top:6px}
+.nx-item.is-late{background:rgba(163,42,42,.045)}
+.nx-body{flex:1 1 auto;min-width:0}
+.nx-item-title{font-weight:600;font-size:14.5px;color:#141B22;overflow-wrap:anywhere}
+.nx-why{margin-top:2px;font-size:12.5px;line-height:1.45;color:#4B585C;overflow-wrap:anywhere}
+.nx-tag{margin-left:8px;font-size:11px;font-weight:700;text-transform:uppercase;
+  letter-spacing:.06em;padding:2px 7px;border-radius:999px;
+  background:var(--gold-soft);color:#8A5A00;vertical-align:middle}
+
+.nx-age{flex:none;align-self:center;font-size:12px;font-weight:600;white-space:nowrap;
+  padding:3px 9px;border-radius:999px}
+.nx-age.warn{background:var(--warning-soft);color:#8A5A00}
+.nx-age.late{background:var(--danger-soft);color:var(--danger)}
+.nx-go{flex:none;align-self:center}
+.nx-more{margin-top:8px}
+
+/* On a phone the row stacks: the reason gets the full width and the action
+   drops beneath it, rather than the title being squeezed to two characters. */
+@media(max-width:720px){
+  .nx-panel{padding:16px 14px}
+  .nx-item{flex-wrap:wrap}
+  .nx-body{flex:1 1 100%}
+  .nx-age,.nx-go{align-self:flex-start;margin-left:21px}
+  .nx-go{margin-left:auto}
+}
+
+/* =====================================================================
+   Conditions grouped by subject (blueprint Move 4b) — the one list.
+   A group header is a button: it says what the group is and how much of it
+   is done, and it collapses. Quiet by design; the ROWS are the content, and
+   a header that shouted would compete with the state dots that matter.
+   Dark text on white throughout (--ink* tokens are LIGHT — never for text).
+   ===================================================================== */
+.cond-group{margin-top:10px}
+.cond-group:first-of-type{margin-top:2px}
+.cond-group-h{display:flex;align-items:center;gap:9px;width:100%;
+  background:none;border:0;border-bottom:1px solid var(--line);
+  padding:9px 2px 7px;margin-bottom:2px;cursor:pointer;font:inherit;text-align:left}
+.cond-group-h:hover .cond-group-name{color:var(--teal-br)}
+.cond-group-chev{flex:none;color:var(--muted);font-size:10px;transition:transform .15s ease}
+.cond-group-chev.open{transform:rotate(90deg)}
+.cond-group-name{font-weight:700;font-size:11.5px;letter-spacing:.09em;
+  text-transform:uppercase;color:#4B585C}
+.cond-group-count{margin-left:auto;flex:none;font-size:12px;color:#4B585C;
+  font-variant-numeric:tabular-nums}
+@media(max-width:720px){.cond-group-name{letter-spacing:.05em}}
+/* The conditions filter row — two labelled controls, not two bare dropdowns
+   squeezed onto the title line (where both truncated and said nothing). */
+.cond-filters{display:flex;gap:14px;flex-wrap:wrap;align-items:flex-end;margin:2px 0 10px}
+.cond-filter{display:flex;flex-direction:column;gap:3px;min-width:170px;flex:1 1 170px;max-width:250px}
+.cond-filter > span{font-size:11px;font-weight:700;letter-spacing:.08em;
+  text-transform:uppercase;color:#4B585C}
+.cond-filter .input{width:100%}
+
+/* ── The condition action bar — one next step, everything else behind More ──
+   Owner-directed 2026-07-27: after a document is uploaded the row carried Accept,
+   Done and Sign off all at one weight, plus five more controls. Nothing was
+   removed; what was missing was a hierarchy. Text is explicit dark on white —
+   never a --ink* token, those are LIGHT in this palette. */
+.cond-act{display:flex;flex-direction:column;gap:4px;width:100%;min-width:0}
+.cond-act-row{display:flex;gap:8px;flex-wrap:wrap;align-items:center;min-width:0}
+.cond-act-hint{font-size:12px;color:#4B585C;line-height:1.4}
+
+/* "More" is a native <details> so it needs no click-outside handling, no focus
+   trap and no portal, and is keyboard-accessible for free. */
+.cond-more{position:relative;display:inline-block}
+.cond-more > summary{list-style:none;cursor:pointer;user-select:none}
+.cond-more > summary::-webkit-details-marker{display:none}
+.cond-more > summary::marker{content:''}
+.cond-more[open] > summary{border-color:var(--teal)}
+.cond-more-menu{position:absolute;z-index:40;top:calc(100% + 4px);left:0;
+  min-width:230px;max-width:min(320px,calc(100vw - 32px));
+  display:flex;flex-direction:column;gap:6px;align-items:stretch;
+  padding:10px;background:#FFFFFF;border:1px solid var(--line);
+  border-radius:var(--radius);box-shadow:0 8px 24px rgba(20,27,34,.14)}
+.cond-more-menu .btn{justify-content:flex-start;text-align:left;width:100%}
+.cond-more-sep{border-top:1px solid var(--line);margin:2px 0}
+.cond-more-field{display:flex;flex-direction:column;gap:3px}
+.cond-more-field > span{font-size:11px;font-weight:700;letter-spacing:.08em;
+  text-transform:uppercase;color:#4B585C}
+.cond-more-field .input{width:100%}
+/* A menu that opens near the right edge of a narrow card would otherwise run
+   off it; on a phone it becomes a full-width block under the button instead. */
+@media(max-width:720px){
+  .cond-more{display:block;width:100%}
+  .cond-more-menu{position:static;min-width:0;max-width:none;box-shadow:none;margin-top:6px}
+}
+
+/* ── WHO SEES IT — one stamp instead of four raw-database chips ────────
+   Owner-directed 2026-07-28. Explicit dark text on white — never a --ink*
+   token, those are LIGHT in this palette. */
+.aud{display:inline-flex;align-items:center;gap:5px;flex:none;
+  padding:2px 9px;border-radius:999px;font-size:11px;font-weight:700;
+  letter-spacing:.03em;white-space:nowrap;border:1px solid}
+.aud::before{content:'';width:5px;height:5px;border-radius:50%;background:currentColor}
+.aud-internal{color:#4B585C;border-color:rgba(75,88,92,.35);background:#F4F1EA}
+.aud-external{color:#256168;border-color:rgba(47,127,134,.45);background:rgba(47,127,134,.09)}
+.aud-both{color:#8A6D3B;border-color:rgba(174,135,70,.5);background:rgba(174,135,70,.10)}
+
+/* ── THE COMPACT CONDITION LINE ──────────────────────────────────
+   Owner-directed 2026-07-28: "one compact line each, click to open the one
+   you're working". 24 conditions came to 8,116px — over seven screens —
+   because every one rendered fully expanded. Now each is a line you scan and
+   open. Nothing is removed: opening a row shows exactly what it did before. */
+.cnd{display:flex;align-items:center;gap:10px;width:100%;min-width:0;
+  padding:9px 2px;cursor:pointer;text-align:left;background:none;border:0;font:inherit}
+.cnd:hover .cnd-name{color:var(--teal-br)}
+.cnd-name{flex:1 1 auto;min-width:0;font-weight:600;color:#141B22;
+  overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.cnd-meta{flex:none;font-size:12px;color:#4B585C;white-space:nowrap}
+.cnd-chev{flex:none;color:#4B585C;font-size:10px;transition:transform .15s ease}
+.cnd-chev.open{transform:rotate(90deg)}
+/* The one next action, reachable WITHOUT opening the row — that is what makes
+   a list of forty workable. It must not also toggle the row. */
+.cnd-do{flex:none}
+.cnd-done .cnd-name{color:#4B585C;font-weight:500}
+@media(max-width:720px){
+  .cnd{flex-wrap:wrap;gap:6px}
+  .cnd-name{flex:1 1 100%;white-space:normal}
+}
+
+/* An internal note: shown when there IS one, a quiet link when there is not.
+   It used to render an empty box + Save button on every single condition —
+   about a full screen of blank boxes down a 24-condition list. */
+.cnd-note{font-size:12.5px;color:#141B22;background:#F4F1EA;border-radius:8px;
+  padding:7px 10px;white-space:pre-wrap;word-break:break-word}
+.cnd-note-add{align-self:flex-start;padding:0;font-size:12.5px}
+
+/* ── A section filling the screen (owner-directed 2026-07-27) ──────────────
+   "there should also be a button by the conditions section to open the
+   conditions section on a full screen so you can work in a big screen."
+   A CSS overlay, not the browser Fullscreen API — that one needs a gesture it
+   can still refuse, paints onto a black backdrop and removes the browser
+   chrome. This keeps the app's own look and closes on Esc. */
+.file-section.sec-full{position:fixed;inset:0;z-index:70;margin:0;
+  background:var(--paper,#F6F3EC);overflow-y:auto;overflow-x:hidden;
+  padding:0 max(14px,env(safe-area-inset-left)) max(20px,env(safe-area-inset-bottom));
+  border-radius:0;border:0}
+/* The header stays put while you scroll forty conditions — it carries the way
+   out, so it must never be scrolled off. */
+.file-section.sec-full > .sec-head{position:sticky;top:0;z-index:2;
+  background:var(--paper,#F6F3EC);padding-top:max(12px,env(safe-area-inset-top));
+  border-bottom:1px solid var(--line);margin-bottom:8px}
+
+/* ── The purchasing desk (owner-directed 2026-07-26) ───────────────────────
+   Every file that moved to purchasing after investor delivery. Text is
+   explicit dark on white — never a --ink* token (those are LIGHT). */
+.pu-detail{padding:12px 10px}
+.pu-cols{display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:14px}
+.pu-col{border:1px solid var(--line);border-radius:var(--radius);padding:10px;background:#FFFFFF}
+.pu-h{font-size:11px;font-weight:700;letter-spacing:.08em;text-transform:uppercase;
+  color:#4B585C;margin-bottom:8px}
+.pu-note{border-bottom:1px solid var(--line);padding:6px 0}
+.pu-note:last-child{border-bottom:none}
+.pu-note-body{color:#141B22;white-space:pre-wrap;word-break:break-word}
+.pu-task{display:flex;gap:8px;align-items:center;padding:4px 0;color:#141B22}
+.pu-task-done{text-decoration:line-through;color:#4B585C}
+/* Table funding — the question the closer answers BEFORE signing off investor
+   delivery. Explicit dark text on white (never an --ink* token, those are LIGHT). */
+/* .cl-signrow is space-between (label left / button right); with only a checkbox
+   and its text here that would shove them to opposite edges. */
+.cl-tf{align-items:flex-start;justify-content:flex-start;gap:9px}
+.cl-tf input{margin-top:3px;flex:0 0 auto}
+.cl-tf-main{display:flex;flex-direction:column;gap:2px;min-width:0;color:#141B22}
+.cl-tf-hint{font-size:12px;color:#4B585C}
+/* Purchasing conditions — what the buyer still needs before they will purchase. */
+.pu-cond{display:flex;gap:12px;justify-content:space-between;align-items:flex-start;
+  border-bottom:1px solid var(--line);padding:7px 0;color:#141B22}
+.pu-cond:last-child{border-bottom:none}
+.pu-cond-main{display:flex;flex-direction:column;gap:2px;min-width:0}

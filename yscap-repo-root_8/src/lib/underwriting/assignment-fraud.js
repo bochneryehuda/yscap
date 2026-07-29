@@ -111,7 +111,7 @@ function analyze(assignor = {}, assignee = {}) {
  * @returns {Promise<{ok:boolean, isNonArmsLength:boolean, suggestionId?:string}>}
  */
 async function analyzeAndRecord(client, {
-  applicationId, documentId, assignor, assignee, contractPrice, assignmentFee, traceUrl,
+  applicationId, documentId, assignor, assignee, contractPrice, assignmentFee, traceUrl, suppressNotify,
 }) {
   const v = analyze(assignor, assignee);
   if (!v.isNonArmsLength) return { ok: true, isNonArmsLength: false };
@@ -135,6 +135,7 @@ async function analyzeAndRecord(client, {
     },
     proposedAction: { type: 'escalate_super_admin', reason: 'non_arms_length_assignment' },
     dedupeKey: `assignment_fraud:${documentId || applicationId}`,
+    suppressNotify,
   });
   return { ok: true, isNonArmsLength: true, suggestionId: r.id, confidence: v.confidence };
 }

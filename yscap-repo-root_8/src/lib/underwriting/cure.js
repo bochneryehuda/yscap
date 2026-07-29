@@ -159,22 +159,49 @@ const ASSERTIONS = Object.freeze({
   entity_screened_when_present({ extractionFields, subject }) {
     const en = subject && subject.entity_name;
     if (!en) return { status: 'satisfied', reason: 'no borrowing entity on the file — nothing to screen' };
-    const screened = extractionFields.entityName || extractionFields.subjectEntity;
-    if (!screened) return { status: 'not_satisfied', reason: `entity ${en} was not screened (report screened no entity)`, newFinding: {
+    // SEARCH THE WHOLE REPORT (owner-reported 2026-07-26) — the same fix as doc-checks. These reports
+    // list every screened party in a Watch List / Subjects Searched table that can sit deep in the
+    // document; reading only the single header field made a screened entity look unscreened.
+    const wanted = twin.normalize(twin.FACT_KEYS.ENTITY_NAME, en);
+    const list = Array.isArray(extractionFields.screenedParties) ? extractionFields.screenedParties.filter(Boolean) : [];
+    const header = extractionFields.entityName || extractionFields.subjectEntity;
+    const all = header ? [header].concat(list) : list;
+    const hit = all.find((n) => twin.normalize(twin.FACT_KEYS.ENTITY_NAME, n) === wanted);
+    if (hit) return { status: 'satisfied', reason: `entity screened: ${hit}` };
+    if (!all.length) {
+      // Nothing at all says WHO was screened. That is unreadable, not unscreened — and
+      // `unable_to_determine` is this engine's word for "we could not tell" (see the header: a missing
+      // field yields it rather than not_satisfied, because we never guess). It keeps a human in the
+      // loop instead of asserting a gap that may not exist.
+      return { status: 'unable_to_determine',
+        reason: `the report's list of screened parties could not be read, so whether ${en} was screened is unconfirmed` };
+    }
+    if (header && !list.length) {
+      return { status: 'not_satisfied', reason: `report screened "${header}" but the file vests in "${en}"` };
+    }
+    return { status: 'not_satisfied', reason: `${en} is not among the parties the report screened (${all.slice(0, 4).join(', ')})`, newFinding: {
       code: 'entity_not_screened', severity: 'warning',
       title: 'The borrowing entity was not screened for OFAC / sanctions',
-      docValue: '(no entity screened)', fileValue: en,
+      docValue: `screened: ${all.slice(0, 4).join(', ')}`, fileValue: en,
       howTo: `Run the screen on ${en} and re-upload the report — an entity can itself be on a sanctions list.`,
     } };
-    if (twin.normalize(twin.FACT_KEYS.ENTITY_NAME, screened) === twin.normalize(twin.FACT_KEYS.ENTITY_NAME, en)) {
-      return { status: 'satisfied', reason: `entity screened: ${screened}` };
-    }
-    return { status: 'not_satisfied', reason: `report screened "${screened}" but the file vests in "${en}"` };
   },
   fraud_alerts_cleared({ extractionFields }) {
-    const flags = Array.isArray(extractionFields.fraudFlags) ? extractionFields.fraudFlags.filter((s) => String(s || '').trim()) : [];
-    if (!flags.length) return { status: 'satisfied', reason: 'no fraud alerts on the report' };
-    return { status: 'not_satisfied', reason: `${flags.length} fraud alert(s) to adjudicate: ${flags.slice(0, 3).join(' | ')}` };
+    // An alert a reviewer ALREADY dispositioned is finished work, not an open item — the owner's
+    // report carried the clearing reasons on the page after the alerts ("the borrower is a
+    // professional investor"), and PILOT kept demanding they be cleared. Same fix as doc-checks.
+    const norm = (x) => String(x == null ? '' : x).toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
+    const cleared = (Array.isArray(extractionFields.clearedVariances) ? extractionFields.clearedVariances : [])
+      .map((c) => norm(c && c.alert)).filter(Boolean);
+    const flags = (Array.isArray(extractionFields.fraudFlags) ? extractionFields.fraudFlags.filter((x) => String(x || '').trim()) : [])
+      .filter((x) => !cleared.includes(norm(x)));
+    if (!flags.length) {
+      return { status: 'satisfied',
+        reason: cleared.length
+          ? `every fraud alert on the report has been cleared (${cleared.length} adjudicated)`
+          : 'no fraud alerts on the report' };
+    }
+    return { status: 'not_satisfied', reason: `${flags.length} fraud alert(s) still to adjudicate: ${flags.slice(0, 3).join(' | ')}` };
   },
   liens_clearable({ extractionFields }) {
     const liens = Array.isArray(extractionFields.liens) ? extractionFields.liens : [];
@@ -311,7 +338,7 @@ function summarize(result, requirements, newFindings) {
 // PERSIST — write the clearance proof + spawn any new findings the analysis
 // surfaced. Runs on the caller's transaction (they pass a `client`).
 // -------------------------------------------------------------------------
-async function persistProof(client, { appId, checklistItemId, intentId, documentId, extractionId, analysis } = {}) {
+async function persistProof(client, { appId, checklistItemId, intentId, documentId, extractionId, analysis, suppressNotify } = {}) {
   if (!appId || !checklistItemId || !analysis) throw new Error('persistProof: appId, checklistItemId, analysis required');
   // Owner hard rule (2026-07-22): the AI does NOT create findings on its own. Every
   // new-finding the cure analysis surfaces becomes an AI SUGGESTION on the file's AI
@@ -322,7 +349,7 @@ async function persistProof(client, { appId, checklistItemId, intentId, document
   for (const f of (analysis.newFindings || [])) {
     try {
       const r = await aiSug.record(client, aiSug.fromCureNewFinding({
-        applicationId: appId, documentId, checklistItemId, extractionId, finding: f,
+        applicationId: appId, documentId, checklistItemId, extractionId, finding: f, suppressNotify,
       }));
       suggestionIds.push(r.id);
     } catch (_) { /* one bad suggestion never stops the proof */ }
@@ -406,7 +433,7 @@ async function loadCureContext(appId, client) {
   let row = {};
   try {
     const r = await client.query(
-      `SELECT a.loan_amount, a.expected_closing, a.program AS app_program,
+      `SELECT a.loan_amount, a.expected_closing, a.program AS app_program, a.lender,
               b.first_name, b.last_name,
               l.llc_name,
               reg.program AS registered_program
@@ -423,8 +450,14 @@ async function loadCureContext(appId, client) {
   // test runs with no DB. bankStatementMonths is the canonical Gold=2/Standard=1
   // helper — never a second copy of that number (CLAUDE.md).
   const { bankStatementMonths } = require('../liquidity');
-  const requiredMonths = program ? bankStatementMonths(program) : null;
-  const borrowerName = [row.first_name, row.last_name].filter(Boolean).join(' ').trim() || null;
+  // The note buyer must go in too (audit 2026-07-26). `syncLiquidityCondition` records the note
+  // buyer's higher count on the condition, but this is what the cure engine COMPARES the uploaded
+  // statements against — and a Blue Lake file whose condition says 2 months was clearing on one
+  // statement because the expectation here was still the program's 1. That is a FALSE CLEAR: the
+  // clearance preview reported it satisfied and the weak-proof sign-off warning, which exists to
+  // catch exactly this, stayed silent. `a.lender` is the note buyer (field-registry.normNoteBuyer).
+  const requiredMonths = program ? bankStatementMonths(program, null, row.lender) : null;
+  const borrowerName = require('../person-name').displayName(row).trim() || null;
   const entityName = row.llc_name || null;
   const expected = {
     programMinFico: null,

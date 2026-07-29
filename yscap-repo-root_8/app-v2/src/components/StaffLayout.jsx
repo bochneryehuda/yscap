@@ -25,6 +25,8 @@ const NAV_ICON = {
   chat: <path d="M5 4h14a1.5 1.5 0 0 1 1.5 1.5v8A1.5 1.5 0 0 1 19 15h-7l-4 4v-4H5a1.5 1.5 0 0 1-1.5-1.5v-8A1.5 1.5 0 0 1 5 4Z" />,
   leads: <><circle cx="9" cy="8" r="3.5" /><path d="M3.5 19a5.5 5.5 0 0 1 11 0" /><path d="M18.5 7.5v5M21 10h-5" /></>,
   borrowers: <><circle cx="12" cy="8" r="4" /><path d="M5 20a7 7 0 0 1 14 0" /></>,
+  // Borrower view — an eye over a person: "look through their eyes".
+  borrowerView: <><path d="M2.5 12S6 6.5 12 6.5 21.5 12 21.5 12 18 17.5 12 17.5 2.5 12 2.5 12Z" /><circle cx="12" cy="12" r="2.6" /></>,
   conditions: <><rect x="5" y="4" width="14" height="17" rx="2" /><path d="M9 4.5a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1V6H9V4.5Z" /><path d="m9 13 2 2 4-4" /></>,
   pricing: <><circle cx="12" cy="12" r="9" /><path d="M12 7v10" /><path d="M14.5 9.2c-.6-.7-1.6-1-2.6-1-1.4 0-2.4.8-2.4 1.9 0 2.6 5.2 1.4 5.2 4 0 1.2-1.1 2-2.6 2-1.1 0-2.1-.4-2.7-1.1" /></>,
   vendors: <><rect x="3" y="7.5" width="18" height="12.5" rx="2" /><path d="M8.5 7.5V6a2 2 0 0 1 2-2h3a2 2 0 0 1 2 2v1.5" /><path d="M3 12.5h18" /></>,
@@ -283,16 +285,27 @@ export default function StaffLayout({ children }) {
   // My Notification Center draft queue — how many parked notifications are waiting for me to Send.
   const [notifDraftCount, setNotifDraftCount] = useState(0);
   const [myExcCount, setMyExcCount] = useState(0);
+  const [closingCount, setClosingCount] = useState(0);
+  // Files still OUTSTANDING on the purchasing desk (admins + closers).
+  const [purchasingCount, setPurchasingCount] = useState(0);
   useEffect(() => {
     let alive = true;
     const poll = () => {
       api.workflowCount().then(r => { if (alive) setWfCount((r && r.total) || 0); }).catch(() => {});
       api.myExceptionsCount().then(r => { if (alive) setMyExcCount((r && r.openCount) || 0); }).catch(() => {});
+      api.closingCount().then(r => { if (alive) setClosingCount((r && r.count) || 0); }).catch(() => {});
+      // Gated: unlike /closing/count this endpoint is capability-gated, so polling
+      // it for everyone would 403 on load and again every 2 minutes for every LO,
+      // processor and underwriter in the company.
+      if (can('manage_purchasing')) api.purchasingCount().then(r => { if (alive) setPurchasingCount((r && r.count) || 0); }).catch(() => {});
     };
     poll();
     const t = setInterval(poll, 120000);
     return () => { alive = false; clearInterval(t); };
-  }, []);
+    // `can` is memoized on the permission list, so this re-runs once when perms
+    // arrive — without it the capability check would be frozen at its mount-time
+    // value (false) and the purchasing badge would never appear.
+  }, [can]);
   useEffect(() => {
     let alive = true;
     const poll = () => api.get('/api/staff/sync-reviews/count')
@@ -374,6 +387,9 @@ export default function StaffLayout({ children }) {
   const canManagePricing = can('manage_pricing');
   const canManageVendors = can('manage_vendors');
   const canManageDraws = can('manage_draws');
+  const canManageClosings = can('manage_closings');
+  const canManagePurchasing = can('manage_purchasing');
+  const canExportTapes = can('export_data_tapes');
   const canDeleteFiles = can('delete_files');
   const canPlatformSetup = can('platform_setup');
   const canViewAudit = can('view_audit_log');
@@ -399,9 +415,12 @@ export default function StaffLayout({ children }) {
         <NavLink className="sb-link" to="/internal/workflow" title="My Workflow — every file submitted to you, in the order it arrived. Pick it up, do your part, then send it back.">
           <NavIcon name="workflow" />Workflow
           {wfCount > 0 && <span className="sb-badge">{wfCount > 99 ? '99+' : wfCount}</span>}</NavLink>
-        {myExcCount > 0 && <NavLink className="sb-link" to="/internal/my-exceptions" title="My exceptions — the exception requests you’ve raised that are waiting on a super-admin.">
+        {/* Always visible (redesign 2026-07-24): with the old count-gated link a
+            staffer had NO way to reach their decided/denied exception history
+            once nothing was open. */}
+        <NavLink className="sb-link" to="/internal/my-exceptions" title="My exceptions — the exception requests you’ve raised, past and pending.">
           <NavIcon name="conditions" />My exceptions
-          <span className="sb-badge">{myExcCount > 99 ? '99+' : myExcCount}</span></NavLink>}
+          {myExcCount > 0 && <span className="sb-badge">{myExcCount > 99 ? '99+' : myExcCount}</span>}</NavLink>
         <NavLink className="sb-link" to="/internal/findings-review" title="Findings to review — underwriting findings a colleague couldn’t decide and escalated to you (or your role) to advise on.">
           <NavIcon name="conditions" />Findings to review
           {fescCount > 0 && <span className="sb-badge">{fescCount > 99 ? '99+' : fescCount}</span>}</NavLink>
@@ -413,6 +432,7 @@ export default function StaffLayout({ children }) {
 
         <div className="sb-sec">Files</div>
         <NavLink className="sb-link" to="/internal/borrowers" title="Your borrowers — invite to PILOT, reset or set a password, see last login"><NavIcon name="borrowers" />Borrowers</NavLink>
+        <NavLink className="sb-link" to="/internal/borrower-view" title="Borrower view — step into a borrower's portal and see PILOT exactly as they see it, so you can walk them through a screen live. One click brings you back."><NavIcon name="borrowerView" />Borrower view</NavLink>
         <NavLink className="sb-link" to="/internal/emails" title="Email Center — every email & notification sent across your files, to exactly whom, with its full body, delivery status, and replies"><NavIcon name="emails" />Email Center</NavLink>
         <NavLink className="sb-link" to="/internal/notifications" title="Notification Center — the master control for every notification your borrowers receive: turn any single one off, keep it automatic, or park it as a draft to review before it goes out">
           <NavIcon name="emails" />Notifications
@@ -420,6 +440,11 @@ export default function StaffLayout({ children }) {
         </NavLink>
         <NavLink className="sb-link" to="/internal/esign" title="E-Signatures — PILOT’s own DocuSign cockpit: every package, every signer, live"><NavIcon name="esign" />E-signatures</NavLink>
         <NavLink className="sb-link" to="/internal/orders" title="Orders — every title & insurance order across your files, and what's waiting to be classified"><NavIcon name="vendors" />Orders</NavLink>
+        {canExportTapes && <NavLink className="sb-link" to="/internal/tapes" title="Data Tapes — export each capital provider's loan tape (their Excel workbook, filled with the loan's figures). One loan at a time or in bulk by provider."><NavIcon name="pipeline" />Data tapes</NavLink>}
+        {(canManageClosings || role === 'loan_officer' || role === 'processor') && <NavLink className="sb-link" to="/internal/closing" title="Closing — files submitted to closing: cash-to-close checks, warehouse & collateral, closing conditions, reconciliation."><NavIcon name="pipeline" />Closing
+          {closingCount > 0 && <span className="sb-badge">{closingCount > 99 ? '99+' : closingCount}</span>}</NavLink>}
+        {canManagePurchasing && <NavLink className="sb-link" to="/internal/purchasing" title="Purchasing — every file that moved to purchasing after investor delivery: what's still missing, notes and tasks. A table-funded loan was sold at closing and never lands here."><NavIcon name="pipeline" />Purchasing
+          {purchasingCount > 0 && <span className="sb-badge">{purchasingCount > 99 ? '99+' : purchasingCount}</span>}</NavLink>}
         {canManageDraws && <NavLink className="sb-link" to="/internal/draws" title="Draw Management — the post-funding phase: every draw, approvals, inspector photos, releases, and reports"><NavIcon name="pipeline" />Draw Management</NavLink>}
         {canManageConditions && <NavLink className="sb-link" to="/internal/conditions" title="Condition Center — the global condition library & rules"><NavIcon name="conditions" />Conditions</NavLink>}
         {canManageVendors && <NavLink className="sb-link" to="/internal/vendors" title="Title & insurance vendor directory"><NavIcon name="vendors" />Vendors</NavLink>}
@@ -428,15 +453,15 @@ export default function StaffLayout({ children }) {
         {(canManageTeam || canManagePricing || canPlatformSetup || canViewAudit) && <div className="sb-sec">Admin</div>}
         {canManageTeam && <NavLink className="sb-link" to="/internal/team"><NavIcon name="team" />Team</NavLink>}
         {canManagePricing && <NavLink className="sb-link" to="/internal/pricing" title="Pricing Admin Center — company-wide markup, origination & fee defaults"><NavIcon name="pricing" />Pricing</NavLink>}
-        {(canManagePricing || role === 'super_admin') && <NavLink className="sb-link" to="/internal/escalations" title="Manual programs & escalations — approve manual products (custom LTV/LTC/ARV) and set the manual-program defaults"><NavIcon name="pricing" />Manual / Escalations
+        {(canManagePricing || role === 'super_admin') && <NavLink className="sb-link" to="/internal/escalations" title="Manual / Escalations — approve pricing structured OUTSIDE the guidelines (custom LTV/LTC/ARV, below-minimum) + counter-offers, and set the manual-program defaults. NOT guaranty waivers or early sends — those are in Exceptions."><NavIcon name="pricing" />Manual / Escalations
           {escCount > 0 && <span className="sb-badge">{escCount > 99 ? '99+' : escCount}</span>}</NavLink>}
-        {(canManagePricing || role === 'super_admin') && <NavLink className="sb-link" to="/internal/exceptions" title="Exceptions — approve or deny requests to make an exception to a loan policy (today: waiving a co-borrower's personal guarantee)"><NavIcon name="conditions" />Exceptions
+        {(canManagePricing || role === 'super_admin') && <NavLink className="sb-link" to="/internal/exceptions" title="Exceptions — the policy-exception register: approve or deny guaranty waivers, early term-sheet sends, one-off pricing/guideline exceptions and overrides; export for diligence. For pricing structured outside the guidelines, use Manual / Escalations."><NavIcon name="conditions" />Exceptions
           {excCount > 0 && <span className="sb-badge">{excCount > 99 ? '99+' : excCount}</span>}</NavLink>}
-        {(canManagePricing || role === 'super_admin') && <NavLink className="sb-link" to="/internal/training" title="Training proposals — candidate improvements PILOT learned from underwriter corrections; approve, shadow-test, or reject each one"><NavIcon name="conditions" />Training</NavLink>}
-        {role === 'super_admin' && <NavLink className="sb-link" to="/internal/labeling" title="AI labeling console — tag past documents to train the classifier and per-type field readers"><NavIcon name="conditions" />AI labeling</NavLink>}
-        {role === 'super_admin' && <NavLink className="sb-link" to="/internal/ai-inbox" title="AI questions inbox — the AI asks here when it's unsure; your answer feeds its learning"><NavIcon name="conditions" />AI inbox</NavLink>}
-        {(role === 'admin' || role === 'super_admin') && <NavLink className="sb-link" to="/internal/insights" title="Sovereign Insights — portfolio-wide view of everything the AI has surfaced across all files"><NavIcon name="conditions" />Insights</NavLink>}
+        {(role === 'admin' || role === 'super_admin') && <NavLink className="sb-link" to="/internal/ai" title="AI Command Center — one place to see everything PILOT flagged, review findings, answer PILOT's questions, and teach it (training, labeling, muted alerts)">
+          <NavIcon name="conditions" />AI Command Center
+          {fescCount > 0 && <span className="sb-badge">{fescCount > 99 ? '99+' : fescCount}</span>}</NavLink>}
         {canPlatformSetup && <NavLink className="sb-link" to="/internal/api-health" title="API Health — every integration & API: live or down, what it needs, and a one-click test"><NavIcon name="health" />API Health</NavLink>}
+        {canPlatformSetup && <NavLink className="sb-link" to="/internal/pipeline-shadow" title="Pipeline (shadow) — the new document pipeline running quietly beside the current one: vendor connections + V2-vs-V1 comparison"><NavIcon name="pipeline" />Pipeline (shadow)</NavLink>}
         {canPlatformSetup && <NavLink className="sb-link" to="/internal/clickup" title="ClickUp Control Center — sync health, dry-run, backfill"><NavIcon name="clickup" />ClickUp</NavLink>}
         {canPlatformSetup && <NavLink className="sb-link" to="/internal/draw-rules" title="Inspection & fee rules — virtual vs on-site and the per-partner fee schedule for draws"><NavIcon name="pipeline" />Draw rules</NavLink>}
         {canViewAudit && <NavLink className="sb-link" to="/internal/audit" title="System audit log — every action across every file & borrower"><NavIcon name="audit" />Audit log</NavLink>}

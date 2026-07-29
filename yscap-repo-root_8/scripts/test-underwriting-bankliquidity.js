@@ -47,6 +47,37 @@ const CTX = { borrower: { first_name: 'Michael', last_name: 'Goldberg' },
   assert.strictEqual(r.qualifyingTotal, 45000, 'the later (representative) month is counted once, not summed');
 }
 
+// ---- #244 — the assets table shows the account NUMBER (last-4, masked) ----
+{
+  const r = assessBankLiquidity(CTX, ext([
+    ['bank_statement', { accountHolderName: 'Michael Goldberg', bankName: 'Chase', accountNumber: '000123456789', closingBalance: 30000, readable: true }],
+  ]), { requiredLiquidity: 100000 });
+  assert.strictEqual(r.accounts.length, 1);
+  assert.strictEqual(r.accounts[0].accountNumber, '••6789', 'the per-account row carries the masked last-4 account number');
+}
+
+// ---- #244 — MOST RECENT statement by DATE wins, not input order ----
+{
+  // The OLDER month (Feb) is listed LAST in input; the NEWER month (March) is first. The March
+  // ending balance must be the one counted — date drives it, never input order.
+  const r = assessBankLiquidity(CTX, ext([
+    ['bank_statement', { accountHolderName: 'Michael Goldberg', bankName: 'Chase', accountNumber: '1234', statementPeriod: 'March 1 - March 31, 2026', closingBalance: 55000, readable: true }],
+    ['bank_statement', { accountHolderName: 'Michael Goldberg', bankName: 'Chase', accountNumber: '1234', statementPeriod: 'February 1 - February 28, 2026', closingBalance: 20000, readable: true }],
+  ]), { requiredLiquidity: 100000 });
+  assert.strictEqual(r.accounts.length, 1, 'still one account (two months collapse)');
+  assert.strictEqual(r.qualifyingTotal, 55000, 'the MARCH (most recent by date) balance is counted, not the older Feb or the last-in-input');
+}
+
+// ---- #244 — with no statement date, the most-recently-UPLOADED statement wins ----
+{
+  const r = assessBankLiquidity(CTX, [
+    { doc_type: 'bank_statement', document_id: 'd-old', created_at: '2026-01-10T00:00:00Z', fields: { accountHolderName: 'Michael Goldberg', bankName: 'Chase', accountNumber: '1234', closingBalance: 10000, readable: true } },
+    { doc_type: 'bank_statement', document_id: 'd-new', created_at: '2026-03-10T00:00:00Z', fields: { accountHolderName: 'Michael Goldberg', bankName: 'Chase', accountNumber: '1234', closingBalance: 60000, readable: true } },
+  ], { requiredLiquidity: 100000 });
+  assert.strictEqual(r.accounts.length, 1);
+  assert.strictEqual(r.qualifyingTotal, 60000, 'no statement date → the most recently uploaded statement is the representative');
+}
+
 // ---- A readable statement with no ending balance → bank_no_ending_balance ----
 {
   const r = assessBankLiquidity(CTX, ext([

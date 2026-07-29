@@ -91,7 +91,7 @@ async function getOrderData(appId) {
     [appId, Object.values(VENDOR_TYPE)]);
   const vendorOf = (type) => vc.rows.find((x) => x.contact_type === type) || null;
 
-  const borrowerName = [a.first_name, a.last_name].filter(Boolean).join(' ')
+  const borrowerName = require('./person-name').displayName(a)
     + (a.co_first || a.co_last ? ` & ${[a.co_first, a.co_last].filter(Boolean).join(' ')}` : '');
 
   return {

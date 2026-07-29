@@ -12,6 +12,7 @@
 const router = require('express').Router();
 const db = require('../db');
 const { requireRole } = require('../auth');
+const aiSuggestions = require('../lib/underwriting/ai-suggestions');
 
 // Admin / super-admin only for now — a follow-up will scope per assignee.
 router.get('/', requireRole('admin'), async (req, res) => {
@@ -29,11 +30,16 @@ router.get('/', requireRole('admin'), async (req, res) => {
       acceptanceRate,
     ] = await Promise.all([
       db.query(
+        // A can't-read / can't-extract finding is not a finding (owner-directed 2026-07-28) — keep it
+        // out of the dashboard's open-findings count too, so the number matches the desk. Gated on the
+        // same switch (JS side), one source of truth for the predicate (unreadable-findings.sqlIsCantRead).
         `SELECT severity, COUNT(*)::int AS n
            FROM document_findings df
            JOIN applications a ON a.id = df.application_id
           WHERE df.status='open' AND a.deleted_at IS NULL
-            AND a.status NOT IN ('withdrawn','cancelled')
+            AND a.status NOT IN ('withdrawn','cancelled')${
+  require('../lib/underwriting/unreadable-findings').suppressing()
+    ? ` AND NOT ${require('../lib/underwriting/unreadable-findings').sqlIsCantRead('df')}` : ''}
           GROUP BY severity`),
       db.query(
         `SELECT source, COUNT(*)::int AS n
@@ -74,6 +80,7 @@ router.get('/', requireRole('admin'), async (req, res) => {
            JOIN applications a ON a.id = s.application_id AND a.deleted_at IS NULL
            LEFT JOIN borrowers b ON b.id = a.borrower_id
           WHERE s.severity='fatal'
+            AND ${aiSuggestions.notScoredSql('s')}
             AND s.status IN ('open','marked_important','escalated','asked_admin')
             AND a.status NOT IN ('withdrawn','cancelled','declined')
           GROUP BY a.id, a.property_address, a.status, a.program, b.first_name, b.last_name
@@ -129,8 +136,35 @@ router.get('/', requireRole('admin'), async (req, res) => {
       recentDecisions = r.rows;
     } catch (_) { recentDecisions = []; }
 
+    // #191 activation 2 — PORTFOLIO condition aging (advisory tile). Ages every
+    // active file's checklist conditions with the pure ager and rolls them up
+    // (buckets, overdue counts, worst files). Best-effort — a failure leaves the
+    // tile null, never breaks the dashboard. Staff/admin-only surface.
+    let conditionAging = null;
+    try {
+      const condRows = await db.query(
+        `SELECT ci.id, ci.status, ci.created_at, ci.signed_off_at, ci.waived_at,
+                ci.application_id,
+                COALESCE(a.property_address->>'oneLine', a.property_address->>'street', a.ys_loan_number, LEFT(a.id::text, 8)) AS file_label
+           FROM checklist_items ci
+           JOIN applications a ON a.id = ci.application_id
+          WHERE a.deleted_at IS NULL
+            AND a.status NOT IN ('funded','cancelled','closed','declined','withdrawn')`);
+      const { ageConditions } = require('../lib/underwriting/condition-aging');
+      const { rollupAging } = require('../lib/underwriting/condition-aging-portfolio');
+      const byFile = new Map();
+      for (const row of condRows.rows) {
+        if (!byFile.has(row.application_id)) byFile.set(row.application_id, { id: row.application_id, label: row.file_label, rows: [] });
+        byFile.get(row.application_id).rows.push(row);
+      }
+      const now = new Date();
+      const files = [...byFile.values()].map((f) => ({ id: f.id, label: f.label, summary: ageConditions(f.rows, { now }).summary }));
+      conditionAging = rollupAging(files, { limit: 10 });
+    } catch (_) { conditionAging = null; }
+
     res.json({
       ok: true,
+      conditionAging,
       openFindings: openFindings.rows,
       openSuggestions: openSuggestions.rows,
       certificates30d: certificates.rows,
@@ -153,16 +187,33 @@ router.get('/ai-stack', requireRole('super_admin'), async (_req, res) => {
   const env = process.env;
   const has = (k) => !!(env[k] && String(env[k]).trim());
   const cfg = require('../config');
+  // #216 — AUTHORITATIVE model/OCR stack health: each component's OWN
+  // availability predicate + the model version it runs. This replaces the old
+  // hand-typed env-name checks below, which had DRIFTED from the real config
+  // (they read AZURE_OPENAI_API_KEY / AZURE_DI_* / AZURE_CUSTOM_CLASSIFIER_MODEL_ID /
+  // GOOGLE_DOC_AI_* — none of which are the real env vars — so live components were
+  // reported OFF). The stack booleans are now derived from this report so they
+  // never lie again. Never leaks a secret (booleans + model NAMES only).
+  const stackHealth = require('../lib/ai/stack-health');
+  const modelStack = stackHealth.report();
+  const modelStackSummary = stackHealth.summary(modelStack);
+  const byKey = Object.fromEntries(modelStack.map((r) => [r.key, r]));
+  const on = (k) => !!(byKey[k] && byKey[k].active);
+  const modelOf = (k) => (byKey[k] && byKey[k].model) || null;
   res.json({
     ok: true,
+    // Authoritative, model-versioned view (the config-health page reads this).
+    modelStack,
+    modelStackSummary,
     stack: {
-      langfuse:            { enabled: has('LANGFUSE_HOST') && has('LANGFUSE_PUBLIC_KEY'), host: env.LANGFUSE_HOST || null },
-      azureOpenAI:         { enabled: has('AZURE_OPENAI_ENDPOINT') && has('AZURE_OPENAI_API_KEY'), deployment: env.AZURE_OPENAI_DEPLOYMENT || null },
-      azureDocumentAI:     { enabled: has('AZURE_DI_ENDPOINT') && has('AZURE_DI_KEY') },
-      azureCustomClassifier: { enabled: has('AZURE_CUSTOM_CLASSIFIER_MODEL_ID'), modelId: env.AZURE_CUSTOM_CLASSIFIER_MODEL_ID || null },
-      azureNeuralExtractor:  { enabled: has('AZURE_NEURAL_EXTRACTOR_PREFIX'), prefix: env.AZURE_NEURAL_EXTRACTOR_PREFIX || null },
-      googleDocumentAI:    { enabled: has('GOOGLE_DOC_AI_PROJECT_ID') && has('GOOGLE_DOC_AI_LOCATION') },
-      mistralOcr:          { enabled: has('MISTRAL_API_KEY') },
+      langfuse:            { enabled: on('langfuse'), host: env.LANGFUSE_HOST || null },
+      azureOpenAI:         { enabled: on('azure_openai'), deployment: modelOf('azure_openai') },
+      anthropic:           { enabled: on('anthropic'), model: modelOf('anthropic') },
+      azureDocumentAI:     { enabled: on('azure_docint'), model: modelOf('azure_docint') },
+      azureCustomClassifier: { enabled: on('azure_custom_classifier'), modelId: modelOf('azure_custom_classifier') },
+      azureNeuralExtractor:  { enabled: on('azure_custom_extractors'), detail: modelOf('azure_custom_extractors') },
+      googleDocumentAI:    { enabled: on('google_docai') },
+      mistralOcr:          { enabled: on('mistral_ocr'), model: modelOf('mistral_ocr') },
       perFileCostCap:      { enabled: Number(env.AI_PER_FILE_CAP_USD || 0) > 0, capUsd: Number(env.AI_PER_FILE_CAP_USD || 0) || null },
       nightlyCrossdocSweep:{ enabled: env.AI_CROSSDOC_SWEEP_ENABLED === '1' },
       notifyDigests:       { enabled: env.NOTIFY_DIGESTS_ENABLED !== '0' },
@@ -215,13 +266,13 @@ router.post('/silenced-codes', requireRole('super_admin'), async (req, res) => {
       `INSERT INTO ai_silenced_codes (code, reason, silenced_by)
        VALUES ($1,$2,$3)
        ON CONFLICT (code) DO UPDATE SET reason=EXCLUDED.reason, silenced_by=EXCLUDED.silenced_by, silenced_at=now()`,
-      [code, reason, req.actor.staffId || null]);
+      [code, reason, req.actor.id || null]);
     // R4.20 — audit trail: who silenced what, when, why. Best-effort.
     try {
       await db.query(
         `INSERT INTO audit_log (actor_kind, actor_id, action, entity_type, entity_id, detail)
          VALUES ('staff',$1,'ai_code_silenced','ai_silenced_code',NULL,$2::jsonb)`,
-        [req.actor.staffId || null, JSON.stringify({ code, reason })]);
+        [req.actor.id || null, JSON.stringify({ code, reason })]);
     } catch (_) { /* additive */ }
     res.json({ ok: true });
   } catch (e) { res.status(500).json({ error: e.message || 'mute failed' }); }
@@ -235,7 +286,7 @@ router.delete('/silenced-codes/:code', requireRole('super_admin'), async (req, r
       await db.query(
         `INSERT INTO audit_log (actor_kind, actor_id, action, entity_type, entity_id, detail)
          VALUES ('staff',$1,'ai_code_unsilenced','ai_silenced_code',NULL,$2::jsonb)`,
-        [req.actor.staffId || null, JSON.stringify({ code })]);
+        [req.actor.id || null, JSON.stringify({ code })]);
     } catch (_) { /* additive */ }
     res.json({ ok: true });
   } catch (e) { res.status(500).json({ error: e.message || 'unmute failed' }); }

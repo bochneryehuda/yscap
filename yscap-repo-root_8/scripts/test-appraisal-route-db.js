@@ -15,6 +15,10 @@ const { importAppraisal } = require('../src/lib/appraisal/import');
 const DIR = process.env.APPRAISAL_DIR
   || '/tmp/claude-0/-home-user-yscap/05b5356c-9672-5e08-9492-67ecffd77817/scratchpad/appraisals/stripped';
 const FILE = 'Completed_Product_(Data)_08108509.xml';
+// CI guard (2026-07-23): the PII-stripped appraisal corpus is LOCAL-only —
+// skip cleanly when the fixture isn't mounted (matches the eight sibling
+// appraisal fixture tests), so the test-db CI job doesn't fail on ENOENT.
+if (!fs.existsSync(path.join(DIR, FILE))) { console.log(`SKIP ${__filename.split('/').pop()} (no fixture at ${path.join(DIR, FILE)}; set APPRAISAL_DIR)`); process.exit(0); }
 let failures = 0;
 const assert = (c, m) => { console.log(`${c ? 'PASS' : 'FAIL'} ${m}`); if (!c) failures++; };
 

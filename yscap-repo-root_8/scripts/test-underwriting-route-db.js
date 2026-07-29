@@ -44,10 +44,16 @@ const ADDR = { line1: '76 Thompson St', city: 'Austin', state: 'TX', zip: '78701
     assert.deepStrictEqual(ctx.entityNames, ['Maple Grove Holdings LLC'], 'borrower entities gathered for assets view');
 
     const idSubj = fileView.subjectFor('government_id', ctx);
-    assert.strictEqual(idSubj.first_name, 'John', 'government_id subject is the borrowers row');
+    // The government_id subject is the SET of people who may legitimately have an ID on
+    // this file — the primary borrower, the co-borrower, and (name-only) any LLC owner —
+    // so a co-borrower's ID is not a fatal mismatch against the primary (2026-07-27).
+    assert.ok(Array.isArray(idSubj.people), 'government_id subject carries the file’s people');
+    assert.strictEqual(idSubj.people.length, 1, 'one borrower on this file → one person');
+    assert.strictEqual(idSubj.people[0].first_name, 'John', 'and that person is the borrowers row');
+    assert.ok(Array.isArray(idSubj.ownerNames), 'plus the name-only LLC owners');
     // db.js returns date-only as a 'YYYY-MM-DD' string in production; a raw pg Pool returns a
     // Date. The check normalizes via toISODate either way — assert on the normalized value.
-    const dobRaw = idSubj.date_of_birth;
+    const dobRaw = idSubj.people[0].date_of_birth;
     const dobStr = dobRaw instanceof Date ? dobRaw.toISOString().slice(0, 10) : String(dobRaw).slice(0, 10);
     assert.strictEqual(toISODate(dobStr), '1980-05-15');
 
@@ -142,8 +148,12 @@ const ADDR = { line1: '76 Thompson St', city: 'Austin', state: 'TX', zip: '78701
     assert.ok(einRow && String(einRow.fileValue).startsWith('***') && !/12-?3456789/.test(String(einRow.fileValue)), 'the matrix never shows a full EIN');
 
     // ---- The underwriting_review_cleared gate is ENFORCED by the db/160 trigger ----
-    // Materialize the condition, open a fatal document finding, and confirm the condition CANNOT
-    // be flipped to 'satisfied' until the finding is resolved.
+    // ADVISORY ONLY (owner-directed 2026-07-27). This block used to assert the exact
+    // OPPOSITE: that db/202's trigger REFUSED to let `underwriting_review_cleared` be
+    // satisfied while a fatal PILOT finding was open. That is precisely the hold-up the
+    // owner asked to remove ("it should not hold up signing off on any condition"), so
+    // db/334 retires the trigger and the assertion is inverted — a human may now clear
+    // the review whenever they are satisfied, with the findings still on the desk.
     const ENSURE = `INSERT INTO checklist_items
          (template_id, scope, label, audience, item_kind, role_scope, phase, is_gate, is_milestone,
           sort_order, tpr_exclude, created_by_kind, is_required, application_id)
@@ -163,16 +173,30 @@ const ADDR = { line1: '76 Thompson St', city: 'Austin', state: 'TX', zip: '78701
       extraction: { fields: { readable: true }, status: 'analyzed' },
       findings: [{ code: 'contract_address_mismatch', severity: 'fatal', field: 'property_address', title: 'x', howTo: 'y', blocksCtc: true }],
     });
-    let blocked = false;
-    await client.query('SAVEPOINT sp_gate');
-    try { await client.query(`UPDATE checklist_items SET status='satisfied' WHERE id=$1`, [ciId]); }
-    catch (e) { blocked = /underwriting_review_cleared cannot be satisfied/.test(e.message); }
-    await client.query('ROLLBACK TO SAVEPOINT sp_gate'); // clear the aborted state
-    assert.ok(blocked, 'the db/160 trigger blocks satisfying the gate while a fatal finding is open');
-    // Resolve the fatal, then the condition CAN be satisfied.
-    await store.resolveFinding(client, { findingId: rf.findingIds[0], action: 'grant_exception', note: 'reviewed', by: b.id });
+    // The finding is genuinely there and genuinely fatal — advisory means "does not
+    // gate", never "was not raised".
+    const openFatal = (await client.query(
+      `SELECT count(*)::int n FROM document_findings
+        WHERE application_id=$1 AND status='open' AND severity='fatal' AND blocks_ctc=true`, [app.id])).rows[0].n;
+    assert.strictEqual(openFatal, 1, 'the fatal finding is still raised and still called fatal');
+
+    // ...and the human can clear the review anyway.
     await client.query(`UPDATE checklist_items SET status='satisfied' WHERE id=$1`, [ciId]);
-    assert.strictEqual((await client.query(`SELECT status FROM checklist_items WHERE id=$1`, [ciId])).rows[0].status, 'satisfied', 'gate clears once the fatal is resolved');
+    assert.strictEqual((await client.query(`SELECT status FROM checklist_items WHERE id=$1`, [ciId])).rows[0].status,
+      'satisfied', 'ADVISORY ONLY: an open fatal PILOT finding no longer refuses the sign-off');
+
+    // The database-level blocks are gone, not merely bypassed — so putting them back
+    // is a deliberate migration (re-run db/154/155/202), never an accident.
+    const trigs = (await client.query(
+      `SELECT tgname FROM pg_trigger WHERE NOT tgisinternal AND tgname = ANY($1::text[])`,
+      [['trg_underwriting_review_guard', 'trg_appraisal_review_guard', 'trg_reopen_appraisal_review_on_fatal']])).rows;
+    assert.deepStrictEqual(trigs, [], 'db/334 retires all three AI-findings triggers');
+
+    // Resolving the finding still works and still records the action.
+    await store.resolveFinding(client, { findingId: rf.findingIds[0], action: 'grant_exception', note: 'reviewed', by: b.id });
+    assert.strictEqual((await client.query(
+      `SELECT count(*)::int n FROM document_findings WHERE application_id=$1 AND status='open'`, [app.id])).rows[0].n,
+      0, 'granting an exception still closes the finding');
 
     await client.query('ROLLBACK');
     console.log('✓ test-underwriting-route-db: file-view subjects, tie-out, resolve gate, EIN masking, CTC-gate enforcement pass');

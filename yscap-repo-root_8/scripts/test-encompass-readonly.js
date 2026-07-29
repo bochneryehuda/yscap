@@ -40,7 +40,7 @@ async function main() {
   const keys = Object.keys(enc).sort();
   assert.deepStrictEqual(
     keys,
-    ['READ_ONLY', 'apiGet', 'configured', 'name', 'ping', 'pipelineSearch'],
+    ['READ_ONLY', 'apiGet', 'configured', 'fieldReader', 'name', 'ping', 'pipelineSearch'],
     `Encompass client exports MUST be exactly {name, configured, ping, apiGet, pipelineSearch, READ_ONLY} — got ${keys.join(', ')}`,
   );
   for (const forbidden of ['apiPost', 'apiPut', 'apiPatch', 'apiDelete', 'updateLoan', 'createLoan', 'patchLoan', 'setField']) {
@@ -136,14 +136,23 @@ async function main() {
     );
   }
 
-  // The allowlist must contain EXACTLY the two read-shaped endpoints — a third
-  // entry must break this test and force the owner-sign-off conversation.
+  // The allowlist must contain EXACTLY the two exact-path read-shaped endpoints.
+  // The THIRD read-shaped POST (fieldReader — read a loan's values BY FIELD NUMBER,
+  // owner sign-off 2026-07-26) carries the loan GUID in its path, so it is matched
+  // by the narrow _isFieldReaderPath predicate instead of this Set. A FOURTH entry,
+  // or any widening of that predicate, must still break this test and force the
+  // owner-sign-off conversation.
   const allowlistMatches = codeOnly.match(/POST_ALLOWLIST\s*=\s*new\s+Set\(\[([^\]]*)\]\)/);
   assert.ok(allowlistMatches, 'POST_ALLOWLIST must be declared as `new Set([...])`');
   const entries = allowlistMatches[1].split(',').map((s) => s.trim()).filter(Boolean);
   assert.strictEqual(entries.length, 2, `POST_ALLOWLIST must have exactly 2 entries — got ${entries.length}: ${entries.join(', ')}`);
   assert.ok(entries.some((e) => e.includes('TOKEN_PATH')), 'POST_ALLOWLIST must include the OAuth token path');
   assert.ok(entries.some((e) => e.includes('PIPELINE_SEARCH_PATH')), 'POST_ALLOWLIST must include the pipeline-search path');
+  // The fieldReader predicate must stay NARROW: /encompass/v3/loans/<guid>/fieldReader
+  // and nothing else — no other loan sub-resource may become POST-able through it.
+  assert.ok(codeOnly.includes('_isFieldReaderPath'), 'the fieldReader path predicate must be present');
+  assert.ok(/FIELD_READER_SUFFIX\s*=\s*'\/fieldReader'/.test(codeOnly), 'fieldReader suffix must be exactly /fieldReader');
+  assert.ok(/\\\/fieldReader\$/.test(codeOnly) || codeOnly.includes("fieldReader$"), 'the predicate must anchor on the /fieldReader suffix');
 
   console.log('OK — Encompass integration is structurally READ-ONLY (with pipeline-search POST allowlist verified).');
 }

@@ -158,15 +158,65 @@ router.get('/draws/:appId/eligibility', async (req, res) => {
     if (awaiting > 0) nextSteps.push(awaiting === 1 ? 'Review and accept your latest inspection result below — that starts your release.' : `Review your ${awaiting} inspection results below — accepting them starts each release.`);
     if (inFlight > 0) nextSteps.push('You already have a draw moving through inspection — you can track it below.');
 
+    // PORTAL composer (physical-inspection program): on those files the borrower may
+    // submit the draw line-by-line right here instead of in the construction portal.
+    // Borrower-safe: line names + remaining only — never a platform or partner name.
+    let composer = null;
+    try {
+      const portalDraws = require('../lib/portal-draws');
+      const st = await portalDraws.composerState(appId);
+      if (st.physical) {
+        const open = st.open_portal_request;
+        if (open) nextSteps.push('Your draw request is in — the site inspection and review are the next steps. We’ll keep you posted.');
+        const lines = (st.set_up && !open)
+          ? (await portalDraws.composerLines(appId)).map((l) => ({
+              sitewire_job_item_id: l.sitewire_job_item_id, name: scrub(l.name), remaining_cents: l.remaining_cents,
+            }))
+          : [];
+        composer = {
+          can_compose: !!(st.eligible && !st.open_sitewire_draw && blocking.length === 0),
+          open_request: open ? {
+            id: open.id, status: open.status, source: open.source,
+            total_requested_cents: Number(open.total_requested_cents),
+          } : null,
+          lines,
+        };
+      }
+    } catch (_) { /* the classic screen still renders without the composer */ }
+
     res.json({
       eligible: blocking.length === 0,
       budget_cents: budget, drawn_cents: Number(proj.drawn) || 0, remaining_cents: Math.max(0, remaining),
       pct_complete: Number(proj.pct_complete) || 0,
       lifecycle_state: lifecycle, awaiting_review: awaiting, in_flight: inFlight,
-      blocking, next_steps: nextSteps,
+      blocking, next_steps: nextSteps, composer,
       sitewire_portal_url: require('../config').sitewireBaseUrl || 'https://app.sitewire.co',
     });
   } catch (e) { res.status(500).json({ error: 'Something went wrong — please try again.' }); }
+});
+
+// ---- POST /draws/:appId/request — the borrower's line-item draw composer (physical files) ----
+// Creates a PORTAL draw request: the coordinator is tasked to run it through the
+// administered/inspection process; the borrower gets a receipt + status updates in PILOT.
+router.post('/draws/:appId/request', async (req, res) => {
+  const appId = req.params.appId;
+  if (!(await ownsApp(req, appId))) return res.status(403).json({ error: 'forbidden' });
+  try {
+    const portalDraws = require('../lib/portal-draws');
+    const st = await portalDraws.composerState(appId);
+    if (!st.physical) {
+      return res.status(422).json({ error: 'Draws for this loan are submitted in the construction portal — use the link on your draws page.' });
+    }
+    const entries = Array.isArray(req.body && req.body.entries) ? req.body.entries : [];
+    const row = await portalDraws.createRequest(appId, entries, {
+      source: 'borrower', borrowerId: me(req),
+      note: req.body && req.body.note ? String(req.body.note) : null,
+    });
+    res.json({ ok: true, request: { id: row.id, status: row.status, total_requested_cents: Number(row.total_requested_cents), created_at: row.created_at } });
+  } catch (e) {
+    if (e && e.status) return res.status(e.status).json({ error: scrub(e.message) });
+    res.status(500).json({ error: 'Something went wrong — please try again.' });
+  }
 });
 
 // ---- GET /draws/:appId/findings — inspection findings delivered for this file ----

@@ -24,13 +24,23 @@ const aiSug = require('./ai-suggestions');
 // uploading that type to that code would be CORRECT. The intersection is
 // used as a soft check — an unmapped doc type is silently allowed (we haven't
 // wired the connection yet), never a wrong-condition finding.
+// The FIRST code in each list is the REAL, live PILOT template code for that
+// document (verified against db/*.sql template seeds) — this is the code a
+// satisfied condition actually carries, so the bad-clearance / wrong-condition
+// detectors only fire when the real code is present. The trailing strings are
+// tolerated legacy/synonym aliases (harmless: they simply won't match a real
+// condition). BUG FIX 2026-07-23: the primary codes were stale placeholders
+// (`rtl_p4_insurance`, `rtl_p2_vesting`, `purchase_contract`) that no live
+// condition carries, so the detector silently no-op'd for insurance, entity/
+// vesting and purchase-contract conditions (a right-doc/wrong-condition and a
+// bad-clearance false-clear could never be caught on those). Real codes now lead.
 const DOC_TYPE_TO_CONDITION_CODES = {
   bank_statement:      ['rtl_p3_assets', 'rtl_assets_liquidity', 'liquidity', 'assets'],
-  insurance:           ['rtl_p4_insurance', 'ins_binder', 'insurance', 'hoi'],
-  operating_agreement: ['rtl_p2_vesting', 'llc_operating_agreement', 'entity_vesting', 'vesting'],
-  drivers_license:     ['photo_id', 'rtl_p1_id', 'id_verification'],
+  insurance:           ['rtl_cond_insurance', 'rtl_p4_insurance', 'ins_binder', 'insurance', 'hoi'],
+  operating_agreement: ['rtl_p1_llc', 'rtl_llc_opagmt', 'rtl_p2_vesting', 'llc_operating_agreement', 'entity_vesting', 'vesting'],
+  drivers_license:     ['rtl_p1_id', 'photo_id', 'id_verification'],
   settlement:          ['closing_disclosure', 'settlement_statement', 'hud'],
-  purchase_contract:   ['purchase_contract', 'contract_of_sale', 'psa'],
+  purchase_contract:   ['rtl_p1_contract', 'purchase_contract', 'contract_of_sale', 'psa'],
 };
 
 // Reverse lookup: template code → set of doc types it accepts.

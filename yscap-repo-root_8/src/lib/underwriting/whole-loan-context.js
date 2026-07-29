@@ -27,6 +27,7 @@
 const crypto = require('crypto');
 const prov = require('./provenance');
 const sourcePriority = require('./source-priority');
+const fieldRegistry = require('../conditions/field-registry');
 
 // The structure facts the whole-loan context governs. `required` fields, when
 // absent from EVERY source, make the context NOT_READY (never assume a value).
@@ -48,6 +49,8 @@ const CONTEXT_FIELDS = Object.freeze([
   { key: 'underlying_contract_price', required: false },
   { key: 'borrower_name', required: false },
   { key: 'entity_name', required: false },
+  { key: 'property_state', required: false },
+  { key: 'note_buyer', required: false },   // the capital partner (applications.lender) — STAFF-ONLY, drives the investor-guideline review
 ]);
 const REQUIRED_KEYS = Object.freeze(CONTEXT_FIELDS.filter((f) => f.required).map((f) => f.key));
 
@@ -91,7 +94,10 @@ function candidatesFor(sources) {
   const regId = reg && reg.id ? reg.id : null;
   const regVer = reg && reg.created_at ? String(reg.created_at) : null;
   const apprId = appr && appr.id ? appr.id : null;
-  const apprVer = appr && appr.created_at ? String(appr.created_at) : null;
+  // The appraisal's version stamp is imported_at (its only timestamp; the appraisals
+  // table has no created_at). Fall back to created_at for a synthetic appraisal object
+  // a caller/test injects with one.
+  const apprVer = appr && (appr.imported_at || appr.created_at) ? String(appr.imported_at || appr.created_at) : null;
 
   const map = {};
   const add = (field, cand) => {
@@ -162,6 +168,15 @@ function candidatesFor(sources) {
 
   add('borrower_name', appFact(str(app.borrower_name)));
   add('entity_name', appFact(str(app.entity_name || app.vesting_entity)));
+  // Property state — the subject property's state, from the property_address jsonb (there is NO
+  // applications.property_state column, so the old `app.property_state` was ALWAYS undefined →
+  // ctx.values.property_state stayed null → the Blue Lake FATAL New-York-escalation rule
+  // (isg_bl_ny_loan) could never fire; #248 phantom-column class). Normalized to the 2-letter
+  // USPS code the SAME way the conditions engine does (registry.normState — codes pass through,
+  // full names map, unknowns → null so the rule stays silent rather than false-firing).
+  const _propAddr = app.property_address || {};
+  add('property_state', appFact(fieldRegistry.normState(_propAddr.state)));
+  add('note_buyer', appFact(str(app.lender)));   // capital partner; drives the investor-guideline review (staff-only)
 
   return map;
 }
@@ -271,7 +286,20 @@ async function buildWholeLoanContext(applicationId, db, opts) {
   const a = await db.query(
     `SELECT a.*,
             NULLIF(GREATEST(COALESCE(b.fico,0), COALESCE(cb.fico,0)), 0) AS fico,
-            b.full_name AS borrower_name
+            -- borrowers has first_name/last_name, NOT full_name (that column lives on
+            -- staff_users). The old b.full_name threw "column does not exist" on EVERY
+            -- buildWholeLoanContext call — silently caught upstream, so the whole-loan
+            -- run returned null every time. Compose the name the way the rest of the repo does.
+            NULLIF(b.full_name,'') AS borrower_name,
+            -- Fix 2026-07-23 (#209): registered_program is a JOIN alias everywhere
+            -- in this codebase, never an applications column. Without it the
+            -- assembler fell back to a.program (STRATEGY text like "Fix & Flip
+            -- w/ Construction"), compared it to reg.program ('standard'/'gold'),
+            -- and flagged a false program discrepancy → STALE on essentially
+            -- every registered file.
+            (SELECT pr.program FROM product_registrations pr
+              WHERE pr.application_id = a.id AND pr.is_current = true
+              ORDER BY pr.created_at DESC LIMIT 1) AS registered_program
        FROM applications a
        JOIN borrowers b  ON b.id = a.borrower_id
        LEFT JOIN borrowers cb ON cb.id = a.co_borrower_id
@@ -290,10 +318,22 @@ async function buildWholeLoanContext(applicationId, db, opts) {
   let appraisal = null;
   try {
     const ap = await db.query(
-      `SELECT id, as_is_value, arv_value, appraised_value, created_at
+      // The current appraisal is superseded=false and its timestamp is imported_at
+      // (db/137/188) — NOT `is_current` / `created_at`, neither of which exists on
+      // this table. The old query referenced BOTH phantom columns, threw, and this
+      // catch silently nulled the appraisal, so the context's appraisal-sourced
+      // as_is_value/arv were always dark. Matches every other appraisal query in the repo.
+      // form_type / units / property_type added 2026-07-26 (owner-directed). The appraisal desk
+      // has always had a unit-count check and a form-vs-type check to run, but this query never
+      // SELECTED the columns they read, so `appraisal.units` was permanently undefined and both
+      // checks were dark on every real file — they could only ever fire in a test that hand-built
+      // the object. The columns exist on db/137 and the importer fills them from the XML
+      // (LivingUnitCount and AppraisalFormType); they were simply never asked for.
+      `SELECT id, as_is_value, arv_value, appraised_value, imported_at,
+              form_type, units, property_type
          FROM appraisals
-        WHERE application_id = $1 AND is_current = true
-        ORDER BY created_at DESC LIMIT 1`, [applicationId]);
+        WHERE application_id = $1 AND superseded = false
+        ORDER BY imported_at DESC LIMIT 1`, [applicationId]);
     appraisal = ap.rows[0] || null;
   } catch (_e) { appraisal = null; } // appraisals table optional in some envs
 

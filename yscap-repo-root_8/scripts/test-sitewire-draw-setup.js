@@ -47,6 +47,13 @@ async function main() {
   await new Promise((r) => server.on('listening', r));
 
   // ---- seed ----
+  // Self-heal residue from a prior crashed/failed run (fixed-email fixtures + the
+  // rule-flag mutation below) so a local re-run never trips on its own leftovers.
+  await db.query(`DELETE FROM applications WHERE borrower_id IN (SELECT id FROM borrowers WHERE email='borrower+draw@example.com')`).catch(() => {});
+  await db.query(`DELETE FROM borrowers WHERE email='borrower+draw@example.com'`).catch(() => {});
+  await db.query(`DELETE FROM notifications WHERE staff_id IN (SELECT id FROM staff_users WHERE email='coordinator@yscapgroup.com')`).catch(() => {});
+  await db.query(`DELETE FROM staff_users WHERE email='coordinator@yscapgroup.com'`).catch(() => {});
+  await db.query(`UPDATE sitewire_inspection_rules SET allow_physical=true WHERE capital_partner_id=19 AND program IS NULL AND allow_physical=false`).catch(() => {});
   const staffId = uuid();
   await db.query(
     `INSERT INTO staff_users (id, email, full_name, role, is_active, password_hash, token_version)

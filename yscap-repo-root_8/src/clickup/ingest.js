@@ -23,7 +23,22 @@ const transforms = require('./transforms');
 const review = require('../lib/sync-review');
 const checklist = require('./checklist');
 
-const RTL_PROGRAMS = new Set(['Fix & Flip w/ Construction', 'Bridge', 'Ground-Up Construction']);
+// The ClickUp *Program values that MATERIALIZE a portal loan file. Anything else
+// (DSCR / Non-QM / HELOC / conventional…) is pulled for PROFILE data only.
+//
+// 'Fix & Hold' joined 2026-07-27 (owner adding the matching ClickUp option): it is
+// a real RTL product we originate — the loan primer says so ("fix & flip, fix &
+// hold"), pricing.js prices it, the EMCAP tape exports it. Without it here a card
+// set to Fix & Hold would be treated as data-only: it would never create a file,
+// and an EXISTING linked file would silently stop syncing from its card (the
+// whole `linkOrCreateApplication` branch is gated on isRtl). Adding it is inert
+// until the ClickUp option exists, since no card can carry the value today.
+const RTL_PROGRAMS = new Set(['Fix & Flip w/ Construction', 'Bridge', 'Ground-Up Construction', 'Fix & Hold']);
+// Array form for the SQL below. The candidate scans MUST read from the set above
+// rather than repeat the list — they were three hardcoded copies, so adding a
+// program silently left the matcher blind to files carrying it (exactly the
+// "same bug in more than one place" trap).
+const RTL_PROGRAM_LIST = [...RTL_PROGRAMS];
 // Raw ClickUp *Program labels that mean "not chosen yet" (the officer will set
 // it) — these must be treated like a blank program, NEVER as an unsupported
 // program to descope. Matched case-insensitively against read.rawProgram.
@@ -41,7 +56,15 @@ function identityFrom(read) {
   const b = read.borrower || {}, a = read.app || {};
   const addr = a.property_address && (a.property_address.formatted_address || a.property_address.oneLine);
   return {
-    address: addr, loanNumber: a.ys_loan_number, borrowerName: [b.first_name, b.last_name].filter(Boolean).join(' '),
+    address: addr, loanNumber: a.ys_loan_number,
+    // DELIBERATELY first + last, NOT the full name. This is the task↔file
+    // identity graph: `identity.countMatches` compares this string EXACTLY
+    // against identities recorded on earlier syncs, which predate the middle-name
+    // column (db/345). Adding the middle name here would make every stored
+    // identity stop agreeing on `borrowerName` overnight — a silently weaker
+    // match on the very workflow (duplicate-a-task) the graph exists to protect.
+    // The middle name adds nothing to matching; it is stored on the profile.
+    borrowerName: require('../lib/person-name').displayName(b),
     dob: b.date_of_birth, email: b.email, ssn: b.ssn, phone: b.cell_phone, purchasePrice: a.purchase_price,
   };
 }
@@ -264,11 +287,29 @@ async function healBorrowerFields(borrowerId, b, taskId) {
   try {
     const em = nn(b.email) ? String(b.email).trim().toLowerCase() : null;
     if (em && /@/.test(em) && !/@clickup\.local$/i.test(em)) {
-      await db.query(
-        `UPDATE borrowers SET email=$2, updated_at=now()
-          WHERE id=$1 AND email LIKE 'noemail+%@clickup.local'`, [borrowerId, em]);
+      try {
+        await db.query(
+          `UPDATE borrowers SET email=$2, updated_at=now()
+            WHERE id=$1 AND email LIKE 'noemail+%@clickup.local'`, [borrowerId, em]);
+      } catch (e) {
+        // 23505 = another profile already OWNS that address. Historically the
+        // placeholder just stayed forever, so the person kept a fake
+        // `@clickup.local` address on their profile and could never be emailed.
+        // Now that two people may share a mailbox (db/318, owner-directed
+        // 2026-07-26), give them the real address as a SHARED one instead —
+        // outside the partial unique index, so the owner is untouched. Only for
+        // a placeholder row with NO portal login (a login must stay pinned to
+        // exactly one profile per address).
+        if (e && e.code === '23505') {
+          await db.query(
+            `UPDATE borrowers SET email=$2, shares_email=true, updated_at=now()
+              WHERE id=$1 AND email LIKE 'noemail+%@clickup.local'
+                AND NOT EXISTS (SELECT 1 FROM borrower_auth ba WHERE ba.borrower_id=borrowers.id)`,
+            [borrowerId, em]).catch(() => {});
+        }
+      }
     }
-  } catch (_) { /* 23505: the real email belongs to another profile — keep the placeholder */ }
+  } catch (_) { /* never blocks the heal */ }
   // SSN fill-only, at the ONE heal chokepoint (owner-reported 2026-07-15
   // night, Shalom Elbaum: ClickUp carried the SSN but the file never got it —
   // the encrypted fill previously ran ONLY on the borrower-CREATE path, so a
@@ -285,11 +326,105 @@ async function healBorrowerFields(borrowerId, b, taskId) {
         [borrowerId, ssnStore.encrypted, ssnStore.last4, identity.ssnHash(b.ssn, cfg.ssnMatchKey)]);
     }
   } catch (e) { console.warn('[ingest] ssn fill skipped:', e.message); }
+
+  // ── A RENAMED CARD RENAMES THE PERSON (owner-reported 2026-07-26) ──────────
+  // "Somebody created a file and named the borrower with the nickname he calls
+  // him — AVI — which created a borrower profile 'Avi'. Then he renamed the task
+  // to the correct name, Abraham, and the profile did not update."
+  //
+  // Root cause: the heal below is strictly FILL-ONLY on the name — it writes a
+  // name only when the stored one is blank or a placeholder. That is right for
+  // an ordinary re-sync (a real stored name must not be clobbered by a stale
+  // card), but it means the FIRST value ever seen is frozen forever, so a
+  // nickname can never be corrected from ClickUp.
+  //
+  // The fix mirrors the DOB human-edit-wins rule exactly: the task's stored
+  // SNAPSHOT is the evidence. If ClickUp's name CHANGED since we last read this
+  // card, a human deliberately renamed it at the source, and that correction
+  // wins. Guarded so it can only ever fix a name, never swap in a stranger:
+  //   • the new name must be real (never a placeholder / "Unknown")
+  //   • a same-SURNAME change (Avi → Abraham Klein) is the nickname-correction
+  //     case → ADOPT, audited
+  //   • a WHOLE-name change is possibly a different human being → never guessed;
+  //     it queues the normal two-sided `first_name` sync review so a person
+  //     decides (that review type is already fully resolvable both ways).
+  // Our own pushes can't trip this: we push the name we already store, so the
+  // stored name equals the new one and nothing fires.
+  try {
+    const PN = require('../lib/person-name');
+    const first = name(b.first_name), last = name(b.last_name);
+    // The whole name, MIDDLE NAME INCLUDED (db/345). Comparing first+last only
+    // would read a middle name arriving from ClickUp as a full rename and either
+    // adopt it as a "nickname correction" or queue a pointless review.
+    const newFull = PN.joinFullName({ first, middle: name(b.middle_name), last, suffix: name(b.name_suffix) });
+    if (taskId && newFull && first) {
+      const cur = (await db.query(`SELECT first_name, middle_name, last_name, name_suffix FROM borrowers WHERE id=$1`, [borrowerId])).rows[0] || {};
+      const curFull = PN.joinFullName(cur);
+      const norm = (v) => String(v || '').trim().toLowerCase().replace(/\s+/g, ' ');
+      const isPlaceholder = ['', 'unknown', 'co-borrower', 'unknown unknown'].includes(norm(curFull));
+      // Same person, only the level of name DETAIL differs (one side carries the
+      // middle name, or an initial vs the full word) — never a rename.
+      const sameHuman = !isPlaceholder && curFull && PN.sameName(curFull, newFull);
+      if (curFull && !isPlaceholder && !sameHuman && norm(curFull) !== norm(newFull)) {
+        const prev = (await db.query(`SELECT snapshot FROM clickup_task_index WHERE task_id=$1`, [taskId])).rows[0];
+        const sb = prev && prev.snapshot && prev.snapshot.borrower ? prev.snapshot.borrower : null;
+        const prevFull = sb ? PN.joinFullName({ first: sb.first_name, middle: sb.middle_name, last: sb.last_name, suffix: sb.name_suffix }) : null;
+        // A real rename AT THE SOURCE: the card said something else last time.
+        if (prevFull && norm(prevFull) !== norm(newFull)) {
+          const sameSurname = last && cur.last_name && norm(last) === norm(cur.last_name);
+          if (sameSurname) {
+            await db.query(
+              `UPDATE borrowers SET first_name=$2, last_name=$3,
+                      middle_name=NULLIF($4,''), name_suffix=NULLIF($5,''), updated_at=now()
+                WHERE id=$1`,
+              [borrowerId, first, last, name(b.middle_name) || '', name(b.name_suffix) || '']);
+            await db.query(
+              `INSERT INTO audit_log (actor_kind, actor_id, action, entity_type, entity_id, detail)
+               VALUES ('system',NULL,'clickup_name_edited_at_source','borrower',$1,$2)`,
+              [borrowerId, JSON.stringify({ taskId, from: curFull, to: newFull, was: prevFull,
+                why: 'the ClickUp card was renamed at the source and the surname still matches — a corrected first name (nickname → real name)' })]).catch(() => {});
+            await review.closeStaleReviews({ borrowerId, fieldKey: 'first_name',
+              note: `auto-closed — ClickUp was renamed to "${newFull}" and PILOT adopted it` }).catch(() => {});
+          } else {
+            // Both names changed — that may be a different person on the card.
+            // Never guessed: a human picks the winner.
+            await review.queueReview({
+              borrowerId, taskId, direction: 'inbound', fieldKey: 'first_name',
+              reason: 'clickup_name_changed_at_source',
+              clickupValue: newFull, portalValue: curFull,
+              currentValue: curFull, proposedValue: newFull,
+            }).catch(() => {});
+          }
+        }
+      }
+    }
+  } catch (e) { console.warn('[ingest] name-change check skipped:', e.message); }
+
+  // THE NAME SPLIT (owner-directed 2026-07-27). ClickUp holds the whole name in
+  // one field; PILOT holds first / middle / last / suffix. The mapper split it
+  // and told us how sure it was — a judgement call is recorded so a human can
+  // confirm it (never a block). FILL-ONLY like every other field here: the flag
+  // is only raised on a profile that has no middle name yet AND has never been
+  // looked at, so re-syncing a card can't re-nag about a name staff already
+  // confirmed.
+  try {
+    const split = b._nameSplit;
+    if (split && split.needsReview && !transforms.isPlaceholderName(b.first_name)) {
+      await db.query(
+        `UPDATE borrowers
+            SET name_review_needed = true, name_review_reason = $2, updated_at = now()
+          WHERE id = $1 AND middle_name IS NULL AND name_split_checked_at IS NULL`,
+        [borrowerId, split.reason || null]);
+    }
+  } catch (e) { console.warn('[ingest] name-split review flag skipped:', e.message); }
+
   try {
     await db.query(
       `UPDATE borrowers SET
           first_name      = CASE WHEN $2::text IS NOT NULL AND lower(btrim(coalesce(first_name,''))) IN ('','unknown','co-borrower') THEN $2 ELSE first_name END,
           last_name       = CASE WHEN $3::text IS NOT NULL AND lower(btrim(coalesce(last_name ,''))) IN ('','unknown','co-borrower') THEN $3 ELSE last_name  END,
+          middle_name     = COALESCE(middle_name, $12),
+          name_suffix     = COALESCE(name_suffix, $13),
           cell_phone      = COALESCE(cell_phone, $4),
           date_of_birth   = COALESCE(date_of_birth, $5::date),
           citizenship     = COALESCE(citizenship, $6),
@@ -303,7 +438,8 @@ async function healBorrowerFields(borrowerId, b, taskId) {
       [borrowerId, name(b.first_name), name(b.last_name), nn(b.cell_phone), dobIn,
        nn(b.citizenship), require('../lib/fields').sanitizeFico(b.fico),   // #90: never persist an out-of-range FICO from ClickUp
        b.current_address ? JSON.stringify(b.current_address) : null,
-       nn(b.marital_status), nn(b.employment_type), nn(b.employer)]);
+       nn(b.marital_status), nn(b.employment_type), nn(b.employer),
+       name(b.middle_name), name(b.name_suffix)]);
   } catch (e) { console.warn('[ingest] borrower heal skipped:', e.message); }
 }
 
@@ -333,31 +469,41 @@ async function resolveBorrower(read, taskId) {
   //      • no SSN either side                    -> merge ONLY if last name / phone
   //        (last 10) / DOB also agrees; else create a distinct profile.
   if (b.email) {
+    // EVERY profile on the address, not just one. Since two people may now
+    // legitimately share a mailbox (db/318), `LIMIT 1` would be a coin flip:
+    // re-ingesting a husband-and-wife task could land on the OTHER spouse's row,
+    // fail to corroborate, and mint a THIRD profile — on every single sync. The
+    // owner is checked first (it is the row every upsert resolves to), then the
+    // people deliberately sharing with them. Bounded; a mailbox never holds many.
     const r = await db.query(
-      `SELECT id, ssn_hash, first_name, last_name, cell_phone, date_of_birth FROM borrowers WHERE email=$1 LIMIT 1`,
+      `SELECT id, ssn_hash, first_name, last_name, cell_phone, date_of_birth, shares_email
+         FROM borrowers WHERE email=$1 ORDER BY shares_email, created_at LIMIT 10`,
       [String(b.email).toLowerCase().trim()]);
-    const ex = r.rows[0];
-    if (ex) {
-      const ssnConflict = ssnHash && ex.ssn_hash && ssnHash !== ex.ssn_hash;
-      const ssnAgree    = ssnHash && ex.ssn_hash && ssnHash === ex.ssn_hash;
-      // Corroboration requires phone / DOB / the FULL name — never the last
-      // name alone (a family-shared email + the family surname merged a loan
-      // officer's LEAD with a different real borrower, owner incident
-      // 2026-07-15 night — two people, one profile, wrong officer on the file).
-      const corroborated = identity.emailMatchCorroborated(
-        { firstName: b.first_name, lastName: b.last_name, phone: b.cell_phone, dob: b.date_of_birth },
-        { firstName: ex.first_name, lastName: ex.last_name, phone: ex.cell_phone, dob: ex.date_of_birth });
-      if (!ssnConflict && (ssnAgree || corroborated)) {
-        if (ssnHash) await db.query(`UPDATE borrowers SET ssn_hash=COALESCE(ssn_hash,$1) WHERE id=$2`, [ssnHash, ex.id]);
-        await healBorrowerFields(ex.id, b, taskId);
-        await recordContacts(ex.id, b, taskId);
-        return { borrowerId: ex.id, created: false };
+    if (r.rows[0]) {
+      let anyConflict = false;
+      for (const ex of r.rows) {
+        const ssnConflict = ssnHash && ex.ssn_hash && ssnHash !== ex.ssn_hash;
+        const ssnAgree    = ssnHash && ex.ssn_hash && ssnHash === ex.ssn_hash;
+        // Corroboration requires phone / DOB / the FULL name — never the last
+        // name alone (a family-shared email + the family surname merged a loan
+        // officer's LEAD with a different real borrower, owner incident
+        // 2026-07-15 night — two people, one profile, wrong officer on the file).
+        const corroborated = identity.emailMatchCorroborated(
+          { firstName: b.first_name, lastName: b.last_name, phone: b.cell_phone, dob: b.date_of_birth },
+          { firstName: ex.first_name, lastName: ex.last_name, phone: ex.cell_phone, dob: ex.date_of_birth });
+        if (!ssnConflict && (ssnAgree || corroborated)) {
+          if (ssnHash) await db.query(`UPDATE borrowers SET ssn_hash=COALESCE(ssn_hash,$1) WHERE id=$2`, [ssnHash, ex.id]);
+          await healBorrowerFields(ex.id, b, taskId);
+          await recordContacts(ex.id, b, taskId);
+          return { borrowerId: ex.id, created: false };
+        }
+        if (ssnConflict) anyConflict = true;
       }
       emailUnsafe = true;   // matched, but not the same person we can prove → don't reuse the email
       // A shared email with NO corroboration (and no SSN conflict) is a genuine
-      // "might be the same person" — flag it for human review. An SSN conflict is a
-      // confirmed DIFFERENT person, so it is not flagged.
-      if (!ssnConflict) possibleDupOfId = ex.id;
+      // "might be the same person" — flag it for human review against the address
+      // OWNER. An SSN conflict is a confirmed DIFFERENT person, so it is not flagged.
+      if (!anyConflict) possibleDupOfId = (r.rows.find((x) => !x.shares_email) || r.rows[0]).id;
     }
   }
   // 3) weak / none -> create a DISTINCT profile (never a blind single-field merge).
@@ -375,22 +521,42 @@ async function resolveBorrower(read, taskId) {
   }
   const first = b.first_name || 'Unknown', last = b.last_name || 'Unknown';
   // CRITICAL: if the email match was declined above (different person, or
-  // uncorroborated), do NOT reuse it here — the INSERT's ON CONFLICT (email) DO
-  // UPDATE would resolve to that other person's row and re-merge the two we just
-  // refused to merge (wrong loan/PII attachment). Use a synthetic unique email so
-  // a distinct profile is created.
-  const email = (b.email && !emailUnsafe) ? String(b.email).toLowerCase().trim() : `noemail+${taskId}@clickup.local`;
-  const ins = await db.query(
+  // uncorroborated), the new profile must NOT resolve back onto the row we just
+  // refused to merge with — an `ON CONFLICT (email) DO UPDATE` would re-merge the
+  // two (wrong loan/PII attachment). It used to be handed a synthetic
+  // `noemail+<task>@clickup.local` address purely because `borrowers.email`
+  // carried a blanket UNIQUE constraint.
+  //
+  // Owner-directed 2026-07-26 ("sometimes two borrowers — a husband and wife —
+  // use the same email address; we need to allow that"): the REAL address is now
+  // kept and the second profile is flagged `shares_email`, which sits outside the
+  // partial unique index (db/318). One mailbox, two real people, both reachable —
+  // and a whole class of nameless `@clickup.local` shadow profiles (exactly the
+  // kind that silently absorbed a borrower's SSN and then blocked a staffer from
+  // typing that SSN on the person's real profile) stops being created. The split
+  // is still recorded as a dedup/"shared email" review card below, so a human is
+  // always told; nothing is ever auto-merged.
+  const realEmail = b.email ? String(b.email).toLowerCase().trim() : null;
+  const shareEmail = !!(realEmail && emailUnsafe);
+  const email = realEmail || `noemail+${taskId}@clickup.local`;
+  const insCols = [first, last, email, b.cell_phone || null,
+    require('../lib/fields').sanitizeDob(b.date_of_birth),   // NEW-borrower path vets too: garbage/toddler DOBs never insert raw
+    b.citizenship || null,
+    require('../lib/fields').sanitizeFico(b.fico),   // #90: FICO 300–850 or null
+    b.current_address ? JSON.stringify(b.current_address) : null, b.marital_status || null,
+    b.employment_type || null, b.employer || null, ssnHash];
+  const INSERT_HEAD =
     `INSERT INTO borrowers (first_name,last_name,email,cell_phone,date_of_birth,citizenship,fico,current_address,
-                            marital_status,employment_type,employer,ssn_hash,origin)
-     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,'clickup_backfill')
-     ON CONFLICT (email) DO UPDATE SET updated_at=now() RETURNING id`,
-    [first, last, email, b.cell_phone || null,
-     require('../lib/fields').sanitizeDob(b.date_of_birth),   // NEW-borrower path vets too: garbage/toddler DOBs never insert raw
-     b.citizenship || null,
-     require('../lib/fields').sanitizeFico(b.fico),   // #90: FICO 300–850 or null
-     b.current_address ? JSON.stringify(b.current_address) : null, b.marital_status || null,
-     b.employment_type || null, b.employer || null, ssnHash]);
+                            marital_status,employment_type,employer,ssn_hash,origin,shares_email)`;
+  // A shared-email profile is outside the partial unique index, so it can never
+  // collide — plain INSERT. The address OWNER keeps the upsert semantics exactly
+  // as before (same row resolution, same heal-on-match afterwards).
+  const ins = shareEmail
+    ? await db.query(`${INSERT_HEAD}
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,'clickup_backfill',true) RETURNING id`, insCols)
+    : await db.query(`${INSERT_HEAD}
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,'clickup_backfill',false)
+     ON CONFLICT (email) WHERE shares_email = false DO UPDATE SET updated_at=now() RETURNING id`, insCols);
   const borrowerId = ins.rows[0].id;
   // The ON CONFLICT path returns a PRE-EXISTING row (same real email, or the
   // same task's shadow email on a re-sync) — heal it too, or the very row this
@@ -437,7 +603,7 @@ async function resolveBorrower(read, taskId) {
         suppressIfRejected: true,
         rawValue: JSON.stringify({ b1: borrowerId, b2: possibleDupOfId, sourceTask: taskId }).slice(0, 300),
         clickupValue: String(b.email || '').toLowerCase().trim().slice(0, 160),
-        portalValue: `${[first, last].filter(Boolean).join(' ')} AND ${[other.first_name, other.last_name].filter(Boolean).join(' ')}`.slice(0, 160) });
+        portalValue: `${[first, last].filter(Boolean).join(' ')} AND ${require('../lib/person-name').displayName(other)}`.slice(0, 160) });
     } catch (_) { /* the card is best-effort; the boot sweep re-produces it */ }
   }
   return { borrowerId, created: true };
@@ -636,7 +802,7 @@ async function findExistingApp(task, read, borrowerId, opts = {}) {
   const cand = await db.query(
     `SELECT id, property_address, ys_loan_number, purchase_price FROM applications
       WHERE borrower_id=$1 AND deleted_at IS NULL AND clickup_pipeline_task_id IS NULL
-        AND program IN ('Fix & Flip w/ Construction','Bridge','Ground-Up Construction')`, [borrowerId]
+        AND program = ANY($2::text[])`, [borrowerId, RTL_PROGRAM_LIST]
   ).catch(() => ({ rows: [] }));
   // NOTE (2026-07-15 audit): the unlinked-candidate scan is gated on having
   // candidates, but the heal + duplicate-defer scans below must run REGARDLESS —
@@ -668,8 +834,8 @@ async function findExistingApp(task, read, borrowerId, opts = {}) {
       `SELECT id, property_address, clickup_pipeline_task_id FROM applications
         WHERE borrower_id=$1 AND deleted_at IS NULL
           AND clickup_pipeline_task_id IS NOT NULL AND clickup_pipeline_task_id <> $2
-          AND program IN ('Fix & Flip w/ Construction','Bridge','Ground-Up Construction')`,
-      [borrowerId, task.id]).catch(() => ({ rows: [] }));
+          AND program = ANY($3::text[])`,
+      [borrowerId, task.id, RTL_PROGRAM_LIST]).catch(() => ({ rows: [] }));
     for (const o of other.rows) {
       const on = identity.normalizeIdentity({ address: _addrOf(o.property_address) });
       if (!on.address) continue;
@@ -850,6 +1016,20 @@ async function descopeFlipped(taskId) {
        VALUES ('system', NULL, 'clickup_descope_flip', 'application', $1, $2)`,
       [r.rows[0].id, JSON.stringify({ taskId, from: r.rows[0].program,
         reason: 'ClickUp program changed to an unsupported (non-RTL) type; removed from portal, ClickUp left untouched' })]).catch(() => {});
+    // A descoped file is OUT of the portal — close any open FILE-LEVEL sync-review
+    // findings it was carrying (they are unactionable now, and a copied-loan-number
+    // finding must not linger after the file it was about is gone — the exact
+    // dead-end the owner hit turning an RTL duplicate into a DSCR, 2026-07-22).
+    // Scoped to the file-level "action card" keys; a value disagreement (or a real
+    // issue) re-raises on the next ingest if the task ever flips back to RTL.
+    await db.query(
+      `UPDATE sync_review_queue
+          SET status='resolved', auto_resolved=true, resolved_at=now(),
+              resolution_note='auto-closed — the file was removed from the portal (its ClickUp program changed to a data-only, non-RTL type)'
+        WHERE status='open'
+          AND (application_id=$1 OR task_id=$2)
+          AND field_key IN ('ys_loan_number','file_link','push_job','sharepoint_folder','sharepoint_doc')`,
+      [r.rows[0].id, String(taskId)]).catch(() => {});
     return r.rows[0];
   } catch (_) { return null; }
 }
@@ -898,7 +1078,7 @@ async function ingestTask(task, options = {}, opts = {}) {
       const withSubs = (task.subtasks && task.subtasks.length) ? task : await client.getTask(task.id, { includeSubtasks: true });
       const subs = (withSubs && withSubs.subtasks) || [];
       if (subs.length) {
-        const coName = read.coBorrower ? `${read.coBorrower.first_name || ''} ${read.coBorrower.last_name || ''}`.trim().toLowerCase() : '';
+        const coName = read.coBorrower ? require('../lib/person-name').displayName(read.coBorrower).toLowerCase() : '';
         const byName = coName && subs.find((s) => String(s.name || '').toLowerCase().includes(coName));
         const byLabel = subs.find((s) => /co.?borrow|borrower\s*2|second\s*borrow|guarantor/i.test(String(s.name || '')));
         // A lone subtask MIGHT be the co-borrower, but its title is unreliable
@@ -989,10 +1169,56 @@ async function ingestTask(task, options = {}, opts = {}) {
   const loanOfficerEmail = routing.loanOfficerEmailFor(read, folderId);
   const processorEmail = routing.processorEmailFor(read);
 
+  // ── The officer OWNS the person, not just the RTL file (owner-directed
+  // 2026-07-26) ──────────────────────────────────────────────────────────────
+  // Every ClickUp card — RTL *and* DSCR / long-term — builds a full borrower
+  // profile here. Only an RTL card also builds a loan FILE, and an officer's
+  // "my borrowers" book was derived purely from files, so a client who has only
+  // ever done DSCR business with them was invisible: not in their borrower list,
+  // not in the name typeahead, no profile to auto-fill on a new file. Stamping
+  // the resolved officer onto the profile itself (FILL-ONLY — an officer a human
+  // already set is never stolen) makes the person theirs from the first card,
+  // whatever the program. Best-effort: this can never break the sync.
+  //
+  // …and the relationship is MANY-TO-MANY (owner-directed 2026-07-26, follow-up):
+  // "he should see every borrower where he closed ANY file in the past." A single
+  // `primary_officer_id` cannot express that — it is fill-only (it must be;
+  // stealing an existing relationship would be worse), so whoever got there first
+  // owned the person and every OTHER officer they did business with stayed locked
+  // out. `borrower_officers` (db/327) records EVERY (borrower, officer) pair this
+  // sync sees, from EVERY card in EVERY status, and is what the staff borrower
+  // scope actually reads. `primary_officer_id` keeps its old meaning: the
+  // borrower's PRIMARY/CRM owner.
+  const taskOfficer = await resolveStaffByEmail(loanOfficerEmail);
+  if (taskOfficer.id) {
+    for (const bid of [borrowerId, coBorrowerId]) {
+      if (!bid) continue;
+      try {
+        await db.query(
+          `UPDATE borrowers SET primary_officer_id=$2, updated_at=now()
+            WHERE id=$1 AND primary_officer_id IS NULL`, [bid, taskOfficer.id]);
+      } catch (_) { /* best-effort */ }
+      try {
+        // Establish the relationship only — `deals` is NOT incremented here. A
+        // per-task counter cannot stay correct across re-syncs (the same card is
+        // ingested many times), so the closed-deal count is RECOMPUTED from the
+        // task index at the end of each profile-sweep cycle (`recountDeals`).
+        // Nothing gates access on it; it is display only.
+        await db.query(
+          `INSERT INTO borrower_officers (borrower_id, staff_id, source, first_task_id, last_seen)
+           VALUES ($1,$2,'clickup',$3,now())
+           ON CONFLICT (borrower_id, staff_id) DO UPDATE
+             SET last_seen = now(),
+                 first_task_id = COALESCE(borrower_officers.first_task_id, EXCLUDED.first_task_id)`,
+          [bid, taskOfficer.id, task.id]);
+      } catch (_) { /* best-effort — the relationship is additive, never critical */ }
+    }
+  }
+
   let applicationId = null, matchStatus = isRtl ? null : 'data_only', matchDetail = null;
   if (isRtl) {
     const res = await linkOrCreateApplication(task, read, borrowerId, llcId,
-      { allowCreate: opts.createFile === true, forceCreate: opts.forceCreate === true, folderId, loanOfficerEmail, processorEmail, coBorrowerId, coBorrowerTaskId });
+      { allowCreate: opts.createFile === true, forceCreate: opts.forceCreate === true, folderId, loanOfficerEmail, processorEmail, coBorrowerId, coBorrowerTaskId, options });
     applicationId = res.applicationId; matchStatus = res.matchStatus; matchDetail = res.detail || null;
     // ROLE RECONCILIATION (owner-directed 2026-07-15 night, Boruch Stauber /
     // Shaindel Schwimmer: the MAIN task is the borrower and the SUBTASK is the
@@ -1180,6 +1406,10 @@ async function ingestTask(task, options = {}, opts = {}) {
     // failure here can NEVER break the ClickUp sync.
     try { await require('../lib/conditions/engine').evaluateApplication(applicationId, { reason: 'clickup_ingest' }); } catch (_) {}
     try { await require('../lib/rehab-budget').enforceSowContingency(applicationId); } catch (_) {}
+    // A note buyer arriving/changing can also change the bank-statement month requirement (Blue Lake
+    // needs 2, Standard 1) — re-derive it now so the condition doesn't keep saying "1 month" until
+    // the next re-register (owner 2026-07-27). Best-effort; never breaks the sync.
+    try { await require('../lib/liquidity').resyncLiquidityForFile(applicationId); } catch (_) {}
   }
 
   // Preserve a MASKED snapshot of every task's mapped data — RTL and non-RTL
@@ -1187,17 +1417,23 @@ async function ingestTask(task, options = {}, opts = {}) {
   // materialize as loan files yet. SSN/card are masked; never cleartext here.
   const snapshot = buildMaskedSnapshot(read, { loanOfficerEmail, processorEmail });
   await db.query(
+    // loan_officer_id (db/318): the owning officer is recorded for EVERY task,
+    // so a DSCR / long-term card — which never becomes a loan file — still knows
+    // whose client it is. That is what lets the borrower profile list a person's
+    // non-RTL deals and what keeps the officer's borrower book complete.
     `INSERT INTO clickup_task_index (task_id, kind, program, ssn_hash, borrower_id, application_id, llc_id,
-        match_status, match_detail, snapshot, snapshot_at, task_name, folder_id, internal_status, last_seen)
-     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,now(),$11,$12,$13,now())
+        match_status, match_detail, snapshot, snapshot_at, task_name, folder_id, internal_status, loan_officer_id, last_seen)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,now(),$11,$12,$13,$14,now())
      ON CONFLICT (task_id) DO UPDATE SET program=EXCLUDED.program, ssn_hash=EXCLUDED.ssn_hash,
         borrower_id=EXCLUDED.borrower_id, application_id=COALESCE(EXCLUDED.application_id, clickup_task_index.application_id),
         llc_id=EXCLUDED.llc_id, match_status=EXCLUDED.match_status, match_detail=EXCLUDED.match_detail,
         snapshot=EXCLUDED.snapshot, snapshot_at=now(), task_name=EXCLUDED.task_name, folder_id=EXCLUDED.folder_id,
-        internal_status=EXCLUDED.internal_status, last_seen=now()`,
+        internal_status=EXCLUDED.internal_status,
+        loan_officer_id=COALESCE(EXCLUDED.loan_officer_id, clickup_task_index.loan_officer_id), last_seen=now()`,
     [task.id, isRtl ? 'rtl_file' : 'data_only', program, identity.ssnHash(read.borrower.ssn, cfg.ssnMatchKey),
      borrowerId, applicationId, llcId, matchStatus, matchDetail ? JSON.stringify(matchDetail) : null,
-     JSON.stringify(snapshot), task.name || null, folderId ? String(folderId) : null, read.internalStatus || null]).catch(() => {});
+     JSON.stringify(snapshot), task.name || null, folderId ? String(folderId) : null, read.internalStatus || null,
+     taskOfficer.id || null]).catch(() => {});
 
   return { borrowerId, llcId, applicationId, isRtl, matchStatus };
 }
@@ -1223,7 +1459,7 @@ function decideInboundProcessor(userId, emailId) {
 }
 
 async function linkOrCreateApplication(task, read, borrowerId, llcId, ctx = {}) {
-  const { allowCreate = false, forceCreate = false, folderId = null, loanOfficerEmail = null, processorEmail = null, coBorrowerId = null, coBorrowerTaskId = null } = ctx;
+  const { allowCreate = false, forceCreate = false, folderId = null, loanOfficerEmail = null, processorEmail = null, coBorrowerId = null, coBorrowerTaskId = null, options: cuOptions = {} } = ctx;
   const a = read.app || {};
   const lo = await resolveStaffByEmail(loanOfficerEmail);
   // PROCESSOR — two-field AGREEMENT gate (owner-directed 2026-07-19). ClickUp holds
@@ -1251,7 +1487,12 @@ async function linkOrCreateApplication(task, read, borrowerId, llcId, ctx = {}) 
   const internal = read.internalStatus;
   const external = statusMap.externalFor(internal) || 'processing';
   const cols = {
-    program: a.program, loan_type: require('../lib/fields').sanitizeLoanType(a.loan_type), property_type: a.property_type, occupancy: a.occupancy,   // #95: ClickUp can't re-introduce a "Ground up" loan_type
+    // #95: ClickUp can't re-introduce a "Ground up" loan_type.
+    // #FNM1025: nor an appraisal FORM number as the property type — sanitize returns
+    // null so the COALESCE UPDATE keeps whatever real type the file already has
+    // (the inbound never breaks over a bad value, it just refuses to store it).
+    program: a.program, loan_type: require('../lib/fields').sanitizeLoanType(a.loan_type),
+    property_type: require('../lib/property-type').sanitizePropertyType(a.property_type), occupancy: a.occupancy,
     lender: a.lender, channel: a.channel, units: a.units, term: a.term,
     loan_amount: a.loan_amount, purchase_price: a.purchase_price, as_is_value: a.as_is_value, arv: a.arv,
     rehab_budget: a.rehab_budget, rehab_type: a.rehab_type, dscr_ratio: a.dscr_ratio,
@@ -1457,6 +1698,45 @@ async function linkOrCreateApplication(task, read, borrowerId, llcId, ctx = {}) 
     }
   }
 
+  // A STREET IS NOT AN ADDRESS — refuse an inbound subject address that lost the
+  // house number (owner-reported 2026-07-28, YSCAP258134762).
+  //
+  // Our OWN push put a road-level geocode result on the card ("2nd St, Piscataway,
+  // NJ 07063" for the real "1727 S 2nd St, …, 08854" — see orchestrator.withCoords,
+  // now fixed). That value is still sitting in ClickUp, and `property_address`
+  // COALESCE-overwrites on every pull — so each time the address was corrected in
+  // PILOT the next reconcile read the corrupted one straight back over it. That is
+  // the loop: "even after I changed the address several times it messes up again".
+  //
+  // The refusal is deliberately NARROW so a human editing the address in ClickUp is
+  // never blocked: it fires ONLY when the pulled value carries NO house number while
+  // the one we hold DOES. Every real property address has a number (ClickUp's own
+  // location picker always returns one), so a street-only value is machine garbage,
+  // not somebody's correction — a house-number CHANGE ("1727" → "1725") still flows
+  // in untouched. Same idiom as the guard below: cols[field]=null → COALESCE keeps
+  // the portal value, audited, and the good value is re-pushed to repair the card.
+  if (targetId && cols.property_address) {
+    try {
+      const ADDR = require('../lib/address');
+      const cur = (await db.query(
+        `SELECT property_address FROM applications WHERE id=$1`, [targetId])).rows[0];
+      const oursText = _addrOf(cur && cur.property_address);
+      const theirsText = _addrOf(a.property_address);
+      const ourHouse = oursText ? ADDR.houseNumberOf(ADDR.parseAddress(oursText).line1) : '';
+      const theirHouse = theirsText ? ADDR.houseNumberOf(ADDR.parseAddress(theirsText).line1) : '';
+      if (ourHouse && !theirHouse) {
+        cols.property_address = null;   // COALESCE keeps the real address
+        try { await require('./enqueue').enqueueClickupPush(targetId, ['property_address']); } catch (_) {}
+        try {
+          await db.query(
+            `INSERT INTO audit_log (actor_kind, actor_id, action, entity_type, entity_id, detail)
+             VALUES ('system', NULL, 'clickup_pull_address_no_house_number', 'application', $1, $2)`,
+            [targetId, JSON.stringify({ taskId: task && task.id, kept: oursText, refused: theirsText })]);
+        } catch (_) {}
+      }
+    } catch (_) { /* best-effort — a guard failure must never break the inbound pull */ }
+  }
+
   // #86 — protect a freshly-APPROVED economics change from a STALE ClickUp pull.
   // When a locked file's economics change is approved in the portal, the value is
   // written to `applications` and an outbound push is enqueued. If an inbound pull
@@ -1513,8 +1793,73 @@ async function linkOrCreateApplication(task, read, borrowerId, llcId, ctx = {}) 
     } catch (_) { /* best-effort — a guard failure must never break the inbound pull */ }
   }
 
+  // ECONOMICS FREEZE (owner-directed follow-up to the term-sheet-sent freeze):
+  // if this existing file is frozen — a Term Sheet DocuSign package is sent, or
+  // the file is Clear-to-Close / Funded — an inbound economics CHANGE must not
+  // silently overwrite the file (it would make the sent term sheet disagree with
+  // it). The guard strips the changed frozen-economics fields from `cols` (their
+  // COALESCE keeps the current value) and parks a review row for the loan officer.
+  // No-op on an unfrozen file, or when ClickUp already matches the frozen figures.
+  if (targetId && task) {
+    try {
+      await require('../lib/inbound-economics-freeze')
+        .applyInboundEconomicsFreeze({ appId: targetId, cols, taskId: task.id, borrowerId });
+    } catch (_) { /* best-effort — never breaks the inbound pull */ }
+  }
+
+  // CLEAR-TO-CLOSE CONFIRM GATE (owner-directed 2026-07-27): when ClickUp moves a
+  // PRE-Clear-to-Close file to Clear to Close, PILOT does NOT advance on its own —
+  // it HOLDS the status (nulls status + internal_status so their COALESCE keeps
+  // the current value) and parks a "confirm Clear to Close" review. `ctcHeld` then
+  // suppresses the inbound borrower status notification for this pull below (it
+  // uses the computed `external`, so without this it would announce Clear to Close
+  // even though the file was held). No-op on any other status move.
+  let ctcHeld = false;
+  if (targetId && task) {
+    try {
+      const g = await require('../lib/inbound-ctc-confirm')
+        .applyInboundCtcConfirm({ appId: targetId, cols, taskId: task.id, borrowerId });
+      ctcHeld = !!(g && g.held);
+    } catch (_) { /* best-effort — never breaks the inbound pull */ }
+  }
+
+  // UNMAPPABLE-VALUE GUARD (owner-reported 2026-07-27: "Fix & Flip → Fix & Hold
+  // bounces back"). A two-way dropdown value PILOT holds but ClickUp has NO
+  // option for can never be pushed — `mapper.put()` drops it silently — so this
+  // COALESCE UPDATE used to write ClickUp's stale value straight back over the
+  // officer's edit. Keep OURS and park a review naming the value, instead of
+  // reverting an edit in silence. No-op when every value maps.
+  if (targetId && task) {
+    try {
+      await require('../lib/inbound-enum-guard')
+        .applyInboundEnumGuard({ appId: targetId, cols, taskId: task.id, borrowerId, options: cuOptions });
+    } catch (_) { /* best-effort — never breaks the inbound pull */ }
+  }
+
+  // PORTAL-EDIT GUARD (owner-directed 2026-07-28: "anything you change that
+  // bounces back must tell you or go to manual review — never do it by itself").
+  // The everyday case the two guards above miss: an un-frozen file with a
+  // mappable value that a HUMAN just edited in the portal, which the COALESCE
+  // pull silently reverts if the reconcile runs before the outbound push lands.
+  // Using ClickUp's last-seen snapshot (still the PREVIOUS values here — the
+  // snapshot is rewritten after this returns), it keeps the file's value and
+  // either re-pushes it (the edit hadn't reached ClickUp yet — silent) or parks a
+  // review (both sides changed — a real conflict). Runs LAST so anything an
+  // earlier guard already stripped is skipped. No-op when ClickUp matches the
+  // file, or when there is no snapshot to prove a portal-side edit.
+  if (targetId && task) {
+    try {
+      await require('../lib/inbound-portal-edit-guard')
+        .applyInboundPortalEditGuard({ appId: targetId, cols, taskId: task.id, borrowerId });
+    } catch (_) { /* best-effort — never breaks the inbound pull */ }
+  }
+
   const vals = Object.values(cols);
   const set = Object.keys(cols).map((k, i) => `${k}=COALESCE($${i + 2}, ${k})`).join(', ');
+  // Set when THIS pull moves the expected closing date, so the closing chain can be
+  // told after the UPDATE lands. Declared out here because the diff is computed in
+  // the audit block below, which is deliberately its own swallowing try/catch.
+  let closingDateMoved = null;
   if (targetId) {
     // INBOUND CHANGE AUDIT (2026-07-15 date incident; broadened to ALL mapped
     // fields owner-directed the same day): whenever this pull is about to CHANGE
@@ -1539,6 +1884,12 @@ async function linkOrCreateApplication(task, read, borrowerId, llcId, ctx = {}) 
             `INSERT INTO audit_log (actor_kind, actor_id, action, entity_type, entity_id, detail)
              VALUES ('system', NULL, 'clickup_pull_field_change', 'application', $1, $2)`,
             [targetId, JSON.stringify({ taskId: task.id, changes: diffs })]);
+        }
+        // The team moves closing dates in ClickUp as often as in PILOT, so this is a
+        // real door for "there is a new expected closing date" — and the closing
+        // attorney needs to hear it wherever it was changed.
+        if (diffs.expected_closing && diffs.expected_closing.to) {
+          closingDateMoved = String(diffs.expected_closing.to).slice(0, 10);
         }
       }
     } catch (_) { /* audit is best-effort — never blocks the pull */ }
@@ -1569,6 +1920,18 @@ async function linkOrCreateApplication(task, read, borrowerId, llcId, ctx = {}) 
     // staff notification routes to the new LO's prefs + drafts (mirrors the
     // /assign path in staff.js — same class of cache invalidation).
     try { require('../lib/lo-notification-gate').invalidateFile(targetId); } catch (_) { /* best-effort */ }
+    // A closing date changed IN CLICKUP goes out on the file's closing chain, exactly
+    // like one changed in PILOT. Silent when the file has no chain; keyed on the date,
+    // so a ClickUp echo of a date we already announced sends nothing. Never blocks
+    // the pull.
+    if (closingDateMoved && /^\d{4}-\d{2}-\d{2}$/.test(closingDateMoved)) {
+      try {
+        await require('../lib/closing-prep').announce({
+          applicationId: targetId, eventKind: 'closing_date',
+          dedupeKey: `closing_date:${closingDateMoved}`, extra: { date: closingDateMoved },
+        });
+      } catch (_) { /* best-effort */ }
+    }
     // Two-field PROCESSOR conflict → the ClickUp processor signal is untrustworthy
     // (the stale-duplicate case). Clear any portal processor so the file returns to
     // "no processor" per the agreement rule (owner-directed 2026-07-19). The COALESCE
@@ -1634,7 +1997,13 @@ async function linkOrCreateApplication(task, read, borrowerId, llcId, ctx = {}) 
     // on the first reconcile), skips an ECHO of a portal change (the portal door
     // already advanced the watermark to this status), and loops the loan officer
     // in via the borrower email's BCC. Best-effort; never breaks the pull. (db/187)
-    try { await require('../lib/status-notify').notifyInboundStatusChange(targetId, external); } catch (_) { /* best-effort */ }
+    // SKIPPED when the Clear-to-Close confirm gate HELD the move (ctcHeld): the
+    // status did not actually change on the file, so announcing Clear to Close here
+    // (this uses the computed `external`, not the held `cols.status`) would be wrong
+    // — the confirm action notifies the borrower when a human approves the move.
+    if (!ctcHeld) {
+      try { await require('../lib/status-notify').notifyInboundStatusChange(targetId, external); } catch (_) { /* best-effort */ }
+    }
     return { applicationId: targetId, matchStatus, detail, copiedLoanNumber };
   }
   if (!allowCreate) return { applicationId: null, matchStatus: 'skipped' };
@@ -1695,4 +2064,5 @@ async function linkOrCreateApplication(task, read, borrowerId, llcId, ctx = {}) 
 module.exports = {
   ingestTask, resolveBorrower, upsertLlc, upsertTrackRecord, linkOrCreateApplication,
   applyChecklistStatuses, identityFrom, RTL_PROGRAMS, decideInboundProcessor,
+  descopeFlipped,
 };

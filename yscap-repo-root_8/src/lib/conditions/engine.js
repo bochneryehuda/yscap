@@ -114,6 +114,12 @@ async function loadRuleContext(appId) {
     // Note buyer / capital partner (applications.lender), normalized to a stable
     // key so a rule matches "CorrFirst" / "Corr First" / "corrfirst" the same.
     note_buyer: registry.normNoteBuyer(a.lender),
+    // Is the note buyer FIDELIS (any spelling — "Fidelis" / "Fidelis Investors" /
+    // "Fidelis Investors LLC")? Always concrete (never null), so an `is_false` rule
+    // row is correct on a file with no note buyer yet. Keeps the internal
+    // flood-certificate condition off a Fidelis file (db/335) UNLESS `in_flood_zone`
+    // proves a flood zone — that branch stands on its own and forces the cert on.
+    note_buyer_is_fidelis: registry.isFidelisNoteBuyer(a.lender),
     // Loan number — blank/absent drives the "loan number missing" internal
     // condition (rules is_empty). Kept as the raw string (null when blank) so
     // is_empty/not_empty fire correctly.
@@ -259,14 +265,17 @@ async function evaluateApplication(appId, opts = {}) {
       });
       // borrowerLabel must NEVER fall back to the internal tpl.label (note-buyer
       // context) — it is interpolated into the borrower notification below.
-      out.added.push({ id, label: effTpl.label, borrowerLabel: effTpl.borrower_label || null, audience: effTpl.audience });
+      // `code` rides along (additive) so a caller can tell WHICH rule attached this —
+      // the note-buyer slot uses it to separate "this happened because you changed the
+      // note buyer" from "the file was re-checked and also picked these up".
+      out.added.push({ id, code: tpl.code || null, label: effTpl.label, borrowerLabel: effTpl.borrower_label || null, audience: effTpl.audience });
     } else if (!matches && tpl.auto_apply === 'rules' && instances.length) {
       for (const inst of instances) {
         const untouched = inst.origin_kind === 'auto' && inst.status === 'outstanding'
           && !inst.signed_off_at && !inst.reviewed_at && !inst.has_payload && !inst.has_docs && !inst.notes;
         if (!untouched) continue;
         await db.query(`DELETE FROM checklist_items WHERE id = $1`, [inst.id]);
-        out.removed.push({ label: inst.label });
+        out.removed.push({ code: tpl.code || null, label: inst.label });
       }
     }
   }
@@ -370,6 +379,16 @@ async function writeFieldValue(appId, borrowerId, fieldKey, rawValue, by = {}) {
                      updated_by_id=EXCLUDED.updated_by_id, updated_at=now()`,
       [appId, fieldKey, JSON.stringify(value), by.kind || 'borrower', by.id || null]);
   } else if (target.table === 'applications') {
+    // #FNM1025: applications.property_type stores the portal LABEL ("Multi 2–4")
+    // — that is what the forms write and what the ClickUp dropdown crosswalk is
+    // keyed on. This enum path validates against the rule KEYS ("multi_2_4"), so
+    // writing the key straight through left the file in a spelling no other door
+    // uses: it wouldn't map to the ClickUp option, and it re-tripped every raw
+    // text comparison. Canonicalize to the label on the way out.
+    if (target.column === 'property_type') {
+      const label = require('../property-type').canonicalPropertyTypeLabel(value);
+      if (label) value = label;
+    }
     await db.query(`UPDATE applications SET ${target.column}=$2, updated_at=now() WHERE id=$1`, [appId, value]);
   } else {
     await db.query(`UPDATE borrowers SET ${target.column}=$2, updated_at=now() WHERE id=$1`, [borrowerId, value]);

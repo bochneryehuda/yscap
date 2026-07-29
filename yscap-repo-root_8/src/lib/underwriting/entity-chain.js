@@ -85,6 +85,9 @@ function buildChain(fileCtx = {}, extractions = []) {
 
   // The entity's authoritative name: the file's vesting entity, else the OA / formation name.
   const vestingName = fileCtx.vestingName || (oa && oa.entityLegalName) || (form && form.entityLegalName) || (ein && ein.entityLegalName) || null;
+  // On a wholesale/assignment deal the buyer-on-contract and current-owner-on-title are NOT the
+  // vesting entity yet — the two entity↔buyer/title edges below are deferred (see comment there).
+  const isAssignment = !!fileCtx.isAssignment;
 
   // EVERY identified individual on file — one per government ID + credit report (a multi-member
   // LLC has one ID per owner). Missing any of these would falsely flag a co-owner unidentified.
@@ -128,8 +131,21 @@ function buildChain(fileCtx = {}, extractions = []) {
     /good|active|current|exist/i.test(String(gs.status || '')) ? 'ok' : 'broken', `status: ${gs.status || 'unknown'}`);
 
   // 6-8. Entity is the buyer / vesting party / named insured.
-  nameEdge('entity_is_buyer', 'Entity is the buyer on the contract', vestingName, contract && contract.buyerName, 'vesting entity', 'purchase contract');
-  nameEdge('entity_on_title', 'Entity is the vesting party on title', vestingName, title && (Array.isArray(title.buyerNames) ? title.buyerNames[0] : title.buyerNames), 'vesting entity', 'title commitment');
+  // ON AN ASSIGNMENT these two links are structurally NOT the vesting entity yet, so comparing them
+  // to the vesting LLC "breaks" on every normal wholesale deal (owner-reported 2026-07-27): the
+  // purchase contract names the WHOLESALER as buyer (the assignment is what carries title to our
+  // entity), and a pre-close title report / tax certificate names the CURRENT owner (the seller),
+  // not the buyer. The assignment→vesting reconciliation is owned by chain-of-title and the
+  // assignment tie-out, so here we mark them not-applicable rather than raise a false "broken chain".
+  if (isAssignment) {
+    edge('entity_is_buyer', 'Entity is the buyer on the contract', 'na',
+      'assignment — the purchase contract names the wholesaler; the assignment carries title to the vesting entity (checked in the chain of title)');
+    edge('entity_on_title', 'Entity is the vesting party on title', 'na',
+      'assignment / pre-close — the title report shows the current owner (seller); the vesting entity is confirmed on the deed / assignment');
+  } else {
+    nameEdge('entity_is_buyer', 'Entity is the buyer on the contract', vestingName, contract && contract.buyerName, 'vesting entity', 'purchase contract');
+    nameEdge('entity_on_title', 'Entity is the vesting party on title', vestingName, title && (Array.isArray(title.buyerNames) ? title.buyerNames[0] : title.buyerNames), 'vesting entity', 'title commitment');
+  }
   nameEdge('entity_insured', 'Entity is the named insured', vestingName, ins && ins.namedInsured, 'vesting entity', 'insurance');
 
   // Beneficial owners and whether each has an ID on file — the KYC gap nobody else checks. The

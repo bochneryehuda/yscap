@@ -176,6 +176,46 @@ const APP_DATE_FIELDS = {
 // user out of PILOT. Routes map non-expose statuses to 502.
 function httpError(status, message) { const e = new Error(message); e.status = status; e.expose = true; return e; }
 
+// HONEST OUTBOUND FEEDBACK (owner-reported 2026-07-27: "I pushed our address to
+// ClickUp and ClickUp didn't update — it sounds like the actions aren't really
+// firing"). A scoped push can legitimately write NOTHING — most often a ClickUp
+// LOCATION field (the borrower home / subject property address) that PILOT could
+// not place on the map (mapper.addressField drops it without lat/lng), or a value
+// ClickUp already holds. Either way the push returned success, so the review read
+// as done while ClickUp stayed unchanged. This turns pushApplication's own return
+// (`fields`/`written`/`suppressed`/`blocked`/`failed`/`skipped`) into a plain
+// outcome the review card SHOWS, so a no-op is never silent. Pure — the caller
+// passes the field key so an address gets the map-pin explanation.
+function pushSummary(pr, fieldKey) {
+  const written = (pr && pr.written) || 0;
+  const suppressed = (pr && pr.suppressed) || 0;
+  const blocked = (pr && pr.blocked) || 0;
+  const failed = (pr && pr.failed) || 0;
+  const fields = pr && typeof pr.fields === 'number' ? pr.fields : null;
+  const skipped = pr && pr.skipped ? String(pr.skipped) : null;
+  let outcome;
+  if (skipped) outcome = 'skipped';                 // sync disabled / unlinked / deleted — pushApplication short-circuit
+  else if (written > 0) outcome = 'written';        // ClickUp updated
+  else if (suppressed > 0) outcome = 'already_matched';  // ClickUp already had this value
+  else if (blocked > 0) outcome = 'blocked';        // a guard held it (PII shield / DOB gate)
+  else if (failed > 0) outcome = 'failed';          // ClickUp rejected the write
+  else if (fields === 0) outcome = 'nothing_to_write';  // the field produced no writable value (e.g. an address with no map coordinates)
+  else outcome = 'no_change';
+  return { outcome, written, suppressed, blocked, failed, skipped, fieldKey: fieldKey || null };
+}
+
+// When the WHOLE point of the action was to push PILOT's value TO ClickUp
+// (winner='portal') and the push produced no write, keep the review OPEN and say
+// WHY — never mark it resolved with ClickUp still wrong. The address case is the
+// common one: a ClickUp location field can't be written without map coordinates.
+function assertPushEffective(pushed) {
+  if (!pushed || pushed.outcome !== 'nothing_to_write') return;
+  if (pushed.fieldKey === 'current_address') {
+    throw httpError(422, 'PILOT could not send this address to ClickUp: ClickUp stores the address as a map location (a pin), and this address could not be placed on the map. Check/fix the address on the file (and confirm its map location), then try again — nothing was changed in ClickUp.');
+  }
+  throw httpError(422, 'Nothing was written to ClickUp — the value could not be sent. Check it on the file and try again; nothing was changed in ClickUp.');
+}
+
 async function journalResolveWrite(appId, taskId, fieldId, fieldKey, oldVal, newVal, masked) {
   await db.query(
     `INSERT INTO clickup_write_log (application_id, task_id, field_id, field_key, old_value, new_value, changed, source)
@@ -183,6 +223,57 @@ async function journalResolveWrite(appId, taskId, fieldId, fieldKey, oldVal, new
     [appId || null, String(taskId), fieldId, fieldKey,
      oldVal == null ? null : JSON.stringify(masked ? '✱✱✱' : String(oldVal)),
      newVal == null ? null : JSON.stringify(masked ? '✱✱✱' : String(newVal))]).catch(() => {});
+}
+
+/**
+ * Resolve a review row that came from the READ-ONLY Encompass enrichment pass
+ * (db/328). Deliberately small and separate from the ClickUp resolver: there is
+ * no second system to write, so the only question is what PILOT should hold.
+ *
+ *   winner 'encompass' → adopt the value Encompass holds (stored on the row —
+ *                        Encompass is a weekly mirror, so the row's snapshot IS
+ *                        the value; nothing is re-fetched from Encompass here,
+ *                        which keeps the read-only surface exactly as frozen);
+ *   winner 'portal'    → keep what PILOT already has; nothing is written;
+ *   winner 'custom'    → the reviewer types the right answer (neither side is).
+ *
+ * Whatever PILOT ends up holding is pushed on to the borrower's ClickUp cards,
+ * because ClickUp is our two-way system of record — otherwise the next inbound
+ * pull would read the old card value straight back over the decision.
+ */
+async function applyEncompassWinner(row, winner, custom, borrowerId, appId) {
+  if (!['encompass', 'portal', 'custom'].includes(winner)) {
+    throw httpError(400, "this review came from Encompass — the winner must be 'encompass', 'portal', or a typed value");
+  }
+  if (row.field_key !== 'current_address') {
+    throw httpError(422, `resolving '${row.field_key}' from Encompass is not supported yet — use approve/reject`);
+  }
+  if (!borrowerId) throw httpError(422, 'no borrower on this review');
+  if (winner === 'portal') return { fieldKey: row.field_key, winner, value: row.portal_value || null, wrote: false };
+
+  const raw = String(winner === 'custom' ? custom : (row.proposed_value || row.clickup_value || '')).trim();
+  // The stored value is the MAILING one-line, never a geocoder display name —
+  // a reviewer can paste anything, so it goes through the same compactor every
+  // other address write uses (a pass-through when it is already correct).
+  const text = require('./address').compactFormattedAddress(raw) || raw;
+  if (!text) throw httpError(422, 'that side has no readable address — keep PILOT’s value, or type the correct one');
+  await db.query(
+    `UPDATE borrowers SET current_address=$2::jsonb, updated_at=now() WHERE id=$1`,
+    [borrowerId, JSON.stringify({ formatted_address: text, oneLine: text })]);
+  // Best-effort onward push to every linked card. A failure here must not undo a
+  // decision the reviewer already made — the portal value is the outcome.
+  try {
+    const apps = (await db.query(
+      `SELECT id FROM applications WHERE (borrower_id=$1 OR co_borrower_id=$1)
+         AND deleted_at IS NULL AND clickup_pipeline_task_id IS NOT NULL`, [borrowerId])).rows;
+    const orch = require('../clickup/orchestrator');
+    for (const a of apps) {
+      // eslint-disable-next-line no-await-in-loop
+      await orch.pushApplication(a.id, { only: ['current_address'], approvedReview: true, force: true })
+        .catch((e) => console.warn('[sync-autoresolve] encompass address push failed', a.id, e.message));
+    }
+  } catch (e) { console.warn('[sync-autoresolve] encompass address push skipped:', e.message); }
+  return { fieldKey: row.field_key, winner, value: text, wrote: true, appId: appId || undefined };
 }
 
 /**
@@ -207,6 +298,15 @@ async function applyReviewWinner(row, winner, customValue) {
   // same sanitizers and appliers as an adopted side — never new machinery.
   const custom = winner === 'custom' ? String(customValue == null ? '' : customValue).trim() : null;
   if (winner === 'custom' && !custom) throw httpError(400, 'a value is required to resolve with a custom value');
+
+  // ---- ENCOMPASS-sourced rows (db/328) are settled FIRST and never fall
+  // through to the ClickUp branches below. The row's `task_id` is a namespaced
+  // `encompass:<loanGuid>`, not a ClickUp task — handing it to `clickup.getTask`
+  // would 404 and make the row permanently unresolvable. Encompass is READ-ONLY
+  // and stays that way: winning as 'encompass' adopts the value Encompass
+  // already holds INTO PILOT; winning as 'portal' keeps ours and writes nothing
+  // anywhere (there is nothing to correct at the source from here).
+  if (row.source === 'encompass') return applyEncompassWinner(row, winner, custom, borrowerId, appId);
 
   // ---- DOB: borrower-level; the adopter writes the portal + every linked task.
   if (fieldKey === 'date_of_birth') {
@@ -337,8 +437,10 @@ async function applyReviewWinner(row, winner, customValue) {
     if (!borrowerId) throw httpError(422, 'no borrower on this review');
     if (winner === 'portal') {
       if (!appId) throw httpError(422, 'no application on this review');
-      await require('../clickup/orchestrator').pushApplication(appId, { only: [fieldKey], approvedReview: true, force: true });
-      return { fieldKey, winner };
+      const pr = await require('../clickup/orchestrator').pushApplication(appId, { only: [fieldKey], approvedReview: true, force: true });
+      const pushed = pushSummary(pr, fieldKey);
+      assertPushEffective(pushed);   // keeps the row OPEN + explains when nothing reached ClickUp
+      return { fieldKey, winner, pushed };
     }
     // ONE applier for both adopt-ClickUp and reviewer-typed custom values —
     // identical validation, identical portal write.
@@ -357,14 +459,28 @@ async function applyReviewWinner(row, winner, customValue) {
         return phone;
       }
       if (fieldKey === 'first_name') {
-        const parts = String(v).trim().split(/\s+/);
-        if (!parts[0] || require('../clickup/transforms').isPlaceholderName(String(v))) {
+        // ClickUp's name field is ONE line; PILOT stores first / middle / last /
+        // suffix (db/345). Split it the same way every other door does, so
+        // resolving a review can never re-merge a middle name back into the first
+        // name — and record whether the split was a judgement call so the person's
+        // profile keeps asking a human to confirm it.
+        const PN = require('./person-name');
+        const p = PN.splitFullName(v);
+        if (!p.first || PN.isPlaceholderName(String(v))) {
           throw httpError(422, `${sourceLabel} is not a usable name`);
         }
-        const first = parts.shift(), last = parts.join(' ') || null;
         await db.query(
-          `UPDATE borrowers SET first_name=$2, last_name=COALESCE($3, last_name), updated_at=now() WHERE id=$1`,
-          [borrowerId, first, last]);
+          `UPDATE borrowers
+              SET first_name=$2,
+                  last_name=COALESCE(NULLIF($3,''), last_name),
+                  middle_name=NULLIF($4,''),
+                  name_suffix=COALESCE(NULLIF($5,''), name_suffix),
+                  name_review_needed=$6,
+                  name_review_reason=$7,
+                  updated_at=now()
+            WHERE id=$1`,
+          [borrowerId, p.first, p.last || '', p.middle || '', p.suffix || '',
+            !!p.needsReview, p.needsReview ? p.reason : null]);
         return String(v).trim();
       }
       // current_address: object (ClickUp location) or typed text → jsonb shape.
@@ -380,11 +496,12 @@ async function applyReviewWinner(row, winner, customValue) {
       const value = await applyIdentityValue(custom, 'that value');
       // The typed value is now the PORTAL's value — push it out scoped with
       // the review bypass so BOTH systems carry it.
+      let pushed = null;
       if (appId) {
-        try { await require('../clickup/orchestrator').pushApplication(appId, { only: [fieldKey], approvedReview: true, force: true }); }
-        catch (e) { console.warn('[sync-autoresolve] custom-value push failed (portal applied):', e.message); }
+        try { pushed = pushSummary(await require('../clickup/orchestrator').pushApplication(appId, { only: [fieldKey], approvedReview: true, force: true }), fieldKey); }
+        catch (e) { console.warn('[sync-autoresolve] custom-value push failed (portal applied):', e.message); pushed = { outcome: 'failed', fieldKey }; }
       }
-      return { fieldKey, winner, value };
+      return { fieldKey, winner, value, ...(pushed ? { pushed } : {}) };
     }
     if (!taskId) throw httpError(422, 'no ClickUp task on this review');
     const task = await clickup.getTask(taskId);
@@ -398,4 +515,4 @@ async function applyReviewWinner(row, winner, customValue) {
   throw httpError(422, `resolving '${fieldKey}' two-sided is not supported yet — use approve/reject`);
 }
 
-module.exports = { decideDob, isArtifactDay, adoptDobEverywhere, applyReviewWinner };
+module.exports = { decideDob, isArtifactDay, adoptDobEverywhere, applyReviewWinner, pushSummary };

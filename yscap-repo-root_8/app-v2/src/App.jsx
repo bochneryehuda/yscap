@@ -40,6 +40,7 @@ import StaffLabelingConsole from './screens/StaffLabelingConsole.jsx';
 import StaffAiAdminInbox from './screens/StaffAiAdminInbox.jsx';
 import StaffAiSilencedCodes from './screens/StaffAiSilencedCodes.jsx';
 import StaffInsightsDashboard from './screens/StaffInsightsDashboard.jsx';
+import StaffAiCenter from './screens/StaffAiCenter.jsx';
 import StaffArchived from './screens/StaffArchived.jsx';
 import StaffLeads from './screens/StaffLeads.jsx';
 import StaffLeadDetail from './screens/StaffLeadDetail.jsx';
@@ -47,13 +48,18 @@ import StaffBorrowers from './screens/StaffBorrowers.jsx';
 import StaffEmails from './screens/StaffEmails.jsx';
 import StaffOrders from './screens/StaffOrders.jsx';
 import StaffBorrowerDetail from './screens/StaffBorrowerDetail.jsx';
+import StaffBorrowerView from './screens/StaffBorrowerView.jsx';
 import StaffVendors from './screens/StaffVendors.jsx';
 import StaffChat from './screens/StaffChat.jsx';
 import StaffClickup from './screens/StaffClickup.jsx';
 import StaffApiHealth from './screens/StaffApiHealth.jsx';
+import StaffPipelineShadow from './screens/StaffPipelineShadow.jsx';
 import StaffDraws from './screens/StaffDraws.jsx';
+import StaffClosing from './screens/StaffClosing.jsx';
+import StaffPurchasing from './screens/StaffPurchasing.jsx';
 import StaffFileDraws from './screens/StaffFileDraws.jsx';
 import StaffDrawRules from './screens/StaffDrawRules.jsx';
+import StaffTapes from './screens/StaffTapes.jsx';
 import StaffAuditLog from './screens/StaffAuditLog.jsx';
 import SyncReviews from './screens/SyncReviews.jsx';
 import EsignDashboard from './screens/EsignDashboard.jsx';
@@ -147,11 +153,14 @@ export default function App() {
           <Route path="/internal/exceptions" element={<StaffPrivate><StaffExceptions /></StaffPrivate>} />
           <Route path="/internal/my-exceptions" element={<StaffPrivate><StaffMyExceptions /></StaffPrivate>} />
           <Route path="/internal/findings-review" element={<StaffPrivate><StaffFindingEscalations /></StaffPrivate>} />
-          <Route path="/internal/training" element={<StaffPrivate><StaffTrainingProposals /></StaffPrivate>} />
-          <Route path="/internal/labeling" element={<StaffPrivate><StaffLabelingConsole /></StaffPrivate>} />
-          <Route path="/internal/ai-inbox" element={<StaffPrivate><StaffAiAdminInbox /></StaffPrivate>} />
-          <Route path="/internal/ai-silenced-codes" element={<StaffPrivate><StaffAiSilencedCodes /></StaffPrivate>} />
-          <Route path="/internal/insights" element={<StaffPrivate><StaffInsightsDashboard /></StaffPrivate>} />
+          {/* AI Command Center — the one hub for everything AI (owner-directed 2026-07-24). */}
+          <Route path="/internal/ai" element={<StaffPrivate><StaffAiCenter /></StaffPrivate>} />
+          {/* Old scattered AI routes now redirect into the hub (keeps emails/bookmarks working). */}
+          <Route path="/internal/training" element={<Navigate to="/internal/ai?tab=training" replace />} />
+          <Route path="/internal/labeling" element={<Navigate to="/internal/ai?tab=labeling" replace />} />
+          <Route path="/internal/ai-inbox" element={<Navigate to="/internal/ai?tab=inbox" replace />} />
+          <Route path="/internal/ai-silenced-codes" element={<Navigate to="/internal/ai?tab=silenced" replace />} />
+          <Route path="/internal/insights" element={<Navigate to="/internal/ai?tab=overview" replace />} />
           <Route path="/internal/archived" element={<StaffPrivate><StaffArchived /></StaffPrivate>} />
           <Route path="/internal/leads" element={<StaffPrivate><StaffLeads /></StaffPrivate>} />
           <Route path="/internal/leads/:id" element={<StaffPrivate><StaffLeadDetail /></StaffPrivate>} />
@@ -159,12 +168,18 @@ export default function App() {
           <Route path="/internal/orders" element={<StaffPrivate><StaffOrders /></StaffPrivate>} />
           <Route path="/internal/borrowers" element={<StaffPrivate><StaffBorrowers /></StaffPrivate>} />
           <Route path="/internal/borrowers/:id" element={<StaffPrivate><StaffBorrowerDetail /></StaffPrivate>} />
+          {/* Borrower view — pick a borrower and see PILOT as they see it. */}
+          <Route path="/internal/borrower-view" element={<StaffPrivate><StaffBorrowerView /></StaffPrivate>} />
           <Route path="/internal/vendors" element={<StaffPrivate><StaffVendors /></StaffPrivate>} />
           <Route path="/internal/chat" element={<StaffPrivate><StaffChat /></StaffPrivate>} />
           <Route path="/internal/api-health" element={<StaffPrivate><StaffApiHealth /></StaffPrivate>} />
+          <Route path="/internal/pipeline-shadow" element={<StaffPrivate><StaffPipelineShadow /></StaffPrivate>} />
           <Route path="/internal/clickup" element={<StaffPrivate><StaffClickup /></StaffPrivate>} />
           <Route path="/internal/draws" element={<StaffPrivate><StaffDraws /></StaffPrivate>} />
+          <Route path="/internal/closing" element={<StaffPrivate><StaffClosing /></StaffPrivate>} />
+          <Route path="/internal/purchasing" element={<StaffPrivate><StaffPurchasing /></StaffPrivate>} />
           <Route path="/internal/draw-rules" element={<StaffPrivate><StaffDrawRules /></StaffPrivate>} />
+          <Route path="/internal/tapes" element={<StaffPrivate><StaffTapes /></StaffPrivate>} />
           <Route path="/internal/audit" element={<StaffPrivate><StaffAuditLog /></StaffPrivate>} />
           <Route path="/internal/sync-reviews" element={<StaffPrivate><SyncReviews /></StaffPrivate>} />
           <Route path="/internal/esign" element={<StaffPrivate><EsignDashboard /></StaffPrivate>} />

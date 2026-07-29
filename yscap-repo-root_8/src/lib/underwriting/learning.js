@@ -47,6 +47,13 @@ const DECISION_BY_ACTION = Object.freeze({
   fix_file:         'confirmed_real',
   decline:          'declined',
   acknowledge:      'false_positive',
+  // #200 — severity-adjust capture: a human flagging a finding's severity as
+  // mis-rated becomes the exact correction the severity-drift proposer already
+  // reads (proposeImprovements counts decision='severity_too_high'/'…_too_low'
+  // per code → a downgrade/upgrade_severity training proposal). Before this,
+  // NO action produced these decisions, so that learning branch was dead.
+  downgrade_severity: 'severity_too_high',
+  upgrade_severity:   'severity_too_low',
 });
 
 /**
@@ -60,12 +67,35 @@ const DECISION_BY_ACTION = Object.freeze({
  *   opts.actorId  — the staffer id
  *   opts.note     — reviewer note
  */
+// Best-effort TX-SAFE runner (audit fix 2026-07-23, found by the CI Postgres
+// soak): these captures run on the CALLER's client, usually inside the
+// caller's BEGIN/COMMIT. A bare catch swallows the JS error but leaves the
+// Postgres transaction ABORTED — every later statement fails 25P02 and the
+// COMMIT silently acts as ROLLBACK, so the staff decision the capture was
+// riding on reports ok:true and never persists (the repo's #1 bug class,
+// "returned 200 but didn't save"). SAVEPOINT/ROLLBACK-TO confines a capture
+// failure to the capture (mirrors store.js's evidence_pass). Outside a
+// transaction the SAVEPOINT itself fails — run bare (a failure there cannot
+// poison anything).
+async function txSafe(client, fn) {
+  let sp = false;
+  try { await client.query('SAVEPOINT learning_capture'); sp = true; } catch (_) { /* not in a tx */ }
+  try {
+    const out = await fn();
+    if (sp) await client.query('RELEASE SAVEPOINT learning_capture').catch(() => {});
+    return out;
+  } catch (_) {
+    if (sp) await client.query('ROLLBACK TO SAVEPOINT learning_capture').catch(() => {});
+    return null;
+  }
+}
+
 async function captureFindingDecision(client, { finding, action, actorId, note } = {}) {
   if (!finding || !finding.id || !action) return null;
   const decision = DECISION_BY_ACTION[String(action)] || null;
   if (!decision) return null;
   const committeeAgreed = finding.committee_action == null ? null : matchesDecision(finding.committee_action, decision);
-  try {
+  return txSafe(client, async () => {
     const r = await client.query(
       `INSERT INTO finding_corrections
          (application_id, finding_id, finding_code, finding_severity,
@@ -80,7 +110,7 @@ async function captureFindingDecision(client, { finding, action, actorId, note }
        finding.committee_action || null,
        committeeAgreed]);
     return r.rows[0].id;
-  } catch (_) { return null; }
+  });
 }
 
 // Loose match: did the committee's action (confirm|dismiss|modify|hold) point
@@ -98,7 +128,7 @@ function matchesDecision(committeeAction, decision) {
  */
 async function captureFactCorrection(client, { appId, factKey, observedValue, correctedValue, actorId, reason } = {}) {
   if (!appId || !factKey) return null;
-  try {
+  return txSafe(client, async () => {
     const r = await client.query(
       `INSERT INTO fact_corrections
          (application_id, fact_key, observed_value, corrected_value, corrected_by, reason)
@@ -109,7 +139,7 @@ async function captureFactCorrection(client, { appId, factKey, observedValue, co
        actorId || null,
        reason ? String(reason).slice(0, 500) : null]);
     return r.rows[0].id;
-  } catch (_) { return null; }
+  });
 }
 
 // -------------------------------------------------------------------------
@@ -163,15 +193,19 @@ async function proposeImprovements(client, opts = {}) {
 
   // 2. severity drift — the human's decision consistently rates the finding
   //    differently than PILOT does.
+  // Count DISTINCT findings, not raw corrections: the severity-adjust action
+  // (#200) keeps the finding OPEN, so one finding could be flagged more than once
+  // — the drift signal must reflect how many SEPARATE findings the humans re-rated,
+  // never how many times one button was clicked.
   const severityQ = await client.query(
     `SELECT finding_code,
-            count(*) FILTER (WHERE decision = 'severity_too_high')::int AS too_high,
-            count(*) FILTER (WHERE decision = 'severity_too_low')::int AS too_low,
-            count(*)::int AS total
+            count(DISTINCT finding_id) FILTER (WHERE decision = 'severity_too_high')::int AS too_high,
+            count(DISTINCT finding_id) FILTER (WHERE decision = 'severity_too_low')::int AS too_low,
+            count(DISTINCT finding_id)::int AS total
        FROM finding_corrections
       WHERE captured_at > now() - interval '90 days' AND finding_code IS NOT NULL
       GROUP BY finding_code
-      HAVING count(*) >= 5`);
+      HAVING count(DISTINCT finding_id) >= 5`);
   for (const r of severityQ.rows) {
     if (r.too_high >= 5 && r.too_high / r.total >= 0.7) {
       proposals.push({
@@ -292,7 +326,7 @@ async function runTraining(client) {
 async function captureAdminAnswer(client, { applicationId, agent, question, answer, context } = {}) {
   if (!agent || !question || !answer) return null;
   const c = client || db();
-  try {
+  return txSafe(c, async () => {
     // Idempotent per (agent, hash(question) — same question re-asked doesn't
     // stack). Uses a small SELECT-first + INSERT; no unique index needed.
     const key = `admin_answer:${agent}:${Buffer.from(String(question)).toString('base64').slice(0, 40)}`;
@@ -322,7 +356,7 @@ async function captureAdminAnswer(client, { applicationId, agent, question, answ
       id = ins.rows[0].id;
     }
     return id;
-  } catch (_) { return null; }
+  });
 }
 
 module.exports = {

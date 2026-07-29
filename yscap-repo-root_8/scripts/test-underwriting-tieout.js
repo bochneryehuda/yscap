@@ -211,6 +211,17 @@ assert.strictEqual(claimsFor('bank_statement', { accountHolderName: 'John Smith'
   assert.ok(bad.discrepancies.some((d) => d.field === 'property_type'), 'SFR vs Condo → discrepancy');
   // Occupancy owner-vs-tenant IS a real disagreement (info severity — a business-purpose flag).
   assert.ok(bad.discrepancies.some((d) => d.field === 'occupancy'), 'Investment (file) vs Owner Occupied (appraisal) → discrepancy');
+
+  // THE OWNER'S 2026-07-27 CASE: the appraisal's property_type is a bare ATTACHMENT STYLE
+  // ("Detached") — that is NOT a unit category, so on a Multi 2–4 file with agreeing unit counts it
+  // must NOT fire "property type doesn't match". (canonPropertyType('Detached') is uncomparable.)
+  const cxMulti = { ...ctx, app: { ...ctx.app, units: 3, property_type: 'Multi 2-4' } };
+  const styleOnly = buildTieout(cxMulti, [{ id: 'a', docType: 'appraisal', fields: {
+    propertyAddress: ADDR, units: 3, propertyType: 'Detached' } }]);
+  assert.ok(!styleOnly.discrepancies.some((d) => d.field === 'property_type'),
+    'a bare "Detached" style on a Multi 2–4 file with matching units → NO false property-type mismatch');
+  assert.ok(!styleOnly.discrepancies.some((d) => d.field === 'units'),
+    '3 units on file and appraisal → no unit discrepancy');
 }
 
 // An UNRECOGNIZED property-type string is uncomparable, never a false mismatch.
@@ -234,6 +245,134 @@ assert.strictEqual(factMatch('measure', 1850, 2400), false, 'GLA far apart is a 
   assert.ok(st.matrix.find((m) => m.key === 'cash_to_close').cells.some((c) => c.value === '$25,000'), 'cash to close surfaced from settlement');
   // The settlement's loan amount also ties out to the file (300000) with no discrepancy.
   assert.ok(!st.discrepancies.some((d) => d.field === 'loan_amount'), 'settlement loan amount matches the file');
+}
+
+// ===== Assignment: a doc reporting the SELLER's underlying price is NOT a mismatch (owner 2026-07-24) =====
+{
+  // File total is the fee-inclusive price (474k); seller's underlying price is 438k, fee 36k.
+  const asgCtx = { ...ctx, app: { ...ctx.app, purchase_price: 474000, is_assignment: true, underlying_contract_price: 438000, assignment_fee: 36000 } };
+  // The appraisal/settlement legitimately report the SELLER's price (438k) — this used to fire a
+  // false tieout_purchase_price fatal. With the assignment tolerance it AGREES.
+  const rSeller = buildTieout(asgCtx, [
+    { id: 'a', docType: 'appraisal', fields: { propertyAddress: ADDR, contractPrice: 438000 } },
+    { id: 's', docType: 'settlement', fields: { propertyAddress: ADDR, contractSalesPrice: 438000, loanAmount: 300000 } },
+  ]);
+  assert.ok(!rSeller.discrepancies.some((d) => d.code === 'tieout_purchase_price'),
+    "a doc reporting the seller's underlying price on an assignment is not a mismatch");
+  // A doc reporting the fee-inclusive TOTAL (474k) also agrees.
+  const rTotal = buildTieout(asgCtx, [{ id: 'a', docType: 'appraisal', fields: { propertyAddress: ADDR, contractPrice: 474000 } }]);
+  assert.ok(!rTotal.discrepancies.some((d) => d.code === 'tieout_purchase_price'), 'the fee-inclusive total also agrees on an assignment');
+  // A doc reporting a price matching NEITHER (500k) still fires the discrepancy.
+  const rWrong = buildTieout(asgCtx, [{ id: 'a', docType: 'appraisal', fields: { propertyAddress: ADDR, contractPrice: 500000 } }]);
+  assert.ok(rWrong.discrepancies.some((d) => d.code === 'tieout_purchase_price'), 'a price matching neither still fires on an assignment');
+  // On a STRAIGHT purchase the tolerance does NOT apply — a doc at 438k vs file 412k still fires.
+  const rStraight = buildTieout(ctx, [{ id: 'a', docType: 'appraisal', fields: { propertyAddress: ADDR, contractPrice: 438000 } }]);
+  assert.ok(rStraight.discrepancies.some((d) => d.code === 'tieout_purchase_price'), 'a straight purchase is unchanged (still fires)');
+
+  // The ASSIGNMENT DOCUMENT states its OWN total-to-assignee (final price = seller price + fee).
+  // NEW-C: that total now ties out against the file's final purchase price.
+  const asgDoc = (total) => ({ id: 'asg', docType: 'assignment',
+    fields: { propertyAddress: ADDR, assigneeName: 'Maple Grove Holdings LLC', originalPurchasePrice: 438000, assignmentFee: 36000, totalPriceToAssignee: total } });
+  // Correct total (474k) → agrees; the seller's underlying (438k) also agrees (assignment-aware).
+  assert.ok(!buildTieout(asgCtx, [asgDoc(474000)]).discrepancies.some((d) => d.code === 'tieout_purchase_price'),
+    "the assignment document's total-to-assignee ties out against the file's final price");
+  assert.ok(!buildTieout(asgCtx, [asgDoc(438000)]).discrepancies.some((d) => d.code === 'tieout_purchase_price'),
+    "an assignment doc stating the seller's underlying total also agrees on an assignment");
+  // A genuinely wrong assignment total (matches neither underlying nor final) → flags.
+  assert.ok(buildTieout(asgCtx, [asgDoc(500000)]).discrepancies.some((d) => d.code === 'tieout_purchase_price'),
+    'a wrong total on the assignment document flags a purchase-price discrepancy');
+  // The assignment doc's purchase_price is a CARRIED fact now (shows in the matrix row).
+  const mRow = buildTieout(asgCtx, [asgDoc(474000)]).matrix.find((m) => m.key === 'purchase_price');
+  assert.ok(mRow.cells.some((c) => c.value === '$474,000'), "the assignment doc's total surfaces in the purchase_price matrix row");
+}
+
+// ===== Assignment fee MISLABELED as the whole price → NOT a false tie-out fatal (owner 2026-07-27) =====
+{
+  // File has a REAL assignment fee (36k) on a 325k total (289k seller + 36k fee).
+  const asgFeeCtx = { app: { property_address: ADDR, is_assignment: true, purchase_price: 325000, underlying_contract_price: 289000, assignment_fee: 36000 }, vestingName: 'Maple Grove Holdings LLC' };
+  // (a) facts.js quarantine — the assignment DOC states the total, and its "fee" equals that total → dropped.
+  const rDocTotal = buildTieout(asgFeeCtx, [{ id: 'asg', docType: 'assignment',
+    fields: { propertyAddress: ADDR, assigneeName: 'Maple Grove Holdings LLC', originalPurchasePrice: 289000, assignmentFee: 325000, totalPriceToAssignee: 325000 } }]);
+  assert.ok(!rDocTotal.discrepancies.some((d) => d.code === 'tieout_assignment_fee'),
+    'a "fee" equal to the assignment total is quarantined — no false assignment-fee fatal');
+  // (b) tie-out belt-and-suspenders — the doc gives ONLY a fee (no total field) but it equals the FILE's total.
+  const rFileTotal = buildTieout(asgFeeCtx, [{ id: 'asg', docType: 'assignment',
+    fields: { propertyAddress: ADDR, assigneeName: 'Maple Grove Holdings LLC', assignmentFee: 325000 } }]);
+  assert.ok(!rFileTotal.discrepancies.some((d) => d.code === 'tieout_assignment_fee'),
+    "a doc fee equal to the file's total price is not a mismatch");
+  // (c) a genuinely different assignment fee (a real fraction, disagreeing with the file) STILL fires.
+  const rReal = buildTieout(asgFeeCtx, [{ id: 'asg', docType: 'assignment',
+    fields: { propertyAddress: ADDR, assigneeName: 'Maple Grove Holdings LLC', assignmentFee: 50000 } }]);
+  assert.ok(rReal.discrepancies.some((d) => d.code === 'tieout_assignment_fee'),
+    'a real fee (50k) that disagrees with the file fee (36k) still fires — nothing over-tolerated');
+}
+
+// ===== Layer A: never compare a current-owner / wholesaler name to the vesting entity (2026-07-27) =====
+{
+  // A TITLE document (or a tax certificate / deed misfiled as one) names the CURRENT owner — the
+  // seller pre-close. It must NOT be compared to the vesting LLC as a fatal "entity mismatch": the
+  // owner-reported tax-cert-owner-vs-buyer-LLC bug. title no longer carries entity_name at all.
+  const titleWithOwner = { id: 'title', docType: 'title',
+    fields: { propertyAddress: ADDR, vestedOwners: ['Shraga Leifer'], buyerNames: ['Shraga Leifer'] } };
+  const rt = buildTieout(ctx, [titleWithOwner]);
+  assert.ok(!rt.discrepancies.some((d) => d.field === 'entity_name'),
+    "a title/tax-cert's current owner is never compared to the vesting entity (no fatal entity mismatch)");
+  // The seller-side owner still ties out as seller_name (chain-of-title/seller-chain rely on it).
+  assert.ok(claimsFor('title', { vestedOwners: ['Shraga Leifer'] }).seller_name,
+    'title still carries the owner of record as seller_name');
+  assert.strictEqual(claimsFor('title', { buyerNames: ['Shraga Leifer'] }).entity_name, undefined,
+    'title no longer maps a buyer field to the vesting entity_name fact');
+
+  // On an ASSIGNMENT, the purchase CONTRACT names the wholesaler as buyer — not our vesting entity.
+  const asgFile = { app: { property_address: ADDR, is_assignment: true }, vestingName: 'Maple Grove Holdings LLC' };
+  const contractWholesaler = { id: 'pc', docType: 'purchase_contract',
+    fields: { propertyAddress: ADDR, buyerName: 'ABC Wholesale LLC' } };
+  const ra = buildTieout(asgFile, [contractWholesaler]);
+  assert.ok(!ra.discrepancies.some((d) => d.field === 'entity_name'),
+    'on an assignment the contract buyer (wholesaler) is not compared to the vesting entity');
+  // The buyer-side vesting comparison STILL works for the documents that legitimately name the
+  // vesting entity: an operating agreement whose legal name disagrees with the file's vesting entity
+  // still fires the tie-out entity mismatch (we only stopped comparing CURRENT-OWNER / wholesaler
+  // names, never the real vesting-entity documents).
+  const rOa = buildTieout(ctx, [{ id: 'oa', docType: 'operating_agreement', fields: { entityLegalName: 'Totally Different LLC' } }]);
+  assert.ok(rOa.discrepancies.some((d) => d.field === 'entity_name'),
+    'an operating agreement naming the wrong entity still ties out against the vesting entity');
+}
+
+// --- THE REASONING-DRIVEN COMPARISON GATE (Layer B, owner-directed 2026-07-27) ---
+// A document whose per-document REASONING says its only named party is the CURRENT owner (seller
+// side) must have its buyer-side entity_name claim SUPPRESSED before the matrix runs — even when the
+// document is NOT a purchase_contract and NOT an assignment (the general case the hardcoded delete
+// can't reach). This directly exercises the gate through buildTieout.
+{
+  const vestCtx = { app: { property_address: ADDR }, vestingName: 'New Vesting LLC' };
+  // A source that (wrongly, via slot-mapping) carries the current owner in its entity_name field.
+  // Use an operating_agreement source (which the tie-out owns for entity_name) so we KNOW it would
+  // otherwise raise the fatal — then prove the reasoning gate suppresses it.
+  const misread = {
+    id: 'src', docType: 'operating_agreement',
+    fields: { entityLegalName: 'Old Owner LLC' },
+    reasoning: { docNature: 'tax_certificate', confidence: 0.95, parties: [{ name: 'Old Owner LLC', role: 'current_owner' }] },
+  };
+  const gated = buildTieout(vestCtx, [misread]);
+  assert.ok(!gated.discrepancies.some((d) => d.field === 'entity_name'),
+    'reasoning that names only the current owner (seller side) suppresses the buyer-side entity_name comparison');
+
+  // WITHOUT the reasoning, the SAME source DOES raise the entity_name mismatch — proving the gate is
+  // what changed the outcome (not the data), and that a real disagreement is still caught.
+  const ungated = buildTieout(vestCtx, [{ id: 'src', docType: 'operating_agreement', fields: { entityLegalName: 'Old Owner LLC' } }]);
+  assert.ok(ungated.discrepancies.some((d) => d.field === 'entity_name'),
+    'the same source with no reasoning still fires — the gate, not the data, suppressed it');
+
+  // Reasoning that DOES name the buyer side (a real title commitment's proposed insured) does NOT
+  // suppress — a genuine wrong vesting entity is still caught.
+  const realCommit = {
+    id: 'src2', docType: 'operating_agreement',
+    fields: { entityLegalName: 'Wrong Vesting LLC' },
+    reasoning: { docNature: 'title_commitment', confidence: 0.9, parties: [{ name: 'Wrong Vesting LLC', role: 'proposed_insured' }] },
+  };
+  assert.ok(buildTieout(vestCtx, [realCommit]).discrepancies.some((d) => d.field === 'entity_name'),
+    'reasoning that names the buyer side keeps the buyer-side comparison (a wrong vesting entity still fires)');
 }
 
 console.log('✓ test-underwriting-tieout: fact registry + data-comparison matrix + discrepancies pass');

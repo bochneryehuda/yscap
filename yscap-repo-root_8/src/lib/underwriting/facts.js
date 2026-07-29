@@ -25,14 +25,26 @@ const { namesMatchLoose, entityMatch, withinMoney, addrMatches, addrLine, toISOD
 function canonPropertyType(v) {
   const s = norm(String(v == null ? '' : v));
   if (!s) return null;
-  if (/\b(5|five|six|seven|eight|nine|ten|\d{2,})\b.*unit|multi.*(5|five)\+?|5\+/.test(s) || /apartment|multifamily 5/.test(s)) return 'multi_5plus';
-  if (/\b(2|3|4|two|three|four|duplex|triplex|fourplex|quad)\b.*unit|multi.*2.?4|2.?4 unit|two to four/.test(s) || /\bduplex\b|\btriplex\b|\bfourplex\b/.test(s)) return 'multi_2_4';
+  if (/\b(5|five|six|seven|eight|nine|ten|\d{2,})\b.*unit|multi.*(5|five)\+?|5\+/.test(s) || /apartment|multifamily 5/.test(s)
+      || /\b(5|six|seven|eight|nine|ten|\d{2,})\s*(?:family|fam|plex)\b/.test(s) || /\bfive\s*(?:family|fam)\b/.test(s)) return 'multi_5plus';
+  // "Two/Three/Four Family" (and "2/3/4 family") are the common appraisal descriptors for a
+  // 2–4 unit property — bucket them so the file's "Multi 2–4" range agrees (owner-fix 2026-07-24).
+  if (/\b(2|3|4|two|three|four|duplex|triplex|fourplex|quad)\b.*unit|multi.*2.?4|2.?4 unit|two to four/.test(s) || /\bduplex\b|\btriplex\b|\bfourplex\b/.test(s)
+      || /\b(2|3|4|two|three|four)\s*(?:family|fam)\b/.test(s)) return 'multi_2_4';
   if (/condo|condominium/.test(s)) return 'condo';
   if (/town\s?home|town\s?house|\bpud\b|planned unit/.test(s)) return 'townhouse';
   if (/mixed.?use/.test(s)) return 'mixed_use';
   if (/\bland\b|lot only|vacant land/.test(s)) return 'land';
   if (/manufactured|mobile/.test(s)) return 'manufactured';
-  if (/sfr|single.?family|1.?unit|one unit|detached|\bsfd\b/.test(s)) return 'sfr';
+  if (/sfr|single.?family|1.?unit|one unit|\bsfd\b/.test(s)) return 'sfr';
+  // A BARE ATTACHMENT STYLE is NOT a unit category (owner 2026-07-27: "Detached is just a type…
+  // this condition is totally wrong"). The appraisal's MISMO AttachmentType is "Detached"/"Attached"
+  // — a detached building can be a 2–4-unit just as easily as a single-family, so "detached" alone
+  // tells you nothing about the category and must NOT resolve to 'sfr'. It only meant SFR above when
+  // a real category word was present ("single family detached" already matched via single.?family).
+  // A style with no category context is uncomparable, so it can never false-mismatch the file's
+  // real category ("Multi 2–4"); the count-vs-range check owns that comparison.
+  if (/^(detached|attached)$/.test(s) || /\b(detached|attached)\b(?!.*\b(family|unit|sfr|condo|town)\b)/.test(s)) return null;
   return null; // unrecognized → uncomparable, never a guessed bucket
 }
 function canonOccupancy(v) {
@@ -46,7 +58,7 @@ function canonOccupancy(v) {
 
 function borrowerName(b) {
   if (!b) return null;
-  const n = `${b.first_name || ''} ${b.last_name || ''}`.trim();
+  const n = require('../person-name').displayName(b);
   return n || null;
 }
 const dateStr = (v) => (v == null ? null : String(v).slice(0, 10));
@@ -99,17 +111,36 @@ for (const f of FACTS) FACT_BY_KEY[f.key] = f;
 // value may be an array (seller names, vested owners) — the matcher handles any-to-any.
 const DOC_CLAIMS = {
   government_id: (f) => ({ borrower_name: f.fullName || nm(f.firstName, f.lastName), borrower_dob: f.dateOfBirth, borrower_address: f.address }),
-  purchase_contract: (f) => ({ property_address: f.propertyAddress, purchase_price: f.purchasePrice, seller_name: f.sellerNames, entity_name: f.buyerName, assignment_fee: f.assignmentFee, underlying_price: f.underlyingPrice }),
-  title: (f) => ({ property_address: f.propertyAddress, seller_name: f.vestedOwners, entity_name: f.buyerNames }),
+  purchase_contract: (f) => ({ property_address: f.propertyAddress, purchase_price: f.purchasePrice, seller_name: f.sellerNames, entity_name: f.buyerName, assignment_fee: assignmentFeeClaim(f.assignmentFee, f.purchasePrice, f.underlyingPrice), underlying_price: f.underlyingPrice }),
+  // A title report / commitment reliably tells you the CURRENT owner of record (the SELLER pre-close)
+  // — that is `vestedOwners` → seller_name. Its "buyer" field is UNRELIABLE and does NOT drive the
+  // buyer-side vesting comparison: on a tax certificate, a deed, or a pre-sale commitment the only
+  // named party is the current owner (the seller), which the extractor drops into `buyerNames`, so
+  // comparing it to the vesting LLC produced a guaranteed-nonsense FATAL mismatch pre-close (owner-
+  // reported 2026-07-27, tax-cert-owner-vs-buyer-LLC). The legitimate "the vesting entity is the
+  // proposed insured on a real title commitment" check is restored by the document-reasoning gate,
+  // which can tell a genuine commitment from a tax cert; a static field map cannot. seller_name still
+  // feeds the owner-of-record reconciliation in chain-of-title / seller-chain.
+  title: (f) => ({ property_address: f.propertyAddress, seller_name: f.vestedOwners }),
   appraisal: (f) => ({ property_address: f.propertyAddress, purchase_price: pick(f.contractPrice, f.salePrice), seller_name: f.sellerNames || arr(f.ownerOfRecord) || arr(f.sellerName), as_is_value: pick(f.asIsValue, f.as_is_value), arv: pick(f.arvValue, f.arv),
     // Collateral physicals off the appraisal (owner-directed 2026-07-21) — the appraisal is the
-    // authority for what the property physically IS; these tie out against the application.
+    // authority for what the property physically IS; these tie out against the application. NOTE
+    // (owner 2026-07-27): the appraisal's property_type is usually the MISMO AttachmentType, a STYLE
+    // ("Detached"/"Attached") — canonPropertyType now treats a bare style as UNCOMPARABLE, so it can
+    // never false-mismatch the file's unit CATEGORY ("Multi 2–4"); a real category (Condo/SFR) still
+    // ties out. The count-vs-type-range check is owned by appraisal-underwriter.js (via `units`).
     units: pick(f.units, f.unitCount), property_type: pick(f.propertyType, f.property_type),
     occupancy: pick(f.occupancy), year_built: pick(f.yearBuilt, f.year_built),
     living_area: pick(f.gla, f.sqft, f.livingArea), market_rent: pick(f.marketRent, f.market_rent) }),
   bank_statement: (f) => (f.holderIsBusiness ? { entity_name: f.accountHolderName } : { borrower_name: f.accountHolderName }),
   // ---- expanded document types (Phase B) ----
-  assignment: (f) => ({ entity_name: f.assigneeName, underlying_price: f.originalPurchasePrice, assignment_fee: f.assignmentFee, property_address: f.propertyAddress, seller_name: f.sellerName ? [f.sellerName] : null }),
+  // The assignment of contract states its OWN total price to the assignee (seller's original price +
+  // the assignment fee) — this is the borrower's final purchase price. Mapping it to purchase_price
+  // lets the tie-out match the assignment document's total against the file's final price (owner-
+  // directed 2026-07-24: "match up the final purchase price with the assignment fee"). The tie-out's
+  // purchase_price comparison is already assignment-aware (priceAwareMatch), so a total that equals
+  // the file's underlying OR final price agrees; only a genuinely wrong total flags.
+  assignment: (f) => ({ entity_name: f.assigneeName, underlying_price: f.originalPurchasePrice, assignment_fee: assignmentFeeClaim(f.assignmentFee, f.totalPriceToAssignee, f.originalPurchasePrice), purchase_price: f.totalPriceToAssignee, property_address: f.propertyAddress, seller_name: f.sellerName ? [f.sellerName] : null }),
   insurance: (f) => ({ entity_name: f.namedInsured, property_address: f.propertyAddress, policy_number: f.policyNumber }),
   insurance_invoice: (f) => ({ entity_name: f.namedInsured, property_address: f.propertyAddress, policy_number: f.policyNumber }),
   operating_agreement: (f) => ({ entity_name: f.entityLegalName, borrower_name: f.managingMember }),
@@ -117,7 +148,7 @@ const DOC_CLAIMS = {
   good_standing: (f) => ({ entity_name: f.entityLegalName }),
   llc_formation: (f) => ({ entity_name: f.entityLegalName }),
   credit_report: (f) => ({ borrower_name: f.subjectName, borrower_dob: f.dob }),
-  settlement: (f) => ({ property_address: f.propertyAddress, purchase_price: f.contractSalesPrice, seller_name: f.sellerName ? [f.sellerName] : null, entity_name: f.buyerName, loan_amount: f.loanAmount, assignment_fee: f.assignmentFee, earnest_money: f.earnestMoney, cash_to_close: f.cashToClose }),
+  settlement: (f) => ({ property_address: f.propertyAddress, purchase_price: f.contractSalesPrice, seller_name: f.sellerName ? [f.sellerName] : null, entity_name: f.buyerName, loan_amount: f.loanAmount, assignment_fee: assignmentFeeClaim(f.assignmentFee, f.contractSalesPrice, null), earnest_money: f.earnestMoney, cash_to_close: f.cashToClose }),
   flood: (f) => ({ property_address: f.propertyAddress }),
   scope_of_work: (f) => ({ property_address: f.propertyAddress, rehab_budget: f.totalBudget }),
   payoff_statement: (f) => ({ property_address: f.propertyAddress }),
@@ -131,10 +162,10 @@ const DOC_CLAIMS = {
 const DOC_CARRIES = {
   government_id: ['borrower_name', 'borrower_dob', 'borrower_address'],
   purchase_contract: ['property_address', 'purchase_price', 'seller_name', 'entity_name', 'assignment_fee', 'underlying_price'],
-  title: ['property_address', 'seller_name', 'entity_name'],
+  title: ['property_address', 'seller_name'],
   appraisal: ['property_address', 'purchase_price', 'seller_name', 'as_is_value', 'arv', 'units', 'property_type', 'occupancy', 'year_built', 'living_area', 'market_rent'],
   bank_statement: ['entity_name', 'borrower_name'],
-  assignment: ['entity_name', 'underlying_price', 'assignment_fee', 'property_address', 'seller_name'],
+  assignment: ['entity_name', 'underlying_price', 'assignment_fee', 'purchase_price', 'property_address', 'seller_name'],
   insurance: ['entity_name', 'property_address', 'policy_number'],
   insurance_invoice: ['entity_name', 'property_address', 'policy_number'],
   operating_agreement: ['entity_name', 'borrower_name'],
@@ -154,6 +185,23 @@ const DOC_CARRIES = {
 function nm(a, b) { const n = `${a || ''} ${b || ''}`.trim(); return n || null; }
 function arr(v) { return v ? [v] : null; }
 function pick(...vals) { for (const v of vals) if (v != null) return v; return null; }
+
+// An assignment / wholesale FEE is a FRACTION of the price — it can never BE the whole price. The
+// extractor sometimes drops the TOTAL purchase price into the "assignment fee" field (owner-reported
+// 2026-07-27, a $325,000 "assignment fee" that was really the entire price — it fired a false
+// assignment-fee tie-out fatal). When the SAME document also states a total (or the seller's
+// underlying price), quarantine a "fee" that IS that total: >= it, or within $1. Only drops when the
+// document's OWN numbers prove it; a real fee (a fraction of the price) passes through unchanged.
+function feeIsTotal(fee, total, underlying) {
+  const fv = num(fee); if (fv == null || fv <= 0) return false;
+  const tv = num(total), uv = num(underlying);
+  if (tv != null && (fv >= tv || Math.abs(fv - tv) <= 1)) return true;  // the whole (or more than the) price
+  if (uv != null && Math.abs(fv - uv) <= 1) return true;               // exactly the seller's underlying price
+  return false;
+}
+function assignmentFeeClaim(fee, total, underlying) {
+  return feeIsTotal(fee, total, underlying) ? null : fee;
+}
 
 // Is a claim value present (non-empty scalar, or a non-empty array)?
 function present(v) {
@@ -236,4 +284,5 @@ function carries(docType, factKey) {
 module.exports = {
   FACTS, FACT_BY_KEY, DOC_CLAIMS, DOC_CARRIES,
   factMatch, matchScalar, display, present, claimsFor, carries, borrowerName,
+  canonPropertyType,
 };

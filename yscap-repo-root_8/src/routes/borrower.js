@@ -23,6 +23,7 @@ const pricing = require('../lib/pricing');
 const manualProgram = require('../lib/manual-program');
 const termOpts = require('../lib/term-options');
 const workflowAuto = require('../lib/workflow-automation');
+const loanExceptions = require('../lib/loan-exceptions');
 const { persistProductRegistration } = require('../lib/product-registration');
 const { syncExperienceChecklistForApplication, syncExperienceChecklistForBorrower, RECENT_EXIT_SQL } = require('../lib/experience');
 const llcLib = require('../lib/llc');
@@ -58,10 +59,16 @@ async function audit(req, action, entity_type, entity_id, detail) {
   let d = detail;
   if (d != null && typeof d !== 'object') d = { note: String(d) };
   try {
+    // BORROWER VIEW: when a staffer is standing inside this borrower's portal
+    // the action really was theirs. The row stays actor_kind='borrower' (the
+    // identity it was performed under, which is what a GLBA trail must record)
+    // and ALSO names the human — otherwise a staffer's clicks would be
+    // indistinguishable from the borrower's own.
     await db.query(
-      `INSERT INTO audit_log (actor_kind,actor_id,action,entity_type,entity_id,ip_address,user_agent,detail)
-       VALUES ('borrower',$1,$2,$3,$4,$5,$6,$7)`,
-      [me(req), action, entity_type, entity_id || null, req.ip, req.get('user-agent') || null, d || null]);
+      `INSERT INTO audit_log (actor_kind,actor_id,action,entity_type,entity_id,ip_address,user_agent,detail,impersonator_staff_id)
+       VALUES ('borrower',$1,$2,$3,$4,$5,$6,$7,$8)`,
+      [me(req), action, entity_type, entity_id || null, req.ip, req.get('user-agent') || null, d || null,
+       (req.impersonation && req.impersonation.staffId) || null]);
   } catch (e) {   // best-effort — a log write must never fail a completed action
     console.warn(`[audit] failed to log ${action}: ${db.describeError ? db.describeError(e) : e.message}`);
   }
@@ -135,7 +142,7 @@ async function storeToolAttachments({ req, appId, borrowerId, itemId, toolKey, a
 // ---------------- PROFILE (canonical PII, shared across applications) ----------------
 router.get('/profile', async (req, res) => {
   const r = await db.query(
-    `SELECT b.id,b.first_name,b.last_name,b.email,b.cell_phone,b.date_of_birth,b.ssn_last4,b.fico,
+    `SELECT b.id,b.first_name,b.last_name,b.middle_name,b.name_suffix,b.full_name,b.email,b.cell_phone,b.date_of_birth,b.ssn_last4,b.fico,
             b.current_address,b.mailing_address,b.years_at_residence,b.months_at_residence,b.residence_since,
             b.housing_status,b.housing_payment,b.citizenship,b.marital_status,
             b.photo_id_document_id,b.contact_type,b.tier,
@@ -168,11 +175,32 @@ router.get('/profile', async (req, res) => {
 // only stored when it differs (mailingDifferent:false clears it). Employment is
 // intentionally NOT collected — this is a no-doc / no-income lender.
 router.put('/profile', async (req, res) => {
-  const b = req.body || {};
+  let b = req.body || {};
   const clean = (v) => (v === '' ? null : v);
   const fields = {};
+  // THE ONE BIG NAME FIELD (owner-directed 2026-07-27): the borrower may type
+  // their whole name into one box. It is SPLIT into the parts here, because the
+  // parts are what get stored — `borrowers.full_name` (db/346) is generated from
+  // them, so the big field always shows exactly what the pieces say.
+  if (b.fullName !== undefined && b.firstName === undefined && b.lastName === undefined
+      && b.middleName === undefined && b.nameSuffix === undefined) {
+    const PN = require('../lib/person-name');
+    const sp = PN.splitFullName(b.fullName);
+    if (sp.first) {
+      b = Object.assign({}, b, {
+        firstName: sp.first,
+        ...(sp.last ? { lastName: sp.last } : {}),
+        middleName: sp.middle,
+        nameSuffix: sp.suffix,
+      });
+    }
+  }
   if (b.firstName !== undefined && String(b.firstName).trim()) fields.first_name = String(b.firstName).trim();
   if (b.lastName !== undefined && String(b.lastName).trim()) fields.last_name = String(b.lastName).trim();
+  // MIDDLE NAME + SUFFIX (db/345) — optional, so unlike the first/last name an
+  // EMPTY value is a real answer ("I have none") and clears the column.
+  if (b.middleName !== undefined) fields.middle_name = clean(String(b.middleName).trim());
+  if (b.nameSuffix !== undefined) fields.name_suffix = clean(String(b.nameSuffix).trim());
   if (b.cellPhone !== undefined) fields.cell_phone = clean(b.cellPhone);
   if (b.dateOfBirth !== undefined) fields.date_of_birth = clean(b.dateOfBirth);
   if (b.fico !== undefined) fields.fico = require('../lib/fields').sanitizeFico(b.fico);  // #90: 3-digit, 300–850
@@ -491,7 +519,7 @@ router.post('/applications/:id/request-draw', async (req, res) => {
   // Self-gated (no-op unless SITEWIRE_ENABLED) so it's inert until turned on.
   enqueueSitewirePush(a.id, 'push_file').catch(() => {});
   const addr = (a.property_address && (a.property_address.oneLine || a.property_address.line1 || a.property_address.street)) || 'your property';
-  const borrowerName = `${a.first_name || ''} ${a.last_name || ''}`.trim();
+  const borrowerName = require('../lib/person-name').displayName(a);
   try {
     await notify.notifyAppStaff(a.id, {   // #113: whole team (primary + assistants)
         type: 'draw_request', title: 'Draw setup requested',
@@ -853,6 +881,15 @@ router.post('/applications/:id/pricing/register', async (req, res) => {
     const f = await loadFileForPricing(appId, me(req));
     if (!f) return res.status(404).json({ error: 'not found' });
     const b = req.body || {};
+
+    // WO-E — a term sheet cannot be issued while this file has OPEN blocking
+    // Encompass mismatches. A borrower can never override (admin-only); they must
+    // wait for the team to reconcile. Dormant until Encompass is live + a loan is
+    // pulled; fails OPEN on any reconcile error.
+    // Owner-directed 2026-07-26 (CORRECTION): registering a product / issuing a term
+    // sheet is NOT gated on the Encompass match. The ONLY action that waits for the
+    // two systems to agree is SENDING the DocuSign term-sheet package (staff.js
+    // esign/send). This block is intentionally removed.
     // Same optimistic-concurrency guard as the staff route (#148): a stale
     // studio session must never re-register economics the file no longer has.
     if (b.econVersion && b.econVersion !== pricing.econVersionFor(f.app)) {
@@ -863,11 +900,12 @@ router.post('/applications/:id/pricing/register', async (req, res) => {
     }
     const program = b.program === 'gold' ? 'gold' : 'standard';
     const overrides = borrowerPricingOverrides(b.overrides || {});
-    // A REGISTERED product is authoritative terms. Never let borrower-claimed
-    // experience beat the verified track record here — staff loan officers are
-    // forbidden from injecting these same keys (ADMIN_ONLY_OVERRIDE_KEYS), so a
-    // borrower (least privileged) must not be able to either. The what-if /quote
-    // path may keep them; the registered basis uses verified experience only.
+    // A REGISTERED product is authoritative terms. A BORROWER never injects the
+    // claimed-experience counts on register — they must not beat the verified
+    // track record from the least-privileged surface (owner-directed 2026-07-27:
+    // the borrower REQUESTS changes and the team approves; only STAFF edit deal
+    // economics here — see src/lib/pricing-overrides.js). The what-if /quote path
+    // may keep them; the registered basis uses the file's experience of record.
     delete overrides.expFlips; delete overrides.expHolds; delete overrides.expGround;
     const inputs = pricing.buildInputs(f.app, f.exp, overrides);
     // Term-sheet options (owner-directed 2026-07-22) — display/record only. A
@@ -928,6 +966,7 @@ router.post('/applications/:id/pricing/register', async (req, res) => {
     const client = await db.getClient();
     let regId;
     let economicsChanged = true;   // first registration always confirms to the borrower
+    let loanAmountChanged = false;   // loan amount moved → auto-clear a signed Heter Iska
     try {
       await client.query('BEGIN');
       const reg = await persistProductRegistration(client, {
@@ -936,6 +975,7 @@ router.post('/applications/:id/pricing/register', async (req, res) => {
       });
       regId = reg.id;
       economicsChanged = reg.economicsChanged;
+      loanAmountChanged = reg.loanAmountChanged;
       // A borrower-submitted exception (MANUAL) opens a super-admin escalation and
       // stays pending until approved; a clean product closes any stale escalation.
       if (needsEscalation) {
@@ -984,6 +1024,14 @@ router.post('/applications/:id/pricing/register', async (req, res) => {
     // condition (even if already signed off) with a FATAL note when the saved
     // Scope of Work is missing it.
     try { await require('../lib/rehab-budget').enforceGoldSowContingency(appId); } catch (_) {}
+    // Loan amount moved → auto-clear a signed Heter Iska (tied to the loan amount).
+    if (loanAmountChanged) {
+      try {
+        await require('../lib/esign/iska-autoclear').autoClearIskaOnLoanChange({
+          appId, actorId: null, db, docusign: require('../lib/integrations/docusign'),
+        });
+      } catch (e) { console.warn('[borrower-register] ISKA auto-clear failed:', db.describeError(e)); }
+    }
 
     // Push the freshly-committed scenario (loan amount, rate, rehab, term, IR,
     // ARV / as-is / purchase, assignment, desired rate) to ClickUp immediately.
@@ -1067,10 +1115,14 @@ router.post('/applications/:id/pricing/register', async (req, res) => {
 });
 
 // Borrower requests an EXCEPTION to a guideline (e.g. finance more of an
-// assignment fee than the 15% cap → a bigger loan). Raises an escalation into the
-// super-admin Workflow + Escalations box; does NOT change the registered product
-// (owner-directed 2026-07-21). A super-admin reviews and, if granted, applies the
-// admin override and re-registers.
+// assignment fee than the 15% cap → a bigger loan). Now recorded as a
+// FIRST-CLASS pricing_exception in the loan_exceptions register
+// (requested_by_kind='borrower' — previously this left no reviewable record at
+// all), AND still raises the escalation into the super-admin Workflow box. It
+// does NOT change the registered product (owner-directed 2026-07-21): a
+// super-admin decides the record in the Exceptions box and, if granting,
+// applies the admin override and re-registers. The register is STAFF-ONLY —
+// the borrower gets the same simple "your team will review it" answer as before.
 router.post('/applications/:id/pricing/request-exception', async (req, res) => {
   const appId = req.params.id;
   try {
@@ -1078,15 +1130,36 @@ router.post('/applications/:id/pricing/request-exception', async (req, res) => {
     if (!f) return res.status(404).json({ error: 'not found' });
     const note = String((req.body && req.body.note) || '').slice(0, 1000).trim();
     if (!note) return res.status(400).json({ error: 'Describe the exception you’re requesting.' });
+
+    try {
+      const already = await loanExceptions.openForApp(appId, 'pricing_exception');
+      if (!already) {
+        const prior = loanExceptions.presentExpiry(await loanExceptions.latestForApp(appId, 'pricing_exception'));
+        const client = await db.getClient();
+        try {
+          await client.query('BEGIN');
+          await loanExceptions.requestPricingException(client, {
+            appId, reasonNote: note,
+            requestedByKind: 'borrower', requestedByBorrowerId: me(req),
+            reRequestOf: prior && ['denied', 'withdrawn', 'expired'].includes(prior.status) ? prior.id : null,
+          });
+          await client.query('COMMIT');
+        } catch (e) { await client.query('ROLLBACK').catch(() => {}); throw e; }
+        finally { client.release(); }
+      }
+      // An already-open ask isn't an error for the borrower — their request is
+      // in review either way; the note still reaches the team via the escalation.
+    } catch (e) { console.warn('[borrower pricing] exception record skipped:', e && e.message); }
+
     const ctx = await notify.fileContext(appId);
     await workflowAuto.onEscalationOpened(appId, { fromStaffId: null, note: `Borrower exception request: ${note}` });
     try {
       await notify.notifyAdmins({
-        type: 'manual_escalation',
+        type: 'pricing_exception',
         title: 'Borrower requested an exception',
         body: `The borrower requested an exception on ${ctx ? ctx.label : 'a file'}: ${note}`,
         meta: (ctx && ctx.meta) || undefined, applicationId: appId,
-        link: '/internal/escalations', ctaLabel: 'Open the Escalations box',
+        link: `/internal/exceptions?app=${appId}`, ctaLabel: 'Open the Exceptions box',
       });
     } catch (_) { /* best-effort */ }
     await audit(req, 'pricing_exception_requested', 'application', appId, { note });
@@ -1358,7 +1431,7 @@ router.post('/applications/:id/checklist/:itemId/info', async (req, res) => {
          FROM applications a JOIN borrowers b ON b.id=a.borrower_id WHERE a.id=$1`, [req.params.id]);
     const row = a.rows[0];
     if (row) {
-      const who = [row.first_name, row.last_name].filter(Boolean).join(' ') || 'The borrower';
+      const who = require('../lib/person-name').displayName(row) || 'The borrower';
       const ctx = await notify.fileContext(req.params.id);
       await notify.notifyAppStaff(req.params.id, {   // #113: whole team (primary + assistants)
           type: 'tool_submitted', title: `${who} answered "${item.borrower_label || item.label}"`,
@@ -1416,20 +1489,24 @@ router.post('/applications/:id/checklist/:itemId/tool', async (req, res) => {
   // and carries a plain-language note until the line items total the budget exactly.
   let sowMismatch = null, goldSow = { ok: true };
   if (it.rows[0].tool_key === 'rehab_budget') {
-    // The rehab budget is loan structure — frozen at Clear-to-Close (#84).
-    const locked = await require('../lib/file-lock').structuralLockReason(req.params.id);
+    // The rehab budget is loan structure — frozen at Clear-to-Close (#84). A save
+    // that leaves the construction budget total exactly where it is is a line-item
+    // reallocation, allowed while a term sheet is out for signature (owner-directed
+    // 2026-07-26) — the test is on the DATA, so it holds for the borrower too.
+    const locked = await require('../lib/file-lock').sowLockReason(req.params.id, payload);
     if (locked) return res.status(409).json({ error: locked, fatal: true });
     const chk = await require('../lib/rehab-budget').checkSowBudget(req.params.id, payload);
-    if (!chk.ok) sowMismatch = { required: chk.required, total: Number(payload && payload.total), message: chk.message };
+    if (!chk.ok) sowMismatch = { required: chk.required, total: require('../lib/rehab-budget').toNum(payload && payload.total), message: chk.message };
     // Gold Standard Program: the SOW must carry a >= 5% construction contingency.
     goldSow = await require('../lib/rehab-budget').checkGoldSow(req.params.id, payload);
   }
   // Status: a matching SOW → 'received'; a budget mismatch OR a missing Gold 5%
   // contingency WITH content → 'issue' (visible, not cleared); an empty draft
   // (opened + exited) → leave the status untouched. Non-rehab tools → 'received'.
-  const rbTotal = Number(payload && payload.total);
+  // toNum (comma/"$"-tolerant) — same parser as the gate (audit finding 6).
+  const rbTotal = require('../lib/rehab-budget').toNum(payload && payload.total);
   const sowOpen = !!sowMismatch || !goldSow.ok;
-  const toolStatus = sowOpen ? (isFinite(rbTotal) && rbTotal > 0 ? 'issue' : null) : 'received';
+  const toolStatus = sowOpen ? (rbTotal != null && rbTotal > 0 ? 'issue' : null) : 'received';
   await db.query(
     `UPDATE checklist_items SET tool_payload=$2, tool_state=COALESCE($3,tool_state), status=COALESCE($4,status), updated_at=now()
       WHERE id=$1`,
@@ -1437,14 +1514,11 @@ router.post('/applications/:id/checklist/:itemId/tool', async (req, res) => {
      payload && typeof payload.state === 'object' ? JSON.stringify(payload.state) : null, toolStatus]);
   // Populate the condition with a plain-language note about the match state, on
   // BOTH a mismatch and a match — visible to every party. '[auto]' notes are ours
-  // to overwrite; a staff-typed note is never clobbered.
+  // to overwrite; a staff-typed note is never clobbered. The note reuses the
+  // gate's own cent-precise message (audit finding 1: it used to re-round the
+  // figures to whole dollars, hiding the very gap it reported).
   if (it.rows[0].tool_key === 'rehab_budget') {
-    const rbMoney = require('../lib/rehab-budget').money;
-    const note = sowMismatch
-      ? `[auto] Scope of Work (line items ${rbMoney(rbTotal)}) does not match the file's rehab budget ${rbMoney(sowMismatch.required)} — this condition stays open for all parties until the first-page construction budget AND the line items each total exactly ${rbMoney(sowMismatch.required)}.`
-      : (!goldSow.ok
-        ? `[auto] ${require('../lib/rehab-budget').GOLD_CONTINGENCY_MSG}`
-        : `[auto] Scope of Work totals ${rbMoney(rbTotal)} and matches the file's rehab budget — ready to clear.`);
+    const note = require('../lib/rehab-budget').sowAutoNote(sowMismatch && sowMismatch.message, goldSow.ok, payload && payload.total);
     try { await db.query(`UPDATE checklist_items SET notes=CASE WHEN notes IS NULL OR notes LIKE '[auto]%' THEN $2 ELSE notes END, updated_at=now() WHERE id=$1`, [req.params.itemId, note]); } catch (_) {}
   }
   // The Scope of Work NEVER writes the file's rehab budget (owner-directed — the
@@ -1464,7 +1538,7 @@ router.post('/applications/:id/checklist/:itemId/tool', async (req, res) => {
          FROM applications a JOIN borrowers b ON b.id=a.borrower_id WHERE a.id=$1`, [req.params.id]);
     const row = a.rows[0];
     if (row) {
-      const who = [row.first_name, row.last_name].filter(Boolean).join(' ') || 'The borrower';
+      const who = require('../lib/person-name').displayName(row) || 'The borrower';
       const label = it.rows[0].tool_key === 'rehab_budget' ? 'rehab budget / scope of work' : 'task';
       const extra = it.rows[0].tool_key === 'rehab_budget' && isFinite(Number(payload.total))
         ? ` — total $${Math.round(Number(payload.total)).toLocaleString('en-US')}` : '';
@@ -1674,7 +1748,8 @@ router.get('/llcs/:id/documents', async (req, res) => {
   if (!own.rows[0]) return res.status(404).json({ error: 'not found' });
   const r = await db.query(`SELECT id,filename,content_type,size_bytes,created_at FROM documents
      WHERE llc_id=$1 AND visibility='borrower' AND source_type <> 'chat_attachment' ORDER BY created_at`, [req.params.id]);
-  res.json(r.rows);
+  // staff-named filenames can carry a partner name (leak fix 2026-07-23)
+  res.json(r.rows.map((row) => scrubFields(row, ['filename'])));
 });
 // Link (or switch) the vesting LLC on an open file. The file's LLC condition
 // immediately reflects the linked entity's real state — a verified LLC
@@ -1724,7 +1799,7 @@ async function notifyAppraisalCardAdded(appId, brand, last4) {
          FROM applications a JOIN borrowers b ON b.id=a.borrower_id WHERE a.id=$1`, [appId]);
     const row = a.rows[0];
     if (!row) return;
-    const who = [row.first_name, row.last_name].filter(Boolean).join(' ') || 'The borrower';
+    const who = require('../lib/person-name').displayName(row) || 'The borrower';
     const ctxCard = await notify.fileContext(appId);
     await notify.notifyAppStaff(appId, {   // #113: whole team (primary + assistants)
         type: 'condition_added', title: `${who} added the appraisal card`,
@@ -1770,16 +1845,18 @@ router.get('/applications/:id/appraisal-card', async (req, res) => {
   res.json(r.rows[0] || null);
 });
 
-// Scan a photo of the credit card via a hosted OCR API and return the parsed
-// number + expiry for the borrower to confirm. The image is NOT persisted and
-// card data is never logged. (Owner chose a hosted OCR API over on-device.)
+// Scan a photo of the credit card and return the parsed number + expiry for the
+// borrower to confirm. Reads the image with the best-in-class vision model
+// (Azure OpenAI GPT-5 — the same reader the underwriting engine uses), falling
+// back to hosted OCR when the vision model isn't configured. The image is NOT
+// persisted, the CVC is never read, and card data is never logged.
 router.post('/applications/:id/scan-card', async (req, res) => {
   const own = await db.query(`SELECT 1 FROM applications WHERE id=$1 AND (${OWN_FILE_SQL("", "$2")})`, [req.params.id, me(req)]);
   if (!own.rows[0]) return res.status(404).json({ error: 'not found' });
   const b = req.body || {};
   if (!b.dataBase64) return res.status(400).json({ error: 'no image provided' });
   try {
-    const parsed = await require('../lib/integrations/card-ocr').scanCard({ dataBase64: b.dataBase64, contentType: b.contentType });
+    const parsed = await require('../lib/integrations/card-ocr').scanCard({ dataBase64: b.dataBase64, contentType: b.contentType, appId: req.params.id });
     // Return only what we could read; the borrower confirms/edits before saving.
     res.json({ number: parsed.number || '', expMonth: parsed.expMonth || '', expYear: parsed.expYear || '' });
   } catch (e) {
@@ -1836,6 +1913,11 @@ router.post('/applications/:id/complete-fields', async (req, res) => {
     // an approval-gated change request that the loan officer + processor rule on.
     // Personal fields (below) stay directly editable either way.
     const locked = await changeRequests.isBorrowerLocked(req.params.id);
+    // #FNM1025: an appraisal FORM number ("FNM1025") is not a property type — it is
+    // the name of the report. Refuse it here too (and before opening a change
+    // request), so no door can put a form code into the category.
+    const ptProblem = require('../lib/property-type').propertyTypeProblem(b.property_type);
+    if (ptProblem) return res.status(400).json({ error: ptProblem });
     const requested = [];
     const appVals = [req.params.id], appSets = [], appKeys = [];
     for (const [k, t] of Object.entries(B_COMPLETE_APP)) {
@@ -1932,7 +2014,7 @@ async function notifyTeamOfChangeRequests(appId, requested) {
       `SELECT a.loan_officer_id, a.processor_id, b.first_name, b.last_name
          FROM applications a JOIN borrowers b ON b.id=a.borrower_id WHERE a.id=$1`, [appId]);
     const row = a.rows[0]; if (!row) return;
-    const who = [row.first_name, row.last_name].filter(Boolean).join(' ') || 'The borrower';
+    const who = require('../lib/person-name').displayName(row) || 'The borrower';
     const fields = requested.map((r) => r.field_label).join(', ');
     // Before → after for each requested field, so the team sees exactly what is
     // being asked without opening the file.
@@ -2016,10 +2098,39 @@ router.post('/contacts', async (req, res) => {
   }
   if (b.applicationId) {
     await db.query(
-      `INSERT INTO application_service_contacts (application_id,service_contact_id,contact_type)
-       VALUES ($1,$2,$3) ON CONFLICT (application_id,contact_type)
-       DO UPDATE SET service_contact_id=EXCLUDED.service_contact_id, created_at=now()`,
-      [b.applicationId, contactId, type]);
+      // ON CONFLICT names (application_id, service_contact_id) — the unique key that
+      // actually exists. db/078 DROPPED the old (application_id, contact_type) PK to
+      // allow MANY contacts of one type per file, so the previous spec matched no
+      // index and this INSERT raised Postgres 42P10 on every borrower submission of
+      // the title / insurance contact form. Same spec the staff route uses.
+      `INSERT INTO application_service_contacts (application_id,service_contact_id,contact_type,added_by_kind,added_by_id)
+       VALUES ($1,$2,$3,'borrower',$4) ON CONFLICT (application_id,service_contact_id)
+       DO UPDATE SET contact_type=EXCLUDED.contact_type`,
+      [b.applicationId, contactId, type, me(req)]);
+    // …and this form REPLACES, it does not accumulate. That is what the old
+    // (application_id, contact_type) key enforced structurally, and this is the ONE
+    // form where it is the right behaviour: it asks "who is your title company?", so
+    // answering it twice means the borrower CHANGED their answer, not that the file
+    // now has two. Without this the old contact stays linked, and every later reader
+    // has two candidates — including the closing-prep email, which would hand the
+    // attorney both title companies. The staff route deliberately keeps appending;
+    // there, adding a second contact of a type is a real thing to want.
+    //
+    // SCOPED TO THIS BORROWER'S OWN CONTACTS, and that scope is the whole safety of
+    // it. `application_service_contacts` is the SHARED file-contacts table, and
+    // db/078 re-keyed it precisely so a file can carry several contacts of one type.
+    // Deleting by (application, contact_type) alone therefore reached far past this
+    // form: a staff-added title company was hard-deleted the next time the borrower
+    // saved their title contact, and because `CONTACT_TYPES` coerces anything
+    // unrecognised to 'other', one save could wipe every free-text vendor on the
+    // file (surveyor, HOA, property manager). Restricting it to service_contacts the
+    // borrower themself owns replaces exactly their own previous answer and can
+    // never touch a vendor the team added.
+    await db.query(
+      `DELETE FROM application_service_contacts
+        WHERE application_id=$1 AND contact_type=$2 AND service_contact_id <> $3
+          AND service_contact_id IN (SELECT id FROM service_contacts WHERE borrower_id=$4)`,
+      [b.applicationId, type, contactId, me(req)]);
   }
   // Submitting the contact form satisfies its checklist task (moves to review).
   if (b.checklistItemId) {
@@ -2040,7 +2151,9 @@ router.post('/contacts', async (req, res) => {
 // Any party can add any kind of vendor to a file; contacts live in
 // service_contacts (=> company-wide vendor management) and link to the file via
 // application_service_contacts (MANY per file). Shared across the file.
-const FILE_CONTACT_TYPES = ['realtor', 'attorney', 'title_company', 'insurance_agent', 'flood_insurance', 'contractor', 'appraiser', 'lender', 'escrow', 'other'];
+// Keep in step with the copy in routes/staff.js and the TYPES list in
+// app-v2/src/components/FileContacts.jsx — an unlisted type is coerced to 'other'.
+const FILE_CONTACT_TYPES = ['realtor', 'attorney', 'title_company', 'settlement_agent', 'insurance_agent', 'flood_insurance', 'contractor', 'appraiser', 'lender', 'escrow', 'other'];
 router.get('/applications/:id/file-contacts', async (req, res) => {
   const o = await db.query(`SELECT 1 FROM applications WHERE id=$1 AND (${OWN_FILE_SQL("", "$2")})`, [req.params.id, me(req)]);
   if (!o.rows[0]) return res.status(404).json({ error: 'application not found' });
@@ -2170,15 +2283,26 @@ router.get('/track-records', async (req, res) => {
                FROM documents d
               WHERE d.track_record_id=t.id AND d.visibility='borrower' AND d.is_current) AS docs,
             (SELECT COALESCE(json_agg(json_build_object(
-                    'id', ci.id, 'label', COALESCE(ci.borrower_label, ci.label),
-                    'hint', COALESCE(ci.borrower_hint, ci.hint), 'status', ci.status) ORDER BY ci.created_at), '[]'::json)
+                    'id', ci.id, 'label', COALESCE(NULLIF(ci.borrower_label,''), 'An item your loan team needs'),
+                    'hint', ci.borrower_hint, 'status', ci.status) ORDER BY ci.created_at), '[]'::json)
                FROM checklist_items ci
               WHERE ci.track_record_id=t.id AND ci.audience IN ('borrower','both')
                 AND ci.status NOT IN ('satisfied')) AS doc_requests
        FROM track_records t
        LEFT JOIN llcs l ON l.id = t.llc_id
       WHERE t.borrower_id=$1 ORDER BY t.sale_date DESC NULLS LAST, t.created_at DESC`, [me(req)]);
-  res.json(r.rows);
+  // Leak fix 2026-07-23: BORROWER wording only above (internal label/hint can
+  // carry capital-partner context, and raise-issue stores staff free text into
+  // borrower_label/hint) — plus a scrub pass over the free-form strings.
+  res.json(r.rows.map((row) => ({
+    ...row,
+    docs: Array.isArray(row.docs)
+      ? row.docs.map((d) => ({ ...d, filename: typeof d.filename === 'string' ? scrubText(d.filename) : d.filename }))
+      : row.docs,
+    doc_requests: Array.isArray(row.doc_requests)
+      ? row.doc_requests.map((q) => ({ ...q, label: scrubText(q.label), hint: q.hint ? scrubText(q.hint) : q.hint }))
+      : row.doc_requests,
+  })));
 });
 // Shared field validation + column mapping for create/update. Mirrors the
 // static Track Record tool's rules: a flip needs a sale; a hold needs a
@@ -2342,7 +2466,8 @@ router.get('/track-records/:id/documents', async (req, res) => {
   const r = await db.query(
     `SELECT id,filename,content_type,size_bytes,created_at,review_status,rejection_reason,slot_label AS doc_type FROM documents
       WHERE track_record_id=$1 AND visibility='borrower' AND is_current ORDER BY created_at`, [req.params.id]);
-  res.json(r.rows);
+  // filename + rejection_reason + slot label are staff free text (leak fix 2026-07-23)
+  res.json(r.rows.map((row) => scrubFields(row, ['filename', 'rejection_reason', 'doc_type'])));
 });
 router.post('/track-records/:id/documents', async (req, res) => {
   const b = req.body || {};
@@ -2561,6 +2686,10 @@ router.post('/documents', async (req, res) => {
   // Live cross-user refresh (#112): a doc answering a track-record line-item
   // request lands on the line — staff viewing it reload to see the new evidence.
   if (trackRecordId) require('../lib/events').publishTrackRecordUpdate(me(req), { kind: 'borrower', id: me(req) }).catch(() => {});
+  // Pipeline V2 (VSLICE-7) — enqueue a SHADOW copy of this upload for the advisory pipeline. Every
+  // eligible upload feeds the shadow line (not just the docs V1 auto-reads). Inert unless the shadow
+  // flag is on (zero db work when off), idempotent, never throws — it can't affect this upload.
+  try { await require('../pipeline/enqueue-on-upload').enqueueUploadedDocument(db, { documentId: r.rows[0].id, loanId: b.applicationId || null, checklistItemId: b.checklistItemId || null, docKind }); } catch (_) { /* advisory only */ }
   res.status(201).json({ ok: true, documentId: r.rows[0].id });
 
   // An LLC document uploaded from the profile (no file context): tell the loan
@@ -2573,7 +2702,7 @@ router.post('/documents', async (req, res) => {
            FROM llcs l JOIN borrowers b ON b.id=l.borrower_id WHERE l.id=$1`, [b.llcId]);
       const row = info.rows[0];
       if (row) {
-        const who = `${row.first_name || ''} ${row.last_name || ''}`.trim() || 'A borrower';
+        const who = require('../lib/person-name').displayName(row) || 'A borrower';
         const apps = await db.query(
           `SELECT id FROM applications
             WHERE llc_id=$1 AND deleted_at IS NULL
@@ -2615,7 +2744,7 @@ router.post('/documents', async (req, res) => {
            FROM applications a JOIN borrowers b ON b.id=a.borrower_id WHERE a.id=$1`, [b.applicationId]);
       const row = a.rows[0];
       if (row) {
-        const who = `${row.first_name || ''} ${row.last_name || ''}`.trim() || 'A borrower';
+        const who = require('../lib/person-name').displayName(row) || 'A borrower';
         // Say WHERE the document landed, not just its filename: the condition
         // it was uploaded to and, when the condition has several slots, which.
         let where = '', condLabel = '';
@@ -2664,8 +2793,9 @@ router.get('/documents', async (req, res) => {
       ORDER BY is_current DESC, created_at DESC`,
     [me(req), req.query.applicationId || null]);
   // rejection_reason AND slot_label are staff free-text shown to the borrower —
-  // scrub any capital-partner name out of both.
-  res.json(r.rows.map((row) => scrubFields(row, ['rejection_reason', 'slot_label'])));
+  // scrub any capital-partner name out of both. Staff-named FILENAMES are the
+  // same vector ("BlueLake_terms.pdf") — scrub those too (leak fix 2026-07-23).
+  res.json(r.rows.map((row) => scrubFields(row, ['rejection_reason', 'slot_label', 'filename'])));
 });
 
 // Download a document the borrower may see: their own uploads plus staff files
@@ -2690,7 +2820,11 @@ router.get('/documents/:id/download', async (req, res) => {
     [req.params.id, me(req)]);
   if (!r.rows[0]) return res.status(404).json({ error: 'not found' });
   await audit(req, 'download_document', 'document', r.rows[0].id);
-  return serveDocument(res, r.rows[0], { inline: req.query.inline === '1' });
+  // Content-Disposition carries the stored name — scrub it so a staff-named
+  // "BlueLake_terms.pdf" never lands on a borrower's disk (leak fix 2026-07-23;
+  // bytes are untouched, only the suggested download name changes).
+  const doc = { ...r.rows[0], filename: typeof r.rows[0].filename === 'string' ? scrubText(r.rows[0].filename) : r.rows[0].filename };
+  return serveDocument(res, doc, { inline: req.query.inline === '1' });
 });
 
 // ---------------- bank verification (Plaid framework) ----------------
@@ -2777,10 +2911,22 @@ router.get('/messages', async (req, res) => {
       ORDER BY m.created_at DESC LIMIT 500`,
     [me(req), req.query.applicationId || null]);
   r.rows.reverse();   // newest-500 window, still rendered oldest-first
-  for (const m of r.rows) if (m && typeof m.body === 'string') m.body = scrubText(m.body);  // no partner name to a borrower
+  for (const m of r.rows) {
+    if (!m) continue;
+    if (typeof m.body === 'string') m.body = scrubText(m.body);  // no partner name to a borrower
+    // staff-named attachment filenames are a partner-name vector too
+    // ("BlueLake_terms.pdf" — the email path already scrubs them; leak fix 2026-07-23)
+    if (typeof m.attachment_name === 'string') m.attachment_name = scrubText(m.attachment_name);
+  }
   // Opening the thread clears the "new message" badge for staff replies —
   // legacy read_at plus the new per-member watermark (035).
-  if (req.query.applicationId) {
+  // NOT inside a borrower view (owner-directed 2026-07-26): a staffer opening
+  // the thread to see what the borrower sees must not mark the borrower's
+  // messages as READ — that would tell the rest of the team the borrower has
+  // seen a reply they have never opened, and clear the borrower's own unread
+  // badge from under them. Everything is still DISPLAYED identically; only the
+  // receipt write is skipped.
+  if (req.query.applicationId && !req.impersonation) {
     await db.query(`UPDATE messages SET read_at=now() WHERE application_id=$1 AND borrower_id=$2 AND sender_kind='staff' AND read_at IS NULL`,
       [req.query.applicationId, me(req)]);
     try {
@@ -2906,7 +3052,10 @@ router.get('/applications/:id/mentionables', async (req, res) => {
     db.query(`SELECT s.id, s.full_name AS label FROM applications a
                 JOIN staff_users s ON s.id IN (a.loan_officer_id, a.processor_id)
                WHERE a.id=$1 AND s.is_active=true`, [req.params.id]),
-    db.query(`SELECT id, label, status FROM checklist_items
+    // BORROWER label only (leak fix 2026-07-23): the internal `label` can carry
+    // capital-partner wording (e.g. the CorrFirst EMD condition) — never
+    // surface it to a borrower. Generic fallback + scrub on output below.
+    db.query(`SELECT id, COALESCE(NULLIF(borrower_label,''), 'An item your loan team needs') AS label, status FROM checklist_items
                WHERE application_id=$1 AND audience IN ('borrower','both') ORDER BY sort_order LIMIT 200`, [req.params.id]),
     // Co-borrower privacy (#82): don't surface the OTHER borrower's personal
     // uploads in the mention list — same rule as the download endpoint.
@@ -2918,7 +3067,15 @@ router.get('/applications/:id/mentionables', async (req, res) => {
     db.query(`SELECT id, COALESCE(property_address->>'oneLine', property_address->>'street', 'Application') AS label
                 FROM applications WHERE ${OWN_FILE_SQL("", "$1")}`, [me(req)]),
   ]);
-  res.json({ users: users.rows, tasks: tasks.rows, documents: docs.rows, applications: apps.rows });
+  // Belt-and-suspenders (leak fix 2026-07-23): scrub every mentionable label —
+  // condition labels and staff-named document FILENAMES are partner-name
+  // vectors (the email path already scrubs attachment names for this reason).
+  res.json({
+    users: users.rows,
+    tasks: tasks.rows.map((t) => ({ ...t, label: scrubText(t.label) })),
+    documents: docs.rows.map((d) => ({ ...d, label: scrubText(d.label) })),
+    applications: apps.rows,
+  });
 });
 
 // Which of my applications have unread messages from the loan team.
@@ -3123,7 +3280,7 @@ async function inviteCoBorrower(appId, primaryName, co) {
         `INSERT INTO audit_log (actor_kind, action, entity_type, entity_id, detail)
          VALUES ('system', 'coborrower_email_conflict_blocked', 'application', $1, $2)`,
         [appId, JSON.stringify({ email: em, typed: `${co.firstName || ''} ${co.lastName || ''}`.trim(),
-          onFile: `${ex.first_name || ''} ${ex.last_name || ''}`.trim() })]).catch(() => {});
+          onFile: require('../lib/person-name').displayName(ex) })]).catch(() => {});
       return null;
     }
   }
@@ -3133,11 +3290,14 @@ async function inviteCoBorrower(appId, primaryName, co) {
   // borrower shared by email), so a primary borrower's guess never overwrites a
   // co-borrower's real score, and a blank never wipes one either.
   const cb = await db.query(
-    `INSERT INTO borrowers (first_name,last_name,email,cell_phone,fico)
-     VALUES ($1,$2,$3,$4,$5)
-     ON CONFLICT (email) DO UPDATE SET updated_at=now(), fico=COALESCE(borrowers.fico, EXCLUDED.fico) RETURNING id`,
+    `INSERT INTO borrowers (first_name,last_name,email,cell_phone,fico,middle_name)
+     VALUES ($1,$2,$3,$4,$5,NULLIF($6,''))
+     ON CONFLICT (email) WHERE shares_email = false DO UPDATE SET updated_at=now(),
+       fico=COALESCE(borrowers.fico, EXCLUDED.fico),
+       -- Optional middle name (db/345) — fill-only, never over a stored one.
+       middle_name=COALESCE(borrowers.middle_name, EXCLUDED.middle_name) RETURNING id`,
     [co.firstName || 'Co-Borrower', co.lastName || '', co.email, co.phone || null,
-     require('../lib/fields').sanitizeFico(co.fico)]);
+     require('../lib/fields').sanitizeFico(co.fico), String(co.middleName || '').trim()]);
   const coId = cb.rows[0].id;
   // Claim the co-borrower slot ATOMICALLY (audit F-LOW-1): the caller's 409 guard
   // reads co_borrower_id in a separate statement, so two concurrent invites from
@@ -3484,7 +3644,7 @@ router.get('/pricing/prefill', async (req, res) => {
     res.json({
       exp,
       fico: row.fico || null,
-      borrowerName: [row.first_name, row.last_name].filter(Boolean).join(' ') || null,
+      borrowerName: require('../lib/person-name').displayName(row) || null,
     });
   } catch (e) { res.status(500).json({ error: 'server error' }); }
 });

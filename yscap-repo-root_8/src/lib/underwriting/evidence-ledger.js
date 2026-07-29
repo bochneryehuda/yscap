@@ -135,9 +135,22 @@ async function spansForFact(client, factObservationId) {
   return r.rows;
 }
 
+// Read every active span cited by a document finding (the finding-side mirror of
+// spansForFact, for "where did we see this finding?"). finding_evidence_links
+// carries EITHER finding_id OR ai_suggestion_id; this reads the finding_id side.
+async function spansForFinding(client, findingId) {
+  const r = await client.query(
+    `SELECT es.*, fel.role
+       FROM finding_evidence_links fel
+       JOIN evidence_spans es ON es.id = fel.evidence_span_id
+      WHERE fel.finding_id = $1 AND es.status = 'active'
+      ORDER BY es.page_number NULLS LAST, es.created_at`, [findingId]);
+  return r.rows;
+}
+
 module.exports = {
   recordSpan, linkFact, linkFinding, linkRequirement,
-  assertSpanExists, supersedeSpansForDocument, spansForFact,
+  assertSpanExists, supersedeSpansForDocument, spansForFact, spansForFinding,
   SPAN_TYPES, SUPPORT_TYPES, FINDING_ROLES, REQUIREMENT_ROLES, SPAN_STATES,
   _internals: { normSpanType, normSupportType, normFindingRole, normRequirementRole, clampConfidence },
 };

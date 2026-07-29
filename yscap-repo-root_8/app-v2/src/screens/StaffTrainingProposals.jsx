@@ -79,6 +79,20 @@ export default function StaffTrainingProposals() {
         finding code, downgrade a severity, add a normalizer alias, tweak a committee prompt.
         Nothing auto-promotes; a super-admin approves each one.
       </p>
+
+      {/* Plain-language explainer of the shadow → production flow (owner-directed 2026-07-24,
+          AI Command Center phase 3): the owner is not a developer, so spell out what each step does. */}
+      <div className="panel" style={{ background: 'var(--paper,#F6F3EC)', marginBottom: 12 }}>
+        <h3 style={{ margin: '0 0 6px' }}>What these steps mean</h3>
+        <div style={{ display: 'grid', gap: 8, fontSize: 13 }}>
+          <div><b>Shadow test</b> — let PILOT try this change <i>quietly</i> on new files in the background. Nothing a borrower or loan officer sees changes; you just get to watch whether the change would help before it’s real. The safe first step.</div>
+          <div><b>Approve</b> — mark the change as reviewed and good, ready to turn on.</div>
+          <div><b>Promote to production</b> — <b>turn the change on for real</b>, so PILOT starts using it on live files from now on. Do this once you’re confident (usually after a shadow test).</div>
+          <div><b>Reject</b> — decline the change; PILOT keeps working as it does today.</div>
+          <div className="muted">Remember: these only change how PILOT <i>suggests</i> things. PILOT never clears a condition or changes a loan on its own — a person always decides.</div>
+        </div>
+      </div>
+
       {msg && <div className={`notice ${msg.ok ? 'ok' : 'err'}`} style={{ marginBottom: 12 }}>{msg.text}</div>}
 
       <div className="panel">
@@ -127,14 +141,18 @@ export default function StaffTrainingProposals() {
                     value={notes[r.id] || ''} onChange={(e) => setNotes((n) => ({ ...n, [r.id]: e.target.value }))} />
                   {r.status === 'pending' && (
                     <>
-                      <button className="btn primary small" disabled={busy} onClick={() => decide(r, 'approved')}>Approve</button>
-                      <button className="btn ghost small" disabled={busy} onClick={() => decide(r, 'shadow_testing')}>Shadow test</button>
+                      <button className="btn ghost small" disabled={busy} title="Let PILOT try this quietly on new files in the background — nothing a borrower or officer sees changes. The safe first step."
+                        onClick={() => decide(r, 'shadow_testing')}>Shadow test (try it quietly)</button>
+                      <button className="btn primary small" disabled={busy} title="Mark this change as reviewed and good, ready to turn on."
+                        onClick={() => decide(r, 'approved')}>Approve</button>
                     </>
                   )}
                   {r.status === 'shadow_testing' && (
-                    <button className="btn primary small" disabled={busy} onClick={() => decide(r, 'promoted')}>Promote to production</button>
+                    <button className="btn primary small" disabled={busy} title="Turn this change ON for real — PILOT starts using it on live files from now on."
+                      onClick={() => { if (window.confirm(`Turn this change on for real?\n\n"${PROPOSAL_LABEL[r.proposal_type] || r.proposal_type}"\n\nPILOT will start using it on live files from now on. You can still reject it later.`)) decide(r, 'promoted'); }}>Turn on for real (promote)</button>
                   )}
-                  <button className="btn ghost small" disabled={busy} onClick={() => decide(r, 'rejected')}>Reject</button>
+                  <button className="btn ghost small" disabled={busy} title="Decline this change — PILOT keeps working as it does today."
+                    onClick={() => decide(r, 'rejected')}>Reject</button>
                 </div>
               )}
             </div>

@@ -103,6 +103,59 @@ function isKnownInternal(internalStatus) {
   return Object.prototype.hasOwnProperty.call(EXTERNAL_FOR, norm(internalStatus));
 }
 
+// The ClickUp status the team uses to PARK a file. Owner-directed 2026-07-26:
+// "inactive / on hold" is a real pause — not an intake stage — and the whole
+// file must go on hold in PILOT too (off the active board, out of the task and
+// reminder lists, notification emails silenced), not only in ClickUp.
+const ON_HOLD_INTERNAL = 'inactive / on hold';
+
+// The REVERSE map (owner-directed 2026-07-28): when staff pick a borrower-facing
+// word in the portal, this is the ONE ClickUp task status PILOT drives the card
+// into. Two invariants, both asserted by scripts/test-status-landing-pure.js:
+//   (1) WORD-PRESERVING — externalFor(LANDING_INTERNAL[w]) === w for every entry,
+//       so the card lands on a stage that reads back to the SAME word and the file
+//       never flips to a different borrower status on the next inbound pull.
+//   (2) NO SURPRISE EMAILS — a ClickUp status whose name carries a "(#-em)" /
+//       "(#-email)" suffix fires an email when a card enters it. PILOT never lands
+//       on one EXCEPT the two the owner wants: clear_to_close ('ctc (4-email)') and
+//       funded ('closed (6-email funded)'). That is why 'approved' lands on
+//       'delegated ctc submission' (no email) and NOT 'final submission (4-em)'.
+// 'new' is intentionally absent: no ClickUp stage maps to the borrower-only
+// "Submitted" bucket, so setting it never moves the card (mirror field only) —
+// landing on 'starting' would flip the word to file_intake. Every value below was
+// verified against the live Loan Pipeline statuses via the ClickUp connector.
+const LANDING_INTERNAL = {
+  file_intake: 'starting',
+  in_review: 'structuring loan',
+  processing: 'assigned to processor',
+  underwriting: 'in underwriting',
+  approved: 'delegated ctc submission',
+  clear_to_close: 'ctc (4-email)',
+  funded: 'closed (6-email funded)',
+  on_hold: ON_HOLD_INTERNAL,
+  declined: 'declined',
+  withdrawn: 'cancelled',
+};
+
+/**
+ * The ClickUp status PILOT should SET when staff pick `externalStatus` in the
+ * portal, or null when there is no representative stage (only 'new'/Submitted).
+ */
+function landingInternalFor(externalStatus) {
+  return LANDING_INTERNAL[externalStatus] || null;
+}
+
+/**
+ * True when a ClickUp status means the file is PARKED. Uses the same rule as
+ * the borrower-facing derive (exact map first, then the `hold` keyword), so a
+ * renamed or newly-added hold status is recognized without a code change.
+ */
+function isOnHold(internalStatus) {
+  const n = norm(internalStatus);
+  if (!n) return false;
+  return externalFor(n) === 'on_hold';
+}
+
 /**
  * True when a ClickUp status means the deal is FINISHED — funded, declined, or
  * withdrawn/cancelled. A terminal deal's task will never be re-addressed, so
@@ -123,4 +176,4 @@ function isTerminal(internalStatus) {
   return e === 'funded' || e === 'declined' || e === 'withdrawn';
 }
 
-module.exports = { EXTERNAL, EXTERNAL_FOR, externalFor, isKnownInternal, isTerminal, norm };
+module.exports = { EXTERNAL, EXTERNAL_FOR, externalFor, isKnownInternal, isTerminal, isOnHold, ON_HOLD_INTERNAL, LANDING_INTERNAL, landingInternalFor, norm };

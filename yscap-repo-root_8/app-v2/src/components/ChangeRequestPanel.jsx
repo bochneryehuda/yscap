@@ -1,6 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import { api } from '../lib/api.js';
 import { useSubmitGate } from '../lib/useSubmitGate.js';
+import { PROGRAMS, PROPERTY_TYPES, LOAN_TYPES } from '../lib/enums.js';
 
 // Borrower change-request "sandbox" (S5-03). Once a product is registered, the
 // borrower can't edit the deal numbers directly — they PROPOSE a change here and
@@ -13,12 +14,15 @@ const FIELDS = [
   { key: 'arv', label: 'After-repair value (ARV)', type: 'money' },
   { key: 'rehab_budget', label: 'Rehab budget', type: 'money' },
   { key: 'units', label: 'Number of units', type: 'int' },
+  // Canonical spellings only — see lib/enums.js. A drifted spelling here ('SFR',
+  // hyphenated 'Multi 2-4') is one the ClickUp push cannot translate, so it lands
+  // on the file but never reaches the card (#822).
   { key: 'property_type', label: 'Property type', type: 'select',
-    options: ['SFR', 'Multi 2-4', 'Multi 5+', 'Condo', 'Townhouse', 'Mixed Use'] },
+    options: PROPERTY_TYPES.map((o) => o.value) },
   { key: 'program', label: 'Program', type: 'select',
-    options: ['Fix & Flip w/ Construction', 'Bridge', 'Ground-Up Construction'] },
+    options: PROGRAMS.filter((o) => o.value !== 'Not sure yet').map((o) => o.value) },
   { key: 'loan_type', label: 'Loan type', type: 'select',
-    options: ['Purchase', 'Refinance — Rate & Term', 'Refinance — Cash-Out'] },
+    options: LOAN_TYPES.map((o) => o.value) },
 ];
 const MONEY_KEYS = new Set(FIELDS.filter((f) => f.type === 'money').map((f) => f.key));
 

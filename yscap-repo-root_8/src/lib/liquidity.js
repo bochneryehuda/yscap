@@ -29,15 +29,39 @@ const money2 = (n) => (n == null || isNaN(Number(n))) ? '—' : '$' + Number(n).
 // Program requires ONE. The MANUAL Program has no fixed table — the registrant
 // states the months at registration (owner-directed 2026-07-20), passed in as
 // `assetMonths`. Borrower-facing — never names a capital partner.
-function bankStatementMonths(program, assetMonths) {
+// The NOTE BUYER can require more months than the program does (owner-directed 2026-07-26: "Blue
+// Lake needs 2 months of bank statements, not 1 — the rule text says 1"). Keyed with the SAME shared
+// normalizer the conditions engine and the guideline desk use, so one spelling of a note buyer is
+// never treated as two. Whichever is stricter wins — a note buyer's requirement can raise the count,
+// never lower it below what the program already asks for.
+// Object.create(null), not {}: a lender literally recorded as "constructor" would otherwise look up
+// Object.prototype.constructor and make the month count NaN. Cheap to prevent, ugly to debug.
+const NOTE_BUYER_MONTHS = Object.assign(Object.create(null), { bluelake: 2 });
+function noteBuyerMonths(noteBuyer) {
+  if (!noteBuyer) return 0;
+  let key = '';
+  try { key = require('./conditions/field-registry').normNoteBuyer(noteBuyer) || ''; } catch (_) { key = ''; }
+  const m = NOTE_BUYER_MONTHS[key];
+  return typeof m === 'number' && Number.isFinite(m) ? m : 0;
+}
+function bankStatementMonths(program, assetMonths, noteBuyer) {
+  const byBuyer = noteBuyerMonths(noteBuyer);
+  let byProgram;
   if (/manual/i.test(String(program || ''))) {
     const m = Math.round(Number(assetMonths));
-    return Number.isFinite(m) && m > 0 ? m : 2;   // fall back to the manual default
+    byProgram = Number.isFinite(m) && m > 0 ? m : 2;   // fall back to the manual default
+  } else {
+    byProgram = /gold/i.test(String(program || '')) ? 2 : 1;
   }
-  return /gold/i.test(String(program || '')) ? 2 : 1;
+  return Math.max(byProgram, byBuyer);
 }
-function bankStatementLine(program, assetMonths) {
-  const m = bankStatementMonths(program, assetMonths);
+function bankStatementLine(program, assetMonths, noteBuyer) {
+  const m = bankStatementMonths(program, assetMonths, noteBuyer);
+  // Borrower-facing: NEVER names the note buyer (frozen rule). When the note buyer is what raises
+  // the count, the line just states the count — the reason is internal.
+  if (noteBuyerMonths(noteBuyer) >= m && m > (/gold/i.test(String(program || '')) ? 2 : 1)) {
+    return `Provide ${m} month${m === 1 ? '' : 's'} of recent bank statements — this loan requires ${m} month${m === 1 ? '' : 's'} of liquidity.`;
+  }
   if (/manual/i.test(String(program || ''))) {
     return `Provide ${m} month${m === 1 ? '' : 's'} of recent bank statements — this loan's program requires ${m} month${m === 1 ? '' : 's'} of liquidity.`;
   }
@@ -74,6 +98,16 @@ async function syncLiquidityCondition(appId, quote, client = db, opts = {}) {
         if (am.rows[0] && am.rows[0].asset_months != null) assetMonths = am.rows[0].asset_months;
       } catch (_) { /* best-effort */ }
     }
+    // The NOTE BUYER on the file can require more months than the program does (Blue Lake: 2).
+    // Read here, next to the program, so both the hint and the recorded requirement agree. Failing
+    // to read it must never lower the count — it just leaves the program's own requirement standing.
+    let noteBuyer = opts.noteBuyer;
+    if (noteBuyer === undefined) {
+      try {
+        const nb = await client.query(`SELECT lender FROM applications WHERE id=$1`, [appId]);
+        noteBuyer = nb.rows[0] ? nb.rows[0].lender : null;
+      } catch (_) { noteBuyer = null; }
+    }
     const sizing = (quote && quote.sizing) || {};
     const cc = (quote && quote.closingCosts) || {};
     const breakdown = {
@@ -87,7 +121,7 @@ async function syncLiquidityCondition(appId, quote, client = db, opts = {}) {
       computedAt: new Date().toISOString(),
     };
     const hint =
-      `${bankStatementLine(program, assetMonths)} ` +
+      `${bankStatementLine(program, assetMonths, noteBuyer)} ` +
       `Required liquidity: ${money2(required)} — the borrower's bank statements must show at least this in liquid assets. ` +
       `Down payment ${money2(breakdown.downPayment)} + ` +
       `${breakdown.assignmentExcess > 0 ? `assignment excess ${money2(breakdown.assignmentExcess)} + ` : ''}` +
@@ -106,7 +140,7 @@ async function syncLiquidityCondition(appId, quote, client = db, opts = {}) {
     const prevRequired = (item.tool_payload && item.tool_payload.liquidity && item.tool_payload.liquidity.required != null)
       ? Number(item.tool_payload.liquidity.required) : null;
     const payload = { ...(item.tool_payload || {}), liquidity: breakdown,
-      bankStatements: { months: bankStatementMonths(program, assetMonths), program: program || null } };
+      bankStatements: { months: bankStatementMonths(program, assetMonths, noteBuyer), program: program || null } };
 
     // The generic "bank statements" condition is REPLACED by this detailed
     // liquidity requirement the moment a product is registered, and must be
@@ -162,7 +196,26 @@ async function backfillLiquidityConditions(client = db) {
   return updated;
 }
 
+// Re-sync ONE file's liquidity condition from its CURRENT registration quote (owner 2026-07-27).
+// The bank-statement month count is the stricter of the program's and the NOTE BUYER's requirement
+// (Blue Lake = 2), and syncLiquidityCondition reads the note buyer itself — but it only ran on
+// register + boot backfill. So a file registered Standard (1 month) whose note buyer is set to Blue
+// Lake AFTER registration kept saying "1 month" until the next re-register. This lets the
+// note-buyer-change handlers (ClickUp inbound + the staff completeness edit) re-derive it
+// immediately. noReopen: never reopens a cleared condition — it just corrects the hint + the
+// recorded requirement. No registration yet → nothing to sync (the count is only set once registered).
+async function resyncLiquidityForFile(appId, client = db) {
+  try {
+    const r = await client.query(
+      `SELECT quote FROM product_registrations WHERE application_id=$1 AND is_current=true AND quote IS NOT NULL LIMIT 1`, [appId]);
+    if (!r.rows[0]) return null;
+    let quote = r.rows[0].quote;
+    if (typeof quote === 'string') { try { quote = JSON.parse(quote); } catch (_) { return null; } }
+    return await syncLiquidityCondition(appId, quote, client, { noReopen: true });
+  } catch (e) { console.error('[liquidity] resyncLiquidityForFile failed', appId, e && e.message); return null; }
+}
+
 module.exports = {
-  syncLiquidityCondition, backfillLiquidityConditions,
+  syncLiquidityCondition, backfillLiquidityConditions, resyncLiquidityForFile,
   bankStatementMonths, bankStatementLine, GENERIC_BANK_STMT_HINT, currentProgram,
 };

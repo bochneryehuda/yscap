@@ -28,7 +28,7 @@ assert.ok(!('password' in st) && !('username' in st), 'status never leaks creden
   assert.ok(/set up/i.test(threw.userMessage || ''), 'friendly userMessage');
 
   // --- request seam: the REAL MISMO 3.4 MESSAGE (from the Xactus packet) --------
-  const bor = { firstName: 'Jane', lastName: 'Investor', ssn: '123456789',
+  const bor = { firstName: 'Jane', lastName: 'Investor', ssn: '123456789', dob: '1985-04-02',
     address: { line1: '12 Maple Ave', city: 'Lakewood', state: 'NJ', zip: '08701' } };
 
   // soft (PQx) + reissue (with a prior report id)
@@ -45,6 +45,10 @@ assert.ok(!('password' in st) && !('username' in st), 'status never leaks creden
   assert.ok(/<TaxpayerIdentifierValue>123456789<\/TaxpayerIdentifierValue>/.test(req.body), 'SSN in TaxpayerIdentifierValue');
   assert.ok(/<PostalCode>08701<\/PostalCode>/.test(req.body), 'address zip present');
   assert.ok(/<LoanIdentifier>YS-1<\/LoanIdentifier>/.test(req.body), 'loan number present');
+  assert.ok(/<BorrowerBirthDate>1985-04-02<\/BorrowerBirthDate>/.test(req.body), 'DOB sent (BorrowerBirthDate) — the review screen promises it, so it must be transmitted');
+  // …and a borrower with NO DOB emits no birth-date element (leaf omits blanks)
+  const noDob = p._seam.buildRequestBody({ borrower: { firstName: 'A', lastName: 'B', ssn: '1', address: {} }, pullType: 'soft', requestType: 'new', bureaus: p.ALL_BUREAUS, version: '3.4' });
+  assert.ok(!/BorrowerBirthDate/.test(noDob.body), 'no DOB on file → no empty BorrowerBirthDate element');
   const X = require('../src/lib/mismo/xml');
   assert.strictEqual(X.parse(req.body).local, 'MESSAGE', 'built request is well-formed MISMO, root MESSAGE');
 
@@ -71,5 +75,35 @@ assert.ok(!('password' in st) && !('username' in st), 'status never leaks creden
   r = p._seam.extractReport('not xml or json at all', 'text/plain');
   assert.ok(r._unrecognized && r._error, 'unrecognized flagged, error attached (not thrown)');
 
-  console.log('OK  credit-provider: gating, tri-merge + soft/hard + reissue/new request, tolerant extractor — all assertions passed');
+  // --- connection test ("Test now"): status → plain-language verdict -----------
+  const cc = p._seam.classifyConnection;
+  assert.strictEqual(cc(401).live, false, '401 → login rejected (reached but not live)');
+  assert.strictEqual(cc(403).live, false, '403 → login rejected');
+  assert.ok(/login was rejected/.test(cc(401).detail), '401 detail names the login');
+  assert.strictEqual(cc(405).live, null, '405 (HEAD not allowed) → reached but unconfirmed (neutral, not green)');
+  assert.strictEqual(cc(404).live, null, '404 → reached but unconfirmed (neutral)');
+  assert.ok(/reachable/.test(cc(404).detail), '404 detail says the address is reachable');
+  assert.strictEqual(cc(200).live, true, '200 → connected (green)');
+  assert.ok(/successfully/.test(cc(200).detail), '200 detail says connected successfully');
+  assert.strictEqual(cc(503).live, null, 'unexpected status → indeterminate (null)');
+  // unconfigured provider → safe not-connected verdict, no network
+  const tc = await p.testConnection();
+  assert.ok(tc.configured === false && tc.live === false && /Not connected/.test(tc.detail),
+    'testConnection with no creds → not connected (no reach attempted)');
+
+  // --- credential scrub: the shared login must never reach an error/log ---------
+  const scrub = p._seam.scrubCredentials;
+  assert.strictEqual(scrub('fetch failed'), 'fetch failed', 'a normal error message passes through unchanged');
+  assert.ok(!/S3cret/.test(scrub('x?LoginAccountPassword=S3cret&LoginAccountIdentifier=op42')),
+    'login password in a URL query is redacted');
+  assert.ok(/LoginAccountPassword=\*\*\*/.test(scrub('x?LoginAccountPassword=S3cret')),
+    'the redacted query keeps the key but masks the value');
+  assert.ok(scrub('at https://op42:S3cret@api.example.com/x') === 'at https://***:***@api.example.com/x',
+    'scheme://user:pass@host userinfo is masked');
+  assert.strictEqual(scrub(null), '', 'null/undefined scrubs to empty, never crashes');
+  // a vendor 4xx body that reflects the request URL (query-auth mode) must not leak the login
+  assert.ok(!/S3cret/.test(scrub('<error>Bad request to /report?LoginAccountPassword=S3cret</error>')),
+    'a reflected request URL in a vendor error body has the login masked');
+
+  console.log('OK  credit-provider: gating, tri-merge + soft/hard + reissue/new request, tolerant extractor, connection test, credential scrub — all assertions passed');
 })().catch((e) => { console.error(e); process.exit(1); });

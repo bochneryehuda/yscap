@@ -50,6 +50,9 @@ app.use('/api/inbound/file-email', require('./routes/inbound-file-email'));
 // DocuSign Connect webhook — RAW body for the base64 HMAC verification, mounted
 // BEFORE the JSON parser for the same reason as the ClickUp/inbound webhooks.
 app.use('/api/esign/webhook', require('./routes/esign-webhook'));
+// TrustPoint webhook — its OWN small JSON parser + rate limit (never the global 32MB
+// parser: unauthenticated callers must not force huge parses), token-authenticated.
+app.use('/api/trustpoint/webhook', require('./routes/trustpoint-webhook'));
 app.use(express.json({ limit: `${JSON_LIMIT_MB}mb` }));
 
 // Rate limits (IP-based, in-memory) on the sensitive/unauthenticated surface.
@@ -59,6 +62,7 @@ app.use(express.json({ limit: `${JSON_LIMIT_MB}mb` }));
 const { rateLimit } = require('./lib/rate-limit');
 app.use('/auth', rateLimit({ bucket: 'auth', windowMs: 60000, max: 30 }));   // login/register/mfa/reset
 app.use('/api/intake', rateLimit({ bucket: 'intake', windowMs: 60000, max: 20 }));
+app.use('/api/apply', rateLimit({ bucket: 'apply', windowMs: 60000, max: 10 }));   // public application submit (creates real files)
 app.use('/api/leads', rateLimit({ bucket: 'leads', windowMs: 60000, max: 20 }));
 // #75 guest chat is magic-link (key) authenticated + public — rate-limit it.
 app.use('/api/guest', rateLimit({ bucket: 'guest', windowMs: 60000, max: 90 }));
@@ -113,6 +117,25 @@ app.get('/api/health', async (req, res) => {
   }
   let storageInfo;
   try { storageInfo = require('./lib/storage').probe(); } catch (e) { storageInfo = { ok: false, error: e.message }; }
+  // Storage CARD (owner-directed 2026-07-26, after the R2 cutover). The flat storage* fields
+  // below only say whether the settings are present; for an object store that is not the same
+  // as "the bucket answers". This does a real, time-bounded round-trip when the provider
+  // supports one, so a revoked token surfaces here instead of on a borrower's upload.
+  let storageCard;
+  try {
+    // `swr` — serve the last known verdict instantly and refresh in the background. Only the very
+    // first caller (no verdict yet) ever waits. This endpoint is Render's health check AND is
+    // polled by every open tab, so it must never pay a full storage timeout on a TTL boundary.
+    storageCard = await require('./lib/storage-health')
+      .readStorageHealth(require('./lib/storage'), cfg.storageProvider, { swr: true });
+    // Shape parity on failure: return the canonical 8-field card (all-null) rather than a partial
+    // object, so a consumer reading e.g. `.configured` never gets `undefined`.
+    // Shape parity on failure: the canonical 8-field card, and carry the FAILURE as the reason —
+    // a bare card would read back the reassuring "local disk" line even though the read threw.
+  } catch (e) {
+    storageCard = require('./lib/storage-health')
+      .buildStorageCard({ provider: cfg.storageProvider, probe: { ok: false, error: 'storage health unavailable' } });
+  }
   // Missing-conditions tripwire (owner-directed 2026-07-14, after the breach):
   // a LIVE file sitting at zero checklist items, or an RTL file without its
   // purchase-contract condition, must be impossible — if it ever happens again
@@ -157,6 +180,9 @@ app.get('/api/health', async (req, res) => {
     storageWritable: storageInfo && storageInfo.ok,
     storagePersistent: storageInfo && storageInfo.persistent,
     storageBase: storageInfo && storageInfo.base,
+    // The full card (provider, live reachability, dual-read migration state). The four flat
+    // fields above are kept verbatim for back-compat with anything already reading them.
+    storageHealth: storageCard,
     // SharePoint one-way sync status (config + last reconciliation pass; cheap —
     // no live Graph call on the health path).
     sharepointSync: (() => { try { return require('./lib/sharepoint-backup').health(); } catch (e) { return { enabled: false, error: e.message }; } })(),
@@ -177,6 +203,18 @@ app.get('/api/health', async (req, res) => {
     ts: Date.now(),
   });
 });
+// BORROWER VIEW guard (owner-directed 2026-07-26) — mounted GLOBALLY, ABOVE
+// every router (including /auth), so the handful of actions a staffer may not
+// perform while standing inside a borrower's portal are refused STRUCTURALLY:
+// executing an e-signature in the borrower's name, changing their two-factor
+// settings, signing the REAL borrower out of their own devices (/auth/logout
+// bumps their token_version), or nesting another borrower view. Position
+// matters — mounted after /auth it would not cover the /auth routes at all.
+// A borrower route added tomorrow inherits the guard automatically; there is no
+// per-handler check to forget. Inert for every ordinary request: it returns on
+// the first line unless the bearer token actually carries a borrower-view
+// envelope. See src/lib/borrower-view.js.
+app.use(require('./lib/borrower-view').guard);
 app.use('/auth', require('./auth').router);
 app.use('/api/roster', require('./routes/roster'));   // public team roster (site dropdown + ?lo branding)
 // Public company pricing defaults — the marketing term-sheet generator + the
@@ -193,6 +231,10 @@ app.use('/api/address', require('./routes/address')); // address autocomplete/ve
 app.use('/api/leads', require('./routes/leads'));     // public marketing-tool submissions (saved + emailed server-side)
 app.use('/api/guest', require('./routes/guest-chat')); // #75 magic-link guest chat (key-authenticated, public)
 app.use('/api/intake', require('./routes/intake'));
+// The site's OWN application submit (public, bot-defended with the shared form
+// token + honeypot) — same intake core as /api/intake, plus the immediate
+// create-your-login step. No more mail-client fallbacks on the marketing site.
+app.use('/api/apply', require('./routes/apply'));
 // Public e-signature bounce endpoint (/api/esign/return) — where a signer lands
 // after signing; resolves the real destination from our DB and 302s into the
 // portal. The Connect webhook (/api/esign/webhook) is mounted above, pre-JSON.
@@ -200,12 +242,19 @@ app.use('/api/esign', require('./routes/esign-public'));
 // Public token-authenticated draw-findings accept (the one-click "Accept" link we email the
 // borrower — the reply_token is the capability; no login needed to release their own money).
 app.use('/api/public/draw-findings', rateLimit({ bucket: 'draw-public', windowMs: 60000, max: 60 }), require('./routes/draw-findings-public'));
+// Start / leave / audit a borrower view. Mounted outside /api/staff because the
+// leave + status calls are made while holding a BORROWER-kind token.
+app.use('/api/borrower-view', require('./routes/borrower-view'));
 app.use('/api/borrower', require('./routes/borrower'));
 app.use('/api/borrower', require('./routes/borrower-draws')); // borrower draw status + findings accept/dispute + change requests
 app.use('/api/staff', require('./routes/staff'));
 // Sitewire construction-draw desk + admin. The router applies requireAuth +
 // requireStaff + per-route capability gates (manage_draws / platform_setup) itself.
 app.use('/api/sitewire', require('./routes/sitewire'));
+
+// TrustPoint mirror (physical-draw workflow phases 2-3): the STAFF router (auth wall
+// + per-route capability gates). The public webhook is mounted earlier, pre-parser.
+app.use('/api/trustpoint', require('./routes/trustpoint'));
 // Appraisal desk: import the appraisal XML, reconcile it against the file, and resolve
 // PILOT findings. The router applies requireAuth + requireStaff + per-file scoping itself.
 app.use('/api/appraisal', require('./routes/appraisal'));
@@ -253,6 +302,10 @@ app.use('/api/underwriting', require('./routes/underwriting'));
   app.use('/api/admin/labeling', requireAuth, requireStaff, require('./routes/admin-labeling'));
   // Sovereign Insights portfolio dashboard (owner-directed 2026-07-22, R2.6).
   app.use('/api/admin/insights', requireAuth, requireStaff, require('./routes/admin-insights'));
+  // Pipeline V2 vendor health (owner-directed 2026-07-26, Phase 1e): a LIVE reachability
+  // check for every document/AI vendor reached through the new Layer-2 adapter contract, so
+  // the owner can prove each key works once entered. Read-only; the router adds requireStaff.
+  app.use('/api/admin/pipeline', requireAuth, requireStaff, require('./routes/admin-pipeline'));
   app.use('/api/admin', requireAuth, requireStaff, require('./routes/admin'));
 }
 // SSE stream (live chat/presence/receipts). Mounted OUTSIDE the authenticated
@@ -505,6 +558,12 @@ if (require.main === module) {
         require('./lib/appraisal/desk').backfillAppraisalCompSplitOnce()
           .then((r) => r && r.split && console.log('[boot] appraisal comp-split backfill:', JSON.stringify(r)))
           .catch((e) => console.error('[boot] appraisal comp-split backfill failed:', e.message));
+        // NOTE: the As-Is / ARV read is GOING FORWARD ONLY (owner-directed 2026-07-28) — a deliberate
+        // exception to the previous-AND-future rule, because that sweep WRITES loan values and
+        // re-reading the back book would rewrite numbers on files people have already worked, all at
+        // once, unwatched. New appraisal imports are read; old ones are left alone. The sweep still
+        // exists (desk.backfillAsIsReadsOnce) behind APPRAISAL_ASIS_SWEEP_FILES for a deliberate,
+        // bounded, hand-run pass — it is intentionally NOT booted here.
         // Email Center history (owner-directed 2026-07-20): mirror the prior
         // notification + inbound-reply history into the email_messages store so
         // every file's new Email Center shows its BACKDATED history. Lightweight
@@ -513,6 +572,55 @@ if (require.main === module) {
         require('./lib/email-log').backfillEmailHistoryOnce()
           .then((r) => r && (r.notifs || r.inbound) && console.log('[boot] email history backfill:', JSON.stringify(r)))
           .catch((e) => console.error('[boot] email history backfill failed:', e.message));
+        // Investor-Specific Soft Guidelines (ISG-2, owner-directed 2026-07-23): seed the
+        // per-note-buyer condition guidelines from the checked-in CorrFirst "Fix & Flip
+        // Purchase" spec into note_buyer_conditions. Idempotent (ON CONFLICT), never throws.
+        // Previous-files fix (owner-reported 2026-07-26): addresses that the
+        // keyless geocode fallback overwrote with the raw OpenStreetMap display
+        // name ("26, South 10th Street, Williamsburg, Brooklyn, Kings County,
+        // New York, 11249, United States") are rewritten to the mailing form
+        // ClickUp shows ("26 S 10th St, Brooklyn, NY 11249, USA"). Only touches
+        // records that ARE in the long form; idempotent, bounded, self-draining.
+        // Owner-reported 2026-07-26 evening: the sync-review queue filled with
+        // "Borrower home address" rows where both sides were the SAME address
+        // written differently (", USA", "Apt 4d" vs "4D", "Avenue" vs "Ave", the
+        // municipality vs the mailing city). Retire those; a real difference —
+        // house number, street, ZIP, state, unit — stays open for a human.
+        require('./lib/address-review-close').closeEquivalentAddressReviewsOnce()
+          .then((r) => r && r.closed && console.log('[boot] address reviews auto-closed:', JSON.stringify(r)))
+          .catch((e) => console.error('[boot] address review close failed:', e.message));
+        // Owner-reported 2026-07-28: rows a reviewer had ALREADY dismissed came
+        // back, and one conflict could hold two open cards, because the guard was
+        // keyed on the Encompass LOAN the conflict arrived on rather than on the
+        // person + the address. The producer is fixed; this retires the rows that
+        // already piled up. Exactly one card per question always survives.
+        require('./lib/address-review-close').closeSupersededAddressReviewsOnce()
+          .then((r) => r && (r.closedDecided || r.closedDuplicate)
+            && console.log('[boot] superseded address reviews retired:', JSON.stringify(r)))
+          .catch((e) => console.error('[boot] superseded address review close failed:', e.message));
+        require('./lib/address-heal').healProviderLongAddressesOnce()
+          .then((r) => r && r.fixed && console.log('[boot] address format repair:', JSON.stringify(r)))
+          .catch((e) => console.error('[boot] address format repair failed:', e.message));
+        // Previous-files fix (owner-directed 2026-07-27): a borrower's name is now
+        // THREE fields (first / middle / last, + suffix) so it lines up with the way
+        // Encompass, MISMO and every closing document model a person. This splits the
+        // names already stored merged by the old one-line ClickUp splitter
+        // ("Issac Michael" / "Grunzweig" -> "Issac" / "Michael" / "Grunzweig"). It only
+        // ever REARRANGES a name, never restates one, and flags the judgement calls for
+        // a human to confirm. Bounded, resumable, idempotent; never blocks boot.
+        require('./lib/name-heal').healBorrowerNamesOnce()
+          .then((r) => r && r.split && console.log('[boot] borrower name split:', JSON.stringify(r)))
+          .catch((e) => console.error('[boot] borrower name split failed:', e.message));
+        require('./lib/underwriting/investor-guidelines/seed').seedNoteBuyerConditions()
+          .then((r) => r && r.ok && console.log('[boot] note-buyer conditions seed:', JSON.stringify(r)))
+          .catch((e) => console.error('[boot] note-buyer conditions seed failed:', e.message));
+        // Retract stale guideline findings on files nobody has re-opened (owner 2026-07-26: "fix
+        // this also for all the previous files"). Retraction otherwise only runs on a file view, so
+        // a corrected rule left its now-wrong notice open on un-viewed files. Retract-only — never
+        // raises, so no boot-time notification burst. Best-effort; never blocks boot.
+        require('./lib/underwriting/investor-guidelines/desk-sync').backfillGuidelineRetractions()
+          .then((r) => r && r.retracted && console.log('[boot] guideline-retraction backfill:', JSON.stringify(r)))
+          .catch((e) => console.error('[boot] guideline-retraction backfill failed:', e.message));
       } catch (e) {
         console.error('[migrate] unexpected error (continuing):', require('./db').describeError(e));
       }
@@ -548,6 +656,11 @@ if (require.main === module) {
     // Self-gated by SITEWIRE_ENABLED (+ SITEWIRE_OUTBOUND_ENABLED for writes); inert
     // otherwise. Manages ONLY properties PILOT created (only-ours rule).
     try { require('./sync/sitewire-sync').start(); } catch (e) { console.warn('sitewire sync not started:', e.message); }
+    // TrustPoint mirror poller (physical-draw workflow phase 2): webhook inbox drain +
+    // draw watermark poll + project discovery sweep. Self-gated by TRUSTPOINT_ENABLED
+    // + the API key; read-only toward TrustPoint (webhook registration is the one
+    // journaled write, and it only happens from the admin route).
+    try { require('./trustpoint/poller').start(); } catch (e) { console.warn('trustpoint poller not started:', e.message); }
     // Encompass READ-ONLY pull worker (owner-directed 2026-07-22). Self-gates on
     // ENCOMPASS_ENABLED=1 + ENCOMPASS_* env creds. Never writes to Encompass
     // (structurally impossible via src/lib/integrations/encompass.js); writes ONLY
@@ -562,6 +675,18 @@ if (require.main === module) {
     // periodically. Gates fall back to their env default until this loads, so it's safe if it lags.
     try { require('./lib/flags').start(); } catch (e) { console.warn('flags cache not started:', e.message); }
     try { require('./lib/notification-digests').start(); } catch (e) { console.warn('notification digests not started:', e.message); }
+    // Pipeline V2 durable document-processing worker (owner-directed 2026-07-26). Drains the
+    // document_pipeline_jobs queue through the packet-control processor (records the stage manifest
+    // + routing decision). It is a NO-OP unless UW_WORKER_ENABLED — so this boot call is inert by
+    // default and everyone stays on Pipeline V1. Nothing enqueues shadow jobs until the shadow gate
+    // (enqueue-on-upload) is also switched on, so the worker simply finds an empty queue.
+    // The start-up sequence lives in ONE shared helper so the web service and the standalone worker
+    // service (src/worker.js) can never drift into reading documents differently. Once the separate
+    // Render worker is running, this service sets UW_WORKER_ENABLED=false and the call below becomes
+    // a no-op — the reader no longer competes with borrower page loads for this process.
+    try {
+      require('./pipeline/start').startPipelineWorker({ db: require('./db'), cfg });
+    } catch (e) { console.warn('pipeline worker not started:', e.message); }
     // Loan-officer Notification Center drainer — schedules parked drafts,
     // auto-sends the untouched ones past the SLA, wakes snoozed rows. Kill-switch
     // NOTIFY_WORKER_ENABLED=0.

@@ -51,6 +51,54 @@
     clearTimeout(flash._t); flash._t = setTimeout(function () { f.classList.remove("show"); }, 3200);
   }
 
+  /* Read the documents out of a drop event — INCLUDING one dragged straight out
+     of the Outlook desktop app. An Outlook attachment is not a file on disk, so
+     Windows offers it as a "virtual file" (CFSTR_FILEDESCRIPTOR) rather than as
+     the CF_HDROP path list that `dataTransfer.files` reads; the File System
+     Access API's getAsFileSystemHandle() (Chrome/Edge 86+) is what reaches its
+     bytes. Try both, keep whichever produces real bytes, and treat a 0-byte
+     result as a failure rather than filing an empty document.
+
+     Everything is read off the event SYNCHRONOUSLY — a DataTransfer is emptied
+     the moment the handler returns, so there may be no await before this block
+     finishes. This is the plain-JS twin of app-v2/src/lib/drop-files.js (the
+     static tools have no bundler, the same way the pricing engines are copied);
+     keep the two in step. */
+  function readDroppedFiles(e) {
+    var dt = e && e.dataTransfer;
+    if (!dt) return Promise.resolve({ files: [], problem: "" });
+    var slice = Function.prototype.call.bind(Array.prototype.slice);
+    var direct = [], items = [];
+    try { direct = slice(dt.files || []); } catch (_) { direct = []; }
+    try {
+      items = slice(dt.items || []).filter(function (it) { return it && it.kind === "file"; });
+    } catch (_) { items = []; }
+    var handles = items.map(function (it) {
+      try { return typeof it.getAsFileSystemHandle === "function" ? it.getAsFileSystemHandle() : null; }
+      catch (_) { return null; }
+    });
+    var itemFiles = items.map(function (it) { try { return it.getAsFile(); } catch (_) { return null; } });
+    if (!direct.length && !items.length) return Promise.resolve({ files: [], problem: "" });
+
+    function settle(extra) {
+      var seen = {}, out = [];
+      extra.concat(direct, itemFiles).forEach(function (f) {
+        if (!f || !f.name || !(Number(f.size) > 0)) return;
+        var key = f.size + ":" + f.name;
+        if (seen[key]) return;
+        seen[key] = 1; out.push(f);
+      });
+      return out.length ? { files: out, problem: "" }
+        : { files: [], problem: "That didn't come through as a file. Drag it to your desktop first, then drop it here — or use the upload button." };
+    }
+    return Promise.all(handles.map(function (p) {
+      return p && typeof p.then === "function"
+        ? p.then(function (h) { return h && h.kind === "file" && typeof h.getFile === "function" ? h.getFile() : null; })
+           .catch(function () { return null; })
+        : Promise.resolve(null);
+    })).then(settle).catch(function () { return settle([]); });
+  }
+
   /* ---- server row <-> tool prop mapping ---- */
   function dstr(v) { return v ? String(v).slice(0, 10) : ""; }
   function nstr(v) { return v == null || v === "" ? "" : String(Math.round(Number(v))); }
@@ -586,10 +634,12 @@
         card.addEventListener(ev, function (e) { e.preventDefault(); e.stopPropagation(); card.classList.remove("tr-dropping"); });
       });
       card.addEventListener("drop", function (e) {
-        if (e.dataTransfer && e.dataTransfer.files && e.dataTransfer.files.length) {
-          var sel = card.querySelector(".tr-doc-type");
-          uploadFilesToRecord(p, e.dataTransfer.files, null, sel && sel.value);
-        }
+        readDroppedFiles(e).then(function (r) {
+          if (r.files.length) {
+            var sel = card.querySelector(".tr-doc-type");
+            uploadFilesToRecord(p, r.files, null, sel && sel.value);
+          } else if (r.problem) flash(r.problem);
+        });
       });
     }
     main.appendChild(strip);

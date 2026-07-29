@@ -4,6 +4,7 @@ import { api, saveBlob } from '../lib/api.js';
 import { fmtDay } from '../lib/dates.js';
 import { formatSSN, cleanFICO, ficoValid } from '../lib/validators.js';
 import { ESIGN_RETURN_MSG } from '../lib/esign.js';
+import { conditionStatusLabel } from '../lib/conditions-vocab.js';
 import ChatThread from '../components/ChatThread.jsx';
 import { useAuth } from '../lib/auth.jsx';
 import PropertyPhoto from '../components/PropertyPhoto.jsx';
@@ -11,10 +12,13 @@ import ActivityFeed from '../components/ActivityFeed.jsx';
 import StatusTimeline from '../components/StatusTimeline.jsx';
 import ProductStudioPanel from '../components/ProductStudioPanel.jsx';
 import { programLabel, loanTypeLabel, propertyTypeLabel, officerLabel } from '../lib/labels.js';
+import { PROPERTY_TYPES } from '../lib/enums.js';
 import ToolModal from '../components/ToolModal.jsx';
 import LlcPicker from '../components/LlcPicker.jsx';
 import LlcManager from '../components/LlcManager.jsx';
 import FileSections, { Section, InfoTip } from '../components/FileSections.jsx';
+import { captureScrollAnchor, restoreScrollAnchor } from '../lib/keep-scroll.js';
+import { onFilesDropped } from '../lib/drop-files.js';
 import EsignBorrowerCard from '../components/EsignBorrowerCard.jsx';
 import { MoneyInput, PhoneInput, ZipInput , EmailInput} from '../components/FormattedInputs.jsx';
 import DocPreview from '../components/DocPreview.jsx';
@@ -23,6 +27,7 @@ import ChangeRequestPanel from '../components/ChangeRequestPanel.jsx';
 import BorrowerDraws from '../components/BorrowerDraws.jsx';
 import AppraisalPanel from '../components/AppraisalPanel.jsx';
 import { fileToBase64 } from '../lib/files.js';
+import { fullNameOf } from '../lib/personName.js';
 
 const kb = (n) => n == null ? '' : (n < 1024 ? n + ' B' : n < 1048576 ? (n / 1024).toFixed(0) + ' KB' : (n / 1048576).toFixed(1) + ' MB');
 const money = (n) => n == null ? '—' : '$' + Number(n).toLocaleString('en-US', { maximumFractionDigits: 0 });
@@ -32,7 +37,10 @@ const addrLine = (a) => !a ? '—' : (a.oneLine || [a.street || a.line1, a.city,
 const LABEL = { file_intake: 'Intake', new: 'Submitted', in_review: 'In review', processing: 'Processing', underwriting: 'Underwriting', approved: 'Approved', clear_to_close: 'Clear to close', funded: 'Funded' };
 
 const isDone = (s) => s === 'received' || s === 'satisfied' || s === 'done';
-const statusText = (it) => it.status === 'issue' ? 'Needs attention' : it.status === 'received' ? 'Submitted' : it.status === 'satisfied' ? 'Completed' : 'To do';
+// The words come from lib/conditions-vocab.js so the borrower and the staff file
+// describe one condition with ONE word. This screen used to say "Submitted" where
+// staff said "In review", and "Completed" where staff said "Done".
+const statusText = (it) => conditionStatusLabel(it.status);
 
 // Contact conditions are FORMS, not uploads: the borrower enters their title /
 // insurance contact once; it saves to a reusable contact book.
@@ -107,10 +115,11 @@ function CardCondition({ it, appId, onSaved }) {
     } catch (e) { setFormErr(e.message || 'Could not save the card'); }
     finally { setBusy(false); }
   }
-  // Card scan via a HOSTED OCR API (owner choice, 2026-07-07). The photo is sent
-  // to our backend, which proxies to the OCR provider and returns the parsed
-  // number + expiry — the image is never persisted and card data is never
-  // logged. The borrower confirms/edits before saving; manual entry always works.
+  // Card scan via our best-in-class vision reader (Azure OpenAI GPT-5, the same
+  // reader the underwriting engine uses), with hosted OCR as a fallback. The
+  // photo is sent to our backend, read for the number + expiry, and then
+  // discarded — it is never saved and card data is never logged. The borrower
+  // confirms/edits before saving; manual entry always works.
   async function scanCard(file) {
     if (!file) return;
     setFormErr(''); setScanning('Reading your card…');
@@ -148,7 +157,7 @@ function CardCondition({ it, appId, onSaved }) {
         <input ref={scanRef} type="file" accept="image/*" style={{ display: 'none' }}
           onChange={e => { const file = e.target.files && e.target.files[0]; e.target.value = ''; scanCard(file); }} />
         <button type="button" className="btn ghost small" onClick={() => scanRef.current && scanRef.current.click()}>📷 Scan card from a photo</button>
-        <span className="muted small">Read on your device — the photo is never uploaded.</span>
+        <span className="muted small">Used only to read your card — the photo is never saved.</span>
       </div>
       {scanning && <div className="notice info" style={{ marginBottom: 8 }}>{scanning}</div>}
       <div className="grid cols-2">
@@ -193,17 +202,15 @@ function ConditionRow({ done, issue, title, subtitle, status, action, children, 
   const dropProps = onDropFiles ? {
     onDragOver: (e) => { e.preventDefault(); if (!over) setOver(true); },
     onDragLeave: (e) => { if (e.currentTarget === e.target) setOver(false); },
-    onDrop: (e) => {
-      e.preventDefault(); setOver(false);
-      const f = Array.from(e.dataTransfer.files || []);
-      if (f.length) onDropFiles(f);
-    },
+    onDrop: (e) => { e.preventDefault(); setOver(false); onFilesDropped(e, onDropFiles); },
   } : {};
   return (
     <div className={`checkitem${onDropFiles ? ' cond-drop' : ''}${over ? ' drop-over' : ''}`}
       style={{ alignItems: 'flex-start', flexDirection: 'column', gap: 8 }} {...dropProps}>
       <div className="row" style={{ width: '100%', gap: 8, alignItems: 'flex-start' }}>
-        <span className={`dot ${done ? 'done' : 'outstanding'}`} style={{ marginTop: 4, ...(issue ? { background: 'var(--danger)' } : {}) }} />
+        {/* Same colours as before — the red is now a class, not an inline style,
+            so every condition dot in the portal is painted from one place. */}
+        <span className={`dot ${issue ? 'cond-issue' : done ? 'done' : 'outstanding'}`} style={{ marginTop: 4 }} />
         <div style={{ flex: 1 }}>
           <div style={{ fontWeight: 600 }}>{title}</div>
           {subtitle && <div className="muted small">{subtitle}</div>}
@@ -465,7 +472,8 @@ function BorrowerCompleteness({ app, profile, appId, onSaved }) {
   const b = profile || {};
   const fields = [
     { key: 'property_address', label: 'Property address', ok: !!(app.property_address && (app.property_address.oneLine || app.property_address.street)), edit: false },
-    { key: 'property_type', label: 'Property type', ok: !!app.property_type, type: 'select', options: ['SFR', 'Multi 2-4', 'Multi 5+', 'Condo', 'Townhouse', 'Mixed Use'] },
+    // Canonical spellings (lib/enums.js) — a drifted one can't reach ClickUp (#822).
+    { key: 'property_type', label: 'Property type', ok: !!app.property_type, type: 'select', options: PROPERTY_TYPES.map((o) => o.value) },
     { key: 'purchase_price', label: 'Purchase price', ok: app.purchase_price != null, type: 'money' },
     { key: 'arv', label: 'ARV (estimate)', ok: app.arv != null, type: 'money' },
     { key: 'rehab_budget', label: 'Rehab budget', ok: app.rehab_budget != null, type: 'money' },
@@ -580,15 +588,24 @@ export default function Application() {
 
   const activityFetcher = useCallback(() => api.activity(id), [id]);
   const idRef = useRef(id); idRef.current = id;
+  // Every load after the first is a refresh caused by something the borrower just
+  // did (or by the window regaining focus) — it must leave them exactly where they
+  // were reading, even though rows collapse and drop out of the "Open" filter.
+  const firstLoad = useRef(true);
   const load = () => {
     const forId = id;   // drop late responses after navigating to another file
+    const isFirst = firstLoad.current;
+    firstLoad.current = false;
     return Promise.all([
       api.application(id), api.checklist(id), api.documents(id).catch(() => []),
       api.conditions(id).catch(() => []), api.profile().catch(() => null),
       api.trackRecords().catch(() => []), api.trackRecordSnapshot().catch(() => null),
     ]).then(([a, c, d, cn, p, tr, ts]) => {
       if (idRef.current !== forId) return;
+      // Captured right before the re-render, restored once it has painted.
+      const anchor = isFirst ? null : captureScrollAnchor();
       setApp(a); setItems(c || []); setUploads(d || []); setConds(cn || []); setProfile(p); setTrRows(tr || []); setTrSnap(ts || null);
+      restoreScrollAnchor(anchor);
     }).catch(e => { if (idRef.current === forId) setErr(e.message); });
   };
 
@@ -611,6 +628,7 @@ export default function Application() {
     setApp(null); setItems([]); setUploads([]); setConds([]); setErr(''); setMsg('');
     setSowOpen(false); setTarget(null);   // else the Scope-of-Work modal carries over to the next file
     setJustTouched(new Set()); setOfficer(null);
+    firstLoad.current = true;   // a new file opens fresh — nothing to hold
     load();
     api.fileOfficer(id).then(r => setOfficer((r && r.officer) || null)).catch(() => setOfficer(null));
     /* eslint-disable-next-line */
@@ -625,14 +643,24 @@ export default function Application() {
   }, [id]);
   // Chat deep-link (…?chat=<id>): once the file has painted, bring the Messages
   // section into view so the recipient lands on the conversation.
+  //
+  // ONCE PER FILE — this is a LANDING, not something that happens while you work
+  // (same fix as the staff file, owner-reported 2026-07-27). `app` is a brand-new
+  // object after every refresh — an upload, and the window-focus refresh above —
+  // so this used to yank the borrower back to Messages mid-task.
+  const landedChat = useRef(false);
+  useEffect(() => { landedChat.current = false; }, [id]);
   useEffect(() => {
-    if (!wantsChat || !app) return undefined;
+    // `app` still holds the PREVIOUS file for one render after the url changes,
+    // so match it to the url or the landing burns itself on the old file.
+    if (!wantsChat || !app || String(app.id) !== String(id) || landedChat.current) return undefined;
+    landedChat.current = true;
     const t = setTimeout(() => {
       const el = document.getElementById('sec-messages');
       if (el) el.scrollIntoView({ behavior: 'smooth', block: 'start' });
     }, 350);
     return () => clearTimeout(t);
-  }, [wantsChat, app]);
+  }, [wantsChat, app, id]);
 
   const readB64 = fileToBase64;   // shared reader (lib/files.js)
 
@@ -821,7 +849,7 @@ export default function Application() {
       <div className="grid cols-2">
         <div className="panel" style={{ marginTop: 0 }}>
           <h3 style={{ marginBottom: 12 }}>Borrower</h3>
-          <div className="metrow"><span className="k">Name</span><span className="v">{profile ? `${profile.first_name || ''} ${profile.last_name || ''}`.trim() || '—' : '—'}</span></div>
+          <div className="metrow"><span className="k">Name</span><span className="v">{profile ? fullNameOf(profile) || '—' : '—'}</span></div>
           <div className="metrow"><span className="k">Email</span><span className="v">{(profile && profile.email) || '—'}</span></div>
           <div className="metrow"><span className="k">Phone</span><span className="v">{(profile && profile.cell_phone) || '—'}</span></div>
           <SsnRow profile={profile} onSaved={load} />
@@ -955,7 +983,7 @@ export default function Application() {
                   subtitle={app.registered_program
                     ? `Registered: ${app.registered_product_label || (app.registered_program === 'gold' ? 'Gold Standard Program' : 'Standard Program')} · ${money(app.registered_total_loan)}`
                     : 'Price your deal in the Term Sheet Studio and register your product — your terms, cash to close and liquidity requirement all come from it.'}
-                  status={(isDone(ppItem.status) || app.registered_program) ? 'Completed' : 'To do'}
+                  status={(isDone(ppItem.status) || app.registered_program) ? conditionStatusLabel('satisfied') : conditionStatusLabel('outstanding')}
                   open={tsDocs.length > 0}
                   action={<button className="btn primary small" onClick={() => {
                     // Same full-screen tool sheet as the Scope of Work — no
@@ -1369,7 +1397,7 @@ function CoBorrowerRail({ app, onChanged }) {
   const { actor } = useAuth();
   const isPrimary = actor?.id && app.borrower_id === actor.id;
   const [open, setOpen] = useState(false);
-  const [f, setF] = useState({ firstName: '', lastName: '', email: '', phone: '' });
+  const [f, setF] = useState({ firstName: '', middleName: '', lastName: '', email: '', phone: '' });
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState('');
   const coName = [app.co_borrower_first_name, app.co_borrower_last_name].filter(Boolean).join(' ');
@@ -1377,7 +1405,7 @@ function CoBorrowerRail({ app, onChanged }) {
     if (busy) return; setErr('');
     if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test((f.email || '').trim())) { setErr('Enter a valid email address.'); return; }
     setBusy(true);
-    try { await api.inviteCoBorrowerToFile(app.id, f); setOpen(false); setF({ firstName: '', lastName: '', email: '', phone: '' }); await onChanged(); }
+    try { await api.inviteCoBorrowerToFile(app.id, f); setOpen(false); setF({ firstName: '', middleName: '', lastName: '', email: '', phone: '' }); await onChanged(); }
     catch (e) { setErr(e.message || 'Could not invite the co-borrower.'); }
     finally { setBusy(false); }
   }
@@ -1404,6 +1432,7 @@ function CoBorrowerRail({ app, onChanged }) {
         <>
           <div className="grid cols-2" style={{ gap: 8 }}>
             <input className="input" placeholder="First name" value={f.firstName} onChange={e => setF(s => ({ ...s, firstName: e.target.value }))} />
+            <input className="input" placeholder="Middle name (optional)" value={f.middleName} onChange={e => setF(s => ({ ...s, middleName: e.target.value }))} />
             <input className="input" placeholder="Last name" value={f.lastName} onChange={e => setF(s => ({ ...s, lastName: e.target.value }))} />
           </div>
           <EmailInput style={{ marginTop: 8 }} placeholder="Email" value={f.email} onChange={v => setF(s => ({ ...s, email: v }))} />

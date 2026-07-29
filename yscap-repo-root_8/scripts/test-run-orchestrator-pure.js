@@ -91,8 +91,10 @@ ok('a source disagreement → DATA_CONFLICT, blocks CTC + funding');
 out = build({}, {}, { extraFindings: [{ code: 'appraisal_value_low', severity: 'fatal', source: 'appraisal', blocks_ctc: true, title: 'Appraisal value below sizing' }] });
 assert.ok(out.findings.some((f) => f.code === 'appraisal_value_low'), 'the appraisal finding is in the one registry');
 assert.strictEqual(out.ctcEligible, false, 'a fatal appraisal finding blocks CTC');
-assert.strictEqual(out.termSheetEligible, true, 'but the term sheet can still issue (no term-sheet block on it)');
-ok('an appraisal/desk finding flows into the ONE registry and gates CTC');
+// Fix 2026-07-23: any fatal blocks the term sheet too (summarize now mirrors
+// issuance-gate.blockersFor, which always listed a fatal as a TS blocker).
+assert.strictEqual(out.termSheetEligible, false, 'a fatal blocks the term sheet as well');
+ok('an appraisal/desk finding flows into the ONE registry and gates every issuance');
 
 // --- pricedDrift derives stale from a CONTEXT discrepancy on a priced field ---
 // (the audit-fixed path: runWholeLoan builds staleChanged from the context's
@@ -109,10 +111,81 @@ assert.ok(drift.some((d) => d.key === 'purchase_price' && d.from === 400000 && d
 assert.ok(!drift.some((d) => d.key === 'borrower_name'), 'a non-priced discrepancy is not treated as priced-input drift');
 ok('pricedDrift derives stale from priced-field context discrepancies (casing-agnostic, audit fix)');
 
+// --- #264: an APPRAISAL value differing from the priced/pro-forma value is ADVISORY, NOT a
+//     whole-run DATA_CONFLICT or STALE. The appraisal is an independent observation the appraisal
+//     desk evaluates (asis_mismatch/arv_mismatch); the #248 appraisal candidate on as_is_value/arv
+//     must not false-flip healthy files. A genuine application/registration change still flags. ---
+{
+  // pricedDrift: an appraisal-ONLY conflict on a priced field is not stale input.
+  const apprOnly = runInternals.pricedDrift({ discrepancies: [
+    { field: 'arv', governing: { source: 'pricing_engine', value: 600000 }, conflicts: [{ source: 'appraisal', value: 620000 }] },
+  ] });
+  assert.strictEqual(apprOnly.length, 0, 'an appraisal-only difference on a priced field is NOT priced-input drift');
+  // a mixed discrepancy (application AND appraisal) still counts, via the pricing-input conflict.
+  const mixed = runInternals.pricedDrift({ discrepancies: [
+    { field: 'arv', governing: { source: 'pricing_engine', value: 600000 }, conflicts: [{ source: 'appraisal', value: 620000 }, { source: 'application', value: 650000 }] },
+  ] });
+  assert.strictEqual(mixed.length, 1, 'a real application drift still counts even when the appraisal also differs');
+  assert.strictEqual(mixed[0].to, 650000, 'drift uses the pricing-input (application) value, not the appraisal observation');
+
+  // assembleRun: an appraisal arv above the priced arv → still ELIGIBLE, no false drift/conflict.
+  const a = { ...app };                              // app.arv === 600000 (matches the priced arv)
+  const r = { ...reg };                              // reg.inputs.arv === 600000 (governing)
+  const ctxA = wlc.assembleContext({ application: a, registration: r, appraisal: { as_is_value: 400000, arv_value: 620000 } });
+  assert.ok((ctxA.discrepancies || []).some((d) => d.field === 'arv'), 'the appraisal arv disagreement is recorded (advisory) in the context');
+  const outA = run.assembleRun({ context: ctxA, registration: r, programDecision: pa.fromRegistration(r, { missingRequired: !ctxA.ready }) });
+  assert.strictEqual(outA.status, 'ELIGIBLE', 'an appraisal-only value difference does NOT make the run DATA_CONFLICT/STALE');
+  assert.strictEqual(outA.ctcEligible, true, 'an appraisal-only value difference does NOT block CTC');
+  assert.strictEqual(outA.fundingEligible, true, 'an appraisal-only value difference does NOT block funding');
+  assert.ok(!outA.findings.some((f) => f.code === 'registration_input_drift'), 'no spurious priced-input-drift finding from the appraisal');
+  ok('an appraisal value differing from the priced value is advisory (no false DATA_CONFLICT / STALE / drift) [#264]');
+}
+
+// --- Fix 2026-07-23 (#209): caps nested at quote.guidelines.caps (the REAL
+// persisted shape from pricing.quoteProgram) drive the ledger — previously only
+// the fixture-only top-level quote.caps was read, so every cap arrived null and
+// NO structure breach could ever fire on a real registration.
+const { caps: _topCaps, ...quoteNoTopCaps } = goodQuote;
+out = build({}, { quote: { ...quoteNoTopCaps, guidelines: { caps: { ...goodQuote.caps, maxArvLtv: 0.6 } } } });
+assert.ok(out.findings.some((f) => /arv_ltv_over_cap/.test(f.code)),
+  'a breach against guidelines.caps produces a finding (the gate is alive on real quotes)');
+assert.strictEqual(out.termSheetEligible, false, 'the guidelines.caps breach blocks issuance');
+ok('caps at quote.guidelines.caps (real persisted shape) arm the structure gate');
+
+// --- Fix 2026-07-23 (#209): reserve-in-cost LTC — the engine's costBasis
+// (purchase + rehab + financed reserve) must reach the ledger, or a correctly
+// sized reserve-financed loan at exactly the cap would false-breach.
+out = build({}, { total_loan: 508750, quote: { ...goodQuote,
+  caps: { ...goodQuote.caps, maxLtc: 0.925, maxAcqLtv: 0.95, maxArvLtv: 0.9 },
+  sizing: { ...goodQuote.sizing, totalLoan: 508750, financedReserve: 50000, costBasis: 550000 } } });
+const ltcRow = out.calculations.find((c) => c.metric === 'ltc');
+assert.ok(ltcRow && Math.abs(ltcRow.result - 0.925) < 0.001,
+  `LTC measures on the engine costBasis 550k (got ${ltcRow && ltcRow.result})`);
+assert.ok(!out.findings.some((f) => /ltc_over_cap/.test(f.code)),
+  'a loan sized exactly at the cap on a reserve-in-cost basis does not false-breach');
+ok('the ledger LTC uses the engine costBasis (reserve-in-cost) — no false breach');
+
 // --- reproducible source hash ---
 const h1 = build().sourceHash;
 const h2 = build().sourceHash;
 assert.strictEqual(h1, h2, 'same inputs → same run hash');
 ok('the run source hash is reproducible');
+
+// --- investor signals are folded into the source hash (#257) ---
+// A change to a wired investor signal that does NOT move the canonical context (e.g. a flood
+// determination added to an existing appraisal) MUST change source_hash, so the deduped
+// auto-trigger (skipIfUnchanged) can't return a stale run that omits the new investor finding.
+const hNoInv = build().sourceHash;
+const hFlood = build(null, null, { investorInputs: { in_flood_zone: true } }).sourceHash;
+assert.notStrictEqual(hFlood, hNoInv, 'adding in_flood_zone changes the run hash');
+ok('an investor signal (in_flood_zone) is folded into the source hash — a signal-only change forces a fresh run');
+
+const hFlood2 = build(null, null, { investorInputs: { in_flood_zone: true } }).sourceHash;
+assert.strictEqual(hFlood, hFlood2, 'same investor signals → same hash (still reproducible)');
+ok('the investor-signal hash is reproducible (no churn without a real change)');
+
+const hRural = build(null, null, { investorInputs: { in_flood_zone: true, appraisal_rural: true } }).sourceHash;
+assert.notStrictEqual(hRural, hFlood, 'a second signal (appraisal_rural) further changes the hash');
+ok('each distinct investor signal moves the hash — a verified/flood/cash-out change re-runs');
 
 console.log(`\nR6.14 run-orchestrator pure — ${passed} checks passed`);

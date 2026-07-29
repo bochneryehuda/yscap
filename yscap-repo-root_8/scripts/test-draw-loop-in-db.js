@@ -1,0 +1,294 @@
+'use strict';
+/**
+ * test-draw-loop-in-db.js — THE DRAW COORDINATOR IS NEVER OUT OF THE LOOP (owner-directed
+ * 2026-07-28). Two halves of one instruction, each pinned here:
+ *
+ *   1. "The draw coordinator assigned to a file should always be added as a VIEWER on the
+ *      DocuSign package that goes out for the wire request form … receiving notifications
+ *      when it's being signed."  → orchestrate.loadCcViewers adds them (draw_request only).
+ *   2. "On every email that is going out to the borrower about the draw process the draw
+ *      coordinator and the loan officer should always be looped into that email."
+ *      → notify.js loops them in at the ONE borrower fan-out chokepoint, keyed on the
+ *      notification's 'draws' category — so it is true for every draw email that exists
+ *      today AND every one added later, with no call site having to remember.
+ *
+ * Every assertion runs the REAL code path against a REAL Postgres (the resolver's SQL, the
+ * live notify send path, a real buildDefinition). DB-gated: skips cleanly with no
+ * DATABASE_URL. Nothing leaves the process — the email provider is 'none' AND sendMail is
+ * stubbed.
+ *
+ * Run: DATABASE_URL=postgres://… node scripts/test-draw-loop-in-db.js
+ */
+if (!process.env.DATABASE_URL) { console.log('SKIP test-draw-loop-in-db (no DATABASE_URL)'); process.exit(0); }
+process.env.JWT_SECRET = process.env.JWT_SECRET || 'test-secret-draw-loop';
+process.env.SSN_ENCRYPTION_KEY = process.env.SSN_ENCRYPTION_KEY || '0123456789abcdef0123456789abcdef';
+process.env.EMAIL_PROVIDER = 'none';
+process.env.NODE_ENV = 'test';
+
+const fs = require('fs');
+const path = require('path');
+const crypto = require('crypto');
+const REPO = path.join(__dirname, '..');
+const db = require(REPO + '/src/db');
+const cfg = require(REPO + '/src/config');
+const dr = require(REPO + '/src/lib/draw-recipients');
+const notify = require(REPO + '/src/lib/notify');
+const emailMod = require(REPO + '/src/lib/email');
+const orchestrate = require(REPO + '/src/lib/esign/orchestrate');
+
+let pass = 0, fail = 0;
+const ok = (cond, msg) => { if (cond) { pass++; console.log('  ✓', msg); } else { fail++; console.log('  ✗ FAIL', msg); } };
+const TAG = 'dli' + crypto.randomBytes(4).toString('hex');
+// Lowercased: every recipient list in the app is normalized, so a mixed-case fixture
+// address would only ever compare against itself.
+const E = (who) => `${who}.${TAG}@example.com`.toLowerCase();
+
+// ---- the email interceptor --------------------------------------------------
+// notify._emailRow SPLITS the send when it injects an open pixel: the borrower gets the
+// pixel copy with no BCC, and the monitors get a separate pixel-free copy addressed To
+// them (`_skipCapture`). Both shapes mean "this address was looped in", so collect both.
+let sends = [];
+const realSendMail = emailMod.sendMail;
+emailMod.sendMail = async (opts) => { sends.push(opts); return { ok: true, id: 'stub' }; };
+const lower = (v) => String(v == null ? '' : v).trim().toLowerCase();
+function monitorsOf(calls) {
+  const s = new Set();
+  for (const c of calls) {
+    for (const e of [].concat(c.bcc || [])) s.add(lower(e));
+    if (c._skipCapture) for (const e of [].concat(c.to || [])) s.add(lower(e));
+  }
+  return s;
+}
+function toAddrsOf(calls) {
+  const s = new Set();
+  for (const c of calls) if (!c._skipCapture) for (const e of [].concat(c.to || [])) s.add(lower(e));
+  return s;
+}
+/** Fire one borrower notification and return { monitors, to } once the send has settled. */
+async function fanOut(appId, opts) {
+  sends = [];
+  await notify.notifyAppBorrowers(appId, opts);
+  await notify.drainEmails();
+  return { monitors: monitorsOf(sends), to: toAddrsOf(sends), calls: sends.slice() };
+}
+
+// ---- fixtures ---------------------------------------------------------------
+const ids = { staff: [], borrowers: [], apps: [] };
+async function seedStaff(role, name, { active = true } = {}) {
+  const id = crypto.randomUUID();
+  await db.query(`INSERT INTO staff_users (id, email, full_name, role, is_active) VALUES ($1,$2,$3,$4,$5)`,
+    [id, E(name), name, role, active]);
+  ids.staff.push(id);
+  return { id, email: E(name), name };
+}
+async function seedBorrower(first, last, who) {
+  const id = crypto.randomUUID();
+  await db.query(`INSERT INTO borrowers (id, first_name, last_name, email) VALUES ($1,$2,$3,$4)`, [id, first, last, E(who)]);
+  ids.borrowers.push(id);
+  return { id, email: E(who) };
+}
+async function seedApp({ borrowerId, coBorrowerId = null, officerId = null, processorId = null, status = 'funded' }) {
+  const id = (await db.query(
+    `INSERT INTO applications (borrower_id, co_borrower_id, loan_officer_id, processor_id, status,
+                               ys_loan_number, property_address, loan_amount, rehab_budget)
+     VALUES ($1,$2,$3,$4,$5,$6,'{"oneLine":"7 Draw Ln, Town, NY 11111","street":"7 Draw Ln","city":"Town","state":"NY","zip":"11111"}',400000,50000)
+     RETURNING id`,
+    [borrowerId, coBorrowerId, officerId, processorId, status, `YS${TAG.toUpperCase()}${ids.apps.length}`])).rows[0].id;
+  ids.apps.push(id);
+  return id;
+}
+
+async function main() {
+  // -------------------------------------------------------------------------
+  console.log('\n1. drawCoordinatorsForFile — WHICH coordinator is "assigned to this file"');
+  // -------------------------------------------------------------------------
+  const lo = await seedStaff('loan_officer', 'officer');
+  const loAssistant = await seedStaff('loan_officer', 'officer2');
+  const processor = await seedStaff('processor', 'processor');
+  const coordA = await seedStaff('draw_coordinator', 'coordA');     // started THIS file's draws
+  const coordB = await seedStaff('draw_coordinator', 'coordB');     // another active coordinator
+  const coordGone = await seedStaff('draw_coordinator', 'coordGone', { active: false });
+  const borrower = await seedBorrower('Pat', 'Borrower', 'borrower');
+  const coBorrower = await seedBorrower('Chris', 'Co', 'coborrower');
+
+  const appA = await seedApp({ borrowerId: borrower.id, coBorrowerId: coBorrower.id, officerId: lo.id, processorId: processor.id });
+  await db.query(
+    `INSERT INTO sitewire_property_links (application_id, matched_by, state, draw_setup_started_at, draw_setup_started_by)
+     VALUES ($1,'created','live',now(),$2)`, [appA, coordA.id]);
+
+  let people = await dr.drawCoordinatorsForFile(appA);
+  ok(people.length === 1 && people[0].id === coordA.id, 'the coordinator who STARTED this file\'s draw process is the file\'s coordinator');
+  ok(people[0].src === 'started_draw', '…recorded with its source, so the precedence is auditable');
+
+  // A second file whose draws were handed to coordB through the Workflow (no Sitewire link).
+  const appB = await seedApp({ borrowerId: borrower.id, officerId: lo.id });
+  const wfId = (await db.query(
+    `INSERT INTO workflow_items (application_id, submission_type, to_staff_id, to_role, status)
+     VALUES ($1,'draw_setup',$2,'draw_coordinator','open') RETURNING id`, [appB, coordB.id])).rows[0].id;
+  people = await dr.drawCoordinatorsForFile(appB);
+  ok(people.length === 1 && people[0].id === coordB.id, 'a LIVE draw hand-off in the Workflow names the file\'s coordinator too');
+
+  await db.query(`UPDATE workflow_items SET status='returned' WHERE id=$1`, [wfId]);
+  ok((await dr.drawCoordinatorsForFile(appB)).length === 0, 'a CLOSED hand-off no longer claims the file (the desk fallback takes over)');
+  await db.query(`UPDATE workflow_items SET status='open' WHERE id=$1`, [wfId]);
+
+  // A deactivated coordinator can't receive anything, so they are never resolved.
+  await db.query(`UPDATE staff_users SET is_active=false WHERE id=$1`, [coordA.id]);
+  ok((await dr.drawCoordinatorsForFile(appA)).length === 0, 'a DEACTIVATED coordinator is not the file\'s coordinator');
+  await db.query(`UPDATE staff_users SET is_active=true WHERE id=$1`, [coordA.id]);
+
+  ok((await dr.drawCoordinatorsForFile(null)).length === 0, 'no file → no coordinator (never throws)');
+  ok(Array.isArray(await dr.drawCoordinatorsForFile('not-a-uuid')), 'a garbage id returns a list instead of throwing into a notification path');
+
+  // -------------------------------------------------------------------------
+  console.log('\n2. drawTeamBcc / drawLoopInBcc — the desk, the file\'s coordinator, the officer');
+  // -------------------------------------------------------------------------
+  let team = await dr.drawTeamBcc(appA);
+  ok(team.includes(dr.DRAW_DESK_INBOX), 'the shared draws@ desk is always on the list');
+  ok(team.includes(coordA.email), 'the FILE\'s coordinator is on the list');
+  ok(!team.includes(coordB.email), '…and an unrelated coordinator is NOT — this is per-file, not the whole desk');
+  ok(!team.includes(coordGone.email), 'a deactivated coordinator is never mailed');
+
+  const appNoCoord = await seedApp({ borrowerId: borrower.id, officerId: lo.id });
+  team = await dr.drawTeamBcc(appNoCoord);
+  ok(team.includes(coordA.email) && team.includes(coordB.email),
+    'a file with NOBODY assigned falls back to the whole active desk — a draw email is never uncovered');
+  ok((await dr.drawTeamBcc()).includes(coordB.email), 'called with no file at all it is the old desk-wide behavior (back-compat)');
+
+  let loop = await dr.drawLoopInBcc(appA);
+  ok(loop.includes(coordA.email) && loop.includes(dr.DRAW_DESK_INBOX) && loop.includes(lo.email),
+    'the loop-in = the file\'s coordinator + the desk + the file\'s LOAN OFFICER');
+  await db.query(
+    `INSERT INTO application_assignees (application_id, staff_id, role, is_primary) VALUES ($1,$2,'loan_officer',false)
+     ON CONFLICT DO NOTHING`, [appA, loAssistant.id]);
+  loop = await dr.drawLoopInBcc(appA);
+  ok(loop.includes(loAssistant.email), 'an assistant loan officer on the file is looped in too (#113)');
+  ok(!loop.includes(processor.email), 'the processor is not part of the owner\'s draw loop-in rule');
+
+  // -------------------------------------------------------------------------
+  console.log('\n3. EVERY borrower draw email loops them in (the notify chokepoint)');
+  // -------------------------------------------------------------------------
+  // One case per draw notification type actually sent to borrowers today.
+  const DRAW_TYPES = ['draw', 'draw_setup', 'draw_findings', 'draw_message', 'draw_dispute_resolved', 'draw_request'];
+  for (const type of DRAW_TYPES) {
+    const r = await fanOut(appA, { type, title: `A ${type} email`, body: 'About your construction draw.', applicationId: appA });
+    ok(r.monitors.has(coordA.email) && r.monitors.has(dr.DRAW_DESK_INBOX) && r.monitors.has(lo.email),
+      `"${type}" → the coordinator, the desk and the loan officer are all looped in`);
+    ok(r.to.has(borrower.email) && !r.to.has(coordA.email),
+      `…"${type}" still goes TO the borrower; the internal addresses ride as BCC only`);
+  }
+
+  {
+    // The control: a NON-draw email is untouched by this rule.
+    const r = await fanOut(appA, { type: 'condition_added', title: 'A condition', body: 'Please upload it.', applicationId: appA });
+    ok(!r.monitors.has(coordA.email) && !r.monitors.has(dr.DRAW_DESK_INBOX),
+      'a NON-draw borrower email does NOT pull in the draw desk (the rule is scoped to the draw process)');
+    ok(r.monitors.has(lo.email), '…the loan officer still rides it, exactly as before');
+  }
+
+  {
+    // "ALWAYS" means always: the global CC_LO_ON_BORROWER switch does not govern draws.
+    const prev = cfg.ccLoanOfficerOnBorrowerEmail;
+    cfg.ccLoanOfficerOnBorrowerEmail = false;
+    try {
+      const draw = await fanOut(appA, { type: 'draw', title: 'Released', body: 'On its way.', applicationId: appA });
+      ok(draw.monitors.has(lo.email) && draw.monitors.has(coordA.email),
+        'with CC_LO_ON_BORROWER OFF the officer + coordinator are STILL looped in on a draw email ("always")');
+      const other = await fanOut(appA, { type: 'condition_added', title: 'A condition', body: 'x', applicationId: appA });
+      ok(!other.monitors.has(lo.email), '…while a non-draw email honors the switch (nothing else changed)');
+    } finally { cfg.ccLoanOfficerOnBorrowerEmail = prev; }
+  }
+
+  {
+    // A caller that already passes its own bccExtra keeps it — the loop-in is ADDITIVE.
+    const r = await fanOut(appA, { type: 'draw', title: 'Released', body: 'x', applicationId: appA, bccExtra: ['extra.' + TAG + '@example.com'] });
+    ok(r.monitors.has('extra.' + TAG + '@example.com') && r.monitors.has(coordA.email),
+      'a caller-supplied bccExtra survives alongside the loop-in (additive, never a replacement)');
+  }
+
+  {
+    // No duplicate monitor copies on a file with a co-borrower.
+    const r = await fanOut(appA, { type: 'draw', title: 'Released', body: 'x', applicationId: appA });
+    ok(r.to.has(borrower.email) && r.to.has(coBorrower.email), 'both borrowers are told');
+    const deskCopies = r.calls.filter((c) => monitorsOf([c]).has(coordA.email)).length;
+    ok(deskCopies === 1, 'the coordinator gets exactly ONE copy, not one per borrower');
+  }
+
+  {
+    // A file with no coordinator assigned still reaches the desk.
+    const r = await fanOut(appNoCoord, { type: 'draw', title: 'Released', body: 'x', applicationId: appNoCoord });
+    ok(r.monitors.has(dr.DRAW_DESK_INBOX) && r.monitors.has(lo.email),
+      'a file with no coordinator assigned still reaches the draw desk + the officer');
+  }
+
+  // -------------------------------------------------------------------------
+  console.log('\n4. The WIRE REQUEST FORM copies the coordinator as a DocuSign viewer');
+  // -------------------------------------------------------------------------
+  {
+    const wire = (await orchestrate.loadCcViewers(db, appA, 'draw_request')).map((v) => lower(v.email));
+    ok(wire.includes(coordA.email), 'the file\'s draw coordinator is a viewer on the wire-request package');
+    ok(wire.includes(dr.DRAW_DESK_INBOX), '…and so is the shared draw desk, so the envelope is never uncovered');
+    ok(wire.includes(lo.email) && wire.includes(processor.email), '…alongside the loan officer + processor (unchanged)');
+    ok((await orchestrate.loadCcViewers(db, appA, 'draw_request')).every((v) => v.name && v.email),
+      'every viewer carries a name + email (DocuSign rejects a nameless recipient)');
+
+    const iska = (await orchestrate.loadCcViewers(db, appA, 'heter_iska')).map((v) => lower(v.email));
+    ok(!iska.includes(coordA.email) && !iska.includes(dr.DRAW_DESK_INBOX),
+      'an ORIGINATION package does not copy the draw desk — the rule is scoped to the wire request form');
+    ok(iska.includes(lo.email), '…the origination package still copies the file team exactly as before');
+  }
+
+  {
+    // End-to-end: a REAL draw_request envelope, built the way the send path builds it.
+    const envRow = (await db.query(
+      `INSERT INTO esign_envelopes (application_id, purpose, status, countersign_required)
+       VALUES ($1,'draw_request','not_sent',false) RETURNING *`, [appA])).rows[0];
+    await db.query(
+      `INSERT INTO esign_recipients (envelope_row_id, role, routing_order, recipient_id_ds, borrower_id, name, email, embedded, client_user_id, status)
+       VALUES ($1,'borrower',1,'1',$2,'Pat Borrower',$3,true,$4,'created')`,
+      [envRow.id, borrower.id, borrower.email, `${envRow.id}:borrower`]);
+    const def = await orchestrate.buildDefinition(envRow, { db });
+    const cc = (def.carbonCopies || []).map((c) => lower(c.email));
+    ok(cc.includes(coordA.email), 'buildDefinition really carries the coordinator onto the wire-form envelope');
+    ok(cc.includes(dr.DRAW_DESK_INBOX), '…and the draw desk');
+    ok(!cc.includes(borrower.email), 'the signing borrower is never also a viewer');
+    const ccIds = (def.carbonCopies || []).map((c) => Number(c.recipientId));
+    ok(ccIds.length === new Set(ccIds).size && ccIds.every((n) => n > 1),
+      'viewer recipientIds are unique and come after the signer (no DocuSign id collision)');
+  }
+
+  // -------------------------------------------------------------------------
+  console.log('\n5. The ONE draw email that must NOT be BCC\'d — the magic signing link');
+  // -------------------------------------------------------------------------
+  {
+    // PILOT's "your wire form is ready to sign" email carries a magic link that signs the
+    // borrower IN AS THEM. BCC'ing staff there would hand a staffer the ability to sign the
+    // wire form in the borrower's legal identity — so it is deliberately excluded, and the
+    // coordinator is looped into that step as a DocuSign VIEWER instead (section 4).
+    const src = fs.readFileSync(path.join(REPO, 'src/lib/esign/notify-signers.js'), 'utf8');
+    const drawSend = src.slice(src.indexOf("mail.send('drawWireReadyToSign'"), src.indexOf("mail.send('esignReadyToSign'"));
+    ok(drawSend.length > 0 && !/\bbcc\b/i.test(drawSend),
+      'the wire-form ready-to-sign email (magic link) is never BCC\'d to staff');
+    ok(/magic signUrl authenticates AS this borrower/.test(src) && /VIEWER on the envelope itself/.test(src),
+      '…and the reason is written down beside it, so it is never "fixed" by adding one');
+  }
+
+  console.log(`\n${fail === 0 ? 'ALL PASS' : 'FAILURES'}: ${pass} passed, ${fail} failed`);
+}
+
+main()
+  .catch((e) => { console.error(e); fail++; })
+  .then(async () => {
+    emailMod.sendMail = realSendMail;
+    try { await notify.drainEmails(); } catch (_) {}
+    for (const a of ids.apps) {
+      await db.query(`DELETE FROM sent_emails WHERE application_id=$1`, [a]).catch(() => {});
+      await db.query(`DELETE FROM email_messages WHERE application_id=$1`, [a]).catch(() => {});
+      await db.query(`DELETE FROM esign_envelopes WHERE application_id=$1`, [a]).catch(() => {});
+      await db.query(`DELETE FROM applications WHERE id=$1`, [a]).catch(() => {});
+    }
+    await db.query(`DELETE FROM borrowers WHERE id = ANY($1)`, [ids.borrowers]).catch(() => {});
+    await db.query(`DELETE FROM staff_users WHERE id = ANY($1)`, [ids.staff]).catch(() => {});
+    await db.pool.end().catch(() => {});
+    process.exit(fail === 0 ? 0 : 1);
+  });

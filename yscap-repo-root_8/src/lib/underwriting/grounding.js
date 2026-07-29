@@ -124,19 +124,101 @@ function groundFields(fields, ocrText) {
   };
 }
 
-// Build the advisory finding when critical extracted values are ABSENT from the document text.
+// Build the advisory finding when critical extracted values could not be confirmed in the document text.
+// Surfaces EVERY unconfirmed CRITICAL value (coverage < 0.5) — the SAME set the engine quarantines out
+// of the deterministic checks (#212). This keeps the "please verify" advisory in lockstep with the
+// quarantine: a critical value held out of the checks is ALWAYS flagged for a human, never silently
+// dropped. `criticalAbsent` (coverage === 0) is the strong fabrication subset; a partial match
+// (0 < coverage < 0.5, a multi-word name/address with fewer than half its words in the OCR) is the
+// weaker "couldn't confirm" case — both belong in the advisory so a human always sees a withheld value.
 function groundingFinding(docType, grounding) {
-  if (!grounding || !grounding.criticalAbsent || !grounding.criticalAbsent.length) return null;
-  const names = grounding.criticalAbsent.map((u) => u.field).join(', ');
+  if (!grounding) return null;
+  const unconfirmed = Array.isArray(grounding.unconfirmed) ? grounding.unconfirmed : [];
+  const absent = Array.isArray(grounding.criticalAbsent) ? grounding.criticalAbsent : [];
+  // Union of field names, absent (fabrication) first, then partial-band criticals; order-stable, deduped.
+  const names = [];
+  const seen = new Set();
+  for (const u of absent.concat(unconfirmed.filter((u) => u && u.critical))) {
+    const nm = u && u.field;
+    if (nm && !seen.has(nm)) { seen.add(nm); names.push(nm); }
+  }
+  if (!names.length) return null;
+  const list = names.join(', ');
   return {
     source: docType, code: 'values_unconfirmed_in_document', severity: 'warning', status: 'open',
     field: 'grounding', blocksCtc: false,
-    docValue: names, fileValue: null,
+    docValue: list, fileValue: null,
     title: 'Some read values could not be confirmed in the document text',
-    howTo: `PILOT extracted these values but could not find them in the document's own text: ${names}. This can mean the copy is poor OR a value was mis-read — confirm them by hand before relying on them, and re-scan a clearer copy if needed.`,
+    howTo: `PILOT extracted these values but could not confirm them in the document's own text: ${list}. This can mean the copy is poor OR a value was mis-read — confirm them by hand before relying on them, and re-scan a clearer copy if needed.`,
     actions: ['post_condition', 'request_document', 'dismiss'],
     opensCondition: 'underwriting_review_cleared',
   };
 }
 
-module.exports = { groundFields, groundingFinding, _internals: { coverageOf } };
+// #212 (launch blocker 1) — QUARANTINE the unconfirmed MATERIAL fields before the
+// deterministic document checks run, so a value PILOT extracted but could NOT
+// confirm in the document (a possible AI mis-read / hallucination) can never
+// create a "mismatch" finding. It only ever raises the grounding "please verify"
+// advisory (groundingFinding above). Confirmed fields, non-material fields, and
+// dates (never escalated) are left untouched. Returns a DEEP-CLONED copy — the
+// original extraction (ext.data) is never mutated, so the full read is still
+// stored; only the copy handed to the checkers has the unconfirmed material
+// fields held out.
+//
+// A field path is the same dotted/[i] path groundFields emits (e.g. "price",
+// "sellerNames[0]", "borrower.name"). NEVER THROWS.
+function quarantineUngrounded(fields, grounding, opts = {}) {
+  const empty = { verified: fields, quarantined: [] };
+  try {
+    if (fields == null || typeof fields !== 'object') return empty;
+    const g = grounding || {};
+    const list = Array.isArray(g.unconfirmed) ? g.unconfirmed : [];
+    // Only MATERIAL (critical) unconfirmed values are held out; a minor field a
+    // human wouldn't underwrite on stays. opts.onlyCritical=false widens to all
+    // unconfirmed (not used by the engine, available for stricter callers).
+    const onlyCritical = opts.onlyCritical !== false;
+    const paths = list
+      .filter((u) => u && u.field && (onlyCritical ? u.critical === true : true))
+      .map((u) => String(u.field));
+    if (!paths.length) return empty;
+    const clone = JSON.parse(JSON.stringify(fields));
+    const quarantined = [];
+    for (const p of paths) { if (deletePath(clone, p)) quarantined.push(p); }
+    return { verified: clone, quarantined };
+  } catch (_e) { return empty; }
+}
+
+// Delete (or null out) the value at a dotted/[i] path. Object leaves are deleted;
+// array elements are set to null (preserving array shape so a checker that maps
+// the array simply skips the held-out slot). Returns true when something was removed.
+function tokenizePath(path) {
+  const out = [];
+  const re = /[^.[\]]+|\[(\d+)\]/g;
+  let m;
+  while ((m = re.exec(path)) !== null) {
+    if (m[1] !== undefined) out.push(Number(m[1]));
+    else out.push(m[0]);
+  }
+  return out;
+}
+function deletePath(root, path) {
+  try {
+    const toks = tokenizePath(path);
+    if (!toks.length) return false;
+    let cur = root;
+    for (let i = 0; i < toks.length - 1; i++) {
+      if (cur == null || typeof cur !== 'object') return false;
+      cur = cur[toks[i]];
+    }
+    const leaf = toks[toks.length - 1];
+    if (cur == null || typeof cur !== 'object') return false;
+    if (Array.isArray(cur)) {
+      if (typeof leaf === 'number' && leaf >= 0 && leaf < cur.length) { cur[leaf] = null; return true; }
+      return false;
+    }
+    if (Object.prototype.hasOwnProperty.call(cur, leaf)) { delete cur[leaf]; return true; }
+    return false;
+  } catch (_e) { return false; }
+}
+
+module.exports = { groundFields, groundingFinding, quarantineUngrounded, _internals: { coverageOf, deletePath, tokenizePath } };

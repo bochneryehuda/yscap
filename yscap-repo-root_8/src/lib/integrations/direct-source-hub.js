@@ -36,6 +36,29 @@ const CONNECTORS = Object.freeze({
 });
 
 /**
+ * enrichCtx(client, appId, ctx) → ctx  (best-effort, NEVER THROWS)
+ * Property connectors (ATTOM, HouseCanary, Clear Capital) need the subject
+ * property address, which the callers don't build. Load it ONCE from
+ * applications.property_address (jsonb {line1,line2,city,state,zip}) and merge a
+ * normalized `property` block into ctx so every property connector can read it.
+ * A caller that already supplied an address is never overwritten.
+ */
+async function enrichCtx(client, appId, ctx = {}) {
+  try {
+    if (ctx && (ctx.property || ctx.street || ctx.address1)) return ctx; // caller already supplied one
+    const runner = client || (db().pool || db());
+    if (!runner || typeof runner.query !== 'function') return ctx;
+    const r = await runner.query('SELECT property_address FROM applications WHERE id = $1', [appId]);
+    const pa = r && r.rows && r.rows[0] && r.rows[0].property_address;
+    if (!pa || typeof pa !== 'object') return ctx;
+    const street = pa.line1 || pa.address || pa.address1 || pa.street || null;
+    const property = { street, address2: pa.line2 || null, city: pa.city || null, state: pa.state || null, zip: pa.zip || pa.postal || null };
+    if (!property.street) return ctx; // nothing usable
+    return Object.assign({}, ctx, { property });
+  } catch (_e) { return ctx; }
+}
+
+/**
  * Run all configured direct-source connectors on ONE file. Every observation
  * feeds twin.recordObservation with source_type='api_verification' so the
  * reconciler treats them as verified truth.
@@ -46,6 +69,7 @@ async function verifyFile(client, appId, ctx = {}) {
   if (!appId) throw new Error('verifyFile: appId required');
   const results = [];
   const kindFilter = ctx && ctx.kind ? String(ctx.kind) : null;
+  ctx = await enrichCtx(client, appId, ctx); // give property connectors the subject address
   for (const [name, conn] of Object.entries(CONNECTORS)) {
     if (kindFilter && conn.kind !== kindFilter) continue;
     if (!conn.configured()) { results.push({ connector: name, ok: false, skipped: true, reason: 'not configured' }); continue; }

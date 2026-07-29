@@ -30,11 +30,17 @@ const REASON_COPY = {
   push_dead_lettered: 'An update from PILOT could not reach ClickUp after every retry (the fields and the last error are shown above). Nothing was lost in PILOT. Retry the push once the cause is fixed — this row also closes itself when any later push for the file succeeds.',
   file_unlinked_no_task: 'This PILOT file has NO ClickUp task, so it does not sync at all (it is older than the automatic recovery window). Link it to the correct existing ClickUp card, create a fresh ClickUp task, or dismiss if this file intentionally lives outside ClickUp.',
   file_dead_unlinked: 'This is a LIVE file that lost its ClickUp card and went orphaned — it no longer syncs, and if another (often near-empty duplicate) file is holding the card, every update has been flowing into that wrong file. Fix it: paste the correct ClickUp card link/id to move the card onto THIS file (if the card is on another file, you’ll be asked to confirm the move), or give it a fresh card, archive it, or keep it as-is.',
+  clickup_name_changed_at_source: 'The borrower’s name was CHANGED on the ClickUp card — and both the first AND last name are different from the profile, so this might be a different person rather than a corrected name. PILOT did not rename anybody. Compare the two and adopt the correct one (it is applied to both systems), or type the right name. (When only the FIRST name changes and the surname still matches — a nickname corrected to the real name, “Avi” → “Abraham” — PILOT adopts it automatically and you never see a card.)',
   identity_mismatch_audit: 'The portfolio audit found the two systems carrying DIFFERENT values for this borrower-identity field. Nothing was changed anywhere (identity fields never overwrite silently) — compare the sides and adopt the correct one; it is applied to both systems. If both are fine (e.g. an old phone number), dismiss and this stays closed.',
   sharepoint_match_uncertain: 'The SharePoint mirror was NOT SURE which folder this file’s documents belong in (an ambiguous folder match, or no officer yet), so it filed into a safe, clearly-marked new folder — shown under “In PILOT”. If that is the wrong tree: merge or rename the folders IN SharePoint (the mirror never moves or renames anything itself), then click Re-match. Dismiss keeps the new folder.',
   sharepoint_mirror_failed: 'This document could NOT be mirrored to SharePoint after every automatic retry — the exact error is shown on the “Last error” line above. Fix the cause if it needs a human (a folder problem, an unreadable file), then Retry the document; if the folder match itself is wrong, use Re-match. Nothing is lost — the document is safe in PILOT.',
   borrower_identity_conflict: 'TWO DIFFERENT PEOPLE appear to share ONE borrower profile: this file’s ClickUp task and the PILOT profile disagree on identity (name, phone, or SSN), and the profile also belongs to another officer’s relationship (a lead or owned profile). This usually comes from a family-shared email + the family last name. Do NOT adopt either value — that would change the other person too. Click Split: the file’s person gets their OWN fresh profile (rebuilt from ClickUp), and the other person keeps the original profile untouched. Dismiss only if you are sure it is genuinely the same human.',
   shared_email_needs_reassignment: 'TWO BORROWER PROFILES are using ONE email address (shown under “In ClickUp”; the two people under “In PILOT”). Two ways to settle it: (1) if the sharing is RIGHT — spouses on the same deals, or the same person twice — click Allow: the two profiles are LINKED, whoever logs in with the email sees BOTH sets of files, and this never flags again (nothing is merged; each keeps their own profile and officer). (2) If they are unrelated people, give one of them their OWN email — edit it on their borrower screen in PILOT or on the ClickUp task — and this card closes itself. Until settled, the system deliberately refuses to link files by this email.',
+  encompass_address_differs: 'The most recent ENCOMPASS file for this borrower carries a different home address than their PILOT profile. Nothing was changed — a person\u2019s address on file is real data that a stale loan must never overwrite. Encompass is read-only here, so whichever value you pick is written to the PILOT profile (and pushed on to their ClickUp cards); nothing is ever sent back to Encompass. If both are right because they moved, use the Encompass one; if the Encompass file is old, keep PILOT\u2019s.',
+  portal_value_not_in_clickup: 'PILOT is holding a value that the matching ClickUp dropdown has no option for (shown above). Because ClickUp cannot store it, the update to the ClickUp card was quietly skipped — and until now the next sync read ClickUp’s old value back and UNDID the change on the file, which is why an edit like Fix & Flip → Fix & Hold kept “bouncing back”. PILOT now KEEPS its value and no longer lets the sync overwrite it. To make both systems agree, add that option to the ClickUp dropdown (then this closes itself on the next sync). If the value was picked by mistake, just set it back on the file. Nothing was lost either way — the file shows what the officer chose.',
+  ctc_confirm_needed: 'ClickUp moved this file to Clear to Close, but in PILOT it is still at an earlier status (shown above). Clear to Close is a major milestone — it locks the file and tells the borrower they’re clear to close — so PILOT did NOT advance on its own. Confirm to move the file to Clear to Close in PILOT (the borrower is notified), or dismiss to keep its current status. Everything else from ClickUp still syncs normally; only this one big step waits for you.',
+  economics_frozen_conflict: 'ClickUp carries different loan figures than PILOT (each change is listed above), but this file is FROZEN — a term sheet has been sent for signature, or the file is Clear-to-Close / Funded — so the numbers can’t change on their own (they would no longer match the term sheet that already went out). PILOT kept its figures and did NOT apply the ClickUp change. Three ways to settle it: (1) keep PILOT’s figures and push them back to ClickUp so both match; (2) an admin can use ClickUp’s figures and update the locked file right here (best for a reconciled/closed file whose numbers PILOT should now match — this overrides the lock); or (3) simply set the figures back in ClickUp to match the file. You no longer have to clear the term sheet or unlock the file just to accept a change.',
+  portal_edit_conflict: 'This deal field (shown above) was changed in BOTH places to different values — someone edited it on the file in PILOT, and it was ALSO changed in ClickUp. To make sure your change was not quietly undone, PILOT KEPT the file’s value and did NOT apply the ClickUp one — it is asking you which to keep instead of deciding on its own. Pick one: “Keep the PILOT value” keeps the file’s value and sends it to ClickUp so both match; “Use ClickUp’s value” puts ClickUp’s value on the file (if it changes a priced number, the pricing / Scope-of-Work steps reopen so they can be re-checked). Nothing was lost — the file still shows what was set in PILOT until you choose.',
 };
 // Sitewire draw-management parks (field_key='sitewire'). The stored reason is
 // "<class>: <detail>"; we key friendly copy by the class and show the detail beneath.
@@ -107,7 +113,32 @@ const REASON_FILE_ACTIONS = {
     { action: 'loan_number_assign_here', label: 'This file owns the number', title: 'Give the loan number to THIS file and take it off the other file in PILOT. Then delete the leftover copy on the OTHER deal’s ClickUp card.' },
     { action: 'loan_number_keep_other', label: 'The other file owns it — this is the copy', title: 'Keep the number on the other deal; this file stays blank. Then delete the leftover copy on THIS file’s ClickUp card.' },
   ],
+  economics_frozen_conflict: [
+    { action: 'keep_frozen_figures', label: 'Keep PILOT’s figures (push to ClickUp)', title: 'Keep the file’s frozen loan figures and push them back to ClickUp so the two match.' },
+    { action: 'accept_clickup_figures', label: 'Use ClickUp’s figures (update the locked file)', title: 'Admin only: pull ClickUp’s figures into this locked file, overriding the lock. Best for a reconciled/closed file whose numbers PILOT should now match. The pricing / Scope-of-Work conditions reopen because the registered numbers changed.', adminOnly: true },
+  ],
+  ctc_confirm_needed: [
+    { action: 'confirm_ctc', label: 'Confirm — move to Clear to Close', title: 'Move this file to Clear to Close in PILOT so it matches ClickUp. This is a major milestone: it locks the file and notifies the borrower.' },
+  ],
+  portal_edit_conflict: [
+    { action: 'keep_portal_value', label: 'Keep the PILOT value', title: 'Keep the file’s value and push it to ClickUp so the two match. Use this when the PILOT value is the right one.' },
+    { action: 'accept_clickup_value', label: 'Use ClickUp’s value', title: 'Put ClickUp’s value on the file. If it changes a priced number, the pricing / Scope-of-Work steps reopen so they can be re-checked.' },
+  ],
 };
+// The itemized list of frozen-figure changes ClickUp made to a locked file
+// (owner-directed 2026-07-27: "open up the box — these three things were changed
+// in ClickUp"). The producer stores { lockReason, changes:[{field,label,from,to}] }
+// in raw_value; we render each change as its own line (PILOT → ClickUp).
+function frozenChanges(r) {
+  try {
+    const raw = r.raw_value ? JSON.parse(r.raw_value) : null;
+    const cs = (raw && raw.changes) || [];
+    return cs.filter((c) => c && c.field && c.label).map((c) => ({
+      field: String(c.field), label: String(c.label),
+      from: c.from == null ? null : String(c.from), to: c.to == null ? null : String(c.to),
+    }));
+  } catch { return []; }
+}
 // The OTHER file that shares the contested loan number (from the row's forensic raw_value).
 function otherLoanFile(r) {
   try {
@@ -166,6 +197,10 @@ const FIELD_LABELS = {
   co_borrower_identity: 'Co-borrower identity — one profile, two people',
   shared_email: 'Shared email — two borrowers',
   sitewire: 'Construction draws (Sitewire)',
+  economics_frozen: 'Loan figures — frozen (term sheet sent / file locked)',
+  status_ctc: 'Clear to Close — confirm the move',
+  enum_unmappable: 'A value ClickUp has no option for',
+  portal_edit_conflict: 'A change was made in both places — pick which to keep',
 };
 // Field keys the two-sided resolver can apply to BOTH systems today.
 // 'file_link' / 'ys_loan_number' rows are deliberately NOT here: they are
@@ -179,6 +214,33 @@ const RESOLVABLE = new Set(['date_of_birth', 'expected_closing', 'actual_closing
 // tried to type is one of these (it shows an Approve that would be a confusing
 // no-op otherwise).
 const DISMISS_ONLY = new Set(['loan_number_duplicate_entered']);
+// Re-check result copy, keyed by the backend outcome `reason` (src/lib/sync-review-recheck.js).
+// The engine now re-derives EVERY row type it can prove — value fields, the loan-number
+// clash, co-borrower fields, file status, a failed ClickUp push, a SharePoint document,
+// a shared-email pair, and a two-people-one-profile split — so each gets a plain line.
+const RECHECK_CLOSED_MSG = {
+  adopt: 'PILOT confirmed the correct value and cleared this review (applied to both systems).',
+  file_removed: 'the file was removed from the portal, so this no longer applies. Cleared.',
+  no_longer_duplicated: 'that loan number is no longer on any other file, so PILOT cleared this on its own.',
+  mirrored: 'the document is now saved to SharePoint, so PILOT cleared this.',
+  doc_gone: 'that document no longer exists, so there was nothing left to save. Cleared.',
+  linked: 'the two profiles are now linked (a login on either sees both), so PILOT cleared this.',
+  separate_emails: 'the two people now have their own separate emails, so PILOT cleared this.',
+  split_done: 'this file now points at a separate profile for that person, so PILOT cleared this.',
+  push_healthy: 'the update reached ClickUp — no failed pushes remain — so PILOT cleared this.',
+  no_co_borrower: 'this file no longer has a co-borrower, so PILOT cleared this.',
+};
+const RECHECK_OPEN_MSG = {
+  still_duplicated: 'that loan number is still on another file too, so this still needs you.',
+  not_mirrored: 'the document still hasn’t saved to SharePoint, so this still needs you.',
+  still_shared: 'the two profiles still share one email, so this still needs you.',
+  still_merged: 'this file still points at the shared profile, so this still needs you.',
+  push_pending: 'there are still failed or pending ClickUp updates for this file, so this still needs you.',
+};
+const RECHECK_UNSUPPORTED_MSG = {
+  sitewire_use_actions: 'Re-checked — a construction-draw setup clears when you fix the cause and use this card’s Retry (or Acknowledge) button; Re-check can’t settle a draw setup on its own.',
+  sharepoint_folder_use_actions: 'Re-checked — fix or merge the folders in SharePoint, then use this card’s Re-match; Re-check can’t settle a folder match on its own.',
+};
 // Which file SECTION each review is about — so the reviewer can jump straight to
 // where the value is edited (owner-directed 2026-07-22: "a button to open the
 // exact file section the review is about"). Borrower/co-borrower identity lives in
@@ -190,7 +252,7 @@ const FIELD_SECTION = {
   // panel (name / email / SSN / DOB), as are file status + the closing dates.
   first_name: 'sec-overview', email: 'sec-overview', ssn: 'sec-overview', date_of_birth: 'sec-overview',
   borrower_identity: 'sec-overview', shared_email: 'sec-overview',
-  status: 'sec-overview', expected_closing: 'sec-overview', actual_closing: 'sec-overview',
+  status: 'sec-overview', status_ctc: 'sec-overview', expected_closing: 'sec-overview', actual_closing: 'sec-overview',
   // Address, phone, the acquisition date, the loan number, and the whole
   // co-borrower live in Application details (address panel / Completeness /
   // co-borrower completeness / EditFileDetails).
@@ -239,6 +301,7 @@ export default function SyncReviews() {
   const [customVal, setCustomVal] = useState({});     // rowId -> reviewer-typed correct value
   const [selected, setSelected] = useState({});       // rowId -> checked (bulk actions)
   const [bulkMsg, setBulkMsg] = useState('');
+  const [rowErr, setRowErr] = useState({});           // rowId -> error shown INLINE at the row (the top banner scrolls off-screen in a long list)
   const [recheckMsg, setRecheckMsg] = useState({});   // rowId -> "look again" result message
 
   async function bulk(action, winner) {
@@ -275,10 +338,33 @@ export default function SyncReviews() {
     finally { setBusyId(null); }
   }
 
+  // Say plainly what actually happened — a "push to ClickUp" that wrote nothing
+  // must never read as success (owner-reported 2026-07-27: "I pushed and ClickUp
+  // didn't update"). The server now returns a `pushed` outcome and a `note`.
+  function actionResultMessage(verb, out) {
+    if (!out) return '';
+    if (out.pushed) {
+      const o = out.pushed.outcome;
+      if (o === 'written') return '✓ ClickUp was updated.';
+      if (o === 'already_matched') return '✓ ClickUp already had that value — nothing needed changing.';
+      if (o === 'failed') return '⚠ ClickUp didn’t accept the change — nothing was lost in PILOT; try again in a moment.';
+      if (o === 'skipped') return '⚠ Nothing was sent to ClickUp (sync is off, or this file has no ClickUp card).';
+    }
+    if (verb === 'resolve-file' && out.note) return '✓ ' + out.note;
+    return '';
+  }
   async function act(id, verb, body) {
-    setBusyId(id); setErr('');
-    try { await api.post(`/api/staff/sync-reviews/${id}/${verb}`, body || {}); await load(); }
-    catch (e) { setErr(e.message || `Could not ${verb}`); }
+    setBusyId(id); setErr(''); setBulkMsg(''); setRowErr((m) => ({ ...m, [id]: '' }));
+    try {
+      const out = await api.post(`/api/staff/sync-reviews/${id}/${verb}`, body || {});
+      const msg = actionResultMessage(verb, out);
+      if (msg) setBulkMsg(msg);
+      await load();
+    }
+    // Show the failure BOTH at the top and INLINE at the row: for a row deep in a
+    // long queue the top banner is off-screen, so a failed action reads as
+    // "nothing happened" (owner-reported for the accept-figures button).
+    catch (e) { const m = (e && (e.data?.error || e.message)) || `Could not ${verb}`; setErr(m); setRowErr((mm) => ({ ...mm, [id]: m })); }
     finally { setBusyId(null); }
   }
 
@@ -292,24 +378,24 @@ export default function SyncReviews() {
     try {
       const out = await api.post(`/api/staff/sync-reviews/${id}/recheck`, {});
       if (out.outcome === 'closed') {
-        // 'adopt' means PILOT applied the proven correction to both systems;
-        // 'agree' means the two sides already matched. Say which — never claim
-        // "already fixed" when PILOT itself wrote the value.
-        setBulkMsg(out.reason === 'adopt'
-          ? '✓ Re-checked — PILOT confirmed the correct value and cleared this review (applied to both systems).'
-          : '✓ Re-checked — the two sides already match, so PILOT cleared this review on its own.');
+        // Each proven-resolved reason gets its own plain line (never claim "already
+        // fixed" when PILOT itself wrote the value); anything new falls back to the
+        // generic "the two sides already match" line.
+        setBulkMsg('✓ Re-checked — ' + (RECHECK_CLOSED_MSG[out.reason]
+          || 'the two sides already match, so PILOT cleared this review on its own.'));
         await load();
       } else if (out.outcome === 'still_open') {
-        setRecheckMsg((m) => ({ ...m, [id]: 'Checked just now — the two sides still don’t match, so this still needs you.' }));
+        setRecheckMsg((m) => ({ ...m, [id]: 'Checked just now — ' + (RECHECK_OPEN_MSG[out.reason]
+          || 'the two sides still don’t match, so this still needs you.') }));
         await load();
       } else if (out.outcome === 'error') {
         setRecheckMsg((m) => ({ ...m, [id]: 'Couldn’t reach ClickUp to re-check just now — try again in a moment.' }));
       } else {
-        // 'unsupported' — a file-level / draw / status row PILOT can't prove from
-        // a value re-read. Don't over-promise that it "clears itself" (some, like
-        // a duplicate loan number typed in, never do) — point to this card's own
-        // options instead.
-        setRecheckMsg((m) => ({ ...m, [id]: 'Re-checked — this one isn’t a simple value match, so PILOT can’t auto-clear it here. Use the options on this card to resolve it.' }));
+        // 'unsupported' — a row PILOT can't prove from a re-read. Draw + folder-match
+        // rows get a specific "use this card's actions" line; everything else points
+        // to the card's own options rather than dead-ending.
+        setRecheckMsg((m) => ({ ...m, [id]: RECHECK_UNSUPPORTED_MSG[out.reason]
+          || 'Re-checked — this one isn’t a simple value match, so PILOT can’t auto-clear it here. Use the options on this card to resolve it.' }));
         await load();
       }
     } catch (e) { setErr(e.message || 'Could not re-check'); }
@@ -387,6 +473,15 @@ export default function SyncReviews() {
         const canResolve = RESOLVABLE.has(r.field_key) && !sidesEqual;
         const isDob = r.field_key === 'date_of_birth';
         const isSitewire = r.field_key === 'sitewire';
+        // A frozen-economics hold lists EACH figure ClickUp changed on the locked
+        // file, itemized (owner-directed 2026-07-27: "open up the box").
+        const isEconFrozen = r.field_key === 'economics_frozen';
+        const econChanges = isEconFrozen ? frozenChanges(r) : [];
+        // A row raised by the weekly READ-ONLY Encompass enrichment pass (db/324).
+        // There is no ClickUp task behind it and NOTHING is ever written back to
+        // Encompass — the only question is what PILOT should hold, so the labels
+        // and the buttons are different from a two-way ClickUp row.
+        const isEncompass = r.source === 'encompass';
         const fileActions = (REASON_FILE_ACTIONS[r.reason] || null)?.filter((a) => !a.adminOnly || isAdmin) || null;
         const candidates = fileActions && fileActions.some((a) => a.needsTarget) ? linkCandidates(r) : [];
         return (
@@ -397,10 +492,10 @@ export default function SyncReviews() {
                   onChange={(e) => setSelected((m) => ({ ...m, [r.id]: e.target.checked }))} />
               )}
               <strong>{FIELD_LABELS[r.field_key] || r.field_key}</strong>
-              <span className={`pill ${r.direction === 'outbound' ? '' : 'done'}`}>{isSitewire ? 'PILOT → Sitewire' : (r.direction === 'outbound' ? 'PILOT → ClickUp' : 'ClickUp → PILOT')}</span>
+              <span className={`pill ${r.direction === 'outbound' ? '' : 'done'}`}>{isSitewire ? 'PILOT → Sitewire' : isEncompass ? 'Encompass → PILOT (read-only)' : (r.direction === 'outbound' ? 'PILOT → ClickUp' : 'ClickUp → PILOT')}</span>
               <span className="muted small">{new Date(r.created_at).toLocaleString()}</span>
               <div className="spacer" />
-              {status === 'open' && (
+              {status === 'open' && !isEncompass && (
                 <button className="btn ghost btn-sm" disabled={busyId === r.id}
                   title="Look again — re-run the check in the background and clear this review if it was already fixed on either side (nothing is written unless the data proves it resolved)"
                   onClick={() => recheck(r.id)}>{busyId === r.id ? '…' : '↻ Re-check'}</button>
@@ -422,9 +517,28 @@ export default function SyncReviews() {
             <div className="metrow"><span className="k">Who</span><span className="v">{r.borrower_name || '—'}{r.property ? ` — ${r.property}` : ''}</span></div>
             {isSitewire ? (
               (cu != null || p != null) && <div className="metrow"><span className="k">Details</span><span className="v">{p != null ? <>expected <strong>{showVal(p)}</strong></> : null}{p != null && cu != null ? ' · ' : ''}{cu != null ? <>found <strong>{showVal(cu)}</strong></> : null}</span></div>
+            ) : isEconFrozen && econChanges.length ? (
+              // Itemized: one row per figure ClickUp changed on this locked file.
+              <div style={{ margin: '4px 0 2px' }}>
+                <div className="metrow" style={{ fontWeight: 600, color: '#141B22' }}>
+                  <span className="k">What changed in ClickUp</span>
+                  <span className="v" style={{ color: '#4B585C', fontWeight: 400 }}>on file &amp; in ClickUp</span>
+                </div>
+                {econChanges.map((c) => (
+                  <div className="metrow" key={c.field}>
+                    <span className="k">{c.label}</span>
+                    <span className="v" style={{ color: '#141B22' }}>
+                      <strong>{c.from == null ? '—' : c.from}</strong>
+                      <span style={{ color: '#4B585C' }}> (our file) → </span>
+                      <strong>{c.to == null ? '—' : c.to}</strong>
+                      <span style={{ color: '#4B585C' }}> (ClickUp)</span>
+                    </span>
+                  </div>
+                ))}
+              </div>
             ) : (
               <>
-                <div className="metrow"><span className="k">In ClickUp</span><span className="v"><strong>{showVal(cu)}</strong>{isDob ? <em className="muted small">{dobNote(cu)}</em> : null}</span></div>
+                <div className="metrow"><span className="k">{isEncompass ? 'In Encompass' : 'In ClickUp'}</span><span className="v"><strong>{showVal(cu)}</strong>{isDob ? <em className="muted small">{dobNote(cu)}</em> : null}</span></div>
                 <div className="metrow"><span className="k">In PILOT</span><span className="v"><strong>{showVal(p)}</strong>{isDob ? <em className="muted small">{dobNote(p)}</em> : null}</span></div>
               </>
             )}
@@ -445,7 +559,10 @@ export default function SyncReviews() {
                 ? (SITEWIRE_REASON_COPY[String(r.reason || '').split(':')[0]] || r.reason)
                 : (sidesEqual && r.reason === 'clickup_dob_differs_from_portal'
                   ? REASON_COPY.dob_same_but_impossible   /* legacy rows queued before the common-sense reasons */
-                  : (REASON_COPY[r.reason] || r.reason))}
+                  // Some reasons carry a ':'-separated detail tail (the Encompass
+                  // rows do) — fall back to the slug before the colon so they
+                  // get real copy instead of the raw machine string.
+                  : (REASON_COPY[r.reason] || REASON_COPY[String(r.reason || '').split(':')[0]] || r.reason))}
             </p>
             {isSitewire && String(r.reason || '').includes(':') && (
               <p className="muted small" style={{ margin: '0 0 8px', fontStyle: 'italic' }}>{String(r.reason).split(':').slice(1).join(':').trim()}</p>
@@ -514,7 +631,33 @@ export default function SyncReviews() {
                   title="Close this without action" onClick={() => sitewireAct(r.id, 'dismiss')}>Dismiss</button>
               </div>
             )}
-            {status === 'open' && !isSitewire && canResolve && (
+            {status === 'open' && isEncompass && canResolve && (
+              <div className="row" style={{ gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
+                <p className="small" style={{ width: '100%', margin: '0 0 4px', color: '#3A4550' }}>
+                  Encompass is read-only — whichever you pick is written to the PILOT profile (and pushed
+                  on to the borrower’s ClickUp cards). Nothing is ever sent back to Encompass.
+                </p>
+                <button className="btn primary btn-sm" disabled={busyId === r.id}
+                  title="Put the address Encompass has on the borrower's PILOT profile"
+                  onClick={() => act(r.id, 'resolve', { winner: 'encompass' })}>{busyId === r.id ? '…' : 'Use the Encompass value'}</button>
+                <button className="btn primary btn-sm" disabled={busyId === r.id}
+                  title="Keep what PILOT already has — nothing is written anywhere"
+                  onClick={() => act(r.id, 'resolve', { winner: 'portal' })}>{busyId === r.id ? '…' : 'Keep the PILOT value'}</button>
+                <button className="btn ghost btn-sm" disabled={busyId === r.id}
+                  title="Close this without writing anything anywhere"
+                  onClick={() => act(r.id, 'reject')}>Dismiss</button>
+                <span style={{ display: 'inline-flex', gap: 6, alignItems: 'center' }}>
+                  <input className="input" style={{ maxWidth: 220 }} type="text"
+                    placeholder="Or type the correct address…" aria-label="Type the correct address"
+                    value={customVal[r.id] || ''} disabled={busyId === r.id}
+                    onChange={(e) => setCustomVal((m) => ({ ...m, [r.id]: e.target.value }))} />
+                  <button className="btn ghost btn-sm" disabled={busyId === r.id || !(customVal[r.id] || '').trim()}
+                    title="Put the typed address on the profile (validated, audited)"
+                    onClick={() => act(r.id, 'resolve', { winner: 'custom', value: customVal[r.id] })}>Apply typed</button>
+                </span>
+              </div>
+            )}
+            {status === 'open' && !isSitewire && !isEncompass && canResolve && (
               <div className="row" style={{ gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
                 <button className="btn primary btn-sm" disabled={busyId === r.id}
                   title="Apply ClickUp's current value to BOTH systems (re-read live, audited)"
@@ -563,11 +706,23 @@ export default function SyncReviews() {
                           value={relinkInput[r.id] || ''} aria-label="ClickUp card to link to this file"
                           onChange={(e) => setRelinkInput((m) => ({ ...m, [r.id]: e.target.value }))} />
                       )}
-                      <button className="btn primary btn-sm" title={a.title}
+                      <button className={`btn btn-sm ${a.action === 'accept_clickup_figures' ? '' : 'primary'}`} title={a.title}
                         disabled={busyId === r.id || (needsPick && !picked) || (needsTask && !typed)}
-                        onClick={() => needsTask
-                          ? relinkFromRow(r.id, false)
-                          : act(r.id, 'resolve-file', { action: a.action, targetApplicationId: needsPick ? picked : undefined })}>
+                        onClick={() => {
+                          if (needsTask) return relinkFromRow(r.id, false);
+                          // Overriding the lock is consequential — confirm first.
+                          if (a.action === 'accept_clickup_figures' && !window.confirm(
+                            'Use ClickUp’s figures and update this LOCKED file?\n\n' +
+                            'This overrides the lock and changes the loan figures on the file to match ClickUp. ' +
+                            'The pricing / Scope-of-Work conditions will reopen because the registered numbers changed.\n\n' +
+                            'Only do this for a file that was reconciled/closed in ClickUp and should now match.')) return;
+                          // Moving to Clear to Close locks the file + notifies the borrower — confirm first.
+                          if (a.action === 'confirm_ctc' && !window.confirm(
+                            'Move this file to Clear to Close in PILOT?\n\n' +
+                            'This is a major milestone: it locks the file’s loan structure and notifies the borrower ' +
+                            'that they’re clear to close. Only confirm if the file really is clear to close.')) return;
+                          return act(r.id, 'resolve-file', { action: a.action, targetApplicationId: needsPick ? picked : undefined });
+                        }}>
                         {busyId === r.id ? '…' : a.label}
                       </button>
                     </React.Fragment>
@@ -595,9 +750,12 @@ export default function SyncReviews() {
                     "fixed outside PILOT" still leaves a visible explanation. */}
                 {r.auto_resolved ? '✓ Resolved automatically — no clicks needed. ' :
                   r.winner === 'custom' ? 'A reviewer typed the correct value; it was applied to both systems. ' :
-                  r.winner ? `Adopted the ${r.winner === 'clickup' ? 'ClickUp' : 'PILOT'} value on both systems. ` : ''}
+                  r.winner ? `Adopted the ${r.winner === 'clickup' ? 'ClickUp' : r.winner === 'encompass' ? 'Encompass' : r.winner === 'custom' ? 'typed' : 'PILOT'} value${r.source === 'encompass' ? ' on the profile' : ' on both systems'}. ` : ''}
                 {r.resolution_note ? `${r.resolution_note}` : ''}
               </p>
+            )}
+            {rowErr[r.id] && (
+              <div role="alert" className="notice err" style={{ marginTop: 8, marginBottom: 0 }}>{rowErr[r.id]}</div>
             )}
           </div>
         );

@@ -31,6 +31,33 @@ function normName(s) {
     .replace(/\s+/g, ' ')
     .trim();
 }
+// SURNAME-FIRST IS NOT A DISCREPANCY (owner-reported 2026-07-26: "'WEIL MOSES' vs 'Moses Weil' is
+// surname-first formatting, not a discrepancy — say so"). Banks, title companies and government
+// systems routinely print a name last-name-first. The same words in a different order are the same
+// name, and calling that a variation trains people to ignore the notice that matters.
+// A DIFFERENT word ("Moses Weil" vs "Sarah Weil") still fails, so nothing real is lost.
+// Reordering is only harmless for a PERSON's name. It keeps the GENERATION SUFFIX, which normName
+// strips: "SMITH JOHN JR" and "John Smith Sr" are the same words in a different order once Jr/Sr are
+// thrown away, and that is exactly a father and a son (audit 2026-07-26). Entity names are
+// positional too — "SMITH HOLDINGS LLC" is not "HOLDINGS SMITH LLC" — and identity-chain reads
+// entity names off operating agreements and bank statements, so those are never reordered either.
+const SUFFIX = /^(jr|sr|ii|iii|iv|v)$/;
+const ENTITY_WORD = /^(llc|l\.?l\.?c|inc|incorporated|corp|corporation|co|company|ltd|limited|lp|llp|plc|trust|holdings|partners|group|associates|enterprises|properties|capital|ventures|realty|management)$/;
+function nameWords(s) {
+  return String(s || '').toLowerCase().replace(/[.,]/g, ' ').replace(/\s+/g, ' ').trim().split(' ').filter(Boolean);
+}
+function sameWordsAnyOrder(a, b) {
+  const wa = nameWords(a), wb = nameWords(b);
+  if (wa.some((w) => ENTITY_WORD.test(w)) || wb.some((w) => ENTITY_WORD.test(w))) return false;
+  // Suffixes are compared IN PLACE (not sorted away) so Jr vs Sr is still a difference.
+  const sufA = wa.filter((w) => SUFFIX.test(w)).sort().join(' ');
+  const sufB = wb.filter((w) => SUFFIX.test(w)).sort().join(' ');
+  if (sufA !== sufB) return false;
+  const A = wa.filter((w) => !SUFFIX.test(w)).sort();
+  const B = wb.filter((w) => !SUFFIX.test(w)).sort();
+  if (!A.length || A.length !== B.length) return false;
+  return A.every((w, i) => w === B[i]);
+}
 function initialsMatch(a, b) {
   // 'John Doe' vs 'J. Doe' → same. Split into tokens; require the LAST token
   // to be identical, and every earlier token to either match exactly or be a
@@ -52,6 +79,24 @@ function initialsMatch(a, b) {
   return true;
 }
 
+// Two names are the SAME natural person if they're initials-compatible or the same words in a
+// different order — the exact same test this module already uses to decide a benign name variation.
+function samePerson(a, b) {
+  return !!(a && b) && (initialsMatch(a, b) || sameWordsAnyOrder(a, b));
+}
+// Which KNOWN file person (primary borrower / co-borrower / named LLC owner) a doc's name belongs
+// to — the index in `people`, or -1 when it matches none. Lets the chain tell "two DIFFERENT people
+// on the file" from "one person written two ways": a co-borrower's ID is not a variation of the
+// primary borrower's name (owner-directed 2026-07-27).
+function resolvePerson(name, people) {
+  if (!name) return -1;
+  for (let i = 0; i < (people || []).length; i += 1) { if (samePerson(name, people[i])) return i; }
+  return -1;
+}
+// Two docs provably belong to DIFFERENT known people → their name/DOB/SSN differing is expected,
+// not a discrepancy. Only fires when BOTH resolved to a known person (never suppresses an unknown).
+function differentKnownPerson(a, b) { return a >= 0 && b >= 0 && a !== b; }
+
 function docLabel(t) {
   return ({
     drivers_license: 'ID', credit_report: 'Credit report', bank_statement: 'Bank statement',
@@ -66,7 +111,8 @@ function docLabel(t) {
  * @param {Array<{doc_type, fields}>} extractions
  * @returns {{issues:Array<{code, severity, title, howTo, docsInvolved, values}>}}
  */
-function analyze(extractions = []) {
+function analyze(extractions = [], opts = {}) {
+  const people = (opts.people || []).filter(Boolean); // known file people (borrower + co-borrower + LLC owners)
   const seenSsn = new Map();
   const seenDob = new Map();
   const seenName = new Map();
@@ -78,12 +124,17 @@ function analyze(extractions = []) {
     const ssn = last4(f.borrowerSSN || f.ssn || f.borrower_ssn || f.ssnLast4);
     const dob = f.borrowerDOB || f.dob || f.date_of_birth || null;
     const name = f.borrowerName || f.borrower_full_name || f.applicantName || f.fullName || null;
+    // Which known file person THIS doc's identity belongs to (from its name). When two docs each
+    // resolve to a DIFFERENT known person, their fields differing is expected — a co-borrower's ID
+    // is not a mismatch against the primary borrower.
+    const pidx = resolvePerson(name, people);
 
     if (ssn) {
       const prev = seenSsn.get(ssn);
-      if (!prev) seenSsn.set(ssn, { docType: doc });
+      if (!prev) seenSsn.set(ssn, { docType: doc, pidx });
       for (const [otherSsn, meta] of seenSsn.entries()) {
         if (otherSsn === ssn) continue;
+        if (differentKnownPerson(meta.pidx, pidx)) continue; // two different people → each has their own SSN
         issues.push({
           code: 'identity_ssn_mismatch', severity: 'fatal',
           title: `Two different SSNs seen on this borrower`,
@@ -96,9 +147,10 @@ function analyze(extractions = []) {
     }
     if (dob) {
       const prev = seenDob.get(dob);
-      if (!prev) seenDob.set(dob, { docType: doc });
+      if (!prev) seenDob.set(dob, { docType: doc, pidx });
       for (const [otherDob, meta] of seenDob.entries()) {
         if (otherDob === dob) continue;
+        if (differentKnownPerson(meta.pidx, pidx)) continue; // two different people → each has their own DOB
         issues.push({
           code: 'identity_dob_mismatch', severity: 'warning',
           title: `Two different dates of birth seen on this borrower`,
@@ -114,8 +166,14 @@ function analyze(extractions = []) {
       if (!prev) {
         // Walk previously-seen names and check compatibility
         let compat = false;
-        for (const seen of seenName.keys()) {
-          if (initialsMatch(nrm, seen)) { compat = true; break; }
+        for (const [seen, seenMeta] of seenName) {
+          // Two names that provably belong to DIFFERENT known file people (a co-borrower vs the
+          // primary borrower, an LLC owner vs either) are not a "variation" of one another.
+          if (differentKnownPerson(seenMeta && seenMeta.pidx, pidx)) { compat = true; break; }
+          // sameWordsAnyOrder gets the RAW names, not `nrm`/`seen`: normName strips Jr/Sr/III
+          // before the map key is built, so comparing the normalized forms could never see the
+          // generation suffix that is the entire difference between a father and a son.
+          if (initialsMatch(nrm, seen) || sameWordsAnyOrder(name, (seenMeta && seenMeta.original) || seen)) { compat = true; break; }
         }
         if (!compat && seenName.size > 0) {
           const otherNorm = seenName.keys().next().value;
@@ -123,23 +181,60 @@ function analyze(extractions = []) {
           issues.push({
             code: 'identity_name_variation', severity: 'info',
             title: `Borrower name reads differently on two documents`,
-            howTo: `The ${docLabel(meta.docType)} names "${meta.original}" but the ${docLabel(doc)} names "${name}". Often benign (nickname, middle-initial vs full middle name, married vs maiden), but note it and confirm with the ID which name is legal.`,
+            // Say WHICH KIND of difference it is. "These two names differ" is not reasoning; an
+            // underwriter needs to know whether they are looking at a formatting habit or a
+            // genuinely different person before they decide to chase it.
+            howTo: `The ${docLabel(meta.docType)} names "${meta.original}" but the ${docLabel(doc)} names "${name}". ${explainNameDifference(meta.original, name)} Confirm against the ID which name is the legal one.`,
             docsInvolved: [meta.docType, doc], values: { docA: meta.original, docB: name },
           });
         }
-        seenName.set(nrm, { docType: doc, original: name });
+        seenName.set(nrm, { docType: doc, original: name, pidx });
       }
     }
   }
   return { issues };
 }
 
+// Name the difference in plain words, so the reader can judge it without re-reading both names.
+function explainNameDifference(a, b) {
+  const A = normName(a).split(' ').filter(Boolean);
+  const B = normName(b).split(' ').filter(Boolean);
+  const setA = new Set(A), setB = new Set(B);
+  const onlyA = A.filter((w) => !setB.has(w));
+  const onlyB = B.filter((w) => !setA.has(w));
+  const shared = A.filter((w) => setB.has(w));
+  if (!shared.length) {
+    return 'They share no words at all, so these read as two different people rather than one name written two ways.';
+  }
+  const extras = onlyA.concat(onlyB);
+  // Every branch below must be TRUE of the two names printed beside it. The earlier version made
+  // three claims it had not checked (audit 2026-07-26): `[].every()` is true, so an empty `extras`
+  // announced "only a middle initial" with no initial in either name; two DIFFERENT single letters
+  // ("John A Smith" / "John B Smith" — the classic father/son pair) were called a formatting
+  // difference; and the final line asserted a shared surname when the shared word was the given name.
+  const initialsOnly = extras.length > 0 && extras.every((w) => w.length === 1);
+  if (initialsOnly && onlyA.length === onlyB.length && onlyA.every((w, i) => w === onlyB[i])) {
+    return 'The difference is only a middle initial, which is a formatting difference rather than a different person.';
+  }
+  if (initialsOnly) {
+    return 'The names differ only by a middle initial, but it is a DIFFERENT initial on each — worth confirming, since a parent and child often share everything but that letter.';
+  }
+  if (extras.length === 1) {
+    return `They agree except for "${extras[0]}" — typically a middle name, a maiden or married surname, or a nickname.`;
+  }
+  // "Surname" only if the LAST word actually agrees; otherwise say plainly which words are shared.
+  if (A.length && B.length && A[A.length - 1] === B[B.length - 1]) {
+    return 'They share a surname but differ on the given name, which is worth confirming — a relative\'s name can end up on a document by mistake.';
+  }
+  return `They share "${shared.join('", "')}" but the surnames differ, which is worth confirming — this can be a marriage, a legal name change, or two different people.`;
+}
+
 /**
  * DB bridge — record each mismatch as an ai_suggestion (source='entity_chain',
  * dedupe key per code+docs pair).
  */
-async function analyzeAndRecord(client, { applicationId, extractions }) {
-  const v = analyze(extractions);
+async function analyzeAndRecord(client, { applicationId, extractions, people }) {
+  const v = analyze(extractions, { people });
   if (!v.issues.length) return { recorded: 0, deduped: 0, failed: 0 };
   const suggestions = v.issues.map((m) => ({
     applicationId,

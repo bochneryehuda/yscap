@@ -52,6 +52,97 @@ const VALID_STATUSES = new Set([
  * }} s
  * @returns {Promise<{id:string, deduped:boolean}>}
  */
+/**
+ * Sources whose rows are ADVISORY BACKGROUND — they belong in the findings list, but must NOT
+ * score, rank or notify (post-merge audit 2026-07-27).
+ *
+ * WHY THIS EXISTS. The file view deliberately keeps the note-buyer desk's rows OUT of
+ * `summary.fatal/warning/info` (`routes/underwriting.js`, `isgOnly`) so the desk can never disagree
+ * with the clear-to-close gate. But SIX other queries aggregate this table with no source filter,
+ * and they re-admitted the same rows through a different door — so the two surfaces contradicted
+ * each other. Measured: up to 7 desk rows on one file x 8 points = 56, which pushes a file with
+ * ZERO real problems past the 50-point ELEVATED threshold and puts an amber risk badge on the
+ * pipeline; it also promoted note-only files into the admin "top 5 riskiest" email and started a
+ * weekly "your files with open AI findings" digest for officers whose files have nothing wrong.
+ *
+ * One definition, so a seventh consumer cannot drift. This is about SCORING and NOTIFYING only —
+ * these rows still render, are still dismissable, and a genuinely fatal one still notifies through
+ * `record()`'s own severity guard.
+ */
+const ADVISORY_ONLY_SOURCES = ['investor_guideline_desk'];
+
+/**
+ * A stored `ai_suggestions` row, in the shape `finding-claims.claimOf` keys on.
+ *
+ * THE ONE PLACE THAT ANSWERS "WHICH FINDING IS THIS ROW ABOUT?" (re-audit 2026-07-27).
+ * Four call sites need it — `listForFile`'s claim stamp, `record()`'s ledger consult,
+ * `decide()`'s ledger write, and the escalation door — and the first cut hand-rolled the
+ * shape at each one. They drifted immediately, and the drift was invisible:
+ *
+ *   - `decide()` gated its whole ledger write on a non-null `code`, taken from
+ *     `evidence.code` = the spec row's `pilot_template_code`. EVERY row that carries a
+ *     `concern_field` — i.e. every row that has a fact to declare — has a NULL template
+ *     code, and structurally so: `desk.js` routes any row WITH a template code to the
+ *     `document` disposition, and only the non-document dispositions carry a concern
+ *     field. So the ledger was never written for exactly the findings the fact key
+ *     exists for, and "dismiss it once and it's gone" silently did nothing for them.
+ *   - `listForFile` stamped its claim key without the fact derivation, so a desk row
+ *     whose sibling had merged away in the Open-findings list did not recognise itself
+ *     as already-shown and rendered a second card for the same fact — re-creating, in
+ *     the AI Findings panel, the duplication this whole change removes.
+ *
+ * The desk's code lives in its `dedupe_key` (`isg-appraisal_review:3345`), normalized by
+ * the SAME `codeOf` the finding producer uses — so the row and the finding it mirrors
+ * always agree.
+ *
+ * THE DESK'S CODE IS ITS DEDUPE KEY, ALWAYS — NOT `evidence.code` (third audit pass).
+ * `evidence.code` on a desk row is the PILOT CONDITION TEMPLATE the guideline maps to
+ * (`rtl_cond_fraud`), which is a different namespace from the finding's own code
+ * (`isg_gap_rtl_cond_fraud`) and is SHARED by every guideline pointing at that template.
+ * Preferring it did two wrong things at once:
+ *   - a coverage-gap mirror could never key-match the finding it mirrors, so the AI panel
+ *     had no way to recognise it as already shown;
+ *   - worse, several rows collapsed onto ONE key. Blue Lake cond 44 carries BOTH a
+ *     `concern_field` and `pilot_template_code: 'rtl_cond_fraud'` (the "explicit
+ *     disposition wins" branch in desk.js runs before the template-code branch, so a row
+ *     can have both — the earlier comment here claimed otherwise and was simply wrong).
+ *     Dismissing that non-arm's-length CONCERN wrote a ledger row keyed `rtl_cond_fraud`,
+ *     which then suppressed the unrelated BACKGROUND-CHECK / OFAC coverage gap — a finding
+ *     nobody had decided about, refused a row by `record()` yet still rendered, with no
+ *     buttons. Deriving from the dedupe key keys them `isg_concern_44` and
+ *     `isg_gap_rtl_cond_fraud`: distinct, and each matching its own finding.
+ * The derivation is scoped to the desk's own source; every other producer writes a real
+ * finding code into `evidence.code` and is untouched.
+ */
+function claimShapeOf(row) {
+  const r = row || {};
+  const ev = r.evidence || {};
+  const pa = r.proposed_action || r.proposedAction || {};
+  const paf = pa.fields || {};
+  let code = null;
+  if (r.source === 'investor_guideline_desk' && r.dedupe_key) {
+    try { code = require('./investor-guidelines/desk-findings')._internals.codeOf(r.dedupe_key); } catch (_) { /* fall through */ }
+  }
+  if (!code) code = ev.code || paf.code || null;
+  const concernField = ev.concern_field || paf.concern_field || null;
+  return {
+    code,
+    factKey: ev.factKey || (concernField ? `isg_signal:${concernField}` : undefined),
+    // `deskToFindings` maps the desk row's DOMAIN onto `field`, so the ledger key must
+    // too — otherwise a decision taken on the AI card keys `…::::::` while the live
+    // finding keys `…::background::::` and the two never match. Same class as the code
+    // namespace above, one field over.
+    field: (r.source === 'investor_guideline_desk' ? (ev.domain || null) : null)
+      || ev.field || paf.field || null,
+    document_id: r.document_id || null,
+    docValue: ev.docValue || ev.doc_value || null,
+  };
+}
+function notScoredSql(alias) {
+  const a = alias ? `${alias}.` : '';
+  return `${a}source <> ALL(ARRAY[${ADVISORY_ONLY_SOURCES.map((s) => `'${s}'`).join(',')}]::text[])`;
+}
+
 async function record(client, s) {
   const c = client || db();
   if (!s || !s.applicationId || !s.source || !s.kind || !s.title) {
@@ -69,11 +160,72 @@ async function record(client, s) {
       if (mute.rowCount > 0) return { id: null, deduped: false, silenced: true };
     }
   } catch (_) { /* if the mute table isn't migrated yet, fall through */ }
-  // If a dedupe key is provided, look for an OPEN row and refresh it in place.
+  // A DISMISSED SUGGESTION MUST NOT COME BACK (owner-reported 2026-07-27: "I hit
+  // Dismiss and it keeps popping up again").
+  //
+  // ROOT CAUSE. The dedupe below matched ONLY `status='open'`. A dismissed row is
+  // not open, so it was invisible to the dedupe and this function inserted a
+  // BRAND-NEW open row for the identical finding — on the very next sync pass,
+  // which runs every time a staffer opens the file. The human's decision was
+  // recorded and then immediately overwritten by a fresh copy of the same finding.
+  //
+  // THE RULE. A row for this exact (file, source, dedupe_key) that a HUMAN DECIDED
+  // — dismissed, converted to a condition or task, or noted — is the last word. Do
+  // not re-raise it.
+  //
+  // NOT decisions, and deliberately excluded: `escalated` / `marked_important` /
+  // `asked_admin` mean "this still needs handling, louder", so they stay in the live
+  // set below and are refreshed in place exactly as before; and `answered` means the
+  // super-admin REPLIED to a question the AI asked, which is an answer, not a
+  // judgement that the issue is closed — the ask-admin flow has its own dedupe (one
+  // unanswered inbox question per agent+scope+question) and is entitled to ask again.
+  //
+  // Belt-and-suspenders with the per-FINDING ledger (db/333) checked further down:
+  // this half catches the suggestion surface, the ledger half catches the same
+  // finding arriving from the Document Review desk or a derived desk.
+  if (s.dedupeKey) {
+    try {
+      const settled = await c.query(
+        `SELECT id, status FROM ai_suggestions
+          WHERE application_id=$1 AND source=$2 AND dedupe_key=$3
+            AND status NOT IN ('open','escalated','marked_important','asked_admin','answered')
+            AND decided_by_staff_id IS NOT NULL
+          ORDER BY decided_at DESC NULLS LAST, created_at DESC
+          LIMIT 1`,
+        [s.applicationId, s.source, s.dedupeKey]);
+      if (settled.rows[0]) {
+        return { id: settled.rows[0].id, deduped: true, settled: true, status: settled.rows[0].status };
+      }
+    } catch (_) { /* fail OPEN: an unreadable check just means the suggestion shows again */ }
+  }
+  // The per-FINDING durable ledger (db/333): the SAME issue may have been settled
+  // from the Document Review desk or the "Findings to review" queue, where it has
+  // no ai_suggestions row to match on. Keyed on the finding's identity, so a
+  // decision taken on any surface silences it on every surface.
+  try {
+    // Same shape as every other consumer (claimShapeOf) — the incoming payload uses
+    // camelCase where a stored row uses snake_case, so it is normalized first.
+    const shape = claimShapeOf({
+      evidence: s.evidence, proposed_action: s.proposedAction,
+      source: s.source, dedupe_key: s.dedupeKey, document_id: s.documentId,
+    });
+    if (shape.code) {
+      const fdec = require('./finding-decisions');
+      const set = await fdec.suppressedKeys(c, s.applicationId);
+      if (set.size && fdec.isSuppressed(set, shape)) return { id: null, deduped: false, settled: true };
+    }
+  } catch (_) { /* fail OPEN */ }
+  // If a dedupe key is provided, look for a LIVE row and refresh it in place.
+  // "Live" now includes escalated / marked-important / asked-admin (they are ways
+  // of saying "this still needs handling", not decisions) so a re-run REFRESHES
+  // the row the staffer is already working instead of stacking a second copy of it
+  // next to their escalation. A plain 'open' row still wins the pick.
   if (s.dedupeKey) {
     const cur = await c.query(
       `SELECT id FROM ai_suggestions
-        WHERE application_id=$1 AND source=$2 AND dedupe_key=$3 AND status='open' LIMIT 1`,
+        WHERE application_id=$1 AND source=$2 AND dedupe_key=$3
+          AND status IN ('open','escalated','marked_important','asked_admin')
+        ORDER BY (status='open') DESC, created_at DESC LIMIT 1`,
       [s.applicationId, s.source, s.dedupeKey]);
     if (cur.rows[0]) {
       await c.query(
@@ -83,7 +235,10 @@ async function record(client, s) {
             kind=$4, title=$5, body=$6,
             evidence=$7::jsonb, proposed_action=$8::jsonb,
             severity=$9, confidence=$10, trace_url=$11,
-            important=$12
+            -- NEVER clear a flag a human raised: an agent re-run passes
+            -- important:false by default, which would silently un-mark the row
+            -- the staffer just flagged. OR it, never overwrite it.
+            important=(important OR $12)
           WHERE id=$1`,
         [cur.rows[0].id, s.documentId || null, s.checklistItemId || null,
          s.kind, s.title, s.body || null,
@@ -107,10 +262,29 @@ async function record(client, s) {
   const rowId = ins.rows[0].id;
   // R3.39 — real-time notify on NEW fatal AI suggestions. Fires only on the
   // fresh-insert branch (dedupe path above never re-notifies). Scheduled via
-  // setImmediate so the caller's transaction gets a chance to COMMIT first,
-  // and then re-verifies the row still exists (defensive against a rollback).
+  // setImmediate so the caller's transaction gets a chance to COMMIT first.
   // Best-effort — a notify failure never rolls back the suggestion.
-  if (String(s.severity || '').toLowerCase() === 'fatal') {
+  // KNOWN GAP (audit 2026-07-27): the comment here used to claim `_notifyFatalNew` re-verifies the
+  // row still exists before sending. It does not — it issues no query. Several callers record
+  // inside a transaction, so if a LATER step in that transaction fails and rolls back, the email
+  // has already been scheduled and goes out for a row that no longer exists. Pre-existing and rare
+  // (a rollback after a successful insert), but do not rely on a re-verify that isn't there — add
+  // a real `SELECT 1 FROM ai_suggestions WHERE id=$1` inside _notifyFatalNew to close it.
+  // `suppressNotify` = the row BELONGS in the list, but this particular write is not a "chase this
+  // now" event, so the team is not emailed. TWO independent producers arrived at the same flag on
+  // 2026-07-27 and both reasons stand — do not narrow it to either one:
+  //   1. The un-funded RE-READ sweep re-reads OLD documents across the whole book, so its findings
+  //      are not new to the humans. Emailing each would be a portfolio-wide bombardment of alerts
+  //      staff have already seen — and would re-notify a fatal a human already dismissed, since the
+  //      dedupe only matches OPEN rows. A caller that is RE-recording, not surfacing something new,
+  //      sets this.
+  //   2. The note-buyer guideline desk's empty-file-slot and appraisal-read items: there is no
+  //      document to collect and nobody to chase, so the row exists (a human's Dismiss can stick)
+  //      without an email. That producer sets it BY SEVERITY, never by kind — a genuinely fatal one
+  //      still emails like every other fatal.
+  // It changes ONLY whether the team is emailed; the row, its severity, and every surface that
+  // reads it are identical. Never set it on a finding a human is expected to act on promptly.
+  if (String(s.severity || '').toLowerCase() === 'fatal' && !s.suppressNotify) {
     setImmediate(() => { _notifyFatalNew(s, rowId).catch(() => { /* additive */ }); });
   }
   return { id: rowId, deduped: false };
@@ -184,7 +358,19 @@ async function listForFile(appId, opts = {}, client) {
     `SELECT * FROM ai_suggestions
       WHERE ${conds.join(' AND ')}
       ORDER BY important DESC, created_at DESC LIMIT ${limit}`, params);
-  return q.rows;
+  // Stamp each suggestion with its CLAIM KEY (owner 2026-07-27, the "six times" duplication): the
+  // SAME semantic key the Open-findings list is deduped by (finding-claims.claimOf). The AI Findings
+  // panel uses it to HIDE any suggestion whose claim is already shown in the one deduped list, so a
+  // fact reached by several desks appears ONCE instead of re-listed here. Best-effort + pure; a code
+  // that isn't in a claim family gets a per-row key that matches nothing (so it still shows).
+  let claimOf = null;
+  try { claimOf = require('./finding-claims').claimOf; } catch (_) { claimOf = null; }
+  return q.rows.map((r) => {
+    if (!claimOf) return r;
+    let claimKey = null;
+    try { claimKey = claimOf(claimShapeOf(r)); } catch (_) { claimKey = null; }
+    return { ...r, claim_key: claimKey };
+  });
 }
 
 /**
@@ -243,6 +429,29 @@ async function decide(client, id, decision = {}) {
      WHERE id=$1 RETURNING *`,
     [id, newStatus, statusReason, staffId, important, linkedCondition, linkedTask, JSON.stringify(notes)]);
 
+  // THE DECISION IS DURABLE, ACROSS SURFACES (owner-reported 2026-07-27).
+  // Recording it only on this row was never enough: the SAME issue is also raised
+  // by the DERIVED desks (tie-out, chains, liquidity, experience, note-buyer
+  // guidelines), which are pure functions of the file and re-raise on every view
+  // with no row to carry a decision. The ledger (db/333) is keyed on the finding's
+  // identity, so dismissing it here silences it everywhere — that is what makes it
+  // actually disappear. Best-effort: never rolls back the decision.
+  try {
+    const shape = claimShapeOf(cur);
+    if (shape.code) {
+      const fdec = require('./finding-decisions');
+      if (fdec.suppresses(newStatus)) {
+        await fdec.record(c, {
+          applicationId: cur.application_id, finding: shape, origin: 'ai_suggestion',
+          decision: newStatus, note: statusReason || decision.note || null, decidedBy: staffId,
+        });
+      } else if (newStatus === 'open') {
+        // "Unmark important" puts the row back to open — a re-open, not a decision.
+        await fdec.reopen(c, { applicationId: cur.application_id, finding: shape, by: staffId });
+      }
+    }
+  } catch (_) { /* ledger is additive — never blocks a human's decision */ }
+
   // R3.42 — a suggestion the human dismissed / converted / noted / signed off in
   // ANY terminal way no longer needs the super-admin's answer. Auto-close every
   // still-open ai_admin_questions row that references this suggestion, marking
@@ -290,8 +499,31 @@ async function addNote(client, id, { staffId, text } = {}) {
 async function askAdmin(client, { applicationId, agent, question, context, documentId, checklistItemId } = {}) {
   const c = client || db();
   if (!applicationId || !agent || !question) throw new Error('askAdmin: applicationId, agent, question required');
-  // Dedupe by (agent + question) so the same open question doesn't stack across runs.
-  const dedupe = 'q:' + agent + ':' + Buffer.from(String(question)).toString('base64').slice(0, 40);
+  // Dedupe key = agent + SCOPE + full-question hash (audit fixes 2026-07-23):
+  //   * the scope (condition/doc, else 'file') keeps the cure engine's CONSTANT
+  //     question text from collapsing ACROSS documents — doc B's escalation must
+  //     not be swallowed because doc A's identical question is still unanswered;
+  //   * a sha256 of the WHOLE question (not a 30-byte base64 prefix) keeps two
+  //     different staff questions with a shared prefix from colliding.
+  const scope = checklistItemId || documentId || 'file';
+  const qHash = require('crypto').createHash('sha256').update(String(question)).digest('hex').slice(0, 24);
+  const dedupe = `q:${agent}:${scope}:${qHash}`;
+  // Fix 2026-07-23: record()'s dedupe only matches status='open' suggestions,
+  // but this function flips its suggestion to 'asked_admin' below — so every
+  // repeat call (e.g. each cure re-run on the same document) stacked a brand-new
+  // suggestion + a DUPLICATE super-admin inbox question. Check for a live
+  // UNANSWERED question on the same (file, dedupe) first. Legacy rows written
+  // before dedupe_key existed match by (agent + question text) — but ONLY for a
+  // file-scoped ask: a doc/condition-scoped ask must never be suppressed by an
+  // unscoped legacy row for a different document.
+  const legacyMatch = scope === 'file';
+  const dup = await c.query(
+    `SELECT id, suggestion_id FROM ai_admin_questions
+      WHERE application_id=$1 AND answered_at IS NULL
+        AND (dedupe_key=$2 OR ($5 AND dedupe_key IS NULL AND agent=$3 AND question=$4))
+      ORDER BY asked_at DESC LIMIT 1`,
+    [applicationId, dedupe, agent, question, legacyMatch]);
+  if (dup.rows[0]) return { suggestionId: dup.rows[0].suggestion_id, questionId: dup.rows[0].id, deduped: true };
   const sug = await record(c, {
     applicationId, documentId, checklistItemId,
     source: 'ask_admin', kind: 'question',
@@ -300,10 +532,34 @@ async function askAdmin(client, { applicationId, agent, question, context, docum
     evidence: { context: context || {}, agent },
     dedupeKey: dedupe,
   });
-  const q = await c.query(
-    `INSERT INTO ai_admin_questions (suggestion_id, application_id, agent, question, context)
-     VALUES ($1,$2,$3,$4,$5::jsonb) RETURNING *`,
-    [sug.id, applicationId, agent, question, JSON.stringify(context || {})]);
+  // SAVEPOINT (best-effort — no-op outside a transaction) so a lost 23505 race
+  // on the db/264 partial-unique index doesn't abort the CALLER's transaction:
+  // rolled back to the savepoint, the re-select works and resolves the race.
+  let sp = false;
+  try { await c.query('SAVEPOINT ask_admin'); sp = true; } catch (_) { /* not in a tx */ }
+  let q;
+  try {
+    q = await c.query(
+      `INSERT INTO ai_admin_questions (suggestion_id, application_id, agent, question, context, dedupe_key)
+       VALUES ($1,$2,$3,$4,$5::jsonb,$6) RETURNING *`,
+      [sug.id, applicationId, agent, question, JSON.stringify(context || {}), dedupe]);
+    if (sp) await c.query('RELEASE SAVEPOINT ask_admin').catch(() => {});
+  } catch (e) {
+    if (sp) await c.query('ROLLBACK TO SAVEPOINT ask_admin').catch(() => {});
+    if (e && e.code === '23505') {
+      // A concurrent ask won the race — return its row. (With the savepoint
+      // rolled back this works even inside a caller transaction; without a
+      // savepoint the re-select fails on the aborted tx and we rethrow.)
+      try {
+        const again = await c.query(
+          `SELECT id, suggestion_id FROM ai_admin_questions
+            WHERE application_id=$1 AND dedupe_key=$2 AND answered_at IS NULL LIMIT 1`,
+          [applicationId, dedupe]);
+        if (again.rows[0]) return { suggestionId: again.rows[0].suggestion_id, questionId: again.rows[0].id, deduped: true };
+      } catch (_) { /* aborted tx — fall through to rethrow */ }
+    }
+    throw e;
+  }
   await c.query(`UPDATE ai_suggestions SET status='asked_admin' WHERE id=$1 AND status='open'`, [sug.id]);
   return { suggestionId: sug.id, questionId: q.rows[0].id };
 }
@@ -355,9 +611,10 @@ async function listOpenAdminQuestions({ appId, limit = 100 } = {}, client) {
  * Convert a cure-analysis new-finding proposal into an AI suggestion row.
  * The cure engine used to INSERT into document_findings directly — now that's suggested.
  */
-function fromCureNewFinding({ applicationId, documentId, checklistItemId, extractionId, finding, traceUrl }) {
+function fromCureNewFinding({ applicationId, documentId, checklistItemId, extractionId, finding, traceUrl, suppressNotify }) {
   return {
     applicationId, documentId, checklistItemId,
+    suppressNotify,
     source: 'cure_analysis', kind: 'finding',
     title: finding.title || finding.code || 'AI noticed a new issue',
     body: finding.howTo || null,
@@ -388,9 +645,12 @@ function fromCureNewFinding({ applicationId, documentId, checklistItemId, extrac
   };
 }
 
-module.exports = {
+module.exports = { ADVISORY_ONLY_SOURCES, notScoredSql,
   record, recordMany, listForFile, decide, addNote,
   askAdmin, answerAdminQuestion, listOpenAdminQuestions,
   fromCureNewFinding,
   VALID_STATUSES,
+  // Exported for the regression test that pins the row -> finding key invariant: a desk
+  // row must key on the FINDING's code, never on the condition template several rows share.
+  _internals: { claimShapeOf },
 };

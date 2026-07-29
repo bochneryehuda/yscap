@@ -94,6 +94,7 @@ function assessReasonability({ extractions = [], economics = {}, today = null } 
   const rehab = num(economics.rehabBudget);
   const fee = num(economics.assignmentFee);
   const underlying = num(economics.underlyingPrice);
+  const isAssignment = !!economics.isAssignment;
 
   // Non-positive purchase price — you cannot underwrite a $0 / negative purchase.
   if (price != null && price <= 0) {
@@ -149,6 +150,34 @@ function assessReasonability({ extractions = [], economics = {}, today = null } 
       ran('assignment_math_unreconciled', 'Seller price + assignment fee = purchase price', true);
     } else ran('assignment_math_unreconciled', 'Seller price + assignment fee = purchase price', false);
   } else ran('assignment_math_unreconciled', 'Seller price + assignment fee = purchase price', false, 'not an assignment / missing inputs');
+
+  // Assignment file missing the seller-price basis. When the file is flagged as an
+  // assignment / wholesale purchase, BOTH the seller's ORIGINAL contract price and the
+  // assignment fee must be on file — the financeable-fee cap (15% of the seller's original
+  // contract price) cannot be verified without both, so a missing figure leaves the cap
+  // silently unenforceable. Fires only on a file explicitly marked as an assignment.
+  if (isAssignment) {
+    const missing = [];
+    if (!(underlying != null && underlying > 0)) missing.push("the seller's original contract price");
+    if (!(fee != null && fee > 0)) missing.push('the assignment fee');
+    if (missing.length) {
+      const missField = !(underlying != null && underlying > 0) ? 'underlying_contract_price' : 'assignment_fee';
+      findings.push(warn({ code: 'assignment_fields_missing', field: missField, actions: A_FIX,
+        title: 'Assignment file is missing the seller price or fee',
+        howTo: `This file is marked as an assignment (wholesale) purchase, but ${missing.join(' and ')} ${missing.length > 1 ? 'are' : 'is'} not on file. Both are needed to check the financeable assignment-fee cap (15% of the seller's original contract price). Add the missing figure${missing.length > 1 ? 's' : ''} on the loan file.` }));
+      ran('assignment_fields_missing', 'Assignment file has seller price + fee', true);
+    } else ran('assignment_fields_missing', 'Assignment file has seller price + fee', false);
+  } else ran('assignment_fields_missing', 'Assignment file has seller price + fee', false, 'not an assignment');
+
+  // Purchase price above the after-repair value — the borrower would pay more for the
+  // property than it is projected to be worth even AFTER all repairs. A serious deal red
+  // flag (or a swapped/typo'd figure). Only compares when both are present and positive.
+  if (price != null && price > 0 && arv != null && arv > 0 && price > arv) {
+    findings.push(warn({ code: 'purchase_exceeds_arv', field: 'purchase_price', docValue: money(price), fileValue: money(arv),
+      title: 'Purchase price is higher than the after-repair value', actions: A_FIX,
+      howTo: `The purchase price (${money(price)}) is more than the after-repair value (${money(arv)}) — the borrower would be paying more than the finished home is projected to be worth. Confirm both figures aren't swapped or mistaken.` }));
+    ran('purchase_exceeds_arv', 'Purchase price ≤ after-repair value', true);
+  } else ran('purchase_exceeds_arv', 'Purchase price ≤ after-repair value', false);
 
   // ---- Per-document plausibility -------------------------------------------
   let futureDated = false, invertedDates = false;

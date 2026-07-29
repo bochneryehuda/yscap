@@ -2,6 +2,9 @@ import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { api } from '../lib/api.js';
 import { useAuth } from '../lib/auth.jsx';
+// (No overrideLine here: this queue only lists OPEN work — a cleared condition,
+// overridden or not, has already dropped off it. The file's list shows the stamp.)
+import { canOverride, isCompletion, askOverride } from '../lib/condition-override.js';
 
 const addrLine = (a) => !a ? '' : (a.oneLine || [a.street, a.city, a.state].filter(Boolean).join(', ') || '');
 const STATUS_LABEL = { outstanding: 'Outstanding', requested: 'Requested', received: 'In review', issue: 'Needs attention' };
@@ -41,18 +44,25 @@ export default function StaffTasks() {
   // Inline completion — the same PATCH the file's condition list issues. On
   // success the list refetches (a signed-off task drops off; a Done task stays,
   // marked done). A blocked sign-off surfaces the server's exact reason.
-  const patchItem = useCallback(async (itemId, body) => {
-    if (busy) return;
+  const patchItem = useCallback(async (itemId, body, label) => {
+    if (busy && !(body && body.adminOverride)) return;   // the override retry is a continuation of the same click
     setBusy(itemId); setErr('');
     try { await api.staffPatchItem(itemId, body); await reload(); }
     catch (e) {
       const msg = e.message || 'Update failed';
+      // Same super-admin override as the file's conditions list, offered at the
+      // same moment — the refusal (owner-directed 2026-07-27). A staffer who
+      // works from this queue must not have to open the file to get through.
+      if (isCompletion(body) && !body.adminOverride && canOverride(role)) {
+        const extra = askOverride(label, { blocked: msg });
+        if (extra) { setBusy(null); return patchItem(itemId, { ...body, ...extra }, label); }
+      }
       setErr(msg);
-      if (body && (body.signedOff === true || body.status === 'satisfied')) {
-        try { window.alert('Can’t sign off yet:\n\n' + msg); } catch (_) { /* no window */ }
+      if (isCompletion(body)) {
+        try { window.alert('Can’t clear this yet:\n\n' + msg); } catch (_) { /* no window */ }
       }
     } finally { setBusy(null); }
-  }, [busy, reload]);
+  }, [busy, reload, role]);
 
   const shown = useMemo(() => {
     if (!rows) return [];
@@ -166,15 +176,21 @@ export default function StaffTasks() {
                             (completes for everyone) → Waive (optional only). */}
                         <div className="task-acts" style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
                           {it.reviewed_at
-                            ? <button className="btn ghost small" disabled={b} title={`Marked done by ${it.reviewed_by_name || 'staff'} — undo to put it back on your list`} onClick={() => patchItem(it.id, { reviewed: false })}>Done ✓</button>
-                            : <button className="btn ghost small" disabled={b} title="Mark this task done (loan-officer step). The processor still signs it off." onClick={() => patchItem(it.id, { reviewed: true })}>Done</button>}
+                            ? <button className="btn ghost small" disabled={b} title={`Marked done by ${it.reviewed_by_name || 'staff'} — undo to put it back on your list`} onClick={() => patchItem(it.id, { reviewed: false }, it.label)}>Done ✓</button>
+                            : <button className="btn ghost small" disabled={b} title="Mark this task done (loan-officer step). The processor still signs it off." onClick={() => patchItem(it.id, { reviewed: true }, it.label)}>Done</button>}
                           {/* Sign off / Waive are the back-office step (#134) — only shown to
                               completers, matching the file view, so an LO never sees a dead button. */}
                           {COMPLETER_ROLES.includes(role) && (it.waived_at
-                            ? <button className="btn ghost small" disabled={b} onClick={() => patchItem(it.id, { waived: false })}>Undo waive</button>
+                            ? <button className="btn ghost small" disabled={b} onClick={() => patchItem(it.id, { waived: false }, it.label)}>Undo waive</button>
                             : <>
-                                <button className="btn primary small" disabled={b} title="Sign off = the whole task is complete. This removes it from the list for everyone." onClick={() => patchItem(it.id, { signedOff: true })}>Sign off</button>
-                                {it.is_required === false && <button className="btn ghost small" disabled={b} title="Waive this optional task (clear without a document)" onClick={() => patchItem(it.id, { waived: true })}>Waive</button>}
+                                <button className="btn primary small" disabled={b} title="Sign off = the whole task is complete. This removes it from the list for everyone." onClick={() => patchItem(it.id, { signedOff: true }, it.label)}>Sign off</button>
+                                {it.is_required === false && <button className="btn ghost small" disabled={b} title="Waive this optional task (clear without a document)" onClick={() => patchItem(it.id, { waived: true }, it.label)}>Waive</button>}
+                                {/* Super admin only — clear it without what it asks for (reason required). */}
+                                {canOverride(role) && (
+                                  <button className="btn ghost small" disabled={b} style={{ color: 'var(--gold, #AE8746)' }}
+                                    title="Super admin: clear this WITHOUT a document / without meeting its requirement. Your reason is saved on the file."
+                                    onClick={() => { const x = askOverride(it.label); if (x) patchItem(it.id, { signedOff: true, ...x }, it.label); }}>Override</button>
+                                )}
                               </>)}
                           <Link className="btn ghost small" to={`/internal/app/${it.application_id}`} title="Open the file">Open</Link>
                         </div>

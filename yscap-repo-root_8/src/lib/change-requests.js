@@ -37,10 +37,20 @@ const INT_FIELDS = new Set(['units']);
 // reviewer approves without looking. property_type, program and loan_type all
 // use the SAME option lists the completeness pickers offer, so an approved
 // request writes a value the pricing engine already understands.
+// The CANONICAL spellings come first — those are what the pickers now offer and
+// what the ClickUp crosswalk can translate. The legacy spellings stay ACCEPTED
+// (never offered) purely so an in-flight request typed before 2026-07-27 is not
+// rejected; validation runs at openRequest time only, so a pending row approves
+// either way. 'Fix & Hold' joins program alongside the ClickUp option the owner
+// is adding — a borrower/officer asking to switch strategy to Fix & Hold was
+// refused outright before.
 const FIELD_OPTIONS = {
-  property_type: ['SFR', 'Multi 2-4', 'Multi 5+', 'Condo', 'Townhouse', 'Mixed Use'],
-  program: ['Fix & Flip w/ Construction', 'Bridge', 'Ground-Up Construction'],
-  loan_type: ['Purchase', 'Refinance — Rate & Term', 'Refinance — Cash-Out'],
+  property_type: [
+    'SFR (1 unit)', 'Multi 2–4', 'Multi 5+', 'Condo', 'Townhouse', 'Mixed use',
+    'SFR', 'Multi 2-4', 'Mixed Use',                 // legacy, accepted not offered
+  ],
+  program: ['Fix & Flip w/ Construction', 'Fix & Hold', 'Bridge', 'Ground-Up Construction'],
+  loan_type: ['Purchase', 'Refinance — Rate & Term', 'Refinance — Cash-Out', 'Delayed Purchase Financing'],
 };
 const isGovernedField = (k) => Object.prototype.hasOwnProperty.call(FIELD_LABELS, k);
 
@@ -53,7 +63,13 @@ const isGovernedField = (k) => Object.prototype.hasOwnProperty.call(FIELD_LABELS
 // stored or shown in the clear (masked display + an encrypted payload column).
 const BORROWER_FIELD_LABELS = {
   first_name: 'First name',
+  // A borrower's name is THREE fields (db/345). The middle name and suffix are
+  // part of their legal identity — printed on the note and the closing package —
+  // so on a LOCKED file they go through the same loan-team approval as the first
+  // and last name, never a silent live edit.
+  middle_name: 'Middle name',
   last_name: 'Last name',
+  name_suffix: 'Suffix (Jr., III)',
   date_of_birth: 'Date of birth',
   ssn: 'Social Security number',
   cell_phone: 'Cell phone',
@@ -64,7 +80,8 @@ const BORROWER_FIELDS = new Set(Object.keys(BORROWER_FIELD_LABELS));
 // The real borrowers COLUMN each personal field writes. 'ssn' is null — it is
 // handled specially (ssn_encrypted/ssn_last4) and its name is never interpolated.
 const BORROWER_FIELD_COLUMN = {
-  first_name: 'first_name', last_name: 'last_name', date_of_birth: 'date_of_birth',
+  first_name: 'first_name', middle_name: 'middle_name', last_name: 'last_name',
+  name_suffix: 'name_suffix', date_of_birth: 'date_of_birth',
   cell_phone: 'cell_phone', fico: 'fico', citizenship: 'citizenship', ssn: null,
 };
 const ALL_LABELS = Object.assign({}, FIELD_LABELS, BORROWER_FIELD_LABELS);

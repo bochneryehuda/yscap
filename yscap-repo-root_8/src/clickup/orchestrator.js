@@ -20,7 +20,7 @@ const routing = require('./routing');
 
 let _address = null;
 function geocoder() {
-  if (_address === null) { try { _address = require('../lib/address'); } catch { _address = false; } }
+  if (_address === null) { try { _address = require('../lib/address-canon'); } catch { _address = false; } }
   return _address || null;
 }
 
@@ -30,16 +30,77 @@ async function firstListId(folderId) {
   return r && r.lists && r.lists[0] ? r.lists[0].id : null;
 }
 
-/** Attach {lat,lng} to a portal address jsonb via our server-side geocoder. */
+/**
+ * Attach {lat,lng} + the canonical formatted address to a portal address jsonb.
+ *
+ * ROOT FIX (owner-reported 2026-07-26: "when we put in the subject property
+ * address in PILOT it doesn't sync to ClickUp — the ClickUp subject address
+ * stays blank"). A ClickUp `location` field REQUIRES real coordinates, so
+ * mapper.addressField() correctly refuses to write one without lat/lng — but
+ * this resolver called `require('../lib/address').geocode`, and that module has
+ * never exported a `geocode` function. `g.geocode` was therefore always
+ * undefined, no address ever gained coordinates, and BOTH location fields (the
+ * subject property AND the borrower's home address) were silently dropped from
+ * every push. Typing an address in PILOT could not reach ClickUp at all.
+ *
+ * The real resolver is `lib/address-canon.canonicalize` — Google Geocoding,
+ * permanently cached per input in `address_canon_cache` (db/115), degrading to
+ * null with no key / no network. Using it also solves the FORMATTING half of the
+ * complaint: ClickUp wants an address PICKED from Google's list, and what we now
+ * write is exactly that — Google's own `formatted_address` for a resolved
+ * `place_id`, with its coordinates — so the value lands as a properly selected
+ * ClickUp location instead of loose text.
+ *
+ * Best-effort throughout: an unresolvable address returns unchanged (the field
+ * is then skipped, exactly as before — never a bad or location-clearing write).
+ */
 async function withCoords(addr) {
   if (!addr || (addr.lat != null && addr.lng != null)) return addr;
   const g = geocoder();
-  const line = addr.oneLine || [addr.line1 || addr.street, addr.city, addr.state, addr.zip].filter(Boolean).join(', ');
-  if (!g || !line) return addr;
+  const line = addr.oneLine || addr.formatted_address
+    || [addr.line1 || addr.street, addr.city, addr.state, addr.zip].filter(Boolean).join(', ');
+  if (!g || !g.geocode || !line) return addr;
   try {
-    const hit = g.geocode ? await g.geocode(line) : null;
-    if (hit && hit.lat != null && hit.lng != null) return { ...addr, lat: hit.lat, lng: hit.lng, formatted_address: hit.formatted || line };
-  } catch (_) { /* best effort */ }
+    const hit = await g.geocode(line);
+    if (hit && hit.lat != null && hit.lng != null) {
+      // FORMATTING (owner-reported 2026-07-26, second report): what we write must
+      // be the MAILING one-line ClickUp's picker shows — "26 S 10th St, Brooklyn,
+      // NY 11249, USA" — never a geocoder display name ("26, South 10th Street,
+      // Williamsburg, Brooklyn, Kings County, New York, 11249, United States").
+      // The keyless OSM fallback used to hand us exactly that display name and it
+      // was written onto the card AND back onto the portal record below. The
+      // provider now returns the mailing form; `compactFormattedAddress` is the
+      // belt-and-suspenders (a permanently-cached old row, a future provider).
+      const ADDR = require('../lib/address');
+      // OUR address, in the mailing form — the value to beat.
+      const ours = ADDR.canonicalOneLine({ ...addr })
+        || ADDR.compactFormattedAddress(addr.formatted_address || line);
+      const theirs = ADDR.compactFormattedAddress(hit.formatted);
+      // A GEOCODE IS A REQUEST FOR COORDINATES. Adopt the provider's text only when
+      // it is the SAME property better spelled — never when it contradicts ours.
+      // Owner-reported 2026-07-28 (YSCAP258134762): this line adopted `hit.formatted`
+      // unconditionally, so a road-level match rewrote the subject property from
+      // "1727 S 2nd St, Piscataway, NJ 08854" to "2nd St, Piscataway, NJ 07063" —
+      // pushed to the card AND written back onto the file below, so every correction
+      // was undone by the next push. `geocodeRewriteIsSafe` refuses a dropped house
+      // number, a changed ZIP, or a dropped directional; the provider is still free
+      // to abbreviate the street, fix the city, or fill a ZIP we never had.
+      const base = (theirs && ADDR.geocodeRewriteIsSafe(ours || line, theirs)) ? theirs : (ours || line);
+      // Keep the apartment on the value we store/show: the geocoder resolved the
+      // BUILDING (the unit was stripped so it would place on the map — see
+      // address-canon.geocode), but the mailing address still names the unit.
+      const formatted = ADDR.withUnit(base, addr.unit);
+      return {
+        ...addr,
+        lat: Number(hit.lat), lng: Number(hit.lng),
+        formatted_address: formatted || addr.formatted_address || line,
+        // The provider's place_id identifies what IT matched. On a road-level match
+        // that is the STREET, not this property — adopting it would make every house
+        // on the street compare as the same place (address-canon.samePlace).
+        place_id: (hit.precision === 'road' ? addr.place_id : (hit.place_id || addr.place_id)) || undefined,
+      };
+    }
+  } catch (_) { /* best effort — an unresolvable address just isn't pushed */ }
   return addr;
 }
 
@@ -91,7 +152,7 @@ async function resolveClickupUserId({ storedId, staffId, email }) {
 /** Load everything the mapper needs to build a task from an application. */
 async function loadPushContext(appId) {
   const r = await db.query(
-    `SELECT a.*, b.first_name, b.last_name, b.email AS b_email, b.cell_phone, b.date_of_birth, b.origin AS b_origin,
+    `SELECT a.*, b.first_name, b.last_name, b.middle_name, b.name_suffix, b.full_name AS b_full_name, b.email AS b_email, b.cell_phone, b.date_of_birth, b.origin AS b_origin,
             b.ssn_encrypted, b.fico AS b_fico, b.current_address, b.citizenship, b.marital_status,
             b.employment_type, b.employer, b.dependents_count, b.years_at_residence, b.housing_status, b.housing_payment,
             l.llc_name, l.ein,
@@ -127,7 +188,13 @@ async function loadPushContext(appId) {
       property_address: await withCoords(row.property_address),
     },
     borrower: {
-      first_name: row.first_name, last_name: row.last_name, email: row.b_email, cell_phone: row.cell_phone,
+      first_name: row.first_name, last_name: row.last_name,
+      // The middle name + suffix (db/345) plus THE ONE BIG NAME FIELD (db/346 —
+      // generated by Postgres from the four parts). The mapper writes `full_name`
+      // into ClickUp's single "Borrower Name" field, so the card always shows
+      // exactly the whole name PILOT holds.
+      middle_name: row.middle_name, name_suffix: row.name_suffix, full_name: row.b_full_name,
+      email: row.b_email, cell_phone: row.cell_phone,
       date_of_birth: row.date_of_birth, fico: row.b_fico, ssn, citizenship: row.citizenship,
       marital_status: row.marital_status, employment_type: row.employment_type, employer: row.employer,
       dependents_count: row.dependents_count, years_at_residence: row.years_at_residence,
@@ -153,6 +220,28 @@ async function loadPushContext(appId) {
     portalFileLink: `${cfg.appUrl}${cfg.portalPath}/#/internal/app/${appId}`,
     _row: row,
   };
+  // Keep the resolved coordinates + canonical formatting ON the portal record.
+  // Fill-only (the write requires the stored address to still be missing lat), so
+  // it never rewrites an address a human or ClickUp owns — it just means the very
+  // next push, the property map, and every address comparison work from the same
+  // canonical value instead of re-resolving. Best-effort.
+  try {
+    const p = ctx.app.property_address;
+    if (p && p.lat != null && (!row.property_address || row.property_address.lat == null)) {
+      await db.query(
+        `UPDATE applications SET property_address=$2, updated_at=now()
+          WHERE id=$1 AND (property_address->>'lat') IS NULL`,
+        [appId, JSON.stringify(p)]);
+    }
+    const h = ctx.borrower.current_address;
+    if (h && h.lat != null && (!row.current_address || row.current_address.lat == null)) {
+      await db.query(
+        `UPDATE borrowers SET current_address=$2, updated_at=now()
+          WHERE id=$1 AND (current_address->>'lat') IS NULL`,
+        [row.borrower_id, JSON.stringify(h)]);
+    }
+  } catch (_) { /* best-effort — a cache write never blocks a push */ }
+
   // Phase B: mapped checklist condition statuses, for a possible SCOPED push to
   // their ClickUp dropdowns (only ever pushed when a checklist:<fieldId> key is
   // explicitly named in opts.only — see pushApplication).
@@ -236,8 +325,12 @@ async function pushApplication(appId, opts = {}) {
     await logSync('push_skipped_unlinked', appId, null, { only: opts.only.slice(0, 20) });
     return { skipped: 'unlinked file — a scoped push never creates a ClickUp task' };
   }
+  // A scoped push (taskId set) leaves listId null → optionMap returns the warm
+  // cache; a full push resolves the real target list. (`applications` has no
+  // clickup_list_id column — the removed `|| ctx._row.clickup_list_id` was always
+  // undefined; see the accept-figures "server error" root cause.)
   const listId = taskId ? null : await resolveTargetList(ctx);
-  const options = await registry.optionMap(listId || ctx._row.clickup_list_id).catch(() => ({}));
+  const options = await registry.optionMap(listId).catch(() => ({}));
   const ysProgramFieldId = null; // set once the "YS Program" field is created + re-pulled
   const built = mapper.buildTaskFields(ctx, options, ysProgramFieldId);
 
@@ -315,7 +408,10 @@ async function pushApplication(appId, opts = {}) {
     const source = scoped ? 'scoped_push' : 'full_repush';
     for (const c of chosen) {
       const old = before ? before[c.id] : undefined;
-      if (before && fieldValueEquivalent(c.id, old, c.value, options)) { journalStats.suppressed++; continue; }
+      // `opts` is passed so the NAME fields can be compared strictly when the push
+      // carries a deliberate human name edit, and middle-name-tolerantly otherwise
+      // (see fieldValueEquivalent). Every other field ignores it.
+      if (before && fieldValueEquivalent(c.id, old, c.value, options, opts)) { journalStats.suppressed++; continue; }
       // ANY change to an existing ClickUp DOB — any magnitude, scoped OR full
       // repush — first consults the AUTO-RESOLUTION engine (owner-directed
       // 2026-07-15 evening): provable conflicts settle themselves (same day in
@@ -392,7 +488,14 @@ async function pushApplication(appId, opts = {}) {
       // ever contain their own scoped fields, so they never trip this), and a
       // queued review's approval re-pushes with opts.approvedReview. DOB is
       // governed by the dedicated day-shift guard above, not this shield.
-      const oldBlank = old == null || old === '' || (Array.isArray(old) && !old.length);
+      const oldBlank = mapper.isBlankClickupValue(old);
+      // FILL-ONLY (the address backfill sweep, 2026-07-28). A repair pass NOBODY
+      // asked for may only ADD a value ClickUp does not have — never replace one.
+      // This is the same guarantee the PII shield gives a full repush, extended to
+      // a scoped push that no human initiated. With no before-image we cannot
+      // prove the field is blank, so we don't write (a scoped push already fails
+      // closed on a failed pre-read; this is belt-and-suspenders).
+      if (opts.fillOnly && (before == null || !oldBlank)) { journalStats.suppressed++; continue; }
       if (!scoped && !opts.approvedReview && PII_OVERWRITE_SHIELD.has(c.id) && (before == null || !oldBlank)) {
         journalStats.blocked++;
         await journalFieldWrite(appId, id, c.id, old, c.value, source, { blocked: true });
@@ -621,6 +724,7 @@ async function createForNewFile(appId) {
 module.exports = {
   pushApplication, createForNewFile, loadPushContext, resolveTargetList, firstListId, logSync,
   PII_OVERWRITE_SHIELD, PII_REVIEW_KEY, // exported for the write-safety tests
+  withCoords, // exported for the address-downgrade regression test
   circuitCheck, // the ONE shared volume breaker — every ClickUp write path counts into it (audit fix)
   seedBreakerFromDb, // WO-4b (F-M16): prime the breaker window from the journal on boot
   recordFieldFailure, assertPushComplete, // WO-1: exported for the push-failure regression test

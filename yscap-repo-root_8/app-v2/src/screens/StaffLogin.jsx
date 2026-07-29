@@ -1,7 +1,7 @@
 import React, { useState } from 'react';
 import { useNavigate, useLocation } from 'react-router-dom';
 import { api } from '../lib/api.js';
-import { useAuth, useAuthNotice } from '../lib/auth.jsx';
+import { useAuth, useAuthNotice, actorFromToken } from '../lib/auth.jsx';
 import AuthShell from '../components/AuthShell.jsx';
 import PasswordInput from '../components/PasswordInput.jsx';
 import { returnDest } from './Login.jsx';
@@ -20,7 +20,13 @@ export default function StaffLogin() {
   const [err, setErr] = useState('');
   const [busy, setBusy] = useState(false);
 
-  const done = (t) => { signIn(t); nav(returnDest(loc, '/internal')); };
+  const done = (t) => {
+    signIn(t);
+    // A closer lands on their Closing queue by default (owner-directed 2026-07-26).
+    let dest = '/internal';
+    try { const a = actorFromToken(t); if (a && a.role === 'closer') dest = '/internal/closing'; } catch (_) { /* fall back to pipeline */ }
+    nav(returnDest(loc, dest));
+  };
 
   async function submitLogin() {
     setErr(''); setBusy(true);

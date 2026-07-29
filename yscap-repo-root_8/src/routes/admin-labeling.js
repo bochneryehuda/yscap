@@ -89,7 +89,7 @@ router.post('/examples', requireRole('super_admin'), async (req, res) => {
        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9) RETURNING *`,
       [b.applicationId || null, b.documentId || null, docType, target,
        b.pages || null, up.url, up.sizeBytes || buf.length,
-       b.filename, req.actor.staffId]);
+       b.filename, req.actor.id]);
     res.json({ ok: true, example: ins.rows[0] });
   } catch (e) { res.status(500).json({ error: e.message || 'label upload failed' }); }
 });
@@ -137,7 +137,7 @@ router.post('/training-runs', requireRole('super_admin'), async (req, res) => {
     const ins = await db.query(
       `INSERT INTO label_training_runs (target_project, doc_type, model_id, requested_by_staff_id, example_count, status)
        VALUES ($1,$2,$3,$4,$5,'queued') RETURNING *`,
-      [target, docType, modelId, req.actor.staffId, cnt]);
+      [target, docType, modelId, req.actor.id, cnt]);
     // Best-effort stamp the examples as "sent to this training run" so the next
     // run doesn't reuse them by default.
     if (target === 'classifier') {

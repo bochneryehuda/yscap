@@ -58,6 +58,14 @@ function normStrategy(raw) {
 function normLoanPurpose(raw) {
   const s = String(raw || '').toLowerCase();
   if (!s) return null;
+  // Delayed purchase financing is checked FIRST and deliberately lands on
+  // 'purchase': the frozen engine (pricing.js loanTypeOf — substring 'refi') also
+  // reads it as a purchase, and the Blue Lake guideline in PILOT says a delayed
+  // purchase gets "purchase leverage". So a condition rule keyed on loan purpose
+  // agrees with the leverage the loan is actually sized on. Explicit rather than
+  // relying on the /purchase/ branch below, so a label like "Delayed Purchase
+  // Financing (Cash-Out)" could never silently flip it to a cash-out refinance.
+  if (/delayed\s+purchase/.test(s)) return 'purchase';
   if (/cash[-\s]?out/.test(s)) return 'refinance_cash_out';
   if (/refi|rate\s*(&|and)?\s*term/.test(s)) return 'refinance_rate_term';
   if (/purchase|acquisition/.test(s)) return 'purchase';
@@ -118,6 +126,36 @@ function normNoteBuyer(raw) {
   return s || null;
 }
 
+// FIDELIS — the capital provider the STANDARD program is paired with
+// (tapes/program-provider.js: standard ↔ fidelis).
+//
+// PREFIX match, not an alias list (owner-reported 2026-07-27: a Fidelis file still
+// showed the flood certificate). This started as an enumerated list — fidelis,
+// fidelisinvestors, fidelisinvestorsllc, … — and that was the wrong shape: the list
+// can only ever cover the spellings someone thought of, and a real ClickUp label
+// one character off ("Fidelis Investor LLC", singular) silently fell through and the
+// file kept a condition it should not have had. There is no bound on how a human
+// types a company name, so the rule is now "the note buyer's name begins with
+// Fidelis", which is what the owner actually means by "a Fidelis file".
+//
+// Safe against the near-miss that matters: "Fidelity" (Fidelity National, the title
+// insurer) does NOT match — it diverges at the 6th character (fidelit… vs fideli**s**).
+//
+// This does NOT loosen `normNoteBuyer`, which stays an EXACT normalizer — an
+// over-match THERE would let "BlueLake Capital" export the Blue Lake data tape
+// (tapes/buyer-rule.js exportGate; guarded by test-tape-access-gate-pure.js). The
+// prefix rule lives only in this Fidelis-specific helper, whose blast radius is the
+// flood-certificate condition and nothing else.
+//
+// Keep in lock-step with the `LIKE 'fidelis%'` test in db/337.
+const FIDELIS_KEY_PREFIX = 'fidelis';
+
+/** True when this note-buyer label (applications.lender) is Fidelis, however it is spelled. */
+function isFidelisNoteBuyer(raw) {
+  const key = normNoteBuyer(raw);
+  return !!key && key.startsWith(FIDELIS_KEY_PREFIX);
+}
+
 const stateOptions = US_STATES.map((v) => ({ v, label: v }));
 
 // ---------------------------------------------------------------------------
@@ -160,11 +198,32 @@ const FIELDS = [
   // option list is the known/confirmed note buyers — an admin can still author a
   // rule against any of them, and a value not in the list still EVALUATES fine
   // (the engine matches on the normalized ctx value, not on option membership).
+  // Drives note-buyer conditions: CorrFirst opens the borrower EMD condition
+  // (db/191), and Blue Lake / CorrFirst require the internal flood-certificate
+  // condition (rtl_cond_flood, db/281) — which a FIDELIS file is excluded from
+  // (db/335, via note_buyer_is_fidelis below).
   { key: 'note_buyer', label: 'Note buyer (capital partner)', group: 'Loan & program', type: 'enum',
     options: [
       { v: 'bluelake', label: 'Blue Lake' }, { v: 'corrfirst', label: 'CorrFirst' },
-      { v: 'fidelis', label: 'Fidelis' }],
+      { v: 'emcap', label: 'EMCAP' }, { v: 'fidelis', label: 'Fidelis' }],
     description: 'The note buyer / capital partner the file is sold to (from ClickUp; staff-only, never shown to the borrower).' },
+  // Is the note buyer FIDELIS (any spelling — "Fidelis", "Fidelis Investors",
+  // "Fidelis Investors LLC")? A BOOLEAN companion to note_buyer, deliberately not
+  // an enum comparison, for two reasons (owner-directed 2026-07-27):
+  //   1. It collapses every Fidelis label spelling into ONE rule row, without
+  //      loosening the shared exact normNoteBuyer (see isFidelisNoteBuyer above).
+  //   2. It is always CONCRETE (true/false, never blank), so an `is_false` rule row
+  //      behaves correctly on a file with NO note buyer yet. An enum
+  //      `note_buyer is not fidelis` row would evaluate FALSE on a blank note buyer
+  //      (rules.evalRow short-circuits a blank actual before the enum compare), which
+  //      would have silently stripped the flood cert off every un-assigned Gold file.
+  // Drives the Fidelis flood-cert rule (db/335): `in_flood_zone OR (gold|manual AND
+  // note_buyer_is_fidelis is_false) OR note_buyer in (bluelake,corrfirst)` — i.e. it
+  // gates the PROGRAM branch only. A proven flood zone stands on its own and requires
+  // the cert on every file, Fidelis included ("if it's a flood zone you should force
+  // this condition on, but as long as you don't have evidence… ignore this condition").
+  { key: 'note_buyer_is_fidelis', label: 'Note buyer is Fidelis?', group: 'Loan & program', type: 'boolean',
+    description: 'True when the file\'s note buyer / capital partner is Fidelis Investors (any spelling). Staff-only, never shown to the borrower.' },
   // YS loan number (applications.ys_loan_number). Referenced by the rule engine so
   // the "loan number missing" internal condition can attach while it is blank and
   // retract the moment it is filled. Not writable via an info-condition (staff set
@@ -197,8 +256,9 @@ const FIELDS = [
       { v: 'secondary', label: 'Secondary' }, { v: 'other', label: 'Other' }] },
   // Known Special Flood Hazard Area — derived from the current appraisal (the
   // FEMA SFHA flag, the FEMA-mapped zone, or the appraiser's stated zone; an A*
-  // or V* zone is an SFHA). Drives the flood-certificate condition: the cert is
-  // ALWAYS required when a flood zone is known, on top of the Gold/Manual rule.
+  // or V* zone is an SFHA). Drives the flood-certificate condition (rtl_cond_flood):
+  // the cert is ALWAYS required when a flood zone is known, on top of the
+  // Gold/Manual program rule AND the Blue Lake / CorrFirst note-buyer rule (db/281).
   { key: 'in_flood_zone', label: 'In a flood zone (SFHA)?', group: 'Property', type: 'boolean',
     description: 'True when the current appraisal places the property in a FEMA Special Flood Hazard Area (zone A*/V*).' },
 
@@ -362,4 +422,5 @@ module.exports = {
   allFields, fieldMap, loadCustomFields, bustCustomFields, isCustomKey, customFieldDef,
   normState, normStrategy, normLoanPurpose, normPropertyType, normRehabType,
   normCitizenship, normOccupancy, normNoteBuyer,
+  FIDELIS_KEY_PREFIX, isFidelisNoteBuyer,
 };

@@ -20,6 +20,7 @@ const switches = require('../lib/integrations/switches'); // runtime on/off (env
 const client = require('./client');
 const T = require('./transforms');
 const M = require('./mapper');
+const routing = require('./routing');
 const rehab = require('../lib/rehab-budget');
 
 // ---- journal every write (before/after) ----
@@ -314,7 +315,10 @@ async function pushFile(appId, opts = {}) {
   const program = /gold/i.test(String(a.registered_program || '')) ? 'gold' : 'standard';
   const cp = await resolveCapitalPartnerId(a.lender);
   const rule = await resolveRule(a.lender, cp.id, program);
-  if (rule && rule.handled_externally) return { skipped: 'handled_externally', partner: a.lender || null };
+  // Phase-1 routing (2026-07-24 blueprint): only the legacy 'external' platform skips the push.
+  // A 'trustpoint' file gets the FULL Sitewire setup — Sitewire stays the borrower intake +
+  // mirror while TrustPoint administers approvals (the coordinator import-task flow).
+  if (routing.isExternal(rule)) return { skipped: 'handled_externally', partner: a.lender || null };
 
   // G-LOAN
   if (!a.ys_loan_number) { await park({ appId, reason: 'sitewire_missing_loan_number: file has no YS loan number to push' }); return { parked: 'missing_loan_number' }; }
@@ -396,7 +400,7 @@ async function pushFile(appId, opts = {}) {
   const ex = M.reconcileToBudget(M.explodeSow(a.sow_payload.state, {}), budgetCents);
   M.uniquifyNames(ex.items); // re-dedupe: reconcileToBudget may append a 'Contingency' line after the first pass
   if (ex.total_cents !== budgetCents) {
-    await park({ appId, reason: `sitewire_budget_mismatch: exploded SOW total ${T.usd(ex.total_cents)} != frozen budget ${T.usd(budgetCents)}`, current: budgetCents, proposed: ex.total_cents });
+    await park({ appId, reason: `sitewire_budget_mismatch: exploded SOW total ${T.usdExact(ex.total_cents)} != frozen budget ${T.usdExact(budgetCents)} (off by ${T.usdExact(Math.abs(Number(ex.total_cents||0)-Number(budgetCents||0)))})`, current: budgetCents, proposed: ex.total_cents });
     return { parked: 'budget_mismatch' };
   }
 
@@ -840,7 +844,7 @@ async function pushBudgetInner(appId, budgetId, ex, budgetCents) {
       return { parked: 'verify_failed' };
     }
     if (Number(fresh.total_budgeted_cents) !== budgetCents) {
-      await park({ appId, reason: `sitewire_total_drift: Sitewire budget total ${T.usd(fresh.total_budgeted_cents)} != expected ${T.usd(budgetCents)} after write`, current: fresh.total_budgeted_cents, proposed: budgetCents });
+      await park({ appId, reason: `sitewire_total_drift: Sitewire budget total ${T.usdExact(fresh.total_budgeted_cents)} != expected ${T.usdExact(budgetCents)} after write (off by ${T.usdExact(Math.abs(Number(fresh.total_budgeted_cents||0)-Number(budgetCents||0)))})`, current: fresh.total_budgeted_cents, proposed: budgetCents });
       return { parked: 'total_drift' };
     }
     // Per-line assertion by id: a coercion that preserved the TOTAL but shifted cents BETWEEN lines
@@ -851,7 +855,7 @@ async function pushBudgetInner(appId, budgetId, ex, budgetCents) {
       for (const l of (await db.query(`SELECT sitewire_job_item_id, budgeted_cents FROM sitewire_job_item_links WHERE application_id=$1 AND sitewire_budget_id=$2 AND state='live'`, [appId, budgetId])).rows) {
         const ji = freshById.get(Number(l.sitewire_job_item_id));
         if (ji && ji.budgeted_cents != null && Number(ji.budgeted_cents) !== Number(l.budgeted_cents)) {
-          await park({ appId, reason: `sitewire_line_drift: job item ${l.sitewire_job_item_id} is ${T.usd(ji.budgeted_cents)} in Sitewire, expected ${T.usd(l.budgeted_cents)}`, current: ji.budgeted_cents, proposed: l.budgeted_cents });
+          await park({ appId, reason: `sitewire_line_drift: job item ${l.sitewire_job_item_id} is ${T.usdExact(ji.budgeted_cents)} in Sitewire, expected ${T.usdExact(l.budgeted_cents)}`, current: ji.budgeted_cents, proposed: l.budgeted_cents });
           return { parked: 'line_drift' };
         }
       }

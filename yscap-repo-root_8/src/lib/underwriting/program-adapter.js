@@ -94,17 +94,26 @@ function adaptQuote(quote, opts) {
     downPayment: num(s.downPayment),
     monthlyPayment: num(s.monthlyPayment),
     assignmentExcessOOP: num(s.assignmentExcessOOP),
+    // Fix 2026-07-23 (#209): the engine's reserve-in-cost basis must survive
+    // adaptation — the run's structure ledger needs it for a correct LTC.
+    costBasis: num(s.costBasis),
   };
 
   return {
     engineStatus,
     wholeLoanStatus,
-    eligible: q.eligible !== undefined ? !!q.eligible : engineStatus !== 'INELIGIBLE',
+    // Fail-safe (fix 2026-07-23): an UNKNOWN/absent engine status must never
+    // read as eligible. Eligible only when the engine SAID eligible (status
+    // ELIGIBLE, or an explicit true flag alongside a recognized status).
+    eligible: engineStatus === 'ELIGIBLE'
+      ? (q.eligible !== undefined ? !!q.eligible : true)
+      : (q.eligible === true && engineStatus !== null),
     manualReasons,
     blockingReasons,
     reasons,
     sizing,
-    caps: q.caps || null,
+    // Fix 2026-07-23 (#209): persisted quotes carry caps at guidelines.caps.
+    caps: q.caps || (q.guidelines && q.guidelines.caps) || null,
     noteRate: num(q.noteRate),
     program: q.program || null,
     productLabel: q.productLabel || q.programLabel || null,

@@ -49,6 +49,9 @@ const SIGNALS = [
   ['appraisal_revision', ['revised appraisal', 'appraisal update', 'reconsideration of value', 'updated appraisal report', 'appraisal revision'], ['revised', 'reconsideration', 'rov', 'updated value']],
   // A lease / rental agreement (rented subject, DSCR support).
   ['lease', ['lease agreement', 'residential lease', 'rental agreement', 'term of lease', 'landlord and tenant'], ['landlord', 'tenant', 'monthly rent', 'lessee', 'lessor']],
+  // A rent roll — the per-unit schedule of rents for a multi-unit/DSCR subject.
+  // Anchored on the schedule phrasing so a single lease never becomes a rent roll.
+  ['rent_roll', ['rent roll', 'schedule of rents', 'rental income schedule', 'unit rent schedule', 'tenant rent roll'], ['unit', 'monthly rent', 'occupancy', 'vacant', 'lease expiration', 'tenant']],
   // A servicer's periodic mortgage statement — distinct from a payoff and from a bank statement.
   ['mortgage_statement', ['mortgage statement', 'monthly mortgage statement', 'escrow account summary', 'your mortgage'], ['escrow balance', 'principal balance', 'servicer', 'amount due']],
   // An entity borrowing / corporate resolution authorizing the loan + signer.
@@ -66,6 +69,7 @@ const FILENAME_HINTS = [
   [/closing.?protection|insured.?closing|\bcpl\b/i, 'cpl'],
   [/draw.?request|disbursement.?request|request.?for.?draw|draw.?recon/i, 'draw_request'], // before scope-of-work/sow
   [/mortgage.?stmt|mortgage.?statement/i, 'mortgage_statement'], // before bank/statement
+  [/rent.?roll|schedule.?of.?rents|rent.?schedule/i, 'rent_roll'], // before lease (both mention rent)
   [/\blease\b|rental.?agreement|landlord/i, 'lease'],
   [/borrowing.?resolution|corporate.?resolution|member.?resolution|written.?consent/i, 'entity_resolution'],
   [/\breo\b|schedule.?of.?real|real.?estate.?owned|experience.?(doc|schedule)/i, 'experience_docs'],

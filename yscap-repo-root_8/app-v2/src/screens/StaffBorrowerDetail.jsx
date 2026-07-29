@@ -2,11 +2,12 @@ import React, { useEffect, useMemo, useState } from 'react';
 import { useParams, Link } from 'react-router-dom';
 import { api, saveBlob } from '../lib/api.js';
 import { useSubmitGate } from '../lib/useSubmitGate.js';
-import { fmtDay, dayInputValue } from '../lib/dates.js';
+import { fmtDay } from '../lib/dates.js';
 import LlcManager from '../components/LlcManager.jsx';
-import { PhoneInput, ZipInput, EmailInput } from '../components/FormattedInputs.jsx';
+import BorrowerViewButton from '../components/BorrowerViewButton.jsx';
 import { passwordProblem } from '../lib/password.js';
-import { CITIZENSHIP, MARITAL, CONTACT_TYPE, withCurrent } from '../lib/enums.js';
+import { BorrowerProfileForm, BorrowerSsnRow, NameSplitPrompt } from '../components/BorrowerProfilePanel.jsx';
+import { fullNameOf } from '../lib/personName.js';
 
 // Borrower CRM hub — the single place staff see everything about a person:
 // personal info + editable CRM fields, their loan files ("mortgages with us"),
@@ -41,7 +42,7 @@ const statusPill = (s) => {
   return <span className={`pill ${cls}`}>{(s || '—').replace(/_/g, ' ')}</span>;
 };
 
-const TABS = ['Overview', 'Files', 'Entities', 'Track record', 'Conditions', 'Tasks', 'Documents', 'Activity', 'Notes'];
+const TABS = ['Overview', 'Files', 'Entities', 'Track record', 'Conditions', 'Tasks', 'Documents', 'Duplicates', 'Activity', 'Notes'];
 
 export default function StaffBorrowerDetail() {
   const { id } = useParams();
@@ -55,10 +56,13 @@ export default function StaffBorrowerDetail() {
   if (err) return <><div role="alert" className="notice err">{err}</div><p><Link to="/internal/borrowers">← Back to borrowers</Link></p></>;
   if (!b) return <p className="muted">Loading…</p>;
 
-  const name = `${b.first_name || ''} ${b.last_name || ''}`.trim() || '(no name)';
+  // THE ONE BIG NAME FIELD (db/346) — the whole name, middle name and suffix
+  // included. Falls back to the parts so nothing breaks on an older response.
+  const name = fullNameOf(b) || '(no name)';
   return (
     <>
       <p style={{ marginTop: 0 }}><Link to="/internal/borrowers" className="small">← Borrowers</Link></p>
+      <NameSplitPrompt b={b} onChanged={load} />
       <Header b={b} name={name} onChanged={load} />
       <div className="tabs" style={{ margin: '18px 0 14px' }}>
         {TABS.map(t => (
@@ -72,6 +76,7 @@ export default function StaffBorrowerDetail() {
       {tab === 'Conditions' && <Conditions id={id} />}
       {tab === 'Tasks' && <Tasks id={id} />}
       {tab === 'Documents' && <Documents id={id} />}
+      {tab === 'Duplicates' && <Duplicates id={id} name={name} onMerged={load} />}
       {tab === 'Activity' && <Activity id={id} />}
       {tab === 'Notes' && <Notes id={id} />}
     </>
@@ -132,6 +137,9 @@ function Header({ b, name, onChanged }) {
           </div>
         </div>
         <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', justifyContent: 'flex-end' }}>
+          {/* Step into this borrower's portal from their profile (owner-directed
+              2026-07-26). Only offered once they actually have a login. */}
+          {b.has_account && <BorrowerViewButton borrowerId={b.id} borrowerName={name} />}
           {b.has_account
             ? <button className="btn ghost small" disabled={busy === 'reset' || !b.email} onClick={() => act('reset')}>Reset password</button>
             : <button className="btn primary small" disabled={busy === 'invite' || !b.email} onClick={() => act('invite')}>Invite to PILOT</button>}
@@ -156,87 +164,21 @@ function Header({ b, name, onChanged }) {
 
 /* ---------------- overview / editable CRM ---------------- */
 function Overview({ b, onChanged }) {
-  const [team, setTeam] = useState([]);
-  const [f, setF] = useState(null);
-  const [busy, setBusy] = useState(false);
+  // The edit FORM lives in components/BorrowerProfilePanel.jsx so this screen and
+  // the LOAN FILE edit the person through ONE definition (owner-directed 2026-07-27
+  // — the file could only edit the property, never the person). A field added there
+  // shows up on both surfaces, so the two can never drift apart.
+  const [editing, setEditing] = useState(false);
   const [msg, setMsg] = useState('');
-  const [err, setErr] = useState('');
-  useEffect(() => { api.staffTeam().then(setTeam).catch(() => {}); }, []);
-  const start = () => setF({
-    email: b.email || '', cellPhone: b.cell_phone || '', contactType: b.contact_type || '',
-    maritalStatus: b.marital_status || '', citizenship: b.citizenship || '',
-    dob: dayInputValue(b.date_of_birth) || '',
-    primaryOfficerId: b.primary_officer_id || '',
-    ca: b.current_address || {}, ma: b.mailing_address || {},
-  });
-  async function save() {
-    setBusy(true); setErr('');
-    try {
-      await api.staffUpdateBorrower(b.id, {
-        email: f.email, cellPhone: f.cellPhone, contactType: f.contactType,
-        maritalStatus: f.maritalStatus, citizenship: f.citizenship,
-        // Send the DOB only when it actually changed — setting it applies to
-        // the profile AND every linked ClickUp task (audited + journaled).
-        ...(f.dob && f.dob !== (dayInputValue(b.date_of_birth) || '') ? { dob: f.dob } : {}),
-        primaryOfficerId: f.primaryOfficerId || null,
-        currentAddress: Object.values(f.ca).some(Boolean) ? f.ca : null,
-        mailingAddress: Object.values(f.ma).some(Boolean) ? f.ma : null,
-      });
-      setMsg('Saved ✓'); setTimeout(() => setMsg(''), 3000); setF(null); onChanged();
-    } catch (e) { setErr(e.message || 'Could not save'); }
-    finally { setBusy(false); }
-  }
+  const start = () => setEditing(true);
   const Row = ({ k, v }) => (<div className="metrow"><span className="k">{k}</span><span className="v">{v || '—'}</span></div>);
 
-  if (f) {
-    const setCa = (k, val) => setF(s => ({ ...s, ca: { ...s.ca, [k]: val } }));
-    const setMa = (k, val) => setF(s => ({ ...s, ma: { ...s.ma, [k]: val } }));
+  if (editing) {
     return (
       <div className="panel">
-        <h3 style={{ marginTop: 0 }}>Edit contact & CRM details</h3>
-        {err && <div role="alert" className="notice err">{err}</div>}
-        <div className="ts-inputs">
-          <label><span>Email</span><EmailInput value={f.email} onChange={v => setF({ ...f, email: v })} /></label>
-          <label><span>Cell phone</span><PhoneInput value={f.cellPhone} onChange={v => setF({ ...f, cellPhone: v })} /></label>
-          <label><span>Contact type</span>
-            <select className="input" value={f.contactType} onChange={e => setF({ ...f, contactType: e.target.value })}>
-              <option value="">Select…</option>{withCurrent(CONTACT_TYPE, f.contactType).map(c => <option key={c} value={c}>{c}</option>)}
-            </select></label>
-          <label><span>Marital status</span>
-            <select className="input" value={f.maritalStatus} onChange={e => setF({ ...f, maritalStatus: e.target.value })}>
-              <option value="">Select…</option>{withCurrent(MARITAL, f.maritalStatus).map(c => <option key={c} value={c}>{c}</option>)}
-            </select></label>
-          <label><span>Citizenship</span>
-            <select className="input" value={f.citizenship} onChange={e => setF({ ...f, citizenship: e.target.value })}>
-              <option value="">Select…</option>{withCurrent(CITIZENSHIP, f.citizenship).map(c => <option key={c} value={c}>{c}</option>)}
-            </select></label>
-          <label><span>Date of birth</span><input className="input" type="date" value={f.dob}
-            onChange={e => setF({ ...f, dob: e.target.value })}
-            title="Saving applies to the borrower profile and every linked ClickUp task (audited)" /></label>
-          <label><span>Primary officer</span>
-            <select className="input" value={f.primaryOfficerId} onChange={e => setF({ ...f, primaryOfficerId: e.target.value })}>
-              <option value="">—</option>
-              {team.map(t => <option key={t.id} value={t.id}>{t.full_name}</option>)}
-            </select></label>
-        </div>
-        <div style={{ fontWeight: 600, margin: '12px 0 6px' }}>Current address</div>
-        <div className="ts-inputs">
-          <label style={{ gridColumn: '1 / -1' }}><span>Street</span><input className="input" value={f.ca.line1 || ''} onChange={e => setCa('line1', e.target.value)} /></label>
-          <label><span>City</span><input className="input" value={f.ca.city || ''} onChange={e => setCa('city', e.target.value)} /></label>
-          <label><span>State</span><input className="input" value={f.ca.state || ''} onChange={e => setCa('state', e.target.value)} /></label>
-          <label><span>ZIP</span><ZipInput value={f.ca.zip || ''} onChange={v => setCa('zip', v)} /></label>
-        </div>
-        <div style={{ fontWeight: 600, margin: '12px 0 6px' }}>Mailing address (if different)</div>
-        <div className="ts-inputs">
-          <label style={{ gridColumn: '1 / -1' }}><span>Street</span><input className="input" value={f.ma.line1 || ''} onChange={e => setMa('line1', e.target.value)} /></label>
-          <label><span>City</span><input className="input" value={f.ma.city || ''} onChange={e => setMa('city', e.target.value)} /></label>
-          <label><span>State</span><input className="input" value={f.ma.state || ''} onChange={e => setMa('state', e.target.value)} /></label>
-          <label><span>ZIP</span><ZipInput value={f.ma.zip || ''} onChange={v => setMa('zip', v)} /></label>
-        </div>
-        <div className="row" style={{ gap: 8, marginTop: 12 }}>
-          <button className="btn primary small" disabled={busy} onClick={save}>{busy ? 'Saving…' : 'Save'}</button>
-          <button className="btn ghost small" onClick={() => setF(null)}>Cancel</button>
-        </div>
+        <h3 style={{ marginTop: 0, color: '#141B22' }}>Edit contact &amp; CRM details</h3>
+        <BorrowerProfileForm b={b} onCancel={() => setEditing(false)}
+          onSaved={async () => { setEditing(false); setMsg('Saved ✓'); setTimeout(() => setMsg(''), 3000); await onChanged(); }} />
       </div>
     );
   }
@@ -249,10 +191,10 @@ function Overview({ b, onChanged }) {
       </div>
       {msg && <div className="notice ok" style={{ marginTop: 8 }}>{msg}</div>}
       <div style={{ marginTop: 10 }}>
-        <Row k="Email" v={b.email} />
+        <Row k="Email" v={b.email && !/@clickup\.local$/i.test(b.email) ? b.email : null} />
         <Row k="Cell phone" v={b.cell_phone} />
         <Row k="Date of birth" v={fmtDate(b.date_of_birth)} />
-        <Row k="SSN" v={b.ssn_last4 ? `•••-••-${b.ssn_last4}` : null} />
+        <BorrowerSsnRow b={b} onChanged={onChanged} />
         <Row k="FICO" v={b.fico} />
         <Row k="Citizenship" v={b.citizenship} />
         <Row k="Marital status" v={b.marital_status} />
@@ -261,24 +203,153 @@ function Overview({ b, onChanged }) {
         {/* ADDITIONAL contact info accumulated across the borrower's files
             (owner-directed 2026-07-15 night): extra emails/phones ADD here —
             the primary above never gets replaced by another file's contact. */}
-        {(() => {
-          const extras = (b.contacts || []).filter((c) =>
-            !(c.kind === 'email' && String(c.value).toLowerCase() === String(b.email || '').toLowerCase()) &&
-            !(c.kind === 'phone' && String(c.value).replace(/\D/g, '').slice(-10) === String(b.cell_phone || '').replace(/\D/g, '').slice(-10)));
-          return extras.length ? (
-            <>
-              <div className="gold-rule" style={{ margin: '8px 0' }} />
-              <div className="metrow"><span className="k">Also on file</span><span className="v muted small">
-                {extras.map((c, i) => <span key={i} style={{ display: 'block' }}>{c.kind === 'email' ? '✉' : '☎'} {c.value}</span>)}
-              </span></div>
-            </>
-          ) : null;
-        })()}
         <Row k="Current address" v={addr(b.current_address)} />
         <Row k="Mailing address" v={b.mailing_address ? addr(b.mailing_address) : 'same as current'} />
-        <Row k="Housing" v={b.housing_status ? `${b.housing_status.replace(/_/g, ' ')}${b.housing_payment ? ` · ${money(b.housing_payment)}/mo` : ''}` : null} />
+        <Row k="Housing" v={b.housing_status
+          ? `${b.housing_status.replace(/_/g, ' ')}${b.housing_payment ? ` · ${money(b.housing_payment)}/mo` : ''}`
+          : null} />
+        <Row k="Time at address" v={b.years_at_residence != null || b.months_at_residence != null
+          ? [b.years_at_residence ? `${b.years_at_residence} yr` : null,
+             b.months_at_residence ? `${b.months_at_residence} mo` : null].filter(Boolean).join(' ') || null
+          : null} />
+        <Row k="Employment" v={[b.employment_type, b.employer].filter(Boolean).join(' · ')} />
+        <Row k="Dependents" v={b.dependents_count} />
         <Row k="In system since" v={fmtDate(b.created_at)} />
       </div>
+      <ContactBook b={b} onChanged={onChanged} />
+      {(b.sharing || []).length > 0 && (
+        <div className="notice" style={{ marginTop: 12, color: '#141B22' }}>
+          <strong>This email is shared.</strong>{' '}
+          {(b.sharing || []).map(s => [s.first_name, s.last_name].filter(Boolean).join(' ')).join(', ')}{' '}
+          {b.sharing.length === 1 ? 'also uses' : 'also use'} this address. They are separate people with their own
+          profiles and files — only one of them can sign in to the portal with it.
+        </div>
+      )}
+      <OtherDeals rows={b.otherDeals || []} />
+    </div>
+  );
+}
+
+
+/* ---------------- primary contact + everything else we can reach them on -----
+   Every synced file can bring another email or phone for the same person, and
+   they ADD to the profile instead of replacing what is already there. Until now
+   that list was read-only: a staffer could SEE a better number but not make
+   PILOT use it, and could not type in a new one at all. */
+function ContactBook({ b, onChanged }) {
+  const [busy, setBusy] = useState('');
+  const [err, setErr] = useState('');
+  const [adding, setAdding] = useState(null);   // {kind, value}
+  const primaryEmail = String(b.email || '').toLowerCase();
+  const primaryPhone = String(b.cell_phone || '').replace(/\D/g, '').slice(-10);
+  const isPrimary = (c) => (c.kind === 'email'
+    ? String(c.value).toLowerCase() === primaryEmail
+    : String(c.value).replace(/\D/g, '').slice(-10) === primaryPhone && !!primaryPhone);
+  const others = (b.contacts || []).filter((c) => !isPrimary(c));
+
+  async function promote(c, allowSharedEmail = false) {
+    setBusy(c.value); setErr('');
+    try { await api.staffSetPrimaryContact(b.id, { kind: c.kind, value: c.value, allowSharedEmail }); onChanged(); }
+    catch (e) {
+      setErr(e.message || 'Could not make that the primary');
+      if (e.data && e.data.sharedEmail && e.data.sharedEmail.canShare
+          && window.confirm(`${e.message}\n\nKeep both people on this email address?`)) {
+        return promote(c, true);
+      }
+    } finally { setBusy(''); }
+  }
+  async function add() {
+    if (!adding || !adding.value.trim()) return;
+    setBusy('add'); setErr('');
+    try { await api.staffAddBorrowerContact(b.id, { kind: adding.kind, value: adding.value.trim(), makePrimary: !!adding.makePrimary }); setAdding(null); onChanged(); }
+    catch (e) { setErr(e.message || 'Could not add that contact'); }
+    finally { setBusy(''); }
+  }
+
+  return (
+    <div style={{ marginTop: 14, borderTop: '1px solid var(--line, #E7E1D3)', paddingTop: 12 }}>
+      <div className="row" style={{ alignItems: 'center' }}>
+        <h4 style={{ margin: 0, color: '#141B22' }}>How to reach them</h4>
+        <div className="spacer" />
+        <button className="btn ghost small" onClick={() => setAdding(adding ? null : { kind: 'phone', value: '', makePrimary: false })}>
+          {adding ? 'Cancel' : '+ Add email or phone'}
+        </button>
+      </div>
+      <p className="small" style={{ color: '#4B585C', marginTop: 4 }}>
+        The <strong>primary</strong> email and phone are what PILOT actually uses — every notification,
+        term sheet and ClickUp card. Anything else here is kept as a way to reach them.
+      </p>
+      {err && <div role="alert" className="notice err" style={{ marginTop: 8 }}>{err}</div>}
+      {adding && (
+        <div className="row" style={{ gap: 8, marginTop: 8, flexWrap: 'wrap', alignItems: 'center' }}>
+          <select className="input" style={{ maxWidth: 120 }} value={adding.kind}
+            onChange={(e) => setAdding({ ...adding, kind: e.target.value })}>
+            <option value="phone">Phone</option><option value="email">Email</option>
+          </select>
+          <input className="input" style={{ maxWidth: 260 }} value={adding.value}
+            placeholder={adding.kind === 'email' ? 'name@email.com' : '(555) 123-4567'}
+            onChange={(e) => setAdding({ ...adding, value: e.target.value })} />
+          <label style={{ display: 'flex', gap: 6, alignItems: 'center', color: '#141B22' }}>
+            <input type="checkbox" checked={!!adding.makePrimary}
+              onChange={(e) => setAdding({ ...adding, makePrimary: e.target.checked })} />
+            <span className="small">Make this the primary</span>
+          </label>
+          <button className="btn small" disabled={busy === 'add'} onClick={add}>{busy === 'add' ? 'Saving…' : 'Add'}</button>
+        </div>
+      )}
+      <div style={{ marginTop: 8 }}>
+        <div className="metrow"><span className="k">Primary email</span>
+          <span className="v" style={{ color: '#141B22' }}>{b.email && !/@clickup\.local$/i.test(b.email) ? b.email : '—'}</span></div>
+        <div className="metrow"><span className="k">Primary phone</span>
+          <span className="v" style={{ color: '#141B22' }}>{b.cell_phone || '—'}</span></div>
+        {others.length === 0
+          ? <p className="small" style={{ color: '#4B585C' }}>Nothing else on file for this person yet.</p>
+          : others.map((c, i) => (
+            <div key={i} className="metrow">
+              <span className="k">{c.kind === 'email' ? 'Other email' : 'Other phone'}</span>
+              <span className="v" style={{ display: 'flex', gap: 8, alignItems: 'center', justifyContent: 'flex-end', color: '#141B22' }}>
+                {c.value}
+                <button className="btn ghost small" disabled={busy === c.value} onClick={() => promote(c)}>
+                  {busy === c.value ? '…' : 'Make primary'}
+                </button>
+              </span>
+            </div>
+          ))}
+      </div>
+    </div>
+  );
+}
+
+/* ---------------- the person's other business with us ------------------------
+   DSCR / long-term deals live in ClickUp and never become loan files here, so a
+   client who has only ever done that kind of business used to look like an empty
+   record. This lists what ClickUp knows about them (owner-directed 2026-07-26:
+   "build up an entire profile from ClickUp for all the information available,
+   even if they never took an RTL loan"). Read-only — ClickUp owns these. */
+function OtherDeals({ rows }) {
+  if (!rows.length) return null;
+  return (
+    <div style={{ marginTop: 14, borderTop: '1px solid var(--line, #E7E1D3)', paddingTop: 12 }}>
+      <h4 style={{ margin: '0 0 4px', color: '#141B22' }}>Other deals with us ({rows.length})</h4>
+      <p className="small" style={{ color: '#4B585C', marginTop: 0 }}>
+        DSCR and long-term deals from ClickUp. These are not fix-and-flip loan files, so they don't
+        open in PILOT — they're here so you can see everything this borrower has done with us.
+      </p>
+      {rows.map((r) => (
+        <div key={r.task_id} className="metrow">
+          <span className="k" style={{ flex: 1, color: '#141B22' }}>
+            {r.property || r.task_name || 'Untitled deal'}
+            <div className="small" style={{ color: '#4B585C' }}>
+              {[r.raw_program, r.internal_status, r.loan_officer_name].filter(Boolean).join(' · ')}
+            </div>
+          </span>
+          <span className="v" style={{ color: '#141B22' }}>
+            {r.loan_amount ? money(r.loan_amount) : ''}
+            <a className="small" style={{ marginLeft: 8 }} target="_blank" rel="noreferrer"
+              href={`https://app.clickup.com/t/${r.task_id}`}>open in ClickUp →</a>
+          </span>
+        </div>
+      ))}
     </div>
   );
 }
@@ -389,6 +460,220 @@ function TrackRecord({ id }) {
           ))}
         </tbody>
       </table>
+    </div>
+  );
+}
+
+/* ---------------- duplicate profiles: compare + merge ---------------- */
+// The sync deliberately OVER-SPLITS (an email it can't corroborate creates a
+// separate profile rather than risk hanging one person's loans and PII on
+// another), so genuine duplicates happen. This is where they are put back
+// together: pick a candidate, see the two side by side, choose a winner for every
+// field they disagree on, and merge. Emails, phones, entities and track records
+// are never a choice — they ADD UP.
+//
+// Merging is the most destructive thing here: it re-points every file, document,
+// condition and message and then removes a profile. So it takes two deliberate
+// clicks, the survivor is always THIS profile (never a surprise), and the whole
+// losing record is snapshotted server-side before anything moves.
+const CONF = { certain: { cls: 'ok', t: 'Certain' }, likely: { cls: '', t: 'Likely' }, possible: { cls: '', t: 'Possible' } };
+
+function Duplicates({ id, name, onMerged }) {
+  const [rows, err, reload] = useLoad(() => api.staffBorrowerDuplicates(id), [id]);
+  const [history] = useLoad(() => api.staffBorrowerMerges(id), [id]);
+  const [openId, setOpenId] = useState(null);
+
+  if (err) return <div className="notice err">{err}</div>;
+  if (!rows) return <Empty t="Looking for duplicate profiles…" />;
+
+  return (
+    <div>
+      <div className="panel" style={{ marginBottom: 12 }}>
+        <h3 style={{ marginTop: 0 }}>Possible duplicates of {name}</h3>
+        {!rows.length ? (
+          <p className="muted small" style={{ margin: 0 }}>
+            No other profile shares this person’s social, email, phone, or name and date of birth.
+          </p>
+        ) : (
+          <>
+            <p className="muted small" style={{ marginTop: 0 }}>
+              Merging keeps <strong>this</strong> profile and absorbs the other one into it. Every
+              loan file, document and condition follows the person; emails, phone numbers, entities
+              and track-record properties add up. Nothing is thrown away — the absorbed profile is
+              saved in full first.
+            </p>
+            <div style={{ overflowX: 'auto' }}>
+              <table className="tbl" style={{ width: '100%', borderCollapse: 'collapse' }}>
+                <thead><tr style={{ textAlign: 'left' }}>
+                  {['Name', 'Email', 'Phone', 'SSN', 'Files', 'Why we think so', ''].map(h => <th key={h} style={{ padding: '10px 12px' }}>{h}</th>)}
+                </tr></thead>
+                <tbody>
+                  {rows.map(d => (
+                    <tr key={d.id} style={{ borderTop: '1px solid var(--line, rgba(127,169,176,.2))' }}>
+                      <td style={{ padding: '10px 12px' }}>
+                        <Link to={`/internal/borrowers/${d.id}`}>{`${d.first_name || ''} ${d.last_name || ''}`.trim() || '(no name)'}</Link>
+                        {' '}<span className={`pill ${CONF[d.confidence]?.cls || ''}`}>{CONF[d.confidence]?.t || d.confidence}</span>
+                      </td>
+                      <td style={{ padding: '10px 12px' }} className="small">{d.email || '—'}</td>
+                      <td style={{ padding: '10px 12px' }} className="small">{d.cell_phone || '—'}</td>
+                      <td style={{ padding: '10px 12px' }} className="small">{d.ssn_last4 ? `•••-••-${d.ssn_last4}` : '—'}</td>
+                      <td style={{ padding: '10px 12px' }}>{d.files}</td>
+                      <td style={{ padding: '10px 12px' }} className="small">
+                        {d.allowedShare
+                          // Somebody already decided these are two real people who
+                          // share a mailbox (husband and wife). Never present that
+                          // as a duplicate — say so plainly.
+                          ? <span className="muted">Confirmed as a different person sharing an email — do not merge</span>
+                          : (d.why || []).join(' · ')}
+                      </td>
+                      <td style={{ padding: '10px 12px' }}>
+                        <button className="btn ghost small" onClick={() => setOpenId(openId === d.id ? null : d.id)}>
+                          {openId === d.id ? 'Close' : 'Compare'}
+                        </button>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </>
+        )}
+      </div>
+
+      {openId && (
+        <CompareMerge
+          key={openId} id={id} otherId={openId}
+          onDone={() => { setOpenId(null); reload(); onMerged && onMerged(); }}
+          onCancel={() => setOpenId(null)}
+        />
+      )}
+
+      {!!(history && history.length) && (
+        <div className="panel" style={{ marginTop: 12 }}>
+          <h3 style={{ marginTop: 0 }}>Already merged into this profile</h3>
+          {history.map(h => (
+            <div key={h.id} className="small" style={{ padding: '6px 0', borderTop: '1px solid var(--line, rgba(127,169,176,.2))' }}>
+              <strong>{h.merged_name || '(no name)'}</strong>{h.merged_email ? ` · ${h.merged_email}` : ''}
+              {' — '}<span className="muted">{fmtDateTime(h.created_at)}{h.merged_by_name ? ` by ${h.merged_by_name}` : ''}</span>
+              <div className="muted" style={{ marginTop: 2 }}>
+                {Object.entries(h.moved || {}).filter(([, n]) => n).map(([t, n]) => `${n} ${t.replace(/_/g, ' ')}`).join(' · ') || 'nothing had to move'}
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function CompareMerge({ id, otherId, onDone, onCancel }) {
+  const [cmp, err, reload] = useLoad(() => api.staffBorrowerCompare(id, otherId), [id, otherId]);
+  const [choices, setChoices] = useState({});
+  const [confirm, setConfirm] = useState(false);
+  const [msg, setMsg] = useState('');
+  const [busy, setBusy] = useState(false);
+  // A merge is not idempotent — a double-click must not run it twice, and
+  // `disabled={busy}` is state that only lands on the NEXT render.
+  const gate = useSubmitGate();
+
+  if (err) return <div className="notice err">{err}</div>;
+  if (!cmp) return <div className="panel"><Empty t="Loading both profiles…" /></div>;
+
+  const conflicts = cmp.fields.filter(f => f.conflict);
+  const undecided = conflicts.filter(f => !choices[f.key]);
+  const gains = cmp.fields.filter(f => f.onlyMerged);
+  const show = (v) => (v == null || v === '' ? <span className="muted">— empty —</span>
+    : (typeof v === 'object' ? (v.oneLine || [v.line1, v.city, v.state].filter(Boolean).join(', ') || JSON.stringify(v)) : String(v)));
+
+  async function doMerge() {
+    if (!gate.enter()) return;
+    setMsg(''); setBusy(true);
+    try {
+      const out = await api.staffBorrowerMerge(id, { mergeId: otherId, choices });
+      const moved = Object.entries(out.moved || {}).filter(([, n]) => n)
+        .map(([t, n]) => `${n} ${t.replace(/_/g, ' ')}`).join(', ');
+      setMsg(`Merged. ${moved ? `Moved ${moved}.` : 'Nothing needed to move.'}`);
+      setTimeout(onDone, 1200);
+    } catch (e) {
+      // The server refuses a merge with an undecided conflict — surface exactly
+      // which fields it is still waiting on rather than a generic failure.
+      setMsg(e.message || 'Could not merge those profiles — nothing was changed.');
+      setConfirm(false); reload();
+    } finally { setBusy(false); gate.leave(); }
+  }
+
+  return (
+    <div className="panel" style={{ marginBottom: 12 }}>
+      <h3 style={{ marginTop: 0 }}>Compare and merge</h3>
+      <div className="row small" style={{ gap: 18, marginBottom: 10 }}>
+        <div><strong>Keeping:</strong> {cmp.survivor.name || '(no name)'} — {cmp.survivor.files} files, {cmp.survivor.llcs} entities, {cmp.survivor.trackRecords} properties, {cmp.survivor.documents} documents{cmp.survivor.hasLogin ? ', has a portal login' : ''}</div>
+        <div><strong>Absorbing:</strong> {cmp.merged.name || '(no name)'} — {cmp.merged.files} files, {cmp.merged.llcs} entities, {cmp.merged.trackRecords} properties, {cmp.merged.documents} documents{cmp.merged.hasLogin ? ', has a portal login' : ''}</div>
+      </div>
+
+      {!conflicts.length ? (
+        <p className="notice ok small">These two profiles do not contradict each other anywhere — nothing to decide.</p>
+      ) : (
+        <>
+          <p className="small" style={{ marginBottom: 6 }}>
+            <strong>{conflicts.length} field{conflicts.length === 1 ? '' : 's'} disagree.</strong> Choose which value the
+            one profile should keep. (The value you don’t pick is not lost for emails and phones —
+            both are kept as extra contacts.)
+          </p>
+          <div style={{ overflowX: 'auto' }}>
+            <table className="tbl" style={{ width: '100%', borderCollapse: 'collapse' }}>
+              <thead><tr style={{ textAlign: 'left' }}>
+                {['Field', 'This profile', 'The other profile'].map(h => <th key={h} style={{ padding: '8px 12px' }}>{h}</th>)}
+              </tr></thead>
+              <tbody>
+                {conflicts.map(f => (
+                  <tr key={f.key} style={{ borderTop: '1px solid var(--line, rgba(127,169,176,.2))' }}>
+                    <td style={{ padding: '8px 12px' }}>{f.label}</td>
+                    {['survivor', 'merged'].map(side => (
+                      <td key={side} style={{ padding: '8px 12px' }}>
+                        <label style={{ display: 'flex', gap: 8, alignItems: 'center', cursor: 'pointer' }}>
+                          <input type="radio" name={`c-${f.key}`} checked={choices[f.key] === side}
+                            onChange={() => setChoices(c => ({ ...c, [f.key]: side }))} />
+                          <span>{show(f[side])}</span>
+                        </label>
+                      </td>
+                    ))}
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </>
+      )}
+
+      {!!gains.length && (
+        <p className="muted small" style={{ marginTop: 10 }}>
+          Filled in automatically from the other profile (this one is empty there):{' '}
+          {gains.map(f => f.label).join(', ')}.
+        </p>
+      )}
+
+      {msg && <div className={`notice ${/^Merged/.test(msg) ? 'ok' : 'err'} small`} style={{ marginTop: 10 }}>{msg}</div>}
+
+      <div className="row" style={{ gap: 8, marginTop: 12, alignItems: 'center' }}>
+        {!confirm ? (
+          <button className="btn" disabled={!!undecided.length} onClick={() => { setMsg(''); setConfirm(true); }}>
+            Merge into this profile
+          </button>
+        ) : (
+          <>
+            <span className="small">
+              This removes <strong>{cmp.merged.name || 'the other profile'}</strong> and moves its{' '}
+              {cmp.merged.files} file{cmp.merged.files === 1 ? '' : 's'} onto this one. It cannot be undone from the app.
+            </span>
+            <button className="btn danger" disabled={busy} onClick={doMerge}>{busy ? 'Merging…' : 'Yes, merge them'}</button>
+            <button className="btn ghost" disabled={busy} onClick={() => setConfirm(false)}>Back</button>
+          </>
+        )}
+        {!confirm && <button className="btn ghost" onClick={onCancel}>Cancel</button>}
+        {!!undecided.length && (
+          <span className="muted small">Still to decide: {undecided.map(f => f.label).join(', ')}</span>
+        )}
+      </div>
     </div>
   );
 }

@@ -168,25 +168,64 @@ async function importAppraisalTx(db, {
 
   // 6. findings vs the file
   const findings = computeFindings(A, f, Object.assign({ today }, thresholds));
+  // A HUMAN'S DECISION SURVIVES A RE-IMPORT (owner-reported 2026-07-27: "I dismiss
+  // it and it keeps popping up again"). A re-import supersedes the old findings and
+  // inserts a fresh OPEN row for each — with no memory of what a reviewer already
+  // decided, so every dismissal / exception on this appraisal was silently undone.
+  // The durable ledger (db/333) is keyed on the finding's identity, not on the row,
+  // so the decision carries forward: the row is still written (audit trail + the
+  // "already dealt with" view) but born resolved instead of re-opening settled work.
+  // FAILS OPEN — an unreadable ledger just means everything lands open, as before.
+  const fdec = require('../underwriting/finding-decisions');
+  const settled = await fdec.suppressedKeys(db, applicationId);
   for (const fd of findings) {
+    const carried = settled.size && fdec.isSuppressed(settled, {
+      code: fd.code, field: fd.field,
+      docValue: fd.appraisalValue == null ? null : String(fd.appraisalValue),
+    });
     await db.query(
       `INSERT INTO appraisal_findings
-         (appraisal_id, application_id, source, code, severity, field, appraisal_value, file_value, title, how_to, blocks_ctc)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)`,
+         (appraisal_id, application_id, source, code, severity, field, appraisal_value, file_value, title, how_to, blocks_ctc, status, resolution, resolution_note)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)`,
       [appraisalId, applicationId, fd.source, fd.code, fd.severity, fd.field,
        fd.appraisalValue == null ? null : String(fd.appraisalValue),
        fd.fileValue == null ? null : String(fd.fileValue),
-       fd.title, fd.howTo, !!fd.blocksCtc]);
+       fd.title, fd.howTo, !!fd.blocksCtc,
+       carried ? 'dismissed' : 'open',
+       carried ? 'carried_forward' : null,
+       carried ? 'A reviewer already decided this finding on this file — carried forward from their decision.' : null]);
+    if (carried) fd.status = 'dismissed';
   }
+  // summarize() counts only OPEN findings, so a carried-forward decision correctly
+  // drops out of the badge + the blocksCtc roll-up instead of re-inflating them.
   const sum = summarize(findings);
 
   // 7. fill the file from DEFINITE values ONLY, ONLY when currently empty (overwrite-shield).
   //    A differing human value is never overwritten — it is one of the findings above.
+  // A fill RECORDS ITSELF on the appraisal row, in the same columns the As-Is/ARV desk uses
+  // (db/353, db/354). Before this, an undo had to GUESS that a file value equal to the appraisal's
+  // must have been filled by the import — and since the desk's whole job is now to make the file
+  // agree with the appraisal, "equal" is the normal state, so that guess deleted values humans had
+  // typed. Recording the fill gives undo exactly one thing to reverse: what PILOT actually wrote.
   if (v.asIs != null && v.asIsConfidence === 'definite') {
-    await db.query(`UPDATE applications SET as_is_value = $2 WHERE id = $1 AND as_is_value IS NULL`, [applicationId, v.asIs]);
+    const r = await db.query(`UPDATE applications SET as_is_value = $2 WHERE id = $1 AND as_is_value IS NULL`, [applicationId, v.asIs]);
+    if (r.rowCount > 0) {
+      try {
+        await db.query(
+          `UPDATE appraisals SET as_is_applied = true, as_is_applied_value = $2, as_is_file_value_before = NULL WHERE id = $1`,
+          [appraisalId, v.asIs]);
+      } catch (_) { /* the fill itself already happened; the stamp is best-effort */ }
+    }
   }
   if (v.arv != null && v.arvConfidence === 'definite') {
-    await db.query(`UPDATE applications SET arv = $2 WHERE id = $1 AND arv IS NULL`, [applicationId, v.arv]);
+    const r = await db.query(`UPDATE applications SET arv = $2 WHERE id = $1 AND arv IS NULL`, [applicationId, v.arv]);
+    if (r.rowCount > 0) {
+      try {
+        await db.query(
+          `UPDATE appraisals SET arv_applied = true, arv_applied_value = $2, arv_file_value_before = NULL WHERE id = $1`,
+          [appraisalId, v.arv]);
+      } catch (_) { /* best-effort stamp */ }
+    }
   }
   // Fill the file's appraiser name (blank-only) so the MISMO 3.4 loan export
   // (src/lib/mismo) carries the real appraiser — synergy, same overwrite-shield posture.

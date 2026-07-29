@@ -20,6 +20,7 @@ process.env.EMAIL_PROVIDER = 'none';
 const assert = require('assert');
 const db = require('../src/db');
 const email = require('../src/lib/email');
+const notify = require('../src/lib/notify');
 const statusNotify = require('../src/lib/status-notify');
 
 let n = 0; const ok = (m) => { n++; console.log('  ok -', m); };
@@ -99,6 +100,11 @@ const watermark = async (appId) => (await db.query(`SELECT status_notified_exter
 
     console.log(`\nAll ${n} inbound-status checks passed.`);
   } finally {
+    // Email fan-out is fire-and-forget (a request never waits on it). Await any
+    // in-flight sends + their sent_emails writes BEFORE we delete rows or close the
+    // pool — otherwise a late INSERT races the cleanup DELETE (a foreign-key error) or
+    // pool.end() ("Cannot use a pool after calling end"). This is the flaky-race fix.
+    await notify.drainEmails().catch(() => {});
     for (const id of [appA, appB]) if (id) { await db.query(`DELETE FROM notifications WHERE application_id=$1`, [id]).catch(() => {});
       await db.query(`DELETE FROM application_assignees WHERE application_id=$1`, [id]).catch(() => {});
       await db.query(`DELETE FROM applications WHERE id=$1`, [id]).catch(() => {}); }

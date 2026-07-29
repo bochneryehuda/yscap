@@ -113,7 +113,7 @@ router.get('/chat/conversations', async (req, res) => {
                   'name', x.name, 'roleLabel', x.role_label)
                 ORDER BY x.member_kind DESC, x.added_at) AS members
            FROM (SELECT cm2.member_kind, cm2.member_id, cm2.role_label, cm2.added_at,
-                        COALESCE(s2.full_name, b3.first_name || ' ' || b3.last_name) AS name
+                        COALESCE(s2.full_name, NULLIF(b3.full_name,'')) AS name
                    FROM conversation_members cm2
                    LEFT JOIN staff_users s2 ON s2.id=cm2.member_id AND cm2.member_kind='staff'
                    LEFT JOIN borrowers b3 ON b3.id=cm2.member_id AND cm2.member_kind='borrower'
@@ -172,7 +172,7 @@ router.get('/conversations/:cid', async (req, res) => {
     chat.membersOf(conv.id),
     chat.externalParticipantsOf(conv.id),
     db.query(`SELECT m.id, m.seq, m.body, m.created_at, m.attachment_kind,
-                     CASE WHEN m.sender_kind='staff' THEN s.full_name ELSE (b.first_name || ' ' || b.last_name) END AS sender_name
+                     CASE WHEN m.sender_kind='staff' THEN s.full_name ELSE NULLIF(b.full_name,'') END AS sender_name
                 FROM messages m
                 LEFT JOIN staff_users s ON s.id=m.sender_id AND m.sender_kind='staff'
                 LEFT JOIN borrowers b ON b.id=m.sender_id AND m.sender_kind='borrower'
@@ -412,7 +412,7 @@ router.get('/conversations/:cid/shared', async (req, res) => {
     db.query(
       `SELECT m.id AS message_id, m.seq, m.created_at, m.attachment_kind,
               d.id AS document_id, d.filename, d.content_type, d.size_bytes,
-              CASE WHEN m.sender_kind='staff' THEN s.full_name ELSE (b.first_name || ' ' || b.last_name) END AS sender_name
+              CASE WHEN m.sender_kind='staff' THEN s.full_name ELSE NULLIF(b.full_name,'') END AS sender_name
          FROM messages m
          JOIN documents d ON d.id=m.attachment_document_id
          LEFT JOIN staff_users s ON s.id=m.sender_id AND m.sender_kind='staff'
@@ -421,7 +421,7 @@ router.get('/conversations/:cid/shared', async (req, res) => {
         ORDER BY m.seq DESC LIMIT 200`, [conv.id]),
     db.query(
       `SELECT m.id AS message_id, m.seq, m.created_at, m.body,
-              CASE WHEN m.sender_kind='staff' THEN s.full_name ELSE (b.first_name || ' ' || b.last_name) END AS sender_name
+              CASE WHEN m.sender_kind='staff' THEN s.full_name ELSE NULLIF(b.full_name,'') END AS sender_name
          FROM messages m
          LEFT JOIN staff_users s ON s.id=m.sender_id AND m.sender_kind='staff'
          LEFT JOIN borrowers b ON b.id=m.sender_id AND m.sender_kind='borrower'
@@ -453,7 +453,7 @@ router.get('/chat/search', async (req, res) => {
             c.name AS conversation_name, c.emoji, c.application_id,
             a.ys_loan_number, b.first_name AS borrower_first, b.last_name AS borrower_last,
             CASE WHEN m.sender_kind='staff' THEN s.full_name
-                 WHEN m.sender_kind='borrower' THEN (b2.first_name || ' ' || b2.last_name)
+                 WHEN m.sender_kind='borrower' THEN NULLIF(b2.full_name,'')
                  ELSE 'System' END AS sender_name
        FROM messages m
        JOIN conversations c ON c.id=m.conversation_id
@@ -499,7 +499,7 @@ router.get('/applications/:id/chat-export', async (req, res) => {
         `SELECT m.seq, m.created_at, m.sender_kind, m.kind, m.priority, m.body, m.edited_at, m.deleted_at,
                 m.attachment_kind, d.filename AS attachment_name,
                 CASE WHEN m.sender_kind='staff' THEN s.full_name
-                     WHEN m.sender_kind='borrower' THEN (b.first_name || ' ' || b.last_name)
+                     WHEN m.sender_kind='borrower' THEN NULLIF(b.full_name,'')
                      ELSE 'System' END AS sender_name,
                 (SELECT json_agg(json_build_object('body', rv.body, 'at', rv.created_at))
                    FROM message_revisions rv WHERE rv.message_id=m.id) AS revisions
