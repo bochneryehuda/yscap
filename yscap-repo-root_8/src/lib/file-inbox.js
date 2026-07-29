@@ -274,6 +274,12 @@ async function retrieveAttachmentsSafe(emailId, metaList) {
       out.push({
         filename: String(a.filename || meta.filename || 'attachment'),
         contentType: a.content_type || 'application/octet-stream',
+        // Inline/Content-ID metadata rides along when the provider exposes it —
+        // the returned-document sinks use it to tell an email-signature image
+        // (embedded in the body) from a genuinely attached document. Read
+        // defensively: the field names vary across provider payload shapes.
+        contentDisposition: a.content_disposition || a.disposition || meta.content_disposition || meta.disposition || undefined,
+        contentId: a.content_id || a.contentId || meta.content_id || meta.contentId || undefined,
         content: buf.toString('base64'),
       });
     } catch (_) { /* skip this attachment, keep going */ }
@@ -786,6 +792,9 @@ async function processReceivedEvent(event) {
           const humanMustAsk = res.failedPermanent + shortfall;
           // What is genuinely on the file: newly filed PLUS already-there duplicates.
           const onFile = res.saved + res.deduped;
+          // Signature/logo images deliberately not filed — named so the "X of N"
+          // arithmetic below never reads as documents unaccounted for.
+          const sigNote = res.skipped ? ` (${res.skipped} email-signature image${res.skipped === 1 ? ' was' : 's were'} ignored on purpose.)` : '';
           console.warn(`[closing-inbox] ${missed} of ${full.attachments.length} closing attachment(s) were NOT filed for ${ref.applicationId} (${res.failedPermanent} unrecoverable, ${res.failedTransient} retryable, ${shortfall} over the retrieval caps).`);
           // Best-effort and non-blocking: the documents that DID arrive are already
           // filed, and a notify failure must never undo that or re-open the chain.
@@ -794,13 +803,13 @@ async function processReceivedEvent(event) {
               type: 'closing_docs_in',
               title: `${humanMustAsk} closing document${humanMustAsk === 1 ? '' : 's'} did not save`,
               body: `${onFile} of ${full.attachments.length} document(s) from the closing chain were filed. ${humanMustAsk} could not be — ask the closing attorney to send ${humanMustAsk === 1 ? 'it' : 'them'} again, on the same email chain.`
-                + (res.failedTransient ? ` (A further ${res.failedTransient} hit a temporary problem on our side; the system is retrying ${res.failedTransient === 1 ? 'that one' : 'those'} on its own.)` : ''),
+                + (res.failedTransient ? ` (A further ${res.failedTransient} hit a temporary problem on our side; the system is retrying ${res.failedTransient === 1 ? 'that one' : 'those'} on its own.)` : '') + sigNote,
               inAppOnly: false,
             } : {
               // Nothing for a person to do yet — say so, but never silently.
               type: 'closing_docs_in',
               title: `${res.failedTransient} closing document${res.failedTransient === 1 ? '' : 's'} did not save yet`,
-              body: `${onFile} of ${full.attachments.length} document(s) from the closing chain were filed. ${res.failedTransient} hit a temporary problem on our side and ${res.failedTransient === 1 ? 'is' : 'are'} being retried automatically — no need to chase the attorney unless ${res.failedTransient === 1 ? 'it' : 'they'} still ${res.failedTransient === 1 ? 'does' : 'do'} not appear.`,
+              body: `${onFile} of ${full.attachments.length} document(s) from the closing chain were filed. ${res.failedTransient} hit a temporary problem on our side and ${res.failedTransient === 1 ? 'is' : 'are'} being retried automatically — no need to chase the attorney unless ${res.failedTransient === 1 ? 'it' : 'they'} still ${res.failedTransient === 1 ? 'does' : 'do'} not appear.` + sigNote,
               inAppOnly: true,
             });
           } catch (_) { /* the filing is what matters */ }

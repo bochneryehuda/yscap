@@ -32,6 +32,7 @@ const db = require('../db');
 const storage = require('./storage');
 const notify = require('./notify');
 const { decodeUploadBase64, sniffKind, expectedKind } = require('./upload-bytes');
+const { classifyReturnAttachment } = require('./order-return-filter');
 
 const DOC_KIND = { title: 'title_order_return', insurance: 'insurance_order_return' };
 // The real document condition each order files into.
@@ -56,25 +57,26 @@ async function conditionItemFor(applicationId, orderType) {
 /**
  * Persist a vendor's returned documents against an order.
  * @param {object} p { applicationId, orderType, attachments:[{filename,contentType,content(base64)}], fromEmail }
- * @returns {Promise<{saved:number, suspect:number}>}
+ * @returns {Promise<{saved:number, suspect:number, skipped:number}>}
  */
 async function saveReturnedDocs({ applicationId, orderType, attachments, fromEmail }) {
   const kind = DOC_KIND[orderType];
-  if (!kind) return { saved: 0, suspect: 0 };
+  if (!kind) return { saved: 0, suspect: 0, skipped: 0 };
   const list = (Array.isArray(attachments) ? attachments : []).filter((a) => a && a.filename && a.content).slice(0, MAX_RETURN_DOCS);
-  if (!list.length) return { saved: 0, suspect: 0 };
+  if (!list.length) return { saved: 0, suspect: 0, skipped: 0 };
 
   let borrowerId = null;
   try {
     const a = await db.query(`SELECT borrower_id FROM applications WHERE id=$1 AND deleted_at IS NULL`, [applicationId]);
-    if (!a.rows[0]) return { saved: 0, suspect: 0 };   // unknown / archived file — nothing to attach to
+    if (!a.rows[0]) return { saved: 0, suspect: 0, skipped: 0 };   // unknown / archived file — nothing to attach to
     borrowerId = a.rows[0].borrower_id;
-  } catch (_) { return { saved: 0, suspect: 0 }; }
+  } catch (_) { return { saved: 0, suspect: 0, skipped: 0 }; }
 
   const itemId = await conditionItemFor(applicationId, orderType);
   const dedup = require('./doc-dedup');
   let saved = 0;
   let suspect = 0;   // decoded fine but the bytes don't look like the claimed type
+  let skipped = 0;   // email-signature/logo images — never returned documents
   for (const a of list) {
     try {
       // Decode through the integrity chokepoint (rejects a data:-prefixed or
@@ -84,6 +86,19 @@ async function saveReturnedDocs({ applicationId, orderType, attachments, fromEma
       try { ({ buf, sha256 } = decodeUploadBase64(String(a.content))); }
       catch (_) { continue; }   // undecodable attachment — skip, never store garbage
       if (!buf.length) continue;
+      // An email-SIGNATURE image (the vendor's logo/headshot embedded in their
+      // reply — inline/Content-ID, or a small standalone image) is not a returned
+      // document. Filing one used to flip the order to 'documents_in', nudge the
+      // condition to 'received' and announce "documents came back" off a reply
+      // that said only "Received." — see order-return-filter.js. Real documents
+      // (PDFs, Word/Excel, TIFF scans, large photo scans) are unaffected, and the
+      // reply itself still forwards to the team with every attachment.
+      const cls = classifyReturnAttachment({ ...a, buf });
+      if (!cls.file) {
+        skipped += 1;
+        console.log(`[order-inbox] skipped a ${cls.reason} attachment ("${String(a.filename).slice(0, 80)}", ${buf.length} bytes) on the ${orderType} order — not filed as a returned document.`);
+        continue;
+      }
       // Magic-byte sniff: flag a file whose bytes don't match its name/type (an
       // HTML error page saved as .pdf) so a corrupt return doesn't masquerade as
       // a real binder. We still store it (staff decide), but tag it corrupt.
@@ -144,7 +159,7 @@ async function saveReturnedDocs({ applicationId, orderType, attachments, fromEma
       });
     } catch (_) { /* best-effort */ }
   }
-  return { saved, suspect };
+  return { saved, suspect, skipped };
 }
 
 module.exports = { saveReturnedDocs, conditionItemFor, DOC_KIND, CONDITION_CODE };
