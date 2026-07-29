@@ -26,12 +26,19 @@
 const db = require('../db');
 const catalog = require('./notification-catalog');
 
-// Per-request cache (rules + prefs are read many times per fan-out).
+// Per-request cache (rules + prefs are read many times per fan-out). Simple
+// FIFO eviction — deleting the oldest key on overflow (Map preserves insert
+// order) so adding one new LO doesn't clear the cache for every other LO.
 const rulesCache = new Map();
 const RULES_CACHE_MAX = 200;
 function _remember(map, cap, k, v) {
-  if (map.size >= cap) map.clear();
-  map.set(String(k), v);
+  const key = String(k);
+  if (map.has(key)) map.delete(key);
+  else if (map.size >= cap) {
+    const first = map.keys().next().value;
+    if (first !== undefined) map.delete(first);
+  }
+  map.set(key, v);
 }
 
 async function rules(staffId) {
@@ -106,9 +113,12 @@ function _isWorkday(mask, weekday) {
   if (!mask) return true;
   return (mask & (1 << (weekday - 1))) !== 0;
 }
+function _isValidHHMM(s) { return typeof s === 'string' && /^([01]\d|2[0-3]):[0-5]\d$/.test(s); }
 function _inQuiet(start, end, now) {
-  if (!start || !end) return false;
-  if (start === end) return true;
+  if (!_isValidHHMM(start) || !_isValidHHMM(end)) return false;
+  // Equal start/end reads as "no quiet window" — otherwise a user who set
+  // 08:00-08:00 by accident silences their inbox 24/7 with no UI warning.
+  if (start === end) return false;
   const s = _hm(start), e = _hm(end), n = _hm(now);
   if (s < e) return n >= s && n < e;
   return n >= s || n < e;
@@ -116,6 +126,47 @@ function _inQuiet(start, end, now) {
 function _hm(t) {
   const [h, m] = String(t).split(':').map((x) => parseInt(x, 10) || 0);
   return h * 60 + m;
+}
+// TZ offset for a given moment in minutes (positive east of UTC). Uses
+// Intl.DateTimeFormat's tz formatting to derive the offset — no external tz
+// library required. Falls back to 0 (UTC) on any Intl failure.
+function _tzOffsetMinutes(tz, date) {
+  try {
+    const dtf = new Intl.DateTimeFormat('en-US', {
+      timeZone: tz || 'UTC', hour12: false,
+      year: 'numeric', month: '2-digit', day: '2-digit',
+      hour: '2-digit', minute: '2-digit', second: '2-digit',
+    });
+    const parts = dtf.formatToParts(date);
+    const g = (t) => parts.find((p) => p.type === t)?.value;
+    const asIfUtc = Date.UTC(+g('year'), +g('month') - 1, +g('day'),
+      +g('hour') % 24, +g('minute'), +g('second'));
+    return (asIfUtc - date.getTime()) / 60000;
+  } catch (_) { return 0; }
+}
+// Return a real Date that represents "wall time yyyy-mm-dd HH:MM in `tz`".
+// Iterates once to correct DST-adjacent misalignments.
+function _wallTimeInTz(tz, y, m, d, hh, mm) {
+  const utcGuess = new Date(Date.UTC(y, m - 1, d, hh, mm, 0));
+  const off = _tzOffsetMinutes(tz, utcGuess);
+  const corrected = new Date(utcGuess.getTime() - off * 60000);
+  const off2 = _tzOffsetMinutes(tz, corrected);
+  if (off2 === off) return corrected;
+  return new Date(utcGuess.getTime() - off2 * 60000);
+}
+// Return {y,m,d} for the tz-local date at `date`.
+function _ymdInTz(tz, date) {
+  try {
+    const dtf = new Intl.DateTimeFormat('en-US', {
+      timeZone: tz || 'UTC', hour12: false,
+      year: 'numeric', month: '2-digit', day: '2-digit',
+    });
+    const parts = dtf.formatToParts(date);
+    const g = (t) => parts.find((p) => p.type === t)?.value;
+    return { y: +g('year'), m: +g('month'), d: +g('day') };
+  } catch (_) {
+    return { y: date.getUTCFullYear(), m: date.getUTCMonth() + 1, d: date.getUTCDate() };
+  }
 }
 function _isWeekend(weekday) { return weekday === 6 || weekday === 7; }
 
@@ -152,14 +203,13 @@ function _nextRelease(rulesRow, reason, opts) {
     return { at: new Date(now.getTime() + mins * 60_000), key: 'batched' };
   }
 
-  // Weekend hold → Monday 8am local (fallback: Monday at daily_digest_hour).
+  // Weekend hold → Monday `daily_digest_hour` IN THE LO'S TZ (not the server's
+  // wall time — a server in UTC would otherwise fire "Monday 8am" at 4am NY).
   if (reason === 'weekend') {
-    const d = new Date(now.getTime());
-    // Advance to Monday
     const daysAhead = weekday === 6 ? 2 : (weekday === 7 ? 1 : 0);
-    d.setDate(d.getDate() + daysAhead);
-    d.setHours(r.daily_digest_hour || 8, 0, 0, 0);
-    return { at: d, key: 'weekend' };
+    const base = _ymdInTz(tz, new Date(now.getTime() + daysAhead * 24 * 3600_000));
+    const at = _wallTimeInTz(tz, base.y, base.m, base.d, Math.max(0, Math.min(23, r.daily_digest_hour || 8)), 0);
+    return { at, key: 'weekend' };
   }
 
   // Quiet-hours or non-workday → until the next open window.
@@ -192,23 +242,20 @@ function _nextRelease(rulesRow, reason, opts) {
 function _nextDailyDigest(r, tz) {
   const now = new Date();
   const hour = Math.max(0, Math.min(23, r.daily_digest_hour || 8));
-  // Compute today's target in the LO's tz; if already past, add a day.
-  const { minutesOfDay } = _tzParts(tz, now);
-  const targetMin = hour * 60;
-  const nowLocalMs = now.getTime();
-  const diffMin = targetMin - minutesOfDay;
-  const at = new Date(nowLocalMs + diffMin * 60_000);
-  if (diffMin <= 0) at.setTime(at.getTime() + 24 * 3600_000);
-  return at;
+  const today = _ymdInTz(tz, now);
+  const todayAt = _wallTimeInTz(tz, today.y, today.m, today.d, hour, 0);
+  if (todayAt.getTime() > now.getTime()) return todayAt;
+  const tomorrow = _ymdInTz(tz, new Date(now.getTime() + 24 * 3600_000));
+  return _wallTimeInTz(tz, tomorrow.y, tomorrow.m, tomorrow.d, hour, 0);
 }
 function _nextWeeklyDigest(r, tz) {
   const now = new Date();
   const dow = Math.max(1, Math.min(7, r.weekly_digest_dow || 1));
   const { weekday } = _tzParts(tz, now);
   const daysAhead = ((dow - weekday) + 7) % 7 || 7;   // never today; next occurrence
-  const at = new Date(now.getTime() + daysAhead * 24 * 3600_000);
-  at.setHours(r.daily_digest_hour || 8, 0, 0, 0);
-  return at;
+  const target = _ymdInTz(tz, new Date(now.getTime() + daysAhead * 24 * 3600_000));
+  return _wallTimeInTz(tz, target.y, target.m, target.d,
+    Math.max(0, Math.min(23, r.daily_digest_hour || 8)), 0);
 }
 function _nextOpenWindow(r, tz, now) {
   // Walk forward 15-minute steps looking for a workday moment outside quiet

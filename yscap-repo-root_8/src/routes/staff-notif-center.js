@@ -47,6 +47,27 @@ const notify = require('../lib/notify');
 const gate = require('../lib/lo-notification-gate');
 const selfGate = require('../lib/lo-self-gate');
 
+// Lightweight presence probe — any hit on the notification-center stamps the
+// LO's staff_users.last_active_at so the "presence-aware" self-gate rule
+// (skip live email if they were just in the portal) has fresh data. Throttled
+// per-process to at most once per staffer per 60s to keep write cost near zero.
+const _presenceStampAt = new Map();
+router.use('/notification-center', (req, _res, next) => {
+  const id = req.actor && req.actor.id;
+  if (!id) return next();
+  const now = Date.now();
+  const last = _presenceStampAt.get(id) || 0;
+  if (now - last < 60_000) return next();
+  _presenceStampAt.set(id, now);
+  // Cap the memory the throttle map holds.
+  if (_presenceStampAt.size > 500) {
+    const first = _presenceStampAt.keys().next().value;
+    if (first !== undefined) _presenceStampAt.delete(first);
+  }
+  db.query(`UPDATE staff_users SET last_active_at=now() WHERE id=$1`, [id]).catch(() => {});
+  next();
+});
+
 // ─── CATALOG + PREFS ────────────────────────────────────────────────────────
 
 router.get('/notification-center/catalog', async (req, res) => {
@@ -704,11 +725,38 @@ router.get('/notification-center/delivery-rules', async (req, res) => {
 
 router.put('/notification-center/delivery-rules', async (req, res) => {
   const b = req.body || {};
-  const HH_MM = /^\d{2}:\d{2}$/;
+  const HH_MM = /^([01]\d|2[0-3]):[0-5]\d$/;
   const num = (v, d, min, max) => {
     const n = parseInt(v, 10);
     if (!Number.isFinite(n)) return d;
     return Math.max(min, Math.min(max, n));
+  };
+  // Parse a datetime-local (`YYYY-MM-DDTHH:MM`) as WALL TIME in the given
+  // tz — else "vacation from Aug 1 midnight" on an NY LO ends up 4-5h early
+  // when the server is UTC. A full ISO with offset is kept as-is.
+  const wallInTz = (s, tz) => {
+    if (!s) return null;
+    if (/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(:\d{2})?$/.test(s)) {
+      const [d, t] = s.split('T');
+      const [y, mo, da] = d.split('-').map((x) => parseInt(x, 10));
+      const [hh, mm] = t.split(':').map((x) => parseInt(x, 10));
+      const utcGuess = new Date(Date.UTC(y, mo - 1, da, hh, mm, 0));
+      try {
+        const dtf = new Intl.DateTimeFormat('en-US', {
+          timeZone: tz || 'UTC', hour12: false,
+          year: 'numeric', month: '2-digit', day: '2-digit',
+          hour: '2-digit', minute: '2-digit', second: '2-digit',
+        });
+        const parts = dtf.formatToParts(utcGuess);
+        const g = (k) => parts.find((p) => p.type === k)?.value;
+        const asIfUtc = Date.UTC(+g('year'), +g('month') - 1, +g('day'),
+          +g('hour') % 24, +g('minute'), +g('second'));
+        const off = (asIfUtc - utcGuess.getTime()) / 60000;
+        return new Date(utcGuess.getTime() - off * 60000);
+      } catch (_) { return utcGuess; }
+    }
+    const d = new Date(s);
+    return isNaN(d.getTime()) ? null : d;
   };
   const master_mode = MASTER.has(b.master_mode) ? b.master_mode : 'instant';
   const batch_minutes = num(b.batch_minutes, 60, 5, 24 * 60);
@@ -716,14 +764,14 @@ router.put('/notification-center/delivery-rules', async (req, res) => {
   const daily_digest_hour = num(b.daily_digest_hour, 8, 0, 23);
   const weekly_digest_enabled = b.weekly_digest_enabled !== false;
   const weekly_digest_dow = num(b.weekly_digest_dow, 1, 1, 7);
-  const vacation_from = b.vacation_from ? new Date(b.vacation_from) : null;
-  const vacation_to = b.vacation_to ? new Date(b.vacation_to) : null;
+  const vacation_from = wallInTz(b.vacation_from, b.timezone || timezone);
+  const vacation_to = wallInTz(b.vacation_to, b.timezone || timezone);
   const vacation_drop = !!b.vacation_drop;
   const vacation_note = b.vacation_note ? String(b.vacation_note).slice(0, 400) : null;
   const weekend_hold = !!b.weekend_hold;
   const timezone = b.timezone && String(b.timezone).length < 64 ? String(b.timezone) : 'America/New_York';
-  const quiet_hours_start = HH_MM.test(b.quiet_hours_start) ? b.quiet_hours_start : null;
-  const quiet_hours_end = HH_MM.test(b.quiet_hours_end) ? b.quiet_hours_end : null;
+  const quiet_hours_start = HH_MM.test(String(b.quiet_hours_start || '')) ? b.quiet_hours_start : null;
+  const quiet_hours_end = HH_MM.test(String(b.quiet_hours_end || '')) ? b.quiet_hours_end : null;
   const work_days_mask = num(b.work_days_mask, 127, 0, 127);
   const presence_hold_minutes = num(b.presence_hold_minutes, 0, 0, 24 * 60);
   const suppress_email_if_read = !!b.suppress_email_if_read;
@@ -799,7 +847,7 @@ router.post('/notification-center/mute-file', async (req, res) => {
 });
 
 router.delete('/notification-center/mute-file', async (req, res) => {
-  const appId = String(req.query.applicationId || req.body.applicationId || '');
+  const appId = String(req.query.applicationId || (req.body || {}).applicationId || '');
   if (!appId) return res.status(400).json({ error: 'applicationId required' });
   await db.query(
     `DELETE FROM lo_muted_files WHERE staff_id=$1 AND application_id=$2`,
@@ -832,7 +880,7 @@ router.post('/notification-center/star-file', async (req, res) => {
 });
 
 router.delete('/notification-center/star-file', async (req, res) => {
-  const appId = String(req.query.applicationId || req.body.applicationId || '');
+  const appId = String(req.query.applicationId || (req.body || {}).applicationId || '');
   if (!appId) return res.status(400).json({ error: 'applicationId required' });
   await db.query(
     `DELETE FROM lo_starred_files WHERE staff_id=$1 AND application_id=$2`,

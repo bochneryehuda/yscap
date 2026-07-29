@@ -381,10 +381,10 @@ async function notifyStaff(staffId, opts) {
   if (inAppOnly) emailOn = false;
   // Self gate: 'inapp' forces in-app-only for the LO's own inbox.
   if (selfChannel === 'inapp') emailOn = false;
-  // Auto-attach the file's identity (subject tag + detail block + default
-  // link/CTA) so every staff file email says WHICH file, without every call
-  // site building it. No-op when there's no applicationId. (#88/#150 unchanged.)
-  opts = await enrichFileOpts(opts, 'staff');
+  // enrichFileOpts already ran at the top of notifyStaff (so the LO gate + the
+  // self gate see the same fully-composed payload the send path uses). It sets
+  // _enriched=true so a second call would be a no-op, but we don't run it —
+  // the audit noted the double-call as a hazard for future edits.
   const { rows } = await db.query(
     `INSERT INTO notifications (recipient_kind,staff_id,type,title,body,application_id,link)
      VALUES ('staff',$1,$2,$3,$4,$5,$6) RETURNING id`,
