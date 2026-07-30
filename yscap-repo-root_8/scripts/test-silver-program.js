@@ -89,17 +89,31 @@ const wb = {
     if (gcOnly) return sizeTok === 'S' ? Math.max(base, 2) : 3;
     return base;
   },
-  // K17: AR-LTV band
-  arBand: (r) => (!(r > 0) ? null : r <= 0.6499 ? '<64.99%' : r <= 0.70 ? '65.00%-70.00%' : r <= 0.75 ? '70.01%-75.00%' : null),
+  /* K17: AR-LTV band.
+     OWNER-AUTHORIZED GUIDELINE CHANGE, 2026-07-30 (the owner's own words): "Fix this
+     entire deal to allow every 75 to price as 74.99. And qualify the same, because this
+     is a mistake from their excel sheet how they set it up, but in real life that should
+     be the case … It should not be this point 99. It should be the above."
+     The workbook's K17 reads IF(ratio<=0.6499,"<64.99%", IF(ratio<=0.70,…)) — so the
+     lowest band stops one hundredth of a point short of the 65.00% the NEXT band
+     advertises, leaving a seam both labels disclaim. Their sheet is a checker (a human
+     types a loan and practically never lands in the seam); ours is a sizer and lands on
+     the round number every time a cap binds. The owner has ruled the round number bands
+     DOWN, so this transcription is the workbook formula with its .99 edge lifted to
+     65.00%. NOTHING else about K17 changed — the 70.00% and 75.00% edges are untouched,
+     and no rate value anywhere moves. */
+  arBand: (r) => (!(r > 0) ? null : r <= 0.65 ? '<64.99%' : r <= 0.70 ? '65.00%-70.00%' : r <= 0.75 ? '70.01%-75.00%' : null),
   // K18: FICO band (tier 3 has its own banding)
   ficoBand: (tier, fico) => {
     if (!(fico > 0)) return null;
     if (tier === 3) return fico >= 700 ? 'FICO 700+' : fico >= 680 ? 'FICO 680-699' : fico >= 640 ? 'FICO 640-679' : null;
     return fico >= 700 ? 'FICO 700+' : fico >= 660 ? 'FICO 660-699' : fico >= 640 ? 'FICO 640-659' : null;
   },
-  // K19: LTC band
-  ltcBand: (r) => (!(r > 0) ? null : r <= 0.7499 ? '<74.99%' : r <= 0.80 ? '75.00%-80.00%' : r <= 0.85 ? '80.01%-85.00%'
-    : r <= 0.875 ? '85.01%-87.50%' : r <= 0.8999 ? '87.51%-89.99%' : r <= 0.925 ? '90.00%-92.50%' : null),
+  /* K19: LTC band — the same owner-authorized lift as K17 above, on the two .99 edges
+     this axis carries: 74.99% → 75.00% and 89.99% → 90.00%. The 80.00% / 85.00% /
+     87.50% / 92.50% edges are untouched. */
+  ltcBand: (r) => (!(r > 0) ? null : r <= 0.75 ? '<74.99%' : r <= 0.80 ? '75.00%-80.00%' : r <= 0.85 ? '80.01%-85.00%'
+    : r <= 0.875 ? '85.01%-87.50%' : r <= 0.90 ? '87.51%-89.99%' : r <= 0.925 ? '90.00%-92.50%' : null),
   // K35: term gate — fails only for the F&F product with a budget at/below the threshold
   termFail: (termTok, prodTok, budget) => {
     if (termTok === '12') return false;
@@ -338,9 +352,15 @@ const wb = {
     const ev = SVP.evaluate({ loanType: purp, strategy: strat, state: 'TX', zip: '75001',
       fico: 640 + Math.floor(rnd() * 180), expFlips: Math.floor(rnd() * 7), expGround: Math.floor(rnd() * 7),
       purchasePrice: pp, asIsValue: pp, arv: arv, rehabBudget: rehab, term: 12 });
-    if (ev.status === 'INELIGIBLE' || !ev.sizing || !(ev.sizing.totalLoan > 0) || !ev.caps) continue;
+    // `pricedCeiling` is the ceiling THIS deal was actually sized at (the tier row after
+    // the grid step-down / de-leverage). `caps` is the PROGRAM MAXIMUM the profile can
+    // reach, which is a display figure and is deliberately NOT what sizing is measured
+    // against (contract split 2026-07-30). Older results carried only `caps` with the
+    // effective meaning — the fallback keeps this sweep correct either way.
+    const eff = ('pricedCeiling' in ev) ? ev.pricedCeiling : ev.caps;
+    if (ev.status === 'INELIGIBLE' || !ev.sizing || !(ev.sizing.totalLoan > 0) || !eff) continue;
     sized++;
-    const s = ev.sizing, c = ev.caps;
+    const s = ev.sizing, c = eff;
     ok(s.totalLoan <= c.maxLoan + 1, `loan within tier max @${i}`);
     ok(s.ltcPct <= c.maxLTC + 1e-6, `LTC within cap @${i}`);
     if (ev.strategyCode !== 'BR' && arv > 0) ok(s.totalLoan / arv <= c.maxARLTV + 1e-6, `AR-LTV within cap @${i}`);

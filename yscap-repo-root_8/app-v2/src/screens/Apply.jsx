@@ -444,6 +444,7 @@ export default function Apply() {
         Object.assign(overrides, {
           markupStdPct: s.fields.tsYspStd, markupGoldPct: s.fields.tsYspGold, markupSilverPct: s.fields.tsYspSilver,
           origStdPct: s.fields.tsOrigStd, origGoldPct: s.fields.tsOrigGold, origSilverPct: s.fields.tsOrigSilver,
+          origManualPct: s.fields.tsOrigManual,
           lenderFee: s.fields.tsFeeUW, creditFee: s.fields.tsFeeCredit,
           appraisalFee: s.fields.tsFeeAppr, titleFee: s.fields.tsFeeTitle,
           manualPricing: !!s.fields.tsManualOn,

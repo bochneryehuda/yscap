@@ -1888,6 +1888,14 @@ router.post('/applications/:id/pricing/quote', async (req, res) => {
     // up-front that registering this scenario goes to an admin for approval.
     const overrideChanges = overrideChangesFor(overrides);
     res.json({ ...out, experience: f.exp, overrideChanges, needsApproval: overrideChanges.length > 0 });
+    // Shadow-Excel parity monitor (owner-directed 2026-07-30): background-check the
+    // SILVER leg against the workbook transcription. Watch-only — never blocks.
+    if (out.silver && out.silver.status && out.silver.status !== 'ERROR') {
+      const appId = req.params.id;
+      setImmediate(() => {
+        try { require('../lib/silver-shadow-parity').monitorQuote(appId, out.inputs, out.silver).catch(() => {}); } catch (_) { /* watch-only */ }
+      });
+    }
   } catch (e) { console.warn('[staff] handler error:', db.describeError(e)); res.status(500).json({ error: 'server error' }); }
 });
 
@@ -2173,12 +2181,17 @@ router.post('/applications/:id/pricing/register', async (req, res) => {
       // admin resetting it) overwrites it. A live company-default registration
       // (no markup key) never freezes the default onto the file.
       const stickyMk = (v) => { if (v == null || v === '') return null; const n = Number(v); return isFinite(n) ? n : null; };
+      // Silver's markup is HARD-CAPPED at 1.00pt (owner-directed; engine
+      // MARKUP_MAX + admin-pricing refusal). The engine already clamps the
+      // PRICED markup, but the sticky must never store a number the studio
+      // would re-display above the cap (meta-audit 2026-07-30 gap 3).
+      const stickyMkSilver = (v) => { const n = stickyMk(v); return n == null ? null : Math.min(n, 1); };
       if (Object.prototype.hasOwnProperty.call(overrides, 'markupStdPct'))
         await client.query(`UPDATE applications SET file_markup_std_pct=$2 WHERE id=$1`, [appId, stickyMk(overrides.markupStdPct)]);
       if (Object.prototype.hasOwnProperty.call(overrides, 'markupGoldPct'))
         await client.query(`UPDATE applications SET file_markup_gold_pct=$2 WHERE id=$1`, [appId, stickyMk(overrides.markupGoldPct)]);
       if (Object.prototype.hasOwnProperty.call(overrides, 'markupSilverPct'))
-        await client.query(`UPDATE applications SET file_markup_silver_pct=$2 WHERE id=$1`, [appId, stickyMk(overrides.markupSilverPct)]);
+        await client.query(`UPDATE applications SET file_markup_silver_pct=$2 WHERE id=$1`, [appId, stickyMkSilver(overrides.markupSilverPct)]);
       await client.query('COMMIT');
     } catch (e) { await client.query('ROLLBACK'); throw e; }
 
@@ -2351,6 +2364,14 @@ router.post('/applications/:id/pricing/register', async (req, res) => {
 
     res.status(201).json({ ok: true, registrationId: regId, quote, pendingApproval: needsEscalation,
       overrideChanges, overrideLines, pendingReason: needsEscalation ? (isManual ? 'manual_product' : (overrideOnly ? 'pricing_override' : 'manual_review')) : null });
+    // Shadow-Excel parity monitor (owner-directed 2026-07-30): background-check the
+    // registered Silver scenario against the workbook transcription. Watch-only —
+    // a mismatch records one advisory AI finding; it never blocks the registration.
+    if (program === 'silver') {
+      setImmediate(() => {
+        try { require('../lib/silver-shadow-parity').monitorQuote(appId, inputs, quote).catch(() => {}); } catch (_) { /* watch-only */ }
+      });
+    }
   } catch (e) { console.warn('[staff] handler error:', db.describeError(e)); res.status(500).json({ error: 'server error' }); }
 });
 
@@ -2657,8 +2678,19 @@ router.post('/applications/:id/pricing/accept-counter', async (req, res) => {
     if (ct.noteRate  != null) overrides.ovrRate  = Number(ct.noteRate);
     if (ct.origPct   != null) {
       const pctVal = Number(ct.origPct) * 100;
+      // The counter's origination must govern WHATEVER program this file
+      // re-registers under, so every per-program origination key is written —
+      // otherwise the replayed escalation blob (which carries the ORIGINAL
+      // request's off-default knobs) silently outranks the super-admin.
+      // Root-caused 2026-07-30: a countered Manual Program kept the loan
+      // officer's origManualPct (pricing.js prefers it for program 'manual'),
+      // so a counter of 0.5% re-registered at the requested 2.5% and the
+      // borrower was emailed those confirmed terms. origSilverPct was missing
+      // for the same reason on a countered Silver registration.
       overrides.origStdPct = pctVal;
       overrides.origGoldPct = pctVal;
+      overrides.origSilverPct = pctVal;
+      overrides.origManualPct = pctVal;
     }
     // Force-price so a scenario ineligible under the standard caps still sizes
     // and registers as MANUAL (the counter TERMS are the approval — we don't want
@@ -2671,7 +2703,12 @@ router.post('/applications/:id/pricing/accept-counter', async (req, res) => {
     const requestedProgram = (esc.summary && esc.summary.program) === 'gold' ? 'gold' : (esc.summary && esc.summary.program) === 'silver' ? 'silver' : 'standard';
     const program = manualProgram.resolveProgram(requestedProgram, overrides);
     const quote = pricing.quoteProgram(program, inputs);
-    const total = Number(quote && quote.totalLoan) || 0;
+    // The sized loan lives on quote.SIZING.totalLoan — a quote has no top-level
+    // `totalLoan` (audit 2026-07-30). Reading the missing key made `total` 0 on
+    // every accepted counter, so the audit row and the API response said 0 and
+    // the borrower's "Your loan terms are ready" email led with "Your loan
+    // amount: $0". Same expression the /register route uses.
+    const total = quote && quote.sizing ? Number(quote.sizing.totalLoan) || 0 : 0;
 
     // Persist + mark the escalation approved in ONE transaction so an accept
     // never half-lands (registered without the escalation closing, or vice versa).
@@ -9170,9 +9207,18 @@ async function applicationCompleteness(appId) {
   // carry an estimated (monthly) rental income before it's complete (owner-directed
   // 2026-07-26). Only this note buyer + strategy adds the requirement; every other
   // file is unaffected.
-  const buyer = conditionRegistry.normNoteBuyer(row.lender);
+  // MATCHED WITH THE SHARED HELPER, NEVER AN EXACT COMPARE (owner-reported
+  // 2026-07-30). `normNoteBuyer` is deliberately EXACT — it must stay that way,
+  // because an over-match there would let a look-alike name export the wrong
+  // note buyer's data tape (tapes/buyer-rule.js). So the real ClickUp label
+  // "EMCAP Financial" normalizes to `emcapfinancial`, NOT `emcap`, and this
+  // `=== 'emcap'` matched no live file: the requirement never once fired. Every
+  // other EMCAP consumer in the repo already routes through
+  // `isEmcapNoteBuyer` (the prefix test) — note-buyer-effects, conditions/engine,
+  // liquidity, appraisal/note-buyer-checks, the guideline desk and review — and
+  // this was the last exact-match left. Use the helper for any new EMCAP branch.
   const strategy = conditionRegistry.normStrategy([row.program, row.loan_type, row.rehab_type].filter(Boolean).join(' '));
-  if (buyer === 'emcap' && strategy === 'fix_hold') {
+  if (conditionRegistry.isEmcapNoteBuyer(row.lender) && strategy === 'fix_hold') {
     need.push([row.estimated_rental_income, 'Estimated rental income']);
   }
   const missing = need.filter(([v]) => v == null || v === '').map(([, label]) => label);

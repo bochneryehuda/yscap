@@ -104,7 +104,7 @@ export default function ClosingPanel({ appId, app, can, onDownloadDoc, onPreview
       </div>
 
       {/* Deal details */}
-      <DealDetails appId={appId} app={app} />
+      <DealDetails appId={appId} app={app} structure={ws.structure} />
 
       {/* Money: estimate + actual cash-to-close + verified liquidity */}
       <MoneySection appId={appId} money={money} isCloser={isCloser} busy={busy} run={run}
@@ -186,7 +186,7 @@ function Fact({ k, v }) {
    shows final → original → fee in that order, side by side. The band is the
    only place the layout differs, so neither shape looks like the other with a
    hole in it. Figures come from the ONE shared derivation (lib/dealPrice.js). */
-function DealDetails({ appId, app }) {
+function DealDetails({ appId, app, structure }) {
   const price = dealPurchase(app);
   return (
     <div className="panel" style={{ marginBottom: 14 }}>
@@ -200,7 +200,24 @@ function DealDetails({ appId, app }) {
           <Fact k="Program" v={(app && (app.registered_program || app.program)) || '—'} />
           <Fact k="Loan amount" v={money0(app && app.loan_amount)} />
           <Fact k="Rehab budget" v={money0(app && app.rehab_budget)} />
-          <Fact k="Financed interest reserve" v={money0(app && app.requested_ir_amount)} />
+          {/* THE reserve the loan CARRIES, read from the registered product's own sized
+              quote — NOT applications.requested_ir_amount, which is only what was ASKED
+              FOR and is 0 on every months-driven file, so this row printed "$0" on a loan
+              carrying a real reserve (owner-reported 2026-07-30). With nothing registered
+              yet the request is shown under its own honest label instead. */}
+          <Fact k="Financed interest reserve"
+            v={structure && structure.financedReserve != null
+              ? money0(structure.financedReserve) + (structure.reserveCapped
+                ? ' · capped by ' + (structure.reserveCapBy || 'the program leverage ceiling')
+                : '')
+              : '— (no registered product yet)'} />
+          {(!structure || structure.financedReserve == null)
+            && app && (Number(app.requested_ir_amount) > 0 || Number(app.requested_ir_months) > 0) && (
+            <Fact k="Interest reserve requested"
+              v={Number(app.requested_ir_amount) > 0
+                ? money0(app.requested_ir_amount)
+                : Number(app.requested_ir_months) + ' months'} />
+          )}
           <Fact k="Loan coordinator" v={(app && app.loan_officer_name) || '—'} />
         </div>
 
