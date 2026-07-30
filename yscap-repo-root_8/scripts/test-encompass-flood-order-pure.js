@@ -12,9 +12,11 @@
  */
 const assert = require('assert');
 
-// Force a clean gate state before requiring the module.
+// Force the gate state before requiring the module. The shipped default is ON
+// (owner-directed "turn everything on"), so to exercise the FAIL-CLOSED path we
+// pin the write gate OFF here — a bad value in prod can never silently send.
 delete process.env.ENCOMPASS_FLOOD_DRYRUN;
-delete process.env.ENCOMPASS_FLOOD_OUTBOUND_ENABLED;
+process.env.ENCOMPASS_FLOOD_OUTBOUND_ENABLED = '0';
 const flood = require('../src/encompass/flood-order');
 
 let n = 0;

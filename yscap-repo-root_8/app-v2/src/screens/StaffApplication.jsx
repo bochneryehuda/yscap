@@ -884,7 +884,7 @@ const APPR_XML_REASONS = [
 // (rtl_cond_flood). Any staff member may order. Self-hides until the feature is
 // turned on (ENCOMPASS_FLOOD_ENABLED). If the file has no loan number, the button
 // says so — the loan number is what links the file to its Encompass loan.
-function OrderFloodButton({ appId, itemId, onChanged }) {
+function OrderFloodButton({ appId, itemId, onChanged, onUploadTo }) {
   const [state, setState] = useState(null);   // { order, enabled, hasLoanNumber } | null
   const [busy, setBusy] = useState(false);
   const [msg, setMsg] = useState('');
@@ -954,6 +954,12 @@ function OrderFloodButton({ appId, itemId, onChanged }) {
       </button>
       {!state.hasLoanNumber && (
         <div className="small" style={{ color: '#4B585C', marginTop: 4 }}>Add a loan number to this file first — the loan number links it to the Encompass loan.</div>
+      )}
+      {/* Quiet fallback: if a certificate can't be ordered (or you already have one),
+          you can still attach it by hand — it's not the up-front action. */}
+      {onUploadTo && (
+        <button className="btn link small" style={{ marginTop: 6, color: '#256168', display: 'block' }}
+          onClick={() => onUploadTo({ itemId, slotBase: 0 })}>Upload a certificate manually instead</button>
       )}
       {msg && <div className="notice" style={{ marginTop: 6 }}>{msg}</div>}
       {err && <div className="notice err" style={{ marginTop: 6 }}>{err}</div>}
@@ -1124,6 +1130,12 @@ function Item({ it, team, onPatch, role, docs, onUploadTo, onDropTo, onReviewDoc
   const myDone = roleDone(it, role);
   const isDoc = it.item_kind === 'document';
   const slots = Array.isArray(it.slots) && it.slots.length ? it.slots : null;
+  // The flood certificate is ORDERED from Encompass and the PDF auto-files onto
+  // this condition (owner-directed 2026-07-30 — "same logic as the credit report;
+  // it uploads automatically, so you don't need the upload button in front"). So
+  // suppress the generic manual-upload button/drop here; the filed certificate
+  // still lists + downloads below, and a manual fallback lives on the order button.
+  const genericUpload = it.template_code === 'rtl_cond_flood' ? null : onUploadTo;
   const itemDocs = (isDoc && docs)
     ? docs.filter(d => d.checklist_item_id === it.id && d.is_current && d.source_type !== 'chat_attachment')
     : [];
@@ -1209,12 +1221,12 @@ function Item({ it, team, onPatch, role, docs, onUploadTo, onDropTo, onReviewDoc
           (download there). Suppress the generic free-form doc block for it so the
           same files don't render twice with destructive Delete/Reject/+Add
           controls that would orphan credit_reports' document pointers. */}
-      {isDoc && it.template_code !== 'rtl_cond_credit' && (onUploadTo || itemDocs.length > 0) && (
+      {isDoc && it.template_code !== 'rtl_cond_credit' && (genericUpload || itemDocs.length > 0) && (
         <div style={{ width: '100%', paddingLeft: 20 }}
-          className={(!slots && onDropTo) ? 'cond-drop' : undefined}
-          onDragOver={(!slots && onDropTo) ? (e) => { e.preventDefault(); e.currentTarget.classList.add('drop-over'); } : undefined}
-          onDragLeave={(!slots && onDropTo) ? (e) => { e.currentTarget.classList.remove('drop-over'); } : undefined}
-          onDrop={(!slots && onDropTo) ? (e) => { e.preventDefault(); e.currentTarget.classList.remove('drop-over'); onFilesDropped(e, (files) => onDropTo(files, { itemId: it.id, slotBase: itemDocs.length })); } : undefined}>
+          className={(!slots && onDropTo && it.template_code !== 'rtl_cond_flood') ? 'cond-drop' : undefined}
+          onDragOver={(!slots && onDropTo && it.template_code !== 'rtl_cond_flood') ? (e) => { e.preventDefault(); e.currentTarget.classList.add('drop-over'); } : undefined}
+          onDragLeave={(!slots && onDropTo && it.template_code !== 'rtl_cond_flood') ? (e) => { e.currentTarget.classList.remove('drop-over'); } : undefined}
+          onDrop={(!slots && onDropTo && it.template_code !== 'rtl_cond_flood') ? (e) => { e.preventDefault(); e.currentTarget.classList.remove('drop-over'); onFilesDropped(e, (files) => onDropTo(files, { itemId: it.id, slotBase: itemDocs.length })); } : undefined}>
           {slots ? (
             /* Fixed named slots (e.g. Insurance → binder + invoice) — each slot is
                its own drop target so a dropped file lands in the right slot. Every
@@ -1282,7 +1294,7 @@ function Item({ it, team, onPatch, role, docs, onUploadTo, onDropTo, onReviewDoc
                   </div>
                 );
               })}
-              {onUploadTo && (
+              {genericUpload && (
                 /* Same labelled-row shape as a fixed slot, so the button starts
                    where every other condition's controls start. With nothing
                    uploaded it used to be a bare button floating in the indent,
@@ -1314,7 +1326,7 @@ function Item({ it, team, onPatch, role, docs, onUploadTo, onDropTo, onReviewDoc
       )}
       {/* Flood condition — order the flood certificate from Encompass (flood only). */}
       {it.template_code === 'rtl_cond_flood' && (
-        <OrderFloodButton appId={appId} itemId={it.id} onChanged={onChanged} />
+        <OrderFloodButton appId={appId} itemId={it.id} onChanged={onChanged} onUploadTo={onUploadTo} />
       )}
 
       {it.template_code === 'usps_address_verification' && (

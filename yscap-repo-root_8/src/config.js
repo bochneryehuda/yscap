@@ -582,8 +582,11 @@ module.exports = {
     serviceId:    process.env.ENCOMPASS_FLOOD_SERVICE_ID || null,
     product:      process.env.ENCOMPASS_FLOOD_PRODUCT || null,
   },
-  encompassFloodEnabled: process.env.ENCOMPASS_FLOOD_ENABLED === '1',            // master (default off)
-  encompassFloodOutboundEnabled: process.env.ENCOMPASS_FLOOD_OUTBOUND_ENABLED === '1', // write gate (default off)
+  // Owner-directed 2026-07-30 ("turn everything on"): flood ordering is ON by
+  // default (button + polling AND the write). Set the env var to '0' — or flip the
+  // switch OFF on the API-Health page — to pause it. TEST MODE (dryrun) stays off.
+  encompassFloodEnabled: process.env.ENCOMPASS_FLOOD_ENABLED !== '0',            // master (default ON)
+  encompassFloodOutboundEnabled: process.env.ENCOMPASS_FLOOD_OUTBOUND_ENABLED !== '0', // write gate (default ON)
 
   // --- document underwriting: OCR reader + AI analyzer (add keys to activate) ---
   // Microsoft Azure AI Document Intelligence — the "reads even scanned/blurry
