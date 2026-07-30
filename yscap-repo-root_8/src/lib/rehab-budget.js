@@ -153,16 +153,27 @@ function budgetSignoffCheck(toolPayload, appRehabBudget, regInputs) {
   const fpTarget = firstPageBudget(toolPayload);
   const fpSet = fpTarget != null && fpTarget > 0;
 
-  // Name each disagreeing pair explicitly, with the exact gap.
+  // Name each disagreeing pair explicitly, with the exact gap — and name the
+  // SOURCE the owner recognizes, not an internal term (owner-reported 2026-07-29:
+  // "tell me clear WHAT does not match — the Application, the Term Sheet section,
+  // Products & Pricing, Encompass or ClickUp — and why it's not letting me sign
+  // it off"). At sign-off there are only these four comparands: the two Scope of
+  // Work numbers, the file's rehab budget (the ONE figure the Application,
+  // Encompass and ClickUp all sync to), and the Products & Pricing / Term Sheet
+  // budget set when the product was registered.
+  const SOW_TOTAL = 'the Scope of Work line-item total';
+  const SOW_START = 'the Scope of Work starting budget (first page)';
+  const APP_BUDGET = 'the file’s rehab budget (Application — the number Encompass & ClickUp also sync to)';
+  const REG_BUDGET = 'the Products & Pricing / Term Sheet budget';
   const problems = [];
-  if (!eqCents(sowTotal, appBudget)) problems.push(`the Scope of Work line-item total ${moneyExact(sowTotal)} is ${gapPhrase(sowTotal, appBudget)} than the file budget ${moneyExact(appBudget)}`);
-  if (regBudget != null && !eqCents(appBudget, regBudget)) problems.push(`the file budget ${moneyExact(appBudget)} is ${gapPhrase(appBudget, regBudget)} than the registered product budget ${moneyExact(regBudget)}`);
-  if (fpSet && !eqCents(fpTarget, appBudget)) problems.push(`the first-page construction budget ${moneyExact(fpTarget)} is ${gapPhrase(fpTarget, appBudget)} than the file budget ${moneyExact(appBudget)}`);
+  if (!eqCents(sowTotal, appBudget)) problems.push(`${SOW_TOTAL} ${moneyExact(sowTotal)} is ${gapPhrase(sowTotal, appBudget)} than ${APP_BUDGET} ${moneyExact(appBudget)}`);
+  if (regBudget != null && !eqCents(appBudget, regBudget)) problems.push(`${APP_BUDGET} ${moneyExact(appBudget)} is ${gapPhrase(appBudget, regBudget)} than ${REG_BUDGET} ${moneyExact(regBudget)}`);
+  if (fpSet && !eqCents(fpTarget, appBudget)) problems.push(`${SOW_START} ${moneyExact(fpTarget)} is ${gapPhrase(fpTarget, appBudget)} than ${APP_BUDGET} ${moneyExact(appBudget)}`);
   if (!problems.length) return null;
 
-  return `Budgets do not match to the cent — ${problems.join('; ')}. `
-    + `Right now: first-page construction budget ${fpSet ? moneyExact(fpTarget) : '—'} · Scope of Work line-item total ${moneyExact(sowTotal)} · file budget ${moneyExact(appBudget)}${regBudget != null ? ` · registered product budget ${moneyExact(regBudget)}` : ''}. `
-    + `They must ALL agree to the cent before sign-off: adjust the Scope of Work (start total + line items) or re-register the product so the numbers match.`;
+  return `The Scope of Work can't be signed off because the numbers don't match to the cent — ${problems.join('; ')}. `
+    + `Right now: Scope of Work starting budget ${fpSet ? moneyExact(fpTarget) : '—'} · Scope of Work line-item total ${moneyExact(sowTotal)} · file rehab budget (Application) ${moneyExact(appBudget)}${regBudget != null ? ` · Products & Pricing / Term Sheet budget ${moneyExact(regBudget)}` : ''}. `
+    + `They must ALL agree to the cent. The file’s rehab budget is the one figure the Application, Encompass and ClickUp share; the Term Sheet is generated from the Products & Pricing budget. Fix it by adjusting the Scope of Work (start total + line items) or re-register the product so the numbers match.`;
 }
 
 /**

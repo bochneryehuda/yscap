@@ -1410,6 +1410,10 @@ async function ingestTask(task, options = {}, opts = {}) {
     // needs 2, Standard 1) — re-derive it now so the condition doesn't keep saying "1 month" until
     // the next re-register (owner 2026-07-27). Best-effort; never breaks the sync.
     try { await require('../lib/liquidity').resyncLiquidityForFile(applicationId); } catch (_) {}
+    // …and re-evaluate the note-buyer APPRAISAL checks (EMCAP — owner 2026-07-30): a note buyer
+    // arriving from ClickUp onto a file with an imported appraisal raises the buyer's appraisal
+    // findings; moving off retires them. Exits fast on a non-EMCAP file. Best-effort.
+    try { await require('../lib/appraisal/note-buyer-checks').syncNoteBuyerFindings(db, applicationId); } catch (_) {}
   }
 
   // Preserve a MASKED snapshot of every task's mapped data — RTL and non-RTL
@@ -1833,6 +1837,24 @@ async function linkOrCreateApplication(task, read, borrowerId, llcId, ctx = {}) 
     try {
       await require('../lib/inbound-enum-guard')
         .applyInboundEnumGuard({ appId: targetId, cols, taskId: task.id, borrowerId, options: cuOptions });
+    } catch (_) { /* best-effort — never breaks the inbound pull */ }
+  }
+
+  // PORTAL-EDIT GUARD (owner-directed 2026-07-28: "anything you change that
+  // bounces back must tell you or go to manual review — never do it by itself").
+  // The everyday case the two guards above miss: an un-frozen file with a
+  // mappable value that a HUMAN just edited in the portal, which the COALESCE
+  // pull silently reverts if the reconcile runs before the outbound push lands.
+  // Using ClickUp's last-seen snapshot (still the PREVIOUS values here — the
+  // snapshot is rewritten after this returns), it keeps the file's value and
+  // either re-pushes it (the edit hadn't reached ClickUp yet — silent) or parks a
+  // review (both sides changed — a real conflict). Runs LAST so anything an
+  // earlier guard already stripped is skipped. No-op when ClickUp matches the
+  // file, or when there is no snapshot to prove a portal-side edit.
+  if (targetId && task) {
+    try {
+      await require('../lib/inbound-portal-edit-guard')
+        .applyInboundPortalEditGuard({ appId: targetId, cols, taskId: task.id, borrowerId });
     } catch (_) { /* best-effort — never breaks the inbound pull */ }
   }
 

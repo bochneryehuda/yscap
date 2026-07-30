@@ -356,13 +356,13 @@ router.get('/tapes/:tapeKey/loans', async (req, res) => {
     let scopeSql = '';
     if (!seesAll(req)) { params.push(req.actor.id); scopeSql = ' AND ' + VISIBLE_OFFICERS_SQL('a', '$' + params.length); }
     // Non-admins only see loans they could actually export: the loan must be
-    // REGISTERED with the correct program for this provider (manual/parked-Silver
-    // are excluded — they're admin-only). Admins see every provider-matched loan.
+    // REGISTERED with the correct program for this provider (manual is excluded —
+    // it's admin-only). Admins see every provider-matched loan.
     let gateSql = '';
     if (!tapeAdmin(req)) {
       const wantProg = tapes.programProvider.programForProvider(tape.buyerKey);
       // No live program is paired to this provider, OR the paired program is PARKED
-      // (e.g. EMCAP↔Silver — a recognized name, not yet registerable) → no loan is
+      // (an incubating program name, not yet registerable) → no loan is
       // non-admin-exportable; return an empty picker flagged admin-only.
       if (!wantProg || tapes.programProvider.PARKED_PROGRAMS.has(wantProg)) {
         return res.json({ tape: tapes.registry.publicTape(tape), count: 0, loans: [], adminOnly: true });
@@ -1094,24 +1094,41 @@ router.post('/applications', async (req, res) => {
   if (!addr || !(addr.oneLine || addr.street || addr.line1))
     return res.status(400).json({ error: 'property address required' });
   try {
-    // Same email + a DIFFERENT person's name → refuse the silent merge (409).
-    const exConflict = await emailAdoptionConflict(email, firstName, lastName);
-    if (exConflict && !b.allowSharedEmail) return emailAdoptionError(res, exConflict, email);
-    // Match-or-create the borrower. Never overwrite existing PII — only fill
-    // blank fields — so an existing borrower record is preserved intact. When the
-    // staffer has confirmed a genuinely shared mailbox, the second person gets
-    // their OWN profile on the same address instead of being refused.
-    const br = exConflict
-      ? { rows: [{ id: await createSharedEmailBorrower({
-          firstName, lastName, email, phone: bo.phone, ownerId: exConflict.id, actorId: req.actor.id }), created: true }] }
-      : await db.query(
-        `INSERT INTO borrowers (first_name,last_name,email,cell_phone)
-       VALUES ($1,$2,$3,$4)
-       ON CONFLICT (email) WHERE shares_email = false DO UPDATE SET
-         cell_phone = COALESCE(borrowers.cell_phone, EXCLUDED.cell_phone),
-         updated_at = now()
-       RETURNING id, (xmax=0) AS created`,
-        [firstName, lastName || '', email, bo.phone || null]);
+    // WHEN THE STAFFER EXPLICITLY PICKED AN EXISTING BORROWER, LINK TO THAT PROFILE
+    // — authoritatively, never a match-or-create off the email (owner-reported
+    // 2026-07-29: "starting a new file for an existing borrower doesn't always
+    // populate / let you select who you're starting for"). The route used to ignore
+    // the picked borrowerId entirely and rely on the email `ON CONFLICT` match, so a
+    // changed/blank/shared email minted a brand-new duplicate profile instead of
+    // linking the one the staffer chose. Opening a file for an existing borrower is
+    // a legitimate origination action for any staffer, and every later SSN reveal /
+    // document read stays separately authorized + audited — so we honor the pick.
+    let br;
+    if (b.borrowerId) {
+      const ex = await db.query(`SELECT id FROM borrowers WHERE id=$1`, [b.borrowerId]);
+      if (!ex.rows[0]) return res.status(404).json({ error: 'that borrower profile was not found — pick again or leave it blank to create a new one' });
+      // Fill a blank phone only; never overwrite the existing profile's PII.
+      if (bo.phone) {
+        await db.query(`UPDATE borrowers SET cell_phone=COALESCE(cell_phone,$2), updated_at=now() WHERE id=$1`, [b.borrowerId, bo.phone]);
+      }
+      br = { rows: [{ id: ex.rows[0].id, created: false }] };
+    } else {
+      // No explicit pick — match-or-create off the email (the original behavior).
+      // Same email + a DIFFERENT person's name → refuse the silent merge (409).
+      const exConflict = await emailAdoptionConflict(email, firstName, lastName);
+      if (exConflict && !b.allowSharedEmail) return emailAdoptionError(res, exConflict, email);
+      br = exConflict
+        ? { rows: [{ id: await createSharedEmailBorrower({
+            firstName, lastName, email, phone: bo.phone, ownerId: exConflict.id, actorId: req.actor.id }), created: true }] }
+        : await db.query(
+          `INSERT INTO borrowers (first_name,last_name,email,cell_phone)
+         VALUES ($1,$2,$3,$4)
+         ON CONFLICT (email) WHERE shares_email = false DO UPDATE SET
+           cell_phone = COALESCE(borrowers.cell_phone, EXCLUDED.cell_phone),
+           updated_at = now()
+         RETURNING id, (xmax=0) AS created`,
+          [firstName, lastName || '', email, bo.phone || null]);
+    }
     const borrowerId = br.rows[0].id;
 
     // A borrower may have MANY files (one per property) and any staffer may open
@@ -1843,6 +1860,17 @@ function overrideChangesFor(raw) {
   try { defaults = pricingSettings.current(); } catch (_) { defaults = null; }
   return pricingOverridesEngaged(raw, defaults);
 }
+// The EXPLICIT experience claim the studio carried on a register (owner-directed
+// 2026-07-28 — "it keeps coming back to 5"). A real number in an override —
+// INCLUDING 0 — is a deliberate claim the staffer typed and must stick (raise OR
+// lower); a MISSING or blank field is not a zero and returns null so persist
+// keeps its conservative never-lower GREATEST. Mirrors the studio's `compact()`,
+// which drops '' / null but keeps a typed 0.
+function explicitClaimedExp(overrides) {
+  const o = overrides || {};
+  const pick = (k) => (o[k] != null && o[k] !== '' ? o[k] : null);
+  return { flips: pick('expFlips'), holds: pick('expHolds'), ground: pick('expGround') };
+}
 
 // Fresh quote for both programs (no persistence). Body: { program?, overrides? }.
 router.post('/applications/:id/pricing/quote', async (req, res) => {
@@ -1902,8 +1930,8 @@ router.get('/applications/:id/pricing', async (req, res) => {
     try {
       const cd = pricingSettings.current() || {};
       pricingDefaults = {
-        markupStdPct: cd.markupStdPct, markupGoldPct: cd.markupGoldPct,
-        origStdPct: cd.origStdPct, origGoldPct: cd.origGoldPct,
+        markupStdPct: cd.markupStdPct, markupGoldPct: cd.markupGoldPct, markupSilverPct: cd.markupSilverPct,
+        origStdPct: cd.origStdPct, origGoldPct: cd.origGoldPct, origSilverPct: cd.origSilverPct,
         lenderFee: cd.lenderFee, creditFee: cd.creditFee,
         appraisalFee: cd.appraisalFee, titleFee: cd.titleFee ?? null,
       };
@@ -1929,7 +1957,7 @@ router.post('/applications/:id/pricing/register', async (req, res) => {
     const locked = await require('../lib/file-lock').structuralLockReason(appId, db, { actor: req.actor });   // #84
     if (locked) return refuse(409, { error: locked }, 'structural_lock');
     const b = req.body || {};
-    const requestedProgram = b.program === 'gold' ? 'gold' : 'standard';
+    const requestedProgram = b.program === 'gold' ? 'gold' : b.program === 'silver' ? 'silver' : 'standard';
     const f = await loadFileForPricing(appId);
     if (!f) return res.status(404).json({ error: 'not found' });
 
@@ -2084,6 +2112,14 @@ router.post('/applications/:id/pricing/register', async (req, res) => {
         appId, program, inputs, quote, registeredByStaffId: req.actor.id,
         isManual, assetMonths, termOptions: resolvedTermOptions,
         needsApproval: needsEscalation, overrideChanges,
+        // Owner-directed 2026-07-28: a staffer may LOWER the experience count
+        // from the studio and have it stick. The studio always sends the field's
+        // current value, so an explicit number here (incl. 0) is a deliberate
+        // claim that overrides the never-lower GREATEST; a BLANK field sends
+        // nothing → null → GREATEST is kept (a blank is not a zero). Staff only —
+        // the borrower register (borrower.js) never passes this, so a borrower's
+        // locked experience keeps its old GREATEST behavior exactly.
+        claimedExp: explicitClaimedExp(overrides),
       });
       regId = reg.id;
       economicsChanged = reg.economicsChanged;
@@ -2141,6 +2177,8 @@ router.post('/applications/:id/pricing/register', async (req, res) => {
         await client.query(`UPDATE applications SET file_markup_std_pct=$2 WHERE id=$1`, [appId, stickyMk(overrides.markupStdPct)]);
       if (Object.prototype.hasOwnProperty.call(overrides, 'markupGoldPct'))
         await client.query(`UPDATE applications SET file_markup_gold_pct=$2 WHERE id=$1`, [appId, stickyMk(overrides.markupGoldPct)]);
+      if (Object.prototype.hasOwnProperty.call(overrides, 'markupSilverPct'))
+        await client.query(`UPDATE applications SET file_markup_silver_pct=$2 WHERE id=$1`, [appId, stickyMk(overrides.markupSilverPct)]);
       await client.query('COMMIT');
     } catch (e) { await client.query('ROLLBACK'); throw e; }
 
@@ -2630,7 +2668,7 @@ router.post('/applications/:id/pricing/accept-counter', async (req, res) => {
 
     const inputs = pricing.buildInputs(f.app, f.exp, overrides);
     inputs.forcePrice = true;
-    const requestedProgram = (esc.summary && esc.summary.program) === 'gold' ? 'gold' : 'standard';
+    const requestedProgram = (esc.summary && esc.summary.program) === 'gold' ? 'gold' : (esc.summary && esc.summary.program) === 'silver' ? 'silver' : 'standard';
     const program = manualProgram.resolveProgram(requestedProgram, overrides);
     const quote = pricing.quoteProgram(program, inputs);
     const total = Number(quote && quote.totalLoan) || 0;
@@ -3557,6 +3595,29 @@ router.post('/applications/:id/credit/import', async (req, res) => {
   } catch (e) {
     console.error('[credit] import failed:', db.describeError ? db.describeError(e) : (e && e.message));
     res.status(e.status || 422).json({ error: e.userMessage || 'Could not import the credit report.' });
+  }
+});
+
+// Reuse a borrower's existing (<120-day) credit report from another of their files
+// onto THIS file — no new Xactus inquiry. Same permission as a live pull; the
+// report is re-filed on this file's credit condition carrying its original date.
+router.post('/applications/:id/credit/reuse', async (req, res) => {
+  if (!can(req.actor, 'pull_credit')) return res.status(403).json({ error: 'You don’t have permission to pull credit on this file.' });
+  const b = req.body || {};
+  try {
+    const out = await require('../lib/credit').reuseFromProfile(req.params.id, {
+      borrowerId: typeof b.borrowerId === 'string' ? b.borrowerId : undefined,
+      sourceReportId: typeof b.sourceReportId === 'string' ? b.sourceReportId : undefined,
+      actorId: req.actor.id,
+    });
+    await audit(req, 'credit_reuse', 'application', req.params.id, {
+      borrowerId: b.borrowerId, fromApplicationId: out.fromApplicationId,
+      reportDate: out.reportDate, ageDays: out.ageDays, middleScore: out.middleScore,
+      ficoWritten: out.ficoWritten, ficoMismatch: out.ficoMismatch || undefined,
+    });
+    res.json(out);
+  } catch (e) {
+    res.status(e.status || 422).json({ error: e.userMessage || 'Could not reuse the credit report.' });
   }
 });
 
@@ -5108,38 +5169,30 @@ async function signOffGate(itemId, actor) {
   const isTitleContact = item.tool_key === 'title_contact' || code === 'rtl_p1_titlec';
   const isInsContact = item.tool_key === 'insurance_contact' || code === 'rtl_p1_insc';
 
-  // FLOOD CERTIFICATE on a FIDELIS file — signable with NOTHING attached, unless the
-  // property is in a known flood zone (owner-reported 2026-07-27: "I cannot sign off
-  // this condition even by mistake… if it was another program and then it changed to
-  // Fidelis, you should be able to sign it off without uploading anything").
-  //
-  // This is a LIVE check, deliberately not just the `is_required=false` flag db/337
-  // stamps at boot. The flag can only ever describe the file as it looked when the last
-  // deploy ran: a file registered Gold today gets the condition, and switching the note
-  // buyer to Fidelis tomorrow leaves a REQUIRED condition standing (the Condition Center
-  // retracts only UNTOUCHED items, and never rewrites is_required on one that already
-  // exists). That is exactly the file the owner was stuck on. Reading the note buyer and
-  // the flood determination at sign-off time makes the gate correct the moment the note
-  // buyer changes, with no deploy and no boot in between.
-  //
-  // The flood zone still wins: on a Fidelis file that IS in an SFHA the condition stays
-  // fully gated, per the owner's rule that a real flood zone forces it on. Never throws —
-  // a read failure falls through to the normal (stricter) gate.
-  if (code === 'rtl_cond_flood') {
+  // FLOOD CERTIFICATE: the Fidelis sign-off bypass that used to live here was
+  // REMOVED (owner-directed 2026-07-30: "the flood certification should be an
+  // internal condition for every single file no matter who the capital provider
+  // is" — reversing the 2026-07-27 Fidelis waiver; db/374 makes the template
+  // always-on for every file). The condition now goes through the ordinary
+  // document gate on every file; a super-admin override (db/344) remains the
+  // recorded way through when a certificate genuinely can't be obtained.
+
+  // THE SIGNED TERM SHEET is only signable once the FULLY EXECUTED DocuSign package
+  // has come back (owner-directed 2026-07-29: "you should not be able to sign it off
+  // till it's fully executed through the DocuSign system"). The unsigned term sheet
+  // from the last registration stays previewable/downloadable on the Products &
+  // Pricing condition at any time; this gate only governs SIGNING THIS condition
+  // off, so it can never be marked done on the strength of the unsigned copy. A
+  // super-admin override (db/344) can still clear it with a recorded reason.
+  if (code === 'rtl_cond_signedts') {
     try {
-      const f = (await db.query(
-        `SELECT a.lender,
-                EXISTS (SELECT 1 FROM appraisals ap
-                         WHERE ap.application_id = a.id AND ap.superseded = false
-                           AND (ap.fema_flood_sfha = true
-                                OR upper(coalesce(ap.fema_flood_zone,'')) ~ '^(A|V)'
-                                OR upper(coalesce(ap.flood_zone,'')) ~ '^(A|V)')) AS in_flood_zone
-           FROM applications a WHERE a.id = $1`, [item.application_id])).rows[0];
-      if (f && !f.in_flood_zone
-          && require('../lib/conditions/field-registry').isFidelisNoteBuyer(f.lender)) {
-        return null;
-      }
-    } catch (_) { /* fall through to the normal gate */ }
+      const done = (await db.query(
+        `SELECT 1 FROM esign_envelopes
+          WHERE application_id=$1 AND purpose='term_sheet_package' AND status='completed' LIMIT 1`,
+        [item.application_id])).rows[0];
+      if (!done) return 'The term sheet can only be signed off once the FULLY EXECUTED DocuSign package (borrower, loan officer and lender) has come back. Send the term-sheet package for signature and wait for it to complete — the unsigned copy on Products & Pricing is for preview only.';
+    } catch (_) { /* on a read error, fall through rather than hard-block */ }
+    return null;
   }
 
   // CONFIRM THE As-Is VALUE (owner-directed 2026-07-28). Two ways this condition lands on a file:
@@ -5256,8 +5309,32 @@ async function signOffGate(itemId, actor) {
       return null;
     }
     if (isAppraisalDocs) {
+      // "No XML available" waiver (owner-directed 2026-07-29): the XML requirement
+      // is lifted, the PDF is STILL required, and the ARV + As-Is must be on file
+      // (typed by hand — there is no XML to read them from). A transferred
+      // appraisal needs the transfer letter in the PDF slot; any other reason must
+      // have its policy exception APPROVED first.
+      const waiver = (await db.query(
+        `SELECT reason, requires_transfer_letter, exception_id FROM appraisal_xml_waivers WHERE application_id=$1`,
+        [item.application_id])).rows[0];
+      if (waiver) {
+        if (!hasSlot('pdf')) {
+          return waiver.requires_transfer_letter
+            ? 'Upload the appraisal TRANSFER LETTER (PDF) before signing off — a transferred appraisal still needs the transfer letter in the PDF slot.'
+            : 'Upload the appraisal report (PDF) before signing off — the XML is waived, but the PDF is still required.';
+        }
+        const av = (await db.query(`SELECT as_is_value, arv FROM applications WHERE id=$1`, [item.application_id])).rows[0] || {};
+        if (!(Number(av.as_is_value) > 0) || !(Number(av.arv) > 0))
+          return 'Enter the ARV and the As-Is value by hand before signing off — with no XML there is nothing to read them from (use “No XML available”).';
+        if (!waiver.requires_transfer_letter && waiver.exception_id) {
+          const ex = (await db.query(`SELECT status FROM loan_exceptions WHERE id=$1`, [waiver.exception_id])).rows[0];
+          if (!ex || ex.status !== 'approved')
+            return 'This “no appraisal XML” waiver is waiting for an admin to approve it on the Exceptions screen. It can be signed off once approved.';
+        }
+        return null;   // XML waived — PDF + hand-entered values (+ approval / transfer letter) satisfy it.
+      }
       if (!hasSlot('xml') || !hasSlot('pdf'))
-        return 'Upload BOTH the appraisal data file (XML) and the appraisal report (PDF) before signing off — this condition cannot be completed without both.';
+        return 'Upload BOTH the appraisal data file (XML) and the appraisal report (PDF) before signing off — this condition cannot be completed without both. If there is no XML, use “No XML available” on the condition.';
       // The XML must have actually IMPORTED. If PILOT could not read the dropped file as a valid
       // appraisal, no `appraisal_review_cleared` condition is ever materialized — and without it the
       // whole PILOT findings engine (the fatal-finding clear-to-close gate) is silently skipped for
@@ -5286,27 +5363,66 @@ async function signOffGate(itemId, actor) {
 
   // Appraisal review cleared / document-underwriting review cleared.
   //
-  // ADVISORY ONLY (owner-directed 2026-07-27): "it should not hold up signing off
-  // on any condition". These two conditions used to REFUSE the human's sign-off
-  // while any fatal PILOT finding was open — which is precisely the hold-up the
-  // owner asked to remove. PILOT still raises every finding, and the reviewer still
-  // sees them on the appraisal / Document Review desks; the sign-off is now the
-  // human's call. The DB backstops that enforced the same rule underneath (db/154,
-  // db/202) are retired by db/334, and db/155 no longer un-signs the appraisal
-  // review when a new fatal lands — otherwise the block would simply move.
+  // TWO DIFFERENT POSTURES — deliberately (both owner-directed):
   //
-  // `AI_FINDINGS_ENFORCE=1` restores the old behavior in one env change (and
-  // re-running db/154/155/202 re-arms the database half).
+  // • APPRAISAL review — ENFORCED (owner-directed 2026-07-30: "all the findings that you
+  //   find from the XML appraisal … that should be enforced and everything should need to
+  //   be signed off … you cannot clear this condition, you cannot get a CTC till you clear
+  //   the appraisal findings … until human entered / confirmed the as-is value"). Signing
+  //   it off requires BOTH: (1) zero open fatal appraisal findings, and (2) the As-Is value
+  //   confirmed — the "Confirm the As-Is value" condition completed (or never needed, when
+  //   PILOT read it confidently and the file already agreed) AND a real As-Is value on the
+  //   file. The deliberate way through remains the super-admin condition override (db/344).
+  //   Kill switch APPRAISAL_FINDINGS_ENFORCE=0 (advisory-policy.appraisalReviewEnforced).
+  //
+  // • DOCUMENT/UNDERWRITING review — still ADVISORY (owner-directed 2026-07-27: "it should
+  //   not hold up signing off on any condition"; the document-review desk is on hold). Only
+  //   AI_FINDINGS_ENFORCE=1 restores that gate.
+  //
+  // The DB reopen backstop for the appraisal half is re-armed by db/375 (a new fatal
+  // appraisal finding un-signs an already-cleared appraisal review). The old db/154
+  // satisfied-guard trigger stays retired ON PURPOSE: it cannot see the actor, so it would
+  // refuse the super-admin override's write — this app-layer gate composes with the
+  // override correctly, the trigger could not.
   if (isAppraisalReview || isUnderwritingReview) {
-    if (advisoryPolicy.advisoryOnly()) return null;
     if (isAppraisalReview) {
+      if (!advisoryPolicy.appraisalReviewEnforced() && advisoryPolicy.advisoryOnly()) return null;
       const n = (await db.query(
         `SELECT count(*)::int AS n FROM appraisal_findings
           WHERE application_id=$1 AND status='open' AND severity='fatal' AND blocks_ctc=true`, [item.application_id])).rows[0].n;
       if (n > 0)
-        return `Resolve the ${n} open fatal appraisal finding${n === 1 ? '' : 's'} first — the appraisal review cannot be cleared while a fatal PILOT finding is open. Open the appraisal to replace, keep, or grant an exception on each.`;
+        return `Resolve the ${n} open fatal appraisal finding${n === 1 ? '' : 's'} first — the appraisal review cannot be cleared while a fatal PILOT finding is open. Open the Appraisal section to replace, keep, or dismiss each one.`;
+      // The As-Is value must be settled before the appraisal review can be cleared
+      // (owner-directed 2026-07-30). Two checks, both needed: the "Confirm the As-Is
+      // value" condition (when it exists on the file) must be GENUINELY confirmed, and
+      // the file must actually carry an As-Is value.
+      //
+      // "Genuinely confirmed" = a human SIGNED IT OFF (signed_off_at set, not merely
+      // waived) OR a super-admin OVERRODE it (override_at set — a recorded decision with
+      // a reason). Making the confirm condition OPTIONAL, or plain-WAIVING it, does NOT
+      // count — that was the two-click bypass the post-merge audit found (finding #1):
+      // an underwriter flips appraisal_as_is_verify to optional (or waives it) and the
+      // As-Is — which PILOT may have AUTO-WRITTEN and nobody read — is treated as
+      // confirmed. The owner's rule is "human entered / confirmed the as-is value", so
+      // is_required and a plain waive are deliberately NOT exclusions here.
+      const asis = (await db.query(
+        `SELECT (SELECT a.as_is_value FROM applications a WHERE a.id=$1) AS as_is_value,
+                EXISTS (
+                  SELECT 1 FROM checklist_items ci JOIN checklist_templates t ON t.id=ci.template_id
+                   WHERE ci.application_id=$1 AND t.code='appraisal_as_is_verify'
+                     AND NOT (
+                       (ci.signed_off_at IS NOT NULL AND ci.waived_at IS NULL)  -- a genuine human sign-off
+                       OR ci.override_at IS NOT NULL                            -- a recorded super-admin override
+                     )
+                ) AS as_is_open`, [item.application_id])).rows[0] || {};
+      if (asis.as_is_open)
+        return 'Confirm the As-Is value first — the "Confirm the As-Is value on the appraisal" condition on this file is still open. Read the value off the report, enter or confirm it there, and sign that condition off; then the appraisal review can be cleared.';
+      const v = asis.as_is_value == null ? null : Number(asis.as_is_value);
+      if (v == null || !Number.isFinite(v) || v <= 0)
+        return 'Enter the As-Is value before clearing the appraisal review — the file has no As-Is value yet. Read it off the appraisal and enter it on the "Confirm the As-Is value" condition.';
       return null;
     }
+    if (advisoryPolicy.advisoryOnly()) return null;
     const { fileFatalCount } = require('../lib/underwriting/file-review');
     const { total } = await fileFatalCount(db, item.application_id);
     if (total > 0)
@@ -5491,6 +5607,16 @@ router.patch('/checklist/:itemId', async (req, res) => {
     // have to be made optional first (that detour edited the file's requirements to
     // clear one item — the override records the decision instead).
     if (!ovr.requested && !isApprCard && cur.rows[0].is_required !== false) return res.status(422).json({ error: 'Only an optional condition can be waived — make it optional first, then waive.' });
+    // THE APPRAISAL REVIEW CANNOT BE WAIVED AROUND ITS GATE (owner-directed 2026-07-30;
+    // pre-merge audit F3). "Make it optional, then waive" would clear appraisal_review_cleared
+    // with open fatal findings / an unconfirmed As-Is and NO recorded override — exactly the
+    // bypass the enforcement forbids. So a plain waive of this ONE condition runs the same
+    // fulfillment gate as a sign-off, whatever its is_required flag says; the super-admin
+    // override (adminOverride:true + a reason) remains the recorded way through.
+    if (!ovr.requested && cur.rows[0].template_code === 'appraisal_review_cleared') {
+      const gate = await signOffGate(req.params.itemId, req.actor);
+      if (gate) return res.status(422).json({ error: gate });
+    }
   }
   // Push-back / reject / reopen: send a condition back to the borrower with a
   // BORROWER-VISIBLE reason (owner-directed 2026-07-12, LOS-grade management). One
@@ -5541,6 +5667,29 @@ router.patch('/checklist/:itemId', async (req, res) => {
   // Requirement toggle — e.g. the LLC's Certificate of Good Standing is
   // optional by default; the officer/processor can flip it to required (it
   // then gates the entity's verification) and back.
+  //
+  // BUT the enforced appraisal review — AND its As-Is confirm prerequisite — may NOT
+  // be made optional to slip past the gate (owner-directed 2026-07-30; pre-merge
+  // finding #1 for the review, POST-merge finding #1 for the confirm condition).
+  // Flipping to optional was the shorter half of the "make it optional, then clear it"
+  // manoeuvre: on `appraisal_review_cleared` it drops the row out of advancementBlockers;
+  // on `appraisal_as_is_verify` it made the review's As-Is check read "confirmed" for an
+  // As-Is PILOT may have auto-written and nobody read. `advancementBlockers` and the
+  // review gate now ignore the is_required/waived state of these codes while enforced
+  // (so a stale optional/waived row still gates), and this refuses the toggle at the
+  // door so the reason is visible. The super-admin override (db/344) is the recorded
+  // way through both.
+  const APPRAISAL_ENFORCED_CODES = ['appraisal_review_cleared', 'appraisal_as_is_verify'];
+  if (b.isRequired === false && !ovr.requested) {
+    const tc = (await db.query(
+      `SELECT t.code FROM checklist_items ci LEFT JOIN checklist_templates t ON t.id=ci.template_id WHERE ci.id=$1`,
+      [req.params.itemId])).rows[0];
+    if (tc && APPRAISAL_ENFORCED_CODES.includes(tc.code) && advisoryPolicy.appraisalReviewEnforced()) {
+      return res.status(422).json({ error: tc.code === 'appraisal_as_is_verify'
+        ? 'The "Confirm the As-Is value" condition cannot be made optional — read the As-Is off the appraisal and sign it off, or use a super-admin override to clear it with a recorded reason.'
+        : 'The appraisal review cannot be made optional — clear the appraisal findings and confirm the As-Is value to sign it off, or use a super-admin override to clear it with a recorded reason.' });
+    }
+  }
   if (typeof b.isRequired === 'boolean') add('is_required=?', b.isRequired);
 
   // Sign-off marks the item satisfied and stamps who/when; un-sign clears it.
@@ -5939,6 +6088,108 @@ router.get('/applications/:id/appraisal-card', async (req, res) => {
     });
   } catch (e) { res.status(500).json({ error: 'server error' }); }
 });
+// ---- Appraisal "no XML available" waiver (owner-directed 2026-07-29) ----------
+// The appraisal-documents condition needs an XML data file + a PDF report + a
+// successful MISMO import. Sometimes there is NO XML (a transferred appraisal, a
+// desk/manual appraisal, an appraiser who won't send the data file). This lets a
+// reviewer waive ONLY the XML — the PDF stays required — after typing the ARV +
+// As-Is by hand. A TRANSFERRED appraisal auto-waives and asks for a transfer
+// letter PDF (no exception); any other reason needs a note and opens a policy
+// exception for an admin to approve.
+const APPRAISAL_XML_WAIVE_REASONS = { transferred_appraisal: 1, appraiser_no_xml: 1, desk_or_manual: 1, other: 1 };
+
+router.get('/applications/:id/appraisal-xml-waiver', async (req, res) => {
+  if (!(await canTouchApp(req, req.params.id))) return res.status(403).json({ error: 'forbidden' });
+  try {
+    const w = (await db.query(`SELECT * FROM appraisal_xml_waivers WHERE application_id=$1`, [req.params.id])).rows[0] || null;
+    let exception = null;
+    if (w && w.exception_id) {
+      exception = (await db.query(
+        `SELECT id, status, reason_code, reason_note, exception_seq, decided_at FROM loan_exceptions WHERE id=$1`,
+        [w.exception_id])).rows[0] || null;
+    }
+    res.json({ waiver: w, exception });
+  } catch (e) { res.status(500).json({ error: 'server error' }); }
+});
+
+router.post('/applications/:id/appraisal-xml-waiver', async (req, res) => {
+  if (!(await canTouchApp(req, req.params.id))) return res.status(403).json({ error: 'forbidden' });
+  const b = req.body || {};
+  const reason = String(b.reason || '').trim();
+  if (!APPRAISAL_XML_WAIVE_REASONS[reason]) return res.status(400).json({ error: 'Pick a reason for waiving the appraisal XML.' });
+  const isTransfer = reason === 'transferred_appraisal';
+  const note = b.note ? String(b.note).slice(0, 2000) : null;
+  if (!isTransfer && !note) return res.status(400).json({ error: 'Add a short note explaining why there is no XML — it goes to an admin for an exception.' });
+  const app = (await db.query(`SELECT id, borrower_id FROM applications WHERE id=$1 AND deleted_at IS NULL`, [req.params.id])).rows[0];
+  if (!app) return res.status(404).json({ error: 'not found' });
+
+  // The values usually read off the XML must be entered by hand. Reuse the shared
+  // human-entry writers — they validate, respect the file freeze, write onto the
+  // file (reopening Products & Pricing), stamp + audit. Set As-Is first so the
+  // ARV-above-As-Is check runs against it.
+  const desk = require('../lib/appraisal/as-is-desk');
+  const asIsRes = await desk.setAsIsByHuman(req.params.id, b.asIs, { actorId: req.actor.id, actor: req.actor, note: 'No-XML appraisal waiver' });
+  if (!asIsRes.ok) return res.status(asIsRes.status || 400).json({ error: asIsRes.error });
+  const arvRes = await desk.setArvByHuman(req.params.id, b.arv, { actorId: req.actor.id, actor: req.actor, note: 'No-XML appraisal waiver' });
+  if (!arvRes.ok) return res.status(arvRes.status || 400).json({ error: arvRes.error });
+
+  const LE = require('../lib/loan-exceptions');
+  const client = await db.getClient();
+  let exceptionRow = null;
+  try {
+    await client.query('BEGIN');
+    if (!isTransfer) {
+      exceptionRow = await LE.requestAppraisalXmlWaiver(client, {
+        appId: req.params.id, reasonCode: reason, reasonNote: note, requestedBy: req.actor.id,
+      });
+    }
+    await client.query(
+      `INSERT INTO appraisal_xml_waivers
+         (application_id, reason, note, arv, as_is_value, requires_transfer_letter, exception_id, waived_by, updated_at)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8, now())
+       ON CONFLICT (application_id) DO UPDATE SET
+         reason=$2, note=$3, arv=$4, as_is_value=$5, requires_transfer_letter=$6, exception_id=$7, waived_by=$8, updated_at=now()`,
+      [req.params.id, reason, note, arvRes.value, asIsRes.value, isTransfer, exceptionRow ? exceptionRow.id : null, req.actor.id]);
+    // Nudge the appraisal-docs condition so it reads "in progress", not outstanding.
+    await client.query(
+      `UPDATE checklist_items SET status=CASE WHEN status='outstanding' THEN 'received' ELSE status END, updated_at=now()
+        WHERE application_id=$1 AND template_id IN (SELECT id FROM checklist_templates WHERE code='rtl_cond_appraisaldocs')`,
+      [req.params.id]);
+    await client.query('COMMIT');
+  } catch (e) {
+    try { await client.query('ROLLBACK'); } catch (_) {}
+    return res.status(500).json({ error: 'could not save the waiver' });
+  } finally { client.release(); }
+
+  await audit(req, 'appraisal_xml_waiver', 'application', req.params.id,
+    { reason, exceptionId: exceptionRow ? exceptionRow.id : null, arv: arvRes.value, asIs: asIsRes.value });
+  if (exceptionRow) {
+    try {
+      const ctx = await notify.fileContext(req.params.id);
+      await notify.notifyAdmins({
+        type: 'appraisal_xml_waiver', title: 'Appraisal with no XML — waiver needs approval',
+        body: `An appraisal was submitted with no XML data file${ctx ? ` on ${ctx.label}` : ''} (reason: ${reason.replace(/_/g, ' ')}). Approve or deny it on the Exceptions screen.`,
+        applicationId: req.params.id, link: `/internal/exceptions?app=${req.params.id}`,
+        meta: ctx ? ctx.meta : undefined,
+      });
+    } catch (_) { /* best-effort */ }
+  }
+  res.json({ ok: true, requiresTransferLetter: isTransfer, exception: exceptionRow ? { id: exceptionRow.id, status: exceptionRow.status } : null });
+});
+
+router.delete('/applications/:id/appraisal-xml-waiver', async (req, res) => {
+  if (!(await canTouchApp(req, req.params.id))) return res.status(403).json({ error: 'forbidden' });
+  try {
+    const w = (await db.query(`SELECT exception_id FROM appraisal_xml_waivers WHERE application_id=$1`, [req.params.id])).rows[0];
+    if (w && w.exception_id) {
+      try { await require('../lib/loan-exceptions').withdrawException(w.exception_id, req.actor.id); } catch (_) {}
+    }
+    await db.query(`DELETE FROM appraisal_xml_waivers WHERE application_id=$1`, [req.params.id]);
+    await audit(req, 'appraisal_xml_waiver_removed', 'application', req.params.id, {});
+    res.json({ ok: true });
+  } catch (e) { res.status(500).json({ error: 'server error' }); }
+});
+
 // #107: the LO / processor / admin can ENTER the appraisal payment card on the
 // borrower's behalf (some borrowers give it over the phone). Same validation +
 // at-rest encryption + condition completion as the borrower route, through the
@@ -5969,31 +6220,38 @@ router.get('/borrowers/search', async (req, res) => {
   try {
     const q = String(req.query.q || '').trim();
     if (q.length < 2) return res.json([]);
-    const params = ['%' + q + '%'];
-    let scope = '';
-    if (!seesAll(req)) {
-      params.push(req.actor.id);
-      scope = `AND ${VISIBLE_BORROWER_SQL('b', '$2')}`;
-    }
-    // Matching on EMAIL too (owner-directed 2026-07-26): the typeahead is what
-    // stops a second profile being typed for someone we already have, and an
-    // officer very often starts from the borrower's email rather than a name
-    // whose spelling varies ("Leib"/"Leibish"/"Leon"). `prior_files` counts the
-    // person's loan files; `other_deals` counts their non-RTL ClickUp cards, so
-    // a DSCR-only client no longer looks brand new.
+    // The new-file typeahead is what lets a staffer SELECT an existing borrower and
+    // is the one thing that stops a duplicate profile being typed. It must find any
+    // existing borrower, not only the ones already in the searcher's book (owner-
+    // reported 2026-07-29: "they should be able to select who they're starting a
+    // new file for"). Origination legitimately opens a file for anyone; this returns
+    // only name/email/phone to internal staff, and every later SSN reveal / document
+    // read stays separately authorized + audited. The searcher's OWN borrowers rank
+    // first so their book stays at the top.
+    const params = ['%' + q + '%', req.actor.id];
+    // Matching on EMAIL too (owner-directed 2026-07-26): an officer very often starts
+    // from the borrower's email rather than a name whose spelling varies. Tokenized
+    // AND-match so "John Smith" still finds "John Michael Smith" (a stored middle
+    // name would otherwise drop the row the moment the last name is typed).
+    const tokens = q.split(/\s+/).filter((t) => t.length >= 2).slice(0, 4);
+    const tokenClauses = tokens.map((_, i) => {
+      const p = params.length + 1; params.push('%' + tokens[i] + '%');
+      return `(b.first_name ILIKE $${p} OR b.last_name ILIKE $${p} OR NULLIF(b.full_name,'') ILIKE $${p})`;
+    });
+    const nameMatch = tokens.length
+      ? `(${tokenClauses.join(' AND ')})`
+      : `(b.first_name ILIKE $1 OR b.last_name ILIKE $1 OR NULLIF(b.full_name,'') ILIKE $1)`;
     const r = await db.query(
       `SELECT b.id, b.first_name, b.last_name, b.email, b.cell_phone,
               (SELECT count(*)::int FROM applications
                  WHERE borrower_id=b.id AND deleted_at IS NULL) AS prior_files,
               (SELECT count(*)::int FROM clickup_task_index t
-                 WHERE t.borrower_id=b.id AND t.kind='data_only') AS other_deals
+                 WHERE t.borrower_id=b.id AND t.kind='data_only') AS other_deals,
+              (${VISIBLE_BORROWER_SQL('b', '$2')}) AS mine
          FROM borrowers b
-        WHERE (b.first_name ILIKE $1 OR b.last_name ILIKE $1
-               OR NULLIF(b.full_name,'') ILIKE $1
-               OR COALESCE(b.email,'') ILIKE $1)
-          ${scope}
-        ORDER BY b.last_name, b.first_name
-        LIMIT 10`, params);
+        WHERE (${nameMatch} OR COALESCE(b.email,'') ILIKE $1)
+        ORDER BY mine DESC, b.last_name, b.first_name
+        LIMIT 12`, params);
     res.json(r.rows);
   } catch (e) { res.status(500).json({ error: 'server error' }); }
 });
@@ -6486,6 +6744,26 @@ router.get('/borrowers/:id/conditions', async (req, res) => {
           AND c.status IN ('open','borrower_responded') ${scope}
         ORDER BY c.created_at DESC`, params);
     res.json(r.rows);
+  } catch (e) { console.warn('[staff] handler error:', db.describeError(e)); res.status(500).json({ error: 'server error' }); }
+});
+
+// Every credit report ON THE BORROWER'S PROFILE (across all their files), newest
+// first, with a per-report freshness flag. This is the person's credit history —
+// a report pulled on one file is the borrower's and shows on every file for them
+// (owner-directed #16). `latest`/`fresh` summarise the most recent one within the
+// 120-day window (the reusable-without-a-new-inquiry report).
+router.get('/borrowers/:id/credit', async (req, res) => {
+  try {
+    if (!(await canSeeBorrower(req))) return res.status(403).json({ error: 'forbidden' });
+    const credit = require('../lib/credit');
+    const reports = await credit.borrowerCreditReports(req.params.id);
+    const fresh = reports.find((r) => r.status === 'completed' && r.fresh) || null;
+    res.json({
+      reports,
+      latest: reports[0] || null,
+      fresh,   // the most-recent completed report still inside 120 days (reusable)
+      freshDays: 120,
+    });
   } catch (e) { console.warn('[staff] handler error:', db.describeError(e)); res.status(500).json({ error: 'server error' }); }
 });
 
@@ -7649,6 +7927,15 @@ const AI_BLOCKER_SOURCES = new Set(['ai_suggestion', 'ai_advisory']);
 // The two checklist conditions whose ONLY job is to record "PILOT's findings are
 // cleared" (db/137, db/200). In advisory mode they are shown but never gate.
 const AI_REVIEW_CONDITION_CODES = ['appraisal_review_cleared', 'underwriting_review_cleared'];
+// The four conditions that are really internal WORKFLOW STEPS (LTC/LTV/ARV checked
+// against guidelines + interest reserves). The client HIDES these from the
+// conditions list (`app-v2/src/lib/condition-workflow-steps.js`); this list is the
+// server's twin so the readiness / "Go fix" aggregator stops counting them as
+// outstanding — otherwise a hidden row shows as a "Go fix →" item that lands on a
+// conditions hub that filtered it out. Kept in sync by
+// `scripts/test-workflow-step-codes-parity.js`. They are always excluded (not
+// gated behind AI_FINDINGS_ENFORCE): they are workflow, not a finding.
+const { WORKFLOW_STEP_CODES } = require('../lib/conditions/workflow-step-codes');
 const CLOSING_STAGE_CATEGORIES = ['prior_to_closing', 'prior_to_funding', 'at_closing', 'post_closing'];
 const SEV_LABEL = { standard: 'Standard', prior_to_docs: 'Prior to docs', prior_to_funding: 'Prior to funding', post_closing: 'Post-closing' };
 // Which file SECTION resolves a given blocker — so the "clear to close"
@@ -7696,6 +7983,23 @@ function decorateBlocker(row, kind) {
 }
 async function advancementBlockers(appId, target) {
   const sevs = target === 'funded' ? FUND_SEVERITIES : CTC_SEVERITIES;
+  // Which of the two PILOT-review conditions are ADVISORY (kept out of the blocking
+  // list, returned under `advisories`). The APPRAISAL review is ENFORCED by default
+  // (owner-directed 2026-07-30: "you cannot get a CTC till you clear the appraisal
+  // findings") so it stays a REAL blocker; the document/underwriting review stays
+  // advisory under the 2026-07-27 rule. See advisory-policy.appraisalReviewEnforced.
+  const advisoryReviewCodes = advisoryPolicy.appraisalReviewEnforced()
+    ? AI_REVIEW_CONDITION_CODES.filter((c) => c !== 'appraisal_review_cleared')
+    : AI_REVIEW_CONDITION_CODES;
+  // The enforced appraisal review blocks clear-to-close REGARDLESS of its is_required
+  // flag (owner-directed 2026-07-30; pre-merge re-audit finding #1). Without this, the
+  // shorter half of the waive bypass — flipping the condition to "optional" — drops it
+  // out of the blocking query below (which filters `is_required = true`) and lets a file
+  // with open fatal appraisal findings reach clear-to-close with no recorded override.
+  // So it is exempt from the required-filter while enforced; making it optional no longer
+  // removes it. (The `is_required=false` toggle is ALSO refused on this code at the write
+  // door for a clear error — belt and suspenders.)
+  const requiredExemptCodes = advisoryPolicy.appraisalReviewEnforced() ? ['appraisal_review_cleared'] : [];
   const conds = await db.query(
     `SELECT id, COALESCE(borrower_title, title) AS title, severity, audience
        FROM conditions
@@ -7720,27 +8024,31 @@ async function advancementBlockers(appId, target) {
        LEFT JOIN checklist_templates t ON t.id = ci.template_id
       WHERE ci.application_id=$1
         AND ci.item_kind IN ('document','condition')
-        AND COALESCE(ci.is_required, true) = true
+        AND (COALESCE(ci.is_required, true) = true OR COALESCE(t.code,'') = ANY($7::text[]))
         AND COALESCE(ci.is_gate, false) = false
         AND NOT (ci.signed_off_at IS NOT NULL OR ci.status='satisfied')
         AND ($3::boolean = false
              OR COALESCE(NULLIF(ci.category,''), t.category) IS NULL
              OR COALESCE(NULLIF(ci.category,''), t.category) <> ALL($2::text[]))
-        -- The two PILOT-REVIEW conditions exist for one purpose: to say "PILOT's
-        -- findings are cleared". Leaving them in the blocking list while making the
-        -- findings advisory would just move the hold-up behind a proxy — the file
-        -- would still read "not ready" and still refuse clear-to-close because of
-        -- the AI section (owner-directed 2026-07-27: "it should not say that it's
-        -- an outstanding thing before CTC"). They stay ON the file, stay signable,
-        -- and are returned under "advisories"; they simply don't gate. Re-armed by
-        -- AI_FINDINGS_ENFORCE=1.
+        -- The PILOT-REVIEW conditions: the DOCUMENT review stays advisory (owner-directed
+        -- 2026-07-27) and is excluded here so it never gates behind a proxy; the APPRAISAL
+        -- review is ENFORCED (owner-directed 2026-07-30) and is NOT in $5, so it stays a
+        -- real blocker — no clear-to-close until it is signed off. Re-armed fully by
+        -- AI_FINDINGS_ENFORCE=1 ($4 false → nothing excluded).
         AND ($4::boolean = false OR COALESCE(t.code,'') <> ALL($5::text[]))
+        -- The four internal WORKFLOW STEPS (LTC/LTV/ARV checked + interest reserves)
+        -- are hidden from the conditions list on the client. Exclude them here too so
+        -- the readiness / "Go fix" aggregator and the conditions hub agree — otherwise
+        -- a hidden row shows as outstanding with a "Go fix →" that leads nowhere.
+        -- Always excluded (they are workflow, not a finding — not AI_FINDINGS_ENFORCE-gated).
+        AND COALESCE(t.code,'') <> ALL($6::text[])
       ORDER BY ci.sort_order, ci.created_at`,
     [appId, CLOSING_STAGE_CATEGORIES, excludeClosingStage,
-     advisoryPolicy.advisoryOnly(), AI_REVIEW_CONDITION_CODES]);
-  // The same two conditions, pulled separately so they can be SHOWN (as advisory)
-  // rather than silently vanish off the readiness view.
-  const aiReviewConds = advisoryPolicy.advisoryOnly() ? (await db.query(
+     advisoryPolicy.advisoryOnly(), advisoryReviewCodes, WORKFLOW_STEP_CODES, requiredExemptCodes]);
+  // The still-advisory review condition(s), pulled separately so they can be SHOWN
+  // (as advisory) rather than silently vanish off the readiness view. The enforced
+  // appraisal review is NOT in this list — it rides the blocking query above.
+  const aiReviewConds = (advisoryPolicy.advisoryOnly() && advisoryReviewCodes.length) ? (await db.query(
     `SELECT ci.id, COALESCE(ci.label, ci.borrower_label, 'Condition') AS title,
             ci.tool_key, t.code AS template_code, ci.audience, ci.status, ci.hint
        FROM checklist_items ci
@@ -7748,7 +8056,7 @@ async function advancementBlockers(appId, target) {
       WHERE ci.application_id=$1
         AND t.code = ANY($2::text[])
         AND NOT (ci.signed_off_at IS NOT NULL OR ci.status='satisfied')
-      ORDER BY ci.sort_order, ci.created_at`, [appId, AI_REVIEW_CONDITION_CODES])).rows
+      ORDER BY ci.sort_order, ci.created_at`, [appId, advisoryReviewCodes])).rows
     .map((r) => ({ ...r, source: 'ai_advisory', advisory: true, section: 'sec-underwriting',
       reason: 'PILOT’s review of the file. Worth a look before closing — it does not hold up clear-to-close, and you can sign it off whenever you’re satisfied.' }))
     : [];
@@ -8010,6 +8318,16 @@ router.patch('/applications/:id/details', async (req, res) => {
     if (Object.keys(changes).length) {
       try { conditions = await conditionEngine.evaluateApplication(req.params.id, { actor: req.actor, reason: 'details_edited' }); }
       catch (_) { /* best-effort */ }
+      // A note-buyer (lender) change through THIS door must also re-evaluate the note-buyer
+      // APPRAISAL checks (EMCAP — owner 2026-07-30), like completeFields and the ClickUp
+      // ingest do — otherwise a file moved off EMCAP here keeps its fatal EMCAP findings
+      // (and a file moved onto it raises none) until some other door touches the lender
+      // (pre-merge audit F4). Cheap no-op for every other field/buyer. Best-effort.
+      // The EMCAP rental check derives its strategy from program/loan_type/rehab_type too, all
+      // editable through this door — so re-sync on any of those, not just lender (re-audit #3).
+      if (['lender', 'program', 'loan_type', 'rehab_type'].some((k) => k in changes || k in b)) {
+        try { await require('../lib/appraisal/note-buyer-checks').syncNoteBuyerFindings(db, req.params.id); } catch (_) {}
+      }
       // Loan Digital Twin (Sovereign 1/4): the same-write also feeds the twin so
       // the LOS-side value shows up as an observation next to any document-sourced
       // observations for the same fact. Best-effort.
@@ -8445,6 +8763,12 @@ async function completeFields(req, res, borrowerScoped) {
       // needs 2 vs Standard 1) — re-derive it now so the condition doesn't keep showing the old
       // count until the next re-register (owner 2026-07-27). Best-effort; never blocks the save.
       try { await require('../lib/liquidity').resyncLiquidityForFile(req.params.id); } catch (_) {}
+      // A note-buyer change also re-evaluates the note-buyer APPRAISAL checks (EMCAP — owner
+      // 2026-07-30): switching a file with an imported appraisal onto EMCAP raises the buyer's
+      // appraisal findings; switching away retires them. Cheap no-op for every other field/buyer.
+      if (appKeys.some((k) => ['lender', 'program', 'loan_type', 'rehab_type'].includes(k))) {
+        try { await require('../lib/appraisal/note-buyer-checks').syncNoteBuyerFindings(db, req.params.id); } catch (_) {}
+      }
       // Loan Digital Twin (Sovereign 1/4, owner-directed 2026-07-21): every LOS
       // field write is a fresh observation of the underlying canonical facts
       // (loan.amount, property.address, etc.). Feeds the twin so the completeness
@@ -10644,7 +10968,14 @@ router.post('/applications/:id/documents', async (req, res) => {
   const maxBytes = cfg.maxUploadMb * 1024 * 1024;
   if (buf.length > maxBytes) return res.status(413).json({ error: `file too large (max ${cfg.maxUploadMb} MB)` });
   const docKind = b.docKind === 'term_sheet' ? 'term_sheet' : null;
-  const slot = b.slot ? String(b.slot).trim().slice(0, 80) : null;
+  let slot = b.slot ? String(b.slot).trim().slice(0, 80) : null;
+  // Every slot keeps every document. On a plain ADD (not an explicit replace),
+  // if the slot label collides with a document already on the item, make it
+  // unique so the two never display under one identical label — a fixed slot
+  // becomes "Insurance binder (2)", a free-form add "Document 3", etc.
+  if (slot && b.checklistItemId && !b.replaceDocumentId) {
+    slot = await require('../lib/slot-label').uniqueSlotLabel(b.checklistItemId, slot);
+  }
   const dupApp = await require('../lib/doc-dedup').recentDuplicateDocId({   // idempotency (#87)
     filename: b.filename, sizeBytes: buf.length, uploadedByKind: 'staff', uploadedById: req.actor.id,
     applicationId: llcId ? null : req.params.id, checklistItemId: b.checklistItemId || null,
@@ -10672,8 +11003,17 @@ router.post('/applications/:id/documents', async (req, res) => {
       [req.params.id, r.rows[0].id]);
   }
   if (b.checklistItemId) {
-    // Mirror the borrower upload rules: replacing a document (or re-filling a
-    // slot) supersedes only that slot's versions; other slots coexist.
+    // EVERY document slot keeps EVERY document (owner-directed): a plain ADD never
+    // deletes what's already there. Only an EXPLICIT replace (the user clicked
+    // "Replace" on one document, sending replaceDocumentId) supersedes — and it
+    // supersedes ONLY that one document, never its siblings or the whole slot.
+    //
+    // This fixes the "upload a 2nd document and the 1st disappears" bug at its
+    // root: the old blanket supersede matched every current document on the
+    // condition whenever the slot label was null or collided (a free-form add) and
+    // matched the same-labelled document on a fixed slot (appraisal xml/pdf,
+    // insurance binder/invoice), so a second upload wiped the first. Now a fixed
+    // slot accumulates just like a free-form one, and nothing is ever lost on add.
     if (b.replaceDocumentId) {
       await db.query(
         `UPDATE documents SET is_current=false,
@@ -10681,14 +11021,6 @@ router.post('/applications/:id/documents', async (req, res) => {
           WHERE id=$1 AND checklist_item_id=$2`,
         [b.replaceDocumentId, b.checklistItemId]);
     }
-    await db.query(
-      `UPDATE documents SET is_current=false,
-          review_status=CASE WHEN review_status IN ('pending','rejected') THEN 'superseded' ELSE review_status END
-        WHERE checklist_item_id=$1 AND id<>$2 AND is_current=true
-          AND COALESCE(doc_kind,'') <> 'track_record_doc'
-          AND ($3::text IS NOT NULL OR $4::uuid IS NULL)
-          AND ($3::text IS NULL OR slot_label IS NOT DISTINCT FROM $3)`,
-      [b.checklistItemId, r.rows[0].id, slot, b.replaceDocumentId || null]);
     // A superseding upload replaces the reviewed evidence with a new UNREVIEWED
     // file, so a prior sign-off no longer matches what's on the item — drop it so
     // the new version is re-reviewed before the file can clear-to-close.
@@ -11169,6 +11501,45 @@ router.get('/documents/:id/download', async (req, res) => {
     if (!(await canSeeDocument(req, doc))) return res.status(403).json({ error: 'forbidden' });
     await audit(req, 'download_document', 'document', doc.id);
     return serveDocument(res, doc, { inline: req.query.inline === '1' });
+  } catch (e) { res.status(500).json({ error: 'server error' }); }
+});
+
+// Read the text off a document with OCR so the in-viewer search can find text in
+// a SCANNED (image-only) PDF (owner-directed 2026-07-29: "when the document is
+// not a searchable document try to attach OCR for them to be able to search text
+// within the document"). User-initiated from the preview's Find bar. Returns
+// per-page recognized text; the client searches it and jumps to the page.
+//
+// Reuses the existing multi-engine OCR router (Azure → Google → Mistral). It is
+// env-gated: with no engine configured it returns a shaped {ok:false} the UI
+// explains, never a 500. Never mutates the document or the file.
+router.post('/documents/:id/ocr', async (req, res) => {
+  try {
+    const r = await db.query(
+      `SELECT id,filename,content_type,storage_ref,size_bytes,application_id,borrower_id,llc_id FROM documents WHERE id=$1`,
+      [req.params.id]);
+    const doc = r.rows[0];
+    if (!doc) return res.status(404).json({ error: 'not found' });
+    if (!(await canSeeDocument(req, doc))) return res.status(403).json({ error: 'forbidden' });
+    const ocr = require('../lib/ai/ocr-router');
+    if (!ocr.configured()) return res.json({ ok: false, reason: 'ocr_not_configured' });
+    let buf;
+    try { buf = await storage.read(doc.storage_ref); }
+    catch (_) { return res.json({ ok: false, reason: 'read_failed' }); }
+    if (!buf || !buf.length) return res.json({ ok: false, reason: 'read_failed' });
+    const out = await ocr.read({ buffer: buf, mimeType: doc.content_type || 'application/pdf' });
+    if (!out || !out.ok) return res.json({ ok: false, reason: (out && out.reason) || 'ocr_failed' });
+    // Prefer per-page text; fall back to the whole-document text on page 1 when an
+    // engine doesn't segment pages (so search still finds it and jumps to page 1).
+    let pages = [];
+    if (Array.isArray(out.pages) && out.pages.some((p) => p && typeof p.text === 'string' && p.text.trim())) {
+      pages = out.pages.map((p, i) => ({ page: Number(p && p.pageNumber) || (i + 1), text: String((p && p.text) || '') }));
+    } else if (out.text && String(out.text).trim()) {
+      pages = [{ page: 1, text: String(out.text) }];
+    }
+    if (!pages.length) return res.json({ ok: false, reason: 'no_text' });
+    await audit(req, 'ocr_document', 'document', doc.id, { engine: out.engine || null, pageCount: pages.length });
+    return res.json({ ok: true, pages, engine: out.engine || null, pageCount: out.pageCount || pages.length });
   } catch (e) { res.status(500).json({ error: 'server error' }); }
 });
 
@@ -12620,3 +12991,6 @@ module.exports.assembleDrawEventRows = assembleDrawEventRows;
 // exported for the IG-W8 test: closing-stage conditions (title/insurance/ISKA) hold
 // funding but NOT clear-to-close.
 module.exports.advancementBlockers = advancementBlockers;
+// exported for the appraisal-enforcement test (owner-directed 2026-07-30): the
+// appraisal-review sign-off gate is enforced again and must be provable directly.
+module.exports.signOffGate = signOffGate;

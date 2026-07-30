@@ -2,6 +2,7 @@ import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { api } from '../lib/api.js';
 import { fullNameOf } from '../lib/personName.js';
+import { fmtDate } from '../lib/dates.js';
 
 /* THE PURCHASING DESK (owner-directed 2026-07-26).
 
@@ -12,7 +13,7 @@ import { fullNameOf } from '../lib/personName.js';
    missing"), and keep a task list. Admins + closers hold `manage_purchasing`. */
 
 const addrLine = (a) => !a ? '' : (a.oneLine || [a.line1 || a.street, a.city, a.state].filter(Boolean).join(', ') || '');
-const day = (v) => (v ? String(v).slice(0, 10) : '—');
+const day = (v) => fmtDate(v);   // MM/DD/YYYY (industry standard), shift-free
 function fileToBase64(file) {
   return new Promise((resolve, reject) => {
     const r = new FileReader();

@@ -1084,11 +1084,11 @@
     // like the on-screen panel and the PDF (audit 2026-07-19 — Excel was the only
     // surface that folded the fee into the total without naming it).
     if (stdOk && d.extraFees && d.extraFees.length) {
-      var si = std.findIndex(function (r) { return r[0] === "Estimated cash to close"; });
+      var si = std.findIndex(function (r) { return r && r[0] === "Estimated cash to close"; });
       if (si > -1) Array.prototype.splice.apply(std, [si, 0].concat(d.extraFees.map(function (f) { return [f.name, money2(f.amount)]; })));
     }
     if (gd && !gd.unavailable && gOk && gd.extraFees && gd.extraFees.length) {
-      var gi = gold.findIndex(function (r) { return r[0] === "Estimated cash to close"; });
+      var gi = gold.findIndex(function (r) { return r && r[0] === "Estimated cash to close"; });
       if (gi > -1) Array.prototype.splice.apply(gold, [gi, 0].concat(gd.extraFees.map(function (f) { return [f.name, money2(f.amount)]; })));
     }
     // Some rows are conditional (min-interest, deferred fee) and come through as

@@ -120,6 +120,10 @@ async function loadRuleContext(appId) {
     // flood-certificate condition off a Fidelis file (db/335) UNLESS `in_flood_zone`
     // proves a flood zone — that branch stands on its own and forces the cert on.
     note_buyer_is_fidelis: registry.isFidelisNoteBuyer(a.lender),
+    // Same boolean companion for EMCAP (the Silver program's note buyer) — its real
+    // ClickUp/Sitewire label "EMCAP Financial" normalizes to 'emcapfinancial', so an
+    // enum `note_buyer eq emcap` rule would never fire on a correctly-labeled file.
+    note_buyer_is_emcap: registry.isEmcapNoteBuyer(a.lender),
     // Loan number — blank/absent drives the "loan number missing" internal
     // condition (rules is_empty). Kept as the raw string (null when blank) so
     // is_empty/not_empty fire correctly.

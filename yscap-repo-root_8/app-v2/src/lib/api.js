@@ -395,6 +395,10 @@ export const api = {
   staffCredit:        (id, scope) => req('GET', `/api/staff/applications/${id}/credit${scope && scope !== 'file' ? `?scope=${encodeURIComponent(scope)}` : ''}`),
   staffCreditPreview: (id) => req('GET', `/api/staff/applications/${id}/credit/preview`),
   staffCreditImport:  (id, b) => req('POST', `/api/staff/applications/${id}/credit/import`, b),
+  // #16 — reuse a borrower's existing (<120-day) report from another of their files,
+  // no new inquiry; and the borrower profile's credit history across all their files.
+  staffCreditReuse:   (id, b) => req('POST', `/api/staff/applications/${id}/credit/reuse`, b),
+  staffBorrowerCredit:(borrowerId) => req('GET', `/api/staff/borrowers/${borrowerId}/credit`),
   // #147 — the cross-system observability timeline for a file (portal + ClickUp +
   // SharePoint + sync-review events, time-ordered). Scoped by the file's access.
   staffObservability: (id, opts = {}) => req('GET', `/api/staff/applications/${id}/observability`
@@ -405,6 +409,10 @@ export const api = {
   // syncs to SharePoint. Reopens the condition if nothing accepted remains.
   staffDeleteDoc:   (id) => req('DELETE', `/api/staff/documents/${id}`),
   staffDownloadDoc: (id) => download(`/api/staff/documents/${id}/download`),
+  // Read the text off a scanned document so the in-viewer search can find it.
+  // Returns { ok, pages:[{page,text}], engine, reason }. Never throws for the
+  // caller's UX — a not-configured / failed read is a shaped { ok:false }.
+  staffOcrDoc:      (id) => req('POST', `/api/staff/documents/${id}/ocr`, {}),
   staffBorrowerSearch: (q) => req('GET', '/api/staff/borrowers/search?q=' + encodeURIComponent(q)),
   // #83 — loan-officer borrower management
   staffBorrowers:   () => req('GET', '/api/staff/borrowers'),
@@ -872,6 +880,10 @@ export const api = {
   staffBorrowerMerge:      (id, body) => req('POST', `/api/staff/borrowers/${id}/merge`, body),
   staffBorrowerMerges:     (id) => req('GET', `/api/staff/borrowers/${id}/merges`),
   staffAppraisalCard:(appId) => req('GET', `/api/staff/applications/${appId}/appraisal-card`),
+  // Appraisal "no XML available" waiver.
+  appraisalXmlWaiverGet:    (appId) => req('GET', `/api/staff/applications/${appId}/appraisal-xml-waiver`),
+  appraisalXmlWaiverSet:    (appId, body) => req('POST', `/api/staff/applications/${appId}/appraisal-xml-waiver`, body),
+  appraisalXmlWaiverRemove: (appId) => req('DELETE', `/api/staff/applications/${appId}/appraisal-xml-waiver`),
   staffSaveAppraisalCard:(appId, b) => req('POST', `/api/staff/applications/${appId}/appraisal-card`, b),
 
   // ---- Appraisal desk: import the appraisal XML, read the property profile, resolve findings ----
@@ -970,6 +982,19 @@ export const api = {
   loNotifClearOverride:(appId, key) => req('DELETE', `/api/staff/notification-center/overrides?applicationId=${encodeURIComponent(appId)}&key=${encodeURIComponent(key)}`),
   loNotifCompose:      (b) => req('POST', '/api/staff/notification-center/compose', b),
   loNotifAnalytics:    (days) => req('GET',  `/api/staff/notification-center/analytics${days ? `?days=${days}` : ''}`),
+  // ---- "For me" — the LO's OWN inbox controls ----
+  loNotifSelfPrefs:        () => req('GET',  '/api/staff/notification-center/self-prefs'),
+  loNotifSelfSavePref:     (key, body) => req('PUT', `/api/staff/notification-center/self-prefs/${encodeURIComponent(key)}`, body),
+  loNotifSelfBulkSave:     (items) => req('POST', '/api/staff/notification-center/self-prefs/bulk', { items }),
+  loNotifDeliveryRules:    () => req('GET',  '/api/staff/notification-center/delivery-rules'),
+  loNotifDeliveryRulesPut: (b) => req('PUT',  '/api/staff/notification-center/delivery-rules', b),
+  loNotifMuteFile:         (b) => req('POST', '/api/staff/notification-center/mute-file', b),
+  loNotifUnmuteFile:       (appId) => req('DELETE', `/api/staff/notification-center/mute-file?applicationId=${encodeURIComponent(appId)}`),
+  loNotifMutedFiles:       () => req('GET',  '/api/staff/notification-center/muted-files'),
+  loNotifStarFile:         (appId) => req('POST', '/api/staff/notification-center/star-file', { applicationId: appId }),
+  loNotifUnstarFile:       (appId) => req('DELETE', `/api/staff/notification-center/star-file?applicationId=${encodeURIComponent(appId)}`),
+  loNotifStarredFiles:     () => req('GET',  '/api/staff/notification-center/starred-files'),
+  loNotifSelfVolume:       (days) => req('GET',  `/api/staff/notification-center/self-volume${days ? `?days=${days}` : ''}`),
 
   // ---- Borrower view: stand inside a borrower's portal (owner-directed 2026-07-26) ----
   // The flow itself lives in lib/auth.jsx (startBorrowerView / exitBorrowerView),

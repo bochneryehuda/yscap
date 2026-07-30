@@ -154,11 +154,24 @@ const FIELDS = {
     },
     fromExtra: { 'starting': 'file_intake', 'started': 'file_intake' },
   },
-  // Registered product -> ClickUp "RTL Loan Program" field (Standard / Gold).
-  // Portal-authoritative, one-way (§7.1/7.5).
+  // Registered product -> ClickUp "RTL Loan Program" field (Standard / Gold /
+  // Silver / Manual). Portal-authoritative, one-way (§7.1/7.5).
   registered_program: {
     id: 'aae034e4-633c-40db-85b4-7d8cfe33501b',
-    to: { standard: 'The Standard program', gold: 'The Gold program', none: null },
+    to: { standard: 'The Standard program', gold: 'The Gold program', silver: 'The Silver program', manual: 'The Manual program', none: null },
+    // ALTERNATE spellings tried when the primary label isn't in the live dropdown.
+    // The Silver + Manual options are created BY HAND in ClickUp (owner-directed
+    // 2026-07-29: "I'm adding the click up label for the silver program … I added
+    // in click up the manual program"), so the exact wording may differ from ours
+    // ("Silver Program" vs "The Silver program"). CLOSED per-value lists consumed
+    // by resolveWriteId — never a fuzzy match; an unmatched label still no-ops
+    // safely (we never invent ClickUp dropdown options).
+    toAlt: {
+      silver: ['Silver program', 'Silver'],
+      manual: ['Manual program', 'Manual'],
+      standard: ['Standard program'],
+      gold: ['Gold program', 'Gold Standard program'],
+    },
   },
 };
 
@@ -232,7 +245,14 @@ function unmappableToClickUp(key, portalValue, optionList) {
     ? portalValue
     : Object.keys(f.to).find((k) => _norm(k) === want);
   // Known value mapped to null ⇒ deliberately blank in ClickUp, not a loss.
-  if (hit !== undefined && hit !== null) return f.to[hit] == null ? false : notInOptions(f.to[hit], optionList);
+  if (hit !== undefined && hit !== null) {
+    if (f.to[hit] == null) return false;
+    if (!notInOptions(f.to[hit], optionList)) return false;
+    // The primary label isn't offered — an enumerated alternate spelling that IS
+    // offered still maps (resolveWriteId tries the same list), so it's not a loss.
+    const alts = (f.toAlt && f.toAlt[_norm(hit)]) || [];
+    return !alts.some((alt) => !notInOptions(alt, optionList));
+  }
   // Unknown value: only a defaultLabel can carry it, else the write is dropped.
   if (!f.defaultLabel) return true;
   return notInOptions(f.defaultLabel, optionList);
@@ -269,12 +289,22 @@ function isNonRtlProgramLabel(rawLabel) {
 
 /**
  * Resolve a portal value to the ClickUp option UUID to WRITE, using the live
- * option list [{id,orderindex,name}] for that field.
+ * option list [{id,orderindex,name}] for that field. Tries the primary label,
+ * then the field's enumerated `toAlt` spellings (hand-created dropdown options
+ * may word a label differently — e.g. "Silver Program" vs "The Silver program").
  */
 function resolveWriteId(key, portalValue, optionList) {
   const label = toClickUpLabel(key, portalValue);
   if (!label) return null;
-  return T.dropdownLabelToId(optionList, label);
+  const hit = T.dropdownLabelToId(optionList, label);
+  if (hit) return hit;
+  const f = FIELDS[key] || {};
+  const alts = (f.toAlt && f.toAlt[_norm(portalValue)]) || [];
+  for (const alt of alts) {
+    const h = T.dropdownLabelToId(optionList, alt);
+    if (h) return h;
+  }
+  return null;
 }
 
 /**

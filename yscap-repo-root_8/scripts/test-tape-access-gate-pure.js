@@ -3,7 +3,7 @@
  * Pure (no-DB) test for the data-tape ACCESS + program↔provider gate
  * (owner-directed 2026-07-26):
  *   · the program↔provider pairing (Gold↔Blue Lake, Standard↔Fidelis,
- *     Silver↔EMCAP [PARKED]) in program-provider.js,
+ *     Silver↔EMCAP [LIVE since 2026-07-29]) in program-provider.js,
  *   · the export gate (buyer-rule.exportGate / assertExportAllowed): admin
  *     bypass, register-first, manual admin-only, provider-match, program-match,
  *   · tapeAvailability reasons for a non-admin vs an admin,
@@ -28,7 +28,7 @@ function tapeOf(key) { const t = registry.getTape(key); assert.ok(t, `tape ${key
 // ── 1. program↔provider mapping ────────────────────────────────────────────
 eq(pp.providerForProgram('gold'), 'bluelake', 'gold → bluelake');
 eq(pp.providerForProgram('standard'), 'fidelis', 'standard → fidelis');
-eq(pp.providerForProgram('silver'), 'emcap', 'silver → emcap (parked)');
+eq(pp.providerForProgram('silver'), 'emcap', 'silver → emcap');
 eq(pp.providerForProgram('manual'), null, 'manual is NOT paired (admin-only)');
 eq(pp.providerForProgram('none'), null, 'none → null');
 eq(pp.providerForProgram(''), null, 'blank → null');
@@ -41,12 +41,11 @@ ok(!pp.programMatchesBuyer('gold', 'fidelis'), 'gold does NOT match fidelis');
 ok(!pp.programMatchesBuyer('standard', 'bluelake'), 'standard does NOT match bluelake');
 ok(!pp.programMatchesBuyer('manual', 'fidelis'), 'manual matches nothing');
 ok(!pp.programMatchesBuyer(null, 'fidelis'), 'null program matches nothing');
-ok(pp.PARKED_PROGRAMS.has('silver'), 'silver is a parked program');
+ok(!pp.PARKED_PROGRAMS.has('silver'), 'silver is LIVE (un-parked 2026-07-29 — the EMCAP Silver program build)');
 ok(!pp.PARKED_PROGRAMS.has('gold'), 'gold is not parked');
 // The bulk picker flags a provider "admin-only" when its paired program is absent
-// OR parked — EMCAP↔Silver is parked, so a non-admin EMCAP picker is admin-only;
-// Fidelis↔Standard is live, so it is not.
-ok(pp.PARKED_PROGRAMS.has(pp.programForProvider('emcap')), 'EMCAP is admin-only (its program Silver is parked)');
+// OR parked — all three pairings are live today, so none is admin-only.
+ok(!pp.PARKED_PROGRAMS.has(pp.programForProvider('emcap')), 'EMCAP is NOT admin-only (Silver went live)');
 ok(!pp.PARKED_PROGRAMS.has(pp.programForProvider('fidelis')), 'Fidelis is NOT admin-only (Standard is live)');
 eq(pp.programLabel('gold'), 'Gold', 'label gold');
 eq(pp.programLabel('manual'), 'Manual', 'label manual');
@@ -89,13 +88,38 @@ ok(buyerRule.exportGate(loan('blue lake'), bluelakeTape, { isAdmin: false, regis
 // NOT resolve to the bluelake key, so it can't export the Blue Lake tape.
 ok(!buyerRule.exportGate(loan('BlueLake Capital'), bluelakeTape, { isAdmin: false, registeredProgram: 'gold' }).ok, 'a suffixed label does NOT fuzzy-match the provider');
 
-// EMCAP is parked — a non-admin can NEVER pass (silver isn't registerable, and any
-// other program mismatches emcap); only an admin exports the EMCAP tape.
+// EMCAP↔Silver is LIVE: a non-admin exports the EMCAP tape exactly when the loan
+// is an EMCAP loan registered on the Silver program — any other program mismatches.
 g = buyerRule.exportGate(loan('EMCAP'), emcapTape, { isAdmin: false, registeredProgram: 'standard' });
-ok(!g.ok, 'non-admin cannot export EMCAP on a standard registration');
+ok(!g.ok && g.error.code === 'program_mismatch', 'non-admin cannot export EMCAP on a standard registration');
+eq(g.error.requiredProgram, 'silver', 'the EMCAP program mismatch names Silver');
+ok(buyerRule.exportGate(loan('EMCAP'), emcapTape, { isAdmin: false, registeredProgram: 'silver' }).ok, 'silver + EMCAP → EMCAP tape OK for a non-admin');
+g = buyerRule.exportGate(loan('Fidelis'), emcapTape, { isAdmin: false, registeredProgram: 'silver' });
+ok(!g.ok && g.error.code === 'buyer_mismatch', 'a silver registration on a Fidelis loan cannot export the EMCAP tape');
 g = buyerRule.exportGate(loan('EMCAP'), emcapTape, { isAdmin: false, registeredProgram: 'manual' });
 ok(!g.ok && g.error.code === 'manual_admin_only', 'EMCAP-as-manual is admin-only');
 ok(buyerRule.exportGate(loan('EMCAP'), emcapTape, { isAdmin: true, registeredProgram: 'manual' }).ok, 'admin CAN export the EMCAP tape');
+
+// "EMCAP Financial" — the buyer's REAL ClickUp/Sitewire dropdown label (owner-directed
+// 2026-07-29) — normalizes to 'emcapfinancial'. It is an ENUMERATED alias on the tape
+// (tapes/emcap.js buyerAliases), never a prefix/fuzzy match: the closed list lets the
+// production label export while "EMCAP Capital Partners" (not enumerated) still can't.
+ok(buyerRule.exportGate(loan('EMCAP Financial'), emcapTape, { isAdmin: false, registeredProgram: 'silver' }).ok,
+  '"EMCAP Financial" (the real ClickUp label) exports the EMCAP tape on a silver registration');
+ok(buyerRule.exportGate(loan('emcap financial'), emcapTape, { isAdmin: false, registeredProgram: 'silver' }).ok,
+  'the alias is casing/spacing tolerant via normNoteBuyer');
+g = buyerRule.exportGate(loan('EMCAP Financial'), emcapTape, { isAdmin: false, registeredProgram: 'standard' });
+ok(!g.ok && g.error.code === 'program_mismatch', 'the alias still enforces the Silver program pairing');
+ok(!buyerRule.exportGate(loan('EMCAP Capital Partners'), emcapTape, { isAdmin: false, registeredProgram: 'silver' }).ok,
+  'a NON-enumerated EMCAP-prefixed label does NOT fuzzy-match the tape (closed list)');
+// tapesForBuyer resolves the alias key to the EMCAP tape (note-buyer slot preview path).
+ok(registry.tapesForBuyer('emcapfinancial').some((t) => t.key === 'emcap'), "tapesForBuyer('emcapfinancial') finds the EMCAP tape");
+ok(!registry.tapesForBuyer('emcapcapital').length, 'tapesForBuyer does not fuzzy-match a non-enumerated key');
+// tapeAvailability (the UI list) honors the alias too.
+{
+  const avAlias = buyerRule.tapeAvailability('emcapfinancial', 'EMCAP Financial', { isAdmin: false, registeredProgram: 'silver' });
+  ok(avAlias.find((x) => x.key === 'emcap').available, 'tapeAvailability: alias key shows the EMCAP tape as available on silver');
+}
 
 // assertExportAllowed throws the right error type
 assert.throws(() => buyerRule.assertExportAllowed(loan('Fidelis'), fidelisTape, { isAdmin: false, registeredProgram: 'gold' }),

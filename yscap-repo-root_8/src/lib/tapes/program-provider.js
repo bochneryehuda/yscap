@@ -7,7 +7,7 @@
  *
  *     Gold      ↔  Blue Lake  (bluelake)
  *     Standard  ↔  Fidelis    (fidelis)
- *     Silver    ↔  EMCAP      (emcap)   — PARKED, see below
+ *     Silver    ↔  EMCAP      (emcap)
  *
  * A non-admin may export a provider's tape only when the loan's capital provider
  * AND its registered program BOTH line up per this table (see buyer-rule.js
@@ -17,19 +17,18 @@
  * program is not locked to any one provider, so its tape is ADMIN-ONLY — only an
  * admin may export a tape for a manual file (owner-directed).
  *
- * SILVER is PARKED: 'silver' is a recognized program NAME wired to EMCAP so the
- * system understands the pairing, but it is NOT a live/registerable program yet
- * (there is no register path, pricing, or studio card for it). No loan can carry
- * `registered_program = 'silver'` today, so in practice an EMCAP tape is
- * admin-only until the Silver program is built and activated. Do NOT wire Silver
- * into the register/pricing flow here — the pairing alone is the whole job for now.
+ * SILVER went LIVE 2026-07-29 (owner-directed — the EMCAP Silver program build):
+ * it is a registerable program with its own frozen engine
+ * (web/tools/silver-program.js), a studio card, register path and pricing
+ * defaults. The pairing below now gates the EMCAP tape exactly like the other
+ * two programs.
  */
 
 // program key (product_registrations.program) → capital-provider (note-buyer) key.
 const PROVIDER_FOR_PROGRAM = Object.freeze({
   gold: 'bluelake',
   standard: 'fidelis',
-  silver: 'emcap', // PARKED — recognized name, not yet a registerable program
+  silver: 'emcap',
 });
 
 // The reverse: capital-provider key → the program a loan must be registered as.
@@ -38,7 +37,9 @@ const PROGRAM_FOR_PROVIDER = Object.freeze(
 );
 
 // Programs recognized but intentionally dormant (no register/pricing path yet).
-const PARKED_PROGRAMS = Object.freeze(new Set(['silver']));
+// Silver went live 2026-07-29; nothing is parked today — the set stays for the
+// next program to incubate in.
+const PARKED_PROGRAMS = Object.freeze(new Set([]));
 
 // Plain-language program labels for messages (staff-facing).
 const PROGRAM_LABEL = Object.freeze({

@@ -76,6 +76,12 @@ const TYPE_META = {
     defaultPolicy: () => 'A confirmed-fatal finding raises a hard warning before a status move / issuance, pausing it for a super-admin.',
     requestedChange: () => <>A <b>super-admin proceeded past a fatal hard-warning</b> (status change or document issuance). This is the record of that override — it was decided in the moment, so there was nothing to approve here.</>,
   },
+  appraisal_xml_waiver: {
+    chip: 'Appraisal — no XML',
+    jumpHash: '#sec-appraisal', jumpLabel: 'Jump to the appraisal',
+    defaultPolicy: () => 'The appraisal condition needs the XML data file, the PDF report, and a successful MISMO import.',
+    requestedChange: () => <>Accept this appraisal with <b>no XML data file</b> — the PDF report is still required and the ARV + As-Is were entered by hand. Approving lets the appraisal condition be signed off without the XML.</>,
+  },
 };
 
 export default function ExceptionCard({ r, reasonCodes = {}, compFactors = {}, highlight = false, forwardRef, gateSelect, children }) {

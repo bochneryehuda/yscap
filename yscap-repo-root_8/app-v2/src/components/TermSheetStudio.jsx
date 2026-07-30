@@ -191,16 +191,19 @@ function readSnapshot(win) {
   const srcVal = (id) => derived(id) ? '' : val(id);
   const chk = (id) => { const e = doc.getElementById(id); return !!(e && e.checked); };
   const active = (id) => { const e = doc.getElementById(id); return !!(e && e.classList.contains('pcard-active')); };
-  const program = active('pcardGold') ? 'gold' : active('pcardStd') ? 'standard' : null;
+  const program = active('pcardGold') ? 'gold' : active('pcardSilver') ? 'silver'
+    : active('pcardManual') ? 'manual' : active('pcardStd') ? 'standard' : null;
   const missBox = doc.getElementById('rMissing');
   const ready = !!missBox && missBox.style.display === 'none';
   const missing = missBox ? Array.from(missBox.querySelectorAll('li')).map((li) => li.textContent) : [];
-  let std = null, gold = null;
+  let std = null, gold = null, silver = null;
   try { std = win.TS._calc(); } catch (_) { /* engine not ready yet */ }
   try { gold = win.TS._calcGold(); } catch (_) { /* gold engine optional */ }
-  const d = program === 'gold' && gold && !gold.unavailable ? gold : std;
+  try { silver = win.TS._calcSilver && win.TS._calcSilver(); } catch (_) { /* silver engine optional */ }
+  const d = program === 'gold' && gold && !gold.unavailable ? gold
+    : program === 'silver' && silver && !silver.unavailable ? silver : std;
   return {
-    program, ready, missing, std, gold, d,
+    program, ready, missing, std, gold, silver, d,
     fields: {
       entityName: val('entityName'), borrowerName: val('borrowerName'), coBorrowerName: val('coBorrowerName'), propAddr: val('propAddr'), addrTBD: chk('addrTBD'),
       dealPurpose: val('dealPurpose'), dealType: val('dealType'),
@@ -212,8 +215,8 @@ function readSnapshot(win) {
       tsTerm: val('tsTerm'), irMonths: srcVal('irMonths'), irAmount: derived('irAmount') ? '' : moneyVal('irAmount'),
       tsEffPrice: moneyVal('tsEffPrice'),
       // admin pricing knobs (staff mode) — same names the staff pricing API takes
-      tsYspStd: val('tsYspStd'), tsYspGold: val('tsYspGold'),
-      tsOrigStd: val('tsOrigStd'), tsOrigGold: val('tsOrigGold'),
+      tsYspStd: val('tsYspStd'), tsYspGold: val('tsYspGold'), tsYspSilver: val('tsYspSilver'),
+      tsOrigStd: val('tsOrigStd'), tsOrigGold: val('tsOrigGold'), tsOrigSilver: val('tsOrigSilver'),
       tsFeeUW: moneyVal('tsFeeUW'), tsFeeCredit: moneyVal('tsFeeCredit'),
       tsFeeAppr: moneyVal('tsFeeAppr'), tsFeeTitle: moneyVal('tsFeeTitle'),
       tsManualOn: chk('tsManualOn'),
@@ -222,7 +225,7 @@ function readSnapshot(win) {
       // Term-sheet options (owner-directed 2026-07-22) — display/record only.
       estClosingDate: val('estClosingDate'),
       tsAccrual: val('tsAccrual'), tsDeferredOrig: val('tsDeferredOrig'),
-      tsMinIntStd: chk('tsMinIntStd'), tsMinIntGold: chk('tsMinIntGold'), tsMinIntManual: chk('tsMinIntManual'),
+      tsMinIntStd: chk('tsMinIntStd'), tsMinIntGold: chk('tsMinIntGold'), tsMinIntSilver: chk('tsMinIntSilver'), tsMinIntManual: chk('tsMinIntManual'),
     },
   };
 }
@@ -265,8 +268,8 @@ export function adminStateFromEngineInputs(inp) {
   inp = inp || {};
   const v = {};
   const put = (id, val) => { if (val != null && val !== '') v[id] = String(val); };
-  put('tsYspStd', inp.markupStdPct); put('tsYspGold', inp.markupGoldPct);
-  put('tsOrigStd', inp.origStdPct); put('tsOrigGold', inp.origGoldPct);
+  put('tsYspStd', inp.markupStdPct); put('tsYspGold', inp.markupGoldPct); put('tsYspSilver', inp.markupSilverPct);
+  put('tsOrigStd', inp.origStdPct); put('tsOrigGold', inp.origGoldPct); put('tsOrigSilver', inp.origSilverPct);
   put('tsFeeUW', inp.lenderFee); put('tsFeeCredit', inp.creditFee);
   put('tsFeeAppr', inp.appraisalFee); put('tsFeeTitle', inp.titleFee);
   put('tsMLtv', inp.ovrAcqLTVPct); put('tsMArv', inp.ovrARLTVPct);
@@ -291,7 +294,7 @@ export function selectionFromSnapshot(snap) {
     source: 'term-sheet-studio',
     selectedAt: new Date().toISOString(),
     program: snap.program,
-    programLabel: snap.program === 'gold' ? 'Gold Standard Program' : 'Standard Program',
+    programLabel: snap.program === 'gold' ? 'Gold Standard Program' : snap.program === 'silver' ? 'Silver Program' : snap.program === 'manual' ? 'Manual Program' : 'Standard Program',
     strategy: snap.fields.dealType,
     purpose: snap.fields.dealPurpose,
     status: d.status || null,

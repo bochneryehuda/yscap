@@ -558,6 +558,12 @@ if (require.main === module) {
         require('./lib/appraisal/desk').backfillAppraisalCompSplitOnce()
           .then((r) => r && r.split && console.log('[boot] appraisal comp-split backfill:', JSON.stringify(r)))
           .catch((e) => console.error('[boot] appraisal comp-split backfill failed:', e.message));
+        // Previous files (owner-directed 2026-07-30): evaluate the note-buyer appraisal checks
+        // (EMCAP) for open EMCAP files that already have an imported appraisal but no note-buyer
+        // findings yet. Bounded per boot, idempotent (the sync diffs by code), fire-and-forget.
+        require('./lib/appraisal/desk').backfillNoteBuyerFindingsOnce()
+          .then((r) => r && r.synced && console.log('[boot] note-buyer appraisal checks backfill:', JSON.stringify(r)))
+          .catch((e) => console.error('[boot] note-buyer appraisal checks backfill failed:', e.message));
         // NOTE: the As-Is / ARV read is GOING FORWARD ONLY (owner-directed 2026-07-28) — a deliberate
         // exception to the previous-AND-future rule, because that sweep WRITES loan values and
         // re-reading the back book would rewrite numbers on files people have already worked, all at
