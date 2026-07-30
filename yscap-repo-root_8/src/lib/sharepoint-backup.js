@@ -403,7 +403,17 @@ const KIND_STREAM = new Set(['photo_id', 'term_sheet', 'term_sheet_signed']);
 function stateKeyFor(row, scopeKey) {
   if (row.doc_kind === 'photo_id') return `kind:${scopeKey}:photo-id`;   // one stream across files
   if (KIND_STREAM.has(row.doc_kind)) return `kind:${scopeKey}:${slug(categoryFor(row))}`;
-  return row.checklist_item_id ? `item:${row.checklist_item_id}` : `kind:${scopeKey}:${slug(categoryFor(row))}`;
+  // A version stream is only meaningful WITHIN one folder (mirrorRowInner resets
+  // it when the resolved folder id changes). A SINGLE checklist item can now map
+  // to TWO folders — the fraud/background condition splits its documents into
+  // "Background Check" vs "Criminal Check" by slot (categoryPathFor) — so the
+  // item key MUST carry the category, or the two folders would share one counter
+  // and interleaved supersedes would mis-file into Version-N. For an ordinary
+  // one-folder condition the category slug is constant, so this is a stable
+  // no-op suffix (and its one-time re-key rides the same folder reset the clean-
+  // category rename already triggers this deploy).
+  const catSlug = slug(categoryFor(row));
+  return row.checklist_item_id ? `item:${row.checklist_item_id}:${catSlug}` : `kind:${scopeKey}:${catSlug}`;
 }
 
 // ------------------------------------------------------------------- selection
@@ -2498,5 +2508,5 @@ module.exports = {
   stripPathEchoes,
   // Exported for the recategorize repair (scripts/sharepoint-recategorize-existing.js)
   // + the pure category test (scripts/test-sharepoint-category.js).
-  categoryPathFor, scopeKeyFor,
+  categoryPathFor, scopeKeyFor, stateKeyFor,
 };
