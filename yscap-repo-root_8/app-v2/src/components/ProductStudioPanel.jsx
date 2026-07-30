@@ -220,7 +220,7 @@ export function RegisteredProductDetails({ reg, compactView = false, showAdmin =
   return (
     <div className={compactView ? '' : 'panel'} style={compactView ? {} : { background: 'var(--ink-2)', marginTop: 10 }}>
       <div className="row" style={{ alignItems: 'baseline', gap: 8, marginBottom: 8 }}>
-        <strong>{q.programLabel || (reg.program === 'gold' ? 'Gold Standard Program' : reg.program === 'silver' ? 'Silver Program' : 'Standard Program')}</strong>
+        <strong>{q.programLabel || (reg.program === 'gold' ? 'Gold Standard Program' : reg.program === 'silver' ? 'Silver Program' : reg.program === 'manual' ? 'Manual Program' : 'Standard Program')}</strong>
         {q.productLabel && <span className="muted small">· {q.productLabel}</span>}
         {q.tierLabel && <span className="muted small">· {q.tierLabel}</span>}
         {reg.status && reg.status !== 'ELIGIBLE' && <span className="ts-badge warn">{statusWord(reg.status)}</span>}
@@ -549,6 +549,15 @@ const ProductStudioPanel = forwardRef(function ProductStudioPanel({ appId, app, 
       // now (it used to be force-cleared for non-admins — the #148 "invisible
       // re-armed knob" guard). The zone is visible to everyone, so nothing is
       // hidden state anymore, and a manual basis simply routes to approval.
+      // A BORROWER is the exception (audit 2026-07-30 #3): the borrower register
+      // route strips every manual override, so a staff manual-scenario draft
+      // resuming in the borrower's studio would dim the real program cards and
+      // display admin-basis numbers the server would never register. Clear the
+      // manual knobs from THEIR view only — the staff draft on the file keeps them.
+      if (!isStaff) {
+        delete c.tsManualOn;
+        for (const k of ['tsMLtv', 'tsMArv', 'tsMLtc', 'tsMRate', 'tsMIr']) delete v[k];
+      }
       // The property ADDRESS (and its state) is file-owned exactly like the
       // economics above (owner-reported 2026-07-24: the file's corrected
       // "392-394 Columbia Ave" never reached the term sheet — a draft/registered
@@ -697,7 +706,7 @@ const ProductStudioPanel = forwardRef(function ProductStudioPanel({ appId, app, 
     const s = studioRef.current && studioRef.current.snapshot();
     if (!s) { setErr('The Term Sheet Studio is still loading.'); return; }
     if (!s.ready) { setErr('Complete the required pricing fields first: ' + s.missing.join(', ')); return; }
-    if (!s.program) { setErr('Tap the Standard, Gold Standard or Silver card in the studio to choose your product first.'); return; }
+    if (!s.program) { setErr('No program selected yet — tap one of the four program cards (Standard, Gold Standard, Silver or Manual) in the studio first, then register.'); return; }
     const dd = s.d;
     if (!dd || dd.status === 'INELIGIBLE' || !(dd.totalLoan > 0)) {
       setErr("This scenario isn't eligible as entered — adjust it in the studio, or contact your loan team for a manual review.");
@@ -824,8 +833,8 @@ const ProductStudioPanel = forwardRef(function ProductStudioPanel({ appId, app, 
   }
 
   const statusLine = snap && !snap.ready ? 'Missing: ' + snap.missing.join(', ')
-    : snap && !snap.program ? 'Tap a program card above to choose Standard, Gold Standard or Silver.'
-    : d && d.totalLoan > 0 ? `${snap.program === 'gold' ? 'Gold Standard' : snap.program === 'silver' ? 'Silver' : 'Standard'} · ${money(d.totalLoan)} @ ${d.rate ? d.rate.toFixed(2) + '%' : '—'} · cash to close ${money2(d.cashToClose)} · liquidity ${money2(d.liquidity)}`
+    : snap && !snap.program ? 'Tap a program card above to choose Standard, Gold Standard, Silver or Manual.'
+    : d && d.totalLoan > 0 ? `${snap.program === 'gold' ? 'Gold Standard' : snap.program === 'silver' ? 'Silver' : snap.program === 'manual' ? 'Manual Program' : 'Standard'} · ${money(d.totalLoan)} @ ${d.rate ? d.rate.toFixed(2) + '%' : '—'} · cash to close ${money2(d.cashToClose)} · liquidity ${money2(d.liquidity)}`
     : '';
   // A PLAIN-LANGUAGE reason the product can't be registered yet — shown as a
   // prominent banner in the studio so the Register action never silently
@@ -837,20 +846,25 @@ const ProductStudioPanel = forwardRef(function ProductStudioPanel({ appId, app, 
   // scenario is NOT eligible as-is: it can't be plain-registered, only submitted as
   // an exception for super-admin approval (owner-directed 2026-07-21).
   const scenarioManual = !!(d && d.status === 'MANUAL' && d.totalLoan > 0);
+  // Is the LIVE studio scenario a manual product (LTV/LTC/ARV override)? Computed
+  // BEFORE blockReason on purpose: a manual product on an engine-refused deal is
+  // the flagship manual-underwrite case ("admin prices what the engine refuses")
+  // and it REGISTERS normally (the server skips exception_required for a
+  // structural override) — it must never read as blocked (audit 2026-07-30 #1).
+  let manualLive = false;
+  try { manualLive = isStaff && snap && overridesAreManual(overridesFromSnapshot(snap, 'staff')); } catch (_) { manualLive = false; }
   const blockReason = busy ? ''
     : !snap ? 'The Term Sheet Studio is still loading — give it a moment, then register.'
     : !snap.ready ? 'To register, add the required pricing fields: ' + ((snap.missing && snap.missing.join(', ')) || 'see the highlighted fields in the studio') + '.'
-    : !snap.program ? 'Choose a product — tap the Standard, Gold Standard or Silver card in the studio.'
+    : !snap.program ? 'No program selected yet — tap one of the four program cards (Standard, Gold Standard, Silver or Manual) to choose your product. Register unlocks once a program is selected.'
     : (d && d.status === 'INELIGIBLE') ? "This scenario isn't eligible as entered — adjust it in the studio, or contact your loan team for a manual review."
     : (d && !(d.totalLoan > 0)) ? "This scenario didn't size a loan yet — check the purchase price, ARV / as-is value and rehab budget in the studio."
-    : scenarioManual ? `This scenario isn’t eligible as-is on the ${snap.program === 'gold' ? 'Gold Standard' : snap.program === 'silver' ? 'Silver' : 'Standard'} program — it needs a manual-review exception. Submit an exception request${isStaff ? ' — an admin reviews it and the borrower isn’t sent terms unless it’s approved.' : ' and your loan team will review it.'}`
+    : (scenarioManual && !manualLive) ? `This scenario isn’t eligible as-is on the ${snap.program === 'gold' ? 'Gold Standard' : snap.program === 'silver' ? 'Silver' : snap.program === 'manual' ? 'Manual' : 'Standard'} program — it needs a manual-review exception. Submit an exception request${isStaff ? ' — an admin reviews it and the borrower isn’t sent terms unless it’s approved.' : ' and your loan team will review it.'}`
     : '';
 
-  // Is the LIVE studio scenario a manual product (LTV/LTC/ARV override)? Every
-  // staff role can enter those knobs now, so every staff role sees the manual UI
-  // (and must state the liquidity months before it can register).
-  let manualLive = false;
-  try { manualLive = isStaff && snap && overridesAreManual(overridesFromSnapshot(snap, 'staff')); } catch (_) { manualLive = false; }
+  // (manualLive — whether the live scenario is a manual product — is computed
+  // above blockReason; every staff role can enter those knobs and must state
+  // the liquidity months before it can register.)
   // Is the LIVE scenario carrying an admin-zone knob that is OFF the company
   // default (and therefore needs an admin's approval)? Compared against the real
   // company defaults the server sends on the pricing load — the SAME numbers the
@@ -890,6 +904,18 @@ const ProductStudioPanel = forwardRef(function ProductStudioPanel({ appId, app, 
   // asset-months flow) registers via the "Submit exception request" action, which
   // opens a super-admin escalation and withholds borrower terms until approved.
   const submitExceptionMode = scenarioManual && !manualLive;
+  // The Register button reads as LOCKED until it can actually register
+  // (owner-directed 2026-07-30: "the register button ... needs to be grayed out
+  // and when somebody is trying to click ... it should say that it didn't
+  // selected a program"). It stays CLICKABLE — aria-disabled + the .is-blocked
+  // grey carry the visual, never `disabled` — so a click surfaces the exact
+  // reason instead of a dead end, and the reason line is ALSO shown before any
+  // click (top bar + next to the bottom button).
+  const registerBlocked = !busy && !!blockReason && !submitExceptionMode && !exceptionInfo;
+  const registerClick = () => {
+    if (registerBlocked) { setErr(blockReason); return; }
+    register((submitExceptionMode || exceptionInfo) ? { submitException: true } : {});
+  };
   const esc = data && data.manualEscalation;
   const escPending = esc && esc.status === 'pending';
   const escCountered = esc && esc.status === 'countered';
@@ -1081,7 +1107,7 @@ const ProductStudioPanel = forwardRef(function ProductStudioPanel({ appId, app, 
       {superseded.length > 0 && (
         <p className="muted small" style={{ margin: '8px 0 0' }}>
           {superseded.length} previous registration{superseded.length === 1 ? '' : 's'} on this file (superseded):{' '}
-          {superseded.map((h) => `${h.program === 'gold' ? 'Gold' : h.program === 'silver' ? 'Silver' : 'Standard'} ${money(h.total_loan)} @ ${pct(h.note_rate)} on ${when(h.created_at)}`).join(' · ')}
+          {superseded.map((h) => `${h.program === 'gold' ? 'Gold' : h.program === 'silver' ? 'Silver' : h.program === 'manual' ? 'Manual' : 'Standard'} ${money(h.total_loan)} @ ${pct(h.note_rate)} on ${when(h.created_at)}`).join(' · ')}
         </p>
       )}
 
@@ -1094,8 +1120,8 @@ const ProductStudioPanel = forwardRef(function ProductStudioPanel({ appId, app, 
               <span className="muted small">Autosaves as you work — leaving saves your scenario to the file too.</span>
             </div>
             {cur && <span className="ts-badge ok" style={{ marginRight: 4 }}>Registered · {money(cur.total_loan)} @ {pct(cur.note_rate)}</span>}
-            <button className="btn primary toolsheet-done" disabled={busy}
-              onClick={() => register((submitExceptionMode || exceptionInfo) ? { submitException: true } : {})}>
+            <button className={`btn primary toolsheet-done${registerBlocked ? ' is-blocked' : ''}`}
+              disabled={busy} aria-disabled={busy || registerBlocked} onClick={registerClick}>
               {busy ? (submitExceptionMode ? 'Submitting…' : 'Registering…')
                 : submitExceptionMode ? 'Submit exception request'
                 : cur ? 'Re-register this product' : 'Register this product'}
@@ -1168,9 +1194,19 @@ const ProductStudioPanel = forwardRef(function ProductStudioPanel({ appId, app, 
                   )}
                 </div>
               )}
+              {/* The refusal reason renders NEXT TO the bottom Register button too —
+                  the top bar is off-screen by the time you scroll down here (the
+                  EditFileDetails lesson: a notice only at the top reads as
+                  "nothing happened"). */}
+              {(err || blockReason) && (
+                <p className="small" role={err ? 'alert' : undefined}
+                  style={{ margin: '4px 0 6px', fontWeight: 600, color: err ? 'var(--danger)' : 'var(--warning)' }}>
+                  {err || `⚠ ${blockReason}`}
+                </p>
+              )}
               <div className="toolsheet-actions">
-                <button className="btn primary" disabled={busy}
-                  onClick={() => register((submitExceptionMode || exceptionInfo) ? { submitException: true } : {})}>
+                <button className={`btn primary${registerBlocked ? ' is-blocked' : ''}`}
+                  disabled={busy} aria-disabled={busy || registerBlocked} onClick={registerClick}>
                   {busy ? (submitExceptionMode ? 'Submitting…' : 'Registering…')
                     : submitExceptionMode ? 'Submit exception request'
                     : cur ? 'Re-register this product' : 'Register this product'}

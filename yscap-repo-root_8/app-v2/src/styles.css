@@ -237,6 +237,11 @@ textarea{min-height:90px;resize:vertical}
 .btn.ghost:hover{border-color:var(--teal-dp)}
 .btn.link{background:none;border:none;color:var(--teal-br);padding:6px 2px}
 .btn:disabled{opacity:.5;cursor:not-allowed}
+/* Greyed-but-clickable: a button that can't act yet (e.g. Register before a
+   program card is picked) — reads locked, but a click still surfaces WHY
+   (owner-directed 2026-07-30). Keep it clickable; never pair with disabled. */
+.btn.is-blocked{opacity:.45;filter:saturate(.35);cursor:not-allowed;box-shadow:none}
+.btn.is-blocked:hover{transform:none}
 .row{display:flex;gap:10px;align-items:center;flex-wrap:wrap}
 .spacer{flex:1}
 

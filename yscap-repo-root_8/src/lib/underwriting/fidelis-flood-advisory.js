@@ -44,7 +44,12 @@
  * Severity is `warning`, not `fatal`, so it does not fan out the fatal-finding email
  * to the whole file team; `important` pins it to the top of the panel instead.
  *
- * Never throws — every entry point is guarded. Test: scripts/test-fidelis-flood-advisory-db.js.
+ * Never throws — every entry point is guarded.
+ *
+ * STRUCTURALLY MOOT since db/374 (owner-directed 2026-07-30): the flood cert now
+ * auto-attaches to EVERY file, so this advisory's raise conditions cannot occur —
+ * it stays wired only so stale open rows withdraw themselves. Its old dedicated
+ * test was retired; the current coverage is scripts/test-flood-cert-every-file-db.js.
  */
 
 const aiSug = require('./ai-suggestions');
