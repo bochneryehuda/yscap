@@ -300,7 +300,6 @@ async function syncNoteBuyerFindings(db, appId) {
     const open = (await db.query(
       `SELECT id, code FROM appraisal_findings
         WHERE application_id = $1 AND source = $2 AND status = 'open'`, [appId, SOURCE])).rows;
-    const openByCode = new Map(open.map((r) => [r.code, r]));
     const desiredCodes = new Set(desired.map((f) => f.code));
 
     // Retire open rows no longer required (requirement met / buyer changed / appraisal gone).
@@ -313,12 +312,20 @@ async function syncNoteBuyerFindings(db, appId) {
     }
 
     // Insert what's newly required — honoring durable human decisions (born dismissed, like the
-    // import's carry-forward), and never duplicating an open row of the same code.
+    // import's carry-forward). The skip set is EVERY non-superseded row of the code on the
+    // CURRENT appraisal, not only the open ones: a dismissed/resolved row is a decided finding,
+    // and skipping only open rows made every later sync add ANOTHER carried "dismissed" row —
+    // unbounded growth on a file whose ClickUp card re-ingests forever (pre-merge audit F1).
+    // A re-import supersedes the whole set and mints a fresh appraisal_id, so a genuinely new
+    // appraisal still re-raises everything.
     if (desired.length && apr) {
+      const onCurrent = new Set((await db.query(
+        `SELECT code FROM appraisal_findings
+          WHERE appraisal_id = $1 AND source = $2 AND status <> 'superseded'`, [apr.id, SOURCE])).rows.map((r) => r.code));
       const fdec = require('../underwriting/finding-decisions');
       const settled = await fdec.suppressedKeys(db, appId);
       for (const fd of desired) {
-        if (openByCode.has(fd.code)) continue;
+        if (onCurrent.has(fd.code)) continue;
         const carried = settled.size && fdec.isSuppressed(settled, {
           code: fd.code, field: fd.field,
           docValue: fd.appraisalValue == null ? null : String(fd.appraisalValue),

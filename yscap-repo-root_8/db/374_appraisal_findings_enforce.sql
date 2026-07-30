@@ -36,7 +36,20 @@
 --      sign-offs through the app-layer gate.
 -- ============================================================================
 
--- (1) Re-arm the reopen-on-fatal trigger (body identical to db/155's original).
+-- (1) Re-arm the reopen-on-fatal trigger. Body is db/155's with three deliberate
+--     changes:
+--     (a) the [auto] note text is THIS trigger's OWN — db/334's tail (which re-runs
+--         every boot BEFORE this file) clears the exact db/155 string from un-signed
+--         rows, so reusing that string would blank the reviewer's explanation on the
+--         very next deploy;
+--     (b) the WAIVE stamps are cleared too — a reopened condition must never read
+--         "waived" and "received" at once;
+--     (c) the super-admin OVERRIDE stamps are cleared as well (db/344 semantics: "a
+--         reopened condition is not 'cleared by override', and a later ordinary
+--         sign-off must not inherit an old reason"). Reopening an overridden row IS
+--         correct here — a fresh fatal finding is NEW information the override never
+--         saw — while the BOOT backfill in (3) below deliberately skips overridden
+--         rows (no new information at boot; never re-litigate a recorded decision).
 CREATE OR REPLACE FUNCTION reopen_appraisal_review_on_fatal() RETURNS trigger AS $$
 BEGIN
   -- Only a fresh, open, CTC-blocking fatal finding reopens the gate.
@@ -49,15 +62,17 @@ BEGIN
   UPDATE checklist_items ci
      SET status = 'received', signed_off_at = NULL, signed_off_by = NULL,
          reviewed_at = NULL, reviewed_by = NULL,
+         waived_at = NULL, waived_by = NULL,
+         override_at = NULL, override_by = NULL, override_reason = NULL, override_blocked_reason = NULL,
          notes = CASE WHEN ci.notes IS NULL OR ci.notes LIKE '[auto]%'
-                      THEN '[auto] A new blocking appraisal finding was raised — review the appraisal findings and clear them before this can be signed off again.'
+                      THEN '[auto] A new blocking appraisal finding was raised — clear the appraisal findings on the Appraisal tab, then sign this off again (appraisal findings are enforced).'
                       ELSE ci.notes END,
          updated_at = now()
    FROM checklist_templates t
   WHERE ci.template_id = t.id
     AND t.code = 'appraisal_review_cleared'
     AND ci.application_id = NEW.application_id
-    AND (ci.status = 'satisfied' OR ci.signed_off_at IS NOT NULL);
+    AND (ci.status = 'satisfied' OR ci.signed_off_at IS NOT NULL OR ci.waived_at IS NOT NULL);
 
   RETURN NEW;
 END;
@@ -90,11 +105,16 @@ SELECT t.id, t.scope, t.label, t.borrower_label, t.audience, t.item_kind,
    AND NOT EXISTS (SELECT 1 FROM checklist_items ci
                     WHERE ci.application_id = a.id AND ci.template_id = t.id);
 
--- (3) Reopen a signed-off/satisfied appraisal review standing over OPEN fatal
---     blocking findings, on files before clear_to_close only.
+-- (3) Reopen a signed-off/satisfied/waived appraisal review standing over OPEN fatal
+--     blocking findings, on files before clear_to_close only. A SUPER-ADMIN OVERRIDE
+--     (db/344 — ci.override_at set) is EXCLUDED: the override is the deliberate,
+--     recorded way through this very gate, and a boot pass must never re-litigate a
+--     decision a super-admin already made (the live trigger above still reopens on a
+--     genuinely NEW fatal finding — new information — which is the correct split).
 UPDATE checklist_items ci
    SET status = 'received', signed_off_at = NULL, signed_off_by = NULL,
        reviewed_at = NULL, reviewed_by = NULL,
+       waived_at = NULL, waived_by = NULL,
        notes = CASE WHEN ci.notes IS NULL OR ci.notes LIKE '[auto]%'
                     THEN '[auto] Appraisal findings are enforced again — this file still has open blocking appraisal findings. Review and clear them, then sign this off again.'
                     ELSE ci.notes END,
@@ -105,7 +125,8 @@ UPDATE checklist_items ci
    AND a.id = ci.application_id
    AND a.status NOT IN ('clear_to_close', 'funded', 'declined', 'withdrawn', 'cancelled')
    AND a.deleted_at IS NULL
-   AND (ci.status = 'satisfied' OR ci.signed_off_at IS NOT NULL)
+   AND ci.override_at IS NULL
+   AND (ci.status = 'satisfied' OR ci.signed_off_at IS NOT NULL OR ci.waived_at IS NOT NULL)
    AND EXISTS (SELECT 1 FROM appraisal_findings af
                 WHERE af.application_id = ci.application_id
                   AND af.status = 'open' AND af.severity = 'fatal' AND af.blocks_ctc = true);

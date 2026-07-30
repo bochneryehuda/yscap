@@ -374,12 +374,20 @@ async function backfillAppraisalCompSplitOnce(limit = 200) {
 async function backfillNoteBuyerFindingsOnce(limit = 100) {
   let scanned = 0, synced = 0;
   try {
+    // The candidate query PRE-FILTERS to plausible EMCAP labels in SQL. Without it the window
+    // fills with files that will never gain a row (every other note buyer), which both starves
+    // a genuinely older EMCAP file out of the LIMIT forever and re-scans the same non-EMCAP
+    // files on every boot (pre-merge audit F5). The SQL filter is deliberately LOOSE — the
+    // authoritative test stays `isEmcapNoteBuyer` in JS below, so a label the prefix match
+    // would accept can never be excluded here by a normalization difference (the SQL strips
+    // the same non-alphanumerics normNoteBuyer does before comparing).
     const rows = (await db.query(
       `SELECT a.id
          FROM applications a
         WHERE a.deleted_at IS NULL
           AND a.status NOT IN ('clear_to_close', 'funded', 'declined', 'withdrawn', 'cancelled')
           AND a.lender IS NOT NULL
+          AND lower(regexp_replace(a.lender, '[^a-zA-Z0-9]', '', 'g')) LIKE 'emcap%'
           AND EXISTS (SELECT 1 FROM appraisals ap WHERE ap.application_id = a.id AND ap.superseded = false)
           AND NOT EXISTS (SELECT 1 FROM appraisal_findings af
                            WHERE af.application_id = a.id AND af.source = 'note_buyer')
@@ -389,8 +397,8 @@ async function backfillNoteBuyerFindingsOnce(limit = 100) {
     const registry = require('../conditions/field-registry');
     for (const r of rows) {
       scanned++;
-      // The EMCAP test runs in JS (isEmcapNoteBuyer is a prefix match on the normalized label —
-      // not expressible as a simple SQL predicate without duplicating the normalizer).
+      // The authoritative EMCAP test runs in JS (isEmcapNoteBuyer is a prefix match on the
+      // shared normalizer — the SQL above only narrows the candidate window).
       const app = (await db.query(`SELECT lender FROM applications WHERE id = $1`, [r.id])).rows[0];
       if (!app || !registry.isEmcapNoteBuyer(app.lender)) continue;
       const res = await nbChecks.syncNoteBuyerFindings(db, r.id);

@@ -224,7 +224,8 @@ transactions / seller credits each ≤15%.
   dropdown/value map (read-only compare).
 - **Borrower safety:** EMCAP added to the partner-name scrub patterns;
   borrower-facing copy says "Silver Program", never the buyer's name.
-- **ISG (advisory):** `isg_emcap_missing_1007` / `isg_emcap_rent_mismatch`
+- **ISG (advisory):** `isg_emcap_rent_mismatch` (the 1007 requirement moved to the
+  appraisal desk 2026-07-30 as `emcap_rental_analysis`; `isg_emcap_missing_1007` is retired)
   (pre-existing) + `isg_emcap_excluded_state`, `isg_emcap_mid_construction`,
   `isg_emcap_cashout_over_half_profit` (Silver build).
 

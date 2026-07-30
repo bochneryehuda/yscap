@@ -5623,6 +5623,16 @@ router.patch('/checklist/:itemId', async (req, res) => {
     // have to be made optional first (that detour edited the file's requirements to
     // clear one item — the override records the decision instead).
     if (!ovr.requested && !isApprCard && cur.rows[0].is_required !== false) return res.status(422).json({ error: 'Only an optional condition can be waived — make it optional first, then waive.' });
+    // THE APPRAISAL REVIEW CANNOT BE WAIVED AROUND ITS GATE (owner-directed 2026-07-30;
+    // pre-merge audit F3). "Make it optional, then waive" would clear appraisal_review_cleared
+    // with open fatal findings / an unconfirmed As-Is and NO recorded override — exactly the
+    // bypass the enforcement forbids. So a plain waive of this ONE condition runs the same
+    // fulfillment gate as a sign-off, whatever its is_required flag says; the super-admin
+    // override (adminOverride:true + a reason) remains the recorded way through.
+    if (!ovr.requested && cur.rows[0].template_code === 'appraisal_review_cleared') {
+      const gate = await signOffGate(req.params.itemId, req.actor);
+      if (gate) return res.status(422).json({ error: gate });
+    }
   }
   // Push-back / reject / reopen: send a condition back to the borrower with a
   // BORROWER-VISIBLE reason (owner-directed 2026-07-12, LOS-grade management). One
@@ -8292,6 +8302,14 @@ router.patch('/applications/:id/details', async (req, res) => {
     if (Object.keys(changes).length) {
       try { conditions = await conditionEngine.evaluateApplication(req.params.id, { actor: req.actor, reason: 'details_edited' }); }
       catch (_) { /* best-effort */ }
+      // A note-buyer (lender) change through THIS door must also re-evaluate the note-buyer
+      // APPRAISAL checks (EMCAP — owner 2026-07-30), like completeFields and the ClickUp
+      // ingest do — otherwise a file moved off EMCAP here keeps its fatal EMCAP findings
+      // (and a file moved onto it raises none) until some other door touches the lender
+      // (pre-merge audit F4). Cheap no-op for every other field/buyer. Best-effort.
+      if ('lender' in changes || 'lender' in b) {
+        try { await require('../lib/appraisal/note-buyer-checks').syncNoteBuyerFindings(db, req.params.id); } catch (_) {}
+      }
       // Loan Digital Twin (Sovereign 1/4): the same-write also feeds the twin so
       // the LOS-side value shows up as an observation next to any document-sourced
       // observations for the same fact. Best-effort.

@@ -271,6 +271,80 @@ const itemRow = async (id) => (await db.query(
     ok(open === 0 && r.retired >= 1, 'E9: moving off EMCAP retires the open note-buyer findings');
   }
 
+  // ============ F. the pre-merge audit's three defects, each pinned ============
+  // F1 — a settled note-buyer finding must NOT re-insert a duplicate row on every sync.
+  {
+    const f = await seedFile({ lender: 'EMCAP Financial' });
+    cleanupApps.push(f.appId); cleanupBors.push(f.borId);
+    const apprId = await insertAppraisal(f.appId, { lender_name: 'Another Lender LLC' });
+    await insertComp(apprId, { seq: '1', comp_set: 'arv' });
+    await insertComp(apprId, { seq: '4', comp_set: 'as_is' });
+    await nbChecks.syncNoteBuyerFindings(db, f.appId);
+    // Settle one finding, then sync repeatedly — the historical bug added a row per sync.
+    await db.query(
+      `UPDATE appraisal_findings SET status='dismissed', resolution='dismiss', resolved_at=now()
+        WHERE application_id=$1 AND code='emcap_lender_name'`, [f.appId]);
+    await require('../src/lib/underwriting/finding-decisions').record(db, {
+      applicationId: f.appId,
+      finding: { code: 'emcap_lender_name', field: 'appraiser', docValue: 'Another Lender LLC' },
+      origin: 'appraisal_finding', decision: 'dismiss', decidedBy: staff.id,
+    });
+    for (let i = 0; i < 3; i++) await nbChecks.syncNoteBuyerFindings(db, f.appId);
+    const rows = (await db.query(
+      `SELECT count(*)::int AS n FROM appraisal_findings
+        WHERE application_id=$1 AND code='emcap_lender_name'`, [f.appId])).rows[0].n;
+    ok(rows === 1, `F1: a settled note-buyer finding never duplicates on re-sync (rows=${rows}, expected 1)`);
+    // …and a still-required OPEN finding is not duplicated either.
+    const dup = (await db.query(
+      `SELECT code, count(*)::int AS n FROM appraisal_findings
+        WHERE application_id=$1 AND source='note_buyer' GROUP BY code HAVING count(*) > 1`, [f.appId])).rows;
+    ok(dup.length === 0, 'F1b: no note-buyer code has more than one row after repeated syncs');
+  }
+
+  // F2 — a super-admin OVERRIDE survives the boot backfill (it must not be re-litigated).
+  {
+    const f = await seedFile({});
+    cleanupApps.push(f.appId); cleanupBors.push(f.borId);
+    const apprId = await insertAppraisal(f.appId);
+    const review = await attach(f.appId, 'appraisal_review_cleared');
+    await insertFatal(f.appId, apprId);
+    // The override clears it deliberately, WITH a recorded reason (db/344 shape).
+    await db.query(
+      `UPDATE checklist_items
+          SET status='satisfied', signed_off_at=now(), signed_off_by=$2,
+              override_at=now(), override_by=$2, override_reason='owner accepted the collateral risk'
+        WHERE id=$1`, [review, staff.id]);
+    await ensureSchema();
+    const r = await itemRow(review);
+    ok(r.status === 'satisfied' && r.signed_off_at != null,
+      'F2: a super-admin override of the appraisal review SURVIVES the boot backfill');
+    // …while an ordinary sign-off in the same shape is still reopened (the control).
+    const f2 = await seedFile({});
+    cleanupApps.push(f2.appId); cleanupBors.push(f2.borId);
+    const appr2 = await insertAppraisal(f2.appId);
+    const rev2 = await attach(f2.appId, 'appraisal_review_cleared');
+    await insertFatal(f2.appId, appr2);
+    await db.query(`UPDATE checklist_items SET status='satisfied', signed_off_at=now(), signed_off_by=$2 WHERE id=$1`, [rev2, staff.id]);
+    await ensureSchema();
+    const r2 = await itemRow(rev2);
+    ok(r2.status === 'received' && r2.signed_off_at === null,
+      'F2b: an ordinary sign-off over open fatals is still reopened (the override is the only exemption)');
+  }
+
+  // F3 — "make it optional, then waive" cannot bypass the gate on the appraisal review.
+  {
+    const f = await seedFile({ as_is_value: null });
+    cleanupApps.push(f.appId); cleanupBors.push(f.borId);
+    const apprId = await insertAppraisal(f.appId);
+    const review = await attach(f.appId, 'appraisal_review_cleared');
+    await insertFatal(f.appId, apprId);
+    await db.query(`UPDATE checklist_items SET is_required=false WHERE id=$1`, [review]);
+    // The gate is what the waive door now consults — prove it still refuses on an OPTIONAL row.
+    const msg = await staffRoutes.signOffGate(review, { id: staff.id });
+    ok(typeof msg === 'string' && /fatal appraisal finding/i.test(msg),
+      'F3: the gate still refuses the appraisal review after it is made OPTIONAL (the waive door consults it)');
+  }
+
   // cleanup
   for (const id of cleanupApps) {
     await db.query('DELETE FROM appraisal_findings WHERE application_id=$1', [id]).catch(() => {});
