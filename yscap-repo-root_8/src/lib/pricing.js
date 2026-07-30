@@ -340,6 +340,23 @@ function normalize(program, input, ev, ladder) {
     maxArvLtv: num(ev.caps.maxARLTV),
     maxLtc: num(ev.caps.maxLTC),
   } : null;
+  /* `caps` above is the EFFECTIVE ceiling this deal was sized and priced at — the
+     right thing for every enforcement path (underwriting metrics, the structure
+     underwriter, the Encompass reconcile) to measure against, and it keeps that exact
+     meaning. `tierCaps` is the FIXED tier-grid row, added ONLY so a DISPLAY surface
+     can print the program maximum without printing a number that moves when a deal
+     input moves (owner-reported 2026-07-30: the studio's "Program maximum leverage —
+     from FICO & experience" changed as the interest reserve changed, because the
+     Silver engine's grid-aware step-down had lowered `caps` to reach a priced cell).
+     Silver publishes the row on its result; nothing else does, so it is null there and
+     a reader falls back to `caps`. Read-only — no number is computed here. */
+  const tierCaps = ev.tierCaps ? {
+    maxLoan: num(ev.tierCaps.maxLoan),
+    minFico: num(ev.tierCaps.minFico),
+    maxAcqLtv: num(ev.tierCaps.maxAcqLTV),
+    maxArvLtv: num(ev.tierCaps.maxARLTV),
+    maxLtc: num(ev.tierCaps.maxLTC),
+  } : null;
 
   const quote = {
     program,
@@ -394,6 +411,10 @@ function normalize(program, input, ev, ladder) {
     liquidity: liquidityRequired,
     guidelines: {
       caps,
+      tierCaps,
+      // the engine's own sentence explaining why this deal's ceiling sits under the
+      // tier maximum (Silver's grid step-down tags it `leverage_capped`)
+      leverageCappedWhy: (ev.reasons || []).filter((r) => r && r.code === 'leverage_capped').map((r) => r.msg).join(' ') || null,
       tierLabel: ev.tierLabel || null,
       binding: (s && s.binding) || '',
       reserveRequirement,

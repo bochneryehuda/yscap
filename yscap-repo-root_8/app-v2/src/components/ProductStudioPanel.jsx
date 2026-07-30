@@ -216,6 +216,18 @@ export function RegisteredProductDetails({ reg, compactView = false, showAdmin =
   const s = q.sizing || {};
   const cc = q.closingCosts || {};
   const caps = (q.guidelines && q.guidelines.caps) || null;
+  // The FIXED tier maximum (the Silver engine publishes its own Tier Grid row; other
+  // programs don't, so we fall back to the effective caps). `caps` is the ceiling THIS
+  // deal was priced at, which on Silver can sit below the tier maximum once the
+  // grid-aware step-down has moved the deal to a priced cell — and a financed interest
+  // reserve is part of the cost basis, so it moves that ceiling. Owner-reported
+  // 2026-07-30: a label promising the PROGRAM maximum must never move with a deal
+  // input. Display only; no number is computed here.
+  const tierCaps = (q.guidelines && q.guidelines.tierCaps) || null;
+  const cappedWhy = (q.guidelines && q.guidelines.leverageCappedWhy) || null;
+  const progMax = tierCaps || caps;
+  const pricedLower = !!(tierCaps && caps && (
+    caps.maxLtc < tierCaps.maxLtc - 1e-9 || caps.maxArvLtv < tierCaps.maxArvLtv - 1e-9 || caps.maxAcqLtv < tierCaps.maxAcqLtv - 1e-9));
   const Row = ({ k, v }) => <div className="metrow"><span className="k">{k}</span><span className="v">{v}</span></div>;
   return (
     <div className={compactView ? '' : 'panel'} style={compactView ? {} : { background: 'var(--ink-2)', marginTop: 10 }}>
@@ -251,12 +263,19 @@ export function RegisteredProductDetails({ reg, compactView = false, showAdmin =
           <Row k="Loan-to-ARV" v={pct(s.arvPct, 1)} />
           {reg.target_ltc > 0 && <Row k="Selected leverage (LTC target)" v={pct(reg.target_ltc, 1)} />}
           {s.binding && <Row k="Binding limit" v={s.binding} />}
-          {caps && ((q.kind === 'bridge' || caps.maxLtc >= 1 || caps.maxArvLtv >= 1)
+          {progMax && ((q.kind === 'bridge' || progMax.maxLtc >= 1 || progMax.maxArvLtv >= 1)
             // Bridge (and any no-cap product) has no LTC/ARV ceiling — the engine
             // uses a 100% sentinel. Don't display "100.0%" as if it were a real cap;
             // show only the as-is advance cap that actually governs (audit #12).
-            ? <Row k="Program max — as-is" v={pct(caps.maxAcqLtv, 1)} />
-            : <Row k="Program max — LTC / ARV / as-is" v={`${pct(caps.maxLtc, 1)} / ${pct(caps.maxArvLtv, 1)} / ${pct(caps.maxAcqLtv, 1)}`} />)}
+            ? <Row k="Program max (tier) — as-is" v={pct(progMax.maxAcqLtv, 1)} />
+            : <Row k="Program max (tier) — LTC / ARV / as-is" v={`${pct(progMax.maxLtc, 1)} / ${pct(progMax.maxArvLtv, 1)} / ${pct(progMax.maxAcqLtv, 1)}`} />)}
+          {pricedLower && <Row k="Most this deal can be priced at — LTC / ARV" v={`${pct(caps.maxLtc, 1)} / ${pct(caps.maxArvLtv, 1)}`} />}
+          {pricedLower && (
+            <p className="small" style={{ margin: '6px 0 0', color: '#4B585C' }}>
+              {cappedWhy || 'On this deal the program prices a lower leverage band than the tier maximum.'}{' '}
+              The program maximum above is set by the tier (FICO and experience) and does not change when the deal changes — including the interest reserve.
+            </p>
+          )}
         </div>
         <div>
           <p className="muted small" style={{ margin: '0 0 4px', textTransform: 'uppercase', letterSpacing: '.06em' }}>Fees & cash to close</p>

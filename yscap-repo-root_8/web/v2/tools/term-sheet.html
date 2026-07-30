@@ -113,6 +113,12 @@
   .ts-cta .btn{ width:100%; justify-content:center; }
   .ts-compliance{ font-size:.72rem; color:var(--muted-2); line-height:1.6; margin-top:1.1rem; padding-top:1rem; border-top:1px solid var(--line-2); }
   .rate-hint{ font-size:.72rem; color:var(--muted-2); margin-top:.4rem; }
+  /* The interest-reserve truth line: what was requested vs what the loan actually
+     finances, and why they differ (owner-reported 2026-07-30). Spans both columns of
+     the two-column field grid so it sits directly under the months / dollar pair. */
+  .ir-fin{ grid-column:1 / -1; margin:-.25rem 0 .25rem; padding:.55rem .75rem; border-radius:9px;
+           font-size:.78rem; line-height:1.5; color:var(--ivory); background:rgba(201,168,106,.09);
+           border-left:3px solid var(--gold,#c9a86a); }
   .ys-toast{ position:fixed; left:50%; bottom:28px; transform:translate(-50%,16px); background:var(--ink); color:var(--ivory-soft); border:1px solid var(--line); padding:.7rem 1.1rem; border-radius:12px; font-size:.85rem; opacity:0; pointer-events:none; transition:.25s; z-index:90; box-shadow:0 14px 40px rgba(0,0,0,.4); }
   .ys-toast.show{ opacity:1; transform:translate(-50%,0); }
   /* ---- eligibility + program max leverage ---- */
@@ -536,7 +542,8 @@
             <p class="panel-note cond hidden" data-cond="bridgeOnly">A bridge loan is sized against the as-is value only — there's no rehab holdback, after-repair value or interest reserve. Just set your requested term below.</p>
             <div class="field-rows two-col">
                 <div class="field cond" data-cond="hasRehab"><label for="irMonths">Interest reserve <em>(months)</em><span class="tip" tabindex="0" role="note" aria-label="Months of interest payments built into the loan so the project carries itself and you don’t pay out of pocket during construction. It’s added to the loan amount, not brought to closing.">i<span class="tip-bub">Months of interest payments built into the loan so the project carries itself and you don’t pay out of pocket during construction. It’s added to the loan amount, not brought to closing.</span></span></label><div class="input"><input id="irMonths" type="number" inputmode="numeric" min="0" max="24" placeholder="e.g. 6"></div></div>
-                <div class="field cond" data-cond="hasRehab"><label for="irAmount">…or as a dollar amount <em>($)</em><span class="tip" tabindex="0" role="note" aria-label="The interest reserve is one thing shown two ways. Type a number of months or an exact dollar amount — fill in either one and the other fills in to match. It is fit under the same leverage caps and added to the loan, not brought to closing.">i<span class="tip-bub">The interest reserve is one thing shown two ways — type a number of <b>months</b> or an exact <b>dollar amount</b>, and the other fills in to match. Fit under the same leverage caps; added to the loan, not brought to closing.</span></span></label><div class="input"><input id="irAmount" type="number" inputmode="numeric" min="0" step="1000" placeholder="e.g. 40,000"></div></div>
+                <div class="field cond" data-cond="hasRehab"><label for="irAmount">…or as a dollar amount <em>($)</em><span class="tip" tabindex="0" role="note" aria-label="The interest reserve is one thing shown two ways. Type a number of months or an exact dollar amount — fill in either one and the other fills in to match. This box always shows the reserve the loan actually finances after the program caps, so it can differ from months times the payment.">i<span class="tip-bub">The interest reserve is one thing shown two ways — type a number of <b>months</b> or an exact <b>dollar amount</b>. This box always shows the reserve the loan <b>actually finances</b> for the program shown (after the leverage and term caps), so it can differ from months × the payment; added to the loan, not brought to closing.</span></span></label><div class="input"><input id="irAmount" type="number" inputmode="numeric" min="0" step="1000" placeholder="e.g. 40,000"></div></div>
+                <div class="ir-fin" id="irFinNote" role="status" aria-live="polite" style="display:none"></div>
                 <div class="field"><label for="tsTerm">Requested term <em>(months)</em></label><div class="input select"><select id="tsTerm">
                     <option value="6">6 months</option>
                     <option value="12" selected>12 months</option>
@@ -736,12 +743,25 @@
             <ul class="reasons" id="rReasons"></ul>
             <div class="ts-state-note" id="rStateNote" style="display:none"></div>
             <div class="ts-manual" id="rManualWrap" style="display:none"></div>
-            <div class="ts-sub">Program maximum leverage <em style="font-style:normal;color:var(--muted-2);text-transform:none;letter-spacing:0">— from FICO &amp; experience</em></div>
+            <div class="ts-sub">Program maximum leverage <em style="font-style:normal;color:var(--muted-2);text-transform:none;letter-spacing:0">— from FICO &amp; experience. These do not change with the deal.</em></div>
             <div class="maxlev">
                 <div class="ml cond" data-cond="hasRehab"><div class="mlk">Max loan-to-cost</div><div class="mlv" id="rMaxLtc">—</div></div>
                 <div class="ml"><div class="mlk">Max as-is (initial)</div><div class="mlv" id="rMaxLtv">—</div></div>
                 <div class="ml cond" data-cond="hasRehab"><div class="mlk">Max loan-to-ARV</div><div class="mlv" id="rMaxArv">—</div></div>
                 <div class="ml"><div class="mlk">Max loan amount</div><div class="mlv" id="rMaxLoan">—</div></div>
+            </div>
+            <!-- The tier maximum above is FIXED. This deal's own ceiling can be lower —
+                 that is a separate, clearly-labelled line, never a rewrite of the
+                 numbers above (owner-reported 2026-07-30: "the Max LTC should never
+                 change, each tier has its own Max LTC"). Hidden whenever the deal
+                 reaches the tier maximum. -->
+            <div id="rPricedWrap" style="display:none">
+                <div class="ts-sub">The most this deal can be priced at <em style="font-style:normal;color:var(--muted-2);text-transform:none;letter-spacing:0">— lower than the program maximum on this deal</em></div>
+                <div class="maxlev">
+                    <div class="ml cond" data-cond="hasRehab"><div class="mlk">This deal — loan-to-cost</div><div class="mlv" id="rPricedLtc">—</div></div>
+                    <div class="ml cond" data-cond="hasRehab"><div class="mlk">This deal — loan-to-ARV</div><div class="mlv" id="rPricedArv">—</div></div>
+                </div>
+                <p class="ts-note" id="rPricedWhy" style="margin-top:.4rem"></p>
             </div>
         </div>
 
@@ -864,10 +884,10 @@
 <script src="rb-logo.js?v=admin8"></script>
 <script src="standard-program.js?v=asgseller18-asgelig"></script>
 <script src="gold-standard.js?v=asgseller19"></script>
-<script src="silver-program.js?v=silver4"></script>
+<script src="silver-program.js?v=silver5-tiercaps"></script>
 <script src="title-cost.js?v=admin8"></script>
 <script src="address-autocomplete.js?v=admin9"></script>
-<script src="termsheet.js?v=cards7"></script>
+<script src="termsheet.js?v=cards7-irtruth1-maxlev1"></script>
 <script src="../float-actions.js?v=admin10-applyfix"></script>
 <script>
 /* Property-address autocomplete (owner-directed 2026-07-17): same shared YSAddr

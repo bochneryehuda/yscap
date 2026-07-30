@@ -691,7 +691,11 @@
 
   function evaluateBand(input, sizeBand, loanCapOverride) {
     var reasons = [], status = "ELIGIBLE";
-    function add(level, msg) { reasons.push({ level: level, msg: msg }); if (RANK[level] > RANK[status]) status = level; }
+    // The tier-grid row for this product | purpose | tier, verbatim. Filled the moment
+    // the row is read (below) and NEVER narrowed — see the note there. null until then,
+    // and on the paths that never get a row (no such tier combination).
+    var tierRow = null;
+    function add(level, msg, code) { var r = { level: level, msg: msg }; if (code) r.code = code; reasons.push(r); if (RANK[level] > RANK[status]) status = level; }
 
     var loanType = clean(input.loanType) === "Refinance" ? "Refinance" : "Purchase";
     var purp = loanType === "Refinance" ? "R" : "P";
@@ -774,6 +778,21 @@
         add("INELIGIBLE", "This strategy isn't available for the selected loan type and experience.");
       return result(status, reasons, base());
     }
+    // READ-ONLY PASSTHROUGH of the TIER-GRID ROW, captured BEFORE anything narrows it
+    // (the loan-size band clamp below, a voluntary de-leverage, an admin override, and
+    // above all the grid-aware step-down further down). It is the FIXED guideline for
+    // this product | purpose | tier — the thing the studio's "Program maximum leverage
+    // — from FICO & experience" label promises — and it must never move when a DEAL
+    // input moves. Owner-reported 2026-07-30: "the Max LTC should never change, each
+    // tier has its own Max LTC … it shouldn't change based on what you're changing the
+    // interest reserve." The display read `caps` (the EFFECTIVE, post-step-down
+    // ceiling), so a financed interest reserve — which is part of the cost basis and
+    // therefore moves the deal into a different priced band — appeared to move the
+    // TIER's own maximum. `caps` keeps its exact meaning (the ceiling this deal was
+    // actually sized and priced at, which is the correct thing to ENFORCE against);
+    // `tierCaps` is the fixed guideline, for DISPLAY. No number, band edge, cap or
+    // sizing formula changes — this is a copy of a row the engine already read.
+    tierRow = { maxLoan: c.maxLoan, minFico: c.minFico, maxAcqLTV: c.maxAcqLTV, maxARLTV: c.maxARLTV, maxLTC: c.maxLTC };
     if (loanCapOverride > 0) c = { maxLoan: Math.min(c.maxLoan, loanCapOverride), minFico: c.minFico, maxAcqLTV: c.maxAcqLTV, maxARLTV: c.maxARLTV, maxLTC: c.maxLTC };
 
     // ---- NYC grid limits (no priced cells exist for these — fail with a plain reason) ----
@@ -1007,6 +1026,11 @@
         // NAME the guideline that actually holds the deal back — blaming
         // loan-to-cost for a cap the after-repair value set sent borrowers to
         // reduce the wrong number (GUC audit 2026-07-30, finding 3).
+        // The `code` is an ADDITIVE, stable marker (existing readers use .level/.msg
+        // only) so a DISPLAY surface can find this exact sentence without pattern-
+        // matching its wording — it is the "why is this deal's ceiling below the tier
+        // maximum" explanation the studio prints beside `tierCaps` (owner-directed
+        // 2026-07-30). No wording, level or number changes.
         if (cutLtc || cutAr) {
           add("ELIGIBLE", "Leverage is capped at " +
             (cutLtc && cutAr
@@ -1014,7 +1038,8 @@
               : cutAr
                 ? (pct2(best.caps.maxARLTV) + " of the after-repair value")
                 : (pct2(best.caps.maxLTC) + " loan-to-cost")) +
-            " — the program doesn't price this profile above " + (cutAr && !cutLtc ? "that after-repair band" : "that band") + " for this market.");
+            " — the program doesn't price this profile above " + (cutAr && !cutLtc ? "that after-repair band" : "that band") + " for this market.",
+            "leverage_capped");
         }
       }
     }
@@ -1115,7 +1140,11 @@
         program: "silver", market: market, sizeBand: sizeBand,
         tier: tier, tierLabel: tierLabel(tier), strategyCode: sc, product: pTok, exit: exit,
         loanType: loanType, cashOut: cashOut, projectCount: pcount, gcOnly: gcOnly,
-        pricingReady: fico > 0, assignment: assignment, caps: null, noteRate: 0, sizing: null
+        pricingReady: fico > 0, assignment: assignment, caps: null, noteRate: 0, sizing: null,
+        // The FIXED tier maximum (read-only; see where tierRow is filled). Present on
+        // EVERY result shape, including the early refusals, so a display surface never
+        // has to fall back to the effective caps to answer "what is this tier's max?".
+        tierCaps: tierRow
       };
       for (var k2 in (extra || {})) o[k2] = extra[k2];
       return o;
