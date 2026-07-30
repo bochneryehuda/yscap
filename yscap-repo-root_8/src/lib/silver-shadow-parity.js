@@ -212,6 +212,58 @@ function myKeyOf(R, mkt, sizeBand, prodTok, purp, termTok, tier, arRatio, fico, 
   if (!arB || !fB || !lB) return null;
   return [mkt, sizeBand, prodTok, purp, termTok, 'T' + tier, arB, fB, lB].join('|');
 }
+/* ---- OWNER-AUTHORIZED GUIDELINE, 2026-07-30 — transcribed here INDEPENDENTLY of the
+   engine, off the fixture's own band labels + rate cells (the same treatment the
+   matrix resolver gets). The owner: "Fix-and-flip & GUC tier 3 — Our system should
+   allow those 65% ARv. Bridge refi tier 1 — Our system should allow till 75% Arv.
+   GUC refi tier 2 / GUC purchase tier 2 — Leave this [as] actually being priced till
+   further notice."
+   A leverage cap sitting EXACTLY ON a band boundary — one 0.01-percentage-point step
+   above the band below, which is the entire gap the two-decimal band labels leave
+   between "<64.99%" and "65.00%-70.00%" — whose OWN band the workbook never prices,
+   while the band BELOW is priced for the family, is REACHABLE: the structure is bought
+   on the band immediately beneath it. A cap sitting DEEPER inside its band (GUC tier
+   2's 92.50% over the 89.99% edge) is a whole-band gap and is NOT this rule, so that
+   row still has to price at 85% or the monitor flags it. Teaching the monitor the rule
+   (rather than letting the knife-edge tolerance absorb it) keeps an UNDER-priced rate
+   on these very cells a real advisory. */
+const BAND_LABEL_STEP = 0.0001;
+function bandPricedFix(R, mkt, sizeBand, prodTok, purp, termTok, tier, fB, axis, idx) {
+  for (let i = 0; i < R.AR.length; i++) {
+    for (let k = 0; k < R.LTC.length; k++) {
+      if (axis === 'AR' ? i !== idx : k !== idx) continue;
+      const key = [mkt, sizeBand, prodTok, purp, termTok, 'T' + tier, R.AR[i].label, fB, R.LTC[k].label].join('|');
+      if (R.rates[key] != null) return true;
+    }
+  }
+  return false;
+}
+/** The band edge a structure sitting exactly AT `cap` is classified on, else null. */
+function capBoundaryEdgeS(R, mkt, sizeBand, prodTok, purp, termTok, tier, fico, axis, cap) {
+  const fB = myFicoBand(R, tier, fico);
+  if (!fB || !(cap > 0)) return null;
+  const bands = axis === 'AR' ? R.AR : R.LTC;
+  let b = -1;
+  for (let i = 0; i < bands.length; i++) if (cap <= bands[i].max + 1e-12) { b = i; break; }
+  if (b <= 0) return null;
+  const below = bands[b - 1].max;
+  if (!(cap - below > 1e-12 && cap - below <= BAND_LABEL_STEP + 1e-9)) return null;
+  if (bandPricedFix(R, mkt, sizeBand, prodTok, purp, termTok, tier, fB, axis, b)) return null;
+  if (!bandPricedFix(R, mkt, sizeBand, prodTok, purp, termTok, tier, fB, axis, b - 1)) return null;
+  return below;
+}
+/** The engine's cap snap + the authorized boundary rule, mirrored. */
+function atCapS(R, ctx, ratio, cap, axis) {
+  if (!(cap > 0)) return ratio;
+  if (ratio > cap && ratio < cap + 1e-6) ratio = cap;
+  // the WHOLE seam (bandBelowEdge, cap] — the workbook prices nothing inside it, so
+  // once the cap is bought on the band below every ratio in the seam is too.
+  if (ratio > 0 && ratio <= cap + 1e-6) {
+    const e = capBoundaryEdgeS(R, ctx.mkt, ctx.sizeBand, ctx.prodTok, ctx.purp, ctx.termTok, ctx.tier, ctx.fico, axis, cap);
+    if (e != null && ratio > e) return e;
+  }
+  return ratio;
+}
 // The engine's OWN raw-float band key (via its pure helpers, '-' placeholders)
 // — only used to prove a MANUAL no-cell verdict honest on a knife edge.
 function engKeyOf(SVP, mkt, sizeBand, prodTok, purp, termTok, tier, arRatio, fico, ltcRatio) {
@@ -389,7 +441,12 @@ function shadowCheckInner(input, result, opts) {
     const arDenom = isBR ? (arv || aiv) : arv;
     const arRatio = arDenom > 0 ? total / arDenom : 0;
     const ltc = num(sz.ltcPct);
-    const myKey = myKeyOf(R, market, sizeBand, prodTok, purp, termTok, tier, snap9(arRatio), fico, snap9(ltc));
+    // The exact-decimal workbook read, with the owner-authorized 2026-07-30 boundary
+    // rule applied off the fixture itself (see capBoundaryEdgeS).
+    const capCtx = { mkt: market, sizeBand, prodTok, purp, termTok, tier, fico };
+    const myKey = myKeyOf(R, market, sizeBand, prodTok, purp, termTok, tier,
+      atCapS(R, capCtx, snap9(arRatio), evCaps.maxARLTV, 'AR'), fico,
+      atCapS(R, capCtx, snap9(ltc > 0 ? ltc : evCaps.maxLTC), evCaps.maxLTC, 'LTC'));
     const fixRate = myKey != null ? R.rates[myKey] : undefined;
     const onEdge = nearBandEdge(R, snap9(ltc)) || nearBandEdge(R, snap9(arRatio));
 

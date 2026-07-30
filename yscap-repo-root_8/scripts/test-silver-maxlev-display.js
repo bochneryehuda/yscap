@@ -30,11 +30,28 @@
  *     result.pricedCeiling — what THIS deal was sized and priced at (may be lower)
  *     result.tierCaps      — the workbook Tier Grid row, verbatim (audit / parity)
  *
+ * OWNER-AUTHORIZED GUIDELINE CHANGE (2026-07-30, the owner's own words):
+ *   "Fix-and-flip & GUC tier 3 — Our system should allow those 65% ARv. Bridge refi
+ *    tier 1 — Our system should allow till 75% Arv. GUC refi tier 2 / GUC purchase
+ *    tier 2 — Leave this [as] actually being priced till further notice."
+ * A tier cap that sits EXACTLY ON a band boundary (one 0.01-percentage-point step
+ * above the band below — 65.00% over the "<64.99%" band, 75.00% over "<74.99%") whose
+ * own band the grid never prices, while the band below IS priced, is REACHABLE: the
+ * deal reaches the round cap and prices on the band immediately beneath it. So the
+ * reachable maxima below moved from the sliver to the cap:
+ *     FF|P|T3, GUC|P|T3, GUC|R|T3, BR|R|T3 — AR-LTV 64.99% → 65.00%
+ *     BR|R|T1                             — loan-to-cost 74.99% → 75.00%
+ * GUC|P|T2 / GUC|R|T2 are the counter-example and MUST NOT move: 92.5% is the TOP of
+ * its own band with two unpriced bands beneath it — a WHOLE-BAND gap, not a boundary
+ * sliver — so they stay at the actually-priced 85%. Section 1b pins that boundary.
+ *
  * WHAT THIS FILE PINS
  *   (1) REACHABILITY — result.caps equals min(tier-grid cap, highest priced band edge),
- *       recomputed HERE from the workbook FIXTURE, never from the engine's own logic.
- *       Includes the three families that advertise leverage the grid never prices:
- *         GUC|P|T2 92.5% → 85%,  GUC|R|T2 92.5% → 85%,  BR|R|T1 75% → 74.99%
+ *       except a cap sitting ON a priced-from-below band boundary, which is reachable.
+ *       Recomputed HERE from the workbook FIXTURE, never from the engine's own logic.
+ *       Includes the families that advertise leverage the grid never prices:
+ *         GUC|P|T2 92.5% → 85%,  GUC|R|T2 92.5% → 85%  (whole-band gap: still lowered)
+ *         BR|R|T1 75% → 75%  (boundary sliver: now reached)
  *       plus NYC, whose reachable maxima are lower still (F&F / GUC top out at 80%).
  *   (2) INVARIANCE — result.caps does not move across reserve months 0/3/6/9/12/18/24,
  *       an amount-driven reserve, rehab budgets, ARVs, prices and as-is values.
@@ -82,7 +99,36 @@ function ficoBandOf(tier, fico) {
   if (tier === 3) return fico >= 700 ? L[0] : fico >= 680 ? L[1] : fico >= 640 ? L[2] : null;
   return fico >= 700 ? L[0] : fico >= 660 ? L[1] : fico >= 640 ? L[2] : null;
 }
-/** min(tier cap, highest LTC/AR band with ANY priced fixture cell) for a family. */
+/* The band-label step: every band edge in this workbook is a percentage to TWO
+   decimals, so consecutive bands sit exactly one 0.01-percentage-point apart
+   ("<64.99%" then "65.00%-70.00%"). A cap ONE step above the band below sits ON the
+   boundary; a cap deeper inside its band (92.50% over an 89.99% edge) does not. */
+const BAND_LABEL_STEP = 0.0001;
+/** TRUE when band `idx` of `axis` carries ANY priced fixture cell for this family. */
+function bandPriced(mkt, size, prod, purp, term, tier, fb, axis, idx) {
+  for (let i = 0; i < AR_BANDS.length; i++) {
+    for (let k = 0; k < LTC_BANDS.length; k++) {
+      if (axis === 'AR' ? i !== idx : k !== idx) continue;
+      const key = `${mkt}|${size}|${prod}|${purp}|${term}|T${tier}|${AR_BANDS[i]}|${fb}|${LTC_BANDS[k]}`;
+      if (FIX.rates[key] != null) return true;
+    }
+  }
+  return false;
+}
+/** The owner-authorized rule, recomputed from the fixture: a cap on a band boundary
+ *  whose own band is unpriced while the band below prices is REACHED, not lowered. */
+function capOnPricedBoundary(mkt, size, prod, purp, term, tier, fb, axis, cap) {
+  const edges = axis === 'AR' ? AR_EDGE : LTC_EDGE;
+  let b = -1;
+  for (let i = 0; i < edges.length; i++) if (cap <= edges[i] + 1e-12) { b = i; break; }
+  if (b <= 0) return false;                                            // inside the lowest band / off the top
+  const below = edges[b - 1];
+  if (!(cap - below > 1e-12 && cap - below <= BAND_LABEL_STEP + 1e-9)) return false;   // not ON the boundary
+  if (bandPriced(mkt, size, prod, purp, term, tier, fb, axis, b)) return false;        // its own band prices
+  return bandPriced(mkt, size, prod, purp, term, tier, fb, axis, b - 1);               // the band below must price
+}
+/** min(tier cap, highest LTC/AR band with ANY priced fixture cell) for a family —
+ *  with the owner-authorized boundary rule of 2026-07-30 applied on top. */
 function specProgramMax(mkt, size, prod, purp, term, tier, fico) {
   const row = FIX.tierGrid[`${prod}|${purp}|T${tier}`];
   if (!row) return null;
@@ -99,6 +145,8 @@ function specProgramMax(mkt, size, prod, purp, term, tier, fico) {
   if (bestL < 0) return out;                       // nothing prices — the tier row stands
   if (LTC_EDGE[bestL] < out.maxLTC) out.maxLTC = LTC_EDGE[bestL];
   if (AR_EDGE[bestA] < out.maxARLTV) out.maxARLTV = AR_EDGE[bestA];
+  if (capOnPricedBoundary(mkt, size, prod, purp, term, tier, fb, 'LTC', row.maxltc)) out.maxLTC = row.maxltc;
+  if (capOnPricedBoundary(mkt, size, prod, purp, term, tier, fb, 'AR', row.maxar)) out.maxARLTV = row.maxar;
   return out;
 }
 
@@ -155,20 +203,28 @@ const OWNER_ROW = FIX.tierGrid['GUC|R|T2'];
   const NAMED = [
     { name: 'GUC|P|T2', prod: 'GUC', purp: 'P', tier: 2, wantLtc: 0.85, tierLtc: 0.925 },
     { name: 'GUC|R|T2', prod: 'GUC', purp: 'R', tier: 2, wantLtc: 0.85, tierLtc: 0.925 },
-    { name: 'BR|R|T1', prod: 'BR', purp: 'R', tier: 1, wantLtc: 0.7499, tierLtc: 0.75 },
+    // AUTHORIZED 2026-07-30: 75.00% sits ON the "<74.99%" boundary and the band below
+    // prices right across this family, so the tier cap IS reached — no longer 74.99%.
+    { name: 'BR|R|T1', prod: 'BR', purp: 'R', tier: 1, wantLtc: 0.75, tierLtc: 0.75 },
   ];
   for (const nm of NAMED) {
     const spec = specProgramMax('STD', 'S', nm.prod, nm.purp, '18', nm.tier, 700);
     ok(eqNum(spec.maxLTC, nm.wantLtc), `SPEC ${nm.name}: reachable LTC is ${pctS(nm.wantLtc)} (fixture says ${pctS(spec.maxLTC)})`);
     ok(eqNum(FIX.tierGrid[`${nm.prod}|${nm.purp}|T${nm.tier}`].maxltc, nm.tierLtc),
-      `SPEC ${nm.name}: the tier grid advertises ${pctS(nm.tierLtc)} — which is what a borrower must NOT be shown`);
+      `SPEC ${nm.name}: the tier grid advertises ${pctS(nm.tierLtc)}`);
+  }
+  // GUC tier 2 is the WHOLE-BAND gap the owner ruled stays lowered — it must still be
+  // shown at the actually-priced 85%, never at the 92.5% the tier grid advertises.
+  for (const purp of ['P', 'R']) {
+    const spec = specProgramMax('STD', 'S', 'GUC', purp, '18', 2, 700);
+    ok(eqNum(spec.maxLTC, 0.85), `SPEC GUC|${purp}|T2 STAYS at the priced 85% (got ${pctS(spec.maxLTC)}) — a whole-band gap is not a boundary sliver`);
   }
 
   // ...and the engine agrees, through evaluate(), on real deals.
   const LIVE = [
     { name: 'GUC|P|T2 STD S', wantLtc: 0.85, wantAr: 0.70, inp: { loanType: 'Purchase', strategy: 'Ground-up', state: 'NJ', zip: '07030', fico: 720, expGround: 1, purchasePrice: 600000, asIsValue: 650000, arv: 1500000, rehabBudget: 400000, term: 18 } },
     { name: 'GUC|R|T2 STD S', wantLtc: 0.85, wantAr: 0.70, inp: OWNER },
-    { name: 'BR|R|T1 STD S', wantLtc: 0.7499, wantAr: 0.75, inp: { loanType: 'Refinance', strategy: 'Bridge', state: 'NJ', zip: '07030', fico: 720, expFlips: 5, purchasePrice: 600000, asIsValue: 800000, arv: 900000, rehabBudget: 0, term: 18 } },
+    { name: 'BR|R|T1 STD S', wantLtc: 0.75, wantAr: 0.75, inp: { loanType: 'Refinance', strategy: 'Bridge', state: 'NJ', zip: '07030', fico: 720, expFlips: 5, purchasePrice: 600000, asIsValue: 800000, arv: 900000, rehabBudget: 0, term: 18 } },
     { name: 'FF|P|T1 NYC S', wantLtc: 0.80, wantAr: 0.75, inp: { loanType: 'Purchase', strategy: 'Fix & Flip', state: 'NY', zip: '11201', fico: 720, expFlips: 5, purchasePrice: 900000, asIsValue: 950000, arv: 1600000, rehabBudget: 300000, term: 18 } },
     { name: 'GUC|P|T1 NYC S', wantLtc: 0.80, wantAr: 0.75, inp: { loanType: 'Purchase', strategy: 'Ground-up', state: 'NY', zip: '10001', fico: 720, expGround: 5, purchasePrice: 900000, asIsValue: 950000, arv: 2200000, rehabBudget: 600000, term: 18 } },
   ];
@@ -179,6 +235,101 @@ const OWNER_ROW = FIX.tierGrid['GUC|R|T2'];
     ok(eqNum(ev.caps.maxLTC, c.wantLtc), `${c.name}: program max LTC ${pctS(c.wantLtc)} (got ${pctS(ev.caps.maxLTC)})`);
     ok(eqNum(ev.caps.maxARLTV, c.wantAr), `${c.name}: program max AR-LTV ${pctS(c.wantAr)} (got ${pctS(ev.caps.maxARLTV)})`);
     ok(ev.caps.maxLTC <= ev.tierCaps.maxLTC + 1e-12, `${c.name}: the program maximum never EXCEEDS the tier grid row`);
+  }
+})();
+
+/* ===================================================================== *
+ * 1b. THE AUTHORIZED BOUNDARY RULE — the WHOLE 18-row table, both markets,
+ *     both size bands, every term and FICO band. Exactly which rows may move,
+ *     and the hard assertion that GUC tier 2 is not one of them.
+ * ===================================================================== */
+(function section1b() {
+  // the PRE-CHANGE rule (min(tier cap, highest priced band edge)) recomputed here,
+  // so "what moved" is measured, never assumed.
+  function priorProgramMax(mkt, size, prod, purp, term, tier, fico) {
+    const row = FIX.tierGrid[`${prod}|${purp}|T${tier}`];
+    if (!row) return null;
+    const fb = ficoBandOf(tier, fico);
+    if (!fb) return null;
+    let bestL = -1, bestA = -1;
+    for (let i = 0; i < AR_BANDS.length; i++) for (let k = 0; k < LTC_BANDS.length; k++) {
+      const key = `${mkt}|${size}|${prod}|${purp}|${term}|T${tier}|${AR_BANDS[i]}|${fb}|${LTC_BANDS[k]}`;
+      if (FIX.rates[key] != null) { if (k > bestL) bestL = k; if (i > bestA) bestA = i; }
+    }
+    const out = { maxARLTV: row.maxar, maxLTC: row.maxltc };
+    if (bestL < 0) return out;
+    if (LTC_EDGE[bestL] < out.maxLTC) out.maxLTC = LTC_EDGE[bestL];
+    if (AR_EDGE[bestA] < out.maxARLTV) out.maxARLTV = AR_EDGE[bestA];
+    return out;
+  }
+  // The ONLY rows the owner's ruling reaches — anything else moving is a bleed.
+  const AUTHORIZED = {
+    'FF|P|T3': 'AR', 'GUC|P|T3': 'AR', 'GUC|R|T3': 'AR', 'BR|R|T3': 'AR', 'BR|R|T1': 'LTC',
+  };
+  const moved = new Set();
+  let compared = 0, badMove = 0, badDirection = 0;
+  for (const mkt of ['STD', 'NYC']) for (const size of ['S', 'L'])
+    for (const prod of ['FF', 'GUC', 'BR']) for (const purp of ['P', 'R']) for (const tier of [1, 2, 3])
+      for (const term of ['12', '18', '24']) for (const fico of [700, 685, 665, 645]) {
+        const now = specProgramMax(mkt, size, prod, purp, term, tier, fico);
+        const was = priorProgramMax(mkt, size, prod, purp, term, tier, fico);
+        if (!now || !was) continue;
+        compared++;
+        const rowName = `${prod}|${purp}|T${tier}`;
+        const row = FIX.tierGrid[rowName];
+        for (const [k, tierCap, axis] of [['maxLTC', row.maxltc, 'LTC'], ['maxARLTV', row.maxar, 'AR']]) {
+          if (eqNum(now[k], was[k])) continue;
+          moved.add(`${rowName} ${mkt} ${size} ${axis}`);
+          if (AUTHORIZED[rowName] !== axis) { badMove++; ok(false, `BLEED — ${rowName} ${mkt} ${size} ${axis} moved ${pctS(was[k])} → ${pctS(now[k])}, which the owner did not authorize`); }
+          // upward only, landing exactly on the tier cap, exactly one label step
+          if (!(now[k] > was[k]) || !eqNum(now[k], tierCap) || Math.abs(now[k] - was[k] - BAND_LABEL_STEP) > 1e-9) {
+            badDirection++;
+            ok(false, `${rowName} ${mkt} ${size} ${axis}: restatement is not "one 0.01-pt step up onto the tier cap" (${pctS(was[k])} → ${pctS(now[k])}, tier cap ${pctS(tierCap)})`);
+          }
+        }
+        // GUC tier 2 — the whole-band gap the owner ruled stays put.
+        if (prod === 'GUC' && tier === 2) {
+          if (!eqNum(now.maxLTC, was.maxLTC) || !eqNum(now.maxARLTV, was.maxARLTV)) {
+            ok(false, `GUC|${purp}|T2 ${mkt} ${size} term ${term} FICO ${fico}: the change BLED into GUC tier 2`);
+          }
+        }
+      }
+  ok(compared > 400, `compared ${compared} family/FICO combinations before vs after`);
+  ok(badMove === 0, `no row outside the owner's authorization moved (${badMove} bleeds)`);
+  ok(badDirection === 0, `every restatement is one 0.01-percentage-point step UP onto the tier cap (${badDirection} malformed)`);
+  ok(moved.size > 0, `${moved.size} row/market/size/axis combinations reached their tier cap: ${[...moved].sort().join(' | ')}`);
+  // GUC tier 2 stays at 85% wherever it prices at all, in EVERY market and size band.
+  let gucT2 = 0;
+  for (const mkt of ['STD', 'NYC']) for (const size of ['S', 'L']) for (const purp of ['P', 'R'])
+    for (const term of ['12', '18', '24']) for (const fico of [700, 665, 645]) {
+      const s = specProgramMax(mkt, size, 'GUC', purp, term, 2, fico);
+      if (!s) continue;
+      const anyPriced = !eqNum(s.maxLTC, 0.925) || !eqNum(s.maxARLTV, 0.75);
+      if (!anyPriced) continue;             // this FICO band prices nothing — the tier row stands
+      gucT2++;
+      ok(s.maxLTC <= 0.85 + 1e-12, `GUC|${purp}|T2 ${mkt}|${size} term ${term} FICO ${fico}: LTC still capped at the priced 85% (got ${pctS(s.maxLTC)})`);
+    }
+  ok(gucT2 > 0, `GUC tier 2 checked in ${gucT2} priced family/FICO combinations — every one still 85%`);
+
+  // ...and the ENGINE agrees on real deals for each row the ruling reached.
+  const REACHED = [
+    { name: 'BR|R|T1 STD S (LTC 75%)', axis: 'maxLTC', want: 0.75,
+      inp: { loanType: 'Refinance', strategy: 'Bridge', state: 'NJ', zip: '07030', fico: 720, expFlips: 5, purchasePrice: 600000, asIsValue: 800000, arv: 900000, rehabBudget: 0, term: 18 } },
+    { name: 'BR|R|T1 NYC S (LTC 75%)', axis: 'maxLTC', want: 0.75,
+      inp: { loanType: 'Refinance', strategy: 'Bridge', state: 'NY', zip: '11215', fico: 720, expFlips: 5, purchasePrice: 600000, asIsValue: 800000, arv: 900000, rehabBudget: 0, term: 18 } },
+    { name: 'FF|P|T3 STD S (AR 65%)', axis: 'maxARLTV', want: 0.65,
+      inp: { loanType: 'Purchase', strategy: 'Fix & Flip', state: 'NJ', zip: '07030', fico: 700, expFlips: 0, expHolds: 0, expGround: 0, purchasePrice: 400000, asIsValue: 420000, arv: 800000, rehabBudget: 120000, term: 12 } },
+    { name: 'GUC|P|T3 STD S (AR 65%)', axis: 'maxARLTV', want: 0.65,
+      inp: { loanType: 'Purchase', strategy: 'Ground-up', state: 'NJ', zip: '07030', fico: 700, expFlips: 0, expHolds: 0, expGround: 0, purchasePrice: 400000, asIsValue: 420000, arv: 900000, rehabBudget: 200000, term: 12 } },
+    { name: 'GUC|R|T3 STD S (AR 65%)', axis: 'maxARLTV', want: 0.65,
+      inp: { loanType: 'Refinance', strategy: 'Ground-up', state: 'NJ', zip: '07030', fico: 700, expFlips: 0, expHolds: 0, expGround: 0, purchasePrice: 400000, asIsValue: 420000, arv: 900000, rehabBudget: 200000, term: 12 } },
+    { name: 'BR|R|T3 STD S (AR 65%)', axis: 'maxARLTV', want: 0.65,
+      inp: { loanType: 'Refinance', strategy: 'Bridge', state: 'NJ', zip: '07030', fico: 700, expFlips: 0, expHolds: 0, expGround: 0, purchasePrice: 400000, asIsValue: 500000, arv: 0, rehabBudget: 0, term: 12 } },
+  ];
+  for (const c of REACHED) {
+    const ev = SVP.evaluate(Object.assign({}, c.inp, { irMonths: 0 }));
+    ok(!!ev.caps && eqNum(ev.caps[c.axis], c.want),
+      `${c.name}: the engine's program maximum reaches the tier cap ${pctS(c.want)} (got ${ev.caps ? pctS(ev.caps[c.axis]) : 'none'})`);
   }
 })();
 

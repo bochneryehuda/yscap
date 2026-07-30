@@ -178,6 +178,41 @@ function myKeyOf(mkt, sizeBand, prodTok, purp, termTok, tier, arRatio, fico, ltc
   if (!arB || !fB || !lB) return null;
   return [mkt, sizeBand, prodTok, purp, termTok, 'T' + tier, arB, fB, lB].join('|');
 }
+/* ---- OWNER-AUTHORIZED GUIDELINE, 2026-07-30 (transcribed here INDEPENDENTLY of the
+   engine, from the fixture's own band labels + rate cells): "Fix-and-flip & GUC tier 3
+   — Our system should allow those 65% ARv. Bridge refi tier 1 — Our system should
+   allow till 75% Arv. GUC refi tier 2 / GUC purchase tier 2 — Leave this [as] actually
+   being priced till further notice."
+   A leverage cap that sits EXACTLY ON a band boundary — one 0.01-percentage-point step
+   above the band below, which is the whole gap the two-decimal band labels leave
+   between "<64.99%" and "65.00%-70.00%" — whose OWN band the workbook never prices,
+   while the band BELOW is priced for the family, is REACHABLE: a structure sized to
+   that cap is bought on the band immediately beneath it. A cap sitting deeper inside
+   its band (GUC tier 2's 92.50% over the 89.99% edge) is a WHOLE-BAND gap and is NOT
+   this rule — that row keeps pricing at 85%, which the one-step test below enforces. */
+const BAND_LABEL_STEP = 0.0001;
+function bandListOf(axis) { return axis === 'AR' ? MY_AR : MY_LTC; }
+function fixBandPriced(mkt, sizeBand, prodTok, purp, termTok, tier, fB, axis, idx) {
+  for (let i = 0; i < MY_AR.length; i++) for (let k = 0; k < MY_LTC.length; k++) {
+    if (axis === 'AR' ? i !== idx : k !== idx) continue;
+    const key = [mkt, sizeBand, prodTok, purp, termTok, 'T' + tier, MY_AR[i].label, fB, MY_LTC[k].label].join('|');
+    if (FIX.rates[key] != null) return true;
+  }
+  return false;
+}
+// The band edge a structure sitting exactly AT `cap` is classified on, else null.
+function capBoundaryEdgeM(mkt, sizeBand, prodTok, purp, termTok, tier, fB, axis, cap) {
+  if (!fB || !(cap > 0)) return null;
+  const bands = bandListOf(axis);
+  let b = -1;
+  for (let i = 0; i < bands.length; i++) if (cap <= bands[i].max + 1e-12) { b = i; break; }
+  if (b <= 0) return null;
+  const below = bands[b - 1].max;
+  if (!(cap - below > 1e-12 && cap - below <= BAND_LABEL_STEP + 1e-9)) return null;
+  if (fixBandPriced(mkt, sizeBand, prodTok, purp, termTok, tier, fB, axis, b)) return null;
+  if (!fixBandPriced(mkt, sizeBand, prodTok, purp, termTok, tier, fB, axis, b - 1)) return null;
+  return below;
+}
 // Cap-edge float noise: a loan sized exactly AT a band edge can carry a ratio
 // like 0.9250000000000002 (2e-16 above the 0.925 edge). The workbook's own
 // arithmetic is exact decimals, so the EXACT cell lookup snaps to the 1e-9
@@ -196,7 +231,20 @@ function engKeyOf(mkt, sizeBand, prodTok, purp, termTok, tier, arRatio, fico, lt
 // rateKey are derived through it, so the key always names the cell actually
 // priced. Replicated here so the rateKey cross-check keeps mirroring the engine;
 // the knife-edge tolerances below deliberately keep using the RAW ratios.
-function atCapM(ratio, cap) { return (cap > 0 && ratio > cap && ratio < cap + 1e-6) ? cap : ratio; }
+// `ctx` (present for the AR / LTC axes) additionally carries the owner-authorized
+// boundary rule of 2026-07-30 — see capBoundaryEdgeM above.
+function atCapM(ratio, cap, axis, ctx) {
+  if (!(cap > 0)) return ratio;
+  if (ratio > cap && ratio < cap + 1e-6) ratio = cap;
+  // the WHOLE seam (bandBelowEdge, cap] — the workbook prices nothing inside it, so
+  // once the cap is bought on the band below every ratio in the seam is too.
+  if (axis && ctx && ratio > 0 && ratio <= cap + 1e-6) {
+    const e = capBoundaryEdgeM(ctx.mkt, ctx.sizeBand, ctx.prodTok, ctx.purp, ctx.termTok, ctx.tier,
+      myFicoBand(ctx.tier, ctx.fico), axis, cap);
+    if (e != null && ratio > e) return e;
+  }
+  return ratio;
+}
 // Every band BOUNDARY number from the fixture's own labels — uppers AND lowers
 // ("<64.99%" and "65.00%-70.00%" leave a gap, and tier caps like the 0.65 max
 // AR-LTV sit exactly ON a band's lower bound, so a cap-bound loan lands there).
@@ -719,8 +767,14 @@ function verifyScenario(cellName, cell, spec, input, ev, effCap, C, recordFail) 
     const arDenom = isBR ? (arv || input.asIsValue) : arv;
     const arRatio = arDenom > 0 ? total / arDenom : 0;
     const termTok = input.term <= 12 ? '12' : input.term <= 18 ? '18' : '24';
-    // exact workbook cell (decimal-snapped ratios — the workbook's own arithmetic)
-    const myKey = myKeyOf(spec.market, ev.sizeBand, prodTok, purp, termTok, tier, snap9(arRatio), input.fico, snap9(s.ltcPct));
+    const capCtx = { mkt: spec.market, sizeBand: ev.sizeBand, prodTok, purp, termTok, tier, fico: input.fico };
+    // exact workbook cell (decimal-snapped ratios — the workbook's own arithmetic),
+    // with the owner-authorized 2026-07-30 boundary rule applied off the fixture's own
+    // labels + cells: a structure sitting exactly AT a cap that lands ON an unpriced
+    // band's lower bound is bought on the band below.
+    const myKey = myKeyOf(spec.market, ev.sizeBand, prodTok, purp, termTok, tier,
+      atCapM(snap9(arRatio), evCaps.maxARLTV, 'AR', capCtx), input.fico,
+      atCapM(snap9(s.ltcPct > 0 ? s.ltcPct : evCaps.maxLTC), evCaps.maxLTC, 'LTC', capCtx));
     const fixRate = myKey ? FIX.rates[myKey] : undefined;
     // the engine's raw-float key — used ONLY by the mirror knife-edge tolerance
     const engKey = engKeyOf(spec.market, ev.sizeBand, prodTok, purp, termTok, tier, arRatio, input.fico, s.ltcPct);
@@ -729,8 +783,8 @@ function verifyScenario(cellName, cell, spec, input, ev, effCap, C, recordFail) 
     // item 3 — the key used to be derived from the RAW ratios and so named a cell
     // the workbook does not price whenever atCap fired)
     const engKeyRep = engKeyOf(spec.market, ev.sizeBand, prodTok, purp, termTok, tier,
-      atCapM(arRatio, evCaps.maxARLTV), input.fico,
-      atCapM(s.ltcPct > 0 ? s.ltcPct : evCaps.maxLTC, evCaps.maxLTC));
+      atCapM(arRatio, evCaps.maxARLTV, 'AR', capCtx), input.fico,
+      atCapM(s.ltcPct > 0 ? s.ltcPct : evCaps.maxLTC, evCaps.maxLTC, 'LTC', capCtx));
     if (ev.rateKey && engKeyRep !== ev.rateKey) bad(`rateKey derivation drift: engine ${ev.rateKey} vs derived ${engKeyRep}`);
     // …and a PRICED result's reported key must be a real workbook cell that ties
     // to the quoted rate (the point of the fix: the key names the cell charged)

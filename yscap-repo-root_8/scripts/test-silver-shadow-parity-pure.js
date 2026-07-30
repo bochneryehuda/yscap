@@ -135,11 +135,18 @@ const A = {
   const rOff = monitor.shadowCheck(E, offEdge, { evOverride: offEdge, markup: 0.005 });
   ok(rOff.ok === false && rOff.kind === 'eligibility_mismatch', `(e) MANUAL no-cell OFF the edge where the workbook prices → eligibility_mismatch (got ${JSON.stringify(rOff && rOff.kind)})`);
 
-  // NATURAL knife-edge (found by the 204k matrix runner, MATRIX_N=500 seed 1,
-  // cell BR:3:R): a cap-bound bridge refi whose AR ratio lands 1.9e-10 above
-  // the 64.99% edge — the frozen engine's raw float bands UP into an unpriced
-  // cell and routes to MANUAL while exact-decimal arithmetic prices the edge.
-  // Runs through the REAL engine replay (no evOverride).
+  /* The scenario below WAS the "natural knife-edge" (found by the 204k matrix runner,
+     MATRIX_N=500 seed 1, cell BR:3:R): a cap-bound bridge refi whose AR ratio lands
+     1.9e-10 ABOVE the 64.99% edge, i.e. inside the seam under BR|R|T3's 65.00% AR-LTV
+     tier cap. The engine used to band it UP into the unpriced "65.00%-70.00%" cell and
+     route the deal to manual review with no rate at all.
+     OWNER-AUTHORIZED 2026-07-30 ("Fix-and-flip & GUC tier 3 — Our system should allow
+     those 65% ARv"): a cap sitting exactly ON a band boundary the grid prices from
+     below is REACHABLE, and the whole seam beneath it prices on that lower band. So
+     this deal is no longer a knife-edge refusal — it PRICES, at the same loan amount,
+     on the "<64.99%" cell. The pin is updated to the authorized behaviour; the
+     synthetic 92.5%-LTC case above still covers the genuine `edge_manual` tolerance
+     (92.5% is the TOP of its own band, not a boundary seam, so it is untouched). */
   const NAT = {
     loanType: 'Refinance', cashOut: false, strategy: 'Bridge (stabilized)', state: 'AZ', zip: '85001', city: '',
     propertyType: 'single family', ownerOccupied: false, fico: 782, expFlips: 0, expHolds: 0, expGround: 0,
@@ -147,11 +154,21 @@ const A = {
     monthlyRent: 0, payoff: 389649, targetLTC: 0.6499, markupSilverPct: 0.5,
   };
   const evNat = evalWith(NAT, 0.005);
-  ok(evNat.status === 'MANUAL' && !(evNat.noteRate > 0) &&
-     (evNat.reasons || []).some((x) => /No priced grid cell/.test(x.msg)),
-    '(e) the NATURAL knife-edge scenario reproduces (engine MANUAL, no cell)');
+  ok(evNat.status === 'ELIGIBLE' && evNat.noteRate > 0 &&
+     !(evNat.reasons || []).some((x) => /No priced grid cell/.test(x.msg)),
+    `(e) AUTHORIZED cap-seam: the former knife-edge refusal now PRICES (got ${evNat.status} @ ${evNat.noteRate})`);
+  ok(evNat.rateKey === 'STD|S|BR|R|18|T3|<64.99%|FICO 700+|<74.99%',
+    `(e) …on the band immediately BELOW the 65% cap (got ${evNat.rateKey})`);
+  ok(FIX.rates[evNat.rateKey] != null && Math.abs(evNat.noteRate - (FIX.rates[evNat.rateKey] + 0.005)) < 1e-9,
+    '(e) …and the quoted rate is exactly that workbook cell + the markup');
   const rNat = monitor.shadowCheck(NAT, evNat);
-  ok(rNat.ok === true && rNat.edge === 'edge_manual', `(e) natural knife-edge MANUAL through the real replay → ok/tolerated (got ${JSON.stringify(rNat)})`);
+  ok(rNat.ok === true && !rNat.edge,
+    `(e) the monitor ties it out EXACTLY — no advisory, and no knife-edge tolerance needed (got ${JSON.stringify(rNat)})`);
+  // …and it is still not a blank cheque: quote the same deal one band LOW and the
+  // monitor must still flag it.
+  const rNatLow = monitor.shadowCheck(NAT, { ...evNat, noteRate: evNat.noteRate - 0.00125 });
+  ok(rNatLow.ok === false && rNatLow.kind === 'rate_mismatch',
+    `(e) the same cap-seam cell quoted one band LOW is STILL a rate_mismatch (got ${JSON.stringify(rNatLow && rNatLow.kind)})`);
 })();
 
 /* caps drift → cap_mismatch */
