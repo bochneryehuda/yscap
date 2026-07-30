@@ -74,7 +74,10 @@ function configured() {
 }
 function enabled() { return switches.on('ENCOMPASS_FLOOD_ENABLED'); }
 function outboundEnabled() { return switches.on('ENCOMPASS_FLOOD_OUTBOUND_ENABLED'); }
-function dryrun() { return !!(flood.dryrun || process.env.ENCOMPASS_FLOOD_DRYRUN === '1'); }
+// Test mode. Live-toggleable on the API-Health page (switches.js) AND settable by
+// env — either one turns it on. Checked BEFORE the outbound gate in placeOrder, so
+// it always wins: leaving it on can never send a real order.
+function dryrun() { return !!(flood.dryrun || process.env.ENCOMPASS_FLOOD_DRYRUN === '1' || switches.on('ENCOMPASS_FLOOD_DRYRUN')); }
 
 // ── Path builders (the guard's allowlist is derived from THESE) ──────────────
 const GUID = '[A-Za-z0-9-]{8,64}';

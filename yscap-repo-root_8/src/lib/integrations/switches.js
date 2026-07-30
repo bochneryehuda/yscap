@@ -32,6 +32,9 @@ const SWITCHES = [
   // Encompass FLOOD ordering — the one owner-authorized WRITE into Encompass.
   // Master turns on reads + the poll worker; OUTBOUND actually places an order.
   { key: 'ENCOMPASS_FLOOD_ENABLED', integration: 'encompass', label: 'Order flood certificates from Encompass (reading + polling)', dangerous: false, resume: true, envDefault: () => cfg.encompassFloodEnabled },
+  // Test mode: build + log the order but send NOTHING. Dry-run wins over the write
+  // gate (checked first), so it is always safe to leave on while verifying.
+  { key: 'ENCOMPASS_FLOOD_DRYRUN', integration: 'encompass', label: 'Flood orders — TEST MODE (build the order but don’t send it)', dangerous: false, envDefault: () => !!(cfg.encompassFlood && cfg.encompassFlood.dryrun) },
   { key: 'ENCOMPASS_FLOOD_OUTBOUND_ENABLED', integration: 'encompass', label: 'Place flood orders in Encompass (write)', dangerous: true, envDefault: () => cfg.encompassFloodOutboundEnabled },
   // Dangerous: this one WRITES a loan value. Off = PILOT still reads the As-Is off the appraisal and
   // still shows it on the "Confirm the As-Is value" condition; it just never changes the file itself.

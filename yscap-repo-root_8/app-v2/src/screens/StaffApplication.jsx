@@ -933,10 +933,23 @@ function OrderFloodButton({ appId, itemId, onChanged }) {
       </div>
     );
   }
+  const isDry = order && order.status === 'dryrun';
   return (
     <div style={{ marginTop: 6 }}>
-      <button className="btn ghost small" disabled={busy || !state.hasLoanNumber} onClick={placeOrder}>
-        {busy ? 'Ordering…' : errored ? 'Order flood certificate again' : 'Order flood certificate'}
+      {isDry && (
+        <div className="small" style={box}>
+          <div style={{ fontWeight: 600, color: '#141B22' }}>Test run — nothing was sent</div>
+          <div style={{ color: '#4B585C', marginTop: 2 }}>Test mode is on, so PILOT built the order but did not send it to Encompass. Turn test mode off (in Settings → API health) to place a real order.</div>
+          {order.raw && (
+            <details style={{ marginTop: 6 }}>
+              <summary style={{ color: '#256168', cursor: 'pointer' }}>What PILOT would send (technical)</summary>
+              <pre style={{ whiteSpace: 'pre-wrap', color: '#141B22', background: '#F4F1EA', padding: 8, borderRadius: 6, marginTop: 4, fontSize: 11 }}>{JSON.stringify(order.raw, null, 2)}</pre>
+            </details>
+          )}
+        </div>
+      )}
+      <button className="btn ghost small" style={{ marginTop: isDry ? 6 : 0 }} disabled={busy || !state.hasLoanNumber} onClick={placeOrder}>
+        {busy ? 'Ordering…' : (errored || isDry) ? 'Order flood certificate again' : 'Order flood certificate'}
       </button>
       {!state.hasLoanNumber && (
         <div className="small" style={{ color: '#4B585C', marginTop: 4 }}>Add a loan number to this file first — the loan number links it to the Encompass loan.</div>
