@@ -484,7 +484,8 @@ async function gatherInvestorInputs(applicationId, db) {
   try {
     const fieldReg = require('../conditions/field-registry');
     const f = await db.query(
-      `SELECT fema_flood_sfha, fema_flood_zone, flood_zone, nbhd_location_type, condition_of_appraisal, lender_name
+      `SELECT fema_flood_sfha, fema_flood_zone, flood_zone, nbhd_location_type, condition_of_appraisal, lender_name,
+              mc_months_supply
          FROM appraisals WHERE application_id = $1 AND superseded = false
          ORDER BY imported_at DESC LIMIT 1`, [applicationId]);
     const r = f.rows[0];
@@ -518,6 +519,17 @@ async function gatherInvestorInputs(applicationId, db) {
       if (cond === 'SubjectToCompletion') out.appraisal_mid_construction = true;
       else if (cond === 'AsIs' || cond === 'SubjectToRepairs' || cond === 'SubjectToInspection') out.appraisal_mid_construction = false;
       // else: null/blank/unrecognized enum → OMIT (unknown, never fabricated)
+
+      // housing_months_supply — feeds the EMCAP advisory isg_emcap_high_housing_supply
+      // (owner-directed 2026-07-30: EMCAP's registration excludes "MSAs with over 10
+      // months housing supply (MSA, product type & re-sale price range should all be
+      // considered)" — surfaced as an escalation review, never an auto-refusal, because
+      // the sheet's own wording makes it an MSA-level judgment while this number is the
+      // appraisal's 1004MC market grid (appraisals.mc_months_supply, db/162), the
+      // closest machine-readable signal the file carries). NULL / no 1004MC → OMITTED
+      // (never fabricated), so the rule stays silent until an appraisal states it.
+      const ms = r.mc_months_supply == null ? NaN : Number(r.mc_months_supply);
+      if (isFinite(ms)) out.housing_months_supply = ms;
 
       // appraisal_transferred — a TRANSFER is an appraisal ordered by SOMEONE ELSE, i.e. the lender
       // on the appraisal is not YS Capital Group (owner 2026-07-27: "once you analyze the XML and

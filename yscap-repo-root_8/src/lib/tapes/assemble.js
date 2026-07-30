@@ -16,6 +16,7 @@
  * the exact basis our own engine prices on, so a tape's tier matches our price.
  */
 const { RECENT_EXIT_SQL } = require('../experience');
+const { preferredFinancingAddress } = require('../usps-verify');
 
 function num(v) { if (v == null || v === '') return null; const n = Number(v); return isFinite(n) ? n : null; }
 
@@ -112,8 +113,9 @@ async function assembleTapeLoan(appId, db) {
       .filter((r) => r.amount > 0);
   } catch (_) { releases = []; }
 
-  // Property address is a jsonb blob on the application (no separate table).
-  const addr = app.property_address || {};
+  // Capital-provider tapes use the USPS-standardized address whenever the file
+  // carries a confirmed USPS stamp. The working address remains untouched.
+  const addr = preferredFinancingAddress(app);
 
   return {
     found: true,
@@ -126,6 +128,11 @@ async function assembleTapeLoan(appId, db) {
       state: addr.state || '',
       zip: addr.zip || '',
       oneLine: addr.oneLine || '',
+    },
+    addressVerification: {
+      source: addr === app.usps_address ? 'usps' : 'working',
+      status: app.usps_match || null,
+      verifiedAt: app.usps_verified_at || null,
     },
     borrower: { first: app.b_first, last: app.b_last, email: app.b_email, fico: num(app.b_fico), citizenship: app.b_citizenship },
     coBorrower: app.co_borrower_id ? { first: app.cb_first, last: app.cb_last, fico: num(app.cb_fico), citizenship: app.cb_citizenship } : null,

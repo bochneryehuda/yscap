@@ -43,6 +43,8 @@ const { CONDITION_TYPES, TOOLS, CATEGORIES, conditionTypeOf } = require('../lib/
 const { strayConditionReason, strayConditionMessage } = require('../lib/conditions/label-sanity');
 const adminOverride = require('../lib/conditions/admin-override');        // super-admin condition override (owner-directed 2026-07-27)
 const { raiseEntityIssue } = require('../lib/raise-issue');
+const uspsVerify = require('../lib/usps-verify');
+const { componentsOf: uspsComponentsOf } = require('../lib/address-usps-verify');
 
 const { can } = require('../lib/permissions');
 // Every staff persona reaches the console; per-file scoping + capability gates
@@ -1479,6 +1481,123 @@ router.get('/applications/:id', async (req, res) => {
   res.json(fileRow);
 });
 
+// USPS ADDRESS VERIFICATION — staff-only, file-scoped by the middleware above.
+// A check stages USPS's answer beside the working address. Only the separate
+// import action adopts it and clears the enforced condition.
+router.get('/applications/:id/usps-verification', async (req, res) => {
+  try {
+    const row = (await db.query(
+      `SELECT a.property_address, a.usps_address, a.usps_match, a.usps_dpv,
+              a.usps_verified_at, a.usps_imported_at,
+              ci.id AS condition_id, ci.status AS condition_status,
+              ci.signed_off_at
+         FROM applications a
+         LEFT JOIN checklist_templates t ON t.code='usps_address_verification'
+         LEFT JOIN checklist_items ci ON ci.application_id=a.id AND ci.template_id=t.id
+        WHERE a.id=$1`, [req.params.id])).rows[0];
+    if (!row) return res.status(404).json({ error: 'not found' });
+    res.json({ configured: uspsVerify.configured(), required: cfg.usps.conditionRequired, ...row });
+  } catch (e) {
+    console.error('[usps] verification status failed:', db.describeError(e));
+    res.status(500).json({ error: 'could not load USPS verification' });
+  }
+});
+
+router.post('/applications/:id/usps-verification/check', async (req, res) => {
+  try {
+    const app = (await db.query(
+      'SELECT property_address, usps_imported_at FROM applications WHERE id=$1 AND deleted_at IS NULL',
+      [req.params.id])).rows[0];
+    if (!app) return res.status(404).json({ error: 'not found' });
+    const ADDR = require('../lib/address');
+
+    // Verify EITHER an edited candidate typed into the verification screen (so staff
+    // can correct a failed address and re-check without touching the file) OR the
+    // file's current working address. Editing here never changes property_address —
+    // only the separate Import action adopts the deliverable USPS result.
+    const edit = req.body && req.body.address;
+    const hasEdit = edit && typeof edit === 'object' && !Array.isArray(edit) && (edit.line1 || edit.street);
+    const input = hasEdit
+      ? { line1: edit.line1 || edit.street, unit: edit.unit || edit.secondary || '',
+          city: edit.city || '', state: edit.state || '', zip: edit.zip || edit.zipcode || '' }
+      : uspsComponentsOf(app.property_address);
+    if (!input || !input.line1 || !input.state) {
+      return res.status(422).json({ error: hasEdit
+        ? 'Enter at least a street address, city and state to check with USPS.'
+        : 'This file has no complete property address yet — edit the address in the box below, then check it with USPS.' });
+    }
+
+    const out = await uspsVerify.standardize(input, { db, noCache: !!(req.body && req.body.refresh) });
+    if (out.status === 'not_configured') return res.status(503).json({ error: 'USPS credentials are not configured on this service.' });
+    if (out.status === 'rate_limited') return res.status(429).json({ error: 'The USPS hourly lookup limit is currently reached. Try again in a little while.' });
+    if (out.status === 'error') return res.status(502).json({ error: 'USPS could not verify this address right now — try again in a moment.' });
+
+    // Preserve an existing import ONLY when the freshly standardized address is the
+    // one already imported as the working address (a harmless re-check). Any other
+    // result is a NEW proposal that must be explicitly imported again, so the ordering
+    // gate re-arms until it is.
+    const canon = (a) => a ? ADDR.canonicalOneLine({
+      line1: a.line1 || a.street, unit: a.unit || a.secondary,
+      city: a.city, state: a.state, zip: String(a.zip || '').slice(0, 5),
+    }).toLowerCase() : '';
+    const workingCanon = canon(uspsComponentsOf(app.property_address));
+    const resultCanon = canon(out.address);
+    const keepImported = !!app.usps_imported_at && !!resultCanon
+      && resultCanon === workingCanon && ['verified', 'corrected'].includes(out.status);
+
+    await db.query(
+      `UPDATE applications
+          SET usps_address=$2, usps_match=$3, usps_dpv=$4, usps_verified_at=now(),
+              usps_imported_at = CASE WHEN $5 THEN usps_imported_at ELSE NULL END,
+              updated_at=now()
+        WHERE id=$1`,
+      [req.params.id, out.address ? JSON.stringify(out.address) : null, out.status,
+        out.dpv ? JSON.stringify(out.dpv) : null, keepImported]);
+    await audit(req, 'usps_address_checked', 'application', req.params.id,
+      { status: out.status, edited: !!hasEdit, changed: !!out.changed, cached: !!out.cached, dpv: out.dpv || null });
+    res.json({ ok: true, edited: !!hasEdit, entered: input, ...out });
+  } catch (e) {
+    console.error('[usps] verification failed:', db.describeError(e));
+    res.status(500).json({ error: 'could not verify the address with USPS' });
+  }
+});
+
+router.post('/applications/:id/usps-verification/import', async (req, res) => {
+  const client = await db.getClient();
+  try {
+    await client.query('BEGIN');
+    const app = (await client.query(
+      `SELECT usps_address, usps_match FROM applications
+        WHERE id=$1 AND deleted_at IS NULL FOR UPDATE`, [req.params.id])).rows[0];
+    if (!app) { await client.query('ROLLBACK'); return res.status(404).json({ error: 'not found' }); }
+    if (!['verified', 'corrected'].includes(String(app.usps_match || '').toLowerCase()) || !app.usps_address) {
+      await client.query('ROLLBACK');
+      return res.status(422).json({ error: 'Run USPS verification and receive a deliverable verified address before importing it.' });
+    }
+    await client.query(
+      `UPDATE applications
+          SET property_address=usps_address, usps_imported_at=now(), updated_at=now()
+        WHERE id=$1`, [req.params.id]);
+    const cleared = await client.query(
+      `UPDATE checklist_items ci
+          SET status='satisfied', signed_off_by=$2, signed_off_at=now(),
+              waived_by=NULL, waived_at=NULL, reviewed_by=$2, reviewed_at=now(),
+              updated_at=now()
+         FROM checklist_templates t
+        WHERE ci.application_id=$1 AND ci.template_id=t.id
+          AND t.code='usps_address_verification'
+        RETURNING ci.id`, [req.params.id, req.actor.id]);
+    await client.query('COMMIT');
+    await audit(req, 'usps_verified_address_imported', 'application', req.params.id,
+      { status: app.usps_match, conditionIds: cleared.rows.map((r) => r.id) });
+    res.json({ ok: true, address: app.usps_address, conditionCleared: cleared.rowCount > 0 });
+  } catch (e) {
+    try { await client.query('ROLLBACK'); } catch (_) {}
+    console.error('[usps] import failed:', db.describeError(e));
+    res.status(500).json({ error: 'could not import the USPS address' });
+  } finally { client.release(); }
+});
+
 // Resolve-or-create a co-borrower from an identity payload and bind it to a
 // file. Shared by the standalone /co-borrower endpoint AND file creation (#98),
 // so "add a co-borrower while creating the application" runs the exact same
@@ -1888,6 +2007,14 @@ router.post('/applications/:id/pricing/quote', async (req, res) => {
     // up-front that registering this scenario goes to an admin for approval.
     const overrideChanges = overrideChangesFor(overrides);
     res.json({ ...out, experience: f.exp, overrideChanges, needsApproval: overrideChanges.length > 0 });
+    // Shadow-Excel parity monitor (owner-directed 2026-07-30): background-check the
+    // SILVER leg against the workbook transcription. Watch-only — never blocks.
+    if (out.silver && out.silver.status && out.silver.status !== 'ERROR') {
+      const appId = req.params.id;
+      setImmediate(() => {
+        try { require('../lib/silver-shadow-parity').monitorQuote(appId, out.inputs, out.silver).catch(() => {}); } catch (_) { /* watch-only */ }
+      });
+    }
   } catch (e) { console.warn('[staff] handler error:', db.describeError(e)); res.status(500).json({ error: 'server error' }); }
 });
 
@@ -2173,12 +2300,17 @@ router.post('/applications/:id/pricing/register', async (req, res) => {
       // admin resetting it) overwrites it. A live company-default registration
       // (no markup key) never freezes the default onto the file.
       const stickyMk = (v) => { if (v == null || v === '') return null; const n = Number(v); return isFinite(n) ? n : null; };
+      // Silver's markup is HARD-CAPPED at 1.00pt (owner-directed; engine
+      // MARKUP_MAX + admin-pricing refusal). The engine already clamps the
+      // PRICED markup, but the sticky must never store a number the studio
+      // would re-display above the cap (meta-audit 2026-07-30 gap 3).
+      const stickyMkSilver = (v) => { const n = stickyMk(v); return n == null ? null : Math.min(n, 1); };
       if (Object.prototype.hasOwnProperty.call(overrides, 'markupStdPct'))
         await client.query(`UPDATE applications SET file_markup_std_pct=$2 WHERE id=$1`, [appId, stickyMk(overrides.markupStdPct)]);
       if (Object.prototype.hasOwnProperty.call(overrides, 'markupGoldPct'))
         await client.query(`UPDATE applications SET file_markup_gold_pct=$2 WHERE id=$1`, [appId, stickyMk(overrides.markupGoldPct)]);
       if (Object.prototype.hasOwnProperty.call(overrides, 'markupSilverPct'))
-        await client.query(`UPDATE applications SET file_markup_silver_pct=$2 WHERE id=$1`, [appId, stickyMk(overrides.markupSilverPct)]);
+        await client.query(`UPDATE applications SET file_markup_silver_pct=$2 WHERE id=$1`, [appId, stickyMkSilver(overrides.markupSilverPct)]);
       await client.query('COMMIT');
     } catch (e) { await client.query('ROLLBACK'); throw e; }
 
@@ -2351,6 +2483,14 @@ router.post('/applications/:id/pricing/register', async (req, res) => {
 
     res.status(201).json({ ok: true, registrationId: regId, quote, pendingApproval: needsEscalation,
       overrideChanges, overrideLines, pendingReason: needsEscalation ? (isManual ? 'manual_product' : (overrideOnly ? 'pricing_override' : 'manual_review')) : null });
+    // Shadow-Excel parity monitor (owner-directed 2026-07-30): background-check the
+    // registered Silver scenario against the workbook transcription. Watch-only —
+    // a mismatch records one advisory AI finding; it never blocks the registration.
+    if (program === 'silver') {
+      setImmediate(() => {
+        try { require('../lib/silver-shadow-parity').monitorQuote(appId, inputs, quote).catch(() => {}); } catch (_) { /* watch-only */ }
+      });
+    }
   } catch (e) { console.warn('[staff] handler error:', db.describeError(e)); res.status(500).json({ error: 'server error' }); }
 });
 
@@ -2657,8 +2797,19 @@ router.post('/applications/:id/pricing/accept-counter', async (req, res) => {
     if (ct.noteRate  != null) overrides.ovrRate  = Number(ct.noteRate);
     if (ct.origPct   != null) {
       const pctVal = Number(ct.origPct) * 100;
+      // The counter's origination must govern WHATEVER program this file
+      // re-registers under, so every per-program origination key is written —
+      // otherwise the replayed escalation blob (which carries the ORIGINAL
+      // request's off-default knobs) silently outranks the super-admin.
+      // Root-caused 2026-07-30: a countered Manual Program kept the loan
+      // officer's origManualPct (pricing.js prefers it for program 'manual'),
+      // so a counter of 0.5% re-registered at the requested 2.5% and the
+      // borrower was emailed those confirmed terms. origSilverPct was missing
+      // for the same reason on a countered Silver registration.
       overrides.origStdPct = pctVal;
       overrides.origGoldPct = pctVal;
+      overrides.origSilverPct = pctVal;
+      overrides.origManualPct = pctVal;
     }
     // Force-price so a scenario ineligible under the standard caps still sizes
     // and registers as MANUAL (the counter TERMS are the approval — we don't want
@@ -2671,7 +2822,12 @@ router.post('/applications/:id/pricing/accept-counter', async (req, res) => {
     const requestedProgram = (esc.summary && esc.summary.program) === 'gold' ? 'gold' : (esc.summary && esc.summary.program) === 'silver' ? 'silver' : 'standard';
     const program = manualProgram.resolveProgram(requestedProgram, overrides);
     const quote = pricing.quoteProgram(program, inputs);
-    const total = Number(quote && quote.totalLoan) || 0;
+    // The sized loan lives on quote.SIZING.totalLoan — a quote has no top-level
+    // `totalLoan` (audit 2026-07-30). Reading the missing key made `total` 0 on
+    // every accepted counter, so the audit row and the API response said 0 and
+    // the borrower's "Your loan terms are ready" email led with "Your loan
+    // amount: $0". Same expression the /register route uses.
+    const total = quote && quote.sizing ? Number(quote.sizing.totalLoan) || 0 : 0;
 
     // Persist + mark the escalation approved in ONE transaction so an accept
     // never half-lands (registered without the escalation closing, or vice versa).
@@ -4238,6 +4394,8 @@ router.post('/applications/:id/orders/:kind/place', async (req, res) => {
     const blk = orders.blockers(kind, data);
     if (blk.includes('loan_number')) return res.status(400).json({ error: 'Add the file’s loan number first — it prints in the mortgage clause.', code: 'loan_number' });
     if (blk.includes('contact')) return res.status(400).json({ error: `Add the ${kind === 'title' ? 'title company' : 'insurance agent'} contact first.`, code: 'contact' });
+    // The address must be the USPS-verified, imported one before it leaves the building.
+    if (blk.includes('usps')) return res.status(422).json({ error: `Import the USPS-verified property address before ordering ${kind === 'title' ? 'title' : 'insurance'}. Open “USPS Address Verification,” verify the subject address, and click “Import verified address” — an order sent with an unverified address can go out with the wrong ZIP or unit.`, code: 'usps' });
 
     const existing = (await db.query(`SELECT status, send_count FROM file_orders WHERE application_id=$1 AND order_type=$2`, [appId, kind])).rows[0];
     const force = req.body && (req.body.force === true || req.body.force === 'true');
@@ -4285,6 +4443,9 @@ router.post('/applications/:id/orders/:kind/followup', async (req, res) => {
     const data = await orders.getOrderData(appId);
     if (!data) return res.status(404).json({ error: 'not found' });
     if (!data.vendors[kind] || !data.vendors[kind].email) return res.status(400).json({ error: 'The vendor contact is missing.', code: 'contact' });
+    // A follow-up re-sends the current property address; if the address was edited
+    // after the order (which re-opens the USPS condition), block it until re-imported.
+    if (data.uspsGate && !data.uspsImported) return res.status(422).json({ error: `The property address is no longer USPS-verified. Re-verify and import it in “USPS Address Verification” before following up on the ${kind} order, so the vendor never gets an unverified address.`, code: 'usps' });
     const note = String((req.body && req.body.message) || '').trim().slice(0, 4000);
     const built = orders.buildOrderEmail(kind, data, { followup: true, note });
     const { to, cc, replyTo } = orders.recipientsFor(kind, data);
@@ -4523,6 +4684,8 @@ router.post('/applications/:id/closing-prep/place', async (req, res) => {
     if (blk.includes('documents_unavailable')) return res.status(503).json({ error: 'We could not read this file’s documents just now, so nothing was sent. Try again in a moment.', code: 'documents_unavailable' });
     if (blk.includes('term_sheet')) return res.status(400).json({ error: 'There is no term sheet on the file yet. Generate the term sheet, then send the closing-prep request.', code: 'term_sheet' });
     if (blk.includes('attorney')) return res.status(400).json({ error: 'There is nowhere to send this — the closing attorney’s group inbox is not set up yet. Ask an admin to set it (ATTORNEY_GROUP_EMAIL); adding an attorney contact to the file will not help, because that contact is the borrower’s own lawyer and is never copied on this email.', code: 'attorney' });
+    // The closing attorney must draft against the USPS-verified, imported address.
+    if (blk.includes('usps')) return res.status(422).json({ error: 'Import the USPS-verified property address before sending closing prep to the attorney. Open “USPS Address Verification,” verify the subject address, and click “Import verified address” — the attorney drafts the security instrument off this address.', code: 'usps' });
 
     const force = req.body && (req.body.force === true || req.body.force === 'true');
     const existing = (await db.query(
@@ -4626,6 +4789,9 @@ router.post('/applications/:id/closing-prep/followup', async (req, res) => {
     }
     const data = await closingPrep.getClosingPrepData(appId);
     if (!data) return res.status(404).json({ error: 'not found' });
+    // A follow-up re-sends the subject address to the attorney; block it if the
+    // address was edited after the order and no longer carries a USPS import.
+    if (data.uspsGate && !data.uspsImported) return res.status(422).json({ error: 'The property address is no longer USPS-verified. Re-verify and import it in “USPS Address Verification” before following up with the attorney.', code: 'usps' });
     const note = String((req.body && req.body.message) || '').trim().slice(0, 4000);
     const last = await closingPrep.lastRecipients((await closingThread.threadFor(appId) || {}).id);
     const extraEmails = cleanEmailList(req.body && req.body.extraEmails);
@@ -5166,11 +5332,23 @@ async function signOffGate(itemId, actor) {
   const isCredit = code === 'rtl_cond_credit';                 // requires an IMPORTED credit report (not a bare PDF)
   const isAppraisalReview = code === 'appraisal_review_cleared'; // CTC gate: no open fatal finding
   const isUnderwritingReview = code === 'underwriting_review_cleared'; // CTC gate: no open fatal document finding
+  const isUspsAddress = code === 'usps_address_verification';
   // Structured-DATA conditions — the borrower/staff enter DATA (not a document):
   // the appraisal payment card, and the title / insurance contact forms.
   const isApprCard = item.tool_key === 'appraisal_card' || code === 'rtl_p1_apprcard';
   const isTitleContact = item.tool_key === 'title_contact' || code === 'rtl_p1_titlec';
   const isInsContact = item.tool_key === 'insurance_contact' || code === 'rtl_p1_insc';
+
+  if (isUspsAddress) {
+    const stamp = (await db.query(
+      `SELECT usps_address, usps_match, usps_imported_at
+         FROM applications WHERE id=$1`, [item.application_id])).rows[0] || {};
+    const accepted = ['verified', 'corrected'].includes(String(stamp.usps_match || '').toLowerCase());
+    if (!accepted || !stamp.usps_address || !stamp.usps_imported_at) {
+      return 'Open USPS Address Verification, verify the current property address, and click “Import verified address.” This condition clears only after the USPS address is imported.';
+    }
+    return null;
+  }
 
   // FLOOD CERTIFICATE: the Fidelis sign-off bypass that used to live here was
   // REMOVED (owner-directed 2026-07-30: "the flood certification should be an
@@ -5683,12 +5861,16 @@ router.patch('/checklist/:itemId', async (req, res) => {
   // door so the reason is visible. The super-admin override (db/344) is the recorded
   // way through both.
   const APPRAISAL_ENFORCED_CODES = ['appraisal_review_cleared', 'appraisal_as_is_verify'];
+  const NEVER_OPTIONAL_CODES = [...APPRAISAL_ENFORCED_CODES, 'usps_address_verification'];
   if (b.isRequired === false && !ovr.requested) {
     const tc = (await db.query(
       `SELECT t.code FROM checklist_items ci LEFT JOIN checklist_templates t ON t.id=ci.template_id WHERE ci.id=$1`,
       [req.params.itemId])).rows[0];
-    if (tc && APPRAISAL_ENFORCED_CODES.includes(tc.code) && advisoryPolicy.appraisalReviewEnforced()) {
-      return res.status(422).json({ error: tc.code === 'appraisal_as_is_verify'
+    if (tc && NEVER_OPTIONAL_CODES.includes(tc.code)
+        && (tc.code === 'usps_address_verification' || advisoryPolicy.appraisalReviewEnforced())) {
+      return res.status(422).json({ error: tc.code === 'usps_address_verification'
+        ? 'USPS Address Verification is required and cannot be made optional. Import a verified USPS address to clear it.'
+        : tc.code === 'appraisal_as_is_verify'
         ? 'The "Confirm the As-Is value" condition cannot be made optional — read the As-Is off the appraisal and sign it off, or use a super-admin override to clear it with a recorded reason.'
         : 'The appraisal review cannot be made optional — clear the appraisal findings and confirm the As-Is value to sign it off, or use a super-admin override to clear it with a recorded reason.' });
     }
@@ -9170,9 +9352,18 @@ async function applicationCompleteness(appId) {
   // carry an estimated (monthly) rental income before it's complete (owner-directed
   // 2026-07-26). Only this note buyer + strategy adds the requirement; every other
   // file is unaffected.
-  const buyer = conditionRegistry.normNoteBuyer(row.lender);
+  // MATCHED WITH THE SHARED HELPER, NEVER AN EXACT COMPARE (owner-reported
+  // 2026-07-30). `normNoteBuyer` is deliberately EXACT — it must stay that way,
+  // because an over-match there would let a look-alike name export the wrong
+  // note buyer's data tape (tapes/buyer-rule.js). So the real ClickUp label
+  // "EMCAP Financial" normalizes to `emcapfinancial`, NOT `emcap`, and this
+  // `=== 'emcap'` matched no live file: the requirement never once fired. Every
+  // other EMCAP consumer in the repo already routes through
+  // `isEmcapNoteBuyer` (the prefix test) — note-buyer-effects, conditions/engine,
+  // liquidity, appraisal/note-buyer-checks, the guideline desk and review — and
+  // this was the last exact-match left. Use the helper for any new EMCAP branch.
   const strategy = conditionRegistry.normStrategy([row.program, row.loan_type, row.rehab_type].filter(Boolean).join(' '));
-  if (buyer === 'emcap' && strategy === 'fix_hold') {
+  if (conditionRegistry.isEmcapNoteBuyer(row.lender) && strategy === 'fix_hold') {
     need.push([row.estimated_rental_income, 'Estimated rental income']);
   }
   const missing = need.filter(([v]) => v == null || v === '').map(([, label]) => label);

@@ -211,8 +211,10 @@ transactions / seller credits each ≤15%.
   `orig_silver_pct` (db/373) + V2 screen fields; `/api/pricing-defaults`
   serves them; override-approval detector covers the Silver knobs.
 - **Register:** staff + borrower routes and the escalation accept path take
-  `program:'silver'`; liquidity condition writes the 1-month Silver wording;
-  economics-reopen trigger watches the Silver sticky markup (db/373).
+  `program:'silver'`; liquidity condition writes the 2-MONTH Silver wording
+  with the loud ⚠️ banner (owner-directed 2026-07-29/30 — see
+  `liquidity.js` `loudMonthsBanner`); economics-reopen trigger watches the
+  Silver sticky markup (db/373).
 - **Conditions/rules:** `registered_program` rule enum has `silver`; no
   Silver-specific conditions by default (no SOW-contingency, flood rule
   unchanged — same posture as Standard).
@@ -243,3 +245,98 @@ transactions / seller credits each ≤15%.
    as 24-month; over 24 is manual.
 5. **Experience counting** uses Standard's split (GUC counts ground-up only);
    the 80%-comparability overlays stay underwriting checks, not engine gates.
+
+---
+
+## 5. Regenerating from a new workbook (the update pipeline)
+
+The owner's ask: *"our system should be built in a way that I can give you a
+new Excel sheet and you just update the pricing according to the new Excel
+sheet."* Everything derived from the workbook is therefore REPRODUCIBLE from a
+committed copy of the workbook itself:
+
+- **Archived source workbook:** `scripts/fixtures/EMCAP_Pricing_Tool_v1.xlsx`
+  (sha256 `432ff2d8c34bd28ca159aae44806177afa2607f5669cd229e5b885942535182b`,
+  the June 2026 `EMCAP_Pricing_Tool_v1_33.xlsx`) — the byte-identical file the
+  committed fixture and engine literals were built from.
+- **Pipeline tool:** `scripts/emcap-regenerate-fixture.js` (pure Node — its own
+  minimal ZIP/SpreadsheetML reader, no python, no npm deps, no network).
+  Modes:
+  - *default / `--check`* — CHECK-ONLY (writes nothing): extracts the hidden
+    **Engine** sheet (RateKeys/RateVals columns A/B → 1,555 rate cells; TG*
+    columns E–J → 18 tier-grid rows), serializes it byte-exactly, and diffs
+    against the committed `scripts/fixtures/emcap-pricing-tool-v1.json`
+    (per-key diff on mismatch); PLUS the tab-2 cross-source verification
+    (below). Exit 0 clean / 1 on any drift.
+  - *`--blocks`* — compiles the engine's `RATE_BLOCKS` (rate ÷ 0.000125 into
+    the fixed 54-slot 3 AR × 3 FICO × 6 LTC block geometry, 112 blocks) and
+    `TG` literals from the workbook and verifies the LIVE
+    `web/v2/tools/silver-program.js` (and all 5 sibling copies) carry exactly
+    that text, plus a semantic reconstruction check through the loaded engine.
+  - *`--write`* — rewrites the fixture JSON (never an engine file). Refused
+    while the cross-source check reports an UNEXPECTED divergence.
+  - *`--emit-blocks <path>`* — writes the freshly compiled literal text for
+    the human engine-update step.
+- **Test:** `scripts/test-emcap-regenerate-pure.js` proves the committed
+  artifacts regenerate bit-for-bit from the archive AND that a single mutated
+  rate cell fails the check naming the exact key.
+
+### Engine-tab-vs-tab-2 precedence (the transcription decision)
+
+The **hidden Engine sheet governs**. It is the workbook's own machine-readable
+index of the display grid (its cells are formulas pointing into tab 2, and the
+workbook's Pricing Tool quotes exclusively through it), and the fixture + the
+frozen engine are deliberately faithful to it. Tab 2 (`EMCAP_Pricing Matrix`)
+displays **251 priced cells the Engine sheet deliberately omits** — the
+expected-differences contract, pinned in the tool's `EXPECTED_TAB2_ONLY`:
+
+- **84 BRIDGE cells** under the `75.01%-80.00%` AR-LTV display band (the
+  Engine sheet never prices AR-LTV above 75%; those tab-2 rows are display
+  only, matching the tier grid's 75% AR cap), and
+- **167 refi-24 cells** (24-month refinance columns for GUC/Bridge that the
+  Engine sheet carries no `R|24` keys for — the workbook's own Pricing Tool
+  cannot quote them either; the engine correctly finds "no priced grid cell"
+  there and steps leverage down / routes to review).
+
+`--check` re-derives tab 2 from scratch on every run and **fails on any
+divergence beyond exactly that list** (including a changed count in either
+direction), so a future workbook update surfaces every new difference
+explicitly instead of silently inheriting an interpretation.
+
+### The 7-step update procedure (new workbook arrives)
+
+1. **Archive the new workbook**: overwrite
+   `scripts/fixtures/EMCAP_Pricing_Tool_v1.xlsx` with the new source file
+   (git history keeps the old one) and update `ARCHIVE_SHA256` in
+   `scripts/emcap-regenerate-fixture.js` (`sha256sum` the file). Also update
+   the sha in this section.
+2. **Regenerate the fixture**: `node scripts/emcap-regenerate-fixture.js
+   --write`. If the cross-source check reports anything beyond the expected
+   251, STOP — every divergence must be resolved or owner-confirmed first
+   (then `EXPECTED_TAB2_ONLY` updated to the newly confirmed contract).
+3. **Recompile the engine literals** (HUMAN step — the engines are frozen, so
+   this requires the owner's explicit written authorization for the rate/tier
+   change): `node scripts/emcap-regenerate-fixture.js --emit-blocks
+   /tmp/blocks.txt`, then in `web/v2/tools/silver-program.js` replace the
+   `    var RATE_BLOCKS = {` … `  };` region and the `  var TG = {` … `  };`
+   region with the compiled text. A band-structure (geometry) change fails the
+   compile loudly and needs an engine rework, not a paste.
+4. **Sync the 6 engine copies + cache-busters**: copy
+   `web/v2/tools/silver-program.js` over `web/tools/`,
+   `web/portal/engines/`, `web/v2/portal/engines/`, `app/public/engines/`,
+   `app-v2/public/engines/`; bump the `silver-program.js?v=` cache-buster
+   to the NEXT value (grep the current one — do not hard-code a version
+   here, it goes stale on every engine change)
+   cache-busters in `web/v2/tools/term-sheet.html`,
+   `web/v2/portal/index.html`, `app-v2/index.html`.
+5. **Re-verify the pipeline**: `node scripts/emcap-regenerate-fixture.js`
+   (default check + blocks) must print `RESULT: CLEAN` and exit 0.
+6. **Run the batteries**: `node scripts/test-silver-program.js`,
+   `MATRIX_N=500 node scripts/test-silver-workbook-matrix.js`,
+   `node scripts/soak-silver-scenarios.js`,
+   `node scripts/test-emcap-regenerate-pure.js` — then the full `npm test`
+   before merging.
+7. **Owner re-freeze**: record the guideline change + the new workbook
+   version/sha in this doc and the CLAUDE.md frozen-baseline notes, with the
+   owner's written authorization quoted; the engine is then re-frozen at the
+   new numbers.
