@@ -5317,7 +5317,14 @@ async function signOffGate(itemId, actor) {
       // (typed by hand — there is no XML to read them from). A transferred
       // appraisal needs the transfer letter in the PDF slot; any other reason must
       // have its policy exception APPROVED first.
-      const waiver = (await db.query(
+      // A later MISMO import SUPERSEDES a stale "no XML" waiver: if a current
+      // appraisal is now on the file there IS XML, so the normal XML+PDF+import
+      // requirement applies and the waiver is ignored (the POST endpoint already
+      // refuses a NEW waiver once an appraisal exists; this covers a waiver that
+      // was recorded BEFORE the XML arrived). Read once, reused below.
+      const currentAppraisal = (await db.query(
+        `SELECT 1 FROM appraisals WHERE application_id=$1 AND superseded=false LIMIT 1`, [item.application_id])).rows[0];
+      const waiver = currentAppraisal ? null : (await db.query(
         `SELECT reason, requires_transfer_letter, exception_id FROM appraisal_xml_waivers WHERE application_id=$1`,
         [item.application_id])).rows[0];
       if (waiver) {
@@ -5343,9 +5350,7 @@ async function signOffGate(itemId, actor) {
       // whole PILOT findings engine (the fatal-finding clear-to-close gate) is silently skipped for
       // this file. A successful import always creates a current appraisals row AND that condition,
       // so require the row to exist before letting this document condition be signed off.
-      const imported = (await db.query(
-        `SELECT 1 FROM appraisals WHERE application_id=$1 AND superseded=false LIMIT 1`, [item.application_id])).rows[0];
-      if (!imported)
+      if (!currentAppraisal)
         return 'The appraisal data file (XML) has not been read as a valid appraisal yet, so the PILOT appraisal review has not run. Re-upload a valid MISMO appraisal XML (PILOT imports it automatically) before signing off this condition.';
       return null;
     }
