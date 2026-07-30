@@ -356,13 +356,13 @@ router.get('/tapes/:tapeKey/loans', async (req, res) => {
     let scopeSql = '';
     if (!seesAll(req)) { params.push(req.actor.id); scopeSql = ' AND ' + VISIBLE_OFFICERS_SQL('a', '$' + params.length); }
     // Non-admins only see loans they could actually export: the loan must be
-    // REGISTERED with the correct program for this provider (manual/parked-Silver
-    // are excluded — they're admin-only). Admins see every provider-matched loan.
+    // REGISTERED with the correct program for this provider (manual is excluded —
+    // it's admin-only). Admins see every provider-matched loan.
     let gateSql = '';
     if (!tapeAdmin(req)) {
       const wantProg = tapes.programProvider.programForProvider(tape.buyerKey);
       // No live program is paired to this provider, OR the paired program is PARKED
-      // (e.g. EMCAP↔Silver — a recognized name, not yet registerable) → no loan is
+      // (an incubating program name, not yet registerable) → no loan is
       // non-admin-exportable; return an empty picker flagged admin-only.
       if (!wantProg || tapes.programProvider.PARKED_PROGRAMS.has(wantProg)) {
         return res.json({ tape: tapes.registry.publicTape(tape), count: 0, loans: [], adminOnly: true });
@@ -1930,8 +1930,8 @@ router.get('/applications/:id/pricing', async (req, res) => {
     try {
       const cd = pricingSettings.current() || {};
       pricingDefaults = {
-        markupStdPct: cd.markupStdPct, markupGoldPct: cd.markupGoldPct,
-        origStdPct: cd.origStdPct, origGoldPct: cd.origGoldPct,
+        markupStdPct: cd.markupStdPct, markupGoldPct: cd.markupGoldPct, markupSilverPct: cd.markupSilverPct,
+        origStdPct: cd.origStdPct, origGoldPct: cd.origGoldPct, origSilverPct: cd.origSilverPct,
         lenderFee: cd.lenderFee, creditFee: cd.creditFee,
         appraisalFee: cd.appraisalFee, titleFee: cd.titleFee ?? null,
       };
@@ -1957,7 +1957,7 @@ router.post('/applications/:id/pricing/register', async (req, res) => {
     const locked = await require('../lib/file-lock').structuralLockReason(appId, db, { actor: req.actor });   // #84
     if (locked) return refuse(409, { error: locked }, 'structural_lock');
     const b = req.body || {};
-    const requestedProgram = b.program === 'gold' ? 'gold' : 'standard';
+    const requestedProgram = b.program === 'gold' ? 'gold' : b.program === 'silver' ? 'silver' : 'standard';
     const f = await loadFileForPricing(appId);
     if (!f) return res.status(404).json({ error: 'not found' });
 
@@ -2177,6 +2177,8 @@ router.post('/applications/:id/pricing/register', async (req, res) => {
         await client.query(`UPDATE applications SET file_markup_std_pct=$2 WHERE id=$1`, [appId, stickyMk(overrides.markupStdPct)]);
       if (Object.prototype.hasOwnProperty.call(overrides, 'markupGoldPct'))
         await client.query(`UPDATE applications SET file_markup_gold_pct=$2 WHERE id=$1`, [appId, stickyMk(overrides.markupGoldPct)]);
+      if (Object.prototype.hasOwnProperty.call(overrides, 'markupSilverPct'))
+        await client.query(`UPDATE applications SET file_markup_silver_pct=$2 WHERE id=$1`, [appId, stickyMk(overrides.markupSilverPct)]);
       await client.query('COMMIT');
     } catch (e) { await client.query('ROLLBACK'); throw e; }
 
@@ -2666,7 +2668,7 @@ router.post('/applications/:id/pricing/accept-counter', async (req, res) => {
 
     const inputs = pricing.buildInputs(f.app, f.exp, overrides);
     inputs.forcePrice = true;
-    const requestedProgram = (esc.summary && esc.summary.program) === 'gold' ? 'gold' : 'standard';
+    const requestedProgram = (esc.summary && esc.summary.program) === 'gold' ? 'gold' : (esc.summary && esc.summary.program) === 'silver' ? 'silver' : 'standard';
     const program = manualProgram.resolveProgram(requestedProgram, overrides);
     const quote = pricing.quoteProgram(program, inputs);
     const total = Number(quote && quote.totalLoan) || 0;

@@ -25,10 +25,12 @@ const money2 = (n) => (n == null || isNaN(Number(n))) ? '—' : '$' + Number(n).
 // How many months of bank statements the file requires, driven by the REGISTERED
 // program (owner-directed 2026-07-12). Before a product is registered the file
 // carries a generic "assets & bank statements" ask (no month count); once
-// registered, the Gold Standard Program requires TWO months and the Standard
-// Program requires ONE. The MANUAL Program has no fixed table — the registrant
-// states the months at registration (owner-directed 2026-07-20), passed in as
-// `assetMonths`. Borrower-facing — never names a capital partner.
+// registered, the Gold Standard Program requires TWO months, the Silver Program
+// requires TWO months (owner-directed 2026-07-29: "They require two months bank
+// statement not only one month… same as blue lake"), and the Standard Program
+// requires ONE. The MANUAL Program has no fixed table — the registrant states the
+// months at registration (owner-directed 2026-07-20), passed in as `assetMonths`.
+// Borrower-facing — never names a capital partner.
 // The NOTE BUYER can require more months than the program does (owner-directed 2026-07-26: "Blue
 // Lake needs 2 months of bank statements, not 1 — the rule text says 1"). Keyed with the SAME shared
 // normalizer the conditions engine and the guideline desk use, so one spelling of a note buyer is
@@ -36,37 +38,48 @@ const money2 = (n) => (n == null || isNaN(Number(n))) ? '—' : '$' + Number(n).
 // never lower it below what the program already asks for.
 // Object.create(null), not {}: a lender literally recorded as "constructor" would otherwise look up
 // Object.prototype.constructor and make the month count NaN. Cheap to prevent, ugly to debug.
-const NOTE_BUYER_MONTHS = Object.assign(Object.create(null), { bluelake: 2 });
+// The Silver program's note buyer requires 2 months too (owner-directed 2026-07-29); its ClickUp/
+// Sitewire label is "EMCAP Financial", which normalizes to 'emcapfinancial' — the prefix helper
+// below (same shape as isFidelisNoteBuyer, db/337) folds every spelling onto the 'emcap' entry.
+const NOTE_BUYER_MONTHS = Object.assign(Object.create(null), { bluelake: 2, emcap: 2 });
 function noteBuyerMonths(noteBuyer) {
   if (!noteBuyer) return 0;
   let key = '';
-  try { key = require('./conditions/field-registry').normNoteBuyer(noteBuyer) || ''; } catch (_) { key = ''; }
+  try {
+    const reg = require('./conditions/field-registry');
+    key = reg.normNoteBuyer(noteBuyer) || '';
+    if (!(key in NOTE_BUYER_MONTHS) && typeof reg.isEmcapNoteBuyer === 'function' && reg.isEmcapNoteBuyer(noteBuyer)) key = 'emcap';
+  } catch (_) { key = ''; }
   const m = NOTE_BUYER_MONTHS[key];
   return typeof m === 'number' && Number.isFinite(m) ? m : 0;
 }
-function bankStatementMonths(program, assetMonths, noteBuyer) {
-  const byBuyer = noteBuyerMonths(noteBuyer);
-  let byProgram;
+// The PROGRAM's own month count (before any note-buyer raise): Gold 2, Silver 2,
+// Standard 1, Manual = the registrant's stated months (default 2).
+function programMonths(program, assetMonths) {
   if (/manual/i.test(String(program || ''))) {
     const m = Math.round(Number(assetMonths));
-    byProgram = Number.isFinite(m) && m > 0 ? m : 2;   // fall back to the manual default
-  } else {
-    byProgram = /gold/i.test(String(program || '')) ? 2 : 1;
+    return Number.isFinite(m) && m > 0 ? m : 2;   // fall back to the manual default
   }
-  return Math.max(byProgram, byBuyer);
+  return /gold|silver/i.test(String(program || '')) ? 2 : 1;
+}
+function bankStatementMonths(program, assetMonths, noteBuyer) {
+  return Math.max(programMonths(program, assetMonths), noteBuyerMonths(noteBuyer));
 }
 function bankStatementLine(program, assetMonths, noteBuyer) {
   const m = bankStatementMonths(program, assetMonths, noteBuyer);
-  // Borrower-facing: NEVER names the note buyer (frozen rule). When the note buyer is what raises
-  // the count, the line just states the count — the reason is internal.
-  if (noteBuyerMonths(noteBuyer) >= m && m > (/gold/i.test(String(program || '')) ? 2 : 1)) {
+  // Borrower-facing: NEVER names the note buyer (frozen rule). When the note buyer is what RAISES
+  // the count above the program's own requirement, the line just states the count — the reason is
+  // internal. A count the program itself requires keeps the program-named wording below.
+  if (noteBuyerMonths(noteBuyer) >= m && m > programMonths(program, assetMonths)) {
     return `Provide ${m} month${m === 1 ? '' : 's'} of recent bank statements — this loan requires ${m} month${m === 1 ? '' : 's'} of liquidity.`;
   }
   if (/manual/i.test(String(program || ''))) {
     return `Provide ${m} month${m === 1 ? '' : 's'} of recent bank statements — this loan's program requires ${m} month${m === 1 ? '' : 's'} of liquidity.`;
   }
   return m === 2
-    ? 'Provide 2 months of recent bank statements — the Gold Standard Program requires two months.'
+    ? (/silver/i.test(String(program || ''))
+      ? 'Provide 2 months of recent bank statements — the Silver Program requires two months.'
+      : 'Provide 2 months of recent bank statements — the Gold Standard Program requires two months.')
     : 'Provide 1 month of a recent bank statement — the Standard Program requires one month.';
 }
 const GENERIC_BANK_STMT_HINT =

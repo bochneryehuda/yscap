@@ -98,7 +98,7 @@ function needsSuperAdminApproval({ program, status, pricingOverrides, needsAppro
  */
 function resolveProgram(requestedProgram, overrides) {
   if (isManualProduct(overrides)) return 'manual';
-  return requestedProgram === 'gold' ? 'gold' : 'standard';
+  return requestedProgram === 'gold' ? 'gold' : requestedProgram === 'silver' ? 'silver' : 'standard';
 }
 
 // ---------------------------------------------------------------------------

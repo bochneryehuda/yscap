@@ -42,6 +42,17 @@
   .tbd-toggle{ display:inline-flex; align-items:center; gap:.5rem; margin-top:.55rem; font-size:.84rem; color:var(--muted); cursor:pointer; user-select:none; }
   .tbd-toggle input{ width:16px; height:16px; accent-color:var(--teal-br); cursor:pointer; }
   .tbd-note{ margin-top:.6rem; padding:.7rem .85rem; border:1px dashed var(--teal-dp); border-radius:10px; background:rgba(47,127,134,.05); font-size:.82rem; color:var(--muted); line-height:1.5; }
+  /* ---- TBD confirmation (owner-directed 2026-07-29): checking "Property is TBD"
+     needs an explicit agree — without the full address the location restrictions
+     (ZIP / city / county / borough) can't be checked. ---- */
+  .tbdw-scrim{ position:fixed; inset:0; background:rgba(20,27,34,.45); display:flex; align-items:center; justify-content:center; z-index:1200; padding:1rem; }
+  .tbdw-scrim.hidden{ display:none; }
+  .tbdw-card{ background:#fff; border:1px solid #DFD8CB; border-radius:14px; max-width:540px; width:100%; padding:1.15rem 1.25rem 1.1rem; box-shadow:0 18px 60px rgba(20,27,34,.28); }
+  .tbdw-card h3{ margin:0 0 .55rem; font-size:1.02rem; color:#141B22; }
+  .tbdw-card p{ margin:.35rem 0; font-size:.86rem; line-height:1.55; color:#3A4550; }
+  .tbdw-actions{ display:flex; gap:.6rem; margin-top:.95rem; flex-wrap:wrap; }
+  .tbdw-actions .btn{ flex:1; justify-content:center; font-size:.84rem; }
+  @media(max-width:560px){ .tbdw-actions{ flex-direction:column; } }
   .exp-total{ display:flex; align-items:center; justify-content:space-between; gap:1rem; margin-top:1rem; padding:.7rem 1rem; border:1px solid var(--teal-dp); border-radius:12px; background:rgba(47,127,134,.06); }
   .exp-total-lbl{ font-size:.74rem; color:var(--muted); text-transform:uppercase; letter-spacing:.09em; }
   .exp-total-val{ font-family:var(--font-d); font-weight:600; font-size:1.05rem; color:var(--teal-br); }
@@ -148,23 +159,28 @@
   .ts-lev-hint{ margin-top:.55rem; font-size:.76rem; color:var(--muted); line-height:1.45; }
   .ts-lev-hint b{ color:var(--ivory); }
   /* dual-program headline cards */
-  .prog-compare{ display:grid; grid-template-columns:1fr 1fr; gap:.8rem; margin-bottom:.7rem; }
+  .prog-compare{ display:grid; grid-template-columns:1fr 1fr 1fr; gap:.8rem; margin-bottom:.7rem; }
+  @media (max-width:860px){ .prog-compare{ grid-template-columns:1fr 1fr; } .prog-compare .pcard.silver{ grid-column:1 / -1; } }
   .pcard{ border:1px solid var(--line-2); border-radius:14px; padding:1rem 1rem .95rem; background:rgba(255,255,255,.02); display:flex; flex-direction:column; min-width:0; }
   .pcard.gold{ border-color:rgba(201,168,106,.5); background:linear-gradient(180deg,rgba(201,168,106,.07),rgba(201,168,106,.015)); }
+  .pcard.silver{ border-color:rgba(148,163,178,.55); background:linear-gradient(180deg,rgba(148,163,178,.09),rgba(148,163,178,.02)); }
   .pcard.pcard-off{ opacity:.5; }
   .pcard-top{ display:flex; align-items:center; justify-content:space-between; gap:.5rem; margin-bottom:.65rem; }
   .pcard-name{ font-family:var(--font-b); font-size:.74rem; font-weight:700; text-transform:uppercase; letter-spacing:.1em; color:var(--ivory); }
   .pcard.gold .pcard-name{ color:var(--gold); }
+  .pcard.silver .pcard-name{ color:#8A99A8; }
   .pcard-badge{ font-size:.62rem; font-weight:700; padding:.22rem .5rem; border-radius:100px; border:1px solid var(--line); color:var(--muted); white-space:nowrap; }
   .pcard-badge.good{ color:var(--good); border-color:rgba(127,176,138,.5); } .pcard-badge.warn{ color:var(--warn); border-color:rgba(201,168,106,.5); } .pcard-badge.bad{ color:var(--bad); border-color:rgba(201,138,106,.5); }
   .pcard-loanlbl{ font-size:.64rem; text-transform:uppercase; letter-spacing:.12em; color:var(--muted-2); }
   .pcard-loan{ font-family:var(--font-d); font-weight:600; font-size:1.95rem; line-height:1.05; color:var(--ivory); margin:.12rem 0 .7rem; word-break:break-word; }
   .pcard-loan.tealed{ color:var(--teal-br,#7FA9B0); }
   .pcard.gold .pcard-loan{ color:var(--gold); }
+  .pcard.silver .pcard-loan{ color:#8A99A8; }
   .pcard-headline{ display:flex; gap:.6rem; padding-top:.6rem; border-top:1px solid var(--line-2); }
   .pcard-stat{ flex:1; min-width:0; }
   .pcard-statnum{ font-family:var(--font-d); font-weight:600; font-size:1.5rem; line-height:1.1; color:var(--ivory); }
   .pcard.gold .pcard-statnum{ color:var(--gold); }
+  .pcard.silver .pcard-statnum{ color:#8A99A8; }
   .pcard-statlbl{ font-size:.6rem; text-transform:uppercase; letter-spacing:.08em; color:var(--muted-2); margin-top:.12rem; }
   .pcard-sub{ margin-top:.65rem; font-size:.72rem; color:var(--muted); line-height:1.4; min-height:1em; }
   .prog-note{ margin:0 0 .9rem; padding:.7rem .9rem; border-radius:10px; border:1px solid var(--line-2); background:rgba(47,127,134,.07); font-size:.82rem; color:var(--ivory-soft); line-height:1.5; }
@@ -183,12 +199,15 @@
   .pcard{ cursor:pointer; transition:border-color .15s, transform .15s, box-shadow .15s; }
   .pcard:hover{ border-color:var(--teal,#7FA9B0); transform:translateY(-2px); }
   .pcard.gold:hover{ border-color:var(--gold); }
+  .pcard.silver:hover{ border-color:#8A99A8; }
   .pcard.pcard-active{ border-color:var(--teal,#7FA9B0); box-shadow:0 0 0 2px rgba(47,127,134,.28); }
   .pcard.gold.pcard-active{ border-color:var(--gold); box-shadow:0 0 0 2px rgba(201,168,106,.3); }
+  .pcard.silver.pcard-active{ border-color:#8A99A8; box-shadow:0 0 0 2px rgba(148,163,178,.32); }
   .pcard.pcard-off{ cursor:default; }
   .pcard.pcard-off:hover{ transform:none; border-color:var(--line-2); }
   .pcard-cta{ margin-top:.7rem; font-size:.72rem; font-weight:700; letter-spacing:.02em; color:var(--teal-br,#7FA9B0); }
   .pcard.gold .pcard-cta{ color:var(--gold); }
+  .pcard.silver .pcard-cta{ color:#8A99A8; }
   .pcard.pcard-off .pcard-cta{ display:none; }
   .prog-hint{ text-align:center; font-size:.8rem; color:var(--muted); margin:.1rem 0 .4rem; line-height:1.4; }
   .prog-detail{ margin-top:.2rem; }
@@ -317,6 +336,7 @@
   .ts-live-head .est::before{ content:""; width:6px; height:6px; border-radius:50%; background:var(--ds-teal); animation:ds-pulse 2s ease-in-out infinite; }
   .results-col .pcard{ background:var(--ds-card); border-color:var(--ds-line); }
   .results-col .pcard.gold{ border-color:rgba(174,135,70,.5); background:linear-gradient(180deg,rgba(174,135,70,.08),rgba(174,135,70,.02)); }
+  .results-col .pcard.silver{ border-color:rgba(120,134,148,.5); background:linear-gradient(180deg,rgba(120,134,148,.08),rgba(120,134,148,.02)); }
   .results-col .panel{ background:var(--ds-card); border:1px solid var(--ds-line); border-radius:12px; }
   .results-col .prog-detail-head{ color:var(--ds-ink-soft); }
 
@@ -405,7 +425,18 @@
                 <div class="input"><input id="propAddr" type="text" placeholder="Street, City, State ZIP"></div>
             </div>
             <label class="tbd-toggle"><input type="checkbox" id="addrTBD"> Property is TBD (hide the address on this term sheet)</label>
-            <div class="tbd-note cond hidden" data-cond="addrTBDnote">No problem — we'll generate indicative terms now and the term sheet will read <strong>“Property: To be determined.”</strong> Add the address when you have it under contract.</div>
+            <div class="tbd-note cond hidden" data-cond="addrTBDnote">No problem — we'll generate indicative terms now and the term sheet will read <strong>“Property: To be determined.”</strong> Heads-up: without the full address (street, city and ZIP code), location restrictions — certain ZIP codes, cities, counties and boroughs — can't be checked, so these terms may change once the address is known. Add the full address when you have it under contract for the most accurate term sheet.</div>
+            <div class="tbdw-scrim hidden" id="tbdWarn" role="alertdialog" aria-modal="true" aria-labelledby="tbdWarnTitle">
+                <div class="tbdw-card">
+                    <h3 id="tbdWarnTitle">Before you continue without an address</h3>
+                    <p>Without the full property address — street, city and ZIP code — this term sheet <strong>can't check location-based restrictions</strong>. Certain ZIP codes, cities, counties and boroughs are priced differently or aren't eligible at all, and the state alone isn't enough to catch them.</p>
+                    <p>The terms shown will be indicative and <strong>may change once the real address is known</strong>. For the most accurate term sheet, enter the full property address including the ZIP code.</p>
+                    <div class="tbdw-actions">
+                        <button type="button" class="btn btn-line" id="tbdWarnBack">Go back and enter the address</button>
+                        <button type="button" class="btn btn-solid" id="tbdWarnAgree">I understand — continue without an address</button>
+                    </div>
+                </div>
+            </div>
             <div class="field-rows two-col" style="margin-top:1rem">
                 <div class="field">
                     <label for="dealPurpose">Loan purpose</label>
@@ -537,16 +568,18 @@
                 <div class="ts-admin-grid2">
                     <div class="field"><label for="tsYspStd">Standard (%)</label><div class="input"><input id="tsYspStd" data-noshare type="number" inputmode="decimal" step="0.05" min="0" placeholder="0.5"></div></div>
                     <div class="field"><label for="tsYspGold">Gold (%)</label><div class="input"><input id="tsYspGold" data-noshare type="number" inputmode="decimal" step="0.05" min="0" placeholder="0.5"></div></div>
+                    <div class="field"><label for="tsYspSilver">Silver (%, max 1.00)</label><div class="input"><input id="tsYspSilver" data-noshare type="number" inputmode="decimal" step="0.05" min="0" max="1" placeholder="0.5"></div></div>
                 </div>
-                <p class="ts-admin-mnote">Gold’s top-experience tier — Fix&nbsp;&amp;&nbsp;Flip / Bridge with 10+ deals, or Ground-up with 8+ — always prices at <strong>zero markup</strong>, regardless of the Gold value above. Enter <strong>0</strong> to waive the markup entirely; leave a field blank to use the 0.5% default.
+                <p class="ts-admin-mnote">Gold’s top-experience tier — Fix&nbsp;&amp;&nbsp;Flip / Bridge with 10+ deals, or Ground-up with 8+ — always prices at <strong>zero markup</strong>, regardless of the Gold value above. Enter <strong>0</strong> to waive the markup entirely; leave a field blank to use the 0.5% default. On the <strong>Silver</strong> program the note buyer’s buy rate is floored at the note rate minus 1.00 point — markup above 1.00% is never earned, so the Silver markup is <strong>hard-capped at 1.00%</strong> (a larger value prices exactly as 1.00%).
 
                 <div class="ts-admin-group">Origination points</div>
                 <div class="ts-admin-grid2">
                     <div class="field"><label for="tsOrigStd">Standard (%)</label><div class="input"><input id="tsOrigStd" data-noshare type="number" inputmode="decimal" step="0.25" min="0" placeholder="1.25"></div></div>
                     <div class="field"><label for="tsOrigGold">Gold (%)</label><div class="input"><input id="tsOrigGold" data-noshare type="number" inputmode="decimal" step="0.25" min="0" placeholder="1.25"></div></div>
+                    <div class="field"><label for="tsOrigSilver">Silver (%)</label><div class="input"><input id="tsOrigSilver" data-noshare type="number" inputmode="decimal" step="0.25" min="0" placeholder="1.25"></div></div>
                 </div>
 
-                <div class="ts-admin-group">Closing-cost overrides <span class="ts-admin-note">— both programs</span></div>
+                <div class="ts-admin-group">Closing-cost overrides <span class="ts-admin-note">— all programs</span></div>
                 <div class="ts-admin-grid2">
                     <div class="field"><label for="tsFeeUW">UW / processing / legal ($)</label><div class="input"><input id="tsFeeUW" data-noshare type="number" inputmode="numeric" step="1" min="0" placeholder="2195"></div></div>
                     <div class="field"><label for="tsFeeCredit">Credit report ($)</label><div class="input"><input id="tsFeeCredit" data-noshare type="number" inputmode="numeric" step="1" min="0" placeholder="150"></div></div>
@@ -581,15 +614,16 @@
                 </div>
                 <p class="ts-admin-mnote">Accrual defaults to <strong>Non-Dutch / As-Drawn</strong> (interest on funds drawn). A deferred origination fee is paid at payoff as an exit fee — <strong>not</strong> part of cash to close or liquidity. Default 0.</p>
 
-                <div class="ts-admin-group">3-month minimum earned interest <span class="ts-admin-note">— off by default on Standard &amp; Gold</span></div>
+                <div class="ts-admin-group">3-month minimum earned interest <span class="ts-admin-note">— off by default on Standard, Gold &amp; Silver</span></div>
                 <div id="tsMinIntProgRow">
                     <label class="ts-admin-check"><input type="checkbox" id="tsMinIntStd" data-noshare> Add the 3-month minimum earned interest to the <strong>Standard</strong> program</label>
                     <label class="ts-admin-check"><input type="checkbox" id="tsMinIntGold" data-noshare> Add the 3-month minimum earned interest to the <strong>Gold</strong> program</label>
+                    <label class="ts-admin-check"><input type="checkbox" id="tsMinIntSilver" data-noshare> Add the 3-month minimum earned interest to the <strong>Silver</strong> program</label>
                 </div>
                 <div id="tsMinIntManualRow" hidden>
                     <label class="ts-admin-check"><input type="checkbox" id="tsMinIntManual" data-noshare checked> Include the 3-month minimum earned interest (<strong>on by default</strong> for a manual product — uncheck to remove)</label>
                 </div>
-                <p class="ts-admin-mnote">A minimum earned-interest (interest floor) provision — never a prepayment penalty. Off by default on Standard &amp; Gold; on by default on a manual scenario. The wording populates on the term sheet only when it is on.</p>
+                <p class="ts-admin-mnote">A minimum earned-interest (interest floor) provision — never a prepayment penalty. Off by default on Standard, Gold &amp; Silver; on by default on a manual scenario. The wording populates on the term sheet only when it is on.</p>
 
                 <button type="button" class="ts-admin-lockbtn" id="tsAdminHide">Lock admin mode &amp; reset to defaults</button>
             </div>
@@ -620,6 +654,17 @@
                 </div>
                 <div class="pcard-sub" id="goldSub">—</div>
                 <div class="pcard-cta" id="goldCta">View full details &rarr;</div>
+            </article>
+            <article class="pcard silver" id="pcardSilver" data-prog="silver">
+                <div class="pcard-top"><span class="pcard-name">Silver</span><span class="pcard-badge" id="silverBadge">—</span></div>
+                <div class="pcard-loanlbl">Loan amount</div>
+                <div class="pcard-loan" id="silverLoanBig">$0</div>
+                <div class="pcard-headline">
+                    <div class="pcard-stat"><div class="pcard-statnum" id="silverRateBig">—</div><div class="pcard-statlbl">note rate<span class="tip" tabindex="0" role="note" aria-label="Your interest rate on the loan. It’s charged interest-only during the term — you pay interest each month, not principal.">i<span class="tip-bub">Your interest rate on the loan. It’s charged interest-only during the term — you pay interest each month, not principal.</span></span></div></div>
+                    <div class="pcard-stat"><div class="pcard-statnum" id="silverOrigBig">$0</div><div class="pcard-statlbl">origination · <span id="silverOrigPts">1.25 pts</span><span class="tip" tabindex="0" role="note" aria-label="The lender’s fee at closing. “1 point” = 1% of the loan amount.">i<span class="tip-bub">The lender’s fee at closing. “1 point” = 1% of the loan amount.</span></span></div></div>
+                </div>
+                <div class="pcard-sub" id="silverSub">—</div>
+                <div class="pcard-cta" id="silverCta">View full details &rarr;</div>
             </article>
         </div>
         <div class="ts-data-io">
@@ -792,9 +837,10 @@
 <script src="rb-logo.js?v=admin8"></script>
 <script src="standard-program.js?v=asgseller18-asgelig"></script>
 <script src="gold-standard.js?v=asgseller19"></script>
+<script src="silver-program.js?v=silver2"></script>
 <script src="title-cost.js?v=admin8"></script>
 <script src="address-autocomplete.js?v=admin9"></script>
-<script src="termsheet.js?v=termopts2-pilotirlink20-esign-exc-pgwaiver-salesnotify2-advbasis"></script>
+<script src="termsheet.js?v=silver2"></script>
 <script src="../float-actions.js?v=admin10-applyfix"></script>
 <script>
 /* Property-address autocomplete (owner-directed 2026-07-17): same shared YSAddr

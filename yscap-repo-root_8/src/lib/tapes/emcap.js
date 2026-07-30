@@ -235,6 +235,14 @@ function bulkFilename() { return `EMCAP-Tape-Bulk-${new Date().toISOString().sli
 module.exports = {
   key: 'emcap',
   buyerKey: 'emcap',
+  // ENUMERATED extra spellings of this buyer's label (normNoteBuyer form). The owner's
+  // real ClickUp/Sitewire dropdown label is "EMCAP Financial" (owner-directed 2026-07-29),
+  // which normalizes to 'emcapfinancial' — without this the tape gate would refuse the
+  // export on every correctly-labeled file. DELIBERATELY a closed list, never a prefix/
+  // fuzzy match: the export gate is the direction where an over-match ships a data tape
+  // for the wrong buyer (the same reason normNoteBuyer itself stays exact). A new real
+  // spelling is added HERE, in the owner's words — never by loosening the matcher.
+  buyerAliases: ['emcapfinancial'],
   name: 'EMCAP',
   fullName: 'EMCAP',
   description: 'EMCAP Format Submission Tape — the loan filled into EMCAP’s own one-sheet workbook.',

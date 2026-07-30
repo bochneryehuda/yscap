@@ -6,7 +6,7 @@
  * doesn't just say "no." It walks a set of ALTERNATIVE STRUCTURES through the
  * frozen pricing engine and reports which levers would make the deal work:
  *   * reduce the loan amount (by 1%, 2%, 5%, 10%)
- *   * switch program (Standard ⇄ Gold Standard)
+ *   * switch program (Standard ⇄ Gold Standard ⇄ Silver)
  *   * swap product / term
  *   * lower the requested LTV / LTC / ARV (admin-only, so scoped)
  *
@@ -35,6 +35,11 @@ const LEVERS = Object.freeze({
     label: `Switch to ${currentProgram === 'gold' ? 'Standard' : 'Gold Standard'} program`,
     inputs: baseline,   // program is passed separately in quoteProgram
     swap: currentProgram === 'gold' ? 'standard' : 'gold',
+  }),
+  swap_program_silver: (baseline, currentProgram) => ({
+    label: currentProgram === 'silver' ? 'Switch to Standard program' : 'Switch to Silver program',
+    inputs: baseline,
+    swap: currentProgram === 'silver' ? 'standard' : 'silver',
   }),
   longer_term:      (baseline) => ({ label: 'Longer term (24 months)', inputs: { ...baseline, term: 24 } }),
   interest_only:    (baseline) => ({ label: 'Interest-only', inputs: { ...baseline, interestOnly: true } }),

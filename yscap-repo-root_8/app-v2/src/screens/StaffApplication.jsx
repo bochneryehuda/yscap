@@ -2589,7 +2589,7 @@ function BorrowerConditions({ appId, app, items, docs, onPatch, onReviewDoc, onD
                         ].filter(Boolean) : [];
                         return `${have}${needsAny ? (short.length ? ` — still needs ${short.join(', ')} verified` : ' — requirement met ✓ (verified)') : ''}`;
                       })()
-                    : it.tool_key === 'product_pricing' ? (app.registered_program ? `Registered · ${app.registered_program === 'gold' ? 'Gold Standard' : 'Standard'} · ${money(app.registered_total_loan)}` : 'No product registered yet')
+                    : it.tool_key === 'product_pricing' ? (app.registered_program ? `Registered · ${app.registered_program === 'gold' ? 'Gold Standard' : app.registered_program === 'silver' ? 'Silver' : app.registered_program === 'manual' ? 'Manual' : 'Standard'} · ${money(app.registered_total_loan)}` : 'No product registered yet')
                     : it.tool_key === 'appraisal_card' ? 'Card for ordering the appraisal (reveal is audited)'
                     : ['title_contact', 'insurance_contact'].includes(it.tool_key) ? (() => {
                         const c = contactFor(it.tool_key);
@@ -3547,7 +3547,7 @@ export default function StaffApplication() {
   const summaries = {
     'sec-pricing': line(
       app.registered_program
-        ? `Registered: ${app.registered_product_label || (app.registered_program === 'gold' ? 'Gold Standard Program' : 'Standard Program')}`
+        ? `Registered: ${app.registered_product_label || (app.registered_program === 'gold' ? 'Gold Standard Program' : app.registered_program === 'silver' ? 'Silver Program' : app.registered_program === 'manual' ? 'Manual Program' : 'Standard Program')}`
         : 'No product registered yet',
       ...openHere('sec-pricing')),
     'sec-appraisal': line(...openHere('sec-appraisal')),

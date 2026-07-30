@@ -483,7 +483,12 @@ async function runInvestorGuidelineDesk(appId, client) {
     ctx = loaded.ctx; app = loaded.app;
   } catch (_e) { return empty; }
 
-  const noteBuyerKey = lc(ctx.note_buyer);
+  // Canonicalize EMCAP spellings — the real ClickUp/Sitewire label is "EMCAP Financial"
+  // (→ 'emcapfinancial'), which must match an investor row seeded 'emcap'. Shared prefix
+  // helper (field-registry.isEmcapNoteBuyer, the isFidelisNoteBuyer shape); advisory
+  // direction only — the data-tape export gate keeps its own enumerated alias list.
+  const noteBuyerKeyRaw = lc(ctx.note_buyer);
+  const noteBuyerKey = (noteBuyerKeyRaw && registry.isEmcapNoteBuyer(noteBuyerKeyRaw)) ? 'emcap' : noteBuyerKeyRaw;
   // Which signal loaders below failed to read. Each one swallows its own error so a single bad
   // query can never break a file view — but a swallowed failure makes the desk go QUIET about
   // whatever that loader feeds, which is indistinguishable from "nothing to say" unless we say so.

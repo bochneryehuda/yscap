@@ -26,7 +26,7 @@
   // /api/pricing-defaults so a company fee/markup change reaches every new term
   // sheet on the marketing generator AND the portal studio. The admin studio
   // fields still override per session; a per-file registration still snapshots.
-  var CO = { markupStd: 0.5, markupGold: 0.5, origStd: 1.25, origGold: 1.25, lender: 2195, credit: 150, appraisal: 800, title: null, extraFees: [] };
+  var CO = { markupStd: 0.5, markupGold: 0.5, markupSilver: 0.5, origStd: 1.25, origGold: 1.25, origSilver: 1.25, lender: 2195, credit: 150, appraisal: 800, title: null, extraFees: [] };
 
   var el = function (id) { return document.getElementById(id); };
   var $ = function (s, c) { return (c || document).querySelector(s); };
@@ -45,8 +45,9 @@
   // Otherwise an LTC bucket the borrower has dialled down to for a better rate.
   var chosenLTC = null;
   var goldChosenLTC = null;   // admin leverage slider for Gold (targetLTC); Gold rate is flat across leverage
+  var silverChosenLTC = null; // leverage slider for Silver (targetLTC); Silver's grid rate varies by LTC band like Standard
   var lastDeal = null;   // tracks deal-type changes (to default the ground-up term/reserve once)
-  var chosenProgram = null;   // null = offers view; "standard" | "gold" = drilled into that program's detail
+  var chosenProgram = null;   // null = offers view; "standard" | "gold" | "silver" = drilled into that program's detail
 
   var INELIGIBLE_CITIES = ["baltimore", "philadelphia", "detroit", "chicago"];
   function detectCity(addr) {
@@ -168,7 +169,19 @@
   // MANUAL / escalation deal (exit shortfall, city review, admin manual basis) IS
   // issuable, but the PDF prints stamped "subject to manual review \u2014 not valid without
   // our countersignature". A hard-INELIGIBLE or unsizeable deal can NOT print one.
-  function issueDeal() { var d = calc(); if (chosenProgram === "gold") { var g = calcGold(); if (g && !g.unavailable) d = g; } return d; }
+  function issueDeal() { var d = calc(); if (chosenProgram === "gold") { var g = calcGold(); if (g && !g.unavailable) d = g; } else if (chosenProgram === "silver") { var sv = calcSilver(); if (sv && !sv.unavailable) d = sv; } return d; }
+  // The deal object for the currently drilled-in program (falls back to Standard).
+  function calcChosen() {
+    if (chosenProgram === "gold") return calcGold() || calc();
+    if (chosenProgram === "silver") { var sv = calcSilver(); return (sv && !sv.unavailable) ? sv : calc(); }
+    return calc();
+  }
+  function progOf(d) { return d && d.gold ? "gold" : (d && d.silver ? "silver" : "standard"); }
+  function chosenProgramName(withManual) {
+    if (chosenProgram === "gold") return "Gold Standard Program";
+    if (chosenProgram === "silver") return "Silver Program";
+    return (withManual && manualOn()) ? "Manual Program" : "Standard Program";
+  }
   function canIssue(d) { return !!(d && d.totalLoan > 0 && d.status !== "INELIGIBLE"); }
   function needsManualStamp(d) { return !!(d && (d.status === "MANUAL" || d.exitShortfall > 0 || d.cityReview)); }
 
@@ -389,6 +402,63 @@
     };
   }
 
+  // Full Silver Program detail, shaped exactly like calc() so the shared detail
+  // renderer can drive the Silver panel. The Silver program (its own rate grid) works
+  // like Standard mechanically: reserve financed + in cost + full-term cap, the
+  // same liquidity-to-show months, the same fee stack — only the guideline
+  // engine (window.SVP) differs. Returns null when the engine isn't loaded.
+  function calcSilver() {
+    var SV = (typeof SVP !== "undefined" && SVP) ? SVP : null;
+    if (!SV) return null;
+    var inp = gather();
+    if (silverChosenLTC) inp.targetLTC = silverChosenLTC;
+    var R = SV.evaluate(inp);
+    if (manualOn()) { if (R.status === "INELIGIBLE") R.status = "MANUAL"; R.exitShortfall = 0; }   // admin-priced basis
+    var s = R.sizing || {};
+    var asg = R.assignment;
+    var rate = (R.noteRate || 0) * 100;
+    // Rounding policy (owner-directed 2026-07-09) — see calc(); same floor +
+    // reconcile so the Silver breakdown sums exactly to the (floored) total loan.
+    var totalLoan = Math.floor(s.totalLoan || 0);
+    var rehabHoldbackR = Math.floor(s.rehabLoan || 0);
+    var initialAdvance = Math.floor(s.acquisition || 0);
+    var financedIRr = 0;
+    if ((s.financedIR || 0) > 0.5) financedIRr = Math.max(0, totalLoan - initialAdvance - rehabHoldbackR);
+    else initialAdvance = Math.max(0, totalLoan - rehabHoldbackR);
+    var origPct = adminOrigPct("silver");
+    var origFee = totalLoan * origPct;
+    var rFrac = (R.noteRate || 0) / 12;
+    var title = (typeof YSTitle !== "undefined" && YSTitle) ? YSTitle.estimate(inp.state, totalLoan, inp.loanType) : { total: 0 };
+    var titleOvr = adminTitle();
+    var titleCost = (titleOvr != null) ? titleOvr : (title.total || 0);
+    var lenderFee = adminFeeUW(), creditFee = adminFeeCredit(), apprFee = adminFeeAppr();
+    var closing = origFee + lenderFee + creditFee + titleCost + extraFeesTotal();
+    var excessOOP = (s.assignmentExcessOOP != null ? s.assignmentExcessOOP : (R.assignment && R.assignment.excessOOP)) || 0;
+    var cashToClose = (s.downPayment || 0) + excessOOP + closing;
+    var reserves = (s.fullPayment != null ? Number(s.fullPayment) : totalLoan * rFrac) * reserveMonths(totalLoan);   // same liquidity buffer as Standard
+    var basisPrice = (asg ? asg.recognizedPrice : (inp.loanType === "Purchase" ? effPurchase() : num("asIs")));
+    return {
+      R: R, inp: inp, silver: true, eff: basisPrice, basisPrice: basisPrice,
+      constr: num("construction"), asg: asg, pricingReady: !!R.pricingReady,
+      asIs: num("asIs"), arv: num("arv"), rate: rate, term: inp.term, irMonths: inp.irMonths,
+      totalLoan: totalLoan, initialAdvance: initialAdvance, rehabHoldback: rehabHoldbackR,
+      financedIR: financedIRr, unfinancedIR: 0,
+      maxReserve: s.maxReserve || 0, reserveCapped: !!s.reserveCapped, reserveCapBy: s.reserveCapBy || "",
+      maxReserveMonths: s.maxReserveMonths || 0, desiredReserve: s.desiredReserve || 0,
+      initialPayment: (s.initialPayment != null ? Number(s.initialPayment) : initialAdvance * rFrac),
+      fullPayment: (s.fullPayment != null ? Number(s.fullPayment) : totalLoan * rFrac),
+      monthlyInterest: s.monthlyInterest || (s.fullPayment != null ? Number(s.fullPayment) : totalLoan * rFrac),
+      totalCost: basisPrice + num("construction") + financedIRr,
+      downPayment: s.downPayment || 0, excessOOP: excessOOP,
+      origFee: origFee, origPct: origPct, lenderFee: lenderFee, creditFee: creditFee, apprFee: apprFee, titleCost: titleCost, titleInfo: title,
+      closing: closing, extraFees: extraFeeList(), cashToClose: cashToClose, reserves: reserves, reserveMo: reserveMonths(totalLoan), liquidity: cashToClose + reserves,
+      ltcPct: s.ltcPct || 0, ltvPct: s.acqLtvPct || 0, arvPct: s.arvPct || 0,
+      binding: s.binding || "", caps: R.caps, status: R.status, reasons: R.reasons || [],
+      exitShortfall: R.exitShortfall || 0, cityReview: R.geoReview || null,
+      tierLabel: R.tierLabel, fico: inp.fico, overlays: R.overlays || [], market: R.market, sizeBand: R.sizeBand
+    };
+  }
+
   /* ---------------- render ---------------- */
   function statusClass(st) { return st === "ELIGIBLE" ? "good" : st === "MANUAL" ? "warn" : "bad"; }
   function statusText(st) { return st === "ELIGIBLE" ? "Eligible" : st === "MANUAL" ? "Not eligible as-is — manual-review exception" : "Not eligible"; }
@@ -451,32 +521,65 @@
       YS.put("goldSub", !ready ? EM : (goldWhy || ((G.productLabel || "") + " \u00b7 " + (G.tierLabel || ""))));
     }
 
+    // ---- Silver card ----
+    var SV = (typeof SVP !== "undefined" && SVP) ? SVP : null;
+    var sInp = gather(); if (silverChosenLTC) sInp.targetLTC = silverChosenLTC;
+    var S = SV ? SV.evaluate(sInp) : null;
+    var silverCard = el("pcardSilver");
+    if (!S) {
+      YS.put("silverLoanBig", EM); YS.put("silverRateBig", EM); YS.put("silverOrigBig", EM);
+      setBadge("silverBadge", "UNAVAILABLE", ready);
+      YS.put("silverSub", "Silver pricing unavailable");
+      if (silverCard) silverCard.classList.add("pcard-off");
+    } else {
+      if (silverCard) silverCard.classList.remove("pcard-off");
+      var ss = S.sizing || {};
+      var silverExit = ready && (S.exitShortfall > 0);
+      var silverGeo = ready && !!S.geoReview;
+      var sSized = ready && (ss.totalLoan > 0) && S.status !== "INELIGIBLE" && !silverExit && !silverGeo;
+      YS.put("silverLoanBig", silverGeo ? "Manual" : (sSized ? YS.fmtUSD(Math.floor(ss.totalLoan)) : ((ready && S.status !== "INELIGIBLE") ? "$0" : EM)));
+      YS.put("silverRateBig", (sSized && S.pricingReady && S.noteRate > 0) ? (S.noteRate * 100).toFixed(2) + "%" : EM);
+      YS.put("silverOrigBig", sSized ? YS.fmtUSD2(Math.floor(ss.totalLoan || 0) * adminOrigPct("silver")) : EM);
+      YS.put("silverOrigPts", origPtStr(adminOrigPct("silver")));
+      setBadge("silverBadge", S.status, ready);
+      var silverWhy = silverExit ? shortMsg(exitMsg(S.reasons)) : (S.status !== "ELIGIBLE" ? shortReason(S.reasons) : "");
+      YS.put("silverSub", !ready ? EM : (silverWhy || (S.caps ? "Max LTC " + pctLbl(S.caps.maxLTC) + " \u00b7 " + (S.tierLabel || "") : (S.tierLabel || ""))));
+    }
+
     // ---- comparison note ----
     var note = el("progNote");
     if (note) {
-      var msg = comparisonNote(d, G, ready);
+      var msg = comparisonNote(d, G, S, ready);
       if (msg) { note.style.display = ""; note.innerHTML = msg; } else { note.style.display = "none"; note.innerHTML = ""; }
     }
     return G;
   }
 
-  function comparisonNote(d, G, ready) {
+  function comparisonNote(d, G, S, ready) {
     if (!ready) return "";
-    var stdOk = d.status !== "INELIGIBLE" && d.totalLoan > 0;
-    var goldOk = G.available !== false && G.status !== "INELIGIBLE" && G.sizing && G.sizing.totalLoan > 0;
-    if (stdOk && goldOk && d.pricingReady && G.pricingReady) {
-      var dLoan = d.totalLoan - G.sizing.totalLoan, dRate = (d.rate / 100) - G.noteRate, parts = [];
-      if (Math.abs(dRate) > 0.00005) parts.push("<strong>" + (dRate > 0 ? "Gold Standard" : "Standard") + "</strong> is <strong>" + (Math.abs(dRate) * 100).toFixed(2) + "% cheaper</strong> on rate");
-      if (Math.abs(dLoan) > 500) parts.push("<strong>" + (dLoan > 0 ? "Standard" : "Gold Standard") + "</strong> lends <strong>" + YS.fmtUSD(Math.abs(dLoan)) + " more</strong>");
-      var tail = "", sM = d.status === "MANUAL", gM = G.status === "MANUAL";
-      if (sM || gM) tail = " " + (sM && gM ? "Both need manual review." : ("The <strong>" + (sM ? "Standard" : "Gold Standard") + "</strong> option needs manual review."));
-      return (parts.length ? (parts.join(" \u00b7 ") + ".") : "Both programs price the same on this deal.") + tail;
+    // Normalize the three programs into comparable rows.
+    var progs = [
+      { name: "Standard", ok: d.status !== "INELIGIBLE" && d.totalLoan > 0 && d.pricingReady, rate: (d.rate || 0) / 100, loan: d.totalLoan || 0, manual: d.status === "MANUAL" },
+      { name: "Gold Standard", ok: !!(G && G.available !== false && G.status !== "INELIGIBLE" && G.sizing && G.sizing.totalLoan > 0 && G.pricingReady && G.noteRate > 0), rate: (G && G.noteRate) || 0, loan: (G && G.sizing && G.sizing.totalLoan) || 0, manual: !!(G && G.status === "MANUAL") },
+      { name: "Silver", ok: !!(S && S.status !== "INELIGIBLE" && S.sizing && S.sizing.totalLoan > 0 && S.pricingReady && S.noteRate > 0), rate: (S && S.noteRate) || 0, loan: (S && S.sizing && S.sizing.totalLoan) || 0, manual: !!(S && S.status === "MANUAL") }
+    ];
+    var live = progs.filter(function (p) { return p.ok; });
+    if (!live.length) return "";
+    if (live.length === 1) {
+      if (live[0].name === "Standard" && G && G.available === false)
+        return "Only the <strong>Standard Program</strong> qualifies as entered \u2014 the Gold Standard isn't offered in this state.";
+      return "Only the <strong>" + live[0].name + " Program</strong> qualifies as entered.";
     }
-    if (stdOk && !goldOk) return (G.available === false)
-      ? "Only the <strong>Standard Program</strong> is available here \u2014 the Gold Standard isn't offered in this state."
-      : "Only the <strong>Standard Program</strong> qualifies as entered.";
-    if (goldOk && !stdOk) return "Only the <strong>Gold Standard Program</strong> qualifies as entered.";
-    return "";
+    var byRate = live.slice().sort(function (a, b) { return a.rate - b.rate; });
+    var byLoan = live.slice().sort(function (a, b) { return b.loan - a.loan; });
+    var parts = [];
+    if (byRate.length > 1 && (byRate[1].rate - byRate[0].rate) > 0.00005)
+      parts.push("<strong>" + byRate[0].name + "</strong> has the <strong>lowest rate</strong> (" + (byRate[0].rate * 100).toFixed(2) + "%)");
+    if (byLoan.length > 1 && (byLoan[0].loan - byLoan[1].loan) > 500)
+      parts.push("<strong>" + byLoan[0].name + "</strong> lends the <strong>most</strong> (" + YS.fmtUSD(byLoan[0].loan) + ")");
+    var manuals = live.filter(function (p) { return p.manual; }).map(function (p) { return p.name; });
+    var tail = manuals.length ? (" The <strong>" + manuals.join("</strong> and <strong>") + "</strong> option" + (manuals.length > 1 ? "s need" : " needs") + " manual review.") : "";
+    return (parts.length ? (parts.join(" \u00b7 ") + ".") : "The qualifying programs price about the same on this deal.") + tail;
   }
 
   function pctLbl(x) { return (Math.round(x * 1000) / 10) + "%"; }
@@ -508,18 +611,18 @@
   // when a program is drilled into.
   function renderLeverage(ready) {
     var wrap = el("rLevWrap"); if (!wrap) return;
-    var isGold = chosenProgram === "gold";
+    var isGold = chosenProgram === "gold", isSilver = chosenProgram === "silver";
     if (!ready || !chosenProgram) { wrap.style.display = "none"; return; }
     // On a manual admin exception (LTC/rate overwritten) the leverage-by-tier ladder
     // is meaningless — the admin fixed the basis, so every "tier" would show the same
     // overridden loan/rate. Hide the slider entirely (audit #13/#35).
     if (manualOn() && (adminNumRaw("tsMLtc") != null || adminNumRaw("tsMRate") != null)) { wrap.style.display = "none"; return; }
-    var ladder = isGold ? goldLadder() : YSP.priceLadder(gather());
+    var ladder = isGold ? goldLadder() : (isSilver ? SVP.priceLadder(gather()) : YSP.priceLadder(gather()));
     if (!ladder.eligible || !ladder.rows.length) { wrap.style.display = "none"; return; }
     var rows = ladder.rows;
     var ltcs = rows.map(function (r) { return r.ltc; });
-    var chosen = isGold ? goldChosenLTC : chosenLTC;
-    if (chosen && ltcs.indexOf(chosen) < 0) { if (isGold) goldChosenLTC = null; else chosenLTC = null; chosen = null; }
+    var chosen = isGold ? goldChosenLTC : (isSilver ? silverChosenLTC : chosenLTC);
+    if (chosen && ltcs.indexOf(chosen) < 0) { if (isGold) goldChosenLTC = null; else if (isSilver) silverChosenLTC = null; else chosenLTC = null; chosen = null; }
     var effIdx = chosen ? ltcs.indexOf(chosen) : 0;
     if (effIdx < 0) effIdx = 0;
     var maxV = rows.length - 1, row = rows[effIdx];
@@ -528,7 +631,7 @@
     slider.value = String(maxV - effIdx);                         // right end = maximum leverage
     slider.disabled = rows.length <= 1;
     var lv = el("rLevVal"), hint = el("rLevHint");
-    var progEl = el("rLevProg"); if (progEl) progEl.textContent = isGold ? "\u00b7 Gold Standard" : "\u00b7 Standard";
+    var progEl = el("rLevProg"); if (progEl) progEl.textContent = isGold ? "\u00b7 Gold Standard" : (isSilver ? "\u00b7 Silver" : "\u00b7 Standard");
     if (effIdx === 0) {
       lv.textContent = "Maximum \u00b7 " + pctLbl(row.targetLtcPct) + " LTC";
       if (rows.length <= 1) {
@@ -558,19 +661,21 @@
 
   // Show the offers (cards) by default; reveal a single program's full detail when drilled into.
   function applyProgramView(ready) {
-    var stdCard = el("pcardStd"), goldCard = el("pcardGold");
+    var stdCard = el("pcardStd"), goldCard = el("pcardGold"), silverCard = el("pcardSilver");
     if (stdCard) stdCard.classList.toggle("pcard-active", chosenProgram === "standard");
     if (goldCard) goldCard.classList.toggle("pcard-active", chosenProgram === "gold");
+    if (silverCard) silverCard.classList.toggle("pcard-active", chosenProgram === "silver");
     var head = el("progDetailHead");
-    if (head) head.textContent = (chosenProgram === "gold" ? "Gold Standard Program" : "Standard Program") + " \u2014 full breakdown";
-    var lev = el("rLevWrap"); if (lev && !chosenProgram) lev.style.display = "none";   // slider shows for the drilled-in program (Standard or Gold)
-    var pdf = el("tsPdf"); if (pdf) pdf.textContent = "Download " + (chosenProgram === "gold" ? "Gold Standard" : "Standard") + " Term Sheet (PDF) \u2913";
+    if (head) head.textContent = chosenProgramName(false) + " \u2014 full breakdown";
+    var lev = el("rLevWrap"); if (lev && !chosenProgram) lev.style.display = "none";   // slider shows for the drilled-in program
+    var pdf = el("tsPdf"); if (pdf) pdf.textContent = "Download " + (chosenProgram === "gold" ? "Gold Standard" : chosenProgram === "silver" ? "Silver" : "Standard") + " Term Sheet (PDF) \u2913";
     var detail = el("progDetail"); if (detail) detail.style.display = chosenProgram ? "" : "none";
     var mb = el("rManualBanner"); if (mb) mb.hidden = !(manualOn() && chosenProgram);
     var hint = el("progHint"); if (hint) hint.style.display = (ready && !chosenProgram) ? "" : "none";
   }
   function selectProgram(p) {
     if (p === "gold") { var gc = el("pcardGold"); if (gc && gc.classList.contains("pcard-off")) return; }  // not offered here
+    if (p === "silver") { var sc2 = el("pcardSilver"); if (sc2 && sc2.classList.contains("pcard-off")) return; }
     chosenProgram = (chosenProgram === p) ? null : p;            // tap the open program again to collapse
     recompute();
     if (chosenProgram) { var dt = el("progDetail"); if (dt && dt.scrollIntoView) { try { dt.scrollIntoView({ behavior: "smooth", block: "nearest" }); } catch (e) {} } }
@@ -578,9 +683,14 @@
 
   function tierNudge(d) {
     if (!d || !d.tierLabel || d.status === "INELIGIBLE" || !(d.totalLoan > 0)) return "";
-    var inp = d.inp || {}, isGold = !!d.gold, sc = YSP.normStrategy(inp.strategy);
+    var inp = d.inp || {}, isGold = !!d.gold, isSilver = !!d.silver, sc = YSP.normStrategy(inp.strategy);
     var count, thresholds, unit;
-    if (isGold) {
+    if (isSilver) {
+      // Silver tiers depend on the loan-size band: ≤$2.5M needs 3+/1–2/0 comps; over $2.5M needs 5+/2–4.
+      count = (sc === "NC") ? num("expGround") : (num("expFlips") + num("expBrrrr") + num("expGround"));
+      thresholds = (d.sizeBand === "L") ? [5, 2, 0] : [3, 1, 0];
+      unit = (sc === "NC") ? "ground-up" : "completed";
+    } else if (isGold) {
       if (sc === "NC") { count = num("expGround"); thresholds = [8, 4, 2]; unit = "ground-up"; }
       else { count = num("expFlips") + num("expBrrrr"); thresholds = [10, 5, 2]; unit = "renovation / bridge"; }
     } else {
@@ -606,12 +716,17 @@
   function adminNum(id, dflt) { var e = el(id); if (!e) return dflt; var v = parseFloat(String(e.value).replace(/,/g, "")); return (isFinite(v) && v >= 0) ? v : dflt; }
   // Read the admin markup fields (default 0.5% each; Gold Tier 1 is exempt in-engine) and push into both engines.
   function syncAdminMarkup() {
-    var std = adminNum("tsYspStd", CO.markupStd), gold = adminNum("tsYspGold", CO.markupGold);
+    var std = adminNum("tsYspStd", CO.markupStd), gold = adminNum("tsYspGold", CO.markupGold), silver = adminNum("tsYspSilver", CO.markupSilver);
     try { if (typeof YSP !== "undefined" && YSP.setMarkup) YSP.setMarkup(std / 100); } catch (e) {}
     try { if (typeof GSP !== "undefined" && GSP && GSP.setMarkup) GSP.setMarkup(gold / 100); } catch (e) {}
+    try { if (typeof SVP !== "undefined" && SVP && SVP.setMarkup) SVP.setMarkup(silver / 100); } catch (e) {}
   }
   // Admin fee/origination overrides. Defaults reproduce current behavior exactly.
-  function adminOrigPct(prog) { return adminNum(prog === "gold" ? "tsOrigGold" : "tsOrigStd", prog === "gold" ? CO.origGold : CO.origStd) / 100; }  // fraction
+  function adminOrigPct(prog) {
+    if (prog === "gold") return adminNum("tsOrigGold", CO.origGold) / 100;
+    if (prog === "silver") return adminNum("tsOrigSilver", CO.origSilver) / 100;
+    return adminNum("tsOrigStd", CO.origStd) / 100;
+  }  // fraction
   function adminFeeUW() { return adminNum("tsFeeUW", CO.lender); }
   function adminFeeCredit() { return adminNum("tsFeeCredit", CO.credit); }
   // Company "extra fees" (e.g. the NY settlement-agent fee) that apply to this
@@ -635,8 +750,8 @@
   // so the math is already correct before this ever runs.
   function seedAdminDefaults() {
     var s = function (id, v) { var e = el(id); if (e && String(e.value).trim() === "") e.value = v; };
-    s("tsYspStd", String(CO.markupStd)); s("tsYspGold", String(CO.markupGold));
-    s("tsOrigStd", String(CO.origStd)); s("tsOrigGold", String(CO.origGold));
+    s("tsYspStd", String(CO.markupStd)); s("tsYspGold", String(CO.markupGold)); s("tsYspSilver", String(CO.markupSilver));
+    s("tsOrigStd", String(CO.origStd)); s("tsOrigGold", String(CO.origGold)); s("tsOrigSilver", String(CO.origSilver));
     s("tsFeeUW", String(CO.lender)); s("tsFeeCredit", String(CO.credit)); s("tsFeeAppr", String(CO.appraisal));
     if (CO.title != null) s("tsFeeTitle", String(CO.title));
   }
@@ -653,7 +768,7 @@
   // may turn it off). prog = "standard" | "gold"; a manual scenario overrides.
   function minInterestOn(prog) {
     if (manualOn()) { var e = el("tsMinIntManual"); return e ? !!e.checked : true; }
-    return (prog === "gold") ? chk("tsMinIntGold") : chk("tsMinIntStd");
+    return (prog === "gold") ? chk("tsMinIntGold") : (prog === "silver") ? chk("tsMinIntSilver") : chk("tsMinIntStd");
   }
   // Accrual type — Non-Dutch / As-Drawn by default; admin may switch to Dutch /
   // Full-Boat. Label + saved field only (the engine input stays Non-Dutch).
@@ -697,7 +812,8 @@
     return { hasCo: hasCo, waived: waived, guarantors: guarantors, list: list, coName: co, recourseLine: recourseLine, disclosure: disclosure, coSignerRole: waived ? "Co-borrower / member (non-guarantor)" : "Co-borrower / guarantor" };
   }
   // Draw fee by program (owner-directed 2026-07-22). Gold: physical only, $250.
-  // Standard: hybrid $299 / physical $499. Display only.
+  // Standard AND Silver (a copy of the Standard housekeeping defaults,
+  // owner-confirmed 2026-07-29): hybrid $299 / physical $499. Display only.
   function drawFeeLines(prog) {
     return (prog === "gold")
       ? ["$250 per draw — physical inspection only (no virtual inspections)"]
@@ -770,7 +886,7 @@
     }
     function lockDown() {
       if (panel) panel.hidden = true; if (lock) lock.hidden = true; trig.hidden = false; trig.setAttribute("aria-expanded", "false");
-      setVal("tsYspStd", String(CO.markupStd)); setVal("tsYspGold", String(CO.markupGold)); setVal("tsOrigStd", String(CO.origStd)); setVal("tsOrigGold", String(CO.origGold));
+      setVal("tsYspStd", String(CO.markupStd)); setVal("tsYspGold", String(CO.markupGold)); setVal("tsYspSilver", String(CO.markupSilver)); setVal("tsOrigStd", String(CO.origStd)); setVal("tsOrigGold", String(CO.origGold)); setVal("tsOrigSilver", String(CO.origSilver));
       setVal("tsFeeUW", String(CO.lender)); setVal("tsFeeCredit", String(CO.credit)); setVal("tsFeeAppr", String(CO.appraisal)); setVal("tsFeeTitle", CO.title != null ? String(CO.title) : "");
       var mo = el("tsManualOn"); if (mo) mo.checked = false;
       setVal("tsMLtv", ""); setVal("tsMArv", ""); setVal("tsMLtc", ""); setVal("tsMRate", ""); setVal("tsMIr", "");
@@ -779,6 +895,7 @@
       setVal("tsAccrual", "non_dutch"); setVal("tsDeferredOrig", "");
       var mis = el("tsMinIntStd"); if (mis) mis.checked = false;
       var mig = el("tsMinIntGold"); if (mig) mig.checked = false;
+      var misv = el("tsMinIntSilver"); if (misv) misv.checked = false;
       var mim = el("tsMinIntManual"); if (mim) mim.checked = true;
       manualVis();
       recompute();
@@ -800,6 +917,7 @@
     renderPrograms(dStd, ready);                                  // both offer cards + comparison note
     var d = dStd;                                                 // detail renders the program you drilled into
     if (chosenProgram === "gold") { var gd = calcGold(); if (!gd || gd.unavailable) chosenProgram = null; else d = gd; }
+    else if (chosenProgram === "silver") { var svd = calcSilver(); if (!svd || svd.unavailable) chosenProgram = null; else d = svd; }
     applyProgramView(ready);                                      // show/hide the detail; slider only for Standard
     var sized = ready && d.totalLoan > 0 && d.status !== "INELIGIBLE";
     syncIrMirror(d, sized);   // reflect the reserve into the sibling months/amount field
@@ -873,7 +991,7 @@
 
     // ---- term-sheet options: live key dates, accrual, min-interest, deferred
     // origination fee, draw fee (owner-directed 2026-07-22). Display/record only. ----
-    var _prog = d.gold ? "gold" : "standard";
+    var _prog = progOf(d);
     var _close = estClosingYMD(), _fp = firstPaymentYMD(_close), _mat = maturityYMD(_fp, d.term);
     var kdWrap = el("rKeyDates");
     if (kdWrap) {
@@ -1035,6 +1153,8 @@
         var cashOutEst = payoff > 0 ? Math.max(0, d.totalLoan - payoff) : 0;
         var refiTxt = d.gold
           ? "<strong>Refinance types.</strong> A rate-&-term refi takes essentially no cash to you. A cash-out refi \u2014 cash to you over the lesser of $20,000 or 2% of the loan \u2014 is capped by the program leverage or 100% of verified hard costs; cash over $250,000 requires an escalation review."
+          : d.silver
+          ? "<strong>Refinance types.</strong> A rate-&-term refi takes no cash to you. Cash-out proceeds are capped at 50% of the total projected project profit; interest reserves are netted from cash-out proceeds; a stabilized refi needs the borrower current on all payments and taxes."
           : "<strong>Refinance types.</strong> A rate-&-term refi takes no cash to you (proceeds at or under 2% of the loan). A cash-out refi \u2014 proceeds over 2% of the loan \u2014 is capped at $50,000 cash to the borrower.";
         if (payoff > 0) refiTxt += " On this deal, the new loan of " + YS.fmtUSD(d.totalLoan) + " less your " + YS.fmtUSD(payoff) + " payoff \u2248 " + YS.fmtUSD(cashOutEst) + " before closing costs.";
         rfn.style.display = ""; rfn.innerHTML = refiTxt;
@@ -1162,17 +1282,48 @@
     // like the on-screen panel and the PDF (audit 2026-07-19 — Excel was the only
     // surface that folded the fee into the total without naming it).
     if (stdOk && d.extraFees && d.extraFees.length) {
-      var si = std.findIndex(function (r) { return r[0] === "Estimated cash to close"; });
+      var si = std.findIndex(function (r) { return r && r[0] === "Estimated cash to close"; });
       if (si > -1) Array.prototype.splice.apply(std, [si, 0].concat(d.extraFees.map(function (f) { return [f.name, money2(f.amount)]; })));
     }
     if (gd && !gd.unavailable && gOk && gd.extraFees && gd.extraFees.length) {
-      var gi = gold.findIndex(function (r) { return r[0] === "Estimated cash to close"; });
+      var gi = gold.findIndex(function (r) { return r && r[0] === "Estimated cash to close"; });
       if (gi > -1) Array.prototype.splice.apply(gold, [gi, 0].concat(gd.extraFees.map(function (f) { return [f.name, money2(f.amount)]; })));
+    }
+    // ---- Silver Program section (same shape as the Standard block) ----
+    var sd = calcSilver();
+    var silver;
+    if (!sd) { silver = [["Availability", "Silver pricing unavailable"]]; }
+    else {
+      var sExit = sd.exitShortfall > 0, sGeo = !!sd.cityReview, sOk = !sExit && !sGeo && sd.pricingReady && sd.status !== "INELIGIBLE" && sd.totalLoan > 0;
+      silver = [
+        ["Status", statusLabel(sd.status)],
+        ["Loan amount", (sExit || sGeo) ? "Manual review" : (sOk && sd.totalLoan ? money(sd.totalLoan) : EM)],
+        ["Note rate", (sOk && sd.rate > 0) ? sd.rate.toFixed(2) + "%" : EM],
+        minInterestOn("silver") ? ["Minimum interest", MIN_INTEREST_ROW] : null,
+        ["Interest accrual", accrualLabel()],
+        (YSP.normStrategy(dealType()) === "BR") ? null : ["Draw fee", drawFeeLines("silver").join("; ")],
+        ["Initial advance", sOk ? money(sd.initialAdvance) : EM],
+        ["Rehab / construction holdback", sOk ? money(sd.rehabHoldback) : EM],
+        ["Down payment (equity)", sOk ? money(sd.downPayment) : EM],
+        ["Leverage — LTC / as-is / ARV", sOk ? (pct(sd.ltcPct) + " / " + pct(sd.ltvPct) + " / " + pct(sd.arvPct)) : EM],
+        ["Origination (" + origPctStr((sd.origPct != null ? sd.origPct : 0.0125)) + ")", (sOk && sd.totalLoan) ? money2(sd.origFee) : EM],
+        ["UW / processing / legal", sOk ? money2(sd.lenderFee) : EM],
+        ["Credit report", sOk ? money2(sd.creditFee) : EM],
+        ["Appraisal (est., POC)", sOk ? money2(sd.apprFee) : EM],
+        ["Title / escrow (est.)", (sOk && sd.titleCost > 0) ? money2(sd.titleCost) : EM],
+        ["Estimated cash to close", sOk ? money2(sd.cashToClose) : EM],
+        ["Liquidity to show", sOk ? money2(sd.liquidity) : EM]
+      ];
+      if (sOk && sd.extraFees && sd.extraFees.length) {
+        var svi = silver.findIndex(function (r) { return r && r[0] === "Estimated cash to close"; });
+        if (svi > -1) Array.prototype.splice.apply(silver, [svi, 0].concat(sd.extraFees.map(function (f) { return [f.name, money2(f.amount)]; })));
+      }
     }
     // Some rows are conditional (min-interest, deferred fee) and come through as
     // null — drop them so the Excel writer never dereferences a null pair.
     return [{ title: "Deal & property", items: deal.filter(Boolean) }, { title: "Purchase & project costs", items: costs.filter(Boolean) },
-            { title: "Standard Program", items: std.filter(Boolean) }, { title: "Gold Standard Program", items: gold.filter(Boolean) }];
+            { title: "Standard Program", items: std.filter(Boolean) }, { title: "Gold Standard Program", items: gold.filter(Boolean) },
+            { title: "Silver Program", items: silver.filter(Boolean) }];
   }
   async function exportXlsx(btn) {
     var o = btn ? btn.textContent : ""; if (btn) { btn.textContent = "Exporting\u2026"; btn.disabled = true; }
@@ -1210,7 +1361,7 @@
       try {
         // Skip entirely in the embedded portal studio (notifyGeneration would
         // refuse anyway — this just avoids serializing the workbook for nothing).
-        var dX = EMBEDDED ? null : ((chosenProgram === "gold") ? (calcGold() || calc()) : calc());
+        var dX = EMBEDDED ? null : calcChosen();
         if (dX && (dX.pricingReady || dX.totalLoan > 0)) {
           notifyGeneration(dX, "Term sheet (Excel)", {
             dataBase64: X.write(wb, { bookType: "xlsx", type: "base64" }),
@@ -1257,8 +1408,8 @@
     try {
       await ensurePDF();
       syncAdminMarkup();
-      var d = (chosenProgram === "gold") ? (calcGold() || calc()) : calc();
-      var progName = (chosenProgram === "gold") ? "Gold Standard Program" : (manualOn() ? "Manual Program" : "Standard Program");
+      var d = calcChosen();
+      var progName = chosenProgramName(true);
       var isBridge = d.inp && YSP.normStrategy(d.inp.strategy) === "BR";   // bridge: as-is only, no rehab/ARV/reserve
       var jsPDF = window.jspdf.jsPDF;
       var doc = new jsPDF({ unit: "pt", format: "letter", orientation: "portrait" });
@@ -1342,7 +1493,7 @@
         item("Title", "Borrower shall provide a Title Report and Title Insurance to the satisfaction of the Lender. Lender's title coverage must be approved.");
         item("Legal fees and expenses", "The Borrower shall be required to pay for all legal fees and services related to the loan transaction. Additionally, the Borrower shall pay the Lender underwriting / processing fee and all other applicable Lender fees.");
         item("Insurance", "Borrower shall provide insurance certificates satisfactory to Lender.");
-        if (minInterestOn(d.gold ? "gold" : "standard")) item("Minimum interest", "This loan carries a 3-month minimum earned interest provision: if the loan pays off before three full months of interest have accrued, the remainder of that minimum is due at payoff. This is an interest floor / minimum earned-interest provision, not a prepayment penalty.");
+        if (minInterestOn(progOf(d))) item("Minimum interest", "This loan carries a 3-month minimum earned interest provision: if the loan pays off before three full months of interest have accrued, the remainder of that minimum is due at payoff. This is an interest floor / minimum earned-interest provision, not a prepayment penalty.");
         if (deferredOrigPct() > 0) item("Deferred origination fee", "A deferred origination fee of " + pc(deferredOrigPct() / 100) + " of the loan amount is payable at payoff as an exit fee. It is not collected at closing and is not part of the cash to close or the liquidity to show.");
         item("Disclaimer", "This term sheet does not set forth all of the terms of the loan contemplated hereunder. Additional terms and conditions may be set by the Lender prior to closing. This term sheet is not a commitment to lend money and is subject to, among other things, the Lender's sole discretion regarding Borrower's status, the Property, the Loan, title, and due diligence.");
         item("Acknowledgement & indemnification", "By accepting these terms you confirm that you will not hold YS Capital Group and/or the Lender liable for any damages related to their decision not to make the loan for any reason. You also confirm that you will indemnify and hold harmless YS Capital Group and the Lender from any claims or liabilities related to this transaction.");
@@ -1500,12 +1651,12 @@
       band("Additional loan terms");
       rowFull("Guaranty / recourse", guarantyInfo().recourseLine);
       rowFull("Interest accrual", accrualLabel() + (accrualType() === "dutch" ? " \u2014 interest on the full committed amount" : " \u2014 interest on funds drawn"));
-      if (minInterestOn(d.gold ? "gold" : "standard")) rowFull("Minimum interest", "3 months (minimum earned interest \u2014 not a prepayment penalty)");
+      if (minInterestOn(progOf(d))) rowFull("Minimum interest", "3 months (minimum earned interest \u2014 not a prepayment penalty)");
       var _def = deferredOrigPct();
       if (_def > 0) rowFull("Deferred origination fee \u2014 paid at payoff (exit fee)", pc(_def / 100) + " of the loan; not part of cash to close");
       if (!isBridge) {   // a bridge / as-is loan has no construction draws
         rowFull("Construction draw fee", d.gold ? "$250 per draw" : "$299 (hybrid) / $499 (physical)");
-        para(d.gold ? "Gold Standard construction draws require a physical inspection (no virtual inspections) at $250 per draw." : "Standard construction draws are $299 per draw with a hybrid inspection, or $499 per draw with a physical inspection.", 7);
+        para(d.gold ? "Gold Standard construction draws require a physical inspection (no virtual inspections) at $250 per draw." : (d.silver ? "Silver Program construction draws are $299 per draw with a hybrid inspection, or $499 per draw with a physical inspection." : "Standard construction draws are $299 per draw with a hybrid inspection, or $499 per draw with a physical inspection."), 7);
       }
 
       band("Terms, conditions & disclosures");
@@ -1596,7 +1747,7 @@
       // makes every leverage step identical, so the page would print duplicate rows
       // on a signable document (audit #13/#35).
       var ladderOverridden = manualOn() && (adminNumRaw("tsMLtc") != null || adminNumRaw("tsMRate") != null);
-      var lad = (!d.gold && !ladderOverridden) ? YSP.priceLadder(gather()) : { eligible: false, rows: [] };
+      var lad = (!d.gold && !ladderOverridden) ? (d.silver ? SVP.priceLadder(gather()) : YSP.priceLadder(gather())) : { eligible: false, rows: [] };
       if (!d.gold && !ladderOverridden && lad.eligible && lad.rows.length) {
         doc.addPage(); header(); y = 92;
         doc.setFont("helvetica", "bold"); doc.setFontSize(13); doc.setTextColor.apply(doc, DARK);
@@ -1683,12 +1834,12 @@
     try {
       await ensurePDF();
       syncAdminMarkup();
-      var d = (chosenProgram === "gold") ? (calcGold() || calc()) : calc();
+      var d = calcChosen();
       if (!d || d.status === "INELIGIBLE" || d.exitShortfall > 0 || d.cityReview || !(d.totalLoan > 0)) {
         flash("This scenario isn't eligible as entered \u2014 adjust the deal to issue a proof-of-funds letter.");
         if (btn) { btn.textContent = label; btn.disabled = false; } return;
       }
-      var progName = (chosenProgram === "gold") ? "Gold Standard Program" : "Standard Program";
+      var progName = chosenProgramName(false);
       var isRefiTxn = (d.inp && d.inp.loanType === "Refinance");
       var isBridge = d.inp && YSP.normStrategy(d.inp.strategy) === "BR";
       var jsPDF = window.jspdf.jsPDF;
@@ -1806,7 +1957,7 @@
       // ---- footer ----
       doc.setDrawColor.apply(doc, LINE); doc.setLineWidth(0.8); doc.line(M, H - 48, W - M, H - 48);
       doc.setFont("helvetica", "normal"); doc.setFontSize(6.8); doc.setTextColor(150, 158, 162);
-      doc.text(pdfSafe((minInterestOn(chosenProgram === "gold" ? "gold" : "standard") ? MIN_INTEREST_DETAIL + " " : "") + LENDER.name + " \u00b7 NMLS " + LENDER.nmls + " \u00b7 Business-purpose lending only. This document is proof of funds / pre-qualification and is not a commitment to lend or an offer to extend consumer credit. Figures are indicative and subject to full underwriting, appraisal, title and final credit approval."), M, H - 36, { maxWidth: W - 2 * M });
+      doc.text(pdfSafe((minInterestOn(chosenProgram === "gold" ? "gold" : chosenProgram === "silver" ? "silver" : "standard") ? MIN_INTEREST_DETAIL + " " : "") + LENDER.name + " \u00b7 NMLS " + LENDER.nmls + " \u00b7 Business-purpose lending only. This document is proof of funds / pre-qualification and is not a commitment to lend or an offer to extend consumer credit. Figures are indicative and subject to full underwriting, appraisal, title and final credit approval."), M, H - 36, { maxWidth: W - 2 * M });
 
       drawDerivationPage(doc, d, "Basis for This Proof of Funds", "The figures in the preceding letter were generated from the inputs below, provided by the applicant through the YS Capital Term Sheet Studio. This page shows what was entered and how the financing amount was determined.");
       doc.save("YS-Capital-Proof-of-Funds-" + borrower.replace(/[^A-Za-z0-9]+/g, "_").replace(/^_+|_+$/g, "") + ".pdf");
@@ -1845,7 +1996,7 @@
   function dealMetaRows(d, kind) {
     return [
       { label: "Document", value: kind },
-      { label: "Program", value: (chosenProgram === "gold") ? "Gold Standard Program" : "Standard Program" },
+      { label: "Program", value: chosenProgramName(false) },
       { label: "Borrower / entity", value: (borrowerOfRecord() || "").trim() },
       { label: "Property", value: (chk("addrTBD") ? "TBD" : (val("propAddr") || "")) + (val("propState") ? ", " + val("propState") : "") },
       { label: "Loan amount", value: (d && d.totalLoan) ? YS.fmtUSD(d.totalLoan) : "" },
@@ -1866,7 +2017,7 @@
       var doSend = function () {
         if (!FORM_TOKEN.t) return;
         var addr = chk("addrTBD") ? "TBD" : (val("propAddr") || val("propState") || "");
-        var subject = kind + " generated \u2014 " + ((chosenProgram === "gold") ? "Gold Standard" : "Standard") +
+        var subject = kind + " generated \u2014 " + ((chosenProgram === "gold") ? "Gold Standard" : (chosenProgram === "silver") ? "Silver" : "Standard") +
           (d && d.totalLoan ? " \u2014 " + YS.fmtUSD(d.totalLoan) : "") + (addr ? " \u2014 " + addr : "");
         var ob = window.YSBRAND || {};
         var code = ob.email ? String(ob.email).split("@")[0].toLowerCase().replace(/[^a-z0-9._-]/g, "") : "";
@@ -2009,10 +2160,10 @@
     // the screen didn't show, and never a term sheet for an ineligible/unsizeable deal.
     if (!readyToPrice()) { if (note) { note.textContent = "Add the required fields (state, FICO, price and ARV) first so we can prepare your term sheet."; note.style.color = "#b8604a"; } return; }
     if (!canIssue(issueDeal())) { if (note) { note.textContent = "This scenario isn't eligible as entered \u2014 submit it for manual review and our team will follow up."; note.style.color = "#b8604a"; } return; }
-    var d = (chosenProgram === "gold") ? (calcGold() || calc()) : calc();
+    var d = calcChosen();
     var summary = {
       email: email, borrower: (borrowerOfRecord() || "").trim(),
-      program: (chosenProgram === "gold") ? "Gold Standard Program" : "Standard Program",
+      program: chosenProgramName(false),
       state: val("propState") || "", property: chk("addrTBD") ? "TBD" : (val("propAddr") || ""),
       loanAmount: (d && d.totalLoan) || 0, rate: (d && d.pricingReady && d.rate) ? d.rate : null,
       term: (d && d.term) || "", status: (d && d.status) || ""
@@ -2045,7 +2196,7 @@
     var pc = function (x) { var v = Math.round((x || 0) * 100 * 100) / 100; return v.toFixed(2).replace(/\.?0+$/, "") + "%"; };   // exact figure, up to 2 decimals trimmed
     var inp = d.inp || {}, isRefi = inp.loanType === "Refinance";
     var sc = YSP.normStrategy(inp.strategy), isBridge = sc === "BR", hasRehab = num("construction") > 0 || sc === "NC" || sc === "FF";
-    var _dpProg = d.gold ? "gold" : "standard";
+    var _dpProg = progOf(d);
     var _dpClose = estClosingYMD(), _dpFp = firstPaymentYMD(_dpClose), _dpMat = maturityYMD(_dpFp, inp.term || 12);
 
     // header
@@ -2229,14 +2380,14 @@
     ["origPrice", "price"].forEach(function (id) { var e = el(id); if (e) e.addEventListener("blur", validateAssign); });
     var slider = el("rLevSlider");
     if (slider) slider.addEventListener("input", function () {
-      var isGold = chosenProgram === "gold";
-      var rows = ((isGold ? goldLadder() : YSP.priceLadder(gather())).rows) || [];
+      var isGold = chosenProgram === "gold", isSilver = chosenProgram === "silver";
+      var rows = ((isGold ? goldLadder() : isSilver ? SVP.priceLadder(gather()) : YSP.priceLadder(gather())).rows) || [];
       if (!rows.length) return;
       var maxV = rows.length - 1;
       var idx = maxV - parseInt(slider.value, 10);
       if (idx < 0) idx = 0; if (idx > maxV) idx = maxV;
       var chosen = (idx === 0) ? null : rows[idx].ltc;             // top of range = max leverage
-      if (isGold) goldChosenLTC = chosen; else chosenLTC = chosen;
+      if (isGold) goldChosenLTC = chosen; else if (isSilver) silverChosenLTC = chosen; else chosenLTC = chosen;
       recompute();
     });
     // Fetch the anti-bot form token at load — by the time a sheet is generated
@@ -2255,6 +2406,39 @@
     if (imp && impFile) { imp.addEventListener("click", function () { impFile.click(); }); impFile.addEventListener("change", function () { importXlsx(impFile); }); }
     var scard = el("pcardStd"); if (scard) scard.addEventListener("click", function () { selectProgram("standard"); });
     var gcard = el("pcardGold"); if (gcard) gcard.addEventListener("click", function () { selectProgram("gold"); });
+    var svcard = el("pcardSilver"); if (svcard) svcard.addEventListener("click", function () { selectProgram("silver"); });
+    // TBD confirmation (owner-directed 2026-07-29): ticking "Property is TBD" must be
+    // an explicit, informed choice — without the full address the engines can't check
+    // ZIP / city / county / borough restrictions (the state alone isn't enough), so
+    // the user agrees before the address is waived. Fires only on a REAL interaction:
+    // programmatic restores (share link / Excel import / studio prefill) set .checked
+    // directly without dispatching events (suite.js applyState), so they never nag.
+    var tbdBox = el("addrTBD"), tbdWarn = el("tbdWarn");
+    if (tbdBox && tbdWarn) {
+      var tbdAgreed = false;
+      var tbdClose = function (agree) {
+        tbdWarn.classList.add("hidden");
+        if (agree) { tbdAgreed = true; return; }
+        tbdBox.checked = false;
+        updateConditionals(); recompute();
+        var addrF = el("propAddr"); if (addrF) { try { addrF.focus(); } catch (_) { } }
+      };
+      var tbdAgreeBtn = el("tbdWarnAgree"), tbdBackBtn = el("tbdWarnBack");
+      tbdBox.addEventListener("change", function () {
+        if (tbdBox.checked && !tbdAgreed) {
+          tbdWarn.classList.remove("hidden");
+          // Move focus INTO the dialog so keyboard users land on the safe choice
+          // (and Escape works — the key fires where the focus is).
+          if (tbdBackBtn) { try { tbdBackBtn.focus(); } catch (_) { } }
+        }
+      });
+      if (tbdAgreeBtn) tbdAgreeBtn.addEventListener("click", function () { tbdClose(true); });
+      if (tbdBackBtn) tbdBackBtn.addEventListener("click", function () { tbdClose(false); });
+      // Document-level so Escape closes no matter where the focus sits.
+      document.addEventListener("keydown", function (e) {
+        if (e.key === "Escape" && !tbdWarn.classList.contains("hidden")) tbdClose(false);
+      });
+    }
     var pback = el("progBack"); if (pback) pback.addEventListener("click", function () { chosenProgram = null; recompute(); });
     // info tooltips: tap toggles (hover/keyboard focus handle desktop); never let a tap fall through to the card
     document.addEventListener("click", function (ev) {
@@ -2272,8 +2456,10 @@
           if (d && typeof d === "object") {
             if (d.markupStdPct != null) CO.markupStd = Number(d.markupStdPct);
             if (d.markupGoldPct != null) CO.markupGold = Number(d.markupGoldPct);
+            if (d.markupSilverPct != null) CO.markupSilver = Number(d.markupSilverPct);
             if (d.origStdPct != null) CO.origStd = Number(d.origStdPct);
             if (d.origGoldPct != null) CO.origGold = Number(d.origGoldPct);
+            if (d.origSilverPct != null) CO.origSilver = Number(d.origSilverPct);
             if (d.lenderFee != null) CO.lender = Number(d.lenderFee);
             if (d.creditFee != null) CO.credit = Number(d.creditFee);
             if (d.appraisalFee != null) CO.appraisal = Number(d.appraisalFee);
@@ -2285,7 +2471,7 @@
     })();
   }
   window.TS = { exportPdf: exportPdf, exportLetter: exportLetter, exportXlsx: exportXlsx, importXlsx: importXlsx, share: function (b) { try { YS.shareLink(b); } catch (e) {} },
-    _calc: calc, _calcGold: calcGold, _xlsxSections: xlsxSections, _gather: gather, _manualOn: manualOn };
+    _calc: calc, _calcGold: calcGold, _calcSilver: calcSilver, _xlsxSections: xlsxSections, _gather: gather, _manualOn: manualOn };
   window.APP = window.TS;
   if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", wire); else wire();
 })();
