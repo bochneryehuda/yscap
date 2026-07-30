@@ -839,7 +839,8 @@ ENGINE LITERALS ARE A HUMAN STEP (frozen engine -- owner authorization required)
   4. Copy web/v2/tools/silver-program.js over the 5 sibling copies:
        web/tools/, web/portal/engines/, web/v2/portal/engines/,
        app/public/engines/, app-v2/public/engines/
-  5. Bump the silver-program.js cache-busters (currently ?v=silver2) in:
+  5. Bump the silver-program.js ?v= cache-busters (grep the CURRENT value
+     first — a hard-coded version here goes stale on every engine change) in:
        web/v2/tools/term-sheet.html, web/v2/portal/index.html, app-v2/index.html
   6. Re-run this tool (--check --blocks), then node scripts/test-silver-program.js,
      MATRIX_N=500 node scripts/test-silver-workbook-matrix.js,

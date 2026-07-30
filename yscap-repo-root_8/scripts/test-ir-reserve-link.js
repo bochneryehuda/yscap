@@ -111,10 +111,17 @@ function assertNoReservePrefill(file) {
   const block = src.slice(start, end);
   ok(/nowGround/.test(block) && /tsTerm/.test(block) && /18/.test(block),
     `${label}: ground-up still defaults the TERM to 18 months`);
-  // The regression itself: any write to the reserve entry on this path.
-  const reserveWrite = /el\(\s*["'](irMonths|irAmount)["']\s*\)[^\n]*\.value\s*=/.test(block)
-    || /\b(irMonths|irAmount)\b[^\n]*\.value\s*=\s*\d/.test(block);
-  ok(!reserveWrite, `${label}: ground-up NEVER pre-fills the interest-reserve entry`);
+  // The regression itself: ANY write to the reserve entry on this path. Deliberately
+  // broad — an audit mutation-tested the first version and it missed four realistic
+  // re-introductions (a two-line write via an intermediate variable, a non-numeric
+  // right-hand side, a forEach over the ids, and setAttribute). So instead of
+  // pattern-matching the write, assert the block never MENTIONS the reserve fields at
+  // all: this path has no legitimate reason to name them, which makes the check
+  // whole-class rather than a race against wording. (The bridge-clearing branch that
+  // legitimately blanks them lives ABOVE this block and is outside the slice.)
+  const mentionsReserve = /\b(irMonths|irAmount)\b/.test(block);
+  ok(!mentionsReserve,
+    `${label}: the ground-up path never touches the interest-reserve entry (no write of any form)`);
   // …and the stale comment promising a pre-filled reserve must be gone too.
   ok(!/pre-fill a full-term financed reserve/.test(src),
     `${label}: the stale "pre-fill a full-term financed reserve" comment is gone`);

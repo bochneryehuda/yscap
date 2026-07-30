@@ -324,7 +324,9 @@ explicitly instead of silently inheriting an interpretation.
 4. **Sync the 6 engine copies + cache-busters**: copy
    `web/v2/tools/silver-program.js` over `web/tools/`,
    `web/portal/engines/`, `web/v2/portal/engines/`, `app/public/engines/`,
-   `app-v2/public/engines/`; bump the `silver-program.js?v=silver2`
+   `app-v2/public/engines/`; bump the `silver-program.js?v=` cache-buster
+   to the NEXT value (grep the current one — do not hard-code a version
+   here, it goes stale on every engine change)
    cache-busters in `web/v2/tools/term-sheet.html`,
    `web/v2/portal/index.html`, `app-v2/index.html`.
 5. **Re-verify the pipeline**: `node scripts/emcap-regenerate-fixture.js`
