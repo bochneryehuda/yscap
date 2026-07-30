@@ -581,6 +581,18 @@ module.exports = {
     partnerId:    process.env.ENCOMPASS_FLOOD_PARTNER_ID || null,
     serviceId:    process.env.ENCOMPASS_FLOOD_SERVICE_ID || null,
     product:      process.env.ENCOMPASS_FLOOD_PRODUCT || null,
+    // The tenant's configured flood "service setup" id — REQUIRED by the Encompass
+    // v3 serviceOrders API (a place-order without it returns "SOO-1125:
+    // serviceSetupId is required"). It identifies WHICH configured service/vendor
+    // to order from (the owner's ICE flood service). Ask the Encompass admin for it.
+    serviceSetupId: process.env.ENCOMPASS_FLOOD_SERVICE_SETUP_ID || null,
+    // The remaining serviceOrders body fields — all overridable so the exact
+    // contract can be dialed in against the live tenant (dry-run to inspect) with
+    // NO redeploy. Defaults match the documented EPC service-order shape.
+    reason:       process.env.ENCOMPASS_FLOOD_REASON || null,        // default 'Manually Requested'
+    requestType:  process.env.ENCOMPASS_FLOOD_REQUEST_TYPE || null,  // default 'Flood'
+    scope:        process.env.ENCOMPASS_FLOOD_SCOPE || null,         // optional (e.g. 'application:<id>')
+    optionsJson:  process.env.ENCOMPASS_FLOOD_OPTIONS_JSON || null,  // optional raw JSON for request.options
   },
   // Owner-directed 2026-07-30 ("turn everything on"): flood ordering is ON by
   // default (button + polling AND the write). Set the env var to '0' — or flip the
