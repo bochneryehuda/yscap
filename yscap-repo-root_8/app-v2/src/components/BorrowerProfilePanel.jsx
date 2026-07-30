@@ -3,6 +3,7 @@ import { Link } from 'react-router-dom';
 import { api } from '../lib/api.js';
 import { fmtDay, dayInputValue } from '../lib/dates.js';
 import { PhoneInput, ZipInput, EmailInput } from './FormattedInputs.jsx';
+import AddressAutocomplete from './AddressAutocomplete.jsx';
 import { CITIZENSHIP, MARITAL, CONTACT_TYPE, HOUSING, EMPLOYMENT, withCurrent } from '../lib/enums.js';
 import { formatSSN, cleanFICO, ficoValid } from '../lib/validators.js';
 import { fullNameOf, splitName, rejoin, nameChanged } from '../lib/personName.js';
@@ -218,14 +219,18 @@ export function BorrowerProfileForm({ b, onSaved, onCancel }) {
       </div>
       <div style={{ fontWeight: 600, margin: '12px 0 6px', color: '#141B22' }}>Current address</div>
       <div className="ts-inputs">
-        <label style={{ gridColumn: '1 / -1' }}><span>Street</span><input className="input" value={f.ca.line1 || ''} onChange={e => setCa('line1', e.target.value)} /></label>
+        <label style={{ gridColumn: '1 / -1' }}><span>Street</span>
+          <AddressAutocomplete value={f.ca.line1 || ''} onChange={v => setCa('line1', v)}
+            onPick={addr => setF(s => ({ ...s, ca: { ...s.ca, line1: addr.line1 || '', city: addr.city || '', state: (addr.state || '').toUpperCase(), zip: addr.zip || '' } }))} /></label>
         <label><span>City</span><input className="input" value={f.ca.city || ''} onChange={e => setCa('city', e.target.value)} /></label>
         <label><span>State</span><input className="input" value={f.ca.state || ''} onChange={e => setCa('state', e.target.value)} /></label>
         <label><span>ZIP</span><ZipInput value={f.ca.zip || ''} onChange={v => setCa('zip', v)} /></label>
       </div>
       <div style={{ fontWeight: 600, margin: '12px 0 6px', color: '#141B22' }}>Mailing address (if different)</div>
       <div className="ts-inputs">
-        <label style={{ gridColumn: '1 / -1' }}><span>Street</span><input className="input" value={f.ma.line1 || ''} onChange={e => setMa('line1', e.target.value)} /></label>
+        <label style={{ gridColumn: '1 / -1' }}><span>Street</span>
+          <AddressAutocomplete value={f.ma.line1 || ''} onChange={v => setMa('line1', v)}
+            onPick={addr => setF(s => ({ ...s, ma: { ...s.ma, line1: addr.line1 || '', city: addr.city || '', state: (addr.state || '').toUpperCase(), zip: addr.zip || '' } }))} /></label>
         <label><span>City</span><input className="input" value={f.ma.city || ''} onChange={e => setMa('city', e.target.value)} /></label>
         <label><span>State</span><input className="input" value={f.ma.state || ''} onChange={e => setMa('state', e.target.value)} /></label>
         <label><span>ZIP</span><ZipInput value={f.ma.zip || ''} onChange={v => setMa('zip', v)} /></label>

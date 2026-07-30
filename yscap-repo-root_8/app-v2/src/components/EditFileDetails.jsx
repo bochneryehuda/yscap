@@ -4,6 +4,7 @@ import { MoneyInput } from './FormattedInputs.jsx';
 import { US_STATES } from './LlcManager.jsx';
 import { PROGRAMS, PROPERTY_TYPES, LOAN_TYPES, selectOptions, unitsMode, unitsForType } from '../lib/enums.js';
 import LlcPicker from './LlcPicker.jsx';
+import AddressAutocomplete from './AddressAutocomplete.jsx';
 
 /* Staff edit of the loan-file data after creation — EVERY field the
    application collects is correctable here (typo'd price, wrong property
@@ -166,7 +167,10 @@ export default function EditFileDetails({ app, onSaved }) {
           <p className="muted small" style={{ margin: '0 0 8px', textTransform: 'uppercase', letterSpacing: '.05em' }}>Property</p>
           <div className="edit-grid">
             <label className="col-4"><span>Street address</span>
-              <input className="input" value={f.addrLine1} onChange={(e) => set('addrLine1', e.target.value)} /></label>
+              <AddressAutocomplete value={f.addrLine1}
+                onChange={(v) => set('addrLine1', v)}
+                onPick={(addr) => setF((s) => ({ ...s, addrLine1: addr.line1 || '', addrUnit: addr.unit || s.addrUnit || '',
+                  addrCity: addr.city || '', addrState: (addr.state || '').toUpperCase(), addrZip: addr.zip || '' }))} /></label>
             <label className="col-2"><span>City</span><input className="input" value={f.addrCity} onChange={(e) => set('addrCity', e.target.value)} /></label>
             <label><span>State</span>
               <select className="input" value={f.addrState} onChange={(e) => set('addrState', e.target.value)}>

@@ -534,6 +534,21 @@ module.exports = {
     clientId:     process.env.USPS_CLIENT_ID,
     clientSecret: process.env.USPS_CLIENT_SECRET,
     baseUrl:      (process.env.USPS_API_BASE || 'https://apis.usps.com').replace(/\/+$/, ''),
+    // Burst brake for the FREE tier (60 lookups/hour, shared across USPS APIs): once
+    // this many lookups happen in a rolling hour, further LIVE verifies are skipped
+    // (the form still works) and the backfill pauses until the window clears, so the
+    // hour's quota is never burned. Defaults to 55 (safe for the free tier, a little
+    // headroom) — set 0 for NO cap once you're on a paid Enhanced Addresses tier.
+    // NOTE: the counter is per-process, so with N app instances the effective cap is
+    // N × this value; on the free tier run a single instance or lower this.
+    maxPerHour:   process.env.USPS_MAX_PER_HOUR != null ? Number(process.env.USPS_MAX_PER_HOUR) : 55,
+    // Previous-files backfill (off by default). When on, a paced boot pass stamps
+    // each existing file with its USPS-standardized subject address (non-destructive
+    // — it never overwrites property_address).
+    backfillEnabled: /^(1|true|yes)$/i.test(String(process.env.USPS_BACKFILL_ENABLED || '')),
+    backfillPerTick: Number(process.env.USPS_BACKFILL_PER_TICK || 40),   // lookups per pass; keep ≤ your hourly quota
+    backfillEveryMin: Number(process.env.USPS_BACKFILL_EVERY_MIN || 60), // minutes between passes (floor 15)
+    conditionRequired: !/^(0|false|no)$/i.test(String(process.env.USPS_CONDITION_REQUIRED || '1')),
   },
   // Encompass (ICE Mortgage Technology / Ellie Mae) — the loan-origination
   // system. OAuth2 via Developer Connect; access is per-instance, so the field
