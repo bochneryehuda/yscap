@@ -1169,10 +1169,10 @@ function Item({ it, team, onPatch, role, docs, onUploadTo, onDropTo, onReviewDoc
           controls that would orphan credit_reports' document pointers. */}
       {isDoc && it.template_code !== 'rtl_cond_credit' && (genericUpload || itemDocs.length > 0) && (
         <div style={{ width: '100%', paddingLeft: 20 }}
-          className={(!slots && onDropTo && genericUpload) ? 'cond-drop' : undefined}
-          onDragOver={(!slots && onDropTo && genericUpload) ? (e) => { e.preventDefault(); e.currentTarget.classList.add('drop-over'); } : undefined}
-          onDragLeave={(!slots && onDropTo && genericUpload) ? (e) => { e.currentTarget.classList.remove('drop-over'); } : undefined}
-          onDrop={(!slots && onDropTo && genericUpload) ? (e) => { e.preventDefault(); e.currentTarget.classList.remove('drop-over'); onFilesDropped(e, (files) => onDropTo(files, { itemId: it.id, slotBase: itemDocs.length })); } : undefined}>
+          className={(!slots && onDropTo && it.template_code !== 'rtl_cond_flood') ? 'cond-drop' : undefined}
+          onDragOver={(!slots && onDropTo && it.template_code !== 'rtl_cond_flood') ? (e) => { e.preventDefault(); e.currentTarget.classList.add('drop-over'); } : undefined}
+          onDragLeave={(!slots && onDropTo && it.template_code !== 'rtl_cond_flood') ? (e) => { e.currentTarget.classList.remove('drop-over'); } : undefined}
+          onDrop={(!slots && onDropTo && it.template_code !== 'rtl_cond_flood') ? (e) => { e.preventDefault(); e.currentTarget.classList.remove('drop-over'); onFilesDropped(e, (files) => onDropTo(files, { itemId: it.id, slotBase: itemDocs.length })); } : undefined}>
           {slots ? (
             /* Fixed named slots (e.g. Insurance → binder + invoice) — each slot is
                its own drop target so a dropped file lands in the right slot. Every
