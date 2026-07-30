@@ -572,7 +572,14 @@
       origFee: origFee, origPct: origPct, lenderFee: lenderFee, creditFee: creditFee, apprFee: apprFee, titleCost: titleCost, titleInfo: title,
       closing: closing, extraFees: extraFeeList(), cashToClose: cashToClose, reserves: reserves, reserveMo: reserveMonths(totalLoan), liquidity: cashToClose + reserves,
       ltcPct: s.ltcPct || 0, ltvPct: s.acqLtvPct || 0, arvPct: s.arvPct || 0,
-      binding: s.binding || "", caps: R.caps, status: R.status, reasons: R.reasons || [],
+      // `d.caps` keeps the meaning every reader in this file already assumes: the
+      // EFFECTIVE ceiling this deal was sized and priced at. The Silver engine now
+      // publishes that as `pricedCeiling` and publishes the PROGRAM MAXIMUM (already
+      // lowered to the highest band the grid actually prices) as `caps` — so the two
+      // are mapped apart here, once, and no other reader in this file changes meaning
+      // (engine contract split 2026-07-30).
+      binding: s.binding || "", caps: R.pricedCeiling || R.caps, progCaps: R.caps, tierCaps: R.tierCaps || null,
+      status: R.status, reasons: R.reasons || [],
       exitShortfall: R.exitShortfall || 0, cityReview: R.geoReview || null,
       tierLabel: R.tierLabel, fico: inp.fico, overlays: R.overlays || [], market: R.market, sizeBand: R.sizeBand
     };
@@ -625,7 +632,7 @@
     // deal's own ceiling is lower.
     var stdTier = tierMaxOf(d);
     YS.put("stdSub", !ready ? "Enter price, budget & ARV to begin"
-      : (stdWhy || (stdTier ? ("Tier max LTC " + pctLbl(stdTier.maxLTC) + (pricedBelowTier(stdTier, d.caps) ? " \u00b7 this deal caps at " + pctLbl(d.caps.maxLTC) : "") + " \u00b7 " + (d.tierLabel || "")) : "")));
+      : (stdWhy || (stdTier ? ("Max LTC " + pctLbl(stdTier.maxLTC) + (pricedBelowTier(stdTier, d.caps) ? " \u00b7 this deal caps at " + pctLbl(d.caps.maxLTC) : "") + " \u00b7 " + (d.tierLabel || "")) : "")));
 
     // ---- Gold Standard card ----
     var GS = (typeof GSP !== "undefined" && GSP) ? GSP : null;
@@ -673,12 +680,14 @@
       YS.put("silverOrigPts", origPtStr(adminOrigPct("silver")));
       setBadge("silverBadge", S.status, ready);
       var silverWhy = silverExit ? shortMsg(exitMsg(S.reasons)) : (S.status !== "ELIGIBLE" ? shortReason(S.reasons) : "");
-      // The Silver card's "Max LTC" is read straight off the engine's fixed Tier Grid
-      // row (R.tierCaps) \u2014 this is the exact line the owner watched change while they
-      // edited the interest reserve (2026-07-30). The step-down's effective ceiling now
-      // rides beside it, plainly labelled as THIS DEAL's cap, never as the tier's.
-      var svTier = S.tierCaps || null;
-      YS.put("silverSub", !ready ? EM : (silverWhy || (svTier ? ("Tier max LTC " + pctLbl(svTier.maxLTC) + (pricedBelowTier(svTier, S.caps) ? " \u00b7 this deal caps at " + pctLbl(S.caps.maxLTC) : "") + " \u00b7 " + (S.tierLabel || "")) : (S.tierLabel || ""))));
+      // The Silver card's "Max LTC" is the engine's PROGRAM MAXIMUM (S.caps) \u2014 the tier
+      // cap already lowered to the highest leverage band the rate grid genuinely prices,
+      // so it is both FIXED and REACHABLE. This is the exact line the owner watched move
+      // while they edited the interest reserve (2026-07-30), and it must never show the
+      // raw tier row (S.tierCaps, e.g. 92.5% on GUC tier 2) which the grid never prices.
+      // The step-down's ceiling for THIS deal rides beside it, plainly labelled.
+      var svProg = S.caps || null, svEff = S.pricedCeiling || S.caps;
+      YS.put("silverSub", !ready ? EM : (silverWhy || (svProg ? ("Max LTC " + pctLbl(svProg.maxLTC) + (pricedBelowTier(svProg, svEff) ? " \u00b7 this deal caps at " + pctLbl(svEff.maxLTC) : "") + " \u00b7 " + (S.tierLabel || "")) : (S.tierLabel || ""))));
     }
 
     // ---- Manual card ----
@@ -1065,7 +1074,11 @@
   function tierMaxOf(d) {
     if (!d) return null;
     var R = d.R;
-    if (d.silver) return (R && R.tierCaps) || null;
+    // SILVER publishes it directly: the engine's `caps` IS the program maximum, already
+    // lowered to the highest band the rate grid genuinely prices. NEVER read `tierCaps`
+    // here — that is the raw workbook row (92.5% on GUC tier 2), a leverage the grid
+    // never prices and therefore exactly the unreachable number we are removing.
+    if (d.silver) return d.progCaps || (R && R.caps) || null;
     if (d.gold) {
       var GS = (typeof GSP !== "undefined" && GSP) ? GSP : null;
       if (!GS || !R || !R.caps) return (R && R.caps) || null;
@@ -1081,7 +1094,7 @@
       return row || R.caps;
     } catch (e2) { return R.caps; }
   }
-  // Is the deal's own priced ceiling BELOW the tier maximum on any leverage axis?
+  // Is the deal's own priced ceiling BELOW the program maximum on any leverage axis?
   function pricedBelowTier(tier, eff) {
     if (!tier || !eff) return false;
     return (eff.maxLTC < tier.maxLTC - 1e-9) || (eff.maxARLTV < tier.maxARLTV - 1e-9) || (eff.maxAcqLTV < tier.maxAcqLTV - 1e-9);
@@ -1521,7 +1534,7 @@
   function xlsxTierMaxRow(dd, pct) {
     var t = dd ? tierMaxOf(dd) : null;
     if (!t) return null;
-    return ["Program maximum (tier) — LTC / as-is / ARV — fixed, does not change with the deal",
+    return ["Program maximum — LTC / as-is / ARV — fixed, does not change with the deal",
             pct(t.maxLTC) + " / " + pct(t.maxAcqLTV) + " / " + pct(t.maxARLTV)];
   }
   function xlsxPricedRow(dd, pct) {
@@ -1946,7 +1959,7 @@
       // deal's own ceiling prints on its OWN row underneath and the band below the
       // leverage card explains why.
       var _pdfTier = tierMaxOf(d);
-      if (_pdfTier && sized) yR = rowIn(xR, colW, isBridge ? "Program max (tier) \u2014 as-is" : "Program max (tier) \u2014 LTC / ARV / as-is", isBridge ? pc(_pdfTier.maxAcqLTV) : (pc(_pdfTier.maxLTC) + " / " + pc(_pdfTier.maxARLTV) + " / " + pc(_pdfTier.maxAcqLTV)), yR);
+      if (_pdfTier && sized) yR = rowIn(xR, colW, isBridge ? "Program max \u2014 as-is" : "Program max \u2014 LTC / ARV / as-is", isBridge ? pc(_pdfTier.maxAcqLTV) : (pc(_pdfTier.maxLTC) + " / " + pc(_pdfTier.maxARLTV) + " / " + pc(_pdfTier.maxAcqLTV)), yR);
       if (_pdfTier && sized && pricedBelowTier(_pdfTier, d.caps)) yR = rowIn(xR, colW, isBridge ? "This deal prices up to \u2014 as-is" : "This deal prices up to \u2014 LTC / ARV / as-is", isBridge ? pc(d.caps.maxAcqLTV) : (pc(d.caps.maxLTC) + " / " + pc(d.caps.maxARLTV) + " / " + pc(d.caps.maxAcqLTV)), yR);
       yR = rowIn(xR, colW, isBridge ? "As-is value" : "As-is / ARV value", isBridge ? money(d.asIs) : (money(d.asIs) + " / " + money(d.arv)), yR);
       yR += 9;
@@ -2664,7 +2677,7 @@
     // (owner-reported 2026-07-30).
     var _dvTier = tierMaxOf(d), _dvLower = _dvTier && d.caps && pricedBelowTier(_dvTier, d.caps);
     section("Resulting leverage & pricing", [
-      _dvTier ? ["Program maximum (tier) — LTC / as-is / ARV", pc(_dvTier.maxLTC) + " / " + pc(_dvTier.maxAcqLTV) + " / " + pc(_dvTier.maxARLTV) + "  (fixed for this tier)"] : null,
+      _dvTier ? ["Program maximum — LTC / as-is / ARV", pc(_dvTier.maxLTC) + " / " + pc(_dvTier.maxAcqLTV) + " / " + pc(_dvTier.maxARLTV) + "  (fixed for this profile)"] : null,
       _dvLower ? ["Most this deal can be priced at — LTC / ARV", pc(d.caps.maxLTC) + " / " + pc(d.caps.maxARLTV)] : null,
       _dvLower ? ["Why this deal is lower", pricedWhy(d, _dvTier, d.caps)] : null,
       (d.ltcPct > 0 && !isBridge) ? ["Loan-to-cost (LTC)", pc(d.ltcPct)] : null,

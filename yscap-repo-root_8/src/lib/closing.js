@@ -409,6 +409,35 @@ async function readNotes(appId, client) {
   return r.rows;
 }
 
+// The REGISTERED product's own sized breakdown, read from the persisted quote —
+// never re-derived. `financedReserve` is the reserve the loan actually carries
+// (pricing.normalize: flooredTotal − flooredInitial − flooredHoldback), which is a
+// DIFFERENT number from `applications.requested_ir_amount` (what was asked for, and
+// 0 on every months-driven file). The closing desk used to print the requested
+// amount under a "Financed interest reserve" label — owner-reported 2026-07-30.
+// READ-ONLY, best-effort: a file with no current registration returns null.
+async function readRegisteredStructure(appId, client) {
+  const c = client || db;
+  const row = (await c.query(
+    `SELECT program, total_loan, quote FROM product_registrations
+      WHERE application_id = $1 AND is_current LIMIT 1`, [appId])).rows[0];
+  if (!row) return null;
+  let q = row.quote;
+  if (typeof q === 'string') { try { q = JSON.parse(q); } catch (_) { q = null; } }
+  const s = (q && q.sizing) || null;
+  const n = (v) => (v == null || !isFinite(Number(v)) ? null : Number(v));
+  const g = (q && q.guidelines) || {};
+  return {
+    program: row.program || null,
+    totalLoan: n(row.total_loan),
+    initialAdvance: s ? n(s.initialAdvance) : null,
+    rehabHoldback: s ? n(s.rehabHoldback) : null,
+    financedReserve: s ? n(s.financedReserve) : null,
+    reserveCapped: !!g.reserveCapped,
+    reserveCapBy: g.reserveCapBy || '',
+  };
+}
+
 // ---------------------------------------------------------------------------
 // THE aggregate workspace payload the Closing screen renders. Best-effort per
 // sub-part — a failure in one block never blanks the whole page.
@@ -431,8 +460,10 @@ async function getClosingWorkspace(appId, client) {
   const checklists = await safe(() => readChecklists(appId, c), []);
   const notes = await safe(() => readNotes(appId, c), []);
   const reconciliation = await safe(() => reconcileClosingDates(appId, c), null);
+  const structure = await safe(() => readRegisteredStructure(appId, c), null);
 
   return {
+    structure,
     application_id: appId,
     ys_loan_number: app.ys_loan_number,
     status: app.status,
@@ -476,6 +507,7 @@ module.exports = {
   readClosingConditions,
   readChecklists,
   readNotes,
+  readRegisteredStructure,
   setChecklistItemChecked,
   getClosingWorkspace,
 };

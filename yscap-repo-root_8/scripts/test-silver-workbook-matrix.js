@@ -454,6 +454,18 @@ function verifyScenario(cellName, cell, spec, input, ev, effCap, C, recordFail) 
   const arv = input.arv;
   let okAll = true;
   const bad = (label, extra) => { okAll = false; recordFail(label, extra); };
+  /* THE CEILING THIS DEAL WAS ACTUALLY SIZED AND PRICED AT.
+     The engine's result splits three meanings (contract split 2026-07-30):
+       result.caps          = the PROGRAM MAXIMUM the profile can reach — a DISPLAY
+                              figure, already lowered to the highest band the grid
+                              genuinely prices, and invariant to deal inputs.
+       result.pricedCeiling = the tier row after the grid step-down / de-leverage — what
+                              the sizing waterfall was handed. EVERY check below is a
+                              check about the sizing, so every one of them wants THIS.
+       result.tierCaps      = the workbook Tier Grid row, verbatim.
+     The fallback keeps this runner correct against an older engine build where `caps`
+     still carried the effective meaning. */
+  const evCaps = ('pricedCeiling' in ev) ? ev.pricedCeiling : ev.caps;
 
   // --- status domain + identity echoes
   if (['ELIGIBLE', 'MANUAL', 'INELIGIBLE'].indexOf(ev.status) < 0) return bad('bad status ' + ev.status);
@@ -604,7 +616,7 @@ function verifyScenario(cellName, cell, spec, input, ev, effCap, C, recordFail) 
     bad('NYC F&F refi not refused with the NYC reason');
   }
   if (stated > 0 && stated < MIN_LOAN && !has(/minimum loan amount is \$100,000/)) bad('stated <$100k not refused');
-  if (ev.caps) {  // the evaluation reached sizing
+  if (evCaps) {  // the evaluation reached sizing
     if (stated >= MIN_LOAN && stated > statedMax && !has(/exceeds the .* program maximum/)) bad(`stated ${stated} over max ${statedMax} not refused`);
     if (input.fico < row.minfico && !has(/below the Tier \d+ minimum of \d+/)) bad('sub-minimum FICO without the waiver reason');
     if (total > 0 && total < MIN_LOAN && !has(/Sized below the \$100,000 minimum/)) bad(`sized ${total} < $100k without the below-min MANUAL flag`);
@@ -620,8 +632,8 @@ function verifyScenario(cellName, cell, spec, input, ev, effCap, C, recordFail) 
   }
 
   // --- caps vs the fixture tier grid
-  if (ev.caps) {
-    const c = ev.caps;
+  if (evCaps) {
+    const c = evCaps;
     if (c.minFico !== row.minfico) bad(`caps.minFico ${c.minFico} != workbook ${row.minfico}`);
     if (c.maxAcqLTV !== row.maxacq) bad(`caps.maxAcqLTV ${c.maxAcqLTV} != workbook ${row.maxacq}`);
     // AR-LTV cap: the workbook row, UNLESS the grid step-down landed the deal on
@@ -661,14 +673,14 @@ function verifyScenario(cellName, cell, spec, input, ev, effCap, C, recordFail) 
 
   // --- sizing walls, breakdown, reserve
   if (s && total > 0) {
-    if (!ev.caps) bad('sizing without caps');
+    if (!evCaps) bad('sizing without caps');
     const parts = (s.acquisition || 0) + (s.rehabLoan || 0) + (s.financedIR || 0);
     if (Math.abs(parts - total) > 0.02) bad(`breakdown does not reconcile: ${parts} vs ${total}`);
     if ((s.acquisition || 0) < -0.01 || (s.rehabLoan || 0) < -0.01 || (s.financedIR || 0) < -0.01) bad('negative sizing component');
     const TOL = 2e-4;
-    if (ev.caps) {
-      if (s.ltcPct > 0 && s.ltcPct > ev.caps.maxLTC + TOL) bad(`LTC ${s.ltcPct} over cap ${ev.caps.maxLTC}`);
-      if (total > ev.caps.maxLoan + 1) bad(`total ${total} over tier max ${ev.caps.maxLoan}`);
+    if (evCaps) {
+      if (s.ltcPct > 0 && s.ltcPct > evCaps.maxLTC + TOL) bad(`LTC ${s.ltcPct} over cap ${evCaps.maxLTC}`);
+      if (total > evCaps.maxLoan + 1) bad(`total ${total} over tier max ${evCaps.maxLoan}`);
       if (total > row.maxloan + 1) bad(`total ${total} over workbook tier max ${row.maxloan}`);
       // AR-LTV wall (bridge is sized on as-is; our bridge ARVs are 0 or >= as-is)
       const arDenom = isBR ? (arv || input.asIsValue) : arv;
@@ -703,7 +715,7 @@ function verifyScenario(cellName, cell, spec, input, ev, effCap, C, recordFail) 
   }
 
   // --- THE WORKBOOK TIE-OUT: note rate == fixture cell + markup; buy rate == note - markup
-  if (s && total > 0 && ev.caps) {
+  if (s && total > 0 && evCaps) {
     const arDenom = isBR ? (arv || input.asIsValue) : arv;
     const arRatio = arDenom > 0 ? total / arDenom : 0;
     const termTok = input.term <= 12 ? '12' : input.term <= 18 ? '18' : '24';
@@ -717,8 +729,8 @@ function verifyScenario(cellName, cell, spec, input, ev, effCap, C, recordFail) 
     // item 3 — the key used to be derived from the RAW ratios and so named a cell
     // the workbook does not price whenever atCap fired)
     const engKeyRep = engKeyOf(spec.market, ev.sizeBand, prodTok, purp, termTok, tier,
-      atCapM(arRatio, ev.caps.maxARLTV), input.fico,
-      atCapM(s.ltcPct > 0 ? s.ltcPct : ev.caps.maxLTC, ev.caps.maxLTC));
+      atCapM(arRatio, evCaps.maxARLTV), input.fico,
+      atCapM(s.ltcPct > 0 ? s.ltcPct : evCaps.maxLTC, evCaps.maxLTC));
     if (ev.rateKey && engKeyRep !== ev.rateKey) bad(`rateKey derivation drift: engine ${ev.rateKey} vs derived ${engKeyRep}`);
     // …and a PRICED result's reported key must be a real workbook cell that ties
     // to the quoted rate (the point of the fix: the key names the cell charged)
@@ -726,7 +738,7 @@ function verifyScenario(cellName, cell, spec, input, ev, effCap, C, recordFail) 
       const repRate = FIX.rates[ev.rateKey];
       if (repRate == null || Math.abs(ev.noteRate - (repRate + effCap)) > 1e-9) {
         if (repRate == null) C.keyNotACell++; else C.keyRateOff++;
-        if (C.keySamples.length < 3) C.keySamples.push({ cell: cellName, input, key: ev.rateKey, repRate: repRate == null ? null : repRate, noteRate: ev.noteRate, effCap, exactKey: myKey, exactRate: fixRate == null ? null : fixRate, ltc: s.ltcPct, ar: arRatio, caps: ev.caps });
+        if (C.keySamples.length < 3) C.keySamples.push({ cell: cellName, input, key: ev.rateKey, repRate: repRate == null ? null : repRate, noteRate: ev.noteRate, effCap, exactKey: myKey, exactRate: fixRate == null ? null : fixRate, ltc: s.ltcPct, ar: arRatio, caps: evCaps });
       } else C.keyTied++;
     }
 

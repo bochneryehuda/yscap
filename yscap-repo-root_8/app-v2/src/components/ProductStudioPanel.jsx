@@ -215,19 +215,18 @@ export function RegisteredProductDetails({ reg, compactView = false, showAdmin =
   const inp = typeof reg.inputs === 'string' ? JSON.parse(reg.inputs || '{}') : (reg.inputs || {});
   const s = q.sizing || {};
   const cc = q.closingCosts || {};
+  // `caps` = the EFFECTIVE ceiling this deal was sized and priced at (unchanged
+  // meaning — every enforcement reader still uses it). `programCaps` = the PROGRAM
+  // MAXIMUM this borrower profile can actually reach: the tier cap already lowered to
+  // the highest leverage band the rate grid genuinely prices. Owner-reported
+  // 2026-07-30 — a label promising the program maximum must be BOTH fixed (it may not
+  // move when the interest reserve moves) and REACHABLE ("the tier two cannot anytime
+  // get 92.5 … because it doesn't price — so keep that tier at 85%"). Display only.
   const caps = (q.guidelines && q.guidelines.caps) || null;
-  // The FIXED tier maximum (the Silver engine publishes its own Tier Grid row; other
-  // programs don't, so we fall back to the effective caps). `caps` is the ceiling THIS
-  // deal was priced at, which on Silver can sit below the tier maximum once the
-  // grid-aware step-down has moved the deal to a priced cell — and a financed interest
-  // reserve is part of the cost basis, so it moves that ceiling. Owner-reported
-  // 2026-07-30: a label promising the PROGRAM maximum must never move with a deal
-  // input. Display only; no number is computed here.
-  const tierCaps = (q.guidelines && q.guidelines.tierCaps) || null;
   const cappedWhy = (q.guidelines && q.guidelines.leverageCappedWhy) || null;
-  const progMax = tierCaps || caps;
-  const pricedLower = !!(tierCaps && caps && (
-    caps.maxLtc < tierCaps.maxLtc - 1e-9 || caps.maxArvLtv < tierCaps.maxArvLtv - 1e-9 || caps.maxAcqLtv < tierCaps.maxAcqLtv - 1e-9));
+  const progMax = (q.guidelines && q.guidelines.programCaps) || caps;
+  const pricedLower = !!(progMax && caps && (
+    caps.maxLtc < progMax.maxLtc - 1e-9 || caps.maxArvLtv < progMax.maxArvLtv - 1e-9 || caps.maxAcqLtv < progMax.maxAcqLtv - 1e-9));
   const Row = ({ k, v }) => <div className="metrow"><span className="k">{k}</span><span className="v">{v}</span></div>;
   return (
     <div className={compactView ? '' : 'panel'} style={compactView ? {} : { background: 'var(--ink-2)', marginTop: 10 }}>
@@ -267,12 +266,12 @@ export function RegisteredProductDetails({ reg, compactView = false, showAdmin =
             // Bridge (and any no-cap product) has no LTC/ARV ceiling — the engine
             // uses a 100% sentinel. Don't display "100.0%" as if it were a real cap;
             // show only the as-is advance cap that actually governs (audit #12).
-            ? <Row k="Program max (tier) — as-is" v={pct(progMax.maxAcqLtv, 1)} />
-            : <Row k="Program max (tier) — LTC / ARV / as-is" v={`${pct(progMax.maxLtc, 1)} / ${pct(progMax.maxArvLtv, 1)} / ${pct(progMax.maxAcqLtv, 1)}`} />)}
+            ? <Row k="Program max — as-is" v={pct(progMax.maxAcqLtv, 1)} />
+            : <Row k="Program max — LTC / ARV / as-is" v={`${pct(progMax.maxLtc, 1)} / ${pct(progMax.maxArvLtv, 1)} / ${pct(progMax.maxAcqLtv, 1)}`} />)}
           {pricedLower && <Row k="Most this deal can be priced at — LTC / ARV" v={`${pct(caps.maxLtc, 1)} / ${pct(caps.maxArvLtv, 1)}`} />}
           {pricedLower && (
             <p className="small" style={{ margin: '6px 0 0', color: '#4B585C' }}>
-              {cappedWhy || 'On this deal the program prices a lower leverage band than the tier maximum.'}{' '}
+              {cappedWhy || 'On this deal the program prices a lower leverage band than the program maximum.'}{' '}
               The program maximum above is set by the tier (FICO and experience) and does not change when the deal changes — including the interest reserve.
             </p>
           )}

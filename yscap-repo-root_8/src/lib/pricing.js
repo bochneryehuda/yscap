@@ -333,30 +333,38 @@ function normalize(program, input, ev, ladder) {
     }
   }
   const liquidityRequired = round2(cashToClose + reserveRequirement);
-  const caps = ev.caps ? {
-    maxLoan: num(ev.caps.maxLoan),
-    minFico: num(ev.caps.minFico),
-    maxAcqLtv: num(ev.caps.maxAcqLTV),
-    maxArvLtv: num(ev.caps.maxARLTV),
-    maxLtc: num(ev.caps.maxLTC),
-  } : null;
-  /* `caps` above is the EFFECTIVE ceiling this deal was sized and priced at — the
-     right thing for every enforcement path (underwriting metrics, the structure
-     underwriter, the Encompass reconcile) to measure against, and it keeps that exact
-     meaning. `tierCaps` is the FIXED tier-grid row, added ONLY so a DISPLAY surface
-     can print the program maximum without printing a number that moves when a deal
-     input moves (owner-reported 2026-07-30: the studio's "Program maximum leverage —
-     from FICO & experience" changed as the interest reserve changed, because the
-     Silver engine's grid-aware step-down had lowered `caps` to reach a priced cell).
-     Silver publishes the row on its result; nothing else does, so it is null there and
-     a reader falls back to `caps`. Read-only — no number is computed here. */
-  const tierCaps = ev.tierCaps ? {
-    maxLoan: num(ev.tierCaps.maxLoan),
-    minFico: num(ev.tierCaps.minFico),
-    maxAcqLtv: num(ev.tierCaps.maxAcqLTV),
-    maxArvLtv: num(ev.tierCaps.maxARLTV),
-    maxLtc: num(ev.tierCaps.maxLTC),
-  } : null;
+  /* THREE MEANINGS OF "MAX LEVERAGE", mapped to the reader that needs each one
+     (engine contract split 2026-07-30, owner-reported).
+
+     `quote.guidelines.caps` KEEPS ITS EXISTING MEANING — the EFFECTIVE ceiling this
+     deal was sized and priced at. Every enforcement path already built on it
+     (underwriting metrics, the structure underwriter, the Encompass reconcile, the
+     file view) must keep measuring the registered loan against the ceiling it was
+     actually approved at, so this mapping is deliberately behaviour-identical: the
+     Silver engine now publishes that value as `pricedCeiling`, and every other engine
+     still publishes it as `caps`.
+
+     `quote.guidelines.programCaps` is NEW and is for DISPLAY only — the PROGRAM
+     MAXIMUM this borrower profile can actually reach, already lowered to the highest
+     leverage band the rate grid genuinely prices, and invariant to deal inputs. The
+     owner: "the tier two cannot anytime get 92.5 even if it says that it's available
+     because it doesn't price — so keep that tier at 85%", and "the Max LTC should
+     never change … it shouldn't change based on what you're changing the interest
+     reserve".
+
+     `quote.guidelines.tierCaps` is the workbook Tier Grid row verbatim — the guideline
+     document's own numbers, kept for audit/parity readers.
+     Read-only: no number is computed here. */
+  const shape = (c) => (c ? {
+    maxLoan: num(c.maxLoan),
+    minFico: num(c.minFico),
+    maxAcqLtv: num(c.maxAcqLTV),
+    maxArvLtv: num(c.maxARLTV),
+    maxLtc: num(c.maxLTC),
+  } : null);
+  const caps = shape(ev.pricedCeiling || ev.caps);
+  const programCaps = shape(ev.caps);
+  const tierCaps = shape(ev.tierCaps);
 
   const quote = {
     program,
@@ -410,10 +418,11 @@ function normalize(program, input, ev, ladder) {
     ladder: ladder || null,
     liquidity: liquidityRequired,
     guidelines: {
-      caps,
-      tierCaps,
+      caps,             // EFFECTIVE — what this deal was sized/priced at (enforcement)
+      programCaps,      // PROGRAM MAXIMUM this profile can reach (display; fixed)
+      tierCaps,         // the workbook Tier Grid row, verbatim (audit / parity)
       // the engine's own sentence explaining why this deal's ceiling sits under the
-      // tier maximum (Silver's grid step-down tags it `leverage_capped`)
+      // program maximum (Silver's grid step-down tags it `leverage_capped`)
       leverageCappedWhy: (ev.reasons || []).filter((r) => r && r.code === 'leverage_capped').map((r) => r.msg).join(' ') || null,
       tierLabel: ev.tierLabel || null,
       binding: (s && s.binding) || '',

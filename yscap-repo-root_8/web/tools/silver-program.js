@@ -217,6 +217,12 @@
   var FICO_BANDS_12 = ["FICO 700+", "FICO 660-699", "FICO 640-659"];   // tiers 1–2
   var FICO_BANDS_3  = ["FICO 700+", "FICO 680-699", "FICO 640-679"];   // tier 3
   var LTC_BANDS = ["<74.99%", "75.00%-80.00%", "80.01%-85.00%", "85.01%-87.50%", "87.51%-89.99%", "90.00%-92.50%"];
+  /* The UPPER EDGE of each band above, in band order. NOT new numbers — these are the
+     exact boundaries ltcBand()/arBand() already test against, named so the achievable-
+     maximum lookup below can turn "the highest band that prices" back into a ratio
+     without re-deriving anything. Keep in lock-step with ltcBand()/arBand(). */
+  var LTC_EDGES_UP = [0.7499, 0.80, 0.85, 0.875, 0.8999, 0.925];
+  var AR_EDGES_UP  = [0.6499, 0.70, 0.75];
 
   /* Each block = market|size|product|purpose|term|tier → 54 cells (3 AR × 3 FICO × 6 LTC)
      flattened in band order above. Values are the note-buyer grid rate in
@@ -631,6 +637,45 @@
     return [mkt, sizeBand, prodTok, purp, termTok, "T" + tier, arB, ficoB, ltcB].join("|");
   }
 
+  /* ---------------- ACHIEVABLE maximum leverage ----------------
+     THE RATE GRID *IS* THE LEVERAGE POLICY. A tier-grid cap the grid never prices is
+     a number no borrower on that profile can ever reach — printing it as the "program
+     maximum" is precisely the misleading display the owner reported (2026-07-30):
+     "the tier two cannot anytime get 92.5 even if it says that it's available because
+     it doesn't price — so keep that tier at 85%."
+
+     For the deal's grid FAMILY (market | size | product | purpose | term | tier |
+     FICO band) this scans every priced cell and returns the UPPER EDGE of the highest
+     LTC band and the highest AR-LTV band that carry ANY price. Derived from the grid
+     itself, so it stays right for every family and every future regeneration of the
+     workbook — nothing is hard-coded per tier.
+       e.g. STD | S | GUC | R | 18 | T2 | FICO 700+ prices LTC bands 1–3 only
+            (<74.99%, 75–80%, 80.01–85%) ⇒ achievable max LTC = 85.00%, not the tier
+            grid's 92.50%; and AR bands 1–2 only ⇒ achievable max AR-LTV = 70.00%.
+     Returns null when the family has NO priced cell at all (there is nothing to
+     achieve — the caller falls back to the tier row and the engine separately raises
+     its "No priced grid cell" reason). READ-ONLY: no rate, band edge, tier cap or
+     sizing formula is computed or changed here. */
+  function achievableCaps(mkt, sizeBand, prodTok, purp, termTok, tier, ficoB) {
+    if (!ficoB) return null;
+    var block = RATE_BLOCKS[mkt + "|" + sizeBand + "|" + prodTok + "|" + purp + "|" + termTok + "|T" + tier];
+    if (!block) return null;
+    var fl = (tier === 3) ? FICO_BANDS_3 : FICO_BANDS_12;
+    var j = fl.indexOf(ficoB);
+    if (j < 0) return null;
+    var bestLtc = -1, bestAr = -1, i, k;
+    for (i = 0; i < AR_BANDS.length; i++) {
+      for (k = 0; k < LTC_BANDS.length; k++) {
+        if (block[(i * 3 + j) * 6 + k] > 0) {
+          if (k > bestLtc) bestLtc = k;
+          if (i > bestAr) bestAr = i;
+        }
+      }
+    }
+    if (bestLtc < 0) return null;                       // this FICO band prices nothing
+    return { maxLTC: LTC_EDGES_UP[bestLtc], maxARLTV: AR_EDGES_UP[bestAr] };
+  }
+
   // Borrower note rate for a deal profile (grid + markup); null when no grid cell.
   function noteRate(o) {
     var g = gridRate(o.market, o.sizeBand, prodToken(o.strategyCode), o.loanType === "Refinance" ? "R" : "P",
@@ -691,10 +736,11 @@
 
   function evaluateBand(input, sizeBand, loanCapOverride) {
     var reasons = [], status = "ELIGIBLE";
-    // The tier-grid row for this product | purpose | tier, verbatim. Filled the moment
-    // the row is read (below) and NEVER narrowed — see the note there. null until then,
-    // and on the paths that never get a row (no such tier combination).
-    var tierRow = null;
+    // The tier-grid row for this product | purpose | tier, verbatim, and the PROGRAM
+    // MAXIMUM a borrower on this profile can actually reach. Both are filled the moment
+    // the tier row is read (below) and NEVER narrowed afterwards — see the note there.
+    // null until then, and on the paths that never get a row at all.
+    var tierRow = null, progMax = null;
     function add(level, msg, code) { var r = { level: level, msg: msg }; if (code) r.code = code; reasons.push(r); if (RANK[level] > RANK[status]) status = level; }
 
     var loanType = clean(input.loanType) === "Refinance" ? "Refinance" : "Purchase";
@@ -778,21 +824,47 @@
         add("INELIGIBLE", "This strategy isn't available for the selected loan type and experience.");
       return result(status, reasons, base());
     }
-    // READ-ONLY PASSTHROUGH of the TIER-GRID ROW, captured BEFORE anything narrows it
-    // (the loan-size band clamp below, a voluntary de-leverage, an admin override, and
-    // above all the grid-aware step-down further down). It is the FIXED guideline for
-    // this product | purpose | tier — the thing the studio's "Program maximum leverage
-    // — from FICO & experience" label promises — and it must never move when a DEAL
-    // input moves. Owner-reported 2026-07-30: "the Max LTC should never change, each
-    // tier has its own Max LTC … it shouldn't change based on what you're changing the
-    // interest reserve." The display read `caps` (the EFFECTIVE, post-step-down
-    // ceiling), so a financed interest reserve — which is part of the cost basis and
-    // therefore moves the deal into a different priced band — appeared to move the
-    // TIER's own maximum. `caps` keeps its exact meaning (the ceiling this deal was
-    // actually sized and priced at, which is the correct thing to ENFORCE against);
-    // `tierCaps` is the fixed guideline, for DISPLAY. No number, band edge, cap or
-    // sizing formula changes — this is a copy of a row the engine already read.
+    /* ================================================================
+       THREE DIFFERENT MEANINGS OF "MAX LEVERAGE" — the result carries all three,
+       because conflating them is the bug the owner reported on 2026-07-30.
+
+       tierRow  (result `tierCaps`)  — the WORKBOOK's Tier Grid row, verbatim, captured
+                 BEFORE anything narrows it. The guideline document's own numbers. This
+                 is what the shadow-parity monitor validates against; it is NOT what a
+                 borrower is shown, because the grid does not price every cap it lists.
+
+       progMax  (result `caps`)      — the PROGRAM MAXIMUM a borrower on this profile can
+                 ACTUALLY reach: the tier row, lowered to the highest LTC / AR-LTV band
+                 the rate grid genuinely prices for this family (see achievableCaps).
+                 Owner-directed: "the tier two cannot anytime get 92.5 even if it says
+                 that it's available because it doesn't price — so keep that tier at 85%."
+                 FIXED for the profile: it is a function of FICO band, experience tier,
+                 product, purpose, market, size band and term — never of the interest
+                 reserve, the rehab budget, the ARV or the price. This is what every
+                 "Program maximum leverage — from FICO & experience" surface shows, on
+                 all three programs, with no Silver special-casing.
+
+       capsEff  (result `pricedCeiling`) — the ceiling THIS DEAL was actually sized and
+                 priced at: progMax's tier row narrowed by a voluntary de-leverage, an
+                 admin basis, and above all by the grid-aware STEP-DOWN that walks the
+                 deal down to a priced cell. A financed interest reserve is part of the
+                 COST BASIS, so changing it moves the deal into a different band and
+                 moves THIS number — which is correct, and is exactly why it may never
+                 be printed under a label promising the program maximum. Every
+                 enforcement path (the shadow monitor, the structure underwriter, the
+                 registered-product checks) measures against THIS one.
+
+       `capsEff` remains the ONLY thing the sizing waterfall is ever handed, so no loan
+       amount, rate, band edge or dollar figure moves — only the result's field names.
+       ================================================================ */
     tierRow = { maxLoan: c.maxLoan, minFico: c.minFico, maxAcqLTV: c.maxAcqLTV, maxARLTV: c.maxARLTV, maxLTC: c.maxLTC };
+    progMax = { maxLoan: c.maxLoan, minFico: c.minFico, maxAcqLTV: c.maxAcqLTV, maxARLTV: c.maxARLTV, maxLTC: c.maxLTC };
+    (function () {
+      var ach = achievableCaps(market, sizeBand, pTok, purp, termTok, tier, ficoBand(tier, fico || 700));
+      if (!ach) return;                                   // nothing prices here — the tier row is the honest fallback
+      if (ach.maxLTC < progMax.maxLTC) progMax.maxLTC = ach.maxLTC;
+      if (ach.maxARLTV < progMax.maxARLTV) progMax.maxARLTV = ach.maxARLTV;
+    }());
     if (loanCapOverride > 0) c = { maxLoan: Math.min(c.maxLoan, loanCapOverride), minFico: c.minFico, maxAcqLTV: c.maxAcqLTV, maxARLTV: c.maxARLTV, maxLTC: c.maxLTC };
 
     // ---- NYC grid limits (no priced cells exist for these — fail with a plain reason) ----
@@ -1128,7 +1200,11 @@
     if (!reasons.length) reasons.push({ level: "ELIGIBLE", msg: "Meets the Silver Program guidelines." });
 
     return result(status, reasons, base({
-      caps: capsEff, noteRate: rate || 0, sizing: sizing,
+      // `caps` = the PROGRAM MAXIMUM (fixed for the profile); `pricedCeiling` = what
+      // THIS deal was sized/priced at. See the three-meanings note at the tier-row
+      // read. Every enforcement path reads `pricedCeiling`; every "program maximum"
+      // display reads `caps`.
+      caps: progMax, pricedCeiling: capsEff, noteRate: rate || 0, sizing: sizing,
       reserveTermCapped: reserveTermCapped, reserveTermMonths: termMonths,
       exitShortfall: exitGap, dscr: dscr > 0 ? Math.round(dscr * 100) / 100 : null,
       assignment: assignment, overlays: overlays, rateKey: key,
@@ -1140,11 +1216,13 @@
         program: "silver", market: market, sizeBand: sizeBand,
         tier: tier, tierLabel: tierLabel(tier), strategyCode: sc, product: pTok, exit: exit,
         loanType: loanType, cashOut: cashOut, projectCount: pcount, gcOnly: gcOnly,
-        pricingReady: fico > 0, assignment: assignment, caps: null, noteRate: 0, sizing: null,
-        // The FIXED tier maximum (read-only; see where tierRow is filled). Present on
-        // EVERY result shape, including the early refusals, so a display surface never
-        // has to fall back to the effective caps to answer "what is this tier's max?".
-        tierCaps: tierRow
+        pricingReady: fico > 0, assignment: assignment, noteRate: 0, sizing: null,
+        // All three leverage meanings are present on EVERY result shape, including the
+        // early refusals, so no surface ever has to fall back to the wrong one:
+        //   caps          = the PROGRAM MAXIMUM this profile can actually reach (fixed)
+        //   pricedCeiling = what THIS deal was sized and priced at (may be lower)
+        //   tierCaps      = the workbook Tier Grid row, verbatim (guideline document)
+        caps: progMax, pricedCeiling: null, tierCaps: tierRow
       };
       for (var k2 in (extra || {})) o[k2] = extra[k2];
       return o;

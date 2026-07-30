@@ -309,6 +309,16 @@ function shadowCheckInner(input, result, opts) {
   const termTok = myTermToken(input.term);
   const sz = ev.sizing || {};
   const total = num(sz.totalLoan);
+  /* THE CEILING THE DEAL WAS ACTUALLY SIZED AND PRICED AT — this monitor exists to
+     prove our sizing ties out to the workbook, so it compares the workbook tier grid
+     against what the SIZER was handed, never against a display figure. The engine's
+     result splits three meanings (contract split 2026-07-30): `caps` is now the
+     PROGRAM MAXIMUM the profile can actually reach (already lowered to the highest
+     band the grid prices, and invariant to deal inputs — a display number);
+     `pricedCeiling` is the tier row after the grid step-down / voluntary de-leverage,
+     which is what sizeLoan received; `tierCaps` is the workbook row verbatim. The
+     fallback keeps the monitor correct against an older engine build. */
+  const evCaps = ('pricedCeiling' in ev) ? ev.pricedCeiling : ev.caps;
   const sizeBand = ev.sizeBand === 'L' ? 'L' : 'S';
   const market = ev.market === 'NYC' ? 'NYC' : 'STD';
   const stated = num(input.loanAmount);
@@ -372,7 +382,7 @@ function shadowCheckInner(input, result, opts) {
 
   // ---- THE WORKBOOK TIE-OUT: rate cell (exact-decimal bands, matrix semantics) ----
   let edge = null;
-  if (total > 0 && ev.caps) {
+  if (total > 0 && evCaps) {
     const isBR = prodTok === 'BR';
     const aiv = Math.max(0, num(input.asIsValue));
     const arv = Math.max(0, num(input.arv));
@@ -430,8 +440,8 @@ function shadowCheckInner(input, result, opts) {
   }
 
   // ---- caps vs the workbook tier grid ----
-  if (ev.caps) {
-    const c = ev.caps;
+  if (evCaps) {
+    const c = evCaps;
     // The priced frontier is a LATTICE (engine 2026-07-30): the step-down can
     // tighten the LTC axis, the AR-LTV axis, or BOTH, and it NAMES whichever cap
     // bound — so an after-repair cap legitimately sits under the tier row.

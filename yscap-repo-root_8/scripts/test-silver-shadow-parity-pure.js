@@ -157,7 +157,10 @@ const A = {
 /* caps drift → cap_mismatch */
 (function capDrift() {
   const ev = evalWith(A, 0.005);
-  const drifted = { ...ev, caps: { ...ev.caps, minFico: 700 } };
+  // The monitor validates the ceiling the SIZER was handed (`pricedCeiling`) against
+  // the workbook tier grid — `caps` is now the display-facing program maximum
+  // (contract split 2026-07-30). Drift the field the monitor actually reads.
+  const drifted = { ...ev, pricedCeiling: { ...(ev.pricedCeiling || ev.caps), minFico: 700 } };
   const r = monitor.shadowCheck(A, drifted, { evOverride: drifted, markup: 0.005 });
   ok(r.ok === false && r.kind === 'cap_mismatch', `caps drifted off the tier grid → cap_mismatch (got ${JSON.stringify(r && r.kind)})`);
 })();

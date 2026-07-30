@@ -338,9 +338,15 @@ const wb = {
     const ev = SVP.evaluate({ loanType: purp, strategy: strat, state: 'TX', zip: '75001',
       fico: 640 + Math.floor(rnd() * 180), expFlips: Math.floor(rnd() * 7), expGround: Math.floor(rnd() * 7),
       purchasePrice: pp, asIsValue: pp, arv: arv, rehabBudget: rehab, term: 12 });
-    if (ev.status === 'INELIGIBLE' || !ev.sizing || !(ev.sizing.totalLoan > 0) || !ev.caps) continue;
+    // `pricedCeiling` is the ceiling THIS deal was actually sized at (the tier row after
+    // the grid step-down / de-leverage). `caps` is the PROGRAM MAXIMUM the profile can
+    // reach, which is a display figure and is deliberately NOT what sizing is measured
+    // against (contract split 2026-07-30). Older results carried only `caps` with the
+    // effective meaning — the fallback keeps this sweep correct either way.
+    const eff = ('pricedCeiling' in ev) ? ev.pricedCeiling : ev.caps;
+    if (ev.status === 'INELIGIBLE' || !ev.sizing || !(ev.sizing.totalLoan > 0) || !eff) continue;
     sized++;
-    const s = ev.sizing, c = ev.caps;
+    const s = ev.sizing, c = eff;
     ok(s.totalLoan <= c.maxLoan + 1, `loan within tier max @${i}`);
     ok(s.ltcPct <= c.maxLTC + 1e-6, `LTC within cap @${i}`);
     if (ev.strategyCode !== 'BR' && arv > 0) ok(s.totalLoan / arv <= c.maxARLTV + 1e-6, `AR-LTV within cap @${i}`);

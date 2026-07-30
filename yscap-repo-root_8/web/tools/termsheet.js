@@ -600,7 +600,7 @@
     var stdWhy = stdExit ? shortMsg(exitMsg(d.reasons)) : (d.status !== "ELIGIBLE" ? shortReason(d.reasons) : "");
     var stdTierV1 = v1TierMax(d);
     YS.put("stdSub", !ready ? "Enter price, budget & ARV to begin"
-      : (stdWhy || (stdTierV1 ? ("Tier max LTC " + pctLbl(stdTierV1.maxLTC) + (v1PricedBelowTier(stdTierV1, d.caps) ? " \u00b7 this deal caps at " + pctLbl(d.caps.maxLTC) : "") + " \u00b7 " + (d.tierLabel || "")) : "")));
+      : (stdWhy || (stdTierV1 ? ("Max LTC " + pctLbl(stdTierV1.maxLTC) + (v1PricedBelowTier(stdTierV1, d.caps) ? " \u00b7 this deal caps at " + pctLbl(d.caps.maxLTC) : "") + " \u00b7 " + (d.tierLabel || "")) : "")));
 
     // ---- Gold Standard card ----
     var GS = (typeof GSP !== "undefined" && GSP) ? GSP : null;
@@ -1538,7 +1538,7 @@
       // "Program max" = the TIER maximum (fixed); the deal's own ceiling, when lower,
       // gets its own row underneath. See v1TierMax.
       var _pdfTierV1 = v1TierMax(d);
-      if (_pdfTierV1 && sized) yR = rowIn(xR, colW, isBridge ? "Program max (tier) \u2014 as-is" : "Program max (tier) \u2014 LTC / ARV / as-is", isBridge ? pc(_pdfTierV1.maxAcqLTV) : (pc(_pdfTierV1.maxLTC) + " / " + pc(_pdfTierV1.maxARLTV) + " / " + pc(_pdfTierV1.maxAcqLTV)), yR);
+      if (_pdfTierV1 && sized) yR = rowIn(xR, colW, isBridge ? "Program max \u2014 as-is" : "Program max \u2014 LTC / ARV / as-is", isBridge ? pc(_pdfTierV1.maxAcqLTV) : (pc(_pdfTierV1.maxLTC) + " / " + pc(_pdfTierV1.maxARLTV) + " / " + pc(_pdfTierV1.maxAcqLTV)), yR);
       if (_pdfTierV1 && sized && v1PricedBelowTier(_pdfTierV1, d.caps)) yR = rowIn(xR, colW, isBridge ? "This deal prices up to \u2014 as-is" : "This deal prices up to \u2014 LTC / ARV / as-is", isBridge ? pc(d.caps.maxAcqLTV) : (pc(d.caps.maxLTC) + " / " + pc(d.caps.maxARLTV) + " / " + pc(d.caps.maxAcqLTV)), yR);
       yR = rowIn(xR, colW, isBridge ? "As-is value" : "As-is / ARV value", isBridge ? money(d.asIs) : (money(d.asIs) + " / " + money(d.arv)), yR);
       yR += 9;
@@ -2086,7 +2086,7 @@
     // Both ceilings, never one under a fixed-sounding label (see v1TierMax).
     var _dvTierV1 = v1TierMax(d), _dvLowerV1 = _dvTierV1 && d.caps && v1PricedBelowTier(_dvTierV1, d.caps);
     section("Resulting leverage & pricing", [
-      _dvTierV1 ? ["Program maximum (tier) — LTC / as-is / ARV", pc(_dvTierV1.maxLTC) + " / " + pc(_dvTierV1.maxAcqLTV) + " / " + pc(_dvTierV1.maxARLTV) + "  (fixed for this tier)"] : null,
+      _dvTierV1 ? ["Program maximum — LTC / as-is / ARV", pc(_dvTierV1.maxLTC) + " / " + pc(_dvTierV1.maxAcqLTV) + " / " + pc(_dvTierV1.maxARLTV) + "  (fixed for this profile)"] : null,
       _dvLowerV1 ? ["Most this deal can be priced at — LTC / ARV", pc(d.caps.maxLTC) + " / " + pc(d.caps.maxARLTV)] : null,
       _dvLowerV1 ? ["Why this deal is lower", v1PricedWhy(d, _dvTierV1, d.caps)] : null,
       (d.ltcPct > 0 && !isBridge) ? ["Loan-to-cost (LTC)", pc(d.ltcPct)] : null,
