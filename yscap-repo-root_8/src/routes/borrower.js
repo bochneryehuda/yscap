@@ -1219,7 +1219,7 @@ router.get('/applications/:id/appraisal', async (req, res) => {
   const [comps, units, findings, photos] = await Promise.all([
     db.query(`SELECT * FROM appraisal_comparables WHERE appraisal_id=$1 ORDER BY seq`, [appr.id]),
     db.query(`SELECT * FROM appraisal_units WHERE appraisal_id=$1 ORDER BY unit_seq`, [appr.id]),
-    db.query(`SELECT id, code, severity, field, appraisal_value, file_value, title, blocks_ctc, created_at
+    db.query(`SELECT id, source, code, severity, field, appraisal_value, file_value, title, blocks_ctc, created_at
                 FROM appraisal_findings WHERE application_id=$1 AND status='open'
                ORDER BY (severity='fatal') DESC, created_at`, [appId]),
     db.query(
@@ -1233,14 +1233,20 @@ router.get('/applications/:id/appraisal', async (req, res) => {
   // as-is). A borrower must never see the lender's internal skepticism, so these codes are
   // dropped from the borrower set entirely (they stay open + visible on the staff desk).
   const SCRUTINY_CODES = new Set(['arv_defensibility', 'value_vs_comps', 'value_not_bracketed', 'asis_below_price', 'comp_split_review']);
+  // NOTE-BUYER findings (source='note_buyer' — the per-capital-partner appraisal checks, e.g.
+  // EMCAP's comp/photo/lender requirements) are STAFF-ONLY as a CLASS: their titles name a note
+  // buyer, which may never reach a borrower. Filter by SOURCE, not by code list, so a future
+  // buyer's checks are covered automatically.
+  const hiddenFromBorrower = (f) => SCRUTINY_CODES.has(f.code) || f.source === 'note_buyer';
   const open = findings.rows
-    .filter((f) => !SCRUTINY_CODES.has(f.code))
+    .filter((f) => !hiddenFromBorrower(f))
     .map((f) => ({ ...f, title: scrubText(f.title) }));
-  // A hidden scrutiny finding can still be a REAL clear-to-close blocker (asis_below_price is
-  // fatal). We must not tell the borrower their file is clear while it's actually gated — but we
-  // also can't reveal the underwriting reason. If a filtered-out finding is a live blocker, surface
-  // ONE neutral placeholder so the borrower's summary honestly shows "under review", not "clear".
-  const hiddenBlocker = findings.rows.some((f) => SCRUTINY_CODES.has(f.code) && f.severity === 'fatal' && f.blocks_ctc);
+  // A hidden scrutiny/note-buyer finding can still be a REAL clear-to-close blocker
+  // (asis_below_price and the EMCAP anchor checks are fatal). We must not tell the borrower their
+  // file is clear while it's actually gated — but we also can't reveal the underwriting reason.
+  // If a filtered-out finding is a live blocker, surface ONE neutral placeholder so the borrower's
+  // summary honestly shows "under review", not "clear".
+  const hiddenBlocker = findings.rows.some((f) => hiddenFromBorrower(f) && f.severity === 'fatal' && f.blocks_ctc);
   if (hiddenBlocker) {
     open.push({ id: 'appraisal_review', code: 'appraisal_under_review', severity: 'fatal', field: 'value',
       appraisal_value: null, file_value: null, blocks_ctc: true, created_at: null,

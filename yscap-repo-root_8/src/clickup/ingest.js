@@ -1410,6 +1410,10 @@ async function ingestTask(task, options = {}, opts = {}) {
     // needs 2, Standard 1) — re-derive it now so the condition doesn't keep saying "1 month" until
     // the next re-register (owner 2026-07-27). Best-effort; never breaks the sync.
     try { await require('../lib/liquidity').resyncLiquidityForFile(applicationId); } catch (_) {}
+    // …and re-evaluate the note-buyer APPRAISAL checks (EMCAP — owner 2026-07-30): a note buyer
+    // arriving from ClickUp onto a file with an imported appraisal raises the buyer's appraisal
+    // findings; moving off retires them. Exits fast on a non-EMCAP file. Best-effort.
+    try { await require('../lib/appraisal/note-buyer-checks').syncNoteBuyerFindings(db, applicationId); } catch (_) {}
   }
 
   // Preserve a MASKED snapshot of every task's mapped data — RTL and non-RTL

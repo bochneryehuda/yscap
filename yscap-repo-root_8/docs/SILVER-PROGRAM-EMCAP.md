@@ -121,7 +121,12 @@ or formula changes without the owner's explicit written authorization.
 ### Underwriting overlays (shown on every Silver evaluation; conditions/ISG)
 Appraisal comps (≥1 as-is + ≥1 ARV comp: sale within 12 months, <15% net
 adjustments, same ZIP; interior photos; submitting lender named on the
-appraisal); refinance background/exit + purchase-price-as-as-is rule (>18
+appraisal) — **IMPLEMENTED 2026-07-30** as deterministic appraisal-desk findings
+(`src/lib/appraisal/note-buyer-checks.js`, codes `emcap_*`, source `note_buyer`),
+raised on import / note-buyer change onto the Appraisal tab and enforced through
+the appraisal-review sign-off (owner-directed: findings, never auto-posted
+conditions; a data gap surfaces as a verify-by-hand warning, never a fabricated
+fatal); refinance background/exit + purchase-price-as-as-is rule (>18
 months → appraisal as-is usable); GUC refi within 18 months may use price +
 documented value-add (1:1 invoices); bridge/stabilized refi requires current
 payments (VOM), taxes current, profitable incl. new fees & carry; experience
@@ -221,7 +226,8 @@ transactions / seller credits each ≤15%.
   dropdown/value map (read-only compare).
 - **Borrower safety:** EMCAP added to the partner-name scrub patterns;
   borrower-facing copy says "Silver Program", never the buyer's name.
-- **ISG (advisory):** `isg_emcap_missing_1007` / `isg_emcap_rent_mismatch`
+- **ISG (advisory):** `isg_emcap_rent_mismatch` (the 1007 requirement moved to the
+  appraisal desk 2026-07-30 as `emcap_rental_analysis`; `isg_emcap_missing_1007` is retired)
   (pre-existing) + `isg_emcap_excluded_state`, `isg_emcap_mid_construction`,
   `isg_emcap_cashout_over_half_profit` (Silver build).
 
