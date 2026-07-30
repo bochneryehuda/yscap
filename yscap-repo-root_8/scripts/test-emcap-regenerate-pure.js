@@ -40,6 +40,23 @@ function ok(cond, msg) {
 }
 function section(name) { console.log('--- ' + name); }
 
+/* CRC32 (IEEE): node:zlib exposes crc32 from v20.15; fall back to a table
+   implementation so the test honors package.json "engines": ">=18". */
+const crc32 = (() => {
+  if (typeof zlib.crc32 === 'function') return (buf) => zlib.crc32(buf) >>> 0;
+  const table = new Uint32Array(256);
+  for (let n = 0; n < 256; n++) {
+    let c = n;
+    for (let k = 0; k < 8; k++) c = c & 1 ? 0xedb88320 ^ (c >>> 1) : c >>> 1;
+    table[n] = c >>> 0;
+  }
+  return (buf) => {
+    let c = 0xffffffff;
+    for (let i = 0; i < buf.length; i++) c = table[(c ^ buf[i]) & 0xff] ^ (c >>> 8);
+    return (c ^ 0xffffffff) >>> 0;
+  };
+})();
+
 /* Minimal STORE-method ZIP writer (test-side only, for the in-memory mutation). */
 function writeZipStored(entries) {
   const locals = [];
@@ -47,7 +64,7 @@ function writeZipStored(entries) {
   let offset = 0;
   for (const [name, data] of entries) {
     const nameBuf = Buffer.from(name, 'utf8');
-    const crc = zlib.crc32(data) >>> 0;
+    const crc = crc32(data);
     const lh = Buffer.alloc(30);
     lh.writeUInt32LE(0x04034b50, 0);
     lh.writeUInt16LE(20, 4);      // version needed
