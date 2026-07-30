@@ -923,6 +923,24 @@ function extract(xml) {
   const pdfCount = X.findAll(root, 'EMBEDDED_FILE').filter((e) => X.attr(e, '_Type') === 'PDF').length;
   const photos = { embeddedPdf: pdfCount, imageMeta: X.findAll(root, 'IMAGE').length };
 
+  // Report CONTENTS + photo metadata (for the note-buyer appraisal checks — EMCAP interior
+  // photos + the 1007 rent-schedule evidence; owner-directed 2026-07-30). READ, never guessed:
+  // the report's own page listing (FORM content names/types — "Subject Interior Photos",
+  // "Comparable Rent Schedule", …), the per-photo IMAGE metadata (identifier + caption — absent
+  // on ~60% of files, per docs/appraisal-xml/photos-comps-variation.md), and the rental-comp
+  // grid count (MULTIFAMILY_RENTAL — present on ~half the corpus's 1004s). Capped defensively;
+  // persisted via the fields jsonb (buildFieldsJson) so the checks can re-run off stored data.
+  const reportForms = X.findAll(root, 'FORM').slice(0, 200).map((fo) => ({
+    type: clean(X.attrAny(fo, ['AppraisalReportContentType', 'ContentType', '_Type'])),
+    name: clean(X.attrAny(fo, ['AppraisalReportContentName', 'AppraisalReportContentIdentifier', '_Name', 'AppraisalFormType'])),
+    other: clean(X.attrAny(fo, ['TypeOtherDescription', '_TypeOtherDescription'])),
+  })).filter((fo) => fo.type || fo.name || fo.other);
+  const reportImages = X.findAll(root, 'IMAGE').slice(0, 200).map((im) => ({
+    id: clean(X.attrAny(im, ['_Identifier', 'ImageIdentifier', '_ID'])),
+    caption: capText(X.attrAny(im, ['_CaptionComment', 'ImageCaption', '_Caption', '_Description']), 200),
+  })).filter((im) => im.id || im.caption);
+  const report = { forms: reportForms, images: reportImages, rentalGrids: X.findAll(root, 'MULTIFAMILY_RENTAL').length };
+
   // ---- tripwires (catch a bad file / parser regression, never silently pass) ----
   if (!['FNM1004', 'FNM1025', 'FNM1073'].includes(formType)) warnings.push({ code: 'unknown_form', msg: `unexpected form type ${formType}` });
   if (val.appraisedValue == null) warnings.push({ code: 'no_appraised_value', msg: 'appraised value missing' });
@@ -975,7 +993,7 @@ function extract(xml) {
     ok: true, formType,
     subject, values: val, appraiser, enrich,
     borrower: { name: borrower, isLlc, hasPartyName: !!borrower },
-    comparables: comps, units, income, condo, photos,
+    comparables: comps, units, income, condo, photos, report,
     compSplit: { confidence: gridSplit.confidence, needsReview: gridSplit.needsReview, note: gridSplit.note,
       asIsValue: gridSplit.asIsValue, arvValue: gridSplit.arvValue,
       counts: { as_is: comps.filter((c) => c.comp_set === 'as_is').length, arv: comps.filter((c) => c.comp_set === 'arv').length, unknown: comps.filter((c) => c.comp_set === 'unknown').length } },

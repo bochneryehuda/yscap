@@ -160,28 +160,29 @@ console.log('investor-guideline-review pure tests');
   ok('null-safe: hostile input never throws, always an array');
 }
 
-// 9 — EMCAP rental rules (owner-directed 2026-07-26; all WARN).
+// 9 — EMCAP rental rules (owner-directed 2026-07-26; rent-match WARN stays here — the
+//     1007 requirement MOVED to the appraisal desk 2026-07-30: emcap_rental_analysis in
+//     src/lib/appraisal/note-buyer-checks.js, so the old isg_emcap_missing_1007 must be GONE).
 {
   const emcap = (extra) => g.review(Object.assign({ note_buyer: 'EMCAP', is_fix_hold: true, appraisal_present: true }, extra));
-  // Missing 1007: fix-hold, appraisal present, NOT a 1025, no market rent → warn.
-  const miss = emcap({ appraisal_is_1025: false });
-  assert.ok(byCode(miss, 'isg_emcap_missing_1007') && byCode(miss, 'isg_emcap_missing_1007').severity === 'warning', 'EMCAP missing-1007 warns');
-  // A 1025 includes the rent schedule → no missing-1007.
-  assert.ok(!byCode(emcap({ appraisal_is_1025: true, appraisal_market_rent: 2500, loan_estimated_rent: 2500 }), 'isg_emcap_missing_1007'), '1025 satisfies the 1007 requirement');
-  // Before the appraisal is in → silent (no guessing).
-  assert.ok(g.review({ note_buyer: 'EMCAP', is_fix_hold: true, appraisal_present: false }).length === 0, 'no findings before the appraisal is in');
+  // The 1007 rule was removed from the ISG table (it lives on the appraisal desk now) —
+  // the exact fix-hold-no-rent shape that used to fire it produces NO isg_emcap_missing_1007.
+  assert.ok(!byCode(emcap({ appraisal_is_1025: false }), 'isg_emcap_missing_1007'), 'the 1007 rule no longer lives in the ISG table (moved to the appraisal desk)');
+  assert.ok(!(g.RULES || []).some((r) => r.code === 'isg_emcap_missing_1007'), 'isg_emcap_missing_1007 is not in RULES at all');
   // Rent mismatch is EXACT: any difference warns; an exact match is clean.
   assert.ok(byCode(emcap({ appraisal_is_1025: false, appraisal_market_rent: 2500, loan_estimated_rent: 2400 }), 'isg_emcap_rent_mismatch'), 'exact rent mismatch warns');
   assert.ok(!byCode(emcap({ appraisal_is_1025: true, appraisal_market_rent: 2500, loan_estimated_rent: 2500 }), 'isg_emcap_rent_mismatch'), 'an exact rent match is clean');
   // "Exact" is to the CENT — a sub-dollar difference still flags (not rounded away).
   assert.ok(byCode(emcap({ appraisal_is_1025: true, appraisal_market_rent: 2500.5, loan_estimated_rent: 2500 }), 'isg_emcap_rent_mismatch'), 'a sub-dollar rent difference (2500.50 vs 2500.00) warns');
   assert.ok(!byCode(emcap({ appraisal_is_1025: true, appraisal_market_rent: 2500.1, loan_estimated_rent: 2500.1 }), 'isg_emcap_rent_mismatch'), 'equal-to-the-cent rents are clean (no float noise)');
-  // Not fix-and-hold → the 1007 rule is inert; missing a signal → silent.
-  assert.ok(!byCode(g.review({ note_buyer: 'EMCAP', is_fix_hold: false, appraisal_present: true, appraisal_is_1025: false }), 'isg_emcap_missing_1007'), 'a non-fix-hold EMCAP loan needs no 1007');
   assert.ok(g.review({ note_buyer: 'EMCAP' }).length === 0, 'EMCAP with no signals → no findings (omit-don’t-guess)');
   // Never fires on another buyer.
   assert.ok(g.review({ note_buyer: 'Fidelis', is_fix_hold: true, appraisal_present: true, appraisal_is_1025: false, appraisal_market_rent: 2500, loan_estimated_rent: 2400 }).filter((f) => f.code.startsWith('isg_emcap')).length === 0, 'EMCAP rules never fire on another buyer');
-  ok('EMCAP rental rules: 1007 (warn, 1025-satisfied, post-appraisal), exact rent match, buyer-scoped');
+  // The transferred-appraisal letter warning is silent for EMCAP too (its own appraisal-desk
+  // fatal `emcap_lender_name` owns that fact — a letter does not cure it for EMCAP).
+  assert.ok(!byCode(g.review({ note_buyer: 'EMCAP', appraisal_transferred: true }), 'isg_transferred_appraisal_letter'), 'EMCAP is excluded from the transfer-letter warning (appraisal-desk fatal owns it)');
+  assert.ok(byCode(g.review({ note_buyer: 'Fidelis', appraisal_transferred: true }), 'isg_transferred_appraisal_letter'), 'other buyers still get the transfer-letter warning');
+  ok('EMCAP rules: 1007 moved to the appraisal desk, exact rent match, buyer-scoped, transfer-letter exclusion');
 }
 
 console.log(`\ninvestor-guideline-review: ${n} checks passed`);

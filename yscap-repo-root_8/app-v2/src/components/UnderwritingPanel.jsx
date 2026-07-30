@@ -1,7 +1,6 @@
 import React, { useEffect, useState, useCallback, useRef } from 'react';
 import { useLocation } from 'react-router-dom';
 import { api } from '../lib/api.js';
-import { AppraisalFinding } from './AppraisalPanel.jsx';
 import DocCompare from './DocCompare.jsx';
 import DocPreview from './DocPreview.jsx';
 import AiReasoningChat from './AiReasoningChat.jsx';
@@ -2962,7 +2961,6 @@ function AISuggestionCard({ appId, suggestion, onChanged, disabled }) {
 
 export default function UnderwritingPanel({ appId, docs = [], readOnly = false, canResolve = true, canWaive = true, onSummary }) {
   const [data, setData] = useState(null);
-  const [appr, setAppr] = useState(null); // appraisal findings folded into this ONE findings section
   const [loading, setLoading] = useState(true);
   const [err, setErr] = useState('');
   const [pick, setPick] = useState('');       // documentId to analyze
@@ -3009,16 +3007,9 @@ export default function UnderwritingPanel({ appId, docs = [], readOnly = false, 
       const d = await api.underwritingGet(appId);
       setData(d);
       if (onSummary) onSummary(d && d.summary ? d.summary : null);
-      // Fold the appraisal's findings (only the findings, not the property-profile report) into
-      // this ONE findings section. Best-effort + additive: a file with no appraisal returns an
-      // empty list, and a fetch error never blocks the underwriting desk. Staff-only endpoint.
-      if (!readOnly) {
-        try { const ap = await api.appraisalGet(appId); setAppr(ap || null); }
-        catch (_) { setAppr(null); }
-      }
     } catch (e) { setErr(e.message || 'Could not load the underwriting review'); }
     finally { setLoading(false); }
-  }, [appId, onSummary, readOnly]);
+  }, [appId, onSummary]);
 
   useEffect(() => { load(); }, [load]);
 
@@ -3150,8 +3141,6 @@ export default function UnderwritingPanel({ appId, docs = [], readOnly = false, 
   // "2 warnings" chip maps to two visible items (owner-reported: "it says 2 warnings and I can't see
   // them"). Shown once, at the top; the per-section finding lists below were removed so nothing repeats.
   const allFindings = _allFindings;   // hoisted above the early return with its memo (see above)
-  const apprFindings = (appr && appr.findings) || [];
-  const apprSum = (appr && appr.summary) || { fatal: 0, warning: 0, info: 0 };
   const exts = (data && data.extractions) || [];
   const docTypes = (data && data.docTypes) || [];
   const analyzers = (data && data.analyzers) || {};
@@ -3408,29 +3397,14 @@ export default function UnderwritingPanel({ appId, docs = [], readOnly = false, 
         </div>
       )}
 
-      {/* Appraisal findings — a SEPARATE source (the appraisal desk), so they live in their own list
-          right beside the open-findings list. Only the FINDINGS (appraisal value vs the loan file),
-          never the full property-profile report — that stays in the Appraisal section. Reuses the
-          appraisal desk's own Finding component + resolve path, so resolving here updates the
-          appraisal review too (and its re-price / replace-with-appraisal actions come along). */}
-      {apprFindings.length > 0 && (
-        <div style={{ marginBottom: 22 }}>
-          <h4 style={{ fontFamily: 'var(--serif,Georgia,serif)', margin: '0 0 4px' }}>Appraisal findings — appraisal vs the loan file</h4>
-          <p style={{ fontSize: 12, color: 'var(--muted,#4B585C)', margin: '0 0 10px' }}>
-            From the imported appraisal. The full property profile stays in the Appraisal section.
-          </p>
-          {(apprSum.fatal > 0 || apprSum.warning > 0) && (
-            <div style={{ display: 'flex', gap: 8, marginBottom: 10, flexWrap: 'wrap' }}>
-              {apprSum.fatal > 0 && <span style={{ fontWeight: 700, color: SEV.fatal.fg, background: SEV.fatal.bg, borderRadius: 999, padding: '3px 11px', fontSize: 12 }}>{severityCount(apprSum.fatal, 'fatal')}</span>}
-              {apprSum.warning > 0 && <span style={{ fontWeight: 700, color: SEV.warning.fg, background: SEV.warning.bg, borderRadius: 999, padding: '3px 11px', fontSize: 12 }}>{apprSum.warning} warning</span>}
-            </div>
-          )}
-          {apprFindings.map((f) => <AppraisalFinding key={f.id} appId={appId} f={f} onChange={load} readOnly={readOnly || !canResolve} />)}
-        </div>
-      )}
+      {/* Appraisal findings are NOT shown here. They moved back to the Appraisal section
+          (owner-directed 2026-07-30, reverting the 2026-07-20 fold-in): the appraisal XML
+          findings are reviewed — and resolved — on the appraisal tab, next to the report they
+          come from, and this desk shows only document-review findings. Do not re-add an
+          api.appraisalGet fold-in here. */}
 
       {/* nothing open anywhere — the all-clear */}
-      {allFindings.length === 0 && apprFindings.length === 0 && (
+      {allFindings.length === 0 && (
         <p style={{ color: 'var(--good,#3F7A5B)', fontSize: 13, marginBottom: 20 }}>✓ No open findings{exts.length ? ' — every analyzed document matches the file.' : ' yet — analyze a document to start the review.'}</p>
       )}
 
