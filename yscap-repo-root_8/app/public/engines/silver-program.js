@@ -86,8 +86,14 @@
   // Ineligible property types: the note buyer's sheet is silent on property types, so the
   // Silver program keeps the same 1–4-unit residential footprint as the Standard
   // program (owner-confirmed default: copy of the Standard program's list).
+  // The program lends on 1-4 unit RESIDENTIAL only (same footprint as Standard).
+  // The value can arrive as free text from the pipeline sync, so the refusal list
+  // carries the common synonyms too — matched as exact normalized tokens (soak
+  // audit 2026-07-30: "office" priced because only "commercial" was listed).
   var INELIGIBLE_PROPERTY = ["co-op", "cooperative", "mobile home", "manufactured", "mixed-use", "mixed use", "commercial",
-    "rural", "agricultural", "bed and breakfast", "boarding house", "half-way house", "care facility", "condemned", "multifamily 5+", "5+ units"];
+    "rural", "agricultural", "bed and breakfast", "boarding house", "half-way house", "care facility", "condemned", "multifamily 5+", "5+ units",
+    "office", "retail", "warehouse", "industrial", "hotel", "motel", "storage", "self storage", "self-storage",
+    "land", "vacant land", "lot", "gas station", "apartment building", "multi 5+", "5+", "multifamily 5+ units", "mixed"];
 
   /* ---------------- tier grid (the note-buyer "Tier Grid" tab, June 2026) ----------------
      row = [maxLoan, minFICO, maxAcqLTV, maxARLTV, maxLTC]; null = ineligible
@@ -447,7 +453,12 @@
     // and step up to the large band only when the sized loan exceeds $2.5M AND
     // the sponsor's experience carries a large-band tier whose ceiling allows it.
     var stated = num(input.loanAmount);
-    if (stated > 0) return evaluateBand(input, stated > SMALL_MAX ? "L" : "S");
+    // A stated loan picks its band — and the SIZED max must stay inside that band
+    // too (soak audit 2026-07-30: a $913k stated loan printed a $3.87M max at
+    // SMALL-band pricing; the small band's ceiling is $2.5M, above it the deal
+    // must be priced on the LARGE grid). So a small-band stated loan sizes capped
+    // at the band ceiling, exactly like the step-down path below.
+    if (stated > 0) return stated > SMALL_MAX ? evaluateBand(input, "L") : evaluateBand(input, "S", SMALL_MAX);
     var r = evaluateBand(input, "S");
     var sized = r.sizing && r.sizing.totalLoan || 0;
     if (sized > SMALL_MAX + 0.5) {
@@ -667,7 +678,11 @@
     if (hasLoan) {
       if (input.loanAmount < MIN_LOAN) add("INELIGIBLE", "The minimum loan amount is $100,000.");
       else if (input.loanAmount > c.maxLoan) add("INELIGIBLE", "Loan amount exceeds the " + usd(c.maxLoan) + " program maximum for this profile.");
-    } else if (sizing.totalLoan < MIN_LOAN && sizing.totalLoan > 0) {
+    }
+    // The SIZED loan below the $100k floor flags whether or not an amount was
+    // stated — a stated $3M on a deal that can only support $70k is still a deal
+    // the program can't fund at its minimum (soak audit 2026-07-30).
+    if (sizing.totalLoan < MIN_LOAN && sizing.totalLoan > 0) {
       add("MANUAL", "Sized below the $100,000 minimum — increase the deal size or leverage.");
     }
     if (sizing.rehabOverCap) add("MANUAL", "The rehab budget exceeds what this program can finance — the loan is capped at " + usd(sizing.totalLoan) + ", so the remaining budget would be funded out of pocket. Reduce the scope or use a larger facility.");

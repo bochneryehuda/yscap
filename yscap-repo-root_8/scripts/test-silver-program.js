@@ -366,6 +366,30 @@ const wb = {
   ok(SVP.constants.MIN_LOAN === 100000 && SVP.constants.ABS_MAX_LOAN === 4500000, 'Silver loan bounds');
 })();
 
+(function statedLoanBandDiscipline() {
+  // Soak audit 2026-07-30: a stated loan picks its size band, and the SIZED max
+  // must stay inside that band (a $913k stated loan must never print a $3.87M
+  // max at SMALL-band pricing — above $2.5M is the LARGE grid's territory).
+  const base = { loanType: 'Purchase', strategy: 'Fix & Flip', state: 'KY', zip: '40202', propertyType: 'single family',
+    fico: 806, expFlips: 0, expHolds: 4, expGround: 4, purchasePrice: 3934000, asIsValue: 3547096, arv: 5645757, rehabBudget: 591000, term: 24 };
+  const evS = SVP.evaluate(Object.assign({}, base, { loanAmount: 913000 }));
+  ok(evS.sizeBand === 'S' && evS.sizing.totalLoan <= 2500000 + 1, 'stated small-band loan sizes capped at the $2.5M band ceiling');
+  const evL = SVP.evaluate(Object.assign({}, base, { expFlips: 6, loanAmount: 3000000 }));
+  ok(evL.sizeBand === 'L' && evL.sizing.totalLoan > 2500000, 'stated large-band loan prices on the L grid');
+  // A stated amount far beyond what the deal supports still flags the sized-below-
+  // minimum manual review (the stated number alone must never read as fundable).
+  const evTiny = SVP.evaluate({ loanType: 'Purchase', strategy: 'Bridge', state: 'FL', zip: '33101', propertyType: 'single family',
+    fico: 773, expFlips: 5, purchasePrice: 101000, asIsValue: 94335, arv: 124009, rehabBudget: 0, term: 12, loanAmount: 3667000 });
+  ok(evTiny.status === 'MANUAL' && evTiny.reasons.some(r => /below the \$100,000 minimum/.test(r.msg)),
+    'a deal sizing under $100k goes to manual review even with a big stated loan');
+  // Commercial synonyms are refused (free-text property types from the pipeline).
+  ['office', 'retail', 'warehouse', 'industrial', 'land', 'multi 5+'].forEach((pt) => {
+    const ev = SVP.evaluate({ loanType: 'Purchase', strategy: 'Bridge', state: 'NJ', zip: '07030', propertyType: pt,
+      fico: 740, expFlips: 5, purchasePrice: 500000, asIsValue: 520000, arv: 560000, rehabBudget: 0, term: 12 });
+    ok(ev.status === 'INELIGIBLE', `property type "${pt}" is refused`);
+  });
+})();
+
 (function markupCappedAtOnePoint() {
   // Owner-directed 2026-07-29: the note buyer's buy rate floor is note − 1.00pt, so
   // any markup above 1 point is spread the program never earns. The engine clamps the
