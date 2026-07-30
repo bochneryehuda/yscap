@@ -47,7 +47,9 @@
   var goldChosenLTC = null;   // admin leverage slider for Gold (targetLTC); Gold rate is flat across leverage
   var silverChosenLTC = null; // leverage slider for Silver (targetLTC); Silver's grid rate varies by LTC band like Standard
   var lastDeal = null;   // tracks deal-type changes (to default the ground-up term/reserve once)
-  var chosenProgram = null;   // null = offers view; "standard" | "gold" | "silver" = drilled into that program's detail
+  var chosenProgram = null;   // null = offers view; "standard" | "gold" | "silver" | "manual" = drilled into that program's detail
+                              // ("manual" = the admin-priced scenario — prices on the Standard engine with the
+                              //  admin-set basis, exactly what the server records for a Manual Program register)
 
   var INELIGIBLE_CITIES = ["baltimore", "philadelphia", "detroit", "chicago"];
   function detectCity(addr) {
@@ -178,6 +180,7 @@
   }
   function progOf(d) { return d && d.gold ? "gold" : (d && d.silver ? "silver" : "standard"); }
   function chosenProgramName(withManual) {
+    if (chosenProgram === "manual") return "Manual Program";
     if (chosenProgram === "gold") return "Gold Standard Program";
     if (chosenProgram === "silver") return "Silver Program";
     return (withManual && manualOn()) ? "Manual Program" : "Standard Program";
@@ -546,6 +549,49 @@
       YS.put("silverSub", !ready ? EM : (silverWhy || (S.caps ? "Max LTC " + pctLbl(S.caps.maxLTC) + " \u00b7 " + (S.tierLabel || "") : (S.tierLabel || ""))));
     }
 
+    // ---- Manual card ----
+    // The Manual Program is the admin-priced scenario (tsManualOn + the custom
+    // LTV/LTC/ARV/rate basis in the pricing controls). It prices on the Standard
+    // engine with that basis \u2014 the SAME numbers the server records when a manual
+    // product registers \u2014 so the card shows `d` (the live calc), never a program
+    // engine's variant. With the manual scenario OFF the card is informational
+    // (dimmed, not selectable), exactly like a not-offered Gold card.
+    var mOn = manualBasisOn();
+    var manCard = el("pcardManual");
+    if (manCard) manCard.classList.toggle("pcard-off", !mOn);
+    if (!mOn) {
+      YS.put("manLoanBig", EM); YS.put("manRateBig", EM); YS.put("manOrigBig", EM);
+      YS.put("manOrigPts", origPtStr(adminOrigPct("standard")));
+      var mb0 = el("manBadge"); if (mb0) { mb0.textContent = "Admin-priced"; mb0.className = "pcard-badge"; }
+      YS.put("manSub", manualOn()
+        ? "Almost there \u2014 a Manual Program needs a custom LTV, LTC or ARV basis. Set one in the pricing controls; a rate or fee change alone registers under the chosen program (with admin approval)."
+        : "A custom product priced by our team \u2014 leverage, rate and fees set case-by-case. It unlocks when a custom LTV / LTC / ARV basis is set in the pricing controls.");
+    } else {
+      var mSized = ready && d.totalLoan > 0 && d.status !== "INELIGIBLE";
+      YS.put("manLoanBig", mSized ? YS.fmtUSD(d.totalLoan) : ((ready && d.status !== "INELIGIBLE") ? "$0" : EM));
+      YS.put("manRateBig", (mSized && d.pricingReady && d.rate > 0) ? d.rate.toFixed(2) + "%" : EM);
+      YS.put("manOrigBig", mSized ? YS.fmtUSD2(d.origFee) : EM);
+      YS.put("manOrigPts", origPtStr(adminOrigPct("standard")));
+      setBadge("manBadge", d.status, ready);
+      YS.put("manSub", !ready ? EM : "Manually underwritten on the admin-set basis \u2014 registers as a Manual Program and goes to an admin for approval.");
+    }
+    // With a STRUCTURAL manual basis set, the basis flows into EVERY engine's
+    // inputs, and the server records ANY register carrying one as a Manual
+    // Program priced on the Standard engine \u2014 so the three program cards can no
+    // longer show what would really register. Dim them and point at the Manual
+    // card; clearing the basis (or the checkbox) restores them (their own
+    // availability branches above manage pcard-off when !mOn).
+    var stdCard0 = el("pcardStd");
+    if (stdCard0) stdCard0.classList.toggle("pcard-off", mOn);
+    if (mOn) {
+      var gc0 = el("pcardGold"), sc0 = el("pcardSilver");
+      if (gc0) gc0.classList.add("pcard-off");
+      if (sc0) sc0.classList.add("pcard-off");
+      YS.put("stdSub", "Manual scenario is on \u2014 pricing is admin-set. See the Manual card.");
+      YS.put("goldSub", "Manual scenario is on \u2014 see the Manual card.");
+      YS.put("silverSub", "Manual scenario is on \u2014 see the Manual card.");
+    }
+
     // ---- comparison note ----
     var note = el("progNote");
     if (note) {
@@ -557,6 +603,9 @@
 
   function comparisonNote(d, G, S, ready) {
     if (!ready) return "";
+    // Structural manual basis: the program comparison is meaningless (every card
+    // prices on the admin-set basis and a register records a Manual Program).
+    if (manualBasisOn()) return "";
     // Normalize the three programs into comparable rows.
     var progs = [
       { name: "Standard", ok: d.status !== "INELIGIBLE" && d.totalLoan > 0 && d.pricingReady, rate: (d.rate || 0) / 100, loan: d.totalLoan || 0, manual: d.status === "MANUAL" },
@@ -631,7 +680,7 @@
     slider.value = String(maxV - effIdx);                         // right end = maximum leverage
     slider.disabled = rows.length <= 1;
     var lv = el("rLevVal"), hint = el("rLevHint");
-    var progEl = el("rLevProg"); if (progEl) progEl.textContent = isGold ? "\u00b7 Gold Standard" : (isSilver ? "\u00b7 Silver" : "\u00b7 Standard");
+    var progEl = el("rLevProg"); if (progEl) progEl.textContent = isGold ? "\u00b7 Gold Standard" : (isSilver ? "\u00b7 Silver" : (chosenProgram === "manual" ? "\u00b7 Manual" : "\u00b7 Standard"));
     if (effIdx === 0) {
       lv.textContent = "Maximum \u00b7 " + pctLbl(row.targetLtcPct) + " LTC";
       if (rows.length <= 1) {
@@ -661,21 +710,27 @@
 
   // Show the offers (cards) by default; reveal a single program's full detail when drilled into.
   function applyProgramView(ready) {
-    var stdCard = el("pcardStd"), goldCard = el("pcardGold"), silverCard = el("pcardSilver");
+    var stdCard = el("pcardStd"), goldCard = el("pcardGold"), silverCard = el("pcardSilver"), manCard = el("pcardManual");
     if (stdCard) stdCard.classList.toggle("pcard-active", chosenProgram === "standard");
     if (goldCard) goldCard.classList.toggle("pcard-active", chosenProgram === "gold");
     if (silverCard) silverCard.classList.toggle("pcard-active", chosenProgram === "silver");
+    if (manCard) manCard.classList.toggle("pcard-active", chosenProgram === "manual");
     var head = el("progDetailHead");
     if (head) head.textContent = chosenProgramName(false) + " \u2014 full breakdown";
     var lev = el("rLevWrap"); if (lev && !chosenProgram) lev.style.display = "none";   // slider shows for the drilled-in program
-    var pdf = el("tsPdf"); if (pdf) pdf.textContent = "Download " + (chosenProgram === "gold" ? "Gold Standard" : chosenProgram === "silver" ? "Silver" : "Standard") + " Term Sheet (PDF) \u2913";
+    var pdf = el("tsPdf"); if (pdf) pdf.textContent = "Download " + (chosenProgram === "gold" ? "Gold Standard" : chosenProgram === "silver" ? "Silver" : chosenProgram === "manual" ? "Manual Program" : "Standard") + " Term Sheet (PDF) \u2913";
     var detail = el("progDetail"); if (detail) detail.style.display = chosenProgram ? "" : "none";
     var mb = el("rManualBanner"); if (mb) mb.hidden = !(manualOn() && chosenProgram);
     var hint = el("progHint"); if (hint) hint.style.display = (ready && !chosenProgram) ? "" : "none";
   }
   function selectProgram(p) {
-    if (p === "gold") { var gc = el("pcardGold"); if (gc && gc.classList.contains("pcard-off")) return; }  // not offered here
-    if (p === "silver") { var sc2 = el("pcardSilver"); if (sc2 && sc2.classList.contains("pcard-off")) return; }
+    // A dimmed card is not selectable: Gold when not offered in the state,
+    // Silver with no engine, Manual while the admin scenario is off, and the
+    // three program cards while the admin scenario is ON (a register would
+    // record a Manual Program regardless of the card \u2014 see renderPrograms).
+    var CARD_OF = { standard: "pcardStd", gold: "pcardGold", silver: "pcardSilver", manual: "pcardManual" };
+    var card = el(CARD_OF[p]);
+    if (card && card.classList.contains("pcard-off")) return;
     chosenProgram = (chosenProgram === p) ? null : p;            // tap the open program again to collapse
     recompute();
     if (chosenProgram) { var dt = el("progDetail"); if (dt && dt.scrollIntoView) { try { dt.scrollIntoView({ behavior: "smooth", block: "nearest" }); } catch (e) {} } }
@@ -756,6 +811,15 @@
     if (CO.title != null) s("tsFeeTitle", String(CO.title));
   }
   function manualOn() { var e = el("tsManualOn"); return !!(e && e.checked); }
+  // A STRUCTURAL manual basis (custom LTV / LTC / ARV) is what actually makes a
+  // register record a Manual Program — the server's manual-program.resolveProgram
+  // flips on the structural keys only; a rate-only override or the bare checkbox
+  // keeps the requested program (with an admin-approval escalation). The Manual
+  // CARD lights, the program cards dim, and the drill-in auto-switches on THIS
+  // predicate, never on the checkbox alone (audit 2026-07-30 #2).
+  function manualBasisOn() {
+    return manualOn() && (adminNumRaw("tsMLtv") != null || adminNumRaw("tsMArv") != null || adminNumRaw("tsMLtc") != null);
+  }
 
   /* ---- Term-sheet options (owner-directed 2026-07-22) ----
      DISPLAY / record-only attributes layered ON TOP of the frozen engine — none
@@ -912,6 +976,14 @@
     updateConditionals();
     var miss = missingFields();
     var ready = miss.length === 0;                                // all required fields present
+    // A structural manual basis coming ON makes the Manual card the only
+    // registrable product — move a program drill-in over to it FIRST (before
+    // the leverage slider and the detail deal are drawn, audit 2026-07-30 #4),
+    // so no tick renders a Gold/Silver ladder under a Manual head. The detail
+    // then shows the Standard-engine calc on the admin basis — exactly what a
+    // register records.
+    if (manualBasisOn() && chosenProgram && chosenProgram !== "manual") chosenProgram = "manual";
+    if (chosenProgram === "manual" && !manualBasisOn()) chosenProgram = null;   // basis cleared → collapse to the offers view
     renderLeverage(ready);                                        // clamp chosenLTC + draw the Standard slider
     var dStd = calc();                                            // Standard, priced at the chosen leverage
     renderPrograms(dStd, ready);                                  // both offer cards + comparison note
@@ -1321,8 +1393,13 @@
     }
     // Some rows are conditional (min-interest, deferred fee) and come through as
     // null — drop them so the Excel writer never dereferences a null pair.
+    // With a structural manual basis engaged, the "Standard" block IS the Manual
+    // Program's pricing (the manual product prices on the Standard engine with
+    // the admin basis) — title it honestly so the export never claims a Standard
+    // registration the server wouldn't record.
+    var stdTitle = manualBasisOn() ? "Manual Program (admin-set basis)" : "Standard Program";
     return [{ title: "Deal & property", items: deal.filter(Boolean) }, { title: "Purchase & project costs", items: costs.filter(Boolean) },
-            { title: "Standard Program", items: std.filter(Boolean) }, { title: "Gold Standard Program", items: gold.filter(Boolean) },
+            { title: stdTitle, items: std.filter(Boolean) }, { title: "Gold Standard Program", items: gold.filter(Boolean) },
             { title: "Silver Program", items: silver.filter(Boolean) }];
   }
   async function exportXlsx(btn) {
@@ -2017,7 +2094,7 @@
       var doSend = function () {
         if (!FORM_TOKEN.t) return;
         var addr = chk("addrTBD") ? "TBD" : (val("propAddr") || val("propState") || "");
-        var subject = kind + " generated \u2014 " + ((chosenProgram === "gold") ? "Gold Standard" : (chosenProgram === "silver") ? "Silver" : "Standard") +
+        var subject = kind + " generated \u2014 " + ((chosenProgram === "gold") ? "Gold Standard" : (chosenProgram === "silver") ? "Silver" : (chosenProgram === "manual") ? "Manual Program" : "Standard") +
           (d && d.totalLoan ? " \u2014 " + YS.fmtUSD(d.totalLoan) : "") + (addr ? " \u2014 " + addr : "");
         var ob = window.YSBRAND || {};
         var code = ob.email ? String(ob.email).split("@")[0].toLowerCase().replace(/[^a-z0-9._-]/g, "") : "";
@@ -2407,6 +2484,7 @@
     var scard = el("pcardStd"); if (scard) scard.addEventListener("click", function () { selectProgram("standard"); });
     var gcard = el("pcardGold"); if (gcard) gcard.addEventListener("click", function () { selectProgram("gold"); });
     var svcard = el("pcardSilver"); if (svcard) svcard.addEventListener("click", function () { selectProgram("silver"); });
+    var mcard = el("pcardManual"); if (mcard) mcard.addEventListener("click", function () { selectProgram("manual"); });
     // TBD confirmation (owner-directed 2026-07-29): ticking "Property is TBD" must be
     // an explicit, informed choice — without the full address the engines can't check
     // ZIP / city / county / borough restrictions (the state alone isn't enough), so

@@ -56,6 +56,7 @@ import DocPreview from '../components/DocPreview.jsx';
 import ReminderModal from '../components/ReminderModal.jsx';
 import LlcManager, { US_STATES } from '../components/LlcManager.jsx';
 import { fullNameOf } from '../lib/personName.js';
+import LoudHint from '../components/LoudHint.jsx';
 
 /* A closing-date <input type="date"> that DOESN'T fight the typist.
  * The old input saved on every onChange and reloaded the file — but a date
@@ -1029,7 +1030,7 @@ function Item({ it, team, onPatch, role, docs, onUploadTo, onDropTo, onReviewDoc
             <PilotAdvice it={it} />
           </div>
           <PilotAdviceNote it={it} />
-          {it.hint && <div className="muted small" style={{ marginTop: 4 }}>{it.hint}</div>}
+          {it.hint && <LoudHint hint={it.hint} className="muted small" style={{ marginTop: 4 }} />}
           {it.assignee_name && <div className="muted small">Assigned to {it.assignee_name}</div>}
           {signed && (it.waived_at
             ? <div className="muted small">Waived by {it.waived_by_name || 'the internal team'} · {new Date(it.waived_at).toLocaleDateString()}</div>
@@ -2628,9 +2629,8 @@ function BorrowerConditions({ appId, app, items, docs, onPatch, onReviewDoc, onD
                 )}
                 <CondInlineEntry it={it} appId={appId} onChanged={onChanged} />
                 {it.template_code === 'rtl_p3_assets' && it.hint && (
-                  <div className="muted small" style={{ whiteSpace: 'pre-line', marginTop: 6, padding: '8px 10px', border: '1px solid rgba(127,169,176,.3)', borderRadius: 8 }}>
-                    {it.hint}
-                  </div>
+                  <LoudHint hint={it.hint} className="muted small"
+                    style={{ marginTop: 6, padding: '8px 10px', border: '1px solid rgba(127,169,176,.3)', borderRadius: 8 }} />
                 )}
                 {it.tool_key === 'track_record' && it.tool_payload && it.tool_payload.perBorrower && it.tool_payload.perBorrower.length > 1 && (
                   // #103 — per-borrower breakdown: each borrower's own 3-year-window

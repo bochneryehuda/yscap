@@ -191,7 +191,8 @@ function readSnapshot(win) {
   const srcVal = (id) => derived(id) ? '' : val(id);
   const chk = (id) => { const e = doc.getElementById(id); return !!(e && e.checked); };
   const active = (id) => { const e = doc.getElementById(id); return !!(e && e.classList.contains('pcard-active')); };
-  const program = active('pcardGold') ? 'gold' : active('pcardSilver') ? 'silver' : active('pcardStd') ? 'standard' : null;
+  const program = active('pcardGold') ? 'gold' : active('pcardSilver') ? 'silver'
+    : active('pcardManual') ? 'manual' : active('pcardStd') ? 'standard' : null;
   const missBox = doc.getElementById('rMissing');
   const ready = !!missBox && missBox.style.display === 'none';
   const missing = missBox ? Array.from(missBox.querySelectorAll('li')).map((li) => li.textContent) : [];
@@ -293,7 +294,7 @@ export function selectionFromSnapshot(snap) {
     source: 'term-sheet-studio',
     selectedAt: new Date().toISOString(),
     program: snap.program,
-    programLabel: snap.program === 'gold' ? 'Gold Standard Program' : snap.program === 'silver' ? 'Silver Program' : 'Standard Program',
+    programLabel: snap.program === 'gold' ? 'Gold Standard Program' : snap.program === 'silver' ? 'Silver Program' : snap.program === 'manual' ? 'Manual Program' : 'Standard Program',
     strategy: snap.fields.dealType,
     purpose: snap.fields.dealPurpose,
     status: d.status || null,

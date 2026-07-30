@@ -146,7 +146,8 @@ const emdCount = async (appId) => (await db.query(
     const flFid = (await db.query(
       `INSERT INTO applications (borrower_id,status,lender) VALUES ($1,'processing','Fidelis') RETURNING id`, [borrowerId])).rows[0].id;
     await engine.evaluateApplication(flFid, { reason: 'test', notify: false });
-    assert((await floodCount(flFid)) === 0, 'a Fidelis note buyer does NOT get the flood-certificate condition from the note-buyer rule');
+    // Owner-directed 2026-07-30 (db/374): the flood cert is on EVERY file, Fidelis included.
+    assert((await floodCount(flFid)) === 1, 'a Fidelis file ALSO gets the flood-certificate condition (every file, db/374)');
 
     console.log(failures ? `\n${failures} assertion(s) failed` : '\nALL note-buyer-conditions assertions passed');
   } catch (e) {

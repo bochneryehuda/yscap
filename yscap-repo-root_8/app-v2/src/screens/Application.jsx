@@ -28,6 +28,7 @@ import BorrowerDraws from '../components/BorrowerDraws.jsx';
 import AppraisalPanel from '../components/AppraisalPanel.jsx';
 import { fileToBase64 } from '../lib/files.js';
 import { fullNameOf } from '../lib/personName.js';
+import { splitLoudHint, LoudBanner } from '../components/LoudHint.jsx';
 
 const kb = (n) => n == null ? '' : (n < 1024 ? n + ' B' : n < 1048576 ? (n / 1024).toFixed(0) + ' KB' : (n / 1048576).toFixed(1) + ' MB');
 const money = (n) => n == null ? '—' : '$' + Number(n).toLocaleString('en-US', { maximumFractionDigits: 0 });
@@ -981,7 +982,7 @@ export default function Application() {
                   done={isDone(ppItem.status) || !!app.registered_program}
                   title="Products & pricing — register your product"
                   subtitle={app.registered_program
-                    ? `Registered: ${app.registered_product_label || (app.registered_program === 'gold' ? 'Gold Standard Program' : app.registered_program === 'silver' ? 'Silver Program' : 'Standard Program')} · ${money(app.registered_total_loan)}`
+                    ? `Registered: ${app.registered_product_label || (app.registered_program === 'gold' ? 'Gold Standard Program' : app.registered_program === 'silver' ? 'Silver Program' : app.registered_program === 'manual' ? 'Manual Program' : 'Standard Program')} · ${money(app.registered_total_loan)}`
                     : 'Price your deal in the Term Sheet Studio and register your product — your terms, cash to close and liquidity requirement all come from it.'}
                   status={(isDone(ppItem.status) || app.registered_program) ? conditionStatusLabel('satisfied') : conditionStatusLabel('outstanding')}
                   open={tsDocs.length > 0}
@@ -1116,22 +1117,28 @@ export default function Application() {
                 // The registration's liquidity condition is one and the same —
                 // its full breakdown renders inside THIS condition.
                 const regCond = conds.find(c => c.linked_entity_type === 'product_registration');
+                // A '⚠️'-marked first line in the hint is the LOUD month requirement
+                // (owner-directed 2026-07-30) — rendered as a highlighted banner
+                // inside the row, whether or not the registered subtitle hides the
+                // rest of the hint.
+                const lh = splitLoudHint(assetsItem.hint);
                 return (
                   <ConditionRow
                     done={isDone(assetsItem.status)}
                     issue={assetsItem.status === 'issue'}
                     title={q ? 'Assets & liquidity — your registered requirement' : assetsItem.label}
                     subtitle={q
-                      ? `Your ${app.registered_program === 'gold' ? 'Gold Standard' : app.registered_program === 'silver' ? 'Silver' : 'Standard'} registration: verify ${money2(liq)} in liquidity`
+                      ? `Your ${app.registered_program === 'gold' ? 'Gold Standard' : app.registered_program === 'silver' ? 'Silver' : app.registered_program === 'manual' ? 'Manual Program' : 'Standard'} registration: verify ${money2(liq)} in liquidity`
                         + (q.reserveRequirement ? ` (incl. ${money(q.reserveRequirement)} reserve${q.reserveBasis ? ` — ${q.reserveBasis}` : ''})` : '')
                         + (q.cashToClose ? ` · estimated cash to close ${money2(q.cashToClose)}` : '')
                         + '. Upload the bank statements that show it.'
-                      : [assetsItem.hint, assetsItem.notes].filter(Boolean).join(' · ') || 'Bank statements showing your required liquidity.'}
+                      : [lh.loud ? lh.rest : assetsItem.hint, assetsItem.notes].filter(Boolean).join(' · ') || 'Bank statements showing your required liquidity.'}
                     status={statusText(assetsItem)}
-                    open={docs.length > 0 || assetsItem.status === 'issue' || !!q}
+                    open={docs.length > 0 || assetsItem.status === 'issue' || !!q || !!lh.loud}
                     action={<button className="btn ghost small" title="You can select several PDFs at once" onClick={() => pick({ itemId: assetsItem.id, slotBase: docs.length })}>{docs.length ? '+ Add another' : 'Upload statements'}</button>}
                     onDropFiles={(f) => uploadFiles(f, { itemId: assetsItem.id, slotBase: docs.length })}
                   >
+                    {lh.loud && <LoudBanner text={lh.loud} style={{ marginTop: 0, marginBottom: 8 }} />}
                     {regCond && regCond.detail && (
                       <div className="muted small" style={{ whiteSpace: 'pre-line', marginBottom: 8, padding: '8px 10px', border: '1px solid rgba(127,169,176,.3)', borderRadius: 8 }}>
                         {regCond.detail}
