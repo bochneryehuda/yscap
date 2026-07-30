@@ -193,7 +193,7 @@ console.log('investor-guideline-review pure tests');
   const emcap = (x) => g.review({ note_buyer: 'EMCAP Financial', ...x });
   const hit = byCode(emcap({ housing_months_supply: 11.5 }), 'isg_emcap_high_housing_supply');
   require('assert').ok(hit && hit.severity === 'warning', '>10 months of supply raises the EMCAP WARNING');
-  require('assert').ok(/11\.5/.test(hit.detail) && /MSA/.test(hit.detail), 'the detail names the number and the MSA-level judgment');
+  require('assert').ok(/11\.5/.test(hit.explanation) && /MSA/.test(hit.explanation), 'the explanation names the number and the MSA-level judgment');
   require('assert').ok(!byCode(emcap({ housing_months_supply: 10 }), 'isg_emcap_high_housing_supply'), 'exactly 10 months is clean (rule is strictly over 10)');
   require('assert').ok(!byCode(emcap({ housing_months_supply: 4 }), 'isg_emcap_high_housing_supply'), 'a normal market is clean');
   require('assert').ok(!byCode(emcap({}), 'isg_emcap_high_housing_supply'), 'no 1004MC signal → silent (omit-don’t-guess)');

@@ -326,6 +326,9 @@ function reviewInput(raw) {
     appraisal_is_1025: appr.is_1025 == null ? (r.appraisal_is_1025 == null ? null : bool(r.appraisal_is_1025)) : bool(appr.is_1025),
     appraisal_market_rent: num(appr.market_rent != null ? appr.market_rent : r.appraisal_market_rent),
     loan_estimated_rent: num(r.loan_estimated_rent),
+    // 1004MC months of housing supply (owner-directed 2026-07-30) — feeds the
+    // EMCAP >10-month-supply advisory. Missing → null → the rule stays silent.
+    housing_months_supply: num(appr.months_supply != null ? appr.months_supply : r.housing_months_supply),
   };
 }
 
