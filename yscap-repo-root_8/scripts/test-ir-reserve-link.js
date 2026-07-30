@@ -183,9 +183,19 @@ function battery() {
       wantNote: /This loan finances \$80,471 of interest reserve on the Gold Standard Program — MORE than the 12 months you entered — this program sets the construction reserve at 13\.5 months \(75% of the 18-month term\)/,
     },
     {
+      /* $60,000, not the $112,500 this expected before 2026-07-30. The step-down now
+         prefers, at the SAME total loan, the structure that needs LESS CASH TO CLOSE
+         (owner-directed: "would rather take the more expensive option with less cash
+         to close"). On this deal the loan is identical at $1,050,000 either way, and
+         the winning split moves $52,500 out of the financed reserve and into the
+         acquisition advance ($437,500 -> $490,000) — so the borrower brings $52,500
+         less to the table and carries that much more interest over the term, at
+         9.875% -> 10.125%. The reserve is still CAPPED by the same 70%
+         after-repair-value ceiling, and the box still shows exactly what the loan
+         finances, which is what this file exists to protect. */
       name: 'Silver — AMOUNT-driven $200,000 entry, capped',
       d: silverAmount, prog: 'Silver Program', source: 'amount', amount: '200000',
-      wantNote: /\$200,000 requested; \$112,500 financed on the Silver Program — capped by the 70% after-repair-value ceiling\./,
+      wantNote: /\$200,000 requested; \$60,000 financed on the Silver Program — capped by the 70% after-repair-value ceiling\./,
     },
   ];
 }
