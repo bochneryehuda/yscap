@@ -162,17 +162,35 @@ function checkOne(i, input, markup) {
     if (!RATE_SET.has(grid)) return fail('I2 rate is not a workbook cell + markup', input, ev, `rate=${ev.noteRate} markup=${effCap}`);
   }
 
-  // I4 caps (tier grid from the fixture — independent of the engine's own copy)
+  // I4 caps (tier grid from the fixture — independent of the engine's own copy).
+  // The fixture keys are `PROD|PURP|Tn` with LOWERCASE cap fields (maxltc /
+  // maxloan / maxacq / maxar / minfico). This lookup used to build
+  // `PROD|PURP|n|S` and read caps.maxLTC/maxLoan, so it ALWAYS missed and the
+  // whole invariant silently never ran (audit 2026-07-30, item I). A miss now
+  // throws loudly instead of skipping.
   const tier = ev.tier, size = ev.sizeBand;
   const pTok = SVP.prodToken(SVP.normStrategy ? SVP.normStrategy(input.strategy) : ev.strategyCode || 'FF');
   const purp = input.loanType === 'Refinance' ? 'R' : 'P';
-  const caps = TG && TG[`${pTok}|${purp}|${tier}|${size}`];
+  const tgKey = `${pTok}|${purp}|T${tier}`;
+  const caps = TG && TG[tgKey];
+  if (!caps) throw new Error(`I4 fixture tierGrid LOOKUP MISS for '${tgKey}' — key-format drift (fixture keys: ${Object.keys(TG || {}).slice(0, 3).join(', ')}…)`);
   const TOL = 2e-4;
-  if (caps) {
-    if (s.ltcPct > 0 && s.ltcPct > caps.maxLTC + TOL && !(ev.reasons || []).some((r) => /Leverage is capped/.test(r.msg))) {
-      return fail('I4 LTC breach', input, ev, `ltc=${s.ltcPct} cap=${caps.maxLTC}`);
+  {
+    // The engine never sizes a row the workbook leaves empty (FF|R|T3 → maxloan 0)
+    // — it refuses before sizing — so a sized loan on such a row is a real breach.
+    if (!(caps.maxloan > 0)) return fail('I4 sized a loan on an empty workbook tier row', input, ev, `row=${tgKey}`);
+    if (caps.maxltc > 0 && s.ltcPct > 0 && s.ltcPct > caps.maxltc + TOL && !(ev.reasons || []).some((r) => /Leverage is capped/.test(r.msg))) {
+      return fail('I4 LTC breach', input, ev, `ltc=${s.ltcPct} cap=${caps.maxltc}`);
     }
-    if (caps.maxLoan && s.totalLoan > caps.maxLoan + 1) return fail('I4 tier max loan breach', input, ev, `loan=${s.totalLoan} cap=${caps.maxLoan}`);
+    if (s.totalLoan > caps.maxloan + 1) return fail('I4 tier max loan breach', input, ev, `loan=${s.totalLoan} cap=${caps.maxloan}`);
+    // acquisition (as-is) wall and, for non-bridge, the after-repair wall
+    if (caps.maxacq > 0 && s.acqLtvPct > 0 && s.acqLtvPct > caps.maxacq + TOL) {
+      return fail('I4 acq-LTV breach', input, ev, `acqLtv=${s.acqLtvPct} cap=${caps.maxacq}`);
+    }
+    const arvN = (typeof input.arv === 'number' && isFinite(input.arv)) ? input.arv : 0;
+    if (pTok !== 'BR' && caps.maxar > 0 && arvN > 0 && s.totalLoan / arvN > caps.maxar + TOL) {
+      return fail('I4 AR-LTV breach', input, ev, `arLtv=${s.totalLoan / arvN} cap=${caps.maxar}`);
+    }
   }
   if (size === 'S' && s.totalLoan > 2500000 + 1) return fail('I4 small band over $2.5M', input, ev);
   if (s.totalLoan > 4500000 + 1) return fail('I4 absolute max breach', input, ev);

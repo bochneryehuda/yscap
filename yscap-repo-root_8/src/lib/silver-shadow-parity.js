@@ -432,17 +432,27 @@ function shadowCheckInner(input, result, opts) {
   if (ev.caps) {
     const c = ev.caps;
     const gridCapped = (ev.reasons || []).some((r) => /Leverage is capped at /.test((r && r.msg) || ''));
+    // The priced frontier is a LATTICE (engine 2026-07-30): the step-down can
+    // tighten the LTC axis, the AR-LTV axis, or BOTH, and it NAMES whichever cap
+    // bound — so an after-repair cap legitimately sits under the tier row.
+    const capMsgs = (ev.reasons || []).map((r) => (r && r.msg) || '').filter((m) => /Leverage is capped at /.test(m));
+    const gridCappedAr = capMsgs.some((m) => /[\d.]+% of the after-repair value/.test(m));
+    const gridCappedLtc = capMsgs.some((m) => /capped at [\d.]+% loan-to-cost/.test(m));
     if (num(c.minFico) !== row.minfico) {
       return bad('cap_mismatch', `Our system used a ${c.minFico} minimum FICO for this tier; the workbook tier grid says ${row.minfico}.`, { cellKey: `${prodTok}|${purp}|T${tier}` });
     }
     if (num(c.maxAcqLTV) !== row.maxacq) {
       return bad('cap_mismatch', `Our system capped acquisition LTV at ${pctS(c.maxAcqLTV)}; the workbook tier grid says ${pctS(row.maxacq)}.`, { cellKey: `${prodTok}|${purp}|T${tier}` });
     }
-    if (num(c.maxARLTV) !== row.maxar) {
-      return bad('cap_mismatch', `Our system capped after-repair LTV at ${pctS(c.maxARLTV)}; the workbook tier grid says ${pctS(row.maxar)}.`, { cellKey: `${prodTok}|${purp}|T${tier}` });
+    if (!gridCappedAr) {
+      if (num(c.maxARLTV) !== row.maxar) {
+        return bad('cap_mismatch', `Our system capped after-repair LTV at ${pctS(c.maxARLTV)}; the workbook tier grid says ${pctS(row.maxar)}.`, { cellKey: `${prodTok}|${purp}|T${tier}` });
+      }
+    } else if (!(num(c.maxARLTV) < row.maxar + 1e-12)) {
+      return bad('cap_mismatch', `The grid step-down RAISED the after-repair LTV cap to ${pctS(c.maxARLTV)} above the workbook's ${pctS(row.maxar)} — a step-down may only lower it.`, { cellKey: `${prodTok}|${purp}|T${tier}` });
     }
     const expLtc = Math.min(row.maxltc, num(input.targetLTC) > 0 ? num(input.targetLTC) : Infinity);
-    if (!gridCapped) {
+    if (!gridCappedLtc) {
       if (Math.abs(num(c.maxLTC) - expLtc) > 1e-12) {
         return bad('cap_mismatch', `Our system capped loan-to-cost at ${pctS(c.maxLTC)}; the workbook says ${pctS(expLtc)} for this tier${num(input.targetLTC) > 0 ? ' (with the requested de-leverage)' : ''}.`, { cellKey: `${prodTok}|${purp}|T${tier}` });
       }

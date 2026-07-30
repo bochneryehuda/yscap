@@ -78,10 +78,69 @@
   ];
   var STATE_NAMES = { NV: "Nevada", MN: "Minnesota", ND: "North Dakota", SD: "South Dakota" };
 
+  /* Spelled-out / dotted STATE names normalize to the 2-letter code BEFORE any
+     geography check runs (owner-directed 2026-07-30: the engine must say "which
+     city and which zip is blocked … include these restrictions"). ONE chokepoint
+     — stateOf() — feeds BOTH the exclusion list and the market map, so "Nevada"
+     is refused exactly like "NV" and "New York"/"N.Y." price on the NYC grid. */
+  var STATE_NAME_TO_CODE = {
+    ALABAMA: "AL", ALASKA: "AK", ARIZONA: "AZ", ARKANSAS: "AR", CALIFORNIA: "CA", COLORADO: "CO",
+    CONNECTICUT: "CT", DELAWARE: "DE", DISTRICTOFCOLUMBIA: "DC", WASHINGTONDC: "DC", FLORIDA: "FL",
+    GEORGIA: "GA", HAWAII: "HI", IDAHO: "ID", ILLINOIS: "IL", INDIANA: "IN", IOWA: "IA", KANSAS: "KS",
+    KENTUCKY: "KY", LOUISIANA: "LA", MAINE: "ME", MARYLAND: "MD", MASSACHUSETTS: "MA", MICHIGAN: "MI",
+    MINNESOTA: "MN", MISSISSIPPI: "MS", MISSOURI: "MO", MONTANA: "MT", NEBRASKA: "NE", NEVADA: "NV",
+    NEWHAMPSHIRE: "NH", NEWJERSEY: "NJ", NEWMEXICO: "NM", NEWYORK: "NY", NORTHCAROLINA: "NC",
+    NORTHDAKOTA: "ND", OHIO: "OH", OKLAHOMA: "OK", OREGON: "OR", PENNSYLVANIA: "PA",
+    RHODEISLAND: "RI", SOUTHCAROLINA: "SC", SOUTHDAKOTA: "SD", TENNESSEE: "TN", TEXAS: "TX",
+    UTAH: "UT", VERMONT: "VT", VIRGINIA: "VA", WASHINGTON: "WA", WESTVIRGINIA: "WV",
+    WISCONSIN: "WI", WYOMING: "WY"
+  };
+  function stateCode(s) {
+    var raw = up(s);
+    if (!raw) return "";
+    var compact = raw.replace(/[^A-Z]/g, "");
+    if (compact.length === 2) return compact;                    // "NY", "N.Y.", " ny "
+    return STATE_NAME_TO_CODE[compact] || raw;                   // "New York" → NY; unknown passes through
+  }
+  function stateOf(input) { return stateCode(input && input.state); }
+
+  /* ZIP → STATE fallback for the four banned states. When the state FIELD is
+     blank the ZIP still names the state, so a Las Vegas / Minneapolis / Fargo /
+     Sioux Falls deal arriving as one unsplit line can't slip through
+     (owner-directed 2026-07-30). USPS zip3 allocations of NV/MN/ND/SD. */
+  var EXCLUDED_STATE_ZIP3 = {
+    NV: ["889", "890", "891", "893", "894", "895", "897", "898"],
+    MN: ["550", "551", "553", "554", "555", "556", "557", "558", "559", "560", "561", "562", "563", "564", "565", "566", "567"],
+    ND: ["580", "581", "582", "583", "584", "585", "586", "587", "588"],
+    SD: ["570", "571", "572", "573", "574", "575", "576", "577"]
+  };
+  var ZIP3_TO_EXCLUDED_STATE = (function () {
+    var m = {};
+    for (var st in EXCLUDED_STATE_ZIP3) {
+      if (!EXCLUDED_STATE_ZIP3.hasOwnProperty(st)) continue;
+      var a = EXCLUDED_STATE_ZIP3[st];
+      for (var i = 0; i < a.length; i++) m[a[i]] = st;
+    }
+    return m;
+  }());
+
   // NYC five-borough detection: ZIP first (high confidence), borough name second.
   var NYC_ZIP3 = ["100", "101", "102", "103", "104", "111", "112", "113", "114", "116"];
   var NYC_ZIP5 = ["11004", "11005"];   // Queens pockets inside the 110xx (mostly Nassau) prefix
-  var NYC_NAMES = ["new york city", "new york, ny", "manhattan", "brooklyn", "the bronx", "bronx", "queens", "staten island", "nyc"];
+  // Borough / city spellings that classify NYC. Address data arrives unsplit and
+  // messy, so the common abbreviations ride the same list (owner-directed
+  // 2026-07-30). Multi-word entries must match the FULL token sequence — see
+  // nameHit(): "New York Mills, MN" is NOT New York City.
+  var NYC_NAMES = ["new york city", "new york, ny", "new york", "manhattan", "brooklyn", "bklyn",
+    "the bronx", "bronx", "queens", "staten island", "s.i.", "nyc"];
+  // "New York" is ALSO the state's own name, so in FREE TEXT a trailing
+  // "…, Rochester, New York" is the STATE, not the city — a bare "new york" in
+  // an ADDRESS only classifies NYC when a state token follows it. Typed into the
+  // CITY field it is unambiguous.
+  var NYC_NAMES_NEED_TAIL = { "new york": 1 };
+  // Tokens that may legitimately follow a multi-word borough name (the state /
+  // country tail). Anything else means a DIFFERENT, longer city name.
+  var CITY_TAIL_OK = { ny: 1, "new": 1, york: 1, nyc: 1, usa: 1, us: 1, united: 1, states: 1, america: 1, county: 1, borough: 1, city: 1 };
 
   // Ineligible property types: the note buyer's sheet is silent on property types, so the
   // Silver program keeps the same 1–4-unit residential footprint as the Standard
@@ -258,6 +317,11 @@
   function num(x) { return (typeof x === "number" && isFinite(x)) ? x : 0; }
   function round2(n) { return Math.round(n * 100) / 100; }
   function pct(x) { return (Math.round(x * 1000) / 10) + "%"; }
+  // Band edges are 2-decimal numbers (89.99%, 74.99%, 64.99%) — a 1-decimal
+  // format rounded 0.8999 to a flat "90%", which reads as a DIFFERENT cap than
+  // the one that actually bound (owner-directed 2026-07-30: say exactly which
+  // guideline is holding it up). Trailing zeros stay trimmed: 0.925 → "92.5%".
+  function pct2(x) { return (Math.round(x * 10000) / 100) + "%"; }
   function usd(n) { return "$" + Math.round(n).toLocaleString("en-US"); }
   function zip5(z) {
     var d = clean(z).replace(/[^0-9]/g, "").slice(0, 5);
@@ -286,8 +350,9 @@
     var implied = EXCLUDED_ZIP_STATE[z.slice(0, 3)];
     return !implied || implied === st;
   }
+  function isNycZip(z) { return NYC_ZIP5.indexOf(z) > -1 || NYC_ZIP3.indexOf(z.slice(0, 3)) > -1; }
   function geoCheck(input) {
-    var st = up(input.state);
+    var st = stateOf(input);
     if (st && EXCLUDED_STATES.indexOf(st) > -1)
       return { level: "INELIGIBLE", label: (STATE_NAMES[st] || st), source: "state" };
     var zTyped = zip5(input.zip);
@@ -309,6 +374,25 @@
         // (re-audit 2026-07-30, finding 1b-i).
         return { level: "MANUAL", label: zipLabel(z), source: "zipstate" };
       }
+      if (zTyped && st && st !== "NY" && isNycZip(z)) {
+        // Same two-typed-fields data problem, on the MARKET side: an NYC ZIP with
+        // a state that isn't NY would otherwise price silently on the Standard
+        // grid at Standard leverage (audit 2026-07-30, finding B). Mirrors the
+        // excluded-ZIP zipstate path exactly — MANUAL, never a silent price.
+        return {
+          level: "MANUAL", label: "the NYC five boroughs", source: "zipstate",
+          reason: "The ZIP code entered is in the NYC five boroughs (which price on their own rate grid, with their own leverage and loan-size limits) but the state entered doesn't match that ZIP — one of the two is wrong. This needs manual review to confirm the property's real location before it can be priced."
+        };
+      }
+      var zipState = st ? null : ZIP3_TO_EXCLUDED_STATE[z.slice(0, 3)];
+      if (zipState) {
+        // No state field typed, but the ZIP is provably inside a banned STATE —
+        // treat it exactly like a typed state (typed ZIP is decisive; a ZIP read
+        // out of free text goes to review, mirroring the banned-metro ZIP path).
+        var zsName = STATE_NAMES[zipState] || zipState;
+        if (zTyped) return { level: "INELIGIBLE", label: zsName, source: "zip" };
+        return { level: "MANUAL", label: zsName, source: "address" };
+      }
       if (zipStateConsistent(z, st)) return null;   // a known good ZIP is decisive — no city-name second-guessing
       // contradicting state on a TEXT-parsed "ZIP" ⇒ likely a house number — fall
       // through to the city-name check instead of trusting it.
@@ -327,7 +411,15 @@
     // Only a TRAILING 5-digit group reads as the ZIP — "60629 Main St, Dallas"
     // starts with a HOUSE NUMBER, and reading it as a ZIP hard-declined real
     // deals (audit 2026-07-30, finding 1). US addresses end "…, ST 12345".
-    var m = clean(t).match(/\b(\d{5})(?:-\d{4})?\s*$/);
+    // A legacy pipeline address ends ", USA" (or a stray period) AFTER the ZIP,
+    // which used to hide the ZIP completely — strip that tail first, then apply
+    // the SAME end-anchored read so a house number still never counts
+    // (audit 2026-07-30, finding F). The country token must follow a separator
+    // so a city ending in "us" ("Columbus") is never chopped.
+    var s = clean(t)
+      .replace(/(?:^|[\s,.;:])(?:u\.?\s?s\.?(?:\s?a\.?)?|united\s+states(?:\s+of\s+america)?)[\s,.;:]*$/i, "")
+      .replace(/[\s,.;:]+$/, "");
+    var m = s.match(/\b(\d{5})(?:-\d{4})?\s*$/);
     return m ? m[1] : "";
   }
   function zipLabel(z) {
@@ -339,21 +431,45 @@
     return "an excluded market";
   }
 
+  // Borough-name match. WORD boundaries keep "Queensbury"/"Bronxville" from
+  // reading as Queens/the Bronx (audit 2026-07-30, finding 4); a MULTI-WORD name
+  // must additionally match the whole token sequence, so "New York Mills" is not
+  // New York City (finding A). Internal whitespace is collapsed first so
+  // "Staten  Island" reads the same as "Staten Island" (finding E).
+  function squash(s) { return low(s).replace(/\s+/g, " "); }
+  function nameHit(hay, name, isCity) {
+    if (!hay) return false;
+    var esc = name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    var re = new RegExp("(^|[^a-z])" + esc + "($|[^a-z])", "g");
+    var m;
+    while ((m = re.exec(hay)) !== null) {
+      var end = m.index + (m[1] ? m[1].length : 0) + name.length;
+      // the next word attached to the match (separated only by spaces/commas/dots)
+      var t = /^[ ,.]{0,3}([a-z]+)/.exec(hay.slice(end));
+      var tail = t ? t[1] : "";
+      var ok = true;
+      if (name.indexOf(" ") > -1 && tail && !CITY_TAIL_OK[tail]) ok = false;   // a longer, different city
+      if (NYC_NAMES_NEED_TAIL[name] && !isCity && !CITY_TAIL_OK[tail]) ok = false;  // the STATE's own name in free text
+      if (ok) return true;
+      re.lastIndex = m.index + 1;
+    }
+    return false;
+  }
   // Market token: NYC five boroughs vs everything else.
   function marketOf(input) {
-    var st = up(input.state);
+    var st = stateOf(input);
     if (st && st !== "NY") return "STD";
     var z = zip5(input.zip) || zipFromText(input.address || input.propAddr);
     if (z) {
-      if (NYC_ZIP5.indexOf(z) > -1 || NYC_ZIP3.indexOf(z.slice(0, 3)) > -1) return "NYC";
+      if (isNycZip(z)) return "NYC";
       return "STD";
     }
-    // Name fallback needs WORD boundaries — "Queensbury"/"Bronxville" must not
-    // read as Queens/the Bronx (audit 2026-07-30, finding 4).
-    var hay = low(input.city) + " | " + low(input.address || input.propAddr || "");
+    // Name fallback — the CITY field is judged on its own (a typed city is
+    // unambiguous), the free-text address second.
+    var cityHay = squash(input.city), addrHay = squash(input.address || input.propAddr || "");
     for (var i = 0; i < NYC_NAMES.length; i++) {
-      var re = new RegExp("(^|[^a-z])" + NYC_NAMES[i].replace(/[.*+?^${}()|[\]\\]/g, "\\$&") + "($|[^a-z])");
-      if (re.test(hay)) return "NYC";
+      if (nameHit(cityHay, NYC_NAMES[i], true)) return "NYC";
+      if (nameHit(addrHay, NYC_NAMES[i], false)) return "NYC";
     }
     return "STD";
   }
@@ -464,12 +580,34 @@
     if (sized > SMALL_MAX + 0.5) {
       var rL = evaluateBand(input, "L");
       var sizedL = rL.sizing && rL.sizing.totalLoan || 0;
-      if (sizedL > SMALL_MAX + 0.5) return rL;       // genuinely a large-band loan
+      if (sizedL > SMALL_MAX + 0.5) {
+        // The LARGE grid has genuine holes (e.g. STD GUC tier 1, FICO 640-659 has
+        // no >$2.5M cells at ANY leverage) and the deal dead-ended at "no priced
+        // grid cell" — while the workbook funds exactly $2.5M for the same sponsor
+        // on the SMALL grid (GUC audit 2026-07-30, finding 4: 27 dead ends).
+        // Retry the small band capped at its own $2.5M ceiling. Scoped tightly to
+        // the no-cell case: a large-band refusal for ANY other reason (tier caps,
+        // geography, the FICO floor, a value-add failure) is INELIGIBLE or carries
+        // its own reason and is never resurrected here.
+        if (isNoCellOnly(rL)) {
+          var rS = evaluateBand(input, "S", SMALL_MAX);
+          if (rS.status !== "INELIGIBLE" && rS.noteRate > 0) return rS;
+        }
+        return rL;                                   // genuinely a large-band loan
+      }
       // Large-band tiering caps it back under $2.5M — stay small-band, capped there.
       var r2 = evaluateBand(input, "S", SMALL_MAX);
       return r2;
     }
     return r;
+  }
+  // TRUE when the ONLY thing standing between this evaluation and a price is the
+  // absence of a grid cell (no rate, MANUAL, and the no-cell reason is present).
+  function isNoCellOnly(ev) {
+    if (!ev || ev.status !== "MANUAL" || ev.noteRate > 0) return false;
+    var rs = ev.reasons || [];
+    for (var i = 0; i < rs.length; i++) if (/No priced grid cell/.test(rs[i].msg)) return true;
+    return false;
   }
 
   function evaluateBand(input, sizeBand, loanCapOverride) {
@@ -529,14 +667,14 @@
     var geo = geoCheck(input);
     var geoReview = null;
     if (geo) {
-      if (geo.level === "INELIGIBLE") add("INELIGIBLE", "Properties in " + geo.label + " are not eligible for the Silver Program.");
+      if (geo.level === "INELIGIBLE") add("INELIGIBLE", geo.reason || ("Properties in " + geo.label + " are not eligible for the Silver Program."));
       else {
         geoReview = geo.label;
-        add("MANUAL", geo.source === "city"
+        add("MANUAL", geo.reason || (geo.source === "city"
           ? "Properties in " + geo.label + " aren't eligible for the Silver Program — this scenario needs manual review."
           : geo.source === "zipstate"
             ? "The ZIP code entered is in " + geo.label + " (not eligible for the Silver Program) but the state entered doesn't match that ZIP — one of the two is wrong. This needs manual review to confirm the property's real location before it can be priced."
-            : "This address looks like it's in " + geo.label + ", which isn't eligible for the Silver Program — it needs manual review to confirm the exact location (a ZIP code decides). If the property isn't in " + geo.label + ", we can price it.");
+            : "This address looks like it's in " + geo.label + ", which isn't eligible for the Silver Program — it needs manual review to confirm the exact location (a ZIP code decides). If the property isn't in " + geo.label + ", we can price it."));
       }
     }
     var propLc = low(input.propertyType);
@@ -589,7 +727,10 @@
     if (geoReview && !input.forcePrice) return result(status, reasons, base({ geoReview: geoReview }));
 
     // ---- FICO vs tier minimum (≥640 but below the tier min ⇒ manual/waiver) ----
-    if (fico > 0 && fico < c.minFico) add("MANUAL", "FICO " + fico + " is below the " + c.minFico + " minimum for this tier — eligible with a credit-committee waiver review.");
+    // Name the TIER that set the floor — "below the 700 minimum for this tier"
+    // left the reader hunting for which tier they landed in (owner-directed
+    // 2026-07-30: say exactly which guideline is holding it up).
+    if (fico > 0 && fico < c.minFico) add("MANUAL", "FICO " + fico + " is below the Tier " + tier + " minimum of " + c.minFico + " — eligible with a credit-committee waiver review.");
 
     // ---- effective caps: voluntary de-leverage + admin overrides ----
     var capsEff = { maxLoan: c.maxLoan, minFico: c.minFico, maxAcqLTV: c.maxAcqLTV, maxARLTV: c.maxARLTV, maxLTC: c.maxLTC };
@@ -605,8 +746,13 @@
     var irMonthsEff = Math.min(irMonthsReq, termMonths);
     var reserveTermCapped = irMonthsReq > termMonths;
     var irAmountReq = (sc === "BR") ? 0 : Math.max(0, num(input.irAmount));
+    // NOTE the num()-sanitized aiv/arv: the raw input values reach the shared
+    // sizing waterfall, and a NON-NUMERIC arv ("900,000" from a pasted field)
+    // made every sizing figure NaN while the deal still reported ELIGIBLE
+    // (audit 2026-07-30, finding F). aiv/arv are already Math.max(0, num(...))
+    // above, so for every numeric input this is byte-identical.
     var dealForSize = {
-      loanType: loanType, purchasePrice: effPurchase, asIsValue: input.asIsValue, arv: input.arv,
+      loanType: loanType, purchasePrice: effPurchase, asIsValue: aiv, arv: arv,
       rehabBudget: rehab, irMonths: irMonthsEff, irAmount: irAmountReq, accrual: input.accrual,
       noteRateForIR: 0.10, reserveCapMonths: termMonths, reserveInCost: true, bridge: (sc === "BR")
     };
@@ -623,9 +769,23 @@
     var rate = rateOvr || rateAt(sizing);
     if (rate) { dealForSize.noteRateForIR = rate; sizing = YSP.sizeLoan(dealForSize, capsEff); rate = rateOvr || (rateAt(sizing) || rate); }
 
+    // A loan sized right up to a leverage cap lands exactly ON that cap — but the
+    // reported total is rounded to the cent, so the ratio it implies can come back
+    // a hair ABOVE the cap (0.925 → 0.9250000000000002; on a small basis the cent
+    // of rounding is worth ~3e-8 of ratio). Read literally that is the NEXT band,
+    // which has no cell, so the deal forfeited a WHOLE band of leverage — the
+    // engine landed at 89.99% loan-to-cost on a deal the grid prices at 92.5%, for
+    // the same rate (parity audit 2026-07-30: 70 of 3,450 sized deals, up to $145k
+    // short). A cap-bound structure is classified AT its cap. The window is 1e-6 —
+    // four orders of magnitude below the narrowest band (0.0249), so it can only
+    // ever absorb rounding, never reclassify a genuinely different structure.
+    function atCap(ratio, cap) {
+      return (cap > 0 && ratio > cap && ratio < cap + 1e-6) ? cap : ratio;
+    }
     function rateAt(s) {
       var g = gridRate(market, sizeBand, pTok, purp, termTok, tier,
-        arBand(arForBand(s)), ficoBand(tier, fico || 700), ltcBand(s.ltcPct > 0 ? s.ltcPct : capsEff.maxLTC));
+        arBand(atCap(arForBand(s), capsEff.maxARLTV)), ficoBand(tier, fico || 700),
+        ltcBand(atCap(s.ltcPct > 0 ? s.ltcPct : capsEff.maxLTC, capsEff.maxLTC)));
       return g == null ? null : g + effMarkup();
     }
 
@@ -637,31 +797,115 @@
     // the MAXIMUM structure the grid actually prices. Only when no leverage
     // level prices at all (e.g. a FICO band with no cells in this market) does
     // the deal go to individual review.
+    // The frontier the grid prices is NOT always an LTC band edge — very often it
+    // is an AR-LTV band edge (the workbook's own max sits at e.g. 64.99% of the
+    // ARV, one cent under the next AR band). Stepping only the LTC edge down
+    // under-lent 54 deals by up to $12k and then blamed loan-to-cost for a cap
+    // the after-repair value had set (GUC audit 2026-07-30, finding 3). So BOTH
+    // band families are candidate frontiers, each scanned high→low (a higher edge
+    // is always the larger loan, so the first that prices is that family's best),
+    // and the LARGER of the two priced loans wins — the true maximum structure
+    // the grid buys. The winning family NAMES itself in the reason.
     var gridCapped = false;
     if (!rate && !rateOvr && sizing.totalLoan > 0 && fico > 0) {
       var EDGES = [0.925, 0.8999, 0.875, 0.85, 0.80, 0.7499, 0.70, 0.6499];
-      var startLtc = sizing.ltcPct > 0 ? sizing.ltcPct : capsEff.maxLTC;
-      for (var e = 0; e < EDGES.length && !rate; e++) {
-        if (EDGES[e] >= startLtc - 1e-9) continue;              // only step DOWN
-        if (EDGES[e] > capsEff.maxLTC + 1e-9) continue;
-        var capsTry = { maxLoan: capsEff.maxLoan, minFico: capsEff.minFico, maxAcqLTV: capsEff.maxAcqLTV, maxARLTV: capsEff.maxARLTV, maxLTC: EDGES[e] };
-        var deal2 = {
-          loanType: loanType, purchasePrice: effPurchase, asIsValue: input.asIsValue, arv: input.arv,
+      var AR_EDGES = [0.75, 0.70, 0.6499];
+      // Same cap-bound rounding rule as the primary pass: a candidate sized to the
+      // edge it is testing must be classified AT that edge, or every candidate
+      // would reject itself and the search would walk past the real frontier (this
+      // is what left NYC fix & flip at 78.5% of a band the grid prices to 80%).
+      var gridAt = function (s, capsTry) {
+        var arRatio = (sc === "BR") ? (s.totalLoan / (arv || aiv)) : (arv > 0 ? s.totalLoan / arv : 0);
+        return gridRate(market, sizeBand, pTok, purp, termTok, tier,
+          arBand(atCap(arRatio, capsTry.maxARLTV)), ficoBand(tier, fico || 700),
+          ltcBand(atCap(s.ltcPct > 0 ? s.ltcPct : capsTry.maxLTC, capsTry.maxLTC)));
+      };
+      // A candidate is evaluated EXACTLY the way the primary pass evaluates the
+      // deal: seed the financed reserve with the rate guess for THIS candidate's
+      // own cap edges, size, settle on the bands achieved, re-size. Reusing the
+      // primary pass's guess (computed at the deal's FULL leverage) sized the
+      // reserve for a different structure, which landed the candidate in a
+      // neighbouring, unpriced band — so a leverage step the grid genuinely prices
+      // was rejected and the search dropped a further band (parity audit
+      // 2026-07-30: a GUC deal held at 74.99% of an 80% band, $99,997 short).
+      var tryCaps = function (capsTry) {
+        var seed = gridRate(market, sizeBand, pTok, purp, termTok, tier,
+          arBand(Math.min(capsTry.maxARLTV, 0.75)), ficoBand(tier, fico || 700),
+          ltcBand(Math.min(capsTry.maxLTC, 0.925)));
+        var d2 = {
+          loanType: loanType, purchasePrice: effPurchase, asIsValue: aiv, arv: arv,
           rehabBudget: rehab, irMonths: irMonthsEff, irAmount: irAmountReq, accrual: input.accrual,
-          noteRateForIR: dealForSize.noteRateForIR, reserveCapMonths: termMonths, reserveInCost: true, bridge: (sc === "BR")
+          noteRateForIR: (seed == null ? 0.10 : seed) + effMarkup(),
+          reserveCapMonths: termMonths, reserveInCost: true, bridge: (sc === "BR")
         };
-        var s2 = YSP.sizeLoan(deal2, capsTry);
-        if (!(s2.totalLoan > 0)) continue;
-        var g2 = gridRate(market, sizeBand, pTok, purp, termTok, tier,
-          arBand((sc === "BR") ? (s2.totalLoan / (arv || aiv)) : (arv > 0 ? s2.totalLoan / arv : 0)),
-          ficoBand(tier, fico || 700), ltcBand(s2.ltcPct > 0 ? s2.ltcPct : EDGES[e]));
-        if (g2 != null) {
-          rate = g2 + effMarkup();
-          deal2.noteRateForIR = rate;
-          sizing = YSP.sizeLoan(deal2, capsTry);
-          capsEff = capsTry;
+        var s2 = YSP.sizeLoan(d2, capsTry);
+        if (!(s2.totalLoan > 0)) return null;
+        var g2 = gridAt(s2, capsTry);
+        if (g2 == null) return null;
+        d2.noteRateForIR = g2 + effMarkup();
+        var s3 = YSP.sizeLoan(d2, capsTry);
+        if (!(s3.totalLoan > 0)) return { caps: capsTry, grid: g2, total: s2.totalLoan, sizing: s2 };
+        var g3 = gridAt(s3, capsTry);
+        return { caps: capsTry, grid: (g3 == null ? g2 : g3), total: s3.totalLoan, sizing: s3 };
+      };
+      // THE FRONTIER IS A LATTICE, NOT A LINE. Tightening ONE axis at a time can
+      // never reach a structure that needs BOTH: cap only the loan-to-cost and the
+      // loan stays wide enough that its AFTER-REPAIR ratio sits in an unpriced AR
+      // band; cap only the after-repair value and the loan stays wide enough that
+      // its LOAN-TO-COST sits in an unpriced LTC band — while the pair (85% LTC AND
+      // 70% AR) prices, for $39,512 more (parity audit 2026-07-30). So the search is
+      // the full CROSS PRODUCT of the two band-edge families, exactly the candidate
+      // set the workbook's own max-eligible frontier is drawn from. Both lists carry
+      // the deal's OWN cap first, so "reduce only the other axis" is a candidate too.
+      var ltcCands = [capsEff.maxLTC], arCands = [capsEff.maxARLTV], ee;
+      for (ee = 0; ee < EDGES.length; ee++) {
+        if (EDGES[ee] > capsEff.maxLTC - 1e-9) continue;         // at/above the deal's own cap
+        ltcCands.push(EDGES[ee]);
+      }
+      // The AR axis only bounds a value-add product — a bridge is sized on the as-is
+      // value, so its after-repair ratio is a reporting figure, not a wall.
+      if (sc !== "BR" && arv > 0) {
+        for (ee = 0; ee < AR_EDGES.length; ee++) {
+          if (AR_EDGES[ee] > capsEff.maxARLTV - 1e-9) continue;
+          // Land on the largest WHOLE-DOLLAR loan inside the band, which is the
+          // workbook's own frontier: edge x ARV can fall on a half dollar (0.6499
+          // x $625,000 = $406,187.50) and a loan reported one cent above the edge
+          // reads into the NEXT — unpriced — AR band.
+          arCands.push(Math.min(AR_EDGES[ee], Math.floor(AR_EDGES[ee] * arv) / arv));
+        }
+      }
+      // Scanned least-restrictive first on both axes and kept on a STRICT
+      // improvement, so the largest priced loan wins and a tie keeps the loosest
+      // caps (the honest description of what actually bound the deal).
+      var best = null, li, ai;
+      for (li = 0; li < ltcCands.length; li++) {
+        for (ai = 0; ai < arCands.length; ai++) {
+          if (li === 0 && ai === 0) continue;                    // the caps that just failed
+          var got = tryCaps({ maxLoan: capsEff.maxLoan, minFico: capsEff.minFico, maxAcqLTV: capsEff.maxAcqLTV, maxARLTV: arCands[ai], maxLTC: ltcCands[li] });
+          if (got && (!best || got.total > best.total + 0.5)) best = got;
+        }
+      }
+      if (best) {
+        // tryCaps already settled the rate on the bands its FINAL sizing lands in
+        // (the same second pass the main rate/IR loop runs), so the charged cell and
+        // the printed structure are the same one by construction.
+        var cutLtc = best.caps.maxLTC < capsEff.maxLTC - 1e-9;
+        var cutAr = best.caps.maxARLTV < capsEff.maxARLTV - 1e-9;
+        rate = best.grid + effMarkup();
+        sizing = best.sizing;
+        capsEff = best.caps;
+        // NAME the guideline that actually holds the deal back — blaming
+        // loan-to-cost for a cap the after-repair value set sent borrowers to
+        // reduce the wrong number (GUC audit 2026-07-30, finding 3).
+        if (cutLtc || cutAr) {
           gridCapped = true;
-          add("ELIGIBLE", "Leverage is capped at " + pct(EDGES[e]) + " loan-to-cost — the program doesn't price higher leverage for this market and profile.");
+          add("ELIGIBLE", "Leverage is capped at " +
+            (cutLtc && cutAr
+              ? (pct2(best.caps.maxLTC) + " loan-to-cost and " + pct2(best.caps.maxARLTV) + " of the after-repair value")
+              : cutAr
+                ? (pct2(best.caps.maxARLTV) + " of the after-repair value")
+                : (pct2(best.caps.maxLTC) + " loan-to-cost")) +
+            " — the program doesn't price this profile above " + (cutAr && !cutLtc ? "that after-repair band" : "that band") + " for this market.");
         }
       }
     }
@@ -685,7 +929,13 @@
     if (sizing.totalLoan < MIN_LOAN && sizing.totalLoan > 0) {
       add("MANUAL", "Sized below the $100,000 minimum — increase the deal size or leverage.");
     }
-    if (sizing.rehabOverCap) add("MANUAL", "The rehab budget exceeds what this program can finance — the loan is capped at " + usd(sizing.totalLoan) + ", so the remaining budget would be funded out of pocket. Reduce the scope or use a larger facility.");
+    // A ground-up loan is sized against the AFTER-REPAIR value, so with no ARV on
+    // file every cap collapses to zero and the deal reported "the rehab budget
+    // exceeds what this program can finance" — a refusal about the wrong field
+    // (audit 2026-07-30, finding F). Name the missing input instead.
+    var arvMissingGuc = (sc === "NC") && !(arv > 0);
+    if (arvMissingGuc) add("MANUAL", "After-repair value is required to size a ground-up loan — enter the completed (as-built) value and this scenario can be priced.");
+    else if (sizing.rehabOverCap) add("MANUAL", "The rehab budget exceeds what this program can finance — the loan is capped at " + usd(sizing.totalLoan) + ", so the remaining budget would be funded out of pocket. Reduce the scope or use a larger facility.");
 
     // ---- DSCR gate (fix & hold exit): projected DSCR must be ≥ 1.00 when known ----
     var dscr = 0;
@@ -782,9 +1032,32 @@
     }
     var maxLtc = full.sizing.ltcPct;
     var rows = [];
+    // TRUE-MAX top rung. The bucket-skip (`b > maxLtc` → continue) left the top
+    // rung a whole band BELOW the deal's real maximum in 71% of ladders (up to a
+    // $223k gap), so the term sheet's ladder page contradicted its own page 1
+    // (owner-directed 2026-07-30: "everything should tie up… the Max leverage the
+    // loan amounts"). Adopting the Standard engine's ltcBucket semantics
+    // (standard-program.js priceLadder): the FIRST row is the deal's EXACT
+    // maximum sizing — the very numbers evaluate() reports — and the band-edge
+    // rungs below it are the voluntary de-leverage steps.
+    // Its `ltc` is 0 on purpose: that is the ONLY marker that round-trips back
+    // through evaluate() as "no targetLTC", i.e. reproduces this exact maximum.
+    // Any real edge value would re-cap the sizing and could shift the loan.
+    var trueMax = (full.noteRate > 0);
+    if (trueMax) {
+      var fs = full.sizing;
+      rows.push({
+        ltc: 0, targetLtcPct: fs.ltcPct, totalLoan: fs.totalLoan, initialAdvance: fs.acquisition,
+        downPayment: fs.downPayment, rehabHoldback: fs.rehabLoan, noteRate: full.noteRate,
+        monthlyPayment: round2(fs.totalLoan * (full.noteRate / 12)),
+        isMax: true
+      });
+    }
     for (var i = 0; i < LADDER_BUCKETS.length; i++) {
       var b = LADDER_BUCKETS[i];
-      if (b > maxLtc + 1e-4) continue;                 // can't lever above the deal's own max
+      // with a true-max rung in place, only rungs strictly BELOW it are steps;
+      // without one (nothing prices at the max) keep the original bucket window.
+      if (trueMax ? (b >= maxLtc - 1e-9) : (b > maxLtc + 1e-4)) continue;
       var ev = evaluate(assign({}, input, { targetLTC: b }));
       var s = ev.sizing || {};
       if (!(s.totalLoan > 0) || !(ev.noteRate > 0)) continue;

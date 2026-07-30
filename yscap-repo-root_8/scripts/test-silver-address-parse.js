@@ -18,15 +18,16 @@
  *    file (transcribed from docs/SILVER-PROGRAM-EMCAP.md "Geography" + the
  *    EMCAP workbook fixture scripts/fixtures/emcap-pricing-tool-v1.json) —
  *    NEVER from re-running the engine's own logic.
- *  - Where the ENGINE disagrees with the spec, the case is marked KNOWN-GAP:
- *    the file runs GREEN today (it pins the engine's OBSERVED behavior) but
- *    prints a loud KNOWN-GAPS section with minimal repros. The main session
- *    fixes the engine under owner authority; once a gap is fixed the case
- *    starts matching the SPEC and is reported under "GAPS FIXED — flip to
- *    strict" (delete its `gap`/`observed` marking to make it strict).
+ *  - STRICT since 2026-07-30: the seven KNOWN-GAPs this battery originally
+ *    reported (A city 'New York', B NYC-zip/state contradiction, C1/C2
+ *    spelled-out state names, D ZIP→state fallback for the banned states,
+ *    E borough abbreviations + whitespace, F trailing ', USA') were FIXED in the
+ *    engine under the owner's 2026-07-30 geography directive, so every case now
+ *    asserts the SPEC directly. The `gap`/`observed` machinery below is kept
+ *    (unused) so a future divergence can be pinned the same way; `GAPS` is now a
+ *    HISTORY record of what was fixed.
  *
  * HARD RULES HONORED
- *  - The frozen engine is NEVER modified here — gaps are reported, not fixed.
  *  - No DB, no network. Pure Node. Runtime well under 60s.
  *
  * Run:  node scripts/test-silver-address-parse.js
@@ -73,8 +74,8 @@ const SPEC_NYC_ZIP3 = ['100', '101', '102', '103', '104', '111', '112', '113', '
 const SPEC_NYC_ZIP5 = ['11004', '11005'];             // Queens pockets inside 110xx (Nassau)
 // Borough names that MUST classify NYC (city field or free-text address):
 const SPEC_NYC_NAMES = ['New York City', 'Manhattan', 'Brooklyn', 'The Bronx', 'Bronx', 'Queens', 'Staten Island', 'NYC', 'Queens Village'];
-// Common spellings that SHOULD classify NYC per the owner's directive but the
-// engine misses today (KNOWN-GAP E):
+// Common messy spellings that must ALSO classify NYC (owner's directive; was
+// KNOWN-GAP E, fixed 2026-07-30 — borough aliases + internal-whitespace collapse):
 const SPEC_NYC_NAMES_GAP = ['Bklyn', 'S.I.', 'Staten  Island', 'New  York  City'];
 // Near-miss names that must STAY Standard market:
 const SPEC_NYC_LOOKALIKES_STD = [
@@ -147,7 +148,10 @@ const PRICING = {
 };
 
 /* ===================================================================== *
- * KNOWN-GAP registry (engine ≠ spec — for the main session to fix).
+ * GAP HISTORY — all seven were FIXED in the engine on 2026-07-30 (owner
+ * geography directive). Every case that used to be marked with one of these
+ * ids is now STRICT. Kept as the record of what the fix had to deliver; the
+ * reporter below prints a section only if a case is ever re-marked.
  * ===================================================================== */
 const GAPS = {
   'GAP-A': {
@@ -323,9 +327,10 @@ function s0(name, cond) { if (cond) s0Pass++; else s0Fail.push(name); }
       if (meta || isZip5) {
         C(id, `typed excluded zip ${zip}`, { zip }, EXCL('zip', meta ? meta.label : BALTIMORE.label));
       } else if (bannedState) {
-        // spec: a ZIP provably inside a banned state blocks; engine: no ZIP→state map — KNOWN-GAP D
+        // a ZIP provably inside a banned state blocks exactly like a typed state
+        // (ZIP→state fallback, fixed 2026-07-30)
         C(id, `typed banned-state zip ${zip} (${bannedState})`, { zip },
-          EXCL(null, null), { gap: 'GAP-D', observed: ELIG('STD') });
+          EXCL('zip', SPEC_EXCLUDED_STATES[bannedState]));
       } else if (nyc) {
         C(id, `typed NYC zip ${zip}`, { zip }, ELIG('NYC'));
       } else {
@@ -406,11 +411,12 @@ function s0(name, cond) { if (cond) s0Pass++; else s0Fail.push(name); }
     // house-number collision: NYC zip as HOUSE NUMBER in a NJ deal
     C(`S3-${zip}-e`, `house number '${zip} ${street}, Trenton NJ 08601'`, { address: `${zip} ${street}, Trenton NJ 08601` }, ELIG('STD'));
   }
-  // GAP-B: NYC zip + contradicting typed state → spec MANUAL, engine prices STD
+  // NYC zip + contradicting typed state → MANUAL 'zipstate' (mirrors the
+  // excluded-ZIP contradiction path; fixed 2026-07-30)
   for (const zip of ['11215', '10001', '10451', '11693', '11004']) {
     for (const st of ['NJ', 'CT', 'PA']) {
       C(`S3-B-${zip}-${st}`, `NYC zip ${zip} + contradicting state ${st}`, { zip, state: st, city: 'Hoboken' },
-        { geo: 'MANUAL', status: 'MANUAL', priced: false }, { gap: 'GAP-B', observed: ELIG('STD') });
+        MAN('zipstate', 'NYC five boroughs'));
     }
   }
   // multiple 5-digit runs in one address — trailing run decides
@@ -436,24 +442,21 @@ function s0(name, cond) { if (cond) s0Pass++; else s0Fail.push(name); }
     C(`S4-${i}-g`, `address 'Apt 4B, ${hn} Water Street, ${name} NY'`, { address: `Apt 4B, ${hn} Water Street, ${name} NY` }, ELIG('NYC'));
     C(`S4-${i}-h`, `city '${name}', no state at all`, { city: name }, ELIG('NYC'));
   }
-  // GAP-E: abbreviations / internal double-space
+  // borough abbreviations / internal double-space (fixed 2026-07-30)
   let j = 0;
   for (const name of SPEC_NYC_NAMES_GAP) {
     j++;
-    C(`S4-E-${j}a`, `city '${name}' + NY (common spelling → spec NYC)`, { city: name, state: 'NY' },
-      { market: 'NYC', status: 'ELIGIBLE' }, { gap: 'GAP-E', observed: ELIG('STD') });
-    C(`S4-E-${j}b`, `address '1 Richmond Ter, ${name} NY'`, { address: `1 Richmond Ter, ${name} NY` },
-      { market: 'NYC', status: 'ELIGIBLE' }, { gap: 'GAP-E', observed: ELIG('STD') });
+    C(`S4-E-${j}a`, `city '${name}' + NY (common spelling → NYC)`, { city: name, state: 'NY' }, ELIG('NYC'));
+    C(`S4-E-${j}b`, `address '1 Richmond Ter, ${name} NY'`, { address: `1 Richmond Ter, ${name} NY` }, ELIG('NYC'));
   }
-  // GAP-A: plain 'New York' city / no-comma address form
-  C('S4-A-1', "city 'New York', state NY, no zip", { city: 'New York', state: 'NY' },
-    ELIG('NYC'), { gap: 'GAP-A', observed: ELIG('STD') });
-  C('S4-A-2', "city 'new york' lowercase", { city: 'new york', state: 'NY' },
-    ELIG('NYC'), { gap: 'GAP-A', observed: ELIG('STD') });
-  C('S4-A-3', "city 'New York', NO state field", { city: 'New York' },
-    ELIG('NYC'), { gap: 'GAP-A', observed: ELIG('STD') });
-  C('S4-A-4', "address '350 5th Ave, New York NY' (no comma before NY)", { address: '350 5th Ave, New York NY' },
-    ELIG('NYC'), { gap: 'GAP-A', observed: ELIG('STD') });
+  // plain 'New York' city / no-comma address form (fixed 2026-07-30)
+  C('S4-A-1', "city 'New York', state NY, no zip", { city: 'New York', state: 'NY' }, ELIG('NYC'));
+  C('S4-A-2', "city 'new york' lowercase", { city: 'new york', state: 'NY' }, ELIG('NYC'));
+  C('S4-A-3', "city 'New York', NO state field", { city: 'New York' }, ELIG('NYC'));
+  C('S4-A-4', "address '350 5th Ave, New York NY' (no comma before NY)", { address: '350 5th Ave, New York NY' }, ELIG('NYC'));
+  // …but 'New York' as the spelled-out STATE at the END of free text is NOT the
+  // city (a bare trailing 'New York' in an address stays Standard market):
+  C('S4-A-8', "address '12 Oak St, Rochester, New York' → STD (state, not the city)", { address: '12 Oak St, Rochester, New York' }, ELIG('STD'));
   // …while the comma form and the full name DO work (strict pins):
   C('S4-A-5', "address '350 5th Ave, New York, NY' (comma form works)", { address: '350 5th Ave, New York, NY' }, ELIG('NYC'));
   C('S4-A-6', "city 'New York City' works", { city: 'New York City', state: 'NY' }, ELIG('NYC'));
@@ -492,10 +495,9 @@ function s0(name, cond) { if (cond) s0Pass++; else s0Fail.push(name); }
     C(`S5-${st}-c`, `state ' ${st} ' padded`, { state: ` ${st} ` }, EXCL('state', name));
     C(`S5-${st}-d`, `state ${st} + allowed zip 07030 (contradiction: state wins — N1)`, { state: st, zip: '07030' }, EXCL('state', name));
     C(`S5-${st}-e`, `state ${st} + borough city`, { state: st, city: 'Brooklyn' }, EXCL('state', name));
-    // GAP-C1: spelled-out names bypass
+    // spelled-out names normalize to the 2-letter code and block (fixed 2026-07-30)
     for (const v of [name, name.toLowerCase(), name.toUpperCase()]) {
-      C(`S5-${st}-f-${v}`, `state '${v}' (spelled out)`, { state: v, city: 'Anytown' },
-        EXCL(null, null), { gap: 'GAP-C1', observed: ELIG('STD') });
+      C(`S5-${st}-f-${v}`, `state '${v}' (spelled out)`, { state: v, city: 'Anytown' }, EXCL('state', name));
     }
   }
   // excluded state trumps an excluded-METRO zip too (label = the state)
@@ -505,15 +507,12 @@ function s0(name, cond) { if (cond) s0Pass++; else s0Fail.push(name); }
   C('S5-NY-1', "state 'NY' + zip 11215 → NYC", { state: 'NY', zip: '11215' }, ELIG('NYC'));
   C('S5-NY-2', "state 'ny' lowercase + zip 10001 → NYC", { state: 'ny', zip: '10001' }, ELIG('NYC'));
   C('S5-NY-3', "state ' NY ' padded + Brooklyn", { state: ' NY ', city: 'Brooklyn' }, ELIG('NYC'));
-  // GAP-C2: dotted / spelled-out New York state forces STD
-  C('S5-C2-1', "state 'New York' + zip 11215", { state: 'New York', zip: '11215' },
-    ELIG('NYC'), { gap: 'GAP-C2', observed: ELIG('STD') });
-  C('S5-C2-2', "state 'N.Y.' + city Brooklyn", { state: 'N.Y.', city: 'Brooklyn' },
-    ELIG('NYC'), { gap: 'GAP-C2', observed: ELIG('STD') });
-  C('S5-C2-3', "state 'N.Y.' + zip 10001", { state: 'N.Y.', zip: '10001' },
-    ELIG('NYC'), { gap: 'GAP-C2', observed: ELIG('STD') });
-  C('S5-C2-4', "state 'new york' + address '1 Court St, Brooklyn'", { state: 'new york', address: '1 Court St, Brooklyn' },
-    ELIG('NYC'), { gap: 'GAP-C2', observed: ELIG('STD') });
+  // dotted / spelled-out New York state normalizes to NY BEFORE the market map
+  // (fixed 2026-07-30)
+  C('S5-C2-1', "state 'New York' + zip 11215", { state: 'New York', zip: '11215' }, ELIG('NYC'));
+  C('S5-C2-2', "state 'N.Y.' + city Brooklyn", { state: 'N.Y.', city: 'Brooklyn' }, ELIG('NYC'));
+  C('S5-C2-3', "state 'N.Y.' + zip 10001", { state: 'N.Y.', zip: '10001' }, ELIG('NYC'));
+  C('S5-C2-4', "state 'new york' + address '1 Court St, Brooklyn'", { state: 'new york', address: '1 Court St, Brooklyn' }, ELIG('NYC'));
   // allowed state + excluded zip (both typed) → MANUAL zipstate (strict pins; both directions per prefix family)
   C('S5-ct-1', 'state NY + zip 60601 → MANUAL zipstate', { state: 'NY', zip: '60601' }, MAN('zipstate', 'Greater Chicago'));
   C('S5-ct-2', 'state NJ + zip 19104 → MANUAL zipstate', { state: 'NJ', zip: '19104' }, MAN('zipstate', 'Greater Philadelphia'));
@@ -522,24 +521,28 @@ function s0(name, cond) { if (cond) s0Pass++; else s0Fail.push(name); }
   // …and the matching-state controls (block hard):
   C('S5-ct-5', 'state IL + zip 60601 → INELIGIBLE', { state: 'IL', zip: '60601' }, EXCL('zip', 'Greater Chicago'));
   C('S5-ct-6', 'state PA + zip 19104 → INELIGIBLE', { state: 'PA', zip: '19104' }, EXCL('zip', 'Greater Philadelphia'));
-  // GAP-D: iconic banned-state zips / free-text addresses
+  // iconic banned-state zips / free-text addresses — the ZIP names the state
+  // when the state field is blank (fixed 2026-07-30)
   const dCases = [
-    ['89109', '2880 Las Vegas Blvd S, Las Vegas, NV 89109'],
-    ['89501', '100 N Virginia St, Reno, NV 89501'],
-    ['55401', '100 N 1st St, Minneapolis, MN 55401'],
-    ['55901', '201 4th St SE, Rochester, MN 55901'],
-    ['58102', '505 Broadway N, Fargo, ND 58102'],
-    ['57104', '300 N Phillips Ave, Sioux Falls, SD 57104'],
-    ['57701', '512 Main St, Rapid City, SD 57701'],
+    ['89109', '2880 Las Vegas Blvd S, Las Vegas, NV 89109', 'Nevada'],
+    ['89501', '100 N Virginia St, Reno, NV 89501', 'Nevada'],
+    ['55401', '100 N 1st St, Minneapolis, MN 55401', 'Minnesota'],
+    ['55901', '201 4th St SE, Rochester, MN 55901', 'Minnesota'],
+    ['58102', '505 Broadway N, Fargo, ND 58102', 'North Dakota'],
+    ['57104', '300 N Phillips Ave, Sioux Falls, SD 57104', 'South Dakota'],
+    ['57701', '512 Main St, Rapid City, SD 57701', 'South Dakota'],
   ];
   let d = 0;
-  for (const [zip, addr] of dCases) {
+  for (const [zip, addr, stName] of dCases) {
     d++;
-    C(`S5-D-${d}a`, `typed banned-state zip ${zip}, no state field`, { zip },
-      EXCL(null, null), { gap: 'GAP-D', observed: ELIG('STD') });
-    C(`S5-D-${d}b`, `one-line address '${addr}' (owner's unsplit-address scenario)`, { address: addr },
-      MAN(null, null), { gap: 'GAP-D', observed: ELIG('STD') });
+    C(`S5-D-${d}a`, `typed banned-state zip ${zip}, no state field`, { zip }, EXCL('zip', stName));
+    C(`S5-D-${d}b`, `one-line address '${addr}' (owner's unsplit-address scenario)`, { address: addr }, MAN('address', stName));
   }
+  // …the ZIP→state fallback only applies when the state field is BLANK: a typed
+  // state is still the authority (a banned-state ZIP + an allowed typed state
+  // stays the engine's existing house-number/typed-field doctrine).
+  C('S5-D-strict-1', 'banned-state zip 89109 + typed state NJ → typed state wins (prices)', { zip: '89109', state: 'NJ' }, ELIG('STD'));
+  C('S5-D-strict-2', 'banned-state zip 55401 + typed state MN → INELIGIBLE by state', { zip: '55401', state: 'MN' }, EXCL('state', 'Minnesota'));
 })();
 
 /* ===================================================================== *
@@ -557,15 +560,26 @@ function s0(name, cond) { if (cond) s0Pass++; else s0Fail.push(name); }
   C('S6-N3-2', 'same + typed state TN → prices (state-scoped)', { address: '60629 Chicago Ave, Nashville', state: 'TN' }, ELIG('STD'));
   C('S6-N3-3', "'12 Detroit St, Denver' no state → MANUAL (pinned note)", { address: '12 Detroit St, Denver' }, MAN('address', 'Greater Detroit'));
   C('S6-N3-4', 'same + typed state CO → prices', { address: '12 Detroit St, Denver', state: 'CO' }, ELIG('STD'));
-  // GAP-F: legacy ', USA' suffix / trailing punctuation defeats zipFromText
-  C('S6-F-1', "'12 Oak St, Darby, PA 19023, USA' (neutral city + excluded zip + USA)", { address: '12 Oak St, Darby, PA 19023, USA' },
-    MAN('address', 'Greater Philadelphia'), { gap: 'GAP-F', observed: ELIG('STD') });
+  // legacy ', USA' suffix / trailing punctuation no longer defeats zipFromText
+  // (fixed 2026-07-30). NOTE: the original S6-F-1 case used Darby's real ZIP
+  // 19023, whose prefix 190 is NOT on the exclusion list (SPEC_EXCLUDED_ZIP3 is
+  // 191xx only) — the case was mis-authored, so it now uses a genuine 191xx ZIP
+  // and 19023 is pinned as the price-normally control below.
+  C('S6-F-1', "'12 Oak St, Darby, PA 19143, USA' (neutral city + excluded zip + USA)", { address: '12 Oak St, Darby, PA 19143, USA' },
+    MAN('address', 'Greater Philadelphia'));
+  C('S6-F-1b', "'12 Oak St, Darby, PA 19023, USA' (190xx is NOT excluded — prices)", { address: '12 Oak St, Darby, PA 19023, USA' },
+    ELIG('STD'));
   C('S6-F-2', "'90-11 160th St, Jamaica, NY 11432, USA' (NYC zip + USA)", { address: '90-11 160th St, Jamaica, NY 11432, USA' },
-    ELIG('NYC'), { gap: 'GAP-F', observed: ELIG('STD') });
+    ELIG('NYC'));
   C('S6-F-3', "'12 Oak St, Springfield, PA 19104.' (trailing period)", { address: '12 Oak St, Springfield, PA 19104.' },
-    MAN('address', 'Greater Philadelphia'), { gap: 'GAP-F', observed: ELIG('STD') });
+    MAN('address', 'Greater Philadelphia'));
   C('S6-F-4', "'55 Court St, Cicero, IL 60804, USA' (enclave + USA)", { address: '55 Court St, Cicero, IL 60804, USA' },
-    MAN('address', 'Greater Chicago'), { gap: 'GAP-F', observed: ELIG('STD') });
+    MAN('address', 'Greater Chicago'));
+  // the ', USA' strip must NOT chop a city that merely ENDS in "us"
+  C('S6-F-7', "'9 Elm St, Columbus, OH 43215' (city ends in 'us')", { address: '9 Elm St, Columbus, OH 43215' }, ELIG('STD'));
+  C('S6-F-8', "'9 Elm St, Columbus, OH 43215, USA'", { address: '9 Elm St, Columbus, OH 43215, USA' }, ELIG('STD'));
+  C('S6-F-9', "house# survives the USA strip: '19104 Elm St, Houston TX 77002, USA'", { address: '19104 Elm St, Houston TX 77002, USA' }, ELIG('STD'));
+  C('S6-F-10', "house# with no trailing zip + USA: '19104 Elm St, Houston TX, USA'", { address: '19104 Elm St, Houston TX, USA' }, ELIG('STD'));
   // …strict pins where a CITY/BOROUGH token still saves the classification:
   C('S6-F-5', "'123 Main St, Philadelphia, PA 19104, USA' → MANUAL via city token", { address: '123 Main St, Philadelphia, PA 19104, USA' }, MAN('address', 'Greater Philadelphia'));
   C('S6-F-6', "'349 Court St, Brooklyn, NY 11231, USA' → NYC via borough token", { address: '349 Court St, Brooklyn, NY 11231, USA' }, ELIG('NYC'));
@@ -602,8 +616,8 @@ function s0(name, cond) { if (cond) s0Pass++; else s0Fail.push(name); }
   C('S7-15', "'Detroit Lakes' MN → INELIGIBLE (state MN wins)", { city: 'Detroit Lakes', state: 'MN' }, EXCL('state', 'Minnesota'));
   C('S7-16', "'Detroit Lakes', no state → MANUAL ('detroit' substring)", { city: 'Detroit Lakes' }, MAN('city', 'Greater Detroit'));
   C('S7-17', "'New York Mills' MN → INELIGIBLE (state)", { city: 'New York Mills', state: 'MN' }, EXCL('state', 'Minnesota'));
-  C('S7-18', "'New York Mills' + spelled 'Minnesota' → GAP-C1 bypass", { city: 'New York Mills', state: 'Minnesota' },
-    EXCL(null, null), { gap: 'GAP-C1', observed: ELIG('STD') });
+  C('S7-18', "'New York Mills' + spelled 'Minnesota' → INELIGIBLE (state normalizes)", { city: 'New York Mills', state: 'Minnesota' },
+    EXCL('state', 'Minnesota'));
   C('S7-19', "'New York Mills' NY (13417) → prices STD (correct — upstate)", { city: 'New York Mills', state: 'NY' }, ELIG('STD'));
   C('S7-20', "'Baltimore' MD, no zip → MANUAL", { city: 'Baltimore', state: 'MD' }, MAN('city', 'Greater Baltimore'));
   C('S7-21', "'New Baltimore' MI (48047) → prices (state-scoped away from MD)", { city: 'New Baltimore', state: 'MI', zip: '48047' }, ELIG('STD'));
@@ -643,10 +657,10 @@ function s0(name, cond) { if (cond) s0Pass++; else s0Fail.push(name); }
   C('S8-10', 'STD loan over $2.5M control (prices on the LARGE grid)',
     { zip: '75201', state: 'TX', loanAmount: 3000000, purchasePrice: 4000000, rehabBudget: 500000, arv: 7000000, expFlips: 6 },
     { geo: 'NONE', market: 'STD', status: 'ELIGIBLE', pricedAny: true, keyStartsWith: 'STD|L|FF|P|12|T1' });
-  // GAP-B pricing consequence with the GUC shape (wrong-market rate would be charged)
-  C('S8-11', 'GUC + NYC zip 11215 + state NJ → spec MANUAL / observed STD-priced',
-    { zip: '11215', state: 'NJ' },
-    { geo: 'MANUAL', status: 'MANUAL', priced: false }, { gap: 'GAP-B', observed: ELIG('STD'), shape: 'GUC' });
+  // the zip/state contradiction is caught BEFORE pricing, so the wrong-market
+  // rate can never be charged (fixed 2026-07-30)
+  C('S8-11', 'GUC + NYC zip 11215 + state NJ → MANUAL zipstate, never priced',
+    { zip: '11215', state: 'NJ' }, MAN('zipstate', 'NYC five boroughs'), { shape: 'GUC' });
 })();
 
 /* ===================================================================== *

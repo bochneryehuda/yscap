@@ -475,11 +475,21 @@ function verifyScenario(cellName, cell, spec, input, ev, effCap, C, recordFail) 
   const coAmt = input.cashOutAmount > 0 ? input.cashOutAmount : 0;
 
   // --- reason mapping: every reason must be independently justified
-  let gridCapped = false, sawNoCell = false;
+  let gridCapped = false, cutLtc = false, cutAr = false, sawNoCell = false;
   for (const r of reasons) {
     const m = r.msg;
     if (/^Meets the Silver Program guidelines\.$/.test(m)) continue;
-    else if (/Leverage is capped at /.test(m)) { gridCapped = true; if (r.level !== 'ELIGIBLE') bad('step-down note not ELIGIBLE level'); }
+    else if (/Leverage is capped at /.test(m)) {
+      gridCapped = true;
+      // The priced frontier is a LATTICE: the step-down can tighten the LTC axis,
+      // the AR-LTV axis, or BOTH (engine 2026-07-30, finding 3). The reason NAMES
+      // whichever cap(s) actually bound, and the caps assertions below branch on
+      // each axis independently.
+      if (/capped at [\d.]+% loan-to-cost/.test(m)) cutLtc = true;
+      if (/[\d.]+% of the after-repair value/.test(m)) cutAr = true;
+      if (!cutLtc && !cutAr) bad('step-down reason names neither the loan-to-cost nor the after-repair cap', m);
+      if (r.level !== 'ELIGIBLE') bad('step-down note not ELIGIBLE level');
+    }
     else if (/ of the .* assignment fee is financed/.test(m)) bad('assignment reason on a non-assignment scenario', m);
     else if (/are not eligible for the Silver Program\.$/.test(m)) {
       if (!(spec.geoKind === 'exclState' || spec.geoKind === 'exclZip')) bad('geo refusal without an excluded state/ZIP', m);
@@ -514,8 +524,19 @@ function verifyScenario(cellName, cell, spec, input, ev, effCap, C, recordFail) 
     else if (/after-repair value must exceed the total cost basis/.test(m)) {
       if (!(!isBR && arv > 0 && basis > 0 && arv <= basis + 0.5)) bad('value-add refusal but ARV exceeds basis', m);
     }
-    else if (/is below the \d+ minimum for this tier/.test(m)) {
+    else if (/is below the Tier \d+ minimum of \d+/.test(m)) {
+      // wording change 2026-07-30 (item G): the reason now NAMES the tier that
+      // set the floor — "below the Tier 3 minimum of 680", not "the 680 minimum
+      // for this tier". Numbers unchanged.
       if (!(row && input.fico < row.minfico)) bad('FICO waiver reason but fico >= tier minimum', m);
+      const mt = /is below the Tier (\d+) minimum of (\d+)/.exec(m);
+      if (!mt || +mt[1] !== tier || +mt[2] !== row.minfico) bad(`FICO waiver reason names Tier ${mt && mt[1]}/min ${mt && mt[2]}, expected Tier ${tier}/min ${row && row.minfico}`, m);
+    }
+    else if (/After-repair value is required to size a ground-up loan/.test(m)) {
+      // engine fix 2026-07-30 (item F): a ground-up deal with no ARV names the
+      // missing input instead of blaming the rehab budget. The matrix always
+      // generates a positive ARV for GUC, so this must never fire here.
+      if (!(prodTok === 'GUC' && !(arv > 0))) bad('missing-ARV reason on a deal that has an ARV', m);
     }
     else if (/Sized below the \$100,000 minimum/.test(m)) {
       if (!(total > 0 && total < MIN_LOAN)) bad(`below-min flag with sized total ${total}`, m);
@@ -570,9 +591,11 @@ function verifyScenario(cellName, cell, spec, input, ev, effCap, C, recordFail) 
   if (stated > 0 && stated < MIN_LOAN && !has(/minimum loan amount is \$100,000/)) bad('stated <$100k not refused');
   if (ev.caps) {  // the evaluation reached sizing
     if (stated >= MIN_LOAN && stated > statedMax && !has(/exceeds the .* program maximum/)) bad(`stated ${stated} over max ${statedMax} not refused`);
-    if (input.fico < row.minfico && !has(/below the \d+ minimum for this tier/)) bad('sub-minimum FICO without the waiver reason');
+    if (input.fico < row.minfico && !has(/below the Tier \d+ minimum of \d+/)) bad('sub-minimum FICO without the waiver reason');
     if (total > 0 && total < MIN_LOAN && !has(/Sized below the \$100,000 minimum/)) bad(`sized ${total} < $100k without the below-min MANUAL flag`);
-    if (s && s.rehabOverCap && !has(/rehab budget exceeds/)) bad('rehabOverCap without its MANUAL reason');
+    // (a ground-up deal with no ARV reports the missing ARV instead — never
+    // generated here, the matrix always gives GUC a positive ARV)
+    if (s && s.rehabOverCap && !has(/rehab budget exceeds/) && !has(/After-repair value is required/)) bad('rehabOverCap without its MANUAL reason');
     if (EXIT_OF[prodKey] === 'HOLD' && input.monthlyRent > 0 && s && s.fullPayment > 0 &&
         (input.monthlyRent / s.fullPayment) < 1 && !has(/DSCR/)) bad('failing DSCR without the refusal');
     if (refi && coAmt > 0 && profit > 0 && coAmt > 0.5 * profit + 0.5 && !has(/Cash-out proceeds/)) bad('cash-out over 50% of profit not refused');
@@ -586,16 +609,32 @@ function verifyScenario(cellName, cell, spec, input, ev, effCap, C, recordFail) 
     const c = ev.caps;
     if (c.minFico !== row.minfico) bad(`caps.minFico ${c.minFico} != workbook ${row.minfico}`);
     if (c.maxAcqLTV !== row.maxacq) bad(`caps.maxAcqLTV ${c.maxAcqLTV} != workbook ${row.maxacq}`);
-    if (c.maxARLTV !== row.maxar) bad(`caps.maxARLTV ${c.maxARLTV} != workbook ${row.maxar}`);
+    // AR-LTV cap: the workbook row, UNLESS the grid step-down landed the deal on
+    // an AR-LTV band edge (engine fix 2026-07-30). Then the cap is that edge
+    // taken to the largest whole DOLLAR of the ARV — 0.6499 x $625,000 is
+    // $406,187.50, and a loan a cent over the edge reads into the next, unpriced,
+    // AR band — so the ratio sits a hair under the edge by construction.
+    if (!cutAr) {
+      if (c.maxARLTV !== row.maxar) bad(`caps.maxARLTV ${c.maxARLTV} != workbook ${row.maxar}`);
+    } else {
+      if (!(c.maxARLTV < row.maxar - 1e-12)) bad(`the reason names an AR step-down but maxARLTV ${c.maxARLTV} is not below the workbook cap ${row.maxar}`);
+      const arvD = arv > 0 ? arv : 0;
+      if (!(arvD > 0)) bad('AR step-down on a deal with no ARV');
+      else if (!MY_AR.some((b) => Math.abs(Math.floor(b.max * arvD) - c.maxARLTV * arvD) < 1.5)) {
+        bad(`AR step-down maxARLTV ${c.maxARLTV} is not a workbook AR band edge (ARV ${arvD})`);
+      }
+    }
     const expLtc = Math.min(row.maxltc, input.targetLTC > 0 ? input.targetLTC : Infinity);
-    if (!gridCapped) {
+    if (!cutLtc) {
+      // no step-down on the LTC axis (AR-only, or no step-down at all)
       if (Math.abs(c.maxLTC - expLtc) > 1e-12) bad(`caps.maxLTC ${c.maxLTC} != expected ${expLtc}`);
     } else {
-      if (!(c.maxLTC < expLtc + 1e-12)) bad(`grid step-down raised maxLTC ${c.maxLTC} above ${expLtc}`);
+      if (!(c.maxLTC < expLtc - 1e-12)) bad(`the reason names an LTC step-down but maxLTC ${c.maxLTC} is not below ${expLtc}`);
       if (!MY_LTC.some((b) => Math.abs(b.max - c.maxLTC) < 1e-9) && ![0.925, 0.8999, 0.875, 0.85, 0.80, 0.7499, 0.70, 0.6499].some((e) => Math.abs(e - c.maxLTC) < 1e-9)) {
         bad(`step-down maxLTC ${c.maxLTC} is not a workbook band edge`);
       }
     }
+    if (gridCapped && !(cutLtc || cutAr)) bad('a step-down reason with neither cap actually lowered');
     const okLoanA = c.maxLoan === row.maxloan;
     const okLoanB = c.maxLoan === Math.min(row.maxloan, SMALL_MAX) && ev.sizeBand === 'S';
     if (!okLoanA && !okLoanB) bad(`caps.maxLoan ${c.maxLoan} != workbook ${row.maxloan} (or its $2.5M small-band cap)`);

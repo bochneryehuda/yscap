@@ -1853,7 +1853,12 @@
         var cx = M;
         cols.forEach(function (c) { var w = c.w * tW; doc.text(c.t, c.a === "r" ? cx + w - 7 : cx + 7, hy + 14, { align: c.a === "r" ? "right" : "left", charSpace: 0.3 }); cx += w; });
         var ry = hy + 22;
-        var selLtc = chosenLTC || lad.rows[0].ltc;
+        // The highlighted rung must be the one THIS program's slider selected —
+        // reading the Standard slider's chosenLTC on a Silver sheet highlighted a
+        // row the borrower never picked (and vice versa). Dispatch exactly like
+        // renderLeverage does. Silver's top rung carries ltc 0 (its "no targetLTC
+        // / true maximum" marker), which is also what an unset slider resolves to.
+        var selLtc = (d.silver ? silverChosenLTC : (d.gold ? goldChosenLTC : chosenLTC)) || lad.rows[0].ltc;
         lad.rows.forEach(function (r, i) {
           var rowH = 20, isSel = Math.abs(r.ltc - selLtc) < 1e-9;
           if (isSel) { doc.setFillColor.apply(doc, GOLD); doc.rect(M, ry, tW, rowH, "F"); }
