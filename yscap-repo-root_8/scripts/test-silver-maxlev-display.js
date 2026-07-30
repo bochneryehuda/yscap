@@ -435,7 +435,21 @@ const DEAL_VARIANTS = [];
   rows.forEach((r) => ok(eqNum(r.caps.maxLTC, 0.85) && eqNum(r.caps.maxARLTV, 0.70),
     `OWNER REPRO — at reserve ${r.m} months the program maximum is still 85% LTC / 70% ARV`));
   ok(rows.some((r) => r.ceil !== rows[0].ceil), 'OWNER REPRO — the priced ceiling does change across those same four reserves (the symptom is real)');
-  ok(eqNum(rows[3].pc.maxLTC, 0.80), `OWNER REPRO — at an 18-month reserve THIS DEAL prices up to 80% LTC (got ${pctS(rows[3].pc.maxLTC)})`);
+  /* THE WINNING STRUCTURE CHANGED — owner-directed, and for the better (2026-07-30).
+     This used to assert an 18-month reserve landed on an 80% loan-to-cost ceiling.
+     The step-down now prefers, at the SAME loan amount, the structure that needs
+     LESS CASH TO CLOSE ("would rather take the more expensive option with less cash
+     to close"), and on this deal that is the pair which tightens the AFTER-REPAIR
+     axis instead of the loan-to-cost one: same $1,050,000 loan, acquisition advance
+     up from $437,500 to $490,000 — $52,500 less for the borrower to bring — so the
+     loan-to-cost axis is left where it was and the AR axis is what binds.
+     What the OWNER sees is unchanged and still correct: the program maximum is 85%
+     and the studio prints the deal ceiling only when it is genuinely lower
+     (`pricedBelowTier`), so the 92.5% tier number never reaches the screen. */
+  ok(eqNum(rows[3].pc.maxARLTV, 0.70) && rows[3].pc.maxARLTV < rows[3].ev.tierCaps.maxARLTV - 1e-9,
+    `OWNER REPRO — at an 18-month reserve the AFTER-REPAIR axis is what binds this deal, at 70% (got ${pctS(rows[3].pc.maxARLTV)})`);
+  ok(rows.every((r) => eqNum(r.ev.sizing.acquisition, rows[0].ev.sizing.acquisition)),
+    'OWNER REPRO — the acquisition advance (and so the cash to close) is identical at every reserve');
   ok(eqNum(rows[2].pc.maxARLTV, 0.70), `OWNER REPRO — at a 12-month reserve THIS DEAL prices up to 70% AR-LTV (got ${pctS(rows[2].pc.maxARLTV)})`);
   // ...and each lowered ceiling is explained
   rows.forEach((r) => {
@@ -588,7 +602,12 @@ const DEAL_VARIANTS = [];
   ok(ev.caps !== ev.pricedCeiling, 'the program maximum and the priced ceiling are separate objects');
   const why = (ev.reasons || []).filter((r) => r && r.code === 'leverage_capped');
   ok(why.length === 1 && why[0].level === 'ELIGIBLE', 'the explanation exists and is not itself a refusal');
-  ok(/loan-to-cost/.test(why[0].msg) && /after-repair value/.test(why[0].msg), 'on this deal the sentence names both axes');
+  /* ONE axis now, not two — see the note in section 2b. With the less-cash-to-close
+     tie-break the winning pair leaves loan-to-cost alone and tightens only the
+     after-repair axis, so naming loan-to-cost here would blame a guideline that did
+     not move this structure (the exact failure mode the sentence exists to avoid). */
+  ok(/after-repair value/.test(why[0].msg) && !/loan-to-cost/.test(why[0].msg),
+    `on this deal the sentence names the one axis that actually bound (got: ${why[0].msg})`);
   // an INELIGIBLE early exit still answers "what can this profile reach?"
   const bad = SVP.evaluate(Object.assign({}, OWNER, { irMonths: 0, ownerOccupied: true }));
   ok(bad.status === 'INELIGIBLE', 'control: an owner-occupied property is ineligible');

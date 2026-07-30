@@ -1027,7 +1027,40 @@
     dealForSize.noteRateForIR = guess;
     var sizing = YSP.sizeLoan(dealForSize, capsEff);
     var rate = rateOvr || rateAt(sizing);
-    if (rate) { dealForSize.noteRateForIR = rate; sizing = YSP.sizeLoan(dealForSize, capsEff); rate = rateOvr || (rateAt(sizing) || rate); }
+    /* ---------------- THE RATE ALWAYS BELONGS TO THE STRUCTURE WE REPORT ----------------
+       OWNER-AUTHORIZED (2026-07-30, the owner's own words): "If something is
+       ineligible on the Excel pricer from AMCAP, that should go to manual review.
+       And it should not price themselves. And we need to find above why this issue
+       is happening and fix the root bug, not just fix the scenarios, not fix the
+       front. Fix the real source of the issue how it was built."
+
+       THE ROOT. This is a TWO-PASS loop: pass 1 sizes on a guessed rate and reads a
+       rate off that structure; pass 2 re-sizes on the real rate — which changes the
+       financed interest reserve, and therefore the loan, and therefore its LTC and
+       AR-LTV bands. The second pass used to end `rateAt(sizing) || rate`. That `||
+       rate` is the bug, and the flaw it encodes is a DESIGN one: it guaranteed we
+       always HAVE a rate rather than that the rate is CORRECT. When the re-sized
+       structure landed in a band the workbook does not price, `rateAt` returned null
+       and we silently kept pass 1's rate — a rate belonging to a structure that no
+       longer exists. Worse, because `rate` was then truthy, the grid-aware step-down
+       below never ran and the "No priced grid cell" reason never fired, so the deal
+       was reported ELIGIBLE carrying a rateKey naming a cell the workbook has no
+       value for. Reproduced: GUC purchase tier 2, 24-month, NJ — ELIGIBLE at 10.75%
+       on STD|S|GUC|P|24|T2|70.01%-75.00%|FICO 660-699|80.01%-85.00%, which is not
+       one of the workbook's 1,555 cells.
+
+       THE FIX IS THE INVARIANT, not a special case: the reported rate is ALWAYS
+       `rateAt` of the structure being reported, or there is no rate. Dropping the
+       fallback is what makes the rest of the engine work as it was already written
+       — a null rate lets the step-down lattice search for a structure the grid
+       genuinely prices, and if none exists the deal falls to the existing MANUAL
+       reason ("No priced grid cell for this profile — submit for individual
+       review"). Nothing new is invented here; the fallback was suppressing the
+       machinery that was already correct.
+
+       The same shape is present in the Standard and Gold engines (both frozen and
+       NOT covered by this authorization) — reported to the owner, not changed. */
+    if (rate) { dealForSize.noteRateForIR = rate; sizing = YSP.sizeLoan(dealForSize, capsEff); rate = rateOvr || rateAt(sizing); }
 
     // A loan sized right up to a leverage cap lands exactly ON that cap — but the
     // reported total is rounded to the cent, so the ratio it implies can come back
@@ -1115,9 +1148,29 @@
         if (g2 == null) return null;
         d2.noteRateForIR = g2 + effMarkup();
         var s3 = YSP.sizeLoan(d2, capsTry);
+        // The re-size produced no loan at all, so the FIRST-pass structure stands —
+        // and (s2, g2) is a consistent pair, because g2 IS gridAt(s2).
         if (!(s3.totalLoan > 0)) return { caps: capsTry, grid: g2, total: s2.totalLoan, sizing: s2 };
         var g3 = gridAt(s3, capsTry);
-        return { caps: capsTry, grid: (g3 == null ? g2 : g3), total: s3.totalLoan, sizing: s3 };
+        /* SAME ROOT AS THE MAIN RATE/IR LOOP ABOVE, ONE LEVEL DOWN (owner-authorized
+           2026-07-30 — "it should not price themselves ... fix the real source of the
+           issue how it was built"). This used to end `grid: (g3 == null ? g2 : g3)`
+           while still returning `sizing: s3` — pairing the rate of a structure it
+           THREW AWAY (s2) with the structure it REPORTS (s3). That is what actually
+           produced the reported defect: the block below states that "tryCaps already
+           settled the rate on the bands its FINAL sizing lands in ... the charged
+           cell and the printed structure are the same one by construction", and this
+           fallback was the one path where that sentence was false. A GUC purchase
+           tier 2, 24-month NJ deal came back ELIGIBLE at 10.75% on
+           STD|S|GUC|P|24|T2|70.01%-75.00%|FICO 660-699|80.01%-85.00% — not one of
+           the workbook's 1,555 cells.
+           A candidate whose FINAL structure the grid does not price is not a
+           candidate. Rejecting it is not a loss: the lattice simply keeps searching
+           the other cap pairs, and only if EVERY pair fails does the deal fall to
+           the existing "No priced grid cell — submit for individual review", which
+           is the outcome the owner asked for. */
+        if (g3 == null) return null;
+        return { caps: capsTry, grid: g3, total: s3.totalLoan, sizing: s3 };
       };
       // THE FRONTIER IS A LATTICE, NOT A LINE. Tightening ONE axis at a time can
       // never reach a structure that needs BOTH: cap only the loan-to-cost and the
@@ -1168,13 +1221,36 @@
       var cutCount = function (cc) {
         return (cc.maxLTC < capsEff.maxLTC - 1e-9 ? 1 : 0) + (cc.maxARLTV < capsEff.maxARLTV - 1e-9 ? 1 : 0);
       };
+      /* CASH TO CLOSE, at a fixed total loan (owner-directed 2026-07-30, asked and
+         answered in the owner's own words: "Would rather take the more expensive
+         option with less cash to close.").
+         At the same total loan the LTC cap is a free parameter, and two candidates
+         can fund the identical loan while splitting it differently between the
+         acquisition advance and the financed interest reserve. Every dollar that
+         moves out of the advance is a dollar the borrower has to bring to the
+         table: a real case moved a $1,234,795.50 loan from a $308,699 to a
+         $411,599 cash requirement — for a quarter point off the rate. Over the term
+         that roughly evens out (the bigger reserve prepays interest they would owe
+         anyway) but the cash TIMING is much worse, and cash at closing is the
+         scarcest thing these borrowers have. So the advance is compared BEFORE the
+         rate, and a dearer cell that needs less cash now wins.
+         `acquisition` is the right measure on every product: on a purchase it is
+         what reaches the seller (down payment = cost basis minus advance), and on a
+         refinance it is what retires the existing loan (or, on a cash-out, what the
+         borrower receives) — in both directions a LARGER advance is less cash out
+         of pocket. The $0.50 window matches the loan comparison, so float noise can
+         never flip the choice. */
+      var advance = function (r) { return (r && r.sizing && r.sizing.acquisition > 0) ? r.sizing.acquisition : 0; };
       var betterThan = function (got, keep) {
         if (!keep) return true;
         if (got.total > keep.total + 0.5) return true;           // (1) materially larger loan
         if (got.total < keep.total - 0.5) return false;
-        if (got.grid < keep.grid - 1e-12) return true;           // (2) same loan, cheaper cell
+        var ga = advance(got), ka = advance(keep);               // (2) same loan ⇒ less cash to close
+        if (ga > ka + 0.5) return true;
+        if (ga < ka - 0.5) return false;
+        if (got.grid < keep.grid - 1e-12) return true;           // (3) same loan + cash, cheaper cell
         if (got.grid > keep.grid + 1e-12) return false;
-        var gc = cutCount(got.caps), kc = cutCount(keep.caps);   // (3) same loan + rate ⇒ cut less
+        var gc = cutCount(got.caps), kc = cutCount(keep.caps);   // (4) all equal ⇒ cut less
         if (gc !== kc) return gc < kc;
         if (got.caps.maxLTC > keep.caps.maxLTC + 1e-9) return true;
         if (got.caps.maxLTC < keep.caps.maxLTC - 1e-9) return false;
@@ -1192,6 +1268,15 @@
         // tryCaps already settled the rate on the bands its FINAL sizing lands in
         // (the same second pass the main rate/IR loop runs), so the charged cell and
         // the printed structure are the same one by construction.
+        /* MEASURED AGAINST THE PROGRAM MAXIMUM, NOT THE RAW TIER ROW. `capsEff` here
+           is still the tier row, which can advertise leverage the grid never prices
+           (GUC refi tier 2: 92.5% loan-to-cost against a grid that stops at 85%).
+           Comparing against it announced "leverage is capped at 70% of the
+           after-repair value" on a deal whose ceiling IS the program maximum of 70%
+           — naming a guideline as if it had held the deal back when the borrower is
+           already at the most the program offers. The sentence exists to explain a
+           ceiling BELOW the program maximum, so that is what it now tests, matching
+           the published `pricedCeiling` (clamped to the same maximum). */
         var cutLtc = best.caps.maxLTC < capsEff.maxLTC - 1e-9;
         var cutAr = best.caps.maxARLTV < capsEff.maxARLTV - 1e-9;
         rate = best.grid + effMarkup();
