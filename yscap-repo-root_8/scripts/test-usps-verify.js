@@ -134,6 +134,24 @@ async function testStandardize() {
     'financing output falls back when the USPS address is empty');
 }
 
+// ── 3b. deliverability(): plain-language DPV reading for the screen ─────────
+{
+  ok(V.deliverability(null) === null, 'no dpv → null (nothing to read)');
+  const y = V.deliverability({ dpvConfirmation: 'Y' });
+  ok(y && y.code === 'Y' && y.deliverable === true && y.unitIssue === false, 'DPV Y is deliverable, no unit issue');
+  const d = V.deliverability({ dpvConfirmation: 'D' });
+  ok(d && d.deliverable === true && d.unitIssue === true, 'DPV D is deliverable-to-building with a missing unit');
+  const s = V.deliverability({ dpvConfirmation: 'S' });
+  ok(s && s.deliverable === true && s.unitIssue === true, 'DPV S is deliverable-to-building with a bad unit');
+  const n = V.deliverability({ dpvConfirmation: 'N' });
+  ok(n && n.code === 'N' && n.deliverable === false, 'DPV N is not deliverable');
+  const blank = V.deliverability({ vacant: 'N' });
+  ok(blank && blank.code === null && blank.deliverable === false, 'a dpv with no confirmation code is not deliverable');
+  // pickDpv keeps the centralized-delivery signal
+  const picked = V.pickDpv({ DPVConfirmation: 'Y', centralDeliveryPoint: 'Y', vacant: 'N' });
+  ok(picked && picked.centralDeliveryPoint === 'Y', 'pickDpv surfaces centralDeliveryPoint');
+}
+
 // ── 4. backfill componentsOf reads every stored shape ──────────────────────
 {
   const a = backfill.componentsOf({ line1: '26 S 10th St', city: 'Brooklyn', state: 'NY', zip: '11249' });

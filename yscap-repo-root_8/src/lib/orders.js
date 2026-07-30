@@ -64,6 +64,7 @@ function propertyLine(pa) {
 async function getOrderData(appId) {
   const r = await db.query(
     `SELECT a.id, a.ys_loan_number, a.property_address, a.loan_type, a.loan_amount,
+            a.usps_match, a.usps_imported_at,
             a.loan_officer_id, a.processor_id,
             b.first_name, b.last_name, b.email AS borrower_email, b.date_of_birth,
             cb.first_name AS co_first, cb.last_name AS co_last, cb.email AS co_email,
@@ -112,7 +113,21 @@ async function getOrderData(appId) {
       : null,
     processor: a.proc_name ? { name: a.proc_name, email: a.proc_email || null } : null,
     vendors: { title: vendorOf('title_company'), insurance: vendorOf('insurance_agent') },
+    // The subject address must be the USPS-imported one BEFORE any order goes out —
+    // an order transmits the property address to a vendor, and a wrong/unverified
+    // address there is expensive to unwind. `uspsGate` is on only when USPS is
+    // actually configured and the condition is required (so nothing is blocked in an
+    // environment that hasn't turned USPS on).
+    uspsImported: !!a.usps_imported_at,
+    uspsGate: uspsGateActive(),
   };
+}
+
+// USPS ordering gate is live only when the standardizer is configured AND the
+// verify-and-import condition is required. Off ⇒ no order is ever blocked on USPS.
+function uspsGateActive() {
+  try { return require('./usps-verify').configured() && !!cfg.usps.conditionRequired; }
+  catch (_) { return false; }
 }
 
 /** What still blocks an order — an empty list means it's ready to send. */
@@ -121,6 +136,8 @@ function blockers(kind, data) {
   if (!data) { out.push('file'); return out; }
   if (!data.hasLoanNumber) out.push('loan_number');
   if (!data.vendors[kind] || !data.vendors[kind].email) out.push('contact');
+  // No order may be placed until a USPS-verified address has been imported.
+  if (data.uspsGate && !data.uspsImported) out.push('usps');
   return out;
 }
 

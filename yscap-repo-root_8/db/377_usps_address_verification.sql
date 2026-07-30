@@ -15,6 +15,10 @@ CREATE INDEX IF NOT EXISTS usps_address_verifications_verified_at_idx
 
 ALTER TABLE applications ADD COLUMN IF NOT EXISTS usps_address jsonb;
 ALTER TABLE applications ADD COLUMN IF NOT EXISTS usps_match text;
+-- Deliverability detail (DPVConfirmation Y/D/S/N + vacant/CMRA/business flags) of
+-- the last check, so the verification screen can explain a result after a reload
+-- without spending another USPS lookup against the hourly quota.
+ALTER TABLE applications ADD COLUMN IF NOT EXISTS usps_dpv jsonb;
 ALTER TABLE applications ADD COLUMN IF NOT EXISTS usps_verified_at timestamptz;
 ALTER TABLE applications ADD COLUMN IF NOT EXISTS usps_imported_at timestamptz;
 CREATE INDEX IF NOT EXISTS applications_usps_verified_at_idx
@@ -67,6 +71,7 @@ BEGIN
      AND NEW.usps_imported_at IS NOT DISTINCT FROM OLD.usps_imported_at THEN
     NEW.usps_address := NULL;
     NEW.usps_match := NULL;
+    NEW.usps_dpv := NULL;
     NEW.usps_verified_at := NULL;
     NEW.usps_imported_at := NULL;
     UPDATE checklist_items ci

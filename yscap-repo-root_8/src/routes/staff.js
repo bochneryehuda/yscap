@@ -1487,7 +1487,7 @@ router.get('/applications/:id', async (req, res) => {
 router.get('/applications/:id/usps-verification', async (req, res) => {
   try {
     const row = (await db.query(
-      `SELECT a.property_address, a.usps_address, a.usps_match,
+      `SELECT a.property_address, a.usps_address, a.usps_match, a.usps_dpv,
               a.usps_verified_at, a.usps_imported_at,
               ci.id AS condition_id, ci.status AS condition_status,
               ci.signed_off_at
@@ -1506,26 +1506,56 @@ router.get('/applications/:id/usps-verification', async (req, res) => {
 router.post('/applications/:id/usps-verification/check', async (req, res) => {
   try {
     const app = (await db.query(
-      'SELECT property_address FROM applications WHERE id=$1 AND deleted_at IS NULL',
+      'SELECT property_address, usps_imported_at FROM applications WHERE id=$1 AND deleted_at IS NULL',
       [req.params.id])).rows[0];
     if (!app) return res.status(404).json({ error: 'not found' });
-    const input = uspsComponentsOf(app.property_address);
+    const ADDR = require('../lib/address');
+
+    // Verify EITHER an edited candidate typed into the verification screen (so staff
+    // can correct a failed address and re-check without touching the file) OR the
+    // file's current working address. Editing here never changes property_address —
+    // only the separate Import action adopts the deliverable USPS result.
+    const edit = req.body && req.body.address;
+    const hasEdit = edit && typeof edit === 'object' && !Array.isArray(edit) && (edit.line1 || edit.street);
+    const input = hasEdit
+      ? { line1: edit.line1 || edit.street, unit: edit.unit || edit.secondary || '',
+          city: edit.city || '', state: edit.state || '', zip: edit.zip || edit.zipcode || '' }
+      : uspsComponentsOf(app.property_address);
     if (!input || !input.line1 || !input.state) {
-      return res.status(422).json({ error: 'Enter a complete property address before checking it with USPS.' });
+      return res.status(422).json({ error: hasEdit
+        ? 'Enter at least a street address, city and state to check with USPS.'
+        : 'This file has no complete property address yet — edit the address in the box below, then check it with USPS.' });
     }
-    const out = await uspsVerify.standardize(input, { db, noCache: req.body && req.body.refresh === true });
-    if (out.status === 'not_configured') return res.status(503).json({ error: 'USPS credentials are not configured.' });
-    if (out.status === 'rate_limited') return res.status(429).json({ error: 'The USPS hourly lookup limit is currently reached. Try again later.' });
-    if (out.status === 'error') return res.status(502).json({ error: 'USPS could not verify this address right now.' });
+
+    const out = await uspsVerify.standardize(input, { db, noCache: !!(req.body && req.body.refresh) });
+    if (out.status === 'not_configured') return res.status(503).json({ error: 'USPS credentials are not configured on this service.' });
+    if (out.status === 'rate_limited') return res.status(429).json({ error: 'The USPS hourly lookup limit is currently reached. Try again in a little while.' });
+    if (out.status === 'error') return res.status(502).json({ error: 'USPS could not verify this address right now — try again in a moment.' });
+
+    // Preserve an existing import ONLY when the freshly standardized address is the
+    // one already imported as the working address (a harmless re-check). Any other
+    // result is a NEW proposal that must be explicitly imported again, so the ordering
+    // gate re-arms until it is.
+    const canon = (a) => a ? ADDR.canonicalOneLine({
+      line1: a.line1 || a.street, unit: a.unit || a.secondary,
+      city: a.city, state: a.state, zip: String(a.zip || '').slice(0, 5),
+    }).toLowerCase() : '';
+    const workingCanon = canon(uspsComponentsOf(app.property_address));
+    const resultCanon = canon(out.address);
+    const keepImported = !!app.usps_imported_at && !!resultCanon
+      && resultCanon === workingCanon && ['verified', 'corrected'].includes(out.status);
+
     await db.query(
       `UPDATE applications
-          SET usps_address=$2, usps_match=$3, usps_verified_at=now(),
-              usps_imported_at=NULL, updated_at=now()
+          SET usps_address=$2, usps_match=$3, usps_dpv=$4, usps_verified_at=now(),
+              usps_imported_at = CASE WHEN $5 THEN usps_imported_at ELSE NULL END,
+              updated_at=now()
         WHERE id=$1`,
-      [req.params.id, out.address ? JSON.stringify(out.address) : null, out.status]);
+      [req.params.id, out.address ? JSON.stringify(out.address) : null, out.status,
+        out.dpv ? JSON.stringify(out.dpv) : null, keepImported]);
     await audit(req, 'usps_address_checked', 'application', req.params.id,
-      { status: out.status, changed: !!out.changed, cached: !!out.cached, dpv: out.dpv || null });
-    res.json({ ok: true, ...out });
+      { status: out.status, edited: !!hasEdit, changed: !!out.changed, cached: !!out.cached, dpv: out.dpv || null });
+    res.json({ ok: true, edited: !!hasEdit, entered: input, ...out });
   } catch (e) {
     console.error('[usps] verification failed:', db.describeError(e));
     res.status(500).json({ error: 'could not verify the address with USPS' });
@@ -4327,6 +4357,8 @@ router.post('/applications/:id/orders/:kind/place', async (req, res) => {
     const blk = orders.blockers(kind, data);
     if (blk.includes('loan_number')) return res.status(400).json({ error: 'Add the file’s loan number first — it prints in the mortgage clause.', code: 'loan_number' });
     if (blk.includes('contact')) return res.status(400).json({ error: `Add the ${kind === 'title' ? 'title company' : 'insurance agent'} contact first.`, code: 'contact' });
+    // The address must be the USPS-verified, imported one before it leaves the building.
+    if (blk.includes('usps')) return res.status(422).json({ error: `Import the USPS-verified property address before ordering ${kind === 'title' ? 'title' : 'insurance'}. Open “USPS Address Verification,” verify the subject address, and click “Import verified address” — an order sent with an unverified address can go out with the wrong ZIP or unit.`, code: 'usps' });
 
     const existing = (await db.query(`SELECT status, send_count FROM file_orders WHERE application_id=$1 AND order_type=$2`, [appId, kind])).rows[0];
     const force = req.body && (req.body.force === true || req.body.force === 'true');
@@ -4612,6 +4644,8 @@ router.post('/applications/:id/closing-prep/place', async (req, res) => {
     if (blk.includes('documents_unavailable')) return res.status(503).json({ error: 'We could not read this file’s documents just now, so nothing was sent. Try again in a moment.', code: 'documents_unavailable' });
     if (blk.includes('term_sheet')) return res.status(400).json({ error: 'There is no term sheet on the file yet. Generate the term sheet, then send the closing-prep request.', code: 'term_sheet' });
     if (blk.includes('attorney')) return res.status(400).json({ error: 'There is nowhere to send this — the closing attorney’s group inbox is not set up yet. Ask an admin to set it (ATTORNEY_GROUP_EMAIL); adding an attorney contact to the file will not help, because that contact is the borrower’s own lawyer and is never copied on this email.', code: 'attorney' });
+    // The closing attorney must draft against the USPS-verified, imported address.
+    if (blk.includes('usps')) return res.status(422).json({ error: 'Import the USPS-verified property address before sending closing prep to the attorney. Open “USPS Address Verification,” verify the subject address, and click “Import verified address” — the attorney drafts the security instrument off this address.', code: 'usps' });
 
     const force = req.body && (req.body.force === true || req.body.force === 'true');
     const existing = (await db.query(

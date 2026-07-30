@@ -65,11 +65,31 @@ function pickDpv(additionalInfo) {
     dpvConfirmation: ai.DPVConfirmation || null,   // Y=confirmed, D/S=confirmed w/ secondary issue, N=not confirmed
     vacant: ai.vacant || null,
     business: ai.business || null,
+    centralDeliveryPoint: ai.centralDeliveryPoint || null,
     carrierRoute: ai.carrierRoute || null,
     deliveryPoint: ai.deliveryPoint || null,
     dpvCMRA: ai.DPVCMRA || null,
   };
   return Object.values(out).some((v) => v != null) ? out : null;
+}
+
+/**
+ * Plain-language reading of the USPS Delivery Point Validation code, so the screen
+ * (and the audit log) can explain WHY a result is what it is. PURE + unit-testable.
+ * Y = primary + any unit confirmed; D = building confirmed, a required unit is
+ * MISSING; S = building confirmed, the unit given is NOT recognized; N/blank = no
+ * confirmed delivery point. Returns null when there is no DPV signal at all.
+ */
+function deliverability(dpv) {
+  const code = dpv && dpv.dpvConfirmation ? String(dpv.dpvConfirmation).toUpperCase() : null;
+  if (!code) return dpv ? { code: null, label: 'USPS returned no delivery-point confirmation.', deliverable: false, unitIssue: false } : null;
+  switch (code) {
+    case 'Y': return { code, label: 'Confirmed deliverable by USPS.', deliverable: true, unitIssue: false };
+    case 'D': return { code, label: 'USPS delivers to the building, but an apartment/suite number is missing. Add the unit and re-verify.', deliverable: true, unitIssue: true };
+    case 'S': return { code, label: 'USPS delivers to the building, but the apartment/suite number entered was not recognized. Fix the unit and re-verify.', deliverable: true, unitIssue: true };
+    case 'N': return { code, label: 'USPS could not confirm this as a deliverable address. Correct the address and re-verify.', deliverable: false, unitIssue: false };
+    default:  return { code, label: `USPS delivery-point code ${code}.`, deliverable: false, unitIssue: false };
+  }
 }
 
 /**
@@ -208,6 +228,6 @@ function preferredFinancingAddress(app = {}) {
 }
 
 module.exports = {
-  configured, standardize, classify, toCanonical, pickDpv, normInput, hashInput,
+  configured, standardize, classify, toCanonical, pickDpv, deliverability, normInput, hashInput,
   preferredFinancingAddress, _resetRateWindow,
 };
