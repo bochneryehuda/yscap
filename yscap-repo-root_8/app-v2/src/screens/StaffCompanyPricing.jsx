@@ -18,7 +18,7 @@ import { useAuth } from '../lib/auth.jsx';
  */
 
 // camelCase keys shared by GET .current / .systemDefaults and the PUT body.
-const KEYS = ['markupStdPct', 'markupGoldPct', 'origStdPct', 'origGoldPct', 'lenderFee', 'creditFee', 'appraisalFee', 'titleFee'];
+const KEYS = ['markupStdPct', 'markupGoldPct', 'markupSilverPct', 'origStdPct', 'origGoldPct', 'origSilverPct', 'lenderFee', 'creditFee', 'appraisalFee', 'titleFee'];
 
 const toForm = (o) => {
   const f = {};
@@ -115,6 +115,7 @@ export default function StaffCompanyPricing() {
         <div className="grid cols-2">
           <Field form={form} set={set} k="markupStdPct" label="Standard program markup (%)" />
           <Field form={form} set={set} k="markupGoldPct" label="Gold Standard program markup (%)" />
+          <Field form={form} set={set} k="markupSilverPct" label="Silver program markup (%)" />
         </div>
 
         <h3 style={{ margin: '18px 0 0' }}>Origination points</h3>
@@ -122,6 +123,7 @@ export default function StaffCompanyPricing() {
         <div className="grid cols-2">
           <Field form={form} set={set} k="origStdPct" label="Standard origination (%)" />
           <Field form={form} set={set} k="origGoldPct" label="Gold Standard origination (%)" />
+          <Field form={form} set={set} k="origSilverPct" label="Silver origination (%)" />
         </div>
 
         <h3 style={{ margin: '18px 0 0' }}>Flat fees</h3>
@@ -184,7 +186,7 @@ export default function StaffCompanyPricing() {
             <thead>
               <tr>
                 <th>When</th><th>By</th>
-                <th>Markup (Std / Gold)</th><th>Orig (Std / Gold)</th>
+                <th>Markup (Std / Gold / Silver)</th><th>Orig (Std / Gold / Silver)</th>
                 <th>UW</th><th>Credit</th><th>Appraisal</th><th>Title</th><th>Note</th>
               </tr>
             </thead>
@@ -193,8 +195,8 @@ export default function StaffCompanyPricing() {
                 <tr key={h.id} style={h.is_current ? { fontWeight: 600 } : undefined}>
                   <td>{new Date(h.created_at).toLocaleString()}{h.is_current ? ' · live' : ''}</td>
                   <td>{h.updated_by_name || 'System'}</td>
-                  <td>{pct(h.markup_std_pct)} / {pct(h.markup_gold_pct)}</td>
-                  <td>{pct(h.orig_std_pct)} / {pct(h.orig_gold_pct)}</td>
+                  <td>{pct(h.markup_std_pct)} / {pct(h.markup_gold_pct)} / {pct(h.markup_silver_pct)}</td>
+                  <td>{pct(h.orig_std_pct)} / {pct(h.orig_gold_pct)} / {pct(h.orig_silver_pct)}</td>
                   <td>{money(h.lender_fee)}</td>
                   <td>{money(h.credit_fee)}</td>
                   <td>{money(h.appraisal_fee)}</td>
