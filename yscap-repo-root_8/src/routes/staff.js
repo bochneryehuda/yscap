@@ -5394,16 +5394,26 @@ async function signOffGate(itemId, actor) {
         return `Resolve the ${n} open fatal appraisal finding${n === 1 ? '' : 's'} first — the appraisal review cannot be cleared while a fatal PILOT finding is open. Open the Appraisal section to replace, keep, or dismiss each one.`;
       // The As-Is value must be settled before the appraisal review can be cleared
       // (owner-directed 2026-07-30). Two checks, both needed: the "Confirm the As-Is
-      // value" condition (when it exists on the file) must be completed, and the file
-      // must actually carry an As-Is value — a waived confirm-condition on a file with
-      // no value is still not a confirmed value.
+      // value" condition (when it exists on the file) must be GENUINELY confirmed, and
+      // the file must actually carry an As-Is value.
+      //
+      // "Genuinely confirmed" = a human SIGNED IT OFF (signed_off_at set, not merely
+      // waived) OR a super-admin OVERRODE it (override_at set — a recorded decision with
+      // a reason). Making the confirm condition OPTIONAL, or plain-WAIVING it, does NOT
+      // count — that was the two-click bypass the post-merge audit found (finding #1):
+      // an underwriter flips appraisal_as_is_verify to optional (or waives it) and the
+      // As-Is — which PILOT may have AUTO-WRITTEN and nobody read — is treated as
+      // confirmed. The owner's rule is "human entered / confirmed the as-is value", so
+      // is_required and a plain waive are deliberately NOT exclusions here.
       const asis = (await db.query(
         `SELECT (SELECT a.as_is_value FROM applications a WHERE a.id=$1) AS as_is_value,
                 EXISTS (
                   SELECT 1 FROM checklist_items ci JOIN checklist_templates t ON t.id=ci.template_id
                    WHERE ci.application_id=$1 AND t.code='appraisal_as_is_verify'
-                     AND COALESCE(ci.is_required, true) = true
-                     AND ci.status <> 'satisfied' AND ci.signed_off_at IS NULL AND ci.waived_at IS NULL
+                     AND NOT (
+                       (ci.signed_off_at IS NOT NULL AND ci.waived_at IS NULL)  -- a genuine human sign-off
+                       OR ci.override_at IS NOT NULL                            -- a recorded super-admin override
+                     )
                 ) AS as_is_open`, [item.application_id])).rows[0] || {};
       if (asis.as_is_open)
         return 'Confirm the As-Is value first — the "Confirm the As-Is value on the appraisal" condition on this file is still open. Read the value off the report, enter or confirm it there, and sign that condition off; then the appraisal review can be cleared.';
@@ -5658,21 +5668,26 @@ router.patch('/checklist/:itemId', async (req, res) => {
   // optional by default; the officer/processor can flip it to required (it
   // then gates the entity's verification) and back.
   //
-  // BUT the enforced appraisal review may NOT be made optional to slip past the
-  // gate (owner-directed 2026-07-30; pre-merge re-audit finding #1). Flipping it to
-  // optional was the shorter half of the same "make it optional, then clear it"
-  // manoeuvre the waive gate above blocks — and on its own it would drop the
-  // condition out of advancementBlockers and let a file with open fatal appraisal
-  // findings reach clear-to-close with no recorded override. `advancementBlockers`
-  // now ignores its is_required flag while enforced (so a stale optional row still
-  // gates), and this refuses the toggle at the door so the reason is visible. The
-  // super-admin condition override (db/344) remains the recorded way through.
+  // BUT the enforced appraisal review — AND its As-Is confirm prerequisite — may NOT
+  // be made optional to slip past the gate (owner-directed 2026-07-30; pre-merge
+  // finding #1 for the review, POST-merge finding #1 for the confirm condition).
+  // Flipping to optional was the shorter half of the "make it optional, then clear it"
+  // manoeuvre: on `appraisal_review_cleared` it drops the row out of advancementBlockers;
+  // on `appraisal_as_is_verify` it made the review's As-Is check read "confirmed" for an
+  // As-Is PILOT may have auto-written and nobody read. `advancementBlockers` and the
+  // review gate now ignore the is_required/waived state of these codes while enforced
+  // (so a stale optional/waived row still gates), and this refuses the toggle at the
+  // door so the reason is visible. The super-admin override (db/344) is the recorded
+  // way through both.
+  const APPRAISAL_ENFORCED_CODES = ['appraisal_review_cleared', 'appraisal_as_is_verify'];
   if (b.isRequired === false && !ovr.requested) {
     const tc = (await db.query(
       `SELECT t.code FROM checklist_items ci LEFT JOIN checklist_templates t ON t.id=ci.template_id WHERE ci.id=$1`,
       [req.params.itemId])).rows[0];
-    if (tc && tc.code === 'appraisal_review_cleared' && advisoryPolicy.appraisalReviewEnforced()) {
-      return res.status(422).json({ error: 'The appraisal review cannot be made optional — clear the appraisal findings and confirm the As-Is value to sign it off, or use a super-admin override to clear it with a recorded reason.' });
+    if (tc && APPRAISAL_ENFORCED_CODES.includes(tc.code) && advisoryPolicy.appraisalReviewEnforced()) {
+      return res.status(422).json({ error: tc.code === 'appraisal_as_is_verify'
+        ? 'The "Confirm the As-Is value" condition cannot be made optional — read the As-Is off the appraisal and sign it off, or use a super-admin override to clear it with a recorded reason.'
+        : 'The appraisal review cannot be made optional — clear the appraisal findings and confirm the As-Is value to sign it off, or use a super-admin override to clear it with a recorded reason.' });
     }
   }
   if (typeof b.isRequired === 'boolean') add('is_required=?', b.isRequired);

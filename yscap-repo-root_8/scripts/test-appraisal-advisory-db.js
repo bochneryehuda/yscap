@@ -36,9 +36,15 @@ async function seedFile() {
   const bor = (await db.query(
     `INSERT INTO borrowers (first_name,last_name,email) VALUES ('Appr','Aisal',$1) RETURNING id`,
     [`appr_${process.pid}_${Date.now()}@example.com`])).rows[0];
+  // A confirmed As-Is value is present (as PILOT auto-fills, then a human confirms). The
+  // advisory's "ready"/"agree" states now also require the As-Is confirmed (post-merge
+  // finding #3: the advisory mirrors the sign-off gate 1:1), and this test attaches NO
+  // appraisal_as_is_verify condition — so an As-Is value present + no open confirm
+  // condition = confirmed, matching the gate. The reopen case below is driven by a fatal
+  // FINDING (the thing this test is about), not the As-Is.
   const app = (await db.query(
-    `INSERT INTO applications (borrower_id, is_assignment, purchase_price, property_address)
-     VALUES ($1,false,300000,$2) RETURNING id`,
+    `INSERT INTO applications (borrower_id, is_assignment, purchase_price, as_is_value, property_address)
+     VALUES ($1,false,300000,240000,$2) RETURNING id`,
     [bor.id, JSON.stringify({ line: '3 Value Ct', city: 'Town', state: 'NY' })])).rows[0];
   return { borId: bor.id, appId: app.id };
 }
@@ -85,6 +91,15 @@ async function row(itemId) {
   ok(c.pilot_advice === 'ready' && c.pilot_advice_at, 'appraisal read + clean → advice "ready"');
   ok(c.status === 'outstanding' && c.signed_off_by === null, '…and "ready" did NOT sign the condition off');
   ok((c.pilot_advice_note || '').length > 0, 'the ready advice carries a plain-language note');
+
+  // 2b) The advisory MIRRORS the gate on the As-Is prerequisite (post-merge finding #3):
+  //     clear the file's As-Is → the gate would refuse, so the advisory must read 'not_ready',
+  //     NOT 'ready'. Restore it afterward so the rest of the flow is unaffected.
+  await db.query(`UPDATE applications SET as_is_value=NULL WHERE id=$1`, [f.appId]);
+  await engine.runFileAdvice(db, f.appId);
+  c = await row(appr);
+  ok(c.pilot_advice === 'not_ready', 'no confirmed As-Is → advice "not_ready" (mirrors the sign-off gate, never a false "ready")');
+  await db.query(`UPDATE applications SET as_is_value=240000 WHERE id=$1`, [f.appId]);
 
   // 3) HUMAN signs it off (still clean) → 'agree'.
   const staff = (await db.query(
