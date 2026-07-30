@@ -73,7 +73,7 @@ const rowsFor = async (appId) => (await db.query(
 (async () => {
   await ensureSchema();
   const sfx = `${process.pid}-${Math.floor(Math.random() * 1e6)}`;
-  let borrowerId, appId, appId2, staffId;
+  let borrowerId, appId, appId2, staffId, server, loId, appHttp;
   try {
     borrowerId = (await db.query(
       `INSERT INTO borrowers (first_name,last_name,email) VALUES ('Silver','Shadow',$1) RETURNING id`,
@@ -160,16 +160,92 @@ const rowsFor = async (appId) => (await db.query(
       await client.query('ROLLBACK').catch(() => {});
       ok(false, `savepoint guard: transaction died (${e.message})`);
     } finally { client.release(); }
+
+    // (7) REAL HTTP — prove the route insertions actually execute. The calls
+    // sit in a swallowing try/catch (watch-only), so a wrong variable name
+    // would fail silently — only a runtime spy can prove the wiring.
+    server = appSrv.listen(0);
+    await new Promise((r) => server.once('listening', r));
+    loId = (await db.query(
+      `INSERT INTO staff_users (email,full_name,role,is_active,mfa_enabled,password_hash,token_version)
+       VALUES ($1,'Silver LO','loan_officer',true,false,'x',0) RETURNING id`,
+      [`ssp-lo-${sfx}@test.local`])).rows[0].id;
+    const loTok = C.signJwt({ sub: loId, kind: 'staff', role: 'loan_officer', tv: 0 });
+    await db.query(`INSERT INTO borrower_auth (borrower_id,password_hash,token_version) VALUES ($1,'x',0) ON CONFLICT DO NOTHING`, [borrowerId]);
+    const boTok = C.signJwt({ sub: borrowerId, kind: 'borrower', tv: 0 });
+    await db.query(`UPDATE borrowers SET fico=740 WHERE id=$1`, [borrowerId]);
+    appHttp = (await db.query(
+      `INSERT INTO applications (borrower_id, loan_officer_id, status, loan_type, program, property_type,
+                                 purchase_price, as_is_value, arv, rehab_budget, term,
+                                 requested_exp_flips, requested_exp_holds, property_address)
+       VALUES ($1,$2,'underwriting','Purchase','Fix & Flip','SFR (1 unit)',300000,300000,550000,100000,'12 Months',4,1,
+               '{"line1":"7 Shadow St","city":"Hoboken","state":"NJ","zip":"07030"}'::jsonb) RETURNING id`,
+      [borrowerId, loId])).rows[0].id;
+
+    const spyCalls = [];
+    const realMonitorQuote = monitor.monitorQuote;
+    monitor.monitorQuote = (aId, input, result, opts) => {
+      const p = realMonitorQuote(aId, input, result, opts);
+      spyCalls.push({ appId: aId, input, result, p });
+      return p;
+    };
+    const settle = () => new Promise((r) => setTimeout(r, 250));
+    try {
+      // staff register, program SILVER → fires with the right args
+      const rr = await call(server, 'POST', `/api/staff/applications/${appHttp}/pricing/register`, loTok, { program: 'silver' });
+      ok(rr.status === 201 && rr.body && rr.body.quote && rr.body.quote.program === 'silver',
+        `staff silver register succeeds over real HTTP (got ${rr.status})`);
+      await settle();
+      ok(spyCalls.length === 1 && spyCalls[0].appId === appHttp, 'the monitor FIRED from the staff register route with the file id');
+      ok(spyCalls[0].input && spyCalls[0].input.zip === '07030' && spyCalls[0].result && spyCalls[0].result.program === 'silver',
+        'the monitor received the engine inputs + the served silver quote');
+      const live1 = await spyCalls[0].p;
+      ok(live1 && live1.ok === true, `the LIVE registered scenario ties out clean against the workbook (got ${JSON.stringify(live1)})`);
+      ok((await rowsFor(appHttp)).length === 0, 'a clean live register writes no advisory');
+
+      // staff QUOTE → fires on the silver leg
+      const rq = await call(server, 'POST', `/api/staff/applications/${appHttp}/pricing/quote`, loTok, {});
+      ok(rq.status === 200, `staff quote succeeds (got ${rq.status})`);
+      await settle();
+      ok(spyCalls.length === 2 && spyCalls[1].appId === appHttp && spyCalls[1].result && spyCalls[1].result.program === 'silver',
+        'the monitor FIRED from the staff quote route on the SILVER leg');
+      ok((await spyCalls[1].p).ok === true, 'the live staff quote ties out clean');
+
+      // borrower register, program SILVER → fires (with the UNSTRIPPED quote)
+      const rb = await call(server, 'POST', `/api/borrower/applications/${appHttp}/pricing/register`, boTok, { program: 'silver' });
+      ok(rb.status === 201, `borrower silver register succeeds over real HTTP (got ${rb.status})`);
+      await settle();
+      ok(spyCalls.length === 3 && spyCalls[2].appId === appHttp, 'the monitor FIRED from the borrower register route');
+      ok(spyCalls[2].result && spyCalls[2].result.adminPricing !== undefined,
+        'the borrower path hands the monitor the UNSTRIPPED quote (server-side only)');
+      ok((await spyCalls[2].p).ok === true, 'the live borrower register ties out clean');
+
+      // a STANDARD register must NOT fire the register-path monitor
+      const before = spyCalls.length;
+      const rs = await call(server, 'POST', `/api/staff/applications/${appHttp}/pricing/register`, loTok, { program: 'standard' });
+      ok(rs.status === 201, `staff standard register succeeds (got ${rs.status})`);
+      await settle();
+      ok(spyCalls.length === before, 'a non-silver register does NOT fire the monitor');
+    } finally {
+      monitor.monitorQuote = realMonitorQuote;
+    }
   } catch (e) {
     ok(false, `unexpected error: ${e && e.message}`);
     console.error(e && e.stack);
   } finally {
+    if (server) await new Promise((r) => server.close(r)).catch(() => {});
     try {
-      if (appId) await db.query(`DELETE FROM ai_suggestions WHERE application_id IN ($1,$2)`, [appId, appId2]);
-      if (appId) await db.query(`DELETE FROM applications WHERE id IN ($1,$2)`, [appId, appId2]);
+      for (const a of [appId, appId2, appHttp].filter(Boolean)) {
+        await db.query(`DELETE FROM ai_suggestions WHERE application_id=$1`, [a]).catch(() => {});
+        await db.query(`DELETE FROM notifications WHERE application_id=$1`, [a]).catch(() => {});
+        await db.query(`DELETE FROM applications WHERE id=$1`, [a]).catch(() => {});
+      }
       if (borrowerId) await db.query(`DELETE FROM borrowers WHERE id=$1`, [borrowerId]);
-      if (staffId) await db.query(`DELETE FROM staff_users WHERE id=$1`, [staffId]);
-    } catch (_) { /* cleanup is best-effort */ }
+      for (const s of [staffId, loId].filter(Boolean)) {
+        await db.query(`DELETE FROM notifications WHERE staff_id=$1`, [s]).catch(() => {});
+        await db.query(`DELETE FROM staff_users WHERE id=$1`, [s]).catch(() => {});
+      }
+    } catch (e) { console.warn('cleanup:', e && e.message); }
     await db.pool.end().catch(() => {});
   }
   console.log(failures ? `\nFAILED (${failures})` : '\nALL PASSED');
