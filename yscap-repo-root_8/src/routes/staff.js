@@ -9207,9 +9207,18 @@ async function applicationCompleteness(appId) {
   // carry an estimated (monthly) rental income before it's complete (owner-directed
   // 2026-07-26). Only this note buyer + strategy adds the requirement; every other
   // file is unaffected.
-  const buyer = conditionRegistry.normNoteBuyer(row.lender);
+  // MATCHED WITH THE SHARED HELPER, NEVER AN EXACT COMPARE (owner-reported
+  // 2026-07-30). `normNoteBuyer` is deliberately EXACT — it must stay that way,
+  // because an over-match there would let a look-alike name export the wrong
+  // note buyer's data tape (tapes/buyer-rule.js). So the real ClickUp label
+  // "EMCAP Financial" normalizes to `emcapfinancial`, NOT `emcap`, and this
+  // `=== 'emcap'` matched no live file: the requirement never once fired. Every
+  // other EMCAP consumer in the repo already routes through
+  // `isEmcapNoteBuyer` (the prefix test) — note-buyer-effects, conditions/engine,
+  // liquidity, appraisal/note-buyer-checks, the guideline desk and review — and
+  // this was the last exact-match left. Use the helper for any new EMCAP branch.
   const strategy = conditionRegistry.normStrategy([row.program, row.loan_type, row.rehab_type].filter(Boolean).join(' '));
-  if (buyer === 'emcap' && strategy === 'fix_hold') {
+  if (conditionRegistry.isEmcapNoteBuyer(row.lender) && strategy === 'fix_hold') {
     need.push([row.estimated_rental_income, 'Estimated rental income']);
   }
   const missing = need.filter(([v]) => v == null || v === '').map(([, label]) => label);
