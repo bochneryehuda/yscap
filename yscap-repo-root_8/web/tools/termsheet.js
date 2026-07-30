@@ -233,15 +233,22 @@
     $$('[data-cond="bridgeOnly"]').forEach(function (n) { show(n, isBridge); });
     if (isBridge) { ["construction", "arv", "irMonths", "irAmount"].forEach(function (id) { var e = el(id); if (e && e.value) e.value = ""; }); }
 
-    // Ground-up defaults: first time the user selects ground-up, set an 18-month term and
-    // pre-fill a full-term financed reserve (required for non-top-tier; optional for 8+ experience).
+    // Ground-up default: first time the user selects ground-up, set an 18-month term.
+    // The INTEREST RESERVE ENTRY IS NEVER PRE-FILLED (owner-directed 2026-07-30:
+    // "it should be defaulted to zero when you start filling out … you can default
+    // the term but you don't default the interest reserve" — and explicitly "it
+    // needs to be updated on tech in all the programs"). This V1 copy is still
+    // SERVED at /v1 (src/server.js static mount + web/tools/term-sheet.html), so
+    // leaving it here reproduced the reported bug verbatim. Where a program
+    // REQUIRES a reserve (Gold ground-up forces the full-term reserve for
+    // non-top tiers inside the frozen engine) the requirement still populates the
+    // PRICED STRUCTURE on its own — only the blank entry changed.
     var dt = dealType();
     if (dt !== lastDeal) {
       var nowGround = YSP.normStrategy(dt) === "NC";
       var wasGround = YSP.normStrategy(lastDeal || "") === "NC";
       if (nowGround && !wasGround) {
         if (el("tsTerm") && num("tsTerm") < 18) el("tsTerm").value = 18;
-        if (el("irMonths") && num("irMonths") < 18) el("irMonths").value = 18;
       }
       lastDeal = dt;
     }

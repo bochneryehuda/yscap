@@ -85,10 +85,46 @@ const files = [
   path.join(__dirname, '..', 'web', 'tools', 'termsheet.js'),
   path.join(__dirname, '..', 'web', 'v2', 'tools', 'termsheet.js'),
 ];
+/**
+ * THE INTEREST-RESERVE ENTRY IS NEVER PRE-FILLED, ON EITHER TOOL COPY
+ * (owner-directed 2026-07-30, reported live: selecting ground-up construction
+ * silently filled the reserve with the whole 18-month term). "You can default
+ * the term but you don't default the interest reserve … it needs to be updated
+ * on tech in all the programs." Both copies are served (V2 at /, V1 at /v1), so
+ * a fix on one is not a fix.
+ *
+ * This reads the SHIPPED deal-type-change block out of each file and asserts the
+ * shape directly: the block still defaults the TERM to 18 for ground-up, and it
+ * contains NO assignment to irMonths / irAmount. Deliberately a source-shape
+ * assertion rather than a DOM replay — the block is wired into updateConditionals
+ * (dozens of unrelated DOM dependencies), and what must never come back is
+ * precisely the *presence* of a reserve write on that path.
+ */
+function assertNoReservePrefill(file) {
+  const src = fs.readFileSync(file, 'utf8');
+  const label = path.basename(path.dirname(path.dirname(file))) === 'v2' ? 'v2' : 'v1';
+  const start = src.indexOf('var dt = dealType();');
+  ok(start > 0, `${label}: the deal-type-change block is present`);
+  // The block runs from `var dt = dealType();` to the end of its `lastDeal = dt;` guard.
+  const end = src.indexOf('lastDeal = dt;', start);
+  ok(end > start, `${label}: the deal-type-change block is intact`);
+  const block = src.slice(start, end);
+  ok(/nowGround/.test(block) && /tsTerm/.test(block) && /18/.test(block),
+    `${label}: ground-up still defaults the TERM to 18 months`);
+  // The regression itself: any write to the reserve entry on this path.
+  const reserveWrite = /el\(\s*["'](irMonths|irAmount)["']\s*\)[^\n]*\.value\s*=/.test(block)
+    || /\b(irMonths|irAmount)\b[^\n]*\.value\s*=\s*\d/.test(block);
+  ok(!reserveWrite, `${label}: ground-up NEVER pre-fills the interest-reserve entry`);
+  // …and the stale comment promising a pre-filled reserve must be gone too.
+  ok(!/pre-fill a full-term financed reserve/.test(src),
+    `${label}: the stale "pre-fill a full-term financed reserve" comment is gone`);
+}
+
 try {
   for (const f of files) runCase(f);
   // parity: both copies must carry identical helper logic
   ok(extractHelpers(files[0]) === extractHelpers(files[1]), 'v1 and v2 tool copies carry identical IR-link logic');
+  for (const f of files) assertNoReservePrefill(f);
 } catch (e) {
   console.error('ERROR', e); failures++;
 }
