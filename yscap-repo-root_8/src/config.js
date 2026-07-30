@@ -546,6 +546,29 @@ module.exports = {
     password:     process.env.ENCOMPASS_PASSWORD,
     baseUrl:      (process.env.ENCOMPASS_API_BASE || 'https://api.elliemae.com').replace(/\/+$/, ''),
   },
+  // Encompass FLOOD ordering — the ONE owner-authorized WRITE into Encompass
+  // (order a Life-of-Loan flood determination from ICE's own flood service, and
+  // nothing else). Isolated in src/encompass/flood-order.js; the read-only module
+  // is untouched. Staged rollout, all default OFF:
+  //   ENCOMPASS_FLOOD_ENABLED          master (reads + poll worker) — via switches.js
+  //   ENCOMPASS_FLOOD_OUTBOUND_ENABLED separate write gate (place an order) — via switches.js
+  //   ENCOMPASS_FLOOD_DRYRUN           build + log the order body, send nothing
+  // Credentials default to the tenant's existing Encompass creds; a dedicated
+  // flood-authorized API user can be dropped into the ENCOMPASS_FLOOD_* overrides.
+  encompassFlood: {
+    clientId:     process.env.ENCOMPASS_FLOOD_CLIENT_ID || null,
+    clientSecret: process.env.ENCOMPASS_FLOOD_CLIENT_SECRET || null,
+    instanceId:   process.env.ENCOMPASS_FLOOD_INSTANCE_ID || null,
+    username:     process.env.ENCOMPASS_FLOOD_USERNAME || null,
+    password:     process.env.ENCOMPASS_FLOOD_PASSWORD || null,
+    dryrun:       process.env.ENCOMPASS_FLOOD_DRYRUN === '1',
+    framework:    process.env.ENCOMPASS_FLOOD_FRAMEWORK || null,   // 'serviceOrders' (default) | 'partnerTransactions'
+    partnerId:    process.env.ENCOMPASS_FLOOD_PARTNER_ID || null,
+    serviceId:    process.env.ENCOMPASS_FLOOD_SERVICE_ID || null,
+    product:      process.env.ENCOMPASS_FLOOD_PRODUCT || null,
+  },
+  encompassFloodEnabled: process.env.ENCOMPASS_FLOOD_ENABLED === '1',            // master (default off)
+  encompassFloodOutboundEnabled: process.env.ENCOMPASS_FLOOD_OUTBOUND_ENABLED === '1', // write gate (default off)
 
   // --- document underwriting: OCR reader + AI analyzer (add keys to activate) ---
   // Microsoft Azure AI Document Intelligence — the "reads even scanned/blurry

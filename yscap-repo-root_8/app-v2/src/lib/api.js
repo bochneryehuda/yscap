@@ -389,6 +389,9 @@ export const api = {
   // Super-admin only: the raw Encompass troubleshooting view.
   encompassRaw:      (id) => req('GET', `/api/staff/applications/${id}/encompass/raw`),
   encompassReplace:  (id, fieldKey) => req('POST', `/api/staff/applications/${id}/encompass/replace`, { fieldKey }),
+  // Flood-certificate ordering (the one owner-authorized Encompass write).
+  floodOrderState:   (id) => req('GET', `/api/staff/applications/${id}/flood-order`),
+  orderFlood:        (id, itemId) => req('POST', `/api/staff/applications/${id}/order-flood`, itemId ? { checklistItemId: itemId } : {}),
   // Credit report (Xactus import) — the internal Credit report condition.
   // `scope` = 'co' | 'primary' narrows the credit section to ONE borrower, so a
   // co-borrower's own credit condition shows their report instead of the file's.
