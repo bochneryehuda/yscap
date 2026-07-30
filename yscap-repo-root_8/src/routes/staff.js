@@ -43,6 +43,8 @@ const { CONDITION_TYPES, TOOLS, CATEGORIES, conditionTypeOf } = require('../lib/
 const { strayConditionReason, strayConditionMessage } = require('../lib/conditions/label-sanity');
 const adminOverride = require('../lib/conditions/admin-override');        // super-admin condition override (owner-directed 2026-07-27)
 const { raiseEntityIssue } = require('../lib/raise-issue');
+const uspsVerify = require('../lib/usps-verify');
+const { componentsOf: uspsComponentsOf } = require('../lib/address-usps-verify');
 
 const { can } = require('../lib/permissions');
 // Every staff persona reaches the console; per-file scoping + capability gates
@@ -1477,6 +1479,93 @@ router.get('/applications/:id', async (req, res) => {
   delete fileRow.registered_stale;
   delete fileRow.registered_stale_reason;
   res.json(fileRow);
+});
+
+// USPS ADDRESS VERIFICATION — staff-only, file-scoped by the middleware above.
+// A check stages USPS's answer beside the working address. Only the separate
+// import action adopts it and clears the enforced condition.
+router.get('/applications/:id/usps-verification', async (req, res) => {
+  try {
+    const row = (await db.query(
+      `SELECT a.property_address, a.usps_address, a.usps_match,
+              a.usps_verified_at, a.usps_imported_at,
+              ci.id AS condition_id, ci.status AS condition_status,
+              ci.signed_off_at
+         FROM applications a
+         LEFT JOIN checklist_templates t ON t.code='usps_address_verification'
+         LEFT JOIN checklist_items ci ON ci.application_id=a.id AND ci.template_id=t.id
+        WHERE a.id=$1`, [req.params.id])).rows[0];
+    if (!row) return res.status(404).json({ error: 'not found' });
+    res.json({ configured: uspsVerify.configured(), required: cfg.usps.conditionRequired, ...row });
+  } catch (e) {
+    console.error('[usps] verification status failed:', db.describeError(e));
+    res.status(500).json({ error: 'could not load USPS verification' });
+  }
+});
+
+router.post('/applications/:id/usps-verification/check', async (req, res) => {
+  try {
+    const app = (await db.query(
+      'SELECT property_address FROM applications WHERE id=$1 AND deleted_at IS NULL',
+      [req.params.id])).rows[0];
+    if (!app) return res.status(404).json({ error: 'not found' });
+    const input = uspsComponentsOf(app.property_address);
+    if (!input || !input.line1 || !input.state) {
+      return res.status(422).json({ error: 'Enter a complete property address before checking it with USPS.' });
+    }
+    const out = await uspsVerify.standardize(input, { db, noCache: req.body && req.body.refresh === true });
+    if (out.status === 'not_configured') return res.status(503).json({ error: 'USPS credentials are not configured.' });
+    if (out.status === 'rate_limited') return res.status(429).json({ error: 'The USPS hourly lookup limit is currently reached. Try again later.' });
+    if (out.status === 'error') return res.status(502).json({ error: 'USPS could not verify this address right now.' });
+    await db.query(
+      `UPDATE applications
+          SET usps_address=$2, usps_match=$3, usps_verified_at=now(),
+              usps_imported_at=NULL, updated_at=now()
+        WHERE id=$1`,
+      [req.params.id, out.address ? JSON.stringify(out.address) : null, out.status]);
+    await audit(req, 'usps_address_checked', 'application', req.params.id,
+      { status: out.status, changed: !!out.changed, cached: !!out.cached, dpv: out.dpv || null });
+    res.json({ ok: true, ...out });
+  } catch (e) {
+    console.error('[usps] verification failed:', db.describeError(e));
+    res.status(500).json({ error: 'could not verify the address with USPS' });
+  }
+});
+
+router.post('/applications/:id/usps-verification/import', async (req, res) => {
+  const client = await db.getClient();
+  try {
+    await client.query('BEGIN');
+    const app = (await client.query(
+      `SELECT usps_address, usps_match FROM applications
+        WHERE id=$1 AND deleted_at IS NULL FOR UPDATE`, [req.params.id])).rows[0];
+    if (!app) { await client.query('ROLLBACK'); return res.status(404).json({ error: 'not found' }); }
+    if (!['verified', 'corrected'].includes(String(app.usps_match || '').toLowerCase()) || !app.usps_address) {
+      await client.query('ROLLBACK');
+      return res.status(422).json({ error: 'Run USPS verification and receive a deliverable verified address before importing it.' });
+    }
+    await client.query(
+      `UPDATE applications
+          SET property_address=usps_address, usps_imported_at=now(), updated_at=now()
+        WHERE id=$1`, [req.params.id]);
+    const cleared = await client.query(
+      `UPDATE checklist_items ci
+          SET status='satisfied', signed_off_by=$2, signed_off_at=now(),
+              waived_by=NULL, waived_at=NULL, reviewed_by=$2, reviewed_at=now(),
+              updated_at=now()
+         FROM checklist_templates t
+        WHERE ci.application_id=$1 AND ci.template_id=t.id
+          AND t.code='usps_address_verification'
+        RETURNING ci.id`, [req.params.id, req.actor.id]);
+    await client.query('COMMIT');
+    await audit(req, 'usps_verified_address_imported', 'application', req.params.id,
+      { status: app.usps_match, conditionIds: cleared.rows.map((r) => r.id) });
+    res.json({ ok: true, address: app.usps_address, conditionCleared: cleared.rowCount > 0 });
+  } catch (e) {
+    try { await client.query('ROLLBACK'); } catch (_) {}
+    console.error('[usps] import failed:', db.describeError(e));
+    res.status(500).json({ error: 'could not import the USPS address' });
+  } finally { client.release(); }
 });
 
 // Resolve-or-create a co-borrower from an identity payload and bind it to a
@@ -5166,11 +5255,23 @@ async function signOffGate(itemId, actor) {
   const isCredit = code === 'rtl_cond_credit';                 // requires an IMPORTED credit report (not a bare PDF)
   const isAppraisalReview = code === 'appraisal_review_cleared'; // CTC gate: no open fatal finding
   const isUnderwritingReview = code === 'underwriting_review_cleared'; // CTC gate: no open fatal document finding
+  const isUspsAddress = code === 'usps_address_verification';
   // Structured-DATA conditions — the borrower/staff enter DATA (not a document):
   // the appraisal payment card, and the title / insurance contact forms.
   const isApprCard = item.tool_key === 'appraisal_card' || code === 'rtl_p1_apprcard';
   const isTitleContact = item.tool_key === 'title_contact' || code === 'rtl_p1_titlec';
   const isInsContact = item.tool_key === 'insurance_contact' || code === 'rtl_p1_insc';
+
+  if (isUspsAddress) {
+    const stamp = (await db.query(
+      `SELECT usps_address, usps_match, usps_imported_at
+         FROM applications WHERE id=$1`, [item.application_id])).rows[0] || {};
+    const accepted = ['verified', 'corrected'].includes(String(stamp.usps_match || '').toLowerCase());
+    if (!accepted || !stamp.usps_address || !stamp.usps_imported_at) {
+      return 'Open USPS Address Verification, verify the current property address, and click “Import verified address.” This condition clears only after the USPS address is imported.';
+    }
+    return null;
+  }
 
   // FLOOD CERTIFICATE: the Fidelis sign-off bypass that used to live here was
   // REMOVED (owner-directed 2026-07-30: "the flood certification should be an
@@ -5683,12 +5784,16 @@ router.patch('/checklist/:itemId', async (req, res) => {
   // door so the reason is visible. The super-admin override (db/344) is the recorded
   // way through both.
   const APPRAISAL_ENFORCED_CODES = ['appraisal_review_cleared', 'appraisal_as_is_verify'];
+  const NEVER_OPTIONAL_CODES = [...APPRAISAL_ENFORCED_CODES, 'usps_address_verification'];
   if (b.isRequired === false && !ovr.requested) {
     const tc = (await db.query(
       `SELECT t.code FROM checklist_items ci LEFT JOIN checklist_templates t ON t.id=ci.template_id WHERE ci.id=$1`,
       [req.params.itemId])).rows[0];
-    if (tc && APPRAISAL_ENFORCED_CODES.includes(tc.code) && advisoryPolicy.appraisalReviewEnforced()) {
-      return res.status(422).json({ error: tc.code === 'appraisal_as_is_verify'
+    if (tc && NEVER_OPTIONAL_CODES.includes(tc.code)
+        && (tc.code === 'usps_address_verification' || advisoryPolicy.appraisalReviewEnforced())) {
+      return res.status(422).json({ error: tc.code === 'usps_address_verification'
+        ? 'USPS Address Verification is required and cannot be made optional. Import a verified USPS address to clear it.'
+        : tc.code === 'appraisal_as_is_verify'
         ? 'The "Confirm the As-Is value" condition cannot be made optional — read the As-Is off the appraisal and sign it off, or use a super-admin override to clear it with a recorded reason.'
         : 'The appraisal review cannot be made optional — clear the appraisal findings and confirm the As-Is value to sign it off, or use a super-admin override to clear it with a recorded reason.' });
     }

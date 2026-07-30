@@ -454,7 +454,9 @@ function integrityIssue(row, bytes) {
 
 async function buildTprExport(appId) {
   const app = (await db.query(
-    `SELECT a.ys_loan_number, a.program, a.loan_type, a.property_address, a.borrower_id, a.co_borrower_id,
+    `SELECT a.ys_loan_number, a.program, a.loan_type, a.property_address,
+            a.usps_address, a.usps_match, a.usps_verified_at, a.usps_imported_at,
+            a.borrower_id, a.co_borrower_id,
             b.first_name, b.last_name
        FROM applications a JOIN borrowers b ON b.id=a.borrower_id WHERE a.id=$1`, [appId])).rows[0];
   if (!app) throw new Error('application not found');
@@ -501,7 +503,10 @@ async function buildTprExport(appId) {
   const integrityWarnings = [];
   const usedByDir = {};   // folderPath -> Set(lowercased names) — collision guard
 
-  const subjectAddr = addrText(app.property_address) || 'Property';
+  // The TPR package is financing output, so its root/property label prefers the
+  // separately stamped USPS form when USPS confirmed the address.
+  const subjectAddress = require('./usps-verify').preferredFinancingAddress(app);
+  const subjectAddr = addrText(subjectAddress) || 'Property';
   const ROOT = folderName(subjectAddr);   // the ONE top folder, named for the property
 
   // 1) Subject-file documents → ROOT/<Category>/<clean filename>.

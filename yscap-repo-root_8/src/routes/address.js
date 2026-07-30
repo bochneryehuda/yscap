@@ -156,6 +156,39 @@ router.get('/parse', (req, res) => {
   res.json({ address: parseAddress(String(req.query.q || '')) });
 });
 
+// Verify / standardize an address against USPS — the authoritative standardizer.
+// The autocomplete provider (Google/Smarty/OSM) suggests the address; this makes it
+// exactly USPS-correct after the pick. Returns { configured, status, address, dpv,
+// changed }. Never breaks the form: if USPS isn't set up yet (or can't confirm the
+// address) it says so and the caller keeps whatever it had.
+const uspsVerify = require('../lib/usps-verify');
+async function handleVerify(input, res) {
+  try {
+    const out = await uspsVerify.standardize(input);
+    // Never expose the raw USPS error text to an anonymous caller (this endpoint is
+    // public — it backs the marketing loan application). `detail` is for server logs.
+    if (out && out.detail) delete out.detail;
+    res.set('Cache-Control', 'private, max-age=300');
+    res.json(out);
+  } catch (e) {
+    res.json({ configured: uspsVerify.configured(), status: 'error', address: null, dpv: null, changed: false });
+  }
+}
+// Accept either discrete components OR a single free-text line (some tools store
+// only the address label). A free-text `q` (or a bare string) is parsed into
+// components server-side so USPS has something to match on.
+const verifyInput = (src) => {
+  if (src && (src.q || typeof src === 'string') && !src.line1 && !src.street) {
+    return parseAddress(String(src.q || src));
+  }
+  return {
+    line1: src.line1 || src.street, unit: src.unit || src.secondary,
+    city: src.city, state: src.state, zip: src.zip || src.zipcode,
+  };
+};
+router.get('/verify', (req, res) => handleVerify(verifyInput(req.query), res));
+router.post('/verify', (req, res) => handleVerify(verifyInput((req.body && (req.body.address || req.body)) || {}), res));
+
 // Property photo — proxies Google Street View Static so the key stays
 // server-side. 404s cleanly when no key is set (or no imagery exists), so the
 // UI can simply hide the image. Activate with GOOGLE_MAPS_API_KEY (or the

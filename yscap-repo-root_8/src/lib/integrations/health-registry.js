@@ -415,14 +415,14 @@ const INTEGRATIONS = [
   },
   {
     key: 'usps', name: 'USPS (address validation)', group: 'data',
-    purpose: 'Official USPS address standardization + ZIP+4 (free with a USPS developer account).',
+    purpose: 'Official USPS address standardization + ZIP+4. Verifies every address after the autocomplete pick, and backfills existing files (developer.usps.com; see docs/USPS-ADDRESS-VERIFICATION.md).',
     direction: 'Outbound', auth: 'OAuth2 client credentials',
     env: [{ name: 'USPS_CLIENT_ID', required: true }, { name: 'USPS_CLIENT_SECRET', required: true }],
     switches: [], liveProbe: true,
     async probe() {
       const m = require('./usps');
-      if (!m.configured()) return { configured: false, live: null, detail: 'Not connected. The connector is built — add a free USPS developer key (USPS_CLIENT_ID / USPS_CLIENT_SECRET from developer.usps.com) to turn on official USPS address checking. Until then, address lookup runs through Google / OpenStreetMap.' };
-      try { const p = await timebox(m.ping()); return { configured: true, live: !!p.ok, detail: p.ok ? 'USPS credentials authenticate.' : (p.reason || 'Not reachable.') }; }
+      if (!m.configured()) return { configured: false, live: null, detail: 'Not connected. The USPS connector is built and WIRED into the address forms — add the two keys (USPS_CLIENT_ID / USPS_CLIENT_SECRET from a USPS developer account) to turn on official USPS verification. A signed Addressing API License Agreement + a paid Enhanced Addresses tier is required for production volume as of Aug 2026. Until connected, address lookup runs through Google / OpenStreetMap.' };
+      try { const p = await timebox(m.ping()); return { configured: true, live: !!p.ok, detail: p.ok ? 'USPS credentials authenticate — official address verification is active.' : (p.reason || 'Not reachable.') }; }
       catch (e) { return { configured: true, live: false, detail: e.message === 'timed out' ? 'Timed out reaching USPS.' : (e.message || 'Not reachable.') }; }
     },
   },
