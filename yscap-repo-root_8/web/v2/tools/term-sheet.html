@@ -158,17 +158,20 @@
   .ts-lev-ends span:first-child{ text-align:left; } .ts-lev-ends span:last-child{ text-align:right; align-self:flex-end; }
   .ts-lev-hint{ margin-top:.55rem; font-size:.76rem; color:var(--muted); line-height:1.45; }
   .ts-lev-hint b{ color:var(--ivory); }
-  /* dual-program headline cards */
-  .prog-compare{ display:grid; grid-template-columns:1fr 1fr 1fr; gap:.8rem; margin-bottom:.7rem; }
-  @media (max-width:860px){ .prog-compare{ grid-template-columns:1fr 1fr; } .prog-compare .pcard.silver{ grid-column:1 / -1; } }
+  /* program headline cards — TWO per row (the original sizing), so four cards
+     sit as two rows of two. Never three across: it wraps the loan amount and
+     pushes the rate/origination out of the box (owner-reported 2026-07-30). */
+  .prog-compare{ display:grid; grid-template-columns:1fr 1fr; gap:.8rem; margin-bottom:.7rem; }
   .pcard{ border:1px solid var(--line-2); border-radius:14px; padding:1rem 1rem .95rem; background:rgba(255,255,255,.02); display:flex; flex-direction:column; min-width:0; }
   .pcard.gold{ border-color:rgba(201,168,106,.5); background:linear-gradient(180deg,rgba(201,168,106,.07),rgba(201,168,106,.015)); }
   .pcard.silver{ border-color:rgba(148,163,178,.55); background:linear-gradient(180deg,rgba(148,163,178,.09),rgba(148,163,178,.02)); }
+  .pcard.manual{ border-style:dashed; border-color:rgba(127,169,176,.5); background:linear-gradient(180deg,rgba(47,127,134,.05),rgba(47,127,134,.01)); }
   .pcard.pcard-off{ opacity:.5; }
   .pcard-top{ display:flex; align-items:center; justify-content:space-between; gap:.5rem; margin-bottom:.65rem; }
   .pcard-name{ font-family:var(--font-b); font-size:.74rem; font-weight:700; text-transform:uppercase; letter-spacing:.1em; color:var(--ivory); }
   .pcard.gold .pcard-name{ color:var(--gold); }
   .pcard.silver .pcard-name{ color:#8A99A8; }
+  .pcard.manual .pcard-name{ color:var(--teal-br,#7FA9B0); }
   .pcard-badge{ font-size:.62rem; font-weight:700; padding:.22rem .5rem; border-radius:100px; border:1px solid var(--line); color:var(--muted); white-space:nowrap; }
   .pcard-badge.good{ color:var(--good); border-color:rgba(127,176,138,.5); } .pcard-badge.warn{ color:var(--warn); border-color:rgba(201,168,106,.5); } .pcard-badge.bad{ color:var(--bad); border-color:rgba(201,138,106,.5); }
   .pcard-loanlbl{ font-size:.64rem; text-transform:uppercase; letter-spacing:.12em; color:var(--muted-2); }
@@ -176,11 +179,13 @@
   .pcard-loan.tealed{ color:var(--teal-br,#7FA9B0); }
   .pcard.gold .pcard-loan{ color:var(--gold); }
   .pcard.silver .pcard-loan{ color:#8A99A8; }
+  .pcard.manual .pcard-loan{ color:var(--teal-br,#7FA9B0); }
   .pcard-headline{ display:flex; gap:.6rem; padding-top:.6rem; border-top:1px solid var(--line-2); }
   .pcard-stat{ flex:1; min-width:0; }
   .pcard-statnum{ font-family:var(--font-d); font-weight:600; font-size:1.5rem; line-height:1.1; color:var(--ivory); }
   .pcard.gold .pcard-statnum{ color:var(--gold); }
   .pcard.silver .pcard-statnum{ color:#8A99A8; }
+  .pcard.manual .pcard-statnum{ color:var(--teal-br,#7FA9B0); }
   .pcard-statlbl{ font-size:.6rem; text-transform:uppercase; letter-spacing:.08em; color:var(--muted-2); margin-top:.12rem; }
   .pcard-sub{ margin-top:.65rem; font-size:.72rem; color:var(--muted); line-height:1.4; min-height:1em; }
   .prog-note{ margin:0 0 .9rem; padding:.7rem .9rem; border-radius:10px; border:1px solid var(--line-2); background:rgba(47,127,134,.07); font-size:.82rem; color:var(--ivory-soft); line-height:1.5; }
@@ -200,14 +205,17 @@
   .pcard:hover{ border-color:var(--teal,#7FA9B0); transform:translateY(-2px); }
   .pcard.gold:hover{ border-color:var(--gold); }
   .pcard.silver:hover{ border-color:#8A99A8; }
+  .pcard.manual:hover{ border-color:var(--teal-br,#7FA9B0); }
   .pcard.pcard-active{ border-color:var(--teal,#7FA9B0); box-shadow:0 0 0 2px rgba(47,127,134,.28); }
   .pcard.gold.pcard-active{ border-color:var(--gold); box-shadow:0 0 0 2px rgba(201,168,106,.3); }
   .pcard.silver.pcard-active{ border-color:#8A99A8; box-shadow:0 0 0 2px rgba(148,163,178,.32); }
+  .pcard.manual.pcard-active{ border-color:var(--teal-br,#7FA9B0); box-shadow:0 0 0 2px rgba(47,127,134,.3); }
   .pcard.pcard-off{ cursor:default; }
   .pcard.pcard-off:hover{ transform:none; border-color:var(--line-2); }
   .pcard-cta{ margin-top:.7rem; font-size:.72rem; font-weight:700; letter-spacing:.02em; color:var(--teal-br,#7FA9B0); }
   .pcard.gold .pcard-cta{ color:var(--gold); }
   .pcard.silver .pcard-cta{ color:#8A99A8; }
+  .pcard.manual .pcard-cta{ color:var(--teal-br,#7FA9B0); }
   .pcard.pcard-off .pcard-cta{ display:none; }
   .prog-hint{ text-align:center; font-size:.8rem; color:var(--muted); margin:.1rem 0 .4rem; line-height:1.4; }
   .prog-detail{ margin-top:.2rem; }
@@ -337,6 +345,7 @@
   .results-col .pcard{ background:var(--ds-card); border-color:var(--ds-line); }
   .results-col .pcard.gold{ border-color:rgba(174,135,70,.5); background:linear-gradient(180deg,rgba(174,135,70,.08),rgba(174,135,70,.02)); }
   .results-col .pcard.silver{ border-color:rgba(120,134,148,.5); background:linear-gradient(180deg,rgba(120,134,148,.08),rgba(120,134,148,.02)); }
+  .results-col .pcard.manual{ border-color:rgba(47,127,134,.45); background:linear-gradient(180deg,rgba(47,127,134,.05),rgba(47,127,134,.01)); }
   .results-col .panel{ background:var(--ds-card); border:1px solid var(--ds-line); border-radius:12px; }
   .results-col .prog-detail-head{ color:var(--ds-ink-soft); }
 
@@ -666,6 +675,17 @@
                 <div class="pcard-sub" id="silverSub">—</div>
                 <div class="pcard-cta" id="silverCta">View full details &rarr;</div>
             </article>
+            <article class="pcard manual" id="pcardManual" data-prog="manual">
+                <div class="pcard-top"><span class="pcard-name">Manual</span><span class="pcard-badge" id="manBadge">—</span></div>
+                <div class="pcard-loanlbl">Loan amount</div>
+                <div class="pcard-loan" id="manLoanBig">&mdash;</div>
+                <div class="pcard-headline">
+                    <div class="pcard-stat"><div class="pcard-statnum" id="manRateBig">—</div><div class="pcard-statlbl">note rate<span class="tip" tabindex="0" role="note" aria-label="Your interest rate on the loan. It’s charged interest-only during the term — you pay interest each month, not principal.">i<span class="tip-bub">Your interest rate on the loan. It’s charged interest-only during the term — you pay interest each month, not principal.</span></span></div></div>
+                    <div class="pcard-stat"><div class="pcard-statnum" id="manOrigBig">—</div><div class="pcard-statlbl">origination · <span id="manOrigPts">1.25 pts</span><span class="tip" tabindex="0" role="note" aria-label="The lender’s fee at closing. “1 point” = 1% of the loan amount.">i<span class="tip-bub">The lender’s fee at closing. “1 point” = 1% of the loan amount.</span></span></div></div>
+                </div>
+                <div class="pcard-sub" id="manSub">A custom product priced by our team — leverage, rate and fees set case-by-case.</div>
+                <div class="pcard-cta" id="manCta">View full details &rarr;</div>
+            </article>
         </div>
         <div class="ts-data-io">
             <button class="btn btn-line" type="button" id="tsXlsx">Export to Excel ⤓</button>
@@ -840,7 +860,7 @@
 <script src="silver-program.js?v=silver2"></script>
 <script src="title-cost.js?v=admin8"></script>
 <script src="address-autocomplete.js?v=admin9"></script>
-<script src="termsheet.js?v=silver2"></script>
+<script src="termsheet.js?v=cards4"></script>
 <script src="../float-actions.js?v=admin10-applyfix"></script>
 <script>
 /* Property-address autocomplete (owner-directed 2026-07-17): same shared YSAddr
