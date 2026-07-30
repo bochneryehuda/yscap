@@ -933,6 +933,9 @@ function AppraisalXmlWaiver({ appId, onChanged, context = 'docs' }) {
   }
 
   const w = state && state.waiver;
+  // The review-side entry does not apply on a file that already has an imported
+  // appraisal (there IS XML) — self-hide unless a waiver was already recorded.
+  if (isReview && state && state.hasAppraisal && !w) return null;
   if (w) {
     const ex = state.exception;
     // Same shared row on both sides. On the side you did NOT enter it from, this
@@ -954,10 +957,9 @@ function AppraisalXmlWaiver({ appId, onChanged, context = 'docs' }) {
         <div style={{ color: '#141B22', marginTop: 2, fontWeight: 600 }}>ARV ${Number(w.arv || 0).toLocaleString('en-US')} · As-Is ${Number(w.as_is_value || 0).toLocaleString('en-US')} — entered by hand.</div>
         {isReview && (
           <div style={{ color: '#4B585C', marginTop: 2 }}>
-            These were already entered on the appraisal. Please confirm they are correct against the
-            appraisal report, then sign this condition off — that clears the appraisal review and lets
-            the term sheet go out. (Re-registering on these numbers is required; changing them re-opens
-            Products &amp; Pricing.)
+            These stand in for the appraisal review, so the term sheet can go out{w.requires_transfer_letter || (ex && ex.status === 'approved') ? '' : ' once the exception is approved'}. Please confirm
+            they are correct against the appraisal report. Re-registering on these numbers is required
+            (changing them re-opens Products &amp; Pricing).
           </div>
         )}
         <button className="btn ghost small" style={{ marginTop: 6 }} disabled={busy} onClick={remove}>Remove waiver (XML is available)</button>
@@ -966,9 +968,23 @@ function AppraisalXmlWaiver({ appId, onChanged, context = 'docs' }) {
     );
   }
   if (!open) {
+    if (isReview) {
+      return (
+        <div style={{ marginBottom: 12, padding: '10px 12px', border: '1px solid var(--line,#d9d3c6)', borderRadius: 10, background: '#fff' }}>
+          <div style={{ fontWeight: 600, color: '#141B22' }}>Appraisal review — no XML available?</div>
+          <div className="small" style={{ color: '#4B585C', marginTop: 2 }}>
+            Use this only when there is genuinely no appraisal XML for PILOT to review. It records the
+            As-Is and ARV by hand, stands in for the appraisal review, and lets the term sheet go out.
+          </div>
+          <button className="btn ghost small" style={{ marginTop: 8 }} onClick={() => setOpen(true)}>
+            No appraisal XML? Enter the As-Is &amp; ARV to clear the review
+          </button>
+        </div>
+      );
+    }
     return (
       <button className="btn ghost small" style={{ marginTop: 6 }} onClick={() => setOpen(true)}>
-        {isReview ? 'No appraisal XML? Enter the As-Is & ARV to clear the review' : 'No XML available?'}
+        No XML available?
       </button>
     );
   }
@@ -1207,17 +1223,11 @@ function Item({ it, team, onPatch, role, docs, onUploadTo, onDropTo, onReviewDoc
 
       {/* Appraisal condition: "No XML available" — waive the XML slot (PDF stays
           required), type the ARV + As-Is by hand, and route the reason to a
-          transfer letter or an admin exception. */}
+          transfer letter or an admin exception. (The REVIEW-side entry point for
+          the same waiver lives in the "Appraisal & findings" section — the
+          appraisal-review task itself is worked from My Tasks, not this list.) */}
       {it.template_code === 'rtl_cond_appraisaldocs' && (
         <AppraisalXmlWaiver appId={appId} onChanged={onChanged} />
-      )}
-
-      {/* Appraisal-REVIEW task: on a no-XML file there are no PILOT findings to
-          review, so the same "No XML available" waiver (shared values with the
-          documents side) stands in for the review and lets the term sheet go
-          out. It shows "already entered — please confirm" once the values exist. */}
-      {it.template_code === 'rtl_p3_apprreview' && (
-        <AppraisalXmlWaiver appId={appId} onChanged={onChanged} context="review" />
       )}
 
       {/* ONE next step, everything else behind More — the shared bar, so this
@@ -3959,6 +3969,13 @@ export default function StaffApplication() {
       <Section id="sec-appraisal" summary={summaries['sec-appraisal']} title="Appraisal & findings" defaultOpen={false}
         info="Import the appraisal XML and PILOT builds the property profile and flags every value that differs from the file for your team to review."
         badge={badges.appraisal.long}>
+        {/* The REVIEW-side "No XML available" waiver — the appraisal-review entry
+            point (the review task itself is worked from My Tasks, not the
+            conditions list). It self-hides on a file that already has an imported
+            appraisal (there IS XML), and shares the SAME As-Is/ARV values as the
+            appraisal-documents waiver, so entering on either side shows "already
+            entered — confirm" on the other. */}
+        <AppraisalXmlWaiver appId={id} onChanged={() => { load(); setApprReload((n) => n + 1); }} context="review" />
         <AppraisalPanel appId={id} onSummary={onApprSummary} reloadSignal={apprReload} />
       </Section>
 
