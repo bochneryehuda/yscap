@@ -549,6 +549,15 @@ const ProductStudioPanel = forwardRef(function ProductStudioPanel({ appId, app, 
       // now (it used to be force-cleared for non-admins — the #148 "invisible
       // re-armed knob" guard). The zone is visible to everyone, so nothing is
       // hidden state anymore, and a manual basis simply routes to approval.
+      // A BORROWER is the exception (audit 2026-07-30 #3): the borrower register
+      // route strips every manual override, so a staff manual-scenario draft
+      // resuming in the borrower's studio would dim the real program cards and
+      // display admin-basis numbers the server would never register. Clear the
+      // manual knobs from THEIR view only — the staff draft on the file keeps them.
+      if (!isStaff) {
+        delete c.tsManualOn;
+        for (const k of ['tsMLtv', 'tsMArv', 'tsMLtc', 'tsMRate', 'tsMIr']) delete v[k];
+      }
       // The property ADDRESS (and its state) is file-owned exactly like the
       // economics above (owner-reported 2026-07-24: the file's corrected
       // "392-394 Columbia Ave" never reached the term sheet — a draft/registered
@@ -837,20 +846,25 @@ const ProductStudioPanel = forwardRef(function ProductStudioPanel({ appId, app, 
   // scenario is NOT eligible as-is: it can't be plain-registered, only submitted as
   // an exception for super-admin approval (owner-directed 2026-07-21).
   const scenarioManual = !!(d && d.status === 'MANUAL' && d.totalLoan > 0);
+  // Is the LIVE studio scenario a manual product (LTV/LTC/ARV override)? Computed
+  // BEFORE blockReason on purpose: a manual product on an engine-refused deal is
+  // the flagship manual-underwrite case ("admin prices what the engine refuses")
+  // and it REGISTERS normally (the server skips exception_required for a
+  // structural override) — it must never read as blocked (audit 2026-07-30 #1).
+  let manualLive = false;
+  try { manualLive = isStaff && snap && overridesAreManual(overridesFromSnapshot(snap, 'staff')); } catch (_) { manualLive = false; }
   const blockReason = busy ? ''
     : !snap ? 'The Term Sheet Studio is still loading — give it a moment, then register.'
     : !snap.ready ? 'To register, add the required pricing fields: ' + ((snap.missing && snap.missing.join(', ')) || 'see the highlighted fields in the studio') + '.'
     : !snap.program ? 'No program selected yet — tap one of the four program cards (Standard, Gold Standard, Silver or Manual) to choose your product. Register unlocks once a program is selected.'
     : (d && d.status === 'INELIGIBLE') ? "This scenario isn't eligible as entered — adjust it in the studio, or contact your loan team for a manual review."
     : (d && !(d.totalLoan > 0)) ? "This scenario didn't size a loan yet — check the purchase price, ARV / as-is value and rehab budget in the studio."
-    : scenarioManual ? `This scenario isn’t eligible as-is on the ${snap.program === 'gold' ? 'Gold Standard' : snap.program === 'silver' ? 'Silver' : snap.program === 'manual' ? 'Manual' : 'Standard'} program — it needs a manual-review exception. Submit an exception request${isStaff ? ' — an admin reviews it and the borrower isn’t sent terms unless it’s approved.' : ' and your loan team will review it.'}`
+    : (scenarioManual && !manualLive) ? `This scenario isn’t eligible as-is on the ${snap.program === 'gold' ? 'Gold Standard' : snap.program === 'silver' ? 'Silver' : snap.program === 'manual' ? 'Manual' : 'Standard'} program — it needs a manual-review exception. Submit an exception request${isStaff ? ' — an admin reviews it and the borrower isn’t sent terms unless it’s approved.' : ' and your loan team will review it.'}`
     : '';
 
-  // Is the LIVE studio scenario a manual product (LTV/LTC/ARV override)? Every
-  // staff role can enter those knobs now, so every staff role sees the manual UI
-  // (and must state the liquidity months before it can register).
-  let manualLive = false;
-  try { manualLive = isStaff && snap && overridesAreManual(overridesFromSnapshot(snap, 'staff')); } catch (_) { manualLive = false; }
+  // (manualLive — whether the live scenario is a manual product — is computed
+  // above blockReason; every staff role can enter those knobs and must state
+  // the liquidity months before it can register.)
   // Is the LIVE scenario carrying an admin-zone knob that is OFF the company
   // default (and therefore needs an admin's approval)? Compared against the real
   // company defaults the server sends on the pricing load — the SAME numbers the

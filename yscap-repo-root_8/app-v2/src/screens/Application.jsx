@@ -982,7 +982,7 @@ export default function Application() {
                   done={isDone(ppItem.status) || !!app.registered_program}
                   title="Products & pricing — register your product"
                   subtitle={app.registered_program
-                    ? `Registered: ${app.registered_product_label || (app.registered_program === 'gold' ? 'Gold Standard Program' : app.registered_program === 'silver' ? 'Silver Program' : 'Standard Program')} · ${money(app.registered_total_loan)}`
+                    ? `Registered: ${app.registered_product_label || (app.registered_program === 'gold' ? 'Gold Standard Program' : app.registered_program === 'silver' ? 'Silver Program' : app.registered_program === 'manual' ? 'Manual Program' : 'Standard Program')} · ${money(app.registered_total_loan)}`
                     : 'Price your deal in the Term Sheet Studio and register your product — your terms, cash to close and liquidity requirement all come from it.'}
                   status={(isDone(ppItem.status) || app.registered_program) ? conditionStatusLabel('satisfied') : conditionStatusLabel('outstanding')}
                   open={tsDocs.length > 0}
@@ -1128,7 +1128,7 @@ export default function Application() {
                     issue={assetsItem.status === 'issue'}
                     title={q ? 'Assets & liquidity — your registered requirement' : assetsItem.label}
                     subtitle={q
-                      ? `Your ${app.registered_program === 'gold' ? 'Gold Standard' : app.registered_program === 'silver' ? 'Silver' : 'Standard'} registration: verify ${money2(liq)} in liquidity`
+                      ? `Your ${app.registered_program === 'gold' ? 'Gold Standard' : app.registered_program === 'silver' ? 'Silver' : app.registered_program === 'manual' ? 'Manual Program' : 'Standard'} registration: verify ${money2(liq)} in liquidity`
                         + (q.reserveRequirement ? ` (incl. ${money(q.reserveRequirement)} reserve${q.reserveBasis ? ` — ${q.reserveBasis}` : ''})` : '')
                         + (q.cashToClose ? ` · estimated cash to close ${money2(q.cashToClose)}` : '')
                         + '. Upload the bank statements that show it.'

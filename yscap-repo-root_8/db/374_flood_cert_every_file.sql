@@ -82,7 +82,7 @@ UPDATE checklist_items ci
          '[auto] Optional on this file — this capital partner does not require a flood certificate as a standing condition, so it can be signed off with nothing attached. If the property turns out to be in a flood zone, this condition becomes required again.',
          ''),
          '[auto] Required on this file — the property is in a flood zone, so the flood determination certificate is required here even though this capital partner does not ask for one as a standing condition.',
-         '')), ''),
+         ''), E' \t\r\n'), ''),
        updated_at = now()
   FROM checklist_templates t
  WHERE ci.template_id = t.id
