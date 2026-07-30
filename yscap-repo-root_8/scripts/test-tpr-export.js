@@ -181,7 +181,7 @@ async function main() {
     ok(names.some(n => /\/REO\/9 Prior Rd[^/]*\/hud-closing\.pdf$/.test(n)), 'REO has a per-property folder with the line-item doc');
     ok(!names.some(n => /\/\d\d?_/.test(n.split('/').pop())), 'no NN_ numbered prefixes on file names');
     ok(names.some(n => /\/(Background Check|Criminal Check)\//.test(n)), 'fraud report filed under Background/Criminal Check');
-    ok(names.some(n => n.endsWith('/_Manifest.json')) && names.some(n => n.endsWith('/_Package Index.txt')), 'manifest + index filed inside the folder');
+    ok(!names.some(n => n.endsWith('/_Manifest.json')) && !names.some(n => n.endsWith('/_Package Index.txt')), 'no _Manifest.json / _Package Index.txt in the package (owner-directed)');
     ok(names.every(n => !/\b(iska|heter)\b/i.test(n)), 'no Iska/Heter file anywhere in the package');
   } catch (e) { fail++; console.log('  ✗ EXCEPTION', e && e.stack ? e.stack : e); }
   finally {

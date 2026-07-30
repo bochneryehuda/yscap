@@ -23,8 +23,9 @@
  *      Term Sheet/             uploaded + signed term sheet (+ registered terms)
  *      TITLE/                  title documents + title replies
  *      Other Documents/        anything that didn't match a category (flagged)
- *      _Package Index.txt      human-readable list of everything in the package
- *      _Manifest.json          machine-readable manifest + integrity report
+ *
+ * (No _Manifest.json / _Package Index.txt — owner-directed 2026-07-30: the ZIP is
+ * just the clean document folders, no technical index/manifest files.)
  *
  * HARD FREEZE (owner-directed): the Heter Iska — unsigned AND signed — is NEVER
  * in the TPR export. Guarded THREE independent ways in the selection: the
@@ -698,66 +699,12 @@ async function buildTprExport(appId) {
     });
   }
 
-  // 4) Manifest + human index — filed inside ROOT so the ZIP is ONE clean folder.
-  const propLabel = subjectAddr;
-  const categoryCounts = {};
-  for (const m of manifestDocs) categoryCounts[m.category] = (categoryCounts[m.category] || 0) + 1;
-  const otherDocs = manifestDocs.filter(m => m.category === C.OTHER);
-
-  const manifest = {
-    generated_at: generatedAt,
-    lender: 'YS Capital Group',
-    loan_number: app.ys_loan_number || null,
-    borrower: borrowerName,
-    property: propLabel,
-    program: app.program || null,
-    loan_type: app.loan_type || null,
-    registered_terms: registration ? {
-      program: registration.program,
-      product_label: registration.product_label,
-      status: registration.status,
-      note_rate: registration.note_rate,
-      total_loan: registration.total_loan,
-      target_ltc: registration.target_ltc,
-      quote: registration.quote,
-      registered_at: registration.created_at,
-    } : null,
-    documents_by_category: categoryCounts,
-    included_documents: manifestDocs,
-    included_count: manifestDocs.length,
-    track_record: { projects: records.length, verified: records.filter(r => r.is_verified).length, line_items: trManifest },
-    unmatched_documents: otherDocs.map(m => ({ file: m.file, source: m.source, requirement: m.requirement })),
-    integrity_warnings: integrityWarnings,
-    unavailable_documents: unavailable,
-    open_conditions_without_documents: missing,
-  };
-  files.push({ name: `${ROOT}/_Manifest.json`, data: Buffer.from(JSON.stringify(manifest, null, 2), 'utf8') });
-
-  const catLine = Object.keys(categoryCounts).sort().map(c => `  ${c}: ${categoryCounts[c]}`);
-  const lines = [
-    `YS CAPITAL GROUP — TPR FILE PACKAGE (every current document on the file)`,
-    `Loan: ${app.ys_loan_number || '(pending)'}   Borrower: ${borrowerName}   Property: ${propLabel}`,
-    `Generated: ${generatedAt}`, '',
-    `This package is ONE folder — "${ROOT}" — organized into these document folders:`,
-    ...catLine,
-    '', `TRACK RECORD (REO): ${records.length} project(s), ${manifest.track_record.verified} verified — see the REO folder (Track Record.xlsx + Track Record.pdf + one folder per property).`,
-    '', `INCLUDED DOCUMENTS (${manifestDocs.length}):`,
-    ...manifestDocs.map(m => `  - ${m.file}${m.accepted_by ? `  (accepted by ${m.accepted_by})` : (m.review && !['accepted', 'n/a'].includes(m.review) ? `  (${m.review} review)` : '')}${m.integrity === 'CHECK' ? '  [CHECK — see integrity notes]' : ''}`),
-    '', `OPEN CONDITIONS WITH NO DOCUMENT YET (${missing.length}):`,
-    ...(missing.length ? missing.map(m => `  - ${m}`) : ['  (none)']),
-  ];
-  if (otherDocs.length) {
-    lines.push('', `UNMATCHED — filed under "Other Documents" (${otherDocs.length}), please tell us where these belong:`,
-      ...otherDocs.map(m => `  - ${m.source}${m.requirement ? `  (from: ${m.requirement})` : ''}`));
-  }
-  if (integrityWarnings.length) {
-    lines.push('', `INTEGRITY CHECKS — these files may be corrupt at the source; re-request a fresh copy (${integrityWarnings.length}):`,
-      ...integrityWarnings.map(w => `  - ${w.file}: ${w.issue}`));
-  }
-  if (unavailable.length) {
-    lines.push('', `UNREADABLE / SKIPPED (${unavailable.length}):`, ...unavailable.map(u => `  - ${u.source} (${u.requirement || 'file'})`));
-  }
-  files.push({ name: `${ROOT}/_Package Index.txt`, data: Buffer.from(lines.join('\n'), 'utf8') });
+  // The machine-readable _Manifest.json and the human _Package Index.txt used to
+  // be filed inside ROOT. Owner-directed 2026-07-30: drop them — they read as
+  // "garbage" technical files in an otherwise clean package of document folders.
+  // The download response + preview still report includedCount + missing from the
+  // same tallies (manifestDocs / missing) below; the integrity/unavailable notes
+  // are still gathered (cheap, and handy for logging) but no longer written in.
 
   const filename = `TPR_${sanitize(app.ys_loan_number || app.last_name || 'file')}_${generatedAt.slice(0, 10)}.zip`;
   return { zip: zip(files), filename, includedCount: manifestDocs.length, missing };
