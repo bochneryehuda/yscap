@@ -1,5 +1,7 @@
-import React, { useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import StaticToolFrame from '../components/StaticToolFrame.jsx';
+import ToolScenarioBar from '../components/ToolScenarioBar.jsx';
+import { api } from '../lib/api.js';
 
 /* Investor Suite inside PILOT (owner-directed 2026-07-29): the same set of
    tools the public marketing "Investor Suite" (web/v2/suite.html) offers —
@@ -16,7 +18,7 @@ const GROUPS = [
     title: 'Structure & apply',
     sub: 'Build the deal — a term sheet, the scope of work, the track record, or the application.',
     tools: [
-      { slug: 'term-sheet', name: 'Term Sheet Studio', desc: 'Price a loan and generate a full term sheet — Standard or Gold.', icon: '📄' },
+      { slug: 'term-sheet', name: 'Term Sheet Studio', desc: 'Price a loan and generate a full term sheet — Standard, Gold, Silver or a manual product.', icon: '📄' },
       { slug: 'rehab-budget', name: 'Rehab Budget', desc: 'Build the Scope of Work line by line, with the contingency baked in.', icon: '🔨' },
       { slug: 'track-record', name: 'Track Record', desc: "Capture the borrower's completed projects and experience.", icon: '🏘️' },
       { slug: 'loan-application', name: 'Loan Application', desc: 'The full RTL loan application form.', icon: '📝' },
@@ -45,8 +47,29 @@ const GROUPS = [
 
 const TOOL_BASE = '/tools/';   // same-origin static tools (frozen engines)
 
-export default function StaffInvestorSuite() {
-  const [open, setOpen] = useState(null);   // the tool being viewed full-screen, or null
+/* Flat lookup so a route can name a tool without knowing which group it sits in. */
+const ALL_TOOLS = GROUPS.flatMap((g) => g.tools);
+const TOOL_BY_SLUG = Object.fromEntries(ALL_TOOLS.map((t) => [t.slug, t]));
+
+export default function StaffInvestorSuite({ initialTool = null }) {
+  /* `initialTool` is the direct left-nav entry (/internal/term-sheet) opening straight
+     onto one tool. An unknown slug falls back to the grid rather than a blank screen. */
+  const [open, setOpen] = useState(() => (initialTool && TOOL_BY_SLUG[initialTool]) || null);
+  const [counts, setCounts] = useState({}); // slug -> how many scenarios this staffer saved
+  /* The frame's own window, captured through StaticToolFrame's onReady. Same-origin,
+     so the scenario bar can ask the tool for its state and hand it back. Held in a
+     REF rather than state: it is an imperative handle, and re-rendering on it would
+     remount the frame and throw away the very numbers we are trying to save. */
+  const winRef = useRef(null);
+
+  // Saved counts for the grid badges — one call, every tool.
+  useEffect(() => {
+    let dead = false;
+    api.toolScenarios().then((r) => { if (!dead) setCounts((r && r.counts) || {}); }).catch(() => {});
+    return () => { dead = true; };
+  }, []);
+
+  const noteCount = useCallback((slug, n) => setCounts((c) => (c[slug] === n ? c : { ...c, [slug]: n })), []);
 
   // Lock the page scroll while the full-screen tool is open.
   useEffect(() => {
@@ -66,10 +89,13 @@ export default function StaffInvestorSuite() {
           <button className="btn ghost small" onClick={() => setOpen(null)} aria-label="Back to the Investor Suite">← Back to the suite</button>
           <strong style={{ fontSize: 15 }}>{open.name}</strong>
           <div style={{ flex: 1 }} />
+          <ToolScenarioBar slug={open.slug} toolName={open.name}
+            getWin={() => winRef.current} onCountChange={noteCount} />
           <a className="btn ghost small" href={url} target="_blank" rel="noopener noreferrer" title="Open this tool in a new browser tab">Open in a new tab ↗</a>
         </div>
         <div className="isuite-full-body">
-          <StaticToolFrame key={open.slug} src={url} title={open.name} fill />
+          <StaticToolFrame key={open.slug} src={url} title={open.name} fill
+            onReady={(win) => { winRef.current = win; }} />
         </div>
       </div>
     );
@@ -97,6 +123,13 @@ export default function StaffInvestorSuite() {
                 <span className="isuite-card-icon" aria-hidden="true">{t.icon}</span>
                 <span className="isuite-card-name">{t.name}</span>
                 <span className="isuite-card-desc">{t.desc}</span>
+                {counts[t.slug] > 0 && (
+                  <span className="isuite-card-saved" style={{
+                    fontSize: 11.5, fontWeight: 700, color: '#256168',
+                    background: 'rgba(47,127,134,.10)', border: '1px solid rgba(47,127,134,.30)',
+                    borderRadius: 100, padding: '1px 8px', marginTop: 6, alignSelf: 'flex-start',
+                  }}>{counts[t.slug]} saved</span>
+                )}
                 <span className="isuite-card-cta">Open →</span>
               </button>
             ))}

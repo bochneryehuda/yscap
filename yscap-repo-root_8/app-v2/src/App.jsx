@@ -169,6 +169,10 @@ export default function App() {
           <Route path="/internal/orders" element={<StaffPrivate><StaffOrders /></StaffPrivate>} />
           {/* Investor Suite — every marketing tool (term sheet, rehab budget, analyzers) inside PILOT. */}
           <Route path="/internal/investor-suite" element={<StaffPrivate><StaffInvestorSuite /></StaffPrivate>} />
+          {/* Same screen, opened straight onto the Term Sheet Studio — the owner's
+              direct left-nav entry (2026-07-30). One screen, so the scenario bar and
+              the saved-count badges behave identically either way in. */}
+          <Route path="/internal/term-sheet" element={<StaffPrivate><StaffInvestorSuite initialTool="term-sheet" /></StaffPrivate>} />
           <Route path="/internal/borrowers" element={<StaffPrivate><StaffBorrowers /></StaffPrivate>} />
           <Route path="/internal/borrowers/:id" element={<StaffPrivate><StaffBorrowerDetail /></StaffPrivate>} />
           {/* Borrower view — pick a borrower and see PILOT as they see it. */}
