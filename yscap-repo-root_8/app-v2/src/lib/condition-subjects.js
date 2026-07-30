@@ -72,6 +72,10 @@ export const CODE_SUBJECT = {
   title_commitment: 'title', rtl_cond_title: 'title',
   // insurance
   insurance_binder: 'insurance', rtl_cond_insurance: 'insurance', rtl_cond_flood: 'insurance',
+  // db/378 (#909) seeds the flood-INSURANCE policy condition — distinct from
+  // rtl_cond_flood, which is the flood CERTIFICATE (the determination). Both
+  // belong with Insurance; without this the new condition fell through to the
+  // catch-all "Other" group on every file that carries it.
   rtl_cond_flood_insurance: 'insurance',
   // money in the deal
   bank_statements: 'assets', rtl_p3_assets: 'assets', voided_check: 'assets',
