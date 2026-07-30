@@ -672,6 +672,10 @@ if (require.main === module) {
     // (structurally impossible via src/lib/integrations/encompass.js); writes ONLY
     // to PILOT's own DB — encompass_field_catalog + applications.encompass_extra.
     try { require('./sync/encompass-sync').start(); } catch (e) { console.warn('encompass sync not started:', e.message); }
+    // Flood-order poll worker (the one owner-authorized Encompass WRITE — flood
+    // only). Runs independently of ENCOMPASS_ENABLED; self-gates on the
+    // ENCOMPASS_FLOOD_ENABLED switch, so an idle tick is a cheap no-op.
+    try { require('./sync/encompass-sync').startFloodPoller(); } catch (e) { console.warn('encompass flood poller not started:', e.message); }
     // Scheduled notification digests (owner-directed 2026-07-20): weekly borrower
     // "what's still needed", daily per-officer pipeline snapshot, stale-file
     // alerts, and the Monday admin summary. Each self-gates via audit_log so it
@@ -702,6 +706,11 @@ if (require.main === module) {
     // recovers). Alerts only on a real transition, never on intentional states. OFF by
     // default — set INTEGRATIONS_MONITOR_ENABLED=1 to turn on.
     try { require('./lib/integrations/monitor').start(); } catch (e) { console.warn('integrations monitor not started:', e.message); }
+    // USPS previous-files backfill (owner-directed: "every file should have the correct
+    // address according to USPS"). Paced + non-destructive — stamps each existing file
+    // with its USPS-standardized subject address. OFF unless USPS_BACKFILL_ENABLED=1 and
+    // USPS keys are set (developer.usps.com).
+    try { require('./lib/address-usps-verify').startUspsBackfill(); } catch (e) { console.warn('usps backfill not started:', e.message); }
   });
 }
 module.exports = app;

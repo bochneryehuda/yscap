@@ -27,7 +27,7 @@ export default function StaffTapes() {
   const [busyBulk, setBusyBulk] = useState(false);
   const [busyRow, setBusyRow] = useState(null);
   const [pending, setPending] = useState(null); // { loanId, tapeName, questions } — questionnaire modal
-  const [adminOnly, setAdminOnly] = useState(false); // provider is admin-only for this user (e.g. parked Silver/EMCAP)
+  const [adminOnly, setAdminOnly] = useState(false); // provider is admin-only for this user (server-driven; nothing is parked today)
   const [err, setErr] = useState('');
   const [msg, setMsg] = useState('');
 

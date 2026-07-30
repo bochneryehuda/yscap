@@ -40,6 +40,7 @@ import { groupBySubject } from '../lib/condition-subjects.js';
 import { isWorkflowStep } from '../lib/condition-workflow-steps.js';
 import ConditionActions, { DocActions } from '../components/ConditionActions.jsx';
 import ConditionLine, { ConditionNote } from '../components/ConditionLine.jsx';
+import UspsAddressVerification from '../components/UspsAddressVerification.jsx';
 import { canComplete } from '../lib/condition-actions.js';
 import EsignFileSection from '../components/EsignFileSection.jsx';
 import ExceptionRegisterCard from '../components/ExceptionRegisterCard.jsx';
@@ -878,6 +879,88 @@ const APPR_XML_REASONS = [
   { v: 'desk_or_manual', label: 'Desk / manual / older appraisal (no MISMO XML)' },
   { v: 'other', label: 'Other (explain in the note)' },
 ];
+// Order a Life-of-Loan flood determination from ICE's own flood service (the one
+// owner-authorized Encompass write — flood only). Renders on the flood condition
+// (rtl_cond_flood). Any staff member may order. Self-hides until the feature is
+// turned on (ENCOMPASS_FLOOD_ENABLED). If the file has no loan number, the button
+// says so — the loan number is what links the file to its Encompass loan.
+function OrderFloodButton({ appId, itemId, onChanged }) {
+  const [state, setState] = useState(null);   // { order, enabled, hasLoanNumber } | null
+  const [busy, setBusy] = useState(false);
+  const [msg, setMsg] = useState('');
+  const [err, setErr] = useState('');
+  const load = useCallback(() => api.floodOrderState(appId).then(setState).catch(() => setState(null)), [appId]);
+  useEffect(() => { load(); }, [load]);
+  if (!state || !state.enabled) return null;   // feature off → nothing shows
+
+  const order = state.order;
+  const pending = order && order.status === 'ordered';
+  const done = order && order.status === 'completed';
+  const errored = order && order.status === 'error';
+  const box = { marginTop: 8, padding: '8px 10px', border: '1px solid var(--gold)', borderRadius: 8, background: 'rgba(174,135,70,0.06)' };
+
+  async function placeOrder() {
+    setBusy(true); setErr(''); setMsg('');
+    try {
+      const out = await api.orderFlood(appId, itemId);
+      setMsg(out.message || 'Flood certificate ordered.');
+      await load();
+      onChanged && onChanged();
+    } catch (e) {
+      setErr((e.data && e.data.message) || e.message || 'Could not order the flood certificate.');
+    } finally { setBusy(false); }
+  }
+
+  if (done) {
+    return (
+      <div className="small" style={box}>
+        <div style={{ fontWeight: 600, color: '#141B22' }}>Flood determination received</div>
+        <div style={{ color: '#4B585C', marginTop: 2 }}>
+          {order.sfha === true
+            ? `In a flood zone${order.flood_zone ? ` (zone ${order.flood_zone})` : ''} — a flood-insurance condition was added to the file.`
+            : order.sfha === false
+              ? `Not in a flood zone${order.flood_zone ? ` (zone ${order.flood_zone})` : ''}.`
+              : 'The determination came back.'}
+          {' '}The certificate is filed on this condition.
+        </div>
+      </div>
+    );
+  }
+  if (pending) {
+    return (
+      <div className="small" style={box}>
+        <div style={{ fontWeight: 600, color: '#141B22' }}>Flood certificate ordered</div>
+        <div style={{ color: '#4B585C', marginTop: 2 }}>Waiting for it to come back from Encompass — it will appear here automatically.</div>
+      </div>
+    );
+  }
+  const isDry = order && order.status === 'dryrun';
+  return (
+    <div style={{ marginTop: 6 }}>
+      {isDry && (
+        <div className="small" style={box}>
+          <div style={{ fontWeight: 600, color: '#141B22' }}>Test run — nothing was sent</div>
+          <div style={{ color: '#4B585C', marginTop: 2 }}>Test mode is on, so PILOT built the order but did not send it to Encompass. Turn test mode off (in Settings → API health) to place a real order.</div>
+          {order.raw && (
+            <details style={{ marginTop: 6 }}>
+              <summary style={{ color: '#256168', cursor: 'pointer' }}>What PILOT would send (technical)</summary>
+              <pre style={{ whiteSpace: 'pre-wrap', color: '#141B22', background: '#F4F1EA', padding: 8, borderRadius: 6, marginTop: 4, fontSize: 11 }}>{JSON.stringify(order.raw, null, 2)}</pre>
+            </details>
+          )}
+        </div>
+      )}
+      <button className="btn ghost small" style={{ marginTop: isDry ? 6 : 0 }} disabled={busy || !state.hasLoanNumber} onClick={placeOrder}>
+        {busy ? 'Ordering…' : (errored || isDry) ? 'Order flood certificate again' : 'Order flood certificate'}
+      </button>
+      {!state.hasLoanNumber && (
+        <div className="small" style={{ color: '#4B585C', marginTop: 4 }}>Add a loan number to this file first — the loan number links it to the Encompass loan.</div>
+      )}
+      {msg && <div className="notice" style={{ marginTop: 6 }}>{msg}</div>}
+      {err && <div className="notice err" style={{ marginTop: 6 }}>{err}</div>}
+    </div>
+  );
+}
+
 // Shared between the appraisal-DOCUMENTS condition (context='docs') and the
 // appraisal-REVIEW condition (context='review'). Both write the SAME
 // appraisal_xml_waivers row + the SAME file As-Is/ARV, so entering the values on
@@ -1228,6 +1311,14 @@ function Item({ it, team, onPatch, role, docs, onUploadTo, onDropTo, onReviewDoc
           appraisal-review task itself is worked from My Tasks, not this list.) */}
       {it.template_code === 'rtl_cond_appraisaldocs' && (
         <AppraisalXmlWaiver appId={appId} onChanged={onChanged} />
+      )}
+      {/* Flood condition — order the flood certificate from Encompass (flood only). */}
+      {it.template_code === 'rtl_cond_flood' && (
+        <OrderFloodButton appId={appId} itemId={it.id} onChanged={onChanged} />
+      )}
+
+      {it.template_code === 'usps_address_verification' && (
+        <UspsAddressVerification appId={appId} onChanged={onChanged} />
       )}
 
       {/* ONE next step, everything else behind More — the shared bar, so this

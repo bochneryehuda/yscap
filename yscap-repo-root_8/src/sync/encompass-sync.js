@@ -143,4 +143,28 @@ function start() {
   }
 }
 
-module.exports = { start, refreshCatalogOnce, pullOldestActiveOnce, enrichPassOnce };
+// ── Flood-order poll worker ──────────────────────────────────────────────────
+// Advances placed flood orders to completion (files the certificate PDF onto the
+// flood condition + records the flood-zone determination). Runs INDEPENDENTLY of
+// ENCOMPASS_ENABLED (a tenant may order flood without the read-sync on); it
+// self-gates on the ENCOMPASS_FLOOD_ENABLED switch inside pollPendingOnce, so an
+// idle tick is a cheap no-op. Started from server boot.
+let floodStarted = false;
+const FLOOD_POLL_MS = _envSec('ENCOMPASS_FLOOD_POLL_SEC', 120) * 1000;
+async function pollFloodOnce() {
+  try {
+    const out = await require('../encompass/flood-desk').pollPendingOnce();
+    if (out && (out.completed || out.failed)) console.log('[encompass-flood] poll:', JSON.stringify(out));
+    return out;
+  } catch (e) { console.warn('[encompass-flood] poll threw:', e.message); return null; }
+}
+function startFloodPoller() {
+  if (floodStarted) return;
+  floodStarted = true;
+  // Warm one-shot shortly after boot, then a steady interval. The tick is a no-op
+  // while the flood switch is off, so this is safe to always start.
+  setTimeout(() => { pollFloodOnce(); }, 20000);
+  setInterval(pollFloodOnce, FLOOD_POLL_MS);
+}
+
+module.exports = { start, startFloodPoller, refreshCatalogOnce, pullOldestActiveOnce, enrichPassOnce, pollFloodOnce };

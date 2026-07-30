@@ -62,6 +62,9 @@ export const CODE_SUBJECT = {
   rtl_cond_appraisaldocs: 'valuation', appraisal_as_is_verify: 'valuation',
   appraisal_review_cleared: 'valuation', rtl_p1_arv: 'valuation', rtl_p4_arv: 'valuation',
   rtl_p4_ltc: 'valuation', rtl_p4_ltv: 'valuation', cond_condo_docs: 'valuation',
+  // the subject PROPERTY itself — its USPS-standardized, deliverable address is the
+  // foundation every valuation and financing export is written against.
+  usps_address_verification: 'valuation',
   // the work
   scope_of_work: 'construction', rtl_p3_sow1: 'construction', rtl_p1_plans: 'construction',
   rtl_cond_feasibility: 'construction', draw_cond_signed_request: 'construction',
@@ -69,6 +72,11 @@ export const CODE_SUBJECT = {
   title_commitment: 'title', rtl_cond_title: 'title',
   // insurance
   insurance_binder: 'insurance', rtl_cond_insurance: 'insurance', rtl_cond_flood: 'insurance',
+  // db/378 (#909) seeds the flood-INSURANCE policy condition — distinct from
+  // rtl_cond_flood, which is the flood CERTIFICATE (the determination). Both
+  // belong with Insurance; without this the new condition fell through to the
+  // catch-all "Other" group on every file that carries it.
+  rtl_cond_flood_insurance: 'insurance',
   // money in the deal
   bank_statements: 'assets', rtl_p3_assets: 'assets', voided_check: 'assets',
   cond_emd_corrfirst: 'assets', cond_cashout_letter: 'assets',

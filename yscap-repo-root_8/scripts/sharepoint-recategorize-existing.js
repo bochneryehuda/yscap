@@ -15,11 +15,17 @@
  *    two old folders that map to one clean name are SKIPPED, never merged, and a
  *    human folder is never touched. It pins the change with an If-Match eTag.
  *  - A rename KEEPS the driveItem id, so documents.sharepoint_backup_ref and the
- *    folder cache stay valid — no re-pointing needed. Nothing is moved or deleted.
- *  - The clean name is computed from each document's REAL metadata via
+ *    folder cache stay valid — no re-pointing. Nothing is moved or deleted.
+ *  - TWO PASSES: pass 1 groups every mirrored document by its current top folder
+ *    and collects the clean category each document maps to; pass 2 renames a
+ *    folder ONLY when EVERY document in it maps to the SAME clean name. A folder
+ *    whose documents map to MORE THAN ONE category (the old "General Documents"
+ *    catch-all, or a legacy fraud folder holding both background + criminal docs)
+ *    is left alone and reported — never renamed to whichever document came first.
+ *  - The clean name comes from each document's REAL metadata via
  *    sharepoint-backup.categoryPathFor (the SAME function the live mirror uses),
  *    so an LLC / REO / Term Sheet / Closing / photo-ID folder — already correct —
- *    is recognized and left alone; only the flat per-condition folders are renamed.
+ *    is recognized (its clean top == its own name) and left alone.
  *  - IDEMPOTENT: a folder already at its clean name is skipped; re-running is safe.
  *
  *   node scripts/sharepoint-recategorize-existing.js           # dry run
@@ -66,19 +72,21 @@ async function topCategoryFolder(sp, driveId, startParentId, leafId) {
       ORDER BY created_at ASC`);
   console.log(`${rows.length} mirrored documents to inspect.`);
 
-  const leafCache = new Map();     // scopeKey -> sync_folder_id
-  const doneFolder = new Set();    // folder ids already handled (rename each folder once)
-  let seen = 0, renamed = 0, skipped = 0, collisions = 0;
+  const leafCache = new Map();     // scopeKey -> sync_folder_id (null = none)
+  const parentTop = new Map();     // parent driveItem id -> topFolder {id,name} | null
+  const folders = new Map();       // topFolderId -> { name, cats:Set }
 
+  // ---- PASS 1: group documents by their current top folder + collect categories.
+  let inspected = 0;
   for (const d of rows) {
     let ref; try { ref = sp.parseRef(d.sharepoint_backup_ref); } catch { continue; }
     if (ref.driveId !== driveId) continue;
     const row = await backup.enrichedRowById(d.id).catch(() => null);
-    if (!row) { skipped++; continue; }
+    if (!row) continue;
 
     const cleanTop = backup.categoryPathFor(row)[0];
     const scopeKey = backup.scopeKeyFor(row);
-    if (!scopeKey || !cleanTop) { skipped++; continue; }
+    if (!scopeKey || !cleanTop) continue;
 
     let leafId = leafCache.get(scopeKey);
     if (leafId === undefined) {
@@ -87,16 +95,36 @@ async function topCategoryFolder(sp, driveId, startParentId, leafId) {
       leafId = r.rows[0] ? r.rows[0].sync_folder_id : null;
       leafCache.set(scopeKey, leafId);
     }
-    if (!leafId) { skipped++; continue; }
+    if (!leafId) continue;
 
-    const top = await topCategoryFolder(sp, driveId, d.sharepoint_parent_id, leafId);
-    if (!top) { skipped++; continue; }
-    if (doneFolder.has(top.id)) continue;
-    doneFolder.add(top.id);
-    seen++;
+    // Resolve (and memoize) the top folder for this document's parent — many
+    // documents share a parent, so this avoids re-walking the same chain.
+    const memoKey = `${leafId}|${d.sharepoint_parent_id}`;
+    let top = parentTop.get(memoKey);
+    if (top === undefined) {
+      top = await topCategoryFolder(sp, driveId, d.sharepoint_parent_id, leafId);
+      parentTop.set(memoKey, top);
+    }
+    if (!top) continue;
 
-    if (top.name === cleanTop) { skipped++; continue; }                 // already clean — leave it
-    const res = await sp.renameOwnItem(driveId, top.id, cleanTop, { kind: 'folder', dryRun: !APPLY })
+    inspected++;
+    let g = folders.get(top.id);
+    if (!g) { g = { name: top.name, cats: new Set() }; folders.set(top.id, g); }
+    g.cats.add(cleanTop);
+  }
+  console.log(`${inspected} documents grouped into ${folders.size} top folder(s).`);
+
+  // ---- PASS 2: rename only HOMOGENEOUS folders that need it.
+  let renamed = 0, alreadyClean = 0, heterogeneous = 0, skipped = 0, collisions = 0;
+  for (const [folderId, g] of folders) {
+    if (g.cats.size > 1) {
+      heterogeneous++;
+      console.log(`  skip FOLDER "${g.name}": holds ${g.cats.size} categories (${[...g.cats].join(', ')}) — a human sorts these, never auto-renamed`);
+      continue;
+    }
+    const cleanTop = [...g.cats][0];
+    if (g.name === cleanTop) { alreadyClean++; continue; }
+    const res = await sp.renameOwnItem(driveId, folderId, cleanTop, { kind: 'folder', dryRun: !APPLY })
       .catch((e) => ({ skipped: true, reason: e.message }));
     if (res.renamed || res.wouldRename) {
       renamed++;
@@ -104,11 +132,12 @@ async function topCategoryFolder(sp, driveId, startParentId, leafId) {
     } else {
       skipped++;
       if (/sibling named/.test(res.reason || '')) collisions++;
-      console.log(`  skip FOLDER "${top.name}" → "${cleanTop}": ${res.reason}`);
+      console.log(`  skip FOLDER "${g.name}" → "${cleanTop}": ${res.reason}`);
     }
   }
 
-  console.log(`\nDone. folders: seen=${seen} ${APPLY ? 'renamed' : 'would-rename'}=${renamed} skipped=${skipped} collisions=${collisions}`);
+  console.log(`\nDone. folders: ${folders.size} total | ${APPLY ? 'renamed' : 'would-rename'}=${renamed} ` +
+    `already-clean=${alreadyClean} heterogeneous=${heterogeneous} skipped=${skipped} collisions=${collisions}`);
   if (collisions) {
     console.log(`(${collisions} folder(s) map to a clean name that ALREADY exists — two old folders → one category. ` +
       `Nothing was merged; a human moves the stragglers, or the going-forward mirror fills the clean folder.)`);

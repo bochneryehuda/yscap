@@ -189,7 +189,8 @@ function buildInputs(app, experience, overrides) {
   const NUMK = ['units', 'purchasePrice', 'sellerPrice', 'asIsValue', 'arv', 'rehabBudget',
     'fico', 'expFlips', 'expHolds', 'expGround', 'term', 'irMonths', 'irAmount', 'targetLTC',
     'ovrAcqLTV', 'ovrARLTV', 'ovrLTC', 'ovrRate',
-    'markupStdPct', 'markupGoldPct', 'markupSilverPct', 'origStdPct', 'origGoldPct', 'origSilverPct',
+    'markupStdPct', 'markupGoldPct', 'markupSilverPct',
+    'origStdPct', 'origGoldPct', 'origSilverPct', 'origManualPct',
     'lenderFee', 'creditFee', 'appraisalFee', 'titleFee',
     'ovrAcqLTVPct', 'ovrARLTVPct', 'ovrLTCPct', 'ovrRatePct', 'ovrIrMonths', 'ovrEffPrice'];
   const STRK = ['loanType', 'strategy', 'state', 'city', 'address', 'propertyType'];
@@ -281,7 +282,20 @@ function normalize(program, input, ev, ladder) {
     : (YSP.constants && YSP.constants.ORIG_PCT)) || 0.0125;
   const companyOrigPct = program === 'gold' ? cd.origGoldPct : program === 'silver' ? cd.origSilverPct : cd.origStdPct;
   const defaultOrigPct = (companyOrigPct != null ? companyOrigPct / 100 : engineOrigPct);
-  const origPct = percentOverride(input, program === 'gold' ? 'origGoldPct' : program === 'silver' ? 'origSilverPct' : 'origStdPct', defaultOrigPct);
+  /* THE MANUAL PRODUCT HAS ITS OWN ORIGINATION KNOB (owner-directed 2026-07-30:
+     "we don't have a word to enter origination fee for the manual program. We only
+     can enter for all other programs, not for the manual program"). It prices on
+     the Standard engine, so it has no company default and no engine constant of
+     its own — a BLANK manual field means "use Standard", which is why the fallback
+     below is `origStdPct` and not the bare default. That ordering is what keeps a
+     file that only ever set a Standard override behaving exactly as it did before
+     this key existed (including the accept-counter path, which writes the countered
+     origination onto origStdPct/origGoldPct only). */
+  const origKey = program === 'gold' ? 'origGoldPct'
+    : program === 'silver' ? 'origSilverPct'
+    : (program === 'manual' && hasInput(input, 'origManualPct')) ? 'origManualPct'
+    : 'origStdPct';
+  const origPct = percentOverride(input, origKey, defaultOrigPct);
   // Rounding policy (owner-directed 2026-07-09): the financed loan is reported in
   // WHOLE DOLLARS, floored DOWN — never lend more than the engine sized. The
   // reported breakdown must reconcile EXACTLY (initial advance + holdback +
@@ -333,13 +347,38 @@ function normalize(program, input, ev, ladder) {
     }
   }
   const liquidityRequired = round2(cashToClose + reserveRequirement);
-  const caps = ev.caps ? {
-    maxLoan: num(ev.caps.maxLoan),
-    minFico: num(ev.caps.minFico),
-    maxAcqLtv: num(ev.caps.maxAcqLTV),
-    maxArvLtv: num(ev.caps.maxARLTV),
-    maxLtc: num(ev.caps.maxLTC),
-  } : null;
+  /* THREE MEANINGS OF "MAX LEVERAGE", mapped to the reader that needs each one
+     (engine contract split 2026-07-30, owner-reported).
+
+     `quote.guidelines.caps` KEEPS ITS EXISTING MEANING — the EFFECTIVE ceiling this
+     deal was sized and priced at. Every enforcement path already built on it
+     (underwriting metrics, the structure underwriter, the Encompass reconcile, the
+     file view) must keep measuring the registered loan against the ceiling it was
+     actually approved at, so this mapping is deliberately behaviour-identical: the
+     Silver engine now publishes that value as `pricedCeiling`, and every other engine
+     still publishes it as `caps`.
+
+     `quote.guidelines.programCaps` is NEW and is for DISPLAY only — the PROGRAM
+     MAXIMUM this borrower profile can actually reach, already lowered to the highest
+     leverage band the rate grid genuinely prices, and invariant to deal inputs. The
+     owner: "the tier two cannot anytime get 92.5 even if it says that it's available
+     because it doesn't price — so keep that tier at 85%", and "the Max LTC should
+     never change … it shouldn't change based on what you're changing the interest
+     reserve".
+
+     `quote.guidelines.tierCaps` is the workbook Tier Grid row verbatim — the guideline
+     document's own numbers, kept for audit/parity readers.
+     Read-only: no number is computed here. */
+  const shape = (c) => (c ? {
+    maxLoan: num(c.maxLoan),
+    minFico: num(c.minFico),
+    maxAcqLtv: num(c.maxAcqLTV),
+    maxArvLtv: num(c.maxARLTV),
+    maxLtc: num(c.maxLTC),
+  } : null);
+  const caps = shape(ev.pricedCeiling || ev.caps);
+  const programCaps = shape(ev.caps);
+  const tierCaps = shape(ev.tierCaps);
 
   const quote = {
     program,
@@ -393,7 +432,12 @@ function normalize(program, input, ev, ladder) {
     ladder: ladder || null,
     liquidity: liquidityRequired,
     guidelines: {
-      caps,
+      caps,             // EFFECTIVE — what this deal was sized/priced at (enforcement)
+      programCaps,      // PROGRAM MAXIMUM this profile can reach (display; fixed)
+      tierCaps,         // the workbook Tier Grid row, verbatim (audit / parity)
+      // the engine's own sentence explaining why this deal's ceiling sits under the
+      // program maximum (Silver's grid step-down tags it `leverage_capped`)
+      leverageCappedWhy: (ev.reasons || []).filter((r) => r && r.code === 'leverage_capped').map((r) => r.msg).join(' ') || null,
       tierLabel: ev.tierLabel || null,
       binding: (s && s.binding) || '',
       reserveRequirement,

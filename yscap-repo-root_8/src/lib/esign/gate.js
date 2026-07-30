@@ -130,7 +130,7 @@ async function esignSendGate(applicationId, { db = dbDefault, purpose } = {}) {
   // machinery covers it. Its reason is DELIBERATELY the original, STABLE string:
   // gate-disposition matches a super-admin's per-item waiver by reason text, so a
   // wording change here would silently un-waive every approved early-send exception
-  // for this code. The "how to clear / no-XML" guidance lives in the UI (db/377
+  // for this code. The "how to clear / no-XML" guidance lives in the UI (db/380
   // hint + the appraisal-review no-XML card), not in this reason. Fails CLOSED.
   let noXmlWaiver = false;
   try { noXmlWaiver = await noXmlWaiverActive(applicationId, db); } catch (_) { noXmlWaiver = false; }
