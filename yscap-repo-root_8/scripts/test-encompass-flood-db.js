@@ -107,6 +107,44 @@ async function completedOrder(appId, { sfha = null, zone = null } = {}) {
     catch (e) { dup = e; }
     ok(dup && dup.code === '23505', 'the DB refuses a second outstanding order on the same file');
 
+    // (E) completeOrder files the certificate PDF onto the flood condition, records
+    //     the determination, sets in_flood_zone (→ flood-insurance), and is idempotent.
+    const client = require('../src/encompass/flood-order');
+    const origDownload = client.downloadResultFile;
+    client.downloadResultFile = async () => Buffer.from('%PDF-1.4\nfake flood cert\n%%EOF');
+    try {
+      const aPdf = await mkApp();
+      // The flood condition (rtl_cond_flood, auto_apply='always') is attached by the engine.
+      await engine.evaluateApplication(aPdf, { reason: 'pre', notify: false });
+      const floodItemId = (await db.query(
+        `SELECT ci.id FROM checklist_items ci JOIN checklist_templates t ON t.id=ci.template_id
+          WHERE ci.application_id=$1 AND t.code='rtl_cond_flood' LIMIT 1`, [aPdf])).rows[0].id;
+      const orderRow = (await db.query(
+        `INSERT INTO encompass_flood_orders (application_id, checklist_item_id, encompass_loan_guid, order_id, status)
+         VALUES ($1,$2,'guid-pdf','ORD-PDF-1','ordered') RETURNING *`, [aPdf, floodItemId])).rows[0];
+      await desk.completeOrder(orderRow, { status: 'completed', sfha: true, floodZone: 'AE', fileUrl: 'https://api.elliemae.com/x/cert.pdf', determination: { community: 'X' }, raw: {} });
+
+      const doc = (await db.query(
+        `SELECT doc_kind, visibility, source_type, checklist_item_id FROM documents
+          WHERE application_id=$1 AND doc_kind='flood_determination' AND is_current=true`, [aPdf])).rows;
+      ok(doc.length === 1, 'completeOrder files exactly one flood-determination PDF');
+      ok(doc[0] && doc[0].visibility === 'staff_only' && doc[0].source_type === 'system' && doc[0].checklist_item_id === floodItemId,
+        'the filed PDF is staff-only, source_type=system, on the flood condition');
+      const ord2 = (await db.query(`SELECT status, sfha, flood_zone, document_id FROM encompass_flood_orders WHERE id=$1`, [orderRow.id])).rows[0];
+      ok(ord2.status === 'completed' && ord2.sfha === true && ord2.flood_zone === 'AE' && ord2.document_id,
+        'the order row records completed + the determination + the document');
+      const fi = (await db.query(
+        `SELECT status FROM checklist_items WHERE id=$1`, [floodItemId])).rows[0];
+      ok(fi.status === 'received', 'the flood condition is moved to received');
+      ok((await fiCount(aPdf)) === 1, 'completeOrder attaches the flood-insurance condition (in_flood_zone via the order)');
+
+      // Idempotent: a re-run (e.g. the row re-polled) does NOT file a second PDF.
+      await desk.completeOrder(orderRow, { status: 'completed', sfha: true, floodZone: 'AE', fileUrl: 'https://api.elliemae.com/x/cert.pdf', determination: { community: 'X' }, raw: {} });
+      const docs2 = (await db.query(
+        `SELECT count(*)::int n FROM documents WHERE application_id=$1 AND doc_kind='flood_determination' AND is_current=true`, [aPdf])).rows[0].n;
+      ok(docs2 === 1, 're-running completeOrder does not file a duplicate certificate');
+    } finally { client.downloadResultFile = origDownload; }
+
     console.log(failures ? `\n${failures} assertion(s) failed` : '\ntest-encompass-flood-db: ALL PASS');
     process.exitCode = failures ? 1 : 0;
   } catch (e) {

@@ -203,8 +203,8 @@ async function attachCertificate(order, buf) {
   const borrowerId = (await db.query(`SELECT borrower_id FROM applications WHERE id=$1`, [order.application_id])).rows[0];
   const r = await db.query(
     `INSERT INTO documents (application_id, checklist_item_id, borrower_id, filename, content_type, size_bytes,
-                            storage_provider, storage_ref, uploaded_by_kind, uploaded_by_id, doc_kind, slot_label, visibility)
-     VALUES ($1,$2,$3,$4,'application/pdf',$5,$6,$7,'staff',$8,'flood_determination','Flood determination','staff_only')
+                            storage_provider, storage_ref, uploaded_by_kind, uploaded_by_id, doc_kind, slot_label, visibility, source_type)
+     VALUES ($1,$2,$3,$4,'application/pdf',$5,$6,$7,'staff',$8,'flood_determination','Flood determination','staff_only','system')
      RETURNING id`,
     [order.application_id, itemId || null, itemId ? (borrowerId && borrowerId.borrower_id) : null, filename, buf.length, provider, ref, order.ordered_by || null]);
   if (itemId) {
@@ -231,4 +231,4 @@ async function audit(actorId, action, appId, detail) {
   } catch (_) { /* logging must never fail the action */ }
 }
 
-module.exports = { orderFlood, pollPendingOnce, resolveLoanGuid, floodConditionId, latestFloodOrder };
+module.exports = { orderFlood, pollPendingOnce, completeOrder, attachCertificate, resolveLoanGuid, floodConditionId, latestFloodOrder };
