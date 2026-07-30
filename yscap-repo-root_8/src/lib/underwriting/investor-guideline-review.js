@@ -210,6 +210,38 @@ const RULES = [
     expected: (x) => money(x.loan_estimated_rent), actual: (x) => money(x.appraisal_market_rent),
     detail: (x) => `The appraisal’s market rent ${money(x.appraisal_market_rent)} does not match the estimated rental income on the loan ${money(x.loan_estimated_rent)}. Reconcile them before submitting to EMCAP.` },
 
+  // ----- EMCAP Silver-program overlays (the EMCAP Underwriting Commentary, 2026-07-29
+  //       Silver build). The frozen Silver engine already HARD-enforces these at
+  //       pricing/registration time; these advisory rows are the belt-and-suspenders
+  //       for a file whose inputs moved after it was priced (never-fabricate: a
+  //       missing signal keeps each rule silent). -----
+  { code: 'isg_emcap_excluded_state', audience: 'emcap', severity: 'fatal',
+    title: 'Property in a state EMCAP excludes', governing_rule: 'EMCAP does not lend in Nevada, Minnesota, North Dakota or South Dakota',
+    when: (x) => x.property_state == null ? null : ['NV', 'MN', 'ND', 'SD'].indexOf(String(x.property_state).toUpperCase()) > -1,
+    actual: (x) => String(x.property_state || ''),
+    detail: (x) => `The property is in ${x.property_state}, which EMCAP excludes (NV / MN / ND / SD are ineligible). The loan cannot be sold to this note buyer.` },
+
+  { code: 'isg_emcap_mid_construction', audience: 'emcap', severity: 'fatal',
+    title: 'Mid-construction project (EMCAP)', governing_rule: 'EMCAP: mid-way completed construction projects are not eligible for funding',
+    when: (x) => x.appraisal_mid_construction == null ? null : x.appraisal_mid_construction === true,
+    detail: () => 'The appraisal shows the project mid-construction. EMCAP does not fund mid-way completed construction projects — an ineligible submission can only go for individual review.' },
+
+  { code: 'isg_emcap_cashout_over_half_profit', audience: 'emcap', severity: 'fatal',
+    title: 'Cash-out exceeds 50% of projected project profit (EMCAP)', governing_rule: 'EMCAP: cash-out proceeds may not exceed 50% of total projected project profitability',
+    when: (x) => {
+      if (x.is_cash_out !== true) return x.is_cash_out === false ? false : null;
+      if (x.cash_out_proceeds == null || !(x.cash_out_proceeds > 0)) return null;
+      // Projected profit = ARV − (as-is basis + rehab) — the same basis the Silver
+      // engine prices on. All three numbers must be present; never guess one.
+      if (x.arv == null || x.as_is_value == null || x.rehab_budget == null) return null;
+      const profit = x.arv - (x.as_is_value + x.rehab_budget);
+      if (!(profit > 0)) return null;   // the value-add gate owns a non-positive profit
+      return x.cash_out_proceeds > 0.5 * profit + 0.5;
+    },
+    expected: (x) => money(Math.max(0, 0.5 * ((x.arv || 0) - ((x.as_is_value || 0) + (x.rehab_budget || 0))))),
+    actual: (x) => money(x.cash_out_proceeds),
+    detail: (x) => `Cash-out proceeds of ${money(x.cash_out_proceeds)} exceed 50% of the projected project profit. EMCAP caps refinance cash-out at half the projected profitability; interest reserves are also netted from cash-out proceeds.` },
+
   // ----- Price vs value (post-appraisal only — never before the appraisal is in) -----
   // Compare the RECOGNIZED (loan-sized) price to value, NOT the gross contract price. On an
   // assignment the gross price includes a wholesaler fee that may be the borrower's own,
