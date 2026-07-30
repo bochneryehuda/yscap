@@ -1950,6 +1950,30 @@ router.post('/applications/:id/complete-fields', async (req, res) => {
       if (k === 'loan_type') v = require('../lib/fields').sanitizeLoanType(v);   // #95: never a program
       appVals.push(v); appSets.push(`${k}=$${appVals.length}`); appKeys.push(k);
     }
+    // Property address (owner-directed invite flow): when a staffer starts a file
+    // from JUST the borrower's email, the borrower fills in the subject property
+    // themselves right here. It is a STRUCTURED object (not a scalar), so it is
+    // handled separately from the fields above. property_address is NOT a pricing
+    // input, so it does not reopen the product-pricing condition. On a LOCKED
+    // (registered) file the address is left to the loan team — a post-registration
+    // address change is a staff action, never a self-serve completeness edit —
+    // so it is simply ignored here (never a 500).
+    if (!locked && b.property_address && typeof b.property_address === 'object' && !Array.isArray(b.property_address)) {
+      const pa = { ...b.property_address };
+      const hasContent = ['oneLine', 'line1', 'street', 'city', 'state', 'zip'].some((k) => String(pa[k] || '').trim());
+      if (hasContent) {
+        // Ensure a display one-line exists even if the client only sent parts; the
+        // boot address-heal + the ClickUp geocode canonicalize it further.
+        if (!String(pa.oneLine || '').trim()) {
+          pa.oneLine = [
+            [pa.line1 || pa.street, pa.unit].filter(Boolean).join(' '),
+            pa.city,
+            [pa.state, pa.zip].filter(Boolean).join(' '),
+          ].filter(Boolean).join(', ');
+        }
+        appVals.push(JSON.stringify(pa)); appSets.push(`property_address=$${appVals.length}`); appKeys.push('property_address');
+      }
+    }
     // Couple units to a live property_type change. The completeness panel doesn't
     // collect units, so a single-family type must still auto-fill "1 unit" and a
     // switch to a multi type must not keep a stale single "1" (mirrors the intake

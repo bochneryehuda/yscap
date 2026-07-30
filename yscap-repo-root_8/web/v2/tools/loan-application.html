@@ -1163,6 +1163,11 @@ html:has(.la-scope),body:has(.la-scope){background:#F4F0E7;}
     .reduce(function (a, g) { return a.concat(g.people); }, []);
   function renderOfficers(list) {
     CURRENT_OFFICERS = list;
+    // A ?lo= link may name a loan officer that lives in the LIVE roster but is not
+    // hard-coded in brand.js — lock to them once the roster arrives (no-op if
+    // already locked or no match). This is why the officer lock also works for a
+    // freshly-added officer, not only the branded sales cards.
+    if (!BRANDED_OFFICER && LO_CODE) applyOfficerLock(officerFromRosterCode(LO_CODE));
     var sel = el("loOfficerSel"); if (!sel) return;
     var prev = val("loOfficer");
     var html = '<option value="">Select your loan officer</option>';
@@ -1200,25 +1205,48 @@ html:has(.la-scope),body:has(.la-scope){background:#F4F0E7;}
   })();
   // A loan-officer-branded link (?lo=) LOCKS the recipient: the application
   // always routes to that officer and no other choice is offered at all
-  // (owner-directed 2026-07-24). The whole officer panel collapses to a
-  // "goes straight to <name>" note; every submit path reads selectedOfficer(),
-  // so the lock covers the application, the manual-review request, the review
-  // screen and the confirmation copy in one place.
+  // (owner-directed 2026-07-24; extended to the whole live roster). The whole
+  // officer panel collapses to a "goes straight to <name>" note; every submit
+  // path reads selectedOfficer(), so the lock covers the application, the
+  // manual-review request, the review screen and the confirmation copy in one
+  // place. The ?lo= code may name ANY real loan officer — brand.js only knows
+  // the hard-coded sales cards, so we ALSO match it against the live /api/roster
+  // list, and the lock reapplies once that roster arrives (renderOfficers).
+  var LO_CODE = "";
+  try { LO_CODE = (new URLSearchParams(location.search).get("lo") || "").toLowerCase().trim(); } catch (e) { LO_CODE = ""; }
   var BRANDED_OFFICER = null;
-  (function lockBrandedOfficer() {
+  function officerFromBrand() {
     var ob = window.YSBRAND || null;
-    if (!ob || !ob.email) return;
-    BRANDED_OFFICER = { name: ob.name || ob.email, title: ob.role || "", email: ob.email };
+    if (ob && ob.email) return { name: ob.name || ob.email, title: ob.role || "", email: ob.email };
+    return null;
+  }
+  function officerFromRosterCode(code) {
+    if (!code) return null;
+    for (var i = 0; i < CURRENT_OFFICERS.length; i++) {
+      var p = CURRENT_OFFICERS[i];
+      if (p && p.email && String(p.email).split("@")[0].toLowerCase() === code) {
+        return { name: p.name || p.email, title: p.title || "", email: p.email };
+      }
+    }
+    return null;
+  }
+  function applyOfficerLock(off) {
+    if (!off || BRANDED_OFFICER) return;         // nothing to lock / already locked
+    BRANDED_OFFICER = off;
     var sel = el("loOfficerSel");
     var panel = sel && sel.closest(".panel");
     if (!panel) return;
     var tog = el("hasOfficer"), togCard = tog && tog.closest(".toggle-card");
     if (togCard) togCard.style.display = "none";
     var fld = sel.closest(".field"); if (fld) { fld.classList.add("hidden"); fld.removeAttribute("data-cond"); }
+    if (el("loOfficer")) el("loOfficer").value = "";   // the hidden index is unused once locked
     var note = panel.querySelector(".panel-note");
     if (note) note.innerHTML = "This application goes straight to <b>" + esc(BRANDED_OFFICER.name) +
       (BRANDED_OFFICER.title ? " — " + esc(BRANDED_OFFICER.title) : "") + "</b>, who will follow up with you personally.";
-  })();
+  }
+  // Lock now if brand.js recognized the code (or the officer is already in the
+  // static list); the roster fetch retries the lock via renderOfficers().
+  applyOfficerLock(officerFromBrand() || officerFromRosterCode(LO_CODE));
   function selectedOfficer() {
     if (BRANDED_OFFICER) return BRANDED_OFFICER;
     var i = parseInt(val("loOfficer"), 10);

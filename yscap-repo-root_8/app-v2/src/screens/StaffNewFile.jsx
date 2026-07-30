@@ -7,6 +7,7 @@ import LlcPicker from '../components/LlcPicker.jsx';
 import { MoneyInput, PhoneInput, ZipInput , EmailInput} from '../components/FormattedInputs.jsx';
 import { unitsMode, unitsForType } from '../lib/enums.js';
 import { fullNameOf } from '../lib/personName.js';
+import InviteApplicant from '../components/InviteApplicant.jsx';
 
 /* Staff-side file origination. An admin, loan officer, or operations user opens
    a mortgage file from their end — the borrower does NOT need to be signed up.
@@ -485,6 +486,21 @@ export default function StaffNewFile() {
       </div>
 
       {err && <div role="alert" className="notice err" style={{ marginBottom: 14 }}>{err}</div>}
+
+      {/* Fast path (owner-directed): don't have the details yet? Start the file
+          from just an email and let the borrower fill in the rest themselves. */}
+      <div className="panel" style={{ marginBottom: 16 }}>
+        <div className="panel-b" style={{ display: 'flex', gap: 14, alignItems: 'center', flexWrap: 'wrap', justifyContent: 'space-between' }}>
+          <div style={{ minWidth: 240, flex: '1 1 320px' }}>
+            <h3 style={{ margin: '0 0 4px' }}>Only have their email?</h3>
+            <p className="muted small" style={{ margin: 0 }}>
+              Start the file from just an email — we invite the borrower to sign in and fill in
+              the rest themselves. No need to key in the property or numbers first.
+            </p>
+          </div>
+          <InviteApplicant className="btn btn-gold" label="Invite for a new application" />
+        </div>
+      </div>
 
       <MismoImport />
 
