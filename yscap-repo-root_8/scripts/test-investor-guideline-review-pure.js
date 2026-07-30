@@ -184,4 +184,21 @@ console.log('investor-guideline-review pure tests');
   ok('EMCAP rental rules: 1007 (warn, 1025-satisfied, post-appraisal), exact rent match, buyer-scoped');
 }
 
+{
+  // EMCAP >10-months housing supply (owner-directed 2026-07-30) — an ADVISORY
+  // escalation off the appraisal's own 1004MC number, never a fatal, never
+  // fabricated. Silent with no signal; ≤10 is clean; >10 warns; buyer-scoped.
+  const byCode = (fs, c) => fs.find((f) => f.code === c);
+  const g = require('../src/lib/underwriting/investor-guideline-review');
+  const emcap = (x) => g.review({ note_buyer: 'EMCAP Financial', ...x });
+  const hit = byCode(emcap({ housing_months_supply: 11.5 }), 'isg_emcap_high_housing_supply');
+  require('assert').ok(hit && hit.severity === 'warning', '>10 months of supply raises the EMCAP WARNING');
+  require('assert').ok(/11\.5/.test(hit.detail) && /MSA/.test(hit.detail), 'the detail names the number and the MSA-level judgment');
+  require('assert').ok(!byCode(emcap({ housing_months_supply: 10 }), 'isg_emcap_high_housing_supply'), 'exactly 10 months is clean (rule is strictly over 10)');
+  require('assert').ok(!byCode(emcap({ housing_months_supply: 4 }), 'isg_emcap_high_housing_supply'), 'a normal market is clean');
+  require('assert').ok(!byCode(emcap({}), 'isg_emcap_high_housing_supply'), 'no 1004MC signal → silent (omit-don’t-guess)');
+  require('assert').ok(!byCode(g.review({ note_buyer: 'Blue Lake', housing_months_supply: 14 }), 'isg_emcap_high_housing_supply'), 'never fires for another note buyer');
+  ok('EMCAP >10-month housing-supply advisory: fires >10 only, silent unknown, buyer-scoped');
+}
+
 console.log(`\ninvestor-guideline-review: ${n} checks passed`);

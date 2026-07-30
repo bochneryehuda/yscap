@@ -231,6 +231,16 @@ const RULES = [
     actual: (x) => String(x.property_state || ''),
     detail: (x) => `The property is in ${x.property_state}, which EMCAP excludes (NV / MN / ND / SD are ineligible). The loan cannot be sold to this note buyer.` },
 
+  { code: 'isg_emcap_high_housing_supply', audience: 'emcap', severity: 'warning',
+    title: 'Over 10 months of housing supply (EMCAP)', governing_rule: 'EMCAP: MSAs with over 10 months housing supply are ineligible (the MSA, product type & re-sale price range should all be considered)',
+    // The appraisal's own 1004MC months-of-supply is the file's closest
+    // machine-readable proxy for the MSA-level rule — a WARNING escalation to a
+    // human market review, never a fatal (the note buyer's own wording makes it
+    // a judgment over MSA + product type + price range, not a per-property gate).
+    when: (x) => x.housing_months_supply == null ? null : Number(x.housing_months_supply) > 10,
+    actual: (x) => x.housing_months_supply == null ? '' : `${x.housing_months_supply} months of supply`,
+    detail: (x) => `The appraisal's 1004MC market grid shows ${x.housing_months_supply} months of housing supply — over EMCAP's 10-month ceiling for the market. EMCAP judges this at the MSA level considering the product type and re-sale price range, so review the market data before committing this file to EMCAP.` },
+
   { code: 'isg_emcap_mid_construction', audience: 'emcap', severity: 'fatal',
     title: 'Mid-construction project (EMCAP)', governing_rule: 'EMCAP: mid-way completed construction projects are not eligible for funding',
     when: (x) => x.appraisal_mid_construction == null ? null : x.appraisal_mid_construction === true,

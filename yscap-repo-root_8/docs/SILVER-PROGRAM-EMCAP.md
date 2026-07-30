@@ -206,8 +206,10 @@ transactions / seller credits each ≤15%.
   `orig_silver_pct` (db/373) + V2 screen fields; `/api/pricing-defaults`
   serves them; override-approval detector covers the Silver knobs.
 - **Register:** staff + borrower routes and the escalation accept path take
-  `program:'silver'`; liquidity condition writes the 1-month Silver wording;
-  economics-reopen trigger watches the Silver sticky markup (db/373).
+  `program:'silver'`; liquidity condition writes the 2-MONTH Silver wording
+  with the loud ⚠️ banner (owner-directed 2026-07-29/30 — see
+  `liquidity.js` `loudMonthsBanner`); economics-reopen trigger watches the
+  Silver sticky markup (db/373).
 - **Conditions/rules:** `registered_program` rule enum has `silver`; no
   Silver-specific conditions by default (no SOW-contingency, flood rule
   unchanged — same posture as Standard).

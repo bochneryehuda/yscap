@@ -2173,12 +2173,17 @@ router.post('/applications/:id/pricing/register', async (req, res) => {
       // admin resetting it) overwrites it. A live company-default registration
       // (no markup key) never freezes the default onto the file.
       const stickyMk = (v) => { if (v == null || v === '') return null; const n = Number(v); return isFinite(n) ? n : null; };
+      // Silver's markup is HARD-CAPPED at 1.00pt (owner-directed; engine
+      // MARKUP_MAX + admin-pricing refusal). The engine already clamps the
+      // PRICED markup, but the sticky must never store a number the studio
+      // would re-display above the cap (meta-audit 2026-07-30 gap 3).
+      const stickyMkSilver = (v) => { const n = stickyMk(v); return n == null ? null : Math.min(n, 1); };
       if (Object.prototype.hasOwnProperty.call(overrides, 'markupStdPct'))
         await client.query(`UPDATE applications SET file_markup_std_pct=$2 WHERE id=$1`, [appId, stickyMk(overrides.markupStdPct)]);
       if (Object.prototype.hasOwnProperty.call(overrides, 'markupGoldPct'))
         await client.query(`UPDATE applications SET file_markup_gold_pct=$2 WHERE id=$1`, [appId, stickyMk(overrides.markupGoldPct)]);
       if (Object.prototype.hasOwnProperty.call(overrides, 'markupSilverPct'))
-        await client.query(`UPDATE applications SET file_markup_silver_pct=$2 WHERE id=$1`, [appId, stickyMk(overrides.markupSilverPct)]);
+        await client.query(`UPDATE applications SET file_markup_silver_pct=$2 WHERE id=$1`, [appId, stickyMkSilver(overrides.markupSilverPct)]);
       await client.query('COMMIT');
     } catch (e) { await client.query('ROLLBACK'); throw e; }
 
