@@ -13207,6 +13207,116 @@ router.post('/esign/drain', async (req, res) => {
   } catch (e) { console.warn('[staff] handler error:', db.describeError(e)); res.status(500).json({ error: 'server error' }); }
 });
 
+/* ---------------- Investor Suite: a staffer's own saved scenarios ----------------
+   Owner-directed 2026-07-30: staff price deals in the suite tools and want to name
+   what they built, come back to the list, and pick up exactly where they left off —
+   for the Term Sheet Studio and every other tool.
+
+   PRIVATE BY CONSTRUCTION. Every statement below is keyed on `req.actor.id`, so a
+   scenario is only ever readable, writable and deletable by the staffer who saved
+   it. A row belonging to somebody else answers 404 rather than 403: a 403 would
+   confirm the id exists, and there is nothing here worth leaking that over.
+   A scenario is a scratchpad — it carries no application_id and cannot register,
+   price a real file, or reach any enforcement path. The rules (which tools exist,
+   what a name is, what a state may be) live in the pure src/lib/suite-scenarios.js
+   so they unit-test without a server. */
+const suiteScenarios = require('../lib/suite-scenarios');
+
+router.get('/tool-scenarios', async (req, res) => {
+  try {
+    const tool = String(req.query.tool || '').trim();
+    if (tool && !suiteScenarios.isToolSlug(tool)) return res.status(400).json({ error: 'unknown_tool' });
+    const r = await db.query(
+      `SELECT id, tool_slug, name, state_kind, created_at, updated_at
+         FROM staff_tool_scenarios
+        WHERE staff_user_id = $1 ${tool ? 'AND tool_slug = $2' : ''}
+        ORDER BY updated_at DESC
+        LIMIT 500`,
+      tool ? [req.actor.id, tool] : [req.actor.id]);
+    // The per-tool counts drive the badge on each suite tile, so the grid can show
+    // "3 saved" without fetching every tool's list.
+    const counts = {};
+    if (!tool) for (const row of r.rows) counts[row.tool_slug] = (counts[row.tool_slug] || 0) + 1;
+    res.json({ scenarios: r.rows.map((x) => suiteScenarios.shapeRow(x)), counts });
+  } catch (e) { console.warn('[staff] handler error:', db.describeError(e)); res.status(500).json({ error: 'server error' }); }
+});
+
+// The full state, fetched only when a scenario is actually opened.
+router.get('/tool-scenarios/:id', async (req, res) => {
+  try {
+    const r = await db.query(
+      `SELECT id, tool_slug, name, state, state_kind, created_at, updated_at
+         FROM staff_tool_scenarios WHERE id = $1 AND staff_user_id = $2`,
+      [req.params.id, req.actor.id]);
+    if (!r.rows[0]) return res.status(404).json({ error: 'not found' });
+    res.json({ scenario: suiteScenarios.shapeRow(r.rows[0], { withState: true }) });
+  } catch (e) {
+    // A malformed uuid is a 404, not a 500 — it is simply not one of your rows.
+    if (String(e && e.code) === '22P02') return res.status(404).json({ error: 'not found' });
+    console.warn('[staff] handler error:', db.describeError(e)); res.status(500).json({ error: 'server error' });
+  }
+});
+
+/* Save. Re-using a name for the same tool OVERWRITES that scenario rather than
+   growing a pile of identically-named rows the staffer cannot tell apart — the
+   unique index in db/380 is what makes that atomic under a double-click. */
+router.post('/tool-scenarios', async (req, res) => {
+  try {
+    const v = suiteScenarios.validateSave(req.body);
+    if (!v.ok) return res.status(400).json({ error: v.error, detail: v.detail });
+    const { toolSlug, name, state, stateKind } = v.value;
+    const r = await db.query(
+      `INSERT INTO staff_tool_scenarios (staff_user_id, tool_slug, name, state, state_kind)
+            VALUES ($1, $2, $3, $4::jsonb, $5)
+       ON CONFLICT (staff_user_id, tool_slug, lower(btrim(name)))
+       DO UPDATE SET state = EXCLUDED.state, state_kind = EXCLUDED.state_kind, name = EXCLUDED.name
+         RETURNING id, tool_slug, name, state_kind, created_at, updated_at`,
+      [req.actor.id, toolSlug, name, JSON.stringify(state), stateKind]);
+    res.status(201).json({ scenario: suiteScenarios.shapeRow(r.rows[0]) });
+  } catch (e) { console.warn('[staff] handler error:', db.describeError(e)); res.status(500).json({ error: 'server error' }); }
+});
+
+// Rename an existing scenario. The state is replaced only when one is supplied, so
+// a pure rename cannot blank the work it names.
+router.put('/tool-scenarios/:id', async (req, res) => {
+  try {
+    const b = (req.body && typeof req.body === 'object') ? req.body : {};
+    const name = b.name != null ? suiteScenarios.cleanName(b.name) : null;
+    if (b.name != null && !name) return res.status(400).json({ error: 'name_required' });
+    const hasState = Object.prototype.hasOwnProperty.call(b, 'state');
+    if (hasState) {
+      if (!suiteScenarios.isStateObject(b.state)) return res.status(400).json({ error: 'state_required' });
+      if (suiteScenarios.stateTooBig(b.state)) return res.status(400).json({ error: 'state_too_large' });
+    }
+    const r = await db.query(
+      `UPDATE staff_tool_scenarios
+          SET name  = COALESCE($3, name),
+              state = COALESCE($4::jsonb, state)
+        WHERE id = $1 AND staff_user_id = $2
+        RETURNING id, tool_slug, name, state_kind, created_at, updated_at`,
+      [req.params.id, req.actor.id, name, hasState ? JSON.stringify(b.state) : null]);
+    if (!r.rows[0]) return res.status(404).json({ error: 'not found' });
+    res.json({ scenario: suiteScenarios.shapeRow(r.rows[0]) });
+  } catch (e) {
+    if (String(e && e.code) === '22P02') return res.status(404).json({ error: 'not found' });
+    if (String(e && e.code) === '23505') return res.status(409).json({ error: 'name_taken', detail: 'You already have a scenario with that name for this tool.' });
+    console.warn('[staff] handler error:', db.describeError(e)); res.status(500).json({ error: 'server error' });
+  }
+});
+
+router.delete('/tool-scenarios/:id', async (req, res) => {
+  try {
+    const r = await db.query(
+      `DELETE FROM staff_tool_scenarios WHERE id = $1 AND staff_user_id = $2 RETURNING id`,
+      [req.params.id, req.actor.id]);
+    if (!r.rows[0]) return res.status(404).json({ error: 'not found' });
+    res.json({ ok: true });
+  } catch (e) {
+    if (String(e && e.code) === '22P02') return res.status(404).json({ error: 'not found' });
+    console.warn('[staff] handler error:', db.describeError(e)); res.status(500).json({ error: 'server error' });
+  }
+});
+
 // ---------------- chat v3: conversations, receipts, presence ----------------
 // Mounted last so the /applications/:id scope guard above still covers the
 // application-scoped chat routes (create chat / export).
