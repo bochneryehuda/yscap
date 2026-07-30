@@ -1,5 +1,7 @@
 import React, { useEffect, useState } from 'react';
+import { useNavigate } from 'react-router-dom';
 import StaticToolFrame from '../components/StaticToolFrame.jsx';
+import { scenarioToDraft } from '../lib/scenario.js';
 
 /* Investor Suite inside PILOT (owner-directed 2026-07-29): the same set of
    tools the public marketing "Investor Suite" (web/v2/suite.html) offers —
@@ -46,7 +48,38 @@ const GROUPS = [
 const TOOL_BASE = '/tools/';   // same-origin static tools (frozen engines)
 
 export default function StaffInvestorSuite() {
+  const nav = useNavigate();
   const [open, setOpen] = useState(null);   // the tool being viewed full-screen, or null
+  const [note, setNote] = useState('');
+
+  // "Create loan file →" (owner-directed): turn the term sheet you just built into
+  // a NEW loan file, pre-filled with everything you entered. Reads the studio's
+  // own input state from the (same-origin) tool frame, maps it with the SAME
+  // scenario→file translation the borrower "Start this loan" uses, stashes it, and
+  // opens the New file form pre-filled — you just add the borrower + submit.
+  function createFileFromStudio() {
+    setNote('');
+    try {
+      const frame = document.querySelector('.isuite-full-body iframe');
+      const win = frame && frame.contentWindow;
+      if (!win || !win.YS || typeof win.YS.collectState !== 'function') {
+        setNote('Give the term sheet a moment to finish loading, then try again.');
+        return;
+      }
+      const state = win.YS.collectState();          // { v, c, rad }
+      const draft = scenarioToDraft({ v: state.v, c: state.c });
+      const name = String((state.v || {}).borrowerName || '').trim();
+      const prefill = {
+        ...draft,
+        firstName: name ? name.split(/\s+/)[0] : '',
+        lastName: name ? name.split(/\s+/).slice(1).join(' ') : '',
+      };
+      sessionStorage.setItem('ys-staff-newfile-prefill', JSON.stringify(prefill));
+      nav('/internal/new');
+    } catch (_) {
+      setNote('Could not read the term sheet — try again.');
+    }
+  }
 
   // Lock the page scroll while the full-screen tool is open.
   useEffect(() => {
@@ -63,11 +96,16 @@ export default function StaffInvestorSuite() {
     return (
       <div className="isuite-full">
         <div className="isuite-full-head">
-          <button className="btn ghost small" onClick={() => setOpen(null)} aria-label="Back to the Investor Suite">← Back to the suite</button>
+          <button className="btn ghost small" onClick={() => { setOpen(null); setNote(''); }} aria-label="Back to the Investor Suite">← Back to the suite</button>
           <strong style={{ fontSize: 15 }}>{open.name}</strong>
           <div style={{ flex: 1 }} />
+          {open.slug === 'term-sheet' && (
+            <button className="btn btn-gold small" onClick={createFileFromStudio}
+              title="Open a new loan file pre-filled with these numbers">Create loan file →</button>
+          )}
           <a className="btn ghost small" href={url} target="_blank" rel="noopener noreferrer" title="Open this tool in a new browser tab">Open in a new tab ↗</a>
         </div>
+        {note && <div className="notice err" role="alert" style={{ margin: '0 12px' }}>{note}</div>}
         <div className="isuite-full-body">
           <StaticToolFrame key={open.slug} src={url} title={open.name} fill />
         </div>

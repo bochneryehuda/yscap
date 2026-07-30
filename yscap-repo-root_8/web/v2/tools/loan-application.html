@@ -2171,6 +2171,13 @@ html:has(.la-scope),body:has(.la-scope){background:#F4F0E7;}
       }
     }).catch(function () {}).then(function () { try { recompute(); } catch (e) {} }); } catch (e) {} })();
     try { YS.applyState(YS.readState()); } catch (e) {}
+    // A URL-restored state (a shared "Save & resume" link OR the term-sheet
+    // "Start application →" hand-off) sets values without firing input events, so
+    // reveal the conditional sections + refresh the deal snapshot once here —
+    // otherwise prefilled rehab / reserve / entity / assignment fields would stay
+    // hidden until the user touches a field.
+    try { if (typeof updateConditionals === "function") updateConditionals(); } catch (e) {}
+    try { if (typeof recompute === "function") recompute(); } catch (e) {}
     setBCount(bCount());
 
     $$("#appForm input, #appForm select, #appForm textarea").forEach(function (inp) {

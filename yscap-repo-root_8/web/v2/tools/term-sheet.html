@@ -440,7 +440,7 @@
         <div class="tool-actions">
             <a class="back tb-under" href="../suite.html">← All tools</a>
             <button class="btn btn-sm btn-line" type="button" onclick="TS.share(this)" title="Copy a link that saves these inputs">Share link 🔗</button>
-            <a class="btn btn-sm btn-solid" href="loan-application.html">Apply Now</a>
+            <a id="tsStartApp" class="btn btn-sm btn-solid" href="loan-application.html" title="Open a full application pre-filled with everything you entered here">Start application →</a>
         </div>
     </div>
 </header>
@@ -946,6 +946,67 @@
       if (st && a.state) { st.value = a.state; st.dispatchEvent(new Event("change", { bubbles: true })); }
       inp.dispatchEvent(new Event("input", { bubbles: true }));
     });
+  }
+  if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", wire); else wire();
+})();
+</script>
+
+<script>
+/* CARRY THE TERM SHEET INTO A PRE-FILLED APPLICATION (owner-directed): finishing a
+   term sheet, "Start application →" opens the full loan application with everything
+   already entered — the borrower only adds the personal details and submits. The
+   application page already restores state from the URL's #d= fragment
+   (YS.applyState on load), so we translate the studio's field ids into the
+   application's own ids and hand it that fragment — no new load code on that page.
+   This does NOT touch any frozen pricing math; it only maps inputs across two tools. */
+(function () {
+  var PROP_TYPE = { "sfr": "Single-Family (SFR)", "2-4": "2–4 Unit" };   // en-dash to match the app's option
+  var PURPOSE   = { "purchase": "Purchase", "rate & term refinance": "Rate & Term Refi", "cash-out refinance": "Cash-Out Refi" };
+  function s(x) { return x == null ? "" : String(x); }
+  function firstWord(n) { n = s(n).trim(); var i = n.indexOf(" "); return i < 0 ? n : n.slice(0, i); }
+  function restWords(n) { n = s(n).trim(); var i = n.indexOf(" "); return i < 0 ? "" : n.slice(i + 1); }
+  function toNum(x) { var n = parseFloat(s(x).replace(/[^0-9.]/g, "")); return isFinite(n) ? n : 0; }
+  // Build the loan application's {v,c,rad} state from the term-sheet inputs.
+  function translate() {
+    if (!window.YS || typeof window.YS.collectState !== "function") return null;
+    var st = window.YS.collectState(), v = st.v || {}, c = st.c || {}, out = { v: {}, c: {}, rad: {} };
+    if (v.dealType) out.v.dealType = v.dealType;                             // same option text on both tools
+    var purpose = PURPOSE[s(v.dealPurpose).toLowerCase()] || "Purchase";
+    out.rad.purpose = purpose;                                              // the app's purpose is a radio group
+    var refi = /refi/i.test(purpose);
+    if (v.propType && PROP_TYPE[v.propType]) out.v.propType = PROP_TYPE[v.propType];
+    if (v.propAddr) out.v.pStreet = v.propAddr;
+    if (v.propState) out.v.pState = v.propState;
+    if (!refi && v.price) out.v.price = s(v.price);
+    if (c.isAssign) { out.c.isAssign = true; if (v.origPrice) out.v.origPrice = s(v.origPrice); }
+    if (v.asIs) out.v.asIs = s(v.asIs);
+    if (v.arv) out.v.arv = s(v.arv);
+    if (v.construction) out.v.rehab = s(v.construction);                    // studio "construction" == app "rehab" budget
+    if (v.tsTerm) out.v.termMonths = s(v.tsTerm);
+    var irM = parseInt(v.irMonths, 10) || 0, irA = toNum(v.irAmount);       // reserve: months OR exact amount
+    if (irM > 0 || irA > 0) { out.c.finReserve = true; if (irM > 0) out.v.resMonths = String(irM); if (irA > 0) out.v.resAmount = String(irA); }
+    if (v.fico) out.v.fico = s(v.fico);
+    if (v.expFlips) out.v.expFlips = s(v.expFlips);
+    if (v.expBrrrr) out.v.expBrrrr = s(v.expBrrrr);
+    if (v.expGround) out.v.expGround = s(v.expGround);
+    if (v.borrowerName) { out.v.b1First = firstWord(v.borrowerName); out.v.b1Last = restWords(v.borrowerName); }
+    if (v.entityName) { out.c.vestEntity = true; out.v.eName = v.entityName; }
+    return out;
+  }
+  function go(e) {
+    try {
+      var out = translate();
+      if (!out || !window.YS || typeof window.YS.encodeState !== "function") return;   // fall back to the plain href
+      var href = "loan-application.html#d=" + window.YS.encodeState(out);
+      // Keep the branded officer (?lo=) so the application still routes to them.
+      if (window.YSBrand && typeof window.YSBrand.link === "function") href = window.YSBrand.link(href);
+      if (e) e.preventDefault();
+      window.location.href = href;
+    } catch (_) { /* let the browser follow the plain link */ }
+  }
+  function wire() {
+    var a = document.getElementById("tsStartApp");
+    if (a) a.addEventListener("click", go);
   }
   if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", wire); else wire();
 })();

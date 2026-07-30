@@ -7675,7 +7675,14 @@ router.post('/llcs/:id/documents', async (req, res) => {
     catch (e) { return res.status(e.status || 400).json({ error: e.message }); }
     const maxBytes = cfg.maxUploadMb * 1024 * 1024;
     if (buf.length > maxBytes) return res.status(413).json({ error: `file too large (max ${cfg.maxUploadMb} MB)` });
-    const slot = b.slot ? String(b.slot).trim().slice(0, 80) : null;
+    let slot = b.slot ? String(b.slot).trim().slice(0, 80) : null;
+    // Every slot keeps EVERY document (owner-directed): on a plain ADD (not an
+    // explicit replace), uniquify a colliding slot label so the two never display
+    // under one name — mirrors the file-view upload path so the entity library
+    // behaves identically ("every single slot from within the condition").
+    if (slot && b.checklistItemId && !b.replaceDocumentId) {
+      slot = await require('../lib/slot-label').uniqueSlotLabel(b.checklistItemId, slot);
+    }
     const dupLlc = await require('../lib/doc-dedup').recentDuplicateDocId({   // idempotency (#87)
       filename: b.filename, sizeBytes: buf.length, uploadedByKind: 'staff', uploadedById: req.actor.id,
       llcId: req.params.id, checklistItemId: b.checklistItemId || null, slotLabel: slot });
@@ -7687,19 +7694,18 @@ router.post('/llcs/:id/documents', async (req, res) => {
       [b.checklistItemId || null, req.params.id, own.rows[0].borrower_id, b.filename,
        b.contentType || 'application/octet-stream', buf.length, provider, ref, req.actor.id, slot]);
     if (b.checklistItemId) {
+      // EVERY document slot keeps EVERY document (owner-directed): a plain ADD
+      // never deletes what's already there. Only an EXPLICIT replace (the user
+      // clicked "Replace" on one document, sending replaceDocumentId) supersedes —
+      // and ONLY that one document, never its siblings. The old blanket supersede
+      // here wiped every current sibling whenever the slot was null/colliding — the
+      // entity library's copy of the "upload a 2nd document, the 1st disappears" bug.
       if (b.replaceDocumentId) {
         await db.query(
           `UPDATE documents SET is_current=false,
               review_status=CASE WHEN review_status IN ('pending','rejected') THEN 'superseded' ELSE review_status END
             WHERE id=$1 AND checklist_item_id=$2`, [b.replaceDocumentId, b.checklistItemId]);
       }
-      await db.query(
-        `UPDATE documents SET is_current=false,
-            review_status=CASE WHEN review_status IN ('pending','rejected') THEN 'superseded' ELSE review_status END
-          WHERE checklist_item_id=$1 AND id<>$2 AND is_current=true
-            AND ($3::text IS NOT NULL OR $4::uuid IS NULL)
-            AND ($3::text IS NULL OR slot_label IS NOT DISTINCT FROM $3)`,
-        [b.checklistItemId, r.rows[0].id, slot, b.replaceDocumentId || null]);
       await db.query(`UPDATE checklist_items SET status='received', updated_at=now() WHERE id=$1`, [b.checklistItemId]);
       enqueueChecklistStatusPush(b.checklistItemId).catch(() => {});
     }
