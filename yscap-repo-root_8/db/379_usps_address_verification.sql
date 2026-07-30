@@ -1,4 +1,4 @@
--- 377 — official USPS address verification and enforced import condition.
+-- 379 — official USPS address verification and enforced import condition.
 -- Additive and idempotent. A lookup stages the USPS result; only the explicit
 -- staff import action changes property_address and completes the condition.
 

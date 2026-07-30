@@ -11024,6 +11024,40 @@ router.post('/leads/:id/convert', async (req, res) => {
   } catch (e) { res.status(500).json({ error: 'server error' }); }
 });
 
+// ---------------- Encompass flood-certificate ordering ----------------
+// Order a Life-of-Loan flood determination from ICE's own flood service (the one
+// owner-authorized write into Encompass — flood only). Any staff member may order
+// (the router mount already restricts to staff roles; the /applications/:id
+// middleware scopes it to files this staffer can see). If the file has no loan
+// number yet, ordering is refused with a plain reason — the loan number is what
+// links the file to its Encompass loan.
+router.post('/applications/:id/order-flood', async (req, res) => {
+  try {
+    const out = await require('../encompass/flood-desk').orderFlood({
+      appId: req.params.id, checklistItemId: (req.body || {}).checklistItemId || null, actorId: req.actor.id });
+    if (!out.ok) {
+      // A refusal the user can act on (no loan number, already pending, etc.) is a
+      // 4xx with the plain message; a real failure is a 502.
+      const soft = ['loan_number_required', 'already_pending', 'disabled', 'not_configured', 'circuit_open', 'not_in_encompass', 'ambiguous'].includes(out.error);
+      return res.status(soft ? 400 : 502).json({ error: out.error, message: out.message, order: out.order || null });
+    }
+    return res.json(out);
+  } catch (e) { console.error('[order-flood]', e && e.message); res.status(500).json({ error: 'server error' }); }
+});
+// The newest flood order for a file — drives the button's state.
+router.get('/applications/:id/flood-order', async (req, res) => {
+  try {
+    const flood = require('../encompass/flood-desk');
+    const row = await flood.latestFloodOrder(req.params.id);
+    const ln = (await db.query(`SELECT ys_loan_number FROM applications WHERE id=$1`, [req.params.id])).rows[0];
+    res.json({
+      order: row,
+      enabled: require('../encompass/flood-order').enabled(),
+      hasLoanNumber: !!(ln && ln.ys_loan_number && String(ln.ys_loan_number).trim()),
+    });
+  } catch (e) { res.status(500).json({ error: 'server error' }); }
+});
+
 // ---------------- documents ----------------
 // List documents on a file. The /applications/:id middleware already enforced
 // that this staffer may see this application.

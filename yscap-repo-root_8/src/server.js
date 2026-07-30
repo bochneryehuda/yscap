@@ -672,6 +672,10 @@ if (require.main === module) {
     // (structurally impossible via src/lib/integrations/encompass.js); writes ONLY
     // to PILOT's own DB — encompass_field_catalog + applications.encompass_extra.
     try { require('./sync/encompass-sync').start(); } catch (e) { console.warn('encompass sync not started:', e.message); }
+    // Flood-order poll worker (the one owner-authorized Encompass WRITE — flood
+    // only). Runs independently of ENCOMPASS_ENABLED; self-gates on the
+    // ENCOMPASS_FLOOD_ENABLED switch, so an idle tick is a cheap no-op.
+    try { require('./sync/encompass-sync').startFloodPoller(); } catch (e) { console.warn('encompass flood poller not started:', e.message); }
     // Scheduled notification digests (owner-directed 2026-07-20): weekly borrower
     // "what's still needed", daily per-officer pipeline snapshot, stale-file
     // alerts, and the Monday admin summary. Each self-gates via audit_log so it

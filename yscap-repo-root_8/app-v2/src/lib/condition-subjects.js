@@ -72,6 +72,7 @@ export const CODE_SUBJECT = {
   title_commitment: 'title', rtl_cond_title: 'title',
   // insurance
   insurance_binder: 'insurance', rtl_cond_insurance: 'insurance', rtl_cond_flood: 'insurance',
+  rtl_cond_flood_insurance: 'insurance',
   // money in the deal
   bank_statements: 'assets', rtl_p3_assets: 'assets', voided_check: 'assets',
   cond_emd_corrfirst: 'assets', cond_cashout_letter: 'assets',

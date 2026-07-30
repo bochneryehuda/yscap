@@ -233,7 +233,7 @@ routes.
 - `src/lib/address-usps-verify.js` — the paced, non-destructive backfill for existing
   files (`applications.usps_address` / `usps_match` / `usps_verified_at`). Booted
   from `src/server.js`, gated by `USPS_BACKFILL_ENABLED`.
-- `db/377_usps_address_verification.sql` — cache/stamp schema, required condition,
+- `db/379_usps_address_verification.sql` — cache/stamp schema, required condition,
   previous-file attachment, and automatic invalidation/reopen when the property
   address changes.
 - `src/lib/tapes/assemble.js` and `src/lib/tpr-export.js` — financing exports prefer
