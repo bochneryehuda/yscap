@@ -13277,7 +13277,7 @@ router.get('/tool-scenarios/:id', async (req, res) => {
 
 /* Save. Re-using a name for the same tool OVERWRITES that scenario rather than
    growing a pile of identically-named rows the staffer cannot tell apart — the
-   unique index in db/380 is what makes that atomic under a double-click. */
+   unique index in db/381 is what makes that atomic under a double-click. */
 router.post('/tool-scenarios', async (req, res) => {
   try {
     const v = suiteScenarios.validateSave(req.body);
