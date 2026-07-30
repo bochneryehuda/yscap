@@ -115,7 +115,7 @@ export default function StaffCompanyPricing() {
         <div className="grid cols-2">
           <Field form={form} set={set} k="markupStdPct" label="Standard program markup (%)" />
           <Field form={form} set={set} k="markupGoldPct" label="Gold Standard program markup (%)" />
-          <Field form={form} set={set} k="markupSilverPct" label="Silver program markup (%)" />
+          <Field form={form} set={set} k="markupSilverPct" label="Silver program markup (%, max 1.00)" />
         </div>
 
         <h3 style={{ margin: '18px 0 0' }}>Origination points</h3>

@@ -32,6 +32,11 @@ function publicTape(t) {
   return {
     key: t.key,
     buyerKey: t.buyerKey,
+    // Enumerated alias spellings of the buyer's label (normNoteBuyer form) — e.g.
+    // EMCAP's real ClickUp label "EMCAP Financial" → 'emcapfinancial'. Carried on the
+    // public shape so tapeAvailability (buyer-rule.js) can match them; a tape with no
+    // aliases carries an empty list.
+    buyerAliases: Array.isArray(t.buyerAliases) ? t.buyerAliases.slice() : [],
     name: t.name,
     fullName: t.fullName,
     description: t.description,
@@ -41,10 +46,12 @@ function publicTape(t) {
 
 function listTapes() { return TAPES.map(publicTape); }
 
-// All tapes belonging to a given normalized note-buyer key.
+// All tapes belonging to a given normalized note-buyer key — the canonical buyerKey
+// or one of the tape's enumerated alias spellings (closed list, never fuzzy).
 function tapesForBuyer(buyerKey) {
   if (!buyerKey) return [];
-  return TAPES.filter((t) => t.buyerKey === buyerKey);
+  return TAPES.filter((t) => t.buyerKey === buyerKey
+    || (Array.isArray(t.buyerAliases) && t.buyerAliases.includes(buyerKey)));
 }
 
 module.exports = { TAPES, getTape, listTapes, tapesForBuyer, publicTape };

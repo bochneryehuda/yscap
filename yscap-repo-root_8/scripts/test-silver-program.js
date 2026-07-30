@@ -193,6 +193,17 @@ const wb = {
   // city-name-only match (no ZIP) → manual review, not a hard decline
   const evCity = SVP.evaluate(Object.assign({}, base, { state: 'IL', city: 'Chicago' }));
   ok(evCity.status === 'MANUAL', 'city-only Chicago (no ZIP) routes to manual review');
+  // TYPED excluded ZIP + a TYPED state that contradicts it: two typed fields
+  // disagreeing is a data problem, never priced silently (re-audit 2026-07-30, 1b-i).
+  [['21215', 'TX'], ['60629', 'TX'], ['19147', 'NJ']].forEach(([zip, st]) => {
+    const ev = SVP.evaluate(Object.assign({}, base, { zip, state: st }));
+    ok(ev.status === 'MANUAL' && ev.reasons.some(r => /doesn't match that ZIP/.test(r.msg)),
+      `typed excluded ZIP ${zip} + contradicting state ${st} routes to manual review`);
+  });
+  // …but a TEXT-parsed 5-digit group that contradicts the state is a house number
+  // ("60629 Main St, Dallas") and must still price (the original audit repro).
+  const evHouseNo = SVP.evaluate(Object.assign({}, base, { state: 'TX', address: '60629 Main St, Dallas' }));
+  ok(evHouseNo.status === 'ELIGIBLE', 'a leading house number in free text never blocks a deal');
   // a good ZIP is decisive even with a scary city name (Chicago Heights-style)
   const evGood = SVP.evaluate(Object.assign({}, base, { state: 'IL', city: 'Naperville', zip: '60540' }));
   ok(evGood.status === 'ELIGIBLE', 'a non-excluded IL ZIP prices normally');
@@ -353,6 +364,29 @@ const wb = {
   // Silver's own program constants
   ok(SVP.constants.MARKUP === 0.005 && SVP.constants.ORIG_PCT === 0.0125, 'Silver defaults: 0.5% markup, 1.25% origination');
   ok(SVP.constants.MIN_LOAN === 100000 && SVP.constants.ABS_MAX_LOAN === 4500000, 'Silver loan bounds');
+})();
+
+(function markupCappedAtOnePoint() {
+  // Owner-directed 2026-07-29: the note buyer's buy rate floor is note − 1.00pt, so
+  // any markup above 1 point is spread the program never earns. The engine clamps the
+  // admin markup at 1.00% — an over-cap admin value prices exactly as 1.00% would.
+  ok(SVP.constants.MARKUP_MAX === 0.01, 'Silver markup cap constant is 1.00%');
+  const probe = { market: 'STD', sizeBand: 'S', strategyCode: 'FF', loanType: 'Purchase', term: 12, tier: 1, arltv: 0.60, fico: 720, ltc: 0.80 };
+  const grid = SVP.gridRate('STD', 'S', 'FF', 'P', '12', 1, SVP.arBand(0.60), 'FICO 700+', SVP.ltcBand(0.80));
+  ok(grid != null, 'markup-cap probe cell prices');
+  try {
+    SVP.setMarkup(0.025);                                      // 2.5% typed by an admin
+    ok(Math.abs(SVP.noteRate(probe) - (grid + 0.01)) < 1e-9, 'markup over 1pt clamps to exactly 1.00%');
+    SVP.setMarkup(0.01);
+    ok(Math.abs(SVP.noteRate(probe) - (grid + 0.01)) < 1e-9, 'markup of exactly 1pt is honored');
+    SVP.setMarkup(0.004);                                      // production-style 0.4% stays untouched
+    ok(Math.abs(SVP.noteRate(probe) - (grid + 0.004)) < 1e-9, 'markup under the cap passes through unchanged');
+    SVP.setMarkup(0);
+    ok(Math.abs(SVP.noteRate(probe) - grid) < 1e-9, 'zero markup allowed (never forced up)');
+  } finally {
+    SVP.setMarkup(null);                                       // restore the default for the rest of the battery
+  }
+  ok(Math.abs(SVP.noteRate(probe) - (grid + 0.005)) < 1e-9, 'markup restored to the 0.5% default after the cap test');
 })();
 
 (function assignmentFrozenRule() {

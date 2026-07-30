@@ -100,6 +100,27 @@ g = buyerRule.exportGate(loan('EMCAP'), emcapTape, { isAdmin: false, registeredP
 ok(!g.ok && g.error.code === 'manual_admin_only', 'EMCAP-as-manual is admin-only');
 ok(buyerRule.exportGate(loan('EMCAP'), emcapTape, { isAdmin: true, registeredProgram: 'manual' }).ok, 'admin CAN export the EMCAP tape');
 
+// "EMCAP Financial" — the buyer's REAL ClickUp/Sitewire dropdown label (owner-directed
+// 2026-07-29) — normalizes to 'emcapfinancial'. It is an ENUMERATED alias on the tape
+// (tapes/emcap.js buyerAliases), never a prefix/fuzzy match: the closed list lets the
+// production label export while "EMCAP Capital Partners" (not enumerated) still can't.
+ok(buyerRule.exportGate(loan('EMCAP Financial'), emcapTape, { isAdmin: false, registeredProgram: 'silver' }).ok,
+  '"EMCAP Financial" (the real ClickUp label) exports the EMCAP tape on a silver registration');
+ok(buyerRule.exportGate(loan('emcap financial'), emcapTape, { isAdmin: false, registeredProgram: 'silver' }).ok,
+  'the alias is casing/spacing tolerant via normNoteBuyer');
+g = buyerRule.exportGate(loan('EMCAP Financial'), emcapTape, { isAdmin: false, registeredProgram: 'standard' });
+ok(!g.ok && g.error.code === 'program_mismatch', 'the alias still enforces the Silver program pairing');
+ok(!buyerRule.exportGate(loan('EMCAP Capital Partners'), emcapTape, { isAdmin: false, registeredProgram: 'silver' }).ok,
+  'a NON-enumerated EMCAP-prefixed label does NOT fuzzy-match the tape (closed list)');
+// tapesForBuyer resolves the alias key to the EMCAP tape (note-buyer slot preview path).
+ok(registry.tapesForBuyer('emcapfinancial').some((t) => t.key === 'emcap'), "tapesForBuyer('emcapfinancial') finds the EMCAP tape");
+ok(!registry.tapesForBuyer('emcapcapital').length, 'tapesForBuyer does not fuzzy-match a non-enumerated key');
+// tapeAvailability (the UI list) honors the alias too.
+{
+  const avAlias = buyerRule.tapeAvailability('emcapfinancial', 'EMCAP Financial', { isAdmin: false, registeredProgram: 'silver' });
+  ok(avAlias.find((x) => x.key === 'emcap').available, 'tapeAvailability: alias key shows the EMCAP tape as available on silver');
+}
+
 // assertExportAllowed throws the right error type
 assert.throws(() => buyerRule.assertExportAllowed(loan('Fidelis'), fidelisTape, { isAdmin: false, registeredProgram: 'gold' }),
   (e) => e.code === 'program_mismatch', 'assertExportAllowed throws program_mismatch');

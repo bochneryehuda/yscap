@@ -24,7 +24,7 @@
  * no DB, no network, never throws.
  */
 
-const { normNoteBuyer } = require('../conditions/field-registry');
+const { normNoteBuyer, isEmcapNoteBuyer } = require('../conditions/field-registry');
 
 const SOURCE = 'investor_guideline';
 const CATEGORY = 'investor_guideline';
@@ -35,7 +35,17 @@ const CATEGORY = 'investor_guideline';
 // exact same way the rest of the ISG stack does; a real future alias (e.g. a longer dropdown
 // label) is added in that one shared place so every consumer agrees at once. normNoteBuyer is
 // pure (field-registry has no requires) so this module stays PURE / never-throws.
-function normKey(v) { return normNoteBuyer(v) || ''; }
+function normKey(v) {
+  const k = normNoteBuyer(v) || '';
+  // "EMCAP Financial" — the buyer's real ClickUp/Sitewire dropdown label (owner-directed
+  // 2026-07-29) — normalizes to 'emcapfinancial'. Fold every EMCAP spelling onto the
+  // canonical 'emcap' key via the SHARED prefix helper (field-registry.isEmcapNoteBuyer,
+  // the isFidelisNoteBuyer shape) so the emcap-audience rules fire on the production
+  // label too. Advisory direction only — the data-tape export gate keeps its own
+  // enumerated alias list and is NOT loosened by this.
+  if (k && isEmcapNoteBuyer(k)) return 'emcap';
+  return k;
+}
 
 /**
  * claimKeyForCode(code) → the shared claim key for a rule code, or null.

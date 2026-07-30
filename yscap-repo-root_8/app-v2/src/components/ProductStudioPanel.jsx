@@ -1072,9 +1072,9 @@ const ProductStudioPanel = forwardRef(function ProductStudioPanel({ appId, app, 
 
       {!cur && data && (
         <p className="muted small" style={{ margin: '10px 0 0' }}>
-          No product registered yet. Price the deal in the Term Sheet Studio, pick Standard, Gold or Silver
-          Standard and your leverage, then register — the terms, cash to close and liquidity
-          requirement all flow onto this file.
+          No product registered yet. Price the deal in the Term Sheet Studio, pick the Standard, Gold
+          Standard or Silver program and your leverage, then register — the terms, cash to close and
+          liquidity requirement all flow onto this file.
         </p>
       )}
       {cur && <RegisteredProductDetails reg={cur} showAdmin={staffAdmin} />}

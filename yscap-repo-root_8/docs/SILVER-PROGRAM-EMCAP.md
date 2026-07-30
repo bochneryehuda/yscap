@@ -62,10 +62,17 @@ or formula changes without the owner's explicit written authorization.
   NYC F&F above 80% LTC, NYC below FICO 700), the engine steps leverage down
   band-by-band to the maximum structure the grid actually prices; if no
   leverage level prices, the deal goes to individual review.
-- Borrower note rate = grid rate + YS markup (default **0.5%**, admin knob).
+- Borrower note rate = grid rate + YS markup (default **0.5%**, admin knob,
+  **hard-capped at 1.00%** — see the markup-cap entry under "Mechanics").
   **EMCAP floors its buy rate at (note rate − 1.00pt)** — markup above 1 point
   is eaten by the note buyer, not earned (stated in the studio admin zone).
 - Origination default **1.25%** (its own admin knob).
+- **Note-buyer label spellings:** the live ClickUp/Sitewire label is **"EMCAP
+  Financial"** (normalizes to `emcapfinancial`, not `emcap`). Handled by
+  `field-registry.isEmcapNoteBuyer` (prefix helper, the Fidelis db/337 shape)
+  for the advisory/months direction, and by the ENUMERATED
+  `tapes/emcap.js buyerAliases: ['emcapfinancial']` for the data-tape export
+  gate (closed list — never fuzzy in the export direction).
 
 ### Geography (hard exclusions — EMCAP's list, not Standard's)
 - ZIP-based: **Greater Philadelphia 191xx, Greater Chicago 606/607/608xx,
@@ -98,9 +105,16 @@ or formula changes without the owner's explicit written authorization.
 - **Interest reserve:** financed into the loan, part of the cost basis,
   capped at the full loan term (months or exact dollar amount).
 - Liquidity to show: cash to close + **2 months of interest (4 over $1M)**;
-  **1 month of bank statements**.
+  **2 months of bank statements** (owner-directed 2026-07-29 — EMCAP requires
+  two months, same as Blue Lake; `liquidity.js` programMonths silver=2 +
+  NOTE_BUYER_MONTHS emcap=2).
 - Draw fees $299 hybrid / $499 physical; 3-month minimum earned interest
-  **off by default**; min loan $100k; markup 0.5% / origination 1.25%.
+  **off by default**; min loan $100k; markup 0.5% default / origination 1.25%.
+- **Markup hard-capped at 1.00%** (owner-directed 2026-07-29): EMCAP's buy
+  rate is floored at the note rate minus 1.00 point, so any spread above 1
+  point goes to EMCAP, not YS ("EMCAP eats any markup over 1 point"). The
+  engine clamps `setMarkup`/`effMarkup` at `MARKUP_MAX = 0.01` (all 6 copies)
+  and the Pricing Admin Center refuses a Silver markup above 1.00%.
 - Loan sizing runs through the same frozen `YSP.sizeLoan` waterfall with
   Silver's caps; whole-dollar floor + breakdown reconciliation unchanged.
 

@@ -57,6 +57,13 @@ router.put('/', async (req, res) => {
     if (/pct/.test(k) && (v < 0 || v > 100)) return res.status(400).json({ error: `${k} must be between 0 and 100` });
     if (/fee/.test(k) && (v < 0 || v > 1000000)) return res.status(400).json({ error: `${k} looks out of range` });
   }
+  // Silver markup is HARD-CAPPED at 1.00% (owner-directed 2026-07-29: the note buyer's
+  // buy rate floor is the note rate minus 1 point, so spread above 1 point is never
+  // earned). The engine clamps at pricing time too; refusing here keeps the stored
+  // default honest — the Admin Center must never display a markup the engine won't use.
+  if (cols.markup_silver_pct != null && cols.markup_silver_pct > 1) {
+    return res.status(400).json({ error: 'Silver program markup is capped at 1.00% — anything above 1 point is not earned on this program.' });
+  }
   // extra_fees is a jsonb column, appended after the scalar columns below.
   cols.extra_fees = JSON.stringify(extraFees);
   const client = await db.getClient();

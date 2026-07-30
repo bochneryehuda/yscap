@@ -47,7 +47,7 @@ const engine = require('./conditions/engine');
 // The rule fields that ARE the note buyer. A template whose rule tree mentions one of
 // these is note-buyer-driven; anything else is pending/retracting for its own reasons
 // and must not be attributed to a note-buyer switch.
-const NOTE_BUYER_FIELDS = ['note_buyer', 'note_buyer_is_fidelis'];
+const NOTE_BUYER_FIELDS = ['note_buyer', 'note_buyer_is_fidelis', 'note_buyer_is_emcap'];
 
 /** Does a rule tree reference any note-buyer field? Walks groups + rows. */
 function mentionsNoteBuyer(node) {
@@ -128,7 +128,10 @@ function requirementsFor(label, { program, assetMonths }) {
     const tapes = key ? tapeReg.tapesForBuyer(key) : [];
     if (tapes.length) {
       const names = tapes.map((t) => t.name).join(', ');
-      const wantProgram = pp.programForProvider(key);
+      // Canonicalize through the matched tape's buyerKey — the file's own key may be
+      // an alias spelling ("EMCAP Financial" → 'emcapfinancial') that the program-
+      // pairing map doesn't know; the tape's canonical key always is.
+      const wantProgram = pp.programForProvider(tapes[0].buyerKey || key);
       const lines = pp.programLabel ? pp.programLabel(wantProgram) : wantProgram;
       const progOk = !wantProgram || !prog || pp.normProgram(prog) === wantProgram;
       out.push({
@@ -241,6 +244,7 @@ async function noteBuyerSlot(appId, client = db, opts = {}) {
     const candidateCtx = Object.assign({}, ctx, {
       note_buyer: registry.normNoteBuyer(o.label),
       note_buyer_is_fidelis: registry.isFidelisNoteBuyer(o.label),
+      note_buyer_is_emcap: registry.isEmcapNoteBuyer(o.label),
     });
     for (const tpl of driven) {
       let matches = false;

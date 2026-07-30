@@ -42,6 +42,17 @@
   .tbd-toggle{ display:inline-flex; align-items:center; gap:.5rem; margin-top:.55rem; font-size:.84rem; color:var(--muted); cursor:pointer; user-select:none; }
   .tbd-toggle input{ width:16px; height:16px; accent-color:var(--teal-br); cursor:pointer; }
   .tbd-note{ margin-top:.6rem; padding:.7rem .85rem; border:1px dashed var(--teal-dp); border-radius:10px; background:rgba(47,127,134,.05); font-size:.82rem; color:var(--muted); line-height:1.5; }
+  /* ---- TBD confirmation (owner-directed 2026-07-29): checking "Property is TBD"
+     needs an explicit agree — without the full address the location restrictions
+     (ZIP / city / county / borough) can't be checked. ---- */
+  .tbdw-scrim{ position:fixed; inset:0; background:rgba(20,27,34,.45); display:flex; align-items:center; justify-content:center; z-index:1200; padding:1rem; }
+  .tbdw-scrim.hidden{ display:none; }
+  .tbdw-card{ background:#fff; border:1px solid #DFD8CB; border-radius:14px; max-width:540px; width:100%; padding:1.15rem 1.25rem 1.1rem; box-shadow:0 18px 60px rgba(20,27,34,.28); }
+  .tbdw-card h3{ margin:0 0 .55rem; font-size:1.02rem; color:#141B22; }
+  .tbdw-card p{ margin:.35rem 0; font-size:.86rem; line-height:1.55; color:#3A4550; }
+  .tbdw-actions{ display:flex; gap:.6rem; margin-top:.95rem; flex-wrap:wrap; }
+  .tbdw-actions .btn{ flex:1; justify-content:center; font-size:.84rem; }
+  @media(max-width:560px){ .tbdw-actions{ flex-direction:column; } }
   .exp-total{ display:flex; align-items:center; justify-content:space-between; gap:1rem; margin-top:1rem; padding:.7rem 1rem; border:1px solid var(--teal-dp); border-radius:12px; background:rgba(47,127,134,.06); }
   .exp-total-lbl{ font-size:.74rem; color:var(--muted); text-transform:uppercase; letter-spacing:.09em; }
   .exp-total-val{ font-family:var(--font-d); font-weight:600; font-size:1.05rem; color:var(--teal-br); }
@@ -414,7 +425,18 @@
                 <div class="input"><input id="propAddr" type="text" placeholder="Street, City, State ZIP"></div>
             </div>
             <label class="tbd-toggle"><input type="checkbox" id="addrTBD"> Property is TBD (hide the address on this term sheet)</label>
-            <div class="tbd-note cond hidden" data-cond="addrTBDnote">No problem — we'll generate indicative terms now and the term sheet will read <strong>“Property: To be determined.”</strong> Add the address when you have it under contract.</div>
+            <div class="tbd-note cond hidden" data-cond="addrTBDnote">No problem — we'll generate indicative terms now and the term sheet will read <strong>“Property: To be determined.”</strong> Heads-up: without the full address (street, city and ZIP code), location restrictions — certain ZIP codes, cities, counties and boroughs — can't be checked, so these terms may change once the address is known. Add the full address when you have it under contract for the most accurate term sheet.</div>
+            <div class="tbdw-scrim hidden" id="tbdWarn" role="alertdialog" aria-modal="true" aria-labelledby="tbdWarnTitle">
+                <div class="tbdw-card">
+                    <h3 id="tbdWarnTitle">Before you continue without an address</h3>
+                    <p>Without the full property address — street, city and ZIP code — this term sheet <strong>can't check location-based restrictions</strong>. Certain ZIP codes, cities, counties and boroughs are priced differently or aren't eligible at all, and the state alone isn't enough to catch them.</p>
+                    <p>The terms shown will be indicative and <strong>may change once the real address is known</strong>. For the most accurate term sheet, enter the full property address including the ZIP code.</p>
+                    <div class="tbdw-actions">
+                        <button type="button" class="btn btn-line" id="tbdWarnBack">Go back and enter the address</button>
+                        <button type="button" class="btn btn-solid" id="tbdWarnAgree">I understand — continue without an address</button>
+                    </div>
+                </div>
+            </div>
             <div class="field-rows two-col" style="margin-top:1rem">
                 <div class="field">
                     <label for="dealPurpose">Loan purpose</label>
@@ -546,9 +568,9 @@
                 <div class="ts-admin-grid2">
                     <div class="field"><label for="tsYspStd">Standard (%)</label><div class="input"><input id="tsYspStd" data-noshare type="number" inputmode="decimal" step="0.05" min="0" placeholder="0.5"></div></div>
                     <div class="field"><label for="tsYspGold">Gold (%)</label><div class="input"><input id="tsYspGold" data-noshare type="number" inputmode="decimal" step="0.05" min="0" placeholder="0.5"></div></div>
-                    <div class="field"><label for="tsYspSilver">Silver (%)</label><div class="input"><input id="tsYspSilver" data-noshare type="number" inputmode="decimal" step="0.05" min="0" placeholder="0.5"></div></div>
+                    <div class="field"><label for="tsYspSilver">Silver (%, max 1.00)</label><div class="input"><input id="tsYspSilver" data-noshare type="number" inputmode="decimal" step="0.05" min="0" max="1" placeholder="0.5"></div></div>
                 </div>
-                <p class="ts-admin-mnote">Gold’s top-experience tier — Fix&nbsp;&amp;&nbsp;Flip / Bridge with 10+ deals, or Ground-up with 8+ — always prices at <strong>zero markup</strong>, regardless of the Gold value above. Enter <strong>0</strong> to waive the markup entirely; leave a field blank to use the 0.5% default. On the <strong>Silver</strong> program the note buyer’s buy rate is floored at the note rate minus 1.00 point — markup above 1.00% is not earned.
+                <p class="ts-admin-mnote">Gold’s top-experience tier — Fix&nbsp;&amp;&nbsp;Flip / Bridge with 10+ deals, or Ground-up with 8+ — always prices at <strong>zero markup</strong>, regardless of the Gold value above. Enter <strong>0</strong> to waive the markup entirely; leave a field blank to use the 0.5% default. On the <strong>Silver</strong> program the note buyer’s buy rate is floored at the note rate minus 1.00 point — markup above 1.00% is never earned, so the Silver markup is <strong>hard-capped at 1.00%</strong> (a larger value prices exactly as 1.00%).
 
                 <div class="ts-admin-group">Origination points</div>
                 <div class="ts-admin-grid2">
@@ -815,10 +837,10 @@
 <script src="rb-logo.js?v=admin8"></script>
 <script src="standard-program.js?v=asgseller18-asgelig"></script>
 <script src="gold-standard.js?v=asgseller19"></script>
-<script src="silver-program.js?v=silver1"></script>
+<script src="silver-program.js?v=silver2"></script>
 <script src="title-cost.js?v=admin8"></script>
 <script src="address-autocomplete.js?v=admin9"></script>
-<script src="termsheet.js?v=silver1"></script>
+<script src="termsheet.js?v=silver2"></script>
 <script src="../float-actions.js?v=admin10-applyfix"></script>
 <script>
 /* Property-address autocomplete (owner-directed 2026-07-17): same shared YSAddr

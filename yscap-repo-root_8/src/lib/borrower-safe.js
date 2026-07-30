@@ -57,7 +57,10 @@ const PARTNER_PATTERNS = [
   partnerRe(['kiavi']),
   // EMCAP is the Silver program's note buyer (live 2026-07-29). Distinctive
   // name → no right boundary, same as fidelis/kiavi ("EMCAP_tape.xlsx",
-  // "EMCAPTerms.pdf" all scrub).
+  // "EMCAPTerms.pdf" all scrub). The two-word form FIRST so the real ClickUp/
+  // Sitewire label "EMCAP Financial" scrubs as ONE unit (never leaving a
+  // dangling "Financial" behind); the bare form then catches everything else.
+  partnerRe(['emcap', 'financial']),
   partnerRe(['emcap']),
   partnerRe(['roc'], { acronym: true }),
   // TrustPoint is the note buyer's draw administrator (2026-07-24 physical-draw workflow) —

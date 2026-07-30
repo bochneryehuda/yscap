@@ -50,9 +50,11 @@
 
   /* ---------------- program constants ---------------- */
   var MARKUP = 0.005;            // YS markup over the the note buyer grid rate (borrower pays grid + markup)
-  var MARKUP_OVR = null;         // admin-set markup override (fraction); null = default
-  function effMarkup() { return (MARKUP_OVR == null) ? MARKUP : MARKUP_OVR; }
-  function setMarkup(f) { MARKUP_OVR = (typeof f === "number" && isFinite(f) && f >= 0) ? f : null; }
+  var MARKUP_MAX = 0.01;         // hard cap (owner-directed 2026-07-29): the program's buy-rate floor is the note
+                                 // rate minus 1.00pt, so any spread above 1 point is never earned — cap it here.
+  var MARKUP_OVR = null;         // admin-set markup override (fraction); null = default; clamped to MARKUP_MAX
+  function effMarkup() { var m = (MARKUP_OVR == null) ? MARKUP : MARKUP_OVR; return (m > MARKUP_MAX) ? MARKUP_MAX : m; }
+  function setMarkup(f) { MARKUP_OVR = (typeof f === "number" && isFinite(f) && f >= 0) ? Math.min(f, MARKUP_MAX) : null; }
   var ORIG_PCT = 0.0125;         // 1.25% origination on the total loan (same as Standard)
   var MIN_LOAN = 100000;         // grid floor: "Loan Sizes $100k–$2.5m" / "$2.5m–$4.5m"
   var SMALL_MAX = 2500000;       // small/large loan-size band boundary
@@ -294,9 +296,16 @@
         if (zTyped) return { level: "INELIGIBLE", label: zipLabel(z), source: "zip" };
         return { level: "MANUAL", label: zipLabel(z), source: "address" };
       }
+      if (excluded && zTyped) {
+        // The TYPED ZIP names an excluded market but the TYPED state contradicts
+        // it. Two typed fields disagreeing is a data problem, not a free-text
+        // misparse — never price it silently; a human confirms which is right
+        // (re-audit 2026-07-30, finding 1b-i).
+        return { level: "MANUAL", label: zipLabel(z), source: "zipstate" };
+      }
       if (zipStateConsistent(z, st)) return null;   // a known good ZIP is decisive — no city-name second-guessing
-      // contradicting state ⇒ the "ZIP" was likely a house number — fall through
-      // to the city-name check instead of trusting it.
+      // contradicting state on a TEXT-parsed "ZIP" ⇒ likely a house number — fall
+      // through to the city-name check instead of trusting it.
     }
     // No ZIP: fall back to the city name, at manual-review confidence.
     var city = low(input.city), addr = low(input.address || input.propAddr || "");
@@ -514,7 +523,9 @@
         geoReview = geo.label;
         add("MANUAL", geo.source === "city"
           ? "Properties in " + geo.label + " aren't eligible for the Silver Program — this scenario needs manual review."
-          : "This address looks like it's in " + geo.label + ", which isn't eligible for the Silver Program — it needs manual review to confirm the exact location (a ZIP code decides). If the property isn't in " + geo.label + ", we can price it.");
+          : geo.source === "zipstate"
+            ? "The ZIP code entered is in " + geo.label + " (not eligible for the Silver Program) but the state entered doesn't match that ZIP — one of the two is wrong. This needs manual review to confirm the property's real location before it can be priced."
+            : "This address looks like it's in " + geo.label + ", which isn't eligible for the Silver Program — it needs manual review to confirm the exact location (a ZIP code decides). If the property isn't in " + geo.label + ", we can price it.");
       }
     }
     var propLc = low(input.propertyType);
@@ -785,7 +796,7 @@
     caps: caps, gridRate: gridRate, rateKey: rateKey, noteRate: noteRate,
     arBand: arBand, ltcBand: ltcBand, ficoBand: ficoBand, termToken: termToken, prodToken: prodToken,
     constants: {
-      MARKUP: MARKUP, ORIG_PCT: ORIG_PCT, MIN_LOAN: MIN_LOAN, SMALL_MAX: SMALL_MAX, ABS_MAX_LOAN: ABS_MAX_LOAN,
+      MARKUP: MARKUP, MARKUP_MAX: MARKUP_MAX, ORIG_PCT: ORIG_PCT, MIN_LOAN: MIN_LOAN, SMALL_MAX: SMALL_MAX, ABS_MAX_LOAN: ABS_MAX_LOAN,
       SPREAD_NOTE: SPREAD_NOTE, TG: TG, AR_BANDS: AR_BANDS, FICO_BANDS_12: FICO_BANDS_12, FICO_BANDS_3: FICO_BANDS_3,
       LTC_BANDS: LTC_BANDS, EXCLUDED_STATES: EXCLUDED_STATES, EXCLUDED_ZIP3: EXCLUDED_ZIP3, EXCLUDED_ZIP5: EXCLUDED_ZIP5,
       RATE_BLOCKS: RATE_BLOCKS

@@ -2407,6 +2407,38 @@
     var scard = el("pcardStd"); if (scard) scard.addEventListener("click", function () { selectProgram("standard"); });
     var gcard = el("pcardGold"); if (gcard) gcard.addEventListener("click", function () { selectProgram("gold"); });
     var svcard = el("pcardSilver"); if (svcard) svcard.addEventListener("click", function () { selectProgram("silver"); });
+    // TBD confirmation (owner-directed 2026-07-29): ticking "Property is TBD" must be
+    // an explicit, informed choice — without the full address the engines can't check
+    // ZIP / city / county / borough restrictions (the state alone isn't enough), so
+    // the user agrees before the address is waived. Fires only on a REAL interaction:
+    // programmatic restores (share link / Excel import / studio prefill) set .checked
+    // directly without dispatching events (suite.js applyState), so they never nag.
+    var tbdBox = el("addrTBD"), tbdWarn = el("tbdWarn");
+    if (tbdBox && tbdWarn) {
+      var tbdAgreed = false;
+      var tbdClose = function (agree) {
+        tbdWarn.classList.add("hidden");
+        if (agree) { tbdAgreed = true; return; }
+        tbdBox.checked = false;
+        updateConditionals(); recompute();
+        var addrF = el("propAddr"); if (addrF) { try { addrF.focus(); } catch (_) { } }
+      };
+      var tbdAgreeBtn = el("tbdWarnAgree"), tbdBackBtn = el("tbdWarnBack");
+      tbdBox.addEventListener("change", function () {
+        if (tbdBox.checked && !tbdAgreed) {
+          tbdWarn.classList.remove("hidden");
+          // Move focus INTO the dialog so keyboard users land on the safe choice
+          // (and Escape works — the key fires where the focus is).
+          if (tbdBackBtn) { try { tbdBackBtn.focus(); } catch (_) { } }
+        }
+      });
+      if (tbdAgreeBtn) tbdAgreeBtn.addEventListener("click", function () { tbdClose(true); });
+      if (tbdBackBtn) tbdBackBtn.addEventListener("click", function () { tbdClose(false); });
+      // Document-level so Escape closes no matter where the focus sits.
+      document.addEventListener("keydown", function (e) {
+        if (e.key === "Escape" && !tbdWarn.classList.contains("hidden")) tbdClose(false);
+      });
+    }
     var pback = el("progBack"); if (pback) pback.addEventListener("click", function () { chosenProgram = null; recompute(); });
     // info tooltips: tap toggles (hover/keyboard focus handle desktop); never let a tap fall through to the card
     document.addEventListener("click", function (ev) {
