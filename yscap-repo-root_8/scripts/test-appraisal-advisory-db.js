@@ -10,12 +10,12 @@
  *   • an OPEN condition with NO appraisal read yet → 'not_ready';
  *   • a current appraisal read + clean (no fatal finding) → 'ready' (status still open);
  *   • a HUMAN-signed-off condition PILOT confirms → 'agree';
- *   • a NEW open FATAL blocks_ctc finding lands AFTER the human signed off → the sign-off
- *     STANDS (db/334 retired the db/155 auto-reopen: PILOT no longer takes a human's sign-off
- *     away, owner-directed 2026-07-27 "advisory only"), and PILOT's advisory flips to
- *     'dispute' — it says out loud that it disagrees, without changing anything. This is the
- *     evaluator's DISPUTE branch, which the old auto-reopen made unreachable on this path.
- *   • the advisory NEVER changes status / signed_off_* on any path.
+ *   • a NEW open FATAL blocks_ctc finding lands AFTER the human signed off → the condition
+ *     REOPENS (owner-directed 2026-07-30: appraisal findings are ENFORCED again — db/374
+ *     re-armed the db/155 reopen for the APPRAISAL review only; the document review stays
+ *     advisory per 2026-07-27), and the advisory reads the reopened condition 'not_ready';
+ *   • the advisory itself NEVER changes status / signed_off_* on any path (the reopen is the
+ *     DB trigger's doing, not the advisory's).
  *
  * Requires DATABASE_URL; skips cleanly otherwise.
  * Run: DATABASE_URL=... node scripts/test-appraisal-advisory-db.js
@@ -97,20 +97,21 @@ async function row(itemId) {
   ok(c.status === 'satisfied' && String(c.signed_off_by) === String(staff.id), '…and the human sign-off is untouched');
 
   // 4) A NEW open FATAL blocks_ctc appraisal finding lands AFTER the human signed off.
-  //    ADVISORY ONLY (owner-directed 2026-07-27): db/334 retired db/155's auto-reopen, so
-  //    the human's sign-off STANDS — PILOT does not silently un-sign work a person cleared.
-  //    What PILOT does instead is SAY it disagrees: the advisory flips to 'dispute'. That is
-  //    the whole shape of the new posture — loud opinion, zero authority.
+  //    ENFORCED for the APPRAISAL review (owner-directed 2026-07-30; db/374 re-armed db/155's
+  //    reopen, narrowing the 2026-07-27 advisory-only rule for this ONE condition): a sign-off
+  //    cannot stand over a fresh blocking appraisal finding — the trigger reopens the
+  //    condition (with an [auto] note) and the officer must re-clear it. The document/
+  //    underwriting review stays advisory (test-ai-advisory-only-db.js covers that side).
   await insertFatalFinding(f.appId, apprId);
   const afterFatal = await row(appr);
-  ok(afterFatal.status === 'satisfied' && String(afterFatal.signed_off_by) === String(staff.id),
-    'ADVISORY ONLY: a late fatal finding no longer takes the human sign-off away (db/334 retired db/155)');
+  ok(afterFatal.status === 'received' && afterFatal.signed_off_by === null,
+    'ENFORCED: a late fatal appraisal finding REOPENS the signed-off appraisal review (db/374 re-armed the reopen)');
   await engine.runFileAdvice(db, f.appId);
   c = await row(appr);
-  ok(c.pilot_advice === 'dispute',
-    'a signed-off condition with an open fatal → advice "dispute" (PILOT disagrees, out loud)');
-  ok(c.status === 'satisfied' && String(c.signed_off_by) === String(staff.id),
-    '…and the advisory still changed nothing — status and sign-off untouched');
+  ok(c.pilot_advice === 'not_ready',
+    'the reopened (open) condition with an open fatal → advice "not_ready"');
+  ok(c.status === 'received' && c.signed_off_by === null,
+    '…and the advisory itself changed nothing — the DB trigger did the reopen, not the advisory');
 
   // cleanup
   cfg.pilotReadyStampEnabled = false;

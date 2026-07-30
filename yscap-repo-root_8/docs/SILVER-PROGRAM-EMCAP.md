@@ -121,7 +121,12 @@ or formula changes without the owner's explicit written authorization.
 ### Underwriting overlays (shown on every Silver evaluation; conditions/ISG)
 Appraisal comps (≥1 as-is + ≥1 ARV comp: sale within 12 months, <15% net
 adjustments, same ZIP; interior photos; submitting lender named on the
-appraisal); refinance background/exit + purchase-price-as-as-is rule (>18
+appraisal) — **IMPLEMENTED 2026-07-30** as deterministic appraisal-desk findings
+(`src/lib/appraisal/note-buyer-checks.js`, codes `emcap_*`, source `note_buyer`),
+raised on import / note-buyer change onto the Appraisal tab and enforced through
+the appraisal-review sign-off (owner-directed: findings, never auto-posted
+conditions; a data gap surfaces as a verify-by-hand warning, never a fabricated
+fatal); refinance background/exit + purchase-price-as-as-is rule (>18
 months → appraisal as-is usable); GUC refi within 18 months may use price +
 documented value-add (1:1 invoices); bridge/stabilized refi requires current
 payments (VOM), taxes current, profitable incl. new fees & carry; experience

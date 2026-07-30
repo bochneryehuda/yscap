@@ -104,6 +104,18 @@ function requirementsFor(label, { program, assetMonths }) {
     });
   }
 
+  // EMCAP's extra APPRAISAL review items (owner-directed 2026-07-30) — the enforcing module
+  // is src/lib/appraisal/note-buyer-checks.js (appraisal-desk findings, source='note_buyer',
+  // raised on import / note-buyer change onto the Appraisal tab). ONE derived line here, never
+  // a second copy of the rules.
+  if (registry.isEmcapNoteBuyer(label)) {
+    out.push({
+      key: 'emcap_appraisal_review',
+      text: 'The appraisal gets EMCAP\'s extra review items as findings on the Appraisal tab: an anchor As-Is comp AND an anchor ARV comp (each a settled sale within 12 months of submission, under 15% net adjustment, in the subject\'s ZIP), a rental analysis on a rental-exit loan (a 1004 needs a 1007), interior photos, and the appraisal in our name.',
+      fromNoteBuyer: true,
+    });
+  }
+
   // Bank statements — liquidity.bankStatementMonths is the authority (the stricter of
   // program and note buyer wins).
   try {

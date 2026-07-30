@@ -201,6 +201,11 @@ async function runAppraisalImport(args) {
   });
   if (!out.ok) return out;
   await ensureAppraisalCondition(appId, 'appraisal_review_cleared');
+  // Note-buyer appraisal checks (EMCAP — owner-directed 2026-07-30): evaluated off the STORED
+  // rows the import just wrote, so the same sync re-runs identically when the note buyer changes
+  // later. AWAITED so the buyer's findings exist before the route answers (they count toward the
+  // enforced appraisal-review gate); its own try/catch inside — a failure never breaks the import.
+  await require('./note-buyer-checks').syncNoteBuyerFindings(db, appId);
   let embedded = null; try { embedded = X.embeddedPdfBase64(xml); } catch (_) { embedded = null; }
   let pdfB64 = pdfBase64 || embedded;
   // If no PDF was passed inline and none is embedded in the XML, but a PDF document was
@@ -358,6 +363,41 @@ async function backfillAppraisalCompSplitOnce(limit = 200) {
     }
   } catch (_) { /* best-effort */ }
   return { scanned, split };
+}
+
+// Previous files (owner-directed 2026-07-30): run the note-buyer appraisal checks (EMCAP)
+// for open EMCAP files that already carry a current appraisal but have never had the
+// note-buyer findings evaluated (no source='note_buyer' rows at all, any status). One sync per
+// file; the sync itself diffs by code and honors human decisions, so this is idempotent and a
+// second boot is a fast no-op (the file then HAS rows — even if all were later resolved).
+// Bounded per boot; never throws.
+async function backfillNoteBuyerFindingsOnce(limit = 100) {
+  let scanned = 0, synced = 0;
+  try {
+    const rows = (await db.query(
+      `SELECT a.id
+         FROM applications a
+        WHERE a.deleted_at IS NULL
+          AND a.status NOT IN ('clear_to_close', 'funded', 'declined', 'withdrawn', 'cancelled')
+          AND a.lender IS NOT NULL
+          AND EXISTS (SELECT 1 FROM appraisals ap WHERE ap.application_id = a.id AND ap.superseded = false)
+          AND NOT EXISTS (SELECT 1 FROM appraisal_findings af
+                           WHERE af.application_id = a.id AND af.source = 'note_buyer')
+        ORDER BY a.updated_at DESC NULLS LAST
+        LIMIT $1`, [limit])).rows;
+    const nbChecks = require('./note-buyer-checks');
+    const registry = require('../conditions/field-registry');
+    for (const r of rows) {
+      scanned++;
+      // The EMCAP test runs in JS (isEmcapNoteBuyer is a prefix match on the normalized label —
+      // not expressible as a simple SQL predicate without duplicating the normalizer).
+      const app = (await db.query(`SELECT lender FROM applications WHERE id = $1`, [r.id])).rows[0];
+      if (!app || !registry.isEmcapNoteBuyer(app.lender)) continue;
+      const res = await nbChecks.syncNoteBuyerFindings(db, r.id);
+      if (res && (res.added || res.carried)) synced++;
+    }
+  } catch (_) { /* best-effort */ }
+  return { scanned, synced };
 }
 
 // Undo the current appraisal import (owner-directed 2026-07-20): a WRONG appraisal
@@ -518,4 +558,4 @@ async function backfillAsIsReadsOnce({ freeLimit = null, pdfLimit = null } = {})
   return out;
 }
 
-module.exports = { ensureAppraisalCondition, runAppraisalImport, undoAppraisalImport, extractAndStorePhotos, repullAppraisalPhotos, backfillAppraisalPhotosOnce, backfillAppraisalCompSplitOnce, backfillAsIsReadsOnce, runAsIsRead, pdfBytesForAppraisal, xmlForAppraisal, todayNY };
+module.exports = { ensureAppraisalCondition, runAppraisalImport, undoAppraisalImport, extractAndStorePhotos, repullAppraisalPhotos, backfillAppraisalPhotosOnce, backfillAppraisalCompSplitOnce, backfillNoteBuyerFindingsOnce, backfillAsIsReadsOnce, runAsIsRead, pdfBytesForAppraisal, xmlForAppraisal, todayNY };

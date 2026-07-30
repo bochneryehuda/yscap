@@ -5389,27 +5389,56 @@ async function signOffGate(itemId, actor) {
 
   // Appraisal review cleared / document-underwriting review cleared.
   //
-  // ADVISORY ONLY (owner-directed 2026-07-27): "it should not hold up signing off
-  // on any condition". These two conditions used to REFUSE the human's sign-off
-  // while any fatal PILOT finding was open — which is precisely the hold-up the
-  // owner asked to remove. PILOT still raises every finding, and the reviewer still
-  // sees them on the appraisal / Document Review desks; the sign-off is now the
-  // human's call. The DB backstops that enforced the same rule underneath (db/154,
-  // db/202) are retired by db/334, and db/155 no longer un-signs the appraisal
-  // review when a new fatal lands — otherwise the block would simply move.
+  // TWO DIFFERENT POSTURES — deliberately (both owner-directed):
   //
-  // `AI_FINDINGS_ENFORCE=1` restores the old behavior in one env change (and
-  // re-running db/154/155/202 re-arms the database half).
+  // • APPRAISAL review — ENFORCED (owner-directed 2026-07-30: "all the findings that you
+  //   find from the XML appraisal … that should be enforced and everything should need to
+  //   be signed off … you cannot clear this condition, you cannot get a CTC till you clear
+  //   the appraisal findings … until human entered / confirmed the as-is value"). Signing
+  //   it off requires BOTH: (1) zero open fatal appraisal findings, and (2) the As-Is value
+  //   confirmed — the "Confirm the As-Is value" condition completed (or never needed, when
+  //   PILOT read it confidently and the file already agreed) AND a real As-Is value on the
+  //   file. The deliberate way through remains the super-admin condition override (db/344).
+  //   Kill switch APPRAISAL_FINDINGS_ENFORCE=0 (advisory-policy.appraisalReviewEnforced).
+  //
+  // • DOCUMENT/UNDERWRITING review — still ADVISORY (owner-directed 2026-07-27: "it should
+  //   not hold up signing off on any condition"; the document-review desk is on hold). Only
+  //   AI_FINDINGS_ENFORCE=1 restores that gate.
+  //
+  // The DB reopen backstop for the appraisal half is re-armed by db/374 (a new fatal
+  // appraisal finding un-signs an already-cleared appraisal review). The old db/154
+  // satisfied-guard trigger stays retired ON PURPOSE: it cannot see the actor, so it would
+  // refuse the super-admin override's write — this app-layer gate composes with the
+  // override correctly, the trigger could not.
   if (isAppraisalReview || isUnderwritingReview) {
-    if (advisoryPolicy.advisoryOnly()) return null;
     if (isAppraisalReview) {
+      if (!advisoryPolicy.appraisalReviewEnforced() && advisoryPolicy.advisoryOnly()) return null;
       const n = (await db.query(
         `SELECT count(*)::int AS n FROM appraisal_findings
           WHERE application_id=$1 AND status='open' AND severity='fatal' AND blocks_ctc=true`, [item.application_id])).rows[0].n;
       if (n > 0)
-        return `Resolve the ${n} open fatal appraisal finding${n === 1 ? '' : 's'} first — the appraisal review cannot be cleared while a fatal PILOT finding is open. Open the appraisal to replace, keep, or grant an exception on each.`;
+        return `Resolve the ${n} open fatal appraisal finding${n === 1 ? '' : 's'} first — the appraisal review cannot be cleared while a fatal PILOT finding is open. Open the Appraisal section to replace, keep, or dismiss each one.`;
+      // The As-Is value must be settled before the appraisal review can be cleared
+      // (owner-directed 2026-07-30). Two checks, both needed: the "Confirm the As-Is
+      // value" condition (when it exists on the file) must be completed, and the file
+      // must actually carry an As-Is value — a waived confirm-condition on a file with
+      // no value is still not a confirmed value.
+      const asis = (await db.query(
+        `SELECT (SELECT a.as_is_value FROM applications a WHERE a.id=$1) AS as_is_value,
+                EXISTS (
+                  SELECT 1 FROM checklist_items ci JOIN checklist_templates t ON t.id=ci.template_id
+                   WHERE ci.application_id=$1 AND t.code='appraisal_as_is_verify'
+                     AND COALESCE(ci.is_required, true) = true
+                     AND ci.status <> 'satisfied' AND ci.signed_off_at IS NULL AND ci.waived_at IS NULL
+                ) AS as_is_open`, [item.application_id])).rows[0] || {};
+      if (asis.as_is_open)
+        return 'Confirm the As-Is value first — the "Confirm the As-Is value on the appraisal" condition on this file is still open. Read the value off the report, enter or confirm it there, and sign that condition off; then the appraisal review can be cleared.';
+      const v = asis.as_is_value == null ? null : Number(asis.as_is_value);
+      if (v == null || !Number.isFinite(v) || v <= 0)
+        return 'Enter the As-Is value before clearing the appraisal review — the file has no As-Is value yet. Read it off the appraisal and enter it on the "Confirm the As-Is value" condition.';
       return null;
     }
+    if (advisoryPolicy.advisoryOnly()) return null;
     const { fileFatalCount } = require('../lib/underwriting/file-review');
     const { total } = await fileFatalCount(db, item.application_id);
     if (total > 0)
@@ -7937,6 +7966,14 @@ function decorateBlocker(row, kind) {
 }
 async function advancementBlockers(appId, target) {
   const sevs = target === 'funded' ? FUND_SEVERITIES : CTC_SEVERITIES;
+  // Which of the two PILOT-review conditions are ADVISORY (kept out of the blocking
+  // list, returned under `advisories`). The APPRAISAL review is ENFORCED by default
+  // (owner-directed 2026-07-30: "you cannot get a CTC till you clear the appraisal
+  // findings") so it stays a REAL blocker; the document/underwriting review stays
+  // advisory under the 2026-07-27 rule. See advisory-policy.appraisalReviewEnforced.
+  const advisoryReviewCodes = advisoryPolicy.appraisalReviewEnforced()
+    ? AI_REVIEW_CONDITION_CODES.filter((c) => c !== 'appraisal_review_cleared')
+    : AI_REVIEW_CONDITION_CODES;
   const conds = await db.query(
     `SELECT id, COALESCE(borrower_title, title) AS title, severity, audience
        FROM conditions
@@ -7967,14 +8004,11 @@ async function advancementBlockers(appId, target) {
         AND ($3::boolean = false
              OR COALESCE(NULLIF(ci.category,''), t.category) IS NULL
              OR COALESCE(NULLIF(ci.category,''), t.category) <> ALL($2::text[]))
-        -- The two PILOT-REVIEW conditions exist for one purpose: to say "PILOT's
-        -- findings are cleared". Leaving them in the blocking list while making the
-        -- findings advisory would just move the hold-up behind a proxy — the file
-        -- would still read "not ready" and still refuse clear-to-close because of
-        -- the AI section (owner-directed 2026-07-27: "it should not say that it's
-        -- an outstanding thing before CTC"). They stay ON the file, stay signable,
-        -- and are returned under "advisories"; they simply don't gate. Re-armed by
-        -- AI_FINDINGS_ENFORCE=1.
+        -- The PILOT-REVIEW conditions: the DOCUMENT review stays advisory (owner-directed
+        -- 2026-07-27) and is excluded here so it never gates behind a proxy; the APPRAISAL
+        -- review is ENFORCED (owner-directed 2026-07-30) and is NOT in $5, so it stays a
+        -- real blocker — no clear-to-close until it is signed off. Re-armed fully by
+        -- AI_FINDINGS_ENFORCE=1 ($4 false → nothing excluded).
         AND ($4::boolean = false OR COALESCE(t.code,'') <> ALL($5::text[]))
         -- The four internal WORKFLOW STEPS (LTC/LTV/ARV checked + interest reserves)
         -- are hidden from the conditions list on the client. Exclude them here too so
@@ -7984,10 +8018,11 @@ async function advancementBlockers(appId, target) {
         AND COALESCE(t.code,'') <> ALL($6::text[])
       ORDER BY ci.sort_order, ci.created_at`,
     [appId, CLOSING_STAGE_CATEGORIES, excludeClosingStage,
-     advisoryPolicy.advisoryOnly(), AI_REVIEW_CONDITION_CODES, WORKFLOW_STEP_CODES]);
-  // The same two conditions, pulled separately so they can be SHOWN (as advisory)
-  // rather than silently vanish off the readiness view.
-  const aiReviewConds = advisoryPolicy.advisoryOnly() ? (await db.query(
+     advisoryPolicy.advisoryOnly(), advisoryReviewCodes, WORKFLOW_STEP_CODES]);
+  // The still-advisory review condition(s), pulled separately so they can be SHOWN
+  // (as advisory) rather than silently vanish off the readiness view. The enforced
+  // appraisal review is NOT in this list — it rides the blocking query above.
+  const aiReviewConds = (advisoryPolicy.advisoryOnly() && advisoryReviewCodes.length) ? (await db.query(
     `SELECT ci.id, COALESCE(ci.label, ci.borrower_label, 'Condition') AS title,
             ci.tool_key, t.code AS template_code, ci.audience, ci.status, ci.hint
        FROM checklist_items ci
@@ -7995,7 +8030,7 @@ async function advancementBlockers(appId, target) {
       WHERE ci.application_id=$1
         AND t.code = ANY($2::text[])
         AND NOT (ci.signed_off_at IS NOT NULL OR ci.status='satisfied')
-      ORDER BY ci.sort_order, ci.created_at`, [appId, AI_REVIEW_CONDITION_CODES])).rows
+      ORDER BY ci.sort_order, ci.created_at`, [appId, advisoryReviewCodes])).rows
     .map((r) => ({ ...r, source: 'ai_advisory', advisory: true, section: 'sec-underwriting',
       reason: 'PILOT’s review of the file. Worth a look before closing — it does not hold up clear-to-close, and you can sign it off whenever you’re satisfied.' }))
     : [];
@@ -8692,6 +8727,12 @@ async function completeFields(req, res, borrowerScoped) {
       // needs 2 vs Standard 1) — re-derive it now so the condition doesn't keep showing the old
       // count until the next re-register (owner 2026-07-27). Best-effort; never blocks the save.
       try { await require('../lib/liquidity').resyncLiquidityForFile(req.params.id); } catch (_) {}
+      // A note-buyer change also re-evaluates the note-buyer APPRAISAL checks (EMCAP — owner
+      // 2026-07-30): switching a file with an imported appraisal onto EMCAP raises the buyer's
+      // appraisal findings; switching away retires them. Cheap no-op for every other field/buyer.
+      if (appKeys.includes('lender')) {
+        try { await require('../lib/appraisal/note-buyer-checks').syncNoteBuyerFindings(db, req.params.id); } catch (_) {}
+      }
       // Loan Digital Twin (Sovereign 1/4, owner-directed 2026-07-21): every LOS
       // field write is a fresh observation of the underlying canonical facts
       // (loan.amount, property.address, etc.). Feeds the twin so the completeness
@@ -12914,3 +12955,6 @@ module.exports.assembleDrawEventRows = assembleDrawEventRows;
 // exported for the IG-W8 test: closing-stage conditions (title/insurance/ISKA) hold
 // funding but NOT clear-to-close.
 module.exports.advancementBlockers = advancementBlockers;
+// exported for the appraisal-enforcement test (owner-directed 2026-07-30): the
+// appraisal-review sign-off gate is enforced again and must be provable directly.
+module.exports.signOffGate = signOffGate;
