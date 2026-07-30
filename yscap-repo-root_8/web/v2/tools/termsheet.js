@@ -954,7 +954,15 @@
   function adminOrigPct(prog) {
     if (prog === "gold") return adminNum("tsOrigGold", CO.origGold) / 100;
     if (prog === "silver") return adminNum("tsOrigSilver", CO.origSilver) / 100;
-    if (prog === "manual") return adminNum("tsOrigManual", CO.origStd) / 100;
+    // MANUAL falls back to the STANDARD KNOB AS RESOLVED — the Standard FIELD if
+    // the staffer typed one, else the company default. NOT the bare company
+    // default: that is what the server does (pricing.js `origKey` picks
+    // origManualPct only when it is really present, else origStdPct), and the
+    // card must never print a percentage the registration will not use. Audit
+    // 2026-07-30: with Standard=2.0 typed and the manual field seeded to the
+    // company 1.25, the card said 1.25 while the pre-existing contract (and every
+    // already-registered file) prices that manual product at 2.0.
+    if (prog === "manual") { var m = adminNumRaw("tsOrigManual"); if (m != null) return m / 100; }
     return adminNum("tsOrigStd", CO.origStd) / 100;
   }  // fraction
   // The live calc (`d`) always runs the STANDARD engine — but with a STRUCTURAL
@@ -989,9 +997,24 @@
     var s = function (id, v) { var e = el(id); if (e && String(e.value).trim() === "") e.value = v; };
     s("tsYspStd", String(CO.markupStd)); s("tsYspGold", String(CO.markupGold)); s("tsYspSilver", String(CO.markupSilver));
     s("tsOrigStd", String(CO.origStd)); s("tsOrigGold", String(CO.origGold)); s("tsOrigSilver", String(CO.origSilver));
-    s("tsOrigManual", String(CO.origStd));   // manual has no company default of its own — it falls back to Standard
+    // tsOrigManual is DELIBERATELY NOT SEEDED. Its three siblings have a company
+    // default of their own, so seeding them writes back exactly what the server
+    // would have used anyway. The Manual knob's default is "whatever Standard
+    // resolves to", which is NOT a fixed number — seeding it with CO.origStd
+    // froze a stale copy of Standard onto the register payload, so a Standard
+    // override of 2.0% silently registered a Manual Program at 1.25% and the
+    // approval card named a percentage that did not govern (audit 2026-07-30).
+    // Blank is the contract everywhere: studio (adminOrigPct), payload
+    // (buildInputs skips ''), approval detector (hasValue false).
     s("tsFeeUW", String(CO.lender)); s("tsFeeCredit", String(CO.credit)); s("tsFeeAppr", String(CO.appraisal));
     if (CO.title != null) s("tsFeeTitle", String(CO.title));
+    syncManualOrigHint();
+  }
+  // Show the staffer WHICH number a blank Manual field will actually use — it
+  // tracks the Standard field, not a fixed literal.
+  function syncManualOrigHint() {
+    var e = el("tsOrigManual"); if (!e) return;
+    try { e.placeholder = String(adminNum("tsOrigStd", CO.origStd)); } catch (_) { /* cosmetic only */ }
   }
   function manualOn() { var e = el("tsManualOn"); return !!(e && e.checked); }
   // A STRUCTURAL manual basis (custom LTV / LTC / ARV) is what actually makes a
@@ -1229,7 +1252,7 @@
     }
     function lockDown() {
       if (panel) panel.hidden = true; if (lock) lock.hidden = true; trig.hidden = false; trig.setAttribute("aria-expanded", "false");
-      setVal("tsYspStd", String(CO.markupStd)); setVal("tsYspGold", String(CO.markupGold)); setVal("tsYspSilver", String(CO.markupSilver)); setVal("tsOrigStd", String(CO.origStd)); setVal("tsOrigGold", String(CO.origGold)); setVal("tsOrigSilver", String(CO.origSilver)); setVal("tsOrigManual", String(CO.origStd));
+      setVal("tsYspStd", String(CO.markupStd)); setVal("tsYspGold", String(CO.markupGold)); setVal("tsYspSilver", String(CO.markupSilver)); setVal("tsOrigStd", String(CO.origStd)); setVal("tsOrigGold", String(CO.origGold)); setVal("tsOrigSilver", String(CO.origSilver)); setVal("tsOrigManual", "");   // blank = follow Standard (it has no default of its own)
       setVal("tsFeeUW", String(CO.lender)); setVal("tsFeeCredit", String(CO.credit)); setVal("tsFeeAppr", String(CO.appraisal)); setVal("tsFeeTitle", CO.title != null ? String(CO.title) : "");
       var mo = el("tsManualOn"); if (mo) mo.checked = false;
       setVal("tsMLtv", ""); setVal("tsMArv", ""); setVal("tsMLtc", ""); setVal("tsMRate", ""); setVal("tsMIr", "");
@@ -1252,6 +1275,7 @@
 
   function recompute() {
     syncAdminMarkup();
+    syncManualOrigHint();          // a blank Manual field hints the Standard value it will use
     updateConditionals();
     var miss = missingFields();
     var ready = miss.length === 0;                                // all required fields present

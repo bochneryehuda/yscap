@@ -164,10 +164,20 @@
   .pcard{ border:1px solid var(--line-2); border-radius:14px; padding:1rem 1rem .95rem; background:rgba(255,255,255,.02); display:flex; flex-direction:column; min-width:0; }
   .pcard.gold{ border-color:rgba(201,168,106,.5); background:linear-gradient(180deg,rgba(201,168,106,.07),rgba(201,168,106,.015)); }
   .pcard.pcard-off{ opacity:.5; }
-  .pcard-top{ display:flex; align-items:center; justify-content:space-between; gap:.5rem; margin-bottom:.65rem; }
-  .pcard-name{ font-family:var(--font-b); font-size:.74rem; font-weight:700; text-transform:uppercase; letter-spacing:.1em; color:var(--ivory); }
+  /* The status CHIP must never set the card's width. "Not eligible as-is —
+     manual-review exception" rendered 173px past the card's right edge at 1024px
+     (audit 2026-07-30 — the same "going out of the box" class the owner reported
+     on V2, which already carries this containment). The head WRAPS so the chip
+     takes its own full-width line and still reads in full; max-width + ellipsis
+     is the last-resort backstop. Keep these properties together. */
+  .pcard-top{ display:flex; flex-wrap:wrap; align-items:center; justify-content:space-between; gap:.3rem .5rem; margin-bottom:.65rem; min-width:0; }
+  .pcard-name{ font-family:var(--font-b); font-size:.74rem; font-weight:700; text-transform:uppercase; letter-spacing:.1em; color:var(--ivory); min-width:0; overflow:hidden; text-overflow:ellipsis; }
   .pcard.gold .pcard-name{ color:var(--gold); }
-  .pcard-badge{ font-size:.62rem; font-weight:700; padding:.22rem .5rem; border-radius:100px; border:1px solid var(--line); color:var(--muted); white-space:nowrap; }
+  /* V1's MANUAL status is a whole SENTENCE ("Not eligible as-is — manual-review
+     exception", termsheet.js statusText), not V2's short "Manual review" chip, so
+     it must be allowed to WRAP inside the pill — clipping it would hide the one
+     word that matters ("exception"). No wording was changed to make it fit. */
+  .pcard-badge{ font-size:.62rem; font-weight:700; padding:.22rem .5rem; border-radius:100px; border:1px solid var(--line); color:var(--muted); white-space:normal; overflow-wrap:break-word; max-width:100%; overflow:hidden; flex:0 1 auto; margin-left:auto; text-align:center; line-height:1.35; }
   .pcard-badge.good{ color:var(--good); border-color:rgba(127,176,138,.5); } .pcard-badge.warn{ color:var(--warn); border-color:rgba(201,168,106,.5); } .pcard-badge.bad{ color:var(--bad); border-color:rgba(201,138,106,.5); }
   .pcard-loanlbl{ font-size:.64rem; text-transform:uppercase; letter-spacing:.12em; color:var(--muted-2); }
   .pcard-loan{ font-family:var(--font-d); font-weight:600; font-size:1.95rem; line-height:1.05; color:var(--ivory); margin:.12rem 0 .7rem; word-break:break-word; }

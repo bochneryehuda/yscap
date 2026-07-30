@@ -143,5 +143,92 @@ console.log('\n--- 5. the whole chain is wired, not just the engine ---');
   ok(/put\('tsOrigManual',\s*inp\.origManualPct\)/.test(studio), 'the snapshot RESTORES it on reopen');
 }
 
+/* =====================================================================
+   6. "BLANK MANUAL = FOLLOW STANDARD" MUST SURVIVE THE STUDIO, NOT JUST
+      THE ENGINE  (audit 2026-07-30)
+
+   Section 2 proves the SERVER falls back to origStdPct when the manual key
+   is absent. That guarantee is worthless if the studio never sends an absent
+   key. The studio used to SEED tsOrigManual with the Standard COMPANY default
+   at page load, so every register payload carried a real number and the
+   fallback could never fire: a staffer who typed a Standard origination of
+   2.0% and set a manual basis registered the Manual Program at 1.25%, while
+   the approval card told the admin "Origination points — Standard: 1.25% →
+   2%" — a percentage that did not govern. Blank has to stay blank.
+   ===================================================================== */
+console.log('\n--- 6. the studio leaves the manual knob BLANK, and blank follows the STANDARD FIELD ---');
+{
+  const fs = require('fs');
+  const ts = fs.readFileSync(path.join(__dirname, '..', 'web/v2/tools/termsheet.js'), 'utf8');
+  ok(!/\bs\("tsOrigManual"/.test(ts),
+    'seedAdminDefaults does NOT seed tsOrigManual (its default is "same as Standard", not a fixed number)');
+  ok(/setVal\("tsOrigManual",\s*""\)/.test(ts),
+    'lockDown CLEARS tsOrigManual (blank), it does not write the Standard company default into it');
+  // adminOrigPct('manual') must read the field RAW (blank => fall through to the
+  // Standard knob as resolved), never adminNum(..., CO.origStd) which pins it to
+  // the company default and ignores a typed Standard override.
+  ok(/if \(prog === "manual"\) \{\s*var m = adminNumRaw\("tsOrigManual"\);/.test(ts),
+    'adminOrigPct("manual") falls through to the Standard knob when the field is blank');
+  ok(!/adminNum\("tsOrigManual"/.test(ts),
+    'adminOrigPct("manual") never pins a blank field to the bare company default');
+  // The panel's own off-default warning has to borrow the same default the
+  // server borrows, or it warns about a value that IS the default.
+  const panel = fs.readFileSync(path.join(__dirname, '..', 'app-v2/src/components/ProductStudioPanel.jsx'), 'utf8');
+  ok(/DEFAULT_SOURCE\s*=\s*\{\s*origManualPct:\s*'origStdPct'/.test(panel),
+    "the panel's approval warning compares the Manual knob against the STANDARD default (mirrors pricing-overrides `defaultKey`)");
+}
+
+/* =====================================================================
+   7. A SUPER-ADMIN'S COUNTERED ORIGINATION MUST GOVERN  (audit 2026-07-30)
+
+   accept-counter replays the escalation's stored override blob and overlays
+   the counter terms. That blob carries the LOAN OFFICER's off-default knobs —
+   including origManualPct. A countered registration resolves to program
+   'manual' (it has a structural override), and pricing.js prefers
+   origManualPct there, so writing only origStdPct/origGoldPct let the loan
+   officer's requested origination outrank the super-admin's counter and the
+   borrower was emailed those terms as CONFIRMED.
+   ===================================================================== */
+console.log('\n--- 7. the countered origination governs the re-registration ---');
+{
+  const fs = require('fs');
+  const manualProgram = require(path.join(__dirname, '..', 'src', 'lib', 'manual-program.js'));
+
+  // Replay exactly what the accept-counter route builds.
+  function acceptCounter(escOverrides, counterTerms, { writeAllOrigKeys }) {
+    const ov = { ...escOverrides };
+    const ct = counterTerms;
+    if (ct.origPct != null) {
+      const pctVal = Number(ct.origPct) * 100;
+      ov.origStdPct = pctVal;
+      ov.origGoldPct = pctVal;
+      if (writeAllOrigKeys) { ov.origSilverPct = pctVal; ov.origManualPct = pctVal; }
+    }
+    ov.forcePrice = true;
+    const program = manualProgram.resolveProgram('standard', ov);
+    const q = pricing.quoteProgram(program, pricing.buildInputs(APP, EXPERIENCE, { strategy: 'Fix & Flip', ...ov }));
+    return { program, pct: q.origPct * 100 };
+  }
+
+  // The loan officer asked for 2.5%; the super-admin counters at 0.5%.
+  const escBlob = { ovrLTCPct: 80, manualPricing: true, origManualPct: 2.5 };
+  const fixed = acceptCounter(escBlob, { origPct: 0.005 }, { writeAllOrigKeys: true });
+  eq(fixed.program, 'manual', 'a countered structural override still registers as a Manual Program');
+  near(fixed.pct, 0.5, "the SUPER-ADMIN's countered origination governs, not the loan officer's request");
+  // Negative control — this is the exact shape of the bug, so the assertion
+  // above cannot pass for the wrong reason.
+  const broken = acceptCounter(escBlob, { origPct: 0.005 }, { writeAllOrigKeys: false });
+  near(broken.pct, 2.5, 'control: writing only origStdPct/origGoldPct DOES leave the counter shadowed');
+
+  // …and the route really does write every origination key.
+  const staffRoutes = fs.readFileSync(path.join(__dirname, '..', 'src/routes/staff.js'), 'utf8');
+  const block = /if \(ct\.origPct\s*!= null\) \{[\s\S]{0,900}?\n    \}/.exec(staffRoutes);
+  ok(!!block, 'the accept-counter origination block is present in src/routes/staff.js');
+  for (const k of ['origStdPct', 'origGoldPct', 'origSilverPct', 'origManualPct']) {
+    ok(!!block && new RegExp('overrides\\.' + k + '\\s*=\\s*pctVal').test(block[0]),
+      `accept-counter writes the countered origination onto ${k}`);
+  }
+}
+
 console.log(`\n${fails.length ? 'FAILED' : 'ALL PASS'} — ${pass} assertions, ${fails.length} failure(s)`);
 if (fails.length) { for (const f of fails) console.log('  - ' + f); process.exit(1); }

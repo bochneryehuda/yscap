@@ -903,6 +903,12 @@ const ProductStudioPanel = forwardRef(function ProductStudioPanel({ appId, app, 
       appraisalFee: 'appraisal fee', titleFee: 'title / escrow fee',
     };
     const NO_DEFAULT = { ovrEffPrice: 'effective purchase price', manualPricing: 'manual scenario' };
+    // A knob with no company default of its own borrows another's — the exact
+    // mirror of pricing-overrides.js `defaultKey`, which is what the server
+    // re-checks with. Without it the Manual origination has no `cd` entry at
+    // all, so the panel would warn "needs an admin approval" for a value that
+    // IS the default and the server would then say it isn't (audit 2026-07-30).
+    const DEFAULT_SOURCE = { origManualPct: 'origStdPct' };
     const out = [];
     if (cd) {
       for (const k of Object.keys(DEFAULTED)) {
@@ -910,7 +916,8 @@ const ProductStudioPanel = forwardRef(function ProductStudioPanel({ appId, app, 
         if (raw == null || raw === '') continue;              // blank = "use the company default"
         const v = Number(raw);
         if (!Number.isFinite(v)) continue;
-        const d = cd[k] == null || cd[k] === '' ? null : Number(cd[k]);
+        const dk = DEFAULT_SOURCE[k] || k;
+        const d = cd[dk] == null || cd[dk] === '' ? null : Number(cd[dk]);
         if (d != null && Math.abs(v - d) < 0.0001) continue;  // typed the default back
         out.push(DEFAULTED[k]);
       }

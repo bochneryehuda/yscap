@@ -188,7 +188,13 @@
   .pcard.silver{ border-color:rgba(148,163,178,.55); background:linear-gradient(180deg,rgba(148,163,178,.09),rgba(148,163,178,.02)); }
   .pcard.manual{ border-style:dashed; border-color:rgba(127,169,176,.5); background:linear-gradient(180deg,rgba(47,127,134,.05),rgba(47,127,134,.01)); }
   .pcard.pcard-off{ opacity:.5; }
-  .pcard-top{ display:flex; align-items:center; justify-content:space-between; gap:.5rem; margin-bottom:.65rem; }
+  /* The name and the status chip share one ~249px card head. When both cannot fit
+     on one line the chip WRAPS to its own line and reads in full — it is never
+     truncated to "Not offer…" / "Eligibl…" (measured: 5-15px of the status word
+     was being eaten at 1024px, audit 2026-07-30). Same structural answer as
+     `.ts-line`: let it wrap rather than clip. margin-left:auto keeps it
+     right-aligned on either line. */
+  .pcard-top{ display:flex; flex-wrap:wrap; align-items:center; justify-content:space-between; gap:.3rem .5rem; margin-bottom:.65rem; min-width:0; }
   .pcard-name{ font-family:var(--font-b); font-size:.74rem; font-weight:700; text-transform:uppercase; letter-spacing:.1em; color:var(--ivory); }
   .pcard.gold .pcard-name{ color:var(--gold); }
   .pcard.silver .pcard-name{ color:#8A99A8; }
@@ -196,10 +202,11 @@
   /* The badge is a CHIP inside a 249px card, so it can never be allowed to set
      the card's width: max-width + ellipsis is the structural backstop (a long
      status string used to render 270px wide and spill out of the box at every
-     viewport — owner's "going out of the box" class, audit 2026-07-30). The
-     card's own sub-line carries the full reason, so a clipped chip loses
-     nothing. Keep all three properties together. */
-  .pcard-badge{ font-size:.62rem; font-weight:700; padding:.22rem .5rem; border-radius:100px; border:1px solid var(--line); color:var(--muted); white-space:nowrap; max-width:58%; overflow:hidden; text-overflow:ellipsis; flex:0 1 auto; }
+     viewport — owner's "going out of the box" class, audit 2026-07-30). Keep all
+     three properties together. The cap is 100% (not 58%) because .pcard-top now
+     WRAPS: a chip that cannot fit beside the name takes its own full-width line
+     and reads in full, so the ellipsis is a last resort instead of routine. */
+  .pcard-badge{ font-size:.62rem; font-weight:700; padding:.22rem .5rem; border-radius:100px; border:1px solid var(--line); color:var(--muted); white-space:nowrap; max-width:100%; overflow:hidden; text-overflow:ellipsis; flex:0 1 auto; margin-left:auto; }
   .pcard-name{ min-width:0; overflow:hidden; text-overflow:ellipsis; }
   .pcard-badge.good{ color:var(--good); border-color:rgba(127,176,138,.5); } .pcard-badge.warn{ color:var(--warn); border-color:rgba(201,168,106,.5); } .pcard-badge.bad{ color:var(--bad); border-color:rgba(201,138,106,.5); }
   .pcard-loanlbl{ font-size:.64rem; text-transform:uppercase; letter-spacing:.12em; color:var(--muted-2); }
@@ -635,7 +642,7 @@
                     <div class="field"><label for="tsOrigSilver">Silver (%)</label><div class="input"><input id="tsOrigSilver" data-noshare type="number" inputmode="decimal" step="0.25" min="0" placeholder="1.25"></div></div>
                     <div class="field"><label for="tsOrigManual">Manual (%)</label><div class="input"><input id="tsOrigManual" data-noshare type="number" inputmode="decimal" step="0.25" min="0" placeholder="1.25"></div></div>
                 </div>
-                <p class="ts-admin-mnote">The <strong>Manual</strong> value prices the manual scenario — it applies only once a custom LTV / LTC / ARV basis is set (the Manual card lights). Leave it blank to use the company default; the other three programs are unaffected by it.</p>
+                <p class="ts-admin-mnote">The <strong>Manual</strong> value prices the manual scenario — it applies only once a custom LTV / LTC / ARV basis is set (the Manual card lights). The Manual Program prices on the Standard engine and has no company default of its own, so leaving it blank means <strong>“same as Standard”</strong> — including a Standard value you typed above (the placeholder shows the number a blank field will use). The other three programs are unaffected by it.</p>
 
                 <div class="ts-admin-group">Closing-cost overrides <span class="ts-admin-note">— all programs</span></div>
                 <div class="ts-admin-grid2">
@@ -922,7 +929,7 @@
 <script src="silver-program.js?v=silver7-band99"></script>
 <script src="title-cost.js?v=admin8"></script>
 <script src="address-autocomplete.js?v=admin9"></script>
-<script src="termsheet.js?v=cards8-irtruth1-maxlev1-origfit-manualorig"></script>
+<script src="termsheet.js?v=cards9-irtruth1-maxlev1-origfit-manualorig2-badgewrap"></script>
 <script src="../float-actions.js?v=admin10-applyfix"></script>
 <script>
 /* Property-address autocomplete (owner-directed 2026-07-17): same shared YSAddr

@@ -2678,8 +2678,19 @@ router.post('/applications/:id/pricing/accept-counter', async (req, res) => {
     if (ct.noteRate  != null) overrides.ovrRate  = Number(ct.noteRate);
     if (ct.origPct   != null) {
       const pctVal = Number(ct.origPct) * 100;
+      // The counter's origination must govern WHATEVER program this file
+      // re-registers under, so every per-program origination key is written —
+      // otherwise the replayed escalation blob (which carries the ORIGINAL
+      // request's off-default knobs) silently outranks the super-admin.
+      // Root-caused 2026-07-30: a countered Manual Program kept the loan
+      // officer's origManualPct (pricing.js prefers it for program 'manual'),
+      // so a counter of 0.5% re-registered at the requested 2.5% and the
+      // borrower was emailed those confirmed terms. origSilverPct was missing
+      // for the same reason on a countered Silver registration.
       overrides.origStdPct = pctVal;
       overrides.origGoldPct = pctVal;
+      overrides.origSilverPct = pctVal;
+      overrides.origManualPct = pctVal;
     }
     // Force-price so a scenario ineligible under the standard caps still sizes
     // and registers as MANUAL (the counter TERMS are the approval — we don't want
@@ -2692,7 +2703,12 @@ router.post('/applications/:id/pricing/accept-counter', async (req, res) => {
     const requestedProgram = (esc.summary && esc.summary.program) === 'gold' ? 'gold' : (esc.summary && esc.summary.program) === 'silver' ? 'silver' : 'standard';
     const program = manualProgram.resolveProgram(requestedProgram, overrides);
     const quote = pricing.quoteProgram(program, inputs);
-    const total = Number(quote && quote.totalLoan) || 0;
+    // The sized loan lives on quote.SIZING.totalLoan — a quote has no top-level
+    // `totalLoan` (audit 2026-07-30). Reading the missing key made `total` 0 on
+    // every accepted counter, so the audit row and the API response said 0 and
+    // the borrower's "Your loan terms are ready" email led with "Your loan
+    // amount: $0". Same expression the /register route uses.
+    const total = quote && quote.sizing ? Number(quote.sizing.totalLoan) || 0 : 0;
 
     // Persist + mark the escalation approved in ONE transaction so an accept
     // never half-lands (registered without the escalation closing, or vice versa).
