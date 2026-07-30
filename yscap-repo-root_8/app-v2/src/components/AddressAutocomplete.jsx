@@ -103,7 +103,9 @@ export default function AddressAutocomplete({ value, onChange, onPick, placehold
       const j = await r.json();
       if (mine !== vseq.current) return;                 // a newer pick won
       if (j && j.configured && (j.status === 'verified' || j.status === 'corrected')) {
-        if (j.status === 'corrected' && j.address) {     // USPS fixed it — adopt the USPS form
+        // Always adopt the USPS response. Even an "already correct" input may
+        // gain ZIP+4 or canonical USPS abbreviations.
+        if (j.address) {
           onChange && onChange(j.address.line1 || value);
           onPick && onPick(j.address);
         }

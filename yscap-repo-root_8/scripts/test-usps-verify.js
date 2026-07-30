@@ -12,7 +12,9 @@
  *   3. standardize() NEVER throws and degrades cleanly: not_configured when USPS keys
  *      are absent, unverified when there isn't enough to match on, error on an API
  *      failure — the address form always keeps working.
- *   4. The backfill's componentsOf() reads every stored address shape.
+ *   4. Financing output prefers an imported, confirmed USPS address and rejects
+ *      any unverified, missing, or merely staged stamp.
+ *   5. The backfill's componentsOf() reads every stored address shape.
  */
 const R = require('path').resolve(__dirname, '..');
 const V = require(R + '/src/lib/usps-verify');
@@ -114,7 +116,25 @@ async function testStandardize() {
   }
 }
 
-// ── 3. backfill componentsOf reads every stored shape ──────────────────────
+// ── 3. financing output uses only an imported, confirmed USPS stamp ─────────
+{
+  const working = { line1: '12 Main Street', city: 'Brooklyn', state: 'NY', zip: '11201' };
+  const official = { line1: '12 MAIN ST', city: 'BROOKLYN', state: 'NY', zip: '11201-1234' };
+  ok(V.preferredFinancingAddress({ property_address: working, usps_address: official, usps_match: 'verified', usps_imported_at: new Date() }) === official,
+    'financing output prefers an imported USPS-verified address');
+  ok(V.preferredFinancingAddress({ property_address: working, usps_address: official, usps_match: 'corrected', usps_imported_at: new Date() }) === official,
+    'financing output prefers an imported USPS-corrected address');
+  ok(V.preferredFinancingAddress({ property_address: working, usps_address: official, usps_match: 'verified' }) === working,
+    'financing output rejects a verified but not imported USPS proposal');
+  ok(V.preferredFinancingAddress({ property_address: working, usps_address: official, usps_match: 'unverified' }) === working,
+    'financing output rejects an unverified USPS stamp');
+  ok(V.preferredFinancingAddress({ property_address: working, usps_address: null, usps_match: 'verified' }) === working,
+    'financing output falls back when the USPS address is missing');
+  ok(V.preferredFinancingAddress({ property_address: working, usps_address: {}, usps_match: 'verified' }) === working,
+    'financing output falls back when the USPS address is empty');
+}
+
+// ── 4. backfill componentsOf reads every stored shape ──────────────────────
 {
   const a = backfill.componentsOf({ line1: '26 S 10th St', city: 'Brooklyn', state: 'NY', zip: '11249' });
   ok(a && a.line1 === '26 S 10th St' && a.state === 'NY', 'componentsOf reads a component object');

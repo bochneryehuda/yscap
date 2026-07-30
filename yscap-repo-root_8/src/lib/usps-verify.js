@@ -187,4 +187,27 @@ async function standardize(addressInput, opts = {}) {
 // Test hook: clear the in-process rate window (so a test can assert the cap fires).
 function _resetRateWindow() { hits.length = 0; }
 
-module.exports = { configured, standardize, classify, toCanonical, pickDpv, normInput, hashInput, _resetRateWindow };
+/**
+ * Return the address that is safe to send to a financing counterparty.
+ *
+ * The USPS stamp is stored beside `property_address` so a backfill never mutates
+ * a live loan. Capital-provider exports should use that official form once USPS
+ * has confirmed it, but must never use an unverified stamp.
+ */
+function preferredFinancingAddress(app = {}) {
+  const status = String(app.usps_match || '').toLowerCase();
+  const official = app.usps_address;
+  const hasOfficialAddress = official && typeof official === 'object' && !Array.isArray(official)
+    && !!(official.line1 || official.street || official.oneLine);
+  // A background check may stage a valid USPS proposal, but financing exports
+  // must not silently adopt it. The staff import action is the human decision
+  // that makes this the working/financing address and clears the condition.
+  const verified = (status === 'verified' || status === 'corrected')
+    && hasOfficialAddress && !!app.usps_imported_at;
+  return verified ? official : (app.property_address || {});
+}
+
+module.exports = {
+  configured, standardize, classify, toCanonical, pickDpv, normInput, hashInput,
+  preferredFinancingAddress, _resetRateWindow,
+};

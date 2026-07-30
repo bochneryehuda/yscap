@@ -124,8 +124,14 @@ an address is entered:
   **"USPS verified"** (green) or, if USPS fixed something, **"USPS verified — corrected
   to the official mailing address."** If USPS can't confirm an address, it says so and
   keeps what you typed so the form never gets stuck.
-- **The address is stored USPS-correct**, so the file, ClickUp card, term sheet and
-  every downstream system carry the official version.
+- **The address is staged USPS-correct** after a confirmed check. A required,
+  staff-only **USPS Address Verification** condition shows the working address and
+  USPS result. Staff must click **Import verified address** before the condition
+  clears or financing exports use the USPS result.
+- If anyone later edits the working property address, PILOT automatically clears
+  the old USPS stamp. Financing output falls back to the edited address until the
+  verifier creates a fresh stamp, so an old verified property can never be exported
+  for a newly entered one.
 - **API Health page** shows a live "USPS — official address verification is active"
   indicator so you can confirm it's working.
 
@@ -143,6 +149,11 @@ USPS_API_BASE=https://apis.usps.com
 # Free-tier brake (defaults to 55 if unset). Keep ~55 while on the free tier so a
 # traffic burst can't burn the 60/hour quota; set 0 once on a paid tier:
 USPS_MAX_PER_HOUR=55
+
+# Recommended financing-grade typeahead (USPS itself has no typeahead endpoint):
+ADDRESS_PROVIDER=smarty
+SMARTY_AUTH_ID=<Smarty key>
+SMARTY_AUTH_TOKEN=<Smarty token>
 ```
 
 That's all that's required for live verification on new addresses.
@@ -166,6 +177,7 @@ so nothing about pricing or underwriting can shift underneath you.
 USPS_BACKFILL_ENABLED=1
 USPS_BACKFILL_PER_TICK=40      # address checks per pass — keep at/under your hourly plan
 USPS_BACKFILL_EVERY_MIN=60     # run a pass every hour
+USPS_CONDITION_REQUIRED=1      # enforced verify-and-import condition
 ```
 
 It paces itself so it never blows past your USPS plan's limit, and it's resumable — it
@@ -189,6 +201,12 @@ comes from a provider, auto-selected:
 
 Whichever you use, **USPS is the authority on the final stored address.**
 
+For the production financing workflow, use **Smarty for typeahead + USPS for final
+standardization/DPV**. This removes OpenStreetMap/Google from address entry without
+pretending USPS has an autocomplete API that it does not publish. The server keeps
+both vendors' credentials private; browsers call only PILOT's `/api/address/*`
+routes.
+
 ---
 
 ## 9. How it's built (for a developer)
@@ -207,10 +225,20 @@ Whichever you use, **USPS is the authority on the final stored address.**
   `web/(v2/)tools/address-autocomplete.js` (marketing loan application, term sheet,
   track record) and the Scope-of-Work tool's own field in `web/(v2/)tools/rehab-budget.js`
   — all verify with USPS after a pick and show the status badge.
+- `src/routes/staff.js` — staff status/check/import endpoints. Verification stages
+  the result; import updates `property_address`, stamps `usps_imported_at`, audits
+  the action, and clears the required condition.
+- `app-v2/src/components/UspsAddressVerification.jsx` — the comparison/import screen
+  opened from the condition.
 - `src/lib/address-usps-verify.js` — the paced, non-destructive backfill for existing
-  files (`applications.usps_address` / `usps_match` / `usps_verified_at`, added in
-  `db/367`). Booted from `src/server.js`, gated by `USPS_BACKFILL_ENABLED`.
-- Config: `src/config.js` `cfg.usps`. Tests: `scripts/test-usps-verify.js` (in `npm test`).
+  files (`applications.usps_address` / `usps_match` / `usps_verified_at`). Booted
+  from `src/server.js`, gated by `USPS_BACKFILL_ENABLED`.
+- `db/377_usps_address_verification.sql` — cache/stamp schema, required condition,
+  previous-file attachment, and automatic invalidation/reopen when the property
+  address changes.
+- `src/lib/tapes/assemble.js` and `src/lib/tpr-export.js` — financing exports prefer
+  a `verified`/`corrected` USPS stamp and otherwise fall back safely.
+- Config: `src/config.js` `cfg.usps`. Tests: `scripts/test-usps-verify.js`.
 
 Nothing here touches the frozen pricing/guideline engines.
 

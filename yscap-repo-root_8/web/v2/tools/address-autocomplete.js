@@ -80,7 +80,9 @@
         var j = await r.json();
         if (mine !== vseq) return;                     // a newer pick/keystroke won
         if (j && j.configured && (j.status === "verified" || j.status === "corrected")) {
-          if (j.status === "corrected" && j.address) { // USPS fixed it — adopt the USPS form
+          // Always adopt the USPS response; a confirmed match may still add
+          // ZIP+4 or canonical USPS abbreviations.
+          if (j.address) {
             input.value = j.address.line1 || input.value;
             if (typeof onSelect === "function") onSelect(j.address);
           }

@@ -10,7 +10,7 @@
  * (the USPS-correct form), usps_match (verified/corrected/unverified) and
  * usps_verified_at — and NEVER touches the working property_address. Underwriting,
  * pricing and the ClickUp sync keep reading the existing field; adopting the USPS
- * form onto property_address is a separate, deliberate step for later.
+ * form onto property_address is a separate, deliberate staff import action.
  *
  * PACED for the free USPS tier (60 lookups/hour, shared across every USPS API):
  * it does at most `backfillPerTick` lookups per pass (default 40), ~1.2s apart, and

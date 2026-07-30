@@ -40,6 +40,7 @@ import { groupBySubject } from '../lib/condition-subjects.js';
 import { isWorkflowStep } from '../lib/condition-workflow-steps.js';
 import ConditionActions, { DocActions } from '../components/ConditionActions.jsx';
 import ConditionLine, { ConditionNote } from '../components/ConditionLine.jsx';
+import UspsAddressVerification from '../components/UspsAddressVerification.jsx';
 import { canComplete } from '../lib/condition-actions.js';
 import EsignFileSection from '../components/EsignFileSection.jsx';
 import ExceptionRegisterCard from '../components/ExceptionRegisterCard.jsx';
@@ -1173,6 +1174,10 @@ function Item({ it, team, onPatch, role, docs, onUploadTo, onDropTo, onReviewDoc
           transfer letter or an admin exception. */}
       {it.template_code === 'rtl_cond_appraisaldocs' && (
         <AppraisalXmlWaiver appId={appId} onChanged={onChanged} />
+      )}
+
+      {it.template_code === 'usps_address_verification' && (
+        <UspsAddressVerification appId={appId} onChanged={onChanged} />
       )}
 
       {/* ONE next step, everything else behind More — the shared bar, so this

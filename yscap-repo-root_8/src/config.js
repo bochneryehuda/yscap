@@ -548,6 +548,7 @@ module.exports = {
     backfillEnabled: /^(1|true|yes)$/i.test(String(process.env.USPS_BACKFILL_ENABLED || '')),
     backfillPerTick: Number(process.env.USPS_BACKFILL_PER_TICK || 40),   // lookups per pass; keep ≤ your hourly quota
     backfillEveryMin: Number(process.env.USPS_BACKFILL_EVERY_MIN || 60), // minutes between passes (floor 15)
+    conditionRequired: !/^(0|false|no)$/i.test(String(process.env.USPS_CONDITION_REQUIRED || '1')),
   },
   // Encompass (ICE Mortgage Technology / Ellie Mae) — the loan-origination
   // system. OAuth2 via Developer Connect; access is per-instance, so the field
