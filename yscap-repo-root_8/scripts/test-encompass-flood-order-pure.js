@@ -12,9 +12,15 @@
  */
 const assert = require('assert');
 
-// Force a clean gate state before requiring the module.
+// Force the gate state before requiring the module. The shipped default is ON
+// (owner-directed "turn everything on"), so to exercise the FAIL-CLOSED path we
+// pin the write gate OFF here — a bad value in prod can never silently send.
 delete process.env.ENCOMPASS_FLOOD_DRYRUN;
-delete process.env.ENCOMPASS_FLOOD_OUTBOUND_ENABLED;
+process.env.ENCOMPASS_FLOOD_OUTBOUND_ENABLED = '0';
+// The v3 serviceOrders API requires the tenant's flood service setup id; set a
+// stand-in so the body assertions can confirm it is included (a real order is
+// refused before the wire without it — see the serviceReady guard below).
+process.env.ENCOMPASS_FLOOD_SERVICE_SETUP_ID = 'SS-FLOOD-TEST-1';
 const flood = require('../src/encompass/flood-order');
 
 let n = 0;
@@ -51,7 +57,11 @@ for (const [m, p] of refuse) ok(!flood.pathAllowed(m, p), `REFUSED ${m} ${p}`);
 // ── 2. The order body ─────────────────────────────────────────────────────────
 const body = flood.buildOrderBody('abcdef12-3456-7890-abcd-ef1234567890');
 ok(body && typeof body === 'object', 'buildOrderBody returns an object');
-ok(/flood/i.test(JSON.stringify(body)) || body.type === 'Flood' || body.options, 'order body describes a flood order');
+ok(/flood/i.test(JSON.stringify(body)) || body.request?.type === 'Flood', 'order body describes a flood order');
+// The v3 serviceOrders shape: serviceSetupId (required) + request{type,options}.
+ok(body.serviceSetupId === 'SS-FLOOD-TEST-1', 'order body carries the tenant flood serviceSetupId');
+ok(body.request && body.request.type === 'Flood' && typeof body.request.options === 'object', 'order body wraps type + options under request');
+ok(flood.serviceReady() === true, 'serviceReady() is true when the serviceSetupId is set');
 
 // ── 3. extractOrderId ─────────────────────────────────────────────────────────
 ok(flood.extractOrderId({ id: 'ORD-1' }) === 'ORD-1', 'order id from body.id');

@@ -22,12 +22,15 @@
 const dbDefault = require('../../db');
 const manualProgram = require('../manual-program');
 const loanExceptions = require('../loan-exceptions');
+const advisoryPolicy = require('../underwriting/advisory-policy');
+const { noXmlWaiverActive } = require('../appraisal/xml-waiver');
 // PURE tiering + send-disposition (floor vs. clear-to-close readiness, the
 // send-before-CTC exception math). Kept require-free so it unit-tests without a DB.
 const { WAIVABLE_CODES, tierOf, gateDisposition } = require('./gate-disposition');
 
 const APPRAISAL_BACK = 'rtl_cond_appraisaldocs';
-const APPRAISAL_REVIEW = 'rtl_p3_apprreview';
+const APPRAISAL_REVIEW = 'rtl_p3_apprreview';       // the review task on every RTL file — the send-gate blocker
+const APPRAISAL_REVIEW_COND = 'appraisal_review_cleared'; // findings-gated condition, present only after an import
 const PRODUCT_PRICING = 'rtl_p1_product';
 
 /**
@@ -93,7 +96,7 @@ async function esignSendGate(applicationId, { db = dbDefault, purpose } = {}) {
        JOIN checklist_templates t ON t.id = ci.template_id
       WHERE ci.application_id = $1 AND t.code = ANY($2)
       ORDER BY ci.created_at DESC`,
-    [applicationId, [APPRAISAL_BACK, APPRAISAL_REVIEW, PRODUCT_PRICING]]);
+    [applicationId, [APPRAISAL_BACK, APPRAISAL_REVIEW, APPRAISAL_REVIEW_COND, PRODUCT_PRICING]]);
   // Newest row per code (a stale duplicate must never let the gate read an old
   // 'satisfied' when the current one reopened) — matches resolveConditionItem.
   const by = {};
@@ -101,13 +104,46 @@ async function esignSendGate(applicationId, { db = dbDefault, purpose } = {}) {
 
   const outstanding = [];
   const appr = by[APPRAISAL_BACK];
-  const review = by[APPRAISAL_REVIEW];
+  const reviewTask = by[APPRAISAL_REVIEW];         // rtl_p3_apprreview (every RTL file)
+  const reviewCond = by[APPRAISAL_REVIEW_COND];    // appraisal_review_cleared (only after an import)
   const pp = by[PRODUCT_PRICING];
 
   const apprOk = !!(appr && appr.status === 'satisfied');
   if (!apprOk) outstanding.push({ code: APPRAISAL_BACK, label: 'Appraisal documents received', reason: 'The appraisal must be back and this condition signed off.' });
 
-  const reviewOk = !!(review && review.status === 'satisfied');
+  // THE APPRAISAL-REVIEW REQUIREMENT (owner-directed 2026-07-30): the term sheet
+  // depends on the appraisal review, and the review depends on the appraisal
+  // findings. PRECEDENCE (order matters — do not reorder):
+  //   1. When the findings-gated condition exists (an appraisal was imported) AND
+  //      that enforcement is on, IT governs — its own sign-off gate already blocks
+  //      while a fatal finding is open or the As-Is is unconfirmed. This is FIRST
+  //      so a "No XML available" waiver can NEVER bypass an enforced findings gate
+  //      on a file that actually HAS an imported appraisal (there is XML — the
+  //      waiver does not apply). A super-admin override / an esign-before-ctc
+  //      exception is the recorded way past it.
+  //   2. Otherwise (no appraisal imported / no XML, or the enforcement kill switch
+  //      is off), a VALID "No XML available" waiver — hand-entered As-Is + ARV,
+  //      transferred or admin-approved — COUNTS as receiving-and-reviewing the
+  //      appraisal ("the same logic as signing off the actual XML documents slot").
+  //   3. Otherwise the plain review task must be signed off (the original behavior).
+  // The blocker keeps code APPRAISAL_REVIEW so the existing per-requirement waiver
+  // machinery covers it. Its reason is DELIBERATELY the original, STABLE string:
+  // gate-disposition matches a super-admin's per-item waiver by reason text, so a
+  // wording change here would silently un-waive every approved early-send exception
+  // for this code. The "how to clear / no-XML" guidance lives in the UI (db/380
+  // hint + the appraisal-review no-XML card), not in this reason. Fails CLOSED.
+  let noXmlWaiver = false;
+  try { noXmlWaiver = await noXmlWaiverActive(applicationId, db); } catch (_) { noXmlWaiver = false; }
+  let reviewEnforced = true;
+  try { reviewEnforced = advisoryPolicy.appraisalReviewEnforced(); } catch (_) { reviewEnforced = true; }
+  let reviewOk;
+  if (reviewCond && reviewEnforced) {
+    reviewOk = reviewCond.status === 'satisfied';
+  } else if (noXmlWaiver) {
+    reviewOk = true;
+  } else {
+    reviewOk = !!(reviewTask && reviewTask.status === 'satisfied');
+  }
   if (!reviewOk) outstanding.push({ code: APPRAISAL_REVIEW, label: 'Appraisal review cleared', reason: 'The internal appraisal review must be signed off.' });
 
   // P&P must be satisfied AND provably re-signed at/after the appraisal came back.

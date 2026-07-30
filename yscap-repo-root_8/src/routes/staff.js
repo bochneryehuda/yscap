@@ -5495,7 +5495,14 @@ async function signOffGate(itemId, actor) {
       // (typed by hand — there is no XML to read them from). A transferred
       // appraisal needs the transfer letter in the PDF slot; any other reason must
       // have its policy exception APPROVED first.
-      const waiver = (await db.query(
+      // A later MISMO import SUPERSEDES a stale "no XML" waiver: if a current
+      // appraisal is now on the file there IS XML, so the normal XML+PDF+import
+      // requirement applies and the waiver is ignored (the POST endpoint already
+      // refuses a NEW waiver once an appraisal exists; this covers a waiver that
+      // was recorded BEFORE the XML arrived). Read once, reused below.
+      const currentAppraisal = (await db.query(
+        `SELECT 1 FROM appraisals WHERE application_id=$1 AND superseded=false LIMIT 1`, [item.application_id])).rows[0];
+      const waiver = currentAppraisal ? null : (await db.query(
         `SELECT reason, requires_transfer_letter, exception_id FROM appraisal_xml_waivers WHERE application_id=$1`,
         [item.application_id])).rows[0];
       if (waiver) {
@@ -5521,9 +5528,7 @@ async function signOffGate(itemId, actor) {
       // whole PILOT findings engine (the fatal-finding clear-to-close gate) is silently skipped for
       // this file. A successful import always creates a current appraisals row AND that condition,
       // so require the row to exist before letting this document condition be signed off.
-      const imported = (await db.query(
-        `SELECT 1 FROM appraisals WHERE application_id=$1 AND superseded=false LIMIT 1`, [item.application_id])).rows[0];
-      if (!imported)
+      if (!currentAppraisal)
         return 'The appraisal data file (XML) has not been read as a valid appraisal yet, so the PILOT appraisal review has not run. Re-upload a valid MISMO appraisal XML (PILOT imports it automatically) before signing off this condition.';
       return null;
     }
@@ -6293,7 +6298,11 @@ router.get('/applications/:id/appraisal-xml-waiver', async (req, res) => {
         `SELECT id, status, reason_code, reason_note, exception_seq, decided_at FROM loan_exceptions WHERE id=$1`,
         [w.exception_id])).rows[0] || null;
     }
-    res.json({ waiver: w, exception });
+    // Whether a current appraisal is imported (there IS XML). The review-side
+    // no-XML entry hides itself when there is one — the no-XML path does not apply.
+    const hasAppraisal = !!(await db.query(
+      `SELECT 1 FROM appraisals WHERE application_id=$1 AND superseded=false LIMIT 1`, [req.params.id])).rows[0];
+    res.json({ waiver: w, exception, hasAppraisal });
   } catch (e) { res.status(500).json({ error: 'server error' }); }
 });
 
@@ -6307,6 +6316,15 @@ router.post('/applications/:id/appraisal-xml-waiver', async (req, res) => {
   if (!isTransfer && !note) return res.status(400).json({ error: 'Add a short note explaining why there is no XML — it goes to an admin for an exception.' });
   const app = (await db.query(`SELECT id, borrower_id FROM applications WHERE id=$1 AND deleted_at IS NULL`, [req.params.id])).rows[0];
   if (!app) return res.status(404).json({ error: 'not found' });
+
+  // A "no XML" waiver is contradictory on a file that HAS an imported appraisal —
+  // a MISMO import only happens when there IS an XML data file, and on such a file
+  // the appraisal review goes through the normal findings-gated path, not this
+  // hand-entry. Refuse it (belt-and-suspenders with the send gate, which already
+  // lets the enforced findings condition govern before any waiver).
+  const imported = (await db.query(
+    `SELECT 1 FROM appraisals WHERE application_id=$1 AND superseded=false LIMIT 1`, [req.params.id])).rows[0];
+  if (imported) return res.status(409).json({ error: 'This file already has an imported appraisal (there is XML), so “No XML available” does not apply — clear the appraisal review through the findings on the Appraisal tab instead.' });
 
   // The values usually read off the XML must be entered by hand. Reuse the shared
   // human-entry writers — they validate, respect the file freeze, write onto the

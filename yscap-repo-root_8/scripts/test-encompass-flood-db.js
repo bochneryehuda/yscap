@@ -23,6 +23,9 @@ const ok = (c, m) => { console.log(`${c ? 'PASS' : 'FAIL'} ${m}`); if (!c) failu
 if (!process.env.DATABASE_URL) { console.log('SKIP test-encompass-flood-db (no DATABASE_URL)'); process.exit(0); }
 process.env.SSN_ENCRYPTION_KEY = process.env.SSN_ENCRYPTION_KEY || '0'.repeat(64);
 process.env.JWT_SECRET = process.env.JWT_SECRET || 'testsecrettestsecrettestsecret12';
+// The shipped default is ON (owner-directed "turn everything on"); pin the master
+// switch OFF here so the "disabled" gate assertion is deterministic in tests.
+process.env.ENCOMPASS_FLOOD_ENABLED = '0';
 
 const db = require('../src/db');
 const { ensureSchema } = require('../src/migrate-boot');
