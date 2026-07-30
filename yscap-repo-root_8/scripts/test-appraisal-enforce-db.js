@@ -345,6 +345,27 @@ const itemRow = async (id) => (await db.query(
       'F3: the gate still refuses the appraisal review after it is made OPTIONAL (the waive door consults it)');
   }
 
+  // F4 (re-audit finding #1) — making the appraisal review OPTIONAL does NOT drop it out of
+  // advancementBlockers. This is the shorter half of the bypass: flip it optional and clear-to-
+  // close would proceed with open fatal findings and no override. It must stay a blocker.
+  {
+    const f = await seedFile({});
+    cleanupApps.push(f.appId); cleanupBors.push(f.borId);
+    await insertAppraisal(f.appId);
+    const review = await attach(f.appId, 'appraisal_review_cleared');
+    // Required → it blocks (the control).
+    let blk = await staffRoutes.advancementBlockers(f.appId, 'clear_to_close');
+    ok((blk.conditions || []).some((c) => String(c.template_code || '') === 'appraisal_review_cleared'),
+      'F4a: the required appraisal review is a clear-to-close blocker (control)');
+    // Flip it OPTIONAL directly in the DB (the manoeuvre) — it must STILL block.
+    await db.query(`UPDATE checklist_items SET is_required=false WHERE id=$1`, [review]);
+    blk = await staffRoutes.advancementBlockers(f.appId, 'clear_to_close');
+    ok((blk.conditions || []).some((c) => String(c.template_code || '') === 'appraisal_review_cleared'),
+      'F4b: an OPTIONAL appraisal review STILL blocks clear-to-close (the required-flag bypass is closed)');
+    ok((blk.conditions || []).length >= 1,
+      'F4c: the readiness gate is not empty — the file is not "ready" via the optional trick');
+  }
+
   // cleanup
   for (const id of cleanupApps) {
     await db.query('DELETE FROM appraisal_findings WHERE application_id=$1', [id]).catch(() => {});

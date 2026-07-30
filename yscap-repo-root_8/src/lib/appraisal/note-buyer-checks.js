@@ -319,9 +319,18 @@ async function syncNoteBuyerFindings(db, appId) {
     // A re-import supersedes the whole set and mints a fresh appraisal_id, so a genuinely new
     // appraisal still re-raises everything.
     if (desired.length && apr) {
+      // Skip a code that already has a live row on the CURRENT appraisal, OR any OPEN row on
+      // the file (whatever appraisal it hangs on). The second arm hardens the narrow cross-door
+      // race the re-audit flagged (finding #2): if an OPEN row briefly outlives its appraisal
+      // — a concurrent import superseding the appraisal between this sync's read and its insert —
+      // the appraisal-scoped set alone would double-raise. Keying the OPEN arm on the file closes
+      // it without ever blocking a legitimate re-raise (a superseded appraisal's findings are
+      // themselves superseded by import.js, so they are not 'open').
       const onCurrent = new Set((await db.query(
         `SELECT code FROM appraisal_findings
-          WHERE appraisal_id = $1 AND source = $2 AND status <> 'superseded'`, [apr.id, SOURCE])).rows.map((r) => r.code));
+          WHERE source = $2
+            AND ((appraisal_id = $1 AND status <> 'superseded') OR (application_id = $3 AND status = 'open'))`,
+        [apr.id, SOURCE, appId])).rows.map((r) => r.code));
       const fdec = require('../underwriting/finding-decisions');
       const settled = await fdec.suppressedKeys(db, appId);
       for (const fd of desired) {

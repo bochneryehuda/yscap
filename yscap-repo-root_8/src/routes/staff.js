@@ -5657,6 +5657,24 @@ router.patch('/checklist/:itemId', async (req, res) => {
   // Requirement toggle — e.g. the LLC's Certificate of Good Standing is
   // optional by default; the officer/processor can flip it to required (it
   // then gates the entity's verification) and back.
+  //
+  // BUT the enforced appraisal review may NOT be made optional to slip past the
+  // gate (owner-directed 2026-07-30; pre-merge re-audit finding #1). Flipping it to
+  // optional was the shorter half of the same "make it optional, then clear it"
+  // manoeuvre the waive gate above blocks — and on its own it would drop the
+  // condition out of advancementBlockers and let a file with open fatal appraisal
+  // findings reach clear-to-close with no recorded override. `advancementBlockers`
+  // now ignores its is_required flag while enforced (so a stale optional row still
+  // gates), and this refuses the toggle at the door so the reason is visible. The
+  // super-admin condition override (db/344) remains the recorded way through.
+  if (b.isRequired === false && !ovr.requested) {
+    const tc = (await db.query(
+      `SELECT t.code FROM checklist_items ci LEFT JOIN checklist_templates t ON t.id=ci.template_id WHERE ci.id=$1`,
+      [req.params.itemId])).rows[0];
+    if (tc && tc.code === 'appraisal_review_cleared' && advisoryPolicy.appraisalReviewEnforced()) {
+      return res.status(422).json({ error: 'The appraisal review cannot be made optional — clear the appraisal findings and confirm the As-Is value to sign it off, or use a super-admin override to clear it with a recorded reason.' });
+    }
+  }
   if (typeof b.isRequired === 'boolean') add('is_required=?', b.isRequired);
 
   // Sign-off marks the item satisfied and stamps who/when; un-sign clears it.
@@ -7958,6 +7976,15 @@ async function advancementBlockers(appId, target) {
   const advisoryReviewCodes = advisoryPolicy.appraisalReviewEnforced()
     ? AI_REVIEW_CONDITION_CODES.filter((c) => c !== 'appraisal_review_cleared')
     : AI_REVIEW_CONDITION_CODES;
+  // The enforced appraisal review blocks clear-to-close REGARDLESS of its is_required
+  // flag (owner-directed 2026-07-30; pre-merge re-audit finding #1). Without this, the
+  // shorter half of the waive bypass — flipping the condition to "optional" — drops it
+  // out of the blocking query below (which filters `is_required = true`) and lets a file
+  // with open fatal appraisal findings reach clear-to-close with no recorded override.
+  // So it is exempt from the required-filter while enforced; making it optional no longer
+  // removes it. (The `is_required=false` toggle is ALSO refused on this code at the write
+  // door for a clear error — belt and suspenders.)
+  const requiredExemptCodes = advisoryPolicy.appraisalReviewEnforced() ? ['appraisal_review_cleared'] : [];
   const conds = await db.query(
     `SELECT id, COALESCE(borrower_title, title) AS title, severity, audience
        FROM conditions
@@ -7982,7 +8009,7 @@ async function advancementBlockers(appId, target) {
        LEFT JOIN checklist_templates t ON t.id = ci.template_id
       WHERE ci.application_id=$1
         AND ci.item_kind IN ('document','condition')
-        AND COALESCE(ci.is_required, true) = true
+        AND (COALESCE(ci.is_required, true) = true OR COALESCE(t.code,'') = ANY($7::text[]))
         AND COALESCE(ci.is_gate, false) = false
         AND NOT (ci.signed_off_at IS NOT NULL OR ci.status='satisfied')
         AND ($3::boolean = false
@@ -8002,7 +8029,7 @@ async function advancementBlockers(appId, target) {
         AND COALESCE(t.code,'') <> ALL($6::text[])
       ORDER BY ci.sort_order, ci.created_at`,
     [appId, CLOSING_STAGE_CATEGORIES, excludeClosingStage,
-     advisoryPolicy.advisoryOnly(), advisoryReviewCodes, WORKFLOW_STEP_CODES]);
+     advisoryPolicy.advisoryOnly(), advisoryReviewCodes, WORKFLOW_STEP_CODES, requiredExemptCodes]);
   // The still-advisory review condition(s), pulled separately so they can be SHOWN
   // (as advisory) rather than silently vanish off the readiness view. The enforced
   // appraisal review is NOT in this list — it rides the blocking query above.
@@ -8281,7 +8308,9 @@ router.patch('/applications/:id/details', async (req, res) => {
       // ingest do — otherwise a file moved off EMCAP here keeps its fatal EMCAP findings
       // (and a file moved onto it raises none) until some other door touches the lender
       // (pre-merge audit F4). Cheap no-op for every other field/buyer. Best-effort.
-      if ('lender' in changes || 'lender' in b) {
+      // The EMCAP rental check derives its strategy from program/loan_type/rehab_type too, all
+      // editable through this door — so re-sync on any of those, not just lender (re-audit #3).
+      if (['lender', 'program', 'loan_type', 'rehab_type'].some((k) => k in changes || k in b)) {
         try { await require('../lib/appraisal/note-buyer-checks').syncNoteBuyerFindings(db, req.params.id); } catch (_) {}
       }
       // Loan Digital Twin (Sovereign 1/4): the same-write also feeds the twin so
@@ -8722,7 +8751,7 @@ async function completeFields(req, res, borrowerScoped) {
       // A note-buyer change also re-evaluates the note-buyer APPRAISAL checks (EMCAP — owner
       // 2026-07-30): switching a file with an imported appraisal onto EMCAP raises the buyer's
       // appraisal findings; switching away retires them. Cheap no-op for every other field/buyer.
-      if (appKeys.includes('lender')) {
+      if (appKeys.some((k) => ['lender', 'program', 'loan_type', 'rehab_type'].includes(k))) {
         try { await require('../lib/appraisal/note-buyer-checks').syncNoteBuyerFindings(db, req.params.id); } catch (_) {}
       }
       // Loan Digital Twin (Sovereign 1/4, owner-directed 2026-07-21): every LOS
