@@ -52,6 +52,12 @@ async function main() {
   ok(/PDF/.test(tpr.integrityIssue({ filename: 'x.pdf' }, Buffer.from('<html>nope')) || ''), 'integrity: HTML masquerading as .pdf is flagged');
   ok(tpr.integrityIssue({ filename: 'x.pdf' }, Buffer.from('%PDF-1.7 ok')) === null, 'integrity: real %PDF header passes');
   ok(/size mismatch/.test(tpr.integrityIssue({ filename: 'x.bin', size_bytes: 999 }, Buffer.from('abc')) || ''), 'integrity: recorded-vs-packed size mismatch flagged');
+  // Scope-of-Work export HTML filter — the HTML snapshot stays OUT, the PDF/Excel ship.
+  ok(tpr.isHtmlExport({ filename: 'SOW.html' }) === true, 'isHtmlExport: .html detected');
+  ok(tpr.isHtmlExport({ filename: 'SOW.htm' }) === true, 'isHtmlExport: .htm detected');
+  ok(tpr.isHtmlExport({ filename: 'SOW.pdf', content_type: 'text/html' }) === true, 'isHtmlExport: text/html content-type detected');
+  ok(tpr.isHtmlExport({ filename: 'SOW.pdf', content_type: 'application/pdf' }) === false, 'isHtmlExport: real PDF is not HTML');
+  ok(tpr.isHtmlExport({ filename: 'SOW.xlsx', content_type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' }) === false, 'isHtmlExport: Excel is not HTML');
 
   const B = uuid(), CB = uuid(), APP = uuid(), LLC = uuid(), OWNER_LLC = uuid(), TR = uuid();
   const ids = [];
@@ -98,6 +104,12 @@ async function main() {
     const dProfile = await doc('photo-id.pdf', { borrower_id: B, review_status: 'pending', is_current: true, source_type: 'staff_upload' });
     const dCoProfile = await doc('co-photo-id.pdf', { borrower_id: CB, review_status: 'pending', is_current: true, source_type: 'staff_upload' });
     const dPriorZip = await doc('TPR_old.zip', { application_id: APP, borrower_id: B, review_status: 'pending', is_current: true, source_type: 'system', doc_kind: 'tpr_export', visibility: 'internal' });
+    // Scope-of-Work tool exports (branded PDF + Excel + HTML). The main selection
+    // drops every '*_export' kind; the PDF + Excel must nonetheless land in the
+    // Scope of Work folder, and the HTML must NOT ship (owner-directed 2026-07-30).
+    const dSowPdf = await doc('62 Highland SOW.pdf', { application_id: APP, borrower_id: B, review_status: 'pending', is_current: true, source_type: 'system', doc_kind: 'rehab_budget_export', content_type: 'application/pdf' });
+    const dSowXls = await doc('62 Highland SOW.xlsx', { application_id: APP, borrower_id: B, review_status: 'pending', is_current: true, source_type: 'system', doc_kind: 'rehab_budget_export', content_type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
+    const dSowHtml = await doc('62 Highland SOW.html', { application_id: APP, borrower_id: B, review_status: 'pending', is_current: true, source_type: 'system', doc_kind: 'rehab_budget_export', content_type: 'text/html' });
     const dTrSnap = await doc('tr-snapshot.html', { borrower_id: B, review_status: 'pending', is_current: true, source_type: 'system', doc_kind: 'track_record_html' });
     const dTrDoc = await doc('hud-closing.pdf', { borrower_id: B, track_record_id: TR, review_status: 'pending', is_current: true, source_type: 'staff_upload', visibility: 'internal' });
 
@@ -142,22 +154,34 @@ async function main() {
     const trGot = (await tpr.selectTrackRecordDocs([TR])).map(d => d.id);
     ok(trGot.includes(dTrDoc), 'track section INCLUDES the line-item doc (even internal visibility)');
 
+    // Scope-of-Work exports: the branded PDF + Excel are pulled DIRECTLY (the shared
+    // selection drops every '*_export'); the HTML is present but must be filtered.
+    const sowGot = await tpr.selectSowExports(APP);
+    ok(sowGot.length === 3, `selectSowExports finds all 3 export formats (got ${sowGot.length})`);
+    const sowShipped = sowGot.filter(d => !tpr.isHtmlExport(d));
+    ok(sowShipped.length === 2 && sowShipped.every(d => !/\.html?$/i.test(d.filename)), 'SOW: only the PDF + Excel ship (HTML filtered)');
+
     // The full zip builds and the manifest counts match the selection.
     const { zip, includedCount } = await tpr.buildTprExport(APP);
     ok(Buffer.isBuffer(zip) && zip.length > 500, 'zip builds');
-    // manifest = subject-set docs + track-record verification docs (got already
-    // includes the two aged docs, so this stays consistent).
-    ok(includedCount === got.size + trGot.length, `manifest count (${includedCount}) === subject (${got.size}) + track (${trGot.length})`);
+    // manifest = subject-set docs + track-record verification docs + the SOW
+    // branded exports (PDF + Excel; the HTML never ships).
+    ok(includedCount === got.size + trGot.length + sowShipped.length,
+      `manifest count (${includedCount}) === subject (${got.size}) + track (${trGot.length}) + SOW exports (${sowShipped.length})`);
 
     // The package is ONE clean folder, foldered by category, no NN_ prefixes.
     const names = unzip(zip).map(e => e.name);
     const roots = new Set(names.map(n => n.split('/')[0]));
     ok(roots.size === 1, `exactly ONE top folder in the ZIP (got: ${[...roots].join(' | ')})`);
     ok(names.some(n => /\/REO\/Track Record\.xlsx$/.test(n)), 'REO/Track Record.xlsx is present');
+    ok(names.some(n => /\/REO\/Track Record\.pdf$/.test(n)), 'REO/Track Record.pdf is present');
+    ok(names.some(n => /\/Scope of Work\/62 Highland SOW\.pdf$/.test(n)), 'SOW branded PDF filed under Scope of Work');
+    ok(names.some(n => /\/Scope of Work\/62 Highland SOW\.xlsx$/.test(n)), 'SOW branded Excel filed under Scope of Work');
+    ok(!names.some(n => /\/Scope of Work\/.*\.html?$/i.test(n)), 'SOW HTML snapshot is NOT in the export');
     ok(names.some(n => /\/REO\/9 Prior Rd[^/]*\/hud-closing\.pdf$/.test(n)), 'REO has a per-property folder with the line-item doc');
     ok(!names.some(n => /\/\d\d?_/.test(n.split('/').pop())), 'no NN_ numbered prefixes on file names');
     ok(names.some(n => /\/(Background Check|Criminal Check)\//.test(n)), 'fraud report filed under Background/Criminal Check');
-    ok(names.some(n => n.endsWith('/_Manifest.json')) && names.some(n => n.endsWith('/_Package Index.txt')), 'manifest + index filed inside the folder');
+    ok(!names.some(n => n.endsWith('/_Manifest.json')) && !names.some(n => n.endsWith('/_Package Index.txt')), 'no _Manifest.json / _Package Index.txt in the package (owner-directed)');
     ok(names.every(n => !/\b(iska|heter)\b/i.test(n)), 'no Iska/Heter file anywhere in the package');
   } catch (e) { fail++; console.log('  ✗ EXCEPTION', e && e.stack ? e.stack : e); }
   finally {

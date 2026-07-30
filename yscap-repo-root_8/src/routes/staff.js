@@ -3284,7 +3284,10 @@ router.get('/applications/:id/export/tpr', async (req, res) => {
 router.get('/applications/:id/export/tpr/preview', async (req, res) => {
   try {
     const tpr = require('../lib/tpr-export');
-    const included = (await tpr.selectTprDocuments(req.params.id)).length;
+    // The Scope of Work folder ALSO ships the SOW tool's branded Excel + PDF
+    // (the HTML is dropped), so count them toward the promised total.
+    const sowExports = (await tpr.selectSowExports(req.params.id)).filter((d) => !tpr.isHtmlExport(d)).length;
+    const included = (await tpr.selectTprDocuments(req.params.id)).length + sowExports;
     const trIds = (await db.query(
       `SELECT id FROM track_records WHERE borrower_id IN (
          SELECT borrower_id FROM applications WHERE id=$1

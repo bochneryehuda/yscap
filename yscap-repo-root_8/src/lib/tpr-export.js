@@ -18,13 +18,14 @@
  *      ID/                     photo ID + Social Security card
  *      Insurance/              insurance binder + invoice + insurance replies
  *      LLC/                    every entity document (incl. layered owning LLCs)
- *      REO/                    Track Record.xlsx  +  one folder per prior property
- *      Scope of Work/          scope of work + rehab budget + plans & permits
+ *      REO/                    Track Record.xlsx + Track Record.pdf  +  one folder per prior property
+ *      Scope of Work/          the SOW tool's branded Excel + PDF (NOT the HTML) + plans & permits
  *      Term Sheet/             uploaded + signed term sheet (+ registered terms)
  *      TITLE/                  title documents + title replies
  *      Other Documents/        anything that didn't match a category (flagged)
- *      _Package Index.txt      human-readable list of everything in the package
- *      _Manifest.json          machine-readable manifest + integrity report
+ *
+ * (No _Manifest.json / _Package Index.txt — owner-directed 2026-07-30: the ZIP is
+ * just the clean document folders, no technical index/manifest files.)
  *
  * HARD FREEZE (owner-directed): the Heter Iska — unsigned AND signed — is NEVER
  * in the TPR export. Guarded THREE independent ways in the selection: the
@@ -396,6 +397,28 @@ async function selectTprMissing(appId) {
       ORDER BY sort_order`, [appId])).rows.map(r => r.label);
 }
 
+// Scope-of-Work tool exports: the branded PDF + Excel the SOW / rehab-budget tool
+// generates on submit, stored as doc_kind 'rehab_budget_export' on the SOW
+// condition (alongside the HTML snapshot). Pulled DIRECTLY here — the shared
+// TPR_DOC_SELECT deliberately drops every '*_export' kind, so without this the
+// Scope of Work folder never received the tool's own PDF/Excel. Only the CURRENT,
+// non-rejected set (a re-submit supersedes the prior one). The caller drops the
+// HTML (owner-directed 2026-07-30: "you don't need the HTML in the TPR export").
+async function selectSowExports(appId) {
+  return (await db.query(
+    `SELECT d.id, d.filename, d.storage_ref, d.sha256, d.size_bytes, d.content_type, d.created_at
+       FROM documents d
+      WHERE d.application_id=$1 AND d.doc_kind='rehab_budget_export' AND d.is_current=true
+        AND COALESCE(d.review_status,'pending') <> 'rejected'
+        AND COALESCE(d.source_type,'') <> 'chat_attachment'
+      ORDER BY d.created_at`, [appId])).rows;
+}
+
+// The HTML snapshot a tool ships alongside its PDF/Excel — identified by extension
+// or content-type — is left OUT of the TPR export (owner-directed 2026-07-30).
+const isHtmlExport = (d) => /\.html?$/i.test(d.filename || '')
+  || String(d.content_type || '').toLowerCase().includes('html');
+
 // Track-record verification docs for a set of line items (current, non-chat,
 // non-rejected — staff-internal docs ship too, per the everything directive).
 async function selectTrackRecordDocs(trIds) {
@@ -507,26 +530,114 @@ async function buildTprExport(appId) {
     });
   }
 
-  // 2) REO → Track Record.xlsx first, then one folder per prior property with
-  //    that project's verification documents.
+  // 1b) Scope of Work → the branded PDF + Excel the SOW tool produced. The tool
+  //     stores three formats (HTML + Excel + PDF) as '*_export' docs, which the
+  //     shared selection drops; here we ADD the Excel + PDF into the Scope of Work
+  //     folder and deliberately skip the HTML (owner-directed 2026-07-30).
+  const sowExports = await selectSowExports(appId);
+  for (const d of sowExports) {
+    if (isHtmlExport(d)) continue;
+    let bytes;
+    try { bytes = await storage.read(d.storage_ref); }
+    catch (_) { unavailable.push({ source: d.filename, requirement: C.SOW }); continue; }
+    if (!Buffer.isBuffer(bytes)) bytes = Buffer.from(bytes || '');
+    const dir = `${ROOT}/${C.SOW}`;
+    const name = uniqueIn(usedByDir, dir, cleanFileName(d.filename));
+    const path = `${dir}/${name}`;
+    files.push({ name: path, data: bytes });
+    const issue = integrityIssue(d, bytes);
+    if (issue) integrityWarnings.push({ file: path, source: d.filename, issue });
+    manifestDocs.push({
+      file: path, source: d.filename, category: C.SOW, requirement: 'Scope of Work export',
+      review: 'n/a', accepted_by: null, accepted_at: d.created_at, integrity: issue ? 'CHECK' : 'ok',
+    });
+  }
+
+  // 2) REO → the branded Track Record workbook + PDF report first, then one folder
+  //    per prior property with that project's verification documents.
   const borrowerName = require('./person-name').displayName(app);
   const generatedAt = new Date().toISOString();
   const REO = `${ROOT}/${C.REO}`;
 
-  const xlsxHeader = ['Property', 'Deal type', 'Purchase', 'Rehab', 'Sale / Refi / Value', 'Purchased', 'Exited', 'Verified', 'Counts toward experience'];
-  const xlsxRows = [xlsxHeader];
+  // Split the projects into Fix & Flip (exit = sale) and Fix & Hold / Rental
+  // (exit = lease-up / refinance), the same two-section shape the Track Record
+  // TOOL shows — so the packaged Excel + PDF read like our own tracker, not a
+  // flat grid. A row with no deal_type is bucketed by the data it carries.
+  const num = (v) => (v == null || v === '') ? null : Number(v);
+  const monthsBetween = (a, b) => {
+    if (!a || !b) return '';
+    const d1 = new Date(a), d2 = new Date(b);
+    if (isNaN(d1) || isNaN(d2)) return '';
+    const m = Math.round((d2.getTime() - d1.getTime()) / (1000 * 60 * 60 * 24 * 30.44));
+    return m >= 0 ? m : '';
+  };
+  const isHoldType = (r) => {
+    const t = String(r.deal_type || '').toLowerCase();
+    if (/rent|hold/.test(t)) return true;
+    if (t) return false;   // flip / bridge / ground-up all exit by sale
+    return !!(r.rent_amount || r.rent_date || r.refi_amount || r.refi_date);   // infer from data
+  };
+  const flipCols = [
+    { header: 'Property', key: 'property', w: 3, align: 'left' },
+    { header: 'Deal type', key: 'dealType', w: 1.3 },
+    { header: 'Purchase price', key: 'purchase', w: 1.3, money: true, align: 'right', sum: true },
+    { header: 'Purchase date', key: 'purchaseDate', w: 1.1, align: 'center' },
+    { header: 'Rehab budget', key: 'rehab', w: 1.2, money: true, align: 'right', sum: true },
+    { header: 'Sale price', key: 'sale', w: 1.3, money: true, align: 'right', sum: true },
+    { header: 'Sale date', key: 'saleDate', w: 1.1, align: 'center' },
+    { header: 'Hold (mo)', key: 'holdMo', w: 0.8, align: 'center' },
+    { header: 'Gross profit', key: 'profit', w: 1.2, money: true, align: 'right', sum: true },
+    { header: 'Verified', key: 'verified', w: 0.9, align: 'center' },
+    { header: 'Recent (3yr)', key: 'counts', w: 0.9, align: 'center' },
+  ];
+  const holdCols = [
+    { header: 'Property', key: 'property', w: 3, align: 'left' },
+    { header: 'Deal type', key: 'dealType', w: 1.3 },
+    { header: 'Purchase price', key: 'purchase', w: 1.3, money: true, align: 'right', sum: true },
+    { header: 'Purchase date', key: 'purchaseDate', w: 1.1, align: 'center' },
+    { header: 'Rehab budget', key: 'rehab', w: 1.2, money: true, align: 'right', sum: true },
+    { header: 'Monthly rent', key: 'rent', w: 1.2, money: true, align: 'right', sum: true },
+    { header: 'Rented date', key: 'rentDate', w: 1.1, align: 'center' },
+    { header: 'Refi amount', key: 'refi', w: 1.2, money: true, align: 'right', sum: true },
+    { header: 'Refi date', key: 'refiDate', w: 1.0, align: 'center' },
+    { header: 'Current value', key: 'currentValue', w: 1.3, money: true, align: 'right', sum: true },
+    { header: 'Verified', key: 'verified', w: 0.9, align: 'center' },
+    { header: 'Recent (3yr)', key: 'counts', w: 0.9, align: 'center' },
+  ];
+  const flipRows = [], holdRows = [];
   for (const r of records) {
     const { exit, counts } = exitInfo(r);
-    xlsxRows.push([
-      addrText(r.property_address) || '', dealLabel(r.deal_type),
-      r.purchase_price != null ? Number(r.purchase_price) : '',
-      r.rehab_amount != null ? Number(r.rehab_amount) : '',
-      (r.sale_price || r.refi_amount || r.current_value) != null ? Number(r.sale_price || r.refi_amount || r.current_value) : '',
-      dateStr(r.purchase_date), dateStr(exit),
-      r.is_verified ? 'Verified' : 'Unverified', counts ? 'Yes' : 'No',
-    ]);
+    const base = {
+      property: addrText(r.property_address) || '', dealType: dealLabel(r.deal_type),
+      purchase: num(r.purchase_price), rehab: num(r.rehab_amount),
+      purchaseDate: dateStr(r.purchase_date),
+      verified: r.is_verified ? 'Verified' : 'Unverified', counts: counts ? 'Yes' : (exit ? 'No' : ''),
+      __verified: !!r.is_verified,
+    };
+    if (isHoldType(r)) {
+      holdRows.push({ ...base, rent: num(r.rent_amount), rentDate: dateStr(r.rent_date),
+        refi: num(r.refi_amount), refiDate: dateStr(r.refi_date), currentValue: num(r.current_value) });
+    } else {
+      const sale = num(r.sale_price);
+      flipRows.push({ ...base, sale, saleDate: dateStr(r.sale_date),
+        holdMo: monthsBetween(r.purchase_date, r.sale_date),
+        profit: sale != null ? sale - (num(r.purchase_price) || 0) - (num(r.rehab_amount) || 0) : null });
+    }
   }
-  files.push({ name: `${REO}/Track Record.xlsx`, data: buildXlsx(xlsxRows) });
+  const trSections = [
+    { title: 'FIX & FLIP EXPERIENCE   (exit = sale)', columns: flipCols, rows: flipRows },
+    { title: 'FIX & HOLD / RENTAL EXPERIENCE   (exit = lease-up / refinance)', columns: holdCols, rows: holdRows },
+  ];
+  const trMeta = { borrowerName, generatedDate: dateStr(generatedAt) };
+  const trExport = require('./track-record-export');
+  // Nicer, sectioned Excel (reuses the proven style-free writer — no corruption risk).
+  files.push({ name: `${REO}/Track Record.xlsx`, data: buildXlsx(trExport.trackRecordAoa(trSections, trMeta), 'Track Record') });
+  // Branded PDF report ("the PDF export from our track record section"). Best-effort:
+  // a pdf-lib hiccup must never sink the whole package — the Excel + docs still ship.
+  try {
+    const trPdf = await trExport.buildTrackRecordPdf(trSections, trMeta);
+    if (Buffer.isBuffer(trPdf) && trPdf.length) files.push({ name: `${REO}/Track Record.pdf`, data: trPdf });
+  } catch (e) { console.warn('[tpr-export] track-record PDF failed:', e && e.message); }
 
   const trFolderCounts = {};
   const trManifest = [];
@@ -588,66 +699,12 @@ async function buildTprExport(appId) {
     });
   }
 
-  // 4) Manifest + human index — filed inside ROOT so the ZIP is ONE clean folder.
-  const propLabel = subjectAddr;
-  const categoryCounts = {};
-  for (const m of manifestDocs) categoryCounts[m.category] = (categoryCounts[m.category] || 0) + 1;
-  const otherDocs = manifestDocs.filter(m => m.category === C.OTHER);
-
-  const manifest = {
-    generated_at: generatedAt,
-    lender: 'YS Capital Group',
-    loan_number: app.ys_loan_number || null,
-    borrower: borrowerName,
-    property: propLabel,
-    program: app.program || null,
-    loan_type: app.loan_type || null,
-    registered_terms: registration ? {
-      program: registration.program,
-      product_label: registration.product_label,
-      status: registration.status,
-      note_rate: registration.note_rate,
-      total_loan: registration.total_loan,
-      target_ltc: registration.target_ltc,
-      quote: registration.quote,
-      registered_at: registration.created_at,
-    } : null,
-    documents_by_category: categoryCounts,
-    included_documents: manifestDocs,
-    included_count: manifestDocs.length,
-    track_record: { projects: records.length, verified: records.filter(r => r.is_verified).length, line_items: trManifest },
-    unmatched_documents: otherDocs.map(m => ({ file: m.file, source: m.source, requirement: m.requirement })),
-    integrity_warnings: integrityWarnings,
-    unavailable_documents: unavailable,
-    open_conditions_without_documents: missing,
-  };
-  files.push({ name: `${ROOT}/_Manifest.json`, data: Buffer.from(JSON.stringify(manifest, null, 2), 'utf8') });
-
-  const catLine = Object.keys(categoryCounts).sort().map(c => `  ${c}: ${categoryCounts[c]}`);
-  const lines = [
-    `YS CAPITAL GROUP — TPR FILE PACKAGE (every current document on the file)`,
-    `Loan: ${app.ys_loan_number || '(pending)'}   Borrower: ${borrowerName}   Property: ${propLabel}`,
-    `Generated: ${generatedAt}`, '',
-    `This package is ONE folder — "${ROOT}" — organized into these document folders:`,
-    ...catLine,
-    '', `TRACK RECORD (REO): ${records.length} project(s), ${manifest.track_record.verified} verified — see the REO folder (Track Record.xlsx + one folder per property).`,
-    '', `INCLUDED DOCUMENTS (${manifestDocs.length}):`,
-    ...manifestDocs.map(m => `  - ${m.file}${m.accepted_by ? `  (accepted by ${m.accepted_by})` : (m.review && !['accepted', 'n/a'].includes(m.review) ? `  (${m.review} review)` : '')}${m.integrity === 'CHECK' ? '  [CHECK — see integrity notes]' : ''}`),
-    '', `OPEN CONDITIONS WITH NO DOCUMENT YET (${missing.length}):`,
-    ...(missing.length ? missing.map(m => `  - ${m}`) : ['  (none)']),
-  ];
-  if (otherDocs.length) {
-    lines.push('', `UNMATCHED — filed under "Other Documents" (${otherDocs.length}), please tell us where these belong:`,
-      ...otherDocs.map(m => `  - ${m.source}${m.requirement ? `  (from: ${m.requirement})` : ''}`));
-  }
-  if (integrityWarnings.length) {
-    lines.push('', `INTEGRITY CHECKS — these files may be corrupt at the source; re-request a fresh copy (${integrityWarnings.length}):`,
-      ...integrityWarnings.map(w => `  - ${w.file}: ${w.issue}`));
-  }
-  if (unavailable.length) {
-    lines.push('', `UNREADABLE / SKIPPED (${unavailable.length}):`, ...unavailable.map(u => `  - ${u.source} (${u.requirement || 'file'})`));
-  }
-  files.push({ name: `${ROOT}/_Package Index.txt`, data: Buffer.from(lines.join('\n'), 'utf8') });
+  // The machine-readable _Manifest.json and the human _Package Index.txt used to
+  // be filed inside ROOT. Owner-directed 2026-07-30: drop them — they read as
+  // "garbage" technical files in an otherwise clean package of document folders.
+  // The download response + preview still report includedCount + missing from the
+  // same tallies (manifestDocs / missing) below; the integrity/unavailable notes
+  // are still gathered (cheap, and handy for logging) but no longer written in.
 
   const filename = `TPR_${sanitize(app.ys_loan_number || app.last_name || 'file')}_${generatedAt.slice(0, 10)}.zip`;
   return { zip: zip(files), filename, includedCount: manifestDocs.length, missing };
@@ -683,7 +740,7 @@ module.exports = {
   buildTprExport, saveTprExportDocument, buildXlsx,
   // the shared selection chokepoint — the preview endpoint MUST use these so
   // its promised counts can never disagree with the built package
-  selectTprDocuments, selectTprMissing, selectTrackRecordDocs,
+  selectTprDocuments, selectTprMissing, selectTrackRecordDocs, selectSowExports,
   // exported for unit tests
-  categoryFor, keywordCategory, integrityIssue, cleanFileName,
+  categoryFor, keywordCategory, integrityIssue, cleanFileName, isHtmlExport,
 };
