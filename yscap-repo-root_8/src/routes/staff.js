@@ -1888,6 +1888,14 @@ router.post('/applications/:id/pricing/quote', async (req, res) => {
     // up-front that registering this scenario goes to an admin for approval.
     const overrideChanges = overrideChangesFor(overrides);
     res.json({ ...out, experience: f.exp, overrideChanges, needsApproval: overrideChanges.length > 0 });
+    // Shadow-Excel parity monitor (owner-directed 2026-07-30): background-check the
+    // SILVER leg against the workbook transcription. Watch-only — never blocks.
+    if (out.silver && out.silver.status && out.silver.status !== 'ERROR') {
+      const appId = req.params.id;
+      setImmediate(() => {
+        try { require('../lib/silver-shadow-parity').monitorQuote(appId, out.inputs, out.silver).catch(() => {}); } catch (_) { /* watch-only */ }
+      });
+    }
   } catch (e) { console.warn('[staff] handler error:', db.describeError(e)); res.status(500).json({ error: 'server error' }); }
 });
 
@@ -2356,6 +2364,14 @@ router.post('/applications/:id/pricing/register', async (req, res) => {
 
     res.status(201).json({ ok: true, registrationId: regId, quote, pendingApproval: needsEscalation,
       overrideChanges, overrideLines, pendingReason: needsEscalation ? (isManual ? 'manual_product' : (overrideOnly ? 'pricing_override' : 'manual_review')) : null });
+    // Shadow-Excel parity monitor (owner-directed 2026-07-30): background-check the
+    // registered Silver scenario against the workbook transcription. Watch-only —
+    // a mismatch records one advisory AI finding; it never blocks the registration.
+    if (program === 'silver') {
+      setImmediate(() => {
+        try { require('../lib/silver-shadow-parity').monitorQuote(appId, inputs, quote).catch(() => {}); } catch (_) { /* watch-only */ }
+      });
+    }
   } catch (e) { console.warn('[staff] handler error:', db.describeError(e)); res.status(500).json({ error: 'server error' }); }
 });
 
