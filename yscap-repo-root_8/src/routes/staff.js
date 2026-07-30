@@ -11070,7 +11070,12 @@ router.post('/leads/:id/convert', async (req, res) => {
         (econReserveOn ? (parseInt(pv.resMonths, 10) || null) : null),
         (econReserveOn ? numv(pv.resAmount) : null),
         econIsAssign, econSeller, econFee,
-        (parseInt(pv.expFlips, 10) || null), (parseInt(pv.expBrrrr, 10) || null), (parseInt(pv.expGround, 10) || null)]);
+        // requested_exp_* are integer NOT NULL DEFAULT 0 — bind 0 (never null) for
+        // a blank/absent value, exactly like every other create path (intField).
+        // The old `parseInt(...) || null` sent NULL into a NOT-NULL column, so a
+        // lead missing any experience count 500'd the whole convert (root cause of
+        // the "server error on Convert to loan file" report).
+        intField(pv.expFlips), intField(pv.expBrrrr), intField(pv.expGround)]);
     const appId = ins.rows[0].id;
 
     try { await require('../lib/conditions/ensure').ensureFileConditions(appId, { reason: 'lead_convert' }); }
@@ -11085,7 +11090,13 @@ router.post('/leads/:id/convert', async (req, res) => {
       [req.params.id, req.actor.id, `Created file ${ins.rows[0].ys_loan_number || appId}`, JSON.stringify({ applicationId: appId, borrowerId })]);
     await audit(req, 'staff_convert_lead', 'lead', req.params.id, { applicationId: appId, borrowerId });
     res.status(201).json({ ok: true, applicationId: appId, borrowerId, loanNumber: ins.rows[0].ys_loan_number });
-  } catch (e) { res.status(500).json({ error: 'server error' }); }
+  } catch (e) {
+    // NEVER silent — a bare `500 server error` with no log is exactly why this
+    // NOT-NULL violation stayed invisible. Log with describeError like every
+    // other write path so the next failure is diagnosable from the server logs.
+    console.error('[lead-convert] convert failed:', db.describeError ? db.describeError(e) : e.message);
+    res.status(500).json({ error: 'server error' });
+  }
 });
 
 // ---------------- Encompass flood-certificate ordering ----------------
