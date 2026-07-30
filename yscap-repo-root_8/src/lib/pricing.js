@@ -13,18 +13,19 @@
    ===================================================================== */
 'use strict';
 
-let YSP = null, GSP = null, YSTitle = null, loadErr = null;
+let YSP = null, GSP = null, SVP = null, YSTitle = null, loadErr = null;
 try {
   YSP = require('../../web/tools/standard-program.js');
   GSP = require('../../web/tools/gold-standard.js');
+  SVP = require('../../web/tools/silver-program.js');
   YSTitle = require('../../web/tools/title-cost.js');
 } catch (e) {
   loadErr = e && e.message ? e.message : String(e);
 }
 
-function enginesReady() { return !!(YSP && GSP && YSTitle); }
+function enginesReady() { return !!(YSP && GSP && SVP && YSTitle); }
 
-const PROGRAM_LABEL = { standard: 'Standard Program', gold: 'Gold Standard Program', manual: 'Manual Program' };
+const PROGRAM_LABEL = { standard: 'Standard Program', gold: 'Gold Standard Program', silver: 'Silver Program', manual: 'Manual Program' };
 // Hardcoded fee fallback (used only if the company-settings cache is stone
 // cold). Company defaults (Pricing Admin Center) override these for every
 // not-yet-registered file; a per-file adminPricing override still wins over
@@ -140,6 +141,9 @@ function buildInputs(app, experience, overrides) {
     state: clean(addr.state).toUpperCase(),
     city: fileCity,
     address: fileLine1,
+    // ZIP feeds the Silver engine's geography exclusions + NYC-market detection
+    // (Standard/Gold ignore it). Falls back to a ZIP inside the address text.
+    zip: clean(addrIsString ? '' : (addr.zip || addr.postal_code || addr.postalCode || '')),
     propertyType: normPropertyType(app.property_type),
     units: num(app.units) || 0,
     purchasePrice: totalPrice,
@@ -178,13 +182,14 @@ function buildInputs(app, experience, overrides) {
     // engine, exactly as before (unregistered / no-override files are unchanged).
     ...(app.file_markup_std_pct  != null ? { markupStdPct:  num(app.file_markup_std_pct) }  : {}),
     ...(app.file_markup_gold_pct != null ? { markupGoldPct: num(app.file_markup_gold_pct) } : {}),
+    ...(app.file_markup_silver_pct != null ? { markupSilverPct: num(app.file_markup_silver_pct) } : {}),
   };
 
   // Staff overrides win. Only copy known keys; coerce numeric fields.
   const NUMK = ['units', 'purchasePrice', 'sellerPrice', 'asIsValue', 'arv', 'rehabBudget',
     'fico', 'expFlips', 'expHolds', 'expGround', 'term', 'irMonths', 'irAmount', 'targetLTC',
     'ovrAcqLTV', 'ovrARLTV', 'ovrLTC', 'ovrRate',
-    'markupStdPct', 'markupGoldPct', 'origStdPct', 'origGoldPct',
+    'markupStdPct', 'markupGoldPct', 'markupSilverPct', 'origStdPct', 'origGoldPct', 'origSilverPct',
     'lenderFee', 'creditFee', 'appraisalFee', 'titleFee',
     'ovrAcqLTVPct', 'ovrARLTVPct', 'ovrLTCPct', 'ovrRatePct', 'ovrIrMonths', 'ovrEffPrice'];
   const STRK = ['loanType', 'strategy', 'state', 'city', 'address', 'propertyType'];
@@ -216,6 +221,7 @@ function buildInputs(app, experience, overrides) {
     // mirroring irAmount's existing blank-sends-0 contract.
     if (overrides.markupStdPct === '') delete out.markupStdPct;
     if (overrides.markupGoldPct === '') delete out.markupGoldPct;
+    if (overrides.markupSilverPct === '') delete out.markupSilverPct;
     if (overrides.irMonths === '') out.irMonths = 0;
   }
   out.strategy = engineStrategy(out.strategy);   // override labels get the same normalization
@@ -255,12 +261,13 @@ function numberOverride(input, key, fallback) {
 function percentOverride(input, key, fallbackFraction) {
   return hasInput(input, key) ? num(input[key]) / 100 : fallbackFraction;
 }
+function markupKeyFor(program) { return program === 'gold' ? 'markupGoldPct' : program === 'silver' ? 'markupSilverPct' : 'markupStdPct'; }
 function markupOverride(input, program) {
-  const key = program === 'gold' ? 'markupGoldPct' : 'markupStdPct';
+  const key = markupKeyFor(program);
   return hasInput(input, key) ? num(input[key]) / 100 : null;
 }
 function setEngineMarkup(program, value) {
-  const engine = program === 'gold' ? GSP : YSP;
+  const engine = program === 'gold' ? GSP : (program === 'silver' ? SVP : YSP);
   if (engine && typeof engine.setMarkup === 'function') engine.setMarkup(value);
 }
 
@@ -269,10 +276,12 @@ function normalize(program, input, ev, ladder) {
   const s = ev.sizing || {};
   const cd = pricingSettings.current();   // company-wide defaults (or literals)
   // Origination default: per-file override → COMPANY default → engine constant.
-  const engineOrigPct = (program === 'gold' ? (GSP.constants && GSP.constants.ORIG_PCT) : (YSP.constants && YSP.constants.ORIG_PCT)) || 0.0125;
-  const companyOrigPct = program === 'gold' ? cd.origGoldPct : cd.origStdPct;
+  const engineOrigPct = (program === 'gold' ? (GSP.constants && GSP.constants.ORIG_PCT)
+    : program === 'silver' ? (SVP && SVP.constants && SVP.constants.ORIG_PCT)
+    : (YSP.constants && YSP.constants.ORIG_PCT)) || 0.0125;
+  const companyOrigPct = program === 'gold' ? cd.origGoldPct : program === 'silver' ? cd.origSilverPct : cd.origStdPct;
   const defaultOrigPct = (companyOrigPct != null ? companyOrigPct / 100 : engineOrigPct);
-  const origPct = percentOverride(input, program === 'gold' ? 'origGoldPct' : 'origStdPct', defaultOrigPct);
+  const origPct = percentOverride(input, program === 'gold' ? 'origGoldPct' : program === 'silver' ? 'origSilverPct' : 'origStdPct', defaultOrigPct);
   // Rounding policy (owner-directed 2026-07-09): the financed loan is reported in
   // WHOLE DOLLARS, floored DOWN — never lend more than the engine sized. The
   // reported breakdown must reconcile EXACTLY (initial advance + holdback +
@@ -401,8 +410,8 @@ function normalize(program, input, ev, ladder) {
       sqftAddition: !!ev.sqft,
     },
     adminPricing: {
-      markupPct: hasInput(input, program === 'gold' ? 'markupGoldPct' : 'markupStdPct')
-        ? num(input[program === 'gold' ? 'markupGoldPct' : 'markupStdPct']) : null,
+      markupPct: hasInput(input, markupKeyFor(program))
+        ? num(input[markupKeyFor(program)]) : null,
       origPct: origPct * 100,
       lenderFee,
       creditFee,
@@ -428,10 +437,28 @@ function quoteProgram(program, input) {
   let m = markupOverride(input, program);
   if (m == null) {
     const cd = pricingSettings.current();
-    const companyMarkup = program === 'gold' ? cd.markupGoldPct : cd.markupStdPct;
+    const companyMarkup = program === 'gold' ? cd.markupGoldPct : program === 'silver' ? cd.markupSilverPct : cd.markupStdPct;
     if (companyMarkup != null) m = num(companyMarkup) / 100;
   }
   if (m != null) setEngineMarkup(program, m);
+  if (program === 'silver') {
+    // The Silver program prices on its own frozen engine (EMCAP grid). Its
+    // ladder varies by LTC band exactly like Standard's, so it ships one too.
+    try {
+      const ev = SVP.evaluate(input);
+      if (input.forcePrice && ev.status === 'INELIGIBLE') { ev.status = 'MANUAL'; ev.exitShortfall = 0; }
+      let ladder = null;
+      try {
+        const pl = SVP.priceLadder(input);
+        if (pl && pl.eligible && pl.rows && pl.rows.length) {
+          ladder = { maxLtc: pl.maxLtc, binding: pl.binding, rows: pl.rows };
+        }
+      } catch (_) { /* ladder is best-effort */ }
+      return normalize('silver', input, ev, ladder);
+    } finally {
+      if (m != null) setEngineMarkup(program, null);
+    }
+  }
   if (program === 'gold') {
     try {
       const ev = GSP.evaluate(input);
@@ -464,7 +491,8 @@ function quoteAll(app, experience, overrides) {
   const input = buildInputs(app, experience, overrides);
   const standard = safeQuote('standard', input);
   const gold = safeQuote('gold', input);
-  return { inputs: input, standard, gold };
+  const silver = safeQuote('silver', input);
+  return { inputs: input, standard, gold, silver };
 }
 
 function safeQuote(program, input) {
@@ -501,7 +529,9 @@ function econVersionFor(app) {
     // the sticky per-file markups.
     app.rehab_type, app.sqft_pre, app.sqft_post,
     (app.property_address && app.property_address.state) || '',
-    app.fico, app.file_markup_std_pct, app.file_markup_gold_pct,
+    app.fico, app.file_markup_std_pct, app.file_markup_gold_pct, app.file_markup_silver_pct,
+    // The Silver engine keys geography off the ZIP too (exclusions + NYC market).
+    (app.property_address && (app.property_address.zip || app.property_address.postal_code)) || '',
   ].map(f).join('|');
   return crypto.createHash('sha1').update(basis).digest('hex').slice(0, 16);
 }

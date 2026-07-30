@@ -158,7 +158,7 @@ const FIELDS = {
   // Portal-authoritative, one-way (§7.1/7.5).
   registered_program: {
     id: 'aae034e4-633c-40db-85b4-7d8cfe33501b',
-    to: { standard: 'The Standard program', gold: 'The Gold program', none: null },
+    to: { standard: 'The Standard program', gold: 'The Gold program', silver: 'The Silver program', none: null },
   },
 };
 

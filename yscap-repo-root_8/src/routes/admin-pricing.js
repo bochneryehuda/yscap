@@ -16,7 +16,7 @@ router.get('/', async (req, res) => {
   try {
     const cur = await pricingSettings.load();
     const hist = await db.query(
-      `SELECT cps.id, cps.markup_std_pct, cps.markup_gold_pct, cps.orig_std_pct, cps.orig_gold_pct,
+      `SELECT cps.id, cps.markup_std_pct, cps.markup_gold_pct, cps.markup_silver_pct, cps.orig_std_pct, cps.orig_gold_pct, cps.orig_silver_pct,
               cps.lender_fee, cps.credit_fee, cps.appraisal_fee, cps.title_fee, cps.extra_fees, cps.note,
               cps.is_current, cps.created_at, s.full_name AS updated_by_name
          FROM company_pricing_settings cps
@@ -44,7 +44,9 @@ router.put('/', async (req, res) => {
   }
   const cols = {
     markup_std_pct: numOrNull(b.markupStdPct), markup_gold_pct: numOrNull(b.markupGoldPct),
+    markup_silver_pct: numOrNull(b.markupSilverPct),
     orig_std_pct: numOrNull(b.origStdPct), orig_gold_pct: numOrNull(b.origGoldPct),
+    orig_silver_pct: numOrNull(b.origSilverPct),
     lender_fee: numOrNull(b.lenderFee), credit_fee: numOrNull(b.creditFee),
     appraisal_fee: numOrNull(b.appraisalFee), title_fee: numOrNull(b.titleFee),
     note: b.note ? String(b.note).slice(0, 300) : null,

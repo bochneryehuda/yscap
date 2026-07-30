@@ -672,7 +672,7 @@ const BORROWER_HIDDEN_APP_FIELDS = [
   'property_insurance', 'property_hoa', 'rental_income', 'appraised_rental_value', 'approx_appraised_rental_value',
   // INTERNAL pricing margin + internal valuations — a borrower may see their loan
   // structure but never OUR markup or the internal appraised figures.
-  'file_markup_std_pct', 'file_markup_gold_pct', 'actual_appraised_value', 'approx_appraised_value',
+  'file_markup_std_pct', 'file_markup_gold_pct', 'file_markup_silver_pct', 'actual_appraised_value', 'approx_appraised_value',
   // staff identities + the structural-unlock bookkeeping (owner-directed funded lock).
   'underwriter_id', 'processor_id', 'structural_unlocked_at', 'structural_unlocked_by', 'structural_unlock_reason',
   // stored card fields (currently populated elsewhere, but never leak them from here).
@@ -709,14 +709,15 @@ function stripQuoteInternal(q) {
 }
 function stripInputsInternal(inp) {
   if (!inp || typeof inp !== 'object') return inp;
-  const { markupStdPct, markupGoldPct, fico, ...rest } = inp;
+  const { markupStdPct, markupGoldPct, markupSilverPct, fico, ...rest } = inp;
   return rest;
 }
-// Make a full quoteAll bundle ({inputs, standard, gold}) borrower-safe.
+// Make a full quoteAll bundle ({inputs, standard, gold, silver}) borrower-safe.
 function borrowerSafeQuoteBundle(out) {
   if (!out || typeof out !== 'object') return out;
   return { ...out, inputs: stripInputsInternal(out.inputs),
-    standard: stripQuoteInternal(out.standard), gold: stripQuoteInternal(out.gold) };
+    standard: stripQuoteInternal(out.standard), gold: stripQuoteInternal(out.gold),
+    silver: stripQuoteInternal(out.silver) };
 }
 
 // Scrub capital-partner names out of an LLC bundle's document slots before it
@@ -898,7 +899,7 @@ router.post('/applications/:id/pricing/register', async (req, res) => {
         code: 'econ_version_conflict',
       }, 'econ_version_conflict', { sent: String(b.econVersion).slice(0, 32) });
     }
-    const program = b.program === 'gold' ? 'gold' : 'standard';
+    const program = b.program === 'gold' ? 'gold' : b.program === 'silver' ? 'silver' : 'standard';
     const overrides = borrowerPricingOverrides(b.overrides || {});
     // A REGISTERED product is authoritative terms. A BORROWER never injects the
     // claimed-experience counts on register — they must not beat the verified
@@ -909,8 +910,8 @@ router.post('/applications/:id/pricing/register', async (req, res) => {
     delete overrides.expFlips; delete overrides.expHolds; delete overrides.expGround;
     const inputs = pricing.buildInputs(f.app, f.exp, overrides);
     // Term-sheet options (owner-directed 2026-07-22) — display/record only. A
-    // borrower self-registers Standard/Gold only (never manual), so min-interest
-    // defaults OFF here unless explicitly set.
+    // borrower self-registers Standard/Gold/Silver only (never manual), so
+    // min-interest defaults OFF here unless explicitly set.
     const rawTermOptions = (b.termOptions && typeof b.termOptions === 'object') ? b.termOptions : {};
     // Effective closing date = studio's, else the file's existing — so a re-register
     // never wipes the dates and they re-derive when the term moves.
@@ -1369,7 +1370,7 @@ router.get('/applications/:id/checklist', async (req, res) => {
       it.tool_payload = (it.field_value === null || it.field_value === undefined) ? null : { value: it.field_value };
     }
     if (it.tool_payload && typeof it.tool_payload === 'object') {
-      const { adminPricing, markupStdPct, markupGoldPct, ...rest } = it.tool_payload; // eslint-disable-line no-unused-vars
+      const { adminPricing, markupStdPct, markupGoldPct, markupSilverPct, ...rest } = it.tool_payload; // eslint-disable-line no-unused-vars
       it.tool_payload = rest;
     }
   }

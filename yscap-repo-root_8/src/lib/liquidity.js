@@ -67,7 +67,9 @@ function bankStatementLine(program, assetMonths, noteBuyer) {
   }
   return m === 2
     ? 'Provide 2 months of recent bank statements — the Gold Standard Program requires two months.'
-    : 'Provide 1 month of a recent bank statement — the Standard Program requires one month.';
+    : (/silver/i.test(String(program || ''))
+      ? 'Provide 1 month of a recent bank statement — the Silver Program requires one month.'
+      : 'Provide 1 month of a recent bank statement — the Standard Program requires one month.');
 }
 const GENERIC_BANK_STMT_HINT =
   'Provide recent bank statements showing your liquid assets. The exact number of months required is set once your product is registered in Products & Pricing.';

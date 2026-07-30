@@ -50,8 +50,10 @@
 const DEFAULTED_OVERRIDE_KEYS = Object.freeze({
   markupStdPct:  { label: 'Rate markup / YSP — Standard',              unit: 'pct'   },
   markupGoldPct: { label: 'Rate markup / YSP — Gold',                  unit: 'pct'   },
+  markupSilverPct: { label: 'Rate markup / YSP — Silver',              unit: 'pct'   },
   origStdPct:    { label: 'Origination points — Standard',             unit: 'pct'   },
   origGoldPct:   { label: 'Origination points — Gold',                 unit: 'pct'   },
+  origSilverPct: { label: 'Origination points — Silver',               unit: 'pct'   },
   lenderFee:     { label: 'Underwriting / processing / legal fee',     unit: 'money' },
   creditFee:     { label: 'Credit-report fee',                         unit: 'money' },
   appraisalFee:  { label: 'Appraisal fee (paid outside closing)',      unit: 'money' },
