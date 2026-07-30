@@ -61,5 +61,20 @@ ok(cat({ llc_resolved_id: 'x', llc_name: 'TPR Vesting LLC', template_code: 'rtl_
   'LLC doc → "<LLC name>/EIN Letter"');
 ok(cat({ source_type: 'chat_attachment' }) === 'Chat Attachments', 'chat attachment → "Chat Attachments"');
 
+// ---- VERSION STREAM: one checklist item that now maps to TWO folders (fraud →
+// Background Check / Criminal Check) MUST get two independent version streams,
+// or interleaved supersedes would mis-file into Version-N. An ordinary condition
+// (one folder) keeps ONE stable stream.
+const sk = backup.stateKeyFor;
+ok(sk({ checklist_item_id: 'ci1', template_code: 'rtl_cond_fraud', slot_label: 'background' }, 'app:x')
+   !== sk({ checklist_item_id: 'ci1', template_code: 'rtl_cond_fraud', slot_label: 'criminal' }, 'app:x'),
+  'fraud background vs criminal (same checklist item) → DIFFERENT version streams');
+ok(sk({ checklist_item_id: 'ci2', template_code: 'rtl_p3_assets' }, 'app:x')
+   === sk({ checklist_item_id: 'ci2', template_code: 'rtl_p3_assets', filename: 'statement-2.pdf' }, 'app:x'),
+  'same bank-statement condition (one folder) → ONE stable version stream');
+ok(sk({ checklist_item_id: 'ci1', template_code: 'rtl_cond_fraud', slot_label: 'background' }, 'app:x')
+   === 'item:ci1:background-check',
+  'fraud/background stream key is item id + clean category slug');
+
 console.log(`\nsharepoint-category: ${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);
