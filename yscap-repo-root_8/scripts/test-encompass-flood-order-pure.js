@@ -58,6 +58,19 @@ ok(flood.extractOrderId({ id: 'ORD-1' }) === 'ORD-1', 'order id from body.id');
 ok(flood.extractOrderId({ transactionId: 'TX-2' }) === 'TX-2', 'order id from transactionId');
 ok(flood.extractOrderId({}, 'https://api.elliemae.com/encompass/v3/loans/g/serviceOrders/ORD-3') === 'ORD-3', 'order id from Location header');
 ok(flood.extractOrderId({}) == null, 'no order id when none present');
+// A dots-only / traversal order id is rejected (it would normalize to a non-flood path).
+ok(flood.sanitizeOrderId('..') === null, 'dots-only order id rejected');
+ok(flood.sanitizeOrderId('a/b') === null, 'order id with a slash rejected');
+ok(flood.sanitizeOrderId('..%2f') === null, 'order id with junk rejected');
+ok(flood.sanitizeOrderId('ORD-123') === 'ORD-123', 'a normal order id is accepted');
+ok(!flood.pathAllowed('GET', '/encompass/v3/loans/abcdef12-3456-7890-abcd-ef1234567890/serviceOrders/..'), 'dots-only order id refused by the guard');
+
+// ── 6. The result-download bearer only ever goes to an ICE host ──────────────
+ok(flood.isIceHost('api.elliemae.com'), 'api.elliemae.com is an ICE host (bearer allowed)');
+ok(flood.isIceHost('services.icemortgagetechnology.com'), 'ICE mortgage tech host allowed');
+ok(!flood.isIceHost('evil.example.com'), 'a random vendor host is NOT an ICE host (no bearer)');
+ok(!flood.isIceHost('169.254.169.254'), 'the metadata IP is not an ICE host');
+ok(!flood.isIceHost('notelliemae.com.evil.com'), 'a look-alike host is not an ICE host');
 
 // ── 4. extractStatus: completion + SFHA/zone + file url ──────────────────────
 let s = flood.extractStatus({ status: 'Completed', determination: { sfha: true, floodZone: 'AE' }, files: [{ name: 'cert.pdf', url: 'https://x/cert.pdf' }] });

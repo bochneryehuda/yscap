@@ -78,7 +78,10 @@ function dryrun() { return !!(flood.dryrun || process.env.ENCOMPASS_FLOOD_DRYRUN
 
 // ── Path builders (the guard's allowlist is derived from THESE) ──────────────
 const GUID = '[A-Za-z0-9-]{8,64}';
-const ORDID = '[A-Za-z0-9._-]{1,80}';
+// An order id must contain at least one alphanumeric — the lookahead rejects a
+// dots-only id like ".." or "." (which WHATWG-URL would normalize to a parent
+// path segment, turning an allowlisted flood GET into a plain loan read).
+const ORDID = '(?=[A-Za-z0-9._-]*[A-Za-z0-9])[A-Za-z0-9._-]{1,80}';
 
 function placePath(guid) {
   return FLOOD_SERVICE.framework === 'partnerTransactions'
@@ -190,13 +193,23 @@ function pick(obj, keys) {
 const DONE = /^(complete|completed|fulfilled|ready|success|succeeded|done|finished)$/i;
 const FAILED = /^(error|failed|rejected|cancell?ed|declined)$/i;
 
+// An order id is embedded in URLs we build (statusPath / resourcesPath), so it
+// must be a plain token — at least one alphanumeric, no slash, no "..". A vendor
+// value that fails this is treated as "no order id" (placeOrder then throws) so a
+// garbage id can never be composed into a non-flood path.
+function sanitizeOrderId(v) {
+  const s = v == null ? '' : String(v).trim();
+  if (!/^[A-Za-z0-9._-]{1,80}$/.test(s)) return null;
+  if (!/[A-Za-z0-9]/.test(s) || s.includes('..')) return null;
+  return s;
+}
 // Reads an order id out of a place-order response, whatever the wire shape.
 function extractOrderId(resp, locationHeader) {
   if (locationHeader) {
     const m = String(locationHeader).match(/([A-Za-z0-9._-]{4,80})\/?$/);
-    if (m) return m[1];
+    if (m) { const id = sanitizeOrderId(m[1]); if (id) return id; }
   }
-  return pick(resp || {}, ['id', 'orderId', 'transactionId', 'serviceOrderId', 'orderID']);
+  return sanitizeOrderId(pick(resp || {}, ['id', 'orderId', 'transactionId', 'serviceOrderId', 'orderID']));
 }
 // Reads {status, sfha, floodZone, fileUrl, determination} out of a status response.
 function extractStatus(resp) {
@@ -276,21 +289,45 @@ async function getOrderStatus(guid, orderId) {
   return out;
 }
 
+// An ICE / Encompass host — the only place our OAuth bearer may ever be sent.
+// A pre-signed vendor URL (S3, a partner's CDN) is self-authenticating and must
+// NOT receive our token; and a non-ICE / internal host must never see it at all.
+const ICE_HOST_RE = /(?:^|\.)(elliemae\.com|ice\.com|icemortgagetechnology\.com)$/i;
+function isIceHost(host) {
+  const h = String(host || '').replace(/^\[|\]$/g, '').toLowerCase();
+  if (ICE_HOST_RE.test(h)) return true;
+  try { return h === new URL(BASE).hostname.toLowerCase(); } catch { return false; }
+}
+
 // Download the certificate PDF from the (opaque, expiring) result URL Encompass
-// hands back. GET-only, https-only. Returns a Buffer or null.
+// hands back. GET-only. SSRF-guarded: https + non-private-IP on EVERY redirect
+// hop (via the shared assertPublicHttps), and the Encompass bearer is attached
+// ONLY when the current hop is an ICE/Encompass host — so a vendor URL (or a
+// malicious one) can never receive our token, and an internal address is refused.
+// Returns a Buffer or null.
 async function downloadResultFile(url) {
   if (!url) return null;
-  let u; try { u = new URL(String(url)); } catch { return null; }
-  if (u.protocol !== 'https:') return null;
-  const token = await getToken();
+  const { assertPublicHttps } = require('../sitewire/media-archive');
   const g = withTimeout(45000);
+  let current = String(url);
+  let token = null;
   try {
-    // Some result URLs are pre-signed (no auth); some need the bearer. Send it —
-    // a pre-signed URL ignores an extra header.
-    const r = await fetch(u.toString(), { method: 'GET', headers: { Authorization: `Bearer ${token}` }, signal: g.signal });
-    if (!r.ok) throw new Error(`flood result download ${r.status}`);
-    const ab = await r.arrayBuffer();
-    return Buffer.from(ab);
+    for (let hop = 0; hop < 5; hop++) {
+      let u; try { u = new URL(current); } catch { return null; }
+      try { await assertPublicHttps(current); }        // https + non-private IP, this hop
+      catch (e) { console.warn('[encompass-flood] refusing result url:', e.message); return null; }
+      const headers = {};
+      if (isIceHost(u.hostname)) { token = token || await getToken(); headers.Authorization = `Bearer ${token}`; }
+      const r = await fetch(u.toString(), { method: 'GET', headers, redirect: 'manual', signal: g.signal });
+      if (r.status >= 300 && r.status < 400 && r.headers.get('location')) {
+        current = new URL(r.headers.get('location'), u).toString();  // re-validate + re-decide the bearer next hop
+        continue;
+      }
+      if (!r.ok) throw new Error(`flood result download ${r.status}`);
+      const ab = await r.arrayBuffer();
+      return Buffer.from(ab);
+    }
+    throw new Error('flood result download: too many redirects');
   } finally { g.done(); }
 }
 
@@ -298,5 +335,5 @@ module.exports = {
   configured, enabled, outboundEnabled, dryrun,
   placeOrder, getOrderStatus, downloadResultFile,
   // exported for tests + the API-Health surface
-  FLOOD_SERVICE, buildOrderBody, extractStatus, extractOrderId, pathAllowed, placePath, statusPath,
+  FLOOD_SERVICE, buildOrderBody, extractStatus, extractOrderId, sanitizeOrderId, isIceHost, pathAllowed, placePath, statusPath,
 };

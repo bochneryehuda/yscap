@@ -78,31 +78,42 @@ async function orderFlood({ appId, checklistItemId, actorId }) {
 
   const resolved = await resolveLoanGuid(appId);
   if (resolved.error) return { ok: false, error: resolved.error, message: resolved.message };
-
-  // One outstanding order per file (the DB unique index is the backstop).
-  const existing = await db.query(
-    `SELECT id, status, order_id FROM encompass_flood_orders WHERE application_id=$1 AND status='ordered' LIMIT 1`, [appId]);
-  if (existing.rows[0]) return { ok: false, error: 'already_pending', message: 'A flood certificate is already on order for this file.', order: existing.rows[0] };
-
   if (!(await circuitOk())) return { ok: false, error: 'circuit_open', message: 'Too many flood orders in a short window — try again shortly.' };
 
   const itemId = checklistItemId || await floodConditionId(appId);
 
+  // RESERVE the single pending slot BEFORE touching Encompass. The partial unique
+  // index (one status='ordered' row per file) makes a concurrent second click
+  // fail the INSERT here — pre-network — so two clicks can never place two real
+  // orders. order_id stays NULL until the order is actually placed, and the poll
+  // worker only advances rows that HAVE an order_id, so a reserved row is inert.
+  let row;
+  try { row = await recordOrder({ appId, itemId, guid: resolved.guid, actorId, status: 'ordered' }); }
+  catch (e) {
+    if (e.code === '23505') return { ok: false, error: 'already_pending', message: 'A flood certificate is already on order for this file.' };
+    throw e;
+  }
+
   let placed;
   try { placed = await client.placeOrder(resolved.guid); }
   catch (e) {
-    // Record the failed attempt so it is never silent; the file can re-order.
-    await recordOrder({ appId, itemId, guid: resolved.guid, actorId, status: 'error', lastError: e.message });
+    // Release the reservation as an error so the file can re-order (and the slot frees).
+    await db.query(`UPDATE encompass_flood_orders SET status='error', last_error=$2, updated_at=now() WHERE id=$1`, [row.id, e.message]).catch(() => {});
     return { ok: false, error: e.code || 'order_failed', message: `The flood order could not be placed: ${e.message}` };
   }
 
   if (placed.dryrun) {
-    const row = await recordOrder({ appId, itemId, guid: resolved.guid, actorId, status: 'dryrun', raw: { body: placed.body } });
-    return { ok: true, dryrun: true, order: row, message: 'Dry run — the order was built and logged but nothing was sent to Encompass.' };
+    // Dry run isn't a live order, so it must not hold the pending slot.
+    const upd = await db.query(
+      `UPDATE encompass_flood_orders SET status='dryrun', raw=$2, updated_at=now() WHERE id=$1 RETURNING *`,
+      [row.id, JSON.stringify({ body: placed.body })]);
+    return { ok: true, dryrun: true, order: upd.rows[0], message: 'Dry run — the order was built and logged but nothing was sent to Encompass.' };
   }
-  const row = await recordOrder({ appId, itemId, guid: resolved.guid, actorId, status: 'ordered', orderId: placed.orderId, raw: placed.raw });
+  const upd = await db.query(
+    `UPDATE encompass_flood_orders SET order_id=$2, raw=$3, updated_at=now() WHERE id=$1 RETURNING *`,
+    [row.id, placed.orderId, placed.raw ? JSON.stringify(placed.raw) : null]);
   await audit(actorId, 'encompass_flood_order_placed', appId, { orderId: placed.orderId, loanGuid: resolved.guid });
-  return { ok: true, order: row, message: 'Flood certificate ordered — it will appear on this condition when it comes back.' };
+  return { ok: true, order: upd.rows[0], message: 'Flood certificate ordered — it will appear on this condition when it comes back.' };
 }
 
 async function recordOrder({ appId, itemId, guid, actorId, status, orderId, raw, lastError }) {
@@ -118,6 +129,14 @@ async function recordOrder({ appId, itemId, guid, actorId, status, orderId, raw,
 // One tick: advance every 'ordered' row. Best-effort per row; never throws.
 async function pollPendingOnce() {
   if (!client.enabled() || !client.configured()) return { checked: 0 };
+  // Reap a reservation whose order was never confirmed placed (both the place AND
+  // the release-on-failure had to fail — rare). It holds the pending slot via the
+  // unique index, so free it as an error after 15 min so the file can re-order.
+  try {
+    await db.query(
+      `UPDATE encompass_flood_orders SET status='error', last_error='order was never confirmed placed', updated_at=now()
+        WHERE status='ordered' AND order_id IS NULL AND ordered_at < now() - interval '15 minutes'`);
+  } catch (_) {}
   let rows;
   try { rows = (await db.query(`SELECT * FROM encompass_flood_orders WHERE status='ordered' AND order_id IS NOT NULL ORDER BY ordered_at LIMIT 25`)).rows; }
   catch (_) { return { checked: 0 }; }
@@ -170,6 +189,15 @@ async function completeOrder(order, st) {
 async function attachCertificate(order, buf) {
   const itemId = order.checklist_item_id || await floodConditionId(order.application_id);
   const filename = `Flood determination${order.order_id ? ` ${order.order_id}` : ''}.pdf`;
+  // Idempotent: if this exact certificate is already filed (a prior completeOrder
+  // filed the PDF but its status UPDATE failed, so the row re-polled), reuse it
+  // rather than filing a duplicate. The filename carries the order id, so the same
+  // order always maps to the same file.
+  const dupe = await db.query(
+    `SELECT id FROM documents WHERE application_id=$1 AND doc_kind='flood_determination'
+        AND filename=$2 AND is_current=true ORDER BY created_at DESC LIMIT 1`,
+    [order.application_id, filename]);
+  if (dupe.rows[0]) return dupe.rows[0].id;
   const storage = require('../lib/storage');
   const { ref, provider } = await storage.save(buf, { filename });
   const borrowerId = (await db.query(`SELECT borrower_id FROM applications WHERE id=$1`, [order.application_id])).rows[0];
