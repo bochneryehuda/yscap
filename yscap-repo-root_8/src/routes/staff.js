@@ -4406,6 +4406,9 @@ router.post('/applications/:id/orders/:kind/followup', async (req, res) => {
     const data = await orders.getOrderData(appId);
     if (!data) return res.status(404).json({ error: 'not found' });
     if (!data.vendors[kind] || !data.vendors[kind].email) return res.status(400).json({ error: 'The vendor contact is missing.', code: 'contact' });
+    // A follow-up re-sends the current property address; if the address was edited
+    // after the order (which re-opens the USPS condition), block it until re-imported.
+    if (data.uspsGate && !data.uspsImported) return res.status(422).json({ error: `The property address is no longer USPS-verified. Re-verify and import it in “USPS Address Verification” before following up on the ${kind} order, so the vendor never gets an unverified address.`, code: 'usps' });
     const note = String((req.body && req.body.message) || '').trim().slice(0, 4000);
     const built = orders.buildOrderEmail(kind, data, { followup: true, note });
     const { to, cc, replyTo } = orders.recipientsFor(kind, data);
@@ -4749,6 +4752,9 @@ router.post('/applications/:id/closing-prep/followup', async (req, res) => {
     }
     const data = await closingPrep.getClosingPrepData(appId);
     if (!data) return res.status(404).json({ error: 'not found' });
+    // A follow-up re-sends the subject address to the attorney; block it if the
+    // address was edited after the order and no longer carries a USPS import.
+    if (data.uspsGate && !data.uspsImported) return res.status(422).json({ error: 'The property address is no longer USPS-verified. Re-verify and import it in “USPS Address Verification” before following up with the attorney.', code: 'usps' });
     const note = String((req.body && req.body.message) || '').trim().slice(0, 4000);
     const last = await closingPrep.lastRecipients((await closingThread.threadFor(appId) || {}).id);
     const extraEmails = cleanEmailList(req.body && req.body.extraEmails);
