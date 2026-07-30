@@ -55,6 +55,10 @@ const PARTNER_PATTERNS = [
   partnerRe(['corr', 'first']),
   partnerRe(['trinity']),
   partnerRe(['kiavi']),
+  // EMCAP is the Silver program's note buyer (live 2026-07-29). Distinctive
+  // name → no right boundary, same as fidelis/kiavi ("EMCAP_tape.xlsx",
+  // "EMCAPTerms.pdf" all scrub).
+  partnerRe(['emcap']),
   partnerRe(['roc'], { acronym: true }),
   // TrustPoint is the note buyer's draw administrator (2026-07-24 physical-draw workflow) —
   // a platform name, but naming it to a borrower reveals the buyer relationship. Staff-only.
