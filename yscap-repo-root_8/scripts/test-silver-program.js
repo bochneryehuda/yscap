@@ -148,8 +148,6 @@ const wb = {
     if (expected == null) { ok(got == null, `NA cell stays NA @${i} ${key}`); naChecks++; }
     else { ok(got != null && Math.abs(got - expected) < 1e-9, `rate parity @${i} ${key}`); rateChecks++; }
 
-    // gate formulas
-    ok(wb.termFail(term, prod, 250000 * rnd()) === wb.termFail(term, prod, 250000 * rnd()) || true, 'noop');
   }
   // term-gate parity (explicit sweep over the boundary)
   [['12', 'FF', 50000, false], ['18', 'FF', 100000, true], ['18', 'FF', 100001, false], ['18', 'GUC', 0, false],
@@ -337,11 +335,9 @@ const wb = {
     if (ev.strategyCode !== 'BR' && arv > 0) ok(s.totalLoan / arv <= c.maxARLTV + 1e-6, `AR-LTV within cap @${i}`);
     ok(s.acqLtvPct <= c.maxAcqLTV + 1e-6, `acq-LTV within cap @${i}`);
     if (ev.noteRate > 0) {
-      // the note rate must be a real workbook cell + the markup
-      const arB = SVP.arBand((ev.strategyCode === 'BR' ? s.totalLoan / pp : s.totalLoan / arv));
-      const key = [ev.market, ev.sizeBand, ev.product, purp === 'Refinance' ? 'R' : 'P', '12', 'T' + ev.tier,
-        arB, SVP.ficoBand(ev.tier, Math.max(640, Math.round(640))) , ''].join('|');
-      ok(ev.noteRate > 0.05 && ev.noteRate < 0.16, `note rate plausible @${i}`);
+      // the note rate must be a real fixture cell + the 0.5% default markup
+      const grid = Math.round((ev.noteRate - 0.005) * 1e6) / 1e6;
+      ok(Object.values(FIX.rates).some((r) => Math.abs(r - grid) < 1e-9), `note rate is grid+markup @${i} (${ev.noteRate})`);
     }
   }
   ok(sized > 500, `sweep sized a healthy sample (${sized})`);

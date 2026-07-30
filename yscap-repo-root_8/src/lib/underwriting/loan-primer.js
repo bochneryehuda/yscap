@@ -133,7 +133,7 @@ THE CONFUSABLES — never substitute one for another
   fee). Do not size on the real total; do not label the effective price as the purchase price.
 - requested_exp_* (claimed) vs verified_* / tier (proven) — claimed >= verified is EXPECTED, not
   a data conflict; the loan sizes on claimed and a condition verifies it.
-- program (free strategy text) vs registered_program ('standard'/'gold'/'manual') — comparing
+- program (free strategy text) vs registered_program ('standard'/'gold'/'silver'/'manual') — comparing
   them as if equal creates a FALSE program discrepancy. Use registered_program.
 - borrower_state vs property_state; original_purchase_price (refi) vs purchase_price (purchase).
 

@@ -61,7 +61,7 @@ function describeChanges(changes) {
   return parts.join('\n');
 }
 
-const PROGRAM_NAME = { gold: 'Gold Standard Program', standard: 'Standard Program' };
+const PROGRAM_NAME = { gold: 'Gold Standard Program', standard: 'Standard Program', silver: 'Silver Program', manual: 'Manual Program' };
 
 /* Audit actions surfaced in the feed. borrowerSafe rows show on the borrower
    feed too; the rest are staff-only. Each render() returns {verb, label}. */

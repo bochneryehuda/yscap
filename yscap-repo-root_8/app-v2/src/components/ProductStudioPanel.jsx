@@ -840,7 +840,7 @@ const ProductStudioPanel = forwardRef(function ProductStudioPanel({ appId, app, 
   const blockReason = busy ? ''
     : !snap ? 'The Term Sheet Studio is still loading — give it a moment, then register.'
     : !snap.ready ? 'To register, add the required pricing fields: ' + ((snap.missing && snap.missing.join(', ')) || 'see the highlighted fields in the studio') + '.'
-    : !snap.program ? 'Choose a product — tap the Standard or Gold Standard card in the studio.'
+    : !snap.program ? 'Choose a product — tap the Standard, Gold Standard or Silver card in the studio.'
     : (d && d.status === 'INELIGIBLE') ? "This scenario isn't eligible as entered — adjust it in the studio, or contact your loan team for a manual review."
     : (d && !(d.totalLoan > 0)) ? "This scenario didn't size a loan yet — check the purchase price, ARV / as-is value and rehab budget in the studio."
     : scenarioManual ? `This scenario isn’t eligible as-is on the ${snap.program === 'gold' ? 'Gold Standard' : snap.program === 'silver' ? 'Silver' : 'Standard'} program — it needs a manual-review exception. Submit an exception request${isStaff ? ' — an admin reviews it and the borrower isn’t sent terms unless it’s approved.' : ' and your loan team will review it.'}`
@@ -1072,7 +1072,7 @@ const ProductStudioPanel = forwardRef(function ProductStudioPanel({ appId, app, 
 
       {!cur && data && (
         <p className="muted small" style={{ margin: '10px 0 0' }}>
-          No product registered yet. Price the deal in the Term Sheet Studio, pick Standard or Gold
+          No product registered yet. Price the deal in the Term Sheet Studio, pick Standard, Gold or Silver
           Standard and your leverage, then register — the terms, cash to close and liquidity
           requirement all flow onto this file.
         </p>

@@ -403,7 +403,7 @@
   }
 
   // Full Silver Program detail, shaped exactly like calc() so the shared detail
-  // renderer can drive the Silver panel. The Silver program (EMCAP grid) works
+  // renderer can drive the Silver panel. The Silver program (its own rate grid) works
   // like Standard mechanically: reserve financed + in cost + full-term cap, the
   // same liquidity-to-show months, the same fee stack — only the guideline
   // engine (window.SVP) differs. Returns null when the engine isn't loaded.
@@ -1282,14 +1282,14 @@
     // like the on-screen panel and the PDF (audit 2026-07-19 — Excel was the only
     // surface that folded the fee into the total without naming it).
     if (stdOk && d.extraFees && d.extraFees.length) {
-      var si = std.findIndex(function (r) { return r[0] === "Estimated cash to close"; });
+      var si = std.findIndex(function (r) { return r && r[0] === "Estimated cash to close"; });
       if (si > -1) Array.prototype.splice.apply(std, [si, 0].concat(d.extraFees.map(function (f) { return [f.name, money2(f.amount)]; })));
     }
     if (gd && !gd.unavailable && gOk && gd.extraFees && gd.extraFees.length) {
-      var gi = gold.findIndex(function (r) { return r[0] === "Estimated cash to close"; });
+      var gi = gold.findIndex(function (r) { return r && r[0] === "Estimated cash to close"; });
       if (gi > -1) Array.prototype.splice.apply(gold, [gi, 0].concat(gd.extraFees.map(function (f) { return [f.name, money2(f.amount)]; })));
     }
-    // ---- Silver Program section (EMCAP grid; same shape as the Standard block) ----
+    // ---- Silver Program section (same shape as the Standard block) ----
     var sd = calcSilver();
     var silver;
     if (!sd) { silver = [["Availability", "Silver pricing unavailable"]]; }

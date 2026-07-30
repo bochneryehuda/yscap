@@ -29,11 +29,12 @@ const { SOW_CONTINGENCY_PCT } = require('../rehab-budget');
 // The canonical program keys the AUS recognizes. Anything else (an unregistered file, a free-text
 // application strategy) resolves to `null` — an unknown program, where we state only the baseline
 // (KYC 25% fallback) and never assert a program-specific requirement we can't justify.
-const PROGRAM_KEYS = { standard: 'Standard', gold: 'Gold Standard', manual: 'Manual' };
+const PROGRAM_KEYS = { standard: 'Standard', gold: 'Gold Standard', silver: 'Silver', manual: 'Manual' };
 
 function canonProgram(program) {
   const p = String(program || '').toLowerCase().trim();
   if (p === 'gold' || /gold/.test(p)) return 'gold';
+  if (p === 'silver' || /silver/.test(p)) return 'silver';
   if (p === 'standard' || /standard/.test(p)) return 'standard';
   if (p === 'manual' || /manual/.test(p)) return 'manual';
   return null;

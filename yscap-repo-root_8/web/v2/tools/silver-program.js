@@ -1,19 +1,20 @@
 /* =====================================================================
    silver-program.js  —  "Silver Program" loan engine
    ---------------------------------------------------------------------
-   Third YS Capital program (EMCAP note buyer), built as a structural
-   sibling of the Standard Program engine. Source of truth for the
-   guidelines/rates: EMCAP RTL Seller Pricing & Eligibility Tool v1
+   Third YS Capital program, built as a structural sibling of the Standard
+   Program engine. Source of truth for the
+   guidelines/rates: the note buyer's RTL Seller Pricing & Eligibility Tool v1
    (June 2026 guideline version) — every tier cap, rate cell, band edge
    and eligibility check below is transcribed from that workbook
-   (Tier Grid + EMCAP_Pricing Matrix + Underwriting Commentary + the
+   (Tier Grid + the note buyer_Pricing Matrix + Underwriting Commentary + the
    hidden Engine tab), NOT copied from the Standard program.
    IMPORTANT brand & pricing rules, mirroring the other engines:
-     • The note buyer's name (EMCAP) is NEVER exposed anywhere
-       user-facing. Borrower-facing copy says "Silver Program".
-     • The borrower NOTE RATE = the EMCAP grid rate + the YS markup
+     • The source program / note-buyer name is NEVER exposed anywhere
+       user-facing (same rule as the other engines). This file ships to the
+       browser: keep every comment name-free. Borrower copy says "Silver Program".
+     • The borrower NOTE RATE = the the note buyer grid rate + the YS markup
        (default 0.5%). The internal grid/buy rate is never returned.
-       NOTE: EMCAP's buy rate is floored at (note rate − 1.00pt), so a
+       NOTE: the note buyer's buy rate is floored at (note rate − 1.00pt), so a
        markup above 1.00% is eaten by the note buyer, not earned.
      • Origination default 1.25% of the total loan (same as Standard).
    Distinct mechanics vs. the Standard Program (do not cross-wire):
@@ -48,7 +49,7 @@
   "use strict";
 
   /* ---------------- program constants ---------------- */
-  var MARKUP = 0.005;            // YS markup over the EMCAP grid rate (borrower pays grid + markup)
+  var MARKUP = 0.005;            // YS markup over the the note buyer grid rate (borrower pays grid + markup)
   var MARKUP_OVR = null;         // admin-set markup override (fraction); null = default
   function effMarkup() { return (MARKUP_OVR == null) ? MARKUP : MARKUP_OVR; }
   function setMarkup(f) { MARKUP_OVR = (typeof f === "number" && isFinite(f) && f >= 0) ? f : null; }
@@ -56,9 +57,9 @@
   var MIN_LOAN = 100000;         // grid floor: "Loan Sizes $100k–$2.5m" / "$2.5m–$4.5m"
   var SMALL_MAX = 2500000;       // small/large loan-size band boundary
   var ABS_MAX_LOAN = 4500000;    // Tier 1 ceiling (large band)
-  var SPREAD_NOTE = 0.01;        // EMCAP buy rate floor = note rate − 1.00pt (markup above 1pt is not earned)
+  var SPREAD_NOTE = 0.01;        // the note buyer buy rate floor = note rate − 1.00pt (markup above 1pt is not earned)
 
-  /* ---------------- geography (EMCAP Underwriting Commentary) ----------------
+  /* ---------------- geography (the note-buyer Underwriting Commentary) ----------------
      Hard exclusions by ZIP prefix / exact ZIP / state. When we only have a city
      name (no ZIP), the deal routes to MANUAL review to confirm the exact
      location, mirroring the Standard engine's city/address confidence split. */
@@ -80,13 +81,13 @@
   var NYC_ZIP5 = ["11004", "11005"];   // Queens pockets inside the 110xx (mostly Nassau) prefix
   var NYC_NAMES = ["new york city", "new york, ny", "manhattan", "brooklyn", "the bronx", "bronx", "queens", "staten island", "nyc"];
 
-  // Ineligible property types: EMCAP's sheet is silent on property types, so the
+  // Ineligible property types: the note buyer's sheet is silent on property types, so the
   // Silver program keeps the same 1–4-unit residential footprint as the Standard
   // program (owner-confirmed default: copy of the Standard program's list).
   var INELIGIBLE_PROPERTY = ["co-op", "cooperative", "mobile home", "manufactured", "mixed-use", "mixed use", "commercial",
     "rural", "agricultural", "bed and breakfast", "boarding house", "half-way house", "care facility", "condemned", "multifamily 5+", "5+ units"];
 
-  /* ---------------- tier grid (EMCAP "Tier Grid" tab, June 2026) ----------------
+  /* ---------------- tier grid (the note-buyer "Tier Grid" tab, June 2026) ----------------
      row = [maxLoan, minFICO, maxAcqLTV, maxARLTV, maxLTC]; null = ineligible
      key = Product(FF|GUC|BR) | Purpose(P|R) | Tier(1|2|3)
      The grid is market-independent — NYC limits come from the rate grid
@@ -114,17 +115,17 @@
     "BR|R|3":  [950000,  700, 0.65, 0.65, 0.65]
   };
 
-  /* ---------------- rate grid (EMCAP "Engine" tab: 1,555 priced cells) ----------------
+  /* ---------------- rate grid (the note-buyer "Engine" tab: 1,555 priced cells) ----------------
      Bands, in grid order. Tier 3 uses its own FICO banding (the sheet's rule).   */
   var AR_BANDS  = ["<64.99%", "65.00%-70.00%", "70.01%-75.00%"];
   var FICO_BANDS_12 = ["FICO 700+", "FICO 660-699", "FICO 640-659"];   // tiers 1–2
   var FICO_BANDS_3  = ["FICO 700+", "FICO 680-699", "FICO 640-679"];   // tier 3
   var LTC_BANDS = ["<74.99%", "75.00%-80.00%", "80.01%-85.00%", "85.01%-87.50%", "87.51%-89.99%", "90.00%-92.50%"];
 
-  /* Each block = market|size|product|purpose|term|tier → 27 (3 AR × 3 FICO) × 6 LTC
-     cells flattened in band order above. Values are the note-buyer grid rate in
+  /* Each block = market|size|product|purpose|term|tier → 54 cells (3 AR × 3 FICO × 6 LTC)
+     flattened in band order above. Values are the note-buyer grid rate in
      units of 0.0125% (multiply by 0.000125); 0 = no priced cell (NA).
-     GENERATED from the EMCAP workbook's hidden Engine tab — verified by an exact
+     GENERATED from the the note buyer workbook's hidden Engine tab — verified by an exact
      round-trip of all 1,555 cells (scripts/test-silver-program.js re-verifies
      shape + spot values). Do not hand-edit; regenerate from the workbook.       */
     var RATE_BLOCKS = {
@@ -255,7 +256,7 @@
     return d.length === 5 ? d : "";
   }
 
-  // Product token: reuse the Standard normalizer (FF / NC / BR) but speak EMCAP's
+  // Product token: reuse the Standard normalizer (FF / NC / BR) but speak the note buyer's
   // grid dialect (FF / GUC / BR) when building rate keys.
   function prodToken(sc) { return sc === "NC" ? "GUC" : sc; }
 
@@ -268,15 +269,34 @@
   }
 
   /* ---------------- geography ---------------- */
+  // The state each excluded ZIP block belongs to — a ZIP that contradicts the
+  // deal's own state is a misparse (e.g. a 5-digit HOUSE NUMBER in free text),
+  // never grounds to refuse the deal (audit 2026-07-30, finding 1).
+  var EXCLUDED_ZIP_STATE = { "191": "PA", "606": "IL", "607": "IL", "608": "IL", "481": "MI", "482": "MI", "483": "MI", "212": "MD" };
+  function zipStateConsistent(z, st) {
+    if (!st) return true;                                  // no state to contradict
+    var implied = EXCLUDED_ZIP_STATE[z.slice(0, 3)];
+    return !implied || implied === st;
+  }
   function geoCheck(input) {
     var st = up(input.state);
     if (st && EXCLUDED_STATES.indexOf(st) > -1)
       return { level: "INELIGIBLE", label: (STATE_NAMES[st] || st), source: "state" };
-    var z = zip5(input.zip) || zipFromText(input.address || input.propAddr);
+    var zTyped = zip5(input.zip);
+    var zText = zipFromText(input.address || input.propAddr);
+    var z = zTyped || zText;
     if (z) {
-      if (EXCLUDED_ZIP5.indexOf(z) > -1 || EXCLUDED_ZIP3.indexOf(z.slice(0, 3)) > -1)
-        return { level: "INELIGIBLE", label: zipLabel(z), source: "zip" };
-      return null;   // a known good ZIP is decisive — no city-name second-guessing
+      var excluded = EXCLUDED_ZIP5.indexOf(z) > -1 || EXCLUDED_ZIP3.indexOf(z.slice(0, 3)) > -1;
+      if (excluded && zipStateConsistent(z, st)) {
+        // A ZIP parsed out of free text is lower confidence than a typed ZIP
+        // field — refuse hard only on the typed field; route a text-parsed hit
+        // to manual review to confirm the location (mirrors the city path).
+        if (zTyped) return { level: "INELIGIBLE", label: zipLabel(z), source: "zip" };
+        return { level: "MANUAL", label: zipLabel(z), source: "address" };
+      }
+      if (zipStateConsistent(z, st)) return null;   // a known good ZIP is decisive — no city-name second-guessing
+      // contradicting state ⇒ the "ZIP" was likely a house number — fall through
+      // to the city-name check instead of trusting it.
     }
     // No ZIP: fall back to the city name, at manual-review confidence.
     var city = low(input.city), addr = low(input.address || input.propAddr || "");
@@ -289,7 +309,10 @@
     return null;
   }
   function zipFromText(t) {
-    var m = clean(t).match(/\b(\d{5})(?:-\d{4})?\b\s*$/) || clean(t).match(/\b(\d{5})(?:-\d{4})?\b/);
+    // Only a TRAILING 5-digit group reads as the ZIP — "60629 Main St, Dallas"
+    // starts with a HOUSE NUMBER, and reading it as a ZIP hard-declined real
+    // deals (audit 2026-07-30, finding 1). US addresses end "…, ST 12345".
+    var m = clean(t).match(/\b(\d{5})(?:-\d{4})?\s*$/);
     return m ? m[1] : "";
   }
   function zipLabel(z) {
@@ -310,8 +333,13 @@
       if (NYC_ZIP5.indexOf(z) > -1 || NYC_ZIP3.indexOf(z.slice(0, 3)) > -1) return "NYC";
       return "STD";
     }
+    // Name fallback needs WORD boundaries — "Queensbury"/"Bronxville" must not
+    // read as Queens/the Bronx (audit 2026-07-30, finding 4).
     var hay = low(input.city) + " | " + low(input.address || input.propAddr || "");
-    for (var i = 0; i < NYC_NAMES.length; i++) if (hay.indexOf(NYC_NAMES[i]) > -1) return "NYC";
+    for (var i = 0; i < NYC_NAMES.length; i++) {
+      var re = new RegExp("(^|[^a-z])" + NYC_NAMES[i].replace(/[.*+?^${}()|[\]\\]/g, "\\$&") + "($|[^a-z])");
+      if (re.test(hay)) return "NYC";
+    }
     return "STD";
   }
 
@@ -388,7 +416,7 @@
     var v = block[(i * 3 + j) * 6 + k];
     return v > 0 ? v * 0.000125 : null;
   }
-  // The exact 9-part key the EMCAP workbook uses — exposed for tests/tooling parity.
+  // The exact 9-part key the the note buyer workbook uses — exposed for tests/tooling parity.
   function rateKey(mkt, sizeBand, prodTok, purp, termTok, tier, arB, ficoB, ltcB) {
     return [mkt, sizeBand, prodTok, purp, termTok, "T" + tier, arB, ficoB, ltcB].join("|");
   }
@@ -445,7 +473,7 @@
 
     // ---- assignment / wholesale: the YS company-wide rule (frozen 2026-07-17)
     //      — financeable fee capped at 15% of the ORIGINAL (seller's) contract
-    //      price; sizing runs off the recognized (effective) price. EMCAP's own
+    //      price; sizing runs off the recognized (effective) price. the note buyer's own
     //      sheet caps assignment fees at 15% of the gross price, which is looser;
     //      the company rule is the binding one for every program. ----
     var totalPP = Math.max(0, num(input.purchasePrice));
@@ -582,7 +610,7 @@
     // ---- grid-aware leverage step-down -------------------------------------
     // The rate grid IS the leverage policy: where the workbook has no priced
     // cell (e.g. NYC F&F above 80% LTC, or a tier/AR combo with no high-LTC
-    // pricing), EMCAP simply doesn't buy that structure. Rather than dead-end,
+    // pricing), the note buyer simply doesn't buy that structure. Rather than dead-end,
     // step the target LTC down one band edge at a time and re-size — landing on
     // the MAXIMUM structure the grid actually prices. Only when no leverage
     // level prices at all (e.g. a FICO band with no cells in this market) does
@@ -662,7 +690,7 @@
     if (sizing) sizing.assignmentExcessOOP = assignment ? assignment.excessOOP : 0;
 
     // ---- required-document / overlay checklist (auto-filters to this loan,
-    //      mirroring the EMCAP tool's section 5 — informational, never a gate) ----
+    //      mirroring the the note buyer tool's section 5 — informational, never a gate) ----
     var overlays = buildOverlays({
       loanType: loanType, sc: sc, exit: exit, gcOnly: gcOnly, rehab: rehab,
       totalLoan: sizing.totalLoan || num(input.loanAmount), cashOutAmt: cashOutAmt,
@@ -698,7 +726,7 @@
   }
   function title(s) { return clean(s).replace(/\b\w/g, function (m) { return m.toUpperCase(); }); }
 
-  /* ---------------- overlays (EMCAP Underwriting Commentary, auto-filtered) ---------------- */
+  /* ---------------- overlays (the note-buyer Underwriting Commentary, auto-filtered) ---------------- */
   function buildOverlays(x) {
     var L = [];
     function o(key, applies, requirement) { L.push({ key: key, applies: !!applies, requirement: requirement }); }

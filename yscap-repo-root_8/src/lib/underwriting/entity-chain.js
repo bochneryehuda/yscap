@@ -30,6 +30,9 @@ const PROGRAM_OWNER_RULES = {
   standard: { pct: 15, label: 'Standard', treatment: 'verified and added to the file as a co-borrower' },
   manual:   { pct: 20, label: 'Manual', treatment: 'brought onto the file as a co-borrower, guarantor, and signer, with a government ID' },
   gold:     { pct: 25, label: 'Gold Standard', treatment: 'added to the file as a co-borrower, guarantor, and qualifier' },
+  // Silver (2026-07-29 build): the note buyer's commentary requires verified
+  // entity ownership at 25% or more (operating agreements / entity docs).
+  silver:   { pct: 25, label: 'Silver', treatment: 'verified through entity documentation (operating agreement / entity docs) and added to the file' },
 };
 function ownerRuleFor(program) {
   const p = String(program || '').toLowerCase().trim();
