@@ -3,6 +3,11 @@
 **Status:** Planning only. No code or website changes are made by this document.
 **Question it answers:** "Can we hide our HTML/CSS so people can't steal our website and our program guidelines — especially the static pages?"
 
+> 📄 **The detailed, step-by-step version with full research is in
+> [`WEBSITE-CONTENT-PROTECTION-DETAILED-PLAN.md`](./WEBSITE-CONTENT-PROTECTION-DETAILED-PLAN.md)** —
+> code-level evidence, a sequenced roadmap with effort/risk, the decisions needed from the owner, and
+> industry sources. This file is the summary; that one is the plan of record.
+
 ---
 
 ## 1. The plain-language answer (read this first)
@@ -53,7 +58,7 @@ whole model. **This is the single biggest real IP exposure** — far more than t
 > fine and must not change (that is a hard rule). The problem is only **where the browser gets its
 > answers from** — today it runs the whole model locally instead of asking the server.
 
-**Most sensitive of all — a capital partner's confidential workbook is public.** `web/tools/silver-program.js`
+**Most sensitive of all — a capital partner's confidential workbook is public.** `silver-program.js`
 transcribes a note buyer's private "RTL Seller Pricing & Eligibility Tool" workbook — every tier cap,
 rate cell, band edge, DSCR floor, excluded state/ZIP — and ships it to **every anonymous visitor**. The
 file's own comment even says *"This file ships to the browser: keep every comment name-free."* We
@@ -61,6 +66,12 @@ already hide the partner's *name*, but the whole confidential *grid* is download
 our IP — it is a **third party's confidential data we are responsible for**, so a leak here risks the
 capital-partner relationship, not only a competitor copying us. **Treat this as the single most urgent
 item.**
+
+**Confirmed exposure path (verified):** the live public term-sheet page `web/v2/tools/term-sheet.html`
+loads `silver-program.js`, and that page is linked directly from the homepage
+(`href="tools/term-sheet.html"`) with no login. The same page is also embedded in the logged-in portal
+(`TermSheetStudio.jsx` → `STUDIO_URL = '/tools/term-sheet.html'`), which is why it loads every engine —
+and that public/private overlap is also the natural seam for fixing it.
 
 ### Gap B — internal/staff mockup pages sit in the public folder
 The site is served with `express.static(web/)` (`src/server.js:434-436`), which publishes **everything**
