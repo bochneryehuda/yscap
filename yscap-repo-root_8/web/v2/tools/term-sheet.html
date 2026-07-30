@@ -58,10 +58,20 @@
   .exp-total-val{ font-family:var(--font-d); font-weight:600; font-size:1.05rem; color:var(--teal-br); }
   .ts-sub{ font-family:var(--font-b); font-size:.7rem; text-transform:uppercase; letter-spacing:.12em; color:var(--muted); margin:1.25rem 0 .55rem; padding-top:1rem; border-top:1px solid var(--line-2); }
   .ts-sub.first{ border-top:0; padding-top:.2rem; margin-top:.4rem; }
-  .ts-line{ display:flex; align-items:baseline; justify-content:space-between; gap:1rem; padding:.42rem 0; border-bottom:1px solid var(--line-2); font-size:.9rem; }
+  .ts-line{ display:flex; flex-wrap:wrap; align-items:baseline; justify-content:space-between; gap:.15rem 1rem; padding:.42rem 0; border-bottom:1px solid var(--line-2); font-size:.9rem; min-width:0; }
   .ts-line:last-child{ border-bottom:0; }
-  .ts-line .k{ color:var(--muted-2); }
-  .ts-line .v{ font-weight:600; color:var(--ivory-soft); text-align:right; white-space:nowrap; }
+  /* A ROW IS NEVER SIZED BY ITS VALUE (owner-reported 2026-07-30: the ADDITIONAL
+     TERMS rows — the 3-month minimum-interest sentence and the two-tier draw fee —
+     ran off the right edge of the results panel and clipped mid-word). Root cause:
+     `white-space:nowrap` + the flex default `min-width:auto` made the value's
+     MIN-CONTENT the entire string, so the row (and the 1fr/1fr .ts-grid2 above it,
+     whose tracks also floor at min-content) could not shrink and pushed straight
+     out of the panel. The value now WRAPS instead: min-width:0 lets it shrink,
+     normal white-space lets it break at spaces, and overflow-wrap:anywhere is the
+     backstop for a single unbreakable token. Same class as the card badge/stat —
+     never let a long string set a container's width. */
+  .ts-line .k{ color:var(--muted-2); flex:0 0 auto; min-width:0; max-width:60%; overflow-wrap:break-word; }
+  .ts-line .v{ font-weight:600; color:var(--ivory-soft); text-align:right; flex:1 1 auto; min-width:0; white-space:normal; overflow-wrap:break-word; }
   .ts-line.em{ padding:.55rem 0; }
   .ts-line.em .k{ color:var(--ivory-soft); font-weight:600; }
   .ts-line.em .v{ color:var(--ivory-soft); font-size:1.02rem; }
@@ -109,8 +119,11 @@
   @media (max-width:460px){ .handoff{ flex-direction:column; align-items:flex-start; } }
   /* required-field highlight */
   .field .input.need, .field .input.select.need{ border-color:rgba(201,168,106,.7); box-shadow:0 0 0 2px rgba(201,168,106,.14); }
-  .ts-cta{ margin-top:1.4rem; }
-  .ts-cta .btn{ width:100%; justify-content:center; }
+  .ts-cta{ margin-top:1.4rem; min-width:0; }
+  /* `.btn` is white-space:nowrap globally, so a full-width CTA was still sized by
+     its own label — "Download Standard Term Sheet (PDF)" ran 36px past the panel
+     at 390px (audit 2026-07-30, same class as the rows above). Let it wrap. */
+  .ts-cta .btn{ width:100%; justify-content:center; white-space:normal; overflow-wrap:break-word; min-width:0; text-align:center; line-height:1.3; }
   .ts-compliance{ font-size:.72rem; color:var(--muted-2); line-height:1.6; margin-top:1.1rem; padding-top:1rem; border-top:1px solid var(--line-2); }
   .rate-hint{ font-size:.72rem; color:var(--muted-2); margin-top:.4rem; }
   /* The interest-reserve truth line: what was requested vs what the loan actually
@@ -135,9 +148,11 @@
   .maxlev .ml .mlk{ font-size:.66rem; text-transform:uppercase; letter-spacing:.09em; color:var(--muted-2); }
   .maxlev .ml .mlv{ font-family:var(--font-d); font-weight:600; color:var(--teal-br); font-size:1.06rem; margin-top:.15rem; }
   /* compact 2-column rows for fees / snapshot */
-  .ts-grid2{ display:grid; grid-template-columns:1fr 1fr; column-gap:1.4rem; }
+  /* minmax(0,1fr) — a bare `1fr` floors at MIN-CONTENT, so one long value in one
+     cell used to widen BOTH tracks and blow the grid out of the panel. */
+  .ts-grid2{ display:grid; grid-template-columns:minmax(0,1fr) minmax(0,1fr); column-gap:1.4rem; min-width:0; }
   .ts-grid2 .ts-line{ font-size:.84rem; }
-  @media (max-width:520px){ .ts-grid2{ grid-template-columns:1fr; } }
+  @media (max-width:520px){ .ts-grid2{ grid-template-columns:minmax(0,1fr); } }
   /* read-only field */
   .input.is-ro{ opacity:.85; background:rgba(255,255,255,.02); }
   .input.is-ro input{ color:var(--muted); cursor:default; }
@@ -193,13 +208,31 @@
   .pcard.gold .pcard-loan{ color:var(--gold); }
   .pcard.silver .pcard-loan{ color:#8A99A8; }
   .pcard.manual .pcard-loan{ color:var(--teal-br,#7FA9B0); }
-  .pcard-headline{ display:flex; gap:.6rem; padding-top:.6rem; border-top:1px solid var(--line-2); }
-  .pcard-stat{ flex:1; min-width:0; }
-  .pcard-statnum{ font-family:var(--font-d); font-weight:600; font-size:1.5rem; line-height:1.1; color:var(--ivory); }
+  .pcard-headline{ display:flex; gap:.6rem; padding-top:.6rem; border-top:1px solid var(--line-2); min-width:0; }
+  /* TWO STATS SHARE ~249px OF CARD, SO EACH GETS ~120px (~105px at 1024px).
+     `flex:1 1 0` + min-width:0 already stopped the stat BOX from being sized by
+     its content — but the TEXT inside kept its own width and the ink spilled out
+     of the card (owner-reported 2026-07-30: "the generation fees keeps go out of
+     the box", origination $27,218.75 / $28,000.00 running past the card's right
+     edge). getBoundingClientRect() on the element could never see it, which is
+     why the earlier badge-overflow battery passed. Belt-and-braces, exactly like
+     .pcard-badge: (1) the card renders the origination in WHOLE dollars (JS), (2)
+     an adaptive font-size ladder (`data-fit`, set by fitStat() in termsheet.js)
+     shrinks a long value to fit instead of pushing out, and (3) overflow:hidden +
+     ellipsis is the structural backstop so NO value can ever escape the box. */
+  .pcard-stat{ flex:1 1 0; min-width:0; max-width:100%; }
+  .pcard-statnum{ font-family:var(--font-d); font-weight:600; font-size:1.5rem; line-height:1.1; color:var(--ivory); min-width:0; max-width:100%; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+  .pcard-statnum[data-fit="1"]{ font-size:1.32rem; }
+  .pcard-statnum[data-fit="2"]{ font-size:1.16rem; }
+  .pcard-statnum[data-fit="3"]{ font-size:1.02rem; }
+  .pcard-statnum[data-fit="4"]{ font-size:.9rem; letter-spacing:-.01em; }
   .pcard.gold .pcard-statnum{ color:var(--gold); }
   .pcard.silver .pcard-statnum{ color:#8A99A8; }
   .pcard.manual .pcard-statnum{ color:var(--teal-br,#7FA9B0); }
-  .pcard-statlbl{ font-size:.6rem; text-transform:uppercase; letter-spacing:.08em; color:var(--muted-2); margin-top:.12rem; }
+  /* The label may WRAP to two lines (acceptable — owner-directed), but it must
+     never overlap or clip the number above it, and never widen the stat. */
+  .pcard-statlbl{ font-size:.6rem; text-transform:uppercase; letter-spacing:.08em; color:var(--muted-2); margin-top:.12rem; min-width:0; max-width:100%; overflow-wrap:break-word; line-height:1.25; }
+  .pcard-statlbl > span[id$="OrigPts"]{ white-space:nowrap; }
   .pcard-sub{ margin-top:.65rem; font-size:.72rem; color:var(--muted); line-height:1.4; min-height:1em; }
   .prog-note{ margin:0 0 .9rem; padding:.7rem .9rem; border-radius:10px; border:1px solid var(--line-2); background:rgba(47,127,134,.07); font-size:.82rem; color:var(--ivory-soft); line-height:1.5; }
   .prog-note strong{ color:var(--ivory); }
@@ -600,7 +633,9 @@
                     <div class="field"><label for="tsOrigStd">Standard (%)</label><div class="input"><input id="tsOrigStd" data-noshare type="number" inputmode="decimal" step="0.25" min="0" placeholder="1.25"></div></div>
                     <div class="field"><label for="tsOrigGold">Gold (%)</label><div class="input"><input id="tsOrigGold" data-noshare type="number" inputmode="decimal" step="0.25" min="0" placeholder="1.25"></div></div>
                     <div class="field"><label for="tsOrigSilver">Silver (%)</label><div class="input"><input id="tsOrigSilver" data-noshare type="number" inputmode="decimal" step="0.25" min="0" placeholder="1.25"></div></div>
+                    <div class="field"><label for="tsOrigManual">Manual (%)</label><div class="input"><input id="tsOrigManual" data-noshare type="number" inputmode="decimal" step="0.25" min="0" placeholder="1.25"></div></div>
                 </div>
+                <p class="ts-admin-mnote">The <strong>Manual</strong> value prices the manual scenario — it applies only once a custom LTV / LTC / ARV basis is set (the Manual card lights). Leave it blank to use the company default; the other three programs are unaffected by it.</p>
 
                 <div class="ts-admin-group">Closing-cost overrides <span class="ts-admin-note">— all programs</span></div>
                 <div class="ts-admin-grid2">
@@ -884,10 +919,10 @@
 <script src="rb-logo.js?v=admin8"></script>
 <script src="standard-program.js?v=asgseller18-asgelig"></script>
 <script src="gold-standard.js?v=asgseller19"></script>
-<script src="silver-program.js?v=silver6-capedge"></script>
+<script src="silver-program.js?v=silver7-band99"></script>
 <script src="title-cost.js?v=admin8"></script>
 <script src="address-autocomplete.js?v=admin9"></script>
-<script src="termsheet.js?v=cards7-irtruth1-maxlev1"></script>
+<script src="termsheet.js?v=cards8-irtruth1-maxlev1-origfit-manualorig"></script>
 <script src="../float-actions.js?v=admin10-applyfix"></script>
 <script>
 /* Property-address autocomplete (owner-directed 2026-07-17): same shared YSAddr

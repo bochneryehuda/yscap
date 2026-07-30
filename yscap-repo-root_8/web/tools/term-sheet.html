@@ -47,10 +47,16 @@
   .exp-total-val{ font-family:var(--font-d); font-weight:600; font-size:1.05rem; color:var(--teal-br); }
   .ts-sub{ font-family:var(--font-b); font-size:.7rem; text-transform:uppercase; letter-spacing:.12em; color:var(--muted); margin:1.25rem 0 .55rem; padding-top:1rem; border-top:1px solid var(--line-2); }
   .ts-sub.first{ border-top:0; padding-top:.2rem; margin-top:.4rem; }
-  .ts-line{ display:flex; align-items:baseline; justify-content:space-between; gap:1rem; padding:.42rem 0; border-bottom:1px solid var(--line-2); font-size:.9rem; }
+  .ts-line{ display:flex; flex-wrap:wrap; align-items:baseline; justify-content:space-between; gap:.15rem 1rem; padding:.42rem 0; border-bottom:1px solid var(--line-2); font-size:.9rem; min-width:0; }
   .ts-line:last-child{ border-bottom:0; }
-  .ts-line .k{ color:var(--muted-2); }
-  .ts-line .v{ font-weight:600; color:var(--ivory-soft); text-align:right; white-space:nowrap; }
+  /* A ROW IS NEVER SIZED BY ITS VALUE (owner-reported on V2 2026-07-30; V1 shares
+     the defect byte-for-byte). `white-space:nowrap` + the flex default
+     `min-width:auto` made the value's MIN-CONTENT the whole string, so the long
+     ADDITIONAL TERMS values (the 3-month minimum-interest sentence, the two-tier
+     draw fee) pushed the row and the 1fr/1fr .ts-grid2 straight out of the panel
+     and clipped mid-word. The value WRAPS instead. */
+  .ts-line .k{ color:var(--muted-2); flex:0 0 auto; min-width:0; max-width:60%; overflow-wrap:break-word; }
+  .ts-line .v{ font-weight:600; color:var(--ivory-soft); text-align:right; flex:1 1 auto; min-width:0; white-space:normal; overflow-wrap:break-word; }
   .ts-line.em{ padding:.55rem 0; }
   .ts-line.em .k{ color:var(--ivory-soft); font-weight:600; }
   .ts-line.em .v{ color:var(--ivory-soft); font-size:1.02rem; }
@@ -98,8 +104,10 @@
   @media (max-width:460px){ .handoff{ flex-direction:column; align-items:flex-start; } }
   /* required-field highlight */
   .field .input.need, .field .input.select.need{ border-color:rgba(201,168,106,.7); box-shadow:0 0 0 2px rgba(201,168,106,.14); }
-  .ts-cta{ margin-top:1.4rem; }
-  .ts-cta .btn{ width:100%; justify-content:center; }
+  .ts-cta{ margin-top:1.4rem; min-width:0; }
+  /* `.btn` is white-space:nowrap globally, so a full-width CTA was still sized by
+     its own label and ran past the panel on a phone. Let it wrap. */
+  .ts-cta .btn{ width:100%; justify-content:center; white-space:normal; overflow-wrap:break-word; min-width:0; text-align:center; line-height:1.3; }
   .ts-compliance{ font-size:.72rem; color:var(--muted-2); line-height:1.6; margin-top:1.1rem; padding-top:1rem; border-top:1px solid var(--line-2); }
   .rate-hint{ font-size:.72rem; color:var(--muted-2); margin-top:.4rem; }
   /* The interest-reserve truth line: what was requested vs what the loan actually
@@ -124,9 +132,11 @@
   .maxlev .ml .mlk{ font-size:.66rem; text-transform:uppercase; letter-spacing:.09em; color:var(--muted-2); }
   .maxlev .ml .mlv{ font-family:var(--font-d); font-weight:600; color:var(--teal-br); font-size:1.06rem; margin-top:.15rem; }
   /* compact 2-column rows for fees / snapshot */
-  .ts-grid2{ display:grid; grid-template-columns:1fr 1fr; column-gap:1.4rem; }
+  /* minmax(0,1fr) — a bare `1fr` floors at MIN-CONTENT, so one long value in one
+     cell widened BOTH tracks and blew the grid out of the panel. */
+  .ts-grid2{ display:grid; grid-template-columns:minmax(0,1fr) minmax(0,1fr); column-gap:1.4rem; min-width:0; }
   .ts-grid2 .ts-line{ font-size:.84rem; }
-  @media (max-width:520px){ .ts-grid2{ grid-template-columns:1fr; } }
+  @media (max-width:520px){ .ts-grid2{ grid-template-columns:minmax(0,1fr); } }
   /* read-only field */
   .input.is-ro{ opacity:.85; background:rgba(255,255,255,.02); }
   .input.is-ro input{ color:var(--muted); cursor:default; }
@@ -163,11 +173,24 @@
   .pcard-loan{ font-family:var(--font-d); font-weight:600; font-size:1.95rem; line-height:1.05; color:var(--ivory); margin:.12rem 0 .7rem; word-break:break-word; }
   .pcard-loan.tealed{ color:var(--teal-br,#7FA9B0); }
   .pcard.gold .pcard-loan{ color:var(--gold); }
-  .pcard-headline{ display:flex; gap:.6rem; padding-top:.6rem; border-top:1px solid var(--line-2); }
-  .pcard-stat{ flex:1; min-width:0; }
-  .pcard-statnum{ font-family:var(--font-d); font-weight:600; font-size:1.5rem; line-height:1.1; color:var(--ivory); }
+  .pcard-headline{ display:flex; gap:.6rem; padding-top:.6rem; border-top:1px solid var(--line-2); min-width:0; }
+  /* THE TWO STATS SPLIT THE CARD, so a long origination value at 1.5rem had its
+     BOX shrunk (min-width:0) while its TEXT INK spilled past the card's right edge
+     (owner-reported on V2 2026-07-30: "the generation fees keeps go out of the
+     box"). V1 shares the defect. Belt-and-braces: the card renders WHOLE dollars
+     (JS), an adaptive font ladder (`data-fit`, set by fitStat() in termsheet.js)
+     shrinks a long value instead of pushing out, and overflow:hidden + ellipsis is
+     the structural backstop so no value can ever escape. */
+  .pcard-stat{ flex:1 1 0; min-width:0; max-width:100%; }
+  .pcard-statnum{ font-family:var(--font-d); font-weight:600; font-size:1.5rem; line-height:1.1; color:var(--ivory); min-width:0; max-width:100%; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+  .pcard-statnum[data-fit="1"]{ font-size:1.32rem; }
+  .pcard-statnum[data-fit="2"]{ font-size:1.16rem; }
+  .pcard-statnum[data-fit="3"]{ font-size:1.02rem; }
+  .pcard-statnum[data-fit="4"]{ font-size:.9rem; letter-spacing:-.01em; }
   .pcard.gold .pcard-statnum{ color:var(--gold); }
-  .pcard-statlbl{ font-size:.6rem; text-transform:uppercase; letter-spacing:.08em; color:var(--muted-2); margin-top:.12rem; }
+  /* The label may WRAP to two lines, but must never overlap or clip the number. */
+  .pcard-statlbl{ font-size:.6rem; text-transform:uppercase; letter-spacing:.08em; color:var(--muted-2); margin-top:.12rem; min-width:0; max-width:100%; overflow-wrap:break-word; line-height:1.25; }
+  .pcard-statlbl > span[id$="OrigPts"]{ white-space:nowrap; }
   .pcard-sub{ margin-top:.65rem; font-size:.72rem; color:var(--muted); line-height:1.4; min-height:1em; }
   .prog-note{ margin:0 0 .9rem; padding:.7rem .9rem; border-radius:10px; border:1px solid var(--line-2); background:rgba(127,169,176,.07); font-size:.82rem; color:var(--ivory-soft); line-height:1.5; }
   .prog-note strong{ color:var(--ivory); }
@@ -696,7 +719,7 @@
 <script src="gold-standard.js?v=asgseller19"></script>
 <script src="title-cost.js?v=admin8"></script>
 <script src="address-autocomplete.js?v=admin9"></script>
-<script src="termsheet.js?v=termopts2-irlink20-esign-exc-nullrow-noirdefault-irtruth1-maxlev1"></script>
+<script src="termsheet.js?v=termopts2-irlink20-esign-exc-nullrow-noirdefault-irtruth1-maxlev1-origfit"></script>
 <script src="../float-actions.js?v=admin8"></script>
 <script>
 /* Property-address autocomplete (owner-directed 2026-07-17): same shared YSAddr

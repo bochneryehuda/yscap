@@ -189,7 +189,8 @@ function buildInputs(app, experience, overrides) {
   const NUMK = ['units', 'purchasePrice', 'sellerPrice', 'asIsValue', 'arv', 'rehabBudget',
     'fico', 'expFlips', 'expHolds', 'expGround', 'term', 'irMonths', 'irAmount', 'targetLTC',
     'ovrAcqLTV', 'ovrARLTV', 'ovrLTC', 'ovrRate',
-    'markupStdPct', 'markupGoldPct', 'markupSilverPct', 'origStdPct', 'origGoldPct', 'origSilverPct',
+    'markupStdPct', 'markupGoldPct', 'markupSilverPct',
+    'origStdPct', 'origGoldPct', 'origSilverPct', 'origManualPct',
     'lenderFee', 'creditFee', 'appraisalFee', 'titleFee',
     'ovrAcqLTVPct', 'ovrARLTVPct', 'ovrLTCPct', 'ovrRatePct', 'ovrIrMonths', 'ovrEffPrice'];
   const STRK = ['loanType', 'strategy', 'state', 'city', 'address', 'propertyType'];
@@ -281,7 +282,20 @@ function normalize(program, input, ev, ladder) {
     : (YSP.constants && YSP.constants.ORIG_PCT)) || 0.0125;
   const companyOrigPct = program === 'gold' ? cd.origGoldPct : program === 'silver' ? cd.origSilverPct : cd.origStdPct;
   const defaultOrigPct = (companyOrigPct != null ? companyOrigPct / 100 : engineOrigPct);
-  const origPct = percentOverride(input, program === 'gold' ? 'origGoldPct' : program === 'silver' ? 'origSilverPct' : 'origStdPct', defaultOrigPct);
+  /* THE MANUAL PRODUCT HAS ITS OWN ORIGINATION KNOB (owner-directed 2026-07-30:
+     "we don't have a word to enter origination fee for the manual program. We only
+     can enter for all other programs, not for the manual program"). It prices on
+     the Standard engine, so it has no company default and no engine constant of
+     its own — a BLANK manual field means "use Standard", which is why the fallback
+     below is `origStdPct` and not the bare default. That ordering is what keeps a
+     file that only ever set a Standard override behaving exactly as it did before
+     this key existed (including the accept-counter path, which writes the countered
+     origination onto origStdPct/origGoldPct only). */
+  const origKey = program === 'gold' ? 'origGoldPct'
+    : program === 'silver' ? 'origSilverPct'
+    : (program === 'manual' && hasInput(input, 'origManualPct')) ? 'origManualPct'
+    : 'origStdPct';
+  const origPct = percentOverride(input, origKey, defaultOrigPct);
   // Rounding policy (owner-directed 2026-07-09): the financed loan is reported in
   // WHOLE DOLLARS, floored DOWN — never lend more than the engine sized. The
   // reported breakdown must reconcile EXACTLY (initial advance + holdback +

@@ -158,6 +158,7 @@ export function overridesFromSnapshot(snap, mode) {
       arv: f.arv,
       rehabBudget: f.construction,
       origStdPct: f.tsOrigStd, origGoldPct: f.tsOrigGold, origSilverPct: f.tsOrigSilver,
+      origManualPct: f.tsOrigManual,
       lenderFee: f.tsFeeUW, creditFee: f.tsFeeCredit, appraisalFee: f.tsFeeAppr,
       titleFee: f.tsFeeTitle,
       ovrAcqLTVPct: f.tsManualOn ? f.tsMLtv : null,
@@ -897,6 +898,7 @@ const ProductStudioPanel = forwardRef(function ProductStudioPanel({ appId, app, 
     const DEFAULTED = {
       markupStdPct: 'rate markup (Standard)', markupGoldPct: 'rate markup (Gold)',
       origStdPct: 'origination points (Standard)', origGoldPct: 'origination points (Gold)',
+      origSilverPct: 'origination points (Silver)', origManualPct: 'origination points (Manual)',
       lenderFee: 'underwriting / legal fee', creditFee: 'credit-report fee',
       appraisalFee: 'appraisal fee', titleFee: 'title / escrow fee',
     };

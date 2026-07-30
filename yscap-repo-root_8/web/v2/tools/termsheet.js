@@ -416,7 +416,7 @@
     var financedIRr = 0;
     if ((s.financedIR || 0) > 0.5) financedIRr = Math.max(0, totalLoan - initialAdvance - rehabHoldbackR);
     else initialAdvance = Math.max(0, totalLoan - rehabHoldbackR);
-    var origPct = adminOrigPct("standard");
+    var origPct = liveOrigPct();                          // manual basis on => the Manual knob (see liveOrigPct)
     var origFee = (totalLoan) * origPct;                  // origination % (admin-overridable; default 1%)
     // interest-only payment logic (industry standard): during construction the borrower pays
     // interest only on funds DRAWN — starts on the initial advance, grows to the full loan.
@@ -611,6 +611,32 @@
     e.textContent = badgeText(status); e.className = "pcard-badge " + statusClass(status);
   }
 
+  /* ---- CARD ORIGINATION: whole dollars, and it can never leave the box ----
+     Owner-reported 2026-07-30 ("there generation fees keeps go out of the box"):
+     $27,218.75 / $28,000.00 at 1.5rem inside a ~120px stat column spilled past
+     the card's right edge. Two presentation-only changes, CARD ONLY:
+       cardUSD  - drops the CENTS on the card (the loan amount above it is already
+                  whole-dollar, and "$28,000" is 3 characters shorter). The detail
+                  panel, the PDF, the Excel export and the derivation page keep
+                  YS.fmtUSD2 and their existing precision — untouched.
+       fitStat  - after the text is in, step the font down a small ladder until it
+                  fits. Belt-and-braces with the CSS overflow:hidden + ellipsis
+                  backstop, so a longer value than any we can produce today still
+                  cannot escape (same treatment as .pcard-badge). */
+  function cardUSD(n) { return YS.fmtUSD(Math.round(Number(n) || 0)); }
+  var FIT_IDS = ["stdRateBig", "stdOrigBig", "goldRateBig", "goldOrigBig", "silverRateBig", "silverOrigBig", "manRateBig", "manOrigBig"];
+  function fitStat(e) {
+    if (!e) return;
+    e.removeAttribute("data-fit");
+    // clientWidth 0 => the card is hidden; measuring now would shrink it wrongly.
+    if (!e.clientWidth) return;
+    for (var step = 1; step <= 4; step++) {
+      if (e.scrollWidth <= e.clientWidth) return;
+      e.setAttribute("data-fit", String(step));
+    }
+  }
+  function fitStats() { for (var i = 0; i < FIT_IDS.length; i++) fitStat(el(FIT_IDS[i])); }
+
   // Populate the two headline program cards (Standard from the live calc; Gold Standard from its engine)
   // and the auto comparison note. Returns the Gold Standard result for reuse.
   function renderPrograms(d, ready) {
@@ -621,8 +647,8 @@
     var stdSized = ready && d.totalLoan > 0 && d.status !== "INELIGIBLE" && !stdExit && !stdCity;
     YS.put("stdLoanBig", (stdExit || stdCity) ? "Manual" : (stdSized ? YS.fmtUSD(d.totalLoan) : ((ready && d.status !== "INELIGIBLE") ? "$0" : EM)));
     YS.put("stdRateBig", (stdSized && d.pricingReady && d.rate > 0) ? d.rate.toFixed(2) + "%" : EM);
-    YS.put("stdOrigBig", stdSized ? YS.fmtUSD2(d.origFee) : EM);
-    YS.put("stdOrigPts", origPtStr(adminOrigPct("standard")));
+    YS.put("stdOrigBig", stdSized ? cardUSD(d.origFee) : EM);
+    YS.put("stdOrigPts", origPtStr(liveOrigPct()));
     setBadge("stdBadge", d.status, ready);
     var stdWhy = stdExit ? shortMsg(exitMsg(d.reasons)) : (d.status !== "ELIGIBLE" ? shortReason(d.reasons) : "");
     // The card's "Max LTC" is the TIER maximum \u2014 a fixed-sounding label must carry a
@@ -651,7 +677,7 @@
       var gSized = ready && (gs.totalLoan > 0) && G.status !== "INELIGIBLE" && !goldExit;
       YS.put("goldLoanBig", gSized ? YS.fmtUSD(Math.floor(gs.totalLoan)) : ((ready && G.status !== "INELIGIBLE") ? "$0" : EM));
       YS.put("goldRateBig", (gSized && G.pricingReady && G.noteRate > 0) ? (G.noteRate * 100).toFixed(2) + "%" : EM);
-      YS.put("goldOrigBig", gSized ? YS.fmtUSD2(Math.floor(gs.totalLoan || 0) * adminOrigPct("gold")) : EM);
+      YS.put("goldOrigBig", gSized ? cardUSD(Math.floor(gs.totalLoan || 0) * adminOrigPct("gold")) : EM);
       YS.put("goldOrigPts", origPtStr(adminOrigPct("gold")));
       setBadge("goldBadge", G.status, ready);
       var goldWhy = goldExit ? shortMsg(exitMsg(G.reasons)) : (G.status !== "ELIGIBLE" ? shortReason(G.reasons) : "");
@@ -676,7 +702,7 @@
       var sSized = ready && (ss.totalLoan > 0) && S.status !== "INELIGIBLE" && !silverExit && !silverGeo;
       YS.put("silverLoanBig", silverGeo ? "Manual" : (sSized ? YS.fmtUSD(Math.floor(ss.totalLoan)) : ((ready && S.status !== "INELIGIBLE") ? "$0" : EM)));
       YS.put("silverRateBig", (sSized && S.pricingReady && S.noteRate > 0) ? (S.noteRate * 100).toFixed(2) + "%" : EM);
-      YS.put("silverOrigBig", sSized ? YS.fmtUSD2(Math.floor(ss.totalLoan || 0) * adminOrigPct("silver")) : EM);
+      YS.put("silverOrigBig", sSized ? cardUSD(Math.floor(ss.totalLoan || 0) * adminOrigPct("silver")) : EM);
       YS.put("silverOrigPts", origPtStr(adminOrigPct("silver")));
       setBadge("silverBadge", S.status, ready);
       var silverWhy = silverExit ? shortMsg(exitMsg(S.reasons)) : (S.status !== "ELIGIBLE" ? shortReason(S.reasons) : "");
@@ -702,7 +728,7 @@
     if (manCard) manCard.classList.toggle("pcard-off", !mOn);
     if (!mOn) {
       YS.put("manLoanBig", EM); YS.put("manRateBig", EM); YS.put("manOrigBig", EM);
-      YS.put("manOrigPts", origPtStr(adminOrigPct("standard")));
+      YS.put("manOrigPts", origPtStr(adminOrigPct("manual")));
       var mb0 = el("manBadge"); if (mb0) { mb0.textContent = "Admin-priced"; mb0.className = "pcard-badge"; }
       YS.put("manSub", manualOn()
         ? "Almost there \u2014 a Manual Program needs a custom LTV, LTC or ARV basis. Set one in the pricing controls; a rate or fee change alone registers under the chosen program (with admin approval)."
@@ -711,8 +737,8 @@
       var mSized = ready && d.totalLoan > 0 && d.status !== "INELIGIBLE";
       YS.put("manLoanBig", mSized ? YS.fmtUSD(d.totalLoan) : ((ready && d.status !== "INELIGIBLE") ? "$0" : EM));
       YS.put("manRateBig", (mSized && d.pricingReady && d.rate > 0) ? d.rate.toFixed(2) + "%" : EM);
-      YS.put("manOrigBig", mSized ? YS.fmtUSD2(d.origFee) : EM);
-      YS.put("manOrigPts", origPtStr(adminOrigPct("standard")));
+      YS.put("manOrigBig", mSized ? cardUSD(d.origFee) : EM);
+      YS.put("manOrigPts", origPtStr(adminOrigPct("manual")));
       setBadge("manBadge", d.status, ready);
       YS.put("manSub", !ready ? EM : "Manually underwritten on the admin-set basis \u2014 registers as a Manual Program and goes to an admin for approval.");
     }
@@ -739,6 +765,9 @@
       var msg = comparisonNote(d, G, S, ready);
       if (msg) { note.style.display = ""; note.innerHTML = msg; } else { note.style.display = "none"; note.innerHTML = ""; }
     }
+    // Every headline stat now holds its final text — size it to the column it
+    // actually got (the two stats share ~249px of card; ~105px each at 1024px).
+    fitStats();
     return G;
   }
 
@@ -918,11 +947,23 @@
     try { if (typeof SVP !== "undefined" && SVP && SVP.setMarkup) SVP.setMarkup(silver / 100); } catch (e) {}
   }
   // Admin fee/origination overrides. Defaults reproduce current behavior exactly.
+  // MANUAL has its own knob (owner-reported 2026-07-30: "we don't have a word to
+  // enter origination fee for the manual program"). It falls back to the STANDARD
+  // company default when blank, exactly like its three siblings — a blank field
+  // always means "use the company default", never 0.
   function adminOrigPct(prog) {
     if (prog === "gold") return adminNum("tsOrigGold", CO.origGold) / 100;
     if (prog === "silver") return adminNum("tsOrigSilver", CO.origSilver) / 100;
+    if (prog === "manual") return adminNum("tsOrigManual", CO.origStd) / 100;
     return adminNum("tsOrigStd", CO.origStd) / 100;
   }  // fraction
+  // The live calc (`d`) always runs the STANDARD engine — but with a STRUCTURAL
+  // manual basis set the file registers as a Manual Program (the server's
+  // manual-program.resolveProgram), so its origination comes from the Manual knob.
+  // ONE helper, so the calc, the Standard + Manual cards, the detail rows, the
+  // PDF, the Excel and the derivation page can never disagree about which
+  // percentage priced `d`.
+  function liveOrigPct() { return adminOrigPct(manualBasisOn() ? "manual" : "standard"); }
   function adminFeeUW() { return adminNum("tsFeeUW", CO.lender); }
   function adminFeeCredit() { return adminNum("tsFeeCredit", CO.credit); }
   // Company "extra fees" (e.g. the NY settlement-agent fee) that apply to this
@@ -948,6 +989,7 @@
     var s = function (id, v) { var e = el(id); if (e && String(e.value).trim() === "") e.value = v; };
     s("tsYspStd", String(CO.markupStd)); s("tsYspGold", String(CO.markupGold)); s("tsYspSilver", String(CO.markupSilver));
     s("tsOrigStd", String(CO.origStd)); s("tsOrigGold", String(CO.origGold)); s("tsOrigSilver", String(CO.origSilver));
+    s("tsOrigManual", String(CO.origStd));   // manual has no company default of its own — it falls back to Standard
     s("tsFeeUW", String(CO.lender)); s("tsFeeCredit", String(CO.credit)); s("tsFeeAppr", String(CO.appraisal));
     if (CO.title != null) s("tsFeeTitle", String(CO.title));
   }
@@ -1187,7 +1229,7 @@
     }
     function lockDown() {
       if (panel) panel.hidden = true; if (lock) lock.hidden = true; trig.hidden = false; trig.setAttribute("aria-expanded", "false");
-      setVal("tsYspStd", String(CO.markupStd)); setVal("tsYspGold", String(CO.markupGold)); setVal("tsYspSilver", String(CO.markupSilver)); setVal("tsOrigStd", String(CO.origStd)); setVal("tsOrigGold", String(CO.origGold)); setVal("tsOrigSilver", String(CO.origSilver));
+      setVal("tsYspStd", String(CO.markupStd)); setVal("tsYspGold", String(CO.markupGold)); setVal("tsYspSilver", String(CO.markupSilver)); setVal("tsOrigStd", String(CO.origStd)); setVal("tsOrigGold", String(CO.origGold)); setVal("tsOrigSilver", String(CO.origSilver)); setVal("tsOrigManual", String(CO.origStd));
       setVal("tsFeeUW", String(CO.lender)); setVal("tsFeeCredit", String(CO.credit)); setVal("tsFeeAppr", String(CO.appraisal)); setVal("tsFeeTitle", CO.title != null ? String(CO.title) : "");
       var mo = el("tsManualOn"); if (mo) mo.checked = false;
       setVal("tsMLtv", ""); setVal("tsMArv", ""); setVal("tsMLtc", ""); setVal("tsMRate", ""); setVal("tsMIr", "");
@@ -2798,6 +2840,16 @@
     var gcard = el("pcardGold"); if (gcard) gcard.addEventListener("click", function () { selectProgram("gold"); });
     var svcard = el("pcardSilver"); if (svcard) svcard.addEventListener("click", function () { selectProgram("silver"); });
     var mcard = el("pcardManual"); if (mcard) mcard.addEventListener("click", function () { selectProgram("manual"); });
+    // The stat columns get narrower as the viewport shrinks, so the adaptive
+    // font-size ladder has to re-run on resize — otherwise a value that fitted at
+    // 1440px would spill at 1024px until the next recompute.
+    (function () {
+      var t = null;
+      window.addEventListener("resize", function () {
+        if (t) clearTimeout(t);
+        t = setTimeout(function () { t = null; try { fitStats(); } catch (e) {} }, 90);
+      });
+    })();
     // TBD confirmation (owner-directed 2026-07-29): ticking "Property is TBD" must be
     // an explicit, informed choice — without the full address the engines can't check
     // ZIP / city / county / borough restrictions (the state alone isn't enough), so

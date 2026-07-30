@@ -584,6 +584,29 @@
     return out.join(" ");
   }
 
+  /* ---- CARD ORIGINATION: whole dollars, and it can never leave the box ----
+     Owner-reported on V2 2026-07-30 ("there generation fees keeps go out of the
+     box"): the origination value at 1.5rem spilled past the card's right edge.
+     V1 shares the defect. Two presentation-only changes, CARD ONLY:
+       cardUSD - drops the CENTS on the card (the loan amount above it is already
+                 whole-dollar, and it removes 3 characters from the longest
+                 string). The detail panel, the PDF and the Excel export keep
+                 YS.fmtUSD2 and their existing precision - untouched.
+       fitStat - after the text is in, step the font down a small ladder until it
+                 fits; the CSS overflow:hidden + ellipsis is the final backstop. */
+  function cardUSD(n) { return YS.fmtUSD(Math.round(Number(n) || 0)); }
+  var FIT_IDS = ["stdRateBig", "stdOrigBig", "goldRateBig", "goldOrigBig"];
+  function fitStat(e) {
+    if (!e) return;
+    e.removeAttribute("data-fit");
+    if (!e.clientWidth) return;                 // hidden: measuring would shrink it wrongly
+    for (var step = 1; step <= 4; step++) {
+      if (e.scrollWidth <= e.clientWidth) return;
+      e.setAttribute("data-fit", String(step));
+    }
+  }
+  function fitStats() { for (var i = 0; i < FIT_IDS.length; i++) fitStat(el(FIT_IDS[i])); }
+
   // Populate the two headline program cards (Standard from the live calc; Gold Standard from its engine)
   // and the auto comparison note. Returns the Gold Standard result for reuse.
   function renderPrograms(d, ready) {
@@ -594,7 +617,7 @@
     var stdSized = ready && d.totalLoan > 0 && d.status !== "INELIGIBLE" && !stdExit && !stdCity;
     YS.put("stdLoanBig", (stdExit || stdCity) ? "Manual" : (stdSized ? YS.fmtUSD(d.totalLoan) : ((ready && d.status !== "INELIGIBLE") ? "$0" : EM)));
     YS.put("stdRateBig", (stdSized && d.pricingReady && d.rate > 0) ? d.rate.toFixed(2) + "%" : EM);
-    YS.put("stdOrigBig", stdSized ? YS.fmtUSD2(d.origFee) : EM);
+    YS.put("stdOrigBig", stdSized ? cardUSD(d.origFee) : EM);
     YS.put("stdOrigPts", origPtStr(adminOrigPct("standard")));
     setBadge("stdBadge", d.status, ready);
     var stdWhy = stdExit ? shortMsg(exitMsg(d.reasons)) : (d.status !== "ELIGIBLE" ? shortReason(d.reasons) : "");
@@ -619,7 +642,7 @@
       var gSized = ready && (gs.totalLoan > 0) && G.status !== "INELIGIBLE" && !goldExit;
       YS.put("goldLoanBig", gSized ? YS.fmtUSD(Math.floor(gs.totalLoan)) : ((ready && G.status !== "INELIGIBLE") ? "$0" : EM));
       YS.put("goldRateBig", (gSized && G.pricingReady && G.noteRate > 0) ? (G.noteRate * 100).toFixed(2) + "%" : EM);
-      YS.put("goldOrigBig", gSized ? YS.fmtUSD2(Math.floor(gs.totalLoan || 0) * adminOrigPct("gold")) : EM);
+      YS.put("goldOrigBig", gSized ? cardUSD(Math.floor(gs.totalLoan || 0) * adminOrigPct("gold")) : EM);
       YS.put("goldOrigPts", origPtStr(adminOrigPct("gold")));
       setBadge("goldBadge", G.status, ready);
       var goldWhy = goldExit ? shortMsg(exitMsg(G.reasons)) : (G.status !== "ELIGIBLE" ? shortReason(G.reasons) : "");
@@ -632,6 +655,8 @@
       var msg = comparisonNote(d, G, ready);
       if (msg) { note.style.display = ""; note.innerHTML = msg; } else { note.style.display = "none"; note.innerHTML = ""; }
     }
+    // Every headline stat holds its final text - size it to the column it got.
+    fitStats();
     return G;
   }
 
@@ -2202,6 +2227,15 @@
     if (imp && impFile) { imp.addEventListener("click", function () { impFile.click(); }); impFile.addEventListener("change", function () { importXlsx(impFile); }); }
     var scard = el("pcardStd"); if (scard) scard.addEventListener("click", function () { selectProgram("standard"); });
     var gcard = el("pcardGold"); if (gcard) gcard.addEventListener("click", function () { selectProgram("gold"); });
+    // The stat columns narrow with the viewport, so the adaptive font ladder has
+    // to re-run on resize or a value that fitted wide would spill when narrow.
+    (function () {
+      var t = null;
+      window.addEventListener("resize", function () {
+        if (t) clearTimeout(t);
+        t = setTimeout(function () { t = null; try { fitStats(); } catch (e) {} }, 90);
+      });
+    })();
     var pback = el("progBack"); if (pback) pback.addEventListener("click", function () { chosenProgram = null; recompute(); });
     // info tooltips: tap toggles (hover/keyboard focus handle desktop); never let a tap fall through to the card
     document.addEventListener("click", function (ev) {
