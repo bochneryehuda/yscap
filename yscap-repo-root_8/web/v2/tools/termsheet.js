@@ -158,17 +158,31 @@
     var termCapped = !!R.reserveTermCapped;                    // asked for more months than the term
     if (!noReserve && !locked && !capped && !termCapped) return "";
     var capMo = Math.round((Number(R.reserveTermMonths) || 0) * 10) / 10;
+    var financed = irFinanced(d, sized);
+    var prog = irProgramLabel(d, progLabel);
+    var req = amountIsSource ? (irUsd(reqAmount) + " requested")
+      : (reqMonths + (reqMonths === 1 ? " month" : " months") + " requested");
     var why = [];
     if (noReserve) why.push("this program finances no interest reserve on a renovation loan");
     else if (locked) why.push("this program sets the construction reserve at " + capMo + " months (75% of the " +
       (d.term || 0) + "-month term) on a ground-up loan at this tier");
     if (capped && d.reserveCapBy) why.push("capped by " + d.reserveCapBy);
     else if (capped) why.push("capped by the program leverage ceiling");
-    if (termCapped && !noReserve && !locked) why.push("a reserve can't cover more interest than the " + capMo + "-month term");
-    var req = amountIsSource ? (irUsd(reqAmount) + " requested")
-      : (reqMonths + (reqMonths === 1 ? " month" : " months") + " requested");
-    return req + "; " + irUsd(irFinanced(d, sized)) + " financed on the " + irProgramLabel(d, progLabel) +
-      (why.length ? (" — " + why.join("; ")) : "") + ".";
+    if (termCapped && !noReserve && !locked) why.push("a reserve can\'t cover more interest than the " + capMo + "-month term");
+    var tail = why.length ? (" — " + why.join("; ")) : "";
+    // THE INVARIANT (owner-directed 2026-07-30): the reader must NEVER be shown less than
+    // the loan actually finances. Over-stating a request that then gets capped is fine and
+    // only needs explaining; UNDER-stating is the defect. When the program finances MORE
+    // than the entry (Gold locks a full 75%-of-term construction reserve and DISCARDS an
+    // exact-dollar request outright), the source box the user typed is the smaller number —
+    // so the note LEADS with the financed figure instead of burying it after the ask.
+    var overFinanced = locked && (amountIsSource ? (financed > reqAmount + 1) : (capMo > reqMonths + 1e-9));
+    if (overFinanced) {
+      return "This loan finances " + irUsd(financed) + " of interest reserve on the " + prog +
+        " — MORE than the " + (amountIsSource ? irUsd(reqAmount) : (reqMonths + (reqMonths === 1 ? " month" : " months"))) +
+        " you entered" + tail + ".";
+    }
+    return req + "; " + irUsd(financed) + " financed on the " + prog + tail + ".";
   }
   // Fill the non-source field with the reserve THE LOAN CARRIES (never an estimate) and write
   // the plain-language note next to the pair.

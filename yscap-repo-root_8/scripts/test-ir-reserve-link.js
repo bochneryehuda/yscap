@@ -180,7 +180,7 @@ function battery() {
     {
       name: 'Gold GROUND-UP — reserve LOCKED at 75% of term (finances MORE than asked)',
       d: goldGround, prog: 'Gold Standard Program', source: 'months', months: '12',
-      wantNote: /12 months requested; \$80,471 financed on the Gold Standard Program — this program sets the construction reserve at 13\.5 months \(75% of the 18-month term\)/,
+      wantNote: /This loan finances \$80,471 of interest reserve on the Gold Standard Program — MORE than the 12 months you entered — this program sets the construction reserve at 13\.5 months \(75% of the 18-month term\)/,
     },
     {
       name: 'Silver — AMOUNT-driven $200,000 entry, capped',
@@ -246,6 +246,99 @@ function runBattery(file, label) {
         `${label}: ${c.name} → nothing to explain, so no note (got "${note}")`);
     }
   });
+}
+
+
+/* ------------------------------------------------------------------ *
+ * THE INVARIANT (owner-directed 2026-07-30):
+ *   "you should never say LESS than it's actually being financed."
+ * The figure the user reads must be >= the reserve the loan carries, and in
+ * the ordinary case exactly equal to it. Over-stating a request that then gets
+ * capped is acceptable (and is explained); UNDER-stating is the defect.
+ *
+ * Swept over all THREE programs x BOTH purposes x months-driven AND
+ * amount-driven entry, including capped, program-LOCKED and zero-reserve
+ * deals — every deal built by the REAL frozen engines. Each case is also
+ * re-run against the OLD months x payment estimate, which must VIOLATE it.
+ * ------------------------------------------------------------------ */
+function invariantSweep(file, label) {
+  const STATES = { standard: 'NY', silver: 'NY', gold: 'PA' };
+  const ENGINES = { standard: YSP, gold: GSP, silver: SVP };
+  const STRATS = ['Fix & Flip', 'Ground-up'];
+  const PURPOSES = [['Purchase', 'purchase'], ['Refinance', 'refinance']];
+  const REQUESTS = [
+    { mode: 'months', v: 6 }, { mode: 'months', v: 12 }, { mode: 'months', v: 24 },
+    { mode: 'amount', v: 40000 }, { mode: 'amount', v: 200000 },
+  ];
+  const SIZES = [
+    { purchasePrice: 300000, asIsValue: 320000, arv: 900000, rehabBudget: 200000 },
+    { purchasePrice: 600000, asIsValue: 700000, arv: 1500000, rehabBudget: 500000 },
+    { purchasePrice: 1200000, asIsValue: 1300000, arv: 3500000, rehabBudget: 1400000 },
+  ];
+  let checked = 0, violations = 0, legacyViolations = 0, equalities = 0, coveredLocked = 0, coveredZero = 0, coveredCapped = 0;
+  Object.keys(ENGINES).forEach((prog) => {
+    STRATS.forEach((strat) => {
+      PURPOSES.forEach(([loanType]) => {
+        SIZES.forEach((size) => {
+          REQUESTS.forEach((req) => {
+            const inp = Object.assign({
+              loanType, cashOut: false, strategy: strat === 'Ground-up' ? 'Ground-up Construction' : strat,
+              state: STATES[prog], zip: '10001', city: '', address: '', propertyType: 'single family',
+              fico: 740, expFlips: 5, expHolds: 2, expGround: 3, term: 18,
+              irMonths: req.mode === 'months' ? req.v : 0,
+              irAmount: req.mode === 'amount' ? req.v : 0,
+              accrual: 'Non-Dutch', sqftAddition: false, heavyRehab: false, isAssignment: false, sellerPrice: 0,
+            }, size);
+            // Gold finances no reserve on a renovation — the studio zeroes the ask first.
+            let evalInp = inp;
+            let probe; try { probe = ENGINES[prog].evaluate(inp); } catch (_) { return; }
+            if (!probe || probe.available === false) return;
+            if (prog === 'gold' && probe.kind === 'reno') evalInp = Object.assign({}, inp, { irMonths: 0, irAmount: 0 });
+            const d = dealFrom(ENGINES[prog], evalInp, prog === 'gold' ? { gold: true } : prog === 'silver' ? { silver: true } : {});
+            if (!d || !(d.totalLoan > 0) || d.R.status === 'INELIGIBLE' || !(d.fullPayment > 0)) return;
+            const progLabel = prog === 'gold' ? 'Gold Standard Program' : prog === 'silver' ? 'Silver Program' : 'Standard Program';
+
+            const H = makeHarness(extractHelpers(file));
+            if (req.mode === 'amount') { H.dom.irAmount.value = String(req.v); H.setIrSource('amount'); }
+            else { H.dom.irMonths.value = String(req.v); H.setIrSource('months'); }
+            H.syncIrMirror(d, true, progLabel);
+            const note = H.dom.irFinNote.textContent;
+            const shownDollars = req.mode === 'months' ? Number(H.dom.irAmount.value || 0) : Number(req.v);
+            checked++;
+            if (d.irLocked) coveredLocked++;
+            if (d.R.reserveEligible === false) coveredZero++;
+            if (d.reserveCapped) coveredCapped++;
+
+            // (1) The number the user reads is never BELOW what the loan carries…
+            const financedStated = note.indexOf(H.irFinanced(d, true).toLocaleString('en-US')) > -1
+              || note.indexOf(String(H.irFinanced(d, true))) > -1
+              || note.indexOf('$' + Number(d.financedIR).toLocaleString('en-US')) > -1;
+            const okInvariant = shownDollars >= d.financedIR || financedStated;
+            if (!okInvariant) { violations++; console.log(`   VIOLATION ${prog}/${strat}/${loanType}/${req.mode}=${req.v}: shown ${shownDollars} < financed ${d.financedIR}, note="${note}"`); }
+            // (2) …and in the ordinary (months-driven) case it is EXACTLY equal.
+            if (req.mode === 'months' && Number(H.dom.irAmount.value || 0) === d.financedIR) equalities++;
+
+            // (3) MUTATION PROOF: the old estimate breaks the invariant on this same deal.
+            const L = makeHarness(extractHelpers(file));
+            if (req.mode === 'amount') { L.dom.irAmount.value = String(req.v); L.setIrSource('amount'); }
+            else { L.dom.irMonths.value = String(req.v); L.setIrSource('months'); }
+            L.legacy(d, true);
+            const legacyShown = req.mode === 'months' ? Number(L.dom.irAmount.value || 0) : Number(req.v);
+            if (legacyShown < d.financedIR) legacyViolations++;   // old behavior: no note existed to save it
+          });
+        });
+      });
+    });
+  });
+  ok(checked > 100, `${label}: invariant swept over ${checked} real engine deals (3 programs x 2 purposes x 2 strategies x 3 sizes x months+amount entry)`);
+  ok(coveredCapped > 0 && coveredLocked > 0 && coveredZero > 0,
+    `${label}: the sweep covers capped (${coveredCapped}), program-LOCKED (${coveredLocked}) and zero-reserve (${coveredZero}) deals`);
+  ok(violations === 0,
+    `${label}: THE INVARIANT HOLDS — no deal ever shows LESS than the reserve the loan carries (${violations} violations in ${checked})`);
+  ok(equalities > 0,
+    `${label}: in the ordinary months-driven case the box is EXACTLY the financed reserve (${equalities} deals)`);
+  ok(legacyViolations > 0,
+    `${label}: MUTATION PROOF — the OLD months x payment estimate VIOLATES the invariant on ${legacyViolations} of these same deals`);
 }
 
 function runCase(file) {
@@ -379,6 +472,9 @@ try {
   console.log('\n--- engine-driven battery (real Standard / Gold / Silver deals) ---');
   runBattery(files[1], 'v2');
   runBattery(files[0], 'v1');
+  console.log('\n--- THE INVARIANT: never show less than the loan finances ---');
+  invariantSweep(files[1], 'v2');
+  invariantSweep(files[0], 'v1');
   // parity: both copies must carry identical helper logic
   ok(extractHelpers(files[0]) === extractHelpers(files[1]), 'v1 and v2 tool copies carry identical IR-link logic');
   for (const f of files) assertNoReservePrefill(f);
