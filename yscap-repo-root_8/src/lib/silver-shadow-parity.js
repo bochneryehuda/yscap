@@ -59,6 +59,7 @@ const path = require('path');
 
 const MIN_LOAN = 100000;
 const SMALL_MAX = 2500000;
+const ABS_MAX_LOAN = 4500000;   // the workbook's Tier 1 large-band ceiling
 const DEFAULT_MARKUP = 0.005;
 const MARKUP_MAX = 0.01;
 
@@ -431,7 +432,6 @@ function shadowCheckInner(input, result, opts) {
   // ---- caps vs the workbook tier grid ----
   if (ev.caps) {
     const c = ev.caps;
-    const gridCapped = (ev.reasons || []).some((r) => /Leverage is capped at /.test((r && r.msg) || ''));
     // The priced frontier is a LATTICE (engine 2026-07-30): the step-down can
     // tighten the LTC axis, the AR-LTV axis, or BOTH, and it NAMES whichever cap
     // bound — so an after-repair cap legitimately sits under the tier row.
@@ -466,6 +466,31 @@ function shadowCheckInner(input, result, opts) {
     }
     if (status === 'ELIGIBLE' && total > row.maxloan + 1) {
       return bad('cap_mismatch', `The sized ${usd(total)} loan exceeds the workbook's ${usd(row.maxloan)} tier maximum.`, { cellKey: `${prodTok}|${purp}|T${tier}` });
+    }
+  }
+
+  // ---- the SERVED loan against the workbook's hard dollar walls ----
+  // Every check above reads `ev.sizing` — the monitor's OWN engine replay — so a
+  // quote whose loan was changed AFTER the engine sized it (a hand-edited
+  // registration, a bad write-back, a doctored payload) was structurally
+  // invisible: a served sizing at 3x the tier maximum came back { ok:true }
+  // (audit 2026-07-30, item 6). These two walls are the workbook's own hard
+  // dollar limits, so a served loan above either one is a real breach whatever
+  // the replay says. Reported figures are FLOORED (frozen rounding rule), so a
+  // truthful quote is always at or below the replay — this can never false-fire
+  // on rounding. FAIL-OPEN: an unreadable served sizing is simply not judged.
+  const servedTotal = num(result.sizing && result.sizing.totalLoan);
+  if (servedTotal > 0) {
+    if (servedTotal > row.maxloan + 1) {
+      return bad('cap_mismatch',
+        `The quote we SERVED carries a ${usd(servedTotal)} loan, above the workbook's ${usd(row.maxloan)} maximum for this tier — the pricing engine sized ${usd(total)}, so the served figure did not come from it.`,
+        { cellKey: `${prodTok}|${purp}|T${tier}`, engine: { totalLoan: total }, workbook: { maxLoan: row.maxloan } });
+    }
+    const bandCeil = sizeBand === 'S' ? SMALL_MAX : ABS_MAX_LOAN;
+    if (servedTotal > bandCeil + 1) {
+      return bad('cap_mismatch',
+        `The quote we SERVED carries a ${usd(servedTotal)} loan, above the ${usd(bandCeil)} ceiling of the workbook's ${sizeBand === 'S' ? '$100k-$2.5M' : '$2.5M-$4.5M'} loan-size band it was priced in.`,
+        { cellKey: `${prodTok}|${purp}|T${tier}`, engine: { totalLoan: total }, workbook: { bandCeiling: bandCeil } });
     }
   }
 

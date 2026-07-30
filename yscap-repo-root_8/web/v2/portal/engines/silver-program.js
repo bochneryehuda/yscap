@@ -93,7 +93,14 @@
     NORTHDAKOTA: "ND", OHIO: "OH", OKLAHOMA: "OK", OREGON: "OR", PENNSYLVANIA: "PA",
     RHODEISLAND: "RI", SOUTHCAROLINA: "SC", SOUTHDAKOTA: "SD", TENNESSEE: "TN", TEXAS: "TX",
     UTAH: "UT", VERMONT: "VT", VIRGINIA: "VA", WASHINGTON: "WA", WESTVIRGINIA: "WV",
-    WISCONSIN: "WI", WYOMING: "WY"
+    WISCONSIN: "WI", WYOMING: "WY",
+    // AP-style abbreviations for the four BANNED states only (audit 2026-07-30,
+    // item 5): "N.D."/"S.D." already normalize because they compact to two
+    // letters, but "Nev." / "Minn." / "N.Dak." / "S. Dak." compact to 3-4 and
+    // fell through to the raw passthrough, so they never blocked. Deliberately
+    // NOT added for any other state — an abbreviation nobody uses is a
+    // false-match risk, and only these four carry a refusal.
+    NEV: "NV", MINN: "MN", NDAK: "ND", SDAK: "SD", NDAKOTA: "ND", SDAKOTA: "SD"
   };
   function stateCode(s) {
     var raw = up(s);
@@ -103,6 +110,28 @@
     return STATE_NAME_TO_CODE[compact] || raw;                   // "New York" → NY; unknown passes through
   }
   function stateOf(input) { return stateCode(input && input.state); }
+
+  /* A RESOLVED state is a real 2-letter USPS code or a name/abbreviation the map
+     above knows. stateCode() deliberately passes UNKNOWN text through verbatim
+     (so nothing is silently reclassified), which means "any non-empty string"
+     is NOT the same question as "do we know which state this is" — and gating
+     the ZIP→banned-state fallback on non-emptiness let "Nevada, USA",
+     "Las Vegas", "N/A", "??" and "unknown" DISABLE it, funding a Las Vegas deal
+     (audit 2026-07-30, item 2). Every gate that means "we know the state" reads
+     THIS, never stateOf() truthiness. */
+  var VALID_STATE_CODES = (function () {
+    var s = {}, k;
+    for (k in STATE_NAME_TO_CODE) if (STATE_NAME_TO_CODE.hasOwnProperty(k)) s[STATE_NAME_TO_CODE[k]] = 1;
+    s.PR = 1; s.VI = 1; s.GU = 1; s.AS = 1; s.MP = 1;            // territories the name map has no entry for
+    return s;
+  }());
+  function stateResolved(input) {
+    var raw = up(input && input.state);
+    if (!raw) return "";
+    var compact = raw.replace(/[^A-Z]/g, "");
+    if (compact.length === 2 && VALID_STATE_CODES[compact]) return compact;
+    return STATE_NAME_TO_CODE[compact] || "";                    // unresolvable text ⇒ we do NOT know the state
+  }
 
   /* ZIP → STATE fallback for the four banned states. When the state FIELD is
      blank the ZIP still names the state, so a Las Vegas / Minneapolis / Fargo /
@@ -384,12 +413,21 @@
           reason: "The ZIP code entered is in the NYC five boroughs (which price on their own rate grid, with their own leverage and loan-size limits) but the state entered doesn't match that ZIP — one of the two is wrong. This needs manual review to confirm the property's real location before it can be priced."
         };
       }
-      var zipState = st ? null : ZIP3_TO_EXCLUDED_STATE[z.slice(0, 3)];
+      // The fallback is gated on a RESOLVED state, never on "the field is
+      // non-blank" (audit 2026-07-30, item 2): stateCode() passes unknown text
+      // through verbatim, so "Nevada, USA" / "Las Vegas" / "Nev." / "N/A" / "??"
+      // read as an authoritative state and DISABLED this whole branch — funding a
+      // Las Vegas property, while the SAME text against a Philadelphia ZIP
+      // correctly went to review. A typed VALID state stays authoritative.
+      var zipState = stateResolved(input) ? null : ZIP3_TO_EXCLUDED_STATE[z.slice(0, 3)];
       if (zipState) {
-        // No state field typed, but the ZIP is provably inside a banned STATE —
-        // treat it exactly like a typed state (typed ZIP is decisive; a ZIP read
-        // out of free text goes to review, mirroring the banned-metro ZIP path).
+        // The ZIP is provably inside a banned STATE. With NO state text at all the
+        // typed ZIP is decisive (a ZIP read out of free text goes to review,
+        // mirroring the banned-metro ZIP path). With state text we cannot RESOLVE,
+        // the two fields may or may not agree — never price it silently; mirror the
+        // existing zipstate MANUAL branch.
         var zsName = STATE_NAMES[zipState] || zipState;
+        if (st) return { level: "MANUAL", label: zsName, source: "zipstate" };
         if (zTyped) return { level: "INELIGIBLE", label: zsName, source: "zip" };
         return { level: "MANUAL", label: zsName, source: "address" };
       }
@@ -405,7 +443,48 @@
       if (city.indexOf(c.city) > -1) return { level: "MANUAL", label: c.label, source: "city" };
       if (addr.indexOf(c.city) > -1) return { level: "MANUAL", label: c.label, source: "address" };
     }
+    // An excluded STATE named only in FREE TEXT was never caught: this fallback
+    // scanned EXCLUDED_CITIES only, and Las Vegas / Minneapolis / Fargo / Sioux
+    // Falls are not excluded CITIES — so "123 Main St, Las Vegas, Nevada" priced
+    // (audit 2026-07-30, item 4; owner-directed: say which city and which zip is
+    // blocked, include these restrictions). Read through the SAME
+    // STATE_NAME_TO_CODE chokepoint, so a name and its AP abbreviation resolve
+    // identically here and in the typed field. MANUAL, never a hard refusal: a
+    // free-text read is lower confidence than a typed field (Nevada, Missouri and
+    // Nevada, Iowa are real towns), and the engine's doctrine everywhere else is
+    // "typed field refuses, free text goes to review".
+    if (!stateResolved(input)) {
+      var txtState = stateTailOf(input.state) || stateTailOf(input.city) || stateTailOf(input.address || input.propAddr);
+      if (txtState && EXCLUDED_STATES.indexOf(txtState) > -1)
+        return { level: "MANUAL", label: (STATE_NAMES[txtState] || txtState), source: "address" };
+    }
     return null;
+  }
+  // The TRAILING state of a free-text line: a US address ends "…, City, ST" (or
+  // "…, City, State"), optionally with the legacy ", USA" tail zipFromText also
+  // strips. POSITION is the guard that keeps a STREET name from firing — "123
+  // Nevada Ave, Denver, CO" ends in CO, so the Nevada in the street is never
+  // read as the state. Whole tokens only, and any run containing a DIGIT is
+  // dropped outright so "123 2nd St" can never contribute an "ND".
+  function stateTailOf(t) {
+    var s = clean(t)
+      .replace(/(?:^|[\s,.;:])(?:u\.?\s?s\.?(?:\s?a\.?)?|united\s+states(?:\s+of\s+america)?)[\s,.;:]*$/i, "")
+      .replace(/[\s,.;:\-]+$/, "");
+    if (!s) return "";
+    var flat = up(s).replace(/[A-Z0-9]*[0-9][A-Z0-9]*/g, " ").replace(/[^A-Z]+/g, " ").trim();
+    if (!flat) return "";
+    var toks = flat.split(" ");
+    var n = toks.length, joined = "", cands = [], w;
+    for (w = 1; w <= 3 && w <= n; w++) {                  // longest tail first: "NORTH DAKOTA" before "DAKOTA"
+      joined = toks.slice(n - w).join("");
+      cands.unshift(joined);
+    }
+    for (var i = 0; i < cands.length; i++) {
+      var cd = cands[i];
+      if (STATE_NAME_TO_CODE[cd]) return STATE_NAME_TO_CODE[cd];
+      if (cd.length === 2 && VALID_STATE_CODES[cd]) return cd;
+    }
+    return "";
   }
   function zipFromText(t) {
     // Only a TRAILING 5-digit group reads as the ZIP — "60629 Main St, Dallas"
@@ -806,7 +885,6 @@
     // is always the larger loan, so the first that prices is that family's best),
     // and the LARGER of the two priced loans wins — the true maximum structure
     // the grid buys. The winning family NAMES itself in the reason.
-    var gridCapped = false;
     if (!rate && !rateOvr && sizing.totalLoan > 0 && fico > 0) {
       var EDGES = [0.925, 0.8999, 0.875, 0.85, 0.80, 0.7499, 0.70, 0.6499];
       var AR_EDGES = [0.75, 0.70, 0.6499];
@@ -874,15 +952,47 @@
           arCands.push(Math.min(AR_EDGES[ee], Math.floor(AR_EDGES[ee] * arv) / arv));
         }
       }
-      // Scanned least-restrictive first on both axes and kept on a STRICT
-      // improvement, so the largest priced loan wins and a tie keeps the loosest
-      // caps (the honest description of what actually bound the deal).
+      // THE LATTICE OPTIMISES LOAN SIZE — AND, ON A TIE, PRICE.
+      // When the loan is pinned by the after-repair value or the tier dollar cap,
+      // the LTC cap is a FREE parameter: several candidates fund the IDENTICAL
+      // total while landing in differently priced LTC bands. Scanning
+      // least-restrictive-first and keeping only a STRICT size improvement kept
+      // the LOOSEST caps, so the borrower was charged MORE for the same loan —
+      // e.g. a $2,673,677.25 ground-up loan priced 10.375% instead of 10.125%,
+      // +$10,026 of interest over 18 months for the same money (audit 2026-07-30,
+      // item 1: 7 same-loan rate increases per 200k scenarios). The ordering is
+      // therefore, in strict priority:
+      //   (1) a MATERIALLY larger loan always wins (the workbook's own max-eligible
+      //       frontier — never trade loan size for rate);
+      //   (2) on effectively the same loan (within $0.50), the LOWER grid rate wins;
+      //   (3) on the same loan AND the same rate, the caps that CUT LESS win — a
+      //       tightening that changes neither the loan nor the price bound nothing,
+      //       and naming it would blame a guideline that is not holding the deal
+      //       back (measured: preferring the tighter caps there invented 102
+      //       after-repair-cap claims and 21 loan-to-cost claims per 30k that the
+      //       sizing does not sit on). So the reason only ever names a cap that
+      //       genuinely moved the structure.
+      var cutCount = function (cc) {
+        return (cc.maxLTC < capsEff.maxLTC - 1e-9 ? 1 : 0) + (cc.maxARLTV < capsEff.maxARLTV - 1e-9 ? 1 : 0);
+      };
+      var betterThan = function (got, keep) {
+        if (!keep) return true;
+        if (got.total > keep.total + 0.5) return true;           // (1) materially larger loan
+        if (got.total < keep.total - 0.5) return false;
+        if (got.grid < keep.grid - 1e-12) return true;           // (2) same loan, cheaper cell
+        if (got.grid > keep.grid + 1e-12) return false;
+        var gc = cutCount(got.caps), kc = cutCount(keep.caps);   // (3) same loan + rate ⇒ cut less
+        if (gc !== kc) return gc < kc;
+        if (got.caps.maxLTC > keep.caps.maxLTC + 1e-9) return true;
+        if (got.caps.maxLTC < keep.caps.maxLTC - 1e-9) return false;
+        return got.caps.maxARLTV > keep.caps.maxARLTV + 1e-9;
+      };
       var best = null, li, ai;
       for (li = 0; li < ltcCands.length; li++) {
         for (ai = 0; ai < arCands.length; ai++) {
           if (li === 0 && ai === 0) continue;                    // the caps that just failed
           var got = tryCaps({ maxLoan: capsEff.maxLoan, minFico: capsEff.minFico, maxAcqLTV: capsEff.maxAcqLTV, maxARLTV: arCands[ai], maxLTC: ltcCands[li] });
-          if (got && (!best || got.total > best.total + 0.5)) best = got;
+          if (got && betterThan(got, best)) best = got;
         }
       }
       if (best) {
@@ -898,7 +1008,6 @@
         // loan-to-cost for a cap the after-repair value set sent borrowers to
         // reduce the wrong number (GUC audit 2026-07-30, finding 3).
         if (cutLtc || cutAr) {
-          gridCapped = true;
           add("ELIGIBLE", "Leverage is capped at " +
             (cutLtc && cutAr
               ? (pct2(best.caps.maxLTC) + " loan-to-cost and " + pct2(best.caps.maxARLTV) + " of the after-repair value")
@@ -911,7 +1020,16 @@
     }
 
     // ---- no priced grid cell at any leverage → individual review ----
-    var arB = arBand(arForBand(sizing)), fB = ficoBand(tier, fico || 700), lB = ltcBand(sizing.ltcPct > 0 ? sizing.ltcPct : capsEff.maxLTC);
+    // The reported key is derived through atCap() — BYTE-FOR-BYTE the expressions
+    // rateAt()/gridAt() charge off — so the key always names the cell the engine
+    // actually priced on. Deriving it from the RAW ratios instead named a cell the
+    // workbook does not price whenever atCap fired: a cap-bound loan reported
+    // "…|90.00%-92.50%" while it was charged the 87.51%-89.99% cell (audit
+    // 2026-07-30, item 3; owner-directed: everything should tie up, the buy rate
+    // included). No rate, band edge, cap or sizing figure moves — only the label.
+    var arB = arBand(atCap(arForBand(sizing), capsEff.maxARLTV)),
+        fB = ficoBand(tier, fico || 700),
+        lB = ltcBand(atCap(sizing.ltcPct > 0 ? sizing.ltcPct : capsEff.maxLTC, capsEff.maxLTC));
     var key = rateKey(market, sizeBand, pTok, purp, termTok, tier, arB || "-", fB || "-", lB || "-");
     if (!rate && sizing.totalLoan > 0 && fico > 0) {
       add("MANUAL", "No priced grid cell for this profile — submit for individual review.");
@@ -933,8 +1051,17 @@
     // file every cap collapses to zero and the deal reported "the rehab budget
     // exceeds what this program can finance" — a refusal about the wrong field
     // (audit 2026-07-30, finding F). Name the missing input instead.
-    var arvMissingGuc = (sc === "NC") && !(arv > 0);
-    if (arvMissingGuc) add("MANUAL", "After-repair value is required to size a ground-up loan — enter the completed (as-built) value and this scenario can be priced.");
+    // EVERY value-add product is sized against the AFTER-REPAIR value (capARV =
+    // maxARLTV x ARV is a hard wall in the shared waterfall), so with no ARV on
+    // file the caps collapse to zero for fix & flip / fix & hold exactly as they do
+    // for ground-up. Scoping the named reason to ground-up left a F&F deal
+    // reporting ELIGIBLE with a $0 loan and "Meets the Silver Program guidelines"
+    // (audit 2026-07-30, item 7). A BRIDGE is sized on the as-is value (capARV is
+    // Infinity there) and genuinely needs no ARV — it is the only exemption.
+    var arvMissing = (sc !== "BR") && !(arv > 0);
+    if (arvMissing) add("MANUAL", (sc === "NC")
+      ? "After-repair value is required to size a ground-up loan — enter the completed (as-built) value and this scenario can be priced."
+      : "After-repair value is required to size a fix & flip / fix & hold loan — enter the after-repair value and this scenario can be priced.");
     else if (sizing.rehabOverCap) add("MANUAL", "The rehab budget exceeds what this program can finance — the loan is capped at " + usd(sizing.totalLoan) + ", so the remaining budget would be funded out of pocket. Reduce the scope or use a larger facility.");
 
     // ---- DSCR gate (fix & hold exit): projected DSCR must be ≥ 1.00 when known ----

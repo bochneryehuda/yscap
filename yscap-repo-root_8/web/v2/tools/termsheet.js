@@ -470,6 +470,11 @@
   /* ---------------- render ---------------- */
   function statusClass(st) { return st === "ELIGIBLE" ? "good" : st === "MANUAL" ? "warn" : "bad"; }
   function statusText(st) { return st === "ELIGIBLE" ? "Eligible" : st === "MANUAL" ? "Not eligible as-is — manual-review exception" : "Not eligible"; }
+  // The CARD badge is a chip in a ~249px box; the full statusText above is 270px
+  // wide on its own and used to spill out of the card (audit 2026-07-30). The card
+  // keeps a SHORT label and its sub-line states the actual reason; the detail
+  // panel's verdict keeps the full wording.
+  function badgeText(st) { return st === "ELIGIBLE" ? "Eligible" : st === "MANUAL" ? "Manual review" : "Not eligible"; }
 
   function firstReason(rs) { for (var i = 0; i < (rs || []).length; i++) if (rs[i].level !== "ELIGIBLE") return rs[i].msg; return ""; }
   // Shorten any reason string to a plain first-clause for the cards.
@@ -485,7 +490,7 @@
     var e = el(id); if (!e) return;
     if (!ready) { e.textContent = "\u2014"; e.className = "pcard-badge"; return; }
     if (status === "UNAVAILABLE") { e.textContent = "Not offered"; e.className = "pcard-badge bad"; return; }
-    e.textContent = statusText(status); e.className = "pcard-badge " + statusClass(status);
+    e.textContent = badgeText(status); e.className = "pcard-badge " + statusClass(status);
   }
 
   // Populate the two headline program cards (Standard from the live calc; Gold Standard from its engine)

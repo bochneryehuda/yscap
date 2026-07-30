@@ -162,6 +162,34 @@ const A = {
   ok(r.ok === false && r.kind === 'cap_mismatch', `caps drifted off the tier grid → cap_mismatch (got ${JSON.stringify(r && r.kind)})`);
 })();
 
+/* the SERVED sizing is judged, not only the monitor's own replay (fix 2026-07-30,
+   item 6): every other check reads ev.sizing (the replay), so a quote whose loan
+   was changed AFTER the engine sized it used to come back { ok:true }. */
+(function servedSizing() {
+  const ev = evalWith(A, 0.005);
+  const row = FIX.tierGrid['FF|P|T1'];
+  ok(row && row.maxloan === 4500000, 'served-sizing control: the workbook tier row caps FF|P|T1 at $4.5M');
+  // 3x the tier maximum — the audit's negative control (used to be MISSED)
+  const over = { ...ev, sizing: { ...ev.sizing, totalLoan: row.maxloan * 3 } };
+  const rOver = monitor.shadowCheck(A, over);
+  ok(rOver.ok === false && rOver.kind === 'cap_mismatch',
+    `a SERVED loan at 3x the tier maximum → cap_mismatch (got ${JSON.stringify(rOver && rOver.kind)})`);
+  ok(/SERVED/.test(String(rOver.detail)) && /13,500,000/.test(String(rOver.detail)),
+    'the detail names the SERVED figure, not the replay');
+  // over the small-band ceiling while still under the tier maximum
+  const overBand = { ...ev, sizing: { ...ev.sizing, totalLoan: 2600000 } };
+  const rBand = monitor.shadowCheck(A, overBand);
+  ok(rBand.ok === false && rBand.kind === 'cap_mismatch',
+    `a SERVED loan over the $2.5M small-band ceiling → cap_mismatch (got ${JSON.stringify(rBand && rBand.kind)})`);
+  // exactly ON the ceiling, and the honest figure, stay clean; a missing/garbage
+  // served sizing FAILS OPEN (never a false advisory)
+  ok(monitor.shadowCheck(A, { ...ev, sizing: { ...ev.sizing, totalLoan: 2500000 } }).ok === true,
+    'a SERVED loan exactly on the band ceiling is not flagged');
+  ok(monitor.shadowCheck(A, ev).ok === true, 'the honest served sizing is not flagged');
+  ok(monitor.shadowCheck(A, { ...ev, sizing: { ...ev.sizing, totalLoan: 'oops' } }).ok === true,
+    'a garbage served sizing fails OPEN');
+})();
+
 /* MANUAL-with-rate (FICO waiver below the tier minimum) still ties out */
 (function manualWithRate() {
   const W = {

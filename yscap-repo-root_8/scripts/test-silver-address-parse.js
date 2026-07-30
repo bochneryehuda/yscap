@@ -543,6 +543,84 @@ function s0(name, cond) { if (cond) s0Pass++; else s0Fail.push(name); }
   // stays the engine's existing house-number/typed-field doctrine).
   C('S5-D-strict-1', 'banned-state zip 89109 + typed state NJ → typed state wins (prices)', { zip: '89109', state: 'NJ' }, ELIG('STD'));
   C('S5-D-strict-2', 'banned-state zip 55401 + typed state MN → INELIGIBLE by state', { zip: '55401', state: 'MN' }, EXCL('state', 'Minnesota'));
+
+  /* ---- fix round 2026-07-30, item 5: AP-style abbreviations of the four banned
+     states normalize like the spelled-out names ("N.D."/"S.D." already did,
+     because they compact to two letters). ---- */
+  const AP = [['Nev.', 'Nevada'], ['nev', 'Nevada'], ['Minn.', 'Minnesota'], ['minn', 'Minnesota'],
+    ['N.Dak.', 'North Dakota'], ['N. Dakota', 'North Dakota'], ['S. Dak.', 'South Dakota'], ['S.Dakota', 'South Dakota'],
+    ['N.D.', 'North Dakota'], ['S.D.', 'South Dakota'], ['n.v.', 'Nevada']];
+  let ap = 0;
+  for (const [txt, name] of AP) {
+    ap++;
+    C(`S5-AP-${ap}`, `state '${txt}' (AP abbreviation) → INELIGIBLE`, { state: txt, city: 'Anytown' }, EXCL('state', name));
+  }
+  // …and abbreviations of ALLOWED states are deliberately NOT invented: a form
+  // the map does not know stays unresolvable and simply prices.
+  C('S5-AP-neg-1', "state 'Calif.' (not in the map) still prices", { state: 'Calif.', zip: '90210' }, ELIG('STD'));
+  C('S5-AP-neg-2', "state 'Tex.' (not in the map) still prices", { state: 'Tex.', zip: '75201' }, ELIG('STD'));
+
+  /* ---- fix round 2026-07-30, item 2: an UNRESOLVABLE but non-blank state must
+     not disable the ZIP→banned-state fallback. Each of these funded a Las Vegas
+     property before the fix. ---- */
+  const UNRES = ['Nevada, USA', 'Las Vegas', 'Minn', 'unknown', '??', 'N/A', 'Clark County', 'n/a', '-'];
+  let ur = 0;
+  for (const st of UNRES) {
+    ur++;
+    if (/^minn$/i.test(st)) continue;                       // resolves to MN → covered by S5-AP
+    C(`S5-UR-${ur}a`, `banned-state zip 89101 + unresolvable state '${st}' → MANUAL zipstate`,
+      { zip: '89101', state: st }, MAN('zipstate', 'Nevada'));
+    C(`S5-UR-${ur}b`, `banned-state zip 55401 + unresolvable state '${st}' → MANUAL zipstate`,
+      { zip: '55401', state: st }, MAN('zipstate', 'Minnesota'));
+  }
+  // the asymmetry that proved it wrong stays intact, both directions
+  C('S5-UR-asym-1', "excluded-METRO zip 19103 + unresolvable state → MANUAL zipstate (unchanged)",
+    { zip: '19103', state: 'Nevada, USA' }, MAN('zipstate', 'Greater Philadelphia'));
+  C('S5-UR-asym-2', 'banned-state zip 89101 + NO state at all → INELIGIBLE (unchanged)',
+    { zip: '89101' }, EXCL('zip', 'Nevada'));
+  // a typed VALID state stays authoritative
+  C('S5-UR-auth-1', 'banned-state zip 89101 + typed state CA → typed state wins (prices)', { zip: '89101', state: 'CA' }, ELIG('STD'));
+  C('S5-UR-auth-2', 'banned-state zip 89101 + typed state NV → INELIGIBLE by state', { zip: '89101', state: 'NV' }, EXCL('state', 'Nevada'));
+  // a text-parsed banned-state ZIP + unresolvable state text → still never priced
+  C('S5-UR-txt-1', "address '12 Elm St, Las Vegas 89101' + state 'N/A' → MANUAL zipstate",
+    { address: '12 Elm St, Las Vegas 89101', state: 'N/A' }, MAN('zipstate', 'Nevada'));
+
+  /* ---- fix round 2026-07-30, item 4: an excluded STATE named only in the FREE
+     TEXT (no ZIP, no typed state). Las Vegas / Minneapolis / Fargo / Sioux Falls
+     are not excluded CITIES, so nothing caught them. ---- */
+  const TXT = [
+    ['123 Main St, Las Vegas, Nevada', 'Nevada'],
+    ['123 Main St, Las Vegas, NV', 'Nevada'],
+    ['123 Main St, Minneapolis, Minnesota', 'Minnesota'],
+    ['123 Main St, Minneapolis, MN', 'Minnesota'],
+    ['123 Main St, Fargo, North Dakota', 'North Dakota'],
+    ['123 Main St, Fargo, ND', 'North Dakota'],
+    ['123 Main St, Sioux Falls, South Dakota', 'South Dakota'],
+    ['123 Main St, Sioux Falls, SD', 'South Dakota'],
+    ['123 Main St, Reno, Nev.', 'Nevada'],
+    ['123 Main St, Las Vegas, Nevada, USA', 'Nevada'],
+    ['123 Main St, Bismarck, N.Dak.', 'North Dakota'],
+  ];
+  let tx = 0;
+  for (const [addr, name] of TXT) {
+    tx++;
+    C(`S5-TXT-${tx}`, `address '${addr}' → MANUAL (state named in free text)`, { address: addr }, MAN('address', name));
+  }
+  // the typed STATE FIELD carrying unresolvable text that still NAMES a banned
+  // state, with no ZIP to fall back on
+  C('S5-TXT-st-1', "state 'Nevada, USA', no zip → MANUAL", { state: 'Nevada, USA' }, MAN('address', 'Nevada'));
+  C('S5-TXT-st-2', "state 'Minnesota USA', no zip → MANUAL", { state: 'Minnesota USA' }, MAN('address', 'Minnesota'));
+  // NEGATIVE controls — position is what makes this safe: only the TRAILING name
+  // is a state, so a street/city carrying a state word never fires.
+  C('S5-TXT-neg-1', "'123 Nevada Ave, Denver, CO' → prices (Nevada is the STREET)", { address: '123 Nevada Ave, Denver, CO' }, ELIG('STD'));
+  C('S5-TXT-neg-2', "'123 Nevada Ave, Denver' (no state at all) → prices", { address: '123 Nevada Ave, Denver' }, ELIG('STD'));
+  C('S5-TXT-neg-3', "'55 Dakota Blvd, Austin, TX' → prices", { address: '55 Dakota Blvd, Austin, TX' }, ELIG('STD'));
+  C('S5-TXT-neg-4', "'900 Minnesota Ave, Kansas City, KS' → prices", { address: '900 Minnesota Ave, Kansas City, KS' }, ELIG('STD'));
+  C('S5-TXT-neg-5', "'12 Oak St, Rochester, New York' → prices STD (state, not NYC)", { address: '12 Oak St, Rochester, New York' }, ELIG('STD'));
+  C('S5-TXT-neg-6', "'123 2nd St, Boise, ID' → prices (a digit run can never read as ND)", { address: '123 2nd St, Boise, ID' }, ELIG('STD'));
+  C('S5-TXT-neg-7', "'123 2nd St, Boise' → prices", { address: '123 2nd St, Boise' }, ELIG('STD'));
+  C('S5-TXT-neg-8', "typed state TN wins over free text naming Nevada", { address: '123 Main St, Las Vegas, Nevada', state: 'TN' }, ELIG('STD'));
+  C('S5-TXT-neg-9', "a good typed ZIP is decisive over free text naming Nevada", { address: '123 Main St, Las Vegas, Nevada', zip: '75201' }, ELIG('STD'));
 })();
 
 /* ===================================================================== *

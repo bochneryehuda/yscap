@@ -189,6 +189,14 @@ function engKeyOf(mkt, sizeBand, prodTok, purp, termTok, tier, arRatio, fico, lt
   const arB = SVP.arBand(arRatio), fB = SVP.ficoBand(tier, fico), lB = SVP.ltcBand(ltcRatio);
   return [mkt, sizeBand, prodTok, purp, termTok, 'T' + tier, arB || '-', fB || '-', lB || '-'].join('|');
 }
+// The engine classifies a CAP-BOUND structure AT its cap (silver-program.js
+// atCap): a loan sized right up to a leverage cap is reported to the cent, so the
+// ratio it implies can come back a hair ABOVE the cap. Both the charged cell
+// (rateAt/gridAt) and — since the fix of 2026-07-30, item 3 — the REPORTED
+// rateKey are derived through it, so the key always names the cell actually
+// priced. Replicated here so the rateKey cross-check keeps mirroring the engine;
+// the knife-edge tolerances below deliberately keep using the RAW ratios.
+function atCapM(ratio, cap) { return (cap > 0 && ratio > cap && ratio < cap + 1e-6) ? cap : ratio; }
 // Every band BOUNDARY number from the fixture's own labels — uppers AND lowers
 // ("<64.99%" and "65.00%-70.00%" leave a gap, and tier caps like the 0.65 max
 // AR-LTV sit exactly ON a band's lower bound, so a cap-bound loan lands there).
@@ -532,11 +540,18 @@ function verifyScenario(cellName, cell, spec, input, ev, effCap, C, recordFail) 
       const mt = /is below the Tier (\d+) minimum of (\d+)/.exec(m);
       if (!mt || +mt[1] !== tier || +mt[2] !== row.minfico) bad(`FICO waiver reason names Tier ${mt && mt[1]}/min ${mt && mt[2]}, expected Tier ${tier}/min ${row && row.minfico}`, m);
     }
-    else if (/After-repair value is required to size a ground-up loan/.test(m)) {
-      // engine fix 2026-07-30 (item F): a ground-up deal with no ARV names the
-      // missing input instead of blaming the rehab budget. The matrix always
-      // generates a positive ARV for GUC, so this must never fire here.
-      if (!(prodTok === 'GUC' && !(arv > 0))) bad('missing-ARV reason on a deal that has an ARV', m);
+    else if (/After-repair value is required to size /.test(m)) {
+      // engine fix 2026-07-30 (item F, widened by item 7): EVERY value-add product
+      // is sized against the after-repair value, so a missing ARV names the missing
+      // input instead of blaming the rehab budget — ground-up keeps its own
+      // wording, fix & flip / fix & hold gets its own, and a BRIDGE (sized on the
+      // as-is value) must never raise it. The matrix always generates a positive
+      // ARV, so this must never fire here at all.
+      if (!(arv > 0)) {
+        if (prodTok === 'BR') bad('missing-ARV reason on a bridge (sized on the as-is value)', m);
+        const wantGuc = /size a ground-up loan/.test(m);
+        if (wantGuc !== (prodTok === 'GUC')) bad(`missing-ARV wording does not match the product ${prodTok}`, m);
+      } else bad('missing-ARV reason on a deal that has an ARV', m);
     }
     else if (/Sized below the \$100,000 minimum/.test(m)) {
       if (!(total > 0 && total < MIN_LOAN)) bad(`below-min flag with sized total ${total}`, m);
@@ -695,9 +710,25 @@ function verifyScenario(cellName, cell, spec, input, ev, effCap, C, recordFail) 
     // exact workbook cell (decimal-snapped ratios — the workbook's own arithmetic)
     const myKey = myKeyOf(spec.market, ev.sizeBand, prodTok, purp, termTok, tier, snap9(arRatio), input.fico, snap9(s.ltcPct));
     const fixRate = myKey ? FIX.rates[myKey] : undefined;
-    // the engine's raw-float key must equal what the engine says it priced at
+    // the engine's raw-float key — used ONLY by the mirror knife-edge tolerance
     const engKey = engKeyOf(spec.market, ev.sizeBand, prodTok, purp, termTok, tier, arRatio, input.fico, s.ltcPct);
-    if (ev.rateKey && engKey !== ev.rateKey) bad(`rateKey derivation drift: engine ${ev.rateKey} vs derived ${engKey}`);
+    // the engine's REPORTED key: the same raw floats put through atCap with the
+    // effective caps, exactly as rateAt()/gridAt() charge (engine fix 2026-07-30,
+    // item 3 — the key used to be derived from the RAW ratios and so named a cell
+    // the workbook does not price whenever atCap fired)
+    const engKeyRep = engKeyOf(spec.market, ev.sizeBand, prodTok, purp, termTok, tier,
+      atCapM(arRatio, ev.caps.maxARLTV), input.fico,
+      atCapM(s.ltcPct > 0 ? s.ltcPct : ev.caps.maxLTC, ev.caps.maxLTC));
+    if (ev.rateKey && engKeyRep !== ev.rateKey) bad(`rateKey derivation drift: engine ${ev.rateKey} vs derived ${engKeyRep}`);
+    // …and a PRICED result's reported key must be a real workbook cell that ties
+    // to the quoted rate (the point of the fix: the key names the cell charged)
+    if (ev.noteRate > 0 && ev.rateKey) {
+      const repRate = FIX.rates[ev.rateKey];
+      if (repRate == null || Math.abs(ev.noteRate - (repRate + effCap)) > 1e-9) {
+        if (repRate == null) C.keyNotACell++; else C.keyRateOff++;
+        if (C.keySamples.length < 3) C.keySamples.push({ cell: cellName, input, key: ev.rateKey, repRate: repRate == null ? null : repRate, noteRate: ev.noteRate, effCap, exactKey: myKey, exactRate: fixRate == null ? null : fixRate, ltc: s.ltcPct, ar: arRatio, caps: ev.caps });
+      } else C.keyTied++;
+    }
 
     if (ev.noteRate > 0) {
       C.priced++;
@@ -777,6 +808,10 @@ for (const cellName of CELLS) {
   const C = {
     cell: cellName, n: 0, eligible: 0, manual: 0, inelig: 0,
     priced: 0, rateExact: 0, rateLagged: 0, edgeManual: 0,
+    // the REPORTED rateKey vs the fixture (engine fix 2026-07-30, item 3): a
+    // priced result's key must be a real workbook cell whose rate + markup IS the
+    // quoted note rate. keyNotACell/keyRateOff are the residual the fix targets.
+    keyTied: 0, keyNotACell: 0, keyRateOff: 0, keySamples: [],
     cellsHit: new Set(), laggedSamples: [], edgeManualSamples: [],
     fams: {}
   };
@@ -841,11 +876,12 @@ function summary() {
   console.log('\n================ PER-CELL SUMMARY ================');
   console.log('cell     | scenarios | eligible | manual | ineligible | priced | rate-exact | edge-lagged | edge-manual | cells-hit');
   const allHit = new Set();
-  let sums = { n: 0, e: 0, m: 0, i: 0, p: 0, rx: 0, rl: 0, em: 0 };
+  let sums = { n: 0, e: 0, m: 0, i: 0, p: 0, rx: 0, rl: 0, em: 0, kt: 0, knc: 0, kro: 0 };
   for (const C of cellStats) {
     for (const k of C.cellsHit) allHit.add(k);
     sums.n += C.n; sums.e += C.eligible; sums.m += C.manual; sums.i += C.inelig;
     sums.p += C.priced; sums.rx += C.rateExact; sums.rl += C.rateLagged; sums.em += C.edgeManual;
+    sums.kt += C.keyTied; sums.knc += C.keyNotACell; sums.kro += C.keyRateOff;
     console.log(
       `${C.cell.padEnd(8)} | ${String(C.n).padStart(9)} | ${String(C.eligible).padStart(8)} | ${String(C.manual).padStart(6)} | ` +
       `${String(C.inelig).padStart(10)} | ${String(C.priced).padStart(6)} | ${String(C.rateExact).padStart(10)} | ` +
@@ -858,6 +894,15 @@ function summary() {
     `${String(sums.i).padStart(10)} | ${String(sums.p).padStart(6)} | ${String(sums.rx).padStart(10)} | ` +
     `${String(sums.rl).padStart(11)} | ${String(sums.em).padStart(11)} | ${String(allHit.size).padStart(5)}`
   );
+  console.log(`\nReported rateKey vs the workbook: ${sums.kt.toLocaleString()} of ${sums.p.toLocaleString()} priced results name a REAL cell that ties to the quoted rate; ` +
+    `${sums.knc} name no fixture cell, ${sums.kro} name a cell whose rate does not tie (engine fix 2026-07-30, item 3 — target 0/0).`);
+  if (sums.knc + sums.kro > 0) {
+    console.log(`  RESIDUAL (${sums.knc + sums.kro}): the knife-edge cases already reported below — the two-pass rate/IR loop settled the FINAL sizing in a band the grid does not price after the rate was picked off the first pass, so the key honestly names the final structure while the charged rate is the first pass's real workbook cell. Samples:`);
+    for (const C of cellStats) for (const x of C.keySamples) {
+      console.log(`  [${x.cell}] key ${x.key} (fixture ${x.repRate}); charged ${x.noteRate} (markup ${x.effCap}); exact-decimal cell ${x.exactKey} = ${x.exactRate}; LTC ${x.ltc} AR ${x.ar}`);
+      console.log(`    input: ${JSON.stringify(x.input)}`);
+    }
+  }
   console.log(`\nUnique serialized inputs: ${globalSeen.size.toLocaleString()} (expected ${(CELLS.length * N).toLocaleString()})`);
   console.log(`Distinct workbook rate cells exercised: ${allHit.size} of ${FIX_KEYS.length}`);
   console.log(`Elapsed: ${((Date.now() - t0) / 1000).toFixed(1)}s`);

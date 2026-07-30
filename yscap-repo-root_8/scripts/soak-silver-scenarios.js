@@ -179,7 +179,12 @@ function checkOne(i, input, markup) {
     // The engine never sizes a row the workbook leaves empty (FF|R|T3 → maxloan 0)
     // — it refuses before sizing — so a sized loan on such a row is a real breach.
     if (!(caps.maxloan > 0)) return fail('I4 sized a loan on an empty workbook tier row', input, ev, `row=${tgKey}`);
-    if (caps.maxltc > 0 && s.ltcPct > 0 && s.ltcPct > caps.maxltc + TOL && !(ev.reasons || []).some((r) => /Leverage is capped/.test(r.msg))) {
+    // NO step-down exemption here. The grid step-down only ever LOWERS maxLTC, so
+    // a deal carrying a "Leverage is capped" reason can never legitimately sit
+    // ABOVE the workbook tier row's own ceiling — the exemption masked nothing
+    // today but was a standing hole (audit 2026-07-30, item 8). A voluntary
+    // targetLTC likewise only lowers. The row ceiling is absolute.
+    if (caps.maxltc > 0 && s.ltcPct > 0 && s.ltcPct > caps.maxltc + TOL) {
       return fail('I4 LTC breach', input, ev, `ltc=${s.ltcPct} cap=${caps.maxltc}`);
     }
     if (s.totalLoan > caps.maxloan + 1) return fail('I4 tier max loan breach', input, ev, `loan=${s.totalLoan} cap=${caps.maxloan}`);

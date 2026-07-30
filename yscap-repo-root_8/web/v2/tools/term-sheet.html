@@ -172,7 +172,14 @@
   .pcard.gold .pcard-name{ color:var(--gold); }
   .pcard.silver .pcard-name{ color:#8A99A8; }
   .pcard.manual .pcard-name{ color:var(--teal-br,#7FA9B0); }
-  .pcard-badge{ font-size:.62rem; font-weight:700; padding:.22rem .5rem; border-radius:100px; border:1px solid var(--line); color:var(--muted); white-space:nowrap; }
+  /* The badge is a CHIP inside a 249px card, so it can never be allowed to set
+     the card's width: max-width + ellipsis is the structural backstop (a long
+     status string used to render 270px wide and spill out of the box at every
+     viewport — owner's "going out of the box" class, audit 2026-07-30). The
+     card's own sub-line carries the full reason, so a clipped chip loses
+     nothing. Keep all three properties together. */
+  .pcard-badge{ font-size:.62rem; font-weight:700; padding:.22rem .5rem; border-radius:100px; border:1px solid var(--line); color:var(--muted); white-space:nowrap; max-width:58%; overflow:hidden; text-overflow:ellipsis; flex:0 1 auto; }
+  .pcard-name{ min-width:0; overflow:hidden; text-overflow:ellipsis; }
   .pcard-badge.good{ color:var(--good); border-color:rgba(127,176,138,.5); } .pcard-badge.warn{ color:var(--warn); border-color:rgba(201,168,106,.5); } .pcard-badge.bad{ color:var(--bad); border-color:rgba(201,138,106,.5); }
   .pcard-loanlbl{ font-size:.64rem; text-transform:uppercase; letter-spacing:.12em; color:var(--muted-2); }
   .pcard-loan{ font-family:var(--font-d); font-weight:600; font-size:1.95rem; line-height:1.05; color:var(--ivory); margin:.12rem 0 .7rem; word-break:break-word; }
@@ -857,10 +864,10 @@
 <script src="rb-logo.js?v=admin8"></script>
 <script src="standard-program.js?v=asgseller18-asgelig"></script>
 <script src="gold-standard.js?v=asgseller19"></script>
-<script src="silver-program.js?v=silver3"></script>
+<script src="silver-program.js?v=silver4"></script>
 <script src="title-cost.js?v=admin8"></script>
 <script src="address-autocomplete.js?v=admin9"></script>
-<script src="termsheet.js?v=cards6"></script>
+<script src="termsheet.js?v=cards7"></script>
 <script src="../float-actions.js?v=admin10-applyfix"></script>
 <script>
 /* Property-address autocomplete (owner-directed 2026-07-17): same shared YSAddr
