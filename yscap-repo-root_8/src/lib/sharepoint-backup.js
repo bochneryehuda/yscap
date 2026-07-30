@@ -318,12 +318,35 @@ function llcSubfolder(row) {
   return row.item_label || 'Other Documents';
 }
 
-// The folder PATH a document belongs in, inside YS portal syncing — an array
-// of nested segments. Condition-attached documents use the condition's label;
-// LLC documents nest under the LLC's NAME; track-record (REO / experience)
-// docs nest under REO/<project address> — one folder per line item, holding
-// every document uploaded to that experience (owner-directed 2026-07-13);
-// term sheets split Unsigned/Signed (the Signed side arrives with DocuSign).
+// The clean, TPR-style category name for an ordinary condition / loose document.
+// Reuses tpr-export's ONE categorizer (the same map that names the TPR package's
+// folders — Bank Statements, Contract & Assignment, Appraisal, Credit Report,
+// Insurance, TITLE, ID, Scope of Work, …) so the mirror can never drift from it.
+// Lazy-required + cached: sharepoint-backup loads at boot and must not force a
+// tpr-export load order (tpr-export never top-level-requires this module).
+let _tprCategoryFor = null;
+function tprCategoryOf(row) {
+  if (!_tprCategoryFor) _tprCategoryFor = require('./tpr-export').categoryFor;
+  return _tprCategoryFor(row);
+}
+
+// The signed closing package / final settlement statement (not the running
+// correspondence, which has its own case above) groups under a clean "Closing"
+// folder rather than a per-condition label.
+function isClosingDoc(row) {
+  const k = String(row.doc_kind || '').toLowerCase();
+  if (k === 'closing_hud_final' || k === 'closing_pkg_signed' || k === 'closing_package') return true;
+  const code = String(row.template_code || '').toLowerCase();
+  return code === 'closing_pkg_signed' || code === 'post_closing';
+}
+
+// The folder PATH a document belongs in, inside the Pilot sync leaf — an array
+// of nested segments. Structural cases keep their own homes (LLC nests under the
+// LLC's NAME; REO/<project address> per line item; term sheets split Unsigned/
+// Signed; photo ID, TPR Exports, Draw Reports, Closing, chat). EVERYTHING ELSE —
+// condition-attached or loose — files under the SAME clean category folder the
+// TPR export uses, so the "Synced by Pilot" tree reads like the TPR package
+// instead of one folder per long condition label (owner-directed 2026-07-30).
 function categoryPathFor(row) {
   if (row.llc_resolved_id) return [row.llc_name || 'LLC', llcSubfolder(row)];
   if (row.doc_kind === 'photo_id') return ['Photo ID'];               // always profile-level
@@ -343,9 +366,9 @@ function categoryPathFor(row) {
   if (row.track_record_id || row.doc_kind === 'track_record_doc') {
     return ['REO', row.tr_address || (row.track_record_id ? `Project ${String(row.track_record_id).slice(0, 8)}` : 'General')];
   }
-  if (row.item_label) return [row.item_label];
+  if (isClosingDoc(row)) return ['Closing'];
   if (row.source_type === 'chat_attachment') return ['Chat Attachments'];
-  return ['General Documents'];
+  return [tprCategoryOf(row)];
 }
 // Back-compat name used by tests/health.
 const categoryFor = (row) => categoryPathFor(row).join('/');
@@ -2473,4 +2496,7 @@ module.exports = {
   REGEN_KIND_SQL, NEVER_MIRROR_SQL, snapshotSettleSec, DEFAULT_BATCH,
   // Exported for the pure unit test (scripts/test-sharepoint-shortpath.js).
   stripPathEchoes,
+  // Exported for the recategorize repair (scripts/sharepoint-recategorize-existing.js)
+  // + the pure category test (scripts/test-sharepoint-category.js).
+  categoryPathFor, scopeKeyFor,
 };
