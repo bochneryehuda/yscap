@@ -92,6 +92,19 @@ console.log('\n--- the share-link guarantee is intact ---');
   assert(/function collectState\(opts\)/.test(suite), 'collectState takes an explicit opt-in');
   assert(/!keepPrivate && inp\.hasAttribute\("data-noshare"\)/.test(suite),
     'without the opt-in, data-noshare fields are still skipped');
+  /* A PASSWORD IS NEVER PART OF A STATE. The admin zone is unlocked by typing into
+     #tsAdminPw, which carries data-noshare like every other admin field — so the
+     moment the includeNoShare opt-in was added for saved scenarios it would have
+     swept the ADMIN PASSWORD into the blob and written it to the database in clear
+     text. The skip is checked BEFORE the opt-in so no caller can ever ask for it. */
+  assert(/if \(inp\.type === "password"\) return;/.test(suite),
+    'a password input is skipped unconditionally, before the opt-in is even considered');
+  {
+    const pwSkip = suite.indexOf('inp.type === "password"');
+    const optIn = suite.indexOf('!keepPrivate && inp.hasAttribute');
+    assert(pwSkip > 0 && optIn > 0 && pwSkip < optIn,
+      'the password skip comes BEFORE the opt-in, so includeNoShare can never reach it');
+  }
   const shareCalls = [...suite.matchAll(/encodeState\(collectState\(([^)]*)\)\)/g)].map((m) => m[1].trim());
   assert(shareCalls.length >= 2 && shareCalls.every((a) => a === ''),
     `every share/URL path calls collectState with NO argument, so links never carry admin knobs (found ${shareCalls.length})`);

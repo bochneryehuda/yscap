@@ -122,6 +122,14 @@ window.YS = (function () {
     const keepPrivate = !!(opts && opts.includeNoShare);
     const v = {}, cb = {}, rad = {};
     document.querySelectorAll("input[id], select[id], textarea[id]").forEach(function (inp) {
+      /* A PASSWORD IS NEVER PART OF A STATE, not even a private one. The admin zone
+         is unlocked by typing a password into #tsAdminPw, which carries data-noshare
+         like every other admin field — so the moment `includeNoShare` was added for
+         saved scenarios, the opt-in would have swept the ADMIN PASSWORD into the
+         saved blob and written it to the database in clear text. A saved scenario is
+         meant to hold the deal's numbers, never a credential. Checked BEFORE the
+         opt-in so no caller, present or future, can ask for it. */
+      if (inp.type === "password") return;
       if (!keepPrivate && inp.hasAttribute("data-noshare")) return;   // admin-only fields never enter shared/exported state
       if (inp.type === "checkbox") { cb[inp.id] = inp.checked; }
       else if (inp.type === "radio") { /* captured by name below */ }

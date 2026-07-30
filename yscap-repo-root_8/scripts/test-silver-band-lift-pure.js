@@ -29,7 +29,9 @@
      • the engine's band arrays ARE the fixture's labels, in band order;
      • every other edge parses to itself and classifies exactly as before;
      • the round number, and the whole seam beneath it, band DOWN;
-     • one ulp above the round number bands UP.
+     • a ROUNDING SPECK above an edge still bands DOWN (owner-authorized
+       2026-07-30: "so it shouldn't get overpriced"), while a ratio genuinely
+       above the edge still bands UP.
 
    PURE: no DB, no network, no server. Run: node scripts/test-silver-band-lift-pure.js
    ===================================================================== */
@@ -77,9 +79,16 @@ for (const fam of [{ n: 'AR', a: AR }, { n: 'LTC', a: LTC }]) {
 /* ---------- the classifier, checked against an independent derivation ---------- */
 const lift = (hi) => (hi % 100 === 99 ? hi + 1 : hi) / 10000;
 const AR_EDGE = AR.map((b) => lift(b.hi)), LTC_EDGE = LTC.map((b) => lift(b.hi));
+/* Mirrors the engine's BAND_EPS. A ratio is a division, and binary floating point
+   cannot hold most decimal fractions exactly, so a loan sitting mathematically ON an
+   edge comes back a hair above it and used to be charged the DEARER band (measured:
+   10.25% instead of 10.00%, ~$1,635 on a 12-month term). 1e-9 is ~7 orders above the
+   observed noise (~1.1e-16) and ~7 below the narrowest band (0.0249), so it absorbs a
+   rounding artifact and can never reclassify a genuinely different structure. */
+const BAND_EPS = 1e-9;
 const myBand = (bands, edges, r) => {
   if (!(r > 0)) return null;
-  for (let i = 0; i < edges.length; i++) if (r <= edges[i]) return bands[i].l;
+  for (let i = 0; i < edges.length; i++) if (r <= edges[i] + BAND_EPS) return bands[i].l;
   return null;
 };
 const ulpUp = (x) => { const b = new Float64Array(1); b[0] = x; const u = new BigUint64Array(b.buffer); u[0] += 1n; return b[0]; };
@@ -101,7 +110,19 @@ for (const b of dot99) {
   const arr = isAr ? AR : LTC, above = arr[arr.indexOf(b) + 1];
   ok(fn(round) === b.l, `${(round * 100).toFixed(2)}% classifies on the band BELOW ("${b.l}")`);
   for (const s of [1e-9, 1e-7, 1e-6, 1e-5, 5e-5, 9.99e-5]) ok(fn(round - s) === b.l, `the seam point ${(round - s).toFixed(9)} classifies on "${b.l}"`);
-  if (above) ok(fn(ulpUp(round)) === above.l, `one ulp above ${(round * 100).toFixed(2)}% classifies on "${above.l}"`);
+  /* A SPECK above the edge is a rounding artifact, not a bigger loan — it bands DOWN. */
+  ok(fn(ulpUp(round)) === b.l,
+    `one ulp above ${(round * 100).toFixed(2)}% is a rounding speck and still classifies on "${b.l}"`);
+  ok(fn(round + BAND_EPS) === b.l,
+    `${(round * 100).toFixed(2)}% + one epsilon still classifies on "${b.l}"`);
+  /* But a ratio GENUINELY above the edge must still band up, or the epsilon would be
+     swallowing real differences instead of rounding noise. */
+  if (above) {
+    ok(fn(round + 1e-7) === above.l,
+      `a real step above ${(round * 100).toFixed(2)}% still classifies UP on "${above.l}" — the epsilon absorbs noise, not deals`);
+    ok(fn(round + 1e-4) === above.l,
+      `a full hundredth of a percent above ${(round * 100).toFixed(2)}% classifies UP on "${above.l}"`);
+  }
 }
 // nothing else moved
 for (const [fn, arr, nm] of [[SVP.arBand, AR, 'AR'], [SVP.ltcBand, LTC, 'LTC']]) {
