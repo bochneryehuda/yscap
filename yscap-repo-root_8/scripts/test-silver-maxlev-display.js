@@ -30,28 +30,44 @@
  *     result.pricedCeiling — what THIS deal was sized and priced at (may be lower)
  *     result.tierCaps      — the workbook Tier Grid row, verbatim (audit / parity)
  *
- * OWNER-AUTHORIZED GUIDELINE CHANGE (2026-07-30, the owner's own words):
- *   "Fix-and-flip & GUC tier 3 — Our system should allow those 65% ARv. Bridge refi
- *    tier 1 — Our system should allow till 75% Arv. GUC refi tier 2 / GUC purchase
- *    tier 2 — Leave this [as] actually being priced till further notice."
- * A tier cap that sits EXACTLY ON a band boundary (one 0.01-percentage-point step
- * above the band below — 65.00% over the "<64.99%" band, 75.00% over "<74.99%") whose
- * own band the grid never prices, while the band below IS priced, is REACHABLE: the
- * deal reaches the round cap and prices on the band immediately beneath it. So the
- * reachable maxima below moved from the sliver to the cap:
+ * OWNER-AUTHORIZED GUIDELINE CHANGE (2026-07-30, the owner's own words — this
+ * SUPERSEDES the narrower cap-only rule of the same day):
+ *   "Fix this entire deal to allow every 75 to price as 74.99. And qualify the same,
+ *    because this is a mistake from their excel sheet how they set it up, but in real
+ *    life that should be the case. And it should be on every tier, on every scenario,
+ *    on everything. Everything should go in this logic. We should do this small change
+ *    to every single scenario. Every single pair, every single experience. Every single
+ *    kind of a deal. It should not be this point 99. It should be the above."
+ * The workbook writes its bands to two decimals and ends three of them one hundredth of
+ * a point short of the round number the next band advertises — "<64.99%" before
+ * "65.00%-70.00%", "<74.99%" before "75.00%-80.00%", "87.51%-89.99%" before
+ * "90.00%-92.50%" — leaving a seam BOTH labels disclaim. Their sheet is a CHECKER, so a
+ * typed loan practically never lands in it; ours is a SIZER and lands on the round
+ * number every time a cap or a de-leverage target binds. So a band whose upper edge ends
+ * in ".99" now runs to the round number one hundredth above it: a ratio of exactly
+ * 65.00% / 75.00% / 90.00% (and the whole seam beneath it) bands DOWN, into the cheaper
+ * band, and the band above starts strictly above that round number.
+ * The rule is derived FROM THE LABELS on both sides — the engine from its own copy, this
+ * spec from the fixture's — and is UNIVERSAL: every tier, product, purpose, market, size
+ * band and FICO band, cap or no cap. The earlier cap-only mechanism
+ * (capBoundaryEdge / atCap's axis argument) is REPLACED, not layered.
+ * The reachable maximum therefore moves wherever a family's top priced band was one of
+ * those three, e.g.
  *     FF|P|T3, GUC|P|T3, GUC|R|T3, BR|R|T3 — AR-LTV 64.99% → 65.00%
- *     BR|R|T1                             — loan-to-cost 74.99% → 75.00%
- * GUC|P|T2 / GUC|R|T2 are the counter-example and MUST NOT move: 92.5% is the TOP of
- * its own band with two unpriced bands beneath it — a WHOLE-BAND gap, not a boundary
- * sliver — so they stay at the actually-priced 85%. Section 1b pins that boundary.
+ *     BR|R|T1, BR|P|T1, BR|P|T2, FF|R|T2   — loan-to-cost 74.99% → 75.00%
+ *     any family topping out in "87.51%-89.99%" — 89.99% → 90.00%
+ * GUC|P|T2 / GUC|R|T2 stay at the actually-priced 85.00% LTC / 70.00% AR-LTV: their top
+ * priced band is "80.01%-85.00%", which ends on a round number and lifts nothing. That
+ * is the counter-example section 1b pins.
  *
  * WHAT THIS FILE PINS
  *   (1) REACHABILITY — result.caps equals min(tier-grid cap, highest priced band edge),
- *       except a cap sitting ON a priced-from-below band boundary, which is reachable.
- *       Recomputed HERE from the workbook FIXTURE, never from the engine's own logic.
- *       Includes the families that advertise leverage the grid never prices:
- *         GUC|P|T2 92.5% → 85%,  GUC|R|T2 92.5% → 85%  (whole-band gap: still lowered)
- *         BR|R|T1 75% → 75%  (boundary sliver: now reached)
+ *       with the band edges read off the labels and a ".99" edge lifted to the round
+ *       number above it. Recomputed HERE from the workbook FIXTURE, never from the
+ *       engine's own logic. Includes the families that advertise leverage the grid never
+ *       prices:
+ *         GUC|P|T2 92.5% → 85%,  GUC|R|T2 92.5% → 85%  (top priced band ends round)
+ *         BR|R|T1 75% → 75%  (top priced band is "<74.99%", lifted, so the cap is met)
  *       plus NYC, whose reachable maxima are lower still (F&F / GUC top out at 80%).
  *   (2) INVARIANCE — result.caps does not move across reserve months 0/3/6/9/12/18/24,
  *       an amount-driven reserve, rehab budgets, ARVs, prices and as-is values.
@@ -89,9 +105,24 @@ const pctS = (x) => (Math.round(x * 10000) / 100) + '%';
  * never calls the engine's own achievable-cap lookup.
  * ===================================================================== */
 const AR_BANDS = ['<64.99%', '65.00%-70.00%', '70.01%-75.00%'];
-const AR_EDGE = [0.6499, 0.70, 0.75];
 const LTC_BANDS = ['<74.99%', '75.00%-80.00%', '80.01%-85.00%', '85.01%-87.50%', '87.51%-89.99%', '90.00%-92.50%'];
-const LTC_EDGE = [0.7499, 0.80, 0.85, 0.875, 0.8999, 0.925];
+/* THE BAND EDGES ARE READ OFF THE LABELS, AND A ".99" EDGE IS THE ROUND NUMBER ABOVE IT
+   (owner-authorized 2026-07-30 — see the header). Derived here so this spec never
+   hard-codes 0.65 / 0.75 / 0.90, and so a future workbook with different labels is
+   handled by the same three lines. A label already ending on a round number lifts
+   nothing, which is why 70.00% / 80.00% / 85.00% / 87.50% / 92.50% are untouched. */
+function edgeOf(label) {
+  let m = /^<(\d+(?:\.\d+)?)%$/.exec(label) || /^\d+(?:\.\d+)?%-(\d+(?:\.\d+)?)%$/.exec(label);
+  if (!m) throw new Error(`unparseable band label ${label}`);
+  const h = Math.round(parseFloat(m[1]) * 100);        // hundredths of a percent
+  return (h % 100 === 99 ? h + 1 : h) / 10000;
+}
+const AR_EDGE = AR_BANDS.map(edgeOf);                   // [0.65, 0.70, 0.75]
+const LTC_EDGE = LTC_BANDS.map(edgeOf);                 // [0.75, 0.80, 0.85, 0.875, 0.90, 0.925]
+/* The PRE-CHANGE edges — the labels read literally, no lift. Kept ONLY so section 1b can
+   measure what moved and prove each move is exactly one hundredth of a point. */
+const AR_EDGE_RAW = [0.6499, 0.70, 0.75];
+const LTC_EDGE_RAW = [0.7499, 0.80, 0.85, 0.875, 0.8999, 0.925];
 const FICO_12 = ['FICO 700+', 'FICO 660-699', 'FICO 640-659'];
 const FICO_3 = ['FICO 700+', 'FICO 680-699', 'FICO 640-679'];
 function ficoBandOf(tier, fico) {
@@ -99,41 +130,8 @@ function ficoBandOf(tier, fico) {
   if (tier === 3) return fico >= 700 ? L[0] : fico >= 680 ? L[1] : fico >= 640 ? L[2] : null;
   return fico >= 700 ? L[0] : fico >= 660 ? L[1] : fico >= 640 ? L[2] : null;
 }
-/* The band-label step: every band edge in this workbook is a percentage to TWO
-   decimals, so consecutive bands sit exactly one 0.01-percentage-point apart
-   ("<64.99%" then "65.00%-70.00%"). A cap ONE step above the band below sits ON the
-   boundary; a cap deeper inside its band (92.50% over an 89.99% edge) does not. */
-const BAND_LABEL_STEP = 0.0001;
-/** TRUE when band `idx` of `axis` carries ANY priced fixture cell for this family. */
-function bandPriced(mkt, size, prod, purp, term, tier, fb, axis, idx) {
-  for (let i = 0; i < AR_BANDS.length; i++) {
-    for (let k = 0; k < LTC_BANDS.length; k++) {
-      if (axis === 'AR' ? i !== idx : k !== idx) continue;
-      const key = `${mkt}|${size}|${prod}|${purp}|${term}|T${tier}|${AR_BANDS[i]}|${fb}|${LTC_BANDS[k]}`;
-      if (FIX.rates[key] != null) return true;
-    }
-  }
-  return false;
-}
-/** The owner-authorized rule, recomputed from the fixture: a cap on a band boundary
- *  whose own band is unpriced while the band below prices is REACHED, not lowered. */
-function capOnPricedBoundary(mkt, size, prod, purp, term, tier, fb, axis, cap) {
-  const edges = axis === 'AR' ? AR_EDGE : LTC_EDGE;
-  let b = -1;
-  for (let i = 0; i < edges.length; i++) if (cap <= edges[i] + 1e-12) { b = i; break; }
-  if (b <= 0) return false;                                            // inside the lowest band / off the top
-  const below = edges[b - 1];
-  if (!(cap - below > 1e-12 && cap - below <= BAND_LABEL_STEP + 1e-9)) return false;   // not ON the boundary
-  if (bandPriced(mkt, size, prod, purp, term, tier, fb, axis, b)) return false;        // its own band prices
-  return bandPriced(mkt, size, prod, purp, term, tier, fb, axis, b - 1);               // the band below must price
-}
-/** min(tier cap, highest LTC/AR band with ANY priced fixture cell) for a family —
- *  with the owner-authorized boundary rule of 2026-07-30 applied on top. */
-function specProgramMax(mkt, size, prod, purp, term, tier, fico) {
-  const row = FIX.tierGrid[`${prod}|${purp}|T${tier}`];
-  if (!row) return null;
-  const fb = ficoBandOf(tier, fico);
-  if (!fb) return null;
+/** The highest AR / LTC band index carrying ANY priced fixture cell for this family. */
+function topPricedBands(mkt, size, prod, purp, term, tier, fb) {
   let bestL = -1, bestA = -1;
   for (let i = 0; i < AR_BANDS.length; i++) {
     for (let k = 0; k < LTC_BANDS.length; k++) {
@@ -141,13 +139,26 @@ function specProgramMax(mkt, size, prod, purp, term, tier, fico) {
       if (FIX.rates[key] != null) { if (k > bestL) bestL = k; if (i > bestA) bestA = i; }
     }
   }
+  return { bestL, bestA };
+}
+/** min(tier cap, highest LTC/AR band with ANY priced fixture cell) for a family, on the
+ *  band edges read off the labels with the owner-authorized .99 lift of 2026-07-30.
+ *  `edges` is injected so section 1b can run the identical shape on the RAW edges and
+ *  measure exactly what the ruling moved. */
+function programMaxOn(arEdge, ltcEdge, mkt, size, prod, purp, term, tier, fico) {
+  const row = FIX.tierGrid[`${prod}|${purp}|T${tier}`];
+  if (!row) return null;
+  const fb = ficoBandOf(tier, fico);
+  if (!fb) return null;
+  const { bestL, bestA } = topPricedBands(mkt, size, prod, purp, term, tier, fb);
   const out = { maxLoan: row.maxloan, minFico: row.minfico, maxAcqLTV: row.maxacq, maxARLTV: row.maxar, maxLTC: row.maxltc };
   if (bestL < 0) return out;                       // nothing prices — the tier row stands
-  if (LTC_EDGE[bestL] < out.maxLTC) out.maxLTC = LTC_EDGE[bestL];
-  if (AR_EDGE[bestA] < out.maxARLTV) out.maxARLTV = AR_EDGE[bestA];
-  if (capOnPricedBoundary(mkt, size, prod, purp, term, tier, fb, 'LTC', row.maxltc)) out.maxLTC = row.maxltc;
-  if (capOnPricedBoundary(mkt, size, prod, purp, term, tier, fb, 'AR', row.maxar)) out.maxARLTV = row.maxar;
+  if (ltcEdge[bestL] < out.maxLTC) out.maxLTC = ltcEdge[bestL];
+  if (arEdge[bestA] < out.maxARLTV) out.maxARLTV = arEdge[bestA];
   return out;
+}
+function specProgramMax(mkt, size, prod, purp, term, tier, fico) {
+  return programMaxOn(AR_EDGE, LTC_EDGE, mkt, size, prod, purp, term, tier, fico);
 }
 
 /* ===================================================================== *
@@ -239,33 +250,18 @@ const OWNER_ROW = FIX.tierGrid['GUC|R|T2'];
 })();
 
 /* ===================================================================== *
- * 1b. THE AUTHORIZED BOUNDARY RULE — the WHOLE 18-row table, both markets,
- *     both size bands, every term and FICO band. Exactly which rows may move,
- *     and the hard assertion that GUC tier 2 is not one of them.
+ * 1b. THE UNIVERSAL .99 RULE — the WHOLE 18-row table, both markets, both size
+ *     bands, every term and FICO band. Every restatement must be exactly one
+ *     0.01-percentage-point step UP off a .99 edge, never anything else — and
+ *     GUC tier 2, whose top priced band ends on a round number, must not budge.
  * ===================================================================== */
 (function section1b() {
-  // the PRE-CHANGE rule (min(tier cap, highest priced band edge)) recomputed here,
-  // so "what moved" is measured, never assumed.
-  function priorProgramMax(mkt, size, prod, purp, term, tier, fico) {
-    const row = FIX.tierGrid[`${prod}|${purp}|T${tier}`];
-    if (!row) return null;
-    const fb = ficoBandOf(tier, fico);
-    if (!fb) return null;
-    let bestL = -1, bestA = -1;
-    for (let i = 0; i < AR_BANDS.length; i++) for (let k = 0; k < LTC_BANDS.length; k++) {
-      const key = `${mkt}|${size}|${prod}|${purp}|${term}|T${tier}|${AR_BANDS[i]}|${fb}|${LTC_BANDS[k]}`;
-      if (FIX.rates[key] != null) { if (k > bestL) bestL = k; if (i > bestA) bestA = i; }
-    }
-    const out = { maxARLTV: row.maxar, maxLTC: row.maxltc };
-    if (bestL < 0) return out;
-    if (LTC_EDGE[bestL] < out.maxLTC) out.maxLTC = LTC_EDGE[bestL];
-    if (AR_EDGE[bestA] < out.maxARLTV) out.maxARLTV = AR_EDGE[bestA];
-    return out;
-  }
-  // The ONLY rows the owner's ruling reaches — anything else moving is a bleed.
-  const AUTHORIZED = {
-    'FF|P|T3': 'AR', 'GUC|P|T3': 'AR', 'GUC|R|T3': 'AR', 'BR|R|T3': 'AR', 'BR|R|T1': 'LTC',
-  };
+  // the PRE-CHANGE reading: the identical computation on the RAW (unlifted) label
+  // edges, so "what moved" is measured, never assumed.
+  const priorProgramMax = (...a) => programMaxOn(AR_EDGE_RAW, LTC_EDGE_RAW, ...a);
+  const DOT99 = [0.6499, 0.7499, 0.8999];         // the ONLY edges in this workbook that lift
+  const isDot99 = (x) => DOT99.some((e) => eqNum(e, x));
+  const STEP = 0.0001;                            // one 0.01-percentage-point
   const moved = new Set();
   let compared = 0, badMove = 0, badDirection = 0;
   for (const mkt of ['STD', 'NYC']) for (const size of ['S', 'L'])
@@ -280,14 +276,19 @@ const OWNER_ROW = FIX.tierGrid['GUC|R|T2'];
         for (const [k, tierCap, axis] of [['maxLTC', row.maxltc, 'LTC'], ['maxARLTV', row.maxar, 'AR']]) {
           if (eqNum(now[k], was[k])) continue;
           moved.add(`${rowName} ${mkt} ${size} ${axis}`);
-          if (AUTHORIZED[rowName] !== axis) { badMove++; ok(false, `BLEED — ${rowName} ${mkt} ${size} ${axis} moved ${pctS(was[k])} → ${pctS(now[k])}, which the owner did not authorize`); }
-          // upward only, landing exactly on the tier cap, exactly one label step
-          if (!(now[k] > was[k]) || !eqNum(now[k], tierCap) || Math.abs(now[k] - was[k] - BAND_LABEL_STEP) > 1e-9) {
+          // A value may ONLY move off one of the three .99 edges — anything else is a bleed.
+          if (!isDot99(was[k])) {
+            badMove++;
+            ok(false, `BLEED — ${rowName} ${mkt} ${size} ${axis} moved ${pctS(was[k])} → ${pctS(now[k])}, but ${pctS(was[k])} is not a ".99" band edge`);
+          }
+          // upward only, exactly one label step, and never past the tier cap
+          if (!(now[k] > was[k]) || Math.abs(now[k] - was[k] - STEP) > 1e-9 || now[k] > tierCap + 1e-12) {
             badDirection++;
-            ok(false, `${rowName} ${mkt} ${size} ${axis}: restatement is not "one 0.01-pt step up onto the tier cap" (${pctS(was[k])} → ${pctS(now[k])}, tier cap ${pctS(tierCap)})`);
+            ok(false, `${rowName} ${mkt} ${size} ${axis}: restatement is not "one 0.01-pt step up, inside the tier cap" (${pctS(was[k])} → ${pctS(now[k])}, tier cap ${pctS(tierCap)})`);
           }
         }
-        // GUC tier 2 — the whole-band gap the owner ruled stays put.
+        // GUC tier 2 — its top priced band is "80.01%-85.00%" / "65.00%-70.00%", both of
+        // which end on a round number, so the ruling reaches nothing here.
         if (prod === 'GUC' && tier === 2) {
           if (!eqNum(now.maxLTC, was.maxLTC) || !eqNum(now.maxARLTV, was.maxARLTV)) {
             ok(false, `GUC|${purp}|T2 ${mkt} ${size} term ${term} FICO ${fico}: the change BLED into GUC tier 2`);
@@ -295,9 +296,34 @@ const OWNER_ROW = FIX.tierGrid['GUC|R|T2'];
         }
       }
   ok(compared > 400, `compared ${compared} family/FICO combinations before vs after`);
-  ok(badMove === 0, `no row outside the owner's authorization moved (${badMove} bleeds)`);
-  ok(badDirection === 0, `every restatement is one 0.01-percentage-point step UP onto the tier cap (${badDirection} malformed)`);
-  ok(moved.size > 0, `${moved.size} row/market/size/axis combinations reached their tier cap: ${[...moved].sort().join(' | ')}`);
+  ok(badMove === 0, `every restatement started on a ".99" band edge (${badMove} bleeds)`);
+  ok(badDirection === 0, `every restatement is one 0.01-percentage-point step UP, inside the tier cap (${badDirection} malformed)`);
+  /* THE DISPLAYED PROGRAM MAXIMUM is min(tier cap, top priced band edge), so the lift
+     only shows up where the top priced band was one of the three .99 bands AND the tier
+     cap did not already clamp it lower — 11 combinations. That is NOT the size of the
+     rule: the rule is in the CLASSIFIER (asserted below and swept by the 204k matrix),
+     which reaches every deal on every tier. Pinned exactly so a future edge change to
+     this display is deliberate. */
+  const MOVED_EXPECTED = [
+    'BR|R|T1 NYC S LTC', 'BR|R|T1 STD L LTC', 'BR|R|T1 STD S LTC',
+    'BR|R|T3 NYC S AR', 'BR|R|T3 STD L AR', 'BR|R|T3 STD S AR',
+    'FF|P|T3 STD S AR',
+    'GUC|P|T3 STD L AR', 'GUC|P|T3 STD S AR',
+    'GUC|R|T3 STD L AR', 'GUC|R|T3 STD S AR',
+  ].join(' | ');
+  ok([...moved].sort().join(' | ') === MOVED_EXPECTED,
+    `exactly the 11 expected row/market/size/axis combinations moved up onto the round number (got: ${[...moved].sort().join(' | ')})`);
+  // The five rows the earlier CAP-ONLY commit reached must still be reached — the
+  // universal rule is a superset of it, never a replacement that loses ground.
+  const CAP_ROWS = [
+    ['FF', 'P', 3, 'maxARLTV', 0.65], ['GUC', 'P', 3, 'maxARLTV', 0.65],
+    ['GUC', 'R', 3, 'maxARLTV', 0.65], ['BR', 'R', 3, 'maxARLTV', 0.65],
+    ['BR', 'R', 1, 'maxLTC', 0.75],
+  ];
+  for (const [prod, purp, tier, key, want] of CAP_ROWS) {
+    const s = specProgramMax('STD', 'S', prod, purp, '18', tier, 700);
+    ok(s && eqNum(s[key], want), `${prod}|${purp}|T${tier}: the cap-only rule's row still reaches ${pctS(want)} (got ${s ? pctS(s[key]) : 'none'})`);
+  }
   // GUC tier 2 stays at 85% wherever it prices at all, in EVERY market and size band.
   let gucT2 = 0;
   for (const mkt of ['STD', 'NYC']) for (const size of ['S', 'L']) for (const purp of ['P', 'R'])
@@ -310,6 +336,32 @@ const OWNER_ROW = FIX.tierGrid['GUC|R|T2'];
       ok(s.maxLTC <= 0.85 + 1e-12, `GUC|${purp}|T2 ${mkt}|${size} term ${term} FICO ${fico}: LTC still capped at the priced 85% (got ${pctS(s.maxLTC)})`);
     }
   ok(gucT2 > 0, `GUC tier 2 checked in ${gucT2} priced family/FICO combinations — every one still 85%`);
+
+  /* THE CLASSIFIER ITSELF, straight off the engine: exactly 65.00% / 75.00% / 90.00%
+     bands DOWN into the cheaper band, one hundredth of a point above it bands up, and
+     every edge that does NOT end in .99 is byte-identical to the workbook's own reading.
+     This is the owner's "every single scenario" restated at its root. */
+  const LIFTED = [
+    ['AR', 0.65, '<64.99%', '65.00%-70.00%'],
+    ['LTC', 0.75, '<74.99%', '75.00%-80.00%'],
+    ['LTC', 0.90, '87.51%-89.99%', '90.00%-92.50%'],
+  ];
+  for (const [axis, at, below, above] of LIFTED) {
+    const f = axis === 'AR' ? SVP.arBand : SVP.ltcBand;
+    ok(f(at) === below, `ENGINE: exactly ${pctS(at)} ${axis} bands as "${below}" (got "${f(at)}")`);
+    ok(f(at - 1e-9) === below, `ENGINE: the seam just under ${pctS(at)} ${axis} bands as "${below}"`);
+    ok(f(at + 0.0001) === above, `ENGINE: ${pctS(at + 0.0001)} ${axis} bands as "${above}" (got "${f(at + 0.0001)}")`);
+  }
+  const UNMOVED = [
+    ['AR', 0.70, '65.00%-70.00%', '70.01%-75.00%'], ['AR', 0.75, '70.01%-75.00%', null],
+    ['LTC', 0.80, '75.00%-80.00%', '80.01%-85.00%'], ['LTC', 0.85, '80.01%-85.00%', '85.01%-87.50%'],
+    ['LTC', 0.875, '85.01%-87.50%', '87.51%-89.99%'], ['LTC', 0.925, '90.00%-92.50%', null],
+  ];
+  for (const [axis, at, below, above] of UNMOVED) {
+    const f = axis === 'AR' ? SVP.arBand : SVP.ltcBand;
+    ok(f(at) === below, `ENGINE: the round edge ${pctS(at)} ${axis} is UNCHANGED — still "${below}" (got "${f(at)}")`);
+    ok(f(at + 0.0001) === above, `ENGINE: ${pctS(at + 0.0001)} ${axis} is UNCHANGED — "${above}" (got "${f(at + 0.0001)}")`);
+  }
 
   // ...and the ENGINE agrees on real deals for each row the ruling reached.
   const REACHED = [

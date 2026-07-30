@@ -117,11 +117,30 @@ function makeRng(seed) {
    workbook formulas' short decimals). */
 const FIX_KEYS = Object.keys(FIX.rates);
 function snap6(x) { return Math.round(x * 1e6) / 1e6; }
+/* OWNER-AUTHORIZED GUIDELINE, 2026-07-30 (the owner's own words): "Fix this entire deal
+   to allow every 75 to price as 74.99. And qualify the same … it should be on every
+   tier, on every scenario, on everything … It should not be this point 99. It should be
+   the above."
+   The workbook writes its band labels to two decimals and ends three of them one
+   hundredth of a point short of the round number the next band advertises ("<64.99%"
+   before "65.00%-70.00%"; "<74.99%" before "75.00%-80.00%"; "87.51%-89.99%" before
+   "90.00%-92.50%"), leaving a seam both labels disclaim. Their sheet is a CHECKER, so a
+   human-typed loan practically never lands in it; ours is a SIZER and lands on the round
+   number whenever a cap or a de-leverage target binds. A band whose upper edge ends in
+   ".99" therefore extends to the round number one hundredth above it, so the lower,
+   cheaper band covers up to and INCLUDING that round number and the band above starts
+   strictly above it. Derived HERE from the fixture's own labels, INDEPENDENTLY of the
+   engine (which derives the identical rule from its own copy of the labels) — a label
+   that already ends on a round number lifts nothing. */
+function liftDotNineNine(pct) {
+  const h = Math.round(pct * 100);          // the edge in HUNDREDTHS of a percent
+  return (h % 100 === 99 ? h + 1 : h) / 10000;
+}
 function parsePctBand(label) {
   let m = /^<(\d+(?:\.\d+)?)%$/.exec(label);
-  if (m) return { label, max: snap6(parseFloat(m[1]) / 100) };
+  if (m) return { label, max: snap6(liftDotNineNine(parseFloat(m[1]))) };
   m = /^(\d+(?:\.\d+)?)%-(\d+(?:\.\d+)?)%$/.exec(label);
-  if (m) return { label, max: snap6(parseFloat(m[2]) / 100) };
+  if (m) return { label, max: snap6(liftDotNineNine(parseFloat(m[2]))) };
   return null;
 }
 function parseFicoBand(label) {
@@ -178,41 +197,6 @@ function myKeyOf(mkt, sizeBand, prodTok, purp, termTok, tier, arRatio, fico, ltc
   if (!arB || !fB || !lB) return null;
   return [mkt, sizeBand, prodTok, purp, termTok, 'T' + tier, arB, fB, lB].join('|');
 }
-/* ---- OWNER-AUTHORIZED GUIDELINE, 2026-07-30 (transcribed here INDEPENDENTLY of the
-   engine, from the fixture's own band labels + rate cells): "Fix-and-flip & GUC tier 3
-   — Our system should allow those 65% ARv. Bridge refi tier 1 — Our system should
-   allow till 75% Arv. GUC refi tier 2 / GUC purchase tier 2 — Leave this [as] actually
-   being priced till further notice."
-   A leverage cap that sits EXACTLY ON a band boundary — one 0.01-percentage-point step
-   above the band below, which is the whole gap the two-decimal band labels leave
-   between "<64.99%" and "65.00%-70.00%" — whose OWN band the workbook never prices,
-   while the band BELOW is priced for the family, is REACHABLE: a structure sized to
-   that cap is bought on the band immediately beneath it. A cap sitting deeper inside
-   its band (GUC tier 2's 92.50% over the 89.99% edge) is a WHOLE-BAND gap and is NOT
-   this rule — that row keeps pricing at 85%, which the one-step test below enforces. */
-const BAND_LABEL_STEP = 0.0001;
-function bandListOf(axis) { return axis === 'AR' ? MY_AR : MY_LTC; }
-function fixBandPriced(mkt, sizeBand, prodTok, purp, termTok, tier, fB, axis, idx) {
-  for (let i = 0; i < MY_AR.length; i++) for (let k = 0; k < MY_LTC.length; k++) {
-    if (axis === 'AR' ? i !== idx : k !== idx) continue;
-    const key = [mkt, sizeBand, prodTok, purp, termTok, 'T' + tier, MY_AR[i].label, fB, MY_LTC[k].label].join('|');
-    if (FIX.rates[key] != null) return true;
-  }
-  return false;
-}
-// The band edge a structure sitting exactly AT `cap` is classified on, else null.
-function capBoundaryEdgeM(mkt, sizeBand, prodTok, purp, termTok, tier, fB, axis, cap) {
-  if (!fB || !(cap > 0)) return null;
-  const bands = bandListOf(axis);
-  let b = -1;
-  for (let i = 0; i < bands.length; i++) if (cap <= bands[i].max + 1e-12) { b = i; break; }
-  if (b <= 0) return null;
-  const below = bands[b - 1].max;
-  if (!(cap - below > 1e-12 && cap - below <= BAND_LABEL_STEP + 1e-9)) return null;
-  if (fixBandPriced(mkt, sizeBand, prodTok, purp, termTok, tier, fB, axis, b)) return null;
-  if (!fixBandPriced(mkt, sizeBand, prodTok, purp, termTok, tier, fB, axis, b - 1)) return null;
-  return below;
-}
 // Cap-edge float noise: a loan sized exactly AT a band edge can carry a ratio
 // like 0.9250000000000002 (2e-16 above the 0.925 edge). The workbook's own
 // arithmetic is exact decimals, so the EXACT cell lookup snaps to the 1e-9
@@ -231,18 +215,14 @@ function engKeyOf(mkt, sizeBand, prodTok, purp, termTok, tier, arRatio, fico, lt
 // rateKey are derived through it, so the key always names the cell actually
 // priced. Replicated here so the rateKey cross-check keeps mirroring the engine;
 // the knife-edge tolerances below deliberately keep using the RAW ratios.
-// `ctx` (present for the AR / LTC axes) additionally carries the owner-authorized
-// boundary rule of 2026-07-30 — see capBoundaryEdgeM above.
-function atCapM(ratio, cap, axis, ctx) {
+// The .99 SEAM is no longer this function's business (owner-authorized 2026-07-30 — see
+// liftDotNineNine): the band classifiers above already put the round number, and the
+// seam beneath it, on the lower band — for every deal, every tier and every cap — so
+// the earlier cap-only mechanism (capBoundaryEdgeM plus an `axis`/`ctx` argument) is
+// gone on both sides and there is exactly ONE rule to disagree about.
+function atCapM(ratio, cap) {
   if (!(cap > 0)) return ratio;
   if (ratio > cap && ratio < cap + 1e-6) ratio = cap;
-  // the WHOLE seam (bandBelowEdge, cap] — the workbook prices nothing inside it, so
-  // once the cap is bought on the band below every ratio in the seam is too.
-  if (axis && ctx && ratio > 0 && ratio <= cap + 1e-6) {
-    const e = capBoundaryEdgeM(ctx.mkt, ctx.sizeBand, ctx.prodTok, ctx.purp, ctx.termTok, ctx.tier,
-      myFicoBand(ctx.tier, ctx.fico), axis, cap);
-    if (e != null && ratio > e) return e;
-  }
   return ratio;
 }
 // Every band BOUNDARY number from the fixture's own labels — uppers AND lowers
@@ -262,6 +242,23 @@ function nearBandEdge(r) {
   for (const e of EDGE_NUMBERS) if (Math.abs(r - e) < 1e-6) return true;
   return false;
 }
+// The step-down's candidate ladder: the descending union of BOTH band families' upper
+// edges, derived from the fixture exactly as the engine derives them from its own labels
+// — the LIFTED edge and the LITERAL one. The engine keeps both because a candidate at
+// the literal .99 edge is a slightly smaller rung that can be reachable where the round
+// one is not (see STEP_EDGES_DESC in silver-program.js); the lattice only ever keeps the
+// largest priced loan, so the extra rung can never make a deal worse.
+const RAW_EDGES = (() => {
+  const s = new Set();
+  for (const label of [..._ar, ..._ltc]) {
+    let m = /^<(\d+(?:\.\d+)?)%$/.exec(label);
+    if (m) s.add(snap6(parseFloat(m[1]) / 100));
+    m = /^(\d+(?:\.\d+)?)%-(\d+(?:\.\d+)?)%$/.exec(label);
+    if (m) s.add(snap6(parseFloat(m[2]) / 100));
+  }
+  return [...s];
+})();
+const STEP_EDGES = [...new Set([...MY_LTC.map((b) => b.max), ...MY_AR.map((b) => b.max), ...RAW_EDGES])].sort((a, b) => b - a);
 // per block-family (first 6 key parts) rate set — for classifying the rare
 // two-pass "rate one band off the final sizing" engine artifact.
 const FAMILY_RATES = {};
@@ -302,6 +299,32 @@ function validateResolver() {
   for (let r = 0.005; r <= 1.0; r += 0.00137) {
     if (myArBand(r) !== SVP.arBand(r)) bad(`AR classifier drift vs engine at ${r}`);
     if (myLtcBand(r) !== SVP.ltcBand(r)) bad(`LTC classifier drift vs engine at ${r}`);
+  }
+  // ...and EXACTLY on / around every edge either side derived, including the three the
+  // owner's 2026-07-30 ruling lifted. A stepped sweep never lands on a boundary, which
+  // is precisely where the two derivations could disagree.
+  const EDGE_PROBES = [];
+  for (const e of [...MY_AR.map((b) => b.max), ...MY_LTC.map((b) => b.max), 0.6499, 0.7499, 0.8999]) {
+    EDGE_PROBES.push(e, e - 1e-7, e + 1e-7, e - 5e-5, e + 5e-5);
+  }
+  for (const r of EDGE_PROBES) {
+    if (!(r > 0)) continue;
+    if (myArBand(r) !== SVP.arBand(r)) bad(`AR classifier drift vs engine AT EDGE ${r}: mine ${myArBand(r)} engine ${SVP.arBand(r)}`);
+    if (myLtcBand(r) !== SVP.ltcBand(r)) bad(`LTC classifier drift vs engine AT EDGE ${r}: mine ${myLtcBand(r)} engine ${SVP.ltcBand(r)}`);
+  }
+  // The owner's ruling, asserted on the resolver itself: a ratio of exactly 65.00% /
+  // 75.00% / 90.00% bands DOWN, and one hundredth of a point above it bands up.
+  const LIFTED = [
+    ['AR', 0.65, '<64.99%', '65.00%-70.00%'],
+    ['LTC', 0.75, '<74.99%', '75.00%-80.00%'],
+    ['LTC', 0.90, '87.51%-89.99%', '90.00%-92.50%'],
+  ];
+  for (const [axis, at, below, above] of LIFTED) {
+    const f = axis === 'AR' ? myArBand : myLtcBand, g = axis === 'AR' ? SVP.arBand : SVP.ltcBand;
+    if (f(at) !== below) bad(`${axis} ${at} should band as ${below}, resolver says ${f(at)}`);
+    if (g(at) !== below) bad(`${axis} ${at} should band as ${below}, ENGINE says ${g(at)}`);
+    if (f(at + 0.0001) !== above) bad(`${axis} ${at + 0.0001} should band as ${above}, resolver says ${f(at + 0.0001)}`);
+    if (g(at + 0.0001) !== above) bad(`${axis} ${at + 0.0001} should band as ${above}, ENGINE says ${g(at + 0.0001)}`);
   }
   for (let f = 600; f <= 850; f++) for (const t of [1, 2, 3]) {
     const mine = myFicoBand(t, f), eng = SVP.ficoBand(t, f);
@@ -456,7 +479,10 @@ function genScenario(cell, R) {
 
   // voluntary de-leverage — walks the lower LTC pricing bands
   let targetLTC = 0;
-  if ((fam === 'clean' || fam === 'stated') && R.next() < 0.25) targetLTC = R.pick([0.6499, 0.70, 0.7499, 0.80, 0.85]);
+  // The three ROUND numbers the owner's 2026-07-30 ruling reaches (0.65 / 0.75 / 0.90)
+  // ride alongside the sliver values they replace, so the matrix exercises a deal
+  // sitting EXACTLY on each lifted boundary as well as one just under it.
+  if ((fam === 'clean' || fam === 'stated') && R.next() < 0.25) targetLTC = R.pick([0.6499, 0.65, 0.70, 0.7499, 0.75, 0.80, 0.85, 0.90]);
 
   // stated loan
   let loanAmount = 0;
@@ -686,8 +712,8 @@ function verifyScenario(cellName, cell, spec, input, ev, effCap, C, recordFail) 
     if (c.maxAcqLTV !== row.maxacq) bad(`caps.maxAcqLTV ${c.maxAcqLTV} != workbook ${row.maxacq}`);
     // AR-LTV cap: the workbook row, UNLESS the grid step-down landed the deal on
     // an AR-LTV band edge (engine fix 2026-07-30). Then the cap is that edge
-    // taken to the largest whole DOLLAR of the ARV — 0.6499 x $625,000 is
-    // $406,187.50, and a loan a cent over the edge reads into the next, unpriced,
+    // taken to the largest whole DOLLAR of the ARV — an edge x ARV can land on a
+    // half dollar, and a loan a cent over the edge reads into the next, unpriced,
     // AR band — so the ratio sits a hair under the edge by construction.
     if (!cutAr) {
       if (c.maxARLTV !== row.maxar) bad(`caps.maxARLTV ${c.maxARLTV} != workbook ${row.maxar}`);
@@ -705,7 +731,7 @@ function verifyScenario(cellName, cell, spec, input, ev, effCap, C, recordFail) 
       if (Math.abs(c.maxLTC - expLtc) > 1e-12) bad(`caps.maxLTC ${c.maxLTC} != expected ${expLtc}`);
     } else {
       if (!(c.maxLTC < expLtc - 1e-12)) bad(`the reason names an LTC step-down but maxLTC ${c.maxLTC} is not below ${expLtc}`);
-      if (!MY_LTC.some((b) => Math.abs(b.max - c.maxLTC) < 1e-9) && ![0.925, 0.8999, 0.875, 0.85, 0.80, 0.7499, 0.70, 0.6499].some((e) => Math.abs(e - c.maxLTC) < 1e-9)) {
+      if (!MY_LTC.some((b) => Math.abs(b.max - c.maxLTC) < 1e-9) && !STEP_EDGES.some((e) => Math.abs(e - c.maxLTC) < 1e-9)) {
         bad(`step-down maxLTC ${c.maxLTC} is not a workbook band edge`);
       }
     }
@@ -767,14 +793,13 @@ function verifyScenario(cellName, cell, spec, input, ev, effCap, C, recordFail) 
     const arDenom = isBR ? (arv || input.asIsValue) : arv;
     const arRatio = arDenom > 0 ? total / arDenom : 0;
     const termTok = input.term <= 12 ? '12' : input.term <= 18 ? '18' : '24';
-    const capCtx = { mkt: spec.market, sizeBand: ev.sizeBand, prodTok, purp, termTok, tier, fico: input.fico };
     // exact workbook cell (decimal-snapped ratios — the workbook's own arithmetic),
-    // with the owner-authorized 2026-07-30 boundary rule applied off the fixture's own
-    // labels + cells: a structure sitting exactly AT a cap that lands ON an unpriced
-    // band's lower bound is bought on the band below.
+    // banded by the fixture-derived classifiers, which carry the owner-authorized .99
+    // edge lift of 2026-07-30: a structure at exactly 65.00% / 75.00% / 90.00%, and
+    // anything in the seam beneath it, is bought on the band below.
     const myKey = myKeyOf(spec.market, ev.sizeBand, prodTok, purp, termTok, tier,
-      atCapM(snap9(arRatio), evCaps.maxARLTV, 'AR', capCtx), input.fico,
-      atCapM(snap9(s.ltcPct > 0 ? s.ltcPct : evCaps.maxLTC), evCaps.maxLTC, 'LTC', capCtx));
+      atCapM(snap9(arRatio), evCaps.maxARLTV), input.fico,
+      atCapM(snap9(s.ltcPct > 0 ? s.ltcPct : evCaps.maxLTC), evCaps.maxLTC));
     const fixRate = myKey ? FIX.rates[myKey] : undefined;
     // the engine's raw-float key — used ONLY by the mirror knife-edge tolerance
     const engKey = engKeyOf(spec.market, ev.sizeBand, prodTok, purp, termTok, tier, arRatio, input.fico, s.ltcPct);
@@ -783,8 +808,8 @@ function verifyScenario(cellName, cell, spec, input, ev, effCap, C, recordFail) 
     // item 3 — the key used to be derived from the RAW ratios and so named a cell
     // the workbook does not price whenever atCap fired)
     const engKeyRep = engKeyOf(spec.market, ev.sizeBand, prodTok, purp, termTok, tier,
-      atCapM(arRatio, evCaps.maxARLTV, 'AR', capCtx), input.fico,
-      atCapM(s.ltcPct > 0 ? s.ltcPct : evCaps.maxLTC, evCaps.maxLTC, 'LTC', capCtx));
+      atCapM(arRatio, evCaps.maxARLTV), input.fico,
+      atCapM(s.ltcPct > 0 ? s.ltcPct : evCaps.maxLTC, evCaps.maxLTC));
     if (ev.rateKey && engKeyRep !== ev.rateKey) bad(`rateKey derivation drift: engine ${ev.rateKey} vs derived ${engKeyRep}`);
     // …and a PRICED result's reported key must be a real workbook cell that ties
     // to the quoted rate (the point of the fix: the key names the cell charged)

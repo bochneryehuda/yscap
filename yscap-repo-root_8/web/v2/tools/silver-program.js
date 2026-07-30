@@ -217,12 +217,94 @@
   var FICO_BANDS_12 = ["FICO 700+", "FICO 660-699", "FICO 640-659"];   // tiers 1–2
   var FICO_BANDS_3  = ["FICO 700+", "FICO 680-699", "FICO 640-679"];   // tier 3
   var LTC_BANDS = ["<74.99%", "75.00%-80.00%", "80.01%-85.00%", "85.01%-87.50%", "87.51%-89.99%", "90.00%-92.50%"];
-  /* The UPPER EDGE of each band above, in band order. NOT new numbers — these are the
-     exact boundaries ltcBand()/arBand() already test against, named so the achievable-
-     maximum lookup below can turn "the highest band that prices" back into a ratio
-     without re-deriving anything. Keep in lock-step with ltcBand()/arBand(). */
-  var LTC_EDGES_UP = [0.7499, 0.80, 0.85, 0.875, 0.8999, 0.925];
-  var AR_EDGES_UP  = [0.6499, 0.70, 0.75];
+
+  /* ---------------- THE BAND EDGES — READ OFF THE LABELS, AND A ".99" EDGE IS THE
+     ROUND NUMBER ABOVE IT ----------------
+     OWNER-AUTHORIZED GUIDELINE CHANGE (2026-07-30, the owner's own words): "Fix this
+     entire deal to allow every 75 to price as 74.99. And qualify the same, because this
+     is a mistake from their excel sheet how they set it up, but in real life that should
+     be the case. And it should be on every tier, on every scenario, on everything.
+     Everything should go in this logic. We should do this small change to every single
+     scenario. Every single pair, every single experience. Every single kind of a deal.
+     It should not be this point 99. It should be the above."
+
+     THE SHAPE OF THE PROBLEM. The workbook writes its band labels as percentages to two
+     decimals and stops a band ONE HUNDREDTH OF A POINT short of the round number the
+     next band advertises: "<64.99%" then "65.00%-70.00%"; "<74.99%" then
+     "75.00%-80.00%"; "87.51%-89.99%" then "90.00%-92.50%". Between those two labels sits
+     a seam — (64.99%, 65.00%], (74.99%, 75.00%], (89.99%, 90.00%] — that BOTH labels
+     disclaim: the lower band says it ends at 64.99% and the upper band says it starts at
+     65.00%. Read literally, a deal at exactly 65.00% / 75.00% / 90.00% is pushed UP into
+     the dearer band (or into a band with no priced cell at all). Their sheet is a
+     CHECKER — a human types a loan, which practically never lands on a round ratio — so
+     the seam never bit them. Ours is a SIZER: it lands on the round number every time a
+     cap or a de-leverage target binds. The owner's ruling is that the round number
+     prices (and qualifies) as the band BELOW, everywhere.
+
+     THE RULE, DERIVED FROM THE LABELS — never keyed to 0.65 / 0.75 / 0.90. Each band's
+     upper edge is read out of its own label; an edge that ends in ".99" is LIFTED to the
+     round number one hundredth above it. So the lower band covers up to and INCLUDING
+     the round number and the band above starts strictly ABOVE it. A future workbook
+     whose labels end on round numbers already parses to itself and nothing lifts.
+
+     THIS REPLACES the narrower cap-only rule of the earlier 2026-07-30 commit
+     (capBoundaryEdge / atCap's axis argument), which made the round number reachable
+     ONLY where a tier cap sat exactly on the boundary. There is now exactly ONE
+     mechanism — the classifier itself — so nothing can disagree with anything.
+
+     READ-ONLY with respect to everything else: no rate cell, tier row, markup, fee or
+     sizing formula is read or written here. The three lifted edges are the ONLY
+     boundaries in the workbook that end in .99; every other band already ends on a round
+     number and is byte-identical to before. */
+  function bandUpperEdge(label, raw) {
+    var s = clean(label), m = /^<\s*(\d+(?:\.\d+)?)\s*%$/.exec(s);
+    if (!m) m = /^\d+(?:\.\d+)?\s*%\s*-\s*(\d+(?:\.\d+)?)\s*%$/.exec(s);
+    if (!m) return null;                                 // unparseable label — never guessed
+    var h = Math.round(parseFloat(m[1]) * 100);          // the edge in HUNDREDTHS of a percent
+    if (!raw && h % 100 === 99) h += 1;                  // 64.99% → 65.00%, 74.99% → 75.00%, 89.99% → 90.00%
+    return h / 10000;                                    // percent → fraction
+  }
+  function bandUpperEdges(labels, raw) {
+    var out = [], i, e;
+    for (i = 0; i < labels.length; i++) { e = bandUpperEdge(labels[i], raw); if (e == null) return null; out.push(e); }
+    return out;
+  }
+  /* The UPPER EDGE of each band above, in band order — the exact boundaries
+     ltcBand()/arBand() classify on AND the ladder the achievable-maximum lookup turns
+     "the highest band that prices" back into a ratio with. ONE derivation, so a label
+     change can never leave the two out of step. */
+  var LTC_EDGES_UP = bandUpperEdges(LTC_BANDS);
+  var AR_EDGES_UP  = bandUpperEdges(AR_BANDS);
+  // The labels read LITERALLY, no lift. NOT a classifier — see STEP_EDGES_DESC.
+  var LTC_EDGES_RAW = bandUpperEdges(LTC_BANDS, true);
+  var AR_EDGES_RAW  = bandUpperEdges(AR_BANDS, true);
+  function edgesDesc() {
+    var seen = {}, out = [], a, i, v;
+    for (a = 0; a < arguments.length; a++) {
+      for (i = 0; i < arguments[a].length; i++) { v = arguments[a][i]; if (!seen[v]) { seen[v] = 1; out.push(v); } }
+    }
+    out.sort(function (x, y) { return y - x; });
+    return out;
+  }
+  /* THE STEP-DOWN'S CANDIDATE LADDER — a SEARCH SPACE, not a policy.
+     It carries the lifted edges AND the literal ones. The lifted edge is the one that
+     matters (a candidate capped at 75.00% buys the same cell as one at 74.99% for a
+     bigger loan, so it always wins the lattice's size test); the literal edge is kept as
+     an extra, slightly smaller rung because it can be REACHABLE where the round one is
+     not. A BRIDGE is the case that proves it: it is sized on the AS-IS value, so the
+     AR-LTV axis is not a step-down candidate at all, and when the as-is value sits a
+     hair above the after-repair value a loan at exactly 75.00% loan-to-cost implies an
+     after-repair ratio a few hundred-thousandths OVER the 75% AR cap — no priced cell.
+     The 74.99% rung pulls it back under; without it the search fell to the next rung
+     (70.00%) and the loan dropped by ~$123k. Since the lattice only ever keeps the
+     LARGEST priced loan (then the cheapest cell), a richer ladder can never make a deal
+     worse — it can only find a structure that was there all along. */
+  var STEP_EDGES_DESC = edgesDesc(LTC_EDGES_UP, AR_EDGES_UP, LTC_EDGES_RAW, AR_EDGES_RAW);
+  var AR_EDGES_DESC   = edgesDesc(AR_EDGES_UP, AR_EDGES_RAW);
+  /* The BORROWER-FACING price ladder's rungs are the lifted edges only: a rung one
+     hundredth of a point under another buys the identical cell and would print as a
+     near-duplicate row. */
+  var LADDER_EDGES_DESC = edgesDesc(LTC_EDGES_UP, AR_EDGES_UP);
 
   /* Each block = market|size|product|purpose|term|tier → 54 cells (3 AR × 3 FICO × 6 LTC)
      flattened in band order above. Values are the note-buyer grid rate in
@@ -352,10 +434,12 @@
   function num(x) { return (typeof x === "number" && isFinite(x)) ? x : 0; }
   function round2(n) { return Math.round(n * 100) / 100; }
   function pct(x) { return (Math.round(x * 1000) / 10) + "%"; }
-  // Band edges are 2-decimal numbers (89.99%, 74.99%, 64.99%) — a 1-decimal
-  // format rounded 0.8999 to a flat "90%", which reads as a DIFFERENT cap than
-  // the one that actually bound (owner-directed 2026-07-30: say exactly which
-  // guideline is holding it up). Trailing zeros stay trimmed: 0.925 → "92.5%".
+  // Caps print to 2 decimals: a 1-decimal format rounds an admin/de-leverage basis
+  // like 0.8999 to a flat "90%", which reads as a DIFFERENT cap than the one that
+  // actually bound (owner-directed 2026-07-30: say exactly which guideline is holding
+  // it up). Trailing zeros stay trimmed: 0.925 → "92.5%", 0.90 → "90%". (The band
+  // edges themselves no longer end in .99 — see bandUpperEdge — but a caller may still
+  // hand us any number.)
   function pct2(x) { return (Math.round(x * 10000) / 100) + "%"; }
   function usd(n) { return "$" + Math.round(n).toLocaleString("en-US"); }
   function zip5(z) {
@@ -581,24 +665,20 @@
     return { maxLoan: row[0], minFico: row[1], maxAcqLTV: row[2], maxARLTV: row[3], maxLTC: row[4] };
   }
 
-  /* ---------------- band classification (exact Pricing Tool formulas) ---------------- */
-  function arBand(r) {
+  /* ---------------- band classification (the Pricing Tool's bands, with the
+     owner-authorized .99 edge lift of 2026-07-30 baked into the edge list) ----------------
+     A ratio falls in the FIRST band whose upper edge it does not exceed. Because a ".99"
+     edge was lifted to the round number above it, a deal at exactly 65.00% AR-LTV /
+     75.00% loan-to-cost / 90.00% loan-to-cost — and everything in the seam below it —
+     classifies in the LOWER, cheaper band, and the band above starts strictly above that
+     round number. Every other edge is unchanged, so every other ratio bands as before. */
+  function bandOf(labels, edges, r) {
     if (!(r > 0)) return null;
-    if (r <= 0.6499) return AR_BANDS[0];
-    if (r <= 0.70) return AR_BANDS[1];
-    if (r <= 0.75) return AR_BANDS[2];
-    return null;                                   // > 75% — never priced
+    for (var i = 0; i < edges.length; i++) if (r <= edges[i]) return labels[i];
+    return null;                                   // above the top band — never priced
   }
-  function ltcBand(r) {
-    if (!(r > 0)) return null;
-    if (r <= 0.7499) return LTC_BANDS[0];
-    if (r <= 0.80) return LTC_BANDS[1];
-    if (r <= 0.85) return LTC_BANDS[2];
-    if (r <= 0.875) return LTC_BANDS[3];
-    if (r <= 0.8999) return LTC_BANDS[4];
-    if (r <= 0.925) return LTC_BANDS[5];
-    return null;                                   // > 92.5% — never priced
-  }
+  function arBand(r)  { return bandOf(AR_BANDS,  AR_EDGES_UP,  r); }
+  function ltcBand(r) { return bandOf(LTC_BANDS, LTC_EDGES_UP, r); }
   function ficoBand(tier, fico) {
     if (!(fico > 0)) return null;
     if (tier === 3) {
@@ -656,7 +736,7 @@
      achieve — the caller falls back to the tier row and the engine separately raises
      its "No priced grid cell" reason). READ-ONLY: no rate, band edge, tier cap or
      sizing formula is computed or changed here. */
-  function achievableCaps(mkt, sizeBand, prodTok, purp, termTok, tier, ficoB, tierCaps) {
+  function achievableCaps(mkt, sizeBand, prodTok, purp, termTok, tier, ficoB) {
     if (!ficoB) return null;
     var block = RATE_BLOCKS[mkt + "|" + sizeBand + "|" + prodTok + "|" + purp + "|" + termTok + "|T" + tier];
     if (!block) return null;
@@ -673,89 +753,14 @@
       }
     }
     if (bestLtc < 0) return null;                       // this FICO band prices nothing
-    var out = { maxLTC: LTC_EDGES_UP[bestLtc], maxARLTV: AR_EDGES_UP[bestAr] };
-    /* A tier cap sitting EXACTLY ON a band boundary the grid prices from BELOW is
-       reachable after all (owner-authorized 2026-07-30 — see capBoundaryEdge): the
-       deal reaches the round cap and prices on the band immediately under it, so the
-       PROGRAM MAXIMUM is the cap itself, not the sliver beneath it. Handed the tier
-       row it reports that; handed nothing it answers exactly as before. */
-    if (tierCaps) {
-      if (capBoundaryEdge(mkt, sizeBand, prodTok, purp, termTok, tier, ficoB, "LTC", tierCaps.maxLTC) != null) out.maxLTC = tierCaps.maxLTC;
-      if (capBoundaryEdge(mkt, sizeBand, prodTok, purp, termTok, tier, ficoB, "AR", tierCaps.maxARLTV) != null) out.maxARLTV = tierCaps.maxARLTV;
-    }
-    return out;
-  }
-
-  /* ---------------- A TIER CAP THAT SITS EXACTLY ON A BAND BOUNDARY ----------------
-     OWNER-AUTHORIZED GUIDELINE CHANGE (2026-07-30, the owner's own words): "Fix-and-
-     flip & GUC tier 3 — Our system should allow those 65% ARv. Bridge refi tier 1 —
-     Our system should allow till 75% Arv. GUC refi tier 2 / GUC purchase tier 2 —
-     Leave this [as] actually being priced till further notice."
-
-     THE SHAPE OF THE PROBLEM. The grid's band labels are percentages to TWO decimals
-     — "<64.99%" then "65.00%-70.00%"; "<74.99%" then "75.00%-80.00%" — so consecutive
-     bands sit exactly ONE 0.01-percentage-point step apart. Several tier rows cap
-     leverage precisely on that step: the tier-3 fix & flip / ground-up rows cap AR-LTV
-     at 65.00% and the tier-1 bridge refinance row caps loan-to-cost at 75.00%. Each
-     lands one step INSIDE a band the grid never prices, while the band immediately
-     below IS priced right across the family. So the round number was unreachable BY A
-     SLIVER: a deal sized to the cap classified into an unpriced band, the step-down
-     walked it back to 64.99% / 74.99%, and that sliver-under-the-cap was printed as
-     the program maximum. The owner's ruling is that the tier cap itself is reachable
-     and prices on the band immediately below it.
-
-     WHAT THIS IS DELIBERATELY NOT. GUC purchase / refinance tier 2 advertises 92.50%
-     loan-to-cost while the grid stops at 85.00%. 92.50% is the TOP of its own band and
-     the two bands beneath it (87.51%-89.99%, 85.01%-87.50%) carry no price either —
-     that is a WHOLE-BAND gap, not a boundary sliver, and the owner has ruled it stays
-     at the actually-priced 85%. The one-step boundary test below is exactly what tells
-     the two apart.
-
-     DATA-DRIVEN, never keyed to 0.65 / 0.75: the cap is whatever cap the deal was
-     sized against, the boundaries come from the same band-edge lists arBand()/ltcBand()
-     classify on, and "does this band price?" is read from the rate grid itself. Any
-     family whose cap lands on a boundary with an unpriced cap band over a priced band
-     below behaves identically — on the LTC axis and the AR-LTV axis, in both markets
-     and both loan-size bands, for every regeneration of the workbook.
-
-     READ-ONLY: no rate cell, band edge, tier row, markup, fee or sizing formula is
-     read or written here. The ONLY thing that changes is which cell a structure
-     sitting exactly AT its cap is classified on. */
-  var BAND_LABEL_STEP = 0.0001;        // one 0.01-percentage-point step: 64.99% → 65.00%
-  function bandIndexOf(edges, r) {
-    for (var i = 0; i < edges.length; i++) if (r <= edges[i] + 1e-12) return i;
-    return -1;                                          // above every priced band
-  }
-  // TRUE when band `idx` of `axis` carries ANY priced cell for this family + FICO row.
-  function bandHasPrice(block, j, axis, idx) {
-    var i, k;
-    if (axis === "AR") {
-      for (k = 0; k < LTC_BANDS.length; k++) if (block[(idx * 3 + j) * 6 + k] > 0) return true;
-      return false;
-    }
-    for (i = 0; i < AR_BANDS.length; i++) if (block[(i * 3 + j) * 6 + idx] > 0) return true;
-    return false;
-  }
-  /* The band edge a structure sitting exactly AT `cap` must be classified on, or null
-     when the cap is reachable inside its own band — which is the answer for every
-     ordinary cap, so nothing else in the engine moves. */
-  function capBoundaryEdge(mkt, sizeBand, prodTok, purp, termTok, tier, ficoB, axis, cap) {
-    if (!ficoB || !(cap > 0)) return null;
-    var edges = (axis === "AR") ? AR_EDGES_UP : LTC_EDGES_UP;
-    var b = bandIndexOf(edges, cap);
-    if (b <= 0) return null;                            // above every band, or inside the lowest one
-    var below = edges[b - 1];
-    // ON the boundary = one band-label step above the band below. A cap sitting deeper
-    // inside its band (92.50% over an 89.99% edge) is a whole-band gap, never this.
-    if (!(cap - below > 1e-12 && cap - below <= BAND_LABEL_STEP + 1e-9)) return null;
-    var block = RATE_BLOCKS[mkt + "|" + sizeBand + "|" + prodTok + "|" + purp + "|" + termTok + "|T" + tier];
-    if (!block) return null;
-    var fl = (tier === 3) ? FICO_BANDS_3 : FICO_BANDS_12;
-    var j = fl.indexOf(ficoB);
-    if (j < 0) return null;
-    if (bandHasPrice(block, j, axis, b)) return null;       // the cap's own band prices — already reachable
-    if (!bandHasPrice(block, j, axis, b - 1)) return null;  // nothing below either — there is no cell to fall to
-    return below;
+    /* The edges are the LIFTED ones (see bandUpperEdge), so a family whose highest
+       priced band is one of the three .99-labelled bands reports the ROUND number the
+       deal can now genuinely reach — 65.00% AR-LTV, 75.00% / 90.00% loan-to-cost —
+       instead of the sliver beneath it. Nothing else about this lookup changed, and
+       where the tier row is the lower of the two the tier row still wins (the caller
+       takes the minimum), so a whole-band gap such as GUC tier 2's 92.50% over an
+       85.00% frontier is still reported at the actually-priced 85.00%. */
+    return { maxLTC: LTC_EDGES_UP[bestLtc], maxARLTV: AR_EDGES_UP[bestAr] };
   }
 
   // Borrower note rate for a deal profile (grid + markup); null when no grid cell.
@@ -942,10 +947,10 @@
     tierRow = { maxLoan: c.maxLoan, minFico: c.minFico, maxAcqLTV: c.maxAcqLTV, maxARLTV: c.maxARLTV, maxLTC: c.maxLTC };
     progMax = { maxLoan: c.maxLoan, minFico: c.minFico, maxAcqLTV: c.maxAcqLTV, maxARLTV: c.maxARLTV, maxLTC: c.maxLTC };
     (function () {
-      // The tier row rides along so a cap sitting exactly ON a band boundary the grid
-      // prices from below is reported as REACHED, not as the sliver beneath it
-      // (owner-authorized 2026-07-30 — see capBoundaryEdge).
-      var ach = achievableCaps(market, sizeBand, pTok, purp, termTok, tier, ficoBand(tier, fico || 700), tierRow);
+      // The reachable frontier is read straight off the rate grid, on the LIFTED band
+      // edges (owner-authorized 2026-07-30 — see bandUpperEdge), so a family whose top
+      // priced band is one of the three .99-labelled bands reports the round number.
+      var ach = achievableCaps(market, sizeBand, pTok, purp, termTok, tier, ficoBand(tier, fico || 700));
       if (!ach) return;                                   // nothing prices here — the tier row is the honest fallback
       if (ach.maxLTC < progMax.maxLTC) progMax.maxLTC = ach.maxLTC;
       if (ach.maxARLTV < progMax.maxARLTV) progMax.maxARLTV = ach.maxARLTV;
@@ -1034,34 +1039,21 @@
     // short). A cap-bound structure is classified AT its cap. The window is 1e-6 —
     // four orders of magnitude below the narrowest band (0.0249), so it can only
     // ever absorb rounding, never reclassify a genuinely different structure.
-    // `axis` ("AR" / "LTC") additionally carries the owner-authorized 2026-07-30 rule:
-    // a structure sitting AT a cap that lands exactly ON a band boundary whose own band
-    // the grid never prices is classified on the band IMMEDIATELY BELOW, so the round
-    // tier cap (65.00% AR-LTV on tier 3, 75.00% loan-to-cost on the tier-1 bridge refi)
-    // is reachable instead of being a sliver short.
-    // THE WHOLE SLIVER, not just the cap to the cent. Between the band below and such a
-    // cap — (64.99%, 65.00%], (74.99%, 75.00%] — the grid prices NOTHING: those band
-    // LABELS say "65.00%-70.00%" while the values in the gap are not yet 65%, so the
-    // interval is a labelling seam, not a real band. Once the cap itself is bought on
-    // the band below, every ratio inside that seam must be too, or the engine would
-    // price 64.99% and 65.00% and refuse 64.995% — the same sliver discontinuity this
-    // ruling removes, one decimal deeper. It is also not hypothetical: the rate/reserve
-    // second pass re-sizes after the rate settles and lands a cap-bound deal a few
-    // hundred-thousandths under its cap, inside the seam. Outside the seam nothing is
-    // touched, so a deal that is not up against this cap prices exactly as before.
-    function atCap(ratio, cap, axis) {
+    // THE SEAM AT A .99 BAND LABEL IS NO LONGER THIS FUNCTION'S BUSINESS (owner-
+    // authorized 2026-07-30 — see bandUpperEdge): the classifier itself now covers
+    // (64.99%, 65.00%], (74.99%, 75.00%] and (89.99%, 90.00%] on the band below, for
+    // every deal and every cap, so the cap-only mechanism this used to carry
+    // (capBoundaryEdge / an `axis` argument) is gone and there is exactly ONE rule.
+    // What remains is the pure ROUNDING snap, which is unrelated and still needed.
+    function atCap(ratio, cap) {
       if (!(cap > 0)) return ratio;
       if (ratio > cap && ratio < cap + 1e-6) ratio = cap;
-      if (axis && ratio > 0 && ratio <= cap + 1e-6) {
-        var e = capBoundaryEdge(market, sizeBand, pTok, purp, termTok, tier, ficoBand(tier, fico || 700), axis, cap);
-        if (e != null && ratio > e) return e;
-      }
       return ratio;
     }
     function rateAt(s) {
       var g = gridRate(market, sizeBand, pTok, purp, termTok, tier,
-        arBand(atCap(arForBand(s), capsEff.maxARLTV, "AR")), ficoBand(tier, fico || 700),
-        ltcBand(atCap(s.ltcPct > 0 ? s.ltcPct : capsEff.maxLTC, capsEff.maxLTC, "LTC")));
+        arBand(atCap(arForBand(s), capsEff.maxARLTV)), ficoBand(tier, fico || 700),
+        ltcBand(atCap(s.ltcPct > 0 ? s.ltcPct : capsEff.maxLTC, capsEff.maxLTC)));
       return g == null ? null : g + effMarkup();
     }
 
@@ -1083,8 +1075,12 @@
     // and the LARGER of the two priced loans wins — the true maximum structure
     // the grid buys. The winning family NAMES itself in the reason.
     if (!rate && !rateOvr && sizing.totalLoan > 0 && fico > 0) {
-      var EDGES = [0.925, 0.8999, 0.875, 0.85, 0.80, 0.7499, 0.70, 0.6499];
-      var AR_EDGES = [0.75, 0.70, 0.6499];
+      // The candidate ladders are the DERIVED band edges — see STEP_EDGES_DESC: the
+      // lifted edge (65.00% / 75.00% / 90.00%) is the one that normally wins, and the
+      // literal .99 edge rides along as a slightly smaller fallback rung for the cases
+      // where the round one is not reachable.
+      var EDGES = STEP_EDGES_DESC;
+      var AR_EDGES = AR_EDGES_DESC;
       // Same cap-bound rounding rule as the primary pass: a candidate sized to the
       // edge it is testing must be classified AT that edge, or every candidate
       // would reject itself and the search would walk past the real frontier (this
@@ -1092,8 +1088,8 @@
       var gridAt = function (s, capsTry) {
         var arRatio = (sc === "BR") ? (s.totalLoan / (arv || aiv)) : (arv > 0 ? s.totalLoan / arv : 0);
         return gridRate(market, sizeBand, pTok, purp, termTok, tier,
-          arBand(atCap(arRatio, capsTry.maxARLTV, "AR")), ficoBand(tier, fico || 700),
-          ltcBand(atCap(s.ltcPct > 0 ? s.ltcPct : capsTry.maxLTC, capsTry.maxLTC, "LTC")));
+          arBand(atCap(arRatio, capsTry.maxARLTV)), ficoBand(tier, fico || 700),
+          ltcBand(atCap(s.ltcPct > 0 ? s.ltcPct : capsTry.maxLTC, capsTry.maxLTC)));
       };
       // A candidate is evaluated EXACTLY the way the primary pass evaluates the
       // deal: seed the financed reserve with the rate guess for THIS candidate's
@@ -1143,8 +1139,8 @@
         for (ee = 0; ee < AR_EDGES.length; ee++) {
           if (AR_EDGES[ee] > capsEff.maxARLTV - 1e-9) continue;
           // Land on the largest WHOLE-DOLLAR loan inside the band, which is the
-          // workbook's own frontier: edge x ARV can fall on a half dollar (0.6499
-          // x $625,000 = $406,187.50) and a loan reported one cent above the edge
+          // workbook's own frontier: edge x ARV can fall on a half dollar (0.65 x
+          // $625,001 = $406,250.65) and a loan reported one cent above the edge
           // reads into the NEXT — unpriced — AR band.
           arCands.push(Math.min(AR_EDGES[ee], Math.floor(AR_EDGES[ee] * arv) / arv));
         }
@@ -1230,9 +1226,9 @@
     // "…|90.00%-92.50%" while it was charged the 87.51%-89.99% cell (audit
     // 2026-07-30, item 3; owner-directed: everything should tie up, the buy rate
     // included). No rate, band edge, cap or sizing figure moves — only the label.
-    var arB = arBand(atCap(arForBand(sizing), capsEff.maxARLTV, "AR")),
+    var arB = arBand(atCap(arForBand(sizing), capsEff.maxARLTV)),
         fB = ficoBand(tier, fico || 700),
-        lB = ltcBand(atCap(sizing.ltcPct > 0 ? sizing.ltcPct : capsEff.maxLTC, capsEff.maxLTC, "LTC"));
+        lB = ltcBand(atCap(sizing.ltcPct > 0 ? sizing.ltcPct : capsEff.maxLTC, capsEff.maxLTC));
     var key = rateKey(market, sizeBand, pTok, purp, termTok, tier, arB || "-", fB || "-", lB || "-");
     if (!rate && sizing.totalLoan > 0 && fico > 0) {
       add("MANUAL", "No priced grid cell for this profile — submit for individual review.");
@@ -1364,7 +1360,7 @@
 
   /* ---------------- pricing ladder (leverage ↔ rate, like the Standard engine) ----------------
      Buckets are the grid's own LTC band edges, so each rung is a real pricing band. */
-  var LADDER_BUCKETS = [0.925, 0.8999, 0.875, 0.85, 0.80, 0.7499, 0.70, 0.6499];
+  var LADDER_BUCKETS = LADDER_EDGES_DESC;
   function priceLadder(input) {
     var full = evaluate(input);
     if (full.status === "INELIGIBLE" || !full.sizing || !(full.sizing.totalLoan > 0)) {
