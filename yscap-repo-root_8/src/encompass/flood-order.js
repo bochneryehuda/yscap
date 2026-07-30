@@ -64,13 +64,41 @@ const FLOOD_SERVICE = {
   // Discover it from the tenant's configured services once a token exists.
   partnerId: flood.partnerId || process.env.ENCOMPASS_FLOOD_PARTNER_ID || null,
   serviceId: flood.serviceId || process.env.ENCOMPASS_FLOOD_SERVICE_ID || null,
+  // REQUIRED by the v3 serviceOrders API — the tenant's configured flood service
+  // setup id (a place-order without it returns "SOO-1125: serviceSetupId is
+  // required"). It names WHICH service/vendor to order from; the Encompass admin
+  // has it. No default: absent → we refuse before the wire with a plain message.
+  serviceSetupId: flood.serviceSetupId || process.env.ENCOMPASS_FLOOD_SERVICE_SETUP_ID || null,
   // The Life-of-Loan flood product name/code the tenant exposes.
   productName: flood.product || process.env.ENCOMPASS_FLOOD_PRODUCT || 'Life of Loan Flood Determination',
   productType: 'Flood',
+  // The rest of the serviceOrders body, all overridable so the exact contract can
+  // be confirmed against the live tenant (dry-run to inspect) with no redeploy.
+  reason: flood.reason || process.env.ENCOMPASS_FLOOD_REASON || 'Manually Requested',
+  requestType: flood.requestType || process.env.ENCOMPASS_FLOOD_REQUEST_TYPE || 'Flood',
+  scope: flood.scope || process.env.ENCOMPASS_FLOOD_SCOPE || null,
+  optionsJson: flood.optionsJson || process.env.ENCOMPASS_FLOOD_OPTIONS_JSON || null,
 };
 
+// Parse the optional request.options override once, tolerantly (a bad JSON value
+// must never crash an order — it degrades to no extra options).
+function floodOptions() {
+  if (!FLOOD_SERVICE.optionsJson) return {};
+  try { const o = JSON.parse(FLOOD_SERVICE.optionsJson); return (o && typeof o === 'object') ? o : {}; }
+  catch { return {}; }
+}
+
+// The serviceOrders framework additionally needs the tenant's serviceSetupId
+// (partnerTransactions uses partnerId instead). Ordering is "not configured"
+// until that id is present — so the file shows a plain "set up the flood service
+// id" message instead of letting a guaranteed 400 reach the wire.
+function serviceReady() {
+  return FLOOD_SERVICE.framework === 'partnerTransactions'
+    ? !!FLOOD_SERVICE.partnerId
+    : !!FLOOD_SERVICE.serviceSetupId;
+}
 function configured() {
-  return !!(clientId && clientSecret && instanceId && (FLOOD_SERVICE.partnerId || FLOOD_SERVICE.serviceId || FLOOD_SERVICE.framework === 'serviceOrders'));
+  return !!(clientId && clientSecret && instanceId && serviceReady());
 }
 function enabled() { return switches.on('ENCOMPASS_FLOOD_ENABLED'); }
 function outboundEnabled() { return switches.on('ENCOMPASS_FLOOD_OUTBOUND_ENABLED'); }
@@ -175,14 +203,21 @@ function buildOrderBody(guid) {
       options: { productName: FLOOD_SERVICE.productName, floodProduct: 'LifeOfLoan' },
     };
   }
-  // serviceOrders (EPC)
+  // serviceOrders (EPC). The documented v3 service-order shape is
+  //   { serviceSetupId, scope?, reason, request: { type, options } }
+  // — serviceSetupId (which vendor/service to order) is REQUIRED; the product
+  // (Life-of-Loan) is encoded by the serviceSetupId the tenant configured. Every
+  // field is env-overridable so the live contract can be dialed in without a
+  // redeploy; a dry-run prints this exact body.
   const body = {
-    type: FLOOD_SERVICE.productType,           // 'Flood'
-    productName: FLOOD_SERVICE.productName,     // Life-of-Loan flood determination
-    options: { floodProduct: 'LifeOfLoan' },
+    serviceSetupId: FLOOD_SERVICE.serviceSetupId,
+    reason: FLOOD_SERVICE.reason,
+    request: {
+      type: FLOOD_SERVICE.requestType,         // 'Flood'
+      options: floodOptions(),                 // {} unless ENCOMPASS_FLOOD_OPTIONS_JSON is set
+    },
   };
-  if (FLOOD_SERVICE.serviceId) body.serviceId = FLOOD_SERVICE.serviceId;
-  if (FLOOD_SERVICE.partnerId) body.partnerId = FLOOD_SERVICE.partnerId;
+  if (FLOOD_SERVICE.scope) body.scope = FLOOD_SERVICE.scope;
   return body;
 }
 
@@ -265,6 +300,13 @@ async function placeOrder(guid) {
     return { orderId: null, dryrun: true, body };
   }
   if (!outboundEnabled()) { const e = new Error('Encompass flood ordering is turned off (ENCOMPASS_FLOOD_OUTBOUND_ENABLED).'); e.code = 'FLOOD_OUTBOUND_DISABLED'; throw e; }
+  // Refuse BEFORE the wire when the tenant's flood service id is missing — the
+  // v3 serviceOrders API would only answer "SOO-1125: serviceSetupId is required".
+  if (!serviceReady()) {
+    const e = new Error('Flood ordering needs your Encompass flood service id set up first (the "service setup id" for your flood service). Ask your Encompass admin for it, add it to ENCOMPASS_FLOOD_SERVICE_SETUP_ID, then order again.');
+    e.code = 'FLOOD_NO_SERVICE_SETUP';
+    throw e;
+  }
   const { body: resp, location } = await authedJson(placePath(guid), {
     method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
   });
@@ -338,5 +380,5 @@ module.exports = {
   configured, enabled, outboundEnabled, dryrun,
   placeOrder, getOrderStatus, downloadResultFile,
   // exported for tests + the API-Health surface
-  FLOOD_SERVICE, buildOrderBody, extractStatus, extractOrderId, sanitizeOrderId, isIceHost, pathAllowed, placePath, statusPath,
+  FLOOD_SERVICE, buildOrderBody, extractStatus, extractOrderId, sanitizeOrderId, isIceHost, pathAllowed, placePath, statusPath, serviceReady,
 };

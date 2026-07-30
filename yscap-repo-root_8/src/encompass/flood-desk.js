@@ -74,7 +74,14 @@ async function circuitOk() {
 // Returns a shaped result the route hands straight back: { ok, order?, error?, message }.
 async function orderFlood({ appId, checklistItemId, actorId }) {
   if (!client.enabled()) return { ok: false, error: 'disabled', message: 'Flood ordering is not turned on yet.' };
-  if (!client.configured()) return { ok: false, error: 'not_configured', message: 'Flood ordering is not set up yet (missing Encompass flood credentials / service).' };
+  if (!client.configured()) {
+    // Distinguish "missing the flood service id" (the tenant setup value) from
+    // "missing credentials" so staff get an actionable message.
+    const msg = client.serviceReady()
+      ? 'Flood ordering is not set up yet (missing Encompass flood credentials).'
+      : 'Flood ordering needs your Encompass flood service id set up first. Ask your Encompass admin for it (the flood "service setup id"), then it can be added.';
+    return { ok: false, error: 'not_configured', message: msg };
+  }
 
   const resolved = await resolveLoanGuid(appId);
   if (resolved.error) return { ok: false, error: resolved.error, message: resolved.message };
