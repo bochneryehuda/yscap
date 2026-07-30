@@ -366,6 +366,37 @@ const itemRow = async (id) => (await db.query(
       'F4c: the readiness gate is not empty — the file is not "ready" via the optional trick');
   }
 
+  // F5 (post-merge audit finding #1) — the As-Is confirmation cannot be bypassed by making
+  // the CONFIRM condition (appraisal_as_is_verify) optional or plain-waiving it. The As-Is
+  // may have been auto-written by PILOT and never human-read; only a genuine sign-off or a
+  // recorded super-admin override counts as "confirmed".
+  {
+    const f = await seedFile({ as_is_value: 240000 });   // a value is present (as PILOT would auto-write)
+    cleanupApps.push(f.appId); cleanupBors.push(f.borId);
+    await insertAppraisal(f.appId);
+    const review = await attach(f.appId, 'appraisal_review_cleared');
+    const asis = await attach(f.appId, 'appraisal_as_is_verify');
+    // Control: confirm condition open → review refused for the As-Is reason.
+    let g = await staffRoutes.signOffGate(review, { id: staff.id });
+    ok(typeof g === 'string' && /Confirm the As-Is value/i.test(g), 'F5a: review refused while the confirm condition is open');
+    // Bypass A — make the confirm condition OPTIONAL: review must STILL refuse.
+    await db.query(`UPDATE checklist_items SET is_required=false WHERE id=$1`, [asis]);
+    g = await staffRoutes.signOffGate(review, { id: staff.id });
+    ok(typeof g === 'string' && /Confirm the As-Is value/i.test(g), 'F5b: an OPTIONAL confirm condition does NOT count as confirmed');
+    // Bypass B — plain WAIVE it (waived_at set, no override): review must STILL refuse.
+    await db.query(`UPDATE checklist_items SET status='satisfied', signed_off_at=now(), waived_at=now(), waived_by=$2 WHERE id=$1`, [asis, staff.id]);
+    g = await staffRoutes.signOffGate(review, { id: staff.id });
+    ok(typeof g === 'string' && /Confirm the As-Is value/i.test(g), 'F5c: a plain-WAIVED confirm condition does NOT count as confirmed');
+    // Legit A — a genuine sign-off (human confirmed): review clears.
+    await db.query(`UPDATE checklist_items SET status='satisfied', signed_off_at=now(), signed_off_by=$2, waived_at=NULL, waived_by=NULL WHERE id=$1`, [asis, staff.id]);
+    g = await staffRoutes.signOffGate(review, { id: staff.id });
+    ok(g == null, 'F5d: a genuine SIGN-OFF of the confirm condition clears the As-Is prerequisite');
+    // Legit B — a super-admin override (recorded) also clears.
+    await db.query(`UPDATE checklist_items SET status='satisfied', signed_off_at=NULL, waived_at=now(), waived_by=$2, override_at=now(), override_by=$2, override_reason='no report' WHERE id=$1`, [asis, staff.id]);
+    g = await staffRoutes.signOffGate(review, { id: staff.id });
+    ok(g == null, 'F5e: a super-admin OVERRIDE of the confirm condition clears the prerequisite (recorded)');
+  }
+
   // cleanup
   for (const id of cleanupApps) {
     await db.query('DELETE FROM appraisal_findings WHERE application_id=$1', [id]).catch(() => {});
