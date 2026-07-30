@@ -31,12 +31,19 @@ export default function ToolScenarioBar({ slug, toolName, getWin, onCountChange 
     if (kind === 'ok') noteTimer.current = setTimeout(() => setNote(null), 3500);
   }, []);
 
+  const [truncated, setTruncated] = useState(false);
+
   const refresh = useCallback(async () => {
     try {
       const r = await api.toolScenarios(slug);
       const rows = (r && r.scenarios) || [];
       setList(rows);
-      if (onCountChange) onCountChange(slug, rows.length);
+      setTruncated(!!(r && r.truncated));
+      /* The BADGE comes from the server's own count, not from the page we were
+         handed — the list is capped, and a badge derived from a capped page would
+         quietly under-report how many scenarios a busy staffer actually has. */
+      const exact = r && r.counts && typeof r.counts[slug] === 'number' ? r.counts[slug] : rows.length;
+      if (onCountChange) onCountChange(slug, exact);
     } catch (_) { /* the list is a convenience; never block the tool on it */ }
   }, [slug, onCountChange]);
 
@@ -58,9 +65,15 @@ export default function ToolScenarioBar({ slug, toolName, getWin, onCountChange 
 
     setBusy(true);
     try {
-      await api.saveToolScenario({ toolSlug: slug, name, state: read.state, stateKind: read.kind });
+      const r = await api.saveToolScenario({ toolSlug: slug, name, state: read.state, stateKind: read.kind });
       await refresh();
-      flash('ok', existing ? `Replaced "${name}".` : `Saved "${name}".`);
+      const verb = existing ? `Replaced "${name}"` : `Saved "${name}"`;
+      /* A social is never stored in a scenario (see lib/tool-scenario-state.js), so
+         say it plainly — a staffer who reopens this and finds the box empty should
+         already know why, not think the save lost their work. */
+      flash('ok', r && r.omittedSensitive
+        ? `${verb}. Social Security numbers are never saved in a scenario — you'll re-enter those.`
+        : `${verb}.`);
     } catch (e) {
       flash('err', (e && e.detail) || (e && e.message) || "Couldn't save that scenario.");
     } finally { setBusy(false); }
@@ -121,6 +134,11 @@ export default function ToolScenarioBar({ slug, toolName, getWin, onCountChange 
           {!list.length && (
             <div style={{ fontSize: 13, color: '#4B585C', padding: '6px 4px 8px' }}>
               Nothing saved yet. Fill this tool in, then press <strong>Save scenario</strong>.
+            </div>
+          )}
+          {truncated && (
+            <div style={{ fontSize: 12, color: '#8A3A2E', padding: '6px 4px 8px' }}>
+              Showing your 500 most recently used. Delete a few you no longer need to see the older ones.
             </div>
           )}
           {list.map((row) => (

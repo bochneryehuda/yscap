@@ -53,6 +53,68 @@ assert(S.validateSave({ toolSlug: 'term-sheet', name: 'x'.repeat(400), state: {}
   assert(S.stateTooBig(circular) === true, 'an unserializable state fails CLOSED (refused, not stored)');
 }
 
+/* A SOCIAL NEVER ENTERS THIS TABLE (pre-merge audit, 2026-07-30).
+   The Loan Application tool's b1Ssn..b4Ssn are ordinary id'd inputs with no
+   data-noshare, so the shared collector picks them up — and this feature would have
+   written them to jsonb in clear text, which is the exact thing redact.js exists to
+   stop everywhere else in this system. The scrub reuses redact.js's own pattern. */
+console.log('\n--- a Social Security number can never be stored in a scenario ---');
+{
+  const REAL_SSN_FIELDS = ['b1Ssn', 'b2Ssn', 'b3Ssn', 'b4Ssn'];
+  const v = { };
+  for (const f of REAL_SSN_FIELDS) v[f] = '123-45-6789';
+  v.b1Dob = '1980-01-01'; v.eEin = '12-3456789'; v.price = '400000';
+  const out = S.validateSave({ toolSlug: 'loan-application', name: 'x', state: { v } });
+  assert(out.ok, 'the save is still accepted — the scenario is kept, only the number is dropped');
+  for (const f of REAL_SSN_FIELDS) {
+    assert(out.value.state.v[f] === undefined, `${f} — the REAL Loan Application field id — is stripped`);
+  }
+  assert(out.value.removed.length === REAL_SSN_FIELDS.length,
+    `the strip is reported, never silent (removed ${JSON.stringify(out.value.removed)})`);
+  assert(out.value.state.v.price === '400000', 'everything that is not a social is untouched');
+  assert(JSON.stringify({ v }).includes('123-45-6789'),
+    'the CALLER\'s object is not mutated — the scrub returns a copy');
+}
+{
+  // nested and inside arrays, because a tool state is not always one flat level
+  const out = S.validateSave({ toolSlug: 'loan-application', name: 'x',
+    state: { v: { ok: '1' }, rows: [{ b1Ssn: '111-22-3333', addr: '12 Oak' }], deep: { deeper: { ssn: '9' } } } });
+  assert(JSON.stringify(out.value.state).includes('111-22-3333') === false, 'a social inside an ARRAY row is stripped');
+  assert(out.value.state.deep.deeper.ssn === undefined, 'a social nested three levels down is stripped');
+  assert(out.value.state.rows[0].addr === '12 Oak', 'the rest of the row survives');
+}
+{
+  // the CLIENT strips too, so the number never travels. The two patterns must agree
+  // on the real field names or one side would ship what the other refuses.
+  const client = fs.readFileSync(path.join(__dirname, '..', 'app-v2', 'src', 'lib', 'tool-scenario-state.js'), 'utf8');
+  const m = /const SSN_KEY = (\/.*\/i);/.exec(client);
+  assert(!!m, 'the client carries its own copy of the social pattern');
+  const clientRe = new RegExp(m[1].slice(1, m[1].lastIndexOf('/')), 'i');
+  const serverRe = require('../src/lib/redact').SSN_KEY;
+  for (const f of ['b1Ssn', 'b4Ssn', 'ssn', 'borrower_ssn', 'socialSecurityNumber']) {
+    assert(clientRe.test(f) && serverRe.test(f), `client and server both treat "${f}" as a social`);
+  }
+  for (const f of ['price', 'assn', 'lessonPlan', 'b1Dob']) {
+    assert(!clientRe.test(f) && !serverRe.test(f), `neither side over-matches "${f}"`);
+  }
+}
+
+/* THE SANITY CHECK OWN_STATE_TOOLS WAS DOCUMENTED AS DOING — it was described and
+   never implemented (pre-merge audit). A 'suite' blob for one of these two tools
+   means the client's own-state read failed and it fell back, so the line items /
+   project rows are already gone. Storing that hands the staffer a "Saved" that has
+   silently lost their work; refusing costs them one retry. */
+console.log('\n--- an own-state tool refuses a flat-collector blob ---');
+for (const slug of S.OWN_STATE_TOOLS) {
+  const bad = S.validateSave({ toolSlug: slug, name: 'x', state: { v: { a: '1' } }, stateKind: 'suite' });
+  assert(bad.error === 'tool_not_ready', `${slug} refuses a 'suite' blob rather than storing a hollow scenario`);
+  assert(/loading/i.test(bad.detail || ''), `${slug}'s refusal tells the staffer what to do about it`);
+  const good = S.validateSave({ toolSlug: slug, name: 'x', state: { items: [] }, stateKind: 'own' });
+  assert(good.ok, `${slug} still accepts its OWN shape`);
+}
+assert(S.validateSave({ toolSlug: 'term-sheet', name: 'x', state: {}, stateKind: 'suite' }).ok,
+  'the other nine tools are unaffected — the shared collector is correct for them');
+
 /* ===================================================================== *
  * 2. SLUG PARITY WITH THE SCREEN — the drift that would silently lose work.
  * A slug the screen offers but the server refuses = a Save button that 400s.
@@ -114,6 +176,41 @@ console.log('\n--- the share-link guarantee is intact ---');
  * 3. THE REAL DOORS (DB + HTTP)
  * ===================================================================== */
 (async () => {
+  /* THE ADAPTER MUST REFUSE, NOT DEGRADE (pre-merge audit, 2026-07-30).
+     The first cut wrapped the own-state read in a catch that fell through to the
+     shared collector. A Rehab Budget whose reader threw would then have been saved
+     as a 'suite' blob with the line items GONE, and the screen still said "Saved" —
+     the precise silent loss the kind field exists to prevent. Exercised for real
+     against fake tool windows, not asserted from the source text. */
+  console.log('\n--- the state adapter refuses a tool it cannot read properly ---');
+  try {
+    const mod = await import('../app-v2/src/lib/tool-scenario-state.js');
+    const suiteWin = { YS: { collectState: () => ({ v: { a: '1' } }) } };
+    const healthy = { RB: { getState: () => ({ items: [{ name: 'White oak' }] }), setState() {} }, YS: suiteWin.YS };
+    const throwing = { RB: { getState: () => { throw new Error('boom'); }, setState() {} }, YS: suiteWin.YS };
+    const nullish = { TR: { snap: () => null, setState() {} }, YS: suiteWin.YS };
+
+    const a = mod.readToolState(healthy);
+    assert(a && a.kind === 'own' && a.state.items[0].name === 'White oak',
+      'a healthy own-state tool is read through its own accessor');
+    const b = mod.readToolState(throwing);
+    assert(b === null, 'a THROWING own-state reader returns null — it never degrades to the flat collector');
+    const c = mod.readToolState(nullish);
+    assert(c === null, 'an own-state reader that hands back nothing also refuses');
+    const d = mod.readToolState(suiteWin);
+    assert(d && d.kind === 'suite', 'a tool with no own accessor still uses the shared collector');
+
+    // and the social never leaves the browser either
+    const withSsn = { YS: { collectState: () => ({ v: { b1Ssn: '123-45-6789', price: '400000' } }) } };
+    const e = mod.readToolState(withSsn);
+    assert(e.state.v.b1Ssn === undefined && e.state.v.price === '400000',
+      'the client drops the social before it is ever sent');
+    assert(mod.toolHasOwnState(healthy) === true && mod.toolHasOwnState(suiteWin) === false,
+      'toolHasOwnState agrees with the reader about which tools carry their own state');
+  } catch (e) {
+    assert(false, `the adapter could not be exercised: ${e && e.message}`);
+  }
+
   if (!process.env.DATABASE_URL) {
     console.log('\nSKIP the HTTP half — no DATABASE_URL');
     console.log(failures ? `\n${failures} assertion(s) failed` : '\nALL suite-scenario assertions passed');
@@ -189,6 +286,64 @@ console.log('\n--- the share-link guarantee is intact ---');
     const otherTool = await call('POST', '/api/staff/tool-scenarios', aTok,
       { toolSlug: 'deal-analyzer', name: '12 Oak St — 85% LTC', state: { v: { y: '2' } } });
     assert(otherTool.status === 201, 'the same name may be reused on a DIFFERENT tool');
+
+    /* ---- NO SOCIAL REACHES THE TABLE, through EITHER door ----
+       The client strips too, but the server is the guarantee: this posts the number
+       straight at the API the way a hand-rolled request would, then reads it back
+       out of POSTGRES rather than trusting the response. */
+    {
+      const SSN = '123-45-6789';
+      const withSsn = await call('POST', '/api/staff/tool-scenarios', aTok, {
+        toolSlug: 'loan-application', name: 'Kamara app',
+        state: { v: { b1Ssn: SSN, b2Ssn: SSN, b1Dob: '1980-01-01', price: '400000' } },
+      });
+      assert(withSsn.status === 201, `a loan-application scenario still saves (${withSsn.status})`);
+      assert(withSsn.body.omittedSensitive === true,
+        'the response SAYS a social was dropped, so the screen can tell the staffer');
+      const laId = withSsn.body.scenario.id;
+      const raw = await db.query('SELECT state::text AS s FROM staff_tool_scenarios WHERE id = $1', [laId]);
+      assert(!raw.rows[0].s.includes(SSN), 'the number is NOT in the stored jsonb — read straight from Postgres');
+      assert(!raw.rows[0].s.includes('b1Ssn') && !raw.rows[0].s.includes('b2Ssn'), 'neither social FIELD survives');
+      assert(raw.rows[0].s.includes('400000'), 'the rest of the application is stored exactly as sent');
+
+      // the UPDATE door is the second way in and must not be the unguarded one
+      const put = await call('PUT', `/api/staff/tool-scenarios/${laId}`, aTok,
+        { state: { v: { b3Ssn: SSN, price: '500000' } } });
+      assert(put.status === 200 && put.body.omittedSensitive === true, `the rename/update door scrubs too (${put.status})`);
+      const raw2 = await db.query('SELECT state::text AS s FROM staff_tool_scenarios WHERE id = $1', [laId]);
+      assert(!raw2.rows[0].s.includes(SSN) && raw2.rows[0].s.includes('500000'),
+        'an UPDATE cannot smuggle a social in either');
+
+      // a clean save does not claim a strip happened
+      const clean = await call('POST', '/api/staff/tool-scenarios', aTok,
+        { toolSlug: 'qualifier-pro', name: 'Clean', state: { v: { fico: '720' } } });
+      assert(clean.body.omittedSensitive === false, 'a scenario with no social does not claim one was removed');
+    }
+
+    /* ---- an own-state tool cannot store a hollow scenario ---- */
+    {
+      const hollow = await call('POST', '/api/staff/tool-scenarios', aTok,
+        { toolSlug: 'rehab-budget', name: 'Hollow', state: { v: { a: '1' } }, stateKind: 'suite' });
+      assert(hollow.status === 400 && hollow.body.error === 'tool_not_ready',
+        `the door refuses a flat blob for Rehab Budget (${hollow.status} ${hollow.body && hollow.body.error})`);
+      const real = await call('POST', '/api/staff/tool-scenarios', aTok,
+        { toolSlug: 'rehab-budget', name: 'Real', state: { items: [{ name: 'White oak', amt: 100 }] }, stateKind: 'own' });
+      assert(real.status === 201, 'its own shape still saves');
+      const back = await call('GET', `/api/staff/tool-scenarios/${real.body.scenario.id}`, aTok);
+      assert(back.body.scenario.state.items[0].name === 'White oak' && back.body.scenario.stateKind === 'own',
+        'and the line items come back with the kind that produced them');
+    }
+
+    /* ---- the badge count comes from the database, not the capped page ---- */
+    {
+      const listed = await call('GET', '/api/staff/tool-scenarios', aTok);
+      assert(listed.body.truncated === false, 'a normal list reports that nothing was cut');
+      const dbCount = await db.query(
+        `SELECT COUNT(*)::int AS n FROM staff_tool_scenarios WHERE staff_user_id = $1 AND tool_slug = 'term-sheet'`,
+        [alice.id]);
+      assert(listed.body.counts['term-sheet'] === dbCount.rows[0].n,
+        `the badge equals the real row count (${listed.body.counts['term-sheet']} vs ${dbCount.rows[0].n})`);
+    }
 
     // ---- PRIVACY: Bob can neither read, rename, nor delete Alice's scenario ----
     const bobList = await call('GET', '/api/staff/tool-scenarios', bTok);

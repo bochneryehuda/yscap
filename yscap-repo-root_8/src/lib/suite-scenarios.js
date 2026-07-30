@@ -14,13 +14,24 @@
    PURE — no DB, no network — so the whole rule set unit-tests without a server.
    ===================================================================== */
 
+/* A SOCIAL SECURITY NUMBER NEVER GOES INTO THIS TABLE (pre-merge audit, 2026-07-30).
+   The Loan Application tool carries `b1Ssn`..`b4Ssn`, which are ordinary id'd inputs
+   with no `data-noshare` — so the generic collector picks them up, and this feature
+   would have persisted them as PLAINTEXT jsonb. That is exactly the rule this repo
+   already enforces everywhere else: a social is encrypted into `borrowers.ssn_encrypted`
+   and STRIPPED out of every raw_intake/payload blob by src/lib/redact.js. A scratchpad
+   scenario is not an exception to it.
+   We reuse redact.js's OWN key pattern rather than writing a second one, so a future
+   spelling (a fifth borrower slot, a renamed field) is covered in one place for both. */
+const { SSN_KEY } = require('./redact');
+
 /* The tools the Investor Suite offers, and therefore the only slugs a scenario may
    be saved against. MUST stay in step with the GROUPS list in
    app-v2/src/screens/StaffInvestorSuite.jsx — a slug in one and not the other means
    either a tool whose scenarios can never be saved (silently, the save just 400s) or
-   a stored row nothing can ever reopen. scripts/test-suite-scenarios-pure.js reads
-   the screen and asserts the two agree, so the drift is caught rather than
-   discovered by a staffer losing work. */
+   a stored row nothing can ever reopen. scripts/test-suite-scenarios-db.js reads the
+   screen and asserts the two agree, so the drift is caught rather than discovered by
+   a staffer losing work. */
 const TOOL_SLUGS = Object.freeze([
   'term-sheet', 'rehab-budget', 'track-record', 'loan-application',
   'deal-analyzer', 'flip-analyzer', 'qualifier-pro', 'portfolio-tracker',
@@ -76,8 +87,27 @@ function stateTooBig(v) {
   catch (_) { return true; }        // unserializable → refuse (fail closed)
 }
 
+/* Drop every social out of a state blob, recursively, and SAY which keys went — a
+   silent strip would leave the staffer thinking their scenario is complete. Returns
+   a copy; the caller's object is untouched. Anything unserializable fails closed to
+   an empty removal list and is refused upstream by stateTooBig. */
+function scrubState(state) {
+  const removed = [];
+  function walk(v) {
+    if (!v || typeof v !== 'object') return v;
+    if (Array.isArray(v)) return v.map(walk);
+    const out = {};
+    for (const [k, val] of Object.entries(v)) {
+      if (SSN_KEY.test(k)) { removed.push(k); continue; }
+      out[k] = walk(val);
+    }
+    return out;
+  }
+  return { state: walk(state), removed };
+}
+
 /**
- * Validate a save. Returns `{ ok:true, value:{toolSlug,name,state,stateKind} }`
+ * Validate a save. Returns `{ ok:true, value:{toolSlug,name,state,stateKind,removed} }`
  * or `{ ok:false, error, detail }` with a reason a human can act on.
  */
 function validateSave(body) {
@@ -94,7 +124,23 @@ function validateSave(body) {
   const stateKind = b.stateKind ? String(b.stateKind).trim() : 'suite';
   if (!isStateKind(stateKind)) return { ok: false, error: 'bad_state_kind', detail: 'Unrecognized scenario format.' };
 
-  return { ok: true, value: { toolSlug, name, state: b.state, stateKind } };
+  /* THE SANITY CHECK THIS LIST WAS ALWAYS DOCUMENTED AS DOING, now actually done
+     (pre-merge audit, 2026-07-30 — it was described and never implemented). Rehab
+     Budget and Track Record hold structured rows the generic collector cannot see,
+     so a 'suite' blob for one of them is not a valid save — it is the SILENT
+     DEGRADE this whole kind field exists to prevent: the client's own-state read
+     failed, it quietly fell back, and the staffer would get a "Saved" that has lost
+     the line items. Refusing with a reason they can act on beats storing the loss. */
+  if (OWN_STATE_TOOLS.includes(toolSlug) && stateKind !== 'own') {
+    return {
+      ok: false,
+      error: 'tool_not_ready',
+      detail: 'This tool was not finished loading, so its rows could not be read. Give it a moment and save again.',
+    };
+  }
+
+  const scrubbed = scrubState(b.state);
+  return { ok: true, value: { toolSlug, name, state: scrubbed.state, stateKind, removed: scrubbed.removed } };
 }
 
 /** The row shape the client reads. `state` is deliberately omitted from LIST
@@ -117,5 +163,5 @@ function shapeRow(row, opts) {
 module.exports = {
   TOOL_SLUGS, STATE_KINDS, OWN_STATE_TOOLS, NAME_MAX, STATE_MAX_BYTES,
   isToolSlug, isStateKind, isStateObject, stateTooBig, cleanName,
-  validateSave, shapeRow,
+  validateSave, shapeRow, scrubState,
 };

@@ -13244,18 +13244,29 @@ router.get('/tool-scenarios', async (req, res) => {
   try {
     const tool = String(req.query.tool || '').trim();
     if (tool && !suiteScenarios.isToolSlug(tool)) return res.status(400).json({ error: 'unknown_tool' });
+    /* The cap is a runaway guard, and it must NEVER be silent: a staffer past it
+       would see truncated badges and older scenarios simply missing, with nothing
+       saying why. Ask for one row beyond it so we can tell the difference between
+       "exactly 500" and "more than we are showing" — and the COUNTS come from the
+       database, not from the capped page, so a badge can never under-report. */
+    const LIST_CAP = 500;
     const r = await db.query(
       `SELECT id, tool_slug, name, state_kind, created_at, updated_at
          FROM staff_tool_scenarios
         WHERE staff_user_id = $1 ${tool ? 'AND tool_slug = $2' : ''}
         ORDER BY updated_at DESC
-        LIMIT 500`,
+        LIMIT ${LIST_CAP + 1}`,
       tool ? [req.actor.id, tool] : [req.actor.id]);
+    const truncated = r.rows.length > LIST_CAP;
+    const rows = truncated ? r.rows.slice(0, LIST_CAP) : r.rows;
     // The per-tool counts drive the badge on each suite tile, so the grid can show
     // "3 saved" without fetching every tool's list.
     const counts = {};
-    if (!tool) for (const row of r.rows) counts[row.tool_slug] = (counts[row.tool_slug] || 0) + 1;
-    res.json({ scenarios: r.rows.map((x) => suiteScenarios.shapeRow(x)), counts });
+    const c = await db.query(
+      `SELECT tool_slug, COUNT(*)::int AS n FROM staff_tool_scenarios
+        WHERE staff_user_id = $1 GROUP BY tool_slug`, [req.actor.id]);
+    for (const row of c.rows) counts[row.tool_slug] = row.n;
+    res.json({ scenarios: rows.map((x) => suiteScenarios.shapeRow(x)), counts, truncated });
   } catch (e) { console.warn('[staff] handler error:', db.describeError(e)); res.status(500).json({ error: 'server error' }); }
 });
 
@@ -13282,7 +13293,7 @@ router.post('/tool-scenarios', async (req, res) => {
   try {
     const v = suiteScenarios.validateSave(req.body);
     if (!v.ok) return res.status(400).json({ error: v.error, detail: v.detail });
-    const { toolSlug, name, state, stateKind } = v.value;
+    const { toolSlug, name, state, stateKind, removed } = v.value;
     const r = await db.query(
       `INSERT INTO staff_tool_scenarios (staff_user_id, tool_slug, name, state, state_kind)
             VALUES ($1, $2, $3, $4::jsonb, $5)
@@ -13290,7 +13301,8 @@ router.post('/tool-scenarios', async (req, res) => {
        DO UPDATE SET state = EXCLUDED.state, state_kind = EXCLUDED.state_kind, name = EXCLUDED.name
          RETURNING id, tool_slug, name, state_kind, created_at, updated_at`,
       [req.actor.id, toolSlug, name, JSON.stringify(state), stateKind]);
-    res.status(201).json({ scenario: suiteScenarios.shapeRow(r.rows[0]) });
+    // Never a silent strip: if a social was dropped on the way in, the screen says so.
+    res.status(201).json({ scenario: suiteScenarios.shapeRow(r.rows[0]), omittedSensitive: removed.length > 0 });
   } catch (e) { console.warn('[staff] handler error:', db.describeError(e)); res.status(500).json({ error: 'server error' }); }
 });
 
@@ -13302,9 +13314,14 @@ router.put('/tool-scenarios/:id', async (req, res) => {
     const name = b.name != null ? suiteScenarios.cleanName(b.name) : null;
     if (b.name != null && !name) return res.status(400).json({ error: 'name_required' });
     const hasState = Object.prototype.hasOwnProperty.call(b, 'state');
+    let state = null; let removed = [];
     if (hasState) {
       if (!suiteScenarios.isStateObject(b.state)) return res.status(400).json({ error: 'state_required' });
       if (suiteScenarios.stateTooBig(b.state)) return res.status(400).json({ error: 'state_too_large' });
+      // The same social scrub as the save door — a rename that also carries a state
+      // is a second way into this table, and it must not be the unguarded one.
+      const scrubbed = suiteScenarios.scrubState(b.state);
+      state = scrubbed.state; removed = scrubbed.removed;
     }
     const r = await db.query(
       `UPDATE staff_tool_scenarios
@@ -13312,9 +13329,9 @@ router.put('/tool-scenarios/:id', async (req, res) => {
               state = COALESCE($4::jsonb, state)
         WHERE id = $1 AND staff_user_id = $2
         RETURNING id, tool_slug, name, state_kind, created_at, updated_at`,
-      [req.params.id, req.actor.id, name, hasState ? JSON.stringify(b.state) : null]);
+      [req.params.id, req.actor.id, name, hasState ? JSON.stringify(state) : null]);
     if (!r.rows[0]) return res.status(404).json({ error: 'not found' });
-    res.json({ scenario: suiteScenarios.shapeRow(r.rows[0]) });
+    res.json({ scenario: suiteScenarios.shapeRow(r.rows[0]), omittedSensitive: removed.length > 0 });
   } catch (e) {
     if (String(e && e.code) === '22P02') return res.status(404).json({ error: 'not found' });
     if (String(e && e.code) === '23505') return res.status(409).json({ error: 'name_taken', detail: 'You already have a scenario with that name for this tool.' });

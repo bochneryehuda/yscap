@@ -59,8 +59,17 @@ export default function StaffInvestorSuite({ initialTool = null }) {
   /* The frame's own window, captured through StaticToolFrame's onReady. Same-origin,
      so the scenario bar can ask the tool for its state and hand it back. Held in a
      REF rather than state: it is an imperative handle, and re-rendering on it would
-     remount the frame and throw away the very numbers we are trying to save. */
+     remount the frame and throw away the very numbers we are trying to save.
+     THE SLUG IS STORED WITH IT (pre-merge audit, 2026-07-30): the ref was never
+     cleared, so between opening a second tool and its frame booting it still pointed
+     at the PREVIOUS, torn-down window. Pinning the handle to the tool it came from
+     makes the stale window unreachable without depending on effect ordering — an
+     effect that nulls the ref would race a frame that loads straight from cache. */
   const winRef = useRef(null);
+  const winFor = useCallback((slug) => {
+    const held = winRef.current;
+    return held && held.slug === slug ? held.win : null;
+  }, []);
 
   // Saved counts for the grid badges — one call, every tool.
   useEffect(() => {
@@ -90,12 +99,12 @@ export default function StaffInvestorSuite({ initialTool = null }) {
           <strong style={{ fontSize: 15 }}>{open.name}</strong>
           <div style={{ flex: 1 }} />
           <ToolScenarioBar slug={open.slug} toolName={open.name}
-            getWin={() => winRef.current} onCountChange={noteCount} />
+            getWin={() => winFor(open.slug)} onCountChange={noteCount} />
           <a className="btn ghost small" href={url} target="_blank" rel="noopener noreferrer" title="Open this tool in a new browser tab">Open in a new tab ↗</a>
         </div>
         <div className="isuite-full-body">
           <StaticToolFrame key={open.slug} src={url} title={open.name} fill
-            onReady={(win) => { winRef.current = win; }} />
+            onReady={(win) => { winRef.current = { slug: open.slug, win }; }} />
         </div>
       </div>
     );
