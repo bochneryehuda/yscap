@@ -36,7 +36,7 @@ import { captureScrollAnchor, restoreScrollAnchor } from '../lib/keep-scroll.js'
 import BorrowerProfilePanel from '../components/BorrowerProfilePanel.jsx';
 import { CONDITION_TIMINGS, conditionStatusLabel, conditionStatusClass, timingLabel, loanConditionStatusLabel, audienceStamp } from '../lib/conditions-vocab.js';
 import { severityCount } from '../lib/findings-vocab.js';
-import { groupBySubject } from '../lib/condition-subjects.js';
+import { groupBySubject, subjectOf } from '../lib/condition-subjects.js';
 import { isWorkflowStep } from '../lib/condition-workflow-steps.js';
 import ConditionActions, { DocActions } from '../components/ConditionActions.jsx';
 import ConditionLine, { ConditionNote } from '../components/ConditionLine.jsx';
@@ -2379,7 +2379,7 @@ function StaffContactEntry({ appId, toolKey, current, onSaved }) {
   );
 }
 
-function BorrowerConditions({ appId, app, items, docs, onPatch, onReviewDoc, onDownloadDoc, dlBusy, role, onUploadTo, onDropTo, onChanged, onPreview, onOpenStudio, team, canImportCredit, fullscreen = false }) {
+function BorrowerConditions({ appId, app, items, docs, onPatch, onReviewDoc, onDownloadDoc, dlBusy, role, onUploadTo, onDropTo, onChanged, onPreview, onOpenStudio, team, canImportCredit, fullscreen = false, closingActive = false }) {
   const completer = canComplete(role);
   const [sowOpen, setSowOpen] = useState(null);   // itemId of the SOW being edited
   const [trOpen, setTrOpen] = useState(null);    // track record open full-screen (staff): holds the borrower id, or null
@@ -2485,7 +2485,18 @@ function BorrowerConditions({ appId, app, items, docs, onPatch, onReviewDoc, onD
   const isInternal = (it) => it.audience === 'staff';
   const matchAudience = (it) => audFilter === 'all' ? true
     : audFilter === 'internal' ? isInternal(it) : !isInternal(it);
-  const visible = ordered.filter(it => matchFilter(it) && matchAudience(it));
+  // CLOSING DOCS STAY OUT OF THE WAY UNTIL THE FILE IS ACTUALLY CLOSING
+  // (owner-directed 2026-07-30: the balanced HUD/ALTA, the signed closing package
+  // and the collateral tracking label "should not come up immediately when the
+  // file is still in processing… it sounds too much"). They are the closer's
+  // end-of-file work and never hold up clear-to-close, so while the file is still
+  // in processing they surface ONLY under the "Everything" filter — tucked in the
+  // Closing group at the bottom — and never in the default "needs my sign-off"
+  // view. They keep their own dedicated home in the Closing section's upload panel
+  // throughout. Once the file reaches closing (a closer is on it, or it's
+  // clear-to-close/funded) they behave like any other condition again.
+  const tuckClosing = (it) => !closingActive && condFilter !== 'all' && subjectOf(it) === 'closing';
+  const visible = ordered.filter(it => matchFilter(it) && matchAudience(it) && !tuckClosing(it));
   // Grouped by what each condition is ABOUT — see lib/condition-subjects.js.
   // "Done" here is the same role-aware rule the rest of this list uses, so a
   // group header can never disagree with the rows under it.
@@ -4128,6 +4139,7 @@ export default function StaffApplication() {
       {condTab === 'borrower' && <>
         <BorrowerConditions appId={id} app={app} items={items} docs={docs} role={role}
           team={team} canImportCredit={can('pull_credit')} fullscreen={full}
+          closingActive={!!app.closer_id || ['clear_to_close', 'funded'].includes(app.status)}
           onPatch={patch} onReviewDoc={reviewDoc} onDownloadDoc={downloadDoc} dlBusy={dlBusy}
           onUploadTo={pickUpload} onDropTo={uploadStaffFiles} onChanged={load} onPreview={openPreview}
           onOpenStudio={() => { studioRef.current ? studioRef.current.openStudio() : document.getElementById('sec-pricing')?.scrollIntoView({ behavior: 'smooth', block: 'start' }); }} />
