@@ -50,12 +50,34 @@ function hashInput(input) {
 }
 
 // ---- USPS output -> canonical address -----------------------------------
+// USPS returns its standardized address in ALL CAPS (Publication 28). We keep the
+// authoritative parts but present them in the app's mixed-case mailing convention,
+// while keeping EVERY component as its own field (street, unit, city, state, the
+// 5-digit ZIP, the +4, and the full ZIP) so downstream code can use any part
+// without re-parsing. The one-line stays for the surfaces that only want a label.
+const KEEP_UPPER = new Set(['N', 'S', 'E', 'W', 'NE', 'NW', 'SE', 'SW', 'PO', 'US', 'RR', 'HC']);
+function properCaseWord(w) {
+  const up = String(w || '').toUpperCase();
+  if (KEEP_UPPER.has(up)) return up;                            // directionals, PO/US/RR/HC
+  if (/^\d+(?:ST|ND|RD|TH)$/i.test(w)) return String(w).toLowerCase();   // 1st, 2nd, 10th
+  if (/^\d+[A-Za-z]?$/.test(w)) return up;                      // house number, unit "4B"
+  return w.charAt(0).toUpperCase() + w.slice(1).toLowerCase();  // Brooklyn, Main, Apt, Ste
+}
+function properCase(s) {
+  return String(s || '').replace(/\s+/g, ' ').trim().split(' ').filter(Boolean).map(properCaseWord).join(' ');
+}
 function toCanonical(std) {
-  return ADDR.normalizeAddress({
-    line1: std.street || '', unit: std.secondary || '',
-    city: std.city || '', state: std.state || '',
-    zip: std.zip || std.zip5 || '', country: 'US',
+  const zip5 = String(std.zip5 || std.zip || '').replace(/\D/g, '').slice(0, 5);
+  const zip4 = String(std.zipPlus4 || '').replace(/\D/g, '').slice(0, 4)
+    || (String(std.zip || '').includes('-') ? String(std.zip).split('-')[1].replace(/\D/g, '').slice(0, 4) : '');
+  const zip = zip5 ? (zip4 ? `${zip5}-${zip4}` : zip5) : '';
+  const norm = ADDR.normalizeAddress({
+    line1: properCase(std.street || ''), unit: properCase(std.secondary || ''),
+    city: properCase(std.city || ''), state: std.state || '',
+    zip, country: 'US',
   });
+  // Explicit separate fields kept in the back end (the front end still shows oneLine).
+  return { ...norm, street: norm.line1, zip, zip5, zip4, formatted_address: norm.oneLine, source: 'usps' };
 }
 
 // Pull the deliverability signals worth keeping out of the API's additionalInfo.

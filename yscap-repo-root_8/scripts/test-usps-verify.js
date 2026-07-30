@@ -152,6 +152,25 @@ async function testStandardize() {
   ok(picked && picked.centralDeliveryPoint === 'Y', 'pickDpv surfaces centralDeliveryPoint');
 }
 
+// ── 3c. toCanonical: correctly-cased address + separate back-end fields ─────
+{
+  // USPS returns ALL CAPS — we keep the parts but present them in mailing case,
+  // and every component is its own field.
+  const a = V.toCanonical({ street: '26 S 10TH ST', secondary: 'APT 4B', city: 'BROOKLYN', state: 'NY', zip5: '11249', zipPlus4: '1234', zip: '11249-1234' });
+  ok(a.line1 === '26 S 10th St', 'street is mailing-cased — got ' + a.line1);
+  ok(a.unit === 'Apt 4B', 'unit is mailing-cased — got ' + a.unit);
+  ok(a.city === 'Brooklyn', 'city is mailing-cased, not ALL CAPS — got ' + a.city);
+  ok(a.state === 'NY', 'state stays the 2-letter code');
+  ok(a.zip5 === '11249', 'the 5-digit ZIP is its own field');
+  ok(a.zip4 === '1234', 'the +4 is its own field');
+  ok(a.zip === '11249-1234', 'the full ZIP+4 is kept too');
+  ok(a.oneLine === '26 S 10th St Apt 4B, Brooklyn, NY 11249-1234', 'the one-line reads correctly — got ' + a.oneLine);
+  // directionals and PO/US stay upper; a plain 5-digit ZIP has an empty +4
+  const b = V.toCanonical({ street: 'PO BOX 45', city: 'LAKEWOOD', state: 'NJ', zip5: '08701', zipPlus4: null, zip: '08701' });
+  ok(b.line1 === 'PO Box 45', 'PO stays upper — got ' + b.line1);
+  ok(b.zip5 === '08701' && b.zip4 === '' && b.zip === '08701', 'a 5-digit-only ZIP leaves +4 empty');
+}
+
 // ── 4. backfill componentsOf reads every stored shape ──────────────────────
 {
   const a = backfill.componentsOf({ line1: '26 S 10th St', city: 'Brooklyn', state: 'NY', zip: '11249' });
