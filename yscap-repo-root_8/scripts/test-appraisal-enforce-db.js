@@ -12,9 +12,9 @@
  *   B. advancementBlockers counts `appraisal_review_cleared` as a REAL blocker
  *      (`conditions`, section sec-appraisal) while `underwriting_review_cleared`
  *      stays in `advisories` — so no clear-to-close until the appraisal review clears.
- *   C. db/374 re-armed the reopen trigger: a fresh open fatal blocking finding
+ *   C. db/375 re-armed the reopen trigger: a fresh open fatal blocking finding
  *      un-signs an already-cleared appraisal review.
- *   D. db/374's backfills: the condition attaches to an open file with a current
+ *   D. db/375's backfills: the condition attaches to an open file with a current
  *      appraisal and none; a signed-off review standing over open fatal findings
  *      reopens; terminal/cleared files are left alone.
  *   E. The EMCAP note-buyer sync: switching an appraised file's note buyer to EMCAP
@@ -149,7 +149,7 @@ const itemRow = async (id) => (await db.query(
     ok(!!uwAdvisory && !uwInConds, 'B3: underwriting_review_cleared stays ADVISORY (document review on hold)');
   }
 
-  // ============ C. the re-armed reopen trigger (db/374) ============
+  // ============ C. the re-armed reopen trigger (db/375) ============
   {
     const f = await seedFile({});
     cleanupApps.push(f.appId); cleanupBors.push(f.borId);
@@ -169,7 +169,7 @@ const itemRow = async (id) => (await db.query(
     ok(c2.status === 'satisfied' && c2.signed_off_at != null, 'C2: a warning finding does NOT reopen the sign-off');
   }
 
-  // ============ D. db/374 backfills (re-run ensureSchema — idempotent by design) ============
+  // ============ D. db/375 backfills (re-run ensureSchema — idempotent by design) ============
   {
     // D1: open file + current appraisal + NO condition → attached on the next boot.
     const f1 = await seedFile({});
@@ -192,7 +192,7 @@ const itemRow = async (id) => (await db.query(
     await insertFatal(f3.appId, appr3);
     await db.query(`UPDATE checklist_items SET status='satisfied', signed_off_at=now(), signed_off_by=$2 WHERE id=$1`, [rev3, staff.id]);
 
-    await ensureSchema();   // the boot pass re-applies db/374
+    await ensureSchema();   // the boot pass re-applies db/375
 
     const attached = (await db.query(
       `SELECT 1 FROM checklist_items ci JOIN checklist_templates t ON t.id=ci.template_id

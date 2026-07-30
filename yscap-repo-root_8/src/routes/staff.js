@@ -5405,7 +5405,7 @@ async function signOffGate(itemId, actor) {
   //   not hold up signing off on any condition"; the document-review desk is on hold). Only
   //   AI_FINDINGS_ENFORCE=1 restores that gate.
   //
-  // The DB reopen backstop for the appraisal half is re-armed by db/374 (a new fatal
+  // The DB reopen backstop for the appraisal half is re-armed by db/375 (a new fatal
   // appraisal finding un-signs an already-cleared appraisal review). The old db/154
   // satisfied-guard trigger stays retired ON PURPOSE: it cannot see the actor, so it would
   // refuse the super-admin override's write — this app-layer gate composes with the

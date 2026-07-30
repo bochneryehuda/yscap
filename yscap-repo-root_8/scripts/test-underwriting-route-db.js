@@ -188,13 +188,13 @@ const ADDR = { line1: '76 Thompson St', city: 'Austin', state: 'TX', zip: '78701
     // The database-level BLOCKS are gone, not merely bypassed. The two satisfied-GUARD
     // triggers stay retired (they cannot see the actor, so they would refuse the
     // super-admin condition override). The APPRAISAL reopen-on-fatal trigger is BACK —
-    // deliberately: db/374 re-arms it (owner-directed 2026-07-30, appraisal findings
+    // deliberately: db/375 re-arms it (owner-directed 2026-07-30, appraisal findings
     // are enforced again; it runs after db/334's every-boot no-op, so it wins).
     const trigs = (await client.query(
       `SELECT tgname FROM pg_trigger WHERE NOT tgisinternal AND tgname = ANY($1::text[]) ORDER BY tgname`,
       [['trg_underwriting_review_guard', 'trg_appraisal_review_guard', 'trg_reopen_appraisal_review_on_fatal']])).rows;
     assert.deepStrictEqual(trigs, [{ tgname: 'trg_reopen_appraisal_review_on_fatal' }],
-      'the two guard triggers stay retired; the appraisal reopen trigger is re-armed by db/374');
+      'the two guard triggers stay retired; the appraisal reopen trigger is re-armed by db/375');
 
     // Resolving the finding still works and still records the action.
     await store.resolveFinding(client, { findingId: rf.findingIds[0], action: 'grant_exception', note: 'reviewed', by: b.id });

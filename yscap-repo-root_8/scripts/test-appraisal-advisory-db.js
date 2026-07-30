@@ -11,7 +11,7 @@
  *   • a current appraisal read + clean (no fatal finding) → 'ready' (status still open);
  *   • a HUMAN-signed-off condition PILOT confirms → 'agree';
  *   • a NEW open FATAL blocks_ctc finding lands AFTER the human signed off → the condition
- *     REOPENS (owner-directed 2026-07-30: appraisal findings are ENFORCED again — db/374
+ *     REOPENS (owner-directed 2026-07-30: appraisal findings are ENFORCED again — db/375
  *     re-armed the db/155 reopen for the APPRAISAL review only; the document review stays
  *     advisory per 2026-07-27), and the advisory reads the reopened condition 'not_ready';
  *   • the advisory itself NEVER changes status / signed_off_* on any path (the reopen is the
@@ -97,7 +97,7 @@ async function row(itemId) {
   ok(c.status === 'satisfied' && String(c.signed_off_by) === String(staff.id), '…and the human sign-off is untouched');
 
   // 4) A NEW open FATAL blocks_ctc appraisal finding lands AFTER the human signed off.
-  //    ENFORCED for the APPRAISAL review (owner-directed 2026-07-30; db/374 re-armed db/155's
+  //    ENFORCED for the APPRAISAL review (owner-directed 2026-07-30; db/375 re-armed db/155's
   //    reopen, narrowing the 2026-07-27 advisory-only rule for this ONE condition): a sign-off
   //    cannot stand over a fresh blocking appraisal finding — the trigger reopens the
   //    condition (with an [auto] note) and the officer must re-clear it. The document/
@@ -105,7 +105,7 @@ async function row(itemId) {
   await insertFatalFinding(f.appId, apprId);
   const afterFatal = await row(appr);
   ok(afterFatal.status === 'received' && afterFatal.signed_off_by === null,
-    'ENFORCED: a late fatal appraisal finding REOPENS the signed-off appraisal review (db/374 re-armed the reopen)');
+    'ENFORCED: a late fatal appraisal finding REOPENS the signed-off appraisal review (db/375 re-armed the reopen)');
   await engine.runFileAdvice(db, f.appId);
   c = await row(appr);
   ok(c.pilot_advice === 'not_ready',
