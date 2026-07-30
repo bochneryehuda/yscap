@@ -72,31 +72,90 @@ equivalence testing before it ships.
 
 ---
 
-## 2. The honest limitation (read before choosing)
+## 2. DECIDED: the site stays fully public — no login (owner-directed 2026-07-30)
 
-There is one trade-off that decides the whole shape of the work, and it cannot be engineered away.
+**Owner decision: "I want us to stay public facing."** No login gate, no email wall on the tools. This
+section records how we protect the model *within* that constraint. **This is achievable** — the urgent
+item (the partner's workbook) is fully fixable with the site 100% public.
 
-**Our public term-sheet tool is deliberately anonymous** — "instant term sheet, no credit pull," linked
-from the homepage as lead generation. That is a real business asset.
+### 2.1 The owner's question: "can we put the static behind a React so only the shell is in front?"
 
-If we move the math to the server but keep the tool public, we must expose a **public quote endpoint**.
-That endpoint is an *oracle*: someone can call it over and over with different inputs and gradually map
-out the leverage matrix from the answers. Rate limiting and bot management slow this down a great deal
-and make it obvious, but they do not make it impossible.
+**The instinct is right; React is the wrong mechanism.** Splitting into "a thin thing in front, the real
+thing behind" is exactly the correct architecture. But the "behind" must be **the server**, not React.
 
-**So there are exactly three honest options, and this is your call:**
+React does **not** hide anything:
+- A React app ships a **JavaScript bundle** to the browser. Whatever is in that bundle — text, numbers,
+  rules — is downloadable and readable, exactly like the HTML is today. Often it is *easier* to harvest,
+  because it arrives as one predictable file.
+- Our own portal already proves it: it is React, and its engines (`/portal/engines/*.js`) are just as
+  downloadable as the static ones.
+- Anything React fetches at runtime comes from an API that is **also public**, so the fetch adds no
+  protection by itself.
 
-| Option | What it protects | What it costs |
+So "static behind React" would cost real money and protect nothing.
+
+**What actually works is the same shape, with the server as the back:**
+
+```
+  TODAY                                  PROPOSED
+  Browser downloads the whole recipe     Browser sends inputs → server runs the frozen
+  and cooks locally.                     recipe → returns only the finished numbers.
+  (the grid is readable)                 (the grid never leaves our building)
+```
+
+The page stays public. Anyone can open it, use it, get an instant term sheet, no login. What changes is
+that **the recipe stops being handed out** — only answers are. This is the standard industry answer:
+move business logic server-side and expose only the necessary data through an API; client-side
+obfuscation is a deterrent, never a control.
+
+### 2.2 The two different problems (they need opposite treatment)
+
+Lumping these together is what makes the question feel unanswerable. They are not the same:
+
+| | **Guideline TEXT on marketing pages** | **The pricing MODEL (engines)** |
 |---|---|---|
-| **A. Public tool, server-side math** | Removes the readable grid. Attacker must *probe* to reconstruct — slow, noisy, blockable. | Small UX latency. Model still partially inferable. |
-| **B. Login-gate the tools** (email capture or full login) | Protects the model properly. | Fewer anonymous leads. |
-| **C. Hybrid (recommended)** | Public tool keeps **Standard** only, at a coarser output; **Gold/Silver/Manual** require login. | Slight product change; best protection-per-lead. |
+| Examples | "up to 90% of purchase, 100% of rehab, 75% ARV" in prose on the program pages | `silver-program.js` grid, `standard-program.js` MATRIX, rate build-up, FICO bands |
+| Can it be hidden? | **No — and it must not be** | **Yes — completely** |
+| Why | It is *sales copy*. It exists to be read and to be **found on Google**. The site has real SEO investment (title, meta description, Open Graph) and the figures are indexable today. Hiding it behind React makes it invisible to search engines and still doesn't hide it from a determined person. | It never needs to be in the browser at all. The server already computes it. |
+| Correct treatment | Copyright + Terms + monitoring + bot blocking (Phases 2/4/5) | **Move server-side (Phase 3)** |
 
-**Recommendation: C.** It removes the partner's workbook from public reach entirely (the urgent item),
-keeps the lead-gen tool working for the common case, and confines the deepest model detail to
-authenticated users. It also matches what the tool is already doing — the same page is embedded in the
-logged-in portal (`app-v2/src/components/TermSheetStudio.jsx` → `STUDIO_URL = '/tools/term-sheet.html'`),
-so a public/private split is a natural seam, not a new concept.
+**In short:** the guideline *wording* competitors could read anyway — they can also just call us and
+ask, or read our brochure. The guideline *machine* (exact caps by state, FICO band, tier, the partner's
+whole grid) is the actual trade secret, and that one we can fully protect while staying public.
+
+### 2.3 The residual risk, stated honestly
+
+With the tool public and the math server-side, the endpoint becomes an **oracle**: someone can submit
+many different inputs and infer the matrix from the answers. This cannot be reduced to zero without a
+login, which we are not doing. It *can* be made slow, expensive and obvious:
+
+1. **Rate limiting** per IP/session, tuned so a real user never notices and a scripted prober trips it.
+2. **Bot management** (Cloudflare bot score) — scripted probing is classified as automated and
+   challenged.
+3. **A page-issued short-lived token** — the tool page hands the browser a signed, expiring token used
+   for quote calls. **This is not a login and is invisible to the visitor**; it simply means you must
+   actually load the page to ask, which defeats trivial scripted enumeration.
+4. **Return only the answer** — never the caps, bands, tier or matrix row that produced it, and no
+   "why" breakdown beyond what a borrower needs.
+5. **Alerting** on abnormal quote volume from one source.
+
+**Net effect:** instead of downloading our complete model in one click, an attacker must run thousands
+of detectable, rate-limited, bot-scored requests to approximate part of it. That is a genuine and large
+improvement, and it keeps the site fully public.
+
+### 2.4 The partner's workbook — a special case, and the easiest win
+
+`silver-program.js` deserves separate treatment from our own engines: it is **not our data**. The
+cleanest fix does not even require Phase 3 to be finished:
+
+- **Do not load it on the public page at all.** Anonymous visitors get Standard/Gold quotes; a Silver
+  quote comes from the server. The Silver *card* can still display publicly — it just gets its numbers
+  from us instead of computing them in the visitor's browser.
+- The same page is embedded in the logged-in portal
+  (`app-v2/src/components/TermSheetStudio.jsx` → `STUDIO_URL = '/tools/term-sheet.html'`), so a
+  context-aware load is a natural seam that already exists.
+
+This can ship in days, ahead of the larger migration, and removes the third-party exposure immediately.
 
 ---
 
@@ -116,18 +175,19 @@ more public — trying to apply tier-1 thinking to tier-4 content is the classic
 
 ## 4. The detailed plan
 
-### Phase 0 — Decisions only (you; ~30 minutes)
+### Phase 0 — Decisions
 
-Nothing gets built until these are answered:
-
-- **D1.** Public tools: **A, B, or C** from §2? *(Recommend C.)*
-- **D2.** Should the **Silver** program appear on the public tool at all? *(Recommend no — it is the
-  partner's product and its grid is their confidential data.)*
+- **D1. ✅ DECIDED (2026-07-30): the site and tools stay FULLY PUBLIC — no login, no email wall.**
+  Protection comes from moving the model server-side plus the §2.3 controls. Not revisited.
+- **D2.** The **Silver** program: keep the card visible publicly but serve its numbers from the server
+  (recommended), or drop the card from the public tool entirely? *Either way the partner's workbook
+  stops being downloadable — this is only about what the public page displays.*
 - **D3.** Are any `web/preview/*` pages real, or all throwaway mockups? *(Recommend treating all as
   internal.)*
 - **D4.** Budget approval for Cloudflare (~$20–250/mo depending on tier) and copyright registration
   (~$45–65 per registration).
 - **D5.** Do we want AI crawlers (GPTBot, ClaudeBot, CCBot, Bytespider…) blocked from our content?
+  *Note: this trades against being cited by AI search, which for a lender may be worth having.*
 
 ---
 
@@ -194,14 +254,15 @@ Move the canonical copies to a server-only directory (e.g. `src/lib/engines/`), 
 `src/lib/pricing.js`'s `require()` path, and remove the public `/tools/*.js` and `/portal/engines/*.js`
 copies. Handle **all six copies** so none is left behind serving the old file.
 
-**3.2 — Add a quote endpoint for each surface.**
-- *Authenticated surfaces:* already done — reuse the existing quote endpoints.
-- *Public surface (if D1 = A or C):* a new public endpoint modelled on `GET /api/pricing-defaults`
-  (`src/server.js:224`) — cached, and it must never 500 the marketing site.
+**3.2 — Add a PUBLIC quote endpoint** (D1 is decided: the tools stay public).
+Model it on `GET /api/pricing-defaults` (`src/server.js:224`) — cached, and it must never 500 the
+marketing site. Apply the §2.3 controls: rate limit, bot score, page-issued short-lived token,
+answer-only response, volume alerting. Authenticated surfaces keep using the existing quote endpoints.
 
 **3.3 — Repoint the tools.**
 `term-sheet.html` and `loan-application.html` call the endpoint instead of computing locally. Add a
-small debounce so typing doesn't fire a request per keystroke.
+small debounce so typing doesn't fire a request per keystroke, and keep a graceful message if the
+endpoint is briefly unreachable — the public tool must never appear broken.
 
 **3.4 — Return answers, never the model.**
 The response carries the resulting numbers only — never the matrix, bands, caps, or rate build-up. Keep
@@ -287,9 +348,11 @@ them.
 
 ## 5. Sequenced roadmap
 
+*(All of this keeps the site fully public — D1 decided.)*
+
 | # | Item | Phase | Effort | Risk | Why this order |
 |---|---|---|---|---|---|
-| 1 | Remove partner workbook from public page | 1.1 | ~0.5 day | Low | **Third party's confidential data, publicly downloadable now** |
+| 1 | Remove partner workbook from public page | 1.1 / 2.4 | ~0.5 day | Low | **Third party's confidential data, publicly downloadable now** |
 | 2 | Remove `web/preview/*` mockups | 1.2 | ~0.5 day | Low | Free win; removes internal-design leak |
 | 3 | `robots.txt` + keep-clean build checks | 1.3–1.4 | ~0.5 day | Low | Cheap housekeeping |
 | 4 | Cloudflare onboarding + bot + rate limits | 2 | 1–3 days | Low | Biggest single lever vs. whole-site copying |
@@ -315,7 +378,12 @@ Common requests that feel protective, are trivially bypassed, and cost real mone
   speed bump on Phase-3 leftovers, never as the plan.
 - ❌ **Relying on `robots.txt` as protection.** It is a request, not a control. Scrapers ignore it.
 - ❌ **Serving marketing content only after login.** Kills SEO and lead generation for content whose
-  purpose is to be found.
+  purpose is to be found. *(Also ruled out by the owner — see D1.)*
+- ❌ **Converting the static marketing pages to React to "hide" them.** See §2.1. React ships its content
+  to the browser in a JS bundle, so nothing becomes hidden — our own React portal's engines are just as
+  downloadable as the static ones. It would also cost real money and **damage Google ranking** on pages
+  that exist to be found. The valuable half of that instinct — thin page in front, real work behind — is
+  delivered by Phase 3, where the **server** is the "behind."
 
 ---
 
