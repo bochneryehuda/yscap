@@ -206,6 +206,12 @@ export function termOptionsFromSnapshot(snap) {
     minInterestEnabled,
     deferredOrigPct: (f.tsDeferredOrig === '' || f.tsDeferredOrig == null) ? 0 : (Number(f.tsDeferredOrig) || 0),
     estClosingDate: f.estClosingDate || '',
+    /* The TYPED cash-out override rides the same channel as the closing date
+       (audit-found 2026-07-31). Without it the officer's figure printed on the
+       term sheet PDF and never reached the loan file, so the file and the sheet
+       the borrower was shown quoted different cash — the exact divergence the
+       payoff work exists to end. Display/record only; no engine reads it. */
+    estimatedCashOut: f.cashOutAmt == null ? '' : String(f.cashOutAmt),
   };
 }
 
@@ -543,6 +549,26 @@ const ProductStudioPanel = forwardRef(function ProductStudioPanel({ appId, app, 
       set('assignmentFee', app.assignment_fee);
       return out;
     };
+    /* THE PAYOFF IS FILE-OWNED, LIKE THE ADDRESS AND THE CLOSING DATE
+       (re-audit-found 2026-07-31). These four live on the loan file, never in a
+       registration's engine inputs — `scenarioFromEngineInputs` has no key for
+       any of them — so unless they are spread in explicitly, the studio opens
+       BLANK on every file that has a registration or a server quote, which is
+       essentially every file. Two things went wrong because of that:
+
+         · the payoff rows added to the printed term sheet ("Existing loan
+           payoff", "Paid off to", "Their loan number") never rendered, because
+           they are gated on the studio's own payoff box;
+         · worse, `termOptionsFromSnapshot` still SENT the blank cash-out, and
+           the register route reads a blank as "clear it" — so re-registering a
+           file WIPED the cash-out figure that had been saved on it.
+
+       Spread into every branch, so there is one answer to "what does the studio
+       show for the payoff" no matter how the file was opened. */
+    const filePayoff = () => ({
+      payoffAmount: app.payoff_amount, payoffLender: app.payoff_lender,
+      payoffLoanNumber: app.payoff_loan_number, estimatedCashOut: app.estimated_cash_out,
+    });
     // The last working scenario (autosaved) resumes — but the file-owned
     // economics/experience SNAP to the file's CURRENT values first (#148): an
     // autosave made before the file was edited must never carry the old
@@ -550,13 +576,23 @@ const ProductStudioPanel = forwardRef(function ProductStudioPanel({ appId, app, 
     // choice, scenario type) keeps resuming untouched, and a field the FILE
     // doesn't carry keeps the draft's value.
     if (savedStudio && savedStudio.v) {
-      const ae = fileEcon();
+      /* The payoff snaps to the file for the SAME reason the economics do: it is
+         file-owned, the Payoff section is where it is edited, and a draft
+         autosaved before that edit must never carry the stale value back into a
+         re-register — which, for the cash-out, would overwrite the file's own
+         figure with the draft's. Only keys the FILE actually carries overwrite
+         the draft (the `srcKey in ae` test below), so a blank column still keeps
+         whatever the draft had. */
+      const ae = { ...fileEcon(), ...filePayoff() };
+      for (const k of Object.keys(ae)) if (ae[k] == null || ae[k] === '') delete ae[k];
       const st2 = buildStudioState(ae);
       const v = { ...savedStudio.v };
       const ID_FOR = {
         purchasePrice: 'price', asIsValue: 'asIs', arv: 'arv', rehabBudget: 'construction',
         expFlips: 'expFlips', expHolds: 'expBrrrr', expGround: 'expGround', termMonths: 'tsTerm',
         irMonths: 'irMonths', irAmount: 'irAmount', underlyingContractPrice: 'origPrice',
+        payoffAmount: 'payoff', payoffLender: 'payoffLender',
+        payoffLoanNumber: 'payoffLoanNo', estimatedCashOut: 'cashOutAmt',
       };
       for (const [srcKey, id] of Object.entries(ID_FOR)) {
         if (!(srcKey in ae)) continue;               // app column empty → keep the draft
@@ -632,7 +668,7 @@ const ProductStudioPanel = forwardRef(function ProductStudioPanel({ appId, app, 
       // CURRENT address always prefills; the registered scenario's stored copy is
       // only a fallback for a file with no address yet. The old order kept the
       // registration-era address on the term sheet forever after a correction.
-      st = buildStudioState(scenarioFromEngineInputs(inp, { entityName: entity, borrowerName: name, coBorrowerName: coName, address: addrLine(app.property_address) || inp.address, state: (app.property_address && app.property_address.state) || inp.state, estClosingDate: app.est_closing_date || app.expected_closing, coBorrowerPgWaived: app.co_borrower_pg_waived, ...econFallback(inp), ...fileEcon() }));
+      st = buildStudioState(scenarioFromEngineInputs(inp, { entityName: entity, borrowerName: name, coBorrowerName: coName, address: addrLine(app.property_address) || inp.address, state: (app.property_address && app.property_address.state) || inp.state, estClosingDate: app.est_closing_date || app.expected_closing, coBorrowerPgWaived: app.co_borrower_pg_waived, ...econFallback(inp), ...fileEcon(), ...filePayoff() }));
       if (isStaff) {
         // The registered scenario's admin knobs (markup, points, fees, and any
         // manual LTV/LTC/ARV/rate basis) restore for EVERY staff role — the zone
@@ -656,7 +692,7 @@ const ProductStudioPanel = forwardRef(function ProductStudioPanel({ appId, app, 
         expGround: app.requested_exp_ground ?? inp.expGround,
         fico: inp.fico || (profile && profile.fico) || '',
         estClosingDate: app.est_closing_date || app.expected_closing, coBorrowerPgWaived: app.co_borrower_pg_waived,
-        ...econFallback(inp),
+        ...econFallback(inp), ...filePayoff(),
       }));
     } else {
       st = buildStudioState({
@@ -679,6 +715,9 @@ const ProductStudioPanel = forwardRef(function ProductStudioPanel({ appId, app, 
         expFlips: app.requested_exp_flips, expHolds: app.requested_exp_holds, expGround: app.requested_exp_ground,
         termMonths: app.term, irMonths: app.requested_ir_months, irAmount: app.requested_ir_amount,
         estClosingDate: app.est_closing_date || app.expected_closing, coBorrowerPgWaived: app.co_borrower_pg_waived,
+        // The refinance payoff and WHO it goes to, so the studio opens showing what
+        // the file already knows instead of asking the officer to retype it.
+        ...filePayoff(),
       });
     }
     return st;

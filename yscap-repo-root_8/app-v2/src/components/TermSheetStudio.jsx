@@ -141,6 +141,19 @@ export function buildStudioState(x) {
     // Term-sheet options (owner-directed 2026-07-22): carry the file's estimated
     // closing date into the studio so it shows and re-registers without wiping.
     estClosingDate: (x.estClosingDate && /^\d{4}-\d{2}-\d{2}/.test(String(x.estClosingDate))) ? String(x.estClosingDate).slice(0, 10) : '',
+    // The refinance payoff, and WHO holds it (owner-directed 2026-07-31). The
+    // studio ids are `payoff` / `payoffLender` / `payoffLoanNo`; carrying them
+    // both ways is what stops the number being retyped — and a retype is where
+    // the file quietly stops agreeing with the term sheet the borrower was shown.
+    payoff: rawNum(x.payoffAmount) || '',
+    payoffLender: String(x.payoffLender || ''),
+    payoffLoanNo: String(x.payoffLoanNumber || ''),
+    /* The TYPED cash-out override, carried both ways too (audit-found
+       2026-07-31). Without it, an officer's typed figure printed on the PDF,
+       never reached the loan file, and silently reverted to the structural
+       number the next time the studio was opened — the term sheet the borrower
+       was shown and the file would then quote different cash. */
+    cashOutAmt: rawNum(x.estimatedCashOut) || '',
     // Co-borrower personal-guaranty waiver (owner-directed 2026-07-22): a READ-ONLY
     // flag set by an approved super-admin exception (applications.co_borrower_pg_waived).
     // It drives the term sheet's guaranty wording; it is never editable in the studio
@@ -226,6 +239,9 @@ function readSnapshot(win) {
       tsMRate: val('tsMRate'), tsMIr: val('tsMIr'),
       // Term-sheet options (owner-directed 2026-07-22) — display/record only.
       estClosingDate: val('estClosingDate'),
+      // The payoff and who it goes to, read back out so a register carries them.
+      payoff: moneyVal('payoff'), payoffLender: val('payoffLender'), payoffLoanNo: val('payoffLoanNo'),
+      cashOutAmt: moneyVal('cashOutAmt'),
       tsAccrual: val('tsAccrual'), tsDeferredOrig: val('tsDeferredOrig'),
       tsMinIntStd: chk('tsMinIntStd'), tsMinIntGold: chk('tsMinIntGold'), tsMinIntSilver: chk('tsMinIntSilver'), tsMinIntManual: chk('tsMinIntManual'),
     },

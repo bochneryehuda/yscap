@@ -963,6 +963,12 @@ export default function Application() {
           <div className="metrow"><span className="k">Transaction</span><span className="v">{loanTypeLabel(app.loan_type) || '—'}</span></div>
           {isRefi ? <>
             <div className="metrow"><span className="k">Payoff amount</span><span className="v">{money(app.payoff_amount)}</span></div>
+            {/* WHO we are paying off and WHICH loan — the borrower's own existing
+                loan, so showing it back to them is how they spot a wrong number
+                before the closing attorney orders the payoff letter. Shown only
+                when entered; blank rows would just be noise on their screen. */}
+            {app.payoff_lender ? <div className="metrow"><span className="k">Lender being paid off</span><span className="v">{app.payoff_lender}</span></div> : null}
+            {app.payoff_loan_number ? <div className="metrow"><span className="k">Their loan number</span><span className="v">{app.payoff_loan_number}</span></div> : null}
             <div className="metrow"><span className="k">Original purchase price</span><span className="v">{money(app.original_purchase_price)}</span></div>
             <div className="metrow"><span className="k">Date acquired</span><span className="v">{app.acquisition_date ? fmtDay(app.acquisition_date) : '—'}</span></div>
           </> : (

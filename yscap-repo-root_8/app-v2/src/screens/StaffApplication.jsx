@@ -20,6 +20,8 @@ import ProductStudioPanel from '../components/ProductStudioPanel.jsx';
 import InvestorGuidelinesPanel from '../components/InvestorGuidelinesPanel.jsx';
 import DealSnapshot from '../components/DealSnapshot.jsx';
 import NoteBuyerCard from '../components/NoteBuyerCard.jsx';
+import PayoffCard from '../components/PayoffCard.jsx';
+import { payoffApplies, payoffMissingKeys } from '../lib/payoff.js';
 import ClearToClosePanel from '../components/ClearToClosePanel.jsx';
 import NextUpPanel from '../components/NextUpPanel.jsx';
 import LoanProgress from '../components/LoanProgress.jsx';
@@ -3696,6 +3698,14 @@ export default function StaffApplication() {
      Each badge is now derived ONCE here and rendered in two lengths: `short` for the
      narrow rail, `long` for the roomy section header. They can differ in wording;
      they can no longer differ in fact. */
+  /* THE PAYOFF SECTION exists only where there is a loan to pay off, and its
+     header says at a glance whether the three things a payoff needs are on the
+     file. Both answers come from the shared mirror of the server's payoff model
+     (lib/payoff.js), so the header can never contradict the card inside it. */
+  const isRefiFile = payoffApplies(app.loan_type);
+  const payoffMissing = isRefiFile ? payoffMissingKeys(app) : [];
+  const payoffBadge = { short: payoffMissing.length ? `${payoffMissing.length} ⚠` : '✓',
+    long: payoffMissing.length ? `${payoffMissing.length} still needed` : 'Complete ✓' };
   const badges = {
     pricing: { short: app.registered_program ? '✓' : '', long: app.registered_program ? 'Registered ✓' : 'Not registered' },
     appraisal: (() => {
@@ -3766,6 +3776,15 @@ export default function StaffApplication() {
   };
   const nOrdersToAssign = docs.filter(d => ['title_order_return', 'insurance_order_return'].includes(d.doc_kind) && !d.slot_label && d.is_current !== false).length;
   const summaries = {
+    /* THE PAYOFF — a refinance-only section, so both of these are computed from
+       the file's own row through the shared mirror in lib/payoff.js (pinned
+       against the server's model by test-payoff-model-pure.js). The card itself
+       asks the server for everything richer. */
+    'sec-payoff': line(
+      payoffMissing.length
+        ? (payoffMissing.length === 1 ? '1 thing still needed' : `${payoffMissing.length} things still needed`)
+        : 'Payoff details are complete',
+      ...openHere('sec-payoff')),
     'sec-pricing': line(
       app.registered_program
         ? `Registered: ${app.registered_product_label || (app.registered_program === 'gold' ? 'Gold Standard Program' : app.registered_program === 'silver' ? 'Silver Program' : app.registered_program === 'manual' ? 'Manual Program' : 'Standard Program')}`
@@ -3802,6 +3821,9 @@ export default function StaffApplication() {
   const SECTIONS = [
     { id: 'sec-overview', label: 'File overview', group: 'Overview' },
     { id: 'sec-application', label: 'Application details', group: 'Application & pricing' },
+    // Refinance only — a purchase has no loan to pay off, so the rail does not
+    // carry a section that would only ever say so.
+    ...(isRefiFile ? [{ id: 'sec-payoff', label: 'Payoff', group: 'Application & pricing', badge: payoffBadge.short }] : []),
     { id: 'sec-pricing', label: 'Structure & pricing', group: 'Application & pricing', badge: badges.pricing.short },
     { id: 'sec-encompass', label: 'Encompass sync', group: 'Application & pricing' },
     { id: 'sec-exceptions', label: 'Exceptions', group: 'Application & pricing' },
@@ -4109,6 +4131,19 @@ export default function StaffApplication() {
         <ClickupFileData app={app} />
       </details>
       </Section>
+
+      {/* THE PAYOFF (owner-directed 2026-07-31) — its own section on a refinance,
+          sitting between the application and the structure because that is what it
+          is: part of the real structure. It collects how much, to whom and on
+          which loan, states what the borrower walks away with on a cash-out, and
+          explains how a payoff works. Purchases never see it. */}
+      {isRefiFile && (
+        <Section id="sec-payoff" summary={summaries['sec-payoff']} title="Payoff" defaultOpen={false}
+          info="The loan already on this property: what it costs to clear it, who holds it, and which of their loans it is — everything the closing attorney needs to order a payoff letter. On a cash-out refinance it also shows what the borrower actually walks away with after the payoff and the closing costs."
+          badge={payoffBadge.long}>
+          <PayoffCard appId={id} app={app} onSaved={load} />
+        </Section>
+      )}
 
       <Section id="sec-pricing" summary={summaries['sec-pricing']} title="Structure & pricing" defaultOpen={false}
         info="The registered product and the Term Sheet Studio to re-price or re-register — every registration attaches the term sheet PDF."

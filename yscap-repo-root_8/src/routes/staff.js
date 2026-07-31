@@ -2248,6 +2248,18 @@ router.post('/applications/:id/pricing/register', async (req, res) => {
     // ON, Standard/Gold OFF) unless the admin explicitly set it; the key dates are
     // derived from the estimated closing date + the priced term.
     const rawTermOptions = (b.termOptions && typeof b.termOptions === 'object') ? b.termOptions : {};
+    /* A cash-out figure that cannot be read is REFUSED, at the door, before any
+       work is done — never silently written as a blank, which would CLEAR the
+       file's figure while answering 200 ("returned 200 but didn't save", the
+       class this repo keeps closing). Refused here rather than inside the write
+       transaction below so a refusal can never leave a register half-done. The
+       details door already answers exactly this for the same value. */
+    if (Object.prototype.hasOwnProperty.call(rawTermOptions, 'estimatedCashOut')) {
+      const rawCo = rawTermOptions.estimatedCashOut;
+      if (rawCo !== '' && rawCo != null && !isFinite(Number(rawCo))) {
+        return res.status(400).json({ error: 'estimatedCashOut must be a number' });
+      }
+    }
     // Derive the key dates from the effective closing date — the one the studio
     // sent, else the one already on the file — so a re-register that doesn't
     // re-enter the date never WIPES it, and the dates re-derive when the term moves.
@@ -2414,6 +2426,38 @@ router.post('/applications/:id/pricing/register', async (req, res) => {
         await client.query(`UPDATE applications SET file_markup_gold_pct=$2 WHERE id=$1`, [appId, stickyMk(overrides.markupGoldPct)]);
       if (Object.prototype.hasOwnProperty.call(overrides, 'markupSilverPct'))
         await client.query(`UPDATE applications SET file_markup_silver_pct=$2 WHERE id=$1`, [appId, stickyMkSilver(overrides.markupSilverPct)]);
+      /* THE TYPED CASH-OUT FOLLOWS THE REGISTER ONTO THE FILE (audit-found
+         2026-07-31). The studio prints the officer's typed figure on the term
+         sheet PDF; without this it never reached the loan file, so the file and
+         the sheet the borrower was shown quoted different cash — and re-opening
+         the studio silently reverted the PDF to the structural number.
+
+         DISPLAY/RECORD ONLY: `estimated_cash_out` is read by no engine (the
+         investor-guideline cash-out rule is gated on `refinance_economic_type`,
+         which still has no writer), so this can neither price nor block a deal.
+         Refinance only, and only when the studio actually sent the key — a
+         re-register that never opened the box leaves the file's figure alone.
+         An explicit blank DOES clear it: blank means "use the structure", which
+         is a real answer.
+
+         "IS THIS A REFINANCE" IS THE SHARED MODEL, not a private regex
+         (re-audit-found 2026-07-31): a bare /refi/ test reads "Delayed Purchase
+         Refinance" as a refinance, while the payoff model, the Condition Center
+         and the pricing engine all read it as a PURCHASE. One definition.
+
+         UNREADABLE INPUT IS REFUSED, NOT SILENTLY TREATED AS BLANK (same
+         re-audit): "62,000" or "abc" used to CLEAR the column here while the
+         details door answered 400 for the identical value — the "returned 200
+         but didn't save" class this repo keeps having to close. */
+      if (Object.prototype.hasOwnProperty.call(rawTermOptions, 'estimatedCashOut')
+          && require('../lib/payoff').isRefinance(f.app.loan_type)) {
+        // Validated BEFORE the transaction opened (see `cashOutRefusal` above),
+        // so nothing here can refuse mid-transaction and leave the register
+        // half-done — by the time we get here the value is known good.
+        const raw = rawTermOptions.estimatedCashOut;
+        const co = (raw === '' || raw == null) ? null : Number(raw);
+        await client.query(`UPDATE applications SET estimated_cash_out=$2 WHERE id=$1`, [appId, co]);
+      }
       await client.query('COMMIT');
     } catch (e) { await client.query('ROLLBACK'); throw e; }
 
@@ -8514,7 +8558,13 @@ router.patch('/applications/:id/details', async (req, res) => {
   // super_admin included. This economics editor is one of the write paths that
   // used to skip the freeze (it could rewrite a funded loan's numbers). A
   // super_admin can UNLOCK the file first to correct a mistake, then re-lock.
-  const detailsLock = await require('../lib/file-lock').structuralLockReason(req.params.id, db, { actor: req.actor });
+  /* payoffContactLockReason IS structuralLockReason, with one narrow exclusion:
+     a request that changes NOTHING but who holds the loan being paid off and
+     their loan number. Those two are needed at closing prep — at or past Clear
+     to Close, long after the term sheet went out — and neither carries money nor
+     enters any calculation. Every other field, the payoff AMOUNT included, falls
+     through to the ordinary freeze unchanged. See the function's own note. */
+  const detailsLock = await require('../lib/file-lock').payoffContactLockReason(req.params.id, req.body || {}, db, { actor: req.actor });
   if (detailsLock) return res.status(409).json({ error: detailsLock, locked: true });
   // sqft only applies to a square-footage / ground-up rehab. When the rehab type
   // is being changed to something else, null any stale sqft in the SAME update so
@@ -8528,9 +8578,19 @@ router.patch('/applications/:id/details', async (req, res) => {
     requestedExpFlips: 'requested_exp_flips', requestedExpHolds: 'requested_exp_holds', requestedExpGround: 'requested_exp_ground',
     requestedExpReo: 'requested_exp_reo', requestedIrMonths: 'requested_ir_months', requestedIrAmount: 'requested_ir_amount',
     payoffAmount: 'payoff_amount', originalPurchasePrice: 'original_purchase_price',
+    // WHAT THE BORROWER WALKS AWAY WITH on a cash-out refinance (db/267's
+    // `estimated_cash_out`, which until now had no writer anywhere in the app).
+    // The payoff section fills it from the structure and lets a human override
+    // it; see src/lib/payoff.js for the one definition of that arithmetic.
+    estimatedCashOut: 'estimated_cash_out',
     underlyingContractPrice: 'underlying_contract_price', assignmentFee: 'assignment_fee' };
   const STR = { propertyType: 'property_type', loanType: 'loan_type', program: 'program', occupancy: 'occupancy',
-    rehabType: 'rehab_type', term: 'term', lender: 'lender', channel: 'channel', ppp: 'ppp' };
+    rehabType: 'rehab_type', term: 'term', lender: 'lender', channel: 'channel', ppp: 'ppp',
+    // WHO we pay off and WHICH loan (db/386) — free text beside the payoff AMOUNT
+    // that has lived in NUM since db/032. Refinance only in the UI; stored
+    // unconditionally here because the door does not know the purpose, and a
+    // purchase simply never sends them.
+    payoffLender: 'payoff_lender', payoffLoanNumber: 'payoff_loan_number' };
   const DATE = { acquisitionDate: 'acquisition_date' };
   const INT_KEYS = /^(requestedExp|requestedIr)/;
   const sets = [], vals = []; let i = 1;
@@ -9168,6 +9228,42 @@ router.get('/applications/:id/note-buyer', async (req, res) => {
     res.json(await require('../lib/note-buyer-effects').noteBuyerSlot(req.params.id, db, { candidate }));
   } catch (e) {
     console.warn('[staff] note-buyer slot error:', db.describeError(e));
+    res.status(500).json({ error: 'server error' });
+  }
+});
+
+/* THE PAYOFF SECTION (owner-directed 2026-07-31) — everything the file's payoff
+   card needs: which kind of refinance this is, what has been entered, what is
+   still missing and WHY it matters, what the structure implies the borrower
+   walks away with, and a plain-language explanation of how a payoff works.
+
+   READ-ONLY: it writes nothing. Entry still goes through the ONE existing write
+   path (`PATCH /applications/:id/details`), which is freeze-aware and audited.
+   Every derived figure is arithmetic on numbers the FROZEN pricing engine
+   already produced — the registered quote's initial advance and closing costs;
+   no guideline, cap or rate is read or written here. */
+router.get('/applications/:id/payoff', async (req, res) => {
+  try {
+    const a = await db.query(
+      `SELECT id, loan_type, payoff_amount, payoff_lender, payoff_loan_number, estimated_cash_out
+         FROM applications WHERE id=$1`, [req.params.id]);
+    if (!a.rows.length) return res.status(404).json({ error: 'not found' });
+    // The CURRENT registration's normalized quote, when the file has one. A file
+    // that has not been registered simply cannot imply a cash-out figure yet, and
+    // payoffState says so rather than showing a zero that reads like an answer.
+    const q = await db.query(
+      `SELECT quote FROM product_registrations
+        WHERE application_id=$1 AND is_current ORDER BY created_at DESC LIMIT 1`, [req.params.id]);
+    const quote = q.rows.length ? q.rows[0].quote : null;
+    res.json(require('../lib/payoff').payoffState(a.rows[0], quote));
+  } catch (e) {
+    /* A malformed id is a BAD REQUEST, not a server fault — the same 400 the
+       server's own error handler gives every other route ("invalid id").
+       Answered here rather than rethrown because this is an async handler and
+       Express 4 does not route a rejected promise to the error middleware; a
+       rethrow would hang the request instead of answering it. */
+    if (e && e.code === '22P02') return res.status(400).json({ error: 'invalid id' });
+    console.warn('[staff] payoff section error:', db.describeError(e));
     res.status(500).json({ error: 'server error' });
   }
 });
