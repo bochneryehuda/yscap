@@ -68,18 +68,41 @@ console.log('--- the payoff crosses from the studio to the loan file ---');
 }
 
 /* ===================================================================== *
- * 2. THE STUDIO — always a payoff box on a refinance, plus who/which.
+ * 2. THE STUDIO — the payoff AMOUNT is asked for; who/which never is.
+ *
+ * Owner-directed 2026-07-31: "make sure the lender name and the loan number
+ * doesn't need to be entered on the products and pricing, only afterwards
+ * within the file." Products & Pricing prices a deal — the payoff amount is the
+ * one of the three that moves a number (it drives the cash-out figure), and the
+ * other two are two boxes an officer would have to skip on every refinance they
+ * price, for facts nobody has looked up yet at quote time.
  * ===================================================================== */
-console.log('\n--- the studio asks for the payoff on every refinance ---');
+console.log('\n--- the studio asks for the payoff AMOUNT, and never for who/which ---');
 {
   const html = readRepo('web/v2/tools/term-sheet.html');
   for (const id of ['payoff', 'payoffLender', 'payoffLoanNo']) {
-    assert(new RegExp(`id="${id}"`).test(html), `the studio has a ${id} box`);
+    assert(new RegExp(`id="${id}"`).test(html), `the studio still carries ${id}`);
+    assert((html.match(new RegExp(`id="${id}"`, 'g')) || []).length === 1, `…exactly once (${id})`);
   }
-  /* All three ride the SAME refi-only condition, so they appear and disappear
-     together. Checked by asking which `data-cond` block each id sits in — the
-     NEAREST PRECEDING one — rather than trying to balance nested <div>s with a
-     regex, which is what a first cut got wrong. */
+
+  /* WHO and WHICH are HIDDEN inputs — carried, never asked for. They are fed
+     read-only from the loan file by ProductStudioPanel (the same shape as
+     coBorrowerPgWaived), so a term sheet generated FROM a file still names the
+     payee, while a standalone quote has nothing to print, which is correct. */
+  const inputTag = (id) => {
+    const m = new RegExp(`<input id="${id}"[^>]*>`).exec(html);
+    return m ? m[0] : '';
+  };
+  for (const id of ['payoffLender', 'payoffLoanNo']) {
+    assert(/type="hidden"/.test(inputTag(id)), `${id} is a hidden carrier, not a box to fill in`);
+    assert(!new RegExp(`<label for="${id}"`).test(html), `${id} has no label — there is nothing to label`);
+    assert(!/placeholder=/.test(inputTag(id)), `${id} has no placeholder — nobody types into it`);
+  }
+
+  /* The AMOUNT is still a real, visible, refinance-only box. Checked by asking
+     which `data-cond` block it sits in — the NEAREST PRECEDING one — rather than
+     trying to balance nested <div>s with a regex, which is what a first cut got
+     wrong. */
   const condOf = (id) => {
     const at = html.indexOf(`id="${id}"`);
     if (at < 0) return null;
@@ -87,9 +110,9 @@ console.log('\n--- the studio asks for the payoff on every refinance ---');
     const m = [...before.matchAll(/data-cond="([a-zA-Z]+)"/g)].pop();
     return m ? m[1] : null;
   };
-  for (const id of ['payoff', 'payoffLender', 'payoffLoanNo']) {
-    assert(condOf(id) === 'refiOnly', `${id} sits in a refinance-only block (got ${condOf(id)})`);
-  }
+  assert(condOf('payoff') === 'refiOnly', `the payoff amount sits in a refinance-only block (got ${condOf('payoff')})`);
+  assert(!/type="hidden"/.test(inputTag('payoff')), 'and it is a real box, not a hidden carrier');
+
   /* Just the VISIBLE label text — everything before the tooltip span. The whole
      <label> runs past 700 characters because the tooltip repeats its text twice
      for screen readers, so windowing the element was the wrong shape. */
@@ -101,12 +124,16 @@ console.log('\n--- the studio asks for the payoff on every refinance ---');
   const payoffText = labelText('payoff');
   assert(payoffText.length > 0, `the payoff label was read (got ${JSON.stringify(payoffText)})`);
   assert(!/optional/i.test(payoffText),
-    `the payoff itself is no longer labelled optional — a refinance always has one (label: ${JSON.stringify(payoffText)})`);
-  // its two companions ARE optional, and say so — we ask, we do not demand
-  for (const id of ['payoffLender', 'payoffLoanNo']) {
-    const t = labelText(id);
-    assert(/optional/i.test(t), `${id} is offered as optional (label: ${JSON.stringify(t)})`);
-  }
+    `the payoff itself is not labelled optional — a refinance always has one (label: ${JSON.stringify(payoffText)})`);
+
+  // NOTHING on Products & Pricing may REQUIRE any of the three: the export gate's
+  // own required-field list must never mention them, or pricing a refinance would
+  // stall on facts the file collects later.
+  const js = readRepo('web/v2/tools/termsheet.js');
+  const missing = /function missingFields\(\)[\s\S]*?\n  \}/.exec(js);
+  assert(!!missing, 'the required-field list was located');
+  assert(!/payoff/i.test(missing[0]),
+    'the term-sheet export gate never demands a payoff, a lender or a loan number');
 }
 
 /* ===================================================================== *

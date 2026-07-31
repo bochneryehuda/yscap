@@ -580,15 +580,25 @@
                 <label for="payoff">Current loan payoff<span class="tip" tabindex="0" role="note" aria-label="The balance on the loan this refinance pays off. Cash to you at closing is the new loan minus this payoff and closing costs — and that cash-out is capped (see the note below the structure).">i<span class="tip-bub">The balance on the loan this refinance pays off. Cash to you at closing is the new loan minus this payoff and closing costs — and that cash-out is capped (see the note below the structure).</span></span></label>
                 <div class="input"><span class="adorn">$</span><input id="payoff" type="number" inputmode="numeric" placeholder="existing balance to pay off"></div>
             </div>
-            <!-- WHO we pay off, and WHICH loan (owner-directed 2026-07-31). A payoff
-                 AMOUNT alone does not tell the closing attorney or the title company
-                 who to request the payoff letter from, or which account it applies
-                 to — so the identity of the debt travels with the deal from here,
-                 through the loan file, onto the term sheet. Refinance only. -->
-            <div class="field-rows two-col cond hidden" data-cond="refiOnly">
-                <div class="field"><label for="payoffLender">Lender being paid off <em>(optional)</em><span class="tip" tabindex="0" role="note" aria-label="Who holds the loan this refinance pays off — the bank, private lender or seller carrying paper. The closing attorney requests the payoff letter from them.">i<span class="tip-bub">Who holds the loan this refinance pays off — the bank, private lender or seller carrying paper. The closing attorney requests the payoff letter from them.</span></span></label><div class="input"><input id="payoffLender" type="text" placeholder="e.g. Chase, or a private lender"></div></div>
-                <div class="field"><label for="payoffLoanNo">Their loan number <em>(optional)</em><span class="tip" tabindex="0" role="note" aria-label="That lender's own reference for the loan being paid off. It goes on the payoff request so the right account is quoted.">i<span class="tip-bub">That lender's own reference for the loan being paid off. It goes on the payoff request so the right account is quoted.</span></span></label><div class="input"><input id="payoffLoanNo" type="text" placeholder="the payoff lender's loan #"></div></div>
-            </div>
+            <!-- WHO we pay off, and WHICH loan — CARRIED, NEVER ASKED FOR HERE
+                 (owner-directed 2026-07-31: "make sure the lender name and the loan
+                 number doesn't need to be entered on the products and pricing, only
+                 afterwards within the file").
+
+                 Products & Pricing prices a deal. Neither of these changes a single
+                 number in it, and at quote time nobody has looked the servicer up
+                 yet — so asking for them here is two boxes an officer must skip on
+                 every refinance they price. They are collected once, later, in the
+                 loan file's own Payoff section, where the closing attorney's payoff
+                 request actually comes from.
+
+                 They stay as HIDDEN inputs, fed read-only by ProductStudioPanel from
+                 the file (the same shape as coBorrowerPgWaived), so a term sheet
+                 generated FROM a file still prints "Paid off to" and "Their loan
+                 number". A standalone quote simply has nothing to print, which is
+                 correct — there is no file yet. -->
+            <input id="payoffLender" type="hidden" value="">
+            <input id="payoffLoanNo" type="hidden" value="">
             <!-- CASH-OUT PROCEEDS (owner-directed 2026-07-31: "if it's a cash out
                  how much the cash out process is going to be according to the
                  structure, just the field for it"). It DEFAULTS to what the
@@ -964,7 +974,7 @@
 <script src="silver-program.js?v=silver9-bandeps"></script>
 <script src="title-cost.js?v=admin8"></script>
 <script src="address-autocomplete.js?v=admin9"></script>
-<script src="termsheet.js?v=cards9-irtruth1-maxlev1-origfit-manualorig2-badgewrap"></script>
+<script src="termsheet.js?v=cards9-irtruth1-maxlev1-origfit-manualorig2-badgewrap-payoff1"></script>
 <script src="../float-actions.js?v=admin10-applyfix"></script>
 <script>
 /* Property-address autocomplete (owner-directed 2026-07-17): same shared YSAddr
