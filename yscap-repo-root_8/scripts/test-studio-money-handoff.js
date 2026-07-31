@@ -280,14 +280,42 @@ const { moneyValue } = require(path.join(__dirname, '..', 'src', 'lib', 'fields.
   const plain = assignmentFields({ isAssignment: false, loanType: 'Purchase', purchasePrice: '412,500' });
   assert(plain.purchasePrice === 412500, `a non-assignment purchase price is parsed too (got ${JSON.stringify(plain.purchasePrice)})`);
 
+  /* Scanned with BLOCK COMMENTS REMOVED: the banned shapes below are quoted
+     verbatim in the prose that explains why they are banned, and a guard that
+     fires on its own documentation teaches people to delete the documentation.
+     The strip is asserted not to have eaten any real code. */
+  const code = (p) => {
+    const raw = fs.readFileSync(path.join(__dirname, '..', ...p), 'utf8');
+    const out = raw.replace(/\/\*[\s\S]*?\*\//g, '');
+    if (!/moneyColumn|assignmentFields/.test(out)) throw new Error(`comment strip ate ${p.join('/')}`);
+    return out;
+  };
   // the three columns the create routes used to bind raw off the draft
   const routes = [
-    ['src/routes/borrower.js', fs.readFileSync(path.join(__dirname, '..', 'src', 'routes', 'borrower.js'), 'utf8')],
-    ['src/routes/staff.js', fs.readFileSync(path.join(__dirname, '..', 'src', 'routes', 'staff.js'), 'utf8')],
+    ['src/routes/borrower.js', code(['src', 'routes', 'borrower.js'])],
+    ['src/routes/staff.js', code(['src', 'routes', 'staff.js'])],
   ];
   for (const [name, txt] of routes) {
     const raw = /\bb\.(asIsValue|arv|rehabBudget)\s*\|\|\s*null/.exec(txt);
     assert(!raw, `${name} never binds a money value to a numeric column raw${raw ? ` — found \`${raw[0]}\`` : ''}`);
+    /* AND NEVER RE-TESTS TRUTHINESS ON THE PARSED NUMBER (re-audit, 2026-07-31).
+       `moneyValue(b.asIsValue) || null` looks like the same expression with a
+       parser bolted on, but it moves the provided/not-provided decision off the
+       raw value onto the parsed one — and 0 is falsy, so a "0" a human typed into
+       a MoneyInput (which stores a numeric STRING) stopped storing 0.00 and
+       started storing NULL on all three create paths. `moneyColumn` is the bind
+       that keeps both halves right; this is the shape that must never come back. */
+    const wrapped = /money(?:Value)?\(\s*b\.\w+\s*\)\s*\|\|\s*null/.exec(txt);
+    assert(!wrapped,
+      `${name} decides "was money provided?" on the RAW value (moneyColumn), never on the parsed number — a typed "0" must not become NULL${wrapped ? ` — found \`${wrapped[0]}\`` : ''}`);
+  }
+  // the shared helper has to hold the same line, since all three routes go through it
+  {
+    const fld = code(['src', 'lib', 'fields.js']);
+    const wrapped = /moneyValue\([^)]*\)\s*\|\|\s*null/.exec(fld);
+    assert(!wrapped, `src/lib/fields.js assignmentFields does the same${wrapped ? ` — found \`${wrapped[0]}\`` : ''}`);
+    assert(typeof require(path.join(__dirname, '..', 'src', 'lib', 'fields.js')).moneyColumn === 'function',
+      'and moneyColumn is exported as the one bind every money column goes through');
   }
 }
 

@@ -85,6 +85,37 @@ function moneyValue(v) {
   return neg ? -n : n;
 }
 
+/* THE BIND FOR A MONEY COLUMN — parse (moneyValue) AND the "was it provided?"
+   decision, which are two different questions and were getting the same answer
+   (re-audit of #919, 2026-07-31).
+
+   Every create path used to bind `b.asIsValue || null`, so "provided?" was
+   JavaScript truthiness OF THE RAW VALUE. The string "0" — which is exactly what
+   a MoneyInput holds after a human types a single 0, because the portal's money
+   contract stores a plain numeric STRING — is truthy, so an entered zero stored
+   0.00. Wrapping the same expression as `moneyValue(b.asIsValue) || null` moved
+   the truthiness test onto the PARSED number, and 0 is falsy: a typed zero
+   started storing NULL on all three create paths. Measured through the three
+   real HTTP doors against real Postgres, before/after 67c12804..d055c1e6:
+
+       {asIsValue:"0", arv:"0", rehabBudget:"0"}   was 0.00 → became NULL
+
+   NULL is not a harmless spelling of 0 here. `applications.rehab_budget != null`
+   is the file's "Rehab budget provided" completeness row (Application.jsx);
+   `UPDATE applications SET as_is_value=$2 WHERE as_is_value IS NULL` is how an
+   appraisal import decides it may overwrite (lib/appraisal/import.js); the
+   investor-guideline rules return "not evaluated" instead of a verdict when
+   `x.rehab_budget == null` (lib/underwriting/investor-guideline-review.js); the
+   tapes fall through to a different source; and db/072 reopens pricing on
+   `IS DISTINCT FROM`, which NULL↔0 satisfies.
+
+   So the provided/not-provided question is answered on the RAW value exactly the
+   way it always was, and only then is the value parsed. `moneyValue` still says
+   what a money value MEANS; this says whether there was one. */
+function moneyColumn(v) {
+  return moneyValue(v || null);
+}
+
 // Assignment-purchase normalization (#96) — ONE definition used by EVERY create
 // path (staff new-file, borrower application draft-submit, borrower direct
 // create) so is_assignment / underlying_contract_price / assignment_fee /
@@ -107,13 +138,15 @@ function assignmentFields(b) {
   /* Every money value is PARSED, not passed through (audit of #919). The bare
      `Number()` this used to run on the underlying price was the server-side twin
      of the client bug #919 fixes: a formatted "380,000" made it NaN, and the
-     string itself went to a numeric column as-is. `|| null` is kept on each so a
-     zero/blank still stores NULL exactly as it always has. */
-  const underlying = isAssignment ? (moneyValue(b.underlyingContractPrice) || null) : null;
-  const assignFee = isAssignment ? (moneyValue(b.assignmentFee) || null) : null;
+     string itself went to a numeric column as-is.
+     `moneyColumn` — not `moneyValue(x) || null` — because the provided /
+     not-provided decision has to stay on the RAW value: an entered "0" is a zero
+     the borrower typed and has always stored 0.00 (re-audit, 2026-07-31). */
+  const underlying = isAssignment ? moneyColumn(b.underlyingContractPrice) : null;
+  const assignFee = isAssignment ? moneyColumn(b.assignmentFee) : null;
   const purchasePrice = isAssignment
     ? ((moneyValue(b.underlyingContractPrice) || 0) + (moneyValue(b.assignmentFee) || 0))
-    : (moneyValue(b.purchasePrice) || null);
+    : moneyColumn(b.purchasePrice);
   return { isAssignment, underlying, assignFee, purchasePrice };
 }
 
@@ -256,4 +289,4 @@ function loanNumberProblem(v) {
   return null;
 }
 
-module.exports = { sanitizeFico, sanitizeSsnDigits, formatSsn, sanitizeLoanType, moneyValue, assignmentFields, sqftRelevantType, sqftForType, sanitizeDateOnly, normalizeTypedDate, sanitizeDob, dobProblem, sanitizeLoanNumber, normalizeLoanNumber, loanNumberProblem };
+module.exports = { sanitizeFico, sanitizeSsnDigits, formatSsn, sanitizeLoanType, moneyValue, moneyColumn, assignmentFields, sqftRelevantType, sqftForType, sanitizeDateOnly, normalizeTypedDate, sanitizeDob, dobProblem, sanitizeLoanNumber, normalizeLoanNumber, loanNumberProblem };
