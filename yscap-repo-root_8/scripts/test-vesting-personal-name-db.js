@@ -2,7 +2,7 @@
 /**
  * DB + HTTP test — vesting defaults to LLC, and a personal-name purchase (waived
  * off the LLC condition with a non-owner-occupied affidavit) flips it to Individual
- * (db/383, owner-directed 2026-07-31).
+ * (db/384, owner-directed 2026-07-31).
  *
  *   DATABASE_URL=postgres://… node scripts/test-vesting-personal-name-db.js
  *
@@ -38,6 +38,7 @@ process.env.JWT_SECRET = process.env.JWT_SECRET || 'testsecrettestsecrettestsecr
   });
   const sfx = `${process.pid}-${Math.floor(Math.random() * 1e6)}`;
   const pnpOf = async (id) => (await db.query(`SELECT personal_name_purchase FROM applications WHERE id=$1`, [id])).rows[0].personal_name_purchase;
+  const llcOf = async (id) => (await db.query(`SELECT llc_id FROM applications WHERE id=$1`, [id])).rows[0].llc_id;
   const condOf = async (id) => (await db.query(
     `SELECT ci.status, ci.signed_off_at FROM checklist_items ci JOIN checklist_templates t ON t.id=ci.template_id
       WHERE ci.application_id=$1 AND t.code='rtl_p1_llc' ORDER BY ci.created_at LIMIT 1`, [id])).rows[0];
@@ -103,6 +104,23 @@ process.env.JWT_SECRET = process.env.JWT_SECRET || 'testsecrettestsecrettestsecr
       `INSERT INTO llcs (borrower_id, llc_name) VALUES ($1,$2) RETURNING id`, [borrowerId, `VP Holdings ${sfx} LLC`])).rows[0].id;
     await require(R + '/src/lib/vesting').setVestingLlc(appId, llcId, { source: 'staff', push: false, force: true });
     ok((await pnpOf(appId)) === false, 'linking a real vesting entity clears the personal-name flag (LLC wins)');
+    ok(String(await llcOf(appId)) === String(llcId), 'the vesting entity is linked');
+
+    // waive over an UNVERIFIED linked LLC → allowed, but the LLC link is dropped so
+    // the ClickUp *Vesting dropdown never reads Individual next to an LLC name.
+    r = await call('POST', `/api/staff/applications/${appId}/vesting/personal-name`, tok,
+      { filename: 'noo3.pdf', contentType: 'application/pdf', dataBase64: pdf });
+    ok(r.status === 200 && (await pnpOf(appId)) === true, 'waiving over an unverified linked LLC succeeds');
+    ok((await llcOf(appId)) === null, 'waiving drops the unverified linked LLC (Individual is never pushed next to an LLC name)');
+
+    // waive over a VERIFIED linked LLC → refused (an LLC always wins)
+    await require(R + '/src/lib/vesting').setVestingLlc(appId, llcId, { source: 'staff', push: false, force: true });
+    await db.query(`UPDATE llcs SET is_verified=true WHERE id=$1`, [llcId]);
+    r = await call('POST', `/api/staff/applications/${appId}/vesting/personal-name`, tok,
+      { filename: 'noo4.pdf', contentType: 'application/pdf', dataBase64: pdf });
+    ok(r.status === 409, 'waiving is refused when a verified LLC is linked');
+    ok((await pnpOf(appId)) === false, 'a refused waive over a verified LLC does not flag the file');
+    ok(String(await llcOf(appId)) === String(llcId), 'the verified LLC stays linked');
 
     console.log(`  vesting personal-name DB: ${pass} passed, ${fail} failed`);
   } catch (e) {

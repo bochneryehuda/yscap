@@ -1925,7 +1925,9 @@ router.post('/applications/:id/vesting/personal-name', async (req, res) => {
     if (!can(req.actor, 'sign_off_conditions'))
       return res.status(403).json({ error: 'Only a processor can waive the LLC condition — signing this off as a personal-name purchase is a sign-off.' });
     const app = (await db.query(
-      `SELECT id, status, borrower_id FROM applications WHERE id=$1 AND deleted_at IS NULL`, [req.params.id])).rows[0];
+      `SELECT a.id, a.status, a.borrower_id, a.llc_id, l.is_verified AS llc_verified
+         FROM applications a LEFT JOIN llcs l ON l.id = a.llc_id
+        WHERE a.id=$1 AND a.deleted_at IS NULL`, [req.params.id])).rows[0];
     if (!app) return res.status(404).json({ error: 'not found' });
     if (['clear_to_close', 'funded', 'declined', 'withdrawn'].includes(app.status))
       return res.status(409).json({ error: 'This file is Clear to Close — vesting is locked. Move it back to an earlier status to change it.' });
@@ -1954,6 +1956,12 @@ router.post('/applications/:id/vesting/personal-name', async (req, res) => {
     // WAIVE — file the affidavit (uploaded now, or already on the item), flag the
     // file personal-name, sign the condition off, and flip vesting to Individual.
     if (!item) return res.status(409).json({ error: 'the LLC condition is not on this file yet' });
+    // An LLC always wins over a personal-name waiver (db/384). A VERIFIED linked
+    // entity means the file really vests in that LLC — refuse (remove the LLC
+    // first). An unverified linked entity is dropped below with the flag write, so
+    // the ClickUp *Vesting dropdown never reads Individual next to an LLC name.
+    if (app.llc_id && app.llc_verified === true)
+      return res.status(409).json({ error: 'This file vests in a verified LLC. Remove the LLC entity first if it is really being bought in a personal name.' });
     let uploadedDocId = null;
     if (b.dataBase64) {
       if (!b.filename) return res.status(400).json({ error: 'filename + dataBase64 required for the affidavit' });
@@ -1966,8 +1974,8 @@ router.post('/applications/:id/vesting/personal-name', async (req, res) => {
       const { ref, provider } = await storage.save(buf, { filename });
       const r = await db.query(
         `INSERT INTO documents (application_id,checklist_item_id,borrower_id,filename,content_type,size_bytes,
-                                storage_provider,storage_ref,uploaded_by_kind,uploaded_by_id,doc_kind,slot_label,visibility)
-         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,'staff',$9,'noo_affidavit',$10,'borrower') RETURNING id`,
+                                storage_provider,storage_ref,uploaded_by_kind,uploaded_by_id,doc_kind,slot_label,visibility,source_type)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,'staff',$9,'noo_affidavit',$10,'borrower','staff_upload') RETURNING id`,
         [req.params.id, item.id, app.borrower_id, filename, b.contentType || 'application/pdf', buf.length,
          provider, ref, req.actor.id, 'Non-owner-occupied affidavit']);
       uploadedDocId = r.rows[0].id;
@@ -1977,7 +1985,7 @@ router.post('/applications/:id/vesting/personal-name', async (req, res) => {
          AND COALESCE(review_status,'') <> 'rejected' AND doc_kind='noo_affidavit' LIMIT 1`, [item.id])).rows[0];
     if (!hasAff) return res.status(400).json({ error: 'Upload the non-owner-occupied affidavit (PDF) to sign this off as a personal-name purchase.' });
 
-    await db.query(`UPDATE applications SET personal_name_purchase=true, updated_at=now() WHERE id=$1`, [req.params.id]);
+    await db.query(`UPDATE applications SET personal_name_purchase=true, llc_id=NULL, updated_at=now() WHERE id=$1`, [req.params.id]);
     await db.query(
       `UPDATE checklist_items SET status='satisfied', signed_off_at=now(), signed_off_by=$2, updated_at=now() WHERE id=$1`,
       [item.id, req.actor.id]);

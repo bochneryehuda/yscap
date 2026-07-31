@@ -27,4 +27,4 @@ ALTER TABLE applications
   ADD COLUMN IF NOT EXISTS personal_name_purchase boolean NOT NULL DEFAULT false;
 
 COMMENT ON COLUMN applications.personal_name_purchase IS
-  'true = bought in a personal name (LLC condition waived via a non-owner-occupied affidavit); drives the ClickUp *Vesting dropdown to Individual. Default false → Individual is never the default; vesting is LLC / Corp. (db/383)';
+  'true = bought in a personal name (LLC condition waived via a non-owner-occupied affidavit); drives the ClickUp *Vesting dropdown to Individual. Default false → Individual is never the default; vesting is LLC / Corp. (db/384)';
