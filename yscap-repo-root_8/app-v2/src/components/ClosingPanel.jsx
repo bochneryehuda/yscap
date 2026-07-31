@@ -3,6 +3,7 @@ import { api } from '../lib/api.js';
 import { dealPurchase } from '../lib/dealPrice.js';
 import { onFilesDropped } from '../lib/drop-files.js';
 import { fmtDate } from '../lib/dates.js';
+import { ChainAddress, ChainHistory } from './ClosingEmailChain.jsx';
 
 /* THE CLOSING WORKSPACE (owner-directed 2026-07-26). The closer's desk inside a
    loan file: deal details, the actual cash-to-close money gate against verified
@@ -143,6 +144,12 @@ export default function ClosingPanel({ appId, app, can, onDownloadDoc, onPreview
         </div>
       </div>
 
+      {/* The closing email chain — the file's own closing address + the whole
+          attorney conversation. It is SENT from the Orders desk ("Attorney closing
+          prep"), but the closer looks for it HERE, so it is surfaced in both places
+          off the one shared component. */}
+      <ClosingEmailChainPanel appId={appId} onDownloadDoc={onDownloadDoc} />
+
       {/* Closing conditions (uploads) */}
       <ConditionsSection appId={appId} conditions={ws.conditions || []} isCloser={isCloser}
         onPreview={onPreview} onDownloadDoc={onDownloadDoc} onUploaded={refresh} setErr={setErr} />
@@ -158,6 +165,50 @@ export default function ClosingPanel({ appId, app, can, onDownloadDoc, onPreview
 
       {/* Notes */}
       <NotesSection appId={appId} notes={ws.notes || []} onChanged={refresh} setErr={setErr} />
+    </div>
+  );
+}
+
+/* THE CLOSING EMAIL CHAIN, surfaced on the closer's desk. The address is minted and
+   the request is SENT from the Orders desk ("Attorney closing prep"), but this is
+   where the closer expects to OPEN the conversation — so it reads the same closing
+   data and renders the SAME shared address + history components. Loaded lazily off
+   the existing closing-prep endpoint (no backend change); no chain yet just points
+   back to Orders. */
+function ClosingEmailChainPanel({ appId, onDownloadDoc }) {
+  const [chain, setChain] = useState(undefined); // undefined = loading, null = none yet
+  const [err, setErr] = useState('');
+  useEffect(() => {
+    let live = true;
+    setChain(undefined); setErr('');
+    api.staffClosingPrep(appId)
+      .then((d) => { if (live) setChain((d && d.chain) || null); })
+      .catch((e) => { if (live) setErr((e && e.message) || 'Could not load the closing email chain.'); });
+    return () => { live = false; };
+  }, [appId]);
+  return (
+    <div className="panel" style={{ marginBottom: 14 }}>
+      <div className="panel-h"><h3 style={{ margin: 0 }}>Closing email chain</h3>
+        <span className="muted small">The file's own closing email address, and the whole attorney conversation.</span></div>
+      <div className="panel-b">
+        {err ? <div className="notice err">{err}</div>
+          : chain === undefined ? <div className="muted small">Loading the closing email chain…</div>
+            : (
+              <>
+                <ChainAddress chain={chain} emptyHint={
+                  <div className="notice" style={{ border: '1px solid var(--gold,#AE8746)', background: 'var(--paper,#F6F3EC)' }}>
+                    <b style={{ color: '#141B22' }}>Closing prep hasn't been sent yet.</b>
+                    <div className="small" style={{ color: '#4B585C', marginTop: 3 }}>
+                      This file doesn't have its own closing email address until the closing-prep request goes to the
+                      attorney. Send it from the <b>Orders (title, insurance &amp; closing prep)</b> section — the
+                      "Attorney closing prep" card — and the address, plus everything on the chain, appears here.
+                    </div>
+                  </div>
+                } />
+                <ChainHistory appId={appId} chain={chain} onDownload={onDownloadDoc} />
+              </>
+            )}
+      </div>
     </div>
   );
 }

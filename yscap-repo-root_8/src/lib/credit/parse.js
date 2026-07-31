@@ -193,12 +193,53 @@ function parseLiabilities(cr) {
   return liabilityNodes(cr).map(liabilityFrom);
 }
 
+// A credit inquiry's HARD/SOFT nature. A HARD inquiry (a full pull to seek new
+// credit) lands on the borrower's file and can move the score; a SOFT one (an
+// account review, a pre-approval offer, the borrower's own check) does not. Every
+// MISMO 2.x inquiry carries it as _PurposeType="HARD"/"SOFT"; some files spell it
+// out. Anything we can't read stays null rather than guessing a HARD.
+function inquiryPurpose(v) {
+  const s = String(v || '').toLowerCase();
+  if (!s) return null;
+  if (s.includes('hard')) return 'hard';
+  if (s.includes('soft')) return 'soft';
+  return null;
+}
+
+// Space out MISMO's glued CamelCase enums so a row reads like words
+// ("OilAndNationalCreditCards" → "Oil And National Credit Cards"); an
+// already-spaced value ("National Credit Card Cos.") is left untouched.
+function spaceCamel(s) {
+  return String(s || '').replace(/([a-z0-9])([A-Z])/g, '$1 $2').replace(/\s+/g, ' ').trim();
+}
+
+// One <CREDIT_INQUIRY> node → an inquiry object. A real MISMO 2.x inquiry carries
+// far more than who/when/which-bureau — the HARD/SOFT purpose, the inquirer's line
+// of business, and its mailing address are all right on the element; pulling only
+// name/date/bureau silently dropped the underwriting-relevant half of each row.
 function inquiryFrom(q) {
+  const street = field(q, ['_StreetAddress', 'AddressLineText'], ['AddressLineText']);
+  const city = field(q, ['_City', 'CityName'], ['CityName']);
+  const state = field(q, ['_State', 'StateCode'], ['StateCode']);
+  const zip = field(q, ['_PostalCode', 'PostalCode'], ['PostalCode']);
+  const address = [street, [city, state].filter(Boolean).join(', '), zip]
+    .filter(Boolean).join(' ').trim() || null;
   return {
     name: field(q, ['_Name', 'CreditInquiryName', '_SubscriberName'], ['CreditInquiryName', 'Name']) || null,
     date: isoDate(field(q, ['_Date', 'CreditInquiryDate'], ['CreditInquiryDate'])),
     bureau: bureau(field(X.firstDeep(q, 'CREDIT_REPOSITORY') || q,
       ['_SourceType', 'CreditRepositorySourceType'], ['CreditRepositorySourceType'])),
+    // HARD vs SOFT — a HARD pull hints at new debt the borrower may not have
+    // disclosed, so it is the half of an inquiry underwriting actually reads.
+    purpose: inquiryPurpose(field(q, ['_PurposeType', 'CreditInquiryPurposeType'], ['CreditInquiryPurposeType'])),
+    // What kind of business inquired (a bank, an auto lender, a card issuer) so the
+    // row is more than an opaque subscriber code. CreditBusinessType is the MISMO
+    // enum (both families); RawIndustryText is the vendor's readable fallback.
+    business: (spaceCamel(field(q, ['CreditBusinessType', '_BusinessType'], ['CreditBusinessType']))
+      || field(q, ['RawIndustryText'], [])) || null,
+    // The inquirer's mailing address when the file carries it (MISMO 2.x puts it
+    // right on the inquiry) — lets staff tell two same-named subscribers apart.
+    address,
   };
 }
 
@@ -551,6 +592,9 @@ function summarize(liabilities, inquiries, publicRecords) {
     collectionCount: liabilities.filter((l) => l.isCollection).length,
     publicRecordCount: publicRecords.length,
     inquiryCount: inquiries.length,
+    // How many of those inquiries are HARD pulls — the ones that move the score and
+    // point at new-credit-seeking (soft account reviews are noise for underwriting).
+    hardInquiryCount: inquiries.filter((q) => q && q.purpose === 'hard').length,
   };
 }
 

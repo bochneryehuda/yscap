@@ -1350,9 +1350,10 @@ async function backfillMemberLinksOnce() {
 
 // One-shot: push the DEFAULTED deal program (db/382) up to any linked ClickUp
 // card whose *Program box is still empty. db/382 defaulted a blank / "Not sure
-// yet" program to 'Fix & Flip w/ Construction' in PILOT, but a raw migration
-// cannot enqueue an outbound push, so the CARD would stay blank until the file
-// is next edited. This fills those cards through the normal guarded,
+// yet" program to 'Fix & Flip w/ Construction' in PILOT (and db/385 canonicalized
+// a legacy plain 'Fix & Flip' to the same label), but a raw migration cannot
+// enqueue an outbound push, so the CARD would stay blank until the file is next
+// edited. This fills those cards through the normal guarded,
 // no-op-suppressed scoped push (`enqueueClickupPush(appId, ['program'])`).
 // Targets ONLY files whose last-ingest snapshot shows a blank ClickUp program,
 // so it never touches a card that already carries one; bounded per boot and
