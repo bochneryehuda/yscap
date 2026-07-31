@@ -341,6 +341,24 @@ if (!process.env.DATABASE_URL) {
          VALUES ($1,'term_sheet_package','completed','test',$2) RETURNING id`,
         [appId, `tsp-${sfx}`]).then((r) => r.rows[0].id).catch(() => null);
       assert(!!env, 'a signed term-sheet package was put on the file (otherwise this case is vacuous)');
+      /* THE FILE IS ALSO REGISTERED — and it has to be, BEFORE the parity loop
+         (fourth audit's test-design point, proven by mutation). The
+         change-request sandbox only engages on a file that carries current
+         terms, so on an unregistered file the five governed economics fields
+         never take that branch at all: the parity loop passed, and removing the
+         route's freeze-first ordering — the very defect this block exists to
+         catch — failed ZERO assertions. A signed term sheet without a
+         registration is also not a state that occurs.
+         The loan amount is set FIRST: db/126's reopen trigger fires on a
+         `loan_amount` change, so setting it after the registration would flag
+         that registration stale from the test's own setup and the later
+         "was not re-priced by a borrower answering a question" assertions would
+         be measuring this fixture rather than the behaviour. */
+      await db.query(`UPDATE applications SET loan_amount=440000 WHERE id=$1`, [appId]);
+      await db.query(
+        `INSERT INTO product_registrations (application_id, program, status, note_rate, total_loan, inputs, quote, is_current)
+         VALUES ($1,'standard','ELIGIBLE',0.1199,440000,'{"fico":700}'::jsonb,'{"sizing":{"totalLoan":440000}}'::jsonb,true)`,
+        [appId]);
       /* THE RULE IS PARITY WITH THE DOOR THAT OWNS THE FIELD, and that is what
          is asserted — for each field, the staff details door and this door must
          AGREE. Three rounds each invented a different private field list here,
@@ -353,31 +371,63 @@ if (!process.env.DATABASE_URL) {
              while staff got a 409 on the same field of the same file.
          Asserting agreement instead of a list is what makes a fourth private
          list impossible. */
-      await db.query(`UPDATE applications SET loan_amount=440000 WHERE id=$1`, [appId]);
       const staffSays = async (body) =>
         (await call('PATCH', `/api/staff/applications/${appId}/details`, sTok, body)).status;
-      const borrowerSays = async (key, value) => {
-        try { await engine.writeFieldValue(appId, borrowerId, key, value, { kind: 'borrower', id: borrowerId }); return 200; }
-        catch (e) { return e.status || 500; }
+      /* THROUGH THE REAL ROUTE, not `writeFieldValue` directly. Calling the
+         engine skips the route's change-request branch — which is exactly the
+         branch that caused the disagreement the previous cut of this test could
+         not see (fourth audit, 2026-07-31). */
+      const borrowerSays = async (fieldKey, value) => {
+        const c = await call('POST', `/api/staff/applications/${appId}/conditions/custom`, sTok, {
+          conditionType: 'info_field', fieldKey, label: `Confirm ${fieldKey}`, audience: 'borrower',
+        });
+        const itemId = c.body && c.body.itemId;
+        if (!itemId) return `no-condition(${c.status})`;
+        const r = await call('POST', `/api/borrower/applications/${appId}/checklist/${itemId}/info`, bTok, { value });
+        return r.status;
       };
-      const PARITY = [
-        ['loan_amount', 'loanAmount', 1],
-        ['payoff_amount', 'payoffAmount', 1],
-        ['original_purchase_price', 'originalPurchasePrice', 310000],
-        ['acquisition_date', 'acquisitionDate', '2024-03-05'],
-        ['requested_ir_amount', 'requestedIrAmount', 40000],
-        ['requested_ir_months', 'requestedIrMonths', 9],
-        ['assignment_fee', 'assignmentFee', 9000],
-        ['requested_exp_flips', 'requestedExpFlips', 9],
-      ];
-      for (const [fieldKey, bodyKey, value] of PARITY) {
+      /* EVERY field this door can write that the details door also writes —
+         derived from the registry, NOT hand-listed. The previous cut pinned
+         eight fields, which turned out to be precisely the set where the two
+         doors happened to agree; the five that disagreed (the governed
+         economics fields, which short-circuited into a change request on a
+         FROZEN file) were absent. A hand-list here is a fourth private list. */
+      const REG_TARGETS = require('../src/lib/conditions/field-registry').WRITE_TARGETS;
+      const DETAILS_BODY_KEY = {
+        purchase_price: 'purchasePrice', as_is_value: 'asIsValue', arv: 'arv',
+        rehab_budget: 'rehabBudget', units: 'units', property_type: 'propertyType',
+        payoff_amount: 'payoffAmount', original_purchase_price: 'originalPurchasePrice',
+        acquisition_date: 'acquisitionDate', requested_ir_amount: 'requestedIrAmount',
+        requested_ir_months: 'requestedIrMonths', assignment_fee: 'assignmentFee',
+        underlying_contract_price: 'underlyingContractPrice',
+        requested_exp_flips: 'requestedExpFlips', requested_exp_holds: 'requestedExpHolds',
+        requested_exp_ground: 'requestedExpGround', sqft_pre: 'sqftPre', sqft_post: 'sqftPost',
+      };
+      const SAMPLE = {
+        acquisition_date: '2024-03-05', property_type: 'Condo', requested_ir_months: 9,
+        units: 3, requested_exp_flips: 9, requested_exp_holds: 9, requested_exp_ground: 9,
+        sqft_pre: 1100, sqft_post: 1400,
+      };
+      let compared = 0, agreed = 0;
+      for (const [fieldKey, t] of Object.entries(REG_TARGETS)) {
+        if (!t || t.table !== 'applications') continue;
+        const bodyKey = DETAILS_BODY_KEY[fieldKey];
+        if (!bodyKey) continue;                  // the details door cannot write it
+        const value = Object.prototype.hasOwnProperty.call(SAMPLE, fieldKey) ? SAMPLE[fieldKey] : 4321;
         const s = await staffSays({ [bodyKey]: value });
         const b = await borrowerSays(fieldKey, value);
-        const bothFrozen = s === 409 && b === 409;
-        const bothOpen = s === 200 && b === 200;
-        assert(bothFrozen || bothOpen,
-          `${fieldKey}: the condition door agrees with the details door (staff ${s}, borrower ${b})`);
+        compared++;
+        const ok = (s === 409 && b === 409) || (s === 200 && b === 200);
+        if (ok) agreed++;
+        assert(ok, `${fieldKey}: the condition door agrees with the details door (staff ${s}, borrower ${b})`);
       }
+      assert(compared >= 15, `every comparable field was actually compared (${compared}) — a shrinking list is how this hid before`);
+      /* AND THE FREEZE IS GENUINELY ENGAGED. Without this the loop passes
+         trivially when both doors are OPEN — measured: with the term-sheet
+         freeze stubbed out, 7 of 8 rows still "agreed". */
+      assert(agreed === compared && compared > 0, 'every compared field agreed');
+      const anyFrozen = await borrowerSays('loan_amount', 1);
+      eq(anyFrozen, 409, 'and the signed term sheet really is freezing this door (not a vacuous both-open pass)');
       const loanNow = (await db.query(`SELECT loan_amount FROM applications WHERE id=$1`, [appId])).rows[0];
       eq(Number(loanNow.loan_amount), 440000,
         'the sheet’s headline number is untouched — it was moved to $1 before this');
@@ -394,6 +444,23 @@ if (!process.env.DATABASE_URL) {
         try { await engine.writeFieldValue(appId, borrowerId, key, value, { kind: 'borrower', id: borrowerId }); return null; }
         catch (e) { return e; }
       };
+      /* A FUNDED FILE WITH NO TERM SHEET AT ALL — so this really tests the
+         STATUS freeze. Every other funded assertion here sits on a file that
+         also carries a signed term-sheet package, so the term-sheet freeze
+         answered first: measured (fourth audit), disabling the entire status
+         freeze failed ZERO assertions in this suite while failing ten in
+         test-funded-lock.js. A file with no envelope has only one freeze left
+         to be doing the work. */
+      {
+        const bare = await newFile();
+        await db.query(`UPDATE applications SET status='funded' WHERE id=$1`, [bare]);
+        let statusOnly = null;
+        try { await engine.writeFieldValue(bare, borrowerId, 'acquisition_date', '2024-01-01', { kind: 'borrower', id: borrowerId }); }
+        catch (e) { statusOnly = e; }
+        assert(statusOnly && statusOnly.status === 409,
+          `a FUNDED file with NO term sheet still refuses (got ${statusOnly ? statusOnly.status : 'a successful write'}) — this is the STATUS freeze on its own`);
+      }
+
       const e1 = await refused('payoff_lender', 'Somebody Else');
       assert(e1 && e1.status === 409, `a FUNDED file refuses the payoff contact (got ${e1 ? e1.status : 'a successful write'})`);
       /* The far worse half of the same hole — an ECONOMICS field with no
@@ -433,13 +500,8 @@ if (!process.env.DATABASE_URL) {
          back to outstanding. That is verbatim the defect this whole series
          began with, on the one table nobody had checked. */
       await db.query(`UPDATE applications SET status='funded' WHERE id=$1`, [appId]);
-      /* The sandbox engages on a REGISTERED file (`isBorrowerLocked` = the file
-         carries a current registration), which is what "accepted terms" means
-         — so the case needs one, or it proves nothing. */
-      await db.query(
-        `INSERT INTO product_registrations (application_id, program, status, note_rate, total_loan, inputs, quote, is_current)
-         VALUES ($1,'standard','ELIGIBLE',0.1199,440000,'{"fico":700}'::jsonb,'{"sizing":{"totalLoan":440000}}'::jsonb,true)`,
-        [appId]);
+      // (the registration was put on this file before the parity loop above —
+      // the sandbox only engages on a file that carries current terms)
       const beforeFico = (await db.query(`SELECT fico FROM borrowers WHERE id=$1`, [borrowerId])).rows[0].fico;
       const ficoCond = await call('POST', `/api/staff/applications/${appId}/conditions/custom`, sTok, {
         conditionType: 'info_field', fieldKey: 'fico', label: 'Confirm your credit score', audience: 'borrower',
@@ -458,6 +520,37 @@ if (!process.env.DATABASE_URL) {
         `SELECT stale FROM product_registrations WHERE application_id=$1 AND is_current`, [appId])).rows[0];
       assert(!regStale || regStale.stale !== true,
         'and the FUNDED loan’s registration was NOT flipped stale by a borrower answering a question');
+
+      /* THE SAME PERSON'S SECOND FILE — the bypass the per-FILE lock left open
+         (fourth audit, 2026-07-31). `borrowers` is a SHARED row and db/126's
+         `reopen_pricing_on_fico_change` re-prices EVERY file the borrower is
+         on, so asking "does THIS file carry terms" was the wrong question:
+         with a funded registered file A and any second UNREGISTERED file B —
+         the ordinary shape for a repeat borrower — answering the credit-score
+         condition on B wrote the score live and flipped A stale. The lock for a
+         personal field is per PERSON, and this is the case that proves it. */
+      const fileB = await newFile();
+      assert(!!fileB, 'the same borrower has a second, unregistered file');
+      const bCond = await call('POST', `/api/staff/applications/${fileB}/conditions/custom`, sTok, {
+        conditionType: 'info_field', fieldKey: 'fico', label: 'Confirm your credit score', audience: 'borrower',
+      });
+      const bItem = bCond.body && bCond.body.itemId;
+      assert(!!bItem, 'with its own credit-score condition');
+      const beforeB = (await db.query(`SELECT fico FROM borrowers WHERE id=$1`, [borrowerId])).rows[0].fico;
+      const bAnswer = await call('POST', `/api/borrower/applications/${fileB}/checklist/${bItem}/info`, bTok, { value: 611 });
+      eq(bAnswer.status, 200, 'the borrower can answer it');
+      assert(bAnswer.body && bAnswer.body.locked === true,
+        '…and it is STILL a change request, because the PERSON has accepted terms somewhere');
+      const afterB = (await db.query(`SELECT fico FROM borrowers WHERE id=$1`, [borrowerId])).rows[0].fico;
+      eq(afterB, beforeB, 'the shared credit score is unchanged');
+      const staleB = (await db.query(
+        `SELECT stale FROM product_registrations WHERE application_id=$1 AND is_current`, [appId])).rows[0];
+      assert(!staleB || staleB.stale !== true,
+        'and the OTHER file’s funded registration was not re-priced from here either');
+      // The item is answered on this door too — it used to return before marking it,
+      // so a credit-score condition on a registered file could never be cleared.
+      const bItemRow = (await db.query(`SELECT status FROM checklist_items WHERE id=$1`, [bItem])).rows[0];
+      eq(bItemRow.status, 'received', 'the condition is marked answered, so it can leave the borrower’s list');
     }
 
     /* ================================================================ *

@@ -130,6 +130,47 @@ async function isBorrowerLocked(appId, client = db) {
   }
 }
 
+/* THE SAME QUESTION FOR A FIELD ON THE SHARED `borrowers` ROW — which is a
+   question about the PERSON, not about one file (fourth audit, 2026-07-31).
+ *
+ * `isBorrowerLocked` asks "does THIS application carry current terms", which is
+ * right for an economics column on `applications`. It is wrong for a personal
+ * column, because that row is shared across every file the person is on and
+ * db/126's `reopen_pricing_on_fico_change` re-prices ALL of them: keyed per
+ * file, a borrower with a funded registered file A and any second unregistered
+ * file B could answer the credit-score condition on B and write `borrowers.fico`
+ * LIVE, flipping A's registration stale and reopening Products & Pricing on a
+ * closed loan.
+ *
+ * Returns the application a request should be ANCHORED to — the borrower's
+ * most-recently-registered file, whose team approves it — or null when the
+ * person has no accepted terms anywhere and may still edit freely. This is the
+ * borrower profile door's own query, lifted here so both doors share one
+ * definition instead of two that can drift. Fails OPEN (null) like its sibling:
+ * if we cannot tell, do not hard-block the borrower.
+ *
+ * `ownFileSql(alias, placeholder)` is injected because the borrower-scope
+ * fragment lives in routes/borrower.js; the default is the plain primary /
+ * co-borrower test, so a caller that has no fragment still asks the right
+ * question. */
+const DEFAULT_OWN_FILE_SQL = (alias, p) => {
+  const a = alias ? alias + '.' : '';
+  return `(${a}borrower_id=${p} OR ${a}co_borrower_id=${p})`;
+};
+async function anchorForBorrower(borrowerId, client = db, ownFileSql = DEFAULT_OWN_FILE_SQL) {
+  if (!borrowerId) return null;
+  try {
+    const r = await client.query(
+      `SELECT a.id FROM applications a
+         JOIN product_registrations pr ON pr.application_id = a.id AND pr.is_current
+        WHERE (${ownFileSql('a', '$1')}) AND a.deleted_at IS NULL
+        ORDER BY pr.created_at DESC LIMIT 1`, [borrowerId]);
+    return r.rows[0] ? r.rows[0].id : null;
+  } catch (_) {
+    return null;
+  }
+}
+
 // Normalize an incoming borrower value the same way the live-write paths do, so a
 // requested value and the stored value are comparable (money → number string).
 function normalizeValue(field, raw) {
@@ -233,7 +274,20 @@ async function openBorrowerRequest(appId, field, rawValue, { reason, requesterKi
     // request; a redundant same-SSN ask is rare and harmless.
   } else {
     newValue = normalizeBorrowerValue(field, rawValue);
-    if (newValue == null || newValue === '') throw Object.assign(new Error('a value is required'), { status: 400 });
+    /* SAY WHICH PROBLEM IT IS (fourth audit, 2026-07-31). `normalizeBorrowerValue`
+       returns null for BOTH "you typed nothing" and "what you typed is not a
+       valid value for this field" — so an out-of-range credit score came back
+       as "a value is required" while the borrower was looking at the number
+       they had just typed. The same value on an unregistered file gets the
+       live-write path's honest "credit score must be between 300 and 850".
+       Blank is still blank; anything else is named for what it is. */
+    if (newValue == null || newValue === '') {
+      const typedSomething = rawValue != null && String(rawValue).trim() !== '';
+      throw Object.assign(
+        new Error(typedSomething ? `${labelOf(field)}: that isn’t a value we can use — check it and try again.`
+          : 'a value is required'),
+        { status: 400 });
+    }
     oldValue = await currentBorrowerValue(targetBorrowerId, field, client);
     if (normalizeBorrowerValue(field, oldValue) === newValue) return { unchanged: true, field };
   }
@@ -328,6 +382,6 @@ const GOVERNED_FIELDS = Object.keys(FIELD_LABELS);
 module.exports = {
   FIELD_LABELS, MONEY_FIELDS, INT_FIELDS, FIELD_OPTIONS, GOVERNED_FIELDS, isGovernedField,
   BORROWER_FIELD_LABELS, BORROWER_FIELDS, isBorrowerField, isChangeRequestable, fieldEntity, labelOf,
-  isBorrowerLocked, openRequest, openBorrowerRequest, applyRequest, currentValue, currentBorrowerValue,
+  isBorrowerLocked, anchorForBorrower, openRequest, openBorrowerRequest, applyRequest, currentValue, currentBorrowerValue,
   normalizeValue, normalizeBorrowerValue, formatValue, describeChange,
 };

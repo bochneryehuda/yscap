@@ -38,6 +38,16 @@ const apprCard = require('../lib/appraisal-card');
 const apprScore = require('../lib/appraisal/scoring');
 const conditionEngine = require('../lib/conditions/engine');
 const conditionRegistry = require('../lib/conditions/field-registry');
+/* The details door speaks camelCase and the field registry speaks snake_case,
+   and `file-lock.payoffContactLockReason` is keyed on the DETAILS door's names —
+   that is where its carve-out is defined. Only the payoff contact pair needs
+   translating; every other key falls through unchanged and is therefore never
+   mistaken for a contact-only edit, which is the safe direction. Mirrors
+   `conditions/engine.js WRITE_BODY_KEY`. */
+const PAYOFF_BODY_KEY = Object.freeze({
+  payoff_lender: 'payoffLender',
+  payoff_loan_number: 'payoffLoanNumber',
+});
 const changeRequests = require('../lib/change-requests');
 const { enqueueChecklistStatusPush } = require('../clickup/enqueue');
 
@@ -263,11 +273,13 @@ router.put('/profile', async (req, res) => {
   // accepted file, whose team approves; approval writes the shared borrower row.
   const changeRequested = [];
   let ssnGated = false;
-  const anchor = (await db.query(
-    `SELECT a.id FROM applications a
-       JOIN product_registrations pr ON pr.application_id=a.id AND pr.is_current
-      WHERE (${OWN_FILE_SQL("a", "$1")}) AND a.deleted_at IS NULL
-      ORDER BY pr.created_at DESC LIMIT 1`, [me(req)])).rows[0];
+  /* ONE definition of "which file does this person's change request belong to",
+     shared with the info-condition door (fourth audit, 2026-07-31) — that door
+     was asking the per-FILE question about a row that is shared across all of
+     them, which left the original defect alive one file over. The full
+     borrower-scope fragment is passed in, so a linked profile still counts. */
+  const anchorId = await changeRequests.anchorForBorrower(me(req), db, OWN_FILE_SQL);
+  const anchor = anchorId ? { id: anchorId } : null;
   if (anchor) {
     for (const col of Object.keys(fields)) {
       if (!changeRequests.isBorrowerField(col)) continue;   // identity fields only; keep address/housing/etc. live
@@ -1440,34 +1452,69 @@ router.post('/applications/:id/checklist/:itemId/info', async (req, res) => {
   if (!item.field_key) return res.status(400).json({ error: 'this item is not linked to a field' });
   if ((req.body || {}).value === undefined || req.body.value === null || req.body.value === '')
     return res.status(400).json({ error: 'a value is required' });
-  /* S5-03: on a REGISTERED file, a field answered here is a change to
-     authoritative terms — route it through the approval sandbox instead of
-     writing the live record.
+  /* THREE GOVERNANCES MEET AT THIS DOOR, AND THE ORDER IS THE WHOLE THING
+     (fourth audit, 2026-07-31). Answering a condition may never be more
+     permissive than editing the same field directly, and it must not be
+     LESS useful either — which means composing, in this order:
 
-     `isChangeRequestable`, NOT `isGovernedField` (third audit, 2026-07-31).
-     The narrower test covers only the eight ECONOMICS fields, so every personal
-     field — name, DOB, SSN, phone, citizenship and above all FICO — wrote LIVE
-     from this door on any file, in any status, with no freeze and no approval.
-     `fico` is the expensive one: db/126 installs a reopen trigger on
-     `borrowers` for exactly that column ("an applications trigger can never
-     catch a credit-report update that re-rates the registered product"), so a
-     borrower answering a credit-score condition on a FUNDED loan re-priced the
-     file — measured: the registration flipped to stale, Products & Pricing
-     reopened, and the SIGNED term-sheet condition went back to outstanding on a
-     closed loan. That is the defect this whole series began with, still live on
-     the one table nobody had checked.
+       1. THE FILE FREEZE, first, for a field that lives on `applications`.
+          It is the same call the staff details door makes, so what the two
+          doors do can never diverge. It has to run BEFORE the sandbox: the
+          five governed economics fields short-circuited into a change request
+          on a FROZEN file, so a borrower answering an ARV condition on a
+          WITHDRAWN loan got "ok, we've asked the team" and the team got a
+          request the approve door refuses with a 409 forever — while staff got
+          a plain 409 on the same field of the same file. A request that can
+          never be applied is worse than a refusal.
 
-     The borrower profile door has always done this correctly (it routes every
-     `isBorrowerField` column through `openRequest` on a locked file); this door
-     simply never matched it. `openRequest` dispatches a personal field to
-     `openBorrowerRequest` itself, and `targetBorrowerId` keeps the co-borrower
-     privacy rule (#82) — a co-borrower's answer is about THEM, never the
-     primary — which the live-write branch below already honours. */
-  if (changeRequests.isChangeRequestable(item.field_key) && await changeRequests.isBorrowerLocked(req.params.id)) {
+       2. THE REGISTRATION SANDBOX, for a field whose value is authoritative
+          once terms exist. `applications` fields are locked per FILE; a
+          `borrowers` field is locked per PERSON, because that row is SHARED
+          and db/126's `reopen_pricing_on_fico_change` re-prices EVERY file
+          the borrower is on. Keying it per file left the original defect
+          alive one file over: with a funded, registered file A and any second
+          unregistered file B, answering the credit-score condition on B wrote
+          `borrowers.fico` LIVE and flipped A's registration stale, reopening
+          Products & Pricing on a closed loan. `anchorForBorrower` is the
+          borrower profile door's own anchor query, shared rather than
+          re-expressed, so the two doors cannot drift.
+
+       3. THE LIVE WRITE, otherwise — through `writeFieldValue`, which applies
+          the freeze again for its own callers.
+
+     `targetBorrowerId` keeps the co-borrower privacy rule (#82): a
+     co-borrower's answer is about THEM, never the primary. */
+  const govTarget = conditionRegistry.WRITE_TARGETS[item.field_key];
+  if (govTarget && govTarget.table === 'applications') {
+    const frozen = await require('../lib/file-lock').payoffContactLockReason(
+      req.params.id, { [PAYOFF_BODY_KEY[item.field_key] || item.field_key]: req.body.value }, db);
+    if (frozen) return res.status(409).json({ error: frozen });
+  }
+  const crAnchor = (govTarget && govTarget.table === 'borrowers')
+    ? await changeRequests.anchorForBorrower(me(req), db)
+    : (await changeRequests.isBorrowerLocked(req.params.id) ? req.params.id : null);
+  if (changeRequests.isChangeRequestable(item.field_key) && crAnchor) {
     try {
-      const cr = await changeRequests.openRequest(req.params.id, item.field_key, req.body.value,
+      const cr = await changeRequests.openRequest(crAnchor, item.field_key, req.body.value,
         { reason: req.body.reason || null, requesterKind: 'borrower', requesterId: me(req), targetBorrowerId: me(req) });
-      if (!cr.unchanged) await notifyTeamOfChangeRequests(req.params.id, [cr]);
+      if (!cr.unchanged) await notifyTeamOfChangeRequests(crAnchor, [cr]);
+      /* THE CONDITION IS ANSWERED EITHER WAY. This branch used to return before
+         the item was marked, so a credit-score condition on a registered file
+         could never be cleared — and confirming the value already on file
+         (`unchanged`) did literally nothing: 200 "ok", item still outstanding,
+         no request, no audit row. The borrower had answered and the item never
+         left their list. `received` is exactly right for both: the answer is in
+         and a human reviews it (the team either approves the request or sees
+         the value confirmed). */
+      await db.query(
+        `UPDATE checklist_items SET status='received', tool_payload=$2, updated_at=now() WHERE id=$1`,
+        [req.params.itemId, JSON.stringify({
+          infoField: item.field_key, value: req.body.value, submittedAt: new Date().toISOString(),
+          changeRequested: !cr.unchanged, locked: true,
+        })]);
+      enqueueChecklistStatusPush(req.params.itemId).catch(() => {});
+      await audit(req, 'submit_info_condition', 'checklist_item', req.params.itemId,
+        { fieldKey: item.field_key, locked: true, changeRequested: !cr.unchanged });
       return res.json({ ok: true, locked: true, changeRequested: !cr.unchanged, field: item.field_key });
     } catch (e) {
       return res.status(e.status || 400).json({ error: e.message });

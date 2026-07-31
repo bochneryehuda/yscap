@@ -471,14 +471,16 @@ async function writeFieldValue(appId, borrowerId, fieldKey, rawValue, by = {}) {
      refusal staff already get on the same field, and the alternative, twice
      demonstrated, is a borrower-only bypass of a signed term sheet.
 
-     NO actor is passed, deliberately: a super-admin's unlock is theirs to spend
-     on their own edit, not a standing permission for whatever the borrower (or
-     a staffer answering on their behalf) types into a condition afterwards.
-     Borrower-table fields (FICO, DOB, citizenship) are untouched by this — they
-     are facts about the PERSON, equally true on a closed file, and they have
-     their own governance in change-requests.js. Fails OPEN on an unreadable
-     file, matching `structuralLockReason`: this is a human's edit, not an
-     unattended writer. */
+     A `borrowers`-table field is NOT frozen here — but it is not ungoverned
+     either, and three rounds of this comment wrongly said it was "untouched …
+     it has its own governance in change-requests.js" while nothing on the way
+     in enforced that. It does now, at the ROUTE (borrower.js), which can open a
+     change request rather than throw: `fico` — the one personal field that is
+     actually reachable as a condition — is locked per PERSON, because that row
+     is shared and db/126 re-prices every file the borrower is on.
+
+     Fails OPEN on an unreadable file, matching `structuralLockReason`: this is
+     a human's edit, not an unattended writer. */
   if (!f.custom && target && target.table === 'applications') {
     /* NO actor is passed, deliberately: a super-admin's unlock is theirs to
        spend on their own edit, not a standing permission for whatever the
