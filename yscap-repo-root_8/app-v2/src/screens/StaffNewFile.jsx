@@ -5,6 +5,7 @@ import { useAuth } from '../lib/auth.jsx';
 import AddressAutocomplete from '../components/AddressAutocomplete.jsx';
 import LlcPicker from '../components/LlcPicker.jsx';
 import { MoneyInput, PhoneInput, ZipInput , EmailInput} from '../components/FormattedInputs.jsx';
+import { moneyNum } from '../lib/money.js';
 import { unitsMode, unitsForType } from '../lib/enums.js';
 import { fullNameOf } from '../lib/personName.js';
 import InviteApplicant from '../components/InviteApplicant.jsx';
@@ -28,6 +29,10 @@ const PROP_TYPES = ['SFR (1 unit)', 'Multi 2–4', 'Multi 5+', 'Condo', 'Townhou
 const REHAB_TYPES = ['Cosmetic', 'Moderate', 'Heavy / gut rehab', 'Adding square footage', 'Ground-up construction'];
 const needsSqft = (rehabType) => /square|adding|ground/i.test(rehabType || '');
 
+/* NOTE the shape of this one: it already strips separators, which is why the
+   money FIELDS survived the Investor-Suite hand-off. The assignment fee below did
+   not — it used a bare Number() on the same strings. Money arithmetic goes through
+   `moneyNum` now; see lib/money.js. */
 const numOrNull = (v) => (v === '' || v == null) ? null : Number(String(v).replace(/[^0-9.]/g, '')) || null;
 
 // This new-file form auto-saves as the officer types (no Save button): the
@@ -456,7 +461,7 @@ export default function StaffNewFile() {
         purchasePrice: numOrNull(f.purchasePrice),
         isAssignment: !!f.isAssignment,
         underlyingContractPrice: f.isAssignment ? numOrNull(f.underlyingContractPrice) : undefined,
-        assignmentFee: f.isAssignment ? Math.max(0, (Number(f.purchasePrice) || 0) - (Number(f.underlyingContractPrice) || 0)) : undefined,
+        assignmentFee: f.isAssignment ? Math.max(0, moneyNum(f.purchasePrice) - moneyNum(f.underlyingContractPrice)) : undefined,
         asIsValue: numOrNull(f.asIsValue),
         arv: numOrNull(f.arv),
         rehabBudget: numOrNull(f.rehabBudget),
@@ -695,7 +700,7 @@ export default function StaffNewFile() {
                     <MoneyInput value={f.underlyingContractPrice} onChange={v => set('underlyingContractPrice', v)} /></div>
                   <div className="field"><label>Assignment fee (auto)</label>
                     <div className="input" style={{ background: 'var(--soft, #f4f1ea)', display: 'flex', alignItems: 'center' }}>
-                      ${Math.max(0, (Number(f.purchasePrice) || 0) - (Number(f.underlyingContractPrice) || 0)).toLocaleString('en-US')}
+                      ${Math.max(0, moneyNum(f.purchasePrice) - moneyNum(f.underlyingContractPrice)).toLocaleString('en-US')}
                     </div></div>
                   <div className="hint" style={{ gridColumn: '1 / -1' }}>The fee is the total purchase price minus the original contract price.</div>
                 </div>

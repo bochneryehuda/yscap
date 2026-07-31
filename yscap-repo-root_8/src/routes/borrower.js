@@ -17,6 +17,13 @@ const mail = require('../lib/email/catalog');
 const { fileReplyTo } = require('../lib/file-address');   // #68 per-file shared reply-to
 const { enqueueSitewirePush } = require('../sitewire/enqueue'); // birth push on the Request-a-draw click (self-gated)
 const { redactPII } = require('../lib/redact');
+/* A money value reaching a numeric column is PARSED, never passed through — a
+   draft written before #919 holds the Term Sheet Studio's display text
+   ("445,000") and the raw bind made the submit INSERT throw. `moneyColumn` is the
+   BIND: it answers "was a value provided?" off the raw value exactly as the
+   `b.x || null` it replaced did (so a typed "0" still stores 0.00, not NULL) and
+   only then parses. See lib/fields.js. */
+const { moneyColumn } = require('../lib/fields');
 const { serveDocument } = require('../lib/serve-document');
 const { decodeUploadBase64, safeFilename } = require('../lib/upload-bytes');
 const pricing = require('../lib/pricing');
@@ -589,8 +596,8 @@ router.post('/applications', async (req, res) => {
         is_assignment,underlying_contract_price,assignment_fee,source,raw_intake,status,submitted_at)
      VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,'portal',$22,'new',now()) RETURNING id,ys_loan_number`,
     [me(req), b.llcId || null, JSON.stringify(b.propertyAddress), b.propertyType || null, b.units || null,
-     b.program || null, require('../lib/fields').sanitizeLoanType(b.loanType), asg.purchasePrice, b.asIsValue || null,   // #95: never a program
-     b.arv || null, b.rehabBudget || null, b.loanOfficerName || null,
+     b.program || null, require('../lib/fields').sanitizeLoanType(b.loanType), asg.purchasePrice, moneyColumn(b.asIsValue),   // #95: never a program
+     moneyColumn(b.arv), moneyColumn(b.rehabBudget), b.loanOfficerName || null,
      b.rehabType || null, sqf.sqftPre, sqf.sqftPost,
      intField(b.requestedExpFlips), intField(b.requestedExpHolds), intField(b.requestedExpGround),
      asg.isAssignment, asg.underlying, asg.assignFee, JSON.stringify(redactPII(b))]);
@@ -3443,8 +3450,8 @@ router.post('/drafts/:id/submit', async (req, res) => {
      VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$24,$25,$26,$27,$28,$29,$30,'portal',$23,'new',now())
      RETURNING id,ys_loan_number`,
     [me(req), b.llcId || null, JSON.stringify(b.propertyAddress), b.propertyType || null, b.units || null,
-     b.program || null, require('../lib/fields').sanitizeLoanType(b.loanType), asg.purchasePrice, b.asIsValue || null,   // #95: never a program
-     b.arv || null, b.rehabBudget || null, officerId, b.loanOfficerName || null,
+     b.program || null, require('../lib/fields').sanitizeLoanType(b.loanType), asg.purchasePrice, moneyColumn(b.asIsValue),   // #95: never a program
+     moneyColumn(b.arv), moneyColumn(b.rehabBudget), officerId, b.loanOfficerName || null,
      b.rehabType || null, sqf.sqftPre, sqf.sqftPost,
      intField(b.requestedExpFlips), intField(b.requestedExpHolds), intField(b.requestedExpGround),
      asg.isAssignment, asg.underlying, asg.assignFee, JSON.stringify(redactPII(b)),

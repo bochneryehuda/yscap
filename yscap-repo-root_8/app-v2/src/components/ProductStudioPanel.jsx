@@ -6,6 +6,7 @@ import TermSheetStudio, {
 } from './TermSheetStudio.jsx';
 import GuarantyWaiverCard from './GuarantyWaiverCard.jsx';
 import { fullNameOf } from '../lib/personName.js';
+import { moneyNum } from '../lib/money.js';
 
 /* Product registration on a loan file — borrower AND staff logins. The panel
    shows the registered product; "Reprice / re-register" opens the real static
@@ -51,7 +52,7 @@ function registeredRehabType(inp) {
   if (/bridge|stabil/i.test(String(i.strategy || ''))) return null;
   if (i.sqftAddition) return 'Adding square footage';
   if (i.heavyRehab) return 'Heavy / gut rehab';
-  if (!(Number(i.rehabBudget) > 0)) return null;
+  if (!(moneyNum(i.rehabBudget) > 0)) return null;
   return 'Light / moderate';
 }
 

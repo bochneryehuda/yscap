@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { api } from '../lib/api.js';
 import { MoneyInput } from './FormattedInputs.jsx';
+import { moneyNum } from '../lib/money.js';
 import { US_STATES } from './LlcManager.jsx';
 import { PROGRAMS, PROPERTY_TYPES, LOAN_TYPES, selectOptions, unitsMode, unitsForType } from '../lib/enums.js';
 import LlcPicker from './LlcPicker.jsx';
@@ -100,7 +101,7 @@ export default function EditFileDetails({ app, onSaved }) {
         // Assignment is a purchase concept — never send it on a refinance.
         isAssignment: f.isAssignment && !isRefi,
         underlyingContractPrice: (f.isAssignment && !isRefi) ? f.underlyingContractPrice : '',
-        assignmentFee: (f.isAssignment && !isRefi) ? Math.max(0, (Number(f.purchasePrice) || 0) - (Number(f.underlyingContractPrice) || 0)) : '',
+        assignmentFee: (f.isAssignment && !isRefi) ? Math.max(0, moneyNum(f.purchasePrice) - moneyNum(f.underlyingContractPrice)) : '',
       };
       if (addrChanged) {
         const line1 = f.addrLine1.trim();
@@ -258,7 +259,7 @@ export default function EditFileDetails({ app, onSaved }) {
               <label className="col-2"><span>Original (underlying) price</span><MoneyInput value={f.underlyingContractPrice} onChange={(v) => set('underlyingContractPrice', v)} /></label>
               <label className="col-2"><span>Assignment fee (auto)</span>
                 <div className="input" style={{ display: 'flex', alignItems: 'center', background: 'var(--soft, #f4f1ea)' }}>
-                  ${Math.max(0, (Number(f.purchasePrice) || 0) - (Number(f.underlyingContractPrice) || 0)).toLocaleString('en-US')}
+                  ${Math.max(0, moneyNum(f.purchasePrice) - moneyNum(f.underlyingContractPrice)).toLocaleString('en-US')}
                 </div></label>
             </>}
           </div>
