@@ -12,15 +12,29 @@
  * email provider are stubbed (no network); the webhook signature is a real
  * Svix round-trip so the verifier is exercised for real.
  *
- * Run: node scripts/test-inbound-file-email.js   (needs local Postgres)
+ * Run: DATABASE_URL=postgres://… node scripts/test-inbound-file-email.js
+ * (DB-gated: skips cleanly when DATABASE_URL is unset — the plain CI `test`
+ * job has no Postgres; the `test-db` job runs it for real.)
  */
 const crypto = require('crypto');
+
+// DB-gated like every other *-db suite: the plain CI `test` job runs npm test
+// with NO database, so this must SKIP cleanly there (it runs for real in the
+// `test-db` job, which provides Postgres + DATABASE_URL). A hard-coded localhost
+// default instead of this guard took the whole `test` job down with
+// ECONNREFUSED retries + ABORT (PR #929's first CI run).
+if (!process.env.DATABASE_URL) { console.log('SKIP test-inbound-file-email (no DATABASE_URL)'); process.exit(0); }
+
+// Hermetic against the runner's environment: a NOTIFY_ADMINS var (or a local
+// .env) would feed adminFallbackRecipients extra email-only entries and flip
+// the admin-edge assertions (self_reply/no_recipients → forwarded). Config
+// caches env at require time, so clear it BEFORE any app module loads.
+process.env.NOTIFY_ADMINS = '';
 
 // --- env MUST be set before any app module (config caches it) --------------
 const DOMAIN = 'reply.yscapgroup.test';
 const SECRET_B64 = Buffer.from('inbound-webhook-test-secret-key-01').toString('base64');
 const SECRET = 'whsec_' + SECRET_B64;
-process.env.DATABASE_URL = process.env.DATABASE_URL || 'postgres://yscap:yscap@127.0.0.1:5432/yscap_test';
 process.env.JWT_SECRET = 'test-secret-inbound-file';
 process.env.CHAT_REPLY_DOMAIN = DOMAIN;
 process.env.RESEND_WEBHOOK_SECRET = SECRET;
@@ -109,12 +123,13 @@ async function main() {
   if (!ready) { server.close(); console.log('\nABORT: table never appeared'); process.exit(1); }
 
   // ---- fixtures ----
-  const B = uuid(), A1 = uuid(), A2 = uuid(), A3 = uuid(), A4 = uuid(), S1 = uuid(), S2 = uuid();
+  const B = uuid(), A1 = uuid(), A2 = uuid(), A3 = uuid(), A4 = uuid(), A5 = uuid(), S1 = uuid(), S2 = uuid(), ADM = uuid();
   const S1email = `s1_${A1.slice(0, 8)}@staff.test`;
   const S2email = `s2_${A1.slice(0, 8)}@staff.test`;
+  const ADMemail = `adm_${A1.slice(0, 8)}@staff.test`;
   try {
     await db.query(`INSERT INTO borrowers (id, first_name, last_name, email) VALUES ($1,'Test','Borrower',$2)`, [B, `b_${A1.slice(0, 8)}@x.test`]);
-    for (const a of [A1, A2, A3, A4]) {
+    for (const a of [A1, A2, A3, A4, A5]) {
       await db.query(`INSERT INTO applications (id, borrower_id, ys_loan_number, property_address)
                       VALUES ($1,$2,$3,$4::jsonb)`, [a, B, 'TEST-' + a.slice(0, 6), JSON.stringify({ oneLine: '123 Test St, Testville, NY' })]);
     }
@@ -122,11 +137,13 @@ async function main() {
     await db.query(`UPDATE applications SET deleted_at = now() WHERE id = $1`, [A4]);
     await db.query(`INSERT INTO staff_users (id, email, full_name, role, is_active) VALUES ($1,$2,'Officer One','loan_officer',true)`, [S1, S1email]);
     await db.query(`INSERT INTO staff_users (id, email, full_name, role, is_active) VALUES ($1,$2,'Processor Two','processor',true)`, [S2, S2email]);
-    // A1 assignees: S1 (LO) + S2 (processor). A2: none. A3/A4: S1 only.
+    await db.query(`INSERT INTO staff_users (id, email, full_name, role, is_active) VALUES ($1,$2,'Admin Three','admin',true)`, [ADM, ADMemail]);
+    // A1 assignees: S1 (LO) + S2 (processor). A2: none. A3/A4/A5: S1 only.
     await db.query(`INSERT INTO application_assignees (application_id, staff_id, role, is_primary) VALUES ($1,$2,'loan_officer',true)`, [A1, S1]);
     await db.query(`INSERT INTO application_assignees (application_id, staff_id, role, is_primary) VALUES ($1,$2,'processor',true)`, [A1, S2]);
     await db.query(`INSERT INTO application_assignees (application_id, staff_id, role, is_primary) VALUES ($1,$2,'loan_officer',true)`, [A3, S1]);
     await db.query(`INSERT INTO application_assignees (application_id, staff_id, role, is_primary) VALUES ($1,$2,'loan_officer',true)`, [A4, S1]);
+    await db.query(`INSERT INTO application_assignees (application_id, staff_id, role, is_primary) VALUES ($1,$2,'loan_officer',true)`, [A5, S1]);
 
     installStubs();
     cannedEmail = { from: 'Guest Sender <guest@external.test>', to: [`file+${A1}@${DOMAIN}`], subject: 'Re: your file', text: 'Hi team, here is my reply.', html: '<p>Hi team</p>', attachments: [] };
@@ -176,11 +193,43 @@ async function main() {
 
     sent = [];
     r = await fileInbox.processReceivedEvent(evt('test-noassign-1', [`file+${A2}@${DOMAIN}`]));
-    // (An admin ALERT may go out — a dropped reply must be visible — but never a
-    // forward to assignee addresses, because this file has none.)
-    ok(r.status === 'no_recipients'
+    // A file with NO active assignees never drops the reply: the MESSAGE ITSELF is
+    // forwarded to the admin fallback (never to assignee addresses — it has none),
+    // with the assign-this-file note leading the body.
+    ok(r.status === 'forwarded'
+      && sent.length === 1 && [].concat(sent[0].to || []).includes(ADMemail)
       && !sent.some((s) => [].concat(s.to || []).some((t) => [S1email, S2email].includes(t))),
-      'file with no assignees → no forward (admins may be alerted)');
+      'file with no assignees → reply FORWARDED to the admin fallback');
+    ok(sent.length === 1 && /no active team assigned/i.test(String(sent[0].text || '')),
+      'admin-fallback forward leads with the "no active team — assign the file" note');
+    ok(sent.length === 1 && sent[0].replyTo === `file+${A2}@${DOMAIN}`,
+      'admin-fallback forward keeps the per-file Reply-To (thread continues)');
+    {
+      const inapp = await db.query(
+        `SELECT 1 FROM notifications WHERE staff_id=$1 AND application_id=$2 AND type='inbound_reply'`, [ADM, A2]);
+      ok(inapp.rows.length >= 1, 'admin got the in-app bell for the fallback forward');
+      const alarm = await db.query(
+        `SELECT 1 FROM notifications WHERE application_id=$1 AND type='inbound_reply_dropped'`, [A2]);
+      ok(alarm.rows.length === 0, 'no dead-end "no one to receive it" alarm when the forward reached the admins');
+    }
+
+    // The reported bug (2026-07-31): the file's ONLY assignee replies into their own
+    // thread. Their own message needs no echo and NO admin alarm — it is recorded on
+    // the file as terminal self_reply.
+    sent = [];
+    cannedEmail = Object.assign({}, cannedEmail, { from: `Officer One <${S1email}>` });
+    r = await fileInbox.processReceivedEvent(evt('test-selfonly-1', [`file+${A5}@${DOMAIN}`]));
+    ok(r.status === 'self_reply' && sent.length === 0, 'sole assignee replying to own file → self_reply, nothing sent');
+    {
+      const row = await db.query(`SELECT status FROM inbound_file_emails WHERE resend_email_id='test-selfonly-1'`);
+      ok(row.rows[0] && row.rows[0].status === 'self_reply', 'self_reply recorded on the inbound row');
+      const alarm = await db.query(
+        `SELECT 1 FROM notifications WHERE application_id=$1 AND type='inbound_reply_dropped'`, [A5]);
+      ok(alarm.rows.length === 0, 'sole-assignee self reply raises NO admin alarm');
+    }
+    r = await fileInbox.processReceivedEvent(evt('test-selfonly-1', [`file+${A5}@${DOMAIN}`]));
+    ok(r.status === 'duplicate', 'self_reply is terminal — a redelivery is a plain duplicate');
+    cannedEmail = Object.assign({}, cannedEmail, { from: 'Guest Sender <guest@external.test>' });
 
     // duplicate assignee emails (same staffer in two roles) dedups to one address
     await db.query(`INSERT INTO application_assignees (application_id, staff_id, role, is_primary) VALUES ($1,$2,'processor',false)
@@ -376,19 +425,51 @@ async function main() {
     r = await fileInbox.processReceivedEvent(evt('test-rl-1', [`file+${A3}@${DOMAIN}`]));
     ok(r.status === 'rate_limited' && sent.length === 0, 'per-file hourly forward cap → rate_limited, no forward');
 
+    // ---------- admin-fallback edge cases ----------
+    console.log('\n# admin fallback edges (sender is the only admin / no emailable admins)');
+    // Make the active-admin set deterministic: park every OTHER active admin the
+    // shared test DB may hold, restore them (and ADM) when done.
+    const parked = await db.query(
+      `UPDATE staff_users SET is_active=false
+        WHERE role IN ('admin','super_admin') AND is_active=true AND id <> $1
+        RETURNING id`, [ADM]);
+    try {
+      // A no-team file whose reply comes FROM the only active admin: no echo, no alarm.
+      sent = [];
+      cannedEmail = Object.assign({}, cannedEmail, { from: `Admin Three <${ADMemail}>` });
+      r = await fileInbox.processReceivedEvent(evt('test-adminself-1', [`file+${A2}@${DOMAIN}`]));
+      ok(r.status === 'self_reply' && sent.length === 0, 'no-team file, sender is the only active admin → self_reply');
+      cannedEmail = Object.assign({}, cannedEmail, { from: 'Guest Sender <guest@external.test>' });
+
+      // No team AND no emailable admin anywhere → the legacy no_recipients + alert path.
+      await db.query(`UPDATE staff_users SET is_active=false WHERE id=$1`, [ADM]);
+      sent = [];
+      r = await fileInbox.processReceivedEvent(evt('test-noadmins-1', [`file+${A2}@${DOMAIN}`]));
+      ok(r.status === 'no_recipients' && sent.length === 0, 'no team AND no emailable admins → no_recipients (alert path)');
+    } finally {
+      await db.query(`UPDATE staff_users SET is_active=true WHERE id=$1`, [ADM]);
+      if (parked.rows.length) {
+        await db.query(`UPDATE staff_users SET is_active=true WHERE id = ANY($1::uuid[])`, [parked.rows.map((x) => x.id)]);
+      }
+    }
+
     // ---------- round-2: chat+ dispatch through the signed endpoint (#75) ----------
     console.log('\n# chat+ guest replies via the signed endpoint');
     const chatLib = require(REPO + '/src/lib/chat');
     const chatPosts = [];
-    const realPostExternalReply = chatLib.postExternalReply;
-    chatLib.postExternalReply = async (key, text) => { chatPosts.push({ key, text }); return { id: 'stub-msg' }; };
+    // Stub the function file-inbox ACTUALLY calls: #144 moved the dispatch from
+    // postExternalReply to postInboundReply (guest AND member keys). Stubbing the
+    // exported postExternalReply no longer intercepts — postInboundReply calls its
+    // LOCAL binding, so the old stub let the real DB lookup run and the test broke.
+    const realPostInboundReply = chatLib.postInboundReply;
+    chatLib.postInboundReply = async (key, text) => { chatPosts.push({ key, text }); return { id: 'stub-msg' }; };
     try {
       sent = [];
       r = await fileInbox.processReceivedEvent(evt('test-chat-1', [`chat+someguestkey123@${DOMAIN}`]));
       ok(r.status === 'chat_posted' && chatPosts.length === 1 && chatPosts[0].key === 'someguestkey123',
         'chat+ reply retrieved and posted into the conversation');
-      ok(chatPosts[0].text === 'Hi team, here is my reply.', 'chat reply body comes from the RETRIEVED email (webhook has no body)');
-    } finally { chatLib.postExternalReply = realPostExternalReply; }
+      ok(chatPosts.length === 1 && chatPosts[0].text === 'Hi team, here is my reply.', 'chat reply body comes from the RETRIEVED email (webhook has no body)');
+    } finally { chatLib.postInboundReply = realPostInboundReply; }
 
     // ---------- round-2: route hardening ----------
     console.log('\n# route hardening');
@@ -422,7 +503,11 @@ async function main() {
     sent = [];
     await catalog.send('leadReceived', 'someone@lead.test',
       { firstName: 'T', toolLabel: 'Loan Calculator', officerName: null }, { replyTo: null });
-    ok(sent.length === 1 && sent[0].replyTo == null, 'opts.replyTo null → no Reply-To (unchanged behavior)');
+    // Emails are never no-reply (owner-directed 2026-07-20): with no per-file
+    // address, catalog.deliver guarantees cfg.replyToDefault as the Reply-To.
+    const cfgNow = require(REPO + '/src/config');
+    ok(sent.length === 1 && sent[0].replyTo === (cfgNow.replyToDefault || null),
+      'opts.replyTo null → falls back to the guaranteed monitored Reply-To (never no-reply)');
 
     // graph provider forwards replyTo → message.replyTo (fetch stubbed, no network)
     const realFetch = global.fetch;
@@ -449,11 +534,11 @@ async function main() {
     // cleanup (FK-safe order)
     try {
       await db.query(`DELETE FROM inbound_file_emails WHERE resend_email_id LIKE 'test-%'`);
-      await db.query(`DELETE FROM notifications WHERE application_id = ANY($1::uuid[]) OR staff_id = ANY($2::uuid[])`, [[A1, A2, A3, A4], [S1, S2]]);
-      await db.query(`DELETE FROM application_assignees WHERE application_id = ANY($1::uuid[])`, [[A1, A2, A3, A4]]);
-      await db.query(`DELETE FROM applications WHERE id = ANY($1::uuid[])`, [[A1, A2, A3, A4]]);
+      await db.query(`DELETE FROM notifications WHERE application_id = ANY($1::uuid[]) OR staff_id = ANY($2::uuid[])`, [[A1, A2, A3, A4, A5], [S1, S2, ADM]]);
+      await db.query(`DELETE FROM application_assignees WHERE application_id = ANY($1::uuid[])`, [[A1, A2, A3, A4, A5]]);
+      await db.query(`DELETE FROM applications WHERE id = ANY($1::uuid[])`, [[A1, A2, A3, A4, A5]]);
       await db.query(`DELETE FROM borrowers WHERE id=$1`, [B]);
-      await db.query(`DELETE FROM staff_users WHERE id = ANY($1::uuid[])`, [[S1, S2]]);
+      await db.query(`DELETE FROM staff_users WHERE id = ANY($1::uuid[])`, [[S1, S2, ADM]]);
     } catch (e) { console.log('  (cleanup warn)', e.message); }
     server.close();
   }

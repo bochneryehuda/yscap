@@ -63,4 +63,9 @@ complete configuration that switches them on. Nothing else is needed.
   forwarded (no auto-responder ping-pong), and each file is capped at 20
   forwards per hour as a circuit breaker.
 - Replies to an archived file's address are not forwarded. A reply arriving on
-  a file with no active assignees alerts the admins instead of vanishing.
+  a file with no active assignees is FORWARDED to the admins (content +
+  attachments, with an "assign this file" note) instead of vanishing; only if
+  no admin can be emailed either does it fall back to an alert. A reply from
+  the file's only assignee (their own message into their own solo thread) is
+  recorded on the file quietly — it never raises a false "no one to receive
+  it" alarm.
