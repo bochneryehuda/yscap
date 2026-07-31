@@ -503,6 +503,13 @@ function readTaskFields(task, options = {}) {
   if (prog && prog.value != null) {
     out.rawProgram = T.dropdownIndexToLabel(options[F.PIPELINE.program] || prog.type_config?.options || [], prog.value);
   }
+  // Raw *Property Type label so the boot one-shot push (db/382) can tell which
+  // linked cards still carry a BLANK property type and fill them from the unit
+  // count PILOT now derives. Blank/unset stays absent so the push targets it.
+  const ptype = m[F.PIPELINE.propertyType];
+  if (ptype && ptype.value != null) {
+    out.rawPropertyType = T.dropdownIndexToLabel(options[F.PIPELINE.propertyType] || ptype.type_config?.options || [], ptype.value);
+  }
 
   // everything unmapped -> extra (backend-only). Exclude SSN + card (encrypted columns only).
   for (const c of (task && task.custom_fields) || []) {

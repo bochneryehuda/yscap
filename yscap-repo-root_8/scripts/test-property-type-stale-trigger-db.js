@@ -30,6 +30,14 @@ const R = require('path').resolve(__dirname, '..');
   let pass = 0, fail = 0;
   const ok = (c, m) => { if (c) { pass++; } else { fail++; console.log('  FAIL:', m); } };
   const rnd = () => 'ptypetrig' + Math.random() + '@e.com';
+  // Section 5 re-applies db/322, whose CREATE OR REPLACE of the reopen trigger is
+  // the db/322-era body — reverting db/381 (program default) and db/382 (property
+  // units-fill) in this shared test DB. applyLatest() restores the newest chain so
+  // the function under test is the real production one (382 wins on every boot).
+  const applyLatest = async () => {
+    await db.query(fs.readFileSync(R + '/db/381_default_deal_program.sql', 'utf8'));
+    await db.query(fs.readFileSync(R + '/db/382_default_property_type.sql', 'utf8'));
+  };
 
   async function mkApp(propertyType, term) {
     const b = await db.query(`INSERT INTO borrowers(first_name,last_name,email) VALUES('P','T',$1) RETURNING id`, [rnd()]);
@@ -90,12 +98,35 @@ const R = require('path').resolve(__dirname, '..');
   st = await regState(reg);
   ok(st.stale === false, 'correcting a stored appraisal form number does NOT demand a re-register');
 
-  // Filling a genuinely BLANK type is still a real change (unchanged behaviour).
-  app = await mkApp(null, '12');
+  // The property type is NEVER blank now (db/382): a file inserted with a NULL
+  // type is auto-filled from the unit count at insert (units=2 → 'Multi 2–4'), so
+  // a genuinely-blank type can no longer exist on a live row.
+  await applyLatest();   // guarantee the newest reopen fn regardless of prior test-DB state
+  app = await mkApp(null, '12');   // mkApp inserts units=2
   reg = await mkReg(app);
-  await db.query(`UPDATE applications SET property_type='Multi 2–4' WHERE id=$1`, [app]);
+  ok((await ptOf(app)) === 'Multi 2–4', 'a NULL property type is auto-filled from the unit count at insert (never blank)');
+
+  // A BACKFILL-style fill of a legacy blank row to its units-CONSISTENT default
+  // (SFR for 1 unit / Multi 2-4 for 2-4 units) is reprice-neutral (db/382) — a
+  // blank and an eligible SFR/2-4 price identically, so it must NOT stale the
+  // registration. Simulate the legacy blank by bypassing the fill trigger.
+  await db.query(`ALTER TABLE applications DISABLE TRIGGER trg_default_property_type`);
+  await db.query(`UPDATE applications SET property_type=NULL WHERE id=$1`, [app]);
+  await db.query(`ALTER TABLE applications ENABLE TRIGGER trg_default_property_type`);
+  await db.query(`UPDATE product_registrations SET stale=false, stale_reason=NULL WHERE id=$1`, [reg]);
+  await db.query(`UPDATE applications SET property_type='Multi 2–4' WHERE id=$1`, [app]);   // the db/382 backfill value (units=2)
   st = await regState(reg);
-  ok(st.stale === true, 'filling a genuinely blank property type is still a real change');
+  ok(st.stale === false, 'a units-consistent blank→Multi 2-4 fill is reprice-neutral (db/382 backfill)');
+
+  // But a units-INCONSISTENT blank fill (units=2 filled with something other than
+  // Multi 2-4) is a real change and still stales — the suppression is narrow.
+  await db.query(`ALTER TABLE applications DISABLE TRIGGER trg_default_property_type`);
+  await db.query(`UPDATE applications SET property_type=NULL WHERE id=$1`, [app]);
+  await db.query(`ALTER TABLE applications ENABLE TRIGGER trg_default_property_type`);
+  await db.query(`UPDATE product_registrations SET stale=false, stale_reason=NULL WHERE id=$1`, [reg]);
+  await db.query(`UPDATE applications SET property_type='Condo' WHERE id=$1`, [app]);
+  st = await regState(reg);
+  ok(st.stale === true, 'a units-inconsistent blank fill (units=2 → Condo) is still a real change');
 
   // ---- 4. pilot_reason_is_cosmetic on the owner's EXACT reported string ----
   const cos = async (d) => (await db.query(`SELECT pilot_reason_is_cosmetic($1) AS c`, [d])).rows[0].c;
@@ -131,6 +162,7 @@ const R = require('path').resolve(__dirname, '..');
   const regForm = await mkReg(appForm);
 
   await db.query(fs.readFileSync(R + '/db/322_property_type_semantic_compare.sql', 'utf8'));
+  await applyLatest();   // db/322 reverted the reopen fn; restore 381+382 for the rest of the suite
 
   st = await regState(reg);
   ok(st.stale === false && st.stale_reason === null,

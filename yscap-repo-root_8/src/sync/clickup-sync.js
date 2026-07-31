@@ -1379,6 +1379,36 @@ async function backfillDefaultProgramPushOnce() {
   return n;
 }
 
+// Boot one-shot (db/382): PILOT now derives a never-blank property_type from the
+// unit count, but a card that came in with a blank *Property Type dropdown won't
+// have it pushed up until the file is next edited. This fills those cards through
+// the normal guarded, no-op-suppressed scoped push
+// (`enqueueClickupPush(appId, ['property_type'])`). Targets ONLY files whose
+// last-ingest snapshot shows a blank ClickUp property type (rawPropertyType), so
+// it never touches a card that already carries one; bounded per boot and
+// self-clearing (the next inbound refresh drops a filled card out of the query).
+// Best-effort; a property type a card already has is a no-op at drain time anyway.
+async function backfillDefaultPropertyTypePushOnce() {
+  if (!switches.on('CLICKUP_OUTBOUND_ENABLED')) return 0;
+  const rows = await db.query(
+    `SELECT a.id
+       FROM applications a
+       JOIN clickup_task_index ti ON ti.task_id = a.clickup_pipeline_task_id
+      WHERE a.deleted_at IS NULL
+        AND a.clickup_pipeline_task_id IS NOT NULL
+        AND NULLIF(btrim(COALESCE(a.property_type, '')), '') IS NOT NULL
+        AND NULLIF(btrim(COALESCE(ti.snapshot->>'rawPropertyType', '')), '') IS NULL
+      ORDER BY a.updated_at DESC
+      LIMIT 300`).catch(() => ({ rows: [] }));
+  let n = 0;
+  for (const r of rows.rows) {
+    try { await require('../clickup/enqueue').enqueueClickupPush(r.id, ['property_type']); n++; }
+    catch (_) { /* best-effort — the drainer no-op-suppresses a card that already matches */ }
+  }
+  if (n) console.log(`[clickup-sync] default-property-type push: enqueued property_type for ${n} file(s) with a blank ClickUp *Property Type`);
+  return n;
+}
+
 function start() {
   // Stage 0 — DRY-RUN validation boot mode. Read-only: fetch a sample of real
   // tasks, run the mapper, and dump what WOULD happen to the logs. Runs even
@@ -1419,6 +1449,7 @@ function start() {
   // the task-index snapshots first; best-effort, no-op-suppressed at drain.
   setTimeout(() => {
     backfillDefaultProgramPushOnce().catch((e) => console.error('[clickup-sync] default-program push', e.message));
+    backfillDefaultPropertyTypePushOnce().catch((e) => console.error('[clickup-sync] default-property-type push', e.message));
   }, cfg.clickupRunBackfill ? 90000 : 15000);
 
   // Stage 1 — one-shot inbound backfill on boot (identity graph, and RTL files
