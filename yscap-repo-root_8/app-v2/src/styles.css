@@ -3105,6 +3105,13 @@ details[open]>.appr-sec-sum .appr-sec-chev{transform:rotate(180deg)}
 .crx-table tbody tr:hover td { background:var(--surface-soft); }
 .crx-table tr.crx-bad td { background:var(--danger-soft); }
 .crx-table tr.crx-warn td { background:var(--warning-soft); }
+/* Inquiry HARD/SOFT pill — a HARD pull draws the eye (it moves the score); a SOFT
+   one reads quiet. */
+.crx-inq { display:inline-flex; align-items:center; font-size:.68rem; font-weight:700; padding:2px 8px;
+  border-radius:999px; text-transform:uppercase; letter-spacing:.03em; border:1px solid transparent; }
+.crx-inq.hard { background:var(--warning-soft); color:var(--warning); border-color:var(--warning); }
+.crx-inq.soft { background:var(--surface-soft); color:var(--muted); border-color:var(--border); }
+.crx-inq-note { margin-left:8px; font-weight:400; font-size:.78rem; }
 .crx-empty { margin-top:8px; padding:16px; border:1px dashed var(--border); border-radius:12px;
   background:var(--surface-soft); color:var(--muted); font-size:.9rem; }
 
