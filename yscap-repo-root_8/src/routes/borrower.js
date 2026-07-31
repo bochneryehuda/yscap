@@ -62,12 +62,9 @@ const me = (req) => req.actor.id;
 // staff-granted only, symmetric (both directions stored), and audited.
 // Profile-scoped data (LLC library, track record, profile edits) deliberately
 // stays per-profile — only FILE access flows through this predicate.
-const OWN_FILE_SQL = (alias, p) => {
-  const a = alias ? alias + '.' : '';
-  return `(${a}borrower_id=${p} OR ${a}co_borrower_id=${p}` +
-    ` OR ${a}borrower_id IN (SELECT linked_borrower_id FROM borrower_profile_links WHERE borrower_id=${p})` +
-    ` OR ${a}co_borrower_id IN (SELECT linked_borrower_id FROM borrower_profile_links WHERE borrower_id=${p}))`;
-};
+// ONE definition, owned by change-requests.js so the two doors that ask "which
+// of this person's files is this about" can never disagree (fifth audit).
+const OWN_FILE_SQL = require('../lib/change-requests').OWN_FILE_SQL;
 const money = (n) => '$' + Math.round(Number(n) || 0).toLocaleString('en-US');
 async function audit(req, action, entity_type, entity_id, detail) {
   // detail lands in a jsonb column: an object serializes to valid JSON via pg, but a
@@ -278,7 +275,7 @@ router.put('/profile', async (req, res) => {
      was asking the per-FILE question about a row that is shared across all of
      them, which left the original defect alive one file over. The full
      borrower-scope fragment is passed in, so a linked profile still counts. */
-  const anchorId = await changeRequests.anchorForBorrower(me(req), db, OWN_FILE_SQL);
+  const anchorId = await changeRequests.anchorForBorrower(me(req), db);
   const anchor = anchorId ? { id: anchorId } : null;
   if (anchor) {
     for (const col of Object.keys(fields)) {
@@ -1498,21 +1495,44 @@ router.post('/applications/:id/checklist/:itemId/info', async (req, res) => {
       const cr = await changeRequests.openRequest(crAnchor, item.field_key, req.body.value,
         { reason: req.body.reason || null, requesterKind: 'borrower', requesterId: me(req), targetBorrowerId: me(req) });
       if (!cr.unchanged) await notifyTeamOfChangeRequests(crAnchor, [cr]);
-      /* THE CONDITION IS ANSWERED EITHER WAY. This branch used to return before
-         the item was marked, so a credit-score condition on a registered file
-         could never be cleared — and confirming the value already on file
-         (`unchanged`) did literally nothing: 200 "ok", item still outstanding,
-         no request, no audit row. The borrower had answered and the item never
-         left their list. `received` is exactly right for both: the answer is in
-         and a human reviews it (the team either approves the request or sees
-         the value confirmed). */
-      await db.query(
-        `UPDATE checklist_items SET status='received', tool_payload=$2, updated_at=now() WHERE id=$1`,
-        [req.params.itemId, JSON.stringify({
-          infoField: item.field_key, value: req.body.value, submittedAt: new Date().toISOString(),
-          changeRequested: !cr.unchanged, locked: true,
-        })]);
-      enqueueChecklistStatusPush(req.params.itemId).catch(() => {});
+      /* THE CONDITION IS ANSWERED ONLY WHEN THE ANSWER IS ON THE FILE — i.e.
+         when the borrower CONFIRMED the value already recorded (`unchanged`).
+         A pending request is not an answer yet (fifth audit, 2026-07-31).
+
+         The previous cut marked it `received` either way, which traded one bug
+         for a worse one: nothing moves the item back when a request is
+         REJECTED, so the condition stayed green with the refused number stored
+         on it — and `signOffGate` has no gate for an info field, so a processor
+         could sign off a condition whose recorded answer contradicts the live
+         record. `received` had already gone to ClickUp too, with nothing to
+         push back. Leaving it outstanding while the team decides is the
+         conservative half, and an approval writes the value, after which the
+         borrower's confirm marks it answered.
+
+         The `unchanged` case is the one that genuinely needed fixing and still
+         is: it used to do literally nothing — 200 "ok", no request, no audit
+         row, no status change — so the borrower answered correctly and the item
+         never left their list. */
+      if (cr.unchanged) {
+        await db.query(
+          `UPDATE checklist_items SET status='received', tool_payload=$2, updated_at=now() WHERE id=$1`,
+          [req.params.itemId, JSON.stringify({
+            infoField: item.field_key, value: req.body.value,
+            submittedAt: new Date().toISOString(), confirmedExisting: true,
+          })]);
+        enqueueChecklistStatusPush(req.params.itemId).catch(() => {});
+        // …and TELL the team, which the live-write path below always does. A
+        // confirmation that reaches nobody is the same silence in a new place.
+        try {
+          const ctx = await notify.fileContext(req.params.id);
+          await notify.notifyAppStaff(req.params.id, {
+            type: 'tool_submitted',
+            title: `The borrower confirmed "${item.borrower_label || item.label}"`,
+            body: `${ctx ? ctx.label : 'A file'} — the value already on file was confirmed; nothing changed.`,
+            meta: (ctx && ctx.meta) || undefined, applicationId: req.params.id,
+          });
+        } catch (_) { /* best-effort */ }
+      }
       await audit(req, 'submit_info_condition', 'checklist_item', req.params.itemId,
         { fieldKey: item.field_key, locked: true, changeRequested: !cr.unchanged });
       return res.json({ ok: true, locked: true, changeRequested: !cr.unchanged, field: item.field_key });

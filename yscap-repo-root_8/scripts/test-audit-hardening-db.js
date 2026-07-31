@@ -549,8 +549,45 @@ if (!process.env.DATABASE_URL) {
         'and the OTHER file’s funded registration was not re-priced from here either');
       // The item is answered on this door too — it used to return before marking it,
       // so a credit-score condition on a registered file could never be cleared.
+      /* A PENDING REQUEST IS NOT AN ANSWER. The item stays outstanding until the
+         team decides — the previous cut marked it `received` immediately, and
+         since nothing moves it back on a REJECT, the condition stayed green
+         holding a number the team had refused (and could then be signed off).
+         Confirming the value already on file IS an answer, and is marked. */
       const bItemRow = (await db.query(`SELECT status FROM checklist_items WHERE id=$1`, [bItem])).rows[0];
-      eq(bItemRow.status, 'received', 'the condition is marked answered, so it can leave the borrower’s list');
+      eq(bItemRow.status, 'outstanding', 'a PENDING request leaves the condition outstanding — it is not answered yet');
+      // Confirm a value that is genuinely ON the record (the score is still
+      // unset above precisely because the request is pending, not applied).
+      await db.query(`UPDATE borrowers SET fico=700 WHERE id=$1`, [borrowerId]);
+      const confirm = await call('POST', `/api/borrower/applications/${fileB}/checklist/${bItem}/info`, bTok, { value: 700 });
+      eq(confirm.status, 200, 'confirming the value already on file is accepted');
+      assert(confirm.body && confirm.body.changeRequested === false, '…and opens no request');
+      const bConfirmed = (await db.query(`SELECT status FROM checklist_items WHERE id=$1`, [bItem])).rows[0];
+      eq(bConfirmed.status, 'received', '…and DOES mark the condition answered, so it leaves the borrower’s list');
+
+      /* A VALUE THE COLUMN CANNOT HOLD IS REFUSED AT THIS DOOR TOO — it used to
+         be filed as a pending request that made the approve door 500 forever,
+         while staff got a plain 400 for the identical value. */
+      const arvCond = await call('POST', `/api/staff/applications/${fileB}/conditions/custom`, sTok, {
+        conditionType: 'info_field', fieldKey: 'arv', label: 'Confirm the ARV', audience: 'borrower',
+      });
+      const arvItem = arvCond.body && arvCond.body.itemId;
+      if (arvItem) {
+        await db.query(
+          `INSERT INTO product_registrations (application_id, program, status, note_rate, total_loan, inputs, quote, is_current)
+           VALUES ($1,'standard','ELIGIBLE',0.1199,100000,'{}'::jsonb,'{"sizing":{"totalLoan":100000}}'::jsonb,true)`,
+          [fileB]);
+        const huge = await call('POST', `/api/borrower/applications/${fileB}/checklist/${arvItem}/info`, bTok,
+          { value: '99999999999999999' });
+        eq(huge.status, 400, 'an unstorable ARV is refused here, not filed as a request that can never be applied');
+        assert(/999,999,999,999\.99/.test(String(huge.body && huge.body.error)),
+          '…quoting the same limit the staff details door quotes');
+        const pend = await db.query(
+          `SELECT 1 FROM change_requests WHERE application_id=$1 AND field='arv' AND status='pending'`, [fileB]);
+        eq(pend.rows.length, 0, '…and no pending request was left behind');
+      } else {
+        assert(false, 'an ARV information condition was posted');
+      }
     }
 
     /* ================================================================ *

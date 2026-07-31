@@ -153,17 +153,30 @@ async function isBorrowerLocked(appId, client = db) {
  * fragment lives in routes/borrower.js; the default is the plain primary /
  * co-borrower test, so a caller that has no fragment still asks the right
  * question. */
-const DEFAULT_OWN_FILE_SQL = (alias, p) => {
+/* THE SCOPE FRAGMENT IS OWNED HERE, NOT INJECTED (fifth audit, 2026-07-31).
+   It was a parameter for one round, and in that round the two callers passed
+   DIFFERENT things: the profile door passed the full borrower scope, the
+   info-condition door passed nothing and got a default that omits
+   `borrower_profile_links`. So on a LINKED profile the "one shared definition"
+   disagreed with itself — measured, a linked borrower wrote a governed identity
+   field LIVE on a REGISTERED, FUNDED file, which is strictly more permissive
+   than the round it replaced. A caller-supplied fragment is also interpolated
+   straight into SQL, which is an injection SHAPE for no gain. One definition,
+   here, used by both. Mirrors routes/borrower.js OWN_FILE_SQL, which now
+   delegates to it. */
+const OWN_FILE_SQL = (alias, p) => {
   const a = alias ? alias + '.' : '';
-  return `(${a}borrower_id=${p} OR ${a}co_borrower_id=${p})`;
+  return `(${a}borrower_id=${p} OR ${a}co_borrower_id=${p}` +
+    ` OR ${a}borrower_id IN (SELECT linked_borrower_id FROM borrower_profile_links WHERE borrower_id=${p})` +
+    ` OR ${a}co_borrower_id IN (SELECT linked_borrower_id FROM borrower_profile_links WHERE borrower_id=${p}))`;
 };
-async function anchorForBorrower(borrowerId, client = db, ownFileSql = DEFAULT_OWN_FILE_SQL) {
+async function anchorForBorrower(borrowerId, client = db) {
   if (!borrowerId) return null;
   try {
     const r = await client.query(
       `SELECT a.id FROM applications a
          JOIN product_registrations pr ON pr.application_id = a.id AND pr.is_current
-        WHERE (${ownFileSql('a', '$1')}) AND a.deleted_at IS NULL
+        WHERE (${OWN_FILE_SQL('a', '$1')}) AND a.deleted_at IS NULL
         ORDER BY pr.created_at DESC LIMIT 1`, [borrowerId]);
     return r.rows[0] ? r.rows[0].id : null;
   } catch (_) {
@@ -215,6 +228,22 @@ async function openRequest(appId, field, rawValue, opts = {}, client = db) {
   if (newValue == null || newValue === '') throw Object.assign(new Error('a value is required'), { status: 400 });
   if (FIELD_OPTIONS[field] && !FIELD_OPTIONS[field].includes(newValue))
     throw Object.assign(new Error(`${FIELD_LABELS[field]} must be one of: ${FIELD_OPTIONS[field].join(', ')}`), { status: 400 });
+  /* A VALUE THE COLUMN CANNOT HOLD IS REFUSED HERE, not stored and discovered
+     at approval (fifth audit, 2026-07-31). Nothing bounded the proposal, so an
+     oversized ARV was accepted with a 200, filed as pending, and then made the
+     approve door answer 500 FOREVER — a request that can never be applied,
+     which is exactly the shape this door's own freeze ordering exists to
+     prevent, on the value axis instead of the status axis. Meanwhile the staff
+     details door refused the identical value with a plain 400 naming the limit.
+     Same limit, same words, from the same module. */
+  {
+    const nb = require('./number-bounds');
+    const kind = MONEY_FIELDS.has(field) ? 'money' : (INT_FIELDS.has(field) ? 'int' : null);
+    if (kind) {
+      const bad = nb.columnProblem(field, Number(newValue), kind, FIELD_LABELS[field] || field);
+      if (bad) throw Object.assign(new Error(bad), { status: 400 });
+    }
+  }
   const oldValue = await currentValue(appId, field, client);
   const oldNorm = normalizeValue(field, oldValue);
   if (oldNorm === newValue) return { unchanged: true, field };
@@ -382,6 +411,6 @@ const GOVERNED_FIELDS = Object.keys(FIELD_LABELS);
 module.exports = {
   FIELD_LABELS, MONEY_FIELDS, INT_FIELDS, FIELD_OPTIONS, GOVERNED_FIELDS, isGovernedField,
   BORROWER_FIELD_LABELS, BORROWER_FIELDS, isBorrowerField, isChangeRequestable, fieldEntity, labelOf,
-  isBorrowerLocked, anchorForBorrower, openRequest, openBorrowerRequest, applyRequest, currentValue, currentBorrowerValue,
+  isBorrowerLocked, anchorForBorrower, OWN_FILE_SQL, openRequest, openBorrowerRequest, applyRequest, currentValue, currentBorrowerValue,
   normalizeValue, normalizeBorrowerValue, formatValue, describeChange,
 };
