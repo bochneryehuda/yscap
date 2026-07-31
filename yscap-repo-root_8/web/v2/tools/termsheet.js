@@ -80,12 +80,25 @@
   /* A REAL advance wins even when it is ZERO — the fallback is for an advance
      that is genuinely ABSENT, not for one that happens to be nothing. `> 0`
      would fall back to the whole loan on a zero advance, which is precisely the
-     overstatement this helper exists to prevent, and it disagreed with the
-     server's own payoff model (src/lib/payoff.js). One rule, both places. */
+     overstatement this helper exists to prevent.
+
+     `numOrNull` is deliberately the SAME rule as the server model's `num()`
+     (src/lib/payoff.js) — absent/blank/unreadable is null, everything else is a
+     number — so the two implementations of "what funds at closing" cannot
+     disagree on an edge. Note `isFinite(null)` is TRUE in JavaScript and
+     `Number('')` is 0, so both have to be excluded BEFORE the numeric test; a
+     bare isFinite() check reads a blank as a zero advance. */
+  function numOrNull(v) {
+    if (v === null || v === undefined || v === '') return null;
+    var n = Number(v);
+    return isFinite(n) ? n : null;
+  }
   function fundedAtClose(d) {
     if (!d) return 0;
-    return isFinite(d.initialAdvance) && d.initialAdvance !== null && d.initialAdvance !== undefined
-      ? d.initialAdvance : (d.totalLoan || 0);
+    var a = numOrNull(d.initialAdvance);
+    if (a !== null) return a;
+    var t = numOrNull(d.totalLoan);
+    return t !== null ? t : 0;
   }
   function structuralCashOut(d) {
     var funded = fundedAtClose(d);

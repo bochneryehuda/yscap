@@ -156,8 +156,36 @@ console.log('\n--- cash to the borrower is net of the payoff AND closing costs -
      netting the payoff off the TOTAL quotes the borrower the entire rehab
      budget as cash in hand. `fundedAtClose` is that one reading. */
   assert(/function fundedAtClose\(d\)/.test(js), 'there is ONE reading of what funds at closing');
-  assert(/d\.initialAdvance > 0 \? d\.initialAdvance/.test(js),
-    'and it is the INITIAL ADVANCE (falling back to the total only when there is no advance)');
+  assert(/var a = numOrNull\(d\.initialAdvance\)/.test(js),
+    'and it is the INITIAL ADVANCE, read by the same rule the server model uses');
+  assert(!/d\.initialAdvance > 0 \? d\.initialAdvance/.test(js),
+    'the old `> 0` test is gone — a zero advance is a real answer, not a missing one');
+
+  /* THE TWO IMPLEMENTATIONS ARE RUN SIDE BY SIDE, not compared by eye. The
+     studio's helper and the server's model both answer "what funds at closing",
+     and an edge where they disagree is a term sheet that disagrees with the loan
+     file. Both are lifted from their real sources. */
+  {
+    const P = require('../src/lib/payoff');
+    const m = /function numOrNull\(v\) \{[\s\S]*?\n  \}\n  function fundedAtClose\(d\) \{[\s\S]*?\n  \}/.exec(js);
+    assert(!!m, 'the studio helpers were located for a live comparison');
+    if (m) {
+      const studio = new Function(`${m[0]}; return fundedAtClose;`)();   // eslint-disable-line no-new-func
+      const EDGES = [null, undefined, 0, NaN, '', '0', '380000', 380000, -1, 'abc'];
+      for (const adv of EDGES) {
+        const d = { initialAdvance: adv, totalLoan: 500000 };
+        const studioFunded = studio(d);
+        // The server answers the same question through structuralCashOut with a
+        // zero payoff and zero closing costs, so the funded figure IS the result.
+        const serverOut = P.structuralCashOut({ initialAdvance: adv, totalLoan: 500000, payoff: 0, closingCosts: 0 });
+        const serverFunded = serverOut == null ? 0 : serverOut;
+        // Both clamp at zero (a borrower never receives a negative cheque).
+        assert(Math.max(0, studioFunded) === serverFunded,
+          `the studio and the server agree on initialAdvance=${JSON.stringify(adv)} `
+          + `(studio ${JSON.stringify(studioFunded)}, server ${JSON.stringify(serverFunded)})`);
+      }
+    }
+  }
   assert(/funded - num\("payoff"\) - \(d\.closing \|\| 0\)/.test(js),
     'the cash-out nets the payoff AND the closing costs off what actually funds');
   assert(!/d\.totalLoan - num\("payoff"\)/.test(js),
