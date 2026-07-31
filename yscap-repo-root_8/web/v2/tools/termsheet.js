@@ -249,6 +249,13 @@
       var ltc = adminNumRaw("tsMLtc"); if (ltc != null) o.ovrLTC = ltc / 100;
       var rt = adminNumRaw("tsMRate"); if (rt != null) o.ovrRate = rt / 100;
     }
+    // Out-of-pocket rehab exception (owner-authorized 2026-07-31): bring part of the
+    // rehab out of pocket so the initial advance rises toward its cap. Read on EVERY
+    // program (the box lives in the admin zone). The re-slice (oopReslice) caps it at
+    // the max, so a stale value can never over-slice. Ignored by the engines — applied
+    // in calc()/normalize() as a pure transform of the already-sized structure.
+    var oopReq = adminNumRaw("tsOopRehab"); if (oopReq != null && oopReq > 0) o.oopRehab = oopReq;
+    if (chk("tsOopRehabMax")) o.oopRehabMax = true;
     return o;
   }
 
@@ -395,6 +402,37 @@
     }
   }
 
+  /* OUT-OF-POCKET REHAB EXCEPTION re-slice (owner-authorized 2026-07-31) — the ONE
+     definition shared by calc()/calcGold()/calcSilver(), mirroring src/lib/pricing.js
+     normalize() so the studio ALWAYS displays exactly what would register. It floors
+     the engine's sized split (the frozen rounding policy, unchanged) and then, only
+     when an out-of-pocket amount is supplied, moves X dollars from the rehab holdback
+     into the initial advance — capped so the initial never exceeds its acquisition
+     ceiling (maxAcqLTV x acqDenom) and the holdback never goes negative. Total loan /
+     rate / caps / financed reserve are untouched; byte-identical when oopRehab is 0.
+     `maxOopRehab`/`initialCut`/`maxInitial` are the two figures the Manual section
+     shows before anything is entered. */
+  function oopReslice(R, inp) {
+    var s = R.sizing || {};
+    var totalLoan = Math.floor(s.totalLoan || 0);
+    var rehabHoldback = Math.floor(s.rehabLoan || 0);
+    var initialAdvance = Math.floor(s.acquisition || 0);
+    var financedIR = 0;
+    if ((s.financedIR || 0) > 0.5) financedIR = Math.max(0, totalLoan - initialAdvance - rehabHoldback);
+    else initialAdvance = Math.max(0, totalLoan - rehabHoldback);
+    var effCaps = R.pricedCeiling || R.caps || {};       // EFFECTIVE sizing cap (Silver splits pricedCeiling from the program max)
+    var maxInitial = Math.floor(Math.max(0, (effCaps.maxAcqLTV || 0) * (s.acqDenom || 0)));
+    var initialCut = Math.max(0, maxInitial - initialAdvance);
+    var maxOopRehab = Math.max(0, Math.min(initialCut, rehabHoldback));
+    var reqOop = (inp && inp.oopRehabMax) ? maxOopRehab : Math.max(0, Math.floor((inp && inp.oopRehab) || 0));
+    var oopRehab = Math.max(0, Math.min(reqOop, maxOopRehab));
+    if (oopRehab > 0) { initialAdvance += oopRehab; rehabHoldback -= oopRehab; }
+    var downPayment = Math.max(0, (s.downPayment || 0) - oopRehab);
+    return { totalLoan: totalLoan, rehabHoldback: rehabHoldback, initialAdvance: initialAdvance,
+      financedIR: financedIR, downPayment: downPayment, oopRehab: oopRehab,
+      maxOopRehab: maxOopRehab, initialCut: initialCut, maxInitial: maxInitial };
+  }
+
   /* ---------------- compute (delegates to the engine) ---------------- */
   function reserveMonths(totalLoan) { return (totalLoan || 0) > 1000000 ? 4 : 2; }  // Standard Program liquidity: 2 months of payments to show under $1M, 4 months over $1M
   function calc() {
@@ -410,12 +448,11 @@
     // initial advance + holdback and let the financed reserve absorb the residual
     // (or the initial, when there is no reserve). Mirrors the LOS and the server
     // (pricing.js). The engine's sizing math is unchanged.
-    var totalLoan = Math.floor(s.totalLoan || 0);
-    var rehabHoldbackR = Math.floor(s.rehabLoan || 0);
-    var initialAdvance = Math.floor(s.acquisition || 0);
-    var financedIRr = 0;
-    if ((s.financedIR || 0) > 0.5) financedIRr = Math.max(0, totalLoan - initialAdvance - rehabHoldbackR);
-    else initialAdvance = Math.max(0, totalLoan - rehabHoldbackR);
+    var _sl = oopReslice(R, inp);                        // floored split + OOP-rehab re-slice (byte-identical when no exception)
+    var totalLoan = _sl.totalLoan;
+    var rehabHoldbackR = _sl.rehabHoldback;
+    var initialAdvance = _sl.initialAdvance;
+    var financedIRr = _sl.financedIR;
     var origPct = liveOrigPct();                          // manual basis on => the Manual knob (see liveOrigPct)
     var origFee = (totalLoan) * origPct;                  // origination % (admin-overridable; default 1%)
     // interest-only payment logic (industry standard): during construction the borrower pays
@@ -427,7 +464,7 @@
     // floored loan drifted 1-2 cents (audit 2026-07-19). Falls back to the floored
     // loan if the engine ever omits them. Does NOT touch the financed-reserve
     // reconciliation (that stays on the floored totalLoan/initial/holdback residual).
-    var initialPayment = (s.initialPayment != null ? Number(s.initialPayment) : initialAdvance * rFrac);   // while only the initial advance is out
+    var initialPayment = (_sl.oopRehab > 0) ? (initialAdvance * rFrac) : (s.initialPayment != null ? Number(s.initialPayment) : initialAdvance * rFrac);   // while only the initial advance is out (rises with a raised initial)
     var fullPayment = (s.fullPayment != null ? Number(s.fullPayment) : totalLoan * rFrac);                 // after all rehab draws complete
     var monthlyInterest = s.monthlyInterest || fullPayment;
     var title = (typeof YSTitle !== "undefined" && YSTitle) ? YSTitle.estimate(inp.state, totalLoan, inp.loanType) : { total: 0 };
@@ -436,9 +473,9 @@
     var lenderFee = adminFeeUW(), creditFee = adminFeeCredit(), apprFee = adminFeeAppr();
     var closing = origFee + lenderFee + creditFee + titleCost + extraFeesTotal();      // + company extra fees (NY settlement etc.); appraisal is POC (excluded)
     var excessOOP = (s.assignmentExcessOOP != null ? s.assignmentExcessOOP : (R.assignment && R.assignment.excessOOP)) || 0;
-    var cashToClose = (s.downPayment || 0) + excessOOP + closing;   // reserve is never brought to the table
+    var cashToClose = _sl.downPayment + excessOOP + closing;   // reserve is never brought to the table; OOP rehab is funded over construction, not here
     var reserves = fullPayment * reserveMonths(totalLoan);  // Standard liquidity buffer: months of interest on top of cash to close
-    var liquidity = cashToClose + reserves;
+    var liquidity = cashToClose + reserves + _sl.oopRehab;  // OOP rehab is part of the liquidity the borrower must show (+0 by default)
     var basisPrice = (asg ? asg.recognizedPrice : (inp.loanType === "Purchase" ? effPurchase() : num("asIs")));
     var displayCost = basisPrice + num("construction") + financedIRr;
 
@@ -451,7 +488,8 @@
       maxReserve: s.maxReserve || 0, reserveCapped: !!s.reserveCapped, reserveCapBy: s.reserveCapBy || "",
       maxReserveMonths: s.maxReserveMonths || 0, desiredReserve: s.desiredReserve || 0,
       initialPayment: initialPayment, fullPayment: fullPayment, monthlyInterest: monthlyInterest,
-      totalCost: displayCost, downPayment: s.downPayment || 0, excessOOP: excessOOP,
+      totalCost: displayCost, downPayment: _sl.downPayment, excessOOP: excessOOP,
+      oopRehab: _sl.oopRehab, maxOopRehab: _sl.maxOopRehab, initialCut: _sl.initialCut, maxInitial: _sl.maxInitial,
       origFee: origFee, origPct: origPct, lenderFee: lenderFee, creditFee: creditFee, apprFee: apprFee, titleCost: titleCost, titleInfo: title,
       closing: closing, extraFees: extraFeeList(), cashToClose: cashToClose, reserves: reserves, reserveMo: reserveMonths(totalLoan), liquidity: liquidity,
       ltcPct: s.ltcPct || 0, ltvPct: s.acqLtvPct || 0, arvPct: s.arvPct || 0,
@@ -479,12 +517,11 @@
     var rate = (R.noteRate || 0) * 100;
     // Rounding policy (owner-directed 2026-07-09) — see calc(); same floor +
     // reconcile so the Gold breakdown sums exactly to the (floored) total loan.
-    var totalLoan = Math.floor(s.totalLoan || 0);
-    var rehabHoldbackR = Math.floor(s.rehabLoan || 0);
-    var initialAdvance = Math.floor(s.acquisition || 0);
-    var financedIRr = 0;
-    if ((s.financedIR || 0) > 0.5) financedIRr = Math.max(0, totalLoan - initialAdvance - rehabHoldbackR);
-    else initialAdvance = Math.max(0, totalLoan - rehabHoldbackR);
+    var _g = oopReslice(R, inp);                         // floored split + OOP-rehab re-slice (byte-identical when no exception)
+    var totalLoan = _g.totalLoan;
+    var rehabHoldbackR = _g.rehabHoldback;
+    var initialAdvance = _g.initialAdvance;
+    var financedIRr = _g.financedIR;
     var origPct = adminOrigPct("gold");
     var origFee = totalLoan * origPct;                    // origination % (admin-overridable; default 1%)
     var rFrac = (R.noteRate || 0) / 12;
@@ -494,7 +531,7 @@
     var lenderFee = adminFeeUW(), creditFee = adminFeeCredit(), apprFee = adminFeeAppr();
     var closing = origFee + lenderFee + creditFee + titleCost + extraFeesTotal();
     var excessOOP = (s.assignmentExcessOOP != null ? s.assignmentExcessOOP : (R.assignment && R.assignment.excessOOP)) || 0;
-    var cashToClose = (s.downPayment || 0) + excessOOP + closing;
+    var cashToClose = _g.downPayment + excessOOP + closing;
     var goldReservePct = R.liquidityPct || 0.05;
     var goldReserve = totalLoan * goldReservePct;            // Gold reserve = 5% of the loan, shown ON TOP of cash to close
     var asg = R.assignment;
@@ -508,12 +545,13 @@
       financedIR: financedIRr, unfinancedIR: 0,
       maxReserve: s.maxReserve || 0, reserveCapped: !!s.reserveCapped, reserveCapBy: s.reserveCapBy || "",
       maxReserveMonths: s.maxReserveMonths || 0, desiredReserve: s.desiredReserve || 0,
-      initialPayment: (s.initialPayment != null ? Number(s.initialPayment) : initialAdvance * rFrac), fullPayment: (s.fullPayment != null ? Number(s.fullPayment) : totalLoan * rFrac), monthlyInterest: (s.fullPayment != null ? Number(s.fullPayment) : totalLoan * rFrac),
+      initialPayment: (_g.oopRehab > 0 ? (initialAdvance * rFrac) : (s.initialPayment != null ? Number(s.initialPayment) : initialAdvance * rFrac)), fullPayment: (s.fullPayment != null ? Number(s.fullPayment) : totalLoan * rFrac), monthlyInterest: (s.fullPayment != null ? Number(s.fullPayment) : totalLoan * rFrac),
       totalCost: basisPrice + num("construction") + financedIRr,
-      downPayment: s.downPayment || 0, excessOOP: excessOOP,
+      downPayment: _g.downPayment, excessOOP: excessOOP,
+      oopRehab: _g.oopRehab, maxOopRehab: _g.maxOopRehab, initialCut: _g.initialCut, maxInitial: _g.maxInitial,
       origFee: origFee, origPct: origPct, lenderFee: lenderFee, creditFee: creditFee, apprFee: apprFee, titleCost: titleCost, titleInfo: title,
       closing: closing, extraFees: extraFeeList(), cashToClose: cashToClose, reserves: goldReserve, reserveMo: 0,
-      liquidity: cashToClose + goldReserve, liquidityPct: goldReservePct,
+      liquidity: cashToClose + goldReserve + _g.oopRehab, liquidityPct: goldReservePct,
       ltcPct: s.ltcPct || 0, ltvPct: s.acqLtvPct || 0, arvPct: s.arvPct || 0,
       binding: s.binding || "", caps: R.caps, status: R.status, reasons: R.reasons || [],
       exitShortfall: R.exitShortfall || 0, tierLabel: R.tierLabel, fico: inp.fico,
@@ -538,12 +576,11 @@
     var rate = (R.noteRate || 0) * 100;
     // Rounding policy (owner-directed 2026-07-09) — see calc(); same floor +
     // reconcile so the Silver breakdown sums exactly to the (floored) total loan.
-    var totalLoan = Math.floor(s.totalLoan || 0);
-    var rehabHoldbackR = Math.floor(s.rehabLoan || 0);
-    var initialAdvance = Math.floor(s.acquisition || 0);
-    var financedIRr = 0;
-    if ((s.financedIR || 0) > 0.5) financedIRr = Math.max(0, totalLoan - initialAdvance - rehabHoldbackR);
-    else initialAdvance = Math.max(0, totalLoan - rehabHoldbackR);
+    var _sv = oopReslice(R, inp);                        // floored split + OOP-rehab re-slice (byte-identical when no exception)
+    var totalLoan = _sv.totalLoan;
+    var rehabHoldbackR = _sv.rehabHoldback;
+    var initialAdvance = _sv.initialAdvance;
+    var financedIRr = _sv.financedIR;
     var origPct = adminOrigPct("silver");
     var origFee = totalLoan * origPct;
     var rFrac = (R.noteRate || 0) / 12;
@@ -553,7 +590,7 @@
     var lenderFee = adminFeeUW(), creditFee = adminFeeCredit(), apprFee = adminFeeAppr();
     var closing = origFee + lenderFee + creditFee + titleCost + extraFeesTotal();
     var excessOOP = (s.assignmentExcessOOP != null ? s.assignmentExcessOOP : (R.assignment && R.assignment.excessOOP)) || 0;
-    var cashToClose = (s.downPayment || 0) + excessOOP + closing;
+    var cashToClose = _sv.downPayment + excessOOP + closing;
     var reserves = (s.fullPayment != null ? Number(s.fullPayment) : totalLoan * rFrac) * reserveMonths(totalLoan);   // same liquidity buffer as Standard
     var basisPrice = (asg ? asg.recognizedPrice : (inp.loanType === "Purchase" ? effPurchase() : num("asIs")));
     return {
@@ -564,13 +601,14 @@
       financedIR: financedIRr, unfinancedIR: 0,
       maxReserve: s.maxReserve || 0, reserveCapped: !!s.reserveCapped, reserveCapBy: s.reserveCapBy || "",
       maxReserveMonths: s.maxReserveMonths || 0, desiredReserve: s.desiredReserve || 0,
-      initialPayment: (s.initialPayment != null ? Number(s.initialPayment) : initialAdvance * rFrac),
+      initialPayment: (_sv.oopRehab > 0 ? (initialAdvance * rFrac) : (s.initialPayment != null ? Number(s.initialPayment) : initialAdvance * rFrac)),
       fullPayment: (s.fullPayment != null ? Number(s.fullPayment) : totalLoan * rFrac),
       monthlyInterest: s.monthlyInterest || (s.fullPayment != null ? Number(s.fullPayment) : totalLoan * rFrac),
       totalCost: basisPrice + num("construction") + financedIRr,
-      downPayment: s.downPayment || 0, excessOOP: excessOOP,
+      downPayment: _sv.downPayment, excessOOP: excessOOP,
+      oopRehab: _sv.oopRehab, maxOopRehab: _sv.maxOopRehab, initialCut: _sv.initialCut, maxInitial: _sv.maxInitial,
       origFee: origFee, origPct: origPct, lenderFee: lenderFee, creditFee: creditFee, apprFee: apprFee, titleCost: titleCost, titleInfo: title,
-      closing: closing, extraFees: extraFeeList(), cashToClose: cashToClose, reserves: reserves, reserveMo: reserveMonths(totalLoan), liquidity: cashToClose + reserves,
+      closing: closing, extraFees: extraFeeList(), cashToClose: cashToClose, reserves: reserves, reserveMo: reserveMonths(totalLoan), liquidity: cashToClose + reserves + _sv.oopRehab,
       ltcPct: s.ltcPct || 0, ltvPct: s.acqLtvPct || 0, arvPct: s.arvPct || 0,
       // `d.caps` keeps the meaning every reader in this file already assumes: the
       // EFFECTIVE ceiling this deal was sized and priced at. The Silver engine now
@@ -1359,6 +1397,19 @@
     YS.put("rLiquidity", sized ? YS.fmtUSD2(d.liquidity) : EM);
     YS.put("rTier", d.tierLabel || EM);
     YS.put("rFico", d.fico ? String(d.fico) : EM);
+    // Out-of-pocket rehab exception (owner-authorized 2026-07-31): the OOP row in the
+    // loan structure (shown ONLY when an amount is applied), and the two figures the
+    // Manual/admin zone shows first — how much the initial is being cut, and the max
+    // out-of-pocket rehab that an exception could allow.
+    (function () {
+      var w = el("rOopWrap");
+      if (w) { if (sized && d.oopRehab > 0) { w.style.display = ""; YS.put("rOopRehab", YS.fmtUSD(d.oopRehab)); } else { w.style.display = "none"; } }
+      var tag = el("rHoldbackTag"); if (tag) tag.textContent = (sized && d.oopRehab > 0) ? "(financed portion, in draws)" : "(= rehab, in draws)";
+      YS.put("oopInitialCut", sized ? YS.fmtUSD(d.initialCut || 0) : EM);
+      YS.put("oopMaxRehab", sized ? YS.fmtUSD(d.maxOopRehab || 0) : EM);
+      var info = el("oopInfoWrap");
+      if (info) info.style.display = (sized && d.pricingReady && (d.maxOopRehab || 0) > 0) ? "" : "none";
+    }());
 
     // PROGRAM / TIER maximum leverage (from FICO + experience) — FIXED for the tier.
     // This block must NEVER move when a deal input moves (owner-reported 2026-07-30:
@@ -1654,6 +1705,7 @@
       (YSP.normStrategy(dealType()) === "BR") ? null : ["Draw fee", drawFeeLines("standard").join("; ")],
       ["Initial advance", stdOk ? money(d.initialAdvance) : EM],
       ["Rehab / construction holdback", stdOk ? money(d.rehabHoldback) : EM],
+      (stdOk && d.oopRehab > 0) ? ["Out-of-pocket rehab (funded over construction)", money(d.oopRehab)] : null,
       // The reserve THIS program finances — the reconciled figure the studio box, the PDF,
       // the derivation page and the registration all carry. It is NOT months x payment, and
       // it differs per program, which is why every section states its own (2026-07-30).
@@ -1683,6 +1735,7 @@
         (YSP.normStrategy(dealType()) === "BR") ? null : ["Draw fee", drawFeeLines("gold").join("; ")],
         ["Initial advance", gOk ? money(gd.initialAdvance) : EM],
         ["Rehab / construction holdback", gOk ? money(gd.rehabHoldback) : EM],
+        (gOk && gd.oopRehab > 0) ? ["Out-of-pocket rehab (funded over construction)", money(gd.oopRehab)] : null,
         ["Financed interest reserve", gOk ? money(gd.financedIR) : EM],
         ["Down payment (equity)", gOk ? money(gd.downPayment) : EM],
         ["Leverage \u2014 LTC / as-is / ARV", gOk ? (pct(gd.ltcPct) + " / " + pct(gd.ltvPct) + " / " + pct(gd.arvPct)) : EM],
@@ -1723,6 +1776,7 @@
         (YSP.normStrategy(dealType()) === "BR") ? null : ["Draw fee", drawFeeLines("silver").join("; ")],
         ["Initial advance", sOk ? money(sd.initialAdvance) : EM],
         ["Rehab / construction holdback", sOk ? money(sd.rehabHoldback) : EM],
+        (sOk && sd.oopRehab > 0) ? ["Out-of-pocket rehab (funded over construction)", money(sd.oopRehab)] : null,
         ["Financed interest reserve", sOk ? money(sd.financedIR) : EM],
         ["Down payment (equity)", sOk ? money(sd.downPayment) : EM],
         ["Leverage — LTC / as-is / ARV", sOk ? (pct(sd.ltcPct) + " / " + pct(sd.ltvPct) + " / " + pct(sd.arvPct)) : EM],
@@ -2001,7 +2055,8 @@
         if (d.financedIR > 0) { var finMo = (d.fullPayment > 0) ? Math.round(d.financedIR / d.fullPayment) : (d.irMonths || 0); yL = rowIn(xL, colW, "Financed interest reserve (" + finMo + " mo)", money(d.financedIR), yL); }
         yL = rowIn(xL, colW, "Total project cost", money(d.totalCost), yL, { bold: true });
         yL = rowIn(xL, colW, "Initial advance (at closing)", sized ? (money(d.initialAdvance) + (d.ltvPct > 0 ? "   (" + pc(d.ltvPct) + " LTV)" : "")) : "\u2014", yL);
-        yL = rowIn(xL, colW, (d.R && d.R.sizing && d.R.sizing.rehabOverCap) ? "Construction holdback (capped \u2014 see eligibility)" : "Construction holdback (= rehab)", sized ? money(d.rehabHoldback) : "\u2014", yL);
+        yL = rowIn(xL, colW, (d.R && d.R.sizing && d.R.sizing.rehabOverCap) ? "Construction holdback (capped \u2014 see eligibility)" : (d.oopRehab > 0 ? "Construction holdback (financed portion)" : "Construction holdback (= rehab)"), sized ? money(d.rehabHoldback) : "\u2014", yL);
+        if (sized && d.oopRehab > 0) yL = rowIn(xL, colW, "Out-of-pocket rehab (funded over construction)", money(d.oopRehab), yL);
       }
       yL = rowIn(xL, colW, isBridge ? "Total loan amount (disbursed at closing)" : "Total loan amount", sized ? money(d.totalLoan) : "\u2014", yL, { bold: true, accent: true });
       yL += 9;

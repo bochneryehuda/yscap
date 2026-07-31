@@ -672,6 +672,14 @@
                 </div>
                 <p class="ts-admin-mnote" id="tsEffPriceHint"></p>
 
+                <div class="ts-admin-group">Out-of-pocket rehab exception <span class="ts-admin-note">— raise the initial, bring rehab out of pocket</span></div>
+                <div class="ts-admin-mnote" id="oopInfoWrap" style="display:none">When a cap has cut the initial advance, an approved exception can raise it toward the initial cap and move the leftover rehab out of pocket. On this scenario the initial is cut by <strong id="oopInitialCut">—</strong>, so up to <strong id="oopMaxRehab">—</strong> of rehab can be brought out of pocket.</div>
+                <label class="ts-admin-check"><input type="checkbox" id="tsOopRehabMax" data-noshare> Raise the initial advance to its maximum (bring the full available rehab out of pocket)</label>
+                <div class="ts-admin-grid2">
+                    <div class="field"><label for="tsOopRehab">Out-of-pocket rehab ($)</label><div class="input"><span class="adorn">$</span><input id="tsOopRehab" data-noshare type="text" inputmode="numeric" placeholder="0"></div></div>
+                </div>
+                <p class="ts-admin-mnote">Off by default — all rehab is financed. Any amount here (or the toggle above) needs the same admin approval as any pricing override. The total loan, rate and every cap stay the same; the amount is capped at the maximum shown, and the initial advance never exceeds its own cap.</p>
+
                 <div class="ts-admin-group">Manual scenario <span class="ts-admin-note">— set the basis yourself</span></div>
                 <label class="ts-admin-check"><input type="checkbox" id="tsManualOn" data-noshare> Price as a manual scenario (admin-set basis)</label>
                 <div class="ts-admin-grid2" id="tsManualFields" hidden>
@@ -831,6 +839,7 @@
             <div class="ts-line cond" data-cond="hasRehab"><span class="k">Initial advance (at closing)<span class="tip" tabindex="0" role="note" aria-label="The part of the loan released at closing to help you buy the property. The rest of the loan is the construction holdback.">i<span class="tip-bub">The part of the loan released at closing to help you buy the property. The rest of the loan is the construction holdback.</span></span></span><span class="v" id="rAdvance">$0</span><span class="v-ltv" id="rAdvanceLtv"></span></div>
             <div class="ts-why" id="rAdvanceWhy" style="display:none"></div>
             <div class="ts-line cond" data-cond="hasRehab"><span class="k">Construction holdback <em style="font-style:normal;color:var(--muted-2)" id="rHoldbackTag">(= rehab, in draws)</em><span class="tip" tabindex="0" role="note" aria-label="Your renovation funds, held by the lender and released in stages (“draws”) as each phase of work is finished and inspected — not handed over up front.">i<span class="tip-bub">Your renovation funds, held by the lender and released in stages (“draws”) as each phase of work is finished and inspected — not handed over up front.</span></span></span><span class="v" id="rHoldback">$0</span></div>
+            <div class="ts-line cond" id="rOopWrap" style="display:none"><span class="k">Out-of-pocket rehab <em style="font-style:normal;color:var(--muted-2)">(you fund over construction)</em><span class="tip" tabindex="0" role="note" aria-label="The part of the renovation budget you pay for yourself as the work is done, because the loan finances only part of it. This is not due at closing.">i<span class="tip-bub">The part of the renovation budget you pay for yourself as the work is done, because the loan finances only part of it. This is not due at closing.</span></span></span><span class="v" id="rOopRehab">$0</span></div>
             <div class="ts-line em gold"><span class="k">Total loan amount</span><span class="v" id="rLoan2">$0</span></div>
             <div class="ts-assign" id="rAssignNote" style="display:none"></div>
 

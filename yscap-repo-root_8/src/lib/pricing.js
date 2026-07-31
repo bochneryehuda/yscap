@@ -331,7 +331,10 @@ function normalize(program, input, ev, ladder) {
      financed reserve are untouched. `maxInitial`/`initialCut`/`maxOopRehab` are the
      two figures the Manual section shows BEFORE anything is entered. When no exception
      amount is supplied (requestedOop <= 0) every number below is identical to before. */
-  const maxInitial = Math.floor(Math.max(0, num((ev.caps || {}).maxAcqLTV) * num(s.acqDenom)));
+  // Use the EFFECTIVE acquisition cap the deal was sized at — pricedCeiling when the
+  // engine splits it out (Silver), else caps (Standard/Gold) — matching the `caps`
+  // mapping below and the engine's own A = maxAcqLTV × acqDenom.
+  const maxInitial = Math.floor(Math.max(0, num(((ev.pricedCeiling || ev.caps) || {}).maxAcqLTV) * num(s.acqDenom)));
   const initialCut = Math.max(0, maxInitial - initialAdvance);         // how much the initial was cut below its cap
   const maxOopRehab = Math.max(0, Math.min(initialCut, rehabHoldback)); // biggest rehab we could push out of pocket
   const requestedOop = input.oopRehabMax ? maxOopRehab : Math.max(0, Math.floor(num(input.oopRehab)));
