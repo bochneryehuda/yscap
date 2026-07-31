@@ -72,6 +72,28 @@ assert(moneyNum('412500') === 412500, 'moneyNum is a drop-in for Number() on an 
 assert(moneyNum('') === 0 && moneyNum(null) === 0 && moneyNum('abc') === 0, 'moneyNum never returns NaN');
 assert(Number.isNaN(Number('412,500')), 'and the reason all of this exists: bare Number() on a grouped value IS NaN');
 
+/* moneyNum IS A DROP-IN OR IT IS A TRAP (pre-merge audit, 2026-07-31). The guard
+   in section 4 tells every future author to replace `Number(x) || 0` on a money
+   field with this — so for every shape that already parses, it must return the
+   IDENTICAL answer. Two escapes were found and closed:
+     • the SIGN. moneyStr strips a minus (a MoneyInput must not let one be typed),
+       so moneyNum(-32500) used to be +32500 — a silent sign flip on any signed
+       money value (a credit, an adjustment, a net figure), which is worse than the
+       zero it replaces because it looks right.
+     • a value that is ALREADY A NUMBER must not round-trip through a string:
+       String(1e21) is "1e+21", which strips to "121". */
+{
+  const SHAPES = [412500, '412500', '412500.00', '412500.5', 0, '0', '', null, undefined,
+    -5000, '-5000', '-32500.00', -0.5, 1e6, 1234567890123, 1e21, 0.1, '0.10'];
+  const bad = SHAPES.filter((v) => !Object.is(moneyNum(v), Number(v) || 0));
+  assert(bad.length === 0,
+    `moneyNum returns EXACTLY what Number(x)||0 returned for every already-parseable shape${bad.length ? ' — diverges on ' + bad.map((v) => `${JSON.stringify(v)}: ${Number(v) || 0} -> ${moneyNum(v)}`).join(', ') : ''}`);
+  assert(moneyNum(-32500) === -32500 && moneyNum('-32500') === -32500 && moneyNum('$-1,500.50') === -1500.50,
+    `a NEGATIVE money value keeps its sign (got ${moneyNum(-32500)}, ${moneyNum('-32500')}, ${moneyNum('$-1,500.50')})`);
+  assert(moneyStr('-32500') === '32500',
+    'while moneyStr still strips it — a MoneyInput cannot hold a minus, and that contract is unchanged');
+}
+
 /* ---------------------------------------------------------------------
    2. THE STAFF DOOR — lib/scenario.js, the Investor Suite hand-off.
    --------------------------------------------------------------------- */
@@ -118,8 +140,35 @@ assert(/const fee = Math\.max\(0, moneyNum\(f\.price\) - moneyNum\(f\.origPrice\
       This is the guard that stops the class coming back through a new field.
    --------------------------------------------------------------------- */
 console.log('\n--- no consumer parses money with a bare Number() ---');
-const MONEY_FIELDS = ['purchasePrice', 'underlyingContractPrice', 'origPrice', 'price', 'asIsValue', 'arv', 'rehabBudget', 'assignmentFee', 'irAmount'];
-const BARE = new RegExp(`Number\\(\\s*[A-Za-z_$][\\w$]*\\.(${MONEY_FIELDS.join('|')})\\b`, 'g');
+/* THE LIST HAS TO INCLUDE THE STUDIO'S OWN FIELD NAMES (pre-merge audit,
+   2026-07-31). The first cut listed only the PORTAL's names — and the portal's
+   values are the CLEAN ones. The identifiers that actually hold the formatted
+   text are the studio's: `v.asIs`, `v.construction`, `v.price`, `v.origPrice`,
+   `v.payoff` (every id in termsheet.js MONEY_IDS), plus `inp.sellerPrice` off a
+   saved registration — which is exactly what this change had to fix in
+   scenario.js, Apply.jsx and scenarioFromEngineInputs. Without them a
+   reintroduced `Number(v.construction)` sailed straight through the guard.
+   Verified: none of the added names appears as a bare Number() today, and none
+   false-fires on a non-money field (`f.units`, `f.fico`, `f.priceHistory`,
+   `f.sqftPre`, `x.termMonths` all stay clean — see the false-fire probe below).
+   KNOWN GAP, deliberate: `loanAmount` is NOT listed. StaffLeads / StaffLeadDetail
+   parse it with Number() off an <input type="number">, which a browser will not
+   let hold a separator, so those two sites are safe and listing it would only
+   force churn. Server-side snake_case names (`purchase_price`, …) are out of
+   scope too — those come off Postgres already clean. */
+const MONEY_FIELDS = [
+  // portal (MoneyInput / draft / applications-row) names
+  'purchasePrice', 'underlyingContractPrice', 'assignmentFee', 'asIsValue', 'rehabBudget',
+  'payoffAmount', 'originalPurchasePrice', 'salePrice', 'irAmount', 'arv',
+  // Term Sheet Studio input ids — the ones that hold the DISPLAY text. This is
+  // the MONEY_IDS list in termsheet.js, in full: every box the tool comma-groups.
+  'price', 'origPrice', 'assignFee', 'construction', 'asIs', 'payoff', 'tsEffPrice',
+  'tsFeeUW', 'tsFeeCredit', 'tsFeeAppr', 'tsFeeTitle',
+  // saved-registration (engine inputs) names
+  'sellerPrice', 'lenderFee', 'creditFee', 'appraisalFee', 'titleFee',
+];
+// `\??\.` so optional chaining (`f?.price`) cannot walk around the guard.
+const BARE = new RegExp(`Number\\(\\s*[A-Za-z_$][\\w$]*\\??\\.(${MONEY_FIELDS.join('|')})\\b`, 'g');
 const files = [];
 (function walk(dir) {
   for (const e of fs.readdirSync(dir, { withFileTypes: true })) {
@@ -141,6 +190,25 @@ for (const f of files) {
 assert(offenders.length === 0,
   `no money field is parsed with a bare Number() anywhere under app-v2/src (${offenders.length})${offenders.length ? '\n     ' + offenders.join('\n     ') : ''}`);
 assert(files.length > 50, `the guard actually walked the tree (${files.length} files scanned)`);
+
+/* THE GUARD MUST ACTUALLY CATCH A REINTRODUCTION, and must not fire on a field
+   that is not money — a guard that does neither is worse than none, because the
+   green tick says the class is closed. Both directions are asserted on synthetic
+   text so they hold even when the tree happens to be clean. */
+{
+  const fires = (s) => { BARE.lastIndex = 0; return BARE.test(s); };
+  const MUST_CATCH = ['Number(v.price)', 'Number(v.origPrice)', 'Number(v.asIs)', 'Number(v.construction)',
+    'Number(v.payoff)', 'Number(v.assignFee)', 'Number(inp.sellerPrice)', 'Number(f.purchasePrice)', 'Number(f.assignmentFee)',
+    'Number(f.underlyingContractPrice)', 'Number(f.rehabBudget)', 'Number(f.asIsValue)', 'Number(f.arv)',
+    'Number(f.irAmount)', 'Number( f.price )', 'Number(f?.price)', 'Number(x.tsEffPrice)'];
+  const MUST_NOT = ['Number(f.units)', 'Number(f.fico)', 'Number(f.priceHistory)', 'Number(f.sqftPre)',
+    'Number(x.termMonths)', 'Number(f.irMonths)', 'Number(s.loanAmount)', 'Number(o.routingOrder)',
+    'Number(p.pricePerSqft)', 'Number(n)', 'Number(v)'];
+  const missed = MUST_CATCH.filter((s) => !fires(s));
+  const falseFired = MUST_NOT.filter((s) => fires(s));
+  assert(missed.length === 0, `the guard catches every way a money field gets re-Number()'d${missed.length ? ' — MISSES ' + missed.join(', ') : ''}`);
+  assert(falseFired.length === 0, `and never fires on a non-money Number()${falseFired.length ? ' — FALSE FIRE on ' + falseFired.join(', ') : ''}`);
+}
 
 /* ---------------------------------------------------------------------
    5. END TO END, THROUGH THE SERVER'S OWN RULE. `fields.assignmentFields` is
@@ -166,6 +234,61 @@ const { assignmentFields } = require(path.join(__dirname, '..', 'src', 'lib', 'f
   });
   assert(bad.purchasePrice === 380000 && bad.assignFee === null,
     'pinned: a zero fee stores purchase_price = the seller price and assignment_fee = NULL — which is what made this worth fixing');
+}
+
+/* ---------------------------------------------------------------------
+   6. AND THE DRAFTS THAT WERE ALREADY WRITTEN THE OLD WAY (pre-merge audit,
+      2026-07-31). Fixing scenarioToDraft stops NEW drafts carrying the studio's
+      display text. It cannot repair the rows ALREADY in `application_drafts`:
+      every draft a borrower started from a saved pricing scenario since #915
+      holds `asIsValue: "445,000"`, and POST /api/borrower/drafts/:id/submit
+      binds those straight into numeric(14,2) columns. Proven against real
+      Postgres during the audit:
+
+          invalid input syntax for type numeric: "445,000"
+
+      — so those borrowers cannot submit their application AT ALL. The fix has to
+      reach the last mile: the value that goes to a money column is PARSED, never
+      passed through, on every create path. `moneyValue` is that chokepoint and
+      `assignmentFields` uses it, so the same formatted draft now stores the right
+      numbers instead of throwing. Every assertion below fails on the pre-fix
+      server (assignmentFields returned the string, and NaN for the price).
+   --------------------------------------------------------------------- */
+console.log('\n--- a draft written the OLD way still has to submit ---');
+const { moneyValue } = require(path.join(__dirname, '..', 'src', 'lib', 'fields.js'));
+{
+  assert(typeof moneyValue === 'function', 'src/lib/fields.js exports moneyValue — the money chokepoint on the way to a numeric column');
+  const mv = moneyValue || (() => null);
+  assert(mv('445,000') === 445000, `a grouped value parses (got ${JSON.stringify(mv('445,000'))})`);
+  assert(mv('$1,200,000.50') === 1200000.50, `so does one with a currency symbol and cents (got ${JSON.stringify(mv('$1,200,000.50'))})`);
+  assert(mv('') === null && mv(null) === null && mv(undefined) === null && mv('abc') === null && mv('-') === null,
+    'blank / nothing-numeric is NULL — the column\'s "not provided", never a fabricated 0');
+  assert(mv(-32500) === -32500 && mv('-32,500.00') === -32500, `a negative keeps its sign (got ${mv(-32500)}, ${mv('-32,500.00')})`);
+  assert(mv(412500) === 412500 && mv('412500') === 412500 && mv('412500.00') === 412500, 'and an already-clean value is unchanged');
+
+  // the exact draft shape lib/scenario.js wrote before this change
+  const legacy = assignmentFields({
+    isAssignment: true, loanType: 'Purchase',
+    purchasePrice: '412,500', underlyingContractPrice: '380,000', assignmentFee: '32,500',
+  });
+  assert(legacy.underlying === 380000, `a legacy draft's seller price reaches the column as a NUMBER (got ${JSON.stringify(legacy.underlying)})`);
+  assert(legacy.assignFee === 32500, `and the wholesaler's fee (got ${JSON.stringify(legacy.assignFee)})`);
+  assert(Number.isFinite(legacy.purchasePrice) && legacy.purchasePrice === 412500,
+    `and purchase_price is a finite number, not the NaN a bare Number() produced (got ${JSON.stringify(legacy.purchasePrice)})`);
+
+  // …and the plain (non-assignment) purchase price, which used to go through raw
+  const plain = assignmentFields({ isAssignment: false, loanType: 'Purchase', purchasePrice: '412,500' });
+  assert(plain.purchasePrice === 412500, `a non-assignment purchase price is parsed too (got ${JSON.stringify(plain.purchasePrice)})`);
+
+  // the three columns the create routes used to bind raw off the draft
+  const routes = [
+    ['src/routes/borrower.js', fs.readFileSync(path.join(__dirname, '..', 'src', 'routes', 'borrower.js'), 'utf8')],
+    ['src/routes/staff.js', fs.readFileSync(path.join(__dirname, '..', 'src', 'routes', 'staff.js'), 'utf8')],
+  ];
+  for (const [name, txt] of routes) {
+    const raw = /\bb\.(asIsValue|arv|rehabBudget)\s*\|\|\s*null/.exec(txt);
+    assert(!raw, `${name} never binds a money value to a numeric column raw${raw ? ` — found \`${raw[0]}\`` : ''}`);
+  }
 }
 
 console.log(failures ? `\n${failures} assertion(s) failed` : '\nALL studio money hand-off assertions passed');

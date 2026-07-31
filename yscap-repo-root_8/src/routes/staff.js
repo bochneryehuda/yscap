@@ -1207,6 +1207,12 @@ router.post('/applications', async (req, res) => {
     // has ONE definition and can never drift between staff and borrower surfaces.
     const { isAssignment, underlying, assignFee, purchasePrice } =
       require('../lib/fields').assignmentFields(b);
+    /* Money is PARSED on the way to a numeric column, never bound raw (pre-merge
+       audit of #919). A formatted "445,000" — which is what a pre-#919 studio
+       hand-off put in an application draft — makes the INSERT throw
+       `invalid input syntax for type numeric`, i.e. a 500 rather than a wrong
+       number. See lib/fields.js moneyValue. */
+    const money = require('../lib/fields').moneyValue;
     // sqft only applies to a square-footage / ground-up rehab — null it otherwise
     // so a stale value can't force the pricing sqftAddition flag.
     const sqf = require('../lib/fields').sqftForType(b.rehabType, intField(b.sqftPre) || null, intField(b.sqftPost) || null);
@@ -1220,8 +1226,8 @@ router.post('/applications', async (req, res) => {
        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,'staff','new',now())
        RETURNING id,ys_loan_number`,
       [borrowerId, addr ? JSON.stringify(addr) : null, b.propertyType || null, b.units || null,
-       b.program || null, require('../lib/fields').sanitizeLoanType(b.loanType), purchasePrice, b.asIsValue || null,   // #95: never a program
-       b.arv || null, b.rehabBudget || null, officerId, officerName,
+       b.program || null, require('../lib/fields').sanitizeLoanType(b.loanType), purchasePrice, money(b.asIsValue) || null,   // #95: never a program
+       money(b.arv) || null, money(b.rehabBudget) || null, officerId, officerName,
        b.rehabType || null, sqf.sqftPre, sqf.sqftPost,
        intField(b.requestedExpFlips), intField(b.requestedExpHolds), intField(b.requestedExpGround),
        processorId, isAssignment, underlying, assignFee, intField(b.requestedExpReo)]);   // #97: General REO slot

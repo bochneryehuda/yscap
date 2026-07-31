@@ -39,10 +39,31 @@ export function moneyStr(v) {
 }
 
 /** A money value as a NUMBER. Blank / unparseable → 0, never NaN.
- *  This is the drop-in for `Number(x) || 0` on any money field: for a value that
- *  already obeys the clean contract it returns exactly what `Number()` did, so
- *  swapping it in can never change an existing result. */
+ *
+ *  THE DROP-IN FOR `Number(x) || 0` ON A MONEY FIELD, and it has to be a real
+ *  drop-in or the repo-wide guard (scripts/test-studio-money-handoff.js) would be
+ *  telling people to make a silent behaviour change. Two things `moneyStr` alone
+ *  gets wrong, both caught by the pre-merge audit of this change (2026-07-31):
+ *
+ *   • THE SIGN. `moneyStr` strips everything that is not a digit or a dot —
+ *     including a minus — because a MoneyInput must not let a human type one.
+ *     But a value read back off the SERVER can legitimately be negative (a
+ *     credit, an adjustment, a net figure), and `moneyNum(-32500)` returning
+ *     +32500 would be a silent sign flip: worse than the NaN→0 this replaces,
+ *     because it is a plausible number. The sign is read off the ORIGINAL value
+ *     and re-applied.
+ *   • A VALUE THAT IS ALREADY A NUMBER is returned as-is, never round-tripped
+ *     through a string. `String(1e21)` is "1e+21", which strips to "121".
+ *
+ *  What it deliberately does NOT preserve, because these are not money: a
+ *  non-finite number (Infinity/NaN → 0, the `|| 0` answer), and exponent or hex
+ *  NOTATION inside a string ("1e5" → 15, "0x10" → 10). No money field on any
+ *  surface produces those — MoneyInput cannot type them and Postgres numeric
+ *  never renders them — and a money box that somehow held "1e5" meant 15 far
+ *  more plausibly than 100000. */
 export function moneyNum(v) {
+  if (typeof v === 'number') return Number.isFinite(v) ? v : 0;
   const n = Number(moneyStr(v));
-  return Number.isFinite(n) ? n : 0;
+  if (!Number.isFinite(n) || n === 0) return 0;
+  return /^[\s$(]*-/.test(String(v == null ? '' : v)) ? -n : n;
 }
