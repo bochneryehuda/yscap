@@ -105,6 +105,8 @@ function borrowerTermsKey({ program, productLabel, noteRate, totalLoan, quote, i
     // re-notify ("ANY number that really changed", owner-directed 2026-07-20).
     s.initialAdvance == null ? null : Math.round(num(s.initialAdvance)),
     s.rehabHoldback == null ? null : Math.round(num(s.rehabHoldback)),
+    // Out-of-pocket rehab exception (owner-authorized 2026-07-31) — a change re-notifies.
+    s.oopRehab == null ? null : Math.round(num(s.oopRehab)),
   ]);
 }
 
@@ -443,6 +445,9 @@ function borrowerTermsEmail({ ctx, quote, total, termMonths, officer, termOption
     num(s.monthlyPayment) > 0 ? { label: 'Monthly payment (interest only)', value: money(s.monthlyPayment) } : null,
     hasHoldback ? { label: 'Initial advance at closing', value: money(s.initialAdvance) } : null,
     hasHoldback ? { label: 'Rehab holdback (drawn as work completes)', value: money(s.rehabHoldback) } : null,
+    // Out-of-pocket rehab exception (owner-authorized 2026-07-31): the rehab the
+    // borrower funds themselves over construction (0 unless an approved exception).
+    num(s.oopRehab) > 0 ? { label: 'Rehab paid out of pocket (funded as the work is done)', value: money(s.oopRehab) } : null,
     num(s.financedReserve) > 0 ? { label: 'Financed interest reserve', value: money(s.financedReserve) } : null,
     quote.cashToClose != null ? { label: 'Estimated cash to close', value: money(quote.cashToClose) } : null,
     (quote.liquidityRequired ?? quote.liquidity) != null ? { label: 'Reserves to verify', value: money(quote.liquidityRequired ?? quote.liquidity) } : null,

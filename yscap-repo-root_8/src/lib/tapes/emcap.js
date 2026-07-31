@@ -154,11 +154,22 @@ function economics(loan) {
   const holdback = n(s.rehabHoldback) != null ? n(s.rehabHoldback) : n(a.rehab_budget);
   const financedReserve = n(s.financedReserve) != null ? n(s.financedReserve)
     : (n(a.requested_ir_amount) != null ? n(a.requested_ir_amount) : 0);
+  // Out-of-pocket rehab exception (owner-authorized 2026-07-31), mirroring Fidelis:
+  // totalRehab = the FULL construction budget; oopRehab = the slice we do NOT finance
+  // (budget − financed holdback). $0 unless an approved exception lowered the holdback.
+  // Exposed for a dedicated EMCAP out-of-pocket column once the owner confirms which
+  // cell of the EMCAP workbook carries it (its rehab columns K/L are unchanged for now,
+  // so no-exception loans are byte-identical).
+  const totalRehab = n(a.rehab_budget) != null ? n(a.rehab_budget) : holdback;
+  let oopRehab = null;
+  if (totalRehab != null && holdback != null && totalRehab - holdback > 0) oopRehab = totalRehab - holdback;
   let initialAdvance = n(s.initialAdvance);
   if (initialAdvance == null && totalLoan != null) initialAdvance = totalLoan - (holdback || 0) - (financedReserve || 0);
   return {
     totalLoan,
     holdback,
+    totalRehab,
+    oopRehab,
     financedReserve,
     // Acquisition Loan = the purchase-money portion (owner-directed): the day-1
     // acquisition advance, i.e. loan − rehab holdback − interest reserve.
