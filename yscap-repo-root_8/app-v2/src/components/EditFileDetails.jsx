@@ -6,6 +6,8 @@ import { US_STATES } from './LlcManager.jsx';
 import { PROGRAMS, PROPERTY_TYPES, LOAN_TYPES, selectOptions, unitsMode, unitsForType } from '../lib/enums.js';
 import LlcPicker from './LlcPicker.jsx';
 import AddressAutocomplete from './AddressAutocomplete.jsx';
+import { goToSection } from './FileSections.jsx';
+import { refiKind } from '../lib/payoff.js';
 
 /* Staff edit of the loan-file data after creation — EVERY field the
    application collects is correctable here (typo'd price, wrong property
@@ -52,6 +54,7 @@ function formFrom(app) {
     requestedExpGround: num(app.requested_exp_ground), requestedExpReo: num(app.requested_exp_reo),
     requestedIrMonths: num(app.requested_ir_months), requestedIrAmount: num(app.requested_ir_amount), term: app.term || '',
     payoffAmount: num(app.payoff_amount), originalPurchasePrice: num(app.original_purchase_price),
+    payoffLender: app.payoff_lender || '', payoffLoanNumber: app.payoff_loan_number || '',
     acquisitionDate: app.acquisition_date ? String(app.acquisition_date).slice(0, 10) : '',
     isAssignment: !!app.is_assignment, underlyingContractPrice: num(app.underlying_contract_price), assignmentFee: num(app.assignment_fee),
     addrLine1: a.line1 || a.street || '', addrUnit: a.unit || '', addrCity: a.city || '',
@@ -81,7 +84,14 @@ export default function EditFileDetails({ app, onSaved }) {
   // 2/3/4 dropdown; "Multi 5+" / "Mixed Use" → free number ≥ 5) — same rule as
   // the borrower application and the new-file form.
   const setPropertyType = (v) => setF((s) => ({ ...s, propertyType: v, units: unitsForType(v, s.units) }));
-  const isRefi = /refi/i.test(f.loanType || '');
+  // The SHARED reading of the loan purpose (lib/payoff.js), so this form, the
+  // Payoff section and the server can never disagree about whether there is a
+  // loan to pay off — including on "Delayed Purchase Financing", which is a
+  // purchase however it is spelled.
+  const isRefi = refiKind(f.loanType) !== 'purchase';
+  // The SAVED purpose, as the file screen reads it — that is what decides whether
+  // the Payoff section exists, so it is what the pointer button must be gated on.
+  const savedIsRefi = refiKind(app.loan_type) !== 'purchase';
 
   async function save() {
     setBusy(true); setErr(''); setMsg(''); setWarn('');
@@ -95,7 +105,19 @@ export default function EditFileDetails({ app, onSaved }) {
         requestedExpFlips: f.requestedExpFlips, requestedExpHolds: f.requestedExpHolds,
         requestedExpGround: f.requestedExpGround, requestedExpReo: f.requestedExpReo,
         requestedIrMonths: f.requestedIrMonths, requestedIrAmount: f.requestedIrAmount, term: f.term,
-        payoffAmount: isRefi ? f.payoffAmount : '',
+        /* THE PAYOFF TRIO IS ONLY EVER CLEARED HERE, NEVER WRITTEN (owner-directed
+           2026-07-31). The Payoff section owns entry, so this form must not send
+           the values it loaded — a form opened before somebody edited the payoff
+           there would save its own stale copy straight back over the fix. It DOES
+           still clear all three when the purpose is switched to a purchase, which
+           is a cleanup only this form can do: there is no Payoff section to do it
+           from once the file stops being a refinance. */
+        ...(isRefi ? {} : { payoffAmount: '', payoffLender: '', payoffLoanNumber: '', estimatedCashOut: '' }),
+        /* A rate-&-term refinance takes no cash out by definition, so switching the
+           purpose off cash-out must clear any cash-out figure the file carries —
+           another cleanup the Payoff section cannot do, because it stops offering
+           the field the moment the purpose changes. */
+        ...(isRefi && refiKind(f.loanType) !== 'cash_out' ? { estimatedCashOut: '' } : {}),
         originalPurchasePrice: isRefi ? f.originalPurchasePrice : '',
         acquisitionDate: isRefi ? f.acquisitionDate : '',
         // Assignment is a purchase concept — never send it on a refinance.
@@ -236,9 +258,34 @@ export default function EditFileDetails({ app, onSaved }) {
           {isRefi && <>
             <p className="muted small" style={{ margin: '14px 0 8px', textTransform: 'uppercase', letterSpacing: '.05em' }}>Refinance details</p>
             <div className="edit-grid">
-              <label><span>Payoff amount</span><MoneyInput value={f.payoffAmount} onChange={(v) => set('payoffAmount', v)} /></label>
               <label><span>Original purchase price</span><MoneyInput value={f.originalPurchasePrice} onChange={(v) => set('originalPurchasePrice', v)} /></label>
-              <label className="col-2"><span>Date acquired</span><input className="input" type="date" value={f.acquisitionDate} onChange={(e) => set('acquisitionDate', e.target.value)} /></label>
+              <label><span>Date acquired</span><input className="input" type="date" value={f.acquisitionDate} onChange={(e) => set('acquisitionDate', e.target.value)} /></label>
+            </div>
+            {/* THE PAYOFF HAS ITS OWN SECTION (owner-directed 2026-07-31), so it is
+                NOT edited here as well. Two editors for the same three fields on one
+                page is worse than one — the same reason the note buyer's second
+                editor was retired to a read-only line. This says where they live and
+                shows what is on the file, and nothing more. */}
+            <div style={{ margin: '10px 0 0', padding: '10px 12px', background: 'var(--soft,#FAF8F3)', borderRadius: 8 }}>
+              <div style={{ fontSize: 13.5, color: '#141B22' }}>
+                <b>Payoff:</b>{' '}
+                {f.payoffAmount ? `$${Number(moneyNum(f.payoffAmount)).toLocaleString('en-US')}` : 'not entered'}
+                {f.payoffLender ? ` to ${f.payoffLender}` : ''}
+                {f.payoffLoanNumber ? ` (loan #${f.payoffLoanNumber})` : ''}
+              </div>
+              <div style={{ marginTop: 4, fontSize: 13, color: '#4B585C' }}>
+                The payoff has its own section on this file — how much, who holds the loan, their loan
+                number, and what the borrower walks away with on a cash-out.{' '}
+                {/* The BUTTON is gated on the SAVED loan purpose, not the one being
+                    typed. The Payoff section only exists once the file is really a
+                    refinance, so on a purchase whose dropdown was just switched (and
+                    not yet saved) this button would scroll to a section that isn't
+                    there and silently do nothing. It says "save first" instead. */}
+                {savedIsRefi
+                  ? <button type="button" className="btn ghost small" style={{ marginLeft: 4 }}
+                      onClick={() => goToSection('sec-payoff')}>Open the Payoff section</button>
+                  : <em>Save this change first and the Payoff section appears on the file.</em>}
+              </div>
             </div>
           </>}
           <p className="muted small" style={{ margin: '14px 0 8px', textTransform: 'uppercase', letterSpacing: '.05em' }}>Experience entered on this file</p>

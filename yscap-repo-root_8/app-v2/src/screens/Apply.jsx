@@ -617,13 +617,26 @@ export default function Apply() {
                   <div className="field"><label>Date acquired</label>
                     <input className="input" type="date" value={form.acquisitionDate || ''} onChange={e => set('acquisitionDate', e.target.value)} /></div>
                 </div>
+                {/* WHO holds the loan being paid off, and WHICH loan (owner-directed
+                    2026-07-31). The payoff AMOUNT alone leaves the closing attorney
+                    and the title company with nowhere to send the payoff request —
+                    these two lines are what make the payoff actionable at closing. */}
+                <div className="grid cols-2">
+                  <div className="field"><label>Lender being paid off</label>
+                    <input className="input" value={form.payoffLender || ''} onChange={e => set('payoffLender', e.target.value)}
+                      placeholder="who holds the current loan" /></div>
+                  <div className="field"><label>Their loan number</label>
+                    <input className="input" value={form.payoffLoanNumber || ''} onChange={e => set('payoffLoanNumber', e.target.value)}
+                      placeholder="the payoff lender's loan #" /></div>
+                </div>
                 <div className="grid cols-2">
                   <div className="field"><label>As-is value *</label>
                     <MoneyInput value={form.asIsValue || ''} onChange={v => set('asIsValue', v)} /></div>
                 </div>
                 <p className="muted small" style={{ marginBottom: 12 }}>
                   On a refinance we lend against the property's current (as-is) value; the payoff tells us
-                  what needs to be retired at closing{/cash/i.test(form.loanType || '') ? ' — anything above it is your cash-out' : ''}.
+                  what needs to be retired at closing{/cash/i.test(form.loanType || '') ? ' — anything above it, after closing costs, is your cash-out' : ''}.
+                  Naming the lender and their loan number lets us request the payoff letter without chasing you for it.
                 </p>
               </>
             )}
