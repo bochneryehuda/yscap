@@ -155,10 +155,26 @@ console.log('\n--- what is still needed, on the server and in the portal ---');
  * ===================================================================== */
 console.log('\n--- a rate-&-term that still nets cash is flagged, not blocked ---');
 {
-  const q = { structure: { totalLoan: 500000, initialAdvance: 380000 }, closingCosts: { dueAtClosing: 18000 } };
+  /* `sizing`, which is the key `pricing.js normalize()` really publishes. A first
+     cut of this file fabricated `structure` — a key the system has never
+     produced — and the model was written to match the fixture, so both were
+     wrong together and this suite stayed green while the feature was dead on
+     every real file. The pin below makes the fixture's shape a claim the test
+     ITSELF checks, and scripts/test-payoff-submit-db.js feeds in a genuine
+     engine quote so the shape can never drift unnoticed again. */
+  const q = { sizing: { totalLoan: 500000, initialAdvance: 380000 }, closingCosts: { dueAtClosing: 18000 } };
+  assert(P.payoffState({ loan_type: 'Refinance — Cash-Out', payoff_amount: 1 }, q).derived.canDerive === true,
+    'the model reads the quote key the pricing engine publishes (`sizing`)');
+  assert(P.payoffState({ loan_type: 'Refinance — Cash-Out', payoff_amount: 1 },
+    { structure: { totalLoan: 500000, initialAdvance: 380000 }, closingCosts: { dueAtClosing: 18000 } })
+    .derived.canDerive === false,
+  'and a `structure` key — which no quote has ever carried — derives nothing');
+
   const rt = P.payoffState({ loan_type: 'Refinance — Rate & Term', payoff_amount: 300000, payoff_lender: 'Chase', payoff_loan_number: '881' }, q);
   assert(!!rt.purposeNote, 'a rate-&-term netting $62k raises a note');
-  eq(rt.purposeNote.amount, 62000, 'and quotes the figure it saw');
+  // Null-guarded: a failure here must REPORT, not take the whole suite down with
+  // a TypeError several hundred tests from the end.
+  eq(rt.purposeNote && rt.purposeNote.amount, 62000, 'and quotes the figure it saw');
   eq(rt.ready, true, 'it does NOT make the file unready — it is advice, not a gate');
 
   const clean = P.payoffState({ loan_type: 'Refinance — Rate & Term', payoff_amount: 380000, payoff_lender: 'Chase', payoff_loan_number: '881' }, q);
@@ -176,7 +192,7 @@ console.log('\n--- garbage in, an answer out ---');
     { loan_type: 'Refinance — Cash-Out', payoff_amount: '300000', payoff_lender: null, payoff_loan_number: undefined }];
   for (const app of JUNK) {
     let ok = true;
-    try { const s = P.payoffState(app, { structure: null, closingCosts: 'nope' }); ok = !!s && typeof s.ready === 'boolean'; }
+    try { const s = P.payoffState(app, { sizing: null, closingCosts: "nope" }); ok = !!s && typeof s.ready === 'boolean'; }
     catch (_) { ok = false; }
     assert(ok, `payoffState survives ${JSON.stringify(app)}`);
   }
