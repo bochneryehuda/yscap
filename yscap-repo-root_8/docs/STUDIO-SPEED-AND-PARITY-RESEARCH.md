@@ -100,6 +100,89 @@ available.
 
 ---
 
+## 2b. THE LIKELIEST DIRECT ANSWER: the public term sheet page grew 75% in four days
+
+An audit found this and I re-verified every byte from git history. Sizes of the three files the public
+Term Sheet Studio loads:
+
+| Date | `termsheet.js` | `term-sheet.html` | `silver-program.js` | **Total** |
+|---|---|---|---|---|
+| 2026-07-27 | 171,435 | 82,838 | *did not exist* | **254,273** |
+| 2026-07-29 | 187,655 | 88,882 | 61,667 | 338,204 |
+| 2026-07-30 | 220,644 | 98,230 | 108,982 | 427,856 |
+| **2026-07-31 (live)** | **228,989** | **106,112** | **110,403** | **445,504** |
+
+**+191,231 bytes — a 75% increase — in four days.**
+
+The Silver Program (a real feature, added 2026-07-29, commit `6e11d29`) brought a **110 KB fourth
+blocking engine script** onto the public page. The V1 page loads three engines; V2 now loads four.
+
+**Nothing here is a mistake** — this is the product growing, as directed. But it is growing
+**uncompressed** (§2), which is what turns normal feature growth into felt slowness. `silver-program.js`
+alone would be 34 KB instead of 110 KB with compression on.
+
+**If "the old static system" means the tool as it was last week, this is the measurable difference.**
+
+---
+
+## 2c. PILOT is 6.5x heavier than the standalone static tool
+
+Audit-measured byte totals for a cold load:
+
+| What you open | Bytes | If compressed |
+|---|---|---|
+| The V1 static term sheet page | 481,070 | 166,063 |
+| The V2 static term sheet page | 686,666 | 227,936 |
+| **The studio *inside* PILOT** (portal shell + studio iframe) | **3,136,233** | **877,089** |
+
+**The same tool inside PILOT costs 6.5x what the old standalone page costs.** Two causes:
+
+1. **The portal is one 2.07 MB JavaScript file** with no code splitting — every user downloads and parses
+   the entire application (borrower + staff + underwriting + draws + closing + chat) before anything
+   appears. V2 is 2.7x the size of V1. This has been true since V2 existed; there is no single commit
+   that broke it.
+2. **The portal downloads 190 KB of the pricing engines it never uses** — the dead copies. They are
+   parser-blocking `<script>` tags in the `<head>`, and their only consumer in the entire application is
+   one `console.info(...)` line. They are also fetched **twice per session** (once by the portal, once by
+   the studio iframe, at different URLs, so the browser cannot share them).
+
+**This is what Stage 0 already deletes** — the change sitting unmerged in the draft PR. It was built as a
+security fix. It is also a 190 KB speed fix, and that was not the reason it was written.
+
+---
+
+## 2d. The term sheet PDF downloads a 364 KB library from someone else's server
+
+`web/v2/tools/termsheet.js:1699` fetches jsPDF from a public CDN, falling back to a second public CDN:
+
+```js
+try { await loadScript("https://cdn.jsdelivr.net/npm/jspdf@2.5.1/..."); }
+catch (e) { await loadScript("https://unpkg.com/jspdf@2.5.1/..."); }
+```
+
+**We already host both libraries ourselves** — `web/v2/tools/vendor/jspdf.umd.min.js` (364,463 bytes) and
+`xlsx.bundle.js` (425,020 bytes) are on our server right now. And our **own sibling tools already use
+them correctly**: `track-record.js:410` and `rehab-budget.js:785` both load `vendor/…` first.
+
+The Term Sheet Studio is the one that does not. So the first "Download PDF" waits on an outside company —
+fast on one network, slow or dead on another. For the term sheet, which is the entire point of the page.
+
+**Fix:** two lines, copying the pattern our other tools already use. *(Note: V1 does the same thing, so
+this is long-standing, not a new regression.)*
+
+---
+
+## 2e. Static files are told not to cache
+
+`src/server.js:425-433` sets cache headers for `.html` (`no-cache`) and `/portal/assets/` (`immutable`)
+— **and nothing else**. Everything else falls to the default, so the browser re-checks all ~12 studio
+files with the server every single time the studio is opened, even when nothing changed.
+
+The `?v=…` strings on those script tags are cache-*busters*; they do not set caching. Because those
+already guarantee a new URL when a file changes, it is safe to cache them hard.
+
+---
+
 ## 3. How fast the pricing is TODAY (the baseline to beat)
 
 Measured in a real browser, on a fully-priced deal:
@@ -147,6 +230,49 @@ loan before: 562500   after: 562500
 ```
 
 That risk is real, and it is provably handled — **as long as that pattern is used.** It is not optional.
+
+---
+
+## 4b. THE REFRAME: the pricing was never the slow part
+
+Two independent measurements, put together, change the conclusion:
+
+| | |
+|---|---|
+| One keystroke in a **real browser** (my measurement, includes drawing the screen) | **2.3 ms** |
+| The **pricing math** inside that keystroke (audit measurement, engines only) | **0.020 ms** common case, **0.131 ms** worst case |
+
+**So roughly 94% of a keystroke is drawing the screen, not pricing.** One `recompute()` does 43 text
+writes, 16 HTML writes, 30 element lookups and a full re-format of every money field. The pricing is
+already effectively free.
+
+**That matters enormously for this decision.** Moving pricing to the server removes **0.13 ms** of work
+and adds **40–300 ms** of network. We would be paying a large cost to remove something that was never
+costing anything.
+
+An audit also measured the **absolute physical floor**: a real HTTP round trip on the *same machine* —
+no network, no encryption, no login, no database — is **0.99 ms**. That is already **7.6× slower** than
+the entire worst-case keystroke today. The message-passing overhead alone (0.78 ms) is **six times** the
+whole pricing computation.
+
+**The gap is not the math. It is the speed of light and the network stack, and no server design closes
+it.**
+
+### And the engines already run on the server
+
+`src/lib/pricing.js:18-21` **already loads these exact four files**. Its own header says:
+
+> *"Registering a product recomputes here on the server so a tampered client can never inject fabricated
+> terms; the browser copy of the engines is used only for instant what-if display."*
+
+So the split already exists and was deliberate: **the server is already the authority when a product is
+registered**; the browser copy exists for one reason only — instant what-if numbers as you type. Removing
+it surrenders the only thing it was there to provide.
+
+That does not kill the project — the security goal is real, the guideline rules genuinely are
+downloadable today, and that is a genuine business risk. But it does mean **the trade is sharper than the
+plan admitted**: this is not "make it server-side, same speed." It is "give up instant what-if typing to
+stop publishing the rules."
 
 ---
 
@@ -205,34 +331,135 @@ The rule stands: **never show a number we are not sure of.**
 
 ## 7. What "operates the exact same way" requires
 
-Proven so far:
+### 7a. An important limit on my own earlier claim
 
-- **Same numbers** — 115,200 scenarios match exactly (`npm test`, first step), and the prototype
-  returned the identical `$562,500` on every run.
-- **Shared-state leak** — provably handled by set→use→reset. Must not be skipped.
+I said "the numbers are identical." **That is proven for the pricing engines and not yet for the studio.**
 
-Still required before anything ships (these are in the implementation plan):
+`scripts/test-engine-parity.js` — the 115,200-scenario harness — only exercises `YSP.evaluate`,
+`YSP.priceLadder`, `GSP.evaluate`, `SVP.evaluate` and `SVP.priceLadder`. It **never calls**
+`YSTitle.estimate`, `YSP.caps`, `setMarkup`, or `calc()` / `calcGold()` / `calcSilver()`, and never
+touches the PDF or the Excel export.
 
-- `window.TS._calc()` must stay **synchronous**, or the staff register screen silently reads blank or
-  stale numbers — both portals call it inside a `catch` that would swallow the failure.
-- **Every export must refuse to run** while an answer is in flight. A term sheet built on the previous
-  deal's numbers is a legal document with the wrong terms on it.
-- **Every door must be covered**, not just the three `calc` functions — the offer cards, the Gold
-  slider, the ladders, the caps row and the admin zone each reach the rules separately.
-- **Offline stops working.** Today the studio keeps working with no internet once loaded. After the
-  move it cannot. That is a real, permanent behaviour change and it must be a deliberate decision.
+So it proves **the rule files themselves are byte-for-byte intact**. It says nothing about whether the
+*screen* shows the same numbers. The fee arithmetic, cash-to-close, liquidity, the PDF and the
+spreadsheet all sit **above** the engines and are untested.
+
+**Before any swap ships, a second harness is needed** that drives the real page in a browser and compares
+the rendered panel, the PDF text and the spreadsheet cells before vs after.
+
+### 7b. One disputed finding, reported honestly
+
+An audit reported that the browser's fee arithmetic and the server's **already disagree by $0.01**,
+because the browser accumulates unrounded values while `src/lib/pricing.js` rounds to the cent at each
+step.
+
+**The mechanism is real and visible in the code.** `termsheet.js:493-514` does no intermediate rounding;
+`pricing.js:325-341` calls `round2()` at every step.
+
+**But I could not reproduce any divergence.** I compared both disciplines across **4,185 scenarios** and
+on the audit's own cited example: **zero difference, largest gap $0.0000.** The likely reason is that the
+browser deliberately uses the engine's already-rounded payment figures — a comment at
+`termsheet.js:497-502` records that exact drift being fixed in a 2026-07-19 audit.
+
+**Status: unconfirmed.** I am not carrying it as a finding. I am carrying the broader point it raises,
+which is correct and important: **this layer is untested, so it must be proven field-by-field rather than
+assumed** (§7a).
+
+### 7c. Must be true before anything ships
+
+- `window.TS._calc()` must stay **synchronous**. Both portals call it inside a bare `catch (_) {}`. A
+  Promise is neither falsy nor throwing, so it sails straight through — and the register button would be
+  greyed out forever behind a *false* "this didn't size a loan" message.
+- **A not-ready `calc()` must blank the panel, not throw.** If it throws, `recompute()` dies partway and
+  skips the code that highlights the selected program card — so **tapping a program card does nothing**,
+  and the portal then reports "no program selected" right after the officer selected one.
+- **Exports must refuse from inside the export function**, not from the button. The portal calls
+  `exportPdf` directly, bypassing the button entirely.
+- **A refused PDF must block the register.** Today, if the PDF fails, the file registers anyway with a
+  note — which means a loan file with **no term sheet**, discovered days later when the e-sign package
+  will not send.
+- **`targetLTC` must come from the fresh answer**, never from a possibly-stale one. It is the only
+  computed value in the register payload and it changes the loan amount.
+- **`setMarkup` set→use→reset must stay synchronous with no waiting in between.** Any pause between
+  setting and using it leaks one visitor's markup into another visitor's quote.
+- **Two endpoints, not one** — see §7d.
+- **Offline stops working.** Today the studio needs the network only to *load*. After the move, a dropped
+  connection leaves the last numbers on screen with nothing indicating they are stale.
+
+### 7d. A design blocker the plan had not accounted for
+
+The Term Sheet Studio is **one page serving two audiences**: the public marketing tool *and* the staff
+portal (which embeds that same page in a frame). It carries **no login token** — it only ever calls
+open endpoints.
+
+The admin zone (markup, origination, rate and leverage overrides, manual pricing, force-price) is read
+**inside** the pricing functions. So a single `/api/quote` has to either:
+
+- **(a)** accept override values from **anonymous visitors** — letting a stranger price past the
+  guideline limits and read the answer back; **or**
+- **(b)** reject them — which **breaks the admin zone inside the portal for every staff member**,
+  re-creating exactly the regression the 2026-07-27 directive was written to fix.
+
+**Neither is acceptable.** It needs **two endpoints** — a public one that accepts only deal inputs, and a
+staff one behind a login — and the portal must hand the embedded page a token, which is a genuinely new
+capability that does not exist today. This is real work that the plan did not carry.
+
+### 7e. Two more doors (the count is now eleven, not nine)
+
+- **`tierMaxOf()`** (`termsheet.js:1225`) fires a **second, separate Gold evaluation** with the overrides
+  stripped, to get the program's fixed maximum. Miss it and the "Program maximum leverage" row silently
+  falls back to the *effective* ceiling — **re-breaking the exact bug reported on 2026-07-30** (the Max
+  LTC moving when the interest reserve was edited).
+- **The slider's own ladder call** (`termsheet.js:2976`) computes the ladder a **third** time and needs
+  the rows **synchronously** to translate slider position into leverage. Without them it hits an early
+  return and **the slider silently does nothing**.
+
+Also confirmed: a `<select>` change (state, strategy) costs **two** full recomputes, not one — the same
+handler is bound to both `input` and `change`, and browsers fire both.
 
 ---
 
-## 8. Recommendation
+## 8. Recommendation — the speed fixes are a SEPARATE, safe job
 
-**Do §6.1 and §6.2 now, on their own, separately from the pricing project.** Self-hosting the fonts and
-turning on compression are small, safe, reversible, and they fix a real problem that exists today and
-has nothing to do with moving the rules. They will make the site feel faster immediately.
+None of the following touches a pricing rule, a number, or a screen design. Each is independently
+revertible. Ranked by benefit ÷ risk:
 
-**Then decide the pricing move on its merits,** knowing the honest trade: the numbers stay identical and
-the rules stop being downloadable, but typing goes from instant to 40–300 ms depending on the visitor's
-connection.
+| # | Fix | Benefit | Risk | Size |
+|---|---|---|---|---|
+| 1 | **Turn on compression** | ~71% smaller downloads, everywhere, every visitor | very low | 2 lines |
+| 2 | **Self-host the two font families** | kills the 12-second worst case on 36 pages; also a privacy fix | very low | small |
+| 3 | **Merge Stage 0** (already built, already proven) | −190 KB of parser-blocking dead script from the portal | very low | done, unmerged |
+| 4 | **Term sheet PDF uses our own copy of jsPDF** | removes an outside dependency from the core deliverable | very low | 2 lines |
+| 5 | **Real cache headers on static files** | stops re-checking ~12 files on every studio open | low | small |
+| 6 | **Split the 2.07 MB portal bundle** | large first-load win for every staff user | medium | real work |
+| 7 | **Make the studio's 700ms poller cheap** | stops a re-render 1.4x/second while the studio is open | medium | moderate |
+
+**Items 1–4 are the ones I would do first.** They are small, safe, reversible, and they fix problems that
+exist **today** and have nothing to do with moving the rules.
+
+**Then decide the pricing move on its own merits,** knowing the honest trade: the numbers stay identical
+and the rules stop being downloadable, but typing goes from instant to 40–300 ms depending on the
+visitor's connection.
+
+**Note on ordering:** fixing compression *first* also makes the pricing move cheaper to judge, because it
+removes the biggest confound. Right now it is impossible to tell "the server is slow" from "the page was
+always heavy."
+
+---
+
+## 9. What was checked and ruled OUT
+
+So the record shows what is *not* the problem:
+
+- **The pricing engines themselves.** All three programs evaluate in ~0.013 ms. Not the cost, at any
+  point, in any measurement.
+- **Service workers serving stale files.** Network-first for pages, correctly versioned cache names, and
+  the reload-loop guards are in place.
+- **A recent bad commit.** The portal bundle has grown steadily (~56 KB over 20 builds). There is no
+  cliff, no single change that "made it slow."
+- **Request auditing / database logging on static files.** Static requests are skipped entirely.
+- **Any previously-tracked performance issue.** Nothing in `docs/` or `CLAUDE.md` records a prior
+  complaint about portal or studio speed — this is new to the record.
 
 ---
 
