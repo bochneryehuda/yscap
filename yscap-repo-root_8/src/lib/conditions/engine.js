@@ -39,6 +39,13 @@ function num(v) {
   const n = Number(v);
   return isFinite(n) ? n : null;
 }
+function str(v) {
+  // Same discipline as num(): absent/blank stays NULL so an "is empty" test reads
+  // true and a comparison against missing data never matches an empty string.
+  if (v === null || v === undefined) return null;
+  const s = String(v).trim();
+  return s === '' ? null : s;
+}
 function dateStr(v) {
   if (!v) return null;
   if (v instanceof Date) return v.toISOString().slice(0, 10);
@@ -157,6 +164,11 @@ async function loadRuleContext(appId) {
     rehab_budget: num(a.rehab_budget),
     rehab_type: registry.normRehabType(a.rehab_type),
     payoff_amount: num(a.payoff_amount),
+    // WHO is being paid off and WHICH loan (db/386) — both are writable rule
+    // fields, so they must be readable ones too or a rule keyed on them would
+    // silently evaluate as blank.
+    payoff_lender: str(a.payoff_lender),
+    payoff_loan_number: str(a.payoff_loan_number),
     original_purchase_price: num(a.original_purchase_price),
     acquisition_date: dateStr(a.acquisition_date),
     underlying_contract_price: num(a.underlying_contract_price),

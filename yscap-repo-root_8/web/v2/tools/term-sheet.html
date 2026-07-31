@@ -577,8 +577,39 @@
                 <div class="input"><span class="adorn">$</span><input id="arv" type="number" inputmode="numeric" placeholder="value after rehab"></div>
             </div>
             <div class="field cond hidden" data-cond="refiOnly">
-                <label for="payoff">Current loan payoff <em>(optional)</em><span class="tip" tabindex="0" role="note" aria-label="The balance on the loan this refinance pays off. Cash to you at closing is the new loan minus this payoff and closing costs — and that cash-out is capped (see the note below the structure).">i<span class="tip-bub">The balance on the loan this refinance pays off. Cash to you at closing is the new loan minus this payoff and closing costs — and that cash-out is capped (see the note below the structure).</span></span></label>
+                <label for="payoff">Current loan payoff<span class="tip" tabindex="0" role="note" aria-label="The balance on the loan this refinance pays off. Cash to you at closing is the new loan minus this payoff and closing costs — and that cash-out is capped (see the note below the structure).">i<span class="tip-bub">The balance on the loan this refinance pays off. Cash to you at closing is the new loan minus this payoff and closing costs — and that cash-out is capped (see the note below the structure).</span></span></label>
                 <div class="input"><span class="adorn">$</span><input id="payoff" type="number" inputmode="numeric" placeholder="existing balance to pay off"></div>
+            </div>
+            <!-- WHO we pay off, and WHICH loan — CARRIED, NEVER ASKED FOR HERE
+                 (owner-directed 2026-07-31: "make sure the lender name and the loan
+                 number doesn't need to be entered on the products and pricing, only
+                 afterwards within the file").
+
+                 Products & Pricing prices a deal. Neither of these changes a single
+                 number in it, and at quote time nobody has looked the servicer up
+                 yet — so asking for them here is two boxes an officer must skip on
+                 every refinance they price. They are collected once, later, in the
+                 loan file's own Payoff section, where the closing attorney's payoff
+                 request actually comes from.
+
+                 They stay as HIDDEN inputs, fed read-only by ProductStudioPanel from
+                 the file (the same shape as coBorrowerPgWaived), so a term sheet
+                 generated FROM a file still prints "Paid off to" and "Their loan
+                 number". A standalone quote simply has nothing to print, which is
+                 correct — there is no file yet. -->
+            <input id="payoffLender" type="hidden" value="">
+            <input id="payoffLoanNo" type="hidden" value="">
+            <!-- CASH-OUT PROCEEDS (owner-directed 2026-07-31: "if it's a cash out
+                 how much the cash out process is going to be according to the
+                 structure, just the field for it"). It DEFAULTS to what the
+                 structure implies — new loan less the payoff less closing costs —
+                 and stays editable, because the figure that matters is the one
+                 actually going to the borrower and a deal can net differently.
+                 Cash-out refinances only: a rate-&-term takes no cash. -->
+            <div class="field cond hidden" data-cond="cashOutOnly">
+                <label for="cashOutAmt">Cash-out proceeds to the borrower<span class="tip" tabindex="0" role="note" aria-label="What the borrower actually receives at closing. Defaults to the advance that funds at closing, less the payoff and the closing costs; edit it if the deal nets differently. It is printed on the term sheet and saved on the loan file — it is not used to price the deal.">i<span class="tip-bub">What the borrower actually receives at closing. Defaults to the advance that funds at closing, less the payoff and the closing costs; edit it if the deal nets differently. It is printed on the term sheet and saved on the loan file — it is not used to price the deal.</span></span></label>
+                <div class="input"><span class="adorn">$</span><input id="cashOutAmt" type="number" inputmode="numeric" placeholder="auto — from the structure"></div>
+                <span class="help" id="cashOutAmtHelp"></span>
             </div>
             <div class="field" id="rehabScopeWrap" data-cond="ffOnly">
                 <label for="rehabScope">Rehab scope</label>
@@ -943,7 +974,7 @@
 <script src="silver-program.js?v=silver9-bandeps"></script>
 <script src="title-cost.js?v=admin8"></script>
 <script src="address-autocomplete.js?v=admin9"></script>
-<script src="termsheet.js?v=cards9-irtruth1-maxlev1-origfit-manualorig2-badgewrap"></script>
+<script src="termsheet.js?v=cards9-irtruth1-maxlev1-origfit-manualorig2-badgewrap-payoff1"></script>
 <script src="../float-actions.js?v=admin10-applyfix"></script>
 <script>
 /* Property-address autocomplete (owner-directed 2026-07-17): same shared YSAddr

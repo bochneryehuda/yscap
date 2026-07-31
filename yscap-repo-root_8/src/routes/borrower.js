@@ -89,6 +89,15 @@ function moneyField(v) {
   const n = Number(String(v).replace(/[^0-9.\-]/g, ''));
   return isFinite(n) ? n : null;
 }
+/* A free-text column: trimmed, and a blank stores NULL rather than an empty
+   string, so "not stated" reads the same however the box was left. Bounded
+   because these are lender names and reference numbers, not prose — a runaway
+   paste should be clipped at the door, not stored and rendered somewhere. */
+function textField(v, max = 200) {
+  if (v == null) return null;
+  const s = String(v).trim();
+  return s ? s.slice(0, max) : null;
+}
 function stripToolAttachments(payload) {
   const raw = Array.isArray(payload && payload.attachments) ? payload.attachments : [];
   const attachments = raw.slice(0, 4)
@@ -3445,9 +3454,10 @@ router.post('/drafts/:id/submit', async (req, res) => {
         is_assignment,underlying_contract_price,assignment_fee,
         term,requested_ir_months,
         requested_exp_reo,payoff_amount,original_purchase_price,acquisition_date,
+        payoff_lender,payoff_loan_number,
         requested_ir_amount,
         source,raw_intake,status,submitted_at)
-     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$24,$25,$26,$27,$28,$29,$30,'portal',$23,'new',now())
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$24,$25,$26,$27,$28,$29,$30,$31,$32,'portal',$23,'new',now())
      RETURNING id,ys_loan_number`,
     [me(req), b.llcId || null, JSON.stringify(b.propertyAddress), b.propertyType || null, b.units || null,
      b.program || null, require('../lib/fields').sanitizeLoanType(b.loanType), asg.purchasePrice, moneyColumn(b.asIsValue),   // #95: never a program
@@ -3458,6 +3468,22 @@ router.post('/drafts/:id/submit', async (req, res) => {
      b.termMonths ? String(b.termMonths) : null, intField(b.irMonths),
      intField(b.requestedExpReo), moneyField(b.payoffAmount), moneyField(b.originalPurchasePrice),
      require('../lib/fields').normalizeTypedDate(b.acquisitionDate),   // typed '26' resolves to 2026; garbage never persists
+     /* ORDER MATTERS AND IT BIT US (audit-found 2026-07-31). These three values
+        must sit in the SAME order as the columns above — payoff_lender,
+        payoff_loan_number, requested_ir_amount. The first cut inserted the two
+        new COLUMNS here but APPENDED their values to the end of the array, so
+        every placeholder from $30 on shifted by two: the interest-reserve amount
+        landed in payoff_lender, the lender's name in payoff_loan_number, and the
+        payoff LOAN NUMBER — routinely alphanumeric — in requested_ir_amount,
+        which is a numeric(14,2) AND a frozen-engine pricing input. An
+        alphanumeric loan number made the whole submission fail with Postgres
+        22P02; an all-digit one silently became a multi-million-dollar financed
+        interest reserve. Add a column here only by adding its value in the same
+        position, and re-run scripts/test-payoff-submit-db.js, which now submits a
+        real application and reads every one of these columns back. */
+     // WHO holds the loan being paid off and WHICH loan (db/386). Free text,
+     // trimmed to null so a blank box never stores an empty string.
+     textField(b.payoffLender), textField(b.payoffLoanNumber),
      moneyField(b.irAmount)]);
   const appId = ins.rows[0].id;
   // If the borrower linked an LLC, ensure its document requirements exist.
