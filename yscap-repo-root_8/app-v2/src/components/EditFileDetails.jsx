@@ -52,6 +52,7 @@ function formFrom(app) {
     requestedExpGround: num(app.requested_exp_ground), requestedExpReo: num(app.requested_exp_reo),
     requestedIrMonths: num(app.requested_ir_months), requestedIrAmount: num(app.requested_ir_amount), term: app.term || '',
     payoffAmount: num(app.payoff_amount), originalPurchasePrice: num(app.original_purchase_price),
+    payoffLender: app.payoff_lender || '', payoffLoanNumber: app.payoff_loan_number || '',
     acquisitionDate: app.acquisition_date ? String(app.acquisition_date).slice(0, 10) : '',
     isAssignment: !!app.is_assignment, underlyingContractPrice: num(app.underlying_contract_price), assignmentFee: num(app.assignment_fee),
     addrLine1: a.line1 || a.street || '', addrUnit: a.unit || '', addrCity: a.city || '',
@@ -96,6 +97,9 @@ export default function EditFileDetails({ app, onSaved }) {
         requestedExpGround: f.requestedExpGround, requestedExpReo: f.requestedExpReo,
         requestedIrMonths: f.requestedIrMonths, requestedIrAmount: f.requestedIrAmount, term: f.term,
         payoffAmount: isRefi ? f.payoffAmount : '',
+        // WHO / WHICH loan — refinance-only, exactly like the amount beside them.
+        payoffLender: isRefi ? f.payoffLender : '',
+        payoffLoanNumber: isRefi ? f.payoffLoanNumber : '',
         originalPurchasePrice: isRefi ? f.originalPurchasePrice : '',
         acquisitionDate: isRefi ? f.acquisitionDate : '',
         // Assignment is a purchase concept — never send it on a refinance.
@@ -238,6 +242,8 @@ export default function EditFileDetails({ app, onSaved }) {
             <div className="edit-grid">
               <label><span>Payoff amount</span><MoneyInput value={f.payoffAmount} onChange={(v) => set('payoffAmount', v)} /></label>
               <label><span>Original purchase price</span><MoneyInput value={f.originalPurchasePrice} onChange={(v) => set('originalPurchasePrice', v)} /></label>
+              <label><span>Lender being paid off</span><input className="input" value={f.payoffLender} onChange={(e) => set('payoffLender', e.target.value)} placeholder="who holds the current loan" /></label>
+              <label><span>Their loan number</span><input className="input" value={f.payoffLoanNumber} onChange={(e) => set('payoffLoanNumber', e.target.value)} placeholder="the payoff lender's loan #" /></label>
               <label className="col-2"><span>Date acquired</span><input className="input" type="date" value={f.acquisitionDate} onChange={(e) => set('acquisitionDate', e.target.value)} /></label>
             </div>
           </>}

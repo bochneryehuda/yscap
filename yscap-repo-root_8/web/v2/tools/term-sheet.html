@@ -577,8 +577,29 @@
                 <div class="input"><span class="adorn">$</span><input id="arv" type="number" inputmode="numeric" placeholder="value after rehab"></div>
             </div>
             <div class="field cond hidden" data-cond="refiOnly">
-                <label for="payoff">Current loan payoff <em>(optional)</em><span class="tip" tabindex="0" role="note" aria-label="The balance on the loan this refinance pays off. Cash to you at closing is the new loan minus this payoff and closing costs — and that cash-out is capped (see the note below the structure).">i<span class="tip-bub">The balance on the loan this refinance pays off. Cash to you at closing is the new loan minus this payoff and closing costs — and that cash-out is capped (see the note below the structure).</span></span></label>
+                <label for="payoff">Current loan payoff<span class="tip" tabindex="0" role="note" aria-label="The balance on the loan this refinance pays off. Cash to you at closing is the new loan minus this payoff and closing costs — and that cash-out is capped (see the note below the structure).">i<span class="tip-bub">The balance on the loan this refinance pays off. Cash to you at closing is the new loan minus this payoff and closing costs — and that cash-out is capped (see the note below the structure).</span></span></label>
                 <div class="input"><span class="adorn">$</span><input id="payoff" type="number" inputmode="numeric" placeholder="existing balance to pay off"></div>
+            </div>
+            <!-- WHO we pay off, and WHICH loan (owner-directed 2026-07-31). A payoff
+                 AMOUNT alone does not tell the closing attorney or the title company
+                 who to request the payoff letter from, or which account it applies
+                 to — so the identity of the debt travels with the deal from here,
+                 through the loan file, onto the term sheet. Refinance only. -->
+            <div class="field-rows two-col cond hidden" data-cond="refiOnly">
+                <div class="field"><label for="payoffLender">Lender being paid off <em>(optional)</em><span class="tip" tabindex="0" role="note" aria-label="Who holds the loan this refinance pays off — the bank, private lender or seller carrying paper. The closing attorney requests the payoff letter from them.">i<span class="tip-bub">Who holds the loan this refinance pays off — the bank, private lender or seller carrying paper. The closing attorney requests the payoff letter from them.</span></span></label><div class="input"><input id="payoffLender" type="text" placeholder="e.g. Chase, or a private lender"></div></div>
+                <div class="field"><label for="payoffLoanNo">Their loan number <em>(optional)</em><span class="tip" tabindex="0" role="note" aria-label="That lender's own reference for the loan being paid off. It goes on the payoff request so the right account is quoted.">i<span class="tip-bub">That lender's own reference for the loan being paid off. It goes on the payoff request so the right account is quoted.</span></span></label><div class="input"><input id="payoffLoanNo" type="text" placeholder="the payoff lender's loan #"></div></div>
+            </div>
+            <!-- CASH-OUT PROCEEDS (owner-directed 2026-07-31: "if it's a cash out
+                 how much the cash out process is going to be according to the
+                 structure, just the field for it"). It DEFAULTS to what the
+                 structure implies — new loan less the payoff less closing costs —
+                 and stays editable, because the figure that matters is the one
+                 actually going to the borrower and a deal can net differently.
+                 Cash-out refinances only: a rate-&-term takes no cash. -->
+            <div class="field cond hidden" data-cond="cashOutOnly">
+                <label for="cashOutAmt">Cash-out proceeds to the borrower<span class="tip" tabindex="0" role="note" aria-label="What the borrower actually receives at closing. Defaults to the new loan less the payoff and closing costs; edit it if the deal nets differently. This is the figure the program's cash-out limits are measured against.">i<span class="tip-bub">What the borrower actually receives at closing. Defaults to the new loan less the payoff and closing costs; edit it if the deal nets differently. This is the figure the program's cash-out limits are measured against.</span></span></label>
+                <div class="input"><span class="adorn">$</span><input id="cashOutAmt" type="number" inputmode="numeric" placeholder="auto — from the structure"></div>
+                <span class="help" id="cashOutAmtHelp"></span>
             </div>
             <div class="field" id="rehabScopeWrap" data-cond="ffOnly">
                 <label for="rehabScope">Rehab scope</label>

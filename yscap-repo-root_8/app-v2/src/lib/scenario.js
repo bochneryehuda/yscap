@@ -33,6 +33,20 @@ export function scenarioToDraft(state) {
     entityName: v.entityName || '',
   };
   if (!refi) data.purchasePrice = moneyStr(v.price);
+  /* THE PAYOFF TRAVELS WITH THE REFINANCE (owner-directed 2026-07-31). It never
+     did: the officer typed the existing balance in the studio, watched it drive
+     the cash-to-you figure the borrower was quoted, pressed "Create loan file"
+     and the number was gone — so it had to be retyped, and a retype is where the
+     file quietly stops agreeing with the term sheet the borrower was shown.
+     WHO holds that loan and WHICH loan it is travel with it, because a payoff
+     amount on its own tells the closing attorney nothing about where to send the
+     payoff request. All three are refinance-only; on a purchase there is nothing
+     to pay off and carrying a stale value would be worse than carrying none. */
+  if (refi) {
+    data.payoffAmount = moneyStr(v.payoff);
+    data.payoffLender = (v.payoffLender || '').trim();
+    data.payoffLoanNumber = (v.payoffLoanNo || '').trim();
+  }
   if (data.isAssignment) {
     data.underlyingContractPrice = moneyStr(v.origPrice);
     /* The wholesaler's fee is the difference between the REAL total price and the

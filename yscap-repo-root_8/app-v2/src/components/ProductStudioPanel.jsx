@@ -679,6 +679,9 @@ const ProductStudioPanel = forwardRef(function ProductStudioPanel({ appId, app, 
         expFlips: app.requested_exp_flips, expHolds: app.requested_exp_holds, expGround: app.requested_exp_ground,
         termMonths: app.term, irMonths: app.requested_ir_months, irAmount: app.requested_ir_amount,
         estClosingDate: app.est_closing_date || app.expected_closing, coBorrowerPgWaived: app.co_borrower_pg_waived,
+        // The refinance payoff and WHO it goes to, so the studio opens showing what
+        // the file already knows instead of asking the officer to retype it.
+        payoffAmount: app.payoff_amount, payoffLender: app.payoff_lender, payoffLoanNumber: app.payoff_loan_number,
       });
     }
     return st;

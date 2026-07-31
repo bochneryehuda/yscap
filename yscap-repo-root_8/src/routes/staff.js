@@ -8530,7 +8530,12 @@ router.patch('/applications/:id/details', async (req, res) => {
     payoffAmount: 'payoff_amount', originalPurchasePrice: 'original_purchase_price',
     underlyingContractPrice: 'underlying_contract_price', assignmentFee: 'assignment_fee' };
   const STR = { propertyType: 'property_type', loanType: 'loan_type', program: 'program', occupancy: 'occupancy',
-    rehabType: 'rehab_type', term: 'term', lender: 'lender', channel: 'channel', ppp: 'ppp' };
+    rehabType: 'rehab_type', term: 'term', lender: 'lender', channel: 'channel', ppp: 'ppp',
+    // WHO we pay off and WHICH loan (db/385) — free text beside the payoff AMOUNT
+    // that has lived in NUM since db/032. Refinance only in the UI; stored
+    // unconditionally here because the door does not know the purpose, and a
+    // purchase simply never sends them.
+    payoffLender: 'payoff_lender', payoffLoanNumber: 'payoff_loan_number' };
   const DATE = { acquisitionDate: 'acquisition_date' };
   const INT_KEYS = /^(requestedExp|requestedIr)/;
   const sets = [], vals = []; let i = 1;
