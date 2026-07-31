@@ -9,6 +9,17 @@ The owner is not a developer. **Every message to the owner must be in PLAIN, SHO
 - **PLAIN, not developer language:** no jargon — no "endpoints", "payloads", "idempotent", "race conditions", "constraints", "migrations", "check violation", "dead-letter queues". If a technical word is truly unavoidable, explain it in the same sentence with a real-life comparison (a mailman, a bookmark, a security guard).
 - **Talk BUSINESS, not code:** explain what things mean for the business (files, borrowers, ClickUp cards, emails), not what they mean in the code.
 - Commit messages and code comments stay technical; chat with the owner never is.
+- **RE-ASSERTED 2026-07-31 (owner had to ask twice — treat a repeat as a failure):** the rule applies to
+  **research, analysis, risk reviews and plans too**, not just status updates. A hard or technical topic
+  is NOT permission to write long. Concretely:
+  - **No walls of text. No big tables. No stacked headings.** If the answer needs a table to be
+    understood, it is too long — say the same thing in a few sentences.
+  - **Aim for well under a screen.** Lead with the answer, then at most a few short points, then stop.
+  - **Every risk gets a real-life comparison** (one notepad two people write on; 24 doors, not 1; a safe
+    left off the locksmith's list). The comparison IS the explanation — not an extra.
+  - **Depth belongs in the doc, not the chat.** Write the full detail to a file in `docs/`, then give the
+    owner the short version and point at it.
+  - Before sending: re-read it and cut it in half. If a sentence teaches nothing, delete it.
 
 ## Repository layout gotcha
 
