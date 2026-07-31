@@ -33,9 +33,10 @@
  *    documents.sharepoint_backup_ref and the folder cache stay valid.
  *  - ONE-SHOT: a durable sync_runtime_state marker records a completed pass;
  *    a pass that hit transient (Graph/DB) errors does NOT stamp, so the next
- *    boot retries. If the inspect cap is hit the rename phase is SKIPPED
- *    entirely (a partial view cannot prove a folder is all-EMD) and the pass
- *    is left unstamped for the manual script to finish.
+ *    boot retries. If the inspect cap is hit — or ANY inspect error occurred
+ *    (second-audit hardening: a doc whose enrichment/walk failed may be the
+ *    non-EMD resident of a folder that was grouped) — the rename phase is
+ *    SKIPPED entirely: a partial view cannot prove a folder is all-EMD.
  *  - Kill switch: SHAREPOINT_EMD_REFOLDER_DISABLED=1. Always best-effort —
  *    it can never block or fail boot.
  */
@@ -194,6 +195,15 @@ async function refolderEmdOnce(deps = {}) {
       }
     }
     summary.folders = folders.size;
+
+    if (summary.errors > 0) {
+      // Partial evidence must never prove a folder is all-EMD — the same rule
+      // as the inspect cap: a doc whose enrichment or walk failed may be the
+      // non-EMD resident of a folder the loop DID manage to group. Rename
+      // nothing this pass; unstamped, so the next boot retries complete.
+      console.warn(`[sp-emd-refolder] ${summary.errors} inspect error(s) — rename phase skipped this pass (retries next boot)`);
+      return { ...summary, skippedReason: 'inspect-errors' };
+    }
 
     for (const [folderId, g] of folders) {
       // Scope filter: this pass ONLY repairs the EMD case the owner asked

@@ -87,7 +87,10 @@ const ROWS = {
 function mkBackup(opts = {}) {
   return {
     enabled: () => !opts.disabled,
-    enrichedRowById: async (id) => ROWS[id] || null,
+    enrichedRowById: async (id) => {
+      if (opts.throwOn === id) throw new Error('pg blip');
+      return ROWS[id] || null;
+    },
     categoryPathFor: backupReal.categoryPathFor,
     scopeKeyFor: backupReal.scopeKeyFor,
   };
@@ -157,6 +160,19 @@ async function pureTests() {
     db: mkDb(calls, { emdRows: [doc('d1', 'T1')], allRows: [doc('d1', 'T1')] }),
   });
   ok(r.errors > 0 && calls.stamped.length === 0, 'Graph outage: errors counted, marker NOT stamped');
+
+  // 8b) PARTIAL EVIDENCE must never prove a folder all-EMD (second-audit
+  // finding): the folder really holds contract + EMD, but the contract doc's
+  // enrichment fails transiently — only the EMD doc's evidence survives, so
+  // the folder LOOKS homogeneous. The rename phase must be skipped entirely
+  // (same rule as the cap), unstamped so the next boot retries complete.
+  calls = freshCalls();
+  r = await refolder.refolderEmdOnce({
+    sp: mkSp(calls), backup: mkBackup({ throwOn: 'd3' }),
+    db: mkDb(calls, { emdRows: [doc('d4', 'T2')], allRows: [doc('d3', 'T2'), doc('d4', 'T2')] }),
+  });
+  ok(r.skippedReason === 'inspect-errors' && calls.renames.length === 0 && calls.stamped.length === 0,
+    'inspect error on a folder-mate: rename phase skipped on partial evidence, unstamped');
 
   // 9) rename collision → reported skip, but stamped (a sibling "EMD" is permanent)
   calls = freshCalls();
