@@ -3468,10 +3468,23 @@ router.post('/drafts/:id/submit', async (req, res) => {
      b.termMonths ? String(b.termMonths) : null, intField(b.irMonths),
      intField(b.requestedExpReo), moneyField(b.payoffAmount), moneyField(b.originalPurchasePrice),
      require('../lib/fields').normalizeTypedDate(b.acquisitionDate),   // typed '26' resolves to 2026; garbage never persists
-     moneyField(b.irAmount),
+     /* ORDER MATTERS AND IT BIT US (audit-found 2026-07-31). These three values
+        must sit in the SAME order as the columns above — payoff_lender,
+        payoff_loan_number, requested_ir_amount. The first cut inserted the two
+        new COLUMNS here but APPENDED their values to the end of the array, so
+        every placeholder from $30 on shifted by two: the interest-reserve amount
+        landed in payoff_lender, the lender's name in payoff_loan_number, and the
+        payoff LOAN NUMBER — routinely alphanumeric — in requested_ir_amount,
+        which is a numeric(14,2) AND a frozen-engine pricing input. An
+        alphanumeric loan number made the whole submission fail with Postgres
+        22P02; an all-digit one silently became a multi-million-dollar financed
+        interest reserve. Add a column here only by adding its value in the same
+        position, and re-run scripts/test-payoff-submit-db.js, which now submits a
+        real application and reads every one of these columns back. */
      // WHO holds the loan being paid off and WHICH loan (db/386). Free text,
      // trimmed to null so a blank box never stores an empty string.
-     textField(b.payoffLender), textField(b.payoffLoanNumber)]);
+     textField(b.payoffLender), textField(b.payoffLoanNumber),
+     moneyField(b.irAmount)]);
   const appId = ins.rows[0].id;
   // If the borrower linked an LLC, ensure its document requirements exist.
   if (b.llcId) { try { await generateLlcChecklist(b.llcId); } catch (_) { /* best-effort */ } }

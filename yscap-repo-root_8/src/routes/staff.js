@@ -2414,6 +2414,25 @@ router.post('/applications/:id/pricing/register', async (req, res) => {
         await client.query(`UPDATE applications SET file_markup_gold_pct=$2 WHERE id=$1`, [appId, stickyMk(overrides.markupGoldPct)]);
       if (Object.prototype.hasOwnProperty.call(overrides, 'markupSilverPct'))
         await client.query(`UPDATE applications SET file_markup_silver_pct=$2 WHERE id=$1`, [appId, stickyMkSilver(overrides.markupSilverPct)]);
+      /* THE TYPED CASH-OUT FOLLOWS THE REGISTER ONTO THE FILE (audit-found
+         2026-07-31). The studio prints the officer's typed figure on the term
+         sheet PDF; without this it never reached the loan file, so the file and
+         the sheet the borrower was shown quoted different cash — and re-opening
+         the studio silently reverted the PDF to the structural number.
+
+         DISPLAY/RECORD ONLY: `estimated_cash_out` is read by no engine (the
+         investor-guideline cash-out rule is gated on `refinance_economic_type`,
+         which still has no writer), so this can neither price nor block a deal.
+         Refinance only, and only when the studio actually sent the key — a
+         re-register that never opened the box leaves the file's figure alone,
+         exactly like the estimated closing date above. An explicit blank DOES
+         clear it: blank means "use the structure", which is a real answer. */
+      if (Object.prototype.hasOwnProperty.call(rawTermOptions, 'estimatedCashOut')
+          && /refi/i.test(String(f.app.loan_type || ''))) {
+        const raw = rawTermOptions.estimatedCashOut;
+        const co = (raw === '' || raw == null) ? null : (isFinite(Number(raw)) ? Number(raw) : null);
+        await client.query(`UPDATE applications SET estimated_cash_out=$2 WHERE id=$1`, [appId, co]);
+      }
       await client.query('COMMIT');
     } catch (e) { await client.query('ROLLBACK'); throw e; }
 
@@ -9213,6 +9232,12 @@ router.get('/applications/:id/payoff', async (req, res) => {
     const quote = q.rows.length ? q.rows[0].quote : null;
     res.json(require('../lib/payoff').payoffState(a.rows[0], quote));
   } catch (e) {
+    /* A malformed id is a BAD REQUEST, not a server fault — the same 400 the
+       server's own error handler gives every other route ("invalid id").
+       Answered here rather than rethrown because this is an async handler and
+       Express 4 does not route a rejected promise to the error middleware; a
+       rethrow would hang the request instead of answering it. */
+    if (e && e.code === '22P02') return res.status(400).json({ error: 'invalid id' });
     console.warn('[staff] payoff section error:', db.describeError(e));
     res.status(500).json({ error: 'server error' });
   }

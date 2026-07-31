@@ -289,17 +289,39 @@ async function sowLockReason(appId, payload, client = db, opts = {}) {
  * single number on the sheet. They print as two informational lines naming the
  * servicer — and the SIGNED PDF is a stored document that this cannot alter.
  *
- * IT IS DELIBERATELY NARROW. Any other field in the same request — the payoff
- * AMOUNT above all — falls straight through to `structuralLockReason` unchanged.
- * That is what stops it becoming a general-purpose way past the freeze.
+ * IT IS DELIBERATELY NARROW, in two directions. Any other field in the same
+ * request — the payoff AMOUNT above all — falls straight through to
+ * `structuralLockReason` unchanged; and the exclusion stops at Clear to Close.
+ * A FUNDED, DECLINED or WITHDRAWN file stays frozen even for these two: the
+ * payoff has already been wired by then, so this is no longer closing prep, it
+ * is rewriting the record of a closed loan. Both limits are what stop it
+ * becoming a general-purpose way past the freeze.
  *
  * Never throws; an unreadable file behaves exactly like `structuralLockReason`.
  */
 async function payoffContactLockReason(appId, body, client = db, opts = {}) {
-  if (!require('./payoff').isPayoffContactOnlyEdit(body)) {
-    return structuralLockReason(appId, client, opts);
-  }
-  return null;
+  const reason = await structuralLockReason(appId, client, opts);
+  if (!reason) return null;                                        // nothing frozen — save away
+  if (!require('./payoff').isPayoffContactOnlyEdit(body)) return reason;
+
+  /* THE EXCLUSION IS THE CLOSING-PREP WINDOW, NOT "any frozen file" (narrowed
+     after the pre-merge audit, 2026-07-31). The first cut returned null for a
+     contact-only body whatever the file's status, which also lifted the freeze
+     on a FUNDED, DECLINED or WITHDRAWN file. None of those is the case this
+     exists for: after funding the payoff has already been wired, so rewriting
+     the record of who was paid — on a closed loan, with no unlock and no change
+     request — is a records-integrity regression, not a workflow need. The window
+     is up to and including Clear to Close: the term-sheet-sent freeze, and the
+     Clear-to-Close status freeze, which is exactly when the payoff letter is
+     ordered. Past that, the ordinary freeze applies and a super_admin unlock is
+     the recorded way through, like every other correction to a closed file. */
+  let row;
+  try { row = await lockInputs(appId, client); }
+  catch (_) { return reason; }                                     // cannot read the file → stay frozen
+  if (!row) return reason;
+  const beyondClosingPrep = row.status && row.status !== 'clear_to_close'
+    && STRUCTURE_LOCKED.includes(row.status);
+  return beyondClosingPrep ? reason : null;
 }
 
 module.exports = {

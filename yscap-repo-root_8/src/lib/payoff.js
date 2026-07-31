@@ -184,9 +184,18 @@ function howItWorks(kind) {
  *
  * @param {object} app  the applications row (snake_case columns).
  * @param {object} [quote]  the CURRENT registration's normalized quote, when the
- *        file has been registered. Only `structure.initialAdvance` /
- *        `structure.totalLoan` / `closingCosts.dueAtClosing` are read — all of
- *        them figures the frozen engine already produced.
+ *        file has been registered. Only `sizing.initialAdvance` /
+ *        `sizing.totalLoan` / `closingCosts.dueAtClosing` are read — all of them
+ *        figures the frozen engine already produced.
+ *
+ *        IT IS `sizing`, NOT `structure` (audit-found 2026-07-31). A first cut
+ *        read `quote.structure`, a key `pricing.js normalize()` has never
+ *        produced — every other consumer in the repo reads `quote.sizing`. The
+ *        result was silent and total: `canDerive` was false on EVERY registered
+ *        file, so the cash-out figure the owner asked for never appeared, the
+ *        derivation was never shown, and the rate-&-term-nets-cash advisory
+ *        could never fire. `closingCosts` was right, which is exactly why it did
+ *        not look broken.
  * @returns {object} never throws; a bad/absent input degrades to "cannot derive".
  */
 function payoffState(app, quote) {
@@ -203,11 +212,11 @@ function payoffState(app, quote) {
   const hasPayoff = entered.payoffAmount != null && entered.payoffAmount > 0;
 
   const q = quote || {};
-  const structure = q.structure || {};
+  const sizing = q.sizing || {};
   const closing = q.closingCosts || {};
   const derivedInputs = {
-    initialAdvance: num(structure.initialAdvance),
-    totalLoan: num(structure.totalLoan),
+    initialAdvance: num(sizing.initialAdvance),
+    totalLoan: num(sizing.totalLoan),
     closingCosts: num(closing.dueAtClosing),
     payoff: entered.payoffAmount || 0,
     typed: entered.estimatedCashOut,

@@ -77,9 +77,15 @@
      rehabHoldback + financedReserve). Netting the payoff off the TOTAL would
      quote the borrower money they will not see for months — on a heavy-rehab
      refinance, overstated by the entire construction budget. */
+  /* A REAL advance wins even when it is ZERO — the fallback is for an advance
+     that is genuinely ABSENT, not for one that happens to be nothing. `> 0`
+     would fall back to the whole loan on a zero advance, which is precisely the
+     overstatement this helper exists to prevent, and it disagreed with the
+     server's own payoff model (src/lib/payoff.js). One rule, both places. */
   function fundedAtClose(d) {
     if (!d) return 0;
-    return d.initialAdvance > 0 ? d.initialAdvance : (d.totalLoan || 0);
+    return isFinite(d.initialAdvance) && d.initialAdvance !== null && d.initialAdvance !== undefined
+      ? d.initialAdvance : (d.totalLoan || 0);
   }
   function structuralCashOut(d) {
     var funded = fundedAtClose(d);
@@ -1586,7 +1592,6 @@
     if (rfn) {
       if (isRefi()) {
         var payoff = num("payoff");
-        var cashOutEst = payoff > 0 ? Math.max(0, d.totalLoan - payoff) : 0;
         var refiTxt = d.gold
           ? "<strong>Refinance types.</strong> A rate-&-term refi takes essentially no cash to you. A cash-out refi \u2014 cash to you over the lesser of $20,000 or 2% of the loan \u2014 is capped by the program leverage or 100% of verified hard costs; cash over $250,000 requires an escalation review."
           : d.silver

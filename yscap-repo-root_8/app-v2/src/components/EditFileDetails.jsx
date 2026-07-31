@@ -89,6 +89,9 @@ export default function EditFileDetails({ app, onSaved }) {
   // loan to pay off — including on "Delayed Purchase Financing", which is a
   // purchase however it is spelled.
   const isRefi = refiKind(f.loanType) !== 'purchase';
+  // The SAVED purpose, as the file screen reads it — that is what decides whether
+  // the Payoff section exists, so it is what the pointer button must be gated on.
+  const savedIsRefi = refiKind(app.loan_type) !== 'purchase';
 
   async function save() {
     setBusy(true); setErr(''); setMsg(''); setWarn('');
@@ -273,8 +276,15 @@ export default function EditFileDetails({ app, onSaved }) {
               <div style={{ marginTop: 4, fontSize: 13, color: '#4B585C' }}>
                 The payoff has its own section on this file — how much, who holds the loan, their loan
                 number, and what the borrower walks away with on a cash-out.{' '}
-                <button type="button" className="btn ghost small" style={{ marginLeft: 4 }}
-                  onClick={() => goToSection('sec-payoff')}>Open the Payoff section</button>
+                {/* The BUTTON is gated on the SAVED loan purpose, not the one being
+                    typed. The Payoff section only exists once the file is really a
+                    refinance, so on a purchase whose dropdown was just switched (and
+                    not yet saved) this button would scroll to a section that isn't
+                    there and silently do nothing. It says "save first" instead. */}
+                {savedIsRefi
+                  ? <button type="button" className="btn ghost small" style={{ marginLeft: 4 }}
+                      onClick={() => goToSection('sec-payoff')}>Open the Payoff section</button>
+                  : <em>Save this change first and the Payoff section appears on the file.</em>}
               </div>
             </div>
           </>}

@@ -165,6 +165,20 @@ function call(server, method, path, token, body) {
     const p5 = await patch({ payoffAmount: 999999 });
     assert(p5.status === 409, 'Clear to Close: the payoff amount is still frozen');
     assert(Number((await payoffOf()).payoff_amount) === 300000, 'the amount is untouched at Clear to Close');
+
+    /* AND IT STOPS THERE. The exclusion exists for the closing-prep window; past
+       it the payoff has already been wired, so rewriting the record of who was
+       paid on a closed loan is not closing prep, it is editing history. A first
+       cut returned null for a contact-only body whatever the status, which
+       lifted the freeze on funded / declined / withdrawn files too — found by
+       the pre-merge audit. A super_admin unlock stays the recorded way through. */
+    for (const st of ['funded', 'declined', 'withdrawn']) {
+      await db.query(`UPDATE applications SET status=$2 WHERE id=$1`, [appId, st]);
+      const px = await patch({ payoffLender: `SHOULD-NOT-STICK-${st}`, payoffLoanNumber: 'X' });
+      assert(px.status === 409, `${st}: naming the payoff lender is frozen — this is no longer closing prep`);
+      assert((await payoffOf()).payoff_lender === 'Kiavi Servicing',
+        `${st}: and nothing was written`);
+    }
     await db.query(`UPDATE applications SET status='processing' WHERE id=$1`, [appId]);
 
     console.log(failures ? `\n${failures} assertion(s) failed` : '\nALL term-sheet-freeze assertions passed');

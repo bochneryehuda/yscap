@@ -206,6 +206,12 @@ export function termOptionsFromSnapshot(snap) {
     minInterestEnabled,
     deferredOrigPct: (f.tsDeferredOrig === '' || f.tsDeferredOrig == null) ? 0 : (Number(f.tsDeferredOrig) || 0),
     estClosingDate: f.estClosingDate || '',
+    /* The TYPED cash-out override rides the same channel as the closing date
+       (audit-found 2026-07-31). Without it the officer's figure printed on the
+       term sheet PDF and never reached the loan file, so the file and the sheet
+       the borrower was shown quoted different cash — the exact divergence the
+       payoff work exists to end. Display/record only; no engine reads it. */
+    estimatedCashOut: f.cashOutAmt == null ? '' : String(f.cashOutAmt),
   };
 }
 
@@ -682,6 +688,10 @@ const ProductStudioPanel = forwardRef(function ProductStudioPanel({ appId, app, 
         // The refinance payoff and WHO it goes to, so the studio opens showing what
         // the file already knows instead of asking the officer to retype it.
         payoffAmount: app.payoff_amount, payoffLender: app.payoff_lender, payoffLoanNumber: app.payoff_loan_number,
+        // The file's typed cash-out override, so re-opening the studio shows the
+        // figure the term sheet actually printed rather than reverting to the
+        // structural one.
+        estimatedCashOut: app.estimated_cash_out,
       });
     }
     return st;
