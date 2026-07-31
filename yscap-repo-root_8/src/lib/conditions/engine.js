@@ -363,6 +363,16 @@ async function evaluateBorrowerApplications(borrowerId, opts = {}) {
   }
 }
 
+/* The details door speaks camelCase and the field registry speaks snake_case,
+   and `file-lock.payoffContactLockReason` is keyed on the DETAILS door's names
+   (that is where its carve-out is defined). Only the payoff contact pair needs
+   translating — every other key falls through unchanged and is therefore never
+   mistaken for a contact-only edit, which is the safe direction. */
+const WRITE_BODY_KEY = Object.freeze({
+  payoff_lender: 'payoffLender',
+  payoff_loan_number: 'payoffLoanNumber',
+});
+
 /**
  * Persist a borrower's answer to an info-field condition — built-in fields
  * write the real application/borrower column; admin-defined custom fields
@@ -396,7 +406,92 @@ async function writeFieldValue(appId, borrowerId, fieldKey, rawValue, by = {}) {
   } else if (f.type === 'boolean') {
     value = !!rawValue;
   } else {
-    value = String(rawValue == null ? '' : rawValue).slice(0, 500);
+    /* Free text — trimmed, NUL-stripped, and capped by the COLUMN rather than by
+       this door (post-merge audit 2026-07-31). The flat 500 here was the third
+       of three different caps on the same two payoff columns, and like the other
+       two it did not trim, so a box of spaces stored spaces and read as answered.
+       A CUSTOM field has no column of its own; it keeps the shared default.
+       An answer that trims to nothing is refused rather than stored as null: the
+       caller has already required a non-empty value, and silently recording
+       "not stated" while marking the condition received is how a blank passes
+       for an answer. */
+    value = require('../fields').textColumn(rawValue, target && target.column, 500);
+    if (value == null) { const err = new Error(`${f.label} cannot be blank`); err.status = 400; throw err; }
+  }
+
+  /* A CLOSED FILE'S ECONOMICS ARE NOT REWRITABLE FROM A CONDITION
+     (post-merge audit 2026-07-31; SCOPE NARROWED after the pre-merge audit —
+     read the second half before widening this again).
+
+     THE HOLE. This door had no freeze of any kind. Of the fields that target
+     `applications`, only the five in the change-request whitelist that have a
+     write target were ever protected, and by a DIFFERENT rule (a REGISTERED
+     file routes those to an approval sandbox, so they never reach here). The
+     rest — `loan_amount`, `requested_ir_amount`, `underlying_contract_price`,
+     `assignment_fee`, `original_purchase_price`, `acquisition_date`, the sqft
+     pair, the three experience counts and the payoff trio — wrote LIVE whatever
+     the file's status. Several are pricing inputs the db/071 trigger watches,
+     so answering an info condition on a FUNDED loan moved the economics AND
+     reopened Products & Pricing on a closed file.
+
+     THE RULE IS PARITY WITH THE DOOR THAT OWNS THE FIELD. Not a field list of
+     this door's own — three rounds of audit each rejected a different one, and
+     the reason is the same every time: any list here is a PROXY for a policy
+     that is already written down somewhere else, and a proxy drifts.
+
+       · round 1 froze the whole request via `payoffContactLockReason`;
+       · round 2 dropped the term-sheet half entirely — so a borrower answered
+         an info condition on `loan_amount` and moved a SIGNED term sheet's
+         loan from $440,000 to $1, with no change request and no approval;
+       · round 3 scoped it to the reopen trigger's watch list — which is a
+         PRICING proxy, not a PRINTING one, so `payoff_amount` stayed writable
+         even though it prints on the sheet twice (the payoff row, and the
+         "estimated cash to you" row derived from it). Measured: staff 409,
+         borrower 200, printed cash-out $85,000 → $384,999.
+
+     Each of those was this door deciding for itself what the freeze means. It
+     does not have to: every field here is ALSO editable somewhere else, and
+     that other door already implements the owner's policy for it. So the rule
+     is simply that answering a condition may never be MORE permissive than
+     editing the same field directly:
+
+       · `applications` fields → the staff details door owns them, and its rule
+         is `payoffContactLockReason` — the status freeze, the term-sheet-sent
+         freeze, and the ONE owner-directed carve-out (the payoff's
+         who-and-which stays editable through closing prep, because that is
+         when the payoff letter is ordered). Used verbatim here.
+       · `borrowers` fields → the borrower profile door owns them, and its rule
+         is the change-request sandbox on a registered file. Applied at the
+         route (borrower.js), which can return a pending request rather than
+         throw. Those fields are deliberately NOT frozen here.
+
+     A field that is frozen for staff is now frozen here too, with the same
+     message and the same escapes (clear the package; a super-admin unlock past
+     Clear to Close). That is not a workflow regression — it is the same
+     refusal staff already get on the same field, and the alternative, twice
+     demonstrated, is a borrower-only bypass of a signed term sheet.
+
+     A `borrowers`-table field is NOT frozen here — but it is not ungoverned
+     either, and three rounds of this comment wrongly said it was "untouched …
+     it has its own governance in change-requests.js" while nothing on the way
+     in enforced that. It does now, at the ROUTE (borrower.js), which can open a
+     change request rather than throw: `fico` — the one personal field that is
+     actually reachable as a condition — is locked per PERSON, because that row
+     is shared and db/126 re-prices every file the borrower is on.
+
+     Fails OPEN on an unreadable file, matching `structuralLockReason`: this is
+     a human's edit, not an unattended writer. */
+  if (!f.custom && target && target.table === 'applications') {
+    /* NO actor is passed, deliberately: a super-admin's unlock is theirs to
+       spend on their own edit, not a standing permission for whatever the
+       borrower (or a staffer answering on their behalf) types into a condition
+       afterwards. `payoffContactLockReason` is keyed on the DETAILS door's
+       camelCase names, which is where its carve-out is defined — only the
+       payoff contact pair needs translating; every other key falls through
+       unchanged and is therefore never mistaken for a contact-only edit. */
+    const frozen = await require('../file-lock')
+      .payoffContactLockReason(appId, { [WRITE_BODY_KEY[fieldKey] || fieldKey]: value }, db);
+    if (frozen) { const err = new Error(frozen); err.status = 409; throw err; }
   }
 
   if (f.custom) {

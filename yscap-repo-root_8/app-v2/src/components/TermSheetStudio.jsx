@@ -228,6 +228,9 @@ function readSnapshot(win) {
       fico: val('fico'), expFlips: val('expFlips'), expBrrrr: val('expBrrrr'), expGround: val('expGround'),
       tsTerm: val('tsTerm'), irMonths: srcVal('irMonths'), irAmount: derived('irAmount') ? '' : moneyVal('irAmount'),
       tsEffPrice: moneyVal('tsEffPrice'),
+      // Out-of-pocket rehab exception (owner-authorized 2026-07-31): the dollar box + the
+      // "raise the initial to its max" toggle in the admin zone.
+      tsOopRehab: moneyVal('tsOopRehab'), tsOopRehabMax: chk('tsOopRehabMax'),
       // admin pricing knobs (staff mode) — same names the staff pricing API takes
       tsYspStd: val('tsYspStd'), tsYspGold: val('tsYspGold'), tsYspSilver: val('tsYspSilver'),
       tsOrigStd: val('tsOrigStd'), tsOrigGold: val('tsOrigGold'), tsOrigSilver: val('tsOrigSilver'),
@@ -293,6 +296,7 @@ export function adminStateFromEngineInputs(inp) {
   put('tsFeeAppr', inp.appraisalFee); put('tsFeeTitle', inp.titleFee);
   put('tsMLtv', inp.ovrAcqLTVPct); put('tsMArv', inp.ovrARLTVPct);
   put('tsMLtc', inp.ovrLTCPct); put('tsMRate', inp.ovrRatePct); put('tsMIr', inp.ovrIrMonths);
+  put('tsOopRehab', inp.oopRehab);   // out-of-pocket rehab exception (owner-authorized 2026-07-31)
   // Re-arm the manual-scenario toggle whenever ANY manual override value was
   // registered — not only when inp.manualPricing is set. Otherwise reopening a
   // manually-priced file restores the rate VALUE into the (hidden) field but leaves
@@ -302,7 +306,10 @@ export function adminStateFromEngineInputs(inp) {
   // are covered too. The server (buildInputs) honors a present override regardless.
   const hasManualOverride = ['ovrAcqLTVPct', 'ovrARLTVPct', 'ovrLTCPct', 'ovrRatePct', 'ovrIrMonths']
     .some((k) => inp[k] != null && inp[k] !== '');
-  return { v, c: (inp.manualPricing || hasManualOverride) ? { tsManualOn: true } : {} };
+  const c = {};
+  if (inp.manualPricing || hasManualOverride) c.tsManualOn = true;
+  if (inp.oopRehabMax) c.tsOopRehabMax = true;   // re-arm the "raise initial to max" toggle
+  return { v, c };
 }
 
 /* A compact, human-readable copy of the priced structure — stored on the
