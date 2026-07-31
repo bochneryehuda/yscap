@@ -1,0 +1,20 @@
+{
+  "version": 1,
+  "engines": {
+    "standard": "18cf2e343b4ea0c8d21fffdcf7c9b4ef",
+    "gold": "da11d62587086d0ec8f6a956ed1a1ca1",
+    "silver": "94c335bc9a2c2542b4b70f93f36fdebb",
+    "title": "d165a204d925b55eeace4655d2cf9a72"
+  },
+  "matrix": {
+    "quick": false,
+    "scenarios": 115200
+  },
+  "statuses": {
+    "INELIGIBLE": 54720,
+    "MANUAL": 18552,
+    "ELIGIBLE": 41928
+  },
+  "digest": "5e34a9cb970ea1b1070fba2e89dd5c16902fef9ab371208475e0c019241af0f3",
+  "rowsHash": "5e34a9cb970ea1b1070fba2e89dd5c16902fef9ab371208475e0c019241af0f3"
+}
