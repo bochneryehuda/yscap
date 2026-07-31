@@ -83,13 +83,17 @@ const ARCHIVE_XLSX = path.join(__dirname, 'fixtures', 'EMCAP_Pricing_Tool_v1.xls
 const ARCHIVE_SHA256 = '432ff2d8c34bd28ca159aae44806177afa2607f5669cd229e5b885942535182b';
 const FIXTURE_PATH = path.join(__dirname, 'fixtures', 'emcap-pricing-tool-v1.json');
 const ENGINE_MAIN = path.join(REPO_ROOT, 'web', 'v2', 'tools', 'silver-program.js');
+/* The engine used to be duplicated into six places. The four portal engines/ copies
+   under web/portal, web/v2/portal, app/public and app-v2/public were DELETED
+   2026-07-31: the portal never computed with them (React only passed them to a
+   console.info, and they were tree-shaken out of the shipped bundle), so they
+   only served the guideline rules — including this capital partner's workbook —
+   to every browser that opened the portal. TWO copies remain, and both are
+   really used: web/v2/tools is the canonical source, web/tools is what the
+   SERVER requires (src/lib/pricing.js). Do NOT re-add the deleted paths. */
 const ENGINE_COPIES = [
   'web/v2/tools/silver-program.js',
-  'web/tools/silver-program.js',
-  'web/portal/engines/silver-program.js',
-  'web/v2/portal/engines/silver-program.js',
-  'app/public/engines/silver-program.js',
-  'app-v2/public/engines/silver-program.js'
+  'web/tools/silver-program.js'
 ];
 
 /* ---------------- fixed grid geometry (the frozen engine's band contract) ----------------
@@ -836,12 +840,13 @@ ENGINE LITERALS ARE A HUMAN STEP (frozen engine -- owner authorization required)
   3. In web/v2/tools/silver-program.js replace the "    var RATE_BLOCKS = {"
      ... "  };" region and the "  var TG = {" ... "  };" region with the
      compiled text (nothing else in the file).
-  4. Copy web/v2/tools/silver-program.js over the 5 sibling copies:
-       web/tools/, web/portal/engines/, web/v2/portal/engines/,
-       app/public/engines/, app-v2/public/engines/
-  5. Bump the silver-program.js ?v= cache-busters (grep the CURRENT value
+  4. Copy web/v2/tools/silver-program.js over the ONE sibling copy:
+       web/tools/   (the copy the SERVER requires via src/lib/pricing.js)
+     The four portal engines/ copies were deleted 2026-07-31 — do NOT re-create them.
+  5. Bump the silver-program.js ?v= cache-buster (grep the CURRENT value
      first — a hard-coded version here goes stale on every engine change) in:
-       web/v2/tools/term-sheet.html, web/v2/portal/index.html, app-v2/index.html
+       web/v2/tools/term-sheet.html
+     (the portal shells no longer load the engine, so they need no bump)
   6. Re-run this tool (--check --blocks), then node scripts/test-silver-program.js,
      MATRIX_N=500 node scripts/test-silver-workbook-matrix.js,
      node scripts/soak-silver-scenarios.js, node scripts/test-emcap-regenerate-pure.js.

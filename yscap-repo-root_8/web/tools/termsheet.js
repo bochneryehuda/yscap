@@ -795,7 +795,7 @@
   }
 
   /* ---- Admin pricing controls (soft, client-side gate; reveals two fields on the same page) ---- */
-  var ADMIN_HASH = 6019969998889003;   // cyrb53("Yscg@12345"). Soft gate only — see note; change = new hash.
+  var ADMIN_HASH = 6019969998889003;   // cyrb53 of the admin passphrase (value deliberately NOT written here — this file is public). Soft gate only — see note; change = new hash.
   function cyrb53(str, seed) {
     seed = seed >>> 0; var h1 = 0xdeadbeef ^ seed, h2 = 0x41c6ce57 ^ seed;
     for (var i = 0, ch; i < str.length; i++) { ch = str.charCodeAt(i); h1 = Math.imul(h1 ^ ch, 2654435761); h2 = Math.imul(h2 ^ ch, 1597334677); }
