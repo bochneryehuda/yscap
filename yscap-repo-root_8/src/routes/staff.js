@@ -1912,6 +1912,90 @@ router.post('/applications/:id/vesting-llc', async (req, res) => {
   } catch (e) { console.warn('[staff] handler error:', db.describeError(e)); res.status(500).json({ error: 'server error' }); }
 });
 
+// Personal-name purchase (owner-directed 2026-07-31): the property is bought in an
+// individual name instead of an LLC. Uploading a NON-OWNER-OCCUPIED AFFIDAVIT (in
+// lieu of LLC documents) waives the LLC condition (rtl_p1_llc): the file is flagged
+// personal_name_purchase, the affidavit is filed as the condition's evidence, the
+// condition is signed off, and the ClickUp *Vesting dropdown flips to Individual
+// (default is LLC — db/384). Sending { undo:true } reverses it: clears the flag,
+// reopens the condition, and pushes vesting back to LLC.
+router.post('/applications/:id/vesting/personal-name', async (req, res) => {
+  try {
+    const b = req.body || {};
+    if (!can(req.actor, 'sign_off_conditions'))
+      return res.status(403).json({ error: 'Only a processor can waive the LLC condition — signing this off as a personal-name purchase is a sign-off.' });
+    const app = (await db.query(
+      `SELECT a.id, a.status, a.borrower_id, a.llc_id, l.is_verified AS llc_verified
+         FROM applications a LEFT JOIN llcs l ON l.id = a.llc_id
+        WHERE a.id=$1 AND a.deleted_at IS NULL`, [req.params.id])).rows[0];
+    if (!app) return res.status(404).json({ error: 'not found' });
+    if (['clear_to_close', 'funded', 'declined', 'withdrawn'].includes(app.status))
+      return res.status(409).json({ error: 'This file is Clear to Close — vesting is locked. Move it back to an earlier status to change it.' });
+
+    // The LLC condition must exist so the affidavit has somewhere to hang / to sign off.
+    try { await require('../lib/vesting').ensureLlcCondition(req.params.id); } catch (_) {}
+    const item = (await db.query(
+      `SELECT ci.id FROM checklist_items ci JOIN checklist_templates t ON t.id=ci.template_id
+        WHERE ci.application_id=$1 AND t.code='rtl_p1_llc' ORDER BY ci.created_at LIMIT 1`, [req.params.id])).rows[0];
+
+    // UNDO — back to an LLC purchase (the default): clear the flag, reopen the
+    // condition, push vesting back to LLC.
+    if (b.undo === true) {
+      await db.query(`UPDATE applications SET personal_name_purchase=false, updated_at=now() WHERE id=$1`, [req.params.id]);
+      if (item) {
+        await db.query(
+          `UPDATE checklist_items SET status='outstanding', signed_off_at=NULL, signed_off_by=NULL,
+              reviewed_at=NULL, reviewed_by=NULL, updated_at=now() WHERE id=$1`, [item.id]);
+        enqueueChecklistStatusPush(item.id).catch(() => {});
+      }
+      try { await enqueueClickupPush(req.params.id, ['vesting']); } catch (_) {}
+      await audit(req, 'vesting_personal_name_undo', 'application', req.params.id, {});
+      return res.json({ ok: true, personalNamePurchase: false });
+    }
+
+    // WAIVE — file the affidavit (uploaded now, or already on the item), flag the
+    // file personal-name, sign the condition off, and flip vesting to Individual.
+    if (!item) return res.status(409).json({ error: 'the LLC condition is not on this file yet' });
+    // An LLC always wins over a personal-name waiver (db/384). A VERIFIED linked
+    // entity means the file really vests in that LLC — refuse (remove the LLC
+    // first). An unverified linked entity is dropped below with the flag write, so
+    // the ClickUp *Vesting dropdown never reads Individual next to an LLC name.
+    if (app.llc_id && app.llc_verified === true)
+      return res.status(409).json({ error: 'This file vests in a verified LLC. Remove the LLC entity first if it is really being bought in a personal name.' });
+    let uploadedDocId = null;
+    if (b.dataBase64) {
+      if (!b.filename) return res.status(400).json({ error: 'filename + dataBase64 required for the affidavit' });
+      let buf;
+      try { ({ buf } = decodeUploadBase64(b.dataBase64)); }
+      catch (e) { return res.status(e.status || 400).json({ error: e.message }); }
+      const maxBytes = cfg.maxUploadMb * 1024 * 1024;
+      if (buf.length > maxBytes) return res.status(413).json({ error: `file too large (max ${cfg.maxUploadMb} MB)` });
+      const filename = safeFilename(b.filename);
+      const { ref, provider } = await storage.save(buf, { filename });
+      const r = await db.query(
+        `INSERT INTO documents (application_id,checklist_item_id,borrower_id,filename,content_type,size_bytes,
+                                storage_provider,storage_ref,uploaded_by_kind,uploaded_by_id,doc_kind,slot_label,visibility,source_type)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,'staff',$9,'noo_affidavit',$10,'borrower','staff_upload') RETURNING id`,
+        [req.params.id, item.id, app.borrower_id, filename, b.contentType || 'application/pdf', buf.length,
+         provider, ref, req.actor.id, 'Non-owner-occupied affidavit']);
+      uploadedDocId = r.rows[0].id;
+    }
+    const hasAff = uploadedDocId || (await db.query(
+      `SELECT 1 FROM documents WHERE checklist_item_id=$1 AND is_current
+         AND COALESCE(review_status,'') <> 'rejected' AND doc_kind='noo_affidavit' LIMIT 1`, [item.id])).rows[0];
+    if (!hasAff) return res.status(400).json({ error: 'Upload the non-owner-occupied affidavit (PDF) to sign this off as a personal-name purchase.' });
+
+    await db.query(`UPDATE applications SET personal_name_purchase=true, llc_id=NULL, updated_at=now() WHERE id=$1`, [req.params.id]);
+    await db.query(
+      `UPDATE checklist_items SET status='satisfied', signed_off_at=now(), signed_off_by=$2, updated_at=now() WHERE id=$1`,
+      [item.id, req.actor.id]);
+    enqueueChecklistStatusPush(item.id).catch(() => {});
+    try { await enqueueClickupPush(req.params.id, ['vesting']); } catch (_) {}
+    await audit(req, 'vesting_personal_name_affidavit', 'application', req.params.id, { documentId: uploadedDocId });
+    res.json({ ok: true, personalNamePurchase: true, documentId: uploadedDocId });
+  } catch (e) { console.warn('[staff] handler error:', db.describeError(e)); res.status(500).json({ error: 'server error' }); }
+});
+
 /* ---------------- Product registration / term sheet ----------------
    Pricing is computed here on the server from the same FROZEN engines the
    browser loads, so a registered product is always authoritative. */
@@ -5657,6 +5741,20 @@ async function signOffGate(itemId, actor) {
   // could be signed off empty. Block a manual sign-off until the vesting LLC is
   // actually linked AND verified.
   if (code === 'rtl_p1_llc') {
+    // Personal-name purchase (owner-directed 2026-07-31): the property can be bought
+    // in an individual name instead of an LLC. The LLC condition is then satisfied by
+    // a NON-OWNER-OCCUPIED AFFIDAVIT (in lieu of LLC documents), which is what flips
+    // the ClickUp vesting to Individual. When the file is flagged personal-name,
+    // require that affidavit here rather than a verified LLC.
+    const pn = (await db.query(
+      `SELECT personal_name_purchase FROM applications WHERE id=$1`, [item.application_id])).rows[0];
+    if (pn && pn.personal_name_purchase) {
+      const aff = (await db.query(
+        `SELECT 1 FROM documents WHERE checklist_item_id=$1 AND is_current
+           AND COALESCE(review_status,'') <> 'rejected' AND doc_kind='noo_affidavit' LIMIT 1`, [itemId])).rows[0];
+      if (!aff) return 'Upload the non-owner-occupied affidavit (PDF) to sign this off as a personal-name purchase (bought in an individual name, not an LLC).';
+      return null;
+    }
     const v = (await db.query(
       `SELECT l.is_verified FROM applications a JOIN llcs l ON l.id = a.llc_id WHERE a.id=$1`, [item.application_id])).rows[0];
     if (!v) return 'Link the vesting entity (LLC) to this file, then verify it, before signing this off.';
