@@ -29,7 +29,7 @@
 // gate reads) — NOT document_findings and NOT underwriting_run_findings. Reading the SAME
 // table + predicate the gate reads is what guarantees the advisory never disagrees with it.
 async function appraisalCompleteness(client, appId) {
-  const out = { appraisalRead: false, openFatal: 0, complete: false };
+  const out = { appraisalRead: false, openFatal: 0, asIsConfirmed: false, complete: false };
   if (!appId) return out;
   try {
     const r = await client.query(
@@ -44,7 +44,25 @@ async function appraisalCompleteness(client, appId) {
           AND severity = 'fatal' AND blocks_ctc = true`, [appId]);
     out.openFatal = (fr.rows[0] && fr.rows[0].n) || 0;
 
-    out.complete = out.appraisalRead && out.openFatal === 0;
+    // The As-Is prerequisite must mirror the sign-off gate 1:1 (owner-directed 2026-07-30;
+    // post-merge audit finding #3) — otherwise the badge reads "ready" while the gate
+    // refuses. Confirmed = the file carries a real As-Is value AND, when the confirm
+    // condition exists, it is genuinely signed off or override-cleared (not merely made
+    // optional / plain-waived). Same predicate as signOffGate's isAppraisalReview branch.
+    const av = await client.query(
+      `SELECT (SELECT a.as_is_value FROM applications a WHERE a.id=$1) AS as_is_value,
+              EXISTS (
+                SELECT 1 FROM checklist_items ci JOIN checklist_templates t ON t.id=ci.template_id
+                 WHERE ci.application_id=$1 AND t.code='appraisal_as_is_verify'
+                   AND NOT (
+                     (ci.signed_off_at IS NOT NULL AND ci.waived_at IS NULL)
+                     OR ci.override_at IS NOT NULL
+                   )
+              ) AS as_is_open`, [appId]);
+    const val = av.rows[0] && av.rows[0].as_is_value != null ? Number(av.rows[0].as_is_value) : null;
+    out.asIsConfirmed = !(av.rows[0] && av.rows[0].as_is_open) && val != null && Number.isFinite(val) && val > 0;
+
+    out.complete = out.appraisalRead && out.openFatal === 0 && out.asIsConfirmed;
   } catch (e) {
     console.error('[appraisal-advisory] appraisalCompleteness', appId, e && e.message);
   }

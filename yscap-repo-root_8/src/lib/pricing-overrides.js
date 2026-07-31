@@ -54,6 +54,14 @@ const DEFAULTED_OVERRIDE_KEYS = Object.freeze({
   origStdPct:    { label: 'Origination points — Standard',             unit: 'pct'   },
   origGoldPct:   { label: 'Origination points — Gold',                 unit: 'pct'   },
   origSilverPct: { label: 'Origination points — Silver',               unit: 'pct'   },
+  // The Manual product prices on the Standard engine and has NO company default of
+  // its own — a blank manual field means "use Standard" (owner-directed 2026-07-30,
+  // mirrored in pricing.js `origKey`). So it is compared against the STANDARD
+  // default via `defaultKey`: typing 1.25 back while the company default is 1.25 is
+  // not a change, exactly like its three siblings. Without `defaultKey` the lookup
+  // would find no `cd.origManualPct`, read as "no default", and demand an approval
+  // for a value that IS the default.
+  origManualPct: { label: 'Origination points — Manual', unit: 'pct', defaultKey: 'origStdPct' },
   lenderFee:     { label: 'Underwriting / processing / legal fee',     unit: 'money' },
   creditFee:     { label: 'Credit-report fee',                         unit: 'money' },
   appraisalFee:  { label: 'Appraisal fee (paid outside closing)',      unit: 'money' },
@@ -143,7 +151,10 @@ function pricingOverridesEngaged(raw, defaults) {
     const meta = DEFAULTED_OVERRIDE_KEYS[key];
     const value = numOrNull(o[key]);
     if (value == null) continue;                // unreadable → not a change we can name
-    const defaultValue = cd ? numOrNull(cd[key]) : null;
+    // `defaultKey` lets a knob borrow another knob's company default (today only
+    // the Manual origination, which falls back to Standard). Absent on every other
+    // key, so the lookup is unchanged for all of them.
+    const defaultValue = cd ? numOrNull(cd[meta.defaultKey || key]) : null;
     if (defaultValue != null && sameNumber(value, defaultValue)) continue;   // typed the default back
     out.push({ key, label: meta.label, unit: meta.unit, value, defaultValue });
   }

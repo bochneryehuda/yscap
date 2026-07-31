@@ -6,6 +6,7 @@
    experience and FICO. Personal identity (name, SSN, contact) comes from the
    borrower's profile at submit time; the borrower only fills what's still missing. */
 import { portalProgram, portalLoanType, rehabTypeFromStudio } from '../components/TermSheetStudio.jsx';
+import { moneyStr, moneyNum } from './money.js';
 
 // Studio property-type code -> the application's property-type option.
 const PROP_TYPE_FROM_STUDIO = { sfr: 'SFR (1 unit)', '2-4': 'Multi 2–4' };
@@ -14,19 +15,31 @@ export function scenarioToDraft(state) {
   const v = (state && state.v) || {};
   const c = (state && state.c) || {};
   const refi = /refinance/i.test(v.dealPurpose || '');
+  /* THE STUDIO IS A FORMATTED SURFACE, THE DRAFT IS A CLEAN ONE (2026-07-31).
+     `YS.collectState()` reads the studio's DOM values, and the studio's money
+     boxes hold the DISPLAY text — "412,500", not "412500". The portal's own
+     contract (MoneyInput) is the clean string, and every consumer downstream
+     assumes it: a bare `Number("412,500")` is NaN, which the surrounding `|| 0`
+     silently turns into ZERO. Normalising here is the root fix — it puts the
+     studio's numbers back onto the contract at the ONE boundary they cross, so
+     the fee below, the New-file form, the draft, and the server all agree. */
   const data = {
     program: portalProgram(v.dealType),
     loanType: portalLoanType(v.dealPurpose),
-    asIsValue: v.asIs || '', arv: v.arv || '', rehabBudget: v.construction || '',
+    asIsValue: moneyStr(v.asIs), arv: moneyStr(v.arv), rehabBudget: moneyStr(v.construction),
     requestedExpFlips: v.expFlips || '', requestedExpHolds: v.expBrrrr || '', requestedExpGround: v.expGround || '',
-    termMonths: v.tsTerm || '', irMonths: v.irMonths || '0', irAmount: v.irAmount || '0',
+    termMonths: v.tsTerm || '', irMonths: v.irMonths || '0', irAmount: moneyStr(v.irAmount) || '0',
     isAssignment: !!c.isAssign && !refi,
     entityName: v.entityName || '',
   };
-  if (!refi) data.purchasePrice = v.price || '';
+  if (!refi) data.purchasePrice = moneyStr(v.price);
   if (data.isAssignment) {
-    data.underlyingContractPrice = v.origPrice || '';
-    const fee = Math.max(0, (Number(v.price) || 0) - (Number(v.origPrice) || 0));
+    data.underlyingContractPrice = moneyStr(v.origPrice);
+    /* The wholesaler's fee is the difference between the REAL total price and the
+       seller's own contract price. Computed with a bare Number() it came out 0 on
+       every studio hand-off, and the server's `fields.assignmentFields` then stored
+       purchase_price = underlying + 0 — the whole fee vanished off the loan file. */
+    const fee = Math.max(0, moneyNum(v.price) - moneyNum(v.origPrice));
     data.assignmentFee = fee ? String(fee) : '';
   }
   // The scenario's rehab scope → the draft's Rehab type. Was heavy-only, so a

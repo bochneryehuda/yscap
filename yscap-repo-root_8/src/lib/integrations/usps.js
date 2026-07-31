@@ -63,8 +63,16 @@ async function verifyAddress(address = {}) {
       standardized: {
         street: a.streetAddress || null, secondary: a.secondaryAddress || null,
         city: a.city || null, state: a.state || null,
+        zip5: a.ZIPCode || null, zipPlus4: a.ZIPPlus4 || null,
         zip: a.ZIPCode ? `${a.ZIPCode}${a.ZIPPlus4 ? `-${a.ZIPPlus4}` : ''}` : null,
       },
+      // Deliverability + delivery-point detail the Addresses API returns alongside
+      // the standardized address — the difference between "this is spelled the USPS
+      // way" and "USPS confirms mail is actually delivered here" (DPVConfirmation).
+      additionalInfo: j.additionalInfo || null,
+      corrections: j.corrections || null,
+      matches: j.matches || null,
+      warnings: j.warnings || null,
       raw: j,
     };
   } finally { g.done(); }

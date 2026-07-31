@@ -1,4 +1,5 @@
 import React, { forwardRef, useEffect, useImperativeHandle, useRef, useState } from 'react';
+import { moneyNum } from '../lib/money.js';
 
 /* The REAL static Term Sheet Studio (web/tools/term-sheet.html) embedded in
    the portal through a same-origin iframe. The static page and its frozen
@@ -217,6 +218,7 @@ function readSnapshot(win) {
       // admin pricing knobs (staff mode) — same names the staff pricing API takes
       tsYspStd: val('tsYspStd'), tsYspGold: val('tsYspGold'), tsYspSilver: val('tsYspSilver'),
       tsOrigStd: val('tsOrigStd'), tsOrigGold: val('tsOrigGold'), tsOrigSilver: val('tsOrigSilver'),
+      tsOrigManual: val('tsOrigManual'),
       tsFeeUW: moneyVal('tsFeeUW'), tsFeeCredit: moneyVal('tsFeeCredit'),
       tsFeeAppr: moneyVal('tsFeeAppr'), tsFeeTitle: moneyVal('tsFeeTitle'),
       tsManualOn: chk('tsManualOn'),
@@ -245,7 +247,7 @@ export function scenarioFromEngineInputs(inp, extra = {}) {
     isAssignment: !!inp.isAssignment,
     underlyingContractPrice: inp.sellerPrice,
     assignmentFee: inp.isAssignment && inp.purchasePrice && inp.sellerPrice
-      ? Math.max(0, Number(inp.purchasePrice) - Number(inp.sellerPrice)) : '',
+      ? Math.max(0, moneyNum(inp.purchasePrice) - moneyNum(inp.sellerPrice)) : '',
     asIsValue: inp.asIsValue,
     arv: inp.arv,
     rehabBudget: inp.rehabBudget,
@@ -270,6 +272,7 @@ export function adminStateFromEngineInputs(inp) {
   const put = (id, val) => { if (val != null && val !== '') v[id] = String(val); };
   put('tsYspStd', inp.markupStdPct); put('tsYspGold', inp.markupGoldPct); put('tsYspSilver', inp.markupSilverPct);
   put('tsOrigStd', inp.origStdPct); put('tsOrigGold', inp.origGoldPct); put('tsOrigSilver', inp.origSilverPct);
+  put('tsOrigManual', inp.origManualPct);
   put('tsFeeUW', inp.lenderFee); put('tsFeeCredit', inp.creditFee);
   put('tsFeeAppr', inp.appraisalFee); put('tsFeeTitle', inp.titleFee);
   put('tsMLtv', inp.ovrAcqLTVPct); put('tsMArv', inp.ovrARLTVPct);

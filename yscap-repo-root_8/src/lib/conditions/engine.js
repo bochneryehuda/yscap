@@ -78,6 +78,7 @@ async function loadRuleContext(appId) {
   // Drives the flood-certificate condition: always required when a flood zone is
   // known, regardless of program. Best-effort — absent appraisal ⇒ not flagged.
   let inFloodZone = false;
+  const isA = (z) => /^(A|V)/.test(String(z || '').trim().toUpperCase());
   try {
     const fz = await db.query(
       `SELECT fema_flood_sfha, fema_flood_zone, flood_zone
@@ -85,10 +86,22 @@ async function loadRuleContext(appId) {
         ORDER BY imported_at DESC NULLS LAST, id DESC LIMIT 1`, [appId]);
     const row = fz.rows[0];
     if (row) {
-      const isA = (z) => /^(A|V)/.test(String(z || '').trim().toUpperCase());
       inFloodZone = row.fema_flood_sfha === true || isA(row.fema_flood_zone) || isA(row.flood_zone);
     }
   } catch (_) { /* appraisals table mid-migration or none — treat as not flagged */ }
+  // A completed Encompass flood-determination ORDER is an independent, authoritative
+  // source of the flood zone (the SFHA flag / FEMA zone the flood vendor returned).
+  // A proven flood zone from EITHER source drives the flood-insurance condition.
+  if (!inFloodZone) {
+    try {
+      const fo = await db.query(
+        `SELECT sfha, flood_zone FROM encompass_flood_orders
+          WHERE application_id=$1 AND status='completed'
+          ORDER BY completed_at DESC NULLS LAST, id DESC LIMIT 1`, [appId]);
+      const o = fo.rows[0];
+      if (o) inFloodZone = o.sfha === true || isA(o.flood_zone);
+    } catch (_) { /* table mid-migration or none — treat as not flagged */ }
+  }
 
   // Admin-defined custom fields: per-application answers live in
   // application_field_values and join the context like any built-in field.

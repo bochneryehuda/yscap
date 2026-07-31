@@ -534,6 +534,21 @@ module.exports = {
     clientId:     process.env.USPS_CLIENT_ID,
     clientSecret: process.env.USPS_CLIENT_SECRET,
     baseUrl:      (process.env.USPS_API_BASE || 'https://apis.usps.com').replace(/\/+$/, ''),
+    // Burst brake for the FREE tier (60 lookups/hour, shared across USPS APIs): once
+    // this many lookups happen in a rolling hour, further LIVE verifies are skipped
+    // (the form still works) and the backfill pauses until the window clears, so the
+    // hour's quota is never burned. Defaults to 55 (safe for the free tier, a little
+    // headroom) — set 0 for NO cap once you're on a paid Enhanced Addresses tier.
+    // NOTE: the counter is per-process, so with N app instances the effective cap is
+    // N × this value; on the free tier run a single instance or lower this.
+    maxPerHour:   process.env.USPS_MAX_PER_HOUR != null ? Number(process.env.USPS_MAX_PER_HOUR) : 55,
+    // Previous-files backfill (off by default). When on, a paced boot pass stamps
+    // each existing file with its USPS-standardized subject address (non-destructive
+    // — it never overwrites property_address).
+    backfillEnabled: /^(1|true|yes)$/i.test(String(process.env.USPS_BACKFILL_ENABLED || '')),
+    backfillPerTick: Number(process.env.USPS_BACKFILL_PER_TICK || 40),   // lookups per pass; keep ≤ your hourly quota
+    backfillEveryMin: Number(process.env.USPS_BACKFILL_EVERY_MIN || 60), // minutes between passes (floor 15)
+    conditionRequired: !/^(0|false|no)$/i.test(String(process.env.USPS_CONDITION_REQUIRED || '1')),
   },
   // Encompass (ICE Mortgage Technology / Ellie Mae) — the loan-origination
   // system. OAuth2 via Developer Connect; access is per-instance, so the field
@@ -546,6 +561,44 @@ module.exports = {
     password:     process.env.ENCOMPASS_PASSWORD,
     baseUrl:      (process.env.ENCOMPASS_API_BASE || 'https://api.elliemae.com').replace(/\/+$/, ''),
   },
+  // Encompass FLOOD ordering — the ONE owner-authorized WRITE into Encompass
+  // (order a Life-of-Loan flood determination from ICE's own flood service, and
+  // nothing else). Isolated in src/encompass/flood-order.js; the read-only module
+  // is untouched. Staged rollout, all default OFF:
+  //   ENCOMPASS_FLOOD_ENABLED          master (reads + poll worker) — via switches.js
+  //   ENCOMPASS_FLOOD_OUTBOUND_ENABLED separate write gate (place an order) — via switches.js
+  //   ENCOMPASS_FLOOD_DRYRUN           build + log the order body, send nothing
+  // Credentials default to the tenant's existing Encompass creds; a dedicated
+  // flood-authorized API user can be dropped into the ENCOMPASS_FLOOD_* overrides.
+  encompassFlood: {
+    clientId:     process.env.ENCOMPASS_FLOOD_CLIENT_ID || null,
+    clientSecret: process.env.ENCOMPASS_FLOOD_CLIENT_SECRET || null,
+    instanceId:   process.env.ENCOMPASS_FLOOD_INSTANCE_ID || null,
+    username:     process.env.ENCOMPASS_FLOOD_USERNAME || null,
+    password:     process.env.ENCOMPASS_FLOOD_PASSWORD || null,
+    dryrun:       process.env.ENCOMPASS_FLOOD_DRYRUN === '1',
+    framework:    process.env.ENCOMPASS_FLOOD_FRAMEWORK || null,   // 'serviceOrders' (default) | 'partnerTransactions'
+    partnerId:    process.env.ENCOMPASS_FLOOD_PARTNER_ID || null,
+    serviceId:    process.env.ENCOMPASS_FLOOD_SERVICE_ID || null,
+    product:      process.env.ENCOMPASS_FLOOD_PRODUCT || null,
+    // The tenant's configured flood "service setup" id — REQUIRED by the Encompass
+    // v3 serviceOrders API (a place-order without it returns "SOO-1125:
+    // serviceSetupId is required"). It identifies WHICH configured service/vendor
+    // to order from (the owner's ICE flood service). Ask the Encompass admin for it.
+    serviceSetupId: process.env.ENCOMPASS_FLOOD_SERVICE_SETUP_ID || null,
+    // The remaining serviceOrders body fields — all overridable so the exact
+    // contract can be dialed in against the live tenant (dry-run to inspect) with
+    // NO redeploy. Defaults match the documented EPC service-order shape.
+    reason:       process.env.ENCOMPASS_FLOOD_REASON || null,        // default 'Manually Requested'
+    requestType:  process.env.ENCOMPASS_FLOOD_REQUEST_TYPE || null,  // default 'Flood'
+    scope:        process.env.ENCOMPASS_FLOOD_SCOPE || null,         // optional (e.g. 'application:<id>')
+    optionsJson:  process.env.ENCOMPASS_FLOOD_OPTIONS_JSON || null,  // optional raw JSON for request.options
+  },
+  // Owner-directed 2026-07-30 ("turn everything on"): flood ordering is ON by
+  // default (button + polling AND the write). Set the env var to '0' — or flip the
+  // switch OFF on the API-Health page — to pause it. TEST MODE (dryrun) stays off.
+  encompassFloodEnabled: process.env.ENCOMPASS_FLOOD_ENABLED !== '0',            // master (default ON)
+  encompassFloodOutboundEnabled: process.env.ENCOMPASS_FLOOD_OUTBOUND_ENABLED !== '0', // write gate (default ON)
 
   // --- document underwriting: OCR reader + AI analyzer (add keys to activate) ---
   // Microsoft Azure AI Document Intelligence — the "reads even scanned/blurry

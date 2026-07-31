@@ -17,8 +17,14 @@ export default function AddressAutocomplete({ value, onChange, onPick, placehold
   const [active, setActive] = useState(-1);
   const [provider, setProvider] = useState('');
   const [pos, setPos] = useState(null);          // { top, left, width, flip }
+  // USPS verification of the PICKED address (the authoritative standardizer). null
+  // until a pick is verified; then 'verified' | 'corrected' | 'unverified'. States
+  // that mean "the feature isn't on / had a hiccup" (not_configured/error/rate_limited)
+  // stay silent so the form never nags when USPS isn't active yet.
+  const [usps, setUsps] = useState(null);        // { status } | null
   const seq = useRef(0);
   const timer = useRef(null);
+  const vseq = useRef(0);
   const inputRef = useRef(null);
   const menuRef = useRef(null);
 
@@ -76,18 +82,51 @@ export default function AddressAutocomplete({ value, onChange, onPick, placehold
   function onInput(e) {
     const v = e.target.value;
     onChange && onChange(v);
+    if (usps) setUsps(null);                    // editing invalidates the last USPS check
+    vseq.current++;                             // and any in-flight verify result
     clearTimeout(timer.current);
     if (v.trim().length < 3) { setOpen(false); setSuggestions([]); return; }
     timer.current = setTimeout(() => runQuery(v.trim()), 250);
   }
+  // Standardize a picked/entered address against USPS. If USPS confirms it (and
+  // maybe fixes the spelling/ZIP) we hand the USPS-correct address to onPick and
+  // update the visible field; if USPS can't confirm (or isn't set up) we keep what
+  // was picked. Never blocks: the pick already applied before this runs.
+  async function verifyWithUsps(addr) {
+    const mine = ++vseq.current;
+    setUsps(null);
+    try {
+      const r = await fetch('/api/address/verify', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ address: addr }),
+      });
+      const j = await r.json();
+      if (mine !== vseq.current) return;                 // a newer pick won
+      if (j && j.configured && (j.status === 'verified' || j.status === 'corrected')) {
+        // Always adopt the USPS response. Even an "already correct" input may
+        // gain ZIP+4 or canonical USPS abbreviations.
+        if (j.address) {
+          onChange && onChange(j.address.line1 || value);
+          onPick && onPick(j.address);
+        }
+        setUsps({ status: j.status });
+      } else if (j && j.configured && j.status === 'unverified') {
+        setUsps({ status: 'unverified' });
+      } else {
+        setUsps(null);                                   // not_configured / error / rate_limited → silent
+      }
+    } catch { if (mine === vseq.current) setUsps(null); }
+  }
+
   async function pick(s) {
     setOpen(false);
+    setUsps(null);
     let addr = s.address;
     if (!addr && s.id) {
       try { const j = await (await fetch('/api/address/details?id=' + encodeURIComponent(s.id))).json(); addr = j.address; }
       catch { addr = null; }
     }
-    if (addr) { onChange && onChange(addr.line1 || value); onPick && onPick(addr); }
+    if (addr) { onChange && onChange(addr.line1 || value); onPick && onPick(addr); verifyWithUsps(addr); }
     else { onChange && onChange(s.label); }
   }
   function onKey(e) {
@@ -114,11 +153,24 @@ export default function AddressAutocomplete({ value, onChange, onPick, placehold
     document.body
   ) : null;
 
+  // Tiny USPS status line under the field. Dark text on the white portal (never a
+  // light var(--ink*) token). Green = USPS-confirmed, amber = couldn't confirm.
+  const uspsBadge = usps ? (
+    <div style={{ marginTop: 4, fontSize: 12, display: 'flex', alignItems: 'center', gap: 5, lineHeight: 1.3,
+      color: usps.status === 'unverified' ? '#8A6D1F' : '#256168' }}>
+      <span aria-hidden="true">{usps.status === 'unverified' ? '⚠' : '✓'}</span>
+      <span>{usps.status === 'verified' ? 'USPS verified'
+        : usps.status === 'corrected' ? 'USPS verified — corrected to the official mailing address'
+        : "Couldn't verify this address with USPS — please double-check it"}</span>
+    </div>
+  ) : null;
+
   return (
     <div style={{ position: 'relative' }}>
       <input ref={inputRef} className={className || 'input'} value={value || ''} placeholder={placeholder} autoFocus={autoFocus}
         autoComplete="off" onChange={onInput} onKeyDown={onKey}
         onFocus={() => { if (suggestions.length) setOpen(true); }} />
+      {uspsBadge}
       {menu}
     </div>
   );

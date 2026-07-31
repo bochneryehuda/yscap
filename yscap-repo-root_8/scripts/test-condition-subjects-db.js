@@ -28,7 +28,18 @@ const ok = (c, m) => { console.log(`${c ? 'PASS' : 'FAIL'} ${m}`); if (!c) failu
   // ---- placement: the template code wins -------------------------------
   ok(subjectOf({ template_code: 'rtl_cond_title' }) === 'title', 'a title template lands in Title');
   ok(subjectOf({ template_code: 'rtl_llc_ein' }) === 'entity', 'an entity document lands in Entity & vesting');
-  ok(subjectOf({ template_code: 'rtl_f_ctc' }) === 'closing', 'the clear-to-close gate lands in Closing');
+  // The investor's clear-to-close gate is PRIOR to CTC — its own group, not Closing
+  // (owner-directed 2026-07-30).
+  ok(subjectOf({ template_code: 'rtl_f_ctc' }) === 'investor', 'the investor clear-to-close gate lands in Investor approval');
+  ok(subjectOf({ template_code: 'rtl_f_review' }) === 'investor', 'the investor final review lands in Investor approval');
+  // The post-CTC closing package stays in Closing.
+  ok(subjectOf({ template_code: 'closing_hud_final' }) === 'closing', 'the balanced final HUD/ALTA lands in Closing');
+  ok(subjectOf({ template_code: 'closing_pkg_signed' }) === 'closing', 'the signed closing package lands in Closing');
+  ok(subjectOf({ template_code: 'closing_tracking_label' }) === 'closing', 'the collateral tracking label lands in Closing');
+  // A staff-typed condition about clear-to-close reads as investor, not closing.
+  ok(subjectOf({ label: 'Confirm investor final review is back' }) === 'investor', 'a typed investor-review condition is placed with Investor approval');
+  ok(subjectOf({ label: 'Waiting on the investor clear to close' }) === 'investor', 'a typed clear-to-close condition is placed with Investor approval');
+  ok(subjectOf({ label: 'Balanced final HUD / ALTA settlement statement' }) === 'closing', 'a typed settlement-statement condition is placed with Closing');
   ok(subjectOf({ template_code: 'rtl_cond_flood' }) === 'insurance', 'the flood certificate sits with Insurance');
   ok(subjectOf({ template_code: 'rtl_cond_title', label: 'wire instructions' }) === 'title',
     'the code beats a label that would have said otherwise');

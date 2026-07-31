@@ -6,6 +6,7 @@ import TermSheetStudio, {
 } from './TermSheetStudio.jsx';
 import GuarantyWaiverCard from './GuarantyWaiverCard.jsx';
 import { fullNameOf } from '../lib/personName.js';
+import { moneyNum } from '../lib/money.js';
 
 /* Product registration on a loan file — borrower AND staff logins. The panel
    shows the registered product; "Reprice / re-register" opens the real static
@@ -51,7 +52,7 @@ function registeredRehabType(inp) {
   if (/bridge|stabil/i.test(String(i.strategy || ''))) return null;
   if (i.sqftAddition) return 'Adding square footage';
   if (i.heavyRehab) return 'Heavy / gut rehab';
-  if (!(Number(i.rehabBudget) > 0)) return null;
+  if (!(moneyNum(i.rehabBudget) > 0)) return null;
   return 'Light / moderate';
 }
 
@@ -158,6 +159,7 @@ export function overridesFromSnapshot(snap, mode) {
       arv: f.arv,
       rehabBudget: f.construction,
       origStdPct: f.tsOrigStd, origGoldPct: f.tsOrigGold, origSilverPct: f.tsOrigSilver,
+      origManualPct: f.tsOrigManual,
       lenderFee: f.tsFeeUW, creditFee: f.tsFeeCredit, appraisalFee: f.tsFeeAppr,
       titleFee: f.tsFeeTitle,
       ovrAcqLTVPct: f.tsManualOn ? f.tsMLtv : null,
@@ -215,7 +217,18 @@ export function RegisteredProductDetails({ reg, compactView = false, showAdmin =
   const inp = typeof reg.inputs === 'string' ? JSON.parse(reg.inputs || '{}') : (reg.inputs || {});
   const s = q.sizing || {};
   const cc = q.closingCosts || {};
+  // `caps` = the EFFECTIVE ceiling this deal was sized and priced at (unchanged
+  // meaning — every enforcement reader still uses it). `programCaps` = the PROGRAM
+  // MAXIMUM this borrower profile can actually reach: the tier cap already lowered to
+  // the highest leverage band the rate grid genuinely prices. Owner-reported
+  // 2026-07-30 — a label promising the program maximum must be BOTH fixed (it may not
+  // move when the interest reserve moves) and REACHABLE ("the tier two cannot anytime
+  // get 92.5 … because it doesn't price — so keep that tier at 85%"). Display only.
   const caps = (q.guidelines && q.guidelines.caps) || null;
+  const cappedWhy = (q.guidelines && q.guidelines.leverageCappedWhy) || null;
+  const progMax = (q.guidelines && q.guidelines.programCaps) || caps;
+  const pricedLower = !!(progMax && caps && (
+    caps.maxLtc < progMax.maxLtc - 1e-9 || caps.maxArvLtv < progMax.maxArvLtv - 1e-9 || caps.maxAcqLtv < progMax.maxAcqLtv - 1e-9));
   const Row = ({ k, v }) => <div className="metrow"><span className="k">{k}</span><span className="v">{v}</span></div>;
   return (
     <div className={compactView ? '' : 'panel'} style={compactView ? {} : { background: 'var(--ink-2)', marginTop: 10 }}>
@@ -251,12 +264,19 @@ export function RegisteredProductDetails({ reg, compactView = false, showAdmin =
           <Row k="Loan-to-ARV" v={pct(s.arvPct, 1)} />
           {reg.target_ltc > 0 && <Row k="Selected leverage (LTC target)" v={pct(reg.target_ltc, 1)} />}
           {s.binding && <Row k="Binding limit" v={s.binding} />}
-          {caps && ((q.kind === 'bridge' || caps.maxLtc >= 1 || caps.maxArvLtv >= 1)
+          {progMax && ((q.kind === 'bridge' || progMax.maxLtc >= 1 || progMax.maxArvLtv >= 1)
             // Bridge (and any no-cap product) has no LTC/ARV ceiling — the engine
             // uses a 100% sentinel. Don't display "100.0%" as if it were a real cap;
             // show only the as-is advance cap that actually governs (audit #12).
-            ? <Row k="Program max — as-is" v={pct(caps.maxAcqLtv, 1)} />
-            : <Row k="Program max — LTC / ARV / as-is" v={`${pct(caps.maxLtc, 1)} / ${pct(caps.maxArvLtv, 1)} / ${pct(caps.maxAcqLtv, 1)}`} />)}
+            ? <Row k="Program max — as-is" v={pct(progMax.maxAcqLtv, 1)} />
+            : <Row k="Program max — LTC / ARV / as-is" v={`${pct(progMax.maxLtc, 1)} / ${pct(progMax.maxArvLtv, 1)} / ${pct(progMax.maxAcqLtv, 1)}`} />)}
+          {pricedLower && <Row k="Most this deal can be priced at — LTC / ARV" v={`${pct(caps.maxLtc, 1)} / ${pct(caps.maxArvLtv, 1)}`} />}
+          {pricedLower && (
+            <p className="small" style={{ margin: '6px 0 0', color: '#4B585C' }}>
+              {cappedWhy || 'On this deal the program prices a lower leverage band than the program maximum.'}{' '}
+              The program maximum above is set by the tier (FICO and experience) and does not change when the deal changes — including the interest reserve.
+            </p>
+          )}
         </div>
         <div>
           <p className="muted small" style={{ margin: '0 0 4px', textTransform: 'uppercase', letterSpacing: '.06em' }}>Fees & cash to close</p>
@@ -879,10 +899,17 @@ const ProductStudioPanel = forwardRef(function ProductStudioPanel({ appId, app, 
     const DEFAULTED = {
       markupStdPct: 'rate markup (Standard)', markupGoldPct: 'rate markup (Gold)',
       origStdPct: 'origination points (Standard)', origGoldPct: 'origination points (Gold)',
+      origSilverPct: 'origination points (Silver)', origManualPct: 'origination points (Manual)',
       lenderFee: 'underwriting / legal fee', creditFee: 'credit-report fee',
       appraisalFee: 'appraisal fee', titleFee: 'title / escrow fee',
     };
     const NO_DEFAULT = { ovrEffPrice: 'effective purchase price', manualPricing: 'manual scenario' };
+    // A knob with no company default of its own borrows another's — the exact
+    // mirror of pricing-overrides.js `defaultKey`, which is what the server
+    // re-checks with. Without it the Manual origination has no `cd` entry at
+    // all, so the panel would warn "needs an admin approval" for a value that
+    // IS the default and the server would then say it isn't (audit 2026-07-30).
+    const DEFAULT_SOURCE = { origManualPct: 'origStdPct' };
     const out = [];
     if (cd) {
       for (const k of Object.keys(DEFAULTED)) {
@@ -890,7 +917,8 @@ const ProductStudioPanel = forwardRef(function ProductStudioPanel({ appId, app, 
         if (raw == null || raw === '') continue;              // blank = "use the company default"
         const v = Number(raw);
         if (!Number.isFinite(v)) continue;
-        const d = cd[k] == null || cd[k] === '' ? null : Number(cd[k]);
+        const dk = DEFAULT_SOURCE[k] || k;
+        const d = cd[dk] == null || cd[dk] === '' ? null : Number(cd[dk]);
         if (d != null && Math.abs(v - d) < 0.0001) continue;  // typed the default back
         out.push(DEFAULTED[k]);
       }

@@ -48,6 +48,11 @@ const T0='2026-07-01T00:00:00Z', T1='2026-07-10T00:00:00Z', T2='2026-07-15T00:00
   let g = await esignSendGate(app,{db});
   ok(g.ready===false, 'nothing satisfied -> not ready');
   ok(g.outstanding.length===3, 'nothing satisfied -> 3 outstanding');
+  // The review blocker's reason is DELIBERATELY the original, STABLE string —
+  // gate-disposition matches a super-admin's per-item waiver by reason text, so a
+  // wording change would silently un-waive every approved early-send exception.
+  ok((g.outstanding.find(o=>o.code==='rtl_p3_apprreview')||{}).reason==='The internal appraisal review must be signed off.',
+     'review blocker keeps the stable original reason string (protects approved per-item waivers)');
 
   // 2. appraisal(T1)+review satisfied, P&P satisfied but signed BEFORE appraisal (T0) -> not ready
   app = await mkApp();
@@ -153,6 +158,108 @@ const T0='2026-07-01T00:00:00Z', T1='2026-07-10T00:00:00Z', T2='2026-07-15T00:00
   g = await esignSendGate(app,{db});
   ok(g.sendAllowed===false && g.exception.status==='requested', 'a requested (pending) exception does not yet permit sending');
   ok(g.canRequestException===false, 'a pending request blocks a duplicate request');
+
+  // 11. THE FINDINGS-GATED CONDITION GOVERNS WHEN IT EXISTS (owner-directed 2026-07-30).
+  //     appraisal_review_cleared is the condition an appraisal import attaches; when it is
+  //     present, the term-sheet gate depends on IT — not on the plain rtl_p3_apprreview
+  //     task. So a plain task signed off while the findings condition is still open must
+  //     NOT let the term sheet through.
+  app = await mkApp();
+  await cond(app,'rtl_cond_appraisaldocs','satisfied',T1);
+  await cond(app,'rtl_p3_apprreview','satisfied',T1);        // plain task signed off
+  await cond(app,'appraisal_review_cleared','outstanding');  // findings condition NOT cleared
+  await cond(app,'rtl_p1_product','satisfied',T2);
+  g = await esignSendGate(app,{db});
+  ok(g.ready===false, 'appraisal_review_cleared open -> not ready even with the plain task signed off');
+  ok(g.outstanding.some(o=>o.code==='rtl_p3_apprreview'), 'the review blocker still uses code rtl_p3_apprreview (stays waivable)');
+  // Clearing the findings condition (satisfied) opens the gate.
+  await db.query(`UPDATE checklist_items ci SET status='satisfied', signed_off_at=$2
+                    FROM checklist_templates t
+                   WHERE ci.template_id=t.id AND t.code='appraisal_review_cleared' AND ci.application_id=$1`,[app,T1]);
+  g = await esignSendGate(app,{db});
+  ok(g.ready===true, 'appraisal_review_cleared satisfied -> ready');
+
+  // 12. NO-XML WAIVER stands in for the appraisal review (owner-directed 2026-07-30).
+  //     A valid "No XML available" waiver — hand-entered As-Is + ARV, transferred (or an
+  //     approved exception) — counts as receiving-and-reviewing the appraisal, so the
+  //     review requirement is met even with the plain task still outstanding.
+  app = await mkApp();
+  await cond(app,'rtl_cond_appraisaldocs','satisfied',T1);   // reviewer signed off the docs condition (PDF + waiver)
+  await cond(app,'rtl_p3_apprreview','outstanding');         // no natural way to "clear appraisal review" with no XML
+  await cond(app,'rtl_p1_product','satisfied',T2);
+  // A transferred-appraisal waiver + the hand-entered values on the file.
+  await db.query(`UPDATE applications SET as_is_value=300000, arv=420000 WHERE id=$1`,[app]);
+  await db.query(`INSERT INTO appraisal_xml_waivers (application_id, reason, requires_transfer_letter, arv, as_is_value)
+                  VALUES ($1,'transferred_appraisal',true,420000,300000)`,[app]);
+  g = await esignSendGate(app,{db});
+  ok(g.ready===true, 'a valid transferred no-XML waiver clears the appraisal-review requirement -> ready');
+  ok(!g.outstanding.some(o=>o.code==='rtl_p3_apprreview'), 'review requirement no longer outstanding under a valid waiver');
+
+  // 12b. A waiver with the VALUES MISSING does not count (nothing was entered by hand).
+  app = await mkApp();
+  await cond(app,'rtl_cond_appraisaldocs','satisfied',T1);
+  await cond(app,'rtl_p3_apprreview','outstanding');
+  await cond(app,'rtl_p1_product','satisfied',T2);
+  await db.query(`INSERT INTO appraisal_xml_waivers (application_id, reason, requires_transfer_letter)
+                  VALUES ($1,'transferred_appraisal',true)`,[app]);   // no As-Is/ARV on the file
+  g = await esignSendGate(app,{db});
+  ok(g.outstanding.some(o=>o.code==='rtl_p3_apprreview'), 'a waiver with no hand-entered values does NOT clear the review');
+
+  // 12c. A non-transfer waiver whose exception is only REQUESTED does not count; APPROVED does.
+  app = await mkApp();
+  await cond(app,'rtl_cond_appraisaldocs','satisfied',T1);
+  await cond(app,'rtl_p3_apprreview','outstanding');
+  await cond(app,'rtl_p1_product','satisfied',T2);
+  await db.query(`UPDATE applications SET as_is_value=250000, arv=360000 WHERE id=$1`,[app]);
+  let exc = await db.getClient(); await exc.query('BEGIN');
+  const xw = await LE.requestAppraisalXmlWaiver(exc, { appId: app, reasonCode:'appraiser_no_xml', reasonNote:'no data file', requestedBy:null });
+  await exc.query('COMMIT'); exc.release();
+  await db.query(`INSERT INTO appraisal_xml_waivers (application_id, reason, note, arv, as_is_value, requires_transfer_letter, exception_id)
+                  VALUES ($1,'appraiser_no_xml','no data file',360000,250000,false,$2)`,[app,xw.id]);
+  g = await esignSendGate(app,{db});
+  ok(g.outstanding.some(o=>o.code==='rtl_p3_apprreview'), 'a non-transfer waiver with a PENDING exception does not clear the review');
+  await LE.decideException(xw.id, 'approved', null, 'ok');
+  g = await esignSendGate(app,{db});
+  ok(!g.outstanding.some(o=>o.code==='rtl_p3_apprreview'), 'once the exception is APPROVED the waiver clears the review');
+
+  // 13. PRECEDENCE: a no-XML waiver must NOT bypass the enforced findings gate on a
+  //     file that HAS an imported appraisal (appraisal_review_cleared present).
+  //     The findings condition governs FIRST — there is XML, so the waiver does not
+  //     apply. (Regression guard for the pre-merge audit's residual-bypass finding.)
+  app = await mkApp();
+  await cond(app,'rtl_cond_appraisaldocs','satisfied',T1);
+  await cond(app,'rtl_p3_apprreview','satisfied',T1);
+  await cond(app,'appraisal_review_cleared','outstanding');   // imported + findings NOT cleared
+  await cond(app,'rtl_p1_product','satisfied',T2);
+  await db.query(`UPDATE applications SET as_is_value=300000, arv=420000 WHERE id=$1`,[app]);
+  await db.query(`INSERT INTO appraisal_xml_waivers (application_id, reason, requires_transfer_letter, arv, as_is_value)
+                  VALUES ($1,'transferred_appraisal',true,420000,300000)`,[app]);   // a waiver alongside an import
+  g = await esignSendGate(app,{db});
+  ok(g.outstanding.some(o=>o.code==='rtl_p3_apprreview'),
+     'a no-XML waiver does NOT bypass the enforced findings condition on an imported file');
+  // Clearing the findings condition opens it (the normal path on an imported file).
+  await db.query(`UPDATE checklist_items ci SET status='satisfied', signed_off_at=$2
+                    FROM checklist_templates t
+                   WHERE ci.template_id=t.id AND t.code='appraisal_review_cleared' AND ci.application_id=$1`,[app,T1]);
+  g = await esignSendGate(app,{db});
+  ok(g.ready===true, 'clearing the findings condition opens the gate on the imported file');
+
+  // 14. KILL SWITCH: with appraisal-review enforcement OFF, the gate falls back to
+  //     the plain review task even when appraisal_review_cleared exists+open.
+  const prevEnforce = process.env.APPRAISAL_FINDINGS_ENFORCE;
+  process.env.APPRAISAL_FINDINGS_ENFORCE = '0';
+  try {
+    app = await mkApp();
+    await cond(app,'rtl_cond_appraisaldocs','satisfied',T1);
+    await cond(app,'rtl_p3_apprreview','satisfied',T1);        // plain task signed off
+    await cond(app,'appraisal_review_cleared','outstanding');  // findings cond open (ignored when off)
+    await cond(app,'rtl_p1_product','satisfied',T2);
+    g = await esignSendGate(app,{db});
+    ok(g.ready===true, 'enforcement OFF -> falls back to the plain review task (findings condition ignored)');
+  } finally {
+    if (prevEnforce === undefined) delete process.env.APPRAISAL_FINDINGS_ENFORCE;
+    else process.env.APPRAISAL_FINDINGS_ENFORCE = prevEnforce;
+  }
 
   console.log(`\n${pass} passed, ${fail} failed`);
   await db.pool?.end?.();

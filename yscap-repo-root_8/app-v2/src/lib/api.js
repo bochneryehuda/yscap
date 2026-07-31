@@ -389,6 +389,9 @@ export const api = {
   // Super-admin only: the raw Encompass troubleshooting view.
   encompassRaw:      (id) => req('GET', `/api/staff/applications/${id}/encompass/raw`),
   encompassReplace:  (id, fieldKey) => req('POST', `/api/staff/applications/${id}/encompass/replace`, { fieldKey }),
+  // Flood-certificate ordering (the one owner-authorized Encompass write).
+  floodOrderState:   (id) => req('GET', `/api/staff/applications/${id}/flood-order`),
+  orderFlood:        (id, itemId) => req('POST', `/api/staff/applications/${id}/order-flood`, itemId ? { checklistItemId: itemId } : {}),
   // Credit report (Xactus import) — the internal Credit report condition.
   // `scope` = 'co' | 'primary' narrows the credit section to ONE borrower, so a
   // co-borrower's own credit condition shows their report instead of the file's.
@@ -449,6 +452,10 @@ export const api = {
   // entities only (not the borrower's whole LLC library). Returns { vestingLlcId, llcs:[{...,vesting}] }.
   staffAppVerifyLlcs: (appId) => req('GET', `/api/staff/applications/${appId}/verify-llcs`),
   staffSetVestingLlc: (appId, llcId) => req('POST', `/api/staff/applications/${appId}/vesting-llc`, { llcId }),
+  // Personal-name purchase: waive the LLC condition with a non-owner-occupied
+  // affidavit → vesting flips to Individual (db/383). Pass the affidavit upload to
+  // waive, or { undo:true } to go back to an LLC purchase (the default).
+  staffVestingPersonalName: (appId, b) => req('POST', `/api/staff/applications/${appId}/vesting/personal-name`, normalizeUpload(b || {})),
   staffCreateLlc:    (borrowerId, b) => req('POST', `/api/staff/borrowers/${borrowerId}/llcs`, b),
   staffLlc:          (id) => req('GET', `/api/staff/llcs/${id}`),
   staffUpdateLlc:    (id, b) => req('PATCH', `/api/staff/llcs/${id}`, b),
@@ -575,6 +582,17 @@ export const api = {
   withdrawException:         (appId, eid) => req('POST', `/api/staff/applications/${appId}/exceptions/${eid}/withdraw`, {}),
   loanExceptions:            (status, type) => req('GET', `/api/admin/exceptions${qs({ status, type })}`),
   loanExceptionsCount:       () => req('GET', '/api/admin/exceptions/count'),
+  /* Investor Suite saved scenarios (owner-directed 2026-07-30) — a staffer's own
+     named working states for the suite tools, so they can price a deal that is not
+     a file yet and pick it up later. Private to the staffer; every route is keyed
+     server-side on the actor, so there is no id to pass. `toolScenarios()` with no
+     tool returns the whole list plus per-tool counts for the suite grid badges;
+     the full state is fetched only when a scenario is actually opened. */
+  toolScenarios:             (tool) => req('GET', `/api/staff/tool-scenarios${qs({ tool })}`),
+  toolScenario:              (id) => req('GET', `/api/staff/tool-scenarios/${id}`),
+  saveToolScenario:          (body) => req('POST', '/api/staff/tool-scenarios', body),
+  renameToolScenario:        (id, body) => req('PUT', `/api/staff/tool-scenarios/${id}`, body),
+  deleteToolScenario:        (id) => req('DELETE', `/api/staff/tool-scenarios/${id}`),
   // The register report (counts, approval rate, time-to-decision, aging) and the
   // diligence-ready xlsx export of the register (redesign 2026-07-24).
   loanExceptionMetrics:      () => req('GET', '/api/admin/exceptions/metrics'),

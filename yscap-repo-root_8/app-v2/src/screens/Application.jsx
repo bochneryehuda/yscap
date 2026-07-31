@@ -16,6 +16,7 @@ import { PROPERTY_TYPES } from '../lib/enums.js';
 import ToolModal from '../components/ToolModal.jsx';
 import LlcPicker from '../components/LlcPicker.jsx';
 import LlcManager from '../components/LlcManager.jsx';
+import AddressAutocomplete from '../components/AddressAutocomplete.jsx';
 import FileSections, { Section, InfoTip } from '../components/FileSections.jsx';
 import { captureScrollAnchor, restoreScrollAnchor } from '../lib/keep-scroll.js';
 import { onFilesDropped } from '../lib/drop-files.js';
@@ -470,9 +471,14 @@ function BorrowerCompleteness({ app, profile, appId, onSaved }) {
   const [val, setVal] = useState('');
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState('');
+  // Inline property-address editor (owner-directed invite flow): when a staffer
+  // started this file from just an email, the borrower adds the subject property
+  // themselves right here. It's a structured object, so it gets its own small form.
+  const [addrOpen, setAddrOpen] = useState(false);
+  const [addr, setAddr] = useState({ street: '', unit: '', city: '', state: '', zip: '' });
   const b = profile || {};
   const fields = [
-    { key: 'property_address', label: 'Property address', ok: !!(app.property_address && (app.property_address.oneLine || app.property_address.street)), edit: false },
+    { key: 'property_address', label: 'Property address', ok: !!(app.property_address && (app.property_address.oneLine || app.property_address.street || app.property_address.line1)), type: 'address' },
     // Canonical spellings (lib/enums.js) — a drifted one can't reach ClickUp (#822).
     { key: 'property_type', label: 'Property type', ok: !!app.property_type, type: 'select', options: PROPERTY_TYPES.map((o) => o.value) },
     { key: 'purchase_price', label: 'Purchase price', ok: app.purchase_price != null, type: 'money' },
@@ -500,6 +506,26 @@ function BorrowerCompleteness({ app, profile, appId, onSaved }) {
     catch (e) { setErr(e.message || 'Could not save'); }
     finally { setBusy(false); }
   }
+  async function saveAddress() {
+    if (!addr.street.trim() && !addr.city.trim()) { setErr('Enter at least the street and city of the property.'); return; }
+    const oneLine = [
+      [addr.street, addr.unit].filter(Boolean).join(' '),
+      addr.city,
+      [addr.state, addr.zip].filter(Boolean).join(' '),
+    ].filter(Boolean).join(', ');
+    setBusy(true); setErr('');
+    try {
+      await api.post(`/api/borrower/applications/${appId}/complete-fields`, {
+        property_address: {
+          line1: addr.street.trim(), street: addr.street.trim(), unit: addr.unit.trim(),
+          city: addr.city.trim(), state: addr.state.trim(), zip: addr.zip.trim(), oneLine,
+        },
+      });
+      setAddrOpen(false); setAddr({ street: '', unit: '', city: '', state: '', zip: '' });
+      await onSaved();
+    } catch (e) { setErr(e.message || 'Could not save'); }
+    finally { setBusy(false); }
+  }
   return (
     <div className="panel" style={{ marginBottom: 16 }}>
       <div className="row" style={{ marginBottom: 8 }}>
@@ -514,7 +540,10 @@ function BorrowerCompleteness({ app, profile, appId, onSaved }) {
           <>
             <p className="muted small" style={{ marginBottom: 8 }}>A few details are still missing — tap any to fill it in right here.</p>
             <div className="row" style={{ gap: 6, flexWrap: 'wrap', alignItems: 'center' }}>
-              {missing.map((f) => editing === f.key ? (
+              {missing.map((f) => f.type === 'address' ? (
+                <button key={f.key} className="pill" style={{ borderColor: 'var(--gold)', color: 'var(--gold)', cursor: 'pointer', background: 'none' }}
+                  onClick={() => { setAddrOpen((v) => !v); setEditing(null); setErr(''); }}>+ {f.label}</button>
+              ) : editing === f.key ? (
                 <span key={f.key} className="row" style={{ gap: 4, alignItems: 'center' }}>
                   {f.type === 'select'
                     ? <select className="input" style={{ maxWidth: 200 }} value={val} onChange={(e) => setVal(e.target.value)} autoFocus>
@@ -538,6 +567,28 @@ function BorrowerCompleteness({ app, profile, appId, onSaved }) {
                   onClick={() => { setEditing(f.key); setVal(''); setErr(''); }}>+ {f.label}</button>
               ))}
             </div>
+            {addrOpen && (
+              <div style={{ marginTop: 12, paddingTop: 12, borderTop: '1px solid var(--line)' }}>
+                <div className="grid cols-2" style={{ gap: 8 }}>
+                  <label className="field" style={{ gridColumn: '1 / -1' }}><span>Street address</span>
+                    <AddressAutocomplete value={addr.street} onChange={(v) => setAddr((s) => ({ ...s, street: v }))}
+                      onPick={(a) => setAddr((s) => ({ ...s, street: a.line1 || s.street, unit: a.unit || s.unit, city: a.city || s.city, state: a.state || s.state, zip: a.zip || s.zip }))}
+                      placeholder="Start typing the property address…" /></label>
+                  <label className="field"><span>Unit / Apt</span>
+                    <input className="input" value={addr.unit} onChange={(e) => setAddr((s) => ({ ...s, unit: e.target.value }))} placeholder="Optional" /></label>
+                  <label className="field"><span>City</span>
+                    <input className="input" value={addr.city} onChange={(e) => setAddr((s) => ({ ...s, city: e.target.value }))} /></label>
+                  <label className="field"><span>State</span>
+                    <input className="input" maxLength={2} value={addr.state} onChange={(e) => setAddr((s) => ({ ...s, state: e.target.value.toUpperCase() }))} placeholder="NY" /></label>
+                  <label className="field"><span>ZIP</span>
+                    <input className="input" value={addr.zip} onChange={(e) => setAddr((s) => ({ ...s, zip: e.target.value }))} /></label>
+                </div>
+                <div className="row" style={{ gap: 8, marginTop: 8, justifyContent: 'flex-end' }}>
+                  <button className="btn ghost small" onClick={() => setAddrOpen(false)} disabled={busy}>Cancel</button>
+                  <button className="btn primary small" disabled={busy || (!addr.street.trim() && !addr.city.trim())} onClick={saveAddress}>{busy ? '…' : 'Save address'}</button>
+                </div>
+              </div>
+            )}
           </>
         )}
     </div>

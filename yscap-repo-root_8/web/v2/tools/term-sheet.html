@@ -25,6 +25,12 @@
 </script>
 <style>
   .hidden{ display:none !important; }
+  /* Pin the layout viewport so a hidden / absolutely-positioned element (a help
+     tooltip bubble near the right edge) can never widen the page and produce a
+     phantom sideways scroll on mid-size screens (~760-1030px). `clip` — not
+     `hidden` — does NOT create a scroll container, so the sticky top bar keeps
+     working (see the mobile-overflow rule in CLAUDE.md). */
+  html{ overflow-x:hidden; overflow-x:clip; }
   /* Bridge (and any conditional row): when a field in a two-column row is hidden, collapse the row to one column so there's no empty slot. */
   .field-rows.two-col:has(> .field.hidden){ grid-template-columns:1fr; }
   .maxlev:has(> .ml.hidden){ grid-template-columns:1fr; }
@@ -58,10 +64,20 @@
   .exp-total-val{ font-family:var(--font-d); font-weight:600; font-size:1.05rem; color:var(--teal-br); }
   .ts-sub{ font-family:var(--font-b); font-size:.7rem; text-transform:uppercase; letter-spacing:.12em; color:var(--muted); margin:1.25rem 0 .55rem; padding-top:1rem; border-top:1px solid var(--line-2); }
   .ts-sub.first{ border-top:0; padding-top:.2rem; margin-top:.4rem; }
-  .ts-line{ display:flex; align-items:baseline; justify-content:space-between; gap:1rem; padding:.42rem 0; border-bottom:1px solid var(--line-2); font-size:.9rem; }
+  .ts-line{ display:flex; flex-wrap:wrap; align-items:baseline; justify-content:space-between; gap:.15rem 1rem; padding:.42rem 0; border-bottom:1px solid var(--line-2); font-size:.9rem; min-width:0; }
   .ts-line:last-child{ border-bottom:0; }
-  .ts-line .k{ color:var(--muted-2); }
-  .ts-line .v{ font-weight:600; color:var(--ivory-soft); text-align:right; white-space:nowrap; }
+  /* A ROW IS NEVER SIZED BY ITS VALUE (owner-reported 2026-07-30: the ADDITIONAL
+     TERMS rows — the 3-month minimum-interest sentence and the two-tier draw fee —
+     ran off the right edge of the results panel and clipped mid-word). Root cause:
+     `white-space:nowrap` + the flex default `min-width:auto` made the value's
+     MIN-CONTENT the entire string, so the row (and the 1fr/1fr .ts-grid2 above it,
+     whose tracks also floor at min-content) could not shrink and pushed straight
+     out of the panel. The value now WRAPS instead: min-width:0 lets it shrink,
+     normal white-space lets it break at spaces, and overflow-wrap:anywhere is the
+     backstop for a single unbreakable token. Same class as the card badge/stat —
+     never let a long string set a container's width. */
+  .ts-line .k{ color:var(--muted-2); flex:0 0 auto; min-width:0; max-width:60%; overflow-wrap:break-word; }
+  .ts-line .v{ font-weight:600; color:var(--ivory-soft); text-align:right; flex:1 1 auto; min-width:0; white-space:normal; overflow-wrap:break-word; }
   .ts-line.em{ padding:.55rem 0; }
   .ts-line.em .k{ color:var(--ivory-soft); font-weight:600; }
   .ts-line.em .v{ color:var(--ivory-soft); font-size:1.02rem; }
@@ -109,10 +125,19 @@
   @media (max-width:460px){ .handoff{ flex-direction:column; align-items:flex-start; } }
   /* required-field highlight */
   .field .input.need, .field .input.select.need{ border-color:rgba(201,168,106,.7); box-shadow:0 0 0 2px rgba(201,168,106,.14); }
-  .ts-cta{ margin-top:1.4rem; }
-  .ts-cta .btn{ width:100%; justify-content:center; }
+  .ts-cta{ margin-top:1.4rem; min-width:0; }
+  /* `.btn` is white-space:nowrap globally, so a full-width CTA was still sized by
+     its own label — "Download Standard Term Sheet (PDF)" ran 36px past the panel
+     at 390px (audit 2026-07-30, same class as the rows above). Let it wrap. */
+  .ts-cta .btn{ width:100%; justify-content:center; white-space:normal; overflow-wrap:break-word; min-width:0; text-align:center; line-height:1.3; }
   .ts-compliance{ font-size:.72rem; color:var(--muted-2); line-height:1.6; margin-top:1.1rem; padding-top:1rem; border-top:1px solid var(--line-2); }
   .rate-hint{ font-size:.72rem; color:var(--muted-2); margin-top:.4rem; }
+  /* The interest-reserve truth line: what was requested vs what the loan actually
+     finances, and why they differ (owner-reported 2026-07-30). Spans both columns of
+     the two-column field grid so it sits directly under the months / dollar pair. */
+  .ir-fin{ grid-column:1 / -1; margin:-.25rem 0 .25rem; padding:.55rem .75rem; border-radius:9px;
+           font-size:.78rem; line-height:1.5; color:var(--ivory); background:rgba(201,168,106,.09);
+           border-left:3px solid var(--gold,#c9a86a); }
   .ys-toast{ position:fixed; left:50%; bottom:28px; transform:translate(-50%,16px); background:var(--ink); color:var(--ivory-soft); border:1px solid var(--line); padding:.7rem 1.1rem; border-radius:12px; font-size:.85rem; opacity:0; pointer-events:none; transition:.25s; z-index:90; box-shadow:0 14px 40px rgba(0,0,0,.4); }
   .ys-toast.show{ opacity:1; transform:translate(-50%,0); }
   /* ---- eligibility + program max leverage ---- */
@@ -129,9 +154,11 @@
   .maxlev .ml .mlk{ font-size:.66rem; text-transform:uppercase; letter-spacing:.09em; color:var(--muted-2); }
   .maxlev .ml .mlv{ font-family:var(--font-d); font-weight:600; color:var(--teal-br); font-size:1.06rem; margin-top:.15rem; }
   /* compact 2-column rows for fees / snapshot */
-  .ts-grid2{ display:grid; grid-template-columns:1fr 1fr; column-gap:1.4rem; }
+  /* minmax(0,1fr) — a bare `1fr` floors at MIN-CONTENT, so one long value in one
+     cell used to widen BOTH tracks and blow the grid out of the panel. */
+  .ts-grid2{ display:grid; grid-template-columns:minmax(0,1fr) minmax(0,1fr); column-gap:1.4rem; min-width:0; }
   .ts-grid2 .ts-line{ font-size:.84rem; }
-  @media (max-width:520px){ .ts-grid2{ grid-template-columns:1fr; } }
+  @media (max-width:520px){ .ts-grid2{ grid-template-columns:minmax(0,1fr); } }
   /* read-only field */
   .input.is-ro{ opacity:.85; background:rgba(255,255,255,.02); }
   .input.is-ro input{ color:var(--muted); cursor:default; }
@@ -167,12 +194,26 @@
   .pcard.silver{ border-color:rgba(148,163,178,.55); background:linear-gradient(180deg,rgba(148,163,178,.09),rgba(148,163,178,.02)); }
   .pcard.manual{ border-style:dashed; border-color:rgba(127,169,176,.5); background:linear-gradient(180deg,rgba(47,127,134,.05),rgba(47,127,134,.01)); }
   .pcard.pcard-off{ opacity:.5; }
-  .pcard-top{ display:flex; align-items:center; justify-content:space-between; gap:.5rem; margin-bottom:.65rem; }
+  /* The name and the status chip share one ~249px card head. When both cannot fit
+     on one line the chip WRAPS to its own line and reads in full — it is never
+     truncated to "Not offer…" / "Eligibl…" (measured: 5-15px of the status word
+     was being eaten at 1024px, audit 2026-07-30). Same structural answer as
+     `.ts-line`: let it wrap rather than clip. margin-left:auto keeps it
+     right-aligned on either line. */
+  .pcard-top{ display:flex; flex-wrap:wrap; align-items:center; justify-content:space-between; gap:.3rem .5rem; margin-bottom:.65rem; min-width:0; }
   .pcard-name{ font-family:var(--font-b); font-size:.74rem; font-weight:700; text-transform:uppercase; letter-spacing:.1em; color:var(--ivory); }
   .pcard.gold .pcard-name{ color:var(--gold); }
   .pcard.silver .pcard-name{ color:#8A99A8; }
   .pcard.manual .pcard-name{ color:var(--teal-br,#7FA9B0); }
-  .pcard-badge{ font-size:.62rem; font-weight:700; padding:.22rem .5rem; border-radius:100px; border:1px solid var(--line); color:var(--muted); white-space:nowrap; }
+  /* The badge is a CHIP inside a 249px card, so it can never be allowed to set
+     the card's width: max-width + ellipsis is the structural backstop (a long
+     status string used to render 270px wide and spill out of the box at every
+     viewport — owner's "going out of the box" class, audit 2026-07-30). Keep all
+     three properties together. The cap is 100% (not 58%) because .pcard-top now
+     WRAPS: a chip that cannot fit beside the name takes its own full-width line
+     and reads in full, so the ellipsis is a last resort instead of routine. */
+  .pcard-badge{ font-size:.62rem; font-weight:700; padding:.22rem .5rem; border-radius:100px; border:1px solid var(--line); color:var(--muted); white-space:nowrap; max-width:100%; overflow:hidden; text-overflow:ellipsis; flex:0 1 auto; margin-left:auto; }
+  .pcard-name{ min-width:0; overflow:hidden; text-overflow:ellipsis; }
   .pcard-badge.good{ color:var(--good); border-color:rgba(127,176,138,.5); } .pcard-badge.warn{ color:var(--warn); border-color:rgba(201,168,106,.5); } .pcard-badge.bad{ color:var(--bad); border-color:rgba(201,138,106,.5); }
   .pcard-loanlbl{ font-size:.64rem; text-transform:uppercase; letter-spacing:.12em; color:var(--muted-2); }
   .pcard-loan{ font-family:var(--font-d); font-weight:600; font-size:1.95rem; line-height:1.05; color:var(--ivory); margin:.12rem 0 .7rem; word-break:break-word; }
@@ -180,13 +221,31 @@
   .pcard.gold .pcard-loan{ color:var(--gold); }
   .pcard.silver .pcard-loan{ color:#8A99A8; }
   .pcard.manual .pcard-loan{ color:var(--teal-br,#7FA9B0); }
-  .pcard-headline{ display:flex; gap:.6rem; padding-top:.6rem; border-top:1px solid var(--line-2); }
-  .pcard-stat{ flex:1; min-width:0; }
-  .pcard-statnum{ font-family:var(--font-d); font-weight:600; font-size:1.5rem; line-height:1.1; color:var(--ivory); }
+  .pcard-headline{ display:flex; gap:.6rem; padding-top:.6rem; border-top:1px solid var(--line-2); min-width:0; }
+  /* TWO STATS SHARE ~249px OF CARD, SO EACH GETS ~120px (~105px at 1024px).
+     `flex:1 1 0` + min-width:0 already stopped the stat BOX from being sized by
+     its content — but the TEXT inside kept its own width and the ink spilled out
+     of the card (owner-reported 2026-07-30: "the generation fees keeps go out of
+     the box", origination $27,218.75 / $28,000.00 running past the card's right
+     edge). getBoundingClientRect() on the element could never see it, which is
+     why the earlier badge-overflow battery passed. Belt-and-braces, exactly like
+     .pcard-badge: (1) the card renders the origination in WHOLE dollars (JS), (2)
+     an adaptive font-size ladder (`data-fit`, set by fitStat() in termsheet.js)
+     shrinks a long value to fit instead of pushing out, and (3) overflow:hidden +
+     ellipsis is the structural backstop so NO value can ever escape the box. */
+  .pcard-stat{ flex:1 1 0; min-width:0; max-width:100%; }
+  .pcard-statnum{ font-family:var(--font-d); font-weight:600; font-size:1.5rem; line-height:1.1; color:var(--ivory); min-width:0; max-width:100%; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+  .pcard-statnum[data-fit="1"]{ font-size:1.32rem; }
+  .pcard-statnum[data-fit="2"]{ font-size:1.16rem; }
+  .pcard-statnum[data-fit="3"]{ font-size:1.02rem; }
+  .pcard-statnum[data-fit="4"]{ font-size:.9rem; letter-spacing:-.01em; }
   .pcard.gold .pcard-statnum{ color:var(--gold); }
   .pcard.silver .pcard-statnum{ color:#8A99A8; }
   .pcard.manual .pcard-statnum{ color:var(--teal-br,#7FA9B0); }
-  .pcard-statlbl{ font-size:.6rem; text-transform:uppercase; letter-spacing:.08em; color:var(--muted-2); margin-top:.12rem; }
+  /* The label may WRAP to two lines (acceptable — owner-directed), but it must
+     never overlap or clip the number above it, and never widen the stat. */
+  .pcard-statlbl{ font-size:.6rem; text-transform:uppercase; letter-spacing:.08em; color:var(--muted-2); margin-top:.12rem; min-width:0; max-width:100%; overflow-wrap:break-word; line-height:1.25; }
+  .pcard-statlbl > span[id$="OrigPts"]{ white-space:nowrap; }
   .pcard-sub{ margin-top:.65rem; font-size:.72rem; color:var(--muted); line-height:1.4; min-height:1em; }
   .prog-note{ margin:0 0 .9rem; padding:.7rem .9rem; border-radius:10px; border:1px solid var(--line-2); background:rgba(47,127,134,.07); font-size:.82rem; color:var(--ivory-soft); line-height:1.5; }
   .prog-note strong{ color:var(--ivory); }
@@ -229,6 +288,14 @@
   .tip:hover .tip-bub, .tip:focus-visible .tip-bub, .tip.tip-open .tip-bub{ opacity:1; visibility:visible; }
   .tip.tip-r .tip-bub{ left:auto; right:-6px; transform:none; }
   .tip.tip-r .tip-bub::after{ left:auto; right:12px; transform:none; }
+  /* The right-column program cards (2-up grid) sit against the page's right edge,
+     so their help-bubbles must open LEFTWARD — a center-anchored 230px bubble
+     otherwise pokes past the viewport at mid-size widths. Only while the cards
+     are 2-wide (≥561px); when they stack 1-up the default centered bubble fits. */
+  @media (min-width:561px){
+    .prog-compare .pcard:nth-child(even) .pcard-statlbl .tip .tip-bub{ left:auto; right:-6px; transform:none; }
+    .prog-compare .pcard:nth-child(even) .pcard-statlbl .tip .tip-bub::after{ left:auto; right:12px; transform:none; }
+  }
   label .tip, .ts-sub .tip, .pcard-statlbl .tip, .snap-line-lbl .tip{ }
   /* loan-amount logic explainer */
   .loan-logic{ margin:1rem 0 .2rem; padding:.85rem 1rem; border:1px solid var(--line-2); border-left:3px solid var(--teal); border-radius:10px; background:rgba(47,127,134,.05); }
@@ -387,7 +454,7 @@
         <div class="tool-actions">
             <a class="back tb-under" href="../suite.html">← All tools</a>
             <button class="btn btn-sm btn-line" type="button" onclick="TS.share(this)" title="Copy a link that saves these inputs">Share link 🔗</button>
-            <a class="btn btn-sm btn-solid" href="loan-application.html">Apply Now</a>
+            <a id="tsStartApp" class="btn btn-sm btn-solid" href="loan-application.html" title="Open a full application pre-filled with everything you entered here">Start application →</a>
         </div>
     </div>
 </header>
@@ -529,7 +596,8 @@
             <p class="panel-note cond hidden" data-cond="bridgeOnly">A bridge loan is sized against the as-is value only — there's no rehab holdback, after-repair value or interest reserve. Just set your requested term below.</p>
             <div class="field-rows two-col">
                 <div class="field cond" data-cond="hasRehab"><label for="irMonths">Interest reserve <em>(months)</em><span class="tip" tabindex="0" role="note" aria-label="Months of interest payments built into the loan so the project carries itself and you don’t pay out of pocket during construction. It’s added to the loan amount, not brought to closing.">i<span class="tip-bub">Months of interest payments built into the loan so the project carries itself and you don’t pay out of pocket during construction. It’s added to the loan amount, not brought to closing.</span></span></label><div class="input"><input id="irMonths" type="number" inputmode="numeric" min="0" max="24" placeholder="e.g. 6"></div></div>
-                <div class="field cond" data-cond="hasRehab"><label for="irAmount">…or as a dollar amount <em>($)</em><span class="tip" tabindex="0" role="note" aria-label="The interest reserve is one thing shown two ways. Type a number of months or an exact dollar amount — fill in either one and the other fills in to match. It is fit under the same leverage caps and added to the loan, not brought to closing.">i<span class="tip-bub">The interest reserve is one thing shown two ways — type a number of <b>months</b> or an exact <b>dollar amount</b>, and the other fills in to match. Fit under the same leverage caps; added to the loan, not brought to closing.</span></span></label><div class="input"><input id="irAmount" type="number" inputmode="numeric" min="0" step="1000" placeholder="e.g. 40,000"></div></div>
+                <div class="field cond" data-cond="hasRehab"><label for="irAmount">…or as a dollar amount <em>($)</em><span class="tip" tabindex="0" role="note" aria-label="The interest reserve is one thing shown two ways. Type a number of months or an exact dollar amount — fill in either one and the other fills in to match. This box always shows the reserve the loan actually finances after the program caps, so it can differ from months times the payment.">i<span class="tip-bub">The interest reserve is one thing shown two ways — type a number of <b>months</b> or an exact <b>dollar amount</b>. This box always shows the reserve the loan <b>actually finances</b> for the program shown (after the leverage and term caps), so it can differ from months × the payment; added to the loan, not brought to closing.</span></span></label><div class="input"><input id="irAmount" type="number" inputmode="numeric" min="0" step="1000" placeholder="e.g. 40,000"></div></div>
+                <div class="ir-fin" id="irFinNote" role="status" aria-live="polite" style="display:none"></div>
                 <div class="field"><label for="tsTerm">Requested term <em>(months)</em></label><div class="input select"><select id="tsTerm">
                     <option value="6">6 months</option>
                     <option value="12" selected>12 months</option>
@@ -586,7 +654,9 @@
                     <div class="field"><label for="tsOrigStd">Standard (%)</label><div class="input"><input id="tsOrigStd" data-noshare type="number" inputmode="decimal" step="0.25" min="0" placeholder="1.25"></div></div>
                     <div class="field"><label for="tsOrigGold">Gold (%)</label><div class="input"><input id="tsOrigGold" data-noshare type="number" inputmode="decimal" step="0.25" min="0" placeholder="1.25"></div></div>
                     <div class="field"><label for="tsOrigSilver">Silver (%)</label><div class="input"><input id="tsOrigSilver" data-noshare type="number" inputmode="decimal" step="0.25" min="0" placeholder="1.25"></div></div>
+                    <div class="field"><label for="tsOrigManual">Manual (%)</label><div class="input"><input id="tsOrigManual" data-noshare type="number" inputmode="decimal" step="0.25" min="0" placeholder="1.25"></div></div>
                 </div>
+                <p class="ts-admin-mnote">The <strong>Manual</strong> value prices the manual scenario — it applies only once a custom LTV / LTC / ARV basis is set (the Manual card lights). The Manual Program prices on the Standard engine and has no company default of its own, so leaving it blank means <strong>“same as Standard”</strong> — including a Standard value you typed above (the placeholder shows the number a blank field will use). The other three programs are unaffected by it.</p>
 
                 <div class="ts-admin-group">Closing-cost overrides <span class="ts-admin-note">— all programs</span></div>
                 <div class="ts-admin-grid2">
@@ -729,12 +799,25 @@
             <ul class="reasons" id="rReasons"></ul>
             <div class="ts-state-note" id="rStateNote" style="display:none"></div>
             <div class="ts-manual" id="rManualWrap" style="display:none"></div>
-            <div class="ts-sub">Program maximum leverage <em style="font-style:normal;color:var(--muted-2);text-transform:none;letter-spacing:0">— from FICO &amp; experience</em></div>
+            <div class="ts-sub">Program maximum leverage <em style="font-style:normal;color:var(--muted-2);text-transform:none;letter-spacing:0">— from FICO &amp; experience. These do not change with the deal.</em></div>
             <div class="maxlev">
                 <div class="ml cond" data-cond="hasRehab"><div class="mlk">Max loan-to-cost</div><div class="mlv" id="rMaxLtc">—</div></div>
                 <div class="ml"><div class="mlk">Max as-is (initial)</div><div class="mlv" id="rMaxLtv">—</div></div>
                 <div class="ml cond" data-cond="hasRehab"><div class="mlk">Max loan-to-ARV</div><div class="mlv" id="rMaxArv">—</div></div>
                 <div class="ml"><div class="mlk">Max loan amount</div><div class="mlv" id="rMaxLoan">—</div></div>
+            </div>
+            <!-- The tier maximum above is FIXED. This deal's own ceiling can be lower —
+                 that is a separate, clearly-labelled line, never a rewrite of the
+                 numbers above (owner-reported 2026-07-30: "the Max LTC should never
+                 change, each tier has its own Max LTC"). Hidden whenever the deal
+                 reaches the tier maximum. -->
+            <div id="rPricedWrap" style="display:none">
+                <div class="ts-sub">The most this deal can be priced at <em style="font-style:normal;color:var(--muted-2);text-transform:none;letter-spacing:0">— lower than the program maximum on this deal</em></div>
+                <div class="maxlev">
+                    <div class="ml cond" data-cond="hasRehab"><div class="mlk">This deal — loan-to-cost</div><div class="mlv" id="rPricedLtc">—</div></div>
+                    <div class="ml cond" data-cond="hasRehab"><div class="mlk">This deal — loan-to-ARV</div><div class="mlv" id="rPricedArv">—</div></div>
+                </div>
+                <p class="ts-note" id="rPricedWhy" style="margin-top:.4rem"></p>
             </div>
         </div>
 
@@ -857,10 +940,10 @@
 <script src="rb-logo.js?v=admin8"></script>
 <script src="standard-program.js?v=asgseller18-asgelig"></script>
 <script src="gold-standard.js?v=asgseller19"></script>
-<script src="silver-program.js?v=silver2"></script>
+<script src="silver-program.js?v=silver9-bandeps"></script>
 <script src="title-cost.js?v=admin8"></script>
 <script src="address-autocomplete.js?v=admin9"></script>
-<script src="termsheet.js?v=cards4"></script>
+<script src="termsheet.js?v=cards9-irtruth1-maxlev1-origfit-manualorig2-badgewrap"></script>
 <script src="../float-actions.js?v=admin10-applyfix"></script>
 <script>
 /* Property-address autocomplete (owner-directed 2026-07-17): same shared YSAddr
@@ -877,6 +960,67 @@
       if (st && a.state) { st.value = a.state; st.dispatchEvent(new Event("change", { bubbles: true })); }
       inp.dispatchEvent(new Event("input", { bubbles: true }));
     });
+  }
+  if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", wire); else wire();
+})();
+</script>
+
+<script>
+/* CARRY THE TERM SHEET INTO A PRE-FILLED APPLICATION (owner-directed): finishing a
+   term sheet, "Start application →" opens the full loan application with everything
+   already entered — the borrower only adds the personal details and submits. The
+   application page already restores state from the URL's #d= fragment
+   (YS.applyState on load), so we translate the studio's field ids into the
+   application's own ids and hand it that fragment — no new load code on that page.
+   This does NOT touch any frozen pricing math; it only maps inputs across two tools. */
+(function () {
+  var PROP_TYPE = { "sfr": "Single-Family (SFR)", "2-4": "2–4 Unit" };   // en-dash to match the app's option
+  var PURPOSE   = { "purchase": "Purchase", "rate & term refinance": "Rate & Term Refi", "cash-out refinance": "Cash-Out Refi" };
+  function s(x) { return x == null ? "" : String(x); }
+  function firstWord(n) { n = s(n).trim(); var i = n.indexOf(" "); return i < 0 ? n : n.slice(0, i); }
+  function restWords(n) { n = s(n).trim(); var i = n.indexOf(" "); return i < 0 ? "" : n.slice(i + 1); }
+  function toNum(x) { var n = parseFloat(s(x).replace(/[^0-9.]/g, "")); return isFinite(n) ? n : 0; }
+  // Build the loan application's {v,c,rad} state from the term-sheet inputs.
+  function translate() {
+    if (!window.YS || typeof window.YS.collectState !== "function") return null;
+    var st = window.YS.collectState(), v = st.v || {}, c = st.c || {}, out = { v: {}, c: {}, rad: {} };
+    if (v.dealType) out.v.dealType = v.dealType;                             // same option text on both tools
+    var purpose = PURPOSE[s(v.dealPurpose).toLowerCase()] || "Purchase";
+    out.rad.purpose = purpose;                                              // the app's purpose is a radio group
+    var refi = /refi/i.test(purpose);
+    if (v.propType && PROP_TYPE[v.propType]) out.v.propType = PROP_TYPE[v.propType];
+    if (v.propAddr) out.v.pStreet = v.propAddr;
+    if (v.propState) out.v.pState = v.propState;
+    if (!refi && v.price) out.v.price = s(v.price);
+    if (c.isAssign) { out.c.isAssign = true; if (v.origPrice) out.v.origPrice = s(v.origPrice); }
+    if (v.asIs) out.v.asIs = s(v.asIs);
+    if (v.arv) out.v.arv = s(v.arv);
+    if (v.construction) out.v.rehab = s(v.construction);                    // studio "construction" == app "rehab" budget
+    if (v.tsTerm) out.v.termMonths = s(v.tsTerm);
+    var irM = parseInt(v.irMonths, 10) || 0, irA = toNum(v.irAmount);       // reserve: months OR exact amount
+    if (irM > 0 || irA > 0) { out.c.finReserve = true; if (irM > 0) out.v.resMonths = String(irM); if (irA > 0) out.v.resAmount = String(irA); }
+    if (v.fico) out.v.fico = s(v.fico);
+    if (v.expFlips) out.v.expFlips = s(v.expFlips);
+    if (v.expBrrrr) out.v.expBrrrr = s(v.expBrrrr);
+    if (v.expGround) out.v.expGround = s(v.expGround);
+    if (v.borrowerName) { out.v.b1First = firstWord(v.borrowerName); out.v.b1Last = restWords(v.borrowerName); }
+    if (v.entityName) { out.c.vestEntity = true; out.v.eName = v.entityName; }
+    return out;
+  }
+  function go(e) {
+    try {
+      var out = translate();
+      if (!out || !window.YS || typeof window.YS.encodeState !== "function") return;   // fall back to the plain href
+      var href = "loan-application.html#d=" + window.YS.encodeState(out);
+      // Keep the branded officer (?lo=) so the application still routes to them.
+      if (window.YSBrand && typeof window.YSBrand.link === "function") href = window.YSBrand.link(href);
+      if (e) e.preventDefault();
+      window.location.href = href;
+    } catch (_) { /* let the browser follow the plain link */ }
+  }
+  function wire() {
+    var a = document.getElementById("tsStartApp");
+    if (a) a.addEventListener("click", go);
   }
   if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", wire); else wire();
 })();

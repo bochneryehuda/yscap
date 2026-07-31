@@ -6,6 +6,7 @@ import { fileToBase64 } from '../lib/files.js';
 import { onFilesDropped } from '../lib/drop-files.js';
 import { fmtDay, dayInputValue } from '../lib/dates.js';
 import { formatSSN, cleanFICO, ficoValid } from '../lib/validators.js';
+import { moneyNum } from '../lib/money.js';
 import { useAuth } from '../lib/auth.jsx';
 import { ESIGN_RETURN_MSG } from '../lib/esign.js';
 import { canOverride, isCompletion, askOverride, overrideLine } from '../lib/condition-override.js';
@@ -36,10 +37,11 @@ import { captureScrollAnchor, restoreScrollAnchor } from '../lib/keep-scroll.js'
 import BorrowerProfilePanel from '../components/BorrowerProfilePanel.jsx';
 import { CONDITION_TIMINGS, conditionStatusLabel, conditionStatusClass, timingLabel, loanConditionStatusLabel, audienceStamp } from '../lib/conditions-vocab.js';
 import { severityCount } from '../lib/findings-vocab.js';
-import { groupBySubject } from '../lib/condition-subjects.js';
+import { groupBySubject, subjectOf } from '../lib/condition-subjects.js';
 import { isWorkflowStep } from '../lib/condition-workflow-steps.js';
 import ConditionActions, { DocActions } from '../components/ConditionActions.jsx';
 import ConditionLine, { ConditionNote } from '../components/ConditionLine.jsx';
+import UspsAddressVerification from '../components/UspsAddressVerification.jsx';
 import { canComplete } from '../lib/condition-actions.js';
 import EsignFileSection from '../components/EsignFileSection.jsx';
 import ExceptionRegisterCard from '../components/ExceptionRegisterCard.jsx';
@@ -878,7 +880,101 @@ const APPR_XML_REASONS = [
   { v: 'desk_or_manual', label: 'Desk / manual / older appraisal (no MISMO XML)' },
   { v: 'other', label: 'Other (explain in the note)' },
 ];
-function AppraisalXmlWaiver({ appId, onChanged }) {
+// Order a Life-of-Loan flood determination from ICE's own flood service (the one
+// owner-authorized Encompass write — flood only). Renders on the flood condition
+// (rtl_cond_flood). Any staff member may order. Self-hides until the feature is
+// turned on (ENCOMPASS_FLOOD_ENABLED). If the file has no loan number, the button
+// says so — the loan number is what links the file to its Encompass loan.
+function OrderFloodButton({ appId, itemId, onChanged, onUploadTo }) {
+  const [state, setState] = useState(null);   // { order, enabled, hasLoanNumber } | null
+  const [busy, setBusy] = useState(false);
+  const [msg, setMsg] = useState('');
+  const [err, setErr] = useState('');
+  const load = useCallback(() => api.floodOrderState(appId).then(setState).catch(() => setState(null)), [appId]);
+  useEffect(() => { load(); }, [load]);
+  if (!state || !state.enabled) return null;   // feature off → nothing shows
+
+  const order = state.order;
+  const pending = order && order.status === 'ordered';
+  const done = order && order.status === 'completed';
+  const errored = order && order.status === 'error';
+  const box = { marginTop: 8, padding: '8px 10px', border: '1px solid var(--gold)', borderRadius: 8, background: 'rgba(174,135,70,0.06)' };
+
+  async function placeOrder() {
+    setBusy(true); setErr(''); setMsg('');
+    try {
+      const out = await api.orderFlood(appId, itemId);
+      setMsg(out.message || 'Flood certificate ordered.');
+      await load();
+      onChanged && onChanged();
+    } catch (e) {
+      setErr((e.data && e.data.message) || e.message || 'Could not order the flood certificate.');
+    } finally { setBusy(false); }
+  }
+
+  if (done) {
+    return (
+      <div className="small" style={box}>
+        <div style={{ fontWeight: 600, color: '#141B22' }}>Flood determination received</div>
+        <div style={{ color: '#4B585C', marginTop: 2 }}>
+          {order.sfha === true
+            ? `In a flood zone${order.flood_zone ? ` (zone ${order.flood_zone})` : ''} — a flood-insurance condition was added to the file.`
+            : order.sfha === false
+              ? `Not in a flood zone${order.flood_zone ? ` (zone ${order.flood_zone})` : ''}.`
+              : 'The determination came back.'}
+          {' '}The certificate is filed on this condition.
+        </div>
+      </div>
+    );
+  }
+  if (pending) {
+    return (
+      <div className="small" style={box}>
+        <div style={{ fontWeight: 600, color: '#141B22' }}>Flood certificate ordered</div>
+        <div style={{ color: '#4B585C', marginTop: 2 }}>Waiting for it to come back from Encompass — it will appear here automatically.</div>
+      </div>
+    );
+  }
+  const isDry = order && order.status === 'dryrun';
+  return (
+    <div style={{ marginTop: 6 }}>
+      {isDry && (
+        <div className="small" style={box}>
+          <div style={{ fontWeight: 600, color: '#141B22' }}>Test run — nothing was sent</div>
+          <div style={{ color: '#4B585C', marginTop: 2 }}>Test mode is on, so PILOT built the order but did not send it to Encompass. Turn test mode off (in Settings → API health) to place a real order.</div>
+          {order.raw && (
+            <details style={{ marginTop: 6 }}>
+              <summary style={{ color: '#256168', cursor: 'pointer' }}>What PILOT would send (technical)</summary>
+              <pre style={{ whiteSpace: 'pre-wrap', color: '#141B22', background: '#F4F1EA', padding: 8, borderRadius: 6, marginTop: 4, fontSize: 11 }}>{JSON.stringify(order.raw, null, 2)}</pre>
+            </details>
+          )}
+        </div>
+      )}
+      <button className="btn ghost small" style={{ marginTop: isDry ? 6 : 0 }} disabled={busy || !state.hasLoanNumber} onClick={placeOrder}>
+        {busy ? 'Ordering…' : (errored || isDry) ? 'Order flood certificate again' : 'Order flood certificate'}
+      </button>
+      {!state.hasLoanNumber && (
+        <div className="small" style={{ color: '#4B585C', marginTop: 4 }}>Add a loan number to this file first — the loan number links it to the Encompass loan.</div>
+      )}
+      {/* Quiet fallback: if a certificate can't be ordered (or you already have one),
+          you can still attach it by hand — it's not the up-front action. */}
+      {onUploadTo && (
+        <button className="btn link small" style={{ marginTop: 6, color: '#256168', display: 'block' }}
+          onClick={() => onUploadTo({ itemId, slotBase: 0 })}>Upload a certificate manually instead</button>
+      )}
+      {msg && <div className="notice" style={{ marginTop: 6 }}>{msg}</div>}
+      {err && <div className="notice err" style={{ marginTop: 6 }}>{err}</div>}
+    </div>
+  );
+}
+
+// Shared between the appraisal-DOCUMENTS condition (context='docs') and the
+// appraisal-REVIEW condition (context='review'). Both write the SAME
+// appraisal_xml_waivers row + the SAME file As-Is/ARV, so entering the values on
+// one side shows them "already entered — please confirm" on the other (both
+// directions), with no separate storage to keep in step.
+function AppraisalXmlWaiver({ appId, onChanged, context = 'docs' }) {
+  const isReview = context === 'review';
   const [state, setState] = useState(null);     // { waiver, exception } | null
   const [open, setOpen] = useState(false);
   const [reason, setReason] = useState('transferred_appraisal');
@@ -890,6 +986,19 @@ function AppraisalXmlWaiver({ appId, onChanged }) {
   const load = useCallback(() => api.appraisalXmlWaiverGet(appId).then(setState).catch(() => setState(null)), [appId]);
   useEffect(() => { load(); }, [load]);
   const isTransfer = reason === 'transferred_appraisal';
+
+  // The owner's warning, shown BEFORE anyone types a value: there is no data file
+  // to read from, so the numbers must be read off the appraisal PDF by hand, and a
+  // wrong figure re-prices the whole loan.
+  const warning = (
+    <div className="small" style={{ padding: '8px 10px', border: '1px solid var(--danger, #b4442f)', borderRadius: 8, background: 'rgba(180,68,47,0.06)', color: '#141B22' }}>
+      <strong>⚠️ Only use this if there is genuinely no XML for this appraisal.</strong> There is no
+      data file to read the numbers from, so open the appraisal PDF yourself and read them by hand:
+      find the <strong>ARV</strong>, and read the <strong>As-Is</strong> value specifically from the
+      As-Is section of the report. A lot goes wrong if the figures are not exactly right — this value
+      re-prices the whole loan.
+    </div>
+  );
 
   async function submit() {
     setErr('');
@@ -914,26 +1023,55 @@ function AppraisalXmlWaiver({ appId, onChanged }) {
   }
 
   const w = state && state.waiver;
+  // The review-side entry does not apply on a file that already has an imported
+  // appraisal (there IS XML) — self-hide unless a waiver was already recorded.
+  if (isReview && state && state.hasAppraisal && !w) return null;
   if (w) {
     const ex = state.exception;
+    // Same shared row on both sides. On the side you did NOT enter it from, this
+    // reads "already entered — please confirm"; on the side you did, it reads as a
+    // recorded waiver. Either way it shows the two values and how to clear.
     return (
       <div className="small" style={{ marginTop: 8, padding: '8px 10px', border: '1px solid var(--gold)', borderRadius: 8, background: 'rgba(174,135,70,0.06)' }}>
-        <div style={{ fontWeight: 600, color: '#141B22' }}>No XML on this appraisal — XML waived</div>
+        <div style={{ fontWeight: 600, color: '#141B22' }}>
+          {isReview ? 'No-XML appraisal — As-Is & ARV already entered' : 'No XML on this appraisal — XML waived'}
+        </div>
         <div style={{ color: '#4B585C', marginTop: 2 }}>
           Reason: {(APPR_XML_REASONS.find(r => r.v === w.reason) || {}).label || w.reason}.
           {w.requires_transfer_letter
-            ? ' Upload the transfer letter in the PDF slot above; no exception is needed.'
+            ? ' Upload the transfer letter in the PDF slot on the appraisal documents condition; no exception is needed.'
             : ex
               ? ` This waiver ${ex.status === 'approved' ? 'was APPROVED' : ex.status === 'denied' ? 'was DENIED' : 'is waiting for an admin to approve it'} on the Exceptions screen${ex.exception_seq ? ` (EX-${ex.exception_seq})` : ''}.`
               : ''}
         </div>
-        <div style={{ color: '#4B585C', marginTop: 2 }}>ARV ${Number(w.arv || 0).toLocaleString('en-US')} · As-Is ${Number(w.as_is_value || 0).toLocaleString('en-US')} — entered by hand.</div>
+        <div style={{ color: '#141B22', marginTop: 2, fontWeight: 600 }}>ARV ${moneyNum(w.arv).toLocaleString('en-US')} · As-Is ${moneyNum(w.as_is_value).toLocaleString('en-US')} — entered by hand.</div>
+        {isReview && (
+          <div style={{ color: '#4B585C', marginTop: 2 }}>
+            These stand in for the appraisal review, so the term sheet can go out{w.requires_transfer_letter || (ex && ex.status === 'approved') ? '' : ' once the exception is approved'}. Please confirm
+            they are correct against the appraisal report. Re-registering on these numbers is required
+            (changing them re-opens Products &amp; Pricing).
+          </div>
+        )}
         <button className="btn ghost small" style={{ marginTop: 6 }} disabled={busy} onClick={remove}>Remove waiver (XML is available)</button>
         {err && <div className="notice err" style={{ marginTop: 6 }}>{err}</div>}
       </div>
     );
   }
   if (!open) {
+    if (isReview) {
+      return (
+        <div style={{ marginBottom: 12, padding: '10px 12px', border: '1px solid var(--line,#d9d3c6)', borderRadius: 10, background: '#fff' }}>
+          <div style={{ fontWeight: 600, color: '#141B22' }}>Appraisal review — no XML available?</div>
+          <div className="small" style={{ color: '#4B585C', marginTop: 2 }}>
+            Use this only when there is genuinely no appraisal XML for PILOT to review. It records the
+            As-Is and ARV by hand, stands in for the appraisal review, and lets the term sheet go out.
+          </div>
+          <button className="btn ghost small" style={{ marginTop: 8 }} onClick={() => setOpen(true)}>
+            No appraisal XML? Enter the As-Is &amp; ARV to clear the review
+          </button>
+        </div>
+      );
+    }
     return (
       <button className="btn ghost small" style={{ marginTop: 6 }} onClick={() => setOpen(true)}>
         No XML available?
@@ -943,7 +1081,12 @@ function AppraisalXmlWaiver({ appId, onChanged }) {
   return (
     <div className="small" style={{ marginTop: 8, padding: '10px', border: '1px solid var(--line, #d9d3c6)', borderRadius: 8, display: 'flex', flexDirection: 'column', gap: 8 }}>
       <div style={{ fontWeight: 600, color: '#141B22' }}>No appraisal XML available</div>
-      <div style={{ color: '#4B585C' }}>The PDF report is still required. Enter the ARV and As-Is by hand (we normally read these off the XML).</div>
+      {warning}
+      <div style={{ color: '#4B585C' }}>
+        {isReview
+          ? 'With no XML there are no PILOT appraisal findings to review, so entering the As-Is and ARV by hand stands in for the review (the same as signing off the appraisal documents slot). The appraisal PDF is still required there.'
+          : 'The PDF report is still required. Enter the ARV and As-Is by hand (we normally read these off the XML).'}
+      </div>
       <label style={{ color: '#141B22' }}>Why is there no XML?
         <select className="input" value={reason} onChange={(e) => setReason(e.target.value)} style={{ marginTop: 4 }}>
           {APPR_XML_REASONS.map(r => <option key={r.v} value={r.v}>{r.label}</option>)}
@@ -962,7 +1105,7 @@ function AppraisalXmlWaiver({ appId, onChanged }) {
           <textarea className="input" rows={2} value={note} onChange={(e) => setNote(e.target.value)} style={{ marginTop: 4 }} />
         </label>
       )}
-      {isTransfer && <div style={{ color: '#4B585C' }}>A transferred appraisal waives automatically — just upload the transfer letter in the PDF slot above. No exception needed.</div>}
+      {isTransfer && <div style={{ color: '#4B585C' }}>A transferred appraisal waives automatically — just upload the transfer letter in the PDF slot on the appraisal documents condition. No exception needed.</div>}
       <div className="row" style={{ gap: 8 }}>
         <button className="btn primary small" disabled={busy} onClick={submit}>{busy ? 'Saving…' : (isTransfer ? 'Waive XML (transferred)' : 'Waive XML & request exception')}</button>
         <button className="btn ghost small" disabled={busy} onClick={() => { setOpen(false); setErr(''); }}>Cancel</button>
@@ -988,6 +1131,12 @@ function Item({ it, team, onPatch, role, docs, onUploadTo, onDropTo, onReviewDoc
   const myDone = roleDone(it, role);
   const isDoc = it.item_kind === 'document';
   const slots = Array.isArray(it.slots) && it.slots.length ? it.slots : null;
+  // The flood certificate is ORDERED from Encompass and the PDF auto-files onto
+  // this condition (owner-directed 2026-07-30 — "same logic as the credit report;
+  // it uploads automatically, so you don't need the upload button in front"). So
+  // suppress the generic manual-upload button/drop here; the filed certificate
+  // still lists + downloads below, and a manual fallback lives on the order button.
+  const genericUpload = it.template_code === 'rtl_cond_flood' ? null : onUploadTo;
   const itemDocs = (isDoc && docs)
     ? docs.filter(d => d.checklist_item_id === it.id && d.is_current && d.source_type !== 'chat_attachment')
     : [];
@@ -1073,12 +1222,12 @@ function Item({ it, team, onPatch, role, docs, onUploadTo, onDropTo, onReviewDoc
           (download there). Suppress the generic free-form doc block for it so the
           same files don't render twice with destructive Delete/Reject/+Add
           controls that would orphan credit_reports' document pointers. */}
-      {isDoc && it.template_code !== 'rtl_cond_credit' && (onUploadTo || itemDocs.length > 0) && (
+      {isDoc && it.template_code !== 'rtl_cond_credit' && (genericUpload || itemDocs.length > 0) && (
         <div style={{ width: '100%', paddingLeft: 20 }}
-          className={(!slots && onDropTo) ? 'cond-drop' : undefined}
-          onDragOver={(!slots && onDropTo) ? (e) => { e.preventDefault(); e.currentTarget.classList.add('drop-over'); } : undefined}
-          onDragLeave={(!slots && onDropTo) ? (e) => { e.currentTarget.classList.remove('drop-over'); } : undefined}
-          onDrop={(!slots && onDropTo) ? (e) => { e.preventDefault(); e.currentTarget.classList.remove('drop-over'); onFilesDropped(e, (files) => onDropTo(files, { itemId: it.id, slotBase: itemDocs.length })); } : undefined}>
+          className={(!slots && onDropTo && it.template_code !== 'rtl_cond_flood') ? 'cond-drop' : undefined}
+          onDragOver={(!slots && onDropTo && it.template_code !== 'rtl_cond_flood') ? (e) => { e.preventDefault(); e.currentTarget.classList.add('drop-over'); } : undefined}
+          onDragLeave={(!slots && onDropTo && it.template_code !== 'rtl_cond_flood') ? (e) => { e.currentTarget.classList.remove('drop-over'); } : undefined}
+          onDrop={(!slots && onDropTo && it.template_code !== 'rtl_cond_flood') ? (e) => { e.preventDefault(); e.currentTarget.classList.remove('drop-over'); onFilesDropped(e, (files) => onDropTo(files, { itemId: it.id, slotBase: itemDocs.length })); } : undefined}>
           {slots ? (
             /* Fixed named slots (e.g. Insurance → binder + invoice) — each slot is
                its own drop target so a dropped file lands in the right slot. Every
@@ -1146,7 +1295,7 @@ function Item({ it, team, onPatch, role, docs, onUploadTo, onDropTo, onReviewDoc
                   </div>
                 );
               })}
-              {onUploadTo && (
+              {genericUpload && (
                 /* Same labelled-row shape as a fixed slot, so the button starts
                    where every other condition's controls start. With nothing
                    uploaded it used to be a bare button floating in the indent,
@@ -1170,9 +1319,19 @@ function Item({ it, team, onPatch, role, docs, onUploadTo, onDropTo, onReviewDoc
 
       {/* Appraisal condition: "No XML available" — waive the XML slot (PDF stays
           required), type the ARV + As-Is by hand, and route the reason to a
-          transfer letter or an admin exception. */}
+          transfer letter or an admin exception. (The REVIEW-side entry point for
+          the same waiver lives in the "Appraisal & findings" section — the
+          appraisal-review task itself is worked from My Tasks, not this list.) */}
       {it.template_code === 'rtl_cond_appraisaldocs' && (
         <AppraisalXmlWaiver appId={appId} onChanged={onChanged} />
+      )}
+      {/* Flood condition — order the flood certificate from Encompass (flood only). */}
+      {it.template_code === 'rtl_cond_flood' && (
+        <OrderFloodButton appId={appId} itemId={it.id} onChanged={onChanged} onUploadTo={onUploadTo} />
+      )}
+
+      {it.template_code === 'usps_address_verification' && (
+        <UspsAddressVerification appId={appId} onChanged={onChanged} />
       )}
 
       {/* ONE next step, everything else behind More — the shared bar, so this
@@ -2221,7 +2380,57 @@ function StaffContactEntry({ appId, toolKey, current, onSaved }) {
   );
 }
 
-function BorrowerConditions({ appId, app, items, docs, onPatch, onReviewDoc, onDownloadDoc, dlBusy, role, onUploadTo, onDropTo, onChanged, onPreview, onOpenStudio, team, canImportCredit, fullscreen = false }) {
+// Personal-name purchase (owner-directed 2026-07-31): buy in an individual name
+// instead of an LLC. Upload a non-owner-occupied affidavit (in lieu of LLC docs)
+// to waive the LLC condition — vesting flips to Individual (default is LLC).
+function PersonalNameWaiver({ appId, app, onChanged }) {
+  const [busy, setBusy] = React.useState(false);
+  const [msg, setMsg] = React.useState('');
+  const fileRef = React.useRef(null);
+  const isPersonal = !!(app && app.personal_name_purchase);
+  const waive = async (file) => {
+    if (!file) return;
+    setBusy(true); setMsg('');
+    try {
+      const dataUrl = await new Promise((res, rej) => {
+        const fr = new FileReader(); fr.onload = () => res(fr.result); fr.onerror = () => rej(new Error('could not read the file')); fr.readAsDataURL(file);
+      });
+      await api.staffVestingPersonalName(appId, { filename: file.name, contentType: file.type || 'application/pdf', dataUrl });
+      setMsg('Saved — this is a personal-name purchase. Vesting is now Individual.');
+      onChanged && await onChanged();
+    } catch (e) { setMsg(e.message || 'could not save the affidavit'); }
+    finally { setBusy(false); if (fileRef.current) fileRef.current.value = ''; }
+  };
+  const undo = async () => {
+    setBusy(true); setMsg('');
+    try { await api.staffVestingPersonalName(appId, { undo: true }); setMsg('Back to an LLC purchase — vesting is LLC.'); onChanged && await onChanged(); }
+    catch (e) { setMsg(e.message || 'could not undo'); }
+    finally { setBusy(false); }
+  };
+  return (
+    <div className="row" style={{ gap: 8, alignItems: 'center', flexWrap: 'wrap', marginTop: 6, color: '#141B22' }}>
+      {isPersonal ? (
+        <>
+          <span className="pill ok">Personal name (Individual) — affidavit on file</span>
+          <span className="muted small" style={{ color: '#4B585C' }}>Bought in an individual name, not an LLC. ClickUp vesting is Individual.</span>
+          <button className="btn link small" disabled={busy} onClick={undo}>Undo — back to an LLC</button>
+        </>
+      ) : (
+        <>
+          <input ref={fileRef} type="file" accept=".pdf,application/pdf" style={{ display: 'none' }}
+            onChange={(e) => waive(e.target.files && e.target.files[0])} />
+          <button className="btn small" disabled={busy} onClick={() => fileRef.current && fileRef.current.click()}>
+            {busy ? 'Saving…' : 'Buying in a personal name? Upload the non-owner-occupied affidavit'}
+          </button>
+          <span className="muted small" style={{ color: '#4B585C' }}>Waives the LLC documents and sets vesting to Individual.</span>
+        </>
+      )}
+      {msg && <span className="muted small" style={{ color: '#4B585C', flexBasis: '100%' }}>{msg}</span>}
+    </div>
+  );
+}
+
+function BorrowerConditions({ appId, app, items, docs, onPatch, onReviewDoc, onDownloadDoc, dlBusy, role, onUploadTo, onDropTo, onChanged, onPreview, onOpenStudio, team, canImportCredit, fullscreen = false, closingActive = false }) {
   const completer = canComplete(role);
   const [sowOpen, setSowOpen] = useState(null);   // itemId of the SOW being edited
   const [trOpen, setTrOpen] = useState(null);    // track record open full-screen (staff): holds the borrower id, or null
@@ -2327,7 +2536,18 @@ function BorrowerConditions({ appId, app, items, docs, onPatch, onReviewDoc, onD
   const isInternal = (it) => it.audience === 'staff';
   const matchAudience = (it) => audFilter === 'all' ? true
     : audFilter === 'internal' ? isInternal(it) : !isInternal(it);
-  const visible = ordered.filter(it => matchFilter(it) && matchAudience(it));
+  // CLOSING DOCS STAY OUT OF THE WAY UNTIL THE FILE IS ACTUALLY CLOSING
+  // (owner-directed 2026-07-30: the balanced HUD/ALTA, the signed closing package
+  // and the collateral tracking label "should not come up immediately when the
+  // file is still in processing… it sounds too much"). They are the closer's
+  // end-of-file work and never hold up clear-to-close, so while the file is still
+  // in processing they surface ONLY under the "Everything" filter — tucked in the
+  // Closing group at the bottom — and never in the default "needs my sign-off"
+  // view. They keep their own dedicated home in the Closing section's upload panel
+  // throughout. Once the file reaches closing (a closer is on it, or it's
+  // clear-to-close/funded) they behave like any other condition again.
+  const tuckClosing = (it) => !closingActive && condFilter !== 'all' && subjectOf(it) === 'closing';
+  const visible = ordered.filter(it => matchFilter(it) && matchAudience(it) && !tuckClosing(it));
   // Grouped by what each condition is ABOUT — see lib/condition-subjects.js.
   // "Done" here is the same role-aware rule the rest of this list uses, so a
   // group header can never disagree with the rows under it.
@@ -2481,6 +2701,7 @@ function BorrowerConditions({ appId, app, items, docs, onPatch, onReviewDoc, onD
                       ? { fullName: fullNameOf(app, 'co_'), email: app.co_email || '' }
                       : null} />
                 : <p className="muted small" style={{ margin: 0 }}>No vesting entity linked yet — link or create one in the “Vesting entity (LLC)” section above.</p>}
+              {!app.entity_verified && <PersonalNameWaiver appId={appId} app={app} onChanged={onChanged} />}
             </div>
           )
       )}
@@ -3914,6 +4135,13 @@ export default function StaffApplication() {
       <Section id="sec-appraisal" summary={summaries['sec-appraisal']} title="Appraisal & findings" defaultOpen={false}
         info="Import the appraisal XML and PILOT builds the property profile and flags every value that differs from the file for your team to review."
         badge={badges.appraisal.long}>
+        {/* The REVIEW-side "No XML available" waiver — the appraisal-review entry
+            point (the review task itself is worked from My Tasks, not the
+            conditions list). It self-hides on a file that already has an imported
+            appraisal (there IS XML), and shares the SAME As-Is/ARV values as the
+            appraisal-documents waiver, so entering on either side shows "already
+            entered — confirm" on the other. */}
+        <AppraisalXmlWaiver appId={id} onChanged={() => { load(); setApprReload((n) => n + 1); }} context="review" />
         <AppraisalPanel appId={id} onSummary={onApprSummary} reloadSignal={apprReload} />
       </Section>
 
@@ -3963,6 +4191,7 @@ export default function StaffApplication() {
       {condTab === 'borrower' && <>
         <BorrowerConditions appId={id} app={app} items={items} docs={docs} role={role}
           team={team} canImportCredit={can('pull_credit')} fullscreen={full}
+          closingActive={!!app.closer_id || ['clear_to_close', 'funded'].includes(app.status)}
           onPatch={patch} onReviewDoc={reviewDoc} onDownloadDoc={downloadDoc} dlBusy={dlBusy}
           onUploadTo={pickUpload} onDropTo={uploadStaffFiles} onChanged={load} onPreview={openPreview}
           onOpenStudio={() => { studioRef.current ? studioRef.current.openStudio() : document.getElementById('sec-pricing')?.scrollIntoView({ behavior: 'smooth', block: 'start' }); }} />

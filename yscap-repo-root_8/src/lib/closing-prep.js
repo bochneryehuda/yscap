@@ -393,6 +393,7 @@ async function getClosingPrepData(applicationId) {
     // registration, NOT a column on applications — the registered program label comes
     // from product_registrations (joined below), the requested one from a.program.
     `SELECT a.id, a.ys_loan_number, a.property_address, a.loan_type, a.program,
+            a.usps_match, a.usps_imported_at,
             a.property_type, a.units, a.status, a.term,
             a.loan_amount, a.purchase_price, a.is_assignment, a.underlying_contract_price,
             a.assignment_fee, a.as_is_value, a.arv, a.rehab_budget,
@@ -534,6 +535,11 @@ async function getClosingPrepData(applicationId) {
     term: a.term || null,
     programLabel: a.product_label || a.reg_program || a.program || null,
     isRegistered: a.total_loan != null || a.note_rate != null,
+    // A closing-prep order transmits the subject address to the attorney; it must be
+    // the USPS-imported address first. Gate is live only when USPS is configured and
+    // the condition is required.
+    uspsImported: !!a.usps_imported_at,
+    uspsGate: (() => { try { return require('./usps-verify').configured() && !!cfg.usps.conditionRequired; } catch (_) { return false; } })(),
     expectedClosing: a.expected_closing || a.est_closing_date || null,
     officer: a.lo_name
       ? { name: a.lo_name, title: a.lo_title || 'Loan Officer', email: a.lo_email || null,
@@ -572,6 +578,8 @@ function blockers(data, pkg) {
   else if (!pkg || !pkg.counts.term_sheet) out.push('term_sheet');
   const to = recipientsFor(data, {}).to;
   if (!to.length) out.push('attorney');
+  // Nothing goes to the closing attorney until the USPS-verified address is imported.
+  if (data.uspsGate && !data.uspsImported) out.push('usps');
   return out;
 }
 

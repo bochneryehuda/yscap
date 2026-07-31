@@ -9,6 +9,7 @@ import AddressAutocomplete from '../components/AddressAutocomplete.jsx';
 import LlcPicker from '../components/LlcPicker.jsx';
 import { US_STATES } from '../components/LlcManager.jsx';
 import { MoneyInput, PhoneInput, ZipInput, EmailInput } from '../components/FormattedInputs.jsx';
+import { moneyStr, moneyNum } from '../lib/money.js';
 import { fullNameOf } from '../lib/personName.js';
 import TermSheetStudio, {
   buildStudioState, portalLoanType, portalProgram, selectionFromSnapshot, blobToBase64, rehabTypePatch,
@@ -349,18 +350,25 @@ export default function Apply() {
   // was priced. FICO merges into personal so it also reaches the profile.
   const patchFromStudio = (f, cur) => {
     const refi = /refinance/i.test(f.dealPurpose || '');
+    /* Every money readout is normalised off the studio's DISPLAY format and back
+       onto the portal's clean-string contract (2026-07-31) — the studio holds
+       "412,500", the draft and every consumer downstream expect "412500", and a
+       bare Number() on the formatted text is NaN, which `|| 0` hides as a zero.
+       Same boundary rule as lib/scenario.js; see lib/money.js for the whole story. */
     const patch = {
       program: portalProgram(f.dealType),
       loanType: portalLoanType(f.dealPurpose),
-      asIsValue: f.asIs, arv: f.arv, rehabBudget: f.construction,
+      asIsValue: moneyStr(f.asIs), arv: moneyStr(f.arv), rehabBudget: moneyStr(f.construction),
       requestedExpFlips: f.expFlips, requestedExpHolds: f.expBrrrr, requestedExpGround: f.expGround,
-      termMonths: f.tsTerm, irMonths: f.irMonths || '0', irAmount: f.irAmount || '0',
+      termMonths: f.tsTerm, irMonths: f.irMonths || '0', irAmount: moneyStr(f.irAmount) || '0',
       isAssignment: !!f.isAssign && !refi,
     };
-    if (!refi) patch.purchasePrice = f.price;
+    if (!refi) patch.purchasePrice = moneyStr(f.price);
     if (patch.isAssignment) {
-      patch.underlyingContractPrice = f.origPrice;
-      const fee = Math.max(0, (Number(f.price) || 0) - (Number(f.origPrice) || 0));
+      patch.underlyingContractPrice = moneyStr(f.origPrice);
+      // The wholesaler's fee — 0 here silently erases it from the loan file, because
+      // the server stores purchase_price as underlying + fee.
+      const fee = Math.max(0, moneyNum(f.price) - moneyNum(f.origPrice));
       patch.assignmentFee = fee ? String(fee) : '';
     }
     // The rehab scope the studio priced → the application's Rehab type. Was
@@ -444,6 +452,7 @@ export default function Apply() {
         Object.assign(overrides, {
           markupStdPct: s.fields.tsYspStd, markupGoldPct: s.fields.tsYspGold, markupSilverPct: s.fields.tsYspSilver,
           origStdPct: s.fields.tsOrigStd, origGoldPct: s.fields.tsOrigGold, origSilverPct: s.fields.tsOrigSilver,
+          origManualPct: s.fields.tsOrigManual,
           lenderFee: s.fields.tsFeeUW, creditFee: s.fields.tsFeeCredit,
           appraisalFee: s.fields.tsFeeAppr, titleFee: s.fields.tsFeeTitle,
           manualPricing: !!s.fields.tsManualOn,

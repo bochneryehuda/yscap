@@ -47,6 +47,75 @@ function sanitizeLoanType(v) {
   return /^\s*ground/i.test(String(v)) ? null : v;
 }
 
+/* A MONEY VALUE ON ITS WAY INTO A numeric COLUMN (pre-merge audit of #919,
+   2026-07-31). The client is SUPPOSED to send a clean number, and every current
+   surface does — but "supposed to" is not a guarantee, and when it is broken the
+   failure is not a wrong number, it is a 500:
+
+     invalid input syntax for type numeric: "445,000"
+
+   That is live today. Before #919, `lib/scenario.js scenarioToDraft` copied the
+   Term Sheet Studio's DISPLAY text straight into an application draft, so every
+   draft a borrower started from a saved pricing scenario (PricingStudio /
+   Dashboard "Start this loan →", shipped in #915) holds `asIsValue: "445,000"`.
+   #919 stops NEW drafts being written that way; it cannot repair the rows that
+   are already in `application_drafts`, and those borrowers cannot submit their
+   application AT ALL — POST /api/borrower/drafts/:id/submit hands the string to
+   Postgres and the INSERT throws.
+
+   So the last mile is guarded here instead of trusted: the value that reaches a
+   money column is parsed, never passed through. Blank / null / nothing-numeric →
+   null (the column's "not provided"), and separators, a currency symbol or stray
+   spaces are stripped. The SIGN is kept — a money column may legitimately hold a
+   negative (a credit / adjustment) and silently flipping one would be worse than
+   the crash it replaces. Returns a NUMBER or null, never NaN and never a string. */
+function moneyValue(v) {
+  if (v == null || v === '') return null;
+  if (typeof v === 'number') return Number.isFinite(v) ? v : null;
+  const s = String(v);
+  if (!/\d/.test(s)) return null;                       // "abc", "-", "$", "." → not provided
+  const neg = /^[\s$(]*-/.test(s);                      // a leading minus, past any "$"/space
+  // Digits + AT MOST ONE decimal point, keeping the FIRST — the same rule the
+  // portal's own money parser uses (app-v2/src/lib/money.js moneyStr), so the two
+  // sides of the wire can never disagree about what a money string means.
+  const d = s.replace(/[^0-9.]/g, '');
+  const i = d.indexOf('.');
+  const n = Number(i < 0 ? d : d.slice(0, i + 1) + d.slice(i + 1).replace(/\./g, ''));
+  if (!Number.isFinite(n)) return null;
+  return neg ? -n : n;
+}
+
+/* THE BIND FOR A MONEY COLUMN — parse (moneyValue) AND the "was it provided?"
+   decision, which are two different questions and were getting the same answer
+   (re-audit of #919, 2026-07-31).
+
+   Every create path used to bind `b.asIsValue || null`, so "provided?" was
+   JavaScript truthiness OF THE RAW VALUE. The string "0" — which is exactly what
+   a MoneyInput holds after a human types a single 0, because the portal's money
+   contract stores a plain numeric STRING — is truthy, so an entered zero stored
+   0.00. Wrapping the same expression as `moneyValue(b.asIsValue) || null` moved
+   the truthiness test onto the PARSED number, and 0 is falsy: a typed zero
+   started storing NULL on all three create paths. Measured through the three
+   real HTTP doors against real Postgres, before/after 67c12804..d055c1e6:
+
+       {asIsValue:"0", arv:"0", rehabBudget:"0"}   was 0.00 → became NULL
+
+   NULL is not a harmless spelling of 0 here. `applications.rehab_budget != null`
+   is the file's "Rehab budget provided" completeness row (Application.jsx);
+   `UPDATE applications SET as_is_value=$2 WHERE as_is_value IS NULL` is how an
+   appraisal import decides it may overwrite (lib/appraisal/import.js); the
+   investor-guideline rules return "not evaluated" instead of a verdict when
+   `x.rehab_budget == null` (lib/underwriting/investor-guideline-review.js); the
+   tapes fall through to a different source; and db/072 reopens pricing on
+   `IS DISTINCT FROM`, which NULL↔0 satisfies.
+
+   So the provided/not-provided question is answered on the RAW value exactly the
+   way it always was, and only then is the value parsed. `moneyValue` still says
+   what a money value MEANS; this says whether there was one. */
+function moneyColumn(v) {
+  return moneyValue(v || null);
+}
+
 // Assignment-purchase normalization (#96) — ONE definition used by EVERY create
 // path (staff new-file, borrower application draft-submit, borrower direct
 // create) so is_assignment / underlying_contract_price / assignment_fee /
@@ -66,11 +135,18 @@ function assignmentFields(b) {
   // type mentions "refi") and the db/173 condition trigger.
   const isRefi = /refi/i.test(String(b.loanType || ''));
   const isAssignment = !!b.isAssignment && !isRefi;
-  const underlying = isAssignment ? (b.underlyingContractPrice || null) : null;
-  const assignFee = isAssignment ? (b.assignmentFee || null) : null;
+  /* Every money value is PARSED, not passed through (audit of #919). The bare
+     `Number()` this used to run on the underlying price was the server-side twin
+     of the client bug #919 fixes: a formatted "380,000" made it NaN, and the
+     string itself went to a numeric column as-is.
+     `moneyColumn` — not `moneyValue(x) || null` — because the provided /
+     not-provided decision has to stay on the RAW value: an entered "0" is a zero
+     the borrower typed and has always stored 0.00 (re-audit, 2026-07-31). */
+  const underlying = isAssignment ? moneyColumn(b.underlyingContractPrice) : null;
+  const assignFee = isAssignment ? moneyColumn(b.assignmentFee) : null;
   const purchasePrice = isAssignment
-    ? (Number(b.underlyingContractPrice || 0) + Number(b.assignmentFee || 0))
-    : (b.purchasePrice || null);
+    ? ((moneyValue(b.underlyingContractPrice) || 0) + (moneyValue(b.assignmentFee) || 0))
+    : moneyColumn(b.purchasePrice);
   return { isAssignment, underlying, assignFee, purchasePrice };
 }
 
@@ -213,4 +289,4 @@ function loanNumberProblem(v) {
   return null;
 }
 
-module.exports = { sanitizeFico, sanitizeSsnDigits, formatSsn, sanitizeLoanType, assignmentFields, sqftRelevantType, sqftForType, sanitizeDateOnly, normalizeTypedDate, sanitizeDob, dobProblem, sanitizeLoanNumber, normalizeLoanNumber, loanNumberProblem };
+module.exports = { sanitizeFico, sanitizeSsnDigits, formatSsn, sanitizeLoanType, moneyValue, moneyColumn, assignmentFields, sqftRelevantType, sqftForType, sanitizeDateOnly, normalizeTypedDate, sanitizeDob, dobProblem, sanitizeLoanNumber, normalizeLoanNumber, loanNumberProblem };

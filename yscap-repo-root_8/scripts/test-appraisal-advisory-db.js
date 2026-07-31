@@ -10,12 +10,12 @@
  *   • an OPEN condition with NO appraisal read yet → 'not_ready';
  *   • a current appraisal read + clean (no fatal finding) → 'ready' (status still open);
  *   • a HUMAN-signed-off condition PILOT confirms → 'agree';
- *   • a NEW open FATAL blocks_ctc finding lands AFTER the human signed off → the sign-off
- *     STANDS (db/334 retired the db/155 auto-reopen: PILOT no longer takes a human's sign-off
- *     away, owner-directed 2026-07-27 "advisory only"), and PILOT's advisory flips to
- *     'dispute' — it says out loud that it disagrees, without changing anything. This is the
- *     evaluator's DISPUTE branch, which the old auto-reopen made unreachable on this path.
- *   • the advisory NEVER changes status / signed_off_* on any path.
+ *   • a NEW open FATAL blocks_ctc finding lands AFTER the human signed off → the condition
+ *     REOPENS (owner-directed 2026-07-30: appraisal findings are ENFORCED again — db/375
+ *     re-armed the db/155 reopen for the APPRAISAL review only; the document review stays
+ *     advisory per 2026-07-27), and the advisory reads the reopened condition 'not_ready';
+ *   • the advisory itself NEVER changes status / signed_off_* on any path (the reopen is the
+ *     DB trigger's doing, not the advisory's).
  *
  * Requires DATABASE_URL; skips cleanly otherwise.
  * Run: DATABASE_URL=... node scripts/test-appraisal-advisory-db.js
@@ -36,9 +36,15 @@ async function seedFile() {
   const bor = (await db.query(
     `INSERT INTO borrowers (first_name,last_name,email) VALUES ('Appr','Aisal',$1) RETURNING id`,
     [`appr_${process.pid}_${Date.now()}@example.com`])).rows[0];
+  // A confirmed As-Is value is present (as PILOT auto-fills, then a human confirms). The
+  // advisory's "ready"/"agree" states now also require the As-Is confirmed (post-merge
+  // finding #3: the advisory mirrors the sign-off gate 1:1), and this test attaches NO
+  // appraisal_as_is_verify condition — so an As-Is value present + no open confirm
+  // condition = confirmed, matching the gate. The reopen case below is driven by a fatal
+  // FINDING (the thing this test is about), not the As-Is.
   const app = (await db.query(
-    `INSERT INTO applications (borrower_id, is_assignment, purchase_price, property_address)
-     VALUES ($1,false,300000,$2) RETURNING id`,
+    `INSERT INTO applications (borrower_id, is_assignment, purchase_price, as_is_value, property_address)
+     VALUES ($1,false,300000,240000,$2) RETURNING id`,
     [bor.id, JSON.stringify({ line: '3 Value Ct', city: 'Town', state: 'NY' })])).rows[0];
   return { borId: bor.id, appId: app.id };
 }
@@ -86,6 +92,15 @@ async function row(itemId) {
   ok(c.status === 'outstanding' && c.signed_off_by === null, '…and "ready" did NOT sign the condition off');
   ok((c.pilot_advice_note || '').length > 0, 'the ready advice carries a plain-language note');
 
+  // 2b) The advisory MIRRORS the gate on the As-Is prerequisite (post-merge finding #3):
+  //     clear the file's As-Is → the gate would refuse, so the advisory must read 'not_ready',
+  //     NOT 'ready'. Restore it afterward so the rest of the flow is unaffected.
+  await db.query(`UPDATE applications SET as_is_value=NULL WHERE id=$1`, [f.appId]);
+  await engine.runFileAdvice(db, f.appId);
+  c = await row(appr);
+  ok(c.pilot_advice === 'not_ready', 'no confirmed As-Is → advice "not_ready" (mirrors the sign-off gate, never a false "ready")');
+  await db.query(`UPDATE applications SET as_is_value=240000 WHERE id=$1`, [f.appId]);
+
   // 3) HUMAN signs it off (still clean) → 'agree'.
   const staff = (await db.query(
     `INSERT INTO staff_users (email, full_name, role, is_active) VALUES ($1,'Appr Tester','underwriter',true) RETURNING id`,
@@ -97,20 +112,21 @@ async function row(itemId) {
   ok(c.status === 'satisfied' && String(c.signed_off_by) === String(staff.id), '…and the human sign-off is untouched');
 
   // 4) A NEW open FATAL blocks_ctc appraisal finding lands AFTER the human signed off.
-  //    ADVISORY ONLY (owner-directed 2026-07-27): db/334 retired db/155's auto-reopen, so
-  //    the human's sign-off STANDS — PILOT does not silently un-sign work a person cleared.
-  //    What PILOT does instead is SAY it disagrees: the advisory flips to 'dispute'. That is
-  //    the whole shape of the new posture — loud opinion, zero authority.
+  //    ENFORCED for the APPRAISAL review (owner-directed 2026-07-30; db/375 re-armed db/155's
+  //    reopen, narrowing the 2026-07-27 advisory-only rule for this ONE condition): a sign-off
+  //    cannot stand over a fresh blocking appraisal finding — the trigger reopens the
+  //    condition (with an [auto] note) and the officer must re-clear it. The document/
+  //    underwriting review stays advisory (test-ai-advisory-only-db.js covers that side).
   await insertFatalFinding(f.appId, apprId);
   const afterFatal = await row(appr);
-  ok(afterFatal.status === 'satisfied' && String(afterFatal.signed_off_by) === String(staff.id),
-    'ADVISORY ONLY: a late fatal finding no longer takes the human sign-off away (db/334 retired db/155)');
+  ok(afterFatal.status === 'received' && afterFatal.signed_off_by === null,
+    'ENFORCED: a late fatal appraisal finding REOPENS the signed-off appraisal review (db/375 re-armed the reopen)');
   await engine.runFileAdvice(db, f.appId);
   c = await row(appr);
-  ok(c.pilot_advice === 'dispute',
-    'a signed-off condition with an open fatal → advice "dispute" (PILOT disagrees, out loud)');
-  ok(c.status === 'satisfied' && String(c.signed_off_by) === String(staff.id),
-    '…and the advisory still changed nothing — status and sign-off untouched');
+  ok(c.pilot_advice === 'not_ready',
+    'the reopened (open) condition with an open fatal → advice "not_ready"');
+  ok(c.status === 'received' && c.signed_off_by === null,
+    '…and the advisory itself changed nothing — the DB trigger did the reopen, not the advisory');
 
   // cleanup
   cfg.pilotReadyStampEnabled = false;

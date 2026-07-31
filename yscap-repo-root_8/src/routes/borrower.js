@@ -17,6 +17,13 @@ const mail = require('../lib/email/catalog');
 const { fileReplyTo } = require('../lib/file-address');   // #68 per-file shared reply-to
 const { enqueueSitewirePush } = require('../sitewire/enqueue'); // birth push on the Request-a-draw click (self-gated)
 const { redactPII } = require('../lib/redact');
+/* A money value reaching a numeric column is PARSED, never passed through — a
+   draft written before #919 holds the Term Sheet Studio's display text
+   ("445,000") and the raw bind made the submit INSERT throw. `moneyColumn` is the
+   BIND: it answers "was a value provided?" off the raw value exactly as the
+   `b.x || null` it replaced did (so a typed "0" still stores 0.00, not NULL) and
+   only then parses. See lib/fields.js. */
+const { moneyColumn } = require('../lib/fields');
 const { serveDocument } = require('../lib/serve-document');
 const { decodeUploadBase64, safeFilename } = require('../lib/upload-bytes');
 const pricing = require('../lib/pricing');
@@ -589,8 +596,8 @@ router.post('/applications', async (req, res) => {
         is_assignment,underlying_contract_price,assignment_fee,source,raw_intake,status,submitted_at)
      VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,'portal',$22,'new',now()) RETURNING id,ys_loan_number`,
     [me(req), b.llcId || null, JSON.stringify(b.propertyAddress), b.propertyType || null, b.units || null,
-     b.program || null, require('../lib/fields').sanitizeLoanType(b.loanType), asg.purchasePrice, b.asIsValue || null,   // #95: never a program
-     b.arv || null, b.rehabBudget || null, b.loanOfficerName || null,
+     b.program || null, require('../lib/fields').sanitizeLoanType(b.loanType), asg.purchasePrice, moneyColumn(b.asIsValue),   // #95: never a program
+     moneyColumn(b.arv), moneyColumn(b.rehabBudget), b.loanOfficerName || null,
      b.rehabType || null, sqf.sqftPre, sqf.sqftPost,
      intField(b.requestedExpFlips), intField(b.requestedExpHolds), intField(b.requestedExpGround),
      asg.isAssignment, asg.underlying, asg.assignFee, JSON.stringify(redactPII(b))]);
@@ -1112,6 +1119,14 @@ router.post('/applications/:id/pricing/register', async (req, res) => {
     } catch (_) {}
 
     res.status(201).json({ ok: true, registrationId: regId, quote: stripQuoteInternal(quote), pendingApproval: needsEscalation });
+    // Shadow-Excel parity monitor (owner-directed 2026-07-30): background-check the
+    // registered Silver scenario (UNSTRIPPED quote) against the workbook transcription.
+    // Watch-only — a mismatch records one staff-side advisory; never blocks anything.
+    if (program === 'silver') {
+      setImmediate(() => {
+        try { require('../lib/silver-shadow-parity').monitorQuote(appId, inputs, quote).catch(() => {}); } catch (_) { /* watch-only */ }
+      });
+    }
   } catch (e) { console.error('[borrower pricing]', e && e.message); res.status(500).json({ error: 'server error' }); }
 });
 
@@ -1211,7 +1226,7 @@ router.get('/applications/:id/appraisal', async (req, res) => {
   const [comps, units, findings, photos] = await Promise.all([
     db.query(`SELECT * FROM appraisal_comparables WHERE appraisal_id=$1 ORDER BY seq`, [appr.id]),
     db.query(`SELECT * FROM appraisal_units WHERE appraisal_id=$1 ORDER BY unit_seq`, [appr.id]),
-    db.query(`SELECT id, code, severity, field, appraisal_value, file_value, title, blocks_ctc, created_at
+    db.query(`SELECT id, source, code, severity, field, appraisal_value, file_value, title, blocks_ctc, created_at
                 FROM appraisal_findings WHERE application_id=$1 AND status='open'
                ORDER BY (severity='fatal') DESC, created_at`, [appId]),
     db.query(
@@ -1225,14 +1240,20 @@ router.get('/applications/:id/appraisal', async (req, res) => {
   // as-is). A borrower must never see the lender's internal skepticism, so these codes are
   // dropped from the borrower set entirely (they stay open + visible on the staff desk).
   const SCRUTINY_CODES = new Set(['arv_defensibility', 'value_vs_comps', 'value_not_bracketed', 'asis_below_price', 'comp_split_review']);
+  // NOTE-BUYER findings (source='note_buyer' — the per-capital-partner appraisal checks, e.g.
+  // EMCAP's comp/photo/lender requirements) are STAFF-ONLY as a CLASS: their titles name a note
+  // buyer, which may never reach a borrower. Filter by SOURCE, not by code list, so a future
+  // buyer's checks are covered automatically.
+  const hiddenFromBorrower = (f) => SCRUTINY_CODES.has(f.code) || f.source === 'note_buyer';
   const open = findings.rows
-    .filter((f) => !SCRUTINY_CODES.has(f.code))
+    .filter((f) => !hiddenFromBorrower(f))
     .map((f) => ({ ...f, title: scrubText(f.title) }));
-  // A hidden scrutiny finding can still be a REAL clear-to-close blocker (asis_below_price is
-  // fatal). We must not tell the borrower their file is clear while it's actually gated — but we
-  // also can't reveal the underwriting reason. If a filtered-out finding is a live blocker, surface
-  // ONE neutral placeholder so the borrower's summary honestly shows "under review", not "clear".
-  const hiddenBlocker = findings.rows.some((f) => SCRUTINY_CODES.has(f.code) && f.severity === 'fatal' && f.blocks_ctc);
+  // A hidden scrutiny/note-buyer finding can still be a REAL clear-to-close blocker
+  // (asis_below_price and the EMCAP anchor checks are fatal). We must not tell the borrower their
+  // file is clear while it's actually gated — but we also can't reveal the underwriting reason.
+  // If a filtered-out finding is a live blocker, surface ONE neutral placeholder so the borrower's
+  // summary honestly shows "under review", not "clear".
+  const hiddenBlocker = findings.rows.some((f) => hiddenFromBorrower(f) && f.severity === 'fatal' && f.blocks_ctc);
   if (hiddenBlocker) {
     open.push({ id: 'appraisal_review', code: 'appraisal_under_review', severity: 'fatal', field: 'value',
       appraisal_value: null, file_value: null, blocks_ctc: true, created_at: null,
@@ -1935,6 +1956,30 @@ router.post('/applications/:id/complete-fields', async (req, res) => {
       }
       if (k === 'loan_type') v = require('../lib/fields').sanitizeLoanType(v);   // #95: never a program
       appVals.push(v); appSets.push(`${k}=$${appVals.length}`); appKeys.push(k);
+    }
+    // Property address (owner-directed invite flow): when a staffer starts a file
+    // from JUST the borrower's email, the borrower fills in the subject property
+    // themselves right here. It is a STRUCTURED object (not a scalar), so it is
+    // handled separately from the fields above. property_address is NOT a pricing
+    // input, so it does not reopen the product-pricing condition. On a LOCKED
+    // (registered) file the address is left to the loan team — a post-registration
+    // address change is a staff action, never a self-serve completeness edit —
+    // so it is simply ignored here (never a 500).
+    if (!locked && b.property_address && typeof b.property_address === 'object' && !Array.isArray(b.property_address)) {
+      const pa = { ...b.property_address };
+      const hasContent = ['oneLine', 'line1', 'street', 'city', 'state', 'zip'].some((k) => String(pa[k] || '').trim());
+      if (hasContent) {
+        // Ensure a display one-line exists even if the client only sent parts; the
+        // boot address-heal + the ClickUp geocode canonicalize it further.
+        if (!String(pa.oneLine || '').trim()) {
+          pa.oneLine = [
+            [pa.line1 || pa.street, pa.unit].filter(Boolean).join(' '),
+            pa.city,
+            [pa.state, pa.zip].filter(Boolean).join(' '),
+          ].filter(Boolean).join(', ');
+        }
+        appVals.push(JSON.stringify(pa)); appSets.push(`property_address=$${appVals.length}`); appKeys.push('property_address');
+      }
     }
     // Couple units to a live property_type change. The completeness panel doesn't
     // collect units, so a single-family type must still auto-fill "1 unit" and a
@@ -3405,8 +3450,8 @@ router.post('/drafts/:id/submit', async (req, res) => {
      VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$24,$25,$26,$27,$28,$29,$30,'portal',$23,'new',now())
      RETURNING id,ys_loan_number`,
     [me(req), b.llcId || null, JSON.stringify(b.propertyAddress), b.propertyType || null, b.units || null,
-     b.program || null, require('../lib/fields').sanitizeLoanType(b.loanType), asg.purchasePrice, b.asIsValue || null,   // #95: never a program
-     b.arv || null, b.rehabBudget || null, officerId, b.loanOfficerName || null,
+     b.program || null, require('../lib/fields').sanitizeLoanType(b.loanType), asg.purchasePrice, moneyColumn(b.asIsValue),   // #95: never a program
+     moneyColumn(b.arv), moneyColumn(b.rehabBudget), officerId, b.loanOfficerName || null,
      b.rehabType || null, sqf.sqftPre, sqf.sqftPost,
      intField(b.requestedExpFlips), intField(b.requestedExpHolds), intField(b.requestedExpGround),
      asg.isAssignment, asg.underlying, asg.assignFee, JSON.stringify(redactPII(b)),

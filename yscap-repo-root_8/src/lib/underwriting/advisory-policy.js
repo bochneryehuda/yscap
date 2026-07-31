@@ -36,6 +36,27 @@
 
 const ENV_KEY = 'AI_FINDINGS_ENFORCE';
 
+/**
+ * THE APPRAISAL REVIEW IS THE OWNER-DIRECTED EXCEPTION (2026-07-30) — it is ENFORCED.
+ *
+ * The owner's words: "double check and triple check all the findings that you find from the
+ * XML appraisal should be on the appraisal findings page and that should be enforced and
+ * everything should need to be signed off … you cannot clear this condition you cannot get a
+ * CTC till you clear the appraisal findings."
+ *
+ * So the `appraisal_review_cleared` condition (and ONLY that condition — the document/
+ * underwriting review stays advisory under the 2026-07-27 rule above) is a REAL gate again:
+ *   • it cannot be signed off while a fatal appraisal finding is open,
+ *   • it cannot be signed off until the As-Is value is confirmed on the file,
+ *   • it counts as a real blocker in advancementBlockers, so no clear-to-close without it.
+ * The deliberate way through remains the super-admin condition override (db/344) — never a
+ * silent bypass.
+ *
+ * Kill switch: `APPRAISAL_FINDINGS_ENFORCE=0` drops the appraisal review back to advisory
+ * (an env change, no deploy). Default (unset / anything else) = ENFORCED.
+ */
+const APPRAISAL_ENV_KEY = 'APPRAISAL_FINDINGS_ENFORCE';
+
 /** True only when the owner has explicitly re-armed enforcement (AI_FINDINGS_ENFORCE=1). */
 function enforcing() {
   return String(process.env[ENV_KEY] == null ? '' : process.env[ENV_KEY]).trim() === '1';
@@ -43,6 +64,15 @@ function enforcing() {
 
 /** True in the default posture: PILOT advises, humans decide. */
 function advisoryOnly() { return !enforcing(); }
+
+/**
+ * The APPRAISAL review gate (owner-directed 2026-07-30): enforced by default, regardless of
+ * the AI_FINDINGS_ENFORCE switch. Only `APPRAISAL_FINDINGS_ENFORCE=0` turns it off.
+ * Read at CALL time like everything else here.
+ */
+function appraisalReviewEnforced() {
+  return String(process.env[APPRAISAL_ENV_KEY] == null ? '' : process.env[APPRAISAL_ENV_KEY]).trim() !== '0';
+}
 
 /**
  * Resolve the mode for one call site. `opts.enforce` (an explicit boolean) always
@@ -60,4 +90,4 @@ const ADVISORY_NOTE =
   'PILOT’s findings are advisory. Review them, but they do not hold up signing off a condition, '
   + 'clearing to close, funding, or sending a package.';
 
-module.exports = { enforcing, advisoryOnly, enforceFor, ADVISORY_NOTE, ENV_KEY };
+module.exports = { enforcing, advisoryOnly, enforceFor, appraisalReviewEnforced, ADVISORY_NOTE, ENV_KEY, APPRAISAL_ENV_KEY };
