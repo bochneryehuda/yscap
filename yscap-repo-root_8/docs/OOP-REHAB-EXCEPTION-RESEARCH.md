@@ -413,6 +413,25 @@ and PILOT **mirrors** the actual wired amounts; the total out-of-pocket there is
 tape's **financed holdback cap** (the note buyer only funds the financed portion), and the
 out-of-pocket floor is still shown on the desk for visibility.
 
+**Latent assumption to verify before enabling an OOP exception on a TrustPoint file:** the seasoning
+tape subtracts the OOP floor from the **gross** released `approved_cents`, which is right only if a
+mirrored TrustPoint `approved_amount` is the FULL construction draw (not already the reduced
+financed amount). There are no TrustPoint OOP files today (Phase-2 admin exception), and the
+out-of-pocket exception is only *validated* on PILOT-administered draws — confirm TrustPoint's
+`approved_amount` semantics for an OOP loan before routing one through the mirror, or the floor could
+be double-counted in that one tape.
+
+### 10.6 Pre-merge audit (two agents) — findings & resolutions
+Both audits returned **no blockers**. Fixed: a per-file advisory lock on `POST /disbursements` so two
+draws recorded at once can't both under-reimburse against a stale running total (audit A #1); the
+floor snapshot is frozen once a draw exists so a re-register can't move it mid-stream (audit A #3);
+the mirror boundary is documented (audit A #2 / audit B); the seasoning interest accrual uses the
+floor-adjusted releases so interest never accrues on the out-of-pocket portion (audit B #1); the GL
+export gained an **Out-of-pocket held** column so every draw row reconciles
+(Approved = Fee + Retainage + Net + OOP held) (audit B #2). Remaining nits are display-only and
+documented in place (the rollup projection for a not-yet-recorded draw is un-floored and self-corrects;
+the EMCAP out-of-pocket column stays parked until the owner confirms the workbook cell).
+
 Tests: out-of-pocket cases added to `scripts/test-sitewire-money.js` and
 `scripts/test-tape-seasoning-pure.js`; all pure money + tape suites pass; `floor=0` proven
 byte-identical.

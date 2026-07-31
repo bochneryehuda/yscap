@@ -1374,8 +1374,15 @@ router.get('/files/:id/gl-export', requirePermission('manage_draws'), async (req
          FROM draw_disbursements d JOIN applications a ON a.id=d.application_id
         WHERE d.application_id=$1 ORDER BY d.created_at`, [req.params.id])).rows;
     const c = (x) => Math.round(Number(x || 0)) / 100;
-    const out = [['Loan', 'Property', 'Recorded', 'Release date', 'Draw', 'Type', 'Approved', 'Fee', 'Retainage held', 'Net release', 'Status']];
-    for (const r of rows) out.push([r.ys_loan_number || '', r.address || '', new Date(r.created_at).toISOString().slice(0, 10), r.release_date || '', r.sitewire_draw_id ? '#' + r.sitewire_draw_id : '', r.kind, c(r.approved_cents), c(r.fee_cents), c(r.retainage_held_cents), c(r.net_release_cents), r.funded_status]);
+    // Out-of-pocket-first (owner-directed 2026-07-31): on an OOP-rehab draw the reimbursable amount is
+    // less than the approved amount, so approved − fee − retainage ≠ net. The gap is the borrower's
+    // out-of-pocket portion; expose it as its own column so every row reconciles exactly
+    // (Approved = Fee + Retainage held + Net release + Out-of-pocket held). It is 0 on a normal draw and
+    // on a retainage-release row, so a file with no exception is byte-identical apart from the new column.
+    const n = (x) => Number(x || 0);
+    const oopHeldCents = (r) => (r.kind === 'draw' ? Math.max(0, n(r.approved_cents) - n(r.fee_cents) - n(r.retainage_held_cents) - n(r.net_release_cents)) : 0);
+    const out = [['Loan', 'Property', 'Recorded', 'Release date', 'Draw', 'Type', 'Approved', 'Fee', 'Retainage held', 'Net release', 'Out-of-pocket held', 'Status']];
+    for (const r of rows) out.push([r.ys_loan_number || '', r.address || '', new Date(r.created_at).toISOString().slice(0, 10), r.release_date || '', r.sitewire_draw_id ? '#' + r.sitewire_draw_id : '', r.kind, c(r.approved_cents), c(r.fee_cents), c(r.retainage_held_cents), c(r.net_release_cents), c(oopHeldCents(r)), r.funded_status]);
     const buf = buildXlsx(out, 'GL Export');
     res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
     res.setHeader('Content-Disposition', `attachment; filename="draw-gl-${req.params.id}.xlsx"`);
