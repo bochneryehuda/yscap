@@ -2248,6 +2248,18 @@ router.post('/applications/:id/pricing/register', async (req, res) => {
     // ON, Standard/Gold OFF) unless the admin explicitly set it; the key dates are
     // derived from the estimated closing date + the priced term.
     const rawTermOptions = (b.termOptions && typeof b.termOptions === 'object') ? b.termOptions : {};
+    /* A cash-out figure that cannot be read is REFUSED, at the door, before any
+       work is done — never silently written as a blank, which would CLEAR the
+       file's figure while answering 200 ("returned 200 but didn't save", the
+       class this repo keeps closing). Refused here rather than inside the write
+       transaction below so a refusal can never leave a register half-done. The
+       details door already answers exactly this for the same value. */
+    if (Object.prototype.hasOwnProperty.call(rawTermOptions, 'estimatedCashOut')) {
+      const rawCo = rawTermOptions.estimatedCashOut;
+      if (rawCo !== '' && rawCo != null && !isFinite(Number(rawCo))) {
+        return res.status(400).json({ error: 'estimatedCashOut must be a number' });
+      }
+    }
     // Derive the key dates from the effective closing date — the one the studio
     // sent, else the one already on the file — so a re-register that doesn't
     // re-enter the date never WIPES it, and the dates re-derive when the term moves.
@@ -2424,13 +2436,26 @@ router.post('/applications/:id/pricing/register', async (req, res) => {
          investor-guideline cash-out rule is gated on `refinance_economic_type`,
          which still has no writer), so this can neither price nor block a deal.
          Refinance only, and only when the studio actually sent the key — a
-         re-register that never opened the box leaves the file's figure alone,
-         exactly like the estimated closing date above. An explicit blank DOES
-         clear it: blank means "use the structure", which is a real answer. */
+         re-register that never opened the box leaves the file's figure alone.
+         An explicit blank DOES clear it: blank means "use the structure", which
+         is a real answer.
+
+         "IS THIS A REFINANCE" IS THE SHARED MODEL, not a private regex
+         (re-audit-found 2026-07-31): a bare /refi/ test reads "Delayed Purchase
+         Refinance" as a refinance, while the payoff model, the Condition Center
+         and the pricing engine all read it as a PURCHASE. One definition.
+
+         UNREADABLE INPUT IS REFUSED, NOT SILENTLY TREATED AS BLANK (same
+         re-audit): "62,000" or "abc" used to CLEAR the column here while the
+         details door answered 400 for the identical value — the "returned 200
+         but didn't save" class this repo keeps having to close. */
       if (Object.prototype.hasOwnProperty.call(rawTermOptions, 'estimatedCashOut')
-          && /refi/i.test(String(f.app.loan_type || ''))) {
+          && require('../lib/payoff').isRefinance(f.app.loan_type)) {
+        // Validated BEFORE the transaction opened (see `cashOutRefusal` above),
+        // so nothing here can refuse mid-transaction and leave the register
+        // half-done — by the time we get here the value is known good.
         const raw = rawTermOptions.estimatedCashOut;
-        const co = (raw === '' || raw == null) ? null : (isFinite(Number(raw)) ? Number(raw) : null);
+        const co = (raw === '' || raw == null) ? null : Number(raw);
         await client.query(`UPDATE applications SET estimated_cash_out=$2 WHERE id=$1`, [appId, co]);
       }
       await client.query('COMMIT');
