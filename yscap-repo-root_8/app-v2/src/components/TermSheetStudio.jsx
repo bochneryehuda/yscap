@@ -1,4 +1,5 @@
 import React, { forwardRef, useEffect, useImperativeHandle, useRef, useState } from 'react';
+import { moneyNum } from '../lib/money.js';
 
 /* The REAL static Term Sheet Studio (web/tools/term-sheet.html) embedded in
    the portal through a same-origin iframe. The static page and its frozen
@@ -246,7 +247,7 @@ export function scenarioFromEngineInputs(inp, extra = {}) {
     isAssignment: !!inp.isAssignment,
     underlyingContractPrice: inp.sellerPrice,
     assignmentFee: inp.isAssignment && inp.purchasePrice && inp.sellerPrice
-      ? Math.max(0, Number(inp.purchasePrice) - Number(inp.sellerPrice)) : '',
+      ? Math.max(0, moneyNum(inp.purchasePrice) - moneyNum(inp.sellerPrice)) : '',
     asIsValue: inp.asIsValue,
     arv: inp.arv,
     rehabBudget: inp.rehabBudget,

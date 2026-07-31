@@ -6,6 +6,7 @@ import { fileToBase64 } from '../lib/files.js';
 import { onFilesDropped } from '../lib/drop-files.js';
 import { fmtDay, dayInputValue } from '../lib/dates.js';
 import { formatSSN, cleanFICO, ficoValid } from '../lib/validators.js';
+import { moneyNum } from '../lib/money.js';
 import { useAuth } from '../lib/auth.jsx';
 import { ESIGN_RETURN_MSG } from '../lib/esign.js';
 import { canOverride, isCompletion, askOverride, overrideLine } from '../lib/condition-override.js';
@@ -1043,7 +1044,7 @@ function AppraisalXmlWaiver({ appId, onChanged, context = 'docs' }) {
               ? ` This waiver ${ex.status === 'approved' ? 'was APPROVED' : ex.status === 'denied' ? 'was DENIED' : 'is waiting for an admin to approve it'} on the Exceptions screen${ex.exception_seq ? ` (EX-${ex.exception_seq})` : ''}.`
               : ''}
         </div>
-        <div style={{ color: '#141B22', marginTop: 2, fontWeight: 600 }}>ARV ${Number(w.arv || 0).toLocaleString('en-US')} · As-Is ${Number(w.as_is_value || 0).toLocaleString('en-US')} — entered by hand.</div>
+        <div style={{ color: '#141B22', marginTop: 2, fontWeight: 600 }}>ARV ${moneyNum(w.arv).toLocaleString('en-US')} · As-Is ${moneyNum(w.as_is_value).toLocaleString('en-US')} — entered by hand.</div>
         {isReview && (
           <div style={{ color: '#4B585C', marginTop: 2 }}>
             These stand in for the appraisal review, so the term sheet can go out{w.requires_transfer_letter || (ex && ex.status === 'approved') ? '' : ' once the exception is approved'}. Please confirm
