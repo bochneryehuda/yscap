@@ -32,6 +32,9 @@ export default function ToolScenarioBar({ slug, toolName, getWin, onCountChange 
   }, []);
 
   const [truncated, setTruncated] = useState(false);
+  /* How many the staffer ACTUALLY has, which past the list cap is more than the page
+     we were handed — the button and the grid badge must never disagree. */
+  const [total, setTotal] = useState(0);
 
   const refresh = useCallback(async () => {
     try {
@@ -43,6 +46,7 @@ export default function ToolScenarioBar({ slug, toolName, getWin, onCountChange 
          handed — the list is capped, and a badge derived from a capped page would
          quietly under-report how many scenarios a busy staffer actually has. */
       const exact = r && r.counts && typeof r.counts[slug] === 'number' ? r.counts[slug] : rows.length;
+      setTotal(exact);              // the button says the same number as the grid badge
       if (onCountChange) onCountChange(slug, exact);
     } catch (_) { /* the list is a convenience; never block the tool on it */ }
   }, [slug, onCountChange]);
@@ -126,7 +130,7 @@ export default function ToolScenarioBar({ slug, toolName, getWin, onCountChange 
         title="Save what's on screen now as a named scenario you can come back to">Save scenario</button>
       <button type="button" className="btn ghost small" onClick={() => setShowList((v) => !v)} disabled={busy}
         aria-expanded={showList}
-        title={`Your saved ${toolName} scenarios`}>My scenarios{list.length ? ` (${list.length})` : ''}</button>
+        title={`Your saved ${toolName} scenarios`}>My scenarios{total ? ` (${total})` : ''}</button>
 
       {showList && (
         <div role="dialog" aria-label={`Saved ${toolName} scenarios`} style={{

@@ -13322,6 +13322,27 @@ router.put('/tool-scenarios/:id', async (req, res) => {
       // is a second way into this table, and it must not be the unguarded one.
       const scrubbed = suiteScenarios.scrubState(b.state);
       state = scrubbed.state; removed = scrubbed.removed;
+      /* AN OWN-STATE ROW'S STATE IS NOT REPLACEABLE THROUGH THIS DOOR (re-audit
+         follow-up, 2026-07-30). The save door refuses a flat blob for Rehab Budget /
+         Track Record because the CLIENT feature-detects the tool and declares which
+         accessor produced the bytes. This door has no such handshake — it takes a
+         bare state with no kind — so a flat blob would land under a row still marked
+         'own' and the reopen would hand that tool a shape it cannot read, restoring a
+         BLANK tool. Declaring a kind here would not help: the check is on provenance,
+         not shape, and a hand-rolled request would simply declare 'own'.
+         So this door does renames; the save door (same name → upsert) is how an
+         own-state scenario's numbers are updated, and it is the one that can prove
+         where they came from. The client already works exactly this way. */
+      const owner = await db.query(
+        `SELECT tool_slug, state_kind FROM staff_tool_scenarios WHERE id = $1 AND staff_user_id = $2`,
+        [req.params.id, req.actor.id]);
+      if (!owner.rows[0]) return res.status(404).json({ error: 'not found' });
+      if (owner.rows[0].state_kind === 'own') {
+        return res.status(400).json({
+          error: 'use_save',
+          detail: 'Re-save this scenario from the tool itself so its rows are read properly. Renaming it here still works.',
+        });
+      }
     }
     const r = await db.query(
       `UPDATE staff_tool_scenarios

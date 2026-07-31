@@ -367,6 +367,42 @@ console.log('\n--- the frame handle cannot survive a reopen of the same tool ---
       const back = await call('GET', `/api/staff/tool-scenarios/${real.body.scenario.id}`, aTok);
       assert(back.body.scenario.state.items[0].name === 'White oak' && back.body.scenario.stateKind === 'own',
         'and the line items come back with the kind that produced them');
+
+      /* THE UPDATE DOOR CANNOT REPLACE AN OWN-STATE ROW'S NUMBERS (re-audit
+         follow-up). It takes a bare state with no kind, so it cannot prove the bytes
+         came from the tool's own accessor — and a flat blob under a row still marked
+         'own' would reopen as a BLANK tool. Renames still work; re-saving from the
+         tool (the door that CAN prove provenance) is how the numbers change. */
+      const rid = real.body.scenario.id;
+      for (const body of [{ state: { v: { a: '1' } } },
+        { state: { items: [{ name: 'Red oak' }] } },
+        { state: { v: { a: '1' } }, stateKind: 'own' }]) {
+        const put = await call('PUT', `/api/staff/tool-scenarios/${rid}`, aTok, body);
+        assert(put.status === 400 && put.body.error === 'use_save',
+          `the update door refuses a state for an own-state row (${put.status} ${put.body && put.body.error}) — declaring a kind does not get around it`);
+      }
+      const intact = await call('GET', `/api/staff/tool-scenarios/${rid}`, aTok);
+      assert(intact.body.scenario.state.items && intact.body.scenario.state.items[0].name === 'White oak',
+        'and the refusal left the real line items untouched');
+      // a plain rename carries no state, so it is never judged on one
+      const ren = await call('PUT', `/api/staff/tool-scenarios/${rid}`, aTok, { name: 'Renamed budget' });
+      assert(ren.status === 200 && ren.body.scenario.name === 'Renamed budget',
+        'a pure rename of an own-state scenario still works');
+      // re-saving from the tool IS the way to change them, and it still works
+      const resave = await call('POST', '/api/staff/tool-scenarios', aTok,
+        { toolSlug: 'rehab-budget', name: 'Renamed budget', state: { items: [{ name: 'Red oak', amt: 200 }] }, stateKind: 'own' });
+      assert(resave.status === 201 && resave.body.scenario.id === rid, 're-saving from the tool updates the same row');
+      const moved = await call('GET', `/api/staff/tool-scenarios/${rid}`, aTok);
+      assert(moved.body.scenario.state.items[0].name === 'Red oak', 'and it carries the new line items');
+      // a SUITE-kind row is unaffected — that door has always been fine
+      const suiteRow = await call('POST', '/api/staff/tool-scenarios', aTok,
+        { toolSlug: 'ratesaver', name: 'Rate A', state: { v: { a: '1' } } });
+      const suitePut = await call('PUT', `/api/staff/tool-scenarios/${suiteRow.body.scenario.id}`, aTok,
+        { state: { v: { a: '2' } } });
+      assert(suitePut.status === 200, 'a suite-kind scenario still updates through the rename door');
+      // the refusal must not become a way to probe someone else's ids
+      const bobPut = await call('PUT', `/api/staff/tool-scenarios/${rid}`, bTok, { state: { v: { a: '1' } } });
+      assert(bobPut.status === 404, `another staffer still gets 404 from the guarded door (${bobPut.status})`);
     }
 
     /* ---- the badge count comes from the database, not the capped page ---- */

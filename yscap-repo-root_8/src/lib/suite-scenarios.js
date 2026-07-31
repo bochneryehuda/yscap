@@ -135,7 +135,10 @@ function validateSave(body) {
     return {
       ok: false,
       error: 'tool_not_ready',
-      detail: 'This tool was not finished loading, so its rows could not be read. Give it a moment and save again.',
+      /* Covers BOTH shapes this refusal has: a tool still booting (retrying works)
+         and a tool whose script never loaded at all (retrying never will) — so the
+         message names the second way out rather than sending someone in a loop. */
+      detail: 'This tool has not finished loading, so its rows could not be read. Give it a moment and save again — if it keeps happening, reload the page.',
     };
   }
 
