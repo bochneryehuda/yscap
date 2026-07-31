@@ -349,7 +349,7 @@ already-sized structure, done in the two mirrored renderers.
 - **Approval** — `pricing-overrides.js` `ENGAGED_OVERRIDE_KEYS` gains both keys, so any amount
   opens the manual-program escalation, withholds the borrower email, and blocks the DocuSign
   issuance. **Tracked record:** a first-class `oop_rehab` `loan_exceptions` type
-  (`loan-exceptions.js` + `db/385` + `ExceptionCard.jsx` + `admin-exceptions.js` audit); the
+  (`loan-exceptions.js` + `db/386` + `ExceptionCard.jsx` + `admin-exceptions.js` audit); the
   register route records an EX-n row after commit (best-effort, on the pool).
 - **Downstream** — Fidelis tape fills its OOP column automatically; EMCAP economics now derive
   `totalRehab`/`oopRehab` (column mapping pending the owner's EMCAP workbook cell); Encompass
