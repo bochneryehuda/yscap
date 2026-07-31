@@ -11541,7 +11541,15 @@ router.post('/leads/:id/convert', async (req, res) => {
         (econReserveOn ? (() => { const m = intv(pv.resMonths); return m == null ? null : Math.max(0, Math.min(24, m)); })() : null),
         (econReserveOn ? numv(pv.resAmount) : null),
         econIsAssign, econSeller, econFee,
-        intv(pv.expFlips), intv(pv.expBrrrr), intv(pv.expGround)]);
+        // requested_exp_* are integer NOT NULL DEFAULT 0. Compose the two fixes that
+        // landed here in parallel: intv() (from the audit) guards int4 overflow by
+        // returning null on a blank/zero/out-of-range count, and `|| 0` coalesces that
+        // null to 0 so a NOT-NULL column never receives NULL. The old
+        // `parseInt(...) || null` sent NULL into a NOT-NULL column, so a lead missing
+        // any experience count 500'd the whole convert (the "server error on Convert
+        // to loan file" report); a raw intv() would 500 the same way on a blank, and a
+        // raw intField() would 500 on an overflowing count — together they close both.
+        (intv(pv.expFlips) || 0), (intv(pv.expBrrrr) || 0), (intv(pv.expGround) || 0)]);
     const appId = ins.rows[0].id;
 
     try { await require('../lib/conditions/ensure').ensureFileConditions(appId, { reason: 'lead_convert' }); }
@@ -11559,7 +11567,8 @@ router.post('/leads/:id/convert', async (req, res) => {
   } catch (e) {
     // NEVER silent (owner-directed "NEVER silent" rule): a convert 500 used to
     // return a bare "server error" with nothing logged, so the reported failure
-    // could never be diagnosed. Log the real cause (PII-safe describeError).
+    // — a NOT-NULL experience column receiving NULL — could never be diagnosed.
+    // Log the real cause (PII-safe describeError) like every other write path.
     console.error('[lead-convert] failed:', db.describeError ? db.describeError(e) : (e && e.message));
     res.status(500).json({ error: 'server error' });
   }
