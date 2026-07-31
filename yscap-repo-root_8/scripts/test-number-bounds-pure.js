@@ -47,6 +47,17 @@ assert(!nb.intOverflows(-2147483648) && nb.intOverflows(-2147483649), '…and at
 assert(!nb.rateOverflows(0.1199), 'a note rate held as a fraction fits numeric(7,5)');
 assert(nb.rateOverflows(100), 'a rate of 100 (as a fraction) does not');
 assert(nb.rateOverflows(1e6), 'nor does the rate an oversized markup produces');
+/* numeric(6,3) — `applications.rate_pct` / `applications.ltv`. This is the
+   TIGHTER of the two rate ceilings and the one that actually binds: the same
+   note rate is written back to the file as a PERCENT, so it overflows a factor
+   of ten sooner. Guarding only numeric(7,5) admitted a 1,000% markup — a
+   plausible typo — straight into a mid-transaction 22003. */
+assert(!nb.pctOverflows(999.999), '999.999% fits numeric(6,3)');
+assert(nb.pctOverflows(1000), '1000% does not');
+assert(nb.pctOverflows(-1000), 'nor does its negative');
+assert(nb.pctOverflows(999.9995), 'and neither does a value that ROUNDS UP to 1000');
+assert(nb.pctOverflows(10.098 * 100) && !nb.rateOverflows(10.098),
+  'the 1,000%-markup rate the audit measured: refused by the percent column, invisible to the fraction one');
 
 /* ---------------------------------------------------------------- *
  * 2. columnProblem — the message names the FIELD and quotes the right limit.
@@ -109,33 +120,101 @@ assert(/Number of units/.test(F.applicationNumberProblem({ units: 5e15 })),
   'an oversized unit COUNT is named as a count');
 assert(/2,147,483,647/.test(F.applicationNumberProblem({ units: 5e15 })),
   '…and quotes int4’s limit, the one that actually applies to it');
-eq(F.applicationNumberProblem({ units: 4.7 }), '',
-  'a fractional count is NOT refused — every create door truncates it, and always has');
-eq(F.applicationNumberProblem({ purchasePrice: 'abc', units: 'xyz' }), '',
+/* A count that reaches its column through `intField`/`parseInt` is TRUNCATED,
+   and always has been, so a fractional value is not a refusal. `units` is the
+   opposite case — it is bound RAW, so Postgres does the cast and the text has
+   to be an integer. The two are tested separately because conflating them is
+   exactly what made the first cut of this guard unable to catch either. */
+eq(F.applicationNumberProblem({ sqftPre: 1200.7 }), '',
+  'a PARSED count is NOT refused for being fractional — those doors truncate it');
+assert(F.applicationNumberProblem({ units: 4.7 }) !== '',
+  '…while a fractional RAW-bound count IS refused, because Postgres would reject the text');
+eq(F.applicationNumberProblem({ purchasePrice: 'abc', sqftPre: 'xyz' }), '',
   'unreadable input is "not provided" on these doors, exactly as before — never a refusal');
 eq(F.applicationNumberProblem({ asIsValue: '0', arv: '0' }), '',
   'a typed ZERO is a real value and is never refused');
 eq(F.applicationNumberProblem(null), '', 'a missing body never throws');
 /* One message, one box. Stopping at the first problem is deliberate: a list of
-   every bad field is harder to act on than the first one to fix. */
-assert(F.applicationNumberProblem({ purchasePrice: 1e15, arv: 1e15 }).indexOf(';') < 0,
-  'the refusal names ONE field to fix, not a list');
+   every bad field is harder to act on than the first one to fix.
+
+   Asserted by NAMING the field it must stop on — the earlier version tested
+   only that the message contained no semicolon, which passed with the function
+   stubbed out entirely (proven by mutation) and for any list joined by anything
+   else. An assertion that a broken feature satisfies is not an assertion. */
+{
+  const both = F.applicationNumberProblem({ purchasePrice: 1e15, arv: 1e15 });
+  assert(/Purchase price/.test(both) && !/After-repair/.test(both),
+    'with two bad fields the refusal names the FIRST one only, not both');
+}
+
+/* The fields the pre-merge audit found missing from this guard entirely — each
+   was a live 500 on the borrower's own submit or the staff create door. */
+console.log('\n--- the columns the first cut of this guard missed ---');
+assert(/between 0 and 24/.test(F.applicationNumberProblem({ irMonths: 25 })),
+  'a 25-month interest reserve is refused against its CHECK, not int4’s ceiling');
+eq(F.applicationNumberProblem({ irMonths: 24 }), '', '…and 24 months is accepted');
+eq(F.applicationNumberProblem({ irMonths: 0 }), '', '…and zero is accepted');
+assert(/whole number/.test(F.applicationNumberProblem({ units: '5.7' })),
+  'units is bound RAW, so a fractional value is refused rather than truncated');
+assert(/whole number/.test(F.applicationNumberProblem({ units: '4 units' })),
+  '…and so is text Postgres could not cast');
+assert(/whole number/.test(F.applicationNumberProblem({ units: '1e10' })),
+  '…and so is scientific notation, which JavaScript calls a whole number and Postgres refuses');
+eq(F.applicationNumberProblem({ units: 4 }), '', 'a real unit count still passes');
+eq(F.applicationNumberProblem({ units: '4' }), '', '…as a string too');
+eq(F.applicationNumberProblem({ sqftPre: '1200.5' }), '', 'a PARSED count still truncates, as it always has');
+assert(/contract plus assignment fee/.test(F.applicationNumberProblem({
+  isAssignment: true, underlyingContractPrice: '900000000000', assignmentFee: '900000000000' })),
+  'the DERIVED assignment purchase price is judged — each part fits, the sum does not');
+eq(F.applicationNumberProblem({ isAssignment: true, underlyingContractPrice: '400000', assignmentFee: '20000' }), '',
+  '…and an ordinary assignment passes');
+eq(F.applicationNumberProblem({ underlyingContractPrice: '900000000000', assignmentFee: '900000000000' }), '',
+  '…and the sum is only judged when the file IS an assignment (the parts are then hard-nulled)');
 
 /* ---------------------------------------------------------------- *
  * 5. quoteStorageProblem — a register whose numbers the file cannot record.
  * ---------------------------------------------------------------- */
 console.log('\n--- a quote the file cannot record is refused before the transaction opens ---');
 const pr = require('../src/lib/product-registration');
-eq(pr.quoteStorageProblem({ noteRate: 0.1199, sizing: { totalLoan: 450000 } }, { targetLTC: 0.85 }), '',
-  'an ordinary quote records fine');
-assert(/note rate/i.test(pr.quoteStorageProblem({ noteRate: 1e6, sizing: { totalLoan: 450000 } }, {})),
+const OK_Q = { noteRate: 0.1199, sizing: { totalLoan: 450000, acqLtvPct: 0.75 } };
+const OK_I = { targetLTC: 0.85, rehabBudget: 80000, arv: 600000, purchasePrice: 400000, irMonths: 6, expFlips: 5 };
+eq(pr.quoteStorageProblem(OK_Q, OK_I), '', 'an ordinary quote records fine');
+
+/* EVERY value the register actually binds, with the column it is bound to. The
+   first cut checked three of eighteen and was calibrated to the wrong column on
+   its headline field, so six studio boxes still produced a 500 — each of these
+   was measured through the real register door before it was fixed. */
+assert(/note rate/i.test(pr.quoteStorageProblem({ ...OK_Q, noteRate: 1e6 }, OK_I)),
   'a rate an oversized markup produced is refused, naming the rate');
-assert(/admin pricing zone/i.test(pr.quoteStorageProblem({ noteRate: 1e6, sizing: {} }, {})),
+assert(/admin pricing zone/i.test(pr.quoteStorageProblem({ ...OK_Q, noteRate: 1e6 }, OK_I)),
   '…and points at the box that caused it');
-assert(/loan amount/i.test(pr.quoteStorageProblem({ noteRate: 0.11, sizing: { totalLoan: 1e15 } }, {})),
+/* THE ONE THE FIRST CUT LET THROUGH. noteRate 10.098 is a 1,000% markup: it
+   fits numeric(7,5) comfortably, and overflows applications.rate_pct — which
+   the same register writes — so it opened the transaction and raised 22003. */
+assert(/note rate/i.test(pr.quoteStorageProblem({ ...OK_Q, noteRate: 10.098 }, OK_I)),
+  'a 1,000% markup is refused (it fits the fraction column and overflows the percent one)');
+eq(pr.quoteStorageProblem({ ...OK_Q, noteRate: 0.35 }, OK_I), '',
+  '…while a genuinely high 35% rate still registers');
+assert(/loan amount/i.test(pr.quoteStorageProblem({ ...OK_Q, sizing: { totalLoan: 1e15 } }, OK_I)),
   'an unstorable loan amount is refused, naming the amount');
-assert(/loan-to-cost/i.test(pr.quoteStorageProblem({ noteRate: 0.11, sizing: { totalLoan: 1 } }, { targetLTC: 1e6 })),
+assert(/LTV/i.test(pr.quoteStorageProblem({ ...OK_Q, sizing: { totalLoan: 1, acqLtvPct: 50 } }, OK_I)),
+  'an unstorable LTV is refused (numeric(6,3), written as a percent)');
+assert(/loan-to-cost/i.test(pr.quoteStorageProblem(OK_Q, { ...OK_I, targetLTC: 1e6 })),
   'an unstorable target LTC is refused, naming the LTC');
+assert(/interest reserve/i.test(pr.quoteStorageProblem(OK_Q, { ...OK_I, irMonths: 25 })),
+  'a 25-month reserve is refused against its CHECK — this was a 23514 → 500');
+assert(/interest reserve/i.test(pr.quoteStorageProblem(OK_Q, { ...OK_I, irMonths: -5 })),
+  '…and so is a negative one');
+assert(/interest reserve/i.test(pr.quoteStorageProblem(OK_Q, { ...OK_I, irAmount: 1e14 })),
+  'an unstorable reserve AMOUNT is refused');
+assert(/after-repair/i.test(pr.quoteStorageProblem(OK_Q, { ...OK_I, arv: 1e14 })),
+  'an unstorable ARV is refused');
+assert(/rehab budget/i.test(pr.quoteStorageProblem(OK_Q, { ...OK_I, rehabBudget: 1e14 })),
+  'an unstorable rehab budget is refused');
+assert(/experience/i.test(pr.quoteStorageProblem(OK_Q, { ...OK_I, expFlips: 1e12 })),
+  'an unstorable experience count is refused');
+assert(/assignment fee/i.test(pr.quoteStorageProblem(OK_Q, { ...OK_I, purchasePrice: 9e11, sellerPrice: -9e11 })),
+  'the DERIVED assignment fee is judged, not only the parts');
 eq(pr.quoteStorageProblem({}, {}), '', 'a quote with nothing to check is not refused');
 eq(pr.quoteStorageProblem(null, null), '', 'and a missing quote never throws');
 

@@ -216,20 +216,58 @@ function quoteStorageProblem(quote, inputs) {
   const nb = require('./number-bounds');
   const q = quote || {};
   const s = q.sizing || {};
-  const rate = Number(q.noteRate);
-  if (Number.isFinite(rate) && nb.rateOverflows(rate)) {
-    return 'Those pricing overrides produce a note rate this file cannot record. '
-      + 'Check the rate markup and any manual rate in the admin pricing zone.';
-  }
-  const total = Number(s.totalLoan);
-  if (Number.isFinite(total) && nb.moneyOverflows(total)) {
-    return 'Those inputs produce a loan amount this file cannot record — '
-      + `the largest it can hold is ${nb.MONEY_LIMIT_TEXT}.`;
-  }
-  const ltc = Number(inputs && inputs.targetLTC);
-  if (Number.isFinite(ltc) && nb.rateOverflows(ltc)) {
-    return 'Those pricing overrides produce a loan-to-cost this file cannot record. '
-      + 'Check the manual LTC / LTV values in the admin pricing zone.';
+  const i = (inputs && typeof inputs === 'object') ? inputs : {};
+  const n = (v) => { const x = Number(v); return Number.isFinite(x) ? x : null; };
+
+  /* EVERY value this registration binds, with the ceiling of the column it is
+     actually bound to. The first cut checked three of them and was calibrated to
+     the WRONG column on its headline field, so six studio boxes still produced a
+     500 (pre-merge audit 2026-07-31) — a 1,000% markup, a 25-month reserve, a
+     negative reserve, an oversized reserve amount / ARV, and an absurd
+     experience count. Measured, all six, through the real register door.
+
+     Order matters only for which message is shown first; each row is
+     [value, column-kind, what the person should go and look at]. */
+  const rate = n(q.noteRate);
+  const checks = [
+    // product_registrations.note_rate numeric(7,5) — the fraction…
+    [rate, 'rate', 'a note rate', 'Check the rate markup and any manual rate in the admin pricing zone.'],
+    /* …and applications.rate_pct numeric(6,3), which is that SAME rate × 100 and
+       therefore overflows a factor of ten sooner. This is the ceiling that
+       actually binds; guarding only the first admits a 1,000% markup. */
+    [rate == null ? null : rate * 100, 'pct', 'a note rate',
+      'Check the rate markup and any manual rate in the admin pricing zone.'],
+    [n(s.totalLoan), 'money', 'a loan amount', ''],
+    // applications.ltv numeric(6,3), written as a percent.
+    [n(s.acqLtvPct) == null ? null : n(s.acqLtvPct) * 100, 'pct', 'an LTV',
+      'Check the manual LTV / LTC values in the admin pricing zone.'],
+    [n(i.targetLTC), 'rate', 'a loan-to-cost',
+      'Check the manual LTC / LTV values in the admin pricing zone.'],
+    [n(i.rehabBudget), 'money', 'a rehab budget', ''],
+    [n(i.arv), 'money', 'an after-repair value', ''],
+    [n(i.irAmount), 'money', 'an interest reserve', 'Check the interest reserve.'],
+    [n(i.sellerPrice), 'money', 'an original contract price', ''],
+    [n(i.purchasePrice), 'money', 'a purchase price', ''],
+    // assignment_fee is DERIVED (purchase − seller), so the parts can each be
+    // storable while the result is not.
+    [n(i.purchasePrice) != null && n(i.sellerPrice) != null
+      ? Math.max(0, n(i.purchasePrice) - n(i.sellerPrice)) : null, 'money', 'an assignment fee', ''],
+    // requested_ir_months carries a CHECK of 0..24, narrower than its type.
+    [n(i.irMonths), { min: 0, max: 24, what: 'months' }, 'an interest reserve term',
+      'The interest reserve must be between 0 and 24 months.'],
+    [n(i.expFlips), 'int', 'an experience count', ''],
+    [n(i.expHolds), 'int', 'an experience count', ''],
+    [n(i.expGround), 'int', 'an experience count', ''],
+    [n(i.sqftPre), 'int', 'a square footage', ''],
+    [n(i.sqftPost), 'int', 'a square footage', ''],
+  ];
+
+  for (const [value, kind, what, hint] of checks) {
+    if (value == null) continue;
+    const bad = nb.columnProblem('value', value, kind);
+    if (!bad) continue;
+    return `Those inputs produce ${what} this file cannot record.`
+      + (hint ? ` ${hint}` : ` ${bad.replace(/^value /, 'The value ')}`);
   }
   return '';
 }

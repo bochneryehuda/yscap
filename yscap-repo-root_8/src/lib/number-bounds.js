@@ -40,9 +40,23 @@ const MONEY_MAX = 1e12;
 const INT_MAX = 2147483647;
 const INT_MIN = -2147483648;
 
-// numeric(7,5) — the note rate, stored as a FRACTION (0.11990 = 11.99%). Five
-// decimals, so the whole part is two digits: |value| must round to < 100.
+// numeric(7,5) — `product_registrations.note_rate`, stored as a FRACTION
+// (0.11990 = 11.99%). Five decimals, so the whole part is two digits.
 const RATE_MAX = 100;
+
+/* numeric(6,3) — `applications.rate_pct` and `applications.ltv`, both stored as
+   a PERCENT. Three decimals, so the whole part is three digits: |value| must
+   round to < 1000.
+
+   THIS IS THE TIGHTER OF THE TWO RATE CEILINGS AND IT IS THE ONE THAT BINDS
+   (pre-merge audit 2026-07-31). The first cut guarded only `note_rate`'s
+   numeric(7,5), which admits a rate up to 10,000% — but the register also
+   writes that same rate back to the file as `rate_pct = note_rate × 100`, whose
+   column overflows a factor of TEN earlier. So a 1,000% markup (a plausible
+   typo; 900% was measured storing cleanly) passed the guard, opened the
+   transaction, and raised 22003 anyway. A guard calibrated to the wrong column
+   is not a guard. */
+const PCT_MAX = 1000;
 
 const MONEY_LIMIT_TEXT = '999,999,999,999.99';
 const INT_LIMIT_TEXT = '2,147,483,647';
@@ -65,6 +79,12 @@ function moneyOverflows(n) {
 function rateOverflows(n) {
   if (!Number.isFinite(n)) return false;
   return Math.round(Math.abs(n) * 1e5) / 1e5 >= RATE_MAX;
+}
+
+/** Would this value overflow numeric(6,3) (a percent: rate_pct, ltv)? */
+function pctOverflows(n) {
+  if (!Number.isFinite(n)) return false;
+  return Math.round(Math.abs(n) * 1e3) / 1e3 >= PCT_MAX;
 }
 
 /** Would this value overflow int4? */
@@ -102,13 +122,16 @@ function columnProblem(key, n, kind, label) {
   if (kind === 'rate') {
     return rateOverflows(n) ? `${name} is out of range — a rate that large cannot be stored` : '';
   }
+  if (kind === 'pct') {
+    return pctOverflows(n) ? `${name} is out of range — the largest percentage this field can hold is 999.999` : '';
+  }
   // int4
   if (!Number.isInteger(n)) return `${name} must be a whole number`;
   return intOverflows(n) ? `${name} is too large — the largest value this field can hold is ${INT_LIMIT_TEXT}` : '';
 }
 
 module.exports = {
-  MONEY_MAX, INT_MAX, INT_MIN, RATE_MAX,
+  MONEY_MAX, INT_MAX, INT_MIN, RATE_MAX, PCT_MAX,
   MONEY_LIMIT_TEXT, INT_LIMIT_TEXT,
-  moneyOverflows, rateOverflows, intOverflows, columnProblem,
+  moneyOverflows, rateOverflows, pctOverflows, intOverflows, columnProblem,
 };

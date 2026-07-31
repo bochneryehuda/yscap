@@ -419,40 +419,67 @@ async function writeFieldValue(appId, borrowerId, fieldKey, rawValue, by = {}) {
     if (value == null) { const err = new Error(`${f.label} cannot be blank`); err.status = 400; throw err; }
   }
 
-  /* THE FILE FREEZE APPLIES HERE TOO (post-merge audit 2026-07-31).
-     This door had NO freeze of any kind, so an info condition could rewrite a
-     column on a CLEAR-TO-CLOSE, FUNDED, DECLINED or WITHDRAWN file, and on one
-     whose Term Sheet package has been sent.
+  /* A CLOSED FILE'S ECONOMICS ARE NOT REWRITABLE FROM A CONDITION
+     (post-merge audit 2026-07-31; SCOPE NARROWED after the pre-merge audit —
+     read the second half before widening this again).
 
-     The audit found it on `payoff_lender`/`payoff_loan_number`, but the hole is
-     the whole class and much of it is worse: of the twenty fields that target
-     `applications`, only the eight in the change-request whitelist were ever
-     protected, and they are protected by a DIFFERENT rule (a registered file
-     routes them to an approval sandbox). The other twelve — `loan_amount`,
-     `requested_ir_amount`, `underlying_contract_price`, `assignment_fee`,
-     `original_purchase_price`, the sqft pair, the three experience counts —
-     wrote LIVE whatever the file's status. Most are pricing inputs the db/071
-     trigger watches, so answering an info condition on a funded loan moved the
-     economics AND reopened Products & Pricing on a closed file.
+     THE HOLE. This door had no freeze of any kind. Of the fields that target
+     `applications`, only the five in the change-request whitelist that have a
+     write target were ever protected, and by a DIFFERENT rule (a REGISTERED
+     file routes those to an approval sandbox, so they never reach here). The
+     rest — `loan_amount`, `requested_ir_amount`, `underlying_contract_price`,
+     `assignment_fee`, `original_purchase_price`, `acquisition_date`, the sqft
+     pair, the three experience counts and the payoff trio — wrote LIVE whatever
+     the file's status. Several are pricing inputs the db/071 trigger watches,
+     so answering an info condition on a FUNDED loan moved the economics AND
+     reopened Products & Pricing on a closed file.
 
-     `payoffContactLockReason` is `structuralLockReason` plus the ONE narrow,
-     owner-directed carve-out this feature is built on: the payoff's
-     who-and-which stays editable through closing prep, because that is when the
-     payoff letter is ordered. Reused rather than re-expressed so the carve-out
-     can never drift from the details door's copy of it — and it is passed the
-     equivalent of a details-door body, so a field OUTSIDE that pair falls
-     straight through to the ordinary freeze.
+     THE FREEZE IS THE STATUS ONE ONLY — deliberately NOT the term-sheet-sent
+     freeze, which the first cut included via `payoffContactLockReason` and
+     which was much worse than the bug it fixed. Every file that reaches Clear
+     to Close carries a COMPLETED term-sheet package, and a package sits in
+     `sent`/`delivered`/`completed` for the whole underwriting phase — which is
+     exactly when the team posts information conditions and the borrower answers
+     them. Measured: an `acquisition_date` condition on an `underwriting` file
+     with a signed term sheet answered 409 "clear the Term Sheet package first",
+     leaving a condition with no way to clear it and advice nobody can act on
+     (voiding a SIGNED term sheet). Thirteen fields were affected, including
+     three that appear in no reopen trigger at all, the borrower's own track
+     record, and this feature's own `payoff_amount` — whose payoff quote arrives
+     from the servicer precisely after the term sheet goes out.
+
+     So the line is drawn where the audit actually drew it: a file that is Clear
+     to Close, Funded, Declined or Withdrawn is closed to this door. Before that,
+     an information condition is answerable, which is the entire point of having
+     one. A field that would genuinely make a SENT sheet disagree with the file
+     is already handled — the eight economics fields go to the change-request
+     sandbox on any registered file, and every one of them is registered by then.
+
+     The one carve-out is the owner-directed closing-prep window: the payoff's
+     who-and-which stays editable up to and including Clear to Close, because
+     that is when the payoff letter is ordered. Funded / declined / withdrawn
+     stay closed even for those two — by then the payoff has been wired.
 
      NO actor is passed, deliberately: a super-admin's unlock is theirs to spend
      on their own edit, not a standing permission for whatever the borrower (or
      a staffer answering on their behalf) types into a condition afterwards.
      Borrower-table fields (FICO, DOB, citizenship) are untouched by this — they
      are facts about the PERSON, equally true on a closed file, and they have
-     their own governance in change-requests.js. */
+     their own governance in change-requests.js. Fails OPEN on an unreadable
+     file, matching `structuralLockReason`: this is a human's edit, not an
+     unattended writer. */
   if (!f.custom && target && target.table === 'applications') {
-    const frozen = await require('../file-lock')
-      .payoffContactLockReason(appId, { [WRITE_BODY_KEY[fieldKey] || fieldKey]: value }, db);
-    if (frozen) { const err = new Error(frozen); err.status = 409; throw err; }
+    const fl = require('../file-lock');
+    let row = null;
+    try { row = await fl._internals.lockInputs(appId, db); } catch (_) { row = null; }
+    const frozen = row ? fl._internals.statusFreezeReason(row, {}) : null;
+    if (frozen) {
+      const bodyKey = WRITE_BODY_KEY[fieldKey];
+      const contactOnly = !!bodyKey && require('../payoff').CONTACT_KEYS.includes(bodyKey);
+      if (!(contactOnly && row.status === 'clear_to_close')) {
+        const err = new Error(frozen); err.status = 409; throw err;
+      }
+    }
   }
 
   if (f.custom) {

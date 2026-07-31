@@ -44,6 +44,14 @@ const int = (v) => {
   const r = Math.round(n);
   return numberBounds.intOverflows(r) ? null : r;
 };
+// A PERCENT column — numeric(6,3), not the numeric(14,2) `num()` is calibrated
+// for. Same drop-don't-crash rule; only the ceiling differs.
+const pct = (v) => {
+  if (v == null || v === '') return null;
+  const n = Number(String(v).replace(/[^0-9.\-]/g, ''));
+  if (!isFinite(n) || numberBounds.pctOverflows(n)) return null;
+  return n;
+};
 
 /**
  * The intake core. Creates/updates the borrower and creates the application in
@@ -185,7 +193,13 @@ async function siteIntake(p, opts = {}) {
        JSON.stringify(p.propertyAddress || { line1: p.pStreet, city: p.pCity, state: p.pState, zip: p.pZip }),
        p.propertyType || p.propType || null, int(p.units || p.units24 || p.unitsN),
        asg.purchasePrice, num(p.asIsValue || p.asIs), num(p.arv),
-       num(p.rehabBudget || p.rehab), num(p.loanAmount), num(p.ltv),
+       // `ltv` is numeric(6,3) — a PERCENT, not money — so `num()`'s
+       // numeric(14,2) calibration is three orders of magnitude too loose for it
+       // and an `ltv` of 5000 raised 22003 and LOST THE LEAD to a 500 (pre-merge
+       // audit 2026-07-31). The shipped marketing form does not send it, but the
+       // endpoint is public and accepts it. Dropped, like every other unstorable
+       // value on this door.
+       num(p.rehabBudget || p.rehab), num(p.loanAmount), pct(p.ltv),
        asg.isAssignment, asg.underlying, asg.assignFee,
        p.rehabType || null, int(p.sqftPre || p.sqftCurrent), int(p.sqftPost),
        irMonths, irAmount,

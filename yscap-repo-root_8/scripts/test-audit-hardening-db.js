@@ -165,6 +165,45 @@ if (!process.env.DATABASE_URL) {
         { program: 'standard', overrides: { ...SCENARIO } });
       assert(good.status === 200 || good.status === 201,
         `a normal register still works after 12 failed ones (got ${good.status} ${JSON.stringify(good.body && good.body.error)})`);
+
+      /* ---------------------------------------------------------------- *
+       * THE RELEASE ITSELF, exercised — not just the guard in front of it.
+       *
+       * Everything above is refused BEFORE `db.getClient()`, so it never
+       * opens a transaction and never reaches the release. Reverting the
+       * release alone therefore left this suite green (pre-merge audit
+       * 2026-07-31): it was testing the guard and calling it coverage.
+       *
+       * The point of the release is the failure the guard CANNOT foresee —
+       * a constraint added later, a trigger, a deadlock. So one is created
+       * on purpose: a trigger that raises inside the register's transaction,
+       * past every validation. Twelve of those must still leave the pool
+       * whole. The trigger is dropped again immediately, whatever happens.
+       * ---------------------------------------------------------------- */
+      await db.query(`CREATE OR REPLACE FUNCTION pilot_test_reg_boom() RETURNS trigger AS $$
+        BEGIN RAISE EXCEPTION 'test-induced mid-transaction failure'; END; $$ LANGUAGE plpgsql`);
+      await db.query(`DROP TRIGGER IF EXISTS trg_pilot_test_reg_boom ON product_registrations`);
+      await db.query(`CREATE TRIGGER trg_pilot_test_reg_boom BEFORE INSERT ON product_registrations
+                      FOR EACH ROW EXECUTE FUNCTION pilot_test_reg_boom()`);
+      let midTx = [];
+      try {
+        for (let i = 0; i < 12; i++) {
+          midTx.push((await call('POST', `/api/staff/applications/${appId}/pricing/register`, sTok,
+            { program: 'standard', overrides: { ...SCENARIO } })).status);
+        }
+      } finally {
+        await db.query(`DROP TRIGGER IF EXISTS trg_pilot_test_reg_boom ON product_registrations`);
+        await db.query(`DROP FUNCTION IF EXISTS pilot_test_reg_boom()`);
+      }
+      assert(midTx.every((s) => s === 500),
+        `12 registers really did fail INSIDE the transaction (got ${JSON.stringify(midTx)})`);
+      const healthAfter = await call('GET', '/api/health', sTok, null);
+      assert(healthAfter.status === 200,
+        `the pool survived 12 mid-transaction failures (health=${healthAfter.status}) — without the release this never returns`);
+      const recovered = await call('POST', `/api/staff/applications/${appId}/pricing/register`, sTok,
+        { program: 'standard', overrides: { ...SCENARIO } });
+      assert(recovered.status === 200 || recovered.status === 201,
+        `and a real register works again once the failure is gone (got ${recovered.status})`);
     }
 
     /* ================================================================ *
@@ -264,6 +303,26 @@ if (!process.env.DATABASE_URL) {
       try { await engine.writeFieldValue(appId, borrowerId, 'payoff_lender', '   ', { kind: 'borrower', id: borrowerId }); }
       catch (e) { blankErr = e; }
       assert(blankErr && blankErr.status === 400, 'a box of spaces is refused, never recorded as an answer');
+
+      /* A SENT / SIGNED TERM SHEET DOES NOT CLOSE THIS DOOR — the regression the
+         pre-merge audit caught, and the reason the freeze here is the STATUS one
+         only. Every file reaching Clear to Close carries a completed term-sheet
+         package, and a package sits in sent/delivered/completed for the whole
+         underwriting phase — exactly when the team posts information conditions
+         and the borrower answers them. The first cut refused those with "clear
+         the Term Sheet package first", which means voiding a SIGNED term sheet:
+         a condition with no way to clear it. */
+      const env = await db.query(
+        `INSERT INTO esign_envelopes (application_id, purpose, status, provider, envelope_id)
+         VALUES ($1,'term_sheet_package','completed','test',$2) RETURNING id`,
+        [appId, `tsp-${sfx}`]).then((r) => r.rows[0].id).catch(() => null);
+      assert(!!env, 'a signed term-sheet package was put on the file (otherwise this case is vacuous)');
+      const withSheet = await engine.writeFieldValue(appId, borrowerId, 'acquisition_date', '2024-03-05', { kind: 'borrower', id: borrowerId });
+      eq(withSheet.value, '2024-03-05',
+        'an information condition is still answerable with a SIGNED term sheet out — the whole underwriting phase depends on it');
+      const amt = await engine.writeFieldValue(appId, borrowerId, 'payoff_amount', 250000, { kind: 'borrower', id: borrowerId });
+      eq(Number(amt.value), 250000,
+        '…including the payoff AMOUNT, whose quote arrives from the servicer after the sheet goes out');
 
       // FUNDED — the strictest freeze. Nothing may be written, not even the
       // payoff contact (past funding the payoff has already been wired).

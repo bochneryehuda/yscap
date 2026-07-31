@@ -224,14 +224,37 @@ const APP_MONEY_FIELDS = Object.freeze([
   ['originalPurchasePrice', 'Original purchase price'],
   ['irAmount', 'Interest reserve amount'],
 ]);
-const APP_COUNT_FIELDS = Object.freeze([
-  ['units', 'Number of units'],
+/* Counts that reach the column through `intField` / `parseInt`, which TRUNCATE.
+   5.7 stores 5, and always has, so a fractional value here is not a refusal —
+   only a magnitude int4 cannot hold. */
+const APP_PARSED_COUNT_FIELDS = Object.freeze([
   ['sqftPre', 'Square footage before'],
   ['sqftPost', 'Square footage after'],
   ['requestedExpFlips', 'Flips completed'],
   ['requestedExpHolds', 'Rentals held'],
   ['requestedExpGround', 'Ground-up projects'],
   ['requestedExpReo', 'Properties owned'],
+]);
+/* …and the counts bound RAW, with no parsing at all — `units` is written as
+   `b.units || null` on all three create doors, so Postgres itself does the
+   cast. That makes it the opposite case, and the first cut got it exactly
+   backwards (pre-merge audit 2026-07-31): the guard TRUNCATED, justified by a
+   comment claiming every count is parsed first, so it could never catch what
+   actually breaks here. Measured: `units:"5.7"` → 22P02 → 500, `"4 units"` →
+   500, `"1e10"` → 500 on the staff door. A whole number is required, and a
+   value that is not one is refused rather than quietly reinterpreted. */
+const APP_RAW_COUNT_FIELDS = Object.freeze([
+  ['units', 'Number of units'],
+]);
+/* A column whose CHECK is narrower than its type. `requested_ir_months` is
+   int4 with `CHECK (0..24)` (db/030), so int4's ceiling is the wrong number to
+   quote — and it was missing from this guard entirely, which left the borrower's
+   own submit answering 500 on a two-digit typo: the exact door, message and
+   class this whole guard exists to close. The details door has had the identical
+   rule since audit round 7; it simply was never carried across. */
+const APP_CHECKED_FIELDS = Object.freeze([
+  ['irMonths', 'Interest reserve (months)', { min: 0, max: 24, what: 'months' }],
+  ['requestedIrMonths', 'Interest reserve (months)', { min: 0, max: 24, what: 'months' }],
 ]);
 function applicationNumberProblem(b) {
   const nb = require('./number-bounds');
@@ -243,14 +266,44 @@ function applicationNumberProblem(b) {
     const bad = nb.columnProblem(key, moneyValue(body[key]), 'money', label);
     if (bad) return bad;
   }
-  for (const [key, label] of APP_COUNT_FIELDS) {
+  /* THE DERIVED ASSIGNMENT PRICE. On an assignment, `fields.assignmentFields`
+     binds `purchase_price = underlying + fee` — so the two parts can each be
+     comfortably storable while the number actually written is not. Measured on
+     both create doors: $900bn + $900bn → 22003 → 500. Judge what is BOUND, not
+     only what was typed. */
+  if (body.isAssignment) {
+    const sum = (moneyValue(body.underlyingContractPrice) || 0) + (moneyValue(body.assignmentFee) || 0);
+    const bad = nb.columnProblem('purchasePrice', sum, 'money', 'Purchase price (contract plus assignment fee)');
+    if (bad) return bad;
+  }
+  for (const [key, label, range] of APP_CHECKED_FIELDS) {
     const raw = body[key];
     if (raw == null || String(raw).trim() === '') continue;
     const n = Number(String(raw).replace(/[^0-9.\-]/g, ''));
     if (!Number.isFinite(n)) continue;            // the create paths read this as "not provided"
-    /* FLOORED, not the raw number: every count on these doors binds through
-       `intField`/`parseInt`, which truncates — so 5.7 stores 5 and is not a
-       "must be a whole number" refusal, while 5e15 still overflows int4. */
+    const bad = nb.columnProblem(key, Math.trunc(n), range, label);
+    if (bad) return bad;
+  }
+  for (const [key, label] of APP_RAW_COUNT_FIELDS) {
+    const raw = body[key];
+    if (raw == null || String(raw).trim() === '') continue;
+    /* Bound RAW, so POSTGRES parses this text, not JavaScript — and the two do
+       not agree. `Number('1e10')` is a whole number to JS, but `'1e10'::int4`
+       is a syntax error (22P02) and would have gone straight back out as a 500.
+       So the TEXT must read as a plain integer, which is exactly what the
+       column accepts. A number type is checked on its own value. */
+    const ok = typeof raw === 'number'
+      ? Number.isInteger(raw)
+      : /^[+-]?\d+$/.test(String(raw).trim());
+    if (!ok) return `${label} must be a whole number`;
+    const bad = nb.columnProblem(key, Number(String(raw).trim()), 'int', label);
+    if (bad) return bad;
+  }
+  for (const [key, label] of APP_PARSED_COUNT_FIELDS) {
+    const raw = body[key];
+    if (raw == null || String(raw).trim() === '') continue;
+    const n = Number(String(raw).replace(/[^0-9.\-]/g, ''));
+    if (!Number.isFinite(n)) continue;            // the create paths read this as "not provided"
     const bad = nb.columnProblem(key, Math.trunc(n), 'int', label);
     if (bad) return bad;
   }
