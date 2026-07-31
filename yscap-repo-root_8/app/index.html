@@ -17,11 +17,10 @@
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet" />
-    <!-- FROZEN PRICING ENGINES — loaded byte-identical, expose window.YSP / GSP / TitleCost.
-         React reads these globals; it never modifies engine logic. -->
-    <script src="engines/standard-program.js?v=asgseller18-asgelig"></script>
-    <script src="engines/gold-standard.js?v=asgseller19"></script>
-    <script src="engines/title-cost.js"></script>
+    <!-- The frozen pricing engines are NOT loaded here. The portal never computed
+         with them (App.jsx only logged their presence), so shipping them to the
+         browser only exposed the guideline rules. Pricing is server-side
+         (src/lib/pricing.js). Do NOT re-add engine <script> tags. -->
   </head>
   <body>
     <div id="root"></div>
