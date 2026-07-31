@@ -4087,7 +4087,7 @@ function recipientsOfRow(r) {
     opened_at: r.opened_at || null,
   }));
 }
-const _STATUS_RANK = { error: 3, no_recipients: 3, failed_permanent: 3, skipped: 2, received: 1, forwarded: 1, sent: 1 };
+const _STATUS_RANK = { error: 3, no_recipients: 3, failed_permanent: 3, skipped: 2, received: 1, forwarded: 1, sent: 1, self_reply: 1 };
 const worseStatus = (a, b) => ((_STATUS_RANK[b] || 0) > (_STATUS_RANK[a] || 0) ? b : a);
 
 // Consolidate a notify FAN-OUT (the same email sent to many people as one row
