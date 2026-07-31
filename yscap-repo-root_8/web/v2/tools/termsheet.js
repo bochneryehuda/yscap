@@ -1374,7 +1374,7 @@
       advWhyEl.innerHTML = showWhy ? advWhy : "";
     }
     YS.put("rHoldback", sized ? YS.fmtUSD(d.rehabHoldback) : EM);
-    var hbTag = el("rHoldbackTag"); if (hbTag) hbTag.textContent = (d.R && d.R.sizing && d.R.sizing.rehabOverCap) ? "(capped \u2014 see eligibility)" : "(= rehab, in draws)";
+    var hbTag = el("rHoldbackTag"); if (hbTag) hbTag.textContent = (d.R && d.R.sizing && d.R.sizing.rehabOverCap) ? "(capped \u2014 see eligibility)" : ((sized && d.oopRehab > 0) ? "(financed portion, in draws)" : "(= rehab, in draws)");
     YS.put("rRate", (sized && d.rate > 0) ? d.rate.toFixed(2) + "%" : EM);
     // two interest-only payment lines: initial-advance payment + fully-drawn payment
     YS.put("rPmtInit", (sized && d.initialPayment > 0) ? YS.fmtUSD(d.initialPayment) + "/mo" : EM);
@@ -1404,7 +1404,6 @@
     (function () {
       var w = el("rOopWrap");
       if (w) { if (sized && d.oopRehab > 0) { w.style.display = ""; YS.put("rOopRehab", YS.fmtUSD(d.oopRehab)); } else { w.style.display = "none"; } }
-      var tag = el("rHoldbackTag"); if (tag) tag.textContent = (sized && d.oopRehab > 0) ? "(financed portion, in draws)" : "(= rehab, in draws)";
       YS.put("oopInitialCut", sized ? YS.fmtUSD(d.initialCut || 0) : EM);
       YS.put("oopMaxRehab", sized ? YS.fmtUSD(d.maxOopRehab || 0) : EM);
       var info = el("oopInfoWrap");
