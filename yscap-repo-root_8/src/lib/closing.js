@@ -194,12 +194,18 @@ async function readVerifiedLiquidity(appId, client, requiredLiquidity) {
 // cash-to-close term swaps estimate → actual. $1 tolerance + haveCountable data-gap
 // guard mirror assets-autoclear.js. Never re-derives a frozen number.
 // ---------------------------------------------------------------------------
-// PURE decision — verified liquidity vs (actual cash-to-close + reserves). $1
-// tolerance + haveCountable data-gap guard mirror assets-autoclear.js. Reserve is
-// the frozen number; only the cash-to-close term is the closer's actual off the ALTA.
-function decideCashToClose({ verified, reserve, actualCashToClose, haveCountable }) {
+// PURE decision — verified liquidity vs (actual cash-to-close + reserves + the 1%
+// closing-cost buffer). $1 tolerance + haveCountable data-gap guard mirror
+// assets-autoclear.js. Reserve is the frozen number; only the cash-to-close term
+// is the closer's actual off the ALTA. The BUFFER (owner-authorized 2026-07-31)
+// still applies at closing — the actual ALTA figure replaces the ESTIMATE, but
+// the cushion exists precisely for the charges that surface after it ("attorney
+// charges or other charges — we should not run short"); 0 when waived per file
+// (the stored breakdown carries 0) and on legacy pre-buffer breakdowns.
+function decideCashToClose({ verified, reserve, actualCashToClose, haveCountable, closingBuffer }) {
   const v = Number(verified) || 0;
   const r = Number(reserve) || 0;
+  const buf = Number(closingBuffer) || 0;
   /* null / undefined / '' — AND A BOX OF SPACES — mean "no actual entered yet",
      and must never be treated as $0 (`Number(null)` and `Number('  ')` are both
      0), which would falsely pass the money gate: a recorded cash-to-close of
@@ -209,7 +215,7 @@ function decideCashToClose({ verified, reserve, actualCashToClose, haveCountable
   const blankActual = actualCashToClose == null || String(actualCashToClose).trim() === '';
   const actual = Number(actualCashToClose);
   const haveActual = !blankActual && Number.isFinite(actual) && actual >= 0;
-  const required = (haveActual ? actual : 0) + r;
+  const required = (haveActual ? actual : 0) + r + buf;
   const ok = haveActual && !!haveCountable && v >= required - 1;
   const shortfall = ok ? 0 : Math.max(0, required - v);
   return { ok, required, shortfall, haveActual };
@@ -220,9 +226,10 @@ async function runCashToCloseCheck(appId, actualCashToClose, client) {
   const liq = await readLiquidityBreakdown(appId, c);
   const reserve = liq && liq.reserveRequirement != null ? Number(liq.reserveRequirement) : 0;
   const required0 = liq && liq.required != null ? Number(liq.required) : null;
+  const closingBuffer = liq && liq.closingBuffer != null ? Number(liq.closingBuffer) : 0;
   const { verified, accounts, excludedTotal } = await readVerifiedLiquidity(appId, c, required0);
   const haveCountable = accounts.some((a) => a && a.tied && a.ending != null);
-  const d = decideCashToClose({ verified, reserve, actualCashToClose, haveCountable });
+  const d = decideCashToClose({ verified, reserve, actualCashToClose, haveCountable, closingBuffer });
   return {
     ok: d.ok,
     verified,

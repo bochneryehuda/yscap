@@ -493,6 +493,7 @@ async function listQueue(staffId, { tab = 'next', sort = 'received', type = null
              -- assigns super_admin rows on files.
              OR (w.to_staff_id IS NULL AND w.to_role = (SELECT role FROM staff_users WHERE id = $1)
                  AND NOT EXISTS (SELECT 1 FROM application_assignees aa
+                                    JOIN staff_users sau ON sau.id = aa.staff_id AND sau.is_active = true
                                   WHERE aa.application_id = w.application_id AND aa.role = w.to_role
                                     AND aa.removed_at IS NULL))
              -- MULTIPLE PEOPLE PER ROLE (owner-directed 2026-07-31): every
@@ -573,6 +574,7 @@ async function queueCounts(staffId, client = db) {
       WHERE (w.to_staff_id = $1
              OR (w.to_staff_id IS NULL AND w.to_role = (SELECT role FROM staff_users WHERE id = $1)
                  AND NOT EXISTS (SELECT 1 FROM application_assignees aa
+                                    JOIN staff_users sau ON sau.id = aa.staff_id AND sau.is_active = true
                                   WHERE aa.application_id = w.application_id AND aa.role = w.to_role
                                     AND aa.removed_at IS NULL))
              OR (w.to_role IS NOT NULL
@@ -587,6 +589,7 @@ async function queueCounts(staffId, client = db) {
       WHERE (w.to_staff_id = $1
              OR (w.to_staff_id IS NULL AND w.to_role = (SELECT role FROM staff_users WHERE id = $1)
                  AND NOT EXISTS (SELECT 1 FROM application_assignees aa
+                                    JOIN staff_users sau ON sau.id = aa.staff_id AND sau.is_active = true
                                   WHERE aa.application_id = w.application_id AND aa.role = w.to_role
                                     AND aa.removed_at IS NULL))
              OR (w.to_role IS NOT NULL

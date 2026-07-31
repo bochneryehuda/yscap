@@ -133,11 +133,15 @@ router.post('/escalations/:id/decide', requirePermission('manage_pricing'), asyn
     // decline sends the borrower nothing. Best-effort; never breaks the decision.
     if (decision === 'approved') {
       try {
+        // ALSO withheld while a fatal appraisal finding is open (owner-directed
+        // 2026-07-31: appraisal fatals hold off generating term sheets; pre-merge
+        // audit #1 — this door bypassed the register routes' hold). Fails open.
+        const apprHold = await require('../lib/underwriting/appraisal-advisory').appraisalTermSheetHold(db, row.application_id);
         const rq = await db.query(
           `SELECT quote, inputs, total_loan FROM product_registrations
             WHERE id=$1 AND is_current`, [row.registration_id]);
         const reg = rq.rows[0];
-        if (reg) {
+        if (reg && !apprHold) {
           const quote = typeof reg.quote === 'string' ? JSON.parse(reg.quote) : reg.quote;
           const inputs = typeof reg.inputs === 'string' ? JSON.parse(reg.inputs) : (reg.inputs || {});
           await require('../lib/terms-notify').sendBorrowerTerms(row.application_id, {

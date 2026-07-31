@@ -2207,6 +2207,14 @@ router.post('/applications/:id/liquidity-buffer', async (req, res) => {
     if (!can(req.actor, 'manage_pricing')) {
       return res.status(403).json({ error: 'Waiving the closing-cost buffer needs the Manage pricing permission (an admin).' });
     }
+    // The waiver rewrites the current registration's stored liquidity figure —
+    // an economics-adjacent write, so it honors the SAME structural freeze as
+    // every other one (pre-merge audit #9): a term-sheet-sent / CTC / funded
+    // file refuses (a sent sheet prints the liquidity WITH the buffer; waiving
+    // after sending would make the file disagree with it). A super-admin
+    // unlock lifts it, exactly like the other frozen doors.
+    const locked = await require('../lib/file-lock').structuralLockReason(req.params.id, db, { actor: req.actor });
+    if (locked) return res.status(409).json({ error: locked });
     const waived = !!(req.body && req.body.waived);
     const out = await require('../lib/liquidity').setClosingBufferWaiver(req.params.id, waived, db);
     await audit(req, 'liquidity_buffer_waiver', 'application', req.params.id, out);
@@ -3101,6 +3109,22 @@ router.post('/applications/:id/pricing/accept-counter', async (req, res) => {
     // authorization is already in place.
     overrides.forcePrice = true;
 
+    // THE REGISTRATION MUST AGREE WITH THE APPLICATION here too (pre-merge audit
+    // 2026-07-31 #3): the replayed escalation blob carries the ORIGINAL request's
+    // propertyType/loanType/strategy/state — if the application was corrected
+    // between the escalation and this acceptance, accepting would persist the
+    // exact mismatch the register door now refuses. Same guard, same wording.
+    const acFileConflicts = registrationGuard.registrationFileConflicts(f.app, overrides);
+    if (acFileConflicts.length) {
+      return res.status(422).json({
+        error: 'The application changed since this counter-offer was made, and the countered scenario no longer matches it.\n'
+          + registrationGuard.conflictMessage(acFileConflicts)
+          + '\nRe-price the file in the studio (or ask for a fresh counter) instead of accepting this one.',
+        code: 'file_mismatch',
+        conflicts: acFileConflicts,
+      });
+    }
+
     const inputs = pricing.buildInputs(f.app, f.exp, overrides);
     inputs.forcePrice = true;
     const requestedProgram = (esc.summary && esc.summary.program) === 'gold' ? 'gold' : (esc.summary && esc.summary.program) === 'silver' ? 'silver' : 'standard';
@@ -3195,11 +3219,16 @@ router.post('/applications/:id/pricing/accept-counter', async (req, res) => {
     // Take the escalation hand-off off the super-admin Workflow (mirrors decide).
     try { await require('../lib/workflow-automation').closeEscalationWorkflow(appId, 'Counter accepted'); } catch (_) {}
 
-    // Send the borrower their confirmed terms — same email the plain-approval path sends.
+    // Send the borrower their confirmed terms — same email the plain-approval path
+    // sends. WITHHELD while a fatal appraisal finding is open (owner-directed
+    // 2026-07-31; pre-merge audit #1 — this door bypassed the register routes' hold).
     try {
-      await require('../lib/terms-notify').sendBorrowerTerms(appId, {
-        quote, total, termMonths: inputs && inputs.term,
-      });
+      const apprHold = await require('../lib/underwriting/appraisal-advisory').appraisalTermSheetHold(db, appId);
+      if (!apprHold) {
+        await require('../lib/terms-notify').sendBorrowerTerms(appId, {
+          quote, total, termMonths: inputs && inputs.term,
+        });
+      }
     } catch (_) { /* best-effort */ }
 
     res.json({ ok: true, registrationId: regId, totalLoan: total });
@@ -4779,9 +4808,21 @@ router.post('/applications/:id/orders/:kind/followup', async (req, res) => {
     const note = String((req.body && req.body.message) || '').trim().slice(0, 4000);
     const built = orders.buildOrderEmail(kind, data, { followup: true, note });
     // Follow-ups keep the borrower-CC footing the ORDER was placed with
-    // (file_orders.meta.ccBorrower; owner-directed 2026-07-31 — title default off).
+    // (file_orders.meta.ccBorrower; owner-directed 2026-07-31 — title default
+    // off). An order placed BEFORE this existed has no stored choice — fall to
+    // the same LO-setting default the place door uses, so the thread's footing
+    // matches what a fresh order would do (pre-merge audit #6).
     const storedCc = row.meta && typeof row.meta === 'object' && row.meta.ccBorrower != null ? !!row.meta.ccBorrower : null;
-    const { to, cc, replyTo } = orders.recipientsFor(kind, data, storedCc != null ? { ccBorrower: storedCc } : {});
+    let fuCc = storedCc;
+    if (fuCc == null) {
+      let loCcSetting = false;
+      try {
+        const lo = await db.query(`SELECT loan_officer_id FROM applications WHERE id=$1`, [appId]);
+        if (lo.rows[0] && lo.rows[0].loan_officer_id) loCcSetting = await require('../lib/lo-settings').getSetting(lo.rows[0].loan_officer_id, 'ccBorrowerOnTitleOrder');
+      } catch (_) { /* off */ }
+      fuCc = orders.ccBorrowerDefault(kind, loCcSetting);
+    }
+    const { to, cc, replyTo } = orders.recipientsFor(kind, data, { ccBorrower: fuCc });
     const meRow = (await db.query(`SELECT full_name, email FROM staff_users WHERE id=$1`, [req.actor.id])).rows[0] || {};
     await email.sendMail({
       to, cc,
