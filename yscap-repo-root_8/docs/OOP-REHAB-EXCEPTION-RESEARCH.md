@@ -359,3 +359,60 @@ already-sized structure, done in the two mirrored renderers.
 **Still owner-dependent (from §6):** the exact out-of-pocket **column** on the Blue Lake & EMCAP
 workbooks (Fidelis is done; EMCAP has the data ready to wire), and confirmation of the Encompass
 field IDs.
+
+## 10. Phase 2 — feed the split to the loan file + enforce out-of-pocket-first in draws (2026-07-31)
+
+Owner-directed follow-up: *"make sure this feeds over directly to the actual loan file — that the
+loan file understands it's more initial and less construction … force it so the first amount is out
+of pocket and cannot be reimbursed, only the next can … feed the logic to the draw coordinator
+section, dive into the Sitewire setup, make sure the capital-provider tape export has the correct
+logic, and check anywhere else."* Everything below is **byte-identical when there is no exception**
+(the floor is 0), and no frozen engine number is touched.
+
+### 10.1 The loan file understands the split
+- `db/387` adds **`applications.financed_rehab_budget`** (the FINANCED rehab — what the loan advances
+  through draws) backfilled `:= rehab_budget` for existing files (fully financed), and
+  **`sitewire_property_links.oop_floor_cents`** (default 0). `rehab_budget` stays the FULL
+  construction budget — the Sitewire budget must equal it to the cent (G-RECON).
+- `product-registration.js` writes `financed_rehab_budget` = the priced rehab holdback
+  (`quote.sizing.rehabHoldback`; the full budget when there is no exception). The out-of-pocket
+  rehab is the difference (`rehab_budget − financed_rehab_budget`).
+
+### 10.2 Out-of-pocket-FIRST enforcement in the draw ledger
+- `src/sitewire/money.js` `computeRelease()` gains `oopFloorCents` + `priorApprovedCents`: the
+  **reimbursable** part of a draw is only what pushes cumulative approved rehab **past the floor**
+  (`reimbursable = max(0,(prior+approved)−floor) − max(0,prior−floor)`); fee + retainage apply to
+  the reimbursable amount; a fully-out-of-pocket draw reimburses **$0**. The telescoping sum makes
+  the total out-of-pocket exactly `min(total approved, floor)` regardless of the order draws are
+  recorded in. `floor=0` returns the pre-exception split unchanged.
+- `start-draw` snapshots `oop_floor_cents` onto the property link from the current registration's
+  priced OOP amount (`orchestrator.registrationOopCents` → `quote.sizing.oopRehab`), so the ledger
+  enforces a fixed contract even if the file is later re-registered under a super-admin unlock. The
+  `POST /disbursements` route reads that snapshot + sums prior `approved_cents` and passes both to
+  `computeRelease`. `draw-setup` and the rollup payload carry the floor (`out_of_pocket` / `oop`).
+- Draw desk UI (`DrawsPanel.jsx`): an out-of-pocket line on the Start card, an "Out-of-pocket rehab"
+  KPI tile, and a floor-aware net preview + note on the release form (mirrors the server split).
+
+### 10.3 Sitewire setup
+The FULL construction budget still pushes to Sitewire (G-RECON is the real gate) — Sitewire has no
+"borrower contribution" property field, so nothing is invented there (never-guess). The
+out-of-pocket-first rule lives in PILOT's own money ledger + the snapshotted floor.
+
+### 10.4 Capital-provider tapes
+All three note-buyer tapes already report the **financed** holdback (`sizing.rehabHoldback`) and the
+**raised** acquisition/day-1 advance, so a tape shows "more initial, less construction" with the
+total loan unchanged. `fidelis.js` (column N) and `emcap.js` now source the out-of-pocket value from
+the exact priced `sizing.oopRehab` (the SAME value the draw ledger enforces). `seasoning.js`
+subtracts the OOP floor before converting released draws to principal — only rehab beyond the floor
+draws the financed holdback down.
+
+### 10.5 Boundary (recorded on purpose)
+PILOT enforces out-of-pocket-first only on **its own** releases (the coordinator's `/disbursements`
+route). On a note-buyer-administered file (TrustPoint) the note buyer wires draws in their own system
+and PILOT **mirrors** the actual wired amounts; the total out-of-pocket there is guaranteed by the
+tape's **financed holdback cap** (the note buyer only funds the financed portion), and the
+out-of-pocket floor is still shown on the desk for visibility.
+
+Tests: out-of-pocket cases added to `scripts/test-sitewire-money.js` and
+`scripts/test-tape-seasoning-pure.js`; all pure money + tape suites pass; `floor=0` proven
+byte-identical.

@@ -98,6 +98,21 @@ const noFloor = s.computeSeasoning({
 ok(noFloor.disbursedHoldback === seasoned.disbursedHoldback && noFloor.currentRehab === seasoned.currentRehab,
   'OOP-first: oopFloor=0 is byte-identical to the pre-exception seasoning');
 
+// A release ENTIRELY within the floor is the borrower's own money: it converts NO principal and
+// accrues NO interest, so the reserve draw-down must equal a loan with no draws at all.
+const fullyOop = s.computeSeasoning({
+  day1: 275000, holdback: 75000, financedReserve: 20000, totalLoan: 370000,
+  rate: 0.12, accrual: 'non_dutch', fundingDate: '2026-01-01', firstPaymentDate: '2026-03-01',
+  asOf: '2026-07-01', releases: [{ date: '2026-04-01', amount: 25000 }], oopFloor: 25000,
+});
+const noDraws = s.computeSeasoning({
+  day1: 275000, holdback: 75000, financedReserve: 20000, totalLoan: 370000,
+  rate: 0.12, accrual: 'non_dutch', fundingDate: '2026-01-01', firstPaymentDate: '2026-03-01',
+  asOf: '2026-07-01', releases: [], oopFloor: 0,
+});
+ok(fullyOop.disbursedHoldback === 0, 'OOP-first: a fully-out-of-pocket release converts no principal');
+near(fullyOop.disbursedReserve, noDraws.disbursedReserve, 'OOP-first: interest accrual ignores the out-of-pocket draw (reserve draw-down == a loan with no draws)');
+
 // ---- 6. Dutch seasoned: whole-note accrual, reserve capped ------------------
 const dutch = s.computeSeasoning({
   day1: 275000, holdback: 75000, financedReserve: 20000, totalLoan: 370000,

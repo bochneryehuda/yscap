@@ -144,13 +144,22 @@ function computeSeasoning(input) {
   const releases = (i.releases || [])
     .map((x) => ({ date: x.date || null, amount: num0(x.amount) }))
     .filter((x) => x.amount > 0);
-  const releasedRaw = releases.reduce((s, x) => s + x.amount, 0);
   // Out-of-pocket-first (owner-directed 2026-07-31 — the OOP-rehab exception): the first
   // `oopFloor` of released rehab is the borrower's own money and never converts from the
   // (financed) holdback into outstanding principal — only the rehab drawn BEYOND the floor
-  // draws the holdback down. oopFloor=0 (no exception) → releasedRaw, byte-identical.
+  // draws the holdback down AND accrues interest. Absorb the floor across the releases in
+  // date order; `principalReleases` is what actually became principal. oopFloor=0 (no
+  // exception) → principalReleases === releases and every number below is byte-identical.
   const oopFloor = num0(i.oopFloor);
-  const disbursedHoldback = Math.min(holdback, Math.max(0, releasedRaw - oopFloor));
+  let absorbed = 0;
+  const principalReleases = [];
+  for (const r of releases) {
+    const within = Math.max(0, Math.min(oopFloor - absorbed, r.amount)); // still inside the floor
+    absorbed += within;
+    const principal = r.amount - within;
+    if (principal > 0) principalReleases.push({ date: r.date, amount: principal });
+  }
+  const disbursedHoldback = Math.min(holdback, principalReleases.reduce((s, x) => s + x.amount, 0));
 
   // Interest reserve used so far ≈ interest paid to date, capped at what was
   // financed. Payments (and therefore reserve draw-down) begin at the first
@@ -160,7 +169,7 @@ function computeSeasoning(input) {
   let disbursedReserve = 0;
   if (financedReserve > 0 && firstPaymentDate && asOf && cmpYMD(asOf, firstPaymentDate) >= 0) {
     const firstPeriodStart = fmtYMD(addMonths(parseYMD(firstPaymentDate), -1));
-    const accrued = accruedInterest({ from: firstPeriodStart, to: asOf, rate: i.rate, accrual, day1, totalLoan, releases });
+    const accrued = accruedInterest({ from: firstPeriodStart, to: asOf, rate: i.rate, accrual, day1, totalLoan, releases: principalReleases });
     disbursedReserve = Math.min(financedReserve, accrued);
   }
 
