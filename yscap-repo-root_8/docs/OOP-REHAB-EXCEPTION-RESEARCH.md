@@ -1,9 +1,14 @@
 # Out-of-Pocket Rehab Exception — Research & Build Blueprint
 
-**Status:** RESEARCH ONLY (owner-directed 2026-07-31 — "do a lot of research… then we can
-start doing the actual work of building it"). No code has been changed. The one frozen-engine
-touch this feature needs is called out explicitly below and is **gated on the owner's explicit
-written authorization** (the HARD RULE in CLAUDE.md).
+**Status:** IMPLEMENTED (owner-authorized 2026-07-31 — the owner gave explicit written
+authorization for the exact frozen change: *"re-slice an already-sized loan so the initial
+advance rises toward the acquisition-LTV cap and the displaced rehab is brought out of pocket —
+total loan, rate and every cap unchanged; byte-identical when the exception amount is zero."*)
+The sections below are the original research; **§9 records what was built.**
+
+Owner decisions (2026-07-31): entry = **a dollar box AND a "raise the initial to max" toggle**
+(the financed-% option was dropped); approval = **both** an escalation and a tracked
+loan_exceptions record; available on **all four programs**.
 
 ---
 
@@ -319,3 +324,38 @@ changes — the re-slice is a post-sizing transform.
 `src/lib/integrations/encompass-field-map.js`, `src/encompass/reconcile.js`,
 `app-v2/src/components/{ProductStudioPanel,TermSheetStudio,ExceptionCard}.jsx`, new
 `db/NNN_oop_rehab_exception.sql`.
+
+---
+
+## 9. What was built (2026-07-31)
+
+The engine matrix/caps/rate math is **untouched** — the re-slice is a pure transform of the
+already-sized structure, done in the two mirrored renderers.
+
+- **Backend re-slice** — `src/lib/pricing.js` `normalize()`: gated re-slice (initial↑ / holdback↓
+  / `oopRehab`=X), new `quote.sizing` keys `oopRehab / maxOopRehab / initialCut / maxInitial`;
+  cash-to-close drops by X, liquidity-to-show unchanged; `buildInputs` whitelists `oopRehab`
+  (NUMK) + `oopRehabMax` (BOOLK). Uses the effective acquisition cap (`pricedCeiling || caps`).
+  Byte-identical when off — proven by a 4,000-scenario old-vs-new equivalence sweep + the pure
+  test `scripts/test-oop-rehab-pricing.js`.
+- **Studio** — `web/v2/tools/term-sheet.html` + `termsheet.js` (V2 only; V1 untouched): a
+  "Out-of-pocket rehab exception" admin group with an info line (initial cut / max OOP), a
+  dollar box (`tsOopRehab`) and a "raise the initial to its max" toggle (`tsOopRehabMax`); one
+  shared `oopReslice()` helper drives `calc()/calcGold()/calcSilver()`; the loan structure, PDF
+  and Excel gain an OOP line.
+- **React** — `ProductStudioPanel.jsx` forwards `oopRehab`/`oopRehabMax` and lists them in the
+  "goes to an admin for approval" banner; `TermSheetStudio.jsx` reads + restores them. Rebuilt
+  into `web/v2/portal`.
+- **Approval** — `pricing-overrides.js` `ENGAGED_OVERRIDE_KEYS` gains both keys, so any amount
+  opens the manual-program escalation, withholds the borrower email, and blocks the DocuSign
+  issuance. **Tracked record:** a first-class `oop_rehab` `loan_exceptions` type
+  (`loan-exceptions.js` + `db/385` + `ExceptionCard.jsx` + `admin-exceptions.js` audit); the
+  register route records an EX-n row after commit (best-effort, on the pool).
+- **Downstream** — Fidelis tape fills its OOP column automatically; EMCAP economics now derive
+  `totalRehab`/`oopRehab` (column mapping pending the owner's EMCAP workbook cell); Encompass
+  reads/reconciles `CX.OUTOFPOCKETREHAB` (read-only); the borrower email gains a "Rehab paid out
+  of pocket" row and `borrowerTermsKey` re-notifies on a change.
+
+**Still owner-dependent (from §6):** the exact out-of-pocket **column** on the Blue Lake & EMCAP
+workbooks (Fidelis is done; EMCAP has the data ready to wire), and confirmation of the Encompass
+field IDs.
