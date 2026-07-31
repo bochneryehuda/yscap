@@ -434,31 +434,38 @@ async function writeFieldValue(appId, borrowerId, fieldKey, rawValue, by = {}) {
      so answering an info condition on a FUNDED loan moved the economics AND
      reopened Products & Pricing on a closed file.
 
-     THE FREEZE IS THE STATUS ONE ONLY — deliberately NOT the term-sheet-sent
-     freeze, which the first cut included via `payoffContactLockReason` and
-     which was much worse than the bug it fixed. Every file that reaches Clear
-     to Close carries a COMPLETED term-sheet package, and a package sits in
-     `sent`/`delivered`/`completed` for the whole underwriting phase — which is
-     exactly when the team posts information conditions and the borrower answers
-     them. Measured: an `acquisition_date` condition on an `underwriting` file
-     with a signed term sheet answered 409 "clear the Term Sheet package first",
-     leaving a condition with no way to clear it and advice nobody can act on
-     (voiding a SIGNED term sheet). Thirteen fields were affected, including
-     three that appear in no reopen trigger at all, the borrower's own track
-     record, and this feature's own `payoff_amount` — whose payoff quote arrives
-     from the servicer precisely after the term sheet goes out.
+     TWO FREEZES, AND THE SECOND IS SCOPED TO THE FIELD — because a
+     whole-request freeze is the wrong shape for a door that answers ONE field
+     at a time, and BOTH all-or-nothing answers shipped before this line was
+     found. First cut: the whole term-sheet freeze via
+     `payoffContactLockReason`, which made information conditions unanswerable
+     for the ENTIRE post-term-sheet phase (a package sits in
+     sent/delivered/completed throughout underwriting, which is exactly when
+     the team posts these conditions) — measured, an `acquisition_date` answer
+     came back "clear the Term Sheet package first", i.e. void a SIGNED term
+     sheet. Second cut: no term-sheet freeze at all, which let a borrower
+     answer an info condition on `loan_amount` and move a signed sheet's
+     headline number from $440,000 to $1 — with no change request, no approval
+     and no unlock. The claim that the change-request sandbox already covered
+     that was half true: it covers its eight governed fields, and
+     `loan_amount` is not one of them, nor are twelve others.
 
-     So the line is drawn where the audit actually drew it: a file that is Clear
-     to Close, Funded, Declined or Withdrawn is closed to this door. Before that,
-     an information condition is answerable, which is the entire point of having
-     one. A field that would genuinely make a SENT sheet disagree with the file
-     is already handled — the eight economics fields go to the change-request
-     sandbox on any registered file, and every one of them is registered by then.
+       · THE STATUS FREEZE applies to every field: Clear to Close, Funded,
+         Declined and Withdrawn are closed to this door. The one carve-out is
+         the owner-directed closing-prep window — the payoff's who-and-which
+         stays editable up to and including Clear to Close, because that is
+         when the payoff letter is ordered. Funded / declined / withdrawn stay
+         closed even for those two; by then the payoff has been wired.
 
-     The one carve-out is the owner-directed closing-prep window: the payoff's
-     who-and-which stays editable up to and including Clear to Close, because
-     that is when the payoff letter is ordered. Funded / declined / withdrawn
-     stay closed even for those two — by then the payoff has been wired.
+       · THE TERM-SHEET-SENT FREEZE applies only to a field that would make the
+         sent sheet disagree with the file — which is not a judgement call,
+         because the reopen trigger (db/072, body db/126) already defines
+         exactly that set: the columns whose change invalidates the registered
+         structure. `file-lock.isRepriceColumn` is that list. So `loan_amount`,
+         the reserve, the assignment pair and the experience counts are frozen
+         once the sheet is out, while `acquisition_date`, `original_purchase_
+         price` and the payoff trio stay answerable — none is watched by the
+         trigger, and none can move a number on the sheet.
 
      NO actor is passed, deliberately: a super-admin's unlock is theirs to spend
      on their own edit, not a standing permission for whatever the borrower (or
@@ -472,12 +479,17 @@ async function writeFieldValue(appId, borrowerId, fieldKey, rawValue, by = {}) {
     const fl = require('../file-lock');
     let row = null;
     try { row = await fl._internals.lockInputs(appId, db); } catch (_) { row = null; }
-    const frozen = row ? fl._internals.statusFreezeReason(row, {}) : null;
-    if (frozen) {
-      const bodyKey = WRITE_BODY_KEY[fieldKey];
-      const contactOnly = !!bodyKey && require('../payoff').CONTACT_KEYS.includes(bodyKey);
-      if (!(contactOnly && row.status === 'clear_to_close')) {
-        const err = new Error(frozen); err.status = 409; throw err;
+    if (row) {
+      const statusFrozen = fl._internals.statusFreezeReason(row, {});
+      if (statusFrozen) {
+        const bodyKey = WRITE_BODY_KEY[fieldKey];
+        const contactOnly = !!bodyKey && require('../payoff').CONTACT_KEYS.includes(bodyKey);
+        if (!(contactOnly && row.status === 'clear_to_close')) {
+          const err = new Error(statusFrozen); err.status = 409; throw err;
+        }
+      } else if (fl.isRepriceColumn(target.column)) {
+        const tsFrozen = fl._internals.termSheetFreezeReason(row, {});
+        if (tsFrozen) { const err = new Error(tsFrozen); err.status = 409; throw err; }
       }
     }
   }

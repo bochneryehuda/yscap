@@ -271,7 +271,11 @@ function applicationNumberProblem(b) {
      comfortably storable while the number actually written is not. Measured on
      both create doors: $900bn + $900bn → 22003 → 500. Judge what is BOUND, not
      only what was typed. */
-  if (body.isAssignment) {
+  /* Gated exactly as `assignmentFields` is — an assignment of contract is a
+     PURCHASE concept, so a stale `isAssignment:true` on a REFINANCE is forced
+     off there and the sum is never bound. Mirroring the condition keeps this
+     from refusing over a number that would not have been written. */
+  if (body.isAssignment && !/refi/i.test(String(body.loanType || ''))) {
     const sum = (moneyValue(body.underlyingContractPrice) || 0) + (moneyValue(body.assignmentFee) || 0);
     const bad = nb.columnProblem('purchasePrice', sum, 'money', 'Purchase price (contract plus assignment fee)');
     if (bad) return bad;

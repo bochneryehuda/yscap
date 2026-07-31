@@ -153,11 +153,15 @@ if (!process.env.DATABASE_URL) {
       assert(statuses.every((s) => s === 400),
         `11 consecutive failures all answer 400 (got ${JSON.stringify(statuses)})`);
 
-      const health = await call('GET', '/api/health', sTok, null);
-      assert(health.status === 200,
-        `the app still answers after 12 failed registers (health=${health.status}) — with the leak, this never returns`);
+      /* ASSERTED ON A ROUTE THAT NEEDS A POOLED CLIENT — not on /api/health,
+         which races its DB probe against a 2.5s timeout and answers 200 with
+         `db:'down'` when it loses. Measured (re-audit 2026-07-31): holding all
+         10 pooled clients, health still returned 200 while a request that
+         actually needs a connection never came back at all. A health check that
+         is 200 either way cannot fail, so it cannot be the assertion. */
       const stillWorks = await call('GET', `/api/staff/applications/${appId}`, sTok, null);
-      eq(stillWorks.status, 200, 'and an ordinary request still gets its connection');
+      eq(stillWorks.status, 200,
+        'an ordinary request still gets its connection after 12 failures — with the leak this never returns');
 
       // A CLEAN register on the same file still works AFTER all those failures —
       // the guard refuses only what cannot be stored, and the pool is intact.
@@ -180,9 +184,28 @@ if (!process.env.DATABASE_URL) {
        * past every validation. Twelve of those must still leave the pool
        * whole. The trigger is dropped again immediately, whatever happens.
        * ---------------------------------------------------------------- */
-      await db.query(`CREATE OR REPLACE FUNCTION pilot_test_reg_boom() RETURNS trigger AS $$
-        BEGIN RAISE EXCEPTION 'test-induced mid-transaction failure'; END; $$ LANGUAGE plpgsql`);
+      /* THE TRIGGER IS SCOPED TO THIS ONE APPLICATION, so a leaked one is inert.
+         DDL through `db.query` is autocommit, and the DROPs live in a JS
+         `finally` — which a SIGKILL does not run. Measured (re-audit
+         2026-07-31): killing the suite mid-run left the trigger live and every
+         later register in that database failed, breaking three other DB suites;
+         and because `npm test` is `&&`-chained with this suite LAST, the
+         poisoned database aborted the next whole run hundreds of steps before
+         reaching the only code that would drop it. The documented way to verify
+         the release fix — revert it and watch the suite hang, then kill it — is
+         precisely how that happens.
+         An `application_id` guard removes the blast radius entirely: the id is
+         one this suite just created, so even a permanently leaked trigger can
+         only ever affect a file nobody will register again. A defensive DROP
+         first clears one left by an earlier killed run. */
       await db.query(`DROP TRIGGER IF EXISTS trg_pilot_test_reg_boom ON product_registrations`);
+      await db.query(`CREATE OR REPLACE FUNCTION pilot_test_reg_boom() RETURNS trigger AS $$
+        BEGIN
+          IF NEW.application_id = '${appId}'::uuid THEN
+            RAISE EXCEPTION 'test-induced mid-transaction failure';
+          END IF;
+          RETURN NEW;
+        END; $$ LANGUAGE plpgsql`);
       await db.query(`CREATE TRIGGER trg_pilot_test_reg_boom BEFORE INSERT ON product_registrations
                       FOR EACH ROW EXECUTE FUNCTION pilot_test_reg_boom()`);
       let midTx = [];
@@ -197,9 +220,10 @@ if (!process.env.DATABASE_URL) {
       }
       assert(midTx.every((s) => s === 500),
         `12 registers really did fail INSIDE the transaction (got ${JSON.stringify(midTx)})`);
-      const healthAfter = await call('GET', '/api/health', sTok, null);
-      assert(healthAfter.status === 200,
-        `the pool survived 12 mid-transaction failures (health=${healthAfter.status}) — without the release this never returns`);
+      // Again on a route that TAKES a pooled client, for the same reason.
+      const afterMidTx = await call('GET', `/api/staff/applications/${appId}`, sTok, null);
+      eq(afterMidTx.status, 200,
+        'the pool survived 12 mid-transaction failures — without the release this never returns');
       const recovered = await call('POST', `/api/staff/applications/${appId}/pricing/register`, sTok,
         { program: 'standard', overrides: { ...SCENARIO } });
       assert(recovered.status === 200 || recovered.status === 201,
@@ -323,6 +347,38 @@ if (!process.env.DATABASE_URL) {
       const amt = await engine.writeFieldValue(appId, borrowerId, 'payoff_amount', 250000, { kind: 'borrower', id: borrowerId });
       eq(Number(amt.value), 250000,
         '…including the payoff AMOUNT, whose quote arrives from the servicer after the sheet goes out');
+      const orig = await engine.writeFieldValue(appId, borrowerId, 'original_purchase_price', 310000, { kind: 'borrower', id: borrowerId });
+      eq(Number(orig.value), 310000, '…and the original purchase price');
+
+      /* …BUT A FIELD THAT WOULD MAKE THE SENT SHEET DISAGREE IS FROZEN. The
+         second cut of this freeze dropped the term-sheet half entirely, on the
+         claim that the change-request sandbox already covered the economics.
+         It covers its EIGHT governed fields — and `loan_amount`, the sheet's
+         headline number, is not one of them. Measured before the fix: a
+         borrower answered an info condition on `loan_amount` and moved a
+         SIGNED term sheet's loan from $440,000 to $1, with no change request,
+         no approval, no unlock. Twelve more fields behaved the same way. */
+      await db.query(`UPDATE applications SET loan_amount=440000 WHERE id=$1`, [appId]);
+      const frozenField = async (key, value) => {
+        try { await engine.writeFieldValue(appId, borrowerId, key, value, { kind: 'borrower', id: borrowerId }); return null; }
+        catch (e) { return e; }
+      };
+      const eLoan = await frozenField('loan_amount', 1);
+      assert(eLoan && eLoan.status === 409,
+        `a SIGNED term sheet freezes loan_amount (got ${eLoan ? eLoan.status : 'a successful write'})`);
+      const loanNow = (await db.query(`SELECT loan_amount FROM applications WHERE id=$1`, [appId])).rows[0];
+      eq(Number(loanNow.loan_amount), 440000, '…and the sheet’s headline number is untouched');
+      for (const [k, v] of [['requested_ir_amount', 40000], ['assignment_fee', 9000],
+        ['requested_exp_flips', 99], ['requested_ir_months', 9]]) {
+        const e = await frozenField(k, v);
+        assert(e && e.status === 409, `…and so is ${k} (got ${e ? e.status : 'a successful write'})`);
+      }
+      /* The line is the reopen trigger's own watch list, so the two halves can
+         never be decided by taste. Pinned against the SQL in
+         test-number-bounds-pure.js. */
+      const fl = require('../src/lib/file-lock');
+      assert(fl.isRepriceColumn('loan_amount') && !fl.isRepriceColumn('payoff_amount'),
+        'the two halves come from ONE list — the columns the reopen trigger watches');
 
       // FUNDED — the strictest freeze. Nothing may be written, not even the
       // payoff contact (past funding the payoff has already been wired).
@@ -394,6 +450,51 @@ if (!process.env.DATABASE_URL) {
       eq(noDoc.status, 200, 'no attachment at all is still valid (the ALTA may not be uploaded yet)');
       const tooBig = await post({ actualCashToClose: 99999999999999999 });
       eq(tooBig.status, 400, 'and an oversized amount is still a plain 400');
+    }
+
+    /* ================================================================ *
+     * THE PUBLIC INTAKE DOOR — an out-of-range LTV must not lose the lead.
+     *
+     * `ltv` is numeric(6,3), a PERCENT, but it was bound through a helper
+     * calibrated to numeric(14,2), so `ltv: 5000` raised 22003 and the whole
+     * submission came back a 500 — the exact outcome this work exists to
+     * prevent, on the one door where the submitter is an anonymous visitor
+     * with no way to correct anything. Untested until the re-audit pointed out
+     * that reverting the fix broke nothing (this is the only suite that
+     * exercises the intake core, and it never sent an ltv).
+     * ================================================================ */
+    console.log('\n--- the public intake form: an out-of-range LTV drops, it does not lose the lead ---');
+    {
+      const intake = (body) => new Promise((resolve) => {
+        const data = JSON.stringify(body);
+        const rq = http.request({ method: 'POST', path: '/api/intake', port: server.address().port,
+          host: '127.0.0.1', timeout: REQ_TIMEOUT_MS,
+          headers: { 'content-type': 'application/json', 'content-length': Buffer.byteLength(data),
+            ...(process.env.INTAKE_API_KEY ? { 'x-api-key': process.env.INTAKE_API_KEY } : {}) } },
+          (res) => { let s = ''; res.on('data', (c) => s += c); res.on('end', () => { let j = null; try { j = s ? JSON.parse(s) : null; } catch (_) { j = { _raw: s.slice(0, 200) }; } resolve({ status: res.statusCode, body: j }); }); });
+        rq.on('timeout', () => { rq.destroy(); resolve({ status: 'timeout', body: null }); });
+        rq.on('error', () => resolve({ status: 'error', body: null }));
+        rq.write(data); rq.end();
+      });
+      const base = {
+        tool: 'loan_application', firstName: 'Ltv', lastName: 'Probe',
+        propertyAddress: ADDR, purchasePrice: 400000, asIsValue: 400000, arv: 600000,
+      };
+      const huge = await intake({ ...base, email: `ltv-huge-${sfx}@test.local`, ltv: 5000 });
+      assert(huge.status === 200 || huge.status === 201,
+        `an out-of-range LTV still captures the lead (got ${huge.status}) — this was a 500 and the lead was lost`);
+      const ok = await intake({ ...base, email: `ltv-ok-${sfx}@test.local`, ltv: 75 });
+      assert(ok.status === 200 || ok.status === 201, `and an ordinary LTV still captures it (got ${ok.status})`);
+      const stored = await db.query(
+        `SELECT a.ltv FROM applications a JOIN borrowers b ON b.id=a.borrower_id
+          WHERE b.email = ANY($1) ORDER BY a.created_at`,
+        [[`ltv-huge-${sfx}@test.local`, `ltv-ok-${sfx}@test.local`]]);
+      if (stored.rows.length === 2) {
+        eq(stored.rows[0].ltv, null, 'the unstorable LTV is recorded as "not provided"…');
+        eq(Number(stored.rows[1].ltv), 75, '…while a real one is stored exactly');
+      } else {
+        assert(false, `both intake submissions created a file (got ${stored.rows.length})`);
+      }
     }
   } catch (e) {
     assert(false, `the suite threw: ${e && e.stack ? e.stack.split('\n').slice(0, 4).join(' | ') : e}`);

@@ -292,7 +292,21 @@ console.log('\n--- the loan file stores it, and every entry surface offers it --
   assert(F.textColumn('x'.repeat(900), 'payoff_lender').length === 200
     && F.textColumn('x'.repeat(900), 'payoff_loan_number').length === 100,
     'and each column carries its OWN cap, whichever door the value arrived at');
-  assert(/function textField/.test(borrower), 'the borrower door routes through it');
+  /* The borrower door really ROUTES through it — asserted by calling its own
+     helper, not by regexing for the word `textField` (which passed even if that
+     helper had stopped delegating). The last source-regex assertion in this
+     block, and the class the two earlier defects in this series hid behind. */
+  {
+    const bmod = require('../src/routes/borrower');
+    const tf = bmod._internals && bmod._internals.textField;
+    if (tf) {
+      assert(tf('  Chase  ', 'payoff_lender') === 'Chase' && tf('   ', 'payoff_lender') === null
+        && tf('x'.repeat(900), 'payoff_loan_number').length === 100,
+        'the borrower door’s own helper delegates to the shared rule');
+    } else {
+      assert(false, 'the borrower door exposes its text helper so this can be tested by running it');
+    }
+  }
 
   const apply = read('screens/Apply.jsx');
   assert(/payoffLender/.test(apply) && /payoffLoanNumber/.test(apply),

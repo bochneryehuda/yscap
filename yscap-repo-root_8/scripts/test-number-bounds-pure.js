@@ -218,5 +218,47 @@ assert(/assignment fee/i.test(pr.quoteStorageProblem(OK_Q, { ...OK_I, purchasePr
 eq(pr.quoteStorageProblem({}, {}), '', 'a quote with nothing to check is not refused');
 eq(pr.quoteStorageProblem(null, null), '', 'and a missing quote never throws');
 
+/* ---------------------------------------------------------------- *
+ * 6. THE REPRICE COLUMN LIST IS A TWIN OF THE SQL TRIGGER.
+ *
+ * `file-lock.isRepriceColumn` decides which fields a SENT term sheet freezes
+ * on the info-condition door, and it is only defensible because it is not a
+ * judgement call: it is the reopen trigger's own watch list. If the two drift,
+ * the door starts freezing the wrong fields — which is how this rule was got
+ * wrong twice, in both directions, before it was keyed on the trigger. Same
+ * discipline as `pilot_term_norm` / `pilot_property_type_norm`.
+ * ---------------------------------------------------------------- */
+console.log('\n--- the reprice list matches the trigger it is a twin of (db/126) ---');
+{
+  const fs = require('fs');
+  const path = require('path');
+  const fl = require('../src/lib/file-lock');
+  const sql = fs.readFileSync(path.join(__dirname, '..', 'db', '126_reopen_trigger_full_inputs_and_fico.sql'), 'utf8');
+  // Every `NEW.<col> IS DISTINCT FROM` the trigger body tests, however wrapped.
+  const watched = new Set();
+  // Handles the bare form and every COALESCE default the body uses (0, false).
+  const re = /NEW\.([a-z_]+)\s*(?:,\s*[a-z0-9]+\s*\))?\s*IS DISTINCT FROM/g;
+  let m;
+  while ((m = re.exec(sql))) watched.add(m[1]);
+  // `fico` lives in a separate statement about the credit condition, not the
+  // pricing reopen, and `property_address` is tested via a jsonb key.
+  watched.delete('fico');
+  assert(watched.size > 15, `the trigger body really was parsed (found ${watched.size} watched columns)`);
+  const missing = [...watched].filter((c) => !fl.isRepriceColumn(c));
+  const extra = fl.REPRICE_COLUMNS.filter((c) => !watched.has(c));
+  assert(missing.length === 0, `every column the trigger watches is in REPRICE_COLUMNS (missing: ${missing.join(', ') || 'none'})`);
+  assert(extra.length === 0, `and nothing is in REPRICE_COLUMNS that the trigger does not watch (extra: ${extra.join(', ') || 'none'})`);
+  // The fields the round-1 audit said must STAY answerable with a sheet out.
+  for (const c of ['payoff_amount', 'payoff_lender', 'payoff_loan_number', 'original_purchase_price', 'acquisition_date']) {
+    assert(!fl.isRepriceColumn(c), `${c} is NOT a reprice column — it stays answerable once the term sheet is out`);
+  }
+  // …and the one the round-2 audit caught writing live on a signed sheet.
+  assert(fl.isRepriceColumn('loan_amount'),
+    'loan_amount IS a reprice column — a signed sheet must freeze it (it was moved from $440,000 to $1)');
+  assert(fl.isRepriceColumn('requested_ir_amount') && fl.isRepriceColumn('assignment_fee')
+    && fl.isRepriceColumn('requested_exp_flips'),
+    '…as are the reserve, the assignment fee and the claimed experience the loan is sized on');
+}
+
 console.log(failures ? `\n${failures} assertion(s) failed` : '\nALL number-bounds assertions passed');
 process.exit(failures ? 1 : 0);

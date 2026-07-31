@@ -3903,3 +3903,7 @@ module.exports.generateLlcChecklist = generateLlcChecklist;
 module.exports.trackRecordErrors = trackRecordErrors;
 module.exports.trackRecordCols = trackRecordCols;
 module.exports.trackRecordMissing = trackRecordMissing;
+// Exposed so a test can RUN this door's text helper rather than regex the source
+// for its name — a source regex passes even when the helper has stopped
+// delegating, which is exactly how two defects in this series stayed hidden.
+module.exports._internals = { textField };

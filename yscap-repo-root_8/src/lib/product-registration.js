@@ -258,8 +258,14 @@ function quoteStorageProblem(quote, inputs) {
     [n(i.expFlips), 'int', 'an experience count', ''],
     [n(i.expHolds), 'int', 'an experience count', ''],
     [n(i.expGround), 'int', 'an experience count', ''],
-    [n(i.sqftPre), 'int', 'a square footage', ''],
-    [n(i.sqftPost), 'int', 'a square footage', ''],
+    /* NO sqft rows here, deliberately. `pricing.buildInputs` never emits
+       `sqftPre`/`sqftPost` (only the derived `sqftAddition` flag), and the
+       register binds `sqft_pre`/`sqft_post` from the FILE's previous values via
+       `sqftForType`, not from `inputs` — so a guard on them was unreachable
+       code claiming coverage it did not have (re-audit 2026-07-31: it was the
+       one mutation of this function that survived the suite). Those columns are
+       guarded where they are actually written: the create doors and the details
+       door, via `fields.applicationNumberProblem` / `numberOutOfRange`. */
   ];
 
   for (const [value, kind, what, hint] of checks) {
