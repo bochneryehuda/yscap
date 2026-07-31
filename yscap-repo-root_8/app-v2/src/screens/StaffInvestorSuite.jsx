@@ -1,7 +1,9 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
+import { useNavigate } from 'react-router-dom';
 import StaticToolFrame from '../components/StaticToolFrame.jsx';
 import ToolScenarioBar from '../components/ToolScenarioBar.jsx';
 import { api } from '../lib/api.js';
+import { scenarioToDraft } from '../lib/scenario.js';
 
 /* Investor Suite inside PILOT (owner-directed 2026-07-29): the same set of
    tools the public marketing "Investor Suite" (web/v2/suite.html) offers —
@@ -52,10 +54,12 @@ const ALL_TOOLS = GROUPS.flatMap((g) => g.tools);
 const TOOL_BY_SLUG = Object.fromEntries(ALL_TOOLS.map((t) => [t.slug, t]));
 
 export default function StaffInvestorSuite({ initialTool = null }) {
+  const nav = useNavigate();
   /* `initialTool` is the direct left-nav entry (/internal/term-sheet) opening straight
      onto one tool. An unknown slug falls back to the grid rather than a blank screen. */
   const [open, setOpen] = useState(() => (initialTool && TOOL_BY_SLUG[initialTool]) || null);
   const [counts, setCounts] = useState({}); // slug -> how many scenarios this staffer saved
+  const [note, setNote] = useState('');     // main's "Create loan file" error line
   /* The frame's own window, captured through StaticToolFrame's onReady. Same-origin,
      so the scenario bar can ask the tool for its state and hand it back. Held in a
      REF rather than state: it is an imperative handle, and re-rendering on it would
@@ -96,6 +100,40 @@ export default function StaffInvestorSuite({ initialTool = null }) {
 
   const noteCount = useCallback((slug, n) => setCounts((c) => (c[slug] === n ? c : { ...c, [slug]: n })), []);
 
+  // "Create loan file →" (owner-directed, from main): turn the term sheet you just
+  // built into a NEW loan file, pre-filled with everything you entered. Maps the
+  // studio's own input state with the SAME scenario→file translation the borrower
+  // "Start this loan" uses, stashes it, and opens the New file form pre-filled —
+  // you just add the borrower + submit.
+  function createFileFromStudio() {
+    setNote('');
+    try {
+      /* Reads the frame through the SAME pinned handle the scenario bar uses, rather
+         than `document.querySelector('.isuite-full-body iframe')`. Both find the live
+         frame in the ordinary case, but the DOM query cannot tell a booted frame from
+         one that is mid-remount — which is exactly the stale-window class the
+         generation pin was added to close. A loan FILE built from the previous tool
+         session's numbers is a worse version of that bug than a saved scenario. */
+      const win = winFor(open && open.slug);
+      if (!win || !win.YS || typeof win.YS.collectState !== 'function') {
+        setNote('Give the term sheet a moment to finish loading, then try again.');
+        return;
+      }
+      const state = win.YS.collectState();          // { v, c, rad }
+      const draft = scenarioToDraft({ v: state.v, c: state.c });
+      const name = String((state.v || {}).borrowerName || '').trim();
+      const prefill = {
+        ...draft,
+        firstName: name ? name.split(/\s+/)[0] : '',
+        lastName: name ? name.split(/\s+/).slice(1).join(' ') : '',
+      };
+      sessionStorage.setItem('ys-staff-newfile-prefill', JSON.stringify(prefill));
+      nav('/internal/new');
+    } catch (_) {
+      setNote('Could not read the term sheet — try again.');
+    }
+  }
+
   // Lock the page scroll while the full-screen tool is open.
   useEffect(() => {
     if (!open) return undefined;
@@ -114,13 +152,18 @@ export default function StaffInvestorSuite({ initialTool = null }) {
     return (
       <div className="isuite-full">
         <div className="isuite-full-head">
-          <button className="btn ghost small" onClick={() => showTool(null)} aria-label="Back to the Investor Suite">← Back to the suite</button>
+          <button className="btn ghost small" onClick={() => { showTool(null); setNote(''); }} aria-label="Back to the Investor Suite">← Back to the suite</button>
           <strong style={{ fontSize: 15 }}>{open.name}</strong>
           <div style={{ flex: 1 }} />
           <ToolScenarioBar slug={open.slug} toolName={open.name}
             getWin={() => winFor(open.slug)} onCountChange={noteCount} />
+          {open.slug === 'term-sheet' && (
+            <button className="btn btn-gold small" onClick={createFileFromStudio}
+              title="Open a new loan file pre-filled with these numbers">Create loan file →</button>
+          )}
           <a className="btn ghost small" href={url} target="_blank" rel="noopener noreferrer" title="Open this tool in a new browser tab">Open in a new tab ↗</a>
         </div>
+        {note && <div className="notice err" role="alert" style={{ margin: '0 12px' }}>{note}</div>}
         <div className="isuite-full-body">
           <StaticToolFrame key={open.slug} src={url} title={open.name} fill
             onReady={(win) => { winRef.current = { gen, slug: open.slug, win }; }} />

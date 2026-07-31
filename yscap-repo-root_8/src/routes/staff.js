@@ -1087,14 +1087,23 @@ async function createSharedEmailBorrower({ firstName, lastName, email, phone, of
 router.post('/applications', async (req, res) => {
   const b = req.body || {};
   const bo = b.borrower || {};
+  // INVITE-ONLY mode (owner-directed): "Invite for a new application" — a staffer
+  // starts a file from JUST an email and the borrower fills in the rest. Email is
+  // the only required field; the name and property address are optional (the
+  // borrower supplies them from the portal), and the invite is always sent. Every
+  // other origination step (borrower match-or-create, checklist, ClickUp task,
+  // officer assignment) runs exactly the same, so there is ONE origination path.
+  const inviteOnly = !!b.inviteOnly;
   const email = String(bo.email || '').trim();
   const firstName = String(bo.firstName || '').trim();
   const lastName = String(bo.lastName || '').trim();
   const addr = b.propertyAddress || null;
   if (!email) return res.status(400).json({ error: 'borrower email required' });
-  if (!firstName) return res.status(400).json({ error: 'borrower first name required' });
-  if (!addr || !(addr.oneLine || addr.street || addr.line1))
-    return res.status(400).json({ error: 'property address required' });
+  if (!inviteOnly) {
+    if (!firstName) return res.status(400).json({ error: 'borrower first name required' });
+    if (!addr || !(addr.oneLine || addr.street || addr.line1))
+      return res.status(400).json({ error: 'property address required' });
+  }
   try {
     // WHEN THE STAFFER EXPLICITLY PICKED AN EXISTING BORROWER, LINK TO THAT PROFILE
     // — authoritatively, never a match-or-create off the email (owner-reported
@@ -1210,7 +1219,7 @@ router.post('/applications', async (req, res) => {
           processor_id,is_assignment,underlying_contract_price,assignment_fee,requested_exp_reo,source,status,submitted_at)
        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,'staff','new',now())
        RETURNING id,ys_loan_number`,
-      [borrowerId, JSON.stringify(addr), b.propertyType || null, b.units || null,
+      [borrowerId, addr ? JSON.stringify(addr) : null, b.propertyType || null, b.units || null,
        b.program || null, require('../lib/fields').sanitizeLoanType(b.loanType), purchasePrice, b.asIsValue || null,   // #95: never a program
        b.arv || null, b.rehabBudget || null, officerId, officerName,
        b.rehabType || null, sqf.sqftPre, sqf.sqftPost,
@@ -1273,8 +1282,10 @@ router.post('/applications', async (req, res) => {
     require('../clickup/orchestrator').createForNewFile(appId).catch((e) => console.error('[clickup] create-on-start (staff)', appId, e && e.message));
 
     // Optionally invite the borrower to the portal for this file right away.
+    // Invite-only origination ALWAYS sends the invite (that is the whole point —
+    // the borrower takes it from here and completes the file themselves).
     let invited = null;
-    if (b.inviteBorrower) {
+    if (b.inviteBorrower || inviteOnly) {
       try { invited = await inviteBorrowerToFile({ appId, borrowerId, email, firstName, req }); }
       catch (e) { console.error('[staff-origination] borrower invite failed:', db.describeError(e)); }
     }
@@ -7664,7 +7675,14 @@ router.post('/llcs/:id/documents', async (req, res) => {
     catch (e) { return res.status(e.status || 400).json({ error: e.message }); }
     const maxBytes = cfg.maxUploadMb * 1024 * 1024;
     if (buf.length > maxBytes) return res.status(413).json({ error: `file too large (max ${cfg.maxUploadMb} MB)` });
-    const slot = b.slot ? String(b.slot).trim().slice(0, 80) : null;
+    let slot = b.slot ? String(b.slot).trim().slice(0, 80) : null;
+    // Every slot keeps EVERY document (owner-directed): on a plain ADD (not an
+    // explicit replace), uniquify a colliding slot label so the two never display
+    // under one name — mirrors the file-view upload path so the entity library
+    // behaves identically ("every single slot from within the condition").
+    if (slot && b.checklistItemId && !b.replaceDocumentId) {
+      slot = await require('../lib/slot-label').uniqueSlotLabel(b.checklistItemId, slot);
+    }
     const dupLlc = await require('../lib/doc-dedup').recentDuplicateDocId({   // idempotency (#87)
       filename: b.filename, sizeBytes: buf.length, uploadedByKind: 'staff', uploadedById: req.actor.id,
       llcId: req.params.id, checklistItemId: b.checklistItemId || null, slotLabel: slot });
@@ -7676,19 +7694,18 @@ router.post('/llcs/:id/documents', async (req, res) => {
       [b.checklistItemId || null, req.params.id, own.rows[0].borrower_id, b.filename,
        b.contentType || 'application/octet-stream', buf.length, provider, ref, req.actor.id, slot]);
     if (b.checklistItemId) {
+      // EVERY document slot keeps EVERY document (owner-directed): a plain ADD
+      // never deletes what's already there. Only an EXPLICIT replace (the user
+      // clicked "Replace" on one document, sending replaceDocumentId) supersedes —
+      // and ONLY that one document, never its siblings. The old blanket supersede
+      // here wiped every current sibling whenever the slot was null/colliding — the
+      // entity library's copy of the "upload a 2nd document, the 1st disappears" bug.
       if (b.replaceDocumentId) {
         await db.query(
           `UPDATE documents SET is_current=false,
               review_status=CASE WHEN review_status IN ('pending','rejected') THEN 'superseded' ELSE review_status END
             WHERE id=$1 AND checklist_item_id=$2`, [b.replaceDocumentId, b.checklistItemId]);
       }
-      await db.query(
-        `UPDATE documents SET is_current=false,
-            review_status=CASE WHEN review_status IN ('pending','rejected') THEN 'superseded' ELSE review_status END
-          WHERE checklist_item_id=$1 AND id<>$2 AND is_current=true
-            AND ($3::text IS NOT NULL OR $4::uuid IS NULL)
-            AND ($3::text IS NULL OR slot_label IS NOT DISTINCT FROM $3)`,
-        [b.checklistItemId, r.rows[0].id, slot, b.replaceDocumentId || null]);
       await db.query(`UPDATE checklist_items SET status='received', updated_at=now() WHERE id=$1`, [b.checklistItemId]);
       enqueueChecklistStatusPush(b.checklistItemId).catch(() => {});
     }
@@ -11023,16 +11040,32 @@ router.post('/leads/:id/convert', async (req, res) => {
     // checkboxes in .c, RADIOS in .rad. Read each field from the right bucket under
     // its REAL loan-application id (verified against the tool): the rehab budget is
     // `rehab` (not "construction"), and loan purpose is the `purpose` radio.
-    const pl = (lead.tool === 'loan_application' && lead.payload) ? lead.payload : {};
-    const pv = (pl && pl.v) || {}, pc = (pl && pl.c) || {}, pr = (pl && pl.rad) || {};
+    // A malformed / unexpected lead payload must NEVER 500 the conversion (owner
+    // reported: "convert to loan comes up a server error when the lead has a lot
+    // of information"). Parse defensively — an older/newer tool payload, a value
+    // of an unexpected type, or a non-object bucket falls back to a bare file
+    // (the borrower/officer fill the economics on registration) instead of
+    // throwing. numv + pv stay in the outer scope; the INSERT reads them below.
     const numv = (x) => { const n = Number(String(x == null ? '' : x).replace(/,/g, '')); return isFinite(n) && n > 0 ? n : null; };
-    const econIsAssign = !!pc.isAssign;
-    const econPrice = numv(pv.price);
-    const econSeller = econIsAssign ? numv(pv.origPrice) : null;
-    const econFee = (econIsAssign && econPrice && econSeller) ? Math.max(0, econPrice - econSeller) : null;
-    const econReserveOn = !!pc.finReserve;
-    const econFico = (() => { const n = Number(pv.fico); return isFinite(n) && n >= 300 && n <= 850 ? Math.round(n) : null; })();
-    const econLoanType = /refi/i.test(String(pr.purpose || '')) ? 'Refinance' : 'Purchase';
+    let pv = {};
+    let econIsAssign = false, econPrice = null, econSeller = null, econFee = null,
+        econReserveOn = false, econFico = null, econLoanType = 'Purchase';
+    try {
+      const pl = (lead.tool === 'loan_application' && lead.payload && typeof lead.payload === 'object') ? lead.payload : {};
+      pv = (pl.v && typeof pl.v === 'object') ? pl.v : {};
+      const pc = (pl.c && typeof pl.c === 'object') ? pl.c : {};
+      const pr = (pl.rad && typeof pl.rad === 'object') ? pl.rad : {};
+      econIsAssign = !!pc.isAssign;
+      econPrice = numv(pv.price);
+      econSeller = econIsAssign ? numv(pv.origPrice) : null;
+      econFee = (econIsAssign && econPrice && econSeller) ? Math.max(0, econPrice - econSeller) : null;
+      econReserveOn = !!pc.finReserve;
+      econFico = (() => { const n = Number(pv.fico); return isFinite(n) && n >= 300 && n <= 850 ? Math.round(n) : null; })();
+      econLoanType = /refi/i.test(String(pr.purpose || '')) ? 'Refinance' : 'Purchase';
+    } catch (e) {
+      console.warn('[lead-convert] payload parse failed — creating a bare file:', e && e.message);
+      pv = {};
+    }
 
     const br = await db.query(
       `INSERT INTO borrowers (first_name,last_name,email,cell_phone,fico)
@@ -11085,7 +11118,13 @@ router.post('/leads/:id/convert', async (req, res) => {
       [req.params.id, req.actor.id, `Created file ${ins.rows[0].ys_loan_number || appId}`, JSON.stringify({ applicationId: appId, borrowerId })]);
     await audit(req, 'staff_convert_lead', 'lead', req.params.id, { applicationId: appId, borrowerId });
     res.status(201).json({ ok: true, applicationId: appId, borrowerId, loanNumber: ins.rows[0].ys_loan_number });
-  } catch (e) { res.status(500).json({ error: 'server error' }); }
+  } catch (e) {
+    // NEVER silent (owner-directed "NEVER silent" rule): a convert 500 used to
+    // return a bare "server error" with nothing logged, so the reported failure
+    // could never be diagnosed. Log the real cause (PII-safe describeError).
+    console.error('[lead-convert] failed:', db.describeError ? db.describeError(e) : (e && e.message));
+    res.status(500).json({ error: 'server error' });
+  }
 });
 
 // ---------------- Encompass flood-certificate ordering ----------------

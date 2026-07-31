@@ -7,6 +7,7 @@ import LlcPicker from '../components/LlcPicker.jsx';
 import { MoneyInput, PhoneInput, ZipInput , EmailInput} from '../components/FormattedInputs.jsx';
 import { unitsMode, unitsForType } from '../lib/enums.js';
 import { fullNameOf } from '../lib/personName.js';
+import InviteApplicant from '../components/InviteApplicant.jsx';
 
 /* Staff-side file origination. An admin, loan officer, or operations user opens
    a mortgage file from their end — the borrower does NOT need to be signed up.
@@ -49,6 +50,38 @@ function readUrlBorrowerId() {
     if (q < 0) return '';
     return new URLSearchParams(hash.slice(q + 1)).get('borrowerId') || '';
   } catch (_) { return ''; }
+}
+
+// Term-sheet → New file hand-off (owner-directed): the Investor Suite's "Create
+// loan file →" stashes a scenario→file translation here; we consume it ONCE and
+// pre-fill the form with everything already entered, so the officer only adds the
+// borrower + submits. Only non-empty values are applied, so it never blanks a
+// field an in-progress draft already had.
+const PREFILL_KEY = 'ys-staff-newfile-prefill';
+function readStaffPrefill() {
+  try {
+    const raw = sessionStorage.getItem(PREFILL_KEY);
+    if (!raw) return null;
+    sessionStorage.removeItem(PREFILL_KEY);
+    const d = JSON.parse(raw);
+    return (d && typeof d === 'object') ? d : null;
+  } catch (_) { return null; }
+}
+function prefillToForm(p) {
+  const f = {}, addr = {};
+  if (!p) return { f, addr };
+  const str = (x) => (x === '' || x == null) ? '' : String(x);
+  const setIf = (o, k, val) => { const s = str(val); if (s !== '') o[k] = s; };
+  setIf(f, 'firstName', p.firstName); setIf(f, 'lastName', p.lastName);
+  setIf(f, 'program', p.program); setIf(f, 'loanType', p.loanType);
+  setIf(f, 'propertyType', p.propertyType);
+  setIf(f, 'purchasePrice', p.purchasePrice); setIf(f, 'asIsValue', p.asIsValue);
+  setIf(f, 'arv', p.arv); setIf(f, 'rehabBudget', p.rehabBudget); setIf(f, 'rehabType', p.rehabType);
+  setIf(f, 'requestedExpFlips', p.requestedExpFlips); setIf(f, 'requestedExpHolds', p.requestedExpHolds);
+  setIf(f, 'requestedExpGround', p.requestedExpGround); setIf(f, 'entityName', p.entityName);
+  if (p.isAssignment) { f.isAssignment = true; setIf(f, 'underlyingContractPrice', p.underlyingContractPrice); }
+  if (p.propertyAddress) { setIf(addr, 'street', p.propertyAddress.street); setIf(addr, 'state', p.propertyAddress.state); }
+  return { f, addr };
 }
 
 /* Optional co-borrower at file creation (#98). Internal-only borrower-name
@@ -260,6 +293,8 @@ export default function StaffNewFile() {
   // fresh so the ?borrowerId prefill effect below actually loads them.
   const _d = (_urlBorrowerId && _rawDraft && (_rawDraft.borrowerId || '') !== _urlBorrowerId) ? null : _rawDraft;
   if (_d !== _rawDraft) { try { localStorage.removeItem(DRAFT_KEY); } catch (_) { /* ignore */ } }
+  const _pf = prefillToForm(readStaffPrefill());   // term-sheet → new-file prefill (consumed once)
+  const _fromTermSheet = Object.keys(_pf.f).length > 0 || Object.keys(_pf.addr).length > 0;
   const [f, setF] = useState({
     firstName: '', lastName: '', email: '', phone: '',
     program: '', loanType: '', propertyType: '', units: '', entityName: '', llcId: '',
@@ -268,8 +303,9 @@ export default function StaffNewFile() {
     requestedExpFlips: '', requestedExpHolds: '', requestedExpGround: '', requestedExpReo: '',
     loanOfficerId: selfOfficerId, processorId: '', inviteBorrower: true,
     ...(_d && _d.f ? _d.f : {}),
+    ..._pf.f,   // prefill fills the economics on top; only non-empty values are set
   });
-  const [addr, setAddr] = useState({ street: '', unit: '', city: '', state: '', zip: '', ...(_d && _d.addr ? _d.addr : {}) });
+  const [addr, setAddr] = useState({ street: '', unit: '', city: '', state: '', zip: '', ...(_d && _d.addr ? _d.addr : {}), ..._pf.addr });
   const [busy, setBusy] = useState(false);
   // Synchronous re-entry guard: `disabled={busy}` alone can't stop a second
   // Enter-submit or double-click landing before React re-renders, which would
@@ -485,6 +521,25 @@ export default function StaffNewFile() {
       </div>
 
       {err && <div role="alert" className="notice err" style={{ marginBottom: 14 }}>{err}</div>}
+
+      {_fromTermSheet && <div className="notice ok" style={{ marginBottom: 14 }}>
+        Pre-filled from your term sheet — add the borrower and anything still missing, then create the file.
+      </div>}
+
+      {/* Fast path (owner-directed): don't have the details yet? Start the file
+          from just an email and let the borrower fill in the rest themselves. */}
+      <div className="panel" style={{ marginBottom: 16 }}>
+        <div className="panel-b" style={{ display: 'flex', gap: 14, alignItems: 'center', flexWrap: 'wrap', justifyContent: 'space-between' }}>
+          <div style={{ minWidth: 240, flex: '1 1 320px' }}>
+            <h3 style={{ margin: '0 0 4px' }}>Only have their email?</h3>
+            <p className="muted small" style={{ margin: 0 }}>
+              Start the file from just an email — we invite the borrower to sign in and fill in
+              the rest themselves. No need to key in the property or numbers first.
+            </p>
+          </div>
+          <InviteApplicant className="btn btn-gold" label="Invite for a new application" />
+        </div>
+      </div>
 
       <MismoImport />
 
