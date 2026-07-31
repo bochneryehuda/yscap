@@ -495,6 +495,11 @@
                      the term sheet lists the co-borrower as a non-guarantor member of the entity. The
                      studio sets this from applications.co_borrower_pg_waived. -->
                 <input id="coBorrowerPgWaived" type="hidden" value="">
+                <!-- Liquidity closing-cost buffer waiver (owner-authorized 2026-07-31): a READ-ONLY
+                     flag set by the portal host via YS.applyState (never edited here; the same shape
+                     as coBorrowerPgWaived). Blank on the public site, so the 1% closing-cost buffer
+                     applies; "1"/"true" waives it on the manual side. -->
+                <input id="liqBufferWaived" type="hidden" value="">
             </div>
             <div class="field cond" data-cond="addr">
                 <label for="propAddr">Subject property address</label>
@@ -904,6 +909,8 @@
             </div>
             <div class="ts-line em gold"><span class="k">Estimated cash to close<span class="tip" tabindex="0" role="note" aria-label="What you actually bring to the closing table — your down payment plus closing fees, including the estimated title and escrow charge.">i<span class="tip-bub">What you actually bring to the closing table — your down payment plus closing fees, including the estimated title and escrow charge.</span></span></span><span class="v" id="rCash">$0</span></div>
             <div class="ts-line"><span class="k">Estimated liquidity to show<span class="tip" tabindex="0" role="note" aria-label="Cash reserves you need to show you have on hand to carry the project. This is demonstrated, not money brought to closing.">i<span class="tip-bub">Cash reserves you need to show you have on hand to carry the project. This is demonstrated, not money brought to closing.</span></span></span><span class="v" id="rLiquidity">$0</span></div>
+            <!-- 1% closing-cost buffer inside the liquidity to show (owner-authorized 2026-07-31) -->
+            <div class="ts-line"><span class="k">Closing cost buffer (1%)<span class="tip" tabindex="0" role="note" aria-label="A buffer for extra closing costs — about 1% of the loan amount — included in the liquidity to show so you never run short at the table. It can be waived on a manual review.">i<span class="tip-bub">A buffer for extra closing costs — about 1% of the loan amount — included in the liquidity to show so you never run short at the table. It can be waived on a manual review.</span></span></span><span class="v" id="rLiqBuffer">—</span></div>
             <div class="ts-irnote" id="rIRnote" style="display:none"></div>
             <div class="ts-irnote" id="rEscNote" style="display:none"></div>
             <div class="ts-info" id="rRefiNote" style="display:none"></div>
@@ -983,7 +990,7 @@
 <script src="silver-program.js?v=silver9-bandeps"></script>
 <script src="title-cost.js?v=admin8"></script>
 <script src="address-autocomplete.js?v=admin9"></script>
-<script src="termsheet.js?v=cards9-irtruth1-maxlev1-origfit-manualorig2-badgewrap-ooprehab1-payoff1"></script>
+<script src="termsheet.js?v=cards9-irtruth1-maxlev1-origfit-manualorig2-badgewrap-ooprehab1-payoff1-tsprov1"></script>
 <script src="../float-actions.js?v=admin10-applyfix"></script>
 <script>
 /* Property-address autocomplete (owner-directed 2026-07-17): same shared YSAddr

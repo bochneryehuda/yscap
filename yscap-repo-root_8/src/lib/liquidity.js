@@ -146,6 +146,11 @@ async function syncLiquidityCondition(appId, quote, client = db, opts = {}) {
       closingCosts: Number(cc.dueAtClosing) || 0,
       reserveRequirement: Number(quote.reserveRequirement) || 0,
       reserveBasis: quote.reserveBasis || null,
+      // 1% closing-cost buffer (owner-authorized 2026-07-31) — extra cash the
+      // borrower must show so attorney/other closing charges never run short.
+      // 0 when waived per file (applications.liquidity_buffer_waived).
+      closingBuffer: Number(quote.closingBuffer) || 0,
+      closingBufferWaived: !!quote.closingBufferWaived,
       computedAt: new Date().toISOString(),
     };
     const hint =
@@ -155,7 +160,8 @@ async function syncLiquidityCondition(appId, quote, client = db, opts = {}) {
       `${breakdown.assignmentExcess > 0 ? `assignment excess ${money2(breakdown.assignmentExcess)} + ` : ''}` +
       `closing costs due at closing ${money2(breakdown.closingCosts)} ` +
       `= cash to close ${money2(breakdown.cashToClose)}; plus reserves ${money2(breakdown.reserveRequirement)}` +
-      `${breakdown.reserveBasis ? ` (${breakdown.reserveBasis})` : ''}.`;
+      `${breakdown.reserveBasis ? ` (${breakdown.reserveBasis})` : ''}` +
+      `${breakdown.closingBuffer > 0 ? `; plus a closing-cost buffer ${money2(breakdown.closingBuffer)} (1% of the loan amount, for extra closing charges)` : (breakdown.closingBufferWaived ? '; closing-cost buffer waived on this file' : '')}.`;
 
     const r = await client.query(
       `SELECT ci.id, ci.status, ci.signed_off_at, ci.tool_payload
@@ -243,7 +249,44 @@ async function resyncLiquidityForFile(appId, client = db) {
   } catch (e) { console.error('[liquidity] resyncLiquidityForFile failed', appId, e && e.message); return null; }
 }
 
+/**
+ * Set the per-file 1% closing-cost-buffer WAIVER (owner-authorized 2026-07-31:
+ * "it's something that we can waive on certain scenarios — on the manual side").
+ * Writes applications.liquidity_buffer_waived, then keeps the CURRENT
+ * registration's stored quote + the assets condition in step: the buffer is a
+ * requirement layer on top of the priced structure (never an engine number), so
+ * the stored quote's closingBuffer / liquidityRequired are adjusted by exact
+ * arithmetic (old buffer out, new buffer in — 1% of the registered total loan)
+ * rather than re-running the engines. Un-waiving RAISES the requirement, so the
+ * condition may reopen (syncLiquidityCondition's increased-rule); waiving only
+ * lowers it and never reopens. No registration yet → just the flag (the next
+ * register prices with it). Returns {waived, closingBuffer, liquidityRequired}.
+ */
+async function setClosingBufferWaiver(appId, waived, client = db) {
+  const on = !!waived;
+  await client.query(`UPDATE applications SET liquidity_buffer_waived=$2 WHERE id=$1`, [appId, on]);
+  const r = await client.query(
+    `SELECT id, total_loan, quote FROM product_registrations
+      WHERE application_id=$1 AND is_current=true LIMIT 1`, [appId]);
+  if (!r.rows[0] || !r.rows[0].quote) return { waived: on, closingBuffer: null, liquidityRequired: null };
+  let quote = r.rows[0].quote;
+  if (typeof quote === 'string') { try { quote = JSON.parse(quote); } catch (_) { return { waived: on, closingBuffer: null, liquidityRequired: null }; } }
+  const totalLoan = Number(r.rows[0].total_loan) || Number(quote.sizing && quote.sizing.totalLoan) || 0;
+  const oldBuffer = Number(quote.closingBuffer) || 0;
+  const newBuffer = on || totalLoan <= 0 ? 0 : Math.round(totalLoan * 0.01 * 100) / 100;
+  const oldRequired = Number(quote.liquidityRequired != null ? quote.liquidityRequired : quote.liquidity) || 0;
+  const newRequired = Math.round((oldRequired - oldBuffer + newBuffer) * 100) / 100;
+  quote.closingBuffer = newBuffer;
+  quote.closingBufferWaived = on;
+  quote.liquidityRequired = newRequired;
+  quote.liquidity = newRequired;
+  await client.query(`UPDATE product_registrations SET quote=$2::jsonb WHERE id=$1`, [r.rows[0].id, JSON.stringify(quote)]);
+  await syncLiquidityCondition(appId, quote, client, { noReopen: on });
+  return { waived: on, closingBuffer: newBuffer, liquidityRequired: newRequired };
+}
+
 module.exports = {
   syncLiquidityCondition, backfillLiquidityConditions, resyncLiquidityForFile,
+  setClosingBufferWaiver,
   bankStatementMonths, bankStatementLine, GENERIC_BANK_STMT_HINT, currentProgram,
 };

@@ -44,7 +44,7 @@ import { isWorkflowStep } from '../lib/condition-workflow-steps.js';
 import ConditionActions, { DocActions } from '../components/ConditionActions.jsx';
 import ConditionLine, { ConditionNote } from '../components/ConditionLine.jsx';
 import UspsAddressVerification from '../components/UspsAddressVerification.jsx';
-import { canComplete } from '../lib/condition-actions.js';
+import { canComplete, canDeleteDoc } from '../lib/condition-actions.js';
 import EsignFileSection from '../components/EsignFileSection.jsx';
 import ExceptionRegisterCard from '../components/ExceptionRegisterCard.jsx';
 import OrdersPanel from '../components/OrdersPanel.jsx';
@@ -1726,7 +1726,7 @@ function LlcReview({ appId, app, onReviewDoc, onDownloadDoc, dlBusy, onChanged, 
                             )}
                             {completer && rs !== 'accepted' && <button className="btn primary small" disabled={reviewBusy} onClick={() => review(s, 'accept')}>Accept</button>}
                             {rs !== 'rejected' && <button className="btn link small" disabled={reviewBusy} onClick={() => review(s, 'reject')}>Reject</button>}
-                            {completer && <button className="btn link small" style={{ color: 'var(--danger)' }} disabled={reviewBusy} title="Permanently delete — for a mistake upload (never synced to SharePoint)" onClick={() => review(s, 'delete')}>Delete</button>}
+                            {canDeleteDoc(role) && <button className="btn link small" style={{ color: 'var(--danger)' }} disabled={reviewBusy} title="Permanently delete — for a mistake upload (never synced to SharePoint)" onClick={() => review(s, 'delete')}>Delete</button>}
                           </>
                         ) : (
                           !l.is_verified && (
@@ -1997,7 +1997,7 @@ function StaffTrackRecordPanel({ app, role }) {
                       <span className="pill small" style={rs === 'accepted' ? { borderColor: 'var(--ok)', color: 'var(--ok)' } : rs === 'rejected' ? { borderColor: 'var(--danger)', color: 'var(--danger)' } : undefined}>{rs}</span>
                       {completerTR && rs !== 'accepted' && <button className="btn primary small" disabled={trBusy === d.id} onClick={() => reviewTrDoc(d, 'accept')}>Accept</button>}
                       {rs !== 'rejected' && <button className="btn link small" disabled={trBusy === d.id} onClick={() => reviewTrDoc(d, 'reject')}>Reject</button>}
-                      {completerTR && <button className="btn link small" style={{ color: 'var(--danger)' }} disabled={trBusy === d.id} title="Permanently delete — for a mistake upload (never synced to SharePoint)" onClick={() => reviewTrDoc(d, 'delete')}>Delete</button>}
+                      {canDeleteDoc(role) && <button className="btn link small" style={{ color: 'var(--danger)' }} disabled={trBusy === d.id} title="Permanently delete — for a mistake upload (never synced to SharePoint)" onClick={() => reviewTrDoc(d, 'delete')}>Delete</button>}
                       {rs === 'rejected' && d.rejection_reason && <span className="small" style={{ color: 'var(--danger)', width: '100%', paddingLeft: 18 }}>{d.rejection_reason}</span>}
                     </div>
                   );
@@ -2113,21 +2113,19 @@ function VestingLlcOwners({ appId, app }) {
 // remove (×). Add-assistant pickers below. The PRIMARY is changed through the
 // admin-only Assign controls, not here. `officers`/`processors` are the roster
 // lists already loaded by the parent; `onChanged` refreshes the file.
-function TeamAssignees({ appId, officers, processors, onChanged }) {
+function TeamAssignees({ appId, officers, processors, closers = [], drawCoordinators = [], onChanged }) {
   const [rows, setRows] = useState(null);
   const [busy, setBusy] = useState('');
   const [err, setErr] = useState('');
-  const [addLo, setAddLo] = useState('');
-  const [addProc, setAddProc] = useState('');
+  const [adds, setAdds] = useState({});   // role -> picked staffId
   const load = () => api.staffAssignees(appId).then(setRows).catch(() => setRows([]));
   useEffect(() => { load(); /* eslint-disable-next-line */ }, [appId]);
   if (!rows) return null;
-  const los = rows.filter(r => r.role === 'loan_officer');
-  const procs = rows.filter(r => r.role === 'processor');
-  async function add(role, staffId) {
+  const byRole = (role) => rows.filter(r => r.role === role);
+  async function add(role, staffId, primary) {
     if (!staffId) return;
     setBusy('add'); setErr('');
-    try { await api.staffAddAssignee(appId, staffId, role); setAddLo(''); setAddProc(''); await load(); onChanged && onChanged(); }
+    try { await api.staffAddAssignee(appId, staffId, role, primary); setAdds(a => ({ ...a, [role]: '' })); await load(); onChanged && onChanged(); }
     catch (e) { setErr(e.message || 'Could not add'); } finally { setBusy(''); }
   }
   async function remove(role, staffId) {
@@ -2135,38 +2133,64 @@ function TeamAssignees({ appId, officers, processors, onChanged }) {
     try { await api.staffRemoveAssignee(appId, staffId, role); await load(); onChanged && onChanged(); }
     catch (e) { setErr(e.message || 'Could not remove'); } finally { setBusy(''); }
   }
+  // Closer / draw-coordinator primaries CAN be cleared here (db/392) — only the
+  // LO/processor primaries stay locked to the Assign selects above.
+  const primaryRemovable = (role) => role === 'closer' || role === 'draw_coordinator';
   const Chip = ({ r }) => (
     <span className="asg-chip">
       {r.full_name}
-      {r.is_primary
-        ? <span className="asg-badge">Primary</span>
-        : <button className="asg-x" title="Remove assistant" disabled={busy === r.staff_id} onClick={() => remove(r.role, r.staff_id)}>×</button>}
+      {r.is_primary && <span className="asg-badge">Primary</span>}
+      {(!r.is_primary || primaryRemovable(r.role)) && (
+        <button className="asg-x" title={r.is_primary ? 'Clear this assignment (falls back to the whole desk)' : 'Remove from this file'}
+          disabled={busy === r.staff_id} onClick={() => remove(r.role, r.staff_id)}>×</button>
+      )}
     </span>
   );
   const Line = ({ label, list }) => (
     <div className="metrow" style={{ alignItems: 'flex-start' }}>
       <span className="k">{label}</span>
       <span className="v" style={{ display: 'flex', flexWrap: 'wrap', gap: 6, justifyContent: 'flex-end' }}>
-        {list.length ? list.map(r => <Chip key={r.staff_id} r={r} />) : <span className="muted small">—</span>}
+        {list.length ? list.map(r => <Chip key={r.staff_id} r={r} />) : <span className="muted small">Whole desk (nobody assigned)</span>}
       </span>
     </div>
   );
+  // ONE add-control per role. The first closer / draw coordinator added becomes
+  // the PRIMARY (their workflow gets the file's submissions); more people can be
+  // added to the same role — every assigned person sees the file's items
+  // (owner-directed 2026-07-31: multiple closers / draw coordinators per file).
+  const AddRow = ({ role, label, pool, firstIsPrimary }) => {
+    const cur = byRole(role);
+    const hasPrimary = cur.some(r => r.is_primary);
+    const val = adds[role] || '';
+    return (
+      <>
+        <select className="input" style={{ maxWidth: 210, flex: '1 1 160px' }} value={val}
+          onChange={e => setAdds(a => ({ ...a, [role]: e.target.value }))}>
+          <option value="">{label}</option>
+          {pool.filter(m => !cur.some(r => r.staff_id === m.id)).map(m => <option key={m.id} value={m.id}>{m.full_name}</option>)}
+        </select>
+        {val && <button className="btn ghost small" disabled={busy === 'add'}
+          onClick={() => add(role, val, firstIsPrimary && !hasPrimary)}>{firstIsPrimary && !hasPrimary ? 'Assign' : 'Add'}</button>}
+      </>
+    );
+  };
   return (
     <div style={{ marginBottom: 4 }}>
-      <Line label="Loan officers" list={los} />
-      <Line label="Processors" list={procs} />
+      <Line label="Loan officers" list={byRole('loan_officer')} />
+      <Line label="Processors" list={byRole('processor')} />
+      <Line label="Closers" list={byRole('closer')} />
+      <Line label="Draw coordinators" list={byRole('draw_coordinator')} />
       <div className="row" style={{ gap: 6, marginTop: 8, flexWrap: 'wrap' }}>
-        <select className="input" style={{ maxWidth: 210, flex: '1 1 160px' }} value={addLo} onChange={e => setAddLo(e.target.value)}>
-          <option value="">+ Add assistant LO…</option>
-          {officers.filter(m => !los.some(r => r.staff_id === m.id)).map(m => <option key={m.id} value={m.id}>{m.full_name}</option>)}
-        </select>
-        {addLo && <button className="btn ghost small" disabled={busy === 'add'} onClick={() => add('loan_officer', addLo)}>Add</button>}
-        <select className="input" style={{ maxWidth: 210, flex: '1 1 160px' }} value={addProc} onChange={e => setAddProc(e.target.value)}>
-          <option value="">+ Add assistant processor…</option>
-          {processors.filter(m => !procs.some(r => r.staff_id === m.id)).map(m => <option key={m.id} value={m.id}>{m.full_name}</option>)}
-        </select>
-        {addProc && <button className="btn ghost small" disabled={busy === 'add'} onClick={() => add('processor', addProc)}>Add</button>}
+        <AddRow role="loan_officer" label="+ Add assistant LO…" pool={officers} firstIsPrimary={false} />
+        <AddRow role="processor" label="+ Add assistant processor…" pool={processors} firstIsPrimary={false} />
+        <AddRow role="closer" label="+ Assign / add closer…" pool={closers} firstIsPrimary />
+        <AddRow role="draw_coordinator" label="+ Assign / add draw coordinator…" pool={drawCoordinators} firstIsPrimary />
       </div>
+      <p className="muted small" style={{ margin: '6px 0 0' }}>
+        Closing and draw submissions go to the file’s assigned closer / draw coordinator; with nobody assigned they
+        go to the whole desk (the default, unchanged). Everyone assigned to a role here sees the file’s items in
+        their own workflow.
+      </p>
       {err && <p className="notice err small" style={{ marginTop: 6 }}>{err}</p>}
     </div>
   );
@@ -3640,6 +3664,11 @@ export default function StaffApplication() {
   const condTab = condTabRaw === 'internal' ? 'borrower' : condTabRaw;
   // Conversations + Activity + Email Center are one "Communication" hub (tabs).
   const [commTab, setCommTab] = useStickyFilter('commTab', 'messages');
+  // "Application details" is ONE tabbed sub-hub too (owner-directed 2026-07-31:
+  // "split in between 100 places… clean up the view"): Deal & property ·
+  // Missing info · Pipeline data. Plain local useState (not sticky) — the deal
+  // editor is the right first thing every time the section is opened.
+  const [appDetailTab, setAppDetailTab] = useState('deal');
   // ONE "off my plate" rule for every surface — see roleDone() above.
   // The internal checklist shows ONLY staff-facing work items — the borrower's
   // conditions (audience borrower/both) already live in "Conditions to close",
@@ -4074,7 +4103,10 @@ export default function StaffApplication() {
             {app.as_is_value == null && app.purchase_price != null &&
               <span className="muted small" style={{ fontWeight: 400 }} title="No as-is value entered — defaults to the final purchase price everywhere (incl. pricing)"> (= purchase)</span>}
           </span></div>
-          <TeamAssignees appId={id} officers={officers} processors={processors} onChanged={load} />
+          <TeamAssignees appId={id} officers={officers} processors={processors}
+            closers={team.filter(m => m.role === 'closer')}
+            drawCoordinators={team.filter(m => m.role === 'draw_coordinator')}
+            onChanged={load} />
           {uwName && <div className="metrow"><span className="k">Underwriter</span><span className="v">{uwName}</span></div>}
           <div className="gold-rule" style={{ margin: '10px 0' }} />
           {/* Reassigning a file is an admin function (S3-02) — the server 403s a
@@ -4098,38 +4130,75 @@ export default function StaffApplication() {
 
       <Section id="sec-application" title="Application details" defaultOpen={false}
         info="What the borrower filled out, plus the editable deal numbers — changes here flow straight into pricing.">
-      <Completeness app={app} borrower={borrower} appId={app.id} onSaved={load} />
-      {/* THE PEOPLE ON THIS FILE — their own records, fully editable (#850:
-          "a button to edit the entire borrower profile, so we can edit the 1st
-          borrower AND the 2nd borrower — name, social, everything"). Everything
-          below in EditFileDetails is the DEAL; the PEOPLE are the two
-          BorrowerProfilePanel mounts, which moved UP to the file overview
-          (owner-directed 2026-07-27) — this section is collapsed by default, so
-          an editor living in here is invisible until you go looking, which is how
-          the Borrower section stayed read-only. Mounted once per person up there,
-          never twice on one page. */}
-      {app.borrower_id && (
-        <PrimaryAddressPanel borrowerId={app.borrower_id}
-          address={borrower && borrower.current_address}
-          name={fullNameOf(app) || 'Borrower'} onSaved={load} />
+      {/* ONE TABBED SUB-HUB (owner-directed 2026-07-31: "the application details
+          are split in between 100 places… everything together, easier for the
+          eye, better organized in sections"). The six stacked panels this
+          section used to hold are now three tabs — the deal editor first, the
+          missing-field pills second, the read-only ClickUp figures last —
+          mirroring the Conditions hub's tab pattern. The PEOPLE on this file
+          are NOT here (#850; owner-directed 2026-07-27): their records are the
+          two BorrowerProfilePanel mounts up on the file overview, once per
+          person, never twice on one page — the line under the tabs points
+          there so nobody hunts this section for them. */}
+      <p className="small" style={{ margin: '0 0 10px', color: '#4B585C' }}>
+        Borrower personal details (name, contact, home address) are edited in the Borrower panel —{' '}
+        <button type="button" className="btn link small" onClick={() => goToSection('sec-overview')}>
+          Open the Borrower panel
+        </button>
+      </p>
+      <div className="cond-tabs" role="tablist" aria-label="Application details">
+        {[
+          { k: 'deal', label: 'Deal & property' },
+          { k: 'missing', label: 'Missing info' },
+          { k: 'pipeline', label: 'Pipeline data (read-only)' },
+        ].map(t => (
+          <button key={t.k} type="button" role="tab" aria-selected={appDetailTab === t.k}
+            className={`cond-tab${appDetailTab === t.k ? ' active' : ''}`} onClick={() => setAppDetailTab(t.k)}>
+            {t.label}
+          </button>
+        ))}
+      </div>
+
+      {appDetailTab === 'deal' && (
+        /* The structural lock/unlock banner used to render here; it now sits at
+           the top of the file (above the collapsible sections) so it is visible
+           without expanding this section. EditFileDetails is where the actual
+           correction is made once a super-admin has unlocked the file up top.
+           openByDefault: the form IS this tab, so it renders expanded instead
+           of hiding behind a second collapse. */
+        <EditFileDetails app={app} onSaved={load} openByDefault />
       )}
-      <CoBorrowerCompleteness app={app} appId={app.id} onSaved={load} />
-      {app.co_borrower_id && (
-        <PrimaryAddressPanel borrowerId={app.co_borrower_id}
-          address={app.co_current_address}
-          name={fullNameOf(app, 'co_') || 'Co-borrower'} onSaved={load} />
-      )}
-      {/* The structural lock/unlock banner used to render here; it now sits at
-          the top of the file (above the collapsible sections) so it is visible
-          without expanding this section. EditFileDetails is where the actual
-          correction is made once a super-admin has unlocked the file up top. */}
-      <EditFileDetails app={app} onSaved={load} />
-      {/* Read-only pipeline data pulled from ClickUp — tucked into a disclosure so it
-          isn't extra weight on the page; open it when you actually need those figures. */}
-      <details className="disclosure" style={{ marginTop: 16 }}>
-        <summary>Pipeline data from ClickUp (read-only)</summary>
+
+      {appDetailTab === 'missing' && <>
+        <p className="small" style={{ margin: '0 0 4px', color: '#4B585C' }}>
+          Anything still missing on the file — fill a pill and it disappears. Every field here can
+          also be edited any time under Deal &amp; property or in the Borrower panel.
+        </p>
+        <Completeness app={app} borrower={borrower} appId={app.id} onSaved={load} />
+        <CoBorrowerCompleteness app={app} appId={app.id} onSaved={load} />
+        {/* The two primary-address rows moved here rather than being deleted
+            with the people's editors: this small panel still edits something
+            the BorrowerProfilePanel's address boxes don't offer (the Apt/Unit
+            slot, and it writes the one-line mailing form). Once an address is
+            on file each collapses to a single row. */}
+        {app.borrower_id && (
+          <PrimaryAddressPanel borrowerId={app.borrower_id}
+            address={borrower && borrower.current_address}
+            name={fullNameOf(app) || 'Borrower'} onSaved={load} />
+        )}
+        {app.co_borrower_id && (
+          <PrimaryAddressPanel borrowerId={app.co_borrower_id}
+            address={app.co_current_address}
+            name={fullNameOf(app, 'co_') || 'Co-borrower'} onSaved={load} />
+        )}
+      </>}
+
+      {appDetailTab === 'pipeline' && (
+        /* Read-only pipeline data pulled from ClickUp — its own tab now, no
+           longer buried inside a disclosure; the panel carries its own
+           "Pulled from the pipeline · read-only" intro line. */
         <ClickupFileData app={app} />
-      </details>
+      )}
       </Section>
 
       {/* THE PAYOFF (owner-directed 2026-07-31) — its own section on a refinance,
@@ -4339,7 +4408,7 @@ export default function StaffApplication() {
                   </button>
                   {d.is_current && rs !== 'accepted' && canComplete(role) && <button className="btn primary small" onClick={() => reviewDoc(d, 'accept')}>Accept</button>}
                   {d.is_current && rs !== 'rejected' && <button className="btn ghost small" onClick={() => reviewDoc(d, 'reject')}>Reject</button>}
-                  {canComplete(role) && <button className="btn ghost small" style={{ color: 'var(--danger)' }} title="Permanently delete — for a mistake upload (never synced to SharePoint)" onClick={() => reviewDoc(d, 'delete')}>Delete</button>}
+                  {canDeleteDoc(role) && <button className="btn ghost small" style={{ color: 'var(--danger)' }} title="Permanently delete — for a mistake upload (never synced to SharePoint)" onClick={() => reviewDoc(d, 'delete')}>Delete</button>}
                 </div>
               </div>
               );

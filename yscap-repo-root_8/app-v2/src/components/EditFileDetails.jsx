@@ -12,10 +12,21 @@ import { refiKind } from '../lib/payoff.js';
 /* Staff edit of the loan-file data after creation — EVERY field the
    application collects is correctable here (typo'd price, wrong property
    type, missed assignment flag, refi economics, address, term, experience…).
-   Collapsed by default. Each save writes a field-level before/after diff to
-   the audit log, which the file's Activity feed renders verbatim. */
+   Collapsed by default; `openByDefault` renders it already expanded — the
+   "Deal & property" tab of the Application details section passes it, because
+   there the form IS the tab and a second collapse would just hide it again
+   (owner-directed 2026-07-31 cleanup). Each save writes a field-level
+   before/after diff to the audit log, which the file's Activity feed renders
+   verbatim. */
 
 const num = (v) => v == null || v === '' ? '' : String(v);
+
+/* ONE shared eyebrow style for the form's section headings (Property /
+   Loan & economics / Refinance details / Experience / Assignment) so the long
+   form scans as clean sections — the same small-caps look as the panel
+   eyebrows used elsewhere. Explicit dark text on the white canvas; NEVER a
+   var(--ink*) token for text color (those resolve LIGHT in this app). */
+const EYEBROW = { textTransform: 'uppercase', letterSpacing: '.06em', fontSize: 12, color: '#4B585C' };
 const REHAB_TYPES = ['Cosmetic', 'Moderate', 'Heavy / gut rehab', 'Adding square footage', 'Ground-up construction'];
 const needsSqft = (rehabType) => /square|adding|ground/i.test(rehabType || '');
 
@@ -62,8 +73,9 @@ function formFrom(app) {
   };
 }
 
-export default function EditFileDetails({ app, onSaved }) {
-  const [open, setOpen] = useState(false);
+export default function EditFileDetails({ app, onSaved, openByDefault = false }) {
+  // Seeds the collapse only — the header toggle still works either way.
+  const [open, setOpen] = useState(!!openByDefault);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState('');
   const [msg, setMsg] = useState('');
@@ -202,7 +214,7 @@ export default function EditFileDetails({ app, onSaved }) {
           {err && <div role="alert" className="notice err" style={{ marginBottom: 10 }}>{err}</div>}
           {msg && <div className="notice ok" style={{ marginBottom: 10 }}>{msg}</div>}
           {warn && <div className="notice warn" style={{ marginBottom: 10, color: '#141B22' }}>{warn}</div>}
-          <p className="muted small" style={{ margin: '0 0 8px', textTransform: 'uppercase', letterSpacing: '.05em' }}>Property</p>
+          <p className="small" style={{ margin: '0 0 8px', ...EYEBROW }}>Property</p>
           <div className="edit-grid">
             <label className="col-4"><span>Street address</span>
               <AddressAutocomplete value={f.addrLine1}
@@ -242,7 +254,7 @@ export default function EditFileDetails({ app, onSaved }) {
             {/* Occupancy is intentionally NOT shown (owner-directed) — kept in the
                 data model and round-tripped unchanged, never surfaced in the UI. */}
           </div>
-          <p className="muted small" style={{ margin: '14px 0 8px', textTransform: 'uppercase', letterSpacing: '.05em' }}>Loan &amp; economics</p>
+          <p className="small" style={{ margin: '14px 0 8px', ...EYEBROW }}>Loan &amp; economics</p>
           <div className="edit-grid">
             <label><span>Program</span>
               <select className="input" value={f.program} onChange={(e) => set('program', e.target.value)}>
@@ -271,7 +283,7 @@ export default function EditFileDetails({ app, onSaved }) {
             </>}
           </div>
           {isRefi && <>
-            <p className="muted small" style={{ margin: '14px 0 8px', textTransform: 'uppercase', letterSpacing: '.05em' }}>Refinance details</p>
+            <p className="small" style={{ margin: '14px 0 8px', ...EYEBROW }}>Refinance details</p>
             <div className="edit-grid">
               <label><span>Original purchase price</span><MoneyInput value={f.originalPurchasePrice} onChange={(v) => set('originalPurchasePrice', v)} /></label>
               <label><span>Date acquired</span><input className="input" type="date" value={f.acquisitionDate} onChange={(e) => set('acquisitionDate', e.target.value)} /></label>
@@ -303,7 +315,7 @@ export default function EditFileDetails({ app, onSaved }) {
               </div>
             </div>
           </>}
-          <p className="muted small" style={{ margin: '14px 0 8px', textTransform: 'uppercase', letterSpacing: '.05em' }}>Experience entered on this file</p>
+          <p className="small" style={{ margin: '14px 0 8px', ...EYEBROW }}>Experience entered on this file</p>
           <div className="edit-grid">
             <label><span>Exp: flips</span><input className="input" type="number" min="0" value={f.requestedExpFlips} onChange={(e) => set('requestedExpFlips', e.target.value)} /></label>
             <label><span>Exp: holds</span><input className="input" type="number" min="0" value={f.requestedExpHolds} onChange={(e) => set('requestedExpHolds', e.target.value)} /></label>
@@ -311,11 +323,12 @@ export default function EditFileDetails({ app, onSaved }) {
             <label><span>Exp: REO</span><input className="input" type="number" min="0" value={f.requestedExpReo} onChange={(e) => set('requestedExpReo', e.target.value)} /></label>
           </div>
           {/* Assignment of contract is a purchase concept — hide it on a refinance. */}
-          {!isRefi && (
-          <div className="edit-grid" style={{ marginTop: 12 }}>
+          {!isRefi && (<>
+          <p className="small" style={{ margin: '14px 0 8px', ...EYEBROW }}>Assignment</p>
+          <div className="edit-grid">
             <label className="col-4" style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
               <input type="checkbox" checked={f.isAssignment} onChange={(e) => set('isAssignment', e.target.checked)} />
-              <span style={{ textTransform: 'none', letterSpacing: 0, fontWeight: 500, fontSize: '14px', color: 'var(--ivory)' }}>This is an assignment purchase</span>
+              <span style={{ textTransform: 'none', letterSpacing: 0, fontWeight: 500, fontSize: '14px', color: '#141B22' }}>This is an assignment purchase</span>
             </label>
             {f.isAssignment && <>
               <label className="col-2"><span>Original (underlying) price</span><MoneyInput value={f.underlyingContractPrice} onChange={(v) => set('underlyingContractPrice', v)} /></label>
@@ -325,7 +338,7 @@ export default function EditFileDetails({ app, onSaved }) {
                 </div></label>
             </>}
           </div>
-          )}
+          </>)}
           <p className="muted small" style={{ margin: '8px 0 0' }}>Editing the price/ARV/rehab/assignment re-drives the pricing engine when you re-register a product. Every change lands in the file's Activity log with its before/after values.</p>
           {/* The result belongs NEXT TO the button that produced it. This form is
               long enough that the notice at the top of the panel is off-screen by

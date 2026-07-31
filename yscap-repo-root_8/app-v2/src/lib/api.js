@@ -561,6 +561,11 @@ export const api = {
   // #152 — export the current pipeline VIEW (same filter params as staffApplications).
   staffExportPipeline: (params) => download(`/api/staff/applications/export${qs(params)}`),
   staffPricing:      (appId) => req('GET', `/api/staff/applications/${appId}/pricing`),
+  // 1% closing-cost liquidity buffer waiver (owner-authorized 2026-07-31; admin).
+  staffSetLiquidityBuffer: (appId, waived) => req('POST', `/api/staff/applications/${appId}/liquidity-buffer`, { waived: !!waived }),
+  // Per-officer business settings (owner-directed 2026-07-31) — self-scoped.
+  mySettings:        () => req('GET', '/api/staff/my-settings'),
+  saveMySettings:    (settings) => req('PUT', '/api/staff/my-settings', { settings }),
   staffPricingQuote: (appId, overrides) => req('POST', `/api/staff/applications/${appId}/pricing/quote`, { overrides }),
   staffRegisterProduct: (appId, program, overrides, econVersion, assetMonths, submitException, termOptions, encompassOverrideReason) => req('POST', `/api/staff/applications/${appId}/pricing/register`, { program, overrides, econVersion, assetMonths, submitException, termOptions, encompassOverrideReason }),
   // Redesign 2026-07-24: the pricing exception is a first-class register record —
@@ -701,7 +706,7 @@ export const api = {
   staffAssign:      (appId, b) => req('POST', `/api/staff/applications/${appId}/assign`, b),
   // Multi-assignee team (#64): the full team + add/remove full-access assistants.
   staffAssignees:      (appId) => req('GET', `/api/staff/applications/${appId}/assignees`),
-  staffAddAssignee:    (appId, staffId, role) => req('POST', `/api/staff/applications/${appId}/assignees`, { staffId, role }),
+  staffAddAssignee:    (appId, staffId, role, primary) => req('POST', `/api/staff/applications/${appId}/assignees`, { staffId, role, primary: !!primary }),
   staffRemoveAssignee: (appId, staffId, role) => req('DELETE', `/api/staff/applications/${appId}/assignees/${staffId}${role ? `?role=${role}` : ''}`),
   staffSetStatus:   (appId, status, force) => req('PATCH', `/api/staff/applications/${appId}`, force ? { status, force: true } : { status }),
   // Internal (ClickUp) status — the exact 38-status task workflow. The list feeds

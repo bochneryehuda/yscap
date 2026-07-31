@@ -166,7 +166,12 @@ export default function StaffInvestorSuite({ initialTool = null }) {
         {note && <div className="notice err" role="alert" style={{ margin: '0 12px' }}>{note}</div>}
         <div className="isuite-full-body">
           <StaticToolFrame key={open.slug} src={url} title={open.name} fill
-            onReady={(win) => { winRef.current = { gen, slug: open.slug, win }; }} />
+            onReady={(win) => { winRef.current = { gen, slug: open.slug, win };
+              // Provenance stamp (owner-directed 2026-07-31): a term sheet built
+              // on a staffer's own login — outside any file — is OFFICER
+              // GENERATED (still an initial, never final).
+              if (open.slug === 'term-sheet') { try { win.TS_PROVENANCE = { kind: 'officer' }; } catch (_) { /* cosmetic */ } }
+            }} />
         </div>
       </div>
     );

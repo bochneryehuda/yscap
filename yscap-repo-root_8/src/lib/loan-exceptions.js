@@ -31,9 +31,11 @@
  * + expired = a time-boxed approval past its validity). Governance on top:
  *   • ANY staff member with file access may REQUEST (structured reason + note);
  *     the borrower pricing ask is recorded too (requested_by_kind='borrower').
- *   • Only a SUPER-ADMIN decides (segregation of duties — the approver cannot
- *     be the requester; enforced in the route). This gate is policy: do NOT
- *     relax it without the owner's explicit written direction.
+ *   • Any `manage_pricing` holder (admin/super-admin) decides. Segregation of
+ *     duties: the approver cannot be the requester — EXCEPT a super-admin, who
+ *     may decide their own request (owner-directed 2026-07-31; enforced in the
+ *     route's mayDecide). This gate is policy: do NOT change it without the
+ *     owner's explicit written direction.
  *   • Compensating factors (structured) travel with the request; the deal
  *     economics are SNAPSHOTTED at request time so the reviewer sees the
  *     picture the requester saw even if the file moves.

@@ -145,17 +145,29 @@ async function fileActivity(appId, onlySafe) {
                'sent a message' AS verb, NULL::text AS label
           FROM messages WHERE application_id=$1
         UNION ALL
-        SELECT created_at, 'document', uploaded_by_kind, NULL,
-               (visibility='borrower' AND source_type<>'chat_attachment'),
+        SELECT d.created_at, 'document', d.uploaded_by_kind, NULL,
+               (d.visibility='borrower' AND d.source_type<>'chat_attachment'),
                -- Borrower feed ($2=true): the borrower's own action was the
                -- UPLOAD; accept/flag are staff review actions and must not read
                -- as "Borrower accepted a document". Staff feed keeps the detail.
                CASE WHEN $2::bool THEN 'uploaded a document'
-                    WHEN review_status='accepted' THEN 'accepted a document'
-                    WHEN review_status='rejected' THEN 'flagged a document for correction'
+                    WHEN d.review_status='accepted' THEN 'accepted a document'
+                    WHEN d.review_status='rejected' THEN 'flagged a document for correction'
                     ELSE 'uploaded a document' END,
-               filename
-          FROM documents WHERE application_id=$1 AND source_type<>'chat_attachment'
+               -- WHICH document, and WHICH condition it was uploaded to
+               -- (owner-directed 2026-07-31: "you should be able to see which
+               -- document the borrower uploaded, and which condition"). The
+               -- borrower feed never sees an internal label — borrower_label
+               -- first, then a borrower-audience item's own label (what their
+               -- checklist already shows), then the slot. Staff see the
+               -- internal label. A loose upload keeps just the filename.
+               d.filename || COALESCE(E'\nFor: ' || CASE WHEN $2::bool
+                     THEN COALESCE(NULLIF(ci.borrower_label,''),
+                                   CASE WHEN ci.audience IN ('borrower','both') THEN NULLIF(ci.label,'') END,
+                                   NULLIF(d.slot_label,''))
+                     ELSE COALESCE(NULLIF(ci.label,''), NULLIF(d.slot_label,'')) END, '')
+          FROM documents d LEFT JOIN checklist_items ci ON ci.id = d.checklist_item_id
+         WHERE d.application_id=$1 AND d.source_type<>'chat_attachment'
         UNION ALL
         SELECT COALESCE(cleared_at, created_at), 'condition', 'staff', NULL,
                (audience IN ('borrower','both')),
