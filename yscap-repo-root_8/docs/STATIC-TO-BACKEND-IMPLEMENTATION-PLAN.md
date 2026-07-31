@@ -127,30 +127,78 @@ Deletes **8 files** that exist only to feed a console message.
 `loan-application.html` uses only `evaluate` + `estimate` (plus the two trivial helpers). It calls
 `/api/quote` instead. Small, self-contained, easy to verify.
 
-### Stage 3 — Term Sheet Studio: the React front *(≈2–4 weeks — the real work)*
+### Stage 3 — Term Sheet Studio: **the swap, NOT a rebuild** *(≈1–2 weeks)*
 
-This is the piece you described: **React in front, our rules in the back.**
+**Owner question (2026-07-30): "Is there any way to do this without rebuilding it — the front end should
+be nothing and just get the data back from my server?"**
 
-`termsheet.js` (2,555 lines) is today a mixture of three things:
+**Yes. There is, and it is much smaller than a React rewrite.** The studio page keeps working exactly as
+it does today. We change **one thing**: where the answer comes from.
 
-| Part | Lines/refs | Where it goes |
+#### Why it works — what the code already looks like
+
+The studio has a single funnel. Everything on screen, in the PDF and in the Excel export reads **one
+object**, produced by three functions:
+
+- `calc()` → Standard · `calcGold()` → Gold · `calcSilver()` → Silver
+
+That object is a flat list of ~40 finished values (`totalLoan`, `initialAdvance`, `rehabHoldback`,
+`rate`, `origFee`, `cashToClose`, `ltcPct`, `ltvPct`, `arvPct`, `status`, `reasons`…). Every renderer,
+the PDF builder and `xlsxSections()` consume **that shape and nothing else**.
+
+**So the rule files are only reachable through those three functions.** Nothing else in the file touches
+them.
+
+#### The change
+
+```
+TODAY                                    AFTER
+calc()  ─ runs the rule files locally    calc()  ─ returns the answer the server already sent
+        └─ returns the ~40-value object          └─ returns the SAME ~40-value object
+```
+
+Concretely:
+
+1. **One new async step**, wired to the existing input-change handler: send the typed deal to
+   `/api/quote`, keep the reply in a variable.
+2. **`calc()` / `calcGold()` / `calcSilver()` bodies become "read that variable."** They stay
+   **synchronous** and keep returning the same object.
+3. **Everything else is untouched** — `recompute()`, all 34 screen references, all 13 PDF references,
+   the Excel export, the program cards, the sliders, the admin zone. Not edited, not moved.
+
+Because `calc()` keeps its signature and its return shape, **all of its call sites keep working
+unchanged** — `issueDeal()`, `calcChosen()`, `recompute()` and `xlsxSections()` never learn anything
+changed.
+
+#### Why this is hard to mess up
+
+- **The screen and PDF code is not rewritten**, so it cannot render differently — it is byte-identical
+  and still receives the identical object.
+- **The rule files are not edited** — they run on the server, unchanged.
+- **The shape is the contract.** The server returns exactly the ~40 fields `calc()` returns today, and
+  the equivalence test (§7) compares them field by field.
+- **The file already speaks async** — `async`/`await` appears 17 times in it already (e.g.
+  `ensureXLSX()`), so this is the file's existing idiom, not a new pattern.
+- **It is reversible in one step**: put the `<script>` tags back and restore three function bodies.
+
+#### The five real gotchas (each small, each has a standard fix)
+
+| # | Gotcha | Fix |
 |---|---|---|
-| Pricing math (`calc`, `calcGold`, `calcSilver`, rounding/reconciliation) | the frozen numbers | **Back end** — `src/lib/pricing.js` already implements this (`normalize`) |
-| Screen drawing | 34 DOM references | **New React front end** |
-| PDF / term-sheet generation | 13 PDF references | **New React front end** |
+| 1 | First load has no answer yet | Show "calculating…" until the first reply lands |
+| 2 | Fast typing → several requests in flight | Number the requests; use only the newest |
+| 3 | Someone hits **Download PDF** mid-fetch and gets the previous numbers | Hold the export button while a fetch is pending |
+| 4 | Server unreachable | Say so plainly — **never show a stale or half number** |
+| 5 | A round trip per keystroke | Debounce ~250ms (the page already debounces input) |
 
-So the studio becomes a React page that sends the deal to `/api/quote` and renders what comes back.
+#### What this replaces
 
-**⚠️ The one honest caveat.** `termsheet.js` is on the frozen list, and it is the one file that cannot
-simply be moved — the front end that replaces it is new code. Two things keep this safe, and neither is
-optional:
+This supersedes the earlier "rebuild the studio in React" idea. **No React rewrite. No new front end.**
+The front end stays the page you already have and trust; it simply stops doing the arithmetic and asks
+the server instead — which is exactly what you described.
 
-1. The **numbers** are not re-implemented in the new front end. It displays what the server returns, and
-   the server's numbers come from the untouched rule files.
-2. The equivalence proof in §7 must pass before any of it ships.
-
-If you would rather not touch `termsheet.js` at all yet, **Stages 0–2 still stand on their own** and
-already remove the partner's workbook from every public page.
+*(If a React front is ever wanted later for other reasons, this same `/api/quote` serves it too — but
+nothing here depends on that.)*
 
 ---
 
@@ -195,6 +243,10 @@ app/index.html, app-v2/index.html               engine <script>s removed
 - ❌ The **logged-in portal's behaviour** — Stage 0 removes files nothing uses.
 - ❌ **Borrower data, documents, logins** — untouched throughout.
 - ❌ The **public-facing nature of the site** — no login is introduced anywhere.
+- ❌ The **existing front end** — no React rewrite. The studio, the loan application and the marketing
+  pages stay the pages they are today; only where the numbers come from changes (see Stage 3).
+- ❌ The **screen, PDF and Excel code** — every renderer keeps receiving the identical object it
+  receives today.
 
 ---
 
@@ -238,19 +290,19 @@ their old location unchanged, because they were never edited.
 | **0** | Delete the portal's dead engine copies | hours | **none** | Partly — the `/portal/engines/` copies |
 | **1** | Move rules to the server + `/api/quote` | ~1 week | low–medium | **Yes — completely** |
 | **2** | Loan application page | 2–3 days | low | — |
-| **3** | Term Sheet Studio React front | 2–4 weeks | medium | — |
+| **3** | Studio: swap `calc()` to read the server's answer | 1–2 weeks | low–medium | — |
 
 *Estimates are planning figures, not commitments.*
 
-**Stage 0 can start immediately and is genuinely risk-free.** Stages 0–2 remove the confidential
-workbook from public reach without rewriting the studio at all.
+**Nothing is rebuilt.** Every stage is a move, a delete, or a swap of where an answer comes from. Stage 0
+can start immediately and is genuinely risk-free.
 
 ---
 
-## 9. Open question for the owner
+## 9. The whole job in one sentence
 
-**The Term Sheet Studio (Stage 3) is the only place existing frozen code must be replaced rather than
-moved.** Everything else is a move or a delete. Confirm you want Stage 3 included, or whether we stop
-after Stage 2 and revisit the studio separately.
+Four rule files move from the browser to the server unchanged; the pages stop downloading them and ask
+the server for the finished numbers instead; nothing that draws a screen, builds a PDF, or writes an
+Excel file is touched.
 
 _Nothing in this document has been implemented._
