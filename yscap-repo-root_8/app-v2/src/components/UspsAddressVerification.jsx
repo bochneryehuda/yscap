@@ -55,8 +55,8 @@ function dpvRead(dpv) {
   const code = dpv && dpv.dpvConfirmation ? String(dpv.dpvConfirmation).toUpperCase() : null;
   if (!dpv) return null;
   if (code === 'Y') return { tone: 'ok', label: 'Confirmed deliverable — primary and unit both match USPS.' };
-  if (code === 'D') return { tone: 'warn', label: 'USPS delivers to the building, but an apartment/suite number is missing. Add the unit and re-verify.' };
-  if (code === 'S') return { tone: 'warn', label: 'USPS delivers to the building, but the apartment/suite entered was not recognized. Fix the unit and re-verify.' };
+  if (code === 'D') return { tone: 'ok', label: 'USPS confirms delivery to this building. An apartment/suite is optional — import this address as-is, or add the unit if you have it.' };
+  if (code === 'S') return { tone: 'muted', label: 'USPS confirms delivery to this building but didn’t recognize the apartment/suite entered. The unit is optional — import as-is, or correct it if you have it.' };
   if (code === 'N') return { tone: 'bad', label: 'USPS could not confirm a deliverable point here. Correct the address and re-verify.' };
   return { tone: 'muted', label: 'USPS returned no delivery-point confirmation.' };
 }
@@ -242,7 +242,7 @@ export default function UspsAddressVerification({ appId, onChanged }) {
                   </div>
                   <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10, marginBottom: 10 }}>
                     <div style={FIELD}>
-                      <label style={LABEL} htmlFor="usps-unit">Apt / Suite</label>
+                      <label style={LABEL} htmlFor="usps-unit">Apt / Suite <span style={{ textTransform: 'none', letterSpacing: 0, color: 'var(--text-soft)' }}>(optional)</span></label>
                       <input id="usps-unit" className="input" value={form.unit} onChange={setField('unit')} placeholder="Apt 4B" autoComplete="off" />
                     </div>
                     <div style={FIELD}>

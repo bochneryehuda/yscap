@@ -17,6 +17,13 @@ const mail = require('../lib/email/catalog');
 const { fileReplyTo } = require('../lib/file-address');   // #68 per-file shared reply-to
 const { enqueueSitewirePush } = require('../sitewire/enqueue'); // birth push on the Request-a-draw click (self-gated)
 const { redactPII } = require('../lib/redact');
+/* A money value reaching a numeric column is PARSED, never passed through — a
+   draft written before #919 holds the Term Sheet Studio's display text
+   ("445,000") and the raw bind made the submit INSERT throw. `moneyColumn` is the
+   BIND: it answers "was a value provided?" off the raw value exactly as the
+   `b.x || null` it replaced did (so a typed "0" still stores 0.00, not NULL) and
+   only then parses. See lib/fields.js. */
+const { moneyColumn } = require('../lib/fields');
 const { serveDocument } = require('../lib/serve-document');
 const { decodeUploadBase64, safeFilename } = require('../lib/upload-bytes');
 const pricing = require('../lib/pricing');
@@ -81,6 +88,15 @@ function moneyField(v) {
   if (v === '' || v == null) return null;
   const n = Number(String(v).replace(/[^0-9.\-]/g, ''));
   return isFinite(n) ? n : null;
+}
+/* A free-text column: trimmed, and a blank stores NULL rather than an empty
+   string, so "not stated" reads the same however the box was left. Bounded
+   because these are lender names and reference numbers, not prose — a runaway
+   paste should be clipped at the door, not stored and rendered somewhere. */
+function textField(v, max = 200) {
+  if (v == null) return null;
+  const s = String(v).trim();
+  return s ? s.slice(0, max) : null;
 }
 function stripToolAttachments(payload) {
   const raw = Array.isArray(payload && payload.attachments) ? payload.attachments : [];
@@ -589,8 +605,8 @@ router.post('/applications', async (req, res) => {
         is_assignment,underlying_contract_price,assignment_fee,source,raw_intake,status,submitted_at)
      VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,'portal',$22,'new',now()) RETURNING id,ys_loan_number`,
     [me(req), b.llcId || null, JSON.stringify(b.propertyAddress), b.propertyType || null, b.units || null,
-     b.program || null, require('../lib/fields').sanitizeLoanType(b.loanType), asg.purchasePrice, b.asIsValue || null,   // #95: never a program
-     b.arv || null, b.rehabBudget || null, b.loanOfficerName || null,
+     b.program || null, require('../lib/fields').sanitizeLoanType(b.loanType), asg.purchasePrice, moneyColumn(b.asIsValue),   // #95: never a program
+     moneyColumn(b.arv), moneyColumn(b.rehabBudget), b.loanOfficerName || null,
      b.rehabType || null, sqf.sqftPre, sqf.sqftPost,
      intField(b.requestedExpFlips), intField(b.requestedExpHolds), intField(b.requestedExpGround),
      asg.isAssignment, asg.underlying, asg.assignFee, JSON.stringify(redactPII(b))]);
@@ -3438,19 +3454,36 @@ router.post('/drafts/:id/submit', async (req, res) => {
         is_assignment,underlying_contract_price,assignment_fee,
         term,requested_ir_months,
         requested_exp_reo,payoff_amount,original_purchase_price,acquisition_date,
+        payoff_lender,payoff_loan_number,
         requested_ir_amount,
         source,raw_intake,status,submitted_at)
-     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$24,$25,$26,$27,$28,$29,$30,'portal',$23,'new',now())
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$24,$25,$26,$27,$28,$29,$30,$31,$32,'portal',$23,'new',now())
      RETURNING id,ys_loan_number`,
     [me(req), b.llcId || null, JSON.stringify(b.propertyAddress), b.propertyType || null, b.units || null,
-     b.program || null, require('../lib/fields').sanitizeLoanType(b.loanType), asg.purchasePrice, b.asIsValue || null,   // #95: never a program
-     b.arv || null, b.rehabBudget || null, officerId, b.loanOfficerName || null,
+     b.program || null, require('../lib/fields').sanitizeLoanType(b.loanType), asg.purchasePrice, moneyColumn(b.asIsValue),   // #95: never a program
+     moneyColumn(b.arv), moneyColumn(b.rehabBudget), officerId, b.loanOfficerName || null,
      b.rehabType || null, sqf.sqftPre, sqf.sqftPost,
      intField(b.requestedExpFlips), intField(b.requestedExpHolds), intField(b.requestedExpGround),
      asg.isAssignment, asg.underlying, asg.assignFee, JSON.stringify(redactPII(b)),
      b.termMonths ? String(b.termMonths) : null, intField(b.irMonths),
      intField(b.requestedExpReo), moneyField(b.payoffAmount), moneyField(b.originalPurchasePrice),
      require('../lib/fields').normalizeTypedDate(b.acquisitionDate),   // typed '26' resolves to 2026; garbage never persists
+     /* ORDER MATTERS AND IT BIT US (audit-found 2026-07-31). These three values
+        must sit in the SAME order as the columns above — payoff_lender,
+        payoff_loan_number, requested_ir_amount. The first cut inserted the two
+        new COLUMNS here but APPENDED their values to the end of the array, so
+        every placeholder from $30 on shifted by two: the interest-reserve amount
+        landed in payoff_lender, the lender's name in payoff_loan_number, and the
+        payoff LOAN NUMBER — routinely alphanumeric — in requested_ir_amount,
+        which is a numeric(14,2) AND a frozen-engine pricing input. An
+        alphanumeric loan number made the whole submission fail with Postgres
+        22P02; an all-digit one silently became a multi-million-dollar financed
+        interest reserve. Add a column here only by adding its value in the same
+        position, and re-run scripts/test-payoff-submit-db.js, which now submits a
+        real application and reads every one of these columns back. */
+     // WHO holds the loan being paid off and WHICH loan (db/386). Free text,
+     // trimmed to null so a blank box never stores an empty string.
+     textField(b.payoffLender), textField(b.payoffLoanNumber),
      moneyField(b.irAmount)]);
   const appId = ins.rows[0].id;
   // If the borrower linked an LLC, ensure its document requirements exist.

@@ -1207,6 +1207,14 @@ router.post('/applications', async (req, res) => {
     // has ONE definition and can never drift between staff and borrower surfaces.
     const { isAssignment, underlying, assignFee, purchasePrice } =
       require('../lib/fields').assignmentFields(b);
+    /* Money is PARSED on the way to a numeric column, never bound raw (pre-merge
+       audit of #919). A formatted "445,000" — which is what a pre-#919 studio
+       hand-off put in an application draft — makes the INSERT throw
+       `invalid input syntax for type numeric`, i.e. a 500 rather than a wrong
+       number. `moneyColumn`, not `moneyValue(x) || null`: the provided /
+       not-provided decision stays on the RAW value, so a "0" a staffer typed into
+       a money box still stores 0.00 rather than NULL. See lib/fields.js. */
+    const money = require('../lib/fields').moneyColumn;
     // sqft only applies to a square-footage / ground-up rehab — null it otherwise
     // so a stale value can't force the pricing sqftAddition flag.
     const sqf = require('../lib/fields').sqftForType(b.rehabType, intField(b.sqftPre) || null, intField(b.sqftPost) || null);
@@ -1220,8 +1228,8 @@ router.post('/applications', async (req, res) => {
        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,'staff','new',now())
        RETURNING id,ys_loan_number`,
       [borrowerId, addr ? JSON.stringify(addr) : null, b.propertyType || null, b.units || null,
-       b.program || null, require('../lib/fields').sanitizeLoanType(b.loanType), purchasePrice, b.asIsValue || null,   // #95: never a program
-       b.arv || null, b.rehabBudget || null, officerId, officerName,
+       b.program || null, require('../lib/fields').sanitizeLoanType(b.loanType), purchasePrice, money(b.asIsValue),   // #95: never a program
+       money(b.arv), money(b.rehabBudget), officerId, officerName,
        b.rehabType || null, sqf.sqftPre, sqf.sqftPost,
        intField(b.requestedExpFlips), intField(b.requestedExpHolds), intField(b.requestedExpGround),
        processorId, isAssignment, underlying, assignFee, intField(b.requestedExpReo)]);   // #97: General REO slot
@@ -1912,6 +1920,90 @@ router.post('/applications/:id/vesting-llc', async (req, res) => {
   } catch (e) { console.warn('[staff] handler error:', db.describeError(e)); res.status(500).json({ error: 'server error' }); }
 });
 
+// Personal-name purchase (owner-directed 2026-07-31): the property is bought in an
+// individual name instead of an LLC. Uploading a NON-OWNER-OCCUPIED AFFIDAVIT (in
+// lieu of LLC documents) waives the LLC condition (rtl_p1_llc): the file is flagged
+// personal_name_purchase, the affidavit is filed as the condition's evidence, the
+// condition is signed off, and the ClickUp *Vesting dropdown flips to Individual
+// (default is LLC — db/384). Sending { undo:true } reverses it: clears the flag,
+// reopens the condition, and pushes vesting back to LLC.
+router.post('/applications/:id/vesting/personal-name', async (req, res) => {
+  try {
+    const b = req.body || {};
+    if (!can(req.actor, 'sign_off_conditions'))
+      return res.status(403).json({ error: 'Only a processor can waive the LLC condition — signing this off as a personal-name purchase is a sign-off.' });
+    const app = (await db.query(
+      `SELECT a.id, a.status, a.borrower_id, a.llc_id, l.is_verified AS llc_verified
+         FROM applications a LEFT JOIN llcs l ON l.id = a.llc_id
+        WHERE a.id=$1 AND a.deleted_at IS NULL`, [req.params.id])).rows[0];
+    if (!app) return res.status(404).json({ error: 'not found' });
+    if (['clear_to_close', 'funded', 'declined', 'withdrawn'].includes(app.status))
+      return res.status(409).json({ error: 'This file is Clear to Close — vesting is locked. Move it back to an earlier status to change it.' });
+
+    // The LLC condition must exist so the affidavit has somewhere to hang / to sign off.
+    try { await require('../lib/vesting').ensureLlcCondition(req.params.id); } catch (_) {}
+    const item = (await db.query(
+      `SELECT ci.id FROM checklist_items ci JOIN checklist_templates t ON t.id=ci.template_id
+        WHERE ci.application_id=$1 AND t.code='rtl_p1_llc' ORDER BY ci.created_at LIMIT 1`, [req.params.id])).rows[0];
+
+    // UNDO — back to an LLC purchase (the default): clear the flag, reopen the
+    // condition, push vesting back to LLC.
+    if (b.undo === true) {
+      await db.query(`UPDATE applications SET personal_name_purchase=false, updated_at=now() WHERE id=$1`, [req.params.id]);
+      if (item) {
+        await db.query(
+          `UPDATE checklist_items SET status='outstanding', signed_off_at=NULL, signed_off_by=NULL,
+              reviewed_at=NULL, reviewed_by=NULL, updated_at=now() WHERE id=$1`, [item.id]);
+        enqueueChecklistStatusPush(item.id).catch(() => {});
+      }
+      try { await enqueueClickupPush(req.params.id, ['vesting']); } catch (_) {}
+      await audit(req, 'vesting_personal_name_undo', 'application', req.params.id, {});
+      return res.json({ ok: true, personalNamePurchase: false });
+    }
+
+    // WAIVE — file the affidavit (uploaded now, or already on the item), flag the
+    // file personal-name, sign the condition off, and flip vesting to Individual.
+    if (!item) return res.status(409).json({ error: 'the LLC condition is not on this file yet' });
+    // An LLC always wins over a personal-name waiver (db/384). A VERIFIED linked
+    // entity means the file really vests in that LLC — refuse (remove the LLC
+    // first). An unverified linked entity is dropped below with the flag write, so
+    // the ClickUp *Vesting dropdown never reads Individual next to an LLC name.
+    if (app.llc_id && app.llc_verified === true)
+      return res.status(409).json({ error: 'This file vests in a verified LLC. Remove the LLC entity first if it is really being bought in a personal name.' });
+    let uploadedDocId = null;
+    if (b.dataBase64) {
+      if (!b.filename) return res.status(400).json({ error: 'filename + dataBase64 required for the affidavit' });
+      let buf;
+      try { ({ buf } = decodeUploadBase64(b.dataBase64)); }
+      catch (e) { return res.status(e.status || 400).json({ error: e.message }); }
+      const maxBytes = cfg.maxUploadMb * 1024 * 1024;
+      if (buf.length > maxBytes) return res.status(413).json({ error: `file too large (max ${cfg.maxUploadMb} MB)` });
+      const filename = safeFilename(b.filename);
+      const { ref, provider } = await storage.save(buf, { filename });
+      const r = await db.query(
+        `INSERT INTO documents (application_id,checklist_item_id,borrower_id,filename,content_type,size_bytes,
+                                storage_provider,storage_ref,uploaded_by_kind,uploaded_by_id,doc_kind,slot_label,visibility,source_type)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,'staff',$9,'noo_affidavit',$10,'borrower','staff_upload') RETURNING id`,
+        [req.params.id, item.id, app.borrower_id, filename, b.contentType || 'application/pdf', buf.length,
+         provider, ref, req.actor.id, 'Non-owner-occupied affidavit']);
+      uploadedDocId = r.rows[0].id;
+    }
+    const hasAff = uploadedDocId || (await db.query(
+      `SELECT 1 FROM documents WHERE checklist_item_id=$1 AND is_current
+         AND COALESCE(review_status,'') <> 'rejected' AND doc_kind='noo_affidavit' LIMIT 1`, [item.id])).rows[0];
+    if (!hasAff) return res.status(400).json({ error: 'Upload the non-owner-occupied affidavit (PDF) to sign this off as a personal-name purchase.' });
+
+    await db.query(`UPDATE applications SET personal_name_purchase=true, llc_id=NULL, updated_at=now() WHERE id=$1`, [req.params.id]);
+    await db.query(
+      `UPDATE checklist_items SET status='satisfied', signed_off_at=now(), signed_off_by=$2, updated_at=now() WHERE id=$1`,
+      [item.id, req.actor.id]);
+    enqueueChecklistStatusPush(item.id).catch(() => {});
+    try { await enqueueClickupPush(req.params.id, ['vesting']); } catch (_) {}
+    await audit(req, 'vesting_personal_name_affidavit', 'application', req.params.id, { documentId: uploadedDocId });
+    res.json({ ok: true, personalNamePurchase: true, documentId: uploadedDocId });
+  } catch (e) { console.warn('[staff] handler error:', db.describeError(e)); res.status(500).json({ error: 'server error' }); }
+});
+
 /* ---------------- Product registration / term sheet ----------------
    Pricing is computed here on the server from the same FROZEN engines the
    browser loads, so a registered product is always authoritative. */
@@ -2156,6 +2248,41 @@ router.post('/applications/:id/pricing/register', async (req, res) => {
     // ON, Standard/Gold OFF) unless the admin explicitly set it; the key dates are
     // derived from the estimated closing date + the priced term.
     const rawTermOptions = (b.termOptions && typeof b.termOptions === 'object') ? b.termOptions : {};
+    /* A cash-out figure that cannot be read is REFUSED, at the door, before any
+       work is done — never silently written as a blank, which would CLEAR the
+       file's figure while answering 200 ("returned 200 but didn't save", the
+       class this repo keeps closing). Refused here rather than inside the write
+       transaction below so a refusal can never leave a register half-done. The
+       details door already answers exactly this for the same value. */
+    /* REFUSE ONLY WHERE THE VALUE WOULD ACTUALLY BE WRITTEN, and AUDIT the
+       refusal (audit round 4, 2026-07-31). The first cut checked on every
+       register, refinance or not — but the write below is refinance-only, so a
+       PURCHASE was being refused over a field it would have ignored. Worse, the
+       studio prefills the box from the file and sends it on every register, so a
+       file carrying a legacy negative (both doors stored one before this round)
+       became permanently un-registerable, refused over a field that is hidden on
+       anything but a cash-out. Gated to match the write, `refuse()` so the
+       reason is in the audit log — this route's own contract, and this is
+       exactly the refusal an officer would need diagnosed from the logs alone —
+       and db/387 normalises the legacy negatives that caused it. */
+    const wantsCashOut = Object.prototype.hasOwnProperty.call(rawTermOptions, 'estimatedCashOut')
+      && require('../lib/payoff').isRefinance(f.app.loan_type);
+    if (wantsCashOut) {
+      const rawCo = rawTermOptions.estimatedCashOut;
+      if (String(rawCo == null ? '' : rawCo).trim() !== '') {
+        const nCo = Number(rawCo);
+        if (!isFinite(nCo)) return refuse(400, { error: 'estimatedCashOut must be a number' }, 'cash_out_not_a_number');
+        // Same rule as the details door: zero is a real answer, a negative is not.
+        if (nCo < 0) return refuse(400, { error: 'estimatedCashOut cannot be negative — leave it blank to use the structure’s own figure' }, 'cash_out_negative');
+        /* …and the SAME ceiling. This door writes the same numeric(14,2) column,
+           from a studio box with no digit cap, and was the last place in this
+           family still able to turn a fat-fingered paste into a 500 (audit round
+           7). Magnitude-rounded, matching how Postgres rounds before it checks. */
+        if (Math.round(Math.abs(nCo) * 100) / 100 >= 1e12) {
+          return refuse(400, { error: 'estimatedCashOut is too large — the largest amount this field can hold is 999,999,999,999.99' }, 'cash_out_too_large');
+        }
+      }
+    }
     // Derive the key dates from the effective closing date — the one the studio
     // sent, else the one already on the file — so a re-register that doesn't
     // re-enter the date never WIPES it, and the dates re-derive when the term moves.
@@ -2322,6 +2449,40 @@ router.post('/applications/:id/pricing/register', async (req, res) => {
         await client.query(`UPDATE applications SET file_markup_gold_pct=$2 WHERE id=$1`, [appId, stickyMk(overrides.markupGoldPct)]);
       if (Object.prototype.hasOwnProperty.call(overrides, 'markupSilverPct'))
         await client.query(`UPDATE applications SET file_markup_silver_pct=$2 WHERE id=$1`, [appId, stickyMkSilver(overrides.markupSilverPct)]);
+      /* THE TYPED CASH-OUT FOLLOWS THE REGISTER ONTO THE FILE (audit-found
+         2026-07-31). The studio prints the officer's typed figure on the term
+         sheet PDF; without this it never reached the loan file, so the file and
+         the sheet the borrower was shown quoted different cash — and re-opening
+         the studio silently reverted the PDF to the structural number.
+
+         DISPLAY/RECORD ONLY: `estimated_cash_out` is read by no engine (the
+         investor-guideline cash-out rule is gated on `refinance_economic_type`,
+         which still has no writer), so this can neither price nor block a deal.
+         Refinance only, and only when the studio actually sent the key — a
+         re-register that never opened the box leaves the file's figure alone.
+         An explicit blank DOES clear it: blank means "use the structure", which
+         is a real answer.
+
+         "IS THIS A REFINANCE" IS THE SHARED MODEL, not a private regex
+         (re-audit-found 2026-07-31): a bare /refi/ test reads "Delayed Purchase
+         Refinance" as a refinance, while the payoff model, the Condition Center
+         and the pricing engine all read it as a PURCHASE. One definition.
+
+         UNREADABLE INPUT IS REFUSED, NOT SILENTLY TREATED AS BLANK (same
+         re-audit): "62,000" or "abc" used to CLEAR the column here while the
+         details door answered 400 for the identical value — the "returned 200
+         but didn't save" class this repo keeps having to close. */
+      if (wantsCashOut) {
+        /* `wantsCashOut` is the SAME predicate the refusal above is gated on, so
+           what we validate and what we write can never disagree — the two were
+           separate conditions for one round and that is how a purchase came to
+           be refused over a field it would never have written. Validated before
+           the transaction opened, so nothing here can refuse mid-transaction and
+           leave the register half-done: by now the value is known good. */
+        const raw = rawTermOptions.estimatedCashOut;
+        const co = String(raw == null ? '' : raw).trim() === '' ? null : Number(raw);
+        await client.query(`UPDATE applications SET estimated_cash_out=$2 WHERE id=$1`, [appId, co]);
+      }
       await client.query('COMMIT');
     } catch (e) { await client.query('ROLLBACK'); throw e; }
 
@@ -5657,6 +5818,20 @@ async function signOffGate(itemId, actor) {
   // could be signed off empty. Block a manual sign-off until the vesting LLC is
   // actually linked AND verified.
   if (code === 'rtl_p1_llc') {
+    // Personal-name purchase (owner-directed 2026-07-31): the property can be bought
+    // in an individual name instead of an LLC. The LLC condition is then satisfied by
+    // a NON-OWNER-OCCUPIED AFFIDAVIT (in lieu of LLC documents), which is what flips
+    // the ClickUp vesting to Individual. When the file is flagged personal-name,
+    // require that affidavit here rather than a verified LLC.
+    const pn = (await db.query(
+      `SELECT personal_name_purchase FROM applications WHERE id=$1`, [item.application_id])).rows[0];
+    if (pn && pn.personal_name_purchase) {
+      const aff = (await db.query(
+        `SELECT 1 FROM documents WHERE checklist_item_id=$1 AND is_current
+           AND COALESCE(review_status,'') <> 'rejected' AND doc_kind='noo_affidavit' LIMIT 1`, [itemId])).rows[0];
+      if (!aff) return 'Upload the non-owner-occupied affidavit (PDF) to sign this off as a personal-name purchase (bought in an individual name, not an LLC).';
+      return null;
+    }
     const v = (await db.query(
       `SELECT l.is_verified FROM applications a JOIN llcs l ON l.id = a.llc_id WHERE a.id=$1`, [item.application_id])).rows[0];
     if (!v) return 'Link the vesting entity (LLC) to this file, then verify it, before signing this off.';
@@ -8408,7 +8583,13 @@ router.patch('/applications/:id/details', async (req, res) => {
   // super_admin included. This economics editor is one of the write paths that
   // used to skip the freeze (it could rewrite a funded loan's numbers). A
   // super_admin can UNLOCK the file first to correct a mistake, then re-lock.
-  const detailsLock = await require('../lib/file-lock').structuralLockReason(req.params.id, db, { actor: req.actor });
+  /* payoffContactLockReason IS structuralLockReason, with one narrow exclusion:
+     a request that changes NOTHING but who holds the loan being paid off and
+     their loan number. Those two are needed at closing prep — at or past Clear
+     to Close, long after the term sheet went out — and neither carries money nor
+     enters any calculation. Every other field, the payoff AMOUNT included, falls
+     through to the ordinary freeze unchanged. See the function's own note. */
+  const detailsLock = await require('../lib/file-lock').payoffContactLockReason(req.params.id, req.body || {}, db, { actor: req.actor });
   if (detailsLock) return res.status(409).json({ error: detailsLock, locked: true });
   // sqft only applies to a square-footage / ground-up rehab. When the rehab type
   // is being changed to something else, null any stale sqft in the SAME update so
@@ -8422,16 +8603,111 @@ router.patch('/applications/:id/details', async (req, res) => {
     requestedExpFlips: 'requested_exp_flips', requestedExpHolds: 'requested_exp_holds', requestedExpGround: 'requested_exp_ground',
     requestedExpReo: 'requested_exp_reo', requestedIrMonths: 'requested_ir_months', requestedIrAmount: 'requested_ir_amount',
     payoffAmount: 'payoff_amount', originalPurchasePrice: 'original_purchase_price',
+    // WHAT THE BORROWER WALKS AWAY WITH on a cash-out refinance (db/267's
+    // `estimated_cash_out`, which until now had no writer anywhere in the app).
+    // The payoff section fills it from the structure and lets a human override
+    // it; see src/lib/payoff.js for the one definition of that arithmetic.
+    estimatedCashOut: 'estimated_cash_out',
     underlyingContractPrice: 'underlying_contract_price', assignmentFee: 'assignment_fee' };
   const STR = { propertyType: 'property_type', loanType: 'loan_type', program: 'program', occupancy: 'occupancy',
-    rehabType: 'rehab_type', term: 'term', lender: 'lender', channel: 'channel', ppp: 'ppp' };
+    rehabType: 'rehab_type', term: 'term', lender: 'lender', channel: 'channel', ppp: 'ppp',
+    // WHO we pay off and WHICH loan (db/386) — free text beside the payoff AMOUNT
+    // that has lived in NUM since db/032. Refinance only in the UI; stored
+    // unconditionally here because the door does not know the purpose, and a
+    // purchase simply never sends them.
+    payoffLender: 'payoff_lender', payoffLoanNumber: 'payoff_loan_number' };
   const DATE = { acquisitionDate: 'acquisition_date' };
   const INT_KEYS = /^(requestedExp|requestedIr)/;
+  /* THE CEILING IS THE COLUMN'S OWN, NOT ONE NUMBER FOR ALL OF THEM (audit round
+     6, 2026-07-31). The first cut of this guard reused `INT_KEYS` — which exists
+     to decide how a BLANK resolves, a different question entirely — and a single
+     1e12 bound, which was wrong three ways:
+       · `requested_ir_amount` is numeric(14,2) MONEY but matches INT_KEYS, so it
+         was excluded from the guard and still answered 500 on a fat-fingered
+         paste — the commit's own headline scenario, on a live portal field;
+       · `units`, `sqft_pre` and `sqft_post` are int4, whose real ceiling is
+         2,147,483,647, so everything from there to 1e12 still answered 500;
+       · and the 400 message quoted a money limit for a UNIT COUNT, so following
+         its advice produced another 500.
+     These two sets are keyed on the COLUMN TYPE, which is what actually decides
+     the limit. Add a key to NUM above and add it here too. */
+  const MONEY_KEYS = new Set(['purchasePrice', 'asIsValue', 'arv', 'rehabBudget', 'requestedIrAmount',
+    'payoffAmount', 'estimatedCashOut', 'originalPurchasePrice', 'underlyingContractPrice', 'assignmentFee']);
+  const MONEY_MAX = 1e12;              // numeric(14,2): |value| must ROUND to < 10^12
+  const INT_MAX = 2147483647, INT_MIN = -2147483648;    // int4
+  /* A column with a CHECK narrower than its TYPE. Its ceiling is the constraint,
+     not int4's — quoting 2,147,483,647 for a field the database refuses past 24
+     is the same "follow the message, get another 500" trap the previous round
+     fixed for `units`, reintroduced one column over (audit round 7). */
+  const CHECKED_RANGE = { requestedIrMonths: { min: 0, max: 24, what: 'months of interest reserve' } };
+  /**
+   * The reason this number cannot be stored, or '' if it can. ONE place, because
+   * the previous three rounds each fixed one column's ceiling and left another's
+   * wrong. Never throws.
+   */
+  const numberOutOfRange = (key, n) => {
+    const chk = CHECKED_RANGE[key];
+    if (chk) {
+      if (!Number.isInteger(n)) return `${key} must be a whole number of ${chk.what}`;
+      if (n < chk.min || n > chk.max) return `${key} must be between ${chk.min} and ${chk.max} ${chk.what}`;
+      return '';
+    }
+    if (MONEY_KEYS.has(key)) {
+      /* ROUND THE MAGNITUDE, NOT THE SIGNED VALUE. numeric(14,2) rounds to two
+         decimals before it checks for overflow, and it rounds HALF AWAY FROM
+         ZERO — while JavaScript's Math.round breaks ties toward +∞. So
+         -999999999999.995 rounded signed came back inside the ceiling and went
+         on to overflow in Postgres, a 500 the previous round believed it had
+         closed for both signs (audit round 7). */
+      return Math.round(Math.abs(n) * 100) / 100 >= MONEY_MAX
+        ? `${key} is too large — the largest amount this field can hold is 999,999,999,999.99` : '';
+    }
+    // Everything else in NUM is an int4 column.
+    if (!Number.isInteger(n)) return `${key} must be a whole number`;
+    return (n > INT_MAX || n < INT_MIN)
+      ? `${key} is too large — the largest value this field can hold is 2,147,483,647` : '';
+  };
   const sets = [], vals = []; let i = 1;
   const touchedCols = [];
   for (const [k, col] of Object.entries(NUM)) if (k in b) {
-    const n = INT_KEYS.test(k) ? intField(b[k]) : (b[k] === '' || b[k] == null ? null : Number(b[k]));
+    /* A BOX OF SPACES IS AN EMPTY BOX (audit round 4, 2026-07-31). The blank
+       test was `=== ''`, but `Number('   ')` is 0 — so whitespace stored a hard
+       ZERO in a money column instead of clearing it. It reached us through the
+       cash-out, where the server then reported "$0, entered by hand" while the
+       studio (whose reader trims) still showed the structural figure; the same
+       trap sat under every money field on this branch of the loop.
+
+       NOT the INT_KEYS branch, and deliberately so (corrected after audit round
+       5 flagged the overstatement): `requested_ir_amount` is a money column but
+       matches INT_KEYS and goes through `intField`, where a blank must resolve
+       to 0 rather than NULL — the owner-directed rule that lets switching an
+       interest reserve from an amount back to months reliably clear the amount. */
+    const n = INT_KEYS.test(k) ? intField(b[k]) : (b[k] == null || String(b[k]).trim() === '' ? null : Number(b[k]));
     if (n != null && !isFinite(n)) return res.status(400).json({ error: `${k} must be a number` });
+    /* A NEGATIVE cash-out is not an answer — nobody receives a negative cheque,
+       and a shortfall is cash the borrower BRINGS, which cash-to-close already
+       reports. Refused rather than stored, because the model treats any typed
+       value as the figure of record and a stored negative would print on a term
+       sheet. Zero IS accepted: it is a real answer, and blank is what means
+       "use the structure". (post-merge audit 2026-07-31) */
+    if (k === 'estimatedCashOut' && n != null && n < 0) {
+      return res.status(400).json({ error: 'estimatedCashOut cannot be negative — leave it blank to use the structure’s own figure' });
+    }
+    /* A NUMBER TOO BIG FOR ITS COLUMN IS A BAD REQUEST, NOT A SERVER FAULT
+       (audit round 5, 2026-07-31 — pre-existing, reproduced on this door). Twenty
+       digits reached Postgres, raised 22003 and came back as a 500 "server
+       error" — which reads as "PILOT is broken" instead of "that number is too
+       big", and MoneyInput imposes no digit cap, so a fat-fingered paste gets
+       there. Bounded here with each column's OWN ceiling (see MONEY_KEYS above).
+
+       The money test is on the ROUNDED value because numeric(14,2) rounds to two
+       decimals BEFORE it checks for overflow: 999999999999.995 rounds up to 10^12
+       and is refused by Postgres, while a bare `>= 1e12` on the raw number let it
+       through to another 500. */
+    if (n != null) {
+      const bad = numberOutOfRange(k, n);
+      if (bad) return res.status(400).json({ error: bad });
+    }
     sets.push(`${col}=$${i++}`); vals.push(n); touchedCols.push(col);
   }
   // #FNM1025: an appraisal FORM number ("FNM1025") is not a property type — it is
@@ -8441,7 +8717,15 @@ router.patch('/applications/:id/details', async (req, res) => {
     const ptProblem = require('../lib/property-type').propertyTypeProblem(b.propertyType);
     if (ptProblem) return res.status(400).json({ error: ptProblem });
   }
-  for (const [k, col] of Object.entries(STR)) if (k in b) { const raw = b[k] === '' ? null : String(b[k]).slice(0, 200); sets.push(`${col}=$${i++}`); vals.push(col === 'loan_type' ? require('../lib/fields').sanitizeLoanType(raw) : raw); touchedCols.push(col); }   // #95: loan_type never a program
+  /* CLEARING A TEXT FIELD MUST STORE NULL — NOT THE STRING "null"
+     (post-merge audit 2026-07-31). This read `b[k] === '' ? null : String(b[k])`,
+     which is correct for a form sending `''` but turns an explicit JSON `null`
+     into the four characters n-u-l-l. That is a non-blank string everywhere
+     downstream, so clearing the payoff lender stored "null", the file reported
+     itself COMPLETE with a green tick, and the borrower's own screen read
+     "Lender being paid off: null". The trap was latent on every STR key here;
+     the payoff card was simply the first caller in the repo to send null. */
+  for (const [k, col] of Object.entries(STR)) if (k in b) { const raw = (b[k] === '' || b[k] == null) ? null : String(b[k]).slice(0, 200); sets.push(`${col}=$${i++}`); vals.push(col === 'loan_type' ? require('../lib/fields').sanitizeLoanType(raw) : raw); touchedCols.push(col); }   // #95: loan_type never a program
   for (const [k, col] of Object.entries(DATE)) if (k in b) {
     // sanitizeDateOnly enforces a REAL calendar date with a 4-digit year in
     // [1900, 2100] — a 2-digit year ('0026-…') is rejected here instead of
@@ -9062,6 +9346,42 @@ router.get('/applications/:id/note-buyer', async (req, res) => {
     res.json(await require('../lib/note-buyer-effects').noteBuyerSlot(req.params.id, db, { candidate }));
   } catch (e) {
     console.warn('[staff] note-buyer slot error:', db.describeError(e));
+    res.status(500).json({ error: 'server error' });
+  }
+});
+
+/* THE PAYOFF SECTION (owner-directed 2026-07-31) — everything the file's payoff
+   card needs: which kind of refinance this is, what has been entered, what is
+   still missing and WHY it matters, what the structure implies the borrower
+   walks away with, and a plain-language explanation of how a payoff works.
+
+   READ-ONLY: it writes nothing. Entry still goes through the ONE existing write
+   path (`PATCH /applications/:id/details`), which is freeze-aware and audited.
+   Every derived figure is arithmetic on numbers the FROZEN pricing engine
+   already produced — the registered quote's initial advance and closing costs;
+   no guideline, cap or rate is read or written here. */
+router.get('/applications/:id/payoff', async (req, res) => {
+  try {
+    const a = await db.query(
+      `SELECT id, loan_type, payoff_amount, payoff_lender, payoff_loan_number, estimated_cash_out
+         FROM applications WHERE id=$1`, [req.params.id]);
+    if (!a.rows.length) return res.status(404).json({ error: 'not found' });
+    // The CURRENT registration's normalized quote, when the file has one. A file
+    // that has not been registered simply cannot imply a cash-out figure yet, and
+    // payoffState says so rather than showing a zero that reads like an answer.
+    const q = await db.query(
+      `SELECT quote FROM product_registrations
+        WHERE application_id=$1 AND is_current ORDER BY created_at DESC LIMIT 1`, [req.params.id]);
+    const quote = q.rows.length ? q.rows[0].quote : null;
+    res.json(require('../lib/payoff').payoffState(a.rows[0], quote));
+  } catch (e) {
+    /* A malformed id is a BAD REQUEST, not a server fault — the same 400 the
+       server's own error handler gives every other route ("invalid id").
+       Answered here rather than rethrown because this is an async handler and
+       Express 4 does not route a rejected promise to the error middleware; a
+       rethrow would hang the request instead of answering it. */
+    if (e && e.code === '22P02') return res.status(400).json({ error: 'invalid id' });
+    console.warn('[staff] payoff section error:', db.describeError(e));
     res.status(500).json({ error: 'server error' });
   }
 });
@@ -9900,8 +10220,21 @@ router.post('/applications/:id/closing/cash-to-close', async (req, res) => {
   if (!can(req.actor, 'manage_closings')) return res.status(403).json({ error: 'Only the closer (or an admin) can enter the actual cash to close.' });
   const appId = req.params.id;
   const raw = req.body && req.body.actualCashToClose;
-  const val = raw === '' || raw == null ? null : Number(raw);
-  if (raw != null && raw !== '' && (!Number.isFinite(val) || val < 0)) return res.status(400).json({ error: 'Enter a real cash-to-close amount.' });
+  // A box of spaces is an empty box here too — `Number('  ')` is 0, so
+  // whitespace used to record a real cash-to-close of ZERO on the closing
+  // workflow, which the closing check then reconciles against. Same rule and
+  // same reason as the details door (audit rounds 4/5, 2026-07-31).
+  const blank = raw == null || String(raw).trim() === '';
+  const val = blank ? null : Number(raw);
+  if (!blank && (!Number.isFinite(val) || val < 0)) return res.status(400).json({ error: 'Enter a real cash-to-close amount.' });
+  // …and too big for the column is a bad request, not a 500. Same numeric(14,2)
+  // ceiling and the same rounded test as the details door (audit round 6).
+  // Magnitude-rounded — Postgres rounds half AWAY FROM ZERO while Math.round
+  // breaks ties toward +∞, so rounding the signed value let a negative edge slip
+  // through to a 500 (audit round 7).
+  if (!blank && Math.round(Math.abs(val) * 100) / 100 >= 1e12) {
+    return res.status(400).json({ error: 'That cash-to-close amount is too large — the largest this field can hold is 999,999,999,999.99.' });
+  }
   const docId = req.body && req.body.docId ? String(req.body.docId) : null;
   try {
     const check = await closing.runCashToCloseCheck(appId, val, db);

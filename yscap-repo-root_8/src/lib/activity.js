@@ -33,6 +33,10 @@ const FIELD_LABEL = {
   requested_ir_months: 'Interest reserve (months)',
   requested_ir_amount: 'Interest reserve (amount)',
   payoff_amount: 'Payoff amount', original_purchase_price: 'Original purchase price',
+  // The payoff section (db/386 + db/267's estimated_cash_out) — named here so the
+  // Activity feed says "Lender being paid off: — → Chase" instead of a raw column.
+  payoff_lender: 'Lender being paid off', payoff_loan_number: 'Payoff loan number',
+  estimated_cash_out: 'Cash out to the borrower',
   acquisition_date: 'Date acquired', underlying_contract_price: 'Underlying contract price',
   assignment_fee: 'Assignment fee', property_type: 'Property type', loan_type: 'Loan type',
   program: 'Program', occupancy: 'Occupancy', rehab_type: 'Rehab type', term: 'Term',
@@ -40,7 +44,7 @@ const FIELD_LABEL = {
   is_assignment: 'Assignment purchase', property_address: 'Property address',
 };
 const MONEY_FIELDS = new Set(['purchase_price', 'as_is_value', 'arv', 'rehab_budget',
-  'payoff_amount', 'original_purchase_price', 'underlying_contract_price', 'assignment_fee']);
+  'payoff_amount', 'estimated_cash_out', 'original_purchase_price', 'underlying_contract_price', 'assignment_fee']);
 
 const fieldVal = (col, v) => {
   if (v == null || v === '') return '—';

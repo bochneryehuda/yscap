@@ -62,6 +62,75 @@
   function purpose() { return val("dealPurpose") || "Purchase"; }
   function isRefi() { return purpose().indexOf("refinance") > -1 || purpose().indexOf("Refinance") > -1; }
   function isCashOut() { return purpose().toLowerCase().indexOf("cash-out") > -1; }
+  /* WHO the payoff goes to, as a sentence fragment — "" when nobody was named, so
+     every caller reads the same whether or not the officer filled it in. */
+  function payoffLender() { return (val("payoffLender") || "").trim(); }
+  function payoffLoanNo() { return (val("payoffLoanNo") || "").trim(); }
+  /* WHAT THE STRUCTURE IMPLIES the borrower receives AT THE TABLE: the money that
+     actually funds on closing day, less the loan being retired, less the closing
+     costs. All three come from the frozen calc — this is arithmetic on the
+     engine's own output, not a pricing rule.
+
+     IT IS THE INITIAL ADVANCE, NOT THE WHOLE LOAN. A renovation loan's rehab
+     holdback is released later, draw by draw, against work completed, and a
+     financed interest reserve is held back too (totalLoan = initialAdvance +
+     rehabHoldback + financedReserve). Netting the payoff off the TOTAL would
+     quote the borrower money they will not see for months — on a heavy-rehab
+     refinance, overstated by the entire construction budget. */
+  /* A REAL advance wins even when it is ZERO — the fallback is for an advance
+     that is genuinely ABSENT, not for one that happens to be nothing. `> 0`
+     would fall back to the whole loan on a zero advance, which is precisely the
+     overstatement this helper exists to prevent.
+
+     `numOrNull` is deliberately the SAME rule as the server model's `num()`
+     (src/lib/payoff.js) — absent/blank/unreadable is null, everything else is a
+     number — so the two implementations of "what funds at closing" cannot
+     disagree on an edge. Note `isFinite(null)` is TRUE in JavaScript and
+     `Number('')` is 0, so both have to be excluded BEFORE the numeric test; a
+     bare isFinite() check reads a blank as a zero advance. */
+  function numOrNull(v) {
+    // TRIMMED, like the server's num(). Round 4 taught the server that a box of
+    // spaces is an empty box (`Number('   ')` is 0) and left this side behind —
+    // breaking the very invariant the note above states. Latent today (the calc
+    // only ever passes real numbers here), which is exactly the kind of drift
+    // that becomes a live bug the day someone passes a string.
+    if (v === null || v === undefined || String(v).trim() === '') return null;
+    var n = Number(v);
+    return isFinite(n) ? n : null;
+  }
+  function fundedAtClose(d) {
+    if (!d) return 0;
+    var a = numOrNull(d.initialAdvance);
+    if (a !== null) return a;
+    var t = numOrNull(d.totalLoan);
+    return t !== null ? t : 0;
+  }
+  function structuralCashOut(d) {
+    var funded = fundedAtClose(d);
+    if (!(funded > 0)) return 0;
+    return Math.max(0, funded - num("payoff") - (d.closing || 0));
+  }
+  /* The figure of record: whatever the officer TYPED, else what the structure
+     implies. A typed value wins because a real deal can net differently (a
+     holdback, a reserve, a second lien) and the number that matters is the one
+     actually going to the borrower. */
+  /* ZERO IS A TYPED ANSWER, NOT AN EMPTY BOX (post-merge audit 2026-07-31).
+     `num()` returns 0 for a BLANK field, so it cannot tell "nothing typed" from
+     "typed nothing" — and `typed > 0` therefore ignored a deliberate 0, on the
+     very deal where the structural figure is most likely to be wrong.
+     `YS.opt()` is the blank-aware reader (null when blank), which is the same
+     rule the server model uses. A negative is never an answer — nobody receives
+     a negative cheque — and is refused at both write doors. */
+  function cashOutOfRecord(d) {
+    var typed = YS.opt("cashOutAmt");
+    return (typed !== null && typed >= 0) ? typed : structuralCashOut(d);
+  }
+  function payoffWhoTxt() {
+    var who = payoffLender(), no = payoffLoanNo();
+    if (!who && !no) return "";
+    if (who && no) return " to " + who + " (loan #" + no + ")";
+    return who ? " to " + who : " (loan #" + no + ")";
+  }
   function dealType() { return val("dealType"); }
   function isGroundUp() { return YSP.normStrategy(dealType()) === "NC"; }
   function isAssign() { return chk("isAssign"); }
@@ -351,6 +420,10 @@
     var purchaseOnly = !isRefi();
     $$('[data-cond="purchaseOnly"]').forEach(function (n) { show(n, purchaseOnly); });
     $$('[data-cond="refiOnly"]').forEach(function (n) { show(n, isRefi()); });
+    // A cash-out figure only exists on a cash-out refinance — a rate-&-term takes
+    // no cash, so asking for the number there would invite the very thing the
+    // structure is not.
+    $$('[data-cond="cashOutOnly"]').forEach(function (n) { show(n, isRefi() && isCashOut()); });
     // rehab scope (light/heavy) and sq-ft addition apply only to fix & flip / fix & hold
     var isFF = YSP.normStrategy(dealType()) === "FF";
     $$('[data-cond="ffOnly"]').forEach(function (n) { show(n, isFF); });
@@ -1544,15 +1617,57 @@
     if (rfn) {
       if (isRefi()) {
         var payoff = num("payoff");
-        var cashOutEst = payoff > 0 ? Math.max(0, d.totalLoan - payoff) : 0;
         var refiTxt = d.gold
           ? "<strong>Refinance types.</strong> A rate-&-term refi takes essentially no cash to you. A cash-out refi \u2014 cash to you over the lesser of $20,000 or 2% of the loan \u2014 is capped by the program leverage or 100% of verified hard costs; cash over $250,000 requires an escalation review."
           : d.silver
           ? "<strong>Refinance types.</strong> A rate-&-term refi takes no cash to you. Cash-out proceeds are capped at 50% of the total projected project profit; interest reserves are netted from cash-out proceeds; a stabilized refi needs the borrower current on all payments and taxes."
           : "<strong>Refinance types.</strong> A rate-&-term refi takes no cash to you (proceeds at or under 2% of the loan). A cash-out refi \u2014 proceeds over 2% of the loan \u2014 is capped at $50,000 cash to the borrower.";
-        if (payoff > 0) refiTxt += " On this deal, the new loan of " + YS.fmtUSD(d.totalLoan) + " less your " + YS.fmtUSD(payoff) + " payoff \u2248 " + YS.fmtUSD(cashOutEst) + " before closing costs.";
+        /* WHAT THE BORROWER ACTUALLY WALKS AWAY WITH (owner-directed 2026-07-31:
+           "on cash out then you should have also how much the cash out is
+           afterwards after the payoff and the closing cost. And obviously for rate
+           and term there's no cash out just payoff").
+           The old line stopped at "before closing costs", which is the number
+           nobody can use \u2014 the borrower asks what they RECEIVE. Closing costs are
+           already computed by the frozen calc (d.closing); subtracting them here is
+           display arithmetic on figures the engine produced, not a pricing change.
+           A rate-&-term refinance is defined by taking essentially no cash, so it
+           states the payoff and stops \u2014 quoting a "cash to you" figure there would
+           invite exactly the cash-out the structure is not. */
+        if (payoff > 0) {
+          var netOut = structuralCashOut(d);
+          refiTxt += " On this deal, the new loan of " + YS.fmtUSD(d.totalLoan) + " pays off " + YS.fmtUSD(payoff) + payoffWhoTxt() + ".";
+          if (isCashOut()) {
+            refiTxt += " Of that loan, " + YS.fmtUSD(fundedAtClose(d)) + " funds at the closing table; after the payoff and " + YS.fmtUSD(d.closing || 0) + " of closing costs, cash to you \u2248 <strong>" + YS.fmtUSD(netOut) + "</strong>.";
+          }
+        }
         rfn.style.display = ""; rfn.innerHTML = refiTxt;
       } else { rfn.style.display = "none"; rfn.innerHTML = ""; }
+    }
+
+    /* The cash-out box SHOWS ITS WORK. The placeholder carries the structural
+       figure so an untouched box is never a mystery, and the help line says
+       whether the number in play is the officer's or the structure's — the
+       officer should never have to guess which one the term sheet will print. */
+    var coEl = el("cashOutAmt"), coHelp = el("cashOutAmtHelp");
+    if (coEl && isRefi() && isCashOut()) {
+      var structural = structuralCashOut(d);
+      coEl.placeholder = structural > 0 ? YS.fmtUSD(structural) : "auto — from the structure";
+      if (coHelp) {
+        // Blank-aware, so a deliberate 0 reports as YOUR number rather than
+        // silently reading as an untouched box (same rule as cashOutOfRecord).
+        var typedCo = YS.opt("cashOutAmt");
+        /* The working shown is the ADVANCE AT CLOSING, not the whole loan — on a
+           renovation refinance the rehab holdback funds later in draws, so the
+           whole loan is not what the borrower walks away with. */
+        var derivTxt = "advance at closing " + YS.fmtUSD(fundedAtClose(d)) +
+          " − payoff " + YS.fmtUSD(num("payoff")) + " − closing " + YS.fmtUSD(d.closing || 0);
+        coHelp.textContent = (typedCo !== null && typedCo >= 0)
+          ? ("You entered " + YS.fmtUSD(typedCo) + ". The structure implies " + YS.fmtUSD(structural) +
+             " (" + derivTxt + ").")
+          : (structural > 0
+            ? ("From the structure: " + derivTxt + " = " + YS.fmtUSD(structural) + ". Type a number to override it.")
+            : "Enter the payoff above and this fills in from the structure.");
+      }
     }
 
     // ---- gate the term-sheet export until required fields are complete ----
@@ -2004,6 +2119,27 @@
         yL = rowIn(xL, colW, (d.R && d.R.sizing && d.R.sizing.rehabOverCap) ? "Construction holdback (capped \u2014 see eligibility)" : "Construction holdback (= rehab)", sized ? money(d.rehabHoldback) : "\u2014", yL);
       }
       yL = rowIn(xL, colW, isBridge ? "Total loan amount (disbursed at closing)" : "Total loan amount", sized ? money(d.totalLoan) : "\u2014", yL, { bold: true, accent: true });
+      /* THE PAYOFF IS PART OF THE STRUCTURE ON A REFINANCE (owner-directed
+         2026-07-31: "it should be part of the real structure also on the term
+         sheet also on the structure screen everywhere by refinancing
+         transaction"). Naming WHO and WHICH loan is what lets the closing attorney
+         and the title company request the payoff letter without a phone call; the
+         net cash line is the number the borrower actually asks about, and it is
+         printed only on a cash-out \u2014 a rate-&-term takes no cash by definition. */
+      if (isRefi() && num("payoff") > 0) {
+        var _po = num("payoff"), _poWho = payoffLender(), _poNo = payoffLoanNo();
+        yL = rowIn(xL, colW, "Existing loan payoff", money(_po), yL);
+        if (_poWho) yL = rowIn(xL, colW, "Paid off to", _poWho, yL);
+        if (_poNo) yL = rowIn(xL, colW, "Their loan number", _poNo, yL);
+        if (isCashOut() && sized) {
+          /* cashOutOfRecord, NOT arithmetic inlined here: the officer may have
+             typed a cash-out figure, and the printed sheet must quote the number
+             of record — the same one the panel and the help line show. Inlining
+             it once meant a typed override never reached the PDF. */
+          yL = rowIn(xL, colW, "Estimated cash to you (after payoff & closing costs)",
+            money(cashOutOfRecord(d)), yL, { bold: true });
+        }
+      }
       yL += 9;
       yL = cardHead(xL, colW, "Payments (interest-only)", yL);
       if (isBridge) {
