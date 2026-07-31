@@ -269,9 +269,43 @@ async function sowLockReason(appId, payload, client = db, opts = {}) {
     + '(that removes the sent term sheet and reopens the term-sheet and application conditions), then re-register.';
 }
 
+/**
+ * The lock reason for a DETAILS save that touches NOTHING but the payoff's
+ * who-and-which — `structuralLockReason` with one narrow exclusion, in the same
+ * shape as the Scope-of-Work carve-out above (owner-directed 2026-07-31).
+ *
+ * WHY IT HAS TO EXIST. `payoff_lender` and `payoff_loan_number` are the two
+ * things the closing attorney needs in order to ORDER the payoff letter — and
+ * the payoff letter is ordered at closing prep, which is at or past Clear to
+ * Close, long after the term sheet went out. Without this, the payoff section
+ * would be frozen at precisely the moment it is needed: the officer learns who
+ * the servicer really is, types it in, and is told to void a signed term sheet.
+ *
+ * WHY IT IS SAFE — the same test the SOW exclusion is held to. The term-sheet
+ * freeze exists so a sent term sheet can never silently disagree with the file.
+ * Neither of these fields carries money: neither is a pricing input (they are
+ * absent from the db/071/072 reopen trigger, so they cannot even make a
+ * registration stale), neither enters any engine, and neither can change a
+ * single number on the sheet. They print as two informational lines naming the
+ * servicer — and the SIGNED PDF is a stored document that this cannot alter.
+ *
+ * IT IS DELIBERATELY NARROW. Any other field in the same request — the payoff
+ * AMOUNT above all — falls straight through to `structuralLockReason` unchanged.
+ * That is what stops it becoming a general-purpose way past the freeze.
+ *
+ * Never throws; an unreadable file behaves exactly like `structuralLockReason`.
+ */
+async function payoffContactLockReason(appId, body, client = db, opts = {}) {
+  if (!require('./payoff').isPayoffContactOnlyEdit(body)) {
+    return structuralLockReason(appId, client, opts);
+  }
+  return null;
+}
+
 module.exports = {
   structuralLockReason, STRUCTURE_LOCKED, TS_SENT_STATUSES, termSheetSentLock,
   sowLockReason, sowBudgetNeutral, SOW_INVESTOR_STATUSES,
+  payoffContactLockReason,
   // The two halves, exported so tests (and any future caller that needs one
   // freeze without the other) never have to re-implement them.
   _internals: { lockInputs, statusFreezeReason, termSheetFreezeReason, superUnlockActive },

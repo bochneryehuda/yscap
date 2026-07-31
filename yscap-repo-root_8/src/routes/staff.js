@@ -8514,7 +8514,13 @@ router.patch('/applications/:id/details', async (req, res) => {
   // super_admin included. This economics editor is one of the write paths that
   // used to skip the freeze (it could rewrite a funded loan's numbers). A
   // super_admin can UNLOCK the file first to correct a mistake, then re-lock.
-  const detailsLock = await require('../lib/file-lock').structuralLockReason(req.params.id, db, { actor: req.actor });
+  /* payoffContactLockReason IS structuralLockReason, with one narrow exclusion:
+     a request that changes NOTHING but who holds the loan being paid off and
+     their loan number. Those two are needed at closing prep — at or past Clear
+     to Close, long after the term sheet went out — and neither carries money nor
+     enters any calculation. Every other field, the payoff AMOUNT included, falls
+     through to the ordinary freeze unchanged. See the function's own note. */
+  const detailsLock = await require('../lib/file-lock').payoffContactLockReason(req.params.id, req.body || {}, db, { actor: req.actor });
   if (detailsLock) return res.status(409).json({ error: detailsLock, locked: true });
   // sqft only applies to a square-footage / ground-up rehab. When the rehab type
   // is being changed to something else, null any stale sqft in the SAME update so
@@ -8528,6 +8534,11 @@ router.patch('/applications/:id/details', async (req, res) => {
     requestedExpFlips: 'requested_exp_flips', requestedExpHolds: 'requested_exp_holds', requestedExpGround: 'requested_exp_ground',
     requestedExpReo: 'requested_exp_reo', requestedIrMonths: 'requested_ir_months', requestedIrAmount: 'requested_ir_amount',
     payoffAmount: 'payoff_amount', originalPurchasePrice: 'original_purchase_price',
+    // WHAT THE BORROWER WALKS AWAY WITH on a cash-out refinance (db/267's
+    // `estimated_cash_out`, which until now had no writer anywhere in the app).
+    // The payoff section fills it from the structure and lets a human override
+    // it; see src/lib/payoff.js for the one definition of that arithmetic.
+    estimatedCashOut: 'estimated_cash_out',
     underlyingContractPrice: 'underlying_contract_price', assignmentFee: 'assignment_fee' };
   const STR = { propertyType: 'property_type', loanType: 'loan_type', program: 'program', occupancy: 'occupancy',
     rehabType: 'rehab_type', term: 'term', lender: 'lender', channel: 'channel', ppp: 'ppp',
@@ -9173,6 +9184,36 @@ router.get('/applications/:id/note-buyer', async (req, res) => {
     res.json(await require('../lib/note-buyer-effects').noteBuyerSlot(req.params.id, db, { candidate }));
   } catch (e) {
     console.warn('[staff] note-buyer slot error:', db.describeError(e));
+    res.status(500).json({ error: 'server error' });
+  }
+});
+
+/* THE PAYOFF SECTION (owner-directed 2026-07-31) — everything the file's payoff
+   card needs: which kind of refinance this is, what has been entered, what is
+   still missing and WHY it matters, what the structure implies the borrower
+   walks away with, and a plain-language explanation of how a payoff works.
+
+   READ-ONLY: it writes nothing. Entry still goes through the ONE existing write
+   path (`PATCH /applications/:id/details`), which is freeze-aware and audited.
+   Every derived figure is arithmetic on numbers the FROZEN pricing engine
+   already produced — the registered quote's initial advance and closing costs;
+   no guideline, cap or rate is read or written here. */
+router.get('/applications/:id/payoff', async (req, res) => {
+  try {
+    const a = await db.query(
+      `SELECT id, loan_type, payoff_amount, payoff_lender, payoff_loan_number, estimated_cash_out
+         FROM applications WHERE id=$1`, [req.params.id]);
+    if (!a.rows.length) return res.status(404).json({ error: 'not found' });
+    // The CURRENT registration's normalized quote, when the file has one. A file
+    // that has not been registered simply cannot imply a cash-out figure yet, and
+    // payoffState says so rather than showing a zero that reads like an answer.
+    const q = await db.query(
+      `SELECT quote FROM product_registrations
+        WHERE application_id=$1 AND is_current ORDER BY created_at DESC LIMIT 1`, [req.params.id]);
+    const quote = q.rows.length ? q.rows[0].quote : null;
+    res.json(require('../lib/payoff').payoffState(a.rows[0], quote));
+  } catch (e) {
+    console.warn('[staff] payoff section error:', db.describeError(e));
     res.status(500).json({ error: 'server error' });
   }
 });

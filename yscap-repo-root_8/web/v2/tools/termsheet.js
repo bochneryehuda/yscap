@@ -66,12 +66,25 @@
      every caller reads the same whether or not the officer filled it in. */
   function payoffLender() { return (val("payoffLender") || "").trim(); }
   function payoffLoanNo() { return (val("payoffLoanNo") || "").trim(); }
-  /* WHAT THE STRUCTURE IMPLIES the borrower receives: the new loan, less the loan
-     being retired, less the closing costs. All three come from the frozen calc —
-     this is arithmetic on the engine's own output, not a pricing rule. */
+  /* WHAT THE STRUCTURE IMPLIES the borrower receives AT THE TABLE: the money that
+     actually funds on closing day, less the loan being retired, less the closing
+     costs. All three come from the frozen calc — this is arithmetic on the
+     engine's own output, not a pricing rule.
+
+     IT IS THE INITIAL ADVANCE, NOT THE WHOLE LOAN. A renovation loan's rehab
+     holdback is released later, draw by draw, against work completed, and a
+     financed interest reserve is held back too (totalLoan = initialAdvance +
+     rehabHoldback + financedReserve). Netting the payoff off the TOTAL would
+     quote the borrower money they will not see for months — on a heavy-rehab
+     refinance, overstated by the entire construction budget. */
+  function fundedAtClose(d) {
+    if (!d) return 0;
+    return d.initialAdvance > 0 ? d.initialAdvance : (d.totalLoan || 0);
+  }
   function structuralCashOut(d) {
-    if (!d || !(d.totalLoan > 0)) return 0;
-    return Math.max(0, d.totalLoan - num("payoff") - (d.closing || 0));
+    var funded = fundedAtClose(d);
+    if (!(funded > 0)) return 0;
+    return Math.max(0, funded - num("payoff") - (d.closing || 0));
   }
   /* The figure of record: whatever the officer TYPED, else what the structure
      implies. A typed value wins because a real deal can net differently (a
@@ -1594,7 +1607,7 @@
           var netOut = structuralCashOut(d);
           refiTxt += " On this deal, the new loan of " + YS.fmtUSD(d.totalLoan) + " pays off " + YS.fmtUSD(payoff) + payoffWhoTxt() + ".";
           if (isCashOut()) {
-            refiTxt += " After that payoff and " + YS.fmtUSD(d.closing || 0) + " of closing costs, cash to you \u2248 <strong>" + YS.fmtUSD(netOut) + "</strong>.";
+            refiTxt += " Of that loan, " + YS.fmtUSD(fundedAtClose(d)) + " funds at the closing table; after the payoff and " + YS.fmtUSD(d.closing || 0) + " of closing costs, cash to you \u2248 <strong>" + YS.fmtUSD(netOut) + "</strong>.";
           }
         }
         rfn.style.display = ""; rfn.innerHTML = refiTxt;
@@ -1611,13 +1624,16 @@
       coEl.placeholder = structural > 0 ? YS.fmtUSD(structural) : "auto — from the structure";
       if (coHelp) {
         var typedCo = num("cashOutAmt");
+        /* The working shown is the ADVANCE AT CLOSING, not the whole loan — on a
+           renovation refinance the rehab holdback funds later in draws, so the
+           whole loan is not what the borrower walks away with. */
+        var derivTxt = "advance at closing " + YS.fmtUSD(fundedAtClose(d)) +
+          " − payoff " + YS.fmtUSD(num("payoff")) + " − closing " + YS.fmtUSD(d.closing || 0);
         coHelp.textContent = typedCo > 0
           ? ("You entered " + YS.fmtUSD(typedCo) + ". The structure implies " + YS.fmtUSD(structural) +
-             " (loan " + YS.fmtUSD(d.totalLoan || 0) + " − payoff " + YS.fmtUSD(num("payoff")) +
-             " − closing " + YS.fmtUSD(d.closing || 0) + ").")
+             " (" + derivTxt + ").")
           : (structural > 0
-            ? ("From the structure: loan " + YS.fmtUSD(d.totalLoan || 0) + " − payoff " + YS.fmtUSD(num("payoff")) +
-               " − closing " + YS.fmtUSD(d.closing || 0) + " = " + YS.fmtUSD(structural) + ". Type a number to override it.")
+            ? ("From the structure: " + derivTxt + " = " + YS.fmtUSD(structural) + ". Type a number to override it.")
             : "Enter the payoff above and this fills in from the structure.");
       }
     }
@@ -2084,8 +2100,12 @@
         if (_poWho) yL = rowIn(xL, colW, "Paid off to", _poWho, yL);
         if (_poNo) yL = rowIn(xL, colW, "Their loan number", _poNo, yL);
         if (isCashOut() && sized) {
+          /* cashOutOfRecord, NOT arithmetic inlined here: the officer may have
+             typed a cash-out figure, and the printed sheet must quote the number
+             of record — the same one the panel and the help line show. Inlining
+             it once meant a typed override never reached the PDF. */
           yL = rowIn(xL, colW, "Estimated cash to you (after payoff & closing costs)",
-            money(Math.max(0, d.totalLoan - _po - (d.closing || 0))), yL, { bold: true });
+            money(cashOutOfRecord(d)), yL, { bold: true });
         }
       }
       yL += 9;

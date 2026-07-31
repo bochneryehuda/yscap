@@ -306,6 +306,17 @@ const FIELDS = [
       { v: 'adding_sf', label: 'Adding square footage' }, { v: 'ground_up', label: 'Ground-up' }, { v: 'other', label: 'Other' }] },
   { key: 'payoff_amount', label: 'Current payoff amount', group: 'Deal economics', type: 'money', writable: true,
     borrowerLabel: 'Current payoff amount', borrowerHint: 'The payoff amount on your current loan (refinances).' },
+  /* WHO holds the loan being paid off, and WHICH loan it is (db/385). Writable
+     because the BORROWER is the one who knows — it is their existing loan — so an
+     info condition can simply ask them, instead of an officer chasing it by phone.
+     A payoff amount with no lender and no loan number is a payoff nobody can
+     order a letter for. */
+  { key: 'payoff_lender', label: 'Lender being paid off', group: 'Deal economics', type: 'text', writable: true,
+    borrowerLabel: 'Who is your current lender?',
+    borrowerHint: 'The bank, private lender or servicer that holds the loan we are paying off.' },
+  { key: 'payoff_loan_number', label: 'Payoff loan number', group: 'Deal economics', type: 'text', writable: true,
+    borrowerLabel: 'Your current loan number',
+    borrowerHint: 'The loan or account number your current lender uses — it is on your monthly statement.' },
   { key: 'original_purchase_price', label: 'Original purchase price', group: 'Deal economics', type: 'money', writable: true,
     borrowerLabel: 'Original purchase price', borrowerHint: 'What you originally paid for the property (refinances).' },
   { key: 'acquisition_date', label: 'Acquisition date', group: 'Deal economics', type: 'date', writable: true,
@@ -362,6 +373,8 @@ const WRITE_TARGETS = {
   arv: { table: 'applications', column: 'arv' },
   rehab_budget: { table: 'applications', column: 'rehab_budget' },
   payoff_amount: { table: 'applications', column: 'payoff_amount' },
+  payoff_lender: { table: 'applications', column: 'payoff_lender' },
+  payoff_loan_number: { table: 'applications', column: 'payoff_loan_number' },
   original_purchase_price: { table: 'applications', column: 'original_purchase_price' },
   acquisition_date: { table: 'applications', column: 'acquisition_date' },
   underlying_contract_price: { table: 'applications', column: 'underlying_contract_price' },

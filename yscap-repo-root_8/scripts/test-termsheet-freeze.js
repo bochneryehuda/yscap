@@ -127,6 +127,46 @@ function call(server, method, path, token, body) {
       'the Clear-to-Close refusal points at the Scope of Work change request');
     await db.query(`UPDATE applications SET status='processing' WHERE id=$1`, [appId]);
 
+    /* ---- THE PAYOFF WHO/WHICH EXCLUSION, end to end (owner-directed 2026-07-31).
+       The closing attorney needs the servicer's name and their loan number in
+       order to ORDER the payoff letter — which happens at closing prep, at or
+       past Clear to Close and long after the term sheet went out. Neither field
+       carries money, neither is a pricing input, and neither can change a number
+       on the sheet, so an edit that touches ONLY those two must go through. The
+       payoff AMOUNT is money and stays frozen, and a request that mixes the two
+       falls straight back into the ordinary freeze. Proven through the REAL staff
+       route, at super_admin authority with NO unlock on the file — so a 409 here
+       is the genuine freeze, not a missing permission. */
+    await setEnv('sent');
+    const payoffOf = async () => (await db.query(
+      `SELECT payoff_amount, payoff_lender, payoff_loan_number FROM applications WHERE id=$1`, [appId])).rows[0];
+    await db.query(`UPDATE applications SET payoff_amount=300000, payoff_lender=NULL, payoff_loan_number=NULL WHERE id=$1`, [appId]);
+
+    const p1 = await patch({ payoffLender: 'Chase Home Finance', payoffLoanNumber: 'CHF-88213' });
+    assert(p1.status === 200, 'term-sheet SENT: naming WHO is paid off and their loan number goes through');
+    const after1 = await payoffOf();
+    assert(after1.payoff_lender === 'Chase Home Finance' && after1.payoff_loan_number === 'CHF-88213',
+      'and it actually persisted');
+
+    const p2 = await patch({ payoffAmount: 310000 });
+    assert(p2.status === 409, 'term-sheet SENT: the payoff AMOUNT is still frozen — it is money');
+    assert(Number((await payoffOf()).payoff_amount) === 300000, 'the frozen payoff amount did not change');
+
+    const p3 = await patch({ payoffLender: 'Someone Else', payoffAmount: 310000 });
+    assert(p3.status === 409, 'term-sheet SENT: a request that MIXES the amount in is refused as a whole');
+    assert((await payoffOf()).payoff_lender === 'Chase Home Finance',
+      'and the mixed request wrote nothing at all — not even the part that would have been allowed');
+
+    // Clear to Close is the case this exists for: the payoff letter is ordered here.
+    await db.query(`UPDATE applications SET status='clear_to_close' WHERE id=$1`, [appId]);
+    const p4 = await patch({ payoffLender: 'Kiavi Servicing', payoffLoanNumber: 'KV-7781' });
+    assert(p4.status === 200, 'Clear to Close: the servicer and their loan number can still be recorded');
+    assert((await payoffOf()).payoff_lender === 'Kiavi Servicing', 'and persisted at Clear to Close');
+    const p5 = await patch({ payoffAmount: 999999 });
+    assert(p5.status === 409, 'Clear to Close: the payoff amount is still frozen');
+    assert(Number((await payoffOf()).payoff_amount) === 300000, 'the amount is untouched at Clear to Close');
+    await db.query(`UPDATE applications SET status='processing' WHERE id=$1`, [appId]);
+
     console.log(failures ? `\n${failures} assertion(s) failed` : '\nALL term-sheet-freeze assertions passed');
   } catch (e) {
     console.error('ERROR', e); failures++;

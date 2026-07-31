@@ -124,8 +124,17 @@ console.log('\n--- cash to the borrower is net of the payoff AND closing costs -
      the note, the box's own help line and the printed term sheet — so those three
      can never quote different numbers for the same deal. */
   assert(/function structuralCashOut\(d\)/.test(js), 'there is ONE structural cash-out definition');
-  assert(/d\.totalLoan - num\("payoff"\) - \(d\.closing \|\| 0\)/.test(js),
-    'and it nets the payoff AND the closing costs off the new loan');
+  /* NETTED OFF WHAT FUNDS AT CLOSING, not off the whole loan. A renovation
+     refinance holds the construction money back and releases it in draws, so
+     netting the payoff off the TOTAL quotes the borrower the entire rehab
+     budget as cash in hand. `fundedAtClose` is that one reading. */
+  assert(/function fundedAtClose\(d\)/.test(js), 'there is ONE reading of what funds at closing');
+  assert(/d\.initialAdvance > 0 \? d\.initialAdvance/.test(js),
+    'and it is the INITIAL ADVANCE (falling back to the total only when there is no advance)');
+  assert(/funded - num\("payoff"\) - \(d\.closing \|\| 0\)/.test(js),
+    'the cash-out nets the payoff AND the closing costs off what actually funds');
+  assert(!/d\.totalLoan - num\("payoff"\)/.test(js),
+    'the old total-loan arithmetic is gone — it promised the construction budget as cash');
   assert(/function cashOutOfRecord\(d\)/.test(js),
     'a TYPED cash-out overrides the structural one — a real deal can net differently');
   assert(!/before closing costs/.test(js),
@@ -144,10 +153,54 @@ console.log('\n--- cash to the borrower is net of the payoff AND closing costs -
   assert(/Estimated cash to you \(after payoff & closing costs\)/.test(js),
     'the term sheet prints the net cash figure, and says what it is net OF');
 
+  // The printed sheet must quote the number OF RECORD, not re-do the sum itself —
+  // inlining the arithmetic once meant a typed cash-out never reached the PDF.
+  assert(/money\(cashOutOfRecord\(d\)\)/.test(js),
+    'the printed cash figure comes from cashOutOfRecord, so a typed override reaches the PDF');
+
   // Arithmetic, exercised rather than asserted from the source.
-  const net = (loan, payoff, closing) => Math.max(0, loan - payoff - (closing || 0));
-  assert(net(500000, 300000, 18000) === 182000, 'net cash = loan − payoff − closing (500k/300k/18k → 182k)');
+  const net = (funded, payoff, closing) => Math.max(0, funded - payoff - (closing || 0));
+  assert(net(380000, 300000, 18000) === 62000, 'net cash = advance − payoff − closing (380k/300k/18k → 62k)');
   assert(net(300000, 300000, 18000) === 0, 'it never goes negative — a payoff-only refi shows $0, not a minus');
+}
+
+/* ===================================================================== *
+ * 5. THE SECTION — the file has one place that owns the payoff.
+ * ===================================================================== */
+console.log('\n--- the loan file has a Payoff section that owns the subject ---');
+{
+  const screen = read('screens/StaffApplication.jsx');
+  assert(/id: 'sec-payoff'/.test(screen), 'the file has its own Payoff section');
+  assert(/isRefiFile \? \[\{ id: 'sec-payoff'/.test(screen),
+    'and it only exists on a refinance — a purchase has nothing to pay off');
+  assert(/<PayoffCard appId=\{id\}/.test(screen), 'the section renders the payoff card');
+  // ONE mount. Two editors for one record on one page is worse than one — the
+  // same rule the borrower-profile editor is held to.
+  assert((screen.match(/<PayoffCard\b/g) || []).length === 1, 'exactly ONE payoff editor on the page');
+
+  const card = read('components/PayoffCard.jsx');
+  assert(/applications\/\$\{appId\}\/payoff/.test(card), 'the card asks the SERVER what the payoff picture is');
+  assert(/api\.staffEditApplication/.test(card),
+    'and saves through the ONE existing write door (which is freeze-aware and audited)');
+  assert(/state\.isCashOut/.test(card) && /estimatedCashOut/.test(card),
+    'the cash-out figure is only ever sent on a cash-out refinance');
+  assert(/howItWorks/.test(card), 'the card can explain how a payoff works');
+
+  // The details form no longer edits the payoff — it points at the section. A
+  // stale copy of the form would otherwise save its own old values over a fix.
+  const edit = read('components/EditFileDetails.jsx');
+  assert(/Open the Payoff section/.test(edit), 'the details form points at the payoff section');
+  assert(!/set\('payoffLender'/.test(edit) && !/set\('payoffAmount'/.test(edit),
+    'and no longer carries its own payoff inputs');
+  assert(/isRefi \? \{\} : \{ payoffAmount: '', payoffLender: '', payoffLoanNumber: '', estimatedCashOut: '' \}/.test(edit),
+    'it still CLEARS all four when the file stops being a refinance — nothing else can');
+
+  // The server door and the derived read.
+  const staff = readRepo('src/routes/staff.js');
+  assert(/router\.get\('\/applications\/:id\/payoff'/.test(staff), 'the server exposes the payoff picture');
+  assert(/estimatedCashOut: 'estimated_cash_out'/.test(staff),
+    'and accepts the cash-out figure (db/267’s column, which had no writer at all until now)');
+  assert(/payoffState\(a\.rows\[0\], quote\)/.test(staff), 'the route answers from the ONE shared model');
 }
 
 /* ===================================================================== *
@@ -173,9 +226,11 @@ console.log('\n--- the loan file stores it, and every entry surface offers it --
   assert(/payoffLender/.test(apply) && /payoffLoanNumber/.test(apply),
     'the loan application form asks for both — the owner asked for them THERE specifically');
 
+  /* The staff edit form used to own these two boxes. It no longer does — the
+     Payoff section does (section 5 below) — so all this file still asks of it is
+     that it READS them, for the one-line summary that points you there. */
   const edit = read('components/EditFileDetails.jsx');
-  assert(/payoffLender: isRefi/.test(edit), 'the staff edit form sends them only on a refinance');
-  assert(/app\.payoff_lender/.test(edit), 'and pre-fills them from the file');
+  assert(/app\.payoff_lender/.test(edit), 'the staff edit form still reads them from the file');
 
   const studioPanel = read('components/ProductStudioPanel.jsx');
   assert(/payoffLender: app\.payoff_lender/.test(studioPanel),
