@@ -192,9 +192,17 @@ function buildInputs(app, experience, overrides) {
     'markupStdPct', 'markupGoldPct', 'markupSilverPct',
     'origStdPct', 'origGoldPct', 'origSilverPct', 'origManualPct',
     'lenderFee', 'creditFee', 'appraisalFee', 'titleFee',
-    'ovrAcqLTVPct', 'ovrARLTVPct', 'ovrLTCPct', 'ovrRatePct', 'ovrIrMonths', 'ovrEffPrice'];
+    'ovrAcqLTVPct', 'ovrARLTVPct', 'ovrLTCPct', 'ovrRatePct', 'ovrIrMonths', 'ovrEffPrice',
+    // Out-of-pocket rehab exception (owner-authorized 2026-07-31): a dollar amount
+    // of the rehab budget brought OUT OF POCKET so the initial advance can rise
+    // toward the acquisition cap. Display/structure only — it re-slices an already-
+    // sized loan (normalize()), never a leverage/rate/cap number. 0/absent → no change.
+    'oopRehab'];
   const STRK = ['loanType', 'strategy', 'state', 'city', 'address', 'propertyType'];
-  const BOOLK = ['cashOut', 'isAssignment', 'heavyRehab', 'sqftAddition', 'forcePrice', 'manualPricing'];
+  const BOOLK = ['cashOut', 'isAssignment', 'heavyRehab', 'sqftAddition', 'forcePrice', 'manualPricing',
+    // "Raise the initial to max" toggle — use the full max out-of-pocket rehab
+    // (exact, independent of any stale client-computed dollar). Pairs with oopRehab.
+    'oopRehabMax'];
   const out = Object.assign({}, base);
   if (overrides && typeof overrides === 'object') {
     for (const k of NUMK) if (overrides[k] != null && overrides[k] !== '') out[k] = num(overrides[k]);
@@ -306,11 +314,36 @@ function normalize(program, input, ev, ladder) {
   // loan amount AND the initial. The engine's sizing math itself is unchanged —
   // this only floors/reconciles the reported figures.
   const totalLoan = Math.floor(num(s.totalLoan));
-  const rehabHoldback = Math.floor(num(s.rehabLoan));
+  let rehabHoldback = Math.floor(num(s.rehabLoan));
   let initialAdvance = Math.floor(num(s.acquisition));
   let financedReserve = 0;
   if (num(s.financedIR) > 0.5) financedReserve = Math.max(0, totalLoan - initialAdvance - rehabHoldback);
   else initialAdvance = Math.max(0, totalLoan - rehabHoldback);
+  /* OUT-OF-POCKET REHAB EXCEPTION (owner-authorized 2026-07-31; the specific change:
+     "re-slice an already-sized loan so the initial advance rises toward the
+     acquisition-LTV cap and the displaced rehab is brought out of pocket — total
+     loan, rate and every cap unchanged; byte-identical when the exception amount is
+     zero"). This is DISPLAY/STRUCTURE ONLY: the frozen engine already sized the total
+     and the default split (initial cut to keep rehab 100% financed); here we move X
+     dollars from the rehab holdback into the initial advance, capped so the initial
+     never exceeds its own acquisition-LTV ceiling A = maxAcqLTV × acqDenom and the
+     holdback never goes negative. The total loan, note rate, LTC/ARV/acq caps and the
+     financed reserve are untouched. `maxInitial`/`initialCut`/`maxOopRehab` are the
+     two figures the Manual section shows BEFORE anything is entered. When no exception
+     amount is supplied (requestedOop <= 0) every number below is identical to before. */
+  const maxInitial = Math.floor(Math.max(0, num((ev.caps || {}).maxAcqLTV) * num(s.acqDenom)));
+  const initialCut = Math.max(0, maxInitial - initialAdvance);         // how much the initial was cut below its cap
+  const maxOopRehab = Math.max(0, Math.min(initialCut, rehabHoldback)); // biggest rehab we could push out of pocket
+  const requestedOop = input.oopRehabMax ? maxOopRehab : Math.max(0, Math.floor(num(input.oopRehab)));
+  const oopRehab = Math.max(0, Math.min(requestedOop, maxOopRehab));   // the applied exception amount
+  if (oopRehab > 0) { initialAdvance += oopRehab; rehabHoldback -= oopRehab; }
+  // The raised initial reduces the equity due at the table $-for-$; the out-of-pocket
+  // rehab is funded during construction (a draw shortfall), NOT at closing — so it is
+  // NOT in cash-to-close, but IS in the liquidity the borrower must show.
+  const downPayment = Math.max(0, num(s.downPayment) - oopRehab);
+  // Interest-only payment on the initial advance rises with the raised initial
+  // (as-drawn accrual). Recomputed only under the exception; byte-identical otherwise.
+  const initialPayment = oopRehab > 0 ? round2(initialAdvance * (num(ev.noteRate) / 12)) : num(s.initialPayment);
   const state = clean(input.state).toUpperCase();
   const title = YSTitle.estimate(state, totalLoan, input.loanType);
   const titleAutoTotal = num(title.total);
@@ -330,7 +363,7 @@ function normalize(program, input, ev, ladder) {
   const extraFeeList = pricingSettings.extraFeesForState(cd.extraFees, state);
   const extraFeesTotal = extraFeeList.reduce((a, f) => a + (num(f.amount) || 0), 0);
   const closingDueAtClose = round2(origination + lenderFee + creditFee + titleTotal + extraFeesTotal);
-  const cashToClose = round2(num(s.downPayment) + assignmentExcess + closingDueAtClose);
+  const cashToClose = round2(downPayment + assignmentExcess + closingDueAtClose);
   let reserveRequirement = 0;
   let reserveBasis = '';
   let reserveMo = 0;
@@ -346,7 +379,10 @@ function normalize(program, input, ev, ladder) {
       reserveBasis = `${reserveMo} months of full-payment interest reserves`;
     }
   }
-  const liquidityRequired = round2(cashToClose + reserveRequirement);
+  // Out-of-pocket rehab is funded over the construction period, not at the table, so
+  // it is added to the liquidity the borrower must SHOW (not to cash-to-close). +0 by
+  // default.
+  const liquidityRequired = round2(cashToClose + reserveRequirement + oopRehab);
   /* THREE MEANINGS OF "MAX LEVERAGE", mapped to the reader that needs each one
      (engine contract split 2026-07-30, owner-reported).
 
@@ -399,9 +435,17 @@ function normalize(program, input, ev, ladder) {
       initialAdvance,
       rehabHoldback,
       financedReserve,
-      downPayment: num(s.downPayment),
+      downPayment,
       assignmentExcessOOP: assignmentExcess,
-      initialPayment: num(s.initialPayment),
+      // Out-of-pocket rehab exception (owner-authorized 2026-07-31). `oopRehab` = the
+      // applied amount (0 = no exception; the tapes/Encompass derive OOP as
+      // rehab_budget − rehabHoldback, which equals this). `maxOopRehab`/`initialCut`/
+      // `maxInitial` are the figures the Manual section shows before anything is entered.
+      oopRehab,
+      maxOopRehab,
+      initialCut,
+      maxInitial,
+      initialPayment,
       monthlyPayment: num(s.fullPayment),
       ltcPct: num(s.ltcPct),
       acqLtvPct: num(s.acqLtvPct),
