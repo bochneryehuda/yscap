@@ -48,13 +48,21 @@ const OWN_GLOBALS = ['RB', 'TR'];
  * scripts/test-suite-scenarios-db.js asserts the two agree on the real field names. */
 const SSN_KEY = /(^|_)ssn$|social.?security|(^|b\d)ssn/i;
 
-function stripSocials(v) {
+/* AND IT MUST SAY SO (re-audit 2026-07-30). The first cut reported the strip from
+ * the SERVER's `omittedSensitive`, but the client strips first — so by the time the
+ * request arrives there is no social left to report, the server always answered
+ * false, and the message the staffer was promised ("you'll re-enter those") could
+ * only ever appear for a hand-rolled request that has no screen to show it on.
+ * Proven in a real browser: a Loan Application with two socials saved with the
+ * plain "Saved." note. The side that actually drops the number is the side that
+ * has to report it, so the reader hands back a count and the bar ORs the two. */
+function stripSocials(v, dropped) {
   if (!v || typeof v !== 'object') return v;
-  if (Array.isArray(v)) return v.map(stripSocials);
+  if (Array.isArray(v)) return v.map((x) => stripSocials(x, dropped));
   const out = {};
   for (const k of Object.keys(v)) {
-    if (SSN_KEY.test(k)) continue;
-    out[k] = stripSocials(v[k]);
+    if (SSN_KEY.test(k)) { dropped.push(k); continue; }
+    out[k] = stripSocials(v[k], dropped);
   }
   return out;
 }
@@ -85,7 +93,10 @@ function ownAccessor(win) {
   return null;
 }
 
-/** Read a tool's state out of its frame. Returns `{state, kind}` or null. */
+/** Read a tool's state out of its frame.
+ *  Returns `{state, kind, omittedSensitive}` or null. `omittedSensitive` is true
+ *  when a Social Security number was dropped on the way out of the browser, so the
+ *  bar can tell the staffer why the box will be empty when they reopen it. */
 export function readToolState(win) {
   if (!win) return null;
   let own = null;
@@ -93,14 +104,20 @@ export function readToolState(win) {
   if (own) {
     try {
       const state = own.mod[own.fn]();
-      if (state && typeof state === 'object') return { state: stripSocials(state), kind: 'own' };
+      if (state && typeof state === 'object') {
+        const dropped = [];
+        return { state: stripSocials(state, dropped), kind: 'own', omittedSensitive: dropped.length > 0 };
+      }
     } catch (_) { /* refuse below — never degrade to the flat collector */ }
     return null;
   }
   try {
     if (win.YS && typeof win.YS.collectState === 'function') {
       const state = win.YS.collectState({ includeNoShare: true });
-      if (state && typeof state === 'object') return { state: stripSocials(state), kind: 'suite' };
+      if (state && typeof state === 'object') {
+        const dropped = [];
+        return { state: stripSocials(state, dropped), kind: 'suite', omittedSensitive: dropped.length > 0 };
+      }
     }
   } catch (_) { /* the tool has not booted yet */ }
   return null;

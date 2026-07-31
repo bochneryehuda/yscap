@@ -70,8 +70,14 @@ export default function ToolScenarioBar({ slug, toolName, getWin, onCountChange 
       const verb = existing ? `Replaced "${name}"` : `Saved "${name}"`;
       /* A social is never stored in a scenario (see lib/tool-scenario-state.js), so
          say it plainly — a staffer who reopens this and finds the box empty should
-         already know why, not think the save lost their work. */
-      flash('ok', r && r.omittedSensitive
+         already know why, not think the save lost their work.
+         EITHER SIDE MAY HAVE DROPPED IT (re-audit 2026-07-30). The client strips
+         before the request is sent, so the server's `omittedSensitive` is false on
+         every real save from this screen and reading it alone made the message
+         unreachable. The reader reports what IT dropped; the server still reports
+         what a hand-rolled request tried to smuggle in. Both count. */
+      const dropped = (read && read.omittedSensitive) || !!(r && r.omittedSensitive);
+      flash('ok', dropped
         ? `${verb}. Social Security numbers are never saved in a scenario — you'll re-enter those.`
         : `${verb}.`);
     } catch (e) {

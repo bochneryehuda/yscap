@@ -207,9 +207,44 @@ console.log('\n--- the share-link guarantee is intact ---');
       'the client drops the social before it is ever sent');
     assert(mod.toolHasOwnState(healthy) === true && mod.toolHasOwnState(suiteWin) === false,
       'toolHasOwnState agrees with the reader about which tools carry their own state');
+
+    /* THE SIDE THAT DROPS THE NUMBER IS THE SIDE THAT REPORTS IT (re-audit
+       2026-07-30). The bar used to read only the SERVER's `omittedSensitive` — but
+       the client strips FIRST, so on every real save from the screen the server saw
+       no social, answered false, and the promised "you'll re-enter those" message
+       could never appear (proven in a real browser: a Loan Application with two
+       socials saved with a bare "Saved."). The reader now reports what IT dropped. */
+    assert(e.omittedSensitive === true,
+      'the reader REPORTS the strip, so the bar can tell the staffer why the box will be empty');
+    const clean = mod.readToolState({ YS: { collectState: () => ({ v: { price: '400000' } }) } });
+    assert(clean.omittedSensitive === false, 'a scenario with no social does not claim one was removed');
+    const ownSsn = mod.readToolState({ RB: { getState: () => ({ items: [], b1Ssn: 'x' }), setState() {} } });
+    assert(ownSsn.omittedSensitive === true, 'an OWN-state read reports its strip too');
+    const bar = fs.readFileSync(path.join(__dirname, '..', 'app-v2', 'src', 'components', 'ToolScenarioBar.jsx'), 'utf8');
+    assert(/read\s*&&\s*read\.omittedSensitive/.test(bar),
+      'and the bar actually consults the READER, not only the server response');
   } catch (e) {
     assert(false, `the adapter could not be exercised: ${e && e.message}`);
   }
+
+/* THE FRAME HANDLE IS PINNED TO A GENERATION, NOT ONLY A SLUG (re-audit 2026-07-30).
+   The slug pin closes "open tool A, open tool B, save before B boots". It does NOT
+   close "open tool A, go back, open tool A AGAIN" — the slug matches, so the pin
+   handed back the PREVIOUS, torn-down window. Measured in a real browser: the row
+   that landed in Postgres carried the FIRST frame's line items. Asserted from the
+   source because the behaviour needs a browser; the browser proof is in the audit. */
+console.log('\n--- the frame handle cannot survive a reopen of the same tool ---');
+{
+  const screen = fs.readFileSync(path.join(__dirname, '..', 'app-v2', 'src', 'screens', 'StaffInvestorSuite.jsx'), 'utf8');
+  assert(/const genRef = useRef\(0\)/.test(screen), 'the screen keeps a generation counter for the frame handle');
+  assert(/held\.gen === genRef\.current/.test(screen), 'and winFor refuses a handle from an older generation');
+  assert(/genRef\.current \+= 1/.test(screen), 'the generation is bumped when the open tool changes');
+  const stray = screen.match(/setOpen\(/g) || [];
+  assert(stray.length === 1,
+    `setOpen is called in exactly ONE place (showTool) so no path can change tools without invalidating the handle (found ${stray.length})`);
+  assert(/onReady=\{\(win\) => \{ winRef\.current = \{ gen,/.test(screen),
+    'onReady stamps the generation captured at RENDER time, so a late onReady from the old frame is ignored');
+}
 
   if (!process.env.DATABASE_URL) {
     console.log('\nSKIP the HTTP half — no DATABASE_URL');
