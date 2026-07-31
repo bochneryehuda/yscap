@@ -344,6 +344,61 @@ if (!process.env.DATABASE_URL) {
       } else { assert(false, `setup submit failed (${r.status})`); }
     }
 
+    console.log('\n--- a number too big for its column is a BAD REQUEST, not a 500 ---');
+    {
+      /* AUDIT ROUNDS 5/6. Twenty digits reached Postgres, raised 22003 and came
+         back as "server error" — which reads as "PILOT is broken" instead of
+         "that number is too big", and no money box in the portal caps its digit
+         count. The bound has to be each COLUMN'S OWN: a first cut used one
+         number for all of them, which left `requested_ir_amount` (money, but it
+         takes the integer branch for blanks) still 500ing, left the whole band
+         from 2.1e9 to 1e12 still 500ing on the int columns, and told a user the
+         wrong limit for a unit count. */
+      const r = await submit({ loanType: 'Purchase', purchasePrice: '500000', asIsValue: '500000' });
+      if (r.status === 201) {
+        const appId = r.body.applicationId;
+        await db.query(`UPDATE applications SET loan_officer_id=$2 WHERE id=$1`, [appId, staffId]);
+        const patch = (body) => call('PATCH', `/api/staff/applications/${appId}/details`, sTok, body);
+
+        // MONEY columns — numeric(14,2). The ceiling is tested on the ROUNDED
+        // value, because Postgres rounds to 2dp BEFORE it checks for overflow.
+        for (const k of ['purchasePrice', 'asIsValue', 'arv', 'rehabBudget', 'payoffAmount',
+          'estimatedCashOut', 'originalPurchasePrice', 'underlyingContractPrice', 'assignmentFee',
+          'requestedIrAmount']) {
+          const big = await patch({ [k]: '12345678901234567890' });
+          eq(big.status, 400, `${k}: twenty digits is refused, not a 500`);
+          assert(/too large/i.test((big.body && big.body.error) || ''), `${k}: and says it is too large`);
+          /* The rounding edge applies to the columns that actually carry cents.
+             `requestedIrAmount` is money but takes the INT branch (an interest
+             reserve is entered in whole dollars), so it is already an integer by
+             the time the ceiling is tested — a decimal never reaches it. */
+          if (k !== 'requestedIrAmount') {
+            const edge = await patch({ [k]: '999999999999.995' });
+            eq(edge.status, 400, `${k}: a value that ROUNDS past the ceiling is refused too`);
+          }
+          const ok = await patch({ [k]: '999999999999.99' });
+          eq(ok.status, 200, `${k}: the largest value it CAN hold is accepted`);
+        }
+
+        // INTEGER columns — int4, ceiling 2,147,483,647, and the message must
+        // say so rather than quoting a money limit nobody can use.
+        for (const k of ['units', 'sqftPre', 'sqftPost']) {
+          const over = await patch({ [k]: '2147483648' });
+          eq(over.status, 400, `${k}: past the integer ceiling is refused, not a 500`);
+          assert(/2,147,483,647/.test((over.body && over.body.error) || ''),
+            `${k}: and the message quotes THIS column's limit (got ${JSON.stringify((over.body || {}).error)})`);
+          const at = await patch({ [k]: '2147483647' });
+          eq(at.status, 200, `${k}: the largest value it CAN hold is accepted`);
+        }
+
+        // And nothing a real loan carries is refused.
+        const real = await patch({ units: '4', purchasePrice: '750000', asIsValue: '600000',
+          arv: '900000', rehabBudget: '200000', sqftPre: '1800', sqftPost: '2600',
+          payoffAmount: '300000', originalPurchasePrice: '410000', requestedIrAmount: '42000' });
+        eq(real.status, 200, 'a real loan’s numbers are all still accepted');
+      } else { assert(false, `setup submit failed (${r.status})`); }
+    }
+
     console.log('\n--- the staff file screen reads it all back ---');
     {
       const r = await submit({

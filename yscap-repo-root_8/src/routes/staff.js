@@ -8611,6 +8611,23 @@ router.patch('/applications/:id/details', async (req, res) => {
     payoffLender: 'payoff_lender', payoffLoanNumber: 'payoff_loan_number' };
   const DATE = { acquisitionDate: 'acquisition_date' };
   const INT_KEYS = /^(requestedExp|requestedIr)/;
+  /* THE CEILING IS THE COLUMN'S OWN, NOT ONE NUMBER FOR ALL OF THEM (audit round
+     6, 2026-07-31). The first cut of this guard reused `INT_KEYS` — which exists
+     to decide how a BLANK resolves, a different question entirely — and a single
+     1e12 bound, which was wrong three ways:
+       · `requested_ir_amount` is numeric(14,2) MONEY but matches INT_KEYS, so it
+         was excluded from the guard and still answered 500 on a fat-fingered
+         paste — the commit's own headline scenario, on a live portal field;
+       · `units`, `sqft_pre` and `sqft_post` are int4, whose real ceiling is
+         2,147,483,647, so everything from there to 1e12 still answered 500;
+       · and the 400 message quoted a money limit for a UNIT COUNT, so following
+         its advice produced another 500.
+     These two sets are keyed on the COLUMN TYPE, which is what actually decides
+     the limit. Add a key to NUM above and add it here too. */
+  const MONEY_KEYS = new Set(['purchasePrice', 'asIsValue', 'arv', 'rehabBudget', 'requestedIrAmount',
+    'payoffAmount', 'estimatedCashOut', 'originalPurchasePrice', 'underlyingContractPrice', 'assignmentFee']);
+  const MONEY_MAX = 1e12;              // numeric(14,2): |value| must ROUND to < 10^12
+  const INT_MAX = 2147483647;          // int4
   const sets = [], vals = []; let i = 1;
   const touchedCols = [];
   for (const [k, col] of Object.entries(NUM)) if (k in b) {
@@ -8638,14 +8655,24 @@ router.patch('/applications/:id/details', async (req, res) => {
       return res.status(400).json({ error: 'estimatedCashOut cannot be negative — leave it blank to use the structure’s own figure' });
     }
     /* A NUMBER TOO BIG FOR ITS COLUMN IS A BAD REQUEST, NOT A SERVER FAULT
-       (audit round 5, 2026-07-31 — pre-existing, reproduced on this door). The
-       money columns here are numeric(14,2), so twenty digits reached Postgres,
-       raised 22003 "numeric field overflow" and came back as a 500 "server
+       (audit round 5, 2026-07-31 — pre-existing, reproduced on this door). Twenty
+       digits reached Postgres, raised 22003 and came back as a 500 "server
        error" — which reads as "PILOT is broken" instead of "that number is too
        big", and MoneyInput imposes no digit cap, so a fat-fingered paste gets
-       there. Bounded at the door with the column's own ceiling. */
-    if (n != null && !INT_KEYS.test(k) && Math.abs(n) >= 1e12) {
-      return res.status(400).json({ error: `${k} is too large — the largest amount this field can hold is 999,999,999,999.99` });
+       there. Bounded here with each column's OWN ceiling (see MONEY_KEYS above).
+
+       The money test is on the ROUNDED value because numeric(14,2) rounds to two
+       decimals BEFORE it checks for overflow: 999999999999.995 rounds up to 10^12
+       and is refused by Postgres, while a bare `>= 1e12` on the raw number let it
+       through to another 500. */
+    if (n != null) {
+      const isMoney = MONEY_KEYS.has(k);
+      const mag = isMoney ? Math.abs(Math.round(n * 100) / 100) : Math.abs(n);
+      if (isMoney ? mag >= MONEY_MAX : mag > INT_MAX) {
+        return res.status(400).json({ error: isMoney
+          ? `${k} is too large — the largest amount this field can hold is 999,999,999,999.99`
+          : `${k} is too large — the largest value this field can hold is 2,147,483,647` });
+      }
     }
     sets.push(`${col}=$${i++}`); vals.push(n); touchedCols.push(col);
   }
@@ -10166,6 +10193,11 @@ router.post('/applications/:id/closing/cash-to-close', async (req, res) => {
   const blank = raw == null || String(raw).trim() === '';
   const val = blank ? null : Number(raw);
   if (!blank && (!Number.isFinite(val) || val < 0)) return res.status(400).json({ error: 'Enter a real cash-to-close amount.' });
+  // …and too big for the column is a bad request, not a 500. Same numeric(14,2)
+  // ceiling and the same rounded test as the details door (audit round 6).
+  if (!blank && Math.abs(Math.round(val * 100) / 100) >= 1e12) {
+    return res.status(400).json({ error: 'That cash-to-close amount is too large — the largest this field can hold is 999,999,999,999.99.' });
+  }
   const docId = req.body && req.body.docId ? String(req.body.docId) : null;
   try {
     const check = await closing.runCashToCloseCheck(appId, val, db);
