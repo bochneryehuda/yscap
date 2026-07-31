@@ -233,7 +233,7 @@ earlier draft.)*
 | 2 | Fast typing → several requests in flight | Number the requests; use only the newest |
 | 3 | Someone hits **Download PDF** mid-fetch and gets the previous numbers | **Block every export while a quote is in flight** — see item 3b |
 | 4 | Server unreachable | Say so plainly — **never show a stale or half number** |
-| 5 | A round trip per keystroke | Add a ~250ms debounce. **The page has none today** — see item 5b |
+| 5 | A round trip per keystroke | Add a **~100–120ms** debounce. **The page has none today**, and 250ms is too long — see item 5b |
 | 6 | `window.TS._calc()` must stay **synchronous** | It is a published contract — see item 6b |
 | 7 | The Gold slider fires **up to ten** engine calls per drag tick | Ask the server for the **whole ladder in one reply**, not one request per rung |
 | 8 | The two offer **cards** price Gold and Silver separately from the detail | One reply must carry **all three programs**, so one round trip serves cards *and* detail |
@@ -246,13 +246,32 @@ run** while a request is pending, and the portal's own export path (`TermSheetSt
 `win.TS.exportPdf(null)` directly) has to be covered by the same refusal — it does not go through the
 page's button.
 
-**5b. The page does not debounce anything.** The earlier draft said "the page already debounces input."
-It does not. `wire()` attaches one handler to **every** input, select and textarea in the form, and that
-handler calls `recompute()` **synchronously on every single keystroke**. With Gold drilled in, one
-recompute runs on the order of a dozen or more engine evaluations (up to ten of them from `goldLadder()`
-alone). Today that is free, because the rules are in the browser. After the swap **every one of those
-becomes a network round trip unless the debounce is added first.** The debounce is therefore not a
-nice-to-have — it is load-bearing, and it must be written before the swap, not after.
+**5b. The page does not debounce anything — and 250ms is the wrong number.** The earlier draft said "the
+page already debounces input." It does not. `wire()` attaches one handler to **every** input, select and
+textarea in the form, and that handler calls `recompute()` **synchronously on every single keystroke**.
+Measured in a real browser: **2.3ms per keystroke** in the comparison view, **4.9ms** with Gold drilled
+in, across **24 engine calls**. Today that is free, because the rules are in the browser. After the swap
+**every one of those becomes a network round trip unless the debounce is added first.** The debounce is
+load-bearing and must be written before the swap, not after.
+
+**But a 250ms debounce is a TRADE, not a fix — measured, 2026-07-31.** It adds its full delay to *every*
+edit, so the steady-state feel gets **worse**, not better:
+
+| Connection | Debounce | Requests for 6 keystrokes | Time for one edit to show |
+|---|---|---|---|
+| *(today, in-browser)* | — | 0 | **2 ms** |
+| typical (80ms) | none | 7 | **87 ms** |
+| typical (80ms) | 250 ms | 2 | **338 ms** |
+| mobile/far (300ms) | none | 7 | **309 ms** |
+| mobile/far (300ms) | 250 ms | 2 | **559 ms** |
+
+**~100–120ms is the better balance** — it still collapses a typing burst into one or two requests, but it
+does not dominate the felt delay. Full measurements and method in
+`docs/STUDIO-SPEED-AND-PARITY-RESEARCH.md`.
+
+Note the second reason to keep *some* debounce: a public endpoint answering on every keystroke is far
+easier to probe automatically to reconstruct the rate matrix (the "oracle" risk in the protection plan).
+Fewer requests make that materially harder.
 
 **6b. `window.TS._calc` / `_calcGold` / `_calcSilver` are a published contract, and they must stay
 synchronous.** Both portals reach into the studio's iframe and call them expecting an object back
