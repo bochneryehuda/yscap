@@ -672,9 +672,29 @@
      75.00% loan-to-cost / 90.00% loan-to-cost — and everything in the seam below it —
      classifies in the LOWER, cheaper band, and the band above starts strictly above that
      round number. Every other edge is unchanged, so every other ratio bands as before. */
+  /* THE EDGE IS INCLUSIVE TO WITHIN A ROUNDING SPECK (owner-authorized 2026-07-30:
+     "Yes, you can figure this one as well. So it shouldn't get overpriced").
+
+     A ratio is a DIVISION — loan / value — and binary floating point cannot hold most
+     decimal fractions exactly. A loan that is mathematically EXACTLY on a band edge
+     therefore comes back a hair above it: the measured case is a bridge refinance
+     where $653,937.90 / $934,197 is exactly 0.70 in decimal but 0.7000000000000001 in
+     the machine. A strict `r <= edge` read that speck as "over 70%" and charged the
+     DEARER band — 10.25% instead of 10.00%, about $1,635 of extra interest over a
+     12-month term, for a deal that is precisely on the line.
+
+     BAND_EPS closes it. 1e-9 is roughly seven orders of magnitude ABOVE the observed
+     noise (~1.1e-16) and seven below the narrowest band in the grid (0.0249), so it
+     can only ever absorb a rounding artifact — never reclassify a genuinely different
+     structure. This is the same remedy `atCap` already applies on the CAP axis, with
+     the same reasoning ("the reported total is rounded to the cent, so the ratio it
+     implies can come back a hair ABOVE the cap"); the band axis simply never got it.
+     It only ever moves a deal DOWN into the cheaper band, so it cannot overcharge and
+     cannot price above the workbook. */
+  var BAND_EPS = 1e-9;
   function bandOf(labels, edges, r) {
     if (!(r > 0)) return null;
-    for (var i = 0; i < edges.length; i++) if (r <= edges[i]) return labels[i];
+    for (var i = 0; i < edges.length; i++) if (r <= edges[i] + BAND_EPS) return labels[i];
     return null;                                   // above the top band — never priced
   }
   function arBand(r)  { return bandOf(AR_BANDS,  AR_EDGES_UP,  r); }

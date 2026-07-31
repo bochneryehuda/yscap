@@ -184,8 +184,19 @@ function resolver() {
 }
 
 /* ---------------- independent classifiers (fixture-derived) ---------------- */
-function myArBand(R, r) { if (!(r > 0)) return null; for (const b of R.AR) if (r <= b.max) return b.label; return null; }
-function myLtcBand(R, r) { if (!(r > 0)) return null; for (const b of R.LTC) if (r <= b.max) return b.label; return null; }
+/* THE SAME EDGE RULE THE ENGINE USES, to the same number (pre-merge audit,
+   2026-07-30). The engine bands with `r <= edge + 1e-9` (silver-program.js BAND_EPS);
+   the monitor used to pre-round with snap9, which tolerates only half of that. The
+   two therefore disagreed on a ratio landing in (edge+5e-10, edge+1e-9] — where the
+   monitor would have cried "our rate is LOWER than the workbook's" about a deal the
+   engine had banded correctly. Empirically unreachable (0 of 205,994 near-edge
+   observations landed in that window), but a watch-only monitor that can raise a
+   false alarm is a monitor people learn to ignore. The classifier is still built
+   INDEPENDENTLY from the fixture's own labels — only the edge tolerance is shared,
+   because a tolerance the two do not share is a tolerance that reports noise. */
+const BAND_EPS = 1e-9;
+function myArBand(R, r) { if (!(r > 0)) return null; for (const b of R.AR) if (r <= b.max + BAND_EPS) return b.label; return null; }
+function myLtcBand(R, r) { if (!(r > 0)) return null; for (const b of R.LTC) if (r <= b.max + BAND_EPS) return b.label; return null; }
 function myFicoBand(R, tier, fico) {
   if (!(fico > 0) || !R.FICO[tier]) return null;
   for (const b of R.FICO[tier]) if (fico >= b.min && fico <= b.max) return b.label;
@@ -419,11 +430,16 @@ function shadowCheckInner(input, result, opts) {
     const ltc = num(sz.ltcPct);
     // The exact-decimal workbook read, banded by the fixture-derived classifiers, which
     // carry the owner-authorized .99 edge lift of 2026-07-30 (see liftDotNineNine).
+    /* No snap9 pre-round any more: the band tolerance now lives in the classifiers
+       themselves (BAND_EPS above), exactly as it does in the engine. Pre-rounding on
+       TOP of it would make the monitor MORE tolerant than the engine and simply move
+       the disagreement to the other side of the edge. */
     const myKey = myKeyOf(R, market, sizeBand, prodTok, purp, termTok, tier,
-      atCapS(snap9(arRatio), evCaps.maxARLTV), fico,
-      atCapS(snap9(ltc > 0 ? ltc : evCaps.maxLTC), evCaps.maxLTC));
+      atCapS(arRatio, evCaps.maxARLTV), fico,
+      atCapS(ltc > 0 ? ltc : evCaps.maxLTC, evCaps.maxLTC));
     const fixRate = myKey != null ? R.rates[myKey] : undefined;
-    const onEdge = nearBandEdge(R, snap9(ltc)) || nearBandEdge(R, snap9(arRatio));
+    // nearBandEdge carries its own 1e-6 window, far wider than either tolerance.
+    const onEdge = nearBandEdge(R, ltc) || nearBandEdge(R, arRatio);
 
     if (noteRate > 0) {
       const buy = noteRate - eff;

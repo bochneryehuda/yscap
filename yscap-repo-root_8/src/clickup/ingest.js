@@ -78,6 +78,7 @@ function buildMaskedSnapshot(read, extra = {}) {
   return {
     status: read.internalStatus || null,
     rawProgram: read.rawProgram || null,   // raw ClickUp *Program label (non-RTL preserved)
+    rawPropertyType: read.rawPropertyType || null,  // raw ClickUp *Property Type label — lets the db/383 boot push find blank cards
     app: read.app || {},
     borrower: { ...b, ssn: ssn4 ? `***-**-${ssn4}` : undefined },
     llc: read.llc || {},

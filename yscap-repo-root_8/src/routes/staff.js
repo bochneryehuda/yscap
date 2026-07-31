@@ -1912,6 +1912,90 @@ router.post('/applications/:id/vesting-llc', async (req, res) => {
   } catch (e) { console.warn('[staff] handler error:', db.describeError(e)); res.status(500).json({ error: 'server error' }); }
 });
 
+// Personal-name purchase (owner-directed 2026-07-31): the property is bought in an
+// individual name instead of an LLC. Uploading a NON-OWNER-OCCUPIED AFFIDAVIT (in
+// lieu of LLC documents) waives the LLC condition (rtl_p1_llc): the file is flagged
+// personal_name_purchase, the affidavit is filed as the condition's evidence, the
+// condition is signed off, and the ClickUp *Vesting dropdown flips to Individual
+// (default is LLC — db/384). Sending { undo:true } reverses it: clears the flag,
+// reopens the condition, and pushes vesting back to LLC.
+router.post('/applications/:id/vesting/personal-name', async (req, res) => {
+  try {
+    const b = req.body || {};
+    if (!can(req.actor, 'sign_off_conditions'))
+      return res.status(403).json({ error: 'Only a processor can waive the LLC condition — signing this off as a personal-name purchase is a sign-off.' });
+    const app = (await db.query(
+      `SELECT a.id, a.status, a.borrower_id, a.llc_id, l.is_verified AS llc_verified
+         FROM applications a LEFT JOIN llcs l ON l.id = a.llc_id
+        WHERE a.id=$1 AND a.deleted_at IS NULL`, [req.params.id])).rows[0];
+    if (!app) return res.status(404).json({ error: 'not found' });
+    if (['clear_to_close', 'funded', 'declined', 'withdrawn'].includes(app.status))
+      return res.status(409).json({ error: 'This file is Clear to Close — vesting is locked. Move it back to an earlier status to change it.' });
+
+    // The LLC condition must exist so the affidavit has somewhere to hang / to sign off.
+    try { await require('../lib/vesting').ensureLlcCondition(req.params.id); } catch (_) {}
+    const item = (await db.query(
+      `SELECT ci.id FROM checklist_items ci JOIN checklist_templates t ON t.id=ci.template_id
+        WHERE ci.application_id=$1 AND t.code='rtl_p1_llc' ORDER BY ci.created_at LIMIT 1`, [req.params.id])).rows[0];
+
+    // UNDO — back to an LLC purchase (the default): clear the flag, reopen the
+    // condition, push vesting back to LLC.
+    if (b.undo === true) {
+      await db.query(`UPDATE applications SET personal_name_purchase=false, updated_at=now() WHERE id=$1`, [req.params.id]);
+      if (item) {
+        await db.query(
+          `UPDATE checklist_items SET status='outstanding', signed_off_at=NULL, signed_off_by=NULL,
+              reviewed_at=NULL, reviewed_by=NULL, updated_at=now() WHERE id=$1`, [item.id]);
+        enqueueChecklistStatusPush(item.id).catch(() => {});
+      }
+      try { await enqueueClickupPush(req.params.id, ['vesting']); } catch (_) {}
+      await audit(req, 'vesting_personal_name_undo', 'application', req.params.id, {});
+      return res.json({ ok: true, personalNamePurchase: false });
+    }
+
+    // WAIVE — file the affidavit (uploaded now, or already on the item), flag the
+    // file personal-name, sign the condition off, and flip vesting to Individual.
+    if (!item) return res.status(409).json({ error: 'the LLC condition is not on this file yet' });
+    // An LLC always wins over a personal-name waiver (db/384). A VERIFIED linked
+    // entity means the file really vests in that LLC — refuse (remove the LLC
+    // first). An unverified linked entity is dropped below with the flag write, so
+    // the ClickUp *Vesting dropdown never reads Individual next to an LLC name.
+    if (app.llc_id && app.llc_verified === true)
+      return res.status(409).json({ error: 'This file vests in a verified LLC. Remove the LLC entity first if it is really being bought in a personal name.' });
+    let uploadedDocId = null;
+    if (b.dataBase64) {
+      if (!b.filename) return res.status(400).json({ error: 'filename + dataBase64 required for the affidavit' });
+      let buf;
+      try { ({ buf } = decodeUploadBase64(b.dataBase64)); }
+      catch (e) { return res.status(e.status || 400).json({ error: e.message }); }
+      const maxBytes = cfg.maxUploadMb * 1024 * 1024;
+      if (buf.length > maxBytes) return res.status(413).json({ error: `file too large (max ${cfg.maxUploadMb} MB)` });
+      const filename = safeFilename(b.filename);
+      const { ref, provider } = await storage.save(buf, { filename });
+      const r = await db.query(
+        `INSERT INTO documents (application_id,checklist_item_id,borrower_id,filename,content_type,size_bytes,
+                                storage_provider,storage_ref,uploaded_by_kind,uploaded_by_id,doc_kind,slot_label,visibility,source_type)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,'staff',$9,'noo_affidavit',$10,'borrower','staff_upload') RETURNING id`,
+        [req.params.id, item.id, app.borrower_id, filename, b.contentType || 'application/pdf', buf.length,
+         provider, ref, req.actor.id, 'Non-owner-occupied affidavit']);
+      uploadedDocId = r.rows[0].id;
+    }
+    const hasAff = uploadedDocId || (await db.query(
+      `SELECT 1 FROM documents WHERE checklist_item_id=$1 AND is_current
+         AND COALESCE(review_status,'') <> 'rejected' AND doc_kind='noo_affidavit' LIMIT 1`, [item.id])).rows[0];
+    if (!hasAff) return res.status(400).json({ error: 'Upload the non-owner-occupied affidavit (PDF) to sign this off as a personal-name purchase.' });
+
+    await db.query(`UPDATE applications SET personal_name_purchase=true, llc_id=NULL, updated_at=now() WHERE id=$1`, [req.params.id]);
+    await db.query(
+      `UPDATE checklist_items SET status='satisfied', signed_off_at=now(), signed_off_by=$2, updated_at=now() WHERE id=$1`,
+      [item.id, req.actor.id]);
+    enqueueChecklistStatusPush(item.id).catch(() => {});
+    try { await enqueueClickupPush(req.params.id, ['vesting']); } catch (_) {}
+    await audit(req, 'vesting_personal_name_affidavit', 'application', req.params.id, { documentId: uploadedDocId });
+    res.json({ ok: true, personalNamePurchase: true, documentId: uploadedDocId });
+  } catch (e) { console.warn('[staff] handler error:', db.describeError(e)); res.status(500).json({ error: 'server error' }); }
+});
+
 /* ---------------- Product registration / term sheet ----------------
    Pricing is computed here on the server from the same FROZEN engines the
    browser loads, so a registered product is always authoritative. */
@@ -5657,6 +5741,20 @@ async function signOffGate(itemId, actor) {
   // could be signed off empty. Block a manual sign-off until the vesting LLC is
   // actually linked AND verified.
   if (code === 'rtl_p1_llc') {
+    // Personal-name purchase (owner-directed 2026-07-31): the property can be bought
+    // in an individual name instead of an LLC. The LLC condition is then satisfied by
+    // a NON-OWNER-OCCUPIED AFFIDAVIT (in lieu of LLC documents), which is what flips
+    // the ClickUp vesting to Individual. When the file is flagged personal-name,
+    // require that affidavit here rather than a verified LLC.
+    const pn = (await db.query(
+      `SELECT personal_name_purchase FROM applications WHERE id=$1`, [item.application_id])).rows[0];
+    if (pn && pn.personal_name_purchase) {
+      const aff = (await db.query(
+        `SELECT 1 FROM documents WHERE checklist_item_id=$1 AND is_current
+           AND COALESCE(review_status,'') <> 'rejected' AND doc_kind='noo_affidavit' LIMIT 1`, [itemId])).rows[0];
+      if (!aff) return 'Upload the non-owner-occupied affidavit (PDF) to sign this off as a personal-name purchase (bought in an individual name, not an LLC).';
+      return null;
+    }
     const v = (await db.query(
       `SELECT l.is_verified FROM applications a JOIN llcs l ON l.id = a.llc_id WHERE a.id=$1`, [item.application_id])).rows[0];
     if (!v) return 'Link the vesting entity (LLC) to this file, then verify it, before signing this off.';
@@ -13262,6 +13360,154 @@ router.post('/esign/drain', async (req, res) => {
     const inbox = await esignWebhook.drainInbox({ db, docusign: docusignLib });
     res.json({ ok: true, inbox });
   } catch (e) { console.warn('[staff] handler error:', db.describeError(e)); res.status(500).json({ error: 'server error' }); }
+});
+
+/* ---------------- Investor Suite: a staffer's own saved scenarios ----------------
+   Owner-directed 2026-07-30: staff price deals in the suite tools and want to name
+   what they built, come back to the list, and pick up exactly where they left off —
+   for the Term Sheet Studio and every other tool.
+
+   PRIVATE BY CONSTRUCTION. Every statement below is keyed on `req.actor.id`, so a
+   scenario is only ever readable, writable and deletable by the staffer who saved
+   it. A row belonging to somebody else answers 404 rather than 403: a 403 would
+   confirm the id exists, and there is nothing here worth leaking that over.
+   A scenario is a scratchpad — it carries no application_id and cannot register,
+   price a real file, or reach any enforcement path. The rules (which tools exist,
+   what a name is, what a state may be) live in the pure src/lib/suite-scenarios.js
+   so they unit-test without a server. */
+const suiteScenarios = require('../lib/suite-scenarios');
+
+router.get('/tool-scenarios', async (req, res) => {
+  try {
+    const tool = String(req.query.tool || '').trim();
+    if (tool && !suiteScenarios.isToolSlug(tool)) return res.status(400).json({ error: 'unknown_tool' });
+    /* The cap is a runaway guard, and it must NEVER be silent: a staffer past it
+       would see truncated badges and older scenarios simply missing, with nothing
+       saying why. Ask for one row beyond it so we can tell the difference between
+       "exactly 500" and "more than we are showing" — and the COUNTS come from the
+       database, not from the capped page, so a badge can never under-report. */
+    const LIST_CAP = 500;
+    const r = await db.query(
+      `SELECT id, tool_slug, name, state_kind, created_at, updated_at
+         FROM staff_tool_scenarios
+        WHERE staff_user_id = $1 ${tool ? 'AND tool_slug = $2' : ''}
+        ORDER BY updated_at DESC
+        LIMIT ${LIST_CAP + 1}`,
+      tool ? [req.actor.id, tool] : [req.actor.id]);
+    const truncated = r.rows.length > LIST_CAP;
+    const rows = truncated ? r.rows.slice(0, LIST_CAP) : r.rows;
+    // The per-tool counts drive the badge on each suite tile, so the grid can show
+    // "3 saved" without fetching every tool's list.
+    const counts = {};
+    const c = await db.query(
+      `SELECT tool_slug, COUNT(*)::int AS n FROM staff_tool_scenarios
+        WHERE staff_user_id = $1 GROUP BY tool_slug`, [req.actor.id]);
+    for (const row of c.rows) counts[row.tool_slug] = row.n;
+    res.json({ scenarios: rows.map((x) => suiteScenarios.shapeRow(x)), counts, truncated });
+  } catch (e) { console.warn('[staff] handler error:', db.describeError(e)); res.status(500).json({ error: 'server error' }); }
+});
+
+// The full state, fetched only when a scenario is actually opened.
+router.get('/tool-scenarios/:id', async (req, res) => {
+  try {
+    const r = await db.query(
+      `SELECT id, tool_slug, name, state, state_kind, created_at, updated_at
+         FROM staff_tool_scenarios WHERE id = $1 AND staff_user_id = $2`,
+      [req.params.id, req.actor.id]);
+    if (!r.rows[0]) return res.status(404).json({ error: 'not found' });
+    res.json({ scenario: suiteScenarios.shapeRow(r.rows[0], { withState: true }) });
+  } catch (e) {
+    // A malformed uuid is a 404, not a 500 — it is simply not one of your rows.
+    if (String(e && e.code) === '22P02') return res.status(404).json({ error: 'not found' });
+    console.warn('[staff] handler error:', db.describeError(e)); res.status(500).json({ error: 'server error' });
+  }
+});
+
+/* Save. Re-using a name for the same tool OVERWRITES that scenario rather than
+   growing a pile of identically-named rows the staffer cannot tell apart — the
+   unique index in db/381 is what makes that atomic under a double-click. */
+router.post('/tool-scenarios', async (req, res) => {
+  try {
+    const v = suiteScenarios.validateSave(req.body);
+    if (!v.ok) return res.status(400).json({ error: v.error, detail: v.detail });
+    const { toolSlug, name, state, stateKind, removed } = v.value;
+    const r = await db.query(
+      `INSERT INTO staff_tool_scenarios (staff_user_id, tool_slug, name, state, state_kind)
+            VALUES ($1, $2, $3, $4::jsonb, $5)
+       ON CONFLICT (staff_user_id, tool_slug, lower(btrim(name)))
+       DO UPDATE SET state = EXCLUDED.state, state_kind = EXCLUDED.state_kind, name = EXCLUDED.name
+         RETURNING id, tool_slug, name, state_kind, created_at, updated_at`,
+      [req.actor.id, toolSlug, name, JSON.stringify(state), stateKind]);
+    // Never a silent strip: if a social was dropped on the way in, the screen says so.
+    res.status(201).json({ scenario: suiteScenarios.shapeRow(r.rows[0]), omittedSensitive: removed.length > 0 });
+  } catch (e) { console.warn('[staff] handler error:', db.describeError(e)); res.status(500).json({ error: 'server error' }); }
+});
+
+// Rename an existing scenario. The state is replaced only when one is supplied, so
+// a pure rename cannot blank the work it names.
+router.put('/tool-scenarios/:id', async (req, res) => {
+  try {
+    const b = (req.body && typeof req.body === 'object') ? req.body : {};
+    const name = b.name != null ? suiteScenarios.cleanName(b.name) : null;
+    if (b.name != null && !name) return res.status(400).json({ error: 'name_required' });
+    const hasState = Object.prototype.hasOwnProperty.call(b, 'state');
+    let state = null; let removed = [];
+    if (hasState) {
+      if (!suiteScenarios.isStateObject(b.state)) return res.status(400).json({ error: 'state_required' });
+      if (suiteScenarios.stateTooBig(b.state)) return res.status(400).json({ error: 'state_too_large' });
+      // The same social scrub as the save door — a rename that also carries a state
+      // is a second way into this table, and it must not be the unguarded one.
+      const scrubbed = suiteScenarios.scrubState(b.state);
+      state = scrubbed.state; removed = scrubbed.removed;
+      /* AN OWN-STATE ROW'S STATE IS NOT REPLACEABLE THROUGH THIS DOOR (re-audit
+         follow-up, 2026-07-30). The save door refuses a flat blob for Rehab Budget /
+         Track Record because the CLIENT feature-detects the tool and declares which
+         accessor produced the bytes. This door has no such handshake — it takes a
+         bare state with no kind — so a flat blob would land under a row still marked
+         'own' and the reopen would hand that tool a shape it cannot read, restoring a
+         BLANK tool. Declaring a kind here would not help: the check is on provenance,
+         not shape, and a hand-rolled request would simply declare 'own'.
+         So this door does renames; the save door (same name → upsert) is how an
+         own-state scenario's numbers are updated, and it is the one that can prove
+         where they came from. The client already works exactly this way. */
+      const owner = await db.query(
+        `SELECT tool_slug, state_kind FROM staff_tool_scenarios WHERE id = $1 AND staff_user_id = $2`,
+        [req.params.id, req.actor.id]);
+      if (!owner.rows[0]) return res.status(404).json({ error: 'not found' });
+      if (owner.rows[0].state_kind === 'own') {
+        return res.status(400).json({
+          error: 'use_save',
+          detail: 'Re-save this scenario from the tool itself so its rows are read properly. Renaming it here still works.',
+        });
+      }
+    }
+    const r = await db.query(
+      `UPDATE staff_tool_scenarios
+          SET name  = COALESCE($3, name),
+              state = COALESCE($4::jsonb, state)
+        WHERE id = $1 AND staff_user_id = $2
+        RETURNING id, tool_slug, name, state_kind, created_at, updated_at`,
+      [req.params.id, req.actor.id, name, hasState ? JSON.stringify(state) : null]);
+    if (!r.rows[0]) return res.status(404).json({ error: 'not found' });
+    res.json({ scenario: suiteScenarios.shapeRow(r.rows[0]), omittedSensitive: removed.length > 0 });
+  } catch (e) {
+    if (String(e && e.code) === '22P02') return res.status(404).json({ error: 'not found' });
+    if (String(e && e.code) === '23505') return res.status(409).json({ error: 'name_taken', detail: 'You already have a scenario with that name for this tool.' });
+    console.warn('[staff] handler error:', db.describeError(e)); res.status(500).json({ error: 'server error' });
+  }
+});
+
+router.delete('/tool-scenarios/:id', async (req, res) => {
+  try {
+    const r = await db.query(
+      `DELETE FROM staff_tool_scenarios WHERE id = $1 AND staff_user_id = $2 RETURNING id`,
+      [req.params.id, req.actor.id]);
+    if (!r.rows[0]) return res.status(404).json({ error: 'not found' });
+    res.json({ ok: true });
+  } catch (e) {
+    if (String(e && e.code) === '22P02') return res.status(404).json({ error: 'not found' });
+    console.warn('[staff] handler error:', db.describeError(e)); res.status(500).json({ error: 'server error' });
+  }
 });
 
 // ---------------- chat v3: conversations, receipts, presence ----------------
