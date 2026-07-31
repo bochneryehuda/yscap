@@ -16,11 +16,17 @@
  */
 const crypto = require('crypto');
 
+// DB-gated like every other *-db suite: the plain CI `test` job runs npm test
+// with NO database, so this must SKIP cleanly there (it runs for real in the
+// `test-db` job, which provides Postgres + DATABASE_URL). A hard-coded localhost
+// default instead of this guard took the whole `test` job down with
+// ECONNREFUSED retries + ABORT (PR #929's first CI run).
+if (!process.env.DATABASE_URL) { console.log('SKIP test-inbound-file-email (no DATABASE_URL)'); process.exit(0); }
+
 // --- env MUST be set before any app module (config caches it) --------------
 const DOMAIN = 'reply.yscapgroup.test';
 const SECRET_B64 = Buffer.from('inbound-webhook-test-secret-key-01').toString('base64');
 const SECRET = 'whsec_' + SECRET_B64;
-process.env.DATABASE_URL = process.env.DATABASE_URL || 'postgres://yscap:yscap@127.0.0.1:5432/yscap_test';
 process.env.JWT_SECRET = 'test-secret-inbound-file';
 process.env.CHAT_REPLY_DOMAIN = DOMAIN;
 process.env.RESEND_WEBHOOK_SECRET = SECRET;
