@@ -441,9 +441,13 @@ function normalize(program, input, ev, ladder) {
       downPayment,
       assignmentExcessOOP: assignmentExcess,
       // Out-of-pocket rehab exception (owner-authorized 2026-07-31). `oopRehab` = the
-      // applied amount (0 = no exception; the tapes/Encompass derive OOP as
-      // rehab_budget − rehabHoldback, which equals this). `maxOopRehab`/`initialCut`/
-      // `maxInitial` are the figures the Manual section shows before anything is entered.
+      // applied EXCEPTION amount (0 = no exception). On the normal trigger (a total cap
+      // cut the initial while rehab was 100% financed) this equals the tapes'/Encompass'
+      // derived `rehab_budget − rehabHoldback`; on a pre-existing rehab-over-cap deal the
+      // derived value can be larger (it also carries the capped-rehab excess), and this
+      // field stays gated to the exception so cash-to-close is byte-identical without one.
+      // `maxOopRehab`/`initialCut`/`maxInitial` are the figures the Manual section shows
+      // before anything is entered.
       oopRehab,
       maxOopRehab,
       initialCut,
