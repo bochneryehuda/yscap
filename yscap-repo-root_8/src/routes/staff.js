@@ -8619,7 +8619,13 @@ router.patch('/applications/:id/details', async (req, res) => {
        ZERO in a money column instead of clearing it. It reached us through the
        cash-out, where the server then reported "$0, entered by hand" while the
        studio (whose reader trims) still showed the structural figure; the same
-       trap sat under every money field this door writes. */
+       trap sat under every money field on this branch of the loop.
+
+       NOT the INT_KEYS branch, and deliberately so (corrected after audit round
+       5 flagged the overstatement): `requested_ir_amount` is a money column but
+       matches INT_KEYS and goes through `intField`, where a blank must resolve
+       to 0 rather than NULL — the owner-directed rule that lets switching an
+       interest reserve from an amount back to months reliably clear the amount. */
     const n = INT_KEYS.test(k) ? intField(b[k]) : (b[k] == null || String(b[k]).trim() === '' ? null : Number(b[k]));
     if (n != null && !isFinite(n)) return res.status(400).json({ error: `${k} must be a number` });
     /* A NEGATIVE cash-out is not an answer — nobody receives a negative cheque,
@@ -8630,6 +8636,16 @@ router.patch('/applications/:id/details', async (req, res) => {
        "use the structure". (post-merge audit 2026-07-31) */
     if (k === 'estimatedCashOut' && n != null && n < 0) {
       return res.status(400).json({ error: 'estimatedCashOut cannot be negative — leave it blank to use the structure’s own figure' });
+    }
+    /* A NUMBER TOO BIG FOR ITS COLUMN IS A BAD REQUEST, NOT A SERVER FAULT
+       (audit round 5, 2026-07-31 — pre-existing, reproduced on this door). The
+       money columns here are numeric(14,2), so twenty digits reached Postgres,
+       raised 22003 "numeric field overflow" and came back as a 500 "server
+       error" — which reads as "PILOT is broken" instead of "that number is too
+       big", and MoneyInput imposes no digit cap, so a fat-fingered paste gets
+       there. Bounded at the door with the column's own ceiling. */
+    if (n != null && !INT_KEYS.test(k) && Math.abs(n) >= 1e12) {
+      return res.status(400).json({ error: `${k} is too large — the largest amount this field can hold is 999,999,999,999.99` });
     }
     sets.push(`${col}=$${i++}`); vals.push(n); touchedCols.push(col);
   }
@@ -10143,8 +10159,13 @@ router.post('/applications/:id/closing/cash-to-close', async (req, res) => {
   if (!can(req.actor, 'manage_closings')) return res.status(403).json({ error: 'Only the closer (or an admin) can enter the actual cash to close.' });
   const appId = req.params.id;
   const raw = req.body && req.body.actualCashToClose;
-  const val = raw === '' || raw == null ? null : Number(raw);
-  if (raw != null && raw !== '' && (!Number.isFinite(val) || val < 0)) return res.status(400).json({ error: 'Enter a real cash-to-close amount.' });
+  // A box of spaces is an empty box here too — `Number('  ')` is 0, so
+  // whitespace used to record a real cash-to-close of ZERO on the closing
+  // workflow, which the closing check then reconciles against. Same rule and
+  // same reason as the details door (audit rounds 4/5, 2026-07-31).
+  const blank = raw == null || String(raw).trim() === '';
+  const val = blank ? null : Number(raw);
+  if (!blank && (!Number.isFinite(val) || val < 0)) return res.status(400).json({ error: 'Enter a real cash-to-close amount.' });
   const docId = req.body && req.body.docId ? String(req.body.docId) : null;
   try {
     const check = await closing.runCashToCloseCheck(appId, val, db);

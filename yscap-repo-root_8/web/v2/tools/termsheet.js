@@ -89,7 +89,12 @@
      `Number('')` is 0, so both have to be excluded BEFORE the numeric test; a
      bare isFinite() check reads a blank as a zero advance. */
   function numOrNull(v) {
-    if (v === null || v === undefined || v === '') return null;
+    // TRIMMED, like the server's num(). Round 4 taught the server that a box of
+    // spaces is an empty box (`Number('   ')` is 0) and left this side behind —
+    // breaking the very invariant the note above states. Latent today (the calc
+    // only ever passes real numbers here), which is exactly the kind of drift
+    // that becomes a live bug the day someone passes a string.
+    if (v === null || v === undefined || String(v).trim() === '') return null;
     var n = Number(v);
     return isFinite(n) ? n : null;
   }

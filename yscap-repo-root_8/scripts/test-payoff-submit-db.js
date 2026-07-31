@@ -301,18 +301,46 @@ if (!process.env.DATABASE_URL) {
         const appId = r.body.applicationId;
         // Write the legacy shape directly — the doors refuse it now, which is the point.
         await db.query(`UPDATE applications SET estimated_cash_out=-5000 WHERE id=$1`, [appId]);
-        await db.query(`UPDATE applications SET estimated_cash_out=NULL, updated_at=now()
-                         WHERE estimated_cash_out IS NOT NULL AND estimated_cash_out < 0`);   // db/387, verbatim
+        /* db/387's predicate, SCOPED TO THIS FILE. The migration itself is
+           deliberately unscoped, but a test that runs an unscoped UPDATE and
+           then asserts on its rowCount is asserting about every other row in the
+           database — it would flake the moment another test left a negative
+           behind. Scoped here; the migration's real reach is proven by applying
+           it for real on a fresh database. */
+        const SCOPED = `UPDATE applications SET estimated_cash_out=NULL, updated_at=now()
+                         WHERE id=$1 AND estimated_cash_out IS NOT NULL AND estimated_cash_out < 0`;
+        await db.query(SCOPED, [appId]);
         eq((await readBack(appId)).estimated_cash_out, null, 'db/387 clears a stored negative');
-        // Idempotent: a second run touches nothing.
-        const again = await db.query(`UPDATE applications SET estimated_cash_out=NULL
-                                       WHERE estimated_cash_out IS NOT NULL AND estimated_cash_out < 0`);
-        eq(again.rowCount, 0, 'and re-running it matches no rows');
+        eq((await db.query(SCOPED, [appId])).rowCount, 0, 'and re-running it matches no rows');
         // A positive figure is untouched by the same statement.
         await db.query(`UPDATE applications SET estimated_cash_out=62000 WHERE id=$1`, [appId]);
-        await db.query(`UPDATE applications SET estimated_cash_out=NULL
-                         WHERE estimated_cash_out IS NOT NULL AND estimated_cash_out < 0`);
+        await db.query(SCOPED, [appId]);
         eq(Number((await readBack(appId)).estimated_cash_out), 62000, 'a real figure is never touched');
+
+        /* THE REGISTER DOOR'S OWN BEHAVIOUR, through real HTTP — the half the
+           previous round claimed and did not have. Reverting either the
+           isRefinance gate or the refuse() call left the whole suite green. */
+        const auditRows = async (reason) => Number((await db.query(
+          `SELECT count(*) c FROM audit_log WHERE entity_id=$1 AND action='register_product_refused'
+             AND detail->>'reason'=$2`, [appId, reason])).rows[0].c);
+        const reg = (termOptions) => call('POST', `/api/staff/applications/${appId}/pricing/register`, sTok,
+          { program: 'standard', termOptions });
+        const before = await auditRows('cash_out_negative');
+        const neg = await reg({ estimatedCashOut: '-5000' });
+        eq(neg.status, 400, 'the REGISTER door refuses a negative too');
+        eq(await auditRows('cash_out_negative') - before, 1,
+          'and the refusal is AUDITED — this route’s own contract, and the one an officer needs diagnosed from the logs');
+        const nan = await reg({ estimatedCashOut: 'abc' });
+        eq(nan.status, 400, 'and an unreadable value');
+        assert(await auditRows('cash_out_not_a_number') >= 1, 'audited with its own reason');
+
+        // A PURCHASE must NOT be refused over a field it would never write —
+        // the studio sends the key on every register, so gating the refusal
+        // differently from the write made purchases un-registerable.
+        await db.query(`UPDATE applications SET loan_type='Purchase', purchase_price=500000 WHERE id=$1`, [appId]);
+        const pur = await reg({ estimatedCashOut: '-5000' });
+        assert(pur.status !== 400 || !/cash out|cashOut/i.test(JSON.stringify(pur.body || {})),
+          `a PURCHASE is never refused over the cash-out (got ${pur.status} ${JSON.stringify(pur.body).slice(0, 120)})`);
       } else { assert(false, `setup submit failed (${r.status})`); }
     }
 
