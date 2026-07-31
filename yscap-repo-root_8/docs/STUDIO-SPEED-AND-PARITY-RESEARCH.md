@@ -347,23 +347,38 @@ spreadsheet all sit **above** the engines and are untested.
 **Before any swap ships, a second harness is needed** that drives the real page in a browser and compares
 the rendered panel, the PDF text and the spreadsheet cells before vs after.
 
-### 7b. One disputed finding, reported honestly
+### 7b. The half-cent divergence — CONFIRMED, and it is an argument FOR the move
 
-An audit reported that the browser's fee arithmetic and the server's **already disagree by $0.01**,
-because the browser accumulates unrounded values while `src/lib/pricing.js` rounds to the cent at each
-step.
+Two audits reported that the browser's fee arithmetic and the server's already disagree. My own first
+attempt to reproduce it found nothing — **my test was too coarse** (I hand-wrote approximate formulas,
+used a flat 1% origination, ignored extra fees and admin overrides, and tested Standard only).
 
-**The mechanism is real and visible in the code.** `termsheet.js:493-514` does no intermediate rounding;
-`pricing.js:325-341` calls `round2()` at every step.
+A line-for-line replication of `calc` / `calcGold` / `calcSilver` against `pricing.js normalize()`, across
+**11,749 program-quotes (6,000 deals × 3 programs)**, settles it:
 
-**But I could not reproduce any divergence.** I compared both disciplines across **4,185 scenarios** and
-on the audit's own cited example: **zero difference, largest gap $0.0000.** The likely reason is that the
-browser deliberately uses the engine's already-rounded payment figures — a comment at
-`termsheet.js:497-502` records that exact drift being fixed in a 2026-07-19 audit.
+| Field | How often they differ | Largest gap |
+|---|---|---|
+| Loan amount, initial advance, rehab holdback, financed reserve, reserves, title | **0%** | — |
+| Origination fee | 1.23% | $0.005 |
+| Closing due at closing | 4.43% | $0.005 |
+| **Cash to close** | **7.69%** | **$0.005** |
+| **Liquidity to show** | **9.41%** | **$0.005** |
 
-**Status: unconfirmed.** I am not carrying it as a finding. I am carrying the broader point it raises,
-which is correct and important: **this layer is untested, so it must be proven field-by-field rather than
-assumed** (§7a).
+**Cause:** the server rounds to the cent at each step; the browser accumulates unrounded and rounds only
+when displaying. Half a cent of raw difference can display as a one-cent difference.
+
+**The loan structure is identical everywhere. Only the fee and cash totals can land a cent apart.**
+
+**And here is the part that matters most:** this divergence **already exists today**, between what the
+studio *shows you* and what registration *actually saves*. Moving to the server does not create it —
+**it removes it.** That is a genuine argument *for* the change.
+
+But it must be **written down and expected**, or the first person who notices a cent moving will report
+it as a bug the change caused, when in fact the change fixed it.
+
+**Correction to my own earlier statement:** I told the owner "the numbers are identical." That is true of
+the **loan amount and the whole loan structure** — verified. It is **not** true of cash-to-close and
+liquidity, which differ by up to half a cent today. I should not have generalised from the loan amount.
 
 ### 7c. Must be true before anything ships
 
@@ -403,6 +418,59 @@ The admin zone (markup, origination, rate and leverage overrides, manual pricing
 **Neither is acceptable.** It needs **two endpoints** — a public one that accepts only deal inputs, and a
 staff one behind a login — and the portal must hand the embedded page a token, which is a genuinely new
 capability that does not exist today. This is real work that the plan did not carry.
+
+### 7f. THE WORST FAILURE THIS PROJECT CAN PRODUCE — two customers swapping rates
+
+The markup setting lives *inside* the rule file. On a server that file is loaded once and shared by
+everyone. Today that is safe for exactly **one** reason: the whole path from setting the markup to
+resetting it is **synchronous** — there is no pause anywhere inside it, so the server physically cannot
+start someone else's quote in the middle.
+
+An audit demonstrated what happens if a single pause is ever introduced into that window. Two customers
+quoting at the same time, one with a 0.5% markup and one with 4%:
+
+```
+customer A asked for 0.5% markup and got noteRate 14.000%   <- B's pricing
+customer B asked for 4.0% markup and got noteRate 10.500%   <- A's pricing
+```
+
+**They do not just get a wrong rate. They get each other's rate.** No error, no warning, and essentially
+impossible to reproduce afterwards because it depends on two requests overlapping by milliseconds.
+
+**The rule, therefore:** never introduce a pause between setting the markup and resetting it, and never
+make the quote function asynchronous. Everything it needs — company defaults, fees — must be resolved
+*before* the engine is touched. This deserves an automated test that fails the build if the function ever
+becomes asynchronous.
+
+### 7g. The "Max LTC" trap — this would re-break a bug the owner already reported
+
+The server and the browser mean **different things** by the caps row, and the difference is silent:
+
+```
+server  programCaps.maxLtc : 0.65    <- moves with the deal you typed
+browser tierMaxOf().maxLTC : 0.925   <- fixed for the borrower's tier
+```
+
+Wiring the studio's "Program maximum leverage" to the server's version would show **65% where it shows
+92.5% today** — which is precisely the 2026-07-30 report: *"the Max LTC should never change… it shouldn't
+change based on what you're changing the interest reserve."*
+
+**Worse, the field names differ in capitalisation** — server `maxAcqLtv / maxArvLtv / maxLtc` vs browser
+`maxAcqLTV / maxARLTV / maxLTC`. The code that reads them would compare `undefined` to `undefined`, which
+is simply `false`, so the "this deal caps at…" note would **quietly vanish with no error at all**. This
+is the same trap CLAUDE.md already documents: a build passes, and the page is wrong.
+
+### 7h. Three things do not exist on the server yet
+
+The server cannot produce the studio's full picture today. Each must be built:
+
+1. **The Gold ladder** — `pricing.js:510` hard-codes it to nothing; the real one lives only in the
+   browser file. Must be ported (consumes engine output; changes no formula).
+2. **The Standard tier caps row** — the server exposes neither of the two values needed to look it up.
+3. **Gold's true program maximum** — the browser runs a *second* Gold evaluation with the overrides
+   stripped to get it.
+
+Skipping any of the three produces a **silently wrong or silently missing display** — not an error.
 
 ### 7e. Two more doors (the count is now eleven, not nine)
 
@@ -445,6 +513,41 @@ visitor's connection.
 removes the biggest confound. Right now it is impossible to tell "the server is slow" from "the page was
 always heavy."
 
+### 8b. THE BIGGEST SPEED LEVER IS NOT IN THE CODE — and nobody has checked it
+
+The server's own share of a quote is **1–4 milliseconds** and is not worth optimising further. Everything
+else is network. And the single largest factor in that is **which physical region the service runs in** —
+which is **not recorded anywhere in this repository** (`render.yaml` has no region setting; its own header
+says the live service was created by hand in the dashboard).
+
+| Where the server is | Cost per keystroke |
+|---|---|
+| Near the team (Virginia / Ohio) | **~18–45 ms** |
+| Far from the team (Oregon) | **~70–100 ms** |
+| Mobile / far | ~150–350 ms |
+
+**That is a 50 ms swing — larger than every code optimisation on this page combined.** If the service sits
+on the opposite coast, no amount of engineering fixes it, and moving a region means building a new service
+and migrating the database.
+
+**Check this before promising any speed number.**
+
+Good news on a related worry: the service is on a **paid** tier (it has a persistent disk and a health
+check, which the free tier does not support), so it does **not** go to sleep and there is no "first visitor
+of the morning waits" problem. A deploy still restarts it — worth running one throwaway quote at startup so
+the first real user does not pay the warm-up.
+
+### 8c. Three small things to get right if the move happens
+
+- **Every keystroke would currently write a database audit row.** The audit logger records everything under
+  `/api/`, so a public quote endpoint would write thousands of rows a day of no investigative value. One
+  line to exclude it.
+- **An answer cache must be cleared when an admin changes the company fees**, or their change is invisible
+  for up to a minute while cached answers keep coming back.
+- **The four rule files are currently byte-identical between the two folders** — verified. That is
+  load-bearing for the whole plan and is maintained *by hand*. It deserves an automated check, because
+  nothing today would catch them drifting apart.
+
 ---
 
 ## 9. What was checked and ruled OUT
@@ -460,6 +563,40 @@ So the record shows what is *not* the problem:
 - **Request auditing / database logging on static files.** Static requests are skipped entirely.
 - **Any previously-tracked performance issue.** Nothing in `docs/` or `CLAUDE.md` records a prior
   complaint about portal or studio speed — this is new to the record.
+
+---
+
+## 10. The verdict, in one place
+
+**On "why is it slow":** three real causes, all confirmed, **none of them pricing** — a third-party font
+request that can freeze the page for 12 seconds, no compression (3.4× the necessary download), and the
+public studio page growing 75% in four days. Plus the structural one: the same tool inside PILOT costs
+6.5× what the standalone page costs.
+
+**On "why doesn't it work the same as the old static system":** most likely that 6.5× weight difference,
+plus the font dependency, which fails for some people and not others depending on their network, browser
+and employer.
+
+**On "will the server version operate the exact same way":**
+
+- **The loan structure — yes.** Loan amount, initial advance, rehab holdback, reserves and title are
+  identical, proven across 11,749 quotes plus 115,200 engine scenarios.
+- **Cash-to-close and liquidity — they will MOVE, by a cent, on about 8% of deals.** Not a new bug: the
+  studio and registration already disagree today, and the move *fixes* it. Must be expected and written
+  down, or it will be reported as a regression.
+- **The screen, the PDF and the Excel — unproven.** No test covers that layer. A browser-level harness is
+  required first.
+
+**On "how fast can it be":** the server's own work is 1–4 ms and is already effectively free. Everything
+else is network, and the biggest single factor — which region the server runs in — **is not recorded
+anywhere and nobody has checked it.** That one unknown is worth more than every code optimisation
+combined. Realistically 20–45 ms per keystroke for a well-placed server on a wired connection, versus
+2.3 ms today.
+
+**The honest summary:** the security problem is real — the guideline rules are downloadable right now, and
+that includes a capital partner's confidential workbook. But the fix costs instant typing, and the pricing
+math was never what made anything slow. **Those are two separate decisions, and they should be made
+separately.**
 
 ---
 
