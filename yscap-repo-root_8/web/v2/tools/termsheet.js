@@ -89,7 +89,12 @@
      `Number('')` is 0, so both have to be excluded BEFORE the numeric test; a
      bare isFinite() check reads a blank as a zero advance. */
   function numOrNull(v) {
-    if (v === null || v === undefined || v === '') return null;
+    // TRIMMED, like the server's num(). Round 4 taught the server that a box of
+    // spaces is an empty box (`Number('   ')` is 0) and left this side behind —
+    // breaking the very invariant the note above states. Latent today (the calc
+    // only ever passes real numbers here), which is exactly the kind of drift
+    // that becomes a live bug the day someone passes a string.
+    if (v === null || v === undefined || String(v).trim() === '') return null;
     var n = Number(v);
     return isFinite(n) ? n : null;
   }
@@ -109,9 +114,16 @@
      implies. A typed value wins because a real deal can net differently (a
      holdback, a reserve, a second lien) and the number that matters is the one
      actually going to the borrower. */
+  /* ZERO IS A TYPED ANSWER, NOT AN EMPTY BOX (post-merge audit 2026-07-31).
+     `num()` returns 0 for a BLANK field, so it cannot tell "nothing typed" from
+     "typed nothing" — and `typed > 0` therefore ignored a deliberate 0, on the
+     very deal where the structural figure is most likely to be wrong.
+     `YS.opt()` is the blank-aware reader (null when blank), which is the same
+     rule the server model uses. A negative is never an answer — nobody receives
+     a negative cheque — and is refused at both write doors. */
   function cashOutOfRecord(d) {
-    var typed = num("cashOutAmt");
-    return typed > 0 ? typed : structuralCashOut(d);
+    var typed = YS.opt("cashOutAmt");
+    return (typed !== null && typed >= 0) ? typed : structuralCashOut(d);
   }
   function payoffWhoTxt() {
     var who = payoffLender(), no = payoffLoanNo();
@@ -1691,13 +1703,15 @@
       var structural = structuralCashOut(d);
       coEl.placeholder = structural > 0 ? YS.fmtUSD(structural) : "auto — from the structure";
       if (coHelp) {
-        var typedCo = num("cashOutAmt");
+        // Blank-aware, so a deliberate 0 reports as YOUR number rather than
+        // silently reading as an untouched box (same rule as cashOutOfRecord).
+        var typedCo = YS.opt("cashOutAmt");
         /* The working shown is the ADVANCE AT CLOSING, not the whole loan — on a
            renovation refinance the rehab holdback funds later in draws, so the
            whole loan is not what the borrower walks away with. */
         var derivTxt = "advance at closing " + YS.fmtUSD(fundedAtClose(d)) +
           " − payoff " + YS.fmtUSD(num("payoff")) + " − closing " + YS.fmtUSD(d.closing || 0);
-        coHelp.textContent = typedCo > 0
+        coHelp.textContent = (typedCo !== null && typedCo >= 0)
           ? ("You entered " + YS.fmtUSD(typedCo) + ". The structure implies " + YS.fmtUSD(structural) +
              " (" + derivTxt + ").")
           : (structural > 0

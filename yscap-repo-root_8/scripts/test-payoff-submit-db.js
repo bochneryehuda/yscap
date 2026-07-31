@@ -139,7 +139,7 @@ if (!process.env.DATABASE_URL) {
       const dr = await call('POST', '/api/borrower/drafts', bTok, { data: { ...data, propertyAddress: ADDR }, step: 5 });
       return call('POST', `/api/borrower/drafts/${dr.body && dr.body.id}/submit`, bTok, {});
     };
-    const COLS = 'payoff_amount,payoff_lender,payoff_loan_number,requested_ir_amount,requested_ir_months,acquisition_date,original_purchase_price';
+    const COLS = 'payoff_amount,payoff_lender,payoff_loan_number,estimated_cash_out,requested_ir_amount,requested_ir_months,acquisition_date,original_purchase_price';
     const readBack = async (id) => (await db.query(`SELECT ${COLS} FROM applications WHERE id=$1`, [id])).rows[0];
 
     console.log('\n--- a refinance with an ALPHANUMERIC payoff loan number ---');
@@ -217,6 +217,216 @@ if (!process.env.DATABASE_URL) {
         eq(Number(a.requested_ir_months), 3, 'the reserve MONTHS landed');
         eq(a.payoff_loan_number, 'PL/2021/88', 'a slashed loan number is stored verbatim');
       }
+    }
+
+    console.log('\n--- clearing a text field stores NOTHING, not the word "null" ---');
+    {
+      /* POST-MERGE AUDIT 2026-07-31. `String(null)` is "null" — four characters,
+         and a non-blank string everywhere downstream. Clearing the payoff lender
+         stored it, the file then reported itself COMPLETE with a green tick, and
+         the borrower's own screen read "Lender being paid off: null". The trap
+         was latent on every free-text field this door writes; the payoff card is
+         simply the first caller in the repo that sends an explicit null. */
+      const r = await submit({
+        loanType: 'Refinance — Cash-Out', asIsValue: '600000', arv: '900000', rehabBudget: '200000',
+        payoffAmount: '300000', payoffLender: 'Chase', payoffLoanNumber: 'C-1',
+      });
+      if (r.status === 201) {
+        const appId = r.body.applicationId;
+        await db.query(`UPDATE applications SET loan_officer_id=$2 WHERE id=$1`, [appId, staffId]);
+        const cleared = await call('PATCH', `/api/staff/applications/${appId}/details`, sTok,
+          { payoffLender: null, payoffLoanNumber: null });
+        eq(cleared.status, 200, 'clearing them is accepted');
+        const a = await readBack(appId);
+        eq(a.payoff_lender, null, 'the lender is NULL — not the string "null"');
+        eq(a.payoff_loan_number, null, 'nor is the loan number');
+        const p = await call('GET', `/api/staff/applications/${appId}/payoff`, sTok, null);
+        eq(p.body && p.body.ready, false, 'and the file no longer claims to be complete');
+        eq((p.body && p.body.missing || []).map((m) => m.key).join(','), 'payoffLender,payoffLoanNumber',
+          'it asks for exactly what was cleared');
+        // An empty STRING must behave identically — that is the path the details
+        // form has always used, and the two must not diverge.
+        await call('PATCH', `/api/staff/applications/${appId}/details`, sTok, { payoffLender: 'Chase' });
+        await call('PATCH', `/api/staff/applications/${appId}/details`, sTok, { payoffLender: '' });
+        eq((await readBack(appId)).payoff_lender, null, 'an empty string clears it the same way');
+      } else { assert(false, `setup submit failed (${r.status})`); }
+    }
+
+    console.log('\n--- a typed cash-out of ZERO is a real answer; a negative is not ---');
+    {
+      const r = await submit({
+        loanType: 'Refinance — Cash-Out', asIsValue: '600000', arv: '900000', rehabBudget: '200000',
+        payoffAmount: '300000', payoffLender: 'Chase', payoffLoanNumber: 'C-2',
+      });
+      if (r.status === 201) {
+        const appId = r.body.applicationId;
+        await db.query(`UPDATE applications SET loan_officer_id=$2 WHERE id=$1`, [appId, staffId]);
+        const z = await call('PATCH', `/api/staff/applications/${appId}/details`, sTok, { estimatedCashOut: '0' });
+        eq(z.status, 200, 'a typed zero is accepted');
+        const p = await call('GET', `/api/staff/applications/${appId}/payoff`, sTok, null);
+        eq(p.body && p.body.derived && p.body.derived.cashOut, 0, 'and the file reports ZERO, not the structural figure');
+        eq(p.body && p.body.derived && p.body.derived.cashOutSource, 'typed', 'reported as the human’s number');
+        // A negative is refused rather than stored — a stored one would print on
+        // a term sheet as the figure of record.
+        const neg = await call('PATCH', `/api/staff/applications/${appId}/details`, sTok, { estimatedCashOut: '-5000' });
+        eq(neg.status, 400, 'a NEGATIVE cash-out is refused at the door');
+        eq(Number((await readBack(appId)).estimated_cash_out), 0, 'and the refused value never reached the file');
+        /* A BOX OF SPACES IS AN EMPTY BOX (audit round 4). `Number('   ')` is 0,
+           so whitespace read as a typed ZERO on the server while the studio —
+           whose reader trims — read it as blank and fell back to the structure.
+           The two then quoted different cash for the same deal. */
+        await call('PATCH', `/api/staff/applications/${appId}/details`, sTok, { estimatedCashOut: '   ' });
+        eq((await readBack(appId)).estimated_cash_out, null,
+          'whitespace CLEARS the column — it does not store a hard zero');
+        const ws = await call('GET', `/api/staff/applications/${appId}/payoff`, sTok, null);
+        assert(!ws.body || !ws.body.derived || ws.body.derived.cashOutSource !== 'typed',
+          'and it is never reported as a figure a human typed');
+      } else { assert(false, `setup submit failed (${r.status})`); }
+    }
+
+    console.log('\n--- a legacy NEGATIVE cash-out is not a dead end ---');
+    {
+      /* AUDIT ROUND 4. Both doors briefly stored a negative. The studio prefills
+         its cash-out box from the file and sends it on EVERY register, the
+         register door now refuses a negative, and on anything but a cash-out
+         that box is HIDDEN — so such a file could not be re-registered at all,
+         refused over a field nobody could see. db/387 clears them, and the
+         refusal is now gated to the same condition as the write so a PURCHASE is
+         never refused over a field it would have ignored. */
+      const r = await submit({
+        loanType: 'Refinance — Rate & Term', asIsValue: '600000', arv: '900000', rehabBudget: '200000',
+        payoffAmount: '300000', payoffLender: 'Chase', payoffLoanNumber: 'C-3',
+      });
+      if (r.status === 201) {
+        const appId = r.body.applicationId;
+        // Write the legacy shape directly — the doors refuse it now, which is the point.
+        await db.query(`UPDATE applications SET estimated_cash_out=-5000 WHERE id=$1`, [appId]);
+        /* db/387's predicate, SCOPED TO THIS FILE. The migration itself is
+           deliberately unscoped, but a test that runs an unscoped UPDATE and
+           then asserts on its rowCount is asserting about every other row in the
+           database — it would flake the moment another test left a negative
+           behind. Scoped here; the migration's real reach is proven by applying
+           it for real on a fresh database. */
+        const SCOPED = `UPDATE applications SET estimated_cash_out=NULL, updated_at=now()
+                         WHERE id=$1 AND estimated_cash_out IS NOT NULL AND estimated_cash_out < 0`;
+        await db.query(SCOPED, [appId]);
+        eq((await readBack(appId)).estimated_cash_out, null, 'db/387 clears a stored negative');
+        eq((await db.query(SCOPED, [appId])).rowCount, 0, 'and re-running it matches no rows');
+        // A positive figure is untouched by the same statement.
+        await db.query(`UPDATE applications SET estimated_cash_out=62000 WHERE id=$1`, [appId]);
+        await db.query(SCOPED, [appId]);
+        eq(Number((await readBack(appId)).estimated_cash_out), 62000, 'a real figure is never touched');
+
+        /* THE REGISTER DOOR'S OWN BEHAVIOUR, through real HTTP — the half the
+           previous round claimed and did not have. Reverting either the
+           isRefinance gate or the refuse() call left the whole suite green. */
+        const auditRows = async (reason) => Number((await db.query(
+          `SELECT count(*) c FROM audit_log WHERE entity_id=$1 AND action='register_product_refused'
+             AND detail->>'reason'=$2`, [appId, reason])).rows[0].c);
+        const reg = (termOptions) => call('POST', `/api/staff/applications/${appId}/pricing/register`, sTok,
+          { program: 'standard', termOptions });
+        const before = await auditRows('cash_out_negative');
+        const neg = await reg({ estimatedCashOut: '-5000' });
+        eq(neg.status, 400, 'the REGISTER door refuses a negative too');
+        eq(await auditRows('cash_out_negative') - before, 1,
+          'and the refusal is AUDITED — this route’s own contract, and the one an officer needs diagnosed from the logs');
+        const nan = await reg({ estimatedCashOut: 'abc' });
+        eq(nan.status, 400, 'and an unreadable value');
+        assert(await auditRows('cash_out_not_a_number') >= 1, 'audited with its own reason');
+
+        // A PURCHASE must NOT be refused over a field it would never write —
+        // the studio sends the key on every register, so gating the refusal
+        // differently from the write made purchases un-registerable.
+        await db.query(`UPDATE applications SET loan_type='Purchase', purchase_price=500000 WHERE id=$1`, [appId]);
+        const pur = await reg({ estimatedCashOut: '-5000' });
+        assert(pur.status !== 400 || !/cash out|cashOut/i.test(JSON.stringify(pur.body || {})),
+          `a PURCHASE is never refused over the cash-out (got ${pur.status} ${JSON.stringify(pur.body).slice(0, 120)})`);
+      } else { assert(false, `setup submit failed (${r.status})`); }
+    }
+
+    console.log('\n--- a number too big for its column is a BAD REQUEST, not a 500 ---');
+    {
+      /* AUDIT ROUNDS 5/6. Twenty digits reached Postgres, raised 22003 and came
+         back as "server error" — which reads as "PILOT is broken" instead of
+         "that number is too big", and no money box in the portal caps its digit
+         count. The bound has to be each COLUMN'S OWN: a first cut used one
+         number for all of them, which left `requested_ir_amount` (money, but it
+         takes the integer branch for blanks) still 500ing, left the whole band
+         from 2.1e9 to 1e12 still 500ing on the int columns, and told a user the
+         wrong limit for a unit count. */
+      const r = await submit({ loanType: 'Purchase', purchasePrice: '500000', asIsValue: '500000' });
+      if (r.status === 201) {
+        const appId = r.body.applicationId;
+        await db.query(`UPDATE applications SET loan_officer_id=$2 WHERE id=$1`, [appId, staffId]);
+        const patch = (body) => call('PATCH', `/api/staff/applications/${appId}/details`, sTok, body);
+
+        // MONEY columns — numeric(14,2). The ceiling is tested on the ROUNDED
+        // value, because Postgres rounds to 2dp BEFORE it checks for overflow.
+        for (const k of ['purchasePrice', 'asIsValue', 'arv', 'rehabBudget', 'payoffAmount',
+          'estimatedCashOut', 'originalPurchasePrice', 'underlyingContractPrice', 'assignmentFee',
+          'requestedIrAmount']) {
+          const big = await patch({ [k]: '12345678901234567890' });
+          eq(big.status, 400, `${k}: twenty digits is refused, not a 500`);
+          assert(/too large/i.test((big.body && big.body.error) || ''), `${k}: and says it is too large`);
+          /* The rounding edge applies to the columns that actually carry cents.
+             `requestedIrAmount` is money but takes the INT branch (an interest
+             reserve is entered in whole dollars), so it is already an integer by
+             the time the ceiling is tested — a decimal never reaches it. */
+          if (k !== 'requestedIrAmount') {
+            const edge = await patch({ [k]: '999999999999.995' });
+            eq(edge.status, 400, `${k}: a value that ROUNDS past the ceiling is refused too`);
+            /* AND THE NEGATIVE EDGE. Postgres rounds half AWAY FROM ZERO;
+               JavaScript's Math.round breaks ties toward +∞ — so rounding the
+               SIGNED value let this exact input through to a 500 while the
+               positive twin was correctly refused (audit round 7). */
+            if (k !== 'estimatedCashOut') {                 // there the negative check fires first
+              const negEdge = await patch({ [k]: '-999999999999.995' });
+              eq(negEdge.status, 400, `${k}: and so is its negative twin — no 500 on either sign`);
+            }
+          }
+          const ok = await patch({ [k]: '999999999999.99' });
+          eq(ok.status, 200, `${k}: the largest value it CAN hold is accepted`);
+        }
+
+        // INTEGER columns — int4, ceiling 2,147,483,647, and the message must
+        // say so rather than quoting a money limit nobody can use.
+        for (const k of ['units', 'sqftPre', 'sqftPost']) {
+          const over = await patch({ [k]: '2147483648' });
+          eq(over.status, 400, `${k}: past the integer ceiling is refused, not a 500`);
+          assert(/2,147,483,647/.test((over.body && over.body.error) || ''),
+            `${k}: and the message quotes THIS column's limit (got ${JSON.stringify((over.body || {}).error)})`);
+          const at = await patch({ [k]: '2147483647' });
+          eq(at.status, 200, `${k}: the largest value it CAN hold is accepted`);
+        }
+
+        /* A COLUMN WHOSE CHECK IS NARROWER THAN ITS TYPE quotes ITS OWN limit.
+           `requested_ir_months` is int4 but the database refuses anything past
+           24, so the int4 ceiling in the message was a number the field cannot
+           hold — follow it and you got another 500, which is the exact trap the
+           previous round had just fixed one column over (audit round 7). */
+        const irBig = await patch({ requestedIrMonths: '2147483648' });
+        eq(irBig.status, 400, 'an out-of-range interest-reserve term is refused');
+        assert(/between 0 and 24/.test((irBig.body && irBig.body.error) || ''),
+          `and the message quotes THIS column's real limit (got ${JSON.stringify((irBig.body || {}).error)})`);
+        eq((await patch({ requestedIrMonths: '25' })).status, 400,
+          'one past the real ceiling is refused — it used to be a 500');
+        eq((await patch({ requestedIrMonths: '24' })).status, 200, 'and the ceiling itself is accepted');
+
+        // A decimal in an integer column is a bad request, not "invalid input
+        // syntax for type integer" wrapped in a 500.
+        const frac = await patch({ units: '2.5' });
+        eq(frac.status, 400, 'a fractional unit count is refused, not a 500');
+        assert(/whole number/i.test((frac.body && frac.body.error) || ''), 'and says it must be a whole number');
+        // int4's floor is a real value the column holds — never refuse it.
+        eq((await patch({ sqftPre: '-2147483648' })).status, 200,
+          'the lowest value int4 can hold is accepted, not refused');
+
+        // And nothing a real loan carries is refused.
+        const real = await patch({ units: '4', purchasePrice: '750000', asIsValue: '600000',
+          arv: '900000', rehabBudget: '200000', sqftPre: '1800', sqftPost: '2600',
+          payoffAmount: '300000', originalPurchasePrice: '410000', requestedIrAmount: '42000' });
+        eq(real.status, 200, 'a real loan’s numbers are all still accepted');
+      } else { assert(false, `setup submit failed (${r.status})`); }
     }
 
     console.log('\n--- the staff file screen reads it all back ---');

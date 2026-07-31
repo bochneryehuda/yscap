@@ -200,10 +200,15 @@ async function readVerifiedLiquidity(appId, client, requiredLiquidity) {
 function decideCashToClose({ verified, reserve, actualCashToClose, haveCountable }) {
   const v = Number(verified) || 0;
   const r = Number(reserve) || 0;
-  // null / undefined / '' means "no actual entered yet" — never treat it as $0
-  // (Number(null) === 0), which would falsely pass the gate.
+  /* null / undefined / '' — AND A BOX OF SPACES — mean "no actual entered yet",
+     and must never be treated as $0 (`Number(null)` and `Number('  ')` are both
+     0), which would falsely pass the money gate: a recorded cash-to-close of
+     zero makes `required` collapse to the reserve alone. The route that writes
+     this now trims too; trimming HERE as well is what stops the two drifting
+     apart, which is the class this file keeps closing (audit round 6). */
+  const blankActual = actualCashToClose == null || String(actualCashToClose).trim() === '';
   const actual = Number(actualCashToClose);
-  const haveActual = actualCashToClose != null && actualCashToClose !== '' && Number.isFinite(actual) && actual >= 0;
+  const haveActual = !blankActual && Number.isFinite(actual) && actual >= 0;
   const required = (haveActual ? actual : 0) + r;
   const ok = haveActual && !!haveCountable && v >= required - 1;
   const shortfall = ok ? 0 : Math.max(0, required - v);
