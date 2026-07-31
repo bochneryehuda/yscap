@@ -98,17 +98,18 @@ function pickDpv(additionalInfo) {
 /**
  * Plain-language reading of the USPS Delivery Point Validation code, so the screen
  * (and the audit log) can explain WHY a result is what it is. PURE + unit-testable.
- * Y = primary + any unit confirmed; D = building confirmed, a required unit is
- * MISSING; S = building confirmed, the unit given is NOT recognized; N/blank = no
- * confirmed delivery point. Returns null when there is no DPV signal at all.
+ * Y = primary + any unit confirmed; D = building confirmed, an apartment/suite is
+ * MISSING (the unit is OPTIONAL — still deliverable and importable as-is); S =
+ * building confirmed, the unit given is NOT recognized (also optional/importable);
+ * N/blank = no confirmed delivery point. Returns null when there is no DPV signal.
  */
 function deliverability(dpv) {
   const code = dpv && dpv.dpvConfirmation ? String(dpv.dpvConfirmation).toUpperCase() : null;
   if (!code) return dpv ? { code: null, label: 'USPS returned no delivery-point confirmation.', deliverable: false, unitIssue: false } : null;
   switch (code) {
     case 'Y': return { code, label: 'Confirmed deliverable by USPS.', deliverable: true, unitIssue: false };
-    case 'D': return { code, label: 'USPS delivers to the building, but an apartment/suite number is missing. Add the unit and re-verify.', deliverable: true, unitIssue: true };
-    case 'S': return { code, label: 'USPS delivers to the building, but the apartment/suite number entered was not recognized. Fix the unit and re-verify.', deliverable: true, unitIssue: true };
+    case 'D': return { code, label: 'USPS confirms delivery to this building. An apartment/suite number is optional — you can import this address as-is, or add the unit if you have it.', deliverable: true, unitIssue: true };
+    case 'S': return { code, label: 'USPS confirms delivery to this building but did not recognize the apartment/suite entered. The unit is optional — you can import this address as-is, or correct it if you have it.', deliverable: true, unitIssue: true };
     case 'N': return { code, label: 'USPS could not confirm this as a deliverable address. Correct the address and re-verify.', deliverable: false, unitIssue: false };
     default:  return { code, label: `USPS delivery-point code ${code}.`, deliverable: false, unitIssue: false };
   }
@@ -128,6 +129,8 @@ function classify(input, result) {
   // DPVConfirmation 'N' = USPS did not confirm a deliverable point → not verified.
   // 'Y' fully confirmed; 'D'/'S' confirmed to the building but the secondary
   // (apt/suite) is missing or unrecognized — still a real, standardized address.
+  // An apartment/suite is NEVER required here: 'D'/'S' stay verified/corrected so a
+  // building-confirmed address always imports, unit or no unit (owner-directed).
   if (dpv && dpv.dpvConfirmation === 'N') {
     return { status: 'unverified', address: toCanonical(std), dpv, changed: false };
   }
