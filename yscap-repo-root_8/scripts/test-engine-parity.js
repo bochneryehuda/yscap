@@ -175,5 +175,19 @@ if (badChunks.length) {
   console.error('This is a release blocker unless the owner authorised the exact change in writing.');
   process.exit(1);
 }
-console.log(`digest           : ${result.digest.slice(0, 16)} (matches baseline)`);
+/* The overall digest is compared for REAL, not asserted. It is a second,
+   independent check on top of the per-chunk loop: the chunks are hashes OF the
+   rows, the digest is a hash of the rows themselves, so a baseline whose two
+   halves had drifted apart (a hand-edit, a bad merge, a partial write) is
+   caught here rather than silently reported as a pass. Printing an unearned
+   "(matches baseline)" is exactly the kind of reassurance that hides a broken
+   safety net — never print an outcome that was not tested. */
+if (base.digest !== result.digest) {
+  console.error(`\nFAIL: every scenario block matched, but the overall digest does NOT.`);
+  console.error(`  baseline: ${base.digest}`);
+  console.error(`  current : ${result.digest}`);
+  console.error('  The baseline file is internally inconsistent — re-record it with --update.');
+  process.exit(1);
+}
+console.log(`digest           : ${result.digest.slice(0, 16)} (verified against baseline)`);
 console.log('\nPASS — every scenario produces identical numbers.');
