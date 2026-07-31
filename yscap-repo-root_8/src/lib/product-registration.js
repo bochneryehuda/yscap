@@ -192,6 +192,94 @@ function rehabTypeWriteback(current, inputs) {
   return derived;
 }
 
+/* =====================================================================
+   CAN THIS QUOTE ACTUALLY BE RECORDED? (post-merge audit 2026-07-31.)
+
+   `product_registrations` holds the note rate in numeric(7,5) and the loan
+   amount in numeric(14,2). Nothing checked either, and the admin pricing zone
+   is open to EVERY staff role since 2026-07-27 — so a fat-fingered markup or
+   origination figure produced a rate the column cannot hold, Postgres raised
+   22003 mid-transaction, and the register came back a 500 "server error" with
+   no hint which box caused it. (It also leaked the pooled connection on the way
+   out, which is the far worse half of the same event and is fixed separately in
+   the route.)
+
+   Guarded on the QUOTE rather than on the knobs deliberately. The overflow is a
+   property of the numbers the engine PRODUCED, so testing them catches every
+   route in, including a combination of individually-plausible inputs — and it
+   can never refuse an override that yields numbers the file can store, which a
+   bounds check on the knobs eventually would. No frozen engine value is read,
+   changed or clamped; this only decides whether the result is recordable.
+
+   Returns a plain-language reason, or '' when the quote can be stored. PURE.
+   Call it BEFORE opening the transaction so a refusal leaves nothing half-done.
+   ===================================================================== */
+function quoteStorageProblem(quote, inputs) {
+  const nb = require('./number-bounds');
+  const q = quote || {};
+  const s = q.sizing || {};
+  const i = (inputs && typeof inputs === 'object') ? inputs : {};
+  const n = (v) => { const x = Number(v); return Number.isFinite(x) ? x : null; };
+
+  /* EVERY value this registration binds, with the ceiling of the column it is
+     actually bound to. The first cut checked three of them and was calibrated to
+     the WRONG column on its headline field, so six studio boxes still produced a
+     500 (pre-merge audit 2026-07-31) — a 1,000% markup, a 25-month reserve, a
+     negative reserve, an oversized reserve amount / ARV, and an absurd
+     experience count. Measured, all six, through the real register door.
+
+     Order matters only for which message is shown first; each row is
+     [value, column-kind, what the person should go and look at]. */
+  const rate = n(q.noteRate);
+  const checks = [
+    // product_registrations.note_rate numeric(7,5) — the fraction…
+    [rate, 'rate', 'a note rate', 'Check the rate markup and any manual rate in the admin pricing zone.'],
+    /* …and applications.rate_pct numeric(6,3), which is that SAME rate × 100 and
+       therefore overflows a factor of ten sooner. This is the ceiling that
+       actually binds; guarding only the first admits a 1,000% markup. */
+    [rate == null ? null : rate * 100, 'pct', 'a note rate',
+      'Check the rate markup and any manual rate in the admin pricing zone.'],
+    [n(s.totalLoan), 'money', 'a loan amount', ''],
+    // applications.ltv numeric(6,3), written as a percent.
+    [n(s.acqLtvPct) == null ? null : n(s.acqLtvPct) * 100, 'pct', 'an LTV',
+      'Check the manual LTV / LTC values in the admin pricing zone.'],
+    [n(i.targetLTC), 'rate', 'a loan-to-cost',
+      'Check the manual LTC / LTV values in the admin pricing zone.'],
+    [n(i.rehabBudget), 'money', 'a rehab budget', ''],
+    [n(i.arv), 'money', 'an after-repair value', ''],
+    [n(i.irAmount), 'money', 'an interest reserve', 'Check the interest reserve.'],
+    [n(i.sellerPrice), 'money', 'an original contract price', ''],
+    [n(i.purchasePrice), 'money', 'a purchase price', ''],
+    // assignment_fee is DERIVED (purchase − seller), so the parts can each be
+    // storable while the result is not.
+    [n(i.purchasePrice) != null && n(i.sellerPrice) != null
+      ? Math.max(0, n(i.purchasePrice) - n(i.sellerPrice)) : null, 'money', 'an assignment fee', ''],
+    // requested_ir_months carries a CHECK of 0..24, narrower than its type.
+    [n(i.irMonths), { min: 0, max: 24, what: 'months' }, 'an interest reserve term',
+      'The interest reserve must be between 0 and 24 months.'],
+    [n(i.expFlips), 'int', 'an experience count', ''],
+    [n(i.expHolds), 'int', 'an experience count', ''],
+    [n(i.expGround), 'int', 'an experience count', ''],
+    /* NO sqft rows here, deliberately. `pricing.buildInputs` never emits
+       `sqftPre`/`sqftPost` (only the derived `sqftAddition` flag), and the
+       register binds `sqft_pre`/`sqft_post` from the FILE's previous values via
+       `sqftForType`, not from `inputs` — so a guard on them was unreachable
+       code claiming coverage it did not have (re-audit 2026-07-31: it was the
+       one mutation of this function that survived the suite). Those columns are
+       guarded where they are actually written: the create doors and the details
+       door, via `fields.applicationNumberProblem` / `numberOutOfRange`. */
+  ];
+
+  for (const [value, kind, what, hint] of checks) {
+    if (value == null) continue;
+    const bad = nb.columnProblem('value', value, kind);
+    if (!bad) continue;
+    return `Those inputs produce ${what} this file cannot record.`
+      + (hint ? ` ${hint}` : ` ${bad.replace(/^value /, 'The value ')}`);
+  }
+  return '';
+}
+
 async function persistProductRegistration(client, { appId, program, inputs, quote, registeredByStaffId, isManual, assetMonths, termOptions, needsApproval, overrideChanges, claimedExp }) {
   const s = quote.sizing || {};
   const total = num(s.totalLoan);
@@ -491,6 +579,6 @@ function borrowerTermsEmail({ ctx, quote, total, termMonths, officer, termOption
 }
 
 module.exports = {
-  persistProductRegistration, borrowerTermsEmail, borrowerTermsKey, money, productName,
+  persistProductRegistration, quoteStorageProblem, borrowerTermsEmail, borrowerTermsKey, money, productName,
   rehabTypeWriteback, rehabTypeFromInputs, REHAB_TYPE,
 };

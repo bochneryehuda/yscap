@@ -23,8 +23,35 @@ const { redactPII } = require('../lib/redact');
 // The public site sends money/units as formatted strings ("$500,000", "1,200").
 // Coerce to plain numbers or NULL before they hit typed numeric columns —
 // inserting "$500,000" raw throws a Postgres 22P02 and 500s a real submission.
-const num = (v) => { if (v == null || v === '') return null; const n = Number(String(v).replace(/[^0-9.\-]/g, '')); return isFinite(n) ? n : null; };
-const int = (v) => { const n = num(v); return n == null ? null : Math.round(n); };
+/* A NUMBER THIS COLUMN CANNOT HOLD IS "NOT PROVIDED" HERE (post-merge audit
+   2026-07-31). This is the PUBLIC marketing-tool door: the submitter is an
+   anonymous visitor with no session and no screen to correct anything on, and
+   the whole point of the route is to capture the lead. So an out-of-range value
+   is DROPPED — exactly as this helper already drops a non-numeric one — rather
+   than sent to numeric(14,2)/int4 to raise 22003 and lose the lead to a 500.
+   The ceiling comes from lib/number-bounds so it can never drift from the one
+   the staff edit doors quote back to a human. */
+const numberBounds = require('../lib/number-bounds');
+const num = (v) => {
+  if (v == null || v === '') return null;
+  const n = Number(String(v).replace(/[^0-9.\-]/g, ''));
+  if (!isFinite(n) || numberBounds.moneyOverflows(n)) return null;
+  return n;
+};
+const int = (v) => {
+  const n = num(v);
+  if (n == null) return null;
+  const r = Math.round(n);
+  return numberBounds.intOverflows(r) ? null : r;
+};
+// A PERCENT column — numeric(6,3), not the numeric(14,2) `num()` is calibrated
+// for. Same drop-don't-crash rule; only the ceiling differs.
+const pct = (v) => {
+  if (v == null || v === '') return null;
+  const n = Number(String(v).replace(/[^0-9.\-]/g, ''));
+  if (!isFinite(n) || numberBounds.pctOverflows(n)) return null;
+  return n;
+};
 
 /**
  * The intake core. Creates/updates the borrower and creates the application in
@@ -166,7 +193,13 @@ async function siteIntake(p, opts = {}) {
        JSON.stringify(p.propertyAddress || { line1: p.pStreet, city: p.pCity, state: p.pState, zip: p.pZip }),
        p.propertyType || p.propType || null, int(p.units || p.units24 || p.unitsN),
        asg.purchasePrice, num(p.asIsValue || p.asIs), num(p.arv),
-       num(p.rehabBudget || p.rehab), num(p.loanAmount), num(p.ltv),
+       // `ltv` is numeric(6,3) — a PERCENT, not money — so `num()`'s
+       // numeric(14,2) calibration is three orders of magnitude too loose for it
+       // and an `ltv` of 5000 raised 22003 and LOST THE LEAD to a 500 (pre-merge
+       // audit 2026-07-31). The shipped marketing form does not send it, but the
+       // endpoint is public and accepts it. Dropped, like every other unstorable
+       // value on this door.
+       num(p.rehabBudget || p.rehab), num(p.loanAmount), pct(p.ltv),
        asg.isAssignment, asg.underlying, asg.assignFee,
        p.rehabType || null, int(p.sqftPre || p.sqftCurrent), int(p.sqftPost),
        irMonths, irAmount,

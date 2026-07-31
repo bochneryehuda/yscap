@@ -29,6 +29,7 @@ const termOpts = require('../lib/term-options');
 const workflow = require('../lib/workflow');
 const workflowAuto = require('../lib/workflow-automation');
 const closing = require('../lib/closing');
+const numberBounds = require('../lib/number-bounds');     // ONE definition of every column's ceiling
 const purchasing = require('../lib/purchasing');
 const { syncExperienceChecklistForApplication, RECENT_EXIT_SQL, EXIT_DATE_SQL } = require('../lib/experience');
 const { enqueueClickupPush, enqueueChecklistStatusPush } = require('../clickup/enqueue');
@@ -1103,6 +1104,14 @@ router.post('/applications', async (req, res) => {
     if (!firstName) return res.status(400).json({ error: 'borrower first name required' });
     if (!addr || !(addr.oneLine || addr.street || addr.line1))
       return res.status(400).json({ error: 'property address required' });
+  }
+  // A number too big for its column is a bad request, not a 500 — the same rule
+  // the details door below enforces, on the door that CREATES the file (see
+  // fields.applicationNumberProblem). Before the borrower row is written, so a
+  // refused create leaves nothing behind.
+  {
+    const numProblem = require('../lib/fields').applicationNumberProblem(b);
+    if (numProblem) return res.status(400).json({ error: numProblem });
   }
   try {
     // WHEN THE STAFFER EXPLICITLY PICKED AN EXISTING BORROWER, LINK TO THAT PROFILE
@@ -2274,11 +2283,12 @@ router.post('/applications/:id/pricing/register', async (req, res) => {
         if (!isFinite(nCo)) return refuse(400, { error: 'estimatedCashOut must be a number' }, 'cash_out_not_a_number');
         // Same rule as the details door: zero is a real answer, a negative is not.
         if (nCo < 0) return refuse(400, { error: 'estimatedCashOut cannot be negative — leave it blank to use the structure’s own figure' }, 'cash_out_negative');
-        /* …and the SAME ceiling. This door writes the same numeric(14,2) column,
-           from a studio box with no digit cap, and was the last place in this
-           family still able to turn a fat-fingered paste into a 500 (audit round
-           7). Magnitude-rounded, matching how Postgres rounds before it checks. */
-        if (Math.round(Math.abs(nCo) * 100) / 100 >= 1e12) {
+        /* …and the SAME ceiling — from the SAME definition (`lib/number-bounds`),
+           because this door writes the same numeric(14,2) column and its inline
+           copy of the rule is exactly how a correction to the details door kept
+           failing to reach it. Magnitude-rounded, matching how Postgres rounds
+           before it checks for overflow. */
+        if (numberBounds.moneyOverflows(nCo)) {
           return refuse(400, { error: 'estimatedCashOut is too large — the largest amount this field can hold is 999,999,999,999.99' }, 'cash_out_too_large');
         }
       }
@@ -2367,7 +2377,17 @@ router.post('/applications/:id/pricing/register', async (req, res) => {
         WHERE application_id=$1 AND is_current LIMIT 1`, [appId]);
     const prev = prevQ.rows[0] || null;
 
+    /* A quote whose numbers the file cannot RECORD is a bad request, not a 500
+       — checked before the transaction opens, so a refusal leaves nothing
+       half-done and answers with the box to look at. See
+       product-registration.quoteStorageProblem. */
+    {
+      const storeProblem = require('../lib/product-registration').quoteStorageProblem(quote, inputs);
+      if (storeProblem) return refuse(400, { error: storeProblem }, 'quote_not_storable');
+    }
+
     const client = await db.getClient();
+    let released = false;            // the connection is handed back exactly once
     let regId;
     let economicsChanged = true;   // first registration always notifies the borrower
     let loanAmountChanged = false;   // loan amount moved → auto-clear a signed Heter Iska
@@ -2455,9 +2475,19 @@ router.post('/applications/:id/pricing/register', async (req, res) => {
          the sheet the borrower was shown quoted different cash — and re-opening
          the studio silently reverted the PDF to the structural number.
 
-         DISPLAY/RECORD ONLY: `estimated_cash_out` is read by no engine (the
-         investor-guideline cash-out rule is gated on `refinance_economic_type`,
-         which still has no writer), so this can neither price nor block a deal.
+         NO FROZEN ENGINE READS IT — but "no engine reads it" was too strong and
+         is corrected here (post-merge audit 2026-07-31). It is absent from every
+         pricing/guideline engine and from `buildInputs`, so it can never move a
+         number on a term sheet. It IS read by the advisory whole-loan run
+         (`underwriting/run.js gatherInvestorInputs`) as the fallback basis for
+         `cash_out_proceeds`, behind `verified_cash_out`, feeding ONE Blue Lake
+         escalation (`isg_bl_cashout_over_250k`, cash out over $250k → review).
+         That path is doubly inert today: it is gated on
+         `refinance_economic_type`, which still has no writer anywhere in the
+         repo, and an ISG finding is advisory — a super-admin-overridable hard
+         warning that can never block. Worth stating accurately anyway: the day
+         that column gains a writer, this figure starts reaching a rule, and a
+         comment claiming otherwise is how that would go unnoticed.
          Refinance only, and only when the studio actually sent the key — a
          re-register that never opened the box leaves the file's figure alone.
          An explicit blank DOES clear it: blank means "use the structure", which
@@ -2484,7 +2514,21 @@ router.post('/applications/:id/pricing/register', async (req, res) => {
         await client.query(`UPDATE applications SET estimated_cash_out=$2 WHERE id=$1`, [appId, co]);
       }
       await client.query('COMMIT');
-    } catch (e) { await client.query('ROLLBACK'); throw e; }
+    } catch (e) {
+      /* RELEASE THE CONNECTION ON THE WAY OUT — the `finally` below belongs to
+         the VESTING try/catch that starts after this block, so a rethrow here
+         skipped it entirely and leaked a pooled client, permanently (post-merge
+         audit 2026-07-31). Measured: an oversized admin-pricing override raises
+         a numeric overflow inside this transaction, and TEN of them exhaust
+         DB_POOL_MAX (10) — after which EVERY request in the app answers 503.
+         One bad paste in the studio's admin zone could take the whole service
+         down. Released here, and `released` stops the later `finally` from
+         double-releasing (pg treats that as an error). */
+      released = true;
+      try { await client.query('ROLLBACK'); } catch (_) { /* the connection may already be gone */ }
+      try { client.release(); } catch (_) { /* best-effort */ }
+      throw e;
+    }
 
     // Vesting LLC on register (owner-directed 2026-07-21): if the staffer typed
     // an entity name on the Products & Pricing / Term Sheet Studio screen and
@@ -2503,7 +2547,7 @@ router.post('/applications/:id/pricing/register', async (req, res) => {
         if (vestLlcId) await require('../lib/vesting').setVestingLlc(appId, vestLlcId, { source: 'staff', actor: req.actor.id });
       }
     } catch (e) { console.error('[staff-register] vesting from studio failed:', db.describeError(e)); }
-    finally { client.release(); }
+    finally { if (!released) client.release(); }
     // Registration rewrites loan amount / rate / program — re-run condition rules.
     try { await conditionEngine.evaluateApplication(appId, { actor: req.actor, reason: 'product_registered' }); } catch (_) {}
 
@@ -3014,6 +3058,15 @@ router.post('/applications/:id/pricing/accept-counter', async (req, res) => {
     // the borrower's "Your loan terms are ready" email led with "Your loan
     // amount: $0". Same expression the /register route uses.
     const total = quote && quote.sizing ? Number(quote.sizing.totalLoan) || 0 : 0;
+
+    /* A quote whose numbers the file cannot RECORD is a bad request, not a 500
+       — and on THIS door the counter was authored in the admin pricing zone, so
+       it is exactly the shape that produced one. See
+       product-registration.quoteStorageProblem. */
+    {
+      const storeProblem = require('../lib/product-registration').quoteStorageProblem(quote, inputs);
+      if (storeProblem) return res.status(400).json({ error: storeProblem });
+    }
 
     // Persist + mark the escalation approved in ONE transaction so an accept
     // never half-lands (registered without the escalation closing, or vice versa).
@@ -8647,40 +8700,23 @@ router.patch('/applications/:id/details', async (req, res) => {
      the limit. Add a key to NUM above and add it here too. */
   const MONEY_KEYS = new Set(['purchasePrice', 'asIsValue', 'arv', 'rehabBudget', 'requestedIrAmount',
     'payoffAmount', 'estimatedCashOut', 'originalPurchasePrice', 'underlyingContractPrice', 'assignmentFee']);
-  const MONEY_MAX = 1e12;              // numeric(14,2): |value| must ROUND to < 10^12
-  const INT_MAX = 2147483647, INT_MIN = -2147483648;    // int4
   /* A column with a CHECK narrower than its TYPE. Its ceiling is the constraint,
      not int4's — quoting 2,147,483,647 for a field the database refuses past 24
      is the same "follow the message, get another 500" trap the previous round
      fixed for `units`, reintroduced one column over (audit round 7). */
   const CHECKED_RANGE = { requestedIrMonths: { min: 0, max: 24, what: 'months of interest reserve' } };
   /**
-   * The reason this number cannot be stored, or '' if it can. ONE place, because
-   * the previous three rounds each fixed one column's ceiling and left another's
-   * wrong. Never throws.
+   * The reason this number cannot be stored, or '' if it can.
+   *
+   * The LIMITS themselves live in `lib/number-bounds` (post-merge audit
+   * 2026-07-31): this door, the register door and the cash-to-close door each
+   * carried their own inline copy of the money ceiling, so the four corrections
+   * this rule has already needed only ever reached whichever copy was being
+   * looked at. Here we say which COLUMN TYPE each key is; the shared module
+   * says what that type can hold. Add a key to NUM above and add it here too.
    */
-  const numberOutOfRange = (key, n) => {
-    const chk = CHECKED_RANGE[key];
-    if (chk) {
-      if (!Number.isInteger(n)) return `${key} must be a whole number of ${chk.what}`;
-      if (n < chk.min || n > chk.max) return `${key} must be between ${chk.min} and ${chk.max} ${chk.what}`;
-      return '';
-    }
-    if (MONEY_KEYS.has(key)) {
-      /* ROUND THE MAGNITUDE, NOT THE SIGNED VALUE. numeric(14,2) rounds to two
-         decimals before it checks for overflow, and it rounds HALF AWAY FROM
-         ZERO — while JavaScript's Math.round breaks ties toward +∞. So
-         -999999999999.995 rounded signed came back inside the ceiling and went
-         on to overflow in Postgres, a 500 the previous round believed it had
-         closed for both signs (audit round 7). */
-      return Math.round(Math.abs(n) * 100) / 100 >= MONEY_MAX
-        ? `${key} is too large — the largest amount this field can hold is 999,999,999,999.99` : '';
-    }
-    // Everything else in NUM is an int4 column.
-    if (!Number.isInteger(n)) return `${key} must be a whole number`;
-    return (n > INT_MAX || n < INT_MIN)
-      ? `${key} is too large — the largest value this field can hold is 2,147,483,647` : '';
-  };
+  const numberOutOfRange = (key, n) => numberBounds.columnProblem(
+    key, n, CHECKED_RANGE[key] || (MONEY_KEYS.has(key) ? 'money' : 'int'));
   const sets = [], vals = []; let i = 1;
   const touchedCols = [];
   for (const [k, col] of Object.entries(NUM)) if (k in b) {
@@ -8739,7 +8775,14 @@ router.patch('/applications/:id/details', async (req, res) => {
      itself COMPLETE with a green tick, and the borrower's own screen read
      "Lender being paid off: null". The trap was latent on every STR key here;
      the payoff card was simply the first caller in the repo to send null. */
-  for (const [k, col] of Object.entries(STR)) if (k in b) { const raw = (b[k] === '' || b[k] == null) ? null : String(b[k]).slice(0, 200); sets.push(`${col}=$${i++}`); vals.push(col === 'loan_type' ? require('../lib/fields').sanitizeLoanType(raw) : raw); touchedCols.push(col); }   // #95: loan_type never a program
+  /* …and a BOX OF SPACES IS AN EMPTY BOX here too, with the cap coming from the
+     COLUMN rather than from this door (post-merge audit 2026-07-31). This slice
+     was one of three different answers — 200 here, 200 on the borrower's
+     application door, 500 on the info-condition door — to a question about the
+     same two columns; and none of the three trimmed, so "   " stored three
+     spaces, counted as answered, and rendered an empty labelled row under a
+     green tick. `fields.textColumn` is now the one definition of all of it. */
+  for (const [k, col] of Object.entries(STR)) if (k in b) { const raw = require('../lib/fields').textColumn(b[k] === '' ? null : b[k], col); sets.push(`${col}=$${i++}`); vals.push(col === 'loan_type' ? require('../lib/fields').sanitizeLoanType(raw) : raw); touchedCols.push(col); }   // #95: loan_type never a program
   for (const [k, col] of Object.entries(DATE)) if (k in b) {
     // sanitizeDateOnly enforces a REAL calendar date with a 4-digit year in
     // [1900, 2100] — a 2-digit year ('0026-…') is rejected here instead of
@@ -10241,15 +10284,32 @@ router.post('/applications/:id/closing/cash-to-close', async (req, res) => {
   const blank = raw == null || String(raw).trim() === '';
   const val = blank ? null : Number(raw);
   if (!blank && (!Number.isFinite(val) || val < 0)) return res.status(400).json({ error: 'Enter a real cash-to-close amount.' });
-  // …and too big for the column is a bad request, not a 500. Same numeric(14,2)
-  // ceiling and the same rounded test as the details door (audit round 6).
-  // Magnitude-rounded — Postgres rounds half AWAY FROM ZERO while Math.round
-  // breaks ties toward +∞, so rounding the signed value let a negative edge slip
-  // through to a 500 (audit round 7).
-  if (!blank && Math.round(Math.abs(val) * 100) / 100 >= 1e12) {
+  // …and too big for the column is a bad request, not a 500 — the same
+  // numeric(14,2) ceiling as the details door, now from the same definition
+  // (`lib/number-bounds`) rather than a third inline copy of it.
+  if (!blank && numberBounds.moneyOverflows(val)) {
     return res.status(400).json({ error: 'That cash-to-close amount is too large — the largest this field can hold is 999,999,999,999.99.' });
   }
-  const docId = req.body && req.body.docId ? String(req.body.docId) : null;
+  /* THE ATTACHED ALTA MUST BE A REAL DOCUMENT ON THIS FILE (post-merge audit
+     2026-07-31). `actual_cash_to_close_doc_id` is a uuid with a foreign key
+     (db/315), and this bound whatever string arrived:
+       · anything not shaped like a uuid raised 22P02 and came back a 500;
+       · a well-formed uuid that is not a document — or one deleted between the
+         click and the save — raised 23503 and came back a 500;
+       · and a document belonging to a DIFFERENT file was accepted, quietly
+         citing another borrower's settlement statement as the evidence for this
+         one's cash to close.
+     All three are answered here, in words the closer can act on, before the
+     transaction opens. Omitting the attachment stays valid — the number may be
+     read off an ALTA that has not been uploaded yet. */
+  let docId = req.body && req.body.docId ? String(req.body.docId).trim() : null;
+  if (docId) {
+    if (!UUID_RE.test(docId)) return res.status(400).json({ error: 'That attachment is not a document on this file — pick it again.' });
+    const dq = await db.query(`SELECT 1 FROM documents WHERE id=$1 AND application_id=$2`, [docId, appId]);
+    if (!dq.rows[0]) return res.status(400).json({ error: 'That attachment is not a document on this file — pick it again.' });
+  } else {
+    docId = null;
+  }
   try {
     const check = await closing.runCashToCloseCheck(appId, val, db);
     const client = await db.getClient();
@@ -11393,7 +11453,33 @@ router.post('/leads/:id/convert', async (req, res) => {
     // of an unexpected type, or a non-object bucket falls back to a bare file
     // (the borrower/officer fill the economics on registration) instead of
     // throwing. numv + pv stay in the outer scope; the INSERT reads them below.
-    const numv = (x) => { const n = Number(String(x == null ? '' : x).replace(/,/g, '')); return isFinite(n) && n > 0 ? n : null; };
+    /* A NUMBER THIS COLUMN CANNOT HOLD IS "NOT PROVIDED" HERE — deliberately
+       NOT a 400 (post-merge audit 2026-07-31). Everything below is bound from
+       the LEAD's stored payload, typed on the public marketing tool by a
+       visitor who may never be heard from again; nothing on the convert screen
+       can edit it. So refusing the conversion would strand the lead with no way
+       through, while letting it reach numeric(14,2) raises 22003 and returns
+       the "convert to loan comes up a server error when the lead has a lot of
+       information" the owner already reported once. Dropped instead, exactly as
+       this function already drops a non-numeric value and as the surrounding
+       catch already falls back to a bare file — the economics are entered on
+       registration either way. The COUNT fields below get the same treatment via
+       `intv`. Ceiling from lib/number-bounds, so it can never drift from the
+       ceiling the edit doors quote. */
+    const numv = (x) => {
+      const n = Number(String(x == null ? '' : x).replace(/,/g, ''));
+      if (!(isFinite(n) && n > 0) || numberBounds.moneyOverflows(n)) return null;
+      return n;
+    };
+    /* Deliberately `parseInt(x) || null` PLUS the bound — identical to what each
+       of these call sites did before (a zero or an unreadable value has always
+       read as "not stated" on this door), with only the out-of-range value newly
+       dropped instead of sent on to overflow int4. */
+    const intv = (x) => {
+      const n = parseInt(x, 10);
+      if (!isFinite(n) || n === 0 || numberBounds.intOverflows(n)) return null;
+      return n;
+    };
     let pv = {};
     let econIsAssign = false, econPrice = null, econSeller = null, econFee = null,
         econReserveOn = false, econFico = null, econLoanType = 'Purchase';
@@ -11447,10 +11533,15 @@ router.post('/leads/:id/convert', async (req, res) => {
         econLoanType,
         econPrice, numv(pv.asIs), numv(pv.arv), numv(pv.rehab),
         pv.termMonths ? String(parseInt(pv.termMonths, 10) || '') || null : null,
-        (econReserveOn ? (parseInt(pv.resMonths, 10) || null) : null),
+        /* requested_ir_months carries a CHECK of 0..24, NARROWER than its type,
+           so int4's ceiling is not the limit that matters here — an out-of-range
+           month count raised a CHECK violation (23514) and returned the same 500.
+           CLAMPED rather than dropped, matching what the public intake door
+           already does with the identical field. */
+        (econReserveOn ? (() => { const m = intv(pv.resMonths); return m == null ? null : Math.max(0, Math.min(24, m)); })() : null),
         (econReserveOn ? numv(pv.resAmount) : null),
         econIsAssign, econSeller, econFee,
-        (parseInt(pv.expFlips, 10) || null), (parseInt(pv.expBrrrr, 10) || null), (parseInt(pv.expGround, 10) || null)]);
+        intv(pv.expFlips), intv(pv.expBrrrr), intv(pv.expGround)]);
     const appId = ins.rows[0].id;
 
     try { await require('../lib/conditions/ensure').ensureFileConditions(appId, { reason: 'lead_convert' }); }
