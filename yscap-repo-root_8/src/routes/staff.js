@@ -2256,8 +2256,11 @@ router.post('/applications/:id/pricing/register', async (req, res) => {
        details door already answers exactly this for the same value. */
     if (Object.prototype.hasOwnProperty.call(rawTermOptions, 'estimatedCashOut')) {
       const rawCo = rawTermOptions.estimatedCashOut;
-      if (rawCo !== '' && rawCo != null && !isFinite(Number(rawCo))) {
-        return res.status(400).json({ error: 'estimatedCashOut must be a number' });
+      if (rawCo !== '' && rawCo != null) {
+        const nCo = Number(rawCo);
+        if (!isFinite(nCo)) return res.status(400).json({ error: 'estimatedCashOut must be a number' });
+        // Same rule as the details door: zero is a real answer, a negative is not.
+        if (nCo < 0) return res.status(400).json({ error: 'estimatedCashOut cannot be negative — leave it blank to use the structure’s own figure' });
       }
     }
     // Derive the key dates from the effective closing date — the one the studio
@@ -8598,6 +8601,15 @@ router.patch('/applications/:id/details', async (req, res) => {
   for (const [k, col] of Object.entries(NUM)) if (k in b) {
     const n = INT_KEYS.test(k) ? intField(b[k]) : (b[k] === '' || b[k] == null ? null : Number(b[k]));
     if (n != null && !isFinite(n)) return res.status(400).json({ error: `${k} must be a number` });
+    /* A NEGATIVE cash-out is not an answer — nobody receives a negative cheque,
+       and a shortfall is cash the borrower BRINGS, which cash-to-close already
+       reports. Refused rather than stored, because the model treats any typed
+       value as the figure of record and a stored negative would print on a term
+       sheet. Zero IS accepted: it is a real answer, and blank is what means
+       "use the structure". (post-merge audit 2026-07-31) */
+    if (k === 'estimatedCashOut' && n != null && n < 0) {
+      return res.status(400).json({ error: 'estimatedCashOut cannot be negative — leave it blank to use the structure’s own figure' });
+    }
     sets.push(`${col}=$${i++}`); vals.push(n); touchedCols.push(col);
   }
   // #FNM1025: an appraisal FORM number ("FNM1025") is not a property type — it is
@@ -8607,7 +8619,15 @@ router.patch('/applications/:id/details', async (req, res) => {
     const ptProblem = require('../lib/property-type').propertyTypeProblem(b.propertyType);
     if (ptProblem) return res.status(400).json({ error: ptProblem });
   }
-  for (const [k, col] of Object.entries(STR)) if (k in b) { const raw = b[k] === '' ? null : String(b[k]).slice(0, 200); sets.push(`${col}=$${i++}`); vals.push(col === 'loan_type' ? require('../lib/fields').sanitizeLoanType(raw) : raw); touchedCols.push(col); }   // #95: loan_type never a program
+  /* CLEARING A TEXT FIELD MUST STORE NULL — NOT THE STRING "null"
+     (post-merge audit 2026-07-31). This read `b[k] === '' ? null : String(b[k])`,
+     which is correct for a form sending `''` but turns an explicit JSON `null`
+     into the four characters n-u-l-l. That is a non-blank string everywhere
+     downstream, so clearing the payoff lender stored "null", the file reported
+     itself COMPLETE with a green tick, and the borrower's own screen read
+     "Lender being paid off: null". The trap was latent on every STR key here;
+     the payoff card was simply the first caller in the repo to send null. */
+  for (const [k, col] of Object.entries(STR)) if (k in b) { const raw = (b[k] === '' || b[k] == null) ? null : String(b[k]).slice(0, 200); sets.push(`${col}=$${i++}`); vals.push(col === 'loan_type' ? require('../lib/fields').sanitizeLoanType(raw) : raw); touchedCols.push(col); }   // #95: loan_type never a program
   for (const [k, col] of Object.entries(DATE)) if (k in b) {
     // sanitizeDateOnly enforces a REAL calendar date with a 4-digit year in
     // [1900, 2100] — a 2-digit year ('0026-…') is rejected here instead of

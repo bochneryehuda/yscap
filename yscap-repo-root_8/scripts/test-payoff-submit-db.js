@@ -139,7 +139,7 @@ if (!process.env.DATABASE_URL) {
       const dr = await call('POST', '/api/borrower/drafts', bTok, { data: { ...data, propertyAddress: ADDR }, step: 5 });
       return call('POST', `/api/borrower/drafts/${dr.body && dr.body.id}/submit`, bTok, {});
     };
-    const COLS = 'payoff_amount,payoff_lender,payoff_loan_number,requested_ir_amount,requested_ir_months,acquisition_date,original_purchase_price';
+    const COLS = 'payoff_amount,payoff_lender,payoff_loan_number,estimated_cash_out,requested_ir_amount,requested_ir_months,acquisition_date,original_purchase_price';
     const readBack = async (id) => (await db.query(`SELECT ${COLS} FROM applications WHERE id=$1`, [id])).rows[0];
 
     console.log('\n--- a refinance with an ALPHANUMERIC payoff loan number ---');
@@ -217,6 +217,61 @@ if (!process.env.DATABASE_URL) {
         eq(Number(a.requested_ir_months), 3, 'the reserve MONTHS landed');
         eq(a.payoff_loan_number, 'PL/2021/88', 'a slashed loan number is stored verbatim');
       }
+    }
+
+    console.log('\n--- clearing a text field stores NOTHING, not the word "null" ---');
+    {
+      /* POST-MERGE AUDIT 2026-07-31. `String(null)` is "null" — four characters,
+         and a non-blank string everywhere downstream. Clearing the payoff lender
+         stored it, the file then reported itself COMPLETE with a green tick, and
+         the borrower's own screen read "Lender being paid off: null". The trap
+         was latent on every free-text field this door writes; the payoff card is
+         simply the first caller in the repo that sends an explicit null. */
+      const r = await submit({
+        loanType: 'Refinance — Cash-Out', asIsValue: '600000', arv: '900000', rehabBudget: '200000',
+        payoffAmount: '300000', payoffLender: 'Chase', payoffLoanNumber: 'C-1',
+      });
+      if (r.status === 201) {
+        const appId = r.body.applicationId;
+        await db.query(`UPDATE applications SET loan_officer_id=$2 WHERE id=$1`, [appId, staffId]);
+        const cleared = await call('PATCH', `/api/staff/applications/${appId}/details`, sTok,
+          { payoffLender: null, payoffLoanNumber: null });
+        eq(cleared.status, 200, 'clearing them is accepted');
+        const a = await readBack(appId);
+        eq(a.payoff_lender, null, 'the lender is NULL — not the string "null"');
+        eq(a.payoff_loan_number, null, 'nor is the loan number');
+        const p = await call('GET', `/api/staff/applications/${appId}/payoff`, sTok, null);
+        eq(p.body && p.body.ready, false, 'and the file no longer claims to be complete');
+        eq((p.body && p.body.missing || []).map((m) => m.key).join(','), 'payoffLender,payoffLoanNumber',
+          'it asks for exactly what was cleared');
+        // An empty STRING must behave identically — that is the path the details
+        // form has always used, and the two must not diverge.
+        await call('PATCH', `/api/staff/applications/${appId}/details`, sTok, { payoffLender: 'Chase' });
+        await call('PATCH', `/api/staff/applications/${appId}/details`, sTok, { payoffLender: '' });
+        eq((await readBack(appId)).payoff_lender, null, 'an empty string clears it the same way');
+      } else { assert(false, `setup submit failed (${r.status})`); }
+    }
+
+    console.log('\n--- a typed cash-out of ZERO is a real answer; a negative is not ---');
+    {
+      const r = await submit({
+        loanType: 'Refinance — Cash-Out', asIsValue: '600000', arv: '900000', rehabBudget: '200000',
+        payoffAmount: '300000', payoffLender: 'Chase', payoffLoanNumber: 'C-2',
+      });
+      if (r.status === 201) {
+        const appId = r.body.applicationId;
+        await db.query(`UPDATE applications SET loan_officer_id=$2 WHERE id=$1`, [appId, staffId]);
+        const z = await call('PATCH', `/api/staff/applications/${appId}/details`, sTok, { estimatedCashOut: '0' });
+        eq(z.status, 200, 'a typed zero is accepted');
+        const p = await call('GET', `/api/staff/applications/${appId}/payoff`, sTok, null);
+        eq(p.body && p.body.derived && p.body.derived.cashOut, 0, 'and the file reports ZERO, not the structural figure');
+        eq(p.body && p.body.derived && p.body.derived.cashOutSource, 'typed', 'reported as the human’s number');
+        // A negative is refused rather than stored — a stored one would print on
+        // a term sheet as the figure of record.
+        const neg = await call('PATCH', `/api/staff/applications/${appId}/details`, sTok, { estimatedCashOut: '-5000' });
+        eq(neg.status, 400, 'a NEGATIVE cash-out is refused at the door');
+        eq(Number((await readBack(appId)).estimated_cash_out), 0, 'and the refused value never reached the file');
+      } else { assert(false, `setup submit failed (${r.status})`); }
     }
 
     console.log('\n--- the staff file screen reads it all back ---');
