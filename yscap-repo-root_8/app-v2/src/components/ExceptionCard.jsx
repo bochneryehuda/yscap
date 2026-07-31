@@ -70,6 +70,12 @@ const TYPE_META = {
     defaultPolicy: () => 'The registered product prices exactly as the program guidelines size it — caps, minimums, leverage and tiers all apply.',
     requestedChange: () => <>Make a <b>pricing / guideline exception</b> for this deal (finance more of an assignment fee, leverage, loan size, experience tier…). Approving records the DECISION — a super-admin then applies the approved terms in the <b>Term Sheet Studio</b> (admin override) and re-registers the file; the approval itself changes no numbers.</>,
   },
+  oop_rehab: {
+    chip: 'Out-of-pocket rehab',
+    jumpHash: '#sec-pricing', jumpLabel: 'Jump to pricing',
+    defaultPolicy: () => 'Every program finances 100% of the rehab — when a cap cuts the loan, the initial advance is reduced and no rehab is paid out of pocket.',
+    requestedChange: () => <>Raise the <b>initial advance</b> toward its cap and bring the displaced rehab <b>out of pocket</b> (the borrower funds part of the rehab over construction). The <b>total loan, rate and every cap stay the same</b>. Approving records the DECISION — a super-admin then enters the approved out-of-pocket amount in the <b>Term Sheet Studio</b> and re-registers; the approval itself changes no numbers.</>,
+  },
   issuance_override: {
     chip: 'Recorded override',
     jumpHash: '#sec-underwriting', jumpLabel: 'Jump to findings',

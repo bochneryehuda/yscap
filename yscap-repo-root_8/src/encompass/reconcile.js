@@ -135,6 +135,11 @@ function buildOurValues(app, quote, llcName) {
     final_initial_loan: nz(sizing.initialAdvance),
     rehab_budget: nz(a.rehab_budget),
     financed_rehab_budget: nz(sizing.rehabHoldback) !== undefined ? sizing.rehabHoldback : nz(a.rehab_budget),
+    // Out-of-pocket rehab (owner-authorized 2026-07-31) = full budget − financed
+    // holdback. 0 unless an approved OOP-rehab exception lowered the holdback;
+    // undefined only when we have no budget to compare (incomparable, never a bad 0).
+    oop_rehab: (nz(a.rehab_budget) === undefined) ? undefined
+      : Math.max(0, nz(a.rehab_budget) - (nz(sizing.rehabHoldback) !== undefined ? sizing.rehabHoldback : nz(a.rehab_budget))),
 
     // purchase / assignment / cost (money)
     purchase_price: nz(a.purchase_price),

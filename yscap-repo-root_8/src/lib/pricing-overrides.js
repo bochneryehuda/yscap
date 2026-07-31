@@ -86,6 +86,12 @@ const ENGAGED_OVERRIDE_KEYS = Object.freeze({
   ovrRate:       { label: 'Manual note rate',                          unit: 'frac'  },
   ovrIrMonths:   { label: 'Manual interest-reserve months',            unit: 'num'   },
   ovrEffPrice:   { label: 'Approved effective purchase price',         unit: 'money' },
+  // Out-of-pocket rehab exception (owner-authorized 2026-07-31): a dollar amount of
+  // rehab brought out of pocket so the initial advance rises toward the acquisition
+  // cap. Off by default; any real amount (or the "raise initial to max" toggle) needs
+  // the same admin approval as any other pricing override.
+  oopRehab:      { label: 'Out-of-pocket rehab exception',             unit: 'money' },
+  oopRehabMax:   { label: 'Out-of-pocket rehab — raise the initial to its max', unit: 'flag' },
   manualPricing: { label: 'Manual scenario (admin-set basis)',         unit: 'flag'  },
   forcePrice:    { label: 'Force-price past the guideline limits',     unit: 'flag'  },
 });

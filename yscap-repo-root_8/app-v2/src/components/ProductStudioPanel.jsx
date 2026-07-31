@@ -172,12 +172,19 @@ export function overridesFromSnapshot(snap, mode) {
       // cap and registers a different loan than the admin saw (audit #3, was
       // present only in the V1 copy). Engine clamps it to [seller, real total].
       ovrEffPrice: f.isAssign ? f.tsEffPrice : null,
+      // Out-of-pocket rehab exception (owner-authorized 2026-07-31): the dollar amount
+      // to bring out of pocket so the initial advance rises toward its cap. Rides the
+      // register/quote payload (buildInputs whitelists it); the engine/normalize caps
+      // it at the maximum. A blank is dropped by compact() (no exception).
+      oopRehab: f.tsOopRehab,
     }),
     cashOut: /cash/i.test(f.dealPurpose || ''),
     isAssignment: !!f.isAssign,
     heavyRehab: f.rehabScope === 'heavy',
     sqftAddition: !!f.sqft,
     manualPricing: !!f.tsManualOn,
+    // "Raise the initial to its max" toggle — pairs with oopRehab (uses the full max).
+    oopRehabMax: !!f.tsOopRehabMax,
     // Markup: an EXPLICITLY blanked field sends '' — the server drops the
     // sticky per-file markup and prices at the company default (root-caused
     // 2026-07-16: compact() omitted it, so the old sticky silently re-applied).
@@ -942,7 +949,8 @@ const ProductStudioPanel = forwardRef(function ProductStudioPanel({ appId, app, 
       lenderFee: 'underwriting / legal fee', creditFee: 'credit-report fee',
       appraisalFee: 'appraisal fee', titleFee: 'title / escrow fee',
     };
-    const NO_DEFAULT = { ovrEffPrice: 'effective purchase price', manualPricing: 'manual scenario' };
+    const NO_DEFAULT = { ovrEffPrice: 'effective purchase price', manualPricing: 'manual scenario',
+      oopRehab: 'out-of-pocket rehab', oopRehabMax: 'out-of-pocket rehab (raise initial to max)' };
     // A knob with no company default of its own borrows another's — the exact
     // mirror of pricing-overrides.js `defaultKey`, which is what the server
     // re-checks with. Without it the Manual origination has no `cd` entry at
