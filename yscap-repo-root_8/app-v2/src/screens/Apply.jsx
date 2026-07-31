@@ -898,7 +898,7 @@ export default function Apply() {
               and register: your loan amount, structure, cash to close, liquidity requirement and
               the signable term sheet PDF are all saved onto your loan file.
             </p>
-            <TermSheetStudio key={adminKey ? 'admin' : 'std'} ref={studioRef} prefill={studioPrefill}
+            <TermSheetStudio key={adminKey ? 'admin' : 'std'} ref={studioRef} prefill={studioPrefill} provenance="borrower_portal"
               lockedIds={STUDIO_LOCKED} onState={onStudioState} showAdmin={!!adminKey} />
           </>
         )}

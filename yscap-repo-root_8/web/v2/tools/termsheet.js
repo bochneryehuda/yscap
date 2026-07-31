@@ -508,6 +508,14 @@
 
   /* ---------------- compute (delegates to the engine) ---------------- */
   function reserveMonths(totalLoan) { return (totalLoan || 0) > 1000000 ? 4 : 2; }  // Standard Program liquidity: 2 months of payments to show under $1M, 4 months over $1M
+  // Closing-cost buffer on the LIQUIDITY TO SHOW (owner-authorized 2026-07-31:
+  // "add a buffer for extra closing costs… about 1% of the deal… we should not
+  // run short… we can waive it on the manual side"). 1% of the loan amount is
+  // added to the liquidity-to-show figure on every program; the portal host may
+  // waive it per file via the read-only liqBufferWaived hidden input (the same
+  // shape as coBorrowerPgWaived). DISPLAY + the tool's own liquidity figure
+  // only — loan sizing, rates and caps are untouched.
+  function liqBufferWaived(){ var e=document.getElementById("liqBufferWaived"); return !!(e && (e.value==="1"||e.value==="true")); }
   function calc() {
     var inp = gather();
     if (chosenLTC) inp.targetLTC = chosenLTC;
@@ -548,7 +556,8 @@
     var excessOOP = (s.assignmentExcessOOP != null ? s.assignmentExcessOOP : (R.assignment && R.assignment.excessOOP)) || 0;
     var cashToClose = _sl.downPayment + excessOOP + closing;   // reserve is never brought to the table; OOP rehab is funded over construction, not here
     var reserves = fullPayment * reserveMonths(totalLoan);  // Standard liquidity buffer: months of interest on top of cash to close
-    var liquidity = cashToClose + reserves + _sl.oopRehab;  // OOP rehab is part of the liquidity the borrower must show (+0 by default)
+    var closingBuffer = liqBufferWaived() ? 0 : Math.round(totalLoan * 0.01 * 100) / 100;   // 1% closing-cost buffer (owner-authorized 2026-07-31); waivable per file
+    var liquidity = cashToClose + reserves + _sl.oopRehab + closingBuffer;  // OOP rehab is part of the liquidity the borrower must show (+0 by default)
     var basisPrice = (asg ? asg.recognizedPrice : (inp.loanType === "Purchase" ? effPurchase() : num("asIs")));
     var displayCost = basisPrice + num("construction") + financedIRr;
 
@@ -565,6 +574,7 @@
       oopRehab: _sl.oopRehab, maxOopRehab: _sl.maxOopRehab, initialCut: _sl.initialCut, maxInitial: _sl.maxInitial,
       origFee: origFee, origPct: origPct, lenderFee: lenderFee, creditFee: creditFee, apprFee: apprFee, titleCost: titleCost, titleInfo: title,
       closing: closing, extraFees: extraFeeList(), cashToClose: cashToClose, reserves: reserves, reserveMo: reserveMonths(totalLoan), liquidity: liquidity,
+      closingBuffer: closingBuffer, closingBufferWaived: liqBufferWaived(),
       ltcPct: s.ltcPct || 0, ltvPct: s.acqLtvPct || 0, arvPct: s.arvPct || 0,
       binding: s.binding || "", caps: R.caps, status: R.status, reasons: R.reasons || [],
       exitShortfall: R.exitShortfall || 0, cityReview: R.cityReview || null,
@@ -607,6 +617,7 @@
     var cashToClose = _g.downPayment + excessOOP + closing;
     var goldReservePct = R.liquidityPct || 0.05;
     var goldReserve = totalLoan * goldReservePct;            // Gold reserve = 5% of the loan, shown ON TOP of cash to close
+    var closingBuffer = liqBufferWaived() ? 0 : Math.round(totalLoan * 0.01 * 100) / 100;   // 1% closing-cost buffer (owner-authorized 2026-07-31); waivable per file
     var asg = R.assignment;
     var basisPrice = (asg ? asg.recognizedPrice : (inp.loanType === "Purchase" ? effPurchase() : num("asIs")));
     return {
@@ -624,7 +635,8 @@
       oopRehab: _g.oopRehab, maxOopRehab: _g.maxOopRehab, initialCut: _g.initialCut, maxInitial: _g.maxInitial,
       origFee: origFee, origPct: origPct, lenderFee: lenderFee, creditFee: creditFee, apprFee: apprFee, titleCost: titleCost, titleInfo: title,
       closing: closing, extraFees: extraFeeList(), cashToClose: cashToClose, reserves: goldReserve, reserveMo: 0,
-      liquidity: cashToClose + goldReserve + _g.oopRehab, liquidityPct: goldReservePct,
+      liquidity: cashToClose + goldReserve + _g.oopRehab + closingBuffer, liquidityPct: goldReservePct,
+      closingBuffer: closingBuffer, closingBufferWaived: liqBufferWaived(),
       ltcPct: s.ltcPct || 0, ltvPct: s.acqLtvPct || 0, arvPct: s.arvPct || 0,
       binding: s.binding || "", caps: R.caps, status: R.status, reasons: R.reasons || [],
       exitShortfall: R.exitShortfall || 0, tierLabel: R.tierLabel, fico: inp.fico,
@@ -665,6 +677,7 @@
     var excessOOP = (s.assignmentExcessOOP != null ? s.assignmentExcessOOP : (R.assignment && R.assignment.excessOOP)) || 0;
     var cashToClose = _sv.downPayment + excessOOP + closing;
     var reserves = (s.fullPayment != null ? Number(s.fullPayment) : totalLoan * rFrac) * reserveMonths(totalLoan);   // same liquidity buffer as Standard
+    var closingBuffer = liqBufferWaived() ? 0 : Math.round(totalLoan * 0.01 * 100) / 100;   // 1% closing-cost buffer (owner-authorized 2026-07-31); waivable per file
     var basisPrice = (asg ? asg.recognizedPrice : (inp.loanType === "Purchase" ? effPurchase() : num("asIs")));
     return {
       R: R, inp: inp, silver: true, eff: basisPrice, basisPrice: basisPrice,
@@ -681,7 +694,8 @@
       downPayment: _sv.downPayment, excessOOP: excessOOP,
       oopRehab: _sv.oopRehab, maxOopRehab: _sv.maxOopRehab, initialCut: _sv.initialCut, maxInitial: _sv.maxInitial,
       origFee: origFee, origPct: origPct, lenderFee: lenderFee, creditFee: creditFee, apprFee: apprFee, titleCost: titleCost, titleInfo: title,
-      closing: closing, extraFees: extraFeeList(), cashToClose: cashToClose, reserves: reserves, reserveMo: reserveMonths(totalLoan), liquidity: cashToClose + reserves + _sv.oopRehab,
+      closing: closing, extraFees: extraFeeList(), cashToClose: cashToClose, reserves: reserves, reserveMo: reserveMonths(totalLoan), liquidity: cashToClose + reserves + _sv.oopRehab + closingBuffer,
+      closingBuffer: closingBuffer, closingBufferWaived: liqBufferWaived(),
       ltcPct: s.ltcPct || 0, ltvPct: s.acqLtvPct || 0, arvPct: s.arvPct || 0,
       // `d.caps` keeps the meaning every reader in this file already assumes: the
       // EFFECTIVE ceiling this deal was sized and priced at. The Silver engine now
@@ -1468,6 +1482,9 @@
         YS.put("rExtraLbl", xf.length === 1 ? xf[0].name : "Additional fees"); YS.put("rExtra", YS.fmtUSD2(t)); } else { w.style.display = "none"; } } })();
     YS.put("rCash", sized ? YS.fmtUSD2(d.cashToClose) : EM);
     YS.put("rLiquidity", sized ? YS.fmtUSD2(d.liquidity) : EM);
+    // 1% closing-cost buffer inside the liquidity to show (owner-authorized
+    // 2026-07-31) — the amount, or "Waived" when the portal host waived it.
+    YS.put("rLiqBuffer", !sized ? EM : (d.closingBufferWaived ? "Waived" : YS.fmtUSD2(d.closingBuffer || 0)));
     YS.put("rTier", d.tierLabel || EM);
     YS.put("rFico", d.fico ? String(d.fico) : EM);
     // Out-of-pocket rehab exception (owner-authorized 2026-07-31): the OOP row in the
@@ -1646,9 +1663,12 @@
       else { irn.style.display = "none"; irn.innerHTML = ""; }
     }
     var resn = el("rResNote");
+    // The buffer phrase rides the explanatory line (owner-authorized 2026-07-31):
+    // "+ a 1% closing-cost buffer" normally, "buffer waived" when the host waived it.
+    var bufPhrase = d.closingBufferWaived ? " (closing-cost buffer waived)" : " plus a 1% closing-cost buffer";
     if (resn) resn.textContent = d.gold
-      ? ("Liquidity to show \u2248 cash to close plus " + Math.round((d.liquidityPct || 0.05) * 100) + "% of the loan amount \u2014 a reserve you demonstrate, not funds brought to closing.")
-      : ("Liquidity to show \u2248 cash to close plus " + d.reserveMo + " months of interest \u2014 a reserve you demonstrate, not funds brought to closing.");
+      ? ("Liquidity to show \u2248 cash to close plus " + Math.round((d.liquidityPct || 0.05) * 100) + "% of the loan amount" + bufPhrase + " \u2014 a reserve you demonstrate, not funds brought to closing.")
+      : ("Liquidity to show \u2248 cash to close plus " + d.reserveMo + " months of interest" + bufPhrase + " \u2014 a reserve you demonstrate, not funds brought to closing.");
     var bn = el("rBindNote");
     if (bn) bn.textContent = (ready && sized && d.binding) ? ("On this deal, " + d.binding + " is the binding limit.") : "";
 
@@ -1833,6 +1853,8 @@
       ["Appraisal (est., POC)", stdOk ? money2(d.apprFee) : EM],
       ["Title / escrow (est.)", (stdOk && d.titleCost > 0) ? money2(d.titleCost) : EM],
       ["Estimated cash to close", stdOk ? money2(d.cashToClose) : EM],
+      // 1% closing-cost buffer feeding the liquidity-to-show total (owner-authorized 2026-07-31)
+      stdOk ? ["Closing cost buffer (1% of loan amount)", d.closingBufferWaived ? "Waived" : money2(d.closingBuffer || 0)] : null,
       ["Liquidity to show", stdOk ? money2(d.liquidity) : EM]
     ];
     var gold;
@@ -1860,6 +1882,8 @@
         ["Appraisal (est., POC)", gOk ? money2(gd.apprFee) : EM],
         ["Title / escrow (est.)", (gOk && gd.titleCost > 0) ? money2(gd.titleCost) : EM],
         ["Estimated cash to close", gOk ? money2(gd.cashToClose) : EM],
+        // 1% closing-cost buffer feeding the liquidity-to-show total (owner-authorized 2026-07-31)
+        gOk ? ["Closing cost buffer (1% of loan amount)", gd.closingBufferWaived ? "Waived" : money2(gd.closingBuffer || 0)] : null,
         ["Liquidity to show", gOk ? money2(gd.liquidity) : EM]
       ];
     }
@@ -1901,6 +1925,8 @@
         ["Appraisal (est., POC)", sOk ? money2(sd.apprFee) : EM],
         ["Title / escrow (est.)", (sOk && sd.titleCost > 0) ? money2(sd.titleCost) : EM],
         ["Estimated cash to close", sOk ? money2(sd.cashToClose) : EM],
+        // 1% closing-cost buffer feeding the liquidity-to-show total (owner-authorized 2026-07-31)
+        sOk ? ["Closing cost buffer (1% of loan amount)", sd.closingBufferWaived ? "Waived" : money2(sd.closingBuffer || 0)] : null,
         ["Liquidity to show", sOk ? money2(sd.liquidity) : EM]
       ];
       if (sOk && sd.extraFees && sd.extraFees.length) {
@@ -1930,7 +1956,10 @@
         merges.push({ s: { r: aoa.length - 1, c: 0 }, e: { r: aoa.length - 1, c: 1 } });
       }
       titleRow("YS CAPITAL GROUP  \u2014  TERM SHEET", INK, "FFFFFF", 13);
-      titleRow("Generated " + new Date().toLocaleDateString("en-US", { year: "numeric", month: "long", day: "numeric" }) + "   \u00b7   NMLS ID 2609746", INK, "C9A86A", 9);
+      // Per-export identity (owner-directed 2026-07-31): the unique term-sheet
+      // id + the exact export date & time, same as the PDF footer carries.
+      var xlsId = tsIdNew(), xlsStamp = tsExportStamp();
+      titleRow("Generated " + xlsStamp + "   \u00b7   " + xlsId + "   \u00b7   NMLS ID 2609746", INK, "C9A86A", 9);
       row([{ v: "" }, { v: "" }]);
       xlsxSections().forEach(function (sec) {
         titleRow(sec.title.toUpperCase(), TEAL, "FFFFFF", 10);
@@ -1997,7 +2026,42 @@
   }
   function money(n) { return YS.fmtUSD(n); } function money2(n) { return YS.fmtUSD2(n); }
 
+  /* ---------------- provenance + export identity (owner-directed 2026-07-31) ----------------
+     Every term sheet PDF carries a stamp saying HOW it was generated and whether
+     it is INITIAL or FINAL. The portal hosts set window.TS_PROVENANCE
+     ({kind:'website'|'borrower_portal'|'officer'|'file'|'file_final'|'portal'});
+     when absent the tool self-derives: standalone officer link -> 'officer',
+     plain public site -> 'website', embedded with no context -> 'portal'. */
+  var PROV_COPY = {
+    website:         { title: "WEBSITE ESTIMATE",      sub: "Generated from the YS Capital website" },
+    borrower_portal: { title: "BORROWER PORTAL DRAFT", sub: "Self-generated in the borrower portal" },
+    officer:         { title: "OFFICER PREPARED",      sub: "Generated by a YS Capital loan officer" },
+    portal:          { title: "PORTAL GENERATED",      sub: "Generated in the PILOT portal" },
+    file:            { title: "ACTIVE LOAN FILE",      sub: "Generated from an active loan file — Products & Pricing" },
+    file_final:      { title: "FINAL TERM SHEET",      sub: "Issued for signature — all clearances complete" }
+  };
+  function provKind() {
+    try { var p = window.TS_PROVENANCE; if (p && p.kind && PROV_COPY[p.kind]) return p.kind; } catch (e) {}
+    if (!EMBEDDED) return window.YSBRAND ? "officer" : "website";
+    return "portal";
+  }
+  // Unique per-export term-sheet id: TS-<epoch base36>-<4 random base36>, uppercase.
+  function tsIdNew() {
+    var A = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ", r = "";
+    for (var i = 0; i < 4; i++) r += A.charAt(Math.floor(Math.random() * 36));
+    return "TS-" + Date.now().toString(36).toUpperCase() + "-" + r;
+  }
+  // Exact export date AND time with timezone (the desk's clock — New York).
+  function tsExportStamp() {
+    try {
+      return new Date().toLocaleString("en-US", { month: "short", day: "numeric", year: "numeric", hour: "numeric", minute: "2-digit", timeZone: "America/New_York", timeZoneName: "short" });
+    } catch (e) { return new Date().toLocaleString("en-US"); }
+  }
+
   async function exportPdf(btn, returnBlob) {
+    // Open fatal appraisal findings HOLD term-sheet generation (owner-directed
+    // 2026-07-31): the portal host sets window.TS_ISSUE_HOLD with the reason.
+    if (window.TS_ISSUE_HOLD) { flash(String(window.TS_ISSUE_HOLD)); return; }
     var label = btn ? btn.textContent : ""; if (btn) { btn.textContent = "Building term sheet\u2026"; btn.disabled = true; }
     try {
       await ensurePDF();
@@ -2016,13 +2080,17 @@
       var sized = d.pricingReady && d.totalLoan > 0 && d.status !== "INELIGIBLE";
       var stTxt = d.status === "ELIGIBLE" ? "Eligible" : d.status === "MANUAL" ? "Eligible \u2014 manual underwrite" : "Not eligible as entered";
       var pillC = d.status === "ELIGIBLE" ? [120, 168, 132] : d.status === "MANUAL" ? [176, 140, 70] : [184, 96, 74];
+      // Provenance + export identity \u2014 computed ONCE per export (owner-directed
+      // 2026-07-31); header()/footer() read them on every page.
+      var provK = provKind(), provFinal = provK === "file_final";
+      var tsId = tsIdNew(), tsStamp = tsExportStamp();
 
       function header() {
         doc.setFillColor.apply(doc, INK); doc.rect(0, 0, W, 76, "F");
         doc.setFillColor.apply(doc, GOLD); doc.rect(0, 76, W, 2.2, "F");
         doc.setDrawColor.apply(doc, LINE); doc.setLineWidth(0.5); doc.line(0, 79.4, W, 79.4);   // fine warm hairline beneath the gold rule
         var lg = logoData(); if (lg) { var h = 30, w = lg.w * (h / lg.h); try { doc.addImage(lg.dataURI, "PNG", M, 23, w, h); } catch (e) {} }
-        doc.setTextColor(244, 240, 231); doc.setFont("times", "bold"); doc.setFontSize(18); doc.text("Preliminary Term Sheet", W - M, 35, { align: "right" });
+        doc.setTextColor(244, 240, 231); doc.setFont("times", "bold"); doc.setFontSize(18); doc.text(provFinal ? "Final Term Sheet" : "Preliminary Term Sheet", W - M, 35, { align: "right" });
         doc.setFont("times", "italic"); doc.setFontSize(9.5); doc.setTextColor(174, 135, 70); doc.text(progName + " \u00b7 business-purpose bridge financing", W - M, 51, { align: "right" });
         doc.setFont("helvetica", "normal"); doc.setFontSize(7.5); doc.setTextColor(176, 184, 186);
         doc.text(LENDER.name + " \u00b7 NMLS " + LENDER.nmls + " \u00b7 Issued " + fmtD(today), W - M, 65, { align: "right", charSpace: 0.3 });
@@ -2036,6 +2104,10 @@
         }
         doc.setFontSize(7); doc.setTextColor(150, 158, 162); doc.setFont("helvetica", "normal");
         doc.text(pdfSafe((manualOn() ? "Manually underwritten \u2014 pricing and leverage set by " + LENDER.name + " on a credit-committee basis. " : "") + "Indicative only \u2014 not a commitment or approval to lend. Subject to underwriting, appraisal, title and final credit approval. Not valid until countersigned by " + LENDER.name + "."), M, H - 26, { maxWidth: W - 2 * M });
+        // Term-sheet identity line on EVERY page (owner-directed 2026-07-31):
+        // Initial/Final + the unique id + the exact export date & time.
+        doc.setFontSize(6); doc.setTextColor.apply(doc, GRAY);
+        doc.text(pdfSafe((provFinal ? "Final" : "Initial") + " term sheet \u00b7 " + tsId + " \u00b7 Exported " + tsStamp), W - M, H - 14, { align: "right" });
       }
       function brk(need) { if (y + need > H - 54) { footer(); doc.addPage(); header(); y = 92; } }
       function cardHead(x, w, title, yy) {
@@ -2044,17 +2116,61 @@
         doc.setFont("helvetica", "bold"); doc.setFontSize(8); doc.setTextColor(255, 255, 255);
         doc.text(pdfSafe(title.toUpperCase()), x + 11, yy + 11.5, { charSpace: 0.6 }); return yy + 23;
       }
+      /* Measure-first row engine (owner-reported 2026-07-31: a wrapping key —
+         "construction holdback is being capped" — ran into the line below).
+         The VALUE is measured at its own font first; a value wider than 60% of
+         the row steps its size down half a point at a time (never below 6.5pt)
+         so it can never collide leftward into the key. The KEY then wraps
+         inside the room the value actually leaves and the row grows by the
+         measured height — divider and accent band included. A single-line row
+         advances exactly the legacy 14.4 (rowIn) / 15 (rowFull), so every
+         non-wrapping card is laid out identically to before. */
+      function fitValue(vTxt, size, budget) {
+        doc.setFont("helvetica", "bold"); doc.setFontSize(size);
+        var vw = doc.getTextWidth(vTxt);
+        while (vw > budget && size > 6.5) { size = Math.max(6.5, Math.round((size - 0.5) * 10) / 10); doc.setFontSize(size); vw = doc.getTextWidth(vTxt); }
+        return { size: size, width: vw };
+      }
       function rowIn(x, w, k, v, yy, opts) {
         opts = opts || {};
-        if (opts.accent) { doc.setFillColor(248, 245, 238); doc.rect(x, yy - 1.5, w, 13.6, "F"); }   // soft ivory band behind headline totals
-        doc.setFont("helvetica", opts.bold ? "bold" : "normal"); doc.setFontSize(opts.bold ? 8.5 : 7.9);
-        doc.setTextColor.apply(doc, GRAY); doc.text(pdfSafe(k), x + 2, yy + 8, { maxWidth: w * 0.62 });
-        doc.setFont("helvetica", "bold"); doc.setFontSize(opts.bold ? 8.7 : 7.9);
-        doc.setTextColor.apply(doc, opts.accent ? GOLD : DARK); doc.text(pdfSafe(String(v)), x + w - 2, yy + 8, { align: "right" });
-        yy += 14.4; doc.setDrawColor.apply(doc, LINE); doc.setLineWidth(0.4); doc.line(x + 2, yy - 3.4, x + w - 2, yy - 3.4); return yy;
+        var vTxt = pdfSafe(String(v));
+        var vFit = fitValue(vTxt, opts.bold ? 8.7 : 7.9, w * 0.6);
+        // Key budget = the room the value leaves (2pt insets + an 8pt gutter),
+        // clamped to [38%, 62%] of the row — a long value can't silently
+        // under-run the key's budget, a short one can't let the key crowd it.
+        var keyMax = Math.max(w * 0.38, Math.min(w * 0.62, w - 4 - vFit.width - 8));
+        var kSize = opts.bold ? 8.5 : 7.9;
+        doc.setFont("helvetica", opts.bold ? "bold" : "normal"); doc.setFontSize(kSize);
+        var kLines = doc.splitTextToSize(pdfSafe(k), keyMax);
+        var lineH = kSize * 1.15;   // jsPDF line height (factor 1.15): ~9.1 @7.9pt, ~9.8 @8.5pt bold
+        var adv = kLines.length > 1 ? Math.max(14.4, kLines.length * lineH + 5.3) : 14.4;
+        if (opts.accent) { doc.setFillColor(248, 245, 238); doc.rect(x, yy - 1.5, w, adv - 0.8, "F"); }   // soft ivory band behind headline totals — as tall as the measured row
+        doc.setFont("helvetica", opts.bold ? "bold" : "normal"); doc.setFontSize(kSize);
+        doc.setTextColor.apply(doc, GRAY); doc.text(kLines, x + 2, yy + 8);
+        doc.setFont("helvetica", "bold"); doc.setFontSize(vFit.size);
+        doc.setTextColor.apply(doc, opts.accent ? GOLD : DARK); doc.text(vTxt, x + w - 2, yy + 8, { align: "right" });
+        yy += adv; doc.setDrawColor.apply(doc, LINE); doc.setLineWidth(0.4); doc.line(x + 2, yy - 3.4, x + w - 2, yy - 3.4); return yy;   // divider under the LAST line
       }
       function band(t) { brk(30); doc.setFillColor.apply(doc, TEAL); doc.roundedRect(M, y, W - 2 * M, 17, 2.5, 2.5, "F"); doc.setFillColor.apply(doc, GOLD); doc.rect(M + 4, y + 4, 2.2, 9, "F"); doc.setFont("helvetica", "bold"); doc.setFontSize(8); doc.setTextColor(255, 255, 255); doc.text(pdfSafe(t.toUpperCase()), M + 11, y + 11.5, { charSpace: 0.6 }); y += 23; }
-      function rowFull(k, v, opts) { opts = opts || {}; brk(16); doc.setFont("helvetica", opts.bold ? "bold" : "normal"); doc.setFontSize(8.4); doc.setTextColor.apply(doc, GRAY); doc.text(pdfSafe(k), M + 3, y + 8); doc.setFont("helvetica", "bold"); doc.setFontSize(8.6); doc.setTextColor.apply(doc, opts.accent ? GOLD : DARK); doc.text(pdfSafe(String(v)), W - M - 3, y + 8, { align: "right" }); y += 15; doc.setDrawColor.apply(doc, LINE); doc.setLineWidth(0.4); doc.line(M + 3, y - 3.5, W - M - 3, y - 3.5); }
+      function rowFull(k, v, opts) {
+        opts = opts || {};
+        var vTxt = pdfSafe(String(v));
+        var fw = W - 2 * M;
+        var vFit = fitValue(vTxt, 8.6, fw * 0.6);
+        // Key wraps in the room the value leaves (3pt insets + a 10pt gutter);
+        // floored at 25% of the row so a pathological value can't zero the key.
+        var keyMax = Math.max(fw * 0.25, fw - 6 - vFit.width - 10);
+        doc.setFont("helvetica", opts.bold ? "bold" : "normal"); doc.setFontSize(8.4);
+        var kLines = doc.splitTextToSize(pdfSafe(k), keyMax);
+        var lineH = 8.4 * 1.15;   // ~9.7
+        var adv = kLines.length > 1 ? Math.max(15, kLines.length * lineH + 5.3) : 15;
+        brk(adv + 1);   // break BEFORE drawing when the measured row would cross the page bottom (mirrors para)
+        doc.setFont("helvetica", opts.bold ? "bold" : "normal"); doc.setFontSize(8.4);
+        doc.setTextColor.apply(doc, GRAY); doc.text(kLines, M + 3, y + 8);
+        doc.setFont("helvetica", "bold"); doc.setFontSize(vFit.size);
+        doc.setTextColor.apply(doc, opts.accent ? GOLD : DARK); doc.text(vTxt, W - M - 3, y + 8, { align: "right" });
+        y += adv; doc.setDrawColor.apply(doc, LINE); doc.setLineWidth(0.4); doc.line(M + 3, y - 3.5, W - M - 3, y - 3.5);   // divider under the LAST line
+      }
       function para(t, size, lead) { var ls = doc.splitTextToSize(pdfSafe(t), W - 2 * M - 6); var lh = lead || (size === 7 ? 9 : 10.5); brk(ls.length * lh + 4); doc.setFont("helvetica", "normal"); doc.setFontSize(size || 8); doc.setTextColor(70, 78, 82); doc.text(ls, M + 3, y + 8); y += ls.length * lh + 6; }
 
       // A dedicated, high-end DISCLOSURES page placed BEFORE the signature page
@@ -2096,6 +2212,43 @@
 
       header();
       var y = 92;
+      // ---- Provenance badge (owner-directed 2026-07-31): a right-aligned
+      // rounded-rect stamp directly under the header band saying HOW this sheet
+      // was generated and whether it is INITIAL or FINAL. GOLD border + title
+      // for the initial kinds, TEAL for a final sheet; every kind except
+      // file_final also carries "INITIAL TERM SHEET \u2014 NOT FINAL". The recipient
+      // block starts BELOW the badge so nothing overlaps. Page 1 only.
+      (function () {
+        var cp = PROV_COPY[provK] || PROV_COPY.website;
+        var ac = provFinal ? TEAL : GOLD;
+        var notFinal = "INITIAL TERM SHEET \u2014 NOT FINAL";
+        // Width fits the longest line (title incl. letter-spacing), clamped 150-180pt.
+        doc.setFont("helvetica", "bold"); doc.setFontSize(8);
+        var tW = doc.getTextWidth(pdfSafe(cp.title)) + Math.max(0, pdfSafe(cp.title).length - 1) * 0.8;
+        doc.setFontSize(6.5);
+        var nW = provFinal ? 0 : doc.getTextWidth(pdfSafe(notFinal));
+        doc.setFont("helvetica", "normal"); doc.setFontSize(6.5);
+        var sW = doc.getTextWidth(pdfSafe(cp.sub));
+        var bw = Math.max(150, Math.min(180, Math.ceil(Math.max(tW, sW, nW)) + 20));
+        var bx = W - M - bw, by = 86;
+        var subL = doc.splitTextToSize(pdfSafe(cp.sub), bw - 18);
+        var subLead = 6.5 * 1.15;
+        var bh = 21 + (subL.length - 1) * subLead + (provFinal ? 0 : 8.6) + 7;
+        if (bh < 30) bh = 30;
+        if (provFinal) doc.setFillColor(244, 249, 249); else doc.setFillColor(252, 249, 243);   // whisper of teal / warm ivory behind the stamp
+        doc.setDrawColor.apply(doc, ac); doc.setLineWidth(1);
+        doc.roundedRect(bx, by, bw, bh, 3, 3, "FD");
+        doc.setFillColor.apply(doc, ac); doc.rect(bx + 5, by + 5.5, 2.2, 8.4, "F");   // accent tab beside the title
+        doc.setFont("helvetica", "bold"); doc.setFontSize(8); doc.setTextColor.apply(doc, ac);
+        doc.text(pdfSafe(cp.title), bx + 11, by + 12.5, { charSpace: 0.8 });
+        doc.setFont("helvetica", "normal"); doc.setFontSize(6.5); doc.setTextColor.apply(doc, GRAY);
+        doc.text(subL, bx + 11, by + 21);
+        if (!provFinal) {
+          doc.setFont("helvetica", "bold"); doc.setFontSize(6.5); doc.setTextColor.apply(doc, GOLD);
+          doc.text(pdfSafe(notFinal), bx + 11, by + 21 + (subL.length - 1) * subLead + 8.6, { charSpace: 0.3 });
+        }
+        y = by + bh + 12;
+      })();
       // Recipient block (owner-directed 2026-07-22): so the attorneys can read the
       // structure, show ALL parties \u2014 the vesting entity (loan is to the entity),
       // the individual borrower/guarantor, and the co-borrower \u2014 plus the loan
@@ -2121,7 +2274,25 @@
       doc.setFont("helvetica", "normal"); doc.setFontSize(8); doc.setTextColor.apply(doc, GRAY); doc.text(pdfSafe(partiesSub), M, y);
       doc.text(pdfSafe(purposeLabel + "  \u00b7  " + prettyStrategy(d.inp.strategy)), W - M, y, { align: "right" });
       y += 12.5;
-      doc.text(pdfSafe(where + "   \u00b7   Valid through " + fmtD(exp)), M, y); y += 14;
+      doc.text(pdfSafe(where + "   \u00b7   Valid through " + fmtD(exp)), M, y);
+      // Loan-officer branding (owner-directed 2026-07-31): a "Prepared by" block
+      // as the right column of the recipient area \u2014 name (bold), role, NMLS,
+      // phone, email at 7pt GRAY. Only when window.YSBRAND carries a name; an
+      // unbranded PDF stays byte-identical. The footer contact line stays too.
+      var _pb = window.YSBRAND, _pbName = _pb ? String(_pb.name || "").trim() : "";
+      if (_pbName) {
+        var _pbPh = _pb.direct || _pb.cell || "";
+        y += 10.5;
+        doc.setFont("helvetica", "bold"); doc.setFontSize(7); doc.setTextColor.apply(doc, GRAY);
+        doc.text(pdfSafe("Prepared by " + _pbName + (_pb.role ? " \u00b7 " + _pb.role : "") + (_pb.nmls ? " \u00b7 NMLS " + _pb.nmls : "")), W - M, y, { align: "right" });
+        if (_pbPh || _pb.email) {
+          y += 9;
+          doc.setFont("helvetica", "normal"); doc.setFontSize(7);
+          doc.text(pdfSafe([_pbPh, _pb.email].filter(Boolean).join("  \u00b7  ")), W - M, y, { align: "right" });
+        }
+        doc.setFontSize(8);   // restore the recipient block's size for anything that follows
+      }
+      y += 14;
       doc.setDrawColor.apply(doc, LINE); doc.setLineWidth(0.5); doc.line(M, y - 4, W - M, y - 4);   // fine rule closing the recipient block
 
       if (needsManualStamp(d)) {
@@ -2229,6 +2400,10 @@
       if (!isRefi()) yR = rowIn(xR, colW, "Down payment (equity)", sized ? money(d.downPayment) : "\u2014", yR, { bold: true });
       if (d.excessOOP > 0) yR = rowIn(xR, colW, ((d.asg && d.asg.dollarCap) ? "Assignment over cap (out of pocket)" : "Assignment over 15% (out of pocket)"), money(d.excessOOP), yR);
       yR = rowIn(xR, colW, "Estimated cash to close", sized ? money2(d.cashToClose) : "\u2014", yR, { bold: true, accent: true });
+      // 1% closing-cost buffer inside the liquidity to show (owner-authorized
+      // 2026-07-31) \u2014 printed just before the liquidity total; a waived buffer
+      // prints nothing extra.
+      if (sized && d.closingBuffer > 0) yR = rowIn(xR, colW, "Closing cost buffer (1% of loan)", money2(d.closingBuffer), yR);
       var liqLbl = d.gold ? ("Liquidity to show (" + Math.round((d.liquidityPct || 0.05) * 100) + "% of loan)") : ("Liquidity to show (" + d.reserveMo + " mo)");
       yR = rowIn(xR, colW, liqLbl, sized ? money2(d.liquidity) : "\u2014", yR);
       y = Math.max(yL, yR) + 4;
@@ -2426,7 +2601,7 @@
         footer();
       }
 
-      if (d && (d.pricingReady || d.totalLoan > 0 || (borrowerOfRecord() || "").trim())) drawDerivationPage(doc, d, "Inputs & Loan Derivation", "This term sheet was generated from the inputs below, entered through the YS Capital Term Sheet Studio. This page records exactly what was provided and how the loan amount and leverage were determined.");
+      if (d && (d.pricingReady || d.totalLoan > 0 || (borrowerOfRecord() || "").trim())) drawDerivationPage(doc, d, "Inputs & Loan Derivation", "This term sheet was generated from the inputs below, entered through the YS Capital Term Sheet Studio. This page records exactly what was provided and how the loan amount and leverage were determined. Term sheet ID " + tsId + " · exported " + tsStamp + ".");
       // #99: when asked for a blob (the "email to my officer" path) return the PDF
       // bytes to attach server-side instead of downloading it.
       if (returnBlob) { if (btn) { btn.textContent = label; btn.disabled = false; } return doc.output("blob"); }
@@ -2460,6 +2635,9 @@
 
   // ============ Proof of Funds / Pre-Qualification letter (bank-grade, one page) ============
   async function exportLetter(btn) {
+    // Open fatal appraisal findings HOLD generation here too (owner-directed
+    // 2026-07-31) — the portal host sets window.TS_ISSUE_HOLD with the reason.
+    if (window.TS_ISSUE_HOLD) { flash(String(window.TS_ISSUE_HOLD)); return; }
     var label = btn ? btn.textContent : "";
     var borrower0 = (borrowerOfRecord() || "").trim();
     if (!borrower0) { flash("Enter the borrowing entity or borrower name to generate the letter."); var bn = el("entityName") || el("borrowerName"); if (bn) { bn.focus(); bn.classList.add("field-flag"); setTimeout(function(){ bn.classList.remove("field-flag"); }, 2400); } return; }

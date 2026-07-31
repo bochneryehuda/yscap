@@ -883,7 +883,12 @@ router.get('/applications/:id/pricing', async (req, res) => {
     } catch (_) {}
     // Echoed back on register — a mismatch means the file's economics moved
     // underneath the open studio (409, never a silent stale re-register).
-    res.json({ current, history, quote, enginesReady: pricing.enginesReady(), econVersion: pricing.econVersionFor(f.app), manualEscalation });
+    // Term-sheet hold (owner-directed 2026-07-31) — surfaced so the studio's
+    // Download button refuses; the borrower banner uses its own safe wording.
+    let termSheetHold = null;
+    try { termSheetHold = await require('../lib/underwriting/appraisal-advisory').appraisalTermSheetHold(db, req.params.id); } catch (_) {}
+    if (termSheetHold) termSheetHold = 'Your terms are being finalized — your loan team is reviewing the appraisal. A term sheet will be available shortly.';
+    res.json({ current, history, quote, enginesReady: pricing.enginesReady(), econVersion: pricing.econVersionFor(f.app), manualEscalation, termSheetHold });
   } catch (e) { console.error('[borrower pricing]', e && e.message); res.status(500).json({ error: 'server error' }); }
 });
 
@@ -1128,7 +1133,10 @@ router.post('/applications/:id/pricing/register', async (req, res) => {
       // (b) the registration does NOT need super-admin approval (owner-directed
       // 2026-07-21 — a manual-review exception is confirmed to the borrower ONLY
       // after a super-admin approves it). The team notice above always fires.
-      if (economicsChanged && !needsEscalation) {
+      // ALSO withheld while a fatal appraisal finding is open (owner-directed
+      // 2026-07-31: appraisal fatals hold off generating term sheets).
+      const apprHold = await require('../lib/underwriting/appraisal-advisory').appraisalTermSheetHold(db, appId);
+      if (economicsChanged && !needsEscalation && !apprHold) {
         try { await require('../lib/terms-notify').sendBorrowerTerms(appId, { quote, total, termMonths: inputs && inputs.term }); }
         catch (_) { /* borrower terms email is best-effort */ }
       }
@@ -2730,6 +2738,12 @@ router.post('/documents', async (req, res) => {
     if (!o.rows[0]) return res.status(404).json({ error: 'llc not found' });
     // A verified LLC's document set is locked — staff verified it as-is.
     if (o.rows[0].is_verified) return res.status(409).json({ error: 'this LLC is verified — ask your loan team to unlock it before replacing documents' });
+  }
+  // TERM SHEETS ARE HELD while a fatal appraisal finding is open (owner-directed
+  // 2026-07-31) — same gate as the staff attach door. Borrower-safe wording.
+  if (b.docKind === 'term_sheet' && b.applicationId) {
+    const hold = await require('../lib/underwriting/appraisal-advisory').appraisalTermSheetHold(db, b.applicationId);
+    if (hold) return res.status(422).json({ error: 'Your terms are being finalized — your loan team is reviewing the appraisal. A term sheet will be available shortly.', code: 'appraisal_hold' });
   }
   // Term sheets auto-attach to the Products & Pricing register condition as a
   // document slot (owner-directed #139): the registered term sheet saves straight

@@ -160,6 +160,13 @@ export function buildStudioState(x) {
     // and the server ignores any client value (it reads the real flag from the file).
     coBorrowerPgWaived: (x.coBorrowerPgWaived === true || x.coBorrowerPgWaived === 1 ||
       String(x.coBorrowerPgWaived).toLowerCase() === 'true' || String(x.coBorrowerPgWaived) === '1') ? 'true' : '',
+    // 1% closing-cost buffer waiver (owner-authorized 2026-07-31): READ-ONLY flag
+    // from applications.liquidity_buffer_waived — the studio only DISPLAYS the
+    // liquidity with/without the buffer; the waiver is set by an admin on the
+    // file (its own audited endpoint), never in the studio, and the server's
+    // pricing ignores any client value (file-owned in buildInputs).
+    liqBufferWaived: (x.liqBufferWaived === true || x.liqBufferWaived === 1 ||
+      String(x.liqBufferWaived).toLowerCase() === 'true' || String(x.liqBufferWaived) === '1') ? 'true' : '',
   };
   const c = {
     isAssign,
@@ -375,7 +382,7 @@ function loadPdfEngine(doc) {
   });
 }
 
-const TermSheetStudio = forwardRef(function TermSheetStudio({ prefill, lockedIds = [], onState, showAdmin = false, officer = null }, ref) {
+const TermSheetStudio = forwardRef(function TermSheetStudio({ prefill, lockedIds = [], onState, showAdmin = false, officer = null, issueHold = null, provenance = null }, ref) {
   const frameRef = useRef(null);
   const winRef = useRef(null);
   const adminStyleRef = useRef(null);   // the injected style hiding the admin zone
@@ -471,6 +478,16 @@ const TermSheetStudio = forwardRef(function TermSheetStudio({ prefill, lockedIds
       return captured;
     },
   }), []);
+
+  // Keep the tool's hold reason live: a resolved finding lifts the hold on the
+  // next pricing reload without remounting the iframe.
+  useEffect(() => {
+    try { const w = winRef.current; if (w) w.TS_ISSUE_HOLD = issueHold || null; } catch (_) { /* advisory */ }
+  }, [issueHold]);
+  // Same for the provenance stamp (file → file_final when the gate clears).
+  useEffect(() => {
+    try { const w = winRef.current; if (w) w.TS_PROVENANCE = provenance ? { kind: provenance } : null; } catch (_) { /* cosmetic */ }
+  }, [provenance]);
 
   useEffect(() => {
     const frame = frameRef.current;
@@ -569,6 +586,16 @@ const TermSheetStudio = forwardRef(function TermSheetStudio({ prefill, lockedIds
             });
           }
         } catch (_) { /* cosmetic — falls back to no LO block */ }
+        // Term-sheet hold (owner-directed 2026-07-31): open fatal appraisal
+        // findings hold generation — the tool's Download-PDF button refuses
+        // with this reason (termsheet.js reads window.TS_ISSUE_HOLD). The
+        // attach door is server-enforced; this stops the local download too.
+        try { win.TS_ISSUE_HOLD = issueHold || null; } catch (_) { /* advisory */ }
+        // Provenance stamp (owner-directed 2026-07-31): the host says HOW this
+        // term sheet is being generated — borrower portal / active file /
+        // final — and the PDF prints the matching stamp (termsheet.js
+        // PROV_COPY). Absent → the tool self-derives (website/officer/portal).
+        try { win.TS_PROVENANCE = provenance ? { kind: provenance } : null; } catch (_) { /* cosmetic */ }
         try { if (prefillRef.current) win.YS.applyState(prefillRef.current); } catch (_) { /* keep defaults */ }
         for (const id of lockedIds) {
           const e = doc.getElementById(id);

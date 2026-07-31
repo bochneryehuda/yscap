@@ -304,6 +304,13 @@ export function RegisteredProductDetails({ reg, compactView = false, showAdmin =
           <Row k="Closing costs due at closing" v={money2(cc.dueAtClosing)} />
           <Row k="Estimated cash to close" v={<strong>{money2(q.cashToClose)}</strong>} />
           <Row k={`Reserve to show${q.reserveBasis ? ` (${q.reserveBasis})` : ''}`} v={money2(q.reserveRequirement)} />
+          {/* 1% closing-cost buffer (owner-authorized 2026-07-31): extra cash to
+              verify so attorney/other closing charges never run short. Waivable
+              per file by an admin (toggle below the card). */}
+          {(Number(q.closingBuffer) > 0 || q.closingBufferWaived) && (
+            <Row k={q.closingBufferWaived ? 'Closing cost buffer — waived on this file' : 'Closing cost buffer (1% of loan)'}
+              v={q.closingBufferWaived ? '$0.00' : money2(q.closingBuffer)} />
+          )}
           <Row k="Liquidity to verify" v={<strong>{money2(q.liquidity ?? q.liquidityRequired)}</strong>} />
           <p className="muted small" style={{ margin: '10px 0 4px', textTransform: 'uppercase', letterSpacing: '.06em' }}>Scenario as registered</p>
           <Row k="Strategy / purpose" v={`${inp.strategy || '—'} · ${inp.loanType || '—'}${inp.cashOut ? ' (cash-out)' : ''}`} />
@@ -630,6 +637,14 @@ const ProductStudioPanel = forwardRef(function ProductStudioPanel({ appId, app, 
       if (fileAddr) { v.propAddr = fileAddr; c.addrTBD = false; }
       const fileState = app.property_address && app.property_address.state;
       if (fileState) v.propState = String(fileState).toUpperCase();
+      // The two FILE-OWNED waiver flags snap over the draft too (pre-merge audit
+      // 2026-07-31): a resumed draft carries neither, so without this a file
+      // whose co-borrower guaranty or 1% closing-cost buffer was waived would
+      // print the un-waived wording/figure on the exported term sheet. Display
+      // only — the server ignores any client value for both — but the printed
+      // sheet is the borrower-facing artifact, so it must read the file's truth.
+      v.coBorrowerPgWaived = app.co_borrower_pg_waived ? 'true' : '';
+      v.liqBufferWaived = app.liquidity_buffer_waived ? 'true' : '';
       return { v, c };
     }
     const name = isStaff
@@ -675,7 +690,7 @@ const ProductStudioPanel = forwardRef(function ProductStudioPanel({ appId, app, 
       // CURRENT address always prefills; the registered scenario's stored copy is
       // only a fallback for a file with no address yet. The old order kept the
       // registration-era address on the term sheet forever after a correction.
-      st = buildStudioState(scenarioFromEngineInputs(inp, { entityName: entity, borrowerName: name, coBorrowerName: coName, address: addrLine(app.property_address) || inp.address, state: (app.property_address && app.property_address.state) || inp.state, estClosingDate: app.est_closing_date || app.expected_closing, coBorrowerPgWaived: app.co_borrower_pg_waived, ...econFallback(inp), ...fileEcon(), ...filePayoff() }));
+      st = buildStudioState(scenarioFromEngineInputs(inp, { entityName: entity, borrowerName: name, coBorrowerName: coName, address: addrLine(app.property_address) || inp.address, state: (app.property_address && app.property_address.state) || inp.state, estClosingDate: app.est_closing_date || app.expected_closing, coBorrowerPgWaived: app.co_borrower_pg_waived, liqBufferWaived: app.liquidity_buffer_waived, ...econFallback(inp), ...fileEcon(), ...filePayoff() }));
       if (isStaff) {
         // The registered scenario's admin knobs (markup, points, fees, and any
         // manual LTV/LTC/ARV/rate basis) restore for EVERY staff role — the zone
@@ -698,7 +713,7 @@ const ProductStudioPanel = forwardRef(function ProductStudioPanel({ appId, app, 
         expHolds: app.requested_exp_holds ?? inp.expHolds,
         expGround: app.requested_exp_ground ?? inp.expGround,
         fico: inp.fico || (profile && profile.fico) || '',
-        estClosingDate: app.est_closing_date || app.expected_closing, coBorrowerPgWaived: app.co_borrower_pg_waived,
+        estClosingDate: app.est_closing_date || app.expected_closing, coBorrowerPgWaived: app.co_borrower_pg_waived, liqBufferWaived: app.liquidity_buffer_waived,
         ...econFallback(inp), ...filePayoff(),
       }));
     } else {
@@ -720,8 +735,8 @@ const ProductStudioPanel = forwardRef(function ProductStudioPanel({ appId, app, 
         rehabType: app.rehab_type,
         fico: app.fico || (profile && profile.fico) || '',
         expFlips: app.requested_exp_flips, expHolds: app.requested_exp_holds, expGround: app.requested_exp_ground,
+        estClosingDate: app.est_closing_date || app.expected_closing, coBorrowerPgWaived: app.co_borrower_pg_waived, liqBufferWaived: app.liquidity_buffer_waived,
         termMonths: app.term, irMonths: app.requested_ir_months, irAmount: app.requested_ir_amount,
-        estClosingDate: app.est_closing_date || app.expected_closing, coBorrowerPgWaived: app.co_borrower_pg_waived,
         // The refinance payoff and WHO it goes to, so the studio opens showing what
         // the file already knows instead of asking the officer to retype it.
         ...filePayoff(),
@@ -848,6 +863,12 @@ const ProductStudioPanel = forwardRef(function ProductStudioPanel({ appId, app, 
       } else if (e.status === 422 && e.data && e.data.code === 'manual_asset_months_required') {
         if (e.data.suggestedAssetMonths != null && !assetMonths) setAssetMonths(String(e.data.suggestedAssetMonths));
         setErr(e.data.error || 'This is a manual product — enter how many months of assets/liquidity this file must show, then register.');
+      } else if (e.status === 422 && e.data && e.data.code === 'file_mismatch') {
+        // The studio's scenario disagrees with the application record (property
+        // type / units / loan type / deal type / state). The registration was
+        // refused — the two must match (owner-directed 2026-07-31). Show the
+        // server's line-by-line message; fixing either side clears it.
+        setErr(e.data.error || 'The registration does not match the application — fix the application details (or the studio pick) and register again.');
       } else if (e.status === 422 && e.data && e.data.code === 'exception_required') {
         // Not eligible as-is — the engine flagged it MANUAL (below the minimum,
         // over the maximum, or another guideline exception). Surface WHY and offer
@@ -1179,6 +1200,26 @@ const ProductStudioPanel = forwardRef(function ProductStudioPanel({ appId, app, 
         </p>
       )}
       {cur && <RegisteredProductDetails reg={cur} showAdmin={staffAdmin} />}
+      {/* 1% closing-cost buffer waiver (owner-authorized 2026-07-31): admin-only
+          per-file toggle. The buffer is part of the liquidity requirement
+          everywhere (condition, structure, term sheet, closing) unless waived. */}
+      {isStaff && app && (staffRole === 'admin' || staffRole === 'super_admin') && (
+        <label className="row small" style={{ gap: 6, margin: '8px 0 0', alignItems: 'center', color: '#4B585C' }}>
+          <input type="checkbox" checked={!!app.liquidity_buffer_waived} disabled={busy}
+            onChange={async (e) => {
+              const waived = e.target.checked;
+              setBusy(true); setErr(''); setMsg('');
+              try {
+                await api.staffSetLiquidityBuffer(appId, waived);
+                setMsg(waived ? 'Closing-cost buffer waived on this file.' : 'Closing-cost buffer restored (1% of the loan).');
+                try { const dNew = await loadPricing(); setData(dNew); } catch (_) { /* keep old */ }
+                if (onRegistered) onRegistered();   // parent re-fetches the app row (the flag lives there)
+              } catch (e2) { setErr((e2 && e2.message) || 'Could not update the buffer waiver.'); }
+              finally { setBusy(false); }
+            }} />
+          <span>Waive the 1% closing-cost buffer on this file (admin) — removes it from the liquidity to verify.</span>
+        </label>
+      )}
       {superseded.length > 0 && (
         <p className="muted small" style={{ margin: '8px 0 0' }}>
           {superseded.length} previous registration{superseded.length === 1 ? '' : 's'} on this file (superseded):{' '}
@@ -1216,9 +1257,21 @@ const ProductStudioPanel = forwardRef(function ProductStudioPanel({ appId, app, 
                   ? 'The live Term Sheet Studio, prefilled from this file. Adjust anything — pick the program and leverage, then register. Every detail saves back onto the file and the exact term sheet PDF is attached (previous sheets are marked superseded).'
                   : 'Prefilled from your loan file. Adjust your experience, credit and reserve, compare the programs, pick your leverage — then register your product. Deal numbers come from your file; ask your loan team to change those.'}
               </p>
+              {/* Open fatal appraisal findings hold term-sheet generation
+                  (owner-directed 2026-07-31). Server-enforced on the attach
+                  door; said here BEFORE they try, and the studio's own
+                  Download-PDF refuses with the same reason (issueHold). */}
+              {data && data.termSheetHold && (
+                <div className="notice warn" style={{ margin: '10px 0' }}>
+                  <strong>Term sheets are on hold.</strong>{' '}
+                  {isStaff ? data.termSheetHold : 'Your loan team is reviewing the appraisal — a term sheet will be available shortly.'}
+                </div>
+              )}
               {prefill
                 ? <TermSheetStudio ref={studioRef} prefill={prefill} lockedIds={lockedIds}
                     showAdmin={staffAdmin} onState={onStudioState}
+                    issueHold={(data && data.termSheetHold) || null}
+                    provenance={data && data.termSheetFinal ? 'file_final' : 'file'}
                     officer={isStaff && app && (app.loan_officer_name || app.loan_officer_email)
                       ? { name: app.loan_officer_name || '', email: app.loan_officer_email || '', nmls: app.loan_officer_nmls || '', role: 'Loan officer' }
                       : null} />

@@ -548,6 +548,9 @@ function borrowerTermsEmail({ ctx, quote, total, termMonths, officer, termOption
     num(s.oopRehab) > 0 ? { label: 'Rehab paid out of pocket (funded as the work is done)', value: money(s.oopRehab) } : null,
     num(s.financedReserve) > 0 ? { label: 'Financed interest reserve', value: money(s.financedReserve) } : null,
     quote.cashToClose != null ? { label: 'Estimated cash to close', value: money(quote.cashToClose) } : null,
+    // 1% closing-cost buffer (owner-authorized 2026-07-31): shown so the borrower
+    // knows the extra cushion is part of what they must show. Hidden when waived.
+    num(quote.closingBuffer) > 0 ? { label: 'Closing cost buffer (1% of loan — extra cash to have on hand)', value: money(quote.closingBuffer) } : null,
     (quote.liquidityRequired ?? quote.liquidity) != null ? { label: 'Reserves to verify', value: money(quote.liquidityRequired ?? quote.liquidity) } : null,
     { label: 'Guaranty', value: to.coBorrowerPgWaived === true
         ? 'Full recourse — co-borrower’s personal guarantee waived (approved exception)'

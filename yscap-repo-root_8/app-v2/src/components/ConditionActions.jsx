@@ -1,5 +1,5 @@
 import React, { useEffect } from 'react';
-import { nextStep, docNextStep, canComplete } from '../lib/condition-actions.js';
+import { nextStep, docNextStep, canComplete, canDeleteDoc } from '../lib/condition-actions.js';
 import { canOverride, askOverride } from '../lib/condition-override.js';
 import { CONDITION_STATUSES, conditionStatusLabel } from '../lib/conditions-vocab.js';
 
@@ -220,7 +220,7 @@ export function DocActions({ doc, role, onReviewDoc, onDownloadDoc, onPreview, o
           )}
           {rs !== 'rejected' && <button className="btn ghost small"
             onClick={() => onReviewDoc(doc, 'reject')}>Reject</button>}
-          {completer && <button className="btn ghost small" style={{ color: '#A32A2A' }}
+          {canDeleteDoc(role) && <button className="btn ghost small" style={{ color: '#A32A2A' }}
             title="Permanently delete — for a mistake upload (never synced to SharePoint)"
             onClick={() => onReviewDoc(doc, 'delete')}>Delete</button>}
         </div>

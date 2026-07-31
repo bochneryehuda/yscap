@@ -15,7 +15,8 @@ import ExceptionCard from '../components/ExceptionCard.jsx';
  * or decided. The summary strip shows the register report (open/overdue/oldest,
  * approval rate); the register exports to a spreadsheet for loan-sale /
  * diligence conversations. The approver can't decide their own request
- * (server-enforced; buttons disabled here too). */
+ * (server-enforced; buttons hidden here too) — EXCEPT a super-admin, who may
+ * decide their own (owner-directed 2026-07-31; the server's canDecideOwn). */
 
 export default function StaffExceptions() {
   const { role } = useAuth();
@@ -33,6 +34,8 @@ export default function StaffExceptions() {
   const [typeFilter, setTypeFilter] = useState('');
   const [pendingCount, setPendingCount] = useState(0);
   const [canDecide, setCanDecide] = useState(false);
+  // Super-admins may decide their OWN request (owner-directed 2026-07-31).
+  const [canDecideOwn, setCanDecideOwn] = useState(false);
   const [metrics, setMetrics] = useState(null);
   const [busy, setBusy] = useState('');
   const [msg, setMsg] = useState(null);
@@ -53,6 +56,7 @@ export default function StaffExceptions() {
       setRows(d.exceptions || []);
       setPendingCount(d.pendingCount || 0);
       setCanDecide(!!d.canDecide);
+      setCanDecideOwn(!!d.canDecideOwn);
       setReasonCodes(d.reasonCodes || {});
       setReasonCodesByType(d.reasonCodesByType || {});
       setTypeLabels(d.typeLabels || {});
@@ -164,7 +168,7 @@ export default function StaffExceptions() {
       <p className="muted" style={{ marginTop: 6 }}>
         Every request to deviate from a loan policy, in one place — waiving a co-borrower’s personal guarantee,
         sending a term-sheet package early, a pricing/guideline exception, and recorded admin overrides. {canDecide
-          ? 'Approve or deny with a short note; on time-boxable types you can set how long the approval stays valid. Clear an exception when it’s handled. You can’t approve your own request — another admin does that.'
+          ? `Approve or deny with a short note; on time-boxable types you can set how long the approval stays valid. Clear an exception when it’s handled.${canDecideOwn ? '' : ' You can’t approve your own request — another admin does that.'}`
           : 'You can review the queue and comment; an admin approves or denies.'}
       </p>
       <div className="notice" style={{ marginTop: 4, marginBottom: 4 }}>
@@ -207,6 +211,9 @@ export default function StaffExceptions() {
         const type = r.type || r.exception_type;
         const open = r.status === 'requested';
         const ownRequest = r.requested_by && actorId && r.requested_by === actorId;
+        // A super-admin may decide their OWN request (owner-directed 2026-07-31);
+        // a regular admin's own request still waits for another admin.
+        const decideBlocked = ownRequest && !canDecideOwn;
         // An OPEN request can't be cleared (withdraw/decide first — server-enforced).
         const canClear = r.status !== 'cleared' && !open && (canDecide || ownRequest);
         const isEsign = type === 'esign_before_ctc';
@@ -215,7 +222,7 @@ export default function StaffExceptions() {
         // card's requirements picture; the selection lives here so Approve can
         // submit it. (EsignGatePanel only enables pickers when the server says
         // this actor can decide.)
-        const gateSelect = isEsign && open && canDecide && !ownRequest
+        const gateSelect = isEsign && open && canDecide && !decideBlocked
           ? { selected: waiveSel[r.id], onChange: (codes) => setWaiveSel((m) => ({ ...m, [r.id]: codes })) }
           : undefined;
         return (
@@ -223,10 +230,13 @@ export default function StaffExceptions() {
             highlight={highlightId === r.id} forwardRef={(el) => { rowRefs.current[r.id] = el; }}>
             {(open || canClear) ? (
               <div style={{ marginTop: 10, borderTop: '1px solid var(--hair,#e7e2d6)', paddingTop: 10 }}>
-                {open && canDecide && ownRequest && (
+                {open && canDecide && decideBlocked && (
                   <div className="muted small" style={{ marginBottom: 6 }}>You requested this exception — another admin must approve or deny it (you can’t approve your own request).</div>
                 )}
-                {open && canDecide && !ownRequest && (
+                {open && canDecide && ownRequest && !decideBlocked && (
+                  <div className="muted small" style={{ marginBottom: 6 }}>You requested this one — as the super admin you can decide it yourself. The decision is recorded under your name.</div>
+                )}
+                {open && canDecide && !decideBlocked && (
                   <>
                     <textarea className="input" rows={2} style={{ width: '100%' }}
                       placeholder="Decision note (required) — e.g. approved: strong primary guarantor; low LTV."

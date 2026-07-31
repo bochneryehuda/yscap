@@ -32,7 +32,13 @@
  *   • GET/POST /:id/comments — the staff-only thread (type-aware copy).
  *
  * Segregation of duties: the approver cannot be the requester (enforced here) —
- * this stays regardless of who may decide.
+ * with ONE exemption, owner-directed 2026-07-31 ("I'm requesting an exception
+ * myself as super admin and it says I cannot approve my own exception — this is
+ * a failure"): a SUPER-ADMIN may decide their own request. They are the top
+ * authority, and in a one-super-admin shop a second approver is a dead end —
+ * the same exemption the manual-program escalation box has always had
+ * (admin-manual-programs.js mayDecide). Every decision is audited either way.
+ * A regular admin still can never decide their own request.
  * Decide gate = `manage_pricing` (admins + super-admins). Owner-directed
  * 2026-07-26 ("let any Admin approve") — WIDENED from the original
  * super-admin-only rule. Narrowing it again is an owner decision; the
@@ -54,6 +60,20 @@ function auditSafe(actorId, action, entityType, entityId, detail) {
     `INSERT INTO audit_log (actor_kind, actor_id, action, entity_type, entity_id, detail)
      VALUES ('staff',$1,$2,$3,$4,$5::jsonb)`,
     [actorId || null, action, entityType, entityId, JSON.stringify(detail || {})]).catch(() => {});
+}
+
+/**
+ * WHO may decide an exception. `manage_pricing` holders (admins + super-admins),
+ * minus the request you raised yourself — EXCEPT a super-admin, who may decide
+ * their own (owner-directed 2026-07-31; mirrors admin-manual-programs.js
+ * mayDecide, and the underwriting escalations' exemption). Checked server-side
+ * on the decide route; the UI hiding buttons is never the gate.
+ */
+function mayDecide(actor, exc) {
+  if (!actor || actor.kind !== 'staff') return false;
+  if (!can(actor, 'manage_pricing')) return false;
+  if (actor.role === 'super_admin') return true;
+  return !(exc && exc.requested_by && String(exc.requested_by) === String(actor.id));
 }
 
 // Per-type action names for the audit trail (the esign comment previously
@@ -110,6 +130,9 @@ router.get('/', requirePermission('manage_pricing'), async (req, res) => {
       exceptions: rows,
       pendingCount: pending,
       canDecide: can(req.actor, 'manage_pricing'),
+      // A super-admin may decide their OWN request (owner-directed 2026-07-31);
+      // the UI uses this to keep the Approve/Deny buttons on own-request rows.
+      canDecideOwn: req.actor.role === 'super_admin',
       actorId: req.actor.id,
       ...registryPayload(),
     });
@@ -191,12 +214,13 @@ router.post('/:id/decide', requirePermission('manage_pricing'), async (req, res)
     if (!note || !String(note).trim()) {
       return res.status(400).json({ error: 'Add a short note explaining your decision.' });
     }
-    // Segregation of duties: the approver cannot be the person who requested it.
+    // Segregation of duties: the approver cannot be the person who requested it
+    // — unless they are the super-admin (top authority; see mayDecide above).
     const exc = await loanExceptions.getById(req.params.id);
     if (!exc) return res.status(404).json({ error: 'That exception no longer exists.' });
     if (exc.status !== 'requested') return res.status(409).json({ error: 'This exception was already decided.' });
-    if (exc.requested_by && exc.requested_by === req.actor.id) {
-      return res.status(403).json({ error: 'The person who requested an exception cannot approve their own request.' });
+    if (!mayDecide(req.actor, exc)) {
+      return res.status(403).json({ error: 'You requested this exception — another admin has to approve or deny it.' });
     }
 
     const isGuaranty = exc.exception_type === 'guaranty_waiver';
@@ -461,8 +485,7 @@ router.get('/:id/gate', async (req, res) => {
       requestSnapshot: exc.gate_snapshot || null,
       decidedGate: exc.decided_gate || null,
       waivedCodes: Array.isArray(exc.waived_codes) ? exc.waived_codes : null,
-      canDecide: can(req.actor, 'manage_pricing') && exc.status === 'requested'
-        && !(exc.requested_by && exc.requested_by === req.actor.id),
+      canDecide: exc.status === 'requested' && mayDecide(req.actor, exc),
     });
   } catch (e) { res.status(500).json({ error: 'server error' }); }
 });

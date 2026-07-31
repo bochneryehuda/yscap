@@ -117,7 +117,7 @@ export default function PricingStudio() {
       )}
       <div className="toolsheet-body scroll">
         <div className="toolsheet-inner">
-          {ready && <TermSheetStudio ref={studioRef} prefill={prefill} showAdmin={false} />}
+          {ready && <TermSheetStudio ref={studioRef} prefill={prefill} showAdmin={false} provenance="borrower_portal" />}
         </div>
       </div>
     </div>

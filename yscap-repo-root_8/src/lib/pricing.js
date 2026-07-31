@@ -183,6 +183,9 @@ function buildInputs(app, experience, overrides) {
     ...(app.file_markup_std_pct  != null ? { markupStdPct:  num(app.file_markup_std_pct) }  : {}),
     ...(app.file_markup_gold_pct != null ? { markupGoldPct: num(app.file_markup_gold_pct) } : {}),
     ...(app.file_markup_silver_pct != null ? { markupSilverPct: num(app.file_markup_silver_pct) } : {}),
+    // 1% closing-cost buffer waiver (db/390, owner-authorized 2026-07-31) —
+    // file-owned; an admin waives it through its own audited endpoint.
+    waiveLiqBuffer: !!app.liquidity_buffer_waived,
   };
 
   // Staff overrides win. Only copy known keys; coerce numeric fields.
@@ -223,6 +226,10 @@ function buildInputs(app, experience, overrides) {
     if (base.address) out.address = base.address;
     if (base.city) out.city = base.city;
     if (overrides.asIsValue != null && overrides.asIsValue !== '') out.asIsDefaulted = false;
+    // The 1% closing-cost buffer WAIVER is FILE-OWNED (admin-set through its own
+    // audited endpoint, owner-directed 2026-07-31) — a studio override can never
+    // set or clear it; the file's recorded flag always governs.
+    out.waiveLiqBuffer = !!app.liquidity_buffer_waived;
     // Present-but-EMPTY means "clear it" (owner-reported 2026-07-16: a field the
     // user blanked in the studio must never silently revert to the previously-
     // saved value on re-register): markup '' → drop the sticky file markup so
@@ -385,7 +392,19 @@ function normalize(program, input, ev, ladder) {
   // Out-of-pocket rehab is funded over the construction period, not at the table, so
   // it is added to the liquidity the borrower must SHOW (not to cash-to-close). +0 by
   // default.
-  const liquidityRequired = round2(cashToClose + reserveRequirement + oopRehab);
+  //
+  // CLOSING-COST BUFFER (owner-authorized liquidity change, 2026-07-31, in the
+  // owner's own words: "add a buffer for extra closing costs … about 1% of the
+  // loan amount — $500,000 loan → $5,000 buffer — extra cash to close that we
+  // verify, because attorney charges and other charges should never leave us
+  // running short"). 1% of the total loan, added to the liquidity the borrower
+  // must SHOW — never to cash-to-close itself (it is a cushion we verify, not a
+  // cost we charge). Waivable per file by an admin (applications.
+  // liquidity_buffer_waived, db/390) — the waiver is file-owned, never a studio
+  // override. Mirrored in web/v2/tools/termsheet.js (calc/calcGold/calcSilver).
+  const closingBufferWaived = !!input.waiveLiqBuffer;
+  const closingBuffer = closingBufferWaived || totalLoan <= 0 ? 0 : round2(totalLoan * 0.01);
+  const liquidityRequired = round2(cashToClose + reserveRequirement + oopRehab + closingBuffer);
   /* THREE MEANINGS OF "MAX LEVERAGE", mapped to the reader that needs each one
      (engine contract split 2026-07-30, owner-reported).
 
@@ -478,6 +497,8 @@ function normalize(program, input, ev, ladder) {
     reserveMonths: reserveMo,
     reserveBasis,
     liquidityPct,
+    closingBuffer,
+    closingBufferWaived,
     liquidityRequired,
     assignment: ev.assignment || null,
     ladder: ladder || null,
