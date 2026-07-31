@@ -370,7 +370,7 @@ logic, and check anywhere else."* Everything below is **byte-identical when ther
 (the floor is 0), and no frozen engine number is touched.
 
 ### 10.1 The loan file understands the split
-- `db/387` adds **`applications.financed_rehab_budget`** (the FINANCED rehab — what the loan advances
+- `db/389` adds **`applications.financed_rehab_budget`** (the FINANCED rehab — what the loan advances
   through draws) backfilled `:= rehab_budget` for existing files (fully financed), and
   **`sitewire_property_links.oop_floor_cents`** (default 0). `rehab_budget` stays the FULL
   construction budget — the Sitewire budget must equal it to the cent (G-RECON).
