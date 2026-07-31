@@ -773,12 +773,17 @@ router.post('/files/:id/start-draw', requirePermission('manage_draws'), async (r
     // Snapshot the out-of-pocket-first floor (owner-directed 2026-07-31) onto the property link as the
     // draw process begins — the borrower funds the first `oopFloorCents` of rehab themselves and it is
     // never reimbursed (the OOP-rehab exception). The structure is frozen post-funding, so this equals
-    // the current registration's priced OOP amount; snapshotting fixes the contract the draw ledger
-    // enforces even if the file is later re-registered under a super-admin unlock. 0 (no exception) leaves
-    // every release byte-identical to before.
-    const oopFloorCents = await orchestrator.registrationOopCents(appId);
-    await db.query(`UPDATE sitewire_property_links SET oop_floor_cents=$2, updated_at=now() WHERE application_id=$1`, [appId, oopFloorCents]);
-    if (oopFloorCents > 0) await orchestrator.journal({ appId, entity: 'settings', field: 'oop_floor_cents', newValue: String(oopFloorCents), source: 'coordinator_start', changed: true }).catch(() => {});
+    // the current registration's priced OOP amount. 0 (no exception) leaves every release byte-identical.
+    // FREEZE it once draws exist: if the file were re-registered under a super-admin unlock with a
+    // different OOP amount and Start pressed again, moving the floor mid-stream would break the running
+    // telescoping total (earlier draws were computed against the old floor). So only (re-)snapshot while
+    // no draw has been recorded yet (audit A #3).
+    const drawsRecorded = Number((await db.query(`SELECT count(*)::int c FROM draw_disbursements WHERE application_id=$1 AND kind='draw'`, [appId])).rows[0].c) || 0;
+    if (drawsRecorded === 0) {
+      const oopFloorCents = await orchestrator.registrationOopCents(appId);
+      await db.query(`UPDATE sitewire_property_links SET oop_floor_cents=$2, updated_at=now() WHERE application_id=$1`, [appId, oopFloorCents]);
+      if (oopFloorCents > 0) await orchestrator.journal({ appId, entity: 'settings', field: 'oop_floor_cents', newValue: String(oopFloorCents), source: 'coordinator_start', changed: true }).catch(() => {});
+    }
     // Record the draw-start as a visible team notification so it shows in the file's Draw messages box
     // ("when the draw is being pushed / registered"). Fires once per Start; best-effort.
     notify.notifyAppStaff(appId, {
@@ -1206,33 +1211,43 @@ router.post('/disbursements', requirePermission('manage_draws'), async (req, res
       WHERE dd.kind='draw' AND (t.sitewire_draw_id=$1
          OR t.portal_draw_request_id IN (SELECT id FROM portal_draw_requests WHERE sitewire_draw_id=$1))`, [drawId]);
   if (dupTp.rowCount) return res.status(409).json({ error: 'This draw\'s release was already recorded automatically from the draw administrator — there is nothing to enter by hand.' });
+  // retainage pct is a stable config read (its own connection is fine outside the money txn).
+  const pct = await retainagePctFor(application_id);
+  // Serialize the release per file (audit A #1 — real money). Out-of-pocket-first makes the reimbursable
+  // amount depend on the RUNNING approved total across draws, so the prior-sum read and the insert must be
+  // atomic: two DIFFERENT draws recorded at once would otherwise both read the same prior total and each
+  // under-reimburse against the floor. A per-file advisory xact lock (same pattern as retainage-release)
+  // makes the second draw see the first's committed row. floor=0 files don't depend on the prior sum, so
+  // this only tightens the OOP-exception case; a normal single release is unaffected.
+  const client = await db.getClient();
   try {
-    // retainage: hold a % of the reimbursable amount; net = reimbursable − fee − retainage held
-    const pct = await retainagePctFor(application_id);
-    // Out-of-pocket-first (owner-directed 2026-07-31 — the OOP-rehab exception): the borrower funds
-    // the first `floorCents` of rehab themselves, so it is never reimbursed. The floor was snapshotted
-    // onto the property link when the draw process started (0 when there is no exception → every number
-    // below is byte-identical). `priorApproved` is the approved rehab already recorded on this file's
-    // earlier draws (the dup-check above guarantees this draw isn't among them), so computeRelease
+    await client.query('BEGIN');
+    await client.query(`SELECT pg_advisory_xact_lock(hashtextextended($1, 0))`, [`sw-disb:${application_id}`]);
+    // Out-of-pocket-first (owner-directed 2026-07-31 — the OOP-rehab exception): the borrower funds the
+    // first `floorCents` of rehab themselves, so it is never reimbursed. The floor was snapshotted onto the
+    // property link when the draw process started (0 when there is no exception → every number below is
+    // byte-identical). `priorApproved` is the approved rehab already recorded on this file's earlier draws
+    // (read UNDER the lock so a concurrent draw can't hand us a stale running total); computeRelease
     // reimburses only the part of THIS draw that clears the running floor.
-    const floorCents = Number(((await db.query(`SELECT oop_floor_cents FROM sitewire_property_links WHERE application_id=$1`, [application_id])).rows[0] || {}).oop_floor_cents) || 0;
-    const priorApproved = Number((await db.query(`SELECT COALESCE(sum(approved_cents),0) s FROM draw_disbursements WHERE application_id=$1 AND kind='draw'`, [application_id])).rows[0].s) || 0;
+    const floorCents = Number(((await client.query(`SELECT oop_floor_cents FROM sitewire_property_links WHERE application_id=$1`, [application_id])).rows[0] || {}).oop_floor_cents) || 0;
+    const priorApproved = Number((await client.query(`SELECT COALESCE(sum(approved_cents),0) s FROM draw_disbursements WHERE application_id=$1 AND kind='draw'`, [application_id])).rows[0].s) || 0;
     const split = computeRelease({ approvedCents: approved, feeCents: fee, retainagePct: pct, oopFloorCents: floorCents, priorApprovedCents: priorApproved });
-    if (!split.ok) return res.status(422).json({ error: split.violation });
+    if (!split.ok) { await client.query('ROLLBACK'); return res.status(422).json({ error: split.violation }); }
     // lien-waiver gate: the release already named its draw (required above), so we check exactly that draw's
     // waivers. Block the release if any required waiver is still outstanding (never guessed).
     if (fundedStatus === 'released' && await lienGateEnabled(application_id)) {
-      const waivers = (await db.query(`SELECT status, tier, party_name, kind FROM draw_lien_waivers WHERE sitewire_draw_id=$1`, [drawId])).rows;
+      const waivers = (await client.query(`SELECT status, tier, party_name, kind FROM draw_lien_waivers WHERE sitewire_draw_id=$1`, [drawId])).rows;
       const gate = waiverGate(waivers, { enabled: true });
-      if (!gate.ok) return res.status(409).json({ error: `Lien waivers still outstanding: ${gate.missing.join('; ')}. Mark them received or waived before releasing.`, missing: gate.missing });
+      if (!gate.ok) { await client.query('ROLLBACK'); return res.status(409).json({ error: `Lien waivers still outstanding: ${gate.missing.join('; ')}. Mark them received or waived before releasing.`, missing: gate.missing }); }
     }
-    const row = (await db.query(
+    const row = (await client.query(
       `INSERT INTO draw_disbursements (application_id, sitewire_draw_id, approved_cents, fee_cents, fee_kind, retainage_held_cents, net_release_cents, release_date, funded_status, kind, note, created_by)
        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,'draw',$10,$11) RETURNING *`,
       [application_id, drawId, approved, fee, feeKind, split.retainage_held_cents, split.net_release_cents, releaseDate, fundedStatus, req.body.note ? String(req.body.note).slice(0, 2000) : null, req.actor.id])).rows[0];
-    // Milestone → borrower (owner-directed 2026-07-20): a construction draw was
-    // released. Tell them the NET amount actually on its way (approved − fee −
-    // retainage), only on an actual release. type 'draw' emails the borrower.
+    await client.query('COMMIT');
+    // Milestone → borrower (owner-directed 2026-07-20): a construction draw was released. Tell them the NET
+    // amount actually on its way (reimbursable − fee − retainage), only on an actual release. type 'draw'
+    // emails the borrower. Best-effort + OUTSIDE the money txn/lock (never hold the lock during email).
     if (fundedStatus === 'released' && split.net_release_cents > 0) {
       try {
         const amt = '$' + (split.net_release_cents / 100).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
@@ -1251,9 +1266,12 @@ router.post('/disbursements', requirePermission('manage_draws'), async (req, res
     }
     res.json({ ok: true, disbursement: row });
   } catch (e) {
+    try { await client.query('ROLLBACK'); } catch (_) { /* connection already unwound */ }
     // db/148 unique index — a second draw release raced past the pre-check
     if (e.code === '23505') return res.status(409).json({ error: 'A release is already recorded for this draw.' });
     res.status(500).json({ error: 'Could not record this release — please try again.' });
+  } finally {
+    client.release();
   }
 });
 
