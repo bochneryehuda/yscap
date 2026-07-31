@@ -271,6 +271,48 @@ if (!process.env.DATABASE_URL) {
         const neg = await call('PATCH', `/api/staff/applications/${appId}/details`, sTok, { estimatedCashOut: '-5000' });
         eq(neg.status, 400, 'a NEGATIVE cash-out is refused at the door');
         eq(Number((await readBack(appId)).estimated_cash_out), 0, 'and the refused value never reached the file');
+        /* A BOX OF SPACES IS AN EMPTY BOX (audit round 4). `Number('   ')` is 0,
+           so whitespace read as a typed ZERO on the server while the studio —
+           whose reader trims — read it as blank and fell back to the structure.
+           The two then quoted different cash for the same deal. */
+        await call('PATCH', `/api/staff/applications/${appId}/details`, sTok, { estimatedCashOut: '   ' });
+        eq((await readBack(appId)).estimated_cash_out, null,
+          'whitespace CLEARS the column — it does not store a hard zero');
+        const ws = await call('GET', `/api/staff/applications/${appId}/payoff`, sTok, null);
+        assert(!ws.body || !ws.body.derived || ws.body.derived.cashOutSource !== 'typed',
+          'and it is never reported as a figure a human typed');
+      } else { assert(false, `setup submit failed (${r.status})`); }
+    }
+
+    console.log('\n--- a legacy NEGATIVE cash-out is not a dead end ---');
+    {
+      /* AUDIT ROUND 4. Both doors briefly stored a negative. The studio prefills
+         its cash-out box from the file and sends it on EVERY register, the
+         register door now refuses a negative, and on anything but a cash-out
+         that box is HIDDEN — so such a file could not be re-registered at all,
+         refused over a field nobody could see. db/387 clears them, and the
+         refusal is now gated to the same condition as the write so a PURCHASE is
+         never refused over a field it would have ignored. */
+      const r = await submit({
+        loanType: 'Refinance — Rate & Term', asIsValue: '600000', arv: '900000', rehabBudget: '200000',
+        payoffAmount: '300000', payoffLender: 'Chase', payoffLoanNumber: 'C-3',
+      });
+      if (r.status === 201) {
+        const appId = r.body.applicationId;
+        // Write the legacy shape directly — the doors refuse it now, which is the point.
+        await db.query(`UPDATE applications SET estimated_cash_out=-5000 WHERE id=$1`, [appId]);
+        await db.query(`UPDATE applications SET estimated_cash_out=NULL, updated_at=now()
+                         WHERE estimated_cash_out IS NOT NULL AND estimated_cash_out < 0`);   // db/387, verbatim
+        eq((await readBack(appId)).estimated_cash_out, null, 'db/387 clears a stored negative');
+        // Idempotent: a second run touches nothing.
+        const again = await db.query(`UPDATE applications SET estimated_cash_out=NULL
+                                       WHERE estimated_cash_out IS NOT NULL AND estimated_cash_out < 0`);
+        eq(again.rowCount, 0, 'and re-running it matches no rows');
+        // A positive figure is untouched by the same statement.
+        await db.query(`UPDATE applications SET estimated_cash_out=62000 WHERE id=$1`, [appId]);
+        await db.query(`UPDATE applications SET estimated_cash_out=NULL
+                         WHERE estimated_cash_out IS NOT NULL AND estimated_cash_out < 0`);
+        eq(Number((await readBack(appId)).estimated_cash_out), 62000, 'a real figure is never touched');
       } else { assert(false, `setup submit failed (${r.status})`); }
     }
 

@@ -2254,13 +2254,26 @@ router.post('/applications/:id/pricing/register', async (req, res) => {
        class this repo keeps closing). Refused here rather than inside the write
        transaction below so a refusal can never leave a register half-done. The
        details door already answers exactly this for the same value. */
-    if (Object.prototype.hasOwnProperty.call(rawTermOptions, 'estimatedCashOut')) {
+    /* REFUSE ONLY WHERE THE VALUE WOULD ACTUALLY BE WRITTEN, and AUDIT the
+       refusal (audit round 4, 2026-07-31). The first cut checked on every
+       register, refinance or not — but the write below is refinance-only, so a
+       PURCHASE was being refused over a field it would have ignored. Worse, the
+       studio prefills the box from the file and sends it on every register, so a
+       file carrying a legacy negative (both doors stored one before this round)
+       became permanently un-registerable, refused over a field that is hidden on
+       anything but a cash-out. Gated to match the write, `refuse()` so the
+       reason is in the audit log — this route's own contract, and this is
+       exactly the refusal an officer would need diagnosed from the logs alone —
+       and db/387 normalises the legacy negatives that caused it. */
+    const wantsCashOut = Object.prototype.hasOwnProperty.call(rawTermOptions, 'estimatedCashOut')
+      && require('../lib/payoff').isRefinance(f.app.loan_type);
+    if (wantsCashOut) {
       const rawCo = rawTermOptions.estimatedCashOut;
-      if (rawCo !== '' && rawCo != null) {
+      if (String(rawCo == null ? '' : rawCo).trim() !== '') {
         const nCo = Number(rawCo);
-        if (!isFinite(nCo)) return res.status(400).json({ error: 'estimatedCashOut must be a number' });
+        if (!isFinite(nCo)) return refuse(400, { error: 'estimatedCashOut must be a number' }, 'cash_out_not_a_number');
         // Same rule as the details door: zero is a real answer, a negative is not.
-        if (nCo < 0) return res.status(400).json({ error: 'estimatedCashOut cannot be negative — leave it blank to use the structure’s own figure' });
+        if (nCo < 0) return refuse(400, { error: 'estimatedCashOut cannot be negative — leave it blank to use the structure’s own figure' }, 'cash_out_negative');
       }
     }
     // Derive the key dates from the effective closing date — the one the studio
@@ -2452,13 +2465,15 @@ router.post('/applications/:id/pricing/register', async (req, res) => {
          re-audit): "62,000" or "abc" used to CLEAR the column here while the
          details door answered 400 for the identical value — the "returned 200
          but didn't save" class this repo keeps having to close. */
-      if (Object.prototype.hasOwnProperty.call(rawTermOptions, 'estimatedCashOut')
-          && require('../lib/payoff').isRefinance(f.app.loan_type)) {
-        // Validated BEFORE the transaction opened (see `cashOutRefusal` above),
-        // so nothing here can refuse mid-transaction and leave the register
-        // half-done — by the time we get here the value is known good.
+      if (wantsCashOut) {
+        /* `wantsCashOut` is the SAME predicate the refusal above is gated on, so
+           what we validate and what we write can never disagree — the two were
+           separate conditions for one round and that is how a purchase came to
+           be refused over a field it would never have written. Validated before
+           the transaction opened, so nothing here can refuse mid-transaction and
+           leave the register half-done: by now the value is known good. */
         const raw = rawTermOptions.estimatedCashOut;
-        const co = (raw === '' || raw == null) ? null : Number(raw);
+        const co = String(raw == null ? '' : raw).trim() === '' ? null : Number(raw);
         await client.query(`UPDATE applications SET estimated_cash_out=$2 WHERE id=$1`, [appId, co]);
       }
       await client.query('COMMIT');
@@ -8599,7 +8614,13 @@ router.patch('/applications/:id/details', async (req, res) => {
   const sets = [], vals = []; let i = 1;
   const touchedCols = [];
   for (const [k, col] of Object.entries(NUM)) if (k in b) {
-    const n = INT_KEYS.test(k) ? intField(b[k]) : (b[k] === '' || b[k] == null ? null : Number(b[k]));
+    /* A BOX OF SPACES IS AN EMPTY BOX (audit round 4, 2026-07-31). The blank
+       test was `=== ''`, but `Number('   ')` is 0 — so whitespace stored a hard
+       ZERO in a money column instead of clearing it. It reached us through the
+       cash-out, where the server then reported "$0, entered by hand" while the
+       studio (whose reader trims) still showed the structural figure; the same
+       trap sat under every money field this door writes. */
+    const n = INT_KEYS.test(k) ? intField(b[k]) : (b[k] == null || String(b[k]).trim() === '' ? null : Number(b[k]));
     if (n != null && !isFinite(n)) return res.status(400).json({ error: `${k} must be a number` });
     /* A NEGATIVE cash-out is not an answer — nobody receives a negative cheque,
        and a shortfall is cash the borrower BRINGS, which cash-to-close already

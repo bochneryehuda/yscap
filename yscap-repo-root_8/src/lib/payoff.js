@@ -78,7 +78,11 @@ function isRefinance(loanType) { return refiKind(loanType) !== KIND.PURCHASE; }
 function isCashOut(loanType) { return refiKind(loanType) === KIND.CASH_OUT; }
 
 function num(v) {
-  if (v === '' || v == null) return null;
+  /* TRIMMED FIRST (audit round 4, 2026-07-31). `Number('   ')` is 0, so a
+     whitespace-only value read as a typed ZERO here while the studio — whose
+     reader trims — read it as blank and fell back to the structure. The two then
+     quoted different cash for the same deal. A box containing spaces is empty. */
+  if (v == null || String(v).trim() === '') return null;
   const n = Number(v);
   return Number.isFinite(n) ? n : null;
 }
