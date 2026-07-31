@@ -3469,7 +3469,7 @@ router.post('/drafts/:id/submit', async (req, res) => {
      intField(b.requestedExpReo), moneyField(b.payoffAmount), moneyField(b.originalPurchasePrice),
      require('../lib/fields').normalizeTypedDate(b.acquisitionDate),   // typed '26' resolves to 2026; garbage never persists
      moneyField(b.irAmount),
-     // WHO holds the loan being paid off and WHICH loan (db/385). Free text,
+     // WHO holds the loan being paid off and WHICH loan (db/386). Free text,
      // trimmed to null so a blank box never stores an empty string.
      textField(b.payoffLender), textField(b.payoffLoanNumber)]);
   const appId = ins.rows[0].id;

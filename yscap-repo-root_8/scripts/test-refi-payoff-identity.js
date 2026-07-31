@@ -208,9 +208,9 @@ console.log('\n--- the loan file has a Payoff section that owns the subject ---'
  * ===================================================================== */
 console.log('\n--- the loan file stores it, and every entry surface offers it ---');
 {
-  const mig = readRepo('db/385_payoff_lender_and_loan_number.sql');
-  assert(/ADD COLUMN IF NOT EXISTS payoff_lender/.test(mig), 'db/385 adds payoff_lender');
-  assert(/ADD COLUMN IF NOT EXISTS payoff_loan_number/.test(mig), 'db/385 adds payoff_loan_number');
+  const mig = readRepo('db/386_payoff_lender_and_loan_number.sql');
+  assert(/ADD COLUMN IF NOT EXISTS payoff_lender/.test(mig), 'db/386 adds payoff_lender');
+  assert(/ADD COLUMN IF NOT EXISTS payoff_loan_number/.test(mig), 'db/386 adds payoff_loan_number');
   assert(/IF NOT EXISTS/.test(mig), 'the migration is idempotent (safe on every boot)');
 
   const staff = readRepo('src/routes/staff.js');

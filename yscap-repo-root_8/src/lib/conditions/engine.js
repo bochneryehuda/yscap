@@ -164,7 +164,7 @@ async function loadRuleContext(appId) {
     rehab_budget: num(a.rehab_budget),
     rehab_type: registry.normRehabType(a.rehab_type),
     payoff_amount: num(a.payoff_amount),
-    // WHO is being paid off and WHICH loan (db/385) — both are writable rule
+    // WHO is being paid off and WHICH loan (db/386) — both are writable rule
     // fields, so they must be readable ones too or a rule keyed on them would
     // silently evaluate as blank.
     payoff_lender: str(a.payoff_lender),

@@ -33,7 +33,7 @@ const FIELD_LABEL = {
   requested_ir_months: 'Interest reserve (months)',
   requested_ir_amount: 'Interest reserve (amount)',
   payoff_amount: 'Payoff amount', original_purchase_price: 'Original purchase price',
-  // The payoff section (db/385 + db/267's estimated_cash_out) — named here so the
+  // The payoff section (db/386 + db/267's estimated_cash_out) — named here so the
   // Activity feed says "Lender being paid off: — → Chase" instead of a raw column.
   payoff_lender: 'Lender being paid off', payoff_loan_number: 'Payoff loan number',
   estimated_cash_out: 'Cash out to the borrower',

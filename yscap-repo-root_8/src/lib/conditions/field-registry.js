@@ -306,7 +306,7 @@ const FIELDS = [
       { v: 'adding_sf', label: 'Adding square footage' }, { v: 'ground_up', label: 'Ground-up' }, { v: 'other', label: 'Other' }] },
   { key: 'payoff_amount', label: 'Current payoff amount', group: 'Deal economics', type: 'money', writable: true,
     borrowerLabel: 'Current payoff amount', borrowerHint: 'The payoff amount on your current loan (refinances).' },
-  /* WHO holds the loan being paid off, and WHICH loan it is (db/385). Writable
+  /* WHO holds the loan being paid off, and WHICH loan it is (db/386). Writable
      because the BORROWER is the one who knows — it is their existing loan — so an
      info condition can simply ask them, instead of an officer chasing it by phone.
      A payoff amount with no lender and no loan number is a payoff nobody can
