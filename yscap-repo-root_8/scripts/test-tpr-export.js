@@ -41,7 +41,9 @@ async function main() {
   ok(cat({ template_code: 'rtl_cond_credit' }) === 'Credit Report', 'categoryFor: credit → Credit Report');
   ok(cat({ template_code: 'rtl_p3_assets' }) === 'Bank Statements', 'categoryFor: assets → Bank Statements');
   ok(cat({ template_code: 'rtl_p1_contract' }) === 'Contract & Assignment', 'categoryFor: contract → Contract & Assignment');
-  ok(cat({ template_code: 'cond_emd_corrfirst' }) === 'Contract & Assignment', 'categoryFor: EMD → Contract & Assignment');
+  ok(cat({ template_code: 'cond_emd_corrfirst' }) === 'EMD', 'categoryFor: EMD condition → its OWN "EMD" folder (never Contract & Assignment)');
+  ok(cat({ filename: 'Earnest money wire confirmation.pdf' }) === 'EMD', 'categoryFor: loose earnest-money doc → EMD (keyword fallback)');
+  ok(cat({ filename: 'EMD receipt.pdf' }) === 'EMD', 'categoryFor: loose "EMD" filename → EMD');
   ok(cat({ template_code: 'rtl_p3_sow1' }) === 'Scope of Work', 'categoryFor: SOW → Scope of Work');
   ok(cat({ template_code: 'rtl_p1_llc' }) === 'LLC', 'categoryFor: LLC condition → LLC');
   ok(cat({ llc_id: 'x' }) === 'LLC', 'categoryFor: any entity doc → LLC');

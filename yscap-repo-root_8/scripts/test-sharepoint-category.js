@@ -22,6 +22,12 @@ ok(cat({ template_code: 'rtl_p5_assign', item_label: 'Assignment letter (if the 
   'assignment condition → "Contract & Assignment"');
 ok(cat({ template_code: 'rtl_p1_contract', item_label: 'Executed purchase contract' }) === 'Contract & Assignment',
   'executed purchase contract → "Contract & Assignment" (merges with assignment)');
+// EMD proof gets its OWN folder — never inside Contract & Assignment
+// (owner-directed 2026-07-31), by condition code AND by keyword fallback.
+ok(cat({ template_code: 'cond_emd_corrfirst', item_label: 'Earnest money deposit (EMD) verification — CorrFirst' }) === 'EMD',
+  'EMD condition → its OWN "EMD" folder (never "Contract & Assignment")');
+ok(cat({ item_label: 'Proof of earnest money deposit' }) === 'EMD',
+  'loose earnest-money doc (no code) → "EMD" by keyword');
 ok(cat({ template_code: 'rtl_cond_credit', item_label: 'Credit report' }) === 'Credit Report',
   'credit condition → "Credit Report"');
 ok(cat({ template_code: 'rtl_cond_appraisaldocs', item_label: 'Appraisal documents' }) === 'Appraisal',
