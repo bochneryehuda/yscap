@@ -114,10 +114,25 @@ export default function EditFileDetails({ app, onSaved }) {
            from once the file stops being a refinance. */
         ...(isRefi ? {} : { payoffAmount: '', payoffLender: '', payoffLoanNumber: '', estimatedCashOut: '' }),
         /* A rate-&-term refinance takes no cash out by definition, so switching the
-           purpose off cash-out must clear any cash-out figure the file carries —
-           another cleanup the Payoff section cannot do, because it stops offering
-           the field the moment the purpose changes. */
-        ...(isRefi && refiKind(f.loanType) !== 'cash_out' ? { estimatedCashOut: '' } : {}),
+           purpose TO one clears any cash-out figure the file carries — a cleanup
+           the Payoff section cannot do, because it stops offering the field the
+           moment the purpose changes.
+
+           TWO GUARDS, BOTH ADDED AFTER THE POST-MERGE AUDIT CAUGHT THIS WIPING
+           REAL DATA. The first cut fired whenever the kind was anything other
+           than cash-out, on EVERY save:
+             · `!== 'cash_out'` also caught kind UNKNOWN — a bare "Refinance",
+               the spelling years of ClickUp sync carries. The payoff model
+               deliberately answers UNKNOWN there precisely because the deal may
+               well BE a cash-out; this form overrode that judgement and deleted
+               the figure instead. Worse, it was unrecoverable: on an unknown
+               kind neither the card nor the studio offers the box to retype it.
+             · it fired on every save, not only when the purpose MOVED — so an
+               unrelated edit (a price typo, an address fix) silently wiped it.
+           Now: only a real rate-&-term, and only when the SAVED purpose was
+           something else. */
+        ...(isRefi && refiKind(f.loanType) === 'rate_term' && refiKind(app.loan_type) !== 'rate_term'
+          ? { estimatedCashOut: '' } : {}),
         originalPurchasePrice: isRefi ? f.originalPurchasePrice : '',
         acquisitionDate: isRefi ? f.acquisitionDate : '',
         // Assignment is a purchase concept — never send it on a refinance.

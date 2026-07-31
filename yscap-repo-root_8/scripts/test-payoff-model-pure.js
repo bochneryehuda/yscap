@@ -106,6 +106,19 @@ console.log('\n--- cash to the borrower is netted off the ADVANCE AT CLOSING ---
   eq(typed.structural, 62000, 'while the structural figure is still reported alongside it');
   eq(P.cashOutOfRecord({ initialAdvance: 380000, payoff: 300000, closingCosts: 18000 }).source, 'structure',
     'an untouched box reports the structure’s own figure');
+
+  /* ZERO IS A TYPED ANSWER (post-merge audit 2026-07-31). `typed > 0` ignored a
+     deliberate 0 — on the very deal where the structural figure is most likely
+     to be wrong — while the column happily stored it, so the officer was told
+     "saved" and every screen went on quoting a different number. BLANK is what
+     means "use the structure", and that is a separate state. */
+  const zero = P.cashOutOfRecord({ initialAdvance: 380000, payoff: 300000, closingCosts: 18000, typed: 0 });
+  eq(zero.amount, 0, 'a typed ZERO is honoured');
+  eq(zero.source, 'typed', 'and is reported as the human’s number, not the structure’s');
+  for (const blank of ['', null, undefined]) {
+    eq(P.cashOutOfRecord({ initialAdvance: 380000, payoff: 300000, closingCosts: 18000, typed: blank }).source,
+      'structure', `a BLANK box (${JSON.stringify(blank)}) still means "use the structure"`);
+  }
 }
 
 /* ===================================================================== *

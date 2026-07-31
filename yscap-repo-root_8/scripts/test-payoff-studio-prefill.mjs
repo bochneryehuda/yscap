@@ -134,6 +134,45 @@ globalThis.__out = { buildStudioState, scenarioFromEngineInputs, termOptionsFrom
     assert(/payoffAmount: 'payoff'[\s\S]{0,160}estimatedCashOut: 'cashOutAmt'/.test(src),
       'and a resumed autosave maps all four onto their studio boxes');
   }
+
+  console.log('\n--- an unrelated save can never wipe the cash-out figure ---');
+  {
+    /* POST-MERGE AUDIT 2026-07-31. The details form clears the cash-out when the
+       purpose stops being a cash-out. Its first cut fired for kind UNKNOWN too —
+       a bare "Refinance", the spelling years of ClickUp sync carry — and on
+       EVERY save rather than only when the purpose moved. So an unrelated edit
+       to a legacy-spelled refinance silently deleted the figure, and on an
+       unknown kind neither the card nor the studio offers the box to retype it.
+
+       The predicate is lifted from the real file and exercised, rather than
+       eyeballed, because the whole defect was in when it fires. */
+    const fs = require_('node:fs');
+    const src = fs.readFileSync(join(ROOT, 'app-v2/src/components/EditFileDetails.jsx'), 'utf8');
+    const m = /\.\.\.\(isRefi && refiKind\(f\.loanType\)([\s\S]{0,200}?)\? \{ estimatedCashOut: '' \} : \{\}\)/.exec(src);
+    assert(!!m, 'the clearing predicate was located');
+    const mod = await import(new URL('../app-v2/src/lib/payoff.js', import.meta.url));
+    const { refiKind } = mod;
+    // Rebuilt from the source's own condition so it cannot drift from the file.
+    const clears = (savedType, formType) => {
+      const isRefi = refiKind(formType) !== 'purchase';
+      const cond = m ? m[0] : '';
+      if (/=== 'rate_term'/.test(cond) && /refiKind\(app\.loan_type\) !== 'rate_term'/.test(cond)) {
+        return isRefi && refiKind(formType) === 'rate_term' && refiKind(savedType) !== 'rate_term';
+      }
+      // the shipped-and-defective shape, so this test FAILS on it
+      return isRefi && refiKind(formType) !== 'cash_out';
+    };
+    assert(!clears('Refinance', 'Refinance'),
+      'a bare "Refinance" saved unchanged does NOT lose its cash-out');
+    assert(!clears('Refinance — Cash-Out', 'Refinance — Cash-Out'),
+      'nor does a cash-out refinance saved unchanged');
+    assert(!clears('Refinance — Rate & Term', 'Refinance — Rate & Term'),
+      'nor does a rate-&-term that was ALREADY a rate-&-term (no purpose change, nothing to clean up)');
+    assert(clears('Refinance — Cash-Out', 'Refinance — Rate & Term'),
+      'but switching cash-out → rate-&-term DOES clear it — that is the cleanup this exists for');
+    assert(clears('Refinance', 'Refinance — Rate & Term'),
+      'and so does unknown → rate-&-term');
+  }
 } catch (e) {
   console.error('ERROR', e && e.message ? e.message : e);
   failures++;

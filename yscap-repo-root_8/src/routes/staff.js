@@ -2254,10 +2254,33 @@ router.post('/applications/:id/pricing/register', async (req, res) => {
        class this repo keeps closing). Refused here rather than inside the write
        transaction below so a refusal can never leave a register half-done. The
        details door already answers exactly this for the same value. */
-    if (Object.prototype.hasOwnProperty.call(rawTermOptions, 'estimatedCashOut')) {
+    /* REFUSE ONLY WHERE THE VALUE WOULD ACTUALLY BE WRITTEN, and AUDIT the
+       refusal (audit round 4, 2026-07-31). The first cut checked on every
+       register, refinance or not — but the write below is refinance-only, so a
+       PURCHASE was being refused over a field it would have ignored. Worse, the
+       studio prefills the box from the file and sends it on every register, so a
+       file carrying a legacy negative (both doors stored one before this round)
+       became permanently un-registerable, refused over a field that is hidden on
+       anything but a cash-out. Gated to match the write, `refuse()` so the
+       reason is in the audit log — this route's own contract, and this is
+       exactly the refusal an officer would need diagnosed from the logs alone —
+       and db/387 normalises the legacy negatives that caused it. */
+    const wantsCashOut = Object.prototype.hasOwnProperty.call(rawTermOptions, 'estimatedCashOut')
+      && require('../lib/payoff').isRefinance(f.app.loan_type);
+    if (wantsCashOut) {
       const rawCo = rawTermOptions.estimatedCashOut;
-      if (rawCo !== '' && rawCo != null && !isFinite(Number(rawCo))) {
-        return res.status(400).json({ error: 'estimatedCashOut must be a number' });
+      if (String(rawCo == null ? '' : rawCo).trim() !== '') {
+        const nCo = Number(rawCo);
+        if (!isFinite(nCo)) return refuse(400, { error: 'estimatedCashOut must be a number' }, 'cash_out_not_a_number');
+        // Same rule as the details door: zero is a real answer, a negative is not.
+        if (nCo < 0) return refuse(400, { error: 'estimatedCashOut cannot be negative — leave it blank to use the structure’s own figure' }, 'cash_out_negative');
+        /* …and the SAME ceiling. This door writes the same numeric(14,2) column,
+           from a studio box with no digit cap, and was the last place in this
+           family still able to turn a fat-fingered paste into a 500 (audit round
+           7). Magnitude-rounded, matching how Postgres rounds before it checks. */
+        if (Math.round(Math.abs(nCo) * 100) / 100 >= 1e12) {
+          return refuse(400, { error: 'estimatedCashOut is too large — the largest amount this field can hold is 999,999,999,999.99' }, 'cash_out_too_large');
+        }
       }
     }
     // Derive the key dates from the effective closing date — the one the studio
@@ -2449,13 +2472,15 @@ router.post('/applications/:id/pricing/register', async (req, res) => {
          re-audit): "62,000" or "abc" used to CLEAR the column here while the
          details door answered 400 for the identical value — the "returned 200
          but didn't save" class this repo keeps having to close. */
-      if (Object.prototype.hasOwnProperty.call(rawTermOptions, 'estimatedCashOut')
-          && require('../lib/payoff').isRefinance(f.app.loan_type)) {
-        // Validated BEFORE the transaction opened (see `cashOutRefusal` above),
-        // so nothing here can refuse mid-transaction and leave the register
-        // half-done — by the time we get here the value is known good.
+      if (wantsCashOut) {
+        /* `wantsCashOut` is the SAME predicate the refusal above is gated on, so
+           what we validate and what we write can never disagree — the two were
+           separate conditions for one round and that is how a purchase came to
+           be refused over a field it would never have written. Validated before
+           the transaction opened, so nothing here can refuse mid-transaction and
+           leave the register half-done: by now the value is known good. */
         const raw = rawTermOptions.estimatedCashOut;
-        const co = (raw === '' || raw == null) ? null : Number(raw);
+        const co = String(raw == null ? '' : raw).trim() === '' ? null : Number(raw);
         await client.query(`UPDATE applications SET estimated_cash_out=$2 WHERE id=$1`, [appId, co]);
       }
       await client.query('COMMIT');
@@ -8593,11 +8618,96 @@ router.patch('/applications/:id/details', async (req, res) => {
     payoffLender: 'payoff_lender', payoffLoanNumber: 'payoff_loan_number' };
   const DATE = { acquisitionDate: 'acquisition_date' };
   const INT_KEYS = /^(requestedExp|requestedIr)/;
+  /* THE CEILING IS THE COLUMN'S OWN, NOT ONE NUMBER FOR ALL OF THEM (audit round
+     6, 2026-07-31). The first cut of this guard reused `INT_KEYS` — which exists
+     to decide how a BLANK resolves, a different question entirely — and a single
+     1e12 bound, which was wrong three ways:
+       · `requested_ir_amount` is numeric(14,2) MONEY but matches INT_KEYS, so it
+         was excluded from the guard and still answered 500 on a fat-fingered
+         paste — the commit's own headline scenario, on a live portal field;
+       · `units`, `sqft_pre` and `sqft_post` are int4, whose real ceiling is
+         2,147,483,647, so everything from there to 1e12 still answered 500;
+       · and the 400 message quoted a money limit for a UNIT COUNT, so following
+         its advice produced another 500.
+     These two sets are keyed on the COLUMN TYPE, which is what actually decides
+     the limit. Add a key to NUM above and add it here too. */
+  const MONEY_KEYS = new Set(['purchasePrice', 'asIsValue', 'arv', 'rehabBudget', 'requestedIrAmount',
+    'payoffAmount', 'estimatedCashOut', 'originalPurchasePrice', 'underlyingContractPrice', 'assignmentFee']);
+  const MONEY_MAX = 1e12;              // numeric(14,2): |value| must ROUND to < 10^12
+  const INT_MAX = 2147483647, INT_MIN = -2147483648;    // int4
+  /* A column with a CHECK narrower than its TYPE. Its ceiling is the constraint,
+     not int4's — quoting 2,147,483,647 for a field the database refuses past 24
+     is the same "follow the message, get another 500" trap the previous round
+     fixed for `units`, reintroduced one column over (audit round 7). */
+  const CHECKED_RANGE = { requestedIrMonths: { min: 0, max: 24, what: 'months of interest reserve' } };
+  /**
+   * The reason this number cannot be stored, or '' if it can. ONE place, because
+   * the previous three rounds each fixed one column's ceiling and left another's
+   * wrong. Never throws.
+   */
+  const numberOutOfRange = (key, n) => {
+    const chk = CHECKED_RANGE[key];
+    if (chk) {
+      if (!Number.isInteger(n)) return `${key} must be a whole number of ${chk.what}`;
+      if (n < chk.min || n > chk.max) return `${key} must be between ${chk.min} and ${chk.max} ${chk.what}`;
+      return '';
+    }
+    if (MONEY_KEYS.has(key)) {
+      /* ROUND THE MAGNITUDE, NOT THE SIGNED VALUE. numeric(14,2) rounds to two
+         decimals before it checks for overflow, and it rounds HALF AWAY FROM
+         ZERO — while JavaScript's Math.round breaks ties toward +∞. So
+         -999999999999.995 rounded signed came back inside the ceiling and went
+         on to overflow in Postgres, a 500 the previous round believed it had
+         closed for both signs (audit round 7). */
+      return Math.round(Math.abs(n) * 100) / 100 >= MONEY_MAX
+        ? `${key} is too large — the largest amount this field can hold is 999,999,999,999.99` : '';
+    }
+    // Everything else in NUM is an int4 column.
+    if (!Number.isInteger(n)) return `${key} must be a whole number`;
+    return (n > INT_MAX || n < INT_MIN)
+      ? `${key} is too large — the largest value this field can hold is 2,147,483,647` : '';
+  };
   const sets = [], vals = []; let i = 1;
   const touchedCols = [];
   for (const [k, col] of Object.entries(NUM)) if (k in b) {
-    const n = INT_KEYS.test(k) ? intField(b[k]) : (b[k] === '' || b[k] == null ? null : Number(b[k]));
+    /* A BOX OF SPACES IS AN EMPTY BOX (audit round 4, 2026-07-31). The blank
+       test was `=== ''`, but `Number('   ')` is 0 — so whitespace stored a hard
+       ZERO in a money column instead of clearing it. It reached us through the
+       cash-out, where the server then reported "$0, entered by hand" while the
+       studio (whose reader trims) still showed the structural figure; the same
+       trap sat under every money field on this branch of the loop.
+
+       NOT the INT_KEYS branch, and deliberately so (corrected after audit round
+       5 flagged the overstatement): `requested_ir_amount` is a money column but
+       matches INT_KEYS and goes through `intField`, where a blank must resolve
+       to 0 rather than NULL — the owner-directed rule that lets switching an
+       interest reserve from an amount back to months reliably clear the amount. */
+    const n = INT_KEYS.test(k) ? intField(b[k]) : (b[k] == null || String(b[k]).trim() === '' ? null : Number(b[k]));
     if (n != null && !isFinite(n)) return res.status(400).json({ error: `${k} must be a number` });
+    /* A NEGATIVE cash-out is not an answer — nobody receives a negative cheque,
+       and a shortfall is cash the borrower BRINGS, which cash-to-close already
+       reports. Refused rather than stored, because the model treats any typed
+       value as the figure of record and a stored negative would print on a term
+       sheet. Zero IS accepted: it is a real answer, and blank is what means
+       "use the structure". (post-merge audit 2026-07-31) */
+    if (k === 'estimatedCashOut' && n != null && n < 0) {
+      return res.status(400).json({ error: 'estimatedCashOut cannot be negative — leave it blank to use the structure’s own figure' });
+    }
+    /* A NUMBER TOO BIG FOR ITS COLUMN IS A BAD REQUEST, NOT A SERVER FAULT
+       (audit round 5, 2026-07-31 — pre-existing, reproduced on this door). Twenty
+       digits reached Postgres, raised 22003 and came back as a 500 "server
+       error" — which reads as "PILOT is broken" instead of "that number is too
+       big", and MoneyInput imposes no digit cap, so a fat-fingered paste gets
+       there. Bounded here with each column's OWN ceiling (see MONEY_KEYS above).
+
+       The money test is on the ROUNDED value because numeric(14,2) rounds to two
+       decimals BEFORE it checks for overflow: 999999999999.995 rounds up to 10^12
+       and is refused by Postgres, while a bare `>= 1e12` on the raw number let it
+       through to another 500. */
+    if (n != null) {
+      const bad = numberOutOfRange(k, n);
+      if (bad) return res.status(400).json({ error: bad });
+    }
     sets.push(`${col}=$${i++}`); vals.push(n); touchedCols.push(col);
   }
   // #FNM1025: an appraisal FORM number ("FNM1025") is not a property type — it is
@@ -8607,7 +8717,15 @@ router.patch('/applications/:id/details', async (req, res) => {
     const ptProblem = require('../lib/property-type').propertyTypeProblem(b.propertyType);
     if (ptProblem) return res.status(400).json({ error: ptProblem });
   }
-  for (const [k, col] of Object.entries(STR)) if (k in b) { const raw = b[k] === '' ? null : String(b[k]).slice(0, 200); sets.push(`${col}=$${i++}`); vals.push(col === 'loan_type' ? require('../lib/fields').sanitizeLoanType(raw) : raw); touchedCols.push(col); }   // #95: loan_type never a program
+  /* CLEARING A TEXT FIELD MUST STORE NULL — NOT THE STRING "null"
+     (post-merge audit 2026-07-31). This read `b[k] === '' ? null : String(b[k])`,
+     which is correct for a form sending `''` but turns an explicit JSON `null`
+     into the four characters n-u-l-l. That is a non-blank string everywhere
+     downstream, so clearing the payoff lender stored "null", the file reported
+     itself COMPLETE with a green tick, and the borrower's own screen read
+     "Lender being paid off: null". The trap was latent on every STR key here;
+     the payoff card was simply the first caller in the repo to send null. */
+  for (const [k, col] of Object.entries(STR)) if (k in b) { const raw = (b[k] === '' || b[k] == null) ? null : String(b[k]).slice(0, 200); sets.push(`${col}=$${i++}`); vals.push(col === 'loan_type' ? require('../lib/fields').sanitizeLoanType(raw) : raw); touchedCols.push(col); }   // #95: loan_type never a program
   for (const [k, col] of Object.entries(DATE)) if (k in b) {
     // sanitizeDateOnly enforces a REAL calendar date with a 4-digit year in
     // [1900, 2100] — a 2-digit year ('0026-…') is rejected here instead of
@@ -10102,8 +10220,21 @@ router.post('/applications/:id/closing/cash-to-close', async (req, res) => {
   if (!can(req.actor, 'manage_closings')) return res.status(403).json({ error: 'Only the closer (or an admin) can enter the actual cash to close.' });
   const appId = req.params.id;
   const raw = req.body && req.body.actualCashToClose;
-  const val = raw === '' || raw == null ? null : Number(raw);
-  if (raw != null && raw !== '' && (!Number.isFinite(val) || val < 0)) return res.status(400).json({ error: 'Enter a real cash-to-close amount.' });
+  // A box of spaces is an empty box here too — `Number('  ')` is 0, so
+  // whitespace used to record a real cash-to-close of ZERO on the closing
+  // workflow, which the closing check then reconciles against. Same rule and
+  // same reason as the details door (audit rounds 4/5, 2026-07-31).
+  const blank = raw == null || String(raw).trim() === '';
+  const val = blank ? null : Number(raw);
+  if (!blank && (!Number.isFinite(val) || val < 0)) return res.status(400).json({ error: 'Enter a real cash-to-close amount.' });
+  // …and too big for the column is a bad request, not a 500. Same numeric(14,2)
+  // ceiling and the same rounded test as the details door (audit round 6).
+  // Magnitude-rounded — Postgres rounds half AWAY FROM ZERO while Math.round
+  // breaks ties toward +∞, so rounding the signed value let a negative edge slip
+  // through to a 500 (audit round 7).
+  if (!blank && Math.round(Math.abs(val) * 100) / 100 >= 1e12) {
+    return res.status(400).json({ error: 'That cash-to-close amount is too large — the largest this field can hold is 999,999,999,999.99.' });
+  }
   const docId = req.body && req.body.docId ? String(req.body.docId) : null;
   try {
     const check = await closing.runCashToCloseCheck(appId, val, db);

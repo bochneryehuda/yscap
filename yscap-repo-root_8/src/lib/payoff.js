@@ -78,7 +78,11 @@ function isRefinance(loanType) { return refiKind(loanType) !== KIND.PURCHASE; }
 function isCashOut(loanType) { return refiKind(loanType) === KIND.CASH_OUT; }
 
 function num(v) {
-  if (v === '' || v == null) return null;
+  /* TRIMMED FIRST (audit round 4, 2026-07-31). `Number('   ')` is 0, so a
+     whitespace-only value read as a typed ZERO here while the studio — whose
+     reader trims — read it as blank and fell back to the structure. The two then
+     quoted different cash for the same deal. A box containing spaces is empty. */
+  if (v == null || String(v).trim() === '') return null;
   const n = Number(v);
   return Number.isFinite(n) ? n : null;
 }
@@ -115,11 +119,20 @@ function structuralCashOut(d) {
    A typed value wins because a real deal can net differently — a junior lien
    nobody modelled, a holdback, an escrow — and the number that matters is the
    one actually going to the borrower. `source` says which it is, so no screen
-   ever has to guess whose number it is showing. */
+   ever has to guess whose number it is showing.
+
+   ZERO IS A TYPED ANSWER, NOT AN EMPTY BOX (post-merge audit 2026-07-31). The
+   test used to be `typed > 0`, so an officer who typed 0 — on a deal that
+   genuinely nets the borrower nothing, which is exactly the case where the
+   structural figure is most wrong — was told "saved", and then every screen and
+   the printed term sheet went on quoting the structural number instead. BLANK is
+   what means "use the structure", and `num()` already answers null for blank, so
+   the only test needed is `!= null`. A NEGATIVE is not an answer at all (nobody
+   receives a negative cheque) and is refused at both write doors. */
 function cashOutOfRecord(d) {
   const typed = num((d || {}).typed);
   const structural = structuralCashOut(d);
-  if (typed != null && typed > 0) return { amount: typed, source: 'typed', structural };
+  if (typed != null && typed >= 0) return { amount: typed, source: 'typed', structural };
   if (structural != null) return { amount: structural, source: 'structure', structural };
   return { amount: null, source: null, structural: null };
 }
