@@ -582,6 +582,17 @@ export const api = {
   withdrawException:         (appId, eid) => req('POST', `/api/staff/applications/${appId}/exceptions/${eid}/withdraw`, {}),
   loanExceptions:            (status, type) => req('GET', `/api/admin/exceptions${qs({ status, type })}`),
   loanExceptionsCount:       () => req('GET', '/api/admin/exceptions/count'),
+  /* Investor Suite saved scenarios (owner-directed 2026-07-30) — a staffer's own
+     named working states for the suite tools, so they can price a deal that is not
+     a file yet and pick it up later. Private to the staffer; every route is keyed
+     server-side on the actor, so there is no id to pass. `toolScenarios()` with no
+     tool returns the whole list plus per-tool counts for the suite grid badges;
+     the full state is fetched only when a scenario is actually opened. */
+  toolScenarios:             (tool) => req('GET', `/api/staff/tool-scenarios${qs({ tool })}`),
+  toolScenario:              (id) => req('GET', `/api/staff/tool-scenarios/${id}`),
+  saveToolScenario:          (body) => req('POST', '/api/staff/tool-scenarios', body),
+  renameToolScenario:        (id, body) => req('PUT', `/api/staff/tool-scenarios/${id}`, body),
+  deleteToolScenario:        (id) => req('DELETE', `/api/staff/tool-scenarios/${id}`),
   // The register report (counts, approval rate, time-to-decision, aging) and the
   // diligence-ready xlsx export of the register (redesign 2026-07-24).
   loanExceptionMetrics:      () => req('GET', '/api/admin/exceptions/metrics'),

@@ -429,6 +429,13 @@ export default function StaffLayout({ children }) {
           {unread > 0 && <span className="sb-badge">{unread > 99 ? '99+' : unread}</span>}
         </NavLink>
         <NavLink className="sb-link" to="/internal/leads"><NavIcon name="leads" />Leads</NavLink>
+        {/* The Term Sheet Generator gets its OWN nav entry, not just a tile inside
+            the suite grid (owner-directed 2026-07-30: "a term sheet generator button
+            on the left side of their screen to access the term sheet generator
+            directly so they can price out loans even when they logged in"). It is
+            the tool staff reach for most, and two clicks behind a grid is two too
+            many. Same screen, opened straight onto that tool. */}
+        <NavLink className="sb-link" to="/internal/term-sheet" title="Term Sheet Generator — price a loan and build a full term sheet without leaving PILOT. Save what you price as a named scenario and pick it up later."><NavIcon name="pricing" />Term Sheet Generator</NavLink>
         <NavLink className="sb-link" to="/internal/investor-suite" title="Investor Suite — build a term sheet, a scope of work, a track record, or run any deal analyzer, right inside PILOT"><NavIcon name="pricing" />Investor Suite</NavLink>
 
         <div className="sb-sec">Files</div>
