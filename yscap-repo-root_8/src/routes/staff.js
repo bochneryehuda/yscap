@@ -2536,6 +2536,20 @@ router.post('/applications/:id/pricing/register', async (req, res) => {
     if (needsEscalation) {
       const escKind = isManual ? 'manual_product' : (overrideOnly ? 'pricing_override' : 'manual_review');
       try { await audit(req, 'manual_program_escalated', 'application', appId, { kind: escKind, status: quote.status, assetMonths, totalLoan: total, noteRate: quote.noteRate, manualReasons, overrideLines: overrideLines.length ? overrideLines : undefined }); } catch (_) {}
+      // OUT-OF-POCKET REHAB EXCEPTION (owner-authorized 2026-07-31): the owner chose
+      // BOTH an escalation AND a tracked register entry. The escalation opened inside
+      // the transaction above; here, AFTER commit and on the pool, record a first-class
+      // loan_exceptions row (EX-n) so the deal also shows on the Exceptions screen.
+      // Best-effort — it never affects the registration; a re-register supersedes it.
+      if (quote.sizing && Number(quote.sizing.oopRehab) > 0) {
+        try {
+          await loanExceptions.requestOopRehab(db, {
+            appId, reasonCode: 'raise_initial',
+            reasonNote: `Out-of-pocket rehab $${Math.round(Number(quote.sizing.oopRehab)).toLocaleString('en-US')} — the initial advance was raised toward its cap by bringing that much rehab out of pocket. Total loan, rate and every cap are unchanged.`,
+            requestedBy: req.actor.id, requestedByKind: 'staff',
+          });
+        } catch (_) { /* the escalation is the required record; the register row is additive */ }
+      }
       try {
         const dollars = '$' + Math.round(total).toLocaleString('en-US');
         const productDesc = isManual ? 'Manual Program (custom LTV/LTC/ARV)'

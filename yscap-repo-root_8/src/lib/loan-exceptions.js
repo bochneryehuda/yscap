@@ -90,6 +90,18 @@ const PRICING_EXCEPTION_REASONS = Object.freeze({
   other:            'Other (see note)',
 });
 
+// Out-of-pocket rehab exception (owner-authorized 2026-07-31): a cap cut the initial
+// advance below its own ceiling because rehab is 100% financed; the approved exception
+// raises the initial toward the cap and brings the displaced rehab OUT OF POCKET. The
+// total loan / rate / caps are unchanged — only the split shifts. Same approval as any
+// out-of-pocket rehab approval; the GRANT is the studio amount + re-register.
+const OOP_REHAB_REASONS = Object.freeze({
+  raise_initial:    'Raise the initial advance to its cap; bring the displaced rehab out of pocket',
+  borrower_funds:   'Borrower is funding part of the rehab out of pocket',
+  lower_cash_close: 'Lower the cash due at closing (fund rehab over construction instead)',
+  other:            'Other (see note)',
+});
+
 // A "no appraisal XML available" waiver. 'transferred_appraisal' auto-waives and
 // asks for a transfer-letter PDF instead (no exception is raised for it); every
 // other reason needs a note and comes here as a real exception for approval.
@@ -161,6 +173,14 @@ const EXCEPTION_TYPES = Object.freeze({
   pricing_exception: Object.freeze({
     label: 'Pricing / guideline exception',
     reasonCodes: PRICING_EXCEPTION_REASONS,
+    subject: 'file',
+    expirable: true,
+    recordOnly: false,
+    slaHours: 48,
+  }),
+  oop_rehab: Object.freeze({
+    label: 'Out-of-pocket rehab exception',
+    reasonCodes: OOP_REHAB_REASONS,
     subject: 'file',
     expirable: true,
     recordOnly: false,
@@ -397,6 +417,21 @@ async function requestEsignBeforeCtc(client, { appId, reasonCode, reasonNote, re
 async function requestPricingException(client, { appId, reasonCode, reasonNote, requestedBy, requestedByKind, requestedByBorrowerId, compensatingFactors, reRequestOf }) {
   return requestException(client, {
     type: 'pricing_exception', appId, reasonCode, reasonNote, requestedBy,
+    requestedByKind, requestedByBorrowerId, compensatingFactors, reRequestOf,
+    dealSnapshot: await dealSnapshotFor(appId), // pool, never the tx client (25P02)
+  });
+}
+
+/**
+ * Record an OUT-OF-POCKET REHAB exception request (owner-authorized 2026-07-31).
+ * A first-class register entry (EX-n) that appears on the Exceptions screen, on top
+ * of the pricing-override escalation the register route already opens. The GRANT is
+ * the studio out-of-pocket amount + a re-register by an approver — no frozen number
+ * is touched here.
+ */
+async function requestOopRehab(client, { appId, reasonCode, reasonNote, requestedBy, requestedByKind, requestedByBorrowerId, compensatingFactors, reRequestOf }) {
+  return requestException(client, {
+    type: 'oop_rehab', appId, reasonCode: reasonCode || 'raise_initial', reasonNote, requestedBy,
     requestedByKind, requestedByBorrowerId, compensatingFactors, reRequestOf,
     dealSnapshot: await dealSnapshotFor(appId), // pool, never the tx client (25P02)
   });
@@ -913,13 +948,13 @@ module.exports = {
   REASON_CODES, isReasonCode,
   ESIGN_BEFORE_CTC_REASONS, isEsignReasonCode,
   PRICING_EXCEPTION_REASONS, ISSUANCE_OVERRIDE_REASONS, CONDITION_OVERRIDE_REASONS,
-  APPRAISAL_XML_WAIVER_REASONS,
+  APPRAISAL_XML_WAIVER_REASONS, OOP_REHAB_REASONS,
   COMPENSATING_FACTORS, sanitizeCompensatingFactors,
   EXCEPTION_TYPES, isExceptionType, typeConfig,
   reasonCodesFor, reasonLabelFor, isReasonCodeFor,
   dealSnapshotFor, dueAtFor, dealDrift, presentExpiry,
   requestException, requestGuarantyWaiver, requestEsignBeforeCtc, requestPricingException,
-  requestAppraisalXmlWaiver,
+  requestAppraisalXmlWaiver, requestOopRehab,
   recordIssuanceOverride, recordConditionOverride, latestEsignBeforeCtc,
   decideException, withdrawException, clearException,
   expireDueApprovals, agingOpen,

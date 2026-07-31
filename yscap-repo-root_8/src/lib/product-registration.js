@@ -105,6 +105,8 @@ function borrowerTermsKey({ program, productLabel, noteRate, totalLoan, quote, i
     // re-notify ("ANY number that really changed", owner-directed 2026-07-20).
     s.initialAdvance == null ? null : Math.round(num(s.initialAdvance)),
     s.rehabHoldback == null ? null : Math.round(num(s.rehabHoldback)),
+    // Out-of-pocket rehab exception (owner-authorized 2026-07-31) — a change re-notifies.
+    s.oopRehab == null ? null : Math.round(num(s.oopRehab)),
   ]);
 }
 
@@ -276,6 +278,14 @@ async function persistProductRegistration(client, { appId, program, inputs, quot
   const sqf = newRehabType
     ? sqftForType(rehabType, wasRehab.sqftPre, wasRehab.sqftPost)
     : { sqftPre: wasRehab.sqftPre, sqftPost: wasRehab.sqftPost };
+  // The FINANCED portion of the rehab (owner-directed 2026-07-31) — what the loan
+  // actually advances through draws = the holdback AFTER the OOP-rehab exception moved
+  // money to the initial advance. rehab_budget stays the FULL construction budget (the
+  // Sitewire budget must equal it — G-RECON); financed_rehab_budget is the part financed,
+  // so the loan file "understands it's more initial and less construction". With no
+  // exception the holdback equals the full budget, so financed_rehab_budget tracks
+  // rehab_budget and the derived out-of-pocket floor (rehab_budget − financed) is 0.
+  const financedRehab = s.rehabHoldback == null ? num(inputs.rehabBudget) : Math.round(num(s.rehabHoldback));
   await client.query(
     `UPDATE applications
         SET loan_amount=$2,
@@ -314,6 +324,7 @@ async function persistProductRegistration(client, { appId, program, inputs, quot
             rehab_type=$17,
             sqft_pre=$18,
             sqft_post=$19,
+            financed_rehab_budget=$23,
             updated_at=now()
       WHERE id=$1`,
     [
@@ -347,6 +358,7 @@ async function persistProductRegistration(client, { appId, program, inputs, quot
       claimExpVal(claimedExp, 'flips'),
       claimExpVal(claimedExp, 'holds'),
       claimExpVal(claimedExp, 'ground'),
+      financedRehab,                                  // $23 — financed rehab (holdback); full budget when no OOP exception
     ]);
   // Term-sheet options onto the file (owner-directed 2026-07-22) — only when the
   // caller supplied them, so a path that doesn't touch them leaves the file's
@@ -443,6 +455,9 @@ function borrowerTermsEmail({ ctx, quote, total, termMonths, officer, termOption
     num(s.monthlyPayment) > 0 ? { label: 'Monthly payment (interest only)', value: money(s.monthlyPayment) } : null,
     hasHoldback ? { label: 'Initial advance at closing', value: money(s.initialAdvance) } : null,
     hasHoldback ? { label: 'Rehab holdback (drawn as work completes)', value: money(s.rehabHoldback) } : null,
+    // Out-of-pocket rehab exception (owner-authorized 2026-07-31): the rehab the
+    // borrower funds themselves over construction (0 unless an approved exception).
+    num(s.oopRehab) > 0 ? { label: 'Rehab paid out of pocket (funded as the work is done)', value: money(s.oopRehab) } : null,
     num(s.financedReserve) > 0 ? { label: 'Financed interest reserve', value: money(s.financedReserve) } : null,
     quote.cashToClose != null ? { label: 'Estimated cash to close', value: money(quote.cashToClose) } : null,
     (quote.liquidityRequired ?? quote.liquidity) != null ? { label: 'Reserves to verify', value: money(quote.liquidityRequired ?? quote.liquidity) } : null,
