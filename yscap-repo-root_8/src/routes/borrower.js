@@ -1440,13 +1440,33 @@ router.post('/applications/:id/checklist/:itemId/info', async (req, res) => {
   if (!item.field_key) return res.status(400).json({ error: 'this item is not linked to a field' });
   if ((req.body || {}).value === undefined || req.body.value === null || req.body.value === '')
     return res.status(400).json({ error: 'a value is required' });
-  // S5-03: on a REGISTERED file, an economics field answered here is a change to
-  // authoritative terms — route it through the approval sandbox instead of writing
-  // the live record. Personal/verification fields (FICO, DOB, …) are unaffected.
-  if (changeRequests.isGovernedField(item.field_key) && await changeRequests.isBorrowerLocked(req.params.id)) {
+  /* S5-03: on a REGISTERED file, a field answered here is a change to
+     authoritative terms — route it through the approval sandbox instead of
+     writing the live record.
+
+     `isChangeRequestable`, NOT `isGovernedField` (third audit, 2026-07-31).
+     The narrower test covers only the eight ECONOMICS fields, so every personal
+     field — name, DOB, SSN, phone, citizenship and above all FICO — wrote LIVE
+     from this door on any file, in any status, with no freeze and no approval.
+     `fico` is the expensive one: db/126 installs a reopen trigger on
+     `borrowers` for exactly that column ("an applications trigger can never
+     catch a credit-report update that re-rates the registered product"), so a
+     borrower answering a credit-score condition on a FUNDED loan re-priced the
+     file — measured: the registration flipped to stale, Products & Pricing
+     reopened, and the SIGNED term-sheet condition went back to outstanding on a
+     closed loan. That is the defect this whole series began with, still live on
+     the one table nobody had checked.
+
+     The borrower profile door has always done this correctly (it routes every
+     `isBorrowerField` column through `openRequest` on a locked file); this door
+     simply never matched it. `openRequest` dispatches a personal field to
+     `openBorrowerRequest` itself, and `targetBorrowerId` keeps the co-borrower
+     privacy rule (#82) — a co-borrower's answer is about THEM, never the
+     primary — which the live-write branch below already honours. */
+  if (changeRequests.isChangeRequestable(item.field_key) && await changeRequests.isBorrowerLocked(req.params.id)) {
     try {
       const cr = await changeRequests.openRequest(req.params.id, item.field_key, req.body.value,
-        { reason: req.body.reason || null, requesterKind: 'borrower', requesterId: me(req) });
+        { reason: req.body.reason || null, requesterKind: 'borrower', requesterId: me(req), targetBorrowerId: me(req) });
       if (!cr.unchanged) await notifyTeamOfChangeRequests(req.params.id, [cr]);
       return res.json({ ok: true, locked: true, changeRequested: !cr.unchanged, field: item.field_key });
     } catch (e) {

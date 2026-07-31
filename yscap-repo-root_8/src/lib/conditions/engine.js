@@ -434,38 +434,42 @@ async function writeFieldValue(appId, borrowerId, fieldKey, rawValue, by = {}) {
      so answering an info condition on a FUNDED loan moved the economics AND
      reopened Products & Pricing on a closed file.
 
-     TWO FREEZES, AND THE SECOND IS SCOPED TO THE FIELD — because a
-     whole-request freeze is the wrong shape for a door that answers ONE field
-     at a time, and BOTH all-or-nothing answers shipped before this line was
-     found. First cut: the whole term-sheet freeze via
-     `payoffContactLockReason`, which made information conditions unanswerable
-     for the ENTIRE post-term-sheet phase (a package sits in
-     sent/delivered/completed throughout underwriting, which is exactly when
-     the team posts these conditions) — measured, an `acquisition_date` answer
-     came back "clear the Term Sheet package first", i.e. void a SIGNED term
-     sheet. Second cut: no term-sheet freeze at all, which let a borrower
-     answer an info condition on `loan_amount` and move a signed sheet's
-     headline number from $440,000 to $1 — with no change request, no approval
-     and no unlock. The claim that the change-request sandbox already covered
-     that was half true: it covers its eight governed fields, and
-     `loan_amount` is not one of them, nor are twelve others.
+     THE RULE IS PARITY WITH THE DOOR THAT OWNS THE FIELD. Not a field list of
+     this door's own — three rounds of audit each rejected a different one, and
+     the reason is the same every time: any list here is a PROXY for a policy
+     that is already written down somewhere else, and a proxy drifts.
 
-       · THE STATUS FREEZE applies to every field: Clear to Close, Funded,
-         Declined and Withdrawn are closed to this door. The one carve-out is
-         the owner-directed closing-prep window — the payoff's who-and-which
-         stays editable up to and including Clear to Close, because that is
-         when the payoff letter is ordered. Funded / declined / withdrawn stay
-         closed even for those two; by then the payoff has been wired.
+       · round 1 froze the whole request via `payoffContactLockReason`;
+       · round 2 dropped the term-sheet half entirely — so a borrower answered
+         an info condition on `loan_amount` and moved a SIGNED term sheet's
+         loan from $440,000 to $1, with no change request and no approval;
+       · round 3 scoped it to the reopen trigger's watch list — which is a
+         PRICING proxy, not a PRINTING one, so `payoff_amount` stayed writable
+         even though it prints on the sheet twice (the payoff row, and the
+         "estimated cash to you" row derived from it). Measured: staff 409,
+         borrower 200, printed cash-out $85,000 → $384,999.
 
-       · THE TERM-SHEET-SENT FREEZE applies only to a field that would make the
-         sent sheet disagree with the file — which is not a judgement call,
-         because the reopen trigger (db/072, body db/126) already defines
-         exactly that set: the columns whose change invalidates the registered
-         structure. `file-lock.isRepriceColumn` is that list. So `loan_amount`,
-         the reserve, the assignment pair and the experience counts are frozen
-         once the sheet is out, while `acquisition_date`, `original_purchase_
-         price` and the payoff trio stay answerable — none is watched by the
-         trigger, and none can move a number on the sheet.
+     Each of those was this door deciding for itself what the freeze means. It
+     does not have to: every field here is ALSO editable somewhere else, and
+     that other door already implements the owner's policy for it. So the rule
+     is simply that answering a condition may never be MORE permissive than
+     editing the same field directly:
+
+       · `applications` fields → the staff details door owns them, and its rule
+         is `payoffContactLockReason` — the status freeze, the term-sheet-sent
+         freeze, and the ONE owner-directed carve-out (the payoff's
+         who-and-which stays editable through closing prep, because that is
+         when the payoff letter is ordered). Used verbatim here.
+       · `borrowers` fields → the borrower profile door owns them, and its rule
+         is the change-request sandbox on a registered file. Applied at the
+         route (borrower.js), which can return a pending request rather than
+         throw. Those fields are deliberately NOT frozen here.
+
+     A field that is frozen for staff is now frozen here too, with the same
+     message and the same escapes (clear the package; a super-admin unlock past
+     Clear to Close). That is not a workflow regression — it is the same
+     refusal staff already get on the same field, and the alternative, twice
+     demonstrated, is a borrower-only bypass of a signed term sheet.
 
      NO actor is passed, deliberately: a super-admin's unlock is theirs to spend
      on their own edit, not a standing permission for whatever the borrower (or
@@ -476,22 +480,16 @@ async function writeFieldValue(appId, borrowerId, fieldKey, rawValue, by = {}) {
      file, matching `structuralLockReason`: this is a human's edit, not an
      unattended writer. */
   if (!f.custom && target && target.table === 'applications') {
-    const fl = require('../file-lock');
-    let row = null;
-    try { row = await fl._internals.lockInputs(appId, db); } catch (_) { row = null; }
-    if (row) {
-      const statusFrozen = fl._internals.statusFreezeReason(row, {});
-      if (statusFrozen) {
-        const bodyKey = WRITE_BODY_KEY[fieldKey];
-        const contactOnly = !!bodyKey && require('../payoff').CONTACT_KEYS.includes(bodyKey);
-        if (!(contactOnly && row.status === 'clear_to_close')) {
-          const err = new Error(statusFrozen); err.status = 409; throw err;
-        }
-      } else if (fl.isRepriceColumn(target.column)) {
-        const tsFrozen = fl._internals.termSheetFreezeReason(row, {});
-        if (tsFrozen) { const err = new Error(tsFrozen); err.status = 409; throw err; }
-      }
-    }
+    /* NO actor is passed, deliberately: a super-admin's unlock is theirs to
+       spend on their own edit, not a standing permission for whatever the
+       borrower (or a staffer answering on their behalf) types into a condition
+       afterwards. `payoffContactLockReason` is keyed on the DETAILS door's
+       camelCase names, which is where its carve-out is defined — only the
+       payoff contact pair needs translating; every other key falls through
+       unchanged and is therefore never mistaken for a contact-only edit. */
+    const frozen = await require('../file-lock')
+      .payoffContactLockReason(appId, { [WRITE_BODY_KEY[fieldKey] || fieldKey]: value }, db);
+    if (frozen) { const err = new Error(frozen); err.status = 409; throw err; }
   }
 
   if (f.custom) {

@@ -153,49 +153,6 @@ function termSheetFreezeReason(row, opts = {}) {
       + 'Contact your loan officer if something needs to change.';
 }
 
-/* =====================================================================
-   WHICH `applications` COLUMNS MAKE A REGISTRATION STALE — and therefore
-   which ones a SENT term sheet has to freeze.
-
-   The term-sheet freeze exists for exactly one stated reason: so a sent term
-   sheet can never silently disagree with the file. That is a question about
-   the FIELD, not about the request — and the repo already answers it, in the
-   reopen trigger `trg_reopen_on_budget_change` (db/072, current body db/126):
-   the columns it watches are precisely the ones whose change invalidates the
-   registered structure and reopens Products & Pricing.
-
-   So this is that trigger's watch list, as a JS twin. It exists because a
-   whole-request freeze is the wrong shape for a door that answers ONE field
-   at a time: freezing everything made information conditions unanswerable for
-   the entire post-term-sheet phase, and freezing nothing let a borrower move
-   a signed sheet's loan amount. Both were shipped, in that order, before this
-   line was drawn where the trigger already draws it.
-
-   KEEP IN SYNC WITH db/126 — `scripts/test-number-bounds-pure.js` reads that
-   migration and asserts this list matches the columns it watches, the same
-   discipline `pilot_term_norm` / `pilot_property_type_norm` are held to.
-
-   NOT here, deliberately, and each is answerable with a sheet out: the payoff
-   trio (`payoff_amount`/`payoff_lender`/`payoff_loan_number` — the servicer's
-   quote arrives after the sheet goes out), `original_purchase_price` and
-   `acquisition_date` (a refinance's history, not its pricing). None is watched
-   by the trigger; none can move a number on the sheet.
-   ===================================================================== */
-const REPRICE_COLUMNS = Object.freeze([
-  'loan_amount', 'purchase_price', 'as_is_value', 'arv', 'rehab_budget',
-  'loan_type', 'program', 'property_type', 'units', 'term', 'rehab_type',
-  'sqft_pre', 'sqft_post',
-  'requested_ir_months', 'requested_ir_amount',
-  'is_assignment', 'underlying_contract_price', 'assignment_fee',
-  'requested_exp_flips', 'requested_exp_holds', 'requested_exp_ground',
-  'co_borrower_id', 'file_markup_std_pct', 'file_markup_gold_pct',
-]);
-const REPRICE_COLUMN_SET = new Set(REPRICE_COLUMNS);
-/** Would changing this column make the registered structure stale? */
-function isRepriceColumn(column) {
-  return REPRICE_COLUMN_SET.has(String(column || ''));
-}
-
 // Returns a human-readable reason string when the file's structure is locked, or
 // null when it's still editable. Pass { actor: req.actor } to honor an active
 // super_admin unlock of the STATUS freeze (the term-sheet freeze is never
@@ -371,7 +328,6 @@ module.exports = {
   structuralLockReason, STRUCTURE_LOCKED, TS_SENT_STATUSES, termSheetSentLock,
   sowLockReason, sowBudgetNeutral, SOW_INVESTOR_STATUSES,
   payoffContactLockReason,
-  REPRICE_COLUMNS, isRepriceColumn,
   // The two halves, exported so tests (and any future caller that needs one
   // freeze without the other) never have to re-implement them.
   _internals: { lockInputs, statusFreezeReason, termSheetFreezeReason, superUnlockActive },

@@ -341,44 +341,51 @@ if (!process.env.DATABASE_URL) {
          VALUES ($1,'term_sheet_package','completed','test',$2) RETURNING id`,
         [appId, `tsp-${sfx}`]).then((r) => r.rows[0].id).catch(() => null);
       assert(!!env, 'a signed term-sheet package was put on the file (otherwise this case is vacuous)');
-      const withSheet = await engine.writeFieldValue(appId, borrowerId, 'acquisition_date', '2024-03-05', { kind: 'borrower', id: borrowerId });
-      eq(withSheet.value, '2024-03-05',
-        'an information condition is still answerable with a SIGNED term sheet out — the whole underwriting phase depends on it');
-      const amt = await engine.writeFieldValue(appId, borrowerId, 'payoff_amount', 250000, { kind: 'borrower', id: borrowerId });
-      eq(Number(amt.value), 250000,
-        '…including the payoff AMOUNT, whose quote arrives from the servicer after the sheet goes out');
-      const orig = await engine.writeFieldValue(appId, borrowerId, 'original_purchase_price', 310000, { kind: 'borrower', id: borrowerId });
-      eq(Number(orig.value), 310000, '…and the original purchase price');
-
-      /* …BUT A FIELD THAT WOULD MAKE THE SENT SHEET DISAGREE IS FROZEN. The
-         second cut of this freeze dropped the term-sheet half entirely, on the
-         claim that the change-request sandbox already covered the economics.
-         It covers its EIGHT governed fields — and `loan_amount`, the sheet's
-         headline number, is not one of them. Measured before the fix: a
-         borrower answered an info condition on `loan_amount` and moved a
-         SIGNED term sheet's loan from $440,000 to $1, with no change request,
-         no approval, no unlock. Twelve more fields behaved the same way. */
+      /* THE RULE IS PARITY WITH THE DOOR THAT OWNS THE FIELD, and that is what
+         is asserted — for each field, the staff details door and this door must
+         AGREE. Three rounds each invented a different private field list here,
+         and each one was a proxy that drifted:
+           · freeze the whole request → conditions unanswerable post-term-sheet;
+           · freeze nothing → a borrower moved a SIGNED sheet's loan $440,000→$1;
+           · freeze the reopen trigger's list → a PRICING proxy, so the borrower
+             could still move `payoff_amount`, which PRINTS on the sheet twice
+             (the payoff row and the cash-out derived from it: $85,000→$384,999),
+             while staff got a 409 on the same field of the same file.
+         Asserting agreement instead of a list is what makes a fourth private
+         list impossible. */
       await db.query(`UPDATE applications SET loan_amount=440000 WHERE id=$1`, [appId]);
-      const frozenField = async (key, value) => {
-        try { await engine.writeFieldValue(appId, borrowerId, key, value, { kind: 'borrower', id: borrowerId }); return null; }
-        catch (e) { return e; }
+      const staffSays = async (body) =>
+        (await call('PATCH', `/api/staff/applications/${appId}/details`, sTok, body)).status;
+      const borrowerSays = async (key, value) => {
+        try { await engine.writeFieldValue(appId, borrowerId, key, value, { kind: 'borrower', id: borrowerId }); return 200; }
+        catch (e) { return e.status || 500; }
       };
-      const eLoan = await frozenField('loan_amount', 1);
-      assert(eLoan && eLoan.status === 409,
-        `a SIGNED term sheet freezes loan_amount (got ${eLoan ? eLoan.status : 'a successful write'})`);
-      const loanNow = (await db.query(`SELECT loan_amount FROM applications WHERE id=$1`, [appId])).rows[0];
-      eq(Number(loanNow.loan_amount), 440000, '…and the sheet’s headline number is untouched');
-      for (const [k, v] of [['requested_ir_amount', 40000], ['assignment_fee', 9000],
-        ['requested_exp_flips', 99], ['requested_ir_months', 9]]) {
-        const e = await frozenField(k, v);
-        assert(e && e.status === 409, `…and so is ${k} (got ${e ? e.status : 'a successful write'})`);
+      const PARITY = [
+        ['loan_amount', 'loanAmount', 1],
+        ['payoff_amount', 'payoffAmount', 1],
+        ['original_purchase_price', 'originalPurchasePrice', 310000],
+        ['acquisition_date', 'acquisitionDate', '2024-03-05'],
+        ['requested_ir_amount', 'requestedIrAmount', 40000],
+        ['requested_ir_months', 'requestedIrMonths', 9],
+        ['assignment_fee', 'assignmentFee', 9000],
+        ['requested_exp_flips', 'requestedExpFlips', 9],
+      ];
+      for (const [fieldKey, bodyKey, value] of PARITY) {
+        const s = await staffSays({ [bodyKey]: value });
+        const b = await borrowerSays(fieldKey, value);
+        const bothFrozen = s === 409 && b === 409;
+        const bothOpen = s === 200 && b === 200;
+        assert(bothFrozen || bothOpen,
+          `${fieldKey}: the condition door agrees with the details door (staff ${s}, borrower ${b})`);
       }
-      /* The line is the reopen trigger's own watch list, so the two halves can
-         never be decided by taste. Pinned against the SQL in
-         test-number-bounds-pure.js. */
-      const fl = require('../src/lib/file-lock');
-      assert(fl.isRepriceColumn('loan_amount') && !fl.isRepriceColumn('payoff_amount'),
-        'the two halves come from ONE list — the columns the reopen trigger watches');
+      const loanNow = (await db.query(`SELECT loan_amount FROM applications WHERE id=$1`, [appId])).rows[0];
+      eq(Number(loanNow.loan_amount), 440000,
+        'the sheet’s headline number is untouched — it was moved to $1 before this');
+      // The owner-directed carve-out is the ONE place they legitimately differ
+      // from a plain freeze, and both doors implement it identically.
+      const cS = await staffSays({ payoffLender: 'Servicer LLC' });
+      const cB = await borrowerSays('payoff_lender', 'Servicer LLC');
+      assert(cS === cB, `the payoff CONTACT carve-out is the same on both doors (staff ${cS}, borrower ${cB})`);
 
       // FUNDED — the strictest freeze. Nothing may be written, not even the
       // payoff contact (past funding the payoff has already been wired).
@@ -395,8 +402,10 @@ if (!process.env.DATABASE_URL) {
       assert(e2 && e2.status === 409, `a FUNDED file refuses an ECONOMICS field (got ${e2 ? e2.status : 'a successful write'})`);
       const e3 = await refused('assignment_fee', 12345);
       assert(e3 && e3.status === 409, '…and refuses the assignment fee');
+      // 'Servicer LLC' is what the parity block wrote through the closing-prep
+      // carve-out a moment ago, while the file was still pre-Clear-to-Close.
       const after = (await db.query(`SELECT payoff_lender, requested_ir_amount FROM applications WHERE id=$1`, [appId])).rows[0];
-      eq(after.payoff_lender, 'Chase', 'nothing was written to the frozen file');
+      eq(after.payoff_lender, 'Servicer LLC', 'nothing was written to the frozen file');
       eq(after.requested_ir_amount, null, '…on either column');
 
       /* CLEAR TO CLOSE is the carve-out this feature is built on: the payoff
@@ -408,11 +417,47 @@ if (!process.env.DATABASE_URL) {
       const e4 = await refused('payoff_amount', 123456);
       assert(e4 && e4.status === 409, '…but the payoff AMOUNT beside it is not');
 
-      /* A BORROWER-table field is untouched by any of this — a person's credit
-         score is equally true on a closed file and has its own governance. */
+      /* A BORROWER-TABLE FIELD GOES TO THE CHANGE-REQUEST SANDBOX ON A
+         REGISTERED FILE — it is not exempt, it is governed by its OWN door's
+         rule (third audit, 2026-07-31).
+
+         Three rounds of this comment claimed personal fields were "untouched
+         by this — they have their own governance in change-requests.js". They
+         did not: the route gated the sandbox on `isGovernedField`, which covers
+         only the eight ECONOMICS fields, so every identity field — name, DOB,
+         SSN, phone, citizenship, FICO — wrote LIVE from this door in all seven
+         file states. `fico` is the expensive one: db/126 puts a reopen trigger
+         on `borrowers` for exactly that column, so answering a credit-score
+         condition on a FUNDED loan re-priced it — the registration went stale,
+         Products & Pricing reopened, and the SIGNED term-sheet condition went
+         back to outstanding. That is verbatim the defect this whole series
+         began with, on the one table nobody had checked. */
       await db.query(`UPDATE applications SET status='funded' WHERE id=$1`, [appId]);
-      const fico = await engine.writeFieldValue(appId, borrowerId, 'fico', 720, { kind: 'borrower', id: borrowerId });
-      eq(fico.value, 720, 'a BORROWER field still writes on a funded file — the freeze is about the loan, not the person');
+      /* The sandbox engages on a REGISTERED file (`isBorrowerLocked` = the file
+         carries a current registration), which is what "accepted terms" means
+         — so the case needs one, or it proves nothing. */
+      await db.query(
+        `INSERT INTO product_registrations (application_id, program, status, note_rate, total_loan, inputs, quote, is_current)
+         VALUES ($1,'standard','ELIGIBLE',0.1199,440000,'{"fico":700}'::jsonb,'{"sizing":{"totalLoan":440000}}'::jsonb,true)`,
+        [appId]);
+      const beforeFico = (await db.query(`SELECT fico FROM borrowers WHERE id=$1`, [borrowerId])).rows[0].fico;
+      const ficoCond = await call('POST', `/api/staff/applications/${appId}/conditions/custom`, sTok, {
+        conditionType: 'info_field', fieldKey: 'fico', label: 'Confirm your credit score', audience: 'borrower',
+      });
+      assert(ficoCond.status === 200 || ficoCond.status === 201,
+        `a credit-score information condition was posted (got ${ficoCond.status} ${JSON.stringify(ficoCond.body && ficoCond.body.error)})`);
+      const ficoItemId = (ficoCond.body && (ficoCond.body.itemId || ficoCond.body.id)) || null;
+      assert(!!ficoItemId, 'and it has an id to answer (otherwise this case is vacuous)');
+      const ficoAnswer = await call('POST', `/api/borrower/applications/${appId}/checklist/${ficoItemId}/info`, bTok, { value: 640 });
+      eq(ficoAnswer.status, 200, 'the borrower can still ANSWER a credit-score condition');
+      assert(ficoAnswer.body && ficoAnswer.body.locked === true && ficoAnswer.body.changeRequested === true,
+        '…but on a registered file it opens a change request for the team, it does not write the record');
+      const afterFico = (await db.query(`SELECT fico FROM borrowers WHERE id=$1`, [borrowerId])).rows[0].fico;
+      eq(afterFico, beforeFico, 'the credit score on the borrower’s record is unchanged');
+      const regStale = (await db.query(
+        `SELECT stale FROM product_registrations WHERE application_id=$1 AND is_current`, [appId])).rows[0];
+      assert(!regStale || regStale.stale !== true,
+        'and the FUNDED loan’s registration was NOT flipped stale by a borrower answering a question');
     }
 
     /* ================================================================ *
