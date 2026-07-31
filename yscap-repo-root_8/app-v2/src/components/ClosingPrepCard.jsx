@@ -1,6 +1,6 @@
 import React, { useCallback, useEffect, useState } from 'react';
 import { api, saveBlob } from '../lib/api.js';
-import EmailCenter from './EmailCenter.jsx';
+import { ChainAddress, ChainHistory } from './ClosingEmailChain.jsx';
 
 /* ════════════════════════════════════════════════════════════════════════════
    ATTORNEY CLOSING PREP — the third order on the Orders desk.
@@ -54,104 +54,8 @@ const STATUS_TONE = {
   completed: { borderColor: 'var(--ok)', color: 'var(--ok)' },
   cancelled: { opacity: 0.6 },
 };
-const EVENT_LABEL = {
-  order: 'Closing prep requested', followup: 'Follow-up',
-  executed_term_sheet: 'Executed term sheet sent', closing_date: 'New closing date sent',
-  clear_to_close: 'Clear to close sent', manual: 'Message',
-};
-
 const KB = (n) => (n == null ? '' : n < 1024 ? `${n} B` : n < 1024 * 1024 ? `${Math.round(n / 1024)} KB` : `${(n / 1024 / 1024).toFixed(1)} MB`);
 const when = (ts) => (ts ? new Date(ts).toLocaleString([], { dateStyle: 'medium', timeStyle: 'short' }) : '');
-
-/* The unique closing address, front and centre — it is the whole feature. */
-function ChainAddress({ chain }) {
-  const [copied, setCopied] = useState(false);
-  const [copyFailed, setCopyFailed] = useState(false);
-  // No chain at all = closing prep has not been sent yet. The address is minted on
-  // the first send, so say that rather than implying something is misconfigured.
-  if (!chain) {
-    return (
-      <div className="small" style={{ color: MUTED, marginTop: 10 }}>
-        When you send this, the file gets its own closing email address. The attorney is asked to keep
-        it on the chain they start, and everything on that chain then lands here by itself.
-      </div>
-    );
-  }
-  const address = chain.address;
-  if (!address) {
-    return (
-      <div className="notice" style={{ marginTop: 10, ...CALLOUT }}>
-        <b style={{ color: INK }}>No inbound email domain is set up yet.</b>
-        <div className="small" style={{ color: MUTED, marginTop: 3 }}>
-          The request still sends, but there is no unique closing address to put on it — so the
-          attorney's own email chain will not come back into this file. Ask an admin to set the
-          inbound email domain.
-        </div>
-      </div>
-    );
-  }
-  const copy = async () => {
-    // writeText returns a promise, so a blocked clipboard (denied permission, or any
-    // non-secure context) rejects AFTER a plain try block has already said "Copied".
-    // On the one address the whole feature depends on, a false success is the worst
-    // possible answer — so the tick only appears once the copy really happened.
-    try {
-      await navigator.clipboard.writeText(address);
-      setCopied(true); setTimeout(() => setCopied(false), 1800);
-    } catch (_) { setCopyFailed(true); setTimeout(() => setCopyFailed(false), 4000); }
-  };
-  return (
-    <div className="panel" style={{ marginTop: 10, background: 'var(--paper,#f6f3ec)', borderColor: GOLD }}>
-      <div style={{ fontWeight: 600, color: INK }}>This closing's own email address</div>
-      <div className="small" style={{ color: MUTED, margin: '3px 0 8px' }}>
-        The attorney is asked, in the email, to keep this address on the closing chain they start.
-        Every message and every document on that chain then lands on this file automatically —
-        nobody has to forward anything.
-      </div>
-      <div className="row" style={{ gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
-        <code style={{ background: '#fff', border: '1px solid var(--line,#D9D4C8)', borderRadius: 8, padding: '6px 10px', color: INK, fontSize: 13, wordBreak: 'break-all' }}>
-          {address}
-        </code>
-        <button className="btn ghost small" onClick={copy}>{copied ? 'Copied' : 'Copy'}</button>
-      </div>
-      {copyFailed && (
-        <div className="small" style={{ color: 'var(--danger,#8C2F2F)', marginTop: 4 }}>
-          Your browser blocked the copy — select the address above and copy it by hand.
-        </div>
-      )}
-      {chain && (
-        <div className="small" style={{ color: MUTED, marginTop: 8 }}>
-          {chain.outboundCount || 0} sent · {chain.inboundCount || 0} received · {chain.docsCount || 0} document{(chain.docsCount || 0) === 1 ? '' : 's'} saved
-          {chain.lastActivityAt ? ` · last activity ${when(chain.lastActivityAt)}` : ''}
-        </div>
-      )}
-      {/* SPOOFED SENDER WARNING — deliberately here, in the always-visible part of
-          the card, NOT inside the collapsed chain history. This address is handed to
-          title, the settlement agent, the realtor and counsel, so it travels; anything
-          arriving on it is filed automatically. The one moment this warning is worth
-          anything is BEFORE somebody opens the attachment and acts on it. */}
-      {chain && Array.isArray(chain.unauthenticated) && chain.unauthenticated.length > 0 && (
-        <div className="notice" style={{ marginTop: 8, background: '#FBF3F3', border: '1px solid #8C2F2F', borderRadius: 8, padding: '8px 10px' }}>
-          <div style={{ fontWeight: 700, color: '#8C2F2F' }}>
-            Check who really sent {chain.unauthenticated.length === 1 ? 'this message' : 'these messages'}
-          </div>
-          <div className="small" style={{ color: INK, margin: '3px 0 5px' }}>
-            {chain.unauthenticated.length === 1 ? 'A message' : `${chain.unauthenticated.length} messages`} on this
-            chain did not pass the sending domain's own checks, so the "from" name may not be who it says.
-            This happens innocently when mail is forwarded — but confirm by phone, on a number you already
-            have, before acting on anything {chain.unauthenticated.length === 1 ? 'it' : 'they'} asked for,
-            especially wiring instructions.
-          </div>
-          {chain.unauthenticated.map((m, i) => (
-            <div key={i} className="small" style={{ color: MUTED }}>
-              {m.from_email || 'unknown sender'} · {when(m.occurred_at)}{m.subject ? ` · "${m.subject}"` : ''}
-            </div>
-          ))}
-        </div>
-      )}
-    </div>
-  );
-}
 
 /* Exactly what will be attached, grouped, with everything empty called out. */
 function DocumentPreview({ documents, isAssignment }) {
@@ -283,66 +187,6 @@ function Recipients({ recipients, team, contacts, extra, setExtra, disabled }) {
           onChange={(e) => setExtra(e.target.value)}
           placeholder="someone@example.com, someone.else@example.com" />
       </div>
-    </div>
-  );
-}
-
-/* Everything the system has put on the chain, and everything that came back. */
-function ChainHistory({ appId, chain, onDownload }) {
-  const [open, setOpen] = useState(false);
-  if (!chain) return null;
-  const msgs = chain.messages || [];
-  const docs = chain.documents || [];
-  return (
-    <div style={{ marginTop: 12 }}>
-      <button className="btn ghost small" onClick={() => setOpen((o) => !o)}>
-        {open ? 'Hide' : 'Open'} the closing email chain
-      </button>
-      {open && (
-        <div style={{ marginTop: 10 }}>
-          {msgs.length > 0 && (
-            <div style={{ marginBottom: 12 }}>
-              <div className="small" style={{ fontWeight: 700, color: INK, marginBottom: 4 }}>What we sent on this chain</div>
-              {msgs.map((m, i) => (
-                <div key={i} className="small" style={{ color: MUTED }}>
-                  {EVENT_LABEL[m.event_kind] || m.event_kind} · {when(m.sent_at)}
-                  {/* 'carried' is not a send — the closing-prep request already told
-                      them this, so it is recorded to stop a duplicate going out
-                      later. Saying "sent" here would be untrue. */}
-                  {m.status === 'carried' ? ' · included in the request above'
-                    : m.status === 'error' ? ' · did not send — will be retried'
-                      : m.status !== 'sent' ? ` · ${m.status}` : ''}
-                  {Array.isArray(m.attachments) && m.attachments.length ? ` · ${m.attachments.length} attachment${m.attachments.length === 1 ? '' : 's'}` : ''}
-                </div>
-              ))}
-            </div>
-          )}
-          {docs.length > 0 && (
-            <div style={{ marginBottom: 12 }}>
-              <div className="small" style={{ fontWeight: 700, color: INK, marginBottom: 4 }}>
-                Closing correspondence saved from this chain ({docs.length})
-              </div>
-              <div className="small" style={{ color: MUTED, marginBottom: 4 }}>
-                Its own package on the file — separate from the final executed closing package.
-              </div>
-              <div style={{ display: 'grid', gap: 4 }}>
-                {docs.map((d) => (
-                  <div key={d.id} className="row" style={{ gap: 8, alignItems: 'center' }}>
-                    <span className="small" style={{ flex: 1, minWidth: 160, color: INK }}>{d.filename}</span>
-                    <span className="small" style={{ color: MUTED }}>{KB(d.size_bytes)} · {new Date(d.created_at).toLocaleDateString()}</span>
-                    <button className="btn ghost small" onClick={() => onDownload(d)}>Download</button>
-                  </div>
-                ))}
-              </div>
-            </div>
-          )}
-          <div className="small" style={{ color: MUTED, marginBottom: 6 }}>
-            Everything on this chain, both directions — a reply typed here goes to the attorney and
-            everyone else already on it.
-          </div>
-          <EmailCenter mode="file" appId={appId} scope="closing" />
-        </div>
-      )}
     </div>
   );
 }
