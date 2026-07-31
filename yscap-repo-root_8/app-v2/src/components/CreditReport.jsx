@@ -695,11 +695,19 @@ function CreditDetails({ report }) {
 
       {Array.isArray(p.inquiries) && p.inquiries.length > 0 && (
         <details className="crx-sec">
-          <summary>Inquiries <span className="crx-count">{p.inquiries.length}</span></summary>
+          <summary>Inquiries <span className="crx-count">{p.inquiries.length}</span>
+            {(s.hardInquiryCount || 0) > 0 && <span className="crx-muted crx-inq-note">{s.hardInquiryCount} hard</span>}
+          </summary>
           <div className="crx-table-wrap"><table className="crx-table">
-            <thead><tr><th>Who</th><th>Date</th><th>Bureau</th></tr></thead>
+            <thead><tr><th>Who</th><th>Date</th><th>Bureau</th><th>Purpose</th><th>Type</th></tr></thead>
             <tbody>{p.inquiries.filter(Boolean).map((q, i) => (
-              <tr key={i}><td>{q.name || '—'}</td><td>{fmtDay(q.date)}</td><td>{q.bureau || '—'}</td></tr>
+              <tr key={i}>
+                <td title={q.address || undefined}>{q.name || '—'}</td>
+                <td>{fmtDay(q.date)}</td>
+                <td>{q.bureau || '—'}</td>
+                <td>{q.purpose ? <span className={'crx-inq ' + q.purpose}>{q.purpose === 'hard' ? 'Hard' : 'Soft'}</span> : '—'}</td>
+                <td>{q.business || '—'}</td>
+              </tr>
             ))}</tbody>
           </table></div>
         </details>
