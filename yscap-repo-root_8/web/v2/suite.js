@@ -106,11 +106,31 @@ window.YS = (function () {
       return JSON.parse(decodeURIComponent(escape(atob(b64))));
     } catch (e) { return null; }
   }
-  // gather every id'd input/select/textarea on the page (+ portfolio rows, if present)
-  function collectState() {
+  /* Gather every id'd input/select/textarea on the page (+ portfolio rows, if present).
+     `opts.includeNoShare` is an OPT-IN for a PRIVATE saved scenario (staff Investor
+     Suite, owner-directed 2026-07-30) and defaults to OFF, so every existing caller —
+     syncURL, shareLink, the float-actions quote request and the term sheet's YSLOAN1
+     encoding, all of which SEND the state somewhere — is byte-identical to before.
+     WHY AN OPT-IN AND NOT REMOVING `data-noshare` FROM THE FIELDS: the attribute is
+     what keeps the admin pricing knobs (markup, origination, the manual LTV/LTC/ARV
+     basis) out of a link a staffer can hand to a borrower. Unmarking them would leak
+     them into every share path. But a saved SCENARIO is that staffer's own scratchpad,
+     never sent anywhere, and dropping their overrides would reopen it showing a
+     DIFFERENT number than when they saved it — the same "displays one thing, stores
+     another" class as the Manual origination field fixed earlier the same day. */
+  function collectState(opts) {
+    const keepPrivate = !!(opts && opts.includeNoShare);
     const v = {}, cb = {}, rad = {};
     document.querySelectorAll("input[id], select[id], textarea[id]").forEach(function (inp) {
-      if (inp.hasAttribute("data-noshare")) return;   // admin-only fields never enter shared/exported state
+      /* A PASSWORD IS NEVER PART OF A STATE, not even a private one. The admin zone
+         is unlocked by typing a password into #tsAdminPw, which carries data-noshare
+         like every other admin field — so the moment `includeNoShare` was added for
+         saved scenarios, the opt-in would have swept the ADMIN PASSWORD into the
+         saved blob and written it to the database in clear text. A saved scenario is
+         meant to hold the deal's numbers, never a credential. Checked BEFORE the
+         opt-in so no caller, present or future, can ask for it. */
+      if (inp.type === "password") return;
+      if (!keepPrivate && inp.hasAttribute("data-noshare")) return;   // admin-only fields never enter shared/exported state
       if (inp.type === "checkbox") { cb[inp.id] = inp.checked; }
       else if (inp.type === "radio") { /* captured by name below */ }
       else { v[inp.id] = inp.value; }

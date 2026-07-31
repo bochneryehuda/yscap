@@ -1087,14 +1087,23 @@ async function createSharedEmailBorrower({ firstName, lastName, email, phone, of
 router.post('/applications', async (req, res) => {
   const b = req.body || {};
   const bo = b.borrower || {};
+  // INVITE-ONLY mode (owner-directed): "Invite for a new application" — a staffer
+  // starts a file from JUST an email and the borrower fills in the rest. Email is
+  // the only required field; the name and property address are optional (the
+  // borrower supplies them from the portal), and the invite is always sent. Every
+  // other origination step (borrower match-or-create, checklist, ClickUp task,
+  // officer assignment) runs exactly the same, so there is ONE origination path.
+  const inviteOnly = !!b.inviteOnly;
   const email = String(bo.email || '').trim();
   const firstName = String(bo.firstName || '').trim();
   const lastName = String(bo.lastName || '').trim();
   const addr = b.propertyAddress || null;
   if (!email) return res.status(400).json({ error: 'borrower email required' });
-  if (!firstName) return res.status(400).json({ error: 'borrower first name required' });
-  if (!addr || !(addr.oneLine || addr.street || addr.line1))
-    return res.status(400).json({ error: 'property address required' });
+  if (!inviteOnly) {
+    if (!firstName) return res.status(400).json({ error: 'borrower first name required' });
+    if (!addr || !(addr.oneLine || addr.street || addr.line1))
+      return res.status(400).json({ error: 'property address required' });
+  }
   try {
     // WHEN THE STAFFER EXPLICITLY PICKED AN EXISTING BORROWER, LINK TO THAT PROFILE
     // — authoritatively, never a match-or-create off the email (owner-reported
@@ -1210,7 +1219,7 @@ router.post('/applications', async (req, res) => {
           processor_id,is_assignment,underlying_contract_price,assignment_fee,requested_exp_reo,source,status,submitted_at)
        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,'staff','new',now())
        RETURNING id,ys_loan_number`,
-      [borrowerId, JSON.stringify(addr), b.propertyType || null, b.units || null,
+      [borrowerId, addr ? JSON.stringify(addr) : null, b.propertyType || null, b.units || null,
        b.program || null, require('../lib/fields').sanitizeLoanType(b.loanType), purchasePrice, b.asIsValue || null,   // #95: never a program
        b.arv || null, b.rehabBudget || null, officerId, officerName,
        b.rehabType || null, sqf.sqftPre, sqf.sqftPost,
@@ -1273,8 +1282,10 @@ router.post('/applications', async (req, res) => {
     require('../clickup/orchestrator').createForNewFile(appId).catch((e) => console.error('[clickup] create-on-start (staff)', appId, e && e.message));
 
     // Optionally invite the borrower to the portal for this file right away.
+    // Invite-only origination ALWAYS sends the invite (that is the whole point —
+    // the borrower takes it from here and completes the file themselves).
     let invited = null;
-    if (b.inviteBorrower) {
+    if (b.inviteBorrower || inviteOnly) {
       try { invited = await inviteBorrowerToFile({ appId, borrowerId, email, firstName, req }); }
       catch (e) { console.error('[staff-origination] borrower invite failed:', db.describeError(e)); }
     }
@@ -7664,7 +7675,14 @@ router.post('/llcs/:id/documents', async (req, res) => {
     catch (e) { return res.status(e.status || 400).json({ error: e.message }); }
     const maxBytes = cfg.maxUploadMb * 1024 * 1024;
     if (buf.length > maxBytes) return res.status(413).json({ error: `file too large (max ${cfg.maxUploadMb} MB)` });
-    const slot = b.slot ? String(b.slot).trim().slice(0, 80) : null;
+    let slot = b.slot ? String(b.slot).trim().slice(0, 80) : null;
+    // Every slot keeps EVERY document (owner-directed): on a plain ADD (not an
+    // explicit replace), uniquify a colliding slot label so the two never display
+    // under one name — mirrors the file-view upload path so the entity library
+    // behaves identically ("every single slot from within the condition").
+    if (slot && b.checklistItemId && !b.replaceDocumentId) {
+      slot = await require('../lib/slot-label').uniqueSlotLabel(b.checklistItemId, slot);
+    }
     const dupLlc = await require('../lib/doc-dedup').recentDuplicateDocId({   // idempotency (#87)
       filename: b.filename, sizeBytes: buf.length, uploadedByKind: 'staff', uploadedById: req.actor.id,
       llcId: req.params.id, checklistItemId: b.checklistItemId || null, slotLabel: slot });
@@ -7676,19 +7694,18 @@ router.post('/llcs/:id/documents', async (req, res) => {
       [b.checklistItemId || null, req.params.id, own.rows[0].borrower_id, b.filename,
        b.contentType || 'application/octet-stream', buf.length, provider, ref, req.actor.id, slot]);
     if (b.checklistItemId) {
+      // EVERY document slot keeps EVERY document (owner-directed): a plain ADD
+      // never deletes what's already there. Only an EXPLICIT replace (the user
+      // clicked "Replace" on one document, sending replaceDocumentId) supersedes —
+      // and ONLY that one document, never its siblings. The old blanket supersede
+      // here wiped every current sibling whenever the slot was null/colliding — the
+      // entity library's copy of the "upload a 2nd document, the 1st disappears" bug.
       if (b.replaceDocumentId) {
         await db.query(
           `UPDATE documents SET is_current=false,
               review_status=CASE WHEN review_status IN ('pending','rejected') THEN 'superseded' ELSE review_status END
             WHERE id=$1 AND checklist_item_id=$2`, [b.replaceDocumentId, b.checklistItemId]);
       }
-      await db.query(
-        `UPDATE documents SET is_current=false,
-            review_status=CASE WHEN review_status IN ('pending','rejected') THEN 'superseded' ELSE review_status END
-          WHERE checklist_item_id=$1 AND id<>$2 AND is_current=true
-            AND ($3::text IS NOT NULL OR $4::uuid IS NULL)
-            AND ($3::text IS NULL OR slot_label IS NOT DISTINCT FROM $3)`,
-        [b.checklistItemId, r.rows[0].id, slot, b.replaceDocumentId || null]);
       await db.query(`UPDATE checklist_items SET status='received', updated_at=now() WHERE id=$1`, [b.checklistItemId]);
       enqueueChecklistStatusPush(b.checklistItemId).catch(() => {});
     }
@@ -11023,16 +11040,32 @@ router.post('/leads/:id/convert', async (req, res) => {
     // checkboxes in .c, RADIOS in .rad. Read each field from the right bucket under
     // its REAL loan-application id (verified against the tool): the rehab budget is
     // `rehab` (not "construction"), and loan purpose is the `purpose` radio.
-    const pl = (lead.tool === 'loan_application' && lead.payload) ? lead.payload : {};
-    const pv = (pl && pl.v) || {}, pc = (pl && pl.c) || {}, pr = (pl && pl.rad) || {};
+    // A malformed / unexpected lead payload must NEVER 500 the conversion (owner
+    // reported: "convert to loan comes up a server error when the lead has a lot
+    // of information"). Parse defensively — an older/newer tool payload, a value
+    // of an unexpected type, or a non-object bucket falls back to a bare file
+    // (the borrower/officer fill the economics on registration) instead of
+    // throwing. numv + pv stay in the outer scope; the INSERT reads them below.
     const numv = (x) => { const n = Number(String(x == null ? '' : x).replace(/,/g, '')); return isFinite(n) && n > 0 ? n : null; };
-    const econIsAssign = !!pc.isAssign;
-    const econPrice = numv(pv.price);
-    const econSeller = econIsAssign ? numv(pv.origPrice) : null;
-    const econFee = (econIsAssign && econPrice && econSeller) ? Math.max(0, econPrice - econSeller) : null;
-    const econReserveOn = !!pc.finReserve;
-    const econFico = (() => { const n = Number(pv.fico); return isFinite(n) && n >= 300 && n <= 850 ? Math.round(n) : null; })();
-    const econLoanType = /refi/i.test(String(pr.purpose || '')) ? 'Refinance' : 'Purchase';
+    let pv = {};
+    let econIsAssign = false, econPrice = null, econSeller = null, econFee = null,
+        econReserveOn = false, econFico = null, econLoanType = 'Purchase';
+    try {
+      const pl = (lead.tool === 'loan_application' && lead.payload && typeof lead.payload === 'object') ? lead.payload : {};
+      pv = (pl.v && typeof pl.v === 'object') ? pl.v : {};
+      const pc = (pl.c && typeof pl.c === 'object') ? pl.c : {};
+      const pr = (pl.rad && typeof pl.rad === 'object') ? pl.rad : {};
+      econIsAssign = !!pc.isAssign;
+      econPrice = numv(pv.price);
+      econSeller = econIsAssign ? numv(pv.origPrice) : null;
+      econFee = (econIsAssign && econPrice && econSeller) ? Math.max(0, econPrice - econSeller) : null;
+      econReserveOn = !!pc.finReserve;
+      econFico = (() => { const n = Number(pv.fico); return isFinite(n) && n >= 300 && n <= 850 ? Math.round(n) : null; })();
+      econLoanType = /refi/i.test(String(pr.purpose || '')) ? 'Refinance' : 'Purchase';
+    } catch (e) {
+      console.warn('[lead-convert] payload parse failed — creating a bare file:', e && e.message);
+      pv = {};
+    }
 
     const br = await db.query(
       `INSERT INTO borrowers (first_name,last_name,email,cell_phone,fico)
@@ -11091,10 +11124,11 @@ router.post('/leads/:id/convert', async (req, res) => {
     await audit(req, 'staff_convert_lead', 'lead', req.params.id, { applicationId: appId, borrowerId });
     res.status(201).json({ ok: true, applicationId: appId, borrowerId, loanNumber: ins.rows[0].ys_loan_number });
   } catch (e) {
-    // NEVER silent — a bare `500 server error` with no log is exactly why this
-    // NOT-NULL violation stayed invisible. Log with describeError like every
-    // other write path so the next failure is diagnosable from the server logs.
-    console.error('[lead-convert] convert failed:', db.describeError ? db.describeError(e) : e.message);
+    // NEVER silent (owner-directed "NEVER silent" rule): a convert 500 used to
+    // return a bare "server error" with nothing logged, so the reported failure
+    // — a NOT-NULL experience column receiving NULL — could never be diagnosed.
+    // Log the real cause (PII-safe describeError) like every other write path.
+    console.error('[lead-convert] failed:', db.describeError ? db.describeError(e) : (e && e.message));
     res.status(500).json({ error: 'server error' });
   }
 });
@@ -13234,6 +13268,154 @@ router.post('/esign/drain', async (req, res) => {
     const inbox = await esignWebhook.drainInbox({ db, docusign: docusignLib });
     res.json({ ok: true, inbox });
   } catch (e) { console.warn('[staff] handler error:', db.describeError(e)); res.status(500).json({ error: 'server error' }); }
+});
+
+/* ---------------- Investor Suite: a staffer's own saved scenarios ----------------
+   Owner-directed 2026-07-30: staff price deals in the suite tools and want to name
+   what they built, come back to the list, and pick up exactly where they left off —
+   for the Term Sheet Studio and every other tool.
+
+   PRIVATE BY CONSTRUCTION. Every statement below is keyed on `req.actor.id`, so a
+   scenario is only ever readable, writable and deletable by the staffer who saved
+   it. A row belonging to somebody else answers 404 rather than 403: a 403 would
+   confirm the id exists, and there is nothing here worth leaking that over.
+   A scenario is a scratchpad — it carries no application_id and cannot register,
+   price a real file, or reach any enforcement path. The rules (which tools exist,
+   what a name is, what a state may be) live in the pure src/lib/suite-scenarios.js
+   so they unit-test without a server. */
+const suiteScenarios = require('../lib/suite-scenarios');
+
+router.get('/tool-scenarios', async (req, res) => {
+  try {
+    const tool = String(req.query.tool || '').trim();
+    if (tool && !suiteScenarios.isToolSlug(tool)) return res.status(400).json({ error: 'unknown_tool' });
+    /* The cap is a runaway guard, and it must NEVER be silent: a staffer past it
+       would see truncated badges and older scenarios simply missing, with nothing
+       saying why. Ask for one row beyond it so we can tell the difference between
+       "exactly 500" and "more than we are showing" — and the COUNTS come from the
+       database, not from the capped page, so a badge can never under-report. */
+    const LIST_CAP = 500;
+    const r = await db.query(
+      `SELECT id, tool_slug, name, state_kind, created_at, updated_at
+         FROM staff_tool_scenarios
+        WHERE staff_user_id = $1 ${tool ? 'AND tool_slug = $2' : ''}
+        ORDER BY updated_at DESC
+        LIMIT ${LIST_CAP + 1}`,
+      tool ? [req.actor.id, tool] : [req.actor.id]);
+    const truncated = r.rows.length > LIST_CAP;
+    const rows = truncated ? r.rows.slice(0, LIST_CAP) : r.rows;
+    // The per-tool counts drive the badge on each suite tile, so the grid can show
+    // "3 saved" without fetching every tool's list.
+    const counts = {};
+    const c = await db.query(
+      `SELECT tool_slug, COUNT(*)::int AS n FROM staff_tool_scenarios
+        WHERE staff_user_id = $1 GROUP BY tool_slug`, [req.actor.id]);
+    for (const row of c.rows) counts[row.tool_slug] = row.n;
+    res.json({ scenarios: rows.map((x) => suiteScenarios.shapeRow(x)), counts, truncated });
+  } catch (e) { console.warn('[staff] handler error:', db.describeError(e)); res.status(500).json({ error: 'server error' }); }
+});
+
+// The full state, fetched only when a scenario is actually opened.
+router.get('/tool-scenarios/:id', async (req, res) => {
+  try {
+    const r = await db.query(
+      `SELECT id, tool_slug, name, state, state_kind, created_at, updated_at
+         FROM staff_tool_scenarios WHERE id = $1 AND staff_user_id = $2`,
+      [req.params.id, req.actor.id]);
+    if (!r.rows[0]) return res.status(404).json({ error: 'not found' });
+    res.json({ scenario: suiteScenarios.shapeRow(r.rows[0], { withState: true }) });
+  } catch (e) {
+    // A malformed uuid is a 404, not a 500 — it is simply not one of your rows.
+    if (String(e && e.code) === '22P02') return res.status(404).json({ error: 'not found' });
+    console.warn('[staff] handler error:', db.describeError(e)); res.status(500).json({ error: 'server error' });
+  }
+});
+
+/* Save. Re-using a name for the same tool OVERWRITES that scenario rather than
+   growing a pile of identically-named rows the staffer cannot tell apart — the
+   unique index in db/381 is what makes that atomic under a double-click. */
+router.post('/tool-scenarios', async (req, res) => {
+  try {
+    const v = suiteScenarios.validateSave(req.body);
+    if (!v.ok) return res.status(400).json({ error: v.error, detail: v.detail });
+    const { toolSlug, name, state, stateKind, removed } = v.value;
+    const r = await db.query(
+      `INSERT INTO staff_tool_scenarios (staff_user_id, tool_slug, name, state, state_kind)
+            VALUES ($1, $2, $3, $4::jsonb, $5)
+       ON CONFLICT (staff_user_id, tool_slug, lower(btrim(name)))
+       DO UPDATE SET state = EXCLUDED.state, state_kind = EXCLUDED.state_kind, name = EXCLUDED.name
+         RETURNING id, tool_slug, name, state_kind, created_at, updated_at`,
+      [req.actor.id, toolSlug, name, JSON.stringify(state), stateKind]);
+    // Never a silent strip: if a social was dropped on the way in, the screen says so.
+    res.status(201).json({ scenario: suiteScenarios.shapeRow(r.rows[0]), omittedSensitive: removed.length > 0 });
+  } catch (e) { console.warn('[staff] handler error:', db.describeError(e)); res.status(500).json({ error: 'server error' }); }
+});
+
+// Rename an existing scenario. The state is replaced only when one is supplied, so
+// a pure rename cannot blank the work it names.
+router.put('/tool-scenarios/:id', async (req, res) => {
+  try {
+    const b = (req.body && typeof req.body === 'object') ? req.body : {};
+    const name = b.name != null ? suiteScenarios.cleanName(b.name) : null;
+    if (b.name != null && !name) return res.status(400).json({ error: 'name_required' });
+    const hasState = Object.prototype.hasOwnProperty.call(b, 'state');
+    let state = null; let removed = [];
+    if (hasState) {
+      if (!suiteScenarios.isStateObject(b.state)) return res.status(400).json({ error: 'state_required' });
+      if (suiteScenarios.stateTooBig(b.state)) return res.status(400).json({ error: 'state_too_large' });
+      // The same social scrub as the save door — a rename that also carries a state
+      // is a second way into this table, and it must not be the unguarded one.
+      const scrubbed = suiteScenarios.scrubState(b.state);
+      state = scrubbed.state; removed = scrubbed.removed;
+      /* AN OWN-STATE ROW'S STATE IS NOT REPLACEABLE THROUGH THIS DOOR (re-audit
+         follow-up, 2026-07-30). The save door refuses a flat blob for Rehab Budget /
+         Track Record because the CLIENT feature-detects the tool and declares which
+         accessor produced the bytes. This door has no such handshake — it takes a
+         bare state with no kind — so a flat blob would land under a row still marked
+         'own' and the reopen would hand that tool a shape it cannot read, restoring a
+         BLANK tool. Declaring a kind here would not help: the check is on provenance,
+         not shape, and a hand-rolled request would simply declare 'own'.
+         So this door does renames; the save door (same name → upsert) is how an
+         own-state scenario's numbers are updated, and it is the one that can prove
+         where they came from. The client already works exactly this way. */
+      const owner = await db.query(
+        `SELECT tool_slug, state_kind FROM staff_tool_scenarios WHERE id = $1 AND staff_user_id = $2`,
+        [req.params.id, req.actor.id]);
+      if (!owner.rows[0]) return res.status(404).json({ error: 'not found' });
+      if (owner.rows[0].state_kind === 'own') {
+        return res.status(400).json({
+          error: 'use_save',
+          detail: 'Re-save this scenario from the tool itself so its rows are read properly. Renaming it here still works.',
+        });
+      }
+    }
+    const r = await db.query(
+      `UPDATE staff_tool_scenarios
+          SET name  = COALESCE($3, name),
+              state = COALESCE($4::jsonb, state)
+        WHERE id = $1 AND staff_user_id = $2
+        RETURNING id, tool_slug, name, state_kind, created_at, updated_at`,
+      [req.params.id, req.actor.id, name, hasState ? JSON.stringify(state) : null]);
+    if (!r.rows[0]) return res.status(404).json({ error: 'not found' });
+    res.json({ scenario: suiteScenarios.shapeRow(r.rows[0]), omittedSensitive: removed.length > 0 });
+  } catch (e) {
+    if (String(e && e.code) === '22P02') return res.status(404).json({ error: 'not found' });
+    if (String(e && e.code) === '23505') return res.status(409).json({ error: 'name_taken', detail: 'You already have a scenario with that name for this tool.' });
+    console.warn('[staff] handler error:', db.describeError(e)); res.status(500).json({ error: 'server error' });
+  }
+});
+
+router.delete('/tool-scenarios/:id', async (req, res) => {
+  try {
+    const r = await db.query(
+      `DELETE FROM staff_tool_scenarios WHERE id = $1 AND staff_user_id = $2 RETURNING id`,
+      [req.params.id, req.actor.id]);
+    if (!r.rows[0]) return res.status(404).json({ error: 'not found' });
+    res.json({ ok: true });
+  } catch (e) {
+    if (String(e && e.code) === '22P02') return res.status(404).json({ error: 'not found' });
+    console.warn('[staff] handler error:', db.describeError(e)); res.status(500).json({ error: 'server error' });
+  }
 });
 
 // ---------------- chat v3: conversations, receipts, presence ----------------
