@@ -452,6 +452,10 @@ export const api = {
   // entities only (not the borrower's whole LLC library). Returns { vestingLlcId, llcs:[{...,vesting}] }.
   staffAppVerifyLlcs: (appId) => req('GET', `/api/staff/applications/${appId}/verify-llcs`),
   staffSetVestingLlc: (appId, llcId) => req('POST', `/api/staff/applications/${appId}/vesting-llc`, { llcId }),
+  // Personal-name purchase: waive the LLC condition with a non-owner-occupied
+  // affidavit → vesting flips to Individual (db/383). Pass the affidavit upload to
+  // waive, or { undo:true } to go back to an LLC purchase (the default).
+  staffVestingPersonalName: (appId, b) => req('POST', `/api/staff/applications/${appId}/vesting/personal-name`, normalizeUpload(b || {})),
   staffCreateLlc:    (borrowerId, b) => req('POST', `/api/staff/borrowers/${borrowerId}/llcs`, b),
   staffLlc:          (id) => req('GET', `/api/staff/llcs/${id}`),
   staffUpdateLlc:    (id, b) => req('PATCH', `/api/staff/llcs/${id}`, b),

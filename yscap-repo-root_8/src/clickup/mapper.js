@@ -274,9 +274,13 @@ function buildTaskFields(ctx, options = {}, ysProgramFieldId = null) {
   if (bAddr) cf.push(bAddr);
   const sAddr = addressField(F.PIPELINE.subjectAddress, app.property_address);
   if (sAddr) cf.push(sAddr);
-  // vesting from LLC presence (§7.6)
+  // Vesting DEFAULTS to LLC (owner-directed 2026-07-31: "most are bought by an
+  // LLC"). Individual is an EXPLICIT choice — a personal-name purchase, waived off
+  // the LLC condition with a non-owner-occupied affidavit (applications
+  // .personal_name_purchase → ctx.personalNamePurchase). A linked entity keeps it
+  // LLC too; only the affidavit waiver flips it to Individual.
   put(F.PIPELINE.vesting, writeValue({ cu: F.PIPELINE.vesting, type: 'dropdown', enumKey: 'vesting' },
-    llc ? 'LLC / Corp' : 'Individual', options));
+    ctx.personalNamePurchase ? 'Individual' : 'LLC / Corp', options));
   // registered product -> "RTL Loan Program" (Standard/Gold, push-only)
   {
     const fid = F.SYNC.rtlLoanProgram;
@@ -573,6 +577,10 @@ function resolveOnly(onlyKeys) {
         cuIds.add(F.PIPELINE.secondBorrowerEmail); cuIds.add(F.PIPELINE.secondBorrowerCell); break;
       case 'llc_id':
         cuIds.add(F.PIPELINE.vesting); cuIds.add(F.PIPELINE.llcName); cuIds.add(F.PIPELINE.ein); break;
+      // The *Vesting dropdown ALONE — a personal-name affidavit waiver (db/383)
+      // flips it to Individual (or back to LLC) with no LLC name/EIN to push.
+      case 'vesting':
+        cuIds.add(F.PIPELINE.vesting); break;
       // Borrower identity keys that have no FIELD_MAP column mapping of their
       // own. They exist so a sync-review APPROVAL (which re-pushes `only:
       // [field_key]` with the review bypass) can apply a deliberately-approved

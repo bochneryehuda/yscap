@@ -52,6 +52,12 @@ eq('build subject location', byId[F.PIPELINE.subjectAddress], { location: { lat:
 eq('build statusName', built.statusName, 'self procesing');
 eq('build name has address', /Dov Steiner - 825 Bishop St/.test(built.name), true);
 
+// Vesting DEFAULTS to LLC now (db/383), even with NO linked entity — only an
+// explicit personal-name purchase (the affidavit waiver) flips it to Individual.
+const vestOf = (b) => (b.customFields.find((c) => c.id === F.PIPELINE.vesting) || {}).value;
+eq('build vesting defaults to LLC with no entity', vestOf(M.buildTaskFields({ ...ctx, llc: null }, options)), 'V-LLC');
+eq('build vesting=Individual for a personal-name purchase', vestOf(M.buildTaskFields({ ...ctx, llc: null, personalNamePurchase: true }, options)), 'V-IND');
+
 // ---- readTaskFields (pull) ----
 const task = { status: 'self procesing', custom_fields: [
   { id: F.PIPELINE.program, type: 'drop_down', type_config: { options: [opt('a', 0, 'Fix & Flip With Construction'), opt('b', 1, 'bridge Without Construction')] }, value: 0 },
