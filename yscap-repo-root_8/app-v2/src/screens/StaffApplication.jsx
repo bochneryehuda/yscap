@@ -2380,6 +2380,56 @@ function StaffContactEntry({ appId, toolKey, current, onSaved }) {
   );
 }
 
+// Personal-name purchase (owner-directed 2026-07-31): buy in an individual name
+// instead of an LLC. Upload a non-owner-occupied affidavit (in lieu of LLC docs)
+// to waive the LLC condition — vesting flips to Individual (default is LLC).
+function PersonalNameWaiver({ appId, app, onChanged }) {
+  const [busy, setBusy] = React.useState(false);
+  const [msg, setMsg] = React.useState('');
+  const fileRef = React.useRef(null);
+  const isPersonal = !!(app && app.personal_name_purchase);
+  const waive = async (file) => {
+    if (!file) return;
+    setBusy(true); setMsg('');
+    try {
+      const dataUrl = await new Promise((res, rej) => {
+        const fr = new FileReader(); fr.onload = () => res(fr.result); fr.onerror = () => rej(new Error('could not read the file')); fr.readAsDataURL(file);
+      });
+      await api.staffVestingPersonalName(appId, { filename: file.name, contentType: file.type || 'application/pdf', dataUrl });
+      setMsg('Saved — this is a personal-name purchase. Vesting is now Individual.');
+      onChanged && await onChanged();
+    } catch (e) { setMsg(e.message || 'could not save the affidavit'); }
+    finally { setBusy(false); if (fileRef.current) fileRef.current.value = ''; }
+  };
+  const undo = async () => {
+    setBusy(true); setMsg('');
+    try { await api.staffVestingPersonalName(appId, { undo: true }); setMsg('Back to an LLC purchase — vesting is LLC.'); onChanged && await onChanged(); }
+    catch (e) { setMsg(e.message || 'could not undo'); }
+    finally { setBusy(false); }
+  };
+  return (
+    <div className="row" style={{ gap: 8, alignItems: 'center', flexWrap: 'wrap', marginTop: 6, color: '#141B22' }}>
+      {isPersonal ? (
+        <>
+          <span className="pill ok">Personal name (Individual) — affidavit on file</span>
+          <span className="muted small" style={{ color: '#4B585C' }}>Bought in an individual name, not an LLC. ClickUp vesting is Individual.</span>
+          <button className="btn link small" disabled={busy} onClick={undo}>Undo — back to an LLC</button>
+        </>
+      ) : (
+        <>
+          <input ref={fileRef} type="file" accept=".pdf,application/pdf" style={{ display: 'none' }}
+            onChange={(e) => waive(e.target.files && e.target.files[0])} />
+          <button className="btn small" disabled={busy} onClick={() => fileRef.current && fileRef.current.click()}>
+            {busy ? 'Saving…' : 'Buying in a personal name? Upload the non-owner-occupied affidavit'}
+          </button>
+          <span className="muted small" style={{ color: '#4B585C' }}>Waives the LLC documents and sets vesting to Individual.</span>
+        </>
+      )}
+      {msg && <span className="muted small" style={{ color: '#4B585C', flexBasis: '100%' }}>{msg}</span>}
+    </div>
+  );
+}
+
 function BorrowerConditions({ appId, app, items, docs, onPatch, onReviewDoc, onDownloadDoc, dlBusy, role, onUploadTo, onDropTo, onChanged, onPreview, onOpenStudio, team, canImportCredit, fullscreen = false, closingActive = false }) {
   const completer = canComplete(role);
   const [sowOpen, setSowOpen] = useState(null);   // itemId of the SOW being edited
@@ -2651,6 +2701,7 @@ function BorrowerConditions({ appId, app, items, docs, onPatch, onReviewDoc, onD
                       ? { fullName: fullNameOf(app, 'co_'), email: app.co_email || '' }
                       : null} />
                 : <p className="muted small" style={{ margin: 0 }}>No vesting entity linked yet — link or create one in the “Vesting entity (LLC)” section above.</p>}
+              {!app.entity_verified && <PersonalNameWaiver appId={appId} app={app} onChanged={onChanged} />}
             </div>
           )
       )}
