@@ -436,8 +436,13 @@ async function moveOwnItem(driveId, itemId, newParentId, { expectedParentId }) {
  * items to a shorter name (a file → its echo-stripped name; a marked folder →
  * its plain name) so existing files become openable. A rename KEEPS the
  * driveItem id, so documents.sharepoint_backup_ref and the folder cache stay
- * valid. It is invoked ONLY by the manual, dry-run-first repair script
- * (scripts/sharepoint-shorten-existing.js) — never automatically.
+ * valid. It has exactly THREE sanctioned callers: the manual, dry-run-first
+ * repair scripts (scripts/sharepoint-shorten-existing.js and
+ * scripts/sharepoint-recategorize-existing.js) and the ONE-SHOT boot pass
+ * lib/sharepoint-emd-refolder.js (owner-directed 2026-07-31 — scoped to
+ * all-EMD condition folders, marker-gated, kill-switched). No other caller
+ * may be added without owner direction, and every caller inherits the guards
+ * below unchanged.
  *
  * Every guard is mandatory; a human's file or folder is NEVER touched:
  *  R1. createdByThisApp — only items whose Graph createdBy.application is our
