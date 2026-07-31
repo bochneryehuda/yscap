@@ -375,6 +375,14 @@ if (!process.env.DATABASE_URL) {
           if (k !== 'requestedIrAmount') {
             const edge = await patch({ [k]: '999999999999.995' });
             eq(edge.status, 400, `${k}: a value that ROUNDS past the ceiling is refused too`);
+            /* AND THE NEGATIVE EDGE. Postgres rounds half AWAY FROM ZERO;
+               JavaScript's Math.round breaks ties toward +∞ — so rounding the
+               SIGNED value let this exact input through to a 500 while the
+               positive twin was correctly refused (audit round 7). */
+            if (k !== 'estimatedCashOut') {                 // there the negative check fires first
+              const negEdge = await patch({ [k]: '-999999999999.995' });
+              eq(negEdge.status, 400, `${k}: and so is its negative twin — no 500 on either sign`);
+            }
           }
           const ok = await patch({ [k]: '999999999999.99' });
           eq(ok.status, 200, `${k}: the largest value it CAN hold is accepted`);
@@ -390,6 +398,28 @@ if (!process.env.DATABASE_URL) {
           const at = await patch({ [k]: '2147483647' });
           eq(at.status, 200, `${k}: the largest value it CAN hold is accepted`);
         }
+
+        /* A COLUMN WHOSE CHECK IS NARROWER THAN ITS TYPE quotes ITS OWN limit.
+           `requested_ir_months` is int4 but the database refuses anything past
+           24, so the int4 ceiling in the message was a number the field cannot
+           hold — follow it and you got another 500, which is the exact trap the
+           previous round had just fixed one column over (audit round 7). */
+        const irBig = await patch({ requestedIrMonths: '2147483648' });
+        eq(irBig.status, 400, 'an out-of-range interest-reserve term is refused');
+        assert(/between 0 and 24/.test((irBig.body && irBig.body.error) || ''),
+          `and the message quotes THIS column's real limit (got ${JSON.stringify((irBig.body || {}).error)})`);
+        eq((await patch({ requestedIrMonths: '25' })).status, 400,
+          'one past the real ceiling is refused — it used to be a 500');
+        eq((await patch({ requestedIrMonths: '24' })).status, 200, 'and the ceiling itself is accepted');
+
+        // A decimal in an integer column is a bad request, not "invalid input
+        // syntax for type integer" wrapped in a 500.
+        const frac = await patch({ units: '2.5' });
+        eq(frac.status, 400, 'a fractional unit count is refused, not a 500');
+        assert(/whole number/i.test((frac.body && frac.body.error) || ''), 'and says it must be a whole number');
+        // int4's floor is a real value the column holds — never refuse it.
+        eq((await patch({ sqftPre: '-2147483648' })).status, 200,
+          'the lowest value int4 can hold is accepted, not refused');
 
         // And nothing a real loan carries is refused.
         const real = await patch({ units: '4', purchasePrice: '750000', asIsValue: '600000',

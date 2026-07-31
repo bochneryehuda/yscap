@@ -2274,6 +2274,13 @@ router.post('/applications/:id/pricing/register', async (req, res) => {
         if (!isFinite(nCo)) return refuse(400, { error: 'estimatedCashOut must be a number' }, 'cash_out_not_a_number');
         // Same rule as the details door: zero is a real answer, a negative is not.
         if (nCo < 0) return refuse(400, { error: 'estimatedCashOut cannot be negative — leave it blank to use the structure’s own figure' }, 'cash_out_negative');
+        /* …and the SAME ceiling. This door writes the same numeric(14,2) column,
+           from a studio box with no digit cap, and was the last place in this
+           family still able to turn a fat-fingered paste into a 500 (audit round
+           7). Magnitude-rounded, matching how Postgres rounds before it checks. */
+        if (Math.round(Math.abs(nCo) * 100) / 100 >= 1e12) {
+          return refuse(400, { error: 'estimatedCashOut is too large — the largest amount this field can hold is 999,999,999,999.99' }, 'cash_out_too_large');
+        }
       }
     }
     // Derive the key dates from the effective closing date — the one the studio
@@ -8627,7 +8634,39 @@ router.patch('/applications/:id/details', async (req, res) => {
   const MONEY_KEYS = new Set(['purchasePrice', 'asIsValue', 'arv', 'rehabBudget', 'requestedIrAmount',
     'payoffAmount', 'estimatedCashOut', 'originalPurchasePrice', 'underlyingContractPrice', 'assignmentFee']);
   const MONEY_MAX = 1e12;              // numeric(14,2): |value| must ROUND to < 10^12
-  const INT_MAX = 2147483647;          // int4
+  const INT_MAX = 2147483647, INT_MIN = -2147483648;    // int4
+  /* A column with a CHECK narrower than its TYPE. Its ceiling is the constraint,
+     not int4's — quoting 2,147,483,647 for a field the database refuses past 24
+     is the same "follow the message, get another 500" trap the previous round
+     fixed for `units`, reintroduced one column over (audit round 7). */
+  const CHECKED_RANGE = { requestedIrMonths: { min: 0, max: 24, what: 'months of interest reserve' } };
+  /**
+   * The reason this number cannot be stored, or '' if it can. ONE place, because
+   * the previous three rounds each fixed one column's ceiling and left another's
+   * wrong. Never throws.
+   */
+  const numberOutOfRange = (key, n) => {
+    const chk = CHECKED_RANGE[key];
+    if (chk) {
+      if (!Number.isInteger(n)) return `${key} must be a whole number of ${chk.what}`;
+      if (n < chk.min || n > chk.max) return `${key} must be between ${chk.min} and ${chk.max} ${chk.what}`;
+      return '';
+    }
+    if (MONEY_KEYS.has(key)) {
+      /* ROUND THE MAGNITUDE, NOT THE SIGNED VALUE. numeric(14,2) rounds to two
+         decimals before it checks for overflow, and it rounds HALF AWAY FROM
+         ZERO — while JavaScript's Math.round breaks ties toward +∞. So
+         -999999999999.995 rounded signed came back inside the ceiling and went
+         on to overflow in Postgres, a 500 the previous round believed it had
+         closed for both signs (audit round 7). */
+      return Math.round(Math.abs(n) * 100) / 100 >= MONEY_MAX
+        ? `${key} is too large — the largest amount this field can hold is 999,999,999,999.99` : '';
+    }
+    // Everything else in NUM is an int4 column.
+    if (!Number.isInteger(n)) return `${key} must be a whole number`;
+    return (n > INT_MAX || n < INT_MIN)
+      ? `${key} is too large — the largest value this field can hold is 2,147,483,647` : '';
+  };
   const sets = [], vals = []; let i = 1;
   const touchedCols = [];
   for (const [k, col] of Object.entries(NUM)) if (k in b) {
@@ -8666,13 +8705,8 @@ router.patch('/applications/:id/details', async (req, res) => {
        and is refused by Postgres, while a bare `>= 1e12` on the raw number let it
        through to another 500. */
     if (n != null) {
-      const isMoney = MONEY_KEYS.has(k);
-      const mag = isMoney ? Math.abs(Math.round(n * 100) / 100) : Math.abs(n);
-      if (isMoney ? mag >= MONEY_MAX : mag > INT_MAX) {
-        return res.status(400).json({ error: isMoney
-          ? `${k} is too large — the largest amount this field can hold is 999,999,999,999.99`
-          : `${k} is too large — the largest value this field can hold is 2,147,483,647` });
-      }
+      const bad = numberOutOfRange(k, n);
+      if (bad) return res.status(400).json({ error: bad });
     }
     sets.push(`${col}=$${i++}`); vals.push(n); touchedCols.push(col);
   }
@@ -10195,7 +10229,10 @@ router.post('/applications/:id/closing/cash-to-close', async (req, res) => {
   if (!blank && (!Number.isFinite(val) || val < 0)) return res.status(400).json({ error: 'Enter a real cash-to-close amount.' });
   // …and too big for the column is a bad request, not a 500. Same numeric(14,2)
   // ceiling and the same rounded test as the details door (audit round 6).
-  if (!blank && Math.abs(Math.round(val * 100) / 100) >= 1e12) {
+  // Magnitude-rounded — Postgres rounds half AWAY FROM ZERO while Math.round
+  // breaks ties toward +∞, so rounding the signed value let a negative edge slip
+  // through to a 500 (audit round 7).
+  if (!blank && Math.round(Math.abs(val) * 100) / 100 >= 1e12) {
     return res.status(400).json({ error: 'That cash-to-close amount is too large — the largest this field can hold is 999,999,999,999.99.' });
   }
   const docId = req.body && req.body.docId ? String(req.body.docId) : null;
