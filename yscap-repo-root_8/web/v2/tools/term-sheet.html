@@ -25,6 +25,12 @@
 </script>
 <style>
   .hidden{ display:none !important; }
+  /* Pin the layout viewport so a hidden / absolutely-positioned element (a help
+     tooltip bubble near the right edge) can never widen the page and produce a
+     phantom sideways scroll on mid-size screens (~760-1030px). `clip` — not
+     `hidden` — does NOT create a scroll container, so the sticky top bar keeps
+     working (see the mobile-overflow rule in CLAUDE.md). */
+  html{ overflow-x:hidden; overflow-x:clip; }
   /* Bridge (and any conditional row): when a field in a two-column row is hidden, collapse the row to one column so there's no empty slot. */
   .field-rows.two-col:has(> .field.hidden){ grid-template-columns:1fr; }
   .maxlev:has(> .ml.hidden){ grid-template-columns:1fr; }
@@ -282,6 +288,14 @@
   .tip:hover .tip-bub, .tip:focus-visible .tip-bub, .tip.tip-open .tip-bub{ opacity:1; visibility:visible; }
   .tip.tip-r .tip-bub{ left:auto; right:-6px; transform:none; }
   .tip.tip-r .tip-bub::after{ left:auto; right:12px; transform:none; }
+  /* The right-column program cards (2-up grid) sit against the page's right edge,
+     so their help-bubbles must open LEFTWARD — a center-anchored 230px bubble
+     otherwise pokes past the viewport at mid-size widths. Only while the cards
+     are 2-wide (≥561px); when they stack 1-up the default centered bubble fits. */
+  @media (min-width:561px){
+    .prog-compare .pcard:nth-child(even) .pcard-statlbl .tip .tip-bub{ left:auto; right:-6px; transform:none; }
+    .prog-compare .pcard:nth-child(even) .pcard-statlbl .tip .tip-bub::after{ left:auto; right:12px; transform:none; }
+  }
   label .tip, .ts-sub .tip, .pcard-statlbl .tip, .snap-line-lbl .tip{ }
   /* loan-amount logic explainer */
   .loan-logic{ margin:1rem 0 .2rem; padding:.85rem 1rem; border:1px solid var(--line-2); border-left:3px solid var(--teal); border-radius:10px; background:rgba(47,127,134,.05); }
