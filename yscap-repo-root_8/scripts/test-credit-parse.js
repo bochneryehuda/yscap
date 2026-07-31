@@ -81,8 +81,11 @@ const XML = `<?xml version="1.0" encoding="UTF-8"?>
       <_CREDITOR _Name="MIDLAND CREDIT"/>
       <CREDIT_REPOSITORY _SourceType="Experian"/>
     </CREDIT_LIABILITY>
-    <CREDIT_INQUIRY _Name="CAPITAL ONE" _Date="2026-05-02">
+    <CREDIT_INQUIRY CreditInquiryID="INQUIRY001" _Name="CAPITAL ONE" _StreetAddress="PO BOX 6241" _City="SIOUX FALLS" _State="SD" _PostalCode="57117" _Date="2026-05-02" CreditBusinessType="OilAndNationalCreditCards" RawIndustryText="NationalCreditCardCos." _PurposeType="HARD">
       <CREDIT_REPOSITORY _SourceType="Experian"/>
+    </CREDIT_INQUIRY>
+    <CREDIT_INQUIRY _Name="ACME UTILITY" _Date="2026-04-01" CreditBusinessType="Utilities" _PurposeType="SOFT">
+      <CREDIT_REPOSITORY _SourceType="TransUnion"/>
     </CREDIT_INQUIRY>
     <CREDIT_PUBLIC_RECORD _Type="Bankruptcy" _FiledDate="2018-01-10" _Amount="0" _DispositionType="Discharged"/>
    </CREDIT_RESPONSE>
@@ -124,10 +127,24 @@ assert.strictEqual(toyota.pastDue, 410);
 const coll = r.liabilities.find((l) => l.isCollection);
 assert.strictEqual(coll.creditor, 'MIDLAND CREDIT', 'collection detected');
 
-// inquiries + public records
-assert.strictEqual(r.inquiries.length, 1);
-assert.strictEqual(r.inquiries[0].name, 'CAPITAL ONE');
-assert.strictEqual(r.inquiries[0].date, '2026-05-02');
+// inquiries + public records — the full row, not just who/when/bureau. A real
+// MISMO 2.x inquiry carries its HARD/SOFT purpose, the inquirer's line of business,
+// and a mailing address; dropping those left the "nice" report missing the
+// underwriting-relevant half of every inquiry (owner-reported).
+assert.strictEqual(r.inquiries.length, 2);
+const inqCap = r.inquiries.find((q) => q.name === 'CAPITAL ONE');
+assert.ok(inqCap, 'CAPITAL ONE inquiry parsed');
+assert.strictEqual(inqCap.date, '2026-05-02');
+assert.strictEqual(inqCap.bureau, 'Experian', 'inquiry bureau from CREDIT_REPOSITORY');
+assert.strictEqual(inqCap.purpose, 'hard', '_PurposeType="HARD" → hard');
+assert.strictEqual(inqCap.business, 'Oil And National Credit Cards', 'CamelCase business type spaced out');
+assert.strictEqual(inqCap.address, 'PO BOX 6241 SIOUX FALLS, SD 57117', 'inquirer address assembled');
+const inqUtil = r.inquiries.find((q) => q.name === 'ACME UTILITY');
+assert.strictEqual(inqUtil.purpose, 'soft', '_PurposeType="SOFT" → soft');
+assert.strictEqual(inqUtil.business, 'Utilities');
+assert.strictEqual(inqUtil.address, null, 'no address on file → null, not empty string');
+assert.strictEqual(r.summary.hardInquiryCount, 1, 'one HARD inquiry counted; the SOFT one excluded');
+assert.strictEqual(r.summary.inquiryCount, 2, 'both inquiries counted in the total');
 assert.strictEqual(r.publicRecords.length, 1);
 assert.strictEqual(r.publicRecords[0].type, 'Bankruptcy');
 assert.strictEqual(r.publicRecords[0].status, 'Discharged');
