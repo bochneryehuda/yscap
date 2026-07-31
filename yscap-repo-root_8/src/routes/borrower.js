@@ -89,14 +89,16 @@ function moneyField(v) {
   const n = Number(String(v).replace(/[^0-9.\-]/g, ''));
   return isFinite(n) ? n : null;
 }
-/* A free-text column: trimmed, and a blank stores NULL rather than an empty
-   string, so "not stated" reads the same however the box was left. Bounded
-   because these are lender names and reference numbers, not prose — a runaway
-   paste should be clipped at the door, not stored and rendered somewhere. */
-function textField(v, max = 200) {
-  if (v == null) return null;
-  const s = String(v).trim();
-  return s ? s.slice(0, max) : null;
+/* A free-text column: trimmed, a blank stores NULL rather than an empty string
+   (so "not stated" reads the same however the box was left), and bounded —
+   these are lender names and reference numbers, not prose.
+   Delegates to `fields.textColumn` so the CAP is a property of the column
+   rather than of this door: the same two columns were being capped at 200 here,
+   200 by the staff details door and 500 by the info-condition door, which meant
+   what a value became depended on which screen it was typed on (post-merge
+   audit 2026-07-31). */
+function textField(v, column) {
+  return require('../lib/fields').textColumn(v, column);
 }
 function stripToolAttachments(payload) {
   const raw = Array.isArray(payload && payload.attachments) ? payload.attachments : [];
@@ -589,6 +591,10 @@ async function resolveEntityByName(borrowerId, name) {
 router.post('/applications', async (req, res) => {
   const b = req.body || {};
   if (!b.propertyAddress) return res.status(400).json({ error: 'propertyAddress required' });
+  // A number too big for its column is a bad request, not a 500 (see
+  // fields.applicationNumberProblem). Checked BEFORE anything is written.
+  const numProblem = require('../lib/fields').applicationNumberProblem(b);
+  if (numProblem) return res.status(400).json({ error: numProblem });
   if (b.llcId) { const o = await db.query(`SELECT 1 FROM llcs WHERE id=$1 AND borrower_id=$2`, [b.llcId, me(req)]); if (!o.rows[0]) b.llcId = null; }
   if (!b.llcId && b.entityName) { try { b.llcId = await resolveEntityByName(me(req), b.entityName); } catch (_) { /* best-effort */ } }
   // Assignment invariant (mirrors the staff create, #96): the ticked flag is the
@@ -979,6 +985,18 @@ router.post('/applications/:id/pricing/register', async (req, res) => {
       `SELECT program, total_loan, note_rate, product_label FROM product_registrations
         WHERE application_id=$1 AND is_current LIMIT 1`, [appId]);
     const prev = prevQ.rows[0] || null;
+
+    /* A quote whose numbers the file cannot RECORD is a bad request, not a 500
+       — checked before the transaction opens. See
+       product-registration.quoteStorageProblem. A borrower can't reach the admin
+       pricing zone, so this is far less likely here than on the staff door; it
+       is applied to both because the guard belongs to the ACT of registering,
+       and leaving one door out is how the money-ceiling rule needed fixing four
+       times. */
+    {
+      const storeProblem = require('../lib/product-registration').quoteStorageProblem(quote, inputs);
+      if (storeProblem) return res.status(400).json({ error: storeProblem });
+    }
 
     const client = await db.getClient();
     let regId;
@@ -3405,6 +3423,14 @@ router.post('/drafts/:id/submit', async (req, res) => {
     return res.status(409).json({ error: 'already submitted', applicationId: d.rows[0].submitted_application_id });
   const b = { ...(d.rows[0].data || {}), ...(req.body || {}) };
   if (!b.propertyAddress) return res.status(400).json({ error: 'propertyAddress required' });
+  /* A number too big for its column is a bad request, not a 500 (see
+     fields.applicationNumberProblem). This is the door the audit reproduced it
+     on: an oversized payoff amount made SUBMIT answer "server error", leaving
+     the borrower with a finished application they could not file and nothing
+     naming the box at fault. Checked on the MERGED body (draft + this request),
+     which is what actually gets bound, and before any write. */
+  const numProblem = require('../lib/fields').applicationNumberProblem(b);
+  if (numProblem) return res.status(400).json({ error: numProblem });
   // Only accept an LLC the borrower actually owns.
   if (b.llcId) { const o = await db.query(`SELECT 1 FROM llcs WHERE id=$1 AND borrower_id=$2`, [b.llcId, me(req)]); if (!o.rows[0]) b.llcId = null; }
   // A typed-but-never-picked entity name still links a real profile LLC.
@@ -3483,7 +3509,7 @@ router.post('/drafts/:id/submit', async (req, res) => {
         real application and reads every one of these columns back. */
      // WHO holds the loan being paid off and WHICH loan (db/386). Free text,
      // trimmed to null so a blank box never stores an empty string.
-     textField(b.payoffLender), textField(b.payoffLoanNumber),
+     textField(b.payoffLender, 'payoff_lender'), textField(b.payoffLoanNumber, 'payoff_loan_number'),
      moneyField(b.irAmount)]);
   const appId = ins.rows[0].id;
   // If the borrower linked an LLC, ensure its document requirements exist.

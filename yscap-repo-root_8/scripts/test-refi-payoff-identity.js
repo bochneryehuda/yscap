@@ -274,8 +274,25 @@ console.log('\n--- the loan file stores it, and every entry surface offers it --
 
   const borrower = readRepo('src/routes/borrower.js');
   assert(/payoff_lender,payoff_loan_number/.test(borrower), 'the borrower application stores both');
-  assert(/textField\(b\.payoffLender\)/.test(borrower), 'and trims them through one helper');
-  assert(/function textField/.test(borrower), 'that helper exists');
+  /* THE RULE IS RUN, NOT REGEXED (post-merge audit 2026-07-31). This used to
+     assert the literal call-site text `textField(b.payoffLender)`, which proves
+     nothing about what the helper DOES and broke the moment the helper gained a
+     column argument. What actually matters is the behaviour, so that is what is
+     tested — and the cap now comes from the COLUMN, because these two were
+     being capped 200 / 200 / 500 by three different doors.
+     The end-to-end proof that the borrower's own door really trims what it
+     STORES lives in test-audit-hardening-db.js, through the real HTTP door. */
+  const F = require('../src/lib/fields');
+  assert(F.textColumn('  Chase Home Finance  ', 'payoff_lender') === 'Chase Home Finance',
+    'a payoff lender is trimmed by the one shared helper');
+  assert(F.textColumn('   ', 'payoff_lender') === null,
+    'a box of spaces is an empty box, not three stored spaces');
+  assert(F.textColumn(null, 'payoff_lender') === null,
+    'an explicit null clears it and never becomes the string "null"');
+  assert(F.textColumn('x'.repeat(900), 'payoff_lender').length === 200
+    && F.textColumn('x'.repeat(900), 'payoff_loan_number').length === 100,
+    'and each column carries its OWN cap, whichever door the value arrived at');
+  assert(/function textField/.test(borrower), 'the borrower door routes through it');
 
   const apply = read('screens/Apply.jsx');
   assert(/payoffLender/.test(apply) && /payoffLoanNumber/.test(apply),

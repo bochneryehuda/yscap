@@ -190,6 +190,50 @@ function rehabTypeWriteback(current, inputs) {
   return derived;
 }
 
+/* =====================================================================
+   CAN THIS QUOTE ACTUALLY BE RECORDED? (post-merge audit 2026-07-31.)
+
+   `product_registrations` holds the note rate in numeric(7,5) and the loan
+   amount in numeric(14,2). Nothing checked either, and the admin pricing zone
+   is open to EVERY staff role since 2026-07-27 — so a fat-fingered markup or
+   origination figure produced a rate the column cannot hold, Postgres raised
+   22003 mid-transaction, and the register came back a 500 "server error" with
+   no hint which box caused it. (It also leaked the pooled connection on the way
+   out, which is the far worse half of the same event and is fixed separately in
+   the route.)
+
+   Guarded on the QUOTE rather than on the knobs deliberately. The overflow is a
+   property of the numbers the engine PRODUCED, so testing them catches every
+   route in, including a combination of individually-plausible inputs — and it
+   can never refuse an override that yields numbers the file can store, which a
+   bounds check on the knobs eventually would. No frozen engine value is read,
+   changed or clamped; this only decides whether the result is recordable.
+
+   Returns a plain-language reason, or '' when the quote can be stored. PURE.
+   Call it BEFORE opening the transaction so a refusal leaves nothing half-done.
+   ===================================================================== */
+function quoteStorageProblem(quote, inputs) {
+  const nb = require('./number-bounds');
+  const q = quote || {};
+  const s = q.sizing || {};
+  const rate = Number(q.noteRate);
+  if (Number.isFinite(rate) && nb.rateOverflows(rate)) {
+    return 'Those pricing overrides produce a note rate this file cannot record. '
+      + 'Check the rate markup and any manual rate in the admin pricing zone.';
+  }
+  const total = Number(s.totalLoan);
+  if (Number.isFinite(total) && nb.moneyOverflows(total)) {
+    return 'Those inputs produce a loan amount this file cannot record — '
+      + `the largest it can hold is ${nb.MONEY_LIMIT_TEXT}.`;
+  }
+  const ltc = Number(inputs && inputs.targetLTC);
+  if (Number.isFinite(ltc) && nb.rateOverflows(ltc)) {
+    return 'Those pricing overrides produce a loan-to-cost this file cannot record. '
+      + 'Check the manual LTC / LTV values in the admin pricing zone.';
+  }
+  return '';
+}
+
 async function persistProductRegistration(client, { appId, program, inputs, quote, registeredByStaffId, isManual, assetMonths, termOptions, needsApproval, overrideChanges, claimedExp }) {
   const s = quote.sizing || {};
   const total = num(s.totalLoan);
@@ -476,6 +520,6 @@ function borrowerTermsEmail({ ctx, quote, total, termMonths, officer, termOption
 }
 
 module.exports = {
-  persistProductRegistration, borrowerTermsEmail, borrowerTermsKey, money, productName,
+  persistProductRegistration, quoteStorageProblem, borrowerTermsEmail, borrowerTermsKey, money, productName,
   rehabTypeWriteback, rehabTypeFromInputs, REHAB_TYPE,
 };

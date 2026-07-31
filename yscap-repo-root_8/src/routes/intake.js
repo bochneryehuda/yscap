@@ -23,8 +23,27 @@ const { redactPII } = require('../lib/redact');
 // The public site sends money/units as formatted strings ("$500,000", "1,200").
 // Coerce to plain numbers or NULL before they hit typed numeric columns —
 // inserting "$500,000" raw throws a Postgres 22P02 and 500s a real submission.
-const num = (v) => { if (v == null || v === '') return null; const n = Number(String(v).replace(/[^0-9.\-]/g, '')); return isFinite(n) ? n : null; };
-const int = (v) => { const n = num(v); return n == null ? null : Math.round(n); };
+/* A NUMBER THIS COLUMN CANNOT HOLD IS "NOT PROVIDED" HERE (post-merge audit
+   2026-07-31). This is the PUBLIC marketing-tool door: the submitter is an
+   anonymous visitor with no session and no screen to correct anything on, and
+   the whole point of the route is to capture the lead. So an out-of-range value
+   is DROPPED — exactly as this helper already drops a non-numeric one — rather
+   than sent to numeric(14,2)/int4 to raise 22003 and lose the lead to a 500.
+   The ceiling comes from lib/number-bounds so it can never drift from the one
+   the staff edit doors quote back to a human. */
+const numberBounds = require('../lib/number-bounds');
+const num = (v) => {
+  if (v == null || v === '') return null;
+  const n = Number(String(v).replace(/[^0-9.\-]/g, ''));
+  if (!isFinite(n) || numberBounds.moneyOverflows(n)) return null;
+  return n;
+};
+const int = (v) => {
+  const n = num(v);
+  if (n == null) return null;
+  const r = Math.round(n);
+  return numberBounds.intOverflows(r) ? null : r;
+};
 
 /**
  * The intake core. Creates/updates the borrower and creates the application in

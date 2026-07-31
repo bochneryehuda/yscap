@@ -363,6 +363,16 @@ async function evaluateBorrowerApplications(borrowerId, opts = {}) {
   }
 }
 
+/* The details door speaks camelCase and the field registry speaks snake_case,
+   and `file-lock.payoffContactLockReason` is keyed on the DETAILS door's names
+   (that is where its carve-out is defined). Only the payoff contact pair needs
+   translating — every other key falls through unchanged and is therefore never
+   mistaken for a contact-only edit, which is the safe direction. */
+const WRITE_BODY_KEY = Object.freeze({
+  payoff_lender: 'payoffLender',
+  payoff_loan_number: 'payoffLoanNumber',
+});
+
 /**
  * Persist a borrower's answer to an info-field condition — built-in fields
  * write the real application/borrower column; admin-defined custom fields
@@ -396,7 +406,53 @@ async function writeFieldValue(appId, borrowerId, fieldKey, rawValue, by = {}) {
   } else if (f.type === 'boolean') {
     value = !!rawValue;
   } else {
-    value = String(rawValue == null ? '' : rawValue).slice(0, 500);
+    /* Free text — trimmed, NUL-stripped, and capped by the COLUMN rather than by
+       this door (post-merge audit 2026-07-31). The flat 500 here was the third
+       of three different caps on the same two payoff columns, and like the other
+       two it did not trim, so a box of spaces stored spaces and read as answered.
+       A CUSTOM field has no column of its own; it keeps the shared default.
+       An answer that trims to nothing is refused rather than stored as null: the
+       caller has already required a non-empty value, and silently recording
+       "not stated" while marking the condition received is how a blank passes
+       for an answer. */
+    value = require('../fields').textColumn(rawValue, target && target.column, 500);
+    if (value == null) { const err = new Error(`${f.label} cannot be blank`); err.status = 400; throw err; }
+  }
+
+  /* THE FILE FREEZE APPLIES HERE TOO (post-merge audit 2026-07-31).
+     This door had NO freeze of any kind, so an info condition could rewrite a
+     column on a CLEAR-TO-CLOSE, FUNDED, DECLINED or WITHDRAWN file, and on one
+     whose Term Sheet package has been sent.
+
+     The audit found it on `payoff_lender`/`payoff_loan_number`, but the hole is
+     the whole class and much of it is worse: of the twenty fields that target
+     `applications`, only the eight in the change-request whitelist were ever
+     protected, and they are protected by a DIFFERENT rule (a registered file
+     routes them to an approval sandbox). The other twelve — `loan_amount`,
+     `requested_ir_amount`, `underlying_contract_price`, `assignment_fee`,
+     `original_purchase_price`, the sqft pair, the three experience counts —
+     wrote LIVE whatever the file's status. Most are pricing inputs the db/071
+     trigger watches, so answering an info condition on a funded loan moved the
+     economics AND reopened Products & Pricing on a closed file.
+
+     `payoffContactLockReason` is `structuralLockReason` plus the ONE narrow,
+     owner-directed carve-out this feature is built on: the payoff's
+     who-and-which stays editable through closing prep, because that is when the
+     payoff letter is ordered. Reused rather than re-expressed so the carve-out
+     can never drift from the details door's copy of it — and it is passed the
+     equivalent of a details-door body, so a field OUTSIDE that pair falls
+     straight through to the ordinary freeze.
+
+     NO actor is passed, deliberately: a super-admin's unlock is theirs to spend
+     on their own edit, not a standing permission for whatever the borrower (or
+     a staffer answering on their behalf) types into a condition afterwards.
+     Borrower-table fields (FICO, DOB, citizenship) are untouched by this — they
+     are facts about the PERSON, equally true on a closed file, and they have
+     their own governance in change-requests.js. */
+  if (!f.custom && target && target.table === 'applications') {
+    const frozen = await require('../file-lock')
+      .payoffContactLockReason(appId, { [WRITE_BODY_KEY[fieldKey] || fieldKey]: value }, db);
+    if (frozen) { const err = new Error(frozen); err.status = 409; throw err; }
   }
 
   if (f.custom) {

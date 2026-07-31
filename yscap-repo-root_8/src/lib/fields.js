@@ -150,6 +150,113 @@ function assignmentFields(b) {
   return { isAssignment, underlying, assignFee, purchasePrice };
 }
 
+/* =====================================================================
+   WHAT A FREE-TEXT COLUMN ACCEPTS — trimmed, blank means NULL, one cap per
+   COLUMN rather than one per door (post-merge audit 2026-07-31).
+
+   `payoff_lender` and `payoff_loan_number` were capped at 200 by the staff
+   details door, 200 by the borrower application door and 500 by the
+   info-condition door — three answers to a question about ONE column, so what
+   a value became depended on which screen typed it. The same lesson as
+   number-bounds: a limit is a property of the column, not of the door.
+
+   And NONE of the three trimmed. `"   "` is not a value: it stored three
+   spaces, which is non-blank to every reader, so the file counted the payoff
+   contact as answered and the borrower's screen rendered an empty labelled row
+   under a green tick. Trimming first makes "a box of spaces is an empty box"
+   true here exactly as it already is for the money fields.
+
+   A NUL byte (U+0000) is removed rather than refused: Postgres cannot store one
+   in a text column at all (22021, another 500), it is never something a person
+   meant to type, and it is invisible — so refusing would be a mystery message
+   about a character nobody can see. Not reachable from a browser today; cheap
+   to close, and it is the last way this family can reach the database as a 500.
+
+   PURE. Returns a trimmed string, or null for "not stated".
+   ===================================================================== */
+const TEXT_COLUMN_MAX = Object.freeze({
+  payoff_lender: 200,
+  payoff_loan_number: 100,     // a lender's own reference, never prose
+});
+const TEXT_COLUMN_DEFAULT_MAX = 200;
+function textColumn(v, column, fallbackMax) {
+  if (v == null) return null;
+  const s = String(v).replace(/\u0000/g, '').trim();
+  if (!s) return null;
+  // The COLUMN decides. `fallbackMax` is for a value that HAS no column of its
+  // own — an admin-defined custom field — so a caller naming no column keeps its
+  // own limit instead of being silently tightened to the shared default.
+  const max = (column && TEXT_COLUMN_MAX[column])
+    || (Number.isFinite(fallbackMax) && fallbackMax > 0 ? fallbackMax : TEXT_COLUMN_DEFAULT_MAX);
+  return s.slice(0, max);
+}
+
+/* =====================================================================
+   A NUMBER TOO BIG FOR ITS COLUMN IS A BAD REQUEST, NOT A SERVER FAULT — on
+   EVERY create door, not only the staff edit door (post-merge audit
+   2026-07-31).
+
+   `PATCH /applications/:id/details` learned this rule over four rounds and now
+   answers a plain 400 naming the field and its ceiling. The five doors that
+   CREATE an application never learned it at all: they parse each money value
+   (moneyColumn, above) but nothing asks whether the parsed number FITS, so a
+   twenty-digit paste reaches Postgres, raises 22003, and comes back to the
+   borrower as a 500 "server error" on the submit button — with the whole
+   application still unsubmitted and no hint which box is at fault. None of the
+   money inputs cap their digits, so an ordinary browser gets there.
+
+   Same shape as the details door: keyed on the COLUMN TYPE (see
+   lib/number-bounds), reported in the words of the form rather than the column
+   name, and STOPPING AT THE FIRST problem so the message names one box to fix.
+
+   `b` is the raw request body. Returns '' when every number on it can be
+   stored. PURE, never throws. Add a numeric field to a create INSERT and add it
+   here too.
+   ===================================================================== */
+const APP_MONEY_FIELDS = Object.freeze([
+  ['purchasePrice', 'Purchase price'],
+  ['asIsValue', 'As-is value'],
+  ['arv', 'After-repair value'],
+  ['rehabBudget', 'Rehab budget'],
+  ['underlyingContractPrice', 'Original contract price'],
+  ['assignmentFee', 'Assignment fee'],
+  ['payoffAmount', 'Payoff amount'],
+  ['originalPurchasePrice', 'Original purchase price'],
+  ['irAmount', 'Interest reserve amount'],
+]);
+const APP_COUNT_FIELDS = Object.freeze([
+  ['units', 'Number of units'],
+  ['sqftPre', 'Square footage before'],
+  ['sqftPost', 'Square footage after'],
+  ['requestedExpFlips', 'Flips completed'],
+  ['requestedExpHolds', 'Rentals held'],
+  ['requestedExpGround', 'Ground-up projects'],
+  ['requestedExpReo', 'Properties owned'],
+]);
+function applicationNumberProblem(b) {
+  const nb = require('./number-bounds');
+  const body = (b && typeof b === 'object') ? b : {};
+  for (const [key, label] of APP_MONEY_FIELDS) {
+    /* Judged on the PARSED value, because that is what reaches the column —
+       "1,000,000,000,000" is a string Postgres never sees, but the number it
+       parses to is the one that overflows. */
+    const bad = nb.columnProblem(key, moneyValue(body[key]), 'money', label);
+    if (bad) return bad;
+  }
+  for (const [key, label] of APP_COUNT_FIELDS) {
+    const raw = body[key];
+    if (raw == null || String(raw).trim() === '') continue;
+    const n = Number(String(raw).replace(/[^0-9.\-]/g, ''));
+    if (!Number.isFinite(n)) continue;            // the create paths read this as "not provided"
+    /* FLOORED, not the raw number: every count on these doors binds through
+       `intField`/`parseInt`, which truncates — so 5.7 stores 5 and is not a
+       "must be a whole number" refusal, while 5e15 still overflows int4. */
+    const bad = nb.columnProblem(key, Math.trunc(n), 'int', label);
+    if (bad) return bad;
+  }
+  return '';
+}
+
 // sqft_pre / sqft_post are only meaningful for a square-footage-adding or
 // ground-up rehab. The intake forms show those inputs only for such rehab types
 // but ALWAYS submit the fields, so switching the rehab type to e.g. "Cosmetic"
@@ -289,4 +396,4 @@ function loanNumberProblem(v) {
   return null;
 }
 
-module.exports = { sanitizeFico, sanitizeSsnDigits, formatSsn, sanitizeLoanType, moneyValue, moneyColumn, assignmentFields, sqftRelevantType, sqftForType, sanitizeDateOnly, normalizeTypedDate, sanitizeDob, dobProblem, sanitizeLoanNumber, normalizeLoanNumber, loanNumberProblem };
+module.exports = { sanitizeFico, sanitizeSsnDigits, formatSsn, sanitizeLoanType, moneyValue, moneyColumn, textColumn, TEXT_COLUMN_MAX, assignmentFields, applicationNumberProblem, sqftRelevantType, sqftForType, sanitizeDateOnly, normalizeTypedDate, sanitizeDob, dobProblem, sanitizeLoanNumber, normalizeLoanNumber, loanNumberProblem };
