@@ -67,3 +67,25 @@ export function moneyNum(v) {
   if (!Number.isFinite(n) || n === 0) return 0;
   return /^[\s$(]*-/.test(String(v == null ? '' : v)) ? -n : n;
 }
+
+/** A money box that is NOT a MoneyInput, read into integer CENTS — or `null` when
+ *  nothing was entered.
+ *
+ *  THE DRAW-DISPUTE AMOUNT, on both screens that ask for it (third audit pass of
+ *  this change, 2026-07-31). The borrower's "$ you expect" box is a hand-rolled
+ *  free-text `inputMode="decimal"` input, so it never got MoneyInput's contract:
+ *  `Math.round(Number("1,200") * 100)` is NaN, and `JSON.stringify` turns NaN into
+ *  `null` — so a borrower who typed the amount the way people write amounts had it
+ *  silently dropped on its way to the desk, on the one screen where they are
+ *  disputing money. It was in TWO places (the portal's BorrowerDraws and the
+ *  PUBLIC DrawAccept page reached from the findings email), which is why the rule
+ *  lives here rather than beside either of them.
+ *
+ *  BLANK IS NOT ZERO. An empty box, and an entry with no digit in it at all, both
+ *  mean "no amount given" — exactly what they meant before — because a fabricated
+ *  $0 dispute is a claim the borrower did not make. A typed `0` IS a real zero. */
+export function moneyCents(v) {
+  if (v == null || String(v).trim() === '') return null;
+  if (!/\d/.test(String(v))) return null;
+  return Math.round(moneyNum(v) * 100);
+}

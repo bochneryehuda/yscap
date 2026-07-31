@@ -166,6 +166,13 @@ const MONEY_FIELDS = [
   'tsFeeUW', 'tsFeeCredit', 'tsFeeAppr', 'tsFeeTitle',
   // saved-registration (engine inputs) names
   'sellerPrice', 'lenderFee', 'creditFee', 'appraisalFee', 'titleFee',
+  /* A MONEY BOX THAT IS NOT A MoneyInput IS THE SAME TRAP (third audit pass). The
+     borrower's draw-dispute amount is a free-text `inputMode="decimal"` field, so a
+     borrower typing `1,200` produced NaN → JSON `null` and the disputed amount was
+     silently dropped on the one screen where they are arguing about money. The guard
+     missed it because the list only held names that came through MoneyInput or the
+     studio. Any hand-rolled money input belongs here too. */
+  'desired',
 ];
 // `\??\.` so optional chaining (`f?.price`) cannot walk around the guard.
 const BARE = new RegExp(`Number\\(\\s*[A-Za-z_$][\\w$]*\\??\\.(${MONEY_FIELDS.join('|')})\\b`, 'g');
@@ -316,6 +323,47 @@ const { moneyValue } = require(path.join(__dirname, '..', 'src', 'lib', 'fields.
     assert(!wrapped, `src/lib/fields.js assignmentFields does the same${wrapped ? ` — found \`${wrapped[0]}\`` : ''}`);
     assert(typeof require(path.join(__dirname, '..', 'src', 'lib', 'fields.js')).moneyColumn === 'function',
       'and moneyColumn is exported as the one bind every money column goes through');
+  }
+}
+
+/* THE BORROWER'S DRAW-DISPUTE AMOUNT (third audit pass, 2026-07-31).
+   The one screen where a borrower is arguing about money, and its box is a free-text
+   `inputMode="decimal"` field rather than a MoneyInput — so `Number("1,200")` was NaN,
+   `Math.round(NaN * 100)` was NaN, and JSON silently turned that into `null`. The
+   amount vanished with no error. Exercised as REAL behaviour by lifting the component's
+   own helper, not by matching source text. */
+console.log('\n--- a disputed draw amount survives the way people type amounts ---');
+{
+  const moneyCents = extract('moneyCents', { moneyNum });
+  assert(typeof moneyCents === 'function', 'money.js publishes moneyCents — the rule lives in ONE place, not beside each screen');
+  if (typeof moneyCents === 'function') {
+    assert(moneyCents('1,200') === 120000, `a typed "1,200" reaches the desk as 120000 cents (got ${moneyCents('1,200')})`);
+    assert(moneyCents('1200') === 120000, 'and so does the same amount without the comma');
+    assert(moneyCents('1,200.50') === 120050, 'cents survive too');
+    assert(moneyCents('$1,200') === 120000, 'a typed dollar sign does not lose it either');
+    assert(moneyCents('') === null && moneyCents(null) === null && moneyCents('   ') === null,
+      'an EMPTY box still means "no amount given" — never a zero');
+    assert(moneyCents('abc') === null, 'an entry with no digit in it stays "no amount", not a fabricated $0');
+    assert(moneyCents('0') === 0, 'but a typed zero is a real zero');
+    // the regression that started this: prove the OLD expression loses it
+    assert(Number.isNaN(Math.round(Number('1,200') * 100)),
+      'the previous expression really did produce NaN — which JSON sends as null');
+  }
+  /* BOTH screens that ask for it, not just the one that was reported. The public
+     DrawAccept page is reached straight from the findings email, so it is the likelier
+     of the two — and the repo-wide guard is what found it. */
+  for (const p of ['components/BorrowerDraws.jsx', 'screens/DrawAccept.jsx']) {
+    const src = read(p);
+    assert(/moneyCents/.test(src) && /from '\.\.\/lib\/money\.js'/.test(src),
+      `${p} reads the disputed amount through moneyCents`);
+    /* Narrowly the SUBMIT path: `desired_cents:` must be produced by moneyCents.
+       Deliberately not a blanket "no Math.round(Number(" — both files legitimately
+       round a Number() in their `usd` DISPLAY helpers, which are handed integer cents
+       the SERVER already sent. A guard that flags correct code is a guard people
+       learn to silence. */
+    const bind = /desired_cents:\s*([^,]+)/.exec(src);
+    assert(!!bind && /moneyCents\(/.test(bind[1]),
+      `${p} builds desired_cents with moneyCents${bind ? ` (found \`${bind[1].trim()}\`)` : ''}`);
   }
 }
 

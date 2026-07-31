@@ -1,6 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import { useParams, useLocation, Link } from 'react-router-dom';
 import { api } from '../lib/api.js';
+import { moneyCents } from '../lib/money.js';
 
 /* Public accept / push-back landing page reached from the findings delivery email. The
    reply_token in the URL is the capability — no login needed to ACCEPT your own release or to
@@ -63,7 +64,10 @@ export default function DrawAccept() {
   async function submitDispute() {
     const payload = Object.entries(disp)
       .filter(([, v]) => (v.desired !== '' && v.desired != null) || (v.note && v.note.trim()))
-      .map(([lineId, v]) => ({ line_id: Number(lineId), desired_cents: v.desired === '' || v.desired == null ? null : Math.round(Number(v.desired) * 100), note: v.note || null }));
+      // `moneyCents`, not a bare Number(): this is the page reached straight from the
+      // findings email, so it is the likelier of the two places a borrower types the
+      // amount — and a typed "1,200" was silently arriving as no amount at all.
+      .map(([lineId, v]) => ({ line_id: Number(lineId), desired_cents: moneyCents(v.desired), note: v.note || null }));
     if (!payload.length) { setErr('Add the amount you expected — or a note — on at least one line.'); return; }
     setBusy(true); setErr('');
     try { const r = await api.post(`/api/public/draw-findings/${token}/dispute`, { lines: payload }); setDisputed(r); }
