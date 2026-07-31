@@ -62,18 +62,21 @@ const DECIDED_AUDIT = {
   guaranty_waiver: 'guaranty_exception_decided',
   esign_before_ctc: 'esign_before_ctc_exception_decided',
   pricing_exception: 'pricing_exception_decided',
+  oop_rehab: 'oop_rehab_exception_decided',
   issuance_override: 'issuance_override_decided',
 };
 const CLEARED_AUDIT = {
   guaranty_waiver: 'guaranty_exception_cleared',
   esign_before_ctc: 'esign_before_ctc_exception_cleared',
   pricing_exception: 'pricing_exception_cleared',
+  oop_rehab: 'oop_rehab_exception_cleared',
   issuance_override: 'issuance_override_cleared',
 };
 const COMMENT_AUDIT = {
   guaranty_waiver: 'guaranty_exception_comment',
   esign_before_ctc: 'esign_before_ctc_exception_comment',
   pricing_exception: 'pricing_exception_comment',
+  oop_rehab: 'oop_rehab_exception_comment',
   issuance_override: 'issuance_override_comment',
 };
 

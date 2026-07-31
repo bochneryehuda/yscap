@@ -39,9 +39,15 @@ const CD = {
 const ZONE = ['markupStdPct', 'markupGoldPct', 'origStdPct', 'origGoldPct',
   'lenderFee', 'creditFee', 'appraisalFee', 'titleFee',
   'ovrAcqLTVPct', 'ovrARLTVPct', 'ovrLTCPct', 'ovrRatePct', 'ovrIrMonths', 'ovrEffPrice',
+  'oopRehab', 'oopRehabMax',
   'manualPricing', 'forcePrice'];
 assert(ZONE.every((k) => APPROVAL_OVERRIDE_KEYS.includes(k)),
   'every studio admin-zone knob is in the approval set');
+// Out-of-pocket rehab exception (owner-authorized 2026-07-31): any real amount, or
+// the "raise initial to max" toggle, needs the same admin approval as any override.
+assert(needsPricingApproval({ oopRehab: 55000 }, CD) === true, 'an OOP-rehab amount needs approval');
+assert(needsPricingApproval({ oopRehabMax: true }, CD) === true, 'the OOP-rehab max toggle needs approval');
+assert(needsPricingApproval({ oopRehab: 0, oopRehabMax: false }, CD) === false, 'a zero/off OOP-rehab is not an override');
 const EXP_KEYS = ['expFlips', 'expHolds', 'expGround'];
 assert(EXP_KEYS.every((k) => !APPROVAL_OVERRIDE_KEYS.includes(k)),
   'experience is a deal INPUT, never an approval-triggering override');

@@ -125,6 +125,9 @@ async function main() {
   ok(d.can_start === true, 'can_start is true when all prereqs pass');
   ok(d.switches && d.switches.enabled === false, 'reports Sitewire is off');
   ok(d.units && d.units.physical >= 1 && d.units.disagree === false, 'draw-setup exposes the units block (base case: no disagreement)');
+  // Out-of-pocket-first floor (owner-directed 2026-07-31): a file with no OOP-rehab exception
+  // reports a $0 floor — the whole rehab is financed, so every draw is fully reimbursable.
+  ok(d.out_of_pocket && d.out_of_pocket.floor_cents === 0, 'draw-setup exposes the out-of-pocket floor (0 with no exception)');
 
   // ---- 3b) UNIT COUNT decouple (owner-directed 2026-07-20 — "use physical building units") ----
   // A file that lists 2 units with a Scope of Work built for 4 must NOT block: PILOT surfaces the

@@ -375,6 +375,13 @@ async function mirrorDisbursement(appId, row, { baseline = false, addr = 'the pr
     // draw is HISTORY — record the row for the ledger, tell no one (a "your money is on
     // its way, 1–2 business days" email about a weeks-old wire would be nonsense).
     const stale = row.disbursed_at != null && (Date.now() - new Date(row.disbursed_at).getTime() > 14 * 86400000);
+    // Out-of-pocket-first (owner-directed 2026-07-31): this path deliberately does NOT apply the
+    // OOP-rehab floor. On a note-buyer-administered file the capital partner wires draws in their OWN
+    // system, so PILOT records what ACTUALLY moved (net = the administrator's wired amount) — overriding
+    // it with a computed floor would make the ledger disagree with the real bank wire. The out-of-pocket
+    // rehab is enforced for these files through the DATA TAPE instead: the tape reports the FINANCED
+    // holdback (rehabHoldback), which caps how much the note buyer funds, so the borrower funds the OOP
+    // portion. PILOT's own /disbursements route is where the floor is enforced when PILOT releases.
     const ins = (await db.query(
       `INSERT INTO draw_disbursements (application_id, sitewire_draw_id, trustpoint_draw_id, approved_cents, fee_cents,
           retainage_held_cents, net_release_cents, release_date, funded_status, kind, source, fees, note)
