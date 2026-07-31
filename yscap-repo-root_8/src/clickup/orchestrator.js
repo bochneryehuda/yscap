@@ -202,7 +202,7 @@ async function loadPushContext(appId) {
       current_address: await withCoords(row.current_address),
     },
     llc: row.llc_name ? { llc_name: row.llc_name, ein: row.ein } : null,
-    // Vesting default (db/383): LLC unless this is an explicit personal-name
+    // Vesting default (db/384): LLC unless this is an explicit personal-name
     // purchase (waived off the LLC condition with a non-owner-occupied affidavit).
     personalNamePurchase: row.personal_name_purchase === true,
     registeredProgram: row.registered_program || 'none',

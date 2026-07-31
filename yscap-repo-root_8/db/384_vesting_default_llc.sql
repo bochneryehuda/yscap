@@ -1,5 +1,5 @@
 -- ============================================================================
--- 383 - Vesting defaults to LLC; a personal-name purchase flips it to Individual
+-- 384 - Vesting defaults to LLC; a personal-name purchase flips it to Individual
 --       (owner-directed 2026-07-31).
 --
 -- "Most of them are being bought by an LLC — the vesting should automatically be

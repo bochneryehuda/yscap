@@ -1348,8 +1348,8 @@ async function backfillMemberLinksOnce() {
   return linked;
 }
 
-// One-shot: push the DEFAULTED deal program (db/381) up to any linked ClickUp
-// card whose *Program box is still empty. db/381 defaulted a blank / "Not sure
+// One-shot: push the DEFAULTED deal program (db/382) up to any linked ClickUp
+// card whose *Program box is still empty. db/382 defaulted a blank / "Not sure
 // yet" program to 'Fix & Flip w/ Construction' in PILOT, but a raw migration
 // cannot enqueue an outbound push, so the CARD would stay blank until the file
 // is next edited. This fills those cards through the normal guarded,
@@ -1379,7 +1379,7 @@ async function backfillDefaultProgramPushOnce() {
   return n;
 }
 
-// Boot one-shot (db/382): PILOT now derives a never-blank property_type from the
+// Boot one-shot (db/383): PILOT now derives a never-blank property_type from the
 // unit count, but a card that came in with a blank *Property Type dropdown won't
 // have it pushed up until the file is next edited. This fills those cards through
 // the normal guarded, no-op-suppressed scoped push
@@ -1444,7 +1444,7 @@ function start() {
   backfillMemberLinksOnce().catch((e) => console.error('[clickup-sync] member-link backfill', e.message));
 
   // Fill any linked ClickUp card whose *Program box is still blank with the
-  // Fix-&-Flip default db/381 set in PILOT (previous-and-future for the "the
+  // Fix-&-Flip default db/382 set in PILOT (previous-and-future for the "the
   // Program came in empty" fix). Delayed so any boot backfill/reconcile settles
   // the task-index snapshots first; best-effort, no-op-suppressed at drain.
   setTimeout(() => {

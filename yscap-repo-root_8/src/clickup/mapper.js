@@ -507,7 +507,7 @@ function readTaskFields(task, options = {}) {
   if (prog && prog.value != null) {
     out.rawProgram = T.dropdownIndexToLabel(options[F.PIPELINE.program] || prog.type_config?.options || [], prog.value);
   }
-  // Raw *Property Type label so the boot one-shot push (db/382) can tell which
+  // Raw *Property Type label so the boot one-shot push (db/383) can tell which
   // linked cards still carry a BLANK property type and fill them from the unit
   // count PILOT now derives. Blank/unset stays absent so the push targets it.
   const ptype = m[F.PIPELINE.propertyType];
@@ -577,7 +577,7 @@ function resolveOnly(onlyKeys) {
         cuIds.add(F.PIPELINE.secondBorrowerEmail); cuIds.add(F.PIPELINE.secondBorrowerCell); break;
       case 'llc_id':
         cuIds.add(F.PIPELINE.vesting); cuIds.add(F.PIPELINE.llcName); cuIds.add(F.PIPELINE.ein); break;
-      // The *Vesting dropdown ALONE — a personal-name affidavit waiver (db/383)
+      // The *Vesting dropdown ALONE — a personal-name affidavit waiver (db/384)
       // flips it to Individual (or back to LLC) with no LLC name/EIN to push.
       case 'vesting':
         cuIds.add(F.PIPELINE.vesting); break;

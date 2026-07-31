@@ -1,91 +1,97 @@
 -- ============================================================================
--- 382 - The property type is NEVER blank — it is derived from the unit count
---       (owner-directed 2026-07-31; "when PILOT says 1 unit the ClickUp property
---        type dropdown should say SFR, and same with 2-4").
+-- 382 - The deal program is NEVER blank — it defaults to Fix & Flip
+--       (owner-directed 2026-07-30; reported card FILLE-2015 / 423 Rutland Rd).
 --
--- ClickUp picked up that a property was a single unit (it filled the unit count)
--- but the *Property Type dropdown was left blank, so the card carried a unit
--- count with no property type. PILOT never populated property_type from the unit
--- count either, so the blank round-tripped and nothing was ever pushed up.
+-- A file's deal-type program (applications.program: Fix & Flip / Fix & Hold /
+-- Bridge / Ground-Up) is a HUMAN choice, and the borrower application offers a
+-- "Not sure yet" option. Both a blank program and "Not sure yet" map to an EMPTY
+-- ClickUp *Program box (crosswalk 'Not sure yet' -> null, on purpose) — so a file
+-- the borrower left on "Not sure yet" (or never set) reached ClickUp with no
+-- Program even after it was priced and registered as a renovation loan. Nothing
+-- ever forced it to be resolved, so it sailed all the way through blank, and the
+-- ClickUp workload automation then mis-classified it as "Long Term".
 --
--- The owner's rule mirrors the Fix-&-Flip program default (db/381): the property
--- type is never blank — it is derived from the unit count (1 unit -> SFR,
--- 2-4 units -> Multi 2-4, 5+ -> Multi 5+) whenever it is blank, on EVERY write
--- path, and previous files are back-filled. The existing bidirectional ClickUp
--- sync (mapper FIELD_MAP property_type, dir:'both') then carries a later change
--- to Condo / Townhouse / Mixed use in either direction, unchanged — you can pick
--- any property type any time and it round-trips like everything else.
+-- The owner's rule: "by default everything is a Fix & Flip — if you don't know
+-- from the application whether it's a Fix & Flip or a Fix & Hold, just put it in
+-- as a Fix & Flip. Once you know it's a Fix & Hold or a Ground-Up you can change
+-- it any time and it syncs bidirectionally like everything else."
 --
--- A single BEFORE trigger is the one chokepoint that catches the borrower
--- application, the staff new-file form, the public intake AND the ClickUp
--- materialize path at once.
+-- So the program defaults to 'Fix & Flip w/ Construction' whenever it is blank or
+-- "Not sure yet", on EVERY write path (a BEFORE trigger is the one chokepoint
+-- that catches the borrower application, the staff new-file form, the public
+-- intake, AND the ClickUp materialize path at once), and previous files are
+-- back-filled. The existing bidirectional ClickUp sync (mapper FIELD_MAP
+-- program, dir:'both') then carries a later change to Fix & Hold / Ground-Up in
+-- either direction, unchanged.
 --
--- FROZEN-PRICING SAFE for the ordinary case: the frozen engine
--- (src/lib/pricing.js normPropertyType/isIneligiblePropertyType) prices a BLANK
--- property type exactly like an eligible SFR / 2-4 (neither is on the ineligible
--- list), so filling a blank type with SFR or Multi 2-4 changes NO pricing number.
--- To keep the P&P re-price trigger from firing on that label-only fill, the
--- trigger below suppresses a blank -> units-consistent SFR/Multi-2-4 fill, exactly
--- as db/322 treats an appraisal-form-code repair as a non-re-price. A Multi 5+
--- fill DOES change eligibility (a 5+ building is ineligible), so it is a genuine
--- pricing-relevant correction and still reopens Products & Pricing. This mirrors
--- the term (db/288) / property_type (db/322) / state (db/326) / program (db/381)
--- semantic-compare pattern already in this same trigger.
+-- FROZEN-PRICING SAFE: the frozen engine already prices a blank / "Not sure yet"
+-- program AS a Fix & Flip — src/lib/pricing.js engineStrategy() maps '', 'not
+-- sure …' AND 'Fix & Flip w/ Construction' all to the SAME strategy 'Fix &
+-- Flip'. So setting the label to 'Fix & Flip w/ Construction' changes NO pricing
+-- number. To keep the P&P re-price trigger from firing on this label-only
+-- change, the trigger below compares the program BY MEANING via
+-- pilot_program_norm() — the SQL twin of engineStrategy() — so 'Not sure yet' and
+-- 'Fix & Flip w/ Construction' are equal and never reopen Products & Pricing,
+-- while a real Fix & Flip -> Fix & Hold change still does. This mirrors the
+-- term (db/288) / property_type (db/322) / state (db/326) semantic-compare
+-- pattern already in this same trigger.
 -- ============================================================================
 
--- The property type a unit count implies. 1 (or an unknown/blank count) -> SFR
--- (the never-blank default; SFR and blank price identically, so this is
--- reprice-neutral), 2-4 -> Multi 2-4, 5+ -> Multi 5+. The labels are the portal's
--- canonical spellings (src/lib/property-type.js LABEL_OF + src/clickup/crosswalk.js
--- property_type.to) — 'Multi 2–4' uses an EN DASH on purpose so it matches the
--- crosswalk key and never re-spells on the round-trip.
-CREATE OR REPLACE FUNCTION pilot_property_type_from_units(u integer) RETURNS text AS $$
+-- The program MEANING key — the SQL twin of src/lib/pricing.js engineStrategy().
+-- Keep the branch ORDER identical to engineStrategy() (blank/not-sure -> flip
+-- first, then bridge, ground, hold, flip, else the value itself), so PILOT never
+-- disagrees with the engine about whether two program labels are the same deal.
+CREATE OR REPLACE FUNCTION pilot_program_norm(p text) RETURNS text AS $$
+DECLARE x text := lower(btrim(coalesce(p, '')));
 BEGIN
-  IF u IS NULL OR u <= 1     THEN RETURN 'SFR (1 unit)'; END IF;
-  IF u BETWEEN 2 AND 4       THEN RETURN 'Multi 2–4';    END IF;
-  RETURN 'Multi 5+';
+  IF x = '' OR position('not sure' in x) > 0 THEN RETURN 'flip'; END IF;
+  IF position('bridge' in x) > 0 OR position('stabil' in x) > 0 THEN RETURN 'bridge'; END IF;
+  IF position('ground' in x) > 0 THEN RETURN 'ground'; END IF;
+  IF position('hold' in x) > 0 OR position('brrrr' in x) > 0 THEN RETURN 'hold'; END IF;
+  IF position('flip' in x) > 0 THEN RETURN 'flip'; END IF;
+  RETURN x;
 END;
 $$ LANGUAGE plpgsql IMMUTABLE;
 
--- Default a blank property_type from the unit count on EVERY write path. BEFORE
--- INSERT catches file creation from the borrower app, the staff new-file form,
--- the public intake and the ClickUp materialize path; BEFORE UPDATE OF
--- property_type, units heals a value edited (or COALESCE-touched by the inbound
--- sync) to blank, or fills the type the moment a unit count arrives.
-CREATE OR REPLACE FUNCTION default_property_type() RETURNS trigger AS $$
+-- Default a blank / "Not sure yet" program to Fix & Flip on EVERY write path.
+-- BEFORE INSERT catches file creation from the borrower app, the staff new-file
+-- form, the public intake and the ClickUp materialize path; BEFORE UPDATE OF
+-- program heals a value edited (or COALESCE-touched by the inbound sync) to blank.
+CREATE OR REPLACE FUNCTION default_deal_program() RETURNS trigger AS $$
 BEGIN
-  IF NEW.property_type IS NULL OR btrim(NEW.property_type) = '' THEN
-    NEW.property_type := pilot_property_type_from_units(NEW.units);
+  IF NEW.program IS NULL OR btrim(NEW.program) = '' OR lower(btrim(NEW.program)) = 'not sure yet' THEN
+    NEW.program := 'Fix & Flip w/ Construction';
   END IF;
   RETURN NEW;
 END;
 $$ LANGUAGE plpgsql;
 
-DROP TRIGGER IF EXISTS trg_default_property_type ON applications;
-CREATE TRIGGER trg_default_property_type
-  BEFORE INSERT OR UPDATE OF property_type, units ON applications
+DROP TRIGGER IF EXISTS trg_default_deal_program ON applications;
+CREATE TRIGGER trg_default_deal_program
+  BEFORE INSERT OR UPDATE OF program ON applications
   FOR EACH ROW
-  EXECUTE FUNCTION default_property_type();
+  EXECUTE FUNCTION default_deal_program();
 
 -- Re-create the P&P / Scope-of-Work / term-sheet / Iska re-price trigger
--- function. This is db/381's authoritative version verbatim EXCEPT the
--- property-type comparison, which now ALSO suppresses a blank -> units-consistent
--- SFR/Multi-2-4 fill (the label-only, pricing-neutral default above). Every other
--- line is identical to db/381 — do not drop the SoW-scope, semantic
--- term/type/state/program compares, stale-registration marking, or the
--- term-sheet / Iska reopens.
+-- function. This is db/373's authoritative version verbatim EXCEPT the two
+-- `program` comparisons, which now go through pilot_program_norm() so the
+-- Fix-&-Flip default above (a label-only, pricing-neutral change) never reopens
+-- Products & Pricing or itemizes a phantom "Program: Not sure yet → Fix & Flip"
+-- line. A genuine deal-type change (Fix & Flip -> Fix & Hold / Bridge / Ground-Up)
+-- changes the engine strategy, so it still reopens exactly as before. Every other
+-- line is identical to db/373 — do not drop the SoW-scope, semantic term/type/
+-- state compares, stale-registration marking, or the term-sheet / Iska reopens.
 CREATE OR REPLACE FUNCTION reopen_conditions_on_budget_change() RETURNS trigger AS $$
 DECLARE
-  budget_changed   boolean;
-  scope_changed    boolean;
-  pricing_changed  boolean;
-  ptype_changed    boolean;
-  ptype_units_fill boolean;
-  prog_changed     boolean;
-  changes          text[] := '{}';
-  detail           text := '';
-  stale_msg        text;
-  note_msg         text;
+  budget_changed  boolean;
+  scope_changed   boolean;
+  pricing_changed boolean;
+  ptype_changed   boolean;
+  prog_changed    boolean;
+  changes         text[] := '{}';
+  detail          text := '';
+  stale_msg       text;
+  note_msg        text;
 BEGIN
   budget_changed := NEW.rehab_budget IS DISTINCT FROM OLD.rehab_budget;
 
@@ -95,25 +101,14 @@ BEGIN
     OR COALESCE(NEW.sqft_pre,0)  IS DISTINCT FROM COALESCE(OLD.sqft_pre,0)
     OR COALESCE(NEW.sqft_post,0) IS DISTINCT FROM COALESCE(OLD.sqft_post,0);
 
-  -- A blank property type filled from the file's unit count to its pricing-
-  -- EQUIVALENT default (SFR for 1 unit, Multi 2-4 for 2-4 units — both price as an
-  -- eligible 1-4 unit deal exactly as a blank type did) is a label-only backfill
-  -- (db/382), not a re-price. A Multi 5+ fill DOES change eligibility, so it is
-  -- deliberately NOT suppressed and still reopens.
-  ptype_units_fill := COALESCE(btrim(OLD.property_type), '') = ''
-    AND pilot_property_type_norm(NEW.property_type)
-          = pilot_property_type_norm(pilot_property_type_from_units(NEW.units))
-    AND pilot_property_type_norm(NEW.property_type) IN ('sfr', 'multi_2_4');
-
   -- Property type compares by MEANING (db/322): "Multi 2-4" vs "Multi 2–4" vs
   -- "multi_2_4" is NOT a change, and replacing an appraisal FORM NUMBER with a
   -- real property type is a REPAIR of bad data, not a re-price event (the loan
-  -- was never priced on a form number). A real type change still counts; filling
-  -- a genuinely blank type still counts EXCEPT the reprice-neutral units fill.
+  -- was never priced on a form number). A real type change, and filling a
+  -- genuinely blank type, still count exactly as before.
   ptype_changed := pilot_property_type_norm(NEW.property_type)
                      IS DISTINCT FROM pilot_property_type_norm(OLD.property_type)
-                   AND NOT pilot_is_appraisal_form_code(OLD.property_type)
-                   AND NOT ptype_units_fill;
+                   AND NOT pilot_is_appraisal_form_code(OLD.property_type);
 
   -- The deal program compares by MEANING (db/381): 'Not sure yet' / blank and
   -- 'Fix & Flip w/ Construction' all price as Fix & Flip (engineStrategy), so the
@@ -154,12 +149,14 @@ BEGIN
   IF pricing_changed THEN
     -- Build the plain-language "which number changed" list (best-effort — a
     -- change we don't itemize falls back to the generic wording below).
+    -- Itemized only on a SEMANTIC program change (db/381) — never on the
+    -- Fix-&-Flip default.
     IF prog_changed THEN
       changes := changes || ('Program: ' || pilot_fmt_txt(OLD.program) || ' → ' || pilot_fmt_txt(NEW.program)); END IF;
     IF NEW.loan_type IS DISTINCT FROM OLD.loan_type THEN
       changes := changes || ('Loan type: ' || pilot_fmt_txt(OLD.loan_type) || ' → ' || pilot_fmt_txt(NEW.loan_type)); END IF;
     -- Itemized only on a SEMANTIC property-type change (db/322) — never on a
-    -- re-spelling, a form-code repair, or the reprice-neutral units fill (db/382).
+    -- re-spelling, and never on a form-code repair.
     IF ptype_changed THEN
       changes := changes || ('Property type: ' || pilot_fmt_txt(OLD.property_type) || ' → ' || pilot_fmt_txt(NEW.property_type)); END IF;
     IF NEW.units IS DISTINCT FROM OLD.units THEN
@@ -262,23 +259,21 @@ BEGIN
 END;
 $$ LANGUAGE plpgsql;
 
--- Previous files: fill every blank property_type from the unit count so no
--- existing file keeps an empty *Property Type. Reprice-neutral for SFR/Multi-2-4
--- by the meaning-aware trigger above; a Multi 5+ fill correctly reopens Products
--- & Pricing (a 5+ building is ineligible and must be re-reviewed). Idempotent:
--- after the first run there is no blank property_type left to match. (The
--- go-forward ClickUp card fill is done by the boot one-shot
--- backfillDefaultPropertyTypePushOnce() in src/sync/clickup-sync.js.)
+-- Previous files: default every blank / "Not sure yet" program to Fix & Flip so
+-- no existing file keeps an empty ClickUp *Program. Reprice-neutral by the
+-- meaning-aware trigger above, so no Products & Pricing condition is reopened.
+-- Idempotent: after the first run there is no blank/"Not sure yet" program left
+-- to match. (The go-forward ClickUp card fill is done by the boot one-shot
+-- backfillDefaultProgramPushOnce() in src/sync/clickup-sync.js.)
 INSERT INTO audit_log (actor_kind, actor_id, action, entity_type, entity_id, detail)
-  SELECT 'system', NULL, 'property_type_defaulted', 'application', id,
-         jsonb_build_object('from', property_type, 'to', pilot_property_type_from_units(units),
-           'units', units,
-           'why', 'blank property type derived from the unit count so the ClickUp *Property Type is never empty (owner-directed 2026-07-31)')
+  SELECT 'system', NULL, 'deal_program_defaulted', 'application', id,
+         jsonb_build_object('from', program, 'to', 'Fix & Flip w/ Construction',
+           'why', 'blank / "Not sure yet" deal program defaulted to Fix & Flip so the ClickUp Program is never empty (owner-directed 2026-07-30)')
     FROM applications
    WHERE deleted_at IS NULL
-     AND (property_type IS NULL OR btrim(property_type) = '');
+     AND (program IS NULL OR btrim(program) = '' OR lower(btrim(program)) = 'not sure yet');
 
 UPDATE applications
-   SET property_type = pilot_property_type_from_units(units)
+   SET program = 'Fix & Flip w/ Construction'
  WHERE deleted_at IS NULL
-   AND (property_type IS NULL OR btrim(property_type) = '');
+   AND (program IS NULL OR btrim(program) = '' OR lower(btrim(program)) = 'not sure yet');

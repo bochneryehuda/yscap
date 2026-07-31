@@ -28,8 +28,8 @@ const R = require('path').resolve(__dirname, '..');
 
   // db/322 (re-applied by a sibling test in the shared suite) reverts the reopen
   // fn; restore the newest chain so this test always runs the production trigger.
-  await db.query(fs.readFileSync(R + '/db/381_default_deal_program.sql', 'utf8'));
-  await db.query(fs.readFileSync(R + '/db/382_default_property_type.sql', 'utf8'));
+  await db.query(fs.readFileSync(R + '/db/382_default_deal_program.sql', 'utf8'));
+  await db.query(fs.readFileSync(R + '/db/383_default_property_type.sql', 'utf8'));
 
   const mkApp = async (propertyType, units) => {
     const b = await db.query(`INSERT INTO borrowers(first_name,last_name,email) VALUES('P','D',$1) RETURNING id`, [rnd()]);
@@ -78,7 +78,7 @@ const R = require('path').resolve(__dirname, '..');
   await db.query(`ALTER TABLE applications DISABLE TRIGGER trg_default_property_type`);
   await db.query(`UPDATE applications SET property_type=NULL WHERE id=$1`, [back]);
   await db.query(`ALTER TABLE applications ENABLE TRIGGER trg_default_property_type`);
-  await db.query(fs.readFileSync(R + '/db/382_default_property_type.sql', 'utf8'));   // re-run the backfill
+  await db.query(fs.readFileSync(R + '/db/383_default_property_type.sql', 'utf8'));   // re-run the backfill
   ok(await ptOf(back) === 'Multi 2–4', 'the boot backfill fills a pre-existing blank row from its unit count');
 
   // ---- 6. reprice-neutral SFR/2-4 fill; Multi 5+ fill reopens P&P ------------

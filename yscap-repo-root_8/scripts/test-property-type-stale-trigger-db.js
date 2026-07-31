@@ -35,8 +35,8 @@ const R = require('path').resolve(__dirname, '..');
   // units-fill) in this shared test DB. applyLatest() restores the newest chain so
   // the function under test is the real production one (382 wins on every boot).
   const applyLatest = async () => {
-    await db.query(fs.readFileSync(R + '/db/381_default_deal_program.sql', 'utf8'));
-    await db.query(fs.readFileSync(R + '/db/382_default_property_type.sql', 'utf8'));
+    await db.query(fs.readFileSync(R + '/db/382_default_deal_program.sql', 'utf8'));
+    await db.query(fs.readFileSync(R + '/db/383_default_property_type.sql', 'utf8'));
   };
 
   async function mkApp(propertyType, term) {

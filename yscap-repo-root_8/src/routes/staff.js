@@ -1906,7 +1906,7 @@ router.post('/applications/:id/vesting-llc', async (req, res) => {
 // lieu of LLC documents) waives the LLC condition (rtl_p1_llc): the file is flagged
 // personal_name_purchase, the affidavit is filed as the condition's evidence, the
 // condition is signed off, and the ClickUp *Vesting dropdown flips to Individual
-// (default is LLC — db/383). Sending { undo:true } reverses it: clears the flag,
+// (default is LLC — db/384). Sending { undo:true } reverses it: clears the flag,
 // reopens the condition, and pushes vesting back to LLC.
 router.post('/applications/:id/vesting/personal-name', async (req, res) => {
   try {

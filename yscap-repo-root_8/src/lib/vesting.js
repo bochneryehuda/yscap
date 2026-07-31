@@ -51,7 +51,7 @@ async function setVestingLlc(appId, llcId, opts = {}) {
         return { changed: false, reason: 'human_or_verified_protected' };
     }
   }
-  // Linking a real vesting entity always wins over a personal-name flag (db/383):
+  // Linking a real vesting entity always wins over a personal-name flag (db/384):
   // the file vests in an LLC, so clear any stale personal-name-purchase waiver so
   // the ClickUp *Vesting dropdown reads LLC.
   await db.query(`UPDATE applications SET llc_id=$2, personal_name_purchase=false, updated_at=now() WHERE id=$1`, [appId, llcId]);
