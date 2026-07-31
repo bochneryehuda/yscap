@@ -119,27 +119,36 @@ for (const s of scenarios()) {
   rows.push(crypto.createHash('sha256').update(JSON.stringify(r)).digest('hex'));
 }
 
+/* Chunked digests: one hash per CHUNK of scenarios rather than per scenario.
+   115,200 individual hashes is a 7 MB file that would be rewritten on every
+   baseline update and bloat the repo forever. Chunking keeps the baseline at
+   ~75 KB while still localising a failure to a small block of scenarios,
+   which is all you need to start debugging. */
+const CHUNK = 100;
+const chunks = [];
+for (let i = 0; i < rows.length; i += CHUNK) {
+  chunks.push(crypto.createHash('sha256').update(rows.slice(i, i + CHUNK).join('')).digest('hex').slice(0, 32));
+}
+
 const result = {
-  version: 1,
+  version: 2,
   engines: { standard: YSP.md5, gold: GSP.md5, silver: SVP.md5, title: TTL.md5 },
-  matrix: { quick: QUICK, scenarios: n },
+  matrix: { quick: QUICK, scenarios: n, chunk: CHUNK },
   statuses,
   digest: crypto.createHash('sha256').update(rows.join('')).digest('hex'),
-  rows,
+  chunks,
 };
 
 /* ---- compare or record -------------------------------------------------- */
 fs.mkdirSync(path.dirname(BASELINE), { recursive: true });
 if (UPDATE || !fs.existsSync(BASELINE)) {
-  fs.writeFileSync(BASELINE, JSON.stringify({ ...result, rows: undefined, rowsHash: result.digest }, null, 2) + '\n');
-  fs.writeFileSync(BASELINE.replace('.json', '.rows'), rows.join('\n') + '\n');
+  fs.writeFileSync(BASELINE, JSON.stringify(result, null, 2) + '\n');
   console.log(`baseline written: ${n.toLocaleString()} scenarios, digest ${result.digest.slice(0, 16)}`);
   console.log(`status spread: ${JSON.stringify(statuses)}`);
   process.exit(0);
 }
 
 const base = JSON.parse(fs.readFileSync(BASELINE, 'utf8'));
-const baseRows = fs.readFileSync(BASELINE.replace('.json', '.rows'), 'utf8').trim().split('\n');
 
 console.log(`scenarios        : ${n.toLocaleString()}`);
 console.log(`status spread    : ${JSON.stringify(statuses)}`);
@@ -149,18 +158,20 @@ if (engineChanged.length) {
   console.log(`\n⚠ ENGINE FILE(S) CHANGED since the baseline: ${engineChanged.join(', ')}`);
   console.log('  A guideline change requires the owner\'s explicit written authorisation.');
 }
-if (base.matrix.quick !== QUICK) {
-  console.error(`\nFAIL: baseline was recorded with --quick=${base.matrix.quick}; rerun with the same matrix.`);
+if (base.version !== result.version || base.matrix.quick !== QUICK || base.matrix.chunk !== CHUNK) {
+  console.error(`\nFAIL: baseline shape differs (version/--quick/chunk); re-record with the same settings.`);
   process.exit(1);
 }
-if (baseRows.length !== rows.length) {
-  console.error(`\nFAIL: scenario count changed (${baseRows.length} → ${rows.length}).`);
+if ((base.chunks || []).length !== chunks.length) {
+  console.error(`\nFAIL: scenario count changed (${(base.chunks || []).length * CHUNK} → ${n}).`);
   process.exit(1);
 }
-let bad = 0;
-for (let i = 0; i < rows.length; i++) if (rows[i] !== baseRows[i]) bad++;
-if (bad) {
-  console.error(`\nFAIL: ${bad.toLocaleString()} of ${rows.length.toLocaleString()} scenarios produce DIFFERENT numbers.`);
+const badChunks = [];
+for (let i = 0; i < chunks.length; i++) if (chunks[i] !== base.chunks[i]) badChunks.push(i);
+if (badChunks.length) {
+  console.error(`\nFAIL: ${badChunks.length} of ${chunks.length} scenario blocks produce DIFFERENT numbers`
+    + ` (up to ${(badChunks.length * CHUNK).toLocaleString()} scenarios).`);
+  console.error(`  first differing block: scenarios ${badChunks[0] * CHUNK + 1}–${(badChunks[0] + 1) * CHUNK}`);
   console.error('This is a release blocker unless the owner authorised the exact change in writing.');
   process.exit(1);
 }
