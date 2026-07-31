@@ -162,7 +162,9 @@ function economics(loan) {
   // so no-exception loans are byte-identical).
   const totalRehab = n(a.rehab_budget) != null ? n(a.rehab_budget) : holdback;
   let oopRehab = null;
-  if (totalRehab != null && holdback != null && totalRehab - holdback > 0) oopRehab = totalRehab - holdback;
+  const oopPriced = n(s.oopRehab); // exact priced OOP amount = the draw ledger's floor
+  if (oopPriced != null && oopPriced > 0) oopRehab = oopPriced;
+  else if (totalRehab != null && holdback != null && totalRehab - holdback > 0) oopRehab = totalRehab - holdback;
   let initialAdvance = n(s.initialAdvance);
   if (initialAdvance == null && totalLoan != null) initialAdvance = totalLoan - (holdback || 0) - (financedReserve || 0);
   return {

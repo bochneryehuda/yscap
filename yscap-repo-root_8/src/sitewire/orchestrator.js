@@ -258,6 +258,18 @@ async function getLink(appId) {
   return (await db.query(`SELECT * FROM sitewire_property_links WHERE application_id=$1`, [appId])).rows[0] || null;
 }
 
+// The out-of-pocket rehab amount (integer cents) the file's CURRENT registration priced —
+// the money the borrower funds themselves before any draw is reimbursed (the OOP-rehab
+// exception, owner-directed 2026-07-31). 0 when there is no exception, so the draw floor is
+// 0 and every release stays byte-identical. Read from the priced sizing (oopRehab, whole
+// dollars) so it's exact — no subtraction drift against the full budget.
+async function registrationOopCents(appId) {
+  const r = (await db.query(
+    `SELECT quote FROM product_registrations WHERE application_id=$1 AND is_current LIMIT 1`, [appId])).rows[0];
+  const oop = r && r.quote && r.quote.sizing ? Number(r.quote.sizing.oopRehab) : 0;
+  return Number.isFinite(oop) && oop > 0 ? Math.round(oop * 100) : 0;
+}
+
 // The email Sitewire's borrower invite is sent to: the coordinator's per-file OVERRIDE
 // (link.invite_email — e.g. the borrower's GC/partner, since Sitewire allows only ONE email per
 // property) if set, else the file's own borrower email. Used by every assign/resend so the whole
@@ -1500,4 +1512,4 @@ async function listSitewireDocumentsForVerify(appId) {
   } catch (e) { return { managed: true, available: false, documents: [], error: (e && e.message) || 'error' }; }
 }
 
-module.exports = { pushFile, pushBudget, setPropertyLifecycle, updatePropertyControls, getPropertyLive, pushJobItemDescription, resetDrawSetup, collisionProperty, getBorrowerInviteStatus, resendBorrowerInvite, setBorrowerInviteEmail, inviteEmailFor, listQuickNotifyStatuses, setDrawQuickNotify, getSitewireDocuments, listSitewireDocumentsForVerify, park, journal, circuitCheck, resolveCapitalPartnerId, resolveRule, resolveInspection, resolveCoordinatorId, getLink, loadFile, isManaged, recordSetupStatus, SITEWIRE_BIRTH_REASONS, LIFECYCLE_STATES, INSPECTION_METHODS };
+module.exports = { pushFile, pushBudget, setPropertyLifecycle, updatePropertyControls, getPropertyLive, pushJobItemDescription, resetDrawSetup, collisionProperty, getBorrowerInviteStatus, resendBorrowerInvite, setBorrowerInviteEmail, inviteEmailFor, listQuickNotifyStatuses, setDrawQuickNotify, getSitewireDocuments, listSitewireDocumentsForVerify, park, journal, circuitCheck, resolveCapitalPartnerId, resolveRule, resolveInspection, resolveCoordinatorId, getLink, registrationOopCents, loadFile, isManaged, recordSetupStatus, SITEWIRE_BIRTH_REASONS, LIFECYCLE_STATES, INSPECTION_METHODS };

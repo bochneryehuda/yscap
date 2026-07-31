@@ -278,6 +278,14 @@ async function persistProductRegistration(client, { appId, program, inputs, quot
   const sqf = newRehabType
     ? sqftForType(rehabType, wasRehab.sqftPre, wasRehab.sqftPost)
     : { sqftPre: wasRehab.sqftPre, sqftPost: wasRehab.sqftPost };
+  // The FINANCED portion of the rehab (owner-directed 2026-07-31) — what the loan
+  // actually advances through draws = the holdback AFTER the OOP-rehab exception moved
+  // money to the initial advance. rehab_budget stays the FULL construction budget (the
+  // Sitewire budget must equal it — G-RECON); financed_rehab_budget is the part financed,
+  // so the loan file "understands it's more initial and less construction". With no
+  // exception the holdback equals the full budget, so financed_rehab_budget tracks
+  // rehab_budget and the derived out-of-pocket floor (rehab_budget − financed) is 0.
+  const financedRehab = s.rehabHoldback == null ? num(inputs.rehabBudget) : Math.round(num(s.rehabHoldback));
   await client.query(
     `UPDATE applications
         SET loan_amount=$2,
@@ -316,6 +324,7 @@ async function persistProductRegistration(client, { appId, program, inputs, quot
             rehab_type=$17,
             sqft_pre=$18,
             sqft_post=$19,
+            financed_rehab_budget=$23,
             updated_at=now()
       WHERE id=$1`,
     [
@@ -349,6 +358,7 @@ async function persistProductRegistration(client, { appId, program, inputs, quot
       claimExpVal(claimedExp, 'flips'),
       claimExpVal(claimedExp, 'holds'),
       claimExpVal(claimedExp, 'ground'),
+      financedRehab,                                  // $23 — financed rehab (holdback); full budget when no OOP exception
     ]);
   // Term-sheet options onto the file (owner-directed 2026-07-22) — only when the
   // caller supplied them, so a path that doesn't touch them leaves the file's

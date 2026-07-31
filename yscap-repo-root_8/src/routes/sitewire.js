@@ -666,6 +666,12 @@ router.get('/files/:id/draw-setup', requirePermission('manage_draws'), async (re
     const sowUnits = M.unitCount(a.sow_payload && a.sow_payload.state);
     const fileUnits = (a.units != null && Number(a.units) > 0) ? Number(a.units) : 0;
     const physicalUnits = Math.max(1, fileUnits, sowUnits);
+    // Out-of-pocket-first (owner-directed 2026-07-31): the OOP-rehab floor the draw ledger will
+    // enforce — the borrower funds this first and it is never reimbursed. Use the snapshot once the
+    // draw process is started, else the live registration amount (what Start will snapshot). 0 = no
+    // exception; the full construction budget still pushes to Sitewire (G-RECON) either way.
+    const oopFloorCents = (link && Number(link.oop_floor_cents) > 0) ? Number(link.oop_floor_cents) : await orchestrator.registrationOopCents(appId);
+    const fullRehabCents = budgetDollars != null ? Math.round(Number(budgetDollars) * 100) : null;
     res.json({
       started: !!(link && link.sitewire_property_id),
       state: link ? link.state : null,
@@ -685,6 +691,13 @@ router.get('/files/:id/draw-setup', requirePermission('manage_draws'), async (re
       requires: { sitewire_inspector: !!(rule && rule.require_sitewire_inspector), capital_partner_approval: !!(rule && rule.require_capital_partner_approval) },
       // disagree only once a SOW exists (before that, sowUnits defaults to 1 and would falsely flag)
       units: { file: fileUnits || null, sow: hasSow ? sowUnits : null, physical: physicalUnits, disagree: hasSow && fileUnits > 0 && fileUnits !== sowUnits },
+      // Out-of-pocket-first floor: full construction budget still pushes to Sitewire; the floor is what
+      // PILOT's draw ledger holds back from reimbursement (0 when there is no OOP-rehab exception).
+      out_of_pocket: {
+        floor_cents: oopFloorCents,
+        full_rehab_cents: fullRehabCents,
+        financed_rehab_cents: fullRehabCents != null ? Math.max(0, fullRehabCents - oopFloorCents) : null,
+      },
       // Routing (phase 1, 2026-07-24): which platform administers this file's draws.
       // 'external' = the legacy handled-externally semantics (PILOT does nothing);
       // 'trustpoint' = full Sitewire setup as intake+mirror, approvals run in TrustPoint.
@@ -757,6 +770,15 @@ router.post('/files/:id/start-draw', requirePermission('manage_draws'), async (r
       await db.query(`UPDATE sitewire_property_links SET fee_cents_override=$2, updated_at=now() WHERE application_id=$1`, [appId, feeOverride]);
       await orchestrator.journal({ appId, entity: 'settings', field: 'draw_fee_cents', newValue: feeOverride == null ? '(rule default)' : String(feeOverride), source: 'coordinator_start', changed: true }).catch(() => {});
     }
+    // Snapshot the out-of-pocket-first floor (owner-directed 2026-07-31) onto the property link as the
+    // draw process begins — the borrower funds the first `oopFloorCents` of rehab themselves and it is
+    // never reimbursed (the OOP-rehab exception). The structure is frozen post-funding, so this equals
+    // the current registration's priced OOP amount; snapshotting fixes the contract the draw ledger
+    // enforces even if the file is later re-registered under a super-admin unlock. 0 (no exception) leaves
+    // every release byte-identical to before.
+    const oopFloorCents = await orchestrator.registrationOopCents(appId);
+    await db.query(`UPDATE sitewire_property_links SET oop_floor_cents=$2, updated_at=now() WHERE application_id=$1`, [appId, oopFloorCents]);
+    if (oopFloorCents > 0) await orchestrator.journal({ appId, entity: 'settings', field: 'oop_floor_cents', newValue: String(oopFloorCents), source: 'coordinator_start', changed: true }).catch(() => {});
     // Record the draw-start as a visible team notification so it shows in the file's Draw messages box
     // ("when the draw is being pushed / registered"). Fires once per Start; best-effort.
     notify.notifyAppStaff(appId, {
@@ -1185,9 +1207,17 @@ router.post('/disbursements', requirePermission('manage_draws'), async (req, res
          OR t.portal_draw_request_id IN (SELECT id FROM portal_draw_requests WHERE sitewire_draw_id=$1))`, [drawId]);
   if (dupTp.rowCount) return res.status(409).json({ error: 'This draw\'s release was already recorded automatically from the draw administrator — there is nothing to enter by hand.' });
   try {
-    // retainage: hold a % of the approved amount; net = approved − fee − retainage held
+    // retainage: hold a % of the reimbursable amount; net = reimbursable − fee − retainage held
     const pct = await retainagePctFor(application_id);
-    const split = computeRelease({ approvedCents: approved, feeCents: fee, retainagePct: pct });
+    // Out-of-pocket-first (owner-directed 2026-07-31 — the OOP-rehab exception): the borrower funds
+    // the first `floorCents` of rehab themselves, so it is never reimbursed. The floor was snapshotted
+    // onto the property link when the draw process started (0 when there is no exception → every number
+    // below is byte-identical). `priorApproved` is the approved rehab already recorded on this file's
+    // earlier draws (the dup-check above guarantees this draw isn't among them), so computeRelease
+    // reimburses only the part of THIS draw that clears the running floor.
+    const floorCents = Number(((await db.query(`SELECT oop_floor_cents FROM sitewire_property_links WHERE application_id=$1`, [application_id])).rows[0] || {}).oop_floor_cents) || 0;
+    const priorApproved = Number((await db.query(`SELECT COALESCE(sum(approved_cents),0) s FROM draw_disbursements WHERE application_id=$1 AND kind='draw'`, [application_id])).rows[0].s) || 0;
+    const split = computeRelease({ approvedCents: approved, feeCents: fee, retainagePct: pct, oopFloorCents: floorCents, priorApprovedCents: priorApproved });
     if (!split.ok) return res.status(422).json({ error: split.violation });
     // lien-waiver gate: the release already named its draw (required above), so we check exactly that draw's
     // waivers. Block the release if any required waiver is still outstanding (never guessed).
@@ -1724,10 +1754,21 @@ router.get('/files/:id/rollup', requirePermission('manage_draws'), async (req, r
     const rlsd = Number((await db.query(`SELECT COALESCE(sum(net_release_cents),0) r FROM draw_disbursements WHERE application_id=$1 AND kind='retainage_release'`, [appId])).rows[0].r) || 0;
     const waivers = (await db.query(`SELECT id, sitewire_draw_id, kind, scope, tier, party_name, amount_cents, status, received_at FROM draw_lien_waivers WHERE application_id=$1 ORDER BY created_at DESC`, [appId])).rows;
     const retainage = { pct: await retainagePctFor(appId), held_cents: held, released_cents: rlsd, holding_cents: Math.max(0, held - rlsd) };
+    // Out-of-pocket-first KPI (owner-directed 2026-07-31): the OOP-rehab floor snapshotted on this
+    // file's draw setup, and how much of it the recorded draws have already absorbed (the borrower's
+    // own money that was never reimbursed). Only present when there is an exception (floor > 0), so a
+    // file with no OOP exception is byte-identical. absorbed = min(cumulative approved, floor).
+    const oopFloor = link ? Number(link.oop_floor_cents || 0) : 0;
+    let oop = null;
+    if (oopFloor > 0) {
+      const drawApprovedTotal = Number((await db.query(`SELECT COALESCE(sum(approved_cents),0) s FROM draw_disbursements WHERE application_id=$1 AND kind='draw'`, [appId])).rows[0].s) || 0;
+      const absorbed = Math.min(drawApprovedTotal, oopFloor);
+      oop = { floor_cents: oopFloor, absorbed_cents: absorbed, remaining_cents: Math.max(0, oopFloor - absorbed) };
+    }
     // lien waivers are OFF by default and only surface once turned on (globally OR for this
     // project) — the panel shows only when enabled or already in use.
     const lienWaiversEnabled = await lienGateEnabled(appId);
-    res.json({ rollup, link, draws, requests, ledger, findings, change_requests: changeRequests, retainage, waivers,
+    res.json({ rollup, link, draws, requests, ledger, findings, change_requests: changeRequests, retainage, oop, waivers,
       lien_waivers_enabled: lienWaiversEnabled, lien_waivers_file_override: link ? link.require_lien_waivers : null,
       // go-forward-only status for the draw-section banner: preexisting = blocked on a pre-existing
       // Sitewire property PILOT didn't create; setup_status = the last birth-phase outcome (inline, not a

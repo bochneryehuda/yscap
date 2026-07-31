@@ -145,7 +145,12 @@ function computeSeasoning(input) {
     .map((x) => ({ date: x.date || null, amount: num0(x.amount) }))
     .filter((x) => x.amount > 0);
   const releasedRaw = releases.reduce((s, x) => s + x.amount, 0);
-  const disbursedHoldback = Math.min(holdback, releasedRaw);
+  // Out-of-pocket-first (owner-directed 2026-07-31 — the OOP-rehab exception): the first
+  // `oopFloor` of released rehab is the borrower's own money and never converts from the
+  // (financed) holdback into outstanding principal — only the rehab drawn BEYOND the floor
+  // draws the holdback down. oopFloor=0 (no exception) → releasedRaw, byte-identical.
+  const oopFloor = num0(i.oopFloor);
+  const disbursedHoldback = Math.min(holdback, Math.max(0, releasedRaw - oopFloor));
 
   // Interest reserve used so far ≈ interest paid to date, capped at what was
   // financed. Payments (and therefore reserve draw-down) begin at the first
@@ -223,6 +228,10 @@ function seasoningInputs(loan, asOf) {
     firstPaymentDate: a.first_payment_date || null,
     asOf: asOf || null,
     releases: (loan && loan.releases) || [],
+    // Out-of-pocket-first floor (owner-directed 2026-07-31): the priced OOP-rehab amount —
+    // the SAME value the draw ledger snapshots as its floor — so seasoning and the draws
+    // agree on which rehab is the borrower's own money. 0 when there is no exception.
+    oopFloor: num0(sz.oopRehab),
   };
 }
 
