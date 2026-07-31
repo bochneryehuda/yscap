@@ -76,7 +76,7 @@ function StatusPill({ row }) {
       forwarded: ['Forwarded to the team', 'ok'], chat_posted: ['Posted to chat', 'ok'], received: ['Received', 'ok'],
       auto_reply: ['Auto-reply', 'muted'], no_recipients: ['No one to receive it', 'danger'], failed_permanent: ['Could not process', 'danger'],
       rate_limited: ['Rate limited', 'muted'], archived_app: ['Archived file', 'muted'],
-      self_reply: ['On file (sender is the only assignee)', 'muted'],
+      self_reply: ['On file (sender was its only recipient)', 'muted'],
     };
     const [label, tone] = map[row.status] || (['retrieval_failed', 'forward_failed', 'lookup_failed', 'error'].includes(row.status)
       ? ['Delivery issue — retrying', 'muted'] : ['Processing', 'muted']);

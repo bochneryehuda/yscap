@@ -12,7 +12,9 @@
  * email provider are stubbed (no network); the webhook signature is a real
  * Svix round-trip so the verifier is exercised for real.
  *
- * Run: node scripts/test-inbound-file-email.js   (needs local Postgres)
+ * Run: DATABASE_URL=postgres://… node scripts/test-inbound-file-email.js
+ * (DB-gated: skips cleanly when DATABASE_URL is unset — the plain CI `test`
+ * job has no Postgres; the `test-db` job runs it for real.)
  */
 const crypto = require('crypto');
 
@@ -22,6 +24,12 @@ const crypto = require('crypto');
 // default instead of this guard took the whole `test` job down with
 // ECONNREFUSED retries + ABORT (PR #929's first CI run).
 if (!process.env.DATABASE_URL) { console.log('SKIP test-inbound-file-email (no DATABASE_URL)'); process.exit(0); }
+
+// Hermetic against the runner's environment: a NOTIFY_ADMINS var (or a local
+// .env) would feed adminFallbackRecipients extra email-only entries and flip
+// the admin-edge assertions (self_reply/no_recipients → forwarded). Config
+// caches env at require time, so clear it BEFORE any app module loads.
+process.env.NOTIFY_ADMINS = '';
 
 // --- env MUST be set before any app module (config caches it) --------------
 const DOMAIN = 'reply.yscapgroup.test';
