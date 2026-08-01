@@ -38,6 +38,11 @@ export const SUBJECTS = [
   { key: 'assets',       label: 'Assets & liquidity' },
   { key: 'credit',       label: 'Credit & background' },
   { key: 'terms',        label: 'Terms & signing' },
+  // The investor's final review + clear-to-close sit BEFORE closing — they gate
+  // clear-to-close, they are not the closing package (owner-directed 2026-07-30:
+  // "these two conditions are prior to CtC, not closing conditions"). Their own
+  // group so they never read as part of the closing docs below.
+  { key: 'investor',     label: 'Investor approval' },
   { key: 'closing',      label: 'Closing' },
   { key: 'setup',        label: 'File setup' },
   { key: 'other',        label: 'Other' },
@@ -62,6 +67,9 @@ export const CODE_SUBJECT = {
   rtl_cond_appraisaldocs: 'valuation', appraisal_as_is_verify: 'valuation',
   appraisal_review_cleared: 'valuation', rtl_p1_arv: 'valuation', rtl_p4_arv: 'valuation',
   rtl_p4_ltc: 'valuation', rtl_p4_ltv: 'valuation', cond_condo_docs: 'valuation',
+  // the subject PROPERTY itself — its USPS-standardized, deliverable address is the
+  // foundation every valuation and financing export is written against.
+  usps_address_verification: 'valuation',
   // the work
   scope_of_work: 'construction', rtl_p3_sow1: 'construction', rtl_p1_plans: 'construction',
   rtl_cond_feasibility: 'construction', draw_cond_signed_request: 'construction',
@@ -69,6 +77,11 @@ export const CODE_SUBJECT = {
   title_commitment: 'title', rtl_cond_title: 'title',
   // insurance
   insurance_binder: 'insurance', rtl_cond_insurance: 'insurance', rtl_cond_flood: 'insurance',
+  // db/378 (#909) seeds the flood-INSURANCE policy condition — distinct from
+  // rtl_cond_flood, which is the flood CERTIFICATE (the determination). Both
+  // belong with Insurance; without this the new condition fell through to the
+  // catch-all "Other" group on every file that carries it.
+  rtl_cond_flood_insurance: 'insurance',
   // money in the deal
   bank_statements: 'assets', rtl_p3_assets: 'assets', voided_check: 'assets',
   cond_emd_corrfirst: 'assets', cond_cashout_letter: 'assets',
@@ -77,10 +90,16 @@ export const CODE_SUBJECT = {
   // the deal's paperwork
   rtl_p4_ts: 'terms', rtl_cond_signedts: 'terms', rtl_cond_signed_app: 'terms',
   rtl_cond_iska: 'terms', rtl_cond_disclosures: 'terms', rtl_p4_ir: 'terms',
-  // getting it closed
+  // the investor's clearance BEFORE closing — final review + the investor's
+  // clear-to-close. These gate CTC (is_gate=true) and are the last pre-closing
+  // step, so they get their own group and stay OUT of the closing-package group
+  // below (owner-directed 2026-07-30).
+  rtl_f_review: 'investor', rtl_f_ctc: 'investor',
+  // getting it closed — the post-CTC closing package (balanced HUD/ALTA, the
+  // signed closing docs, the collateral tracking label). Closer-managed; never
+  // holds up clear-to-close.
   rtl_cond_settlement: 'closing', closing_hud_final: 'closing',
   closing_pkg_signed: 'closing', closing_tracking_label: 'closing',
-  rtl_f_review: 'closing', rtl_f_ctc: 'closing',
   // internal housekeeping
   cond_note_buyer_missing: 'setup', cond_loan_number_missing: 'setup',
   rtl_cond_investorstruct: 'setup', underwriting_review_cleared: 'setup',
@@ -114,7 +133,10 @@ const LABEL_RULES = [
   [/\bscope of work\b|\bsow\b|\brehab\b|\bbudget\b|\bpermit|\bplans\b|\bdraw\b|\bcontractor\b|\bfeasibility\b/i, 'construction'],
   [/\bpurchase contract\b|\bassignment\b|\bcontract of sale\b|\bseller\b/i, 'contract'],
   [/\bterm sheet\b|\biska\b|\bdisclosure\b|\bsigned application\b|\binterest reserve\b/i, 'terms'],
-  [/\bhud\b|\balta\b|\bsettlement statement\b|\bclear to close\b|\bctc\b|\bclosing package\b|\bcollateral\b/i, 'closing'],
+  // "clear to close" / "CTC" and the investor's final review come BEFORE closing —
+  // this must run before the closing rule below so those words don't fall into it.
+  [/\binvestor (final )?review\b|\bclear to close\b|\bctc\b/i, 'investor'],
+  [/\bhud\b|\balta\b|\bsettlement statement\b|\bclosing package\b|\bcollateral\b/i, 'closing'],
 ];
 
 /* The subject for one row. Accepts a checklist item, an underwriting-conditions

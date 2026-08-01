@@ -389,12 +389,19 @@ export const api = {
   // Super-admin only: the raw Encompass troubleshooting view.
   encompassRaw:      (id) => req('GET', `/api/staff/applications/${id}/encompass/raw`),
   encompassReplace:  (id, fieldKey) => req('POST', `/api/staff/applications/${id}/encompass/replace`, { fieldKey }),
+  // Flood-certificate ordering (the one owner-authorized Encompass write).
+  floodOrderState:   (id) => req('GET', `/api/staff/applications/${id}/flood-order`),
+  orderFlood:        (id, itemId) => req('POST', `/api/staff/applications/${id}/order-flood`, itemId ? { checklistItemId: itemId } : {}),
   // Credit report (Xactus import) — the internal Credit report condition.
   // `scope` = 'co' | 'primary' narrows the credit section to ONE borrower, so a
   // co-borrower's own credit condition shows their report instead of the file's.
   staffCredit:        (id, scope) => req('GET', `/api/staff/applications/${id}/credit${scope && scope !== 'file' ? `?scope=${encodeURIComponent(scope)}` : ''}`),
   staffCreditPreview: (id) => req('GET', `/api/staff/applications/${id}/credit/preview`),
   staffCreditImport:  (id, b) => req('POST', `/api/staff/applications/${id}/credit/import`, b),
+  // #16 — reuse a borrower's existing (<120-day) report from another of their files,
+  // no new inquiry; and the borrower profile's credit history across all their files.
+  staffCreditReuse:   (id, b) => req('POST', `/api/staff/applications/${id}/credit/reuse`, b),
+  staffBorrowerCredit:(borrowerId) => req('GET', `/api/staff/borrowers/${borrowerId}/credit`),
   // #147 — the cross-system observability timeline for a file (portal + ClickUp +
   // SharePoint + sync-review events, time-ordered). Scoped by the file's access.
   staffObservability: (id, opts = {}) => req('GET', `/api/staff/applications/${id}/observability`
@@ -405,6 +412,10 @@ export const api = {
   // syncs to SharePoint. Reopens the condition if nothing accepted remains.
   staffDeleteDoc:   (id) => req('DELETE', `/api/staff/documents/${id}`),
   staffDownloadDoc: (id) => download(`/api/staff/documents/${id}/download`),
+  // Read the text off a scanned document so the in-viewer search can find it.
+  // Returns { ok, pages:[{page,text}], engine, reason }. Never throws for the
+  // caller's UX — a not-configured / failed read is a shaped { ok:false }.
+  staffOcrDoc:      (id) => req('POST', `/api/staff/documents/${id}/ocr`, {}),
   staffBorrowerSearch: (q) => req('GET', '/api/staff/borrowers/search?q=' + encodeURIComponent(q)),
   // #83 — loan-officer borrower management
   staffBorrowers:   () => req('GET', '/api/staff/borrowers'),
@@ -441,6 +452,10 @@ export const api = {
   // entities only (not the borrower's whole LLC library). Returns { vestingLlcId, llcs:[{...,vesting}] }.
   staffAppVerifyLlcs: (appId) => req('GET', `/api/staff/applications/${appId}/verify-llcs`),
   staffSetVestingLlc: (appId, llcId) => req('POST', `/api/staff/applications/${appId}/vesting-llc`, { llcId }),
+  // Personal-name purchase: waive the LLC condition with a non-owner-occupied
+  // affidavit → vesting flips to Individual (db/383). Pass the affidavit upload to
+  // waive, or { undo:true } to go back to an LLC purchase (the default).
+  staffVestingPersonalName: (appId, b) => req('POST', `/api/staff/applications/${appId}/vesting/personal-name`, normalizeUpload(b || {})),
   staffCreateLlc:    (borrowerId, b) => req('POST', `/api/staff/borrowers/${borrowerId}/llcs`, b),
   staffLlc:          (id) => req('GET', `/api/staff/llcs/${id}`),
   staffUpdateLlc:    (id, b) => req('PATCH', `/api/staff/llcs/${id}`, b),
@@ -546,6 +561,11 @@ export const api = {
   // #152 — export the current pipeline VIEW (same filter params as staffApplications).
   staffExportPipeline: (params) => download(`/api/staff/applications/export${qs(params)}`),
   staffPricing:      (appId) => req('GET', `/api/staff/applications/${appId}/pricing`),
+  // 1% closing-cost liquidity buffer waiver (owner-authorized 2026-07-31; admin).
+  staffSetLiquidityBuffer: (appId, waived) => req('POST', `/api/staff/applications/${appId}/liquidity-buffer`, { waived: !!waived }),
+  // Per-officer business settings (owner-directed 2026-07-31) — self-scoped.
+  mySettings:        () => req('GET', '/api/staff/my-settings'),
+  saveMySettings:    (settings) => req('PUT', '/api/staff/my-settings', { settings }),
   staffPricingQuote: (appId, overrides) => req('POST', `/api/staff/applications/${appId}/pricing/quote`, { overrides }),
   staffRegisterProduct: (appId, program, overrides, econVersion, assetMonths, submitException, termOptions, encompassOverrideReason) => req('POST', `/api/staff/applications/${appId}/pricing/register`, { program, overrides, econVersion, assetMonths, submitException, termOptions, encompassOverrideReason }),
   // Redesign 2026-07-24: the pricing exception is a first-class register record —
@@ -567,6 +587,17 @@ export const api = {
   withdrawException:         (appId, eid) => req('POST', `/api/staff/applications/${appId}/exceptions/${eid}/withdraw`, {}),
   loanExceptions:            (status, type) => req('GET', `/api/admin/exceptions${qs({ status, type })}`),
   loanExceptionsCount:       () => req('GET', '/api/admin/exceptions/count'),
+  /* Investor Suite saved scenarios (owner-directed 2026-07-30) — a staffer's own
+     named working states for the suite tools, so they can price a deal that is not
+     a file yet and pick it up later. Private to the staffer; every route is keyed
+     server-side on the actor, so there is no id to pass. `toolScenarios()` with no
+     tool returns the whole list plus per-tool counts for the suite grid badges;
+     the full state is fetched only when a scenario is actually opened. */
+  toolScenarios:             (tool) => req('GET', `/api/staff/tool-scenarios${qs({ tool })}`),
+  toolScenario:              (id) => req('GET', `/api/staff/tool-scenarios/${id}`),
+  saveToolScenario:          (body) => req('POST', '/api/staff/tool-scenarios', body),
+  renameToolScenario:        (id, body) => req('PUT', `/api/staff/tool-scenarios/${id}`, body),
+  deleteToolScenario:        (id) => req('DELETE', `/api/staff/tool-scenarios/${id}`),
   // The register report (counts, approval rate, time-to-decision, aging) and the
   // diligence-ready xlsx export of the register (redesign 2026-07-24).
   loanExceptionMetrics:      () => req('GET', '/api/admin/exceptions/metrics'),
@@ -675,7 +706,7 @@ export const api = {
   staffAssign:      (appId, b) => req('POST', `/api/staff/applications/${appId}/assign`, b),
   // Multi-assignee team (#64): the full team + add/remove full-access assistants.
   staffAssignees:      (appId) => req('GET', `/api/staff/applications/${appId}/assignees`),
-  staffAddAssignee:    (appId, staffId, role) => req('POST', `/api/staff/applications/${appId}/assignees`, { staffId, role }),
+  staffAddAssignee:    (appId, staffId, role, primary) => req('POST', `/api/staff/applications/${appId}/assignees`, { staffId, role, primary: !!primary }),
   staffRemoveAssignee: (appId, staffId, role) => req('DELETE', `/api/staff/applications/${appId}/assignees/${staffId}${role ? `?role=${role}` : ''}`),
   staffSetStatus:   (appId, status, force) => req('PATCH', `/api/staff/applications/${appId}`, force ? { status, force: true } : { status }),
   // Internal (ClickUp) status — the exact 38-status task workflow. The list feeds
@@ -872,6 +903,10 @@ export const api = {
   staffBorrowerMerge:      (id, body) => req('POST', `/api/staff/borrowers/${id}/merge`, body),
   staffBorrowerMerges:     (id) => req('GET', `/api/staff/borrowers/${id}/merges`),
   staffAppraisalCard:(appId) => req('GET', `/api/staff/applications/${appId}/appraisal-card`),
+  // Appraisal "no XML available" waiver.
+  appraisalXmlWaiverGet:    (appId) => req('GET', `/api/staff/applications/${appId}/appraisal-xml-waiver`),
+  appraisalXmlWaiverSet:    (appId, body) => req('POST', `/api/staff/applications/${appId}/appraisal-xml-waiver`, body),
+  appraisalXmlWaiverRemove: (appId) => req('DELETE', `/api/staff/applications/${appId}/appraisal-xml-waiver`),
   staffSaveAppraisalCard:(appId, b) => req('POST', `/api/staff/applications/${appId}/appraisal-card`, b),
 
   // ---- Appraisal desk: import the appraisal XML, read the property profile, resolve findings ----
@@ -970,6 +1005,19 @@ export const api = {
   loNotifClearOverride:(appId, key) => req('DELETE', `/api/staff/notification-center/overrides?applicationId=${encodeURIComponent(appId)}&key=${encodeURIComponent(key)}`),
   loNotifCompose:      (b) => req('POST', '/api/staff/notification-center/compose', b),
   loNotifAnalytics:    (days) => req('GET',  `/api/staff/notification-center/analytics${days ? `?days=${days}` : ''}`),
+  // ---- "For me" — the LO's OWN inbox controls ----
+  loNotifSelfPrefs:        () => req('GET',  '/api/staff/notification-center/self-prefs'),
+  loNotifSelfSavePref:     (key, body) => req('PUT', `/api/staff/notification-center/self-prefs/${encodeURIComponent(key)}`, body),
+  loNotifSelfBulkSave:     (items) => req('POST', '/api/staff/notification-center/self-prefs/bulk', { items }),
+  loNotifDeliveryRules:    () => req('GET',  '/api/staff/notification-center/delivery-rules'),
+  loNotifDeliveryRulesPut: (b) => req('PUT',  '/api/staff/notification-center/delivery-rules', b),
+  loNotifMuteFile:         (b) => req('POST', '/api/staff/notification-center/mute-file', b),
+  loNotifUnmuteFile:       (appId) => req('DELETE', `/api/staff/notification-center/mute-file?applicationId=${encodeURIComponent(appId)}`),
+  loNotifMutedFiles:       () => req('GET',  '/api/staff/notification-center/muted-files'),
+  loNotifStarFile:         (appId) => req('POST', '/api/staff/notification-center/star-file', { applicationId: appId }),
+  loNotifUnstarFile:       (appId) => req('DELETE', `/api/staff/notification-center/star-file?applicationId=${encodeURIComponent(appId)}`),
+  loNotifStarredFiles:     () => req('GET',  '/api/staff/notification-center/starred-files'),
+  loNotifSelfVolume:       (days) => req('GET',  `/api/staff/notification-center/self-volume${days ? `?days=${days}` : ''}`),
 
   // ---- Borrower view: stand inside a borrower's portal (owner-directed 2026-07-26) ----
   // The flow itself lives in lib/auth.jsx (startBorrowerView / exitBorrowerView),

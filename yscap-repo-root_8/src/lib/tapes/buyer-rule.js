@@ -88,8 +88,19 @@ class LoanNotFoundError extends Error {
 // Normalized note-buyer key of a loan (from its raw ClickUp lender label).
 function loanBuyerKey(loan) { return normNoteBuyer(loan && loan.noteBuyerRaw); }
 
+// True when a normalized loan-buyer key names this tape's buyer: the canonical key,
+// or one of the tape's ENUMERATED alias spellings (e.g. EMCAP's real ClickUp label
+// "EMCAP Financial" → 'emcapfinancial'; tapes/emcap.js buyerAliases). Deliberately a
+// closed list — never a prefix/fuzzy match — because an over-match HERE exports a
+// data tape for the wrong buyer.
+function keyNamesTapeBuyer(key, tape) {
+  if (!tape || !key) return false;
+  if (key === tape.buyerKey) return true;
+  return Array.isArray(tape.buyerAliases) && tape.buyerAliases.includes(key);
+}
+
 // True when `loan`'s capital provider matches `tape`'s buyer.
-function buyerMatches(loan, tape) { return !!tape && loanBuyerKey(loan) === tape.buyerKey; }
+function buyerMatches(loan, tape) { return !!tape && keyNamesTapeBuyer(loanBuyerKey(loan), tape); }
 
 function assertBuyer(loan, tape) {
   if (!buyerMatches(loan, tape)) throw new BuyerMismatchError(tape, loan && loan.noteBuyerRaw);
@@ -134,7 +145,7 @@ function tapeAvailability(buyerKey, currentBuyerRaw, opts = {}) {
       reason = `Register this loan's product first, then export the ${t.name} tape.`;
     } else if (prog === 'manual') {
       reason = 'This loan is Manual (admin-approved) — only an admin can export its tape.';
-    } else if (buyerKey !== t.buyerKey) {
+    } else if (!keyNamesTapeBuyer(buyerKey, t)) {
       reason = cur
         ? `Capital provider is "${cur}" — switch it to ${t.name} to export this tape.`
         : `No capital provider set — set it to ${t.name} to export this tape.`;
@@ -151,5 +162,5 @@ function tapeAvailability(buyerKey, currentBuyerRaw, opts = {}) {
 module.exports = {
   BuyerMismatchError, NotRegisteredError, ProgramMismatchError, ManualAdminOnlyError,
   TapeNotFoundError, LoanNotFoundError,
-  loanBuyerKey, buyerMatches, assertBuyer, exportGate, assertExportAllowed, tapeAvailability,
+  loanBuyerKey, keyNamesTapeBuyer, buyerMatches, assertBuyer, exportGate, assertExportAllowed, tapeAvailability,
 };

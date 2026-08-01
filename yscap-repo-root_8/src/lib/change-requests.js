@@ -130,6 +130,60 @@ async function isBorrowerLocked(appId, client = db) {
   }
 }
 
+/* THE SAME QUESTION FOR A FIELD ON THE SHARED `borrowers` ROW — which is a
+   question about the PERSON, not about one file (fourth audit, 2026-07-31).
+ *
+ * `isBorrowerLocked` asks "does THIS application carry current terms", which is
+ * right for an economics column on `applications`. It is wrong for a personal
+ * column, because that row is shared across every file the person is on and
+ * db/126's `reopen_pricing_on_fico_change` re-prices ALL of them: keyed per
+ * file, a borrower with a funded registered file A and any second unregistered
+ * file B could answer the credit-score condition on B and write `borrowers.fico`
+ * LIVE, flipping A's registration stale and reopening Products & Pricing on a
+ * closed loan.
+ *
+ * Returns the application a request should be ANCHORED to — the borrower's
+ * most-recently-registered file, whose team approves it — or null when the
+ * person has no accepted terms anywhere and may still edit freely. This is the
+ * borrower profile door's own query, lifted here so both doors share one
+ * definition instead of two that can drift. Fails OPEN (null) like its sibling:
+ * if we cannot tell, do not hard-block the borrower.
+ *
+ * `ownFileSql(alias, placeholder)` is injected because the borrower-scope
+ * fragment lives in routes/borrower.js; the default is the plain primary /
+ * co-borrower test, so a caller that has no fragment still asks the right
+ * question. */
+/* THE SCOPE FRAGMENT IS OWNED HERE, NOT INJECTED (fifth audit, 2026-07-31).
+   It was a parameter for one round, and in that round the two callers passed
+   DIFFERENT things: the profile door passed the full borrower scope, the
+   info-condition door passed nothing and got a default that omits
+   `borrower_profile_links`. So on a LINKED profile the "one shared definition"
+   disagreed with itself — measured, a linked borrower wrote a governed identity
+   field LIVE on a REGISTERED, FUNDED file, which is strictly more permissive
+   than the round it replaced. A caller-supplied fragment is also interpolated
+   straight into SQL, which is an injection SHAPE for no gain. One definition,
+   here, used by both. Mirrors routes/borrower.js OWN_FILE_SQL, which now
+   delegates to it. */
+const OWN_FILE_SQL = (alias, p) => {
+  const a = alias ? alias + '.' : '';
+  return `(${a}borrower_id=${p} OR ${a}co_borrower_id=${p}` +
+    ` OR ${a}borrower_id IN (SELECT linked_borrower_id FROM borrower_profile_links WHERE borrower_id=${p})` +
+    ` OR ${a}co_borrower_id IN (SELECT linked_borrower_id FROM borrower_profile_links WHERE borrower_id=${p}))`;
+};
+async function anchorForBorrower(borrowerId, client = db) {
+  if (!borrowerId) return null;
+  try {
+    const r = await client.query(
+      `SELECT a.id FROM applications a
+         JOIN product_registrations pr ON pr.application_id = a.id AND pr.is_current
+        WHERE (${OWN_FILE_SQL('a', '$1')}) AND a.deleted_at IS NULL
+        ORDER BY pr.created_at DESC LIMIT 1`, [borrowerId]);
+    return r.rows[0] ? r.rows[0].id : null;
+  } catch (_) {
+    return null;
+  }
+}
+
 // Normalize an incoming borrower value the same way the live-write paths do, so a
 // requested value and the stored value are comparable (money → number string).
 function normalizeValue(field, raw) {
@@ -174,6 +228,22 @@ async function openRequest(appId, field, rawValue, opts = {}, client = db) {
   if (newValue == null || newValue === '') throw Object.assign(new Error('a value is required'), { status: 400 });
   if (FIELD_OPTIONS[field] && !FIELD_OPTIONS[field].includes(newValue))
     throw Object.assign(new Error(`${FIELD_LABELS[field]} must be one of: ${FIELD_OPTIONS[field].join(', ')}`), { status: 400 });
+  /* A VALUE THE COLUMN CANNOT HOLD IS REFUSED HERE, not stored and discovered
+     at approval (fifth audit, 2026-07-31). Nothing bounded the proposal, so an
+     oversized ARV was accepted with a 200, filed as pending, and then made the
+     approve door answer 500 FOREVER — a request that can never be applied,
+     which is exactly the shape this door's own freeze ordering exists to
+     prevent, on the value axis instead of the status axis. Meanwhile the staff
+     details door refused the identical value with a plain 400 naming the limit.
+     Same limit, same words, from the same module. */
+  {
+    const nb = require('./number-bounds');
+    const kind = MONEY_FIELDS.has(field) ? 'money' : (INT_FIELDS.has(field) ? 'int' : null);
+    if (kind) {
+      const bad = nb.columnProblem(field, Number(newValue), kind, FIELD_LABELS[field] || field);
+      if (bad) throw Object.assign(new Error(bad), { status: 400 });
+    }
+  }
   const oldValue = await currentValue(appId, field, client);
   const oldNorm = normalizeValue(field, oldValue);
   if (oldNorm === newValue) return { unchanged: true, field };
@@ -233,7 +303,20 @@ async function openBorrowerRequest(appId, field, rawValue, { reason, requesterKi
     // request; a redundant same-SSN ask is rare and harmless.
   } else {
     newValue = normalizeBorrowerValue(field, rawValue);
-    if (newValue == null || newValue === '') throw Object.assign(new Error('a value is required'), { status: 400 });
+    /* SAY WHICH PROBLEM IT IS (fourth audit, 2026-07-31). `normalizeBorrowerValue`
+       returns null for BOTH "you typed nothing" and "what you typed is not a
+       valid value for this field" — so an out-of-range credit score came back
+       as "a value is required" while the borrower was looking at the number
+       they had just typed. The same value on an unregistered file gets the
+       live-write path's honest "credit score must be between 300 and 850".
+       Blank is still blank; anything else is named for what it is. */
+    if (newValue == null || newValue === '') {
+      const typedSomething = rawValue != null && String(rawValue).trim() !== '';
+      throw Object.assign(
+        new Error(typedSomething ? `${labelOf(field)}: that isn’t a value we can use — check it and try again.`
+          : 'a value is required'),
+        { status: 400 });
+    }
     oldValue = await currentBorrowerValue(targetBorrowerId, field, client);
     if (normalizeBorrowerValue(field, oldValue) === newValue) return { unchanged: true, field };
   }
@@ -328,6 +411,6 @@ const GOVERNED_FIELDS = Object.keys(FIELD_LABELS);
 module.exports = {
   FIELD_LABELS, MONEY_FIELDS, INT_FIELDS, FIELD_OPTIONS, GOVERNED_FIELDS, isGovernedField,
   BORROWER_FIELD_LABELS, BORROWER_FIELDS, isBorrowerField, isChangeRequestable, fieldEntity, labelOf,
-  isBorrowerLocked, openRequest, openBorrowerRequest, applyRequest, currentValue, currentBorrowerValue,
+  isBorrowerLocked, anchorForBorrower, OWN_FILE_SQL, openRequest, openBorrowerRequest, applyRequest, currentValue, currentBorrowerValue,
   normalizeValue, normalizeBorrowerValue, formatValue, describeChange,
 };

@@ -2,6 +2,8 @@ import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { api } from '../lib/api.js';
 import { dealPurchase } from '../lib/dealPrice.js';
 import { onFilesDropped } from '../lib/drop-files.js';
+import { fmtDate } from '../lib/dates.js';
+import { ChainAddress, ChainHistory } from './ClosingEmailChain.jsx';
 
 /* THE CLOSING WORKSPACE (owner-directed 2026-07-26). The closer's desk inside a
    loan file: deal details, the actual cash-to-close money gate against verified
@@ -16,7 +18,7 @@ import { onFilesDropped } from '../lib/drop-files.js';
 
 const money0 = (v) => (v == null || v === '' ? '—' : '$' + Number(v).toLocaleString(undefined, { maximumFractionDigits: 0 }));
 const money2 = (v) => (v == null || v === '' ? '—' : '$' + Number(v).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 }));
-const day = (v) => (v ? String(v).slice(0, 10) : '—');
+const day = (v) => fmtDate(v);   // MM/DD/YYYY (industry standard), shift-free
 
 function fileToBase64(file) {
   return new Promise((resolve, reject) => {
@@ -103,7 +105,7 @@ export default function ClosingPanel({ appId, app, can, onDownloadDoc, onPreview
       </div>
 
       {/* Deal details */}
-      <DealDetails appId={appId} app={app} />
+      <DealDetails appId={appId} app={app} structure={ws.structure} />
 
       {/* Money: estimate + actual cash-to-close + verified liquidity */}
       <MoneySection appId={appId} money={money} isCloser={isCloser} busy={busy} run={run}
@@ -142,6 +144,12 @@ export default function ClosingPanel({ appId, app, can, onDownloadDoc, onPreview
         </div>
       </div>
 
+      {/* The closing email chain — the file's own closing address + the whole
+          attorney conversation. It is SENT from the Orders desk ("Attorney closing
+          prep"), but the closer looks for it HERE, so it is surfaced in both places
+          off the one shared component. */}
+      <ClosingEmailChainPanel appId={appId} onDownloadDoc={onDownloadDoc} />
+
       {/* Closing conditions (uploads) */}
       <ConditionsSection appId={appId} conditions={ws.conditions || []} isCloser={isCloser}
         onPreview={onPreview} onDownloadDoc={onDownloadDoc} onUploaded={refresh} setErr={setErr} />
@@ -157,6 +165,50 @@ export default function ClosingPanel({ appId, app, can, onDownloadDoc, onPreview
 
       {/* Notes */}
       <NotesSection appId={appId} notes={ws.notes || []} onChanged={refresh} setErr={setErr} />
+    </div>
+  );
+}
+
+/* THE CLOSING EMAIL CHAIN, surfaced on the closer's desk. The address is minted and
+   the request is SENT from the Orders desk ("Attorney closing prep"), but this is
+   where the closer expects to OPEN the conversation — so it reads the same closing
+   data and renders the SAME shared address + history components. Loaded lazily off
+   the existing closing-prep endpoint (no backend change); no chain yet just points
+   back to Orders. */
+function ClosingEmailChainPanel({ appId, onDownloadDoc }) {
+  const [chain, setChain] = useState(undefined); // undefined = loading, null = none yet
+  const [err, setErr] = useState('');
+  useEffect(() => {
+    let live = true;
+    setChain(undefined); setErr('');
+    api.staffClosingPrep(appId)
+      .then((d) => { if (live) setChain((d && d.chain) || null); })
+      .catch((e) => { if (live) setErr((e && e.message) || 'Could not load the closing email chain.'); });
+    return () => { live = false; };
+  }, [appId]);
+  return (
+    <div className="panel" style={{ marginBottom: 14 }}>
+      <div className="panel-h"><h3 style={{ margin: 0 }}>Closing email chain</h3>
+        <span className="muted small">The file's own closing email address, and the whole attorney conversation.</span></div>
+      <div className="panel-b">
+        {err ? <div className="notice err">{err}</div>
+          : chain === undefined ? <div className="muted small">Loading the closing email chain…</div>
+            : (
+              <>
+                <ChainAddress chain={chain} emptyHint={
+                  <div className="notice" style={{ border: '1px solid var(--gold,#AE8746)', background: 'var(--paper,#F6F3EC)' }}>
+                    <b style={{ color: '#141B22' }}>Closing prep hasn't been sent yet.</b>
+                    <div className="small" style={{ color: '#4B585C', marginTop: 3 }}>
+                      This file doesn't have its own closing email address until the closing-prep request goes to the
+                      attorney. Send it from the <b>Orders (title, insurance &amp; closing prep)</b> section — the
+                      "Attorney closing prep" card — and the address, plus everything on the chain, appears here.
+                    </div>
+                  </div>
+                } />
+                <ChainHistory appId={appId} chain={chain} onDownload={onDownloadDoc} />
+              </>
+            )}
+      </div>
     </div>
   );
 }
@@ -185,7 +237,7 @@ function Fact({ k, v }) {
    shows final → original → fee in that order, side by side. The band is the
    only place the layout differs, so neither shape looks like the other with a
    hole in it. Figures come from the ONE shared derivation (lib/dealPrice.js). */
-function DealDetails({ appId, app }) {
+function DealDetails({ appId, app, structure }) {
   const price = dealPurchase(app);
   return (
     <div className="panel" style={{ marginBottom: 14 }}>
@@ -199,7 +251,24 @@ function DealDetails({ appId, app }) {
           <Fact k="Program" v={(app && (app.registered_program || app.program)) || '—'} />
           <Fact k="Loan amount" v={money0(app && app.loan_amount)} />
           <Fact k="Rehab budget" v={money0(app && app.rehab_budget)} />
-          <Fact k="Financed interest reserve" v={money0(app && app.requested_ir_amount)} />
+          {/* THE reserve the loan CARRIES, read from the registered product's own sized
+              quote — NOT applications.requested_ir_amount, which is only what was ASKED
+              FOR and is 0 on every months-driven file, so this row printed "$0" on a loan
+              carrying a real reserve (owner-reported 2026-07-30). With nothing registered
+              yet the request is shown under its own honest label instead. */}
+          <Fact k="Financed interest reserve"
+            v={structure && structure.financedReserve != null
+              ? money0(structure.financedReserve) + (structure.reserveCapped
+                ? ' · capped by ' + (structure.reserveCapBy || 'the program leverage ceiling')
+                : '')
+              : '— (no registered product yet)'} />
+          {(!structure || structure.financedReserve == null)
+            && app && (Number(app.requested_ir_amount) > 0 || Number(app.requested_ir_months) > 0) && (
+            <Fact k="Interest reserve requested"
+              v={Number(app.requested_ir_amount) > 0
+                ? money0(app.requested_ir_amount)
+                : Number(app.requested_ir_months) + ' months'} />
+          )}
           <Fact k="Loan coordinator" v={(app && app.loan_officer_name) || '—'} />
         </div>
 

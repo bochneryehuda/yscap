@@ -32,7 +32,13 @@
  *   • GET/POST /:id/comments — the staff-only thread (type-aware copy).
  *
  * Segregation of duties: the approver cannot be the requester (enforced here) —
- * this stays regardless of who may decide.
+ * with ONE exemption, owner-directed 2026-07-31 ("I'm requesting an exception
+ * myself as super admin and it says I cannot approve my own exception — this is
+ * a failure"): a SUPER-ADMIN may decide their own request. They are the top
+ * authority, and in a one-super-admin shop a second approver is a dead end —
+ * the same exemption the manual-program escalation box has always had
+ * (admin-manual-programs.js mayDecide). Every decision is audited either way.
+ * A regular admin still can never decide their own request.
  * Decide gate = `manage_pricing` (admins + super-admins). Owner-directed
  * 2026-07-26 ("let any Admin approve") — WIDENED from the original
  * super-admin-only rule. Narrowing it again is an owner decision; the
@@ -56,24 +62,41 @@ function auditSafe(actorId, action, entityType, entityId, detail) {
     [actorId || null, action, entityType, entityId, JSON.stringify(detail || {})]).catch(() => {});
 }
 
+/**
+ * WHO may decide an exception. `manage_pricing` holders (admins + super-admins),
+ * minus the request you raised yourself — EXCEPT a super-admin, who may decide
+ * their own (owner-directed 2026-07-31; mirrors admin-manual-programs.js
+ * mayDecide, and the underwriting escalations' exemption). Checked server-side
+ * on the decide route; the UI hiding buttons is never the gate.
+ */
+function mayDecide(actor, exc) {
+  if (!actor || actor.kind !== 'staff') return false;
+  if (!can(actor, 'manage_pricing')) return false;
+  if (actor.role === 'super_admin') return true;
+  return !(exc && exc.requested_by && String(exc.requested_by) === String(actor.id));
+}
+
 // Per-type action names for the audit trail (the esign comment previously
 // audited as guaranty — type-aware everywhere now).
 const DECIDED_AUDIT = {
   guaranty_waiver: 'guaranty_exception_decided',
   esign_before_ctc: 'esign_before_ctc_exception_decided',
   pricing_exception: 'pricing_exception_decided',
+  oop_rehab: 'oop_rehab_exception_decided',
   issuance_override: 'issuance_override_decided',
 };
 const CLEARED_AUDIT = {
   guaranty_waiver: 'guaranty_exception_cleared',
   esign_before_ctc: 'esign_before_ctc_exception_cleared',
   pricing_exception: 'pricing_exception_cleared',
+  oop_rehab: 'oop_rehab_exception_cleared',
   issuance_override: 'issuance_override_cleared',
 };
 const COMMENT_AUDIT = {
   guaranty_waiver: 'guaranty_exception_comment',
   esign_before_ctc: 'esign_before_ctc_exception_comment',
   pricing_exception: 'pricing_exception_comment',
+  oop_rehab: 'oop_rehab_exception_comment',
   issuance_override: 'issuance_override_comment',
 };
 
@@ -107,6 +130,9 @@ router.get('/', requirePermission('manage_pricing'), async (req, res) => {
       exceptions: rows,
       pendingCount: pending,
       canDecide: can(req.actor, 'manage_pricing'),
+      // A super-admin may decide their OWN request (owner-directed 2026-07-31);
+      // the UI uses this to keep the Approve/Deny buttons on own-request rows.
+      canDecideOwn: req.actor.role === 'super_admin',
       actorId: req.actor.id,
       ...registryPayload(),
     });
@@ -188,12 +214,13 @@ router.post('/:id/decide', requirePermission('manage_pricing'), async (req, res)
     if (!note || !String(note).trim()) {
       return res.status(400).json({ error: 'Add a short note explaining your decision.' });
     }
-    // Segregation of duties: the approver cannot be the person who requested it.
+    // Segregation of duties: the approver cannot be the person who requested it
+    // — unless they are the super-admin (top authority; see mayDecide above).
     const exc = await loanExceptions.getById(req.params.id);
     if (!exc) return res.status(404).json({ error: 'That exception no longer exists.' });
     if (exc.status !== 'requested') return res.status(409).json({ error: 'This exception was already decided.' });
-    if (exc.requested_by && exc.requested_by === req.actor.id) {
-      return res.status(403).json({ error: 'The person who requested an exception cannot approve their own request.' });
+    if (!mayDecide(req.actor, exc)) {
+      return res.status(403).json({ error: 'You requested this exception — another admin has to approve or deny it.' });
     }
 
     const isGuaranty = exc.exception_type === 'guaranty_waiver';
@@ -409,10 +436,17 @@ router.post('/:id/comments', async (req, res) => {
       const notifType = exc.exception_type === 'guaranty_waiver' ? 'guaranty_exception_comment' : 'exception_comment';
       for (const sid of participants) {
         // The requester reads their queue; a reviewer reads the box.
-        const link = exc.requested_by && sid === exc.requested_by ? '/internal/my-exceptions' : '/internal/exceptions';
+        const isRequester = !!(exc.requested_by && sid === exc.requested_by);
+        const link = isRequester ? '/internal/my-exceptions' : '/internal/exceptions';
+        // A reply TO THE REQUESTER on their OWN exception is FORCED (owner-directed
+        // 2026-07-29) — the loan officer who raised it can never turn this one off,
+        // so a super-admin's "why do you need this exception?" always reaches them.
+        // Everyone else on the thread gets the ordinary (disableable) comment type.
         await notify.notifyStaff(sid, {
-          type: notifType,
-          title: `New comment on a ${typeLabel.toLowerCase()} exception`,
+          type: isRequester ? 'exception_request_reply' : notifType,
+          title: isRequester
+            ? `Reply on your ${typeLabel.toLowerCase()} exception request`
+            : `New comment on a ${typeLabel.toLowerCase()} exception`,
           body: `${req.actor.name || 'A team member'} commented on ${what} on ${ctx ? ctx.label : 'a file'}:\n\n${body.slice(0, 600)}`,
           meta: (ctx && ctx.meta) || undefined, applicationId: exc.application_id,
           link, ctaLabel: 'Open the exception',
@@ -451,8 +485,7 @@ router.get('/:id/gate', async (req, res) => {
       requestSnapshot: exc.gate_snapshot || null,
       decidedGate: exc.decided_gate || null,
       waivedCodes: Array.isArray(exc.waived_codes) ? exc.waived_codes : null,
-      canDecide: can(req.actor, 'manage_pricing') && exc.status === 'requested'
-        && !(exc.requested_by && exc.requested_by === req.actor.id),
+      canDecide: exc.status === 'requested' && mayDecide(req.actor, exc),
     });
   } catch (e) { res.status(500).json({ error: 'server error' }); }
 });

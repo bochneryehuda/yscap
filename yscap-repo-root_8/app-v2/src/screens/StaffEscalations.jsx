@@ -354,9 +354,9 @@ export default function StaffEscalations() {
             const isOpen = r.status === 'pending' || r.status === 'countered';
             const badgeCls = r.status === 'approved' ? 'ok' : (r.status === 'declined' ? 'err' : 'warn');
             const kindLabel = s.kind === 'manual_review'
-              ? `${s.program === 'gold' ? 'Gold Standard' : 'Standard'} — manual-review exception`
+              ? `${s.program === 'gold' ? 'Gold Standard' : s.program === 'silver' ? 'Silver' : 'Standard'} — manual-review exception`
               : s.kind === 'pricing_override'
-                ? `${s.program === 'gold' ? 'Gold Standard' : 'Standard'} — pricing changed from the defaults`
+                ? `${s.program === 'gold' ? 'Gold Standard' : s.program === 'silver' ? 'Silver' : 'Standard'} — pricing changed from the defaults`
                 : 'Manual Program';
             const acqLabel = (s.kind === 'manual_review' || s.kind === 'pricing_override') ? 'As-is LTV' : 'Acq LTV';
             // Per-row decide right (server-computed): an admin may decide any

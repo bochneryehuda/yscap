@@ -47,7 +47,7 @@ const engine = require('./conditions/engine');
 // The rule fields that ARE the note buyer. A template whose rule tree mentions one of
 // these is note-buyer-driven; anything else is pending/retracting for its own reasons
 // and must not be attributed to a note-buyer switch.
-const NOTE_BUYER_FIELDS = ['note_buyer', 'note_buyer_is_fidelis'];
+const NOTE_BUYER_FIELDS = ['note_buyer', 'note_buyer_is_fidelis', 'note_buyer_is_emcap'];
 
 /** Does a rule tree reference any note-buyer field? Walks groups + rows. */
 function mentionsNoteBuyer(node) {
@@ -66,7 +66,7 @@ function isUntouched(inst) {
     && !inst.signed_off_at && !inst.reviewed_at && !inst.has_payload && !inst.has_docs && !inst.notes;
 }
 
-/** The file's registered program ('gold' | 'standard' | 'manual' | null). */
+/** The file's registered program ('gold' | 'standard' | 'silver' | 'manual' | null). */
 async function registeredProgram(appId, client = db) {
   try {
     const r = await client.query(
@@ -104,6 +104,18 @@ function requirementsFor(label, { program, assetMonths }) {
     });
   }
 
+  // EMCAP's extra APPRAISAL review items (owner-directed 2026-07-30) — the enforcing module
+  // is src/lib/appraisal/note-buyer-checks.js (appraisal-desk findings, source='note_buyer',
+  // raised on import / note-buyer change onto the Appraisal tab). ONE derived line here, never
+  // a second copy of the rules.
+  if (registry.isEmcapNoteBuyer(label)) {
+    out.push({
+      key: 'emcap_appraisal_review',
+      text: 'The appraisal gets EMCAP\'s extra review items as findings on the Appraisal tab: an anchor As-Is comp AND an anchor ARV comp (each a settled sale within 12 months of submission, under 15% net adjustment, in the subject\'s ZIP), a rental analysis on a rental-exit loan (a 1004 needs a 1007), interior photos, and the appraisal in our name.',
+      fromNoteBuyer: true,
+    });
+  }
+
   // Bank statements — liquidity.bankStatementMonths is the authority (the stricter of
   // program and note buyer wins).
   try {
@@ -128,7 +140,10 @@ function requirementsFor(label, { program, assetMonths }) {
     const tapes = key ? tapeReg.tapesForBuyer(key) : [];
     if (tapes.length) {
       const names = tapes.map((t) => t.name).join(', ');
-      const wantProgram = pp.programForProvider(key);
+      // Canonicalize through the matched tape's buyerKey — the file's own key may be
+      // an alias spelling ("EMCAP Financial" → 'emcapfinancial') that the program-
+      // pairing map doesn't know; the tape's canonical key always is.
+      const wantProgram = pp.programForProvider(tapes[0].buyerKey || key);
       const lines = pp.programLabel ? pp.programLabel(wantProgram) : wantProgram;
       const progOk = !wantProgram || !prog || pp.normProgram(prog) === wantProgram;
       out.push({
@@ -241,6 +256,7 @@ async function noteBuyerSlot(appId, client = db, opts = {}) {
     const candidateCtx = Object.assign({}, ctx, {
       note_buyer: registry.normNoteBuyer(o.label),
       note_buyer_is_fidelis: registry.isFidelisNoteBuyer(o.label),
+      note_buyer_is_emcap: registry.isEmcapNoteBuyer(o.label),
     });
     for (const tpl of driven) {
       let matches = false;

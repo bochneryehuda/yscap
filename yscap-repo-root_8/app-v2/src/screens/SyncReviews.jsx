@@ -40,6 +40,7 @@ const REASON_COPY = {
   portal_value_not_in_clickup: 'PILOT is holding a value that the matching ClickUp dropdown has no option for (shown above). Because ClickUp cannot store it, the update to the ClickUp card was quietly skipped — and until now the next sync read ClickUp’s old value back and UNDID the change on the file, which is why an edit like Fix & Flip → Fix & Hold kept “bouncing back”. PILOT now KEEPS its value and no longer lets the sync overwrite it. To make both systems agree, add that option to the ClickUp dropdown (then this closes itself on the next sync). If the value was picked by mistake, just set it back on the file. Nothing was lost either way — the file shows what the officer chose.',
   ctc_confirm_needed: 'ClickUp moved this file to Clear to Close, but in PILOT it is still at an earlier status (shown above). Clear to Close is a major milestone — it locks the file and tells the borrower they’re clear to close — so PILOT did NOT advance on its own. Confirm to move the file to Clear to Close in PILOT (the borrower is notified), or dismiss to keep its current status. Everything else from ClickUp still syncs normally; only this one big step waits for you.',
   economics_frozen_conflict: 'ClickUp carries different loan figures than PILOT (each change is listed above), but this file is FROZEN — a term sheet has been sent for signature, or the file is Clear-to-Close / Funded — so the numbers can’t change on their own (they would no longer match the term sheet that already went out). PILOT kept its figures and did NOT apply the ClickUp change. Three ways to settle it: (1) keep PILOT’s figures and push them back to ClickUp so both match; (2) an admin can use ClickUp’s figures and update the locked file right here (best for a reconciled/closed file whose numbers PILOT should now match — this overrides the lock); or (3) simply set the figures back in ClickUp to match the file. You no longer have to clear the term sheet or unlock the file just to accept a change.',
+  portal_edit_conflict: 'This deal field (shown above) was changed in BOTH places to different values — someone edited it on the file in PILOT, and it was ALSO changed in ClickUp. To make sure your change was not quietly undone, PILOT KEPT the file’s value and did NOT apply the ClickUp one — it is asking you which to keep instead of deciding on its own. Pick one: “Keep the PILOT value” keeps the file’s value and sends it to ClickUp so both match; “Use ClickUp’s value” puts ClickUp’s value on the file (if it changes a priced number, the pricing / Scope-of-Work steps reopen so they can be re-checked). Nothing was lost — the file still shows what was set in PILOT until you choose.',
 };
 // Sitewire draw-management parks (field_key='sitewire'). The stored reason is
 // "<class>: <detail>"; we key friendly copy by the class and show the detail beneath.
@@ -119,6 +120,10 @@ const REASON_FILE_ACTIONS = {
   ctc_confirm_needed: [
     { action: 'confirm_ctc', label: 'Confirm — move to Clear to Close', title: 'Move this file to Clear to Close in PILOT so it matches ClickUp. This is a major milestone: it locks the file and notifies the borrower.' },
   ],
+  portal_edit_conflict: [
+    { action: 'keep_portal_value', label: 'Keep the PILOT value', title: 'Keep the file’s value and push it to ClickUp so the two match. Use this when the PILOT value is the right one.' },
+    { action: 'accept_clickup_value', label: 'Use ClickUp’s value', title: 'Put ClickUp’s value on the file. If it changes a priced number, the pricing / Scope-of-Work steps reopen so they can be re-checked.' },
+  ],
 };
 // The itemized list of frozen-figure changes ClickUp made to a locked file
 // (owner-directed 2026-07-27: "open up the box — these three things were changed
@@ -195,6 +200,7 @@ const FIELD_LABELS = {
   economics_frozen: 'Loan figures — frozen (term sheet sent / file locked)',
   status_ctc: 'Clear to Close — confirm the move',
   enum_unmappable: 'A value ClickUp has no option for',
+  portal_edit_conflict: 'A change was made in both places — pick which to keep',
 };
 // Field keys the two-sided resolver can apply to BOTH systems today.
 // 'file_link' / 'ys_loan_number' rows are deliberately NOT here: they are

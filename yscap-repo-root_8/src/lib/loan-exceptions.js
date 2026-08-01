@@ -31,9 +31,11 @@
  * + expired = a time-boxed approval past its validity). Governance on top:
  *   • ANY staff member with file access may REQUEST (structured reason + note);
  *     the borrower pricing ask is recorded too (requested_by_kind='borrower').
- *   • Only a SUPER-ADMIN decides (segregation of duties — the approver cannot
- *     be the requester; enforced in the route). This gate is policy: do NOT
- *     relax it without the owner's explicit written direction.
+ *   • Any `manage_pricing` holder (admin/super-admin) decides. Segregation of
+ *     duties: the approver cannot be the requester — EXCEPT a super-admin, who
+ *     may decide their own request (owner-directed 2026-07-31; enforced in the
+ *     route's mayDecide). This gate is policy: do NOT change it without the
+ *     owner's explicit written direction.
  *   • Compensating factors (structured) travel with the request; the deal
  *     economics are SNAPSHOTTED at request time so the reviewer sees the
  *     picture the requester saw even if the file moves.
@@ -87,6 +89,27 @@ const PRICING_EXCEPTION_REASONS = Object.freeze({
   experience_tier:  'Price off a higher experience tier than verified',
   fico_liquidity:   'FICO / liquidity outside the program guideline',
   program_fit:      'Deal shape the program doesn’t cover (city, exit, budget, term…)',
+  other:            'Other (see note)',
+});
+
+// Out-of-pocket rehab exception (owner-authorized 2026-07-31): a cap cut the initial
+// advance below its own ceiling because rehab is 100% financed; the approved exception
+// raises the initial toward the cap and brings the displaced rehab OUT OF POCKET. The
+// total loan / rate / caps are unchanged — only the split shifts. Same approval as any
+// out-of-pocket rehab approval; the GRANT is the studio amount + re-register.
+const OOP_REHAB_REASONS = Object.freeze({
+  raise_initial:    'Raise the initial advance to its cap; bring the displaced rehab out of pocket',
+  borrower_funds:   'Borrower is funding part of the rehab out of pocket',
+  lower_cash_close: 'Lower the cash due at closing (fund rehab over construction instead)',
+  other:            'Other (see note)',
+});
+
+// A "no appraisal XML available" waiver. 'transferred_appraisal' auto-waives and
+// asks for a transfer-letter PDF instead (no exception is raised for it); every
+// other reason needs a note and comes here as a real exception for approval.
+const APPRAISAL_XML_WAIVER_REASONS = Object.freeze({
+  appraiser_no_xml: 'The appraiser did not provide the XML (data) file',
+  desk_or_manual:   'Desk / manual / older appraisal with no MISMO XML',
   other:            'Other (see note)',
 });
 
@@ -157,6 +180,14 @@ const EXCEPTION_TYPES = Object.freeze({
     recordOnly: false,
     slaHours: 48,
   }),
+  oop_rehab: Object.freeze({
+    label: 'Out-of-pocket rehab exception',
+    reasonCodes: OOP_REHAB_REASONS,
+    subject: 'file',
+    expirable: true,
+    recordOnly: false,
+    slaHours: 48,
+  }),
   issuance_override: Object.freeze({
     label: 'Issuance override (recorded)',
     reasonCodes: ISSUANCE_OVERRIDE_REASONS,
@@ -172,6 +203,14 @@ const EXCEPTION_TYPES = Object.freeze({
     expirable: false,
     recordOnly: true,
     slaHours: null,
+  }),
+  appraisal_xml_waiver: Object.freeze({
+    label: 'Appraisal — no XML available',
+    reasonCodes: APPRAISAL_XML_WAIVER_REASONS,
+    subject: 'file',
+    expirable: false,
+    recordOnly: false,
+    slaHours: 48,
   }),
 });
 function isExceptionType(t) { return !!t && Object.prototype.hasOwnProperty.call(EXCEPTION_TYPES, t); }
@@ -382,6 +421,34 @@ async function requestPricingException(client, { appId, reasonCode, reasonNote, 
     type: 'pricing_exception', appId, reasonCode, reasonNote, requestedBy,
     requestedByKind, requestedByBorrowerId, compensatingFactors, reRequestOf,
     dealSnapshot: await dealSnapshotFor(appId), // pool, never the tx client (25P02)
+  });
+}
+
+/**
+ * Record an OUT-OF-POCKET REHAB exception request (owner-authorized 2026-07-31).
+ * A first-class register entry (EX-n) that appears on the Exceptions screen, on top
+ * of the pricing-override escalation the register route already opens. The GRANT is
+ * the studio out-of-pocket amount + a re-register by an approver — no frozen number
+ * is touched here.
+ */
+async function requestOopRehab(client, { appId, reasonCode, reasonNote, requestedBy, requestedByKind, requestedByBorrowerId, compensatingFactors, reRequestOf }) {
+  return requestException(client, {
+    type: 'oop_rehab', appId, reasonCode: reasonCode || 'raise_initial', reasonNote, requestedBy,
+    requestedByKind, requestedByBorrowerId, compensatingFactors, reRequestOf,
+    dealSnapshot: await dealSnapshotFor(appId), // pool, never the tx client (25P02)
+  });
+}
+
+/**
+ * Request an APPRAISAL "no XML available" exception (a non-transfer reason). The
+ * waiver row itself is written by the appraisal route; this is the reviewable
+ * register entry an admin approves.
+ */
+async function requestAppraisalXmlWaiver(client, { appId, reasonCode, reasonNote, requestedBy, reRequestOf }) {
+  return requestException(client, {
+    type: 'appraisal_xml_waiver', appId, reasonCode, reasonNote, requestedBy,
+    dealSnapshot: await dealSnapshotFor(appId), // pool, never the tx client (25P02)
+    reRequestOf,
   });
 }
 
@@ -883,11 +950,13 @@ module.exports = {
   REASON_CODES, isReasonCode,
   ESIGN_BEFORE_CTC_REASONS, isEsignReasonCode,
   PRICING_EXCEPTION_REASONS, ISSUANCE_OVERRIDE_REASONS, CONDITION_OVERRIDE_REASONS,
+  APPRAISAL_XML_WAIVER_REASONS, OOP_REHAB_REASONS,
   COMPENSATING_FACTORS, sanitizeCompensatingFactors,
   EXCEPTION_TYPES, isExceptionType, typeConfig,
   reasonCodesFor, reasonLabelFor, isReasonCodeFor,
   dealSnapshotFor, dueAtFor, dealDrift, presentExpiry,
   requestException, requestGuarantyWaiver, requestEsignBeforeCtc, requestPricingException,
+  requestAppraisalXmlWaiver, requestOopRehab,
   recordIssuanceOverride, recordConditionOverride, latestEsignBeforeCtc,
   decideException, withdrawException, clearException,
   expireDueApprovals, agingOpen,

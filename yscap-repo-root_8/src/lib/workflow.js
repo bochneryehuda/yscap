@@ -133,12 +133,28 @@ async function allActiveStaff(client = db) {
 // 0 conditions → 100% (nothing to clear).
 // ---------------------------------------------------------------------------
 async function conditionsClearedPct(appId, client = db) {
+  // The four internal WORKFLOW STEPS (LTC/LTV/ARV checked + interest reserves) are
+  // hidden from the conditions list, so a human can't sign them off — counting them
+  // would peg this percentage below 100% forever. Exclude them here for the same
+  // reason `advancementBlockers` does. Kept in sync by the parity test.
+  const { WORKFLOW_STEP_CODES } = require('./conditions/workflow-step-codes');
+  // The enforced appraisal review counts toward "cleared %" even when is_required=false —
+  // mirror advancementBlockers' requiredExemptCodes (post-merge audit finding #4). Without
+  // it, flipping the review to optional makes this read 100% cleared and lets the
+  // 'conditions' submission type pass while advancementBlockers still blocks CTC.
+  const requiredExemptCodes = require('./underwriting/advisory-policy').appraisalReviewEnforced()
+    ? ['appraisal_review_cleared'] : [];
   const ci = await client.query(
     `SELECT
-        count(*) FILTER (WHERE item_kind IN ('document','condition') AND COALESCE(is_required,true) = true) AS total,
-        count(*) FILTER (WHERE item_kind IN ('document','condition') AND COALESCE(is_required,true) = true
-                         AND (signed_off_at IS NOT NULL OR status = 'satisfied')) AS cleared
-       FROM checklist_items WHERE application_id = $1`, [appId]);
+        count(*) FILTER (WHERE ci.item_kind IN ('document','condition')
+                         AND (COALESCE(ci.is_required,true) = true OR COALESCE(t.code,'') = ANY($3::text[]))) AS total,
+        count(*) FILTER (WHERE ci.item_kind IN ('document','condition')
+                         AND (COALESCE(ci.is_required,true) = true OR COALESCE(t.code,'') = ANY($3::text[]))
+                         AND (ci.signed_off_at IS NOT NULL OR ci.status = 'satisfied')) AS cleared
+       FROM checklist_items ci
+       LEFT JOIN checklist_templates t ON t.id = ci.template_id
+      WHERE ci.application_id = $1
+        AND COALESCE(t.code,'') <> ALL($2::text[])`, [appId, WORKFLOW_STEP_CODES, requiredExemptCodes]);
   const uw = await client.query(
     `SELECT count(*) AS total,
             count(*) FILTER (WHERE status NOT IN ('open','borrower_responded')) AS cleared
@@ -466,13 +482,29 @@ async function listQueue(staffId, { tab = 'next', sort = 'received', type = null
        JOIN borrowers b ON b.id = a.borrower_id
        LEFT JOIN staff_users fr ON fr.id = w.from_staff_id
       WHERE (w.to_staff_id = $1
-             -- Role INBOX: an UNASSIGNED hand-off addressed to my ROLE (nobody
-             -- picked it yet) shows for everyone in that role — this is how an
-             -- automated escalation to super_admin lands in every super-admin's
-             -- workflow (owner-directed 2026-07-21). An item WITH a to_staff_id
-             -- stays scoped to that person (the ` + '`' + `to_staff_id IS NULL` + '`' + ` guard),
-             -- so the personal-queue scoping is unchanged.
-             OR (w.to_staff_id IS NULL AND w.to_role = (SELECT role FROM staff_users WHERE id = $1)))
+             -- Role INBOX (narrowed 2026-07-31, owner-directed per-file
+             -- contacts): an UNASSIGNED hand-off addressed to my ROLE shows to
+             -- the whole role desk ONLY while the FILE has nobody actively
+             -- assigned for that role — a file with its own closer(s)/draw
+             -- coordinator(s) is THEIR work, not the desk's. An item WITH a
+             -- to_staff_id stays scoped (see the third arm). This is still how
+             -- an automated escalation to super_admin lands in every
+             -- super-admin's workflow (owner-directed 2026-07-21) — nothing
+             -- assigns super_admin rows on files.
+             OR (w.to_staff_id IS NULL AND w.to_role = (SELECT role FROM staff_users WHERE id = $1)
+                 AND NOT EXISTS (SELECT 1 FROM application_assignees aa
+                                    JOIN staff_users sau ON sau.id = aa.staff_id AND sau.is_active = true
+                                  WHERE aa.application_id = w.application_id AND aa.role = w.to_role
+                                    AND aa.removed_at IS NULL))
+             -- MULTIPLE PEOPLE PER ROLE (owner-directed 2026-07-31): every
+             -- ACTIVE assignee of the item's role on the FILE sees it — the
+             -- second closer works the same closing queue as the primary the
+             -- item was addressed to. Their workflow shows only files assigned
+             -- to them; picking up an unassigned item still claims it.
+             OR (w.to_role IS NOT NULL
+                 AND EXISTS (SELECT 1 FROM application_assignees aa
+                              WHERE aa.application_id = w.application_id AND aa.role = w.to_role
+                                AND aa.staff_id = $1 AND aa.removed_at IS NULL)))
         AND w.status IN ('open','in_progress')
         AND a.deleted_at IS NULL
         ${typeClause}
@@ -540,14 +572,30 @@ async function queueCounts(staffId, client = db) {
        FROM workflow_items w
        JOIN applications a ON a.id = w.application_id
       WHERE (w.to_staff_id = $1
-             OR (w.to_staff_id IS NULL AND w.to_role = (SELECT role FROM staff_users WHERE id = $1)))
+             OR (w.to_staff_id IS NULL AND w.to_role = (SELECT role FROM staff_users WHERE id = $1)
+                 AND NOT EXISTS (SELECT 1 FROM application_assignees aa
+                                    JOIN staff_users sau ON sau.id = aa.staff_id AND sau.is_active = true
+                                  WHERE aa.application_id = w.application_id AND aa.role = w.to_role
+                                    AND aa.removed_at IS NULL))
+             OR (w.to_role IS NOT NULL
+                 AND EXISTS (SELECT 1 FROM application_assignees aa
+                              WHERE aa.application_id = w.application_id AND aa.role = w.to_role
+                                AND aa.staff_id = $1 AND aa.removed_at IS NULL)))
         AND w.status IN ('open','in_progress') AND a.deleted_at IS NULL`, [staffId]);
   const byType = await client.query(
     `SELECT submission_type, count(*) AS n
        FROM workflow_items w
        JOIN applications a ON a.id = w.application_id
       WHERE (w.to_staff_id = $1
-             OR (w.to_staff_id IS NULL AND w.to_role = (SELECT role FROM staff_users WHERE id = $1)))
+             OR (w.to_staff_id IS NULL AND w.to_role = (SELECT role FROM staff_users WHERE id = $1)
+                 AND NOT EXISTS (SELECT 1 FROM application_assignees aa
+                                    JOIN staff_users sau ON sau.id = aa.staff_id AND sau.is_active = true
+                                  WHERE aa.application_id = w.application_id AND aa.role = w.to_role
+                                    AND aa.removed_at IS NULL))
+             OR (w.to_role IS NOT NULL
+                 AND EXISTS (SELECT 1 FROM application_assignees aa
+                              WHERE aa.application_id = w.application_id AND aa.role = w.to_role
+                                AND aa.staff_id = $1 AND aa.removed_at IS NULL)))
         AND w.status IN ('open','in_progress') AND a.deleted_at IS NULL
       GROUP BY submission_type`, [staffId]);
   const counts = { open: Number(r.rows[0].open), inProgress: Number(r.rows[0].in_progress), total: Number(r.rows[0].total), byType: {} };

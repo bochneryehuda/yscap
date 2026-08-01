@@ -132,7 +132,10 @@ export function Section({ id, title, info, badge, children, style, collapsible =
         {collapsible && !full && <span className="muted small" style={{ flex: 'none', marginLeft: (badge != null || headAction) ? 12 : 'auto' }}>{open ? 'Hide' : 'Show'}</span>}
       </div>
       {showSummary && <div className="sec-summary">{summary}</div>}
-      {(!collapsible || open || full) && children}
+      {/* A section may take a render-prop child so its content can react to full
+          screen (e.g. the Conditions hub opens every category + condition when the
+          section fills the screen). A plain element child is rendered as-is. */}
+      {(!collapsible || open || full) && (typeof children === 'function' ? children({ full }) : children)}
     </section>
   );
 }

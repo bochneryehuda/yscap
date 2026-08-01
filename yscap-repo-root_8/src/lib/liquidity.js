@@ -25,10 +25,12 @@ const money2 = (n) => (n == null || isNaN(Number(n))) ? '—' : '$' + Number(n).
 // How many months of bank statements the file requires, driven by the REGISTERED
 // program (owner-directed 2026-07-12). Before a product is registered the file
 // carries a generic "assets & bank statements" ask (no month count); once
-// registered, the Gold Standard Program requires TWO months and the Standard
-// Program requires ONE. The MANUAL Program has no fixed table — the registrant
-// states the months at registration (owner-directed 2026-07-20), passed in as
-// `assetMonths`. Borrower-facing — never names a capital partner.
+// registered, the Gold Standard Program requires TWO months, the Silver Program
+// requires TWO months (owner-directed 2026-07-29: "They require two months bank
+// statement not only one month… same as blue lake"), and the Standard Program
+// requires ONE. The MANUAL Program has no fixed table — the registrant states the
+// months at registration (owner-directed 2026-07-20), passed in as `assetMonths`.
+// Borrower-facing — never names a capital partner.
 // The NOTE BUYER can require more months than the program does (owner-directed 2026-07-26: "Blue
 // Lake needs 2 months of bank statements, not 1 — the rule text says 1"). Keyed with the SAME shared
 // normalizer the conditions engine and the guideline desk use, so one spelling of a note buyer is
@@ -36,37 +38,63 @@ const money2 = (n) => (n == null || isNaN(Number(n))) ? '—' : '$' + Number(n).
 // never lower it below what the program already asks for.
 // Object.create(null), not {}: a lender literally recorded as "constructor" would otherwise look up
 // Object.prototype.constructor and make the month count NaN. Cheap to prevent, ugly to debug.
-const NOTE_BUYER_MONTHS = Object.assign(Object.create(null), { bluelake: 2 });
+// The Silver program's note buyer requires 2 months too (owner-directed 2026-07-29); its ClickUp/
+// Sitewire label is "EMCAP Financial", which normalizes to 'emcapfinancial' — the prefix helper
+// below (same shape as isFidelisNoteBuyer, db/337) folds every spelling onto the 'emcap' entry.
+const NOTE_BUYER_MONTHS = Object.assign(Object.create(null), { bluelake: 2, emcap: 2 });
 function noteBuyerMonths(noteBuyer) {
   if (!noteBuyer) return 0;
   let key = '';
-  try { key = require('./conditions/field-registry').normNoteBuyer(noteBuyer) || ''; } catch (_) { key = ''; }
+  try {
+    const reg = require('./conditions/field-registry');
+    key = reg.normNoteBuyer(noteBuyer) || '';
+    if (!(key in NOTE_BUYER_MONTHS) && typeof reg.isEmcapNoteBuyer === 'function' && reg.isEmcapNoteBuyer(noteBuyer)) key = 'emcap';
+  } catch (_) { key = ''; }
   const m = NOTE_BUYER_MONTHS[key];
   return typeof m === 'number' && Number.isFinite(m) ? m : 0;
 }
-function bankStatementMonths(program, assetMonths, noteBuyer) {
-  const byBuyer = noteBuyerMonths(noteBuyer);
-  let byProgram;
+// The PROGRAM's own month count (before any note-buyer raise): Gold 2, Silver 2,
+// Standard 1, Manual = the registrant's stated months (default 2).
+function programMonths(program, assetMonths) {
   if (/manual/i.test(String(program || ''))) {
     const m = Math.round(Number(assetMonths));
-    byProgram = Number.isFinite(m) && m > 0 ? m : 2;   // fall back to the manual default
-  } else {
-    byProgram = /gold/i.test(String(program || '')) ? 2 : 1;
+    return Number.isFinite(m) && m > 0 ? m : 2;   // fall back to the manual default
   }
-  return Math.max(byProgram, byBuyer);
+  return /gold|silver/i.test(String(program || '')) ? 2 : 1;
+}
+function bankStatementMonths(program, assetMonths, noteBuyer) {
+  return Math.max(programMonths(program, assetMonths), noteBuyerMonths(noteBuyer));
+}
+// THE TWO-MONTH REQUIREMENT IS LOUD, NEVER A SMALL ASIDE (owner-directed 2026-07-30:
+// "it should stay in very bulk on the condition, highlighted, quoted, that this
+// program requires two months of bank statements according to the registration").
+// Whenever the registration requires 2+ months (the Gold or Silver program, a note
+// buyer that raises a Standard file, or a manual registration stating 2+), the
+// condition LEADS with an unmissable quoted banner on its own line. The '⚠️' prefix
+// on the first line is the marker the portal UIs key on to render it as a
+// highlighted callout; plain-text surfaces still read it loud (caps + quote).
+// Borrower-facing: never a note-buyer name.
+function loudMonthsBanner(m) {
+  const words = m === 2 ? 'TWO (2) MONTHS' : `${m} MONTHS`;
+  const plain = m === 2 ? 'two months' : `${m} months`;
+  return `⚠️ ${words} OF BANK STATEMENTS REQUIRED — "This program requires ${plain} of bank statements according to the registration."\n`;
 }
 function bankStatementLine(program, assetMonths, noteBuyer) {
   const m = bankStatementMonths(program, assetMonths, noteBuyer);
-  // Borrower-facing: NEVER names the note buyer (frozen rule). When the note buyer is what raises
-  // the count, the line just states the count — the reason is internal.
-  if (noteBuyerMonths(noteBuyer) >= m && m > (/gold/i.test(String(program || '')) ? 2 : 1)) {
-    return `Provide ${m} month${m === 1 ? '' : 's'} of recent bank statements — this loan requires ${m} month${m === 1 ? '' : 's'} of liquidity.`;
+  const loud = m >= 2 ? loudMonthsBanner(m) : '';
+  // Borrower-facing: NEVER names the note buyer (frozen rule). When the note buyer is what RAISES
+  // the count above the program's own requirement, the line just states the count — the reason is
+  // internal. A count the program itself requires keeps the program-named wording below.
+  if (noteBuyerMonths(noteBuyer) >= m && m > programMonths(program, assetMonths)) {
+    return `${loud}Provide ${m} month${m === 1 ? '' : 's'} of recent bank statements — this loan requires ${m} month${m === 1 ? '' : 's'} of liquidity.`;
   }
   if (/manual/i.test(String(program || ''))) {
-    return `Provide ${m} month${m === 1 ? '' : 's'} of recent bank statements — this loan's program requires ${m} month${m === 1 ? '' : 's'} of liquidity.`;
+    return `${loud}Provide ${m} month${m === 1 ? '' : 's'} of recent bank statements — this loan's program requires ${m} month${m === 1 ? '' : 's'} of liquidity.`;
   }
   return m === 2
-    ? 'Provide 2 months of recent bank statements — the Gold Standard Program requires two months.'
+    ? (/silver/i.test(String(program || ''))
+      ? `${loud}Provide 2 months of recent bank statements — the Silver Program requires two months.`
+      : `${loud}Provide 2 months of recent bank statements — the Gold Standard Program requires two months.`)
     : 'Provide 1 month of a recent bank statement — the Standard Program requires one month.';
 }
 const GENERIC_BANK_STMT_HINT =
@@ -118,6 +146,11 @@ async function syncLiquidityCondition(appId, quote, client = db, opts = {}) {
       closingCosts: Number(cc.dueAtClosing) || 0,
       reserveRequirement: Number(quote.reserveRequirement) || 0,
       reserveBasis: quote.reserveBasis || null,
+      // 1% closing-cost buffer (owner-authorized 2026-07-31) — extra cash the
+      // borrower must show so attorney/other closing charges never run short.
+      // 0 when waived per file (applications.liquidity_buffer_waived).
+      closingBuffer: Number(quote.closingBuffer) || 0,
+      closingBufferWaived: !!quote.closingBufferWaived,
       computedAt: new Date().toISOString(),
     };
     const hint =
@@ -127,7 +160,8 @@ async function syncLiquidityCondition(appId, quote, client = db, opts = {}) {
       `${breakdown.assignmentExcess > 0 ? `assignment excess ${money2(breakdown.assignmentExcess)} + ` : ''}` +
       `closing costs due at closing ${money2(breakdown.closingCosts)} ` +
       `= cash to close ${money2(breakdown.cashToClose)}; plus reserves ${money2(breakdown.reserveRequirement)}` +
-      `${breakdown.reserveBasis ? ` (${breakdown.reserveBasis})` : ''}.`;
+      `${breakdown.reserveBasis ? ` (${breakdown.reserveBasis})` : ''}` +
+      `${breakdown.closingBuffer > 0 ? `; plus a closing-cost buffer ${money2(breakdown.closingBuffer)} (1% of the loan amount, for extra closing charges)` : (breakdown.closingBufferWaived ? '; closing-cost buffer waived on this file' : '')}.`;
 
     const r = await client.query(
       `SELECT ci.id, ci.status, ci.signed_off_at, ci.tool_payload
@@ -215,7 +249,44 @@ async function resyncLiquidityForFile(appId, client = db) {
   } catch (e) { console.error('[liquidity] resyncLiquidityForFile failed', appId, e && e.message); return null; }
 }
 
+/**
+ * Set the per-file 1% closing-cost-buffer WAIVER (owner-authorized 2026-07-31:
+ * "it's something that we can waive on certain scenarios — on the manual side").
+ * Writes applications.liquidity_buffer_waived, then keeps the CURRENT
+ * registration's stored quote + the assets condition in step: the buffer is a
+ * requirement layer on top of the priced structure (never an engine number), so
+ * the stored quote's closingBuffer / liquidityRequired are adjusted by exact
+ * arithmetic (old buffer out, new buffer in — 1% of the registered total loan)
+ * rather than re-running the engines. Un-waiving RAISES the requirement, so the
+ * condition may reopen (syncLiquidityCondition's increased-rule); waiving only
+ * lowers it and never reopens. No registration yet → just the flag (the next
+ * register prices with it). Returns {waived, closingBuffer, liquidityRequired}.
+ */
+async function setClosingBufferWaiver(appId, waived, client = db) {
+  const on = !!waived;
+  await client.query(`UPDATE applications SET liquidity_buffer_waived=$2 WHERE id=$1`, [appId, on]);
+  const r = await client.query(
+    `SELECT id, total_loan, quote FROM product_registrations
+      WHERE application_id=$1 AND is_current=true LIMIT 1`, [appId]);
+  if (!r.rows[0] || !r.rows[0].quote) return { waived: on, closingBuffer: null, liquidityRequired: null };
+  let quote = r.rows[0].quote;
+  if (typeof quote === 'string') { try { quote = JSON.parse(quote); } catch (_) { return { waived: on, closingBuffer: null, liquidityRequired: null }; } }
+  const totalLoan = Number(r.rows[0].total_loan) || Number(quote.sizing && quote.sizing.totalLoan) || 0;
+  const oldBuffer = Number(quote.closingBuffer) || 0;
+  const newBuffer = on || totalLoan <= 0 ? 0 : Math.round(totalLoan * 0.01 * 100) / 100;
+  const oldRequired = Number(quote.liquidityRequired != null ? quote.liquidityRequired : quote.liquidity) || 0;
+  const newRequired = Math.round((oldRequired - oldBuffer + newBuffer) * 100) / 100;
+  quote.closingBuffer = newBuffer;
+  quote.closingBufferWaived = on;
+  quote.liquidityRequired = newRequired;
+  quote.liquidity = newRequired;
+  await client.query(`UPDATE product_registrations SET quote=$2::jsonb WHERE id=$1`, [r.rows[0].id, JSON.stringify(quote)]);
+  await syncLiquidityCondition(appId, quote, client, { noReopen: on });
+  return { waived: on, closingBuffer: newBuffer, liquidityRequired: newRequired };
+}
+
 module.exports = {
   syncLiquidityCondition, backfillLiquidityConditions, resyncLiquidityForFile,
+  setClosingBufferWaiver,
   bankStatementMonths, bankStatementLine, GENERIC_BANK_STMT_HINT, currentProgram,
 };

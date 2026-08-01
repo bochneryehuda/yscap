@@ -47,10 +47,16 @@
   .exp-total-val{ font-family:var(--font-d); font-weight:600; font-size:1.05rem; color:var(--teal-br); }
   .ts-sub{ font-family:var(--font-b); font-size:.7rem; text-transform:uppercase; letter-spacing:.12em; color:var(--muted); margin:1.25rem 0 .55rem; padding-top:1rem; border-top:1px solid var(--line-2); }
   .ts-sub.first{ border-top:0; padding-top:.2rem; margin-top:.4rem; }
-  .ts-line{ display:flex; align-items:baseline; justify-content:space-between; gap:1rem; padding:.42rem 0; border-bottom:1px solid var(--line-2); font-size:.9rem; }
+  .ts-line{ display:flex; flex-wrap:wrap; align-items:baseline; justify-content:space-between; gap:.15rem 1rem; padding:.42rem 0; border-bottom:1px solid var(--line-2); font-size:.9rem; min-width:0; }
   .ts-line:last-child{ border-bottom:0; }
-  .ts-line .k{ color:var(--muted-2); }
-  .ts-line .v{ font-weight:600; color:var(--ivory-soft); text-align:right; white-space:nowrap; }
+  /* A ROW IS NEVER SIZED BY ITS VALUE (owner-reported on V2 2026-07-30; V1 shares
+     the defect byte-for-byte). `white-space:nowrap` + the flex default
+     `min-width:auto` made the value's MIN-CONTENT the whole string, so the long
+     ADDITIONAL TERMS values (the 3-month minimum-interest sentence, the two-tier
+     draw fee) pushed the row and the 1fr/1fr .ts-grid2 straight out of the panel
+     and clipped mid-word. The value WRAPS instead. */
+  .ts-line .k{ color:var(--muted-2); flex:0 0 auto; min-width:0; max-width:60%; overflow-wrap:break-word; }
+  .ts-line .v{ font-weight:600; color:var(--ivory-soft); text-align:right; flex:1 1 auto; min-width:0; white-space:normal; overflow-wrap:break-word; }
   .ts-line.em{ padding:.55rem 0; }
   .ts-line.em .k{ color:var(--ivory-soft); font-weight:600; }
   .ts-line.em .v{ color:var(--ivory-soft); font-size:1.02rem; }
@@ -98,10 +104,18 @@
   @media (max-width:460px){ .handoff{ flex-direction:column; align-items:flex-start; } }
   /* required-field highlight */
   .field .input.need, .field .input.select.need{ border-color:rgba(201,168,106,.7); box-shadow:0 0 0 2px rgba(201,168,106,.14); }
-  .ts-cta{ margin-top:1.4rem; }
-  .ts-cta .btn{ width:100%; justify-content:center; }
+  .ts-cta{ margin-top:1.4rem; min-width:0; }
+  /* `.btn` is white-space:nowrap globally, so a full-width CTA was still sized by
+     its own label and ran past the panel on a phone. Let it wrap. */
+  .ts-cta .btn{ width:100%; justify-content:center; white-space:normal; overflow-wrap:break-word; min-width:0; text-align:center; line-height:1.3; }
   .ts-compliance{ font-size:.72rem; color:var(--muted-2); line-height:1.6; margin-top:1.1rem; padding-top:1rem; border-top:1px solid var(--line-2); }
   .rate-hint{ font-size:.72rem; color:var(--muted-2); margin-top:.4rem; }
+  /* The interest-reserve truth line: what was requested vs what the loan actually
+     finances, and why they differ (owner-reported 2026-07-30). Spans both columns of
+     the two-column field grid so it sits directly under the months / dollar pair. */
+  .ir-fin{ grid-column:1 / -1; margin:-.25rem 0 .25rem; padding:.55rem .75rem; border-radius:9px;
+           font-size:.78rem; line-height:1.5; color:var(--ivory); background:rgba(201,168,106,.09);
+           border-left:3px solid var(--gold,#c9a86a); }
   .ys-toast{ position:fixed; left:50%; bottom:28px; transform:translate(-50%,16px); background:var(--ink); color:var(--ivory-soft); border:1px solid var(--line); padding:.7rem 1.1rem; border-radius:12px; font-size:.85rem; opacity:0; pointer-events:none; transition:.25s; z-index:90; box-shadow:0 14px 40px rgba(0,0,0,.4); }
   .ys-toast.show{ opacity:1; transform:translate(-50%,0); }
   /* ---- eligibility + program max leverage ---- */
@@ -118,9 +132,11 @@
   .maxlev .ml .mlk{ font-size:.66rem; text-transform:uppercase; letter-spacing:.09em; color:var(--muted-2); }
   .maxlev .ml .mlv{ font-family:var(--font-d); font-weight:600; color:var(--teal-br); font-size:1.06rem; margin-top:.15rem; }
   /* compact 2-column rows for fees / snapshot */
-  .ts-grid2{ display:grid; grid-template-columns:1fr 1fr; column-gap:1.4rem; }
+  /* minmax(0,1fr) — a bare `1fr` floors at MIN-CONTENT, so one long value in one
+     cell widened BOTH tracks and blew the grid out of the panel. */
+  .ts-grid2{ display:grid; grid-template-columns:minmax(0,1fr) minmax(0,1fr); column-gap:1.4rem; min-width:0; }
   .ts-grid2 .ts-line{ font-size:.84rem; }
-  @media (max-width:520px){ .ts-grid2{ grid-template-columns:1fr; } }
+  @media (max-width:520px){ .ts-grid2{ grid-template-columns:minmax(0,1fr); } }
   /* read-only field */
   .input.is-ro{ opacity:.85; background:rgba(255,255,255,.02); }
   .input.is-ro input{ color:var(--muted); cursor:default; }
@@ -148,20 +164,43 @@
   .pcard{ border:1px solid var(--line-2); border-radius:14px; padding:1rem 1rem .95rem; background:rgba(255,255,255,.02); display:flex; flex-direction:column; min-width:0; }
   .pcard.gold{ border-color:rgba(201,168,106,.5); background:linear-gradient(180deg,rgba(201,168,106,.07),rgba(201,168,106,.015)); }
   .pcard.pcard-off{ opacity:.5; }
-  .pcard-top{ display:flex; align-items:center; justify-content:space-between; gap:.5rem; margin-bottom:.65rem; }
-  .pcard-name{ font-family:var(--font-b); font-size:.74rem; font-weight:700; text-transform:uppercase; letter-spacing:.1em; color:var(--ivory); }
+  /* The status CHIP must never set the card's width. "Not eligible as-is —
+     manual-review exception" rendered 173px past the card's right edge at 1024px
+     (audit 2026-07-30 — the same "going out of the box" class the owner reported
+     on V2, which already carries this containment). The head WRAPS so the chip
+     takes its own full-width line and still reads in full; max-width + ellipsis
+     is the last-resort backstop. Keep these properties together. */
+  .pcard-top{ display:flex; flex-wrap:wrap; align-items:center; justify-content:space-between; gap:.3rem .5rem; margin-bottom:.65rem; min-width:0; }
+  .pcard-name{ font-family:var(--font-b); font-size:.74rem; font-weight:700; text-transform:uppercase; letter-spacing:.1em; color:var(--ivory); min-width:0; overflow:hidden; text-overflow:ellipsis; }
   .pcard.gold .pcard-name{ color:var(--gold); }
-  .pcard-badge{ font-size:.62rem; font-weight:700; padding:.22rem .5rem; border-radius:100px; border:1px solid var(--line); color:var(--muted); white-space:nowrap; }
+  /* V1's MANUAL status is a whole SENTENCE ("Not eligible as-is — manual-review
+     exception", termsheet.js statusText), not V2's short "Manual review" chip, so
+     it must be allowed to WRAP inside the pill — clipping it would hide the one
+     word that matters ("exception"). No wording was changed to make it fit. */
+  .pcard-badge{ font-size:.62rem; font-weight:700; padding:.22rem .5rem; border-radius:100px; border:1px solid var(--line); color:var(--muted); white-space:normal; overflow-wrap:break-word; max-width:100%; overflow:hidden; flex:0 1 auto; margin-left:auto; text-align:center; line-height:1.35; }
   .pcard-badge.good{ color:var(--good); border-color:rgba(127,176,138,.5); } .pcard-badge.warn{ color:var(--warn); border-color:rgba(201,168,106,.5); } .pcard-badge.bad{ color:var(--bad); border-color:rgba(201,138,106,.5); }
   .pcard-loanlbl{ font-size:.64rem; text-transform:uppercase; letter-spacing:.12em; color:var(--muted-2); }
   .pcard-loan{ font-family:var(--font-d); font-weight:600; font-size:1.95rem; line-height:1.05; color:var(--ivory); margin:.12rem 0 .7rem; word-break:break-word; }
   .pcard-loan.tealed{ color:var(--teal-br,#7FA9B0); }
   .pcard.gold .pcard-loan{ color:var(--gold); }
-  .pcard-headline{ display:flex; gap:.6rem; padding-top:.6rem; border-top:1px solid var(--line-2); }
-  .pcard-stat{ flex:1; min-width:0; }
-  .pcard-statnum{ font-family:var(--font-d); font-weight:600; font-size:1.5rem; line-height:1.1; color:var(--ivory); }
+  .pcard-headline{ display:flex; gap:.6rem; padding-top:.6rem; border-top:1px solid var(--line-2); min-width:0; }
+  /* THE TWO STATS SPLIT THE CARD, so a long origination value at 1.5rem had its
+     BOX shrunk (min-width:0) while its TEXT INK spilled past the card's right edge
+     (owner-reported on V2 2026-07-30: "the generation fees keeps go out of the
+     box"). V1 shares the defect. Belt-and-braces: the card renders WHOLE dollars
+     (JS), an adaptive font ladder (`data-fit`, set by fitStat() in termsheet.js)
+     shrinks a long value instead of pushing out, and overflow:hidden + ellipsis is
+     the structural backstop so no value can ever escape. */
+  .pcard-stat{ flex:1 1 0; min-width:0; max-width:100%; }
+  .pcard-statnum{ font-family:var(--font-d); font-weight:600; font-size:1.5rem; line-height:1.1; color:var(--ivory); min-width:0; max-width:100%; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+  .pcard-statnum[data-fit="1"]{ font-size:1.32rem; }
+  .pcard-statnum[data-fit="2"]{ font-size:1.16rem; }
+  .pcard-statnum[data-fit="3"]{ font-size:1.02rem; }
+  .pcard-statnum[data-fit="4"]{ font-size:.9rem; letter-spacing:-.01em; }
   .pcard.gold .pcard-statnum{ color:var(--gold); }
-  .pcard-statlbl{ font-size:.6rem; text-transform:uppercase; letter-spacing:.08em; color:var(--muted-2); margin-top:.12rem; }
+  /* The label may WRAP to two lines, but must never overlap or clip the number. */
+  .pcard-statlbl{ font-size:.6rem; text-transform:uppercase; letter-spacing:.08em; color:var(--muted-2); margin-top:.12rem; min-width:0; max-width:100%; overflow-wrap:break-word; line-height:1.25; }
+  .pcard-statlbl > span[id$="OrigPts"]{ white-space:nowrap; }
   .pcard-sub{ margin-top:.65rem; font-size:.72rem; color:var(--muted); line-height:1.4; min-height:1em; }
   .prog-note{ margin:0 0 .9rem; padding:.7rem .9rem; border-radius:10px; border:1px solid var(--line-2); background:rgba(127,169,176,.07); font-size:.82rem; color:var(--ivory-soft); line-height:1.5; }
   .prog-note strong{ color:var(--ivory); }
@@ -375,7 +414,8 @@
             <p class="panel-note cond hidden" data-cond="bridgeOnly">A bridge loan is sized against the as-is value only — there's no rehab holdback, after-repair value or interest reserve. Just set your requested term below.</p>
             <div class="field-rows two-col">
                 <div class="field cond" data-cond="hasRehab"><label for="irMonths">Interest reserve <em>(months)</em><span class="tip" tabindex="0" role="note" aria-label="Months of interest payments built into the loan so the project carries itself and you don’t pay out of pocket during construction. It’s added to the loan amount, not brought to closing.">i<span class="tip-bub">Months of interest payments built into the loan so the project carries itself and you don’t pay out of pocket during construction. It’s added to the loan amount, not brought to closing.</span></span></label><div class="input"><input id="irMonths" type="number" inputmode="numeric" min="0" max="24" placeholder="e.g. 6"></div></div>
-                <div class="field cond" data-cond="hasRehab"><label for="irAmount">…or as a dollar amount <em>($)</em><span class="tip" tabindex="0" role="note" aria-label="The interest reserve is one thing shown two ways. Type a number of months or an exact dollar amount — fill in either one and the other fills in to match. It is fit under the same leverage caps and added to the loan, not brought to closing.">i<span class="tip-bub">The interest reserve is one thing shown two ways — type a number of <b>months</b> or an exact <b>dollar amount</b>, and the other fills in to match. Fit under the same leverage caps; added to the loan, not brought to closing.</span></span></label><div class="input"><input id="irAmount" type="number" inputmode="numeric" min="0" step="1000" placeholder="e.g. 40,000"></div></div>
+                <div class="field cond" data-cond="hasRehab"><label for="irAmount">…or as a dollar amount <em>($)</em><span class="tip" tabindex="0" role="note" aria-label="The interest reserve is one thing shown two ways. Type a number of months or an exact dollar amount — fill in either one and the other fills in to match. This box always shows the reserve the loan actually finances after the program caps, so it can differ from months times the payment.">i<span class="tip-bub">The interest reserve is one thing shown two ways — type a number of <b>months</b> or an exact <b>dollar amount</b>. This box always shows the reserve the loan <b>actually finances</b> for the program shown (after the leverage and term caps), so it can differ from months × the payment; added to the loan, not brought to closing.</span></span></label><div class="input"><input id="irAmount" type="number" inputmode="numeric" min="0" step="1000" placeholder="e.g. 40,000"></div></div>
+                <div class="ir-fin" id="irFinNote" role="status" aria-live="polite" style="display:none"></div>
                 <div class="field"><label for="tsTerm">Requested term <em>(months)</em></label><div class="input select"><select id="tsTerm">
                     <option value="6">6 months</option>
                     <option value="12" selected>12 months</option>
@@ -549,12 +589,23 @@
             <ul class="reasons" id="rReasons"></ul>
             <div class="ts-state-note" id="rStateNote" style="display:none"></div>
             <div class="ts-manual" id="rManualWrap" style="display:none"></div>
-            <div class="ts-sub">Program maximum leverage <em style="font-style:normal;color:var(--muted-2);text-transform:none;letter-spacing:0">— from FICO &amp; experience</em></div>
+            <div class="ts-sub">Program maximum leverage <em style="font-style:normal;color:var(--muted-2);text-transform:none;letter-spacing:0">— from FICO &amp; experience. These do not change with the deal.</em></div>
             <div class="maxlev">
                 <div class="ml cond" data-cond="hasRehab"><div class="mlk">Max loan-to-cost</div><div class="mlv" id="rMaxLtc">—</div></div>
                 <div class="ml"><div class="mlk">Max as-is (initial)</div><div class="mlv" id="rMaxLtv">—</div></div>
                 <div class="ml cond" data-cond="hasRehab"><div class="mlk">Max loan-to-ARV</div><div class="mlv" id="rMaxArv">—</div></div>
                 <div class="ml"><div class="mlk">Max loan amount</div><div class="mlv" id="rMaxLoan">—</div></div>
+            </div>
+            <!-- The tier maximum above is FIXED. This deal's own ceiling can be lower —
+                 that is a separate, clearly-labelled line, never a rewrite of the
+                 numbers above (owner-reported 2026-07-30). -->
+            <div id="rPricedWrap" style="display:none">
+                <div class="ts-sub">The most this deal can be priced at <em style="font-style:normal;color:var(--muted-2);text-transform:none;letter-spacing:0">— lower than the program maximum on this deal</em></div>
+                <div class="maxlev">
+                    <div class="ml cond" data-cond="hasRehab"><div class="mlk">This deal — loan-to-cost</div><div class="mlv" id="rPricedLtc">—</div></div>
+                    <div class="ml cond" data-cond="hasRehab"><div class="mlk">This deal — loan-to-ARV</div><div class="mlv" id="rPricedArv">—</div></div>
+                </div>
+                <p class="ts-note" id="rPricedWhy" style="margin-top:.4rem"></p>
             </div>
         </div>
 
@@ -678,7 +729,7 @@
 <script src="gold-standard.js?v=asgseller19"></script>
 <script src="title-cost.js?v=admin8"></script>
 <script src="address-autocomplete.js?v=admin9"></script>
-<script src="termsheet.js?v=termopts2-irlink20-esign-exc"></script>
+<script src="termsheet.js?v=termopts2-irlink20-esign-exc-nullrow-noirdefault-irtruth1-maxlev1-origfit"></script>
 <script src="../float-actions.js?v=admin8"></script>
 <script>
 /* Property-address autocomplete (owner-directed 2026-07-17): same shared YSAddr

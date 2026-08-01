@@ -8,6 +8,7 @@ import BorrowerViewButton from '../components/BorrowerViewButton.jsx';
 import { passwordProblem } from '../lib/password.js';
 import { BorrowerProfileForm, BorrowerSsnRow, NameSplitPrompt } from '../components/BorrowerProfilePanel.jsx';
 import { fullNameOf } from '../lib/personName.js';
+import { BorrowerContacts } from '../components/FileContacts.jsx';
 
 // Borrower CRM hub — the single place staff see everything about a person:
 // personal info + editable CRM fields, their loan files ("mortgages with us"),
@@ -30,7 +31,7 @@ function ago(iso) {
   const mo = Math.floor(d / 30); if (mo < 12) return `${mo}mo ago`;
   return `${Math.floor(mo / 12)}y ago`;
 }
-const fmtDate = (iso) => (fmtDay(iso, { year: 'numeric', month: 'short', day: 'numeric' }, 'en-US') || '—');
+const fmtDate = (iso) => (fmtDay(iso) || '—');   // MM/DD/YYYY (industry standard)
 const fmtDateTime = (iso) => (iso ? new Date(iso).toLocaleString('en-US', { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' }) : '');
 function addr(a) {
   if (!a) return '—';
@@ -42,7 +43,7 @@ const statusPill = (s) => {
   return <span className={`pill ${cls}`}>{(s || '—').replace(/_/g, ' ')}</span>;
 };
 
-const TABS = ['Overview', 'Files', 'Entities', 'Track record', 'Conditions', 'Tasks', 'Documents', 'Duplicates', 'Activity', 'Notes'];
+const TABS = ['Overview', 'Files', 'Entities', 'Track record', 'Credit', 'Conditions', 'Tasks', 'Documents', 'Duplicates', 'Activity', 'Notes'];
 
 export default function StaffBorrowerDetail() {
   const { id } = useParams();
@@ -73,6 +74,7 @@ export default function StaffBorrowerDetail() {
       {tab === 'Files' && <Files id={id} />}
       {tab === 'Entities' && <Entities id={id} />}
       {tab === 'Track record' && <TrackRecord id={id} />}
+      {tab === 'Credit' && <Credit id={id} />}
       {tab === 'Conditions' && <Conditions id={id} />}
       {tab === 'Tasks' && <Tasks id={id} />}
       {tab === 'Documents' && <Documents id={id} />}
@@ -217,6 +219,10 @@ function Overview({ b, onChanged }) {
         <Row k="In system since" v={fmtDate(b.created_at)} />
       </div>
       <ContactBook b={b} onChanged={onChanged} />
+      {/* Vendors (title, insurance, attorney, realtor…) this borrower has used
+          across ALL their files — one place to see who's been released for them
+          (owner-directed). Read-only aggregate keyed on the borrower. */}
+      <BorrowerContacts borrowerId={b.id} isStaff />
       {(b.sharing || []).length > 0 && (
         <div className="notice" style={{ marginTop: 12, color: '#141B22' }}>
           <strong>This email is shared.</strong>{' '}
@@ -460,6 +466,55 @@ function TrackRecord({ id }) {
           ))}
         </tbody>
       </table>
+    </div>
+  );
+}
+
+/* ---------------- credit history (the person's reports across all files) ---------------- */
+// A credit report is the BORROWER's, not the file's: every report pulled on any of
+// their files shows here, newest first, with a freshness flag. A report still inside
+// the 120-day window can be reused on a new file with no fresh inquiry (from the
+// file's own credit condition — this is the read-only history of the person).
+function Credit({ id }) {
+  const [data, err] = useLoad(() => api.staffBorrowerCredit(id), [id]);
+  if (err) return <div className="notice err">{err}</div>;
+  if (!data) return <Empty t="Loading…" />;
+  const reports = data.reports || [];
+  if (!reports.length) return <div className="panel"><Empty t="No credit reports on this borrower’s profile yet. Import one from a loan file’s Credit condition." /></div>;
+  const fresh = data.fresh;
+  return (
+    <div className="panel">
+      {fresh && (
+        <div className="notice ok" style={{ marginBottom: 12 }}>
+          Current report on file — dated <b>{fresh.reportDate ? fmtDay(fresh.reportDate) : '—'}</b>
+          {fresh.ageDays != null ? <> ({fresh.ageDays} days ago)</> : null}
+          {fresh.middleScore != null ? <>, middle score <b>{fresh.middleScore}</b></> : null}.
+          {' '}It can be reused on a new file without a fresh pull (within {data.freshDays} days).
+        </div>
+      )}
+      <div style={{ overflowX: 'auto' }}>
+        <table className="tbl" style={{ width: '100%', borderCollapse: 'collapse' }}>
+          <thead><tr style={{ textAlign: 'left' }}>
+            {['Report date', 'Age', 'Middle score', 'Loan #', 'Property', 'Source', 'Status'].map(h => <th key={h} style={{ padding: '10px 12px' }}>{h}</th>)}
+          </tr></thead>
+          <tbody>
+            {reports.map(r => (
+              <tr key={r.id} style={{ borderTop: '1px solid var(--line, rgba(127,169,176,.2))' }}>
+                <td style={{ padding: '10px 12px' }}>{r.reportDate ? fmtDay(r.reportDate) : '—'}</td>
+                <td style={{ padding: '10px 12px' }}>
+                  {r.ageDays != null ? `${r.ageDays}d` : '—'}
+                  {' '}<span className={'pill ' + (r.fresh ? 'ok' : '')}>{r.fresh ? 'current' : 'expired'}</span>
+                </td>
+                <td style={{ padding: '10px 12px' }}>{r.middleScore != null ? <b>{r.middleScore}</b> : <span className="muted">no score</span>}</td>
+                <td style={{ padding: '10px 12px' }} className="small">{r.loanNumber || '—'}</td>
+                <td style={{ padding: '10px 12px' }} className="small">{r.propertyLine || '—'}</td>
+                <td style={{ padding: '10px 12px' }} className="small">{r.source === 'reuse' ? 'reused' : (r.source || '—')}</td>
+                <td style={{ padding: '10px 12px' }}>{r.status === 'completed' ? <span className="pill ok">✓</span> : <span className="pill">{r.status}</span>}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
     </div>
   );
 }

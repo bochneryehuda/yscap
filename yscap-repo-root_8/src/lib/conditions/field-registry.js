@@ -156,6 +156,27 @@ function isFidelisNoteBuyer(raw) {
   return !!key && key.startsWith(FIDELIS_KEY_PREFIX);
 }
 
+// EMCAP — the capital provider the SILVER program is paired with
+// (tapes/program-provider.js: silver ↔ emcap). Same PREFIX shape as
+// isFidelisNoteBuyer above (the db/337 lesson): the owner's real ClickUp/Sitewire
+// label is "EMCAP Financial" (→ 'emcapfinancial'), and an enumerated alias list
+// always lags the next spelling someone types. No other note buyer's key starts
+// with 'emcap', so the prefix cannot over-match a different partner.
+// This does NOT loosen `normNoteBuyer` (which stays EXACT). The tape EXPORT gate
+// deliberately does not use this helper — it keys on an ENUMERATED alias list on
+// the tape definition (tapes/emcap.js), because the export direction is the one
+// where an over-match ships a data tape for the wrong buyer. Blast radius here:
+// bank-statement months (liquidity.js) and the investor-guideline review audience
+// — the advisory/months direction, where matching a genuine EMCAP spelling is
+// strictly safer than missing it.
+const EMCAP_KEY_PREFIX = 'emcap';
+
+/** True when this note-buyer label (applications.lender) is EMCAP, however it is spelled. */
+function isEmcapNoteBuyer(raw) {
+  const key = normNoteBuyer(raw);
+  return !!key && key.startsWith(EMCAP_KEY_PREFIX);
+}
+
 const stateOptions = US_STATES.map((v) => ({ v, label: v }));
 
 // ---------------------------------------------------------------------------
@@ -164,7 +185,7 @@ const stateOptions = US_STATES.map((v) => ({ v, label: v }));
 const FIELDS = [
   // ---- Loan & program ----
   { key: 'registered_program', label: 'Program (registered product)', group: 'Loan & program', type: 'enum',
-    options: [{ v: 'standard', label: 'Standard Program' }, { v: 'gold', label: 'Gold Standard Program' }, { v: 'manual', label: 'Manual Program' }, { v: 'none', label: 'Not registered yet' }],
+    options: [{ v: 'standard', label: 'Standard Program' }, { v: 'gold', label: 'Gold Standard Program' }, { v: 'silver', label: 'Silver Program' }, { v: 'manual', label: 'Manual Program' }, { v: 'none', label: 'Not registered yet' }],
     description: 'The product program registered in the Term Sheet Studio. "Manual Program" = a manual override of the deal structure (LTV/LTC/ARV).' },
   { key: 'program_strategy', label: 'Loan strategy (program)', group: 'Loan & program', type: 'enum',
     options: [
@@ -224,6 +245,14 @@ const FIELDS = [
   // this condition on, but as long as you don't have evidence… ignore this condition").
   { key: 'note_buyer_is_fidelis', label: 'Note buyer is Fidelis?', group: 'Loan & program', type: 'boolean',
     description: 'True when the file\'s note buyer / capital partner is Fidelis Investors (any spelling). Staff-only, never shown to the borrower.' },
+  // Same boolean companion for EMCAP (the Silver program's note buyer, live
+  // 2026-07-29) — its real ClickUp/Sitewire dropdown label is "EMCAP Financial"
+  // (→ 'emcapfinancial'), so an enum `note_buyer eq emcap` rule would silently
+  // never fire on a correctly-labeled file. Always concrete (true/false, never
+  // blank), so `is_false` rows behave on a file with no note buyer yet — the
+  // exact two reasons the Fidelis boolean above exists.
+  { key: 'note_buyer_is_emcap', label: 'Note buyer is EMCAP?', group: 'Loan & program', type: 'boolean',
+    description: 'True when the file\'s note buyer / capital partner is EMCAP (any spelling, e.g. "EMCAP Financial"). Staff-only, never shown to the borrower.' },
   // YS loan number (applications.ys_loan_number). Referenced by the rule engine so
   // the "loan number missing" internal condition can attach while it is blank and
   // retract the moment it is filled. Not writable via an info-condition (staff set
@@ -277,6 +306,17 @@ const FIELDS = [
       { v: 'adding_sf', label: 'Adding square footage' }, { v: 'ground_up', label: 'Ground-up' }, { v: 'other', label: 'Other' }] },
   { key: 'payoff_amount', label: 'Current payoff amount', group: 'Deal economics', type: 'money', writable: true,
     borrowerLabel: 'Current payoff amount', borrowerHint: 'The payoff amount on your current loan (refinances).' },
+  /* WHO holds the loan being paid off, and WHICH loan it is (db/386). Writable
+     because the BORROWER is the one who knows — it is their existing loan — so an
+     info condition can simply ask them, instead of an officer chasing it by phone.
+     A payoff amount with no lender and no loan number is a payoff nobody can
+     order a letter for. */
+  { key: 'payoff_lender', label: 'Lender being paid off', group: 'Deal economics', type: 'text', writable: true,
+    borrowerLabel: 'Who is your current lender?',
+    borrowerHint: 'The bank, private lender or servicer that holds the loan we are paying off.' },
+  { key: 'payoff_loan_number', label: 'Payoff loan number', group: 'Deal economics', type: 'text', writable: true,
+    borrowerLabel: 'Your current loan number',
+    borrowerHint: 'The loan or account number your current lender uses — it is on your monthly statement.' },
   { key: 'original_purchase_price', label: 'Original purchase price', group: 'Deal economics', type: 'money', writable: true,
     borrowerLabel: 'Original purchase price', borrowerHint: 'What you originally paid for the property (refinances).' },
   { key: 'acquisition_date', label: 'Acquisition date', group: 'Deal economics', type: 'date', writable: true,
@@ -333,6 +373,8 @@ const WRITE_TARGETS = {
   arv: { table: 'applications', column: 'arv' },
   rehab_budget: { table: 'applications', column: 'rehab_budget' },
   payoff_amount: { table: 'applications', column: 'payoff_amount' },
+  payoff_lender: { table: 'applications', column: 'payoff_lender' },
+  payoff_loan_number: { table: 'applications', column: 'payoff_loan_number' },
   original_purchase_price: { table: 'applications', column: 'original_purchase_price' },
   acquisition_date: { table: 'applications', column: 'acquisition_date' },
   underlying_contract_price: { table: 'applications', column: 'underlying_contract_price' },
@@ -423,4 +465,5 @@ module.exports = {
   normState, normStrategy, normLoanPurpose, normPropertyType, normRehabType,
   normCitizenship, normOccupancy, normNoteBuyer,
   FIDELIS_KEY_PREFIX, isFidelisNoteBuyer,
+  EMCAP_KEY_PREFIX, isEmcapNoteBuyer,
 };

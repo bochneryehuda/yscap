@@ -3,6 +3,7 @@ import { Link } from 'react-router-dom';
 import { api } from '../lib/api.js';
 import { useAuth } from '../lib/auth.jsx';
 import { fullNameOf } from '../lib/personName.js';
+import { fmtDate } from '../lib/dates.js';
 
 /* THE CLOSING QUEUE (owner-directed 2026-07-26). Every file in the closing
    workflow, for the closer + the file's officer. Closers land here on login. */
@@ -11,7 +12,7 @@ const STAGE_LABEL = {
   estimated: 'Submitted', ready_for_docs: 'Ready for docs', wire_sent: 'Wire sent',
   fully_closed: 'Closed (funded)', fully_reconciled: 'Reconciled', in_purchasing: 'In purchasing',
 };
-const day = (v) => (v ? String(v).slice(0, 10) : '—');
+const day = (v) => fmtDate(v);   // MM/DD/YYYY (industry standard), shift-free
 function fmtAddr(a) {
   if (!a) return '—';
   if (typeof a === 'string') return a;

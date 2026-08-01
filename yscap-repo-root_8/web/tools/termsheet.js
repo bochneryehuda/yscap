@@ -65,24 +65,127 @@
   function effPurchase() { return isRefi() ? num("asIs") : num("price"); }  // total purchase price
 
   /* ---------------- build the engine input ---------------- */
-  // ---------------- interest reserve: months <-> amount, "all one" ----------------
+  // ---------------- interest reserve: months <-> the reserve THE LOAN CARRIES ----------------
   // Owner-directed 2026-07-20: the reserve is ONE value shown two ways. Fill EITHER the
   // months field or the dollar field and the other fills in to match. The field the user
   // drives is the SOURCE; the other is a DERIVED mirror (data-derived="1"), written for
   // display only. gather() feeds the engine ONLY the source field (a derived field reads
   // as 0), so the priced/registered result is byte-identical to the old "fill one, leave
   // the other blank" behavior — no pricing math changes.
+  //
+  // DISPLAY-TRUTH FIX (owner-reported 2026-07-30: "I'm putting in 12 months reserve, right
+  // next to it the box converts to $186,000 — but the Excel structure gives me $210,000
+  // interest reserve"). The mirror used to be an INDEPENDENT ESTIMATE,
+  // Math.round(months x monthly payment), which is NOT the reserve the loan carries — every
+  // reserve rule sits between the request and the structure:
+  //   • the LEVERAGE caps shrink it (ARV / as-is / LTC / program max loan) — `reserveCapped`
+  //     + `reserveCapBy` on the sizing;
+  //   • the loan TERM caps it (`reserveTermCapped` / `reserveTermMonths`);
+  //   • Gold finances ZERO on a renovation (`R.reserveEligible === false`) and LOCKS a full
+  //     75%-of-term construction reserve on ground-up at tier 2/3 and tier 1 at $1.5MM+
+  //     (`irLocked`) — which finances MORE than a smaller request, the owner's own direction;
+  //   • the frozen whole-dollar breakdown reconciliation moves the last dollar or two
+  //     (reserve = flooredTotal − flooredInitial − flooredHoldback).
+  // So the mirror now shows d.financedIR — the SAME reconciled figure the structure row, the
+  // term-sheet PDF, the Excel export, the derivation page, the leverage ladder and the
+  // server's registration (`pricing.normalize` → `quote.sizing.financedReserve`) all report —
+  // and irNoteText() states the request, the financed figure and WHY they differ in the
+  // ENGINE'S OWN WORDS. It also NAMES the program, because the reserve is per-program and the
+  // Excel prints one section per program. All DISPLAY ONLY: no engine input, no formula, no
+  // frozen number is touched (the engine still receives ONLY the source field).
   function irIsDerived(id) { var e = el(id); return !!(e && e.dataset && e.dataset.derived === "1"); }
   function setIrSource(src) {
     var m = el("irMonths"), a = el("irAmount");
     if (src === "amount") { if (a) delete a.dataset.derived; if (m) m.dataset.derived = "1"; }
     else { if (m) delete m.dataset.derived; if (a) a.dataset.derived = "1"; }
   }
-  // Fill the non-source field with the equivalent, from the sized monthly payment.
-  function syncIrMirror(d, sized) {
+  // Whole-dollar money wording, LOCAL to these helpers (not YS.fmtUSD) so the reserve link
+  // stays self-contained and the DOM harness in scripts/test-ir-reserve-link.js can assert
+  // the exact copy the owner reads.
+  function irUsd(n) {
+    var v = Math.round(Math.abs(Number(n) || 0));
+    return "$" + String(v).replace(/\B(?=(\d{3})+(?!\d))/g, ",");
+  }
+  // The reserve REQUEST exactly as the engine received it (the SOURCE field only — a derived
+  // mirror reads as 0, the same gate gather() uses). EVERY surface that prints "what was asked
+  // for" must use this, never a raw read of the dollar box: that box now carries the FINANCED
+  // figure whenever months is the source, so a raw read would print the financed number under
+  // a "requested" label (owner-reported 2026-07-30).
+  function irRequestText() {
+    var a = irIsDerived("irAmount") ? 0 : num("irAmount");
+    if (a > 0) return irUsd(a);
+    var m = irIsDerived("irMonths") ? 0 : num("irMonths");
+    return m > 0 ? (m + (m === 1 ? " month" : " months")) : "";
+  }
+  // THE reserve figure: what the loan carries, never an estimate. d.financedIR is already the
+  // reconciled whole-dollar reserve (calc/calcGold/calcSilver derive it as
+  // flooredTotal − flooredInitial − flooredHoldback, exactly like src/lib/pricing.js).
+  function irFinanced(d, sized) {
+    var v = (sized && d) ? Math.round(Number(d.financedIR) || 0) : 0;
+    return v > 0 ? v : 0;
+  }
+  // The months that financed reserve actually buys, at the SAME payment the structure prints.
+  // null = nothing to show (unsized / no payment yet).
+  function irFinancedMonths(d, sized) {
+    var pay = (d && d.fullPayment > 0) ? Number(d.fullPayment) : 0;
+    if (!sized || !(pay > 0)) return null;
+    return Math.round((irFinanced(d, sized) / pay) * 10) / 10;
+  }
+  function irProgramLabel(d, progLabel) {
+    if (progLabel) return progLabel;
+    return (d && d.gold) ? "Gold Standard Program" : (d && d.silver) ? "Silver Program" : "Standard Program";
+  }
+  // "12 months requested; $60,000 financed on the Silver Program — capped by the 70%
+  // after-repair-value ceiling." Empty string when the loan carries exactly what was asked
+  // for and no program rule reshaped it (the box alone already tells the truth).
+  function irNoteText(d, sized, progLabel) {
+    var m = el("irMonths"), a = el("irAmount");
+    if (!m || !a || !d) return "";
+    var amountIsSource = (a.dataset.derived === "1") ? false
+      : (m.dataset.derived === "1") ? true
+      : num("irAmount") > 0;
+    var reqMonths = amountIsSource ? 0 : num("irMonths");
+    var reqAmount = amountIsSource ? num("irAmount") : 0;
+    if (!(reqMonths > 0) && !(reqAmount > 0)) return "";
+    if (!sized) return "";
+    var R = (d && d.R) || {};
+    var noReserve = (R.reserveEligible === false);              // Gold renovation: never any reserve
+    var locked = !!(d.irLocked || R.irLocked);                  // Gold ground-up: reserve set by the program
+    var capped = !!d.reserveCapped;                            // leverage / max-loan ceiling
+    var termCapped = !!R.reserveTermCapped;                    // asked for more months than the term
+    if (!noReserve && !locked && !capped && !termCapped) return "";
+    var capMo = Math.round((Number(R.reserveTermMonths) || 0) * 10) / 10;
+    var financed = irFinanced(d, sized);
+    var prog = irProgramLabel(d, progLabel);
+    var req = amountIsSource ? (irUsd(reqAmount) + " requested")
+      : (reqMonths + (reqMonths === 1 ? " month" : " months") + " requested");
+    var why = [];
+    if (noReserve) why.push("this program finances no interest reserve on a renovation loan");
+    else if (locked) why.push("this program sets the construction reserve at " + capMo + " months (75% of the " +
+      (d.term || 0) + "-month term) on a ground-up loan at this tier");
+    if (capped && d.reserveCapBy) why.push("capped by " + d.reserveCapBy);
+    else if (capped) why.push("capped by the program leverage ceiling");
+    if (termCapped && !noReserve && !locked) why.push("a reserve can\'t cover more interest than the " + capMo + "-month term");
+    var tail = why.length ? (" — " + why.join("; ")) : "";
+    // THE INVARIANT (owner-directed 2026-07-30): the reader must NEVER be shown less than
+    // the loan actually finances. Over-stating a request that then gets capped is fine and
+    // only needs explaining; UNDER-stating is the defect. When the program finances MORE
+    // than the entry (Gold locks a full 75%-of-term construction reserve and DISCARDS an
+    // exact-dollar request outright), the source box the user typed is the smaller number —
+    // so the note LEADS with the financed figure instead of burying it after the ask.
+    var overFinanced = locked && (amountIsSource ? (financed > reqAmount + 1) : (capMo > reqMonths + 1e-9));
+    if (overFinanced) {
+      return "This loan finances " + irUsd(financed) + " of interest reserve on the " + prog +
+        " — MORE than the " + (amountIsSource ? irUsd(reqAmount) : (reqMonths + (reqMonths === 1 ? " month" : " months"))) +
+        " you entered" + tail + ".";
+    }
+    return req + "; " + irUsd(financed) + " financed on the " + prog + tail + ".";
+  }
+  // Fill the non-source field with the reserve THE LOAN CARRIES (never an estimate) and write
+  // the plain-language note next to the pair.
+  function syncIrMirror(d, sized, progLabel) {
     var m = el("irMonths"), a = el("irAmount");
     if (!m || !a) return;
-    var pay = (d && d.fullPayment > 0) ? d.fullPayment : 0;
     // Source = the field NOT marked derived (the flags carry real user intent, set on
     // input). Only when NEITHER is flagged (a fresh load / portal prefill) do we infer
     // from the value: a real dollar amount wins (matches the engine's amount>0 override),
@@ -93,14 +196,19 @@
       : num("irAmount") > 0;
     if (amountIsSource) {
       m.dataset.derived = "1"; delete a.dataset.derived;
-      var mo = (sized && pay > 0) ? (num("irAmount") / pay) : 0;
-      var mv = mo > 0 ? String(Math.round(mo * 10) / 10) : "";
+      var mo = (num("irAmount") > 0) ? irFinancedMonths(d, sized) : null;
+      var mv = (mo == null) ? "" : String(mo);
       if (m.value !== mv) m.value = mv;
     } else {
       a.dataset.derived = "1"; delete m.dataset.derived;
-      var amt = (sized && pay > 0 && num("irMonths") > 0) ? Math.round(num("irMonths") * pay) : 0;
-      var av = amt > 0 ? String(amt) : "";
+      var av = (sized && num("irMonths") > 0) ? String(irFinanced(d, sized)) : "";
       if (a.value !== av) a.value = av;
+    }
+    var note = el("irFinNote");
+    if (note) {
+      var t = irNoteText(d, sized, progLabel);
+      if (note.textContent !== t) note.textContent = t;
+      if (note.style) note.style.display = t ? "" : "none";
     }
   }
 
@@ -202,7 +310,10 @@
     L.push("ARV: " + (num("arv") ? YS.fmtUSD(num("arv")) : "—"));
     L.push("Rehab budget: " + (num("construction") ? YS.fmtUSD(num("construction")) : "$0"));
     L.push("Requested term: " + (num("tsTerm") || 12) + " months");
-    L.push("Interest reserve: " + (num("irAmount") > 0 ? YS.fmtUSD(num("irAmount")) : (num("irMonths") || 0) + " months"));
+    // The REQUEST as the engine received it, plus the reserve the loan actually carries —
+    // a raw read of the dollar box would print the FINANCED figure as if it were the ask.
+    L.push("Interest reserve requested: " + (irRequestText() || "none") +
+      ((d && d.financedIR > 0) ? (" · financed on this scenario: " + YS.fmtUSD(d.financedIR)) : ""));
     L.push("Estimated FICO: " + (num("fico") || "—"));
     L.push("Experience (36 mo): flips " + (num("expFlips") || 0) + ", holds/BRRRR " + (num("expBrrrr") || 0) + ", ground-up " + (num("expGround") || 0));
     if (d && d.totalLoan > 0) L.push("Indicated loan amount: " + YS.fmtUSD(d.totalLoan));
@@ -233,15 +344,22 @@
     $$('[data-cond="bridgeOnly"]').forEach(function (n) { show(n, isBridge); });
     if (isBridge) { ["construction", "arv", "irMonths", "irAmount"].forEach(function (id) { var e = el(id); if (e && e.value) e.value = ""; }); }
 
-    // Ground-up defaults: first time the user selects ground-up, set an 18-month term and
-    // pre-fill a full-term financed reserve (required for non-top-tier; optional for 8+ experience).
+    // Ground-up default: first time the user selects ground-up, set an 18-month term.
+    // The INTEREST RESERVE ENTRY IS NEVER PRE-FILLED (owner-directed 2026-07-30:
+    // "it should be defaulted to zero when you start filling out … you can default
+    // the term but you don't default the interest reserve" — and explicitly "it
+    // needs to be updated on tech in all the programs"). This V1 copy is still
+    // SERVED at /v1 (src/server.js static mount + web/tools/term-sheet.html), so
+    // leaving it here reproduced the reported bug verbatim. Where a program
+    // REQUIRES a reserve (Gold ground-up forces the full-term reserve for
+    // non-top tiers inside the frozen engine) the requirement still populates the
+    // PRICED STRUCTURE on its own — only the blank entry changed.
     var dt = dealType();
     if (dt !== lastDeal) {
       var nowGround = YSP.normStrategy(dt) === "NC";
       var wasGround = YSP.normStrategy(lastDeal || "") === "NC";
       if (nowGround && !wasGround) {
         if (el("tsTerm") && num("tsTerm") < 18) el("tsTerm").value = 18;
-        if (el("irMonths") && num("irMonths") < 18) el("irMonths").value = 18;
       }
       lastDeal = dt;
     }
@@ -409,6 +527,86 @@
     e.textContent = statusText(status); e.className = "pcard-badge " + statusClass(status);
   }
 
+  /* ==================================================================
+     TWO DIFFERENT TRUTHS ABOUT "MAX LEVERAGE" — never one number
+     ------------------------------------------------------------------
+     Owner-reported 2026-07-30 on the V2 studio ("the Max LTC should never change,
+     each tier has its own Max LTC … it shouldn't change based on what you're
+     changing the interest reserve"). The same LABEL CLASS is here: every surface
+     printed the engine's `caps`, which is the EFFECTIVE ceiling after a voluntary
+     de-leverage (the slider), an admin basis, or a program overlay narrowed it —
+     under labels that promise the PROGRAM maximum. V1 carries no Silver program,
+     so there is no grid step-down on this surface, but the label is still wrong
+     the moment somebody drags the leverage slider.
+
+     `v1TierMax` = the FIXED tier maximum, always read from the ENGINE so the
+     display can never drift from the guideline:
+       Standard — `YSP.caps(regime, loanType, strategyCode, tier)`, the engine's own
+                  published matrix lookup.
+       Gold     — Gold publishes no tier lookup, so re-evaluate with ONLY the
+                  borrower's/admin's own narrowing stripped. A genuine program
+                  overlay (the adverse-market reduction) deliberately stays inside
+                  the program maximum — it is a market guideline, not a deal choice.
+     `d.caps` keeps its exact meaning: what THIS deal was sized and priced at.
+     PURE DISPLAY — nothing here computes, rounds or re-derives a cap. ================================================================== */
+  function v1TierMax(d) {
+    if (!d) return null;
+    var R = d.R;
+    if (d.gold) {
+      var GS = (typeof GSP !== "undefined" && GSP) ? GSP : null;
+      if (!GS || !R || !R.caps) return (R && R.caps) || null;
+      try {
+        var bare = GS.evaluate(Object.assign({}, d.inp, { targetLTC: 0, ovrAcqLTV: 0, ovrARLTV: 0, ovrLTC: 0 }));
+        return (bare && bare.caps) || R.caps;
+      } catch (e) { return R.caps; }
+    }
+    if (!R || !R.caps) return null;
+    try { return YSP.caps(R.regime, R.loanType, R.strategyCode, R.tier) || R.caps; }
+    catch (e2) { return R.caps; }
+  }
+  function v1PricedBelowTier(tier, eff) {
+    if (!tier || !eff) return false;
+    return (eff.maxLTC < tier.maxLTC - 1e-9) || (eff.maxARLTV < tier.maxARLTV - 1e-9) || (eff.maxAcqLTV < tier.maxAcqLTV - 1e-9);
+  }
+  function v1PricedWhy(d, tier, eff) {
+    var out = [], rs = (d && d.reasons) || [];
+    for (var j = 0; j < rs.length; j++) {
+      var m = (rs[j] && rs[j].msg) || "";
+      if (/square feet|sq\.? ?ft/i.test(m) && /leverage|loan-to-cost|LTC/i.test(m)) { out.push(m); break; }
+    }
+    var ovrOn = (adminNumRaw("tsMLtc") != null || adminNumRaw("tsMLtv") != null || adminNumRaw("tsMArv") != null);
+    var chosen = (d && d.gold) ? goldChosenLTC : chosenLTC;
+    if (ovrOn) out.push("An approved exception sets the leverage basis for this deal, so it is priced on that basis rather than the program maximum.");
+    else if (chosen && eff && tier && eff.maxLTC < tier.maxLTC - 1e-9)
+      out.push("You have chosen to take less leverage than the program allows (the leverage slider), which is what lowered this deal's ceiling.");
+    if (!out.length) out.push("On this deal the program prices a lower leverage band than the tier maximum. The tier maximum itself has not changed.");
+    out.push("The program maximum above is set by the tier (your FICO and experience) and does not change when you change the deal — including the interest reserve.");
+    return out.join(" ");
+  }
+
+  /* ---- CARD ORIGINATION: whole dollars, and it can never leave the box ----
+     Owner-reported on V2 2026-07-30 ("there generation fees keeps go out of the
+     box"): the origination value at 1.5rem spilled past the card's right edge.
+     V1 shares the defect. Two presentation-only changes, CARD ONLY:
+       cardUSD - drops the CENTS on the card (the loan amount above it is already
+                 whole-dollar, and it removes 3 characters from the longest
+                 string). The detail panel, the PDF and the Excel export keep
+                 YS.fmtUSD2 and their existing precision - untouched.
+       fitStat - after the text is in, step the font down a small ladder until it
+                 fits; the CSS overflow:hidden + ellipsis is the final backstop. */
+  function cardUSD(n) { return YS.fmtUSD(Math.round(Number(n) || 0)); }
+  var FIT_IDS = ["stdRateBig", "stdOrigBig", "goldRateBig", "goldOrigBig"];
+  function fitStat(e) {
+    if (!e) return;
+    e.removeAttribute("data-fit");
+    if (!e.clientWidth) return;                 // hidden: measuring would shrink it wrongly
+    for (var step = 1; step <= 4; step++) {
+      if (e.scrollWidth <= e.clientWidth) return;
+      e.setAttribute("data-fit", String(step));
+    }
+  }
+  function fitStats() { for (var i = 0; i < FIT_IDS.length; i++) fitStat(el(FIT_IDS[i])); }
+
   // Populate the two headline program cards (Standard from the live calc; Gold Standard from its engine)
   // and the auto comparison note. Returns the Gold Standard result for reuse.
   function renderPrograms(d, ready) {
@@ -419,12 +617,13 @@
     var stdSized = ready && d.totalLoan > 0 && d.status !== "INELIGIBLE" && !stdExit && !stdCity;
     YS.put("stdLoanBig", (stdExit || stdCity) ? "Manual" : (stdSized ? YS.fmtUSD(d.totalLoan) : ((ready && d.status !== "INELIGIBLE") ? "$0" : EM)));
     YS.put("stdRateBig", (stdSized && d.pricingReady && d.rate > 0) ? d.rate.toFixed(2) + "%" : EM);
-    YS.put("stdOrigBig", stdSized ? YS.fmtUSD2(d.origFee) : EM);
+    YS.put("stdOrigBig", stdSized ? cardUSD(d.origFee) : EM);
     YS.put("stdOrigPts", origPtStr(adminOrigPct("standard")));
     setBadge("stdBadge", d.status, ready);
     var stdWhy = stdExit ? shortMsg(exitMsg(d.reasons)) : (d.status !== "ELIGIBLE" ? shortReason(d.reasons) : "");
+    var stdTierV1 = v1TierMax(d);
     YS.put("stdSub", !ready ? "Enter price, budget & ARV to begin"
-      : (stdWhy || (d.caps ? "Max LTC " + pctLbl(d.caps.maxLTC) + " \u00b7 " + (d.tierLabel || "") : "")));
+      : (stdWhy || (stdTierV1 ? ("Max LTC " + pctLbl(stdTierV1.maxLTC) + (v1PricedBelowTier(stdTierV1, d.caps) ? " \u00b7 this deal caps at " + pctLbl(d.caps.maxLTC) : "") + " \u00b7 " + (d.tierLabel || "")) : "")));
 
     // ---- Gold Standard card ----
     var GS = (typeof GSP !== "undefined" && GSP) ? GSP : null;
@@ -443,7 +642,7 @@
       var gSized = ready && (gs.totalLoan > 0) && G.status !== "INELIGIBLE" && !goldExit;
       YS.put("goldLoanBig", gSized ? YS.fmtUSD(Math.floor(gs.totalLoan)) : ((ready && G.status !== "INELIGIBLE") ? "$0" : EM));
       YS.put("goldRateBig", (gSized && G.pricingReady && G.noteRate > 0) ? (G.noteRate * 100).toFixed(2) + "%" : EM);
-      YS.put("goldOrigBig", gSized ? YS.fmtUSD2(Math.floor(gs.totalLoan || 0) * adminOrigPct("gold")) : EM);
+      YS.put("goldOrigBig", gSized ? cardUSD(Math.floor(gs.totalLoan || 0) * adminOrigPct("gold")) : EM);
       YS.put("goldOrigPts", origPtStr(adminOrigPct("gold")));
       setBadge("goldBadge", G.status, ready);
       var goldWhy = goldExit ? shortMsg(exitMsg(G.reasons)) : (G.status !== "ELIGIBLE" ? shortReason(G.reasons) : "");
@@ -456,6 +655,8 @@
       var msg = comparisonNote(d, G, ready);
       if (msg) { note.style.display = ""; note.innerHTML = msg; } else { note.style.display = "none"; note.innerHTML = ""; }
     }
+    // Every headline stat holds its final text - size it to the column it got.
+    fitStats();
     return G;
   }
 
@@ -744,7 +945,10 @@
     if (chosenProgram === "gold") { var gd = calcGold(); if (!gd || gd.unavailable) chosenProgram = null; else d = gd; }
     applyProgramView(ready);                                      // show/hide the detail; slider only for Standard
     var sized = ready && d.totalLoan > 0 && d.status !== "INELIGIBLE";
-    syncIrMirror(d, sized);   // reflect the reserve into the sibling months/amount field
+    // The dollar box shows the reserve the loan CARRIES for the program in view (never a
+    // months x payment estimate) and names that program — the reserve is per-program and
+    // the Excel prints one section per program (owner-reported 2026-07-30).
+    syncIrMirror(d, sized, (chosenProgram === "gold") ? "Gold Standard Program" : (manualOn() ? "Manual Program" : "Standard Program"));
     var EM = "\u2014";
 
     YS.put("rLoan", sized ? YS.fmtUSD(d.totalLoan) : EM);
@@ -794,12 +998,25 @@
     YS.put("rTier", d.tierLabel || EM);
     YS.put("rFico", d.fico ? String(d.fico) : EM);
 
-    // program max leverage (from FICO + experience) — only once a FICO is in
-    var c = d.caps;
+    // PROGRAM / TIER maximum leverage (from FICO + experience) — FIXED for the tier.
+    // A fixed-sounding label must carry a fixed number: this block used to print
+    // `caps`, the EFFECTIVE ceiling, which moves with the leverage slider and with an
+    // admin basis (owner-reported on the V2 studio 2026-07-30 — same label class here).
+    // V1 carries no Silver program, so there is no grid step-down on this surface.
+    var c = v1TierMax(d) || d.caps;
     YS.put("rMaxLtc", (ready && c) ? pcFull(c.maxLTC) : EM);
     YS.put("rMaxLtv", (ready && c) ? pcFull(c.maxAcqLTV) : EM);
     YS.put("rMaxArv", (ready && c) ? pcFull(c.maxARLTV) : EM);
     YS.put("rMaxLoan", (ready && c) ? YS.fmtUSD(c.maxLoan) : EM);
+    (function () {
+      var wrap = el("rPricedWrap"); if (!wrap) return;
+      var eff = d.caps, lower = ready && !!c && v1PricedBelowTier(c, eff);
+      wrap.style.display = lower ? "" : "none";
+      if (!lower) return;
+      YS.put("rPricedLtc", pcFull(eff.maxLTC));
+      YS.put("rPricedArv", pcFull(eff.maxARLTV));
+      var w = el("rPricedWhy"); if (w) w.textContent = v1PricedWhy(d, c, eff);
+    }());
 
     // ---- term-sheet options: live key dates, accrual, min-interest, deferred
     // origination fee, draw fee (owner-directed 2026-07-22). Display/record only. ----
@@ -917,17 +1134,18 @@
       var notes = [];
       if (ready && d.R.reserveTermCapped) {
         if (d.R.reserveCapIsConstruction) {
-          notes.push("<strong>Construction interest reserve capped at 75% of the full term (" + (Math.round(d.R.reserveTermMonths * 10) / 10) + " months).</strong> You requested " + d.irMonths +
-            " months; a construction reserve is financed up to 75% of the term's interest, so it covers " + (Math.round(d.R.reserveTermMonths * 10) / 10) + " months.");
+          notes.push("<strong>Construction interest reserve capped at 75% of the full term (" + (Math.round(d.R.reserveTermMonths * 10) / 10) + " months).</strong> You requested " + (irRequestText() || (d.irMonths + " months")) +
+            "; a construction reserve is financed up to 75% of the term's interest, so it covers " + (Math.round(d.R.reserveTermMonths * 10) / 10) + " months.");
         } else {
-          notes.push("<strong>Interest reserve capped at the loan term (" + d.R.reserveTermMonths + " months).</strong> You requested " + d.irMonths +
-            " months, but a reserve can't finance more interest than the loan runs \u2014 so it covers " + (Math.round(d.R.reserveTermMonths * 10) / 10) + " months.");
+          notes.push("<strong>Interest reserve capped at the loan term (" + d.R.reserveTermMonths + " months).</strong> You requested " + (irRequestText() || (d.irMonths + " months")) +
+            ", but a reserve can't finance more interest than the loan runs \u2014 so it covers " + (Math.round(d.R.reserveTermMonths * 10) / 10) + " months.");
         }
       }
       if (ready && d.reserveCapped && d.maxReserve >= 0) {
         notes.push("<strong>Maximum eligible interest reserve: " + YS.fmtUSD(d.maxReserve) +
           "</strong> (\u2248 " + (d.maxReserveMonths).toFixed(1) + " months). " + d.reserveCapBy +
-          " limits the reserve further; the maximum eligible amount has been applied and the remainder isn't eligible to finance.");
+          " limits the reserve further; the maximum eligible amount has been applied and the remainder isn't eligible to finance. " +
+          "This loan finances <strong>" + YS.fmtUSD(d.financedIR) + "</strong> \u2014 the figure in the reserve box, the structure above, the term sheet and the export.");
       }
       if (notes.length) { irn.style.display = ""; irn.innerHTML = notes.join("<br><br>"); }
       else { irn.style.display = "none"; irn.innerHTML = ""; }
@@ -1018,9 +1236,9 @@
       ["As-is value", num("asIs") ? money(num("asIs")) : EM],
       ["After-repair value (ARV)", num("arv") ? money(num("arv")) : EM],
       ["Requested term (months)", String(num("tsTerm") || 12)],
-      (num("irAmount") > 0)
-        ? ["Interest reserve (amount)", money(num("irAmount"))]
-        : ["Interest reserve (months)", String((d.inp && d.inp.irMonths) || num("irMonths") || 0)],
+      // What was ASKED FOR (source field only). What each program actually FINANCES is a
+      // row inside that program's own section below — the reserve is per-program.
+      ["Interest reserve requested", irRequestText() || "None"],
       ["Estimated FICO", num("fico") ? String(num("fico")) : EM],
       ["Experience (flips / holds / ground-up)", num("expFlips") + " / " + num("expBrrrr") + " / " + num("expGround")],
       (function () { var c = estClosingYMD(); return ["Estimated closing date", c ? fmtDateLong(c) : EM]; })(),
@@ -1044,6 +1262,10 @@
       (YSP.normStrategy(dealType()) === "BR") ? null : ["Draw fee", drawFeeLines("standard").join("; ")],
       ["Initial advance", stdOk ? money(d.initialAdvance) : EM],
       ["Rehab / construction holdback", stdOk ? money(d.rehabHoldback) : EM],
+      // The reserve THIS program finances — the reconciled figure the studio box, the PDF,
+      // the derivation page and the registration all carry. It is NOT months x payment, and
+      // it differs per program, which is why every section states its own (2026-07-30).
+      ["Financed interest reserve", stdOk ? money(d.financedIR) : EM],
       ["Down payment (equity)", stdOk ? money(d.downPayment) : EM],
       ["Leverage \u2014 LTC / as-is / ARV", stdOk ? (pct(d.ltcPct) + " / " + pct(d.ltvPct) + " / " + pct(d.arvPct)) : EM],
       ["Origination (" + origPctStr((d.origPct != null ? d.origPct : 0.0125)) + ")", (stdOk && d.totalLoan) ? money2(d.origFee) : EM],
@@ -1068,6 +1290,7 @@
         (YSP.normStrategy(dealType()) === "BR") ? null : ["Draw fee", drawFeeLines("gold").join("; ")],
         ["Initial advance", gOk ? money(gd.initialAdvance) : EM],
         ["Rehab / construction holdback", gOk ? money(gd.rehabHoldback) : EM],
+        ["Financed interest reserve", gOk ? money(gd.financedIR) : EM],
         ["Down payment (equity)", gOk ? money(gd.downPayment) : EM],
         ["Leverage \u2014 LTC / as-is / ARV", gOk ? (pct(gd.ltcPct) + " / " + pct(gd.ltvPct) + " / " + pct(gd.arvPct)) : EM],
         ["Origination (" + origPctStr((gd.origPct != null ? gd.origPct : 0.0125)) + ")", (gOk && gd.totalLoan) ? money2(gd.origFee) : EM],
@@ -1084,11 +1307,11 @@
     // like the on-screen panel and the PDF (audit 2026-07-19 — Excel was the only
     // surface that folded the fee into the total without naming it).
     if (stdOk && d.extraFees && d.extraFees.length) {
-      var si = std.findIndex(function (r) { return r[0] === "Estimated cash to close"; });
+      var si = std.findIndex(function (r) { return r && r[0] === "Estimated cash to close"; });
       if (si > -1) Array.prototype.splice.apply(std, [si, 0].concat(d.extraFees.map(function (f) { return [f.name, money2(f.amount)]; })));
     }
     if (gd && !gd.unavailable && gOk && gd.extraFees && gd.extraFees.length) {
-      var gi = gold.findIndex(function (r) { return r[0] === "Estimated cash to close"; });
+      var gi = gold.findIndex(function (r) { return r && r[0] === "Estimated cash to close"; });
       if (gi > -1) Array.prototype.splice.apply(gold, [gi, 0].concat(gd.extraFees.map(function (f) { return [f.name, money2(f.amount)]; })));
     }
     // Some rows are conditional (min-interest, deferred fee) and come through as
@@ -1337,7 +1560,11 @@
         yR = rowIn(xR, colW, "Loan-to-ARV", sized ? pc(d.arvPct) : "\u2014", yR);
       }
       yR = rowIn(xR, colW, isBridge ? "Loan-to-value (as-is)" : "As-is (initial advance)", sized ? pc(d.ltvPct) : "\u2014", yR);
-      if (d.caps && sized) yR = rowIn(xR, colW, isBridge ? "Program max \u2014 as-is" : "Program max \u2014 LTC / ARV / as-is", isBridge ? pc(d.caps.maxAcqLTV) : (pc(d.caps.maxLTC) + " / " + pc(d.caps.maxARLTV) + " / " + pc(d.caps.maxAcqLTV)), yR);
+      // "Program max" = the TIER maximum (fixed); the deal's own ceiling, when lower,
+      // gets its own row underneath. See v1TierMax.
+      var _pdfTierV1 = v1TierMax(d);
+      if (_pdfTierV1 && sized) yR = rowIn(xR, colW, isBridge ? "Program max \u2014 as-is" : "Program max \u2014 LTC / ARV / as-is", isBridge ? pc(_pdfTierV1.maxAcqLTV) : (pc(_pdfTierV1.maxLTC) + " / " + pc(_pdfTierV1.maxARLTV) + " / " + pc(_pdfTierV1.maxAcqLTV)), yR);
+      if (_pdfTierV1 && sized && v1PricedBelowTier(_pdfTierV1, d.caps)) yR = rowIn(xR, colW, isBridge ? "This deal prices up to \u2014 as-is" : "This deal prices up to \u2014 LTC / ARV / as-is", isBridge ? pc(d.caps.maxAcqLTV) : (pc(d.caps.maxLTC) + " / " + pc(d.caps.maxARLTV) + " / " + pc(d.caps.maxAcqLTV)), yR);
       yR = rowIn(xR, colW, isBridge ? "As-is value" : "As-is / ARV value", isBridge ? money(d.asIs) : (money(d.asIs) + " / " + money(d.arv)), yR);
       yR += 9;
       yR = cardHead(xR, colW, "Estimated cash to close", yR);
@@ -1356,7 +1583,7 @@
 
       if (d.reserveCapped && d.maxReserve >= 0) {
         band("Interest reserve");
-        para("Maximum eligible interest reserve on this deal is " + money(d.maxReserve) + " (\u2248 " + d.maxReserveMonths.toFixed(1) + " months). The requested " + (num("irAmount") > 0 ? money(num("irAmount")) : d.irMonths + " months") + " exceeds what " + d.reserveCapBy + " allows; the maximum eligible amount has been applied and the remainder is not eligible to finance. Interest on any period beyond the reserve is paid as billed.");
+        para("Maximum eligible interest reserve on this deal is " + money(d.maxReserve) + " (\u2248 " + d.maxReserveMonths.toFixed(1) + " months). The requested " + (irRequestText() || (d.irMonths + " months")) + " exceeds what " + d.reserveCapBy + " allows; the maximum eligible amount has been applied and the remainder is not eligible to finance. Interest on any period beyond the reserve is paid as billed.");
       }
 
       if (!isRefi() && isAssign() && d.asg && (d.asg.overLimit || d.asg.overridden)) {
@@ -1367,10 +1594,15 @@
       }
 
       band("How your loan amount is built");
+      // The numbered "program limits" list is a statement about the PROGRAM, so it
+      // carries the TIER maximum; what THIS deal prices at is a separate sentence.
+      var _bldCapsV1 = v1TierMax(d) || d.caps;
+      var _bldLowerV1 = v1PricedBelowTier(_bldCapsV1, d.caps);
       if (isBridge) {
-        para("This is a stabilized bridge loan \u2014 it is sized against the as-is value only. The loan is capped at " + pc(d.caps ? d.caps.maxAcqLTV : 0) + " of the lower of purchase price or as-is value. A bridge has no rehab holdback, no loan-to-cost limit and no after-repair-value limit." + (d.pricingReady && d.binding ? (" On this deal, " + d.binding + " is the binding limit.") : ""));
+        para("This is a stabilized bridge loan \u2014 it is sized against the as-is value only. The loan is capped at " + pc(_bldCapsV1 ? _bldCapsV1.maxAcqLTV : 0) + " of the lower of purchase price or as-is value. A bridge has no rehab holdback, no loan-to-cost limit and no after-repair-value limit." + (d.pricingReady && d.binding ? (" On this deal, " + d.binding + " is the binding limit.") : ""));
       } else {
-        para("Your maximum loan is the lesser of four program limits \u2014 the most conservative one sets your number. (1) The initial advance is capped at " + pc(d.caps ? d.caps.maxAcqLTV : 0) + " of the lower of purchase price or as-is value. (2) 100% of your rehab budget is financed and released in draws as work is verified \u2014 no rehab comes out of pocket." + ((d.R && d.R.sizing && d.R.sizing.rehabOverCap) ? " (On this deal the program cap limits the holdback below the budget \u2014 see the eligibility notes.)" : "") + " (3) The total loan can't exceed " + pc(d.caps ? d.caps.maxLTC : 0) + " loan-to-cost (purchase + rehab). (4) The total loan can't exceed " + pc(d.caps ? d.caps.maxARLTV : 0) + " of the after-repair value." + (d.pricingReady && d.binding ? (" On this deal, " + d.binding + " is the binding limit.") : ""));
+        para("Your maximum loan is the lesser of four program limits \u2014 the most conservative one sets your number. (1) The initial advance is capped at " + pc(_bldCapsV1 ? _bldCapsV1.maxAcqLTV : 0) + " of the lower of purchase price or as-is value. (2) 100% of your rehab budget is financed and released in draws as work is verified \u2014 no rehab comes out of pocket." + ((d.R && d.R.sizing && d.R.sizing.rehabOverCap) ? " (On this deal the program cap limits the holdback below the budget \u2014 see the eligibility notes.)" : "") + " (3) The total loan can't exceed " + pc(_bldCapsV1 ? _bldCapsV1.maxLTC : 0) + " loan-to-cost (purchase + rehab). (4) The total loan can't exceed " + pc(_bldCapsV1 ? _bldCapsV1.maxARLTV : 0) + " of the after-repair value." + (d.pricingReady && d.binding ? (" On this deal, " + d.binding + " is the binding limit.") : ""));
+        if (_bldLowerV1 && sized) para("These four limits are your program maximum and are set by your tier (FICO and experience) \u2014 they do not change when the deal changes. On this deal the program prices up to " + pc(d.caps.maxLTC) + " loan-to-cost and " + pc(d.caps.maxARLTV) + " of the after-repair value, which is lower. " + v1PricedWhy(d, _bldCapsV1, d.caps));
       }
 
       band("Eligibility snapshot");
@@ -1644,7 +1876,10 @@
         ["Prepared to finance up to", money(d.totalLoan)],
         ["Transaction", (isRefiTxn ? "Refinance" : "Purchase") + "  \u00b7  " + prettyStrategy(d.inp.strategy)],
         [isRefiTxn ? "Estimated as-is value" : "Estimated purchase price", money(price)],
-        ["Maximum leverage", leverageLine(d, isBridge)],
+        // Relabelled from "Maximum leverage": this row carries the caps THIS loan is
+        // sized at, matching the "prepared to finance up to $X" figure above — it was
+        // reading as a PROGRAM maximum (owner-reported label class, 2026-07-30).
+        ["Leverage on this financing", leverageLine(d, isBridge)],
         ["Indicative term", (d.term || 12) + " months, interest-only"]
       ];
       var boxH = headH + rows.length * rowH + 8;
@@ -1873,7 +2108,12 @@
     }
     section("How the loan amount was determined", derivRows);
 
+    // Both ceilings, never one under a fixed-sounding label (see v1TierMax).
+    var _dvTierV1 = v1TierMax(d), _dvLowerV1 = _dvTierV1 && d.caps && v1PricedBelowTier(_dvTierV1, d.caps);
     section("Resulting leverage & pricing", [
+      _dvTierV1 ? ["Program maximum — LTC / as-is / ARV", pc(_dvTierV1.maxLTC) + " / " + pc(_dvTierV1.maxAcqLTV) + " / " + pc(_dvTierV1.maxARLTV) + "  (fixed for this profile)"] : null,
+      _dvLowerV1 ? ["Most this deal can be priced at — LTC / ARV", pc(d.caps.maxLTC) + " / " + pc(d.caps.maxARLTV)] : null,
+      _dvLowerV1 ? ["Why this deal is lower", v1PricedWhy(d, _dvTierV1, d.caps)] : null,
       (d.ltcPct > 0 && !isBridge) ? ["Loan-to-cost (LTC)", pc(d.ltcPct)] : null,
       ["Initial / as-is LTV", pc(d.ltvPct)],
       (d.arvPct > 0) ? ["Loan-to-ARV", pc(d.arvPct)] : null,
@@ -1987,6 +2227,15 @@
     if (imp && impFile) { imp.addEventListener("click", function () { impFile.click(); }); impFile.addEventListener("change", function () { importXlsx(impFile); }); }
     var scard = el("pcardStd"); if (scard) scard.addEventListener("click", function () { selectProgram("standard"); });
     var gcard = el("pcardGold"); if (gcard) gcard.addEventListener("click", function () { selectProgram("gold"); });
+    // The stat columns narrow with the viewport, so the adaptive font ladder has
+    // to re-run on resize or a value that fitted wide would spill when narrow.
+    (function () {
+      var t = null;
+      window.addEventListener("resize", function () {
+        if (t) clearTimeout(t);
+        t = setTimeout(function () { t = null; try { fitStats(); } catch (e) {} }, 90);
+      });
+    })();
     var pback = el("progBack"); if (pback) pback.addEventListener("click", function () { chosenProgram = null; recompute(); });
     // info tooltips: tap toggles (hover/keyboard focus handle desktop); never let a tap fall through to the card
     document.addEventListener("click", function (ev) {

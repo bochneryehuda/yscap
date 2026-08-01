@@ -1,5 +1,6 @@
 import React, { useCallback, useEffect, useState } from 'react';
 import { api } from '../lib/api.js';
+import { moneyCents } from '../lib/money.js';
 
 /* Borrower draw view. You submit draws and upload photos in Sitewire; here you see the
    live picture of your construction budget vs. what's been released, and you review each
@@ -369,7 +370,7 @@ function FindingCard({ finding, appId, onChanged }) {
   }
   async function submitDispute() {
     const lines = Object.entries(disp).filter(([, v]) => v && (v.desired !== '' || v.note || (v.media && v.media.length)))
-      .map(([line_id, v]) => ({ line_id, desired_cents: v.desired === '' || v.desired == null ? null : Math.round(Number(v.desired) * 100), note: v.note || '', media: (v.media || []).map((m) => ({ filename: m.filename, contentType: m.contentType, dataBase64: m.dataBase64 })) }));
+      .map(([line_id, v]) => ({ line_id, desired_cents: moneyCents(v.desired), note: v.note || '', media: (v.media || []).map((m) => ({ filename: m.filename, contentType: m.contentType, dataBase64: m.dataBase64 })) }));
     if (!lines.length) { setErr('Add a note, amount, or a photo to at least one line you\'re disputing.'); return; }
     setBusy(true); setErr('');
     try { await api.post(`/api/borrower/findings/${finding.id}/dispute`, { lines }); setMode(null); onChanged(); }

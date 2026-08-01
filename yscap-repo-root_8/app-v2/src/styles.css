@@ -237,6 +237,11 @@ textarea{min-height:90px;resize:vertical}
 .btn.ghost:hover{border-color:var(--teal-dp)}
 .btn.link{background:none;border:none;color:var(--teal-br);padding:6px 2px}
 .btn:disabled{opacity:.5;cursor:not-allowed}
+/* Greyed-but-clickable: a button that can't act yet (e.g. Register before a
+   program card is picked) — reads locked, but a click still surfaces WHY
+   (owner-directed 2026-07-30). Keep it clickable; never pair with disabled. */
+.btn.is-blocked{opacity:.45;filter:saturate(.35);cursor:not-allowed;box-shadow:none}
+.btn.is-blocked:hover{transform:none}
 .row{display:flex;gap:10px;align-items:center;flex-wrap:wrap}
 .spacer{flex:1}
 
@@ -981,8 +986,14 @@ input[type=checkbox],input[type=radio]{width:16px;height:16px;accent-color:var(-
 /* The rail locks the moment it meets the bottom of the sticky stack (app
    header + file identity bar) — it never slides underneath, and it scrolls
    inside itself if the section list is taller than the viewport. */
-.file-nav{position:sticky;top:152px;z-index:20;max-height:calc(100vh - 168px);overflow-y:auto;scrollbar-width:none}
-.file-nav::-webkit-scrollbar{display:none}
+.file-nav{position:sticky;top:152px;z-index:20;max-height:calc(100vh - 168px);overflow-y:auto;
+  /* Visible slim scrollbar so a long file's section list can be scrolled with a
+     trackpad, same fix as the main sidebar (owner-reported 2026-07-31). */
+  scrollbar-width:thin;scrollbar-color:var(--border) transparent}
+.file-nav::-webkit-scrollbar{width:8px}
+.file-nav::-webkit-scrollbar-track{background:transparent}
+.file-nav::-webkit-scrollbar-thumb{background:var(--border);border-radius:8px}
+.file-nav:hover::-webkit-scrollbar-thumb{background:var(--text-soft)}
 .file-nav ol{list-style:none;margin:0;padding:6px;background:var(--ink-1);
   border:1px solid var(--line);border-radius:var(--radius)}
 /* lightweight disclosure for occasionally-needed, low-priority content */
@@ -1633,8 +1644,17 @@ a.checkitem:hover{transform:none;border-color:var(--primary-border)}
   grid-template-areas:'side top' 'side main'}
 .app-sidebar{grid-area:side;background:var(--surface);border-right:1px solid var(--border);
   padding:20px 14px;display:flex;flex-direction:column;gap:3px;position:sticky;top:0;
-  height:100vh;overflow-y:auto;scrollbar-width:none;z-index:60}
-.app-sidebar::-webkit-scrollbar{display:none}
+  height:100vh;overflow-y:auto;z-index:60;
+  /* A VISIBLE scrollbar is the affordance a trackpad user needs to reach the
+     bottom of a long nav (owner-reported 2026-07-31: "not scrollable without a
+     mouse — no line at the end that lets you scroll to logout"). A slim styled
+     bar, not the hidden one it used to be. */
+  scrollbar-width:thin;scrollbar-color:var(--border) transparent}
+.app-sidebar::-webkit-scrollbar{width:10px}
+.app-sidebar::-webkit-scrollbar-track{background:transparent}
+.app-sidebar::-webkit-scrollbar-thumb{background:var(--border);border-radius:8px;
+  border:3px solid var(--surface)}
+.app-sidebar:hover::-webkit-scrollbar-thumb{background:var(--text-soft)}
 .app-brandrow{padding:6px 10px 18px;margin-bottom:6px;border-bottom:1px solid var(--surface-soft)}
 /* Sidebar masthead: stack the PILOT lockup OVER the console label so
    "Admin console" can't clip inside the 248px rail. The shared .brand base is a
@@ -1660,8 +1680,13 @@ a.checkitem:hover{transform:none;border-color:var(--primary-border)}
 .sb-link .sb-badge{margin-left:auto;font-size:11px;font-weight:700;min-width:20px;text-align:center;
   padding:1px 6px;border-radius:999px;background:var(--gold);color:#fff}
 .sb-spacer{flex:1}
+/* PIN the role pill + Sign out to the bottom of the rail so logout is ALWAYS
+   reachable without scrolling, even when the nav list overflows on a short
+   laptop screen (owner-reported 2026-07-31). The nav links scroll behind it;
+   the solid background covers anything scrolling underneath. */
 .sb-foot{border-top:1px solid var(--surface-soft);margin-top:6px;padding-top:10px;
-  display:flex;flex-direction:column;gap:8px}
+  display:flex;flex-direction:column;gap:8px;
+  position:sticky;bottom:0;background:var(--surface);padding-bottom:2px}
 
 .app-topbar{grid-area:top;min-height:68px;background:var(--surface);border-bottom:1px solid var(--border);
   display:flex;align-items:center;gap:16px;padding:0 28px;position:sticky;top:0;z-index:50}
@@ -2965,6 +2990,9 @@ details[open]>.appr-sec-sum .appr-sec-chev{transform:rotate(180deg)}
   display:block; line-height:1.45; }
 .crx-note.secure { color:var(--teal-br); }
 .crx-note.warn { color:var(--warning); }
+.crx-note.reuse { color:#141B22; background:var(--primary-soft); border-top:none;
+  margin-top:10px; padding:10px 12px; border-radius:10px; border:1px solid var(--border); }
+.crx-note.reuse .crx-btn.ghost { white-space:nowrap; }
 .crx-lock { font-size:.85rem; margin-right:4px; }
 
 /* Options ---------------------------------------------------------------- */
@@ -3077,6 +3105,13 @@ details[open]>.appr-sec-sum .appr-sec-chev{transform:rotate(180deg)}
 .crx-table tbody tr:hover td { background:var(--surface-soft); }
 .crx-table tr.crx-bad td { background:var(--danger-soft); }
 .crx-table tr.crx-warn td { background:var(--warning-soft); }
+/* Inquiry HARD/SOFT pill — a HARD pull draws the eye (it moves the score); a SOFT
+   one reads quiet. */
+.crx-inq { display:inline-flex; align-items:center; font-size:.68rem; font-weight:700; padding:2px 8px;
+  border-radius:999px; text-transform:uppercase; letter-spacing:.03em; border:1px solid transparent; }
+.crx-inq.hard { background:var(--warning-soft); color:var(--warning); border-color:var(--warning); }
+.crx-inq.soft { background:var(--surface-soft); color:var(--muted); border-color:var(--border); }
+.crx-inq-note { margin-left:8px; font-weight:400; font-size:.78rem; }
 .crx-empty { margin-top:8px; padding:16px; border:1px dashed var(--border); border-radius:12px;
   background:var(--surface-soft); color:var(--muted); font-size:.9rem; }
 
@@ -3418,6 +3453,14 @@ details[open]>.appr-sec-sum .appr-sec-chev{transform:rotate(180deg)}
 .cond-group-count{margin-left:auto;flex:none;font-size:12px;color:#4B585C;
   font-variant-numeric:tabular-nums}
 @media(max-width:720px){.cond-group-name{letter-spacing:.05em}}
+/* Full-screen conditions: the old internal/external split banner (owner-directed 2026-07-29). */
+.cond-section-banner{display:flex;align-items:baseline;gap:10px;flex-wrap:wrap;
+  margin:22px 0 4px;padding:9px 12px;border-radius:10px;background:var(--primary-soft);
+  border:1px solid var(--gold)}
+.cond-section-banner:first-of-type{margin-top:6px}
+.cond-section-title{font-family:var(--serif,inherit);font-weight:700;font-size:15px;color:#141B22}
+.cond-section-sub{font-size:12px;color:#4B585C}
+.cond-section-count{margin-left:auto;font-size:12px;color:#4B585C;white-space:nowrap}
 /* The conditions filter row — two labelled controls, not two bare dropdowns
    squeezed onto the title line (where both truncated and said nothing). */
 .cond-filters{display:flex;gap:14px;flex-wrap:wrap;align-items:flex-end;margin:2px 0 10px}
@@ -3542,3 +3585,25 @@ details[open]>.appr-sec-sum .appr-sec-chev{transform:rotate(180deg)}
   border-bottom:1px solid var(--line);padding:7px 0;color:#141B22}
 .pu-cond:last-child{border-bottom:none}
 .pu-cond-main{display:flex;flex-direction:column;gap:2px;min-width:0}
+
+/* Investor Suite inside PILOT (owner-directed 2026-07-29) — the staff-side host
+   for the marketing tools. White-first, dark text on the paper canvas. */
+.isuite-group-h{margin:0 0 10px}
+.isuite-group-title{font-family:var(--serif,inherit);font-weight:700;font-size:17px;color:#141B22}
+.isuite-group-sub{font-size:13px;color:#4B585C;margin-top:2px}
+.isuite-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(240px,1fr));gap:12px}
+.isuite-card{display:flex;flex-direction:column;align-items:flex-start;gap:4px;
+  text-align:left;padding:16px;border:1px solid var(--border);border-radius:14px;
+  background:var(--surface,#fff);cursor:pointer;transition:border-color .15s ease,box-shadow .15s ease,transform .15s ease;color:#141B22}
+.isuite-card:hover{border-color:var(--gold);box-shadow:0 6px 20px rgba(20,27,34,.08);transform:translateY(-1px)}
+.isuite-card:focus-visible{outline:2px solid var(--focus,#2F7F86);outline-offset:2px}
+.isuite-card-icon{font-size:22px;line-height:1}
+.isuite-card-name{font-weight:700;font-size:15px;color:#141B22}
+.isuite-card-desc{font-size:12.5px;color:#4B585C;line-height:1.4;flex:1}
+.isuite-card-cta{font-size:12.5px;font-weight:600;color:var(--teal-br,#256168);margin-top:4px}
+/* Full-screen tool host */
+.isuite-full{position:fixed;inset:0;z-index:60;display:flex;flex-direction:column;background:#F4F0E7}
+.isuite-full-head{display:flex;align-items:center;gap:12px;padding:10px 14px;
+  background:#fff;border-bottom:1px solid var(--border);
+  padding-top:calc(10px + env(safe-area-inset-top,0px))}
+.isuite-full-body{flex:1;min-height:0;display:flex}

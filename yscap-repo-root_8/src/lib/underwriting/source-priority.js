@@ -35,8 +35,23 @@ function rankOf(source) {
 
 // Are two present values equal after light normalization (numbers within a cent;
 // strings case/space-insensitive)? Used to decide whether a disagreement is real.
-function valuesAgree(a, b) {
+// FREE-TEXT fields compare by MEANING through their shared semantic key (the
+// db/288 term / db/322 property-type / db/326 state hard rule): the studio
+// stores "2-4 units" while the application stores "Multi 2–4" — same type, and
+// reporting it as registration drift was a permanent false discrepancy on every
+// multi-unit file (fixed 2026-07-31).
+const SEMANTIC_KEYS = Object.freeze({
+  property_type: (v) => { try { return require('../property-type').propertyTypeCompareKey(v); } catch (_) { return null; } },
+  term: (v) => { try { return require('../term-text').termKey(v); } catch (_) { return null; } },
+  property_state: (v) => { try { return require('../address').stateCompareKey(v); } catch (_) { return null; } },
+});
+function valuesAgree(a, b, fieldKey) {
   if (a === b) return true;
+  const sem = fieldKey && SEMANTIC_KEYS[fieldKey];
+  if (sem) {
+    const ka = sem(a), kb = sem(b);
+    if (ka != null && kb != null) return ka === kb;
+  }
   const na = Number(a), nb = Number(b);
   if (Number.isFinite(na) && Number.isFinite(nb)) return Math.abs(na - nb) < 0.005;
   return String(a).trim().toLowerCase() === String(b).trim().toLowerCase();
@@ -62,7 +77,7 @@ function resolve(fieldKey, candidates) {
   });
   const chosen = present[0];
   // Any OTHER present candidate that disagrees is a discrepancy.
-  const disagreeing = present.slice(1).filter((c) => !valuesAgree(c.value, chosen.value));
+  const disagreeing = present.slice(1).filter((c) => !valuesAgree(c.value, chosen.value, fieldKey));
   const discrepancy = disagreeing.length ? {
     field: fieldKey,
     governing: { source: chosen.source, value: chosen.value, sourceId: chosen.sourceId || null },

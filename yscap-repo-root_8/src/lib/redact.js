@@ -16,4 +16,4 @@ function redactPII(obj) {
   return out;
 }
 
-module.exports = { redactPII };
+module.exports = { redactPII, SSN_KEY };

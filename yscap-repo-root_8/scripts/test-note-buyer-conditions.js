@@ -146,7 +146,57 @@ const emdCount = async (appId) => (await db.query(
     const flFid = (await db.query(
       `INSERT INTO applications (borrower_id,status,lender) VALUES ($1,'processing','Fidelis') RETURNING id`, [borrowerId])).rows[0].id;
     await engine.evaluateApplication(flFid, { reason: 'test', notify: false });
-    assert((await floodCount(flFid)) === 0, 'a Fidelis note buyer does NOT get the flood-certificate condition from the note-buyer rule');
+    // Owner-directed 2026-07-30 (db/374): the flood cert is on EVERY file, Fidelis included.
+    assert((await floodCount(flFid)) === 1, 'a Fidelis file ALSO gets the flood-certificate condition (every file, db/374)');
+
+    /* THE EXACT-MATCH GUARD (owner-reported 2026-07-30).
+       `normNoteBuyer` is deliberately EXACT — loosening it would let a look-alike
+       name export the wrong note buyer's data tape — so the real ClickUp label
+       "EMCAP Financial" normalizes to `emcapfinancial`, NOT `emcap`. Any branch
+       that compares a normalized note buyer to the bare string 'emcap' therefore
+       matches NO live file and is silently dead. That is exactly how the
+       fix-and-hold estimated-rent requirement (staff.js applicationCompleteness)
+       never fired once. `isEmcapNoteBuyer` (the prefix test) is the only correct
+       way to ask, and every consumer now uses it. */
+    assert(reg.isEmcapNoteBuyer('EMCAP Financial') && reg.isEmcapNoteBuyer('EMCAP')
+      && reg.isEmcapNoteBuyer('emcap financial llc'),
+      'isEmcapNoteBuyer matches every real EMCAP spelling, including the live "EMCAP Financial" label');
+    assert(!reg.isEmcapNoteBuyer('Blue Lake') && !reg.isEmcapNoteBuyer('Fidelis Investors LLC')
+      && !reg.isEmcapNoteBuyer('') && !reg.isEmcapNoteBuyer(null),
+      'isEmcapNoteBuyer matches nothing else, and a blank note buyer is not EMCAP');
+    assert(reg.normNoteBuyer('EMCAP Financial') !== 'emcap',
+      'the live label does NOT normalize to the bare "emcap" — which is why an exact compare is always a dead branch');
+    {
+      /* Flag the exact bug SHAPE: a value taken straight from `normNoteBuyer`
+         compared to the bare 'emcap'. Deliberately NOT "any 'emcap' string" —
+         that flags rule metadata (`audience:'emcap'`), comments, and the
+         legitimate canonical-key compare in investor-guideline-review.js, whose
+         `normKey` FOLDS every EMCAP spelling onto 'emcap' via isEmcapNoteBuyer
+         before comparing. A folding canonicalizer is correct; reading
+         normNoteBuyer's raw output and testing it for 'emcap' is the dead branch. */
+      const fs = require('fs'), path = require('path');
+      const hits = [];
+      const strip = (t) => t.replace(/\/\*[\s\S]*?\*\//g, '').replace(/(^|[^:])\/\/[^\n]*/g, '$1');
+      const walk = (d) => {
+        for (const e of fs.readdirSync(d, { withFileTypes: true })) {
+          const f = path.join(d, e.name);
+          if (e.isDirectory()) { if (e.name !== 'node_modules') walk(f); continue; }
+          if (!/\.js$/.test(e.name)) continue;
+          const txt = strip(fs.readFileSync(f, 'utf8'));
+          // (a) inline:  normNoteBuyer(x) === 'emcap'
+          if (/normNoteBuyer\([^)]*\)\s*(===|==|!==|!=)\s*['"]emcap['"]/.test(txt)) { hits.push(f + ' (inline)'); continue; }
+          // (b) via a variable assigned DIRECTLY from normNoteBuyer
+          const vars = [...txt.matchAll(/(?:const|let|var)\s+([A-Za-z_$][\w$]*)\s*=\s*[^;\n]*normNoteBuyer\(/g)].map((m) => m[1]);
+          for (const v of new Set(vars)) {
+            const re = new RegExp('\\b' + v + '\\s*(===|==|!==|!=)\\s*[\'"]emcap[\'"]');
+            if (re.test(txt)) { hits.push(f + ' (' + v + ')'); break; }
+          }
+        }
+      };
+      walk(path.join(__dirname, '..', 'src'));
+      assert(hits.length === 0,
+        `no source file compares a note buyer to the bare 'emcap' — use isEmcapNoteBuyer (found: ${hits.join(', ') || 'none'})`);
+    }
 
     console.log(failures ? `\n${failures} assertion(s) failed` : '\nALL note-buyer-conditions assertions passed');
   } catch (e) {

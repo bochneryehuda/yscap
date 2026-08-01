@@ -64,6 +64,7 @@ function propertyLine(pa) {
 async function getOrderData(appId) {
   const r = await db.query(
     `SELECT a.id, a.ys_loan_number, a.property_address, a.loan_type, a.loan_amount,
+            a.usps_match, a.usps_imported_at,
             a.loan_officer_id, a.processor_id,
             b.first_name, b.last_name, b.email AS borrower_email, b.date_of_birth,
             cb.first_name AS co_first, cb.last_name AS co_last, cb.email AS co_email,
@@ -112,7 +113,21 @@ async function getOrderData(appId) {
       : null,
     processor: a.proc_name ? { name: a.proc_name, email: a.proc_email || null } : null,
     vendors: { title: vendorOf('title_company'), insurance: vendorOf('insurance_agent') },
+    // The subject address must be the USPS-imported one BEFORE any order goes out —
+    // an order transmits the property address to a vendor, and a wrong/unverified
+    // address there is expensive to unwind. `uspsGate` is on only when USPS is
+    // actually configured and the condition is required (so nothing is blocked in an
+    // environment that hasn't turned USPS on).
+    uspsImported: !!a.usps_imported_at,
+    uspsGate: uspsGateActive(),
   };
+}
+
+// USPS ordering gate is live only when the standardizer is configured AND the
+// verify-and-import condition is required. Off ⇒ no order is ever blocked on USPS.
+function uspsGateActive() {
+  try { return require('./usps-verify').configured() && !!cfg.usps.conditionRequired; }
+  catch (_) { return false; }
 }
 
 /** What still blocks an order — an empty list means it's ready to send. */
@@ -121,6 +136,8 @@ function blockers(kind, data) {
   if (!data) { out.push('file'); return out; }
   if (!data.hasLoanNumber) out.push('loan_number');
   if (!data.vendors[kind] || !data.vendors[kind].email) out.push('contact');
+  // No order may be placed until a USPS-verified address has been imported.
+  if (data.uspsGate && !data.uspsImported) out.push('usps');
   return out;
 }
 
@@ -221,23 +238,49 @@ function buildOrderEmail(kind, data, { followup = false, note = '' } = {}) {
   return built;
 }
 
-/** Recipients for an order: TO the vendor; CC the borrower(s), loan officer and
-    processor (deduped, minus the vendor). Reply-To is the unique per-order box. */
-function recipientsFor(kind, data) {
+/**
+ * Whether the BORROWER is CC'd on this order (owner-directed 2026-07-31: "By
+ * default, the borrower should not be included and looped in the title
+ * insurance order email … the officer can turn that on on each and every file
+ * … and the loan officers should have their settings section [to] default to
+ * CC their borrowers").
+ * Precedence, per kind:
+ *   1. an explicit per-order choice (the checkbox at place time, or the choice
+ *      persisted on file_orders.meta.ccBorrower from the first send — follow-ups
+ *      stay on the same footing as the order they follow);
+ *   2. TITLE: the file's loan officer's own default (lo-settings
+ *      ccBorrowerOnTitleOrder) — false when unset;
+ *   3. INSURANCE: true (unchanged behavior — the borrower usually picked the
+ *      agent; the checkbox can still turn it off per order).
+ */
+function ccBorrowerDefault(kind, loSetting) {
+  if (kind === 'title') return loSetting === true;
+  return true;
+}
+
+/** Recipients for an order: TO the vendor; CC the loan officer + processor, and
+    the borrower(s) ONLY when opts.ccBorrower says so (see ccBorrowerDefault —
+    title defaults OFF, owner-directed 2026-07-31). Reply-To is the unique
+    per-order box. */
+function recipientsFor(kind, data, opts) {
+  const o = opts || {};
   const vendor = data.vendors[kind];
   const to = vendor && vendor.email ? [vendor.email] : [];
   const cc = [];
   const seen = new Set(to.map((e) => e.toLowerCase()));
   const add = (e) => { const k = String(e || '').trim().toLowerCase(); if (k && !seen.has(k)) { seen.add(k); cc.push(k); } };
-  add(data.borrowerEmail);
-  add(data.coBorrowerEmail);
+  const ccBorrower = o.ccBorrower != null ? !!o.ccBorrower : ccBorrowerDefault(kind, o.loCcSetting);
+  if (ccBorrower) {
+    add(data.borrowerEmail);
+    add(data.coBorrowerEmail);
+  }
   if (data.officer) add(data.officer.email);
   if (data.processor) add(data.processor.email);
-  return { to, cc, replyTo: orderReplyTo(data.appId, kind) };
+  return { to, cc, replyTo: orderReplyTo(data.appId, kind), ccBorrower };
 }
 
 module.exports = {
   ORDER_TYPES, VENDOR_TYPE, ORDER_LABEL,
-  getOrderData, blockers, buildOrderEmail, recipientsFor,
+  getOrderData, blockers, buildOrderEmail, recipientsFor, ccBorrowerDefault,
   transactionType, propertyLine, money,
 };

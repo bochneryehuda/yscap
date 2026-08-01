@@ -13,18 +13,19 @@
    ===================================================================== */
 'use strict';
 
-let YSP = null, GSP = null, YSTitle = null, loadErr = null;
+let YSP = null, GSP = null, SVP = null, YSTitle = null, loadErr = null;
 try {
   YSP = require('../../web/tools/standard-program.js');
   GSP = require('../../web/tools/gold-standard.js');
+  SVP = require('../../web/tools/silver-program.js');
   YSTitle = require('../../web/tools/title-cost.js');
 } catch (e) {
   loadErr = e && e.message ? e.message : String(e);
 }
 
-function enginesReady() { return !!(YSP && GSP && YSTitle); }
+function enginesReady() { return !!(YSP && GSP && SVP && YSTitle); }
 
-const PROGRAM_LABEL = { standard: 'Standard Program', gold: 'Gold Standard Program', manual: 'Manual Program' };
+const PROGRAM_LABEL = { standard: 'Standard Program', gold: 'Gold Standard Program', silver: 'Silver Program', manual: 'Manual Program' };
 // Hardcoded fee fallback (used only if the company-settings cache is stone
 // cold). Company defaults (Pricing Admin Center) override these for every
 // not-yet-registered file; a per-file adminPricing override still wins over
@@ -140,6 +141,9 @@ function buildInputs(app, experience, overrides) {
     state: clean(addr.state).toUpperCase(),
     city: fileCity,
     address: fileLine1,
+    // ZIP feeds the Silver engine's geography exclusions + NYC-market detection
+    // (Standard/Gold ignore it). Falls back to a ZIP inside the address text.
+    zip: clean(addrIsString ? '' : (addr.zip || addr.postal_code || addr.postalCode || '')),
     propertyType: normPropertyType(app.property_type),
     units: num(app.units) || 0,
     purchasePrice: totalPrice,
@@ -178,17 +182,30 @@ function buildInputs(app, experience, overrides) {
     // engine, exactly as before (unregistered / no-override files are unchanged).
     ...(app.file_markup_std_pct  != null ? { markupStdPct:  num(app.file_markup_std_pct) }  : {}),
     ...(app.file_markup_gold_pct != null ? { markupGoldPct: num(app.file_markup_gold_pct) } : {}),
+    ...(app.file_markup_silver_pct != null ? { markupSilverPct: num(app.file_markup_silver_pct) } : {}),
+    // 1% closing-cost buffer waiver (db/390, owner-authorized 2026-07-31) —
+    // file-owned; an admin waives it through its own audited endpoint.
+    waiveLiqBuffer: !!app.liquidity_buffer_waived,
   };
 
   // Staff overrides win. Only copy known keys; coerce numeric fields.
   const NUMK = ['units', 'purchasePrice', 'sellerPrice', 'asIsValue', 'arv', 'rehabBudget',
     'fico', 'expFlips', 'expHolds', 'expGround', 'term', 'irMonths', 'irAmount', 'targetLTC',
     'ovrAcqLTV', 'ovrARLTV', 'ovrLTC', 'ovrRate',
-    'markupStdPct', 'markupGoldPct', 'origStdPct', 'origGoldPct',
+    'markupStdPct', 'markupGoldPct', 'markupSilverPct',
+    'origStdPct', 'origGoldPct', 'origSilverPct', 'origManualPct',
     'lenderFee', 'creditFee', 'appraisalFee', 'titleFee',
-    'ovrAcqLTVPct', 'ovrARLTVPct', 'ovrLTCPct', 'ovrRatePct', 'ovrIrMonths', 'ovrEffPrice'];
+    'ovrAcqLTVPct', 'ovrARLTVPct', 'ovrLTCPct', 'ovrRatePct', 'ovrIrMonths', 'ovrEffPrice',
+    // Out-of-pocket rehab exception (owner-authorized 2026-07-31): a dollar amount
+    // of the rehab budget brought OUT OF POCKET so the initial advance can rise
+    // toward the acquisition cap. Display/structure only — it re-slices an already-
+    // sized loan (normalize()), never a leverage/rate/cap number. 0/absent → no change.
+    'oopRehab'];
   const STRK = ['loanType', 'strategy', 'state', 'city', 'address', 'propertyType'];
-  const BOOLK = ['cashOut', 'isAssignment', 'heavyRehab', 'sqftAddition', 'forcePrice', 'manualPricing'];
+  const BOOLK = ['cashOut', 'isAssignment', 'heavyRehab', 'sqftAddition', 'forcePrice', 'manualPricing',
+    // "Raise the initial to max" toggle — use the full max out-of-pocket rehab
+    // (exact, independent of any stale client-computed dollar). Pairs with oopRehab.
+    'oopRehabMax'];
   const out = Object.assign({}, base);
   if (overrides && typeof overrides === 'object') {
     for (const k of NUMK) if (overrides[k] != null && overrides[k] !== '') out[k] = num(overrides[k]);
@@ -209,6 +226,10 @@ function buildInputs(app, experience, overrides) {
     if (base.address) out.address = base.address;
     if (base.city) out.city = base.city;
     if (overrides.asIsValue != null && overrides.asIsValue !== '') out.asIsDefaulted = false;
+    // The 1% closing-cost buffer WAIVER is FILE-OWNED (admin-set through its own
+    // audited endpoint, owner-directed 2026-07-31) — a studio override can never
+    // set or clear it; the file's recorded flag always governs.
+    out.waiveLiqBuffer = !!app.liquidity_buffer_waived;
     // Present-but-EMPTY means "clear it" (owner-reported 2026-07-16: a field the
     // user blanked in the studio must never silently revert to the previously-
     // saved value on re-register): markup '' → drop the sticky file markup so
@@ -216,6 +237,7 @@ function buildInputs(app, experience, overrides) {
     // mirroring irAmount's existing blank-sends-0 contract.
     if (overrides.markupStdPct === '') delete out.markupStdPct;
     if (overrides.markupGoldPct === '') delete out.markupGoldPct;
+    if (overrides.markupSilverPct === '') delete out.markupSilverPct;
     if (overrides.irMonths === '') out.irMonths = 0;
   }
   out.strategy = engineStrategy(out.strategy);   // override labels get the same normalization
@@ -255,12 +277,13 @@ function numberOverride(input, key, fallback) {
 function percentOverride(input, key, fallbackFraction) {
   return hasInput(input, key) ? num(input[key]) / 100 : fallbackFraction;
 }
+function markupKeyFor(program) { return program === 'gold' ? 'markupGoldPct' : program === 'silver' ? 'markupSilverPct' : 'markupStdPct'; }
 function markupOverride(input, program) {
-  const key = program === 'gold' ? 'markupGoldPct' : 'markupStdPct';
+  const key = markupKeyFor(program);
   return hasInput(input, key) ? num(input[key]) / 100 : null;
 }
 function setEngineMarkup(program, value) {
-  const engine = program === 'gold' ? GSP : YSP;
+  const engine = program === 'gold' ? GSP : (program === 'silver' ? SVP : YSP);
   if (engine && typeof engine.setMarkup === 'function') engine.setMarkup(value);
 }
 
@@ -269,10 +292,25 @@ function normalize(program, input, ev, ladder) {
   const s = ev.sizing || {};
   const cd = pricingSettings.current();   // company-wide defaults (or literals)
   // Origination default: per-file override → COMPANY default → engine constant.
-  const engineOrigPct = (program === 'gold' ? (GSP.constants && GSP.constants.ORIG_PCT) : (YSP.constants && YSP.constants.ORIG_PCT)) || 0.0125;
-  const companyOrigPct = program === 'gold' ? cd.origGoldPct : cd.origStdPct;
+  const engineOrigPct = (program === 'gold' ? (GSP.constants && GSP.constants.ORIG_PCT)
+    : program === 'silver' ? (SVP && SVP.constants && SVP.constants.ORIG_PCT)
+    : (YSP.constants && YSP.constants.ORIG_PCT)) || 0.0125;
+  const companyOrigPct = program === 'gold' ? cd.origGoldPct : program === 'silver' ? cd.origSilverPct : cd.origStdPct;
   const defaultOrigPct = (companyOrigPct != null ? companyOrigPct / 100 : engineOrigPct);
-  const origPct = percentOverride(input, program === 'gold' ? 'origGoldPct' : 'origStdPct', defaultOrigPct);
+  /* THE MANUAL PRODUCT HAS ITS OWN ORIGINATION KNOB (owner-directed 2026-07-30:
+     "we don't have a word to enter origination fee for the manual program. We only
+     can enter for all other programs, not for the manual program"). It prices on
+     the Standard engine, so it has no company default and no engine constant of
+     its own — a BLANK manual field means "use Standard", which is why the fallback
+     below is `origStdPct` and not the bare default. That ordering is what keeps a
+     file that only ever set a Standard override behaving exactly as it did before
+     this key existed (including the accept-counter path, which writes the countered
+     origination onto origStdPct/origGoldPct only). */
+  const origKey = program === 'gold' ? 'origGoldPct'
+    : program === 'silver' ? 'origSilverPct'
+    : (program === 'manual' && hasInput(input, 'origManualPct')) ? 'origManualPct'
+    : 'origStdPct';
+  const origPct = percentOverride(input, origKey, defaultOrigPct);
   // Rounding policy (owner-directed 2026-07-09): the financed loan is reported in
   // WHOLE DOLLARS, floored DOWN — never lend more than the engine sized. The
   // reported breakdown must reconcile EXACTLY (initial advance + holdback +
@@ -283,11 +321,39 @@ function normalize(program, input, ev, ladder) {
   // loan amount AND the initial. The engine's sizing math itself is unchanged —
   // this only floors/reconciles the reported figures.
   const totalLoan = Math.floor(num(s.totalLoan));
-  const rehabHoldback = Math.floor(num(s.rehabLoan));
+  let rehabHoldback = Math.floor(num(s.rehabLoan));
   let initialAdvance = Math.floor(num(s.acquisition));
   let financedReserve = 0;
   if (num(s.financedIR) > 0.5) financedReserve = Math.max(0, totalLoan - initialAdvance - rehabHoldback);
   else initialAdvance = Math.max(0, totalLoan - rehabHoldback);
+  /* OUT-OF-POCKET REHAB EXCEPTION (owner-authorized 2026-07-31; the specific change:
+     "re-slice an already-sized loan so the initial advance rises toward the
+     acquisition-LTV cap and the displaced rehab is brought out of pocket — total
+     loan, rate and every cap unchanged; byte-identical when the exception amount is
+     zero"). This is DISPLAY/STRUCTURE ONLY: the frozen engine already sized the total
+     and the default split (initial cut to keep rehab 100% financed); here we move X
+     dollars from the rehab holdback into the initial advance, capped so the initial
+     never exceeds its own acquisition-LTV ceiling A = maxAcqLTV × acqDenom and the
+     holdback never goes negative. The total loan, note rate, LTC/ARV/acq caps and the
+     financed reserve are untouched. `maxInitial`/`initialCut`/`maxOopRehab` are the
+     two figures the Manual section shows BEFORE anything is entered. When no exception
+     amount is supplied (requestedOop <= 0) every number below is identical to before. */
+  // Use the EFFECTIVE acquisition cap the deal was sized at — pricedCeiling when the
+  // engine splits it out (Silver), else caps (Standard/Gold) — matching the `caps`
+  // mapping below and the engine's own A = maxAcqLTV × acqDenom.
+  const maxInitial = Math.floor(Math.max(0, num(((ev.pricedCeiling || ev.caps) || {}).maxAcqLTV) * num(s.acqDenom)));
+  const initialCut = Math.max(0, maxInitial - initialAdvance);         // how much the initial was cut below its cap
+  const maxOopRehab = Math.max(0, Math.min(initialCut, rehabHoldback)); // biggest rehab we could push out of pocket
+  const requestedOop = input.oopRehabMax ? maxOopRehab : Math.max(0, Math.floor(num(input.oopRehab)));
+  const oopRehab = Math.max(0, Math.min(requestedOop, maxOopRehab));   // the applied exception amount
+  if (oopRehab > 0) { initialAdvance += oopRehab; rehabHoldback -= oopRehab; }
+  // The raised initial reduces the equity due at the table $-for-$; the out-of-pocket
+  // rehab is funded during construction (a draw shortfall), NOT at closing — so it is
+  // NOT in cash-to-close, but IS in the liquidity the borrower must show.
+  const downPayment = Math.max(0, num(s.downPayment) - oopRehab);
+  // Interest-only payment on the initial advance rises with the raised initial
+  // (as-drawn accrual). Recomputed only under the exception; byte-identical otherwise.
+  const initialPayment = oopRehab > 0 ? round2(initialAdvance * (num(ev.noteRate) / 12)) : num(s.initialPayment);
   const state = clean(input.state).toUpperCase();
   const title = YSTitle.estimate(state, totalLoan, input.loanType);
   const titleAutoTotal = num(title.total);
@@ -307,7 +373,7 @@ function normalize(program, input, ev, ladder) {
   const extraFeeList = pricingSettings.extraFeesForState(cd.extraFees, state);
   const extraFeesTotal = extraFeeList.reduce((a, f) => a + (num(f.amount) || 0), 0);
   const closingDueAtClose = round2(origination + lenderFee + creditFee + titleTotal + extraFeesTotal);
-  const cashToClose = round2(num(s.downPayment) + assignmentExcess + closingDueAtClose);
+  const cashToClose = round2(downPayment + assignmentExcess + closingDueAtClose);
   let reserveRequirement = 0;
   let reserveBasis = '';
   let reserveMo = 0;
@@ -323,14 +389,54 @@ function normalize(program, input, ev, ladder) {
       reserveBasis = `${reserveMo} months of full-payment interest reserves`;
     }
   }
-  const liquidityRequired = round2(cashToClose + reserveRequirement);
-  const caps = ev.caps ? {
-    maxLoan: num(ev.caps.maxLoan),
-    minFico: num(ev.caps.minFico),
-    maxAcqLtv: num(ev.caps.maxAcqLTV),
-    maxArvLtv: num(ev.caps.maxARLTV),
-    maxLtc: num(ev.caps.maxLTC),
-  } : null;
+  // Out-of-pocket rehab is funded over the construction period, not at the table, so
+  // it is added to the liquidity the borrower must SHOW (not to cash-to-close). +0 by
+  // default.
+  //
+  // CLOSING-COST BUFFER (owner-authorized liquidity change, 2026-07-31, in the
+  // owner's own words: "add a buffer for extra closing costs … about 1% of the
+  // loan amount — $500,000 loan → $5,000 buffer — extra cash to close that we
+  // verify, because attorney charges and other charges should never leave us
+  // running short"). 1% of the total loan, added to the liquidity the borrower
+  // must SHOW — never to cash-to-close itself (it is a cushion we verify, not a
+  // cost we charge). Waivable per file by an admin (applications.
+  // liquidity_buffer_waived, db/390) — the waiver is file-owned, never a studio
+  // override. Mirrored in web/v2/tools/termsheet.js (calc/calcGold/calcSilver).
+  const closingBufferWaived = !!input.waiveLiqBuffer;
+  const closingBuffer = closingBufferWaived || totalLoan <= 0 ? 0 : round2(totalLoan * 0.01);
+  const liquidityRequired = round2(cashToClose + reserveRequirement + oopRehab + closingBuffer);
+  /* THREE MEANINGS OF "MAX LEVERAGE", mapped to the reader that needs each one
+     (engine contract split 2026-07-30, owner-reported).
+
+     `quote.guidelines.caps` KEEPS ITS EXISTING MEANING — the EFFECTIVE ceiling this
+     deal was sized and priced at. Every enforcement path already built on it
+     (underwriting metrics, the structure underwriter, the Encompass reconcile, the
+     file view) must keep measuring the registered loan against the ceiling it was
+     actually approved at, so this mapping is deliberately behaviour-identical: the
+     Silver engine now publishes that value as `pricedCeiling`, and every other engine
+     still publishes it as `caps`.
+
+     `quote.guidelines.programCaps` is NEW and is for DISPLAY only — the PROGRAM
+     MAXIMUM this borrower profile can actually reach, already lowered to the highest
+     leverage band the rate grid genuinely prices, and invariant to deal inputs. The
+     owner: "the tier two cannot anytime get 92.5 even if it says that it's available
+     because it doesn't price — so keep that tier at 85%", and "the Max LTC should
+     never change … it shouldn't change based on what you're changing the interest
+     reserve".
+
+     `quote.guidelines.tierCaps` is the workbook Tier Grid row verbatim — the guideline
+     document's own numbers, kept for audit/parity readers.
+     Read-only: no number is computed here. */
+  const shape = (c) => (c ? {
+    maxLoan: num(c.maxLoan),
+    minFico: num(c.minFico),
+    maxAcqLtv: num(c.maxAcqLTV),
+    maxArvLtv: num(c.maxARLTV),
+    maxLtc: num(c.maxLTC),
+  } : null);
+  const caps = shape(ev.pricedCeiling || ev.caps);
+  const programCaps = shape(ev.caps);
+  const tierCaps = shape(ev.tierCaps);
 
   const quote = {
     program,
@@ -351,9 +457,21 @@ function normalize(program, input, ev, ladder) {
       initialAdvance,
       rehabHoldback,
       financedReserve,
-      downPayment: num(s.downPayment),
+      downPayment,
       assignmentExcessOOP: assignmentExcess,
-      initialPayment: num(s.initialPayment),
+      // Out-of-pocket rehab exception (owner-authorized 2026-07-31). `oopRehab` = the
+      // applied EXCEPTION amount (0 = no exception). On the normal trigger (a total cap
+      // cut the initial while rehab was 100% financed) this equals the tapes'/Encompass'
+      // derived `rehab_budget − rehabHoldback`; on a pre-existing rehab-over-cap deal the
+      // derived value can be larger (it also carries the capped-rehab excess), and this
+      // field stays gated to the exception so cash-to-close is byte-identical without one.
+      // `maxOopRehab`/`initialCut`/`maxInitial` are the figures the Manual section shows
+      // before anything is entered.
+      oopRehab,
+      maxOopRehab,
+      initialCut,
+      maxInitial,
+      initialPayment,
       monthlyPayment: num(s.fullPayment),
       ltcPct: num(s.ltcPct),
       acqLtvPct: num(s.acqLtvPct),
@@ -379,12 +497,19 @@ function normalize(program, input, ev, ladder) {
     reserveMonths: reserveMo,
     reserveBasis,
     liquidityPct,
+    closingBuffer,
+    closingBufferWaived,
     liquidityRequired,
     assignment: ev.assignment || null,
     ladder: ladder || null,
     liquidity: liquidityRequired,
     guidelines: {
-      caps,
+      caps,             // EFFECTIVE — what this deal was sized/priced at (enforcement)
+      programCaps,      // PROGRAM MAXIMUM this profile can reach (display; fixed)
+      tierCaps,         // the workbook Tier Grid row, verbatim (audit / parity)
+      // the engine's own sentence explaining why this deal's ceiling sits under the
+      // program maximum (Silver's grid step-down tags it `leverage_capped`)
+      leverageCappedWhy: (ev.reasons || []).filter((r) => r && r.code === 'leverage_capped').map((r) => r.msg).join(' ') || null,
       tierLabel: ev.tierLabel || null,
       binding: (s && s.binding) || '',
       reserveRequirement,
@@ -401,8 +526,8 @@ function normalize(program, input, ev, ladder) {
       sqftAddition: !!ev.sqft,
     },
     adminPricing: {
-      markupPct: hasInput(input, program === 'gold' ? 'markupGoldPct' : 'markupStdPct')
-        ? num(input[program === 'gold' ? 'markupGoldPct' : 'markupStdPct']) : null,
+      markupPct: hasInput(input, markupKeyFor(program))
+        ? num(input[markupKeyFor(program)]) : null,
       origPct: origPct * 100,
       lenderFee,
       creditFee,
@@ -428,10 +553,28 @@ function quoteProgram(program, input) {
   let m = markupOverride(input, program);
   if (m == null) {
     const cd = pricingSettings.current();
-    const companyMarkup = program === 'gold' ? cd.markupGoldPct : cd.markupStdPct;
+    const companyMarkup = program === 'gold' ? cd.markupGoldPct : program === 'silver' ? cd.markupSilverPct : cd.markupStdPct;
     if (companyMarkup != null) m = num(companyMarkup) / 100;
   }
   if (m != null) setEngineMarkup(program, m);
+  if (program === 'silver') {
+    // The Silver program prices on its own frozen engine (EMCAP grid). Its
+    // ladder varies by LTC band exactly like Standard's, so it ships one too.
+    try {
+      const ev = SVP.evaluate(input);
+      if (input.forcePrice && ev.status === 'INELIGIBLE') { ev.status = 'MANUAL'; ev.exitShortfall = 0; }
+      let ladder = null;
+      try {
+        const pl = SVP.priceLadder(input);
+        if (pl && pl.eligible && pl.rows && pl.rows.length) {
+          ladder = { maxLtc: pl.maxLtc, binding: pl.binding, rows: pl.rows };
+        }
+      } catch (_) { /* ladder is best-effort */ }
+      return normalize('silver', input, ev, ladder);
+    } finally {
+      if (m != null) setEngineMarkup(program, null);
+    }
+  }
   if (program === 'gold') {
     try {
       const ev = GSP.evaluate(input);
@@ -464,7 +607,8 @@ function quoteAll(app, experience, overrides) {
   const input = buildInputs(app, experience, overrides);
   const standard = safeQuote('standard', input);
   const gold = safeQuote('gold', input);
-  return { inputs: input, standard, gold };
+  const silver = safeQuote('silver', input);
+  return { inputs: input, standard, gold, silver };
 }
 
 function safeQuote(program, input) {
@@ -501,7 +645,9 @@ function econVersionFor(app) {
     // the sticky per-file markups.
     app.rehab_type, app.sqft_pre, app.sqft_post,
     (app.property_address && app.property_address.state) || '',
-    app.fico, app.file_markup_std_pct, app.file_markup_gold_pct,
+    app.fico, app.file_markup_std_pct, app.file_markup_gold_pct, app.file_markup_silver_pct,
+    // The Silver engine keys geography off the ZIP too (exclusions + NYC market).
+    (app.property_address && (app.property_address.zip || app.property_address.postal_code)) || '',
   ].map(f).join('|');
   return crypto.createHash('sha1').update(basis).digest('hex').slice(0, 16);
 }

@@ -194,17 +194,28 @@ async function readVerifiedLiquidity(appId, client, requiredLiquidity) {
 // cash-to-close term swaps estimate → actual. $1 tolerance + haveCountable data-gap
 // guard mirror assets-autoclear.js. Never re-derives a frozen number.
 // ---------------------------------------------------------------------------
-// PURE decision — verified liquidity vs (actual cash-to-close + reserves). $1
-// tolerance + haveCountable data-gap guard mirror assets-autoclear.js. Reserve is
-// the frozen number; only the cash-to-close term is the closer's actual off the ALTA.
-function decideCashToClose({ verified, reserve, actualCashToClose, haveCountable }) {
+// PURE decision — verified liquidity vs (actual cash-to-close + reserves + the 1%
+// closing-cost buffer). $1 tolerance + haveCountable data-gap guard mirror
+// assets-autoclear.js. Reserve is the frozen number; only the cash-to-close term
+// is the closer's actual off the ALTA. The BUFFER (owner-authorized 2026-07-31)
+// still applies at closing — the actual ALTA figure replaces the ESTIMATE, but
+// the cushion exists precisely for the charges that surface after it ("attorney
+// charges or other charges — we should not run short"); 0 when waived per file
+// (the stored breakdown carries 0) and on legacy pre-buffer breakdowns.
+function decideCashToClose({ verified, reserve, actualCashToClose, haveCountable, closingBuffer }) {
   const v = Number(verified) || 0;
   const r = Number(reserve) || 0;
-  // null / undefined / '' means "no actual entered yet" — never treat it as $0
-  // (Number(null) === 0), which would falsely pass the gate.
+  const buf = Number(closingBuffer) || 0;
+  /* null / undefined / '' — AND A BOX OF SPACES — mean "no actual entered yet",
+     and must never be treated as $0 (`Number(null)` and `Number('  ')` are both
+     0), which would falsely pass the money gate: a recorded cash-to-close of
+     zero makes `required` collapse to the reserve alone. The route that writes
+     this now trims too; trimming HERE as well is what stops the two drifting
+     apart, which is the class this file keeps closing (audit round 6). */
+  const blankActual = actualCashToClose == null || String(actualCashToClose).trim() === '';
   const actual = Number(actualCashToClose);
-  const haveActual = actualCashToClose != null && actualCashToClose !== '' && Number.isFinite(actual) && actual >= 0;
-  const required = (haveActual ? actual : 0) + r;
+  const haveActual = !blankActual && Number.isFinite(actual) && actual >= 0;
+  const required = (haveActual ? actual : 0) + r + buf;
   const ok = haveActual && !!haveCountable && v >= required - 1;
   const shortfall = ok ? 0 : Math.max(0, required - v);
   return { ok, required, shortfall, haveActual };
@@ -215,9 +226,10 @@ async function runCashToCloseCheck(appId, actualCashToClose, client) {
   const liq = await readLiquidityBreakdown(appId, c);
   const reserve = liq && liq.reserveRequirement != null ? Number(liq.reserveRequirement) : 0;
   const required0 = liq && liq.required != null ? Number(liq.required) : null;
+  const closingBuffer = liq && liq.closingBuffer != null ? Number(liq.closingBuffer) : 0;
   const { verified, accounts, excludedTotal } = await readVerifiedLiquidity(appId, c, required0);
   const haveCountable = accounts.some((a) => a && a.tied && a.ending != null);
-  const d = decideCashToClose({ verified, reserve, actualCashToClose, haveCountable });
+  const d = decideCashToClose({ verified, reserve, actualCashToClose, haveCountable, closingBuffer });
   return {
     ok: d.ok,
     verified,
@@ -409,6 +421,35 @@ async function readNotes(appId, client) {
   return r.rows;
 }
 
+// The REGISTERED product's own sized breakdown, read from the persisted quote —
+// never re-derived. `financedReserve` is the reserve the loan actually carries
+// (pricing.normalize: flooredTotal − flooredInitial − flooredHoldback), which is a
+// DIFFERENT number from `applications.requested_ir_amount` (what was asked for, and
+// 0 on every months-driven file). The closing desk used to print the requested
+// amount under a "Financed interest reserve" label — owner-reported 2026-07-30.
+// READ-ONLY, best-effort: a file with no current registration returns null.
+async function readRegisteredStructure(appId, client) {
+  const c = client || db;
+  const row = (await c.query(
+    `SELECT program, total_loan, quote FROM product_registrations
+      WHERE application_id = $1 AND is_current LIMIT 1`, [appId])).rows[0];
+  if (!row) return null;
+  let q = row.quote;
+  if (typeof q === 'string') { try { q = JSON.parse(q); } catch (_) { q = null; } }
+  const s = (q && q.sizing) || null;
+  const n = (v) => (v == null || !isFinite(Number(v)) ? null : Number(v));
+  const g = (q && q.guidelines) || {};
+  return {
+    program: row.program || null,
+    totalLoan: n(row.total_loan),
+    initialAdvance: s ? n(s.initialAdvance) : null,
+    rehabHoldback: s ? n(s.rehabHoldback) : null,
+    financedReserve: s ? n(s.financedReserve) : null,
+    reserveCapped: !!g.reserveCapped,
+    reserveCapBy: g.reserveCapBy || '',
+  };
+}
+
 // ---------------------------------------------------------------------------
 // THE aggregate workspace payload the Closing screen renders. Best-effort per
 // sub-part — a failure in one block never blanks the whole page.
@@ -431,8 +472,10 @@ async function getClosingWorkspace(appId, client) {
   const checklists = await safe(() => readChecklists(appId, c), []);
   const notes = await safe(() => readNotes(appId, c), []);
   const reconciliation = await safe(() => reconcileClosingDates(appId, c), null);
+  const structure = await safe(() => readRegisteredStructure(appId, c), null);
 
   return {
+    structure,
     application_id: appId,
     ys_loan_number: app.ys_loan_number,
     status: app.status,
@@ -476,6 +519,7 @@ module.exports = {
   readClosingConditions,
   readChecklists,
   readNotes,
+  readRegisteredStructure,
   setChecklistItemChecked,
   getClosingWorkspace,
 };

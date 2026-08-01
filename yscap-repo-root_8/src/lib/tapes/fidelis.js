@@ -205,17 +205,17 @@ function economics(loan) {
     : (loan.registration && n(loan.registration.total_loan) != null ? n(loan.registration.total_loan) : n(a.loan_amount));
   const financedRehab = n(s.rehabHoldback) != null ? n(s.rehabHoldback) : n(a.rehab_budget);
   const totalRehab = n(a.rehab_budget) != null ? n(a.rehab_budget) : financedRehab;
-  // Out-of-pocket rehab = the slice of the rehab budget we do NOT finance
-  // (total rehab − financed rehab). Today we finance the WHOLE rehab, so this is
-  // always $0 → we leave the column BLANK rather than print $0. The logic is
-  // built for the day a loan finances only part of the rehab: e.g. a $100k
-  // construction budget where we finance $75k has $25k out of pocket, which would
-  // then surface here automatically. Only a genuine, positive unfinanced amount
-  // ever fills this column.
+  // Out-of-pocket rehab = the slice of the rehab budget we do NOT finance (the
+  // OOP-rehab exception, owner-authorized 2026-07-31). Prefer the exact priced
+  // amount (sizing.oopRehab — the SAME value the draw ledger enforces as its
+  // out-of-pocket-first floor) so the tape and the draws can never disagree; fall
+  // back to (total rehab − financed rehab) for a registration that predates the
+  // field. $0/absent → the column stays BLANK (we never print $0), so a loan with
+  // no exception is byte-identical. Only a genuine positive unfinanced amount fills it.
   let oopRehab = null;
-  if (totalRehab != null && financedRehab != null && totalRehab - financedRehab > 0) {
-    oopRehab = totalRehab - financedRehab;
-  }
+  const oopPriced = n(s.oopRehab);
+  if (oopPriced != null && oopPriced > 0) oopRehab = oopPriced;
+  else if (totalRehab != null && financedRehab != null && totalRehab - financedRehab > 0) oopRehab = totalRehab - financedRehab;
   const financedIR = n(s.financedReserve) != null ? n(s.financedReserve) : n(a.requested_ir_amount);
   const initialAdvance = n(s.initialAdvance);
   // Day-1 advance = the amount actually funded at closing (loan − holdback −

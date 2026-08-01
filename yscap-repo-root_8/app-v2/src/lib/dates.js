@@ -26,10 +26,24 @@ export function parseDay(v) {
 }
 
 /** Localized calendar-date string, timezone-shift-free for date-only values.
- *  opts/locale mirror Date.prototype.toLocaleDateString(locale, opts). */
+ *  opts/locale mirror Date.prototype.toLocaleDateString(locale, opts).
+ *
+ *  DEFAULT is the industry-standard US format MM/DD/YYYY (owner-directed
+ *  2026-07-29). A caller that wants a different shape passes its own opts
+ *  (e.g. { month:'short', day:'numeric', year:'numeric' } → "Jul 27, 2026"). */
+const MDY = { month: '2-digit', day: '2-digit', year: 'numeric' };
 export function fmtDay(v, opts, locale) {
   const d = parseDay(v);
-  return d ? d.toLocaleDateString(locale, opts) : '';
+  if (!d) return '';
+  return opts ? d.toLocaleDateString(locale, opts) : d.toLocaleDateString('en-US', MDY);
+}
+
+/** Explicit MM/DD/YYYY (industry standard) — shift-free for date-only values.
+ *  Returns the given placeholder (default '—') for an empty/unparseable value,
+ *  so it can drop straight into the many `String(v).slice(0,10)` wrappers. */
+export function fmtDate(v, placeholder = '—') {
+  const d = parseDay(v);
+  return d ? d.toLocaleDateString('en-US', MDY) : placeholder;
 }
 
 /** 'YYYY-MM-DD' string for binding an <input type="date"> value. */

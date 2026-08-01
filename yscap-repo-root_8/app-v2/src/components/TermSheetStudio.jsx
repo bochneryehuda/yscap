@@ -1,4 +1,5 @@
 import React, { forwardRef, useEffect, useImperativeHandle, useRef, useState } from 'react';
+import { moneyNum } from '../lib/money.js';
 
 /* The REAL static Term Sheet Studio (web/tools/term-sheet.html) embedded in
    the portal through a same-origin iframe. The static page and its frozen
@@ -140,12 +141,32 @@ export function buildStudioState(x) {
     // Term-sheet options (owner-directed 2026-07-22): carry the file's estimated
     // closing date into the studio so it shows and re-registers without wiping.
     estClosingDate: (x.estClosingDate && /^\d{4}-\d{2}-\d{2}/.test(String(x.estClosingDate))) ? String(x.estClosingDate).slice(0, 10) : '',
+    // The refinance payoff, and WHO holds it (owner-directed 2026-07-31). The
+    // studio ids are `payoff` / `payoffLender` / `payoffLoanNo`; carrying them
+    // both ways is what stops the number being retyped — and a retype is where
+    // the file quietly stops agreeing with the term sheet the borrower was shown.
+    payoff: rawNum(x.payoffAmount) || '',
+    payoffLender: String(x.payoffLender || ''),
+    payoffLoanNo: String(x.payoffLoanNumber || ''),
+    /* The TYPED cash-out override, carried both ways too (audit-found
+       2026-07-31). Without it, an officer's typed figure printed on the PDF,
+       never reached the loan file, and silently reverted to the structural
+       number the next time the studio was opened — the term sheet the borrower
+       was shown and the file would then quote different cash. */
+    cashOutAmt: rawNum(x.estimatedCashOut) || '',
     // Co-borrower personal-guaranty waiver (owner-directed 2026-07-22): a READ-ONLY
     // flag set by an approved super-admin exception (applications.co_borrower_pg_waived).
     // It drives the term sheet's guaranty wording; it is never editable in the studio
     // and the server ignores any client value (it reads the real flag from the file).
     coBorrowerPgWaived: (x.coBorrowerPgWaived === true || x.coBorrowerPgWaived === 1 ||
       String(x.coBorrowerPgWaived).toLowerCase() === 'true' || String(x.coBorrowerPgWaived) === '1') ? 'true' : '',
+    // 1% closing-cost buffer waiver (owner-authorized 2026-07-31): READ-ONLY flag
+    // from applications.liquidity_buffer_waived — the studio only DISPLAYS the
+    // liquidity with/without the buffer; the waiver is set by an admin on the
+    // file (its own audited endpoint), never in the studio, and the server's
+    // pricing ignores any client value (file-owned in buildInputs).
+    liqBufferWaived: (x.liqBufferWaived === true || x.liqBufferWaived === 1 ||
+      String(x.liqBufferWaived).toLowerCase() === 'true' || String(x.liqBufferWaived) === '1') ? 'true' : '',
   };
   const c = {
     isAssign,
@@ -191,16 +212,19 @@ function readSnapshot(win) {
   const srcVal = (id) => derived(id) ? '' : val(id);
   const chk = (id) => { const e = doc.getElementById(id); return !!(e && e.checked); };
   const active = (id) => { const e = doc.getElementById(id); return !!(e && e.classList.contains('pcard-active')); };
-  const program = active('pcardGold') ? 'gold' : active('pcardStd') ? 'standard' : null;
+  const program = active('pcardGold') ? 'gold' : active('pcardSilver') ? 'silver'
+    : active('pcardManual') ? 'manual' : active('pcardStd') ? 'standard' : null;
   const missBox = doc.getElementById('rMissing');
   const ready = !!missBox && missBox.style.display === 'none';
   const missing = missBox ? Array.from(missBox.querySelectorAll('li')).map((li) => li.textContent) : [];
-  let std = null, gold = null;
+  let std = null, gold = null, silver = null;
   try { std = win.TS._calc(); } catch (_) { /* engine not ready yet */ }
   try { gold = win.TS._calcGold(); } catch (_) { /* gold engine optional */ }
-  const d = program === 'gold' && gold && !gold.unavailable ? gold : std;
+  try { silver = win.TS._calcSilver && win.TS._calcSilver(); } catch (_) { /* silver engine optional */ }
+  const d = program === 'gold' && gold && !gold.unavailable ? gold
+    : program === 'silver' && silver && !silver.unavailable ? silver : std;
   return {
-    program, ready, missing, std, gold, d,
+    program, ready, missing, std, gold, silver, d,
     fields: {
       entityName: val('entityName'), borrowerName: val('borrowerName'), coBorrowerName: val('coBorrowerName'), propAddr: val('propAddr'), addrTBD: chk('addrTBD'),
       dealPurpose: val('dealPurpose'), dealType: val('dealType'),
@@ -211,9 +235,13 @@ function readSnapshot(win) {
       fico: val('fico'), expFlips: val('expFlips'), expBrrrr: val('expBrrrr'), expGround: val('expGround'),
       tsTerm: val('tsTerm'), irMonths: srcVal('irMonths'), irAmount: derived('irAmount') ? '' : moneyVal('irAmount'),
       tsEffPrice: moneyVal('tsEffPrice'),
+      // Out-of-pocket rehab exception (owner-authorized 2026-07-31): the dollar box + the
+      // "raise the initial to its max" toggle in the admin zone.
+      tsOopRehab: moneyVal('tsOopRehab'), tsOopRehabMax: chk('tsOopRehabMax'),
       // admin pricing knobs (staff mode) — same names the staff pricing API takes
-      tsYspStd: val('tsYspStd'), tsYspGold: val('tsYspGold'),
-      tsOrigStd: val('tsOrigStd'), tsOrigGold: val('tsOrigGold'),
+      tsYspStd: val('tsYspStd'), tsYspGold: val('tsYspGold'), tsYspSilver: val('tsYspSilver'),
+      tsOrigStd: val('tsOrigStd'), tsOrigGold: val('tsOrigGold'), tsOrigSilver: val('tsOrigSilver'),
+      tsOrigManual: val('tsOrigManual'),
       tsFeeUW: moneyVal('tsFeeUW'), tsFeeCredit: moneyVal('tsFeeCredit'),
       tsFeeAppr: moneyVal('tsFeeAppr'), tsFeeTitle: moneyVal('tsFeeTitle'),
       tsManualOn: chk('tsManualOn'),
@@ -221,8 +249,11 @@ function readSnapshot(win) {
       tsMRate: val('tsMRate'), tsMIr: val('tsMIr'),
       // Term-sheet options (owner-directed 2026-07-22) — display/record only.
       estClosingDate: val('estClosingDate'),
+      // The payoff and who it goes to, read back out so a register carries them.
+      payoff: moneyVal('payoff'), payoffLender: val('payoffLender'), payoffLoanNo: val('payoffLoanNo'),
+      cashOutAmt: moneyVal('cashOutAmt'),
       tsAccrual: val('tsAccrual'), tsDeferredOrig: val('tsDeferredOrig'),
-      tsMinIntStd: chk('tsMinIntStd'), tsMinIntGold: chk('tsMinIntGold'), tsMinIntManual: chk('tsMinIntManual'),
+      tsMinIntStd: chk('tsMinIntStd'), tsMinIntGold: chk('tsMinIntGold'), tsMinIntSilver: chk('tsMinIntSilver'), tsMinIntManual: chk('tsMinIntManual'),
     },
   };
 }
@@ -242,7 +273,7 @@ export function scenarioFromEngineInputs(inp, extra = {}) {
     isAssignment: !!inp.isAssignment,
     underlyingContractPrice: inp.sellerPrice,
     assignmentFee: inp.isAssignment && inp.purchasePrice && inp.sellerPrice
-      ? Math.max(0, Number(inp.purchasePrice) - Number(inp.sellerPrice)) : '',
+      ? Math.max(0, moneyNum(inp.purchasePrice) - moneyNum(inp.sellerPrice)) : '',
     asIsValue: inp.asIsValue,
     arv: inp.arv,
     rehabBudget: inp.rehabBudget,
@@ -265,12 +296,14 @@ export function adminStateFromEngineInputs(inp) {
   inp = inp || {};
   const v = {};
   const put = (id, val) => { if (val != null && val !== '') v[id] = String(val); };
-  put('tsYspStd', inp.markupStdPct); put('tsYspGold', inp.markupGoldPct);
-  put('tsOrigStd', inp.origStdPct); put('tsOrigGold', inp.origGoldPct);
+  put('tsYspStd', inp.markupStdPct); put('tsYspGold', inp.markupGoldPct); put('tsYspSilver', inp.markupSilverPct);
+  put('tsOrigStd', inp.origStdPct); put('tsOrigGold', inp.origGoldPct); put('tsOrigSilver', inp.origSilverPct);
+  put('tsOrigManual', inp.origManualPct);
   put('tsFeeUW', inp.lenderFee); put('tsFeeCredit', inp.creditFee);
   put('tsFeeAppr', inp.appraisalFee); put('tsFeeTitle', inp.titleFee);
   put('tsMLtv', inp.ovrAcqLTVPct); put('tsMArv', inp.ovrARLTVPct);
   put('tsMLtc', inp.ovrLTCPct); put('tsMRate', inp.ovrRatePct); put('tsMIr', inp.ovrIrMonths);
+  put('tsOopRehab', inp.oopRehab);   // out-of-pocket rehab exception (owner-authorized 2026-07-31)
   // Re-arm the manual-scenario toggle whenever ANY manual override value was
   // registered — not only when inp.manualPricing is set. Otherwise reopening a
   // manually-priced file restores the rate VALUE into the (hidden) field but leaves
@@ -280,7 +313,10 @@ export function adminStateFromEngineInputs(inp) {
   // are covered too. The server (buildInputs) honors a present override regardless.
   const hasManualOverride = ['ovrAcqLTVPct', 'ovrARLTVPct', 'ovrLTCPct', 'ovrRatePct', 'ovrIrMonths']
     .some((k) => inp[k] != null && inp[k] !== '');
-  return { v, c: (inp.manualPricing || hasManualOverride) ? { tsManualOn: true } : {} };
+  const c = {};
+  if (inp.manualPricing || hasManualOverride) c.tsManualOn = true;
+  if (inp.oopRehabMax) c.tsOopRehabMax = true;   // re-arm the "raise initial to max" toggle
+  return { v, c };
 }
 
 /* A compact, human-readable copy of the priced structure — stored on the
@@ -291,7 +327,7 @@ export function selectionFromSnapshot(snap) {
     source: 'term-sheet-studio',
     selectedAt: new Date().toISOString(),
     program: snap.program,
-    programLabel: snap.program === 'gold' ? 'Gold Standard Program' : 'Standard Program',
+    programLabel: snap.program === 'gold' ? 'Gold Standard Program' : snap.program === 'silver' ? 'Silver Program' : snap.program === 'manual' ? 'Manual Program' : 'Standard Program',
     strategy: snap.fields.dealType,
     purpose: snap.fields.dealPurpose,
     status: d.status || null,
@@ -346,7 +382,7 @@ function loadPdfEngine(doc) {
   });
 }
 
-const TermSheetStudio = forwardRef(function TermSheetStudio({ prefill, lockedIds = [], onState, showAdmin = false, officer = null }, ref) {
+const TermSheetStudio = forwardRef(function TermSheetStudio({ prefill, lockedIds = [], onState, showAdmin = false, officer = null, issueHold = null, provenance = null }, ref) {
   const frameRef = useRef(null);
   const winRef = useRef(null);
   const adminStyleRef = useRef(null);   // the injected style hiding the admin zone
@@ -442,6 +478,16 @@ const TermSheetStudio = forwardRef(function TermSheetStudio({ prefill, lockedIds
       return captured;
     },
   }), []);
+
+  // Keep the tool's hold reason live: a resolved finding lifts the hold on the
+  // next pricing reload without remounting the iframe.
+  useEffect(() => {
+    try { const w = winRef.current; if (w) w.TS_ISSUE_HOLD = issueHold || null; } catch (_) { /* advisory */ }
+  }, [issueHold]);
+  // Same for the provenance stamp (file → file_final when the gate clears).
+  useEffect(() => {
+    try { const w = winRef.current; if (w) w.TS_PROVENANCE = provenance ? { kind: provenance } : null; } catch (_) { /* cosmetic */ }
+  }, [provenance]);
 
   useEffect(() => {
     const frame = frameRef.current;
@@ -540,6 +586,16 @@ const TermSheetStudio = forwardRef(function TermSheetStudio({ prefill, lockedIds
             });
           }
         } catch (_) { /* cosmetic — falls back to no LO block */ }
+        // Term-sheet hold (owner-directed 2026-07-31): open fatal appraisal
+        // findings hold generation — the tool's Download-PDF button refuses
+        // with this reason (termsheet.js reads window.TS_ISSUE_HOLD). The
+        // attach door is server-enforced; this stops the local download too.
+        try { win.TS_ISSUE_HOLD = issueHold || null; } catch (_) { /* advisory */ }
+        // Provenance stamp (owner-directed 2026-07-31): the host says HOW this
+        // term sheet is being generated — borrower portal / active file /
+        // final — and the PDF prints the matching stamp (termsheet.js
+        // PROV_COPY). Absent → the tool self-derives (website/officer/portal).
+        try { win.TS_PROVENANCE = provenance ? { kind: provenance } : null; } catch (_) { /* cosmetic */ }
         try { if (prefillRef.current) win.YS.applyState(prefillRef.current); } catch (_) { /* keep defaults */ }
         for (const id of lockedIds) {
           const e = doc.getElementById(id);
