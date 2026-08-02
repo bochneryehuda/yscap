@@ -22,6 +22,7 @@ import DealSnapshot from '../components/DealSnapshot.jsx';
 import NoteBuyerCard from '../components/NoteBuyerCard.jsx';
 import PayoffCard from '../components/PayoffCard.jsx';
 import { payoffApplies, payoffMissingKeys } from '../lib/payoff.js';
+import { sizesOnAsIsValue } from '../lib/dealBasis.js';
 import ClearToClosePanel from '../components/ClearToClosePanel.jsx';
 import NextUpPanel from '../components/NextUpPanel.jsx';
 import LoanProgress from '../components/LoanProgress.jsx';
@@ -413,7 +414,25 @@ const COMPLETENESS_FIELDS = (app, borrower) => [
   { key: 'property_type', label: 'Property type', ok: !!app.property_type, type: 'select', options: ['SFR', 'Multi 2-4', 'Multi 5+', 'Condo', 'Townhouse', 'Mixed Use'] },
   { key: 'program', label: 'Program', ok: !!app.program, type: 'select', options: ['Fix & Flip w/ Construction', 'Bridge', 'Ground-Up Construction'] },
   { key: 'loan_type', label: 'Loan type', ok: !!app.loan_type, type: 'select', options: ['Purchase', 'Refinance — Rate & Term', 'Refinance — Cash-Out'] },
-  { key: 'purchase_price', label: 'Purchase price', ok: app.purchase_price != null, type: 'money' },
+  /* THE FILE IS ASKED FOR THE FIGURE IT IS SIZED ON (owner-directed 2026-08-02).
+     A refinance is sized on the AS-IS VALUE — the frozen engine's own denominator
+     (`acqDenom = purchase ? min(pp, aiv) : aiv`) — so demanding a purchase price
+     there was demanding a number nothing reads, while the number that actually
+     sets the initial advance was never asked for at all. A purchase is unchanged.
+     The extra refinance rows below are the seasoning basis the owner asked for;
+     they are pills to FILL, not gates — nothing waits on them. */
+  ...(sizesOnAsIsValue(app.loan_type) ? [
+    { key: 'as_is_value', label: 'As-is value', ok: app.as_is_value != null, type: 'money',
+      hint: 'What the property is worth today — a refinance is sized on this.' },
+    { key: 'original_purchase_price', label: 'Original purchase price', ok: app.original_purchase_price != null,
+      edit: false, goTo: 'sec-application',
+      hint: 'What the borrower paid when they bought it — enter it under Refinance details.' },
+    { key: 'acquisition_date', label: 'Date acquired', ok: !!app.acquisition_date,
+      edit: false, goTo: 'sec-application',
+      hint: 'When they bought it — this is what ownership seasoning is counted from.' },
+  ] : [
+    { key: 'purchase_price', label: 'Purchase price', ok: app.purchase_price != null, type: 'money' },
+  ]),
   { key: 'arv', label: 'ARV', ok: app.arv != null, type: 'money' },
   { key: 'rehab_budget', label: 'Rehab budget', ok: app.rehab_budget != null, type: 'money' },
   { key: 'cell_phone', label: 'Borrower phone', ok: !!(borrower && borrower.cell_phone), type: 'tel' },

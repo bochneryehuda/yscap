@@ -13,6 +13,7 @@ import StatusTimeline from '../components/StatusTimeline.jsx';
 import ProductStudioPanel from '../components/ProductStudioPanel.jsx';
 import { programLabel, loanTypeLabel, propertyTypeLabel, officerLabel } from '../lib/labels.js';
 import { PROPERTY_TYPES } from '../lib/enums.js';
+import { sizesOnAsIsValue, seasoningText } from '../lib/dealBasis.js';
 import ToolModal from '../components/ToolModal.jsx';
 import LlcPicker from '../components/LlcPicker.jsx';
 import LlcManager from '../components/LlcManager.jsx';
@@ -481,7 +482,13 @@ function BorrowerCompleteness({ app, profile, appId, onSaved }) {
     { key: 'property_address', label: 'Property address', ok: !!(app.property_address && (app.property_address.oneLine || app.property_address.street || app.property_address.line1)), type: 'address' },
     // Canonical spellings (lib/enums.js) — a drifted one can't reach ClickUp (#822).
     { key: 'property_type', label: 'Property type', ok: !!app.property_type, type: 'select', options: PROPERTY_TYPES.map((o) => o.value) },
-    { key: 'purchase_price', label: 'Purchase price', ok: app.purchase_price != null, type: 'money' },
+    /* A refinance is asked for the AS-IS VALUE, not a purchase price
+       (owner-directed 2026-08-02) — there is nothing being bought, and the loan
+       is sized on what the property is worth today. Same rule, same shared
+       predicate, as the staff panel. */
+    sizesOnAsIsValue(app.loan_type)
+      ? { key: 'as_is_value', label: 'As-is value', ok: app.as_is_value != null, type: 'money' }
+      : { key: 'purchase_price', label: 'Purchase price', ok: app.purchase_price != null, type: 'money' },
     { key: 'arv', label: 'ARV (estimate)', ok: app.arv != null, type: 'money' },
     { key: 'rehab_budget', label: 'Rehab budget', ok: app.rehab_budget != null, type: 'money' },
     { key: 'cell_phone', label: 'Your phone', ok: !!b.cell_phone, type: 'tel' },
@@ -824,7 +831,10 @@ export default function Application() {
 
   const nDone = items.filter(it => isDone(it.status)).length;
   const nOpen = items.length - nDone;
-  const isRefi = /refi/i.test(app.loan_type || '');
+  // The ONE shared reading (lib/dealBasis mirrors the server's lib/deal-basis,
+  // which is the frozen engine's own test), so what this screen shows is always
+  // the figure the loan was actually sized on.
+  const isRefi = sizesOnAsIsValue(app.loan_type);
 
   // The 1003-style section rail: one page, clearly named parts.
   const SECTIONS = [
@@ -881,10 +891,16 @@ export default function Application() {
         <div className="panel" style={{ marginTop: 0 }}>
           <h3 style={{ marginBottom: 12 }}>Loan snapshot <InfoTip tip="The headline numbers your loan team works from. Ask your officer to update deal numbers — they flow into pricing automatically." /></h3>
           <div className="metrow"><span className="k">Officer</span><span className="v">{officerLabel(app.loan_officer_name)}{app.team_online && <span title="Your loan team is online now" style={{ display: 'inline-block', width: 8, height: 8, borderRadius: '50%', background: '#3fb950', marginLeft: 8, verticalAlign: 'middle' }} />}</span></div>
-          <div className="metrow"><span className="k">Purchase price</span><span className="v">{money(app.purchase_price)}</span></div>
+          {/* A REFINANCE HAS NO PURCHASE PRICE (owner-directed 2026-08-02). The
+              loan is sized on what the property is worth today, so that is the
+              headline; the price they paid when they bought it appears under
+              Property & transaction below, where it belongs. On a PURCHASE this
+              is exactly what it always showed, including the "(= purchase price)"
+              note when the as-is box was left blank. */}
+          {!isRefi && <div className="metrow"><span className="k">Purchase price</span><span className="v">{money(app.purchase_price)}</span></div>}
           <div className="metrow"><span className="k">As-is value</span><span className="v">
-            {money(app.as_is_value ?? app.purchase_price)}
-            {app.as_is_value == null && app.purchase_price != null &&
+            {money(isRefi ? app.as_is_value : (app.as_is_value ?? app.purchase_price))}
+            {!isRefi && app.as_is_value == null && app.purchase_price != null &&
               <span className="muted small" style={{ fontWeight: 400 }} title="No as-is value was entered, so it defaults to the final purchase price"> (= purchase price)</span>}
           </span></div>
           <div className="metrow"><span className="k">ARV</span><span className="v">{money(app.arv)}</span></div>
@@ -969,8 +985,16 @@ export default function Application() {
                 when entered; blank rows would just be noise on their screen. */}
             {app.payoff_lender ? <div className="metrow"><span className="k">Lender being paid off</span><span className="v">{app.payoff_lender}</span></div> : null}
             {app.payoff_loan_number ? <div className="metrow"><span className="k">Their loan number</span><span className="v">{app.payoff_loan_number}</span></div> : null}
+            {/* The as-is value is the number this loan is sized on, so the
+                borrower sees it here beside the transaction it belongs to, not
+                only in the snapshot above (owner-directed 2026-08-02). */}
+            <div className="metrow"><span className="k">As-is value</span><span className="v">{money(app.as_is_value)}</span></div>
             <div className="metrow"><span className="k">Original purchase price</span><span className="v">{money(app.original_purchase_price)}</span></div>
-            <div className="metrow"><span className="k">Date acquired</span><span className="v">{app.acquisition_date ? fmtDay(app.acquisition_date) : '—'}</span></div>
+            <div className="metrow"><span className="k">Date acquired</span><span className="v">
+              {app.acquisition_date ? fmtDay(app.acquisition_date) : '—'}
+              {seasoningText(app.acquisition_date) &&
+                <span className="muted small" style={{ fontWeight: 400 }}> · owned {seasoningText(app.acquisition_date)}</span>}
+            </span></div>
           </> : (
             <div className="metrow"><span className="k">Purchase price</span><span className="v">{money(app.purchase_price)}</span></div>
           )}
