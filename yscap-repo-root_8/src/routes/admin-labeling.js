@@ -69,8 +69,11 @@ router.post('/examples', requireRole('super_admin'), async (req, res) => {
     if (!['classifier', 'extractor'].includes(target)) return res.status(400).json({ error: 'targetProject must be classifier or extractor' });
     if (!b.filename || !b.dataBase64) return res.status(400).json({ error: 'filename + dataBase64 required' });
 
+    // decodeUploadBase64 returns { buf, sha256 } — DESTRUCTURE it. Treating the
+    // wrapper as a Buffer made `buf.length` undefined, so every upload here was
+    // refused as "empty" (and the wrapper, not the bytes, went to blob storage).
     let buf;
-    try { buf = decodeUploadBase64(b.dataBase64); }
+    try { ({ buf } = decodeUploadBase64(b.dataBase64)); }
     catch (e) { return res.status(400).json({ error: 'bad upload: ' + (e && e.message || 'decode failed') }); }
     if (!buf || !buf.length) return res.status(400).json({ error: 'empty upload' });
 
