@@ -156,6 +156,109 @@ recalculation trigger.
 
 ---
 
+## 4b. WHAT THE SCREEN DOES — measured in a real browser
+
+A second audit drove the actual page in a real browser and reproduced the "answer hasn't come back yet"
+state exactly as the plan specifies it. This is the part that matters most.
+
+### The baseline: why the page looks so calm today
+
+One keystroke rewrites **57 places on screen** — and only **7 of them actually change**. That is why the
+page never flickers. The whole thing finishes in about **5 milliseconds**.
+
+After the move, for the 40–300 ms after every keystroke, **all 57 are in a state this page has never had
+to draw.** There are only two options in the current code, and both are bad.
+
+### 🔴 THE WORST ONE: a complete, confident term sheet for the wrong deal
+
+Measured. The price box was changed from 400,000 to 550,000 while the answer was in flight:
+
+| On screen | Showing |
+|---|---|
+| Purchase price | **550,000** ← the new deal |
+| Loan amount | **$450,000** ← the OLD deal |
+| Rate | **10.30%** ← old |
+| Cash to close | **$61,720.00** ← old |
+| Status | **Eligible** |
+
+**No badge. No dimming. No spinner. No message of any kind.** The page looks completely normal and
+completely settled. A borrower screenshots that. A loan officer reads it down the phone.
+
+The cause: one line fetches the numbers, and **everything after it is skipped** — the offer cards, the
+status badge, the reasons list, the missing-fields checklist, the compliance notes, and the code that
+disables the download button.
+
+### 🔴 The public "Download Term Sheet" button becomes DEAD — not disabled, dead
+
+Measured: the button keeps its full normal styling and label, is **not** disabled, and clicking it
+produces **no PDF, no error, and no toast.** Nothing happens at all.
+
+**The same kills the marketing page's "Send it →" lead-capture button** — the conversion button on the
+public funnel. Measured: clicking left the page byte-identical.
+
+### 🔴 Tapping a program card does nothing — then flips on its own
+
+Measured: tapping Gold leaves the Standard card highlighted and the Standard detail showing. Internally
+the choice *did* register, so the staff screen reads **"standard"** while the studio thinks **Gold**.
+Tap again out of frustration and it toggles off — so when the answer finally lands, the whole detail
+**collapses**.
+
+### 🔴 The staff Register button looks live while the numbers are stale
+
+Measured against the real gating logic. Mid-flight the button is **not greyed**, no reason is shown, and
+the "Standard · $450,000 @ 10.30%" summary line **silently disappears**. Clicking it says:
+
+> *"This scenario isn't eligible as entered"*
+
+The deal is perfectly eligible. And on a first load that never answers, it lists **five missing fields
+that are all filled in and visible on screen**.
+
+### 🟠 The leverage slider shows a screen that contradicts itself
+
+Measured, dragging one step down while the panel below is stale:
+
+> Slider: **"At 80% LTC your rate is 10.10% … Loan $400,…"**
+> Panel two inches below: **$450,000 at 10.30%**
+
+With no ladder available, dragging does nothing at all — and on the next update **the entire "Adjust
+leverage" control vanishes** and everything below jumps up.
+
+### 🟠 There is no loading, offline or error display anywhere to reuse
+
+Verified: **zero** spinners, skeletons or busy indicators in the entire studio. The only way it can talk
+to a user is a small toast — and **inside the staff portal that toast renders about 5,000 pixels below
+the visible area** (9,500 on a phone), because the studio is embedded at full height. So it is invisible.
+
+**This already affects something live:** the existing "this term sheet is on hold" refusal uses that same
+toast, so staff clicking export in the portal today get a message they cannot see.
+
+### 🟠 Registering mid-flight files a loan with no term sheet — and blames your internet
+
+If exports refuse while pricing (which they must), the registration **still completes** and records:
+
+> *"Product registered. The term sheet PDF could not be generated (internet required)"*
+
+So the file carries registered terms with no term-sheet document, discovered days later when the e-sign
+package will not send.
+
+### 🟡 Two more measured effects
+
+- **Blanking the numbers reflows the page by 121 pixels**, twice per edit — and inside the portal the
+  embedded frame resizes with it, moving the Register button while you reach for it.
+- **The share link stops updating**, so a borrower who shares mid-flight shares the *previous* deal.
+
+### 🟢 Genuinely good news, measured
+
+- **Typing stays smooth.** The comma formatting and the cursor position are handled *before* pricing, so
+  there is no cursor jumping and no focus loss. The rule is simply: never write a server value back into
+  a box someone is typing in.
+- **Mobile is clean today** — correct width, no sideways scrolling, no iOS zoom-on-tap. A "Calculating…"
+  line **fits** in the status area (measured), though it will **not** fit in the small headline number
+  boxes — those need a dash, not a word.
+- **The staff screen's twice-a-second re-read is cheap** (0.17 ms) and stays cheap.
+
+---
+
 ## 5. What this means for the decision
 
 Nothing here says the move is impossible. It says the move is **bigger than "swap where the answer comes
@@ -165,4 +268,24 @@ The honest list of prerequisites is now: two endpoints (public and logged-in), e
 rewired, six new server fields, a name-mapping layer, exports that refuse mid-flight, and a browser-level
 test that compares the actual screen, PDF and spreadsheet before and after.
 
+**Plus three things that must be built before a single number moves to the server:**
+
+1. **A real "still pricing" state.** The page must never be able to show a settled-looking term sheet
+   built on numbers it has already replaced. Today a failure part-way through simply stops drawing and
+   leaves the previous deal on screen, looking correct.
+2. **Take the things that are not pricing OUT of the pricing path** — which program card is highlighted,
+   the money formatting, the share link. None of them are results; none should wait on an answer.
+3. **A visible status line and a working way to say "no."** There is no loading or error display in the
+   studio at all, and the one message channel is invisible inside the staff portal. Every refusal this
+   project depends on — a blocked export, a stale quote — would be silent today.
+
 **And separately from all of it: fix the seven things in §0 that are broken today.**
+
+---
+
+## 6. One thing the audits agree on that is worth stating plainly
+
+Every failure found here is **silent**. Not one of them produces an error a user can see. The page keeps
+looking finished and correct while showing the wrong loan, the wrong program, or a dead button.
+
+That is the real risk in this project — not that it breaks loudly, but that it doesn't.
