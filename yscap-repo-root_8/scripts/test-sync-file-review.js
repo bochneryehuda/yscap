@@ -36,7 +36,7 @@ async function expectHttp(status, fn) {
       'file_unlinked_no_task', 'file_dead_unlinked', 'push_dead_lettered', 'task_deleted_needs_decision',
       'sharepoint_match_uncertain', 'sharepoint_mirror_failed', 'borrower_identity_conflict',
       'shared_email_needs_reassignment', 'copied_loan_number_needs_assignment',
-      'economics_frozen_conflict', 'ctc_confirm_needed'].sort());
+      'economics_frozen_conflict', 'ctc_confirm_needed', 'portal_edit_conflict'].sort());
     for (const k of keys) assert.ok(SFR.REASON_ACTIONS[k].length >= 1, `${k} has at least one action`);
   });
   await ta('allow_shared_email without the pair reference → 409', () =>

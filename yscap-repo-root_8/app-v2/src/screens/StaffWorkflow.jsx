@@ -2,6 +2,7 @@ import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { api } from '../lib/api.js';
 import { useAuth } from '../lib/auth.jsx';
+import { fmtDate } from '../lib/dates.js';
 
 /* THE WORKFLOW (owner-directed 2026-07-21) — my personal work queue.
    Everything submitted to me, in the order it arrived, with a live "up next"
@@ -203,7 +204,7 @@ export default function StaffWorkflow() {
                         <span><span className="pill">{TYPE_LABEL[it.submission_type] || it.submission_type}</span>
                           {it.auto && <span className="pill" style={{ marginLeft: 6 }} title="Created automatically by PILOT">Auto</span>}
                           {it.status === 'in_progress' && <span className="muted small" style={{ marginLeft: 6 }}>· started</span>}
-                          {it.est_closing_date && <span className="muted small" style={{ display: 'block' }}>Est. close {it.est_closing_date}</span>}
+                          {it.est_closing_date && <span className="muted small" style={{ display: 'block' }}>Est. close {fmtDate(it.est_closing_date)}</span>}
                           {it.note && <span className="muted small" style={{ display: 'block' }}>“{it.note}”</span>}
                         </span>
                         <span className="muted small">{isMine

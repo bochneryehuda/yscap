@@ -5,7 +5,13 @@
  * always fetched live over the network. */
 // v4: purges caches poisoned by the bad-merge window where a missing CSS file
 // was answered with the marketing homepage HTML (and cached as a "stylesheet").
-const CACHE = 'pilot-v2-shell-v1';
+// NOTE (2026-07-29): the v4 bump above was written but the cache NAME was left
+// at v1, so the activate-time purge never actually deleted the poisoned/stale
+// v1 cache — clients kept serving old shell entries until they cleared site
+// data by hand (the recurring "works after I clear my cookies" logout reports).
+// The name is now versioned for real. Rule going forward: any time this file's
+// caching behavior changes, bump CACHE — activation cleanup keys off it.
+const CACHE = 'pilot-v2-shell-v4';
 const SHELL = ['/portal/', '/portal/index.html', '/portal/manifest.webmanifest', '/portal/icon.svg'];
 
 self.addEventListener('install', (e) => {

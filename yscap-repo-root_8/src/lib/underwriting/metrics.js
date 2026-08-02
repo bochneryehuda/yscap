@@ -113,8 +113,19 @@ function computeMetrics(econ = {}, caps = DEFAULT_CAPS) {
   const asIs = num(econ.asIsValue);
   const arv = num(econ.arv);
   const rehab = num(econ.rehabBudget);
-  // Cost = purchase + rehab (rehab treated as 0 when absent, but only if we have a price).
-  const cost = price != null ? price + (rehab != null ? rehab : 0) : null;
+  const reserve = num(econ.financedReserve);
+  // Cost basis MUST MATCH the frozen engine's LTC denominator (owner-reported
+  // 2026-07-29: the AI review reported a wrong 95% LTC because it left the financed
+  // interest reserve OUT of the cost). The frozen engines define
+  //   costBasis = (purchase or as-is) + rehab + (reserveInCost ? financedReserve : 0)
+  // where reserveInCost is TRUE for the Standard (silver) program and Gold ground-up,
+  // FALSE for Gold reno/bridge — and Gold reno/bridge finance ZERO interest reserve,
+  // so adding the financed reserve whenever it is present is exactly the frozen
+  // definition for every current program (this changes no frozen number — it feeds
+  // the AI review the same cost basis the frozen engine already sized the loan on).
+  const reserveInCost = econ.reserveInCost !== false;
+  const reserveInBasis = reserveInCost && reserve != null && reserve > 0 ? reserve : 0;
+  const cost = price != null ? price + (rehab != null ? rehab : 0) + reserveInBasis : null;
   const bases = { purchasePrice: price, asIsValue: asIs, arv, cost };
   // The loan figure each ratio is measured on: acquisition metrics use the initial advance, the
   // rest use the total loan. `null` numerator → the metric is skipped (never guess).
@@ -132,7 +143,11 @@ function computeMetrics(econ = {}, caps = DEFAULT_CAPS) {
     const capAmount = round2(cfg.cap * baseAmount);
     const value = round2(numerAmount / baseAmount);
     const over = numerAmount > capAmount + 0.5 ? round2(numerAmount - capAmount) : 0;
-    metrics.push({ key, label: cfg.label, base: cfg.base, baseLabel: cfg.baseLabel, numer: numerKey,
+    // When the financed interest reserve is part of the cost basis, say so, so the
+    // AI review's shown denominator is honest ("purchase + rehab + interest reserve").
+    const baseLabel = (cfg.base === 'cost' && reserveInBasis > 0)
+      ? `${cfg.baseLabel} + interest reserve` : cfg.baseLabel;
+    metrics.push({ key, label: cfg.label, base: cfg.base, baseLabel, numer: numerKey,
       baseAmount, loanAmount: numerAmount, value, cap: cfg.cap, capAmount, over, pass: over === 0 });
     // The binding max-loan is a TOTAL-loan ceiling; only the total-loan caps constrain it directly
     // (an acquisition cap limits the initial advance, not the whole loan).

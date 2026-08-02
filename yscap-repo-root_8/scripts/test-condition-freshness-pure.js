@@ -80,4 +80,50 @@ const daysAgo = (n) => new Date(NOW.getTime() - n * 86400000).toISOString();
   ok('the [auto] note is explanatory and borrower-safe');
 }
 
+// 7. Credit uses the report's EFFECTIVE date, not the sign-off date. A report
+//    dated 130 days ago but signed off yesterday is stale (past 120d window).
+{
+  const plans = planFreshnessReopens([
+    { id: 'credit', application_id: 'app1', template_code: 'rtl_cond_credit',
+      signed_off_at: daysAgo(1), effective_at: daysAgo(130) },
+  ], { now: NOW });
+  assert.strictEqual(plans.length, 1, 'stale-by-effective-date credit reopens');
+  assert.strictEqual(plans[0].kind, 'credit');
+  assert.strictEqual(plans[0].basisKind, 'effective_date');
+  assert.strictEqual(plans[0].daysStale, 130, 'staleness measured from report_date');
+  ok('credit freshness runs off the report effective date, not the sign-off date');
+}
+
+// 8. A fresh report signed off long ago is NOT stale — the effective date wins
+//    over an old sign-off (the report was re-pulled after sign-off).
+{
+  const plans = planFreshnessReopens([
+    { id: 'credit', template_code: 'rtl_cond_credit',
+      signed_off_at: daysAgo(200), effective_at: daysAgo(10) },
+  ], { now: NOW });
+  assert.strictEqual(plans.length, 0, 'a recent report keeps the condition cleared');
+  ok('a fresh report effective date keeps credit cleared despite an old sign-off');
+}
+
+// 9. With no effective_at supplied, the sign-off date remains the basis
+//    (byte-identical to the pre-2026-07-29 behavior for non-credit kinds).
+{
+  const plans = planFreshnessReopens([
+    { id: 'title', template_code: 'rtl_cond_title', signed_off_at: daysAgo(130) },
+  ], { now: NOW });
+  assert.strictEqual(plans.length, 1);
+  assert.strictEqual(plans[0].basisKind, 'signed_off');
+  assert.strictEqual(plans[0].daysStale, 130);
+  ok('no effective_at → sign-off date basis (back-compat for title/insurance/flood)');
+}
+
+// 10. The credit [auto] note reads for a report effective date and is borrower-safe.
+{
+  const note = autoNoteFor({ kind: 'credit', daysStale: 130 });
+  assert.ok(/credit report/i.test(note) && /120-day/.test(note) && /130 days ago/.test(note));
+  const { hasPartnerName } = require('../src/lib/borrower-safe');
+  assert.strictEqual(hasPartnerName(note), false);
+  ok('the credit [auto] note reads for the report date and is borrower-safe');
+}
+
 console.log(`\ncondition-freshness pure — ${passed} checks passed`);

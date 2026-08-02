@@ -6,6 +6,7 @@ import { fileToBase64 } from '../lib/files.js';
 import { onFilesDropped } from '../lib/drop-files.js';
 import { fmtDay, dayInputValue } from '../lib/dates.js';
 import { formatSSN, cleanFICO, ficoValid } from '../lib/validators.js';
+import { moneyNum } from '../lib/money.js';
 import { useAuth } from '../lib/auth.jsx';
 import { ESIGN_RETURN_MSG } from '../lib/esign.js';
 import { canOverride, isCompletion, askOverride, overrideLine } from '../lib/condition-override.js';
@@ -19,6 +20,8 @@ import ProductStudioPanel from '../components/ProductStudioPanel.jsx';
 import InvestorGuidelinesPanel from '../components/InvestorGuidelinesPanel.jsx';
 import DealSnapshot from '../components/DealSnapshot.jsx';
 import NoteBuyerCard from '../components/NoteBuyerCard.jsx';
+import PayoffCard from '../components/PayoffCard.jsx';
+import { payoffApplies, payoffMissingKeys } from '../lib/payoff.js';
 import ClearToClosePanel from '../components/ClearToClosePanel.jsx';
 import NextUpPanel from '../components/NextUpPanel.jsx';
 import LoanProgress from '../components/LoanProgress.jsx';
@@ -36,11 +39,12 @@ import { captureScrollAnchor, restoreScrollAnchor } from '../lib/keep-scroll.js'
 import BorrowerProfilePanel from '../components/BorrowerProfilePanel.jsx';
 import { CONDITION_TIMINGS, conditionStatusLabel, conditionStatusClass, timingLabel, loanConditionStatusLabel, audienceStamp } from '../lib/conditions-vocab.js';
 import { severityCount } from '../lib/findings-vocab.js';
-import { groupBySubject } from '../lib/condition-subjects.js';
+import { groupBySubject, subjectOf } from '../lib/condition-subjects.js';
 import { isWorkflowStep } from '../lib/condition-workflow-steps.js';
 import ConditionActions, { DocActions } from '../components/ConditionActions.jsx';
 import ConditionLine, { ConditionNote } from '../components/ConditionLine.jsx';
-import { canComplete } from '../lib/condition-actions.js';
+import UspsAddressVerification from '../components/UspsAddressVerification.jsx';
+import { canComplete, canDeleteDoc } from '../lib/condition-actions.js';
 import EsignFileSection from '../components/EsignFileSection.jsx';
 import ExceptionRegisterCard from '../components/ExceptionRegisterCard.jsx';
 import OrdersPanel from '../components/OrdersPanel.jsx';
@@ -56,6 +60,7 @@ import DocPreview from '../components/DocPreview.jsx';
 import ReminderModal from '../components/ReminderModal.jsx';
 import LlcManager, { US_STATES } from '../components/LlcManager.jsx';
 import { fullNameOf } from '../lib/personName.js';
+import LoudHint from '../components/LoudHint.jsx';
 
 /* A closing-date <input type="date"> that DOESN'T fight the typist.
  * The old input saved on every onChange and reloaded the file — but a date
@@ -866,7 +871,254 @@ function useStickyFilter(key, fallback) {
   return [v, set];
 }
 
-function Item({ it, team, onPatch, role, docs, onUploadTo, onDropTo, onReviewDoc, onDownloadDoc, dlBusy, onPreview, appId, onChanged, canImportCredit }) {
+// The appraisal "no XML available" control on the appraisal-documents condition.
+// Waives ONLY the XML upload (the PDF stays required), collects the ARV + As-Is by
+// hand (usually read off the XML), and routes the reason: a transferred appraisal
+// auto-waives and asks for a transfer-letter PDF; any other reason needs a note
+// and opens an admin exception.
+const APPR_XML_REASONS = [
+  { v: 'transferred_appraisal', label: 'Transferred appraisal (from another lender)' },
+  { v: 'appraiser_no_xml', label: 'Appraiser did not provide the XML data file' },
+  { v: 'desk_or_manual', label: 'Desk / manual / older appraisal (no MISMO XML)' },
+  { v: 'other', label: 'Other (explain in the note)' },
+];
+// Order a Life-of-Loan flood determination from ICE's own flood service (the one
+// owner-authorized Encompass write — flood only). Renders on the flood condition
+// (rtl_cond_flood). Any staff member may order. Self-hides until the feature is
+// turned on (ENCOMPASS_FLOOD_ENABLED). If the file has no loan number, the button
+// says so — the loan number is what links the file to its Encompass loan.
+function OrderFloodButton({ appId, itemId, onChanged, onUploadTo }) {
+  const [state, setState] = useState(null);   // { order, enabled, hasLoanNumber } | null
+  const [busy, setBusy] = useState(false);
+  const [msg, setMsg] = useState('');
+  const [err, setErr] = useState('');
+  const load = useCallback(() => api.floodOrderState(appId).then(setState).catch(() => setState(null)), [appId]);
+  useEffect(() => { load(); }, [load]);
+  if (!state || !state.enabled) return null;   // feature off → nothing shows
+
+  const order = state.order;
+  const pending = order && order.status === 'ordered';
+  const done = order && order.status === 'completed';
+  const errored = order && order.status === 'error';
+  const box = { marginTop: 8, padding: '8px 10px', border: '1px solid var(--gold)', borderRadius: 8, background: 'rgba(174,135,70,0.06)' };
+
+  async function placeOrder() {
+    setBusy(true); setErr(''); setMsg('');
+    try {
+      const out = await api.orderFlood(appId, itemId);
+      setMsg(out.message || 'Flood certificate ordered.');
+      await load();
+      onChanged && onChanged();
+    } catch (e) {
+      setErr((e.data && e.data.message) || e.message || 'Could not order the flood certificate.');
+    } finally { setBusy(false); }
+  }
+
+  if (done) {
+    return (
+      <div className="small" style={box}>
+        <div style={{ fontWeight: 600, color: '#141B22' }}>Flood determination received</div>
+        <div style={{ color: '#4B585C', marginTop: 2 }}>
+          {order.sfha === true
+            ? `In a flood zone${order.flood_zone ? ` (zone ${order.flood_zone})` : ''} — a flood-insurance condition was added to the file.`
+            : order.sfha === false
+              ? `Not in a flood zone${order.flood_zone ? ` (zone ${order.flood_zone})` : ''}.`
+              : 'The determination came back.'}
+          {' '}The certificate is filed on this condition.
+        </div>
+      </div>
+    );
+  }
+  if (pending) {
+    return (
+      <div className="small" style={box}>
+        <div style={{ fontWeight: 600, color: '#141B22' }}>Flood certificate ordered</div>
+        <div style={{ color: '#4B585C', marginTop: 2 }}>Waiting for it to come back from Encompass — it will appear here automatically.</div>
+      </div>
+    );
+  }
+  const isDry = order && order.status === 'dryrun';
+  return (
+    <div style={{ marginTop: 6 }}>
+      {isDry && (
+        <div className="small" style={box}>
+          <div style={{ fontWeight: 600, color: '#141B22' }}>Test run — nothing was sent</div>
+          <div style={{ color: '#4B585C', marginTop: 2 }}>Test mode is on, so PILOT built the order but did not send it to Encompass. Turn test mode off (in Settings → API health) to place a real order.</div>
+          {order.raw && (
+            <details style={{ marginTop: 6 }}>
+              <summary style={{ color: '#256168', cursor: 'pointer' }}>What PILOT would send (technical)</summary>
+              <pre style={{ whiteSpace: 'pre-wrap', color: '#141B22', background: '#F4F1EA', padding: 8, borderRadius: 6, marginTop: 4, fontSize: 11 }}>{JSON.stringify(order.raw, null, 2)}</pre>
+            </details>
+          )}
+        </div>
+      )}
+      <button className="btn ghost small" style={{ marginTop: isDry ? 6 : 0 }} disabled={busy || !state.hasLoanNumber} onClick={placeOrder}>
+        {busy ? 'Ordering…' : (errored || isDry) ? 'Order flood certificate again' : 'Order flood certificate'}
+      </button>
+      {!state.hasLoanNumber && (
+        <div className="small" style={{ color: '#4B585C', marginTop: 4 }}>Add a loan number to this file first — the loan number links it to the Encompass loan.</div>
+      )}
+      {/* Quiet fallback: if a certificate can't be ordered (or you already have one),
+          you can still attach it by hand — it's not the up-front action. */}
+      {onUploadTo && (
+        <button className="btn link small" style={{ marginTop: 6, color: '#256168', display: 'block' }}
+          onClick={() => onUploadTo({ itemId, slotBase: 0 })}>Upload a certificate manually instead</button>
+      )}
+      {msg && <div className="notice" style={{ marginTop: 6 }}>{msg}</div>}
+      {err && <div className="notice err" style={{ marginTop: 6 }}>{err}</div>}
+    </div>
+  );
+}
+
+// Shared between the appraisal-DOCUMENTS condition (context='docs') and the
+// appraisal-REVIEW condition (context='review'). Both write the SAME
+// appraisal_xml_waivers row + the SAME file As-Is/ARV, so entering the values on
+// one side shows them "already entered — please confirm" on the other (both
+// directions), with no separate storage to keep in step.
+function AppraisalXmlWaiver({ appId, onChanged, context = 'docs' }) {
+  const isReview = context === 'review';
+  const [state, setState] = useState(null);     // { waiver, exception } | null
+  const [open, setOpen] = useState(false);
+  const [reason, setReason] = useState('transferred_appraisal');
+  const [note, setNote] = useState('');
+  const [arv, setArv] = useState('');
+  const [asIs, setAsIs] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState('');
+  const load = useCallback(() => api.appraisalXmlWaiverGet(appId).then(setState).catch(() => setState(null)), [appId]);
+  useEffect(() => { load(); }, [load]);
+  const isTransfer = reason === 'transferred_appraisal';
+
+  // The owner's warning, shown BEFORE anyone types a value: there is no data file
+  // to read from, so the numbers must be read off the appraisal PDF by hand, and a
+  // wrong figure re-prices the whole loan.
+  const warning = (
+    <div className="small" style={{ padding: '8px 10px', border: '1px solid var(--danger, #b4442f)', borderRadius: 8, background: 'rgba(180,68,47,0.06)', color: '#141B22' }}>
+      <strong>⚠️ Only use this if there is genuinely no XML for this appraisal.</strong> There is no
+      data file to read the numbers from, so open the appraisal PDF yourself and read them by hand:
+      find the <strong>ARV</strong>, and read the <strong>As-Is</strong> value specifically from the
+      As-Is section of the report. A lot goes wrong if the figures are not exactly right — this value
+      re-prices the whole loan.
+    </div>
+  );
+
+  async function submit() {
+    setErr('');
+    if (!(Number(String(arv).replace(/[,$\s]/g, '')) > 0) || !(Number(String(asIs).replace(/[,$\s]/g, '')) > 0)) {
+      setErr('Enter both the ARV and the As-Is value.'); return;
+    }
+    if (!isTransfer && !note.trim()) { setErr('Add a short note — it goes to an admin for an exception.'); return; }
+    setBusy(true);
+    try {
+      await api.appraisalXmlWaiverSet(appId, { reason, note: note.trim() || undefined, arv, asIs });
+      setOpen(false); setNote('');
+      await load();
+      onChanged && onChanged();
+    } catch (e) { setErr(e.message || 'Could not save the waiver.'); }
+    finally { setBusy(false); }
+  }
+  async function remove() {
+    setBusy(true); setErr('');
+    try { await api.appraisalXmlWaiverRemove(appId); await load(); onChanged && onChanged(); }
+    catch (e) { setErr(e.message || 'Could not remove the waiver.'); }
+    finally { setBusy(false); }
+  }
+
+  const w = state && state.waiver;
+  // The review-side entry does not apply on a file that already has an imported
+  // appraisal (there IS XML) — self-hide unless a waiver was already recorded.
+  if (isReview && state && state.hasAppraisal && !w) return null;
+  if (w) {
+    const ex = state.exception;
+    // Same shared row on both sides. On the side you did NOT enter it from, this
+    // reads "already entered — please confirm"; on the side you did, it reads as a
+    // recorded waiver. Either way it shows the two values and how to clear.
+    return (
+      <div className="small" style={{ marginTop: 8, padding: '8px 10px', border: '1px solid var(--gold)', borderRadius: 8, background: 'rgba(174,135,70,0.06)' }}>
+        <div style={{ fontWeight: 600, color: '#141B22' }}>
+          {isReview ? 'No-XML appraisal — As-Is & ARV already entered' : 'No XML on this appraisal — XML waived'}
+        </div>
+        <div style={{ color: '#4B585C', marginTop: 2 }}>
+          Reason: {(APPR_XML_REASONS.find(r => r.v === w.reason) || {}).label || w.reason}.
+          {w.requires_transfer_letter
+            ? ' Upload the transfer letter in the PDF slot on the appraisal documents condition; no exception is needed.'
+            : ex
+              ? ` This waiver ${ex.status === 'approved' ? 'was APPROVED' : ex.status === 'denied' ? 'was DENIED' : 'is waiting for an admin to approve it'} on the Exceptions screen${ex.exception_seq ? ` (EX-${ex.exception_seq})` : ''}.`
+              : ''}
+        </div>
+        <div style={{ color: '#141B22', marginTop: 2, fontWeight: 600 }}>ARV ${moneyNum(w.arv).toLocaleString('en-US')} · As-Is ${moneyNum(w.as_is_value).toLocaleString('en-US')} — entered by hand.</div>
+        {isReview && (
+          <div style={{ color: '#4B585C', marginTop: 2 }}>
+            These stand in for the appraisal review, so the term sheet can go out{w.requires_transfer_letter || (ex && ex.status === 'approved') ? '' : ' once the exception is approved'}. Please confirm
+            they are correct against the appraisal report. Re-registering on these numbers is required
+            (changing them re-opens Products &amp; Pricing).
+          </div>
+        )}
+        <button className="btn ghost small" style={{ marginTop: 6 }} disabled={busy} onClick={remove}>Remove waiver (XML is available)</button>
+        {err && <div className="notice err" style={{ marginTop: 6 }}>{err}</div>}
+      </div>
+    );
+  }
+  if (!open) {
+    if (isReview) {
+      return (
+        <div style={{ marginBottom: 12, padding: '10px 12px', border: '1px solid var(--line,#d9d3c6)', borderRadius: 10, background: '#fff' }}>
+          <div style={{ fontWeight: 600, color: '#141B22' }}>Appraisal review — no XML available?</div>
+          <div className="small" style={{ color: '#4B585C', marginTop: 2 }}>
+            Use this only when there is genuinely no appraisal XML for PILOT to review. It records the
+            As-Is and ARV by hand, stands in for the appraisal review, and lets the term sheet go out.
+          </div>
+          <button className="btn ghost small" style={{ marginTop: 8 }} onClick={() => setOpen(true)}>
+            No appraisal XML? Enter the As-Is &amp; ARV to clear the review
+          </button>
+        </div>
+      );
+    }
+    return (
+      <button className="btn ghost small" style={{ marginTop: 6 }} onClick={() => setOpen(true)}>
+        No XML available?
+      </button>
+    );
+  }
+  return (
+    <div className="small" style={{ marginTop: 8, padding: '10px', border: '1px solid var(--line, #d9d3c6)', borderRadius: 8, display: 'flex', flexDirection: 'column', gap: 8 }}>
+      <div style={{ fontWeight: 600, color: '#141B22' }}>No appraisal XML available</div>
+      {warning}
+      <div style={{ color: '#4B585C' }}>
+        {isReview
+          ? 'With no XML there are no PILOT appraisal findings to review, so entering the As-Is and ARV by hand stands in for the review (the same as signing off the appraisal documents slot). The appraisal PDF is still required there.'
+          : 'The PDF report is still required. Enter the ARV and As-Is by hand (we normally read these off the XML).'}
+      </div>
+      <label style={{ color: '#141B22' }}>Why is there no XML?
+        <select className="input" value={reason} onChange={(e) => setReason(e.target.value)} style={{ marginTop: 4 }}>
+          {APPR_XML_REASONS.map(r => <option key={r.v} value={r.v}>{r.label}</option>)}
+        </select>
+      </label>
+      <div className="row" style={{ gap: 8, flexWrap: 'wrap' }}>
+        <label style={{ color: '#141B22', flex: 1, minWidth: 140 }}>ARV
+          <input className="input" inputMode="decimal" placeholder="$" value={arv} onChange={(e) => setArv(e.target.value)} style={{ marginTop: 4 }} />
+        </label>
+        <label style={{ color: '#141B22', flex: 1, minWidth: 140 }}>As-Is value
+          <input className="input" inputMode="decimal" placeholder="$" value={asIs} onChange={(e) => setAsIs(e.target.value)} style={{ marginTop: 4 }} />
+        </label>
+      </div>
+      {!isTransfer && (
+        <label style={{ color: '#141B22' }}>Note (goes to an admin for an exception)
+          <textarea className="input" rows={2} value={note} onChange={(e) => setNote(e.target.value)} style={{ marginTop: 4 }} />
+        </label>
+      )}
+      {isTransfer && <div style={{ color: '#4B585C' }}>A transferred appraisal waives automatically — just upload the transfer letter in the PDF slot on the appraisal documents condition. No exception needed.</div>}
+      <div className="row" style={{ gap: 8 }}>
+        <button className="btn primary small" disabled={busy} onClick={submit}>{busy ? 'Saving…' : (isTransfer ? 'Waive XML (transferred)' : 'Waive XML & request exception')}</button>
+        <button className="btn ghost small" disabled={busy} onClick={() => { setOpen(false); setErr(''); }}>Cancel</button>
+      </div>
+      {err && <div className="notice err">{err}</div>}
+      <div style={{ color: '#4B585C' }}>Changing the ARV / As-Is re-opens Products &amp; Pricing so the loan is re-priced on the new numbers.</div>
+    </div>
+  );
+}
+
+function Item({ it, team, onPatch, role, docs, onUploadTo, onDropTo, onReviewDoc, onDownloadDoc, dlBusy, onPreview, appId, onChanged, canImportCredit, fullscreen = false }) {
   const [open, setOpen] = useState(false);
   // EVERY condition is a compact line until you open it (owner-directed
   // 2026-07-28: "one compact line each, click to open the one you're working").
@@ -881,10 +1133,18 @@ function Item({ it, team, onPatch, role, docs, onUploadTo, onDropTo, onReviewDoc
   const myDone = roleDone(it, role);
   const isDoc = it.item_kind === 'document';
   const slots = Array.isArray(it.slots) && it.slots.length ? it.slots : null;
+  // The flood certificate is ORDERED from Encompass and the PDF auto-files onto
+  // this condition (owner-directed 2026-07-30 — "same logic as the credit report;
+  // it uploads automatically, so you don't need the upload button in front"). So
+  // suppress the generic manual-upload button/drop here; the filed certificate
+  // still lists + downloads below, and a manual fallback lives on the order button.
+  const genericUpload = it.template_code === 'rtl_cond_flood' ? null : onUploadTo;
   const itemDocs = (isDoc && docs)
     ? docs.filter(d => d.checklist_item_id === it.id && d.is_current && d.source_type !== 'chat_attachment')
     : [];
-  const collapsed = expandOverride === null ? true : !expandOverride;
+  // In full screen everything opens by default (owner-directed); the per-row
+  // manual override still wins, so you can collapse an internal condition by hand.
+  const collapsed = expandOverride === null ? !fullscreen : !expandOverride;
   if (collapsed) {
     return (
       // data-keep-scroll: a stable handle so a refresh can put this row back
@@ -921,7 +1181,7 @@ function Item({ it, team, onPatch, role, docs, onUploadTo, onDropTo, onReviewDoc
             <PilotAdvice it={it} />
           </div>
           <PilotAdviceNote it={it} />
-          {it.hint && <div className="muted small" style={{ marginTop: 4 }}>{it.hint}</div>}
+          {it.hint && <LoudHint hint={it.hint} className="muted small" style={{ marginTop: 4 }} />}
           {it.assignee_name && <div className="muted small">Assigned to {it.assignee_name}</div>}
           {signed && (it.waived_at
             ? <div className="muted small">Waived by {it.waived_by_name || 'the internal team'} · {new Date(it.waived_at).toLocaleDateString()}</div>
@@ -964,39 +1224,55 @@ function Item({ it, team, onPatch, role, docs, onUploadTo, onDropTo, onReviewDoc
           (download there). Suppress the generic free-form doc block for it so the
           same files don't render twice with destructive Delete/Reject/+Add
           controls that would orphan credit_reports' document pointers. */}
-      {isDoc && it.template_code !== 'rtl_cond_credit' && (onUploadTo || itemDocs.length > 0) && (
+      {isDoc && it.template_code !== 'rtl_cond_credit' && (genericUpload || itemDocs.length > 0) && (
         <div style={{ width: '100%', paddingLeft: 20 }}
-          className={(!slots && onDropTo) ? 'cond-drop' : undefined}
-          onDragOver={(!slots && onDropTo) ? (e) => { e.preventDefault(); e.currentTarget.classList.add('drop-over'); } : undefined}
-          onDragLeave={(!slots && onDropTo) ? (e) => { e.currentTarget.classList.remove('drop-over'); } : undefined}
-          onDrop={(!slots && onDropTo) ? (e) => { e.preventDefault(); e.currentTarget.classList.remove('drop-over'); onFilesDropped(e, (files) => onDropTo(files, { itemId: it.id, slotBase: itemDocs.length })); } : undefined}>
+          className={(!slots && onDropTo && it.template_code !== 'rtl_cond_flood') ? 'cond-drop' : undefined}
+          onDragOver={(!slots && onDropTo && it.template_code !== 'rtl_cond_flood') ? (e) => { e.preventDefault(); e.currentTarget.classList.add('drop-over'); } : undefined}
+          onDragLeave={(!slots && onDropTo && it.template_code !== 'rtl_cond_flood') ? (e) => { e.currentTarget.classList.remove('drop-over'); } : undefined}
+          onDrop={(!slots && onDropTo && it.template_code !== 'rtl_cond_flood') ? (e) => { e.preventDefault(); e.currentTarget.classList.remove('drop-over'); onFilesDropped(e, (files) => onDropTo(files, { itemId: it.id, slotBase: itemDocs.length })); } : undefined}>
           {slots ? (
             /* Fixed named slots (e.g. Insurance → binder + invoice) — each slot is
-               its own drop target so a dropped file lands in the right slot. */
+               its own drop target so a dropped file lands in the right slot. Every
+               slot KEEPS EVERY document dropped in it (owner-directed): uploading a
+               second file ADDS it, it never replaces the first. "Replace" is an
+               explicit per-document action; the slot's Upload/drop always adds. */
             slots.map(slot => {
-              const doc = itemDocs.find(d => (d.slot_label || '') === slot.label);
-              const rs = doc ? (doc.review_status || 'pending') : null;
-              const slotTarget = doc ? { itemId: it.id, slot: slot.label, replaceDocumentId: doc.id } : { itemId: it.id, slot: slot.label };
+              const slotDocs = itemDocs.filter(d => (d.slot_label || '') === slot.label);
+              const addTarget = { itemId: it.id, slot: slot.label };   // no replaceDocumentId → additive
               return (
-                <div className={`row${onDropTo ? ' cond-drop' : ''}`} key={slot.key || slot.label} style={{ gap: 8, flexWrap: 'wrap', padding: '3px 0' }}
+                <div className={`row${onDropTo ? ' cond-drop' : ''}`} key={slot.key || slot.label} style={{ gap: 8, flexWrap: 'wrap', padding: '3px 0', alignItems: 'flex-start' }}
                   onDragOver={onDropTo ? (e) => { e.preventDefault(); e.currentTarget.classList.add('drop-over'); } : undefined}
                   onDragLeave={onDropTo ? (e) => { e.currentTarget.classList.remove('drop-over'); } : undefined}
-                  onDrop={onDropTo ? (e) => { e.preventDefault(); e.currentTarget.classList.remove('drop-over'); onFilesDropped(e, (files) => onDropTo(files, slotTarget)); } : undefined}>
+                  onDrop={onDropTo ? (e) => { e.preventDefault(); e.currentTarget.classList.remove('drop-over'); onFilesDropped(e, (files) => onDropTo(files, addTarget)); } : undefined}>
                   <span className="muted small" style={{ minWidth: 140 }}>{slot.label}</span>
-                  {doc ? (
-                    <>
-                      <span className="small" style={{ flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{doc.filename}</span>
-                      <span className="pill" style={rs === 'accepted' ? { borderColor: 'var(--ok)', color: 'var(--ok)' } : rs === 'rejected' ? { borderColor: 'var(--danger)', color: 'var(--danger)' } : undefined}>{rs}</span>
-                      <DocActions doc={doc} role={role} onReviewDoc={onReviewDoc}
-                        onDownloadDoc={onDownloadDoc} onPreview={onPreview} dlBusy={dlBusy}
-                        onReplace={onUploadTo ? () => onUploadTo({ itemId: it.id, slot: slot.label, replaceDocumentId: doc.id }) : null} />
-                    </>
-                  ) : (
-                    <>
-                      <span className="small muted" style={{ flex: 1 }}>not uploaded</span>
-                      {onUploadTo && <button className="btn ghost small" onClick={() => onUploadTo({ itemId: it.id, slot: slot.label })}>Upload</button>}
-                    </>
-                  )}
+                  <div style={{ flex: 1, display: 'flex', flexDirection: 'column', gap: 4, minWidth: 0 }}>
+                    {slotDocs.length === 0 ? (
+                      <div className="row" style={{ gap: 8 }}>
+                        <span className="small muted" style={{ flex: 1 }}>not uploaded</span>
+                        {onUploadTo && <button className="btn ghost small" onClick={() => onUploadTo(addTarget)}>Upload</button>}
+                      </div>
+                    ) : (
+                      <>
+                        {slotDocs.map((doc) => {
+                          const rs = doc.review_status || 'pending';
+                          return (
+                            <div className="row" key={doc.id} style={{ gap: 8, flexWrap: 'wrap' }}>
+                              <span className="small" style={{ flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{doc.filename}</span>
+                              <span className="pill" style={rs === 'accepted' ? { borderColor: 'var(--ok)', color: 'var(--ok)' } : rs === 'rejected' ? { borderColor: 'var(--danger)', color: 'var(--danger)' } : undefined}>{rs}</span>
+                              <DocActions doc={doc} role={role} onReviewDoc={onReviewDoc} fullscreen={fullscreen}
+                                onDownloadDoc={onDownloadDoc} onPreview={onPreview} dlBusy={dlBusy}
+                                onReplace={onUploadTo ? () => onUploadTo({ itemId: it.id, slot: slot.label, replaceDocumentId: doc.id }) : null} />
+                            </div>
+                          );
+                        })}
+                        {onUploadTo && (
+                          <div className="row" style={{ gap: 8 }}>
+                            <button className="btn ghost small" onClick={() => onUploadTo(addTarget)}>+ Add another</button>
+                          </div>
+                        )}
+                      </>
+                    )}
+                  </div>
                 </div>
               );
             })
@@ -1014,14 +1290,14 @@ function Item({ it, team, onPatch, role, docs, onUploadTo, onDropTo, onReviewDoc
                     <span className="muted small" style={{ minWidth: 140 }}>{d.slot_label || `Document ${i + 1}`}</span>
                     <span className="small" style={{ flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{d.filename}</span>
                     <span className="pill" style={rs === 'accepted' ? { borderColor: 'var(--ok)', color: 'var(--ok)' } : rs === 'rejected' ? { borderColor: 'var(--danger)', color: 'var(--danger)' } : undefined}>{rs}</span>
-                    <DocActions doc={d} role={role} onReviewDoc={onReviewDoc}
+                    <DocActions doc={d} role={role} onReviewDoc={onReviewDoc} fullscreen={fullscreen}
                       onDownloadDoc={onDownloadDoc} onPreview={onPreview} dlBusy={dlBusy}
                       onReplace={(onUploadTo && d.source_type !== 'system')
                         ? () => onUploadTo({ itemId: it.id, slot: d.slot_label || undefined, replaceDocumentId: d.id }) : null} />
                   </div>
                 );
               })}
-              {onUploadTo && (
+              {genericUpload && (
                 /* Same labelled-row shape as a fixed slot, so the button starts
                    where every other condition's controls start. With nothing
                    uploaded it used to be a bare button floating in the indent,
@@ -1041,6 +1317,23 @@ function Item({ it, team, onPatch, role, docs, onUploadTo, onDropTo, onReviewDoc
             </>
           )}
         </div>
+      )}
+
+      {/* Appraisal condition: "No XML available" — waive the XML slot (PDF stays
+          required), type the ARV + As-Is by hand, and route the reason to a
+          transfer letter or an admin exception. (The REVIEW-side entry point for
+          the same waiver lives in the "Appraisal & findings" section — the
+          appraisal-review task itself is worked from My Tasks, not this list.) */}
+      {it.template_code === 'rtl_cond_appraisaldocs' && (
+        <AppraisalXmlWaiver appId={appId} onChanged={onChanged} />
+      )}
+      {/* Flood condition — order the flood certificate from Encompass (flood only). */}
+      {it.template_code === 'rtl_cond_flood' && (
+        <OrderFloodButton appId={appId} itemId={it.id} onChanged={onChanged} onUploadTo={onUploadTo} />
+      )}
+
+      {it.template_code === 'usps_address_verification' && (
+        <UspsAddressVerification appId={appId} onChanged={onChanged} />
       )}
 
       {/* ONE next step, everything else behind More — the shared bar, so this
@@ -1433,7 +1726,7 @@ function LlcReview({ appId, app, onReviewDoc, onDownloadDoc, dlBusy, onChanged, 
                             )}
                             {completer && rs !== 'accepted' && <button className="btn primary small" disabled={reviewBusy} onClick={() => review(s, 'accept')}>Accept</button>}
                             {rs !== 'rejected' && <button className="btn link small" disabled={reviewBusy} onClick={() => review(s, 'reject')}>Reject</button>}
-                            {completer && <button className="btn link small" style={{ color: 'var(--danger)' }} disabled={reviewBusy} title="Permanently delete — for a mistake upload (never synced to SharePoint)" onClick={() => review(s, 'delete')}>Delete</button>}
+                            {canDeleteDoc(role) && <button className="btn link small" style={{ color: 'var(--danger)' }} disabled={reviewBusy} title="Permanently delete — for a mistake upload (never synced to SharePoint)" onClick={() => review(s, 'delete')}>Delete</button>}
                           </>
                         ) : (
                           !l.is_verified && (
@@ -1704,7 +1997,7 @@ function StaffTrackRecordPanel({ app, role }) {
                       <span className="pill small" style={rs === 'accepted' ? { borderColor: 'var(--ok)', color: 'var(--ok)' } : rs === 'rejected' ? { borderColor: 'var(--danger)', color: 'var(--danger)' } : undefined}>{rs}</span>
                       {completerTR && rs !== 'accepted' && <button className="btn primary small" disabled={trBusy === d.id} onClick={() => reviewTrDoc(d, 'accept')}>Accept</button>}
                       {rs !== 'rejected' && <button className="btn link small" disabled={trBusy === d.id} onClick={() => reviewTrDoc(d, 'reject')}>Reject</button>}
-                      {completerTR && <button className="btn link small" style={{ color: 'var(--danger)' }} disabled={trBusy === d.id} title="Permanently delete — for a mistake upload (never synced to SharePoint)" onClick={() => reviewTrDoc(d, 'delete')}>Delete</button>}
+                      {canDeleteDoc(role) && <button className="btn link small" style={{ color: 'var(--danger)' }} disabled={trBusy === d.id} title="Permanently delete — for a mistake upload (never synced to SharePoint)" onClick={() => reviewTrDoc(d, 'delete')}>Delete</button>}
                       {rs === 'rejected' && d.rejection_reason && <span className="small" style={{ color: 'var(--danger)', width: '100%', paddingLeft: 18 }}>{d.rejection_reason}</span>}
                     </div>
                   );
@@ -1820,21 +2113,19 @@ function VestingLlcOwners({ appId, app }) {
 // remove (×). Add-assistant pickers below. The PRIMARY is changed through the
 // admin-only Assign controls, not here. `officers`/`processors` are the roster
 // lists already loaded by the parent; `onChanged` refreshes the file.
-function TeamAssignees({ appId, officers, processors, onChanged }) {
+function TeamAssignees({ appId, officers, processors, closers = [], drawCoordinators = [], onChanged }) {
   const [rows, setRows] = useState(null);
   const [busy, setBusy] = useState('');
   const [err, setErr] = useState('');
-  const [addLo, setAddLo] = useState('');
-  const [addProc, setAddProc] = useState('');
+  const [adds, setAdds] = useState({});   // role -> picked staffId
   const load = () => api.staffAssignees(appId).then(setRows).catch(() => setRows([]));
   useEffect(() => { load(); /* eslint-disable-next-line */ }, [appId]);
   if (!rows) return null;
-  const los = rows.filter(r => r.role === 'loan_officer');
-  const procs = rows.filter(r => r.role === 'processor');
-  async function add(role, staffId) {
+  const byRole = (role) => rows.filter(r => r.role === role);
+  async function add(role, staffId, primary) {
     if (!staffId) return;
     setBusy('add'); setErr('');
-    try { await api.staffAddAssignee(appId, staffId, role); setAddLo(''); setAddProc(''); await load(); onChanged && onChanged(); }
+    try { await api.staffAddAssignee(appId, staffId, role, primary); setAdds(a => ({ ...a, [role]: '' })); await load(); onChanged && onChanged(); }
     catch (e) { setErr(e.message || 'Could not add'); } finally { setBusy(''); }
   }
   async function remove(role, staffId) {
@@ -1842,38 +2133,64 @@ function TeamAssignees({ appId, officers, processors, onChanged }) {
     try { await api.staffRemoveAssignee(appId, staffId, role); await load(); onChanged && onChanged(); }
     catch (e) { setErr(e.message || 'Could not remove'); } finally { setBusy(''); }
   }
+  // Closer / draw-coordinator primaries CAN be cleared here (db/392) — only the
+  // LO/processor primaries stay locked to the Assign selects above.
+  const primaryRemovable = (role) => role === 'closer' || role === 'draw_coordinator';
   const Chip = ({ r }) => (
     <span className="asg-chip">
       {r.full_name}
-      {r.is_primary
-        ? <span className="asg-badge">Primary</span>
-        : <button className="asg-x" title="Remove assistant" disabled={busy === r.staff_id} onClick={() => remove(r.role, r.staff_id)}>×</button>}
+      {r.is_primary && <span className="asg-badge">Primary</span>}
+      {(!r.is_primary || primaryRemovable(r.role)) && (
+        <button className="asg-x" title={r.is_primary ? 'Clear this assignment (falls back to the whole desk)' : 'Remove from this file'}
+          disabled={busy === r.staff_id} onClick={() => remove(r.role, r.staff_id)}>×</button>
+      )}
     </span>
   );
   const Line = ({ label, list }) => (
     <div className="metrow" style={{ alignItems: 'flex-start' }}>
       <span className="k">{label}</span>
       <span className="v" style={{ display: 'flex', flexWrap: 'wrap', gap: 6, justifyContent: 'flex-end' }}>
-        {list.length ? list.map(r => <Chip key={r.staff_id} r={r} />) : <span className="muted small">—</span>}
+        {list.length ? list.map(r => <Chip key={r.staff_id} r={r} />) : <span className="muted small">Whole desk (nobody assigned)</span>}
       </span>
     </div>
   );
+  // ONE add-control per role. The first closer / draw coordinator added becomes
+  // the PRIMARY (their workflow gets the file's submissions); more people can be
+  // added to the same role — every assigned person sees the file's items
+  // (owner-directed 2026-07-31: multiple closers / draw coordinators per file).
+  const AddRow = ({ role, label, pool, firstIsPrimary }) => {
+    const cur = byRole(role);
+    const hasPrimary = cur.some(r => r.is_primary);
+    const val = adds[role] || '';
+    return (
+      <>
+        <select className="input" style={{ maxWidth: 210, flex: '1 1 160px' }} value={val}
+          onChange={e => setAdds(a => ({ ...a, [role]: e.target.value }))}>
+          <option value="">{label}</option>
+          {pool.filter(m => !cur.some(r => r.staff_id === m.id)).map(m => <option key={m.id} value={m.id}>{m.full_name}</option>)}
+        </select>
+        {val && <button className="btn ghost small" disabled={busy === 'add'}
+          onClick={() => add(role, val, firstIsPrimary && !hasPrimary)}>{firstIsPrimary && !hasPrimary ? 'Assign' : 'Add'}</button>}
+      </>
+    );
+  };
   return (
     <div style={{ marginBottom: 4 }}>
-      <Line label="Loan officers" list={los} />
-      <Line label="Processors" list={procs} />
+      <Line label="Loan officers" list={byRole('loan_officer')} />
+      <Line label="Processors" list={byRole('processor')} />
+      <Line label="Closers" list={byRole('closer')} />
+      <Line label="Draw coordinators" list={byRole('draw_coordinator')} />
       <div className="row" style={{ gap: 6, marginTop: 8, flexWrap: 'wrap' }}>
-        <select className="input" style={{ maxWidth: 210, flex: '1 1 160px' }} value={addLo} onChange={e => setAddLo(e.target.value)}>
-          <option value="">+ Add assistant LO…</option>
-          {officers.filter(m => !los.some(r => r.staff_id === m.id)).map(m => <option key={m.id} value={m.id}>{m.full_name}</option>)}
-        </select>
-        {addLo && <button className="btn ghost small" disabled={busy === 'add'} onClick={() => add('loan_officer', addLo)}>Add</button>}
-        <select className="input" style={{ maxWidth: 210, flex: '1 1 160px' }} value={addProc} onChange={e => setAddProc(e.target.value)}>
-          <option value="">+ Add assistant processor…</option>
-          {processors.filter(m => !procs.some(r => r.staff_id === m.id)).map(m => <option key={m.id} value={m.id}>{m.full_name}</option>)}
-        </select>
-        {addProc && <button className="btn ghost small" disabled={busy === 'add'} onClick={() => add('processor', addProc)}>Add</button>}
+        <AddRow role="loan_officer" label="+ Add assistant LO…" pool={officers} firstIsPrimary={false} />
+        <AddRow role="processor" label="+ Add assistant processor…" pool={processors} firstIsPrimary={false} />
+        <AddRow role="closer" label="+ Assign / add closer…" pool={closers} firstIsPrimary />
+        <AddRow role="draw_coordinator" label="+ Assign / add draw coordinator…" pool={drawCoordinators} firstIsPrimary />
       </div>
+      <p className="muted small" style={{ margin: '6px 0 0' }}>
+        Closing and draw submissions go to the file’s assigned closer / draw coordinator; with nobody assigned they
+        go to the whole desk (the default, unchanged). Everyone assigned to a role here sees the file’s items in
+        their own workflow.
+      </p>
       {err && <p className="notice err small" style={{ marginTop: 6 }}>{err}</p>}
     </div>
   );
@@ -2089,7 +2406,57 @@ function StaffContactEntry({ appId, toolKey, current, onSaved }) {
   );
 }
 
-function BorrowerConditions({ appId, app, items, docs, onPatch, onReviewDoc, onDownloadDoc, dlBusy, role, onUploadTo, onDropTo, onChanged, onPreview, onOpenStudio, team, canImportCredit }) {
+// Personal-name purchase (owner-directed 2026-07-31): buy in an individual name
+// instead of an LLC. Upload a non-owner-occupied affidavit (in lieu of LLC docs)
+// to waive the LLC condition — vesting flips to Individual (default is LLC).
+function PersonalNameWaiver({ appId, app, onChanged }) {
+  const [busy, setBusy] = React.useState(false);
+  const [msg, setMsg] = React.useState('');
+  const fileRef = React.useRef(null);
+  const isPersonal = !!(app && app.personal_name_purchase);
+  const waive = async (file) => {
+    if (!file) return;
+    setBusy(true); setMsg('');
+    try {
+      const dataUrl = await new Promise((res, rej) => {
+        const fr = new FileReader(); fr.onload = () => res(fr.result); fr.onerror = () => rej(new Error('could not read the file')); fr.readAsDataURL(file);
+      });
+      await api.staffVestingPersonalName(appId, { filename: file.name, contentType: file.type || 'application/pdf', dataUrl });
+      setMsg('Saved — this is a personal-name purchase. Vesting is now Individual.');
+      onChanged && await onChanged();
+    } catch (e) { setMsg(e.message || 'could not save the affidavit'); }
+    finally { setBusy(false); if (fileRef.current) fileRef.current.value = ''; }
+  };
+  const undo = async () => {
+    setBusy(true); setMsg('');
+    try { await api.staffVestingPersonalName(appId, { undo: true }); setMsg('Back to an LLC purchase — vesting is LLC.'); onChanged && await onChanged(); }
+    catch (e) { setMsg(e.message || 'could not undo'); }
+    finally { setBusy(false); }
+  };
+  return (
+    <div className="row" style={{ gap: 8, alignItems: 'center', flexWrap: 'wrap', marginTop: 6, color: '#141B22' }}>
+      {isPersonal ? (
+        <>
+          <span className="pill ok">Personal name (Individual) — affidavit on file</span>
+          <span className="muted small" style={{ color: '#4B585C' }}>Bought in an individual name, not an LLC. ClickUp vesting is Individual.</span>
+          <button className="btn link small" disabled={busy} onClick={undo}>Undo — back to an LLC</button>
+        </>
+      ) : (
+        <>
+          <input ref={fileRef} type="file" accept=".pdf,application/pdf" style={{ display: 'none' }}
+            onChange={(e) => waive(e.target.files && e.target.files[0])} />
+          <button className="btn small" disabled={busy} onClick={() => fileRef.current && fileRef.current.click()}>
+            {busy ? 'Saving…' : 'Buying in a personal name? Upload the non-owner-occupied affidavit'}
+          </button>
+          <span className="muted small" style={{ color: '#4B585C' }}>Waives the LLC documents and sets vesting to Individual.</span>
+        </>
+      )}
+      {msg && <span className="muted small" style={{ color: '#4B585C', flexBasis: '100%' }}>{msg}</span>}
+    </div>
+  );
+}
+
+function BorrowerConditions({ appId, app, items, docs, onPatch, onReviewDoc, onDownloadDoc, dlBusy, role, onUploadTo, onDropTo, onChanged, onPreview, onOpenStudio, team, canImportCredit, fullscreen = false, closingActive = false }) {
   const completer = canComplete(role);
   const [sowOpen, setSowOpen] = useState(null);   // itemId of the SOW being edited
   const [trOpen, setTrOpen] = useState(null);    // track record open full-screen (staff): holds the borrower id, or null
@@ -2195,11 +2562,44 @@ function BorrowerConditions({ appId, app, items, docs, onPatch, onReviewDoc, onD
   const isInternal = (it) => it.audience === 'staff';
   const matchAudience = (it) => audFilter === 'all' ? true
     : audFilter === 'internal' ? isInternal(it) : !isInternal(it);
-  const visible = ordered.filter(it => matchFilter(it) && matchAudience(it));
+  // CLOSING DOCS STAY OUT OF THE WAY UNTIL THE FILE IS ACTUALLY CLOSING
+  // (owner-directed 2026-07-30: the balanced HUD/ALTA, the signed closing package
+  // and the collateral tracking label "should not come up immediately when the
+  // file is still in processing… it sounds too much"). They are the closer's
+  // end-of-file work and never hold up clear-to-close, so while the file is still
+  // in processing they surface ONLY under the "Everything" filter — tucked in the
+  // Closing group at the bottom — and never in the default "needs my sign-off"
+  // view. They keep their own dedicated home in the Closing section's upload panel
+  // throughout. Once the file reaches closing (a closer is on it, or it's
+  // clear-to-close/funded) they behave like any other condition again.
+  const tuckClosing = (it) => !closingActive && condFilter !== 'all' && subjectOf(it) === 'closing';
+  const visible = ordered.filter(it => matchFilter(it) && matchAudience(it) && !tuckClosing(it));
   // Grouped by what each condition is ABOUT — see lib/condition-subjects.js.
   // "Done" here is the same role-aware rule the rest of this list uses, so a
   // group header can never disagree with the rows under it.
   const groups = groupBySubject(visible, offMyPlate);
+  // FULL SCREEN restores the OLD split layout (owner-directed 2026-07-29): before
+  // the merge, internal (staff) and external (borrower) conditions each lived in
+  // their own section. The regular screen keeps the merged, subject-grouped list;
+  // ONLY full screen splits back into "Borrower conditions" and "Internal
+  // conditions" so you can view each side on its own. The subject grouping is
+  // kept WITHIN each side, so nothing else about the list changes.
+  const countTotal = (gs) => gs.reduce((n, g) => n + g.total, 0);
+  const extGroups = fullscreen ? groupBySubject(visible.filter((it) => !isInternal(it)), offMyPlate) : [];
+  const intGroups = fullscreen ? groupBySubject(visible.filter((it) => isInternal(it)), offMyPlate) : [];
+  const sectionBanner = (label, sub, count) => (
+    <div className="cond-section-banner">
+      <div className="cond-section-title">{label}</div>
+      <div className="cond-section-sub">{sub}</div>
+      <span className="cond-section-count">{count} condition{count === 1 ? '' : 's'}</span>
+    </div>
+  );
+  const sections = fullscreen
+    ? [
+        { key: 'ext', banner: extGroups.length ? sectionBanner('Borrower conditions', 'What the borrower sees and uploads', countTotal(extGroups)) : null, groups: extGroups },
+        { key: 'int', banner: intGroups.length ? sectionBanner('Internal conditions', 'Staff-only — never shown to the borrower', countTotal(intGroups)) : null, groups: intGroups },
+      ]
+    : [{ key: 'all', banner: null, groups }];
   // The LLC condition renders as its own row; drive its visibility off a
   // synthesized status so it honors the same filters.
   const llcPseudo = { id: '__llc', tool_key: null, reviewed_at: null,
@@ -2211,6 +2611,32 @@ function BorrowerConditions({ appId, app, items, docs, onPatch, onReviewDoc, onD
   // verified — which is most of a file's life, and the entity panel is the
   // tallest thing in the list.
   const llcOpen = expandedConds.has('__llc');
+
+  // FULL SCREEN opens EVERYTHING (owner-directed 2026-07-28): when you fill the
+  // screen to work through the file, the categories, the conditions and the LLC
+  // row should all be open — not auto-collapsed the way they are in the normal
+  // (space-saving) view. You can still collapse any of them by hand. On entering
+  // full screen we snapshot the normal collapse state and open everything; on
+  // leaving we put the normal state back, so day-to-day collapses aren't lost.
+  const prevFullRef = useRef(false);
+  const fsSnapRef = useRef(null);
+  useEffect(() => {
+    if (fullscreen && !prevFullRef.current) {
+      fsSnapRef.current = { shut: shutGroups, expanded: expandedConds };
+      setShutGroups('');                                        // every category open
+      const allIds = new Set(visible.map((v) => v.id));         // every condition open
+      allIds.add('__llc');
+      setExpandedConds(allIds);
+    } else if (!fullscreen && prevFullRef.current) {
+      const snap = fsSnapRef.current;
+      if (snap) { setShutGroups(snap.shut); setExpandedConds(snap.expanded); }
+      fsSnapRef.current = null;
+    }
+    prevFullRef.current = fullscreen;
+    // Only react to the full-screen transition; the collapse state it reads is the
+    // live value at that moment (opening full screen always re-renders first).
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [fullscreen]);
 
   if (ordered.length === 0 && !llcCondItem) return null;
   return (
@@ -2301,6 +2727,7 @@ function BorrowerConditions({ appId, app, items, docs, onPatch, onReviewDoc, onD
                       ? { fullName: fullNameOf(app, 'co_'), email: app.co_email || '' }
                       : null} />
                 : <p className="muted small" style={{ margin: 0 }}>No vesting entity linked yet — link or create one in the “Vesting entity (LLC)” section above.</p>}
+              {!app.entity_verified && <PersonalNameWaiver appId={appId} app={app} onChanged={onChanged} />}
             </div>
           )
       )}
@@ -2312,7 +2739,10 @@ function BorrowerConditions({ appId, app, items, docs, onPatch, onReviewDoc, onD
           scan. Each header carries its own count, so "is the title work done?"
           is answerable without reading the rows. Groups collapse and the choice
           sticks. A group with nothing in it is not rendered at all. */}
-      {groups.map(g => (
+      {sections.map(sec => (
+        <React.Fragment key={sec.key}>
+          {sec.banner}
+          {sec.groups.map(g => (
         <div className="cond-group" key={g.key}>
           <button type="button" className="cond-group-h" aria-expanded={!shut.has(g.key)}
             onClick={() => toggleGroup(g.key)}>
@@ -2328,7 +2758,7 @@ function BorrowerConditions({ appId, app, items, docs, onPatch, onReviewDoc, onD
               <Item key={it.id} it={it} team={team} onPatch={onPatch} role={role}
                 docs={docs} onUploadTo={onUploadTo} onDropTo={onDropTo} onReviewDoc={onReviewDoc}
                 onDownloadDoc={onDownloadDoc} dlBusy={dlBusy} onPreview={onPreview} appId={appId}
-                onChanged={onChanged} canImportCredit={canImportCredit} />
+                onChanged={onChanged} canImportCredit={canImportCredit} fullscreen={fullscreen} />
             );
         const itemDocs = docsFor(it.id);
         const signed = !!it.signed_off_at;
@@ -2407,7 +2837,7 @@ function BorrowerConditions({ appId, app, items, docs, onPatch, onReviewDoc, onD
                         ].filter(Boolean) : [];
                         return `${have}${needsAny ? (short.length ? ` — still needs ${short.join(', ')} verified` : ' — requirement met ✓ (verified)') : ''}`;
                       })()
-                    : it.tool_key === 'product_pricing' ? (app.registered_program ? `Registered · ${app.registered_program === 'gold' ? 'Gold Standard' : 'Standard'} · ${money(app.registered_total_loan)}` : 'No product registered yet')
+                    : it.tool_key === 'product_pricing' ? (app.registered_program ? `Registered · ${app.registered_program === 'gold' ? 'Gold Standard' : app.registered_program === 'silver' ? 'Silver' : app.registered_program === 'manual' ? 'Manual' : 'Standard'} · ${money(app.registered_total_loan)}` : 'No product registered yet')
                     : it.tool_key === 'appraisal_card' ? 'Card for ordering the appraisal (reveal is audited)'
                     : ['title_contact', 'insurance_contact'].includes(it.tool_key) ? (() => {
                         const c = contactFor(it.tool_key);
@@ -2446,9 +2876,8 @@ function BorrowerConditions({ appId, app, items, docs, onPatch, onReviewDoc, onD
                 )}
                 <CondInlineEntry it={it} appId={appId} onChanged={onChanged} />
                 {it.template_code === 'rtl_p3_assets' && it.hint && (
-                  <div className="muted small" style={{ whiteSpace: 'pre-line', marginTop: 6, padding: '8px 10px', border: '1px solid rgba(127,169,176,.3)', borderRadius: 8 }}>
-                    {it.hint}
-                  </div>
+                  <LoudHint hint={it.hint} className="muted small"
+                    style={{ marginTop: 6, padding: '8px 10px', border: '1px solid rgba(127,169,176,.3)', borderRadius: 8 }} />
                 )}
                 {it.tool_key === 'track_record' && it.tool_payload && it.tool_payload.perBorrower && it.tool_payload.perBorrower.length > 1 && (
                   // #103 — per-borrower breakdown: each borrower's own 3-year-window
@@ -2550,7 +2979,7 @@ function BorrowerConditions({ appId, app, items, docs, onPatch, onReviewDoc, onD
                       <span className="muted small" style={{ minWidth: 140 }}>{d.slot_label || (d.source_type === 'system' ? 'Tool export' : `Document ${i + 1}`)}</span>
                       <span className="small" style={{ flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{d.filename}</span>
                       <span className="pill" style={rs === 'accepted' ? { borderColor: 'var(--ok)', color: 'var(--ok)' } : rs === 'rejected' ? { borderColor: 'var(--danger)', color: 'var(--danger)' } : undefined}>{rs}</span>
-                      <DocActions doc={d} role={role} onReviewDoc={onReviewDoc}
+                      <DocActions doc={d} role={role} onReviewDoc={onReviewDoc} fullscreen={fullscreen}
                         onDownloadDoc={onDownloadDoc} onPreview={onPreview} dlBusy={dlBusy}
                         onReplace={(onUploadTo && d.source_type !== 'system')
                           ? () => onUploadTo({ itemId: it.id, slot: d.slot_label || undefined, replaceDocumentId: d.id }) : null} />
@@ -2563,6 +2992,8 @@ function BorrowerConditions({ appId, app, items, docs, onPatch, onReviewDoc, onD
         );
           })}
         </div>
+          ))}
+        </React.Fragment>
       ))}
       {sowOpen && (
         <ToolModal
@@ -3233,6 +3664,11 @@ export default function StaffApplication() {
   const condTab = condTabRaw === 'internal' ? 'borrower' : condTabRaw;
   // Conversations + Activity + Email Center are one "Communication" hub (tabs).
   const [commTab, setCommTab] = useStickyFilter('commTab', 'messages');
+  // "Application details" is ONE tabbed sub-hub too (owner-directed 2026-07-31:
+  // "split in between 100 places… clean up the view"): Deal & property ·
+  // Missing info · Pipeline data. Plain local useState (not sticky) — the deal
+  // editor is the right first thing every time the section is opened.
+  const [appDetailTab, setAppDetailTab] = useState('deal');
   // ONE "off my plate" rule for every surface — see roleDone() above.
   // The internal checklist shows ONLY staff-facing work items — the borrower's
   // conditions (audience borrower/both) already live in "Conditions to close",
@@ -3291,6 +3727,14 @@ export default function StaffApplication() {
      Each badge is now derived ONCE here and rendered in two lengths: `short` for the
      narrow rail, `long` for the roomy section header. They can differ in wording;
      they can no longer differ in fact. */
+  /* THE PAYOFF SECTION exists only where there is a loan to pay off, and its
+     header says at a glance whether the three things a payoff needs are on the
+     file. Both answers come from the shared mirror of the server's payoff model
+     (lib/payoff.js), so the header can never contradict the card inside it. */
+  const isRefiFile = payoffApplies(app.loan_type);
+  const payoffMissing = isRefiFile ? payoffMissingKeys(app) : [];
+  const payoffBadge = { short: payoffMissing.length ? `${payoffMissing.length} ⚠` : '✓',
+    long: payoffMissing.length ? `${payoffMissing.length} still needed` : 'Complete ✓' };
   const badges = {
     pricing: { short: app.registered_program ? '✓' : '', long: app.registered_program ? 'Registered ✓' : 'Not registered' },
     appraisal: (() => {
@@ -3361,9 +3805,18 @@ export default function StaffApplication() {
   };
   const nOrdersToAssign = docs.filter(d => ['title_order_return', 'insurance_order_return'].includes(d.doc_kind) && !d.slot_label && d.is_current !== false).length;
   const summaries = {
+    /* THE PAYOFF — a refinance-only section, so both of these are computed from
+       the file's own row through the shared mirror in lib/payoff.js (pinned
+       against the server's model by test-payoff-model-pure.js). The card itself
+       asks the server for everything richer. */
+    'sec-payoff': line(
+      payoffMissing.length
+        ? (payoffMissing.length === 1 ? '1 thing still needed' : `${payoffMissing.length} things still needed`)
+        : 'Payoff details are complete',
+      ...openHere('sec-payoff')),
     'sec-pricing': line(
       app.registered_program
-        ? `Registered: ${app.registered_product_label || (app.registered_program === 'gold' ? 'Gold Standard Program' : 'Standard Program')}`
+        ? `Registered: ${app.registered_product_label || (app.registered_program === 'gold' ? 'Gold Standard Program' : app.registered_program === 'silver' ? 'Silver Program' : app.registered_program === 'manual' ? 'Manual Program' : 'Standard Program')}`
         : 'No product registered yet',
       ...openHere('sec-pricing')),
     'sec-appraisal': line(...openHere('sec-appraisal')),
@@ -3397,6 +3850,9 @@ export default function StaffApplication() {
   const SECTIONS = [
     { id: 'sec-overview', label: 'File overview', group: 'Overview' },
     { id: 'sec-application', label: 'Application details', group: 'Application & pricing' },
+    // Refinance only — a purchase has no loan to pay off, so the rail does not
+    // carry a section that would only ever say so.
+    ...(isRefiFile ? [{ id: 'sec-payoff', label: 'Payoff', group: 'Application & pricing', badge: payoffBadge.short }] : []),
     { id: 'sec-pricing', label: 'Structure & pricing', group: 'Application & pricing', badge: badges.pricing.short },
     { id: 'sec-encompass', label: 'Encompass sync', group: 'Application & pricing' },
     { id: 'sec-exceptions', label: 'Exceptions', group: 'Application & pricing' },
@@ -3647,7 +4103,10 @@ export default function StaffApplication() {
             {app.as_is_value == null && app.purchase_price != null &&
               <span className="muted small" style={{ fontWeight: 400 }} title="No as-is value entered — defaults to the final purchase price everywhere (incl. pricing)"> (= purchase)</span>}
           </span></div>
-          <TeamAssignees appId={id} officers={officers} processors={processors} onChanged={load} />
+          <TeamAssignees appId={id} officers={officers} processors={processors}
+            closers={team.filter(m => m.role === 'closer')}
+            drawCoordinators={team.filter(m => m.role === 'draw_coordinator')}
+            onChanged={load} />
           {uwName && <div className="metrow"><span className="k">Underwriter</span><span className="v">{uwName}</span></div>}
           <div className="gold-rule" style={{ margin: '10px 0' }} />
           {/* Reassigning a file is an admin function (S3-02) — the server 403s a
@@ -3671,39 +4130,89 @@ export default function StaffApplication() {
 
       <Section id="sec-application" title="Application details" defaultOpen={false}
         info="What the borrower filled out, plus the editable deal numbers — changes here flow straight into pricing.">
-      <Completeness app={app} borrower={borrower} appId={app.id} onSaved={load} />
-      {/* THE PEOPLE ON THIS FILE — their own records, fully editable (#850:
-          "a button to edit the entire borrower profile, so we can edit the 1st
-          borrower AND the 2nd borrower — name, social, everything"). Everything
-          below in EditFileDetails is the DEAL; the PEOPLE are the two
-          BorrowerProfilePanel mounts, which moved UP to the file overview
-          (owner-directed 2026-07-27) — this section is collapsed by default, so
-          an editor living in here is invisible until you go looking, which is how
-          the Borrower section stayed read-only. Mounted once per person up there,
-          never twice on one page. */}
-      {app.borrower_id && (
-        <PrimaryAddressPanel borrowerId={app.borrower_id}
-          address={borrower && borrower.current_address}
-          name={fullNameOf(app) || 'Borrower'} onSaved={load} />
+      {/* ONE TABBED SUB-HUB (owner-directed 2026-07-31: "the application details
+          are split in between 100 places… everything together, easier for the
+          eye, better organized in sections"). The six stacked panels this
+          section used to hold are now three tabs — the deal editor first, the
+          missing-field pills second, the read-only ClickUp figures last —
+          mirroring the Conditions hub's tab pattern. The PEOPLE on this file
+          are NOT here (#850; owner-directed 2026-07-27): their records are the
+          two BorrowerProfilePanel mounts up on the file overview, once per
+          person, never twice on one page — the line under the tabs points
+          there so nobody hunts this section for them. */}
+      <p className="small" style={{ margin: '0 0 10px', color: '#4B585C' }}>
+        Borrower personal details (name, contact, home address) are edited in the Borrower panel —{' '}
+        <button type="button" className="btn link small" onClick={() => goToSection('sec-overview')}>
+          Open the Borrower panel
+        </button>
+      </p>
+      <div className="cond-tabs" role="tablist" aria-label="Application details">
+        {[
+          { k: 'deal', label: 'Deal & property' },
+          { k: 'missing', label: 'Missing info' },
+          { k: 'pipeline', label: 'Pipeline data (read-only)' },
+        ].map(t => (
+          <button key={t.k} type="button" role="tab" aria-selected={appDetailTab === t.k}
+            className={`cond-tab${appDetailTab === t.k ? ' active' : ''}`} onClick={() => setAppDetailTab(t.k)}>
+            {t.label}
+          </button>
+        ))}
+      </div>
+
+      {appDetailTab === 'deal' && (
+        /* The structural lock/unlock banner used to render here; it now sits at
+           the top of the file (above the collapsible sections) so it is visible
+           without expanding this section. EditFileDetails is where the actual
+           correction is made once a super-admin has unlocked the file up top.
+           openByDefault: the form IS this tab, so it renders expanded instead
+           of hiding behind a second collapse. */
+        <EditFileDetails app={app} onSaved={load} openByDefault />
       )}
-      <CoBorrowerCompleteness app={app} appId={app.id} onSaved={load} />
-      {app.co_borrower_id && (
-        <PrimaryAddressPanel borrowerId={app.co_borrower_id}
-          address={app.co_current_address}
-          name={fullNameOf(app, 'co_') || 'Co-borrower'} onSaved={load} />
-      )}
-      {/* The structural lock/unlock banner used to render here; it now sits at
-          the top of the file (above the collapsible sections) so it is visible
-          without expanding this section. EditFileDetails is where the actual
-          correction is made once a super-admin has unlocked the file up top. */}
-      <EditFileDetails app={app} onSaved={load} />
-      {/* Read-only pipeline data pulled from ClickUp — tucked into a disclosure so it
-          isn't extra weight on the page; open it when you actually need those figures. */}
-      <details className="disclosure" style={{ marginTop: 16 }}>
-        <summary>Pipeline data from ClickUp (read-only)</summary>
+
+      {appDetailTab === 'missing' && <>
+        <p className="small" style={{ margin: '0 0 4px', color: '#4B585C' }}>
+          Anything still missing on the file — fill a pill and it disappears. Every field here can
+          also be edited any time under Deal &amp; property or in the Borrower panel.
+        </p>
+        <Completeness app={app} borrower={borrower} appId={app.id} onSaved={load} />
+        <CoBorrowerCompleteness app={app} appId={app.id} onSaved={load} />
+        {/* The two primary-address rows moved here rather than being deleted
+            with the people's editors: this small panel still edits something
+            the BorrowerProfilePanel's address boxes don't offer (the Apt/Unit
+            slot, and it writes the one-line mailing form). Once an address is
+            on file each collapses to a single row. */}
+        {app.borrower_id && (
+          <PrimaryAddressPanel borrowerId={app.borrower_id}
+            address={borrower && borrower.current_address}
+            name={fullNameOf(app) || 'Borrower'} onSaved={load} />
+        )}
+        {app.co_borrower_id && (
+          <PrimaryAddressPanel borrowerId={app.co_borrower_id}
+            address={app.co_current_address}
+            name={fullNameOf(app, 'co_') || 'Co-borrower'} onSaved={load} />
+        )}
+      </>}
+
+      {appDetailTab === 'pipeline' && (
+        /* Read-only pipeline data pulled from ClickUp — its own tab now, no
+           longer buried inside a disclosure; the panel carries its own
+           "Pulled from the pipeline · read-only" intro line. */
         <ClickupFileData app={app} />
-      </details>
+      )}
       </Section>
+
+      {/* THE PAYOFF (owner-directed 2026-07-31) — its own section on a refinance,
+          sitting between the application and the structure because that is what it
+          is: part of the real structure. It collects how much, to whom and on
+          which loan, states what the borrower walks away with on a cash-out, and
+          explains how a payoff works. Purchases never see it. */}
+      {isRefiFile && (
+        <Section id="sec-payoff" summary={summaries['sec-payoff']} title="Payoff" defaultOpen={false}
+          info="The loan already on this property: what it costs to clear it, who holds it, and which of their loans it is — everything the closing attorney needs to order a payoff letter. On a cash-out refinance it also shows what the borrower actually walks away with after the payoff and the closing costs."
+          badge={payoffBadge.long}>
+          <PayoffCard appId={id} app={app} onSaved={load} />
+        </Section>
+      )}
 
       <Section id="sec-pricing" summary={summaries['sec-pricing']} title="Structure & pricing" defaultOpen={false}
         info="The registered product and the Term Sheet Studio to re-price or re-register — every registration attaches the term sheet PDF."
@@ -3730,6 +4239,13 @@ export default function StaffApplication() {
       <Section id="sec-appraisal" summary={summaries['sec-appraisal']} title="Appraisal & findings" defaultOpen={false}
         info="Import the appraisal XML and PILOT builds the property profile and flags every value that differs from the file for your team to review."
         badge={badges.appraisal.long}>
+        {/* The REVIEW-side "No XML available" waiver — the appraisal-review entry
+            point (the review task itself is worked from My Tasks, not the
+            conditions list). It self-hides on a file that already has an imported
+            appraisal (there IS XML), and shares the SAME As-Is/ARV values as the
+            appraisal-documents waiver, so entering on either side shows "already
+            entered — confirm" on the other. */}
+        <AppraisalXmlWaiver appId={id} onChanged={() => { load(); setApprReload((n) => n + 1); }} context="review" />
         <AppraisalPanel appId={id} onSummary={onApprSummary} reloadSignal={apprReload} />
       </Section>
 
@@ -3755,6 +4271,7 @@ export default function StaffApplication() {
         info="Everything to clear on this file — the borrower's conditions, your underwriting conditions, internal staff conditions, and the LLC. Switch with the tabs."
         badge={nCondOpen || ''} fullscreenable>
 
+      {({ full }) => (<>
       <input ref={staffFileRef} type="file" multiple style={{ display: 'none' }} onChange={onStaffFile} />
       {(() => {
         const uwOpen = conds.filter(c => c.status === 'open' || c.status === 'borrower_responded').length;
@@ -3777,7 +4294,8 @@ export default function StaffApplication() {
 
       {condTab === 'borrower' && <>
         <BorrowerConditions appId={id} app={app} items={items} docs={docs} role={role}
-          team={team} canImportCredit={can('pull_credit')}
+          team={team} canImportCredit={can('pull_credit')} fullscreen={full}
+          closingActive={!!app.closer_id || ['clear_to_close', 'funded'].includes(app.status)}
           onPatch={patch} onReviewDoc={reviewDoc} onDownloadDoc={downloadDoc} dlBusy={dlBusy}
           onUploadTo={pickUpload} onDropTo={uploadStaffFiles} onChanged={load} onPreview={openPreview}
           onOpenStudio={() => { studioRef.current ? studioRef.current.openStudio() : document.getElementById('sec-pricing')?.scrollIntoView({ behavior: 'smooth', block: 'start' }); }} />
@@ -3818,6 +4336,7 @@ export default function StaffApplication() {
           dlBusy={dlBusy} onChanged={load} reviewBusy={busyAct === 'review'} onPreview={openPreview} />
         <VestingLlcOwners appId={id} app={app} />
       </>}
+      </>)}
       </Section>
 
       {/* The standalone "Investor guidelines" section was RETIRED (owner-directed 2026-07-24):
@@ -3889,7 +4408,7 @@ export default function StaffApplication() {
                   </button>
                   {d.is_current && rs !== 'accepted' && canComplete(role) && <button className="btn primary small" onClick={() => reviewDoc(d, 'accept')}>Accept</button>}
                   {d.is_current && rs !== 'rejected' && <button className="btn ghost small" onClick={() => reviewDoc(d, 'reject')}>Reject</button>}
-                  {canComplete(role) && <button className="btn ghost small" style={{ color: 'var(--danger)' }} title="Permanently delete — for a mistake upload (never synced to SharePoint)" onClick={() => reviewDoc(d, 'delete')}>Delete</button>}
+                  {canDeleteDoc(role) && <button className="btn ghost small" style={{ color: 'var(--danger)' }} title="Permanently delete — for a mistake upload (never synced to SharePoint)" onClick={() => reviewDoc(d, 'delete')}>Delete</button>}
                 </div>
               </div>
               );
@@ -4024,6 +4543,7 @@ export default function StaffApplication() {
           title={previewDoc.item_label || previewDoc.slot_label || 'Document preview'}
           filename={previewDoc.filename} contentType={previewDoc.content_type}
           load={() => api.staffDownloadDoc(previewDoc.id)}
+          ocr={() => api.staffOcrDoc(previewDoc.id)}
           onDownload={() => downloadDoc(previewDoc)}
           onClose={() => setPreviewDoc(null)} />
       )}

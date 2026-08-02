@@ -21,7 +21,12 @@ const centsOrNull = (v) => {
   const n = Math.round(Number(s.replace(/[^0-9.]/g, '')) * 100);
   return Number.isFinite(n) && n >= 0 ? n : null;
 };
-const fmtDay = (v) => (v ? String(v).slice(0, 10) : '—');
+const fmtDay = (v) => {   // MM/DD/YYYY (industry standard), shift-free for date-only values
+  if (!v) return '—';
+  const m = /^(\d{4})-(\d{2})-(\d{2})/.exec(String(v));
+  const d = m ? new Date(+m[1], +m[2] - 1, +m[3]) : new Date(v);
+  return Number.isNaN(d.getTime()) ? '—' : d.toLocaleDateString('en-US', { month: '2-digit', day: '2-digit', year: 'numeric' });
+};
 const STATUS = {
   drafting: 'Drafting', pending_borrower: 'With borrower', inspecting: 'Inspecting',
   pending: 'Awaiting your approval', pending_capital_partner: 'With capital partner', approved: 'Approved',
@@ -75,7 +80,7 @@ export default function DrawsPanel({ appId }) {
   if (err) return <div className="panel" style={{ marginTop: 12, color: 'var(--bad,#b04a3f)' }}>{err}</div>;
   if (!data) return null;
 
-  const { rollup, link, requests = [], ledger = [], findings = [], change_requests = [], retainage = null, waivers = [], lien_waivers_enabled = false,
+  const { rollup, link, requests = [], ledger = [], findings = [], change_requests = [], retainage = null, oop = null, waivers = [], lien_waivers_enabled = false,
     preexisting = false, setup_status = null, managed_since = null, go_live_date = null } = data;
   // Render draw cards from rollup.draws — it carries the money (requested/approved/net_release),
   // the funded flag, and the merged risk flags + pdf_src. The top-level `draws` array has no
@@ -234,7 +239,7 @@ export default function DrawsPanel({ appId }) {
 
             {/* MONEY — the ledger + retainage/waivers. */}
             <Section id="dsec-ledger" title="Money ledger" defaultOpen={false}>
-              <LedgerPanel appId={appId} ledger={ledger} draws={draws} retainage={retainage} onSaved={load} act={act} busy={busy} />
+              <LedgerPanel appId={appId} ledger={ledger} draws={draws} retainage={retainage} oop={oop} onSaved={load} act={act} busy={busy} />
             </Section>
             <Section id="dsec-waivers" title="Retainage & lien waivers" defaultOpen={false}>
               <LienWaivers appId={appId} enabled={lien_waivers_enabled} fileOverride={data.lien_waivers_file_override}
@@ -1360,6 +1365,7 @@ function StartDrawCard({ appId, onStarted }) {
   const cp = s.capital_partner || {};
   const p = s.prereqs || {};
   const u = s.units || null;
+  const oop = s.out_of_pocket || null; // out-of-pocket-first floor (0 = no OOP-rehab exception)
   // the method actually in effect (the coordinator's live switch, else the resolved default)
   const effMethod = method || insp.method;
   const effKind = effMethod === 'traditional' ? 'physical' : 'virtual';
@@ -1462,6 +1468,11 @@ function StartDrawCard({ appId, onStarted }) {
             <div className="small" style={{ marginTop: 8, color: 'var(--text-muted)' }}>
               Units in Sitewire: <b style={{ color: 'var(--text)' }}>{u.physical}</b>
               {u.disagree && <span> — the file lists {u.file}, the Scope of Work is built for {u.sow}; PILOT pushes the physical building count ({u.physical}). Units with no work carry no budget lines — fix the file’s unit count if {u.physical} is wrong.</span>}
+            </div>
+          )}
+          {oop && oop.floor_cents > 0 && (
+            <div className="small" style={{ marginTop: 8, padding: '8px 10px', borderRadius: 8, background: 'var(--gold-soft)', color: 'var(--text)', fontWeight: 600 }}>
+              Out-of-pocket rehab: <b>{usd(oop.floor_cents)}</b>. The borrower pays the first {usd(oop.floor_cents)} of rehab themselves — PILOT won’t reimburse a draw until that much has been done out of pocket. The full {oop.full_rehab_cents != null ? usd(oop.full_rehab_cents) : 'construction'} budget still goes to Sitewire; only {oop.financed_rehab_cents != null ? usd(oop.financed_rehab_cents) : 'the financed portion'} is reimbursed.
             </div>
           )}
           {!p.capital_partner && cp.ambiguous && <div className="small" style={{ color: 'var(--danger)', marginTop: 6 }}>The capital-partner name matches more than one — fix the lender label on the file.</div>}
@@ -2084,7 +2095,7 @@ function InspectionGallery({ appId, draw, finding, readsOff }) {
   );
 }
 
-function LedgerPanel({ appId, ledger, draws, retainage, onSaved, act, busy: parentBusy }) {
+function LedgerPanel({ appId, ledger, draws, retainage, oop = null, onSaved, act, busy: parentBusy }) {
   // map the Sitewire draw id -> the friendly draw number so the ledger reads "Draw #1", not "#8001"
   const numByDraw = {};
   for (const d of draws) if (d.number != null) numByDraw[String(d.sitewire_draw_id)] = d.number;
@@ -2096,10 +2107,20 @@ function LedgerPanel({ appId, ledger, draws, retainage, onSaved, act, busy: pare
   // any. Show the retainage column/summary/preview ONLY when this project actually uses it — otherwise
   // it stays out of the ledger entirely.
   const showRetainage = !!(retainage && (pct > 0 || retainage.held_cents > 0 || retainage.holding_cents > 0));
+  // Out-of-pocket-first (owner-directed 2026-07-31): the borrower funds the first `floorC` of rehab, so a
+  // draw is reimbursed only for the part that clears the running approved total past the floor. This
+  // mirrors the server's computeRelease so the net preview matches what will actually be recorded. 0 (no
+  // OOP-rehab exception) → reimbursable === approved and the preview is unchanged.
+  const floorC = oop && Number(oop.floor_cents) > 0 ? Number(oop.floor_cents) : 0;
+  const priorApprovedC = ledger.reduce((s, d) => s + (d.kind === 'draw' ? (Number(d.approved_cents) || 0) : 0), 0);
   const approvedC = centsOrNull(f.approved); // null when the Approved box is blank/garbage
   const feeC = centsOrNull(f.fee) || 0;       // a $0 fee is legitimate
-  const retC = Math.round((approvedC || 0) * pct / 100);
-  const net = (approvedC || 0) - feeC - retC;
+  const reimbursableC = floorC > 0
+    ? Math.max(0, (priorApprovedC + (approvedC || 0)) - floorC) - Math.max(0, priorApprovedC - floorC)
+    : (approvedC || 0);
+  const oopHeldC = (approvedC || 0) - reimbursableC; // the part of this draw that stays out of pocket
+  const retC = Math.round(reimbursableC * pct / 100);
+  const net = reimbursableC - feeC - retC;
   async function save() {
     // A release must name its draw (audit F-2) — so the ledger, retainage pool and overdue monitor all bind
     // the release to exactly one draw. The server enforces this too; guarding here gives a clean message.
@@ -2140,6 +2161,7 @@ function LedgerPanel({ appId, ledger, draws, retainage, onSaved, act, busy: pare
         <KpiTile label="Our fees" value={usd(totFee)} tone="gold" />
         <KpiTile label="Net wired to borrower" value={usd(totNet)} tone="teal" sub="released" />
         {showRetainage && <KpiTile label="Retainage held" value={usd(retainage.holding_cents)} sub={retainage.released_cents > 0 ? `released ${usd2(retainage.released_cents)}` : 'held back'} />}
+        {floorC > 0 && <KpiTile label="Out-of-pocket rehab" value={usd(floorC)} tone="gold" sub={oop && oop.remaining_cents > 0 ? `${usd2(oop.remaining_cents)} left before draws reimburse` : 'met — draws now reimburse'} />}
       </div>
 
       {showRetainage && retainage.holding_cents > 0 && (
@@ -2190,8 +2212,13 @@ function LedgerPanel({ appId, ledger, draws, retainage, onSaved, act, busy: pare
           </label>
           <label className="small">Release date<input type="date" className="input" value={f.release_date} onChange={(e) => setF({ ...f, release_date: e.target.value })} /></label>
         </div>
+        {floorC > 0 && oopHeldC > 0 && (
+          <div className="small" style={{ color: 'var(--warning)', marginTop: 8 }}>
+            {usd2(oopHeldC)} of this draw is within the borrower’s out-of-pocket rehab ({usd2(floorC)}) and won’t be reimbursed — only {usd2(reimbursableC)} is reimbursable.
+          </div>
+        )}
         <div className="row" style={{ justifyContent: 'space-between', alignItems: 'center', marginTop: 12, flexWrap: 'wrap', gap: 10 }}>
-          <div className="small">{pct > 0 ? <>Retainage held: <b>{usd2(retC)}</b> · </> : null}Borrower nets: <b style={{ fontSize: 16, color: 'var(--teal-br)' }}>{usd2(net)}</b></div>
+          <div className="small">{floorC > 0 ? <>Reimbursable: <b>{usd2(reimbursableC)}</b> · </> : null}{pct > 0 ? <>Retainage held: <b>{usd2(retC)}</b> · </> : null}Borrower nets: <b style={{ fontSize: 16, color: 'var(--teal-br)' }}>{usd2(net)}</b></div>
           <button className="btn btn-sm primary" disabled={busy || !f.sitewire_draw_id || approvedC == null || approvedC <= 0 || net < 0} onClick={save}>Record release</button>
         </div>
         {err && <div className="small" style={{ color: 'var(--bad,#b04a3f)', marginTop: 6 }}>{err}</div>}

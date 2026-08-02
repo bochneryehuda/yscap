@@ -33,6 +33,10 @@ const FIELD_LABEL = {
   requested_ir_months: 'Interest reserve (months)',
   requested_ir_amount: 'Interest reserve (amount)',
   payoff_amount: 'Payoff amount', original_purchase_price: 'Original purchase price',
+  // The payoff section (db/386 + db/267's estimated_cash_out) — named here so the
+  // Activity feed says "Lender being paid off: — → Chase" instead of a raw column.
+  payoff_lender: 'Lender being paid off', payoff_loan_number: 'Payoff loan number',
+  estimated_cash_out: 'Cash out to the borrower',
   acquisition_date: 'Date acquired', underlying_contract_price: 'Underlying contract price',
   assignment_fee: 'Assignment fee', property_type: 'Property type', loan_type: 'Loan type',
   program: 'Program', occupancy: 'Occupancy', rehab_type: 'Rehab type', term: 'Term',
@@ -40,7 +44,7 @@ const FIELD_LABEL = {
   is_assignment: 'Assignment purchase', property_address: 'Property address',
 };
 const MONEY_FIELDS = new Set(['purchase_price', 'as_is_value', 'arv', 'rehab_budget',
-  'payoff_amount', 'original_purchase_price', 'underlying_contract_price', 'assignment_fee']);
+  'payoff_amount', 'estimated_cash_out', 'original_purchase_price', 'underlying_contract_price', 'assignment_fee']);
 
 const fieldVal = (col, v) => {
   if (v == null || v === '') return '—';
@@ -61,7 +65,7 @@ function describeChanges(changes) {
   return parts.join('\n');
 }
 
-const PROGRAM_NAME = { gold: 'Gold Standard Program', standard: 'Standard Program' };
+const PROGRAM_NAME = { gold: 'Gold Standard Program', standard: 'Standard Program', silver: 'Silver Program', manual: 'Manual Program' };
 
 /* Audit actions surfaced in the feed. borrowerSafe rows show on the borrower
    feed too; the rest are staff-only. Each render() returns {verb, label}. */
@@ -141,17 +145,29 @@ async function fileActivity(appId, onlySafe) {
                'sent a message' AS verb, NULL::text AS label
           FROM messages WHERE application_id=$1
         UNION ALL
-        SELECT created_at, 'document', uploaded_by_kind, NULL,
-               (visibility='borrower' AND source_type<>'chat_attachment'),
+        SELECT d.created_at, 'document', d.uploaded_by_kind, NULL,
+               (d.visibility='borrower' AND d.source_type<>'chat_attachment'),
                -- Borrower feed ($2=true): the borrower's own action was the
                -- UPLOAD; accept/flag are staff review actions and must not read
                -- as "Borrower accepted a document". Staff feed keeps the detail.
                CASE WHEN $2::bool THEN 'uploaded a document'
-                    WHEN review_status='accepted' THEN 'accepted a document'
-                    WHEN review_status='rejected' THEN 'flagged a document for correction'
+                    WHEN d.review_status='accepted' THEN 'accepted a document'
+                    WHEN d.review_status='rejected' THEN 'flagged a document for correction'
                     ELSE 'uploaded a document' END,
-               filename
-          FROM documents WHERE application_id=$1 AND source_type<>'chat_attachment'
+               -- WHICH document, and WHICH condition it was uploaded to
+               -- (owner-directed 2026-07-31: "you should be able to see which
+               -- document the borrower uploaded, and which condition"). The
+               -- borrower feed never sees an internal label — borrower_label
+               -- first, then a borrower-audience item's own label (what their
+               -- checklist already shows), then the slot. Staff see the
+               -- internal label. A loose upload keeps just the filename.
+               d.filename || COALESCE(E'\nFor: ' || CASE WHEN $2::bool
+                     THEN COALESCE(NULLIF(ci.borrower_label,''),
+                                   CASE WHEN ci.audience IN ('borrower','both') THEN NULLIF(ci.label,'') END,
+                                   NULLIF(d.slot_label,''))
+                     ELSE COALESCE(NULLIF(ci.label,''), NULLIF(d.slot_label,'')) END, '')
+          FROM documents d LEFT JOIN checklist_items ci ON ci.id = d.checklist_item_id
+         WHERE d.application_id=$1 AND d.source_type<>'chat_attachment'
         UNION ALL
         SELECT COALESCE(cleared_at, created_at), 'condition', 'staff', NULL,
                (audience IN ('borrower','both')),

@@ -1,15 +1,16 @@
 import React from 'react';
+import { moneyStr } from '../lib/money.js';
 
 /* Money input: shows a $ prefix and comma-grouped digits while storing a plain
    numeric string in the form (so the backend still gets a number). */
 // Strip to digits + AT MOST ONE decimal point — "1.2.3" (paste, fat-finger,
 // European "1.200.000") used to render "NaN" and feed an unparseable string
 // to drafts and the pricing engine.
-function cleanMoney(v) {
-  const s = String(v).replace(/[^0-9.]/g, '');
-  const i = s.indexOf('.');
-  return i < 0 ? s : s.slice(0, i + 1) + s.slice(i + 1).replace(/\./g, '');
-}
+// THE DEFINITION MOVED to lib/money.js (2026-07-31) so the parser that decides
+// what a money string MEANS is shared with everything that reads one — this
+// component sets the portal's clean-string contract, and the Term Sheet Studio
+// hand-off has to be able to put a value back ONTO that contract.
+const cleanMoney = (v) => moneyStr(v);
 // Group the integer part with commas but PRESERVE a decimal being typed (a
 // trailing '.' and any cents) — running Number().toLocaleString() on the whole
 // string rendered 'NaN' for a lone '.' and erased the decimal point mid-entry,

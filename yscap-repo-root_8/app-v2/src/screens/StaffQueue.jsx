@@ -2,6 +2,7 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Link, useNavigate, useSearchParams } from 'react-router-dom';
 import { api, saveBlob } from '../lib/api.js';
 import { useAuth } from '../lib/auth.jsx';
+import InviteApplicant from '../components/InviteApplicant.jsx';
 
 const money = (n) => n == null ? '—' : '$' + Number(n).toLocaleString('en-US', { maximumFractionDigits: 0 });
 const addrLine = (a) => !a ? '—' : (a.oneLine || [a.street, a.city, a.state].filter(Boolean).join(', ') || '—');
@@ -530,6 +531,7 @@ export default function StaffQueue() {
             title="Pull your files from your ClickUp folder into PILOT">
             {syncing ? 'Syncing…' : '⟳ Sync my files from ClickUp'}
           </button>
+          <InviteApplicant className="btn btn-ghost btn-sm" label="Invite for a new application" />
           <button className="btn btn-gold btn-sm" onClick={() => nav('/internal/new')} title="Open a new loan file — the borrower doesn't need an account">
             + New file
           </button>

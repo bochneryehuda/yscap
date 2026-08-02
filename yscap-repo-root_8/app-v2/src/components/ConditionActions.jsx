@@ -1,5 +1,5 @@
 import React, { useEffect } from 'react';
-import { nextStep, docNextStep, canComplete } from '../lib/condition-actions.js';
+import { nextStep, docNextStep, canComplete, canDeleteDoc } from '../lib/condition-actions.js';
 import { canOverride, askOverride } from '../lib/condition-override.js';
 import { CONDITION_STATUSES, conditionStatusLabel } from '../lib/conditions-vocab.js';
 
@@ -185,21 +185,29 @@ export default function ConditionActions({
 /* THE DOCUMENT ROW's actions — same shape, one line down. Accept is the only
    prominent one; preview, download, replace, accept-and-ask-for-more, reject and
    delete all keep working from More. */
-export function DocActions({ doc, role, onReviewDoc, onDownloadDoc, onPreview, onReplace, dlBusy }) {
+export function DocActions({ doc, role, onReviewDoc, onDownloadDoc, onPreview, onReplace, dlBusy, fullscreen = false }) {
   useMenuAutoClose();
   const rs = doc.review_status || 'pending';
   const completer = canComplete(role);
   const step = docNextStep(doc, { role });
+  // In full screen the Preview button sits right next to the document (owner-directed):
+  // you're working through the file on a big screen and want to open a PDF in one
+  // click, so it comes out of the "More" menu and the menu keeps only the rest
+  // (download, replace, reject, delete…).
   return (
     <div className="cond-act-row">
       {step && (
         <button className="btn primary small" title={step.title}
           onClick={() => onReviewDoc(doc, 'accept')}>{step.label}</button>
       )}
+      {fullscreen && onPreview && (
+        <button className="btn ghost small" title="Preview without downloading"
+          onClick={() => onPreview(doc)}>Preview</button>
+      )}
       <details className="cond-more">
         <summary className="btn ghost small cond-more-btn" title="Everything else for this document">More ▾</summary>
         <div className="cond-more-menu" onClick={closeMenu}>
-          {onPreview && <button className="btn ghost small" title="Preview without downloading"
+          {!fullscreen && onPreview && <button className="btn ghost small" title="Preview without downloading"
             onClick={() => onPreview(doc)}>Preview</button>}
           <button className="btn ghost small" disabled={dlBusy === doc.id}
             onClick={() => onDownloadDoc(doc)}>{dlBusy === doc.id ? '…' : 'Download'}</button>
@@ -212,7 +220,7 @@ export function DocActions({ doc, role, onReviewDoc, onDownloadDoc, onPreview, o
           )}
           {rs !== 'rejected' && <button className="btn ghost small"
             onClick={() => onReviewDoc(doc, 'reject')}>Reject</button>}
-          {completer && <button className="btn ghost small" style={{ color: '#A32A2A' }}
+          {canDeleteDoc(role) && <button className="btn ghost small" style={{ color: '#A32A2A' }}
             title="Permanently delete — for a mistake upload (never synced to SharePoint)"
             onClick={() => onReviewDoc(doc, 'delete')}>Delete</button>}
         </div>

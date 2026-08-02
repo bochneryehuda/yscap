@@ -208,6 +208,10 @@ async function loadRollup(db, appId, { sowState = null } = {}) {
   for (const d of rollup.draws) {
     const l = ledgerByDraw.get(d.sitewire_draw_id);
     d.fee_cents = l ? l.fee_cents : 0;
+    // For a draw with a RECORDED release, use the stored (already OOP-floored) net. The fallback for a
+    // not-yet-recorded draw is a rough projection (approved − fee) and does NOT apply the out-of-pocket
+    // floor — it would need the per-draw running approved order. It self-corrects the moment the release
+    // is recorded (the `l` branch), and is stripped before any borrower sees it (borrower-draws.js).
     d.net_release_cents = l ? l.net_release_cents : Math.max(0, d.approved_cents - d.fee_cents);
     d.released = l ? l.released : false;
     d.release_date = l ? l.release_date : null;

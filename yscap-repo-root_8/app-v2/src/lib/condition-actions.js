@@ -39,6 +39,16 @@
 export const canComplete = (role) =>
   ['processor', 'admin', 'super_admin', 'underwriter', 'loan_coordinator'].includes(role);
 
+/* Who may permanently DELETE a document from a condition. The completer roles,
+   plus (owner-directed 2026-07-31) the LOAN OFFICER on the file — they could
+   only replace before, and a mistaken upload needed an admin. Also the closer,
+   who has always held sign_off_conditions server-side but was never shown the
+   button. Server-enforced in DELETE /api/staff/documents/:id; this only decides
+   which rows render the button. NEVER reuse this for sign-off/waive — an LO
+   must not complete conditions. */
+export const canDeleteDoc = (role) =>
+  canComplete(role) || role === 'loan_officer' || role === 'closer';
+
 /* A document still waiting on somebody. Anything not accepted and not rejected
    is pending — matching how the rows themselves read `review_status`, where an
    absent value means pending. */

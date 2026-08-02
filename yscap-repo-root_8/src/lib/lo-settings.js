@@ -1,0 +1,90 @@
+'use strict';
+/**
+ * lo-settings.js — per-loan-officer BUSINESS settings (owner-directed
+ * 2026-07-31). One jsonb bag per staffer (db/391), read/written through this
+ * module only, with a hard key WHITELIST: an unknown key is refused, never
+ * stored — so the bag can grow a setting at a time without ever becoming a
+ * junk drawer. Defaults live here too, so a missing row/key always reads a
+ * concrete value.
+ *
+ * Keys today:
+ *   ccBorrowerOnTitleOrder (bool, default false) — whether the officer's files
+ *     CC the borrower on the TITLE order email by default (owner-directed
+ *     2026-07-31: default is OFF; each order can still flip it per file).
+ *
+ * Adding a setting = one entry in SETTINGS_KEYS + the UI row in
+ * StaffSettings.jsx. Never bypass validate() on a write.
+ */
+
+const db = require('../db');
+
+const SETTINGS_KEYS = Object.freeze({
+  ccBorrowerOnTitleOrder: {
+    type: 'bool',
+    default: false,
+    label: 'CC my borrowers on title order emails by default',
+    help: 'Off (the default): the borrower is not looped into the title insurance order email. You can still turn it on for any single order when you place it.',
+  },
+});
+
+function coerce(spec, value) {
+  if (spec.type === 'bool') {
+    if (value === true || value === 'true' || value === 1 || value === '1') return true;
+    if (value === false || value === 'false' || value === 0 || value === '0' || value == null) return false;
+    return null; // unrecognized → refuse
+  }
+  return null;
+}
+
+/** Validate a patch {key: value}. Returns {ok, clean} or {ok:false, error}. */
+function validate(patch) {
+  const clean = {};
+  for (const [k, v] of Object.entries(patch || {})) {
+    const spec = SETTINGS_KEYS[k];
+    if (!spec) return { ok: false, error: `Unknown setting “${k}”.` };
+    const cv = coerce(spec, v);
+    if (cv === null && spec.type === 'bool') return { ok: false, error: `Setting “${k}” must be on or off.` };
+    clean[k] = cv;
+  }
+  return { ok: true, clean };
+}
+
+/** The staffer's settings, defaults filled in. Never throws (defaults on error). */
+async function getSettings(staffId, client = db) {
+  const out = {};
+  for (const [k, spec] of Object.entries(SETTINGS_KEYS)) out[k] = spec.default;
+  if (!staffId) return out;
+  try {
+    const r = await client.query(`SELECT settings FROM lo_settings WHERE staff_id=$1`, [staffId]);
+    let s = r.rows[0] && r.rows[0].settings;
+    if (typeof s === 'string') { try { s = JSON.parse(s); } catch (_) { s = null; } }
+    if (s && typeof s === 'object') {
+      for (const k of Object.keys(SETTINGS_KEYS)) {
+        const cv = coerce(SETTINGS_KEYS[k], s[k]);
+        if (s[k] != null && cv !== null) out[k] = cv;
+      }
+    }
+  } catch (_) { /* defaults stand */ }
+  return out;
+}
+
+/** Merge a validated patch into the staffer's bag (upsert). */
+async function setSettings(staffId, patch, client = db) {
+  const v = validate(patch);
+  if (!v.ok) { const e = new Error(v.error); e.status = 400; throw e; }
+  await client.query(
+    `INSERT INTO lo_settings (staff_id, settings, updated_at)
+     VALUES ($1, $2::jsonb, now())
+     ON CONFLICT (staff_id) DO UPDATE
+       SET settings = lo_settings.settings || EXCLUDED.settings, updated_at = now()`,
+    [staffId, JSON.stringify(v.clean)]);
+  return getSettings(staffId, client);
+}
+
+/** One key for one staffer (defaults when unset). */
+async function getSetting(staffId, key, client = db) {
+  const all = await getSettings(staffId, client);
+  return all[key];
+}
+
+module.exports = { SETTINGS_KEYS, validate, getSettings, setSettings, getSetting };

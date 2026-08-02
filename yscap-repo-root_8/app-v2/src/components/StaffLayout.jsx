@@ -393,6 +393,10 @@ export default function StaffLayout({ children }) {
   const canDeleteFiles = can('delete_files');
   const canPlatformSetup = can('platform_setup');
   const canViewAudit = can('view_audit_log');
+  // ONE Approvals badge = every decision queue this role can see. The pricing-
+  // gated counts (escCount/excCount) only ever poll for manage_pricing/super
+  // roles, so they stay 0 for everyone else and the sum is naturally scoped.
+  const approvalsCount = escCount + excCount + fescCount + reviewCount + myExcCount;
   const roleLabel = ROLE_LABEL[role] || role || 'Internal';
   return (
     <div className="app">
@@ -415,20 +419,27 @@ export default function StaffLayout({ children }) {
         <NavLink className="sb-link" to="/internal/workflow" title="My Workflow — every file submitted to you, in the order it arrived. Pick it up, do your part, then send it back.">
           <NavIcon name="workflow" />Workflow
           {wfCount > 0 && <span className="sb-badge">{wfCount > 99 ? '99+' : wfCount}</span>}</NavLink>
-        {/* Always visible (redesign 2026-07-24): with the old count-gated link a
-            staffer had NO way to reach their decided/denied exception history
-            once nothing was open. */}
-        <NavLink className="sb-link" to="/internal/my-exceptions" title="My exceptions — the exception requests you’ve raised, past and pending.">
-          <NavIcon name="conditions" />My exceptions
-          {myExcCount > 0 && <span className="sb-badge">{myExcCount > 99 ? '99+' : myExcCount}</span>}</NavLink>
-        <NavLink className="sb-link" to="/internal/findings-review" title="Findings to review — underwriting findings a colleague couldn’t decide and escalated to you (or your role) to advise on.">
-          <NavIcon name="conditions" />Findings to review
-          {fescCount > 0 && <span className="sb-badge">{fescCount > 99 ? '99+' : fescCount}</span>}</NavLink>
+        {/* Approvals hub (owner-directed 2026-07-31) — replaces the five separate
+            nav entries (Manual / Escalations, Exceptions, Findings to review,
+            Sync review, My exceptions) with ONE tabbed section. Visible to ALL
+            staff; the badge sums every queue this role can see (the escalation/
+            exception counts stay 0 for roles that don't poll them). */}
+        <NavLink className="sb-link" to="/internal/approvals" title="Approvals — everything waiting on a decision, in one place: manual/escalation approvals, policy exceptions, findings to review, sync reviews, and the requests you raised.">
+          <NavIcon name="conditions" />Approvals
+          {approvalsCount > 0 && <span className="sb-badge">{approvalsCount > 99 ? '99+' : approvalsCount}</span>}</NavLink>
         <NavLink className="sb-link" to="/internal/chat">
           <NavIcon name="chat" />Chat
           {unread > 0 && <span className="sb-badge">{unread > 99 ? '99+' : unread}</span>}
         </NavLink>
         <NavLink className="sb-link" to="/internal/leads"><NavIcon name="leads" />Leads</NavLink>
+        {/* The Term Sheet Generator gets its OWN nav entry, not just a tile inside
+            the suite grid (owner-directed 2026-07-30: "a term sheet generator button
+            on the left side of their screen to access the term sheet generator
+            directly so they can price out loans even when they logged in"). It is
+            the tool staff reach for most, and two clicks behind a grid is two too
+            many. Same screen, opened straight onto that tool. */}
+        <NavLink className="sb-link" to="/internal/term-sheet" title="Term Sheet Generator — price a loan and build a full term sheet without leaving PILOT. Save what you price as a named scenario and pick it up later."><NavIcon name="pricing" />Term Sheet Generator</NavLink>
+        <NavLink className="sb-link" to="/internal/investor-suite" title="Investor Suite — build a term sheet, a scope of work, a track record, or run any deal analyzer, right inside PILOT"><NavIcon name="pricing" />Investor Suite</NavLink>
 
         <div className="sb-sec">Files</div>
         <NavLink className="sb-link" to="/internal/borrowers" title="Your borrowers — invite to PILOT, reset or set a password, see last login"><NavIcon name="borrowers" />Borrowers</NavLink>
@@ -438,6 +449,7 @@ export default function StaffLayout({ children }) {
           <NavIcon name="emails" />Notifications
           {notifDraftCount > 0 && <span className="sb-badge">{notifDraftCount > 99 ? '99+' : notifDraftCount}</span>}
         </NavLink>
+        <NavLink className="sb-link" to="/internal/settings" title="My settings — how you run your business: your own defaults (e.g. whether your borrowers are CC'd on title order emails). Each officer sets their own."><NavIcon name="team" />My settings</NavLink>
         <NavLink className="sb-link" to="/internal/esign" title="E-Signatures — PILOT’s own DocuSign cockpit: every package, every signer, live"><NavIcon name="esign" />E-signatures</NavLink>
         <NavLink className="sb-link" to="/internal/orders" title="Orders — every title & insurance order across your files, and what's waiting to be classified"><NavIcon name="vendors" />Orders</NavLink>
         {canExportTapes && <NavLink className="sb-link" to="/internal/tapes" title="Data Tapes — export each capital provider's loan tape (their Excel workbook, filled with the loan's figures). One loan at a time or in bulk by provider."><NavIcon name="pipeline" />Data tapes</NavLink>}
@@ -453,10 +465,9 @@ export default function StaffLayout({ children }) {
         {(canManageTeam || canManagePricing || canPlatformSetup || canViewAudit) && <div className="sb-sec">Admin</div>}
         {canManageTeam && <NavLink className="sb-link" to="/internal/team"><NavIcon name="team" />Team</NavLink>}
         {canManagePricing && <NavLink className="sb-link" to="/internal/pricing" title="Pricing Admin Center — company-wide markup, origination & fee defaults"><NavIcon name="pricing" />Pricing</NavLink>}
-        {(canManagePricing || role === 'super_admin') && <NavLink className="sb-link" to="/internal/escalations" title="Manual / Escalations — approve pricing structured OUTSIDE the guidelines (custom LTV/LTC/ARV, below-minimum) + counter-offers, and set the manual-program defaults. NOT guaranty waivers or early sends — those are in Exceptions."><NavIcon name="pricing" />Manual / Escalations
-          {escCount > 0 && <span className="sb-badge">{escCount > 99 ? '99+' : escCount}</span>}</NavLink>}
-        {(canManagePricing || role === 'super_admin') && <NavLink className="sb-link" to="/internal/exceptions" title="Exceptions — the policy-exception register: approve or deny guaranty waivers, early term-sheet sends, one-off pricing/guideline exceptions and overrides; export for diligence. For pricing structured outside the guidelines, use Manual / Escalations."><NavIcon name="conditions" />Exceptions
-          {excCount > 0 && <span className="sb-badge">{excCount > 99 ? '99+' : excCount}</span>}</NavLink>}
+        {/* Manual / Escalations + Exceptions moved into the Approvals hub in the
+            Main group (owner-directed 2026-07-31) — their counts still poll here
+            and feed the Approvals badge. */}
         {(role === 'admin' || role === 'super_admin') && <NavLink className="sb-link" to="/internal/ai" title="AI Command Center — one place to see everything PILOT flagged, review findings, answer PILOT's questions, and teach it (training, labeling, muted alerts)">
           <NavIcon name="conditions" />AI Command Center
           {fescCount > 0 && <span className="sb-badge">{fescCount > 99 ? '99+' : fescCount}</span>}</NavLink>}
@@ -465,8 +476,6 @@ export default function StaffLayout({ children }) {
         {canPlatformSetup && <NavLink className="sb-link" to="/internal/clickup" title="ClickUp Control Center — sync health, dry-run, backfill"><NavIcon name="clickup" />ClickUp</NavLink>}
         {canPlatformSetup && <NavLink className="sb-link" to="/internal/draw-rules" title="Inspection & fee rules — virtual vs on-site and the per-partner fee schedule for draws"><NavIcon name="pipeline" />Draw rules</NavLink>}
         {canViewAudit && <NavLink className="sb-link" to="/internal/audit" title="System audit log — every action across every file & borrower"><NavIcon name="audit" />Audit log</NavLink>}
-        <NavLink className="sb-link" to="/internal/sync-reviews" title="Sync review — suspicious PILOT ⇄ ClickUp changes held for human approval before anything is rewritten"><NavIcon name="audit" />Sync review
-          {reviewCount > 0 && <span className="sb-badge">{reviewCount > 99 ? '99+' : reviewCount}</span>}</NavLink>
 
         <div className="sb-spacer" />
         <div className="sb-foot">

@@ -138,6 +138,13 @@ const CATALOG = [
   { key: 'exception_comment',     label: 'Comment on an exception',
     description: "A participant commented on a send-before-CTC or pricing exception thread.",
     category: 'conditions', audience: 'staff', forced: false, default_mode: 'automatic' },
+  // The reply TO THE REQUESTER on their OWN exception is FORCED (owner-directed
+  // 2026-07-29): when a super-admin/admin asks "why do you need this exception?"
+  // the loan officer who raised it must always hear it — this is the one exception
+  // notification they cannot turn off, because it's tied to their own request.
+  { key: 'exception_request_reply', label: 'Reply on your exception request',
+    description: "A reviewer replied on an exception YOU requested — always delivered, cannot be turned off.",
+    category: 'conditions', audience: 'staff', forced: true, default_mode: 'automatic' },
   { key: 'exception_aging',       label: 'Exceptions waiting past their review target',
     description: "Daily nudge to super-admins when open exception requests age past their review SLA.",
     category: 'conditions', audience: 'admin', forced: false, default_mode: 'automatic' },
@@ -301,8 +308,8 @@ const CATALOG = [
   { key: 'inbound_reply_failed',  label: 'Inbound email could not be delivered',
     description: "A borrower reply came in but the system could not route it (no recipients / lookup failed).",
     category: 'system', audience: 'staff', forced: false, default_mode: 'automatic' },
-  { key: 'inbound_reply_dropped', label: 'Inbound email dropped (rate limited / archived)',
-    description: "A borrower reply was dropped (rate-limited or file archived).",
+  { key: 'inbound_reply_dropped', label: 'Inbound email dropped (no one to receive it)',
+    description: "A reply arrived on a file with no active assignees and no emailable admin — recorded, but nobody could be forwarded the message.",
     category: 'system', audience: 'staff', forced: false, default_mode: 'automatic' },
   { key: 'borrower_dedup',        label: 'Duplicate borrower email flagged',
     description: "Public intake found the email belongs to another borrower profile; flag for a human to reconcile.",

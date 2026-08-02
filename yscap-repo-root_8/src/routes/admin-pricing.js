@@ -16,7 +16,7 @@ router.get('/', async (req, res) => {
   try {
     const cur = await pricingSettings.load();
     const hist = await db.query(
-      `SELECT cps.id, cps.markup_std_pct, cps.markup_gold_pct, cps.orig_std_pct, cps.orig_gold_pct,
+      `SELECT cps.id, cps.markup_std_pct, cps.markup_gold_pct, cps.markup_silver_pct, cps.orig_std_pct, cps.orig_gold_pct, cps.orig_silver_pct,
               cps.lender_fee, cps.credit_fee, cps.appraisal_fee, cps.title_fee, cps.extra_fees, cps.note,
               cps.is_current, cps.created_at, s.full_name AS updated_by_name
          FROM company_pricing_settings cps
@@ -44,7 +44,9 @@ router.put('/', async (req, res) => {
   }
   const cols = {
     markup_std_pct: numOrNull(b.markupStdPct), markup_gold_pct: numOrNull(b.markupGoldPct),
+    markup_silver_pct: numOrNull(b.markupSilverPct),
     orig_std_pct: numOrNull(b.origStdPct), orig_gold_pct: numOrNull(b.origGoldPct),
+    orig_silver_pct: numOrNull(b.origSilverPct),
     lender_fee: numOrNull(b.lenderFee), credit_fee: numOrNull(b.creditFee),
     appraisal_fee: numOrNull(b.appraisalFee), title_fee: numOrNull(b.titleFee),
     note: b.note ? String(b.note).slice(0, 300) : null,
@@ -54,6 +56,13 @@ router.put('/', async (req, res) => {
     if (k === 'note' || v == null) continue;
     if (/pct/.test(k) && (v < 0 || v > 100)) return res.status(400).json({ error: `${k} must be between 0 and 100` });
     if (/fee/.test(k) && (v < 0 || v > 1000000)) return res.status(400).json({ error: `${k} looks out of range` });
+  }
+  // Silver markup is HARD-CAPPED at 1.00% (owner-directed 2026-07-29: the note buyer's
+  // buy rate floor is the note rate minus 1 point, so spread above 1 point is never
+  // earned). The engine clamps at pricing time too; refusing here keeps the stored
+  // default honest — the Admin Center must never display a markup the engine won't use.
+  if (cols.markup_silver_pct != null && cols.markup_silver_pct > 1) {
+    return res.status(400).json({ error: 'Silver program markup is capped at 1.00% — anything above 1 point is not earned on this program.' });
   }
   // extra_fees is a jsonb column, appended after the scalar columns below.
   cols.extra_fees = JSON.stringify(extraFees);

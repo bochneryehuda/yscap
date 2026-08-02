@@ -9,6 +9,7 @@ import AddressAutocomplete from '../components/AddressAutocomplete.jsx';
 import LlcPicker from '../components/LlcPicker.jsx';
 import { US_STATES } from '../components/LlcManager.jsx';
 import { MoneyInput, PhoneInput, ZipInput, EmailInput } from '../components/FormattedInputs.jsx';
+import { moneyStr, moneyNum } from '../lib/money.js';
 import { fullNameOf } from '../lib/personName.js';
 import TermSheetStudio, {
   buildStudioState, portalLoanType, portalProgram, selectionFromSnapshot, blobToBase64, rehabTypePatch,
@@ -349,18 +350,25 @@ export default function Apply() {
   // was priced. FICO merges into personal so it also reaches the profile.
   const patchFromStudio = (f, cur) => {
     const refi = /refinance/i.test(f.dealPurpose || '');
+    /* Every money readout is normalised off the studio's DISPLAY format and back
+       onto the portal's clean-string contract (2026-07-31) — the studio holds
+       "412,500", the draft and every consumer downstream expect "412500", and a
+       bare Number() on the formatted text is NaN, which `|| 0` hides as a zero.
+       Same boundary rule as lib/scenario.js; see lib/money.js for the whole story. */
     const patch = {
       program: portalProgram(f.dealType),
       loanType: portalLoanType(f.dealPurpose),
-      asIsValue: f.asIs, arv: f.arv, rehabBudget: f.construction,
+      asIsValue: moneyStr(f.asIs), arv: moneyStr(f.arv), rehabBudget: moneyStr(f.construction),
       requestedExpFlips: f.expFlips, requestedExpHolds: f.expBrrrr, requestedExpGround: f.expGround,
-      termMonths: f.tsTerm, irMonths: f.irMonths || '0', irAmount: f.irAmount || '0',
+      termMonths: f.tsTerm, irMonths: f.irMonths || '0', irAmount: moneyStr(f.irAmount) || '0',
       isAssignment: !!f.isAssign && !refi,
     };
-    if (!refi) patch.purchasePrice = f.price;
+    if (!refi) patch.purchasePrice = moneyStr(f.price);
     if (patch.isAssignment) {
-      patch.underlyingContractPrice = f.origPrice;
-      const fee = Math.max(0, (Number(f.price) || 0) - (Number(f.origPrice) || 0));
+      patch.underlyingContractPrice = moneyStr(f.origPrice);
+      // The wholesaler's fee — 0 here silently erases it from the loan file, because
+      // the server stores purchase_price as underlying + fee.
+      const fee = Math.max(0, moneyNum(f.price) - moneyNum(f.origPrice));
       patch.assignmentFee = fee ? String(fee) : '';
     }
     // The rehab scope the studio priced → the application's Rehab type. Was
@@ -419,7 +427,7 @@ export default function Apply() {
     const s = studioRef.current && studioRef.current.snapshot();
     if (!s) { setErr('The Term Sheet Studio is still loading — one moment.'); return; }
     if (!s.ready) { setErr('Complete the required pricing fields first: ' + s.missing.join(', ')); return; }
-    if (!s.program) { setErr('Tap the Standard or Gold Standard card above to choose your product, then register.'); return; }
+    if (!s.program) { setErr('Tap the Standard, Gold Standard or Silver card above to choose your product, then register.'); return; }
     const d = s.d;
     if (!d || d.status === 'INELIGIBLE' || !(d.totalLoan > 0)) {
       setErr("This scenario isn't eligible as entered — adjust the deal above, or finish later and price it with your loan team.");
@@ -442,8 +450,9 @@ export default function Apply() {
       if (adminKey) {
         // Admin-unlocked pricing: carry the studio's fee/markup/manual knobs.
         Object.assign(overrides, {
-          markupStdPct: s.fields.tsYspStd, markupGoldPct: s.fields.tsYspGold,
-          origStdPct: s.fields.tsOrigStd, origGoldPct: s.fields.tsOrigGold,
+          markupStdPct: s.fields.tsYspStd, markupGoldPct: s.fields.tsYspGold, markupSilverPct: s.fields.tsYspSilver,
+          origStdPct: s.fields.tsOrigStd, origGoldPct: s.fields.tsOrigGold, origSilverPct: s.fields.tsOrigSilver,
+          origManualPct: s.fields.tsOrigManual,
           lenderFee: s.fields.tsFeeUW, creditFee: s.fields.tsFeeCredit,
           appraisalFee: s.fields.tsFeeAppr, titleFee: s.fields.tsFeeTitle,
           manualPricing: !!s.fields.tsManualOn,
@@ -608,13 +617,26 @@ export default function Apply() {
                   <div className="field"><label>Date acquired</label>
                     <input className="input" type="date" value={form.acquisitionDate || ''} onChange={e => set('acquisitionDate', e.target.value)} /></div>
                 </div>
+                {/* WHO holds the loan being paid off, and WHICH loan (owner-directed
+                    2026-07-31). The payoff AMOUNT alone leaves the closing attorney
+                    and the title company with nowhere to send the payoff request —
+                    these two lines are what make the payoff actionable at closing. */}
+                <div className="grid cols-2">
+                  <div className="field"><label>Lender being paid off</label>
+                    <input className="input" value={form.payoffLender || ''} onChange={e => set('payoffLender', e.target.value)}
+                      placeholder="who holds the current loan" /></div>
+                  <div className="field"><label>Their loan number</label>
+                    <input className="input" value={form.payoffLoanNumber || ''} onChange={e => set('payoffLoanNumber', e.target.value)}
+                      placeholder="the payoff lender's loan #" /></div>
+                </div>
                 <div className="grid cols-2">
                   <div className="field"><label>As-is value *</label>
                     <MoneyInput value={form.asIsValue || ''} onChange={v => set('asIsValue', v)} /></div>
                 </div>
                 <p className="muted small" style={{ marginBottom: 12 }}>
                   On a refinance we lend against the property's current (as-is) value; the payoff tells us
-                  what needs to be retired at closing{/cash/i.test(form.loanType || '') ? ' — anything above it is your cash-out' : ''}.
+                  what needs to be retired at closing{/cash/i.test(form.loanType || '') ? ' — anything above it, after closing costs, is your cash-out' : ''}.
+                  Naming the lender and their loan number lets us request the payoff letter without chasing you for it.
                 </p>
               </>
             )}
@@ -872,11 +894,11 @@ export default function Apply() {
             <p className="muted small" style={{ marginBottom: 12 }}>
               This is the live YS Term Sheet Studio, prefilled from your application — the same
               guidelines, limits and pricing as our public tool. Adjust anything, compare the
-              Standard and Gold Standard programs, choose your leverage, then tap a program card
+              Standard, Gold Standard and Silver programs, choose your leverage, then tap a program card
               and register: your loan amount, structure, cash to close, liquidity requirement and
               the signable term sheet PDF are all saved onto your loan file.
             </p>
-            <TermSheetStudio key={adminKey ? 'admin' : 'std'} ref={studioRef} prefill={studioPrefill}
+            <TermSheetStudio key={adminKey ? 'admin' : 'std'} ref={studioRef} prefill={studioPrefill} provenance="borrower_portal"
               lockedIds={STUDIO_LOCKED} onState={onStudioState} showAdmin={!!adminKey} />
           </>
         )}
@@ -905,8 +927,8 @@ export default function Apply() {
         {step === 4 && (
           <p className="muted small" style={{ marginTop: 8 }}>
             {snap && !snap.ready ? `Still needed to price: ${snap.missing.join(', ')}.`
-              : snap && !snap.program ? 'Tap the Standard or Gold Standard card above to open your product.'
-              : snap && snap.d && snap.d.totalLoan > 0 ? `Selected: ${snap.program === 'gold' ? 'Gold Standard' : 'Standard'} · ${'$' + Math.round(snap.d.totalLoan).toLocaleString('en-US')} @ ${snap.d.rate ? snap.d.rate.toFixed(2) + '%' : '—'} · cash to close ${'$' + Number(snap.d.cashToClose).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} · liquidity to show ${'$' + Number(snap.d.liquidity).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
+              : snap && !snap.program ? 'Tap the Standard, Gold Standard or Silver card above to open your product.'
+              : snap && snap.d && snap.d.totalLoan > 0 ? `Selected: ${snap.program === 'gold' ? 'Gold Standard' : snap.program === 'silver' ? 'Silver' : 'Standard'} · ${'$' + Math.round(snap.d.totalLoan).toLocaleString('en-US')} @ ${snap.d.rate ? snap.d.rate.toFixed(2) + '%' : '—'} · cash to close ${'$' + Number(snap.d.cashToClose).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} · liquidity to show ${'$' + Number(snap.d.liquidity).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
               : ''}
           </p>
         )}

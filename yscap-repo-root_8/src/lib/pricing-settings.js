@@ -13,8 +13,8 @@ const db = require('../db');
 // The exact literals the system used before this feature — the cold-cache and
 // missing-row fallback, so an unwarmed process prices identically to before.
 const SYSTEM_DEFAULTS = Object.freeze({
-  markupStdPct: 0.5, markupGoldPct: 0.5,
-  origStdPct: 1.25, origGoldPct: 1.25,
+  markupStdPct: 0.5, markupGoldPct: 0.5, markupSilverPct: 0.5,
+  origStdPct: 1.25, origGoldPct: 1.25, origSilverPct: 1.25,
   lenderFee: 2195, creditFee: 150, appraisalFee: 800,
   titleFee: null,   // null = auto-estimate per state
   // Admin-managed extra closing fees: [{ name, amount, state }]. state '' = all
@@ -45,8 +45,10 @@ function shape(row) {
   return {
     markupStdPct:  n(row.markup_std_pct, SYSTEM_DEFAULTS.markupStdPct),
     markupGoldPct: n(row.markup_gold_pct, SYSTEM_DEFAULTS.markupGoldPct),
+    markupSilverPct: n(row.markup_silver_pct, SYSTEM_DEFAULTS.markupSilverPct),
     origStdPct:    n(row.orig_std_pct, SYSTEM_DEFAULTS.origStdPct),
     origGoldPct:   n(row.orig_gold_pct, SYSTEM_DEFAULTS.origGoldPct),
+    origSilverPct: n(row.orig_silver_pct, SYSTEM_DEFAULTS.origSilverPct),
     lenderFee:     n(row.lender_fee, SYSTEM_DEFAULTS.lenderFee),
     creditFee:     n(row.credit_fee, SYSTEM_DEFAULTS.creditFee),
     appraisalFee:  n(row.appraisal_fee, SYSTEM_DEFAULTS.appraisalFee),
@@ -68,7 +70,7 @@ function extraFeesTotalForState(fees, state) {
 async function load() {
   try {
     const r = await db.query(
-      `SELECT markup_std_pct, markup_gold_pct, orig_std_pct, orig_gold_pct,
+      `SELECT markup_std_pct, markup_gold_pct, markup_silver_pct, orig_std_pct, orig_gold_pct, orig_silver_pct,
               lender_fee, credit_fee, appraisal_fee, title_fee, extra_fees
          FROM company_pricing_settings WHERE is_current LIMIT 1`);
     _cache = { at: Date.now(), val: shape(r.rows[0]) };

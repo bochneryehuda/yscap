@@ -17,6 +17,13 @@ const mail = require('../lib/email/catalog');
 const { fileReplyTo } = require('../lib/file-address');   // #68 per-file shared reply-to
 const { enqueueSitewirePush } = require('../sitewire/enqueue'); // birth push on the Request-a-draw click (self-gated)
 const { redactPII } = require('../lib/redact');
+/* A money value reaching a numeric column is PARSED, never passed through — a
+   draft written before #919 holds the Term Sheet Studio's display text
+   ("445,000") and the raw bind made the submit INSERT throw. `moneyColumn` is the
+   BIND: it answers "was a value provided?" off the raw value exactly as the
+   `b.x || null` it replaced did (so a typed "0" still stores 0.00, not NULL) and
+   only then parses. See lib/fields.js. */
+const { moneyColumn } = require('../lib/fields');
 const { serveDocument } = require('../lib/serve-document');
 const { decodeUploadBase64, safeFilename } = require('../lib/upload-bytes');
 const pricing = require('../lib/pricing');
@@ -31,6 +38,16 @@ const apprCard = require('../lib/appraisal-card');
 const apprScore = require('../lib/appraisal/scoring');
 const conditionEngine = require('../lib/conditions/engine');
 const conditionRegistry = require('../lib/conditions/field-registry');
+/* The details door speaks camelCase and the field registry speaks snake_case,
+   and `file-lock.payoffContactLockReason` is keyed on the DETAILS door's names —
+   that is where its carve-out is defined. Only the payoff contact pair needs
+   translating; every other key falls through unchanged and is therefore never
+   mistaken for a contact-only edit, which is the safe direction. Mirrors
+   `conditions/engine.js WRITE_BODY_KEY`. */
+const PAYOFF_BODY_KEY = Object.freeze({
+  payoff_lender: 'payoffLender',
+  payoff_loan_number: 'payoffLoanNumber',
+});
 const changeRequests = require('../lib/change-requests');
 const { enqueueChecklistStatusPush } = require('../clickup/enqueue');
 
@@ -45,12 +62,9 @@ const me = (req) => req.actor.id;
 // staff-granted only, symmetric (both directions stored), and audited.
 // Profile-scoped data (LLC library, track record, profile edits) deliberately
 // stays per-profile — only FILE access flows through this predicate.
-const OWN_FILE_SQL = (alias, p) => {
-  const a = alias ? alias + '.' : '';
-  return `(${a}borrower_id=${p} OR ${a}co_borrower_id=${p}` +
-    ` OR ${a}borrower_id IN (SELECT linked_borrower_id FROM borrower_profile_links WHERE borrower_id=${p})` +
-    ` OR ${a}co_borrower_id IN (SELECT linked_borrower_id FROM borrower_profile_links WHERE borrower_id=${p}))`;
-};
+// ONE definition, owned by change-requests.js so the two doors that ask "which
+// of this person's files is this about" can never disagree (fifth audit).
+const OWN_FILE_SQL = require('../lib/change-requests').OWN_FILE_SQL;
 const money = (n) => '$' + Math.round(Number(n) || 0).toLocaleString('en-US');
 async function audit(req, action, entity_type, entity_id, detail) {
   // detail lands in a jsonb column: an object serializes to valid JSON via pg, but a
@@ -81,6 +95,17 @@ function moneyField(v) {
   if (v === '' || v == null) return null;
   const n = Number(String(v).replace(/[^0-9.\-]/g, ''));
   return isFinite(n) ? n : null;
+}
+/* A free-text column: trimmed, a blank stores NULL rather than an empty string
+   (so "not stated" reads the same however the box was left), and bounded —
+   these are lender names and reference numbers, not prose.
+   Delegates to `fields.textColumn` so the CAP is a property of the column
+   rather than of this door: the same two columns were being capped at 200 here,
+   200 by the staff details door and 500 by the info-condition door, which meant
+   what a value became depended on which screen it was typed on (post-merge
+   audit 2026-07-31). */
+function textField(v, column) {
+  return require('../lib/fields').textColumn(v, column);
 }
 function stripToolAttachments(payload) {
   const raw = Array.isArray(payload && payload.attachments) ? payload.attachments : [];
@@ -245,11 +270,13 @@ router.put('/profile', async (req, res) => {
   // accepted file, whose team approves; approval writes the shared borrower row.
   const changeRequested = [];
   let ssnGated = false;
-  const anchor = (await db.query(
-    `SELECT a.id FROM applications a
-       JOIN product_registrations pr ON pr.application_id=a.id AND pr.is_current
-      WHERE (${OWN_FILE_SQL("a", "$1")}) AND a.deleted_at IS NULL
-      ORDER BY pr.created_at DESC LIMIT 1`, [me(req)])).rows[0];
+  /* ONE definition of "which file does this person's change request belong to",
+     shared with the info-condition door (fourth audit, 2026-07-31) — that door
+     was asking the per-FILE question about a row that is shared across all of
+     them, which left the original defect alive one file over. The full
+     borrower-scope fragment is passed in, so a linked profile still counts. */
+  const anchorId = await changeRequests.anchorForBorrower(me(req), db);
+  const anchor = anchorId ? { id: anchorId } : null;
   if (anchor) {
     for (const col of Object.keys(fields)) {
       if (!changeRequests.isBorrowerField(col)) continue;   // identity fields only; keep address/housing/etc. live
@@ -573,6 +600,10 @@ async function resolveEntityByName(borrowerId, name) {
 router.post('/applications', async (req, res) => {
   const b = req.body || {};
   if (!b.propertyAddress) return res.status(400).json({ error: 'propertyAddress required' });
+  // A number too big for its column is a bad request, not a 500 (see
+  // fields.applicationNumberProblem). Checked BEFORE anything is written.
+  const numProblem = require('../lib/fields').applicationNumberProblem(b);
+  if (numProblem) return res.status(400).json({ error: numProblem });
   if (b.llcId) { const o = await db.query(`SELECT 1 FROM llcs WHERE id=$1 AND borrower_id=$2`, [b.llcId, me(req)]); if (!o.rows[0]) b.llcId = null; }
   if (!b.llcId && b.entityName) { try { b.llcId = await resolveEntityByName(me(req), b.entityName); } catch (_) { /* best-effort */ } }
   // Assignment invariant (mirrors the staff create, #96): the ticked flag is the
@@ -589,8 +620,8 @@ router.post('/applications', async (req, res) => {
         is_assignment,underlying_contract_price,assignment_fee,source,raw_intake,status,submitted_at)
      VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,'portal',$22,'new',now()) RETURNING id,ys_loan_number`,
     [me(req), b.llcId || null, JSON.stringify(b.propertyAddress), b.propertyType || null, b.units || null,
-     b.program || null, require('../lib/fields').sanitizeLoanType(b.loanType), asg.purchasePrice, b.asIsValue || null,   // #95: never a program
-     b.arv || null, b.rehabBudget || null, b.loanOfficerName || null,
+     b.program || null, require('../lib/fields').sanitizeLoanType(b.loanType), asg.purchasePrice, moneyColumn(b.asIsValue),   // #95: never a program
+     moneyColumn(b.arv), moneyColumn(b.rehabBudget), b.loanOfficerName || null,
      b.rehabType || null, sqf.sqftPre, sqf.sqftPost,
      intField(b.requestedExpFlips), intField(b.requestedExpHolds), intField(b.requestedExpGround),
      asg.isAssignment, asg.underlying, asg.assignFee, JSON.stringify(redactPII(b))]);
@@ -672,7 +703,7 @@ const BORROWER_HIDDEN_APP_FIELDS = [
   'property_insurance', 'property_hoa', 'rental_income', 'appraised_rental_value', 'approx_appraised_rental_value',
   // INTERNAL pricing margin + internal valuations — a borrower may see their loan
   // structure but never OUR markup or the internal appraised figures.
-  'file_markup_std_pct', 'file_markup_gold_pct', 'actual_appraised_value', 'approx_appraised_value',
+  'file_markup_std_pct', 'file_markup_gold_pct', 'file_markup_silver_pct', 'actual_appraised_value', 'approx_appraised_value',
   // staff identities + the structural-unlock bookkeeping (owner-directed funded lock).
   'underwriter_id', 'processor_id', 'structural_unlocked_at', 'structural_unlocked_by', 'structural_unlock_reason',
   // stored card fields (currently populated elsewhere, but never leak them from here).
@@ -709,14 +740,15 @@ function stripQuoteInternal(q) {
 }
 function stripInputsInternal(inp) {
   if (!inp || typeof inp !== 'object') return inp;
-  const { markupStdPct, markupGoldPct, fico, ...rest } = inp;
+  const { markupStdPct, markupGoldPct, markupSilverPct, fico, ...rest } = inp;
   return rest;
 }
-// Make a full quoteAll bundle ({inputs, standard, gold}) borrower-safe.
+// Make a full quoteAll bundle ({inputs, standard, gold, silver}) borrower-safe.
 function borrowerSafeQuoteBundle(out) {
   if (!out || typeof out !== 'object') return out;
   return { ...out, inputs: stripInputsInternal(out.inputs),
-    standard: stripQuoteInternal(out.standard), gold: stripQuoteInternal(out.gold) };
+    standard: stripQuoteInternal(out.standard), gold: stripQuoteInternal(out.gold),
+    silver: stripQuoteInternal(out.silver) };
 }
 
 // Scrub capital-partner names out of an LLC bundle's document slots before it
@@ -851,7 +883,12 @@ router.get('/applications/:id/pricing', async (req, res) => {
     } catch (_) {}
     // Echoed back on register — a mismatch means the file's economics moved
     // underneath the open studio (409, never a silent stale re-register).
-    res.json({ current, history, quote, enginesReady: pricing.enginesReady(), econVersion: pricing.econVersionFor(f.app), manualEscalation });
+    // Term-sheet hold (owner-directed 2026-07-31) — surfaced so the studio's
+    // Download button refuses; the borrower banner uses its own safe wording.
+    let termSheetHold = null;
+    try { termSheetHold = await require('../lib/underwriting/appraisal-advisory').appraisalTermSheetHold(db, req.params.id); } catch (_) {}
+    if (termSheetHold) termSheetHold = 'Your terms are being finalized — your loan team is reviewing the appraisal. A term sheet will be available shortly.';
+    res.json({ current, history, quote, enginesReady: pricing.enginesReady(), econVersion: pricing.econVersionFor(f.app), manualEscalation, termSheetHold });
   } catch (e) { console.error('[borrower pricing]', e && e.message); res.status(500).json({ error: 'server error' }); }
 });
 
@@ -898,7 +935,7 @@ router.post('/applications/:id/pricing/register', async (req, res) => {
         code: 'econ_version_conflict',
       }, 'econ_version_conflict', { sent: String(b.econVersion).slice(0, 32) });
     }
-    const program = b.program === 'gold' ? 'gold' : 'standard';
+    const program = b.program === 'gold' ? 'gold' : b.program === 'silver' ? 'silver' : 'standard';
     const overrides = borrowerPricingOverrides(b.overrides || {});
     // A REGISTERED product is authoritative terms. A BORROWER never injects the
     // claimed-experience counts on register — they must not beat the verified
@@ -909,8 +946,8 @@ router.post('/applications/:id/pricing/register', async (req, res) => {
     delete overrides.expFlips; delete overrides.expHolds; delete overrides.expGround;
     const inputs = pricing.buildInputs(f.app, f.exp, overrides);
     // Term-sheet options (owner-directed 2026-07-22) — display/record only. A
-    // borrower self-registers Standard/Gold only (never manual), so min-interest
-    // defaults OFF here unless explicitly set.
+    // borrower self-registers Standard/Gold/Silver only (never manual), so
+    // min-interest defaults OFF here unless explicitly set.
     const rawTermOptions = (b.termOptions && typeof b.termOptions === 'object') ? b.termOptions : {};
     // Effective closing date = studio's, else the file's existing — so a re-register
     // never wipes the dates and they re-derive when the term moves.
@@ -962,6 +999,18 @@ router.post('/applications/:id/pricing/register', async (req, res) => {
       `SELECT program, total_loan, note_rate, product_label FROM product_registrations
         WHERE application_id=$1 AND is_current LIMIT 1`, [appId]);
     const prev = prevQ.rows[0] || null;
+
+    /* A quote whose numbers the file cannot RECORD is a bad request, not a 500
+       — checked before the transaction opens. See
+       product-registration.quoteStorageProblem. A borrower can't reach the admin
+       pricing zone, so this is far less likely here than on the staff door; it
+       is applied to both because the guard belongs to the ACT of registering,
+       and leaving one door out is how the money-ceiling rule needed fixing four
+       times. */
+    {
+      const storeProblem = require('../lib/product-registration').quoteStorageProblem(quote, inputs);
+      if (storeProblem) return res.status(400).json({ error: storeProblem });
+    }
 
     const client = await db.getClient();
     let regId;
@@ -1084,7 +1133,10 @@ router.post('/applications/:id/pricing/register', async (req, res) => {
       // (b) the registration does NOT need super-admin approval (owner-directed
       // 2026-07-21 — a manual-review exception is confirmed to the borrower ONLY
       // after a super-admin approves it). The team notice above always fires.
-      if (economicsChanged && !needsEscalation) {
+      // ALSO withheld while a fatal appraisal finding is open (owner-directed
+      // 2026-07-31: appraisal fatals hold off generating term sheets).
+      const apprHold = await require('../lib/underwriting/appraisal-advisory').appraisalTermSheetHold(db, appId);
+      if (economicsChanged && !needsEscalation && !apprHold) {
         try { await require('../lib/terms-notify').sendBorrowerTerms(appId, { quote, total, termMonths: inputs && inputs.term }); }
         catch (_) { /* borrower terms email is best-effort */ }
       }
@@ -1111,6 +1163,14 @@ router.post('/applications/:id/pricing/register', async (req, res) => {
     } catch (_) {}
 
     res.status(201).json({ ok: true, registrationId: regId, quote: stripQuoteInternal(quote), pendingApproval: needsEscalation });
+    // Shadow-Excel parity monitor (owner-directed 2026-07-30): background-check the
+    // registered Silver scenario (UNSTRIPPED quote) against the workbook transcription.
+    // Watch-only — a mismatch records one staff-side advisory; never blocks anything.
+    if (program === 'silver') {
+      setImmediate(() => {
+        try { require('../lib/silver-shadow-parity').monitorQuote(appId, inputs, quote).catch(() => {}); } catch (_) { /* watch-only */ }
+      });
+    }
   } catch (e) { console.error('[borrower pricing]', e && e.message); res.status(500).json({ error: 'server error' }); }
 });
 
@@ -1210,7 +1270,7 @@ router.get('/applications/:id/appraisal', async (req, res) => {
   const [comps, units, findings, photos] = await Promise.all([
     db.query(`SELECT * FROM appraisal_comparables WHERE appraisal_id=$1 ORDER BY seq`, [appr.id]),
     db.query(`SELECT * FROM appraisal_units WHERE appraisal_id=$1 ORDER BY unit_seq`, [appr.id]),
-    db.query(`SELECT id, code, severity, field, appraisal_value, file_value, title, blocks_ctc, created_at
+    db.query(`SELECT id, source, code, severity, field, appraisal_value, file_value, title, blocks_ctc, created_at
                 FROM appraisal_findings WHERE application_id=$1 AND status='open'
                ORDER BY (severity='fatal') DESC, created_at`, [appId]),
     db.query(
@@ -1224,14 +1284,20 @@ router.get('/applications/:id/appraisal', async (req, res) => {
   // as-is). A borrower must never see the lender's internal skepticism, so these codes are
   // dropped from the borrower set entirely (they stay open + visible on the staff desk).
   const SCRUTINY_CODES = new Set(['arv_defensibility', 'value_vs_comps', 'value_not_bracketed', 'asis_below_price', 'comp_split_review']);
+  // NOTE-BUYER findings (source='note_buyer' — the per-capital-partner appraisal checks, e.g.
+  // EMCAP's comp/photo/lender requirements) are STAFF-ONLY as a CLASS: their titles name a note
+  // buyer, which may never reach a borrower. Filter by SOURCE, not by code list, so a future
+  // buyer's checks are covered automatically.
+  const hiddenFromBorrower = (f) => SCRUTINY_CODES.has(f.code) || f.source === 'note_buyer';
   const open = findings.rows
-    .filter((f) => !SCRUTINY_CODES.has(f.code))
+    .filter((f) => !hiddenFromBorrower(f))
     .map((f) => ({ ...f, title: scrubText(f.title) }));
-  // A hidden scrutiny finding can still be a REAL clear-to-close blocker (asis_below_price is
-  // fatal). We must not tell the borrower their file is clear while it's actually gated — but we
-  // also can't reveal the underwriting reason. If a filtered-out finding is a live blocker, surface
-  // ONE neutral placeholder so the borrower's summary honestly shows "under review", not "clear".
-  const hiddenBlocker = findings.rows.some((f) => SCRUTINY_CODES.has(f.code) && f.severity === 'fatal' && f.blocks_ctc);
+  // A hidden scrutiny/note-buyer finding can still be a REAL clear-to-close blocker
+  // (asis_below_price and the EMCAP anchor checks are fatal). We must not tell the borrower their
+  // file is clear while it's actually gated — but we also can't reveal the underwriting reason.
+  // If a filtered-out finding is a live blocker, surface ONE neutral placeholder so the borrower's
+  // summary honestly shows "under review", not "clear".
+  const hiddenBlocker = findings.rows.some((f) => hiddenFromBorrower(f) && f.severity === 'fatal' && f.blocks_ctc);
   if (hiddenBlocker) {
     open.push({ id: 'appraisal_review', code: 'appraisal_under_review', severity: 'fatal', field: 'value',
       appraisal_value: null, file_value: null, blocks_ctc: true, created_at: null,
@@ -1369,7 +1435,7 @@ router.get('/applications/:id/checklist', async (req, res) => {
       it.tool_payload = (it.field_value === null || it.field_value === undefined) ? null : { value: it.field_value };
     }
     if (it.tool_payload && typeof it.tool_payload === 'object') {
-      const { adminPricing, markupStdPct, markupGoldPct, ...rest } = it.tool_payload; // eslint-disable-line no-unused-vars
+      const { adminPricing, markupStdPct, markupGoldPct, markupSilverPct, ...rest } = it.tool_payload; // eslint-disable-line no-unused-vars
       it.tool_payload = rest;
     }
   }
@@ -1391,14 +1457,92 @@ router.post('/applications/:id/checklist/:itemId/info', async (req, res) => {
   if (!item.field_key) return res.status(400).json({ error: 'this item is not linked to a field' });
   if ((req.body || {}).value === undefined || req.body.value === null || req.body.value === '')
     return res.status(400).json({ error: 'a value is required' });
-  // S5-03: on a REGISTERED file, an economics field answered here is a change to
-  // authoritative terms — route it through the approval sandbox instead of writing
-  // the live record. Personal/verification fields (FICO, DOB, …) are unaffected.
-  if (changeRequests.isGovernedField(item.field_key) && await changeRequests.isBorrowerLocked(req.params.id)) {
+  /* THREE GOVERNANCES MEET AT THIS DOOR, AND THE ORDER IS THE WHOLE THING
+     (fourth audit, 2026-07-31). Answering a condition may never be more
+     permissive than editing the same field directly, and it must not be
+     LESS useful either — which means composing, in this order:
+
+       1. THE FILE FREEZE, first, for a field that lives on `applications`.
+          It is the same call the staff details door makes, so what the two
+          doors do can never diverge. It has to run BEFORE the sandbox: the
+          five governed economics fields short-circuited into a change request
+          on a FROZEN file, so a borrower answering an ARV condition on a
+          WITHDRAWN loan got "ok, we've asked the team" and the team got a
+          request the approve door refuses with a 409 forever — while staff got
+          a plain 409 on the same field of the same file. A request that can
+          never be applied is worse than a refusal.
+
+       2. THE REGISTRATION SANDBOX, for a field whose value is authoritative
+          once terms exist. `applications` fields are locked per FILE; a
+          `borrowers` field is locked per PERSON, because that row is SHARED
+          and db/126's `reopen_pricing_on_fico_change` re-prices EVERY file
+          the borrower is on. Keying it per file left the original defect
+          alive one file over: with a funded, registered file A and any second
+          unregistered file B, answering the credit-score condition on B wrote
+          `borrowers.fico` LIVE and flipped A's registration stale, reopening
+          Products & Pricing on a closed loan. `anchorForBorrower` is the
+          borrower profile door's own anchor query, shared rather than
+          re-expressed, so the two doors cannot drift.
+
+       3. THE LIVE WRITE, otherwise — through `writeFieldValue`, which applies
+          the freeze again for its own callers.
+
+     `targetBorrowerId` keeps the co-borrower privacy rule (#82): a
+     co-borrower's answer is about THEM, never the primary. */
+  const govTarget = conditionRegistry.WRITE_TARGETS[item.field_key];
+  if (govTarget && govTarget.table === 'applications') {
+    const frozen = await require('../lib/file-lock').payoffContactLockReason(
+      req.params.id, { [PAYOFF_BODY_KEY[item.field_key] || item.field_key]: req.body.value }, db);
+    if (frozen) return res.status(409).json({ error: frozen });
+  }
+  const crAnchor = (govTarget && govTarget.table === 'borrowers')
+    ? await changeRequests.anchorForBorrower(me(req), db)
+    : (await changeRequests.isBorrowerLocked(req.params.id) ? req.params.id : null);
+  if (changeRequests.isChangeRequestable(item.field_key) && crAnchor) {
     try {
-      const cr = await changeRequests.openRequest(req.params.id, item.field_key, req.body.value,
-        { reason: req.body.reason || null, requesterKind: 'borrower', requesterId: me(req) });
-      if (!cr.unchanged) await notifyTeamOfChangeRequests(req.params.id, [cr]);
+      const cr = await changeRequests.openRequest(crAnchor, item.field_key, req.body.value,
+        { reason: req.body.reason || null, requesterKind: 'borrower', requesterId: me(req), targetBorrowerId: me(req) });
+      if (!cr.unchanged) await notifyTeamOfChangeRequests(crAnchor, [cr]);
+      /* THE CONDITION IS ANSWERED ONLY WHEN THE ANSWER IS ON THE FILE — i.e.
+         when the borrower CONFIRMED the value already recorded (`unchanged`).
+         A pending request is not an answer yet (fifth audit, 2026-07-31).
+
+         The previous cut marked it `received` either way, which traded one bug
+         for a worse one: nothing moves the item back when a request is
+         REJECTED, so the condition stayed green with the refused number stored
+         on it — and `signOffGate` has no gate for an info field, so a processor
+         could sign off a condition whose recorded answer contradicts the live
+         record. `received` had already gone to ClickUp too, with nothing to
+         push back. Leaving it outstanding while the team decides is the
+         conservative half, and an approval writes the value, after which the
+         borrower's confirm marks it answered.
+
+         The `unchanged` case is the one that genuinely needed fixing and still
+         is: it used to do literally nothing — 200 "ok", no request, no audit
+         row, no status change — so the borrower answered correctly and the item
+         never left their list. */
+      if (cr.unchanged) {
+        await db.query(
+          `UPDATE checklist_items SET status='received', tool_payload=$2, updated_at=now() WHERE id=$1`,
+          [req.params.itemId, JSON.stringify({
+            infoField: item.field_key, value: req.body.value,
+            submittedAt: new Date().toISOString(), confirmedExisting: true,
+          })]);
+        enqueueChecklistStatusPush(req.params.itemId).catch(() => {});
+        // …and TELL the team, which the live-write path below always does. A
+        // confirmation that reaches nobody is the same silence in a new place.
+        try {
+          const ctx = await notify.fileContext(req.params.id);
+          await notify.notifyAppStaff(req.params.id, {
+            type: 'tool_submitted',
+            title: `The borrower confirmed "${item.borrower_label || item.label}"`,
+            body: `${ctx ? ctx.label : 'A file'} — the value already on file was confirmed; nothing changed.`,
+            meta: (ctx && ctx.meta) || undefined, applicationId: req.params.id,
+          });
+        } catch (_) { /* best-effort */ }
+      }
+      await audit(req, 'submit_info_condition', 'checklist_item', req.params.itemId,
+        { fieldKey: item.field_key, locked: true, changeRequested: !cr.unchanged });
       return res.json({ ok: true, locked: true, changeRequested: !cr.unchanged, field: item.field_key });
     } catch (e) {
       return res.status(e.status || 400).json({ error: e.message });
@@ -1934,6 +2078,30 @@ router.post('/applications/:id/complete-fields', async (req, res) => {
       }
       if (k === 'loan_type') v = require('../lib/fields').sanitizeLoanType(v);   // #95: never a program
       appVals.push(v); appSets.push(`${k}=$${appVals.length}`); appKeys.push(k);
+    }
+    // Property address (owner-directed invite flow): when a staffer starts a file
+    // from JUST the borrower's email, the borrower fills in the subject property
+    // themselves right here. It is a STRUCTURED object (not a scalar), so it is
+    // handled separately from the fields above. property_address is NOT a pricing
+    // input, so it does not reopen the product-pricing condition. On a LOCKED
+    // (registered) file the address is left to the loan team — a post-registration
+    // address change is a staff action, never a self-serve completeness edit —
+    // so it is simply ignored here (never a 500).
+    if (!locked && b.property_address && typeof b.property_address === 'object' && !Array.isArray(b.property_address)) {
+      const pa = { ...b.property_address };
+      const hasContent = ['oneLine', 'line1', 'street', 'city', 'state', 'zip'].some((k) => String(pa[k] || '').trim());
+      if (hasContent) {
+        // Ensure a display one-line exists even if the client only sent parts; the
+        // boot address-heal + the ClickUp geocode canonicalize it further.
+        if (!String(pa.oneLine || '').trim()) {
+          pa.oneLine = [
+            [pa.line1 || pa.street, pa.unit].filter(Boolean).join(' '),
+            pa.city,
+            [pa.state, pa.zip].filter(Boolean).join(' '),
+          ].filter(Boolean).join(', ');
+        }
+        appVals.push(JSON.stringify(pa)); appSets.push(`property_address=$${appVals.length}`); appKeys.push('property_address');
+      }
     }
     // Couple units to a live property_type change. The completeness panel doesn't
     // collect units, so a single-family type must still auto-fill "1 unit" and a
@@ -2571,6 +2739,12 @@ router.post('/documents', async (req, res) => {
     // A verified LLC's document set is locked — staff verified it as-is.
     if (o.rows[0].is_verified) return res.status(409).json({ error: 'this LLC is verified — ask your loan team to unlock it before replacing documents' });
   }
+  // TERM SHEETS ARE HELD while a fatal appraisal finding is open (owner-directed
+  // 2026-07-31) — same gate as the staff attach door. Borrower-safe wording.
+  if (b.docKind === 'term_sheet' && b.applicationId) {
+    const hold = await require('../lib/underwriting/appraisal-advisory').appraisalTermSheetHold(db, b.applicationId);
+    if (hold) return res.status(422).json({ error: 'Your terms are being finalized — your loan team is reviewing the appraisal. A term sheet will be available shortly.', code: 'appraisal_hold' });
+  }
   // Term sheets auto-attach to the Products & Pricing register condition as a
   // document slot (owner-directed #139): the registered term sheet saves straight
   // into that condition, not just as a loose file — unless the caller already
@@ -2616,8 +2790,13 @@ router.post('/documents', async (req, res) => {
   // the previous term sheet so exactly one is current on the file.
   const docKind = b.docKind === 'term_sheet' ? 'term_sheet' : null;
   // Optional slot: a condition holds several coexisting documents, each in its
-  // own named slot. Re-uploading a slot supersedes only that slot's versions.
-  const slot = b.slot ? String(b.slot).trim().slice(0, 80) : null;
+  // own named slot. Every slot keeps EVERY document — a plain add never replaces.
+  let slot = b.slot ? String(b.slot).trim().slice(0, 80) : null;
+  // On a plain add, keep the label unique among the item's current documents so
+  // two never display under one identical label (mirror of the staff route).
+  if (slot && b.checklistItemId && !b.replaceDocumentId) {
+    slot = await require('../lib/slot-label').uniqueSlotLabel(b.checklistItemId, slot);
+  }
   // Idempotency (#87): a double-submitted upload (React double-invoke, a drop
   // firing twice, a client retry) must not create a second document row + a
   // second "New document uploaded" email. Collapse a byte-identical re-upload to
@@ -2647,13 +2826,16 @@ router.post('/documents', async (req, res) => {
       [b.applicationId, r.rows[0].id]);
   }
   if (b.checklistItemId) {
-    // A re-upload supersedes the borrower's prior versions so a rejected/old
-    // document never stays part of the file. With a slot (or an explicit
-    // replaceDocumentId), only THAT slot's versions are superseded — the
-    // condition's other documents coexist. Documents dropped STRAIGHT on a
-    // track-record card (doc_kind='track_record_doc') attach to the same
-    // request condition but are line-item evidence — a condition-row upload
-    // must never supersede them off the card.
+    // EVERY document slot keeps EVERY document (owner-directed): a plain ADD never
+    // deletes what's already there. Only an EXPLICIT replace (replaceDocumentId,
+    // the borrower clicked "Replace" on one document) supersedes — and only that
+    // one document, never its siblings or the whole slot. This is the borrower
+    // mirror of the staff fix for the "upload a 2nd document and the 1st
+    // disappears" bug: the old blanket supersede matched every current document on
+    // the condition whenever the slot was null/collided or the same fixed slot was
+    // re-filled, so a second upload wiped the first. Documents dropped straight on
+    // a track-record card (doc_kind='track_record_doc') were already spared and
+    // stay so.
     if (b.replaceDocumentId) {
       await db.query(
         `UPDATE documents SET is_current=false,
@@ -2661,14 +2843,6 @@ router.post('/documents', async (req, res) => {
           WHERE id=$1 AND checklist_item_id=$2 AND borrower_id=$3`,
         [b.replaceDocumentId, b.checklistItemId, me(req)]);
     }
-    await db.query(
-      `UPDATE documents SET is_current=false,
-          review_status=CASE WHEN review_status IN ('pending','rejected') THEN 'superseded' ELSE review_status END
-        WHERE checklist_item_id=$1 AND borrower_id=$2 AND id<>$3 AND is_current=true
-          AND COALESCE(doc_kind,'') <> 'track_record_doc'
-          AND ($4::text IS NOT NULL OR $5::uuid IS NULL)
-          AND ($4::text IS NULL OR slot_label IS NOT DISTINCT FROM $4)`,
-      [b.checklistItemId, me(req), r.rows[0].id, slot, b.replaceDocumentId || null]);
     // S2-09: only a BORROWER-FACING item may be flipped by a borrower — never a
     // staff-only condition (the id is borrower-supplied, so ownership alone is not
     // enough). Mirrors the audience guard on the tool/info endpoints.
@@ -3350,6 +3524,14 @@ router.post('/drafts/:id/submit', async (req, res) => {
     return res.status(409).json({ error: 'already submitted', applicationId: d.rows[0].submitted_application_id });
   const b = { ...(d.rows[0].data || {}), ...(req.body || {}) };
   if (!b.propertyAddress) return res.status(400).json({ error: 'propertyAddress required' });
+  /* A number too big for its column is a bad request, not a 500 (see
+     fields.applicationNumberProblem). This is the door the audit reproduced it
+     on: an oversized payoff amount made SUBMIT answer "server error", leaving
+     the borrower with a finished application they could not file and nothing
+     naming the box at fault. Checked on the MERGED body (draft + this request),
+     which is what actually gets bound, and before any write. */
+  const numProblem = require('../lib/fields').applicationNumberProblem(b);
+  if (numProblem) return res.status(400).json({ error: numProblem });
   // Only accept an LLC the borrower actually owns.
   if (b.llcId) { const o = await db.query(`SELECT 1 FROM llcs WHERE id=$1 AND borrower_id=$2`, [b.llcId, me(req)]); if (!o.rows[0]) b.llcId = null; }
   // A typed-but-never-picked entity name still links a real profile LLC.
@@ -3399,19 +3581,36 @@ router.post('/drafts/:id/submit', async (req, res) => {
         is_assignment,underlying_contract_price,assignment_fee,
         term,requested_ir_months,
         requested_exp_reo,payoff_amount,original_purchase_price,acquisition_date,
+        payoff_lender,payoff_loan_number,
         requested_ir_amount,
         source,raw_intake,status,submitted_at)
-     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$24,$25,$26,$27,$28,$29,$30,'portal',$23,'new',now())
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$24,$25,$26,$27,$28,$29,$30,$31,$32,'portal',$23,'new',now())
      RETURNING id,ys_loan_number`,
     [me(req), b.llcId || null, JSON.stringify(b.propertyAddress), b.propertyType || null, b.units || null,
-     b.program || null, require('../lib/fields').sanitizeLoanType(b.loanType), asg.purchasePrice, b.asIsValue || null,   // #95: never a program
-     b.arv || null, b.rehabBudget || null, officerId, b.loanOfficerName || null,
+     b.program || null, require('../lib/fields').sanitizeLoanType(b.loanType), asg.purchasePrice, moneyColumn(b.asIsValue),   // #95: never a program
+     moneyColumn(b.arv), moneyColumn(b.rehabBudget), officerId, b.loanOfficerName || null,
      b.rehabType || null, sqf.sqftPre, sqf.sqftPost,
      intField(b.requestedExpFlips), intField(b.requestedExpHolds), intField(b.requestedExpGround),
      asg.isAssignment, asg.underlying, asg.assignFee, JSON.stringify(redactPII(b)),
      b.termMonths ? String(b.termMonths) : null, intField(b.irMonths),
      intField(b.requestedExpReo), moneyField(b.payoffAmount), moneyField(b.originalPurchasePrice),
      require('../lib/fields').normalizeTypedDate(b.acquisitionDate),   // typed '26' resolves to 2026; garbage never persists
+     /* ORDER MATTERS AND IT BIT US (audit-found 2026-07-31). These three values
+        must sit in the SAME order as the columns above — payoff_lender,
+        payoff_loan_number, requested_ir_amount. The first cut inserted the two
+        new COLUMNS here but APPENDED their values to the end of the array, so
+        every placeholder from $30 on shifted by two: the interest-reserve amount
+        landed in payoff_lender, the lender's name in payoff_loan_number, and the
+        payoff LOAN NUMBER — routinely alphanumeric — in requested_ir_amount,
+        which is a numeric(14,2) AND a frozen-engine pricing input. An
+        alphanumeric loan number made the whole submission fail with Postgres
+        22P02; an all-digit one silently became a multi-million-dollar financed
+        interest reserve. Add a column here only by adding its value in the same
+        position, and re-run scripts/test-payoff-submit-db.js, which now submits a
+        real application and reads every one of these columns back. */
+     // WHO holds the loan being paid off and WHICH loan (db/386). Free text,
+     // trimmed to null so a blank box never stores an empty string.
+     textField(b.payoffLender, 'payoff_lender'), textField(b.payoffLoanNumber, 'payoff_loan_number'),
      moneyField(b.irAmount)]);
   const appId = ins.rows[0].id;
   // If the borrower linked an LLC, ensure its document requirements exist.
@@ -3805,3 +4004,7 @@ module.exports.generateLlcChecklist = generateLlcChecklist;
 module.exports.trackRecordErrors = trackRecordErrors;
 module.exports.trackRecordCols = trackRecordCols;
 module.exports.trackRecordMissing = trackRecordMissing;
+// Exposed so a test can RUN this door's text helper rather than regex the source
+// for its name — a source regex passes even when the helper has stopped
+// delegating, which is exactly how two defects in this series stayed hidden.
+module.exports._internals = { textField };

@@ -101,7 +101,12 @@ const REGISTRY = Object.freeze([
   pull({ key: 'max_total_loan', encompassFieldId: 'CX.MAXTOTALLOAN', type: 'money', category: 'sizing', compare: 'money', our: 'column:loan_amount (Encompass second copy of the total)', note: 'Max/total loan — must equal our total loan amount' }),
   pull({ key: 'final_initial_loan', encompassFieldId: 'CX.FINALINITIALLOAN', type: 'money', category: 'sizing', compare: 'money', our: 'quote:initialAdvance = loan_amount − financed_rehab − financed_reserve', note: 'Final initial advance — compute-only on our side' }),
   pull({ key: 'rehab_budget', encompassFieldId: 'CX.REHABBUDGET', type: 'money', category: 'rehab', compare: 'money', our: 'column:rehab_budget (+ SOW total)', note: 'Rehab / construction budget' }),
-  pull({ key: 'financed_rehab_budget', encompassFieldId: 'CX.FINANCEDREHABBUDGET', type: 'money', category: 'rehab', compare: 'money', our: 'derive(financed rehab = rehab_budget today; modelled distinct for future out-of-pocket rehab)', note: 'Financed portion of rehab' }),
+  pull({ key: 'financed_rehab_budget', encompassFieldId: 'CX.FINANCEDREHABBUDGET', type: 'money', category: 'rehab', compare: 'money', our: 'derive(financed rehab = quote:rehabHoldback; equals rehab_budget unless the OOP-rehab exception was approved)', note: 'Financed portion of rehab' }),
+  // Out-of-pocket rehab (owner-authorized 2026-07-31): the rehab NOT financed
+  // (rehab_budget − financed holdback). $0 on nearly every file, so zeroMeansNone so a
+  // blank-our-side vs 0-Encompass never reads as "no data to compare". READ-ONLY like
+  // every entry — PILOT never writes to Encompass.
+  pull({ key: 'oop_rehab', encompassFieldId: 'CX.OUTOFPOCKETREHAB', type: 'money', category: 'rehab', compare: 'money', zeroMeansNone: true, our: 'derive(rehab_budget − quote:rehabHoldback)', note: 'Out-of-pocket rehab (borrower-funded; 0 unless the OOP-rehab exception was approved)' }),
 
   // ── Purchase / assignment / cost (money) ──────────────────────────────────
   pull({ key: 'purchase_price', encompassFieldId: '136', loanPath: 'purchasePriceAmount', type: 'money', category: 'loan', compare: 'money', our: 'column:purchase_price', note: 'Real final purchase price (build-spec §5). NOTE: the discovery doc read 136/purchasePriceAmount as the EFFECTIVE price on assignment deals — confirm which the tenant populates before relying on this on an assignment file' }),

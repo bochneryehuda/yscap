@@ -10,24 +10,55 @@ const N = (x) => Number(x || 0) || 0;
 
 /**
  * Split an approved draw into fee, retainage held, and the borrower's net release.
- *   net_release = approved − fee − retainage_held ;  retainage_held = round(approved × pct/100)
+ *   net_release = reimbursable − fee − retainage_held ;  retainage_held = round(reimbursable × pct/100)
+ *
+ * Out-of-pocket-first (owner-directed 2026-07-31 — the OOP-rehab exception): the first
+ * `oopFloorCents` of CUMULATIVE approved rehab across ALL draws is the borrower's own money
+ * and can never be reimbursed — "if the first $10,000 is out of pocket … the first $10,000 he
+ * puts in cannot be reimbursed, only the next $10,000 can." `priorApprovedCents` is the approved
+ * rehab already recorded on earlier draws for this file; the REIMBURSABLE part of THIS draw is
+ * only what pushes the running approved total past the floor. When `oopFloorCents` is 0 (no
+ * exception — the default), reimbursable === approved and every returned field is byte-identical
+ * to the pre-exception behavior. Fee + retainage apply to the reimbursable amount, so a fully
+ * out-of-pocket draw releases nothing (and carries no retainage).
+ *
  * Guards: amounts are non-negative integer cents; pct clamped to [0,100]; a fee that would drive
  * the net negative is reported (never silently). Returns the breakdown + any violation.
  */
-function computeRelease({ approvedCents, feeCents = 0, retainagePct = 0 } = {}) {
+function computeRelease({ approvedCents, feeCents = 0, retainagePct = 0, oopFloorCents = 0, priorApprovedCents = 0 } = {}) {
   const approved = Math.max(0, Math.round(N(approvedCents)));
   const fee = Math.max(0, Math.round(N(feeCents)));
   const pct = Math.min(100, Math.max(0, N(retainagePct)));
-  const retainage_held_cents = Math.round(approved * (pct / 100));
-  const net_release_cents = approved - fee - retainage_held_cents;
+  const floor = Math.max(0, Math.round(N(oopFloorCents)));
+  const prior = Math.max(0, Math.round(N(priorApprovedCents)));
+  // The reimbursable slice of THIS draw = the amount of cumulative approved that clears the floor
+  // during this draw. floor=0 → (prior+approved) − prior === approved, so nothing changes.
+  const reimbursable_cents = Math.max(0, (prior + approved) - floor) - Math.max(0, prior - floor);
+  const oop_held_cents = approved - reimbursable_cents; // stays out of pocket (never reimbursed)
+  const retainage_held_cents = Math.round(reimbursable_cents * (pct / 100));
+  const net_release_cents = reimbursable_cents - fee - retainage_held_cents;
+  const ok = net_release_cents >= 0;
+  let violation = null;
+  if (!ok) {
+    if (floor > 0 && reimbursable_cents === 0) {
+      violation = `this draw is within the borrower's out-of-pocket rehab of ${usd(floor)} — there is nothing to reimburse yet, so a fee can't be taken from it`;
+    } else if (floor > 0) {
+      violation = `fee ${usd(fee)} + retainage ${usd(retainage_held_cents)} exceed the ${usd(reimbursable_cents)} reimbursable on this draw (the first ${usd(floor)} of rehab is out of pocket) — net release would be negative`;
+    } else {
+      violation = `fee ${usd(fee)} + retainage ${usd(retainage_held_cents)} exceed the ${usd(approved)} approved — net release would be negative`;
+    }
+  }
   return {
     gross_cents: approved,
+    reimbursable_cents,
+    oop_held_cents,
+    oop_floor_cents: floor,
     fee_cents: fee,
     retainage_pct: pct,
     retainage_held_cents,
     net_release_cents,
-    ok: net_release_cents >= 0,
-    violation: net_release_cents < 0 ? `fee ${usd(fee)} + retainage ${usd(retainage_held_cents)} exceed the ${usd(approved)} approved — net release would be negative` : null,
+    ok,
+    violation,
   };
 }
 

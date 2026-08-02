@@ -126,6 +126,13 @@ function call(server, method, path, token, body) {
     const ctcSubmit = await call(server, 'POST', `/api/staff/applications/${app2}/workflow/submit`, loT, { submissionType: 'clear_to_close' });
     assert(ctcSubmit.status === 200, 'submitted the file for clear-to-close');
     const ctcItem = (await db.query(`SELECT id FROM workflow_items WHERE application_id=$1 AND submission_type='clear_to_close' AND status IN ('open','in_progress')`, [app2])).rows[0].id;
+    // The conditions engine attaches items to every file on its own (the flood
+    // certificate on every file per db/374, USPS address verification), and an open
+    // REQUIRED condition refuses the move. This block is about the RETURN OUTCOME
+    // driving the status, so clear whatever the engine attached and measure that.
+    await db.query(
+      `UPDATE checklist_items SET status='satisfied', signed_off_at=now()
+        WHERE application_id=$1 AND status <> 'satisfied'`, [app2]);
     const ret = await call(server, 'POST', `/api/staff/workflow/${ctcItem}/return`, procT, { outcomeLabel: 'Finished CTC' });
     assert(ret.status === 200 && ret.body.status === 'clear_to_close', 'returning "Finished CTC" drove the file to clear-to-close');
     const st = (await db.query(`SELECT status FROM applications WHERE id=$1`, [app2])).rows[0].status;

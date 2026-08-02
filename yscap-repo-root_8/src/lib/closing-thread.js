@@ -320,15 +320,26 @@ async function releaseClaim(msgId) {
 }
 
 /** Record inbound activity on the chain (an email, and any documents it carried). */
-async function noteInbound(threadId, { docs = 0 } = {}) {
+/**
+ * Record inbound activity on a chain.
+ *
+ * `countMessage` exists because a message with a TRANSIENT save failure is
+ * deliberately left un-marked so Resend redelivers it (see file-inbox), and this
+ * runs once per delivery. Counting the MESSAGE every time inflated `inbound_count`
+ * ("4 received" for one email retried 3 times). `docs_count` must still accumulate
+ * each pass — the content-hash dedupe means every pass adds only the documents that
+ * newly landed — so only the message tally is gated: incremented once, on the pass
+ * that finally handles the message (the terminal, marker-setting pass).
+ */
+async function noteInbound(threadId, { docs = 0, countMessage = true } = {}) {
   if (!threadId) return;
   try {
     await db.query(
       `UPDATE closing_threads
-          SET inbound_count = inbound_count + 1,
+          SET inbound_count = inbound_count + $3,
               docs_count = docs_count + $2,
               last_activity_at = now(), updated_at = now()
-        WHERE id = $1`, [threadId, Math.max(0, Number(docs) || 0)]);
+        WHERE id = $1`, [threadId, Math.max(0, Number(docs) || 0), countMessage ? 1 : 0]);
   } catch (_) { /* best-effort */ }
 }
 

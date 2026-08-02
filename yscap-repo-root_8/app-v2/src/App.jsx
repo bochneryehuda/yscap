@@ -31,10 +31,8 @@ import StaffApplication from './screens/StaffApplication.jsx';
 import StaffTeam from './screens/StaffTeam.jsx';
 import StaffConditionStudio from './screens/StaffConditionStudio.jsx';
 import StaffCompanyPricing from './screens/StaffCompanyPricing.jsx';
-import StaffEscalations from './screens/StaffEscalations.jsx';
-import StaffExceptions from './screens/StaffExceptions.jsx';
-import StaffMyExceptions from './screens/StaffMyExceptions.jsx';
-import StaffFindingEscalations from './screens/StaffFindingEscalations.jsx';
+import StaffApprovals from './screens/StaffApprovals.jsx';
+import StaffSettings from './screens/StaffSettings.jsx';
 import StaffTrainingProposals from './screens/StaffTrainingProposals.jsx';
 import StaffLabelingConsole from './screens/StaffLabelingConsole.jsx';
 import StaffAiAdminInbox from './screens/StaffAiAdminInbox.jsx';
@@ -47,6 +45,7 @@ import StaffLeadDetail from './screens/StaffLeadDetail.jsx';
 import StaffBorrowers from './screens/StaffBorrowers.jsx';
 import StaffEmails from './screens/StaffEmails.jsx';
 import StaffOrders from './screens/StaffOrders.jsx';
+import StaffInvestorSuite from './screens/StaffInvestorSuite.jsx';
 import StaffBorrowerDetail from './screens/StaffBorrowerDetail.jsx';
 import StaffBorrowerView from './screens/StaffBorrowerView.jsx';
 import StaffVendors from './screens/StaffVendors.jsx';
@@ -61,7 +60,6 @@ import StaffFileDraws from './screens/StaffFileDraws.jsx';
 import StaffDrawRules from './screens/StaffDrawRules.jsx';
 import StaffTapes from './screens/StaffTapes.jsx';
 import StaffAuditLog from './screens/StaffAuditLog.jsx';
-import SyncReviews from './screens/SyncReviews.jsx';
 import EsignDashboard from './screens/EsignDashboard.jsx';
 import StaffNotificationCenter from './screens/StaffNotificationCenter.jsx';
 
@@ -98,6 +96,17 @@ function Fallback() {
 function LegacyStaffRedirect() {
   const loc = useLocation();
   return <Navigate to={loc.pathname.replace(/^\/staff/, '/internal') + loc.search} replace />;
+}
+
+/* Old standalone approval routes → the Approvals hub (owner-directed 2026-07-31),
+   PRESERVING the incoming query string — StaffExceptions deep-links carry ?app=<id>
+   (notification emails link them) — then appending the hub tab. Mirrors the
+   /internal/training → /internal/ai redirect pattern, plus the query carry-over. */
+function RedirectWithQuery({ to, tab }) {
+  const loc = useLocation();
+  const merged = new URLSearchParams(loc.search);
+  merged.set('tab', tab);
+  return <Navigate to={`${to}?${merged.toString()}`} replace />;
 }
 
 export default function App() {
@@ -149,10 +158,17 @@ export default function App() {
           <Route path="/internal/team" element={<StaffPrivate><StaffTeam /></StaffPrivate>} />
           <Route path="/internal/conditions" element={<StaffPrivate><StaffConditionStudio /></StaffPrivate>} />
           <Route path="/internal/pricing" element={<StaffPrivate><StaffCompanyPricing /></StaffPrivate>} />
-          <Route path="/internal/escalations" element={<StaffPrivate><StaffEscalations /></StaffPrivate>} />
-          <Route path="/internal/exceptions" element={<StaffPrivate><StaffExceptions /></StaffPrivate>} />
-          <Route path="/internal/my-exceptions" element={<StaffPrivate><StaffMyExceptions /></StaffPrivate>} />
-          <Route path="/internal/findings-review" element={<StaffPrivate><StaffFindingEscalations /></StaffPrivate>} />
+          {/* Approvals hub — every queue waiting on a decision, in one tabbed section
+              (owner-directed 2026-07-31). Embeds the escalation/exception/finding/
+              sync-review/my-request screens unchanged. */}
+          <Route path="/internal/approvals" element={<StaffPrivate><StaffApprovals /></StaffPrivate>} />
+          <Route path="/internal/settings" element={<StaffPrivate><StaffSettings /></StaffPrivate>} />
+          {/* Old scattered approval routes now redirect into the hub, keeping their
+              query string so deep links (?app=<id>) still land on the right card. */}
+          <Route path="/internal/escalations" element={<RedirectWithQuery to="/internal/approvals" tab="escalations" />} />
+          <Route path="/internal/exceptions" element={<RedirectWithQuery to="/internal/approvals" tab="exceptions" />} />
+          <Route path="/internal/my-exceptions" element={<RedirectWithQuery to="/internal/approvals" tab="mine" />} />
+          <Route path="/internal/findings-review" element={<RedirectWithQuery to="/internal/approvals" tab="findings" />} />
           {/* AI Command Center — the one hub for everything AI (owner-directed 2026-07-24). */}
           <Route path="/internal/ai" element={<StaffPrivate><StaffAiCenter /></StaffPrivate>} />
           {/* Old scattered AI routes now redirect into the hub (keeps emails/bookmarks working). */}
@@ -166,6 +182,12 @@ export default function App() {
           <Route path="/internal/leads/:id" element={<StaffPrivate><StaffLeadDetail /></StaffPrivate>} />
           <Route path="/internal/emails" element={<StaffPrivate><StaffEmails /></StaffPrivate>} />
           <Route path="/internal/orders" element={<StaffPrivate><StaffOrders /></StaffPrivate>} />
+          {/* Investor Suite — every marketing tool (term sheet, rehab budget, analyzers) inside PILOT. */}
+          <Route path="/internal/investor-suite" element={<StaffPrivate><StaffInvestorSuite /></StaffPrivate>} />
+          {/* Same screen, opened straight onto the Term Sheet Studio — the owner's
+              direct left-nav entry (2026-07-30). One screen, so the scenario bar and
+              the saved-count badges behave identically either way in. */}
+          <Route path="/internal/term-sheet" element={<StaffPrivate><StaffInvestorSuite initialTool="term-sheet" /></StaffPrivate>} />
           <Route path="/internal/borrowers" element={<StaffPrivate><StaffBorrowers /></StaffPrivate>} />
           <Route path="/internal/borrowers/:id" element={<StaffPrivate><StaffBorrowerDetail /></StaffPrivate>} />
           {/* Borrower view — pick a borrower and see PILOT as they see it. */}
@@ -181,7 +203,7 @@ export default function App() {
           <Route path="/internal/draw-rules" element={<StaffPrivate><StaffDrawRules /></StaffPrivate>} />
           <Route path="/internal/tapes" element={<StaffPrivate><StaffTapes /></StaffPrivate>} />
           <Route path="/internal/audit" element={<StaffPrivate><StaffAuditLog /></StaffPrivate>} />
-          <Route path="/internal/sync-reviews" element={<StaffPrivate><SyncReviews /></StaffPrivate>} />
+          <Route path="/internal/sync-reviews" element={<RedirectWithQuery to="/internal/approvals" tab="sync" />} />
           <Route path="/internal/esign" element={<StaffPrivate><EsignDashboard /></StaffPrivate>} />
           <Route path="/internal/notifications" element={<StaffPrivate><StaffNotificationCenter /></StaffPrivate>} />
 

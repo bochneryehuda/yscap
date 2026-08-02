@@ -712,7 +712,27 @@ const RB = (function(){
   // nominatim/smarty/google proxy every other address field on the site uses),
   // so the rehab budget always autocompletes + verifies addresses.
   function maybeAutocomplete(){ const inp=document.getElementById("f-address"); if(!inp) return;
-    if(window.google&&google.maps&&google.maps.places){ try{ const ac=new google.maps.places.Autocomplete(inp,{types:["address"]}); ac.addListener("place_changed",()=>{ const p=ac.getPlace(); S.address=(p&&p.formatted_address)||inp.value; commit(); }); return; }catch(e){} }
+    // After a pick, confirm/correct the address against USPS (the official standardizer).
+    // Degrades silently when USPS isn't set up; never blocks the field.
+    var uspsSeq=0;
+    function uspsStatus(status){ var el=document.getElementById("f-address-usps");
+      if(!el){ el=document.createElement("div"); el.id="f-address-usps"; el.style.cssText="margin-top:4px;font-size:12px;line-height:1.3"; if(inp.parentNode) inp.parentNode.appendChild(el); }
+      if(!status){ el.textContent=""; return; }
+      el.style.color = status==="unverified" ? "#8A6D1F" : "#256168";
+      el.textContent = status==="verified" ? "✓ USPS verified"
+        : status==="corrected" ? "✓ USPS verified — corrected to the official mailing address"
+        : "⚠ Couldn't verify this address with USPS — please double-check it";
+    }
+    function uspsVerify(label){ if(!label) return; var mine=++uspsSeq; uspsStatus("");
+      fetch("/api/address/verify",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({q:label})})
+        .then(function(r){return r.ok?r.json():null;}).then(function(j){ if(mine!==uspsSeq||!j) return;
+          if(j.configured&&(j.status==="verified"||j.status==="corrected")){
+            if(j.status==="corrected"&&j.address&&j.address.oneLine){ inp.value=j.address.oneLine; S.address=j.address.oneLine; commit(); }
+            uspsStatus(j.status);
+          } else if(j.configured&&j.status==="unverified"){ uspsStatus("unverified"); }
+        }).catch(function(){});
+    }
+    if(window.google&&google.maps&&google.maps.places){ try{ const ac=new google.maps.places.Autocomplete(inp,{types:["address"]}); ac.addListener("place_changed",()=>{ const p=ac.getPlace(); S.address=(p&&p.formatted_address)||inp.value; commit(); uspsVerify(S.address); }); return; }catch(e){} }
     if(inp.dataset.acWired) return; inp.dataset.acWired="1";
     const wrap=inp.parentNode; if(wrap) wrap.style.position="relative";
     const box=document.createElement("div"); box.className="rb-ac";
@@ -720,8 +740,8 @@ const RB = (function(){
     if(wrap) wrap.appendChild(box);
     let t=null, seq=0;
     const hide=()=>{ box.style.display="none"; box.innerHTML=""; };
-    const pick=(label)=>{ inp.value=label; S.address=label; commit(); hide(); };
-    inp.addEventListener("input",()=>{ const q=inp.value.trim(); clearTimeout(t);
+    const pick=(label)=>{ inp.value=label; S.address=label; commit(); hide(); uspsVerify(label); };
+    inp.addEventListener("input",()=>{ const q=inp.value.trim(); clearTimeout(t); uspsStatus(""); uspsSeq++;
       if(q.length<3){ hide(); return; }
       const mine=++seq;
       t=setTimeout(()=>{

@@ -31,6 +31,50 @@ assert.strictEqual(r.ok, false);
 assert.ok(/negative/.test(r.violation), 'negative net flagged with a reason');
 ok('retainage: fee+retainage over approved is flagged (never silent)');
 
+// ---- out-of-pocket-first floor (owner-directed 2026-07-31 — the OOP-rehab exception) ----
+// "the first $10,000 he puts in cannot be reimbursed, only the next $10,000 can."
+// Floor $10,000; retainage/fee off so the floor arithmetic is isolated.
+// Draw 1 ($10,000 approved, nothing prior): entirely within the floor → reimburse $0.
+r = computeRelease({ approvedCents: 1000000, feeCents: 0, retainagePct: 0, oopFloorCents: 1000000, priorApprovedCents: 0 });
+assert.strictEqual(r.reimbursable_cents, 0, 'draw 1 is fully out of pocket → $0 reimbursable');
+assert.strictEqual(r.oop_held_cents, 1000000, 'the whole $10,000 stays out of pocket');
+assert.strictEqual(r.net_release_cents, 0, 'net release is $0 on a fully-OOP draw');
+assert.strictEqual(r.ok, true, 'a $0 net release (no fee) is allowed');
+// Draw 2 ($10,000 approved, $10,000 already approved): the floor is spent → reimburse the full $10,000.
+r = computeRelease({ approvedCents: 1000000, feeCents: 0, retainagePct: 0, oopFloorCents: 1000000, priorApprovedCents: 1000000 });
+assert.strictEqual(r.reimbursable_cents, 1000000, 'draw 2 clears the floor → fully reimbursable');
+assert.strictEqual(r.oop_held_cents, 0, 'nothing more is out of pocket on draw 2');
+assert.strictEqual(r.net_release_cents, 1000000, 'net release = the full $10,000');
+ok('OOP-first: draw 1 fully out of pocket ($0), draw 2 fully reimbursed ($10,000)');
+
+// A single draw that STRADDLES the floor: $10,000 floor, $6,000 already approved, this draw $8,000.
+// The first $4,000 of this draw finishes the floor; the remaining $4,000 is reimbursable.
+r = computeRelease({ approvedCents: 800000, feeCents: 0, retainagePct: 0, oopFloorCents: 1000000, priorApprovedCents: 600000 });
+assert.strictEqual(r.reimbursable_cents, 400000, 'the part of this draw past the floor is reimbursable');
+assert.strictEqual(r.oop_held_cents, 400000, 'the part still within the floor stays out of pocket');
+ok('OOP-first: a draw straddling the floor splits reimbursable vs out-of-pocket to the cent');
+
+// Fee + retainage apply to the REIMBURSABLE amount, not the full approved.
+r = computeRelease({ approvedCents: 2000000, feeCents: 29900, retainagePct: 10, oopFloorCents: 1000000, priorApprovedCents: 0 });
+assert.strictEqual(r.reimbursable_cents, 1000000, 'reimbursable = $20,000 approved − $10,000 floor');
+assert.strictEqual(r.retainage_held_cents, 100000, '10% retainage is taken on the $10,000 reimbursable, not the $20,000 approved');
+assert.strictEqual(r.net_release_cents, 1000000 - 29900 - 100000, 'net = reimbursable − fee − retainage');
+ok('OOP-first: fee + retainage are computed on the reimbursable amount');
+
+// A fee against a fully-out-of-pocket draw is refused (never a negative wire), with an OOP-aware reason.
+r = computeRelease({ approvedCents: 500000, feeCents: 29900, retainagePct: 0, oopFloorCents: 1000000, priorApprovedCents: 0 });
+assert.strictEqual(r.ok, false, 'a fee on a fully-OOP draw drives net negative → refused');
+assert.ok(/out-of-pocket/.test(r.violation), 'the refusal explains the draw is within the out-of-pocket amount');
+ok('OOP-first: a fee on a fully-out-of-pocket draw is refused with a plain reason');
+
+// floor=0 is byte-identical to the pre-exception split (the whole reason this is safe to ship).
+const base = computeRelease({ approvedCents: 733333, feeCents: 29900, retainagePct: 10 });
+const withZeroFloor = computeRelease({ approvedCents: 733333, feeCents: 29900, retainagePct: 10, oopFloorCents: 0, priorApprovedCents: 450000 });
+assert.strictEqual(withZeroFloor.net_release_cents, base.net_release_cents, 'floor=0 → identical net release');
+assert.strictEqual(withZeroFloor.retainage_held_cents, base.retainage_held_cents, 'floor=0 → identical retainage');
+assert.strictEqual(withZeroFloor.reimbursable_cents, base.gross_cents, 'floor=0 → reimbursable equals approved');
+ok('OOP-first: floor=0 is byte-identical to the pre-exception behavior');
+
 // ---- lien-waiver gate ----
 let g = waiverGate([{ status: 'required', tier: 'subcontractor', party_name: 'Ace Plumbing', kind: 'conditional' }], { enabled: false });
 assert.strictEqual(g.ok, true, 'gate off → always ok');

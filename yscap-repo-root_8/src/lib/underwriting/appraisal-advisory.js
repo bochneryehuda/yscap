@@ -29,7 +29,7 @@
 // gate reads) — NOT document_findings and NOT underwriting_run_findings. Reading the SAME
 // table + predicate the gate reads is what guarantees the advisory never disagrees with it.
 async function appraisalCompleteness(client, appId) {
-  const out = { appraisalRead: false, openFatal: 0, complete: false };
+  const out = { appraisalRead: false, openFatal: 0, asIsConfirmed: false, complete: false };
   if (!appId) return out;
   try {
     const r = await client.query(
@@ -44,11 +44,71 @@ async function appraisalCompleteness(client, appId) {
           AND severity = 'fatal' AND blocks_ctc = true`, [appId]);
     out.openFatal = (fr.rows[0] && fr.rows[0].n) || 0;
 
-    out.complete = out.appraisalRead && out.openFatal === 0;
+    // The As-Is prerequisite must mirror the sign-off gate 1:1 (owner-directed 2026-07-30;
+    // post-merge audit finding #3) — otherwise the badge reads "ready" while the gate
+    // refuses. Confirmed = the file carries a real As-Is value AND, when the confirm
+    // condition exists, it is genuinely signed off or override-cleared (not merely made
+    // optional / plain-waived). Same predicate as signOffGate's isAppraisalReview branch.
+    const av = await client.query(
+      `SELECT (SELECT a.as_is_value FROM applications a WHERE a.id=$1) AS as_is_value,
+              EXISTS (
+                SELECT 1 FROM checklist_items ci JOIN checklist_templates t ON t.id=ci.template_id
+                 WHERE ci.application_id=$1 AND t.code='appraisal_as_is_verify'
+                   AND NOT (
+                     (ci.signed_off_at IS NOT NULL AND ci.waived_at IS NULL)
+                     OR ci.override_at IS NOT NULL
+                   )
+              ) AS as_is_open`, [appId]);
+    const val = av.rows[0] && av.rows[0].as_is_value != null ? Number(av.rows[0].as_is_value) : null;
+    out.asIsConfirmed = !(av.rows[0] && av.rows[0].as_is_open) && val != null && Number.isFinite(val) && val > 0;
+
+    out.complete = out.appraisalRead && out.openFatal === 0 && out.asIsConfirmed;
   } catch (e) {
     console.error('[appraisal-advisory] appraisalCompleteness', appId, e && e.message);
   }
   return out;
 }
 
-module.exports = { appraisalCompleteness };
+/**
+ * TERM SHEETS ARE HELD WHILE A FATAL APPRAISAL FINDING IS OPEN (owner-directed
+ * 2026-07-31: "The fatals caused by the appraisal … it's clear to hold off CTC,
+ * hold off generating term sheets"). The CTC half already exists
+ * (signOffGate + advancementBlockers on appraisal_review_cleared); this is the
+ * TERM-SHEET half — one reason string every issuance door consults:
+ *   • POST /applications/:id/documents with docKind 'term_sheet' (the studio's
+ *     register-and-attach + any manual attach) — staff AND borrower routes;
+ *   • the borrower "your terms are ready" email on (re-)register (withheld,
+ *     exactly like a needs-approval manual product's);
+ *   • the in-file studio's own Download-PDF button (the reason travels to the
+ *     tool as window.TS_ISSUE_HOLD via GET /pricing → TermSheetStudio).
+ *
+ * Deliberately NARROWER than the CTC gate: a file with NO imported appraisal is
+ * NOT held — the initial term sheet before the appraisal comes back is the
+ * normal flow. Only an appraisal PILOT actually read, with an open fatal
+ * blocks_ctc finding, holds issuance. The DocuSign package was already held
+ * transitively (esign gate → appraisal_review_cleared). Fails OPEN (an error
+ * returns null): a DB blip must never stop a term sheet by itself — the
+ * enforced sign-off gate is the real control.
+ * Kill switch: the same APPRAISAL_FINDINGS_ENFORCE=0 that lifts the CTC gate.
+ */
+async function appraisalTermSheetHold(client, appId) {
+  try {
+    if (!appId) return null;
+    if (!require('./advisory-policy').appraisalReviewEnforced()) return null;
+    const fr = await client.query(
+      `SELECT count(*)::int AS n FROM appraisal_findings
+        WHERE application_id = $1 AND status = 'open'
+          AND severity = 'fatal' AND blocks_ctc = true`, [appId]);
+    const n = (fr.rows[0] && fr.rows[0].n) || 0;
+    if (n > 0) {
+      return `Term sheets are on hold for this file: ${n} fatal appraisal finding${n === 1 ? '' : 's'} `
+        + `${n === 1 ? 'is' : 'are'} still open. Resolve ${n === 1 ? 'it' : 'them'} in the Appraisal section first.`;
+    }
+    return null;
+  } catch (e) {
+    console.error('[appraisal-advisory] appraisalTermSheetHold', appId, e && e.message);
+    return null;
+  }
+}
+
+module.exports = { appraisalCompleteness, appraisalTermSheetHold };

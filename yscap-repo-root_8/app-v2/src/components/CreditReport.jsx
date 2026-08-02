@@ -179,6 +179,7 @@ function CreditImportModal({ appId, onClose, onDone, scopeBorrowerId }) {
   const [uploadMode, setUploadMode] = useState('one');
   const [perFiles, setPerFiles] = useState({});     // borrowerId → { xml, pdf }
   const [selected, setSelected] = useState(null);   // Set of borrowerIds to pull; null until preview loads
+  const [reuseBusy, setReuseBusy] = useState(null);  // borrowerId currently being reused-from-profile
 
   useEffect(() => {
     let alive = true;
@@ -242,6 +243,23 @@ function CreditImportModal({ appId, onClose, onDone, scopeBorrowerId }) {
   const jointJoined = jointMode && selBorrowers.length > 1;
   const needRef = requestType !== 'reissue' ? []
     : (jointJoined ? (jointRef.trim() ? [] : [{ name: 'the joint report' }]) : selBorrowers.filter((b) => !refOf(b.borrowerId)));
+
+  // #16 — reuse a report the borrower already has on ANOTHER file (still inside the
+  // 120-day window), with NO new Xactus inquiry. One click; the same report is
+  // re-filed on this file's credit condition carrying its original date.
+  async function reuseProfileReport(bb) {
+    setErr(''); setReuseBusy(bb.borrowerId);
+    try {
+      const out = await api.staffCreditReuse(appId, {
+        borrowerId: bb.borrowerId,
+        sourceReportId: bb.profileReport && bb.profileReport.sourceReportId,
+      });
+      onDone(out);
+    } catch (e) {
+      setErr(e.message || 'Could not reuse that report.');
+      setReuseBusy(null);
+    }
+  }
 
   async function runImport(kind) {
     setErr(''); setBusy(true);
@@ -402,6 +420,23 @@ function CreditImportModal({ appId, onClose, onDone, scopeBorrowerId }) {
                     </div>
                     {(bb.missing || []).length > 0 && (
                       <div className="crx-note warn">Add the {bb.missing.join(', ')} on the file before a live pull{hasMulti ? ` for ${bb.name}` : ''}. You can still import a downloaded report below.</div>
+                    )}
+                    {/* #16 — this borrower already has a recent report on another file.
+                        Reuse it here with NO new inquiry (and no cost). */}
+                    {bb.profileReport && (!hasMulti || on) && (
+                      <div className="crx-note reuse" style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
+                        <span style={{ flex: '1 1 240px' }}>
+                          {hasMulti ? bb.name + ' has' : 'This borrower has'} a credit report from{' '}
+                          <b>{bb.profileReport.ageDays != null ? bb.profileReport.ageDays + ' days ago' : 'a recent file'}</b>
+                          {bb.profileReport.middleScore != null ? <> (middle score <b>{bb.profileReport.middleScore}</b>)</> : null}
+                          {bb.profileReport.fromLoanNumber ? <> on file <b>{bb.profileReport.fromLoanNumber}</b></> : null}. It’s still current — reuse it here, no new pull.
+                        </span>
+                        <button type="button" className="crx-btn ghost"
+                          disabled={reuseBusy === bb.borrowerId}
+                          onClick={() => reuseProfileReport(bb)}>
+                          {reuseBusy === bb.borrowerId ? 'Reusing…' : 'Reuse this report'}
+                        </button>
+                      </div>
                     )}
                   </div>
                 );
@@ -660,11 +695,19 @@ function CreditDetails({ report }) {
 
       {Array.isArray(p.inquiries) && p.inquiries.length > 0 && (
         <details className="crx-sec">
-          <summary>Inquiries <span className="crx-count">{p.inquiries.length}</span></summary>
+          <summary>Inquiries <span className="crx-count">{p.inquiries.length}</span>
+            {(s.hardInquiryCount || 0) > 0 && <span className="crx-muted crx-inq-note">{s.hardInquiryCount} hard</span>}
+          </summary>
           <div className="crx-table-wrap"><table className="crx-table">
-            <thead><tr><th>Who</th><th>Date</th><th>Bureau</th></tr></thead>
+            <thead><tr><th>Who</th><th>Date</th><th>Bureau</th><th>Purpose</th><th>Type</th></tr></thead>
             <tbody>{p.inquiries.filter(Boolean).map((q, i) => (
-              <tr key={i}><td>{q.name || '—'}</td><td>{fmtDay(q.date)}</td><td>{q.bureau || '—'}</td></tr>
+              <tr key={i}>
+                <td title={q.address || undefined}>{q.name || '—'}</td>
+                <td>{fmtDay(q.date)}</td>
+                <td>{q.bureau || '—'}</td>
+                <td>{q.purpose ? <span className={'crx-inq ' + q.purpose}>{q.purpose === 'hard' ? 'Hard' : 'Soft'}</span> : '—'}</td>
+                <td>{q.business || '—'}</td>
+              </tr>
             ))}</tbody>
           </table></div>
         </details>
@@ -809,6 +852,21 @@ export function CreditCondition({ appId, canPull, onChanged, fieldKey }) {
 
   const onImported = (out) => {
     setShowModal(false);
+    // #16 — a report reused from the borrower's profile (no new inquiry).
+    if (out && out.reused) {
+      const bits = [];
+      if (out.ageDays != null) bits.push(`dated ${out.ageDays} days ago`);
+      if (out.middleScore != null) bits.push(`middle score ${out.middleScore}`);
+      if (out.ficoWritten != null) bits.push(`FICO set to ${out.ficoWritten}`);
+      const tone = (out.ficoMismatch || out.ficoUnverified) ? 'warn' : 'ok';
+      if (out.ficoMismatch) bits.push('FICO not auto-set — the report named a different person');
+      if (out.ficoUnverified) bits.push('FICO not auto-set — no SSN on file to confirm identity');
+      showFlash('Reused the borrower’s existing credit report ✓ — no new pull' + (bits.length ? ' — ' + bits.join(' · ') : ''), tone);
+      setJustImported(true);
+      loadCredit().then(() => setShowOverlay(true));
+      if (onChanged) onChanged();
+      return;
+    }
     const results = (out && Array.isArray(out.results)) ? out.results : [];
     // Three outcomes per borrower:
     //   withData — the report parsed (scores/tradelines): a real, full report.

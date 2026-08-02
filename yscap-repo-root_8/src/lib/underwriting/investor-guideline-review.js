@@ -24,7 +24,7 @@
  * no DB, no network, never throws.
  */
 
-const { normNoteBuyer } = require('../conditions/field-registry');
+const { normNoteBuyer, isEmcapNoteBuyer } = require('../conditions/field-registry');
 
 const SOURCE = 'investor_guideline';
 const CATEGORY = 'investor_guideline';
@@ -35,7 +35,17 @@ const CATEGORY = 'investor_guideline';
 // exact same way the rest of the ISG stack does; a real future alias (e.g. a longer dropdown
 // label) is added in that one shared place so every consumer agrees at once. normNoteBuyer is
 // pure (field-registry has no requires) so this module stays PURE / never-throws.
-function normKey(v) { return normNoteBuyer(v) || ''; }
+function normKey(v) {
+  const k = normNoteBuyer(v) || '';
+  // "EMCAP Financial" — the buyer's real ClickUp/Sitewire dropdown label (owner-directed
+  // 2026-07-29) — normalizes to 'emcapfinancial'. Fold every EMCAP spelling onto the
+  // canonical 'emcap' key via the SHARED prefix helper (field-registry.isEmcapNoteBuyer,
+  // the isFidelisNoteBuyer shape) so the emcap-audience rules fire on the production
+  // label too. Advisory direction only — the data-tape export gate keeps its own
+  // enumerated alias list and is NOT loosened by this.
+  if (k && isEmcapNoteBuyer(k)) return 'emcap';
+  return k;
+}
 
 /**
  * claimKeyForCode(code) → the shared claim key for a rule code, or null.
@@ -138,12 +148,15 @@ const RULES = [
 
   { code: 'isg_transferred_appraisal_letter', audience: 'all', severity: 'warning', signal: 'appraisal_transferred',
     title: 'Appraisal is not in our name — request an appraisal transfer letter',
-    governing_rule: 'A note buyer (other than Blue Lake) accepts a transferred appraisal with a transfer letter',
-    // Fires for EVERY buyer except Blue Lake (Blue Lake is the FATAL above — no letter can fix it).
+    governing_rule: 'A note buyer (other than Blue Lake / EMCAP) accepts a transferred appraisal with a transfer letter',
+    // Fires for EVERY buyer except Blue Lake and EMCAP — each of those has its own FATAL a
+    // letter cannot fix (Blue Lake: the rule above; EMCAP: the appraisal desk's
+    // `emcap_lender_name` finding on the Appraisal tab, owner-directed 2026-07-30).
     when: (x) => {
       if (x.appraisal_transferred == null) return null;    // we don't know who the appraisal is addressed to
       if (x.appraisal_transferred !== true) return false;   // it IS in our name → nothing to do
       if (normKey(x.note_buyer) === 'bluelake') return false; // Blue Lake handled by its own fatal
+      if (normKey(x.note_buyer) === 'emcap') return false;    // EMCAP handled by the appraisal desk's fatal
       if (x.appraisal_transfer_letter === true) return false; // a transfer letter is already on file → nothing to request
       return true;
     },
@@ -185,21 +198,14 @@ const RULES = [
     when: (x) => x.in_flood_zone == null ? null : x.in_flood_zone === true,
     detail: () => 'The property is in a flood zone. A flood-insurance condition is required for all note buyers.' },
 
-  // ----- EMCAP rental checks (fix-and-hold; all WARN, owner-directed 2026-07-26) -----
-  // EMCAP prices the rental cash flow. A fix-and-hold loan needs a 1007 rent schedule;
-  // a 1025 appraisal already INCLUDES the rent schedule, so it satisfies the requirement.
-  // These are warnings (never block) and never fire before the appraisal is in.
-  { code: 'isg_emcap_missing_1007', audience: 'emcap', severity: 'warning',
-    title: 'Fix-and-hold needs a 1007 rent schedule (EMCAP)', governing_rule: 'EMCAP requires a 1007 rent schedule on a fix-and-hold loan; a 1025 appraisal includes it',
-    when: (x) => {
-      if (x.is_fix_hold !== true) return false;              // only fix-and-hold
-      if (!x.appraisal_present) return null;                 // wait for the appraisal
-      if (x.appraisal_is_1025 === true) return false;        // a 1025 includes the rent schedule
-      if (x.appraisal_is_1025 == null) return null;          // form type unknown → don't guess
-      return x.appraisal_market_rent == null;                // no market rent = no 1007 rent schedule
-    },
-    detail: () => 'This is a fix-and-hold loan for EMCAP and the appraisal is not a 1025, but it carries no rent schedule (1007). Obtain a 1007 comparable rent schedule with the appraiser’s market rent.' },
-
+  // ----- EMCAP rental checks -----
+  // NOTE: the "fix-and-hold needs a 1007" requirement MOVED to the appraisal desk
+  // (`emcap_rental_analysis` in src/lib/appraisal/note-buyer-checks.js, owner-directed
+  // 2026-07-30: EMCAP's appraisal requirements live WITH the appraisal findings, enforced via
+  // the appraisal review sign-off) — the old `isg_emcap_missing_1007` warning here was its
+  // duplicate and was removed so the same fact never shows in two sections. The rent-match
+  // check below is a LOAN-vs-appraisal consistency read, not an appraisal-content
+  // requirement, so it stays here.
   { code: 'isg_emcap_rent_mismatch', audience: 'emcap', severity: 'warning',
     title: 'Appraisal market rent does not match the loan’s estimated rent (EMCAP)', governing_rule: 'EMCAP: the appraiser’s market rent must equal the estimated rental income on the loan',
     // EXACT match (owner-directed): flag any difference. Compared to the CENT (both
@@ -209,6 +215,48 @@ const RULES = [
       : Math.round(x.appraisal_market_rent * 100) !== Math.round(x.loan_estimated_rent * 100),
     expected: (x) => money(x.loan_estimated_rent), actual: (x) => money(x.appraisal_market_rent),
     detail: (x) => `The appraisal’s market rent ${money(x.appraisal_market_rent)} does not match the estimated rental income on the loan ${money(x.loan_estimated_rent)}. Reconcile them before submitting to EMCAP.` },
+
+  // ----- EMCAP Silver-program overlays (the EMCAP Underwriting Commentary, 2026-07-29
+  //       Silver build). The frozen Silver engine already HARD-enforces these at
+  //       pricing/registration time; these advisory rows are the belt-and-suspenders
+  //       for a file whose inputs moved after it was priced (never-fabricate: a
+  //       missing signal keeps each rule silent). -----
+  { code: 'isg_emcap_excluded_state', audience: 'emcap', severity: 'fatal',
+    title: 'Property in a state EMCAP excludes', governing_rule: 'EMCAP does not lend in Nevada, Minnesota, North Dakota or South Dakota',
+    when: (x) => x.property_state == null ? null : ['NV', 'MN', 'ND', 'SD'].indexOf(String(x.property_state).toUpperCase()) > -1,
+    actual: (x) => String(x.property_state || ''),
+    detail: (x) => `The property is in ${x.property_state}, which EMCAP excludes (NV / MN / ND / SD are ineligible). The loan cannot be sold to this note buyer.` },
+
+  { code: 'isg_emcap_high_housing_supply', audience: 'emcap', severity: 'warning',
+    title: 'Over 10 months of housing supply (EMCAP)', governing_rule: 'EMCAP: MSAs with over 10 months housing supply are ineligible (the MSA, product type & re-sale price range should all be considered)',
+    // The appraisal's own 1004MC months-of-supply is the file's closest
+    // machine-readable proxy for the MSA-level rule — a WARNING escalation to a
+    // human market review, never a fatal (the note buyer's own wording makes it
+    // a judgment over MSA + product type + price range, not a per-property gate).
+    when: (x) => x.housing_months_supply == null ? null : Number(x.housing_months_supply) > 10,
+    actual: (x) => x.housing_months_supply == null ? '' : `${x.housing_months_supply} months of supply`,
+    detail: (x) => `The appraisal's 1004MC market grid shows ${x.housing_months_supply} months of housing supply — over EMCAP's 10-month ceiling for the market. EMCAP judges this at the MSA level considering the product type and re-sale price range, so review the market data before committing this file to EMCAP.` },
+
+  { code: 'isg_emcap_mid_construction', audience: 'emcap', severity: 'fatal',
+    title: 'Mid-construction project (EMCAP)', governing_rule: 'EMCAP: mid-way completed construction projects are not eligible for funding',
+    when: (x) => x.appraisal_mid_construction == null ? null : x.appraisal_mid_construction === true,
+    detail: () => 'The appraisal shows the project mid-construction. EMCAP does not fund mid-way completed construction projects — an ineligible submission can only go for individual review.' },
+
+  { code: 'isg_emcap_cashout_over_half_profit', audience: 'emcap', severity: 'fatal',
+    title: 'Cash-out exceeds 50% of projected project profit (EMCAP)', governing_rule: 'EMCAP: cash-out proceeds may not exceed 50% of total projected project profitability',
+    when: (x) => {
+      if (x.is_cash_out !== true) return x.is_cash_out === false ? false : null;
+      if (x.cash_out_proceeds == null || !(x.cash_out_proceeds > 0)) return null;
+      // Projected profit = ARV − (as-is basis + rehab) — the same basis the Silver
+      // engine prices on. All three numbers must be present; never guess one.
+      if (x.arv == null || x.as_is_value == null || x.rehab_budget == null) return null;
+      const profit = x.arv - (x.as_is_value + x.rehab_budget);
+      if (!(profit > 0)) return null;   // the value-add gate owns a non-positive profit
+      return x.cash_out_proceeds > 0.5 * profit + 0.5;
+    },
+    expected: (x) => money(Math.max(0, 0.5 * ((x.arv || 0) - ((x.as_is_value || 0) + (x.rehab_budget || 0))))),
+    actual: (x) => money(x.cash_out_proceeds),
+    detail: (x) => `Cash-out proceeds of ${money(x.cash_out_proceeds)} exceed 50% of the projected project profit. EMCAP caps refinance cash-out at half the projected profitability; interest reserves are also netted from cash-out proceeds.` },
 
   // ----- Price vs value (post-appraisal only — never before the appraisal is in) -----
   // Compare the RECOGNIZED (loan-sized) price to value, NOT the gross contract price. On an
@@ -274,6 +322,9 @@ function reviewInput(raw) {
     appraisal_is_1025: appr.is_1025 == null ? (r.appraisal_is_1025 == null ? null : bool(r.appraisal_is_1025)) : bool(appr.is_1025),
     appraisal_market_rent: num(appr.market_rent != null ? appr.market_rent : r.appraisal_market_rent),
     loan_estimated_rent: num(r.loan_estimated_rent),
+    // 1004MC months of housing supply (owner-directed 2026-07-30) — feeds the
+    // EMCAP >10-month-supply advisory. Missing → null → the rule stays silent.
+    housing_months_supply: num(appr.months_supply != null ? appr.months_supply : r.housing_months_supply),
   };
 }
 

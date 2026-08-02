@@ -1,17 +1,32 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { api } from '../lib/api.js';
 import { MoneyInput } from './FormattedInputs.jsx';
+import { moneyNum } from '../lib/money.js';
 import { US_STATES } from './LlcManager.jsx';
 import { PROGRAMS, PROPERTY_TYPES, LOAN_TYPES, selectOptions, unitsMode, unitsForType } from '../lib/enums.js';
 import LlcPicker from './LlcPicker.jsx';
+import AddressAutocomplete from './AddressAutocomplete.jsx';
+import { goToSection } from './FileSections.jsx';
+import { refiKind } from '../lib/payoff.js';
 
 /* Staff edit of the loan-file data after creation — EVERY field the
    application collects is correctable here (typo'd price, wrong property
    type, missed assignment flag, refi economics, address, term, experience…).
-   Collapsed by default. Each save writes a field-level before/after diff to
-   the audit log, which the file's Activity feed renders verbatim. */
+   Collapsed by default; `openByDefault` renders it already expanded — the
+   "Deal & property" tab of the Application details section passes it, because
+   there the form IS the tab and a second collapse would just hide it again
+   (owner-directed 2026-07-31 cleanup). Each save writes a field-level
+   before/after diff to the audit log, which the file's Activity feed renders
+   verbatim. */
 
 const num = (v) => v == null || v === '' ? '' : String(v);
+
+/* ONE shared eyebrow style for the form's section headings (Property /
+   Loan & economics / Refinance details / Experience / Assignment) so the long
+   form scans as clean sections — the same small-caps look as the panel
+   eyebrows used elsewhere. Explicit dark text on the white canvas; NEVER a
+   var(--ink*) token for text color (those resolve LIGHT in this app). */
+const EYEBROW = { textTransform: 'uppercase', letterSpacing: '.06em', fontSize: 12, color: '#4B585C' };
 const REHAB_TYPES = ['Cosmetic', 'Moderate', 'Heavy / gut rehab', 'Adding square footage', 'Ground-up construction'];
 const needsSqft = (rehabType) => /square|adding|ground/i.test(rehabType || '');
 
@@ -50,6 +65,7 @@ function formFrom(app) {
     requestedExpGround: num(app.requested_exp_ground), requestedExpReo: num(app.requested_exp_reo),
     requestedIrMonths: num(app.requested_ir_months), requestedIrAmount: num(app.requested_ir_amount), term: app.term || '',
     payoffAmount: num(app.payoff_amount), originalPurchasePrice: num(app.original_purchase_price),
+    payoffLender: app.payoff_lender || '', payoffLoanNumber: app.payoff_loan_number || '',
     acquisitionDate: app.acquisition_date ? String(app.acquisition_date).slice(0, 10) : '',
     isAssignment: !!app.is_assignment, underlyingContractPrice: num(app.underlying_contract_price), assignmentFee: num(app.assignment_fee),
     addrLine1: a.line1 || a.street || '', addrUnit: a.unit || '', addrCity: a.city || '',
@@ -57,8 +73,9 @@ function formFrom(app) {
   };
 }
 
-export default function EditFileDetails({ app, onSaved }) {
-  const [open, setOpen] = useState(false);
+export default function EditFileDetails({ app, onSaved, openByDefault = false }) {
+  // Seeds the collapse only — the header toggle still works either way.
+  const [open, setOpen] = useState(!!openByDefault);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState('');
   const [msg, setMsg] = useState('');
@@ -79,7 +96,14 @@ export default function EditFileDetails({ app, onSaved }) {
   // 2/3/4 dropdown; "Multi 5+" / "Mixed Use" → free number ≥ 5) — same rule as
   // the borrower application and the new-file form.
   const setPropertyType = (v) => setF((s) => ({ ...s, propertyType: v, units: unitsForType(v, s.units) }));
-  const isRefi = /refi/i.test(f.loanType || '');
+  // The SHARED reading of the loan purpose (lib/payoff.js), so this form, the
+  // Payoff section and the server can never disagree about whether there is a
+  // loan to pay off — including on "Delayed Purchase Financing", which is a
+  // purchase however it is spelled.
+  const isRefi = refiKind(f.loanType) !== 'purchase';
+  // The SAVED purpose, as the file screen reads it — that is what decides whether
+  // the Payoff section exists, so it is what the pointer button must be gated on.
+  const savedIsRefi = refiKind(app.loan_type) !== 'purchase';
 
   async function save() {
     setBusy(true); setErr(''); setMsg(''); setWarn('');
@@ -93,13 +117,40 @@ export default function EditFileDetails({ app, onSaved }) {
         requestedExpFlips: f.requestedExpFlips, requestedExpHolds: f.requestedExpHolds,
         requestedExpGround: f.requestedExpGround, requestedExpReo: f.requestedExpReo,
         requestedIrMonths: f.requestedIrMonths, requestedIrAmount: f.requestedIrAmount, term: f.term,
-        payoffAmount: isRefi ? f.payoffAmount : '',
+        /* THE PAYOFF TRIO IS ONLY EVER CLEARED HERE, NEVER WRITTEN (owner-directed
+           2026-07-31). The Payoff section owns entry, so this form must not send
+           the values it loaded — a form opened before somebody edited the payoff
+           there would save its own stale copy straight back over the fix. It DOES
+           still clear all three when the purpose is switched to a purchase, which
+           is a cleanup only this form can do: there is no Payoff section to do it
+           from once the file stops being a refinance. */
+        ...(isRefi ? {} : { payoffAmount: '', payoffLender: '', payoffLoanNumber: '', estimatedCashOut: '' }),
+        /* A rate-&-term refinance takes no cash out by definition, so switching the
+           purpose TO one clears any cash-out figure the file carries — a cleanup
+           the Payoff section cannot do, because it stops offering the field the
+           moment the purpose changes.
+
+           TWO GUARDS, BOTH ADDED AFTER THE POST-MERGE AUDIT CAUGHT THIS WIPING
+           REAL DATA. The first cut fired whenever the kind was anything other
+           than cash-out, on EVERY save:
+             · `!== 'cash_out'` also caught kind UNKNOWN — a bare "Refinance",
+               the spelling years of ClickUp sync carries. The payoff model
+               deliberately answers UNKNOWN there precisely because the deal may
+               well BE a cash-out; this form overrode that judgement and deleted
+               the figure instead. Worse, it was unrecoverable: on an unknown
+               kind neither the card nor the studio offers the box to retype it.
+             · it fired on every save, not only when the purpose MOVED — so an
+               unrelated edit (a price typo, an address fix) silently wiped it.
+           Now: only a real rate-&-term, and only when the SAVED purpose was
+           something else. */
+        ...(isRefi && refiKind(f.loanType) === 'rate_term' && refiKind(app.loan_type) !== 'rate_term'
+          ? { estimatedCashOut: '' } : {}),
         originalPurchasePrice: isRefi ? f.originalPurchasePrice : '',
         acquisitionDate: isRefi ? f.acquisitionDate : '',
         // Assignment is a purchase concept — never send it on a refinance.
         isAssignment: f.isAssignment && !isRefi,
         underlyingContractPrice: (f.isAssignment && !isRefi) ? f.underlyingContractPrice : '',
-        assignmentFee: (f.isAssignment && !isRefi) ? Math.max(0, (Number(f.purchasePrice) || 0) - (Number(f.underlyingContractPrice) || 0)) : '',
+        assignmentFee: (f.isAssignment && !isRefi) ? Math.max(0, moneyNum(f.purchasePrice) - moneyNum(f.underlyingContractPrice)) : '',
       };
       if (addrChanged) {
         const line1 = f.addrLine1.trim();
@@ -163,10 +214,13 @@ export default function EditFileDetails({ app, onSaved }) {
           {err && <div role="alert" className="notice err" style={{ marginBottom: 10 }}>{err}</div>}
           {msg && <div className="notice ok" style={{ marginBottom: 10 }}>{msg}</div>}
           {warn && <div className="notice warn" style={{ marginBottom: 10, color: '#141B22' }}>{warn}</div>}
-          <p className="muted small" style={{ margin: '0 0 8px', textTransform: 'uppercase', letterSpacing: '.05em' }}>Property</p>
+          <p className="small" style={{ margin: '0 0 8px', ...EYEBROW }}>Property</p>
           <div className="edit-grid">
             <label className="col-4"><span>Street address</span>
-              <input className="input" value={f.addrLine1} onChange={(e) => set('addrLine1', e.target.value)} /></label>
+              <AddressAutocomplete value={f.addrLine1}
+                onChange={(v) => set('addrLine1', v)}
+                onPick={(addr) => setF((s) => ({ ...s, addrLine1: addr.line1 || '', addrUnit: addr.unit || s.addrUnit || '',
+                  addrCity: addr.city || '', addrState: (addr.state || '').toUpperCase(), addrZip: addr.zip || '' }))} /></label>
             <label className="col-2"><span>City</span><input className="input" value={f.addrCity} onChange={(e) => set('addrCity', e.target.value)} /></label>
             <label><span>State</span>
               <select className="input" value={f.addrState} onChange={(e) => set('addrState', e.target.value)}>
@@ -200,7 +254,7 @@ export default function EditFileDetails({ app, onSaved }) {
             {/* Occupancy is intentionally NOT shown (owner-directed) — kept in the
                 data model and round-tripped unchanged, never surfaced in the UI. */}
           </div>
-          <p className="muted small" style={{ margin: '14px 0 8px', textTransform: 'uppercase', letterSpacing: '.05em' }}>Loan &amp; economics</p>
+          <p className="small" style={{ margin: '14px 0 8px', ...EYEBROW }}>Loan &amp; economics</p>
           <div className="edit-grid">
             <label><span>Program</span>
               <select className="input" value={f.program} onChange={(e) => set('program', e.target.value)}>
@@ -229,14 +283,39 @@ export default function EditFileDetails({ app, onSaved }) {
             </>}
           </div>
           {isRefi && <>
-            <p className="muted small" style={{ margin: '14px 0 8px', textTransform: 'uppercase', letterSpacing: '.05em' }}>Refinance details</p>
+            <p className="small" style={{ margin: '14px 0 8px', ...EYEBROW }}>Refinance details</p>
             <div className="edit-grid">
-              <label><span>Payoff amount</span><MoneyInput value={f.payoffAmount} onChange={(v) => set('payoffAmount', v)} /></label>
               <label><span>Original purchase price</span><MoneyInput value={f.originalPurchasePrice} onChange={(v) => set('originalPurchasePrice', v)} /></label>
-              <label className="col-2"><span>Date acquired</span><input className="input" type="date" value={f.acquisitionDate} onChange={(e) => set('acquisitionDate', e.target.value)} /></label>
+              <label><span>Date acquired</span><input className="input" type="date" value={f.acquisitionDate} onChange={(e) => set('acquisitionDate', e.target.value)} /></label>
+            </div>
+            {/* THE PAYOFF HAS ITS OWN SECTION (owner-directed 2026-07-31), so it is
+                NOT edited here as well. Two editors for the same three fields on one
+                page is worse than one — the same reason the note buyer's second
+                editor was retired to a read-only line. This says where they live and
+                shows what is on the file, and nothing more. */}
+            <div style={{ margin: '10px 0 0', padding: '10px 12px', background: 'var(--soft,#FAF8F3)', borderRadius: 8 }}>
+              <div style={{ fontSize: 13.5, color: '#141B22' }}>
+                <b>Payoff:</b>{' '}
+                {f.payoffAmount ? `$${Number(moneyNum(f.payoffAmount)).toLocaleString('en-US')}` : 'not entered'}
+                {f.payoffLender ? ` to ${f.payoffLender}` : ''}
+                {f.payoffLoanNumber ? ` (loan #${f.payoffLoanNumber})` : ''}
+              </div>
+              <div style={{ marginTop: 4, fontSize: 13, color: '#4B585C' }}>
+                The payoff has its own section on this file — how much, who holds the loan, their loan
+                number, and what the borrower walks away with on a cash-out.{' '}
+                {/* The BUTTON is gated on the SAVED loan purpose, not the one being
+                    typed. The Payoff section only exists once the file is really a
+                    refinance, so on a purchase whose dropdown was just switched (and
+                    not yet saved) this button would scroll to a section that isn't
+                    there and silently do nothing. It says "save first" instead. */}
+                {savedIsRefi
+                  ? <button type="button" className="btn ghost small" style={{ marginLeft: 4 }}
+                      onClick={() => goToSection('sec-payoff')}>Open the Payoff section</button>
+                  : <em>Save this change first and the Payoff section appears on the file.</em>}
+              </div>
             </div>
           </>}
-          <p className="muted small" style={{ margin: '14px 0 8px', textTransform: 'uppercase', letterSpacing: '.05em' }}>Experience entered on this file</p>
+          <p className="small" style={{ margin: '14px 0 8px', ...EYEBROW }}>Experience entered on this file</p>
           <div className="edit-grid">
             <label><span>Exp: flips</span><input className="input" type="number" min="0" value={f.requestedExpFlips} onChange={(e) => set('requestedExpFlips', e.target.value)} /></label>
             <label><span>Exp: holds</span><input className="input" type="number" min="0" value={f.requestedExpHolds} onChange={(e) => set('requestedExpHolds', e.target.value)} /></label>
@@ -244,21 +323,22 @@ export default function EditFileDetails({ app, onSaved }) {
             <label><span>Exp: REO</span><input className="input" type="number" min="0" value={f.requestedExpReo} onChange={(e) => set('requestedExpReo', e.target.value)} /></label>
           </div>
           {/* Assignment of contract is a purchase concept — hide it on a refinance. */}
-          {!isRefi && (
-          <div className="edit-grid" style={{ marginTop: 12 }}>
+          {!isRefi && (<>
+          <p className="small" style={{ margin: '14px 0 8px', ...EYEBROW }}>Assignment</p>
+          <div className="edit-grid">
             <label className="col-4" style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
               <input type="checkbox" checked={f.isAssignment} onChange={(e) => set('isAssignment', e.target.checked)} />
-              <span style={{ textTransform: 'none', letterSpacing: 0, fontWeight: 500, fontSize: '14px', color: 'var(--ivory)' }}>This is an assignment purchase</span>
+              <span style={{ textTransform: 'none', letterSpacing: 0, fontWeight: 500, fontSize: '14px', color: '#141B22' }}>This is an assignment purchase</span>
             </label>
             {f.isAssignment && <>
               <label className="col-2"><span>Original (underlying) price</span><MoneyInput value={f.underlyingContractPrice} onChange={(v) => set('underlyingContractPrice', v)} /></label>
               <label className="col-2"><span>Assignment fee (auto)</span>
                 <div className="input" style={{ display: 'flex', alignItems: 'center', background: 'var(--soft, #f4f1ea)' }}>
-                  ${Math.max(0, (Number(f.purchasePrice) || 0) - (Number(f.underlyingContractPrice) || 0)).toLocaleString('en-US')}
+                  ${Math.max(0, moneyNum(f.purchasePrice) - moneyNum(f.underlyingContractPrice)).toLocaleString('en-US')}
                 </div></label>
             </>}
           </div>
-          )}
+          </>)}
           <p className="muted small" style={{ margin: '8px 0 0' }}>Editing the price/ARV/rehab/assignment re-drives the pricing engine when you re-register a product. Every change lands in the file's Activity log with its before/after values.</p>
           {/* The result belongs NEXT TO the button that produced it. This form is
               long enough that the notice at the top of the panel is off-screen by

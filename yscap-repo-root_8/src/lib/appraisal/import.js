@@ -255,6 +255,14 @@ function buildFieldsJson(A) {
   Object.entries(ap).forEach(([k, val]) => put('appraiser.' + k, val));
   if (A.condo) Object.entries(A.condo).forEach(([k, val]) => put('condo.' + k, val));
   if (A.income) Object.entries(A.income).forEach(([k, val]) => put('income.' + k, val));
+  // Report contents + photo metadata + rental-grid count (extract.js `report`) — persisted so the
+  // note-buyer appraisal checks (EMCAP interior photos / 1007 evidence) can re-run off STORED data
+  // when the note buyer changes after import, without re-parsing the XML.
+  if (A.report) {
+    if (Array.isArray(A.report.forms) && A.report.forms.length) put('report.forms', A.report.forms);
+    if (Array.isArray(A.report.images) && A.report.images.length) put('report.images', A.report.images);
+    if (A.report.rentalGrids != null) put('report.rentalGrids', A.report.rentalGrids);
+  }
   return out;
 }
 

@@ -47,6 +47,75 @@ function sanitizeLoanType(v) {
   return /^\s*ground/i.test(String(v)) ? null : v;
 }
 
+/* A MONEY VALUE ON ITS WAY INTO A numeric COLUMN (pre-merge audit of #919,
+   2026-07-31). The client is SUPPOSED to send a clean number, and every current
+   surface does — but "supposed to" is not a guarantee, and when it is broken the
+   failure is not a wrong number, it is a 500:
+
+     invalid input syntax for type numeric: "445,000"
+
+   That is live today. Before #919, `lib/scenario.js scenarioToDraft` copied the
+   Term Sheet Studio's DISPLAY text straight into an application draft, so every
+   draft a borrower started from a saved pricing scenario (PricingStudio /
+   Dashboard "Start this loan →", shipped in #915) holds `asIsValue: "445,000"`.
+   #919 stops NEW drafts being written that way; it cannot repair the rows that
+   are already in `application_drafts`, and those borrowers cannot submit their
+   application AT ALL — POST /api/borrower/drafts/:id/submit hands the string to
+   Postgres and the INSERT throws.
+
+   So the last mile is guarded here instead of trusted: the value that reaches a
+   money column is parsed, never passed through. Blank / null / nothing-numeric →
+   null (the column's "not provided"), and separators, a currency symbol or stray
+   spaces are stripped. The SIGN is kept — a money column may legitimately hold a
+   negative (a credit / adjustment) and silently flipping one would be worse than
+   the crash it replaces. Returns a NUMBER or null, never NaN and never a string. */
+function moneyValue(v) {
+  if (v == null || v === '') return null;
+  if (typeof v === 'number') return Number.isFinite(v) ? v : null;
+  const s = String(v);
+  if (!/\d/.test(s)) return null;                       // "abc", "-", "$", "." → not provided
+  const neg = /^[\s$(]*-/.test(s);                      // a leading minus, past any "$"/space
+  // Digits + AT MOST ONE decimal point, keeping the FIRST — the same rule the
+  // portal's own money parser uses (app-v2/src/lib/money.js moneyStr), so the two
+  // sides of the wire can never disagree about what a money string means.
+  const d = s.replace(/[^0-9.]/g, '');
+  const i = d.indexOf('.');
+  const n = Number(i < 0 ? d : d.slice(0, i + 1) + d.slice(i + 1).replace(/\./g, ''));
+  if (!Number.isFinite(n)) return null;
+  return neg ? -n : n;
+}
+
+/* THE BIND FOR A MONEY COLUMN — parse (moneyValue) AND the "was it provided?"
+   decision, which are two different questions and were getting the same answer
+   (re-audit of #919, 2026-07-31).
+
+   Every create path used to bind `b.asIsValue || null`, so "provided?" was
+   JavaScript truthiness OF THE RAW VALUE. The string "0" — which is exactly what
+   a MoneyInput holds after a human types a single 0, because the portal's money
+   contract stores a plain numeric STRING — is truthy, so an entered zero stored
+   0.00. Wrapping the same expression as `moneyValue(b.asIsValue) || null` moved
+   the truthiness test onto the PARSED number, and 0 is falsy: a typed zero
+   started storing NULL on all three create paths. Measured through the three
+   real HTTP doors against real Postgres, before/after 67c12804..d055c1e6:
+
+       {asIsValue:"0", arv:"0", rehabBudget:"0"}   was 0.00 → became NULL
+
+   NULL is not a harmless spelling of 0 here. `applications.rehab_budget != null`
+   is the file's "Rehab budget provided" completeness row (Application.jsx);
+   `UPDATE applications SET as_is_value=$2 WHERE as_is_value IS NULL` is how an
+   appraisal import decides it may overwrite (lib/appraisal/import.js); the
+   investor-guideline rules return "not evaluated" instead of a verdict when
+   `x.rehab_budget == null` (lib/underwriting/investor-guideline-review.js); the
+   tapes fall through to a different source; and db/072 reopens pricing on
+   `IS DISTINCT FROM`, which NULL↔0 satisfies.
+
+   So the provided/not-provided question is answered on the RAW value exactly the
+   way it always was, and only then is the value parsed. `moneyValue` still says
+   what a money value MEANS; this says whether there was one. */
+function moneyColumn(v) {
+  return moneyValue(v || null);
+}
+
 // Assignment-purchase normalization (#96) — ONE definition used by EVERY create
 // path (staff new-file, borrower application draft-submit, borrower direct
 // create) so is_assignment / underlying_contract_price / assignment_fee /
@@ -66,12 +135,183 @@ function assignmentFields(b) {
   // type mentions "refi") and the db/173 condition trigger.
   const isRefi = /refi/i.test(String(b.loanType || ''));
   const isAssignment = !!b.isAssignment && !isRefi;
-  const underlying = isAssignment ? (b.underlyingContractPrice || null) : null;
-  const assignFee = isAssignment ? (b.assignmentFee || null) : null;
+  /* Every money value is PARSED, not passed through (audit of #919). The bare
+     `Number()` this used to run on the underlying price was the server-side twin
+     of the client bug #919 fixes: a formatted "380,000" made it NaN, and the
+     string itself went to a numeric column as-is.
+     `moneyColumn` — not `moneyValue(x) || null` — because the provided /
+     not-provided decision has to stay on the RAW value: an entered "0" is a zero
+     the borrower typed and has always stored 0.00 (re-audit, 2026-07-31). */
+  const underlying = isAssignment ? moneyColumn(b.underlyingContractPrice) : null;
+  const assignFee = isAssignment ? moneyColumn(b.assignmentFee) : null;
   const purchasePrice = isAssignment
-    ? (Number(b.underlyingContractPrice || 0) + Number(b.assignmentFee || 0))
-    : (b.purchasePrice || null);
+    ? ((moneyValue(b.underlyingContractPrice) || 0) + (moneyValue(b.assignmentFee) || 0))
+    : moneyColumn(b.purchasePrice);
   return { isAssignment, underlying, assignFee, purchasePrice };
+}
+
+/* =====================================================================
+   WHAT A FREE-TEXT COLUMN ACCEPTS — trimmed, blank means NULL, one cap per
+   COLUMN rather than one per door (post-merge audit 2026-07-31).
+
+   `payoff_lender` and `payoff_loan_number` were capped at 200 by the staff
+   details door, 200 by the borrower application door and 500 by the
+   info-condition door — three answers to a question about ONE column, so what
+   a value became depended on which screen typed it. The same lesson as
+   number-bounds: a limit is a property of the column, not of the door.
+
+   And NONE of the three trimmed. `"   "` is not a value: it stored three
+   spaces, which is non-blank to every reader, so the file counted the payoff
+   contact as answered and the borrower's screen rendered an empty labelled row
+   under a green tick. Trimming first makes "a box of spaces is an empty box"
+   true here exactly as it already is for the money fields.
+
+   A NUL byte (U+0000) is removed rather than refused: Postgres cannot store one
+   in a text column at all (22021, another 500), it is never something a person
+   meant to type, and it is invisible — so refusing would be a mystery message
+   about a character nobody can see. Not reachable from a browser today; cheap
+   to close, and it is the last way this family can reach the database as a 500.
+
+   PURE. Returns a trimmed string, or null for "not stated".
+   ===================================================================== */
+const TEXT_COLUMN_MAX = Object.freeze({
+  payoff_lender: 200,
+  payoff_loan_number: 100,     // a lender's own reference, never prose
+});
+const TEXT_COLUMN_DEFAULT_MAX = 200;
+function textColumn(v, column, fallbackMax) {
+  if (v == null) return null;
+  const s = String(v).replace(/\u0000/g, '').trim();
+  if (!s) return null;
+  // The COLUMN decides. `fallbackMax` is for a value that HAS no column of its
+  // own — an admin-defined custom field — so a caller naming no column keeps its
+  // own limit instead of being silently tightened to the shared default.
+  const max = (column && TEXT_COLUMN_MAX[column])
+    || (Number.isFinite(fallbackMax) && fallbackMax > 0 ? fallbackMax : TEXT_COLUMN_DEFAULT_MAX);
+  return s.slice(0, max);
+}
+
+/* =====================================================================
+   A NUMBER TOO BIG FOR ITS COLUMN IS A BAD REQUEST, NOT A SERVER FAULT — on
+   EVERY create door, not only the staff edit door (post-merge audit
+   2026-07-31).
+
+   `PATCH /applications/:id/details` learned this rule over four rounds and now
+   answers a plain 400 naming the field and its ceiling. The five doors that
+   CREATE an application never learned it at all: they parse each money value
+   (moneyColumn, above) but nothing asks whether the parsed number FITS, so a
+   twenty-digit paste reaches Postgres, raises 22003, and comes back to the
+   borrower as a 500 "server error" on the submit button — with the whole
+   application still unsubmitted and no hint which box is at fault. None of the
+   money inputs cap their digits, so an ordinary browser gets there.
+
+   Same shape as the details door: keyed on the COLUMN TYPE (see
+   lib/number-bounds), reported in the words of the form rather than the column
+   name, and STOPPING AT THE FIRST problem so the message names one box to fix.
+
+   `b` is the raw request body. Returns '' when every number on it can be
+   stored. PURE, never throws. Add a numeric field to a create INSERT and add it
+   here too.
+   ===================================================================== */
+const APP_MONEY_FIELDS = Object.freeze([
+  ['purchasePrice', 'Purchase price'],
+  ['asIsValue', 'As-is value'],
+  ['arv', 'After-repair value'],
+  ['rehabBudget', 'Rehab budget'],
+  ['underlyingContractPrice', 'Original contract price'],
+  ['assignmentFee', 'Assignment fee'],
+  ['payoffAmount', 'Payoff amount'],
+  ['originalPurchasePrice', 'Original purchase price'],
+  ['irAmount', 'Interest reserve amount'],
+]);
+/* Counts that reach the column through `intField` / `parseInt`, which TRUNCATE.
+   5.7 stores 5, and always has, so a fractional value here is not a refusal —
+   only a magnitude int4 cannot hold. */
+const APP_PARSED_COUNT_FIELDS = Object.freeze([
+  ['sqftPre', 'Square footage before'],
+  ['sqftPost', 'Square footage after'],
+  ['requestedExpFlips', 'Flips completed'],
+  ['requestedExpHolds', 'Rentals held'],
+  ['requestedExpGround', 'Ground-up projects'],
+  ['requestedExpReo', 'Properties owned'],
+]);
+/* …and the counts bound RAW, with no parsing at all — `units` is written as
+   `b.units || null` on all three create doors, so Postgres itself does the
+   cast. That makes it the opposite case, and the first cut got it exactly
+   backwards (pre-merge audit 2026-07-31): the guard TRUNCATED, justified by a
+   comment claiming every count is parsed first, so it could never catch what
+   actually breaks here. Measured: `units:"5.7"` → 22P02 → 500, `"4 units"` →
+   500, `"1e10"` → 500 on the staff door. A whole number is required, and a
+   value that is not one is refused rather than quietly reinterpreted. */
+const APP_RAW_COUNT_FIELDS = Object.freeze([
+  ['units', 'Number of units'],
+]);
+/* A column whose CHECK is narrower than its type. `requested_ir_months` is
+   int4 with `CHECK (0..24)` (db/030), so int4's ceiling is the wrong number to
+   quote — and it was missing from this guard entirely, which left the borrower's
+   own submit answering 500 on a two-digit typo: the exact door, message and
+   class this whole guard exists to close. The details door has had the identical
+   rule since audit round 7; it simply was never carried across. */
+const APP_CHECKED_FIELDS = Object.freeze([
+  ['irMonths', 'Interest reserve (months)', { min: 0, max: 24, what: 'months' }],
+  ['requestedIrMonths', 'Interest reserve (months)', { min: 0, max: 24, what: 'months' }],
+]);
+function applicationNumberProblem(b) {
+  const nb = require('./number-bounds');
+  const body = (b && typeof b === 'object') ? b : {};
+  for (const [key, label] of APP_MONEY_FIELDS) {
+    /* Judged on the PARSED value, because that is what reaches the column —
+       "1,000,000,000,000" is a string Postgres never sees, but the number it
+       parses to is the one that overflows. */
+    const bad = nb.columnProblem(key, moneyValue(body[key]), 'money', label);
+    if (bad) return bad;
+  }
+  /* THE DERIVED ASSIGNMENT PRICE. On an assignment, `fields.assignmentFields`
+     binds `purchase_price = underlying + fee` — so the two parts can each be
+     comfortably storable while the number actually written is not. Measured on
+     both create doors: $900bn + $900bn → 22003 → 500. Judge what is BOUND, not
+     only what was typed. */
+  /* Gated exactly as `assignmentFields` is — an assignment of contract is a
+     PURCHASE concept, so a stale `isAssignment:true` on a REFINANCE is forced
+     off there and the sum is never bound. Mirroring the condition keeps this
+     from refusing over a number that would not have been written. */
+  if (body.isAssignment && !/refi/i.test(String(body.loanType || ''))) {
+    const sum = (moneyValue(body.underlyingContractPrice) || 0) + (moneyValue(body.assignmentFee) || 0);
+    const bad = nb.columnProblem('purchasePrice', sum, 'money', 'Purchase price (contract plus assignment fee)');
+    if (bad) return bad;
+  }
+  for (const [key, label, range] of APP_CHECKED_FIELDS) {
+    const raw = body[key];
+    if (raw == null || String(raw).trim() === '') continue;
+    const n = Number(String(raw).replace(/[^0-9.\-]/g, ''));
+    if (!Number.isFinite(n)) continue;            // the create paths read this as "not provided"
+    const bad = nb.columnProblem(key, Math.trunc(n), range, label);
+    if (bad) return bad;
+  }
+  for (const [key, label] of APP_RAW_COUNT_FIELDS) {
+    const raw = body[key];
+    if (raw == null || String(raw).trim() === '') continue;
+    /* Bound RAW, so POSTGRES parses this text, not JavaScript — and the two do
+       not agree. `Number('1e10')` is a whole number to JS, but `'1e10'::int4`
+       is a syntax error (22P02) and would have gone straight back out as a 500.
+       So the TEXT must read as a plain integer, which is exactly what the
+       column accepts. A number type is checked on its own value. */
+    const ok = typeof raw === 'number'
+      ? Number.isInteger(raw)
+      : /^[+-]?\d+$/.test(String(raw).trim());
+    if (!ok) return `${label} must be a whole number`;
+    const bad = nb.columnProblem(key, Number(String(raw).trim()), 'int', label);
+    if (bad) return bad;
+  }
+  for (const [key, label] of APP_PARSED_COUNT_FIELDS) {
+    const raw = body[key];
+    if (raw == null || String(raw).trim() === '') continue;
+    const n = Number(String(raw).replace(/[^0-9.\-]/g, ''));
+    if (!Number.isFinite(n)) continue;            // the create paths read this as "not provided"
+    const bad = nb.columnProblem(key, Math.trunc(n), 'int', label);
+    if (bad) return bad;
+  }
+  return '';
 }
 
 // sqft_pre / sqft_post are only meaningful for a square-footage-adding or
@@ -213,4 +453,4 @@ function loanNumberProblem(v) {
   return null;
 }
 
-module.exports = { sanitizeFico, sanitizeSsnDigits, formatSsn, sanitizeLoanType, assignmentFields, sqftRelevantType, sqftForType, sanitizeDateOnly, normalizeTypedDate, sanitizeDob, dobProblem, sanitizeLoanNumber, normalizeLoanNumber, loanNumberProblem };
+module.exports = { sanitizeFico, sanitizeSsnDigits, formatSsn, sanitizeLoanType, moneyValue, moneyColumn, textColumn, TEXT_COLUMN_MAX, assignmentFields, applicationNumberProblem, sqftRelevantType, sqftForType, sanitizeDateOnly, normalizeTypedDate, sanitizeDob, dobProblem, sanitizeLoanNumber, normalizeLoanNumber, loanNumberProblem };

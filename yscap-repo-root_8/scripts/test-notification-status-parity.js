@@ -82,6 +82,17 @@ function call(server, method, path, token, body) {
     // Reset the file back to processing/self procesing for the internal-status cases.
     await db.query(`UPDATE applications SET status='processing', internal_status='self procesing' WHERE id=$1`, [appId]);
 
+    // The flood certificate now auto-attaches to EVERY file (db/374, owner-directed
+    // 2026-07-30) as a REQUIRED internal condition, and a required open condition
+    // blocks the funded bucket (advancementBlockers). This test is about the
+    // NOTIFICATION doors, not readiness — clear whatever the engine attached so
+    // the move to funded goes through as before.
+    await db.query(
+      `UPDATE checklist_items ci SET status='satisfied'
+         FROM checklist_templates t
+        WHERE ci.template_id=t.id AND ci.application_id=$1
+          AND ci.status NOT IN ('satisfied')`, [appId]);
+
     // 2) INTERNAL-STATUS door → an internal status that CHANGES the external bucket
     //    (processing → funded). Borrower IS notified now (was silent before the fix).
     reset();
