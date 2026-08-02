@@ -396,6 +396,7 @@ app.get('/e/o/:token', async (req, res) => {
 //     web/…) keeps resolving exactly as before.
 const webDir = path.join(__dirname, '..', cfg.webDir);
 const v2Dir = path.join(webDir, 'v2');
+const staticGzip = require('./lib/static-gzip');
 
 // Vanity login subdomain (owner-directed 2026-07-14): pilot.yscapgroup.com (and
 // www.pilot.…) route STRAIGHT to the PILOT client login. Only the bare root on
@@ -431,6 +432,18 @@ const staticOpts = {
     else if (/[/\\]portal[/\\]assets[/\\]/.test(filePath)) res.set('Cache-Control', 'public, max-age=31536000, immutable');
   },
 };
+// GZIP THE STATIC TEXT ASSETS. Nothing here compressed anything before, and
+// express.static does not do it on its own — so every visitor downloaded the
+// raw bytes (measured on the public term-sheet page's own files: 585,845 B
+// sent where 171,096 B would do, ~415 KB of pure waste per visit).
+// It is mounted HERE, immediately above the static mounts, so every /api and
+// /auth route — Server-Sent Events at /api/events included — has already had
+// its chance and this can never see a streaming response. It serves files it
+// resolves itself and never wraps res.write/res.end, which is the usual way
+// compression middleware breaks streaming. Roots are listed in the SAME order
+// as the mounts below so it can never serve a file they would not.
+app.use(staticGzip([{ dir: v2Dir }, { prefix: '/v1', dir: webDir }, { dir: webDir }]));
+
 app.use(express.static(v2Dir, staticOpts));            // V2 wins at the root
 app.use('/v1', express.static(webDir, staticOpts));    // version 1, kept browsable
 app.use(express.static(webDir, staticOpts));           // fallthrough: v1 assets + legacy /v2/* URLs
