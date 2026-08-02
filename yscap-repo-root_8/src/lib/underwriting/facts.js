@@ -86,7 +86,7 @@ const FACTS = [
   // must reference the SAME policy as the binder, so they tie out on this. A warning when they differ.
   { key: 'policy_number', label: 'Insurance policy number', category: 'collateral', kind: 'ident', severity: 'warning', file: () => null },
   { key: 'purchase_price', label: 'Purchase price', category: 'economics', kind: 'money', severity: 'fatal', file: (c) => (c.app ? c.app.purchase_price : null) },
-  // THE SELLER IS NOW A FILE FACT (db/402, owner-directed 2026-08-02: "we have a seller's name on
+  // THE SELLER IS NOW A FILE FACT (db/403, owner-directed 2026-08-02: "we have a seller's name on
   // file, so we can do stuff with it to make sure it matches other documentation"). The appraisal
   // import writes `applications.seller_name` from the appraiser's owner of record, so the contract,
   // the title report and the settlement statement are all measured against ONE value of record
@@ -103,12 +103,12 @@ const FACTS = [
   // comparison). The appraisal is the authority; the application/file carries units/type/occupancy,
   // so these cross-check appraisal-vs-file. Year built / living area / market rent used to read
   // `file: () => null` — nothing on the loan file stored them, so every one of those rows showed the
-  // appraiser's figure beside an empty cell and the verdict "· Nothing to compare". db/402 gave the
+  // appraiser's figure beside an empty cell and the verdict "· Nothing to compare". db/403 gave the
   // file the four columns and the appraisal import fills them, so they answer now.
   { key: 'units', label: 'Number of units', category: 'collateral', kind: 'count', severity: 'warning', file: (c) => (c.app ? c.app.units : null) },
   { key: 'property_type', label: 'Property type', category: 'collateral', kind: 'propertyType', severity: 'warning', file: (c) => (c.app ? c.app.property_type : null) },
   // OCCUPANCY IS NEVER IMPORTED FROM THE APPRAISAL (owner-directed 2026-08-02, and the reason it is
-  // the one fact db/402 left alone): the appraisal states who lives there TODAY — usually the
+  // the one fact db/403 left alone): the appraisal states who lives there TODAY — usually the
   // SELLER, and "OwnerOccupied" on a purchase simply means the seller lives in the house they are
   // selling. Our file's occupancy is the BORROWER's use after closing, and we only lend
   // non-owner-occupied, so the two legitimately differ. `lib/appraisal/import.js` must never write

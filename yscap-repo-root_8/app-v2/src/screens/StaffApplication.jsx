@@ -757,7 +757,7 @@ function ClickupFileData({ app }) {
   );
 }
 
-/* THE FACTS THE APPRAISAL PUT ON THE FILE (db/402, owner-directed 2026-08-02:
+/* THE FACTS THE APPRAISAL PUT ON THE FILE (db/403, owner-directed 2026-08-02:
    "all these things that he's getting from the appraisal … please add this field
    in our file and that field should automatically be tabulated once you import
    the XML of the appraisal").
@@ -4522,7 +4522,7 @@ export default function StaffApplication() {
         <>
           <EditFileDetails app={app} onSaved={load} openByDefault />
           {/* Read-only, under the editable deal fields: what the appraisal put on
-              the file (db/402). Renders nothing until an appraisal is imported. */}
+              the file (db/403). Renders nothing until an appraisal is imported. */}
           <AppraisalFileFacts app={app} />
         </>
       )}

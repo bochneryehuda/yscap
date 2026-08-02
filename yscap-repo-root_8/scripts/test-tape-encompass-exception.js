@@ -67,13 +67,17 @@ const ok = (c, m) => { if (c) { pass++; } else { fail++; console.log('  FAIL:', 
   // It must re-assert the STATUS check verbatim too (the rollback-collateral rule
   // documented on db/344/388) — every prior-boot value must survive.
   ok(/loan_exceptions_status_check[\s\S]*'requested'[\s\S]*'expired'/.test(sql), 'db/397 re-asserts the status CHECK incl. expired');
-  // It must be numbered ABOVE every other loan_exceptions type-CHECK migration so
-  // its full list is the boot's final word (the db/388 rollback-collateral rule).
-  const typeCheckNums = fs.readdirSync(R + '/db')
+  // The boot's FINAL word on the type CHECK must still allow tape_encompass_override
+  // (the db/388 rollback-collateral rule). This value must survive whatever the
+  // highest-numbered type-CHECK migration is — db/400 (the encompass field-exception
+  // widening) is now numbered above db/397 and re-asserts the full list INCLUDING
+  // tape_encompass_override, so the invariant holds regardless of the number.
+  const typeCheckFiles = fs.readdirSync(R + '/db')
     .filter((f) => /^\d+_.*\.sql$/.test(f))
-    .filter((f) => /loan_exceptions_exception_type_check/.test(fs.readFileSync(R + '/db/' + f, 'utf8')))
-    .map((f) => parseInt(f, 10));
-  ok(397 === Math.max(...typeCheckNums), 'db/397 is the highest-numbered loan_exceptions type-CHECK migration');
+    .filter((f) => /loan_exceptions_exception_type_check/.test(fs.readFileSync(R + '/db/' + f, 'utf8')));
+  const highest = typeCheckFiles.sort((a, b) => parseInt(b, 10) - parseInt(a, 10))[0];
+  ok(/tape_encompass_override/.test(fs.readFileSync(R + '/db/' + highest, 'utf8')),
+    `the highest-numbered loan_exceptions type-CHECK migration (${highest}) preserves tape_encompass_override — it is the boot's final word`);
 })();
 
 // ───────────────────────── PURE: notify maps register the events ────────────

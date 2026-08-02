@@ -272,7 +272,7 @@ function buildTieout(fileCtx, sources = []) {
       //
       // WHICH SOURCES DISAGREE IS READ OFF THE CELLS, not recomputed (2026-08-02). The cells already
       // judged each document against the truth that applies to IT — and now that the file carries a
-      // seller (db/402), that distinction is load-bearing: on a wholesale deal the contract's seller
+      // seller (db/403), that distinction is load-bearing: on a wholesale deal the contract's seller
       // IS the flipper, and measuring it against the file's ORIGINAL seller could only ever produce
       // a nonsense fatal on a perfectly ordinary assignment. Deriving `bad` from the cells is also
       // what keeps the matrix and the finding from telling two different stories. For every other

@@ -1,4 +1,4 @@
--- 402 — THE FACTS THE APPRAISAL STATES NOW LIVE ON THE FILE (owner-directed 2026-08-02).
+-- 403 — THE FACTS THE APPRAISAL STATES NOW LIVE ON THE FILE (owner-directed 2026-08-02).
 --
 -- The owner, reading the Appraisal page's data-comparison table: "Occupancy /
 -- Year built / Living area / Market rent (1007) / Seller … all these things

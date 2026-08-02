@@ -47,7 +47,7 @@ async function tieoutForFile(client, appId, preloadedCtx) {
             -- per-unit rents alone read BLANK on a 1004 + 1007, which carries the appraiser's market
             -- rent as est_market_monthly_rent (db/158) and no per-unit schedule — so the Market
             -- rent row showed nothing on exactly the files that state one. This is the SAME
-            -- resolution run.js and the appraisal import (db/402) use, so the appraisal column and
+            -- resolution run.js and the appraisal import (db/403) use, so the appraisal column and
             -- the loan-file column can never disagree about which number the appraisal states.
             COALESCE(a.est_market_monthly_rent,
                      NULLIF((SELECT sum(u.market_rent) FROM appraisal_units u WHERE u.appraisal_id = a.id), 0)) AS market_rent

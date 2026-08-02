@@ -232,7 +232,7 @@ async function importAppraisalTx(db, {
   if (ap.name) {
     await db.query(`UPDATE applications SET appraiser_name = $2 WHERE id = $1 AND (appraiser_name IS NULL OR appraiser_name = '')`, [applicationId, ap.name]);
   }
-  // 8. THE FACTS THE APPRAISAL STATES, ONTO THE FILE (db/402, owner-directed 2026-08-02:
+  // 8. THE FACTS THE APPRAISAL STATES, ONTO THE FILE (db/403, owner-directed 2026-08-02:
   //    "all these things that he's getting from the appraisal … please add this field in our file
   //    and that field should automatically be tabulated once you import the XML"). Before this the
   //    loan file had no column for the seller, the year built, the living area or the market rent,
@@ -253,7 +253,7 @@ async function importAppraisalTx(db, {
 
 /**
  * The appraiser's MONTHLY market rent for the whole property — the ONE resolution this repo uses
- * (mirrors src/lib/underwriting/run.js and db/402's backfill): the subject's estimated market
+ * (mirrors src/lib/underwriting/run.js and db/403's backfill): the subject's estimated market
  * monthly rent when the report carries it, else the summed per-unit market rents off a 1025/1007
  * rent schedule. Returns null when the appraisal states neither (never 0 — a zero sum means the
  * schedule was empty, not that the property rents for nothing).
@@ -270,7 +270,7 @@ function marketMonthlyRent(A) {
 }
 
 /**
- * COPY THE APPRAISAL'S PROPERTY FACTS ONTO THE LOAN FILE (db/402, owner-directed 2026-08-02).
+ * COPY THE APPRAISAL'S PROPERTY FACTS ONTO THE LOAN FILE (db/403, owner-directed 2026-08-02).
  *
  * The seller, the year built, the living area and the market rent had no home on the file at all,
  * so the Appraisal page's data-comparison showed the appraiser's figure beside an empty "Loan file"
