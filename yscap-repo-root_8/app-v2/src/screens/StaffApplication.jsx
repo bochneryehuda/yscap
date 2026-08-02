@@ -23,8 +23,7 @@ import NoteBuyerCard from '../components/NoteBuyerCard.jsx';
 import PayoffCard from '../components/PayoffCard.jsx';
 import { payoffApplies, payoffMissingKeys } from '../lib/payoff.js';
 import { sizesOnAsIsValue } from '../lib/dealBasis.js';
-import ClearToClosePanel from '../components/ClearToClosePanel.jsx';
-import NextUpPanel from '../components/NextUpPanel.jsx';
+import WhatsLeftPanel from '../components/WhatsLeftPanel.jsx';
 import LoanProgress from '../components/LoanProgress.jsx';
 import ClosingPanel from '../components/ClosingPanel.jsx';
 import TapeQuestionsModal from '../components/TapeQuestionsModal.jsx';
@@ -3319,8 +3318,20 @@ export default function StaffApplication() {
     // landing would burn itself on the old file and never fire for the new one.
     if (!app || String(app.id) !== String(id) || landed.current) return;
     landed.current = true;
-    const m = String(window.location.hash || '').match(/#(sec-[a-z-]+)$/);
-    if (m) { const t = setTimeout(() => goToSection(m[1]), 250); return () => clearTimeout(t); }
+    // Any anchor the room map knows, not only a `sec-*` one: the old
+    // `#(sec-[a-z-]+)` filter dropped `#ai-findings` (emitted by
+    // src/lib/ai/cost-meter.js) before it was ever looked up, so that email
+    // landed on the file top with nothing opened (post-merge audit 2026-08-02).
+    // revealAnchor hops to the owning room AND opens the section; a plain
+    // `sec-*` keeps the byte-identical goToSection path it always had.
+    const m = String(window.location.hash || '').match(/#([a-z][a-z0-9-]*)$/);
+    if (m && stationOf(m[1])) {
+      const target = m[1];
+      const t = setTimeout(() => {
+        if (target.startsWith('sec-')) goToSection(target); else revealAnchor(target);
+      }, 250);
+      return () => clearTimeout(t);
+    }
     // A closer lands on the Closing section by default (owner-directed 2026-07-26)
     // when there's actually a closing to work — a closer on file or a CTC/funded file.
     if (can('manage_closings') && (app.closer_id || ['clear_to_close', 'funded'].includes(app.status))) {
@@ -4212,12 +4223,10 @@ export default function StaffApplication() {
           where this is. */}
       <LoanProgress status={app.status} />
 
-      {/* THE FRONT DOOR (blueprint Move 1). Above the section nav on purpose:
-          the few things that want you today, before the sixteen sections. It
-          renders the SAME server payload ClearToClosePanel already used — which
-          stays exactly where it was, further down — so nothing is hidden and
-          nothing is duplicated work. */}
-      <NextUpPanel gating={gating} items={items} conds={conds} />
+      {/* The work list used to ALSO render here, above the room nav, duplicating
+          the Overview's clear-to-close list with a different slice of the same
+          payload. Owner-directed 2026-08-02: one list, inside the Overview
+          (WhatsLeftPanel, in sec-overview) — the top of the file stays clean. */}
 
       {/* The super-admin structural UNLOCK must be reachable WITHOUT hunting.
           It used to live inside "Application details", which starts collapsed —
@@ -4251,12 +4260,18 @@ export default function StaffApplication() {
           Silent + per-notification override rows for JUST this file. */}
       <FileNotificationOverrides applicationId={id} isMyFile={isMyFile} />
       <DealSnapshot app={app} gating={gating} />
+      {/* THE ONE WORK LIST (owner-directed 2026-08-02) — what is holding the file,
+          what is needed before funding, and PILOT's advisory notes, in one place
+          directly under the deal. It carries the permanent #ctc-outstanding
+          anchor, so every deep link and the header's "N to clear before CTC"
+          badge still land here. Sits high in the Overview on purpose: after the
+          deal facts, before everything else. */}
+      <WhatsLeftPanel gating={gating} items={items} conds={conds} />
       {/* THE NOTE-BUYER SLOT (owner-directed 2026-07-27) — one obvious home for the
           capital partner: who it is, what they require of this file, and what
           switching would change. It used to live only as a pencil icon on a muted
           line inside the ClickUp panel, which is not a path anyone would find. */}
       <div id="note-buyer-slot"><NoteBuyerCard appId={id} value={app.lender} onSaved={load} /></div>
-      <ClearToClosePanel gating={gating} />
       {/* THE WORKFLOW (owner-directed 2026-07-21) — the primary way a file moves.
           Submit it to the next person; the status follows automatically. */}
       <SubmitFilePanel appId={id} onChange={load} />

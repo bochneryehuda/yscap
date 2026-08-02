@@ -78,11 +78,35 @@ const CLIENT_TARGETS = {
 for (const [who, target] of Object.entries(CLIENT_TARGETS)) {
   ok(!!stationOf(target), `${who} → ${target} resolves`);
 }
-// Server-emitted anchors (emails must land forever): scan the three producers.
-for (const p of ['src/routes/admin-exceptions.js', 'src/lib/closing-inbox.js', 'src/lib/notification-digests.js']) {
+/* Server-emitted anchors (emails must land forever). The scan used to cover only
+   the three `#sec-*` producers and only the `sec-` prefix, which is exactly why
+   two dead links survived a green suite (post-merge audit 2026-08-02): a
+   `#ai-findings-<id>` that matches no element at all, and a `#ai-findings` the
+   staff screen's landing regex dropped. So: scan EVERY producer, and match ANY
+   anchor shape, not just `sec-`. */
+const ANCHOR_PRODUCERS = [
+  'src/routes/admin-exceptions.js', 'src/lib/closing-inbox.js', 'src/lib/notification-digests.js',
+  'src/lib/ai/cost-meter.js', 'src/lib/underwriting/ai-suggestions.js',
+];
+for (const p of ANCHOR_PRODUCERS) {
   const src = read(p);
-  const anchors = [...src.matchAll(/#(sec-[a-z]+)/g)].map((m) => m[1]);
-  for (const a of new Set(anchors)) ok(!!stationOf(a), `${p} emits #${a} — resolves`);
+  const anchors = [...src.matchAll(/\/internal\/app\/\$\{[^}]+\}#([a-z][a-z0-9-]*)/g)].map((m) => m[1]);
+  for (const a of new Set(anchors)) ok(!!stationOf(a), `${p} emits #${a} — resolves to a room`);
+}
+// The dead form specifically: an anchor with the suggestion id glued on can never
+// resolve, so no producer may emit one. Deep-linking a finding uses `?finding=`.
+for (const p of ANCHOR_PRODUCERS) {
+  ok(!/#ai-findings-\$\{/.test(read(p)), `${p} does not emit the dead #ai-findings-<id> form`);
+}
+ok(/\?finding=\$\{suggestionId\}/.test(read('src/lib/underwriting/ai-suggestions.js')),
+  'the fatal-finding email deep-links with ?finding= (the form the panel actually consumes)');
+// The staff screen's landing handler must not filter a known anchor out before
+// the map is consulted — it reads any anchor and asks stationOf().
+{
+  const staffSrc = read('app-v2/src/screens/StaffApplication.jsx');
+  ok(!/match\(\/#\(sec-\[a-z-\]\+\)\$\//.test(staffSrc),
+    'the landing handler no longer hard-filters to sec-* (it dropped #ai-findings)');
+  ok(/stationOf\(m\[1\]\)/.test(staffSrc), 'the landing handler consults the room map for the anchor it found');
 }
 
 /* ---------------------------- 4. the staff screen is wired the audited way */

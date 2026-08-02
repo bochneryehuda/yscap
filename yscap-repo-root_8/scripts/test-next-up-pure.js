@@ -1,17 +1,23 @@
 /**
- * "What needs you next" — the loan file's front door (blueprint Move 1).
+ * "What's left on this file" — the ONE work list (components/WhatsLeftPanel.jsx).
  *
- * Pure. Exercises app-v2/src/lib/next-up.js, the ordering brain behind
- * components/NextUpPanel.jsx. This card is the FIRST thing anyone sees on a
- * loan file, so "which item is at the top" is worth locking down: get it wrong
- * and the front door quietly points at the wrong work.
+ * Pure. Exercises app-v2/src/lib/next-up.js, the ordering brain behind it, plus
+ * the structural rule the 2026-08-02 merge exists to enforce: there is exactly
+ * ONE such list, and it lives inside the Overview.
  *
- * The two rules that must never regress:
+ * The rules that must never regress:
  *   1. PILOT's advisories are never listed and never counted (owner-directed
  *      2026-07-27 — an AI finding may not read as something holding the file).
  *   2. An item that blocks BOTH clear-to-close and funding appears once.
+ *   3. ONE panel, in sec-overview, carrying the permanent #ctc-outstanding
+ *      anchor — never a second copy above the room nav (owner-directed
+ *      2026-08-02: "it should only be one section … under the overview").
  */
 const assert = require('node:assert');
+const { readFileSync } = require('node:fs');
+const { join } = require('node:path');
+const ROOT = join(__dirname, '..');
+const read = (p) => readFileSync(join(ROOT, p), 'utf8');
 
 let failures = 0;
 const ok = (c, m) => { console.log(`${c ? 'PASS' : 'FAIL'} ${m}`); if (!c) failures++; };
@@ -92,6 +98,45 @@ const ok = (c, m) => { console.log(`${c ? 'PASS' : 'FAIL'} ${m}`); if (!c) failu
     const sorted = [blank, old, gate, late].sort(byUrgency).map((x) => x.title);
     assert.deepStrictEqual(sorted, ['late', 'gate', 'old', 'blank']);
     ok(true, 'comparator: overdue → gate → longest open → no ageing data last');
+  }
+
+  /* ---- ONE list, in the Overview (the 2026-08-02 merge) ------------------ */
+  {
+    const staff = read('app-v2/src/screens/StaffApplication.jsx');
+
+    // The two panels this replaced are gone — not merely unmounted, deleted, so
+    // nobody can re-mount a second work list from a file that still exists.
+    for (const gone of ['NextUpPanel', 'ClearToClosePanel']) {
+      ok(!staff.includes(`components/${gone}.jsx`), `${gone} is retired (no import)`);
+      let exists = true;
+      try { read(`app-v2/src/components/${gone}.jsx`); } catch { exists = false; }
+      ok(!exists, `components/${gone}.jsx is deleted`);
+    }
+
+    // Exactly one mount, and it is INSIDE sec-overview — not above the room nav,
+    // which is what made the top of the file noisy.
+    const mounts = staff.match(/<WhatsLeftPanel\b/g) || [];
+    ok(mounts.length === 1, 'exactly one WhatsLeftPanel is mounted');
+    const overviewAt = staff.indexOf(`id="sec-overview"`);
+    const nextSectionAt = staff.indexOf('<Section ', overviewAt + 1);
+    const mountAt = staff.indexOf('<WhatsLeftPanel');
+    ok(overviewAt > 0 && mountAt > overviewAt && mountAt < nextSectionAt,
+      'the work list renders inside the File overview section');
+
+    // It is fed the ageing rows; without these it silently loses every
+    // overdue chip (the one thing the retired top card had that the other didn't).
+    ok(/<WhatsLeftPanel[^>]*items=\{items\}[^>]*conds=\{conds\}/.test(staff),
+      'the work list receives items + conds, so ageing/overdue still renders');
+
+    const panel = read('app-v2/src/components/WhatsLeftPanel.jsx');
+    ok(panel.includes('id="ctc-outstanding"'), 'it keeps the permanent #ctc-outstanding anchor');
+    ok(panel.includes('id="next-up"'), 'it keeps #next-up as an alias so old links still land');
+    ok(panel.includes('buildNextUp'), 'it orders through the tested brain, not a private sort');
+    // Advisories still render, and still under their own "does not block" heading.
+    ok(/advisories/.test(panel) && /None of it holds up clear-to-close/.test(panel),
+      "PILOT's notes survive the merge, still labelled as never blocking");
+    // Every text colour dark on white (--ink* tokens are LIGHT — see styles.css).
+    ok(!/color:\s*['"]?var\(--ink/.test(panel), 'no --ink* token is used as a text colour');
   }
 
   console.log(failures === 0 ? '\nALL PASS' : `\n${failures} FAILED`);

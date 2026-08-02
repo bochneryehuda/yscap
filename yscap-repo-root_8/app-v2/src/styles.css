@@ -3371,8 +3371,9 @@ details[open]>.appr-sec-sum .appr-sec-chev{transform:rotate(180deg)}
 }
 
 /* =====================================================================
-   "What needs you next" — the loan file's front door (NextUpPanel.jsx).
-   Move 1 of docs/LOAN-FILE-SIMPLICITY-BLUEPRINT.md.
+   "What's left on this file" — the ONE work list (WhatsLeftPanel.jsx).
+   Move 1 of docs/LOAN-FILE-SIMPLICITY-BLUEPRINT.md; merged 2026-08-02 with the
+   Overview's clear-to-close list so one file never shows the same work twice.
 
    Design brief, owner-directed 2026-07-27: simple, modern, easy to scan.
    So: one card, one row shape, one weight of type per line, and colour used
@@ -3417,6 +3418,17 @@ details[open]>.appr-sec-sum .appr-sec-chev{transform:rotate(180deg)}
 .nx-age.late{background:var(--danger-soft);color:var(--danger)}
 .nx-go{flex:none;align-self:center}
 .nx-more{margin-top:8px}
+
+/* The two groups inside the ONE work list (WhatsLeftPanel.jsx). A funding item
+   must never read as something holding clear-to-close, so when both are present
+   each gets a quiet label. One group needs no label — the counts already say
+   which it is — so these only render in the two-group case. */
+.nx-group + .nx-group{margin-top:14px}
+.nx-group-h{font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.08em;
+  color:#4B585C;padding-bottom:6px;border-bottom:1px solid var(--line)}
+.nx-group-note{margin:6px 0 2px;font-size:12.5px;color:#4B585C}
+.nx-cleared{padding:10px 0 4px}
+.nx-advisories{margin-top:16px;padding-top:12px;border-top:1px solid #EAE4D7}
 
 /* On a phone the row stacks: the reason gets the full width and the action
    drops beneath it, rather than the title being squeezed to two characters. */
