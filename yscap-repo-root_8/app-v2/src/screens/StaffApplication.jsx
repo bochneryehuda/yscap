@@ -23,8 +23,7 @@ import NoteBuyerCard from '../components/NoteBuyerCard.jsx';
 import PayoffCard from '../components/PayoffCard.jsx';
 import { payoffApplies, payoffMissingKeys } from '../lib/payoff.js';
 import { sizesOnAsIsValue } from '../lib/dealBasis.js';
-import ClearToClosePanel from '../components/ClearToClosePanel.jsx';
-import NextUpPanel from '../components/NextUpPanel.jsx';
+import WhatsLeftPanel from '../components/WhatsLeftPanel.jsx';
 import LoanProgress from '../components/LoanProgress.jsx';
 import ClosingPanel from '../components/ClosingPanel.jsx';
 import TapeQuestionsModal from '../components/TapeQuestionsModal.jsx';
@@ -3373,8 +3372,51 @@ export default function StaffApplication() {
     // landing would burn itself on the old file and never fire for the new one.
     if (!app || String(app.id) !== String(id) || landed.current) return;
     landed.current = true;
-    const m = String(window.location.hash || '').match(/#(sec-[a-z-]+)$/);
-    if (m) { const t = setTimeout(() => goToSection(m[1]), 250); return () => clearTimeout(t); }
+    const rawHash = String(window.location.hash || '');
+    // A `?finding=` / `?focus=` arrival is OWNED by its own landing effect below.
+    // Without this stand-down the closer landing fires 300ms later, hops to
+    // Signing & Closing, and strands the anchor's scroll in a room that is no
+    // longer rendered — and admin/super_admin/closer all hold manage_closings,
+    // so it hit exactly the people the fatal-finding email fans out to
+    // (pre-merge audit 2026-08-02).
+    const qAt = rawHash.indexOf('?');
+    const landingQuery = new URLSearchParams(search || (qAt >= 0 ? rawHash.slice(qAt + 1) : ''));
+    if (landingQuery.get('finding') || landingQuery.get('focus')) return;
+    // Any anchor the room map knows, not only a `sec-*` one: the old
+    // `#(sec-[a-z-]+)` filter dropped `#ai-findings` (emitted by
+    // src/lib/ai/cost-meter.js) before it was ever looked up, so that email
+    // landed on the file top with nothing opened (post-merge audit 2026-08-02).
+    const m = rawHash.match(/#([a-z][a-z0-9-]*)$/);
+    if (m && stationOf(m[1])) {
+      const target = m[1];
+      let inner = null;
+      const t = setTimeout(() => {
+        if (target.startsWith('sec-')) { goToSection(target); return; }
+        // Rooms view: the resolver hops to the owning room, opens it and scrolls.
+        if (revealAnchor(target)) return;
+        // revealAnchor is three-state collapsed into a boolean: `true` means only
+        // that the RESOLVER took it. Its own getElementById path scrolls and still
+        // returns false, so without this the fallback below would schedule a
+        // SECOND scroll of the same element 400ms later — which yanks a reader who
+        // scrolled away in between (re-audit 2026-08-02). If the element is on the
+        // page, the reveal already did the work.
+        if (document.getElementById(target)) return;
+        // Classic view registers NO resolver, and the owning section may be
+        // collapsed — a collapsed Section unmounts its children, so there is
+        // nothing for revealAnchor to find. Open the section first, then scroll:
+        // the same shape the ?focus=ai-findings landing already uses.
+        const owner = ANCHOR_SECTION[target];
+        if (owner) requestOpenSection(owner);
+        inner = setTimeout(() => {
+          const el = document.getElementById(target) || (owner ? document.getElementById(owner) : null);
+          if (el) el.scrollIntoView({ behavior: 'smooth', block: 'start' });
+        }, 400);
+      }, 250);
+      // BOTH timers: the inner one is created inside the outer callback, so a
+      // cleanup that only cleared `t` left an orphan that could fire against the
+      // NEXT file and scroll it to the top (open A, switch to B within ~650ms).
+      return () => { clearTimeout(t); if (inner) clearTimeout(inner); };
+    }
     // A closer lands on the Closing section by default (owner-directed 2026-07-26)
     // when there's actually a closing to work — a closer on file or a CTC/funded file.
     if (can('manage_closings') && (app.closer_id || ['clear_to_close', 'funded'].includes(app.status))) {
@@ -4266,12 +4308,10 @@ export default function StaffApplication() {
           where this is. */}
       <LoanProgress status={app.status} />
 
-      {/* THE FRONT DOOR (blueprint Move 1). Above the section nav on purpose:
-          the few things that want you today, before the sixteen sections. It
-          renders the SAME server payload ClearToClosePanel already used — which
-          stays exactly where it was, further down — so nothing is hidden and
-          nothing is duplicated work. */}
-      <NextUpPanel gating={gating} items={items} conds={conds} />
+      {/* The work list used to ALSO render here, above the room nav, duplicating
+          the Overview's clear-to-close list with a different slice of the same
+          payload. Owner-directed 2026-08-02: one list, inside the Overview
+          (WhatsLeftPanel, in sec-overview) — the top of the file stays clean. */}
 
       {/* The super-admin structural UNLOCK must be reachable WITHOUT hunting.
           It used to live inside "Application details", which starts collapsed —
@@ -4305,12 +4345,18 @@ export default function StaffApplication() {
           Silent + per-notification override rows for JUST this file. */}
       <FileNotificationOverrides applicationId={id} isMyFile={isMyFile} />
       <DealSnapshot app={app} gating={gating} />
+      {/* THE ONE WORK LIST (owner-directed 2026-08-02) — what is holding the file,
+          what is needed before funding, and PILOT's advisory notes, in one place
+          directly under the deal. It carries the permanent #ctc-outstanding
+          anchor, so every deep link and the header's "N to clear before CTC"
+          badge still land here. Sits high in the Overview on purpose: after the
+          deal facts, before everything else. */}
+      <WhatsLeftPanel gating={gating} items={items} conds={conds} />
       {/* THE NOTE-BUYER SLOT (owner-directed 2026-07-27) — one obvious home for the
           capital partner: who it is, what they require of this file, and what
           switching would change. It used to live only as a pencil icon on a muted
           line inside the ClickUp panel, which is not a path anyone would find. */}
       <div id="note-buyer-slot"><NoteBuyerCard appId={id} value={app.lender} onSaved={load} /></div>
-      <ClearToClosePanel gating={gating} />
       {/* THE WORKFLOW (owner-directed 2026-07-21) — the primary way a file moves.
           Submit it to the next person; the status follows automatically. */}
       <SubmitFilePanel appId={id} onChange={load} />

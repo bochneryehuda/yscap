@@ -25,6 +25,12 @@ export const STATIONS = [
 export const ANCHOR_SECTION = {
   'note-buyer-slot': 'sec-overview',
   'ctc-outstanding': 'sec-overview',
+  /* The retired "What needs you next" card's address. Its list merged INTO
+     #ctc-outstanding (2026-08-02), and both ids now sit on that one panel — so
+     an old bookmark resolves to the same room and the same element. A dead
+     entry here is not harmless: the landing handler only acts on an anchor the
+     map knows, so leaving it out is what makes a bookmark silently do nothing. */
+  'next-up': 'sec-overview',
   'ai-findings': 'sec-underwriting',
   'conversations': 'sec-messages',
 };

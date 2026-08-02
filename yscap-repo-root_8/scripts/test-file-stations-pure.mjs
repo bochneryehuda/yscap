@@ -9,7 +9,7 @@
    (5) the classic-view escape hatch exists. Pure — real import of stations.js
    plus source reading; no DB, no browser. */
 
-import { readFileSync } from 'node:fs';
+import { readFileSync, readdirSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 
@@ -74,15 +74,53 @@ const CLIENT_TARGETS = {
   '?focus=chat': 'conversations',
   'CTC badge / DealSnapshot': 'ctc-outstanding',
   'NoteBuyerRef / CondNoteBuyerEntry': 'note-buyer-slot',
+  'a bookmark to the retired What-needs-you-next card': 'next-up',
 };
 for (const [who, target] of Object.entries(CLIENT_TARGETS)) {
   ok(!!stationOf(target), `${who} → ${target} resolves`);
 }
-// Server-emitted anchors (emails must land forever): scan the three producers.
-for (const p of ['src/routes/admin-exceptions.js', 'src/lib/closing-inbox.js', 'src/lib/notification-digests.js']) {
+/* Server-emitted anchors (emails must land forever). The scan used to cover only
+   the three `#sec-*` producers and only the `sec-` prefix, which is exactly why
+   two dead links survived a green suite (post-merge audit 2026-08-02): a
+   `#ai-findings-<id>` that matches no element at all, and a `#ai-findings` the
+   staff screen's landing regex dropped. So: scan EVERY producer, and match ANY
+   anchor shape, not just `sec-`.
+
+   The list is WALKED, not hand-typed: a hand-typed list is how the two dead
+   links survived in the first place, and it can only ever describe the
+   producers somebody remembered on the day. */
+const ANCHOR_PRODUCERS = readdirSync(join(ROOT, 'src'), { recursive: true })
+  .filter((f) => String(f).endsWith('.js'))
+  .map((f) => join('src', String(f)))
+  .filter((p) => /\/internal\/app\/\$\{[^}]+\}#/.test(read(p)));
+/* The walk must not silently find NOTHING — a typo in the path or the regex
+   would make every assertion below vacuously true. Pinned by naming the
+   producers we know emit an anchor today rather than by a count, which would
+   go stale the moment one of them switches to a query link (ai-suggestions.js
+   just did). Anything new the walk turns up is checked by the loop below. */
+for (const known of ['src/lib/ai/cost-meter.js', 'src/lib/closing-inbox.js',
+  'src/lib/notification-digests.js', 'src/routes/admin-exceptions.js']) {
+  ok(ANCHOR_PRODUCERS.includes(known), `the producer walk sees ${known}`);
+}
+for (const p of ANCHOR_PRODUCERS) {
   const src = read(p);
-  const anchors = [...src.matchAll(/#(sec-[a-z]+)/g)].map((m) => m[1]);
-  for (const a of new Set(anchors)) ok(!!stationOf(a), `${p} emits #${a} — resolves`);
+  const anchors = [...src.matchAll(/\/internal\/app\/\$\{[^}]+\}#([a-z][a-z0-9-]*)/g)].map((m) => m[1]);
+  for (const a of new Set(anchors)) ok(!!stationOf(a), `${p} emits #${a} — resolves to a room`);
+}
+// The dead form specifically: an anchor with the suggestion id glued on can never
+// resolve, so no producer may emit one. Deep-linking a finding uses `?finding=`.
+for (const p of ANCHOR_PRODUCERS) {
+  ok(!/#ai-findings-\$\{/.test(read(p)), `${p} does not emit the dead #ai-findings-<id> form`);
+}
+ok(/\?finding=\$\{suggestionId\}/.test(read('src/lib/underwriting/ai-suggestions.js')),
+  'the fatal-finding email deep-links with ?finding= (the form the panel actually consumes)');
+// The staff screen's landing handler must not filter a known anchor out before
+// the map is consulted — it reads any anchor and asks stationOf().
+{
+  const staffSrc = read('app-v2/src/screens/StaffApplication.jsx');
+  ok(!/match\(\/#\(sec-\[a-z-\]\+\)\$\//.test(staffSrc),
+    'the landing handler no longer hard-filters to sec-* (it dropped #ai-findings)');
+  ok(/stationOf\(m\[1\]\)/.test(staffSrc), 'the landing handler consults the room map for the anchor it found');
 }
 
 /* ---------------------------- 4. the staff screen is wired the audited way */

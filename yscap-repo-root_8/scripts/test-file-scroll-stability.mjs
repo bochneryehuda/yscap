@@ -46,8 +46,15 @@ ok(/if \(!app \|\| String\(app\.id\) !== String\(id\) \|\| landed\.current\) ret
   // somewhere in the file.
   const i = staff.indexOf("goToSection('sec-closing')");
   ok(i > 0, 'the closer still lands on the Closing section when the file opens');
-  const before = staff.slice(Math.max(0, i - 1400), i);
-  ok(/landed\.current = true;/.test(before), 'the sec-closing landing is behind the one-shot guard');
+  // Assert the INVARIANT — the guard sits in the same effect as the jump — not a
+  // byte distance. This used to scan a fixed 1400-char window, which is a proxy
+  // that breaks on any honest edit between the two (adding the ?finding=
+  // stand-down did exactly that) while still passing if the guard were moved
+  // into a different effect. Slice from the effect the jump actually lives in.
+  const effectStart = staff.lastIndexOf('useEffect(', i);
+  const before = staff.slice(effectStart, i);
+  ok(effectStart > 0 && /landed\.current = true;/.test(before),
+    'the sec-closing landing is behind the one-shot guard, in the same effect');
 }
 {
   const i = staff.indexOf("'ai-findings'");

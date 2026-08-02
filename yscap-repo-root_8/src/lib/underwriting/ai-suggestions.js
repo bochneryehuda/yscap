@@ -308,7 +308,13 @@ async function _notifyFatalNew(s, suggestionId) {
       type: 'ai_fatal_finding',
       title: 'New fatal AI finding',
       body: `AI detected a fatal issue on this file: "${(s.title || '').slice(0, 140)}". Open the AI Findings panel to review, escalate, or dismiss.`,
-      link: `/internal/app/${applicationId}#ai-findings-${suggestionId}`,
+      // `?finding=<id>` — NOT `#ai-findings-<id>`. No element with that id has
+      // ever been rendered (UnderwritingPanel renders a single `id="ai-findings"`
+      // and pulses the row from a React ref keyed off THIS query), so the old
+      // form landed the recipient on the file top with nothing highlighted
+      // (post-merge audit 2026-08-02). The staff screen parses `?finding=` from
+      // the search string AND from inside the hash, so both link shapes work.
+      link: `/internal/app/${applicationId}?finding=${suggestionId}`,
       ctaLabel: 'Open the AI Findings panel',
       // Kicker auto-mapped from type via KICKER_OF; category auto-mapped via CATEGORY_OF.
     };

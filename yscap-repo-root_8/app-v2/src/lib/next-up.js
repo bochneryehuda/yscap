@@ -1,9 +1,9 @@
-/* The ORDERING BRAIN behind "What needs you next" (components/NextUpPanel.jsx).
+/* The ORDERING BRAIN behind "What's left on this file" (components/WhatsLeftPanel.jsx).
  *
  * Kept out of the component and free of JSX so it can be tested directly —
- * see scripts/test-next-up-pure.js. This card is the first thing anyone sees on
- * a loan file, so "which item is at the top" is worth locking down: get it
- * wrong and the front door quietly points at the wrong work.
+ * see scripts/test-next-up-pure.js. This is the file's one work list, so
+ * "which item is at the top" is worth locking down: get it wrong and it
+ * quietly points at the wrong work.
  *
  * It reads the payload GET /api/staff/applications/:id/gating already returns
  * and adds nothing to it. No fetch, no state, no schema.
