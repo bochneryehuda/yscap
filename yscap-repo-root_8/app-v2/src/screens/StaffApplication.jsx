@@ -882,13 +882,13 @@ const APPR_XML_REASONS = [
   { v: 'desk_or_manual', label: 'Desk / manual / older appraisal (no MISMO XML)' },
   { v: 'other', label: 'Other (explain in the note)' },
 ];
-// Order a Life-of-Loan flood determination from ICE's own flood service (the one
-// owner-authorized Encompass write — flood only). Renders on the flood condition
+// Order a flood determination from the active flood provider (Xactus by default;
+// Encompass parked — see src/flood/dispatch.js). Renders on the flood condition
 // (rtl_cond_flood). Any staff member may order. Self-hides until the feature is
-// turned on (ENCOMPASS_FLOOD_ENABLED). If the file has no loan number, the button
-// says so — the loan number is what links the file to its Encompass loan.
+// turned on. If the file isn't ready to order, the button says exactly what's
+// missing (the property address / borrower name / loan number, per provider).
 function OrderFloodButton({ appId, itemId, onChanged, onUploadTo }) {
-  const [state, setState] = useState(null);   // { order, enabled, hasLoanNumber } | null
+  const [state, setState] = useState(null);   // { order, enabled, provider, hasLoanNumber(=ready), needs } | null
   const [busy, setBusy] = useState(false);
   const [msg, setMsg] = useState('');
   const [err, setErr] = useState('');
@@ -933,7 +933,7 @@ function OrderFloodButton({ appId, itemId, onChanged, onUploadTo }) {
     return (
       <div className="small" style={box}>
         <div style={{ fontWeight: 600, color: '#141B22' }}>Flood certificate ordered</div>
-        <div style={{ color: '#4B585C', marginTop: 2 }}>Waiting for it to come back from Encompass — it will appear here automatically.</div>
+        <div style={{ color: '#4B585C', marginTop: 2 }}>Waiting for it to come back — it will appear here automatically.</div>
       </div>
     );
   }
@@ -943,7 +943,7 @@ function OrderFloodButton({ appId, itemId, onChanged, onUploadTo }) {
       {isDry && (
         <div className="small" style={box}>
           <div style={{ fontWeight: 600, color: '#141B22' }}>Test run — nothing was sent</div>
-          <div style={{ color: '#4B585C', marginTop: 2 }}>Test mode is on, so PILOT built the order but did not send it to Encompass. Turn test mode off (in Settings → API health) to place a real order.</div>
+          <div style={{ color: '#4B585C', marginTop: 2 }}>Test mode is on, so PILOT built the order but did not send it. Turn test mode off (in Settings → API health) to place a real order.</div>
           {order.raw && (
             <details style={{ marginTop: 6 }}>
               <summary style={{ color: '#256168', cursor: 'pointer' }}>What PILOT would send (technical)</summary>
@@ -956,7 +956,15 @@ function OrderFloodButton({ appId, itemId, onChanged, onUploadTo }) {
         {busy ? 'Ordering…' : (errored || isDry) ? 'Order flood certificate again' : 'Order flood certificate'}
       </button>
       {!state.hasLoanNumber && (
-        <div className="small" style={{ color: '#4B585C', marginTop: 4 }}>Add a loan number to this file first — the loan number links it to the Encompass loan.</div>
+        <div className="small" style={{ color: '#4B585C', marginTop: 4 }}>
+          {state.needs === 'address'
+            ? 'Add the full property address (street, city, state, ZIP) to this file first — the flood certificate is ordered on the property address.'
+            : state.needs === 'borrower'
+              ? 'Add the borrower’s name to this file first — the flood certificate is issued in the borrower’s name.'
+              : state.needs === 'loan_number'
+                ? 'Add a loan number to this file first.'
+                : 'This file isn’t ready to order a flood certificate yet.'}
+        </div>
       )}
       {/* Quiet fallback: if a certificate can't be ordered (or you already have one),
           you can still attach it by hand — it's not the up-front action. */}

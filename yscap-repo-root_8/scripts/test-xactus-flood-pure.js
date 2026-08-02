@@ -1,0 +1,224 @@
+'use strict';
+/**
+ * Pure tests for the Xactus flood provider (no DB, no network):
+ *   - the MISMO 2.4 Original request body matches the Xactus Postman collection,
+ *   - the response parser reads a completed / pending / error / SFHA response,
+ *   - the credential scrub + connection classifier behave,
+ *   - the desk's address resolver + usability predicate behave.
+ * Runs in `npm test`.
+ */
+const assert = require('assert');
+const flood = require('../src/xactus/flood');
+const addr = require('../src/xactus/flood-address');
+const X = require('../src/lib/mismo/xml');
+const { buildOrderBody, buildStatusBody, parseResponse, scrubCredentials, classifyConnection } = flood._seam;
+
+let n = 0;
+function ok(cond, msg) { n++; assert.ok(cond, msg); }
+
+// ── 1. Original request body (individual) ─────────────────────────────────────
+{
+  const xml = buildOrderBody({
+    loanNumber: 'YS-123',
+    borrowers: [{ firstName: 'Alice', lastName: 'Firsttimer' }],
+    property: { street: '1373 Azalea Dr', city: 'Jacksonville', state: 'FL', zip: '32205' },
+    product: 'life',
+  });
+  const root = X.parse(xml);
+  ok(root.local === 'REQUEST_GROUP', 'root is REQUEST_GROUP');
+  ok(X.attr(root, 'MISMOVersionID') === '2.4', 'MISMO version 2.4');
+  const fr = X.firstDeep(root, 'FLOOD_REQUEST');
+  ok(fr && X.attr(fr, '_ActionType') === 'Original', 'ActionType Original');
+  const name = X.firstDeep(root, '_NAME');
+  ok(X.attr(name, '_Description') === 'Residential', 'Residential (has first name)');
+  ok(X.attr(name, '_Identifier') === 'life', 'life-of-loan identifier');
+  const bor = X.firstDeep(root, 'BORROWER');
+  ok(X.attr(bor, '_FirstName') === 'Alice' && X.attr(bor, '_LastName') === 'Firsttimer', 'borrower name');
+  const mt = X.firstDeep(root, 'MORTGAGE_TERMS');
+  ok(X.attr(mt, 'LenderCaseIdentifier') === 'YS-123', 'loan number as LenderCaseIdentifier');
+  const prop = X.firstDeep(root, 'PROPERTY');
+  ok(X.attr(prop, '_StreetAddress') === '1373 Azalea Dr', 'property street');
+  ok(X.attr(prop, '_City') === 'Jacksonville', 'property city');
+  ok(X.attr(prop, '_State') === 'FL', 'property state');
+  ok(X.attr(prop, '_PostalCode') === '32205', 'property zip');
+}
+
+// ── 2. Joint order → two BORROWER elements; basic identifier ──────────────────
+{
+  const xml = buildOrderBody({
+    loanNumber: 'L1',
+    borrowers: [{ firstName: 'Alice', lastName: 'Firsttimer' }, { firstName: 'John', lastName: 'Firsttimer' }],
+    property: { street: '1 Main St', city: 'Town', state: 'NJ', zip: '07001' },
+    product: 'basic',
+  });
+  const root = X.parse(xml);
+  ok(X.allDeep(root, 'BORROWER').length === 2, 'two borrower elements for a joint order');
+  ok(X.attr(X.firstDeep(root, '_NAME'), '_Identifier') === 'basic', 'basic identifier');
+}
+
+// ── 3. Entity-only borrower → Commercial ──────────────────────────────────────
+{
+  const xml = buildOrderBody({
+    loanNumber: 'L2',
+    borrowers: [{ lastName: 'Acme Holdings LLC' }],
+    property: { street: '2 Oak Ave', city: 'City', state: 'PA', zip: '19000' },
+  });
+  const root = X.parse(xml);
+  ok(X.attr(X.firstDeep(root, '_NAME'), '_Description') === 'Commercial', 'Commercial (no first name)');
+  ok(X.attr(X.firstDeep(root, 'BORROWER'), '_LastName') === 'Acme Holdings LLC', 'company name in _LastName');
+}
+
+// ── 4. StatusQuery body ───────────────────────────────────────────────────────
+{
+  const xml = buildStatusBody('2322271');
+  const root = X.parse(xml);
+  const fr = X.firstDeep(root, 'FLOOD_REQUEST');
+  ok(X.attr(fr, '_ActionType') === 'StatusQuery', 'StatusQuery action');
+  ok(X.attr(fr, 'FloodCertificationIdentifier') === '2322271', 'status query carries the cert id');
+}
+
+// ── 5. Parse a COMPLETED response (instant, PDF inline, zone X = not SFHA) ─────
+{
+  const xml = `<?xml version="1.0" encoding="UTF-8"?>
+<RESPONSE_GROUP MISMOVersionID="2.4">
+  <RESPONSE ResponseDateTime="2025-01-14T18:09:25">
+    <RESPONSE_DATA>
+      <FLOOD_RESPONSE>
+        <EMBEDDED_FILE _EncodingType="Base64" _Extension="pdf" _Name="Flood.pdf">
+          <DOCUMENT>JVBERi0xLjQKtestbase64content==</DOCUMENT>
+        </EMBEDDED_FILE>
+        <FLOOD_DETERMINATION FloodProductCertifyDate="2025-01-14" FloodCertificationIdentifier="2322271" SpecialFloodHazardAreaIndicator="No" _LifeOfLoanIndicator="Yes">
+          <_COMMUNITY_INFORMATION NFIPCommunityName="Jacksonville" NFIPCommunityIdentifier="120077"/>
+          <_BUILDING_INFORMATION NFIPFloodZoneIdentifier="X" NFIPMapIdentifier="12031C" NFIPMapPanelDate="2013-06-19"/>
+        </FLOOD_DETERMINATION>
+      </FLOOD_RESPONSE>
+    </RESPONSE_DATA>
+    <STATUS _Name="success" _Condition="success" _Description="Order completed"/>
+  </RESPONSE>
+</RESPONSE_GROUP>`;
+  const p = parseResponse(xml);
+  ok(p.status === 'completed', 'completed status');
+  ok(p.certId === '2322271', 'cert id');
+  ok(p.sfha === false, 'zone X → not SFHA');
+  ok(p.floodZone === 'X', 'flood zone X');
+  ok(/^JVBER/.test(p.pdfBase64 || ''), 'PDF base64 extracted');
+  ok(p.determination && p.determination.communityName === 'Jacksonville', 'determination community');
+}
+
+// ── 6. Parse an SFHA determination (zone AE, no explicit indicator) ───────────
+{
+  const xml = `<?xml version="1.0"?>
+<RESPONSE_GROUP MISMOVersionID="2.4"><RESPONSE>
+  <RESPONSE_DATA><FLOOD_RESPONSE>
+    <EMBEDDED_FILE><DOCUMENT>JVBERiFLOODZONE</DOCUMENT></EMBEDDED_FILE>
+    <FLOOD_DETERMINATION FloodCertificationIdentifier="999">
+      <_BUILDING_INFORMATION NFIPFloodZoneIdentifier="AE"/>
+    </FLOOD_DETERMINATION>
+  </FLOOD_RESPONSE></RESPONSE_DATA>
+  <STATUS _Condition="success" _Name="success"/>
+</RESPONSE></RESPONSE_GROUP>`;
+  const p = parseResponse(xml);
+  ok(p.status === 'completed', 'completed');
+  ok(p.sfha === true, 'zone AE → SFHA true');
+  ok(p.floodZone === 'AE', 'zone AE');
+}
+
+// ── 7. Parse a PENDING ack (manual order, no PDF) → ordered ───────────────────
+{
+  const xml = `<?xml version="1.0"?>
+<RESPONSE_GROUP MISMOVersionID="2.4"><RESPONSE>
+  <KEY _Name="VendorOrderID" _Value="2384271"/>
+  <RESPONSE_DATA><FLOOD_RESPONSE>
+    <FLOOD_DETERMINATION FloodProductCertifyDate="2025-01-14" FloodCertificationIdentifier="2322271"/>
+  </FLOOD_RESPONSE></RESPONSE_DATA>
+  <STATUS _Code="1000" _Name="external" _Condition="Status" _Description="Request created, request id: 2322271"/>
+</RESPONSE></RESPONSE_GROUP>`;
+  const p = parseResponse(xml);
+  ok(p.status === 'ordered', 'ack with cert id but no PDF → ordered (poll later)');
+  ok(p.certId === '2322271', 'ack cert id');
+  ok(p.pdfBase64 === null, 'no PDF on the ack');
+}
+
+// ── 8. Parse an ERROR response ────────────────────────────────────────────────
+{
+  const xml = `<?xml version="1.0"?>
+<RESPONSE_GROUP MISMOVersionID="2.4"><RESPONSE>
+  <STATUS _Condition="error" _Code="E036" _Description="Invalid Client Account Identifier, Incorrect password supplied"/>
+</RESPONSE></RESPONSE_GROUP>`;
+  const p = parseResponse(xml);
+  ok(p.status === 'error', 'error status');
+  ok(/Invalid Client Account/.test(p.error || ''), 'error message surfaced');
+}
+
+// ── 8b. Completed determination with a ZONE but NO PDF and no success word ────
+// (reachable for the `basic` product) → must be COMPLETED, not misfiled as pending.
+{
+  const xml = `<?xml version="1.0"?>
+<RESPONSE_GROUP MISMOVersionID="2.4"><RESPONSE>
+  <RESPONSE_DATA><FLOOD_RESPONSE>
+    <FLOOD_DETERMINATION FloodCertificationIdentifier="777" SpecialFloodHazardAreaIndicator="No">
+      <_BUILDING_INFORMATION NFIPFloodZoneIdentifier="X"/>
+    </FLOOD_DETERMINATION>
+  </FLOOD_RESPONSE></RESPONSE_DATA>
+  <STATUS _Code="200" _Name="external" _Condition="Status" _Description="Determination returned"/>
+</RESPONSE></RESPONSE_GROUP>`;
+  const p = parseResponse(xml);
+  ok(p.status === 'completed', 'zone present, no PDF, no success word → completed (payload-driven)');
+  ok(p.floodZone === 'X' && p.sfha === false, 'determination captured');
+}
+
+// ── 8c. An ACK whose STATUS says "Order Completed" but has NO determination ────
+// → must stay ORDERED (poll later), not be finalized empty.
+{
+  const xml = `<?xml version="1.0"?>
+<RESPONSE_GROUP MISMOVersionID="2.4"><RESPONSE>
+  <RESPONSE_DATA><FLOOD_RESPONSE>
+    <FLOOD_DETERMINATION FloodCertificationIdentifier="888"/>
+  </FLOOD_RESPONSE></RESPONSE_DATA>
+  <STATUS _Name="Order Completed" _Condition="Status" _Description="queued"/>
+</RESPONSE></RESPONSE_GROUP>`;
+  const p = parseResponse(xml);
+  ok(p.status === 'ordered', 'ack with a "completed" word but no result → ordered');
+  ok(p.sfha === null && p.floodZone === null, 'no determination yet');
+}
+
+// ── 8d. An error surfaced only in _Description → error ─────────────────────────
+{
+  const xml = `<?xml version="1.0"?>
+<RESPONSE_GROUP MISMOVersionID="2.4"><RESPONSE>
+  <FLOOD_RESPONSE><FLOOD_DETERMINATION FloodCertificationIdentifier="999"/></FLOOD_RESPONSE>
+  <STATUS _Name="external" _Condition="Status" _Description="Order rejected: duplicate request"/>
+</RESPONSE></RESPONSE_GROUP>`;
+  const p = parseResponse(xml);
+  ok(p.status === 'error', 'error in _Description → error (not ordered)');
+}
+
+// ── 9. Credential scrub ───────────────────────────────────────────────────────
+{
+  const s = scrubCredentials('POST https://x/flood?LoginAccountIdentifier=op123&LoginAccountPassword=secretpw failed');
+  ok(!/secretpw/.test(s), 'password scrubbed from URL');
+  ok(!/op123/.test(s), 'login id scrubbed from URL');
+}
+
+// ── 10. Connection classifier ─────────────────────────────────────────────────
+{
+  ok(classifyConnection(401).live === false, '401 → login rejected');
+  ok(classifyConnection(200).live === true, '200 → connected');
+  ok(classifyConnection(404).live === null, '404 → reachable, uncertain');
+}
+
+// ── 11. Address resolver + usability (pure helper) ────────────────────────────
+{
+  const a = addr.resolveAddress({ line1: '1373 Azalea Dr', city: 'Jacksonville', state: 'FL', zip: '32205' });
+  ok(a.street === '1373 Azalea Dr' && a.city === 'Jacksonville' && a.state === 'FL' && a.zip === '32205', 'object address resolved');
+  ok(addr.addressUsable(a) === true, 'complete address is usable');
+  ok(addr.addressUsable({ street: '1 Main', city: 'Town' }) === false, 'missing state/zip → not usable');
+  // Alternate key names + a bare string must not throw.
+  const b = addr.resolveAddress({ street: '5 Elm', city: 'X', state: 'NY', postalCode: '10001' });
+  ok(b.zip === '10001', 'postalCode key recovered');
+  const c = addr.resolveAddress('1373 Azalea Dr, Jacksonville, FL 32205');
+  ok(c && typeof c === 'object', 'string address does not throw');
+  ok(addr.resolveAddress(null).street === '', 'null address → empty');
+}
+
+console.log(`test-xactus-flood-pure: ${n} assertions passed`);
