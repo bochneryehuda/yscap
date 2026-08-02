@@ -104,7 +104,7 @@ const FAKE = '00000000-0000-0000-0000-0000000000ff';
   }
   if (dChecked === dq.length) ok(`all ${dChecked} dossier queries run against the real schema`);
 
-  // ── 6. THE INDEXES db/403 PROMISED ARE ACTUALLY THERE ───────────────────
+  // ── 6. THE INDEXES db/405 PROMISED ARE ACTUALLY THERE ───────────────────
   // The wide audit read scans an append-only table that is never pruned; if
   // the index silently failed to create, one tab becomes a table scan.
   const idx = await db.query(
@@ -112,7 +112,7 @@ const FAKE = '00000000-0000-0000-0000-0000000000ff';
     [['idx_audit_detail_application', 'idx_audit_entity_created', 'idx_req_audit_entity_id_at']]);
   const have = new Set(idx.rows.map((r) => r.indexname));
   for (const want of ['idx_audit_detail_application', 'idx_audit_entity_created', 'idx_req_audit_entity_id_at']) {
-    if (!have.has(want)) bad(`db/403 did not create ${want}`);
+    if (!have.has(want)) bad(`db/405 did not create ${want}`);
   }
   if (have.size === 3) ok('the three audit-log indexes exist');
 
