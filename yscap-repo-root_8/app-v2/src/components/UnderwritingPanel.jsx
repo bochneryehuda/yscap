@@ -659,8 +659,14 @@ function TieOutMatrix({ tieout }) {
   const [onlyIssues, setOnlyIssues] = useState(false);
   if (!tieout || !tieout.matrix || !tieout.matrix.length) return null;
   const { columns, matrix, summary } = tieout;
-  const shown = matrix.filter((r) => r.status !== 'none'); // hide facts nothing in the file speaks to
-  if (!shown.length) return null;
+  // EVERY fact, ALWAYS — the chart never hides itself (owner-reported 2026-08-02, "the data
+  // comparison disappeared"). It used to drop every row no document speaks to yet and then return
+  // null when that left nothing, so on a file whose documents have not been read the whole chart
+  // vanished — no heading, no explanation, nothing to say why. A fact with no document value is
+  // precisely what tells an underwriter what is still outstanding, so it stays on screen; the
+  // "Show only issues" toggle below is the way to narrow down, not a silent filter.
+  const shown = matrix;
+  const docCount = Math.max(0, columns.length - 1); // columns minus the loan-file column
   const mismatchCount = shown.filter((r) => r.status === 'mismatch').length;
   // Per-category mismatch tally for the section-header badges.
   const catMismatch = {};
@@ -685,8 +691,14 @@ function TieOutMatrix({ tieout }) {
         )}
       </div>
       <div style={{ fontSize: 12, color: 'var(--muted,#4B585C)', marginBottom: 10 }}>
-        {summary ? `${summary.matched} of ${summary.facts} facts tie out${mismatchCount ? ` · ${mismatchCount} disagree` : ' · everything agrees'} · ` : ''}
-        <span style={{ color: 'var(--good,#3F7A5B)' }}>✓ agrees</span> · <span style={{ color: 'var(--crit,#B4483C)' }}>✕ differs</span> · <span style={{ color: 'var(--amber,#B7791F)' }}>– missing</span> · <span style={{ color: 'var(--muted,#4B585C)' }}>· not on this document</span>
+        {docCount === 0 ? (
+          <span>No documents have been read on this file yet — below is every fact the loan file itself holds. Each document PILOT reads becomes a column here and is compared against the file, fact by fact.</span>
+        ) : (
+          <>
+            {summary ? `${summary.matched} of ${summary.facts} facts tie out${mismatchCount ? ` · ${mismatchCount} disagree` : ' · everything agrees'} · ` : ''}
+            <span style={{ color: 'var(--good,#3F7A5B)' }}>✓ agrees</span> · <span style={{ color: 'var(--crit,#B4483C)' }}>✕ differs</span> · <span style={{ color: 'var(--amber,#B7791F)' }}>– missing</span> · <span style={{ color: 'var(--muted,#4B585C)' }}>· not on this document</span>
+          </>
+        )}
       </div>
       <div style={{ overflowX: 'auto', border: '1px solid var(--line,#E7E1D3)', borderRadius: 12 }}>
         <table style={{ width: '100%', borderCollapse: 'collapse', minWidth: 520 }}>
