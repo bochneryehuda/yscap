@@ -48,6 +48,11 @@ const ALLOWLIST = new Set([
   'src/lib/conditions/engine.js',    // deterministic rules engine (admin-defined templates)
   'src/lib/appraisal/desk.js',       // appraisal desk condition (fixed template)
   'src/lib/vesting.js',              // entity / LLC vesting condition
+  // Staff press "Add this LLC to the borrower's profile" on a different-entity bank finding; this
+  // carries that click out — it attaches the fixed, vetted `rtl_cond_entity_docs` template (db/400)
+  // and generates the entity's own document slots. Not an AI path: PILOT only ever SUGGESTS the
+  // button, and nothing here runs without a human's click (src/routes/underwriting.js entity-adopt).
+  'src/lib/underwriting/entity-adopt.js',
   'src/lib/esign/draw-wire.js',      // e-sign / draw-wire condition
   'src/lib/raise-issue.js',          // staff "raise an issue" on an entity
   'src/lib/product-registration.js', // product registration -> first-class conditions row (db/022)

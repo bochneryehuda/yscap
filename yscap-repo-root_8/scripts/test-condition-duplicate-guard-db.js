@@ -23,7 +23,7 @@
  *  (C) THE LOCK FAILS OPEN — evaluation still happens if the lock cannot be taken.
  *
  * NOTE: a partial unique index was built and then deliberately REMOVED — see
- * db/400's header. Every real insert path already enforces one-per-(file,
+ * db/401's header. Every real insert path already enforces one-per-(file,
  * template) itself; what the index could not live with was the test suite's
  * habit of instantiating one template twice to obtain two independent fixtures.
  *
@@ -121,7 +121,7 @@ const countOf = async (appId, code) => (await db.query(
          VALUES ($1,'application',$2,$3,'borrower','document',true,'received','auto','a human worked this copy too')
          RETURNING id`, [wEmd.template_id, worked, wEmd.label])).rows[0].id;
 
-      await ensureSchema();   // the next boot runs db/400
+      await ensureSchema();   // the next boot runs db/401
 
       assert(await countOf(app, 'cond_emd_corrfirst') === 1,
         'the cleanup removes the UNTOUCHED duplicate');

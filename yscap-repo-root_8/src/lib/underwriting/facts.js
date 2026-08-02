@@ -285,4 +285,7 @@ module.exports = {
   FACTS, FACT_BY_KEY, DOC_CLAIMS, DOC_CARRIES,
   factMatch, matchScalar, display, present, claimsFor, carries, borrowerName,
   canonPropertyType,
+  // Exported so the assignment chain quarantines a mislabeled "fee" the SAME way this file does —
+  // one definition of "that number is really the price", never a second copy that can drift.
+  feeIsTotal,
 };
