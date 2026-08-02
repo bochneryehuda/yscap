@@ -398,16 +398,25 @@ function _matchParty(person, parties, used) {
 // per-pair off the applications[] subtree (std field ids 66 / 1490 / 4533 for a
 // borrower, 98 / 1480 / 4534 for a co-borrower). Our ONE number matches ANY of
 // them (owner: "one is home, one is cell, one is work — any of them is good").
+// Real loans and our own enrich.partyContacts disagree on the exact JSON key
+// (homePhone vs homePhoneNumber, cellPhone vs cellPhoneNumber vs mobilePhone,
+// workPhone vs workPhoneNumber vs businessPhoneNumber), so read EVERY spelling —
+// match-any only ever helps: an absent key is ignored, never a false match. Keep
+// this list a superset of enrich.js partyContacts so the two never drift.
 function _phones(p) {
   if (!p || typeof p !== 'object') return [];
-  return [p.mobilePhone, p.cellPhone, p.homePhoneNumber, p.workPhoneNumber, p.businessPhone]
-    .filter((v) => v != null && String(v).trim() !== '');
+  return [
+    p.mobilePhone, p.cellPhone, p.cellPhoneNumber,
+    p.homePhoneNumber, p.homePhone,
+    p.workPhoneNumber, p.workPhone, p.businessPhone, p.businessPhoneNumber,
+  ].filter((v) => v != null && String(v).trim() !== '');
 }
 // A party's email(s) — the personal email (field 1240 / 1268 = emailAddressText)
-// first, with a work email as a tolerant fallback.
+// first, then every other spelling enrich.partyContacts reads, so a work / alt
+// email still matches. Match-any, same safe failure mode as _phones.
 function _emails(p) {
   if (!p || typeof p !== 'object') return [];
-  return [p.emailAddressText, p.email, p.workEmailAddress]
+  return [p.emailAddressText, p.email, p.emailAddress, p.workEmailAddress, p.workEmail]
     .filter((v) => v != null && String(v).trim() !== '');
 }
 

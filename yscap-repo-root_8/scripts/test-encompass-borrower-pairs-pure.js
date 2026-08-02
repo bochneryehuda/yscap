@@ -78,11 +78,17 @@ ok('_pairLabel names the pair, role, and how it matched (or null)');
 {
   assert.deepStrictEqual(_phones(P('J', 'S', { mobilePhone: '5551112222', homePhoneNumber: '5553334444', workPhoneNumber: '5555556666' })),
     ['5551112222', '5553334444', '5555556666'], 'reads cell + home + work');
+  // Alternate spellings real Encompass loans + enrich.partyContacts use must ALL
+  // be read (cellPhoneNumber / homePhone / workPhone / businessPhoneNumber), or the
+  // "any phone matches" rule silently misses those numbers.
+  assert.deepStrictEqual(_phones(P('J', 'S', { cellPhoneNumber: '5551110000', homePhone: '5552220000', workPhone: '5553330000', businessPhoneNumber: '5554440000' })),
+    ['5551110000', '5552220000', '5553330000', '5554440000'], 'reads the alternate phone spellings too');
   assert.deepStrictEqual(_phones({}), [], 'no phones → empty');
   assert.deepStrictEqual(_emails(P('J', 'S', { emailAddressText: 'a@b.com', workEmailAddress: 'a@work.com' })), ['a@b.com', 'a@work.com']);
+  assert.deepStrictEqual(_emails(P('J', 'S', { emailAddress: 'alt@b.com', workEmail: 'w@b.com' })), ['alt@b.com', 'w@b.com'], 'reads the alternate email spellings too');
   assert.deepStrictEqual(_emails({}), []);
 }
-ok('_phones reads home/cell/work; _emails reads personal + work');
+ok('_phones/_emails read every home/cell/work spelling (superset of enrich.partyContacts) — match-any is fully effective');
 
 // ── SCENARIO A — classic: borrower + co-borrower on ONE pair ────────────────
 {
