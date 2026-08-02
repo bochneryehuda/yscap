@@ -1334,7 +1334,17 @@ export default function Application() {
                 {/* The CONDITION is where the document lives — lead with it;
                     the raw filename is secondary (often meaningless). */}
                 <div style={{ fontWeight: 600, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                  {itemLabelById[d.checklist_item_id] || (d.doc_kind === 'term_sheet' ? 'Term sheet' : d.doc_kind === 'photo_id' ? 'Government photo ID' : 'General upload')}
+                  {/* Never the bare "General upload" — say what it is, or say
+                      plainly that it is filed on the loan itself. */}
+                  {itemLabelById[d.checklist_item_id]
+                    || (d.doc_kind === 'term_sheet' ? 'Term sheet'
+                      : d.doc_kind === 'term_sheet_signed' ? 'Signed term sheet'
+                      : d.doc_kind === 'photo_id' ? 'Government photo ID'
+                      : d.doc_kind === 'appraisal_pdf' ? 'Appraisal report'
+                      : d.doc_kind === 'rehab_budget_export' ? 'Scope of work / rehab budget'
+                      : d.doc_kind === 'draw_inspection_report' ? 'Draw inspection report'
+                      : d.slot_label ? d.slot_label
+                      : 'Filed on your loan')}
                   {d.slot_label ? <span className="muted small" style={{ fontWeight: 400 }}> · {d.slot_label}</span> : null}
                 </div>
                 <div className="muted small">{d.filename} · {kb(d.size_bytes)} · {new Date(d.created_at).toLocaleDateString()}</div>
