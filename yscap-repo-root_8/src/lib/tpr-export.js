@@ -11,9 +11,12 @@
  *      Appraisal/              appraisal report (PDF/XML) + photos + appraisal docs
  *      Background Check/       background report (fraud condition, background slot)
  *      Bank Statements/        bank statements / assets / voided check
- *      Contract & Assignment/  purchase contract + assignment + EMD proof
+ *      Contract & Assignment/  purchase contract + assignment
  *      Credit Report/          credit report
  *      Criminal Check/         criminal report (fraud condition, criminal slot)
+ *      EMD/                    earnest money deposit proof (its OWN folder —
+ *                              never inside Contract & Assignment; owner-directed
+ *                              2026-07-31)
  *      Flood Cert/             flood certificate
  *      ID/                     photo ID + Social Security card
  *      Insurance/              insurance binder + invoice + insurance replies
@@ -79,6 +82,7 @@ const C = {
   CONTRACT: 'Contract & Assignment',
   CREDIT: 'Credit Report',
   CRIMINAL: 'Criminal Check',
+  EMD: 'EMD',
   FLOOD: 'Flood Cert',
   ID: 'ID',
   INSURANCE: 'Insurance',
@@ -94,10 +98,13 @@ const C = {
 // condition-attached document (the code is stable; labels get relabeled).
 const CODE_CATEGORY = {
   // ID (photo ID + Social Security card)
-  gov_id: C.ID, rtl_p1_id: C.ID, rtl_p1_ssn: C.ID,
-  // Contract & Assignment (purchase contract, assignment letter, EMD proof)
+  // (a Social Security card / SSA-89 is an identity document, same as the photo ID)
+  gov_id: C.ID, rtl_p1_id: C.ID, rtl_p1_ssn: C.ID, cond_ssn_verify_corrfirst: C.ID,
+  // Contract & Assignment (purchase contract, assignment letter)
   purchase_contract: C.CONTRACT, rtl_p1_contract: C.CONTRACT, rtl_p5_assign: C.CONTRACT,
-  cond_emd_corrfirst: C.CONTRACT,
+  // EMD proof (the CorrFirst earnest-money condition) — its OWN folder, never
+  // filed inside Contract & Assignment (owner-directed 2026-07-31).
+  cond_emd_corrfirst: C.EMD,
   // LLC / vesting entity documents
   llc_docs: C.LLC, operating_agmt: C.LLC, rtl_p1_llc: C.LLC,
   rtl_llc_formation: C.LLC, rtl_llc_ein: C.LLC, rtl_llc_opagmt: C.LLC, rtl_llc_goodstanding: C.LLC,
@@ -140,7 +147,7 @@ function keywordCategory(text) {
   if (/insurance|hazard|\bbinder\b/.test(s)) return C.INSURANCE;
   if (/appraisal|valuation|\bbpo\b/.test(s)) return C.APPRAISAL;
   if (/scope of work|\bsow\b|rehab budget|construction budget|\bplans\b|permit/.test(s)) return C.SOW;
-  if (/earnest|\bemd\b|escrow deposit/.test(s)) return C.CONTRACT;
+  if (/earnest|\bemd\b|escrow deposit/.test(s)) return C.EMD;
   if (/assignment|purchase (contract|agreement|and sale)|sales? contract|contract of sale|executed contract|\bpsa\b/.test(s)) return C.CONTRACT;
   if (/bank statement|statement|voided check|proof of funds|liquid|reserve|\basset/.test(s)) return C.BANK;
   if (/operating agreement|certificate of formation|articles of organization|ein|good standing|\bllc\b|entity/.test(s)) return C.LLC;

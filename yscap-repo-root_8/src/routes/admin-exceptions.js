@@ -72,6 +72,12 @@ function auditSafe(actorId, action, entityType, entityId, detail) {
 function mayDecide(actor, exc) {
   if (!actor || actor.kind !== 'staff') return false;
   if (!can(actor, 'manage_pricing')) return false;
+  // A type may REQUIRE a specific role (owner-directed 2026-08-02: the
+  // tape_encompass_override may be granted ONLY by a super-admin, never a plain
+  // admin — unlike the other types the decide gate widened to). This is on TOP of
+  // the manage_pricing gate, never a way around it.
+  const needRole = exc && loanExceptions.decideRoleFor(exc.exception_type);
+  if (needRole && actor.role !== needRole) return false;
   if (actor.role === 'super_admin') return true;
   return !(exc && exc.requested_by && String(exc.requested_by) === String(actor.id));
 }
@@ -84,6 +90,7 @@ const DECIDED_AUDIT = {
   pricing_exception: 'pricing_exception_decided',
   oop_rehab: 'oop_rehab_exception_decided',
   issuance_override: 'issuance_override_decided',
+  tape_encompass_override: 'tape_encompass_exception_decided',
 };
 const CLEARED_AUDIT = {
   guaranty_waiver: 'guaranty_exception_cleared',
@@ -91,6 +98,7 @@ const CLEARED_AUDIT = {
   pricing_exception: 'pricing_exception_cleared',
   oop_rehab: 'oop_rehab_exception_cleared',
   issuance_override: 'issuance_override_cleared',
+  tape_encompass_override: 'tape_encompass_exception_cleared',
 };
 const COMMENT_AUDIT = {
   guaranty_waiver: 'guaranty_exception_comment',
@@ -98,6 +106,7 @@ const COMMENT_AUDIT = {
   pricing_exception: 'pricing_exception_comment',
   oop_rehab: 'oop_rehab_exception_comment',
   issuance_override: 'issuance_override_comment',
+  tape_encompass_override: 'tape_encompass_exception_comment',
 };
 
 // The maps/labels every exception screen needs, shipped once per list call.
@@ -220,6 +229,10 @@ router.post('/:id/decide', requirePermission('manage_pricing'), async (req, res)
     if (!exc) return res.status(404).json({ error: 'That exception no longer exists.' });
     if (exc.status !== 'requested') return res.status(409).json({ error: 'This exception was already decided.' });
     if (!mayDecide(req.actor, exc)) {
+      const needRole = loanExceptions.decideRoleFor(exc.exception_type);
+      if (needRole && req.actor.role !== needRole) {
+        return res.status(403).json({ error: 'Only a super admin can approve or deny this exception.' });
+      }
       return res.status(403).json({ error: 'You requested this exception — another admin has to approve or deny it.' });
     }
 
@@ -333,6 +346,19 @@ router.post('/:id/decide', requirePermission('manage_pricing'), async (req, res)
             : `The pricing/guideline exception on ${ctx ? ctx.label : 'the file'} (EX-${row.exception_seq}) was DENIED by an administrator${note ? ` — ${String(note).slice(0, 200)}` : ''}. The registered product stands exactly as the program prices it.`,
           meta: (ctx && ctx.meta) || undefined, applicationId: row.application_id,
           link: `/internal/app/${row.application_id}#sec-pricing`, ctaLabel: 'Open the loan file',
+        });
+      } else if (exc.exception_type === 'tape_encompass_override') {
+        const ctx = await notify.fileContext(row.application_id, [
+          { label: 'Tape before Encompass match', value: decision === 'approved' ? 'Approved' : 'Denied' },
+        ]);
+        await notify.notifyAppStaff(row.application_id, {
+          type: 'tape_encompass_exception_decided',
+          title: decision === 'approved' ? 'Data-tape export allowed' : 'Data-tape export not allowed',
+          body: decision === 'approved'
+            ? `A super admin APPROVED exporting the capital-provider data tape on ${ctx ? ctx.label : 'the file'} before Encompass matches (EX-${row.exception_seq})${note ? ` — ${String(note).slice(0, 200)}` : ''}.${validityLine} The tape can now be exported while this exception stands.`
+            : `A super admin DENIED exporting the data tape on ${ctx ? ctx.label : 'the file'} before Encompass matches (EX-${row.exception_seq})${note ? ` — ${String(note).slice(0, 200)}` : ''}. Get the loan into Encompass and reconcile every field first.`,
+          meta: (ctx && ctx.meta) || undefined, applicationId: row.application_id,
+          link: `/internal/app/${row.application_id}#sec-encompass`, ctaLabel: 'Open the loan file',
         });
       } else {
         const ctx = await notify.fileContext(row.application_id, [

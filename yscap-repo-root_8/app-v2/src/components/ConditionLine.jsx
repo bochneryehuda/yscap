@@ -59,6 +59,7 @@ export default function ConditionLine({
       <span className={`dot ${signed || it.waived_at ? 'cond-satisfied' : conditionStatusClass(it.status)}`} />
       <span className="cnd-name">{it.label}</span>
       <span className={`aud ${stamp.cls}`} title={stamp.title}>{stamp.label}</span>
+      <NoteBuyerMark it={it} />
       {it.is_gate && <span className="pill" style={{ borderColor: 'var(--gold)', color: '#8A6D3B', flex: 'none' }}>gate</span>}
       {it.override_at && <span className="pill" style={{ borderColor: 'var(--gold)', color: '#8A6D3B', flex: 'none' }}>override</span>}
       <span className="cnd-meta">{meta}</span>
@@ -71,6 +72,35 @@ export default function ConditionLine({
         </span>
       )}
     </div>
+  );
+}
+
+/* THE NOTE-BUYER MARK — "this one is here because of THIS capital partner."
+ *
+ * Owner-directed 2026-08-02: "it should have a mark that this condition is for
+ * this particular note buyer." Some conditions exist only because of who is buying
+ * the note (CorrFirst's EMD and SSN verification, Blue Lake's 5% contingency), and
+ * on a list of forty rows there was nothing to tell them apart from the ones every
+ * file carries — so a processor could not see which requirement would disappear if
+ * the file moved to another buyer.
+ *
+ * The value is DERIVED SERVER-SIDE from the condition's own rule (staff.js →
+ * note-buyer-effects.noteBuyerMark), so it can never disagree with the rule that
+ * attached the condition. STAFF-ONLY: the borrower checklist route does not send
+ * this field, and a note buyer's name must never reach a borrower surface — so this
+ * component renders nothing at all unless the server put a mark on the row.
+ *
+ * Gold, like every other "PILOT decided this" chip on the line. Text is explicit
+ * dark hex — `var(--ink*)` is a LIGHT token in this palette.
+ */
+export function NoteBuyerMark({ it }) {
+  const mark = it && it.note_buyer_mark;
+  if (!mark) return null;
+  return (
+    <span className="pill" style={{ borderColor: 'var(--gold)', color: '#8A6D3B', flex: 'none', fontWeight: 700 }}
+      title={`This condition is on the file because the note buyer is ${mark}. It applies to ${mark} files only.`}>
+      {mark}
+    </span>
   );
 }
 

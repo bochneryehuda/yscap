@@ -36,24 +36,9 @@
 const R = require('path').resolve(__dirname, '..');
 const APPLY = process.argv.includes('--apply');
 
-// Walk UP from a document's immediate parent folder to the folder that sits
-// DIRECTLY under the sync leaf — that is the top "category/condition" folder we
-// may rename. Handles a doc filed in the folder root (version 0) OR inside a
-// "Version N" subfolder. Returns null if the leaf is reached without a category
-// child (a doc filed straight in the leaf) or the chain leaves the tree.
-async function topCategoryFolder(sp, driveId, startParentId, leafId) {
-  let curId = startParentId;
-  for (let hop = 0; hop < 12 && curId; hop++) {
-    let f;
-    try { f = await sp.graph(`/drives/${driveId}/items/${curId}?$select=id,name,parentReference`); }
-    catch { return null; }
-    if (!f || f.id == null) return null;
-    if (f.id === leafId) return null;                                   // reached the leaf, no category child
-    if (f.parentReference && f.parentReference.id === leafId) return { id: f.id, name: String(f.name || '') };
-    curId = f.parentReference && f.parentReference.id;
-  }
-  return null;
-}
+// The leaf-walk lives in the shared module (the one-shot EMD refolder uses the
+// SAME definition — owner-directed 2026-07-31) so the two can never drift.
+const { topCategoryFolder } = require(R + '/src/lib/sharepoint-emd-refolder');
 
 (async function main() {
   if (!process.env.DATABASE_URL) { console.error('DATABASE_URL is required'); process.exit(1); }
