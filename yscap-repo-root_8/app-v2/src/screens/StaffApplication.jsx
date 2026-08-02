@@ -42,7 +42,7 @@ import { severityCount } from '../lib/findings-vocab.js';
 import { groupBySubject, subjectOf } from '../lib/condition-subjects.js';
 import { isWorkflowStep } from '../lib/condition-workflow-steps.js';
 import ConditionActions, { DocActions } from '../components/ConditionActions.jsx';
-import ConditionLine, { ConditionNote } from '../components/ConditionLine.jsx';
+import ConditionLine, { ConditionNote, NoteBuyerMark } from '../components/ConditionLine.jsx';
 import UspsAddressVerification from '../components/UspsAddressVerification.jsx';
 import { canComplete, canDeleteDoc } from '../lib/condition-actions.js';
 import EsignFileSection from '../components/EsignFileSection.jsx';
@@ -2798,6 +2798,9 @@ function BorrowerConditions({ appId, app, items, docs, onPatch, onReviewDoc, onD
               <div style={{ flex: 1 }}>
                 <div style={{ fontWeight: 600 }}>
                   {it.label}
+                  {/* Whose requirement this is, when it belongs to one capital
+                      partner — derived from the rule, staff-only. */}
+                  {it.note_buyer_mark && <span style={{ marginLeft: 8 }}><NoteBuyerMark it={it} /></span>}
                   {it.origin_kind === 'auto' && (
                     <span className="pill" style={{ marginLeft: 8, borderColor: 'var(--gold)', color: 'var(--gold)' }}
                       title={(it.origin_detail && it.origin_detail.rule) ? `Added automatically — applies when: ${it.origin_detail.rule}` : 'Added automatically by a condition rule'}>Auto</span>

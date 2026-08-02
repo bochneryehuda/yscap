@@ -94,7 +94,8 @@ const C = {
 // condition-attached document (the code is stable; labels get relabeled).
 const CODE_CATEGORY = {
   // ID (photo ID + Social Security card)
-  gov_id: C.ID, rtl_p1_id: C.ID, rtl_p1_ssn: C.ID,
+  // (a Social Security card / SSA-89 is an identity document, same as the photo ID)
+  gov_id: C.ID, rtl_p1_id: C.ID, rtl_p1_ssn: C.ID, cond_ssn_verify_corrfirst: C.ID,
   // Contract & Assignment (purchase contract, assignment letter, EMD proof)
   purchase_contract: C.CONTRACT, rtl_p1_contract: C.CONTRACT, rtl_p5_assign: C.CONTRACT,
   cond_emd_corrfirst: C.CONTRACT,

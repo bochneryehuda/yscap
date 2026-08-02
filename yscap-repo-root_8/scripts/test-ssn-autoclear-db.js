@@ -31,14 +31,20 @@ const C = require('../src/lib/crypto');
 const cfg = require('../src/config');
 const { ensureSchema } = require('../src/migrate-boot');
 const {
-  noteBuyerIsCorrFirst, ssnVerifiedForBorrower, ssnCompleteness, maybeAutoSatisfySsn,
+  noteBuyerIsCorrFirst, ssnVerifiedForBorrower, ssnCompleteness, maybeAutoSatisfySsn, SSN_TEMPLATE_CODE,
 } = require('../src/lib/underwriting/ssn-autoclear');
 
 let failures = 0;
 const ok = (c, m) => { console.log(`${c ? 'PASS' : 'FAIL'} ${m}`); if (!c) failures++; };
 
-// Seed a file (borrower with SSN, the rtl_p1_ssn condition, note buyer = lender).
-async function seedFile(first, ssn9, lender) {
+// Seed a file (borrower with SSN, the SSN-verification condition, note buyer = lender).
+//
+// The condition is seeded from `code` — defaulting to the LIVE template
+// `cond_ssn_verify_corrfirst` (db/396). It used to be hard-coded to `rtl_p1_ssn`, which
+// db/040 retired and deleted off every open file: the template row still exists, so this
+// suite passed while the module it tests could never find a condition on a real file.
+// The retired code is still accepted as an argument so the legacy path stays covered.
+async function seedFile(first, ssn9, lender, code = 'cond_ssn_verify_corrfirst') {
   const ssn = ssn9 ? C.ssnForStorage(ssn9) : { encrypted: null, last4: null };
   const bor = (await db.query(
     `INSERT INTO borrowers (first_name,last_name,email,ssn_encrypted,ssn_last4)
@@ -51,7 +57,7 @@ async function seedFile(first, ssn9, lender) {
        (template_id, scope, label, borrower_label, audience, item_kind, role_scope, phase, is_required, application_id, status)
      SELECT t.id, t.scope, t.label, t.label, t.audience, t.item_kind, COALESCE(t.role_scope,'loan_officer'),
             t.phase, COALESCE(t.is_required,true), $1, 'outstanding'
-       FROM checklist_templates t WHERE t.code='rtl_p1_ssn' RETURNING id`, [app.id])).rows[0];
+       FROM checklist_templates t WHERE t.code=$2 RETURNING id`, [app.id, code])).rows[0];
   return { borId: bor.id, appId: app.id, itemId: item.id, ssnLast4: ssn.last4 };
 }
 
@@ -90,6 +96,29 @@ async function condRow(itemId) {
   ok((r1.notes || '').startsWith('[auto]'), 'auto-clear leaves an [auto] note');
   const m1b = await maybeAutoSatisfySsn(db, f1.appId, f1.itemId);
   ok(m1b.satisfied === false && m1b.reason === 'already_satisfied', 'a second pass is a no-op');
+
+  // ── 1b) THE CONDITION IT TARGETS IS REAL. Everything above ran against
+  // `cond_ssn_verify_corrfirst` (db/396). Before it existed this module targeted
+  // `rtl_p1_ssn`, which db/040 retired and deleted off every open file, so it could
+  // never find anything to clear on a live file — the owner's "SS NUMBER VERIFICATION
+  // — no condition on the file" (2026-08-02). Two guards so that cannot recur:
+  // the targeted template must be ACTIVE (a retired one can never be on a file), and
+  // a HISTORICAL instance of the old code must still behave, since a terminal file may
+  // still carry one.
+  {
+    const live = (await db.query(
+      `SELECT is_active FROM checklist_templates WHERE code=$1`, [SSN_TEMPLATE_CODE])).rows[0];
+    ok(!!live && live.is_active === true,
+      'the template ssn-autoclear targets is ACTIVE — a retired one could never be on a file');
+    const legacy = await seedFile('Legacy', '123456789', 'CorrFirst', 'rtl_p1_ssn');
+    await insertReport(legacy.appId, legacy.borId, legacy.ssnLast4);
+    const mL = await maybeAutoSatisfySsn(db, legacy.appId, legacy.itemId);
+    ok(mL.satisfied === true, 'a historical rtl_p1_ssn instance on an old file still auto-clears');
+    await db.query('DELETE FROM credit_reports WHERE application_id=$1', [legacy.appId]).catch(() => {});
+    await db.query('DELETE FROM checklist_items WHERE application_id=$1', [legacy.appId]).catch(() => {});
+    await db.query('DELETE FROM applications WHERE id=$1', [legacy.appId]).catch(() => {});
+    await db.query('DELETE FROM borrowers WHERE id=$1', [legacy.borId]).catch(() => {});
+  }
 
   // ── 2) CorrFirst-ONLY gate: a non-CorrFirst note buyer is never auto-cleared
   cfg.ssnAutoclearEnabled = true;

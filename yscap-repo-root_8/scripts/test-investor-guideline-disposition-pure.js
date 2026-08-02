@@ -71,11 +71,20 @@ console.log('ISG disposition pure tests');
   ok('email / non-arms-length / rural / transfer / occupancy no longer surface as "post this condition"');
 }
 
-// 3b — REGRESSION: the SSN-verification condition (mapped to rtl_p1_ssn) still surfaces as a
-// coverage gap when absent — it must NOT be silenced by the internal_verification inference.
+// 3b — REGRESSION: the SSN-verification condition still surfaces as a coverage gap when
+// absent — it must NOT be silenced by the internal_verification inference.
+//
+// The mapped code moved from `rtl_p1_ssn` to `cond_ssn_verify_corrfirst` (db/396,
+// owner-directed 2026-08-02): `rtl_p1_ssn` was retired by db/040 and deleted off every
+// open file, so this guideline was mapped to a template that could never be on a file —
+// which is exactly the "SS NUMBER VERIFICATION — no condition on the file" the owner
+// reported. What this case actually guards is unchanged and is the point of it: a
+// PILOT-mapped condition that clears by internal verification keeps its DOCUMENT
+// disposition and still surfaces as a coverage gap.
 {
   const ssn = corr.CONDITIONS.find((c) => c.cond_no === 1050);
-  assert.ok(ssn && ssn.pilot_template_code === 'rtl_p1_ssn', 'cond 1050 maps to rtl_p1_ssn');
+  assert.ok(ssn && ssn.pilot_template_code === 'cond_ssn_verify_corrfirst',
+    'cond 1050 maps to the live SSN-verification condition (db/396), not the retired rtl_p1_ssn');
   assert.strictEqual(desk.dispositionOf(ssn), D.DOCUMENT, 'SSN verification is a document condition, not file_data');
   const res = desk.assess({ conditions: [ssn], existingByCode: new Map(), signals: {}, noteBuyerKey: 'corrfirst' });
   assert.strictEqual(res.unhappy.length, 1, 'a missing SSN condition still surfaces');
