@@ -55,6 +55,32 @@ app.use('/api/esign/webhook', require('./routes/esign-webhook'));
 app.use('/api/trustpoint/webhook', require('./routes/trustpoint-webhook'));
 app.use(express.json({ limit: `${JSON_LIMIT_MB}mb` }));
 
+/* THE NUL BYTE IS REMOVED ONCE, AT THE DOOR (third audit, 2026-08-02).
+   Postgres cannot store U+0000 in ANY text or jsonb column — it answers 22021 /
+   22P05 and the route's catch-all turns that into a 500. This was fixed three
+   times at three different layers and each fix covered only what its author
+   enumerated: `fields.textColumn` for a handful of text columns, then
+   `fields.jsonbText` for the jsonb binds, and the audit STILL found the public
+   lead door 500-ing on a NUL in the visitor's own `name` box, the public intake
+   door losing an entire application on a NUL in `firstName`, and both borrower
+   profile doors 500-ing on `citizenship` — on the very doors whose jsonb binds
+   had just been converted.
+
+   Enumerating binds fails for the same reason enumerating doors failed. A NUL is
+   never meaningful in a JSON request to this API: no field wants one, nobody can
+   type one, and every storage layer refuses it. So it is stripped from every
+   string in every parsed body, once, here — and the two helpers stay as
+   belt-and-suspenders for values that arrive some other way (a webhook mounted
+   above this line, a ClickUp pull, a parsed document).
+
+   Mounted AFTER express.json (it needs the parsed body) and BEFORE every route.
+   The webhook routers above deliberately sit in front of the JSON parser and are
+   therefore untouched — they carry external payloads through their own parsers.
+   Depth- and breadth-bounded so a hostile body cannot make this the expensive
+   part of a request, and never throws: a body it cannot walk is left alone
+   rather than turned into a 500 of its own. */
+app.use(require('./lib/nul-strip').middleware);
+
 // Rate limits (IP-based, in-memory) on the sensitive/unauthenticated surface.
 // The per-account lockout can't stop credential-stuffing across many accounts
 // or flooding of the public endpoints; this does, and it shields the scrypt

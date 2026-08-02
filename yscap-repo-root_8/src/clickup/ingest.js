@@ -1463,6 +1463,27 @@ function decideInboundProcessor(userId, emailId) {
   return { adopt: null, conflict: false };
 }
 
+/* A NUMBER TOO BIG FOR ITS COLUMN CANNOT BE ALLOWED TO BREAK THE SYNC
+   (post-merge audit round 2, 2026-08-02). `cols` is bound straight into
+   `applications`, and nothing checked that a figure typed into a ClickUp money
+   field actually fits — so one absurd number raises 22003 inside the ingest and
+   THAT TASK FAILS TO SYNC ON EVERY PASS, indefinitely, over a value nobody can
+   see is the culprit.
+
+   DROPPED, not refused: the same idiom the property-type and copied-loan-number
+   guards use — `cols[k] = null` makes the UPDATE's COALESCE keep the real portal
+   value, and the INSERT omit the column so it takes its default. ClickUp is not
+   a person we can hand a 400 to, and the value we already hold is a better
+   answer than a broken sync.
+
+   MUTATES `cols` in place and returns the keys it dropped (for the log and for
+   the test). PURE apart from that — no DB, no network, never throws. */
+function dropUnstorableCols(cols, taskId) {
+  return require('../lib/number-bounds').dropUnstorable('applications', cols, (dropped) => {
+    console.warn(`[clickup] inbound ${dropped.join(', ')} did not fit the column on task ${taskId} — keeping the portal value`);
+  });
+}
+
 async function linkOrCreateApplication(task, read, borrowerId, llcId, ctx = {}) {
   const { allowCreate = false, forceCreate = false, folderId = null, loanOfficerEmail = null, processorEmail = null, coBorrowerId = null, coBorrowerTaskId = null, options: cuOptions = {} } = ctx;
   const a = read.app || {};
@@ -1545,6 +1566,21 @@ async function linkOrCreateApplication(task, read, borrowerId, llcId, ctx = {}) 
   // chokepoint) keeps STORAGE uppercase; the case-insensitive ownership matching
   // just below still uses lower(btrim(…)), so this changes storage only.
   cols.ys_loan_number = require('../lib/fields').normalizeLoanNumber(cols.ys_loan_number);
+
+  /* A NUMBER TOO BIG FOR ITS COLUMN CANNOT BE ALLOWED TO BREAK THE SYNC
+     (post-merge audit round 2, 2026-08-02). `cols` is bound straight into
+     `applications`, and nothing checked that a figure typed into a ClickUp money
+     field actually fits — so one absurd number would raise 22003 inside the
+     ingest and that task would fail to sync on every pass, indefinitely, over a
+     value nobody can see is the culprit.
+
+     DROPPED, not refused: this is the same idiom the property-type and copied-
+     loan-number guards above use — `cols[k] = null` makes the UPDATE's COALESCE
+     keep the real portal value, and the INSERT omit the column so it takes its
+     default. ClickUp is not a person we can hand a 400 to, and the real value we
+     already hold is a better answer than a broken sync. Logged so a recurring
+     one is findable. */
+  dropUnstorableCols(cols, task.id);
 
   // INBOUND YEAR GUARD (2026-07-15 incident): a ClickUp date whose year is out
   // of range (a mid-typing artifact, or a literal 2-digit year — "26" typed as
@@ -2087,5 +2123,5 @@ async function linkOrCreateApplication(task, read, borrowerId, llcId, ctx = {}) 
 module.exports = {
   ingestTask, resolveBorrower, upsertLlc, upsertTrackRecord, linkOrCreateApplication,
   applyChecklistStatuses, identityFrom, RTL_PROGRAMS, decideInboundProcessor,
-  descopeFlipped,
+  descopeFlipped, dropUnstorableCols,
 };

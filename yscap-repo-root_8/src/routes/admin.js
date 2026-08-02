@@ -2,6 +2,7 @@
 const express = require('express');
 const router = require('../lib/safe-router')();
 const db = require('../db');
+const F = require('../lib/fields');           // jsonbText: NUL-safe jsonb binds
 const cfg = require('../config');
 const C = require('../lib/crypto');
 const provider = require('../lib/email');
@@ -169,7 +170,7 @@ router.post('/staff', async (req, res) => {
        RETURNING id, (xmax=0) AS created`,
       [email, fullName, role, b.title || null, dept, b.phone || null, b.cell || null, b.ext || null,
        b.siteSelectable !== false, Number(b.sortOrder) || 100, b.password ? await C.hashPassword(b.password) : null,
-       permOverrides ? JSON.stringify(permOverrides) : null]);
+       permOverrides ? F.jsonbText(permOverrides) : null]);
     const staffId = r.rows[0].id;
     roster.bust();
 
@@ -242,7 +243,7 @@ router.patch('/staff/:id', async (req, res) => {
   // Permission overrides: {} or null clears them (fall back to role defaults).
   if (b.permissions !== undefined) {
     const ov = sanitizeOverrides(b.permissions);
-    sets.push(`permissions=$${i++}`); vals.push(ov ? JSON.stringify(ov) : null);
+    sets.push(`permissions=$${i++}`); vals.push(ov ? F.jsonbText(ov) : null);
   }
   // Shared file access: the specific loan officers whose files this staffer may
   // see even when unassigned. Validated to UUIDs + deduped; [] clears it. Read

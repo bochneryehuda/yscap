@@ -182,6 +182,16 @@ async function siteIntake(p, opts = {}) {
       assignmentFee: num(p.assignmentFee),
       purchasePrice: num(p.purchasePrice || p.price),
     });
+    /* THE DERIVED PRICE HAS TO FIT TOO (post-merge audit round 2, 2026-08-02).
+       On an assignment `assignmentFields` binds purchase_price = underlying +
+       fee, so the two PARTS can each be comfortably storable while the number
+       actually written is not: $900bn + $900bn raised 22003 and LOST THE LEAD to
+       a 500, which is the one failure this door exists to avoid. Judge what is
+       BOUND, not only what was typed — the same reasoning the create doors got
+       in fields.applicationNumberProblem. Those doors REFUSE; this one is
+       public, so it DROPS, like every other unstorable value here. The two parts
+       are still recorded, so nothing the sender typed is lost. */
+    if (numberBounds.moneyOverflows(asg.purchasePrice)) asg.purchasePrice = null;
     /* THE REFINANCE ECONOMICS THE PUBLIC FORM ALREADY COLLECTS (owner-directed
        2026-08-02). `web/v2/tools/loan-application.html` has asked a refinancing
        applicant for the current payoff, the ORIGINAL purchase price and the date
@@ -216,7 +226,10 @@ async function siteIntake(p, opts = {}) {
        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,
                $28,$29,$30,$31,$32,$26,$27,'new',now()) RETURNING id`,
       [borrowerId, officerId, officerName, p.program || p.dealType || null, loanTypeIn,   // #95: public form can't persist a program as a loan type
-       JSON.stringify(p.propertyAddress || { line1: p.pStreet, city: p.pCity, state: p.pState, zip: p.pZip }),
+       /* jsonbText, not JSON.stringify — a NUL byte anywhere in a PUBLIC form post is
+          refused by Postgres and would strand the lead with a 500, the same failure
+          mode as an unstorable number above (audit 2026-08-02). */
+       F.jsonbText(p.propertyAddress || { line1: p.pStreet, city: p.pCity, state: p.pState, zip: p.pZip }),
        p.propertyType || p.propType || null, int(p.units || p.units24 || p.unitsN),
        asg.purchasePrice, num(p.asIsValue || p.asIs), num(p.arv),
        // `ltv` is numeric(6,3) — a PERCENT, not money — so `num()`'s
@@ -230,7 +243,7 @@ async function siteIntake(p, opts = {}) {
        p.rehabType || null, int(p.sqftPre || p.sqftCurrent), int(p.sqftPost),
        irMonths, irAmount,
        int(p.expFlips) || 0, int(p.expHolds != null ? p.expHolds : p.expBrrrr) || 0, int(p.expGround) || 0,
-       source, JSON.stringify(redactPII(p)),
+       source, F.jsonbText(redactPII(p)),
        // $28..$32 — the refinance economics. Positional, and the placeholder list
        // above puts them BEFORE $26/$27 in the column order, so keep the two in
        // step: the column list reads … requested_exp_ground, payoff_amount,
