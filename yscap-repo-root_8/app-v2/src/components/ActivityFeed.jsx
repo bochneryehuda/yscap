@@ -44,6 +44,8 @@ const CATS = [
   { k: 'email', label: 'Email' },
   { k: 'notification', label: 'Notifications' },
   { k: 'pricing', label: 'Pricing' },
+  { k: 'closing', label: 'Closing' },
+  { k: 'draws', label: 'Draws' },
   { k: 'sync', label: 'Integrations' },
   { k: 'security', label: 'Access & security' },
   { k: 'request', label: 'Requests' },

@@ -337,6 +337,32 @@ async function source(name, fn, problems) {
   catch (e) { problems.push(`${name}: ${(e && e.message) || 'unavailable'}`); return []; }
 }
 
+/**
+ * Run tasks with a CEILING on how many are in flight at once.
+ *
+ * This is not tidiness. The audit log reads ~45 tables, and `DB_POOL_MAX` is 10
+ * — firing them all through one `Promise.all` would take every connection in
+ * the pool for the duration of the read, and a request that cannot get a
+ * connection does not fail fast, it WAITS (the pool-exhaustion incident this
+ * repo already has a regression test for). One person opening this tab must
+ * never be able to stall the rest of the app, so the fan-out is bounded well
+ * under the pool and leaves connections for everyone else.
+ */
+const DB_FANOUT = 5;
+async function mapLimit(items, limit, fn) {
+  const out = new Array(items.length);
+  let next = 0;
+  const worker = async () => {
+    for (;;) {
+      const i = next++;
+      if (i >= items.length) return;
+      out[i] = await fn(items[i], i);
+    }
+  };
+  await Promise.all(Array.from({ length: Math.min(limit, items.length) }, worker));
+  return out;
+}
+
 // ── 1. Documents — arrival and verdict are SEPARATE events ─────────────────
 // The old feed emitted ONE row per document whose verb depended on the current
 // review_status, so accepting a document ERASED the upload from the history.
@@ -719,6 +745,9 @@ async function workflowEvents(appId) {
 
    `$1` is always the application id. Keep every query LIMIT-ed. */
 const val = (v) => (v == null || v === '' ? '—' : String(v).slice(0, 200));
+// Money on the draw side is stored in CENTS (the file's own money helper
+// above takes DOLLARS — do not confuse the two).
+const cents = (c) => (c == null ? '—' : `$${Math.round(Number(c) / 100).toLocaleString('en-US')}`);
 
 const TRAILS = [
   // Signatures — the most consequential thing that leaves the building.
@@ -1090,6 +1119,345 @@ const TRAILS = [
       ].filter(Boolean).join('\n'),
       entity_type: 'inbound_email', entity_id: String(m.id) })],
   },
+  // ── CONSTRUCTION DRAWS — money leaving the building ─────────────────────
+  {
+    name: 'draws',
+    sql: `SELECT d.id, d.submitted_at, d.approved_at, d.number, d.name, d.status,
+                 d.total_requested_cents, d.total_approved_cents
+            FROM sitewire_draws d WHERE d.application_id=$1
+           ORDER BY d.submitted_at DESC NULLS LAST LIMIT 60`,
+    map: (d) => {
+      const which = d.number != null ? `draw #${d.number}` : (d.name || 'a draw');
+      const out = [];
+      if (d.submitted_at) out.push(row({ at: d.submitted_at, kind: 'workflow', cat: 'draws', source: 'draws',
+        actor: 'borrower', verb: `submitted ${which}`,
+        label: d.total_requested_cents ? `Requested ${cents(d.total_requested_cents)}` : null,
+        entity_type: 'draw', entity_id: d.id }));
+      if (d.approved_at) out.push(row({ at: d.approved_at, kind: 'workflow', cat: 'draws', source: 'draws',
+        actor: 'staff', verb: `approved ${which}`,
+        label: [d.total_approved_cents ? `Approved ${cents(d.total_approved_cents)}` : null,
+          d.total_requested_cents && d.total_approved_cents && d.total_requested_cents !== d.total_approved_cents
+            ? `(asked for ${cents(d.total_requested_cents)})` : null].filter(Boolean).join(' '),
+        entity_type: 'draw', entity_id: d.id }));
+      return out;
+    },
+  },
+  {
+    name: 'draw money',
+    sql: `SELECT b.id, COALESCE(b.release_date::timestamptz, b.created_at) AS at,
+                 b.approved_cents, b.fee_cents, b.net_release_cents, b.funded_status, b.note,
+                 ${STAFF_NAME_SQL('s')} AS by_name
+            FROM draw_disbursements b
+            LEFT JOIN staff_users s ON s.id=b.created_by
+           WHERE b.application_id=$1 ORDER BY 2 DESC LIMIT 100`,
+    map: (b) => [row({ at: b.at, kind: 'card', cat: 'draws', source: 'draws',
+      actor: 'staff', actor_name: b.by_name,
+      verb: `released ${cents(b.net_release_cents)} on a draw`,
+      label: [b.approved_cents ? `Approved ${cents(b.approved_cents)}` : null,
+        b.fee_cents ? `less a ${cents(b.fee_cents)} fee` : null,
+        b.funded_status ? `Status: ${b.funded_status}` : null, b.note || null].filter(Boolean).join(' · '),
+      entity_type: 'disbursement', entity_id: b.id })],
+  },
+  {
+    name: 'inspection results',
+    sql: `SELECT f.id, f.delivered_at, f.accepted_at, f.accepted_via, f.status,
+                 f.total_requested_cents, f.total_approved_cents
+            FROM draw_findings f WHERE f.application_id=$1
+           ORDER BY f.delivered_at DESC NULLS LAST LIMIT 60`,
+    map: (f) => {
+      const out = [];
+      if (f.delivered_at) out.push(row({ at: f.delivered_at, kind: 'workflow', cat: 'draws', source: 'draws',
+        actor: 'staff', verb: 'sent the inspection result to the borrower',
+        label: f.total_approved_cents ? `Approved ${cents(f.total_approved_cents)} of ${cents(f.total_requested_cents)}` : null,
+        entity_type: 'draw_finding', entity_id: f.id }));
+      if (f.accepted_at) out.push(row({ at: f.accepted_at, kind: 'workflow', cat: 'draws', source: 'draws',
+        actor: 'borrower',
+        verb: f.status === 'disputed' ? 'DISPUTED the inspection result' : 'accepted the inspection result',
+        label: f.accepted_via ? `Via ${f.accepted_via}` : null,
+        entity_type: 'draw_finding', entity_id: f.id }));
+      return out;
+    },
+  },
+  {
+    name: 'lien waivers',
+    sql: `SELECT w.id, COALESCE(w.received_at, w.created_at) AS at, w.kind, w.tier, w.party_name,
+                 w.amount_cents, w.status, ${STAFF_NAME_SQL('s')} AS by_name
+            FROM draw_lien_waivers w
+            LEFT JOIN staff_users s ON s.id=w.created_by
+           WHERE w.application_id=$1 ORDER BY 2 DESC LIMIT 80`,
+    map: (w) => [row({ at: w.at, kind: 'document', cat: 'draws', source: 'draws',
+      actor: 'staff', actor_name: w.by_name,
+      verb: w.received_at ? 'received a lien waiver' : 'recorded a lien waiver as required',
+      label: [w.party_name || null, w.kind ? String(w.kind).replace(/_/g, ' ') : null,
+        w.tier || null, w.amount_cents ? cents(w.amount_cents) : null,
+        w.status ? `Status: ${w.status}` : null].filter(Boolean).join(' · '),
+      entity_type: 'lien_waiver', entity_id: w.id })],
+  },
+  {
+    name: 'TrustPoint draws',
+    sql: `SELECT t.id, t.submitted_at, t.approved_at, t.disbursed_at, t.number, t.name, t.status,
+                 t.requested_cents, t.approved_cents, t.disbursed_cents, t.coordinator_name
+            FROM trustpoint_draws t WHERE t.application_id=$1
+           ORDER BY t.submitted_at DESC NULLS LAST LIMIT 60`,
+    map: (t) => {
+      const which = t.number != null ? `draw #${t.number}` : (t.name || 'a draw');
+      const out = [];
+      if (t.submitted_at) out.push(row({ at: t.submitted_at, kind: 'workflow', cat: 'draws', source: 'TrustPoint',
+        actor: 'borrower', verb: `submitted ${which}`,
+        label: t.requested_cents ? `Requested ${cents(t.requested_cents)}` : null }));
+      if (t.approved_at) out.push(row({ at: t.approved_at, kind: 'workflow', cat: 'draws', source: 'TrustPoint',
+        actor: 'staff', actor_name: t.coordinator_name || null, verb: `approved ${which}`,
+        label: t.approved_cents ? `Approved ${cents(t.approved_cents)}` : null }));
+      if (t.disbursed_at) out.push(row({ at: t.disbursed_at, kind: 'card', cat: 'draws', source: 'TrustPoint',
+        actor: 'system', verb: `disbursed ${which}`,
+        label: t.disbursed_cents ? cents(t.disbursed_cents) : null }));
+      return out;
+    },
+  },
+  // A whole conversation channel the feed never showed.
+  {
+    name: 'TrustPoint comments',
+    sql: `SELECT c.tp_comment_id, c.commented_at, c.edited_at, c.author, c.body, c.is_pinned
+            FROM trustpoint_draw_comments c WHERE c.application_id=$1
+           ORDER BY c.commented_at DESC LIMIT 150`,
+    map: (c) => [row({ at: c.commented_at, kind: 'message', cat: 'draws', source: 'TrustPoint',
+      actor: 'external', actor_name: c.author || null,
+      verb: `commented on a draw${c.is_pinned ? ' (pinned)' : ''}${c.edited_at ? ' (later edited)' : ''}`,
+      label: String(c.body || '').slice(0, 400) || null,
+      entity_type: 'draw_comment', entity_id: String(c.tp_comment_id) })],
+  },
+
+  // ── CLOSING ─────────────────────────────────────────────────────────────
+  {
+    name: 'closing milestones',
+    sql: `SELECT w.application_id, w.stage, w.ready_for_docs_at, w.wire_sent_at,
+                 w.fully_closed_at, w.fully_reconciled_at, ${STAFF_NAME_SQL('s')} AS by_name
+            FROM closing_workflow w
+            LEFT JOIN staff_users s ON s.id=w.updated_by
+           WHERE w.application_id=$1 LIMIT 1`,
+    map: (w) => [
+      w.ready_for_docs_at && { at: w.ready_for_docs_at, verb: 'marked the file ready for closing documents' },
+      w.wire_sent_at && { at: w.wire_sent_at, verb: 'SENT THE WIRE' },
+      w.fully_closed_at && { at: w.fully_closed_at, verb: 'closed the loan' },
+      w.fully_reconciled_at && { at: w.fully_reconciled_at, verb: 'fully reconciled the closing' },
+    ].filter(Boolean).map((e) => row({ at: e.at, kind: 'status', cat: 'closing', source: 'closing',
+      actor: 'staff', actor_name: w.by_name, verb: e.verb, entity_type: 'closing_workflow' })),
+  },
+  {
+    name: 'closing checklist',
+    sql: `SELECT i.id, i.checked_at, i.label, ${STAFF_NAME_SQL('s')} AS by_name
+            FROM closing_checklist_items i
+            JOIN closing_checklists c ON c.id = i.checklist_id
+            LEFT JOIN staff_users s ON s.id = i.checked_by
+           WHERE c.application_id=$1 AND i.checked_at IS NOT NULL
+           ORDER BY i.checked_at DESC LIMIT 150`,
+    map: (i) => [row({ at: i.checked_at, kind: 'condition', cat: 'closing', source: 'closing',
+      actor: 'staff', actor_name: i.by_name, verb: 'ticked a closing checklist item',
+      label: i.label, entity_type: 'closing_checklist_item', entity_id: i.id })],
+  },
+  {
+    name: 'closing notes',
+    sql: `SELECT n.id, n.created_at, n.body, ${STAFF_NAME_SQL('s')} AS by_name
+            FROM closing_notes n
+            LEFT JOIN staff_users s ON s.id=n.author_staff_id
+           WHERE n.application_id=$1 ORDER BY n.created_at DESC LIMIT 100`,
+    map: (n) => [row({ at: n.created_at, kind: 'message', cat: 'closing', source: 'closing',
+      actor: 'staff', actor_name: n.by_name, verb: 'left a closing note',
+      label: String(n.body || '').slice(0, 400) || null, entity_type: 'closing_note', entity_id: n.id })],
+  },
+  {
+    name: 'post-closing',
+    sql: `SELECT p.id, p.updated_at, p.label, p.status, p.exception_note,
+                 ${STAFF_NAME_SQL('s')} AS by_name
+            FROM post_closing_items p
+            LEFT JOIN staff_users s ON s.id=p.assigned_staff_id
+           WHERE p.application_id=$1 AND p.status <> 'pending'
+           ORDER BY p.updated_at DESC LIMIT 100`,
+    map: (p) => [row({ at: p.updated_at, kind: 'condition', cat: 'closing', source: 'post-closing',
+      actor: 'staff', actor_name: p.by_name,
+      verb: `moved a post-closing item to ${String(p.status || '').replace(/_/g, ' ')}`,
+      label: [p.label, p.exception_note || null].filter(Boolean).join('\n'),
+      entity_type: 'post_closing_item', entity_id: p.id })],
+  },
+  // A SECOND, parallel condition system the feed did not know about.
+  {
+    name: 'purchasing',
+    sql: `SELECT c.id, c.created_at, c.resolved_at, c.label, c.status, c.resolution_note,
+                 ${STAFF_NAME_SQL('cb')} AS created_by_name, ${STAFF_NAME_SQL('rb')} AS resolved_by_name
+            FROM purchasing_conditions c
+            LEFT JOIN staff_users cb ON cb.id=c.created_by
+            LEFT JOIN staff_users rb ON rb.id=c.resolved_by
+           WHERE c.application_id=$1 ORDER BY c.created_at DESC LIMIT 100`,
+    map: (c) => {
+      const out = [row({ at: c.created_at, kind: 'condition', cat: 'closing', source: 'purchasing',
+        actor: 'staff', actor_name: c.created_by_name, verb: 'added a purchasing condition',
+        label: c.label, entity_type: 'purchasing_condition', entity_id: c.id })];
+      if (c.resolved_at) out.push(row({ at: c.resolved_at, kind: 'condition', cat: 'closing', source: 'purchasing',
+        actor: 'staff', actor_name: c.resolved_by_name,
+        verb: `${String(c.status || 'resolved')} a purchasing condition`,
+        label: [c.label, c.resolution_note || null].filter(Boolean).join('\n'),
+        entity_type: 'purchasing_condition', entity_id: c.id }));
+      return out;
+    },
+  },
+
+  // ── PILOT WRITING REAL LOAN VALUES ──────────────────────────────────────
+  // The most audit-shaped rows in the schema: an automated before → after on
+  // the two numbers the loan is sized on.
+  {
+    name: 'appraisal value writes',
+    sql: `SELECT a.id, a.imported_at, a.superseded, a.form_type,
+                 a.as_is_applied, a.as_is_applied_value, a.as_is_file_value_before,
+                 a.as_is_read_source, a.as_is_confirmed_at, a.as_is_confirmed_value,
+                 a.arv_applied, a.arv_applied_value, a.arv_file_value_before,
+                 a.arv_confirmed_at, a.arv_confirmed_value,
+                 ${STAFF_NAME_SQL('ac')} AS as_is_confirmed_by_name,
+                 ${STAFF_NAME_SQL('vc')} AS arv_confirmed_by_name
+            FROM appraisals a
+            LEFT JOIN staff_users ac ON ac.id=a.as_is_confirmed_by
+            LEFT JOIN staff_users vc ON vc.id=a.arv_confirmed_by
+           WHERE a.application_id=$1 ORDER BY a.imported_at DESC LIMIT 30`,
+    map: (a) => {
+      const dollars = (v) => (v == null ? '—' : `$${Math.round(Number(v)).toLocaleString('en-US')}`);
+      const out = [row({ at: a.imported_at, kind: 'document', cat: 'document', source: 'appraisal',
+        actor: 'system', verb: `imported an appraisal${a.form_type ? ` (${a.form_type})` : ''}`,
+        label: a.superseded ? 'Since superseded by a newer appraisal' : null,
+        entity_type: 'appraisal', entity_id: a.id })];
+      if (a.as_is_applied) out.push(row({ at: a.imported_at, kind: 'edit', cat: 'pricing', source: 'appraisal',
+        actor: 'system', verb: 'PILOT wrote the As-Is value onto the loan from the appraisal',
+        label: `As-is value: ${dollars(a.as_is_file_value_before)} → ${dollars(a.as_is_applied_value)}${a.as_is_read_source ? ` (read from the ${String(a.as_is_read_source).replace(/_/g, ' ')})` : ''}`,
+        entity_type: 'appraisal', entity_id: a.id }));
+      if (a.arv_applied) out.push(row({ at: a.imported_at, kind: 'edit', cat: 'pricing', source: 'appraisal',
+        actor: 'system', verb: 'PILOT wrote the ARV onto the loan from the appraisal',
+        label: `ARV: ${dollars(a.arv_file_value_before)} → ${dollars(a.arv_applied_value)}`,
+        entity_type: 'appraisal', entity_id: a.id }));
+      if (a.as_is_confirmed_at) out.push(row({ at: a.as_is_confirmed_at, kind: 'edit', cat: 'pricing', source: 'appraisal',
+        actor: 'staff', actor_name: a.as_is_confirmed_by_name,
+        verb: 'typed in the As-Is value by hand',
+        label: `Set to ${dollars(a.as_is_confirmed_value)}`, entity_type: 'appraisal', entity_id: a.id }));
+      if (a.arv_confirmed_at) out.push(row({ at: a.arv_confirmed_at, kind: 'edit', cat: 'pricing', source: 'appraisal',
+        actor: 'staff', actor_name: a.arv_confirmed_by_name,
+        verb: 'typed in the ARV by hand',
+        label: `Set to ${dollars(a.arv_confirmed_value)}`, entity_type: 'appraisal', entity_id: a.id }));
+      return out;
+    },
+  },
+  {
+    name: 'pricing approvals',
+    sql: `SELECT e.id, e.created_at, e.decided_at, e.status, e.decision_note, e.summary,
+                 ${STAFF_NAME_SQL('rq')} AS requested_by_name, ${STAFF_NAME_SQL('dc')} AS decided_by_name
+            FROM manual_program_escalations e
+            LEFT JOIN staff_users rq ON rq.id=e.requested_by
+            LEFT JOIN staff_users dc ON dc.id=e.decided_by
+           WHERE e.application_id=$1 ORDER BY e.created_at DESC LIMIT 40`,
+    map: (e) => {
+      const kind = e.summary && typeof e.summary === 'object' && e.summary.kind
+        ? String(e.summary.kind).replace(/_/g, ' ') : 'a manual product';
+      const out = [row({ at: e.created_at, kind: 'product', cat: 'pricing', source: 'approvals',
+        actor: 'staff', actor_name: e.requested_by_name,
+        verb: `sent ${kind} to an admin for approval`,
+        entity_type: 'pricing_escalation', entity_id: e.id })];
+      if (e.decided_at) out.push(row({ at: e.decided_at, kind: 'product', cat: 'pricing', source: 'approvals',
+        actor: 'staff', actor_name: e.decided_by_name, verb: `${e.status} the pricing approval`,
+        label: e.decision_note || null, entity_type: 'pricing_escalation', entity_id: e.id }));
+      return out;
+    },
+  },
+
+  // ── DECISIONS + AI ──────────────────────────────────────────────────────
+  {
+    name: 'decision certificates',
+    sql: `SELECT c.id, c.issued_at, c.superseded_at, c.milestone, c.digest_sha256,
+                 c.surveillance_state, c.surveillance_reason, ${STAFF_NAME_SQL('s')} AS by_name
+            FROM decision_certificates c
+            LEFT JOIN staff_users s ON s.id=c.issued_by
+           WHERE c.application_id=$1 ORDER BY c.issued_at DESC LIMIT 40`,
+    map: (c) => [row({ at: c.issued_at, kind: 'security', cat: 'file', source: 'certificates',
+      actor: 'staff', actor_name: c.by_name,
+      verb: `issued a decision certificate for ${String(c.milestone || '').replace(/_/g, ' ')}`,
+      label: [c.digest_sha256 ? `Seal: ${String(c.digest_sha256).slice(0, 12)}…` : null,
+        c.superseded_at ? 'Since superseded' : null,
+        c.surveillance_state && c.surveillance_state !== 'ok'
+          ? `Watch: ${c.surveillance_state}${c.surveillance_reason ? ` — ${c.surveillance_reason}` : ''}` : null,
+      ].filter(Boolean).join(' · '), entity_type: 'decision_certificate', entity_id: c.id })],
+  },
+  {
+    name: 'underwriting runs',
+    sql: `SELECT r.id, r.created_at, r.trigger, r.status, r.program_key,
+                 r.term_sheet_eligible, r.ctc_eligible, r.funding_eligible, r.superseded_at
+            FROM underwriting_runs r WHERE r.application_id=$1
+           ORDER BY r.created_at DESC LIMIT 40`,
+    map: (r) => [row({ at: r.created_at, kind: 'setup', cat: 'condition', source: 'underwriting',
+      actor: 'system', verb: `PILOT re-ran the whole-loan review (${String(r.trigger || '').replace(/_/g, ' ')})`,
+      label: [r.status ? `Verdict: ${r.status}` : null,
+        `Term sheet ${r.term_sheet_eligible ? 'ok' : 'not ok'} · CTC ${r.ctc_eligible ? 'ok' : 'not ok'} · funding ${r.funding_eligible ? 'ok' : 'not ok'}`,
+      ].filter(Boolean).join(' · '), entity_type: 'underwriting_run', entity_id: r.id })],
+  },
+  {
+    name: 'PILOT questions',
+    sql: `SELECT q.id, q.asked_at, q.answered_at, q.agent, q.question, q.answer,
+                 ${STAFF_NAME_SQL('s')} AS answered_by_name
+            FROM ai_admin_questions q
+            LEFT JOIN staff_users s ON s.id=q.answered_by_staff_id
+           WHERE q.application_id=$1 ORDER BY q.asked_at DESC LIMIT 60`,
+    map: (q) => {
+      const out = [row({ at: q.asked_at, kind: 'condition', cat: 'condition', source: 'PILOT',
+        actor: 'system', verb: 'PILOT asked an admin a question',
+        label: [q.agent ? `From: ${String(q.agent).replace(/_/g, ' ')}` : null, q.question || null]
+          .filter(Boolean).join('\n'), entity_type: 'ai_question', entity_id: q.id })];
+      if (q.answered_at) out.push(row({ at: q.answered_at, kind: 'condition', cat: 'condition', source: 'PILOT',
+        actor: 'staff', actor_name: q.answered_by_name, verb: 'answered PILOT\'s question',
+        label: q.answer || null, entity_type: 'ai_question', entity_id: q.id }));
+      return out;
+    },
+  },
+
+  // ── THE REST OF THE COMMUNICATION TRAIL ─────────────────────────────────
+  // "They say they never got it" — the open receipt answers it.
+  {
+    name: 'email opens',
+    sql: `SELECT o.notification_id, o.first_opened_at, o.last_opened_at, o.open_count, o.last_ip,
+                 n.title, n.recipient_kind
+            FROM email_opens o
+            JOIN notifications n ON n.id = o.notification_id
+           WHERE n.application_id=$1 ORDER BY o.first_opened_at DESC LIMIT 150`,
+    map: (o) => [row({ at: o.first_opened_at, kind: 'email', cat: 'email', source: 'email opens',
+      actor: o.recipient_kind === 'borrower' ? 'borrower' : 'staff',
+      verb: 'opened an email we sent',
+      label: [o.title, o.open_count > 1 ? `Opened ${o.open_count} times, last ${new Date(o.last_opened_at).toLocaleString()}` : null]
+        .filter(Boolean).join('\n'), ip: o.last_ip, entity_type: 'email_open', entity_id: o.notification_id })],
+  },
+  // Every prior version of an edited message. The feed showed deletions but
+  // never edits, so a message could be rewritten without a trace.
+  {
+    name: 'message edits',
+    sql: `SELECT r.id, r.created_at, r.body, r.edited_by_kind,
+                 ${STAFF_NAME_SQL('s')} AS staff_name, ${BORROWER_NAME_SQL('b')} AS borrower_name
+            FROM message_revisions r
+            JOIN messages m ON m.id = r.message_id
+            LEFT JOIN staff_users s ON r.edited_by_kind='staff' AND s.id=r.edited_by_id
+            LEFT JOIN borrowers b ON r.edited_by_kind='borrower' AND b.id=r.edited_by_id
+           WHERE m.application_id=$1 ORDER BY r.created_at DESC LIMIT 100`,
+    map: (r) => [row({ at: r.created_at, kind: 'message', cat: 'message', source: 'message edits',
+      actor: r.edited_by_kind, actor_name: r.staff_name || r.borrower_name || null,
+      verb: 'edited a message — this is what it said before',
+      label: String(r.body || '').slice(0, 400) || null,
+      entity_type: 'message_revision', entity_id: r.id })],
+  },
+  {
+    name: 'Encompass resolutions',
+    sql: `SELECT e.field_key, e.resolution, e.resolved_at, e.note,
+                 ${STAFF_NAME_SQL('s')} AS by_name
+            FROM encompass_sync_resolutions e
+            LEFT JOIN staff_users s ON s.id=e.resolved_by
+           WHERE e.application_id=$1 ORDER BY e.resolved_at DESC LIMIT 100`,
+    map: (e) => [row({ at: e.resolved_at, kind: 'sync', cat: 'sync', source: 'Encompass',
+      actor: 'staff', actor_name: e.by_name,
+      verb: `settled a disagreement with the LOS — ${e.resolution === 'replaced' ? 'took theirs' : 'kept ours'}`,
+      label: [String(e.field_key || '').replace(/_/g, ' '), e.note || null].filter(Boolean).join('\n'),
+      entity_type: 'encompass_resolution', entity_id: null })],
+  },
+
   // Tasks and reminders raised on the file, and whether they actually fired.
   {
     name: 'reminders',
@@ -1157,22 +1525,24 @@ async function staffFeed(appId, opts) {
   const o = opts || {};
   const limit = Math.min(Math.max(Number(o.limit) || 600, 50), 2000);
   const problems = [];
-  const lists = await Promise.all([
-    source('documents', () => docEvents(appId), problems),
-    source('messages', () => messageEvents(appId), problems),
-    source('conditions', () => conditionEvents(appId), problems),
-    source('status', () => statusEvents(appId), problems),
-    source('audit log', () => auditEvents(appId, Math.min(limit, 800)), problems),
-    source('notifications', () => notificationEvents(appId), problems),
-    source('email', () => emailEvents(appId), problems),
-    source('integrations', () => syncEvents(appId), problems),
-    source('change requests', () => changeRequestEvents(appId), problems),
-    source('workflow', () => workflowEvents(appId), problems),
-    o.includeRequests
-      ? source('requests', () => requestEvents(appId, Math.min(limit, 500)), problems)
-      : Promise.resolve([]),
-    ...TRAILS.map((t) => source(t.name, () => trailEvents(appId, t), problems)),
-  ]);
+  // ONE list of every source, run through a bounded fan-out (see mapLimit):
+  // this reads ~45 tables and the connection pool holds 10, so they may not all
+  // be in flight at once.
+  const jobs = [
+    ['documents', () => docEvents(appId)],
+    ['messages', () => messageEvents(appId)],
+    ['conditions', () => conditionEvents(appId)],
+    ['status', () => statusEvents(appId)],
+    ['audit log', () => auditEvents(appId, Math.min(limit, 800))],
+    ['notifications', () => notificationEvents(appId)],
+    ['email', () => emailEvents(appId)],
+    ['integrations', () => syncEvents(appId)],
+    ['change requests', () => changeRequestEvents(appId)],
+    ['workflow', () => workflowEvents(appId)],
+    ...TRAILS.map((t) => [t.name, () => trailEvents(appId, t)]),
+    ...(o.includeRequests ? [['requests', () => requestEvents(appId, Math.min(limit, 500))]] : []),
+  ];
+  const lists = await mapLimit(jobs, DB_FANOUT, ([name, fn]) => source(name, fn, problems));
   const all = [].concat(...lists)
     .sort((a, b) => new Date(b.at || 0) - new Date(a.at || 0))
     .slice(0, limit);

@@ -50,6 +50,24 @@ const FAKE = '00000000-0000-0000-0000-0000000000ff';
   }
   if (checked === TRAILS.length) ok(`all ${checked} trails run against the real schema`);
 
+  // ── 1b. THE FAN-OUT IS BOUNDED WELL UNDER THE CONNECTION POOL ──────────
+  // The feed reads ~45 tables and the pool holds 10. A request that cannot get
+  // a connection does not fail fast, it WAITS — this repo already has a
+  // regression test for that exact incident. One person opening this tab must
+  // never be able to stall the rest of the app.
+  {
+    const realQuery = db.query;
+    let inFlight = 0; let peak = 0;
+    db.query = function (...args) {
+      inFlight++; peak = Math.max(peak, inFlight);
+      return realQuery.apply(db, args).finally(() => { inFlight--; });
+    };
+    await activity.fileActivity(FAKE, false, { includeRequests: true });
+    db.query = realQuery;
+    if (peak > 8) bad(`the feed ran ${peak} queries at once — that is too close to the 10-connection pool`);
+    else ok(`the fan-out peaked at ${peak} concurrent queries, well under the pool`);
+  }
+
   // ── 2. THE WHOLE FEED, END TO END, REPORTS NO UNREADABLE SOURCE ─────────
   // staffFeed swallows a broken source and records it in the completeness row.
   // On a correct build that row must not exist at all.
