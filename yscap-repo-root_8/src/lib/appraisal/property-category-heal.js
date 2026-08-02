@@ -53,7 +53,7 @@ async function healAppraisalPropertyCategoriesOnce({ limit = DEFAULT_LIMIT } = {
         ORDER BY imported_at DESC
         LIMIT $1`, [limit])).rows;
   } catch (_) {
-    // A database that has not applied db/404 yet is not an error — the next boot runs it.
+    // A database that has not applied db/405 yet is not an error — the next boot runs it.
     return out;
   }
 

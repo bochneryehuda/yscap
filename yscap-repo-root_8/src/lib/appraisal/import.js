@@ -94,7 +94,7 @@ async function importAppraisalTx(db, {
     // `property_type` now holds the real CATEGORY in the portal's vocabulary ("Multi 2–4", "Condo",
     // "SFR (1 unit)"), derived by lib/appraisal/property-category.js. The MISMO attachment STYLE
     // that used to live in this column keeps its own home so the fact is not lost — it is simply
-    // never again mistaken for a property type (owner-reported 2026-08-02). db/404.
+    // never again mistaken for a property type (owner-reported 2026-08-02). db/405.
     property_type: s.propertyType, property_category: s.propertyCategory, attachment_type: s.attachmentType,
     units: s.units, year_built: s.yearBuilt, gla: s.gla,
     rooms: s.rooms, beds: s.beds, baths_full: s.bathsFull, baths_half: s.bathsHalf,

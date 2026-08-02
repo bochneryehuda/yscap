@@ -44,7 +44,7 @@ async function tieoutForFile(client, appId, preloadedCtx) {
   // THE PROPERTY TYPE IS THE CATEGORY, NOT THE ATTACHMENT STYLE (owner-reported 2026-08-02: the
   // comparison read "Property type | Detached | Multi 2–4"). `appraisals.property_type` held the
   // MISMO AttachmentType, whose whole value list is Detached / Attached — not an answer to the
-  // question this row asks. db/404 + the importer now store the real category, and
+  // question this row asks. db/405 + the importer now store the real category, and
   // `property-category.categoryLabelFor` re-derives it live for a row the boot repair has not
   // reached yet, so this column is right on EVERY file from the first deploy rather than after the
   // sweep drains. The style stays available as its own fact and is never compared.
