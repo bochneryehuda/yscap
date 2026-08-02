@@ -92,6 +92,15 @@ const PERDOC_COVERS = {
   bank_statement: ['entity_name', 'borrower_name'],
   scope_of_work: ['rehab_budget'],   // the SOW per-doc check owns rehab_budget_mismatch
   payoff_statement: ['property_address'],   // the payoff per-doc check owns payoff_address_mismatch (vs file)
+  // THE APPRAISAL HAS ITS OWN DESK, AND IT WAS MISSING FROM THIS LIST (owner-reported 2026-08-02:
+  // "some of the appraisal findings is going over to the document findings section"). Every fact
+  // below is compared appraisal-vs-file by lib/appraisal/findings.js, which raises a REAL,
+  // resolvable `appraisal_findings` row on the Appraisal tab — so without this entry the tie-out
+  // raised a second card for the same disagreement on the document desk (address / price / as-is /
+  // ARV / units / property type), and resolving one left the other standing. The matrix still shows
+  // every appraisal cell, exactly as it does for the contract and the ID; only the duplicate
+  // FINDING is suppressed. One list, kept in step with the appraisal desk's own checks.
+  appraisal: require('../appraisal/finding-subject').APPRAISAL_DESK_FACTS,
 };
 // The contract check compares assignment_fee / underlying_price ONLY when the file is flagged an
 // assignment (purchase-contract-checks guards them behind is_assignment). So the tie-out may only
@@ -267,8 +276,11 @@ function buildTieout(fileCtx, sources = []) {
           // document, with its document id so the desk can open them side by side
           // ("this document vs. that document"). documentId is null for the loan
           // file (no PDF) and for the appraisal source (it's its own table).
+          // `docType` is the MACHINE key (the human `label` is display text and must never be
+          // matched on): appraisal/finding-subject.js reads it to decide whether a discrepancy
+          // belongs on the Appraisal page instead of this desk.
           sources: [{ kind: 'file', label: 'Loan file', value: display(fact.kind, fileVal), documentId: null }]
-            .concat(bad.map((c) => ({ kind: 'document', label: c.label, value: display(fact.kind, c.value), documentId: c.documentId || null }))),
+            .concat(bad.map((c) => ({ kind: 'document', docType: c.docType, label: c.label, value: display(fact.kind, c.value), documentId: c.documentId || null }))),
         }));
       }
     } else if (cons.conflict) {
@@ -297,9 +309,12 @@ function buildTieout(fileCtx, sources = []) {
           howTo: `The ${bad.map((c) => c.label).join(', ')} show${bad.length === 1 ? 's' : ''} ${bad.map((c) => display(fact.kind, c.value)).join('; ')} while ${rest}.${roleNote} This must be reconciled — a mismatched ${fact.label.toLowerCase()} across documents is a top fraud/misrepresentation signal.`,
           // The documents that disagree with each other — "this document vs. that
           // document" — each with its id so the desk can open them side by side. The
-          // agreeing side rides along so the reader sees both halves of the comparison.
-          sources: bad.map((c) => ({ kind: 'document', label: c.label, value: display(fact.kind, c.value), documentId: c.documentId || null }))
-            .concat(agreed.map((c) => ({ kind: 'document', label: c.label, value: display(fact.kind, c.value), documentId: c.documentId || null, agrees: true }))),
+          // agreeing side rides along so the reader sees both halves of the comparison. `docType`
+          // is the MACHINE key the Appraisal-page routing reads: a document-vs-document conflict
+          // stays on THIS desk even when the appraisal is one of the parties (finding-subject only
+          // claims a row whose every disagreeing document IS the appraisal).
+          sources: bad.map((c) => ({ kind: 'document', docType: c.docType, label: c.label, value: display(fact.kind, c.value), documentId: c.documentId || null }))
+            .concat(agreed.map((c) => ({ kind: 'document', docType: c.docType, label: c.label, value: display(fact.kind, c.value), documentId: c.documentId || null, agrees: true }))),
         }));
       }
     }

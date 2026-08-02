@@ -43,16 +43,21 @@ const ok = (c, m) => { console.log(`${c ? 'PASS' : 'FAIL'} ${m}`); if (!c) failu
   ok(ids[0] === 'doc-contract' && ids[1] === 'doc-settle', 'B: both document ids are present for the side-by-side compare');
 }
 
-// (C) a source WITHOUT a documentId (e.g. the appraisal source) still surfaces,
-// with documentId null (the UI shows it as a value chip, not an openable pane).
+// (C) a source WITHOUT a documentId (the appraisal — it lives in its own table, not `documents`)
+// still surfaces, with documentId null (the UI shows it as a value chip, not an openable pane).
+// The fact used here is OCCUPANCY on purpose: since 2026-08-02 the tie-out no longer duplicates the
+// facts the appraisal desk itself compares (address / price / as-is / ARV / units / property type —
+// those findings live on the Appraisal tab), so an ARV fixture would prove nothing about source
+// shape. Occupancy is an appraisal fact that desk does NOT compare, so the tie-out still owns it.
 {
-  const ctx = { app: { arv: 600000 } };
-  const sources = [{ id: 'appraisal', docType: 'appraisal', fields: { arvValue: 700000 } }];   // no documentId
+  const ctx = { app: { occupancy: 'Vacant' } };
+  const sources = [{ id: 'appraisal', docType: 'appraisal', fields: { occupancy: 'TenantOccupied' } }];   // no documentId
   const out = buildTieout(ctx, sources);
-  const d = out.discrepancies.find((x) => x.field === 'arv');
-  ok(!!d, 'C: an ARV discrepancy is raised (file vs appraisal)');
+  const d = out.discrepancies.find((x) => x.field === 'occupancy');
+  ok(!!d, 'C: an occupancy discrepancy is raised (file vs appraisal)');
   const doc = (d.sources || []).find((s) => s.kind === 'document');
   ok(doc && doc.documentId === null, 'C: a source with no source-PDF carries documentId null (still listed)');
+  ok(doc && doc.docType === 'appraisal', 'C: and it carries docType — the machine key the Appraisal-page routing reads');
 }
 
 assert.strictEqual(failures, 0, `${failures} assertion(s) failed`);

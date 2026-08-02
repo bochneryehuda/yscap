@@ -28,6 +28,119 @@ const { decodeUploadBase64 } = require('../lib/upload-bytes');
 const { runAppraisalImport, undoAppraisalImport } = require('../lib/appraisal/desk');
 const { collateralScore, arvDefensibility, compImpliedValue } = require('../lib/appraisal/scoring');
 const X = require('../lib/appraisal/xml');
+const apprSubject = require('../lib/appraisal/finding-subject');
+
+/**
+ * THE APPRAISAL FINDINGS THE *DOCUMENT* DESK COMPUTES (owner-directed 2026-08-02).
+ *
+ * The Appraisal page must show EVERY appraisal finding, not only the ones in `appraisal_findings`.
+ * Two producers live on the document side and read the appraisal as their evidence:
+ *   • stored `document_findings` rows whose source is an appraisal source (today: the AVM-consensus
+ *     panel's "AVM consensus disagrees with the appraisal ARV"). These carry a real id, so they are
+ *     RESOLVABLE — from here, through the document desk's own resolve endpoint;
+ *   • tie-out discrepancies whose only disagreeing document is the appraisal. These are DERIVED
+ *     (no row to resolve) and clear when the underlying values agree — shown read-only, and
+ *     deliberately NOT counted by the sign-off gate, or a file could be stuck behind a card with
+ *     no button on it.
+ * The predicate is the shared one (`finding-subject`), so this list and the document desk's
+ * exclusion are the same decision made once.
+ *
+ * Best-effort by construction: any failure returns an empty list — the appraisal tab must render.
+ */
+async function deskAppraisalFindings(appId) {
+  const out = [];
+  try {
+    const rows = await db.query(
+      `SELECT id, source, code, severity, field, doc_value, file_value, title, how_to, blocks_ctc,
+              suggested_actions, page_number, document_id
+         FROM document_findings
+        WHERE application_id=$1 AND COALESCE(status,'open')='open' AND source = ANY($2::text[])
+        ORDER BY (severity='fatal') DESC, created_at`,
+      [appId, apprSubject.APPRAISAL_SOURCE_LIST]);
+    for (const r of rows.rows) {
+      out.push({
+        id: r.id, origin: 'document_desk', resolvable: true,
+        source: r.source, code: r.code, severity: r.severity || 'warning', field: r.field,
+        appraisal_value: r.doc_value, file_value: r.file_value,
+        title: r.title, how_to: r.how_to,
+        blocks_ctc: r.blocks_ctc === true, status: 'open',
+        document_id: r.document_id || null,
+      });
+    }
+  } catch (e) { console.error('[appraisal] desk findings (stored) failed:', e && e.message); }
+
+  try {
+    const { tieoutForFile } = require('../lib/underwriting/file-review');
+    const tie = await tieoutForFile(db, appId);
+    const derived = apprSubject.split(tie.discrepancies || []).appraisal;
+    // A finding a human already settled anywhere (this page, the document desk, the escalation
+    // queue) must not come back on a derived list — same durable ledger the document desk reads.
+    // FAILS OPEN: an unreadable ledger shows the finding, never hides one.
+    let keep = derived;
+    try {
+      const fdec = require('../lib/underwriting/finding-decisions');
+      const settled = await fdec.suppressedKeys(db, appId);
+      keep = fdec.filterSuppressed(settled, derived).kept;
+    } catch (_) { keep = derived; }
+    for (const f of keep) {
+      out.push({
+        id: null, origin: 'tie_out', resolvable: false,
+        source: f.source, code: f.code, severity: f.severity || 'info', field: f.field,
+        appraisal_value: f.docValue != null ? f.docValue : f.doc_value,
+        file_value: f.fileValue != null ? f.fileValue : f.file_value,
+        title: f.title, how_to: f.howTo != null ? f.howTo : f.how_to,
+        // A derived row is advisory here: it has no resolve button, so it must never gate.
+        blocks_ctc: false, status: 'open',
+      });
+    }
+  } catch (e) { console.error('[appraisal] desk findings (tie-out) failed:', e && e.message); }
+  return out;
+}
+
+/**
+ * THE APPRAISAL'S OWN DATA COMPARISON — appraisal value vs loan-file value, fact by fact
+ * (owner-directed 2026-08-02: "the data-comparison table should still show the data comparison of
+ * the appraisal even if the flag is already raised on the appraisal findings screen … the file ARV
+ * and the appraisal ARV, the file as-is and the appraisal as-is, the property type, the unit count,
+ * the address and everything").
+ *
+ * Two separate things, and they must not be confused: a FINDING is the flag raised once, to be
+ * answered once; the COMPARISON is the standing side-by-side an underwriter reads. Suppressing the
+ * duplicate FINDING (so the appraisal's disagreements live on one page) must never remove the
+ * appraisal from the comparison — so the tie-out MATRIX has always kept every appraisal cell, and
+ * this lifts that column out onto the Appraisal page itself, next to the report it describes.
+ *
+ * Reuses `tieoutForFile` — the SAME engine the document desk's matrix renders — so the two screens
+ * can never state different things about the same fact. Every fact the appraisal can carry is
+ * listed, including the ones that AGREE and the ones neither side has, because "these match" is
+ * exactly what a reviewer is looking for. Best-effort: a failure returns null and the tab renders.
+ */
+async function appraisalComparison(appId) {
+  try {
+    const { tieoutForFile } = require('../lib/underwriting/file-review');
+    const tie = await tieoutForFile(db, appId);
+    const rows = [];
+    for (const m of (tie.matrix || [])) {
+      const cells = m.cells || [];
+      const file = cells.find((c) => c.source === 'file');
+      const appr = cells.find((c) => c.source === 'appraisal');
+      // A fact the appraisal is not expected to carry at all ('na') is not part of this comparison.
+      if (!appr || appr.status === 'na') continue;
+      rows.push({
+        key: m.key, label: m.label, category: m.category,
+        appraisalValue: appr.value == null ? null : appr.value,
+        fileValue: file && file.value != null ? file.value : null,
+        // agree | disagree | missing (the appraisal is silent) | noref (nothing to compare against)
+        status: appr.status,
+      });
+    }
+    const disagree = rows.filter((r) => r.status === 'disagree').length;
+    return { rows, summary: { facts: rows.length, disagree, agree: rows.filter((r) => r.status === 'agree').length } };
+  } catch (e) {
+    console.error('[appraisal] comparison failed:', e && e.message);
+    return null;
+  }
+}
 
 // Upload cap: aligned to the per-file limit the JSON body-parser actually allows,
 // so the decode cap can never exceed what express.json() accepts (no dead ceiling).
@@ -68,7 +181,7 @@ router.get('/:appId', async (req, res, next) => {
     const appr = (await db.query(
       `SELECT * FROM appraisals WHERE application_id=$1 AND superseded=false ORDER BY imported_at DESC LIMIT 1`,
       [app.id])).rows[0];
-    if (!appr) return res.json({ appraisal: null, comparables: [], units: [], findings: [], photos: [], summary: { fatal: 0, warning: 0, info: 0, blocksCtc: false } });
+    if (!appr) return res.json({ appraisal: null, comparables: [], units: [], findings: [], photos: [], summary: { fatal: 0, warning: 0, info: 0, blocksCtc: false, open: 0 } });
     const [comps, units, findings, photos] = await Promise.all([
       db.query(`SELECT * FROM appraisal_comparables WHERE appraisal_id=$1 ORDER BY seq`, [appr.id]),
       db.query(`SELECT * FROM appraisal_units WHERE appraisal_id=$1 ORDER BY unit_seq`, [appr.id]),
@@ -79,12 +192,22 @@ router.get('/:appId', async (req, res, next) => {
           WHERE ap.appraisal_id=$1 AND d.is_current AND ap.document_id IS NOT NULL
           ORDER BY ap.sequence`, [appr.id]),
     ]);
-    const open = findings.rows;
+    // ONE list: the appraisal desk's own findings PLUS the appraisal findings the document desk
+    // computes (owner-directed 2026-08-02). The desk's own rows come first — they are the
+    // appraisal-vs-file comparison and carry the write-back actions.
+    const open = findings.rows.concat(await deskAppraisalFindings(app.id));
     const summary = {
       fatal: open.filter((f) => f.severity === 'fatal').length,
       warning: open.filter((f) => f.severity === 'warning').length,
       info: open.filter((f) => f.severity === 'info').length,
       blocksCtc: open.some((f) => f.severity === 'fatal' && f.blocks_ctc),
+      // EVERY open finding, whatever its severity — the appraisal review can't be signed off until
+      // each one has been resolved (owner-directed: "appraisal findings should need to be resolved
+      // before you clear the appraisal review condition"), so the tab shows the number the gate
+      // actually uses. `resolvable` counts only the ones that HAVE a button; a derived tie-out row
+      // is advisory and never holds the sign-off.
+      open: open.length,
+      openResolvable: open.filter((f) => f.resolvable !== false).length,
     };
     // Advisory PILOT reads, recomputed live (never stored/stale): the collateral score and the
     // ARV-defensibility cross-check against the file's rehab budget.
@@ -103,7 +226,11 @@ router.get('/:appId', async (req, res, next) => {
       arv: arvDefensibility({ arv: appr.arv_value, asIs: appr.as_is_value, rehab: rehab.rehab_budget, isReno }),
       impliedValue: compImpliedValue({ comps: impliedComps, subjectGla: appr.gla }),
     };
-    res.json({ appraisal: appr, comparables: comps.rows, units: units.rows, findings: open, photos: photos.rows, summary, score });
+    res.json({ appraisal: appr, comparables: comps.rows, units: units.rows, findings: open, photos: photos.rows, summary, score,
+      // The standing appraisal-vs-file side-by-side. Independent of the findings above: a fact stays
+      // in this table whether or not a finding was ever raised on it, and whether or not that finding
+      // has been answered.
+      comparison: await appraisalComparison(app.id) });
   } catch (e) { next(e); }
 });
 
@@ -329,7 +456,52 @@ router.post('/:appId/findings/:fid/resolve', requirePermission('sign_off_conditi
     const fnd = (await db.query(
       `SELECT * FROM appraisal_findings WHERE id=$1 AND application_id=$2 AND status='open'`,
       [req.params.fid, app.id])).rows[0];
-    if (!fnd) return res.status(404).json({ error: 'finding not found or already resolved' });
+    // AN APPRAISAL FINDING THE *DOCUMENT* DESK STORED IS RESOLVED FROM HERE TOO (owner-directed
+    // 2026-08-02). The Appraisal page now lists them, so its buttons must work on them — otherwise
+    // moving a finding onto this page would strand it, which is worse than the split it fixes.
+    // Scoped to the appraisal sources only (a reviewer on this page can never reach an unrelated
+    // document finding), and it goes through the document desk's OWN resolution path — same
+    // validation, same durable decision ledger, same AI-mirror close — so the two desks can never
+    // record a decision differently.
+    if (!fnd) {
+      const deskRow = (await db.query(
+        `SELECT * FROM document_findings
+          WHERE id=$1 AND application_id=$2 AND COALESCE(status,'open')='open' AND source = ANY($3::text[])`,
+        [req.params.fid, app.id, apprSubject.APPRAISAL_SOURCE_LIST])).rows[0];
+      if (!deskRow) return res.status(404).json({ error: 'finding not found or already resolved' });
+      // Same tiered authority as the document desk: granting an exception on a fatal,
+      // clear-to-close-blocking finding needs waive_conditions on top of sign_off_conditions.
+      const canon = require('../lib/underwriting/actions').canon(action);
+      const auth = require('../lib/underwriting/exceptions').canApply(req.actor, canon, deskRow, can);
+      if (!auth.ok) return res.status(403).json({ error: auth.reason, requiredPermission: auth.requiredPermission });
+      const store = require('../lib/underwriting/store');
+      const client2 = await db.getClient();
+      let updated = null;
+      try {
+        await client2.query('BEGIN');
+        updated = await store.resolveFinding(client2, {
+          findingId: deskRow.id, action: canon, note: (b.note || '').slice(0, 2000),
+          value: b.value != null ? b.value : null, by: req.actor.id,
+        });
+        await client2.query('COMMIT');
+      } catch (e) {
+        await client2.query('ROLLBACK').catch(() => {});
+        client2.release();
+        // validateResolution throws a plain Error with a safe, user-facing reason; a pg error
+        // carries a SQLSTATE and must go to the global handler rather than leak its internals.
+        if (e && e.code) return next(e);
+        return res.status(400).json({ error: e.message });
+      }
+      client2.release();
+      if (!updated) return res.status(409).json({ error: 'this finding was already resolved' });
+      await audit(req.actor.id, 'appraisal_desk_finding_resolve', app.id,
+        { finding: deskRow.code, source: deskRow.source, action: canon, note: (b.note || '').slice(0, 300) });
+      const counts = (await db.query(
+        `SELECT count(*) FILTER (WHERE severity='fatal' AND blocks_ctc=true)::int AS fatal,
+                count(*)::int AS open
+           FROM appraisal_findings WHERE application_id=$1 AND status='open'`, [app.id])).rows[0];
+      return res.json({ ok: true, repriced: false, openFatal: counts.fatal, blocksCtc: counts.fatal > 0, openFindings: counts.open });
+    }
 
     let repriced = false, newValue = null, col = null;
     if (action === 'replace' || action === 'custom') {
@@ -408,12 +580,21 @@ router.post('/:appId/findings/:fid/resolve', requirePermission('sign_off_conditi
       await audit(req.actor.id, 'appraisal_finding_resolve', app.id, { finding: fnd.code, action, note: (b.note || '').slice(0, 300) });
     }
 
-    // Remaining open fatal findings gate the review-cleared condition.
-    const openFatal = (await db.query(
-      `SELECT count(*)::int n FROM appraisal_findings WHERE application_id=$1 AND status='open' AND severity='fatal' AND blocks_ctc=true`, [app.id])).rows[0].n;
+    // What's left gates the review-cleared condition: every open finding must be resolved before
+    // the appraisal review can be signed off (owner-directed 2026-08-02), and an open FATAL one
+    // additionally holds term sheets (the 2026-07-31 rule). Both counts are reported so the tab can
+    // say what is still standing between this file and a cleared appraisal review.
+    const left = (await db.query(
+      `SELECT count(*) FILTER (WHERE severity='fatal' AND blocks_ctc=true)::int AS fatal,
+              count(*)::int AS open
+         FROM appraisal_findings WHERE application_id=$1 AND status='open'`, [app.id])).rows[0];
 
-    res.json({ ok: true, repriced, openFatal, blocksCtc: openFatal > 0 });
+    res.json({ ok: true, repriced, openFatal: left.fatal, blocksCtc: left.fatal > 0, openFindings: left.open });
   } catch (e) { next(e); }
 });
 
 module.exports = router;
+// Exported for the DB test: the appraisal findings the DOCUMENT desk computes, which this page
+// lists and resolves. Test-only surface — nothing in the app calls it through the module.
+module.exports._deskAppraisalFindings = deskAppraisalFindings;
+module.exports._appraisalComparison = appraisalComparison;

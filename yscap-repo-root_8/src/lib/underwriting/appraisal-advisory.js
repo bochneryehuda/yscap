@@ -29,7 +29,7 @@
 // gate reads) — NOT document_findings and NOT underwriting_run_findings. Reading the SAME
 // table + predicate the gate reads is what guarantees the advisory never disagrees with it.
 async function appraisalCompleteness(client, appId) {
-  const out = { appraisalRead: false, openFatal: 0, asIsConfirmed: false, complete: false };
+  const out = { appraisalRead: false, openFatal: 0, openFindings: 0, asIsConfirmed: false, complete: false };
   if (!appId) return out;
   try {
     const r = await client.query(
@@ -38,11 +38,25 @@ async function appraisalCompleteness(client, appId) {
         LIMIT 1`, [appId]);
     out.appraisalRead = !!r.rows[0];
 
+    // MIRRORS THE GATE 1:1 (see the file header). Since 2026-08-02 the gate requires EVERY open
+    // appraisal finding to be resolved, not only the fatal ones, and it counts both tables — the
+    // appraisal desk's own rows and the appraisal findings the document desk stores (which now
+    // render and resolve on the Appraisal page). Reading a narrower set here would make the badge
+    // say "ready" on a file the gate refuses, which is the one thing this advisory must never do.
     const fr = await client.query(
-      `SELECT count(*)::int AS n FROM appraisal_findings
-        WHERE application_id = $1 AND status = 'open'
-          AND severity = 'fatal' AND blocks_ctc = true`, [appId]);
-    out.openFatal = (fr.rows[0] && fr.rows[0].n) || 0;
+      `SELECT
+         (SELECT count(*)::int FROM appraisal_findings
+           WHERE application_id = $1 AND status = 'open'
+             AND severity = 'fatal' AND blocks_ctc = true) AS fatal,
+         (SELECT count(*)::int FROM appraisal_findings
+           WHERE application_id = $1 AND status = 'open') AS open_all,
+         (SELECT count(*)::int FROM document_findings
+           WHERE application_id = $1 AND COALESCE(status,'open') = 'open'
+             AND source = ANY($2::text[])) AS desk_open`,
+      [appId, require('../appraisal/finding-subject').APPRAISAL_SOURCE_LIST]);
+    const c = fr.rows[0] || {};
+    out.openFatal = c.fatal || 0;
+    out.openFindings = (c.open_all || 0) + (c.desk_open || 0);
 
     // The As-Is prerequisite must mirror the sign-off gate 1:1 (owner-directed 2026-07-30;
     // post-merge audit finding #3) — otherwise the badge reads "ready" while the gate
@@ -62,7 +76,7 @@ async function appraisalCompleteness(client, appId) {
     const val = av.rows[0] && av.rows[0].as_is_value != null ? Number(av.rows[0].as_is_value) : null;
     out.asIsConfirmed = !(av.rows[0] && av.rows[0].as_is_open) && val != null && Number.isFinite(val) && val > 0;
 
-    out.complete = out.appraisalRead && out.openFatal === 0 && out.asIsConfirmed;
+    out.complete = out.appraisalRead && out.openFindings === 0 && out.asIsConfirmed;
   } catch (e) {
     console.error('[appraisal-advisory] appraisalCompleteness', appId, e && e.message);
   }
