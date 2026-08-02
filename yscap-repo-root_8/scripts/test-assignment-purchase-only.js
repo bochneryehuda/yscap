@@ -30,7 +30,12 @@ const refi = assignmentFields({ isAssignment: true, loanType: 'Cash-Out Refinanc
 assert(refi.isAssignment === false, 'refinance forces isAssignment OFF even when ticked');
 assert(refi.underlying === null, 'refinance hard-nulls the underlying price');
 assert(refi.assignFee === null, 'refinance hard-nulls the assignment fee');
-assert(Number(refi.purchasePrice) === 500000, 'refinance stores the real purchase price, NOT underlying + fee');
+/* UPDATED 2026-08-02 (owner-directed): a refinance stores NO purchase price at
+   all — it is sized on the as-is value, and what the borrower paid when they
+   bought the property is `original_purchase_price`. This assertion previously
+   expected the raw 500000 to be stored, which is exactly the purchase-style
+   economics the owner reported on a cash-out file. */
+assert(refi.purchasePrice === null, 'refinance stores NO purchase price — it is sized on the as-is value');
 
 (async () => {
   if (!process.env.DATABASE_URL) {

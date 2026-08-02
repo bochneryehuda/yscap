@@ -39,6 +39,17 @@ const CONTEXT_FIELDS = Object.freeze([
   { key: 'purchase_price', required: false },
   { key: 'effective_purchase_price', required: false },
   { key: 'as_is_value', required: false },
+  /* WHAT THE BORROWER PAID WHEN THEY ACQUIRED IT, AND HOW LONG AGO (refinance
+     only; owner-directed 2026-08-02). Neither is a pricing input — a refinance is
+     sized on `as_is_value` — but both are things a note-buyer guideline and the
+     title / rapid-resale checks ask about, and until now the context could not
+     answer either, so every seasoning question had to be answered by hand from
+     the file. `ownership_seasoning_months` is DERIVED from `acquisition_date` by
+     lib/deal-basis, the same helper the Condition Center reads, so the two can
+     never give different answers about the same property. */
+  { key: 'original_purchase_price', required: false },
+  { key: 'acquisition_date', required: false },
+  { key: 'ownership_seasoning_months', required: false },
   { key: 'arv', required: false },
   { key: 'rehab_budget', required: false },
   { key: 'loan_amount', required: true },
@@ -143,6 +154,11 @@ function candidatesFor(sources) {
   add('as_is_value', engFact(num(pick(regInputs, 'asIsValue', 'as_is_value'))));
   add('as_is_value', appFact(num(app.as_is_value)));
   add('as_is_value', apprFact(num(appr && (appr.as_is_value ?? appr.appraised_value))));
+
+  // The file is the only source for these — no engine input, no appraisal field.
+  add('original_purchase_price', appFact(num(app.original_purchase_price)));
+  add('acquisition_date', appFact(str(app.acquisition_date ? String(app.acquisition_date).slice(0, 10) : null)));
+  add('ownership_seasoning_months', appFact(require('../deal-basis').seasoningMonths(app.acquisition_date)));
 
   add('arv', engFact(num(pick(regInputs, 'arv'))));
   add('arv', appFact(num(app.arv)));

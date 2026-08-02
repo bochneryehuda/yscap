@@ -17,6 +17,7 @@
 const { FACTS, factMatch, display, present, claimsFor, carries } = require('./facts');
 const { num } = require('./compare');
 const { gateClaims } = require('./comparison-gate');
+const { buildAssignmentChain } = require('./assignment-chain');
 
 // On an ASSIGNMENT deal a document may legitimately report the seller's underlying price OR the
 // fee-inclusive total the borrower pays — both tie out to the file. So for the purchase_price fact
@@ -103,23 +104,62 @@ function perDocCovers(docType, factKey, isAssignment) {
   return false;
 }
 
-// The agreed value among a set of present document claims for one fact: if every pair matches,
-// the consensus (first) value; if any pair disagrees, null (a genuine cross-document conflict).
+// The agreed value among a set of present document claims for one fact.
+//
+// ONLY THE ODD ONE OUT IS THE ODD ONE OUT (owner-reported 2026-08-02). This used to answer "any pair
+// disagrees → null", and the caller turned a null truth into `conflictNoTruth`, which marked EVERY
+// document in the row as disagreeing. On a file where eight documents name the same seller and ONE
+// names a different party, saying all nine disagree is simply not true — it buried the one document
+// worth opening under a row of red, and it is what made the Seller row read as nine mismatches.
+//
+// So the claims are grouped into buckets of mutually-matching values, and when one bucket is
+// strictly bigger than every other it becomes the working truth: the documents in it read as
+// agreeing and only the dissenters are flagged. A genuine tie (2 vs 2, or 1 vs 1) has no majority to
+// stand on, so it still returns null and every claim is flagged — we never invent an answer.
 function consensus(kind, claims) {
   const vals = claims.filter((c) => present(c.value));
   if (!vals.length) return { value: null, conflict: false };
-  for (let i = 0; i < vals.length; i++) {
-    for (let j = i + 1; j < vals.length; j++) {
-      if (factMatch(kind, vals[i].value, vals[j].value) === false) return { value: null, conflict: true };
+  const buckets = [];
+  for (const c of vals) {
+    const b = buckets.find((x) => factMatch(kind, x.value, c.value) === true);
+    if (b) b.members.push(c); else buckets.push({ value: c.value, members: [c] });
+  }
+  // No DEFINITE disagreement between any two buckets → not a conflict (values that merely can't be
+  // compared, e.g. one side blank after normalization, must never read as a mismatch).
+  let conflict = false;
+  for (let i = 0; i < buckets.length && !conflict; i++) {
+    for (let j = i + 1; j < buckets.length; j++) {
+      if (factMatch(kind, buckets[i].value, buckets[j].value) === false) { conflict = true; break; }
     }
   }
-  return { value: vals[0].value, conflict: false };
+  if (!conflict) return { value: vals[0].value, conflict: false };
+  const sorted = buckets.slice().sort((a, b) => b.members.length - a.members.length);
+  // A majority only counts when every OTHER value definitively disagrees with it. Otherwise the
+  // minority claims would come back 'unknown' against it, the row would name nobody, and a real
+  // conflict between two minority values would go unreported — the gate must never get quieter
+  // than it was. A majority we can't judge the rest against falls back to flagging everything.
+  const hasMajority = sorted.length > 1 && sorted[0].members.length > sorted[1].members.length
+    && sorted.slice(1).every((b) => factMatch(kind, sorted[0].value, b.value) === false);
+  return { value: hasMajority ? sorted[0].value : null, conflict: true };
 }
 
 function buildTieout(fileCtx, sources = []) {
   const ctx = fileCtx || {};
   const isAssignment = !!(ctx.app && ctx.app.is_assignment);
-  const srcs = (sources || []).filter((s) => s && s.docType).map((s, i) => {
+  const raw = (sources || []).filter((s) => s && s.docType);
+  // THE WHOLESALE CHAIN, resolved BEFORE the matrix runs (owner-directed 2026-08-02). On an
+  // assignment there is an ORIGINAL SELLER, a FLIPPER in the middle, and an END BUYER — so "the
+  // seller" has more than one right answer and the documents legitimately name different parties.
+  // The chain says which seller each document is talking about; without it the matrix compared the
+  // flipper to the original seller and called a perfectly ordinary wholesale deal a mismatch.
+  // Pure, and the chain is keyed on the SAME source ids the columns below use. Wrapped anyway: the
+  // tie-out's fatals are what GATE clear-to-close, and a throw here would be swallowed upstream as
+  // "no tie-out fatals" — i.e. it would OPEN the gate. A chain we couldn't build degrades to no
+  // roles, which is exactly the behaviour this file had before the chain existed.
+  let chain = null;
+  try { chain = buildAssignmentChain(ctx, raw); } catch (_) { chain = null; }
+  const chainRoles = (chain && chain.sellerRoleBySource) || {};
+  const srcs = raw.map((s, i) => {
     let claims = claimsFor(s.docType, s.fields);
     // On an ASSIGNMENT / wholesale deal the purchase CONTRACT names the WHOLESALER as its buyer — the
     // entity we actually vest into appears on the ASSIGNMENT (assigneeName), not the underlying
@@ -156,13 +196,32 @@ function buildTieout(fileCtx, sources = []) {
     const claims = srcs.map((s) => ({ id: s.id, documentId: s.documentId, label: s.label, docType: s.docType, value: s.claims[fact.key] }));
     const withVal = claims.filter((c) => present(c.value));
 
+    // ROLE-AWARE SELLER on a wholesale deal (owner-directed 2026-08-02). A flip contract's "seller"
+    // IS the flipper — comparing it to the original seller is comparing two different bodies and can
+    // only ever produce a nonsense mismatch. So each document is judged against the seller whose role
+    // it actually speaks to, and the original-seller consensus is taken over the origin-role
+    // documents ONLY. Requires a chain we could actually resolve; with nothing proven every document
+    // stays 'origin' and the row behaves exactly as it did before.
+    // Gated on the CHAIN's own flag, not the raw application flag: the owner's rule is that the
+    // wholesale ladder only applies when the application AND the product & pricing both say
+    // assignment. A file the engine priced on ONE price gets the ordinary single-seller comparison.
+    const roleAware = fact.key === 'seller_name'
+      && !!chain && chain.isAssignment
+      && (chain.originalSellerNames.length > 0 || chain.flipperNames.length > 0);
+    const roleOf = (id) => ((roleAware && chainRoles[id] === 'flipper') ? 'flipper' : 'origin');
+
     // Truth = the file value if the file stores this fact, else the documents' consensus.
-    const cons = consensus(fact.kind, claims);
+    const cons = consensus(fact.kind, roleAware ? claims.filter((c) => roleOf(c.id) === 'origin') : claims);
     const truth = fileHas ? fileVal : cons.value;
     // A meaningful comparison needs a reference OTHER than the value itself: the file value, or
     // more than one document. A lone document with no file value can't "agree" with anything.
     const hasRef = fileHas || withVal.length > 1;
-    const conflictNoTruth = !fileHas && cons.conflict; // documents disagree and there's no file truth
+    // Documents disagree, no file truth AND no majority to stand on → every claim is flagged. With a
+    // majority `cons.value` is the working truth, so only the dissenters get marked.
+    const conflictNoTruth = !fileHas && cons.conflict && !present(cons.value);
+    // A flipper-role document is measured against the flipper, never against the original seller.
+    const truthFor = (id) => (roleOf(id) === 'flipper' && chain.flipperNames.length ? chain.flipperNames : truth);
+    const hasRefFor = (id) => (roleOf(id) === 'flipper' ? chain.flipperNames.length > 0 : hasRef);
 
     // Build the row cells (file + each document).
     const cells = [{ source: 'file', label: 'Loan file', status: fileHas ? 'source' : 'na', value: fileHas ? display(fact.kind, fileVal) : null }];
@@ -171,9 +230,13 @@ function buildTieout(fileCtx, sources = []) {
       if (!carries(s.docType, fact.key)) { cells.push({ source: s.id, label: s.label, status: 'na', value: null }); continue; }
       if (!present(v)) { cells.push({ source: s.id, label: s.label, status: 'missing', value: null }); continue; }
       let status = 'noref';
-      if (conflictNoTruth) { status = 'disagree'; }               // docs disagree, no file anchor → flag each
-      else if (hasRef && present(truth)) { const m = priceAwareMatch(ctx, fact.kind, fact.key, truth, v); status = m === true ? 'agree' : m === false ? 'disagree' : 'unknown'; }
-      cells.push({ source: s.id, label: s.label, status, value: display(fact.kind, v) });
+      const t = truthFor(s.id);
+      // The origin-side conflict says nothing about a flipper-role document, so it never marks one.
+      if (conflictNoTruth && roleOf(s.id) === 'origin') { status = 'disagree'; }
+      else if (hasRefFor(s.id) && present(t)) { const m = priceAwareMatch(ctx, fact.kind, fact.key, t, v); status = m === true ? 'agree' : m === false ? 'disagree' : 'unknown'; }
+      const cell = { source: s.id, label: s.label, status, value: display(fact.kind, v) };
+      if (roleAware) cell.role = roleOf(s.id) === 'flipper' ? 'flipper' : 'original_seller';
+      cells.push(cell);
     }
 
     // Row status. For the purchase_price fact on an assignment, documents legitimately differ
@@ -209,17 +272,36 @@ function buildTieout(fileCtx, sources = []) {
         }));
       }
     } else if (cons.conflict) {
-      // No file value (e.g. seller) — the documents themselves disagree.
-      discrepancies.push(finding({
-        code: `tieout_${fact.key}`, severity: fact.severity, field: fact.key,
-        docValue: withVal.map((c) => `${display(fact.kind, c.value)} (${c.label})`).join('; '),
-        fileValue: null,
-        title: `${fact.label} differs between documents`,
-        howTo: `The documents don't agree on the ${fact.label.toLowerCase()}: ${withVal.map((c) => `${c.label} = ${display(fact.kind, c.value)}`).join('; ')}. This must be reconciled — a mismatched ${fact.label.toLowerCase()} across documents is a top fraud/misrepresentation signal.`,
-        // The documents that disagree with each other — "this document vs. that
-        // document" — each with its id so the desk can open them side by side.
-        sources: withVal.map((c) => ({ kind: 'document', label: c.label, value: display(fact.kind, c.value), documentId: c.documentId || null })),
-      }));
+      // No file value (e.g. the seller) — the documents themselves disagree. ONLY THE DOCUMENTS THAT
+      // ACTUALLY DISAGREE ARE NAMED (owner-reported 2026-08-02): when eight documents say one thing
+      // and one says another, the finding is about the one, not about all nine. The cells already
+      // hold that verdict — deriving the list from them is what keeps the matrix and the finding from
+      // ever telling two different stories. A genuine tie has no majority, so every claim is named,
+      // exactly as before. On a wholesale deal the flipper's documents are judged against the
+      // flipper, so they are never dragged into the original seller's disagreement.
+      const disagreeIds = new Set(cells.filter((c) => c.status === 'disagree').map((c) => c.source));
+      const bad = withVal.filter((c) => disagreeIds.has(c.id));
+      const agreed = withVal.filter((c) => !disagreeIds.has(c.id) && roleOf(c.id) === 'origin');
+      if (bad.length) {
+        const rest = agreed.length
+          ? `the ${agreed.map((c) => c.label).join(', ')} show${agreed.length === 1 ? 's' : ''} ${display(fact.kind, cons.value)}`
+          : `the other documents disagree`;
+        const roleNote = roleAware
+          ? ` On this wholesale deal the original seller is ${chain.originalSellerNames.join(', ') || 'not established'}${chain.flipperNames.length ? ` and the wholesaler in the middle is ${chain.flipperNames.join(', ')}` : ''} — this document names neither.`
+          : '';
+        discrepancies.push(finding({
+          code: `tieout_${fact.key}`, severity: fact.severity, field: fact.key,
+          docValue: bad.map((c) => `${display(fact.kind, c.value)} (${c.label})`).join('; '),
+          fileValue: null,
+          title: agreed.length ? `${fact.label} on one document doesn't match the rest` : `${fact.label} differs between documents`,
+          howTo: `The ${bad.map((c) => c.label).join(', ')} show${bad.length === 1 ? 's' : ''} ${bad.map((c) => display(fact.kind, c.value)).join('; ')} while ${rest}.${roleNote} This must be reconciled — a mismatched ${fact.label.toLowerCase()} across documents is a top fraud/misrepresentation signal.`,
+          // The documents that disagree with each other — "this document vs. that
+          // document" — each with its id so the desk can open them side by side. The
+          // agreeing side rides along so the reader sees both halves of the comparison.
+          sources: bad.map((c) => ({ kind: 'document', label: c.label, value: display(fact.kind, c.value), documentId: c.documentId || null }))
+            .concat(agreed.map((c) => ({ kind: 'document', label: c.label, value: display(fact.kind, c.value), documentId: c.documentId || null, agrees: true }))),
+        }));
+      }
     }
   }
 
@@ -248,7 +330,9 @@ function buildTieout(fileCtx, sources = []) {
     blocksCtc: discrepancies.some((d) => d.severity === 'fatal' && d.blocksCtc),
   };
 
-  return { columns, matrix, discrepancies, summary };
+  // The chain rides along so the desk shows the SAME resolution the matrix judged the seller by —
+  // computed once, so the two can never tell different stories about who the flipper is.
+  return { columns, matrix, discrepancies, summary, assignmentChain: chain };
 }
 
 function firstClaim(srcs, docType, factKey) {

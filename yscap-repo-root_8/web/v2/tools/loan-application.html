@@ -821,7 +821,11 @@ html:has(.la-scope),body:has(.la-scope){background:#F4F0E7;}
             <div class="panel">
                 <h2><span class="panel-num">5</span> Valuation</h2>
                 <div class="field-rows two-col">
-                    <div class="field"><label for="asIs">As-is value <em>(est.)</em></label><div class="input"><span class="adorn">$</span><input id="asIs" type="number" inputmode="decimal" placeholder="0"></div></div>
+                    <!-- On a REFINANCE the as-is value is what the loan is sized on
+                         (the frozen engine's own denominator), so it is required —
+                         the checker has always demanded it, but the label never said
+                         so and no help text explained why. Owner-directed 2026-08-02. -->
+                    <div class="field"><label for="asIs">As-is value <em>(est.)</em><span class="req cond hidden" data-cond="isRefi">*</span></label><div class="input"><span class="adorn">$</span><input id="asIs" type="number" inputmode="decimal" placeholder="0"></div><span class="help cond hidden" data-cond="isRefi">What the property is worth today. On a refinance this is what your loan is sized on — there is no purchase price.</span><span class="field-err">Enter the as-is value.</span></div>
                     <div class="field" id="arvFieldApp"><label for="arv">After-repair value (ARV) <span class="req">*</span></label><div class="input"><span class="adorn">$</span><input id="arv" type="number" inputmode="decimal" placeholder="0"></div><span class="field-err">Enter the ARV.</span></div>
                 </div>
             </div>
@@ -1343,8 +1347,12 @@ html:has(.la-scope),body:has(.la-scope){background:#F4F0E7;}
     show($('[data-cond="sqftSplit"]'), sqftSplit());
     show($('[data-cond="sqftOne"]'), !sqftSplit());
     // acquisition
-    show($('[data-cond="isPurchase"]'), !isRefi());
-    show($('[data-cond="isRefi"]'), isRefi());
+    // EVERY node, not just the first (`$$`, not `$`). The refinance marker now
+    // also drives the required-star and the help line on the As-is value field in
+    // section 5, and a single-node toggle would silently leave those hidden —
+    // the same trap the finReserve rows below already avoid.
+    $$('[data-cond="isPurchase"]').forEach(function (n) { show(n, !isRefi()); });
+    $$('[data-cond="isRefi"]').forEach(function (n) { show(n, isRefi()); });
     show($('[data-cond="isAssign"]'), el("isAssign").checked && !isRefi());
     // rehab / contacts
     $$('[data-cond="finReserve"]').forEach(function (n) { show(n, el("finReserve").checked); });
@@ -2026,6 +2034,18 @@ html:has(.la-scope),body:has(.la-scope){background:#F4F0E7;}
       propertyType: val("propType"), units: unitsVal(),
       purchasePrice: isRefi() ? null : val("price"),
       asIsValue: val("asIs"), arv: val("arv"), rehabBudget: val("rehab"),
+      /* THE REFINANCE ANSWERS THIS FORM ALREADY ASKS FOR (owner-directed
+         2026-08-02). Section 4 has collected the current payoff, the ORIGINAL
+         purchase price and the date acquired on every refinance for some time —
+         and none of the three was ever SENT, so a public refinance application
+         arrived on the desk missing exactly the fields the owner reported
+         missing, and the applicant was asked for them a second time. The loan
+         is still sized on the as-is value above; these carry the payoff and the
+         seasoning basis. Refinance-only: on a purchase there is nothing to pay
+         off and no prior acquisition. */
+      payoffAmount: isRefi() ? val("payoff") : null,
+      originalPurchasePrice: isRefi() ? val("origPrice2") : null,
+      acquisitionDate: isRefi() ? val("acqDate") : null,
       isAssignment: assign,
       underlyingContractPrice: assign ? val("origPrice") : null,
       assignmentFee: assign ? val("assignFee") : null,

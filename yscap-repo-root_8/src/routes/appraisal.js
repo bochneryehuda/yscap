@@ -40,11 +40,14 @@ router.use(requireAuth, requireStaff);
 // Authorization: the file must exist AND the staffer must see it (see_all or assigned).
 async function fileFor(req, appId) {
   if (!isUuid(appId)) return null;
+  // `loan_type` rides along because the reprice door has to know whether this
+  // file even HAS a purchase price to write back to (2026-08-02) — a refinance
+  // is sized on the as-is value and carries none.
   if (can(req.actor, 'see_all_files')) {
-    return (await db.query(`SELECT id, borrower_id FROM applications WHERE id=$1 AND deleted_at IS NULL`, [appId])).rows[0] || null;
+    return (await db.query(`SELECT id, borrower_id, loan_type FROM applications WHERE id=$1 AND deleted_at IS NULL`, [appId])).rows[0] || null;
   }
   return (await db.query(
-    `SELECT a.id, a.borrower_id FROM applications a WHERE a.id=$1 AND a.deleted_at IS NULL AND ${assigneeExistsSql('a', '$2')}`,
+    `SELECT a.id, a.borrower_id, a.loan_type FROM applications a WHERE a.id=$1 AND a.deleted_at IS NULL AND ${assigneeExistsSql('a', '$2')}`,
     [appId, req.actor.id])).rows[0] || null;
 }
 
@@ -333,6 +336,18 @@ router.post('/:appId/findings/:fid/resolve', requirePermission('sign_off_conditi
       col = fnd.field;
       if (!Object.prototype.hasOwnProperty.call(REPRICE_COLS, col)) {
         return res.status(400).json({ error: `this finding's field (${col}) cannot be written back automatically — use keep/dismiss or edit the file` });
+      }
+      /* A REFINANCE CARRIES NO PURCHASE PRICE (owner-directed 2026-08-02) — it is
+         sized on the as-is value, and every other door now refuses to write one
+         onto one. This is the same class of door as the #FNM1025 property-type
+         exclusion above it: the appraisal desk may propose a value, but it may
+         not put a figure on the loan file that the file's own purpose says does
+         not exist. The as-is value, the ARV and the units are unaffected — those
+         are exactly what an appraisal IS authoritative about. */
+      if (col === 'purchase_price' && require('../lib/deal-basis').sizesOnAsIsValue(app.loan_type)) {
+        return res.status(400).json({
+          error: 'This is a refinance, so there is no purchase price to write back — it is sized on the as-is value. '
+            + 'Use keep or dismiss, or record what was paid at acquisition as the original purchase price on the file.' });
       }
       const raw = action === 'replace' ? fnd.appraisal_value : b.value;
       const kind = REPRICE_COLS[col];
