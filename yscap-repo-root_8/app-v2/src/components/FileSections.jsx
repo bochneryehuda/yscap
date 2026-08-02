@@ -27,16 +27,48 @@ export function subscribeConditionsTab(cb) {
   sectionBus.addEventListener('pilot-conditions-tab', h);
   return () => sectionBus.removeEventListener('pilot-conditions-tab', h);
 }
+/* THE ROOM RESOLVER (Seven Rooms, Phase 1 — docs/LOAN-FILE-NAVIGATION-AUDIT-2026-07.md).
+   The staff file screen renders one room at a time, so a jump's target section
+   may not be MOUNTED (the bus listeners above exist only while a Section is
+   mounted, and goToSection scrolls immediately). The staff screen registers a
+   resolver here; goToSection/revealAnchor consult it FIRST. The resolver
+   returns true when it took the jump over (it switches the room, then replays
+   the open+scroll after mount) and false to fall through to the byte-identical
+   default path. With no resolver registered — the borrower screen, the Draw
+   Center, the staff screen's classic view — nothing changes at all.
+   setSectionResolver returns an unregister function; register it in an effect
+   WITH CLEANUP so an unmounted screen can never hijack another one's jumps. */
+let sectionResolver = null;
+export function setSectionResolver(fn) {
+  sectionResolver = fn;
+  return () => { if (sectionResolver === fn) sectionResolver = null; };
+}
+
 /* One-call "take me to that section": expand it, then smooth-scroll to it.
    The expand is dispatched first so the header is already rendered open when the
    scroll lands. An optional `tab` also flips the Conditions hub to the right tab.
    Reused by the rail, the outstanding-to-close list, etc. */
 export function goToSection(id, tab) {
   if (!id) return;
+  if (sectionResolver && sectionResolver({ kind: 'section', id, tab })) return;
   requestOpenSection(id);
   if (tab) requestConditionsTab(tab);
   const el = typeof document !== 'undefined' ? document.getElementById(id) : null;
   if (el) el.scrollIntoView({ behavior: 'smooth', block: 'start' });
+}
+
+/* "Take me to that ANCHOR" — an element INSIDE a section (#note-buyer-slot,
+   #ctc-outstanding, #ai-findings, #conversations). Returns true when the
+   resolver took it over (room switch + open + scroll after mount); on false the
+   caller keeps its own fallback (today's behavior), because only the caller
+   knows which section must be opened first on an already-mounted room. */
+export function revealAnchor(id, opts = {}) {
+  const anchor = String(id || '').replace(/^#/, '');
+  if (!anchor) return false;
+  if (sectionResolver && sectionResolver({ kind: 'anchor', id: anchor, block: opts.block || 'start' })) return true;
+  const el = typeof document !== 'undefined' ? document.getElementById(anchor) : null;
+  if (el) { el.scrollIntoView({ behavior: 'smooth', block: opts.block || 'start' }); return false; }
+  return false;
 }
 
 export function InfoTip({ tip }) {
@@ -62,7 +94,7 @@ export function InfoTip({ tip }) {
    to say passes nothing and shows nothing, which is better than a guess. It
    disappears when the section opens, because the real content is then right
    there and repeating it would be noise. */
-export function Section({ id, title, info, badge, children, style, collapsible = true, defaultOpen = true, action = null, summary = null, fullscreenable = false }) {
+export function Section({ id, title, info, badge, children, style, collapsible = true, defaultOpen = true, action = null, summary = null, fullscreenable = false, hidden = false }) {
   const [open, setOpen] = useState(defaultOpen);
   /* FULL SCREEN — owner-directed 2026-07-27: "there should also be a button by
      the conditions section to open the conditions section on a full screen so
@@ -114,6 +146,17 @@ export function Section({ id, title, info, badge, children, style, collapsible =
   const headAction = (fullBtn || action)
     ? <>{action}{fullBtn}</>
     : null;
+  // A section in CSS full-screen that gets hidden by a room hop must drop out
+  // of full-screen too — it renders null below, and leaving `full` set would
+  // keep document.body scroll-locked with no overlay to escape from (audit
+  // 2026-08-02 #2).
+  useEffect(() => { if (hidden) setFull(false); }, [hidden]);
+  // Seven Rooms: a section whose room isn't showing renders NOTHING — but stays
+  // MOUNTED, so its open/closed state survives room switches and the section bus
+  // can pre-open it while its room is off screen. Sits AFTER every hook above
+  // (hooks must run unconditionally); collapsed children still unmount as
+  // before, so the performance contract is unchanged.
+  if (hidden) return null;
   return (
     <section id={id} className={`file-section${full ? ' sec-full' : ''}`} style={style}>
       <div
@@ -140,8 +183,18 @@ export function Section({ id, title, info, badge, children, style, collapsible =
   );
 }
 
-/* sections: [{id, label, badge?}] — the rail highlights the section in view. */
-export default function FileSections({ sections, children, top = null }) {
+/* sections: [{id, label, badge?}] — the rail highlights the section in view.
+
+   ROOMS MODE (staff file, Seven Rooms Phase 1): pass `stations`
+   ([{id,label,badge?}]), `activeStation` and `onStationGo` and the rail becomes
+   two-level — one row per room, with the ACTIVE room's child sections indented
+   under it as spokes. `sections` must then be ONLY the active room's visible
+   sections, in render order (they are the mounted ids the scroll tracker
+   watches). `footer` renders at the bottom of the rail (the classic-view
+   toggle + "where did everything go?"). With `stations` unset everything below
+   is byte-identical to before — the borrower screen and the Draw Center pass
+   nothing new. */
+export default function FileSections({ sections, children, top = null, stations = null, activeStation = null, onStationGo = null, footer = null }) {
   const [active, setActive] = useState(sections[0] && sections[0].id);
   const clickLock = useRef(0);
 
@@ -204,6 +257,46 @@ export default function FileSections({ sections, children, top = null }) {
     el.scrollIntoView({ behavior: 'smooth', block: 'start' });
   }
 
+  // A section spoke row — shared by both rail modes so the label/badge/active
+  // treatment can never drift between them.
+  const spoke = (s) => (
+    <li key={s.id}>
+      <a href={`#${s.id}`} className={active === s.id ? 'active' : ''} onClick={(e) => go(e, s.id)}>
+        <span className="file-nav-label">{s.label}</span>
+        {s.badge != null && s.badge !== '' && <span className="file-nav-badge">{s.badge}</span>}
+      </a>
+    </li>
+  );
+
+  if (stations) {
+    return (
+      <div className="file-layout">
+        <nav className="file-nav" aria-label="Loan file rooms">
+          {top}
+          <ol>
+            {stations.map((st) => (
+              <li key={st.id} className="file-nav-station-row">
+                {/* An <a> so the phone chip-bar styling applies unchanged; the
+                    href is decorative — the click switches the room. */}
+                <a href={`#${st.id}`} className={`file-nav-station${st.id === activeStation ? ' active' : ''}`}
+                  aria-current={st.id === activeStation ? 'true' : undefined}
+                  onClick={(e) => { e.preventDefault(); onStationGo && onStationGo(st.id); }}>
+                  <span className="file-nav-label">{st.label}</span>
+                  {st.badge != null && st.badge !== '' && <span className="file-nav-badge">{st.badge}</span>}
+                </a>
+                {st.id === activeStation && sections.length > 1 && (
+                  <ol className="file-nav-spokes">{sections.map(spoke)}</ol>
+                )}
+              </li>
+            ))}
+          </ol>
+          {footer}
+        </nav>
+        <div className="file-main">{children}</div>
+      </div>
+    );
+  }
+
   return (
     <div className="file-layout">
       <nav className="file-nav" aria-label="Loan file sections">
@@ -219,16 +312,12 @@ export default function FileSections({ sections, children, top = null }) {
             return (
               <React.Fragment key={s.id}>
                 {header}
-                <li>
-                  <a href={`#${s.id}`} className={active === s.id ? 'active' : ''} onClick={(e) => go(e, s.id)}>
-                    <span className="file-nav-label">{s.label}</span>
-                    {s.badge != null && s.badge !== '' && <span className="file-nav-badge">{s.badge}</span>}
-                  </a>
-                </li>
+                {spoke(s)}
               </React.Fragment>
             );
           })}
         </ol>
+        {footer}
       </nav>
       <div className="file-main">{children}</div>
     </div>
