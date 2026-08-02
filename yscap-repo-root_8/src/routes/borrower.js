@@ -701,6 +701,11 @@ const BORROWER_HIDDEN_APP_FIELDS = [
   'appraiser_name', 'cda_value', 'first_lien', 'second_lien', 'actual_rate', 'desired_rate',
   'encompass_status', 'application_submitted', 'prepayment_penalty', 'property_taxes',
   'property_insurance', 'property_hoa', 'rental_income', 'appraised_rental_value', 'approx_appraised_rental_value',
+  // The appraiser's own opinion of market rent, copied onto the file by the appraisal import
+  // (db/403). Same posture as the two appraised rental figures beside it: an internal valuation the
+  // underwriting desk reads, never a borrower-facing number. The other three db/403 facts (seller,
+  // year built, living area) are ordinary facts about the borrower's own deal and stay visible.
+  'market_rent',
   // INTERNAL pricing margin + internal valuations — a borrower may see their loan
   // structure but never OUR markup or the internal appraised figures.
   'file_markup_std_pct', 'file_markup_gold_pct', 'file_markup_silver_pct', 'actual_appraised_value', 'approx_appraised_value',

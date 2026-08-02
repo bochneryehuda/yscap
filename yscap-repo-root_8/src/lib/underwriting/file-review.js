@@ -44,7 +44,7 @@ async function tieoutForFile(client, appId, preloadedCtx) {
   // THE PROPERTY TYPE IS THE CATEGORY, NOT THE ATTACHMENT STYLE (owner-reported 2026-08-02: the
   // comparison read "Property type | Detached | Multi 2–4"). `appraisals.property_type` held the
   // MISMO AttachmentType, whose whole value list is Detached / Attached — not an answer to the
-  // question this row asks. db/403 + the importer now store the real category, and
+  // question this row asks. db/404 + the importer now store the real category, and
   // `property-category.categoryLabelFor` re-derives it live for a row the boot repair has not
   // reached yet, so this column is right on EVERY file from the first deploy rather than after the
   // sweep drains. The style stays available as its own fact and is never compared.
@@ -53,7 +53,14 @@ async function tieoutForFile(client, appId, preloadedCtx) {
             a.units, a.property_type, a.property_category, a.attachment_type, a.form_type, a.design_style,
             a.condo_project_type, a.fields,
             a.occupancy_status AS occupancy, a.year_built, a.gla, a.owner_of_record,
-            (SELECT sum(u.market_rent) FROM appraisal_units u WHERE u.appraisal_id = a.id) AS market_rent
+            -- THE SUBJECT'S OWN FIGURE FIRST, then the rent schedule (2026-08-02). The summed
+            -- per-unit rents alone read BLANK on a 1004 + 1007, which carries the appraiser's market
+            -- rent as est_market_monthly_rent (db/158) and no per-unit schedule — so the Market
+            -- rent row showed nothing on exactly the files that state one. This is the SAME
+            -- resolution run.js and the appraisal import (db/403) use, so the appraisal column and
+            -- the loan-file column can never disagree about which number the appraisal states.
+            COALESCE(a.est_market_monthly_rent,
+                     NULLIF((SELECT sum(u.market_rent) FROM appraisal_units u WHERE u.appraisal_id = a.id), 0)) AS market_rent
        FROM appraisals a WHERE a.application_id=$1 AND a.superseded=false ORDER BY a.imported_at DESC LIMIT 1`, [appId])).rows[0];
   if (appr) {
     sources.push({
