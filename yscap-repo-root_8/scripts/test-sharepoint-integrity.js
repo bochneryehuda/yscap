@@ -156,8 +156,13 @@ ok('explainExclusion is exported', typeof backup.explainExclusion === 'function'
 ok('forceAttemptDoc is exported (per-doc safety net)', typeof backup.forceAttemptDoc === 'function');
 {
   const ex = backup.explainExclusion;
-  ok('explains a non-local storage_provider (invisible to the normal drain)',
-    /storage_provider='s3'/.test(ex({ storage_provider: 's3', app_id: 'a' })));
+  // A non-local provider is NO LONGER an exclusion reason — the drain mirrors
+  // every provider the storage layer can read (local + s3). An s3 row with a
+  // valid scope has no obvious exclusion, exactly like a local one.
+  ok('a non-local (s3) provider is NOT reported as an exclusion reason',
+    !/storage_provider=/.test(ex({ storage_provider: 's3', app_id: 'a', borrower_id: 'b' })));
+  ok('a clean s3 row falls back to drain/lease-health (like local)',
+    /drain\/lease health/.test(ex({ storage_provider: 's3', is_regen: false, is_current: true, app_id: 'a', borrower_id: 'b' })));
   ok('explains a superseded regen snapshot',
     /superseded/.test(ex({ storage_provider: 'local', is_regen: true, is_current: false, app_id: 'a' })));
   ok('explains a NULL is_current regen snapshot',
