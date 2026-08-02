@@ -6193,11 +6193,30 @@ async function signOffGate(itemId, actor) {
   if (isAppraisalReview || isUnderwritingReview) {
     if (isAppraisalReview) {
       if (!advisoryPolicy.appraisalReviewEnforced() && advisoryPolicy.advisoryOnly()) return null;
-      const n = (await db.query(
-        `SELECT count(*)::int AS n FROM appraisal_findings
-          WHERE application_id=$1 AND status='open' AND severity='fatal' AND blocks_ctc=true`, [item.application_id])).rows[0].n;
-      if (n > 0)
-        return `Resolve the ${n} open fatal appraisal finding${n === 1 ? '' : 's'} first — the appraisal review cannot be cleared while a fatal PILOT finding is open. Open the Appraisal section to replace, keep, or dismiss each one.`;
+      // EVERY OPEN APPRAISAL FINDING MUST BE RESOLVED, NOT ONLY THE FATAL ONES (owner-directed
+      // 2026-08-02: "appraisal findings should need to be resolved before you clear the appraisal
+      // review condition"; the 2026-07-30 direction said the same — "till you reviewed and
+      // confirmed and fulfilled ALL the appraisal findings" — and only the fatals were enforced).
+      // A warning is resolved with one click (Keep / Dismiss / Acknowledge — reviewed), so this is
+      // "read each one and say what you decided", which is what clearing an appraisal review means.
+      // Two tables, one rule: the appraisal desk's own findings AND the appraisal findings the
+      // document desk stores (the AVM-vs-appraised-value panel), both of which now render — and
+      // resolve — on the Appraisal page. DERIVED tie-out advisories are deliberately NOT counted:
+      // they have no resolve button, so gating on one would be a dead end with nothing to click.
+      const counts = (await db.query(
+        `SELECT
+           (SELECT count(*)::int FROM appraisal_findings
+             WHERE application_id=$1 AND status='open') AS open_all,
+           (SELECT count(*)::int FROM appraisal_findings
+             WHERE application_id=$1 AND status='open' AND severity='fatal' AND blocks_ctc=true) AS fatal,
+           (SELECT count(*)::int FROM document_findings
+             WHERE application_id=$1 AND COALESCE(status,'open')='open' AND source = ANY($2::text[])) AS desk_open`,
+        [item.application_id, require('../lib/appraisal/finding-subject').APPRAISAL_SOURCE_LIST])).rows[0];
+      const fatal = counts.fatal, open = counts.open_all + counts.desk_open;
+      if (fatal > 0)
+        return `Resolve the ${fatal} open fatal appraisal finding${fatal === 1 ? '' : 's'} first — the appraisal review cannot be cleared while a fatal PILOT finding is open. Open the Appraisal section to replace, keep, or dismiss each one.`;
+      if (open > 0)
+        return `Resolve the ${open} open appraisal finding${open === 1 ? '' : 's'} first — the appraisal review is cleared only once every finding on the appraisal has been reviewed and answered. Open the Appraisal section and keep, dismiss or acknowledge each one (a super-admin override is the recorded way through if one genuinely can't be answered).`;
       // The As-Is value must be settled before the appraisal review can be cleared
       // (owner-directed 2026-07-30). Two checks, both needed: the "Confirm the As-Is
       // value" condition (when it exists on the file) must be GENUINELY confirmed, and
