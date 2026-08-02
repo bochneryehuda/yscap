@@ -232,6 +232,16 @@ async function importAppraisalTx(db, {
   if (ap.name) {
     await db.query(`UPDATE applications SET appraiser_name = $2 WHERE id = $1 AND (appraiser_name IS NULL OR appraiser_name = '')`, [applicationId, ap.name]);
   }
+  // 8. THE FACTS THE APPRAISAL STATES, ONTO THE FILE (db/402, owner-directed 2026-08-02:
+  //    "all these things that he's getting from the appraisal … please add this field in our file
+  //    and that field should automatically be tabulated once you import the XML"). Before this the
+  //    loan file had no column for the seller, the year built, the living area or the market rent,
+  //    so every one of those rows in the data comparison read "· Nothing to compare".
+  //    Same overwrite-shield as everything above: blank-only, so a value already on the file is
+  //    never overwritten. NOT wrapped in a try/catch — the fills above aren't either, and a
+  //    swallowed error inside the import's transaction would poison the COMMIT anyway; a failure
+  //    here is a real fault and should roll the import back loudly.
+  await fillFileFacts(db, applicationId, A);
 
   return {
     ok: true, appraisalId, findings, summary: sum,
@@ -239,6 +249,63 @@ async function importAppraisalTx(db, {
     blocksCtc: sum.blocksCtc,
     warnings: A.warnings || [],
   };
+}
+
+/**
+ * The appraiser's MONTHLY market rent for the whole property — the ONE resolution this repo uses
+ * (mirrors src/lib/underwriting/run.js and db/402's backfill): the subject's estimated market
+ * monthly rent when the report carries it, else the summed per-unit market rents off a 1025/1007
+ * rent schedule. Returns null when the appraisal states neither (never 0 — a zero sum means the
+ * schedule was empty, not that the property rents for nothing).
+ */
+function marketMonthlyRent(A) {
+  const est = Number((A.enrich || {}).est_market_monthly_rent);
+  if (Number.isFinite(est) && est > 0) return est;
+  let sum = 0, seen = 0;
+  for (const u of A.units || []) {
+    const n = Number(u.marketRent);
+    if (Number.isFinite(n) && n > 0) { sum += n; seen++; }
+  }
+  return seen > 0 && sum > 0 ? sum : null;
+}
+
+/**
+ * COPY THE APPRAISAL'S PROPERTY FACTS ONTO THE LOAN FILE (db/402, owner-directed 2026-08-02).
+ *
+ * The seller, the year built, the living area and the market rent had no home on the file at all,
+ * so the Appraisal page's data-comparison showed the appraiser's figure beside an empty "Loan file"
+ * cell and the verdict "· Nothing to compare". Now the file carries them, which is also what gives
+ * the SELLER a value of record for the purchase contract / title report / settlement statement to
+ * tie out against (facts.js `seller_name`).
+ *
+ * BLANK-ONLY, one column at a time — the same overwrite-shield the As-Is / ARV / appraiser-name
+ * fills use. A value already on the file is never overwritten by a re-import.
+ *
+ * OCCUPANCY IS DELIBERATELY ABSENT (owner-directed, same message): the appraisal's occupancy is the
+ * SELLER's use of the property TODAY ("even if the appraisal is owner occupied it means that the
+ * current owner is living in the property"), while `applications.occupancy` is the BORROWER's use
+ * after closing — and we only lend non-owner-occupied. Two different facts about two different
+ * people, so an "OwnerOccupied" appraisal must never write our file's occupancy. If you are ever
+ * tempted to add it here: don't.
+ */
+async function fillFileFacts(db, applicationId, A) {
+  const s = A.subject || {};
+  // year() already validated the range (1700..current year) and returns a numeric string.
+  const yearBuilt = s.yearBuilt == null ? null : Number(s.yearBuilt);
+  // gla is bounded to 1e8 by the parser; round to whole square feet for the int4 column.
+  const gla = Number(s.gla);
+  // [column, value, "still blank" test]. seller_name is text, so an empty string counts as blank
+  // (that is how the rest of the file treats a text column — see the appraiser_name fill above).
+  const fills = [
+    ['seller_name', (A.enrich || {}).owner_of_record || null, `(seller_name IS NULL OR seller_name = '')`],
+    ['year_built', Number.isInteger(yearBuilt) ? yearBuilt : null, 'year_built IS NULL'],
+    ['living_area_sqft', Number.isFinite(gla) && gla > 0 && gla < 1e9 ? Math.round(gla) : null, 'living_area_sqft IS NULL'],
+    ['market_rent', marketMonthlyRent(A), 'market_rent IS NULL'],
+  ];
+  for (const [col, val, blank] of fills) {
+    if (val == null || val === '') continue;
+    await db.query(`UPDATE applications SET ${col} = $2 WHERE id = $1 AND ${blank}`, [applicationId, val]);
+  }
 }
 
 // Flatten the parsed appraisal into the {key:{value,source,confidence}} catch-all so nothing is lost.
@@ -266,4 +333,4 @@ function buildFieldsJson(A) {
   return out;
 }
 
-module.exports = { importAppraisal };
+module.exports = { importAppraisal, _internals: { marketMonthlyRent, fillFileFacts } };

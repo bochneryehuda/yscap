@@ -260,11 +260,26 @@ function buildTieout(fileCtx, sources = []) {
     matrix.push({ key: fact.key, label: fact.label, category: fact.category, severity: fact.severity, fileValue: cells[0].value, status: rowStatus, cells });
 
     // Discrepancy findings.
-    if (fileHas) {
+    // A READ-ONLY fact (facts.js `noFlag`) is shown above and never flagged: the year the house was
+    // built, its square footage, the appraiser's rent opinion and who lives there today are carried
+    // onto the file for reference, so a difference is something to READ, not a to-do to answer
+    // (owner-directed 2026-08-02). The matrix row and its cell statuses are unchanged.
+    if (fact.noFlag) { /* shown, never flagged */ }
+    else if (fileHas) {
       // A source whose own per-document check already compares this fact to the file is EXCLUDED
       // here — that mismatch is raised once by the per-doc check; the tie-out avoids the duplicate
       // (the matrix cell still shows the disagreement). Sources with no dedicated check stay.
-      const bad = withVal.filter((c) => priceAwareMatch(ctx, fact.kind, fact.key, fileVal, c.value) === false && !perDocCovers(c.docType, fact.key, isAssignment));
+      //
+      // WHICH SOURCES DISAGREE IS READ OFF THE CELLS, not recomputed (2026-08-02). The cells already
+      // judged each document against the truth that applies to IT — and now that the file carries a
+      // seller (db/402), that distinction is load-bearing: on a wholesale deal the contract's seller
+      // IS the flipper, and measuring it against the file's ORIGINAL seller could only ever produce
+      // a nonsense fatal on a perfectly ordinary assignment. Deriving `bad` from the cells is also
+      // what keeps the matrix and the finding from telling two different stories. For every other
+      // fact this is exactly the old test: with a file value, a cell reads 'disagree' precisely when
+      // priceAwareMatch(fileVal, value) === false.
+      const disagreeIds = new Set(cells.filter((c) => c.status === 'disagree').map((c) => c.source));
+      const bad = withVal.filter((c) => disagreeIds.has(c.id) && !perDocCovers(c.docType, fact.key, isAssignment));
       if (bad.length) {
         discrepancies.push(finding({
           code: `tieout_${fact.key}`, severity: fact.severity, field: fact.key,

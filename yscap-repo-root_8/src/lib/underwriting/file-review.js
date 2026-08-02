@@ -43,7 +43,14 @@ async function tieoutForFile(client, appId, preloadedCtx) {
   const appr = (await client.query(
     `SELECT a.subject_address, a.subject_city, a.subject_state, a.subject_zip, a.contract_price, a.as_is_value, a.arv_value,
             a.units, a.property_type, a.occupancy_status AS occupancy, a.year_built, a.gla, a.owner_of_record,
-            (SELECT sum(u.market_rent) FROM appraisal_units u WHERE u.appraisal_id = a.id) AS market_rent
+            -- THE SUBJECT'S OWN FIGURE FIRST, then the rent schedule (2026-08-02). The summed
+            -- per-unit rents alone read BLANK on a 1004 + 1007, which carries the appraiser's market
+            -- rent as est_market_monthly_rent (db/158) and no per-unit schedule — so the Market
+            -- rent row showed nothing on exactly the files that state one. This is the SAME
+            -- resolution run.js and the appraisal import (db/402) use, so the appraisal column and
+            -- the loan-file column can never disagree about which number the appraisal states.
+            COALESCE(a.est_market_monthly_rent,
+                     NULLIF((SELECT sum(u.market_rent) FROM appraisal_units u WHERE u.appraisal_id = a.id), 0)) AS market_rent
        FROM appraisals a WHERE a.application_id=$1 AND a.superseded=false ORDER BY a.imported_at DESC LIMIT 1`, [appId])).rows[0];
   if (appr) {
     sources.push({

@@ -68,7 +68,13 @@ const identKey = (v) => String(v == null ? '' : v).toUpperCase().replace(/[^A-Z0
 
 // The canonical facts. `kind` selects the match + display logic; `severity` is the finding
 // severity when this fact disagrees; `file(ctx)` reads the loan-file value (null when the file
-// doesn't store it — e.g. the seller, which only documents carry, so it's a doc-vs-doc fact).
+// doesn't store it, which makes it a doc-vs-doc fact).
+//
+// `noFlag: true` marks a READ-ONLY fact: it is shown in the comparison and the matrix like any
+// other, but it never produces a discrepancy finding and never gates anything (owner-directed
+// 2026-08-02: these "should not be a requirement for us to fill anywhere, should not be missing …
+// it should just be a slot in our file"). Use it for a fact that is carried onto the file for
+// reference — the property's age, its size, the appraiser's rent opinion, who lives there today.
 const FACTS = [
   { key: 'borrower_name', label: 'Borrower name', category: 'identity', kind: 'name', severity: 'fatal', file: (c) => borrowerName(c.borrower) },
   { key: 'borrower_dob', label: 'Date of birth', category: 'identity', kind: 'date', severity: 'fatal', file: (c) => (c.borrower ? dateStr(c.borrower.date_of_birth) : null) },
@@ -80,7 +86,13 @@ const FACTS = [
   // must reference the SAME policy as the binder, so they tie out on this. A warning when they differ.
   { key: 'policy_number', label: 'Insurance policy number', category: 'collateral', kind: 'ident', severity: 'warning', file: () => null },
   { key: 'purchase_price', label: 'Purchase price', category: 'economics', kind: 'money', severity: 'fatal', file: (c) => (c.app ? c.app.purchase_price : null) },
-  { key: 'seller_name', label: 'Seller', category: 'economics', kind: 'nameOrEntity', severity: 'fatal', file: () => null },
+  // THE SELLER IS NOW A FILE FACT (db/402, owner-directed 2026-08-02: "we have a seller's name on
+  // file, so we can do stuff with it to make sure it matches other documentation"). The appraisal
+  // import writes `applications.seller_name` from the appraiser's owner of record, so the contract,
+  // the title report and the settlement statement are all measured against ONE value of record
+  // instead of only against each other. On a wholesale deal the file's seller is the ORIGINAL
+  // seller — tieout.js judges a flipper-role document against the flipper, never against this.
+  { key: 'seller_name', label: 'Seller', category: 'economics', kind: 'nameOrEntity', severity: 'fatal', file: (c) => (c.app ? c.app.seller_name : null) },
   { key: 'underlying_price', label: "Seller's original price", category: 'economics', kind: 'money', severity: 'fatal', file: (c) => (c.app ? c.app.underlying_contract_price : null) },
   { key: 'assignment_fee', label: 'Assignment fee', category: 'economics', kind: 'money', severity: 'fatal', file: (c) => (c.app ? c.app.assignment_fee : null) },
   { key: 'loan_amount', label: 'Loan amount', category: 'economics', kind: 'money', severity: 'warning', file: (c) => (c.app ? c.app.loan_amount : null) },
@@ -89,14 +101,23 @@ const FACTS = [
   { key: 'rehab_budget', label: 'Rehab budget', category: 'rehab', kind: 'money', severity: 'warning', file: (c) => (c.app ? c.app.rehab_budget : null) },
   // ---- collateral physicals (owner-directed 2026-07-21 — pull EVERY appraisal fact into the
   // comparison). The appraisal is the authority; the application/file carries units/type/occupancy,
-  // so these cross-check appraisal-vs-file. Year built / living area / market rent are appraisal-
-  // carried facts we surface even when nothing else states them (single-source display).
+  // so these cross-check appraisal-vs-file. Year built / living area / market rent used to read
+  // `file: () => null` — nothing on the loan file stored them, so every one of those rows showed the
+  // appraiser's figure beside an empty cell and the verdict "· Nothing to compare". db/402 gave the
+  // file the four columns and the appraisal import fills them, so they answer now.
   { key: 'units', label: 'Number of units', category: 'collateral', kind: 'count', severity: 'warning', file: (c) => (c.app ? c.app.units : null) },
   { key: 'property_type', label: 'Property type', category: 'collateral', kind: 'propertyType', severity: 'warning', file: (c) => (c.app ? c.app.property_type : null) },
+  // OCCUPANCY IS NEVER IMPORTED FROM THE APPRAISAL (owner-directed 2026-08-02, and the reason it is
+  // the one fact db/402 left alone): the appraisal states who lives there TODAY — usually the
+  // SELLER, and "OwnerOccupied" on a purchase simply means the seller lives in the house they are
+  // selling. Our file's occupancy is the BORROWER's use after closing, and we only lend
+  // non-owner-occupied, so the two legitimately differ. `lib/appraisal/import.js` must never write
+  // it, and `file-view.loadContext` deliberately does not load it, which is why this row reads
+  // "nothing to compare" against a lone appraisal instead of flagging an ordinary purchase.
   { key: 'occupancy', label: 'Occupancy', category: 'collateral', kind: 'occupancy', severity: 'info', file: (c) => (c.app ? c.app.occupancy : null) },
-  { key: 'year_built', label: 'Year built', category: 'collateral', kind: 'count', severity: 'info', file: () => null },
-  { key: 'living_area', label: 'Living area (sq ft)', category: 'collateral', kind: 'measure', severity: 'info', file: () => null },
-  { key: 'market_rent', label: 'Market rent (1007)', category: 'valuation', kind: 'money', severity: 'info', file: () => null },
+  { key: 'year_built', label: 'Year built', category: 'collateral', kind: 'count', severity: 'info', noFlag: true, file: (c) => (c.app ? c.app.year_built : null) },
+  { key: 'living_area', label: 'Living area (sq ft)', category: 'collateral', kind: 'measure', severity: 'info', noFlag: true, file: (c) => (c.app ? c.app.living_area_sqft : null) },
+  { key: 'market_rent', label: 'Market rent (1007)', category: 'valuation', kind: 'money', severity: 'info', noFlag: true, file: (c) => (c.app ? c.app.market_rent : null) },
   // ---- closing economics (owner-directed 2026-07-21 — the settlement statement is the
   // reconciliation SINK; surface its figures in the comparison). Doc-carried facts (the loan file
   // doesn't store the earnest money or cash-to-close), so they show + tie out doc-vs-doc.
