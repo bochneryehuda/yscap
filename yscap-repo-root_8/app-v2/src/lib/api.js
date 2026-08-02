@@ -391,7 +391,9 @@ export const api = {
   encompassReplace:  (id, fieldKey) => req('POST', `/api/staff/applications/${id}/encompass/replace`, { fieldKey }),
   // Flood-certificate ordering (the one owner-authorized Encompass write).
   floodOrderState:   (id) => req('GET', `/api/staff/applications/${id}/flood-order`),
-  orderFlood:        (id, itemId) => req('POST', `/api/staff/applications/${id}/order-flood`, itemId ? { checklistItemId: itemId } : {}),
+  orderFlood:        (id, itemId, force) => req('POST', `/api/staff/applications/${id}/order-flood`, { ...(itemId ? { checklistItemId: itemId } : {}), ...(force ? { force: true } : {}) }),
+  // Retrieval of a certificate we already paid for — never places a new order.
+  fetchFloodCertificate: (id) => req('POST', `/api/staff/applications/${id}/flood-certificate`),
   // Credit report (Xactus import) — the internal Credit report condition.
   // `scope` = 'co' | 'primary' narrows the credit section to ONE borrower, so a
   // co-borrower's own credit condition shows their report instead of the file's.
@@ -584,6 +586,8 @@ export const api = {
   fileExceptions:            (appId) => req('GET', `/api/staff/applications/${appId}/exceptions`),
   requestGuarantyWaiver:     (appId, body) => req('POST', `/api/staff/applications/${appId}/exceptions/guaranty-waiver`, body || {}),
   requestEsignBeforeCtc:     (appId, body) => req('POST', `/api/staff/applications/${appId}/exceptions/esign-before-ctc`, body || {}),
+  // Ask a super admin to allow the data tape out before Encompass matches (owner-directed 2026-08-02).
+  requestTapeException:      (appId, body) => req('POST', `/api/staff/applications/${appId}/exceptions/tape-encompass`, body || {}),
   withdrawException:         (appId, eid) => req('POST', `/api/staff/applications/${appId}/exceptions/${eid}/withdraw`, {}),
   loanExceptions:            (status, type) => req('GET', `/api/admin/exceptions${qs({ status, type })}`),
   loanExceptionsCount:       () => req('GET', '/api/admin/exceptions/count'),

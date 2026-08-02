@@ -167,7 +167,8 @@ export default function StaffExceptions() {
       </div>
       <p className="muted" style={{ marginTop: 6 }}>
         Every request to deviate from a loan policy, in one place — waiving a co-borrower’s personal guarantee,
-        sending a term-sheet package early, a pricing/guideline exception, and recorded admin overrides. {canDecide
+        sending a term-sheet package early, exporting a data tape before Encompass matches (super admin only),
+        a pricing/guideline exception, and recorded admin overrides. {canDecide
           ? `Approve or deny with a short note; on time-boxable types you can set how long the approval stays valid. Clear an exception when it’s handled.${canDecideOwn ? '' : ' You can’t approve your own request — another admin does that.'}`
           : 'You can review the queue and comment; an admin approves or denies.'}
       </p>
@@ -217,12 +218,17 @@ export default function StaffExceptions() {
         // An OPEN request can't be cleared (withdraw/decide first — server-enforced).
         const canClear = r.status !== 'cleared' && !open && (canDecide || ownRequest);
         const isEsign = type === 'esign_before_ctc';
+        // A tape-before-Encompass exception may be decided ONLY by a super admin
+        // (owner-directed 2026-08-02) — a plain admin sees a note instead of buttons.
+        // canDecideOwn is the server's super-admin flag.
+        const needsSuper = type === 'tape_encompass_override';
+        const canDecideRow = canDecide && (!needsSuper || canDecideOwn);
         const perTypeReasons = reasonCodesByType[type] || reasonCodes;
         // The deciding super-admin picks which requirements to waive right in the
         // card's requirements picture; the selection lives here so Approve can
         // submit it. (EsignGatePanel only enables pickers when the server says
         // this actor can decide.)
-        const gateSelect = isEsign && open && canDecide && !decideBlocked
+        const gateSelect = isEsign && open && canDecideRow && !decideBlocked
           ? { selected: waiveSel[r.id], onChange: (codes) => setWaiveSel((m) => ({ ...m, [r.id]: codes })) }
           : undefined;
         return (
@@ -236,7 +242,10 @@ export default function StaffExceptions() {
                 {open && canDecide && ownRequest && !decideBlocked && (
                   <div className="muted small" style={{ marginBottom: 6 }}>You requested this one — as the super admin you can decide it yourself. The decision is recorded under your name.</div>
                 )}
-                {open && canDecide && !decideBlocked && (
+                {open && canDecide && needsSuper && !canDecideOwn && (
+                  <div className="notice" style={{ marginBottom: 6 }}>Only a <b>super admin</b> can approve or deny a data-tape exception. You can review it and add a comment here.</div>
+                )}
+                {open && canDecideRow && !decideBlocked && (
                   <>
                     <textarea className="input" rows={2} style={{ width: '100%' }}
                       placeholder="Decision note (required) — e.g. approved: strong primary guarantor; low LTV."
