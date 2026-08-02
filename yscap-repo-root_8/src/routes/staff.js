@@ -2267,19 +2267,27 @@ router.get('/applications/:id/pricing', async (req, res) => {
     // studio's Download button refuses with it (window.TS_ISSUE_HOLD).
     let termSheetHold = null;
     try { termSheetHold = await require('../lib/underwriting/appraisal-advisory').appraisalTermSheetHold(db, req.params.id); } catch (_) {}
-    // Provenance (owner-directed 2026-07-31): once EVERY e-sign prerequisite is
-    // met (the same gate that lets the DocuSign package send), a regenerated
-    // term sheet is stamped FINAL TERM SHEET; before that, every sheet is
-    // stamped initial. Best-effort — an error just keeps the initial stamp.
+    // Provenance (owner-directed 2026-07-31; corrected 2026-08-02): once every
+    // e-sign prerequisite is met, a regenerated term sheet is stamped FINAL TERM
+    // SHEET; before that, every sheet is stamped initial. The rule lives in ONE
+    // place — esign/term-sheet-stamp.js — because the studio (here), the
+    // register response and the DocuSign send guard must never disagree about
+    // what "final" means. It used to be `esignSendGate(...).ready`, which
+    // includes the P&P sign-off that only happens AFTER this sheet is generated,
+    // so no sheet was ever stamped final. Best-effort — an error keeps the
+    // initial stamp.
     let termSheetFinal = false;
+    let termSheetFinalBlockers = [];
     try {
       if (current) {
-        const g = await require('../lib/esign/gate').esignSendGate(req.params.id, { db });
-        termSheetFinal = !!(g && g.ready);
+        const st = await require('../lib/esign/term-sheet-stamp').termSheetStamp(req.params.id, { db });
+        termSheetFinal = !!st.final;
+        termSheetFinalBlockers = st.blockers.map((b) => ({ code: b.code, label: b.label, reason: b.reason }));
       }
     } catch (_) { /* initial stamp */ }
     res.json({ current, history: hist.rows, quote, enginesReady: pricing.enginesReady(),
-      econVersion: pricing.econVersionFor(f.app), manualEscalation, manualDefaults, pricingDefaults, termSheetHold, termSheetFinal });
+      econVersion: pricing.econVersionFor(f.app), manualEscalation, manualDefaults, pricingDefaults, termSheetHold,
+      termSheetFinal, termSheetFinalBlockers });
   } catch (e) { console.warn('[staff] handler error:', db.describeError(e)); res.status(500).json({ error: 'server error' }); }
 });
 
@@ -2872,7 +2880,18 @@ router.post('/applications/:id/pricing/register', async (req, res) => {
       }
     } catch (_) { /* notification is best-effort */ }
 
-    res.status(201).json({ ok: true, registrationId: regId, quote, pendingApproval: needsEscalation,
+    // Which stamp the term sheet the client is about to capture must print
+    // (owner-directed 2026-08-02). Computed HERE, after the registration has
+    // landed, so it reads the truth about the registration being issued — its
+    // staleness cleared, its pending-approval known — rather than the stale
+    // answer the panel fetched before the register. The client sets the studio's
+    // provenance from this, exports the PDF, and reports the stamp back on the
+    // upload; the DocuSign send then refuses anything not stamped FINAL.
+    // Best-effort: unreadable → initial, which is the honest wording.
+    let termSheetFinal = false;
+    try { termSheetFinal = !!(await require('../lib/esign/term-sheet-stamp').termSheetStamp(appId, { db })).final; }
+    catch (_) { termSheetFinal = false; }
+    res.status(201).json({ ok: true, registrationId: regId, quote, pendingApproval: needsEscalation, termSheetFinal,
       overrideChanges, overrideLines, pendingReason: needsEscalation ? (isManual ? 'manual_product' : (overrideOnly ? 'pricing_override' : 'manual_review')) : null });
     // Shadow-Excel parity monitor (owner-directed 2026-07-30): background-check the
     // registered Silver scenario against the workbook transcription. Watch-only —
@@ -12409,6 +12428,13 @@ router.post('/applications/:id/documents', async (req, res) => {
   const maxBytes = cfg.maxUploadMb * 1024 * 1024;
   if (buf.length > maxBytes) return res.status(413).json({ error: `file too large (max ${cfg.maxUploadMb} MB)` });
   const docKind = b.docKind === 'term_sheet' ? 'term_sheet' : null;
+  // WHICH STAMP these bytes print (owner-directed 2026-08-02, db/404). The
+  // INITIAL/FINAL wording is drawn into the PDF at generation time, so the
+  // generator is the only thing that knows — it reports what it printed and we
+  // record it. This is a description of the file, never an authorization: the
+  // send gate still decides whether a package may go out, and orchestrate.js
+  // reads this only to refuse mailing a sheet whose own face says "NOT FINAL".
+  const termSheetFinal = docKind === 'term_sheet' ? (b.termSheetFinal === true) : null;
   let slot = b.slot ? String(b.slot).trim().slice(0, 80) : null;
   // Every slot keeps every document. On a plain ADD (not an explicit replace),
   // if the slot label collides with a document already on the item, make it
@@ -12420,17 +12446,17 @@ router.post('/applications/:id/documents', async (req, res) => {
   const dupApp = await require('../lib/doc-dedup').recentDuplicateDocId({   // idempotency (#87)
     filename: b.filename, sizeBytes: buf.length, uploadedByKind: 'staff', uploadedById: req.actor.id,
     applicationId: llcId ? null : req.params.id, checklistItemId: b.checklistItemId || null,
-    llcId: llcId || null, trackRecordId: itemTrackRecordId, slotLabel: slot, docKind });
+    llcId: llcId || null, trackRecordId: itemTrackRecordId, slotLabel: slot, docKind, termSheetFinal });
   if (dupApp) return res.status(201).json({ ok: true, documentId: dupApp, deduped: true, visibility: docVisibility });
   const { ref, provider } = await storage.save(buf, { filename: b.filename });
   const r = await db.query(
     `INSERT INTO documents (application_id,checklist_item_id,borrower_id,llc_id,track_record_id,filename,content_type,size_bytes,storage_provider,storage_ref,
-                            uploaded_by_kind,uploaded_by_id,doc_kind,slot_label,visibility)
-     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,'staff',$11,$12,$13,$14) RETURNING id`,
+                            uploaded_by_kind,uploaded_by_id,doc_kind,slot_label,visibility,term_sheet_final)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,'staff',$11,$12,$13,$14,$15) RETURNING id`,
     [llcId ? null : req.params.id, b.checklistItemId || null,
      (b.checklistItemId || llcId) ? borrowerId : null, llcId, itemTrackRecordId,
      b.filename, b.contentType || 'application/octet-stream', buf.length, provider, ref,
-     req.actor.id, docKind, slot, docVisibility]);
+     req.actor.id, docKind, slot, docVisibility, termSheetFinal]);
   if (itemTrackRecordId) {
     await db.query(
       `UPDATE track_records SET docs_status='received', updated_at=now()

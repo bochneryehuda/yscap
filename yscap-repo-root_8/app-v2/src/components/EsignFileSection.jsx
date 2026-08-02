@@ -219,6 +219,15 @@ export default function EsignFileSection({ appId, role, onChanged }) {
   // Heter Iska carries no Encompass-sourced numbers and is never held by it.
   const encBlocks = !!enc.block;
   const encFieldCount = enc.openBlocking || (enc.openBlockingKeys || []).length;
+  // A THIRD reason the term-sheet package can't send (owner-directed
+  // 2026-08-02): the Term Sheet on the file PRINTS "INITIAL TERM SHEET — NOT
+  // FINAL". The wording is drawn into the PDF when it is generated, so the send
+  // refuses to mail it — and, like the Encompass gate, it has to show HERE or
+  // the officer meets the refusal only after pressing Send. Same shape, same
+  // rule: the blocker and its one-step way out appear together. Defaults keep
+  // this safe against an older server payload with no `termSheet`.
+  const tsDoc = data.termSheet || { onFile: false, final: false, block: false };
+  const tsStampBlocks = !!tsDoc.block;
   const termSheetStarted = envelopes.some((e) => e.purpose === 'term_sheet_package');
   // Everything that must be true before the override button can actually send.
   const encOvrSendable = sendAllowed && hasLoanNumber && !termSheetStarted;
@@ -228,6 +237,13 @@ export default function EsignFileSection({ appId, role, onChanged }) {
   // voided needs its own way past the Encompass check — asked for right here,
   // the same way Void asks for its reason.
   const reissueSend = (e) => {
+    // A re-issue mails the term sheet stored on the file right now, so it meets
+    // the same "the sheet that goes out is the final one" rule as a first send —
+    // and there is no override for it, because the fix is one re-registration.
+    if (tsStampBlocks && e.purpose === 'term_sheet_package') {
+      setErr('The term sheet on this file still prints “INITIAL TERM SHEET — NOT FINAL”. Re-register the product in Products & Pricing — that regenerates it as the final version — then re-issue.');
+      return;
+    }
     if (encBlocks && e.purpose === 'term_sheet_package') {
       if (!isAdmin) {
         setErr('Encompass doesn’t match this file yet — fix the fields in the Encompass sync section, or ask an admin to make an exception for this send.');
@@ -340,6 +356,8 @@ export default function EsignFileSection({ appId, role, onChanged }) {
             <button className="btn primary btn-sm"
               disabled={busy === `send:${e.purpose}` || (e.purpose === 'term_sheet_package' && !hasLoanNumber)}
               title={e.purpose === 'term_sheet_package' && !hasLoanNumber ? 'Enter the YS loan number above first'
+                : (tsStampBlocks && e.purpose === 'term_sheet_package')
+                  ? 'The term sheet on file still prints “NOT FINAL” — re-register the product to regenerate it as the final one'
                 : (encBlocks && e.purpose === 'term_sheet_package')
                   ? (isAdmin ? 'Encompass doesn’t match yet — you’ll be asked for a reason to send anyway'
                     : 'Encompass doesn’t match yet — fix the fields, or ask an admin to make an exception for this send')
@@ -379,8 +397,9 @@ export default function EsignFileSection({ appId, role, onChanged }) {
           {/* Never say "All prerequisites met" while the Encompass check is still
               holding the term-sheet package — that headline is what sent people
               to a Send button that could only fail. */}
-          <span className={`pill ${encBlocks ? 'warn' : gate.ready ? 'ok' : sendAllowed ? 'warn' : 'muted'}`}>
+          <span className={`pill ${encBlocks || tsStampBlocks ? 'warn' : gate.ready ? 'ok' : sendAllowed ? 'warn' : 'muted'}`}>
             {encBlocks ? 'Encompass doesn’t match yet'
+              : tsStampBlocks ? 'Term sheet isn’t the final one yet'
               : gate.ready ? 'All prerequisites met'
               : sendAllowed ? 'Cleared by exception' : 'Not yet'}
           </span>
@@ -540,6 +559,32 @@ export default function EsignFileSection({ appId, role, onChanged }) {
             ) : null}
           </div>
         )}
+        {/* THE TERM SHEET THAT GOES OUT IS THE FINAL ONE (owner-directed
+            2026-08-02): "the term sheet that goes out through DocuSign should
+            not say NOT FINAL — it goes to everybody after you finished all the
+            required steps." The INITIAL/FINAL wording is printed into the PDF
+            when it is generated, so a sheet made before the file was ready
+            still says it isn't final and the send refuses it. Shown OUTSIDE the
+            gate.ready branch for the same reason the Encompass blocker is: it
+            holds a file whose prerequisites are all met, and it carries its own
+            one-step fix — re-register, which regenerates and re-attaches the
+            sheet stamped FINAL. */}
+        {tsStampBlocks && (
+          <div className="notice err" style={{ margin: '2px 0 10px' }}>
+            <div>
+              <strong>The term sheet on this file is still the initial one.</strong>{' '}
+              It prints “INITIAL TERM SHEET — NOT FINAL”, so it can’t go out for signature — the sheet everyone
+              signs has to be the final one. Re-register the product in Products &amp; Pricing: that regenerates
+              the term sheet and attaches it as the final version, and nothing else about the deal changes.
+              {' '}<span className="muted small">(The Heter Iska is not affected.)</span>
+            </div>
+            <div className="row" style={{ gap: 8, marginTop: 8, flexWrap: 'wrap' }}>
+              <button className="btn ghost btn-sm" onClick={() => goToSection('sec-pricing')}>
+                Open Products &amp; Pricing
+              </button>
+            </div>
+          </div>
+        )}
         {/* Inline loan-number backfill — the term-sheet package prints the loan number
             on the disclosure, so a file without one can't send. Enter it right here. */}
         {!hasLoanNumber && (
@@ -570,9 +615,15 @@ export default function EsignFileSection({ appId, role, onChanged }) {
             // the way out (override / fix the fields) lives in the blocker box
             // above, so point there instead of firing a doomed send.
             const encHeld = encBlocks && p.purpose === 'term_sheet_package';
-            const blocked = !sendAllowed || needsLoan || already || encHeld;
+            // Same treatment as the Encompass hold: the term sheet on file
+            // printing "NOT FINAL" holds the TERM-SHEET package only, and the
+            // send can only ever fail while it does — so point at the fix above
+            // instead of firing a doomed send.
+            const tsHeld = tsStampBlocks && p.purpose === 'term_sheet_package';
+            const blocked = !sendAllowed || needsLoan || already || encHeld || tsHeld;
             const title = already ? 'This package is already started — manage it on its envelope below (Resend / Void / Re-issue)'
               : needsLoan ? 'Enter the YS loan number above first'
+              : tsHeld ? 'The term sheet on file still prints “NOT FINAL” — re-register the product to regenerate it as the final one'
               : encHeld ? (isAdmin
                 ? 'Encompass doesn’t match yet — use “Send anyway — make an exception for this send” above'
                 : 'Encompass doesn’t match yet — fix the fields, or ask an admin to make an exception for this send')

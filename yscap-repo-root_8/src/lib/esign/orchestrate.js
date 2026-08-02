@@ -30,6 +30,7 @@ const docusignDefault = require('../integrations/docusign');
 const storageDefault = require('../storage');
 const sendEngine = require('./send');
 const gate = require('./gate');
+const termSheetStamp = require('./term-sheet-stamp');
 const docgen = require('./docgen');
 const onDeadLetter = require('./dead-letter');
 const { notifyReadyToSign } = require('./notify-signers');
@@ -548,7 +549,7 @@ function validateGenerated(spec, data) {
 /** The latest current, non-rejected stored PDF for a doc_kind on this application. */
 async function latestDocument(db, applicationId, docKind) {
   const r = await db.query(
-    `SELECT id, filename, content_type, storage_ref, storage_provider, created_at
+    `SELECT id, filename, content_type, storage_ref, storage_provider, created_at, term_sheet_final
        FROM documents
       WHERE application_id = $1 AND doc_kind = $2
         AND COALESCE(review_status,'') <> 'rejected'
@@ -813,6 +814,22 @@ async function buildDefinition(row, { db = dbDefault, storage = storageDefault }
     // never mail a contradictory package.
     if (apprBackAt && d.freshnessCheck && doc.created_at && new Date(doc.created_at) < apprBackAt) {
       const err = new Error(`Cannot send ${spec.label}: the ${d.name} on file was produced before the appraisal came back, so it may show a loan amount that no longer matches. Regenerate the ${d.name} on the appraised value, then send.`);
+      err.retryable = false;
+      throw err;
+    }
+    // THE SHEET THAT GOES OUT FOR SIGNATURE IS THE FINAL ONE (owner-directed
+    // 2026-08-02): "that term sheet should not be 'not final' — it is going to
+    // everybody through DocuSign after you finished all the required steps."
+    // The INITIAL/FINAL wording is PRINTED INTO the PDF at generation time, so
+    // by the time the bytes are here nothing can read it back — db/404 records
+    // what the generator printed. A sheet whose own face says "INITIAL TERM
+    // SHEET — NOT FINAL" (or a legacy sheet whose stamp was never recorded, all
+    // of which were generated under the rule that produced that wording) is
+    // REFUSED, permanently, with the one-step fix. Nothing here decides whether
+    // the package MAY send — gate.js still owns that; this only stops the wrong
+    // DOCUMENT going out once it may.
+    if (d.kind === 'term_sheet' && doc.term_sheet_final !== true) {
+      const err = new Error(`Cannot send ${spec.label}: ${termSheetStamp.REGENERATE_MESSAGE}`);
       err.retryable = false;
       throw err;
     }

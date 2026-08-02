@@ -457,6 +457,19 @@ const TermSheetStudio = forwardRef(function TermSheetStudio({ prefill, lockedIds
         }
       } catch (_) { /* scrolling is best-effort */ }
     },
+    /* Set the INITIAL/FINAL provenance stamp RIGHT NOW, synchronously, and
+       report whether it landed (owner-directed 2026-08-02). The `provenance`
+       prop drives the same window flag through an effect, but a caller that has
+       just learned the truth from the server — the register response says
+       whether this file is ready to issue — must be able to stamp the sheet it
+       is about to capture in the same tick, without waiting for a re-render.
+       Returns false when the frame isn't up, so the caller can record the stamp
+       it actually got rather than the one it asked for. */
+    setProvenance(kind) {
+      const win = winRef.current;
+      if (!win) return false;
+      try { win.TS_PROVENANCE = kind ? { kind } : null; return true; } catch (_) { return false; }
+    },
     /* Build the exact PDF the static tool downloads, but capture the bytes
        instead: doc.save() is swapped for an output('blob') capture for the
        duration of the one export call, then restored. */
