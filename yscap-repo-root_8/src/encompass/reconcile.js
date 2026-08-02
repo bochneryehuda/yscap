@@ -362,34 +362,36 @@ function _collectParties(loan) {
   return out;
 }
 
-// The best still-unclaimed Encompass party for one of OUR people. A one-way keyed
-// SSN hash equal on both sides is PROOF of identity and wins; otherwise the
-// middle-tolerant name matcher decides (a full match beats a middle-only match).
-// `used` is a Set of party objects already claimed, so the same Encompass person
-// is never matched to BOTH of our people. Returns { party, pairIndex, role,
-// method } or null. Pure — no DB, no network.
-function _matchParty(person, parties, used) {
-  if (!person) return null;
-  const free = parties.filter((e) => !used.has(e.party));
-  if (!free.length) return null;
-  // 1) SSN hash — definitive identity proof (never guessed from a partial).
-  if (person.ssnHash) {
-    const bySsn = free.find((e) => e.party && e.party._ssnHash && e.party._ssnHash === person.ssnHash);
-    if (bySsn) return { party: bySsn.party, pairIndex: bySsn.pairIndex, role: bySsn.role, method: 'ssn' };
-  }
-  // 2) Name — first + surname must agree (middle-name tolerant). A full match
-  //    wins immediately; a middle-only match is a fallback if nothing better.
-  if (!(person.first || person.last)) return null; // nothing of ours to match on
+// SSN half — a one-way keyed hash equal on both sides is PROOF of identity. The
+// best still-unclaimed party whose stored `_ssnHash` equals ours. Pure.
+function _matchBySsn(person, parties, used) {
+  if (!person || !person.ssnHash) return null;
+  const e = parties.find((x) => !used.has(x.party) && x.party && x.party._ssnHash && x.party._ssnHash === person.ssnHash);
+  return e ? { party: e.party, pairIndex: e.pairIndex, role: e.role, method: 'ssn' } : null;
+}
+// Name half — first + surname must agree (middle-name tolerant); a full match
+// beats a middle-only match. Nothing of ours to match on → null (never guessed).
+function _matchByName(person, parties, used) {
+  if (!person || !(person.first || person.last)) return null;
   const ourParts = { first: person.first, middle: person.middle, last: person.last, suffix: person.suffix };
   let detailOnly = null;
-  for (const e of free) {
+  for (const e of parties) {
+    if (used.has(e.party)) continue;
     const p = e.party;
     const cmp = PN.compareNames(ourParts, { first: p.firstName, middle: p.middleName, last: p.lastName, suffix: p.suffixToName });
     if (cmp.status === 'match') return { party: p, pairIndex: e.pairIndex, role: e.role, method: 'name' };
     if (cmp.status === 'match_detail_only' && !detailOnly) detailOnly = e;
   }
-  if (detailOnly) return { party: detailOnly.party, pairIndex: detailOnly.pairIndex, role: detailOnly.role, method: 'name' };
-  return null;
+  return detailOnly ? { party: detailOnly.party, pairIndex: detailOnly.pairIndex, role: detailOnly.role, method: 'name' } : null;
+}
+// Per-person convenience (SSN, then name) for callers/tests. NOTE: compareIdentity
+// deliberately does NOT use this directly — it assigns SSN matches for BOTH of our
+// people FIRST, then names, so a definitive SSN proof for one person is never
+// pre-empted by the OTHER person's weaker name match (order-independent). `used`
+// is a Set of already-claimed party objects. Returns { party, pairIndex, role,
+// method } or null. Pure — no DB, no network.
+function _matchParty(person, parties, used) {
+  return _matchBySsn(person, parties, used) || _matchByName(person, parties, used);
 }
 
 // Every phone number Encompass carries for a party — home / cell / work — read
@@ -432,21 +434,30 @@ function compareIdentity(row, loan) {
   const used = new Set();
 
   const ourPrimary = { first: row.b_first_name, middle: row.b_middle_name, last: row.b_last_name, suffix: row.b_name_suffix, ssnHash: row.b_ssn_hash };
-  const primaryHit = _matchParty(ourPrimary, parties, used);
+  const ourSecond = { first: row.cb_first_name, middle: row.cb_middle_name, last: row.cb_last_name, suffix: row.cb_name_suffix, ssnHash: row.cb_ssn_hash };
+  // SSN proof for BOTH people FIRST — a hash match outranks any name match — then
+  // name for whoever is still unmatched. Doing SSN globally before names makes the
+  // assignment order-independent: a definitive SSN match for one borrower can never
+  // be pre-empted by the OTHER borrower's weaker name match on the same party.
+  let primaryHit = _matchBySsn(ourPrimary, parties, used); if (primaryHit) used.add(primaryHit.party);
+  let secondHit = _matchBySsn(ourSecond, parties, used); if (secondHit) used.add(secondHit.party);
+  if (!primaryHit) { primaryHit = _matchByName(ourPrimary, parties, used); if (primaryHit) used.add(primaryHit.party); }
+  if (!secondHit) { secondHit = _matchByName(ourSecond, parties, used); if (secondHit) used.add(secondHit.party); }
+
   let bor;
-  if (primaryHit) { bor = primaryHit.party; used.add(primaryHit.party); }
+  if (primaryHit) bor = primaryHit.party;
   else {
     // No match anywhere → fall back to pair 1's borrower (the classic slot) so a
-    // genuine "our borrower isn't in Encompass" still surfaces as a comparison
-    // (a name mismatch), never silently vanishes.
-    bor = (apps[0] && apps[0].borrower) ? apps[0].borrower : {};
+    // genuine "our borrower isn't in Encompass" still surfaces as a comparison (a
+    // name mismatch), never silently vanishes. But NOT if that party was already
+    // claimed by our second borrower (then it is not ours) — use nothing instead.
+    const b0 = (apps[0] && apps[0].borrower) ? apps[0].borrower : null;
+    bor = (b0 && !used.has(b0)) ? b0 : {};
     if (_named(bor)) used.add(bor);
   }
 
-  const ourSecond = { first: row.cb_first_name, middle: row.cb_middle_name, last: row.cb_last_name, suffix: row.cb_name_suffix, ssnHash: row.cb_ssn_hash };
-  const secondHit = _matchParty(ourSecond, parties, used);
   let coBor;
-  if (secondHit) { coBor = secondHit.party; used.add(secondHit.party); }
+  if (secondHit) coBor = secondHit.party;
   else {
     // The first still-unclaimed named party — naturally pair 1's co-borrower,
     // else a SECOND pair's borrower — so both historical representations, and an
@@ -1041,5 +1052,5 @@ module.exports = {
   // compareIdentity is exported for the name-split regression test: a borrower
   // whose Encompass copy is correctly split must MATCH our three columns, and a
   // legacy merged first name must match too rather than hold the term sheet.
-  _internals: { snap, deriveDealType, tapeGateDecision, tapeGateError, compareIdentity, _collectParties, _matchParty, _phones, _emails, _pairLabel },
+  _internals: { snap, deriveDealType, tapeGateDecision, tapeGateError, compareIdentity, _collectParties, _matchParty, _matchBySsn, _matchByName, _phones, _emails, _pairLabel },
 };

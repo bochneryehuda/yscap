@@ -14,7 +14,7 @@
  */
 const assert = require('assert');
 const R = require('../src/encompass/reconcile');
-const { compareIdentity, _collectParties, _matchParty, _phones, _emails, _pairLabel } = R._internals;
+const { compareIdentity, _collectParties, _matchParty, _matchBySsn, _matchByName, _phones, _emails, _pairLabel } = R._internals;
 
 let passed = 0;
 const ok = (n) => { console.log(`  ok  ${n}`); passed++; };
@@ -154,6 +154,32 @@ ok('D: matching is name-driven, not slot-driven — reversed Encompass order sti
   assert.strictEqual(f.id_ssn.status, 'match', 'the borrower is matched to the twin whose SSN hash equals ours (so the SSN row matches)');
 }
 ok('E: with two identical names, the SSN hash resolves the borrower to the correct pair');
+
+// ── SCENARIO E2 — an SSN proof for the SECOND borrower is never pre-empted ──
+// The tricky one: an Encompass party NAME-matches our PRIMARY but SSN-matches our
+// SECOND. Assigning SSN for BOTH people BEFORE names must hand that party to the
+// second (by SSN), and the primary must fall to the OTHER same-named party (by
+// name) — order-independent. (A naive primary-first greedy would let the primary
+// grab it by name and LOSE the second's definitive SSN match.)
+{
+  const loan = { applications: [
+    app(P('Alice', 'Adams', { _ssnHash: 'S2', _ssnLast4: '2222' }), null), // name→our primary, SSN→our second
+    app(P('Alice', 'Adams'), null),                                          // the primary's real party (by name)
+  ] };
+  const row = bor('Alice', 'Adams', {                                        // primary: no SSN on file
+    co_borrower_id: 'x', cb_first_name: 'Bob', cb_last_name: 'Brown', cb_ssn_hash: 'S2', cb_ssn_last4: '2222',
+  });
+  const f = byKey(compareIdentity(row, loan));
+  assert.strictEqual(f.id_borrower_name.matchNote, 'Matched to Encompass borrower pair 2 (primary borrower), by name.', 'primary lands on the pair-2 same-named party (pair 1 was claimed by the second borrower via SSN)');
+  assert.strictEqual(f.id_borrower_name.status, 'match', 'primary name still matches');
+  assert.strictEqual(f.id_coborrower_name.matchNote, 'Matched to Encompass borrower pair 1 (primary borrower), by SSN.', 'the second borrower claimed pair 1 by SSN — never pre-empted by the primary name match');
+  assert.strictEqual(f.id_coborrower_ssn.status, 'match', 'the SECOND borrower SSN proof is honored (this FAILS under a naive primary-first greedy)');
+  // The split helpers are exported and behave.
+  assert.ok(_matchBySsn({ ssnHash: 'S2' }, _collectParties(loan), new Set()), '_matchBySsn finds an SSN party');
+  assert.strictEqual(_matchBySsn({ ssnHash: 'NOPE' }, _collectParties(loan), new Set()), null, '_matchBySsn with no hash match → null');
+  assert.ok(_matchByName({ first: 'Alice', last: 'Adams' }, _collectParties(loan), new Set()), '_matchByName finds a name party');
+}
+ok('E2: SSN is assigned for BOTH people before names — a second borrower SSN proof is order-independent, never pre-empted');
 
 // ── SCENARIO F — phone match-any (home / cell / work) ───────────────────────
 {
