@@ -342,6 +342,13 @@ router.get('/comps', async (req, res, next) => {
       sqft_max: subject.gla ? Math.round(subject.gla * 1.6) : undefined,
       limit: 60, sort: 'recent_sale',
     }, stripEmpty(req.query));
+    // A VALUE WE OFFER IS A VALUE WE ACCEPT. The screen offers "sold at any time",
+    // which arrives as an EMPTY `sold_within_months` — and `stripEmpty` drops an
+    // empty value, so the 18-month default above would quietly win and the option
+    // would do nothing. An empty value that was actually SENT means "no limit".
+    for (const k of ['sold_within_months', 'radius_miles']) {
+      if (Object.prototype.hasOwnProperty.call(req.query, k) && req.query[k] === '') delete filters[k];
+    }
     if (subject.id) filters.exclude_property_id = subject.id;
     // WHERE THE SUBJECT IS — the looked-up coordinate first, the appraiser's second
     // (db/411). A stored subject property has `eff_latitude`; a typed one carries

@@ -203,6 +203,52 @@ const AT_MILES = (m) => ({ lat: SUBJ.lat + m / 69.0546, lng: SUBJ.lng });
     ok(todoAfter.geo_attempts > todoBefore || todoAfter.geo_attempted_at != null,
       'and every row it tried is stamped, so an address nobody can place is not re-asked on every boot forever');
 
+    // =====================================================================
+    // 6. THE COMP ROUTE — a value the screen OFFERS is a value the server accepts
+    // =====================================================================
+    // "Sold at any time" arrives as an empty sold_within_months. The route's
+    // defaults set 18 months and empty values are stripped, so without an explicit
+    // rule the option would silently do nothing — the class the repo calls "a value
+    // we offer is a value we accept".
+    const http = require('http');
+    const C = require('../src/lib/crypto');
+    const app = require('../src/server');
+    const server = app.listen(0);
+    await new Promise((r) => server.once('listening', r));
+    const call = (path, token) => new Promise((resolve, reject) => {
+      const rq = http.request({ method: 'GET', path, port: server.address().port, host: '127.0.0.1',
+        headers: token ? { authorization: `Bearer ${token}` } : {} },
+      (res) => { let b = ''; res.on('data', (c) => b += c);
+        res.on('end', () => { let j = null; try { j = b ? JSON.parse(b) : null; } catch (_) { j = { raw: b }; }
+          resolve({ status: res.statusCode, body: j }); }); });
+      rq.on('error', reject); rq.end();
+    });
+    try {
+      const staff = (await db.query(
+        `INSERT INTO staff_users (email,full_name,role,is_active,mfa_enabled,password_hash,token_version)
+         VALUES ($1,'Geo Officer','loan_officer',true,false,'x',0) RETURNING id`,
+        [`geo-${RUN}@test.local`])).rows[0].id;
+      const token = C.signJwt({ sub: staff, kind: 'staff', role: 'loan_officer', tv: 0 });
+
+      const anyTime = await call(`/api/research/comps?property_id=${subject.id}&sold_within_months=&radius_miles=3`, token);
+      ok(anyTime.status === 200 && anyTime.body.filters.sold_within_months === undefined,
+        '"sold at any time" really means any time — the 18-month default does not quietly win');
+      ok(anyTime.body.subject_located === true,
+        'and the answer says the subject IS placed, so a distance can be trusted');
+
+      const dflt = await call(`/api/research/comps?property_id=${subject.id}`, token);
+      ok(dflt.status === 200 && Number(dflt.body.filters.sold_within_months) === 18,
+        'while asking for nothing still gets the sensible 18-month default');
+
+      // An unplaced subject must SAY SO rather than answer with the whole town.
+      await db.query(`UPDATE properties SET geo_latitude=NULL, geo_longitude=NULL WHERE id=$1`, [subject.id]);
+      const blind = await call(`/api/research/comps?property_id=${subject.id}&radius_miles=0.5`, token);
+      ok(blind.status === 200 && blind.body.subject_located === false && blind.body.radius_dropped === true,
+        'AN UNPLACED SUBJECT SAYS SO — the radius is dropped and reported, never silently answered with the whole town');
+    } finally {
+      server.close();
+    }
+
     console.log(`test-research-geocode-db: ${pass} passed, ${fail} failed`);
   } catch (e) {
     fail++;
