@@ -677,6 +677,18 @@ if (require.main === module) {
         require('./lib/address-heal').healProviderLongAddressesOnce()
           .then((r) => r && r.fixed && console.log('[boot] address format repair:', JSON.stringify(r)))
           .catch((e) => console.error('[boot] address format repair failed:', e.message));
+        // GOOGLE COORDINATES ARE KEPT ONLY AS LONG AS GOOGLE ALLOWS (db/412,
+        // owner-authorized 2026-08-02). Maps Platform permits keeping a `place_id`
+        // indefinitely and caps a stored latitude/longitude at 30 days; this cache
+        // was holding them permanently. The sweep blanks the lapsed COORDINATES and
+        // keeps the place_id, so `samePlace()` — the whole reason db/124 exists — is
+        // untouched: no extra API call, no behaviour change, nothing slower. An
+        // `osm:` row never expires (its licence permits keeping the result), and the
+        // research warehouse's own coordinates (db/411) are Census/OSM-sourced and
+        // are not affected. Bounded, idempotent, self-draining, never throws.
+        require('./lib/address-canon').expireGoogleCoordsOnce()
+          .then((r) => r && r.expired && console.log('[boot] google coordinate expiry:', JSON.stringify(r)))
+          .catch((e) => console.error('[boot] google coordinate expiry failed:', e.message));
         // Previous-files fix (owner-directed 2026-07-27): a borrower's name is now
         // THREE fields (first / middle / last, + suffix) so it lines up with the way
         // Encompass, MISMO and every closing document model a person. This splits the
