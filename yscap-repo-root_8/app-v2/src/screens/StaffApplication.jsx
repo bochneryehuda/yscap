@@ -401,9 +401,22 @@ function isFixHoldStrategy(app) {
   return /hold|brrrr/.test(s);
 }
 
-// Field metadata shared by the staff + borrower completeness panels. `edit`
-// false = filled elsewhere (address picker / secure SSN flow) so we only hint.
-const COMPLETENESS_FIELDS = (app, borrower) => [
+/* COMPLETENESS IS THREE LISTS, NOT ONE (owner-directed 2026-08-02: split it
+   three ways — the application, the borrower, the co-borrower).
+
+   It used to be one flat run of pills that mixed the DEAL (address, program,
+   price, loan number) with the PERSON (date of birth, Social, FICO), so a
+   processor chasing deal terms and an officer chasing borrower identity read the
+   same undifferentiated wall — and the co-borrower's identical six fields sat in
+   their own section below, which only made the primary's look like part of the
+   deal. Now: what is true of the FILE, what is true of the BORROWER, what is true
+   of the CO-BORROWER.
+
+   The split is by SUBJECT, and the test asserts it both ways so a new field
+   cannot quietly land in the wrong list: a field that reads `borrower.*` belongs
+   to the person, everything else to the file. `edit:false` still means "filled
+   somewhere else" (the address picker, the secure SSN flow) so we only hint. */
+const APP_COMPLETENESS_FIELDS = (app) => [
   { key: 'property_address', label: 'Property address', ok: !!(app.property_address && (app.property_address.oneLine || app.property_address.street)), edit: false, hint: 'Set from the property address field on the file.' },
   // Subject-property LLC / vesting entity (owner-directed 2026-07-21): required
   // for application completeness. Filled from the Vesting entity (LLC) section
@@ -434,23 +447,6 @@ const COMPLETENESS_FIELDS = (app, borrower) => [
   ]),
   { key: 'arv', label: 'ARV', ok: app.arv != null, type: 'money' },
   { key: 'rehab_budget', label: 'Rehab budget', ok: app.rehab_budget != null, type: 'money' },
-  { key: 'cell_phone', label: 'Borrower phone', ok: !!(borrower && borrower.cell_phone), type: 'tel' },
-  // Borrower's PRIMARY (home) residence address — required for application
-  // completeness (owner-directed 2026-07-21). Filled via the PrimaryAddressPanel
-  // below; the panel writes borrowers.current_address through
-  // staffUpdateBorrower({currentAddress}), so completeness only checks it here.
-  { key: 'current_address', label: 'Borrower primary home address',
-    ok: !!(borrower && borrower.current_address
-      && ['line1', 'city', 'state', 'zip'].some((k) => String(borrower.current_address[k] || '').trim())),
-    edit: false, hint: 'Set with the borrower primary address panel below.' },
-  { key: 'date_of_birth', label: 'Date of birth', ok: !!(borrower && borrower.date_of_birth), type: 'date' },
-  // SSN is entered on its own audited line in the Borrower section (it has a
-  // duplicate-profile resolver and a reveal that this compact panel can't carry),
-  // so the pill jumps you straight there rather than naming a screen to go hunt.
-  { key: 'ssn', label: 'SSN on file', ok: !!(borrower && borrower.ssn_last4), edit: false, goTab: 'people',
-    hint: 'Add it on the SSN line of the Borrower profile — click to go there.' },
-  { key: 'fico', label: 'FICO', ok: !!(borrower && borrower.fico), type: 'fico' },
-  { key: 'citizenship', label: 'Citizenship', ok: !!(borrower && borrower.citizenship), type: 'select', options: ['US Citizen', 'Permanent Resident', 'Foreign National'] },
   // Note buyer / capital partner (applications.lender). Normally fed from ClickUp;
   // staff can fill it here when ClickUp doesn't feed it or is empty (owner-directed
   // 2026-07-20). Type 'notebuyer' renders a datalist of every note buyer available
@@ -470,6 +466,32 @@ const COMPLETENESS_FIELDS = (app, borrower) => [
     placeholder: 'YSCAP…',
     postEndpoint: (base) => base.replace(/\/complete-fields$/, '/loan-number'),
     postBody: (v) => ({ loanNumber: v }) },
+];
+
+/* THE BORROWER — facts about the PERSON, not about the deal. Every row here
+   reads `borrower.*`, and it is the mirror of CO_COMPLETENESS_FIELDS below, so
+   the two people are asked for the same things in the same order. It saves
+   through the SAME complete-fields endpoint as the deal list (the server keys on
+   the field name, not on which panel it came from), so nothing about the write
+   path changed. */
+const BORROWER_COMPLETENESS_FIELDS = (app, borrower) => [
+  { key: 'cell_phone', label: 'Borrower phone', ok: !!(borrower && borrower.cell_phone), type: 'tel' },
+  // Borrower's PRIMARY (home) residence address — required for application
+  // completeness (owner-directed 2026-07-21). Filled via the PrimaryAddressPanel
+  // below; the panel writes borrowers.current_address through
+  // staffUpdateBorrower({currentAddress}), so completeness only checks it here.
+  { key: 'current_address', label: 'Borrower primary home address',
+    ok: !!(borrower && borrower.current_address
+      && ['line1', 'city', 'state', 'zip'].some((k) => String(borrower.current_address[k] || '').trim())),
+    edit: false, hint: 'Set with the borrower primary address panel below.' },
+  { key: 'date_of_birth', label: 'Date of birth', ok: !!(borrower && borrower.date_of_birth), type: 'date' },
+  // SSN is entered on its own audited line in the Borrower section (it has a
+  // duplicate-profile resolver and a reveal that this compact panel can't carry),
+  // so the pill jumps you straight there rather than naming a screen to go hunt.
+  { key: 'ssn', label: 'SSN on file', ok: !!(borrower && borrower.ssn_last4), edit: false, goTab: 'people',
+    hint: 'Add it on the SSN line of the Borrower profile — click to go there.' },
+  { key: 'fico', label: 'FICO', ok: !!(borrower && borrower.fico), type: 'fico' },
+  { key: 'citizenship', label: 'Citizenship', ok: !!(borrower && borrower.citizenship), type: 'select', options: ['US Citizen', 'Permanent Resident', 'Foreign National'] },
 ];
 
 // #30 / #60 — the co-borrower's own required identity fields, shown in a SEPARATE
@@ -511,7 +533,7 @@ function CompletenessPanel({ app, borrower, endpoint, onSaved, heading = 'Applic
   const [val, setVal] = useState('');
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState('');
-  const fields = fieldsProp || COMPLETENESS_FIELDS(app, borrower);
+  const fields = fieldsProp || [...APP_COMPLETENESS_FIELDS(app), ...BORROWER_COMPLETENESS_FIELDS(app, borrower)];
   // Note-buyer picker: load every note buyer available in ClickUp (+ known + on
   // file) so a 'notebuyer' field renders a datalist. Only fetched when the panel
   // actually carries such a field. Its own datalist id avoids id collisions.
@@ -600,8 +622,20 @@ function CompletenessPanel({ app, borrower, endpoint, onSaved, heading = 'Applic
   );
 }
 
+/* THE DEAL's own missing pieces (owner-directed 2026-08-02 — the first of the
+   three). Same endpoint as before; only the list it is handed is narrower. */
 function Completeness({ app, borrower, appId, onSaved }) {
+  return <CompletenessPanel app={app} borrower={borrower} fields={APP_COMPLETENESS_FIELDS(app)}
+    heading="Application — what's missing"
+    endpoint={`/api/staff/applications/${appId}/complete-fields`} onSaved={onSaved} />;
+}
+
+/* THE BORROWER's own missing pieces — the second of the three, and the mirror of
+   the co-borrower panel below, so the two people read identically. */
+function BorrowerCompleteness({ app, borrower, appId, onSaved }) {
   return <CompletenessPanel app={app} borrower={borrower}
+    fields={BORROWER_COMPLETENESS_FIELDS(app, borrower)}
+    heading="Borrower — what's missing"
     endpoint={`/api/staff/applications/${appId}/complete-fields`} onSaved={onSaved} />;
 }
 
@@ -694,7 +728,7 @@ function CoBorrowerCompleteness({ app, appId, onSaved }) {
   if (!fields.length) return null;
   return <CompletenessPanel app={app} borrower={null} fields={fields}
     endpoint={`/api/staff/applications/${appId}/co-borrower-fields`} onSaved={onSaved}
-    heading="Co-borrower completeness" />;
+    heading="Co-borrower — what's missing" />;
 }
 
 /* Staff-only file detail the team keeps in ClickUp — pulled onto the file for a
@@ -4655,12 +4689,21 @@ export default function StaffApplication() {
         <CoBorrowerBlock appId={id} app={app} onChanged={load} />
       </>}
 
+      {/* THREE LISTS, BY SUBJECT (owner-directed 2026-08-02). What is missing on
+          the DEAL, on the BORROWER, and on the CO-BORROWER — one flat run of
+          pills mixed the loan number in with somebody's date of birth, so
+          neither the processor chasing terms nor the officer chasing identity
+          could see their own work. The co-borrower panel already stood apart;
+          this makes the primary borrower its equal instead of leaving their
+          identity fields looking like part of the deal. */}
       {appDetailTab === 'missing' && <>
         <p className="small" style={{ margin: '0 0 4px', color: '#4B585C' }}>
-          Anything still missing on the file — fill a pill and it disappears. Every field here can
-          also be edited any time under Deal &amp; property or in the Borrower panel.
+          Anything still missing, split three ways — the deal, the borrower, the co-borrower.
+          Fill a pill and it disappears. Every field here can also be edited any time under
+          Deal &amp; property or on the borrower&rsquo;s own profile.
         </p>
         <Completeness app={app} borrower={borrower} appId={app.id} onSaved={load} />
+        <BorrowerCompleteness app={app} borrower={borrower} appId={app.id} onSaved={load} />
         <CoBorrowerCompleteness app={app} appId={app.id} onSaved={load} />
         {/* The two primary-address rows moved here rather than being deleted
             with the people's editors: this small panel still edits something
