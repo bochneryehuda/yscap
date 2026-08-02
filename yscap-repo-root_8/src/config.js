@@ -182,6 +182,19 @@ module.exports = {
   // clamp for both, so a 0 can never mean "one byte" (every document skipped).
   closingAttachBudgetBytes: mbBytes(process.env.CLOSING_ATTACH_BUDGET_MB, 20),
   closingAttachBudgetGraphBytes: mbBytes(process.env.CLOSING_ATTACH_BUDGET_GRAPH_MB, 2.5),
+  // The ceiling on ONE MESSAGE AS IT TRAVELS. Attachments go base64 (4 characters
+  // per 3 bytes), and it is that inflated size a receiving mail server measures —
+  // Google Workspace and most corporate gateways refuse a message over 25 MB. A
+  // 20 MB raw package is 26.7 MB on the wire, so the budget above alone would let
+  // us hand Resend a message the attorney's own server bounces. 24 MB keeps every
+  // message under that line with room to spare (and far under Resend's own 40 MB).
+  closingAttachWireBytes: mbBytes(process.env.CLOSING_ATTACH_WIRE_MB, 24),
+  // How many messages one closing-prep package may be split across when it does not
+  // fit in a single email (owner-directed 2026-08-02: a document too big to attach
+  // must still REACH the attorney). Six is far more than any real package needs —
+  // it is a runaway backstop, not a target — and anything still over it is NAMED in
+  // the email and reported to the sender rather than silently dropped.
+  closingAttachMaxParts: Math.max(1, Math.min(20, Number(process.env.CLOSING_ATTACH_MAX_PARTS) || 6)),
   // #75 external chat guests: the domain a unique per-participant reply-to is
   // built on (e.g. "reply.yscapgroup.com" → chat+<key>@reply.yscapgroup.com).
   // When UNSET, external guests still receive chat emails but with no reply-to,
