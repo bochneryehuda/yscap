@@ -206,6 +206,158 @@ services:
         sync: false
       - key: JWT_SECRET
         sync: false
+  # ---------------------------------------------------------------------------
+  # NIGHTLY OFF-SITE BACKUP (owner-directed 2026-08-02).
+  #
+  # Render already keeps its own point-in-time backups of the database, and those are the FIRST
+  # thing to reach for — they restore to any second in the recovery window with one click. What
+  # they do not survive is the Render account itself: a billing lapse, a mistaken database
+  # deletion noticed a week late, a compromised login. This job is the copy that lives somewhere
+  # else entirely, encrypted with a key Render never sees.
+  #
+  # It is a CRON JOB, not a worker: it runs, does its work, and exits. Render bills the seconds.
+  #
+  # Runtime is DOCKER because the job needs pg_dump at a major version >= the database's, and the
+  # native Node image does not guarantee one. See Dockerfile.backup.
+  #
+  # 07:10 UTC ≈ 3:10am New York — after the day's work, before anyone starts.
+  # ---------------------------------------------------------------------------
+  - type: cron
+    name: ys-capital-backup
+    runtime: docker
+    plan: starter
+    rootDir: yscap-repo-root_8
+    dockerfilePath: ./Dockerfile.backup
+    schedule: "10 7 * * *"
+    dockerCommand: node scripts/backup-run.js
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: DATABASE_URL
+        fromDatabase: { name: yscap, property: connectionString }
+      # THE KEY. Generated once with `openssl rand -base64 32`, set in the dashboard, and kept in
+      # the company password manager. Without it, every backup in the vault is unreadable — by an
+      # attacker AND by us. It is the single most important value in this file.
+      - key: BACKUP_ENCRYPTION_KEY
+        sync: false
+      # The vault: an S3-compatible bucket at a DIFFERENT provider than Render, in a DIFFERENT
+      # account than the documents bucket, ideally with Object Lock turned on so a backup cannot
+      # be deleted by anyone — including someone holding these credentials.
+      - key: BACKUP_S3_BUCKET
+        sync: false
+      - key: BACKUP_S3_ENDPOINT
+        sync: false
+      - key: BACKUP_S3_ACCESS_KEY_ID
+        sync: false
+      - key: BACKUP_S3_SECRET_ACCESS_KEY
+        sync: false
+      - key: BACKUP_S3_REGION
+        sync: false
+      # WORM immutability. BLANK because the vault is Cloudflare R2 (owner-directed 2026-08-02):
+      # R2 does not implement the S3 per-object Object Lock API, so a mode set here would send
+      # x-amz-object-lock-* headers it rejects — and with no mode set, vault.js sends none at all.
+      # R2 protects the bucket instead, via a 35-day BUCKET LOCK rule set in the Cloudflare
+      # dashboard; keep that equal to BACKUP_KEEP_DAILY_DAYS so the nightly prune only ever
+      # deletes objects whose lock has already expired. Set this to COMPLIANCE only if the vault
+      # is moved to AWS S3 or Backblaze B2 (whose bucket must be CREATED with Object Lock on).
+      - key: BACKUP_S3_OBJECT_LOCK_MODE
+        value: ""
+      - key: BACKUP_S3_OBJECT_LOCK_DAYS
+        value: "35"
+      # The loan documents live in the same object storage the app writes to, so the backup job
+      # needs read access to copy them into the vault. A database restored without them is every
+      # loan file with no paperwork. Same values as the web service.
+      - key: STORAGE_PROVIDER
+        value: s3
+      - key: S3_BUCKET
+        sync: false
+      - key: S3_ENDPOINT
+        sync: false
+      - key: S3_ACCESS_KEY_ID
+        sync: false
+      - key: S3_SECRET_ACCESS_KEY
+        sync: false
+      - key: S3_REGION
+        value: auto
+      # Where "the backup failed" goes. A backup system that fails quietly is worse than none.
+      - key: BACKUP_ALERT_EMAIL
+        sync: false
+      - key: RESEND_API_KEY
+        sync: false
+      - key: EMAIL_PROVIDER
+        value: auto
+      - key: NOTIFY_FROM
+        value: PILOT by YS Capital <notifications@yscapgroup.com>
+      # The shared config generates ephemeral values and prints a SECURITY warning on every boot
+      # when these are missing. The backup job verifies no tokens and decrypts no SSNs, so the
+      # values only need to exist — but a real warning must never be lost in that noise.
+      - key: JWT_SECRET
+        sync: false
+      - key: SSN_ENCRYPTION_KEY
+        sync: false
+
+  # ---------------------------------------------------------------------------
+  # THE WEEKLY RESTORE DRILL.
+  #
+  # This is the part most backup setups skip, and it is the part that decides whether the backups
+  # are real. It downloads an actual backup, decrypts it, restores it into a scratch database, and
+  # compares the result table by table and row by row against what was recorded when the dump was
+  # taken. If it ever disagrees, it emails.
+  #
+  # It needs its OWN throwaway database — it wipes the target every run, and refuses to point at
+  # anything whose name does not say so. On Render: create a second, small Postgres instance named
+  # e.g. `yscap-verify` and set BACKUP_VERIFY_DATABASE_URL to it. Without it the drill still proves
+  # the file is intact and decrypts; it just cannot prove it LOADS.
+  #
+  # Sundays 08:30 UTC ≈ 4:30am New York, well after the nightly job has finished.
+  # ---------------------------------------------------------------------------
+  - type: cron
+    name: ys-capital-backup-verify
+    runtime: docker
+    plan: starter
+    rootDir: yscap-repo-root_8
+    dockerfilePath: ./Dockerfile.backup
+    schedule: "30 8 * * 0"
+    dockerCommand: node scripts/backup-verify.js
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: DATABASE_URL
+        fromDatabase: { name: yscap, property: connectionString }
+      # The scratch database. EVERYTHING IN IT IS DELETED on every run — never point this at
+      # anything real. The drill refuses a target that is the live database, and refuses one whose
+      # name does not look disposable.
+      - key: BACKUP_VERIFY_DATABASE_URL
+        sync: false
+      - key: BACKUP_ENCRYPTION_KEY
+        sync: false
+      - key: BACKUP_S3_BUCKET
+        sync: false
+      - key: BACKUP_S3_ENDPOINT
+        sync: false
+      - key: BACKUP_S3_ACCESS_KEY_ID
+        sync: false
+      - key: BACKUP_S3_SECRET_ACCESS_KEY
+        sync: false
+      - key: BACKUP_S3_REGION
+        sync: false
+      - key: BACKUP_ALERT_EMAIL
+        sync: false
+      # A PASSING drill emails too — this is the one "all good" worth reading, because it is the
+      # only message in the system that proves a restore actually works.
+      - key: BACKUP_ALERT_ON_SUCCESS
+        value: "1"
+      - key: RESEND_API_KEY
+        sync: false
+      - key: EMAIL_PROVIDER
+        value: auto
+      - key: NOTIFY_FROM
+        value: PILOT by YS Capital <notifications@yscapgroup.com>
+      - key: JWT_SECRET
+        sync: false
+      - key: SSN_ENCRYPTION_KEY
+        sync: false
+
 databases:
   - name: yscap
     plan: basic-1gb

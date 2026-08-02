@@ -4411,10 +4411,18 @@ router.post('/applications/:id/credit/reuse', async (req, res) => {
   }
 });
 
-// Full file activity feed (staff sees everything, including internal).
+// The file's AUDIT LOG (staff see everything, including internal).
+// `?requests=1` adds the HTTP request-level layer — one line per call that
+// touched this file. It is opt-in because it is enormous and mostly page
+// loads; it is what you turn on when the business trail doesn't explain what
+// happened. `?limit=` widens the window (capped server-side).
 router.get('/applications/:id/activity', async (req, res) => {
-  try { res.json(await require('../lib/activity').fileActivity(req.params.id, false)); }
-  catch (e) { res.status(500).json({ error: 'server error' }); }
+  try {
+    res.json(await require('../lib/activity').fileActivity(req.params.id, false, {
+      limit: Number(req.query.limit) || undefined,
+      includeRequests: req.query.requests === '1',
+    }));
+  } catch (e) { console.error('[file-activity]', e && e.message); res.status(500).json({ error: 'server error' }); }
 });
 
 // ════════════════════════════════════════════════════════════════════════════
@@ -12567,14 +12575,27 @@ router.get('/applications/:id/documents', async (req, res) => {
   // The vesting LLC's documents (application_id NULL, llc_id = the file's LLC)
   // are part of the file too — they ride along automatically wherever the
   // entity is linked.
+  // The list carries enough for the panel to say WHERE each document landed and
+  // WHAT state it is in without a second call per row (owner-directed
+  // 2026-08-02: "it just says everywhere 'General upload'"). The full history
+  // is one click away on /documents/:id/dossier.
   const r = await db.query(
     `SELECT d.id,d.filename,d.content_type,d.size_bytes,d.checklist_item_id,d.slot_label,d.doc_kind,d.uploaded_by_kind,d.created_at,
             d.review_status,d.rejection_reason,d.reviewed_at,d.is_current,d.replaces_document_id,
-            d.source_type,d.visibility,d.llc_id,
+            d.source_type,d.visibility,d.llc_id,d.track_record_id,d.sha256,d.page_range,d.source_document_id,
+            d.sharepoint_mirror_status,d.sharepoint_backed_up_at,d.sharepoint_web_url,
+            d.authenticity_level,d.authenticity_score,
             s.full_name AS reviewed_by_name,
+            COALESCE(NULLIF(su.full_name,''),
+                     NULLIF(bu.full_name,''),
+                     NULLIF(btrim(COALESCE(bu.first_name,'')||' '||COALESCE(bu.last_name,'')),'')) AS uploaded_by_name,
+            ci.audience AS cond_audience, ci.status AS cond_status, ci.is_gate AS cond_is_gate,
+            ci.is_required AS cond_is_required, ci.phase AS cond_phase, ci.item_kind AS cond_item_kind,
             CASE WHEN d.llc_id IS NOT NULL THEN 'LLC — ' || COALESCE(ci.label, l.llc_name) ELSE ci.label END AS item_label
        FROM documents d
        LEFT JOIN staff_users s ON s.id=d.reviewed_by
+       LEFT JOIN staff_users su ON d.uploaded_by_kind='staff' AND su.id=d.uploaded_by_id
+       LEFT JOIN borrowers bu ON d.uploaded_by_kind='borrower' AND bu.id=d.uploaded_by_id
        LEFT JOIN checklist_items ci ON ci.id=d.checklist_item_id
        LEFT JOIN llcs l ON l.id=d.llc_id
       WHERE (d.application_id=$1
@@ -12582,7 +12603,15 @@ router.get('/applications/:id/documents', async (req, res) => {
                  AND d.llc_id=(SELECT llc_id FROM applications WHERE id=$1)))
         AND d.source_type <> 'chat_attachment'
       ORDER BY d.is_current DESC, d.created_at DESC`, [req.params.id]);
-  res.json(r.rows);
+  // Title + the one-line "where / why" come from the SAME pure module the
+  // dossier uses, so the list row and the opened detail can never disagree.
+  const dossier = require('../lib/document-dossier');
+  res.json(r.rows.map((d) => ({
+    ...d,
+    title: dossier.documentTitle(d),
+    where_label: dossier.describePlacement(d).whereLabel,
+    purpose_headline: dossier.describePurpose(d).headline,
+  })));
 });
 
 // Attach a document to the file as staff. Used by the Term Sheet Studio panel
@@ -13190,6 +13219,181 @@ async function canSeeDocument(req, doc) {
   }
   return false;
 }
+
+// ── THE DOCUMENT DOSSIER ────────────────────────────────────────────────────
+// Everything the system knows about ONE document: where it landed, why it was
+// asked for, what it is, every version of it, and its full history — accepted,
+// rejected, replaced, synced, read by PILOT, pushed to ClickUp (owner-directed
+// 2026-08-02). The wording + shaping live in the pure `document-dossier`
+// module; this route only READS. Every side table is independently guarded:
+// several are env-gated features, and a document whose AI tables are empty must
+// still return a dossier, just a shorter one.
+const STAFF_NAME_SQL_DOSSIER = `NULLIF(s.full_name,'') AS pushed_by_name`;
+router.get('/documents/:id/dossier', async (req, res) => {
+  try {
+    const dossier = require('../lib/document-dossier');
+    const base = await db.query(
+      `SELECT d.*,
+              COALESCE(NULLIF(su.full_name,''),
+                       NULLIF(bu.full_name,''),
+                       NULLIF(btrim(COALESCE(bu.first_name,'')||' '||COALESCE(bu.last_name,'')),'')) AS uploaded_by_name,
+              rv.full_name AS reviewed_by_name,
+              l.llc_name,
+              tr.property_address AS track_record_address,
+              ci.label AS cond_label, ci.status AS cond_status, ci.audience AS cond_audience,
+              ci.phase AS cond_phase, ci.category AS cond_category, ci.item_kind AS cond_item_kind,
+              ci.is_gate AS cond_is_gate, ci.is_required AS cond_is_required,
+              ci.hint AS cond_hint, ci.borrower_hint AS cond_borrower_hint,
+              ci.origin_kind AS cond_origin_kind, ci.origin_detail AS cond_origin_detail,
+              ci.signed_off_at AS cond_signed_off_at, ci.waived_at AS cond_waived_at,
+              so.full_name AS cond_signed_off_by_name,
+              CASE WHEN d.llc_id IS NOT NULL THEN 'LLC — ' || COALESCE(ci.label, l.llc_name) ELSE ci.label END AS item_label
+         FROM documents d
+         LEFT JOIN staff_users su ON d.uploaded_by_kind='staff' AND su.id=d.uploaded_by_id
+         LEFT JOIN borrowers bu ON d.uploaded_by_kind='borrower' AND bu.id=d.uploaded_by_id
+         LEFT JOIN staff_users rv ON rv.id=d.reviewed_by
+         LEFT JOIN checklist_items ci ON ci.id=d.checklist_item_id
+         LEFT JOIN staff_users so ON so.id=ci.signed_off_by
+         LEFT JOIN llcs l ON l.id=d.llc_id
+         LEFT JOIN track_records tr ON tr.id=d.track_record_id
+        WHERE d.id=$1`, [req.params.id]);
+    const doc = base.rows[0];
+    if (!doc) return res.status(404).json({ error: 'not found' });
+    if (!(await canSeeDocument(req, doc))) return res.status(403).json({ error: 'forbidden' });
+
+    // A track record's address is a jsonb blob — render the one line the panel
+    // shows rather than dumping the object.
+    if (doc.track_record_address) {
+      const a = doc.track_record_address;
+      doc.track_record_label = a.oneLine
+        || [a.line1 || a.street, a.city, a.state].filter(Boolean).join(', ') || null;
+    }
+
+    // Never let one unreadable side table cost the whole dossier.
+    const safe = async (fn) => { try { return (await fn()) || []; } catch (_) { return []; } };
+
+    const [versions, audits, extractions, findings, jobs, syncRows, lifecycle,
+      proofs, suggestions, routes, roles, access] = await Promise.all([
+      // The version chain, BOTH ways: what this replaced, and what replaced it.
+      safe(async () => {
+        const r = await db.query(
+          `SELECT id, filename, created_at, review_status, is_current, 'replaced_by' AS relation
+             FROM documents WHERE replaces_document_id=$1
+           UNION ALL
+           SELECT id, filename, created_at, review_status, is_current, 'replaces' AS relation
+             FROM documents WHERE id=$2
+           ORDER BY created_at`,
+          [doc.id, doc.replaces_document_id || '00000000-0000-0000-0000-000000000000']);
+        return r.rows;
+      }),
+      safe(async () => {
+        const r = await db.query(
+          `SELECT al.created_at, al.action, al.actor_kind, al.detail, al.ip_address,
+                  COALESCE(NULLIF(s.full_name,''),
+                           NULLIF(b.full_name,''),
+                           NULLIF(btrim(COALESCE(b.first_name,'')||' '||COALESCE(b.last_name,'')),'')) AS actor_name
+             FROM audit_log al
+             LEFT JOIN staff_users s ON al.actor_kind='staff' AND s.id=al.actor_id
+             LEFT JOIN borrowers b ON al.actor_kind='borrower' AND b.id=al.actor_id
+            WHERE (al.entity_type='document' AND al.entity_id=$1)
+               OR (al.detail->>'documentId' = $1::text)
+            ORDER BY al.created_at LIMIT 200`, [doc.id]);
+        return r.rows.map((a) => ({ ...a, detail: typeof a.detail === 'string' ? (() => { try { return JSON.parse(a.detail); } catch (_) { return null; } })() : a.detail }));
+      }),
+      safe(async () => (await db.query(
+        `SELECT created_at, doc_type, confidence, page_count, ocr_engine, ai_model, status, reason
+           FROM document_extractions WHERE document_id=$1 ORDER BY created_at LIMIT 50`, [doc.id])).rows),
+      // A cross-document finding hangs off the EXTRACTION, not the document —
+      // matching on document_id alone silently under-counts what PILOT found.
+      safe(async () => (await db.query(
+        `SELECT f.created_at, f.severity, f.code, f.title, f.doc_value, f.file_value,
+                f.status, f.resolved_at, f.resolution_note, s.full_name AS resolved_by_name
+           FROM document_findings f
+           LEFT JOIN staff_users s ON s.id=f.resolved_by
+          WHERE f.document_id=$1
+             OR f.extraction_id IN (SELECT id FROM document_extractions WHERE document_id=$1)
+          ORDER BY f.created_at LIMIT 100`, [doc.id])).rows),
+      safe(async () => (await db.query(
+        `SELECT created_at, updated_at, status, document_family, attempts, last_error
+           FROM document_pipeline_jobs WHERE document_id=$1 ORDER BY created_at LIMIT 20`, [doc.id])).rows),
+      // The outbound push of a DOCUMENT is `sitewire_document_links`, not
+      // `sync_queue` — nothing ever enqueues a document there (the two writers
+      // both hard-code entity_type='application'), so reading sync_queue here
+      // would silently always be empty.
+      safe(async () => (await db.query(
+        // Qualify every column: `updated_at` exists on BOTH sides of the join.
+        `SELECT COALESCE(l.pushed_at, l.updated_at) AS at, l.which, l.status, l.last_error,
+                l.sitewire_document_name, ${STAFF_NAME_SQL_DOSSIER}
+           FROM sitewire_document_links l
+           LEFT JOIN staff_users s ON s.id = l.pushed_by
+          WHERE l.source_document_id=$1 ORDER BY 1 LIMIT 20`, [doc.id])).rows),
+      // The packet lifecycle is keyed on the PACKAGE / LOGICAL document, never
+      // on documents.id — reach it through both, defensively (the packet
+      // splitter ships behind a flag, so this is usually empty).
+      safe(async () => (await db.query(
+        `SELECT e.created_at, e.event_type, e.actor_kind, e.detail, s.full_name AS actor_name
+           FROM document_lifecycle_events e
+           LEFT JOIN staff_users s ON e.actor_kind='staff' AND s.id=e.actor_id
+          WHERE e.package_id IN (SELECT id FROM document_packages WHERE source_document_id=$1)
+             OR e.logical_document_id IN (SELECT id FROM logical_documents WHERE document_id=$1)
+          ORDER BY e.created_at LIMIT 50`, [doc.id])).rows),
+      // DID IT ANSWER THE CONDITION? The single most on-point record for the
+      // owner's "what was the purpose" question.
+      safe(async () => (await db.query(
+        `SELECT created_at, result, recommended_action, reviewer_summary, requirements_json
+           FROM condition_clearance_proofs WHERE document_id=$1
+          ORDER BY created_at LIMIT 20`, [doc.id])).rows),
+      safe(async () => (await db.query(
+        `SELECT a.created_at, a.decided_at, a.source, a.kind, a.title, a.body, a.severity,
+                a.status, a.status_reason, s.full_name AS decided_by_name
+           FROM ai_suggestions a
+           LEFT JOIN staff_users s ON s.id = a.decided_by_staff_id
+          WHERE a.document_id=$1 ORDER BY a.created_at LIMIT 40`, [doc.id])).rows),
+      safe(async () => (await db.query(
+        `SELECT created_at, provider, service, model_version, reason, confidence,
+                challenger_provider, latency_ms, cost_cents, outcome, document_family
+           FROM document_processing_routes WHERE document_id=$1
+          ORDER BY created_at LIMIT 20`, [doc.id])).rows),
+      // WHAT THIS DOCUMENT IS, elsewhere in the system. Each arm is guarded on
+      // its own so one absent feature never costs the others.
+      (async () => {
+        const found = [];
+        const add = async (label, sql) => {
+          try { const r = await db.query(sql, [doc.id]); if (r.rows[0]) found.push({ label, ...r.rows[0] }); }
+          catch (_) { /* the feature isn't installed on this tenant */ }
+        };
+        await Promise.all([
+          add('the credit report', `SELECT pulled_at AS at, middle_score, pull_type FROM credit_reports WHERE xml_document_id=$1 OR pdf_document_id=$1 LIMIT 1`),
+          add('the appraisal', `SELECT imported_at AS at, superseded FROM appraisals WHERE source_xml_document_id=$1 OR pdf_document_id=$1 LIMIT 1`),
+          add('an executed e-signature package', `SELECT cleared_at AS at FROM esign_envelope_docs WHERE completed_document_id=$1 LIMIT 1`),
+          add('the flood certificate', `SELECT completed_at AS at, flood_zone FROM encompass_flood_orders WHERE document_id=$1 LIMIT 1`),
+          add('a post-closing item', `SELECT updated_at AS at, status FROM post_closing_items WHERE document_id=$1 LIMIT 1`),
+          add('a lien waiver', `SELECT received_at AS at, kind, status FROM draw_lien_waivers WHERE document_id=$1 LIMIT 1`),
+          add('a training example for PILOT', `SELECT uploaded_at AS at, doc_type FROM label_examples WHERE document_id=$1 LIMIT 1`),
+        ]);
+        return found;
+      })().catch(() => []),
+      // THE ACCESS LEDGER — who opened, previewed or downloaded this document,
+      // when, and from where. The request log is richer than the audit row
+      // (it has the IP and the outcome of every attempt, including refusals).
+      safe(async () => (await db.query(
+        `SELECT ra.at, ra.method, ra.path, ra.status, ra.actor_kind, ra.actor_email,
+                ra.actor_role, ra.ip
+           FROM request_audit_log ra
+          WHERE ra.entity_id=$1 ORDER BY ra.at DESC LIMIT 100`, [doc.id])).rows),
+    ]);
+
+    const out = dossier.buildDossier({
+      doc, versions, audits, extractions, findings, jobs, syncRows, lifecycle,
+      proofs, suggestions, routes, roles, access,
+    });
+    out.applicationId = doc.application_id || null;
+    res.json(out);
+  } catch (e) {
+    console.error('[document-dossier]', e && e.message);
+    res.status(500).json({ error: 'server error' });
+  }
+});
 
 router.get('/documents/:id/download', async (req, res) => {
   try {
