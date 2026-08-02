@@ -1247,8 +1247,14 @@ async function _doDecideException(c, appId, fieldKey, staffId, decision, reason)
     const nf = (after.fields || []).find((x) => x.key === fieldKey) || f;
     return { ok: true, decision, field: nf, label: f.label };
   }
-  // grant
+  // grant — mirror requestException's guards so a direct re-grant (or a double-click
+  // before the button disables) can't INSERT a second born-approved register row for
+  // the one logical exception, and a grant on a file with no pulled loan is refused
+  // (there is nothing to reconcile against). deny/revoke stay unguarded on hasLoan so
+  // a stale exception can still be cleaned up after a loan is un-pulled.
+  if (!cur.hasLoan) return { ok: false, reason: 'no_loan' };
   if (f.status === 'match' || f.status === 'reference') return { ok: false, reason: 'already_passing' };
+  if (f.excepted) return { ok: false, reason: 'already_excepted' };
   await c.query(
     `INSERT INTO encompass_sync_resolutions
         (application_id, field_key, resolution, ours_snapshot, theirs_snapshot, resolved_by, resolved_at, note)

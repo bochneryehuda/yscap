@@ -241,6 +241,16 @@ function call(server, method, path, token, body) {
       { fieldKey: 'purchase_price', reason: 'again' });
     assert(reReq.status === 400 && JSON.parse(reReq.body).reason === 'already_excepted', 'a request on an already-granted field is refused (already_excepted)');
 
+    // A super-admin RE-GRANT on an already-excepted field is refused too, so one logical
+    // exception never accretes a second born-approved register row (a double-click / retry).
+    const regCount = async () => Number((await db.query(
+      `SELECT count(*) c FROM loan_exceptions WHERE application_id=$1 AND exception_type='encompass_mismatch'`, [appId])).rows[0].c);
+    const regBefore = await regCount();
+    const reGrant = await call(server, 'POST', `/api/staff/applications/${appId}/encompass/decide-exception`, sToken,
+      { fieldKey: 'purchase_price', decision: 'grant', reason: 'again' });
+    assert(reGrant.status === 400 && JSON.parse(reGrant.body).reason === 'already_excepted', 'a re-grant on an already-excepted field is refused (already_excepted)');
+    assert((await regCount()) === regBefore, 'a refused re-grant creates NO duplicate register row');
+
     // 6. AUTO-VOID — move the value off the snapshot → the field re-blocks; restore → re-honoured.
     await db.query(`UPDATE applications SET purchase_price = 888888 WHERE id = $1`, [appId]);
     g = await findings(loToken);

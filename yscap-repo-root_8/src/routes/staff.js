@@ -9602,8 +9602,10 @@ router.post('/applications/:id/encompass/decide-exception', requireRole('super_a
     if (!r.ok) {
       const msg = {
         not_found: 'Application not found.',
+        no_loan: 'No Encompass loan has been pulled for this file yet.',
         unknown_field: 'Unknown field.',
         already_passing: 'This field already matches — no exception is needed.',
+        already_excepted: 'This field already has a granted exception.',
       }[r.reason] || 'Could not update the exception.';
       return res.status(r.reason === 'not_found' ? 404 : 400).json({ error: msg, reason: r.reason });
     }
