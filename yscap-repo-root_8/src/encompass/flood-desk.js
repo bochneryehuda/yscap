@@ -142,10 +142,13 @@ async function pollPendingOnce() {
   try {
     await db.query(
       `UPDATE encompass_flood_orders SET status='error', last_error='order was never confirmed placed', updated_at=now()
-        WHERE status='ordered' AND order_id IS NULL AND ordered_at < now() - interval '15 minutes'`);
+        WHERE status='ordered' AND order_id IS NULL AND ordered_at < now() - interval '15 minutes'
+          AND COALESCE(provider,'encompass')='encompass'`);
   } catch (_) {}
+  // Drain ONLY Encompass rows — a Xactus flood row (provider='xactus', db/394) is
+  // polled by src/xactus/flood-desk.js, never by this Encompass status call.
   let rows;
-  try { rows = (await db.query(`SELECT * FROM encompass_flood_orders WHERE status='ordered' AND order_id IS NOT NULL ORDER BY ordered_at LIMIT 25`)).rows; }
+  try { rows = (await db.query(`SELECT * FROM encompass_flood_orders WHERE status='ordered' AND order_id IS NOT NULL AND COALESCE(provider,'encompass')='encompass' ORDER BY ordered_at LIMIT 25`)).rows; }
   catch (_) { return { checked: 0 }; }
   let completed = 0, failed = 0;
   for (const o of rows) {
