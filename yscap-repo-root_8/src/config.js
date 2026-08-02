@@ -364,6 +364,13 @@ module.exports = {
     // The scratch database used by the weekly restore DRILL. It is DROPPED and recreated on every
     // drill, so it must never point at anything real — the drill refuses if it equals DATABASE_URL.
     verifyDatabaseUrl: (process.env.BACKUP_VERIFY_DATABASE_URL || '').trim(),
+    // How old the newest backup may be before the weekly drill treats it as an INCIDENT rather
+    // than a clean pass. The nightly job only emails on failure, and a job that never runs never
+    // fails — so a stopped cron is silent, and the drill would keep restoring an ever-older backup
+    // and reporting "passed". 48h clears one late run without excusing a missed night.
+    // 0 disables the check (not recommended — it is the only detector of a stopped nightly).
+    verifyMaxAgeHours: Number.isFinite(parseFloat(process.env.BACKUP_VERIFY_MAX_AGE_HOURS))
+      ? parseFloat(process.env.BACKUP_VERIFY_MAX_AGE_HOURS) : 48,
   },
 
   // --- SharePoint document sync (one-way mirror into Pipeline Drive) ---

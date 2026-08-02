@@ -14,7 +14,12 @@
 # to install, so this is a loud failure, never a silently broken backup.
 FROM node:22-bookworm-slim
 
-ARG PG_MAJOR=17
+# 18 because the production database reported PostgreSQL 18.4 on the first live run (2026-08-02).
+# This was pinned at 17 when it was written, which is LOWER than the server — pg_dump flatly refuses
+# to dump a newer server, so the next rebuild of either cron image would have started failing the
+# preflight. Auto-deploy is Off on both services, so that break would not have surfaced on the
+# deploy that caused it; it would have waited for whatever unrelated deploy came next.
+ARG PG_MAJOR=18
 
 # PostgreSQL's own apt repository — Debian's packaged client lags, and "close enough" is exactly
 # what fails on the night the database is a major version ahead.
