@@ -6,7 +6,7 @@
 --       going to be appraised").
 --
 -- A saved run of the sales-comparison grid: a SUBJECT, the comparables a human
--- picked out of the research warehouse (db/406), the dollar adjustments they
+-- picked out of the research warehouse (db/408), the dollar adjustments they
 -- made to each one, and the reconciled indicated value — kept so it can be
 -- re-opened, re-run, printed and defended months later.
 --

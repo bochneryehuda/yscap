@@ -1057,7 +1057,7 @@ export const api = {
   borrowerViewHistory:  (limit) => req('GET', '/api/borrower-view/history' + qs({ limit })),
 
   // ---- Research desk: the property / comparable / appraiser database ----------
-  // Built out of every appraisal XML we have ever imported (db/406). Staff-wide —
+  // Built out of every appraisal XML we have ever imported (db/408). Staff-wide —
   // it holds addresses, property facts and recorded sale prices, no borrower data.
   researchStats:       () => req('GET', '/api/research/stats'),
   researchSearch:      (f) => req('GET', '/api/research/properties' + qs(f)),
@@ -1068,7 +1068,7 @@ export const api = {
   researchRates:       (f) => req('GET', '/api/research/rates' + qs(f)),
   researchComps:       (f) => req('GET', '/api/research/comps' + qs(f)),
   researchBackfill:    (b) => req('POST', '/api/research/backfill', b || {}),
-  // Build-your-own valuations (db/407)
+  // Build-your-own valuations (db/409)
   valuations:          (f) => req('GET', '/api/research/valuations' + qs(f)),
   valuation:           (id) => req('GET', `/api/research/valuations/${id}`),
   valuationCreate:     (b) => req('POST', '/api/research/valuations', b),

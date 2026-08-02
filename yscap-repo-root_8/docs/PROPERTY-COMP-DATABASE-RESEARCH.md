@@ -1,6 +1,6 @@
 # The Research Database — properties, comparables, appraisers, and your own valuation
 
-*Owner-directed, 2026-08-02. This is the design document db/406 and db/407 point at.*
+*Owner-directed, 2026-08-02. This is the design document db/408 and db/409 point at.*
 
 ---
 
@@ -221,7 +221,7 @@ Plain Postgres — no PostGIS, no Elasticsearch, no new dependency (see
 
 ## 8. Build your own valuation
 
-`db/407` + `src/lib/research/valuation.js` + the `/internal/research/valuation/:id` screen.
+`db/409` + `src/lib/research/valuation.js` + the `/internal/research/valuation/:id` screen.
 
 Pick comparables out of the warehouse, adjust each one on the grid an appraiser knows, get a
 reconciled indicated value with an honest range and every objection a reviewer would raise.

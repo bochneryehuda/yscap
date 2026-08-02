@@ -1,6 +1,6 @@
 # Appraisal → Property Warehouse: FACT COVERAGE AUDIT
 
-**Question this document answers:** when the `db/406` ingest copies an appraisal into
+**Question this document answers:** when the `db/408` ingest copies an appraisal into
 `properties` / `property_observations` / `property_sales` / `property_photos`, **what does it drop
 on the floor?**
 
@@ -24,13 +24,13 @@ research (`docs/appraisal-xml/photos-comps-variation.md`, `1004-URAR-field-map.m
 | **F1** | **A comparable's PROPERTY TYPE and UNIT COUNT do not exist anywhere in our stored data.** `appraisal_comparables` has no `property_type`, no `property_category`, no `units` column, and the extractor never reads one. Two of the owner's five must-haves would be **permanently NULL** in `property_observations`. | **BLOCKER** |
 | **F2** | **A comparable's CONDITION is UAD-only and silently dropped when the appraiser wrote a word.** `extract.js:261` accepts `condition_uad` only when it matches `^C[1-6]$`; a comp rated `"Good"`/`"Avg-Good"` stores **null**. The subject at least raises a `nonuad_cq` warning (`extract.js:1001`); a comp raises nothing. Condition is the owner's *"very important"* field. | **BLOCKER** |
 | **F3** | **A comp's year built, lot size, design/style, garage, basement description, heating/cooling and functional utility ARE captured — but only inside the `adjustments` jsonb blob.** `property_observations` has first-class columns for every one of them (`year_built`, `lot_area`, `design_style`, `garage_type`, `garage_spaces`, `basement_sqft`). A naive column-to-column copy leaves them all NULL while the data sits three inches away. | **HIGH** |
-| **F4** | **`property_observations.appraisal_id` and `.comparable_id` are `ON DELETE CASCADE` (db/406:230, :232).** Purging one loan file destroys that report's entire contribution to the cross-file warehouse — the exact thing the warehouse exists to outlive. `property_photos` (db/406:351-353) is worse: three cascading FKs. | **HIGH** |
+| **F4** | **`property_observations.appraisal_id` and `.comparable_id` are `ON DELETE CASCADE` (db/408:230, :232).** Purging one loan file destroys that report's entire contribution to the cross-file warehouse — the exact thing the warehouse exists to outlive. `property_photos` (db/408:351-353) is worse: three cascading FKs. | **HIGH** |
 | **F5** | **A comp with no city/state/zip cannot be keyed and will be silently skipped.** ~1/3 of files omit the separate `PropertyCity/State/PostalCode` attrs (`extract.js:332` fallback); `property-key.js` returns null without a locality. `property_ingest_log` has **no skipped-row counter**, so the loss is invisible. | **HIGH** |
 | **F6** | **`comp_set` alone does not mean what a warehouse reader will think it means.** On a single-grid report *every* comp is stamped `'as_is'` or `'arv'` by default (`comp-grid.js:185-193`). The provenance that says whether the split was real (`appraisals.comp_split_confidence`, `comp_split_needs_review`) has **no column on `property_observations`**. | **HIGH** |
-| **F7** | **A comparable PHOTO cannot currently be attached to a comparable ROW.** db/406 adds `appraisal_photos.identifier` / `.comp_seq` (db/406:369-370) but **no code writes them** — `desk.js:128-130` and `desk.js:105-111` both discard the identifier the labeller produced, and the INSERT at `desk.js:166-169` names neither column. | **HIGH** |
+| **F7** | **A comparable PHOTO cannot currently be attached to a comparable ROW.** db/408 adds `appraisal_photos.identifier` / `.comp_seq` (db/408:369-370) but **no code writes them** — `desk.js:128-130` and `desk.js:105-111` both discard the identifier the labeller produced, and the INSERT at `desk.js:166-169` names neither column. | **HIGH** |
 | **F8** | **On a subject-to (renovation) report, `appraisals.condition_uad` is the AFTER-REPAIR condition, not the property's condition today** (`docs/appraisal-xml/1025-SmallIncome-field-map.md:386-388`). Copying it into `properties.condition_uad` as "this property's condition" is a factual error. | **HIGH** |
 | **F9** | **`appraisals.subject_unit` is never written** (`import.js:92-118` has no `subject_unit` key). For a condo the unit lives in `condo_unit_identifier`, which the warehouse must read instead or `properties.unit` is blank and every unit of a building folds into one property row. | **MEDIUM** |
-| **F10** | Large blocks of *subject* facts that a property warehouse plainly wants have **no home in db/406**: property tax, owner of record, property rights (fee/leasehold), HOA fee, condo project/floor, effective age, heating/cooling, roof/foundation, attic/ADU, updates, amenities, utilities, listing history, neighborhood price range, FEMA SFHA. Full list in §5. | **MEDIUM** |
+| **F10** | Large blocks of *subject* facts that a property warehouse plainly wants have **no home in db/408**: property tax, owner of record, property rights (fee/leasehold), HOA fee, condo project/floor, effective age, heating/cooling, roof/foundation, attic/ADU, updates, amenities, utilities, listing history, neighborhood price range, FEMA SFHA. Full list in §5. | **MEDIUM** |
 
 ---
 
@@ -114,24 +114,24 @@ is orphaned. The gaps are in what the TABLE lacks, not in what the writer skips 
 | db/354:33-36 | 4 | `arv_applied`, `arv_applied_value`, `arv_file_value_before`, `arv_skip_reason` |
 | db/355:13-15 | 3 | `arv_confirmed_value/_by/_at` |
 | db/405:25-26 | 2 | `property_category` (canonical key), `attachment_type` (the MISMO style, evicted from `property_type`) |
-| db/406:134 | 1 | `appraiser_id` FK |
+| db/408:134 | 1 | `appraiser_id` FK |
 
 The subject-describing subset is enumerated with its warehouse mapping in **§5**.
 
-### 1.3 `appraisal_units` (db/137:132-143) — has NO home in db/406
+### 1.3 `appraisal_units` (db/137:132-143) — has NO home in db/408
 
 `unit_seq` text, `rooms` int, `beds` int, `baths` text, `sqft` numeric(12,2), `actual_rent`
 numeric(12,2), `market_rent` numeric(12,2), `lease_status` text (`vacant`\|`month_to_month`\|
 `owner_occupied`\|`family_occupied`\|`leased`\|null — `extract.js:758-767`).
 
-**db/406 has no per-unit table and no per-unit jsonb.** A 4-family's unit mix and per-unit rents —
+**db/408 has no per-unit table and no per-unit jsonb.** A 4-family's unit mix and per-unit rents —
 the whole point of a 1025 — collapse into a single `property_observations.market_rent` scalar. See
 §5 and §8.
 
-### 1.4 `appraisal_photos` (db/137:146-155 + db/406:369-370)
+### 1.4 `appraisal_photos` (db/137:146-155 + db/408:369-370)
 
 `id`, `appraisal_id`, `document_id`, `category`, `caption`, `sequence`, `width`, `height`,
-**`identifier`** (db/406:369, *never written*), **`comp_seq`** (db/406:370, *never written*).
+**`identifier`** (db/408:369, *never written*), **`comp_seq`** (db/408:370, *never written*).
 
 **`category` carries a mixed vocabulary today** — db/137:150 documents
 `subject_front|subject_rear|subject_street|interior|comparable|sketch|map|exhibit`, but the code
@@ -139,7 +139,7 @@ actually writes: `'photo'` / `'graphic'` (the pixel classification fallback, `de
 `'subject_front'` / `'subject'` / `'comparable'` / `'rental'` / `'interior'` / `'map'` / `'sketch'`
 / `'exhibit'` / `'cover'` / `'other'` (`photo-meta.js:83-87` + `:42-46`), plus the two sentinels
 `'exhibit'` for the PDF-manifest row (`import.js:170`), `'backfill_none'` (`desk.js:349`) and
-`'unclassified'` (`desk.js:390`). **`property_photos.category` (db/406:355) copying this verbatim
+`'unclassified'` (`desk.js:390`). **`property_photos.category` (db/408:355) copying this verbatim
 inherits all of it, sentinels included.**
 
 ---
@@ -153,7 +153,7 @@ inherits all of it, sentinels included.**
 
 | jsonb key | Produced at | Why the warehouse wants it |
 |---|---|---|
-| `subject.baths` | extract.js:860 (`bathsParsed.text`) | **The subject's UAD baths string (`"2.1"`).** `appraisals` has `baths_full`/`baths_half` but **NO `baths` text column** — yet `property_observations.baths_text` (db/406:257) exists and expects one. **Its only source is this jsonb key.** |
+| `subject.baths` | extract.js:860 (`bathsParsed.text`) | **The subject's UAD baths string (`"2.1"`).** `appraisals` has `baths_full`/`baths_half` but **NO `baths` text column** — yet `property_observations.baths_text` (db/408:257) exists and expects one. **Its only source is this jsonb key.** |
 | `subject.propertyCategoryType` | extract.js:852 | the raw MISMO `PropertyCategoryType` behind the derived category |
 | `subject.pudIndicator` | extract.js:853 | `GSE_PUDIndicator` — PUD vs condo vs SFR |
 | `subject.projectDesignType` | extract.js:854 | condo/PUD project design |
@@ -222,23 +222,23 @@ Legend: **✅** = clean 1:1 · **⚠️** = lands, but with a trap (§7) · **�
 
 ### 3.1 `property_observations` columns that CANNOT be filled for a comparable
 
-These columns exist in db/406 and have **no source column on `appraisal_comparables`**:
+These columns exist in db/408 and have **no source column on `appraisal_comparables`**:
 
 | Warehouse column | Recoverable? | How |
 |---|---|---|
-| **`property_type`** (db/406:266) | **NO — F1** | no source column, no extractor read |
-| **`property_category`** (db/406:267) | **NO — F1** | ↑ |
-| **`units`** (db/406:263) | **NO — F1** | ↑ |
-| `year_built` (db/406:261) | **YES, from `adjustments`** | `_Type='Age'` row's `_Description` (an AGE, not a year — needs the report's effective year to convert, and UAD writes it as `"25"` or `"Actual 25"`) |
-| `lot_area` (db/406:262) | **YES, from `adjustments`** | `_Type='SiteArea'` `_Description` |
-| `design_style` (db/406:265) | **YES, from `adjustments`** | `_Type='DesignStyle'` `_Description` |
-| `stories` (db/406:264) | NO | not a grid row |
-| `garage_type` / `garage_spaces` (db/406:276-277) | **PARTIAL, from `adjustments`** | `_Type='Parking'`/`'CarStorage'` `_Description` — UAD-coded (`"2ga2dw"`, see `expanded-field-catalog.md:339`); needs a decoder |
-| `basement_sqft` (db/406:275) | **YES, from `adjustments`** | `_Type='BasementArea'` / `'BasementFinish'` |
-| `neighborhood`, `census_tract`, `flood_zone`, `zoning_id`, `zoning_desc` (db/406:280-284) | NO | never stated per comp |
-| `occupancy_status` (db/406:285) | NO | never stated per comp |
-| `market_rent` (db/406:286) | **NOT WITH TODAY'S PARSER** | 1025 comps carry `MonthlyRentAmount` — never extracted (§1.1) |
-| `appraised_value`, `as_is_value`, `arv_value`, `contract_price` (db/406:295-298) | N/A | subject-only block, correctly null on a comp |
+| **`property_type`** (db/408:266) | **NO — F1** | no source column, no extractor read |
+| **`property_category`** (db/408:267) | **NO — F1** | ↑ |
+| **`units`** (db/408:263) | **NO — F1** | ↑ |
+| `year_built` (db/408:261) | **YES, from `adjustments`** | `_Type='Age'` row's `_Description` (an AGE, not a year — needs the report's effective year to convert, and UAD writes it as `"25"` or `"Actual 25"`) |
+| `lot_area` (db/408:262) | **YES, from `adjustments`** | `_Type='SiteArea'` `_Description` |
+| `design_style` (db/408:265) | **YES, from `adjustments`** | `_Type='DesignStyle'` `_Description` |
+| `stories` (db/408:264) | NO | not a grid row |
+| `garage_type` / `garage_spaces` (db/408:276-277) | **PARTIAL, from `adjustments`** | `_Type='Parking'`/`'CarStorage'` `_Description` — UAD-coded (`"2ga2dw"`, see `expanded-field-catalog.md:339`); needs a decoder |
+| `basement_sqft` (db/408:275) | **YES, from `adjustments`** | `_Type='BasementArea'` / `'BasementFinish'` |
+| `neighborhood`, `census_tract`, `flood_zone`, `zoning_id`, `zoning_desc` (db/408:280-284) | NO | never stated per comp |
+| `occupancy_status` (db/408:285) | NO | never stated per comp |
+| `market_rent` (db/408:286) | **NOT WITH TODAY'S PARSER** | 1025 comps carry `MonthlyRentAmount` — never extracted (§1.1) |
+| `appraised_value`, `as_is_value`, `arv_value`, `contract_price` (db/408:295-298) | N/A | subject-only block, correctly null on a comp |
 
 > **F1 is the one that needs a decision, not just code.** A corpus sweep is required to establish
 > whether the MISMO 2.6 comp grid carries a unit count / property type at all (the documented
@@ -257,12 +257,12 @@ These columns exist in db/406 and have **no source column on `appraisal_comparab
 
 | # | Must-have | Source column | Warehouse column | Verdict |
 |---|---|---|---|---|
-| 1 | **Property type** | **NONE** | `property_observations.property_type` / `.property_category` (db/406:266-267) | ❌ **NOT COVERED — no source exists.** See F1. |
-| 2 | **Unit count** | **NONE** | `property_observations.units` (db/406:263) | ❌ **NOT COVERED — no source exists.** See F1. |
-| 3 | **CONDITION** *(the owner's "very important")* | `appraisal_comparables.condition_uad` (db/137:123) — written `extract.js:379` from `SALE_PRICE_ADJUSTMENT[_Type=Condition]` (extract.js:261) or `COMPARISON_DETAIL/@GSEOverallConditionType` (extract.js:284) | `property_observations.condition_uad` (db/406:268) | ⚠️ **Column-to-column YES, but lossy.** Only `C1`–`C6` survives; a worded rating (`"Good"`, `"Avg-Good"` — real corpus values per `field-validation-rules.md:73`) is **discarded with no warning for a comp**. **Add `condition_text text` + carry the raw string.** |
-| 4 | **As-Is grid vs ARV grid** | `appraisal_comparables.comp_set` (db/137:127) — assigned by `comp-grid.js:167-259`, provenance in `appraisals.comp_split_confidence` / `comp_split_needs_review` (db/156:22-23) | `property_observations.comp_set` (db/406:236) | ⚠️ **Value carried, provenance NOT.** On a single-grid report every comp is stamped by default (`comp-grid.js:185-193`) and `'unknown'` is a real, meaningful value (`comp-grid.js:254`). **Add `comp_set_confidence` + `comp_set_needs_review`.** See F6. |
-| 5 | **Sale dates** | `appraisal_comparables.sale_date` **(text `YYYY-MM-01`)** + `prior_sale_date` **(text `YYYY-MM-DD`)** | `property_observations.sale_date` (date) + `sale_date_text` + `prior_sale_date` (date); `property_sales.sale_date` (date NOT NULL) | ⚠️ **Carried, with a precision caveat.** The day is always `01` — `settledMonth()` (extract.js:230-244) discards it even when the XML gave `MM/DD/YYYY`. `uq_property_sale` (db/406:337-338) is month-resolution and therefore consistent, but **any "sold on the 14th" claim would be fabricated.** A listing has NO sale date and must not produce a `property_sales` row. |
-| 6 | **Photos** | `appraisal_photos` (db/137:146) + the unwritten `identifier`/`comp_seq` (db/406:369-370) | `property_photos` (db/406:348) | ❌ **NOT COVERED for comparables today.** See §6 and F7. |
+| 1 | **Property type** | **NONE** | `property_observations.property_type` / `.property_category` (db/408:266-267) | ❌ **NOT COVERED — no source exists.** See F1. |
+| 2 | **Unit count** | **NONE** | `property_observations.units` (db/408:263) | ❌ **NOT COVERED — no source exists.** See F1. |
+| 3 | **CONDITION** *(the owner's "very important")* | `appraisal_comparables.condition_uad` (db/137:123) — written `extract.js:379` from `SALE_PRICE_ADJUSTMENT[_Type=Condition]` (extract.js:261) or `COMPARISON_DETAIL/@GSEOverallConditionType` (extract.js:284) | `property_observations.condition_uad` (db/408:268) | ⚠️ **Column-to-column YES, but lossy.** Only `C1`–`C6` survives; a worded rating (`"Good"`, `"Avg-Good"` — real corpus values per `field-validation-rules.md:73`) is **discarded with no warning for a comp**. **Add `condition_text text` + carry the raw string.** |
+| 4 | **As-Is grid vs ARV grid** | `appraisal_comparables.comp_set` (db/137:127) — assigned by `comp-grid.js:167-259`, provenance in `appraisals.comp_split_confidence` / `comp_split_needs_review` (db/156:22-23) | `property_observations.comp_set` (db/408:236) | ⚠️ **Value carried, provenance NOT.** On a single-grid report every comp is stamped by default (`comp-grid.js:185-193`) and `'unknown'` is a real, meaningful value (`comp-grid.js:254`). **Add `comp_set_confidence` + `comp_set_needs_review`.** See F6. |
+| 5 | **Sale dates** | `appraisal_comparables.sale_date` **(text `YYYY-MM-01`)** + `prior_sale_date` **(text `YYYY-MM-DD`)** | `property_observations.sale_date` (date) + `sale_date_text` + `prior_sale_date` (date); `property_sales.sale_date` (date NOT NULL) | ⚠️ **Carried, with a precision caveat.** The day is always `01` — `settledMonth()` (extract.js:230-244) discards it even when the XML gave `MM/DD/YYYY`. `uq_property_sale` (db/408:337-338) is month-resolution and therefore consistent, but **any "sold on the 14th" claim would be fabricated.** A listing has NO sale date and must not produce a `property_sales` row. |
+| 6 | **Photos** | `appraisal_photos` (db/137:146) + the unwritten `identifier`/`comp_seq` (db/408:369-370) | `property_photos` (db/408:348) | ❌ **NOT COVERED for comparables today.** See §6 and F7. |
 
 ---
 
@@ -324,7 +324,7 @@ Grouped by how much a property/comparable warehouse actually needs them.
 | `basement_finished_pct`, `foundation_type`, `attic`, `has_adu` | db/158:55, :53, :60, :61 | **basement is on the owner's list** — `basement_finished_pct integer`, `foundation_type text`, `attic boolean`, `has_adu boolean` |
 | `listed_within_year`, `listing_history` | db/158:74-75 | `property_observations.listed_within_year boolean`, `listing_history text` — prior-listing history is core MLS-shaped data |
 | **`appraisal_units.*`** (§1.3) | db/137:132 | **a `property_units` child table, or `property_observations.unit_mix jsonb`** — currently a 4-family's entire rent roll is discarded |
-| *(none)* subject latitude/longitude | — | `appraisals` has **no** subject lat/long and `extract.js` never reads one; `properties.latitude/longitude` (db/406:156-157) can only ever be filled for a property that was once a COMP, or by geocoding |
+| *(none)* subject latitude/longitude | — | `appraisals` has **no** subject lat/long and `extract.js` never reads one; `properties.latitude/longitude` (db/408:156-157) can only ever be filled for a property that was once a COMP, or by geocoding |
 
 **Tier 2 — worth keeping, lower urgency:** `legal_description`, `zoning_compliance`,
 `zoning_compliance_note`, `attachment_type` (db/405 — the style is a real fact and has no warehouse
@@ -439,7 +439,7 @@ desk.js:166-169
         [appraisalId, doc.rows[0].id, ph.seq, ph.width, ph.height,
           ph.category || (ph.kind === 'graphic' ? 'graphic' : 'photo'), ph.caption || null]);
 ```
-→ **`appraisal_photos.identifier` and `.comp_seq` (db/406:369-370) are dead columns.**
+→ **`appraisal_photos.identifier` and `.comp_seq` (db/408:369-370) are dead columns.**
 
 ### 6.3 Exactly what has to change
 
@@ -469,7 +469,7 @@ desk.js:166-169
 - `extractAndStorePhotos` already receives the `appraisalId`, so the caption→comp join can run in
   the same function with one `SELECT seq, address FROM appraisal_comparables WHERE appraisal_id=$1`.
 
-**(c) The warehouse ingest** then links `property_photos` (db/406:348) by
+**(c) The warehouse ingest** then links `property_photos` (db/408:348) by
 `appraisal_photos.comp_seq = appraisal_comparables.seq` → that comp's `property_id` /
 `observation_id`; everything with `category IN ('subject','subject_front','interior')` links to the
 subject observation; `'map'`/`'sketch'`/`'exhibit'`/`'cover'`/`'graphic'` links to **nothing**.
@@ -491,7 +491,7 @@ subject observation; `'map'`/`'sketch'`/`'exhibit'`/`'cover'`/`'graphic'` links 
 
 **T1 — `appraisal_comparables.sale_date` is TEXT and the DAY IS FAKE.** `settledMonth()`
 (extract.js:230-244) always returns `YYYY-MM-01`, even when the XML gave a full `MM/DD/YYYY`.
-`property_sales`'s month-resolution unique key (db/406:337-338) is consistent with this, but any UI
+`property_sales`'s month-resolution unique key (db/408:337-338) is consistent with this, but any UI
 that renders "sold 1 Mar 2025" is inventing a day.
 
 **T2 — `prior_sale_date` is TEXT in a DIFFERENT format** (`YYYY-MM-DD`, `isoDate`, extract.js:340).
@@ -499,7 +499,7 @@ Do not share a parser with T1.
 
 **T3 — `days_on_market` is TEXT holding an integer** (`String(c.dom)`, import.js:149), and a
 non-numeric `GSEDaysOnMarketDescription` is silently nulled (`toNum`, extract.js:286). Keeping it
-text in `property_observations` (db/406:249) is correct but forecloses range search.
+text in `property_observations` (db/408:249) is correct but forecloses range search.
 
 **T4 — `appraisals.year_built` is TEXT** (db/137:59) into an INTEGER warehouse column. `year()`
 (extract.js:772) validates 1700..2026, so a cast is safe **for rows this parser wrote** — but reuse
@@ -507,7 +507,7 @@ db/403's explicit `~ '^\d{4}$'` guard rather than trusting it.
 
 **T5 — a LISTING is not a SALE.** `sale_status ∈ {closed, active, pending}` (db/157) and on an
 active/pending comp `sale_price` is the **asking** price (extract.js:355-360). Rules:
-`property_sales` rows only for `closed`; `properties.last_list_price` (db/406:195) for the rest;
+`property_sales` rows only for `closed`; `properties.last_list_price` (db/408:195) for the rest;
 `properties.last_sale_price` must never be fed a listing.
 
 **T6 — `sale_status IS NULL` means CLOSED**, not unknown. db/157:13-14: *"Default NULL is read as
@@ -525,13 +525,13 @@ includes comps that were never distinguished. **F6.**
 
 **T9 — `comp_set` MUTATES AFTER INGEST.** `desk.backfillAppraisalCompSplitOnce` (desk.js:427-460)
 re-extracts old appraisals at boot and `UPDATE`s `appraisal_comparables.comp_set` (desk.js:452-454).
-`property_ingest_log` is keyed on `appraisal_id` (db/406:379) with an `ingest_version`; an appraisal
+`property_ingest_log` is keyed on `appraisal_id` (db/408:379) with an `ingest_version`; an appraisal
 already logged `ok` will **not** be revisited and its warehouse copy goes stale. Either re-open the
 ledger row when the backfill touches an appraisal, or key freshness on
 `appraisals.comp_split_confidence IS NOT NULL`.
 
 **T10 — UAD baths `"2.1"` is 2 full + 1 half, not 2.1.** `parseBaths` (extract.js:60-70) already
-warns. `property_observations.baths_text` (db/406:257) is text — never cast it.
+warns. `property_observations.baths_text` (db/408:257) is text — never cast it.
 
 **T11 — enum whitelists silently null everything else.** `condition_uad`/`quality_uad` accept only
 `^C[1-6]$`/`^Q[1-6]$` (extract.js:58); `view_rating`/`location_rating` accept only
@@ -541,7 +541,7 @@ subject enums at extract.js:453-458, :535, :599, :639. **A rejected value is not
 
 **T12 — one column name, two vocabularies.** `view_rating`: UAD enum on comps (extract.js:383) vs
 free text on the subject (extract.js:550). If both flow into
-`property_observations.view_rating` (db/406:270) the column becomes unqueryable. Split it or
+`property_observations.view_rating` (db/408:270) the column becomes unqueryable. Split it or
 normalise on the way in.
 
 **T13 — comp `gla` is GBA on 1025s.** extract.js:258-259 falls back from `GrossLivingArea` to
@@ -551,7 +551,7 @@ regardless. Cross-form $/sqft comparisons are apples-to-oranges without a `gla_b
 **T14 — the subject's condition on a subject-to report is the AFTER-REPAIR condition.**
 `docs/appraisal-xml/1025-SmallIncome-field-map.md:386-388`: *"The condition shown reflects the
 as-repaired state; the As-Is condition rating is usually only in the `PropertyCondition` narrative."*
-`properties.condition_uad` (db/406:178) is a roll-up billed as "the best-known current answer" —
+`properties.condition_uad` (db/408:178) is a roll-up billed as "the best-known current answer" —
 which would be **false** for every renovation file. Gate the roll-up on
 `appraisals.condition_of_appraisal = 'AsIs'`, or carry a `condition_basis` alongside. **F8.**
 
@@ -559,9 +559,9 @@ which would be **false** for every renovation file. Gate the roll-up on
 basis was inferred from hypothetical-completion language rather than the enum (extract.js:178).
 
 **T16 — `is_subject` is always false** (extract.js:326, import.js:146). Any ingest that tries to
-find the subject row via `appraisal_comparables.is_subject = true` finds nothing. The db/406
+find the subject row via `appraisal_comparables.is_subject = true` finds nothing. The db/408
 uniqueness design is already correct here (`uq_prop_obs_subject` keys on `appraisal_id` where
-`role='subject'`, db/406:311-312) — just do not join the other way.
+`role='subject'`, db/408:311-312) — just do not join the other way.
 
 **T17 — `appraisals.subject_unit` is never written.** `import.js:92-118` has no `subject_unit` key;
 the unit designator only exists as `condo_unit_identifier` (import.js:110). Since
@@ -571,22 +571,22 @@ into a single `properties` row** unless the ingest reads `condo_unit_identifier`
 **T18 — a comp with no locality is unkeyable and will vanish silently.** `extract.js:332` only
 back-fills city/state/zip from the `"City, ST ZIP"` line when `PropertyCity` is blank, and
 `photos-comps-variation.md:116-118` notes a la mode is the only vendor emitting the separate attrs.
-`property-key.js` returns null without a locality. **`property_ingest_log` (db/406:378-388) has no
+`property-key.js` returns null without a locality. **`property_ingest_log` (db/408:378-388) has no
 skipped counter** — add `rows_skipped integer` + `skip_reasons jsonb` or the loss is unmeasurable.
 **F5.**
 
-**T19 — the warehouse dies with the loan file.** db/406:230 `appraisal_id … ON DELETE CASCADE`,
-db/406:232 `comparable_id … ON DELETE CASCADE`; `appraisals.application_id` is itself
+**T19 — the warehouse dies with the loan file.** db/408:230 `appraisal_id … ON DELETE CASCADE`,
+db/408:232 `comparable_id … ON DELETE CASCADE`; `appraisals.application_id` is itself
 `ON DELETE CASCADE` (db/137:21). So deleting one application **cascades all the way through to
-`property_observations`**, and `property_photos` (db/406:351-353) cascades on three separate FKs.
+`property_observations`**, and `property_photos` (db/408:351-353) cascades on three separate FKs.
 A cross-file warehouse whose ledger is deleted by a per-file purge is not a warehouse.
 **Recommend `ON DELETE SET NULL` on `comparable_id`/`appraisal_id`/`photo_id`/`document_id`,
 `appraisal_id` nullable, and denormalising `address_as_stated` + `observed_on` onto the
 observation so a detached row is still meaningful.** **F4.**
 
-**T20 — `uq_property_photo (property_id, document_id)` (db/406:361) does not dedupe when
+**T20 — `uq_property_photo (property_id, document_id)` (db/408:361) does not dedupe when
 `document_id` is NULL** — NULLs are distinct in a unique index. `property_photos.document_id` is
-nullable (db/406:353), so a re-run can duplicate rows.
+nullable (db/408:353), so a re-run can duplicate rows.
 
 **T21 — `property_photos.category` inherits a mixed vocabulary including sentinels** —
 `'backfill_none'` (desk.js:349) and `'unclassified'` (desk.js:390) are bookkeeping markers, not
@@ -596,17 +596,17 @@ photo categories, and `'photo'`/`'graphic'` are the pixel classifier's answer wh
 **T22 — superseded appraisals.** `property_ingest_log`'s PK is `appraisal_id`, so every appraisal
 row — including `superseded = true` — is ingestible exactly once. Two imports of the *same* report
 therefore produce two subject observations and double `properties.comp_count` /
-`observation_count` (db/406:200-201). Decide explicitly: skip `superseded = true` (and log it as
+`observation_count` (db/408:200-201). Decide explicitly: skip `superseded = true` (and log it as
 `status='skipped'`), or count only non-superseded rows in the roll-ups.
 
-**T23 — `properties` roll-up columns are "most recent report wins" (db/406:34-36), which conflicts
+**T23 — `properties` roll-up columns are "most recent report wins" (db/408:34-36), which conflicts
 with `condition_uad`/`quality_uad`/`occupancy_status`.** A property observed as a comp in 2024 (C3)
 and again in 2026 (C5) rolls up to C5 — correct. But a subject-to report's C-code (T14) is a
 *future* condition and would win by recency. Order the roll-up on `observed_on`, exclude
 after-repair statements, and record which observation each roll-up value came from.
 
-**T24 — `property-key.js` is committed but `src/lib/research/identity.js` is not.** db/406:62
-references it for the appraiser dedupe key, and db/406:22 references
+**T24 — `property-key.js` is committed but `src/lib/research/identity.js` is not.** db/408:62
+references it for the appraiser dedupe key, and db/408:22 references
 `docs/PROPERTY-COMP-DATABASE-RESEARCH.md` — neither exists in the tree. Not a data-loss issue;
 flagged so the ingest work is not assumed to be further along than it is.
 
@@ -614,7 +614,7 @@ flagged so the ingest work is not assumed to be further along than it is.
 
 ## 8. RECOMMENDED SCHEMA ADDITIONS (consolidated)
 
-A single follow-up migration `db/407_property_observation_gaps.sql` would close everything above.
+A single follow-up migration `db/409_property_observation_gaps.sql` would close everything above.
 Sketched, not applied:
 
 ```sql
@@ -680,7 +680,7 @@ Plus the FK-durability change (T19) and the parser/photo changes in §6.3.
 ## 9. ORDER OF WORK
 
 1. **F7 / §6.3** — write `identifier` + `comp_seq`; ~6 lines in `desk.js` plus one pure helper in
-   `photo-meta.js`. Unblocks the owner's "photos" must-have and needs no schema change (db/406
+   `photo-meta.js`. Unblocks the owner's "photos" must-have and needs no schema change (db/408
    already added the columns).
 2. **F2** — carry the raw condition/quality string. One extractor change, two columns; without it
    the owner's "very important" field is null on every non-UAD vendor.

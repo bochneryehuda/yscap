@@ -1,6 +1,6 @@
 'use strict';
 /**
- * THE INGEST — fold ONE imported appraisal into the research warehouse (db/406).
+ * THE INGEST — fold ONE imported appraisal into the research warehouse (db/408).
  *
  * Reads the per-file tables the appraisal import already wrote (`appraisals`,
  * `appraisal_comparables`, `appraisal_units`, `appraisal_photos`) and lands them

@@ -1,6 +1,6 @@
 'use strict';
 /**
- * WHO IS THIS APPRAISER? — the identity rule for the appraiser registry (db/406).
+ * WHO IS THIS APPRAISER? — the identity rule for the appraiser registry (db/408).
  *
  * The same person signs report after report and spells themselves differently
  * every time: "John Q. Appraiser", "JOHN Q APPRAISER, SRA", "John Appraiser" at

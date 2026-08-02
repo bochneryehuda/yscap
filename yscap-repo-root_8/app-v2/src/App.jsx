@@ -49,8 +49,8 @@ import StaffInvestorSuite from './screens/StaffInvestorSuite.jsx';
 import StaffBorrowerDetail from './screens/StaffBorrowerDetail.jsx';
 import StaffBorrowerView from './screens/StaffBorrowerView.jsx';
 import StaffVendors from './screens/StaffVendors.jsx';
-// The research desk: the property / comparable / appraiser database (db/406) and
-// the build-your-own valuation grid (db/407).
+// The research desk: the property / comparable / appraiser database (db/408) and
+// the build-your-own valuation grid (db/409).
 import StaffPropertyResearch from './screens/StaffPropertyResearch.jsx';
 import StaffPropertyDetail from './screens/StaffPropertyDetail.jsx';
 import StaffAppraisers from './screens/StaffAppraisers.jsx';

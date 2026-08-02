@@ -16,7 +16,7 @@ This is not a greenfield build. Almost every input already exists in the databas
 | Thing | Where it lives today |
 |---|---|
 | Per-report comparables, UAD grid data, itemized adjustments | `appraisal_comparables` (`db/137`, `149`, `156`, `157`, `166`) — `sale_price`, `adjusted_price`, `gla`, `sale_date`, `condition_uad`, `quality_uad`, `view_rating`, `location_rating`, `days_on_market`, `proximity`, `data_source`, `net_adjustment`, `net_adj_pct`, `gross_adj_pct`, `price_per_gla`, `below_grade_sqft`, `comp_set`, and the **full itemized `adjustments` jsonb** |
-| Cross-file property warehouse | `properties` (deduped entity + roll-up facts), `property_observations` (one row per report × property, never overwritten), `property_sales` (distinct transactions), `property_photos` (`db/406`) |
+| Cross-file property warehouse | `properties` (deduped entity + roll-up facts), `property_observations` (one row per report × property, never overwritten), `property_sales` (distinct transactions), `property_photos` (`db/408`) |
 | Subject properties | `applications.property_address` + `appraisals` subject block + `properties.subject_count` |
 | Photos | `appraisal_photos` → `documents` bytes, linked to a property by `property_photos` |
 | Provenance | `property_observations.appraisal_id` / `application_id` / `appraiser_id` / `observed_on` |
@@ -242,7 +242,7 @@ comparison grid. That grid is the canonical column list and is what our report m
   lines; the mapping is user-customizable to enforce house standards).
 - **A local comp database** accumulates every comp the appraiser has ever used, with photos, so a comp used
   last month is one click away this month. (**We already have this** — `properties` + `property_observations`
-  + `property_photos` from `db/406`. That is the single biggest head start we have.)
+  + `property_photos` from `db/408`. That is the single biggest head start we have.)
 - Adjustments are typed **per line, per comp, in dollars**, with a `DESCRIPTION` column next to each
   `+(-) $ Adjustment` column. The software computes net adjustment, net adj %, gross adj %, and adjusted
   sale price automatically. Nothing is auto-filled with a market rate — the appraiser supplies the rate and
@@ -320,7 +320,7 @@ Reasons, specific to our stack:
 
 1. **Our warehouse is a live roll-up that changes under you.** `properties` is explicitly documented as
    *"a ROLL-UP: the best-known current answer for each fact, always sourced from the most recent report
-   that stated it"* (`db/406`). The moment a new appraisal lands naming 42 Oak St as a comp, `properties.gla`
+   that stated it"* (`db/408`). The moment a new appraisal lands naming 42 Oak St as a comp, `properties.gla`
    / `condition_uad` / `last_sale_price` can all move. A valuation that references `properties.id` would
    silently re-render with different facts than the ones the analyst looked at, and the math on the printed
    PDF would no longer reproduce. That is a disqualifying defect for a document we put in a loan file.
@@ -1230,9 +1230,9 @@ regression. Ship the grid first and let the desk use it.
   the appraisal lands; a > 10% divergence becomes an *advisory* finding on the appraisal desk (never a
   block, never an auto-write — the existing advisory-only doctrine).
 
-## ⚠️ Reconciling with the in-flight `db/407_property_valuations.sql`
+## ⚠️ Reconciling with the in-flight `db/409_property_valuations.sql`
 
-**A parallel session has already begun this feature** — `db/407_property_valuations.sql` and
+**A parallel session has already begun this feature** — `db/409_property_valuations.sql` and
 `src/lib/research/valuation.js` exist untracked in the working tree as of 2026-08-02. Per the house merge
 rule (*both sides' enhancements must survive; renumber your own migration, never theirs*), the schema
 below is written as an **evolution of theirs, not a replacement**, and any new migration takes the next
@@ -1251,7 +1251,7 @@ free number (**`db/408`**), leaving `407` alone.
 
 **Where this document recommends changing `407`, and why:**
 
-| `db/407` as written | Recommendation | Reason |
+| `db/409` as written | Recommendation | Reason |
 |---|---|---|
 | `property_valuation_comps.adjustments jsonb` — `[{key,label,amount,note,source}]` | **Normalize to `property_valuation_adjustments` rows** (`db/408`, additive; keep the jsonb column populated during a transition) | §2.3 — the cross-valuation query *"what has this desk been paying per bath in Passaic County?"* is the Phase-4 feedback loop, and it is not reachable through a jsonb array. Also gives per-line `basis_method` / `basis_n` / `blank_reason` first-class homes |
 | `version integer` + `supersedes_id` self-FK | **Add `chain_id` + a partial unique index `WHERE superseded = false`** | A `supersedes_id` chain has no cheap "which one is live?" query and no constraint stopping two live heads. `db/188_appraisals_one_current.sql` and `product_registrations` both use the partial-unique-current pattern; follow it |
@@ -1576,7 +1576,7 @@ CREATE INDEX IF NOT EXISTS idx_avm_events_kind ON avm_valuation_events(kind, cre
 
 ## Proposed routes
 
-*(If `db/407`'s session has already shipped routes under `/api/staff/research/valuations`, keep that prefix
+*(If `db/409`'s session has already shipped routes under `/api/staff/research/valuations`, keep that prefix
 and map the paths below onto it — the shapes are what matter, not the mount point.)*
 
 ```

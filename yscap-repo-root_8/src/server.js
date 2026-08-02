@@ -259,8 +259,8 @@ app.use('/api/trustpoint', require('./routes/trustpoint'));
 // PILOT findings. The router applies requireAuth + requireStaff + per-file scoping itself.
 app.use('/api/appraisal', require('./routes/appraisal'));
 // The research desk: the cross-file property / comparable / appraiser database built
-// out of every appraisal XML we have ever imported (db/406), its search engine, and
-// the build-your-own valuation grid (db/407). Staff-wide by design — it holds
+// out of every appraisal XML we have ever imported (db/408), its search engine, and
+// the build-your-own valuation grid (db/409). Staff-wide by design — it holds
 // addresses, property characteristics and recorded sale prices, no borrower data —
 // so the router applies requireAuth + requireStaff itself and does NOT scope per file.
 app.use('/api/research', require('./routes/research'));
@@ -581,7 +581,7 @@ if (require.main === module) {
         // this database — on every single file that we have already in XML, all the
         // comparables that he used should be saved into that database"). Folds every
         // appraisal we have ever imported into the cross-file property / comparable /
-        // appraiser warehouse (db/406). Oldest report first, so the final state matches
+        // appraiser warehouse (db/408). Oldest report first, so the final state matches
         // what we would have reached by filing each report as it arrived.
         //
         // Bounded per boot and SELF-DRAINING: the ingest ledger records each report, so

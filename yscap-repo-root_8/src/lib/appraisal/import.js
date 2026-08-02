@@ -153,7 +153,7 @@ async function importAppraisalTx(db, {
          c.priorSaleAmount, c.priorSaleDate, c.latitude, c.longitude,
          c.viewRating, c.locationRating, c.belowGradeSqft, c.belowGradeFinishedSqft, c.compDataSource, c.locationType,
          // The worded condition/quality rating a non-UAD vendor wrote, and which of
-         // the two AREA measures this comp's `gla` actually is (db/406 §7).
+         // the two AREA measures this comp's `gla` actually is (db/408 §7).
          c.conditionText, c.qualityText, c.glaBasis]);
     }
   }

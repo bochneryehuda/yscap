@@ -8838,10 +8838,21 @@ const FUND_SEVERITIES = ['standard', 'prior_to_docs', 'prior_to_funding'];
 // already stage this by severity (a `prior_to_funding` condition blocks funding, not
 // CTC — see FUND_SEVERITIES above); this mirrors that for the document/condition
 // checklist items via their category (owner-directed IG-W8, 2026-07-24: "Title & Tax —
-// push to closing, do NOT hold CTC"). A condition in one of these categories (title,
-// insurance, ISKA, and any future closing/funding-stage doc) still HARD-blocks funding —
-// it is only excluded from the clear-to-close gate. Everything pre-close (core `none`,
-// `prior_to_approval`, `prior_to_docs`) keeps holding CTC exactly as before.
+// push to closing, do NOT hold CTC"). A condition in one of these categories still
+// HARD-blocks funding — it is only excluded from the clear-to-close gate. Everything
+// pre-close (core `none`, `prior_to_approval`, `prior_to_docs`) keeps holding CTC.
+//
+// WHAT BELONGS HERE is a document that cannot EXIST before the file is cleared to
+// close — the settlement statement (db/215) and the investor structure printout
+// (db/056) are produced at the closing table, so gating CTC on them would deadlock
+// every file. TITLE DOCUMENTS and the INSURANCE binder + invoice are NOT that: they
+// are prerequisites for drawing closing docs, and db/406 moved both to
+// 'prior_to_docs' so they hold clear-to-close again (owner-directed 2026-08-02:
+// "Insurance (binder + invoice) — it's not before funding, it's before clear to
+// close … Title documents — is also before CTC"). db/378 had already seeded FLOOD
+// insurance as 'prior_to_docs', so the hazard binder riding past CTC was an
+// inconsistency inside the app, not a policy. The category is what decides this —
+// do NOT add a per-code exception list here; move the condition's category instead.
 // Blocker sources that are PILOT's opinion, never human work. Belt-and-suspenders:
 // advancementBlockers already returns these under `advisories` rather than
 // `conditions`, so this filter is a second lock on the same door — a new AI blocker
@@ -14607,8 +14618,9 @@ router.use(require('./staff-notif-center'));
 module.exports = router;
 // exported for tests (the draw email center's DocuSign + Sitewire activity fold-in)
 module.exports.assembleDrawEventRows = assembleDrawEventRows;
-// exported for the IG-W8 test: closing-stage conditions (title/insurance/ISKA) hold
-// funding but NOT clear-to-close.
+// exported for the closing-stage test: a document produced AT the closing (settlement
+// statement, investor structure printout) holds funding but NOT clear-to-close, while
+// title + insurance hold both (db/406).
 module.exports.advancementBlockers = advancementBlockers;
 // exported for the appraisal-enforcement test (owner-directed 2026-07-30): the
 // appraisal-review sign-off gate is enforced again and must be provable directly.

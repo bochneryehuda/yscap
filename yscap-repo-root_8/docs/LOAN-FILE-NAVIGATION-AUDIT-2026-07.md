@@ -6,6 +6,19 @@ scroll, they scroll, they scroll within the loan file, they don't get anywhere�
 **fewer sections, nicely designed, more organized** — everything should be where
 they belong… like a **top, top, top portal**."_
 
+> **SUPERSEDED IN ONE PLACE (2026-08-02).** This document was written while the
+> file had TWO work lists — `NextUpPanel.jsx` ("What needs you next", floating
+> above the sections) and `ClearToClosePanel.jsx` ("What's left to clear to
+> close", inside the Overview). The owner: _"those should be merged together, not
+> two separate sections… It should only be one section altogether. It should be
+> under the overview."_ Both components are DELETED and replaced by the single
+> **`app-v2/src/components/WhatsLeftPanel.jsx`** (ordering brain still
+> `app-v2/src/lib/next-up.js`), mounted once inside `sec-overview`. Both anchors
+> — `#ctc-outstanding` and `#next-up` — live on that one panel, so every link in
+> this document still resolves. Read every mention of either old component below
+> as `WhatsLeftPanel`; the line numbers quoted for `StaffApplication.jsx` are
+> from before the merge.
+
 **This document changes no code. It is the plan.** It is the successor to
 `docs/LOAN-FILE-SIMPLICITY-BLUEPRINT.md` (2026-07-27): that plan said "keep all
 16 sections, group and label them" — the owner has now overridden that with
