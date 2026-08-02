@@ -1,4 +1,5 @@
 import React, { useEffect, useRef, useState } from 'react';
+import { rememberScroll, restoreRemembered, parkScroll, unparkScroll } from '../lib/keep-scroll.js';
 
 /* The 1003-style layout for a loan file: a sticky section rail on the left
    (horizontal chip bar on mobile) and clearly named, anchored sections on the
@@ -106,15 +107,44 @@ export function Section({ id, title, info, badge, children, style, collapsible =
      for "give me more room to work". Esc closes it, and the page behind is
      stopped from scrolling so it does not drift underneath. */
   const [full, setFull] = useState(false);
+  /* Set when a ROOM HOP is what closed full screen, so the exit does NOT drag the
+     reader back to where they stood in the room they just left. */
+  /* Is this section off-screen RIGHT NOW? Read at cleanup time, never latched.
+     A latched "skip the restore" flag was set on EVERY room hop — including the
+     one every section does at mount, since only the active room renders — so it
+     was still set hours later when the reader finally left full screen, and the
+     restore silently did nothing. Deliberately a no-dependency effect: it must be
+     current before the `hidden` handler below triggers the re-render whose
+     cleanup reads it. */
+  const hiddenRef = useRef(hidden);
+  useEffect(() => { hiddenRef.current = hidden; });
+  /* Where the reader was before full screen took the page away.
+     CAPTURED IN THE CLICK, NOT IN THE EFFECT — and that distinction is the whole
+     fix. `.sec-full` is `position:fixed`, so the section leaves the flow in the
+     very commit that sets `full`, the document collapses to the viewport, and the
+     browser clamps scrollY to 0 BEFORE any effect runs. Reading the offset inside
+     the effect therefore reads 0 and restores nothing; measured on the real
+     bundle, that was 1931 -> 0 -> 0. */
+  const fullY = useRef(0);
   useEffect(() => {
     if (!full) return undefined;
     const onKey = (e) => { if (e.key === 'Escape') setFull(false); };
     document.addEventListener('keydown', onKey);
     const prev = document.body.style.overflow;
+    /* Locking the body also drops the document to the viewport height, and
+       unlocking gives the height back but never the offset — which is why exiting
+       full screen left the reader at the top of the file (owner-reported
+       2026-08-02, and the half that PRE-DATES the rooms: CreditReport, ToolModal
+       and ProductStudioPanel have done this step since #108; this overlay landed
+       later and never got it). */
     document.body.style.overflow = 'hidden';
     return () => {
       document.removeEventListener('keydown', onKey);
       document.body.style.overflow = prev;
+      // A ROOM HOP closes full screen too. Restoring then would drag the reader
+      // to where they stood in the room they just left.
+      if (hiddenRef.current) return;
+      restoreRemembered(fullY.current);
     };
   }, [full]);
   // Listen for an "open this section" request from anywhere on the page — the
@@ -128,18 +158,29 @@ export function Section({ id, title, info, badge, children, style, collapsible =
     sectionBus.addEventListener('pilot-open-section', h);
     return () => sectionBus.removeEventListener('pilot-open-section', h);
   }, [id, collapsible]);
+  /* Where the reader was before they shut this section. A room can hold a single
+     section, so closing it leaves a page barely taller than the window and the
+     browser clamps them to the top — there is no position left to hold. Re-opening
+     is where the place has to come back, which is what this remembers. */
+  const parked = useRef(null);
   const toggle = (e) => {
     if (!collapsible) return;
     // hovering/clicking the little "i" — or a header action button — must never collapse the section
     if (e && e.target && e.target.closest && (e.target.closest('.info-tip') || e.target.closest('.sec-action'))) return;
-    setOpen(o => !o);
+    if (open) { parked.current = parkScroll(); setOpen(false); }
+    else { const p = parked.current; parked.current = null; setOpen(true); unparkScroll(p); }
   };
   // Full screen implies open — there would be nothing to fill the screen with.
   const showSummary = collapsible && !open && !full && summary;
   const fullBtn = fullscreenable ? (
     <button type="button" className="btn ghost small"
       title={full ? 'Back to the file (Esc)' : 'Open this section full screen so you can work through it on a big screen'}
-      onClick={(e) => { e.stopPropagation(); if (!full) setOpen(true); setFull(f => !f); }}>
+      onClick={(e) => {
+        e.stopPropagation();
+        // Read the offset BEFORE the state change — see fullY above.
+        if (!full) { fullY.current = rememberScroll(); setOpen(true); }
+        setFull(f => !f);
+      }}>
       {full ? 'Exit full screen' : 'Full screen'}
     </button>
   ) : null;

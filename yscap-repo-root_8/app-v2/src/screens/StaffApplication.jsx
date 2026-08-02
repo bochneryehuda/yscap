@@ -36,7 +36,7 @@ import EditFileDetails from '../components/EditFileDetails.jsx';
 import ToolModal from '../components/ToolModal.jsx';
 import FileSections, { Section, InfoTip, subscribeConditionsTab, goToSection, requestOpenSection, requestConditionsTab, setSectionResolver, revealAnchor } from '../components/FileSections.jsx';
 import { STATIONS, STATION_OF, ANCHOR_SECTION, stationOf, whereDidItGo } from '../lib/stations.js';
-import { captureScrollAnchor, restoreScrollAnchor } from '../lib/keep-scroll.js';
+import { captureScrollAnchor, keepAnchored, keepTabPlace, parkScroll, restoreScrollAnchor, unparkScroll } from '../lib/keep-scroll.js';
 import BorrowerProfilePanel from '../components/BorrowerProfilePanel.jsx';
 import { CONDITION_TIMINGS, conditionStatusLabel, conditionStatusClass, timingLabel, loanConditionStatusLabel, audienceStamp, audienceLabel } from '../lib/conditions-vocab.js';
 import { severityCount } from '../lib/findings-vocab.js';
@@ -2641,10 +2641,21 @@ function BorrowerConditions({ appId, app, items, docs, onPatch, onReviewDoc, onD
   // ever works title keeps Title open and the rest shut, file after file.
   const [shutGroups, setShutGroups] = useStickyFilter('condGroups', '');
   const shut = new Set(String(shutGroups || '').split(',').filter(Boolean));
-  const toggleGroup = (k) => {
+  /* Where the reader was before they shut each group. A subject group can be 30
+     conditions tall, so closing one takes most of the page away and the browser
+     clamps them upward; re-opening has to hand the place back (owner-reported
+     2026-08-02). Keyed by group so shutting Title then Insurance and re-opening
+     Title still lands on Title. */
+  const parkedGroups = useRef({});
+  const toggleGroup = (k, el) => {
     const n = new Set(shut);
-    n.has(k) ? n.delete(k) : n.add(k);
-    setShutGroups([...n].join(','));
+    const closing = !n.has(k);
+    if (closing) { n.add(k); parkedGroups.current[k] = parkScroll(); }
+    else n.delete(k);
+    // Closing: hold the header the reader clicked, then remember where they were.
+    // Opening: put them back, unless they have scrolled somewhere else since.
+    keepAnchored(closing ? el : null, () => setShutGroups([...n].join(',')));
+    if (!closing) { const p = parkedGroups.current[k]; delete parkedGroups.current[k]; unparkScroll(p); }
   };
   const borrowerItems = items.filter(it => (it.audience === 'borrower' || it.audience === 'both') && it.template_code !== 'rtl_p1_llc');
   const llcCondItem = items.find(it => it.template_code === 'rtl_p1_llc');
@@ -2891,7 +2902,7 @@ function BorrowerConditions({ appId, app, items, docs, onPatch, onReviewDoc, onD
           {sec.groups.map(g => (
         <div className="cond-group" key={g.key}>
           <button type="button" className="cond-group-h" aria-expanded={!shut.has(g.key)}
-            onClick={() => toggleGroup(g.key)}>
+            onClick={(e) => toggleGroup(g.key, e.currentTarget)}>
             <span className={`cond-group-chev${shut.has(g.key) ? '' : ' open'}`} aria-hidden="true">▶</span>
             <span className="cond-group-name">{g.label}</span>
             <span className="cond-group-count">{g.done} of {g.total} done</span>
@@ -3900,6 +3911,13 @@ export default function StaffApplication() {
   const condTab = condTabRaw === 'internal' ? 'borrower' : condTabRaw;
   // Conversations + Activity + Email Center are one "Communication" hub (tabs).
   const [commTab, setCommTab] = useStickyFilter('commTab', 'messages');
+  /* Where the reader was in each tab of the two hubs. A panel shorter than the
+     window leaves the page nothing to scroll, so holding the tab strip is not
+     enough on its own — coming BACK to a tab is what has to put them back
+     (owner-reported 2026-08-02). Deliberately NOT persisted: a scroll offset only
+     means anything against the page you were just looking at. */
+  const condTabY = useRef({});
+  const commTabY = useRef({});
 
   /* ===== SEVEN ROOMS (Phase 1 — docs/LOAN-FILE-NAVIGATION-AUDIT-2026-07.md) =====
      The 17 sections regroup into 7 rooms and ONE room renders at a time; the
@@ -4699,7 +4717,12 @@ export default function StaffApplication() {
           <div className="cond-tabs" role="tablist" aria-label="Conditions">
             {TABS.map(t => (
               <button key={t.k} type="button" role="tab" aria-selected={condTab === t.k}
-                className={`cond-tab${condTab === t.k ? ' active' : ''}`} onClick={() => setCondTab(t.k)}>
+                /* Hold the tab the reader clicked where it is, and remember a place
+                   per tab: a panel shorter than the window leaves the page nothing
+                   to scroll, so coming BACK is what has to restore them
+                   (owner-reported 2026-08-02). */
+                className={`cond-tab${condTab === t.k ? ' active' : ''}`}
+                onClick={(e) => keepTabPlace(condTabY.current, condTab, t.k, e.currentTarget, () => setCondTab(t.k))}>
                 {t.label}{t.badge !== '' && <span className="cond-tab-badge">{t.badge}</span>}
               </button>
             ))}
@@ -4874,7 +4897,8 @@ export default function StaffApplication() {
       <div className="comm-tabs" role="tablist" aria-label="Communication">
         {[{ k: 'messages', label: '💬 Chats' }, { k: 'emails', label: '✉️ Email' }, { k: 'activity', label: '🕓 Activity' }].map(t => (
           <button key={t.k} type="button" role="tab" aria-selected={commTab === t.k}
-            className={`comm-tab${commTab === t.k ? ' active' : ''}`} onClick={() => setCommTab(t.k)}>{t.label}</button>
+            className={`comm-tab${commTab === t.k ? ' active' : ''}`}
+            onClick={(e) => keepTabPlace(commTabY.current, commTab, t.k, e.currentTarget, () => setCommTab(t.k))}>{t.label}</button>
         ))}
       </div>
       {commTab === 'messages' && <ChatPanel appId={id} onTaskCreated={load} />}
