@@ -218,8 +218,42 @@ router.get('/appraisers/:id', async (req, res, next) => {
                 min(o.observed_on) AS first_report, max(o.observed_on) AS last_report
            FROM property_observations o WHERE o.appraiser_id = $1`, [req.params.id]),
     ]);
+    // EVERY PROPERTY THIS APPRAISER EVER TOUCHED, and how they touched it (the
+    // owner's "after opening appraiser profile you can see all property and files
+    // and reports he did"). One row per PROPERTY, not per observation — an
+    // appraiser who used one house as a comparable on four reports is telling us
+    // something about that house, and it belongs on one line, not four.
+    const properties = await db.query(
+      `SELECT p.id, p.display_address, p.city, p.state, p.zip,
+              p.property_type, p.units, p.year_built, p.gla, p.beds, p.baths_total,
+              p.condition_uad, p.last_sale_price, p.last_sale_date, p.photo_count,
+              count(*)::int                                            AS times_seen,
+              count(*) FILTER (WHERE o.role = 'subject')::int           AS as_subject,
+              count(*) FILTER (WHERE o.role = 'comparable')::int        AS as_comparable,
+              max(o.observed_on)                                        AS last_observed_on
+         FROM property_observations o
+         JOIN properties p ON p.id = o.property_id
+        WHERE o.appraiser_id = $1
+        GROUP BY p.id
+        ORDER BY max(o.observed_on) DESC NULLS LAST, p.display_address
+        LIMIT 2000`, [req.params.id]);
+
+    // THE REPORTS THEY WROTE THAT ARE NOT ON A LOAN FILE — uploaded straight into
+    // the research database (db/410). Without this the profile would show only the
+    // deals we happened to write, and an appraiser's real body of work here would
+    // read as smaller than it is.
+    const imports = await db.query(
+      `SELECT i.id, i.filename, i.form_type, i.effective_date, i.status,
+              i.subject_address, i.subject_city, i.subject_state, i.subject_zip,
+              i.subject_property_id, i.comparables_seen, i.observations_written, i.created_at
+         FROM research_imports i
+        WHERE i.appraiser_id = $1 AND i.status = 'ok'
+        ORDER BY i.effective_date DESC NULLS LAST, i.created_at DESC
+        LIMIT 500`, [req.params.id]);
+
     res.json({ appraiser: a, contacts: contacts.rows, licenses: licenses.rows,
-      files: files.rows, work: work.rows[0] || {} });
+      files: files.rows, imports: imports.rows, properties: properties.rows,
+      work: work.rows[0] || {} });
   } catch (e) { next(e); }
 });
 
@@ -734,6 +768,85 @@ router.post('/backfill', async (req, res, next) => {
     const out = await ingest.backfill(db, { limit, force: !!(req.body && req.body.force) });
     await audit(req.actor.id, 'research_backfill', null, out);
     res.json({ ...out, status: await ingest.ingestStatus(db) });
+  } catch (e) { next(e); }
+});
+
+// ---------------------------------------------------------------------------
+// UPLOAD AN APPRAISAL XML STRAIGHT INTO THE DATABASE — single or bulk (db/410)
+// ---------------------------------------------------------------------------
+/**
+ * The owner's "we should be able to manually add XML appraisal reports to build up
+ * our database … single or bulk". The whole read is `lib/research/xml-import`; this
+ * is only the door.
+ *
+ * OPEN TO EVERY STAFF USER, like the rest of this router. It is an ADD-ONLY action
+ * into a database of addresses and recorded sale prices — it creates no loan file,
+ * touches no borrower, and cannot delete anything — so gating it behind an admin
+ * permission would only mean the people doing the research have to ask somebody
+ * else to press the button.
+ *
+ * The bulk cap is deliberate and is REPORTED rather than silently applied: a
+ * hundred reports is a minute of parsing, and a request that quietly dropped file
+ * 101 would read as "all imported" when it was not.
+ *
+ * THE REAL CEILING IS USUALLY THE REQUEST SIZE, NOT THIS COUNT. A MISMO appraisal
+ * carries the whole report PDF inside itself, so one file routinely runs to several
+ * megabytes and the server's JSON body limit (~25 MB) is reached long before 100
+ * files. The screen therefore sends a big drop in SIZE-BOUNDED batches and reports
+ * the running total — which is also why the summary shape has to stay addable.
+ */
+const MAX_BULK = 100;
+
+router.post('/imports', async (req, res, next) => {
+  try {
+    const XI = require('../lib/research/xml-import');
+    const body = req.body || {};
+    let files = [];
+    if (Array.isArray(body.files)) {
+      files = body.files.map((f) => ({ xml: f && f.xml, filename: txt(f && f.filename) }));
+    } else if (body.xml != null) {
+      files = [{ xml: body.xml, filename: txt(body.filename) }];
+    }
+    if (!files.length) return res.status(400).json({ error: 'Attach at least one appraisal data file (XML).' });
+
+    let dropped = 0;
+    if (files.length > MAX_BULK) { dropped = files.length - MAX_BULK; files = files.slice(0, MAX_BULK); }
+
+    const out = await XI.importMany(db, files, { uploadedBy: req.actor.id });
+    if (dropped) {
+      out.summary.dropped = dropped;
+      out.summary.note = `Only the first ${MAX_BULK} files were read this time — ${dropped} more were left out. Send them in another batch.`;
+    }
+    await audit(req.actor.id, 'research_xml_import', null, out.summary);
+    res.json(out);
+  } catch (e) { next(e); }
+});
+
+/** The upload history — what has been fed in, what landed, and what did not. */
+router.get('/imports', async (req, res, next) => {
+  try {
+    const limit = Math.min(500, Math.max(1, parseInt(req.query.limit, 10) || 100));
+    const params = [];
+    const where = [];
+    const P = (v) => { params.push(v); return '$' + params.length; };
+    const status = txt(req.query.status);
+    if (status && ['ok', 'skipped', 'error', 'pending'].includes(status)) where.push(`i.status = ${P(status)}`);
+    const r = await db.query(
+      `SELECT i.id, i.filename, i.status, i.error, i.form_type, i.effective_date,
+              i.subject_address, i.subject_city, i.subject_state, i.subject_zip,
+              i.subject_property_id, i.appraiser_id, i.appraisal_id,
+              i.comparables_seen, i.properties_written, i.observations_written, i.sales_written,
+              i.rows_skipped, i.created_at, i.ran_at,
+              ap.name AS appraiser_name,
+              s.full_name AS uploaded_by_name,
+              count(*) OVER ()::int AS total
+         FROM research_imports i
+         LEFT JOIN appraisers ap ON ap.id = i.appraiser_id
+         LEFT JOIN staff_users s ON s.id = i.uploaded_by
+        ${where.length ? 'WHERE ' + where.join(' AND ') : ''}
+        ORDER BY i.created_at DESC
+        LIMIT ${P(limit)}`, params);
+    res.json({ rows: r.rows, total: r.rows.length ? r.rows[0].total : 0 });
   } catch (e) { next(e); }
 });
 

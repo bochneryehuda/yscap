@@ -189,15 +189,30 @@ async function upsertAppraiser(db, a) {
 /** Recount an appraiser's reports + files. Cheap, and keeps the list screen honest. */
 async function recountAppraiser(db, appraiserId) {
   if (!appraiserId) return;
+  // TWO COUNTERS, TWO MEANINGS. `appraisal_count` is the reports that came in on a
+  // loan file and `file_count` the files they were on — the profile shows them side
+  // by side, so neither may quietly start including something else. An UPLOADED
+  // report (db/410) is a report this person wrote too, and gets its own counter.
+  //
+  // The upload count is taken from the OBSERVATIONS rather than from
+  // `research_imports.status`, because this runs INSIDE the import's transaction —
+  // the header is still 'pending' at this moment and always would be. Counting what
+  // actually landed is both the truer statement and the only one available here.
   await db.query(
     `UPDATE appraisers SET
-       appraisal_count = c.n, file_count = c.files,
-       first_report_date = c.first_date, last_report_date = c.last_date, updated_at = now()
+       appraisal_count = c.n, file_count = c.files, import_count = i.n,
+       first_report_date = LEAST(c.first_date, i.first_date),
+       last_report_date  = GREATEST(c.last_date, i.last_date),
+       updated_at = now()
      FROM (SELECT count(*)::int AS n,
                   count(DISTINCT application_id)::int AS files,
                   min(COALESCE(effective_date, report_signed_date)) AS first_date,
                   max(COALESCE(effective_date, report_signed_date)) AS last_date
-             FROM appraisals WHERE appraiser_id = $1) c
+             FROM appraisals WHERE appraiser_id = $1) c,
+          (SELECT count(DISTINCT import_id)::int AS n,
+                  min(observed_on) AS first_date, max(observed_on) AS last_date
+             FROM property_observations
+            WHERE appraiser_id = $1 AND import_id IS NOT NULL) i
      WHERE appraisers.id = $1`, [appraiserId]);
 }
 
@@ -235,10 +250,21 @@ async function upsertProperty(db, parts, extra = {}) {
  */
 async function upsertObservation(db, cols) {
   const keys = Object.keys(cols);
+  // WHICH DOOR THE REPORT CAME THROUGH DECIDES THE PIVOT. A loan-file report is
+  // keyed on its `appraisals` row (subject) and on the `appraisal_comparables` row
+  // (each comp). An UPLOADED report (db/410) has neither, so it is keyed on its
+  // import row and — because one upload carries a whole grid — the comp's own
+  // position within that grid. Picking the wrong pivot does not error; it inserts
+  // a second copy, which is why the choice is made from the row itself rather than
+  // from a flag the caller could forget to pass.
+  const uploaded = cols.import_id != null;
   const conflict = cols.role === 'subject'
-    ? '(appraisal_id) WHERE role = \'subject\''
-    : '(comparable_id) WHERE comparable_id IS NOT NULL';
-  const updatable = keys.filter((k) => k !== 'appraisal_id' && k !== 'comparable_id' && k !== 'role');
+    ? (uploaded ? '(import_id) WHERE role = \'subject\' AND import_id IS NOT NULL'
+      : '(appraisal_id) WHERE role = \'subject\'')
+    : (uploaded ? '(import_id, comp_seq) WHERE role = \'comparable\' AND import_id IS NOT NULL'
+      : '(comparable_id) WHERE comparable_id IS NOT NULL');
+  const updatable = keys.filter((k) => k !== 'appraisal_id' && k !== 'import_id'
+    && k !== 'comparable_id' && k !== 'comp_seq' && k !== 'role');
   const r = await db.query(
     `INSERT INTO property_observations (${keys.join(',')})
      VALUES (${keys.map((_, i) => '$' + (i + 1)).join(',')})
@@ -442,194 +468,11 @@ async function ingestAppraisal(db, appraisalId) {
     // trying again forever.
     if (a.superseded) return retireAppraisal(db, appraisalId, out);
 
-    const appraiserId = await upsertAppraiser(db, a);
-    if (appraiserId) await db.query(`UPDATE appraisals SET appraiser_id = $2 WHERE id = $1`, [appraisalId, appraiserId]);
-
-    const observedOn = dateOnly(a.effective_date) || dateOnly(a.report_signed_date) || dateOnly(a.inspection_date);
-    const touched = new Set();
-    // A RENOVATION REPORT'S SUBJECT RATINGS DESCRIBE THE FINISHED HOUSE. Record
-    // which it is so the roll-up can refuse to treat a future condition as today's.
-    // Two independent signals, and EITHER one makes it after-repair: an ARV on the
-    // report (there is no such thing as an after-repair value for a house nobody is
-    // repairing) or subject-to language in the condition of appraisal. Only a report
-    // showing neither is read as describing the house as it stands today. Matches
-    // the same isReno predicate the appraisal desk already uses.
-    const conditionBasis = (a.arv_value != null
-      || /subject|hypothetical|as.?repair|as.?complet/i.test(String(a.condition_of_appraisal || '')))
-      ? 'as_repaired' : 'as_is';
-
-    // ---- the SUBJECT -------------------------------------------------------
-    // Our own borrower's property. It goes in the warehouse exactly like a comp,
-    // because next year it IS somebody's comp — and because "what did we lend on,
-    // and what was it worth" is the other half of the research question.
-    //
-    // THE UNIT COMES FROM THE CONDO BLOCK. `appraisals.subject_unit` exists but the
-    // importer never writes it — the unit designator only ever lands in
-    // `condo_unit_identifier`. Reading only `subject_unit` would fold every unit of
-    // one condo building into a single property row, which is the one dedupe error
-    // that would silently corrupt the whole warehouse for condos.
-    const subjectUnit = txt(a.subject_unit) || txt(a.condo_unit_identifier);
-    const subjectId = await upsertProperty(db, {
-      street: a.subject_address, unit: subjectUnit, city: a.subject_city,
-      state: a.subject_state, zip: a.subject_zip,
-    }, { county: a.subject_county, apn: a.apn });
-    let subjectObsId = null;
-    if (subjectId) {
-      touched.add(subjectId);
-      out.properties++;
-      const marketRent = await subjectMarketRent(db, a);
-      const unitMix = await subjectUnitMix(db, a.id);
-      const obs = await upsertObservation(db, {
-        property_id: subjectId, appraisal_id: a.id, application_id: a.application_id,
-        comparable_id: null, appraiser_id: appraiserId, role: 'subject',
-        comp_seq: null, comp_set: null, comp_set_confidence: null, comp_set_needs_review: null,
-        observed_on: observedOn, form_type: txt(a.form_type),
-        address_as_stated: [txt(a.subject_address), subjectUnit, txt(a.subject_city),
-          txt(a.subject_state), txt(a.subject_zip)].filter(Boolean).join(', ') || null,
-        sale_price: null, adjusted_price: null,
-        sale_date: dateOnly(a.contract_date), sale_date_text: null,
-        sale_status: null, sale_type: txt(a.sale_type),
-        concession_amount: a.concession_amount, financing_type: null,
-        days_on_market: null, data_source: txt(a.contract_data_source),
-        prior_sale_amount: a.prior_sale_amount, prior_sale_date: dateOnly(a.prior_sale_date),
-        gla: a.gla, beds: a.beds, baths_text: bathsText(a.baths_full, a.baths_half),
-        baths_full: a.baths_full, baths_half: a.baths_half, total_rooms: a.rooms,
-        year_built: K.yearBuilt(a.year_built), lot_area: txt(a.lot_area),
-        lot_sqft: K.lotSqft(a.lot_area), units: a.units,
-        stories: txt(a.stories), design_style: txt(a.design_style),
-        property_type: txt(a.property_category) || txt(a.property_type),
-        property_category: txt(a.property_category),
-        condition_uad: txt(a.condition_uad), condition_text: null,
-        quality_uad: txt(a.quality_uad), quality_text: null,
-        condition_basis: conditionBasis,
-        // ONE COLUMN, TWO VOCABULARIES — the trap. A COMPARABLE's view_rating is a
-        // UAD enum (Beneficial/Neutral/Adverse); the SUBJECT's is free text off a
-        // different element. Letting the free text into the same column makes it
-        // unqueryable, so a subject view is stored only when it speaks the comps'
-        // language, and the prose is kept in `facts`.
-        view_rating: uadView(a.view_rating), location_rating: null, location_type: txt(a.nbhd_location_type),
-        below_grade_sqft: a.below_grade_sqft, below_grade_finished_sqft: a.below_grade_finished_sqft,
-        basement_sqft: a.basement_sqft, basement_finished_pct: a.basement_finished_pct,
-        garage_type: txt(a.garage_type), garage_spaces: a.garage_spaces,
-        price_per_gla: null, gla_basis: 'gla', proximity: null,
-        neighborhood: txt(a.neighborhood), census_tract: txt(a.census_tract),
-        flood_zone: txt(a.flood_zone), fema_flood_zone: txt(a.fema_flood_zone),
-        sfha: a.special_flood_hazard == null ? null : !!a.special_flood_hazard,
-        zoning_id: txt(a.zoning_id), zoning_desc: txt(a.zoning_desc),
-        occupancy_status: txt(a.occupancy_status), market_rent: marketRent,
-        unit_mix: unitMix ? JSON.stringify(unitMix) : null,
-        owner_of_record: txt(a.owner_of_record), property_rights: txt(a.property_rights),
-        hoa_fee_amount: a.hoa_fee_amount, hoa_fee_period: txt(a.hoa_fee_period),
-        condo_floor: txt(a.condo_floor),
-        effective_age: a.effective_age, remaining_economic_life: a.remaining_economic_life,
-        heating_type: txt(a.heating_type), heating_fuel: txt(a.heating_fuel),
-        cooling: txt(a.cooling), foundation_type: txt(a.foundation_type),
-        attic: a.attic == null ? null : !!a.attic, has_adu: a.has_adu == null ? null : !!a.has_adu,
-        lot_shape: txt(a.lot_shape), lot_dimensions: txt(a.lot_dimensions),
-        listed_within_year: a.listed_within_year == null ? null : !!a.listed_within_year,
-        latitude: null, longitude: null,
-        net_adjustment: null, net_adj_pct: null, gross_adj_pct: null, adjustments: '[]',
-        appraised_value: a.appraised_value, as_is_value: a.as_is_value, arv_value: a.arv_value,
-        contract_price: a.contract_price, contract_date: dateOnly(a.contract_date),
-        facts: JSON.stringify(subjectFacts(a)),
-      });
-      subjectObsId = obs.id;
-      out.observations++;
-      // A subject's own transactions: the prior sale the report researched, and
-      // the purchase under contract (a contract price with a date IS a sale we
-      // know about — marked 'pending' until a later report proves it closed).
-      out.sales += await recordSale(db, { propertyId: subjectId, date: a.prior_sale_date,
-        price: a.prior_sale_amount, type: null, status: 'closed', source: 'subject_prior_sale',
-        appraisalId: a.id, observationId: subjectObsId });
-      out.sales += await recordSale(db, { propertyId: subjectId, date: a.contract_date,
-        price: a.contract_price, type: txt(a.sale_type), status: 'pending', source: 'subject_contract',
-        appraisalId: a.id, observationId: subjectObsId });
-    } else if (txt(a.subject_address)) {
-      out.skipped.push({ role: 'subject', address: txt(a.subject_address), why: 'address not identifiable' });
-    }
-
-    // ---- the COMPARABLES ---------------------------------------------------
     const comps = (await db.query(
       `SELECT * FROM appraisal_comparables WHERE appraisal_id = $1 AND is_subject = false ORDER BY seq`,
       [appraisalId])).rows;
-    const compObs = [];
-    for (const c of comps) {
-      const pid = await upsertProperty(db, {
-        street: c.address, city: c.city, state: c.state || a.subject_state, zip: c.zip,
-      });
-      if (!pid) {
-        out.skipped.push({ role: 'comparable', seq: c.seq, address: txt(c.address),
-          why: 'the report did not write enough of this address to identify the property (needs a house number, a state, and a city or ZIP)' });
-        continue;
-      }
-      touched.add(pid);
-      out.properties++;
-      const saleDate = dateOnly(c.sale_date);
-      const obs = await upsertObservation(db, {
-        property_id: pid, appraisal_id: a.id, application_id: a.application_id,
-        comparable_id: c.id, appraiser_id: appraiserId, role: 'comparable',
-        comp_seq: txt(c.seq), comp_set: txt(c.comp_set) || 'unknown',
-        comp_set_confidence: txt(a.comp_split_confidence),
-        comp_set_needs_review: a.comp_split_needs_review == null ? null : !!a.comp_split_needs_review,
-        observed_on: observedOn, form_type: txt(a.form_type),
-        address_as_stated: [txt(c.address), txt(c.city), txt(c.state), txt(c.zip)].filter(Boolean).join(', ') || null,
-        sale_price: c.sale_price, adjusted_price: c.adjusted_price,
-        sale_date: saleDate, sale_date_text: txt(c.sale_date),
-        sale_status: txt(c.sale_status) || 'closed', sale_type: txt(c.sale_type),
-        concession_amount: c.concession_amount, financing_type: txt(c.financing_type),
-        days_on_market: txt(c.days_on_market), data_source: txt(c.data_source),
-        prior_sale_amount: c.prior_sale_amount, prior_sale_date: dateOnly(c.prior_sale_date),
-        gla: c.gla, beds: c.beds, baths_text: txt(c.baths),
-        baths_full: c.baths_full, baths_half: c.baths_half, total_rooms: c.total_rooms,
-        // A comp's year built, lot and style are NOT on the MISMO grid as their own
-        // elements — but the appraiser's ADJUSTMENT LINES name them ("Age", "Site",
-        // "Design (Style)") with the comp's own figure in the description, so they
-        // are mined from there. Only a value the line actually states is taken.
-        year_built: fromAdjustments(c.adjustments, 'age', K.yearBuilt),
-        lot_area: fromAdjustments(c.adjustments, 'site', (v) => txt(v)),
-        lot_sqft: fromAdjustments(c.adjustments, 'site', K.lotSqft),
-        units: K.int(c.units, { min: 1, max: 100 }),
-        stories: null, design_style: fromAdjustments(c.adjustments, 'design', (v) => txt(v)),
-        property_type: txt(c.property_type), property_category: null,
-        condition_uad: txt(c.condition_uad), condition_text: txt(c.condition_text),
-        quality_uad: txt(c.quality_uad), quality_text: txt(c.quality_text),
-        // A comparable is always described AS IT SOLD — there is no such thing as
-        // an after-repair comparable, so its ratings are always the as-is basis.
-        condition_basis: 'as_is',
-        view_rating: txt(c.view_rating), location_rating: txt(c.location_rating),
-        location_type: txt(c.location_type),
-        below_grade_sqft: c.below_grade_sqft, below_grade_finished_sqft: c.below_grade_finished_sqft,
-        basement_sqft: null, basement_finished_pct: null,
-        garage_type: fromAdjustments(c.adjustments, 'garage', (v) => txt(v)), garage_spaces: null,
-        price_per_gla: c.price_per_gla, gla_basis: txt(c.gla_basis) || 'gla', proximity: txt(c.proximity),
-        neighborhood: null, census_tract: null, flood_zone: null, fema_flood_zone: null, sfha: null,
-        zoning_id: null, zoning_desc: null,
-        occupancy_status: null, market_rent: null, unit_mix: null,
-        owner_of_record: null, property_rights: null,
-        hoa_fee_amount: null, hoa_fee_period: null, condo_floor: null,
-        effective_age: null, remaining_economic_life: null,
-        heating_type: null, heating_fuel: null, cooling: null, foundation_type: null,
-        attic: null, has_adu: null, lot_shape: null, lot_dimensions: null, listed_within_year: null,
-        latitude: c.latitude, longitude: c.longitude,
-        net_adjustment: c.net_adjustment, net_adj_pct: c.net_adj_pct, gross_adj_pct: c.gross_adj_pct,
-        adjustments: JSON.stringify(c.adjustments || []),
-        appraised_value: null, as_is_value: null, arv_value: null, contract_price: null,
-        contract_date: null,
-        facts: JSON.stringify({}),
-      });
-      compObs.push({ id: obs.id, property_id: pid, comp_seq: txt(c.seq) });
-      out.observations++;
-      out.sales += await recordSale(db, { propertyId: pid, date: c.sale_date, price: c.sale_price,
-        type: txt(c.sale_type), status: txt(c.sale_status) || 'closed', source: 'comp_sale',
-        appraisalId: a.id, observationId: obs.id });
-      out.sales += await recordSale(db, { propertyId: pid, date: c.prior_sale_date, price: c.prior_sale_amount,
-        type: null, status: 'closed', source: 'comp_prior_sale', appraisalId: a.id, observationId: obs.id });
-    }
 
-    // ---- photos, then the roll-ups ----------------------------------------
-    out.photos = await linkPhotos(db, appraisalId, { comps: compObs, subjectPropertyId: subjectId });
-    for (const pid of touched) await rollupProperty(db, pid);
-    await recountAppraiser(db, appraiserId);
+    await writeReport(db, { a, comps, link: { appraisalId }, out });
 
     await db.query(
       `INSERT INTO property_ingest_log (appraisal_id, status, properties_written, observations_written,
@@ -656,6 +499,279 @@ async function ingestAppraisal(db, appraisalId) {
     } catch (_) { /* the log is a courtesy; the caller still gets the error back */ }
     return out;
   }
+}
+
+/**
+ * WRITE ONE REPORT INTO THE WAREHOUSE — the shared body, used by BOTH doors.
+ *
+ * A report reaches the warehouse two ways: it was imported onto a loan file (the
+ * `appraisals` + `appraisal_comparables` rows the desk wrote), or it was uploaded
+ * straight into the research database with no file behind it (db/410). Those two
+ * doors MUST read one report identically — a fact that lands in a different column
+ * depending on how the XML arrived is a fact the search cannot be trusted on — so
+ * there is exactly ONE mapping, here, and the callers only differ in where the
+ * rows came from and what they are linked to.
+ *
+ * @param {object}   a     an `appraisals` ROW SHAPE (a real row, or the same shape
+ *                         built in memory from a parsed XML — `import.appraisalRowFrom`)
+ * @param {object[]} comps `appraisal_comparables` ROW SHAPES, same deal
+ * @param {{appraisalId?:string, importId?:string}} link which door this came through
+ * @param {object}   out   the running summary, mutated in place
+ */
+async function writeReport(db, { a, comps, link, out }) {
+  const appraisalId = link.appraisalId || null;
+  const importId = link.importId || null;
+
+  const appraiserId = await upsertAppraiser(db, a);
+  out.appraiserId = appraiserId;
+  if (appraiserId && appraisalId) {
+    await db.query(`UPDATE appraisals SET appraiser_id = $2 WHERE id = $1`, [appraisalId, appraiserId]);
+  }
+
+  const observedOn = dateOnly(a.effective_date) || dateOnly(a.report_signed_date) || dateOnly(a.inspection_date);
+  const touched = new Set();
+  // A RENOVATION REPORT'S SUBJECT RATINGS DESCRIBE THE FINISHED HOUSE. Record
+  // which it is so the roll-up can refuse to treat a future condition as today's.
+  // Two independent signals, and EITHER one makes it after-repair: an ARV on the
+  // report (there is no such thing as an after-repair value for a house nobody is
+  // repairing) or subject-to language in the condition of appraisal. Only a report
+  // showing neither is read as describing the house as it stands today. Matches
+  // the same isReno predicate the appraisal desk already uses.
+  const conditionBasis = (a.arv_value != null
+    || /subject|hypothetical|as.?repair|as.?complet/i.test(String(a.condition_of_appraisal || '')))
+    ? 'as_repaired' : 'as_is';
+
+  // ---- the SUBJECT -------------------------------------------------------
+  // Our own borrower's property. It goes in the warehouse exactly like a comp,
+  // because next year it IS somebody's comp — and because "what did we lend on,
+  // and what was it worth" is the other half of the research question.
+  //
+  // THE UNIT COMES FROM THE CONDO BLOCK. `appraisals.subject_unit` exists but the
+  // importer never writes it — the unit designator only ever lands in
+  // `condo_unit_identifier`. Reading only `subject_unit` would fold every unit of
+  // one condo building into a single property row, which is the one dedupe error
+  // that would silently corrupt the whole warehouse for condos.
+  const subjectUnit = txt(a.subject_unit) || txt(a.condo_unit_identifier);
+  const subjectId = await upsertProperty(db, {
+    street: a.subject_address, unit: subjectUnit, city: a.subject_city,
+    state: a.subject_state, zip: a.subject_zip,
+  }, { county: a.subject_county, apn: a.apn });
+  let subjectObsId = null;
+  if (subjectId) {
+    touched.add(subjectId);
+    out.properties++;
+    const marketRent = await subjectMarketRent(db, a);
+    const unitMix = await subjectUnitMix(db, a);
+    const obs = await upsertObservation(db, {
+      property_id: subjectId, appraisal_id: appraisalId, import_id: importId,
+      application_id: a.application_id || null,
+      comparable_id: null, appraiser_id: appraiserId, role: 'subject',
+      comp_seq: null, comp_set: null, comp_set_confidence: null, comp_set_needs_review: null,
+      observed_on: observedOn, form_type: txt(a.form_type),
+      address_as_stated: [txt(a.subject_address), subjectUnit, txt(a.subject_city),
+        txt(a.subject_state), txt(a.subject_zip)].filter(Boolean).join(', ') || null,
+      sale_price: null, adjusted_price: null,
+      sale_date: dateOnly(a.contract_date), sale_date_text: null,
+      sale_status: null, sale_type: txt(a.sale_type),
+      concession_amount: a.concession_amount, financing_type: null,
+      days_on_market: null, data_source: txt(a.contract_data_source),
+      prior_sale_amount: a.prior_sale_amount, prior_sale_date: dateOnly(a.prior_sale_date),
+      gla: a.gla, beds: a.beds, baths_text: bathsText(a.baths_full, a.baths_half),
+      baths_full: a.baths_full, baths_half: a.baths_half, total_rooms: a.rooms,
+      year_built: K.yearBuilt(a.year_built), lot_area: txt(a.lot_area),
+      lot_sqft: K.lotSqft(a.lot_area), units: a.units,
+      stories: txt(a.stories), design_style: txt(a.design_style),
+      property_type: txt(a.property_category) || txt(a.property_type),
+      property_category: txt(a.property_category),
+      condition_uad: txt(a.condition_uad), condition_text: null,
+      quality_uad: txt(a.quality_uad), quality_text: null,
+      condition_basis: conditionBasis,
+      // ONE COLUMN, TWO VOCABULARIES — the trap. A COMPARABLE's view_rating is a
+      // UAD enum (Beneficial/Neutral/Adverse); the SUBJECT's is free text off a
+      // different element. Letting the free text into the same column makes it
+      // unqueryable, so a subject view is stored only when it speaks the comps'
+      // language, and the prose is kept in `facts`.
+      view_rating: uadView(a.view_rating), location_rating: null, location_type: txt(a.nbhd_location_type),
+      below_grade_sqft: a.below_grade_sqft, below_grade_finished_sqft: a.below_grade_finished_sqft,
+      basement_sqft: a.basement_sqft, basement_finished_pct: a.basement_finished_pct,
+      garage_type: txt(a.garage_type), garage_spaces: a.garage_spaces,
+      price_per_gla: null, gla_basis: 'gla', proximity: null,
+      neighborhood: txt(a.neighborhood), census_tract: txt(a.census_tract),
+      flood_zone: txt(a.flood_zone), fema_flood_zone: txt(a.fema_flood_zone),
+      sfha: a.special_flood_hazard == null ? null : !!a.special_flood_hazard,
+      zoning_id: txt(a.zoning_id), zoning_desc: txt(a.zoning_desc),
+      occupancy_status: txt(a.occupancy_status), market_rent: marketRent,
+      unit_mix: unitMix ? JSON.stringify(unitMix) : null,
+      owner_of_record: txt(a.owner_of_record), property_rights: txt(a.property_rights),
+      hoa_fee_amount: a.hoa_fee_amount, hoa_fee_period: txt(a.hoa_fee_period),
+      condo_floor: txt(a.condo_floor),
+      effective_age: a.effective_age, remaining_economic_life: a.remaining_economic_life,
+      heating_type: txt(a.heating_type), heating_fuel: txt(a.heating_fuel),
+      cooling: txt(a.cooling), foundation_type: txt(a.foundation_type),
+      attic: a.attic == null ? null : !!a.attic, has_adu: a.has_adu == null ? null : !!a.has_adu,
+      lot_shape: txt(a.lot_shape), lot_dimensions: txt(a.lot_dimensions),
+      listed_within_year: a.listed_within_year == null ? null : !!a.listed_within_year,
+      latitude: null, longitude: null,
+      net_adjustment: null, net_adj_pct: null, gross_adj_pct: null, adjustments: '[]',
+      appraised_value: a.appraised_value, as_is_value: a.as_is_value, arv_value: a.arv_value,
+      contract_price: a.contract_price, contract_date: dateOnly(a.contract_date),
+      facts: JSON.stringify(subjectFacts(a)),
+    });
+    subjectObsId = obs.id;
+    out.observations++;
+    // A subject's own transactions: the prior sale the report researched, and
+    // the purchase under contract (a contract price with a date IS a sale we
+    // know about — marked 'pending' until a later report proves it closed).
+    out.sales += await recordSale(db, { propertyId: subjectId, date: a.prior_sale_date,
+      price: a.prior_sale_amount, type: null, status: 'closed', source: 'subject_prior_sale',
+      appraisalId, importId, observationId: subjectObsId });
+    out.sales += await recordSale(db, { propertyId: subjectId, date: a.contract_date,
+      price: a.contract_price, type: txt(a.sale_type), status: 'pending', source: 'subject_contract',
+      appraisalId, importId, observationId: subjectObsId });
+  } else if (txt(a.subject_address)) {
+    out.skipped.push({ role: 'subject', address: txt(a.subject_address), why: 'address not identifiable' });
+  }
+
+  // ---- the COMPARABLES ---------------------------------------------------
+  const compObs = [];
+  for (const c of comps) {
+    const pid = await upsertProperty(db, {
+      street: c.address, city: c.city, state: c.state || a.subject_state, zip: c.zip,
+    });
+    if (!pid) {
+      out.skipped.push({ role: 'comparable', seq: c.seq, address: txt(c.address),
+        why: 'the report did not write enough of this address to identify the property (needs a house number, a state, and a city or ZIP)' });
+      continue;
+    }
+    touched.add(pid);
+    out.properties++;
+    const saleDate = dateOnly(c.sale_date);
+    const obs = await upsertObservation(db, {
+      property_id: pid, appraisal_id: appraisalId, import_id: importId,
+      application_id: a.application_id || null,
+      comparable_id: c.id || null, appraiser_id: appraiserId, role: 'comparable',
+      comp_seq: txt(c.seq), comp_set: txt(c.comp_set) || 'unknown',
+      comp_set_confidence: txt(a.comp_split_confidence),
+      comp_set_needs_review: a.comp_split_needs_review == null ? null : !!a.comp_split_needs_review,
+      observed_on: observedOn, form_type: txt(a.form_type),
+      address_as_stated: [txt(c.address), txt(c.city), txt(c.state), txt(c.zip)].filter(Boolean).join(', ') || null,
+      sale_price: c.sale_price, adjusted_price: c.adjusted_price,
+      sale_date: saleDate, sale_date_text: txt(c.sale_date),
+      sale_status: txt(c.sale_status) || 'closed', sale_type: txt(c.sale_type),
+      concession_amount: c.concession_amount, financing_type: txt(c.financing_type),
+      days_on_market: txt(c.days_on_market), data_source: txt(c.data_source),
+      prior_sale_amount: c.prior_sale_amount, prior_sale_date: dateOnly(c.prior_sale_date),
+      gla: c.gla, beds: c.beds, baths_text: txt(c.baths),
+      baths_full: c.baths_full, baths_half: c.baths_half, total_rooms: c.total_rooms,
+      // A comp's year built, lot and style are NOT on the MISMO grid as their own
+      // elements — but the appraiser's ADJUSTMENT LINES name them ("Age", "Site",
+      // "Design (Style)") with the comp's own figure in the description, so they
+      // are mined from there. Only a value the line actually states is taken.
+      year_built: fromAdjustments(c.adjustments, 'age', K.yearBuilt),
+      lot_area: fromAdjustments(c.adjustments, 'site', (v) => txt(v)),
+      lot_sqft: fromAdjustments(c.adjustments, 'site', K.lotSqft),
+      units: K.int(c.units, { min: 1, max: 100 }),
+      stories: null, design_style: fromAdjustments(c.adjustments, 'design', (v) => txt(v)),
+      property_type: txt(c.property_type), property_category: null,
+      condition_uad: txt(c.condition_uad), condition_text: txt(c.condition_text),
+      quality_uad: txt(c.quality_uad), quality_text: txt(c.quality_text),
+      // A comparable is always described AS IT SOLD — there is no such thing as
+      // an after-repair comparable, so its ratings are always the as-is basis.
+      condition_basis: 'as_is',
+      view_rating: txt(c.view_rating), location_rating: txt(c.location_rating),
+      location_type: txt(c.location_type),
+      below_grade_sqft: c.below_grade_sqft, below_grade_finished_sqft: c.below_grade_finished_sqft,
+      basement_sqft: null, basement_finished_pct: null,
+      garage_type: fromAdjustments(c.adjustments, 'garage', (v) => txt(v)), garage_spaces: null,
+      price_per_gla: c.price_per_gla, gla_basis: txt(c.gla_basis) || 'gla', proximity: txt(c.proximity),
+      neighborhood: null, census_tract: null, flood_zone: null, fema_flood_zone: null, sfha: null,
+      zoning_id: null, zoning_desc: null,
+      occupancy_status: null, market_rent: null, unit_mix: null,
+      owner_of_record: null, property_rights: null,
+      hoa_fee_amount: null, hoa_fee_period: null, condo_floor: null,
+      effective_age: null, remaining_economic_life: null,
+      heating_type: null, heating_fuel: null, cooling: null, foundation_type: null,
+      attic: null, has_adu: null, lot_shape: null, lot_dimensions: null, listed_within_year: null,
+      latitude: c.latitude, longitude: c.longitude,
+      net_adjustment: c.net_adjustment, net_adj_pct: c.net_adj_pct, gross_adj_pct: c.gross_adj_pct,
+      adjustments: JSON.stringify(c.adjustments || []),
+      appraised_value: null, as_is_value: null, arv_value: null, contract_price: null,
+      contract_date: null,
+      facts: JSON.stringify({}),
+    });
+    compObs.push({ id: obs.id, property_id: pid, comp_seq: txt(c.seq) });
+    out.observations++;
+    out.sales += await recordSale(db, { propertyId: pid, date: c.sale_date, price: c.sale_price,
+      type: txt(c.sale_type), status: txt(c.sale_status) || 'closed', source: 'comp_sale',
+      appraisalId, importId, observationId: obs.id });
+    out.sales += await recordSale(db, { propertyId: pid, date: c.prior_sale_date, price: c.prior_sale_amount,
+      type: null, status: 'closed', source: 'comp_prior_sale', appraisalId, importId, observationId: obs.id });
+  }
+
+  // ---- photos, then the roll-ups ----------------------------------------
+  // ONLY A LOAN-FILE REPORT HAS PICTURES TO LINK. The photographs live in
+  // `appraisal_photos` as `documents` rows, which the appraisal desk creates by
+  // mining the report PDF into stored bytes. An upload straight into the research
+  // database stores no bytes, so there is nothing to attach — the facts land, the
+  // gallery does not, and the screen says so rather than pretending otherwise.
+  if (appraisalId) {
+    out.photos = await linkPhotos(db, appraisalId, { comps: compObs, subjectPropertyId: subjectId });
+  }
+
+  // ONE REPORT IS ONE REPORT, WHICHEVER DOOR IT CAME THROUGH. The same appraisal
+  // can arrive as an upload today and land on a loan file next month. Left alone
+  // that would put the report's whole comp grid into the warehouse TWICE —
+  // doubling every one of those properties' comp counts and letting one
+  // appraiser's single opinion out-vote the rest of the market in the roll-up.
+  // The loan-file copy always wins: it is the one with the photographs, the
+  // findings and a file behind it. (db/410)
+  if (appraisalId && subjectId) {
+    await retireDuplicateImports(db, { appraisalId, subjectId, observedOn, appraiserId, touched });
+  }
+
+  for (const pid of touched) await rollupProperty(db, pid);
+  await recountAppraiser(db, appraiserId);
+  return out;
+}
+
+/**
+ * A REPORT'S FINGERPRINT: this property, on this effective date, by this appraiser.
+ *
+ * Retire every UPLOADED copy of the report just written from a loan file — take its
+ * observations back out and mark its import row `skipped`, naming where the report
+ * actually lives now. Properties it touched are added to `touched` so the caller's
+ * roll-up pass sees them (a property the upload knew about and this report does not
+ * would otherwise keep the retired observation's numbers in its roll-up forever).
+ *
+ * Best-effort: a failure here costs a duplicate row, and must never fail the ingest.
+ */
+async function retireDuplicateImports(db, { appraisalId, subjectId, observedOn, appraiserId, touched }) {
+  try {
+    // A report with no effective date and no named appraiser has no fingerprint —
+    // matching on the address alone would retire a DIFFERENT report on the same
+    // house, which is exactly the kind of guess this warehouse does not make.
+    if (!observedOn && !appraiserId) return;
+    const dupes = (await db.query(
+      `SELECT DISTINCT import_id FROM property_observations
+        WHERE role = 'subject' AND import_id IS NOT NULL
+          AND property_id = $1
+          AND observed_on IS NOT DISTINCT FROM $2
+          AND appraiser_id IS NOT DISTINCT FROM $3`,
+      [subjectId, observedOn, appraiserId])).rows.map((r) => r.import_id);
+    for (const importId of dupes) {
+      const hit = (await db.query(
+        `SELECT DISTINCT property_id FROM property_observations WHERE import_id = $1`, [importId])).rows;
+      for (const r of hit) touched.add(r.property_id);
+      await db.query(`DELETE FROM property_observations WHERE import_id = $1`, [importId]);
+      await db.query(
+        `UPDATE research_imports
+            SET status = 'skipped', appraisal_id = COALESCE(appraisal_id, $2),
+                error = 'This same report was later imported onto a loan file, so the file''s copy is the one the database keeps.',
+                observations_written = 0, properties_written = 0, sales_written = 0, ran_at = now()
+          WHERE id = $1`,
+        [importId, appraisalId]);
+    }
+  } catch (_) { /* a duplicate is a cosmetic cost; never fail the ingest over it */ }
 }
 
 /**
@@ -727,10 +843,21 @@ function fromAdjustments(adjustments, kind, parse) {
 }
 
 /** The per-unit rent roll off a 1025/1007, or null when the report carried none. */
-async function subjectUnitMix(db, appraisalId) {
+async function subjectUnitMix(db, a) {
+  // An UPLOADED report (db/410) has no `appraisal_units` rows — it was never stored
+  // per-file — so it hands its parsed rent schedule along on the row shape itself.
+  // Without this a 1025 uploaded straight into the research database would lose its
+  // whole unit mix, which is one of the facts the warehouse exists to hold.
+  if (Array.isArray(a && a._units)) {
+    const rows = a._units.map((u) => ({
+      unit_seq: u.seq, rooms: u.rooms, beds: u.beds, baths: u.baths, sqft: u.sqft,
+      actual_rent: u.actualRent, market_rent: u.marketRent, lease_status: u.leaseStatus,
+    }));
+    return rows.length ? rows : null;
+  }
   const r = await db.query(
     `SELECT unit_seq, rooms, beds, baths, sqft, actual_rent, market_rent, lease_status
-       FROM appraisal_units WHERE appraisal_id = $1 ORDER BY unit_seq`, [appraisalId]);
+       FROM appraisal_units WHERE appraisal_id = $1 ORDER BY unit_seq`, [(a && a.id) || null]);
   return r.rows.length ? r.rows : null;
 }
 
@@ -738,9 +865,16 @@ async function subjectUnitMix(db, appraisalId) {
 async function subjectMarketRent(db, a) {
   const est = K.num(a.est_market_monthly_rent, { min: 1 });
   if (est != null) return est;
+  // Same reason as subjectUnitMix: an uploaded report carries its rent schedule in
+  // memory rather than in `appraisal_units`.
+  if (Array.isArray(a._units)) {
+    let sum = 0, n = 0;
+    for (const u of a._units) { const v = K.num(u.marketRent, { min: 1 }); if (v != null) { sum += v; n++; } }
+    return n > 0 && sum > 0 ? sum : null;
+  }
   const r = await db.query(
     `SELECT COALESCE(sum(market_rent),0)::numeric AS total, count(market_rent)::int AS n
-       FROM appraisal_units WHERE appraisal_id = $1`, [a.id]);
+       FROM appraisal_units WHERE appraisal_id = $1`, [a.id || null]);
   const total = K.num(r.rows[0].total, { min: 1 });
   return r.rows[0].n > 0 && total != null ? total : null;
 }
@@ -829,6 +963,9 @@ async function ingestStatus(db) {
 
 module.exports = {
   ingestAppraisal, backfill, ingestStatus, linkPhotos,
+  // The shared report-writing body — the standalone XML upload (db/410) drives it
+  // with the same row shapes, so both doors read one report identically.
+  writeReport,
   INGEST_VERSION,
   _internals: { upsertAppraiser, upsertProperty, upsertObservation, rollupProperty, recordSale,
     recountAppraiser, subjectFacts, bathsText, digits, fromAdjustments, uadView, retireAppraisal,
