@@ -589,38 +589,63 @@ function bathsOf(p) {
  */
 function scoreComp(subject, comp, { today = null } = {}) {
   const parts = [];
-  let score = 0, possible = 0;
-  const add = (weight, earned, label) => { possible += weight; score += earned; parts.push({ label, earned: round(earned, 0.1), weight }); };
+  let score = 0, possible = 0, total = 0;
+  // A FACT NOBODY STATED IS NOT A BAD MATCH. The score used to count an unknown at
+  // its FULL weight with ZERO earned, which is a penalty for our own missing data
+  // rather than a measure of similarity: a property next door, identical in every
+  // way, with no coordinates and no size on file could not exceed 45 out of 100 —
+  // and since a subject property was never geocoded at all (db/411), the largest
+  // single weight was contributing nothing but noise to every comparison.
+  //
+  // So an unknown is EXCLUDED from the denominator, and the share of the weight we
+  // could actually judge comes back as `coverage`. The two numbers say different
+  // things and both are needed: 90 out of 100 on two facts is a weaker statement
+  // than 78 on seven, and the screen can say so instead of the score pretending
+  // to a confidence it does not have.
+  const add = (weight, earned, label) => {
+    total += weight; possible += weight; score += earned;
+    parts.push({ label, earned: round(earned, 0.1), weight });
+  };
+  const unknown = (weight, label) => { total += weight; parts.push({ label, earned: null, weight: 0, unknown: true }); };
 
   const d = num(comp.distance_miles);
   if (d != null) add(25, 25 * Math.max(0, 1 - Math.min(d, 3) / 3), `${d.toFixed(2)} miles away`);
-  else if (subject && comp.city && subject.city && String(comp.city).toLowerCase() === String(subject.city).toLowerCase()) add(25, 15, 'same city');
-  else add(25, 0, 'distance unknown');
+  // Same town is a real, weaker signal — not an unknown. It is scored at a reduced
+  // weight so it can never outrank a measured distance.
+  else if (subject && comp.city && subject.city && String(comp.city).toLowerCase() === String(subject.city).toLowerCase()) add(15, 9, 'same town (not measured)');
+  else unknown(25, 'distance unknown');
 
   const age = today && comp.sale_date ? monthsBetween(today, comp.sale_date) : null;
   if (age != null) add(25, 25 * Math.max(0, 1 - Math.min(age, 24) / 24), `sold about ${Math.round(age)} months ago`);
-  else add(25, 0, 'sale date unknown');
+  else unknown(25, 'sale date unknown');
 
   const sg = num(subject && subject.gla), cg = num(comp.gla);
   if (sg && cg) {
     const off = Math.abs(cg - sg) / sg;
     add(20, 20 * Math.max(0, 1 - Math.min(off, 0.5) / 0.5), `${Math.round(cg)} sq ft vs ${Math.round(sg)}`);
-  } else add(20, 0, 'size unknown');
+  } else unknown(20, 'size unknown');
 
   const sb = num(subject && subject.beds), cb = num(comp.beds);
   if (sb != null && cb != null) add(10, sb === cb ? 10 : Math.max(0, 10 - Math.abs(sb - cb) * 5), `${cb} bed vs ${sb}`);
-  else add(10, 0, 'bedroom count unknown');
+  else unknown(10, 'bedroom count unknown');
 
   const sc = rankOf(CONDITION_SCALE, subject && subject.condition_uad);
   const cc = rankOf(CONDITION_SCALE, comp.condition_uad);
   if (sc != null && cc != null) add(10, Math.max(0, 10 - Math.abs(sc - cc) * 4), `condition ${comp.condition_uad} vs ${subject.condition_uad}`);
-  else add(10, 0, 'condition unknown');
+  else unknown(10, 'condition unknown');
 
   const st = subject && (subject.property_type || subject.property_category);
   if (st && comp.property_type) add(10, String(st).toLowerCase() === String(comp.property_type).toLowerCase() ? 10 : 0, `${comp.property_type} vs ${st}`);
-  else add(10, 5, 'property type unknown');
+  else unknown(10, 'property type unknown');
 
-  return { score: round((score / (possible || 1)) * 100, 0.1), parts };
+  // NOTHING KNOWN AT ALL IS NOT A PERFECT MATCH. With no facts to compare, the
+  // exclusion rule would divide zero by zero; a score of 0 with a coverage of 0 is
+  // the honest answer, and the caller can see both.
+  return {
+    score: possible > 0 ? round((score / possible) * 100, 0.1) : 0,
+    coverage: total > 0 ? round((possible / total) * 100, 1) : 0,
+    parts,
+  };
 }
 
 /**

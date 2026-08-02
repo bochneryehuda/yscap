@@ -204,6 +204,32 @@ function buildQuery(input = {}) {
   if (f.has_sale === true || f.has_sale === 'true' || f.has_sale === '1') where.push('p.last_sale_price IS NOT NULL AND p.last_sale_date IS NOT NULL');
   if (f.has_photos === true || f.has_photos === 'true' || f.has_photos === '1') where.push('p.photo_count > 0');
 
+  // ---- the facts the reports have always stated (db/413) -------------------
+  // Each is a plain equality on a rolled-up column with a partial index behind it.
+  // They are all THREE-STATE, and that is the point: `sfha=1` means the reports say
+  // it IS in a flood zone, `sfha=0` means they say it is NOT, and asking for neither
+  // returns both plus every property no report has ever said either way. A missing
+  // fact must never be answered as a "no" — the warehouse's whole discipline.
+  const yesNo = (v) => (v === true || v === 'true' || v === '1' ? true
+    : (v === false || v === 'false' || v === '0' ? false : null));
+  const sfha = yesNo(f.sfha);
+  if (sfha !== null) where.push(`p.sfha IS ${sfha ? 'TRUE' : 'FALSE'}`);
+  const adu = yesNo(f.has_adu);
+  if (adu !== null) where.push(`p.has_adu IS ${adu ? 'TRUE' : 'FALSE'}`);
+  const attic = yesNo(f.attic);
+  if (attic !== null) where.push(`p.attic IS ${attic ? 'TRUE' : 'FALSE'}`);
+  const rights = list(f.property_rights);
+  if (rights) where.push(`p.property_rights = ANY(${P(rights)})`);
+  const occ = list(f.occupancy_status);
+  if (occ) where.push(`p.occupancy_status = ANY(${P(occ)})`);
+  // "It has a rent roll" — the fact that makes a 2-4 comparable actually usable.
+  if (f.has_unit_mix === true || f.has_unit_mix === 'true' || f.has_unit_mix === '1') {
+    where.push(`p.unit_mix IS NOT NULL AND jsonb_array_length(p.unit_mix) > 0`);
+  }
+  const rentMin = num(f.market_rent_min), rentMax = num(f.market_rent_max);
+  if (rentMin != null) where.push(`p.market_rent >= ${P(rentMin)}`);
+  if (rentMax != null) where.push(`p.market_rent <= ${P(rentMax)}`);
+
   // ---- how WE know it -----------------------------------------------------
   const role = str(f.role);
   if (role === 'subject') where.push('p.subject_count > 0');
@@ -297,6 +323,8 @@ const LIST_COLUMNS = `p.id, p.display_address, p.street, p.unit, p.city, p.state
   p.lot_area, p.lot_sqft,
   p.condition_uad, p.condition_text, p.condition_rank, p.quality_uad, p.quality_text, p.quality_rank,
   p.view_rating, p.location_rating,
+  p.sfha, p.fema_flood_zone, p.flood_zone, p.property_rights, p.occupancy_status,
+  p.has_adu, p.attic, p.basement_finished_pct, p.lot_shape, p.market_rent, p.unit_mix,
   p.last_sale_price, p.last_sale_date, p.last_sale_type, p.last_sale_status, p.last_list_price,
   p.sale_count, p.subject_count, p.comp_count, p.arv_comp_count, p.asis_comp_count,
   p.observation_count, p.photo_count, p.first_observed_on, p.last_observed_on`;

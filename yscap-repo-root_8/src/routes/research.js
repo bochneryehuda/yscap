@@ -367,7 +367,10 @@ router.get('/comps', async (req, res, next) => {
     const page = await S.searchProperties(db, filters);
     const ranked = page.rows.map((c) => {
       const s = V.scoreComp(subject, c, { today });
-      return Object.assign({}, c, { match_score: s.score, match_reasons: s.parts });
+      // `coverage` travels WITH the score, always. They say different things — the
+      // score is how well it matches on what we know, the coverage is how much we
+      // knew — and a screen showing one without the other overstates its confidence.
+      return Object.assign({}, c, { match_score: s.score, match_coverage: s.coverage, match_reasons: s.parts });
     }).sort((a, b) => b.match_score - a.match_score);
     res.json({
       subject, rows: ranked, total: page.total, filters,

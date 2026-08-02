@@ -148,6 +148,15 @@ export default function NearbyComps({ propertyId, subjectAddress }) {
                       <b style={{ color: c.match_score >= 70 ? '#2F7F86' : c.match_score >= 45 ? GOLD : MUTED }}>
                         {Math.round(c.match_score)}
                       </b>
+                      {/* HOW MUCH OF THE MATCH WE COULD ACTUALLY JUDGE. 90 out of
+                          100 on two facts is a weaker statement than 78 on seven,
+                          and hiding that would let a barely-known property look
+                          like the best comparable on the list. */}
+                      {c.match_coverage != null && c.match_coverage < 100 && (
+                        <div style={{ color: MUTED, fontSize: 11 }}>
+                          on {Math.round(c.match_coverage)}% of the facts
+                        </div>
+                      )}
                     </td>
                   </tr>
                 ))}

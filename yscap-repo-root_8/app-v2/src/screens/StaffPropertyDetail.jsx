@@ -120,7 +120,22 @@ export default function StaffPropertyDetail() {
           <Fact k="Cooling" v={p.cooling} />
           <Fact k="Style" v={p.design_style} />
           <Fact k="Stories" v={p.stories} />
-          <Fact k="Flood zone" v={p.flood_zone} />
+          {/* db/413 — facts the reports have always stated. A flood determination
+              is THREE-STATE: "no" is an answer worth showing, and blank means no
+              report has said either way. */}
+          <Fact k="Flood zone" v={p.sfha === true
+            ? `${p.flood_zone || p.fema_flood_zone || 'yes'} — in a flood zone`
+            : (p.sfha === false ? `${p.flood_zone || p.fema_flood_zone || 'X'} — not in a flood zone` : p.flood_zone)} />
+          <Fact k="Held as" v={p.property_rights} />
+          <Fact k="Occupancy" v={p.occupancy_status} />
+          <Fact k="Lot shape" v={p.lot_shape} />
+          <Fact k="Lot dimensions" v={p.lot_dimensions} />
+          <Fact k="Basement finished" v={p.basement_finished_pct == null ? null : `${Number(p.basement_finished_pct)}%`} />
+          <Fact k="Attic" v={p.attic === true ? 'Yes' : (p.attic === false ? 'No' : null)} />
+          <Fact k="Extra dwelling unit" v={p.has_adu === true ? 'Yes' : (p.has_adu === false ? 'No' : null)} />
+          <Fact k="Heating fuel" v={p.heating_fuel} />
+          <Fact k="Remaining life" v={p.remaining_economic_life ? `${p.remaining_economic_life} years` : null} />
+          <Fact k="Floor" v={p.condo_floor} />
           <Fact k="Zoning" v={p.zoning_id || p.zoning_desc} />
           <Fact k="Market rent" v={p.market_rent ? money(p.market_rent) + ' / month' : null} />
           <Fact k="Owner of record" v={p.owner_of_record} />

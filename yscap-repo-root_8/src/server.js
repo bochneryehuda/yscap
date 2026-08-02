@@ -634,6 +634,18 @@ if (require.main === module) {
           { limit: Number(process.env.RESEARCH_GEOCODE_BOOT || 120) })
           .then((r) => r && r.looked && console.log('[boot] research geocoding:', JSON.stringify(r)))
           .catch((e) => console.error('[boot] research geocoding failed:', e.message));
+        // PREVIOUS AND FUTURE for the warehouse's own roll-up (db/413). `properties`
+        // is derived from the observations, but the roll-up only runs when a report
+        // TOUCHES a property — so widening what rolls up (the facts the reports have
+        // always stated and the search could not reach) would leave every property
+        // already in the database behind, with a NULL in each new column and a
+        // filter that quietly returns almost nothing. This drains that through the
+        // ONE definition of the roll-up. Bounded, most-observed first, self-draining
+        // via `rollup_version`; a future fact is a column, a mapping and a bump.
+        require('./lib/research/ingest').rerollStaleProperties(require('./db'),
+          { limit: Number(process.env.RESEARCH_REROLL_BOOT || 500) })
+          .then((r) => r && r.rerolled && console.log('[boot] research roll-up refresh:', JSON.stringify(r)))
+          .catch((e) => console.error('[boot] research roll-up refresh failed:', e.message));
         // NOTE: the As-Is / ARV read is GOING FORWARD ONLY (owner-directed 2026-07-28) — a deliberate
         // exception to the previous-AND-future rule, because that sweep WRITES loan values and
         // re-reading the back book would rewrite numbers on files people have already worked, all at

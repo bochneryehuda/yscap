@@ -153,6 +153,63 @@ const propByAddress = async (street) => (await db.query(
       'and points at the property and the appraiser, so the screen can link straight to them');
 
     // =====================================================================
+    // 1b. THE FACTS THAT USED TO BE STORED AND UNSEARCHABLE (db/413)
+    // =====================================================================
+    // Every one of these was already read, validated and stored on the OBSERVATION
+    // and was invisible to the search, which queries `properties` alone.
+    ok(subj && subj.property_rights === 'FeeSimple' && subj.lot_shape === 'Rectangular'
+      && subj.lot_dimensions === '60 x 123',
+    'how the property is held, and the shape and size of its land, now roll up to where the search can see them');
+    ok(subj && subj.sfha === false && subj.flood_zone === 'X',
+      'and the flood determination — a REAL "no", not a missing value');
+
+    // THE SUBJECT'S VIEW WAS DROPPED ON EVERY SINGLE REPORT. A comparable's rating
+    // comes off a structured element spelling it out ("Neutral"); the subject's is
+    // the UAD coded triple "N;Res;" in a free-text comment, and the reader only
+    // accepted the spelled-out words — so it matched nothing, ever.
+    ok(subj && subj.view_rating === 'Neutral',
+      `the subject's UAD view code is decoded, not discarded (got ${subj && subj.view_rating})`);
+    const subjObs = (await db.query(
+      `SELECT facts FROM property_observations WHERE property_id = $1 AND role = 'subject' LIMIT 1`,
+      [subj.id])).rows[0];
+    ok(subjObs && subjObs.facts && subjObs.facts.view_rating === 'N;Res;',
+      'and the FACTORS behind it are kept in full — the code carries what the view is OF, not just how good it is');
+
+    // A flood-zone property, read the same way, must come back as a real yes.
+    const flood = await XI.importXml(D, {
+      // Its own comparables on purpose: reusing the first report's would legitimately
+      // raise their comp counts and break the "counted once" assertions below, which
+      // are about a RE-UPLOAD of one report, not about two different reports.
+      xml: base({ street: '3 Riverbank Rd', sfha: 'Y', floodZone: 'AE', viewCode: 'A;Comm;',
+        effectiveDate: '2026-05-20', signedDate: '2026-05-21',
+        comps: [
+          { seq: '1', address: '4 Riverbank Rd', city: TOWN, state: 'NJ', zip: '08854',
+            price: 380000, saleDate: '2026-04-02', gla: 1400, beds: 3, baths: '2.0',
+            condition: 'C4', quality: 'Q4', yearBuilt: 1965 },
+        ] }),
+      filename: 'flood.xml', uploadedBy: staff,
+    });
+    ok(flood.ok, 'a second report lands');
+    const floodProp = await propByAddress('3 Riverbank Rd');
+    ok(floodProp && floodProp.sfha === true && floodProp.flood_zone === 'AE',
+      'a property IN a flood zone is recorded as such, so "show me the flood-zone properties" is now a real question');
+    ok(floodProp && floodProp.view_rating === 'Adverse',
+      'and an adverse view decodes too');
+
+    // The three-state rule: asking for neither must return both, and a property
+    // nobody has said either way about must never be answered as a "no".
+    const S = require('../src/lib/research/search');
+    const yes = await S.searchProperties(db, { city: TOWN, sfha: '1', limit: 50 });
+    const no = await S.searchProperties(db, { city: TOWN, sfha: '0', limit: 50 });
+    ok(yes.rows.some((r) => r.street === '3 Riverbank Rd') && !yes.rows.some((r) => r.street === '26 S 10th St'),
+      'the flood-zone filter finds the flood-zone property and only it');
+    ok(no.rows.some((r) => r.street === '26 S 10th St') && !no.rows.some((r) => r.street === '3 Riverbank Rd'),
+      'and asking for NOT in a flood zone finds the other one');
+    const either = await S.searchProperties(db, { city: TOWN, limit: 50 });
+    ok(either.total > yes.total + no.total - 1 && either.total >= yes.total,
+      'while asking for neither returns everything, including the properties no report has said either way about');
+
+    // =====================================================================
     // 2. IT NEVER TOUCHES A LOAN FILE
     // =====================================================================
     const appraisalsAfter = (await db.query(

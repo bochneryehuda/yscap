@@ -75,7 +75,32 @@ const ROLLUP_FACTS = Object.freeze({
   effective_age: 'effective_age', heating_type: 'heating_type', cooling: 'cooling',
   foundation_type: 'foundation_type',
   latitude: 'latitude', longitude: 'longitude',
+  // db/413 — facts the reports have always stated and the search could not reach,
+  // because `search.js` queries `properties` and these lived only on the
+  // observation. No new parsing: these values were already read and validated.
+  basement_finished_pct: 'basement_finished_pct',
+  attic: 'attic', has_adu: 'has_adu',
+  heating_fuel: 'heating_fuel', remaining_economic_life: 'remaining_economic_life',
+  condo_floor: 'condo_floor',
+  lot_shape: 'lot_shape', lot_dimensions: 'lot_dimensions',
+  property_rights: 'property_rights', occupancy_status: 'occupancy_status',
+  fema_flood_zone: 'fema_flood_zone', sfha: 'sfha',
+  unit_mix: 'unit_mix',
 });
+
+/**
+ * WHAT THE ROLL-UP CURRENTLY KNOWS HOW TO WRITE.
+ *
+ * `properties` is derived, and `rollupProperty` only runs when a report touches a
+ * property — so widening ROLLUP_FACTS does nothing for the properties already in
+ * the database. Stamping the version on every roll-up turns "which rows are behind"
+ * into an indexed query, and `rerollStaleProperties` drains it over the following
+ * boots through the ONE definition of the roll-up that already exists.
+ *
+ * BUMP THIS whenever ROLLUP_FACTS (or the roll-up's rules) change. That is the
+ * entire migration story for a future fact: add the column, add the mapping, bump.
+ */
+const ROLLUP_VERSION = 2;
 
 /**
  * ROLL-UP COLUMNS THAT MUST IGNORE AN AFTER-REPAIR STATEMENT.
@@ -334,9 +359,10 @@ async function rollupProperty(db, propertyId) {
   const keys = Object.keys(all);
   await db.query(
     `UPDATE properties SET ${keys.map((k, i) => `${k} = $${i + 2}`).join(', ')},
-       apn = COALESCE(properties.apn, $${keys.length + 2}), updated_at = now()
+       apn = COALESCE(properties.apn, $${keys.length + 2}),
+       rollup_version = $${keys.length + 3}, updated_at = now()
      WHERE id = $1`,
-    [propertyId, ...keys.map((k) => all[k]), apn || null]);
+    [propertyId, ...keys.map((k) => all[k]), apn || null, ROLLUP_VERSION]);
 }
 
 // ---------------------------------------------------------------------------
@@ -808,7 +834,22 @@ async function retireAppraisal(db, appraisalId, out) {
 function uadView(v) {
   const s = txt(v);
   if (!s) return null;
-  return /^(beneficial|neutral|adverse)$/i.test(s) ? s[0].toUpperCase() + s.slice(1).toLowerCase() : null;
+  if (/^(beneficial|neutral|adverse)$/i.test(s)) return s[0].toUpperCase() + s.slice(1).toLowerCase();
+  // THE SUBJECT'S VIEW IS A UAD CODE, NOT A WORD — and refusing it dropped the
+  // subject's view on EVERY report. A comparable's rating comes off a structured
+  // element that spells it out ("Neutral"); the SUBJECT's comes off the site
+  // feature's free-text comment, which under UAD is the coded triple
+  // "N;Res;" / "B;Wtr;Wds" / "A;Comm;" — overall rating, then up to two view
+  // factors. The first token is the same rating, written as one letter.
+  //
+  // MATCHED STRICTLY, because the loose version is a real error: a report that
+  // writes the prose "Average" starts with an A and would be recorded as ADVERSE —
+  // the exact opposite of what it says. So the letter is only read as a code when
+  // the string is a code: a single letter alone, or a single letter followed by the
+  // semicolon the UAD triple always carries.
+  const m = /^([BNA])(?:\s*;|$)/i.exec(s);
+  if (!m) return null;
+  return { b: 'Beneficial', n: 'Neutral', a: 'Adverse' }[m[1].toLowerCase()];
 }
 
 /**
@@ -900,7 +941,12 @@ function subjectFacts(a) {
     'special_flood_hazard', 'fema_panel_id', 'physical_deficiency', 'adverse_site_conditions',
     'zoning_compliance', 'condo_project_name', 'condo_project_type', 'hoa_fee_amount', 'hoa_fee_period',
     'site_value', 'grm', 'value_sales_approach', 'value_cost_approach', 'value_income_approach',
-    'updated_last_15yr', 'owner_of_record', 'listed_within_year'];
+    'updated_last_15yr', 'owner_of_record', 'listed_within_year',
+    // The full UAD view string ("N;Res;Wds"). `view_rating` keeps only the overall
+    // rating, because that is the one the search compares across subjects and
+    // comparables; the FACTORS behind it ("Res" residential, "Wds" woods, "Wtr"
+    // water) are real information and are kept here rather than thrown away.
+    'view_rating'];
   const out = {};
   for (const k of keep) if (a[k] != null && a[k] !== '') out[k] = a[k];
   for (const k of ['utilities', 'updates', 'amenities']) if (a[k]) out[k] = a[k];
@@ -948,6 +994,40 @@ async function backfill(db, { limit = 500, force = false, onProgress = null } = 
 }
 
 /** How much of the corpus is folded in — for the admin panel and the boot log. */
+/**
+ * RE-ROLL THE PROPERTIES THAT PREDATE THE CURRENT ROLL-UP (db/413).
+ *
+ * `properties` is derived from the observations, but `rollupProperty` only runs
+ * when a report TOUCHES a property — so widening what rolls up leaves every
+ * property already in the database behind, with a NULL in each new column and a
+ * search filter that quietly returns almost nothing.
+ *
+ * This drains that, through the ONE definition of the roll-up rather than a SQL
+ * twin of it (the roll-up has to skip an after-repair condition rating, which is a
+ * judgement, not a COALESCE). Bounded per boot, most-observed properties first so
+ * the ones searches actually return are corrected first, and SELF-DRAINING: a
+ * re-rolled row is stamped with the current version and drops out of the queue.
+ * Never throws.
+ */
+async function rerollStaleProperties(db, { limit = 500 } = {}) {
+  const out = { rerolled: 0, remaining: 0, version: ROLLUP_VERSION, errors: 0 };
+  try {
+    const rows = (await db.query(
+      `SELECT id FROM properties
+        WHERE rollup_version < $2
+        ORDER BY observation_count DESC
+        LIMIT $1`, [Math.min(5000, Math.max(1, limit)), ROLLUP_VERSION])).rows;
+    for (const r of rows) {
+      try { await rollupProperty(db, r.id); out.rerolled++; } catch (_) { out.errors++; }
+    }
+    out.remaining = (await db.query(
+      `SELECT count(*)::int n FROM properties WHERE rollup_version < $1`, [ROLLUP_VERSION])).rows[0].n;
+  } catch (e) {
+    out.error = (e && e.message) || String(e);
+  }
+  return out;
+}
+
 async function ingestStatus(db) {
   const r = await db.query(
     `SELECT (SELECT count(*)::int FROM appraisals) AS appraisals,
@@ -962,12 +1042,12 @@ async function ingestStatus(db) {
 }
 
 module.exports = {
-  ingestAppraisal, backfill, ingestStatus, linkPhotos,
+  ingestAppraisal, backfill, ingestStatus, linkPhotos, rerollStaleProperties,
   // The shared report-writing body — the standalone XML upload (db/410) drives it
   // with the same row shapes, so both doors read one report identically.
   writeReport,
   INGEST_VERSION,
   _internals: { upsertAppraiser, upsertProperty, upsertObservation, rollupProperty, recordSale,
     recountAppraiser, subjectFacts, bathsText, digits, fromAdjustments, uadView, retireAppraisal,
-    ROLLUP_FACTS, AS_IS_ONLY },
+    ROLLUP_FACTS, AS_IS_ONLY, ROLLUP_VERSION },
 };

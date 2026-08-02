@@ -263,6 +263,36 @@ function corpus(n, f) {
   ok(close.score > far.score, 'a near, recent, same-sized, same-condition sale outranks a far, old, different one');
   ok(close.score <= 100 && far.score >= 0, 'the score stays inside 0–100');
   ok(close.parts.length && close.parts.every((p) => p.label), 'the score shows its working, line by line');
+
+  // A FACT NOBODY STATED IS NOT A BAD MATCH. The score used to count an unknown at
+  // its full weight with nothing earned, so our own missing data looked like a poor
+  // comparable — and since no subject property was ever geocoded, the distance
+  // weight (a quarter of the total) was dragging EVERY comparison down.
+  const perfect = V.scoreComp(subject, { gla: 1500, beds: 3, condition_uad: 'C3', sale_date: TODAY,
+    distance_miles: 0.05, property_type: 'SFR (1 unit)' }, { today: TODAY });
+  ok(perfect.score >= 95 && perfect.coverage === 100,
+    `a near-identical sale next door scores near 100 on full coverage (${perfect.score}/${perfect.coverage})`);
+
+  const sparse = V.scoreComp(subject, { beds: 3, sale_date: TODAY, city: subject.city }, { today: TODAY });
+  ok(sparse.score >= 80,
+    `A GOOD MATCH WE ONLY PARTLY KNOW STILL SCORES WELL (${sparse.score}) — it used to be capped near 45 by facts nobody had stated`);
+  ok(sparse.coverage < 100 && sparse.coverage > 0,
+    `and the coverage SAYS how much of it we could actually judge (${sparse.coverage}%) — the two numbers mean different things`);
+  ok(sparse.parts.some((p) => p.unknown === true && p.weight === 0),
+    'the unknowns are still listed, at zero weight, so nothing is hidden');
+
+  const blank = V.scoreComp(subject, {}, { today: TODAY });
+  ok(blank.score === 0 && blank.coverage === 0,
+    'KNOWING NOTHING IS NOT A PERFECT MATCH — with no facts to compare, the score is 0 and says its coverage is 0');
+
+  // The same-town fallback is a real but weaker signal, and must never outrank a
+  // measured distance.
+  const sameTown = V.scoreComp(subject, { gla: 1500, beds: 3, condition_uad: 'C3', sale_date: TODAY,
+    city: subject.city, property_type: 'SFR (1 unit)' }, { today: TODAY });
+  const measured = V.scoreComp(subject, { gla: 1500, beds: 3, condition_uad: 'C3', sale_date: TODAY,
+    distance_miles: 0.1, property_type: 'SFR (1 unit)' }, { today: TODAY });
+  ok(measured.score > sameTown.score,
+    'a MEASURED distance beats "same town", which is the weaker statement it is');
 }
 
 // ---- 7. the review thresholds are OURS, not a GSE rule -----------------------

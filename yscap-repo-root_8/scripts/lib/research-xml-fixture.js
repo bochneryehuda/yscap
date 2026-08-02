@@ -81,7 +81,8 @@ function appraisalXml(o = {}) {
 <VALUATION_RESPONSE MISMOVersionID="2.6">
   <REPORT AppraisalFormType="${esc(s.formType)}" AppraiserReportSignedDate="${esc(s.signedDate)}">
     <PROPERTY _StreetAddress="${esc(s.street)}" _City="${esc(s.city)}" _County="${esc(s.county)}"
-              _State="${esc(s.state)}" _PostalCode="${esc(s.zip)}">
+              _State="${esc(s.state)}" _PostalCode="${esc(s.zip)}"
+              _RightsType="${esc(s.propertyRights || 'FeeSimple')}">
       <_IDENTIFICATION AssessorsParcelIdentifier="${esc(s.apn)}" CensusTractIdentifier="0405.02"/>
       <STRUCTURE AttachmentType="Detached" LivingUnitCount="${esc(s.units)}"
                  PropertyStructureBuiltYear="${esc(s.yearBuilt)}"
@@ -90,7 +91,14 @@ function appraisalXml(o = {}) {
                  TotalRoomCount="${esc(s.rooms)}" StoriesCount="2"
                  _DesignDescription="${esc(s.design)}"/>
       <SITE _AreaDescription="${esc(s.lotArea)}" _ZoningClassificationIdentifier="R-1"
-            _ZoningClassificationDescription="Residential" _ZoningComplianceType="Legal"/>
+            _ZoningClassificationDescription="Residential" _ZoningComplianceType="Legal"
+            _DimensionsDescription="${esc(s.lotDimensions || '60 x 123')}">
+        <SITE_FEATURE _Type="View" _Comment="${esc(s.viewCode || 'N;Res;')}"/>
+        <SITE_FEATURE _Type="Shape" _Comment="${esc(s.lotShape || 'Rectangular')}"/>
+      </SITE>
+      <FLOOD_ZONE NFIPFloodZoneIdentifier="${esc(s.floodZone || 'X')}"
+                  SpecialFloodHazardAreaIndicator="${esc(s.sfha || 'N')}"
+                  NFIPMapIdentifier="34023C0123F"/>
     </PROPERTY>
     <NEIGHBORHOOD _Name="North Piscataway"/>
     <COMPARABLE_SALE PropertySequenceIdentifier="0">
