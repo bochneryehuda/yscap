@@ -3500,14 +3500,17 @@ details[open]>.appr-sec-sum .appr-sec-chev{transform:rotate(180deg)}
 
 /* ── WHO SEES IT — one stamp instead of four raw-database chips ────────
    Owner-directed 2026-07-28. Explicit dark text on white — never a --ink*
-   token, those are LIGHT in this palette. */
+   token, those are LIGHT in this palette.
+   Two looks only (owner 2026-08-02): teal "Internal + external" (stored
+   audience borrower AND both — same stamp on purpose) and grey "Internal
+   only". The old gold .aud-both stamp is gone with the three-way wording —
+   there is no external-only, so there is no third visibility to colour. */
 .aud{display:inline-flex;align-items:center;gap:5px;flex:none;
   padding:2px 9px;border-radius:999px;font-size:11px;font-weight:700;
   letter-spacing:.03em;white-space:nowrap;border:1px solid}
 .aud::before{content:'';width:5px;height:5px;border-radius:50%;background:currentColor}
 .aud-internal{color:#4B585C;border-color:rgba(75,88,92,.35);background:#F4F1EA}
 .aud-external{color:#256168;border-color:rgba(47,127,134,.45);background:rgba(47,127,134,.09)}
-.aud-both{color:#8A6D3B;border-color:rgba(174,135,70,.5);background:rgba(174,135,70,.10)}
 
 /* ── THE COMPACT CONDITION LINE ──────────────────────────────────
    Owner-directed 2026-07-28: "one compact line each, click to open the one
