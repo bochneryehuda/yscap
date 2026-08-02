@@ -47,7 +47,7 @@ const EDGE_CLAIM_CODE = {
  * @param {{entityChain?:object, sellerChain?:object}} chains
  * @returns {Promise<{recorded:number, deduped:number, failed:number}>}
  */
-async function syncChainsToSuggestions(client, appId, { entityChain, sellerChain, chainOfTitle } = {}) {
+async function syncChainsToSuggestions(client, appId, { entityChain, sellerChain, chainOfTitle, assignmentChain } = {}) {
   const suggestions = [];
 
   // 1. Broken entity-chain edges — each becomes a "chain break" suggestion.
@@ -141,6 +141,34 @@ async function syncChainsToSuggestions(client, appId, { entityChain, sellerChain
         // cot_assignor_never_held_title on assignment 1 and assignment 2) don't collapse into one
         // suggestion — mirrors the entity-chain key above.
         dedupeKey: `chain_of_title:${f.code}:${(f.field || '')}:${(f.docValue || '').toString().slice(0, 40)}`,
+      });
+    }
+  }
+
+  // 5. Assignment / wholesale chain findings — the two legs of paper on a flip (the seller's
+  // contract and the assignment), the three bodies that sign them, and the dollars closing across
+  // both legs and the loan file. Advisory; a human converts to a condition / requests a document.
+  if (assignmentChain && Array.isArray(assignmentChain.findings)) {
+    for (const f of assignmentChain.findings) {
+      if (!f || !f.code) continue;
+      suggestions.push({
+        applicationId: appId,
+        source: 'entity_chain', kind: 'finding',
+        title: f.title || `Assignment chain finding: ${f.code}`,
+        body: f.howTo || null,
+        severity: f.severity || 'warning',
+        evidence: {
+          code: f.code, field: f.field, docValue: f.docValue, fileValue: f.fileValue,
+          source: f.source, subFrom: 'assignment_chain',
+        },
+        proposedAction: {
+          type: 'create_finding',
+          fields: { code: f.code, severity: f.severity, title: f.title, howTo: f.howTo, source: 'assignment_chain',
+                    opensCondition: f.opens_condition || f.opensCondition || null },
+        },
+        // docValue is part of the key so two distinct breaks sharing a code+field (a second flip
+        // contract, a second amount) don't collapse into one suggestion — same rule as above.
+        dedupeKey: `assignment_chain:${f.code}:${(f.field || '')}:${(f.docValue || '').toString().slice(0, 40)}`,
       });
     }
   }

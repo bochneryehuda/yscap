@@ -118,13 +118,17 @@ function moneyColumn(v) {
 
 // Assignment-purchase normalization (#96) — ONE definition used by EVERY create
 // path (staff new-file, borrower application draft-submit, borrower direct
-// create) so is_assignment / underlying_contract_price / assignment_fee /
-// purchase_price can never drift between surfaces. The ticked flag is the truth:
-// underlying + fee are hard-nulled unless the file is an assignment, and the
-// stored purchase price is the underlying + the (client-derived) fee so
-// leverage/pricing size off seller price + fee and the row is self-consistent
-// regardless of what a stale or hand-rolled client sends. Returns the exact
-// bind values the INSERTs use.
+// create, public intake, MISMO import) so is_assignment /
+// underlying_contract_price / assignment_fee / purchase_price can never drift
+// between surfaces. The ticked flag is the truth: underlying + fee are
+// hard-nulled unless the file is an assignment, and the stored purchase price is
+// the underlying + the (client-derived) fee so leverage/pricing size off seller
+// price + fee and the row is self-consistent regardless of what a stale or
+// hand-rolled client sends. Returns the exact bind values the INSERTs use.
+//
+// THE LOAN PURPOSE GOVERNS ALL THREE (extended 2026-08-02): a refinance is not a
+// purchase, so it carries no assignment AND no purchase price. Pass `loanType`
+// from every caller — omitting it reads as a purchase.
 function assignmentFields(b) {
   b = b || {};
   // An assignment of contract is a PURCHASE concept. On a refinance it can never
@@ -144,9 +148,21 @@ function assignmentFields(b) {
      the borrower typed and has always stored 0.00 (re-audit, 2026-07-31). */
   const underlying = isAssignment ? moneyColumn(b.underlyingContractPrice) : null;
   const assignFee = isAssignment ? moneyColumn(b.assignmentFee) : null;
-  const purchasePrice = isAssignment
-    ? ((moneyValue(b.underlyingContractPrice) || 0) + (moneyValue(b.assignmentFee) || 0))
-    : moneyColumn(b.purchasePrice);
+  /* A REFINANCE HAS NO PURCHASE PRICE — the same rule, and the same reason, as
+     the assignment flag one line up (owner-directed 2026-08-02: "instead of
+     asking for the purchase price just ask him right away for the as is value
+     because that's what it counts for, it doesn't count for the purchase price").
+     A refinancing borrower is not buying anything; the loan is sized on the as-is
+     value, and what they paid when they BOUGHT the property is a different field
+     (`original_purchase_price`) with a different meaning. Left to the client, a
+     price typed before the purpose was switched — or carried by a stale draft —
+     stayed on the row and turned a refinance into the purchase-style file the
+     owner reported. Forced null HERE, at the one create chokepoint every door
+     shares, so no surface can reintroduce it. */
+  const purchasePrice = isRefi ? null
+    : (isAssignment
+      ? ((moneyValue(b.underlyingContractPrice) || 0) + (moneyValue(b.assignmentFee) || 0))
+      : moneyColumn(b.purchasePrice));
   return { isAssignment, underlying, assignFee, purchasePrice };
 }
 

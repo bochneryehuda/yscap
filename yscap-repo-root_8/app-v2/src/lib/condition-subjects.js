@@ -55,13 +55,17 @@ const SUBJECT_ORDER = Object.fromEntries(SUBJECTS.map((s, i) => [s.key, i]));
    migrations is listed, so a standard file never falls through to a guess.
    When a new condition template is added, add its code here too. */
 export const CODE_SUBJECT = {
-  // who the borrower is — the photo ID, and (db/398, CorrFirst) the Social
+  // who the borrower is — the photo ID, and (db/400, CorrFirst) the Social
   // Security number verified off the card / an SSA-89 / the credit report.
   gov_id: 'identity', rtl_p1_id: 'identity', cond_ssn_verify_corrfirst: 'identity',
   // the borrowing entity
   rtl_llc_formation: 'entity', rtl_llc_ein: 'entity', rtl_llc_opagmt: 'entity',
   rtl_llc_goodstanding: 'entity', llc_docs: 'entity', operating_agmt: 'entity',
   rtl_p1_llc: 'entity', draw_cond_operating_agreement: 'entity',
+  // db/400 — the documents for an OUTSIDE entity whose bank funds the borrower is using. It is
+  // raised by the assets review, but what it asks for is a company's formation papers, so it reads
+  // with the other entity documents, which is where anyone looking for them would look.
+  rtl_cond_entity_docs: 'entity',
   // what they are buying
   purchase_contract: 'contract', rtl_p1_contract: 'contract', rtl_p5_assign: 'contract',
   // what we are lending against

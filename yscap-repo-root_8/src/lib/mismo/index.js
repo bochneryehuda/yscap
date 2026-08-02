@@ -282,6 +282,11 @@ async function createFromParsed(parsed, opts = {}) {
     // is_assignment / underlying / fee / purchase_price stay self-consistent,
     // exactly like every other create path.
     const asg = fields.assignmentFields({
+      // The loan purpose decides BOTH invariants the helper enforces: an
+      // assignment is a purchase concept, and a refinance carries no purchase
+      // price at all (it is sized on the as-is value). Passed through the same
+      // sanitizer the INSERT below uses so both read the identical value.
+      loanType: fields.sanitizeLoanType(loan.loanType),
       isAssignment: !!extras.isAssignment,
       underlyingContractPrice: extras.underlyingContractPrice,
       assignmentFee: extras.assignmentFee,

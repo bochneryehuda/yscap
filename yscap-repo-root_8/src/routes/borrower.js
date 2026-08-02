@@ -962,6 +962,15 @@ router.post('/applications/:id/pricing/register', async (req, res) => {
     // may keep them; the registered basis uses the file's experience of record.
     delete overrides.expFlips; delete overrides.expHolds; delete overrides.expGround;
     const inputs = pricing.buildInputs(f.app, f.exp, overrides);
+    /* A refinance is sized on the as-is value, so with none on file there is no
+       denominator and nothing to register (owner-directed 2026-08-02). Same
+       refusal as the staff door — the studio blocks it client-side, this stops a
+       stale or hand-rolled payload getting past that. */
+    if (inputs.asIsMissing) {
+      return res.status(400).json({
+        error: 'A refinance is sized on the as-is value — enter what the property is worth today before registering.',
+        field: 'asIsValue' });
+    }
     // Term-sheet options (owner-directed 2026-07-22) — display/record only. A
     // borrower self-registers Standard/Gold/Silver only (never manual), so
     // min-interest defaults OFF here unless explicitly set.
@@ -2098,9 +2107,18 @@ router.post('/applications/:id/complete-fields', async (req, res) => {
       }
     }
     const requested = [];
+    /* A refinance has no purchase price — it is sized on the as-is value
+       (owner-directed 2026-08-02). Same rule as the staff completeness door and
+       PATCH /details; the pill is already gone from the borrower's panel on a
+       refinance, so this only catches a stale tab or a direct call. */
+    const purposeRow = (await db.query(
+      `SELECT loan_type FROM applications WHERE id=$1`, [req.params.id])).rows[0] || {};
+    const refiNow = require('../lib/deal-basis').sizesOnAsIsValue(
+      ('loan_type' in b && b.loan_type) ? b.loan_type : purposeRow.loan_type);
     const appVals = [req.params.id], appSets = [], appKeys = [];
     for (const [k, t] of Object.entries(B_COMPLETE_APP)) {
       if (!(k in b) || b[k] === '' || b[k] == null) continue;
+      if (k === 'purchase_price' && refiNow) continue;
       let v = b[k];
       if (t === 'money') {
         const s = String(v).replace(/[^0-9.]/g, ''); if (s === '') continue;
@@ -3641,8 +3659,15 @@ router.post('/drafts/:id/submit', async (req, res) => {
 
   // Assignment invariant (mirrors the staff create via the shared helper, #96):
   // hard-null underlying/fee off an assignment and store purchase = underlying +
-  // (derived) fee, so the submitted file is internally consistent.
+  // (derived) fee, so the submitted file is internally consistent. The same
+  // helper now also hard-nulls the purchase price on a REFINANCE — it is sized on
+  // the as-is value (owner-directed 2026-08-02).
   const asg = require('../lib/fields').assignmentFields(b);
+  // The mirror image of that rule for the refinance-only economics below: keep
+  // them on a refinance, drop them on a purchase. Read from the ONE shared
+  // predicate so this door and the pricing engine agree on what a refinance is.
+  const isRefiSubmit = require('../lib/deal-basis').sizesOnAsIsValue(b.loanType);
+  const refiEcon = (v) => (isRefiSubmit ? v : null);
   // sqft only applies to a square-footage / ground-up rehab — null it otherwise
   // so a stale value can't force the pricing sqftAddition flag.
   const sqf = require('../lib/fields').sqftForType(b.rehabType, intField(b.sqftPre) || null, intField(b.sqftPost) || null);
@@ -3666,8 +3691,15 @@ router.post('/drafts/:id/submit', async (req, res) => {
      intField(b.requestedExpFlips), intField(b.requestedExpHolds), intField(b.requestedExpGround),
      asg.isAssignment, asg.underlying, asg.assignFee, jsonbText(redactPII(b)),
      b.termMonths ? String(b.termMonths) : null, intField(b.irMonths),
-     intField(b.requestedExpReo), moneyField(b.payoffAmount), moneyField(b.originalPurchasePrice),
-     require('../lib/fields').normalizeTypedDate(b.acquisitionDate),   // typed '26' resolves to 2026; garbage never persists
+     /* THE REFINANCE ECONOMICS ARE REFINANCE-ONLY (owner-directed 2026-08-02).
+        The form only asks for them on a refinance, but a draft STARTED as one and
+        switched to a purchase keeps its old answers in the saved draft data — and
+        a purchase carrying a payoff, a prior acquisition date and "the original
+        purchase price" is exactly the mixed-up file this change exists to stop.
+        `refiEcon` is the same gate `fields.assignmentFields` applies to the
+        assignment fields, read from the one shared predicate. */
+     intField(b.requestedExpReo), refiEcon(moneyField(b.payoffAmount)), refiEcon(moneyField(b.originalPurchasePrice)),
+     refiEcon(require('../lib/fields').normalizeTypedDate(b.acquisitionDate)),   // typed '26' resolves to 2026; garbage never persists
      /* ORDER MATTERS AND IT BIT US (audit-found 2026-07-31). These three values
         must sit in the SAME order as the columns above — payoff_lender,
         payoff_loan_number, requested_ir_amount. The first cut inserted the two
@@ -3683,7 +3715,7 @@ router.post('/drafts/:id/submit', async (req, res) => {
         real application and reads every one of these columns back. */
      // WHO holds the loan being paid off and WHICH loan (db/386). Free text,
      // trimmed to null so a blank box never stores an empty string.
-     textField(b.payoffLender, 'payoff_lender'), textField(b.payoffLoanNumber, 'payoff_loan_number'),
+     refiEcon(textField(b.payoffLender, 'payoff_lender')), refiEcon(textField(b.payoffLoanNumber, 'payoff_loan_number')),
      moneyField(b.irAmount)]);
   const appId = ins.rows[0].id;
   // If the borrower linked an LLC, ensure its document requirements exist.
@@ -3761,7 +3793,10 @@ function normLoanType(text) {
 }
 
 // Insert a checklist_items row from a template row, carrying workflow columns.
-async function insertFromTemplate(tpl, owner) {
+// `client` is optional and defaults to the pool — a caller inside a transaction
+// (the entity-adoption path) passes its own so the dedupe check and the insert
+// both run on the connection that holds the open transaction.
+async function insertFromTemplate(tpl, owner, client = db) {
   // Idempotency: never create a second copy of the same template for the same
   // owner (application / borrower_profile / llc). This lets generateChecklist run
   // repeatedly — a ClickUp re-ingest, a self-serve re-sync, or the RTL backfill —
@@ -3769,7 +3804,7 @@ async function insertFromTemplate(tpl, owner) {
   // brand-new file there are no items yet, so the create path is unchanged.
   const [ownerCol, ownerVal] = Object.entries(owner)[0] || [];
   if (ownerCol && ownerVal != null) {
-    const existing = await db.query(
+    const existing = await client.query(
       `SELECT 1 FROM checklist_items WHERE template_id=$1 AND ${ownerCol}=$2 LIMIT 1`, [tpl.id, ownerVal]);
     if (existing.rows[0]) return;
   }
@@ -3783,7 +3818,7 @@ async function insertFromTemplate(tpl, owner) {
                 tpl.is_required !== false];
   for (const [k, v] of Object.entries(owner)) { cols.push(k); vals.push(v); }
   const ph = vals.map((_, i) => `$${i + 1}`).join(',');
-  await db.query(`INSERT INTO checklist_items (${cols.join(',')}) VALUES (${ph})`, vals);
+  await client.query(`INSERT INTO checklist_items (${cols.join(',')}) VALUES (${ph})`, vals);
 }
 
 async function generateChecklist(appId, borrowerId, program, loanType, opts = {}) {
@@ -3847,13 +3882,14 @@ async function generateChecklist(appId, borrowerId, program, loanType, opts = {}
 
 // Materialize the LLC document requirements (EIN letter, formation docs,
 // operating agreement) against an LLC. Idempotent per (llc_id, template).
-async function generateLlcChecklist(llcId) {
-  const t = await db.query(
+// `client` is optional and defaults to the pool (see insertFromTemplate).
+async function generateLlcChecklist(llcId, client = db) {
+  const t = await client.query(
     `SELECT * FROM checklist_templates WHERE is_active=true AND scope='llc' ORDER BY sort_order`);
   for (const tpl of t.rows) {
-    const dup = await db.query(`SELECT 1 FROM checklist_items WHERE llc_id=$1 AND template_id=$2`, [llcId, tpl.id]);
+    const dup = await client.query(`SELECT 1 FROM checklist_items WHERE llc_id=$1 AND template_id=$2`, [llcId, tpl.id]);
     if (dup.rows[0]) continue;
-    await insertFromTemplate(tpl, { llc_id: llcId });
+    await insertFromTemplate(tpl, { llc_id: llcId }, client);
   }
 }
 

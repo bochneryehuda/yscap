@@ -1293,20 +1293,43 @@ router.post('/applications', async (req, res) => {
     // so a stale value can't force the pricing sqftAddition flag.
     const sqf = require('../lib/fields').sqftForType(b.rehabType, intField(b.sqftPre) || null, intField(b.sqftPost) || null);
 
+    /* THE REFINANCE ECONOMICS TRAVEL WITH THE FILE FROM THE MOMENT IT IS CREATED
+       (owner-directed 2026-08-02). The staff new-file form asks a refinance for
+       the payoff, the ORIGINAL purchase price and the date acquired — the
+       seasoning inputs — and every one of them used to be dropped on the floor
+       here, so an officer typed them and the file came back blank. Refinance-only
+       by the same rule the borrower draft-submit door uses: on a purchase there is
+       nothing to pay off and no prior acquisition, and carrying a stale value
+       would be worse than carrying none. `normalizeTypedDate` is what makes a
+       typed "26" resolve to 2026 rather than year 0026 (the 2026-07-15 date rule);
+       the text columns go through the one per-COLUMN cap in lib/fields. */
+    const F_ = require('../lib/fields');
+    const isRefiCreate = require('../lib/deal-basis').sizesOnAsIsValue(b.loanType);
+    const refiCols = isRefiCreate ? {
+      payoff: money(b.payoffAmount),
+      origPrice: money(b.originalPurchasePrice),
+      acqDate: F_.normalizeTypedDate(b.acquisitionDate),
+      payoffLender: F_.textColumn(b.payoffLender, 'payoff_lender'),
+      payoffLoanNumber: F_.textColumn(b.payoffLoanNumber, 'payoff_loan_number'),
+    } : { payoff: null, origPrice: null, acqDate: null, payoffLender: null, payoffLoanNumber: null };
     const ins = await db.query(
       `INSERT INTO applications
          (borrower_id,property_address,property_type,units,program,loan_type,
           purchase_price,as_is_value,arv,rehab_budget,loan_officer_id,loan_officer_name,
           rehab_type,sqft_pre,sqft_post,requested_exp_flips,requested_exp_holds,requested_exp_ground,
-          processor_id,is_assignment,underlying_contract_price,assignment_fee,requested_exp_reo,source,status,submitted_at)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,'staff','new',now())
+          processor_id,is_assignment,underlying_contract_price,assignment_fee,requested_exp_reo,
+          payoff_amount,original_purchase_price,acquisition_date,payoff_lender,payoff_loan_number,
+          source,status,submitted_at)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,
+               $24,$25,$26,$27,$28,'staff','new',now())
        RETURNING id,ys_loan_number`,
       [borrowerId, addr ? jsonbText(addr) : null, b.propertyType || null, b.units || null,
        b.program || null, require('../lib/fields').sanitizeLoanType(b.loanType), purchasePrice, money(b.asIsValue),   // #95: never a program
        money(b.arv), money(b.rehabBudget), officerId, officerName,
        b.rehabType || null, sqf.sqftPre, sqf.sqftPost,
        intField(b.requestedExpFlips), intField(b.requestedExpHolds), intField(b.requestedExpGround),
-       processorId, isAssignment, underlying, assignFee, intField(b.requestedExpReo)]);   // #97: General REO slot
+       processorId, isAssignment, underlying, assignFee, intField(b.requestedExpReo),   // #97: General REO slot
+       refiCols.payoff, refiCols.origPrice, refiCols.acqDate, refiCols.payoffLender, refiCols.payoffLoanNumber]);
     const appId = ins.rows[0].id;
 
     try { await require('../lib/conditions/ensure').ensureFileConditions(appId, { reason: 'staff_create' }); }
@@ -2374,6 +2397,19 @@ router.post('/applications/:id/pricing/register', async (req, res) => {
       }
     }
     const inputs = pricing.buildInputs(f.app, f.exp, overrides);
+    /* A REFINANCE CANNOT BE SIZED WITHOUT AN AS-IS VALUE (owner-directed
+       2026-08-02). It is the denominator the frozen engine uses for the initial
+       advance and the cost basis, so with no value there is nothing to size
+       against — the loan would come back as the rehab holdback alone and read as
+       a real quote. The Term Sheet Studio already refuses this client-side
+       (`missingFields`); refusing here too means a hand-rolled or stale payload
+       cannot get past it either. Refused BEFORE any work is done, like the
+       cash-out refusal below, so it can never leave a register half-done. */
+    if (inputs.asIsMissing) {
+      return res.status(400).json({
+        error: 'A refinance is sized on the as-is value — enter what the property is worth today before registering.',
+        field: 'asIsValue' });
+    }
     // Term-sheet options (owner-directed 2026-07-22) — DISPLAY / record only, never
     // engine math. The min-interest default follows the resolved program (manual
     // ON, Standard/Gold OFF) unless the admin explicitly set it; the key dates are
@@ -3265,6 +3301,14 @@ router.post('/applications/:id/pricing/accept-counter', async (req, res) => {
     }
 
     const inputs = pricing.buildInputs(f.app, f.exp, overrides);
+    /* Same refusal as the register door: a refinance with no as-is value has no
+       denominator to size against, and `forcePrice` below would otherwise turn
+       that into a confident-looking quote rather than an INELIGIBLE one. */
+    if (inputs.asIsMissing) {
+      return res.status(400).json({
+        error: 'A refinance is sized on the as-is value — enter what the property is worth today before accepting these terms.',
+        field: 'asIsValue' });
+    }
     inputs.forcePrice = true;
     const requestedProgram = (esc.summary && esc.summary.program) === 'gold' ? 'gold' : (esc.summary && esc.summary.program) === 'silver' ? 'silver' : 'standard';
     const program = manualProgram.resolveProgram(requestedProgram, overrides);
@@ -9086,6 +9130,56 @@ router.patch('/applications/:id/details', async (req, res) => {
   if ('rehabType' in b && !require('../lib/fields').sqftRelevantType(b.rehabType)) {
     b.sqftPre = null; b.sqftPost = null;
   }
+  /* A REFINANCE CARRIES NO PURCHASE PRICE (owner-directed 2026-08-02). It is
+     sized on the AS-IS VALUE — the frozen engine's own denominator — and what the
+     borrower paid when they BOUGHT the property is `original_purchase_price`, a
+     different field with a different meaning. Enforced HERE, at the door, rather
+     than trusted to the form, because that is the only way a stale tab, a
+     switched dropdown or a direct API call cannot leave the file in the mixed-up
+     state the owner reported ("structured as a cash-out refinance, but it has
+     purchase-style economics with a purchase price … while both original purchase
+     price and payoff are missing").
+
+     The EFFECTIVE purpose is the one being saved when the dropdown is part of
+     this request, else the file's current one — so switching Purchase→Refinance
+     in the same save that carries a price still clears the price. The clear is
+     written EXPLICITLY (the key is added to the body) rather than merely dropped,
+     so the stale value is actually removed and the change is recorded in the
+     field-level audit diff like any other edit. The mirror of `assignmentFields`,
+     which has cleared the assignment side this way since #96.
+
+     DELIBERATELY ONE-SIDED. The first cut also nulled the refinance-only columns
+     on a PURCHASE, and that broke the payoff-contact carve-out
+     (`payoffContactLockReason`): a request naming ONLY who is paid off and their
+     loan number — the one edit allowed through a sent term sheet, and the whole
+     reason that carve-out exists — had both values silently nulled on the way to
+     the UPDATE, so it answered 200 and wrote nothing. Caught by
+     `test-termsheet-freeze.js`. The purchase side needs no server rule anyway:
+     `EditFileDetails` already clears the payoff trio when the purpose is switched
+     (it sends explicit blanks, which this door has always honoured), and a
+     payoff contact recorded on a file is a human's deliberate act — never
+     something to wipe because of a dropdown. */
+  {
+    const curRow = (await db.query(
+      `SELECT loan_type, purchase_price FROM applications WHERE id=$1`, [req.params.id])).rows[0] || {};
+    const purpose = ('loanType' in b) ? b.loanType : curRow.loan_type;
+    if (require('../lib/deal-basis').sizesOnAsIsValue(purpose)) {
+      /* ONLY WHAT THE REQUEST ITSELF TOUCHED. Clearing whenever the file merely
+         HOLDS a stale price would (a) touch the column on saves that changed
+         nothing, tripping db/072's pricing reopen, and (b) drag an otherwise
+         payoff-contact-only request out of its freeze carve-out — writing an
+         economics column on a term-sheet-frozen file. Neither is needed: db/399
+         clears the whole back book at boot, and every other door that could
+         introduce one (the create paths, the completeness panels, the
+         info-condition writer, the ClickUp pull) refuses it too. So the rule
+         here is simply that a purchase price can never be WRITTEN onto a
+         refinance. */
+      if ('purchasePrice' in b) b.purchasePrice = null;
+      // An assignment of contract is a purchase concept — the same rule
+      // fields.assignmentFields applies on every create path.
+      if (b.isAssignment) { b.isAssignment = false; b.underlyingContractPrice = null; b.assignmentFee = null; }
+    }
+  }
   const NUM = { units: 'units', purchasePrice: 'purchase_price', asIsValue: 'as_is_value',
     arv: 'arv', rehabBudget: 'rehab_budget', sqftPre: 'sqft_pre', sqftPost: 'sqft_post',
     requestedExpFlips: 'requested_exp_flips', requestedExpHolds: 'requested_exp_holds', requestedExpGround: 'requested_exp_ground',
@@ -9690,8 +9784,19 @@ async function completeFields(req, res, borrowerScoped) {
     const ptProblem = require('../lib/property-type').propertyTypeProblem(b.property_type);
     if (ptProblem) return res.status(400).json({ error: ptProblem });
     const appVals = [req.params.id]; const appSets = []; const appKeys = [];
+    /* A REFINANCE HAS NO PURCHASE PRICE (owner-directed 2026-08-02). This panel
+       is a second write path into the same economics columns as PATCH /details,
+       so it needs the same rule — otherwise the pill would happily put a purchase
+       price back on a refinance the details door had just cleared. The pill is
+       gone from the panel on a refinance (the completeness list is purpose-aware
+       now), so this only ever catches a stale tab or a direct call. */
+    const purposeRow = (await db.query(
+      `SELECT loan_type FROM applications WHERE id=$1`, [req.params.id])).rows[0] || {};
+    const purposeNow = ('loan_type' in b && b.loan_type) ? b.loan_type : purposeRow.loan_type;
+    const refiNow = require('../lib/deal-basis').sizesOnAsIsValue(purposeNow);
     for (const [k, t] of Object.entries(COMPLETE_APP_FIELDS)) {
       if (!(k in b) || b[k] === '' || b[k] == null) continue;
+      if (k === 'purchase_price' && refiNow) continue;
       let v = b[k];
       if (t === 'money') {
         const s = String(v).replace(/[^0-9.]/g, ''); if (s === '') continue;

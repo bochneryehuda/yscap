@@ -1911,6 +1911,24 @@ async function linkOrCreateApplication(task, read, borrowerId, llcId, ctx = {}) 
         .applyInboundPortalEditGuard({ appId: targetId, cols, taskId: task.id, borrowerId });
     } catch (_) { /* best-effort — never breaks the inbound pull */ }
   }
+  /* A REFINANCE CARRIES NO PURCHASE PRICE, WHICHEVER SIDE IT ARRIVES FROM
+     (owner-directed 2026-08-02). ClickUp's Purchase Price field is mapped 'both',
+     so a value left on a card whose deal became a refinance would flow straight
+     back in and re-create the purchase-style file the portal doors now refuse to
+     write. Nulled here is the established idiom on this pull (the same one
+     `sanitizePropertyType` and the year guard use): a null column means COALESCE
+     keeps whatever the file already holds — it never CLEARS anything, so this can
+     only decline to write, never destroy. The purpose is the inbound one when
+     ClickUp is sending it, else the file's own. */
+  if ('purchase_price' in cols && cols.purchase_price != null) {
+    try {
+      let purpose = cols.loan_type;
+      if (!purpose && targetId) {
+        purpose = ((await db.query(`SELECT loan_type FROM applications WHERE id=$1`, [targetId])).rows[0] || {}).loan_type;
+      }
+      if (require('../lib/deal-basis').sizesOnAsIsValue(purpose)) cols.purchase_price = null;
+    } catch (_) { /* best-effort — a lookup failure just leaves the pull as it was */ }
+  }
 
   const vals = Object.values(cols);
   const set = Object.keys(cols).map((k, i) => `${k}=COALESCE($${i + 2}, ${k})`).join(', ');
