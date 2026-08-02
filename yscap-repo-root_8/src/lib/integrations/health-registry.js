@@ -55,6 +55,11 @@ const INTEGRATIONS = [
       { name: 'AZURE_OPENAI_DEPLOYMENT', required: true }, { name: 'AZURE_OPENAI_API_VERSION', required: false },
       { name: 'AZURE_OPENAI_REASONING_EFFORT', required: false }],
     switches: [], liveProbe: true,
+    // The LIVE model actually in use = the Azure deployment NAME (AZURE_OPENAI_DEPLOYMENT).
+    // This is a name, not a secret (it's already surfaced on the AI-stack tile), and it's the
+    // single lever that picks which model everything runs — so show it here so an admin can
+    // read, on this page, exactly which model PILOT is running right now.
+    model: () => (cfg.azureOpenai && cfg.azureOpenai.deployment) || null,
     async probe() {
       const m = require('../ai/azure-openai');
       if (!m.available()) return { configured: false, live: null, detail: 'Endpoint, key, or deployment not set.' };
@@ -477,8 +482,17 @@ async function resolveOne(entry, opts) {
   const runtimeSwitches = require('./switches').list().filter((s) => s.integration === entry.key)
     .map((s) => ({ name: s.key, label: s.label, on: s.on, dangerous: s.dangerous, overridden: s.overridden, resume: s.resume, envDefault: s.envDefault, toggleable: true }));
   const runtimeNames = new Set(runtimeSwitches.map((s) => s.name));
+  // The model/version NAME this integration runs (e.g. the Azure OpenAI deployment name) — a
+  // name, never a secret. From the entry's own model() accessor, else a probe-returned model.
+  // Never throws (matches the whole-module contract); shows even when the service is unreachable.
+  let model = null;
+  try {
+    if (typeof entry.model === 'function') model = entry.model();
+    if (model == null && r.model != null) model = r.model;
+    model = model != null ? String(model) : null;
+  } catch (_e) { model = null; }
   return {
-    key: entry.key, name: entry.name, group: entry.group, purpose: entry.purpose,
+    key: entry.key, name: entry.name, group: entry.group, purpose: entry.purpose, model,
     direction: entry.direction, auth: entry.auth, liveProbe: !!entry.liveProbe, notBuilt: !!entry.notBuilt,
     env: (entry.env || []).map((e) => ({ name: e.name, required: !!e.required, set: envSet(e.name) })),
     switches: runtimeSwitches,
