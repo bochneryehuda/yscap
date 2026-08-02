@@ -3574,11 +3574,20 @@ export default function UnderwritingPanel({ appId, docs = [], readOnly = false, 
         </div>
       )}
 
-      {/* Appraisal findings are NOT shown here. They moved back to the Appraisal section
-          (owner-directed 2026-07-30, reverting the 2026-07-20 fold-in): the appraisal XML
-          findings are reviewed — and resolved — on the appraisal tab, next to the report they
-          come from, and this desk shows only document-review findings. Do not re-add an
-          api.appraisalGet fold-in here. */}
+      {/* Appraisal findings are NOT shown here. They live on the Appraisal section
+          (owner-directed 2026-07-30, widened 2026-08-02): the appraisal's findings are reviewed —
+          and resolved — next to the report they come from. Since 2026-08-02 that includes the ones
+          THIS desk computes (the AVM-vs-appraised-value check, an appraisal-only tie-out row): the
+          server routes them by subject, not by table, so they no longer show up here. All that is
+          left is a pointer, so a reviewer knows the work exists rather than wondering where a card
+          went. Do not re-add an api.appraisalGet fold-in here. */}
+      {data && Array.isArray(data.appraisalFindings) && data.appraisalFindings.length > 0 && (
+        <p style={{ fontSize: 12.5, color: 'var(--muted,#4B585C)', margin: '0 0 18px' }}>
+          {data.appraisalFindings.length} finding{data.appraisalFindings.length === 1 ? '' : 's'} about the appraisal
+          {data.appraisalFindings.length === 1 ? ' is' : ' are'} in the <strong style={{ color: '#141B22' }}>Appraisal</strong> section,
+          with the report {data.appraisalFindings.length === 1 ? 'it comes' : 'they come'} from — that is where {data.appraisalFindings.length === 1 ? 'it is' : 'they are'} resolved.
+        </p>
+      )}
 
       {/* nothing open anywhere — the all-clear */}
       {allFindings.length === 0 && (

@@ -1149,7 +1149,21 @@ router.get('/:appId', async (req, res, next) => {
     // dealbreaker is never sorted below noise. The background pass (setImmediate) fills the rankings.
     let triageMem = new Map();
     try { triageMem = await findingsTriage.readMemory(db, app.id); } catch (_) { triageMem = new Map(); }
-    const openAll = findingsTriage.applyTriage(aiGate.shown, triageMem);
+    const triaged = findingsTriage.applyTriage(aiGate.shown, triageMem);
+
+    // AN APPRAISAL FINDING BELONGS ON THE APPRAISAL PAGE — INCLUDING THE ONES THIS DESK PRODUCES
+    // (owner-reported 2026-08-02: "some of the appraisal findings is going over to the document
+    // findings section"). The 2026-07-30 rule split the desks by TABLE, which covered the appraisal
+    // desk's own rows but not the desks HERE that read the appraisal: the tie-out (whose appraisal
+    // duplicates are now suppressed at source via PERDOC_COVERS, leaving only genuinely
+    // appraisal-only rows such as occupancy) and the AVM-consensus panel. They are removed from
+    // this desk and returned as `appraisalFindings` so nothing is hidden — the Appraisal section
+    // renders and resolves them, and GET /api/appraisal/:id rebuilds the same set from the same
+    // shared predicate, so the two screens can never disagree about where a finding lives.
+    const apprSubject = require('../lib/appraisal/finding-subject');
+    const apprRouted = apprSubject.split(triaged);
+    const openAll = apprRouted.document;
+    const appraisalFindings = apprRouted.appraisal.map(decorate);
 
     // Sync computed chain + bank findings → ai_suggestions (owner-directed 2026-07-22,
     // HARD RULE). Best-effort, fired AFTER the response so file view stays fast; dedupe
@@ -1391,7 +1405,12 @@ router.get('/:appId', async (req, res, next) => {
       // consolidated list) so one can't linger in a section after being filtered off the main desk.
       const readable = unreadableFindings.partition((arr || []).filter(Boolean)).kept;
       const kept = fdec.filterSuppressed(settledKeys, readable).kept;
-      return findingAiReview.annotateFindings(kept, aiReviewMem).shown.map(decorate);
+      // …and the appraisal-subject ones, for the same reason: every section renders its OWN array
+      // as well as the consolidated list, so a finding routed to the Appraisal page would otherwise
+      // still show inside `crossDocument` / `staleness` / `findings` here — the "it didn't actually
+      // move" report, arriving through a sub-panel.
+      const desk = kept.filter((f) => !apprSubject.isAppraisalSubject(f));
+      return findingAiReview.annotateFindings(desk, aiReviewMem).shown.map(decorate);
     };
 
     res.json({
@@ -1475,6 +1494,11 @@ router.get('/:appId', async (req, res, next) => {
       allFindings: [...openWithRisk]
         .sort((x, y) => (SEVERITY_RANK[y && y.severity] || 0) - (SEVERITY_RANK[x && x.severity] || 0))
         .map(decorate),
+      // The findings this desk computed that belong to the APPRAISAL — removed from every list
+      // above and handed over so the Appraisal section can render + resolve them. Returned here
+      // (rather than silently dropped) so this desk can say "N appraisal findings — they're on the
+      // Appraisal tab" instead of a reviewer wondering where a card went.
+      appraisalFindings,
       summary,
       docTypes: registry.docTypes(),
       analyzers: { reader: docint.configured(), ai: azureOpenai.available() },
