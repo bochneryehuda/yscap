@@ -39,7 +39,7 @@ import FileSections, { Section, InfoTip, subscribeConditionsTab, goToSection, re
 import { STATIONS, STATION_OF, ANCHOR_SECTION, stationOf, whereDidItGo } from '../lib/stations.js';
 import { captureScrollAnchor, restoreScrollAnchor } from '../lib/keep-scroll.js';
 import BorrowerProfilePanel from '../components/BorrowerProfilePanel.jsx';
-import { CONDITION_TIMINGS, conditionStatusLabel, conditionStatusClass, timingLabel, loanConditionStatusLabel, audienceStamp } from '../lib/conditions-vocab.js';
+import { CONDITION_TIMINGS, conditionStatusLabel, conditionStatusClass, timingLabel, loanConditionStatusLabel, audienceStamp, audienceLabel } from '../lib/conditions-vocab.js';
 import { severityCount } from '../lib/findings-vocab.js';
 import { groupBySubject, subjectOf } from '../lib/condition-subjects.js';
 import { isWorkflowStep } from '../lib/condition-workflow-steps.js';
@@ -753,6 +753,50 @@ function ClickupFileData({ app }) {
             ))}
           </div>
         )}
+    </div>
+  );
+}
+
+/* THE FACTS THE APPRAISAL PUT ON THE FILE (db/403, owner-directed 2026-08-02:
+   "all these things that he's getting from the appraisal … please add this field
+   in our file and that field should automatically be tabulated once you import
+   the XML of the appraisal").
+
+   Filled by the appraisal import, blank-only — there is nothing to type here and
+   nothing to chase: these are NOT part of application completeness and never
+   appear on a missing-info panel ("this field should not be a requirement for us
+   to fill anywhere"). The seller is the useful one: it gives the purchase
+   contract, the title report and the settlement statement a single value of
+   record to be matched against on the data comparison.
+
+   OCCUPANCY IS NOT HERE ON PURPOSE. The appraisal's occupancy is the SELLER's use
+   of the property today — a seller living in the house they are selling is
+   perfectly ordinary — while the file's occupancy is the borrower's use after
+   closing, and we only lend non-owner-occupied. The import never writes it.
+
+   Renders nothing until an appraisal has been imported. */
+function AppraisalFileFacts({ app }) {
+  const rows = [
+    ['Seller', app.seller_name || null],
+    ['Year built', app.year_built == null ? null : String(app.year_built)],
+    ['Living area', app.living_area_sqft == null ? null : `${Number(app.living_area_sqft).toLocaleString('en-US')} sq ft`],
+    ['Market rent (1007)', app.market_rent == null ? null : '$' + Number(app.market_rent).toLocaleString('en-US', { maximumFractionDigits: 0 }) + ' / mo'],
+  ].filter(([, v]) => v != null);
+  if (!rows.length) return null;
+  return (
+    <div className="panel" style={{ marginTop: 18 }}>
+      <div className="row" style={{ marginBottom: 8 }}>
+        <h3>Property facts from the appraisal</h3>
+        <div className="spacer" />
+        <span className="muted small">Filled when the appraisal XML was imported · read-only</span>
+      </div>
+      <p className="muted small" style={{ marginTop: 0, marginBottom: 10 }}>
+        Nothing to fill in here — these come off the appraisal and are never required on the file.
+        They are on the file so the data comparison can match them against the other documents.
+      </p>
+      {rows.map(([k, v]) => (
+        <div className="metrow" key={k}><span className="k">{k}</span><span className="v">{v}</span></div>
+      ))}
     </div>
   );
 }
@@ -2754,11 +2798,14 @@ function BorrowerConditions({ appId, app, items, docs, onPatch, onReviewDoc, onD
             lets a processor see everything outstanding on the file at once. */}
         <label className="cond-filter">
           <span>Who sees it</span>
+          {/* The two answers mirror the row stamps exactly (conditions-vocab §4).
+              "Everyone" used to be the no-filter option — it read as "conditions
+              everyone sees", which is the OTHER option. */}
           <select className="input" value={audFilter} onChange={e => setAudFilter(e.target.value)}
-            title="Borrower-facing conditions, internal ones, or both together">
-            <option value="all">Everyone</option>
-            <option value="borrower">Borrower sees it</option>
-            <option value="internal">Internal only</option>
+            title="Conditions the borrower also sees, internal-only ones, or the whole list">
+            <option value="all">All conditions</option>
+            <option value="borrower">{audienceLabel('borrower')}</option>
+            <option value="internal">{audienceLabel('staff')}</option>
           </select>
         </label>
         <label className="cond-filter">
@@ -2890,6 +2937,13 @@ function BorrowerConditions({ appId, app, items, docs, onPatch, onReviewDoc, onD
               <div style={{ flex: 1 }}>
                 <div style={{ fontWeight: 600 }}>
                   {it.label}
+                  {/* WHO SEES IT stays visible when the row is open. Full screen
+                      opens every row, so without this the whole full-screen list
+                      lost its Internal + external / Internal only stamps — the
+                      compact line and the internal rows (Item) already carry it
+                      (owner-directed 2026-08-02). */}
+                  <span className={`aud ${audienceStamp(it.audience).cls}`} style={{ marginLeft: 8, verticalAlign: 'text-bottom' }}
+                    title={audienceStamp(it.audience).title}>{audienceStamp(it.audience).label}</span>
                   {/* Whose requirement this is, when it belongs to one capital
                       partner — derived from the rule, staff-only. */}
                   {it.note_buyer_mark && <span style={{ marginLeft: 8 }}><NoteBuyerMark it={it} /></span>}
@@ -4475,7 +4529,12 @@ export default function StaffApplication() {
            correction is made once a super-admin has unlocked the file up top.
            openByDefault: the form IS this tab, so it renders expanded instead
            of hiding behind a second collapse. */
-        <EditFileDetails app={app} onSaved={load} openByDefault />
+        <>
+          <EditFileDetails app={app} onSaved={load} openByDefault />
+          {/* Read-only, under the editable deal fields: what the appraisal put on
+              the file (db/403). Renders nothing until an appraisal is imported. */}
+          <AppraisalFileFacts app={app} />
+        </>
       )}
 
       {appDetailTab === 'missing' && <>
@@ -4893,7 +4952,7 @@ function LoanConditionsPanel({ conds, condFilter, setCondFilter, cForm, setCForm
                   <div style={{ flex: 1 }}>
                     <div style={{ fontWeight: 600 }}>{c.title}</div>
                     <div className="muted small">
-                      {timing} · {c.audience === 'staff' ? 'Internal' : 'Borrower-facing'}
+                      {timing} · {audienceLabel(c.audience)}
                       {c.status !== 'open' ? ` · ${loanConditionStatusLabel(c.status).toLowerCase()}${c.cleared_by_name ? ` by ${c.cleared_by_name}` : ''}` : ''}
                       {open && c.reviewed_by_name ? ` · reviewed by ${c.reviewed_by_name}` : ''}
                       {c.waive_reason ? ` · ${c.waive_reason}` : ''}
@@ -4923,9 +4982,11 @@ function LoanConditionsPanel({ conds, condFilter, setCondFilter, cForm, setCForm
           <input className="input" placeholder="New condition — e.g. Verify owner of record on REO #3" value={cForm.title}
             onChange={e => setCForm({ ...cForm, title: e.target.value })} onKeyDown={e => e.key === 'Enter' && addLoanCondition()} style={{ marginBottom: 8 }} />
           <div className="row" style={{ gap: 8, flexWrap: 'wrap' }}>
-            <select className="input" style={{ maxWidth: 150 }} value={cForm.audience} onChange={e => setCForm({ ...cForm, audience: e.target.value })}>
-              <option value="staff">Internal</option>
-              <option value="both">Borrower-facing</option>
+            {/* Words from conditions-vocab §4 — two visibilities, never a bare
+                "External"/"Borrower-facing" (staff see everything). */}
+            <select className="input" style={{ maxWidth: 190 }} value={cForm.audience} onChange={e => setCForm({ ...cForm, audience: e.target.value })}>
+              <option value="staff">{audienceLabel('staff')}</option>
+              <option value="both">{audienceLabel('both')}</option>
             </select>
             {/* Stored values unchanged (conditions.severity CHECK constraint);
                 only the words the user reads come from the shared vocabulary. */}

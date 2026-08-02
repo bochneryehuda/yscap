@@ -117,6 +117,18 @@ export function loanConditionStatusLabel(status) {
  * the borrower can also see it on their end; internal means only the staff
  * sees it."
  *
+ * TWO answers, not three (owner-directed 2026-08-02, looking at the cash-out
+ * letter stamped "External": "this condition says only external, but I don't
+ * believe there is something like that. Because internal also sees it").
+ * The owner is right: staff see EVERY condition on the staff side, so a stamp
+ * reading plain "External" claims a visibility that does not exist. The stamp
+ * answers exactly one question — can the borrower see it? — and that question
+ * has two answers: "Internal + external" (stored audience borrower OR both;
+ * identical label AND colour, because from the visibility standpoint they ARE
+ * the same thing) and "Internal only" (audience staff). The borrower/both
+ * difference is about who WORKS it, and lives in the authoring pickers and the
+ * "borrower task" chips — never in this stamp.
+ *
  * Every condition row used to carry up to four grey chips — Staff, Processor,
  * Document, Condition — which are the stored `audience`, `role_scope` and
  * `item_kind` columns printed verbatim. 46 of them across 24 conditions, none
@@ -129,14 +141,16 @@ export function loanConditionStatusLabel(status) {
  * ------------------------------------------------------------------------ */
 export const CONDITION_AUDIENCE = {
   // Only the team. The borrower has no idea this condition exists.
-  staff:    { label: 'Internal', cls: 'aud-internal',
+  staff:    { label: 'Internal only', cls: 'aud-internal',
               title: 'Internal only — the borrower never sees this condition' },
-  // The borrower's own list. This is what they are being asked for.
-  borrower: { label: 'External', cls: 'aud-external',
-              title: 'External — the borrower sees this condition on their side too' },
-  // Both lists at once: the borrower is asked for it AND the team works it.
-  both:     { label: 'External + internal', cls: 'aud-both',
-              title: 'External and internal — the borrower sees it, and the team works it too' },
+  // The borrower's own list. This is what they are being asked for — and the
+  // team always sees it here too, so it is never "external only".
+  borrower: { label: 'Internal + external', cls: 'aud-external',
+              title: 'Internal + external — the borrower sees this condition on their side, and the team sees it here too' },
+  // Same visibility as `borrower` — the difference (the team also WORKS it) is
+  // a workflow detail, so the stamp reads and looks identical on purpose.
+  both:     { label: 'Internal + external', cls: 'aud-external',
+              title: 'Internal + external — the borrower sees this condition on their side, and the team works it here too' },
 };
 
 export const CONDITION_AUDIENCES = ['staff', 'borrower', 'both'];
