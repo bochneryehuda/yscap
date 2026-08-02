@@ -180,6 +180,11 @@ function Finding({ appId, f, onChange, readOnly }) {
     finally { setBusy(false); }
   };
   const canWriteBack = ['arv', 'as_is_value', 'purchase_price', 'units'].includes(f.field);
+  // A DERIVED advisory (an appraisal-only tie-out row) has no stored row to resolve — it clears
+  // when the values it compares agree. Never render buttons that would 404: a card with a dead
+  // button is worse than one that says plainly why there isn't one. `resolvable` is only ever
+  // false when the server says so, so the appraisal desk's own findings are unaffected.
+  const derived = f.resolvable === false || !f.id;
   // A dry-run "what-if": price the file WITH the appraisal's value as an override and compare to
   // the current terms — NON-persisting (reuses the /pricing/quote engine, nothing is written).
   const previewKey = PREVIEW_KEY[f.field];
@@ -209,11 +214,22 @@ function Finding({ appId, f, onChange, readOnly }) {
       )}
       {f.how_to && <div style={{ fontSize: 12.5, color: 'var(--muted,#4B585C)', marginBottom: readOnly ? 0 : 10 }}>{f.how_to}</div>}
       {/* Borrowers SEE every finding but never act on it — the actions are our team's. */}
-      {!readOnly && (
+      {!readOnly && derived && (
+        <div style={{ fontSize: 12, color: 'var(--muted,#4B585C)', fontStyle: 'italic' }}>
+          Advisory — PILOT worked this out by comparing the file's own numbers, so there is nothing to sign here.
+          It clears by itself once the two agree, and it never holds up the appraisal review.
+        </div>
+      )}
+      {!readOnly && !derived && (
         <div className="appr-noprint" style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
           {canWriteBack && <button disabled={busy} onClick={() => act('replace')} style={btn(true)}>Replace with appraisal · re-prices</button>}
           {canPreview && <button disabled={busy || (preview && preview.loading)} onClick={doPreview} style={btn()} title="See how this would re-price the loan — without changing anything">↻ Preview the re-price</button>}
-          <button disabled={busy} onClick={() => act('keep')} style={btn()}>Keep file value</button>
+          {/* A value disagreement is answered by choosing a value; everything else (a comp
+              warning, a licence note, the AVM read) is answered by saying you looked at it. Both
+              close the finding, which is what the appraisal review waits on. */}
+          {canWriteBack
+            ? <button disabled={busy} onClick={() => act('keep')} style={btn()}>Keep file value</button>
+            : <button disabled={busy} onClick={() => act('acknowledge')} style={btn()} title="Close this finding — you have read it and it needs no change">Mark reviewed</button>}
           {canWriteBack && <button disabled={busy} onClick={() => setShowCustom((v) => !v)} style={btn()}>Enter custom…</button>}
           <button disabled={busy} onClick={() => act('dismiss')} style={btn()}>Dismiss</button>
           {f.severity === 'fatal' && <button disabled={busy} onClick={() => { if (confirm('Decline this file?')) act('decline'); }} style={btn(false, true)}>Decline file</button>}
@@ -1154,7 +1170,12 @@ export default function AppraisalPanel({ appId, readOnly = false, onSummary, rel
   const findings = (data && data.findings) || [];
   const comps = (data && data.comparables) || [];
   const photos = (data && data.photos) || [];
-  const hero = photos[0];
+  // THE MAIN PICTURE MUST BE A PHOTOGRAPH (owner-reported 2026-08-02: "for the main picture of the
+  // house it comes up the appraiser's signature"). The server now stores real photographs ahead of
+  // the form's own artwork AND records which is which, so this is belt-and-suspenders: never lead
+  // with something classified as a graphic (signature, logo, location map, floor-plan sketch). An
+  // older gallery that has not been re-classified yet carries no category and behaves as before.
+  const hero = photos.find((p) => p.category !== 'graphic') || photos[0];
 
   // Value basis: an ARV present + a subject-to / hypothetical condition means the headline value
   // reflects the AFTER-REPAIR value. State it plainly so no one mis-sizes the loan.
@@ -1236,12 +1257,16 @@ export default function AppraisalPanel({ appId, readOnly = false, onSummary, rel
           </div>
 
           {/* ===== PILOT findings =====
-              The appraisal's own findings live — and are resolved — RIGHT HERE, in the Appraisal
-              section (owner-directed 2026-07-30: the 2026-07-20 fold into the Document-review
-              section is reverted; appraisal XML findings belong on the appraisal tab). Only
-              findings from the appraisal desk (appraisal_findings) render here — document-review
-              findings never appear in this section. Staff get the full resolve actions; the
-              borrower (readOnly) sees the same list read-only. */}
+              EVERY appraisal finding lives — and is resolved — RIGHT HERE, in the Appraisal
+              section (owner-directed 2026-07-30, widened 2026-08-02). Two producers feed this one
+              list: the appraisal desk's own `appraisal_findings` (appraisal vs the loan file, with
+              the write-back actions), and the appraisal findings the DOCUMENT desk computes — the
+              AVM-vs-appraised-value check and any appraisal-only tie-out row — which used to render
+              on the Document-review desk, the one place someone reviewing the appraisal wouldn't
+              look. The server decides which is which (lib/appraisal/finding-subject), so the two
+              screens can never disagree; a cross-DOCUMENT conflict the appraisal takes part in
+              deliberately stays on that desk. Staff get the resolve actions; the borrower
+              (readOnly) sees the same list read-only. */}
           {(sum.fatal > 0 || sum.warning > 0) && (
             <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 12, flexWrap: 'wrap' }}>
               {sum.fatal > 0 && <span style={{ fontWeight: 700, color: SEV.fatal.fg, background: SEV.fatal.bg, borderRadius: 999, padding: '4px 12px', fontSize: 12.5 }}>{severityCount(sum.fatal, 'fatal')}</span>}
@@ -1251,8 +1276,16 @@ export default function AppraisalPanel({ appId, readOnly = false, onSummary, rel
           )}
           {findings.length > 0 ? (
             <div style={{ marginBottom: 24 }}>
-              <h4 style={{ fontFamily: 'var(--serif,Georgia,serif)', margin: '0 0 12px' }}>PILOT findings — appraisal vs file</h4>
-              {findings.map((f) => <Finding key={f.id} appId={appId} f={f} onChange={load} readOnly={readOnly} />)}
+              <h4 style={{ fontFamily: 'var(--serif,Georgia,serif)', margin: '0 0 4px' }}>PILOT findings — appraisal vs file</h4>
+              {!readOnly && (
+                <p style={{ fontSize: 12.5, color: 'var(--muted,#4B585C)', margin: '0 0 12px' }}>
+                  Every finding on the appraisal is here — nothing about the appraisal is filed under Document review.
+                  <strong style={{ color: '#141B22' }}> The appraisal review condition clears only once each one has an answer</strong>
+                  {' '}— replace, keep the file value, or mark it reviewed. Advisory rows that PILOT worked out from
+                  other data (marked below) clear on their own when the numbers agree and never hold the sign-off.
+                </p>
+              )}
+              {findings.map((f, i) => <Finding key={f.id || `d-${f.code}-${i}`} appId={appId} f={f} onChange={load} readOnly={readOnly} />)}
             </div>
           ) : (
             <p style={{ color: 'var(--good,#3F7A5B)', fontSize: 13, marginBottom: 20 }}>✓ No open findings — the appraisal matches the file.</p>

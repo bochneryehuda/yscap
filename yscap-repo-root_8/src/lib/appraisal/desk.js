@@ -112,9 +112,14 @@ async function extractAndStorePhotos(appraisalId, appId, pdfB64, importedBy) {
         `INSERT INTO documents (application_id,borrower_id,filename,content_type,size_bytes,storage_provider,storage_ref,uploaded_by_kind,uploaded_by_id,doc_kind,visibility,source_type,review_status,reviewed_at)
          VALUES ($1,$2,$3,'image/png',$4,$5,$6,'staff',$7,'appraisal_photo','borrower','system','accepted',now()) RETURNING id`,
         [appId, borrowerId, `appraisal-photo-${ph.seq + 1}.png`, ph.png.length, s.provider, s.ref, importedBy || null]);
+      // `category` records WHAT the image is (owner-reported 2026-08-02: the appraiser's signature
+      // was coming up as the property's main picture). extractPhotos already ordered real
+      // photographs ahead of the form's own artwork, so sequence 0 is a photograph; storing the
+      // classification as well means the gallery can label a map/sketch/signature honestly and the
+      // hero can insist on a photograph rather than trusting position alone.
       await db.query(
-        `INSERT INTO appraisal_photos (appraisal_id, document_id, sequence, width, height) VALUES ($1,$2,$3,$4,$5)`,
-        [appraisalId, doc.rows[0].id, ph.seq, ph.width, ph.height]);
+        `INSERT INTO appraisal_photos (appraisal_id, document_id, sequence, width, height, category) VALUES ($1,$2,$3,$4,$5,$6)`,
+        [appraisalId, doc.rows[0].id, ph.seq, ph.width, ph.height, ph.kind === 'graphic' ? 'graphic' : 'photo']);
       stored++;
     } catch (e) { console.error('[appraisal] photo store failed (non-fatal, continuing):', e && e.message); }
   }
@@ -297,6 +302,51 @@ async function backfillAppraisalPhotosOnce(limit = 25) {
     }
   } catch (_) { /* best-effort */ }
   return { scanned, filled, photos };
+}
+
+// PREVIOUS FILES: re-classify a gallery that was extracted before photographs were told apart from
+// the form's own artwork (owner-reported 2026-08-02 — the appraiser's signature was showing as the
+// property's main picture). Those rows were stored in raw PAGE order with no `category`, so the
+// signature on the certification page still outranks the subject photo page and no amount of
+// front-end logic can fix a set that was ordered wrong on the way in. Re-pull the PDF and re-store:
+// extractAndStorePhotos retires the old set and writes the fresh, classified, photographs-first one.
+//
+// SELF-DRAINING by construction — an appraisal drops out of the query the moment ANY of its photo
+// rows carries a category, which the re-pull always writes. Bounded per boot (a PDF decode is
+// CPU-heavy) and best-effort: a file whose PDF can no longer be recovered is stamped so it is not
+// re-decoded on every boot, and nothing here can throw.
+async function backfillAppraisalPhotoKindsOnce(limit = 25) {
+  let scanned = 0, refreshed = 0, photos = 0;
+  try {
+    const rows = (await db.query(
+      `SELECT a.id, a.application_id, a.pdf_document_id, a.source_xml_document_id
+         FROM appraisals a
+        WHERE a.superseded=false
+          AND (a.pdf_document_id IS NOT NULL OR a.source_xml_document_id IS NOT NULL)
+          -- has a real stored gallery …
+          AND EXISTS (SELECT 1 FROM appraisal_photos ap WHERE ap.appraisal_id=a.id AND ap.document_id IS NOT NULL)
+          -- … and NOT ONE row of it has been classified (i.e. it predates this change)
+          AND NOT EXISTS (SELECT 1 FROM appraisal_photos ap WHERE ap.appraisal_id=a.id AND ap.category IS NOT NULL)
+        ORDER BY a.imported_at DESC
+        LIMIT $1`, [limit])).rows;
+    for (const r of rows) {
+      scanned++;
+      try {
+        const pdfB64 = await pdfBytesForAppraisal(r);
+        if (!pdfB64) {
+          // The PDF is gone, so the gallery can never be re-classified. Stamp the EXISTING rows
+          // rather than leave them uncategorized, or this appraisal is re-scanned every boot
+          // forever. 'unclassified' is honest: kept, position unchanged, kind unknown.
+          try { await db.query(`UPDATE appraisal_photos SET category='unclassified' WHERE appraisal_id=$1 AND category IS NULL`, [r.id]); } catch (_) { /* best-effort */ }
+          continue;
+        }
+        const n = await extractAndStorePhotos(r.id, r.application_id, pdfB64, null);
+        if (n > 0) { refreshed++; photos += n; }
+        else { try { await db.query(`UPDATE appraisal_photos SET category='unclassified' WHERE appraisal_id=$1 AND category IS NULL`, [r.id]); } catch (_) { /* best-effort */ } }
+      } catch (_) { /* per-appraisal best-effort */ }
+    }
+  } catch (_) { /* best-effort */ }
+  return { scanned, refreshed, photos };
 }
 
 // Recover the appraisal's SOURCE XML bytes (the raw MISMO) from what we stored at import. Returns
@@ -566,4 +616,4 @@ async function backfillAsIsReadsOnce({ freeLimit = null, pdfLimit = null } = {})
   return out;
 }
 
-module.exports = { ensureAppraisalCondition, runAppraisalImport, undoAppraisalImport, extractAndStorePhotos, repullAppraisalPhotos, backfillAppraisalPhotosOnce, backfillAppraisalCompSplitOnce, backfillNoteBuyerFindingsOnce, backfillAsIsReadsOnce, runAsIsRead, pdfBytesForAppraisal, xmlForAppraisal, todayNY };
+module.exports = { ensureAppraisalCondition, runAppraisalImport, undoAppraisalImport, extractAndStorePhotos, repullAppraisalPhotos, backfillAppraisalPhotosOnce, backfillAppraisalPhotoKindsOnce, backfillAppraisalCompSplitOnce, backfillNoteBuyerFindingsOnce, backfillAsIsReadsOnce, runAsIsRead, pdfBytesForAppraisal, xmlForAppraisal, todayNY };

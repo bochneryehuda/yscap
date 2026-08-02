@@ -58,14 +58,29 @@ assert.strictEqual(claimsFor('bank_statement', { accountHolderName: 'John Smith'
   const cell = r.matrix.find((m) => m.key === 'purchase_price').cells.find((c) => c.label === 'Purchase contract');
   assert.strictEqual(cell.status, 'disagree', 'the matrix still shows the contract price disagreeing');
 }
-// ===== 2c. Appraisal VALUE ties out against the file (M1 fix) =====
+// ===== 2c. The APPRAISAL has its own desk — the tie-out does NOT duplicate it =====
+// (owner-reported 2026-08-02: "some of the appraisal findings is going over to the document
+// findings section"). Same rule as the purchase contract in 2b: lib/appraisal/findings.js compares
+// address / price / as-is / ARV / units / property type appraisal-vs-file and raises a REAL,
+// resolvable finding on the Appraisal tab, so a second tie-out card for the same disagreement was
+// pure duplication — and resolving one left the other standing. The MATRIX still shows every cell.
 {
   const r = buildTieout(ctx, [
     { id: 'a', docType: 'appraisal', fields: { propertyAddress: ADDR, contractPrice: 412000, asIsValue: 360000, arvValue: 520000 } },
   ]);
-  const d = r.discrepancies.find((x) => x.field === 'as_is_value');
-  assert.ok(d && d.severity === 'warning', 'appraisal as-is value below the file value ties out (warning)');
+  assert.ok(!r.discrepancies.some((x) => x.field === 'as_is_value'),
+    'the appraisal as-is mismatch is owned by the appraisal desk, not duplicated by the tie-out');
+  const cell = r.matrix.find((m) => m.key === 'as_is_value').cells.find((c) => c.label === 'Appraisal');
+  assert.strictEqual(cell.status, 'disagree', 'the matrix still shows the appraisal as-is disagreeing');
   assert.ok(!r.discrepancies.some((x) => x.field === 'arv'), 'matching ARV raises nothing');
+}
+// ===== 2c-bis. …but an appraisal fact the appraisal desk does NOT compare still surfaces =====
+// The suppression is a fixed list of the facts that desk owns, never "ignore the appraisal".
+{
+  const occCtx = { app: { property_address: ADDR, occupancy: 'Vacant' } };
+  const r = buildTieout(occCtx, [{ id: 'a', docType: 'appraisal', fields: { propertyAddress: ADDR, occupancy: 'TenantOccupied' } }]);
+  assert.ok(r.discrepancies.some((x) => x.field === 'occupancy'),
+    'an appraisal fact outside the appraisal desk’s own checks is still raised by the tie-out');
 }
 
 // ===== 2d. Assignment-fee suppression is CONDITIONAL on the file being an assignment =====
@@ -204,12 +219,20 @@ assert.strictEqual(claimsFor('bank_statement', { accountHolderName: 'John Smith'
   const mr = ok.matrix.find((m) => m.key === 'market_rent');
   assert.ok(mr && mr.cells.some((c) => c.value === '$2,400'), 'market rent shown as money');
 
-  // A REAL unit-count / property-type disagreement IS flagged (appraisal says a different property).
+  // A REAL unit-count / property-type disagreement IS still SEEN — it is just not raised twice.
+  // Since 2026-08-02 the tie-out defers units + property type to the appraisal desk, which raises
+  // its own resolvable `units_mismatch` / `property_type_mismatch` on the Appraisal tab; the matrix
+  // still marks the cells as disagreeing, exactly as it does for the purchase contract's facts.
   const bad = buildTieout(cx, [{ id: 'a', docType: 'appraisal', fields: {
     propertyAddress: ADDR, units: 4, propertyType: 'Condominium', occupancy: 'Owner Occupied' } }]);
-  assert.ok(bad.discrepancies.some((d) => d.field === 'units'), 'file 2 units vs appraisal 4 units → discrepancy');
-  assert.ok(bad.discrepancies.some((d) => d.field === 'property_type'), 'SFR vs Condo → discrepancy');
-  // Occupancy owner-vs-tenant IS a real disagreement (info severity — a business-purpose flag).
+  assert.ok(!bad.discrepancies.some((d) => d.field === 'units'), 'file 2 units vs appraisal 4 units → the appraisal desk owns it, no tie-out duplicate');
+  assert.ok(!bad.discrepancies.some((d) => d.field === 'property_type'), 'SFR vs Condo → the appraisal desk owns it, no tie-out duplicate');
+  const unitCell = bad.matrix.find((m) => m.key === 'units').cells.find((c) => c.label === 'Appraisal');
+  assert.strictEqual(unitCell.status, 'disagree', 'the matrix still shows the unit count disagreeing');
+  const typeCell = bad.matrix.find((m) => m.key === 'property_type').cells.find((c) => c.label === 'Appraisal');
+  assert.strictEqual(typeCell.status, 'disagree', 'the matrix still shows the property type disagreeing');
+  // Occupancy owner-vs-tenant IS a real disagreement (info severity — a business-purpose flag), and
+  // no appraisal-desk check compares it, so the tie-out still raises it.
   assert.ok(bad.discrepancies.some((d) => d.field === 'occupancy'), 'Investment (file) vs Owner Occupied (appraisal) → discrepancy');
 
   // THE OWNER'S 2026-07-27 CASE: the appraisal's property_type is a bare ATTACHMENT STYLE
@@ -259,14 +282,18 @@ assert.strictEqual(factMatch('measure', 1850, 2400), false, 'GLA far apart is a 
   ]);
   assert.ok(!rSeller.discrepancies.some((d) => d.code === 'tieout_purchase_price'),
     "a doc reporting the seller's underlying price on an assignment is not a mismatch");
+  // The three cases below are about the ASSIGNMENT price TOLERANCE (priceAwareMatch), not about
+  // any one document, so they use the SETTLEMENT statement — a document with no per-doc price check
+  // of its own, so the tie-out owns its price the way it always did. (The appraisal's own price
+  // disagreement moved to the Appraisal desk on 2026-08-02, which would make it the wrong probe.)
   // A doc reporting the fee-inclusive TOTAL (474k) also agrees.
-  const rTotal = buildTieout(asgCtx, [{ id: 'a', docType: 'appraisal', fields: { propertyAddress: ADDR, contractPrice: 474000 } }]);
+  const rTotal = buildTieout(asgCtx, [{ id: 's', docType: 'settlement', fields: { propertyAddress: ADDR, contractSalesPrice: 474000 } }]);
   assert.ok(!rTotal.discrepancies.some((d) => d.code === 'tieout_purchase_price'), 'the fee-inclusive total also agrees on an assignment');
   // A doc reporting a price matching NEITHER (500k) still fires the discrepancy.
-  const rWrong = buildTieout(asgCtx, [{ id: 'a', docType: 'appraisal', fields: { propertyAddress: ADDR, contractPrice: 500000 } }]);
+  const rWrong = buildTieout(asgCtx, [{ id: 's', docType: 'settlement', fields: { propertyAddress: ADDR, contractSalesPrice: 500000 } }]);
   assert.ok(rWrong.discrepancies.some((d) => d.code === 'tieout_purchase_price'), 'a price matching neither still fires on an assignment');
   // On a STRAIGHT purchase the tolerance does NOT apply — a doc at 438k vs file 412k still fires.
-  const rStraight = buildTieout(ctx, [{ id: 'a', docType: 'appraisal', fields: { propertyAddress: ADDR, contractPrice: 438000 } }]);
+  const rStraight = buildTieout(ctx, [{ id: 's', docType: 'settlement', fields: { propertyAddress: ADDR, contractSalesPrice: 438000 } }]);
   assert.ok(rStraight.discrepancies.some((d) => d.code === 'tieout_purchase_price'), 'a straight purchase is unchanged (still fires)');
 
   // The ASSIGNMENT DOCUMENT states its OWN total-to-assignee (final price = seller price + fee).
