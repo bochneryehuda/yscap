@@ -106,55 +106,93 @@ holding the live documents**, that supports **Object Lock** (WORM).
 | Another Render database | No | — | Same account. Not a backup. |
 | A Google Drive / Dropbox folder | No | — | No WORM, no integrity checking, no automation story. Not appropriate for borrower PII. |
 
-### Recommendation: **AWS S3, in a brand-new dedicated AWS account, with Object Lock in Compliance mode.**
+### DECIDED (owner-directed 2026-08-02): **Cloudflare R2 — a dedicated backup bucket, with its own scoped API token.**
 
-Reasons, in order:
-1. **Compliance-mode Object Lock is genuinely absolute.** Once a backup is written, nothing can
-   delete or alter it until its retention expires — not a stolen credential, not ransomware, not a
-   disgruntled employee, not AWS support at our own request. That is the "military/government grade"
-   property, and it is a real, checkable control, not marketing.
-2. **Different company, different account, different login from everything else we run.** Render
-   going away, or our Render/Cloudflare logins being compromised, does not touch it.
-3. It is what an auditor, an investor's diligence questionnaire, or a note buyer will expect to
-   hear, and it maps directly to the retention rules financial records are held to.
-4. The cost is a rounding error — a few dollars a month.
+The owner chose R2 to avoid taking on another vendor. That is a reasonable call and the reasoning is
+worth recording, because the trade-off is real and someone will re-open this question later.
 
-**If you would rather keep it simpler and cheaper: Backblaze B2 is a legitimate second choice** and
-everything here works with it unchanged (it speaks the same protocol). The setup below notes the
-differences. What matters far more than which of the two you pick is that it is **not Render and not
-the account holding the documents**.
+**What it still buys us — the thing that actually mattered.** The danger this whole system exists to
+answer is *losing the Render account* (billing, a compromised login, a deletion noticed three weeks
+later). Cloudflare is a different company with a different login, so a backup sitting in R2 survives
+that completely. That is the bulk of the value.
 
-**Optional second vault.** The system supports writing every backup to two vaults at once
-(`BACKUP_S3_SECONDARY_*`). If you want the belt-and-braces version, put the second one at Backblaze
-B2. That is the full 3-2-1: Render's PITR, S3, B2.
+**What we consciously gave up.** The live documents already live in R2 (§1), so the loan documents
+and the backups now sit behind **one vendor login**. Losing the Cloudflare *account* would take both.
+AWS in a separate account would have put them behind two unrelated logins.
+
+**The two mitigations below are therefore NOT optional — they are what makes this decision safe:**
+
+1. **A separate bucket**, used only for backups. Never the documents bucket.
+2. **A separate API token, scoped to that bucket alone.** This is the one that matters: the realistic
+   threat is a leaked or over-broad *credential*, not Cloudflare itself failing. A documents key that
+   cannot address the backup bucket cannot erase the backups. Do not reuse the `S3_*` documents
+   credential here, ever.
+
+That leaves only "the entire Cloudflare account is lost" uncovered, which is the rarer case — and the
+upgrade path for it is already built (below).
+
+### The one mechanical difference: R2 locks the BUCKET, not each object
+
+R2 does **not** implement the S3 per-object Object Lock API (`x-amz-object-lock-*`). It has
+[**bucket locks**](https://developers.cloudflare.com/r2/buckets/bucket-locks/) instead — retention
+rules set once on the bucket, in Cloudflare. Same guarantee, configured somewhere else. So:
+
+- Leave **`BACKUP_S3_OBJECT_LOCK_MODE` blank** — with no mode set, `vault.js` sends no lock headers
+  at all, which is what R2 expects. (Do not set it to `COMPLIANCE` "just in case"; that sends headers
+  R2 does not accept.)
+- Set a **bucket lock rule of 35 days** on the backup bucket in Cloudflare.
+- Keep those 35 days equal to `BACKUP_KEEP_DAILY_DAYS` (also 35). Then the nightly prune only ever
+  deletes objects whose lock has already expired, and the two never fight.
+- If they *do* fight, nothing breaks: `pruneVault` in `scripts/backup-run.js` records a refused
+  delete as a reported failure and the backup still succeeds. A lock is never able to fail a run.
+
+`vault.probe()` reads the bucket's lock configuration where the store exposes one; on R2 it reports
+`unknown` rather than an error, because R2 answers that question through its own API and not S3's.
+**"unknown" means "check it in the Cloudflare dashboard", not "unprotected".**
+
+### If this is ever revisited
+
+**AWS S3 in a brand-new account, Object Lock in Compliance mode**, remains the stronger answer, for
+reasons that have not changed: compliance-mode lock cannot be overridden by anyone including the
+account root, it is a different company *and* a different login from everything else we run, and it
+is what an auditor or a note buyer's diligence questionnaire expects to hear. Backblaze B2 is the
+same idea for ~$1/month. Both speak the same protocol, so switching is a change of five environment
+variables and nothing else.
+
+**The upgrade path needs no rework.** The system already writes every backup to two vaults at once
+(`BACKUP_S3_SECONDARY_*`). Adding an AWS or B2 bucket later as the *second* vault restores the full
+3-2-1 — Render's PITR, Cloudflare, and a third company — without touching a line of code. That is the
+recommended next step whenever the appetite for a second vendor returns.
 
 ---
 
 ## 4. What to set up, and exactly which keys to hand over
 
-Everything below is done once. Nothing here needs a developer, but it does need someone who can
-create an AWS account.
+Everything below is done once, in the existing Cloudflare account. Nothing here needs a developer.
 
-### Step 1 — Create the vault
-1. Create a **new AWS account** (not a user inside an existing one — a separate account is a
-   separate blast radius). Turn on MFA on its root login and put the root password in the company
-   password manager.
-2. Create a bucket, e.g. `yscap-backup-vault`, in a region away from where the app runs
-   (e.g. `us-east-2`).
-   **Tick "Object Lock" while creating it — it cannot be turned on afterwards.** This also turns on
-   versioning, which is required.
-3. Set the bucket's default retention to **Compliance, 35 days**.
-4. Turn on "Block all public access" (the default).
-5. Create an IAM user for the backup job with **exactly** these permissions on that one bucket:
-   `s3:PutObject`, `s3:GetObject`, `s3:ListBucket`, `s3:DeleteObject`,
-   `s3:AbortMultipartUpload`, `s3:GetBucketObjectLockConfiguration`.
-   `DeleteObject` is needed to expire old backups; Object Lock is what stops it being dangerous —
-   the bucket itself refuses any delete inside the retention window.
-6. Generate an access key for that user.
+### Step 1 — Create the vault (Cloudflare R2)
+1. In the Cloudflare dashboard, create a **new R2 bucket** used only for backups, e.g.
+   `yscap-backup-vault`. **This must not be the bucket holding the loan documents.**
+2. Add a **bucket lock rule** on it with a retention of **35 days**, so a stored backup cannot be
+   deleted or overwritten inside that window. (Keep this equal to `BACKUP_KEEP_DAILY_DAYS`.)
+3. Leave the bucket private — an R2 bucket has no public access unless a public URL is attached, so
+   simply do not attach one.
+4. Create an **R2 API token scoped to this bucket only**, with Object Read & Write. Do **not** reuse
+   the token the app uses for the documents bucket: keeping them separate is what stops a leaked
+   documents credential from reaching the backups. Note the Access Key ID and Secret — Cloudflare
+   shows the secret once.
+5. Note the account's S3 endpoint, which looks like
+   `https://<account-id>.r2.cloudflarestorage.com`. The region is the literal string `auto`.
 
-*(Backblaze B2 instead: create a bucket with Object Lock enabled, set the default retention to 35
-days, create an application key scoped to that bucket. The endpoint looks like
-`https://s3.us-west-004.backblazeb2.com`.)*
+*(AWS S3 instead — the stronger option if this is ever revisited, and the right shape for a second
+vault: create a **new AWS account**, MFA on root, root password in the password manager. Create a
+bucket in a region away from the app and **tick "Object Lock" while creating it — it cannot be turned
+on afterwards**; set default retention to **Compliance, 35 days**; "Block all public access" on.
+Create an IAM user limited to that one bucket with exactly `s3:PutObject`, `s3:GetObject`,
+`s3:ListBucket`, `s3:DeleteObject`, `s3:AbortMultipartUpload`,
+`s3:GetBucketObjectLockConfiguration` — `DeleteObject` expires old backups and Object Lock is what
+makes that safe — then generate an access key. Set `BACKUP_S3_OBJECT_LOCK_MODE=COMPLIANCE` for AWS.
+Backblaze B2 is the same recipe; its endpoint looks like `https://s3.us-west-004.backblazeb2.com`.)*
 
 ### Step 2 — Generate the encryption key
 On any machine, run:
@@ -181,10 +219,10 @@ the service → Environment). Nothing goes in the code; nothing is ever committe
 |---|---|---|
 | `BACKUP_ENCRYPTION_KEY` | The encryption key | Step 2 (`openssl rand -base64 32`) |
 | `BACKUP_S3_BUCKET` | The vault bucket name | Step 1 (e.g. `yscap-backup-vault`) |
-| `BACKUP_S3_ENDPOINT` | The vault's address | AWS: `https://s3.us-east-2.amazonaws.com` |
-| `BACKUP_S3_ACCESS_KEY_ID` | The vault user's key id | Step 1.6 |
-| `BACKUP_S3_SECRET_ACCESS_KEY` | The vault user's secret | Step 1.6 |
-| `BACKUP_S3_REGION` | The vault's region | e.g. `us-east-2` |
+| `BACKUP_S3_ENDPOINT` | The vault's address | R2: `https://<account-id>.r2.cloudflarestorage.com` |
+| `BACKUP_S3_ACCESS_KEY_ID` | The **backup-only** token's key id | Step 1.4 — not the documents token |
+| `BACKUP_S3_SECRET_ACCESS_KEY` | The **backup-only** token's secret | Step 1.4 — not the documents token |
+| `BACKUP_S3_REGION` | The vault's region | R2: the literal string `auto` |
 | `BACKUP_ALERT_EMAIL` | Who is told when a backup fails | Your choice |
 
 **Already in use elsewhere — copy the same values across** (so the job can read the loan documents
@@ -197,8 +235,8 @@ and send mail):
 
 | Key | Value | Why |
 |---|---|---|
-| `BACKUP_S3_OBJECT_LOCK_MODE` | `COMPLIANCE` | Makes each stored backup undeletable |
-| `BACKUP_S3_OBJECT_LOCK_DAYS` | `35` | For how long |
+| `BACKUP_S3_OBJECT_LOCK_MODE` | **blank on R2** (`COMPLIANCE` on AWS/B2) | R2 has no per-object lock — its 35-day *bucket lock* rule from Step 1.2 does this job. Setting a mode on R2 sends headers it does not accept. |
+| `BACKUP_S3_OBJECT_LOCK_DAYS` | ignored while the mode is blank | Kept for an AWS/B2 vault |
 | `BACKUP_VERIFY_DATABASE_URL` | a second, small, throwaway Render Postgres named e.g. `yscap-verify` (the name must contain `verify`, `scratch` or `drill`) | Lets the weekly test do a **real restore**. Without it the test proves the file is intact but not that it loads. |
 
 **Optional second vault** (a different vendor again):
@@ -349,8 +387,14 @@ the password manager and not only in a dashboard.
 - **A restore is not instant.** Expect to spend an hour or two on a full rebuild, most of it waiting.
 - **The encryption key is a single point of failure by design.** That is the trade for the vendor
   never being able to read our borrowers' data. Store it in two places.
-- **Object Lock cannot be turned on after a bucket is created.** If the bucket was made without it,
-  make a new one.
+- **On R2, immutability lives on the bucket, not in these settings.** `BACKUP_S3_OBJECT_LOCK_MODE`
+  stays blank and the protection is the bucket lock rule in Cloudflare — so if that rule is missing,
+  the backups are deletable and nothing in this app will say so (`probe()` reports `unknown`, which
+  is not the same as "protected"). Check it in the dashboard.
+- **The backup token must not be the documents token.** Sharing one credential across both buckets
+  quietly undoes the main reason the R2 decision is safe.
+- **On AWS/B2, Object Lock cannot be turned on after a bucket is created.** If the bucket was made
+  without it, make a new one.
 
 ---
 
