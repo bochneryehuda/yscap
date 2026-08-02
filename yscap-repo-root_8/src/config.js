@@ -735,11 +735,13 @@ module.exports = {
     // dry-run gate (flood.js dryrun() is hard-false), because a stored runtime override
     // kept surviving deploys and pinning the button in test mode. The master switch
     // XACTUS_FLOOD_ENABLED is the kill switch; nothing is ever ordered automatically.
-    // Auth style follows CREDIT by default (same login on the same connection):
-    // 'basic' (HTTP Basic header — the credit default) or 'query'
-    // (LoginAccountIdentifier/LoginAccountPassword URL params). Override with
-    // XACTUS_FLOOD_AUTH_MODE only if a separate flood endpoint needs a different style.
-    authMode: /^query$/i.test((process.env.XACTUS_FLOOD_AUTH_MODE || process.env.XACTUS_AUTH_MODE || 'basic').trim()) ? 'query' : 'basic',
+    // Flood ReportX authenticates via URL QUERY PARAMS — LoginAccountIdentifier /
+    // LoginAccountPassword in the URL, with only a Content-Type header — NOT an HTTP
+    // Basic header. This is exactly what the Xactus Flood ReportX Postman collection
+    // does (every action posts to {baseUrl}?LoginAccountIdentifier=…&LoginAccountPassword=…).
+    // Default 'query'; set XACTUS_FLOOD_AUTH_MODE=basic ONLY if Xactus tells you this
+    // account uses a Basic header instead.
+    authMode: /^basic$/i.test((process.env.XACTUS_FLOOD_AUTH_MODE || 'query').trim()) ? 'basic' : 'query',
   },
   // Which flood provider the "Order flood certificate" button uses.
   floodProvider: (process.env.FLOOD_ORDER_PROVIDER || 'xactus').trim().toLowerCase(),

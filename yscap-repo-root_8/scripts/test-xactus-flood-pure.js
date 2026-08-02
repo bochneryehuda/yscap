@@ -11,7 +11,7 @@ const assert = require('assert');
 const flood = require('../src/xactus/flood');
 const addr = require('../src/xactus/flood-address');
 const X = require('../src/lib/mismo/xml');
-const { buildOrderBody, buildStatusBody, parseResponse, scrubCredentials, classifyConnection } = flood._seam;
+const { buildOrderBody, buildStatusBody, parseResponse, scrubCredentials, classifyConnection, buildUrlAndHeaders } = flood._seam;
 
 let n = 0;
 function ok(cond, msg) { n++; assert.ok(cond, msg); }
@@ -219,6 +219,39 @@ function ok(cond, msg) { n++; assert.ok(cond, msg); }
   const c = addr.resolveAddress('1373 Azalea Dr, Jacksonville, FL 32205');
   ok(c && typeof c === 'object', 'string address does not throw');
   ok(addr.resolveAddress(null).street === '', 'null address → empty');
+}
+
+// ── 13. Flood auth is QUERY PARAMS by default (matches the Xactus Postman set) ─
+{
+  const { url, headers } = buildUrlAndHeaders({ endpoint: 'https://flood.xactus.example/order', username: 'op123', password: 'p@ss/wrd', authMode: 'query' });
+  ok(/[?&]LoginAccountIdentifier=op123(&|$)/.test(url), 'login id rides in the URL query');
+  ok(/LoginAccountPassword=/.test(url), 'password rides in the URL query');
+  ok(/p%40ss/.test(url), 'reserved chars in the password are URL-encoded');
+  ok(!headers.Authorization, 'no Basic auth header in query mode');
+  ok(headers['Content-Type'] === 'text/xml', 'Content-Type is text/xml');
+}
+
+// ── 14. Basic auth ONLY when explicitly overridden ────────────────────────────
+{
+  const { url, headers } = buildUrlAndHeaders({ endpoint: 'https://flood.xactus.example/order', username: 'op123', password: 'secret', authMode: 'basic' });
+  ok(/^Basic /.test(headers.Authorization || ''), 'Basic header present in basic mode');
+  ok(!/LoginAccountIdentifier/.test(url), 'no login query param in basic mode');
+}
+
+// ── 15. Error surfacing carries the REAL Xactus reason + code ──────────────────
+{
+  // Code-only rejection (empty description) → the vendor code is still surfaced.
+  const codeOnly = parseResponse('<?xml version="1.0"?><RESPONSE_GROUP MISMOVersionID="2.4"><RESPONSE><STATUS _Condition="error" _Code="E036"/></RESPONSE></RESPONSE_GROUP>');
+  ok(codeOnly.status === 'error' && /E036/.test(codeOnly.error || ''), 'code-only rejection surfaces the code');
+  // Description present → surfaced verbatim, with the code.
+  const withDesc = parseResponse('<?xml version="1.0"?><RESPONSE_GROUP MISMOVersionID="2.4"><RESPONSE><STATUS _Condition="error" _Code="E036" _Description="Invalid Client Account Identifier, Incorrect password supplied"/></RESPONSE></RESPONSE_GROUP>');
+  ok(/Invalid Client Account/.test(withDesc.error || '') && /E036/.test(withDesc.error || ''), 'description AND code both surfaced');
+  // No reason anywhere → an actionable fallback, never a bare "failed".
+  const noReason = parseResponse('<?xml version="1.0"?><RESPONSE_GROUP MISMOVersionID="2.4"><RESPONSE><STATUS _Condition="Error"/></RESPONSE></RESPONSE_GROUP>');
+  ok(noReason.status === 'error' && /flood web address|activated/.test(noReason.error || ''), 'empty reason → actionable fallback');
+  // A message carried only in a KEY element is recovered.
+  const keyErr = parseResponse('<?xml version="1.0"?><RESPONSE_GROUP MISMOVersionID="2.4"><RESPONSE><KEY _Name="ErrorMessage" _Value="Flood product not enabled for this operator"/><STATUS _Condition="error"/></RESPONSE></RESPONSE_GROUP>');
+  ok(/not enabled/.test(keyErr.error || ''), 'error recovered from a KEY element');
 }
 
 // ── 12. Test mode is REMOVED — the button always places a real order ──────────

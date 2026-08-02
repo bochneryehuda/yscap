@@ -172,6 +172,29 @@ function embeddedPdfBase64(root) {
   return null;
 }
 
+// Build the most specific error text Xactus actually gave us. A MISMO error carries
+// it in STATUS/_Description (+ _Code); a bad login comes back the same way ("Invalid
+// Client Account Identifier"); a non-MISMO error may put it only in _Condition/_Name
+// or a KEY element. Always keep the code so a code-only rejection is still
+// diagnosable, and NEVER return an empty string for an error.
+function extractError(root, stName, stCond, stDesc, stCode) {
+  let reason = clean(stDesc);
+  if (!reason) {
+    // A KEY element sometimes carries the message (_Name Error/Message → _Value).
+    for (const k of X.allDeep(root, 'KEY')) {
+      const kn = clean(X.attr(k, '_Name')).toLowerCase();
+      if (/error|message|reason/.test(kn)) { reason = clean(X.attr(k, '_Value')); if (reason) break; }
+    }
+  }
+  if (!reason) reason = clean(stCond) || clean(stName);
+  if (/^(error|status|failure|failed)$/i.test(reason)) reason = '';   // a bare word is not a reason
+  const bits = [];
+  if (reason) bits.push(reason);
+  if (clean(stCode)) bits.push(`code ${clean(stCode)}`);
+  return bits.join(' — ')
+    || 'Xactus rejected the order but gave no reason — check the flood web address and that the flood login is activated';
+}
+
 // Turn a MISMO 2.4 response into a normalized shape. Never throws for a well-formed
 // document; a parse failure is surfaced as an `unrecognized` error by the caller.
 function parseResponse(text) {
@@ -214,7 +237,7 @@ function parseResponse(text) {
     statusText: stDesc || '',
     code: stCode || '',
     determination: det ? summarizeDetermination(det) : null,
-    error: outStatus === 'error' ? (stDesc || 'Xactus reported the flood order failed.') : null,
+    error: outStatus === 'error' ? extractError(root, stName, stCond, stDesc, stCode) : null,
   };
 }
 
@@ -237,15 +260,18 @@ function summarizeDetermination(det) {
 }
 
 // ── HTTP ─────────────────────────────────────────────────────────────────────
-function buildUrlAndHeaders() {
-  let url = cfg.endpoint.replace(/\/+$/, '');
+// `over` lets a unit test inject {endpoint, username, password, authMode} without env.
+// Flood ReportX default is QUERY-PARAM auth (login in the URL, no Basic header).
+function buildUrlAndHeaders(over) {
+  const c = over || cfg;
+  let url = String(c.endpoint || '').replace(/\/+$/, '');
   const headers = { 'Content-Type': 'text/xml', Accept: 'application/xml, text/xml' };
-  if ((cfg.authMode || 'query') === 'basic') {
-    headers.Authorization = 'Basic ' + Buffer.from(`${cfg.username}:${cfg.password}`).toString('base64');
+  if ((c.authMode || 'query') === 'basic') {
+    headers.Authorization = 'Basic ' + Buffer.from(`${c.username}:${c.password}`).toString('base64');
   } else {
     const u = new URL(url);
-    u.searchParams.set('LoginAccountIdentifier', cfg.username);
-    u.searchParams.set('LoginAccountPassword', cfg.password);
+    u.searchParams.set('LoginAccountIdentifier', c.username);
+    u.searchParams.set('LoginAccountPassword', c.password);
     url = u.toString();
   }
   return { url, headers };
@@ -276,14 +302,25 @@ async function postXml(body) {
     e.userMessage = `Xactus couldn’t complete the flood order (error ${r.status}). ${r.status === 401 || r.status === 403 ? 'The login may be wrong or not yet activated.' : 'Please try again in a moment.'}`;
     throw e;
   }
+  let parsed;
   try {
-    return parseResponse(respText);
+    parsed = parseResponse(respText);
   } catch (_) {
+    // Not a recognized MISMO flood response at all — log the raw body (scrubbed) so a
+    // wrong endpoint (e.g. an HTML error page) is diagnosable, then surface a clear message.
+    console.warn('[xactus-flood] unrecognized response:', scrubCredentials(String(respText)).slice(0, 1200));
     const e = new Error('unrecognized Xactus flood response');
     e.status = 502;
-    e.userMessage = 'Xactus responded, but the flood report format wasn’t recognized. Confirm the exact endpoint with Xactus.';
+    e.userMessage = 'Xactus responded, but the flood report format wasn’t recognized. Confirm the exact flood web address with Xactus.';
     throw e;
   }
+  // When Xactus REJECTS the order, log its raw response (credentials scrubbed) so the
+  // exact reason — bad login, product not enabled, wrong endpoint — is diagnosable
+  // from the server logs even though the user only sees the summarized message.
+  if (parsed.status === 'error') {
+    console.warn('[xactus-flood] order rejected by Xactus — response:', scrubCredentials(String(respText)).slice(0, 1200));
+  }
+  return parsed;
 }
 
 // Place an ORIGINAL flood order. Honors dry-run (build + return the body, send
@@ -348,5 +385,5 @@ module.exports = {
   configured, enabled, dryrun, status, version, productIdentifier,
   placeOrder, getOrderStatus, testConnection,
   // exposed for unit tests
-  _seam: { buildOrderBody, buildStatusBody, parseResponse, embeddedPdfBase64, scrubCredentials, classifyConnection: _classifyConnection },
+  _seam: { buildOrderBody, buildStatusBody, parseResponse, embeddedPdfBase64, scrubCredentials, classifyConnection: _classifyConnection, buildUrlAndHeaders, extractError },
 };
