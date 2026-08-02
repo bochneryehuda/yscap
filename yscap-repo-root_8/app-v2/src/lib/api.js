@@ -391,7 +391,9 @@ export const api = {
   encompassReplace:  (id, fieldKey) => req('POST', `/api/staff/applications/${id}/encompass/replace`, { fieldKey }),
   // Flood-certificate ordering (the one owner-authorized Encompass write).
   floodOrderState:   (id) => req('GET', `/api/staff/applications/${id}/flood-order`),
-  orderFlood:        (id, itemId) => req('POST', `/api/staff/applications/${id}/order-flood`, itemId ? { checklistItemId: itemId } : {}),
+  orderFlood:        (id, itemId, force) => req('POST', `/api/staff/applications/${id}/order-flood`, { ...(itemId ? { checklistItemId: itemId } : {}), ...(force ? { force: true } : {}) }),
+  // Retrieval of a certificate we already paid for — never places a new order.
+  fetchFloodCertificate: (id) => req('POST', `/api/staff/applications/${id}/flood-certificate`),
   // Credit report (Xactus import) — the internal Credit report condition.
   // `scope` = 'co' | 'primary' narrows the credit section to ONE borrower, so a
   // co-borrower's own credit condition shows their report instead of the file's.
