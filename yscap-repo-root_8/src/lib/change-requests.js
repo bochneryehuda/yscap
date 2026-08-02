@@ -241,6 +241,10 @@ async function currentValue(appId, field, client = db) {
    ===================================================================== */
 function proposalProblem(field, rawValue, opts = {}) {
   if (isBorrowerField(field)) {
+    // `openBorrowerRequest` refuses without one, so this must too — a pre-check
+    // LOOSER than the writer re-opens the very hole it was added to close
+    // (re-audit, 2026-08-02).
+    if (!opts.targetBorrowerId) return 'a target borrower is required';
     if (field === 'ssn') {
       return require('./fields').sanitizeSsnDigits(rawValue) ? '' : 'Enter a valid 9-digit SSN.';
     }

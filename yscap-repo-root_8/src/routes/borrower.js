@@ -229,7 +229,20 @@ router.put('/profile', async (req, res) => {
   if (b.nameSuffix !== undefined) fields.name_suffix = clean(String(b.nameSuffix).trim());
   if (b.cellPhone !== undefined) fields.cell_phone = clean(b.cellPhone);
   if (b.dateOfBirth !== undefined) fields.date_of_birth = clean(b.dateOfBirth);
-  if (b.fico !== undefined) fields.fico = require('../lib/fields').sanitizeFico(b.fico);  // #90: 3-digit, 300–850
+  /* A BAD SCORE IS REFUSED, NOT WRITTEN AS A BLANK (re-audit, 2026-08-02).
+     `sanitizeFico` answers null for BOTH "cleared" and "that is not a score", and
+     this door wrote the null either way — so `{"fico":"abc"}` came back 200
+     {ok:true} and ERASED a credit score the file already had. The staff door has
+     always refused it with a reason; two doors onto one column disagreeing is
+     the recurring shape, and here the borrower-facing one was the destructive
+     one. An explicit blank still clears, exactly as before. */
+  if (b.fico !== undefined) {
+    const typedFico = b.fico != null && String(b.fico).trim() !== '';
+    fields.fico = require('../lib/fields').sanitizeFico(b.fico);  // #90: 3-digit, 300–850
+    if (typedFico && fields.fico == null) {
+      return res.status(400).json({ error: 'Credit score must be a 3-digit score between 300 and 850' });
+    }
+  }
   if (b.citizenship !== undefined) fields.citizenship = clean(b.citizenship);
   if (b.maritalStatus !== undefined) fields.marital_status = clean(b.maritalStatus);
   if (b.yearsAtResidence !== undefined) fields.years_at_residence = (b.yearsAtResidence === '' || b.yearsAtResidence == null) ? null : Number(b.yearsAtResidence);
@@ -240,6 +253,14 @@ router.put('/profile', async (req, res) => {
   if (b.yearsAtResidence !== undefined || b.monthsAtResidence !== undefined) {
     const y = fields.years_at_residence != null ? fields.years_at_residence : null;
     const m = fields.months_at_residence != null ? fields.months_at_residence : null;
+    /* SAY SO, rather than silently dropping the anchor. `moveInFrom` now refuses
+       to build a date it cannot make (that is what stops the 500 — see
+       lib/residence), but a count nobody could have lived is still a typo the
+       person should be told about, not quietly half-saved. `months_at_residence`
+       is int4, so 99999 fits its column perfectly — only the DERIVED date does
+       not, which the column sweep below cannot see (re-audit 2026-08-02). */
+    const rProblem = require('../lib/residence').residenceCountProblem(y, m);
+    if (rProblem) return res.status(400).json({ error: rProblem });
     fields.residence_since = (y || m) ? require('../lib/residence').moveInFrom(y, m) : null;
   }
   if (b.housingStatus !== undefined) fields.housing_status = clean(b.housingStatus);
@@ -2102,6 +2123,14 @@ router.post('/applications/:id/complete-fields', async (req, res) => {
       for (const [k, v] of Object.entries(b)) {
         if (!(k in B_COMPLETE_APP) && !(k in B_COMPLETE_BORROWER)) continue;
         if (v === '' || v == null) continue;
+        /* SKIP EXACTLY WHAT THE WRITER SKIPS (re-audit, 2026-08-02). The money
+           branch below IGNORES a value with no digits in it — `purchase_price:
+           'TBD'` has always been passed over — so refusing it here made the
+           pre-pass STRICTER than the door it guards: a post carrying a good ARV
+           and a "TBD" price saved nothing on a registered file while the same
+           post on an unregistered one still saved the ARV. A pre-check that
+           refuses work the writer would have done is its own bug. */
+        if (B_COMPLETE_APP[k] === 'money' && String(v).replace(/[^0-9.]/g, '') === '') continue;
         const bad = changeRequests.proposalProblem(k, v, { targetBorrowerId: me(req) });
         if (bad) return res.status(400).json({ error: bad });
       }

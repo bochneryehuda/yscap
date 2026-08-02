@@ -8,6 +8,7 @@
 // and the marketing generator.
 const router = require('express').Router();
 const db = require('../db');
+const F = require('../lib/fields');           // jsonbText: NUL-safe jsonb binds
 const pricingSettings = require('../lib/pricing-settings');
 
 const numOrNull = (v) => (v == null || v === '' || isNaN(Number(v)) ? null : Number(v));
@@ -65,7 +66,7 @@ router.put('/', async (req, res) => {
     return res.status(400).json({ error: 'Silver program markup is capped at 1.00% — anything above 1 point is not earned on this program.' });
   }
   // extra_fees is a jsonb column, appended after the scalar columns below.
-  cols.extra_fees = JSON.stringify(extraFees);
+  cols.extra_fees = F.jsonbText(extraFees);
   const client = await db.getClient();
   try {
     await client.query('BEGIN');

@@ -118,7 +118,12 @@ if (!process.env.DATABASE_URL) {
       const nb = require('../src/lib/number-bounds');
       const KIND_OF = (t, p, s) => {
         if (t === 'integer') return 'int';
-        if (t !== 'numeric' || p == null) return null;    // bigint / bare numeric: no ceiling to enforce
+        /* A type we have no kind for is reported, never silently skipped — the
+           filter used to list only numeric+integer, so a future smallint or
+           double precision column would have been invisible to the completeness
+           check AND made a legitimate entry read as "not a numeric column". */
+        if (t !== 'numeric') return null;                 // bigint/smallint/float: no ceiling defined
+        if (p == null) return null;                       // bare numeric: no ceiling to enforce
         if (p === 14 && s === 2) return 'money';
         if (p === 6 && s === 3) return 'pct';
         return { precision: p, scale: s };
@@ -133,7 +138,7 @@ if (!process.env.DATABASE_URL) {
           `SELECT column_name, data_type, numeric_precision, numeric_scale
              FROM information_schema.columns
             WHERE table_schema='public' AND table_name=$1
-              AND data_type IN ('numeric','integer')`, [table])).rows;
+              AND data_type IN ('numeric','integer','smallint','bigint','double precision','real')`, [table])).rows;
         const seen = new Set();
         for (const c of cols) {
           const want = KIND_OF(c.data_type, c.numeric_precision, c.numeric_scale);
@@ -570,6 +575,116 @@ if (!process.env.DATABASE_URL) {
       eq(bAddr.status, 200, 'and so does the borrower profile door');
       const row = (await db.query(`SELECT current_address FROM borrowers WHERE id=$1`, [borrowerId])).rows[0];
       eq(row.current_address && row.current_address.line1, '2 BSt', '…with the invisible character removed');
+    }
+
+    /* ================================================================ *
+     * THE RE-AUDIT'S FINDINGS (2026-08-02) — what the FIX round left open.
+     * ================================================================ */
+    console.log('\n--- Q1: a count that cannot be a move-in date ---');
+    {
+      /* THE BLOCKER. `months_at_residence` is int4, so 99999 fits its column
+         perfectly — it is the DERIVED move-in date that Postgres cannot store,
+         which the column sweep structurally cannot see. The fix round closed the
+         YEARS axis and left the MONTHS one open, on the same two doors, and 99999
+         months is the more plausible fat-finger of the two. */
+      const R = require('../src/lib/residence');
+      eq(R.moveInFrom(0, 99999), null, 'moveInFrom refuses to build a date it cannot make');
+      eq(R.moveInFrom(0, 2000000000), null, '…and never returns an Invalid Date');
+      assert(R.moveInFrom(2, 3) instanceof Date, '…while an ordinary duration still anchors');
+      eq(R.residenceCountProblem(0, 5), '', 'five months is a fine duration');
+      assert(R.residenceCountProblem(0, 99999) !== '', '…99999 months is not');
+      assert(R.residenceCountProblem(9999, 0) !== '', '…and neither is 9999 years');
+
+      const bSet = (body) => call('PUT', '/api/borrower/profile', bTok, body);
+      const staffSet = (body) => call('PATCH', `/api/staff/borrowers/${borrowerId}`, sTok, body);
+      for (const [label, door] of [['borrower', bSet], ['staff', staffSet]]) {
+        for (const m of [99999, 100000000, 2000000000]) {
+          const r = await door({ monthsAtResidence: m });
+          eq(r.status, 400, `${label}: monthsAtResidence ${m} is refused, not a 500`);
+          assert(noRawPg(r), `${label}: …in our words, not the driver's`);
+        }
+        eq((await door({ yearsAtResidence: 2, monthsAtResidence: 3 })).status, 200,
+          `${label}: an ordinary time at this address still saves`);
+      }
+      const anchored = (await db.query(
+        `SELECT years_at_residence, months_at_residence, residence_since FROM borrowers WHERE id=$1`, [borrowerId])).rows[0];
+      eq(Number(anchored.years_at_residence), 2, '…and is stored');
+      assert(!!anchored.residence_since, '…with a real move-in date anchored from it');
+    }
+
+    console.log('\n--- Q2: the PUBLIC lead door cannot lose a lead to a NUL byte ---');
+    {
+      const NUL = String.fromCharCode(0);
+      const post = (body) => call('POST', '/api/leads', null, body);
+      const clean = await post({ tool: 'loan_application', name: `Clean ${sfx}`, email: `lead-a-${sfx}@test.local`, payload: { v: { note: 'clean' } } });
+      eq(clean.status, 201, 'an ordinary lead is captured');
+      const nul = await post({ tool: 'loan_application', name: `Nul ${sfx}`, email: `lead-b-${sfx}@test.local`, payload: { v: { note: `a${NUL}b` } } });
+      eq(nul.status, 201, 'a lead carrying a NUL byte is ALSO captured (it used to 500 and be lost)');
+      const nulKey = await post({ tool: 'loan_application', name: `NulKey ${sfx}`, email: `lead-c-${sfx}@test.local`, payload: { [`k${NUL}`]: 1 } });
+      eq(nulKey.status, 201, '…including one in a KEY');
+      const rows = await db.query(`SELECT payload FROM leads WHERE email=$1`, [`lead-b-${sfx}@test.local`]);
+      eq(rows.rows.length, 1, '…and it really is stored');
+      eq(rows.rows[0].payload && rows.rows[0].payload.v && rows.rows[0].payload.v.note, 'ab',
+        '…with the invisible character removed');
+    }
+
+    console.log('\n--- Q3: the pre-pass never refuses work the writer would have done ---');
+    {
+      /* A pre-check STRICTER than the door it guards is its own bug. The writer
+         has always IGNORED a money value with no digits in it ("TBD"), so
+         refusing it made a registered file behave differently from an
+         unregistered one for identical input. */
+      const appId = await newFile();
+      await register(appId);
+      const r = await call('POST', `/api/borrower/applications/${appId}/complete-fields`, bTok,
+        { purchase_price: 'TBD', arv: 725000 });
+      eq(r.status, 200, 'a junk money value is passed over, exactly as the writer passes it over');
+      const filed = await db.query(
+        `SELECT field FROM change_requests WHERE application_id=$1 AND status='pending' ORDER BY field`, [appId]);
+      eq(filed.rows.map((x) => x.field).join(','), 'arv', '…and the GOOD field is still filed');
+
+      // …and the two paths agree, which is the property that actually matters.
+      const open = await newFile();
+      const unlocked = await call('POST', `/api/borrower/applications/${open}/complete-fields`, bTok,
+        { purchase_price: 'TBD', arv: 725000 });
+      eq(unlocked.status, r.status, 'a registered and an unregistered file answer the same way');
+    }
+
+    console.log('\n--- Q4: a bad credit score is refused, never written as a blank ---');
+    {
+      /* `sanitizeFico` answers null for BOTH "cleared" and "that is not a score",
+         and this door wrote the null either way — so junk came back 200 {ok:true}
+         and ERASED a score the file already had. */
+      /* A FRESH borrower with no registered file — once ANY of a borrower's files
+         is accepted, a personal edit becomes a change request instead of a live
+         write, and this is about the LIVE write path. */
+      const freshId = (await db.query(
+        `INSERT INTO borrowers (email,first_name,last_name) VALUES ($1,'Fresh','Score') RETURNING id`,
+        [`bounds-fico-${sfx}@test.local`])).rows[0].id;
+      await db.query(`INSERT INTO borrower_auth (borrower_id,password_hash,token_version) VALUES ($1,'x',0) ON CONFLICT DO NOTHING`, [freshId]);
+      const fTok = C.signJwt({ sub: freshId, kind: 'borrower', tv: 0 });
+      const bSet = (body) => call('PUT', '/api/borrower/profile', fTok, body);
+      const ficoNow = async () => (await db.query(`SELECT fico FROM borrowers WHERE id=$1`, [freshId])).rows[0].fico;
+
+      eq((await bSet({ fico: 740 })).status, 200, 'a real score saves');
+      eq(Number(await ficoNow()), 740, '…and is stored');
+      const junk = await bSet({ fico: 'abc' });
+      eq(junk.status, 400, 'junk is REFUSED');
+      eq(Number(await ficoNow()), 740, '…and the score already on file is UNTOUCHED');
+      eq((await bSet({ fico: 1e12 })).status, 400, 'an absurd score is refused too');
+      eq(Number(await ficoNow()), 740, '…still untouched');
+      eq((await bSet({ fico: '' })).status, 200, '…while an explicit blank still CLEARS it');
+      eq(await ficoNow(), null, '…really cleared');
+    }
+
+    console.log('\n--- Q5: the pre-check agrees with the writer on every axis ---');
+    {
+      const CR = require('../src/lib/change-requests');
+      // LOOSER than the writer re-opens the hole the pre-pass exists to close.
+      assert(CR.proposalProblem('fico', '720', {}) !== '',
+        'a personal field with no target borrower is refused, exactly as openBorrowerRequest refuses it');
+      eq(CR.proposalProblem('fico', '720', { targetBorrowerId: borrowerId }), '',
+        '…and accepted once there is one');
     }
 
     console.log(failures ? `\n${failures} FAILURE(S)` : '\nALL column-bounds door assertions passed');

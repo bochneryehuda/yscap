@@ -7471,6 +7471,11 @@ router.patch('/borrowers/:id', async (req, res) => {
     if (b.yearsAtResidence !== undefined || b.monthsAtResidence !== undefined) {
       const y = b.yearsAtResidence === '' || b.yearsAtResidence == null ? null : Number(b.yearsAtResidence);
       const m = b.monthsAtResidence === '' || b.monthsAtResidence == null ? null : parseInt(b.monthsAtResidence, 10);
+      // See the borrower door's note: `months_at_residence` fits int4 fine, so the
+      // column sweep below cannot catch a count that walks the DERIVED move-in
+      // date off the calendar. Refused here, in words (re-audit 2026-08-02).
+      const rProblem = require('../lib/residence').residenceCountProblem(y, m);
+      if (rProblem) return res.status(400).json({ error: rProblem });
       put('years_at_residence', Number.isFinite(y) ? y : null);
       put('months_at_residence', Number.isFinite(m) ? m : null);
       put('residence_since', (y || m) ? require('../lib/residence').moveInFrom(y, m) : null);
