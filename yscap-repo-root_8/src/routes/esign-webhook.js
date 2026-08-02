@@ -18,6 +18,10 @@
 const express = require('express');
 const crypto = require('crypto');
 const router = require('../lib/safe-router')();
+const F = require('../lib/fields');           // jsonbText: this router is mounted ABOVE
+                                              // the request-boundary NUL stripper (it needs the
+                                              // RAW body for signature checks), so the helper is
+                                              // genuinely the only guard here (audit 2026-08-02).
 const db = require('../db');
 const cfg = require('../config');
 const docusign = require('../lib/integrations/docusign');
@@ -78,7 +82,7 @@ router.post('/', async (req, res) => {
     await db.query(
       `INSERT INTO docusign_event_inbox (body_sha256, envelope_id, event_type, raw)
        VALUES ($1,$2,$3,$4) ON CONFLICT (body_sha256) DO NOTHING`,
-      [bodySha, envelopeId, eventType, JSON.stringify(trimmed)]);
+      [bodySha, envelopeId, eventType, F.jsonbText(trimmed)]);
   } catch (e) {
     console.error('[esign-webhook] inbox insert failed:', db.describeError ? db.describeError(e) : e.message);
     // Still 200 — DocuSign retries are fine; the next Envelopes:get reconciles.
