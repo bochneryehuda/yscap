@@ -44,9 +44,16 @@ const INT_FIELDS = new Set(['units']);
 // either way. 'Fix & Hold' joins program alongside the ClickUp option the owner
 // is adding — a borrower/officer asking to switch strategy to Fix & Hold was
 // refused outright before.
+/* THE OPTION LIST IS DERIVED, NOT RE-TYPED (fourth audit, 2026-08-02).
+   This was a hand-copy of the canonical lists and it had already drifted: `PUD`
+   is in `property-type.PROPERTY_TYPES` and `PATCH /details` stores it happily,
+   but this list did not carry it — so the borrower's own panel refused to
+   confirm a value the staff door had just written. Exactly the "we offer a
+   choice and then refuse it" bug the round before fixed for `DSCR / Rental`,
+   two entries down the same list. Derive it, and it cannot drift again. */
 const FIELD_OPTIONS = {
   property_type: [
-    'SFR (1 unit)', 'Multi 2–4', 'Multi 5+', 'Condo', 'Townhouse', 'Mixed use',
+    ...require('./property-type').PROPERTY_TYPES.map((p) => p.label),
     'SFR', 'Multi 2-4', 'Mixed Use',                 // legacy, accepted not offered
   ],
   /* 'DSCR / Rental' is in `app-v2/src/lib/enums.js PROGRAMS` and the borrower's
@@ -57,7 +64,11 @@ const FIELD_OPTIONS = {
      file", which was a lie; surfacing the refusal made an offered-but-rejected
      option visible. Offering a choice and then refusing it is the bug — a
      borrower can only pick what we show them. */
-  program: ['Fix & Flip w/ Construction', 'Fix & Hold', 'Bridge', 'Ground-Up Construction', 'DSCR / Rental'],
+  /* 'Not sure yet' is a real entry in the PROGRAMS picker and db/382/db/385
+     deliberately CANONICALIZE it on write, so the staff door takes it and the
+     trigger rewrites it. Refusing it on the borrower's door was the same
+     offer-then-refuse bug. */
+  program: ['Fix & Flip w/ Construction', 'Fix & Hold', 'Bridge', 'Ground-Up Construction', 'DSCR / Rental', 'Not sure yet'],
   loan_type: ['Purchase', 'Refinance — Rate & Term', 'Refinance — Cash-Out', 'Delayed Purchase Financing'],
 };
 const isGovernedField = (k) => Object.prototype.hasOwnProperty.call(FIELD_LABELS, k);

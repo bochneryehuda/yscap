@@ -7490,6 +7490,13 @@ router.patch('/borrowers/:id', async (req, res) => {
     if (b.yearsAtResidence !== undefined || b.monthsAtResidence !== undefined) {
       const y = b.yearsAtResidence === '' || b.yearsAtResidence == null ? null : Number(b.yearsAtResidence);
       const m = b.monthsAtResidence === '' || b.monthsAtResidence == null ? null : parseInt(b.monthsAtResidence, 10);
+      /* Junk is REFUSED here too. It used to answer 200 and write NULL into all
+         three residence columns, while the borrower door refused the identical
+         value — one question, two answers (fourth audit, 2026-08-02). */
+      if ((b.yearsAtResidence != null && b.yearsAtResidence !== '' && !Number.isFinite(y))
+          || (b.monthsAtResidence != null && b.monthsAtResidence !== '' && !Number.isFinite(m))) {
+        return res.status(400).json({ error: 'Time at this address must be a number' });
+      }
       // See the borrower door's note: `months_at_residence` fits int4 fine, so the
       // column sweep below cannot catch a count that walks the DERIVED move-in
       // date off the calendar. Refused here, in words (re-audit 2026-08-02).
@@ -7502,9 +7509,20 @@ router.patch('/borrowers/:id', async (req, res) => {
          refuses what the person did not touch is not guarding anything. */
       const rProblem = require('../lib/residence').residenceCountProblem(y, m);
       if (rProblem) {
-        const cur = (await db.query(`SELECT years_at_residence, months_at_residence FROM borrowers WHERE id=$1`, [req.params.id])).rows[0] || {};
-        const same = Number(cur.years_at_residence || 0) === Number(y || 0)
-          && Number(cur.months_at_residence || 0) === Number(m || 0);
+        /* COMPARE AGAINST WHAT THEY WERE SHOWN (fourth audit, 2026-08-02).
+           The first cut compared the request to the STORED columns — but both GET
+           doors return `withLiveResidence`, which OVERWRITES those columns with the
+           duration computed live from `residence_since`. The client echoes the LIVE
+           number, so the two were never the same value, and they drift further apart
+           every month: the brick this was written to remove was still live, and the
+           door even bricked rows it had just accepted — exactly 100 years is allowed,
+           and one month of drift later that same row could no longer be saved. */
+        const cur = (await db.query(
+          `SELECT years_at_residence, months_at_residence, residence_since FROM borrowers WHERE id=$1`,
+          [req.params.id])).rows[0] || {};
+        const shown = require('../lib/residence').withLiveResidence(Object.assign({}, cur));
+        const same = Number(shown.years_at_residence || 0) === Number(y || 0)
+          && Number(shown.months_at_residence || 0) === Number(m || 0);
         if (!same) return res.status(400).json({ error: rProblem });
       }
       put('years_at_residence', Number.isFinite(y) ? y : null);
@@ -9923,8 +9941,13 @@ async function completeFields(req, res, borrowerScoped) {
       if (k === 'purchase_price' && refiNow) continue;
       let v = b[k];
       if (t === 'money') {
-        const s = String(v).replace(/[^0-9.]/g, ''); if (s === '') continue;
-        v = Number(s); if (!Number.isFinite(v)) continue;
+        /* A money box is either a number or a refusal — see the borrower door's
+           note. The character-deleting parse this replaces stored 15 for "1e5"
+           and a POSITIVE 500000 for "-500000", on pricing columns. */
+        const mp = require('../lib/fields').moneyTextProblem(v, k);
+        if (mp) return res.status(400).json({ error: mp });
+        v = require('../lib/fields').moneyValue(v);
+        if (v == null) continue;
         /* …and it has to FIT (post-merge audit round 2, 2026-08-02). This panel
            writes the SAME economics columns as `PATCH /details`, which answers a
            plain 400 naming the field — here the value went straight to Postgres,

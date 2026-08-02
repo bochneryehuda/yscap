@@ -268,9 +268,20 @@ router.put('/profile', async (req, res) => {
        refuses what the person did not touch is not guarding anything. */
     const rProblem = require('../lib/residence').residenceCountProblem(y, m);
     if (rProblem) {
-      const cur = (await db.query(`SELECT years_at_residence, months_at_residence FROM borrowers WHERE id=$1`, [me(req)])).rows[0] || {};
-      const same = Number(cur.years_at_residence || 0) === Number(y || 0)
-        && Number(cur.months_at_residence || 0) === Number(m || 0);
+      /* COMPARE AGAINST WHAT THEY WERE SHOWN (fourth audit, 2026-08-02).
+         The first cut compared the request to the STORED columns — but both GET
+         doors return `withLiveResidence`, which OVERWRITES those columns with the
+         duration computed live from `residence_since`. The client echoes the LIVE
+         number, so the two were never the same value, and they drift further apart
+         every month: the brick this was written to remove was still live, and the
+         door even bricked rows it had just accepted — exactly 100 years is allowed,
+         and one month of drift later that same row could no longer be saved. */
+      const cur = (await db.query(
+        `SELECT years_at_residence, months_at_residence, residence_since FROM borrowers WHERE id=$1`,
+        [me(req)])).rows[0] || {};
+      const shown = require('../lib/residence').withLiveResidence(Object.assign({}, cur));
+      const same = Number(shown.years_at_residence || 0) === Number(y || 0)
+        && Number(shown.months_at_residence || 0) === Number(m || 0);
       if (!same) return res.status(400).json({ error: rProblem });
     }
     fields.residence_since = (y || m) ? require('../lib/residence').moveInFrom(y, m) : null;
@@ -2103,16 +2114,18 @@ router.post('/applications/:id/appraisal-card/from-saved', async (req, res) => {
 const B_COMPLETE_APP = { program: 'text', loan_type: 'text', property_type: 'text',
   purchase_price: 'money', as_is_value: 'money', arv: 'money', rehab_budget: 'money' };
 const B_COMPLETE_BORROWER = { cell_phone: 'text', date_of_birth: 'date', fico: 'int', citizenship: 'text' };
-/* WHAT THE WRITER IGNORES — one definition, so the pre-check in front of it can
-   never be stricter OR looser (third audit, 2026-08-02). The writer skips a
-   money value with no digits ("TBD") AND one that does not parse to a finite
-   number ("1.2.3", "..", a European "1.200.000"); the pre-pass mirrored only the
-   first, so a registered file refused nine shapes of input that an unregistered
-   file happily ignored — same body, two answers. */
-function writerSkipsMoney(v) {
-  const s = String(v).replace(/[^0-9.]/g, '');
-  return s === '' || !Number.isFinite(Number(s));
-}
+/* A MONEY BOX IS EITHER A NUMBER OR A REFUSAL — never a reinterpretation, and
+   never a silent skip (fourth audit, 2026-08-02).
+   Ignoring what it could not parse was a 200 with nothing saved, on a client that
+   posts ONE field at a time; and the parse it did use deleted characters rather
+   than reading a number, so "1e5" stored 15, "2-4" stored 24 and "-500000" stored
+   a POSITIVE 500000 on a pricing column. One definition, used by the pre-pass AND
+   by the writer, so the two cannot answer the same body differently. */
+const moneyBoxProblem = (k, v) => require('../lib/fields').moneyTextProblem(v, MONEY_LABEL[k] || 'That value');
+const MONEY_LABEL = {
+  purchase_price: 'Purchase price', as_is_value: 'As-is value',
+  arv: 'After-repair value', rehab_budget: 'Rehab budget',
+};
 router.post('/applications/:id/complete-fields', async (req, res) => {
   const own = await db.query(
     `SELECT borrower_id FROM applications WHERE id=$1 AND (${OWN_FILE_SQL("", "$2")}) AND deleted_at IS NULL`,
@@ -2142,9 +2155,16 @@ router.post('/applications/:id/complete-fields', async (req, res) => {
        `proposalProblem` is the same rule `openRequest` enforces, asked without
        writing, so the pre-pass and the write can never disagree. */
     if (locked) {
+      /* The writer skips `purchase_price` entirely on a refinance (a refi carries
+         none). The pre-pass did not, so the same body was refused on a registered
+         file and accepted on an unregistered one — the exact divergence this
+         pre-pass exists to prevent (fourth audit, 2026-08-02). */
+      const refiPre = /refi/i.test(String(
+        (await db.query(`SELECT loan_type FROM applications WHERE id=$1`, [req.params.id])).rows[0]?.loan_type || ''));
       for (const [k, v] of Object.entries(b)) {
         if (!(k in B_COMPLETE_APP) && !(k in B_COMPLETE_BORROWER)) continue;
         if (v === '' || v == null) continue;
+        if (k === 'purchase_price' && refiPre) continue;
         /* SKIP EXACTLY WHAT THE WRITER SKIPS (re-audit, 2026-08-02). The money
            branch below IGNORES a value with no digits in it — `purchase_price:
            'TBD'` has always been passed over — so refusing it here made the
@@ -2152,7 +2172,10 @@ router.post('/applications/:id/complete-fields', async (req, res) => {
            and a "TBD" price saved nothing on a registered file while the same
            post on an unregistered one still saved the ARV. A pre-check that
            refuses work the writer would have done is its own bug. */
-        if (B_COMPLETE_APP[k] === 'money' && writerSkipsMoney(v)) continue;
+        if (B_COMPLETE_APP[k] === 'money') {
+          const mp = moneyBoxProblem(k, v);
+          if (mp) return res.status(400).json({ error: mp });
+        }
         const bad = changeRequests.proposalProblem(k, v, { targetBorrowerId: me(req) });
         if (bad) return res.status(400).json({ error: bad });
       }
@@ -2172,8 +2195,10 @@ router.post('/applications/:id/complete-fields', async (req, res) => {
       if (k === 'purchase_price' && refiNow) continue;
       let v = b[k];
       if (t === 'money') {
-        if (writerSkipsMoney(v)) continue;
-        v = Number(String(v).replace(/[^0-9.]/g, ''));
+        const mp = moneyBoxProblem(k, v);
+        if (mp) return res.status(400).json({ error: mp });
+        v = require('../lib/fields').moneyValue(v);
+        if (v == null) continue;
         /* …and it has to FIT (post-merge audit round 2, 2026-08-02). Judged
            BEFORE the locked branch, so one check covers both outcomes: on an
            unlocked file the value used to reach Postgres and come back to the

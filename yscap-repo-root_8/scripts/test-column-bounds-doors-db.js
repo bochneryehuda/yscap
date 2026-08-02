@@ -118,10 +118,13 @@ if (!process.env.DATABASE_URL) {
       const nb = require('../src/lib/number-bounds');
       const KIND_OF = (t, p, s) => {
         if (t === 'integer') return 'int';
-        /* A type we have no kind for is reported, never silently skipped — the
-           filter used to list only numeric+integer, so a future smallint or
-           double precision column would have been invisible to the completeness
-           check AND made a legitimate entry read as "not a numeric column". */
+        /* A type with no kind DEFINED is skipped (bigint/smallint/float have no
+           ceiling in the table today — `applications.clickup_folder_id` and
+           `borrower_gross_annual_revenue_cents` are the live examples). What the
+           widened filter really buys is the `seen` set: a legitimate COLUMN_KIND
+           entry on such a column no longer reads as "not a numeric column".
+           Widening it is a no-op on today's schema — said plainly here because
+           the previous comment overstated it (fourth audit, 2026-08-02). */
         if (t !== 'numeric') return null;                 // bigint/smallint/float: no ceiling defined
         if (p == null) return null;                       // bare numeric: no ceiling to enforce
         if (p === 14 && s === 2) return 'money';
@@ -653,12 +656,18 @@ if (!process.env.DATABASE_URL) {
          unregistered one for identical input. */
       const appId = await newFile();
       await register(appId);
+      /* The pre-pass and the writer must give the SAME answer. That answer used
+         to be "pass it over" — a 200 with nothing saved. It is a refusal now
+         (see T6): silently ignoring a money box the borrower typed into is the
+         "returned 200 but didn't save" class, and reinterpreting it is worse. */
       const r = await call('POST', `/api/borrower/applications/${appId}/complete-fields`, bTok,
         { purchase_price: 'TBD', arv: 725000 });
-      eq(r.status, 200, 'a junk money value is passed over, exactly as the writer passes it over');
+      eq(r.status, 400, 'a junk money value is refused, not passed over');
       const filed = await db.query(
         `SELECT field FROM change_requests WHERE application_id=$1 AND status='pending' ORDER BY field`, [appId]);
-      eq(filed.rows.map((x) => x.field).join(','), 'arv', '…and the GOOD field is still filed');
+      eq(filed.rows.length, 0, '…and nothing was filed — not even the field that was fine');
+      const good = await call('POST', `/api/borrower/applications/${appId}/complete-fields`, bTok, { arv: 725000 });
+      eq(good.status, 200, '…while the same good field on its own is filed');
 
       // …and the two paths agree, which is the property that actually matters.
       const open = await newFile();
@@ -786,13 +795,26 @@ if (!process.env.DATABASE_URL) {
       /* Every client resends the whole form on every save, so refusing an
          UNCHANGED out-of-range value made editing a phone number impossible on
          any row whose anchor predates the rule. */
+      /* THE ANCHOR IS THE POINT. The first version of this case inserted the row
+         with `residence_since` NULL, so `withLiveResidence` never fired, the
+         client echoed the stored columns verbatim, and the case passed without
+         ever exercising its subject — the fourth audit proved the brick was
+         still live behind it. A real legacy row HAS an anchor, and the GET door
+         recomputes the duration from it. */
       const oldId = (await db.query(
-        `INSERT INTO borrowers (email,first_name,last_name,years_at_residence,months_at_residence)
-         VALUES ($1,'Legacy','Anchor',126,7) RETURNING id`, [`legacy-anchor-${sfx}@test.local`])).rows[0].id;
+        `INSERT INTO borrowers (email,first_name,last_name,years_at_residence,months_at_residence,residence_since)
+         VALUES ($1,'Legacy','Anchor',120,0, (now() - interval '1520 months')::date) RETURNING id`,
+        [`legacy-anchor-${sfx}@test.local`])).rows[0].id;
       await db.query(`INSERT INTO borrower_auth (borrower_id,password_hash,token_version) VALUES ($1,'x',0) ON CONFLICT DO NOTHING`, [oldId]);
       const oTok = C.signJwt({ sub: oldId, kind: 'borrower', tv: 0 });
+      /* Echo back exactly what the GET door SHOWS — which is the live duration
+         from the anchor, not the stored columns. That is what every client does. */
+      const shown = await call('GET', '/api/borrower/profile', oTok);
+      const sy = shown.body && shown.body.years_at_residence;
+      const sm = shown.body && shown.body.months_at_residence;
+      assert(Number(sy) > 100, `the GET door really does show a >100-year duration (${sy}y ${sm}m)`);
       const resave = await call('PUT', '/api/borrower/profile', oTok,
-        { cellPhone: '555-0100', yearsAtResidence: 126, monthsAtResidence: 7 });
+        { cellPhone: '555-0100', yearsAtResidence: sy, monthsAtResidence: sm });
       eq(resave.status, 200, 'resending an UNCHANGED legacy duration still saves');
       eq((await db.query(`SELECT cell_phone FROM borrowers WHERE id=$1`, [oldId])).rows[0].cell_phone, '555-0100',
         '…and the field they actually edited landed');
@@ -829,17 +851,144 @@ if (!process.env.DATABASE_URL) {
          shapes an unregistered one ignored — including a European "1.200.000". */
       const locked = await newFile(); await register(locked);
       const open = await newFile();
-      for (const v of ['TBD', '1.2.3', '.', '..', '1.200.000']) {
+      for (const v of ['TBD', '1.2.3', '.', '..', '1.200.000', '1e5', '2-4']) {
         const a = await call('POST', `/api/borrower/applications/${locked}/complete-fields`, bTok, { purchase_price: v, arv: 725000 });
         const b2 = await call('POST', `/api/borrower/applications/${open}/complete-fields`, bTok, { purchase_price: v, arv: 725000 });
         eq(a.status, b2.status, `"${v}": a registered and an unregistered file answer the same way`);
         /* …AND pin what that answer IS. Asserting only that the two agree is not
-           enough: the writer and the pre-pass now share one predicate, so a
-           change to it moves both together and the equality holds while the
-           behaviour is wrong. The writer has always IGNORED an unparseable money
-           value, so the answer is 200 with the good field saved. */
-        eq(a.status, 200, `"${v}": …and that answer is "ignore it and save the rest"`);
+           enough: they share one predicate, so a change moves both together and
+           the equality holds while the behaviour is wrong.
+           The answer used to be "ignore it and save the rest" — which was a 200
+           with NOTHING saved on a client that posts one field at a time, and for
+           "1e5"/"2-4" it was worse: the character-deleting parse SILENTLY stored
+           15 and 24 on a pricing column. It is a refusal now. */
+        eq(a.status, 400, `"${v}": …and that answer is a refusal, not a silent reinterpretation`);
       }
+      // …and the value the money box is FOR still saves, in every real spelling.
+      for (const v of ['725000', '$1,250,000.50', ' 480000 ', 725000]) {
+        const r = await call('POST', `/api/borrower/applications/${open}/complete-fields`, bTok, { arv: v });
+        eq(r.status, 200, `an ordinary money value ${JSON.stringify(v)} still saves`);
+      }
+    }
+
+    /* ================================================================ *
+     * THE FOURTH AUDIT'S FINDINGS (2026-08-02).
+     * ================================================================ */
+    console.log('\n--- U1: a value we OFFER is a value we accept (the whole list) ---');
+    {
+      /* Fixed for `DSCR / Rental` one round ago and left broken two entries down
+         the same hand-copied list: `Not sure yet` is a real PROGRAMS entry that
+         db/382 canonicalizes on write, and `PUD` is canonical in
+         property-type.js and stores fine via PATCH /details. The list is derived
+         now, so it cannot drift from its source again. */
+      const appId = await newFile();
+      for (const [k, v] of [['program', 'Not sure yet'], ['property_type', 'PUD']]) {
+        const r = await call('POST', `/api/borrower/applications/${appId}/complete-fields`, bTok, { [k]: v });
+        eq(r.status, 200, `the borrower can set ${k} = "${v}" — a value the system supports elsewhere`);
+      }
+      const CR = require('../src/lib/change-requests');
+      const canonical = require('../src/lib/property-type').PROPERTY_TYPES.map((p) => p.label);
+      const missing = canonical.filter((lbl) => !CR.FIELD_OPTIONS.property_type.includes(lbl));
+      eq(missing.join(',') || '(none)', '(none)', 'every canonical property type is accepted (derived, not re-typed)');
+    }
+
+    console.log('\n--- U2: the residence guard compares what the client was SHOWN ---');
+    {
+      /* The self-inflicted half: exactly 100 years is ACCEPTED, and one month of
+         drift later the GET door shows 100y1m — which the client echoes back. */
+      const id = (await db.query(
+        `INSERT INTO borrowers (email,first_name,last_name,residence_since)
+         VALUES ($1,'Drift','Case',(now() - interval '1201 months')::date) RETURNING id`,
+        [`drift-${sfx}@test.local`])).rows[0].id;
+      await db.query(`INSERT INTO borrower_auth (borrower_id,password_hash,token_version) VALUES ($1,'x',0) ON CONFLICT DO NOTHING`, [id]);
+      const t = C.signJwt({ sub: id, kind: 'borrower', tv: 0 });
+      const shown = await call('GET', '/api/borrower/profile', t);
+      const sy = shown.body && shown.body.years_at_residence;
+      const sm = shown.body && shown.body.months_at_residence;
+      const r = await call('PUT', '/api/borrower/profile', t,
+        { cellPhone: '555-0123', yearsAtResidence: sy, monthsAtResidence: sm });
+      eq(r.status, 200, 'a row just past the cap by DRIFT can still be saved');
+      eq((await db.query(`SELECT cell_phone FROM borrowers WHERE id=$1`, [id])).rows[0].cell_phone, '555-0123',
+        '…and the field they actually edited landed');
+      /* The staff half of the same guard, on its OWN untouched row — the first
+         version ran after the borrower PUT above had already written the columns,
+         so a stored-column comparison happened to agree and the case proved
+         nothing (it survived its mutation). */
+      const id2 = (await db.query(
+        `INSERT INTO borrowers (email,first_name,last_name,residence_since)
+         VALUES ($1,'Drift','Staff',(now() - interval '1201 months')::date) RETURNING id`,
+        [`drift-staff-${sfx}@test.local`])).rows[0].id;
+      const shown2 = require('../src/lib/residence').withLiveResidence(
+        (await db.query(`SELECT years_at_residence, months_at_residence, residence_since FROM borrowers WHERE id=$1`, [id2])).rows[0]);
+      const sr = await call('PATCH', `/api/staff/borrowers/${id2}`, sTok,
+        { citizenship: 'US Citizen', yearsAtResidence: shown2.years_at_residence, monthsAtResidence: shown2.months_at_residence });
+      eq(sr.status, 200, 'the STAFF door behaves the same way (it had no assertion at all)');
+      const bump = await call('PUT', '/api/borrower/profile', t, { yearsAtResidence: 300 });
+      eq(bump.status, 400, '…while genuinely changing it to an impossible value is still refused');
+    }
+
+    console.log('\n--- U3: a cleaned key is an own property, never a prototype write ---');
+    {
+      const NUL = String.fromCharCode(0);
+      const appId = await newFile();
+      const before = (await db.query(`SELECT arv FROM applications WHERE id=$1`, [appId])).rows[0].arv;
+      const r = await call('POST', `/api/staff/applications/${appId}/complete-fields`, sTok,
+        JSON.parse(JSON.stringify({ [`__proto__${NUL}`]: { arv: 777777 } })));
+      const after = (await db.query(`SELECT arv FROM applications WHERE id=$1`, [appId])).rows[0].arv;
+      eq(String(after), String(before), 'a `__proto__` key cannot smuggle a value into a route handler');
+      assert(r.status < 500, '…and the request does not 500');
+      eq({}.arv, undefined, '…and Object.prototype is untouched');
+    }
+
+    console.log('\n--- U4: junk time-at-residence gets ONE answer ---');
+    {
+      /* A row with NO stored duration is the case that matters: both sides of the
+         "did they change it?" comparison read 0, so "unchanged" won and the junk
+         sailed through. A row that already holds a duration was already refused,
+         which is why the first version of this case proved nothing. */
+      const fresh = (await db.query(
+        `INSERT INTO borrowers (email,first_name,last_name) VALUES ($1,'Junk','Res') RETURNING id`,
+        [`junk-res-${sfx}@test.local`])).rows[0].id;
+      await db.query(`INSERT INTO borrower_auth (borrower_id,password_hash,token_version) VALUES ($1,'x',0) ON CONFLICT DO NOTHING`, [fresh]);
+      const t = C.signJwt({ sub: fresh, kind: 'borrower', tv: 0 });
+      eq((await call('PUT', '/api/borrower/profile', t, { yearsAtResidence: 'abc' })).status, 400,
+        'the borrower door refuses a junk duration');
+      eq((await call('PATCH', `/api/staff/borrowers/${fresh}`, sTok, { yearsAtResidence: 'abc' })).status, 400,
+        '…and so does the staff door (it used to answer 200 and NULL all three columns)');
+      const row = (await db.query(`SELECT years_at_residence FROM borrowers WHERE id=$1`, [fresh])).rows[0];
+      eq(row.years_at_residence, null, '…and nothing was written');
+      eq((await call('PUT', '/api/borrower/profile', t, { yearsAtResidence: 4, monthsAtResidence: 2 })).status, 200,
+        '…while a real duration still saves');
+    }
+
+    console.log('\n--- U6: the STAFF money box is not reinterpreted either ---');
+    {
+      /* The character-deleting parse lived on BOTH completeness panels; only the
+         borrower half had an assertion, so the staff half survived its mutation. */
+      const appId = await newFile();
+      const before = (await db.query(`SELECT arv FROM applications WHERE id=$1`, [appId])).rows[0].arv;
+      for (const v of ['1e5', '2-4', '1.2.3']) {
+        const r = await call('POST', `/api/staff/applications/${appId}/complete-fields`, sTok, { arv: v });
+        eq(r.status, 400, `staff completeness refuses "${v}" rather than reinterpreting it`);
+      }
+      const after = (await db.query(`SELECT arv FROM applications WHERE id=$1`, [appId])).rows[0].arv;
+      eq(String(after), String(before), '…and the ARV on the file never moved');
+      const ok = await call('POST', `/api/staff/applications/${appId}/complete-fields`, sTok, { arv: '$1,250,000.50' });
+      eq(ok.status, 200, '…while a properly formatted amount still saves');
+      eq(Number((await db.query(`SELECT arv FROM applications WHERE id=$1`, [appId])).rows[0].arv), 1250000.5,
+        '…at full precision');
+    }
+
+    console.log('\n--- U5: the pre-pass honours the refinance skip too ---');
+    {
+      const refi = await newFile();
+      await db.query(`UPDATE applications SET loan_type='Refinance — Cash-Out' WHERE id=$1`, [refi]);
+      const open2 = await newFile();
+      await db.query(`UPDATE applications SET loan_type='Refinance — Cash-Out' WHERE id=$1`, [open2]);
+      await register(refi);
+      const a = await call('POST', `/api/borrower/applications/${refi}/complete-fields`, bTok, { purchase_price: HUGE_MONEY });
+      const b2 = await call('POST', `/api/borrower/applications/${open2}/complete-fields`, bTok, { purchase_price: HUGE_MONEY });
+      eq(a.status, b2.status, 'on a REFINANCE the two paths still answer the same way');
     }
 
     console.log(failures ? `\n${failures} FAILURE(S)` : '\nALL column-bounds door assertions passed');

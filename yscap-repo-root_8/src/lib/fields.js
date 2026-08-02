@@ -112,6 +112,26 @@ function moneyValue(v) {
    So the provided/not-provided question is answered on the RAW value exactly the
    way it always was, and only then is the value parsed. `moneyValue` still says
    what a money value MEANS; this says whether there was one. */
+/* IS THIS TEXT A MONEY VALUE AT ALL? (fourth audit, 2026-08-02)
+   `Number(String(v).replace(/[^0-9.]/g,''))` does not parse a number — it
+   DELETES characters until something numeric is left, so it silently
+   reinterprets: "1e5" stored 15, "2-4" stored 24, and "-500000" stored a
+   POSITIVE 500000, on the money columns the loan is priced off. That is the
+   appraisal-reprice defect ("worse than a 500, because nothing tells anybody it
+   happened") on the two doors that write the same columns. And a value it cannot
+   salvage at all ("1.2.3", "TBD") was skipped with a 200 — "saved!" with nothing
+   saved, on a client that posts one field at a time.
+   Accepts what a person or a MoneyInput actually produces: an optional sign, a
+   currency symbol, thousands separators and at most one decimal point. */
+const MONEY_TEXT = /^\s*[-+]?\s*\$?\s*(\d{1,3}(,\d{3})*|\d*)(\.\d*)?\s*$/;
+function moneyTextProblem(v, label) {
+  if (v == null || String(v).trim() === '') return '';
+  if (typeof v === 'number') return Number.isFinite(v) ? '' : `${label || 'That value'} must be a number`;
+  const s = String(v);
+  if (!MONEY_TEXT.test(s) || !/\d/.test(s)) return `${label || 'That value'} must be a number`;
+  return '';
+}
+
 function moneyColumn(v) {
   return moneyValue(v || null);
 }
@@ -509,4 +529,4 @@ function loanNumberProblem(v) {
   return null;
 }
 
-module.exports = { sanitizeFico, sanitizeSsnDigits, formatSsn, sanitizeLoanType, moneyValue, moneyColumn, textColumn, TEXT_COLUMN_MAX, jsonbText, stripNulDeep, assignmentFields, applicationNumberProblem, sqftRelevantType, sqftForType, sanitizeDateOnly, normalizeTypedDate, sanitizeDob, dobProblem, sanitizeLoanNumber, normalizeLoanNumber, loanNumberProblem };
+module.exports = { sanitizeFico, sanitizeSsnDigits, formatSsn, sanitizeLoanType, moneyValue, moneyColumn, moneyTextProblem, textColumn, TEXT_COLUMN_MAX, jsonbText, stripNulDeep, assignmentFields, applicationNumberProblem, sqftRelevantType, sqftForType, sanitizeDateOnly, normalizeTypedDate, sanitizeDob, dobProblem, sanitizeLoanNumber, normalizeLoanNumber, loanNumberProblem };
