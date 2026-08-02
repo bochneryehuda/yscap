@@ -35,9 +35,14 @@ async function tieoutForFile(client, appId, preloadedCtx) {
   // the 1007 market rent lives per-unit on the appraisal_units child, so we sum it for the property.
   // (occupancy is stored as occupancy_status — canonOccupancy maps its Vacant/TenantOccupied/
   // OwnerOccupied values; there is no `sqft`/`market_rent` column on appraisals — see db/137/158.)
+  // `owner_of_record` (db/158) is the appraiser's statement of who owns the property per public
+  // records — i.e. the SELLER before closing. The owner named it alongside the title report as where
+  // the original seller is established on a wholesale deal (2026-08-02), and until now the appraisal
+  // column simply read blank in the Seller row because nothing loaded it. STAFF-ONLY, like every
+  // other appraisal field here — the tie-out matrix is an underwriting-desk surface.
   const appr = (await client.query(
     `SELECT a.subject_address, a.subject_city, a.subject_state, a.subject_zip, a.contract_price, a.as_is_value, a.arv_value,
-            a.units, a.property_type, a.occupancy_status AS occupancy, a.year_built, a.gla,
+            a.units, a.property_type, a.occupancy_status AS occupancy, a.year_built, a.gla, a.owner_of_record,
             (SELECT sum(u.market_rent) FROM appraisal_units u WHERE u.appraisal_id = a.id) AS market_rent
        FROM appraisals a WHERE a.application_id=$1 AND a.superseded=false ORDER BY a.imported_at DESC LIMIT 1`, [appId])).rows[0];
   if (appr) {
@@ -46,6 +51,7 @@ async function tieoutForFile(client, appId, preloadedCtx) {
       fields: {
         propertyAddress: appr.subject_address ? { line1: appr.subject_address, city: appr.subject_city, state: appr.subject_state, zip: appr.subject_zip } : null,
         contractPrice: appr.contract_price, asIsValue: appr.as_is_value, arvValue: appr.arv_value,
+        ownerOfRecord: appr.owner_of_record,
         units: appr.units, propertyType: appr.property_type, occupancy: appr.occupancy,
         yearBuilt: appr.year_built, gla: appr.gla, marketRent: appr.market_rent,
       },
