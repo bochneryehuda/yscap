@@ -4742,6 +4742,7 @@ export default function StaffApplication() {
           { k: 'people', label: app.co_borrower_id ? 'Borrower profiles' : 'Borrower profile' },
           { k: 'missing', label: 'Missing info' },
           { k: 'pipeline', label: 'ClickUp Sync' },
+          { k: 'encompass', label: 'Encompass sync' },
         ].map(t => (
           <button key={t.k} type="button" role="tab" aria-selected={appDetailTab === t.k}
             className={`cond-tab${appDetailTab === t.k ? ' active' : ''}`} onClick={() => setAppDetailTab(t.k)}>
@@ -4843,6 +4844,16 @@ export default function StaffApplication() {
         </div>
         <ClickupFileData app={app} />
       </>}
+
+      {/* ENCOMPASS SYNC (owner-directed 2026-08-02) — the file's two outside
+          systems now sit side by side under Application details, in the order the
+          owner asked for: ClickUp first, then Encompass. It was its own top-level
+          section, which put the same KIND of screen (a live field-by-field
+          comparison against another system) two rooms away from its twin.
+          READ-ONLY, unchanged: Encompass is never written to. */}
+      {appDetailTab === 'encompass' && (
+        <EncompassSyncPanel appId={id} />
+      )}
       </Section>
 
       {/* THE PAYOFF (owner-directed 2026-07-31) — its own section on a refinance,
@@ -4876,9 +4887,22 @@ export default function StaffApplication() {
         <ExceptionRegisterCard appId={id} canSeeBox={can('manage_pricing') || role === 'super_admin'} />
       </Section>
 
+      {/* The panel itself moved into Application details → Encompass sync
+          (owner-directed 2026-08-02). This shell stays so every existing deep
+          link, the room rail and the tape screen's "open the Encompass sync"
+          button still land somewhere that takes you there, rather than on a
+          section that silently no longer exists. */}
       <Section hidden={!show('sec-encompass')} id="sec-encompass" title="Encompass sync" defaultOpen={false}
-        info="A live, read-only comparison of this file against its Encompass loan — every field, our value vs what Encompass has, and what matches. Pull any Encompass value into your file with one click. A term sheet can't be issued while a field here doesn't match. Encompass is never written to.">
-        <EncompassSyncPanel appId={id} />
+        info="A live, read-only comparison of this file against its Encompass loan — every field, our value vs what Encompass has, and what matches. It now lives with the ClickUp comparison under Application details.">
+        <div className="row" style={{ gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+          <span className="small" style={{ color: '#4B585C' }}>
+            The Encompass comparison now sits beside the ClickUp one, under Application details.
+          </span>
+          <button type="button" className="btn primary small"
+            onClick={() => { setAppDetailTab('encompass'); goToSection('sec-application'); }}>
+            Open Encompass sync
+          </button>
+        </div>
       </Section>
 
       {/* ONE Conditions hub with tabs (owner-directed cleanup): the borrower's
