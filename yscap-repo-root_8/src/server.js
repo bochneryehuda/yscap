@@ -160,6 +160,27 @@ app.get('/api/health', async (req, res) => {
       conditionsGuard = { filesZeroItems: g.rows[0].zero_items, rtlFilesMissingContract: g.rows[0].no_contract };
     } catch (e) { console.warn('[health] conditions guard failed:', db.describeError(e)); conditionsGuard = { error: 'unavailable' }; }
   }
+  // Off-site backup status (owner-directed 2026-08-02). "Are we protected right now?" has to be
+  // answerable without opening a bucket — a backup job that quietly stopped is the failure this
+  // whole system exists to prevent, and it is invisible by nature. Read-only, time-bounded, and
+  // deliberately WITHOUT sizes, table counts or bucket names: this endpoint is public.
+  let backupStatus;
+  if (dbStatus === 'up') {
+    try {
+      const s = await Promise.race([
+        require('./lib/backup/report').protectionStatusCached(db),
+        new Promise((_, rej) => setTimeout(() => rej(new Error('backup status timeout')), 2500)),
+      ]);
+      backupStatus = {
+        protected: s.protected,
+        lastBackupAt: s.lastBackupAt,
+        lastBackupAgeHours: s.lastBackupAgeHours,
+        lastVerifiedAt: s.lastVerifiedAt,
+        verificationFresh: s.verificationFresh,
+      };
+    } catch (e) { backupStatus = { protected: null, error: 'unavailable' }; }
+  }
+
   // Liveness: 200 unless the caller explicitly asked for a strict DB gate.
   const code = (strict && dbStatus !== 'up') ? 503 : 200;
   res.status(code).json({
@@ -183,6 +204,8 @@ app.get('/api/health', async (req, res) => {
     // The full card (provider, live reachability, dual-read migration state). The four flat
     // fields above are kept verbatim for back-compat with anything already reading them.
     storageHealth: storageCard,
+    // `protected:false` means the nightly off-site backup has not succeeded recently — act on it.
+    backup: backupStatus,
     // SharePoint one-way sync status (config + last reconciliation pass; cheap —
     // no live Graph call on the health path).
     sharepointSync: (() => { try { return require('./lib/sharepoint-backup').health(); } catch (e) { return { enabled: false, error: e.message }; } })(),
