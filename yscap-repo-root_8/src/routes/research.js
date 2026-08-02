@@ -343,15 +343,33 @@ router.get('/comps', async (req, res, next) => {
       limit: 60, sort: 'recent_sale',
     }, stripEmpty(req.query));
     if (subject.id) filters.exclude_property_id = subject.id;
-    if (subject.latitude != null && subject.longitude != null && req.query.radius_miles) {
-      filters.lat = subject.latitude; filters.lng = subject.longitude;
+    // WHERE THE SUBJECT IS — the looked-up coordinate first, the appraiser's second
+    // (db/411). A stored subject property has `eff_latitude`; a typed one carries
+    // whatever the caller sent as lat/lng. Distance is always computed when we know
+    // both ends, even with no radius asked for, because "how far is each of these
+    // from my property" is the question the screen is there to answer.
+    const sLat = K.num(subject.eff_latitude != null ? subject.eff_latitude : subject.latitude);
+    const sLng = K.num(subject.eff_longitude != null ? subject.eff_longitude : subject.longitude);
+    if (sLat != null && sLng != null) { filters.lat = sLat; filters.lng = sLng; }
+    else if (req.query.radius_miles) {
+      // A radius was asked for and we cannot place the subject. Answering with the
+      // whole town silently would look like the radius worked, so the radius is
+      // dropped and the answer SAYS the subject has not been placed yet.
+      delete filters.radius_miles;
     }
     const page = await S.searchProperties(db, filters);
     const ranked = page.rows.map((c) => {
       const s = V.scoreComp(subject, c, { today });
       return Object.assign({}, c, { match_score: s.score, match_reasons: s.parts });
     }).sort((a, b) => b.match_score - a.match_score);
-    res.json({ subject, rows: ranked, total: page.total, filters });
+    res.json({
+      subject, rows: ranked, total: page.total, filters,
+      // Distance is only real when BOTH ends are placed. Saying so is the whole
+      // difference between "there is nothing within half a mile" and "we do not
+      // know where your property is yet".
+      subject_located: sLat != null && sLng != null,
+      radius_dropped: !!(req.query.radius_miles && (sLat == null || sLng == null)),
+    });
   } catch (e) { next(e); }
 });
 
@@ -768,6 +786,32 @@ router.post('/backfill', async (req, res, next) => {
     const out = await ingest.backfill(db, { limit, force: !!(req.body && req.body.force) });
     await audit(req.actor.id, 'research_backfill', null, out);
     res.json({ ...out, status: await ingest.ingestStatus(db) });
+  } catch (e) { next(e); }
+});
+
+// ---------------------------------------------------------------------------
+// PUTTING PROPERTIES ON THE MAP — the distance search's fuel (db/411)
+// ---------------------------------------------------------------------------
+/** How many properties we can measure a distance to, and how many are still to do. */
+router.get('/geocode/status', async (req, res, next) => {
+  try {
+    res.json((await require('../lib/research/geocode').geocodeStatus(db)) || { error: 'unavailable' });
+  } catch (e) { next(e); }
+});
+
+/**
+ * Place another batch by hand. The sweep runs on its own in the background; this is
+ * for someone who wants to push it along, so it is capped small enough to answer
+ * inside one request rather than leaving the screen hanging.
+ */
+router.post('/geocode/run', async (req, res, next) => {
+  try {
+    if (!can(req.actor, 'platform_setup')) return res.status(403).json({ error: 'You do not have access to that.' });
+    const G = require('../lib/research/geocode');
+    const limit = Math.min(200, Math.max(1, parseInt(req.body && req.body.limit, 10) || 50));
+    const out = await G.backfillGeocodes(db, { limit });
+    await audit(req.actor.id, 'research_geocode_run', null, out);
+    res.json({ ...out, status: await G.geocodeStatus(db) });
   } catch (e) { next(e); }
 });
 

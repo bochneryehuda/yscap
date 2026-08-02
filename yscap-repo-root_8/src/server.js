@@ -616,6 +616,24 @@ if (require.main === module) {
         require('./lib/research/ingest').backfill(require('./db'), { limit: 400 })
           .then((r) => r && r.ingested && console.log('[boot] research warehouse backfill:', JSON.stringify(r)))
           .catch((e) => console.error('[boot] research warehouse backfill failed:', e.message));
+        // PUTTING THOSE PROPERTIES ON THE MAP (db/411) — what makes "find me every
+        // comparable within half a mile" possible. Only comparables the appraiser's
+        // own software happened to geocode carry coordinates, and a SUBJECT property
+        // never does, so the radius search had almost nothing to filter.
+        //
+        // Two free, keyless services (US Census, then OpenStreetMap) and the answer
+        // is stored permanently — deliberately not Google, whose terms cap a stored
+        // coordinate at 30 days and would turn a one-off lookup into a monthly bill
+        // for a number that never moves (docs/research/GEOCODING-DISTANCE-VENDOR-RESEARCH.md).
+        //
+        // Paced and bounded per boot, ordered by how often a property actually turns
+        // up in the reports so the useful ones are placed first, and SELF-DRAINING
+        // (every row it looks at is stamped, so an address nobody can place is not
+        // re-asked forever). Off-switch RESEARCH_GEOCODE_DISABLED=1.
+        require('./lib/research/geocode').backfillGeocodes(require('./db'),
+          { limit: Number(process.env.RESEARCH_GEOCODE_BOOT || 120) })
+          .then((r) => r && r.looked && console.log('[boot] research geocoding:', JSON.stringify(r)))
+          .catch((e) => console.error('[boot] research geocoding failed:', e.message));
         // NOTE: the As-Is / ARV read is GOING FORWARD ONLY (owner-directed 2026-07-28) — a deliberate
         // exception to the previous-AND-future rule, because that sweep WRITES loan values and
         // re-reading the back book would rewrite numbers on files people have already worked, all at

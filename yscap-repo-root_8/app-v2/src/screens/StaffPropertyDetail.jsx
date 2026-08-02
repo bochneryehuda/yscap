@@ -5,6 +5,7 @@ import {
   INK, MUTED, GOLD, S, money, sqft, num, day, saleMonth, baths,
   conditionLabel, qualityLabel, COMP_SET_LABEL,
 } from '../lib/research.js';
+import NearbyComps from '../components/NearbyComps.jsx';
 
 /* ONE PROPERTY — everything every appraisal ever said about it.
 
@@ -91,6 +92,9 @@ export default function StaffPropertyDetail() {
           )}
         </div>
       </header>
+
+      {/* ---- comparable sales near it ---- */}
+      <NearbyComps propertyId={id} subjectAddress={p.display_address} />
 
       {/* ---- what we know about the property ---- */}
       <section style={{ ...S.panel, marginBottom: 14 }}>

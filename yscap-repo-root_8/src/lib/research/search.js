@@ -245,23 +245,38 @@ function buildQuery(input = {}) {
   // be about a third WIDER in degrees than the latitude box to cover the same
   // miles. Using one delta for both (the usual version of this bug) silently
   // clips the east-west edges off every radius search.
+  //
+  // IT READS `eff_latitude` / `eff_longitude`, NEVER `latitude` (db/411). Those are
+  // the appraiser's own figures, which only some comparables carry and no subject
+  // ever does; `eff_*` is the looked-up coordinate falling back to the appraiser's,
+  // and is a generated STORED column precisely so a query cannot forget which one
+  // it meant to use.
   let distanceSelect = 'NULL::numeric AS distance_miles';
   const lat = num(f.lat), lng = num(f.lng), radius = num(f.radius_miles);
+  let distanceExpr = null;
   if (lat != null && lng != null) {
     const pLat = P(lat), pLng = P(lng);
-    distanceSelect =
+    distanceExpr =
       `(3958.7613 * 2 * asin(sqrt(
-          power(sin(radians(p.latitude - ${pLat}) / 2), 2) +
-          cos(radians(${pLat})) * cos(radians(p.latitude)) *
-          power(sin(radians(p.longitude - ${pLng}) / 2), 2)
-        )))::numeric AS distance_miles`;
+          power(sin(radians(p.eff_latitude - ${pLat}) / 2), 2) +
+          cos(radians(${pLat})) * cos(radians(p.eff_latitude)) *
+          power(sin(radians(p.eff_longitude - ${pLng}) / 2), 2)
+        )))::numeric`;
+    distanceSelect = `${distanceExpr} AS distance_miles`;
     if (radius != null && radius > 0) {
       const dLat = radius / 69.0546;
       const dLng = radius / Math.max(1, 69.1710 * Math.cos((lat * Math.PI) / 180));
-      where.push(`p.latitude BETWEEN ${P(lat - dLat)} AND ${P(lat + dLat)}`);
-      where.push(`p.longitude BETWEEN ${P(lng - dLng)} AND ${P(lng + dLng)}`);
+      where.push(`p.eff_latitude BETWEEN ${P(lat - dLat)} AND ${P(lat + dLat)}`);
+      where.push(`p.eff_longitude BETWEEN ${P(lng - dLng)} AND ${P(lng + dLng)}`);
+      // THE EXACT CIRCLE IS CUT IN SQL, not in JS afterwards. Filtering the page
+      // in JS looks equivalent and is not: the LIMIT and the `count(*) OVER ()`
+      // total both run BEFORE it, so a corner-of-the-box row that gets dropped
+      // leaves the page short and the total overstated — by up to 27%, which is
+      // the box's area over the circle's. Doing it here makes the count, the page
+      // size and the paging all agree.
+      where.push(`${distanceExpr} <= ${P(radius)}`);
     } else {
-      where.push('p.latitude IS NOT NULL AND p.longitude IS NOT NULL');
+      where.push('p.eff_latitude IS NOT NULL AND p.eff_longitude IS NOT NULL');
     }
   }
 
@@ -277,7 +292,7 @@ function buildQuery(input = {}) {
 // The columns the result list renders. Explicit, so adding a column to
 // `properties` never silently widens every search payload.
 const LIST_COLUMNS = `p.id, p.display_address, p.street, p.unit, p.city, p.state, p.zip, p.county,
-  p.latitude, p.longitude, p.property_type, p.property_category, p.units, p.year_built, p.gla,
+  p.latitude, p.longitude, p.eff_latitude, p.eff_longitude, p.geo_source, p.property_type, p.property_category, p.units, p.year_built, p.gla,
   p.beds, p.baths_full, p.baths_half, p.baths_text, p.baths_total, p.total_rooms,
   p.lot_area, p.lot_sqft,
   p.condition_uad, p.condition_text, p.condition_rank, p.quality_uad, p.quality_text, p.quality_rank,
@@ -299,11 +314,9 @@ async function searchProperties(db, filters = {}) {
       ORDER BY ${b.sort}
       LIMIT ${b.limit} OFFSET ${b.offset}`;
   const r = await db.query(sql, b.params);
-  // A radius search cuts with the bounding box; the exact circle is applied here
-  // so a corner-of-the-box property does not sneak into a "half a mile" answer.
-  let rows = r.rows;
-  const radius = num(filters.radius_miles);
-  if (radius != null && radius > 0) rows = rows.filter((x) => x.distance_miles == null || Number(x.distance_miles) <= radius);
+  // The exact circle is already cut in SQL (see buildQuery), so the page, the total
+  // and the paging all describe the same set. Nothing is filtered out here.
+  const rows = r.rows;
   const total = rows.length ? Number(rows[0].total_count) : 0;
   for (const x of rows) delete x.total_count;
   return { rows, total, page: b.page, limit: b.limit, pages: Math.max(1, Math.ceil(total / b.limit)), sort: b.sortKey };
