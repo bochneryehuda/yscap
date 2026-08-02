@@ -20,9 +20,18 @@ let failures = 0;
 
 // Minimal appraisal object: address matches the file (so no address_mismatch), a form type
 // + a parsed subject unit count. `values` empty so no arv/comp findings interfere.
-const A = (formType, units, extra = {}) => Object.assign({
-  ok: true, formType, values: {}, subject: { address: '10 Main St', city: 'Town', state: 'NY', units },
-}, extra);
+// `propertyCategory` is derived the SAME way extract() derives it (from the form + the unit count),
+// rather than hard-coded — so this fixture cannot claim a category the real parser would not
+// produce (owner-reported 2026-08-02: the appraisal's property type is a CATEGORY, never the
+// Detached / Attached attachment style).
+const { derivePropertyCategory } = require('../src/lib/appraisal/property-category');
+const A = (formType, units, extra = {}) => {
+  const cat = derivePropertyCategory({ formType, units });
+  return Object.assign({
+    ok: true, formType, values: {},
+    subject: { address: '10 Main St', city: 'Town', state: 'NY', units, propertyCategory: cat ? cat.key : null },
+  }, extra);
+};
 const F = (property_type, units) => ({ property_type, units, property_address: { line: '10 Main St', city: 'Town', state: 'NY' } });
 const codes = (finds) => finds.map((f) => f.code);
 const byCode = (finds, code) => finds.find((f) => f.code === code) || null;
@@ -80,7 +89,10 @@ ok(!byCode(f, 'property_type_mismatch'), 'sfr file + condo(1073) form, both 1 un
 const style = byCode(f, 'property_style_note');
 ok(style && style.severity === 'warning' && style.blocksCtc === false, 'sfr vs condo (same 1 unit) → non-blocking property_style_note advisory');
 ok(style && !style.actions.includes('replace') && !style.actions.includes('custom'),
-  'property_style_note offers NO replace/custom either (no valid category to write back)');
+  'property_style_note offers NO replace/custom either (property_type is a pricing input — corrected on the application, never written back from a finding)');
+// Both sides of the advisory are stated in the portal's own words — never a MISMO form code.
+ok(style && style.appraisalValue === 'Condo' && !/FNM/.test(String(style.appraisalValue)),
+  'property_style_note names the appraisal CATEGORY ("Condo"), not the form code');
 
 // ── twin bucketing: appraisal's specific type agrees with the file's range category ──
 const { canonPropertyType } = require('../src/lib/underwriting/facts');

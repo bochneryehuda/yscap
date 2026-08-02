@@ -15,6 +15,10 @@
  * and UI never change.
  */
 const { namesMatchLoose, entityMatch, withinMoney, addrMatches, addrLine, toISODate, digitsOnly, num, norm } = require('./compare');
+// Pure, and the ONE place that knows which words are a MISMO attachment style rather than a
+// property type — shared with lib/appraisal/property-category.js so a style can never be read as a
+// category on one desk and dropped on the other.
+const { isAttachmentStyle } = require('../appraisal/property-category');
 
 // ---- Enum canonicalizers (collateral classifications) ----------------------------------------
 // Property type + occupancy come off different documents in different words ("SFR" / "Single
@@ -145,12 +149,20 @@ const DOC_CLAIMS = {
   title: (f) => ({ property_address: f.propertyAddress, seller_name: f.vestedOwners }),
   appraisal: (f) => ({ property_address: f.propertyAddress, purchase_price: pick(f.contractPrice, f.salePrice), seller_name: f.sellerNames || arr(f.ownerOfRecord) || arr(f.sellerName), as_is_value: pick(f.asIsValue, f.as_is_value), arv: pick(f.arvValue, f.arv),
     // Collateral physicals off the appraisal (owner-directed 2026-07-21) — the appraisal is the
-    // authority for what the property physically IS; these tie out against the application. NOTE
-    // (owner 2026-07-27): the appraisal's property_type is usually the MISMO AttachmentType, a STYLE
-    // ("Detached"/"Attached") — canonPropertyType now treats a bare style as UNCOMPARABLE, so it can
-    // never false-mismatch the file's unit CATEGORY ("Multi 2–4"); a real category (Condo/SFR) still
-    // ties out. The count-vs-type-range check is owned by appraisal-underwriter.js (via `units`).
-    units: pick(f.units, f.unitCount), property_type: pick(f.propertyType, f.property_type),
+    // authority for what the property physically IS; these tie out against the application.
+    //
+    // THE PROPERTY TYPE IS A CATEGORY, AND AN ATTACHMENT STYLE IS NOT ONE (owner-reported
+    // 2026-08-02, the comparison row "Property type | Detached | Multi 2–4"). The MISMO
+    // AttachmentType's whole controlled list is Detached / Attached — it says whether the building
+    // touches its neighbour, not what the property IS. The 2026-07-27 patch stopped it FALSE-
+    // MISMATCHING (canonPropertyType returns null for a bare style) but still let it be CLAIMED, so
+    // the appraisal column printed a word that is not an answer. A bare style is now dropped at the
+    // claim, which reads as "this document didn't state it" — the truth. The real category comes
+    // from the appraisal's own form + unit count + ownership signals via
+    // lib/appraisal/property-category.js (`file-review.js` folds it in); an AI-read appraisal PDF
+    // that genuinely says "Single Family" / "Condo" still ties out normally. The count-vs-type-range
+    // check stays owned by appraisal-underwriter.js (via `units`).
+    units: pick(f.units, f.unitCount), property_type: categoryOnly(pick(f.propertyType, f.property_type)),
     occupancy: pick(f.occupancy), year_built: pick(f.yearBuilt, f.year_built),
     living_area: pick(f.gla, f.sqft, f.livingArea), market_rent: pick(f.marketRent, f.market_rent) }),
   bank_statement: (f) => (f.holderIsBusiness ? { entity_name: f.accountHolderName } : { borrower_name: f.accountHolderName }),
@@ -206,6 +218,10 @@ const DOC_CARRIES = {
 function nm(a, b) { const n = `${a || ''} ${b || ''}`.trim(); return n || null; }
 function arr(v) { return v ? [v] : null; }
 function pick(...vals) { for (const v of vals) if (v != null) return v; return null; }
+// A property-type claim, unless the value is only an attachment STYLE (Detached / Attached), which
+// is not a property type at all. ONE definition of what a style is — shared with the appraisal's
+// own derivation, so the two can never drift on which words are styles.
+function categoryOnly(v) { return isAttachmentStyle(v) ? null : v; }
 
 // An assignment / wholesale FEE is a FRACTION of the price — it can never BE the whole price. The
 // extractor sometimes drops the TOTAL purchase price into the "assignment fee" field (owner-reported

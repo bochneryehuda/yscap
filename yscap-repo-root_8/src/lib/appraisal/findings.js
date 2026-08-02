@@ -19,6 +19,9 @@
 
 const { arvDefensibility, compImpliedValue } = require('./scoring');
 const { propertyTypeUnitRange } = require('../mismo/enums');
+// The portal's own property-type vocabulary — so the appraisal states its category in exactly the
+// words the file uses, and "what is a 1025" has one answer in this codebase.
+const { propertyTypeKey, LABEL_OF } = require('../property-type');
 
 const DEFAULTS = {
   valueTolerancePct: 2,        // ARV/As-Is: treat within this % (and $) as a match
@@ -88,20 +91,9 @@ function fileAddrLine(file) {
   }
   return line || null;
 }
-// Map the file's property_type text to a class key. Mirrors src/lib/mismo/enums.js
-// (unitsHint/toMismoAttachment) so the appraisal + loan-interchange modules agree on
-// the portal's property-type vocabulary. Returns null when unknown (never guesses).
-function fileClass(t) {
-  const s = String(t || '').toLowerCase().replace(/[^a-z0-9]/g, '');
-  if (!s) return null;
-  if (s.startsWith('sfr') || s.includes('singlefamily')) return 'sfr';
-  if (s.includes('condo')) return 'condo';
-  if (s.includes('town')) return 'town';
-  if (s.includes('multi5') || s.includes('multi54')) return 'multi5';
-  if (s.includes('multi2') || s.includes('multi24')) return 'multi24';
-  if (s.includes('mixed')) return 'mixed';
-  return null;
-}
+// (The file's property_type is read with `property-type.propertyTypeKey` — the portal's own
+// canonicalizer — rather than a private copy of the same table. The local `fileClass` this file
+// used to carry was that duplicate; it went with the form-code comparison it existed for.)
 
 function finding(f) {
   return Object.assign({ source: 'appraisal', severity: 'fatal', status: 'open', blocksCtc: f.severity !== 'warning' && f.severity !== 'info' }, f);
@@ -170,18 +162,32 @@ function computeFindings(appraisal, file, opts = {}) {
       // corrupt the enum). Keep/dismiss here; correct the type on the application form.
       actions: ['keep', 'dismiss', 'decline'] }));
   } else {
-    // Same-unit-count STYLE difference (SFR vs Condo — both 1-unit dwelling styles). A real
-    // but non-blocking distinction: surface as an ADVISORY, never a CTC-blocking fatal (the
-    // fatal above is unit-count only, per the owner's directive). Only the 1-unit forms
-    // carry a comparable style; a 1025 (2–4) form has no single dwelling style to compare.
-    const styleForm = { FNM1004: 'sfr', FNM1073: 'condo' }[A.formType];
-    const styleFile = fileClass(file && file.property_type);
-    if (styleForm && styleFile && styleForm !== styleFile && (styleFile === 'sfr' || styleFile === 'condo' || styleFile === 'town')) {
+    // SAME UNIT COUNT, DIFFERENT KIND OF PROPERTY — a real but non-blocking distinction, surfaced
+    // as an ADVISORY (the fatal above is unit-count only, per the owner's directive).
+    //
+    // OWNER-REPORTED 2026-08-02: this used to compare the appraisal's FORM CODE and could only ever
+    // see two of them, so it showed the reviewer "FNM1004" as the appraisal's property type and was
+    // completely silent on a townhouse, a PUD, a 5+ or anything else. It now reads the appraisal's
+    // real CATEGORY — derived once, from the form + the unit count + the ownership signals
+    // (property-category.js) — so both sides of this finding are stated in the same plain
+    // vocabulary the file uses, and every category is covered rather than two.
+    //
+    // PUD and Townhouse are ONE bucket on purpose: they are the same one-unit attached/planned
+    // ownership form to this comparison, and the portal's own `facts.canonPropertyType` already
+    // collapses them — splitting them here would make the Appraisal tab disagree with the data
+    // comparison about the same two words. NEVER guesses: an appraisal that does not say, or a file
+    // property type outside the portal's list, leaves this silent.
+    const kind = (k) => (k === 'pud' ? 'townhouse' : k);
+    const apprKey = A.subject ? A.subject.propertyCategory : null;
+    const fileKey = propertyTypeKey(file && file.property_type);
+    if (apprKey && fileKey && kind(apprKey) !== kind(fileKey)) {
+      const apprLabel = LABEL_OF[apprKey] || apprKey;
       out.push(finding({ code: 'property_style_note', severity: 'warning', field: 'property_type',
-        appraisalValue: A.formType, fileValue: file.property_type,
-        title: `Property style differs — appraisal is a ${styleForm === 'sfr' ? 'single-family (1004)' : 'condo (1073)'} form, file property type is ${file.property_type}`,
-        howTo: 'Same unit count but a different dwelling style (single-family vs condo). Confirm the program allows it — not a blocker. Correct the property type on the application if needed.',
-        // keep/dismiss only — the appraisal form code is not a portal property_type category.
+        appraisalValue: apprLabel, fileValue: file.property_type,
+        title: `Property type differs — the appraisal is a ${apprLabel}, the file says ${file.property_type}`,
+        howTo: `The unit count agrees, but the appraisal describes a different kind of property (${apprLabel}) than the file is registered as (${file.property_type}). Confirm which is right and that the program allows it — not a blocker. Correct the property type on the application if the file is wrong.`,
+        // keep/dismiss only — property_type is a pricing input and is corrected on the application
+        // form (the validated door), never written back from a finding. See REPRICE_COLS.
         actions: ['keep', 'dismiss'] }));
     }
   }
