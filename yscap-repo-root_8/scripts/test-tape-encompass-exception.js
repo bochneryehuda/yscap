@@ -5,7 +5,7 @@
  *
  * PURE part (always runs): the `tape_encompass_override` exception type contract —
  * it exists, is super-admin-decide-only (decideRoleFor), file-subject, expirable,
- * with the right reason codes; the db/396 migration widens the type CHECK; the
+ * with the right reason codes; the db/397 migration widens the type CHECK; the
  * notify maps register the two new event types.
  *
  * DB part (runs only with DATABASE_URL): the lifecycle — request → approve (a

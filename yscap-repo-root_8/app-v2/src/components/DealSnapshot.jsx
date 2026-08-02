@@ -2,6 +2,7 @@ import React from 'react';
 import { fullNameOf } from '../lib/personName.js';
 import { dealPurchase } from '../lib/dealPrice.js';
 import { revealAnchor } from './FileSections.jsx';
+import { dealBasis, seasoningText } from '../lib/dealBasis.js';
 
 /* Staff "cockpit" band at the top of a loan file — the facts an officer wants
    without scrolling: borrower/entity, property, program, the registered terms
@@ -27,7 +28,16 @@ export default function DealSnapshot({ app, gating }) {
   // The REAL total paid (seller's contract + the FULL fee on an assignment) —
   // the one shared derivation, so this and the closing desk can never disagree.
   const purchase = dealPurchase(app).total;
-  const basis = (Number(purchase) || 0) + (Number(app.rehab_budget) || 0);
+  // Which figure this deal is sized on — the as-is value on a refinance, the
+  // purchase price on a purchase. One shared reading with the server + engine.
+  const basisOf = dealBasis(app);
+  /* The fallback LTC denominator follows the same rule: on a refinance the cost
+     basis the frozen engine uses is `as_is_value + rehab`, not `price + rehab`,
+     so the approximate ratio shown when there is no registered quote was being
+     divided by a number the engine never used (usually 0 + rehab on a refinance,
+     which made the ≈ LTC read absurdly high). A registered quote still wins — its
+     `sizing.ltcPct` is the engine's own — so this only corrects the estimate. */
+  const basis = (Number(basisOf.basis) || 0) + (Number(app.rehab_budget) || 0);
   const quote = app.registered_quote || null;
   // Fallback ratios (no registered quote) use simple display math on raw columns —
   // a different basis than the engine's; mark them approximate (owner audit 2026-07-17).
@@ -111,7 +121,20 @@ export default function DealSnapshot({ app, gating }) {
 
         <div className="snap-cluster">
           <div className="snap-cluster-h">Economics</div>
-          {row('Purchase', money(purchase))}
+          {/* THE FIGURE THE LOAN IS SIZED ON, NAMED CORRECTLY (owner-directed
+              2026-08-02). A refinance is sized on the AS-IS VALUE, so a row
+              labelled "Purchase" is either blank or a leftover — which is exactly
+              what the owner saw on a cash-out file. `dealBasis` is the one shared
+              reading (it mirrors the server's, which is the frozen engine's own
+              test), so this band can never disagree with what was priced. */}
+          {basisOf.sizedOnAsIs
+            ? <>
+              {row('As-is value', money(basisOf.basis))}
+              {row('Owned', seasoningText(app.acquisition_date))}
+              {row('Original price', money(app.original_purchase_price))}
+              {row('Payoff', money(app.payoff_amount))}
+            </>
+            : row('Purchase', money(purchase))}
           {row('ARV', money(app.arv))}
           {row('Rehab', money(app.rehab_budget))}
           {/* The SCOPE next to its cost — registering a product now writes the

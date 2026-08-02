@@ -168,12 +168,36 @@ async function siteIntake(p, opts = {}) {
     // Same shared invariant as every other create path (#96): the ticked flag is
     // truth, underlying/fee hard-null off a non-assignment, purchase = underlying
     // + fee. The public form uses looser key names, so normalize them first.
+    const loanTypeIn = F.sanitizeLoanType(p.loanType || p.purpose);
     const asg = F.assignmentFields({
+      // The loan PURPOSE governs both invariants the helper enforces: an
+      // assignment is a purchase concept, and a refinance carries no purchase
+      // price at all (owner-directed 2026-08-02 — it is sized on the as-is
+      // value). The public form already sends `purchasePrice: null` on a
+      // refinance; passing the purpose means a hand-rolled post to this open
+      // endpoint cannot get one in either.
+      loanType: loanTypeIn,
       isAssignment: !!(p.isAssignment || p.assignment),
       underlyingContractPrice: num(p.underlyingContractPrice || p.underlyingPrice),
       assignmentFee: num(p.assignmentFee),
       purchasePrice: num(p.purchasePrice || p.price),
     });
+    /* THE REFINANCE ECONOMICS THE PUBLIC FORM ALREADY COLLECTS (owner-directed
+       2026-08-02). `web/v2/tools/loan-application.html` has asked a refinancing
+       applicant for the current payoff, the ORIGINAL purchase price and the date
+       acquired for some time — and this door had nowhere to put any of them, so
+       three answered questions were dropped on every single public refinance
+       application and the file arrived missing exactly what the owner reported
+       missing. Refinance-only, like every other door. */
+    const isRefiIntake = require('../lib/deal-basis').sizesOnAsIsValue(loanTypeIn);
+    const refiOnly = (v) => (isRefiIntake ? v : null);
+    const payoffAmount = refiOnly(num(p.payoffAmount != null ? p.payoffAmount : p.payoff));
+    const origPurchase = refiOnly(num(p.originalPurchasePrice != null ? p.originalPurchasePrice : p.origPrice2));
+    // A typed 2-digit year resolves to the real year rather than persisting as
+    // year 0026 (the 2026-07-15 date-incident rule); anything unreadable is null.
+    const acqDate = refiOnly(F.normalizeTypedDate(p.acquisitionDate != null ? p.acquisitionDate : p.acqDate));
+    const payoffLender = refiOnly(F.textColumn(p.payoffLender, 'payoff_lender'));
+    const payoffLoanNo = refiOnly(F.textColumn(p.payoffLoanNumber, 'payoff_loan_number'));
     // Interest-reserve request: months (0..24 per the column CHECK) or an exact
     // dollar amount — both optional; display/record only, engines stay frozen.
     let irMonths = int(p.requestedIrMonths != null ? p.requestedIrMonths : p.resMonths);
@@ -187,9 +211,11 @@ async function siteIntake(p, opts = {}) {
           is_assignment,underlying_contract_price,assignment_fee,
           rehab_type,sqft_pre,sqft_post,requested_ir_months,requested_ir_amount,
           requested_exp_flips,requested_exp_holds,requested_exp_ground,
+          payoff_amount,original_purchase_price,acquisition_date,payoff_lender,payoff_loan_number,
           source,raw_intake,status,submitted_at)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,'new',now()) RETURNING id`,
-      [borrowerId, officerId, officerName, p.program || p.dealType || null, F.sanitizeLoanType(p.loanType || p.purpose),   // #95: public form can't persist a program as a loan type
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,
+               $28,$29,$30,$31,$32,$26,$27,'new',now()) RETURNING id`,
+      [borrowerId, officerId, officerName, p.program || p.dealType || null, loanTypeIn,   // #95: public form can't persist a program as a loan type
        JSON.stringify(p.propertyAddress || { line1: p.pStreet, city: p.pCity, state: p.pState, zip: p.pZip }),
        p.propertyType || p.propType || null, int(p.units || p.units24 || p.unitsN),
        asg.purchasePrice, num(p.asIsValue || p.asIs), num(p.arv),
@@ -204,7 +230,14 @@ async function siteIntake(p, opts = {}) {
        p.rehabType || null, int(p.sqftPre || p.sqftCurrent), int(p.sqftPost),
        irMonths, irAmount,
        int(p.expFlips) || 0, int(p.expHolds != null ? p.expHolds : p.expBrrrr) || 0, int(p.expGround) || 0,
-       source, JSON.stringify(redactPII(p))]);
+       source, JSON.stringify(redactPII(p)),
+       // $28..$32 — the refinance economics. Positional, and the placeholder list
+       // above puts them BEFORE $26/$27 in the column order, so keep the two in
+       // step: the column list reads … requested_exp_ground, payoff_amount,
+       // original_purchase_price, acquisition_date, payoff_lender,
+       // payoff_loan_number, source, raw_intake. (The borrower door learned this
+       // the hard way — see its own note about a shifted bind list.)
+       payoffAmount, origPurchase, acqDate, payoffLender, payoffLoanNo]);
     appId = a.rows[0].id;
     await client.query('COMMIT');
   } catch (e) {
