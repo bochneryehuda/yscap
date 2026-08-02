@@ -91,7 +91,12 @@ async function importAppraisalTx(db, {
     has_prior_sale: s.priorSale ? s.priorSale.hasPrior : null,
     subject_address: s.address, subject_city: s.city, subject_county: s.county, subject_state: s.state, subject_zip: s.zip,
     apn: s.apn, legal_description: s.legal, census_tract: s.censusTract, neighborhood: s.neighborhood,
-    property_type: s.propertyType, units: s.units, year_built: s.yearBuilt, gla: s.gla,
+    // `property_type` now holds the real CATEGORY in the portal's vocabulary ("Multi 2–4", "Condo",
+    // "SFR (1 unit)"), derived by lib/appraisal/property-category.js. The MISMO attachment STYLE
+    // that used to live in this column keeps its own home so the fact is not lost — it is simply
+    // never again mistaken for a property type (owner-reported 2026-08-02). db/405.
+    property_type: s.propertyType, property_category: s.propertyCategory, attachment_type: s.attachmentType,
+    units: s.units, year_built: s.yearBuilt, gla: s.gla,
     rooms: s.rooms, beds: s.beds, baths_full: s.bathsFull, baths_half: s.bathsHalf,
     stories: s.stories, design_style: s.design, lot_area: s.lotArea,
     zoning_id: s.zoningId, zoning_desc: s.zoningDesc, zoning_compliance: s.zoningCompliance,
