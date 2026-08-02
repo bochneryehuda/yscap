@@ -10,19 +10,51 @@
 
 const MONTH_MS = 365.2425 / 12 * 86400000;
 
+/* NOBODY HAS LIVED ANYWHERE FOR A HUNDRED YEARS (re-audit, 2026-08-02). A count
+   is subtracted from today to anchor a move-in date, so a big enough count walks
+   the date off the end of the calendar — and `residence_since` is a `date`
+   column, which then answers 500:
+
+     monthsAtResidence: 99999      → date out of range: "6308-05-02 … BC"
+     monthsAtResidence: 2000000000 → invalid input syntax for type date:
+                                     "0NaN-NaN-NaNTNaN:NaN:NaN.NaN+NaN:NaN"
+
+   Both borrower-profile doors carried this. The column bound could not see it:
+   `months_at_residence` is int4 and 99999 fits int4 perfectly — it is the DERIVED
+   date that cannot be stored, which is the same "judge what is BOUND, not only
+   what was typed" lesson as the assignment sum.
+
+   Fixed HERE rather than at the two doors, because this is the one function that
+   turns a count into a date, so every present and future caller is covered. */
+const MAX_RESIDENCE_MONTHS = 1200;      // 100 years
+
+/** Why this (years, months) pair cannot be a residence duration, or '' if it can. */
+function residenceCountProblem(years, months) {
+  const y = Number(years == null || years === '' ? 0 : years);
+  const m = Number(months == null || months === '' ? 0 : months);
+  if (!Number.isFinite(y) || !Number.isFinite(m)) return 'Time at this address must be a number';
+  if (y < 0 || m < 0) return 'Time at this address cannot be negative';
+  if (y * 12 + m > MAX_RESIDENCE_MONTHS) return 'Time at this address is too long — enter at most 100 years';
+  return '';
+}
+
 /** count (years, months) at a reference instant → an anchored move-in Date. */
 function moveInFrom(years, months, asOf = new Date()) {
   const y = Number(years) || 0;
   const m = parseInt(months, 10) || 0;
   const totalMonths = y * 12 + m;
-  if (totalMonths <= 0) return null;
+  if (!Number.isFinite(totalMonths) || totalMonths <= 0) return null;
+  // Beyond a human lifetime the answer is not a date — it is bad input, and a
+  // date the column cannot hold is worse than no date at all.
+  if (totalMonths > MAX_RESIDENCE_MONTHS) return null;
   const d = new Date(asOf.getTime());
   // Whole months back, then the fractional-year remainder in days.
   const wholeMonths = Math.floor(totalMonths);
   d.setMonth(d.getMonth() - wholeMonths);
   const fracDays = Math.round((totalMonths - wholeMonths) * (MONTH_MS / 86400000));
   if (fracDays) d.setDate(d.getDate() - fracDays);
-  return d;
+  // Belt-and-suspenders: never hand back something that is not a real date.
+  return isNaN(d.getTime()) ? null : d;
 }
 
 /** A move-in date → the LIVE {years, months, totalMonths} as of now.
@@ -58,4 +90,4 @@ function withLiveResidence(row, now = new Date()) {
   return row;
 }
 
-module.exports = { moveInFrom, durationSince, withLiveResidence };
+module.exports = { moveInFrom, durationSince, withLiveResidence, residenceCountProblem, MAX_RESIDENCE_MONTHS };

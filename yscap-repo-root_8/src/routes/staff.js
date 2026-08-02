@@ -32,6 +32,7 @@ const workflowAuto = require('../lib/workflow-automation');
 const trackRecordFromFile = require('../lib/track-record-from-file');
 const closing = require('../lib/closing');
 const numberBounds = require('../lib/number-bounds');     // ONE definition of every column's ceiling
+const { jsonbText } = require('../lib/fields');            // NUL-safe serializer for every jsonb bind
 const purchasing = require('../lib/purchasing');
 const { syncExperienceChecklistForApplication, RECENT_EXIT_SQL, EXIT_DATE_SQL } = require('../lib/experience');
 const { enqueueClickupPush, enqueueChecklistStatusPush } = require('../clickup/enqueue');
@@ -1323,7 +1324,7 @@ router.post('/applications', async (req, res) => {
        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,
                $24,$25,$26,$27,$28,'staff','new',now())
        RETURNING id,ys_loan_number`,
-      [borrowerId, addr ? JSON.stringify(addr) : null, b.propertyType || null, b.units || null,
+      [borrowerId, addr ? jsonbText(addr) : null, b.propertyType || null, b.units || null,
        b.program || null, require('../lib/fields').sanitizeLoanType(b.loanType), purchasePrice, money(b.asIsValue),   // #95: never a program
        money(b.arv), money(b.rehabBudget), officerId, officerName,
        b.rehabType || null, sqf.sqftPre, sqf.sqftPost,
@@ -2455,7 +2456,10 @@ router.post('/applications/:id/pricing/register', async (req, res) => {
            failing to reach it. Magnitude-rounded, matching how Postgres rounds
            before it checks for overflow. */
         if (numberBounds.moneyOverflows(nCo)) {
-          return refuse(400, { error: 'estimatedCashOut is too large — the largest amount this field can hold is 999,999,999,999.99' }, 'cash_out_too_large');
+          // The NUMBER comes from the shared definition too, not a typed copy of
+          // it — a hand-written ceiling is the one part of this that can still
+          // drift silently (audit round 2, 2026-08-02).
+          return refuse(400, { error: `estimatedCashOut is too large — the largest amount this field can hold is ${numberBounds.MONEY_LIMIT_TEXT}` }, 'cash_out_too_large');
         }
       }
     }
@@ -2688,8 +2692,16 @@ router.post('/applications/:id/pricing/register', async (req, res) => {
          a numeric overflow inside this transaction, and TEN of them exhaust
          DB_POOL_MAX (10) — after which EVERY request in the app answers 503.
          One bad paste in the studio's admin zone could take the whole service
-         down. Released here, and `released` stops the later `finally` from
-         double-releasing (pg treats that as an error). */
+         down. Released here.
+
+         `released` is DEFENSIVE, not load-bearing, and the comment used to
+         overstate it (audit round 2, 2026-08-02): the `throw e` below leaves the
+         function before the vesting block is entered, so that `finally` never
+         actually runs on this path and the flag is always false when it does.
+         It is kept so that the day someone turns this rethrow into a `return`
+         — or wraps the vesting block differently — the double release it would
+         otherwise introduce (pg treats that as an error) is already prevented.
+         Proved unreachable by mutation: removing the guard fails no assertion. */
       released = true;
       try { await client.query('ROLLBACK'); } catch (_) { /* the connection may already be gone */ }
       try { client.release(); } catch (_) { /* best-effort */ }
@@ -3464,7 +3476,7 @@ router.post('/applications/:id/rehab-budget', async (req, res) => {
     const mismatch = chk.ok ? null : { required: chk.required, total, message: chk.message };
     const goldSow = await RBsow.checkGoldSow(appId, payload);
     const st = (mismatch || !goldSow.ok) ? (total != null && total > 0 ? 'issue' : null) : 'received';
-    await db.query(`UPDATE checklist_items SET tool_payload=$2, status=COALESCE($3,status), updated_at=now() WHERE id=$1`, [itemId, JSON.stringify(payload), st]);
+    await db.query(`UPDATE checklist_items SET tool_payload=$2, status=COALESCE($3,status), updated_at=now() WHERE id=$1`, [itemId, jsonbText(payload), st]);
     // The durable note reuses the gate's own cent-precise message (audit
     // finding 1: this note used to re-round the figures to whole dollars).
     const note = RBsow.sowAutoNote(mismatch && mismatch.message, goldSow.ok, payload.total);
@@ -3496,7 +3508,7 @@ router.put('/applications/:id/checklist/:itemId/tool-state', async (req, res) =>
   const r = await db.query(
     `UPDATE checklist_items SET tool_state=$3, updated_at=now()
       WHERE id=$1 AND application_id=$2 AND tool_key IS NOT NULL RETURNING id`,
-    [req.params.itemId, req.params.id, JSON.stringify(state)]);
+    [req.params.itemId, req.params.id, jsonbText(state)]);
   if (!r.rows[0]) return res.status(404).json({ error: 'tool task not found' });
   res.json({ ok: true, savedAt: new Date().toISOString() });
 });
@@ -3540,8 +3552,8 @@ router.post('/applications/:id/checklist/:itemId/tool', async (req, res) => {
   const toolStatus = (sowMismatch || !goldSow.ok) ? (rbTotal != null && rbTotal > 0 ? 'issue' : null) : 'received';
   await db.query(
     `UPDATE checklist_items SET tool_payload=$2, tool_state=COALESCE($3,tool_state), status=COALESCE($4,status), updated_at=now() WHERE id=$1`,
-    [req.params.itemId, JSON.stringify(payload),
-     payload && typeof payload.state === 'object' ? JSON.stringify(payload.state) : null, toolStatus]);
+    [req.params.itemId, jsonbText(payload),
+     payload && typeof payload.state === 'object' ? jsonbText(payload.state) : null, toolStatus]);
   if (toolKey === 'rehab_budget') {
     // Durable note = the gate's own cent-precise message (audit finding 1).
     const note = require('../lib/rehab-budget').sowAutoNote(sowMismatch && sowMismatch.message, goldSow.ok, payload && payload.total);
@@ -7391,8 +7403,8 @@ router.patch('/borrowers/:id', async (req, res) => {
   try {
     if (!(await canSeeBorrower(req))) return res.status(403).json({ error: 'forbidden' });
     let b = req.body || {};
-    const sets = [], vals = [req.params.id];
-    const put = (col, val) => { vals.push(val); sets.push(`${col}=$${vals.length}`); };
+    const sets = [], vals = [req.params.id], putCols = [];
+    const put = (col, val) => { vals.push(val); sets.push(`${col}=$${vals.length}`); putCols.push([col, val]); };
     // Set when the whole name was typed into ONE box and PILOT had to judge where
     // it splits — the "please check this" prompt is kept in that case.
     let nameSplitFromFullName = null;
@@ -7474,8 +7486,8 @@ router.patch('/borrowers/:id', async (req, res) => {
         put('fico', n);
       }
     }
-    if (b.currentAddress !== undefined) put('current_address', b.currentAddress ? JSON.stringify(b.currentAddress) : null);
-    if (b.mailingAddress !== undefined) put('mailing_address', b.mailingAddress ? JSON.stringify(b.mailingAddress) : null);
+    if (b.currentAddress !== undefined) put('current_address', b.currentAddress ? jsonbText(b.currentAddress) : null);
+    if (b.mailingAddress !== undefined) put('mailing_address', b.mailingAddress ? jsonbText(b.mailingAddress) : null);
     if (b.primaryOfficerId !== undefined) put('primary_officer_id', b.primaryOfficerId || null);
     // HOUSING + EMPLOYMENT on the profile (owner-directed 2026-07-26: "the
     // housing details of where he lives, how much rent he pays, if he owns, if
@@ -7498,9 +7510,49 @@ router.patch('/borrowers/:id', async (req, res) => {
     if (b.yearsAtResidence !== undefined || b.monthsAtResidence !== undefined) {
       const y = b.yearsAtResidence === '' || b.yearsAtResidence == null ? null : Number(b.yearsAtResidence);
       const m = b.monthsAtResidence === '' || b.monthsAtResidence == null ? null : parseInt(b.monthsAtResidence, 10);
+      /* Junk is REFUSED here too. It used to answer 200 and write NULL into all
+         three residence columns, while the borrower door refused the identical
+         value — one question, two answers (fourth audit, 2026-08-02). */
+      if ((b.yearsAtResidence != null && b.yearsAtResidence !== '' && !Number.isFinite(y))
+          || (b.monthsAtResidence != null && b.monthsAtResidence !== '' && !Number.isFinite(m))) {
+        return res.status(400).json({ error: 'Time at this address must be a number' });
+      }
+      // See the borrower door's note: `months_at_residence` fits int4 fine, so the
+      // column sweep below cannot catch a count that walks the DERIVED move-in
+      // date off the calendar. Refused here, in words (re-audit 2026-08-02).
+      /* …but only when they are actually CHANGING it (third audit, 2026-08-02).
+         `withLiveResidence` computes the duration from the stored anchor, so a row
+         whose anchor predates this rule reads back as >100 years — and both
+         clients resend the whole form on every save, so refusing an UNCHANGED
+         out-of-range value bricked the entire profile screen: editing a phone
+         number 400'd until somebody hand-fixed the years box. A guard that
+         refuses what the person did not touch is not guarding anything. */
+      const rProblem = require('../lib/residence').residenceCountProblem(y, m);
+      if (rProblem) {
+        /* COMPARE AGAINST WHAT THEY WERE SHOWN (fourth audit, 2026-08-02).
+           The first cut compared the request to the STORED columns — but both GET
+           doors return `withLiveResidence`, which OVERWRITES those columns with the
+           duration computed live from `residence_since`. The client echoes the LIVE
+           number, so the two were never the same value, and they drift further apart
+           every month: the brick this was written to remove was still live, and the
+           door even bricked rows it had just accepted — exactly 100 years is allowed,
+           and one month of drift later that same row could no longer be saved. */
+        const cur = (await db.query(
+          `SELECT years_at_residence, months_at_residence, residence_since FROM borrowers WHERE id=$1`,
+          [req.params.id])).rows[0] || {};
+        const shown = require('../lib/residence').withLiveResidence(Object.assign({}, cur));
+        const same = Number(shown.years_at_residence || 0) === Number(y || 0)
+          && Number(shown.months_at_residence || 0) === Number(m || 0);
+        if (!same) return res.status(400).json({ error: rProblem });
+      }
       put('years_at_residence', Number.isFinite(y) ? y : null);
       put('months_at_residence', Number.isFinite(m) ? m : null);
-      put('residence_since', (y || m) ? require('../lib/residence').moveInFrom(y, m) : null);
+      // See the borrower door's note: a count we cannot anchor must not destroy
+      // the anchor we already have.
+      {
+        const anchor = (y || m) ? require('../lib/residence').moveInFrom(y, m) : null;
+        if (anchor || !(y || m)) put('residence_since', anchor);
+      }
     }
     // DOB from the borrower-profile edit (owner-directed 2026-07-15 night: DOB
     // must be fully editable from PILOT — the profile screen previously showed
@@ -7512,6 +7564,22 @@ router.patch('/borrowers/:id', async (req, res) => {
     if (b.dob !== undefined && b.dob !== null && b.dob !== '') {
       dobDay = require('../lib/fields').sanitizeDob(b.dob);
       if (dobDay == null) return res.status(400).json({ error: 'date of birth must be a real adult birth date (YYYY-MM-DD, 4-digit year)' });
+    }
+    /* EVERY NUMBER HAS TO FIT ITS COLUMN (pre-merge audit, 2026-08-02). Measured
+       on this door: `housingPayment: 1e14` → 500 "server error". It is
+       numeric(12,2) — neither money nor a percent — which is precisely the shape
+       the column table could not express until it grew a {precision, scale}
+       kind. Swept over everything `put()` collected, so a field added below is
+       covered without anyone remembering to add a check. */
+    {
+      /* ONLY an actual number is judged. A cleared field arrives as null — which
+         is a legitimate "no value", not a bad one — and handing it to
+         columnProblem as NaN turned every CLEAR into "must be a number". Caught
+         by test-borrower-fields-db's own clearing case. */
+      const bad = putCols
+        .map(([col, val]) => (typeof val === 'number' ? numberBounds.tableColumnProblem('borrowers', col, val) : ''))
+        .find(Boolean);
+      if (bad) return res.status(400).json({ error: bad });
     }
     if (!sets.length && !dobDay) return res.status(400).json({ error: 'nothing to update' });
     if (sets.length) {
@@ -9235,13 +9303,18 @@ router.patch('/applications/:id/details', async (req, res) => {
          its advice produced another 500.
      These two sets are keyed on the COLUMN TYPE, which is what actually decides
      the limit. Add a key to NUM above and add it here too. */
-  const MONEY_KEYS = new Set(['purchasePrice', 'asIsValue', 'arv', 'rehabBudget', 'requestedIrAmount',
-    'payoffAmount', 'estimatedCashOut', 'originalPurchasePrice', 'underlyingContractPrice', 'assignmentFee']);
-  /* A column with a CHECK narrower than its TYPE. Its ceiling is the constraint,
-     not int4's — quoting 2,147,483,647 for a field the database refuses past 24
-     is the same "follow the message, get another 500" trap the previous round
-     fixed for `units`, reintroduced one column over (audit round 7). */
-  const CHECKED_RANGE = { requestedIrMonths: { min: 0, max: 24, what: 'months of interest reserve' } };
+  /* WHICH TYPE EACH KEY IS NO LONGER LIVES HERE (pre-merge audit, 2026-08-02).
+     This door kept its own hand-maintained MONEY_KEYS / CHECKED_RANGE tables — a
+     second definition of exactly what `number-bounds.COLUMN_KIND` now holds, in a
+     loop that already has the COLUMN in hand. It was verified correct, but it is
+     precisely the drift this whole change exists to remove, sitting on the door
+     the rest of the change is calibrated against. The kind now comes from the
+     shared table, keyed on the column.
+
+     Only the WORDING stays local: this door names fields by their request key
+     ("payoffAmount"), which is what its callers and its tests read, and the
+     interest-reserve message says which months it means. */
+  const CHECKED_WHAT = { requestedIrMonths: 'months of interest reserve' };
   /**
    * The reason this number cannot be stored, or '' if it can.
    *
@@ -9252,8 +9325,13 @@ router.patch('/applications/:id/details', async (req, res) => {
    * looked at. Here we say which COLUMN TYPE each key is; the shared module
    * says what that type can hold. Add a key to NUM above and add it here too.
    */
-  const numberOutOfRange = (key, n) => numberBounds.columnProblem(
-    key, n, CHECKED_RANGE[key] || (MONEY_KEYS.has(key) ? 'money' : 'int'));
+  const numberOutOfRange = (key, n, col) => {
+    const kind = numberBounds.columnKindOf('applications', col) || 'int';
+    // A CHECK-bounded column keeps this door's more specific noun.
+    const spoken = (kind && typeof kind === 'object' && kind.min != null && CHECKED_WHAT[key])
+      ? { ...kind, what: CHECKED_WHAT[key] } : kind;
+    return numberBounds.columnProblem(key, n, spoken);
+  };
   const sets = [], vals = []; let i = 1;
   const touchedCols = [];
   for (const [k, col] of Object.entries(NUM)) if (k in b) {
@@ -9292,7 +9370,7 @@ router.patch('/applications/:id/details', async (req, res) => {
        and is refused by Postgres, while a bare `>= 1e12` on the raw number let it
        through to another 500. */
     if (n != null) {
-      const bad = numberOutOfRange(k, n);
+      const bad = numberOutOfRange(k, n, col);
       if (bad) return res.status(400).json({ error: bad });
     }
     sets.push(`${col}=$${i++}`); vals.push(n); touchedCols.push(col);
@@ -9329,7 +9407,7 @@ router.patch('/applications/:id/details', async (req, res) => {
     sets.push(`${col}=$${i++}`); vals.push(v); touchedCols.push(col);
   }
   if ('isAssignment' in b) { sets.push(`is_assignment=$${i++}`); vals.push(!!b.isAssignment); touchedCols.push('is_assignment'); }
-  if (b.propertyAddress !== undefined) { sets.push(`property_address=$${i++}`); vals.push(b.propertyAddress ? JSON.stringify(b.propertyAddress) : null); touchedCols.push('property_address'); }
+  if (b.propertyAddress !== undefined) { sets.push(`property_address=$${i++}`); vals.push(b.propertyAddress ? jsonbText(b.propertyAddress) : null); touchedCols.push('property_address'); }
   // Couple units to a property_type change when the caller didn't send units
   // explicitly (a direct API call, or the completeness panel) — mirrors the
   // intake form's unitsForType so a single-family type auto-fills "1 unit" and a
@@ -9898,7 +9976,23 @@ async function completeFields(req, res, borrowerScoped) {
       if (!(k in b) || b[k] === '' || b[k] == null) continue;
       if (k === 'purchase_price' && refiNow) continue;
       let v = b[k];
-      if (t === 'money') { const s = String(v).replace(/[^0-9.]/g, ''); if (s === '') continue; v = Number(s); if (!Number.isFinite(v)) continue; }
+      if (t === 'money') {
+        /* A money box is either a number or a refusal — see the borrower door's
+           note. The character-deleting parse this replaces stored 15 for "1e5"
+           and a POSITIVE 500000 for "-500000", on pricing columns. */
+        const mp = require('../lib/fields').moneyTextProblem(v, numberBounds.COLUMN_LABEL[k] || k);
+        if (mp) return res.status(400).json({ error: mp });
+        v = require('../lib/fields').moneyValue(v);
+        if (v == null) continue;
+        /* …and it has to FIT (post-merge audit round 2, 2026-08-02). This panel
+           writes the SAME economics columns as `PATCH /details`, which answers a
+           plain 400 naming the field — here the value went straight to Postgres,
+           raised 22003 and came back to the officer as "server error" with
+           nothing saved and no hint which box was at fault. Same rule, same
+           words, decided by the COLUMN (lib/number-bounds). */
+        const bad = numberBounds.applicationColumnProblem(k, v);
+        if (bad) return res.status(400).json({ error: bad });
+      }
       if (k === 'loan_type') v = require('../lib/fields').sanitizeLoanType(v);   // #95: never a program
       appVals.push(v); appSets.push(`${k}=$${appVals.length}`); appKeys.push(k);
     }
@@ -9908,6 +10002,17 @@ async function completeFields(req, res, borrowerScoped) {
     // Pricing (db/072) so the underwriter re-signs, and the Clear-to-Close /
     // Funded / term-sheet-sent freeze below (structuralLockReason) still blocks
     // everyone equally once the file is locked.
+    /* VALIDATE THE PERSONAL FIELDS BEFORE THE ECONOMICS UPDATE COMMITS (fifth
+       audit, 2026-08-02). The borrower door's note applies here identically:
+       `{arv:950000, fico:'abc'}` answered 400 with the ARV already written and
+       the pricing-reopen triggers already fired. */
+    for (const [k, t] of Object.entries(COMPLETE_BORROWER_FIELDS)) {
+      if (!(k in b) || b[k] === '' || b[k] == null) continue;
+      if (t === 'int' && k === 'fico'
+          && String(b[k]).trim() !== '' && require('../lib/fields').sanitizeFico(b[k]) == null) {
+        return res.status(400).json({ error: 'Credit score must be a 3-digit score between 300 and 850' });
+      }
+    }
     if (appSets.length) {
       // #84 — this staff completeness path writes the SAME frozen economics fields
       // as PATCH /details (program / loan_type / property_type / price / as-is / ARV
@@ -9991,7 +10096,19 @@ async function completeFields(req, res, borrowerScoped) {
     for (const [k, t] of Object.entries(COMPLETE_BORROWER_FIELDS)) {
       if (!(k in b) || b[k] === '' || b[k] == null) continue;
       let v = b[k];
-      if (t === 'int') { v = k === 'fico' ? require('../lib/fields').sanitizeFico(v) : parseInt(v, 10); if (v == null || !Number.isFinite(v)) continue; }  // #90: FICO 300–850
+      if (t === 'int') {
+        /* A BAD SCORE IS REFUSED, NOT SILENTLY DROPPED (third audit,
+           2026-08-02). `sanitizeFico` answers null for junk, and `continue`
+           turned that into "saved!" with nothing written — while both profile
+           doors refuse the identical value with a reason. One column, four
+           doors, two behaviours; this is the half that lied. */
+        const typed = v != null && String(v).trim() !== '';
+        v = k === 'fico' ? require('../lib/fields').sanitizeFico(v) : parseInt(v, 10);
+        if (v == null || !Number.isFinite(v)) {
+          if (typed && k === 'fico') return res.status(400).json({ error: 'Credit score must be a 3-digit score between 300 and 850' });
+          continue;
+        }
+      }  // #90: FICO 300–850
       if (t === 'date') {  // 2026-07-15 incident: strict calendar + year bounds;
         // a typed 2-digit year resolves to the real year (DOB → adult century).
         v = require('../lib/fields').sanitizeDob(v);
@@ -10993,7 +11110,7 @@ router.post('/applications/:id/closing/cash-to-close', async (req, res) => {
   // numeric(14,2) ceiling as the details door, now from the same definition
   // (`lib/number-bounds`) rather than a third inline copy of it.
   if (!blank && numberBounds.moneyOverflows(val)) {
-    return res.status(400).json({ error: 'That cash-to-close amount is too large — the largest this field can hold is 999,999,999,999.99.' });
+    return res.status(400).json({ error: `That cash-to-close amount is too large — the largest this field can hold is ${numberBounds.MONEY_LIMIT_TEXT}.` });
   }
   /* THE ATTACHED ALTA MUST BE A REAL DOCUMENT ON THIS FILE (post-merge audit
      2026-07-31). `actual_cash_to_close_doc_id` is a uuid with a foreign key
@@ -11010,7 +11127,12 @@ router.post('/applications/:id/closing/cash-to-close', async (req, res) => {
   let docId = req.body && req.body.docId ? String(req.body.docId).trim() : null;
   if (docId) {
     if (!UUID_RE.test(docId)) return res.status(400).json({ error: 'That attachment is not a document on this file — pick it again.' });
-    const dq = await db.query(`SELECT 1 FROM documents WHERE id=$1 AND application_id=$2`, [docId, appId]);
+    /* …and it must be the CURRENT copy. A superseded document is still on the
+       file, so without this filter the closer could cite a replaced settlement
+       statement as the evidence for the cash to close — the stale-figure version
+       of the wrong-file problem the ownership check above already closes
+       (post-merge audit, 2026-08-02). */
+    const dq = await db.query(`SELECT 1 FROM documents WHERE id=$1 AND application_id=$2 AND is_current = true`, [docId, appId]);
     if (!dq.rows[0]) return res.status(400).json({ error: 'That attachment is not a document on this file — pick it again.' });
   } else {
     docId = null;
@@ -11854,7 +11976,7 @@ router.post('/leads', async (req, res) => {
        VALUES ('manual','manual',$1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,now())
        RETURNING id`,
       [b.leadSource || 'manual', name, first || null, last || null, b.company || null, email || null, phone || null, b.phoneAlt || null,
-        b.contactAddress ? JSON.stringify(b.contactAddress) : null, b.propertyAddress ? JSON.stringify(b.propertyAddress) : null,
+        b.contactAddress ? jsonbText(b.contactAddress) : null, b.propertyAddress ? jsonbText(b.propertyAddress) : null,
         b.propertyType || null, b.program || null, amount, b.referralPartner || null,
         b.subject || null, b.message || null, status, officerId, req.actor.id]);
     const leadId = ins.rows[0].id;
@@ -11891,8 +12013,8 @@ router.patch('/leads/:id', async (req, res) => {
   if (b.email !== undefined) col('email', String(b.email).trim() || null);
   if (b.phone !== undefined) col('phone', String(b.phone).trim() || null);
   if (b.phoneAlt !== undefined) col('phone_alt', String(b.phoneAlt).trim() || null);
-  if (b.contactAddress !== undefined) col('contact_address', b.contactAddress ? JSON.stringify(b.contactAddress) : null);
-  if (b.propertyAddress !== undefined) col('property_address', b.propertyAddress ? JSON.stringify(b.propertyAddress) : null);
+  if (b.contactAddress !== undefined) col('contact_address', b.contactAddress ? jsonbText(b.contactAddress) : null);
+  if (b.propertyAddress !== undefined) col('property_address', b.propertyAddress ? jsonbText(b.propertyAddress) : null);
   if (b.propertyType !== undefined) col('property_type', b.propertyType || null);
   if (b.program !== undefined) col('program', b.program || null);
   if (b.loanAmount !== undefined) col('loan_amount', (b.loanAmount !== '' && Number.isFinite(Number(b.loanAmount))) ? Number(b.loanAmount) : null);
@@ -12232,7 +12354,7 @@ router.post('/leads/:id/convert', async (req, res) => {
        VALUES ($1,$2,$3,$4,$5,$6,'staff','new',now(),
           $7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20)
        RETURNING id, ys_loan_number`,
-      [borrowerId, JSON.stringify(addr),
+      [borrowerId, jsonbText(addr),
         b.propertyType || pv.propType || lead.property_type || null,
         b.program || pv.dealType || lead.program || null, officerId, officerName,
         econLoanType,
@@ -14544,7 +14666,7 @@ router.post('/tool-scenarios', async (req, res) => {
        ON CONFLICT (staff_user_id, tool_slug, lower(btrim(name)))
        DO UPDATE SET state = EXCLUDED.state, state_kind = EXCLUDED.state_kind, name = EXCLUDED.name
          RETURNING id, tool_slug, name, state_kind, created_at, updated_at`,
-      [req.actor.id, toolSlug, name, JSON.stringify(state), stateKind]);
+      [req.actor.id, toolSlug, name, jsonbText(state), stateKind]);
     // Never a silent strip: if a social was dropped on the way in, the screen says so.
     res.status(201).json({ scenario: suiteScenarios.shapeRow(r.rows[0]), omittedSensitive: removed.length > 0 });
   } catch (e) { console.warn('[staff] handler error:', db.describeError(e)); res.status(500).json({ error: 'server error' }); }
@@ -14594,7 +14716,7 @@ router.put('/tool-scenarios/:id', async (req, res) => {
               state = COALESCE($4::jsonb, state)
         WHERE id = $1 AND staff_user_id = $2
         RETURNING id, tool_slug, name, state_kind, created_at, updated_at`,
-      [req.params.id, req.actor.id, name, hasState ? JSON.stringify(state) : null]);
+      [req.params.id, req.actor.id, name, hasState ? jsonbText(state) : null]);
     if (!r.rows[0]) return res.status(404).json({ error: 'not found' });
     res.json({ scenario: suiteScenarios.shapeRow(r.rows[0]), omittedSensitive: removed.length > 0 });
   } catch (e) {

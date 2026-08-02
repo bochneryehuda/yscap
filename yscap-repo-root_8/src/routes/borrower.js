@@ -23,7 +23,8 @@ const { redactPII } = require('../lib/redact');
    BIND: it answers "was a value provided?" off the raw value exactly as the
    `b.x || null` it replaced did (so a typed "0" still stores 0.00, not NULL) and
    only then parses. See lib/fields.js. */
-const { moneyColumn } = require('../lib/fields');
+const { moneyColumn, jsonbText } = require('../lib/fields');
+const numberBounds = require('../lib/number-bounds');     // ONE definition of every column's ceiling
 const { serveDocument } = require('../lib/serve-document');
 const { decodeUploadBase64, safeFilename } = require('../lib/upload-bytes');
 const pricing = require('../lib/pricing');
@@ -228,7 +229,20 @@ router.put('/profile', async (req, res) => {
   if (b.nameSuffix !== undefined) fields.name_suffix = clean(String(b.nameSuffix).trim());
   if (b.cellPhone !== undefined) fields.cell_phone = clean(b.cellPhone);
   if (b.dateOfBirth !== undefined) fields.date_of_birth = clean(b.dateOfBirth);
-  if (b.fico !== undefined) fields.fico = require('../lib/fields').sanitizeFico(b.fico);  // #90: 3-digit, 300–850
+  /* A BAD SCORE IS REFUSED, NOT WRITTEN AS A BLANK (re-audit, 2026-08-02).
+     `sanitizeFico` answers null for BOTH "cleared" and "that is not a score", and
+     this door wrote the null either way — so `{"fico":"abc"}` came back 200
+     {ok:true} and ERASED a credit score the file already had. The staff door has
+     always refused it with a reason; two doors onto one column disagreeing is
+     the recurring shape, and here the borrower-facing one was the destructive
+     one. An explicit blank still clears, exactly as before. */
+  if (b.fico !== undefined) {
+    const typedFico = b.fico != null && String(b.fico).trim() !== '';
+    fields.fico = require('../lib/fields').sanitizeFico(b.fico);  // #90: 3-digit, 300–850
+    if (typedFico && fields.fico == null) {
+      return res.status(400).json({ error: 'Credit score must be a 3-digit score between 300 and 850' });
+    }
+  }
   if (b.citizenship !== undefined) fields.citizenship = clean(b.citizenship);
   if (b.maritalStatus !== undefined) fields.marital_status = clean(b.maritalStatus);
   if (b.yearsAtResidence !== undefined) fields.years_at_residence = (b.yearsAtResidence === '' || b.yearsAtResidence == null) ? null : Number(b.yearsAtResidence);
@@ -239,13 +253,53 @@ router.put('/profile', async (req, res) => {
   if (b.yearsAtResidence !== undefined || b.monthsAtResidence !== undefined) {
     const y = fields.years_at_residence != null ? fields.years_at_residence : null;
     const m = fields.months_at_residence != null ? fields.months_at_residence : null;
-    fields.residence_since = (y || m) ? require('../lib/residence').moveInFrom(y, m) : null;
+    /* SAY SO, rather than silently dropping the anchor. `moveInFrom` now refuses
+       to build a date it cannot make (that is what stops the 500 — see
+       lib/residence), but a count nobody could have lived is still a typo the
+       person should be told about, not quietly half-saved. `months_at_residence`
+       is int4, so 99999 fits its column perfectly — only the DERIVED date does
+       not, which the column sweep below cannot see (re-audit 2026-08-02). */
+    /* …but only when they are actually CHANGING it (third audit, 2026-08-02).
+       `withLiveResidence` computes the duration from the stored anchor, so a row
+       whose anchor predates this rule reads back as >100 years — and both
+       clients resend the whole form on every save, so refusing an UNCHANGED
+       out-of-range value bricked the entire profile screen: editing a phone
+       number 400'd until somebody hand-fixed the years box. A guard that
+       refuses what the person did not touch is not guarding anything. */
+    const rProblem = require('../lib/residence').residenceCountProblem(y, m);
+    if (rProblem) {
+      /* COMPARE AGAINST WHAT THEY WERE SHOWN (fourth audit, 2026-08-02).
+         The first cut compared the request to the STORED columns — but both GET
+         doors return `withLiveResidence`, which OVERWRITES those columns with the
+         duration computed live from `residence_since`. The client echoes the LIVE
+         number, so the two were never the same value, and they drift further apart
+         every month: the brick this was written to remove was still live, and the
+         door even bricked rows it had just accepted — exactly 100 years is allowed,
+         and one month of drift later that same row could no longer be saved. */
+      const cur = (await db.query(
+        `SELECT years_at_residence, months_at_residence, residence_since FROM borrowers WHERE id=$1`,
+        [me(req)])).rows[0] || {};
+      const shown = require('../lib/residence').withLiveResidence(Object.assign({}, cur));
+      const same = Number(shown.years_at_residence || 0) === Number(y || 0)
+        && Number(shown.months_at_residence || 0) === Number(m || 0);
+      if (!same) return res.status(400).json({ error: rProblem });
+    }
+    /* NEVER WIPE AN ANCHOR WE CANNOT REBUILD (fifth audit, 2026-08-02).
+       `moveInFrom` returns null past the cap, and on the "unchanged" bypass
+       above that turned an ordinary re-save into silent destruction of
+       `residence_since` — the anchor is what keeps the duration LIVE, so losing
+       it freezes the number at the stored count. A count we cannot anchor leaves
+       the existing anchor exactly where it was. */
+    {
+      const anchor = (y || m) ? require('../lib/residence').moveInFrom(y, m) : null;
+      if (anchor || !(y || m)) fields.residence_since = anchor;
+    }
   }
   if (b.housingStatus !== undefined) fields.housing_status = clean(b.housingStatus);
   if (b.housingPayment !== undefined) fields.housing_payment = (b.housingPayment === '' || b.housingPayment == null) ? null : Number(String(b.housingPayment).replace(/[^0-9.]/g, '')) || null;
-  if (b.currentAddress !== undefined) fields.current_address = b.currentAddress ? JSON.stringify(b.currentAddress) : null;
+  if (b.currentAddress !== undefined) fields.current_address = b.currentAddress ? jsonbText(b.currentAddress) : null;
   if (b.mailingDifferent === false) fields.mailing_address = null;
-  else if (b.mailingAddress !== undefined) fields.mailing_address = b.mailingAddress ? JSON.stringify(b.mailingAddress) : null;
+  else if (b.mailingAddress !== undefined) fields.mailing_address = b.mailingAddress ? jsonbText(b.mailingAddress) : null;
 
   // 2026-07-15 incident: DOB must be a real calendar date in a sane year — a
   // mid-typing artifact (year 0026), an impossible day (2026-02-31), or a
@@ -260,6 +314,22 @@ router.put('/profile', async (req, res) => {
       return res.status(400).json({ error: 'date of birth must be a valid YYYY-MM-DD' });
     }
     fields.date_of_birth = dob;
+  }
+  /* …AND EVERY NUMBER HERE HAS TO FIT ITS COLUMN TOO (pre-merge audit,
+     2026-08-02). `housing_payment` is numeric(12,2) and `years_at_residence`
+     numeric(4,1) — neither is money nor a percent, so the first cut of the
+     column table had no way to express them and they fell through as "no
+     ceiling". Measured on this exact door: `housingPayment: 1e14` → 500, and
+     `yearsAtResidence: 99999` → 500 from `residence.moveInFrom` computing a date
+     out of range before Postgres ever saw it. One sweep over the whole bag, so a
+     field added to it later is covered without anyone remembering to. */
+  {
+    // ONLY an actual number is judged — a cleared field is null, which is a
+    // legitimate "no value" and must never be refused as "must be a number".
+    const bad = Object.keys(fields)
+      .map((col) => (typeof fields[col] === 'number' ? numberBounds.tableColumnProblem('borrowers', col, fields[col]) : ''))
+      .find(Boolean);
+    if (bad) return res.status(400).json({ error: bad });
   }
   // Owner-directed 2026-07-20: once ANY of this borrower's files is ACCEPTED (a
   // product is registered), the borrower can no longer change their identity on
@@ -619,12 +689,12 @@ router.post('/applications', async (req, res) => {
         rehab_type,sqft_pre,sqft_post,requested_exp_flips,requested_exp_holds,requested_exp_ground,
         is_assignment,underlying_contract_price,assignment_fee,source,raw_intake,status,submitted_at)
      VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,'portal',$22,'new',now()) RETURNING id,ys_loan_number`,
-    [me(req), b.llcId || null, JSON.stringify(b.propertyAddress), b.propertyType || null, b.units || null,
+    [me(req), b.llcId || null, jsonbText(b.propertyAddress), b.propertyType || null, b.units || null,
      b.program || null, require('../lib/fields').sanitizeLoanType(b.loanType), asg.purchasePrice, moneyColumn(b.asIsValue),   // #95: never a program
      moneyColumn(b.arv), moneyColumn(b.rehabBudget), b.loanOfficerName || null,
      b.rehabType || null, sqf.sqftPre, sqf.sqftPost,
      intField(b.requestedExpFlips), intField(b.requestedExpHolds), intField(b.requestedExpGround),
-     asg.isAssignment, asg.underlying, asg.assignFee, JSON.stringify(redactPII(b))]);
+     asg.isAssignment, asg.underlying, asg.assignFee, jsonbText(redactPII(b))]);
   const appId = r.rows[0].id;
   // Invariant chokepoint (root fix 2026-07-14) — inputs derive from the saved row.
   await require('../lib/conditions/ensure').ensureFileConditions(appId, { reason: 'borrower_create' });
@@ -1671,8 +1741,8 @@ router.post('/applications/:id/checklist/:itemId/tool', async (req, res) => {
   await db.query(
     `UPDATE checklist_items SET tool_payload=$2, tool_state=COALESCE($3,tool_state), status=COALESCE($4,status), updated_at=now()
       WHERE id=$1`,
-    [req.params.itemId, JSON.stringify(payload),
-     payload && typeof payload.state === 'object' ? JSON.stringify(payload.state) : null, toolStatus]);
+    [req.params.itemId, jsonbText(payload),
+     payload && typeof payload.state === 'object' ? jsonbText(payload.state) : null, toolStatus]);
   // Populate the condition with a plain-language note about the match state, on
   // BOTH a mismatch and a match — visible to every party. '[auto]' notes are ours
   // to overwrite; a staff-typed note is never clobbered. The note reuses the
@@ -1743,7 +1813,7 @@ router.put('/applications/:id/checklist/:itemId/tool-state', async (req, res) =>
     `UPDATE checklist_items SET tool_state=$3, updated_at=now()
       WHERE id=$1 AND application_id=$2 AND audience IN ('borrower','both') AND tool_key IS NOT NULL
       RETURNING id`,
-    [req.params.itemId, req.params.id, JSON.stringify(state)]);
+    [req.params.itemId, req.params.id, jsonbText(state)]);
   if (!r.rows[0]) return res.status(404).json({ error: 'tool task not found' });
   res.json({ ok: true, savedAt: new Date().toISOString() });
 });
@@ -2061,6 +2131,18 @@ router.post('/applications/:id/appraisal-card/from-saved', async (req, res) => {
 const B_COMPLETE_APP = { program: 'text', loan_type: 'text', property_type: 'text',
   purchase_price: 'money', as_is_value: 'money', arv: 'money', rehab_budget: 'money' };
 const B_COMPLETE_BORROWER = { cell_phone: 'text', date_of_birth: 'date', fico: 'int', citizenship: 'text' };
+/* A MONEY BOX IS EITHER A NUMBER OR A REFUSAL — never a reinterpretation, and
+   never a silent skip (fourth audit, 2026-08-02).
+   Ignoring what it could not parse was a 200 with nothing saved, on a client that
+   posts ONE field at a time; and the parse it did use deleted characters rather
+   than reading a number, so "1e5" stored 15, "2-4" stored 24 and "-500000" stored
+   a POSITIVE 500000 on a pricing column. One definition, used by the pre-pass AND
+   by the writer, so the two cannot answer the same body differently. */
+const moneyBoxProblem = (k, v) => require('../lib/fields').moneyTextProblem(v, MONEY_LABEL[k] || 'That value');
+const MONEY_LABEL = {
+  purchase_price: 'Purchase price', as_is_value: 'As-is value',
+  arv: 'After-repair value', rehab_budget: 'Rehab budget',
+};
 router.post('/applications/:id/complete-fields', async (req, res) => {
   const own = await db.query(
     `SELECT borrower_id FROM applications WHERE id=$1 AND (${OWN_FILE_SQL("", "$2")}) AND deleted_at IS NULL`,
@@ -2079,6 +2161,41 @@ router.post('/applications/:id/complete-fields', async (req, res) => {
     // request), so no door can put a form code into the category.
     const ptProblem = require('../lib/property-type').propertyTypeProblem(b.property_type);
     if (ptProblem) return res.status(400).json({ error: ptProblem });
+    /* NOTHING IS FILED UNTIL EVERYTHING IS ACCEPTABLE (pre-merge audit,
+       2026-08-02). The two loops below file each change request as they go and
+       refuse on the first bad value — so a post carrying a good ARV and a bad
+       credit score left a REAL pending request behind AND answered 400, with the
+       loan team never told, because the notification runs at the very end. Both
+       shipped clients post one field at a time so it was not reachable in
+       production, but "half of it happened and you were told it failed" is not a
+       state this door should be able to reach at all.
+       `proposalProblem` is the same rule `openRequest` enforces, asked without
+       writing, so the pre-pass and the write can never disagree. */
+    if (locked) {
+      /* The writer skips `purchase_price` entirely on a refinance (a refi carries
+         none). The pre-pass did not, so the same body was refused on a registered
+         file and accepted on an unregistered one — the exact divergence this
+         pre-pass exists to prevent (fourth audit, 2026-08-02). */
+      const refiPre = /refi/i.test(String(
+        (await db.query(`SELECT loan_type FROM applications WHERE id=$1`, [req.params.id])).rows[0]?.loan_type || ''));
+      for (const [k, v] of Object.entries(b)) {
+        if (!(k in B_COMPLETE_APP) && !(k in B_COMPLETE_BORROWER)) continue;
+        if (v === '' || v == null) continue;
+        if (k === 'purchase_price' && refiPre) continue;
+        /* THE PRE-PASS AND THE WRITER ASK THE SAME QUESTION (re-audit
+           2026-08-02, corrected 2026-08-02 evening). It began as "skip exactly
+           what the writer skips" — but round 4 turned that skip into a REFUSAL
+           on both halves, because ignoring a money box the borrower typed into
+           is a 200 with nothing saved. Both now read `moneyBoxProblem`, so they
+           cannot answer the same body differently in either direction. */
+        if (B_COMPLETE_APP[k] === 'money') {
+          const mp = moneyBoxProblem(k, v);
+          if (mp) return res.status(400).json({ error: mp });
+        }
+        const bad = changeRequests.proposalProblem(k, v, { targetBorrowerId: me(req) });
+        if (bad) return res.status(400).json({ error: bad });
+      }
+    }
     const requested = [];
     /* A refinance has no purchase price — it is sized on the as-is value
        (owner-directed 2026-08-02). Same rule as the staff completeness door and
@@ -2093,16 +2210,50 @@ router.post('/applications/:id/complete-fields', async (req, res) => {
       if (!(k in b) || b[k] === '' || b[k] == null) continue;
       if (k === 'purchase_price' && refiNow) continue;
       let v = b[k];
-      if (t === 'money') { const s = String(v).replace(/[^0-9.]/g, ''); if (s === '') continue; v = Number(s); if (!Number.isFinite(v)) continue; }
+      if (t === 'money') {
+        const mp = moneyBoxProblem(k, v);
+        if (mp) return res.status(400).json({ error: mp });
+        v = require('../lib/fields').moneyValue(v);
+        if (v == null) continue;
+        /* …and it has to FIT (post-merge audit round 2, 2026-08-02). Judged
+           BEFORE the locked branch, so one check covers both outcomes: on an
+           unlocked file the value used to reach Postgres and come back to the
+           borrower as a 500 "server error", and on a locked one `openRequest`
+           refused it correctly but the refusal was swallowed below and the
+           borrower was told "ok" with nothing filed. */
+        const bad = numberBounds.applicationColumnProblem(k, v);
+        if (bad) return res.status(400).json({ error: bad });
+      }
       if (locked) {
         try {
           const cr = await changeRequests.openRequest(req.params.id, k, b[k],
             { reason: b.reason || null, requesterKind: 'borrower', requesterId: me(req) });
           if (!cr.unchanged) requested.push(cr);
-        } catch (_) { /* skip a bad field, keep going with the rest */ }
+        } catch (e) {
+          /* A REFUSAL IS THE ANSWER, NOT A FIELD TO SKIP (post-merge audit round
+             2, 2026-08-02). `openRequest` bounds the proposal and throws a 400
+             naming the field — and this catch swallowed it, so the door replied
+             200 {ok:true} while no request was filed and nothing was said. That
+             is the repo's #1 recurring class ("returned 200 but didn't save"),
+             and it hid the one guard that was working. Anything WITHOUT a
+             client-error status really is something transient and unrelated, so
+             that still skips the field and keeps the rest of the save. */
+          if (e && e.status && e.status >= 400 && e.status < 500) {
+            return res.status(e.status).json({ error: e.message });
+          }
+        }
         continue;   // never a live write for a governed field on a locked file
       }
       if (k === 'loan_type') v = require('../lib/fields').sanitizeLoanType(v);   // #95: never a program
+      /* THE SAME OPTION LIST THE LOCKED PATH ENFORCES (third audit, 2026-08-02).
+         `FIELD_OPTIONS` was checked only when the file was registered, so on an
+         unregistered one a borrower could store any string at all into `program`
+         or `loan_type` — both PRICING-ENGINE inputs. A door that validates a
+         value only sometimes does not validate it. */
+      if (changeRequests.FIELD_OPTIONS[k]) {
+        const bad = changeRequests.proposalProblem(k, v, { targetBorrowerId: me(req) });
+        if (bad) return res.status(400).json({ error: bad });
+      }
       appVals.push(v); appSets.push(`${k}=$${appVals.length}`); appKeys.push(k);
     }
     // Property address (owner-directed invite flow): when a staffer starts a file
@@ -2126,7 +2277,7 @@ router.post('/applications/:id/complete-fields', async (req, res) => {
             [pa.state, pa.zip].filter(Boolean).join(' '),
           ].filter(Boolean).join(', ');
         }
-        appVals.push(JSON.stringify(pa)); appSets.push(`property_address=$${appVals.length}`); appKeys.push('property_address');
+        appVals.push(require('../lib/fields').jsonbText(pa)); appSets.push(`property_address=$${appVals.length}`); appKeys.push('property_address');
       }
     }
     // Couple units to a live property_type change. The completeness panel doesn't
@@ -2140,6 +2291,20 @@ router.post('/applications/:id/complete-fields', async (req, res) => {
       const prevUnits = curU ? curU.units : null;
       const nextUnits = require('../lib/units').unitsForPropertyType(newPt, prevUnits);
       if (nextUnits !== prevUnits) { appVals.push(nextUnits); appSets.push(`units=$${appVals.length}`); appKeys.push('units'); }
+    }
+    /* VALIDATE THE PERSONAL FIELDS BEFORE THE APPLICATION UPDATE COMMITS (fifth
+       audit, 2026-08-02). Round 4 turned "silently drop a junk FICO" into a
+       refusal but left the refusal AFTER the economics write, so
+       `{arv:950000, fico:'abc'}` answered 400 with the ARV already changed and
+       the pricing-reopen triggers already fired — "half of it happened and you
+       were told it failed", which is the state this door's own locked-path
+       pre-pass exists to prevent. Same rule, other path. */
+    for (const [k, t] of Object.entries(B_COMPLETE_BORROWER)) {
+      if (!(k in b) || b[k] === '' || b[k] == null) continue;
+      if (t === 'int' && k === 'fico'
+          && String(b[k]).trim() !== '' && require('../lib/fields').sanitizeFico(b[k]) == null) {
+        return res.status(400).json({ error: 'Credit score must be a 3-digit score between 300 and 850' });
+      }
     }
     if (appSets.length) {
       appSets.push('updated_at=now()');
@@ -2160,11 +2325,35 @@ router.post('/applications/:id/complete-fields', async (req, res) => {
           const cr = await changeRequests.openRequest(req.params.id, k, b[k],
             { reason: b.reason || null, requesterKind: 'borrower', requesterId: me(req), targetBorrowerId: me(req) });
           if (!cr.unchanged) requested.push(cr);
-        } catch (_) { /* skip a bad field, keep going with the rest */ }
+        } catch (e) {
+          /* A REFUSAL IS THE ANSWER, NOT A FIELD TO SKIP (post-merge audit round
+             2, 2026-08-02). `openRequest` bounds the proposal and throws a 400
+             naming the field — and this catch swallowed it, so the door replied
+             200 {ok:true} while no request was filed and nothing was said. That
+             is the repo's #1 recurring class ("returned 200 but didn't save"),
+             and it hid the one guard that was working. Anything WITHOUT a
+             client-error status really is something transient and unrelated, so
+             that still skips the field and keeps the rest of the save. */
+          if (e && e.status && e.status >= 400 && e.status < 500) {
+            return res.status(e.status).json({ error: e.message });
+          }
+        }
         continue;   // never a live write for a personal field on a locked file
       }
       let v = b[k];
-      if (t === 'int') { v = k === 'fico' ? require('../lib/fields').sanitizeFico(v) : parseInt(v, 10); if (v == null || !Number.isFinite(v)) continue; }  // #90: FICO 300–850
+      if (t === 'int') {
+        /* A BAD SCORE IS REFUSED, NOT SILENTLY DROPPED (third audit,
+           2026-08-02). `sanitizeFico` answers null for junk, and `continue`
+           turned that into "saved!" with nothing written — while both profile
+           doors refuse the identical value with a reason. One column, four
+           doors, two behaviours; this is the half that lied. */
+        const typed = v != null && String(v).trim() !== '';
+        v = k === 'fico' ? require('../lib/fields').sanitizeFico(v) : parseInt(v, 10);
+        if (v == null || !Number.isFinite(v)) {
+          if (typed && k === 'fico') return res.status(400).json({ error: 'Credit score must be a 3-digit score between 300 and 850' });
+          continue;
+        }
+      }  // #90: FICO 300–850
       if (t === 'date') {  // 2026-07-15 incident: strict calendar + year bounds;
         // a typed 2-digit year resolves to the real year (DOB → adult century).
         v = require('../lib/fields').sanitizeDob(v);
@@ -2547,7 +2736,7 @@ function trackRecordCols(b) {
   const personal = !!b.ownedPersonally;
   return {
     owned_personally: personal,
-    property_address: JSON.stringify(b.propertyAddress),
+    property_address: jsonbText(b.propertyAddress),
     deal_type: b.dealType || 'flip',
     purchase_price: moneyField(b.purchasePrice),
     sale_price: moneyField(b.salePrice),
@@ -3339,7 +3528,10 @@ router.post('/drafts', async (req, res) => {
   const r = await db.query(
     `INSERT INTO application_drafts (borrower_id,label,data,step)
      VALUES ($1,$2,$3,$4) RETURNING id,label,step,updated_at`,
-    [me(req), b.label || null, JSON.stringify(b.data || {}), b.step || 1]);
+    // jsonbText, not JSON.stringify: a NUL byte anywhere in the draft is refused
+    // by Postgres and answered 500, on an AUTOSAVE the borrower never triggered
+    // deliberately (post-merge audit, 2026-08-02).
+    [me(req), b.label || null, require('../lib/fields').jsonbText(b.data), b.step || 1]);
   res.status(201).json(r.rows[0]);
 });
 
@@ -3377,7 +3569,7 @@ router.put('/drafts/:id', async (req, res) => {
             updated_at = now()
       WHERE id=$1 AND borrower_id=$2
       RETURNING id,step,updated_at`,
-    [req.params.id, me(req), JSON.stringify(data),
+    [req.params.id, me(req), require('../lib/fields').jsonbText(data),
      (b.step == null ? null : b.step), (b.label == null ? null : b.label)]);
   res.json({ ok: true, ...r.rows[0] });
 });
@@ -3422,10 +3614,23 @@ async function syncProfileFromApplication(borrowerId, b) {
                   'currentAddress', 'yearsAtResidence', 'monthsAtResidence', 'housingStatus', 'housingPayment']
     .some(k => p[k] != null && p[k] !== '');
   if (!hasAny && !b.ssn) return;
-  const currentAddress = p.currentAddress ? JSON.stringify(p.currentAddress) : null;
-  const yearsAtResidence = p.yearsAtResidence === '' || p.yearsAtResidence == null ? null : Number(p.yearsAtResidence);
-  const monthsAtResidence = p.monthsAtResidence === '' || p.monthsAtResidence == null ? null : parseInt(p.monthsAtResidence, 10) || null;
-  const housingPayment = moneyField(p.housingPayment);
+  const currentAddress = p.currentAddress ? jsonbText(p.currentAddress) : null;
+  /* ALL THREE numerics are swept against their real columns before they are
+     bound (third audit, 2026-08-02). This sync is post-commit and its caller
+     SWALLOWS a throw, so an unstorable figure did not 500 — it silently threw
+     away the ENTIRE update (citizenship, marital status, the lot) while the
+     submit answered 201 {ok:true}: the repo's #1 class, on the third door onto
+     these columns. Drop-mode is right here because there is nobody left to
+     answer — the application is already committed. */
+  const resBag = {
+    years_at_residence: p.yearsAtResidence === '' || p.yearsAtResidence == null ? null : Number(p.yearsAtResidence),
+    months_at_residence: p.monthsAtResidence === '' || p.monthsAtResidence == null ? null : parseInt(p.monthsAtResidence, 10) || null,
+    housing_payment: moneyField(p.housingPayment),
+  };
+  numberBounds.dropUnstorable('borrowers', resBag);
+  const yearsAtResidence = resBag.years_at_residence;
+  const monthsAtResidence = resBag.months_at_residence;
+  const housingPayment = resBag.housing_payment;
   await db.query(
     `UPDATE borrowers SET
        cell_phone      = COALESCE(cell_phone, NULLIF($2,'')),
@@ -3635,12 +3840,12 @@ router.post('/drafts/:id/submit', async (req, res) => {
         source,raw_intake,status,submitted_at)
      VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$24,$25,$26,$27,$28,$29,$30,$31,$32,'portal',$23,'new',now())
      RETURNING id,ys_loan_number`,
-    [me(req), b.llcId || null, JSON.stringify(b.propertyAddress), b.propertyType || null, b.units || null,
+    [me(req), b.llcId || null, jsonbText(b.propertyAddress), b.propertyType || null, b.units || null,
      b.program || null, require('../lib/fields').sanitizeLoanType(b.loanType), asg.purchasePrice, moneyColumn(b.asIsValue),   // #95: never a program
      moneyColumn(b.arv), moneyColumn(b.rehabBudget), officerId, b.loanOfficerName || null,
      b.rehabType || null, sqf.sqftPre, sqf.sqftPost,
      intField(b.requestedExpFlips), intField(b.requestedExpHolds), intField(b.requestedExpGround),
-     asg.isAssignment, asg.underlying, asg.assignFee, JSON.stringify(redactPII(b)),
+     asg.isAssignment, asg.underlying, asg.assignFee, jsonbText(redactPII(b)),
      b.termMonths ? String(b.termMonths) : null, intField(b.irMonths),
      /* THE REFINANCE ECONOMICS ARE REFINANCE-ONLY (owner-directed 2026-08-02).
         The form only asks for them on a refinance, but a draft STARTED as one and
@@ -3926,7 +4131,7 @@ router.post('/pricing/scenarios', async (req, res) => {
     const r = await db.query(
       `INSERT INTO borrower_pricing_scenarios (borrower_id, label, inputs)
        VALUES ($1,$2,$3::jsonb) RETURNING id, label, inputs, created_at, updated_at`,
-      [me(req), scenarioLabel(b.label), JSON.stringify(scenarioInputs(b.inputs))]);
+      [me(req), scenarioLabel(b.label), jsonbText(scenarioInputs(b.inputs))]);
     res.status(201).json(r.rows[0]);
   } catch (e) { res.status(500).json({ error: 'server error' }); }
 });
@@ -3944,7 +4149,7 @@ router.put('/pricing/scenarios/:id', async (req, res) => {
         RETURNING id, label, inputs, created_at, updated_at`,
       [req.params.id, me(req),
        b.label !== undefined ? scenarioLabel(b.label) : null,
-       b.inputs !== undefined ? JSON.stringify(scenarioInputs(b.inputs)) : null]);
+       b.inputs !== undefined ? jsonbText(scenarioInputs(b.inputs)) : null]);
     if (!r.rows[0]) return res.status(404).json({ error: 'not found' });
     res.json(r.rows[0]);
   } catch (e) { res.status(500).json({ error: 'server error' }); }

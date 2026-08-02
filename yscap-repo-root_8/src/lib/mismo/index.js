@@ -19,12 +19,37 @@ const fields = require('../fields');
 const { buildMismoXml } = require('./build');
 const { parseMismoXml } = require('./parse');
 
+/* A MISMO file is written by somebody else's system, so every number on it is
+   untrusted input — and none of these were bounded (post-merge audit round 2,
+   2026-08-02). This is the SIXTH door that creates an application, and it was
+   never counted among "the five create doors": an out-of-range value reached
+   Postgres, raised 22003/22P02 and came back as a 500, losing the whole import.
+   Same drop-don't-crash rule the public intake door uses — an import must not
+   fail wholesale over one unstorable figure, and the raw file is kept in
+   `raw_intake` either way, so nothing is actually lost. */
+const numberBounds = require('../number-bounds');
 const num = (v) => {
   if (v == null || v === '') return null;
   const n = Number(String(v).replace(/[^0-9.\-]/g, ''));
-  return isFinite(n) ? n : null;
+  if (!isFinite(n) || numberBounds.moneyOverflows(n)) return null;
+  return n;
 };
-const int = (v) => { const n = num(v); return n == null ? null : Math.round(n); };
+const int = (v) => {
+  const n = num(v);
+  if (n == null) return null;
+  const r = Math.round(n);
+  return numberBounds.intOverflows(r) ? null : r;
+};
+/* numeric(6,3) — a PERCENT or a ratio (ltv, rate_pct, dscr_ratio), a THOUSAND
+   times tighter than `num()`'s numeric(14,2). Binding these through `num()` was
+   the identical three-orders-of-magnitude mistake the intake door was already
+   fixed for; an `ltv` of 5000 overflowed and took the import down with it. */
+const pct = (v) => {
+  if (v == null || v === '') return null;
+  const n = Number(String(v).replace(/[^0-9.\-]/g, ''));
+  if (!isFinite(n) || numberBounds.pctOverflows(n)) return null;
+  return n;
+};
 // requested_ir_months is DB-constrained to 0..24 — clamp an out-of-range import
 // (a hand-edited/foreign file) instead of letting it throw a CHECK violation.
 const clampIrMonths = (v) => { const n = int(v); return n == null ? null : Math.max(0, Math.min(24, n)); };
@@ -193,7 +218,16 @@ async function upsertBorrower(client, p, opts = {}) {
      p.dependents != null ? int(p.dependents) : null,
      p.currentAddress ? JSON.stringify(p.currentAddress) : null,
      p.priorAddress ? JSON.stringify(p.priorAddress) : null,
-     p.yearsAtResidence != null ? num(p.yearsAtResidence) : null,
+     /* numeric(4,1), NOT money — `num()` bounds numeric(14,2), which is three
+        orders too loose here, and `parse.js` DERIVES this from the MISMO
+        residency-months count, so a months value the file itself carries can
+        produce a years value the column cannot hold (8333.3 from 99999 months)
+        and take the WHOLE import down with a 500. Same derived-value class as
+        the assignment sum and `residence_since` (third audit, 2026-08-02). */
+     p.yearsAtResidence != null
+       ? (numberBounds.tableColumnProblem('borrowers', 'years_at_residence', num(p.yearsAtResidence))
+           ? null : num(p.yearsAtResidence))
+       : null,
      p.employer || null,
      p.middleName || null, p.suffix || null]);
   const id = b.rows[0].id;
@@ -267,6 +301,19 @@ async function createFromParsed(parsed, opts = {}) {
       assignmentFee: extras.assignmentFee,
       purchasePrice: property.purchasePrice,
     });
+    /* THE THREE MONEY COLUMNS THAT BYPASS `num()` (pre-merge audit, 2026-08-02).
+       `assignmentFields` parses but does not BOUND, and its three outputs are
+       bound to the INSERT directly — so the ceiling added to `num`/`int`/`pct`
+       above never touched purchase_price / underlying_contract_price /
+       assignment_fee, and this door still answered 500 and lost the whole
+       import. It is the identical defect the public intake door was fixed for
+       in the same commit: bound the PARTS *and* the price they DERIVE, because
+       two storable parts can sum to one that is not. Dropped, not refused —
+       an import must not fail wholesale over one figure, and the source file is
+       kept in `raw_intake` either way. */
+    for (const k of ['purchasePrice', 'underlying', 'assignFee']) {
+      if (numberBounds.moneyOverflows(asg[k])) asg[k] = null;
+    }
     const a = await client.query(
       `INSERT INTO applications
          (borrower_id, co_borrower_id, llc_id, loan_officer_id,
@@ -292,9 +339,10 @@ async function createFromParsed(parsed, opts = {}) {
        extras.arv != null ? num(extras.arv) : null,
        extras.rehabBudget != null ? num(extras.rehabBudget) : null, extras.rehabType || null,
        loan.loanAmount != null ? num(loan.loanAmount) : null,
-       extras.ltv != null ? num(extras.ltv) : null,
-       extras.dscr != null ? num(extras.dscr) : null,
-       loan.rate != null ? num(loan.rate) : null, loan.term || null, extras.ppp || null,
+       // ltv / dscr_ratio / rate_pct are numeric(6,3), not money — see pct() above.
+       extras.ltv != null ? pct(extras.ltv) : null,
+       extras.dscr != null ? pct(extras.dscr) : null,
+       loan.rate != null ? pct(loan.rate) : null, loan.term || null, extras.ppp || null,
        // requested experience columns are NOT NULL DEFAULT 0 — coerce to integers.
        int(extras.expFlips) || 0, int(extras.expHolds) || 0, int(extras.expGround) || 0,
        extras.sqftPre != null ? int(extras.sqftPre) : null,
@@ -361,4 +409,7 @@ async function createFromParsed(parsed, opts = {}) {
 module.exports = {
   loadFile, exportApplicationXml, exportFilename,
   previewImport, createFromParsed,
+  // The value coercions, exposed so their ceilings are unit-testable without
+  // constructing a whole MISMO document (audit round 2, 2026-08-02).
+  _internals: { num, int, pct, clampIrMonths },
 };

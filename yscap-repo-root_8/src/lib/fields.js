@@ -112,6 +112,26 @@ function moneyValue(v) {
    So the provided/not-provided question is answered on the RAW value exactly the
    way it always was, and only then is the value parsed. `moneyValue` still says
    what a money value MEANS; this says whether there was one. */
+/* IS THIS TEXT A MONEY VALUE AT ALL? (fourth audit, 2026-08-02)
+   `Number(String(v).replace(/[^0-9.]/g,''))` does not parse a number — it
+   DELETES characters until something numeric is left, so it silently
+   reinterprets: "1e5" stored 15, "2-4" stored 24, and "-500000" stored a
+   POSITIVE 500000, on the money columns the loan is priced off. That is the
+   appraisal-reprice defect ("worse than a 500, because nothing tells anybody it
+   happened") on the two doors that write the same columns. And a value it cannot
+   salvage at all ("1.2.3", "TBD") was skipped with a 200 — "saved!" with nothing
+   saved, on a client that posts one field at a time.
+   Accepts what a person or a MoneyInput actually produces: an optional sign, a
+   currency symbol, thousands separators and at most one decimal point. */
+const MONEY_TEXT = /^\s*[-+]?\s*\$?\s*(\d{1,3}(,\d{3})*|\d*)(\.\d*)?\s*$/;
+function moneyTextProblem(v, label) {
+  if (v == null || String(v).trim() === '') return '';
+  if (typeof v === 'number') return Number.isFinite(v) ? '' : `${label || 'That value'} must be a number`;
+  const s = String(v);
+  if (!MONEY_TEXT.test(s) || !/\d/.test(s)) return `${label || 'That value'} must be a number`;
+  return '';
+}
+
 function moneyColumn(v) {
   return moneyValue(v || null);
 }
@@ -186,7 +206,13 @@ function assignmentFields(b) {
    in a text column at all (22021, another 500), it is never something a person
    meant to type, and it is invisible — so refusing would be a mystery message
    about a character nobody can see. Not reachable from a browser today; cheap
-   to close, and it is the last way this family can reach the database as a 500.
+   to close.
+
+   It is NOT the last way this family reaches the database as a 500 — that claim
+   stood here until the post-merge audit (2026-08-02) found the same character
+   doing the same thing to a JSONB column, which is a different write path with
+   a different error (`unsupported Unicode escape sequence`). See `jsonbText`
+   below.
 
    PURE. Returns a trimmed string, or null for "not stated".
    ===================================================================== */
@@ -205,6 +231,40 @@ function textColumn(v, column, fallbackMax) {
   const max = (column && TEXT_COLUMN_MAX[column])
     || (Number.isFinite(fallbackMax) && fallbackMax > 0 ? fallbackMax : TEXT_COLUMN_DEFAULT_MAX);
   return s.slice(0, max);
+}
+
+/* =====================================================================
+   THE SAME NUL BYTE, ONE COLUMN TYPE OVER (post-merge audit, 2026-08-02).
+
+   `textColumn` closed NUL for text columns. A JSONB column takes a whole
+   user-supplied OBJECT, and Postgres refuses `\u0000` inside a jsonb string too
+   — with a different message (`unsupported Unicode escape sequence`) from a
+   different write path, so the text fix never touched it. Proved on the
+   borrower's draft autosave: `{data:{payoffLender:"AB\u0000C"}}` → 500.
+
+   IT MUST BE STRIPPED FROM THE OBJECT, NOT FROM THE SERIALIZED TEXT. The
+   obvious one-liner — `JSON.stringify(x).replace(/\\u0000/g,'')` — is WRONG and
+   worse than the bug: a string containing the literal characters `\u0000`
+   serializes to `\\u0000`, the regex eats the second backslash and its escape,
+   and what is left is malformed JSON. So both KEYS and string VALUES are walked.
+
+   Returns the JSON text ready to bind. Use this for every jsonb column whose
+   contents come from a request body.
+   ===================================================================== */
+function stripNulDeep(v) {
+  if (typeof v === 'string') return v.replace(/\u0000/g, '');
+  if (Array.isArray(v)) return v.map(stripNulDeep);
+  if (v && typeof v === 'object') {
+    // A Date (or anything with its own serializer) must survive as itself.
+    if (typeof v.toJSON === 'function') return v;
+    const out = {};
+    for (const [k, val] of Object.entries(v)) out[k.replace(/\u0000/g, '')] = stripNulDeep(val);
+    return out;
+  }
+  return v;
+}
+function jsonbText(v) {
+  return JSON.stringify(stripNulDeep(v == null ? {} : v));
 }
 
 /* =====================================================================
@@ -469,4 +529,4 @@ function loanNumberProblem(v) {
   return null;
 }
 
-module.exports = { sanitizeFico, sanitizeSsnDigits, formatSsn, sanitizeLoanType, moneyValue, moneyColumn, textColumn, TEXT_COLUMN_MAX, assignmentFields, applicationNumberProblem, sqftRelevantType, sqftForType, sanitizeDateOnly, normalizeTypedDate, sanitizeDob, dobProblem, sanitizeLoanNumber, normalizeLoanNumber, loanNumberProblem };
+module.exports = { sanitizeFico, sanitizeSsnDigits, formatSsn, sanitizeLoanType, moneyValue, moneyColumn, moneyTextProblem, textColumn, TEXT_COLUMN_MAX, jsonbText, stripNulDeep, assignmentFields, applicationNumberProblem, sqftRelevantType, sqftForType, sanitizeDateOnly, normalizeTypedDate, sanitizeDob, dobProblem, sanitizeLoanNumber, normalizeLoanNumber, loanNumberProblem };

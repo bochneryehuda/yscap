@@ -14,6 +14,7 @@
 const express = require('express');
 const router = require('../lib/safe-router')();
 const db = require('../db');
+const F = require('../lib/fields');           // jsonbText: NUL-safe jsonb binds
 const { scrubText } = require('../lib/borrower-safe');
 const registry = require('../lib/conditions/field-registry');
 const rules = require('../lib/conditions/rules');
@@ -99,7 +100,7 @@ function normalizeDefinition(b, existing, fields) {
     const problems = rules.validateRule(ruleLogic, { fields: byKey });
     if (problems.length) return { error: 'rule problems: ' + problems.join('; ') };
   }
-  out.rule_logic = ruleLogic ? JSON.stringify(ruleLogic) : null;
+  out.rule_logic = ruleLogic ? F.jsonbText(ruleLogic) : null;
   if (out.auto_apply && existing && existing.scope && existing.scope !== 'application') {
     return { error: 'automatic rules only run on application-scoped conditions' };
   }
@@ -206,7 +207,7 @@ router.post('/custom-fields', async (req, res) => {
       [key, label.slice(0, 200),
        String(b.borrowerLabel || '').trim().slice(0, 200) || null,
        String(b.borrowerHint || '').trim().slice(0, 1000) || null,
-       b.type, options ? JSON.stringify(options) : null, req.actor.id]);
+       b.type, options ? F.jsonbText(options) : null, req.actor.id]);
     registry.bustCustomFields();
     await audit(req, 'custom_field_created', 'custom_field', r.rows[0].id, { key, label, type: b.type });
     res.status(201).json({ ok: true, field: { id: r.rows[0].id, ...registry.customFieldDef(r.rows[0]) } });
