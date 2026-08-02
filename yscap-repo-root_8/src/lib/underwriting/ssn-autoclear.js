@@ -3,7 +3,7 @@
  * SSN-verification condition auto-clear — CorrFirst only (IG-W4, owner-directed 2026-07-24).
  *
  * The owner's wiring instruction for the "SSN verification" condition (CorrFirst
- * cond 1050 → rtl_p1_ssn): when the note buyer is CorrFirst, the borrower's SSN is
+ * cond 1050 → cond_ssn_verify_corrfirst): when the note buyer is CorrFirst, the SSN is
  * verified "via the credit report (if no other SSN is listed and the report is
  * verified)". So once PILOT has imported a credit report whose SSN matches the SSN
  * on file for the borrower, the SSN condition can clear on its own. Never a
@@ -23,7 +23,7 @@
  * A report that names a DIFFERENT last-4 (the FICO-mismatch signal) never verifies;
  * a borrower with no SSN on file, or no credit report, is not verified.
  *
- * The rtl_p1_ssn condition is application-scoped (one task per file), so it covers
+ * The SSN condition is application-scoped (one item per file), so it covers
  * EVERY borrower on the file — the primary and, when present, the co-borrower. Every
  * covered borrower must be verified before it clears (a co-borrower whose report
  * hasn't been pulled holds it open).
@@ -43,7 +43,21 @@ const cfg = require('../../config');
 const { normNoteBuyer } = require('../conditions/field-registry');
 const { enqueueChecklistStatusPush } = require('../../clickup/enqueue');
 
-const SSN_TEMPLATE_CODE = 'rtl_p1_ssn';
+/* THE CONDITION THIS CLEARS (repointed 2026-08-02).
+ *
+ * This module was written against `rtl_p1_ssn` — which db/040 set `is_active=false`
+ * and DELETED off every open file long before this was built. So it has never had a
+ * condition to clear: the guideline was mapped, the row never existed, and the owner
+ * reported exactly that ("SS NUMBER VERIFICATION — no condition on the file").
+ * db/398 creates the real, rule-driven `cond_ssn_verify_corrfirst`, and that is the
+ * condition this clears now.
+ *
+ * The retired code stays in the list deliberately: a terminal file may still carry a
+ * historical `rtl_p1_ssn` instance, and clearing/reopening it should behave exactly
+ * as it always would have. It is never re-created — the template is inactive.
+ */
+const SSN_TEMPLATE_CODE = 'cond_ssn_verify_corrfirst';
+const SSN_TEMPLATE_CODES = [SSN_TEMPLATE_CODE, 'rtl_p1_ssn'];
 const CORRFIRST_KEY = 'corrfirst';
 
 /**
@@ -114,7 +128,7 @@ async function maybeAutoSatisfySsn(client, appId, itemId) {
     if (!out.enabled) { out.reason = 'disabled'; return out; }
     if (!itemId) { out.reason = 'no_item'; return out; }
 
-    // Only act on an actual SSN condition (the rtl_p1_ssn template item).
+    // Only act on an actual SSN condition (an SSN_TEMPLATE_CODES template item).
     const item = (await client.query(
       `SELECT ci.id, ci.status, ci.signed_off_at, ci.signed_off_by, ci.notes,
               COALESCE(t.code,'') AS code
@@ -123,7 +137,7 @@ async function maybeAutoSatisfySsn(client, appId, itemId) {
         WHERE ci.id=$1 AND ci.application_id=$2
         LIMIT 1`, [itemId, appId])).rows[0];
     if (!item) { out.reason = 'not_found'; return out; }
-    if (item.code !== SSN_TEMPLATE_CODE) { out.reason = 'not_ssn_condition'; return out; }
+    if (!SSN_TEMPLATE_CODES.includes(item.code)) { out.reason = 'not_ssn_condition'; return out; }
 
     const autoCleared = item.status === 'satisfied' && item.signed_off_by == null
       && String(item.notes || '').startsWith('[auto]');
@@ -175,7 +189,7 @@ async function maybeAutoSatisfySsn(client, appId, itemId) {
 }
 
 /**
- * Run the auto-clear pass over the file's SSN condition (rtl_p1_ssn). Best-effort;
+ * Run the auto-clear pass over the file's SSN condition. Best-effort;
  * never throws. Call this after a credit report has been imported for the file.
  * Early-returns before any query when the env flag is off.
  */
@@ -186,7 +200,7 @@ async function autoClearSsnCondition(client, appId) {
       `SELECT ci.id
          FROM checklist_items ci
          JOIN checklist_templates t ON t.id = ci.template_id
-        WHERE ci.application_id=$1 AND t.code=$2`, [appId, SSN_TEMPLATE_CODE]);
+        WHERE ci.application_id=$1 AND t.code = ANY($2::text[])`, [appId, SSN_TEMPLATE_CODES]);
     for (const row of conds.rows) {
       // eslint-disable-next-line no-await-in-loop
       await maybeAutoSatisfySsn(client, appId, row.id);
@@ -198,5 +212,5 @@ async function autoClearSsnCondition(client, appId) {
 
 module.exports = {
   noteBuyerIsCorrFirst, ssnVerifiedForBorrower, ssnCompleteness,
-  maybeAutoSatisfySsn, autoClearSsnCondition, SSN_TEMPLATE_CODE,
+  maybeAutoSatisfySsn, autoClearSsnCondition, SSN_TEMPLATE_CODE, SSN_TEMPLATE_CODES,
 };
