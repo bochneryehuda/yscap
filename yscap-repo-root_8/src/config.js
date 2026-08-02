@@ -730,11 +730,11 @@ module.exports = {
     // a mortgage; 'basic' = a one-time determination (cheaper, no monitoring).
     product:  (process.env.XACTUS_FLOOD_PRODUCT || 'life').trim(),
     requestingParty: (process.env.XACTUS_REQUESTING_PARTY || 'YS Capital Group').trim(),
-    // LIVE by default (owner-directed 2026-08-02: "remove the test mode, go live
-    // right away"). A staff click places a REAL, billable order — nothing is ordered
-    // automatically. Set XACTUS_FLOOD_DRYRUN=1 (or flip TEST MODE on the API-Health
-    // page) to build + log an order without sending it.
-    dryrun:   process.env.XACTUS_FLOOD_DRYRUN === '1',
+    // Test mode is REMOVED (owner-directed 2026-08-02: "remove the test mode, go live
+    // right away"). A staff click ALWAYS places a REAL, billable order — there is no
+    // dry-run gate (flood.js dryrun() is hard-false), because a stored runtime override
+    // kept surviving deploys and pinning the button in test mode. The master switch
+    // XACTUS_FLOOD_ENABLED is the kill switch; nothing is ever ordered automatically.
     // Auth style follows CREDIT by default (same login on the same connection):
     // 'basic' (HTTP Basic header — the credit default) or 'query'
     // (LoginAccountIdentifier/LoginAccountPassword URL params). Override with

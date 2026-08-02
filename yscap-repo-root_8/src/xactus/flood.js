@@ -47,9 +47,14 @@ function productIdentifier(override) {
 }
 function configured() { return !!(cfg.endpoint && cfg.username && cfg.password); }
 function enabled() { return _switches().on('XACTUS_FLOOD_ENABLED'); }
-// Test mode: build + log the order but send NOTHING. Settable by env OR live on the
-// API-Health page. Checked BEFORE the send so leaving it on can never bill an order.
-function dryrun() { return !!(cfg.dryrun || process.env.XACTUS_FLOOD_DRYRUN === '1' || _switches().on('XACTUS_FLOOD_DRYRUN')); }
+// Test mode is REMOVED for Xactus flood (owner-directed 2026-08-02: "remove the test
+// mode … just go right away and get everything right away live"). A staff click ALWAYS
+// places a real order — there is no dry-run gate of any kind: not a runtime flag (a
+// stored override kept surviving deploys and pinning the button in test mode), and not
+// an env var (which PILOT can't clear for the owner). The master switch
+// (XACTUS_FLOOD_ENABLED) is the kill switch, and the volume circuit breaker in the desk
+// caps runaway orders. Kept as a function so the desk's defensive guards still call it.
+function dryrun() { return false; }
 
 // Remove the shared Xactus login from any string before it can reach a log or an
 // error message. In query-auth mode the login rides in the request URL, so a
