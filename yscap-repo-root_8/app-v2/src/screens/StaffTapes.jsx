@@ -77,10 +77,24 @@ export default function StaffTapes() {
       setPending(null);
     } catch (e) {
       const d = (e && e.data) || {};
-      // Encompass reconciliation gate: an admin may override with a logged reason.
-      if ((d.code === 'encompass_unreconciled' || d.code === 'encompass_override_reason_required') && d.canOverride) {
-        const reason = window.prompt(`${d.message || 'This loan doesn’t fully match Encompass yet.'}\n\nTo export it anyway, type a short reason (this is logged):`, '');
+      // Encompass reconciliation gate (owner-directed 2026-07-26; tightened 2026-08-02):
+      // NOBODY may self-override. A super admin can allow it inline with a reason;
+      // everyone else asks a super admin for an exception (recorded per file).
+      if (d.code === 'encompass_override_reason_required' && d.canOverride) {
+        const reason = window.prompt(`${d.message || 'This loan doesn’t fully match Encompass yet.'}\n\nAs a super admin you can allow it — type a short reason (this is logged):`, '');
         if (reason && reason.trim()) { setBusyRow(null); await exportRow(loanId, tapeName, { ...(answers || {}), encompassOverrideReason: reason.trim() }); return; }
+        setBusyRow(null); return;
+      }
+      if (d.code === 'encompass_exception_required' || d.code === 'encompass_unreconciled') {
+        if (d.canRequestException) {
+          const note = window.prompt(`${d.message || 'This loan doesn’t fully match Encompass yet.'}\n\nAsk a super admin to allow it — say why the tape needs to go out now:`, '');
+          if (note && note.trim()) {
+            try { await api.requestTapeException(loanId, { reasonNote: note.trim() }); setMsg('Sent a request to a super admin. They can allow the tape from the Exceptions box.'); }
+            catch (e2) { setErr((e2.data && e2.data.error) || e2.message || 'Could not send the request.'); }
+          }
+        } else {
+          setErr(d.message || 'This loan isn’t reconciled with Encompass yet. A super admin has to allow it, or reconcile it first.');
+        }
         setBusyRow(null); return;
       }
       setErr(d.message || e.message || 'Export failed');
@@ -97,11 +111,16 @@ export default function StaffTapes() {
       setMsg(`Exported a bulk ${activeTape ? activeTape.name : ''} tape with ${sel.size} loan${sel.size === 1 ? '' : 's'}.`);
     } catch (e) {
       const d = (e && e.data) || {};
-      // Encompass reconciliation gate: an admin may override the whole batch with a
-      // logged reason; a non-admin sees which loans still need reconciling.
-      if ((d.code === 'encompass_unreconciled' || d.code === 'encompass_override_reason_required') && d.canOverride) {
-        const reason = window.prompt(`${d.message || 'Some selected loans don’t fully match Encompass yet.'}\n\nTo export them anyway, type a short reason (this is logged):`, '');
+      // Encompass reconciliation gate: a super admin may allow the whole batch with a
+      // logged reason; everyone else sees which loans still need reconciling or a
+      // super-admin exception (requested per file from the loan file).
+      if (d.code === 'encompass_override_reason_required' && d.canOverride) {
+        const reason = window.prompt(`${d.message || 'Some selected loans don’t fully match Encompass yet.'}\n\nAs a super admin you can allow them — type a short reason (this is logged):`, '');
         if (reason && reason.trim()) { setBusyBulk(false); await exportBulk(reason.trim()); return; }
+        setBusyBulk(false); return;
+      }
+      if (d.code === 'encompass_exception_required' || d.code === 'encompass_unreconciled') {
+        setErr(d.message || 'Some selected loans aren’t reconciled with Encompass yet. A super admin has to allow those (open each file to request it), or reconcile them first.');
         setBusyBulk(false); return;
       }
       setErr(d.message || e.message || 'Bulk export failed');
