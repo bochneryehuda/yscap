@@ -64,8 +64,16 @@ ok(/if \(!app \|\| String\(app\.id\) !== String\(id\) \|\| landed\.current\) ret
 }
 
 // The staff file holds the reader's place on every refresh but the first.
-ok(/import \{ captureScrollAnchor, restoreScrollAnchor \} from '\.\.\/lib\/keep-scroll\.js'/.test(staff),
-  'the staff file uses the keep-scroll helper');
+// Match the two names this test is about rather than the whole import list —
+// the list grew when the LAYOUT half of the same problem was fixed
+// (keepAnchored / keepTabPlace / parkScroll, see test-file-scroll-lock.mjs),
+// and pinning it verbatim made an unrelated addition look like a regression.
+{
+  const imp = (staff.match(/import \{([^}]*)\} from '\.\.\/lib\/keep-scroll\.js'/) || [])[1] || '';
+  const names = imp.split(',').map((s) => s.trim());
+  ok(names.includes('captureScrollAnchor') && names.includes('restoreScrollAnchor'),
+    'the staff file uses the keep-scroll helper');
+}
 ok(/const anchor = isFirst \? null : captureScrollAnchor\(\);/.test(staff), 'staff load() captures the anchor');
 ok(/restoreScrollAnchor\(anchor\);/.test(staff), 'staff load() restores the anchor');
 ok(/firstLoad\.current = true;/.test(staff), 'the first load of a file is exempt');
