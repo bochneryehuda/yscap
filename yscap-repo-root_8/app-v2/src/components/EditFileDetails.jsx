@@ -8,6 +8,7 @@ import LlcPicker from './LlcPicker.jsx';
 import AddressAutocomplete from './AddressAutocomplete.jsx';
 import { goToSection } from './FileSections.jsx';
 import { refiKind } from '../lib/payoff.js';
+import { seasoningText } from '../lib/dealBasis.js';
 
 /* Staff edit of the loan-file data after creation — EVERY field the
    application collects is correctable here (typo'd price, wrong property
@@ -104,6 +105,10 @@ export default function EditFileDetails({ app, onSaved, openByDefault = false })
   // The SAVED purpose, as the file screen reads it — that is what decides whether
   // the Payoff section exists, so it is what the pointer button must be gated on.
   const savedIsRefi = refiKind(app.loan_type) !== 'purchase';
+  // A refinance is sized on the as-is value, so a blank one is a real gap, not a
+  // cosmetic one: the register door refuses it and the studio cannot price it.
+  // Say so on the field rather than letting them find out at the end.
+  const asIsMissing = isRefi && !(moneyNum(f.asIsValue) > 0);
 
   async function save() {
     setBusy(true); setErr(''); setMsg(''); setWarn('');
@@ -112,7 +117,16 @@ export default function EditFileDetails({ app, onSaved, openByDefault = false })
         || f.addrCity !== (a.city || '') || f.addrState !== ((a.state || '').toUpperCase()) || f.addrZip !== (a.zip || '');
       const body = {
         program: f.program, loanType: f.loanType, propertyType: f.propertyType, occupancy: f.occupancy,
-        units: unitsForType(f.propertyType, f.units), purchasePrice: f.purchasePrice, asIsValue: f.asIsValue, arv: f.arv, rehabBudget: f.rehabBudget,
+        units: unitsForType(f.propertyType, f.units),
+        /* A REFINANCE CARRIES NO PURCHASE PRICE (owner-directed 2026-08-02) — it
+           is sized on the as-is value, and the box is not even shown above. Sent
+           as an explicit blank rather than omitted so that switching a file's
+           purpose from Purchase to Refinance actually CLEARS the price it was
+           carrying; that cleanup can only happen here, exactly like the payoff
+           trio below. The server enforces the same rule at the door, so a stale
+           tab cannot put one back either. */
+        purchasePrice: isRefi ? '' : f.purchasePrice,
+        asIsValue: f.asIsValue, arv: f.arv, rehabBudget: f.rehabBudget,
         rehabType: f.rehabType, sqftPre: f.sqftPre, sqftPost: f.sqftPost,
         requestedExpFlips: f.requestedExpFlips, requestedExpHolds: f.requestedExpHolds,
         requestedExpGround: f.requestedExpGround, requestedExpReo: f.requestedExpReo,
@@ -265,8 +279,22 @@ export default function EditFileDetails({ app, onSaved, openByDefault = false })
                 <option value="">—</option>{selectOptions(LOAN_TYPES, f.loanType).map(x => <option key={x.value} value={x.value}>{x.label}</option>)}
               </select>
             </label>
-            <label><span>Purchase price</span><MoneyInput value={f.purchasePrice} onChange={(v) => set('purchasePrice', v)} /></label>
-            <label><span>As-is value</span><MoneyInput value={f.asIsValue} onChange={(v) => set('asIsValue', v)} /></label>
+            {/* A REFINANCE IS NOT ASKED FOR A PURCHASE PRICE (owner-directed
+                2026-08-02). It isn't buying anything — the loan is sized on what
+                the property is worth TODAY, which is what the frozen engine reads
+                (`acqDenom = purchase ? min(pp, aiv) : aiv`). Showing the box here
+                is what produced the file the owner reported: a cash-out refinance
+                wearing purchase-style economics. What the borrower paid when they
+                BOUGHT the property is a different question, asked below under
+                Refinance details. */}
+            {!isRefi && <label><span>Purchase price</span><MoneyInput value={f.purchasePrice} onChange={(v) => set('purchasePrice', v)} /></label>}
+            <label><span>As-is value{isRefi ? ' *' : ''}</span><MoneyInput value={f.asIsValue} onChange={(v) => set('asIsValue', v)} />
+              {isRefi && <span className="small" style={{ color: asIsMissing ? 'var(--warning)' : '#4B585C' }}>
+                {asIsMissing
+                  ? 'Required — a refinance is sized on this number.'
+                  : 'What the property is worth today. This sets the initial advance.'}
+              </span>}
+            </label>
             <label><span>ARV</span><MoneyInput value={f.arv} onChange={(v) => set('arv', v)} /></label>
             <label><span>Rehab budget</span><MoneyInput value={f.rehabBudget} onChange={(v) => set('rehabBudget', v)} /></label>
             <label><span>Rehab type</span>
@@ -284,9 +312,21 @@ export default function EditFileDetails({ app, onSaved, openByDefault = false })
           </div>
           {isRefi && <>
             <p className="small" style={{ margin: '14px 0 8px', ...EYEBROW }}>Refinance details</p>
+            {/* WHAT THEY PAID AND WHEN — the two questions a refinance CAN answer
+                about a purchase, and the ones the owner asked for so seasoning can
+                be counted (2026-08-02). Neither prices the loan: the as-is value
+                above does that. These say how long the borrower has owned the
+                property and at what basis, which is what a note buyer's seasoning
+                rule and the title/flip checks want. */}
             <div className="edit-grid">
-              <label><span>Original purchase price</span><MoneyInput value={f.originalPurchasePrice} onChange={(v) => set('originalPurchasePrice', v)} /></label>
-              <label><span>Date acquired</span><input className="input" type="date" value={f.acquisitionDate} onChange={(e) => set('acquisitionDate', e.target.value)} /></label>
+              <label><span>Original purchase price</span><MoneyInput value={f.originalPurchasePrice} onChange={(v) => set('originalPurchasePrice', v)} />
+                <span className="small" style={{ color: '#4B585C' }}>What they paid when they bought it — not what this loan is sized on.</span>
+              </label>
+              <label><span>Date acquired</span><input className="input" type="date" value={f.acquisitionDate} onChange={(e) => set('acquisitionDate', e.target.value)} />
+                <span className="small" style={{ color: '#4B585C' }}>
+                  {seasoningText(f.acquisitionDate) ? `Owned ${seasoningText(f.acquisitionDate)}.` : 'Used to count how long they have owned it (seasoning).'}
+                </span>
+              </label>
             </div>
             {/* THE PAYOFF HAS ITS OWN SECTION (owner-directed 2026-07-31), so it is
                 NOT edited here as well. Two editors for the same three fields on one

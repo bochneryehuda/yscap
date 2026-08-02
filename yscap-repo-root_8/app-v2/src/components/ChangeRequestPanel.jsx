@@ -2,6 +2,7 @@ import React, { useEffect, useState } from 'react';
 import { api } from '../lib/api.js';
 import { useSubmitGate } from '../lib/useSubmitGate.js';
 import { PROGRAMS, PROPERTY_TYPES, LOAN_TYPES } from '../lib/enums.js';
+import { sizesOnAsIsValue } from '../lib/dealBasis.js';
 
 // Borrower change-request "sandbox" (S5-03). Once a product is registered, the
 // borrower can't edit the deal numbers directly — they PROPOSE a change here and
@@ -43,6 +44,13 @@ function fmtVal(field, v) {
 
 export default function ChangeRequestPanel({ appId, app }) {
   const [state, setState] = useState({ locked: false, requests: [] });
+  /* A REFINANCE HAS NO PURCHASE PRICE TO REQUEST A CHANGE TO (owner-directed
+     2026-08-02) — it is sized on the as-is value, and the server now refuses to
+     write one onto a refinance at every door, so offering it here would be
+     offering the borrower a request nobody could ever apply. What they paid when
+     they BOUGHT the property is `original_purchase_price`, which is not a priced
+     input and so is not in this sandbox at all. */
+  const fields = FIELDS.filter((f) => !(f.key === 'purchase_price' && sizesOnAsIsValue(app && app.loan_type)));
   const [field, setField] = useState('arv');
   const [value, setValue] = useState('');
   const [reason, setReason] = useState('');
@@ -71,7 +79,7 @@ export default function ChangeRequestPanel({ appId, app }) {
   }
 
   if (!state.locked) return null;
-  const def = FIELDS.find((f) => f.key === field) || FIELDS[0];
+  const def = fields.find((f) => f.key === field) || fields[0];
   const requests = state.requests || [];
 
   return (
@@ -88,7 +96,7 @@ export default function ChangeRequestPanel({ appId, app }) {
 
       <div className="row" style={{ gap: 6, flexWrap: 'wrap', alignItems: 'center', marginBottom: 6 }}>
         <select className="input" style={{ maxWidth: 220 }} value={field} onChange={(e) => { setField(e.target.value); setValue(''); }}>
-          {FIELDS.map((f) => <option key={f.key} value={f.key}>{f.label}</option>)}
+          {fields.map((f) => <option key={f.key} value={f.key}>{f.label}</option>)}
         </select>
         {def.type === 'select'
           ? <select className="input" style={{ maxWidth: 180 }} value={value} onChange={(e) => setValue(e.target.value)}>

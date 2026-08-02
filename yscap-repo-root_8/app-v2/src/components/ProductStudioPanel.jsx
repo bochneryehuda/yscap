@@ -314,7 +314,14 @@ export function RegisteredProductDetails({ reg, compactView = false, showAdmin =
           <Row k="Liquidity to verify" v={<strong>{money2(q.liquidity ?? q.liquidityRequired)}</strong>} />
           <p className="muted small" style={{ margin: '10px 0 4px', textTransform: 'uppercase', letterSpacing: '.06em' }}>Scenario as registered</p>
           <Row k="Strategy / purpose" v={`${inp.strategy || '—'} · ${inp.loanType || '—'}${inp.cashOut ? ' (cash-out)' : ''}`} />
-          <Row k="Purchase price" v={money(inp.purchasePrice)} />
+          {/* NAME THE FIGURE THE LOAN WAS SIZED ON (owner-directed 2026-08-02).
+              On a refinance `inp.purchasePrice` IS the as-is value — that is the
+              engine's own contract, and how the studio and the public form have
+              always sent it — so a row labelled "Purchase price" here would put
+              a purchase-price label on the property's current value. The as-is
+              row below already carries the number; on a refinance this row would
+              simply repeat it, so it is dropped. */}
+          {inp.loanType !== 'Refinance' && <Row k="Purchase price" v={money(inp.purchasePrice)} />}
           {inp.isAssignment && <Row k="Seller price / assignment fee" v={`${money(inp.sellerPrice)} / ${money(Math.max(0, (inp.purchasePrice || 0) - (inp.sellerPrice || 0)))}`} />}
           {inp.isAssignment && q.assignment && (q.assignment.overLimit || q.assignment.overridden) &&
             <Row k={`Effective purchase price ${q.assignment.overridden ? '(admin exception)' : q.assignment.dollarCap ? '(fee capped at the program limit)' : '(fee capped at 15%)'}`} v={money(q.assignment.recognizedPrice)} />}

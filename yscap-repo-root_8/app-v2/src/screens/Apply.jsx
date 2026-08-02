@@ -242,6 +242,15 @@ export default function Apply() {
     const cur = f || {};
     const patch = { loanType: v };
     if (isRefi(v) && cur.isAssignment) { patch.isAssignment = false; patch.underlyingContractPrice = ''; patch.assignmentFee = ''; }
+    /* The economics follow the purpose, both ways (owner-directed 2026-08-02).
+       Switching TO a refinance clears the purchase price — there is nothing being
+       bought, and the loan is sized on the as-is value; switching BACK to a
+       purchase clears the payoff and the prior-acquisition answers. Without this
+       a draft started one way and finished the other submitted BOTH sets, which
+       is the mixed-up file this change exists to prevent. The server enforces the
+       same rule at the door, so this is the near half of a pair. */
+    if (isRefi(v)) { patch.purchasePrice = ''; }
+    else { patch.payoffAmount = ''; patch.payoffLender = ''; patch.payoffLoanNumber = ''; patch.originalPurchasePrice = ''; patch.acquisitionDate = ''; }
     save({ data: patch });
     return { ...cur, ...patch };
   });
