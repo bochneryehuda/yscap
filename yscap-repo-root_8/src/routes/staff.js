@@ -2095,19 +2095,54 @@ router.post('/applications/:id/vesting/personal-name', async (req, res) => {
          provider, ref, req.actor.id, 'Non-owner-occupied affidavit']);
       uploadedDocId = r.rows[0].id;
     }
+    /* THE AFFIDAVIT IS NO LONGER A PREREQUISITE OF MARKING THE FILE INDIVIDUAL
+       (owner-directed 2026-08-02). It is still REQUIRED — as its own rule-driven
+       condition (db/408, `cond_noo_affidavit_individual`), which is the thing
+       that must be cleared before clear-to-close.
+
+       WHY THE OLD 400 HAD TO GO: it demanded the affidavit ride along in the very
+       same request, which makes the choice impossible at the two doors that
+       matter most. A borrower filling in the public application form has no
+       affidavit to attach, and neither does a staffer opening a brand-new file —
+       and the owner wants the choice available right away on all three doors.
+       Nothing is lost: the requirement moved from a refusal nobody could act on
+       into a condition everybody can see, chase and clear. */
     const hasAff = uploadedDocId || (await db.query(
       `SELECT 1 FROM documents WHERE checklist_item_id=$1 AND is_current
          AND COALESCE(review_status,'') <> 'rejected' AND doc_kind='noo_affidavit' LIMIT 1`, [item.id])).rows[0];
-    if (!hasAff) return res.status(400).json({ error: 'Upload the non-owner-occupied affidavit (PDF) to sign this off as a personal-name purchase.' });
 
     await db.query(`UPDATE applications SET personal_name_purchase=true, llc_id=NULL, updated_at=now() WHERE id=$1`, [req.params.id]);
-    await db.query(
-      `UPDATE checklist_items SET status='satisfied', signed_off_at=now(), signed_off_by=$2, updated_at=now() WHERE id=$1`,
-      [item.id, req.actor.id]);
+    /* The LLC condition stands down either way — there is no entity to document.
+       It is only SIGNED OFF when the affidavit is genuinely in hand; otherwise it
+       is waived as not-applicable, so the file never reads as though somebody
+       cleared a requirement that was never met. The affidavit is chased by its
+       own condition from here. */
+    if (hasAff) {
+      await db.query(
+        `UPDATE checklist_items SET status='satisfied', signed_off_at=now(), signed_off_by=$2, updated_at=now() WHERE id=$1`,
+        [item.id, req.actor.id]);
+    } else {
+      /* WAIVED is recorded the way this system records a waive — `waived_at` set
+         alongside status 'satisfied' (the status column's CHECK allows only
+         outstanding/requested/received/satisfied/issue; there is no 'waived'
+         value, and the waive is the STAMP). `is_required=false` so it reads as
+         not-applicable rather than as a requirement somebody met. */
+      await db.query(
+        `UPDATE checklist_items
+            SET status='satisfied', waived_at=now(), is_required=false, updated_at=now(),
+                notes = COALESCE(NULLIF(notes,''), '[auto] Not applicable — this file vests in an individual''s name, so there is no entity to document. The non-owner-occupied affidavit is tracked on its own condition.')
+          WHERE id=$1`, [item.id]);
+    }
     enqueueChecklistStatusPush(item.id).catch(() => {});
     try { await enqueueClickupPush(req.params.id, ['vesting']); } catch (_) {}
-    await audit(req, 'vesting_personal_name_affidavit', 'application', req.params.id, { documentId: uploadedDocId });
-    res.json({ ok: true, personalNamePurchase: true, documentId: uploadedDocId });
+    /* Attach the affidavit condition NOW rather than waiting for the next
+       evaluate — the person who just marked the file individual should see what
+       it costs them immediately. Best-effort: the engine re-runs on every file
+       view, so a failure here delays the condition, it never loses it. */
+    try { await require('../lib/conditions/engine').evaluateApplication(req.params.id); } catch (_) {}
+    await audit(req, 'vesting_personal_name_affidavit', 'application', req.params.id,
+      { documentId: uploadedDocId, affidavitOnFile: !!hasAff });
+    res.json({ ok: true, personalNamePurchase: true, documentId: uploadedDocId, affidavitOnFile: !!hasAff });
   } catch (e) { console.warn('[staff] handler error:', db.describeError(e)); res.status(500).json({ error: 'server error' }); }
 });
 
@@ -2423,6 +2458,19 @@ router.post('/applications/:id/pricing/register', async (req, res) => {
        (`missingFields`); refusing here too means a hand-rolled or stale payload
        cannot get past it either. Refused BEFORE any work is done, like the
        cash-out refusal below, so it can never leave a register half-done. */
+    /* GOLD DOES NOT LEND TO AN INDIVIDUAL (owner-directed 2026-08-02, authorized
+       in the owner's own words). Refused HERE and never in the engine:
+       gold-standard.js already carries this exact rule and it has always been
+       DARK, because nothing has ever populated `input.vesting` — and switching a
+       dormant INELIGIBLE branch on would change a frozen engine's behaviour on
+       files already priced under today's rules. The refusal sits on top; not one
+       engine number, formula or input moves. Refused BEFORE any work is done, so
+       it can never leave a registration half-written. */
+    {
+      const vestRefusal = require('../lib/vesting-program-rule')
+        .registrationRefusal(f.app, inputs.program);
+      if (vestRefusal) return res.status(400).json({ error: vestRefusal, field: 'vesting' });
+    }
     if (inputs.asIsMissing) {
       return res.status(400).json({
         error: 'A refinance is sized on the as-is value — enter what the property is worth today before registering.',
@@ -3333,6 +3381,19 @@ router.post('/applications/:id/pricing/accept-counter', async (req, res) => {
     /* Same refusal as the register door: a refinance with no as-is value has no
        denominator to size against, and `forcePrice` below would otherwise turn
        that into a confident-looking quote rather than an INELIGIBLE one. */
+    /* GOLD DOES NOT LEND TO AN INDIVIDUAL (owner-directed 2026-08-02, authorized
+       in the owner's own words). Refused HERE and never in the engine:
+       gold-standard.js already carries this exact rule and it has always been
+       DARK, because nothing has ever populated `input.vesting` — and switching a
+       dormant INELIGIBLE branch on would change a frozen engine's behaviour on
+       files already priced under today's rules. The refusal sits on top; not one
+       engine number, formula or input moves. Refused BEFORE any work is done, so
+       it can never leave a registration half-written. */
+    {
+      const vestRefusal = require('../lib/vesting-program-rule')
+        .registrationRefusal(f.app, inputs.program);
+      if (vestRefusal) return res.status(400).json({ error: vestRefusal, field: 'vesting' });
+    }
     if (inputs.asIsMissing) {
       return res.status(400).json({
         error: 'A refinance is sized on the as-is value — enter what the property is worth today before accepting these terms.',
@@ -6321,13 +6382,15 @@ async function signOffGate(itemId, actor) {
     // require that affidavit here rather than a verified LLC.
     const pn = (await db.query(
       `SELECT personal_name_purchase FROM applications WHERE id=$1`, [item.application_id])).rows[0];
-    if (pn && pn.personal_name_purchase) {
-      const aff = (await db.query(
-        `SELECT 1 FROM documents WHERE checklist_item_id=$1 AND is_current
-           AND COALESCE(review_status,'') <> 'rejected' AND doc_kind='noo_affidavit' LIMIT 1`, [itemId])).rows[0];
-      if (!aff) return 'Upload the non-owner-occupied affidavit (PDF) to sign this off as a personal-name purchase (bought in an individual name, not an LLC).';
-      return null;
-    }
+    /* THE AFFIDAVIT IS NO LONGER DEMANDED HERE (owner-directed 2026-08-02). It
+       has its own condition now — `cond_noo_affidavit_individual` (db/408),
+       rule-driven on `vesting_is_individual` — and that condition is
+       prior_to_docs, so it holds clear-to-close exactly as this gate used to.
+       Keeping the demand in BOTH places would mean one affidavit asked for
+       twice, and the LLC condition could never be closed out on a file that
+       genuinely has no entity to document. There is nothing to verify here on a
+       personal-name file: there IS no entity, which is the whole point. */
+    if (pn && pn.personal_name_purchase) return null;
     const v = (await db.query(
       `SELECT l.is_verified FROM applications a JOIN llcs l ON l.id = a.llc_id WHERE a.id=$1`, [item.application_id])).rows[0];
     if (!v) return 'Link the vesting entity (LLC) to this file, then verify it, before signing this off.';

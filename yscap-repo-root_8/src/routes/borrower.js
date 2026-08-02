@@ -1024,6 +1024,19 @@ router.post('/applications/:id/pricing/register', async (req, res) => {
        denominator and nothing to register (owner-directed 2026-08-02). Same
        refusal as the staff door — the studio blocks it client-side, this stops a
        stale or hand-rolled payload getting past that. */
+    /* GOLD DOES NOT LEND TO AN INDIVIDUAL (owner-directed 2026-08-02, authorized
+       in the owner's own words). Refused HERE and never in the engine:
+       gold-standard.js already carries this exact rule and it has always been
+       DARK, because nothing has ever populated `input.vesting` — and switching a
+       dormant INELIGIBLE branch on would change a frozen engine's behaviour on
+       files already priced under today's rules. The refusal sits on top; not one
+       engine number, formula or input moves. Refused BEFORE any work is done, so
+       it can never leave a registration half-written. */
+    {
+      const vestRefusal = require('../lib/vesting-program-rule')
+        .registrationRefusal(f.app, inputs.program);
+      if (vestRefusal) return res.status(400).json({ error: vestRefusal, field: 'vesting' });
+    }
     if (inputs.asIsMissing) {
       return res.status(400).json({
         error: 'A refinance is sized on the as-is value — enter what the property is worth today before registering.',

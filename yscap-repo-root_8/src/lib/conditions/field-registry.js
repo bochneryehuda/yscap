@@ -291,6 +291,17 @@ const FIELDS = [
   { key: 'in_flood_zone', label: 'In a flood zone (SFHA)?', group: 'Property', type: 'boolean',
     description: 'True when the current appraisal places the property in a FEMA Special Flood Hazard Area (zone A*/V*).' },
 
+  /* VESTING IN AN INDIVIDUAL'S NAME (owner-directed 2026-08-02). Drives the
+     non-owner-occupied affidavit condition: marking a file individual is allowed
+     from any door with nothing attached, and THIS is what then asks for the
+     affidavit — rather than the act of marking it being blocked until one is in
+     hand, which is impossible on a public application form.
+     Derived, never typed: `applications.personal_name_purchase` AND no entity
+     linked. A linked LLC always wins, so the affidavit condition retracts itself
+     the moment a real entity arrives. */
+  { key: 'vesting_is_individual', label: 'Vests in an individual\'s name?', group: 'Property', type: 'boolean',
+    description: 'True when the file is marked as a personal-name purchase and no vesting entity is linked.' },
+
   // ---- Deal economics ----
   { key: 'purchase_price', label: 'Purchase price', group: 'Deal economics', type: 'money', writable: true,
     borrowerLabel: 'Purchase price', borrowerHint: 'Enter the contract purchase price.' },
