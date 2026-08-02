@@ -124,6 +124,14 @@ function Card({ it, onTest, testing, onToggle, onReset, switchBusy }) {
           </button>
         )}
       </div>
+      {it.model && (
+        <div style={{ display: 'flex', alignItems: 'center', gap: 7, flexWrap: 'wrap', marginBottom: 8 }}>
+          <span style={{ fontSize: 11, fontWeight: 800, letterSpacing: '.04em', textTransform: 'uppercase', color: '#4B585C' }}>Model in use</span>
+          <span title="The exact model PILOT is running right now (the Azure deployment name). Set by AZURE_OPENAI_DEPLOYMENT in the hosting settings (Render)."
+            style={{ fontSize: 12.5, fontWeight: 700, color: '#141B22', fontFamily: 'ui-monospace,Menlo,monospace',
+              background: 'rgba(47,127,134,.12)', border: '1px solid rgba(0,0,0,.06)', borderRadius: 6, padding: '2px 9px' }}>{it.model}</span>
+        </div>
+      )}
       <div style={{ fontSize: 12.5, color: 'var(--muted,#4B585C)', marginBottom: 8 }}>{it.purpose}</div>
       {it.detail && <div style={{ fontSize: 12.5, marginBottom: 10 }}>{it.detail}</div>}
 
