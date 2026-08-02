@@ -1,4 +1,4 @@
--- 402 — THE APPRAISAL'S PROPERTY TYPE IS A CATEGORY, NOT AN ATTACHMENT STYLE
+-- 403 — THE APPRAISAL'S PROPERTY TYPE IS A CATEGORY, NOT AN ATTACHMENT STYLE
 --
 -- Owner-reported 2026-08-02, quoting the data-comparison row: "Property type | Detached | Multi 2–4
 -- … you're taking the property type from the wrong place … we need you to find if on the appraisal

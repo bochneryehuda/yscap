@@ -183,7 +183,7 @@ router.get('/:appId', async (req, res, next) => {
       [app.id])).rows[0];
     if (!appr) return res.json({ appraisal: null, comparables: [], units: [], findings: [], photos: [], summary: { fatal: 0, warning: 0, info: 0, blocksCtc: false, open: 0 } });
     // "Property type" must answer what the property IS, not whether the building touches its
-    // neighbour (owner-reported 2026-08-02). db/402 + the importer store the real category going
+    // neighbour (owner-reported 2026-08-02). db/403 + the importer store the real category going
     // forward; this re-derives it for any row the boot repair has not reached yet, and moves the
     // Detached / Attached style into its own field instead of dropping it.
     require('../lib/appraisal/property-category').applyPropertyType(appr);

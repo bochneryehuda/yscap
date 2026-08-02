@@ -137,6 +137,13 @@ const CONDITION_OVERRIDE_REASONS = Object.freeze({
   other: 'Super-admin cleared a condition without fulfilling it (see note)',
 });
 
+// An Encompass field exception is recorded, not requested here: the super admin
+// GRANTED it on the reconcile panel (the grant/deny workflow + the gate flip live in
+// encompass_sync_resolutions); this register row is the audit/certificate surface.
+const ENCOMPASS_MISMATCH_REASONS = Object.freeze({
+  other: 'Super-admin excepted an Encompass field that does not match (see note)',
+});
+
 /**
  * Structured COMPENSATING FACTORS — what offsets the risk the exception takes
  * on. Travel with the request as jsonb [{code, note}]; reportable across files
@@ -215,6 +222,14 @@ const EXCEPTION_TYPES = Object.freeze({
   condition_override: Object.freeze({
     label: 'Condition override (recorded)',
     reasonCodes: CONDITION_OVERRIDE_REASONS,
+    subject: 'file',
+    expirable: false,
+    recordOnly: true,
+    slaHours: null,
+  }),
+  encompass_mismatch: Object.freeze({
+    label: 'Encompass field exception (recorded)',
+    reasonCodes: ENCOMPASS_MISMATCH_REASONS,
     subject: 'file',
     expirable: false,
     recordOnly: true,
@@ -619,6 +634,38 @@ async function recordConditionOverride({ appId, staffId, note, snapshot }, clien
     return ins.rows[0] || null;
   } catch (e) {
     try { console.warn('[loan-exceptions] condition-override record skipped:', e.message); } catch (_) {}
+    return null;
+  }
+}
+
+/**
+ * RECORD a super-admin ENCOMPASS FIELD EXCEPTION (owner-directed 2026-08-02) — born
+ * approved, record-only. The grant/deny workflow AND the gate flip live in
+ * encompass_sync_resolutions; this register row is purely the audit surface (the
+ * Exceptions screen, the EX-n export, the decision certificate). `snapshot` carries the
+ * field's identity + our value vs Encompass's so the register row alone answers "which
+ * field, and what did the two sides say?". Best-effort — NEVER throws; a register hiccup
+ * must never reverse or block the grant (which has already been written).
+ */
+async function recordEncompassException({ appId, staffId, note, snapshot }, client = db) {
+  try {
+    const deal = await dealSnapshotFor(appId);
+    const ins = await client.query(
+      `INSERT INTO loan_exceptions
+         (application_id, exception_type, status, reason_code, reason_note,
+          requested_by, requested_by_kind, decided_by, decided_at, decision_note,
+          gate_snapshot, deal_snapshot, severity)
+       VALUES ($1,'encompass_mismatch','approved','other',$2,$3,'staff',$3,now(),$4,$5,$6,'material')
+       RETURNING *`,
+      [appId,
+       note ? String(note).slice(0, 2000) : 'Super-admin excepted an Encompass field that does not match',
+       staffId || null,
+       note ? String(note).slice(0, 1000) : null,
+       snapshot ? JSON.stringify(snapshot) : null,
+       deal ? JSON.stringify(deal) : null]);
+    return ins.rows[0] || null;
+  } catch (e) {
+    try { console.warn('[loan-exceptions] encompass-exception record skipped:', e.message); } catch (_) {}
     return null;
   }
 }
@@ -1059,7 +1106,7 @@ module.exports = {
   requestException, requestGuarantyWaiver, requestEsignBeforeCtc, requestPricingException,
   requestAppraisalXmlWaiver, requestOopRehab, requestTapeEncompassOverride,
   recordIssuanceOverride, recordConditionOverride, recordTapeEncompassOverride,
-  approvedForApp, latestEsignBeforeCtc,
+  recordEncompassException, approvedForApp, latestEsignBeforeCtc,
   decideException, withdrawException, clearException,
   expireDueApprovals, agingOpen,
   openForApp, latestForApp, registerForApp, getById, listExceptions, pendingCount, metrics,

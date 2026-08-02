@@ -201,4 +201,49 @@ r = recon.compareAll(ours4, theirs, resolutions);
 assert.strictEqual(r.fields.find((f) => f.key === 'loan_amount').open, true, 'a value move re-opens the resolved finding');
 ok('an accepted-but-differing resolution never passes; a value move re-opens it');
 
+// ── Super-admin FIELD EXCEPTIONS (owner-directed 2026-08-02) ────────────────
+// A not-matching / "no data to compare" field can be escalated to a super admin, who
+// GRANTS an exception so it PASSES the gate. This mirrors how computeFindings composes
+// it: compareAll → applyFieldExceptions(resolutions) → summarize.
+const applyFieldExceptions = recon._internals.applyFieldExceptions;
+{
+  // A $450 loan-amount mismatch blocks; a granted exception (snapshot holds) clears it.
+  const resEx = { loan_amount: { resolution: 'excepted', ours_snapshot: '525000', theirs_snapshot: '525450', resolved_by: 'super-1', note: 'known LOS rounding, verified' } };
+  const cmp = recon.compareAll(ours2, theirs, resEx);
+  applyFieldExceptions(cmp.fields, resEx);
+  const summary = recon.summarize(cmp.fields);
+  const la = cmp.fields.find((f) => f.key === 'loan_amount');
+  assert.strictEqual(la.excepted, true, 'the granted field is marked excepted');
+  assert.strictEqual(la.exceptedBy, 'super-1', 'it carries who granted it (for the panel)');
+  assert.ok(!summary.notPassingKeys.includes('loan_amount'), 'an excepted field is NOT in notPassingKeys — the gate stops blocking it');
+  assert.strictEqual(summary.excepted, 1, 'excepted is counted');
+  assert.ok(summary.exceptedKeys.includes('loan_amount'), 'excepted keys are listed for the panel');
+  // clear passes ONLY because max_total_loan (the other $450 mismatch) is also excepted:
+  const resBoth = Object.assign({}, resEx, { max_total_loan: { resolution: 'excepted', ours_snapshot: '525000', theirs_snapshot: '525450', resolved_by: 'super-1' } });
+  const cmp2 = recon.compareAll(ours2, theirs, resBoth);
+  applyFieldExceptions(cmp2.fields, resBoth);
+  assert.strictEqual(recon.summarize(cmp2.fields).clear, true, 'with every not-passing field excepted, the term-sheet gate PASSES');
+}
+{
+  // AUTO-VOID: the exception snapshot no longer holds after the value moves → re-blocks.
+  const resEx = { loan_amount: { resolution: 'excepted', ours_snapshot: '525000', theirs_snapshot: '525450', resolved_by: 'super-1' } };
+  const oursMoved = Object.assign({}, ours, { loan_amount: 524000, max_total_loan: 524000 }); // now $1450 off — snapshot stale
+  const cmp = recon.compareAll(oursMoved, theirs, resEx);
+  applyFieldExceptions(cmp.fields, resEx);
+  const la = cmp.fields.find((f) => f.key === 'loan_amount');
+  assert.ok(!la.excepted, 'the exception AUTO-VOIDS once the value changes — it can never hide a NEW disagreement');
+  assert.ok(recon.summarize(cmp.fields).notPassingKeys.includes('loan_amount'), 'the field blocks again after the data moved');
+}
+{
+  // A REQUESTED (not yet granted) exception still blocks — only a grant passes the gate.
+  const resReq = { loan_amount: { resolution: 'exception_requested', ours_snapshot: '525000', theirs_snapshot: '525450', requested_by: 'lo-1', note: 'please except' } };
+  const cmp = recon.compareAll(ours2, theirs, resReq);
+  applyFieldExceptions(cmp.fields, resReq);
+  const la = cmp.fields.find((f) => f.key === 'loan_amount');
+  assert.strictEqual(la.exceptionRequested, true, 'a pending request is surfaced for the super admin');
+  assert.ok(!la.excepted, 'a request is NOT a grant');
+  assert.ok(recon.summarize(cmp.fields).notPassingKeys.includes('loan_amount'), 'a pending request still blocks until granted');
+}
+ok('field exceptions: a granted exception passes the gate; auto-voids on a data change; a pending request still blocks');
+
 console.log(`\nWO-B Encompass reconcile pure — ${passed} checks passed`);

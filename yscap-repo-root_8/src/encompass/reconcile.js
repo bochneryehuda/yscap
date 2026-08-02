@@ -267,8 +267,9 @@ function compareAll(ours, theirs, resolutions) {
 // Reference fields are the only ones never compared.
 function summarize(fields) {
   let compared = 0, matched = 0, mismatched = 0, incomparable = 0;
-  let openBlocking = 0, openAdvisory = 0, resolved = 0;
+  let openBlocking = 0, openAdvisory = 0, resolved = 0, excepted = 0;
   const notPassingKeys = [];
+  const exceptedKeys = [];
   for (const f of fields) {
     if (f.compare === 'reference' || f.status === 'reference') continue;
     // NOT APPLICABLE ≠ missing data. A field flagged `naWhenOursMissing` whose OUR
@@ -279,7 +280,15 @@ function summarize(fields) {
     if (f.naWhenOursMissing && f.status === 'incomparable' && (f.oursNorm === null || f.oursNorm === undefined)) continue;
     compared += 1;
     if (f.status === 'match') { matched += 1; continue; }
-    notPassingKeys.push(f.key);                    // anything that is not an exact match
+    // A super-admin-GRANTED field exception (owner-directed 2026-08-02) makes a
+    // not-matching / "no data to compare" field PASS the gate — it no longer blocks
+    // the term sheet or the tape. The exception is stamped with who/why and stays
+    // visible on the panel; it AUTO-VOIDS the moment the underlying values change
+    // (the snapshot-hold check in computeFindings only sets `excepted` while the
+    // stored snapshot still equals the live values), so a granted exception can
+    // never paper over a NEW disagreement.
+    if (f.excepted) { excepted += 1; exceptedKeys.push(f.key); continue; }
+    notPassingKeys.push(f.key);                    // anything that is not an exact match (and not excepted)
     if (f.status === 'incomparable') incomparable += 1;
     else if (f.status === 'mismatch') {
       mismatched += 1;
@@ -289,16 +298,50 @@ function summarize(fields) {
     }
   }
   return {
-    compared, matched, mismatched, incomparable, resolved,
+    compared, matched, mismatched, incomparable, resolved, excepted,
     openBlocking, openAdvisory,
     notPassing: notPassingKeys.length,
     notPassingKeys,
+    exceptedKeys,
     // Back-compat alias: the term-sheet gate + the register override now name
     // EVERY not-passing field (mismatch, advisory, or no-data), not just the
-    // block-gate mismatches.
+    // block-gate mismatches. An EXCEPTED field is NOT here — it passes the gate.
     openBlockingKeys: notPassingKeys,
-    clear: matched === compared, // the term-sheet gate (WO-E) reads this — pass = everything matches
+    // The term-sheet gate (WO-E) reads this — pass = every compared field is an
+    // exact match OR a super-admin-granted exception.
+    clear: (matched + excepted) === compared,
   };
+}
+
+// Apply super-admin FIELD EXCEPTIONS to a computed comparison (owner-directed
+// 2026-08-02). A per-field row in encompass_sync_resolutions with resolution 'excepted'
+// (a super admin GRANTED it) or 'exception_requested' (a staffer asked, awaiting the
+// super admin) marks the matching field — but ONLY while the stored snapshot still
+// equals the field's LIVE normalized values, so the exception auto-voids the instant the
+// data moves and can never hide a NEW disagreement. Mutates fields in place: sets
+// `excepted` (→ summarize passes it) / `exceptionRequested`, plus who / when / why for
+// the panel. A field that now matches on its own needs no exception (skipped). Pure.
+function applyFieldExceptions(fields, resolutions) {
+  const res = resolutions || {};
+  for (const f of fields) {
+    const r = res[f.key];
+    if (!r || (r.resolution !== 'excepted' && r.resolution !== 'exception_requested')) continue;
+    if (f.status === 'match' || f.status === 'reference') continue;
+    const holds = snap(f.oursNorm) === snap(r.ours_snapshot) && snap(f.theirsNorm) === snap(r.theirs_snapshot);
+    if (!holds) continue; // stale — values moved since the request/grant; the field re-blocks
+    if (r.resolution === 'excepted') {
+      f.excepted = true;
+      f.exceptedBy = r.resolved_by || null;
+      f.exceptedAt = r.resolved_at || null;
+      f.exceptionNote = r.note || null;
+    } else {
+      f.exceptionRequested = true;
+      f.exceptionRequestedBy = r.requested_by || null;
+      f.exceptionRequestedAt = r.requested_at || null;
+      f.exceptionNote = r.note || null;
+    }
+  }
+  return fields;
 }
 
 // ── Identity + subject-address comparison (owner-directed 2026-07-26) ────────
@@ -835,7 +878,8 @@ async function computeFindings(appId, dbc, opts) {
     [appId])).rows[0];
 
   const resRows = (await c.query(
-    `SELECT field_key, resolution, ours_snapshot, theirs_snapshot, resolved_by, resolved_at, note
+    `SELECT field_key, resolution, ours_snapshot, theirs_snapshot, resolved_by, resolved_at, note,
+            requested_by, requested_at
        FROM encompass_sync_resolutions WHERE application_id = $1`, [appId])).rows;
   const resolutions = {};
   for (const r of resRows) resolutions[r.field_key] = r;
@@ -867,6 +911,15 @@ async function computeFindings(appId, dbc, opts) {
   // summary so "everything matches" includes them.
   const idFields = loan ? compareIdentity(row, loan) : [];
   const fields = econFields.concat(idFields);
+  // Super-admin FIELD EXCEPTIONS (owner-directed 2026-08-02): a not-matching / "no
+  // data to compare" field can be escalated to a super admin, who GRANTS an exception
+  // (resolution 'excepted') so it no longer blocks the term sheet — or a staffer has
+  // REQUESTED one ('exception_requested') and it is awaiting the super admin. Applied
+  // uniformly to BOTH economics and identity fields here (compareAll only sees
+  // economics). Both states apply ONLY while the stored snapshot still equals the live
+  // normalized values, so an exception AUTO-VOIDS the moment the data changes — it can
+  // never hide a NEW disagreement. summarize() reads `f.excepted`; the panel reads both.
+  applyFieldExceptions(fields, resolutions);
   const summary = summarize(fields);
 
   // Attach the resolver metadata onto resolved fields for the panel.
@@ -1121,6 +1174,101 @@ async function _doReplace(c, appId, fieldKey, staffId) {
   return { ok: true, field: nf, column: w.col, before, wrote: writeVal, status: nf.status };
 }
 
+// ── Super-admin FIELD EXCEPTIONS (owner-directed 2026-08-02) ────────────────
+// A not-matching / "no data to compare" Encompass field can be escalated: any assigned
+// staffer REQUESTS an exception, a SUPER ADMIN grants it, and the field then passes the
+// gate ("it doesn't need to match"). All state lives in encompass_sync_resolutions
+// (resolution 'exception_requested' → 'excepted'), snapshotting the LIVE normalized
+// values so the exception auto-voids the moment the data changes. NEVER writes to
+// Encompass. The notification + policy-exception-register record happen at the route.
+
+// Run a write in the caller's transaction, or a fresh one that commits on {ok:true}.
+async function _withTxn(dbc, fn) {
+  if (dbc) return fn(dbc);
+  const db = require('../db');
+  const client = await db.getClient();
+  try {
+    await client.query('BEGIN');
+    const r = await fn(client);
+    await client.query(r && r.ok ? 'COMMIT' : 'ROLLBACK');
+    return r;
+  } catch (e) {
+    await client.query('ROLLBACK').catch(() => {});
+    throw e;
+  } finally {
+    client.release();
+  }
+}
+
+// Any assigned staffer asks for an exception on a currently-not-passing field.
+async function requestException(appId, fieldKey, staffId, reason, dbc) {
+  return _withTxn(dbc, (c) => _doRequestException(c, appId, fieldKey, staffId, reason));
+}
+async function _doRequestException(c, appId, fieldKey, staffId, reason) {
+  const cur = await computeFindings(appId, c);
+  if (!cur.found) return { ok: false, reason: 'not_found' };
+  if (!cur.hasLoan) return { ok: false, reason: 'no_loan' };
+  const f = (cur.fields || []).find((x) => x.key === fieldKey);
+  if (!f) return { ok: false, reason: 'unknown_field' };
+  if (f.status === 'match' || f.status === 'reference') return { ok: false, reason: 'already_passing' };
+  if (f.excepted) return { ok: false, reason: 'already_excepted' };
+  await c.query(
+    `INSERT INTO encompass_sync_resolutions
+        (application_id, field_key, resolution, ours_snapshot, theirs_snapshot, requested_by, requested_at, note)
+       VALUES ($1,$2,'exception_requested',$3,$4,$5,now(),$6)
+     ON CONFLICT (application_id, field_key) DO UPDATE
+       SET resolution='exception_requested', ours_snapshot=EXCLUDED.ours_snapshot, theirs_snapshot=EXCLUDED.theirs_snapshot,
+           requested_by=EXCLUDED.requested_by, requested_at=now(), note=EXCLUDED.note,
+           resolved_by=NULL, resolved_at=NULL`,
+    [appId, fieldKey, snap(f.oursNorm), snap(f.theirsNorm), staffId || null, reason || null]);
+  const after = await computeFindings(appId, c);
+  const nf = (after.fields || []).find((x) => x.key === fieldKey) || f;
+  return { ok: true, field: nf, label: f.label, ours: f.ours, theirs: f.theirs, status: f.status };
+}
+
+// A super admin GRANTS ('grant'), DENIES ('deny') or REVOKES ('revoke') an exception.
+// grant → the field passes the gate; deny/revoke → the row is removed and it re-blocks.
+async function decideException(appId, fieldKey, staffId, decision, reason, dbc) {
+  return _withTxn(dbc, (c) => _doDecideException(c, appId, fieldKey, staffId, decision, reason));
+}
+async function _doDecideException(c, appId, fieldKey, staffId, decision, reason) {
+  const cur = await computeFindings(appId, c);
+  if (!cur.found) return { ok: false, reason: 'not_found' };
+  const f = (cur.fields || []).find((x) => x.key === fieldKey);
+  if (!f) return { ok: false, reason: 'unknown_field' };
+  if (decision === 'deny' || decision === 'revoke') {
+    // Remove ONLY an exception row (never a 'replaced'/'accepted' provenance row) so the
+    // field re-blocks. Idempotent — a no-op if there was no exception.
+    await c.query(
+      `DELETE FROM encompass_sync_resolutions
+        WHERE application_id=$1 AND field_key=$2 AND resolution IN ('exception_requested','excepted')`,
+      [appId, fieldKey]);
+    const after = await computeFindings(appId, c);
+    const nf = (after.fields || []).find((x) => x.key === fieldKey) || f;
+    return { ok: true, decision, field: nf, label: f.label };
+  }
+  // grant — mirror requestException's guards so a direct re-grant (or a double-click
+  // before the button disables) can't INSERT a second born-approved register row for
+  // the one logical exception, and a grant on a file with no pulled loan is refused
+  // (there is nothing to reconcile against). deny/revoke stay unguarded on hasLoan so
+  // a stale exception can still be cleaned up after a loan is un-pulled.
+  if (!cur.hasLoan) return { ok: false, reason: 'no_loan' };
+  if (f.status === 'match' || f.status === 'reference') return { ok: false, reason: 'already_passing' };
+  if (f.excepted) return { ok: false, reason: 'already_excepted' };
+  await c.query(
+    `INSERT INTO encompass_sync_resolutions
+        (application_id, field_key, resolution, ours_snapshot, theirs_snapshot, resolved_by, resolved_at, note)
+       VALUES ($1,$2,'excepted',$3,$4,$5,now(),$6)
+     ON CONFLICT (application_id, field_key) DO UPDATE
+       SET resolution='excepted', ours_snapshot=EXCLUDED.ours_snapshot, theirs_snapshot=EXCLUDED.theirs_snapshot,
+           resolved_by=EXCLUDED.resolved_by, resolved_at=now(),
+           note=COALESCE(EXCLUDED.note, encompass_sync_resolutions.note)`,
+    [appId, fieldKey, snap(f.oursNorm), snap(f.theirsNorm), staffId || null, reason || null]);
+  const after = await computeFindings(appId, c);
+  const nf = (after.fields || []).find((x) => x.key === fieldKey) || f;
+  return { ok: true, decision: 'grant', field: nf, label: f.label, ours: f.ours, theirs: f.theirs, note: reason || null };
+}
+
 // Manual READ-ONLY re-pull + fresh comparison (WO-C /refresh).
 async function refresh(appId, dbc) {
   const pull = await onLoanNumberSet(appId); // read-only, best-effort
@@ -1154,11 +1302,13 @@ module.exports = {
   tapeGateMessage,
   issuanceGate,
   replaceField,
+  requestException,
+  decideException,
   refresh,
   onLoanNumberSet,
   WRITABLE,
   // compareIdentity is exported for the name-split regression test: a borrower
   // whose Encompass copy is correctly split must MATCH our three columns, and a
   // legacy merged first name must match too rather than hold the term sheet.
-  _internals: { snap, deriveDealType, tapeGateDecision, tapeGateError, compareIdentity, _collectParties, _matchParty, _matchBySsn, _matchByName, _phones, _emails, _pairLabel, _partyFromFieldValues },
+  _internals: { snap, deriveDealType, tapeGateDecision, tapeGateError, compareIdentity, _collectParties, _matchParty, _matchBySsn, _matchByName, _phones, _emails, _pairLabel, _partyFromFieldValues, applyFieldExceptions },
 };

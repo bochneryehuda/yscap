@@ -624,7 +624,7 @@ if (require.main === module) {
         require('./lib/name-heal').healBorrowerNamesOnce()
           .then((r) => r && r.split && console.log('[boot] borrower name split:', JSON.stringify(r)))
           .catch((e) => console.error('[boot] borrower name split failed:', e.message));
-        // Previous-files fix (owner-reported 2026-08-02): every appraisal imported before db/402
+        // Previous-files fix (owner-reported 2026-08-02): every appraisal imported before db/403
         // stored the MISMO attachment STYLE ("Detached") in its property-type column, so the
         // Appraisal tab, the tie-out matrix and the Data comparison all printed a word that is not
         // an answer to "what is this property". This re-reads the real category (single family /
