@@ -58,8 +58,8 @@ function fsmMode() {
   return (m === 'shadow' || m === 'on') ? m : 'off';
 }
 
-// The claimable predicate = the legacy pendingBatch gating (settle window, local
-// bytes, storage_ref, attempts<MAX, not-superseded-regen) AND an FSM-claimable
+// The claimable predicate = the legacy pendingBatch gating (settle window, any
+// provider's bytes, storage_ref, attempts<MAX, not-superseded-regen) AND an FSM-claimable
 // status, OR an IN_PROGRESS row whose lease expired (crash reclaim). Reusing the
 // shared NEVER_MIRROR_SQL / REGEN_KIND_SQL fragments means the historically
 // divergence-prone bits are identical to the legacy drain by construction.
@@ -78,7 +78,9 @@ function claimableWhere() {
        AND d.sharepoint_skipped_reason IS NULL
        AND ${backup.NEVER_MIRROR_SQL}
        AND d.storage_ref IS NOT NULL
-       AND COALESCE(d.storage_provider, 'local') = 'local'
+       -- Provider-agnostic, in lock-step with the legacy pendingBatch: bytes are
+       -- read via the storage layer (local + s3 dual-read), so the claim set must
+       -- cover every provider or the shadow-compare would diverge from the drain.
        AND d.sharepoint_backup_attempts < $MAXA
        AND d.created_at < now() - (CASE WHEN ${backup.REGEN_KIND_SQL}
              THEN make_interval(secs => $SETTLE) ELSE interval '3 seconds' END)
