@@ -471,7 +471,10 @@ async function pendingBatch(limit) {
       WHERE d.sharepoint_backed_up_at IS NULL
         AND ${NEVER_MIRROR_SQL}
         AND d.storage_ref IS NOT NULL
-        AND COALESCE(d.storage_provider, 'local') = 'local'
+        -- Provider-agnostic: bytes are read via the storage layer (src/lib/
+        -- storage.js), which handles 'local' AND 's3' (the dual-read wrapper), so
+        -- a document on ANY supported provider is mirrored the same way. (Was
+        -- filtered to 'local' when S3 was only a stub; that stranded every S3 doc.)
         AND d.sharepoint_backup_attempts < $2
         -- Settle window: the upload request's follow-up statements (supersede
         -- flags on prior versions) run in separate autocommit statements right
@@ -508,16 +511,16 @@ async function enrichedRowById(id) {
 // ------------------------------------------------- never-attempted stray net
 // Root fix for "the document is stuck / last error: (not yet attempted)": a
 // document can be excluded from pendingBatch by a selection predicate (a
-// non-'local' storage_provider, a NULL/false is_current, a scope the JOINs
-// don't resolve) while it is still un-mirrored with real bytes on disk. When
-// that happens the normal drain never touches it, so recordFailure never runs,
-// so it sits at attempts=0 / error=NULL — invisible and un-attempted — until
-// the 12h SLO escalation force-attempts it. That window is too long and the
-// cause is never logged. This selector finds exactly that population — past a
-// grace window, attempts=0, error NULL, NOT a settling phantom — and does NOT
-// filter on storage_provider, so even a doc the normal batch can't see is
-// surfaced. runOnce force-attempts each one EVERY pass, so a stray gets one
-// real attempt (mirror, or a classified error) within a single poll cycle.
+// NULL/false is_current, a scope the JOINs don't resolve) while it is still
+// un-mirrored with real bytes in storage. When that happens the normal drain
+// never touches it, so recordFailure never runs, so it sits at attempts=0 /
+// error=NULL — invisible and un-attempted — until the 12h SLO escalation
+// force-attempts it. That window is too long and the cause is never logged.
+// This selector finds exactly that population — past a grace window, attempts=0,
+// error NULL, NOT a settling phantom — regardless of storage_provider, so any
+// doc the normal batch can't see is surfaced. runOnce force-attempts each one
+// EVERY pass, so a stray gets one real attempt (mirror, or a classified error)
+// within a single poll cycle.
 const STRAY_BATCH = 15;                 // small: this is a safety net, not the main path
 function strayGraceSec() {
   // Past the settle window + a margin: a doc this old that is STILL un-attempted
@@ -557,8 +560,8 @@ async function neverAttemptedStrays(limit) {
 // line pinpoints the cause instead of leaving "(not yet attempted)".
 function explainExclusion(row) {
   const reasons = [];
-  const prov = row.storage_provider || 'local';
-  if (prov !== 'local') reasons.push(`storage_provider='${prov}' (the normal drain only mirrors 'local' bytes)`);
+  // storage_provider is NO LONGER an exclusion reason — the drain mirrors every
+  // provider the storage layer can read (local + s3). Kept in the row for logging.
   if (row.is_regen && row.is_current === false) reasons.push('superseded auto-saved snapshot (should have settled)');
   if (row.is_regen && row.is_current == null) reasons.push('regen snapshot with NULL is_current');
   if (!row.app_id && !row.borrower_id) reasons.push('no application/borrower scope resolves (nothing to file it under)');
@@ -984,6 +987,22 @@ async function uploadAndRecord({ row, driveId, parentId, version, bytes, content
   return up;
 }
 
+// The storage provider that actually holds THIS document's bytes. A document's
+// storage_provider is authoritative: the local→S3 migration stamps it 's3' ONLY
+// after the bytes have landed in S3, so a 'local'/NULL doc is always readable
+// straight from disk. Reading by the doc's own provider (a) avoids a wasted S3
+// GET+404 for a not-yet-migrated 'local' doc while STORAGE_PROVIDER=s3, and
+// (b) makes probe() report the RIGHT provider's health — a transiently unmounted
+// local disk yields a RETRY, not a permanent park. An 's3' doc reads through the
+// composite provider (the dual-read wrapper: S3, falling back to local disk for a
+// doc still mid-migration). storage._local is exported by src/lib/storage.js in
+// BOTH modes; in local mode it IS storage, so this is a no-op there.
+function providerForRow(row) {
+  const prov = (row && row.storage_provider) || 'local';
+  if (prov === 'local' && storage._local) return storage._local;
+  return storage;
+}
+
 // `retried` guards the one self-heal: when a cached folder id has gone stale
 // (a human deleted/moved the folder in SharePoint → Graph itemNotFound), the
 // scope cache is invalidated and resolution re-runs once from scratch.
@@ -1018,21 +1037,27 @@ async function mirrorRow(row, retried = false) {
 }
 
 async function mirrorRowInner(row, scopeKey) {
-  // Read the bytes FIRST: a missing/corrupt local file must fail the row
-  // before any folder is created or a version counter is bumped.
+  // Read the bytes FIRST: a missing/corrupt stored file must fail the row
+  // before any folder is created or a version counter is bumped. The read goes
+  // through the doc's OWN provider (local disk or the S3 dual-read wrapper), so a
+  // document living on any supported provider mirrors identically.
+  const provider = providerForRow(row);
   let bytes;
   try {
-    bytes = await storage.read(row.storage_ref);
+    bytes = await provider.read(row.storage_ref);
   } catch (e) {
     // A read failure while the persistent disk is transiently unmounted (common
     // at Render boot/redeploy) must NOT be parked permanent (ENOENT is a HARD
     // permanent pattern) — the file is fine, the mount lagged. Only treat a
-    // missing file as permanent when the disk itself is confirmed healthy; if the
-    // disk is not writable/mounted, raise a TRANSIENT error so the row retries
-    // instead of requiring a human "Retry" (round-2 audit F4).
+    // missing file as permanent when the storage itself is confirmed healthy; if
+    // the disk is not writable/mounted, raise a TRANSIENT error so the row retries
+    // instead of requiring a human "Retry" (round-2 audit F4). For object storage
+    // probe() reports "configured?" (always healthy when the keys are present), so
+    // a genuinely missing object is permanent and a transient S3 blip (5xx/timeout)
+    // is caught as transient by the error classifier instead.
     let diskOk = true;
     try {
-      const p = storage.probe();
+      const p = provider.probe();
       // Not healthy = the base is unwritable, OR a STORAGE_DIR was configured (prod
       // intent) but we are NOT on it — i.e. the persistent mount hasn't come up and
       // we fell back to an ephemeral dir. In that state a read of a real-disk file
@@ -1252,7 +1277,14 @@ const PERMANENT_PATTERNS = [
   // bytes") coincidentally looks like an HTTP code — they must not be downgraded
   // to "retry forever" by the transient/throttle subordination (pre-merge audit).
   { re: /no application or borrower to file under/i, hard: true, cause: 'this document is not linked to any borrower or loan file, so there is nowhere to file it. Link it to a file/borrower in PILOT (or remove it).' },
-  { re: /ENOENT|no such file|invalid storage ref|storage.*not configured/i, hard: true, cause: 'the document’s own saved copy could not be read from PILOT storage (its file is missing). This usually means it was saved to a non-persistent disk. Re-upload the document.' },
+  // Missing bytes: a local ENOENT, or an S3/object-storage 404 (the dual-read
+  // wrapper only surfaces this once BOTH S3 and the old local disk lack the
+  // object — i.e. the bytes are genuinely gone). Retrying can't help; re-upload.
+  { re: /ENOENT|no such file|invalid storage ref|storage.*not configured|NoSuchKey|s3 (read|stream) failed \(HTTP 404\)/i, hard: true, cause: 'the document’s own saved copy could not be read from PILOT storage (its file is missing). This usually means it was saved to a non-persistent disk. Re-upload the document.' },
+  // Object storage denied the read — a credentials / bucket-permission problem
+  // (distinct from a SharePoint permission error). A human must fix the storage
+  // config; retrying the same request can never succeed on its own.
+  { re: /s3 (read|stream) failed \(HTTP 403\)/i, hard: true, cause: 'the document’s saved copy could not be read from object storage (access denied). The storage credentials or bucket permissions need attention — nothing on this provider will mirror until it is fixed.' },
   { re: /not configured \(MS_|AADSTS|invalid_client|unauthorized_client|certificate|client assertion|token via/i, hard: true, cause: 'SharePoint authentication is failing (an expired or misconfigured certificate/secret). Rotate/renew the Microsoft credential — nothing will mirror until it is fixed.' },
   { re: /name conflict persisted after uniquification/i, hard: true, cause: 'the upload keeps colliding with an existing item and could not be uniquified. A human should check the target folder in SharePoint.' },
   // Local bytes on disk don't match what the upload recorded — retrying the
@@ -1369,13 +1401,13 @@ function verifyPollSec() {
 
 async function verifyBatch(limit) {
   const { rows } = await db.query(
-    `SELECT id, filename, content_type, storage_ref, size_bytes, sha256,
+    `SELECT id, filename, content_type, storage_ref, storage_provider, size_bytes, sha256,
             sharepoint_backup_ref, sharepoint_parent_id, sharepoint_web_url,
             sharepoint_backed_up_at,
             application_id, borrower_id, doc_kind, slot_label, is_current
        FROM documents
       WHERE sharepoint_backup_ref IS NOT NULL
-        AND COALESCE(storage_provider, 'local') = 'local'
+        -- Audit mirrored docs on EVERY provider (bytes read via the storage layer).
         AND (sharepoint_verified_at IS NULL
              OR sharepoint_verified_at < now() - make_interval(days => $2))
       ORDER BY sharepoint_verified_at ASC NULLS FIRST, created_at ASC
@@ -1409,14 +1441,44 @@ async function auditLogVerify(row, action, details) {
   } catch (_) { /* audit is best-effort here — verdicts live on the document row */ }
 }
 
+// A source read error that means the bytes are GENUINELY gone (not a transient
+// blip and not access-denied). Deliberately NARROWER than the classifier's
+// permanent set: it excludes S3 403 (a creds problem, not a missing file) and
+// config errors, so the verify pass never raises the alarming "only surviving
+// copy" verdict on those.
+const SOURCE_MISSING_RE = /ENOENT|no such file|NoSuchKey|s3 (read|stream) failed \(HTTP 404\)/i;
+
 async function verifyRow(row) {
   const { driveId, itemId } = sp.parseRef(row.sharepoint_backup_ref);
 
   let bytes;
   try {
-    bytes = await storage.read(row.storage_ref);
+    bytes = await providerForRow(row).read(row.storage_ref);
   } catch (e) {
-    // The portal's own copy is unreadable — the mirror may be the ONLY copy
+    // Distinguish a GENUINELY-missing source copy from a merely TRANSIENT read
+    // failure — the same triage the mirror drain (mirrorRowInner) applies. The
+    // alarming "local-missing / the mirror may be the only copy left — do not
+    // delete it" verdict is STICKY (30-day recheck window) and flips the mirror
+    // unhealthy, so it must fire ONLY when we are confident the source is gone:
+    // the storage is healthy AND the error is a missing-object signal (ENOENT /
+    // S3 404 / NoSuchKey). A transient blip — an S3 5xx/timeout (the dual-read
+    // wrapper only falls back to local on 404/403, so a 5xx propagates straight
+    // here), a transiently unmounted local disk, or an S3 403 access-denied
+    // (creds, not a missing file) — must NOT raise that alarm; re-check on the
+    // next rotation instead.
+    let storageOk = true;
+    try {
+      const p = providerForRow(row).probe();
+      storageOk = !!(p && p.ok && !(p.configured && p.persistent === false));
+    } catch (_) { storageOk = false; }
+    const msg = String((e && e.message) || e);
+    if (!(storageOk && SOURCE_MISSING_RE.test(msg))) {
+      // Transient / access / config error — re-check soon, no false "only copy"
+      // alarm and no 30-day stamp (stampVerdict backdates a verify-error).
+      await stampVerdict(row.id, `verify-error: source read failed (${msg.slice(0, 80)})`);
+      return 'verify-error';
+    }
+    // The portal's own copy is genuinely gone — the mirror may be the ONLY copy
     // left. NEVER touch the mirror; a human must see this.
     await stampVerdict(row.id, 'local-missing');
     try {
@@ -1425,7 +1487,7 @@ async function verifyRow(row) {
         taskId: `spdoc:${row.id}`, direction: 'outbound', fieldKey: 'sharepoint_doc',
         reason: 'sharepoint_mirror_failed', suppressIfRejected: true,
         clickupValue: null,
-        portalValue: `${row.filename || 'document'} — the portal's local bytes are unreadable (${String(e.message).slice(0, 80)}); the SharePoint mirror copy may be the only surviving copy. Do not delete it.`.slice(0, 300),
+        portalValue: `${row.filename || 'document'} — the portal's stored bytes are unreadable (${msg.slice(0, 80)}); the SharePoint mirror copy may be the only surviving copy. Do not delete it.`.slice(0, 300),
         rawValue: JSON.stringify({ docId: row.id, kind: 'local-missing' }).slice(0, 500) });
     } catch (_) { /* visibility best-effort */ }
     return 'local-missing';
@@ -1730,34 +1792,21 @@ async function runOnce({ limit = DEFAULT_BATCH, seq = 0 } = {}) {
   // swept at most once (next pass it no longer matches attempts=0).
   let strayForced = 0, strayMirrored = 0;
   try {
-    // When the FSM owns uploads it claims every LOCAL pending doc (its claim +
-    // reaper + reconcile subsume the local stray net), but its claim carries the
-    // storage_provider='local' filter, so it can't reach NON-local docs. Keep the
-    // stray net for exactly that population in 'on' mode — those still get a forced
-    // attempt + review card and don't race the FSM claim (which never selects them).
-    const strays = fsmOwnsUploads
-      ? (await neverAttemptedStrays(STRAY_BATCH)).filter((s) => (s.storage_provider || 'local') !== 'local')
-      : await neverAttemptedStrays(STRAY_BATCH);
+    // When the FSM owns uploads it claims every pending doc on every provider (its
+    // claim + reaper + reconcile fully subsume this net), so there is nothing left
+    // for the stray sweep to cover. Otherwise sweep any never-attempted stray,
+    // regardless of provider: a failed forced attempt records a CLASSIFIED error,
+    // and — because the normal drain now retries every provider — it surfaces
+    // through the ordinary permanent-error card / stuck-doc escalation like any
+    // other document (no per-provider special-casing needed).
+    const strays = fsmOwnsUploads ? [] : await neverAttemptedStrays(STRAY_BATCH);
     for (const s of strays) {
       if (seq && seq !== _runSeq) break;   // superseded by a fresher pass — stop
       console.warn(`[sp-sync] never-attempted stray doc ${s.id} (${s.filename || '?'}) age ${s.age_hours}h — ${explainExclusion(s)}; forcing one attempt`);
       const res = await forceAttemptDoc(s.id).catch((e) => ({ failed: true, error: e.message }));
       strayForced++;
       if (res.mirrored) { strayMirrored++; mirrored++; }
-      else if (res.failed) {
-        failed++;
-        // A non-'local' stray won't be retried by the normal drain and is
-        // invisible to stuckDocuments/SLO (both filter to 'local'): after its one
-        // forced attempt it would sit at attempts=1 with no card. Card it NOW so
-        // it's visible in Sync review, not buried after a single log line.
-        if (s.storage_provider !== 'local') {
-          try {
-            await cardStuckDoc({ docId: s.id, appId: s.app_id, borrowerId: s.borrower_id,
-              filename: s.filename, ageHours: s.age_hours, attempts: 1,
-              rawErr: res.error || `the document is stored on '${s.storage_provider}', which the sync cannot read` });
-          } catch (_) { /* visibility best-effort */ }
-        }
-      }
+      else if (res.failed) { failed++; }
       await renewLease('sp-drain');
       heartbeat(seq);
       maybePersistHeartbeat(seq, { mirrored, failed });
@@ -1906,11 +1955,16 @@ function start() {
         -- a permanent cause is re-driven via the card's Retry / retry-exhausted.
         AND COALESCE(sharepoint_backup_error, '') NOT LIKE '[permanent]%'`,
     [MAX_ATTEMPTS]).catch(() => {});
-  // Fail-safe visibility: mirror enabled but bytes live on a non-'local' provider
-  // means the fast drain selects nothing (it filters to 'local'); say so loudly
-  // rather than degrade near-silently (A-Z audit D1).
-  if ((cfg.storageProvider || 'local') !== 'local') {
-    console.warn(`[sp-sync] WARNING: SharePoint sync is enabled but STORAGE_PROVIDER='${cfg.storageProvider}' (not 'local') — the mirror reads local bytes and will not pick up documents on this provider.`);
+  // The mirror reads document bytes through the storage layer (src/lib/storage.js),
+  // which handles 'local' AND 's3' (the S3 dual-read wrapper) — both flow through
+  // the drain like any other document. Only warn for a provider the storage layer
+  // can't actually read back (e.g. the not-yet-implemented 'sharepoint' stub),
+  // which WOULD silently mirror nothing. 's3' is expected and fully supported.
+  const _prov = cfg.storageProvider || 'local';
+  if (_prov !== 'local' && _prov !== 's3') {
+    console.warn(`[sp-sync] WARNING: STORAGE_PROVIDER='${_prov}' is not a provider the mirror can read (expected 'local' or 's3') — documents stored on it will NOT be mirrored to SharePoint.`);
+  } else if (_prov !== 'local') {
+    console.log(`[sp-sync] storage provider '${_prov}' — document bytes are read via the storage layer (dual-read); documents mirror normally.`);
   }
   const sec = Number.isFinite(cfg.sharepointBackupPollSec) ? cfg.sharepointBackupPollSec : 300;
   // Floor 60s, CEILING 1h — an absurd poll must not push the watchdog grace
@@ -1982,7 +2036,7 @@ async function reconciliation() {
         count(*) FILTER (WHERE sharepoint_backup_ref IS NOT NULL)::int                                  AS mirrored,
         count(*) FILTER (WHERE sharepoint_skipped_reason IS NOT NULL)::int                              AS skipped,
         count(*) FILTER (WHERE sharepoint_backed_up_at IS NULL AND storage_ref IS NOT NULL
-                          AND COALESCE(storage_provider,'local')='local' AND ${NEVER_MIRROR_SQL})::int   AS pending,
+                          AND ${NEVER_MIRROR_SQL})::int                                                  AS pending,
         count(*) FILTER (WHERE sharepoint_backed_up_at IS NULL AND storage_ref IS NOT NULL
                           AND sharepoint_backup_attempts >= $1 AND ${NEVER_MIRROR_SQL})::int             AS exhausted,
         count(*) FILTER (WHERE sharepoint_backup_ref IS NOT NULL AND sharepoint_verified_at IS NULL)::int AS unverified,
@@ -1994,15 +2048,14 @@ async function reconciliation() {
         count(*) FILTER (WHERE sharepoint_integrity = 'item-missing')::int                              AS item_missing,
         count(*) FILTER (WHERE sharepoint_integrity = 'local-missing')::int                             AS local_missing,
         count(*) FILTER (WHERE sharepoint_backup_ref IS NOT NULL AND sharepoint_stamped_at IS NOT NULL)::int AS id_stamped,
-        -- Un-mirrored docs on a NON-'local' provider: invisible to the normal
-        -- selectors (which filter to 'local'). Counted here so they can never be
-        -- fully silent (the gap-audit's counted-but-never-selected class). Latent
-        -- today — every doc is 'local' — but visible the moment a provider ships.
+        -- Informational provider breakdown: how many of the pending docs live on
+        -- a non-'local' provider. These now flow through the normal drain (counted
+        -- in the pending total above), so this is a visibility metric, not a stuck bucket.
         count(*) FILTER (WHERE sharepoint_backed_up_at IS NULL AND storage_ref IS NOT NULL
                           AND COALESCE(storage_provider,'local') <> 'local')::int                        AS nonlocal_pending,
         EXTRACT(EPOCH FROM (now() - min(created_at) FILTER (
            WHERE sharepoint_backed_up_at IS NULL AND storage_ref IS NOT NULL
-             AND COALESCE(storage_provider,'local')='local' AND ${NEVER_MIRROR_SQL})))::bigint          AS oldest_pending_secs
+             AND ${NEVER_MIRROR_SQL})))::bigint                                                          AS oldest_pending_secs
       FROM documents d`,
     [MAX_ATTEMPTS]);
   const r = rows[0];
@@ -2053,8 +2106,10 @@ async function reconciliation() {
   // the pending/backlog population) and therefore used to be INVISIBLE to the
   // health verdict — a mirror carrying malware-blocked or source-corrupt or
   // human-deleted copies reported healthy:true (A-Z audit #3). Fold them in.
+  // (nonlocal_pending is NOT a human-action verdict anymore — non-local docs
+  // mirror through the normal drain and show up as ordinary pending/exhausted.)
   const needsAttention = (r.malware_flagged || 0) + (r.source_suspect || 0)
-    + (r.item_missing || 0) + (r.local_missing || 0) + (r.nonlocal_pending || 0);
+    + (r.item_missing || 0) + (r.local_missing || 0);
   return {
     ...r,
     oldest_pending_hours: oldestHrs,
@@ -2065,7 +2120,7 @@ async function reconciliation() {
     // A mirror is "healthy" when nothing is exhausted, the backlog is inside
     // SLO, the auth credential is not about to expire, the worker itself is
     // alive (not stalled), AND nothing is sitting in a human-action verdict
-    // (malware / source-corrupt / item-missing / local-missing / non-local).
+    // (malware / source-corrupt / item-missing / local-missing).
     healthy: r.exhausted === 0 && !backlogBreached && !(credential && credential.warning)
              && !workerStalled && needsAttention === 0,
   };
@@ -2096,7 +2151,8 @@ async function stuckDocuments(limit = 25) {
        LEFT JOIN borrowers b        ON b.id = COALESCE(d.borrower_id, ci.borrower_id, l.borrower_id, a.borrower_id)
       WHERE d.sharepoint_backed_up_at IS NULL
         AND d.storage_ref IS NOT NULL
-        AND COALESCE(d.storage_provider,'local') = 'local'
+        -- Provider-agnostic (bytes read via the storage layer) — a stuck S3 doc is
+        -- listed here just like a local one, so nothing degrades silently.
         -- Deliberately-never-mirrored kinds (heter iska, appraisal photos) and
         -- lead-CRM attachments are NOT stuck backlog: the settle pass stamps them
         -- skipped. Excluding them here keeps a not-yet-settled policy doc out of
@@ -2162,11 +2218,8 @@ async function forceAttemptDoc(id) {
 // Ensure a Sync-review card exists for a stuck, human-actionable document,
 // showing the FRIENDLY cause (e.g. "the document's own saved copy could not be
 // read…" instead of a raw ENOENT). Idempotent — queueReview dedups per doc.
-// Shared by escalateStuckDocs AND the never-attempted stray sweep, so a stray
-// that fails a forced attempt and will NOT be retried by the normal drain
-// (a non-'local' provider the mirror can't read is invisible to both
-// pendingBatch and stuckDocuments) is made VISIBLE immediately — not surfaced
-// for a single log line and then buried at attempts=1.
+// Used by escalateStuckDocs to surface a document that has been failing past
+// the SLO window with a plain-language reason.
 async function cardStuckDoc({ docId, appId, borrowerId, filename, ageHours, attempts, rawErr }) {
   const verdict = classifyMirrorError(rawErr);
   const shown = verdict.class === 'permanent' ? verdict.cause : String(rawErr);
@@ -2373,9 +2426,9 @@ async function checkBacklogSlo() {
     const allStuck = (await stuckDocuments(200)).filter((d) => !d.phantom);
     // Only alert when there are named, past-SLO documents to show. If nothing is
     // nameable (escalation cleared it, or the only breach is a still-young
-    // exhausted doc / a non-'local' doc that stuckDocuments can't list), skip the
-    // email — a vague "0 document(s)…" alert helps no one, and those docs surface
-    // through their own Sync-review cards (stray-sweep / permanent-error carding).
+    // exhausted doc), skip the email — a vague "0 document(s)…" alert helps no
+    // one, and those docs surface through their own Sync-review cards
+    // (stray-sweep / permanent-error carding).
     if (allStuck.length === 0) return;
     // PER-DOCUMENT dedup (the bombardment fix): stay quiet while the cooldown is
     // active UNLESS a genuinely NEW stuck doc appeared (one not alerted within the

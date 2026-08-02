@@ -717,12 +717,15 @@ module.exports = {
   //   flood provider is parked; FLOOD_ORDER_PROVIDER picks which the button uses.
   //   USES THE SAME XACTUS LOGIN AS CREDIT — no separate flood credentials
   //   (owner-directed 2026-07-30: "it's the same credentials, we don't need extra
-  //   credentials for flood"). The login AND the web address both fall back to the
-  //   credit connection (XACTUS_API_*), so with the credit integration set up,
-  //   flood needs nothing extra. Set XACTUS_FLOOD_API_URL ONLY if Xactus gave you a
-  //   SEPARATE flood endpoint different from the credit one.
+  //   credentials for flood"). The LOGIN falls back to the credit connection
+  //   (XACTUS_API_USERNAME/PASSWORD) — same Xactus account. The WEB ADDRESS does
+  //   NOT fall back: Flood ReportX is MISMO 2.4 and credit is MISMO 3.4, which are
+  //   DIFFERENT endpoints on the Xactus360 gateway (credit …/uaweb/mismo3, flood
+  //   …/uaweb/mismo2), so XACTUS_FLOOD_API_URL MUST be set to the flood endpoint —
+  //   posting a 2.4 flood order to the 3.4 credit endpoint is rejected with no
+  //   reason (owner-reported 2026-08-02). It does NOT fall back to XACTUS_API_URL.
   xactusFlood: {
-    endpoint: (process.env.XACTUS_FLOOD_API_URL || process.env.XACTUS_API_URL || '').trim().replace(/\/+$/, ''),
+    endpoint: (process.env.XACTUS_FLOOD_API_URL || '').trim().replace(/\/+$/, ''),
     username: (process.env.XACTUS_FLOOD_USERNAME || process.env.XACTUS_API_USERNAME || '').trim(),
     password: process.env.XACTUS_FLOOD_PASSWORD || process.env.XACTUS_API_PASSWORD || '',
     version:  (process.env.XACTUS_FLOOD_VERSION || '2.4').trim(),
@@ -730,16 +733,23 @@ module.exports = {
     // a mortgage; 'basic' = a one-time determination (cheaper, no monitoring).
     product:  (process.env.XACTUS_FLOOD_PRODUCT || 'life').trim(),
     requestingParty: (process.env.XACTUS_REQUESTING_PARTY || 'YS Capital Group').trim(),
-    // LIVE by default (owner-directed 2026-08-02: "remove the test mode, go live
-    // right away"). A staff click places a REAL, billable order — nothing is ordered
-    // automatically. Set XACTUS_FLOOD_DRYRUN=1 (or flip TEST MODE on the API-Health
-    // page) to build + log an order without sending it.
-    dryrun:   process.env.XACTUS_FLOOD_DRYRUN === '1',
-    // Auth style follows CREDIT by default (same login on the same connection):
-    // 'basic' (HTTP Basic header — the credit default) or 'query'
-    // (LoginAccountIdentifier/LoginAccountPassword URL params). Override with
-    // XACTUS_FLOOD_AUTH_MODE only if a separate flood endpoint needs a different style.
-    authMode: /^query$/i.test((process.env.XACTUS_FLOOD_AUTH_MODE || process.env.XACTUS_AUTH_MODE || 'basic').trim()) ? 'query' : 'basic',
+    // Explicitly ask Xactus to embed the certificate PDF in every response (their
+    // _UseEmbeddedFileIndicator toggle can otherwise EXCLUDE it). ON by default —
+    // set XACTUS_FLOOD_REQUEST_PDF=0 ONLY if Xactus ever rejects the element, which
+    // restores flood ordering without a redeploy.
+    requestPdf: process.env.XACTUS_FLOOD_REQUEST_PDF !== '0',
+    // Test mode is REMOVED (owner-directed 2026-08-02: "remove the test mode, go live
+    // right away"). A staff click ALWAYS places a REAL, billable order — there is no
+    // dry-run gate (flood.js dryrun() is hard-false), because a stored runtime override
+    // kept surviving deploys and pinning the button in test mode. The master switch
+    // XACTUS_FLOOD_ENABLED is the kill switch; nothing is ever ordered automatically.
+    // Flood ReportX authenticates via URL QUERY PARAMS — LoginAccountIdentifier /
+    // LoginAccountPassword in the URL, with only a Content-Type header — NOT an HTTP
+    // Basic header. This is exactly what the Xactus Flood ReportX Postman collection
+    // does (every action posts to {baseUrl}?LoginAccountIdentifier=…&LoginAccountPassword=…).
+    // Default 'query'; set XACTUS_FLOOD_AUTH_MODE=basic ONLY if Xactus tells you this
+    // account uses a Basic header instead.
+    authMode: /^basic$/i.test((process.env.XACTUS_FLOOD_AUTH_MODE || 'query').trim()) ? 'basic' : 'query',
   },
   // Which flood provider the "Order flood certificate" button uses.
   floodProvider: (process.env.FLOOD_ORDER_PROVIDER || 'xactus').trim().toLowerCase(),

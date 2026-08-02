@@ -62,8 +62,9 @@ const ok = (name, cond) => { if (cond) pass++; else { fail++; console.log(`FAIL 
   // === TEST 1: never-attempted stray net ====================================
   // A well-formed local doc, un-mirrored, attempts=0, error NULL, 35h old.
   const strayLocal = await mkDoc();
-  // A doc on a NON-local provider — the class that is invisible to BOTH
-  // pendingBatch and stuckDocuments (they filter storage_provider='local').
+  // A doc on a NON-local (s3) provider — previously stranded because every mirror
+  // selector filtered to storage_provider='local'; now a first-class citizen of
+  // the drain (bytes are read through the storage layer, which handles s3).
   const strayS3 = await mkDoc({ storage_provider: 's3', filename: 'other.pdf' });
   // A superseded regen snapshot — must NOT be picked up by the stray net
   // (it settles WITHOUT uploading; force-attempting it would be wrong).
@@ -81,13 +82,29 @@ const ok = (name, cond) => { if (cond) pass++; else { fail++; console.log(`FAIL 
   ok('stray net does NOT pick up a too-fresh doc (inside the grace window)', !strayIds.includes(String(fresh)));
   ok('stray net does NOT pick up an already-attempted doc', !strayIds.includes(String(attempted)));
 
-  // explainExclusion on the real rows returned by the selector.
+  // explainExclusion on the real rows returned by the selector. A non-local
+  // provider is NO LONGER an exclusion reason (the drain mirrors every provider),
+  // so a clean s3 row explains the same way a clean local row does.
   const s3row = strays.find((s) => String(s.id) === String(strayS3));
-  ok("explainExclusion names storage_provider='s3' for the invisible doc",
-    /storage_provider='s3'/.test(backup.explainExclusion(s3row)));
+  ok('explainExclusion no longer treats a non-local provider as an exclusion reason',
+    !/storage_provider=/.test(backup.explainExclusion(s3row)));
+  ok('a clean s3 row (valid scope) falls back to drain/lease-health, like local',
+    /drain\/lease health/.test(backup.explainExclusion(s3row)));
   const localrow = strays.find((s) => String(s.id) === String(strayLocal));
   ok('explainExclusion falls back to drain/lease-health for a clean local row',
     /drain\/lease health/.test(backup.explainExclusion(localrow)));
+
+  // === CORE FIX: an s3-provider doc is FIRST-CLASS in the normal drain =========
+  // Previously pendingBatch filtered to storage_provider='local', so an s3 doc was
+  // never selected/retried and only got a one-shot stray attempt. Now it is
+  // selected by pendingBatch (and counted in the normal backlog) like a local doc.
+  const pendingIds = (await backup.pendingBatch(200)).map((p) => String(p.id));
+  ok('pendingBatch now SELECTS an s3-provider doc (was stranded before the fix)',
+    pendingIds.includes(String(strayS3)));
+  ok('pendingBatch still selects a local doc (no regression)', pendingIds.includes(String(strayLocal)));
+  const reconPend = await backup.reconciliation();
+  ok('reconciliation counts un-mirrored s3 docs in the normal pending backlog',
+    Number(reconPend.pending) >= 1 && typeof reconPend.nonlocal_pending === 'number');
 
   // forceAttemptDoc must MOVE a stray out of "not yet attempted": it either
   // mirrors (not possible here — no live Graph) or records a REAL error so the
@@ -101,21 +118,19 @@ const ok = (name, cond) => { if (cond) pass++; else { fail++; console.log(`FAIL 
   const strays2 = await backup.neverAttemptedStrays(50);
   ok('the forced doc is no longer in the never-attempted set', !strays2.map((s) => String(s.id)).includes(String(strayLocal)));
 
-  // A real runOnce sweep must make the invisible non-local doc VISIBLE: its
-  // forced attempt fails (no local bytes to read → no Graph touched), and
-  // because it's non-'local' the stray sweep cards it in Sync review rather than
-  // leaving it buried at attempts=1. (All local docs here also fail their read,
-  // but that's fine — we only assert the non-local doc gets a card.)
+  // A real drain now handles the s3 doc through the NORMAL pipeline (pendingBatch),
+  // not a provider special-case: it is attempted and its read failure is recorded
+  // as an error — so it can never sit at "not yet attempted" the way a stranded
+  // non-local doc used to. (Its Sync-review card then follows from the ordinary
+  // permanent-error path, which is exercised by the classifier tests.)
   await backup.runOnce({ limit: 50 });
-  const cardRows = (await db.query(
-    `SELECT count(*)::int AS n FROM sync_review_queue WHERE task_id = $1`,
-    [`spdoc:${strayS3}`])).rows[0].n;
-  ok('a non-local stray becomes VISIBLE — a Sync review card is created for it', cardRows >= 1);
   const s3after = (await db.query(
     `SELECT sharepoint_backup_attempts AS a, sharepoint_backup_error AS e FROM documents WHERE id=$1`,
     [strayS3])).rows[0];
-  ok('the non-local stray was actually attempted (attempts>=1, real error recorded)',
+  ok('the s3 doc is attempted via the normal drain (attempts>=1, real error recorded)',
     Number(s3after.a) >= 1 && !!s3after.e);
+  ok('the s3 doc is no longer in the never-attempted stray set after a drain pass',
+    !(await backup.neverAttemptedStrays(50)).map((s) => String(s.id)).includes(String(strayS3)));
 
   // === TEST 1c: stall-guard supersede check ==================================
   // A drain pass carries a generation token (seq). If a stall guard spawned a

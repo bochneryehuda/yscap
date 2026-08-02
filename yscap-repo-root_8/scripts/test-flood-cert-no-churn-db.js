@@ -33,13 +33,17 @@ const { ensureSchema } = require('../src/migrate-boot');
 let failures = 0;
 const ok = (c, m) => { console.log(`${c ? 'PASS' : 'FAIL'} ${m}`); if (!c) failures++; };
 
-// The EXACT note db/376 stamps, and db/281's note (Blue Lake / CorrFirst keep
-// theirs — db/376 never overwrites an existing note). Asserting the exact string
-// (not just "non-empty") catches a note-ACCUMULATION regression: if db/374 §3's
-// strip ever broke, a Fidelis cert's note would grow "MARKER\n\nOptional…" instead
-// of staying MARKER. Keep these in lock-step with db/376 / db/281.
-const MARKER = '[auto] Flood determination certificate — a standing internal condition kept on every file, whatever the capital provider. This note keeps the condition from being rebuilt on each deploy so its history stays intact; it does not change what is required.';
-const BL_NOTE = '[auto] A flood determination certificate is required on this file (capital-partner requirement). Auto-added by the Condition Center; an underwriter can waive it if the deal no longer needs it.';
+// The note every flood cert settles on. db/376 and db/281 still stamp their own
+// (older, plumbing-flavoured) texts, and db/396 — which runs after both — rewrites
+// them to this ONE staff-facing line, so whichever route a file took it converges
+// here. Asserting the exact string (not just "non-empty") catches a note-
+// ACCUMULATION regression: if db/374 §3's strip or db/396's replace ever broke, a
+// cert's note would grow "MARKER\n\nOptional…" instead of staying MARKER.
+// Keep in lock-step with db/396.
+const MARKER = '[auto] Required on every file — attach the flood determination certificate.';
+// Blue Lake / CorrFirst reach the same note by a different road (db/281 stamps
+// first, db/396 converts) — same expected end state.
+const BL_NOTE = MARKER;
 
 let seq = 0;
 async function seedFile(lender, floodZone) {

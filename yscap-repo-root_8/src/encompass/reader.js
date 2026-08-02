@@ -133,6 +133,34 @@ function _hashAndStripSsn(party) {
   delete party.taxIdentificationIdentifier; // never store the plaintext SSN
 }
 
+// The borrower/co-borrower SSN read BY FIELD NUMBER (std ids 65 / 97) comes back as
+// PLAINTEXT in the fieldReader map. It must NEVER be stored in applications.encompass_extra
+// — the exact guarantee _hashAndStripSsn gives the loan subtree. This is the same
+// treatment for the flat `_fieldValues` map: replace the raw SSN with the PII-SAFE keyed
+// HMAC hash + last-4 (the SAME hash borrowers.ssn_hash uses, so reconcile can compare it),
+// under fixed private keys, and DELETE the raw digits. Mutates + returns `vals`. Idempotent
+// (after the first pass the raw ids are gone, so re-running is a no-op). Called at every
+// place that fetches identity fields by number (the reader pull + the reconcile self-heal)
+// AND defensively inside _scrubForStorage, so no path can persist a plaintext SSN.
+const _FIELDVALUE_SSN = [
+  { raw: '65', hash: '_ssn_b_hash', last4: '_ssn_b_last4' },   // borrower SSN
+  { raw: '97', hash: '_ssn_cb_hash', last4: '_ssn_cb_last4' }, // co-borrower SSN
+];
+function scrubFieldValuesSsn(vals) {
+  if (!vals || typeof vals !== 'object') return vals;
+  for (const m of _FIELDVALUE_SSN) {
+    const raw = vals[m.raw];
+    if (raw != null && String(raw).trim() !== '') {
+      const h = identity.ssnHash(raw, cfg.ssnMatchKey);
+      if (h) vals[m.hash] = h;
+      const d = String(raw).replace(/\D/g, '');
+      if (d.length >= 4) vals[m.last4] = d.slice(-4);
+    }
+    delete vals[m.raw]; // never store the plaintext SSN
+  }
+  return vals;
+}
+
 function _scrubForStorage(loan) {
   if (!loan || typeof loan !== 'object') return loan;
   const out = JSON.parse(JSON.stringify(loan));
@@ -141,6 +169,9 @@ function _scrubForStorage(loan) {
     if (app && app.borrower && typeof app.borrower === 'object') _hashAndStripSsn(app.borrower);
     if (app && app.coBorrower && typeof app.coBorrower === 'object') _hashAndStripSsn(app.coBorrower);
   }
+  // Defense-in-depth: a plaintext SSN read by number (65/97) must never survive into
+  // storage even if a caller set `_fieldValues` without pre-scrubbing.
+  if (out._fieldValues && typeof out._fieldValues === 'object') scrubFieldValuesSsn(out._fieldValues);
   return out;
 }
 // Exposed for tests
@@ -245,9 +276,19 @@ async function pullLoanForApplication(appId) {
   // leaves `_fieldValues` unset and the path-based extract still works exactly as
   // before, so a fieldReader outage degrades rather than breaks the pull.
   try {
-    const ids = require('../lib/integrations/encompass-field-map').allFieldIds();
+    const fm = require('../lib/integrations/encompass-field-map');
+    // Economics fields AND borrower/co-borrower IDENTITY fields (name/DOB/email/phone/
+    // SSN) — read BY NUMBER so identity is location-independent and self-healing, the
+    // same as 1859/388. This is what lets the reconcile find a co-borrower the stored
+    // applications[] subtree left out (owner-directed 2026-08-02, YSCAP258134762).
+    const ids = fm.allFieldIds().concat(fm.identityFieldIds());
     const vals = await client.readFields(guid, ids);
-    if (vals && typeof vals === 'object' && Object.keys(vals).length) loan._fieldValues = vals;
+    // Hash + strip the plaintext SSN (fields 65/97) BEFORE it is ever stored on the loan.
+    scrubFieldValuesSsn(vals);
+    // Stamp that identity was read by number (only on a non-empty read) so the reconcile
+    // self-heal treats this snapshot as already-identity-read and never re-fires a live
+    // read on every panel view (see reconcile._hasIdentityFieldValues).
+    if (vals && typeof vals === 'object' && Object.keys(vals).length) { vals._idRead = 1; loan._fieldValues = vals; }
   } catch (e) {
     // eslint-disable-next-line no-console
     console.warn('[encompass] fieldReader unavailable, falling back to loan paths:', e && e.message);
@@ -530,6 +571,7 @@ module.exports = {
   pullLoanForApplication,
   superDump,
   bulkPullAllLoans,
+  scrubFieldValuesSsn,
   // exported for unit tests
   _scrubForStorage,
   PIPELINE_SEARCH_FIELDS,

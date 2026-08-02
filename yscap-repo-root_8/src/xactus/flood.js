@@ -47,9 +47,14 @@ function productIdentifier(override) {
 }
 function configured() { return !!(cfg.endpoint && cfg.username && cfg.password); }
 function enabled() { return _switches().on('XACTUS_FLOOD_ENABLED'); }
-// Test mode: build + log the order but send NOTHING. Settable by env OR live on the
-// API-Health page. Checked BEFORE the send so leaving it on can never bill an order.
-function dryrun() { return !!(cfg.dryrun || process.env.XACTUS_FLOOD_DRYRUN === '1' || _switches().on('XACTUS_FLOOD_DRYRUN')); }
+// Test mode is REMOVED for Xactus flood (owner-directed 2026-08-02: "remove the test
+// mode … just go right away and get everything right away live"). A staff click ALWAYS
+// places a real order — there is no dry-run gate of any kind: not a runtime flag (a
+// stored override kept surviving deploys and pinning the button in test mode), and not
+// an env var (which PILOT can't clear for the owner). The master switch
+// (XACTUS_FLOOD_ENABLED) is the kill switch, and the volume circuit breaker in the desk
+// caps runaway orders. Kept as a function so the desk's defensive guards still call it.
+function dryrun() { return false; }
 
 // Remove the shared Xactus login from any string before it can reach a log or an
 // error message. In query-auth mode the login rides in the request URL, so a
@@ -105,13 +110,29 @@ function isResidential(people) {
   return !!clean(primary.firstName);
 }
 
+// REQUESTING_PARTY, carrying the explicit "send me the certificate PDF" request.
+// PREFERRED_RESPONSE/_UseEmbeddedFileIndicator="Y" asks for the certificate to ride
+// back as a base64 EMBEDDED_FILE. Xactus documents this as a toggle that can
+// EXCLUDE the PDF, so we never leave it to the account default — a determination
+// with no certificate is useless to us (owner-reported 2026-08-02: the zone came
+// back, no PDF was filed). It goes on EVERY request shape, not just the order: a
+// StatusQuery is how we RETRIEVE a missing certificate, so if it inherited the same
+// account default the recovery path would come back empty too.
+// Escape hatch: XACTUS_FLOOD_REQUEST_PDF=0 omits the element entirely, so if Xactus
+// ever rejects it, flood ordering is restored by an env change and no redeploy.
+function requestingPartyEl() {
+  const { el } = X;
+  const kids = cfg.requestPdf === false ? [] : [el('PREFERRED_RESPONSE', { _UseEmbeddedFileIndicator: 'Y' }, [])];
+  return el('REQUESTING_PARTY', { _Name: clean(cfg.requestingParty) || 'YS Capital Group' }, kids);
+}
+
 // Build the Original flood-order request body. `property` = {street, city, state, zip}.
 function buildOrderBody({ loanNumber, borrowers, property, product } = {}) {
   const { el } = X;
   const prop = property || {};
   const residential = isResidential(borrowers);
   const req = el('REQUEST_GROUP', { MISMOVersionID: version() }, [
-    el('REQUESTING_PARTY', { _Name: clean(cfg.requestingParty) || 'YS Capital Group' }, []),
+    requestingPartyEl(),
     el('SUBMITTING_PARTY', { _Name: 'PILOT by YS Capital' }, []),
     el('REQUEST', {}, [el('REQUEST_DATA', {}, [
       el('FLOOD_REQUEST', { _ActionType: 'Original' }, [
@@ -134,7 +155,10 @@ function buildOrderBody({ loanNumber, borrowers, property, product } = {}) {
 function buildStatusBody(certId) {
   const { el } = X;
   const req = el('REQUEST_GROUP', { MISMOVersionID: version() }, [
-    el('REQUESTING_PARTY', { _Name: clean(cfg.requestingParty) || 'YS Capital Group' }, []),
+    // Same explicit PDF request as the order — a StatusQuery is how a MISSING
+    // certificate is retrieved, so it must never inherit an "exclude the PDF"
+    // account default or the whole recovery path comes back empty.
+    requestingPartyEl(),
     el('SUBMITTING_PARTY', { _Name: 'PILOT by YS Capital' }, []),
     el('REQUEST', {}, [el('REQUEST_DATA', {}, [
       el('FLOOD_REQUEST', { FloodCertificationIdentifier: clean(certId), _ActionType: 'StatusQuery' }, []),
@@ -165,6 +189,29 @@ function embeddedPdfBase64(root) {
     if (/^JVBER/.test(b64)) return b64;
   }
   return null;
+}
+
+// Build the most specific error text Xactus actually gave us. A MISMO error carries
+// it in STATUS/_Description (+ _Code); a bad login comes back the same way ("Invalid
+// Client Account Identifier"); a non-MISMO error may put it only in _Condition/_Name
+// or a KEY element. Always keep the code so a code-only rejection is still
+// diagnosable, and NEVER return an empty string for an error.
+function extractError(root, stName, stCond, stDesc, stCode) {
+  let reason = clean(stDesc);
+  if (!reason) {
+    // A KEY element sometimes carries the message (_Name Error/Message → _Value).
+    for (const k of X.allDeep(root, 'KEY')) {
+      const kn = clean(X.attr(k, '_Name')).toLowerCase();
+      if (/error|message|reason/.test(kn)) { reason = clean(X.attr(k, '_Value')); if (reason) break; }
+    }
+  }
+  if (!reason) reason = clean(stCond) || clean(stName);
+  if (/^(error|status|failure|failed)$/i.test(reason)) reason = '';   // a bare word is not a reason
+  const bits = [];
+  if (reason) bits.push(reason);
+  if (clean(stCode)) bits.push(`code ${clean(stCode)}`);
+  return bits.join(' — ')
+    || 'Xactus rejected the order but gave no reason — check the flood web address and that the flood login is activated';
 }
 
 // Turn a MISMO 2.4 response into a normalized shape. Never throws for a well-formed
@@ -209,7 +256,7 @@ function parseResponse(text) {
     statusText: stDesc || '',
     code: stCode || '',
     determination: det ? summarizeDetermination(det) : null,
-    error: outStatus === 'error' ? (stDesc || 'Xactus reported the flood order failed.') : null,
+    error: outStatus === 'error' ? extractError(root, stName, stCond, stDesc, stCode) : null,
   };
 }
 
@@ -232,26 +279,29 @@ function summarizeDetermination(det) {
 }
 
 // ── HTTP ─────────────────────────────────────────────────────────────────────
-function buildUrlAndHeaders() {
-  let url = cfg.endpoint.replace(/\/+$/, '');
+// `over` lets a unit test inject {endpoint, username, password, authMode} without env.
+// Flood ReportX default is QUERY-PARAM auth (login in the URL, no Basic header).
+function buildUrlAndHeaders(over) {
+  const c = over || cfg;
+  let url = String(c.endpoint || '').replace(/\/+$/, '');
   const headers = { 'Content-Type': 'text/xml', Accept: 'application/xml, text/xml' };
-  if ((cfg.authMode || 'query') === 'basic') {
-    headers.Authorization = 'Basic ' + Buffer.from(`${cfg.username}:${cfg.password}`).toString('base64');
+  if ((c.authMode || 'query') === 'basic') {
+    headers.Authorization = 'Basic ' + Buffer.from(`${c.username}:${c.password}`).toString('base64');
   } else {
     const u = new URL(url);
-    u.searchParams.set('LoginAccountIdentifier', cfg.username);
-    u.searchParams.set('LoginAccountPassword', cfg.password);
+    u.searchParams.set('LoginAccountIdentifier', c.username);
+    u.searchParams.set('LoginAccountPassword', c.password);
     url = u.toString();
   }
   return { url, headers };
 }
 
-async function postXml(body) {
+async function postXml(body, timeoutMs) {
   if (!configured()) throw notConfiguredError();
   const { url, headers } = buildUrlAndHeaders();
   let r, respText;
   const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), 90000);
+  const timer = setTimeout(() => controller.abort(), Number(timeoutMs) > 0 ? Number(timeoutMs) : 90000);
   try {
     r = await fetch(url, { method: 'POST', headers, body, signal: controller.signal });
     respText = await r.text();
@@ -271,14 +321,25 @@ async function postXml(body) {
     e.userMessage = `Xactus couldn’t complete the flood order (error ${r.status}). ${r.status === 401 || r.status === 403 ? 'The login may be wrong or not yet activated.' : 'Please try again in a moment.'}`;
     throw e;
   }
+  let parsed;
   try {
-    return parseResponse(respText);
+    parsed = parseResponse(respText);
   } catch (_) {
+    // Not a recognized MISMO flood response at all — log the raw body (scrubbed) so a
+    // wrong endpoint (e.g. an HTML error page) is diagnosable, then surface a clear message.
+    console.warn('[xactus-flood] unrecognized response:', scrubCredentials(String(respText)).slice(0, 1200));
     const e = new Error('unrecognized Xactus flood response');
     e.status = 502;
-    e.userMessage = 'Xactus responded, but the flood report format wasn’t recognized. Confirm the exact endpoint with Xactus.';
+    e.userMessage = 'Xactus responded, but the flood report format wasn’t recognized. Confirm the exact flood web address with Xactus.';
     throw e;
   }
+  // When Xactus REJECTS the order, log its raw response (credentials scrubbed) so the
+  // exact reason — bad login, product not enabled, wrong endpoint — is diagnosable
+  // from the server logs even though the user only sees the summarized message.
+  if (parsed.status === 'error') {
+    console.warn('[xactus-flood] order rejected by Xactus — response:', scrubCredentials(String(respText)).slice(0, 1200));
+  }
+  return parsed;
 }
 
 // Place an ORIGINAL flood order. Honors dry-run (build + return the body, send
@@ -295,9 +356,13 @@ async function placeOrder({ loanNumber, borrowers, property, product } = {}) {
 }
 
 // Poll a pending (manual) order's status.
-async function getOrderStatus(certId) {
+// `timeoutMs` bounds the wait — the certificate-retrieval fallback runs INSIDE a
+// staff request that has already spent time placing the order, so it uses a short
+// budget rather than the full 90s (a staffer must never hit a gateway timeout on an
+// order that actually succeeded).
+async function getOrderStatus(certId, timeoutMs) {
   if (!certId) throw new Error('getOrderStatus: FloodCertificationIdentifier is required.');
-  return postXml(buildStatusBody(certId));
+  return postXml(buildStatusBody(certId), timeoutMs);
 }
 
 // ── Connection test (the API-Health "Test now" button) ───────────────────────
@@ -343,5 +408,5 @@ module.exports = {
   configured, enabled, dryrun, status, version, productIdentifier,
   placeOrder, getOrderStatus, testConnection,
   // exposed for unit tests
-  _seam: { buildOrderBody, buildStatusBody, parseResponse, embeddedPdfBase64, scrubCredentials, classifyConnection: _classifyConnection },
+  _seam: { buildOrderBody, buildStatusBody, parseResponse, embeddedPdfBase64, scrubCredentials, classifyConnection: _classifyConnection, buildUrlAndHeaders, extractError },
 };

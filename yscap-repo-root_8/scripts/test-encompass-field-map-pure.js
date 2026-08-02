@@ -345,4 +345,51 @@ ok('capital provider: LLC/Inc/spelling variants of the SAME buyer MATCH; unmappe
 
 ok('PII governance: economics registry is PII-free; SSN/DOB sensitive; 1859 vesting in identity map');
 
+// identityFieldIds() — every standard IDENTITY_MAP field id for BOTH parties, so the
+// fieldReader can read borrower/co-borrower identity BY NUMBER (owner-directed 2026-08-02,
+// YSCAP258134762). This is what recovers a co-borrower the stored applications[] subtree
+// left out. Derived from IDENTITY_MAP.stdFieldId so it can never drift from the map.
+{
+  const ids = m.identityFieldIds();
+  const set = new Set(ids);
+  // Borrower + co-borrower name / DOB / email / phone / SSN std ids are all present.
+  for (const id of ['4000', '4002', '4001', '1402', '1240', '66', '1490', '4533', '65',   // borrower
+                    '4004', '4006', '4005', '1403', '1268', '98', '1480', '4534', '97']) { // co-borrower
+    assert.ok(set.has(id), `identityFieldIds includes ${id}`);
+  }
+  // The SSN ids ARE fetched (65/97) — the raw value is hashed + stripped in the reader
+  // layer before storage, never here.
+  assert.ok(set.has('65') && set.has('97'), 'SSN ids fetched by number (hashed downstream, never stored raw)');
+  // Deduped (a Set-clean list), and no empty entries.
+  assert.strictEqual(ids.length, new Set(ids).size, 'identityFieldIds is deduped');
+  assert.ok(ids.every((x) => typeof x === 'string' && x !== ''), 'every id is a non-empty string');
+}
+ok('identityFieldIds(): borrower + co-borrower name/DOB/email/phone/SSN std ids, derived from IDENTITY_MAP, deduped');
+
+// flattenLoan stays REGISTRY-ONLY even though `_fieldValues` now also carries identity
+// (name/DOB/email/phone) + the keyed-HMAC SSN keys + the `_idRead` marker for the
+// co-borrower recovery (which reads `_fieldValues` directly). Those must NEVER leak into
+// the economics extract or the super-admin raw diagnostic.
+{
+  const loan = { _fieldValues: {
+    '1859': 'MW TRADING LLC',            // economics (registry) — kept
+    '388': '1.000',                       // economics (registry) — kept
+    '4004': 'Patrick', '4006': 'Kamara',  // identity name — dropped
+    '1268': 'p@x.com', '1403': '1999-08-30', '98': '7322095023',  // identity — dropped
+    '_ssn_cb_hash': 'deadbeef', '_ssn_cb_last4': '8028',           // hashed SSN — dropped
+    '_idRead': 1,                         // marker — dropped
+  } };
+  const flat = m.flattenLoan(loan).fields;
+  assert.ok(flat['1859'] && flat['1859'].value === 'MW TRADING LLC', 'economics 1859 kept');
+  assert.ok(flat['388'] && flat['388'].value === '1.000', 'economics 388 kept');
+  for (const k of ['4004', '4006', '1268', '1403', '98', '_ssn_cb_hash', '_ssn_cb_last4', '_idRead']) {
+    assert.ok(!(k in flat), `flattenLoan drops non-registry key ${k} (identity/SSN/marker never leaks)`);
+  }
+  // extractFields surfaces ONLY registry keys — no identity ever bleeds into economics.
+  const out = m.extractFields(loan);
+  assert.ok(!('first_name' in out) && !('date_of_birth' in out) && !('email' in out), 'extractFields surfaces no identity key');
+  assert.strictEqual(out.vesting_llc, 'MW TRADING LLC', 'extractFields still reads the registry vesting value by number');
+}
+ok('flattenLoan/extractFields stay registry-only: identity, hashed-SSN, and the _idRead marker never leak from _fieldValues');
+
 console.log(`\nWO-A Encompass field-map pure — ${passed} checks passed`);

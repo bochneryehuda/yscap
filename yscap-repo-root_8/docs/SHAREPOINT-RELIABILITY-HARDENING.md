@@ -61,7 +61,7 @@ worker-liveness / dead-man's-switch; Postgres statement timeouts):
 | Dead-letter | `classifyMirrorError` + PARK permanent failures; `escalateStuckDocs` cards anything stuck past the threshold with the real reason |
 | Idempotency | adopt-on-conflict + sha256 dedup + cross-process `sync_locks` leases; `conflictBehavior:'fail'` (never overwrite) |
 | Backoff + jitter | `graph()` honors `Retry-After`, exponential backoff **with jitter**, capped |
-| Observability | `health()` → `lastPassAgeSec`/`stalled`; `reconciliation().worker` → `lastPassAgeSec`/`stalled`/`inFlightAgeSec`/`verifyRunning`, and `healthy` now goes false when the worker is stalled (the freeze lesson); `nonlocal_pending` counts otherwise-invisible non-local docs |
+| Observability | `health()` → `lastPassAgeSec`/`stalled`; `reconciliation().worker` → `lastPassAgeSec`/`stalled`/`inFlightAgeSec`/`verifyRunning`, and `healthy` now goes false when the worker is stalled (the freeze lesson); `nonlocal_pending` is an informational provider breakdown (non-local docs now mirror through the normal drain) |
 | Alerting discipline | Backlog alert only when there are NAMED docs; liveness alert self-heals first and is deduped per episode with a distinct key; both survive restarts |
 
 ## 4. Deliberately deferred (documented, not silent)
@@ -70,10 +70,19 @@ worker-liveness / dead-man's-switch; Postgres statement timeouts):
   sibling's mirror and is not independently re-verified; if a human deletes the
   sibling item the dependent's URL 404s undetected. Lower severity; touches the
   delicate dedup-identity path. Track for a dedicated change.
-- **Full non-local re-surfacing (gap-audit #5):** non-'local' provider docs are
-  now COUNTED (`nonlocal_pending`) so they can't be fully silent, but are still
-  not re-driven every pass. Latent — every document is `local` today (s3/sharepoint
-  storage providers are stubs). Revisit when a second provider ships.
+- **Non-local providers are now FIRST-CLASS (was gap-audit #5; RESOLVED when S3
+  shipped, 2026-08).** The mirror reads document bytes through the storage layer
+  (`src/lib/storage.js`), which handles `local` AND `s3` (the dual-read wrapper),
+  so every selection path — `pendingBatch`, the FSM `claimBatch`, `verifyBatch`,
+  `stuckDocuments`, the reconciliation `pending`/`oldest` counts — is now
+  provider-agnostic (the old `storage_provider='local'` filters, which stranded
+  every S3 document, are gone). Bytes are read from the document's OWN provider
+  (`providerForRow`), so a not-yet-migrated `local` doc reads straight from disk
+  and an `s3` doc from object storage. `nonlocal_pending` is retained purely as an
+  informational provider breakdown (no longer a "needs attention" bucket), and S3
+  read failures are classified (404 → permanent-missing, 403 → permanent-creds).
+  The startup warning now fires ONLY for a provider the storage layer can't read
+  (e.g. the not-yet-implemented `sharepoint` stub), never for `s3`.
 - **External supervisor / crash-restart:** on Render the platform restarts a
   dead process; the in-process watchdog covers "up but stalled." A true external
   dead-man's switch (uptime monitor hitting `/health`) is an ops add-on.
@@ -114,9 +123,12 @@ card auto-closes).
   used to churn 8 doomed "no borrower/file" attempts and sit as permanent stuck
   noise. It's now excluded from the mirror and settled-skipped at the pass.
 - **Health told the truth (reconciler #3):** malware / source-suspect /
-  item-missing / local-missing / non-local docs (which keep `backed_up_at` set)
-  are now counted in `needs_attention` and make `healthy` false — a mirror
-  carrying human-action items no longer reports healthy.
+  item-missing / local-missing docs (which keep `backed_up_at` set) are counted
+  in `needs_attention` and make `healthy` false — a mirror carrying human-action
+  items no longer reports healthy. (Non-local docs were dropped from this set when
+  S3 became first-class: they now mirror through the normal drain, so an
+  un-mirrored one is ordinary `pending`/`exhausted` backlog, not a human-action
+  verdict.)
 - **Graph body-read timeout (client F1):** the abort timer now covers the response
   body read, not just headers.
 - **Path-length (client F2):** the filename trim now reserves room for the
