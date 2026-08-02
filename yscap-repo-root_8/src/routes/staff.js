@@ -9567,6 +9567,94 @@ router.post('/applications/:id/encompass/replace', async (req, res) => {
   } catch (e) { console.warn('[staff] encompass replace:', db.describeError(e)); res.status(500).json({ error: 'server error' }); }
 });
 
+// ── Super-admin FIELD EXCEPTIONS on the reconcile (owner-directed 2026-08-02) ──
+// A not-matching / "no data to compare" field can be escalated: any assigned staffer
+// REQUESTS an exception; a SUPER ADMIN grants it, and the field then passes the
+// term-sheet gate. File-scoped by the /applications/:id middleware. Never writes to
+// Encompass (the state lives in encompass_sync_resolutions).
+router.post('/applications/:id/encompass/request-exception', async (req, res) => {
+  try {
+    const appId = req.params.id;
+    const fieldKey = String((req.body || {}).fieldKey || '').trim();
+    const reason = String((req.body || {}).reason || '').slice(0, 2000).trim();
+    if (!fieldKey) return res.status(400).json({ error: 'fieldKey is required' });
+    if (!reason) return res.status(400).json({ error: 'Add a short note explaining why this field should be excepted.' });
+    const r = await require('../encompass/reconcile').requestException(appId, fieldKey, req.actor && req.actor.id, reason);
+    if (!r.ok) {
+      const msg = {
+        not_found: 'Application not found.',
+        no_loan: 'No Encompass loan has been pulled for this file yet.',
+        unknown_field: 'Unknown field.',
+        already_passing: 'This field already matches — no exception is needed.',
+        already_excepted: 'This field already has a granted exception.',
+      }[r.reason] || 'Could not request an exception.';
+      return res.status(r.reason === 'not_found' ? 404 : 400).json({ error: msg, reason: r.reason });
+    }
+    try {
+      const ctx = await notify.fileContext(appId);
+      await notify.notifyAdmins({
+        type: 'encompass_exception',
+        title: 'Encompass field exception needs super-admin review',
+        body: `${(req.actor && req.actor.name) || 'A team member'} asked to except the Encompass field “${r.label || fieldKey}” on ${ctx ? ctx.label : 'a file'} (our value: ${r.ours == null ? '—' : r.ours}; Encompass: ${r.theirs == null ? '—' : r.theirs}). Reason: ${reason}`,
+        meta: (ctx && ctx.meta) || undefined, applicationId: appId,
+        link: `/internal/app/${appId}`, ctaLabel: 'Open the file',
+      });
+    } catch (_) { /* best-effort — a notify failure never fails the request */ }
+    await audit(req, 'encompass_exception_requested', 'application', appId, { field: fieldKey });
+    res.json(r);
+  } catch (e) { console.warn('[staff] encompass request-exception:', db.describeError(e)); res.status(500).json({ error: 'server error' }); }
+});
+
+// SUPER-ADMIN ONLY: grant / deny / revoke a per-field exception. A grant makes the field
+// pass the gate; deny/revoke removes it and the field re-blocks. Best-effort register
+// record (EX-n / decision certificate) + a note to the file team on any decision.
+router.post('/applications/:id/encompass/decide-exception', requireRole('super_admin'), async (req, res) => {
+  try {
+    const appId = req.params.id;
+    const fieldKey = String((req.body || {}).fieldKey || '').trim();
+    const decision = String((req.body || {}).decision || '').trim();
+    const reason = String((req.body || {}).reason || '').slice(0, 2000).trim();
+    if (!fieldKey) return res.status(400).json({ error: 'fieldKey is required' });
+    if (!['grant', 'deny', 'revoke'].includes(decision)) return res.status(400).json({ error: 'decision must be grant, deny, or revoke' });
+    if (decision === 'grant' && !reason) return res.status(400).json({ error: 'Add a short reason for granting this exception.' });
+    const r = await require('../encompass/reconcile').decideException(appId, fieldKey, req.actor && req.actor.id, decision, reason);
+    if (!r.ok) {
+      const msg = {
+        not_found: 'Application not found.',
+        no_loan: 'No Encompass loan has been pulled for this file yet.',
+        unknown_field: 'Unknown field.',
+        already_passing: 'This field already matches — no exception is needed.',
+        already_excepted: 'This field already has a granted exception.',
+      }[r.reason] || 'Could not update the exception.';
+      return res.status(r.reason === 'not_found' ? 404 : 400).json({ error: msg, reason: r.reason });
+    }
+    if (decision === 'grant') {
+      // Record the granted exception in the policy-exception register (born approved,
+      // record-only — the gate does not read it). Never blocks the decision.
+      try {
+        await loanExceptions.recordEncompassException({
+          appId, staffId: req.actor && req.actor.id,
+          note: `Encompass field “${r.label || fieldKey}” excepted (ours: ${r.ours == null ? '—' : r.ours}; Encompass: ${r.theirs == null ? '—' : r.theirs}). ${reason}`,
+          snapshot: { field: fieldKey, label: r.label || fieldKey, ours: r.ours == null ? null : r.ours, theirs: r.theirs == null ? null : r.theirs },
+        });
+      } catch (_) { /* best-effort */ }
+    }
+    try {
+      const ctx = await notify.fileContext(appId);
+      const verb = decision === 'grant' ? 'granted' : (decision === 'revoke' ? 'revoked' : 'denied');
+      await notify.notifyAppStaff(appId, {
+        type: 'encompass_exception_decided',
+        title: `Encompass field exception ${verb}`,
+        body: `${(req.actor && req.actor.name) || 'A super admin'} ${verb} the Encompass exception for “${r.label || fieldKey}” on ${ctx ? ctx.label : 'this file'}.`,
+        meta: (ctx && ctx.meta) || undefined, applicationId: appId,
+        link: `/internal/app/${appId}`, ctaLabel: 'Open the file',
+      });
+    } catch (_) { /* best-effort */ }
+    await audit(req, 'encompass_exception_decided', 'application', appId, { field: fieldKey, decision });
+    res.json(r);
+  } catch (e) { console.warn('[staff] encompass decide-exception:', db.describeError(e)); res.status(500).json({ error: 'server error' }); }
+});
+
 // Nudge the borrower with a friendly reminder of what's still outstanding on
 // their file (borrower-facing checklist items + open borrower conditions).
 router.post('/applications/:id/nudge', async (req, res) => {
