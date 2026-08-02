@@ -8,6 +8,7 @@ import { MoneyInput, PhoneInput, ZipInput , EmailInput} from '../components/Form
 import { moneyNum } from '../lib/money.js';
 import { unitsMode, unitsForType } from '../lib/enums.js';
 import { fullNameOf } from '../lib/personName.js';
+import { sizesOnAsIsValue, seasoningText } from '../lib/dealBasis.js';
 import InviteApplicant from '../components/InviteApplicant.jsx';
 
 /* Staff-side file origination. An admin, loan officer, or operations user opens
@@ -257,7 +258,11 @@ function MismoImport() {
               <div className="metrow"><span className="k">Vesting entity</span><span className="v">{preview.llc ? preview.llc.name : '—'}</span></div>
               <div className="metrow"><span className="k">Loan amount</span><span className="v">{fmtMoney(l && l.loanAmount)}</span></div>
               <div className="metrow"><span className="k">Loan purpose</span><span className="v">{(l && l.loanType) || '—'}</span></div>
-              <div className="metrow"><span className="k">Purchase price</span><span className="v">{fmtMoney(p && p.purchasePrice)}</span></div>
+              {/* Name the figure this file is sized on, not a box that may be
+                  empty by design: a refinance has no purchase price. */}
+              {sizesOnAsIsValue(l && l.loanType)
+                ? <div className="metrow"><span className="k">As-is value</span><span className="v">{fmtMoney(p && p.asIsValue)}</span></div>
+                : <div className="metrow"><span className="k">Purchase price</span><span className="v">{fmtMoney(p && p.purchasePrice)}</span></div>}
               <div className="metrow"><span className="k">After-repair value</span><span className="v">{fmtMoney(preview.extras && preview.extras.arv)}</span></div>
             </div>
             {warnings.length > 0 && (
@@ -305,6 +310,10 @@ export default function StaffNewFile() {
     program: '', loanType: '', propertyType: '', units: '', entityName: '', llcId: '',
     purchasePrice: '', asIsValue: '', arv: '', rehabBudget: '', rehabType: '', sqftPre: '', sqftPost: '',
     isAssignment: false, underlyingContractPrice: '',
+    // Refinance-only. The loan is sized on the as-is value above; these carry the
+    // payoff and the seasoning basis onto the new file so an officer never has to
+    // reopen it to type what they already knew (owner-directed 2026-08-02).
+    payoffAmount: '', payoffLender: '', payoffLoanNumber: '', originalPurchasePrice: '', acquisitionDate: '',
     requestedExpFlips: '', requestedExpHolds: '', requestedExpGround: '', requestedExpReo: '',
     loanOfficerId: selfOfficerId, processorId: '', inviteBorrower: true,
     ...(_d && _d.f ? _d.f : {}),
@@ -393,6 +402,10 @@ export default function StaffNewFile() {
   }, []);
 
   const set = (k, v) => setF(s => ({ ...s, [k]: v }));
+  /* Which figure this file will be sized on. The SHARED predicate (lib/dealBasis
+     mirrors the server's lib/deal-basis, which is the frozen engine's own test),
+     so what this form asks for is always what the engine will read. */
+  const isRefi = sizesOnAsIsValue(f.loanType);
   // Property type drives the units control: single-unit types auto-fill 1 (and
   // lock the field), "Multi 2–4" becomes a 2/3/4 dropdown, "Multi 5+" / "Mixed
   // use" take a free number. Mirrors the borrower application so both sides
@@ -458,10 +471,22 @@ export default function StaffNewFile() {
         entityName: (!f.llcId && f.entityName.trim()) ? f.entityName.trim() : undefined,
         program: f.program || undefined,
         loanType: f.loanType || undefined,
-        purchasePrice: numOrNull(f.purchasePrice),
-        isAssignment: !!f.isAssignment,
-        underlyingContractPrice: f.isAssignment ? numOrNull(f.underlyingContractPrice) : undefined,
-        assignmentFee: f.isAssignment ? Math.max(0, moneyNum(f.purchasePrice) - moneyNum(f.underlyingContractPrice)) : undefined,
+        /* A refinance sends NO purchase price and NO assignment — it is sized on
+           the as-is value, and an assignment of contract is a purchase concept.
+           The server enforces both invariants again in `fields.assignmentFields`,
+           so this is the near half of a belt-and-braces pair rather than the only
+           guard (owner-directed 2026-08-02). */
+        purchasePrice: isRefi ? null : numOrNull(f.purchasePrice),
+        isAssignment: !isRefi && !!f.isAssignment,
+        underlyingContractPrice: (!isRefi && f.isAssignment) ? numOrNull(f.underlyingContractPrice) : undefined,
+        assignmentFee: (!isRefi && f.isAssignment) ? Math.max(0, moneyNum(f.purchasePrice) - moneyNum(f.underlyingContractPrice)) : undefined,
+        // The payoff + the seasoning basis. Refinance-only: on a purchase there is
+        // nothing to pay off and no prior acquisition.
+        payoffAmount: isRefi ? numOrNull(f.payoffAmount) : undefined,
+        payoffLender: isRefi ? (f.payoffLender.trim() || undefined) : undefined,
+        payoffLoanNumber: isRefi ? (f.payoffLoanNumber.trim() || undefined) : undefined,
+        originalPurchasePrice: isRefi ? numOrNull(f.originalPurchasePrice) : undefined,
+        acquisitionDate: isRefi ? (f.acquisitionDate || undefined) : undefined,
         asIsValue: numOrNull(f.asIsValue),
         arv: numOrNull(f.arv),
         rehabBudget: numOrNull(f.rehabBudget),
@@ -687,9 +712,16 @@ export default function StaffNewFile() {
               <select className="input" value={f.loanType} onChange={e => set('loanType', e.target.value)}>
                 <option value="">Select…</option>{LOAN_TYPES.map(p => <option key={p}>{p}</option>)}
               </select></div>
-            <div className="field"><label>Purchase price</label>
-              <MoneyInput value={f.purchasePrice} onChange={v => set('purchasePrice', v)} /></div>
-            <div className="field" style={{ gridColumn: '1 / -1' }}>
+            {/* PURCHASE PRICE OR AS-IS VALUE — never both (owner-directed
+                2026-08-02). A refinancing borrower is not buying anything, so
+                asking for a purchase price is asking for a number the frozen
+                engine never reads: on a refinance it sizes the initial advance on
+                `acqDenom = aiv`. Opening a file this way is where the mixed-up
+                economics the owner reported came from, so the branch belongs here
+                at origination, not only on the edit form. */}
+            {!isRefi && <div className="field"><label>Purchase price</label>
+              <MoneyInput value={f.purchasePrice} onChange={v => set('purchasePrice', v)} /></div>}
+            {!isRefi && <div className="field" style={{ gridColumn: '1 / -1' }}>
               <label style={{ display: 'flex', alignItems: 'center', gap: 8, textTransform: 'none', letterSpacing: 0, fontWeight: 500 }}>
                 <input type="checkbox" checked={f.isAssignment} onChange={e => set('isAssignment', e.target.checked)} />
                 This is an assignment purchase
@@ -705,9 +737,36 @@ export default function StaffNewFile() {
                   <div className="hint" style={{ gridColumn: '1 / -1' }}>The fee is the total purchase price minus the original contract price.</div>
                 </div>
               )}
-            </div>
-            <div className="field"><label>As-is value</label>
-              <MoneyInput value={f.asIsValue} onChange={v => set('asIsValue', v)} /></div>
+            </div>}
+            <div className="field"><label>As-is value{isRefi ? ' *' : ''}</label>
+              <MoneyInput value={f.asIsValue} onChange={v => set('asIsValue', v)} />
+              {isRefi && <div className="hint">What the property is worth today — a refinance is sized on this, so it sets the initial advance.</div>}</div>
+            {/* THE REFINANCE'S OWN QUESTIONS. The payoff is what has to be retired
+                at closing; the original price and the date acquired are what
+                seasoning is counted from (owner-directed 2026-08-02: "you can add
+                some extra fields later on what was the original purchase price of
+                the property and when exactly it was purchased so we can count
+                seasoning"). Neither prices the loan. */}
+            {isRefi && <>
+              <div className="field"><label>Current loan payoff</label>
+                <MoneyInput value={f.payoffAmount} onChange={v => set('payoffAmount', v)} />
+                <div className="hint">What has to be paid off at closing.</div></div>
+              <div className="field"><label>Lender being paid off</label>
+                <input className="input" value={f.payoffLender} placeholder="who holds the current loan"
+                  onChange={e => set('payoffLender', e.target.value)} /></div>
+              <div className="field"><label>Their loan number</label>
+                <input className="input" value={f.payoffLoanNumber} placeholder="the payoff lender's loan #"
+                  onChange={e => set('payoffLoanNumber', e.target.value)} /></div>
+              <div className="field"><label>Original purchase price</label>
+                <MoneyInput value={f.originalPurchasePrice} onChange={v => set('originalPurchasePrice', v)} />
+                <div className="hint">What they paid when they bought it — not what this loan is sized on.</div></div>
+              <div className="field"><label>Date acquired</label>
+                <input className="input" type="date" value={f.acquisitionDate}
+                  onChange={e => set('acquisitionDate', e.target.value)} />
+                <div className="hint">
+                  {seasoningText(f.acquisitionDate) ? `Owned ${seasoningText(f.acquisitionDate)}.` : 'Used to count how long they have owned it (seasoning).'}
+                </div></div>
+            </>}
             <div className="field"><label>ARV</label>
               <MoneyInput value={f.arv} onChange={v => set('arv', v)} /></div>
             <div className="field"><label>Rehab budget</label>
@@ -768,7 +827,13 @@ export default function StaffNewFile() {
                 <div className="metrow"><span className="k">Property</span><span className="v">{[addr.street, addr.city, addr.state].filter(Boolean).join(', ') || '—'}</span></div>
                 <div className="metrow"><span className="k">Program</span><span className="v">{f.program || '—'}</span></div>
                 <div className="metrow"><span className="k">Loan type</span><span className="v">{f.loanType || '—'}</span></div>
-                <div className="metrow"><span className="k">Purchase price</span><span className="v">{f.purchasePrice ? '$' + f.purchasePrice : '—'}</span></div>
+                {/* The summary names the figure the file will actually be sized
+                    on — the as-is value on a refinance, the purchase price on a
+                    purchase — so it can never quietly disagree with the form. */}
+                <div className="metrow"><span className="k">{isRefi ? 'As-is value' : 'Purchase price'}</span>
+                  <span className="v">{isRefi
+                    ? (f.asIsValue ? '$' + f.asIsValue : '—')
+                    : (f.purchasePrice ? '$' + f.purchasePrice : '—')}</span></div>
                 <div className="metrow"><span className="k">ARV</span><span className="v">{f.arv ? '$' + f.arv : '—'}</span></div>
                 <div className="sum-actions">
                   <button className="btn primary btn-block" disabled={busy}>{busy ? 'Creating…' : 'Create file'}</button>
