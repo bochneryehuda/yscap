@@ -49,7 +49,15 @@ const FIELD_OPTIONS = {
     'SFR (1 unit)', 'Multi 2–4', 'Multi 5+', 'Condo', 'Townhouse', 'Mixed use',
     'SFR', 'Multi 2-4', 'Mixed Use',                 // legacy, accepted not offered
   ],
-  program: ['Fix & Flip w/ Construction', 'Fix & Hold', 'Bridge', 'Ground-Up Construction'],
+  /* 'DSCR / Rental' is in `app-v2/src/lib/enums.js PROGRAMS` and the borrower's
+     own change-request panel OFFERS it — this list simply never got it, so the
+     one program a borrower could pick that we did not accept was refused by the
+     enum check (pre-merge audit, 2026-08-02). Before this round that refusal was
+     swallowed and the panel rendered "That already matches what we have on
+     file", which was a lie; surfacing the refusal made an offered-but-rejected
+     option visible. Offering a choice and then refusing it is the bug — a
+     borrower can only pick what we show them. */
+  program: ['Fix & Flip w/ Construction', 'Fix & Hold', 'Bridge', 'Ground-Up Construction', 'DSCR / Rental'],
   loan_type: ['Purchase', 'Refinance — Rate & Term', 'Refinance — Cash-Out', 'Delayed Purchase Financing'],
 };
 const isGovernedField = (k) => Object.prototype.hasOwnProperty.call(FIELD_LABELS, k);
@@ -213,6 +221,51 @@ async function currentValue(appId, field, client = db) {
   return v == null ? null : String(v);
 }
 
+/* =====================================================================
+   WHY THIS PROPOSAL CANNOT BE FILED — the SAME refusals the two open* functions
+   below raise, decided WITHOUT writing anything (pre-merge audit, 2026-08-02).
+
+   The borrower's completeness panel fills several fields in one post. It filed
+   each one as it went and refused on the first bad value, so a post carrying a
+   good ARV and a bad credit score left a real change request behind AND answered
+   400 — a filed request the borrower was told had failed, and the loan team never
+   notified because the notification tail never ran. (Both shipped clients post one
+   field at a time, so this was not reachable in production; it was still wrong.)
+
+   The door now asks this about EVERY field first and refuses before it writes
+   anything. Pure — no DB, never throws. It deliberately does NOT answer the
+   "unchanged" question, which needs the live row and is not a refusal.
+
+   `open*` call this too, so the two can never drift into disagreeing about what
+   is acceptable.
+   ===================================================================== */
+function proposalProblem(field, rawValue, opts = {}) {
+  if (isBorrowerField(field)) {
+    if (field === 'ssn') {
+      return require('./fields').sanitizeSsnDigits(rawValue) ? '' : 'Enter a valid 9-digit SSN.';
+    }
+    const v = normalizeBorrowerValue(field, rawValue);
+    if (v == null || v === '') {
+      const typedSomething = rawValue != null && String(rawValue).trim() !== '';
+      return typedSomething
+        ? `${labelOf(field)}: that isn’t a value we can use — check it and try again.`
+        : 'a value is required';
+    }
+    return '';
+  }
+  if (!isGovernedField(field)) return 'field is not change-requestable';
+  const newValue = normalizeValue(field, rawValue);
+  if (newValue == null || newValue === '') return 'a value is required';
+  if (FIELD_OPTIONS[field] && !FIELD_OPTIONS[field].includes(newValue)) {
+    return `${FIELD_LABELS[field]} must be one of: ${FIELD_OPTIONS[field].join(', ')}`;
+  }
+  const kind = MONEY_FIELDS.has(field) ? 'money' : (INT_FIELDS.has(field) ? 'int' : null);
+  if (kind) {
+    return require('./number-bounds').columnProblem(field, Number(newValue), kind, FIELD_LABELS[field] || field);
+  }
+  return '';
+}
+
 /**
  * Open (or supersede-and-open) a pending change request for one field. Returns
  * the new row, or { unchanged:true } when the proposed value equals the live
@@ -223,11 +276,13 @@ async function openRequest(appId, field, rawValue, opts = {}, client = db) {
   // Personal-field requests target the borrowers row (name/DOB/SSN/phone/FICO/…).
   if (isBorrowerField(field)) return openBorrowerRequest(appId, field, rawValue, opts, client);
   const { reason, requesterKind = 'borrower', requesterId = null } = opts;
-  if (!isGovernedField(field)) throw Object.assign(new Error('field is not change-requestable'), { status: 400 });
+  // Every refusal, from the ONE definition — so "may I file this?" asked ahead of
+  // time and "is this filable?" asked here can never disagree.
+  {
+    const bad = proposalProblem(field, rawValue, opts);
+    if (bad) throw Object.assign(new Error(bad), { status: 400 });
+  }
   const newValue = normalizeValue(field, rawValue);
-  if (newValue == null || newValue === '') throw Object.assign(new Error('a value is required'), { status: 400 });
-  if (FIELD_OPTIONS[field] && !FIELD_OPTIONS[field].includes(newValue))
-    throw Object.assign(new Error(`${FIELD_LABELS[field]} must be one of: ${FIELD_OPTIONS[field].join(', ')}`), { status: 400 });
   /* A VALUE THE COLUMN CANNOT HOLD IS REFUSED HERE, not stored and discovered
      at approval (fifth audit, 2026-07-31). Nothing bounded the proposal, so an
      oversized ARV was accepted with a 200, filed as pending, and then made the
@@ -235,15 +290,8 @@ async function openRequest(appId, field, rawValue, opts = {}, client = db) {
      which is exactly the shape this door's own freeze ordering exists to
      prevent, on the value axis instead of the status axis. Meanwhile the staff
      details door refused the identical value with a plain 400 naming the limit.
-     Same limit, same words, from the same module. */
-  {
-    const nb = require('./number-bounds');
-    const kind = MONEY_FIELDS.has(field) ? 'money' : (INT_FIELDS.has(field) ? 'int' : null);
-    if (kind) {
-      const bad = nb.columnProblem(field, Number(newValue), kind, FIELD_LABELS[field] || field);
-      if (bad) throw Object.assign(new Error(bad), { status: 400 });
-    }
-  }
+     Same limit, same words, from the same module — now via `proposalProblem`
+     above, which every door consults, rather than a second copy here. */
   const oldValue = await currentValue(appId, field, client);
   const oldNorm = normalizeValue(field, oldValue);
   if (oldNorm === newValue) return { unchanged: true, field };
@@ -412,5 +460,5 @@ module.exports = {
   FIELD_LABELS, MONEY_FIELDS, INT_FIELDS, FIELD_OPTIONS, GOVERNED_FIELDS, isGovernedField,
   BORROWER_FIELD_LABELS, BORROWER_FIELDS, isBorrowerField, isChangeRequestable, fieldEntity, labelOf,
   isBorrowerLocked, anchorForBorrower, OWN_FILE_SQL, openRequest, openBorrowerRequest, applyRequest, currentValue, currentBorrowerValue,
-  normalizeValue, normalizeBorrowerValue, formatValue, describeChange,
+  normalizeValue, normalizeBorrowerValue, formatValue, describeChange, proposalProblem,
 };

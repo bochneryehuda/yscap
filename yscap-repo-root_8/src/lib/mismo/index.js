@@ -287,6 +287,19 @@ async function createFromParsed(parsed, opts = {}) {
       assignmentFee: extras.assignmentFee,
       purchasePrice: property.purchasePrice,
     });
+    /* THE THREE MONEY COLUMNS THAT BYPASS `num()` (pre-merge audit, 2026-08-02).
+       `assignmentFields` parses but does not BOUND, and its three outputs are
+       bound to the INSERT directly — so the ceiling added to `num`/`int`/`pct`
+       above never touched purchase_price / underlying_contract_price /
+       assignment_fee, and this door still answered 500 and lost the whole
+       import. It is the identical defect the public intake door was fixed for
+       in the same commit: bound the PARTS *and* the price they DERIVE, because
+       two storable parts can sum to one that is not. Dropped, not refused —
+       an import must not fail wholesale over one figure, and the source file is
+       kept in `raw_intake` either way. */
+    for (const k of ['purchasePrice', 'underlying', 'assignFee']) {
+      if (numberBounds.moneyOverflows(asg[k])) asg[k] = null;
+    }
     const a = await client.query(
       `INSERT INTO applications
          (borrower_id, co_borrower_id, llc_id, loan_officer_id,

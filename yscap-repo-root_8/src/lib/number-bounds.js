@@ -61,6 +61,13 @@ const PCT_MAX = 1000;
 const MONEY_LIMIT_TEXT = '999,999,999,999.99';
 const INT_LIMIT_TEXT = '2,147,483,647';
 
+/** The biggest value numeric(precision, scale) holds, written the way a person
+ *  reads a number — "9,999,999,999.99" rather than "10^12 minus a cent". */
+function limitText(precision, scale) {
+  const whole = '9'.repeat(precision - scale).replace(/\B(?=(\d{3})+$)/g, ',');
+  return scale > 0 ? `${whole}.${'9'.repeat(scale)}` : whole;
+}
+
 /**
  * Would this value overflow numeric(14,2)?
  *
@@ -94,6 +101,26 @@ function intOverflows(n) {
 }
 
 /**
+ * Would this value overflow numeric(precision, scale) — ANY precision?
+ *
+ * `money` and `pct` are just the two shapes that happen to come up most, and
+ * hard-coding only those left every OTHER numeric precision with no ceiling at
+ * all (pre-merge audit, 2026-08-02): `columnKindOf` returned null for
+ * `borrowers.housing_payment` (numeric(12,2)) and `borrowers.years_at_residence`
+ * (numeric(4,1)), and `tableColumnProblem` reads null as "nothing wrong" — so
+ * both borrower-profile doors still answered 500 on a value the column cannot
+ * hold, which is the exact class the module exists to close. A table of column
+ * TYPES has to be able to express any type it meets.
+ *
+ * Same magnitude-rounding rule as the two above, for the same reason.
+ */
+function numericOverflows(n, precision, scale) {
+  if (!Number.isFinite(n)) return false;
+  const f = Math.pow(10, scale);
+  return Math.round(Math.abs(n) * f) / f >= Math.pow(10, precision - scale);
+}
+
+/**
  * The reason `n` cannot be stored in the column `key` names, or '' if it can.
  *
  * `kind` is the COLUMN TYPE:
@@ -112,6 +139,12 @@ function columnProblem(key, n, kind, label) {
   if (!Number.isFinite(n)) return `${name} must be a number`;
 
   if (kind && typeof kind === 'object') {
+    // numeric(precision, scale) — any precision, not only the two named kinds.
+    if (kind.precision != null) {
+      return numericOverflows(n, kind.precision, kind.scale)
+        ? `${name} is too large — the largest value this field can hold is ${limitText(kind.precision, kind.scale)}`
+        : '';
+    }
     if (!Number.isInteger(n)) return `${name} must be a whole number of ${kind.what}`;
     if (n < kind.min || n > kind.max) return `${name} must be between ${kind.min} and ${kind.max} ${kind.what}`;
     return '';
@@ -164,14 +197,18 @@ function columnProblem(key, n, kind, label) {
    and complete for `applications` — that any door can ask.
 
    `money` means numeric(14,2) SPECIFICALLY, `pct` numeric(6,3), `int` int4.
-   A column of some other precision (borrowers.housing_payment is numeric(12,2))
-   must NOT be given one of these kinds — its ceiling is a different number.
+   A column of some OTHER precision gets `{precision, scale}` — never one of the
+   named kinds, whose ceiling is a different number. The first cut had no way to
+   say that at all, so `borrowers.housing_payment` (numeric(12,2)) and
+   `years_at_residence` (numeric(4,1)) fell through as "no ceiling" and both
+   borrower-profile doors still answered 500 on them.
+
    Columns declared bare `numeric`, with no precision at all, have no ceiling to
    enforce and are deliberately absent (file_markup_*_pct, financed_rehab_budget).
 
-   `borrowers` carries only what the conditions engine can write there today.
-
-   Add a numeric column to `applications` and add it here in the same commit.
+   Add a numeric column to either table and add it here in the same commit —
+   `scripts/test-column-bounds-doors-db.js` reads `information_schema` and FAILS
+   on a column that is missing or carries the wrong kind, so this cannot drift.
    ===================================================================== */
 const IR_MONTHS = Object.freeze({ min: 0, max: 24, what: 'months' });
 const COLUMN_KIND = Object.freeze({
@@ -203,6 +240,11 @@ const COLUMN_KIND = Object.freeze({
        storage limit, so it is deliberately NOT stated here — this table answers
        "what can the column hold", and the doors keep their own kinder wording. */
     fico: 'int',
+    dependents_count: 'int', months_at_residence: 'int', tier: 'int',
+    // …and the two that are neither money nor a percent, which is exactly why
+    // the {precision, scale} kind had to exist.
+    housing_payment: { precision: 12, scale: 2 },
+    years_at_residence: { precision: 4, scale: 1 },
   }),
 });
 
@@ -255,6 +297,7 @@ function applicationColumnProblem(column, n, label) {
 module.exports = {
   MONEY_MAX, INT_MAX, INT_MIN, RATE_MAX, PCT_MAX,
   MONEY_LIMIT_TEXT, INT_LIMIT_TEXT,
-  moneyOverflows, rateOverflows, pctOverflows, intOverflows, columnProblem,
+  moneyOverflows, rateOverflows, pctOverflows, intOverflows, numericOverflows,
+  limitText, columnProblem,
   COLUMN_KIND, COLUMN_LABEL, columnKindOf, tableColumnProblem, applicationColumnProblem,
 };

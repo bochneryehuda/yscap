@@ -23,7 +23,7 @@ const { redactPII } = require('../lib/redact');
    BIND: it answers "was a value provided?" off the raw value exactly as the
    `b.x || null` it replaced did (so a typed "0" still stores 0.00, not NULL) and
    only then parses. See lib/fields.js. */
-const { moneyColumn } = require('../lib/fields');
+const { moneyColumn, jsonbText } = require('../lib/fields');
 const numberBounds = require('../lib/number-bounds');     // ONE definition of every column's ceiling
 const { serveDocument } = require('../lib/serve-document');
 const { decodeUploadBase64, safeFilename } = require('../lib/upload-bytes');
@@ -244,9 +244,9 @@ router.put('/profile', async (req, res) => {
   }
   if (b.housingStatus !== undefined) fields.housing_status = clean(b.housingStatus);
   if (b.housingPayment !== undefined) fields.housing_payment = (b.housingPayment === '' || b.housingPayment == null) ? null : Number(String(b.housingPayment).replace(/[^0-9.]/g, '')) || null;
-  if (b.currentAddress !== undefined) fields.current_address = b.currentAddress ? JSON.stringify(b.currentAddress) : null;
+  if (b.currentAddress !== undefined) fields.current_address = b.currentAddress ? jsonbText(b.currentAddress) : null;
   if (b.mailingDifferent === false) fields.mailing_address = null;
-  else if (b.mailingAddress !== undefined) fields.mailing_address = b.mailingAddress ? JSON.stringify(b.mailingAddress) : null;
+  else if (b.mailingAddress !== undefined) fields.mailing_address = b.mailingAddress ? jsonbText(b.mailingAddress) : null;
 
   // 2026-07-15 incident: DOB must be a real calendar date in a sane year — a
   // mid-typing artifact (year 0026), an impossible day (2026-02-31), or a
@@ -261,6 +261,22 @@ router.put('/profile', async (req, res) => {
       return res.status(400).json({ error: 'date of birth must be a valid YYYY-MM-DD' });
     }
     fields.date_of_birth = dob;
+  }
+  /* …AND EVERY NUMBER HERE HAS TO FIT ITS COLUMN TOO (pre-merge audit,
+     2026-08-02). `housing_payment` is numeric(12,2) and `years_at_residence`
+     numeric(4,1) — neither is money nor a percent, so the first cut of the
+     column table had no way to express them and they fell through as "no
+     ceiling". Measured on this exact door: `housingPayment: 1e14` → 500, and
+     `yearsAtResidence: 99999` → 500 from `residence.moveInFrom` computing a date
+     out of range before Postgres ever saw it. One sweep over the whole bag, so a
+     field added to it later is covered without anyone remembering to. */
+  {
+    // ONLY an actual number is judged — a cleared field is null, which is a
+    // legitimate "no value" and must never be refused as "must be a number".
+    const bad = Object.keys(fields)
+      .map((col) => (typeof fields[col] === 'number' ? numberBounds.tableColumnProblem('borrowers', col, fields[col]) : ''))
+      .find(Boolean);
+    if (bad) return res.status(400).json({ error: bad });
   }
   // Owner-directed 2026-07-20: once ANY of this borrower's files is ACCEPTED (a
   // product is registered), the borrower can no longer change their identity on
@@ -620,12 +636,12 @@ router.post('/applications', async (req, res) => {
         rehab_type,sqft_pre,sqft_post,requested_exp_flips,requested_exp_holds,requested_exp_ground,
         is_assignment,underlying_contract_price,assignment_fee,source,raw_intake,status,submitted_at)
      VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,'portal',$22,'new',now()) RETURNING id,ys_loan_number`,
-    [me(req), b.llcId || null, JSON.stringify(b.propertyAddress), b.propertyType || null, b.units || null,
+    [me(req), b.llcId || null, jsonbText(b.propertyAddress), b.propertyType || null, b.units || null,
      b.program || null, require('../lib/fields').sanitizeLoanType(b.loanType), asg.purchasePrice, moneyColumn(b.asIsValue),   // #95: never a program
      moneyColumn(b.arv), moneyColumn(b.rehabBudget), b.loanOfficerName || null,
      b.rehabType || null, sqf.sqftPre, sqf.sqftPost,
      intField(b.requestedExpFlips), intField(b.requestedExpHolds), intField(b.requestedExpGround),
-     asg.isAssignment, asg.underlying, asg.assignFee, JSON.stringify(redactPII(b))]);
+     asg.isAssignment, asg.underlying, asg.assignFee, jsonbText(redactPII(b))]);
   const appId = r.rows[0].id;
   // Invariant chokepoint (root fix 2026-07-14) — inputs derive from the saved row.
   await require('../lib/conditions/ensure').ensureFileConditions(appId, { reason: 'borrower_create' });
@@ -1655,8 +1671,8 @@ router.post('/applications/:id/checklist/:itemId/tool', async (req, res) => {
   await db.query(
     `UPDATE checklist_items SET tool_payload=$2, tool_state=COALESCE($3,tool_state), status=COALESCE($4,status), updated_at=now()
       WHERE id=$1`,
-    [req.params.itemId, JSON.stringify(payload),
-     payload && typeof payload.state === 'object' ? JSON.stringify(payload.state) : null, toolStatus]);
+    [req.params.itemId, jsonbText(payload),
+     payload && typeof payload.state === 'object' ? jsonbText(payload.state) : null, toolStatus]);
   // Populate the condition with a plain-language note about the match state, on
   // BOTH a mismatch and a match — visible to every party. '[auto]' notes are ours
   // to overwrite; a staff-typed note is never clobbered. The note reuses the
@@ -1727,7 +1743,7 @@ router.put('/applications/:id/checklist/:itemId/tool-state', async (req, res) =>
     `UPDATE checklist_items SET tool_state=$3, updated_at=now()
       WHERE id=$1 AND application_id=$2 AND audience IN ('borrower','both') AND tool_key IS NOT NULL
       RETURNING id`,
-    [req.params.itemId, req.params.id, JSON.stringify(state)]);
+    [req.params.itemId, req.params.id, jsonbText(state)]);
   if (!r.rows[0]) return res.status(404).json({ error: 'tool task not found' });
   res.json({ ok: true, savedAt: new Date().toISOString() });
 });
@@ -2063,6 +2079,24 @@ router.post('/applications/:id/complete-fields', async (req, res) => {
     // request), so no door can put a form code into the category.
     const ptProblem = require('../lib/property-type').propertyTypeProblem(b.property_type);
     if (ptProblem) return res.status(400).json({ error: ptProblem });
+    /* NOTHING IS FILED UNTIL EVERYTHING IS ACCEPTABLE (pre-merge audit,
+       2026-08-02). The two loops below file each change request as they go and
+       refuse on the first bad value — so a post carrying a good ARV and a bad
+       credit score left a REAL pending request behind AND answered 400, with the
+       loan team never told, because the notification runs at the very end. Both
+       shipped clients post one field at a time so it was not reachable in
+       production, but "half of it happened and you were told it failed" is not a
+       state this door should be able to reach at all.
+       `proposalProblem` is the same rule `openRequest` enforces, asked without
+       writing, so the pre-pass and the write can never disagree. */
+    if (locked) {
+      for (const [k, v] of Object.entries(b)) {
+        if (!(k in B_COMPLETE_APP) && !(k in B_COMPLETE_BORROWER)) continue;
+        if (v === '' || v == null) continue;
+        const bad = changeRequests.proposalProblem(k, v, { targetBorrowerId: me(req) });
+        if (bad) return res.status(400).json({ error: bad });
+      }
+    }
     const requested = [];
     const appVals = [req.params.id], appSets = [], appKeys = [];
     for (const [k, t] of Object.entries(B_COMPLETE_APP)) {
@@ -2557,7 +2591,7 @@ function trackRecordCols(b) {
   const personal = !!b.ownedPersonally;
   return {
     owned_personally: personal,
-    property_address: JSON.stringify(b.propertyAddress),
+    property_address: jsonbText(b.propertyAddress),
     deal_type: b.dealType || 'flip',
     purchase_price: moneyField(b.purchasePrice),
     sale_price: moneyField(b.salePrice),
@@ -3419,7 +3453,7 @@ async function syncProfileFromApplication(borrowerId, b) {
                   'currentAddress', 'yearsAtResidence', 'monthsAtResidence', 'housingStatus', 'housingPayment']
     .some(k => p[k] != null && p[k] !== '');
   if (!hasAny && !b.ssn) return;
-  const currentAddress = p.currentAddress ? JSON.stringify(p.currentAddress) : null;
+  const currentAddress = p.currentAddress ? jsonbText(p.currentAddress) : null;
   const yearsAtResidence = p.yearsAtResidence === '' || p.yearsAtResidence == null ? null : Number(p.yearsAtResidence);
   const monthsAtResidence = p.monthsAtResidence === '' || p.monthsAtResidence == null ? null : parseInt(p.monthsAtResidence, 10) || null;
   const housingPayment = moneyField(p.housingPayment);
@@ -3625,12 +3659,12 @@ router.post('/drafts/:id/submit', async (req, res) => {
         source,raw_intake,status,submitted_at)
      VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$24,$25,$26,$27,$28,$29,$30,$31,$32,'portal',$23,'new',now())
      RETURNING id,ys_loan_number`,
-    [me(req), b.llcId || null, JSON.stringify(b.propertyAddress), b.propertyType || null, b.units || null,
+    [me(req), b.llcId || null, jsonbText(b.propertyAddress), b.propertyType || null, b.units || null,
      b.program || null, require('../lib/fields').sanitizeLoanType(b.loanType), asg.purchasePrice, moneyColumn(b.asIsValue),   // #95: never a program
      moneyColumn(b.arv), moneyColumn(b.rehabBudget), officerId, b.loanOfficerName || null,
      b.rehabType || null, sqf.sqftPre, sqf.sqftPost,
      intField(b.requestedExpFlips), intField(b.requestedExpHolds), intField(b.requestedExpGround),
-     asg.isAssignment, asg.underlying, asg.assignFee, JSON.stringify(redactPII(b)),
+     asg.isAssignment, asg.underlying, asg.assignFee, jsonbText(redactPII(b)),
      b.termMonths ? String(b.termMonths) : null, intField(b.irMonths),
      intField(b.requestedExpReo), moneyField(b.payoffAmount), moneyField(b.originalPurchasePrice),
      require('../lib/fields').normalizeTypedDate(b.acquisitionDate),   // typed '26' resolves to 2026; garbage never persists
@@ -3905,7 +3939,7 @@ router.post('/pricing/scenarios', async (req, res) => {
     const r = await db.query(
       `INSERT INTO borrower_pricing_scenarios (borrower_id, label, inputs)
        VALUES ($1,$2,$3::jsonb) RETURNING id, label, inputs, created_at, updated_at`,
-      [me(req), scenarioLabel(b.label), JSON.stringify(scenarioInputs(b.inputs))]);
+      [me(req), scenarioLabel(b.label), jsonbText(scenarioInputs(b.inputs))]);
     res.status(201).json(r.rows[0]);
   } catch (e) { res.status(500).json({ error: 'server error' }); }
 });
@@ -3923,7 +3957,7 @@ router.put('/pricing/scenarios/:id', async (req, res) => {
         RETURNING id, label, inputs, created_at, updated_at`,
       [req.params.id, me(req),
        b.label !== undefined ? scenarioLabel(b.label) : null,
-       b.inputs !== undefined ? JSON.stringify(scenarioInputs(b.inputs)) : null]);
+       b.inputs !== undefined ? jsonbText(scenarioInputs(b.inputs)) : null]);
     if (!r.rows[0]) return res.status(404).json({ error: 'not found' });
     res.json(r.rows[0]);
   } catch (e) { res.status(500).json({ error: 'server error' }); }

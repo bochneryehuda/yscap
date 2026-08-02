@@ -351,6 +351,14 @@ router.post('/:appId/findings/:fid/resolve', requirePermission('sign_off_conditi
         if (action === 'custom' && !/^[+-]?\d+$/.test(txt)) return res.status(400).json({ error: 'a whole number is required' });
         newValue = parseInt(action === 'custom' ? txt : txt.replace(/\D/g, ''), 10);
         if (!Number.isInteger(newValue)) return res.status(400).json({ error: 'a whole number is required' });
+        /* AND IT MUST BE A REAL COUNT. Accepting the sign was a REGRESSION this
+           guard introduced (pre-merge audit, 2026-08-02): the `\D` strip it
+           replaced silently deleted a minus, so "-3" used to store 3, and the
+           tightened regex stored -3 — a NEGATIVE unit count on a pricing input,
+           with no CHECK on the column to catch it. The money branch above has
+           always required a positive number; a count is no different, and
+           `change-requests.normalizeValue` already refuses anything under 1. */
+        if (newValue < 1) return res.status(400).json({ error: 'a whole number of at least 1 is required' });
       }
       else { newValue = String(raw || '').trim(); if (!newValue) return res.status(400).json({ error: 'a value is required' }); }
       /* …and whatever it is, it has to FIT the column it is about to be written

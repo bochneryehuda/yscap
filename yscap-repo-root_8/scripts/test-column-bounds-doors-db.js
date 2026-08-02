@@ -105,6 +105,69 @@ if (!process.env.DATABASE_URL) {
     const HUGE_MONEY = '99999999999999999';
 
     /* ================================================================ *
+     * THE COLUMN TABLE, CHECKED AGAINST THE REAL SCHEMA.
+     *
+     * The pure suite's completeness check is a HARD-CODED list, so it can only
+     * ever re-state what someone already knew — the pre-merge audit proved it by
+     * adding a real numeric(14,2) column and by giving an existing column the
+     * WRONG kind, and the pure suite passed both times. The only thing that can
+     * actually catch a drift is the database itself.
+     * ================================================================ */
+    console.log('\n--- the column table vs information_schema ---');
+    {
+      const nb = require('../src/lib/number-bounds');
+      const KIND_OF = (t, p, s) => {
+        if (t === 'integer') return 'int';
+        if (t !== 'numeric' || p == null) return null;    // bigint / bare numeric: no ceiling to enforce
+        if (p === 14 && s === 2) return 'money';
+        if (p === 6 && s === 3) return 'pct';
+        return { precision: p, scale: s };
+      };
+      const same = (a, b) => (a && typeof a === 'object' && b && typeof b === 'object')
+        ? (a.precision === b.precision && a.scale === b.scale)
+        : a === b;
+
+      const problems = [];
+      for (const table of Object.keys(nb.COLUMN_KIND)) {
+        const cols = (await db.query(
+          `SELECT column_name, data_type, numeric_precision, numeric_scale
+             FROM information_schema.columns
+            WHERE table_schema='public' AND table_name=$1
+              AND data_type IN ('numeric','integer')`, [table])).rows;
+        const seen = new Set();
+        for (const c of cols) {
+          const want = KIND_OF(c.data_type, c.numeric_precision, c.numeric_scale);
+          const got = nb.columnKindOf(table, c.column_name);
+          seen.add(c.column_name);
+          if (want == null) continue;                     // nothing to enforce
+          /* A CHECK narrower than the type legitimately overrides the type's own
+             ceiling — that is the {min,max,what} kind, and it is stricter, so it
+             is never a gap. */
+          if (got && typeof got === 'object' && got.min != null) continue;
+          if (got == null) { problems.push(`${table}.${c.column_name} is ${c.data_type}(${c.numeric_precision},${c.numeric_scale}) but has NO kind`); continue; }
+          if (!same(want, got)) problems.push(`${table}.${c.column_name} is ${c.data_type}(${c.numeric_precision},${c.numeric_scale}) but the table says ${JSON.stringify(got)}`);
+        }
+        for (const k of Object.keys(nb.COLUMN_KIND[table])) {
+          if (!seen.has(k)) problems.push(`${table}.${k} is in the table but is not a numeric column`);
+        }
+      }
+      eq(problems.join(' | ') || '(none)', '(none)', 'every numeric column agrees with the table, read from the live schema');
+
+      /* …and prove THIS check can fail, which is the whole point — the hard-coded
+         one could not. A column the schema has and the table does not must be
+         reported, so a real ALTER TABLE that forgets the table is caught. */
+      const cols = (await db.query(
+        `SELECT column_name FROM information_schema.columns
+          WHERE table_schema='public' AND table_name='applications'
+            AND data_type='numeric' AND numeric_precision=14 AND numeric_scale=2`)).rows;
+      const sample = cols[0] && cols[0].column_name;
+      assert(!!sample && nb.columnKindOf('applications', sample) === 'money',
+        `…and it really is reading the schema (${sample} → money)`);
+      const pretendMissing = cols.filter((c) => !nb.columnKindOf('applications', c.column_name));
+      eq(pretendMissing.length, 0, '…with no numeric(14,2) column left uncovered');
+    }
+
+    /* ================================================================ *
      * F1 — the two completeness panels.
      * ================================================================ */
     console.log('\n--- F1: a money value the column cannot hold is a 400, not a 500 ---');
@@ -180,6 +243,19 @@ if (!process.env.DATABASE_URL) {
       eq(badFico.status, 400, 'and the same on a PERSONAL field (the borrowers-row path)');
       assert(/value we can use|required/i.test(String(badFico.body && badFico.body.error)),
         '…in words the borrower can act on');
+
+      /* NOTHING IS FILED WHEN ANY FIELD IS BAD. A post carrying a good ARV and a
+         bad credit score used to file the ARV and then answer 400 — a real
+         pending request the borrower was told had failed, with the loan team
+         never notified because that runs at the very end. */
+      const beforeN = (await db.query(
+        `SELECT count(*)::int n FROM change_requests WHERE application_id=$1 AND status='pending'`, [appId])).rows[0].n;
+      const mixed = await call('POST', `/api/borrower/applications/${appId}/complete-fields`, bTok,
+        { arv: 1300000, fico: '250' });
+      eq(mixed.status, 400, 'a post with one bad field is refused');
+      const afterN = (await db.query(
+        `SELECT count(*)::int n FROM change_requests WHERE application_id=$1 AND status='pending'`, [appId])).rows[0].n;
+      eq(afterN, beforeN, '…and NOTHING was filed — not even the field that was fine');
 
       /* The control. The swallow existed for a REASON — one bad field must not
          sink the rest of the save — so a legitimate change request must still
@@ -350,11 +426,150 @@ if (!process.env.DATABASE_URL) {
          VALUES ($1,'alta.pdf','application/pdf','local','x/y',$2) RETURNING id`, [appId, isCurrent])).rows[0].id;
       const post = (body) => call('POST', `/api/staff/applications/${appId}/closing/cash-to-close`, sTok, body);
 
-      const stale = await post({ amount: 50000, docId: await mkDoc(false) });
+      // `actualCashToClose` is the key the route reads — posting `amount` left the
+      // money half of this door untested (pre-merge audit nit).
+      const stale = await post({ actualCashToClose: 50000, docId: await mkDoc(false) });
       eq(stale.status, 400, 'a SUPERSEDED document is refused as the cash-to-close evidence');
 
-      const current = await post({ amount: 50000, docId: await mkDoc(true) });
+      const current = await post({ actualCashToClose: 50000, docId: await mkDoc(true) });
       eq(current.status, 200, '…while the current copy is accepted');
+      const saved = (await db.query(
+        `SELECT actual_cash_to_close FROM closing_workflow WHERE application_id=$1`, [appId])).rows[0];
+      eq(Number(saved && saved.actual_cash_to_close), 50000, '…and the FIGURE really was recorded');
+      const big = await post({ actualCashToClose: 1e17 });
+      eq(big.status, 400, 'an unstorable cash-to-close figure is refused');
+    }
+
+    /* ================================================================ *
+     * THE PRE-MERGE AUDIT'S OWN FINDINGS (2026-08-02) — the five things the
+     * first cut of this round got wrong or left open.
+     * ================================================================ */
+    console.log('\n--- P1: a reprice can never store a NEGATIVE unit count ---');
+    {
+      /* A REGRESSION THIS ROUND INTRODUCED. The `\D` strip it replaced silently
+         deleted a minus, so "-3" used to store 3; the tightened regex admits the
+         sign, and `applications.units` has no CHECK to catch it. */
+      const appId = await newFile();
+      const apprId = (await db.query(`INSERT INTO appraisals (application_id) VALUES ($1) RETURNING id`, [appId])).rows[0].id;
+      const finding = async () => (await db.query(
+        `INSERT INTO appraisal_findings (appraisal_id, application_id, code, severity, field, appraisal_value, status)
+         VALUES ($1,$2,$3,'warning','units','3','open') RETURNING id`,
+        [apprId, appId, `neg_${Math.random().toString(36).slice(2, 8)}`])).rows[0].id;
+      const resolve = (fid, v) => call('POST', `/api/appraisal/${appId}/findings/${fid}/resolve`, sTok, { action: 'custom', value: v });
+
+      const neg = await resolve(await finding(), '-3');
+      eq(neg.status, 400, 'a negative unit count is refused');
+      const u = (await db.query(`SELECT units FROM applications WHERE id=$1`, [appId])).rows[0];
+      assert(Number(u.units) > 0, `…and the file still has a real unit count (units=${u.units})`);
+      eq((await resolve(await finding(), '0')).status, 400, 'zero units is refused too');
+      eq((await resolve(await finding(), '3')).status, 200, '…while an ordinary count still applies');
+    }
+
+    console.log('\n--- P2: the MISMO import bounds the money that bypasses num() ---');
+    {
+      /* `assignmentFields` PARSES but does not BOUND, and its three outputs are
+         bound to the INSERT directly — so the ceilings added to num/int/pct
+         never touched purchase_price / underlying / fee, and the door still
+         answered 500 and lost the whole import. */
+      /* THROUGH THE REAL IMPORT, not a re-implementation of its rule in the test.
+         The first version of this case computed the drop itself, so mutating the
+         import changed nothing and it proved exactly nothing — the same trap the
+         F2 case fell into. `createFromParsed` is the function the route calls. */
+      const mismo = require('../src/lib/mismo');
+      const parsed = (over) => ({
+        borrower: { firstName: 'Mismo', lastName: 'Bounds', email: `mismo-${Math.random().toString(36).slice(2, 8)}-${sfx}@test.local` },
+        loan: { loanType: 'Purchase' },
+        property: { address: { line1: '3 Import Way', city: 'Lakewood', state: 'NJ', zip: '08701' }, ...over.property },
+        extras: { isAssignment: true, ...over.extras },
+      });
+
+      let threw = null, appId = null;
+      try {
+        const out = await mismo.createFromParsed(parsed({
+          extras: { isAssignment: true, underlyingContractPrice: 900000000000, assignmentFee: 900000000000 },
+        }));
+        appId = out && (out.applicationId || out.id);
+      } catch (e) { threw = e.code || e.message || String(e); }
+      eq(threw, null, 'an assignment whose parts SUM past the column still imports');
+      assert(!!appId, '…and a real file exists');
+      if (appId) {
+        const row = (await db.query(
+          `SELECT purchase_price, underlying_contract_price FROM applications WHERE id=$1`, [appId])).rows[0];
+        eq(row.purchase_price, null, '…with the unstorable derived price dropped');
+        eq(Number(row.underlying_contract_price), 900000000000, '…and the storable part kept');
+      }
+
+      // The control: an ordinary assignment import still derives its price.
+      const ok = await mismo.createFromParsed(parsed({
+        extras: { isAssignment: true, underlyingContractPrice: 100000, assignmentFee: 20000 },
+      }));
+      const okRow = (await db.query(`SELECT purchase_price FROM applications WHERE id=$1`,
+        [ok.applicationId || ok.id])).rows[0];
+      eq(Number(okRow.purchase_price), 120000, 'an ordinary assignment import still stores contract + fee');
+    }
+
+    console.log('\n--- P3: borrowers columns that are neither money nor a percent ---');
+    {
+      /* numeric(12,2) and numeric(4,1). The first cut of the column table could
+         not express these at all, so both profile doors still answered 500. */
+      const staffSet = (body) => call('PATCH', `/api/staff/borrowers/${borrowerId}`, sTok, body);
+      const bSet = (body) => call('PUT', '/api/borrower/profile', bTok, body);
+
+      const sBig = await staffSet({ housingPayment: 1e14 });
+      eq(sBig.status, 400, 'the staff profile door refuses an unstorable housing payment');
+      assert(noRawPg(sBig), '…in our words');
+      eq((await staffSet({ housingPayment: 3200 })).status, 200, '…while an ordinary one still saves');
+
+      const bBig = await bSet({ housingPayment: 1e14 });
+      eq(bBig.status, 400, 'and so does the borrower profile door');
+      const bYears = await bSet({ yearsAtResidence: 99999 });
+      eq(bYears.status, 400, 'an impossible time-at-residence is refused (it used to be a date out of range)');
+      eq((await bSet({ housingPayment: 2400, yearsAtResidence: 3 })).status, 200,
+        '…while ordinary values still save');
+      const hp = (await db.query(`SELECT housing_payment, years_at_residence FROM borrowers WHERE id=$1`, [borrowerId])).rows[0];
+      eq(Number(hp.housing_payment), 2400, '…and land on the profile');
+      eq(Number(hp.years_at_residence), 3, '…both of them');
+
+      /* A CLEARED field is a legitimate "no value", not a bad number. The first
+         cut of this sweep handed null to the checker as NaN and turned every
+         CLEAR into "must be a number" — caught by test-borrower-fields-db's own
+         clearing case, which is why this one is pinned here too. */
+      eq((await bSet({ housingPayment: '' })).status, 200, 'and a field can still be CLEARED');
+      const cleared = (await db.query(`SELECT housing_payment FROM borrowers WHERE id=$1`, [borrowerId])).rows[0];
+      eq(cleared.housing_payment, null, '…really cleared, not zeroed');
+      eq((await staffSet({ fico: '' })).status, 200, '…and from the staff door too');
+    }
+
+    console.log('\n--- P4: a program the borrower is OFFERED is a program we accept ---');
+    {
+      /* The panel offers DSCR / Rental; the server's governed enum did not carry
+         it. Before this round the refusal was swallowed and the panel said "that
+         already matches what we have on file" — a lie. Offering a choice and then
+         refusing it is the bug. */
+      const appId = await newFile();
+      await register(appId);
+      const r = await call('POST', `/api/borrower/applications/${appId}/complete-fields`, bTok, { program: 'DSCR / Rental' });
+      eq(r.status, 200, 'the borrower can request the program their own screen offers');
+      const filed = await db.query(
+        `SELECT new_value FROM change_requests WHERE application_id=$1 AND field='program' AND status='pending'`, [appId]);
+      eq(filed.rows.length, 1, '…and it is filed as a real pending request');
+      eq(filed.rows[0].new_value, 'DSCR / Rental', '…with the value they picked');
+
+      const junk = await call('POST', `/api/borrower/applications/${appId}/complete-fields`, bTok, { program: 'Not A Real Program' });
+      eq(junk.status, 400, '…while a value no screen offers is still refused');
+    }
+
+    console.log('\n--- P5: a NUL byte on the profile doors, not just the drafts ---');
+    {
+      const NUL = String.fromCharCode(0);
+      const sAddr = await call('PATCH', `/api/staff/borrowers/${borrowerId}`, sTok,
+        { currentAddress: { line1: `1 A${NUL}St`, city: 'Lakewood', state: 'NJ', zip: '08701' } });
+      eq(sAddr.status, 200, 'the staff profile door takes an address carrying a NUL');
+      const bAddr = await call('PUT', '/api/borrower/profile', bTok,
+        { currentAddress: { line1: `2 B${NUL}St`, city: 'Lakewood', state: 'NJ', zip: '08701' } });
+      eq(bAddr.status, 200, 'and so does the borrower profile door');
+      const row = (await db.query(`SELECT current_address FROM borrowers WHERE id=$1`, [borrowerId])).rows[0];
+      eq(row.current_address && row.current_address.line1, '2 BSt', '…with the invisible character removed');
     }
 
     console.log(failures ? `\n${failures} FAILURE(S)` : '\nALL column-bounds door assertions passed');

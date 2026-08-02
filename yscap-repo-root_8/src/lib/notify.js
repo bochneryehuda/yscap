@@ -48,6 +48,9 @@ const KICKER_OF = {
   // a first-class register record; comments got a type-generic kicker; the aging
   // + expiry digests nudge the reviewers/team.
   pricing_exception: 'Pricing exception', pricing_exception_decided: 'Pricing exception',
+  // Data-tape export before Encompass matches (owner-directed 2026-08-02): the
+  // request to a super-admin, and the decision sent back to the file's team.
+  tape_encompass_exception: 'Data-tape exception', tape_encompass_exception_decided: 'Data-tape exception',
   exception_comment: 'Exception comment', exception_request_reply: 'Your exception',
   exception_aging: 'Exceptions waiting', exception_expired: 'Exception expired',
   message: 'New message', mention: 'You were mentioned', reminder: 'Reminder',
@@ -508,6 +511,7 @@ const CATEGORY_OF = {
   // super-admin review request, the decision back to the team, thread comments,
   // the aging/expiry digests), so they email like the guaranty/esign ones.
   pricing_exception: 'conditions', pricing_exception_decided: 'conditions',
+  tape_encompass_exception: 'conditions', tape_encompass_exception_decided: 'conditions',
   exception_comment: 'conditions', exception_request_reply: 'conditions',
   exception_aging: 'conditions', exception_expired: 'conditions',
   // Major-fraud / authenticity alert (R3.14, owner-directed 2026-07-22).

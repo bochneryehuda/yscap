@@ -259,6 +259,28 @@ console.log('\n--- the column table ---');
   eq(nb.columnKindOf('borrowers', 'fico'), 'int', 'the conditions engine\'s borrowers target is covered');
   assert(nb.tableColumnProblem('borrowers', 'fico', 1e10) !== '', 'a FICO past int4 is refused');
 
+  /* A COLUMN THAT IS NEITHER MONEY NOR A PERCENT. Hard-coding only those two
+     shapes left every OTHER numeric precision with NO ceiling at all, because
+     `columnKindOf` answered null and null reads as "nothing wrong" — so both
+     borrower-profile doors still answered 500 on a numeric(12,2). */
+  assert(!nb.numericOverflows(9999999999.99, 12, 2), 'numeric(12,2) holds 9,999,999,999.99');
+  assert(nb.numericOverflows(1e10, 12, 2), '…and not 10^10');
+  assert(nb.numericOverflows(9999999999.995, 12, 2), '…nor a value that ROUNDS UP to it');
+  assert(!nb.numericOverflows(-9999999999.99, 12, 2) && nb.numericOverflows(-1e10, 12, 2),
+    '…symmetrically for negatives (the magnitude rule, same as money)');
+  assert(!nb.numericOverflows(999.9, 4, 1) && nb.numericOverflows(1000, 4, 1), 'numeric(4,1) stops at 999.9');
+  eq(nb.limitText(12, 2), '9,999,999,999.99', 'the limit is quoted the way a person reads a number');
+  eq(nb.limitText(4, 1), '999.9', '…at any precision');
+  eq(nb.limitText(6, 0), '999,999', '…including one with no decimals');
+  assert(nb.tableColumnProblem('borrowers', 'housing_payment', 1e14) !== '',
+    'an unstorable housing payment (numeric(12,2)) is refused');
+  assert(/9,999,999,999\.99/.test(nb.tableColumnProblem('borrowers', 'housing_payment', 1e14)),
+    '…quoting ITS ceiling, not the money one');
+  eq(nb.tableColumnProblem('borrowers', 'housing_payment', 3200), '', '…while an ordinary payment fits');
+  assert(nb.tableColumnProblem('borrowers', 'years_at_residence', 99999) !== '',
+    'an impossible time at residence (numeric(4,1)) is refused');
+  eq(nb.tableColumnProblem('borrowers', 'years_at_residence', 3.5), '', '…while a real one fits');
+
   // The message names the field in words, never the raw column name.
   assert(/After-repair value/.test(nb.applicationColumnProblem('arv', 1e14)),
     'the message uses the words the form uses');
@@ -296,7 +318,7 @@ console.log('\n--- jsonbText ---');
   eq(Object.keys(JSON.parse(F.jsonbText({ [`k${NUL}`]: 1 })))[0], 'k', '…and inside a KEY');
   eq(JSON.parse(F.jsonbText({ n: [{ deep: `a${NUL}` }] })).n[0].deep, 'a', '…at any depth, through arrays');
 
-  /* THE TRAP. The obvious one-liner — stripping ` ` out of the SERIALIZED
+  /* THE TRAP. The obvious one-liner — stripping `\u0000` out of the SERIALIZED
      JSON — eats the second backslash of an escaped backslash and produces
      malformed JSON, which is worse than the bug it fixes. */
   const literal = 'a\\u0000b';

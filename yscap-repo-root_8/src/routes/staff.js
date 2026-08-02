@@ -31,6 +31,7 @@ const workflow = require('../lib/workflow');
 const workflowAuto = require('../lib/workflow-automation');
 const closing = require('../lib/closing');
 const numberBounds = require('../lib/number-bounds');     // ONE definition of every column's ceiling
+const { jsonbText } = require('../lib/fields');            // NUL-safe serializer for every jsonb bind
 const purchasing = require('../lib/purchasing');
 const { syncExperienceChecklistForApplication, RECENT_EXIT_SQL, EXIT_DATE_SQL } = require('../lib/experience');
 const { enqueueClickupPush, enqueueChecklistStatusPush } = require('../clickup/enqueue');
@@ -71,6 +72,64 @@ const tapeAdmin = (req) => !!(req.actor && (req.actor.role === 'admin' || req.ac
 // the loan is in Encompass AND every field matches. The message text lives with
 // the gate (reconcile.js) so it's unit-tested against the same `reason` values.
 const encompassTapeMessage = (gate) => require('../encompass/reconcile').tapeGateMessage(gate);
+
+// The tape Encompass-gate ESCAPE (owner-directed 2026-08-02). The gate now blocks
+// EVERYONE — even an admin can NOT self-override any more. There are exactly two
+// ways past a blocked tape:
+//   (a) a SUPER-ADMIN-approved `tape_encompass_override` exception on the file
+//       (which anyone with export permission may then use — it only has effect
+//       while the file is unmatched; once Encompass reconciles the gate passes on
+//       its own), or
+//   (b) a super-admin allowing it INLINE with a reason, which records that same
+//       born-approved exception (the super admin IS the grantor).
+// Read-only — records nothing. Returns { pass, via, exception?, reason?, response? }.
+// The caller applies the side-effect (recording the super override) only AFTER
+// every other gate has passed, so a blocked export records nothing. Call this ONLY
+// when encTape.block is true.
+async function tapeEncompassEscape(req, appId, encTape, dbc, overrideReason) {
+  const conn = dbc || db;
+  const approved = await loanExceptions.approvedForApp(appId, 'tape_encompass_override', conn);
+  if (approved) return { pass: true, via: 'approved_exception', exception: approved };
+
+  const isSuper = !!(req.actor && req.actor.role === 'super_admin');
+  const reason = String(overrideReason || '').trim();
+  if (isSuper && reason) return { pass: true, via: 'super_override', reason };
+
+  const msg = encompassTapeMessage(encTape) || 'This loan doesn’t fully match Encompass yet.';
+  let pending = null;
+  try { pending = await loanExceptions.openForApp(appId, 'tape_encompass_override', conn); } catch (_) { pending = null; }
+  if (isSuper) {
+    return { pass: false, response: {
+      error: 'encompass_override_reason_required', code: 'encompass_override_reason_required',
+      message: `${msg} As a super admin you can allow it — give a short reason (this is logged).`,
+      reason: encTape.reason, openFields: encTape.openBlockingKeys, hasLoan: encTape.hasLoan,
+      canOverride: true, isSuperAdmin: true, pendingException: !!pending,
+    } };
+  }
+  return { pass: false, response: {
+    error: 'encompass_exception_required', code: 'encompass_exception_required',
+    message: `${msg} Only a super admin can allow this — request an exception.`,
+    reason: encTape.reason, openFields: encTape.openBlockingKeys, hasLoan: encTape.hasLoan,
+    canOverride: false, canRequestException: true, pendingException: !!pending,
+  } };
+}
+
+// Record a super-admin's inline tape override (born-approved register row + audit).
+// Best-effort by design — the audit_log row is the primary proof, so a register
+// hiccup must never reverse the export the super admin authorized.
+async function recordTapeSuperOverride(req, appId, tape, encGate, reason) {
+  await audit(req, 'tape_encompass_override', 'application', appId, {
+    action: 'export_tape', tape: tape && tape.key, reason: String(reason || '').slice(0, 500),
+    encReason: encGate && encGate.reason, openBlocking: encGate && encGate.openBlocking, openFields: encGate && encGate.openBlockingKeys });
+  try {
+    await loanExceptions.recordTapeEncompassOverride({
+      appId, staffId: req.actor.id, note: `tape ${tape && tape.key}: ${String(reason || '').slice(0, 400)}`,
+      snapshot: { action: 'export_tape', tape: tape && tape.key, encompass_reason: encGate && encGate.reason,
+        encompass_open_blocking: encGate && encGate.openBlocking, encompass_open_fields: encGate && encGate.openBlockingKeys,
+        at: new Date().toISOString() } });
+  } catch (_) { /* register write is best-effort — the audit row stands */ }
+}
+
 // Advisory-only sources must never score or notify — one shared filter (audit 2026-07-27).
 const aiSuggestions = require('../lib/underwriting/ai-suggestions');
 // The borrower DIRECTORY / CRM has a WIDER audience than file-level see_all_files
@@ -434,35 +493,39 @@ router.post('/tapes/:tapeKey/export/bulk', async (req, res) => {
       if (issuance.hardWarning && !issuance.proceed) { blockedFatal.push({ id, tier: issuance.tier || null }); continue; }
       if (issuance.override && issuance.override.applied) issuanceOverrides.push({ id, tier: issuance.tier || null, reason: issuance.override.reason });
       const encTape = await require('../encompass/reconcile').tapeGate(id, db);
-      if (encTape.block) encBlocked.push({ id, reason: encTape.reason, openBlocking: encTape.openBlocking, message: encompassTapeMessage(encTape) });
+      if (encTape.block) {
+        // A SUPER-ADMIN-approved exception on this file lets it out (it only matters
+        // while the file is unmatched). Otherwise it's blocked — no self-override.
+        const approved = await loanExceptions.approvedForApp(id, 'tape_encompass_override', db);
+        if (!approved) encBlocked.push({ id, reason: encTape.reason, openBlocking: encTape.openBlocking, openFields: encTape.openBlockingKeys, message: encompassTapeMessage(encTape) });
+      }
     }
     if (blockedFatal.length) {
       return res.status(409).json({ error: 'blocked', action: 'export_tape_bulk', message: `${blockedFatal.length} of the selected loan(s) have a confirmed fatal issue and can't be exported without a super-admin override. Remove them from the selection, or have a super-admin export.`, blocked: blockedFatal });
     }
-    // Encompass gate: non-admins are blocked with the per-loan list; an admin's
-    // encompassOverrideReason overrides the batch (recorded per file below).
-    let encOverrideReason = null;
+    // Encompass gate (tightened 2026-08-02): the only way past a blocked loan is a
+    // SUPER-ADMIN-approved exception, or a super-admin allowing the batch inline with
+    // a reason. Even a plain admin can't self-override — they must request per file.
+    let superReason = null;
     if (encBlocked.length) {
-      if (!tapeAdmin(req)) {
-        return res.status(409).json({ error: 'encompass_unreconciled', code: 'encompass_unreconciled', message: `${encBlocked.length} of the selected loan(s) don’t fully match Encompass yet. Reconcile each file — it must be in Encompass and every field matching — before exporting its tape.`, blocked: encBlocked, canOverride: false });
+      const isSuper = req.actor && req.actor.role === 'super_admin';
+      if (!isSuper) {
+        return res.status(409).json({ error: 'encompass_exception_required', code: 'encompass_exception_required', message: `${encBlocked.length} of the selected loan(s) don’t fully match Encompass yet. Reconcile each file — it must be in Encompass and every field matching — or have a super admin grant an exception on each. Only a super admin can allow this.`, blocked: encBlocked, canOverride: false, canRequestException: true });
       }
-      encOverrideReason = String((req.query && req.query.encompassOverrideReason) || '').trim();
-      if (!encOverrideReason) {
-        return res.status(409).json({ error: 'encompass_override_reason_required', code: 'encompass_override_reason_required', message: `${encBlocked.length} of the selected loan(s) don’t fully match Encompass yet. As an admin you can override — provide a reason to export anyway.`, blocked: encBlocked, canOverride: true });
+      superReason = String((req.query && req.query.encompassOverrideReason) || '').trim();
+      if (!superReason) {
+        return res.status(409).json({ error: 'encompass_override_reason_required', code: 'encompass_override_reason_required', message: `${encBlocked.length} of the selected loan(s) don’t fully match Encompass yet. As a super admin you can allow it — provide a reason to export anyway.`, blocked: encBlocked, canOverride: true, isSuperAdmin: true });
       }
     }
     // Every gate is passable → NOW apply the deferred side-effects: record each
-    // issuance override, then each Encompass-gate override (best-effort register).
+    // issuance override, then each super-admin tape override (best-effort register).
     for (const o of issuanceOverrides) {
       await audit(req, 'issuance_override', 'application', o.id, { action: 'export_tape_bulk', tape: tape.key, tier: o.tier, reason: o.reason });
       await loanExceptions.recordIssuanceOverride({ appId: o.id, staffId: req.actor.id, note: `export_tape_bulk ${tape.key}: ${o.reason || 'no reason given'}`, snapshot: { action: 'export_tape_bulk', tape: tape.key, tier: o.tier, at: new Date().toISOString() } });
     }
-    if (encOverrideReason) {
+    if (superReason) {
       for (const b of encBlocked) {
-        await audit(req, 'encompass_tape_gate_override', 'application', b.id, { action: 'export_tape_bulk', tape: tape.key, reason: encOverrideReason.slice(0, 500), encReason: b.reason, openBlocking: b.openBlocking });
-        try {
-          await loanExceptions.recordIssuanceOverride({ appId: b.id, staffId: req.actor.id, note: `encompass_tape_gate_bulk (${tape.key}): ${encOverrideReason.slice(0, 400)}`, snapshot: { action: 'export_tape_bulk', tape: tape.key, encompass_reason: b.reason, encompass_open_blocking: b.openBlocking, at: new Date().toISOString() } });
-        } catch (_) { /* exception-register write is best-effort */ }
+        await recordTapeSuperOverride(req, b.id, tape, { reason: b.reason, openBlocking: b.openBlocking, openBlockingKeys: b.openFields }, superReason);
       }
     }
     const { buf, filename, contentType, count } = await tapes.buildBulkTape(req.params.tapeKey, visible, db, { isAdmin: tapeAdmin(req) });
@@ -1238,7 +1301,7 @@ router.post('/applications', async (req, res) => {
           processor_id,is_assignment,underlying_contract_price,assignment_fee,requested_exp_reo,source,status,submitted_at)
        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,'staff','new',now())
        RETURNING id,ys_loan_number`,
-      [borrowerId, addr ? JSON.stringify(addr) : null, b.propertyType || null, b.units || null,
+      [borrowerId, addr ? jsonbText(addr) : null, b.propertyType || null, b.units || null,
        b.program || null, require('../lib/fields').sanitizeLoanType(b.loanType), purchasePrice, money(b.asIsValue),   // #95: never a program
        money(b.arv), money(b.rehabBudget), officerId, officerName,
        b.rehabType || null, sqf.sqftPre, sqf.sqftPost,
@@ -2979,11 +3042,75 @@ router.post('/applications/:id/exceptions/:eid/withdraw', async (req, res) => {
       guaranty_waiver: 'guaranty_exception_withdrawn',
       esign_before_ctc: 'esign_before_ctc_exception_withdrawn',
       pricing_exception: 'pricing_exception_withdrawn',
+      tape_encompass_override: 'tape_encompass_exception_withdrawn',
     };
     await audit(req, WITHDRAW_ACTION[exc.exception_type] || 'loan_exception_withdrawn', 'application', appId,
       { exceptionId: row.id, exceptionType: exc.exception_type });
     res.json({ ok: true, exception: row });
   } catch (e) { console.warn('[staff] handler error:', db.describeError(e)); res.status(500).json({ error: 'server error' }); }
+});
+
+// Request a SUPER-ADMIN exception to export the capital-provider DATA TAPE before
+// the loan is in Encompass and every field matches (owner-directed 2026-08-02). By
+// default nobody — not even an admin — may export until Encompass reconciles; this
+// files the request a super-admin approves in the Exceptions box. File-scoped; the
+// decide lives in /api/admin/exceptions (super-admin only for this type).
+router.post('/applications/:id/exceptions/tape-encompass', async (req, res) => {
+  if (!canExportTapes(req)) return res.status(403).json({ error: 'You don’t have permission to export data tapes.' });
+  const appId = req.params.id;
+  try {
+    const reasonNote = String((req.body && (req.body.reasonNote || req.body.note)) || '').slice(0, 2000).trim();
+    if (!reasonNote) return res.status(400).json({ error: 'Add a short note explaining why the tape must go out before Encompass matches.' });
+    // Nothing to request if it's already granted (approved + valid).
+    const approved = await loanExceptions.approvedForApp(appId, 'tape_encompass_override', db);
+    if (approved) return res.status(409).json({ error: 'A super admin has already allowed this tape — you can export it.' });
+    const already = await loanExceptions.openForApp(appId, 'tape_encompass_override');
+    if (already) return res.status(409).json({ error: 'A request to export this tape early is already awaiting super-admin review.' });
+
+    // Snapshot the LIVE Encompass gate so the reviewing super-admin sees exactly
+    // what blocked the export (loan not in Encompass, or which fields still differ).
+    let gateSnapshot = null;
+    try {
+      const encTape = await require('../encompass/reconcile').tapeGate(appId, db);
+      gateSnapshot = { at: new Date().toISOString(), blocked: !!encTape.block, reason: encTape.reason || null, openCount: encTape.openBlocking || 0, openFields: encTape.openBlockingKeys || [], hasLoan: !!encTape.hasLoan };
+    } catch (_) { gateSnapshot = null; }
+
+    // A fresh ask after a denial/withdrawal links back to the prior attempt.
+    const prior = loanExceptions.presentExpiry(await loanExceptions.latestForApp(appId, 'tape_encompass_override'));
+    const reRequestOf = prior && ['denied', 'withdrawn', 'expired'].includes(prior.status) ? prior.id : null;
+
+    const client = await db.getClient();
+    let row;
+    try {
+      await client.query('BEGIN');
+      row = await loanExceptions.requestTapeEncompassOverride(client, {
+        appId, reasonCode: req.body && req.body.reasonCode, reasonNote, requestedBy: req.actor.id,
+        gateSnapshot,
+        compensatingFactors: loanExceptions.sanitizeCompensatingFactors(req.body && req.body.compensatingFactors),
+        reRequestOf,
+      });
+      await client.query('COMMIT');
+    } catch (e) { await client.query('ROLLBACK').catch(() => {}); throw e; }
+    finally { client.release(); }
+
+    try {
+      const ctx = await notify.fileContext(appId);
+      await notify.notifyAdmins({
+        type: 'tape_encompass_exception',
+        title: 'Data-tape export needs super-admin review',
+        body: `${req.actor.name || 'A team member'} asked to export the capital-provider data tape on ${ctx ? ctx.label : 'a file'} before Encompass matches: ${reasonNote}`,
+        meta: (ctx && ctx.meta) || undefined, applicationId: appId,
+        link: `/internal/exceptions?app=${appId}`, ctaLabel: 'Open the Exceptions box',
+      });
+    } catch (_) { /* best-effort */ }
+    await audit(req, 'tape_encompass_exception_requested', 'application', appId, { exceptionId: row.id, reasonCode: row.reason_code });
+    res.json({ ok: true, exception: row });
+  } catch (e) {
+    // Concurrent double-submit races on the one-open-per-file index — the loser's
+    // INSERT is a unique violation, i.e. "already pending", not a server error.
+    if (e && e.code === '23505') return res.status(409).json({ error: 'A request to export this tape early is already awaiting super-admin review.' });
+    console.warn('[staff] handler error:', db.describeError(e)); res.status(500).json({ error: 'server error' });
+  }
 });
 
 // Request a super-admin exception to send the term-sheet package for signature
@@ -3285,7 +3412,7 @@ router.post('/applications/:id/rehab-budget', async (req, res) => {
     const mismatch = chk.ok ? null : { required: chk.required, total, message: chk.message };
     const goldSow = await RBsow.checkGoldSow(appId, payload);
     const st = (mismatch || !goldSow.ok) ? (total != null && total > 0 ? 'issue' : null) : 'received';
-    await db.query(`UPDATE checklist_items SET tool_payload=$2, status=COALESCE($3,status), updated_at=now() WHERE id=$1`, [itemId, JSON.stringify(payload), st]);
+    await db.query(`UPDATE checklist_items SET tool_payload=$2, status=COALESCE($3,status), updated_at=now() WHERE id=$1`, [itemId, jsonbText(payload), st]);
     // The durable note reuses the gate's own cent-precise message (audit
     // finding 1: this note used to re-round the figures to whole dollars).
     const note = RBsow.sowAutoNote(mismatch && mismatch.message, goldSow.ok, payload.total);
@@ -3317,7 +3444,7 @@ router.put('/applications/:id/checklist/:itemId/tool-state', async (req, res) =>
   const r = await db.query(
     `UPDATE checklist_items SET tool_state=$3, updated_at=now()
       WHERE id=$1 AND application_id=$2 AND tool_key IS NOT NULL RETURNING id`,
-    [req.params.itemId, req.params.id, JSON.stringify(state)]);
+    [req.params.itemId, req.params.id, jsonbText(state)]);
   if (!r.rows[0]) return res.status(404).json({ error: 'tool task not found' });
   res.json({ ok: true, savedAt: new Date().toISOString() });
 });
@@ -3361,8 +3488,8 @@ router.post('/applications/:id/checklist/:itemId/tool', async (req, res) => {
   const toolStatus = (sowMismatch || !goldSow.ok) ? (rbTotal != null && rbTotal > 0 ? 'issue' : null) : 'received';
   await db.query(
     `UPDATE checklist_items SET tool_payload=$2, tool_state=COALESCE($3,tool_state), status=COALESCE($4,status), updated_at=now() WHERE id=$1`,
-    [req.params.itemId, JSON.stringify(payload),
-     payload && typeof payload.state === 'object' ? JSON.stringify(payload.state) : null, toolStatus]);
+    [req.params.itemId, jsonbText(payload),
+     payload && typeof payload.state === 'object' ? jsonbText(payload.state) : null, toolStatus]);
   if (toolKey === 'rehab_budget') {
     // Durable note = the gate's own cent-precise message (audit finding 1).
     const note = require('../lib/rehab-budget').sowAutoNote(sowMismatch && sowMismatch.message, goldSow.ok, payload && payload.total);
@@ -3430,6 +3557,10 @@ router.get('/applications/:id/checklist', async (req, res) => {
             ci.borrower_hint,
             (SELECT code FROM checklist_templates t WHERE t.id=ci.template_id) AS template_code,
             (SELECT slots FROM checklist_templates t WHERE t.id=ci.template_id) AS slots,
+            -- The condition's own rule tree, read ONLY to derive the note-buyer MARK
+            -- below (never sent to the client). A condition that exists because of one
+            -- capital partner must say so on its face — owner-directed 2026-08-02.
+            (SELECT rule_logic FROM checklist_templates t WHERE t.id=ci.template_id) AS rule_logic,
             ci.tool_key, (ci.tool_payload IS NOT NULL) AS tool_submitted, ci.tool_payload,
             ci.assignee_staff_id, asg.full_name AS assignee_name,
             ci.signed_off_by, so.full_name AS signed_off_name, ci.signed_off_at,
@@ -3456,6 +3587,22 @@ router.get('/applications/:id/checklist', async (req, res) => {
        LEFT JOIN staff_users ov  ON ov.id  = ci.override_by
       WHERE ci.application_id=$1
       ORDER BY ci.sort_order, ci.created_at`, [req.params.id]);
+  // THE NOTE-BUYER MARK (owner-directed 2026-08-02). A condition that is on this
+  // file only because of one capital partner carries that partner's name on its
+  // row, DERIVED from the rule that put it there (note-buyer-effects.noteBuyerMark)
+  // so it can never disagree with what the engine did. STAFF-ONLY — the borrower
+  // checklist route never selects rule_logic and never gains this field. rule_logic
+  // itself is dropped from the response: it was read to compute the mark, and the
+  // client has no business with a raw rule tree.
+  try {
+    const { noteBuyerMark } = require('../lib/note-buyer-effects');
+    for (const row of r.rows) {
+      let mark = null;
+      try { mark = noteBuyerMark(row.rule_logic); } catch (_) { mark = null; }
+      row.note_buyer_mark = mark ? mark.label : null;
+      delete row.rule_logic;
+    }
+  } catch (_) { for (const row of r.rows) { row.note_buyer_mark = null; delete row.rule_logic; } }
   // #191 activation 2 — condition AGING (advisory, additive): each row gains
   // daysOpen / agingBucket / overdue / overdueBy from the pure ager. The
   // response stays a bare array (no shape change for the UI); an ager hiccup
@@ -3815,30 +3962,54 @@ router.get('/applications/:id/tapes', async (req, res) => {
     // pairing that gates a non-admin export). registered_program is a JOIN alias
     // for product_registrations.program — null when the loan isn't registered.
     const r = await db.query(
-      `SELECT a.lender,
+      `SELECT a.lender, a.ys_loan_number,
               (SELECT pr.program FROM product_registrations pr
                 WHERE pr.application_id = a.id AND pr.is_current LIMIT 1) AS registered_program
          FROM applications a WHERE a.id=$1 AND a.deleted_at IS NULL`, [req.params.id]);
     if (!r.rows[0]) return res.status(404).json({ error: 'not found' });
     const lender = r.rows[0].lender || null;
+    const loanNumber = r.rows[0].ys_loan_number || null;
     const registeredProgram = r.rows[0].registered_program || null;
     const isAdmin = tapeAdmin(req);
+    const isSuper = !!(req.actor && req.actor.role === 'super_admin');
     const key = require('../lib/conditions/field-registry').normNoteBuyer(lender);
-    // Encompass reconciliation gate status (owner-directed 2026-07-26): the UI
-    // shows a plain-language banner when a tape is blocked (loan not yet in
-    // Encompass, or fields still don't match) and offers the admin override.
+    // Encompass reconciliation gate status (owner-directed 2026-07-26; tightened
+    // 2026-08-02): the UI shows a plain-language banner when a tape is blocked
+    // (loan not yet in Encompass, or fields still don't match). Nobody may
+    // self-override any more — the escape is a SUPER-ADMIN-approved exception, or a
+    // super-admin allowing it inline. When the loan number is missing, the UI shows
+    // a slot to enter it (which triggers the Encompass pull), then reconcile.
     const encTape = await require('../encompass/reconcile').tapeGate(req.params.id, db);
+    // Read any current exception state so the banner can say "waiting for a super
+    // admin" (requested) or "allowed by a super admin" (approved) instead of only
+    // "blocked". Best-effort — never let a register read break the tape list.
+    let tapeException = null;
+    try {
+      const approved = await loanExceptions.approvedForApp(req.params.id, 'tape_encompass_override', db);
+      if (approved) tapeException = { status: 'approved', id: approved.id, seq: approved.exception_seq || null, expiresAt: approved.expires_at || null };
+      else {
+        const open = await loanExceptions.openForApp(req.params.id, 'tape_encompass_override', db);
+        if (open) tapeException = { status: 'requested', id: open.id, seq: open.exception_seq || null };
+      }
+    } catch (_) { tapeException = null; }
     const encompass = {
       blocked: !!encTape.block,
       reason: encTape.reason || null,
       openCount: encTape.openBlocking || 0,
       openKeys: encTape.openBlockingKeys || [],
       hasLoan: !!encTape.hasLoan,
-      canOverride: !!(encTape.block && isAdmin),
+      // A super-admin may allow it inline; everyone else requests an exception.
+      canOverride: !!(encTape.block && isSuper),
+      canRequestException: !!(encTape.block && !isSuper && !(tapeException && tapeException.status === 'requested')),
+      isSuperAdmin: isSuper,
+      loanNumber,
+      hasLoanNumber: !!loanNumber,
+      exception: tapeException,
       message: encompassTapeMessage(encTape),
     };
     res.json({
-      currentBuyer: lender, buyerKey: key, registeredProgram, isAdmin,
+      currentBuyer: lender, buyerKey: key, registeredProgram, isAdmin, isSuperAdmin: isSuper,
+      loanNumber, hasLoanNumber: !!loanNumber,
       tapes: tapes.tapeAvailability(key, lender, { registeredProgram, isAdmin }),
       encompass,
     });
@@ -3880,38 +4051,30 @@ router.get('/applications/:id/export/tape/:tapeKey', async (req, res) => {
     if (issuance.hardWarning && !issuance.proceed) {
       return res.status(409).json({ error: 'blocked', action: 'export_tape', message: 'This file has a confirmed fatal issue, so its tape can\'t be exported without a super-admin override.', issuance });
     }
-    // Encompass reconciliation gate (owner-directed 2026-07-26): a loan's tape
-    // can't be exported until it is synced to Encompass AND every field matches.
-    // An admin may override with a logged reason. Dormant when Encompass is off
-    // (nothing to reconcile against); fails CLOSED on a reconcile error (can't
-    // confirm the match → don't release, admin-overridable). Runs BEFORE the
-    // issuance-override is recorded so a blocked export records nothing.
-    let encOverrideReason = null, encGate = null;
+    // Encompass reconciliation gate (owner-directed 2026-07-26; tightened 2026-08-02):
+    // a loan's tape can't be exported until it is synced to Encompass AND every field
+    // matches. NOBODY may self-override any more — even an admin. The ONLY way past a
+    // blocked tape is a SUPER-ADMIN-approved exception, or a super-admin allowing it
+    // inline with a reason. Dormant when Encompass is off; fails CLOSED on a reconcile
+    // error. Runs BEFORE the override is recorded so a blocked export records nothing.
+    let tapeEscape = null, encGate = null;
     {
       const encTape = await require('../encompass/reconcile').tapeGate(req.params.id, db);
       if (encTape.block) {
         encGate = encTape;
-        const msg = encompassTapeMessage(encTape);
-        if (!tapeAdmin(req)) {
-          return res.status(409).json({ error: 'encompass_unreconciled', code: 'encompass_unreconciled', message: msg, reason: encTape.reason, openFields: encTape.openBlockingKeys, hasLoan: encTape.hasLoan, canOverride: false });
-        }
-        encOverrideReason = String((req.query && req.query.encompassOverrideReason) || '').trim();
-        if (!encOverrideReason) {
-          return res.status(409).json({ error: 'encompass_override_reason_required', code: 'encompass_override_reason_required', message: `${msg} As an admin you can override — provide a reason to export anyway.`, reason: encTape.reason, openFields: encTape.openBlockingKeys, hasLoan: encTape.hasLoan, canOverride: true });
-        }
+        const esc = await tapeEncompassEscape(req, req.params.id, encTape, db, req.query && req.query.encompassOverrideReason);
+        if (!esc.pass) return res.status(409).json(esc.response);
+        tapeEscape = esc;
       }
     }
     // Every gate is passable → record the deferred overrides (issuance first, then
-    // the Encompass-gate override) so nothing is recorded for a blocked export.
+    // the super-admin tape override) so nothing is recorded for a blocked export.
     if (issuance.override && issuance.override.applied) {
       await audit(req, 'issuance_override', 'application', req.params.id, { action: 'export_tape', tape: tape.key, tier: issuance.tier, reason: issuance.override.reason });
       await loanExceptions.recordIssuanceOverride({ appId: req.params.id, staffId: req.actor.id, note: `export_tape ${tape.key}: ${issuance.override.reason || 'no reason given'}`, snapshot: { action: 'export_tape', tape: tape.key, tier: issuance.tier || null, at: new Date().toISOString() } });
     }
-    if (encOverrideReason && encGate) {
-      await audit(req, 'encompass_tape_gate_override', 'application', req.params.id, { action: 'export_tape', tape: tape.key, reason: encOverrideReason.slice(0, 500), encReason: encGate.reason, openBlocking: encGate.openBlocking, openFields: encGate.openBlockingKeys });
-      try {
-        await loanExceptions.recordIssuanceOverride({ appId: req.params.id, staffId: req.actor.id, note: `encompass_tape_gate (${tape.key}): ${encOverrideReason.slice(0, 400)}`, snapshot: { action: 'export_tape', tape: tape.key, encompass_reason: encGate.reason, encompass_open_blocking: encGate.openBlocking, encompass_open_fields: encGate.openBlockingKeys, at: new Date().toISOString() } });
-      } catch (_) { /* exception-register write is best-effort */ }
+    if (tapeEscape && tapeEscape.via === 'super_override' && encGate) {
+      await recordTapeSuperOverride(req, req.params.id, tape, encGate, tapeEscape.reason);
     }
     // Persist any questionnaire answers (validated) BEFORE building, so the tape
     // fills from them and a later export never re-asks. A no-op when none present.
@@ -5857,6 +6020,33 @@ async function signOffGate(itemId, actor) {
             LIMIT 1`, [item.borrower_id || null, item.application_id || null]);
         if (pid.rows.length) return null;
       }
+      // SSN VERIFICATION — the credit report is one of the three accepted proofs
+      // (owner-directed 2026-08-02; CorrFirst cond 1050). The guideline reads
+      // "SSN verified via the credit report … ELSE a copy of the Social Security
+      // card or a completed SSA-89", so the card/SSA-89 is the FALLBACK, not the
+      // only way. When the report already proves it there is no document to
+      // upload, and the strict doc-gate would leave a genuinely-verified SSN
+      // signable only through a super-admin override. Same shape as the gov-ID
+      // reuse above: real fulfillment that lives somewhere other than a document
+      // on this item.
+      //
+      // NOT a weakening. `ssnCompleteness` is a PROVEN state, stricter than "a
+      // file is attached": every borrower on the file (primary AND co-borrower)
+      // must have an SSN on record and a COMPLETED credit report whose parsed
+      // SSN last-4 EQUALS it. Anything short of that — one borrower unpulled, a
+      // report naming a different last-4, no SSN on file — falls straight
+      // through to the ordinary refusal below and a document is required.
+      //
+      // Deliberately NOT gated on SSN_AUTOCLEAR_ENABLED: that switch governs
+      // PILOT clearing the condition BY ITSELF. This is a human signing off on
+      // evidence that already exists, which is always allowed to read the file.
+      if (code === 'cond_ssn_verify_corrfirst') {
+        try {
+          const c = await require('../lib/underwriting/ssn-autoclear').ssnCompleteness(db, item.application_id);
+          if (c && c.complete) return null;
+        } catch (_) { /* unreadable → fall through to the document requirement */ }
+        return 'Attach the borrower’s Social Security card or a completed SSA-89 before signing this off — or import a credit report whose Social Security number matches the one on file for every borrower, which verifies it on its own.';
+      }
       return 'Upload a document to this condition before signing it off — a document-based condition cannot be completed with nothing uploaded.';
     }
   }
@@ -7130,8 +7320,8 @@ router.patch('/borrowers/:id', async (req, res) => {
   try {
     if (!(await canSeeBorrower(req))) return res.status(403).json({ error: 'forbidden' });
     let b = req.body || {};
-    const sets = [], vals = [req.params.id];
-    const put = (col, val) => { vals.push(val); sets.push(`${col}=$${vals.length}`); };
+    const sets = [], vals = [req.params.id], putCols = [];
+    const put = (col, val) => { vals.push(val); sets.push(`${col}=$${vals.length}`); putCols.push([col, val]); };
     // Set when the whole name was typed into ONE box and PILOT had to judge where
     // it splits — the "please check this" prompt is kept in that case.
     let nameSplitFromFullName = null;
@@ -7213,8 +7403,8 @@ router.patch('/borrowers/:id', async (req, res) => {
         put('fico', n);
       }
     }
-    if (b.currentAddress !== undefined) put('current_address', b.currentAddress ? JSON.stringify(b.currentAddress) : null);
-    if (b.mailingAddress !== undefined) put('mailing_address', b.mailingAddress ? JSON.stringify(b.mailingAddress) : null);
+    if (b.currentAddress !== undefined) put('current_address', b.currentAddress ? jsonbText(b.currentAddress) : null);
+    if (b.mailingAddress !== undefined) put('mailing_address', b.mailingAddress ? jsonbText(b.mailingAddress) : null);
     if (b.primaryOfficerId !== undefined) put('primary_officer_id', b.primaryOfficerId || null);
     // HOUSING + EMPLOYMENT on the profile (owner-directed 2026-07-26: "the
     // housing details of where he lives, how much rent he pays, if he owns, if
@@ -7251,6 +7441,22 @@ router.patch('/borrowers/:id', async (req, res) => {
     if (b.dob !== undefined && b.dob !== null && b.dob !== '') {
       dobDay = require('../lib/fields').sanitizeDob(b.dob);
       if (dobDay == null) return res.status(400).json({ error: 'date of birth must be a real adult birth date (YYYY-MM-DD, 4-digit year)' });
+    }
+    /* EVERY NUMBER HAS TO FIT ITS COLUMN (pre-merge audit, 2026-08-02). Measured
+       on this door: `housingPayment: 1e14` → 500 "server error". It is
+       numeric(12,2) — neither money nor a percent — which is precisely the shape
+       the column table could not express until it grew a {precision, scale}
+       kind. Swept over everything `put()` collected, so a field added below is
+       covered without anyone remembering to add a check. */
+    {
+      /* ONLY an actual number is judged. A cleared field arrives as null — which
+         is a legitimate "no value", not a bad one — and handing it to
+         columnProblem as NaN turned every CLEAR into "must be a number". Caught
+         by test-borrower-fields-db's own clearing case. */
+      const bad = putCols
+        .map(([col, val]) => (typeof val === 'number' ? numberBounds.tableColumnProblem('borrowers', col, val) : ''))
+        .find(Boolean);
+      if (bad) return res.status(400).json({ error: bad });
     }
     if (!sets.length && !dobDay) return res.status(400).json({ error: 'nothing to update' });
     if (sets.length) {
@@ -8913,13 +9119,18 @@ router.patch('/applications/:id/details', async (req, res) => {
          its advice produced another 500.
      These two sets are keyed on the COLUMN TYPE, which is what actually decides
      the limit. Add a key to NUM above and add it here too. */
-  const MONEY_KEYS = new Set(['purchasePrice', 'asIsValue', 'arv', 'rehabBudget', 'requestedIrAmount',
-    'payoffAmount', 'estimatedCashOut', 'originalPurchasePrice', 'underlyingContractPrice', 'assignmentFee']);
-  /* A column with a CHECK narrower than its TYPE. Its ceiling is the constraint,
-     not int4's — quoting 2,147,483,647 for a field the database refuses past 24
-     is the same "follow the message, get another 500" trap the previous round
-     fixed for `units`, reintroduced one column over (audit round 7). */
-  const CHECKED_RANGE = { requestedIrMonths: { min: 0, max: 24, what: 'months of interest reserve' } };
+  /* WHICH TYPE EACH KEY IS NO LONGER LIVES HERE (pre-merge audit, 2026-08-02).
+     This door kept its own hand-maintained MONEY_KEYS / CHECKED_RANGE tables — a
+     second definition of exactly what `number-bounds.COLUMN_KIND` now holds, in a
+     loop that already has the COLUMN in hand. It was verified correct, but it is
+     precisely the drift this whole change exists to remove, sitting on the door
+     the rest of the change is calibrated against. The kind now comes from the
+     shared table, keyed on the column.
+
+     Only the WORDING stays local: this door names fields by their request key
+     ("payoffAmount"), which is what its callers and its tests read, and the
+     interest-reserve message says which months it means. */
+  const CHECKED_WHAT = { requestedIrMonths: 'months of interest reserve' };
   /**
    * The reason this number cannot be stored, or '' if it can.
    *
@@ -8930,8 +9141,13 @@ router.patch('/applications/:id/details', async (req, res) => {
    * looked at. Here we say which COLUMN TYPE each key is; the shared module
    * says what that type can hold. Add a key to NUM above and add it here too.
    */
-  const numberOutOfRange = (key, n) => numberBounds.columnProblem(
-    key, n, CHECKED_RANGE[key] || (MONEY_KEYS.has(key) ? 'money' : 'int'));
+  const numberOutOfRange = (key, n, col) => {
+    const kind = numberBounds.columnKindOf('applications', col) || 'int';
+    // A CHECK-bounded column keeps this door's more specific noun.
+    const spoken = (kind && typeof kind === 'object' && kind.min != null && CHECKED_WHAT[key])
+      ? { ...kind, what: CHECKED_WHAT[key] } : kind;
+    return numberBounds.columnProblem(key, n, spoken);
+  };
   const sets = [], vals = []; let i = 1;
   const touchedCols = [];
   for (const [k, col] of Object.entries(NUM)) if (k in b) {
@@ -8970,7 +9186,7 @@ router.patch('/applications/:id/details', async (req, res) => {
        and is refused by Postgres, while a bare `>= 1e12` on the raw number let it
        through to another 500. */
     if (n != null) {
-      const bad = numberOutOfRange(k, n);
+      const bad = numberOutOfRange(k, n, col);
       if (bad) return res.status(400).json({ error: bad });
     }
     sets.push(`${col}=$${i++}`); vals.push(n); touchedCols.push(col);
@@ -9007,7 +9223,7 @@ router.patch('/applications/:id/details', async (req, res) => {
     sets.push(`${col}=$${i++}`); vals.push(v); touchedCols.push(col);
   }
   if ('isAssignment' in b) { sets.push(`is_assignment=$${i++}`); vals.push(!!b.isAssignment); touchedCols.push('is_assignment'); }
-  if (b.propertyAddress !== undefined) { sets.push(`property_address=$${i++}`); vals.push(b.propertyAddress ? JSON.stringify(b.propertyAddress) : null); touchedCols.push('property_address'); }
+  if (b.propertyAddress !== undefined) { sets.push(`property_address=$${i++}`); vals.push(b.propertyAddress ? jsonbText(b.propertyAddress) : null); touchedCols.push('property_address'); }
   // Couple units to a property_type change when the caller didn't send units
   // explicitly (a direct API call, or the completeness panel) — mirrors the
   // intake form's unitsForType so a single-family type auto-fills "1 unit" and a
@@ -11442,7 +11658,7 @@ router.post('/leads', async (req, res) => {
        VALUES ('manual','manual',$1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,now())
        RETURNING id`,
       [b.leadSource || 'manual', name, first || null, last || null, b.company || null, email || null, phone || null, b.phoneAlt || null,
-        b.contactAddress ? JSON.stringify(b.contactAddress) : null, b.propertyAddress ? JSON.stringify(b.propertyAddress) : null,
+        b.contactAddress ? jsonbText(b.contactAddress) : null, b.propertyAddress ? jsonbText(b.propertyAddress) : null,
         b.propertyType || null, b.program || null, amount, b.referralPartner || null,
         b.subject || null, b.message || null, status, officerId, req.actor.id]);
     const leadId = ins.rows[0].id;
@@ -11479,8 +11695,8 @@ router.patch('/leads/:id', async (req, res) => {
   if (b.email !== undefined) col('email', String(b.email).trim() || null);
   if (b.phone !== undefined) col('phone', String(b.phone).trim() || null);
   if (b.phoneAlt !== undefined) col('phone_alt', String(b.phoneAlt).trim() || null);
-  if (b.contactAddress !== undefined) col('contact_address', b.contactAddress ? JSON.stringify(b.contactAddress) : null);
-  if (b.propertyAddress !== undefined) col('property_address', b.propertyAddress ? JSON.stringify(b.propertyAddress) : null);
+  if (b.contactAddress !== undefined) col('contact_address', b.contactAddress ? jsonbText(b.contactAddress) : null);
+  if (b.propertyAddress !== undefined) col('property_address', b.propertyAddress ? jsonbText(b.propertyAddress) : null);
   if (b.propertyType !== undefined) col('property_type', b.propertyType || null);
   if (b.program !== undefined) col('program', b.program || null);
   if (b.loanAmount !== undefined) col('loan_amount', (b.loanAmount !== '' && Number.isFinite(Number(b.loanAmount))) ? Number(b.loanAmount) : null);
@@ -11820,7 +12036,7 @@ router.post('/leads/:id/convert', async (req, res) => {
        VALUES ($1,$2,$3,$4,$5,$6,'staff','new',now(),
           $7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20)
        RETURNING id, ys_loan_number`,
-      [borrowerId, JSON.stringify(addr),
+      [borrowerId, jsonbText(addr),
         b.propertyType || pv.propType || lead.property_type || null,
         b.program || pv.dealType || lead.program || null, officerId, officerName,
         econLoanType,
@@ -14125,7 +14341,7 @@ router.post('/tool-scenarios', async (req, res) => {
        ON CONFLICT (staff_user_id, tool_slug, lower(btrim(name)))
        DO UPDATE SET state = EXCLUDED.state, state_kind = EXCLUDED.state_kind, name = EXCLUDED.name
          RETURNING id, tool_slug, name, state_kind, created_at, updated_at`,
-      [req.actor.id, toolSlug, name, JSON.stringify(state), stateKind]);
+      [req.actor.id, toolSlug, name, jsonbText(state), stateKind]);
     // Never a silent strip: if a social was dropped on the way in, the screen says so.
     res.status(201).json({ scenario: suiteScenarios.shapeRow(r.rows[0]), omittedSensitive: removed.length > 0 });
   } catch (e) { console.warn('[staff] handler error:', db.describeError(e)); res.status(500).json({ error: 'server error' }); }
@@ -14175,7 +14391,7 @@ router.put('/tool-scenarios/:id', async (req, res) => {
               state = COALESCE($4::jsonb, state)
         WHERE id = $1 AND staff_user_id = $2
         RETURNING id, tool_slug, name, state_kind, created_at, updated_at`,
-      [req.params.id, req.actor.id, name, hasState ? JSON.stringify(state) : null]);
+      [req.params.id, req.actor.id, name, hasState ? jsonbText(state) : null]);
     if (!r.rows[0]) return res.status(404).json({ error: 'not found' });
     res.json({ scenario: suiteScenarios.shapeRow(r.rows[0]), omittedSensitive: removed.length > 0 });
   } catch (e) {
