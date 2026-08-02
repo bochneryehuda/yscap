@@ -49,7 +49,15 @@ CREATE TABLE applications (
   is_assignment boolean NOT NULL DEFAULT false,
   underlying_contract_price numeric(14,2),
   assignment_fee numeric(14,2),
+  rehab_type text,
   submitted_at timestamptz,
+  -- The estimated closing date the send-gate has required for the term-sheet
+  -- package since 2026-07-22 (db/... expected_closing / est_closing_date). The
+  -- fixture had gone stale against it, so every run of this suite died on
+  -- `column "expected_closing" does not exist` before reaching a single
+  -- assertion; the seed below sets one so the gate passes as it always meant to.
+  expected_closing date,
+  est_closing_date date,
   deleted_at timestamptz,
   created_at timestamptz NOT NULL DEFAULT now()
 );
@@ -63,6 +71,15 @@ CREATE TABLE product_registrations (
   product_label text,
   note_rate numeric(7,5),
   quote jsonb,
+  -- The issuability columns the send-gate reads (R6.4 + db/343). Missing here,
+  -- the gate's registrationIssuabilityBlockers query THREW and its fail-closed
+  -- catch reported "Product registration — could not confirm the registration
+  -- status", so the suite could never reach a send.
+  status text,
+  is_manual boolean NOT NULL DEFAULT false,
+  stale boolean NOT NULL DEFAULT false,
+  stale_reason text,
+  needs_approval boolean NOT NULL DEFAULT false,
   is_current boolean NOT NULL DEFAULT true,
   created_at timestamptz NOT NULL DEFAULT now()
 );
@@ -101,6 +118,10 @@ CREATE TABLE documents (
   slot_label text,
   is_current boolean DEFAULT true,
   review_status text,
+  -- db/403: which stamp a stored term sheet PDF actually prints. The send
+  -- refuses a sheet whose face reads "INITIAL TERM SHEET — NOT FINAL", so the
+  -- orchestration path reads this column (owner-directed 2026-08-02).
+  term_sheet_final boolean,
   created_at timestamptz NOT NULL DEFAULT now()
 );
 

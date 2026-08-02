@@ -803,9 +803,10 @@ const ProductStudioPanel = forwardRef(function ProductStudioPanel({ appId, app, 
     if (!gate.enter()) return;             // a registration is already in flight
     setBusy(true); setErr(''); setMsg('');
     try {
-      // exact PDF from the static generator (best-effort — registration still proceeds)
+      // The exact PDF is captured AFTER the register lands (owner-directed
+      // 2026-08-02) — see the stamp block below. Registration still proceeds if
+      // the capture then fails; the note tells the user to download it instead.
       let pdf = null;
-      try { pdf = await studioRef.current.capturePdf(); } catch (_) { /* offline */ }
       // Admin-unlocked borrowers price like staff (fee/markup/manual overrides)
       // — the admin key rides along even when the zone is locked shut, so the
       // changes made in admin mode STAY in the registration and the exports.
@@ -841,10 +842,24 @@ const ProductStudioPanel = forwardRef(function ProductStudioPanel({ appId, app, 
                 : `Exception request submitted — it’s waiting for approval in the Escalations box${changed.length ? ` (${changed.join('; ')})` : ''}. The borrower is NOT sent terms until it’s approved.`)
             : 'Exception request submitted — your loan team will review it. You won’t receive terms unless it’s approved.')
         : 'Product registered — the loan file now carries these terms, the liquidity requirement and the term sheet.';
+      // THE STAMP (owner-directed 2026-08-02) — "the term sheet going out through
+      // DocuSign should not say NOT FINAL". The INITIAL/FINAL wording is PRINTED
+      // INTO the PDF, so it has to be right BEFORE the bytes are captured. The
+      // register response says whether this file is now ready to issue (the
+      // server computes it AFTER persisting, so it knows this registration's own
+      // staleness and approval state — the panel's `data.termSheetFinal` was read
+      // before the register and can be stale). Stamp, capture, then report the
+      // stamp we ACTUALLY set on the upload so the DocuSign send can refuse an
+      // initial sheet instead of mailing one.
+      const stampFinal = !!(resp && resp.termSheetFinal);
+      let stamped = false;
+      try { stamped = studioRef.current.setProvenance(stampFinal ? 'file_final' : 'file') === true; } catch (_) { stamped = false; }
+      try { pdf = await studioRef.current.capturePdf(); } catch (_) { /* offline */ }
       if (pdf && pdf.blob) {
         try {
           const dataBase64 = await blobToBase64(pdf.blob);
-          const body = { filename: pdf.filename, contentType: 'application/pdf', dataBase64, docKind: 'term_sheet' };
+          const body = { filename: pdf.filename, contentType: 'application/pdf', dataBase64, docKind: 'term_sheet',
+            termSheetFinal: stampFinal && stamped };
           if (isStaff) await api.staffUploadAppDoc(appId, body);
           else await api.uploadDoc({ ...body, applicationId: appId });
         } catch (_) { note = 'Product registered. The term sheet PDF could not be attached — download it from the studio instead.'; }
@@ -1274,6 +1289,29 @@ const ProductStudioPanel = forwardRef(function ProductStudioPanel({ appId, app, 
                   {isStaff ? data.termSheetHold : 'Your loan team is reviewing the appraisal — a term sheet will be available shortly.'}
                 </div>
               )}
+              {/* WHICH STAMP this sheet will print (owner-directed 2026-08-02).
+                  The INITIAL/FINAL wording is drawn into the PDF as it is
+                  generated, and only a FINAL sheet may go out for signature —
+                  so say up front which one registering is about to produce, and
+                  what is still standing in the way of the final one. Staff only:
+                  a borrower's sheet is always a working copy. */}
+              {isStaff && data && (data.termSheetFinal
+                ? (
+                  <div className="notice ok" style={{ margin: '10px 0' }}>
+                    <strong>This will be issued as the FINAL term sheet.</strong>{' '}
+                    Everything needed to send it for signature is in place, so registering attaches the sheet
+                    stamped <em>Final Term Sheet</em> — the version that goes out on DocuSign.
+                  </div>
+                ) : (
+                  <div className="notice" style={{ margin: '10px 0' }}>
+                    <strong>This will be a working term sheet, marked “INITIAL — NOT FINAL”.</strong>{' '}
+                    {(data.termSheetFinalBlockers || []).length
+                      ? <>Still outstanding: {(data.termSheetFinalBlockers || []).map((b) => b.label).join(', ')}. </>
+                      : null}
+                    Once those are done, re-register here and the sheet regenerates as the final one — that is the
+                    version DocuSign sends for signature.
+                  </div>
+                ))}
               {prefill
                 ? <TermSheetStudio ref={studioRef} prefill={prefill} lockedIds={lockedIds}
                     showAdmin={staffAdmin} onState={onStudioState}
