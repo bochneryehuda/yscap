@@ -26,6 +26,35 @@ These are live right now. They are not caused by the server move, and fixing the
 | 5 | **Blanking an admin field to fall back to the company default does not survive re-opening a draft** (it does survive a register). The draft and the register disagree about the same box. | An admin clears a markup, reopens tomorrow, and the old number is back. |
 | 6 | **Four file-owned hidden values travel inside every share link and every exported workbook** — including the payoff lender's name and the liquidity-buffer waiver flag. | Internal flags leave the building in a file you hand to a borrower. |
 | 7 | **The stored "what did they pick" snapshot always records a $0 reserve** — it reads a field name that does not exist on the object. | Currently harmless (nothing reads it yet), but it is wrong and will bite whoever wires it up. |
+| 8 | **A GOLD file can be shown 8.50% and book at 9.00%** — see below. | A half-point rate difference between the term sheet on screen and the loan that registers. |
+
+### 8 in full — the Gold unit-count gap (verified 2026-08-02)
+
+The studio's `gather()` **never sends `units`**. The server's `buildInputs` **always does**
+(`pricing.js:154`, from `applications.units`). Gold applies a multi-unit surcharge; Standard and Silver
+do not.
+
+So on a file **typed "Single Family" but carrying `units` > 1 on the loan record**, the browser prices
+with no unit count and the server prices with it:
+
+```
+BROWSER (units absent) : 8.50%   $562,500
+SERVER  (units = 3)    : 9.00%   $562,500
+```
+
+**Same loan amount, half a point of rate.** Swept across 720 scenarios × 3 programs:
+
+- **54 affected — every one of them GOLD.** Standard and Silver: zero.
+- Property types affected: **Single Family, Condo, Townhouse** (i.e. types where nobody expects a unit
+  count, which is exactly why it goes unnoticed).
+- Strategies affected: Fix & Flip, Fix & Hold, Bridge.
+
+**Correction to my own earlier reports:** I had carried this as a general browser-vs-server discrepancy.
+It is **Gold-only**. My first attempt to reproduce it used the Standard program and found nothing, which
+is why it nearly got written off. It is real.
+
+**Note this cuts the other way from the rest of this document:** moving pricing to the server would
+*eliminate* this gap, because there would only be one calculation. It is an argument **for** the move.
 
 **None of these need the server move to fix.** Items 1–3 are one change to how the workbook is saved.
 
