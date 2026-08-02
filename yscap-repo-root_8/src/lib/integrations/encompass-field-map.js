@@ -211,8 +211,17 @@ const IDENTITY_MAP = Object.freeze([
   Object.freeze({ key: 'date_of_birth', our: 'borrowers.date_of_birth', enc: 'applications[].{party}.birthDate', stdFieldId: { borrower: '1402', coBorrower: '1403' }, match: 'dateEquals', sensitive: true, note: 'Respect sanitizeDob + DOB-review rules' }),
   Object.freeze({ key: 'ssn', our: 'borrowers.ssn_hash / ssn_last4', enc: 'applications[].{party}.taxIdentificationIdentifier', stdFieldId: { borrower: '65', coBorrower: '97' }, match: 'ssnHash', sensitive: true, note: 'Compare by HMAC hash / last-4 ONLY; reveal stays behind the audited view_ssn gate; never fetch-print-store plaintext' }),
   Object.freeze({ key: 'current_address', our: 'borrowers.current_address (jsonb)', enc: 'applications[].{party}.residences[] (current) / mailing', match: 'addressCanon', note: 'Canonicalize with address-canon.samePlace' }),
-  Object.freeze({ key: 'phone', our: 'borrowers.cell_phone', enc: 'applications[].{party}.mobilePhone / .homePhoneNumber', match: 'digitsEquals' }),
-  Object.freeze({ key: 'email', our: 'borrowers.email', enc: 'applications[].{party}.emailAddressText', match: 'lowerEquals' }),
+  // PHONE — Encompass carries THREE numbers per party (home / cell / work); our
+  // ONE cell_phone matches ANY of them (owner-directed 2026-08-02: "one is home,
+  // one is cell, one is work — any of them is good"). Std field ids: borrower home
+  // 66, cell 1490, work 4533; co-borrower home 98, cell 1480, work 4534. Read
+  // per-pair off the applications[] subtree so a SECOND borrower pair resolves to
+  // its OWN numbers, not pair 1's.
+  Object.freeze({ key: 'phone', our: 'borrowers.cell_phone', enc: 'applications[].{party}.homePhoneNumber / mobilePhone / workPhoneNumber', stdFieldId: { borrower: ['66', '1490', '4533'], coBorrower: ['98', '1480', '4534'] }, match: 'digitsEqualsAny', note: 'Home / cell / work — our one number matches any of the three' }),
+  // EMAIL — the party's personal email (owner-directed 2026-08-02: borrower field
+  // 1240, co-borrower field 1268 = emailAddressText). workEmailAddress is a
+  // tolerant fallback for display/compare.
+  Object.freeze({ key: 'email', our: 'borrowers.email', enc: 'applications[].{party}.emailAddressText', stdFieldId: { borrower: '1240', coBorrower: '1268' }, match: 'lowerEquals' }),
   Object.freeze({ key: 'vesting_llc', our: 'llcs.name via applications.llc_id', enc: 'field 1859 (subject LLC vesting name)', stdFieldId: { borrower: '1859' }, match: 'nameEquals', note: 'Owner-directed: match field 1859 with our subject LLC vesting' }),
 ]);
 

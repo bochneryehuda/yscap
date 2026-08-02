@@ -340,19 +340,141 @@ function _addrStr(a) {
   return _stripPlus4(built) || oneLine;
 }
 function _named(p) { return !!(p && ((p.firstName && String(p.firstName).trim()) || (p.lastName && String(p.lastName).trim()))); }
+
+// ── Borrower-pair party resolution (owner-directed 2026-08-02) ───────────────
+// Encompass models up to FOUR borrower pairs — `applications[0..3]`, each with a
+// `.borrower` and a `.coBorrower`. Our SECOND borrower is NOT always Encompass's
+// "co-borrower": they are sometimes entered as the PRIMARY borrower of a SECOND
+// pair (same field numbers, different pair), and a file can carry three people
+// (a borrower + a co-borrower on pair 1 and a second-pair borrower on pair 2). So
+// we never assume a fixed slot: gather EVERY named party across every pair and
+// MATCH each of OUR people to wherever their name (or SSN) actually appears —
+// "look where the name exists and go with that."
+function _collectParties(loan) {
+  const apps = (loan && Array.isArray(loan.applications)) ? loan.applications : [];
+  const out = [];
+  for (let i = 0; i < apps.length; i++) {
+    const app = apps[i];
+    if (!app || typeof app !== 'object') continue;
+    if (app.borrower && _named(app.borrower)) out.push({ party: app.borrower, pairIndex: i, role: 'borrower' });
+    if (app.coBorrower && _named(app.coBorrower)) out.push({ party: app.coBorrower, pairIndex: i, role: 'coBorrower' });
+  }
+  return out;
+}
+
+// SSN half — a one-way keyed hash equal on both sides is PROOF of identity. The
+// best still-unclaimed party whose stored `_ssnHash` equals ours. Pure.
+function _matchBySsn(person, parties, used) {
+  if (!person || !person.ssnHash) return null;
+  const e = parties.find((x) => !used.has(x.party) && x.party && x.party._ssnHash && x.party._ssnHash === person.ssnHash);
+  return e ? { party: e.party, pairIndex: e.pairIndex, role: e.role, method: 'ssn' } : null;
+}
+// Name half — first + surname must agree (middle-name tolerant); a full match
+// beats a middle-only match. Nothing of ours to match on → null (never guessed).
+function _matchByName(person, parties, used) {
+  if (!person || !(person.first || person.last)) return null;
+  const ourParts = { first: person.first, middle: person.middle, last: person.last, suffix: person.suffix };
+  let detailOnly = null;
+  for (const e of parties) {
+    if (used.has(e.party)) continue;
+    const p = e.party;
+    const cmp = PN.compareNames(ourParts, { first: p.firstName, middle: p.middleName, last: p.lastName, suffix: p.suffixToName });
+    if (cmp.status === 'match') return { party: p, pairIndex: e.pairIndex, role: e.role, method: 'name' };
+    if (cmp.status === 'match_detail_only' && !detailOnly) detailOnly = e;
+  }
+  return detailOnly ? { party: detailOnly.party, pairIndex: detailOnly.pairIndex, role: detailOnly.role, method: 'name' } : null;
+}
+// Per-person convenience (SSN, then name) for callers/tests. NOTE: compareIdentity
+// deliberately does NOT use this directly — it assigns SSN matches for BOTH of our
+// people FIRST, then names, so a definitive SSN proof for one person is never
+// pre-empted by the OTHER person's weaker name match (order-independent). `used`
+// is a Set of already-claimed party objects. Returns { party, pairIndex, role,
+// method } or null. Pure — no DB, no network.
+function _matchParty(person, parties, used) {
+  return _matchBySsn(person, parties, used) || _matchByName(person, parties, used);
+}
+
+// Every phone number Encompass carries for a party — home / cell / work — read
+// per-pair off the applications[] subtree (std field ids 66 / 1490 / 4533 for a
+// borrower, 98 / 1480 / 4534 for a co-borrower). Our ONE number matches ANY of
+// them (owner: "one is home, one is cell, one is work — any of them is good").
+// Real loans and our own enrich.partyContacts disagree on the exact JSON key
+// (homePhone vs homePhoneNumber, cellPhone vs cellPhoneNumber vs mobilePhone,
+// workPhone vs workPhoneNumber vs businessPhoneNumber), so read EVERY spelling —
+// match-any only ever helps: an absent key is ignored, never a false match. Keep
+// this list a superset of enrich.js partyContacts so the two never drift.
+function _phones(p) {
+  if (!p || typeof p !== 'object') return [];
+  return [
+    p.mobilePhone, p.cellPhone, p.cellPhoneNumber,
+    p.homePhoneNumber, p.homePhone,
+    p.workPhoneNumber, p.workPhone, p.businessPhone, p.businessPhoneNumber,
+  ].filter((v) => v != null && String(v).trim() !== '');
+}
+// A party's email(s) — the personal email (field 1240 / 1268 = emailAddressText)
+// first, then every other spelling enrich.partyContacts reads, so a work / alt
+// email still matches. Match-any, same safe failure mode as _phones.
+function _emails(p) {
+  if (!p || typeof p !== 'object') return [];
+  return [p.emailAddressText, p.email, p.emailAddress, p.workEmailAddress, p.workEmail]
+    .filter((v) => v != null && String(v).trim() !== '');
+}
+
+// A short plain-language note for the panel: WHERE in Encompass this person was
+// found and HOW they were matched, so "why did it match / where is it reading
+// from" is answerable at a glance.
+function _pairLabel(hit) {
+  if (!hit) return null;
+  const role = hit.role === 'coBorrower' ? 'co-borrower' : 'primary borrower';
+  const how = hit.method === 'ssn' ? 'by SSN' : 'by name';
+  return `Matched to Encompass borrower pair ${hit.pairIndex + 1} (${role}), ${how}.`;
+}
+
 function compareIdentity(row, loan) {
   const N = map._internals;
   const apps = (loan && Array.isArray(loan.applications)) ? loan.applications : [];
-  const app0 = apps[0] || null;
-  const bor = (app0 && app0.borrower) ? app0.borrower : {};
-  // Encompass models a second person TWO ways (owner-directed 2026-07-26): as the
-  // CO-BORROWER in the same borrower pair (applications[0].coBorrower), OR as a
-  // SECOND borrower pair (applications[1].borrower). Read whichever actually
-  // carries the co-borrower — same-pair coBorrower first, else the 2nd pair's
-  // borrower — so our single co_borrower_id matches either representation.
-  const coInPair = (app0 && app0.coBorrower) ? app0.coBorrower : {};
-  const coInSecondPair = (apps[1] && apps[1].borrower) ? apps[1].borrower : {};
-  const coBor = _named(coInPair) ? coInPair : (_named(coInSecondPair) ? coInSecondPair : coInPair);
+
+  // BORROWER PAIRS (owner-directed 2026-08-02). Encompass carries up to four
+  // borrower pairs and our people can sit in ANY slot — a second borrower is
+  // sometimes the PRIMARY of a second pair, not a "co-borrower". So we gather
+  // every named party across every pair and match OURS to wherever their name or
+  // SSN actually is, claiming each Encompass person at most once.
+  const parties = _collectParties(loan);
+  const used = new Set();
+
+  const ourPrimary = { first: row.b_first_name, middle: row.b_middle_name, last: row.b_last_name, suffix: row.b_name_suffix, ssnHash: row.b_ssn_hash };
+  const ourSecond = { first: row.cb_first_name, middle: row.cb_middle_name, last: row.cb_last_name, suffix: row.cb_name_suffix, ssnHash: row.cb_ssn_hash };
+  // SSN proof for BOTH people FIRST — a hash match outranks any name match — then
+  // name for whoever is still unmatched. Doing SSN globally before names makes the
+  // assignment order-independent: a definitive SSN match for one borrower can never
+  // be pre-empted by the OTHER borrower's weaker name match on the same party.
+  let primaryHit = _matchBySsn(ourPrimary, parties, used); if (primaryHit) used.add(primaryHit.party);
+  let secondHit = _matchBySsn(ourSecond, parties, used); if (secondHit) used.add(secondHit.party);
+  if (!primaryHit) { primaryHit = _matchByName(ourPrimary, parties, used); if (primaryHit) used.add(primaryHit.party); }
+  if (!secondHit) { secondHit = _matchByName(ourSecond, parties, used); if (secondHit) used.add(secondHit.party); }
+
+  let bor;
+  if (primaryHit) bor = primaryHit.party;
+  else {
+    // No match anywhere → fall back to pair 1's borrower (the classic slot) so a
+    // genuine "our borrower isn't in Encompass" still surfaces as a comparison (a
+    // name mismatch), never silently vanishes. But NOT if that party was already
+    // claimed by our second borrower (then it is not ours) — use nothing instead.
+    const b0 = (apps[0] && apps[0].borrower) ? apps[0].borrower : null;
+    bor = (b0 && !used.has(b0)) ? b0 : {};
+    if (_named(bor)) used.add(bor);
+  }
+
+  let coBor;
+  if (secondHit) coBor = secondHit.party;
+  else {
+    // The first still-unclaimed named party — naturally pair 1's co-borrower,
+    // else a SECOND pair's borrower — so both historical representations, and an
+    // "Encompass has an extra person we don't", still surface.
+    const fb = parties.find((e) => !used.has(e.party));
+    coBor = fb ? fb.party : {};
+  }
+
   const prop = (loan && loan.property) ? loan.property : {};
   const out = [];
   const push = (key, label, compare, ours, theirs) => {
@@ -393,7 +515,7 @@ function compareIdentity(row, loan) {
   // verdict is smarter. A middle-name-only difference reports MATCH (the same
   // person, one side simply carries less detail); `detail` records that for the
   // panel so staff can still see the two spellings side by side.
-  const pushName = (key, label, ourP, theirP) => {
+  const pushName = (key, label, ourP, theirP, matchNote) => {
     const cmp = PN.compareNames(ourP, theirP);
     const status = cmp.status === 'match' || cmp.status === 'match_detail_only' ? 'match'
       : cmp.status === 'mismatch' ? 'mismatch' : 'incomparable';
@@ -407,6 +529,45 @@ function compareIdentity(row, loan) {
       // 'the same person, written with a different amount of detail' — surfaced
       // so a reviewer can still see the two spellings without it being a finding.
       detailOnly: cmp.status === 'match_detail_only',
+      // WHERE in Encompass this person was found + HOW (borrower pair, by name /
+      // by SSN). Populated for every real match (including a legitimate pair-1
+      // name match); null ONLY on the no-hit fallback. The panel can show it so
+      // the multi-pair match is transparent.
+      matchNote: matchNote || null,
+      writable: false, open: status === 'mismatch', resolution: null,
+    });
+  };
+
+  // Our ONE value vs ANY of several Encompass values — phone (home / cell / work)
+  // and email (personal / work). A match on ANY is a match; a value present on
+  // both sides that agrees with none is a mismatch; a blank side stays
+  // incomparable. Same row shape as `push`. This is the owner's "any of them is
+  // good" rule, and it composes with the borrower-pair resolution above because
+  // `_phones`/`_emails` read the MATCHED party's own subtree.
+  const pushAny = (key, label, compare, ours, theirsArr) => {
+    const normOne = (v) => {
+      if (v == null || String(v).trim() === '') return null;
+      if (compare === 'phone') { const d = _digits(v); return d === '' ? null : d.slice(-10); }
+      return N.normText(v); // email / text
+    };
+    const pairs = (Array.isArray(theirsArr) ? theirsArr : [])
+      .map((v) => ({ raw: v, norm: normOne(v) }))
+      .filter((x) => x.norm != null && x.norm !== '');
+    const o = normOne(ours);
+    let status = 'incomparable';
+    let theirsShown = pairs.length ? pairs[0].raw : null;
+    let theirsNorm = pairs.length ? pairs[0].norm : null;
+    if (o != null && o !== '' && pairs.length) {
+      const hit = pairs.find((x) => x.norm === o);
+      if (hit) { status = 'match'; theirsShown = hit.raw; theirsNorm = o; }
+      else { status = 'mismatch'; }
+    }
+    out.push({
+      key, encompassFieldId: null, label, category: 'identity', compare,
+      gate: map.GATE.BLOCK,
+      ours: (ours == null || ours === '') ? null : String(ours),
+      theirs: theirsShown == null ? null : String(theirsShown),
+      oursNorm: o, theirsNorm, status,
       writable: false, open: status === 'mismatch', resolution: null,
     });
   };
@@ -441,10 +602,10 @@ function compareIdentity(row, loan) {
   // word, is the same person. A genuinely different middle name still mismatches.
   const ourParts = { first: row.b_first_name, middle: row.b_middle_name, last: row.b_last_name, suffix: row.b_name_suffix };
   const theirParts = { first: bor.firstName, middle: bor.middleName, last: bor.lastName, suffix: bor.suffixToName };
-  pushName('id_borrower_name', 'Borrower name', ourParts, theirParts);
+  pushName('id_borrower_name', 'Borrower name', ourParts, theirParts, _pairLabel(primaryHit));
   push('id_dob', 'Date of birth', 'date', row.b_dob || null, bor.birthDate || null);
-  push('id_email', 'Email', 'email', row.b_email || null, bor.emailAddressText || null);
-  push('id_phone', 'Phone', 'phone', row.b_cell_phone || null, (bor.mobilePhone || bor.homePhoneNumber) || null);
+  pushAny('id_email', 'Email', 'email', row.b_email || null, _emails(bor));
+  pushAny('id_phone', 'Phone', 'phone', row.b_cell_phone || null, _phones(bor));
   // SSN is surfaced only when at least ONE side actually has one. A file with no
   // SSN anywhere (common on early/legacy files — SSN is often not captured by
   // term-sheet time) does NOT get a blocking "no data" SSN row; but the moment an
@@ -465,12 +626,12 @@ function compareIdentity(row, loan) {
   const theirCoParts = { first: coBor.firstName, middle: coBor.middleName, last: coBor.lastName, suffix: coBor.suffixToName };
   const ourCoName = PN.joinFullName(ourCoParts);
   const theirCoName = PN.joinFullName(theirCoParts);
-  const hasCo = !!(row.co_borrower_id || ourCoName || theirCoName || coBor.birthDate || coBor.emailAddressText || coBor.mobilePhone || coBor.homePhoneNumber || coBor._ssnHash || row.cb_ssn_hash);
+  const hasCo = !!(row.co_borrower_id || ourCoName || theirCoName || coBor.birthDate || _emails(coBor).length || _phones(coBor).length || coBor._ssnHash || row.cb_ssn_hash);
   if (hasCo) {
-    pushName('id_coborrower_name', 'Co-borrower name', ourCoParts, theirCoParts);
+    pushName('id_coborrower_name', 'Co-borrower name', ourCoParts, theirCoParts, _pairLabel(secondHit));
     push('id_coborrower_dob', 'Co-borrower date of birth', 'date', row.cb_dob || null, coBor.birthDate || null);
-    push('id_coborrower_email', 'Co-borrower email', 'email', row.cb_email || null, coBor.emailAddressText || null);
-    push('id_coborrower_phone', 'Co-borrower phone', 'phone', row.cb_cell_phone || null, (coBor.mobilePhone || coBor.homePhoneNumber) || null);
+    pushAny('id_coborrower_email', 'Co-borrower email', 'email', row.cb_email || null, _emails(coBor));
+    pushAny('id_coborrower_phone', 'Co-borrower phone', 'phone', row.cb_cell_phone || null, _phones(coBor));
     if (row.cb_ssn_hash || coBor._ssnHash) {
       pushSsn('id_coborrower_ssn', 'Co-borrower Social Security number', row.cb_ssn_hash || null, row.cb_ssn_last4 || null, coBor._ssnHash || null, coBor._ssnLast4 || null);
     }
@@ -901,5 +1062,5 @@ module.exports = {
   // compareIdentity is exported for the name-split regression test: a borrower
   // whose Encompass copy is correctly split must MATCH our three columns, and a
   // legacy merged first name must match too rather than hold the term sheet.
-  _internals: { snap, deriveDealType, tapeGateDecision, tapeGateError, compareIdentity },
+  _internals: { snap, deriveDealType, tapeGateDecision, tapeGateError, compareIdentity, _collectParties, _matchParty, _matchBySsn, _matchByName, _phones, _emails, _pairLabel },
 };
