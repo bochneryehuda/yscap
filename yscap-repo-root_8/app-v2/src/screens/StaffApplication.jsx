@@ -39,7 +39,7 @@ import FileSections, { Section, InfoTip, subscribeConditionsTab, goToSection, re
 import { STATIONS, STATION_OF, ANCHOR_SECTION, stationOf, whereDidItGo } from '../lib/stations.js';
 import { captureScrollAnchor, restoreScrollAnchor } from '../lib/keep-scroll.js';
 import BorrowerProfilePanel from '../components/BorrowerProfilePanel.jsx';
-import { CONDITION_TIMINGS, conditionStatusLabel, conditionStatusClass, timingLabel, loanConditionStatusLabel, audienceStamp } from '../lib/conditions-vocab.js';
+import { CONDITION_TIMINGS, conditionStatusLabel, conditionStatusClass, timingLabel, loanConditionStatusLabel, audienceStamp, audienceLabel } from '../lib/conditions-vocab.js';
 import { severityCount } from '../lib/findings-vocab.js';
 import { groupBySubject, subjectOf } from '../lib/condition-subjects.js';
 import { isWorkflowStep } from '../lib/condition-workflow-steps.js';
@@ -2754,11 +2754,14 @@ function BorrowerConditions({ appId, app, items, docs, onPatch, onReviewDoc, onD
             lets a processor see everything outstanding on the file at once. */}
         <label className="cond-filter">
           <span>Who sees it</span>
+          {/* The two answers mirror the row stamps exactly (conditions-vocab §4).
+              "Everyone" used to be the no-filter option — it read as "conditions
+              everyone sees", which is the OTHER option. */}
           <select className="input" value={audFilter} onChange={e => setAudFilter(e.target.value)}
-            title="Borrower-facing conditions, internal ones, or both together">
-            <option value="all">Everyone</option>
-            <option value="borrower">Borrower sees it</option>
-            <option value="internal">Internal only</option>
+            title="Conditions the borrower also sees, internal-only ones, or the whole list">
+            <option value="all">All conditions</option>
+            <option value="borrower">{audienceLabel('borrower')}</option>
+            <option value="internal">{audienceLabel('staff')}</option>
           </select>
         </label>
         <label className="cond-filter">
@@ -2890,6 +2893,13 @@ function BorrowerConditions({ appId, app, items, docs, onPatch, onReviewDoc, onD
               <div style={{ flex: 1 }}>
                 <div style={{ fontWeight: 600 }}>
                   {it.label}
+                  {/* WHO SEES IT stays visible when the row is open. Full screen
+                      opens every row, so without this the whole full-screen list
+                      lost its Internal + external / Internal only stamps — the
+                      compact line and the internal rows (Item) already carry it
+                      (owner-directed 2026-08-02). */}
+                  <span className={`aud ${audienceStamp(it.audience).cls}`} style={{ marginLeft: 8, verticalAlign: 'text-bottom' }}
+                    title={audienceStamp(it.audience).title}>{audienceStamp(it.audience).label}</span>
                   {/* Whose requirement this is, when it belongs to one capital
                       partner — derived from the rule, staff-only. */}
                   {it.note_buyer_mark && <span style={{ marginLeft: 8 }}><NoteBuyerMark it={it} /></span>}
@@ -4893,7 +4903,7 @@ function LoanConditionsPanel({ conds, condFilter, setCondFilter, cForm, setCForm
                   <div style={{ flex: 1 }}>
                     <div style={{ fontWeight: 600 }}>{c.title}</div>
                     <div className="muted small">
-                      {timing} · {c.audience === 'staff' ? 'Internal' : 'Borrower-facing'}
+                      {timing} · {audienceLabel(c.audience)}
                       {c.status !== 'open' ? ` · ${loanConditionStatusLabel(c.status).toLowerCase()}${c.cleared_by_name ? ` by ${c.cleared_by_name}` : ''}` : ''}
                       {open && c.reviewed_by_name ? ` · reviewed by ${c.reviewed_by_name}` : ''}
                       {c.waive_reason ? ` · ${c.waive_reason}` : ''}
@@ -4923,9 +4933,11 @@ function LoanConditionsPanel({ conds, condFilter, setCondFilter, cForm, setCForm
           <input className="input" placeholder="New condition — e.g. Verify owner of record on REO #3" value={cForm.title}
             onChange={e => setCForm({ ...cForm, title: e.target.value })} onKeyDown={e => e.key === 'Enter' && addLoanCondition()} style={{ marginBottom: 8 }} />
           <div className="row" style={{ gap: 8, flexWrap: 'wrap' }}>
-            <select className="input" style={{ maxWidth: 150 }} value={cForm.audience} onChange={e => setCForm({ ...cForm, audience: e.target.value })}>
-              <option value="staff">Internal</option>
-              <option value="both">Borrower-facing</option>
+            {/* Words from conditions-vocab §4 — two visibilities, never a bare
+                "External"/"Borrower-facing" (staff see everything). */}
+            <select className="input" style={{ maxWidth: 190 }} value={cForm.audience} onChange={e => setCForm({ ...cForm, audience: e.target.value })}>
+              <option value="staff">{audienceLabel('staff')}</option>
+              <option value="both">{audienceLabel('both')}</option>
             </select>
             {/* Stored values unchanged (conditions.severity CHECK constraint);
                 only the words the user reads come from the shared vocabulary. */}
