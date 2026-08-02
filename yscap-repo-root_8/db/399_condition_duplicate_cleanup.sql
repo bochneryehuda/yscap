@@ -1,6 +1,6 @@
 -- ============================================================================
--- 399 — Duplicate conditions: clean up the ones already created, and add the
---       structural guard so they cannot come back.
+-- 399 — Duplicate conditions: clean up the ones already created.
+--       (The live fix is the per-file advisory lock in conditions/engine.js.)
 --       Owner-reported 2026-08-02: "check if there is more than one EMD
 --       condition on a file … maybe on certain files if there's any potentials
 --       we can get more than 1 EMD condition."
@@ -21,9 +21,8 @@
 -- CorrFirst pair — the EMD condition is simply where it was noticed.
 --
 -- The live fix is the per-file advisory lock added to evaluateApplication in the
--- same change. This file handles the two things the lock cannot: the duplicates
--- ALREADY on files, and a structural backstop for any future insert path that
--- forgets to check.
+-- same change. This file handles the one thing the lock cannot: the duplicates
+-- ALREADY on files from before it existed.
 --
 -- (1) CLEAN UP — deliberately CONSERVATIVE. Only a duplicate that is provably
 --     UNTOUCHED is removed: engine-owned ('auto'), still 'outstanding', never
@@ -40,23 +39,33 @@
 --     re-run finds nothing. Audited per row, so the deletion is not only in a log
 --     line that scrolls away.
 --
--- (2) THE GUARD — a partial unique index on
---     (application_id, template_id, COALESCE(field_key,'')).
---     The key is NOT (application_id, template_id): the co-borrower CREDIT
---     condition deliberately puts a SECOND row of the same `rtl_cond_credit`
---     template on one file, told apart only by field_key (credit/co-condition.js),
---     and the draw conditions do the same with a draw marker. Including field_key
---     keeps every one of those legal and blocks only a true duplicate. Rows with
---     no template (a hand-typed condition, raise-issue.js, the co-borrower gov-ID)
---     are outside the index entirely.
+-- (2) NO UNIQUE INDEX — a deliberate decision, recorded so nobody re-adds one
+--     without knowing what it costs. A partial unique index on
+--     (application_id, template_id, COALESCE(field_key,'')) was built, tested and
+--     then REMOVED. It was correct about production: every real insert path
+--     already enforces one-row-per-(file, template) on its own — closing.js,
+--     vesting.js, appraisal/desk.js and underwriting.js all carry
+--     NOT EXISTS (... application_id AND template_id); the engine is guarded;
+--     co-condition.js and esign/draw-wire.js carry a distinct field_key; and
+--     staff.js's hand-typed conditions, borrower.js, staff-chat.js and
+--     raise-issue.js insert no template_id at all.
 --
---     It is created inside an exception handler ON PURPOSE. If a file still has a
---     duplicate whose copies have BOTH been worked, step 1 correctly refused to
---     touch it, and a bare CREATE UNIQUE INDEX would then throw — which at boot
---     means the whole service does not start. So a failure raises a NOTICE and
---     the boot continues on the advisory lock alone; the next boot tries again,
---     so the guard appears on its own once a human resolves the leftover. Never
---     replace this with an unguarded CREATE.
+--     What it was NOT correct about is the TEST SUITE. Instantiating one template
+--     twice on one file is a widespread fixture idiom — a cheap way to get two
+--     independent conditions to work on — and the index turned every one of those
+--     into a hard failure. Three suites broke before this was abandoned
+--     (notification-doc-verdict-dedup, condition-admin-override-db,
+--     evidence-reopen) and ~45 more instantiate templates in ways the scan could
+--     not clear. Fixing them means editing unrelated suites to add synthetic
+--     field_keys — which risks changing what those suites actually assert, and the
+--     safety net is worth more than a second layer under a lock that already
+--     closes the hole. The two suites already edited were reverted to exactly as
+--     their authors wrote them.
+--
+--     So the guarantee is the ADVISORY LOCK plus the per-path NOT EXISTS checks
+--     that were always there. If a future unguarded insert path is ever added,
+--     the fix is to guard that path — not to add an index the tests cannot live
+--     with.
 -- ============================================================================
 
 -- ---------------------------------------------------------------------------
@@ -113,22 +122,3 @@ logged AS (
   RETURNING 1
 )
 DELETE FROM checklist_items ci USING doomed d WHERE ci.id = d.id;
-
--- ---------------------------------------------------------------------------
--- (2) The structural guard. Guarded so a leftover worked-duplicate can never
---     stop the service booting (see the header — do not un-guard this).
--- ---------------------------------------------------------------------------
-DO $$
-BEGIN
-  BEGIN
-    CREATE UNIQUE INDEX IF NOT EXISTS checklist_items_one_per_template_uk
-      ON checklist_items (application_id, template_id, COALESCE(field_key, ''))
-      WHERE application_id IS NOT NULL AND template_id IS NOT NULL;
-  EXCEPTION WHEN unique_violation OR duplicate_table THEN
-    RAISE NOTICE '[399] duplicate conditions remain whose copies have BOTH been worked — '
-                 'the unique guard was not created this boot. The per-file advisory lock in '
-                 'conditions/engine.js still prevents new ones. Resolve the leftovers by hand '
-                 '(audit action condition_duplicate_removed lists what was auto-cleaned) and '
-                 'the guard will be created on the next boot.';
-  END;
-END $$;

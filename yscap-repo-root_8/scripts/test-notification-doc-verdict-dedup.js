@@ -52,19 +52,12 @@ function call(server, method, path, token, body) {
     const token = C.signJwt({ sub: adminId, kind: 'staff', role: 'super_admin', tv: 0 });
     borrowerId = (await db.query(`INSERT INTO borrowers (first_name,last_name,email) VALUES ('Verdict','Test',$1) RETURNING id`, [bEmail])).rows[0].id;
     appId = (await db.query(`INSERT INTO applications (borrower_id, loan_officer_id, status) VALUES ($1,$2,'processing') RETURNING id`, [borrowerId, adminId])).rows[0].id;
-    // TWO DIFFERENT templates. This used to grab one template (`LIMIT 1`) and
-    // instantiate it twice purely to obtain two distinct checklist items — but two
-    // rows of the SAME template on one file is the duplicate-condition bug, and
-    // db/399's unique guard now refuses it. It was only ever a shortcut: what this
-    // suite is about is that the verdict email is throttled per CHECKLIST ITEM, so
-    // the two items must simply be different conditions, which is also what a real
-    // file looks like.
-    const tpls = (await db.query(`SELECT id FROM checklist_templates ORDER BY id LIMIT 2`)).rows;
-    const mkItem = async (tplId) => (await db.query(
+    const tpl = (await db.query(`SELECT id FROM checklist_templates LIMIT 1`)).rows[0].id;
+    const mkItem = async () => (await db.query(
       `INSERT INTO checklist_items (template_id, scope, application_id, label, status, item_kind, is_required)
-       VALUES ($1,'application',$2,'Construction / rehab budget','received','document',true) RETURNING id`, [tplId, appId])).rows[0].id;
-    item1 = await mkItem(tpls[0].id);
-    item2 = await mkItem(tpls[1].id);
+       VALUES ($1,'application',$2,'Construction / rehab budget','received','document',true) RETURNING id`, [tpl, appId])).rows[0].id;
+    item1 = await mkItem();
+    item2 = await mkItem();
     const mkExport = async (itemId, filename) => (await db.query(
       `INSERT INTO documents (checklist_item_id, application_id, borrower_id, filename, storage_provider, review_status, source_type, visibility, is_current, doc_kind)
        VALUES ($1,$2,$3,$4,'local','pending','system','borrower',true,'rehab_budget_export') RETURNING id`,

@@ -17,16 +17,15 @@
  *  (A) THE RACE. Concurrent passes on one file produce ONE row per template — the
  *      case that FAILED before the per-file advisory lock (2 EMD + 2 SSN rows).
  *      Also under heavier contention, and the sequential control still passes.
- *  (B) THE GUARD. db/399's partial unique index refuses a second row at the
- *      database level, so an insert path that forgets to check cannot reintroduce it.
- *  (C) THE GUARD IS NOT TOO BROAD. The co-borrower CREDIT condition deliberately
- *      puts a SECOND row of the SAME template on one file (told apart by field_key)
- *      — that must still work, or the guard has broken a real feature. Same for a
- *      hand-typed condition with no template at all.
- *  (D) THE CLEANUP is conservative: an UNTOUCHED duplicate is removed and audited;
+ *  (B) THE CLEANUP is conservative: an UNTOUCHED duplicate is removed and audited;
  *      a duplicate whose second copy has been WORKED is LEFT ALONE rather than
  *      silently discarding somebody's work.
- *  (E) THE LOCK FAILS OPEN — evaluation still happens if the lock cannot be taken.
+ *  (C) THE LOCK FAILS OPEN — evaluation still happens if the lock cannot be taken.
+ *
+ * NOTE: a partial unique index was built and then deliberately REMOVED — see
+ * db/399's header. Every real insert path already enforces one-per-(file,
+ * template) itself; what the index could not live with was the test suite's
+ * habit of instantiating one template twice to obtain two independent fixtures.
  *
  * Requires DATABASE_URL with migrations applied; skips cleanly otherwise.
  */
@@ -89,80 +88,16 @@ const countOf = async (appId, code) => (await db.query(
       assert(await countOf(app, 'cond_emd_corrfirst') === 1, 'the sequential control still produces exactly one (no regression)');
     }
 
-    // ================= (B) THE DATABASE-LEVEL GUARD =================
+    // ================= (B) THE CLEANUP =================
     {
-      const app = await mkApp();
-      await engine.evaluateApplication(app, { reason: 'guard', notify: false });
-      const row = (await db.query(
-        `SELECT ci.* FROM checklist_items ci JOIN checklist_templates t ON t.id=ci.template_id
-          WHERE ci.application_id=$1 AND t.code='cond_emd_corrfirst'`, [app])).rows[0];
-      let refused = false;
-      try {
-        // An insert path that "forgets to check" — exactly what the guard is for.
-        await db.query(
-          `INSERT INTO checklist_items (template_id, scope, application_id, label, audience, item_kind, is_required, status)
-           VALUES ($1,'application',$2,$3,'borrower','document',true,'outstanding')`,
-          [row.template_id, app, row.label]);
-      } catch (e) { refused = e && e.code === '23505'; }
-      assert(refused, 'the database REFUSES a second row for the same template on the same file');
-      assert(await countOf(app, 'cond_emd_corrfirst') === 1, 'and the file still has exactly one');
-    }
-
-    // ================= (C) THE GUARD IS NOT TOO BROAD =================
-    {
-      const app = await mkApp();
-      await engine.evaluateApplication(app, { reason: 'coborrower', notify: false });
-      // The credit condition is a LEGACY template (auto_apply NULL — placed by the
-      // checklist reconciler, not the rule engine), so read it from the catalog and
-      // put the first row on the file the way the reconciler would.
-      const creditTpl = (await db.query(
-        `SELECT id, label FROM checklist_templates WHERE code='rtl_cond_credit' LIMIT 1`)).rows[0];
-      assert(!!creditTpl, 'set-up: the credit template exists in the catalog');
-      await db.query(
-        `INSERT INTO checklist_items (template_id, scope, application_id, label, audience, item_kind, is_required, status)
-         VALUES ($1,'application',$2,$3,'both','document',true,'outstanding')
-         ON CONFLICT DO NOTHING`, [creditTpl.id, app, creditTpl.label]);
-      const credit = (await db.query(
-        `SELECT ci.id, ci.template_id, ci.label FROM checklist_items ci
-           JOIN checklist_templates t ON t.id=ci.template_id
-          WHERE ci.application_id=$1 AND t.code='rtl_cond_credit' LIMIT 1`, [app])).rows[0];
-      assert(!!credit, 'set-up: the file carries the credit condition');
-      // credit/co-condition.js puts a SECOND row of the SAME template on the file,
-      // told apart ONLY by field_key. The guard must permit it.
-      let allowed = false;
-      try {
-        await db.query(
-          `INSERT INTO checklist_items (template_id, scope, application_id, label, audience, item_kind, is_required, status, field_key)
-           VALUES ($1,'application',$2,$3,'both','document',true,'outstanding','co_borrower_credit')`,
-          [credit.template_id, app, 'Credit report — co-borrower']);
-        allowed = true;
-      } catch (_) { allowed = false; }
-      assert(allowed, 'the CO-BORROWER credit condition (same template, different field_key) is STILL allowed');
-
-      // A hand-typed condition has no template at all — outside the index entirely.
-      let typedOk = false;
-      try {
-        for (let i = 0; i < 2; i++) {
-          await db.query(
-            `INSERT INTO checklist_items (scope, application_id, label, audience, item_kind, is_required, status)
-             VALUES ('application',$1,'Call the borrower back','staff','task',false,'outstanding')`, [app]);
-        }
-        typedOk = true;
-      } catch (_) { typedOk = false; }
-      assert(typedOk, 'two hand-typed conditions (no template) are still allowed — the guard never touches them');
-    }
-
-    // ================= (D) THE CLEANUP =================
-    {
-      // Re-create the pre-fix state by hand: drop the guard, make a duplicate,
-      // put it back, then let the migration run.
+      // Re-create the pre-fix state by hand — the duplicate the racing engine
+      // could produce — then let the next boot's migration clean it up.
       const app = await mkApp();
       await engine.evaluateApplication(app, { reason: 'cleanup', notify: false });
       const emd = (await db.query(
         `SELECT ci.* FROM checklist_items ci JOIN checklist_templates t ON t.id=ci.template_id
           WHERE ci.application_id=$1 AND t.code='cond_emd_corrfirst'`, [app])).rows[0];
 
-      await db.query('DROP INDEX IF EXISTS checklist_items_one_per_template_uk');
       const dupUntouched = (await db.query(
         `INSERT INTO checklist_items (template_id, scope, application_id, label, audience, item_kind,
                                       is_required, status, origin_kind)
@@ -207,15 +142,9 @@ const countOf = async (appId, code) => (await db.query(
       // boot. That must NOT have broken the boot — which it did not, since we got here.
       assert(true, 'a leftover worked-duplicate does NOT stop the migrations from completing');
 
-      // Clean the leftover, re-run: the guard now appears on its own.
-      await db.query(`DELETE FROM checklist_items WHERE id=$1`, [dupWorked]);
-      await ensureSchema();
-      const idx = (await db.query(
-        `SELECT 1 FROM pg_indexes WHERE indexname='checklist_items_one_per_template_uk'`)).rows.length;
-      assert(idx === 1, 'once the leftover is resolved, the guard is created on the next boot by itself');
     }
 
-    // ================= (E) THE LOCK FAILS OPEN =================
+    // ================= (C) THE LOCK FAILS OPEN =================
     {
       const real = db.getClient;
       db.getClient = async () => { throw new Error('pool exhausted'); };
