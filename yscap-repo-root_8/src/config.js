@@ -715,11 +715,14 @@ module.exports = {
   //   Xactus "Flood ReportX" (MISMO 2.4) — the ACTIVE flood-cert provider
   //   (owner-directed 2026-07-30, "much cheaper for us to use"). The Encompass
   //   flood provider is parked; FLOOD_ORDER_PROVIDER picks which the button uses.
-  //   Credentials default to a dedicated flood login; username/password fall back
-  //   to the shared credit login (same Xactus account). The flood ENDPOINT is its
-  //   own address — email Integrations@xactus.com for the flood endpoint + login.
+  //   USES THE SAME XACTUS LOGIN AS CREDIT — no separate flood credentials
+  //   (owner-directed 2026-07-30: "it's the same credentials, we don't need extra
+  //   credentials for flood"). The login AND the web address both fall back to the
+  //   credit connection (XACTUS_API_*), so with the credit integration set up,
+  //   flood needs nothing extra. Set XACTUS_FLOOD_API_URL ONLY if Xactus gave you a
+  //   SEPARATE flood endpoint different from the credit one.
   xactusFlood: {
-    endpoint: (process.env.XACTUS_FLOOD_API_URL || '').trim().replace(/\/+$/, ''),
+    endpoint: (process.env.XACTUS_FLOOD_API_URL || process.env.XACTUS_API_URL || '').trim().replace(/\/+$/, ''),
     username: (process.env.XACTUS_FLOOD_USERNAME || process.env.XACTUS_API_USERNAME || '').trim(),
     password: process.env.XACTUS_FLOOD_PASSWORD || process.env.XACTUS_API_PASSWORD || '',
     version:  (process.env.XACTUS_FLOOD_VERSION || '2.4').trim(),
@@ -728,9 +731,11 @@ module.exports = {
     product:  (process.env.XACTUS_FLOOD_PRODUCT || 'life').trim(),
     requestingParty: (process.env.XACTUS_REQUESTING_PARTY || 'YS Capital Group').trim(),
     dryrun:   process.env.XACTUS_FLOOD_DRYRUN === '1',
-    // Auth: 'query' (LoginAccountIdentifier/LoginAccountPassword URL params — the
-    // Postman-collection style, the flood default) or 'basic' (HTTP Basic header).
-    authMode: /^basic$/i.test((process.env.XACTUS_FLOOD_AUTH_MODE || process.env.XACTUS_AUTH_MODE || 'query').trim()) ? 'basic' : 'query',
+    // Auth style follows CREDIT by default (same login on the same connection):
+    // 'basic' (HTTP Basic header — the credit default) or 'query'
+    // (LoginAccountIdentifier/LoginAccountPassword URL params). Override with
+    // XACTUS_FLOOD_AUTH_MODE only if a separate flood endpoint needs a different style.
+    authMode: /^query$/i.test((process.env.XACTUS_FLOOD_AUTH_MODE || process.env.XACTUS_AUTH_MODE || 'basic').trim()) ? 'query' : 'basic',
   },
   // Which flood provider the "Order flood certificate" button uses.
   floodProvider: (process.env.FLOOD_ORDER_PROVIDER || 'xactus').trim().toLowerCase(),
