@@ -160,10 +160,10 @@ async function preflight() {
 }
 
 /** Make sure the ledger tables exist even if the web service has not deployed this migration yet.
- *  db/407 is idempotent, so running it here is free and means the cron job is never blocked. */
+ *  db/408 is idempotent, so running it here is free and means the cron job is never blocked. */
 async function ensureLedger() {
   try {
-    const sql = fs.readFileSync(path.join(__dirname, '..', 'db', '407_backup_runs.sql'), 'utf8');
+    const sql = fs.readFileSync(path.join(__dirname, '..', 'db', '408_backup_runs.sql'), 'utf8');
     await db.query(sql);
   } catch (e) {
     log(`could not ensure the backup ledger tables (${e.message}) — continuing; the backup does not depend on them`);
