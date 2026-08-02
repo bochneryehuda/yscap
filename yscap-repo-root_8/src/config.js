@@ -717,12 +717,15 @@ module.exports = {
   //   flood provider is parked; FLOOD_ORDER_PROVIDER picks which the button uses.
   //   USES THE SAME XACTUS LOGIN AS CREDIT — no separate flood credentials
   //   (owner-directed 2026-07-30: "it's the same credentials, we don't need extra
-  //   credentials for flood"). The login AND the web address both fall back to the
-  //   credit connection (XACTUS_API_*), so with the credit integration set up,
-  //   flood needs nothing extra. Set XACTUS_FLOOD_API_URL ONLY if Xactus gave you a
-  //   SEPARATE flood endpoint different from the credit one.
+  //   credentials for flood"). The LOGIN falls back to the credit connection
+  //   (XACTUS_API_USERNAME/PASSWORD) — same Xactus account. The WEB ADDRESS does
+  //   NOT fall back: Flood ReportX is MISMO 2.4 and credit is MISMO 3.4, which are
+  //   DIFFERENT endpoints on the Xactus360 gateway (credit …/uaweb/mismo3, flood
+  //   …/uaweb/mismo2), so XACTUS_FLOOD_API_URL MUST be set to the flood endpoint —
+  //   posting a 2.4 flood order to the 3.4 credit endpoint is rejected with no
+  //   reason (owner-reported 2026-08-02). It does NOT fall back to XACTUS_API_URL.
   xactusFlood: {
-    endpoint: (process.env.XACTUS_FLOOD_API_URL || process.env.XACTUS_API_URL || '').trim().replace(/\/+$/, ''),
+    endpoint: (process.env.XACTUS_FLOOD_API_URL || '').trim().replace(/\/+$/, ''),
     username: (process.env.XACTUS_FLOOD_USERNAME || process.env.XACTUS_API_USERNAME || '').trim(),
     password: process.env.XACTUS_FLOOD_PASSWORD || process.env.XACTUS_API_PASSWORD || '',
     version:  (process.env.XACTUS_FLOOD_VERSION || '2.4').trim(),
