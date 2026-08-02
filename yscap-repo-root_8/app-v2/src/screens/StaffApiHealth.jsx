@@ -311,6 +311,117 @@ function ConfirmModal({ pending, text, setText, busy, onCancel, onConfirm }) {
   );
 }
 
+/* Document-mirror scoreboard + backfill controls (platform_setup). Plain-English
+   proof of "is every document in SharePoint?" — total documents vs how many are
+   in SharePoint vs waiting vs stuck — plus a one-click "Copy everything now" (a
+   full sweep) and "Retry stuck ones" (re-drive every document that was set aside
+   after repeated failures). Wired to the existing, tested admin/sharepoint
+   reconciliation + mirror + retry-exhausted endpoints. The req() helper throws
+   with the structured body on e.data, so a plain-English reason always shows and
+   a raw code never reaches the owner. */
+function MirrorBackfillPanel() {
+  const [recon, setRecon] = useState(null);
+  const [loading, setLoading] = useState(true);
+  const [err, setErr] = useState('');
+  const [busy, setBusy] = useState(null);      // 'sweep' | 'retry' | 'refresh'
+  const [msg, setMsg] = useState('');
+  const [notEnabled, setNotEnabled] = useState(false);
+
+  const load = useCallback(async () => {
+    setErr(''); setBusy('refresh');
+    try { const r = await api.sharepointReconciliation(); setRecon(r); setNotEnabled(false); }
+    catch (e) {
+      const data = (e && e.data) || {};
+      if (/not enabled/i.test(data.error || e.message || '')) setNotEnabled(true);
+      else setErr(data.error || e.message || 'Could not load the mirror status.');
+    } finally { setLoading(false); setBusy(null); }
+  }, []);
+  useEffect(() => { load(); }, [load]);
+
+  const runSweep = async () => {
+    setBusy('sweep'); setMsg(''); setErr('');
+    try { await api.sharepointRunSweep(); setMsg('Started copying everything now — it works through the list in the background. Give it a moment, then Refresh to watch the numbers move.'); setTimeout(load, 4000); }
+    catch (e) { setErr((e && e.data && e.data.error) || e.message || 'Could not start the copy.'); }
+    finally { setBusy(null); }
+  };
+  const retryStuck = async () => {
+    setBusy('retry'); setMsg(''); setErr('');
+    try { const r = await api.sharepointRetryStuck(); setMsg(`Re-queued ${(r && r.requeued) || 0} stuck document(s) to try again. Refresh in a moment to watch them clear.`); setTimeout(load, 4000); }
+    catch (e) { setErr((e && e.data && e.data.error) || e.message || 'Could not retry the stuck ones.'); }
+    finally { setBusy(null); }
+  };
+
+  const n = (v) => (v == null ? '—' : Number(v).toLocaleString());
+  const waiting = recon ? Number(recon.pending || 0) : 0;
+  const stuck = recon ? Number(recon.exhausted || 0) : 0;
+  const skipped = recon ? Number(recon.skipped || 0) : 0;
+  const oldestHrs = recon ? recon.oldest_pending_hours : null;
+  const allClear = recon && waiting === 0 && stuck === 0;
+  const tiles = recon ? [
+    { label: 'Total documents', value: n(recon.total_docs), tone: null },
+    { label: 'In SharePoint', value: n(recon.mirrored), tone: 'good' },
+    { label: 'Waiting to copy', value: n(recon.pending), tone: waiting > 0 ? 'warn' : null },
+    { label: 'Stuck', value: n(recon.exhausted), tone: stuck > 0 ? 'bad' : null },
+  ] : [];
+  const toneBg = { good: 'rgba(63,122,91,.08)', warn: '#F6EEDD', bad: '#F6E7E4' };
+
+  return (
+    <section style={{ marginTop: 22 }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap', marginBottom: 2 }}>
+        <h3 style={{ fontFamily: 'var(--serif,Georgia,serif)', margin: 0 }}>Document mirror — SharePoint</h3>
+        <button className="btn ghost small" disabled={busy != null} onClick={load}>{busy === 'refresh' ? 'Checking…' : 'Refresh'}</button>
+      </div>
+      <div style={{ border: '1px solid var(--line,#E7E1D3)', borderLeft: '4px solid #2F7F86', borderRadius: 12,
+        background: 'var(--card,#fff)', padding: '14px 16px', marginTop: 8 }}>
+        <p className="small" style={{ margin: '0 0 12px', maxWidth: 760, color: '#4B585C' }}>
+          Every document PILOT saves is copied into your team SharePoint site. This is the live scoreboard — how many are
+          already in SharePoint, how many are waiting, and how many are stuck. Use <b>Copy everything now</b> to force a full
+          sweep, and <b>Retry stuck ones</b> to re-try any that were set aside after repeated failures. Anything still stuck
+          also appears in your review queue and emails the team.
+        </p>
+
+        {notEnabled ? (
+          <div style={{ fontSize: 12.5, color: '#B7791F', background: '#F6EEDD',
+            border: '1px solid var(--line,#E7E1D3)', borderRadius: 8, padding: '10px 12px' }}>
+            The SharePoint mirror is switched off on this server. Turn it on in the “SharePoint (document mirror)” card above to start copying.
+          </div>
+        ) : loading ? (
+          <p style={{ color: '#4B585C' }}>Loading the scoreboard…</p>
+        ) : recon ? (
+          <>
+            <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap' }}>
+              {tiles.map((t) => (
+                <div key={t.label} style={{ border: '1px solid var(--line,#E7E1D3)', borderRadius: 10, padding: '10px 14px',
+                  minWidth: 120, background: t.tone ? toneBg[t.tone] : '#fff' }}>
+                  <div style={{ fontSize: 22, fontWeight: 800, color: '#141B22' }}>{t.value}</div>
+                  <div style={{ fontSize: 11, fontWeight: 700, letterSpacing: '.03em', textTransform: 'uppercase', color: '#4B585C' }}>{t.label}</div>
+                </div>
+              ))}
+            </div>
+            <div style={{ marginTop: 10, fontSize: 12.5, color: allClear ? '#3F7A5B' : '#4B585C' }}>
+              {allClear
+                ? '✓ Everything saved is in SharePoint — nothing waiting, nothing stuck.'
+                : `${waiting > 0 ? `${n(waiting)} waiting${oldestHrs != null ? ` (oldest ${oldestHrs}h)` : ''}. ` : ''}${stuck > 0 ? `${n(stuck)} stuck — use “Retry stuck ones” below.` : ''}`}
+              {skipped > 0 && <span style={{ color: '#8A939A' }}> · {n(skipped)} not mirrored on purpose (e.g. Heter Iska, appraisal photos).</span>}
+            </div>
+          </>
+        ) : null}
+
+        {!notEnabled && (
+          <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginTop: 14 }}>
+            <button className="btn" disabled={busy != null} onClick={runSweep}>{busy === 'sweep' ? 'Starting…' : 'Copy everything now'}</button>
+            <button className="btn ghost" disabled={busy != null} onClick={retryStuck}>{busy === 'retry' ? 'Retrying…' : 'Retry stuck ones'}</button>
+          </div>
+        )}
+
+        {msg && <div style={{ marginTop: 12, fontSize: 12.5, color: '#256168', background: 'rgba(47,127,134,.10)',
+          border: '1px solid var(--line,#E7E1D3)', borderRadius: 8, padding: '10px 12px' }}>{msg}</div>}
+        {err && <div style={{ marginTop: 12, fontSize: 12.5, color: '#B4483C' }}>{err}</div>}
+      </div>
+    </section>
+  );
+}
+
 export default function StaffApiHealth() {
   const { role } = useAuth();
   const [data, setData] = useState(null);
@@ -417,6 +528,11 @@ export default function StaffApiHealth() {
           {checkedAt && <span className="muted small" style={{ alignSelf: 'center' }}>Last checked {checkedAt}</span>}
         </div>
       )}
+
+      {/* The document-mirror scoreboard + backfill controls — front and center,
+          because "is every document in SharePoint?" is the question this page most
+          needs to answer at a glance. Loads its own data independent of the list. */}
+      <MirrorBackfillPanel />
 
       {loading && <p className="muted">Checking every integration…</p>}
 
