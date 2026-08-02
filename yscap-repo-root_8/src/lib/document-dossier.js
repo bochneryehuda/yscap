@@ -364,6 +364,8 @@ const ev = (at, code, title, opts) => ({
   tone: (opts && opts.tone) || 'info',
   detail: (opts && opts.detail) || null,
   actor: (opts && opts.actor) || null,
+  // The real human behind a borrower-view session, when there was one.
+  impersonator: (opts && opts.impersonator) || null,
   source: (opts && opts.source) || 'document',
 });
 
@@ -424,9 +426,17 @@ function buildTimeline(input) {
     if (d.pageCount) bits.push(`${d.pageCount} page${Number(d.pageCount) === 1 ? '' : 's'}`);
     if (d.filename && action !== 'upload_document') bits.push(String(d.filename));
     if (d.wasMirrored) bits.push('It had already been mirrored to SharePoint.');
+    // ON-BEHALF-OF. An action taken inside a borrower-view session is recorded
+    // under the BORROWER's identity — which is correct, that is who the session
+    // ran as — so naming only the actor tells the reader a borrower did
+    // something a staff member did. Name the real human, and mark the row, so
+    // it can never be read as the borrower's own act.
+    const onBehalf = trimmed(a.impersonator_name);
+    if (onBehalf) bits.unshift(`⚠️ Done by ${onBehalf} while signed in as this borrower.`);
     out.push(ev(a.created_at, action, meta.title, {
-      icon: meta.icon, tone: meta.tone, source: 'audit',
+      icon: meta.icon, tone: onBehalf ? 'warn' : meta.tone, source: 'audit',
       actor: actorLabel(a.actor_kind, a.actor_name),
+      impersonator: onBehalf || null,
       detail: bits.join(' · ') || null,
     }));
   }
@@ -733,6 +743,7 @@ function buildAccess(requests, audits) {
       status: r.status == null ? null : Number(r.status),
       ip: r.ip || null,
       denied: Number(r.status) === 403 || Number(r.status) === 401,
+      impersonator: trimmed(r.impersonator_name) || null,
     });
   }
   const seen = new Set(out.map((a) => `${a.at}`));
@@ -744,6 +755,7 @@ function buildAccess(requests, audits) {
       who: trimmed(a.actor_name) || (ACTOR_KIND[trimmed(a.actor_kind)] || 'unknown'),
       role: null, what: 'Downloaded the document', status: 200,
       ip: a.ip_address || null, denied: false,
+      impersonator: trimmed(a.impersonator_name) || null,
     });
   }
   return out.sort((x, y) => new Date(y.at || 0) - new Date(x.at || 0)).slice(0, 100);
