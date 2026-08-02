@@ -184,6 +184,42 @@ const propByAddress = async (street) => (await db.query(
       [borrower, JSON.stringify({ line1: '26 S 10th St', city: TOWN, state: 'NJ' })])).rows[0].id;
     const imp = await importAppraisal(D, { applicationId: appId, xml });
     ok(imp.ok, 'the SAME report imports onto a loan file the normal way');
+
+    // THIS IS ALSO THE CI COVERAGE FOR THE SHARED ROW-SHAPING. `appraisalRowFrom`
+    // and `comparableRowFrom` were factored out of this importer so the upload door
+    // could reuse them; the appraisal suites that would normally guard the loan-file
+    // importer all SKIP without the real corpus, which is not in the repository. So
+    // the loan-file path is asserted here, on the synthetic report, rather than
+    // being left unproven on every deploy.
+    const stored = (await db.query(
+      `SELECT form_type, subject_address, subject_city, gla, beds, year_built,
+              condition_uad, quality_uad, appraiser_name, license_id, effective_date,
+              as_is_value, lot_area
+         FROM appraisals WHERE id = $1`, [imp.appraisalId])).rows[0];
+    ok(stored && stored.subject_address === '26 S 10th St' && stored.form_type === 'FNM1004'
+      // `year_built` is a TEXT column on appraisals (the parser keeps it as the
+      // digits it read); compare it as a number so the assertion says what it means.
+      && Number(stored.gla) === 1520 && stored.beds === 3 && Number(stored.year_built) === 1962
+      && stored.condition_uad === 'C3' && stored.quality_uad === 'Q4'
+      && stored.license_id === LIC && stored.effective_date === '2026-05-14'
+      && Number(stored.as_is_value) === 430000,
+    'the appraisal row carries every fact the parser read — the shared shaping is unchanged');
+    const storedComps = (await db.query(
+      `SELECT seq, address, sale_price, adjusted_price, gla, sale_date, condition_uad,
+              beds, baths, days_on_market, gross_adj_pct, adjustments, comp_set
+         FROM appraisal_comparables WHERE appraisal_id = $1 AND is_subject = false ORDER BY seq`,
+      [imp.appraisalId])).rows;
+    ok(storedComps.length === 2, 'both comparables are stored against the file');
+    ok(storedComps[0] && storedComps[0].address === '12 Elm St'
+      && Number(storedComps[0].sale_price) === 415000 && Number(storedComps[0].adjusted_price) === 421000
+      && Number(storedComps[0].gla) === 1480 && storedComps[0].condition_uad === 'C3'
+      && storedComps[0].beds === 3 && storedComps[0].baths === '2.1'
+      && storedComps[0].days_on_market === '21'
+      && Array.isArray(storedComps[0].adjustments) && storedComps[0].adjustments.length > 0,
+    'with the whole grid line — price, adjusted price, size, condition, rooms, days on market and the adjustments');
+    ok((await db.query(`SELECT year_built, living_area_sqft FROM applications WHERE id=$1`, [appId])).rows[0].year_built === 1962,
+      'and the import still fills the loan file\'s own facts from the report');
+
     await ingest.ingestAppraisal(D, imp.appraisalId);
 
     const hdr2 = (await db.query(`SELECT * FROM research_imports WHERE id = $1`, [r1.importId])).rows[0];
