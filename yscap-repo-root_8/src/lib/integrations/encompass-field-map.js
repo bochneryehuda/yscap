@@ -388,6 +388,34 @@ function comparableKeys() {
 // read them BY NUMBER instead of guessing where each one lives in the loan JSON.
 function allFieldIds() { return REGISTRY.map((e) => e.encompassFieldId).filter(Boolean); }
 
+// Every STANDARD Encompass field id in IDENTITY_MAP, for BOTH the borrower and the
+// co-borrower (owner-directed 2026-08-02, file YSCAP258134762). Handed to the
+// fieldReader so borrower/co-borrower name, DOB, email, phone AND SSN can be read BY
+// NUMBER — the same by-number read economics uses for 1859/388, applied at PARTY
+// granularity: reconcile.compareIdentity uses these to RECOVER A WHOLE PARTY the stored
+// applications[] subtree left out (it does not per-field re-heal a party already present).
+// A snapshot pulled BEFORE the co-borrower was added, or one whose co-borrower name is at
+// a non-standard path (so the party reads as unnamed and drops out), would otherwise leave
+// every co-borrower field reading "no data to compare" and BLOCK-holding the term sheet —
+// the identity subtree, unlike economics, had no by-number read and no self-heal.
+// Derived from IDENTITY_MAP.stdFieldId so it can never drift from the map. The SSN ids
+// (65/97) ARE included, but the raw value is HASHED + stripped in the impure reader
+// layer (reader.scrubFieldValuesSsn) before anything is stored — plaintext SSN is never
+// kept in encompass_extra, exactly as _scrubForStorage guarantees for the loan subtree.
+function identityFieldIds() {
+  const ids = [];
+  for (const e of IDENTITY_MAP) {
+    const s = e.stdFieldId;
+    if (!s) continue;
+    for (const slot of ['borrower', 'coBorrower']) {
+      const v = s[slot];
+      if (Array.isArray(v)) { for (const x of v) if (x != null && x !== '') ids.push(String(x)); }
+      else if (v != null && v !== '') ids.push(String(v));
+    }
+  }
+  return [...new Set(ids)];
+}
+
 // Normalize a raw Encompass fieldReader response into a flat { fieldId: value } map,
 // regardless of which wire shape it arrived in. This exists because the shape is NOT
 // stable across API versions / gateways (VERIFIED LIVE 2026-07-26 on the tenant):
@@ -438,6 +466,13 @@ function flattenLoan(rawLoan) {
   if (authoritative) {
     for (const [id, v] of Object.entries(authoritative)) {
       if (v === undefined || v === null || v === '') continue;
+      // REGISTRY-mapped ids ONLY (economics). `_fieldValues` now ALSO carries borrower/
+      // co-borrower identity read by number (name/DOB/email/phone + the keyed-HMAC SSN +
+      // the `_idRead` marker) for the missing-co-borrower recovery in
+      // reconcile.compareIdentity — which reads `_fieldValues` DIRECTLY. Those keys must
+      // never leak into the economics extract or the super-admin raw diagnostic, so
+      // flattenLoan stays registry-only exactly as its header documents.
+      if (!KNOWN_FIELD_IDS.has(id)) continue;
       out[id] = { value: v };
     }
   }
@@ -696,6 +731,7 @@ module.exports = {
   extractFields,
   flattenLoan,
   allFieldIds,
+  identityFieldIds,
   fieldReaderToMap,
   mapValue,
   compareField,
