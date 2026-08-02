@@ -13192,13 +13192,22 @@ router.get('/documents/:id/dossier', async (req, res) => {
       }),
       safe(async () => {
         const r = await db.query(
+          // ON-BEHALF-OF. `impersonator_staff_id` (db/320) is stamped whenever a
+          // staffer acts inside a borrower-view session. Without this join the
+          // dossier names the BORROWER as the person who uploaded or accepted a
+          // document a staff member actually handled — the same hole the file
+          // audit log closed, left open here. The user agent rides along too:
+          // "which device did this arrive from" is a routine custody question.
           `SELECT al.created_at, al.action, al.actor_kind, al.detail, al.ip_address,
+                  al.user_agent,
+                  NULLIF(imp.full_name,'') AS impersonator_name,
                   COALESCE(NULLIF(s.full_name,''),
                            NULLIF(b.full_name,''),
                            NULLIF(btrim(COALESCE(b.first_name,'')||' '||COALESCE(b.last_name,'')),'')) AS actor_name
              FROM audit_log al
              LEFT JOIN staff_users s ON al.actor_kind='staff' AND s.id=al.actor_id
              LEFT JOIN borrowers b ON al.actor_kind='borrower' AND b.id=al.actor_id
+             LEFT JOIN staff_users imp ON imp.id = al.impersonator_staff_id
             WHERE (al.entity_type='document' AND al.entity_id=$1)
                OR (al.detail->>'documentId' = $1::text)
             ORDER BY al.created_at LIMIT 200`, [doc.id]);
@@ -13281,9 +13290,14 @@ router.get('/documents/:id/dossier', async (req, res) => {
       // when, and from where. The request log is richer than the audit row
       // (it has the IP and the outcome of every attempt, including refusals).
       safe(async () => (await db.query(
+        // Same on-behalf-of rule as the audit trail above: a staffer who
+        // previewed or downloaded this inside a borrower-view session must not
+        // appear in the ledger as the borrower. This is the half of the ledger
+        // an exfiltration question is actually asked of.
         `SELECT ra.at, ra.method, ra.path, ra.status, ra.actor_kind, ra.actor_email,
-                ra.actor_role, ra.ip
+                ra.actor_role, ra.ip, NULLIF(rimp.full_name,'') AS impersonator_name
            FROM request_audit_log ra
+           LEFT JOIN staff_users rimp ON rimp.id = ra.impersonator_staff_id
           WHERE ra.entity_id=$1 ORDER BY ra.at DESC LIMIT 100`, [doc.id])).rows),
     ]);
 

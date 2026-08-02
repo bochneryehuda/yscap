@@ -94,6 +94,55 @@ const FAKE = '00000000-0000-0000-0000-0000000000ff';
   else if (!/notifications/.test(meta.label)) bad(`the warning does not name the broken trail: ${meta.label}`);
   else ok('a broken trail is reported at the TOP, naming itself');
 
+  // ── 3b. A TRUNCATED LOG SAYS SO ─────────────────────────────────────────
+  // The completeness row only ever fired when a trail THREW. A busy file simply
+  // has more events than the limit, so the oldest were dropped by the slice and
+  // the page asserted nothing was missing — the counts, the search and the
+  // people list describing the WINDOW while reading as if they described the
+  // FILE. That is the one thing an audit log may not do, and it goes wrong
+  // precisely on the files worth auditing. Needs its own noisy file.
+  {
+    const bId = (await db.query(
+      `INSERT INTO borrowers (first_name,last_name,email) VALUES ('Trunc','Test',$1) RETURNING id`,
+      [`trunc-${Date.now()}@test.local`])).rows[0].id;
+    const noisy = (await db.query(
+      `INSERT INTO applications (borrower_id,status,property_address)
+       VALUES ($1,'underwriting','{"line1":"2 Noisy Way"}') RETURNING id`, [bId])).rows[0].id;
+    for (let i = 0; i < 80; i++) {
+      await db.query(
+        `INSERT INTO audit_log (actor_kind,action,entity_type,entity_id,detail)
+         VALUES ('staff','edit_application','application',$1,'{}'::jsonb)`, [noisy]);
+    }
+    // Two ways a log can be short, and BOTH must announce themselves: the outer
+    // window drops the oldest merged events, and a single source hits its own
+    // cap (which is what happens first when one source dominates the file).
+    const tiny = await activity.staffFeed(noisy, { limit: 50 });
+    const short = tiny.find((r) => r && r.source === 'meta'
+      && /(TRUNCATED|PARTIAL)/.test(r.verb || ''));
+    if (!short) bad('the feed returned a short log and claimed to be complete');
+    else if (tiny[0].source !== 'meta') bad('the shortfall warning was not at the top');
+    else if (!short.detail) bad('the warning carries no detail to act on');
+    else ok(`a short log reports it at the TOP: "${short.verb}"`);
+
+    // And the trail that was cut must NAME ITSELF, so the reader knows which
+    // part of the record is partial rather than being told the whole log is.
+    const capped = tiny.find((r) => r && r.source === 'meta' && /PARTIAL/.test(r.verb || ''));
+    if (!capped) bad('no trail reported hitting its own limit');
+    else if (!/audit log/.test(capped.label || '')) bad(`the warning does not name the cut trail: ${capped.label}`);
+    else ok('the trail that hit its own limit names itself');
+
+    // The warning is added AFTER the slice, so truncation can never throw away
+    // the very row that announces it.
+    const full = await activity.staffFeed(noisy, { limit: 2000 });
+    if (full.some((r) => r && r.source === 'meta' && /TRUNCATED/.test(r.verb || ''))) {
+      bad('a complete feed falsely reported itself truncated');
+    } else ok('a complete feed makes no truncation claim');
+
+    await db.query(`DELETE FROM audit_log WHERE entity_id=$1`, [noisy]);
+    await db.query(`DELETE FROM applications WHERE id=$1`, [noisy]);
+    await db.query(`DELETE FROM borrowers WHERE id=$1`, [bId]);
+  }
+
   // ── 4. THE BORROWER FEED IS STRUCTURALLY SEPARATE ───────────────────────
   // Widening the staff log must never be able to leak an internal action onto
   // a borrower screen, so the two paths may not share a query.

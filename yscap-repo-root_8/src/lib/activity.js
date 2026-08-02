@@ -562,7 +562,7 @@ async function auditEvents(appId, limit) {
               (SELECT id FROM checklist_items WHERE application_id=$1
                UNION ALL SELECT id FROM conditions WHERE application_id=$1))
       ORDER BY al.created_at DESC LIMIT $2`, [appId, limit]);
-  return r.rows.map((a) => {
+  const events = r.rows.map((a) => {
     const d = parseDetail(a.detail);
     const known = AUDIT_RENDER[a.action];
     const meta = describeAction(a.action);
@@ -592,6 +592,9 @@ async function auditEvents(appId, limit) {
       detail: d, ip: a.ip_address, user_agent: a.user_agent,
     });
   });
+  // The audit log is the biggest source on a busy file and caps independently
+  // of the outer window, so it is the one most likely to be quietly short.
+  return withRowCount(events, r.rows.length, limit);
 }
 
 // ── 6. Notifications raised on this file ───────────────────────────────────
@@ -1488,7 +1491,29 @@ async function trailEvents(appId, trail) {
   for (const rec of r.rows) {
     for (const e of (trail.map(rec) || [])) if (e && e.at) out.push(e);
   }
-  return out;
+  // The number of EVENTS is not the number of ROWS — one envelope emits a sent,
+  // a signed and a voided event — so the truncation check below cannot count
+  // events. Report the raw row count so it can tell "this trail hit its LIMIT"
+  // from "this trail is chatty".
+  return withRowCount(out, r.rows.length, capOf(trail.sql));
+}
+
+/**
+ * Tag a source's events with what its own query actually read, so `staffFeed`
+ * can report a trail that hit its LIMIT. Non-enumerable: this must never reach
+ * the wire or change how the array behaves anywhere else.
+ */
+function withRowCount(events, rows, cap) {
+  if (!cap) return events;
+  Object.defineProperty(events, '__rows', { value: rows, enumerable: false });
+  Object.defineProperty(events, '__cap', { value: cap, enumerable: false });
+  return events;
+}
+
+/** The LIMIT a trail's own SQL declares, so the cap is never restated by hand. */
+function capOf(sql) {
+  const m = /LIMIT\s+(\d+)\s*$/i.exec(String(sql || '').trim());
+  return m ? Number(m[1]) : null;
 }
 
 // ── 12. The request log — every HTTP call that touched this file ───────────
@@ -1543,18 +1568,65 @@ async function staffFeed(appId, opts) {
     ...(o.includeRequests ? [['requests', () => requestEvents(appId, Math.min(limit, 500))]] : []),
   ];
   const lists = await mapLimit(jobs, DB_FANOUT, ([name, fn]) => source(name, fn, problems));
-  const all = [].concat(...lists)
-    .sort((a, b) => new Date(b.at || 0) - new Date(a.at || 0))
-    .slice(0, limit);
-  // COMPLETENESS. A source that could not be read is REPORTED at the TOP — an
-  // audit log with a silent hole in it is worse than one that says where the
-  // hole is. This is what lets a reader trust the rest of the page.
+  const merged = [].concat(...lists)
+    .sort((a, b) => new Date(b.at || 0) - new Date(a.at || 0));
+  const all = merged.slice(0, limit);
+
+  // COMPLETENESS. Two DIFFERENT ways this log can be short of the truth, and
+  // both are reported at the TOP — an audit log with a silent hole in it is
+  // worse than one that says where the hole is. This is what lets a reader
+  // trust the rest of the page.
+  //
+  // The meta rows are added AFTER the slice on purpose: the warning must
+  // never be the row that truncation throws away.
+
+  // (1) A TRAIL THREW. Its whole table is missing from the log.
   if (problems.length) {
     all.unshift(row({
       at: null, kind: 'security', cat: 'other', source: 'meta', actor: 'system',
       verb: `could not read ${problems.length} of the file's trails — this log is INCOMPLETE`,
       label: problems.join('\n'),
       detail: { unreadableSources: problems },
+    }));
+  }
+
+  // (2) THE WINDOW IS TRUNCATED — the failure the first version could not see.
+  // `problems` only ever caught a source that THREW. A busy file simply has
+  // more events than `limit`, so the oldest were dropped by the slice above
+  // and the page asserted nothing was missing: the category counts, the
+  // search and the actor list all describe the WINDOW while reading as if
+  // they described the FILE. That is the one thing an audit log may not do,
+  // and it goes wrong precisely on the files worth auditing.
+  if (merged.length > all.length) {
+    const oldest = all.length ? all[all.length - 1].at : null;
+    all.unshift(row({
+      at: null, kind: 'security', cat: 'other', source: 'meta', actor: 'system',
+      verb: `showing the most recent ${all.length} of ${merged.length} events — this log is TRUNCATED`,
+      label: [
+        oldest ? `Nothing before ${new Date(oldest).toLocaleString()} is on this page.` : null,
+        'Everything below — the counts, the search and the people list — describes only what is shown, not the whole file.',
+        'Raise the limit or narrow the dates to see earlier activity.',
+      ].filter(Boolean).join('\n'),
+      detail: { shown: all.length, matched: merged.length, limit, oldestShown: oldest },
+    }));
+  }
+
+  // (3) A SINGLE TRAIL HIT ITS OWN CAP. Each source caps independently, so a
+  // file with 900 audit rows loses 100 of them even when the merged total is
+  // under `limit` and (2) stays silent. Reported by NAME so the reader knows
+  // which part of the record is partial, rather than being told the whole log
+  // is short and left to guess where.
+  // A source only reports here if it MEASURED itself (see withRowCount) — a
+  // source that cannot say how many rows it read is never guessed about.
+  const capped = jobs
+    .map((j, i) => ({ name: j[0], rows: lists[i] && lists[i].__rows, cap: lists[i] && lists[i].__cap }))
+    .filter((s) => s.cap && s.rows >= s.cap);
+  if (capped.length) {
+    all.unshift(row({
+      at: null, kind: 'security', cat: 'other', source: 'meta', actor: 'system',
+      verb: `${capped.length} of the file's trails hit their own limit — those parts are PARTIAL`,
+      label: capped.map((s) => `${s.name}: read ${s.rows} records, which is all this page reads — there may be older ones`).join('\n'),
+      detail: { cappedSources: capped },
     }));
   }
   return all;
