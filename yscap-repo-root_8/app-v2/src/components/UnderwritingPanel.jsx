@@ -31,6 +31,10 @@ const DOC_LABEL = {
   // carry these sources — label them clearly so they read as "investor-specific" in the one list.
   investor_guideline: 'Investor-specific guideline', investor_guideline_desk: 'Investor-specific guideline',
   investor_guideline_ai: 'Investor-specific guideline (AI)',
+  // The chain desks. Without these the finding line reads "assignment chain" / "chain of title" —
+  // the underscore-replace fallback — which is legible but looks unfinished next to every other
+  // labelled source.
+  assignment_chain: 'Assignment chain', chain_of_title: 'Chain of title', seller_chain: 'Purchase chain',
 };
 const label = (t) => DOC_LABEL[t] || String(t || '').replace(/_/g, ' ');
 
@@ -784,11 +788,18 @@ function TieOutMatrix({ tieout }) {
                     </td>
                     {row.cells.map((cell, i) => {
                       const cfg = CELL[cell.status] || CELL.noref;
+                      // On a wholesale deal "the seller" has more than one right answer, so the cell
+                      // says WHICH seller it is — the original owner, or the wholesaler in the middle
+                      // selling the contract on (owner-directed 2026-08-02).
+                      const roleLabel = cell.role === 'flipper' ? 'flipper' : (cell.role === 'original_seller' ? 'original seller' : null);
                       return (
-                        <td key={i} style={cellStyle(cell.status)} title={cell.status}>
+                        <td key={i} style={cellStyle(cell.status)} title={roleLabel ? `${cell.status} — ${roleLabel}` : cell.status}>
                           {cell.value != null
                             ? <span>{cfg.mark && <b style={{ marginRight: 4 }}>{cfg.mark}</b>}{cell.value}</span>
                             : <span style={{ color: cfg.fg }}>{cfg.mark || ''}</span>}
+                          {roleLabel && cell.value != null
+                            ? <div style={{ fontSize: 10, color: '#4B585C', marginTop: 1 }}>{roleLabel}</div>
+                            : null}
                         </td>
                       );
                     })}
@@ -1182,6 +1193,101 @@ function ChainOfTitle({ chainOfTitle }) {
           );
         })}
       </div>
+    </div>
+  );
+}
+
+// ASSIGNMENT / WHOLESALE CHAIN — the three bodies on a flip and the two legs of paper between them
+// (owner-directed 2026-08-02). Chain of title above answers "does ownership line up"; this answers
+// the money question next to it: the seller's original price on leg 1, and the flip fee — or the
+// final price, whichever the paper states — on leg 2, each shown against what the loan file says.
+function AssignmentChain({ assignmentChain }) {
+  const legs = (assignmentChain && assignmentChain.legs) || [];
+  if (!legs.length) return null;   // a straight purchase has no flipper and no second leg
+  const st = CHAIN[assignmentChain.status] || CHAIN.incomplete;
+  const m = assignmentChain.money || { file: {}, documents: {} };
+  const money = (n) => (n == null ? '—' : `$${Math.round(n).toLocaleString('en-US')}`);
+  const MARK = { true: { t: '✓', fg: 'var(--good,#3F7A5B)' }, false: { t: '✕', fg: 'var(--crit,#B4483C)' } };
+  const mark = (v) => MARK[String(v)] || { t: '·', fg: '#4B585C' };
+  const names = (a) => ((a && a.length) ? a.join(' / ') : '—');
+  const rows = [
+    { label: "Seller's original price", doc: m.documents.underlying, file: m.file.underlying, ok: m.underlyingAgrees,
+      note: m.documents.underlyingFrom ? `from ${m.documents.underlyingFrom}` : null },
+    { label: 'Flip fee', doc: m.documents.flip, file: m.file.flip, ok: m.flipAgrees,
+      note: m.documents.flipDerived ? 'worked out from the final price' : (m.documents.feeFrom ? `from ${m.documents.feeFrom}` : null) },
+    { label: 'Final purchase price', doc: m.documents.total, file: m.file.total, ok: m.totalAgrees,
+      note: m.documents.totalFrom ? `from ${m.documents.totalFrom}` : null },
+  ];
+  return (
+    <div style={{ marginBottom: 22 }}>
+      <h4 style={{ fontFamily: 'var(--serif,Georgia,serif)', margin: '0 0 4px' }}>Assignment chain — the seller, the flipper, and the money</h4>
+      <div style={{ marginBottom: 10 }}>
+        <span style={{ fontSize: 11, fontWeight: 800, letterSpacing: '.05em', textTransform: 'uppercase', color: st.fg }}>{st.label}</span>
+        {assignmentChain.parties.ownerOfRecordDisputed
+          ? <span style={{ marginLeft: 10, fontSize: 11.5, color: 'var(--crit,#B4483C)' }}>the documents disagree on who the original seller is</span>
+          : null}
+        {assignmentChain.reachesVesting === false
+          ? <span style={{ marginLeft: 10, fontSize: 11.5, color: 'var(--crit,#B4483C)' }}>does not end at the vesting entity</span>
+          : null}
+      </div>
+      {/* the three bodies, with the leg of paper between each pair */}
+      <div style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'stretch', gap: 4, overflowX: 'auto', marginBottom: 12 }}>
+        {[{ role: 'Original seller', who: assignmentChain.parties.originalSeller, src: 'Title / appraisal — owner of record' }]
+          .concat(legs.map((lg, i) => ({
+            role: i === 0 ? 'Flipper (wholesaler)' : 'End buyer (our borrower)',
+            who: i === 0 ? assignmentChain.parties.flipper : assignmentChain.parties.endBuyer,
+            src: i === 0 ? "Buyer on the seller's contract" : 'Assignee on the assignment',
+            leg: lg,
+          })))
+          .map((n, i) => (
+            <div key={n.role} style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
+              {n.leg ? (
+                <div style={{ minWidth: 108, textAlign: 'center', padding: '0 4px' }}>
+                  <div style={{ fontSize: 17, fontWeight: 800, color: mark(n.leg.agrees).fg, lineHeight: 1 }}>⇒</div>
+                  <div style={{ fontSize: 10, color: '#4B585C' }}>{n.leg.label}</div>
+                  <div style={{ fontSize: 11.5, fontWeight: 700, color: mark(n.leg.agrees).fg }}>
+                    {n.leg.amountLabel} {money(n.leg.amount)}
+                  </div>
+                </div>
+              ) : null}
+              <div style={{ border: '1px solid var(--line,#E4DECF)', borderRadius: 8, padding: '7px 10px', minWidth: 130, background: 'var(--card,#fff)', opacity: (n.who || []).length ? 1 : 0.55 }}>
+                <div style={{ fontSize: 10, fontWeight: 800, letterSpacing: '.04em', textTransform: 'uppercase', color: '#4B585C' }}>{n.role}</div>
+                <div style={{ fontSize: 13, fontWeight: 700, color: '#141B22' }}>{names(n.who)}</div>
+                <div style={{ fontSize: 10.5, color: '#4B585C' }}>{n.src}</div>
+              </div>
+            </div>
+          ))}
+      </div>
+      {/* the dollars, documents vs the loan file */}
+      <div style={{ overflowX: 'auto' }}>
+        <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12.5 }}>
+          <thead>
+            <tr style={{ textAlign: 'left', color: '#4B585C' }}>
+              <th style={{ padding: '4px 8px', fontWeight: 700 }}>Amount</th>
+              <th style={{ padding: '4px 8px', fontWeight: 700, textAlign: 'right' }}>On the documents</th>
+              <th style={{ padding: '4px 8px', fontWeight: 700, textAlign: 'right' }}>On our file</th>
+              <th style={{ padding: '4px 8px', fontWeight: 700, textAlign: 'center' }}>Agrees?</th>
+            </tr>
+          </thead>
+          <tbody>
+            {rows.map((r) => (
+              <tr key={r.label} style={{ borderTop: '1px solid var(--line,#EFEAE0)' }}>
+                <td style={{ padding: '5px 8px', color: '#141B22' }}>
+                  {r.label}
+                  {r.note ? <span style={{ color: '#4B585C', fontSize: 11 }}> — {r.note}</span> : null}
+                </td>
+                <td style={{ padding: '5px 8px', textAlign: 'right', color: '#141B22' }}>{money(r.doc)}</td>
+                <td style={{ padding: '5px 8px', textAlign: 'right', color: '#141B22' }}>{money(r.file)}</td>
+                <td style={{ padding: '5px 8px', textAlign: 'center', fontWeight: 800, color: mark(r.ok).fg }}>{mark(r.ok).t}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+      <p style={{ fontSize: 11.5, color: '#4B585C', margin: '8px 0 0' }}>
+        The seller&rsquo;s original price plus the flip fee has to equal the final purchase price — on the paperwork and on our file.
+        The paperwork states one or the other, so whichever it states is worked back to the same three numbers.
+      </p>
     </div>
   );
 }
@@ -3199,6 +3305,7 @@ export default function UnderwritingPanel({ appId, docs = [], readOnly = false, 
   const entityChain = data && data.entityChain;
   const sellerChain = data && data.sellerChain;
   const chainOfTitle = data && data.chainOfTitle;
+  const assignmentChain = data && data.assignmentChain;
   const bankLiquidity = data && data.bankLiquidity;
   const experience = data && data.experience;
   const completeness = data && data.completeness;
@@ -3496,6 +3603,7 @@ export default function UnderwritingPanel({ appId, docs = [], readOnly = false, 
       {/* entity-resolution chain */}
       <SellerChain sellerChain={sellerChain} />
       <ChainOfTitle chainOfTitle={chainOfTitle} />
+      <AssignmentChain assignmentChain={assignmentChain} />
       <EntityChain entityChain={entityChain} />
       <BankLiquidity bankLiquidity={bankLiquidity} />
       <Experience experience={experience} appId={appId} onChange={load} readOnly={readOnly || !canWaive} />

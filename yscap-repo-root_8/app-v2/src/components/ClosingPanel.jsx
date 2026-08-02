@@ -1,6 +1,7 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { api } from '../lib/api.js';
 import { dealPurchase } from '../lib/dealPrice.js';
+import { sizesOnAsIsValue } from '../lib/dealBasis.js';
 import { onFilesDropped } from '../lib/drop-files.js';
 import { fmtDate } from '../lib/dates.js';
 import { ChainAddress, ChainHistory } from './ClosingEmailChain.jsx';
@@ -290,7 +291,23 @@ function DealDetails({ appId, app, structure }) {
             </>
           ) : (
             <>
-              <Tile k="Purchase price" v={money0(price.total)} />
+              {/* A REFINANCE IS NOT BUYING ANYTHING (owner-directed 2026-08-02).
+                  Its headline figure is what the property is worth TODAY — the
+                  number the loan was sized on — with the payoff beside it, which
+                  is what the closing desk actually has to retire. A "Purchase
+                  price" tile there was either empty or a leftover. */}
+              {sizesOnAsIsValue(app && app.loan_type) ? (
+                <>
+                  <Tile k="As-is value" v={money0(app && app.as_is_value)} sub="What the loan is sized on" accent />
+                  <Tile k="Payoff" v={money0(app && app.payoff_amount)}
+                    sub={(app && app.payoff_lender) ? `To ${app.payoff_lender}` : 'What has to be retired at closing'} />
+                  {app && app.original_purchase_price != null && (
+                    <Tile k="Original purchase price" v={money0(app.original_purchase_price)} sub="What they paid when they bought it" />
+                  )}
+                </>
+              ) : (
+                <Tile k="Purchase price" v={money0(price.total)} />
+              )}
               {/* Flagged as an assignment but the original contract price has
                   not been captured, so the split can't be shown — say so
                   rather than pass the entered price off as the seller's. */}

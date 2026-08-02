@@ -32,10 +32,12 @@ const { tieoutForFile } = require('../src/lib/underwriting/file-review');
     const appr = (await client.query(
       `INSERT INTO appraisals (application_id, fields, warnings, superseded,
          subject_address, subject_city, subject_state, subject_zip,
-         contract_price, as_is_value, arv_value, units, property_type, occupancy_status, year_built, gla)
+         contract_price, as_is_value, arv_value, units, property_type, occupancy_status, year_built, gla,
+         owner_of_record)
        VALUES ($1,'{}','[]',false,
          '2547 S Braddock Ave','Pittsburgh','PA','15218',
-         400000, 390000, 520000, 4, 'Single Family Detached', 'TenantOccupied', 1998, 1850) RETURNING id`,
+         400000, 390000, 520000, 4, 'Single Family Detached', 'TenantOccupied', 1998, 1850,
+         'Braddock Holdings LLC') RETURNING id`,
       [app.id])).rows[0];
     await client.query(`INSERT INTO appraisal_units (appraisal_id, market_rent) VALUES ($1, 1200)`, [appr.id]);
     await client.query(`INSERT INTO appraisal_units (appraisal_id, market_rent) VALUES ($1, 1300)`, [appr.id]);
@@ -60,6 +62,14 @@ const { tieoutForFile } = require('../src/lib/underwriting/file-review');
     // Year built + living area surfaced from the appraisal row.
     assert.ok(to.matrix.find((m) => m.key === 'year_built').cells.some((c) => c.value === '1998'), 'year built surfaced');
     assert.ok(to.matrix.find((m) => m.key === 'living_area').cells.some((c) => String(c.value).indexOf('1,850') !== -1), 'GLA surfaced');
+    // The appraiser's OWNER OF RECORD — the seller per public records — reaches the Seller row
+    // (2026-08-02). The column has always existed; nothing loaded it, so the appraisal's Seller cell
+    // read blank on every file. Asserting the VALUE, not just that the query survived, is what makes
+    // this a guard: a silently-dropped column would still return a matrix.
+    const sellerRow = to.matrix.find((m) => m.key === 'seller_name');
+    assert.ok(sellerRow, 'the Seller fact is in the matrix');
+    assert.strictEqual(sellerRow.cells.find((c) => c.source === 'appraisal').value, 'Braddock Holdings LLC',
+      "the appraisal's owner of record surfaces as the seller of public records");
 
     await client.query('ROLLBACK');
     console.log('PASS test-underwriting-tieout-db');

@@ -321,6 +321,16 @@ const FIELDS = [
     borrowerLabel: 'Original purchase price', borrowerHint: 'What you originally paid for the property (refinances).' },
   { key: 'acquisition_date', label: 'Acquisition date', group: 'Deal economics', type: 'date', writable: true,
     borrowerLabel: 'Acquisition date', borrowerHint: 'When you purchased the property (refinances).' },
+  /* DERIVED, so `writable: false` — there is no column behind it and no
+     WRITE_TARGETS entry. It is computed from `acquisition_date` in
+     engine.loadRuleContext by lib/deal-basis.seasoningMonths, which is the ONE
+     definition of ownership seasoning in the app. A rule may READ it (e.g. a note
+     buyer that wants six months of ownership before a cash-out); to change it you
+     change the acquisition date. Null on a file with no date, so a rule keyed on
+     it evaluates as blank rather than firing on an assumed zero. */
+  { key: 'ownership_seasoning_months', label: 'Ownership seasoning (months)', group: 'Deal economics',
+    type: 'number', writable: false,
+    borrowerLabel: 'Months owned', borrowerHint: 'How long you have owned the property, counted from the date you acquired it.' },
   { key: 'underlying_contract_price', label: 'Underlying contract price', group: 'Deal economics', type: 'money', writable: true,
     borrowerLabel: 'Underlying contract price', borrowerHint: 'The price on the original (underlying) purchase contract.' },
   { key: 'assignment_fee', label: 'Assignment fee', group: 'Deal economics', type: 'money', writable: true,

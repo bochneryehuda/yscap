@@ -57,6 +57,7 @@ const { computeMetrics, capsFromRegistration } = require('../lib/underwriting/me
 const { buildChain } = require('../lib/underwriting/entity-chain');
 const { buildSellerChain } = require('../lib/underwriting/seller-chain');
 const { buildChainOfTitle } = require('../lib/underwriting/chain-of-title');
+const { buildAssignmentChain } = require('../lib/underwriting/assignment-chain');
 const { assessBankLiquidity, readRequiredLiquidity } = require('../lib/underwriting/bank-liquidity');
 // Loaded at module scope, not at the call site: a lazy require inside the handler is OUTSIDE the
 // `.catch()` that guards the desk run, so a load-time error there would 500 the whole file view —
@@ -874,6 +875,13 @@ router.get('/:appId', async (req, res, next) => {
     // the vesting entity). The personal-name→LLC case is deferred to seller-chain (no duplicate).
     const chainOfTitle = buildChainOfTitle(mctx || {}, exts.rows);
 
+    // ASSIGNMENT / WHOLESALE CHAIN (owner-directed 2026-08-02): the three bodies on a wholesale deal
+    // — original seller → flipper → end buyer — the TWO legs of paper they sign, and the dollars
+    // closing across both legs and the loan file. Taken straight off the tie-out, which already
+    // built it to decide WHICH seller each document is talking about; computed once, so the chain
+    // card and the Seller row can never tell different stories about who the flipper is.
+    const assignmentChain = tieout.assignmentChain || null;
+
     // Bank LIQUIDITY aggregation: sum every current bank statement's ending balance across the
     // borrower's / verified-entity accounts and compare to the file's required liquidity (read off
     // the registered product's assets condition, above). Raises the "short of required liquidity" and
@@ -982,6 +990,7 @@ router.get('/:appId', async (req, res, next) => {
     // surface in the roll-up).
     const cotFindings = (chainOfTitle.findings || []).filter(Boolean);
     const sellerChainFindings = (sellerChain.findings || []).filter(Boolean);
+    const asgChainFindings = ((assignmentChain && assignmentChain.findings) || []).filter(Boolean);
     // THE 4th GUIDELINE SURFACE (owner-reported 2026-07-27). The whole-loan run's note-buyer rule
     // table (investor-guideline-review) wrote its findings ONLY to `underwriting_run_findings`,
     // read back by the run cockpit. They never reached `openRaw`, so they never passed through the
@@ -997,7 +1006,7 @@ router.get('/:appId', async (req, res, next) => {
     const investorRunFindings = await loadRunGuidelineFindings(db, app.id);
     const openRaw = [...perDoc, ...cross, ...staleness.findings, ...metrics.findings, ...amendments.findings,
       ...(entityChain ? entityChain.findings : []), ...reasonability.findings, ...sellerChainFindings,
-      ...cotFindings, ...bankLiquidity.findings, ...(experience ? experience.findings : []),
+      ...cotFindings, ...asgChainFindings, ...bankLiquidity.findings, ...(experience ? experience.findings : []),
       ...investorDeskFindings, ...investorRunFindings];
 
     // FILE-LEVEL entity-screening rollup (owner-reported 2026-07-26/27: "this entity WAS screened —
@@ -1174,8 +1183,8 @@ router.get('/:appId', async (req, res, next) => {
         };
         try {
           await c.query('BEGIN');
-          if (entityChain || sellerChain || chainOfTitle) {
-            await step(() => syncEntityChain.syncChainsToSuggestions(c, app.id, { entityChain, sellerChain, chainOfTitle }));
+          if (entityChain || sellerChain || chainOfTitle || assignmentChain) {
+            await step(() => syncEntityChain.syncChainsToSuggestions(c, app.id, { entityChain, sellerChain, chainOfTitle, assignmentChain }));
           }
           if (bankFindingsFlat.length) {
             // These liquidity roll-up findings are FILE-level (no single source
@@ -1421,6 +1430,11 @@ router.get('/:appId', async (req, res, next) => {
       chainOfTitle: { status: chainOfTitle.status, hops: chainOfTitle.hops, ownershipPath: chainOfTitle.ownershipPath,
         finalBuyer: chainOfTitle.finalBuyer, reachesVesting: chainOfTitle.reachesVesting,
         findings: live(cotFindings) },
+      // The wholesale chain: who the three bodies are, the two legs of paper, and whether the money
+      // closes. Rendered only on an assignment — a straight purchase has no flipper and no leg 2.
+      assignmentChain: assignmentChain && assignmentChain.isAssignment ? {
+        status: assignmentChain.status, parties: assignmentChain.parties, legs: assignmentChain.legs,
+        money: assignmentChain.money, findings: live(asgChainFindings) } : null,
       bankLiquidity: { requiredLiquidity: bankLiquidity.requiredLiquidity, qualifyingTotal: bankLiquidity.qualifyingTotal,
         excludedTotal: bankLiquidity.excludedTotal, shortfall: bankLiquidity.shortfall,
         accounts: bankLiquidity.accounts, statementsCount: bankLiquidity.statementsCount,
@@ -2786,9 +2800,10 @@ router.post('/:appId/ai-suggestions/rerun-checks', requirePermission('sign_off_c
             exts.rows) : null;
           const sellerChain = buildSellerChain(mctx || {}, exts.rows);
           const chainOfTitle = buildChainOfTitle(mctx || {}, exts.rows);
-          if (!entityChain && !sellerChain && !chainOfTitle) return { recorded: 0 };
+          const assignmentChain = buildAssignmentChain(mctx || {}, exts.rows);
+          if (!entityChain && !sellerChain && !chainOfTitle && !assignmentChain) return { recorded: 0 };
           return require('../lib/underwriting/entity-chain-suggestions')
-            .syncChainsToSuggestions(client, app.id, { entityChain, sellerChain, chainOfTitle });
+            .syncChainsToSuggestions(client, app.id, { entityChain, sellerChain, chainOfTitle, assignmentChain });
         }],
         ['bank', () => {
           const bl = assessBankLiquidity(mctx || {}, exts.rows, { requiredLiquidity });

@@ -76,6 +76,20 @@ async function loadContext(client, appId) {
       maxArvLtv: numOrNull(qcaps.maxArvLtv),
       maxLtc: numOrNull(qcaps.maxLtc),
     } : null,
+    // DID THE PRODUCT ACTUALLY PRICE AS AN ASSIGNMENT? (owner-directed 2026-08-02: the wholesale
+    // review runs "only if the file shows it's an assignment of contract on the application AND on
+    // the product and pricing"). The engine writes this block ONLY when it sized the loan on the
+    // seller price plus the financeable fee (`pricing.js` requires `is_assignment` AND a captured
+    // seller price), so its PRESENCE is the pricing side of that question — not a second flag
+    // somebody could forget to set. Read-only; no frozen number is recomputed here.
+    assignment: (quoteObj && quoteObj.assignment) ? {
+      sellerPrice: numOrNull(quoteObj.assignment.sellerPrice),
+      totalPrice: numOrNull(quoteObj.assignment.totalPrice),
+      fee: numOrNull(quoteObj.assignment.fee),
+      financeableFee: numOrNull(quoteObj.assignment.financeableFee),
+      recognizedPrice: numOrNull(quoteObj.assignment.recognizedPrice),
+    } : null,
+    isAssignment: !!(quoteObj && quoteObj.assignment),
   } : null;
   // Which of the borrower's entities are VERIFIED (LLC section complete: formation + OA + EIN
   // reviewed, is_verified=true). A business bank account under an entity that is on file but NOT
