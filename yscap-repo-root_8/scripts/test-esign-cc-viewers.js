@@ -105,10 +105,13 @@ async function main() {
       `INSERT INTO application_assignees (application_id, staff_id, role, is_primary)
        VALUES ($1,$2,'processor',false) ON CONFLICT DO NOTHING`, [appId, dupAdmin]).catch(() => {});
     // A stored term sheet (the only stored doc; app + disclosure are generated).
+    // term_sheet_final=true because a sheet that prints "INITIAL TERM SHEET —
+    // NOT FINAL" is refused by the send (owner-directed 2026-08-02) — this suite
+    // is about the CC viewers, so it uses the sheet a ready file really carries.
     const fakeStorage = { async read() { return Buffer.from('%PDF-1.4 term-sheet'); } };
     await db.query(
-      `INSERT INTO documents (application_id, filename, storage_provider, storage_ref, doc_kind, is_current)
-       VALUES ($1,'ts.pdf','local','ref-ts','term_sheet',true)`, [appId]);
+      `INSERT INTO documents (application_id, filename, storage_provider, storage_ref, doc_kind, is_current, term_sheet_final)
+       VALUES ($1,'ts.pdf','local','ref-ts','term_sheet',true,true)`, [appId]);
     const tsRow = (await db.query(
       `INSERT INTO esign_envelopes (application_id, purpose, status, countersign_required)
        VALUES ($1,'term_sheet_package','not_sent',true) RETURNING *`, [appId])).rows[0];
