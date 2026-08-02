@@ -68,7 +68,7 @@ function dispositionOf(cond) {
     // A condition that maps to a REAL PILOT template code is backed by an actual document
     // condition on the file — it is a DOCUMENT gap and must NEVER be silenced by clears_by
     // inference (only an explicit `disposition` can reclassify it). This guards against a
-    // PILOT-mapped condition (e.g. SSN verification → rtl_p1_ssn) being dropped just because
+    // PILOT-mapped condition (e.g. SSN verification → cond_ssn_verify_corrfirst) being dropped just because
     // it clears by internal verification.
     if (c.pilot_template_code) return DISPOSITION.DOCUMENT;
     // An appraisal-domain guideline that is NOT backed by a PILOT document and hinges on an
