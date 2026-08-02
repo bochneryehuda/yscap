@@ -221,4 +221,12 @@ function ok(cond, msg) { n++; assert.ok(cond, msg); }
   ok(addr.resolveAddress(null).street === '', 'null address → empty');
 }
 
+// ── 12. Test mode is REMOVED — the button always places a real order ──────────
+{
+  // dryrun() must be hard-false: no runtime/DB-backed switch (an override survived
+  // deploys and pinned the button in test mode) and no env var (which PILOT can't
+  // clear for the owner). Calling it must not require the DB (stays pure).
+  ok(flood.dryrun() === false, 'test mode removed — the button is always live');
+}
+
 console.log(`test-xactus-flood-pure: ${n} assertions passed`);
