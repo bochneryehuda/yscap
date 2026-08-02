@@ -29,6 +29,31 @@ const STATUS_TONE = {
   cancelled: { opacity: 0.6 },
 };
 const KIND_LABEL = { title: 'Title', insurance: 'Insurance' };
+
+/* Has this order actually been placed? Mirrors the server's own live-order test
+   (routes/orders + closing-prep.orderIsLive): anything other than "not ordered"
+   or "cancelled" means it is out. Used only to decide which sub-section starts
+   open, so an unreadable value simply reads as not placed — the safe direction,
+   since an un-placed order is the one with work to do. */
+function isPlaced(order) {
+  const s = order && order.status;
+  return !!s && s !== 'not_ordered' && s !== 'cancelled';
+}
+
+/* One of the three order types, as its own collapsible section (owner-directed
+   2026-08-02). Native <details> for the same reason AppraisalPanel uses it: the
+   browser owns the open/closed state, so nothing here can bounce the reader. */
+function OrderSection({ label, open, children }) {
+  return (
+    <details className="panel" open={open} style={{ padding: 0 }}>
+      <summary style={{
+        cursor: 'pointer', padding: '12px 16px', fontWeight: 700,
+        color: '#141B22', listStyle: 'revert',
+      }}>{label}</summary>
+      <div style={{ padding: '0 16px 16px' }}>{children}</div>
+    </details>
+  );
+}
 const CONTACT_TYPE = { title: 'title_company', insurance: 'insurance_agent' };
 const CONTACT_ASK = { title: 'title company', insurance: 'insurance agent' };
 
@@ -377,13 +402,24 @@ export default function OrdersPanel({ appId, canAccept = false }) {
         the documents they send back land below.
       </p>
       {!data.file.hasLoanNumber && <LoanNumberEntry appId={appId} onSaved={load} />}
+      {/* THREE SEPARATE SECTIONS, one per order type (owner-directed 2026-08-02:
+          "under the orders three separate sections for all 3 different order
+          types that we currently have"). Each opens and closes on its own so you
+          can sit on the one you are working; an order that has NOT been placed
+          yet starts open, because that is the one with something to do. */}
       <div style={{ display: 'grid', gap: 14 }}>
-        <OrderCard appId={appId} kind="title" order={data.orders.title} file={data.file} canAccept={canAccept} onChanged={load} />
-        <OrderCard appId={appId} kind="insurance" order={data.orders.insurance} file={data.file} canAccept={canAccept} onChanged={load} />
+        <OrderSection label="Title" open={!isPlaced(data.orders.title)}>
+          <OrderCard appId={appId} kind="title" order={data.orders.title} file={data.file} canAccept={canAccept} onChanged={load} />
+        </OrderSection>
+        <OrderSection label="Insurance" open={!isPlaced(data.orders.insurance)}>
+          <OrderCard appId={appId} kind="insurance" order={data.orders.insurance} file={data.file} canAccept={canAccept} onChanged={load} />
+        </OrderSection>
         {/* The attorney closing-prep order. Its own card + its own routes — the
             recipients, the document package and the closing email chain share
             nothing with a title/insurance vendor order. */}
-        <ClosingPrepCard appId={appId} />
+        <OrderSection label="Attorney closing prep" open>
+          <ClosingPrepCard appId={appId} />
+        </OrderSection>
       </div>
     </div>
   );
