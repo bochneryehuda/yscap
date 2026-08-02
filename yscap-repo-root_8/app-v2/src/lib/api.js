@@ -1068,6 +1068,12 @@ export const api = {
   researchRates:       (f) => req('GET', '/api/research/rates' + qs(f)),
   researchComps:       (f) => req('GET', '/api/research/comps' + qs(f)),
   researchBackfill:    (b) => req('POST', '/api/research/backfill', b || {}),
+  // Upload appraisal data files straight into the research database. `files` is
+  // [{filename, xml}] — the screen sends a big drop in size-bounded batches,
+  // because one MISMO file carries the whole report PDF inside it and a hundred
+  // of them would blow past the server's request-size limit in a single POST.
+  researchImportXml:   (b) => req('POST', '/api/research/imports', b),
+  researchImports:     (f) => req('GET', '/api/research/imports' + qs(f)),
   // Build-your-own valuations (db/409)
   valuations:          (f) => req('GET', '/api/research/valuations' + qs(f)),
   valuation:           (id) => req('GET', `/api/research/valuations/${id}`),

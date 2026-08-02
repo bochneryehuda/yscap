@@ -4,7 +4,13 @@ import { api } from '../lib/api.js';
 import { INK, MUTED, GOLD, S, money, sqft, num, day, pct } from '../lib/research.js';
 
 /* ONE APPRAISER — their profile, everything we have ever been told about how to
-   reach them, and every file they appraised for us.
+   reach them, every file they appraised for us, every report of theirs we hold,
+   and every property they have ever put in front of us.
+
+   THE PROPERTIES LIST IS ONE ROW PER PROPERTY, NOT PER REPORT. An appraiser who
+   used the same house as a comparable on four different reports is telling us
+   something about that house, and it belongs on one line saying "used 4 times" —
+   four identical rows would read as four houses.
 
    The "how they work" block is something only we can compute, because we hold
    many reports from the same person: how many comparables they typically use,
@@ -40,7 +46,11 @@ export default function StaffAppraiserDetail() {
         {a.company && <div style={{ color: MUTED, fontSize: 15 }}>{a.company}</div>}
         <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginTop: 10 }}>
           <span style={S.tag}>{num(a.file_count)} file{a.file_count === 1 ? '' : 's'} for us</span>
-          <span style={S.tag}>{num(a.appraisal_count)} report{a.appraisal_count === 1 ? '' : 's'}</span>
+          <span style={S.tag}>{num(a.appraisal_count)} report{a.appraisal_count === 1 ? '' : 's'} on files</span>
+          {a.import_count > 0 && (
+            <span style={S.tag}>{num(a.import_count)} report{a.import_count === 1 ? '' : 's'} added by hand</span>
+          )}
+          <span style={S.tag}>{num((d.properties || []).length)} propert{(d.properties || []).length === 1 ? 'y' : 'ies'}</span>
           {a.first_report_date && <span style={S.tag}>first {day(a.first_report_date)}</span>}
           {a.last_report_date && <span style={S.tag}>last {day(a.last_report_date)}</span>}
         </div>
@@ -146,13 +156,145 @@ export default function StaffAppraiserDetail() {
               </table>
             </div>
           )}
-        <div style={{ marginTop: 12 }}>
-          <Link className="btn ghost small" to={`/internal/research?appraiser_id=${a.id}`}>
-            See every property they have shown us →
-          </Link>
-        </div>
       </section>
+
+      {/* ---- reports of theirs that are not on a loan file ---- */}
+      {(d.imports || []).length > 0 && (
+        <section style={{ ...S.panel, marginTop: 14 }}>
+          <h2 style={{ margin: '0 0 4px', fontSize: 16, color: INK }}>
+            Other reports of theirs we hold ({d.imports.length})
+          </h2>
+          <p style={{ margin: '0 0 10px', color: MUTED, fontSize: 13 }}>
+            Reports added straight to the research database — no loan file behind them.
+          </p>
+          <div style={{ overflowX: 'auto' }}>
+            <table style={{ width: '100%', borderCollapse: 'collapse', minWidth: 620 }}>
+              <thead><tr>
+                <th style={S.th}>Date</th><th style={S.th}>Property</th>
+                <th style={S.th}>Form</th><th style={S.th}>Comps</th><th style={S.th}>Added from</th>
+              </tr></thead>
+              <tbody>
+                {d.imports.map((r) => (
+                  <tr key={r.id}>
+                    <td style={S.cell}>{r.effective_date ? day(r.effective_date) : '—'}</td>
+                    <td style={S.cell}>
+                      {r.subject_property_id
+                        ? <Link to={`/internal/research/property/${r.subject_property_id}`} style={{ color: INK }}>
+                          {[r.subject_address, r.subject_city, r.subject_state].filter(Boolean).join(', ') || 'the property'}
+                        </Link>
+                        : [r.subject_address, r.subject_city, r.subject_state].filter(Boolean).join(', ') || '—'}
+                    </td>
+                    <td style={S.cell}>{r.form_type || '—'}</td>
+                    <td style={S.cell}>{num(r.comparables_seen)}</td>
+                    <td style={{ ...S.cell, color: MUTED, wordBreak: 'break-all' }}>{r.filename || '—'}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </section>
+      )}
+
+      {/* ---- every property they have ever put in front of us ---- */}
+      <PropertiesSection rows={d.properties || []} />
     </div>
+  );
+}
+
+/* Every property this appraiser has ever described to us, and HOW — as the subject
+   of their own report, or as a comparable sale supporting somebody else's value.
+   Long lists are the norm here (one busy appraiser can reach a few thousand), so
+   the list filters and pages in the browser rather than dumping everything. */
+function PropertiesSection({ rows }) {
+  const [q, setQ] = useState('');
+  const [role, setRole] = useState('');
+  const [shown, setShown] = useState(50);
+
+  const filtered = rows.filter((p) => {
+    if (role === 'subject' && !p.as_subject) return false;
+    if (role === 'comparable' && !p.as_comparable) return false;
+    if (!q.trim()) return true;
+    const hay = `${p.display_address || ''} ${p.city || ''} ${p.state || ''} ${p.zip || ''}`.toLowerCase();
+    return q.trim().toLowerCase().split(/\s+/).every((w) => hay.includes(w));
+  });
+
+  return (
+    <section style={{ ...S.panel, marginTop: 14 }}>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-end', gap: 12, flexWrap: 'wrap', marginBottom: 10 }}>
+        <div>
+          <h2 style={{ margin: '0 0 4px', fontSize: 16, color: INK }}>
+            Every property they have shown us ({num(rows.length)})
+          </h2>
+          <p style={{ margin: 0, color: MUTED, fontSize: 13 }}>
+            Their own subject properties and every comparable sale they have used, across all their reports.
+          </p>
+        </div>
+        <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+          <input style={{ ...S.input, width: 200 }} placeholder="Filter by address or town"
+            value={q} onChange={(e) => { setQ(e.target.value); setShown(50); }} />
+          <select style={{ ...S.input, width: 160 }} value={role}
+            onChange={(e) => { setRole(e.target.value); setShown(50); }}>
+            <option value="">Subject or comparable</option>
+            <option value="subject">Their subjects only</option>
+            <option value="comparable">Used as a comparable</option>
+          </select>
+        </div>
+      </div>
+
+      {filtered.length === 0
+        ? <div style={{ color: MUTED, fontSize: 13 }}>
+          {rows.length === 0 ? 'Nothing has been read in from their reports yet.' : 'Nothing matches that filter.'}
+        </div>
+        : (
+          <div style={{ overflowX: 'auto' }}>
+            <table style={{ width: '100%', borderCollapse: 'collapse', minWidth: 800 }}>
+              <thead><tr>
+                <th style={S.th}>Property</th><th style={S.th}>Type</th><th style={S.th}>Beds</th>
+                <th style={S.th}>Baths</th><th style={S.th}>Size</th><th style={S.th}>Built</th>
+                <th style={S.th}>Condition</th><th style={S.th}>Last sale</th>
+                <th style={S.th}>How they used it</th>
+              </tr></thead>
+              <tbody>
+                {filtered.slice(0, shown).map((p) => (
+                  <tr key={p.id}>
+                    <td style={S.cell}>
+                      <Link to={`/internal/research/property/${p.id}`} style={{ color: INK, fontWeight: 600 }}>
+                        {p.display_address}
+                      </Link>
+                      {p.photo_count > 0 && <span style={{ ...S.tag, marginLeft: 6 }}>{p.photo_count} photo{p.photo_count === 1 ? '' : 's'}</span>}
+                    </td>
+                    <td style={S.cell}>{p.property_type || '—'}{p.units > 1 ? ` · ${p.units} units` : ''}</td>
+                    <td style={S.cell}>{p.beds == null ? '—' : p.beds}</td>
+                    <td style={S.cell}>{p.baths_total == null ? '—' : Number(p.baths_total)}</td>
+                    <td style={S.cell}>{p.gla ? sqft(p.gla) : '—'}</td>
+                    <td style={S.cell}>{p.year_built || '—'}</td>
+                    <td style={S.cell}>{p.condition_uad || '—'}</td>
+                    <td style={S.cell}>
+                      {p.last_sale_price ? money(p.last_sale_price) : '—'}
+                      {p.last_sale_date && <div style={{ color: MUTED, fontSize: 12 }}>{day(p.last_sale_date)}</div>}
+                    </td>
+                    <td style={S.cell}>
+                      {p.as_subject > 0 && <span style={S.tag}>their subject{p.as_subject > 1 ? ` ×${p.as_subject}` : ''}</span>}
+                      {p.as_comparable > 0 && (
+                        <span style={{ ...S.tag, marginLeft: p.as_subject > 0 ? 4 : 0 }}>
+                          comparable{p.as_comparable > 1 ? ` ×${p.as_comparable}` : ''}
+                        </span>
+                      )}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+            {filtered.length > shown && (
+              <div style={{ marginTop: 10 }}>
+                <button className="btn ghost small" onClick={() => setShown((n) => n + 100)}>
+                  Show more ({num(filtered.length - shown)} left)
+                </button>
+              </div>
+            )}
+          </div>
+        )}
+    </section>
   );
 }
 

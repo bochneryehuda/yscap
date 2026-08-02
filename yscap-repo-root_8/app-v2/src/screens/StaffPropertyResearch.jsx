@@ -6,6 +6,7 @@ import {
   INK, MUTED, GOLD, S, money, sqft, num, saleMonth, baths, conditionLabel,
   CONDITION_CODES, compSetShort,
 } from '../lib/research.js';
+import ResearchImportPanel from '../components/ResearchImportPanel.jsx';
 
 /* PROPERTY RESEARCH — the search engine over every property and every comparable
    sale our appraisers have ever put in front of us.
@@ -133,6 +134,13 @@ export default function StaffPropertyResearch() {
       </header>
 
       {err && <div className="card" style={{ borderColor: '#B4423A', color: '#B4423A', marginBottom: 12 }}>{err}</div>}
+
+      {/* Feed the database by hand — one report or a whole folder. Re-reads the
+          headline counts when it finishes, so the numbers above move with it. */}
+      <ResearchImportPanel onDone={() => {
+        api.researchStats().then(setStats).catch(() => {});
+        run(filters);
+      }} />
 
       <div style={{ display: 'grid', gridTemplateColumns: 'minmax(220px, 280px) 1fr', gap: 16, alignItems: 'start' }}>
         {/* ---------------- filters ---------------- */}
