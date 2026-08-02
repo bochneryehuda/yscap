@@ -7493,8 +7493,20 @@ router.patch('/borrowers/:id', async (req, res) => {
       // See the borrower door's note: `months_at_residence` fits int4 fine, so the
       // column sweep below cannot catch a count that walks the DERIVED move-in
       // date off the calendar. Refused here, in words (re-audit 2026-08-02).
+      /* …but only when they are actually CHANGING it (third audit, 2026-08-02).
+         `withLiveResidence` computes the duration from the stored anchor, so a row
+         whose anchor predates this rule reads back as >100 years — and both
+         clients resend the whole form on every save, so refusing an UNCHANGED
+         out-of-range value bricked the entire profile screen: editing a phone
+         number 400'd until somebody hand-fixed the years box. A guard that
+         refuses what the person did not touch is not guarding anything. */
       const rProblem = require('../lib/residence').residenceCountProblem(y, m);
-      if (rProblem) return res.status(400).json({ error: rProblem });
+      if (rProblem) {
+        const cur = (await db.query(`SELECT years_at_residence, months_at_residence FROM borrowers WHERE id=$1`, [req.params.id])).rows[0] || {};
+        const same = Number(cur.years_at_residence || 0) === Number(y || 0)
+          && Number(cur.months_at_residence || 0) === Number(m || 0);
+        if (!same) return res.status(400).json({ error: rProblem });
+      }
       put('years_at_residence', Number.isFinite(y) ? y : null);
       put('months_at_residence', Number.isFinite(m) ? m : null);
       put('residence_since', (y || m) ? require('../lib/residence').moveInFrom(y, m) : null);
@@ -9926,7 +9938,19 @@ async function completeFields(req, res, borrowerScoped) {
     for (const [k, t] of Object.entries(COMPLETE_BORROWER_FIELDS)) {
       if (!(k in b) || b[k] === '' || b[k] == null) continue;
       let v = b[k];
-      if (t === 'int') { v = k === 'fico' ? require('../lib/fields').sanitizeFico(v) : parseInt(v, 10); if (v == null || !Number.isFinite(v)) continue; }  // #90: FICO 300–850
+      if (t === 'int') {
+        /* A BAD SCORE IS REFUSED, NOT SILENTLY DROPPED (third audit,
+           2026-08-02). `sanitizeFico` answers null for junk, and `continue`
+           turned that into "saved!" with nothing written — while both profile
+           doors refuse the identical value with a reason. One column, four
+           doors, two behaviours; this is the half that lied. */
+        const typed = v != null && String(v).trim() !== '';
+        v = k === 'fico' ? require('../lib/fields').sanitizeFico(v) : parseInt(v, 10);
+        if (v == null || !Number.isFinite(v)) {
+          if (typed && k === 'fico') return res.status(400).json({ error: 'Credit score must be a 3-digit score between 300 and 850' });
+          continue;
+        }
+      }  // #90: FICO 300–850
       if (t === 'date') {  // 2026-07-15 incident: strict calendar + year bounds;
         // a typed 2-digit year resolves to the real year (DOB → adult century).
         v = require('../lib/fields').sanitizeDob(v);

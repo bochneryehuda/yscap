@@ -259,8 +259,20 @@ router.put('/profile', async (req, res) => {
        person should be told about, not quietly half-saved. `months_at_residence`
        is int4, so 99999 fits its column perfectly — only the DERIVED date does
        not, which the column sweep below cannot see (re-audit 2026-08-02). */
+    /* …but only when they are actually CHANGING it (third audit, 2026-08-02).
+       `withLiveResidence` computes the duration from the stored anchor, so a row
+       whose anchor predates this rule reads back as >100 years — and both
+       clients resend the whole form on every save, so refusing an UNCHANGED
+       out-of-range value bricked the entire profile screen: editing a phone
+       number 400'd until somebody hand-fixed the years box. A guard that
+       refuses what the person did not touch is not guarding anything. */
     const rProblem = require('../lib/residence').residenceCountProblem(y, m);
-    if (rProblem) return res.status(400).json({ error: rProblem });
+    if (rProblem) {
+      const cur = (await db.query(`SELECT years_at_residence, months_at_residence FROM borrowers WHERE id=$1`, [me(req)])).rows[0] || {};
+      const same = Number(cur.years_at_residence || 0) === Number(y || 0)
+        && Number(cur.months_at_residence || 0) === Number(m || 0);
+      if (!same) return res.status(400).json({ error: rProblem });
+    }
     fields.residence_since = (y || m) ? require('../lib/residence').moveInFrom(y, m) : null;
   }
   if (b.housingStatus !== undefined) fields.housing_status = clean(b.housingStatus);
@@ -2091,6 +2103,16 @@ router.post('/applications/:id/appraisal-card/from-saved', async (req, res) => {
 const B_COMPLETE_APP = { program: 'text', loan_type: 'text', property_type: 'text',
   purchase_price: 'money', as_is_value: 'money', arv: 'money', rehab_budget: 'money' };
 const B_COMPLETE_BORROWER = { cell_phone: 'text', date_of_birth: 'date', fico: 'int', citizenship: 'text' };
+/* WHAT THE WRITER IGNORES — one definition, so the pre-check in front of it can
+   never be stricter OR looser (third audit, 2026-08-02). The writer skips a
+   money value with no digits ("TBD") AND one that does not parse to a finite
+   number ("1.2.3", "..", a European "1.200.000"); the pre-pass mirrored only the
+   first, so a registered file refused nine shapes of input that an unregistered
+   file happily ignored — same body, two answers. */
+function writerSkipsMoney(v) {
+  const s = String(v).replace(/[^0-9.]/g, '');
+  return s === '' || !Number.isFinite(Number(s));
+}
 router.post('/applications/:id/complete-fields', async (req, res) => {
   const own = await db.query(
     `SELECT borrower_id FROM applications WHERE id=$1 AND (${OWN_FILE_SQL("", "$2")}) AND deleted_at IS NULL`,
@@ -2130,7 +2152,7 @@ router.post('/applications/:id/complete-fields', async (req, res) => {
            and a "TBD" price saved nothing on a registered file while the same
            post on an unregistered one still saved the ARV. A pre-check that
            refuses work the writer would have done is its own bug. */
-        if (B_COMPLETE_APP[k] === 'money' && String(v).replace(/[^0-9.]/g, '') === '') continue;
+        if (B_COMPLETE_APP[k] === 'money' && writerSkipsMoney(v)) continue;
         const bad = changeRequests.proposalProblem(k, v, { targetBorrowerId: me(req) });
         if (bad) return res.status(400).json({ error: bad });
       }
@@ -2150,8 +2172,8 @@ router.post('/applications/:id/complete-fields', async (req, res) => {
       if (k === 'purchase_price' && refiNow) continue;
       let v = b[k];
       if (t === 'money') {
-        const s = String(v).replace(/[^0-9.]/g, ''); if (s === '') continue;
-        v = Number(s); if (!Number.isFinite(v)) continue;
+        if (writerSkipsMoney(v)) continue;
+        v = Number(String(v).replace(/[^0-9.]/g, ''));
         /* …and it has to FIT (post-merge audit round 2, 2026-08-02). Judged
            BEFORE the locked branch, so one check covers both outcomes: on an
            unlocked file the value used to reach Postgres and come back to the
@@ -2182,6 +2204,15 @@ router.post('/applications/:id/complete-fields', async (req, res) => {
         continue;   // never a live write for a governed field on a locked file
       }
       if (k === 'loan_type') v = require('../lib/fields').sanitizeLoanType(v);   // #95: never a program
+      /* THE SAME OPTION LIST THE LOCKED PATH ENFORCES (third audit, 2026-08-02).
+         `FIELD_OPTIONS` was checked only when the file was registered, so on an
+         unregistered one a borrower could store any string at all into `program`
+         or `loan_type` — both PRICING-ENGINE inputs. A door that validates a
+         value only sometimes does not validate it. */
+      if (changeRequests.FIELD_OPTIONS[k]) {
+        const bad = changeRequests.proposalProblem(k, v, { targetBorrowerId: me(req) });
+        if (bad) return res.status(400).json({ error: bad });
+      }
       appVals.push(v); appSets.push(`${k}=$${appVals.length}`); appKeys.push(k);
     }
     // Property address (owner-directed invite flow): when a staffer starts a file
@@ -2255,7 +2286,19 @@ router.post('/applications/:id/complete-fields', async (req, res) => {
         continue;   // never a live write for a personal field on a locked file
       }
       let v = b[k];
-      if (t === 'int') { v = k === 'fico' ? require('../lib/fields').sanitizeFico(v) : parseInt(v, 10); if (v == null || !Number.isFinite(v)) continue; }  // #90: FICO 300–850
+      if (t === 'int') {
+        /* A BAD SCORE IS REFUSED, NOT SILENTLY DROPPED (third audit,
+           2026-08-02). `sanitizeFico` answers null for junk, and `continue`
+           turned that into "saved!" with nothing written — while both profile
+           doors refuse the identical value with a reason. One column, four
+           doors, two behaviours; this is the half that lied. */
+        const typed = v != null && String(v).trim() !== '';
+        v = k === 'fico' ? require('../lib/fields').sanitizeFico(v) : parseInt(v, 10);
+        if (v == null || !Number.isFinite(v)) {
+          if (typed && k === 'fico') return res.status(400).json({ error: 'Credit score must be a 3-digit score between 300 and 850' });
+          continue;
+        }
+      }  // #90: FICO 300–850
       if (t === 'date') {  // 2026-07-15 incident: strict calendar + year bounds;
         // a typed 2-digit year resolves to the real year (DOB → adult century).
         v = require('../lib/fields').sanitizeDob(v);
@@ -3501,9 +3544,22 @@ async function syncProfileFromApplication(borrowerId, b) {
     .some(k => p[k] != null && p[k] !== '');
   if (!hasAny && !b.ssn) return;
   const currentAddress = p.currentAddress ? jsonbText(p.currentAddress) : null;
-  const yearsAtResidence = p.yearsAtResidence === '' || p.yearsAtResidence == null ? null : Number(p.yearsAtResidence);
-  const monthsAtResidence = p.monthsAtResidence === '' || p.monthsAtResidence == null ? null : parseInt(p.monthsAtResidence, 10) || null;
-  const housingPayment = moneyField(p.housingPayment);
+  /* ALL THREE numerics are swept against their real columns before they are
+     bound (third audit, 2026-08-02). This sync is post-commit and its caller
+     SWALLOWS a throw, so an unstorable figure did not 500 — it silently threw
+     away the ENTIRE update (citizenship, marital status, the lot) while the
+     submit answered 201 {ok:true}: the repo's #1 class, on the third door onto
+     these columns. Drop-mode is right here because there is nobody left to
+     answer — the application is already committed. */
+  const resBag = {
+    years_at_residence: p.yearsAtResidence === '' || p.yearsAtResidence == null ? null : Number(p.yearsAtResidence),
+    months_at_residence: p.monthsAtResidence === '' || p.monthsAtResidence == null ? null : parseInt(p.monthsAtResidence, 10) || null,
+    housing_payment: moneyField(p.housingPayment),
+  };
+  numberBounds.dropUnstorable('borrowers', resBag);
+  const yearsAtResidence = resBag.years_at_residence;
+  const monthsAtResidence = resBag.months_at_residence;
+  const housingPayment = resBag.housing_payment;
   await db.query(
     `UPDATE borrowers SET
        cell_phone      = COALESCE(cell_phone, NULLIF($2,'')),

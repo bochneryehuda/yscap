@@ -1479,26 +1479,9 @@ function decideInboundProcessor(userId, emailId) {
    MUTATES `cols` in place and returns the keys it dropped (for the log and for
    the test). PURE apart from that — no DB, no network, never throws. */
 function dropUnstorableCols(cols, taskId) {
-  const nb = require('../lib/number-bounds');
-  const dropped = [];
-  for (const k of Object.keys(cols || {})) {
-    // Only columns that HAVE a ceiling; everything else is left completely alone.
-    if (!nb.columnKindOf('applications', k) || cols[k] == null) continue;
-    const raw = cols[k];
-    const txt = typeof raw === 'number' ? null : String(raw).trim();
-    /* An empty string is "not provided", not zero — `Number('')` is 0, which
-       would pass every check below and then be bound as `''`. */
-    const n = txt === null ? raw : (txt === '' ? NaN : Number(txt));
-    /* Not a number AT ALL is the same failure with a different code (22P02 vs
-       22003) — a formatted "$450,000" breaks the sync exactly as 10^20 does. */
-    if (Number.isFinite(n) && !nb.applicationColumnProblem(k, n)) continue;
-    cols[k] = null;
-    dropped.push(k);
-  }
-  if (dropped.length) {
+  return require('../lib/number-bounds').dropUnstorable('applications', cols, (dropped) => {
     console.warn(`[clickup] inbound ${dropped.join(', ')} did not fit the column on task ${taskId} — keeping the portal value`);
-  }
-  return dropped;
+  });
 }
 
 async function linkOrCreateApplication(task, read, borrowerId, llcId, ctx = {}) {

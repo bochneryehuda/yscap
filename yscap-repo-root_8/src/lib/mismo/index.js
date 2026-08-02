@@ -218,7 +218,16 @@ async function upsertBorrower(client, p, opts = {}) {
      p.dependents != null ? int(p.dependents) : null,
      p.currentAddress ? JSON.stringify(p.currentAddress) : null,
      p.priorAddress ? JSON.stringify(p.priorAddress) : null,
-     p.yearsAtResidence != null ? num(p.yearsAtResidence) : null,
+     /* numeric(4,1), NOT money — `num()` bounds numeric(14,2), which is three
+        orders too loose here, and `parse.js` DERIVES this from the MISMO
+        residency-months count, so a months value the file itself carries can
+        produce a years value the column cannot hold (8333.3 from 99999 months)
+        and take the WHOLE import down with a 500. Same derived-value class as
+        the assignment sum and `residence_since` (third audit, 2026-08-02). */
+     p.yearsAtResidence != null
+       ? (numberBounds.tableColumnProblem('borrowers', 'years_at_residence', num(p.yearsAtResidence))
+           ? null : num(p.yearsAtResidence))
+       : null,
      p.employer || null,
      p.middleName || null, p.suffix || null]);
   const id = b.rows[0].id;

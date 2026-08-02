@@ -294,10 +294,41 @@ function applicationColumnProblem(column, n, label) {
   return tableColumnProblem('applications', column, n, label);
 }
 
+/**
+ * DROP-MODE: null out every value in `bag` that its column cannot hold, and
+ * return the keys dropped. MUTATES `bag`. Never throws.
+ *
+ * For the doors with NO HUMAN TO ANSWER — an import, an inbound sync, a
+ * post-commit follow-up — where refusing means losing an entire import or
+ * breaking one task's sync forever, and where the value we already hold is a
+ * better answer than a failure. A door with somebody at it should call
+ * `tableColumnProblem` and say what is wrong instead.
+ *
+ * `''` is "not provided", not zero: `Number('')` is 0, which would sail through
+ * every check and then be bound as an empty string. A value that is not a number
+ * at all is dropped too — 22P02 breaks a sync exactly as 22003 does.
+ */
+function dropUnstorable(table, bag, onDrop) {
+  const dropped = [];
+  if (!bag || typeof bag !== 'object') return dropped;
+  for (const k of Object.keys(bag)) {
+    if (!columnKindOf(table, k) || bag[k] == null) continue;
+    const raw = bag[k];
+    const txt = typeof raw === 'number' ? null : String(raw).trim();
+    const n = txt === null ? raw : (txt === '' ? NaN : Number(txt));
+    if (Number.isFinite(n) && !tableColumnProblem(table, k, n)) continue;
+    bag[k] = null;
+    dropped.push(k);
+  }
+  if (dropped.length && typeof onDrop === 'function') { try { onDrop(dropped); } catch (_) {} }
+  return dropped;
+}
+
 module.exports = {
   MONEY_MAX, INT_MAX, INT_MIN, RATE_MAX, PCT_MAX,
   MONEY_LIMIT_TEXT, INT_LIMIT_TEXT,
   moneyOverflows, rateOverflows, pctOverflows, intOverflows, numericOverflows,
   limitText, columnProblem,
   COLUMN_KIND, COLUMN_LABEL, columnKindOf, tableColumnProblem, applicationColumnProblem,
+  dropUnstorable,
 };

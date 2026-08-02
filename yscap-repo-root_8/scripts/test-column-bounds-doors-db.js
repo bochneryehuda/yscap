@@ -504,6 +504,23 @@ if (!process.env.DATABASE_URL) {
         eq(Number(row.underlying_contract_price), 900000000000, '…and the storable part kept');
       }
 
+      /* THE DERIVED YEARS-AT-RESIDENCE. `parse.js` computes it from the MISMO
+         residency-MONTHS count, so a months value the file itself carries can
+         produce a years value numeric(4,1) cannot hold — and the whole import
+         was lost to a 500. Same class as the assignment sum and residence_since. */
+      let yThrew = null, yApp = null;
+      try {
+        const out = await mismo.createFromParsed(Object.assign(parsed({}), {
+          borrower: { firstName: 'Mismo', lastName: 'Years', email: `mismo-y-${sfx}@test.local`, yearsAtResidence: 8333.3 },
+        }));
+        yApp = out && (out.applicationId || out.id);
+      } catch (e) { yThrew = e.code || e.message || String(e); }
+      eq(yThrew, null, 'an out-of-range years-at-residence no longer loses the whole import');
+      assert(!!yApp, '…and the file exists');
+      const yRow = (await db.query(
+        `SELECT years_at_residence FROM borrowers WHERE email=$1`, [`mismo-y-${sfx}@test.local`])).rows[0];
+      eq(yRow && yRow.years_at_residence, null, '…with only the unstorable figure dropped');
+
       // The control: an ordinary assignment import still derives its price.
       const ok = await mismo.createFromParsed(parsed({
         extras: { isAssignment: true, underlyingContractPrice: 100000, assignmentFee: 20000 },
@@ -685,6 +702,144 @@ if (!process.env.DATABASE_URL) {
         'a personal field with no target borrower is refused, exactly as openBorrowerRequest refuses it');
       eq(CR.proposalProblem('fico', '720', { targetBorrowerId: borrowerId }), '',
         '…and accepted once there is one');
+    }
+
+    /* ================================================================ *
+     * THE THIRD AUDIT'S FINDINGS (2026-08-02).
+     * ================================================================ */
+    console.log('\n--- T1: a NUL byte cannot reach ANY column, on any door ---');
+    {
+      const NUL = String.fromCharCode(0);
+      /* The class was fixed three times — textColumn, then jsonbText on 4 of ~17
+         binds, then the rest — and each fix was a LIST. The public lead door was
+         still 500-ing on the visitor's own name box, and the public intake door
+         lost a whole application on `firstName`, because those are plain TEXT
+         columns. It is now stripped once, at the request boundary. */
+      const lead = (over) => call('POST', '/api/leads', null, Object.assign(
+        { tool: 'contact', name: `Lead ${sfx}`, email: `nul-${Math.random().toString(36).slice(2, 8)}-${sfx}@test.local` }, over));
+      for (const [field, body] of [
+        ['name', { name: `Bo${NUL}b` }], ['phone', { phone: `55${NUL}5` }],
+        ['subject', { subject: `s${NUL}u` }], ['message', { message: `hi${NUL}there` }],
+        ['payload', { payload: { v: `a${NUL}b` } }],
+      ]) {
+        const r = await lead(body);
+        eq(r.status, 201, `the public lead door survives a NUL in ${field}`);
+      }
+      const stored = await db.query(`SELECT name FROM leads WHERE name LIKE 'Bob'`);
+      assert(stored.rows.length > 0, '…and the cleaned value is what was stored');
+
+      const intake = await call('POST', '/api/intake', null, {
+        email: `nul-intake-${sfx}@test.local`, firstName: `Jo${NUL}e`, lastName: 'Nul',
+        propertyAddress: ADDR,
+      });
+      eq(intake.status, 201, 'the public intake door survives a NUL in firstName');
+      const b = await db.query(`SELECT first_name FROM borrowers WHERE email=$1`, [`nul-intake-${sfx}@test.local`]);
+      eq(b.rows[0] && b.rows[0].first_name, 'Joe', '…with the invisible character removed');
+
+      for (const [door, method, path, tok] of [
+        ['borrower profile', 'PUT', '/api/borrower/profile', bTok],
+        ['staff profile', 'PATCH', `/api/staff/borrowers/${borrowerId}`, sTok],
+      ]) {
+        const r = await call(method, path, tok, { citizenship: `US${NUL}A` });
+        eq(r.status, 200, `${door}: a NUL in a plain TEXT field no longer 500s`);
+      }
+
+      // The middleware itself: bounded, never throws, leaves real values alone.
+      const N = require('../src/lib/nul-strip');
+      eq(N.stripNulBody({ a: `x${NUL}y` }).a, 'xy', 'the stripper removes a NUL from a value');
+      eq(Object.keys(N.stripNulBody({ [`k${NUL}`]: 1 }))[0], 'k', '…and from a KEY');
+      eq(N.stripNulBody({ s: 'a\\u0000b' }).s, 'a\\u0000b', '…while text that merely SPELLS it survives');
+      assert(N.stripNulBody({ d: new Date(0) }).d instanceof Date, '…a Date is left as a Date');
+      eq(N.stripNulBody(null), null, '…a null body never throws');
+      let deep = { s: `a${NUL}` }; for (let i = 0; i < 200; i++) deep = { deep };
+      assert(!!N.stripNulBody(deep), '…and a body deeper than the cap returns rather than blowing the stack');
+    }
+
+    console.log('\n--- T2: a derived value that cannot be stored, on the two doors that swallow ---');
+    {
+      /* Same class as `residence_since` and the assignment sum: the INPUT fits
+         its column and the DERIVED value does not. Here it is worse than a 500 —
+         the caller swallows, so the whole update vanished behind a 201. */
+      const freshId = (await db.query(
+        `INSERT INTO borrowers (email,first_name,last_name) VALUES ($1,'Draft','Sync') RETURNING id`,
+        [`draft-sync-${sfx}@test.local`])).rows[0].id;
+      await db.query(`INSERT INTO borrower_auth (borrower_id,password_hash,token_version) VALUES ($1,'x',0) ON CONFLICT DO NOTHING`, [freshId]);
+      const dTok = C.signJwt({ sub: freshId, kind: 'borrower', tv: 0 });
+      const draft = await call('POST', '/api/borrower/drafts', dTok, { data: {}, step: 1 });
+      const did = draft.body && draft.body.id;
+      assert(!!did, 'a draft exists to submit');
+      if (did) {
+        const sub = await call('POST', `/api/borrower/drafts/${did}/submit`, dTok, {
+          propertyAddress: ADDR, program: 'Bridge', loanType: 'Purchase',
+          personal: { yearsAtResidence: 99999, citizenship: 'US Citizen' },
+        });
+        assert(sub.status === 201 || sub.status === 200, 'the submit succeeds');
+        const row = (await db.query(
+          `SELECT citizenship, years_at_residence FROM borrowers WHERE id=$1`, [freshId])).rows[0];
+        eq(row.citizenship, 'US Citizen', '…and the REST of the profile really saved (it used to be lost whole)');
+        eq(row.years_at_residence, null, '…with only the unstorable figure dropped');
+      }
+    }
+
+    console.log('\n--- T3: the >100-year rule cannot brick a profile it did not cause ---');
+    {
+      /* Every client resends the whole form on every save, so refusing an
+         UNCHANGED out-of-range value made editing a phone number impossible on
+         any row whose anchor predates the rule. */
+      const oldId = (await db.query(
+        `INSERT INTO borrowers (email,first_name,last_name,years_at_residence,months_at_residence)
+         VALUES ($1,'Legacy','Anchor',126,7) RETURNING id`, [`legacy-anchor-${sfx}@test.local`])).rows[0].id;
+      await db.query(`INSERT INTO borrower_auth (borrower_id,password_hash,token_version) VALUES ($1,'x',0) ON CONFLICT DO NOTHING`, [oldId]);
+      const oTok = C.signJwt({ sub: oldId, kind: 'borrower', tv: 0 });
+      const resave = await call('PUT', '/api/borrower/profile', oTok,
+        { cellPhone: '555-0100', yearsAtResidence: 126, monthsAtResidence: 7 });
+      eq(resave.status, 200, 'resending an UNCHANGED legacy duration still saves');
+      eq((await db.query(`SELECT cell_phone FROM borrowers WHERE id=$1`, [oldId])).rows[0].cell_phone, '555-0100',
+        '…and the field they actually edited landed');
+      const changed = await call('PUT', '/api/borrower/profile', oTok, { yearsAtResidence: 300 });
+      eq(changed.status, 400, '…while genuinely CHANGING it to an impossible value is still refused');
+    }
+
+    console.log('\n--- T4: one column, four doors, ONE behaviour ---');
+    {
+      const appId = await newFile();
+      const bad = { fico: 'abc' };
+      const doors = [
+        ['staff completeness', await call('POST', `/api/staff/applications/${appId}/complete-fields`, sTok, bad)],
+        ['borrower completeness', await call('POST', `/api/borrower/applications/${appId}/complete-fields`, bTok, bad)],
+      ];
+      for (const [name, r] of doors) eq(r.status, 400, `${name} refuses a junk credit score (it used to answer 200 and drop it)`);
+    }
+
+    console.log('\n--- T5: a pricing input is validated on EVERY path, not just the locked one ---');
+    {
+      const appId = await newFile();
+      const junk = await call('POST', `/api/borrower/applications/${appId}/complete-fields`, bTok, { program: 'Not A Real Program' });
+      eq(junk.status, 400, 'an unregistered file refuses a program no screen offers');
+      const lt = await call('POST', `/api/borrower/applications/${appId}/complete-fields`, bTok, { loan_type: 'Banana' });
+      eq(lt.status, 400, '…and a made-up loan type');
+      const ok = await call('POST', `/api/borrower/applications/${appId}/complete-fields`, bTok, { program: 'Bridge' });
+      eq(ok.status, 200, '…while a real program still saves');
+      eq((await db.query(`SELECT program FROM applications WHERE id=$1`, [appId])).rows[0].program, 'Bridge', '…and lands');
+    }
+
+    console.log('\n--- T6: the pre-pass and the writer agree on EVERY shape ---');
+    {
+      /* It mirrored one of the writer's skips, so a registered file refused nine
+         shapes an unregistered one ignored — including a European "1.200.000". */
+      const locked = await newFile(); await register(locked);
+      const open = await newFile();
+      for (const v of ['TBD', '1.2.3', '.', '..', '1.200.000']) {
+        const a = await call('POST', `/api/borrower/applications/${locked}/complete-fields`, bTok, { purchase_price: v, arv: 725000 });
+        const b2 = await call('POST', `/api/borrower/applications/${open}/complete-fields`, bTok, { purchase_price: v, arv: 725000 });
+        eq(a.status, b2.status, `"${v}": a registered and an unregistered file answer the same way`);
+        /* …AND pin what that answer IS. Asserting only that the two agree is not
+           enough: the writer and the pre-pass now share one predicate, so a
+           change to it moves both together and the equality holds while the
+           behaviour is wrong. The writer has always IGNORED an unparseable money
+           value, so the answer is 200 with the good field saved. */
+        eq(a.status, 200, `"${v}": …and that answer is "ignore it and save the rest"`);
+      }
     }
 
     console.log(failures ? `\n${failures} FAILURE(S)` : '\nALL column-bounds door assertions passed');
