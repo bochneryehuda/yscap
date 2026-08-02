@@ -3335,22 +3335,33 @@ export default function StaffApplication() {
     const m = rawHash.match(/#([a-z][a-z0-9-]*)$/);
     if (m && stationOf(m[1])) {
       const target = m[1];
+      let inner = null;
       const t = setTimeout(() => {
         if (target.startsWith('sec-')) { goToSection(target); return; }
         // Rooms view: the resolver hops to the owning room, opens it and scrolls.
         if (revealAnchor(target)) return;
+        // revealAnchor is three-state collapsed into a boolean: `true` means only
+        // that the RESOLVER took it. Its own getElementById path scrolls and still
+        // returns false, so without this the fallback below would schedule a
+        // SECOND scroll of the same element 400ms later — which yanks a reader who
+        // scrolled away in between (re-audit 2026-08-02). If the element is on the
+        // page, the reveal already did the work.
+        if (document.getElementById(target)) return;
         // Classic view registers NO resolver, and the owning section may be
         // collapsed — a collapsed Section unmounts its children, so there is
         // nothing for revealAnchor to find. Open the section first, then scroll:
         // the same shape the ?focus=ai-findings landing already uses.
         const owner = ANCHOR_SECTION[target];
         if (owner) requestOpenSection(owner);
-        setTimeout(() => {
+        inner = setTimeout(() => {
           const el = document.getElementById(target) || (owner ? document.getElementById(owner) : null);
           if (el) el.scrollIntoView({ behavior: 'smooth', block: 'start' });
         }, 400);
       }, 250);
-      return () => clearTimeout(t);
+      // BOTH timers: the inner one is created inside the outer callback, so a
+      // cleanup that only cleared `t` left an orphan that could fire against the
+      // NEXT file and scroll it to the top (open A, switch to B within ~650ms).
+      return () => { clearTimeout(t); if (inner) clearTimeout(inner); };
     }
     // A closer lands on the Closing section by default (owner-directed 2026-07-26)
     // when there's actually a closing to work — a closer on file or a CTC/funded file.
