@@ -8,11 +8,26 @@
    Pure data + pure helpers — no React, no DOM — so the link-contract test can
    run it under plain node. */
 
+/* ORDER MATTERS IN THREE PLACES AND THEY MUST MOVE TOGETHER (learned the hard
+   way): the ROOM RAIL reads its order from the `SECTIONS` array in
+   StaffApplication.jsx, the PAGE reads its order from the literal JSX order of
+   the <Section> blocks, and THIS array is ORDER-BLIND — it only feeds
+   STATION_OF and the room badge roll-up. Changing one and not the others gets
+   you a rail that disagrees with the page. */
 export const STATIONS = [
   { id: 'st-overview', label: 'Overview', sections: ['sec-overview'] },
   { id: 'st-deal', label: 'The Deal', sections: ['sec-application', 'sec-payoff', 'sec-pricing', 'sec-exceptions', 'sec-encompass'] },
-  { id: 'st-review', label: 'Review & Conditions', sections: ['sec-conditions', 'sec-underwriting', 'sec-appraisal', 'sec-track', 'sec-documents'] },
-  { id: 'st-signing', label: 'Signing & Closing', sections: ['sec-esign', 'sec-orders', 'sec-closing'] },
+  /* Owner-directed 2026-08-02: conditions, then track record, then appraisal and
+     findings, then document review, then documents. */
+  { id: 'st-review', label: 'Review & Conditions', sections: ['sec-conditions', 'sec-track', 'sec-appraisal', 'sec-underwriting', 'sec-documents'] },
+  /* ORDERS IS ITS OWN ROOM (owner-directed 2026-08-02: "that orders should be a
+     separate section of orders … the same way we have a button now Signing and
+     Closing, we should have a button Orders"). It sits BEFORE Signing & Closing
+     because that is the order of the work — title and insurance are ordered, and
+     closing prep is sent, well before anything is signed or closed. */
+  { id: 'st-orders', label: 'Orders', sections: ['sec-orders'] },
+  /* E-signatures BEFORE closing (owner-directed 2026-08-02). */
+  { id: 'st-signing', label: 'Signing & Closing', sections: ['sec-esign', 'sec-closing'] },
   { id: 'st-delivery', label: 'Send to Investor', sections: ['sec-tapes'] },
   { id: 'st-draws', label: 'Construction Draws', sections: ['sec-draws'] },
   { id: 'st-messages', label: 'Messages & History', sections: ['sec-messages'] },

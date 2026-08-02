@@ -369,6 +369,6 @@ the password manager and not only in a dashboard.
 | `src/lib/backup/documents.js` | The document copy |
 | `src/lib/backup/targets.js` | The guards on a restore target |
 | `src/lib/backup/report.js` | The ledger and the alarm |
-| `db/406_backup_runs.sql` | The ledger tables |
+| `db/407_backup_runs.sql` | The ledger tables |
 | `Dockerfile.backup` | The cron container (pins the Postgres client version) |
 | `scripts/test-backup-*.js` | Tests, in `npm test` |
