@@ -186,6 +186,41 @@ async function encompassSendBlock(applicationId) {
   }
 }
 
+/**
+ * A THIRD reason a term-sheet package can't send (owner-directed 2026-08-02):
+ * the Term Sheet stored on the file PRINTS "INITIAL TERM SHEET — NOT FINAL".
+ * The wording is drawn into the PDF at generation time, so orchestrate.js
+ * refuses to mail one — and, exactly like the Encompass gate above, the panel
+ * has to READ that here or the officer meets the refusal only after pressing
+ * Send, with nothing on screen explaining it.
+ *
+ * The document query MIRRORS orchestrate.latestDocument so the panel and the
+ * send can never disagree about WHICH sheet is being judged. Best-effort: a
+ * read failure reports no block (the send still refuses — the panel is advisory
+ * and must never break on it), and "no term sheet on the file at all" is left to
+ * the orchestrator's own missing-document message rather than duplicated here.
+ */
+async function termSheetStampBlock(db, applicationId) {
+  try {
+    const r = await db.query(
+      `SELECT id, term_sheet_final, created_at
+         FROM documents
+        WHERE application_id = $1 AND doc_kind = 'term_sheet'
+          AND COALESCE(review_status,'') <> 'rejected'
+        ORDER BY is_current DESC NULLS LAST, created_at DESC
+        LIMIT 1`, [applicationId]);
+    const doc = r.rows[0];
+    if (!doc) return { onFile: false, final: false, block: false, message: null };
+    const final = doc.term_sheet_final === true;
+    return {
+      onFile: true, final, block: !final, generatedAt: doc.created_at,
+      message: final ? null : require('./term-sheet-stamp').REGENERATE_MESSAGE,
+    };
+  } catch (_) {
+    return { onFile: false, final: false, block: false, message: null };
+  }
+}
+
 /** Per-file: the send-gate + the two packages' envelopes (with signed-doc links). */
 async function fileEsign(db, applicationId) {
   const g = await gate.esignSendGate(applicationId, { db });
@@ -205,7 +240,8 @@ async function fileEsign(db, applicationId) {
   // send, enforced at the send route. The panel needs it to tell the truth about
   // readiness and to offer the admin override instead of a dead end.
   const encompass = await encompassSendBlock(applicationId);
-  return { gate: g, packages: byPurpose, envelopes, loanNumber: meta.ys_loan_number || null, exceptionReasonCodes, encompass };
+  const termSheet = await termSheetStampBlock(db, applicationId);
+  return { gate: g, packages: byPurpose, envelopes, loanNumber: meta.ys_loan_number || null, exceptionReasonCodes, encompass, termSheet };
 }
 
-module.exports = { esignPhase, waitingOn, dashboard, fileEsign, encompassSendBlock };
+module.exports = { esignPhase, waitingOn, dashboard, fileEsign, encompassSendBlock, termSheetStampBlock };

@@ -96,10 +96,13 @@ function fakeStorage() {
     const b = (await pool.query(`INSERT INTO borrowers (first_name,last_name,email) VALUES ('Pat','Borrower','borrower@example.com') RETURNING id`)).rows[0].id;
     const cb = (await pool.query(`INSERT INTO borrowers (first_name,last_name,email) VALUES ('Chris','Co','co@example.com') RETURNING id`)).rows[0].id;
     const app = (await pool.query(
-      `INSERT INTO applications (ys_loan_number,borrower_id,co_borrower_id,property_address,loan_amount,submitted_at)
+      // expected_closing: the term-sheet package's send-gate has required an
+      // estimated closing date since 2026-07-22 (the signed sheet's first-payment
+      // and maturity dates are derived from it), so the fixture carries one.
+      `INSERT INTO applications (ys_loan_number,borrower_id,co_borrower_id,property_address,loan_amount,submitted_at,expected_closing)
        VALUES ('YS-1001',$1,$2,
                '{"line1":"1 Main St","city":"Town","state":"NY","zip":"10001","oneLine":"1 Main St, Town, NY"}',
-               487500, '2026-06-01T00:00:00Z') RETURNING id`, [b, cb])).rows[0].id;
+               487500, '2026-06-01T00:00:00Z', '2026-09-01') RETURNING id`, [b, cb])).rows[0].id;
 
     // Conditions: appraisal back (t0), review (t0), product AFTER appraisal (t1),
     // plus the target conditions the signed docs clear.
@@ -122,11 +125,15 @@ function fakeStorage() {
     // disclosure are GENERATED on our server at send time, so no stored bytes for
     // them — the send must still work without a stored application_export.
     const storage = fakeStorage();
+    // term_sheet_final=true: a term sheet whose own face reads "INITIAL TERM
+    // SHEET — NOT FINAL" is refused by the send (owner-directed 2026-08-02), so
+    // the fixture carries the sheet a ready-to-issue file really has. The
+    // refusal itself is covered by test-term-sheet-final-stamp-db.js.
     for (const kind of ['term_sheet']) {
       const { ref } = await storage.save(Buffer.from(`${kind}-bytes`));
       await pool.query(
-        `INSERT INTO documents (application_id,filename,storage_provider,storage_ref,doc_kind,is_current)
-         VALUES ($1,$2,'local',$3,$4,true)`, [app, `${kind}.pdf`, ref, kind]);
+        `INSERT INTO documents (application_id,filename,storage_provider,storage_ref,doc_kind,is_current,term_sheet_final)
+         VALUES ($1,$2,'local',$3,$4,true,true)`, [app, `${kind}.pdf`, ref, kind]);
     }
 
     // ---- SEND the term-sheet package ----------------------------------------
