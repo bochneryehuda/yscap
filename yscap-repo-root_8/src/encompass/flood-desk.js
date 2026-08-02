@@ -211,12 +211,16 @@ async function attachCertificate(order, buf) {
   const storage = require('../lib/storage');
   const { ref, provider } = await storage.save(buf, { filename });
   const borrowerId = (await db.query(`SELECT borrower_id FROM applications WHERE id=$1`, [order.application_id])).rows[0];
+  // sha256 so the SharePoint integrity audit can verify this mirror copy like every
+  // other document (db/115). These bytes arrive as a real Buffer from the vendor
+  // download, so they are hashed here rather than riding along from a decode.
+  const sha256 = require('../lib/upload-bytes').sha256hex(buf);
   const r = await db.query(
     `INSERT INTO documents (application_id, checklist_item_id, borrower_id, filename, content_type, size_bytes,
-                            storage_provider, storage_ref, uploaded_by_kind, uploaded_by_id, doc_kind, slot_label, visibility, source_type)
-     VALUES ($1,$2,$3,$4,'application/pdf',$5,$6,$7,'staff',$8,'flood_determination','Flood determination','staff_only','system')
+                            storage_provider, storage_ref, uploaded_by_kind, uploaded_by_id, doc_kind, slot_label, visibility, source_type, sha256)
+     VALUES ($1,$2,$3,$4,'application/pdf',$5,$6,$7,'staff',$8,'flood_determination','Flood determination','staff_only','system',$9)
      RETURNING id`,
-    [order.application_id, itemId || null, itemId ? (borrowerId && borrowerId.borrower_id) : null, filename, buf.length, provider, ref, order.ordered_by || null]);
+    [order.application_id, itemId || null, itemId ? (borrowerId && borrowerId.borrower_id) : null, filename, buf.length, provider, ref, order.ordered_by || null, sha256]);
   if (itemId) {
     try { await require('../lib/checklist-evidence').reopenConditionEvidence(db, itemId, 'received'); } catch (_) {}
   }
