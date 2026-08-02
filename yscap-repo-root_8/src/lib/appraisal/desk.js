@@ -107,7 +107,11 @@ async function extractAndStorePhotos(appraisalId, appId, pdfB64, importedBy, xml
           const mime = photoMeta.sniffImageMime(buf) || im.mime;   // magic bytes beat the attribute
           return { bytes: buf, contentType: mime, ext: (mime.split('/')[1] || 'jpg').replace('jpeg', 'jpg'),
             kind: im.photo ? 'photo' : 'graphic', category: photoMeta.categoryFor(im),
-            caption: im.caption || null, width: null, height: null };
+            caption: im.caption || null, width: null, height: null,
+            // The appraiser's own slot label, and the comparable number derived from
+            // it. Both were being read and then dropped, which is why a comparable in
+            // the research warehouse could never carry its own picture.
+            identifier: im.identifier || null, compSeq: photoMeta.compSeqFromSlot(im) };
         });
         // Same contract as the PDF path: real photographs first, form artwork last.
         photos = photos.filter((p) => p.kind !== 'graphic').concat(photos.filter((p) => p.kind === 'graphic'));
@@ -127,9 +131,26 @@ async function extractAndStorePhotos(appraisalId, appId, pdfB64, importedBy, xml
     }
     photos = list.map((ph) => ({ bytes: ph.png, contentType: 'image/png', ext: 'png',
       kind: ph.kind, category: ph.category || null, caption: ph.caption || null,
-      width: ph.width, height: ph.height }));
+      width: ph.width, height: ph.height,
+      identifier: ph.identifier || null, compSeq: ph.compSeq == null ? null : ph.compSeq }));
   }
   if (!photos.length) return 0;
+  // WHICH COMPARABLE EACH COMP PHOTO SHOWS. The caption is the comparable's own
+  // ADDRESS on every vendor that writes captions at all, so matching on it beats
+  // both ordinal schemes — a photo can only be attributed to the house it names.
+  // The slot ordinal (already on `compSeq`) stays as the fallback.
+  try {
+    const comps = (await db.query(
+      `SELECT seq, address, city, state, zip FROM appraisal_comparables
+        WHERE appraisal_id=$1 AND is_subject=false`, [appraisalId])).rows;
+    if (comps.length) {
+      for (const p of photos) {
+        if (p.category !== 'comparable' || !p.caption) continue;
+        const bySeq = photoMeta.compSeqFromCaption(p.caption, comps);
+        if (bySeq != null) p.compSeq = bySeq;
+      }
+    }
+  } catch (e) { console.error('[appraisal] comp-photo address match (non-fatal):', e && e.message); }
   const res = { photos: photos.map((p, i) => Object.assign(p, { seq: i })), fromXml };
   const app = (await db.query(`SELECT borrower_id FROM applications WHERE id=$1`, [appId])).rows[0];
   const borrowerId = app ? app.borrower_id : null;
@@ -164,9 +185,11 @@ async function extractAndStorePhotos(appraisalId, appId, pdfB64, importedBy, xml
       // position alone. When the XML named the slot, that name is what is stored ('subject_front',
       // 'comparable', …) — the appraiser's own label, which no pixel heuristic can beat.
       await db.query(
-        `INSERT INTO appraisal_photos (appraisal_id, document_id, sequence, width, height, category, caption) VALUES ($1,$2,$3,$4,$5,$6,$7)`,
+        `INSERT INTO appraisal_photos (appraisal_id, document_id, sequence, width, height, category, caption, identifier, comp_seq)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)`,
         [appraisalId, doc.rows[0].id, ph.seq, ph.width, ph.height,
-          ph.category || (ph.kind === 'graphic' ? 'graphic' : 'photo'), ph.caption || null]);
+          ph.category || (ph.kind === 'graphic' ? 'graphic' : 'photo'), ph.caption || null,
+          ph.identifier || null, ph.compSeq == null ? null : String(ph.compSeq)]);
       stored++;
     } catch (e) { console.error('[appraisal] photo store failed (non-fatal, continuing):', e && e.message); }
   }
@@ -235,7 +258,30 @@ function fireFloodCheck(appraisalId, appId) {
 function firePhotoExtraction(appraisalId, appId, pdfB64, importedBy, xml) {
   if (!appraisalId || !pdfB64) return;
   extractAndStorePhotos(appraisalId, appId, pdfB64, importedBy, xml)
+    .then(() => fireResearchIngest(appraisalId, 'photos'))   // re-link now that the pictures exist
     .catch((e) => console.error('[appraisal] photo extraction failed (non-fatal):', e && e.message));
+}
+
+/**
+ * FOLD THIS REPORT INTO THE RESEARCH WAREHOUSE (db/406).
+ *
+ * Every imported appraisal also becomes rows in the cross-file property /
+ * comparable / appraiser database: the subject, every comparable, the sales, the
+ * photos and the appraiser's contact record. Fire-and-forget and swallowing by
+ * construction — the warehouse is a research surface, and a failure to file
+ * something in it must never affect the loan file the officer is working on.
+ *
+ * Called TWICE per import on purpose: once immediately (the facts are already in
+ * the database by then) and once after the photo extraction finishes, because the
+ * photo links can only be made after the pictures exist. The ingest is idempotent,
+ * so the second pass refreshes rather than duplicates.
+ */
+function fireResearchIngest(appraisalId, why) {
+  if (!appraisalId) return;
+  Promise.resolve()
+    .then(() => require('../research/ingest').ingestAppraisal(db, appraisalId))
+    .then((r) => { if (r && !r.ok) console.error(`[research] ingest (${why}) did not complete:`, r.error); })
+    .catch((e) => console.error(`[research] ingest (${why}) failed (non-fatal):`, e && e.message));
 }
 
 /**
@@ -274,6 +320,7 @@ async function runAppraisalImport(args) {
   // 2026-07-28) — a definite XML As-Is still has to be compared with what the file currently says.
   fireAsIsRead(appId, pdfB64, importedBy);
   // The XML goes along: it may CARRY the photos, and it names the ones mined from the PDF.
+  fireResearchIngest(out.appraisalId, 'import');
   firePhotoExtraction(out.appraisalId, appId, pdfB64, importedBy, xml);
   fireFloodCheck(out.appraisalId, appId);
   // The appraiser's OWN stated flood zone is on the row the moment the XML is parsed, with no
@@ -459,6 +506,11 @@ async function backfillAppraisalCompSplitOnce(limit = 200) {
           [r.id, (A.compSplit && A.compSplit.confidence) || 'undetermined', A.compSplit ? !!A.compSplit.needsReview : false]);
         await client.query('COMMIT');
         if ([...bySeq.values()].some((v) => v === 'as_is') && [...bySeq.values()].some((v) => v === 'arv')) split++;
+        // THE WAREHOUSE HAS A COPY OF comp_set, AND IT JUST MOVED. Its ingest ledger
+        // is keyed on the appraisal id and would never revisit a report already
+        // filed as `ok`, so without this the research database would keep answering
+        // "which comps were on the ARV grid?" with the pre-split answer forever.
+        fireResearchIngest(r.id, 'comp-split backfill');
       } catch (_) { await client.query('ROLLBACK').catch(() => {}); }
       finally { client.release(); }
     }

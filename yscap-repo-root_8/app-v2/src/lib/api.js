@@ -1055,4 +1055,29 @@ export const api = {
   borrowerViewSession:  () => req('GET', '/api/borrower-view/session'),
   borrowerViewExit:     () => req('POST', '/api/borrower-view/exit'),
   borrowerViewHistory:  (limit) => req('GET', '/api/borrower-view/history' + qs({ limit })),
+
+  // ---- Research desk: the property / comparable / appraiser database ----------
+  // Built out of every appraisal XML we have ever imported (db/406). Staff-wide —
+  // it holds addresses, property facts and recorded sale prices, no borrower data.
+  researchStats:       () => req('GET', '/api/research/stats'),
+  researchSearch:      (f) => req('GET', '/api/research/properties' + qs(f)),
+  researchProperty:    (id) => req('GET', `/api/research/properties/${id}`),
+  researchPhotoUrl:    (documentId) => `/api/research/photos/${documentId}`,
+  researchAppraisers:  (f) => req('GET', '/api/research/appraisers' + qs(f)),
+  researchAppraiser:   (id) => req('GET', `/api/research/appraisers/${id}`),
+  researchRates:       (f) => req('GET', '/api/research/rates' + qs(f)),
+  researchComps:       (f) => req('GET', '/api/research/comps' + qs(f)),
+  researchBackfill:    (b) => req('POST', '/api/research/backfill', b || {}),
+  // Build-your-own valuations (db/407)
+  valuations:          (f) => req('GET', '/api/research/valuations' + qs(f)),
+  valuation:           (id) => req('GET', `/api/research/valuations/${id}`),
+  valuationCreate:     (b) => req('POST', '/api/research/valuations', b),
+  valuationUpdate:     (id, b) => req('PATCH', `/api/research/valuations/${id}`, b),
+  valuationAddComps:   (id, b) => req('POST', `/api/research/valuations/${id}/comps`, b),
+  valuationEditComp:   (id, compId, b) => req('PATCH', `/api/research/valuations/${id}/comps/${compId}`, b),
+  valuationDropComp:   (id, compId) => req('DELETE', `/api/research/valuations/${id}/comps/${compId}`),
+  valuationSuggest:    (id, b) => req('POST', `/api/research/valuations/${id}/suggest`, b || {}),
+  valuationFinalize:   (id, b) => req('POST', `/api/research/valuations/${id}/finalize`, b || {}),
+  valuationDuplicate:  (id) => req('POST', `/api/research/valuations/${id}/duplicate`, {}),
+  valuationDelete:     (id) => req('DELETE', `/api/research/valuations/${id}`),
 };

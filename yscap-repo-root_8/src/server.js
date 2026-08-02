@@ -258,6 +258,12 @@ app.use('/api/trustpoint', require('./routes/trustpoint'));
 // Appraisal desk: import the appraisal XML, reconcile it against the file, and resolve
 // PILOT findings. The router applies requireAuth + requireStaff + per-file scoping itself.
 app.use('/api/appraisal', require('./routes/appraisal'));
+// The research desk: the cross-file property / comparable / appraiser database built
+// out of every appraisal XML we have ever imported (db/406), its search engine, and
+// the build-your-own valuation grid (db/407). Staff-wide by design — it holds
+// addresses, property characteristics and recorded sale prices, no borrower data —
+// so the router applies requireAuth + requireStaff itself and does NOT scope per file.
+app.use('/api/research', require('./routes/research'));
 // Document-underwriting desk: read + understand each uploaded document (Azure Document
 // Intelligence + Azure OpenAI), raise per-document and cross-document findings, and let an
 // underwriter post conditions / request documents / clear them. Same auth + per-file scoping.
@@ -571,6 +577,19 @@ if (require.main === module) {
         require('./lib/appraisal/desk').backfillNoteBuyerFindingsOnce()
           .then((r) => r && r.synced && console.log('[boot] note-buyer appraisal checks backfill:', JSON.stringify(r)))
           .catch((e) => console.error('[boot] note-buyer appraisal checks backfill failed:', e.message));
+        // BACK-DATE THE RESEARCH DATABASE (owner-directed 2026-08-02: "open and back date
+        // this database — on every single file that we have already in XML, all the
+        // comparables that he used should be saved into that database"). Folds every
+        // appraisal we have ever imported into the cross-file property / comparable /
+        // appraiser warehouse (db/406). Oldest report first, so the final state matches
+        // what we would have reached by filing each report as it arrived.
+        //
+        // Bounded per boot and SELF-DRAINING: the ingest ledger records each report, so
+        // each boot picks up where the last one stopped and a fully-folded corpus makes
+        // this a single empty query. Idempotent, never throws, fire-and-forget.
+        require('./lib/research/ingest').backfill(require('./db'), { limit: 400 })
+          .then((r) => r && r.ingested && console.log('[boot] research warehouse backfill:', JSON.stringify(r)))
+          .catch((e) => console.error('[boot] research warehouse backfill failed:', e.message));
         // NOTE: the As-Is / ARV read is GOING FORWARD ONLY (owner-directed 2026-07-28) — a deliberate
         // exception to the previous-AND-future rule, because that sweep WRITES loan values and
         // re-reading the back book would rewrite numbers on files people have already worked, all at

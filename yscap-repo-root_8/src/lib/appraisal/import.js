@@ -142,15 +142,19 @@ async function importAppraisalTx(db, {
             net_adjustment, net_adj_pct, gross_adj_pct, adjustments, comp_set, sale_status,
             beds, baths, baths_full, baths_half, total_rooms, sale_type, concession_amount, financing_type,
             prior_sale_amount, prior_sale_date, latitude, longitude,
-            view_rating, location_rating, below_grade_sqft, below_grade_finished_sqft, data_source, location_type)
+            view_rating, location_rating, below_grade_sqft, below_grade_finished_sqft, data_source, location_type,
+            condition_text, quality_text, gla_basis)
          VALUES ($1,$2,false,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,
-                 $22,$23,$24,$25,$26,$27,$28,$29,$30,$31,$32,$33,$34,$35,$36,$37,$38,$39)`,
+                 $22,$23,$24,$25,$26,$27,$28,$29,$30,$31,$32,$33,$34,$35,$36,$37,$38,$39,$40,$41,$42)`,
         [appraisalId, c.seq, c.address, c.city, c.state, c.zip, c.proximity, c.salePrice, c.adjustedPrice,
          c.gla, c.saleDate, c.conditionUad, c.qualityUad, c.dom == null ? null : String(c.dom), c.pricePerGla,
          c.netAdjustment, c.netAdjPct, c.grossAdjPct, JSON.stringify(c.adjustments || []), c.comp_set || 'unknown', c.saleStatus || 'closed',
          c.beds, c.bathsText, c.bathsFull, c.bathsHalf, c.totalRooms, c.saleType, c.compConcession, c.financingType,
          c.priorSaleAmount, c.priorSaleDate, c.latitude, c.longitude,
-         c.viewRating, c.locationRating, c.belowGradeSqft, c.belowGradeFinishedSqft, c.compDataSource, c.locationType]);
+         c.viewRating, c.locationRating, c.belowGradeSqft, c.belowGradeFinishedSqft, c.compDataSource, c.locationType,
+         // The worded condition/quality rating a non-UAD vendor wrote, and which of
+         // the two AREA measures this comp's `gla` actually is (db/406 §7).
+         c.conditionText, c.qualityText, c.glaBasis]);
     }
   }
 
