@@ -40,9 +40,19 @@ async function tieoutForFile(client, appId, preloadedCtx) {
   // the original seller is established on a wholesale deal (2026-08-02), and until now the appraisal
   // column simply read blank in the Seller row because nothing loaded it. STAFF-ONLY, like every
   // other appraisal field here — the tie-out matrix is an underwriting-desk surface.
+  //
+  // THE PROPERTY TYPE IS THE CATEGORY, NOT THE ATTACHMENT STYLE (owner-reported 2026-08-02: the
+  // comparison read "Property type | Detached | Multi 2–4"). `appraisals.property_type` held the
+  // MISMO AttachmentType, whose whole value list is Detached / Attached — not an answer to the
+  // question this row asks. db/405 + the importer now store the real category, and
+  // `property-category.categoryLabelFor` re-derives it live for a row the boot repair has not
+  // reached yet, so this column is right on EVERY file from the first deploy rather than after the
+  // sweep drains. The style stays available as its own fact and is never compared.
   const appr = (await client.query(
     `SELECT a.subject_address, a.subject_city, a.subject_state, a.subject_zip, a.contract_price, a.as_is_value, a.arv_value,
-            a.units, a.property_type, a.occupancy_status AS occupancy, a.year_built, a.gla, a.owner_of_record,
+            a.units, a.property_type, a.property_category, a.attachment_type, a.form_type, a.design_style,
+            a.condo_project_type, a.fields,
+            a.occupancy_status AS occupancy, a.year_built, a.gla, a.owner_of_record,
             -- THE SUBJECT'S OWN FIGURE FIRST, then the rent schedule (2026-08-02). The summed
             -- per-unit rents alone read BLANK on a 1004 + 1007, which carries the appraiser's market
             -- rent as est_market_monthly_rent (db/158) and no per-unit schedule — so the Market
@@ -59,7 +69,7 @@ async function tieoutForFile(client, appId, preloadedCtx) {
         propertyAddress: appr.subject_address ? { line1: appr.subject_address, city: appr.subject_city, state: appr.subject_state, zip: appr.subject_zip } : null,
         contractPrice: appr.contract_price, asIsValue: appr.as_is_value, arvValue: appr.arv_value,
         ownerOfRecord: appr.owner_of_record,
-        units: appr.units, propertyType: appr.property_type, occupancy: appr.occupancy,
+        units: appr.units, propertyType: require('../appraisal/property-category').categoryLabelFor(appr), occupancy: appr.occupancy,
         yearBuilt: appr.year_built, gla: appr.gla, marketRent: appr.market_rent,
       },
     });

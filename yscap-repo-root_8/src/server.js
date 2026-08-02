@@ -624,6 +624,15 @@ if (require.main === module) {
         require('./lib/name-heal').healBorrowerNamesOnce()
           .then((r) => r && r.split && console.log('[boot] borrower name split:', JSON.stringify(r)))
           .catch((e) => console.error('[boot] borrower name split failed:', e.message));
+        // Previous-files fix (owner-reported 2026-08-02): every appraisal imported before db/405
+        // stored the MISMO attachment STYLE ("Detached") in its property-type column, so the
+        // Appraisal tab, the tie-out matrix and the Data comparison all printed a word that is not
+        // an answer to "what is this property". This re-reads the real category (single family /
+        // 2–4 / condo / …) from what the row already holds and parks the style in its own column.
+        // Bounded, self-draining, idempotent; never blocks boot.
+        require('./lib/appraisal/property-category-heal').healAppraisalPropertyCategoriesOnce()
+          .then((r) => r && r.looked && console.log('[boot] appraisal property category repair:', JSON.stringify(r)))
+          .catch((e) => console.error('[boot] appraisal property category repair failed:', e.message));
         require('./lib/underwriting/investor-guidelines/seed').seedNoteBuyerConditions()
           .then((r) => r && r.ok && console.log('[boot] note-buyer conditions seed:', JSON.stringify(r)))
           .catch((e) => console.error('[boot] note-buyer conditions seed failed:', e.message));

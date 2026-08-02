@@ -164,7 +164,9 @@ function lightBtn(side) {
 }
 
 // Which finding fields can be previewed against the pricing engine, and the engine override key
-// each maps to. property_type is excluded (its finding value is a form code, not a portal type).
+// each maps to. property_type is excluded: it is never written back from a finding (see
+// REPRICE_COLS in routes/appraisal.js — it is a pricing input whose one validated door is the
+// application form), so there is nothing to preview.
 const PREVIEW_KEY = { as_is_value: 'asIsValue', arv: 'arv', purchase_price: 'purchasePrice', units: 'units' };
 
 function Finding({ appId, f, onChange, readOnly }) {
@@ -1399,7 +1401,12 @@ export default function AppraisalPanel({ appId, readOnly = false, onSummary, rel
             <DCard title="Structure">
               <KV rows={[
                 ['Design / style', or(a.design_style)],
+                // The property TYPE is the category the appraisal reports — single family / 2–4 /
+                // condo / townhouse / PUD — derived from the form, the unit count and the ownership
+                // signals. The Detached / Attached attachment style is a SEPARATE fact and gets its
+                // own row rather than masquerading as the property type (owner-reported 2026-08-02).
                 ['Property type', or(a.property_type)],
+                a.attachment_type && ['Attached / detached', a.attachment_type],
                 ['Units', or(a.units)],
                 ['Total rooms', or(a.rooms)],
                 ['Beds / baths', `${or(a.beds)} / ${a.baths_full != null ? a.baths_full + (a.baths_half ? '.' + a.baths_half : '') : '—'}`],

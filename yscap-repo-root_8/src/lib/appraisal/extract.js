@@ -12,6 +12,7 @@
  */
 const X = require('./xml');
 const { splitComps } = require('./comp-grid');
+const { derivePropertyCategory } = require('./property-category');
 
 const CUR_YEAR = 2026; // NOTE: injected constant — the codebase forbids new Date() in date-only paths.
 
@@ -806,6 +807,16 @@ function extract(xml) {
   const ident = X.find(root, '_IDENTIFICATION');
   const pidExt = X.find(root, 'PARCEL_IDENTIFIER');
   const st = X.find(root, 'STRUCTURE');
+  // Read a STRUCTURE attribute by NAME across every SUBJECT structure sibling. a la mode / ACI
+  // merge the subject improvements into one <STRUCTURE>; Appraise-It splits them into siblings
+  // (main + BuildingStatusType + LivingUnitCount), so a first-node-only read silently misses half
+  // the attributes (docs/appraisal-xml/1004-URAR-field-map.md: "Read attrs by name across all
+  // STRUCTURE siblings, not positionally"). `subjAll` keeps a comparable's structure out.
+  const subjStructs = subjAll(root, 'STRUCTURE');
+  const stAttr = (names) => {
+    for (const n of subjStructs) { const v = X.attrAny(n, names); if (v != null && String(v).trim() !== '') return v; }
+    return null;
+  };
   const site = X.find(root, 'SITE');
   const val = valuation(root);
   const { comps, subject0 } = comparables(root);
@@ -830,7 +841,18 @@ function extract(xml) {
     legal: clean(X.attr(X.find(root, '_LEGAL_DESCRIPTION'), '_TextDescription')),
     censusTract: clean(X.attr(ident, 'CensusTractIdentifier')),
     neighborhood: clean(X.attr(X.find(root, 'NEIGHBORHOOD'), '_Name')),
-    propertyType: clean(X.attr(st, 'AttachmentType')),
+    // THE PROPERTY TYPE IS NOT THE ATTACHMENT STYLE (owner-reported 2026-08-02: the data comparison
+    // read "Property type — Detached | Multi 2–4"). `AttachmentType`'s ENTIRE controlled list is
+    // Detached / Attached — whether the building touches its neighbour — which says nothing about
+    // how many dwellings it holds or what kind of ownership it is. It is kept here as its own fact,
+    // and the real CATEGORY is derived below from the form, the unit count and the ownership
+    // signals in ONE place (lib/appraisal/property-category.js) so the Appraisal tab, the tie-out
+    // and every finding read the same answer.
+    attachmentType: clean(X.attr(st, 'AttachmentType')),
+    propertyCategoryType: clean(stAttr(['PropertyCategoryType', '_PropertyCategoryType', 'PropertyType'])),
+    pudIndicator: clean(X.attrAny(subjFind(root, 'PROPERTY_TYPE'), ['GSE_PUDIndicator', '_PUDIndicator', 'PUDIndicator'])),
+    projectDesignType: clean(X.attr(subjFind(root, 'PROJECT'), '_DesignType')),
+    propertyType: null,          // the CATEGORY — filled in below, once the unit count is settled
     units: count(X.attr(st, 'LivingUnitCount'), 999),
     yearBuilt: year(X.attr(st, 'PropertyStructureBuiltYear')),
     gla: bounded(X.attr(st, 'GrossLivingAreaSquareFeetCount'), 1e8),
@@ -850,6 +872,35 @@ function extract(xml) {
   };
   // imply units by form when blank (1004/1073 → 1)
   if (subject.units == null && (formType === 'FNM1004' || formType === 'FNM1073')) subject.units = 1;
+
+  // THE PROPERTY CATEGORY — single family / 2–4 / condo / townhouse / PUD — derived from the
+  // appraisal's OWN evidence (the form, the settled unit count, the ownership signals) and written
+  // into `propertyType` in the PORTAL's vocabulary, so every consumer of `subject.propertyType`
+  // (the stored `appraisals.property_type`, the Appraisal tab, the tie-out, the findings) is fixed
+  // at this one chokepoint. Runs AFTER the form-implied unit count above, because the unit count is
+  // half the answer. NEVER guesses: `null` when the appraisal does not say.
+  //
+  // The unit count it reads FALLS BACK to the sibling-scanning read when `subject.units` came back
+  // blank: Appraise-It splits the subject improvements across three <STRUCTURE> siblings and puts
+  // LivingUnitCount on one of the later ones, which the first-node read above misses entirely
+  // (docs/appraisal-xml/1004-URAR-field-map.md). Deliberately scoped to the CATEGORY and not
+  // written back onto `subject.units`: the stored unit count feeds the CTC-blocking
+  // `units_mismatch` / `property_type_mismatch` fatals, and quietly changing what those read on
+  // files that are already in flight is not part of what was asked for. Worth raising separately —
+  // on those vendors' files the file's unit count is currently compared against nothing.
+  const cat = derivePropertyCategory({
+    formType, units: subject.units != null ? subject.units : count(stAttr(['LivingUnitCount']), 999),
+    attachmentType: subject.attachmentType,
+    propertyCategoryType: subject.propertyCategoryType,
+    pudIndicator: subject.pudIndicator,
+    projectDesignType: subject.projectDesignType,
+    designDescription: subject.design,
+  });
+  subject.propertyType = cat ? cat.label : null;
+  subject.propertyCategory = cat ? cat.key : null;
+  subject.propertyCategoryConfidence = cat ? cat.confidence : null;
+  // Kept as plain text (never an object) — buildFieldsJson stores every subject.* key verbatim.
+  subject.propertyCategoryBasis = cat && cat.basis.length ? cat.basis.join('; ') : null;
 
   // parties
   const ap = X.find(root, 'APPRAISER');
