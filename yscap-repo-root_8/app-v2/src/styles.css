@@ -799,9 +799,11 @@ a.checkitem:hover{transform:translateY(-1px)}
 .snap-stat-btn:hover{background:var(--surface-soft,rgba(47,127,134,.06))}
 .snap-stat-btn:hover .snap-stat-sub{color:var(--teal-br,var(--teal))}
 
-/* "What's left to clear to close" — the single clear outstanding view */
-.ctc-panel{border-left:4px solid var(--warning,#c98a1a)}
-.ctc-panel.ctc-ready{border-left-color:var(--ok,#2f7f4f)}
+/* The file's one work list — WhatsLeftPanel.jsx.
+   `.ctc-panel` / `.ctc-panel.ctc-ready` lived here for the retired
+   ClearToClosePanel and were deleted with it (post-merge audit 2026-08-02);
+   the panel's own accent is `.nx-panel`. The rules BELOW are still live — the
+   Advisories block reuses .ctc-list / .ctc-item / .ctc-item-title / .ctc-tick. */
 .ctc-tick{flex:none;width:30px;height:30px;border-radius:50%;display:inline-flex;align-items:center;justify-content:center;
   background:var(--ok,#2f7f4f);color:#fff;font-weight:800}
 .ctc-list{display:flex;flex-direction:column;gap:2px}

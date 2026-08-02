@@ -166,8 +166,13 @@ export default function WhatsLeftPanel({ gating, items, conds }) {
       )}
 
       <Group rows={holding} heading={twoGroups ? 'Holding clear to close' : null} />
-      <Group rows={next} heading={twoGroups ? 'Before funding' : null}
-        note={twoGroups ? 'These do not hold clear-to-close — they are needed before the loan funds.' : null} />
+      {/* "Before funding" alone read as "this can wait until the wire", which is wrong
+          for the rows that actually land here — a settlement statement is produced AT
+          the closing table. Title and insurance used to sit in this group too and did
+          not belong (owner-reported 2026-08-02); db/406 moved them up to the holding
+          group where they belong. The heading now says WHEN, not just what it blocks. */}
+      <Group rows={next} heading={twoGroups ? 'At the closing, before funding' : null}
+        note={twoGroups ? 'These do not hold clear-to-close — they are produced at the closing and must be in before the loan funds.' : null} />
       <Advisories rows={advisories} />
     </div>
   );
