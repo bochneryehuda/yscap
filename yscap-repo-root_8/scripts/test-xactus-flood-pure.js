@@ -75,6 +75,16 @@ function ok(cond, msg) { n++; assert.ok(cond, msg); }
   const fr = X.firstDeep(root, 'FLOOD_REQUEST');
   ok(X.attr(fr, '_ActionType') === 'StatusQuery', 'StatusQuery action');
   ok(X.attr(fr, 'FloodCertificationIdentifier') === '2322271', 'status query carries the cert id');
+  // A StatusQuery is how a MISSING certificate is RETRIEVED, so it must ask for the
+  // embedded PDF exactly like the order does. Without this it inherits the same
+  // account default that dropped the PDF in the first place and the whole recovery
+  // path silently returns nothing (found by pre-merge audit, 2026-08-02).
+  const pref = X.firstDeep(root, 'PREFERRED_RESPONSE');
+  ok(!!pref && X.attr(pref, '_UseEmbeddedFileIndicator') === 'Y', 'the StatusQuery asks for the certificate PDF too');
+  // It must NEVER carry order fields — a StatusQuery that looked like an order
+  // would place (and be charged for) a second determination.
+  ok(!X.firstDeep(root, '_PRODUCT'), 'no product on a status query');
+  ok(!X.firstDeep(root, 'PROPERTY'), 'no property on a status query');
 }
 
 // ── 5. Parse a COMPLETED response (instant, PDF inline, zone X = not SFHA) ─────
@@ -219,6 +229,50 @@ function ok(cond, msg) { n++; assert.ok(cond, msg); }
   const c = addr.resolveAddress('1373 Azalea Dr, Jacksonville, FL 32205');
   ok(c && typeof c === 'object', 'string address does not throw');
   ok(addr.resolveAddress(null).street === '', 'null address → empty');
+}
+
+// ── 16. The order EXPLICITLY asks for the certificate PDF ─────────────────────
+// Xactus documents _UseEmbeddedFileIndicator as a toggle that can EXCLUDE the PDF.
+// A determination with no certificate is useless to us, so we must never leave it
+// to the account default (owner-reported 2026-08-02: zone came back, no PDF filed).
+{
+  const xml = buildOrderBody({
+    loanNumber: 'L1',
+    borrowers: [{ firstName: 'Alice', lastName: 'Firsttimer' }],
+    property: { street: '1 Main St', city: 'Town', state: 'NJ', zip: '07001' },
+  });
+  const root = X.parse(xml);
+  const pref = X.firstDeep(root, 'PREFERRED_RESPONSE');
+  ok(!!pref, 'the order carries a PREFERRED_RESPONSE element');
+  ok(X.attr(pref, '_UseEmbeddedFileIndicator') === 'Y', 'the certificate PDF is explicitly requested');
+  // It must sit under REQUESTING_PARTY, where the vendor spec puts it.
+  const rp = X.firstDeep(root, 'REQUESTING_PARTY');
+  ok(!!X.kid(rp, 'PREFERRED_RESPONSE'), 'PREFERRED_RESPONSE is a child of REQUESTING_PARTY');
+  // The rest of the documented order shape is untouched by that addition.
+  ok(X.attr(X.firstDeep(root, 'FLOOD_REQUEST'), '_ActionType') === 'Original', 'still an Original order');
+  ok(X.attr(X.firstDeep(root, 'PROPERTY'), '_City') === 'Town', 'property still carried');
+}
+
+// ── 17. A StatusQuery response carrying the PDF is readable ───────────────────
+// This is the retrieval path used when a determination arrives with no certificate:
+// the PDF must be extracted exactly as it is from an order response.
+{
+  const xml = `<?xml version="1.0"?>
+<RESPONSE_GROUP MISMOVersionID="2.4"><RESPONSE>
+  <RESPONSE_DATA><FLOOD_RESPONSE>
+    <EMBEDDED_FILE _EncodingType="Base64" _Extension="pdf" _Name="Flood.pdf">
+      <DOCUMENT>JVBERi0xLjQKcmV0cmlldmVk</DOCUMENT>
+    </EMBEDDED_FILE>
+    <FLOOD_DETERMINATION FloodCertificationIdentifier="2322271" SpecialFloodHazardAreaIndicator="No">
+      <_BUILDING_INFORMATION NFIPFloodZoneIdentifier="X"/>
+    </FLOOD_DETERMINATION>
+  </FLOOD_RESPONSE></RESPONSE_DATA>
+  <STATUS _Name="success" _Condition="success"/>
+</RESPONSE></RESPONSE_GROUP>`;
+  const p = parseResponse(xml);
+  ok(p.status === 'completed', 'status-query retrieval reads as completed');
+  ok(/^JVBER/.test(p.pdfBase64 || ''), 'the certificate PDF is recovered from a StatusQuery');
+  ok(p.floodZone === 'X' && p.sfha === false, 'the determination rides along too');
 }
 
 // ── 13. Flood auth is QUERY PARAMS by default (matches the Xactus Postman set) ─

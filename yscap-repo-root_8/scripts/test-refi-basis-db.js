@@ -10,7 +10,7 @@
    refinance it cannot size. Every assertion below was checked to FAIL with the
    corresponding change reverted.
 
-   PART 1 — db/396, run against real rows: the implicit as-is value is
+   PART 1 — db/398, run against real rows: the implicit as-is value is
             materialized, the leftover purchase price is cleared and audited,
             purchases are untouched, no cleared condition is reopened (the
             economics triggers really are suppressed and really are re-enabled),
@@ -48,13 +48,13 @@ if (!process.env.DATABASE_URL) {
   const sfx = Date.now().toString(36);
   let server = null;
 
-  const MIG = path.join(__dirname, '..', 'db', '396_refinance_sized_on_as_is_value.sql');
+  const MIG = path.join(__dirname, '..', 'db', '398_refinance_sized_on_as_is_value.sql');
 
   try {
     /* ================================================================= *
-     * PART 1 — db/396 on real rows
+     * PART 1 — db/398 on real rows
      * ================================================================= */
-    console.log('\n--- db/396: the back book ---');
+    console.log('\n--- db/398: the back book ---');
     const bid = (await db.query(
       `INSERT INTO borrowers (email,first_name,last_name) VALUES ($1,'Refi','Basis') RETURNING id`,
       [`refi-basis-${sfx}@test.local`])).rows[0].id;

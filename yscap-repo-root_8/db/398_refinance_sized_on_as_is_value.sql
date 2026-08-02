@@ -1,4 +1,4 @@
--- 396 — A REFINANCE IS SIZED ON THE AS-IS VALUE, AND CARRIES NO PURCHASE PRICE
+-- 398 — A REFINANCE IS SIZED ON THE AS-IS VALUE, AND CARRIES NO PURCHASE PRICE
 --       (owner-directed 2026-08-02).
 --
 -- The owner, after a cash-out refinance turned up carrying purchase-style
