@@ -171,6 +171,16 @@ async function loadRuleContext(appId) {
     payoff_loan_number: str(a.payoff_loan_number),
     original_purchase_price: num(a.original_purchase_price),
     acquisition_date: dateStr(a.acquisition_date),
+    /* HOW LONG THE BORROWER HAS OWNED IT, in whole months — DERIVED, read-only
+       (owner-directed 2026-08-02: "you can add some extra fields later on what
+       was the original purchase price of the property and when exactly it was
+       purchased so we can count seasoning and stuff like that"). Computed from
+       `acquisition_date` by the one shared helper, so a seasoning rule, the
+       underwriting context and the file screens can never disagree about how
+       many months a property has been held. NULL when there is no date, it
+       cannot be read, or it is in the future — never a guessed zero, so a rule
+       keyed on it stays silent rather than firing on an unknown. */
+    ownership_seasoning_months: require('../deal-basis').seasoningMonths(a.acquisition_date),
     underlying_contract_price: num(a.underlying_contract_price),
     assignment_fee: num(a.assignment_fee),
     sqft_pre: num(a.sqft_pre),
@@ -541,6 +551,21 @@ async function writeFieldValue(appId, borrowerId, fieldKey, rawValue, by = {}) {
     const frozen = await require('../file-lock')
       .payoffContactLockReason(appId, { [WRITE_BODY_KEY[fieldKey] || fieldKey]: value }, db);
     if (frozen) { const err = new Error(frozen); err.status = 409; throw err; }
+    /* SAME PARITY RULE, APPLIED TO THE LOAN PURPOSE (owner-directed 2026-08-02).
+       The details door will not store a purchase price on a refinance — the loan
+       is sized on the as-is value, and what the borrower paid when they bought
+       the property is `original_purchase_price`. Answering a condition must not
+       be more permissive than editing the field directly, so it is refused here
+       too, with a message that names the field to answer instead. Reads the
+       file's own purpose, not the caller's word for it. */
+    if (fieldKey === 'purchase_price') {
+      const row = (await db.query(`SELECT loan_type FROM applications WHERE id=$1`, [appId])).rows[0] || {};
+      if (require('../deal-basis').sizesOnAsIsValue(row.loan_type)) {
+        const err = new Error('This is a refinance, so there is no purchase price — it is sized on the as-is value. '
+          + 'If this is what was paid when the property was bought, answer with the original purchase price instead.');
+        err.status = 400; throw err;
+      }
+    }
   }
 
   if (f.custom) {

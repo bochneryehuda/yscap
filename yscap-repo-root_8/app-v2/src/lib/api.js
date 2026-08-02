@@ -52,12 +52,19 @@ function sessionExpired(reason) {
    else. Plain fetch, so this can never recurse back into the 401 handling.
    Anything other than a clean 401 (a network blip, a 502 from an upstream
    vendor, a 500) means KEEP the session. */
-async function confirmSessionDead(token) {
+async function confirmSessionDead() {
+  // Probe with the token stored RIGHT NOW, and report which token that was — so the
+  // caller only ever signs out the exact token it proved dead (see handle401). This
+  // single-flight probe is shared across every 401 in a burst, so it may test a
+  // DIFFERENT token than a given caller captured; tying the verdict to the token it
+  // used stops a delayed 401 from an old token signing out a freshly-refreshed one.
+  const token = getToken();
+  if (!token) return null;
   try {
     const res = await fetch('/auth/me', { headers: { Authorization: `Bearer ${token}` } });
     if (res.status !== 401) return null;
     let data = null; try { data = await res.json(); } catch { /* empty */ }
-    return { dead: true, reason: (data && data.error) || '' };
+    return { dead: true, reason: (data && data.error) || '', token };
   } catch { return null; }   // couldn't reach the server — not proof of anything
 }
 
@@ -71,10 +78,13 @@ async function handle401(data) {
   // A 401 WITHOUT that marker is not ours to act on — it came from something
   // else on the way (a proxy, a CDN, an older build) and must never sign
   // anyone out on its own; we confirm it against /auth/me first either way.
-  if (!deadCheck) deadCheck = confirmSessionDead(token).finally(() => { deadCheck = null; });
+  if (!deadCheck) deadCheck = confirmSessionDead().finally(() => { deadCheck = null; });
   const verdict = await deadCheck;
   if (!verdict || !verdict.dead) return;               // session is fine — leave it alone
-  if (getToken() !== token) return;                    // someone already signed in again
+  // Sign out ONLY the token we actually proved dead, and only if it is STILL the
+  // active one — so a refresh (or a fresh sign-in) that swapped the token while the
+  // shared probe was in flight leaves the good session alone.
+  if (verdict.token !== getToken()) return;
   sessionExpired(verdict.reason || (data && data.error) || DEFAULT_NOTICE);
 }
 
@@ -822,6 +832,12 @@ export const api = {
   // Read-only Sitewire TEST-environment capability explorer (super_admin). Lists every field/button
   // Sitewire exposes so new integrations use confirmed names. Uses SITEWIRE_TEST_* creds; never writes.
   sitewireExplore:    (opts) => req('POST', '/api/admin/integrations/sitewire/explore', opts || {}),
+  // SharePoint document-mirror scoreboard + controls (admin / platform_setup).
+  // Reconciliation = total docs vs mirrored vs waiting vs stuck; the two POSTs
+  // force a full backfill sweep and re-drive every "given up" (parked) document.
+  sharepointReconciliation: () => req('GET', '/api/admin/sharepoint/reconciliation'),
+  sharepointRunSweep:  () => req('POST', '/api/admin/sharepoint/mirror', {}),
+  sharepointRetryStuck: () => req('POST', '/api/admin/sharepoint/retry-exhausted', {}),
   integrationSwitches: () => req('GET', '/api/admin/integrations/switches'),
   integrationToggleSwitch: (key, enabled, confirm) => req('POST', `/api/admin/integrations/switches/${encodeURIComponent(key)}`, { enabled, confirm }),
   integrationResetSwitch:  (key) => req('POST', `/api/admin/integrations/switches/${encodeURIComponent(key)}/reset`),

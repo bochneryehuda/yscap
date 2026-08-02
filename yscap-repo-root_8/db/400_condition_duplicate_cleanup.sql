@@ -1,5 +1,5 @@
 -- ============================================================================
--- 399 — Duplicate conditions: clean up the ones already created.
+-- 400 — Duplicate conditions: clean up the ones already created.
 --       (The live fix is the per-file advisory lock in conditions/engine.js.)
 --       Owner-reported 2026-08-02: "check if there is more than one EMD
 --       condition on a file … maybe on certain files if there's any potentials
@@ -117,7 +117,7 @@ logged AS (
   INSERT INTO audit_log (actor_kind, actor_id, action, entity_type, entity_id, detail)
   SELECT 'system', NULL, 'condition_duplicate_removed', 'application', d.application_id,
          jsonb_build_object('checklistItemId', d.id, 'templateId', d.template_id,
-                            'label', d.label, 'reason', 'db/399 duplicate cleanup')
+                            'label', d.label, 'reason', 'db/400 duplicate cleanup')
     FROM doomed d
   RETURNING 1
 )

@@ -230,11 +230,19 @@ console.log('\n--- the money BIND: parse, without changing what counts as provid
       { n: 'an ABSENT (JSON number 0) value — still NULL',
         b: { loanType: 'Purchase', purchasePrice: 350000, asIsValue: 0, arv: 0, rehabBudget: 0 },
         want: { purchase_price: 350000, as_is_value: null, arv: null, rehab_budget: null } },
-      { n: 'a refinance — assignment is forced off, price still parsed',
+      /* UPDATED 2026-08-02 (owner-directed): a refinance stores NO purchase price
+         at all. It is sized on the AS-IS VALUE — the frozen engine's own
+         denominator — and what the borrower paid when they BOUGHT the property is
+         `original_purchase_price`, a different field. This case previously
+         asserted `purchase_price: 412500`, which is exactly the purchase-style
+         economics the owner reported on a cash-out file. The as-is value is still
+         parsed from its comma-formatted form, which is what this battery is
+         really about; the assignment is still forced off. */
+      { n: 'a refinance — assignment forced off AND no purchase price is stored',
         b: { loanType: 'Refinance', isAssignment: true, purchasePrice: '412,500',
           underlyingContractPrice: '380,000', assignmentFee: '32,500', asIsValue: '445,000' },
         want: { is_assignment: false, underlying_contract_price: null, assignment_fee: null,
-          purchase_price: 412500, as_is_value: 445000 } },
+          purchase_price: null, as_is_value: 445000 } },
     ];
     const COLS = `purchase_price,as_is_value,arv,rehab_budget,is_assignment,underlying_contract_price,assignment_fee`;
     const readBack = async (id, door, name, want) => {

@@ -126,6 +126,12 @@ function buildInputs(app, experience, overrides) {
     if (composed) { try { fileCity = clean(parseAddress(composed).city); } catch (_) { /* best-effort recovery */ } }
   }
   const loanType = loanTypeOf(app);
+  // Does this deal size on the property's CURRENT value rather than on a price?
+  // Deliberately `loanTypeOf`'s OWN answer — the very branch the frozen engines
+  // use to pick `acqDenom` — so "which number do we feed it" and "which number
+  // does it read" can never disagree. lib/deal-basis.js mirrors this test for
+  // every screen, and a test pins the two together.
+  const sizedOnAsIs = loanType === 'Refinance';
 
   // Assignment purchases: leverage/pricing size off seller price + financeable fee.
   const isAssignment = loanType === 'Purchase' && !!app.is_assignment && num(app.underlying_contract_price) > 0;
@@ -146,17 +152,52 @@ function buildInputs(app, experience, overrides) {
     zip: clean(addrIsString ? '' : (addr.zip || addr.postal_code || addr.postalCode || '')),
     propertyType: normPropertyType(app.property_type),
     units: num(app.units) || 0,
-    purchasePrice: totalPrice,
+    /* A REFINANCE IS SIZED ON THE AS-IS VALUE, AND ON NOTHING ELSE
+       (owner-directed 2026-08-02, in the owner's own words: "once a file is
+       refinance then instead of asking for the purchase price just ask him right
+       away for the as is value because that's what it counts for, it doesn't
+       count for the purchase price … as is value is the one that sets how much
+       initial he can get instead of looking on the purchase price").
+
+       The FROZEN ENGINES ALREADY DID THIS — `acqDenom = purchase ? min(pp, aiv)
+       : aiv` and `costBasis0 = (purchase ? pp : aiv) + rehab` — so not one
+       formula, cap, rate or matrix value moves here. What moved is which numbers
+       this input builder hands them on a refinance:
+
+         · `asIsValue` no longer falls back to the purchase price. That fallback
+           is right on a PURCHASE ("worth what I'm paying for it") and meaningless
+           on a refinance, where a stored purchase price is either a leftover from
+           a file that started life as a purchase or the price the borrower paid
+           years ago — which is `original_purchase_price`, a different field. It
+           was silently sizing refinances off it.
+         · `purchasePrice` becomes the as-is value on a refinance, which is
+           exactly what the Term Sheet Studio (`termsheet.js`:
+           `purchasePrice: isRefi() ? num("asIs") : effPurchase()`) and the public
+           loan application have always sent. The server was the odd one out, so a
+           quote could differ from the sheet the borrower was shown. With an as-is
+           value present the engines read `purchasePrice` on a refinance NOWHERE
+           (it is excluded from acqDenom, the cost basis, the heavy-rehab basis
+           and the exit test), so this is a parity fix, not a math one.
+
+       PURCHASES ARE BYTE-IDENTICAL — same total price, same as-is default, same
+       `asIsDefaulted` flag. */
+    purchasePrice: sizedOnAsIs ? num(app.as_is_value) : totalPrice,
     sellerPrice,
     isAssignment,
     // An empty as-is value defaults to the FINAL purchase price — leaving it
-    // blank on the application means "worth what I'm paying for it". Applies
-    // everywhere these inputs flow (quotes, registrations, the studio prefill).
-    asIsValue: num(app.as_is_value) || totalPrice,
+    // blank on the application means "worth what I'm paying for it". PURCHASE
+    // ONLY: on a refinance there is no price to stand in for the value.
+    asIsValue: sizedOnAsIs ? num(app.as_is_value) : (num(app.as_is_value) || totalPrice),
     // Display metadata only (engines ignore it): marks the value above as the
     // auto-default rather than an entered figure, so the studio prefill and the
-    // registered-product panel never present it as if the borrower typed it.
-    asIsDefaulted: !(num(app.as_is_value) > 0),
+    // registered-product panel never present it as if the borrower typed it. A
+    // refinance never auto-defaults, so it is never "defaulted" there.
+    asIsDefaulted: !sizedOnAsIs && !(num(app.as_is_value) > 0),
+    /* Display metadata only. A refinance with no as-is value on file cannot be
+       sized AT ALL — there is no denominator — so say so plainly rather than let
+       a caller register a loan built on nothing. The register routes refuse on
+       this; the studio already refuses client-side (`missingFields`). */
+    asIsMissing: sizedOnAsIs && !(num(app.as_is_value) > 0),
     arv: num(app.arv),
     rehabBudget: num(app.rehab_budget),
     fico: num(app.fico),
@@ -242,6 +283,23 @@ function buildInputs(app, experience, overrides) {
   }
   out.strategy = engineStrategy(out.strategy);   // override labels get the same normalization
   out.propertyType = normPropertyType(out.propertyType);   // override labels get normalized too
+  /* RE-ASSERT THE REFINANCE INVARIANT AFTER OVERRIDES. `loanType` is itself an
+     overridable key (the studio sends its own purpose), and `purchasePrice` is in
+     NUMK — so without this a scenario that flipped the purpose to Refinance, or a
+     stale studio payload carrying both a price and an as-is value, could hand the
+     engine a refinance whose "purchase price" was a leftover purchase figure. On a
+     refinance the two ARE one number by definition, so bind them rather than trust
+     the caller to. A purchase is untouched. */
+  if (out.loanType === 'Refinance') {
+    out.purchasePrice = num(out.asIsValue);
+    out.asIsDefaulted = false;
+    out.asIsMissing = !(num(out.asIsValue) > 0);
+  } else {
+    // Nothing else changes on a purchase — deliberately not "helping" here, so
+    // every existing purchase quote stays byte-identical (an explicit `0` as-is
+    // override, for instance, still means 0 exactly as it always did).
+    out.asIsMissing = false;
+  }
   // The studio's property-type control only expresses "SFR (1 unit)" / "2-4 units",
   // so it can never represent a 5+/mixed-use/commercial building. If the FILE's real
   // recorded type is engine-ineligible, never let a studio-collapsed override launder
