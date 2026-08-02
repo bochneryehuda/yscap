@@ -237,6 +237,14 @@ function decorate(f) {
   // one of several conflicting docs as "the" source would be arbitrary and misleading. Only ever
   // ADDS a link (never overrides a real per-document finding's own `document_id`).
   const extra = { claimKey, availableActions: underwriterActions(actions ? { ...f, actions } : f) };
+  // "Add this LLC to the borrower's profile" (owner-directed 2026-08-02). A different-entity bank
+  // finding NAMES an entity that is missing from the borrower's record; stamping the name here is
+  // what puts the one-click button on the card. Pure + best-effort: a finding that names no entity
+  // is unchanged, so no other card grows a button.
+  try {
+    const target = require('../lib/underwriting/entity-adopt').adoptTargetOf(f);
+    if (target) extra.entityAdopt = target;
+  } catch (_) { /* additive */ }
   if (f.document_id == null && f.documentId == null && Array.isArray(f.sources)) {
     const openable = f.sources.filter((s) => s && s.documentId != null);
     if (openable.length === 1) extra.documentId = openable[0].documentId;
@@ -2469,6 +2477,91 @@ router.post('/:appId/findings/:fid/resolve', requirePermission('sign_off_conditi
     const gate = await ctcGateCounts(app.id);
 
     res.json({ ok: true, finding: decorate(applied.updated), ...gate, fileFix: applied.fileFix });
+  } catch (e) { next(e); }
+});
+
+// ---- POST /:appId/entity-adopt : put an outside entity on the borrower's profile ---------------
+// The button the owner asked for (2026-08-02) on a different-LLC bank finding: "add this LLC to the
+// borrower profile so it's safe for always and we can always see he has this LLC on his record",
+// then "suggest posting a condition to ask for entity documents to allow him to use this LLC", and
+// when the operating agreement is already sitting in the assets condition, "use that operating
+// agreement to satisfy your finding" and carry it onto the new entity's operating-agreement slot.
+//
+// PERMISSIONS. Adding an entity to a borrower's profile is ordinary file work — a loan officer can
+// already do it from the CRM (POST /staff/borrowers/:id/llcs), so this route is gated on FILE
+// ACCESS only, or the button would be dead for the person most likely to press it. RESOLVING the
+// finding is the part that needs `sign_off_conditions`; without it the adoption still happens and
+// the response says the finding was left open, rather than refusing the whole action.
+router.post('/:appId/entity-adopt', async (req, res, next) => {
+  try {
+    const app = await fileFor(req, req.params.appId);
+    if (!app) return res.status(404).json({ error: 'not found' });
+    const entityAdopt = require('../lib/underwriting/entity-adopt');
+    const b = req.body || {};
+    const entityName = String(b.entityName || '').trim();
+    if (!entityName) return res.status(400).json({ error: 'entityName required' });
+
+    // The finding this came from, when it came from one. Loaded authoritatively (never trusted from
+    // the body) so the entity name can be checked against what the finding actually says — a click
+    // must not be able to adopt an entity the file never flagged.
+    let finding = null;
+    if (b.findingId && isUuid(b.findingId)) {
+      finding = (await db.query(
+        `SELECT id, code, severity, blocks_ctc, field, doc_value FROM document_findings
+          WHERE id=$1 AND application_id=$2 AND status='open'`, [b.findingId, app.id])).rows[0] || null;
+      if (finding) {
+        const target = entityAdopt.adoptTargetOf(finding);
+        if (!target) return res.status(400).json({ error: 'that finding does not name an entity to add' });
+      }
+    }
+
+    // One transaction: the entity, its slots, the carried documents and the condition are one
+    // record — a half-made one would leave an entity on the profile with nothing explaining it.
+    let result;
+    const client = await db.pool.connect();
+    try {
+      await client.query('BEGIN');
+      result = await entityAdopt.adoptEntityToProfile(client, {
+        appId: app.id, entityName, actorId: req.actor.id,
+        postCondition: b.postCondition !== false,
+      });
+      await client.query('COMMIT');
+    } catch (e) {
+      await client.query('ROLLBACK').catch(() => {});
+      if (e && e.status) return res.status(e.status).json({ error: e.message });
+      throw e;
+    } finally { client.release(); }
+
+    // Only now that it is committed: refresh the entity condition on any file vesting in it, and
+    // nudge the SharePoint mirror so the carried documents land in the entity's folder.
+    await entityAdopt.afterAdoptCommit(result.llcId);
+
+    await audit(req.actor.id, 'entity_adopted_to_profile', app.id, {
+      entityName: result.entityName, llcId: result.llcId, created: result.created,
+      carried: result.carried.map((d) => d.docType), skipped: result.skipped.map((d) => d.reason),
+      conditionPosted: !!result.conditionId && !result.conditionExisted,
+    });
+
+    // The finding: settled only when the ownership PROOF landed, and only by someone who may settle
+    // a finding. Anything else leaves it open on purpose — the entity is on the record and the
+    // condition is posted, but nobody has shown yet that the borrower controls it.
+    let findingResolved = false, findingReason = null;
+    const summary = entityAdopt.adoptionSummary(result);
+    if (finding) {
+      if (!entityAdopt.ownershipProofLanded(result)) {
+        findingReason = 'no_operating_agreement_yet';
+      } else if (!can(req.actor, 'sign_off_conditions')) {
+        findingReason = 'needs_sign_off_permission';
+      } else {
+        const applied = await applyFindingResolution({
+          actor: req.actor, appId: app.id, finding, action: 'clear', note: summary,
+        });
+        if (applied.ok) findingResolved = true;
+        else findingReason = (applied.body && applied.body.error) || 'could_not_resolve';
+      }
+    }
+
+    res.json({ ok: true, ...result, summary, findingResolved, findingReason });
   } catch (e) { next(e); }
 });
 

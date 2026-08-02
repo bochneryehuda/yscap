@@ -102,6 +102,30 @@ async function loadContext(client, appId) {
           AND NULLIF(TRIM(COALESCE(fields->>'entityLegalName','')),'') IS NOT NULL`, [appId]);
     entityDocNames = ed.rows.map((r) => r.name).filter(Boolean);
   } catch (_) { entityDocNames = []; }
+  // Entities PILOT itself put on the profile from a bank-statement finding that STILL have nothing
+  // proving the borrower owns them (owner-directed 2026-08-02, the "add this LLC to the borrower
+  // profile" button). The liquidity engine counts an account as the borrower's when its holder
+  // matches ANY entity on the profile — so without this, pressing that button would move the whole
+  // balance of an unproven entity into the file's provable liquidity in one click. These names stay
+  // in the EXCLUDED column until an entity document lands or the entity is verified, at which point
+  // the hold releases itself. Best-effort: a read failure leaves the set EMPTY, which is the
+  // pre-existing behavior (nothing held back) rather than a new one.
+  let entityDocsPendingNames = [];
+  try {
+    const pend = await client.query(
+      `SELECT l.llc_name, l.is_verified,
+              (l.adopted_at IS NOT NULL) AS adopted,
+              EXISTS (
+                SELECT 1 FROM checklist_items ci
+                  JOIN checklist_templates t ON t.id = ci.template_id AND t.scope = 'llc'
+                  JOIN documents d ON d.checklist_item_id = ci.id
+                 WHERE ci.llc_id = l.id AND d.is_current
+                   AND COALESCE(d.review_status,'') <> 'superseded'
+                   AND COALESCE(d.review_status,'') <> 'rejected'
+              ) AS has_entity_doc
+         FROM llcs l WHERE l.borrower_id = $1`, [app.borrower_id]);
+    entityDocsPendingNames = require('./entity-adopt').entityDocsPendingNames(pend.rows);
+  } catch (_) { entityDocsPendingNames = []; }
   // Names of every individual PILOT has read off an operating agreement on the file (members +
   // managing member). A ≥25% LLC owner may legitimately put their own government ID on the file
   // (KYC) — that ID is NOT the borrower, so its name must NOT be flagged as a borrower name
@@ -126,6 +150,7 @@ async function loadContext(client, appId) {
     entityNames: entities.map((r) => r.llc_name).filter(Boolean),
     verifiedEntityNames,
     entityDocNames,
+    entityDocsPendingNames,
     ownerNames,
     registration,
   };

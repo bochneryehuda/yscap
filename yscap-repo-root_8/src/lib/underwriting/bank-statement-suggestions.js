@@ -19,15 +19,23 @@ const aiSug = require('./ai-suggestions');
 // Which entity-set condition templates does the "different-LLC" case cascade to?
 // `firstAvailable` takes the HEAD of this list as the template the AI-panel
 // "Convert to condition" button materializes, so the head MUST be a real live
-// template code. FIX 2026-07-23 (same stale-code class as wrong-condition.js): the
-// previous heads (`llc_operating_agreement`, `rtl_p2_vesting`, `entity_vesting`)
-// are NOT seeded anywhere in db/*.sql — the suggestion pointed at a template that
-// can't materialize. Real codes, ordered most-specific first (verified in
-// db/005_rtl_workflow.sql): the LLC operating-agreement condition, then the entity
-// (LLC) umbrella. Legacy strings kept only as trailing fallbacks.
+// template code — AND it must be scope='application', because the route that
+// materializes it (`POST /:appId/ai-suggestions/:id/decide`) instantiates
+// `WHERE t.code=$1 AND t.scope='application'` onto a loan file.
+//
+// FIX 2026-08-02 (the same stale-code class as the 2026-07-23 fix, one scope over).
+// The head was `rtl_llc_opagmt` — a real template, but scope='llc' (db/005:114): it
+// is a slot on an ENTITY, not a condition on a FILE, so the route matched nothing
+// and every click on "Post the condition" answered 400 "unknown template
+// rtl_llc_opagmt". The head is now the dedicated, application-scoped
+// `rtl_cond_entity_docs` (db/397) — "collect the operating agreement, articles and
+// EIN for the business whose bank funds are being used" — which is exactly what the
+// owner asked this button to post. `rtl_p1_llc` stays as the fallback; the legacy
+// strings are kept only as trailing aliases and are not live anywhere.
 const OA_CASCADE_TEMPLATE_CODES = [
-  'rtl_llc_opagmt',             // the LLC operating-agreement condition (db/005:114)
+  'rtl_cond_entity_docs',       // the entity-documents condition on the FILE (db/397)
   'rtl_p1_llc',                 // fallback: the entity/LLC umbrella condition (db/005:61)
+  'rtl_llc_opagmt',             // the entity's own OA SLOT (db/005:114) — scope='llc', not file-postable
   'llc_operating_agreement', 'rtl_p2_vesting', 'entity_vesting',  // legacy aliases (not live)
 ];
 

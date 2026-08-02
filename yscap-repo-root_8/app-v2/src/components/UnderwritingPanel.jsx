@@ -151,6 +151,59 @@ function SuggestionActions({ appId, suggestionId, status, important, templateCod
   );
 }
 
+/**
+ * "Add this LLC to the borrower's profile" (owner-directed 2026-08-02).
+ *
+ * A bank statement under an LLC we have no documents for is an OWNERSHIP question, not fraud — and
+ * the way out of it is one click: put that entity on the borrower's record (with its three document
+ * slots), carry any operating agreement / articles / EIN already sitting on this file onto those
+ * slots so they are on the profile for every future deal, and post the condition that asks for
+ * whatever is still missing. The server does all four together and reports what it actually did;
+ * this only shows it. The finding is settled only when the operating agreement really landed —
+ * otherwise it stays on the desk, which is the honest outcome.
+ */
+function EntityAdoptButton({ appId, entityName, findingId, onChange }) {
+  const [busy, setBusy] = useState(false);
+  const [done, setDone] = useState(null);
+  const run = async () => {
+    if (!window.confirm(`Add "${entityName}" to the borrower's profile as one of their entities?\n\nAny operating agreement, articles of organization or EIN letter for it already on this file is copied onto the new entity, and the entity-documents condition is posted for whatever is still missing.`)) return;
+    setBusy(true);
+    try {
+      const r = await api.adoptEntityToProfile(appId, entityName, findingId);
+      setDone(r);
+      onChange && onChange();
+    } catch (e) { alert(`Could not add the entity: ${(e && e.message) || 'error'}`); }
+    finally { setBusy(false); }
+  };
+  if (done) {
+    return (
+      <div style={{ marginTop: 8, padding: '8px 10px', borderRadius: 8, background: '#F2F7F2', border: '1px solid #CBDFCB' }}>
+        <div style={{ fontSize: 12.5, color: '#141B22' }}>{done.summary}</div>
+        {!done.findingResolved && (
+          <div style={{ fontSize: 11.5, color: '#4B585C', marginTop: 4 }}>
+            {done.findingReason === 'no_operating_agreement_yet'
+              ? 'This stays on the desk until the operating agreement for that company is on file — that is what shows the borrower controls it.'
+              : done.findingReason === 'needs_sign_off_permission'
+                ? 'A processor or underwriter still has to close this finding off.'
+                : 'This finding was left open.'}
+          </div>
+        )}
+      </div>
+    );
+  }
+  return (
+    <div style={{ marginTop: 8 }}>
+      <button disabled={busy} onClick={run} style={btn(true)}
+        title={`Add "${entityName}" to the borrower's profile, carry over any of its documents already on this file, and post the entity-documents condition`}>
+        {busy ? 'Adding…' : `＋ Add “${entityName}” to the borrower’s profile`}
+      </button>
+      <div style={{ fontSize: 11.5, color: '#4B585C', marginTop: 4 }}>
+        Puts the company on the borrower’s record for good, moves any of its documents already on this file onto it, and asks for the rest.
+      </div>
+    </div>
+  );
+}
+
 function Finding({ appId, f, onChange, resolvable, canAct = false, canWaive = true, canEscalate = false, escalated = null, highlighted = false, cardRef = null }) {
   const [busy, setBusy] = useState(false);
   const [pending, setPending] = useState(null); // the action awaiting its note/value
@@ -461,6 +514,11 @@ function Finding({ appId, f, onChange, resolvable, canAct = false, canWaive = tr
               style={btn(a.key === 'post_condition' || a.key === 'request_document', a.key === 'decline')}>{a.label}</button>
           ))}
         </div>
+      )}
+      {/* The one-click way out of a different-entity bank finding — see EntityAdoptButton. */}
+      {canAct && f.entityAdopt && f.entityAdopt.entityName && (
+        <EntityAdoptButton appId={appId} entityName={f.entityAdopt.entityName}
+          findingId={f.id || null} onChange={onChange} />
       )}
       {resolvable && actions.length === 0 && allActions.length > 0 && (
         <div style={{ fontSize: 12, color: 'var(--muted,#4B585C)' }}>An underwriter or admin can clear this dealbreaker.</div>

@@ -3688,7 +3688,10 @@ function normLoanType(text) {
 }
 
 // Insert a checklist_items row from a template row, carrying workflow columns.
-async function insertFromTemplate(tpl, owner) {
+// `client` is optional and defaults to the pool — a caller inside a transaction
+// (the entity-adoption path) passes its own so the dedupe check and the insert
+// both run on the connection that holds the open transaction.
+async function insertFromTemplate(tpl, owner, client = db) {
   // Idempotency: never create a second copy of the same template for the same
   // owner (application / borrower_profile / llc). This lets generateChecklist run
   // repeatedly — a ClickUp re-ingest, a self-serve re-sync, or the RTL backfill —
@@ -3696,7 +3699,7 @@ async function insertFromTemplate(tpl, owner) {
   // brand-new file there are no items yet, so the create path is unchanged.
   const [ownerCol, ownerVal] = Object.entries(owner)[0] || [];
   if (ownerCol && ownerVal != null) {
-    const existing = await db.query(
+    const existing = await client.query(
       `SELECT 1 FROM checklist_items WHERE template_id=$1 AND ${ownerCol}=$2 LIMIT 1`, [tpl.id, ownerVal]);
     if (existing.rows[0]) return;
   }
@@ -3710,7 +3713,7 @@ async function insertFromTemplate(tpl, owner) {
                 tpl.is_required !== false];
   for (const [k, v] of Object.entries(owner)) { cols.push(k); vals.push(v); }
   const ph = vals.map((_, i) => `$${i + 1}`).join(',');
-  await db.query(`INSERT INTO checklist_items (${cols.join(',')}) VALUES (${ph})`, vals);
+  await client.query(`INSERT INTO checklist_items (${cols.join(',')}) VALUES (${ph})`, vals);
 }
 
 async function generateChecklist(appId, borrowerId, program, loanType, opts = {}) {
@@ -3774,13 +3777,14 @@ async function generateChecklist(appId, borrowerId, program, loanType, opts = {}
 
 // Materialize the LLC document requirements (EIN letter, formation docs,
 // operating agreement) against an LLC. Idempotent per (llc_id, template).
-async function generateLlcChecklist(llcId) {
-  const t = await db.query(
+// `client` is optional and defaults to the pool (see insertFromTemplate).
+async function generateLlcChecklist(llcId, client = db) {
+  const t = await client.query(
     `SELECT * FROM checklist_templates WHERE is_active=true AND scope='llc' ORDER BY sort_order`);
   for (const tpl of t.rows) {
-    const dup = await db.query(`SELECT 1 FROM checklist_items WHERE llc_id=$1 AND template_id=$2`, [llcId, tpl.id]);
+    const dup = await client.query(`SELECT 1 FROM checklist_items WHERE llc_id=$1 AND template_id=$2`, [llcId, tpl.id]);
     if (dup.rows[0]) continue;
-    await insertFromTemplate(tpl, { llc_id: llcId });
+    await insertFromTemplate(tpl, { llc_id: llcId }, client);
   }
 }
 
