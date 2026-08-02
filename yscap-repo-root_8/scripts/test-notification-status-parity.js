@@ -60,6 +60,13 @@ function call(server, method, path, token, body) {
     appId = (await db.query(
       `INSERT INTO applications (borrower_id, loan_officer_id, status, internal_status)
        VALUES ($1,$2,'processing','self procesing') RETURNING id`, [borrowerId, adminId])).rows[0].id;
+    // The fully-executed term sheet package gates clear-to-close AND funding
+    // (esign/ctc-gate.js). This test is about the two doors ANNOUNCING a move the
+    // same way, so the file carries a real executed package and both doors are
+    // measured on the announcement rather than on the gate.
+    await db.query(
+      `INSERT INTO esign_envelopes (application_id, purpose, status, completed_at, is_test)
+       VALUES ($1,'term_sheet_package','completed', now(), false)`, [appId]);
 
     // 1) PATCH door → a decision milestone. Borrower IS emailed (major), team notified.
     reset();

@@ -46,6 +46,12 @@ const FATAL = {
       [`adv+${tag}@example.com`])).rows[0].id;
     appId = (await db.query(
       `INSERT INTO applications (borrower_id, status) VALUES ($1,'underwriting') RETURNING id`, [borId])).rows[0].id;
+    // The fully-executed term sheet package is its own clear-to-close gate
+    // (esign/ctc-gate.js), and "nothing but PILOT findings on it" below has to mean
+    // exactly that — so the file carries a real executed package.
+    await db.query(
+      `INSERT INTO esign_envelopes (application_id, purpose, status, completed_at, is_test)
+       VALUES ($1,'term_sheet_package','completed', now(), false)`, [appId]);
     const docId = (await db.query(
       `INSERT INTO documents (application_id,borrower_id,filename,content_type,storage_provider)
        VALUES ($1,$2,'contract.pdf','application/pdf','local') RETURNING id`, [appId, borId])).rows[0].id;

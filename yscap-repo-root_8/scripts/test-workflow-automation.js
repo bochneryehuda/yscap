@@ -105,6 +105,12 @@ function call(server, method, path, token, body) {
     const app2 = (await db.query(
       `INSERT INTO applications (borrower_id, loan_officer_id, status, program, loan_type, property_type)
        VALUES ($1,$2,'approved','Fix & Flip','Purchase','SFR') RETURNING id`, [borrowerId, loId])).rows[0].id;
+    // The fully-executed term sheet package gates clear-to-close AND funding
+    // (esign/ctc-gate.js). This block is about the hand-off automation, so the
+    // file carries a real executed package and the automation is measured alone.
+    await db.query(
+      `INSERT INTO esign_envelopes (application_id, purpose, status, completed_at, is_test)
+       VALUES ($1,'term_sheet_package','completed', now(), false)`, [app2]);
     const created = await wfAuto.onFunded(app2, superId);
     assert(created && created.submission_type === 'draw_setup', 'onFunded created a Draw Setup hand-off');
     const dr = (await db.query(`SELECT to_staff_id, auto FROM workflow_items WHERE application_id=$1 AND submission_type='draw_setup'`, [app2])).rows[0];

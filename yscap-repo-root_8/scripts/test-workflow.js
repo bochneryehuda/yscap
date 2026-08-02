@@ -156,6 +156,12 @@ function call(server, method, path, token, body) {
     const app2 = (await db.query(
       `INSERT INTO applications (borrower_id, loan_officer_id, closer_id, status, program, loan_type, property_type)
        VALUES ($1,$2,$3,'approved','Fix & Flip','Purchase','SFR') RETURNING id`, [borrowerId, loId, closerId])).rows[0].id;
+    // The fully-executed term sheet package gates clear-to-close AND funding
+    // (esign/ctc-gate.js). This is the CLEAN file, so it carries a real executed
+    // package and the closing → funded walk is measured on the workflow alone.
+    await db.query(
+      `INSERT INTO esign_envelopes (application_id, purpose, status, completed_at, is_test)
+       VALUES ($1,'term_sheet_package','completed', now(), false)`, [app2]);
     // ---- Closing: est closing date recorded + closing sub-workflow opens ----
     r = await call(server, 'POST', `/api/staff/applications/${app2}/workflow/submit`, loT, { submissionType: 'closing', estClosingDate: '2026-09-15' });
     assert(r.status === 200, 'Closing submits (routes to the assigned closer)');
