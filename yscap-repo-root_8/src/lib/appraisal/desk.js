@@ -18,6 +18,7 @@ const storage = require('../storage');
 const { importAppraisal } = require('./import');
 const { extract } = require('./extract');
 const { extractPhotos } = require('./photos');
+const photoMeta = require('./photo-meta');
 const { crossCheckFlood } = require('./flood');
 const X = require('./xml');
 
@@ -82,10 +83,54 @@ function runAsIsRead(appId, opts = {}) {
 // document, and record it on appraisal_photos. Supersedes any earlier appraisal's extracted
 // photos so a re-import doesn't pile up stale images. Returns the number stored. Awaitable so it
 // can be tested; the caller (firePhotoExtraction) runs it fire-and-forget after the import.
-async function extractAndStorePhotos(appraisalId, appId, pdfB64, importedBy) {
-  if (!appraisalId || !pdfB64) return 0;
-  const res = await extractPhotos(pdfB64);
-  if (!res.attempted || !res.photos.length) return 0;
+async function extractAndStorePhotos(appraisalId, appId, pdfB64, importedBy, xml) {
+  if (!appraisalId) return 0;
+  // TWO SOURCES, IN ORDER OF AUTHORITY (owner-directed 2026-08-02: "I'm sure that the XML does
+  // carry some photos … do further digging on the XML structure").
+  //
+  //  (1) PHOTOS SHIPPED IN THE XML ITSELF. A vendor that embeds per-photo images gives us the
+  //      appraiser's OWN label for each one ("SubjectFront"), which beats any pixel heuristic —
+  //      so when they are there, they ARE the gallery and the PDF is not mined (mining it would
+  //      re-add the same shots with no labels and no way to tell them apart).
+  //  (2) THE REPORT PDF — which, note, is itself carried INSIDE the XML
+  //      (`<EMBEDDED_FILE _Type="PDF">`). That is why an XML-only import has always produced
+  //      photographs, and it is the path ~all real files take. Its images are then NAMED from the
+  //      XML's `<IMAGE>` slot list when the two line up exactly (labelPhotos is strict).
+  let photos = [], fromXml = false;
+  if (xml) {
+    try {
+      const imgs = photoMeta.embeddedImages(xml);
+      if (imgs.length) {
+        fromXml = true;
+        photos = imgs.map((im) => {
+          const buf = Buffer.from(im.base64, 'base64');
+          const mime = photoMeta.sniffImageMime(buf) || im.mime;   // magic bytes beat the attribute
+          return { bytes: buf, contentType: mime, ext: (mime.split('/')[1] || 'jpg').replace('jpeg', 'jpg'),
+            kind: im.photo ? 'photo' : 'graphic', category: photoMeta.categoryFor(im),
+            caption: im.caption || null, width: null, height: null };
+        });
+        // Same contract as the PDF path: real photographs first, form artwork last.
+        photos = photos.filter((p) => p.kind !== 'graphic').concat(photos.filter((p) => p.kind === 'graphic'));
+      }
+    } catch (e) { console.error('[appraisal] XML photo read failed (falling back to the PDF):', e && e.message); }
+  }
+  if (!photos.length) {
+    if (!pdfB64) return 0;
+    const res = await extractPhotos(pdfB64);
+    if (!res.attempted || !res.photos.length) return 0;
+    let list = res.photos;
+    if (xml) {
+      try {
+        const labelled = photoMeta.labelPhotos(list, photoMeta.photoSlots(xml));
+        if (labelled.applied) list = labelled.photos;
+      } catch (_) { /* labelling is a bonus; the pixel classification already stands */ }
+    }
+    photos = list.map((ph) => ({ bytes: ph.png, contentType: 'image/png', ext: 'png',
+      kind: ph.kind, category: ph.category || null, caption: ph.caption || null,
+      width: ph.width, height: ph.height }));
+  }
+  if (!photos.length) return 0;
+  const res = { photos: photos.map((p, i) => Object.assign(p, { seq: i })), fromXml };
   const app = (await db.query(`SELECT borrower_id FROM applications WHERE id=$1`, [appId])).rows[0];
   const borrowerId = app ? app.borrower_id : null;
   // Retire EVERY existing appraisal_photo on this file before inserting the fresh set — including
@@ -102,7 +147,7 @@ async function extractAndStorePhotos(appraisalId, appId, pdfB64, importedBy) {
   let stored = 0;
   for (const ph of res.photos) {
     try {
-      const s = await storage.save(ph.png, { filename: `appraisal-photo-${ph.seq + 1}.png` });
+      const s = await storage.save(ph.bytes, { filename: `appraisal-photo-${ph.seq + 1}.${ph.ext}` });
       // These are photos the SYSTEM extracted from the appraisal PDF — not human uploads, so they
       // must never sit in the document-review queue waiting to be accepted one by one. Store them
       // pre-ACCEPTED (review_status='accepted') and marked source_type='system' (which also hides the
@@ -110,16 +155,18 @@ async function extractAndStorePhotos(appraisalId, appId, pdfB64, importedBy) {
       // extracted image shows an Accept button on the file's Documents list.
       const doc = await db.query(
         `INSERT INTO documents (application_id,borrower_id,filename,content_type,size_bytes,storage_provider,storage_ref,uploaded_by_kind,uploaded_by_id,doc_kind,visibility,source_type,review_status,reviewed_at)
-         VALUES ($1,$2,$3,'image/png',$4,$5,$6,'staff',$7,'appraisal_photo','borrower','system','accepted',now()) RETURNING id`,
-        [appId, borrowerId, `appraisal-photo-${ph.seq + 1}.png`, ph.png.length, s.provider, s.ref, importedBy || null]);
+         VALUES ($1,$2,$3,$4,$5,$6,$7,'staff',$8,'appraisal_photo','borrower','system','accepted',now()) RETURNING id`,
+        [appId, borrowerId, `appraisal-photo-${ph.seq + 1}.${ph.ext}`, ph.contentType, ph.bytes.length, s.provider, s.ref, importedBy || null]);
       // `category` records WHAT the image is (owner-reported 2026-08-02: the appraiser's signature
-      // was coming up as the property's main picture). extractPhotos already ordered real
-      // photographs ahead of the form's own artwork, so sequence 0 is a photograph; storing the
-      // classification as well means the gallery can label a map/sketch/signature honestly and the
-      // hero can insist on a photograph rather than trusting position alone.
+      // was coming up as the property's main picture). The list is already ordered photographs-first,
+      // so sequence 0 is a photograph; storing the classification as well means the gallery can label
+      // a map/sketch/signature honestly and the hero can insist on a photograph rather than trusting
+      // position alone. When the XML named the slot, that name is what is stored ('subject_front',
+      // 'comparable', …) — the appraiser's own label, which no pixel heuristic can beat.
       await db.query(
-        `INSERT INTO appraisal_photos (appraisal_id, document_id, sequence, width, height, category) VALUES ($1,$2,$3,$4,$5,$6)`,
-        [appraisalId, doc.rows[0].id, ph.seq, ph.width, ph.height, ph.kind === 'graphic' ? 'graphic' : 'photo']);
+        `INSERT INTO appraisal_photos (appraisal_id, document_id, sequence, width, height, category, caption) VALUES ($1,$2,$3,$4,$5,$6,$7)`,
+        [appraisalId, doc.rows[0].id, ph.seq, ph.width, ph.height,
+          ph.category || (ph.kind === 'graphic' ? 'graphic' : 'photo'), ph.caption || null]);
       stored++;
     } catch (e) { console.error('[appraisal] photo store failed (non-fatal, continuing):', e && e.message); }
   }
@@ -185,9 +232,9 @@ function fireFloodCheck(appraisalId, appId) {
   })().catch(() => { /* best-effort advisory — never breaks the import */ });
 }
 
-function firePhotoExtraction(appraisalId, appId, pdfB64, importedBy) {
+function firePhotoExtraction(appraisalId, appId, pdfB64, importedBy, xml) {
   if (!appraisalId || !pdfB64) return;
-  extractAndStorePhotos(appraisalId, appId, pdfB64, importedBy)
+  extractAndStorePhotos(appraisalId, appId, pdfB64, importedBy, xml)
     .catch((e) => console.error('[appraisal] photo extraction failed (non-fatal):', e && e.message));
 }
 
@@ -226,7 +273,8 @@ async function runAppraisalImport(args) {
   // THE As-Is READ runs on EVERY import, not only when the data file was silent (owner-directed
   // 2026-07-28) — a definite XML As-Is still has to be compared with what the file currently says.
   fireAsIsRead(appId, pdfB64, importedBy);
-  firePhotoExtraction(out.appraisalId, appId, pdfB64, importedBy);
+  // The XML goes along: it may CARRY the photos, and it names the ones mined from the PDF.
+  firePhotoExtraction(out.appraisalId, appId, pdfB64, importedBy, xml);
   fireFloodCheck(out.appraisalId, appId);
   // The appraiser's OWN stated flood zone is on the row the moment the XML is parsed, with no
   // FEMA call involved — so the Fidelis advisory must also run here, not only inside
@@ -267,7 +315,8 @@ async function repullAppraisalPhotos(appId) {
   if (!appr) return 0;
   const pdfB64 = await pdfBytesForAppraisal(appr);
   if (!pdfB64) return 0;
-  return extractAndStorePhotos(appr.id, appr.application_id, pdfB64, null);
+  const xml = await xmlForAppraisal(appr).catch(() => null);
+  return extractAndStorePhotos(appr.id, appr.application_id, pdfB64, null, xml);
 }
 
 // Boot backfill (previous AND future rule): every CURRENT appraisal that has a recoverable PDF but
@@ -291,7 +340,8 @@ async function backfillAppraisalPhotosOnce(limit = 25) {
       try {
         const pdfB64 = await pdfBytesForAppraisal(r);
         if (!pdfB64) continue;                             // no decodable PDF (cheap check, no re-decode)
-        const n = await extractAndStorePhotos(r.id, r.application_id, pdfB64, null);
+        const xml = await xmlForAppraisal(r).catch(() => null);
+        const n = await extractAndStorePhotos(r.id, r.application_id, pdfB64, null, xml);
         if (n > 0) { filled++; photos += n; }
         else {
           // Had a PDF but nothing extractable — drop a sentinel so the (CPU-heavy) decode isn't
@@ -340,7 +390,8 @@ async function backfillAppraisalPhotoKindsOnce(limit = 25) {
           try { await db.query(`UPDATE appraisal_photos SET category='unclassified' WHERE appraisal_id=$1 AND category IS NULL`, [r.id]); } catch (_) { /* best-effort */ }
           continue;
         }
-        const n = await extractAndStorePhotos(r.id, r.application_id, pdfB64, null);
+        const xml = await xmlForAppraisal(r).catch(() => null);
+        const n = await extractAndStorePhotos(r.id, r.application_id, pdfB64, null, xml);
         if (n > 0) { refreshed++; photos += n; }
         else { try { await db.query(`UPDATE appraisal_photos SET category='unclassified' WHERE appraisal_id=$1 AND category IS NULL`, [r.id]); } catch (_) { /* best-effort */ } }
       } catch (_) { /* per-appraisal best-effort */ }

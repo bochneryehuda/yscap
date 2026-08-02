@@ -97,6 +97,51 @@ async function deskAppraisalFindings(appId) {
   return out;
 }
 
+/**
+ * THE APPRAISAL'S OWN DATA COMPARISON — appraisal value vs loan-file value, fact by fact
+ * (owner-directed 2026-08-02: "the data-comparison table should still show the data comparison of
+ * the appraisal even if the flag is already raised on the appraisal findings screen … the file ARV
+ * and the appraisal ARV, the file as-is and the appraisal as-is, the property type, the unit count,
+ * the address and everything").
+ *
+ * Two separate things, and they must not be confused: a FINDING is the flag raised once, to be
+ * answered once; the COMPARISON is the standing side-by-side an underwriter reads. Suppressing the
+ * duplicate FINDING (so the appraisal's disagreements live on one page) must never remove the
+ * appraisal from the comparison — so the tie-out MATRIX has always kept every appraisal cell, and
+ * this lifts that column out onto the Appraisal page itself, next to the report it describes.
+ *
+ * Reuses `tieoutForFile` — the SAME engine the document desk's matrix renders — so the two screens
+ * can never state different things about the same fact. Every fact the appraisal can carry is
+ * listed, including the ones that AGREE and the ones neither side has, because "these match" is
+ * exactly what a reviewer is looking for. Best-effort: a failure returns null and the tab renders.
+ */
+async function appraisalComparison(appId) {
+  try {
+    const { tieoutForFile } = require('../lib/underwriting/file-review');
+    const tie = await tieoutForFile(db, appId);
+    const rows = [];
+    for (const m of (tie.matrix || [])) {
+      const cells = m.cells || [];
+      const file = cells.find((c) => c.source === 'file');
+      const appr = cells.find((c) => c.source === 'appraisal');
+      // A fact the appraisal is not expected to carry at all ('na') is not part of this comparison.
+      if (!appr || appr.status === 'na') continue;
+      rows.push({
+        key: m.key, label: m.label, category: m.category,
+        appraisalValue: appr.value == null ? null : appr.value,
+        fileValue: file && file.value != null ? file.value : null,
+        // agree | disagree | missing (the appraisal is silent) | noref (nothing to compare against)
+        status: appr.status,
+      });
+    }
+    const disagree = rows.filter((r) => r.status === 'disagree').length;
+    return { rows, summary: { facts: rows.length, disagree, agree: rows.filter((r) => r.status === 'agree').length } };
+  } catch (e) {
+    console.error('[appraisal] comparison failed:', e && e.message);
+    return null;
+  }
+}
+
 // Upload cap: aligned to the per-file limit the JSON body-parser actually allows,
 // so the decode cap can never exceed what express.json() accepts (no dead ceiling).
 const MAX_UPLOAD_BYTES = Math.max(1, cfg.maxUploadMb) * 1024 * 1024;
@@ -181,7 +226,11 @@ router.get('/:appId', async (req, res, next) => {
       arv: arvDefensibility({ arv: appr.arv_value, asIs: appr.as_is_value, rehab: rehab.rehab_budget, isReno }),
       impliedValue: compImpliedValue({ comps: impliedComps, subjectGla: appr.gla }),
     };
-    res.json({ appraisal: appr, comparables: comps.rows, units: units.rows, findings: open, photos: photos.rows, summary, score });
+    res.json({ appraisal: appr, comparables: comps.rows, units: units.rows, findings: open, photos: photos.rows, summary, score,
+      // The standing appraisal-vs-file side-by-side. Independent of the findings above: a fact stays
+      // in this table whether or not a finding was ever raised on it, and whether or not that finding
+      // has been answered.
+      comparison: await appraisalComparison(app.id) });
   } catch (e) { next(e); }
 });
 
@@ -548,3 +597,4 @@ module.exports = router;
 // Exported for the DB test: the appraisal findings the DOCUMENT desk computes, which this page
 // lists and resolves. Test-only surface — nothing in the app calls it through the module.
 module.exports._deskAppraisalFindings = deskAppraisalFindings;
+module.exports._appraisalComparison = appraisalComparison;

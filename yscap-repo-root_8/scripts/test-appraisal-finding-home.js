@@ -212,5 +212,107 @@ const verdict = (px, w, h) => classifyImage(imageStats(px, w, h, 3));
   assert(imageStats(Buffer.alloc(4), 100, 100, 3) === null, 'a short buffer returns no statistics rather than throwing');
 }
 
-console.log(failures ? `\nFAILED (${failures})` : '\nAll appraisal finding-home + photo-classification checks passed');
+// ---------------------------------------------------------------- D. what the XML says about photos
+// The owner's observation — "even when we don't upload the PDF you still get some photos" — is
+// correct, and this is the mechanism: the report PDF is carried INSIDE the XML. On top of that the
+// XML often names each photo slot, which is what lets the SUBJECT FRONT shot be identified with
+// certainty instead of by position.
+const meta = require('../src/lib/appraisal/photo-meta');
+
+// A la mode shape: the PDF embedded with NO per-photo metadata at all (~60% of real files).
+const XML_PDF_ONLY = `<?xml version="1.0"?><VALUATION_RESPONSE MISMOVersionID="2.6">
+  <REPORT AppraisalFormType="FNM1004"><FORM AppraisalReportContentType="AppraisalForm">
+    <EMBEDDED_FILE _Name="AppraisalReport" _Type="PDF" _EncodingType="Base64" MIMEType="application/pdf">
+      <DOCUMENT>JVBERi0xLjQKJc${'A'.repeat(600)}</DOCUMENT>
+    </EMBEDDED_FILE></FORM></REPORT></VALUATION_RESPONSE>`;
+
+// ClickFORMS shape: the PDF plus a full, labelled slot list (metadata only, no pixels).
+const XML_WITH_SLOTS = `<?xml version="1.0"?><VALUATION_RESPONSE MISMOVersionID="2.6"><REPORT>
+  <FORM AppraisalReportContentType="AppraisalForm">
+    <IMAGE _Name="AppraisalForm" _SequenceIdentifier="1">
+      <EMBEDDED_FILE _Type="PDF" MIMEType="application/pdf"><DOCUMENT>JVBERi0${'B'.repeat(600)}</DOCUMENT></EMBEDDED_FILE>
+    </IMAGE></FORM>
+  <FORM AppraisalReportContentType="SubjectPhotos">
+    <IMAGE _Name="HasImage" _Identifier="SubjectFront" _CaptionComment="76 Thompson St/Springfield, MA 01109"/>
+    <IMAGE _Name="HasImage" _Identifier="SubjectRear" _CaptionComment="76 Thompson St/Springfield, MA 01109"/>
+    <IMAGE _Name="NoImage" _Identifier="SubjectStreet"/>
+  </FORM>
+  <FORM AppraisalReportContentType="SalePhotos">
+    <IMAGE _Name="HasImage" _Identifier="ComparablePhoto1" _CaptionComment="12 Elm St/Springfield, MA 01109"/>
+  </FORM>
+  <FORM AppraisalReportContentType="Sketch"><IMAGE _Name="HasImage" _Identifier="Sketch"/></FORM>
+</REPORT></VALUATION_RESPONSE>`;
+
+// A vendor that ships the pixels per photo (rare, but reading them costs nothing and a vendor we
+// have not measured stops being a blank gallery).
+const XML_WITH_PIXELS = `<?xml version="1.0"?><VALUATION_RESPONSE><REPORT>
+  <FORM AppraisalReportContentType="SubjectPhotos">
+    <IMAGE _Name="HasImage" _Identifier="SubjectFront" _CaptionComment="76 Thompson St">
+      <EMBEDDED_FILE _Type="JPEG" MIMEType="image/jpeg"><DOCUMENT>${'/9j/4AAQSkZJRg'.repeat(60)}</DOCUMENT></EMBEDDED_FILE>
+    </IMAGE></FORM>
+  <FORM AppraisalReportContentType="Exhibit">
+    <IMAGE _Name="HasImage" _Identifier="Exhibit">
+      <EMBEDDED_FILE _Type="PNG" MIMEType="image/png"><DOCUMENT>${'iVBORw0KGgo'.repeat(60)}</DOCUMENT></EMBEDDED_FILE>
+    </IMAGE></FORM>
+</REPORT></VALUATION_RESPONSE>`;
+
+{
+  // The PDF is IN the XML — this is the whole answer to "how do we get photos with no PDF upload".
+  const { embeddedPdfBase64 } = require('../src/lib/appraisal/xml');
+  assert(typeof embeddedPdfBase64(XML_PDF_ONLY) === 'string' && embeddedPdfBase64(XML_PDF_ONLY).length > 500,
+    'the report PDF is carried inside the XML — an XML-only import still yields photographs');
+  assert(meta.embeddedImages(XML_PDF_ONLY).length === 0,
+    'a PDF-only XML offers no per-photo pixels — the PDF path is left exactly as it was');
+  assert(meta.photoSlots(XML_PDF_ONLY).length === 0, 'and it declares no photo slots (the ~60% case)');
+}
+{
+  const slots = meta.photoSlots(XML_WITH_SLOTS);
+  assert(slots.length === 4, 'the slot list skips the PDF wrapper and the empty NoImage slot');
+  assert(slots[0].subjectFront === true && slots[0].group === 'subject', 'the SUBJECT FRONT shot is identified by name');
+  assert(slots[0].caption && slots[0].caption.indexOf('Thompson') > -1, 'its caption comes across');
+  assert(slots[1].group === 'subject' && slots[2].group === 'comparable' && slots[3].group === 'sketch',
+    'each slot takes its group from the FORM it sits under');
+  assert(slots[3].photo === false, 'a sketch is not a photograph');
+  assert(meta.embeddedImages(XML_WITH_SLOTS).length === 0,
+    'slot metadata carries no pixels — it never masquerades as a photo source');
+}
+{
+  const imgs = meta.embeddedImages(XML_WITH_PIXELS);
+  assert(imgs.length === 2, 'a vendor that embeds per-photo images has them read');
+  assert(imgs[0].mime === 'image/jpeg' && imgs[0].subjectFront === true && imgs[0].photo === true,
+    'the front photo arrives labelled, with its type');
+  assert(imgs[1].group === 'exhibit' && imgs[1].photo === false,
+    'an exhibit (a licence, an E&O certificate) is kept but is never a photograph');
+  assert(imgs.every((i) => i.base64 && i.base64.indexOf('<') === -1), 'the payloads come back clean');
+}
+{
+  // Labelling the PDF-mined photos: STRICT — it applies only on an exact match.
+  const mined = [{ kind: 'photo' }, { kind: 'photo' }, { kind: 'photo' }, { kind: 'graphic' }];
+  const slots = meta.photoSlots(XML_WITH_SLOTS);        // 4 slots: front, rear, comp, sketch
+  const no = meta.labelPhotos(mined, slots);
+  assert(no.applied === false && /4 photo slot\(s\) but 3/.test(no.reason),
+    'a count mismatch labels NOTHING — a wrong label on the main picture is the bug being fixed');
+  const yes = meta.labelPhotos([...mined, { kind: 'photo' }], slots);
+  assert(yes.applied === true, 'an exact match labels the set');
+  assert(yes.photos[0].category === 'subject_front' && yes.photos[0].caption.indexOf('Thompson') > -1,
+    'photo #1 is named the subject front, with the appraiser’s caption');
+  assert(yes.photos[3].kind === 'graphic',
+    'a slot the XML calls a sketch is demoted even though the pixels read as a photograph');
+  assert(mined[0].category === undefined, 'the input list is never mutated');
+  assert(meta.labelPhotos([{ kind: 'photo' }], []).applied === false, 'no slots → nothing labelled');
+}
+{
+  assert(meta.heroIndex([{ kind: 'graphic' }, { kind: 'photo', category: 'comparable' }, { kind: 'photo', category: 'subject_front' }]) === 2,
+    'the main picture is the subject FRONT shot when the XML names one');
+  assert(meta.heroIndex([{ kind: 'graphic' }, { kind: 'photo', category: 'comparable' }, { kind: 'photo', category: 'subject' }]) === 2,
+    '…then any subject photo');
+  assert(meta.heroIndex([{ kind: 'graphic' }, { kind: 'photo' }]) === 1,
+    '…then simply the first photograph — never the form artwork');
+  assert(meta.heroIndex([{ kind: 'graphic' }]) === -1 && meta.heroIndex([]) === -1,
+    'and it reports honestly when there is no photograph at all');
+  assert(meta.photoSlots(null).length === 0 && meta.embeddedImages('<not xml').length === 0,
+    'junk input never throws');
+}
+
+console.log(failures ? `\nFAILED (${failures})` : '\nAll appraisal finding-home + photo checks passed');
 process.exit(failures ? 1 : 0);

@@ -150,6 +150,66 @@ async function attach(appId, code) {
     delete process.env.APPRAISAL_FINDINGS_ENFORCE;
     ok(!!(await gate()), 'E: …and unsetting it re-arms enforcement');
 
+    // ============ F. the DATA COMPARISON survives the finding ============
+    // (owner-directed 2026-08-02: "the data-comparison table should still show the data comparison
+    // of the appraisal even if the flag is already raised on the appraisal findings screen".)
+    // The appraisal disagrees with the file on ARV, as-is, units and the address — every one of
+    // which is now suppressed as a duplicate FINDING because the appraisal desk owns it. The
+    // comparison must still state all of them, side by side.
+    await db.query(
+      `UPDATE appraisals SET arv_value=520000, as_is_value=240000, units=4, property_type='Condominium',
+              subject_address='999 Elsewhere Rd', subject_city='Springfield', subject_state='MA', subject_zip='01109'
+        WHERE id=$1`, [apprId]);
+    await db.query(
+      `UPDATE applications SET units=2, property_type='Multi 2-4',
+              property_address='{"line1":"76 Thompson St","city":"Springfield","state":"MA","zip":"01109"}'::jsonb
+        WHERE id=$1`, [appId]);
+    const cmp = await require('../src/routes/appraisal')._appraisalComparison(appId);
+    ok(!!cmp && Array.isArray(cmp.rows) && cmp.rows.length > 0, 'F: the appraisal has a data comparison');
+    const row = (k) => cmp.rows.find((r) => r.key === k);
+    for (const k of ['arv', 'as_is_value', 'units', 'property_type', 'property_address']) {
+      const r = row(k);
+      ok(!!r, `F: "${k}" is in the comparison — a fact the appraisal desk owns is still COMPARED`);
+      ok(r && r.appraisalValue != null && String(r.appraisalValue).trim() !== '',
+        `F: …and the appraisal's own ${k} is shown`);
+    }
+    ok(row('arv') && row('arv').status === 'disagree' && row('arv').fileValue != null,
+      'F: a real disagreement reads as "differs", with BOTH numbers — the finding moving never hid it');
+    ok(cmp.summary && cmp.summary.disagree > 0, 'F: the summary counts what differs');
+    // A fact the appraisal cannot carry is not padded into the table.
+    ok(!cmp.rows.some((r) => r.key === 'borrower_dob'), 'F: facts the appraisal never states are left out');
+
+    // ============ G. photos carried IN the XML are stored, labelled, photographs first ============
+    // (owner-directed 2026-08-02: "I'm sure that the XML does carry some photos … do further
+    // digging".) No existing test exercised this storage path, and it writes real documents.
+    {
+      const { encodePng } = require('../src/lib/appraisal/photos');
+      const png = (r, g, b) => encodePng(Buffer.alloc(8 * 8 * 3).map((_, i) => [r, g, b][i % 3]), 8, 8, 3);
+      // Deliberately out of order: the EXHIBIT (a licence page — not a photograph) comes FIRST in
+      // the document, exactly like the signature page that started all this.
+      const xmlPhotos = `<?xml version="1.0"?><VALUATION_RESPONSE><REPORT>
+        <FORM AppraisalReportContentType="Exhibit"><IMAGE _Name="HasImage" _Identifier="Exhibit">
+          <EMBEDDED_FILE _Type="PNG" MIMEType="image/png"><DOCUMENT>${png(250, 250, 250).toString('base64')}</DOCUMENT></EMBEDDED_FILE>
+        </IMAGE></FORM>
+        <FORM AppraisalReportContentType="SubjectPhotos"><IMAGE _Name="HasImage" _Identifier="SubjectFront" _CaptionComment="76 Thompson St">
+          <EMBEDDED_FILE _Type="PNG" MIMEType="image/png"><DOCUMENT>${png(120, 170, 90).toString('base64')}</DOCUMENT></EMBEDDED_FILE>
+        </IMAGE></FORM></REPORT></VALUATION_RESPONSE>`;
+      const n = await require('../src/lib/appraisal/desk')
+        .extractAndStorePhotos(apprId, appId, null, staff.id, xmlPhotos);
+      ok(n === 2, 'G: both images carried in the XML are stored (no PDF needed at all)');
+      const rows = (await db.query(
+        `SELECT ap.sequence, ap.category, ap.caption, d.content_type, d.filename
+           FROM appraisal_photos ap JOIN documents d ON d.id=ap.document_id
+          WHERE ap.appraisal_id=$1 AND ap.document_id IS NOT NULL ORDER BY ap.sequence`, [apprId])).rows;
+      ok(rows.length === 2, 'G: …and both are on the gallery');
+      ok(rows[0] && rows[0].category === 'subject_front',
+        'G: the SUBJECT FRONT shot is photo #1 — ahead of the exhibit that came first in the file');
+      ok(rows[0] && rows[0].caption === '76 Thompson St', 'G: the appraiser’s own caption is kept');
+      ok(rows[1] && rows[1].category === 'exhibit', 'G: the exhibit is kept, labelled, and last');
+      ok(rows.length === 2 && rows.every((r) => r.content_type === 'image/png' && /\.png$/.test(r.filename)),
+        'G: the image is stored in its OWN format, not re-encoded');
+    }
+
     await db.query(`DELETE FROM staff_users WHERE id=$1`, [staff.id]).catch(() => {});
   } finally {
     for (const id of cleanupApps) await db.query(`DELETE FROM applications WHERE id=$1`, [id]).catch(() => {});

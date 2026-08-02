@@ -316,6 +316,69 @@ function SecHead({ eyebrow, title, extra }) {
 // Ctrl+P from the inline view.
 const ApprOpenCtx = React.createContext(false);
 
+// THE DATA COMPARISON — the appraisal against the loan file, fact by fact (owner-directed
+// 2026-08-02: "the data-comparison table should still show the data comparison of the appraisal
+// even if the flag is already raised on the appraisal findings screen … the file ARV and the
+// appraisal ARV, the file as-is and the appraisal as-is, the property type, the unit count, the
+// address and everything"). A FINDING is raised once and answered once; this table is the standing
+// side-by-side, and it stays here whether or not a finding was ever raised on a row, and whether or
+// not it has been resolved. Same engine as the document desk's matrix, so they can never disagree.
+const CMP = {
+  agree: { bg: 'rgba(63,122,91,.10)', fg: 'var(--good,#3F7A5B)', mark: '✓', word: 'Matches' },
+  disagree: { bg: 'rgba(180,72,60,.10)', fg: 'var(--crit,#B4483C)', mark: '✕', word: 'Differs' },
+  missing: { bg: 'rgba(183,121,31,.08)', fg: 'var(--amber,#B7791F)', mark: '–', word: 'Not stated' },
+  noref: { bg: 'transparent', fg: '#4B585C', mark: '·', word: 'Nothing to compare' },
+};
+function DataComparison({ comparison }) {
+  const [onlyDiff, setOnlyDiff] = useState(false);
+  if (!comparison || !Array.isArray(comparison.rows) || !comparison.rows.length) return null;
+  const s = comparison.summary || {};
+  const rows = onlyDiff ? comparison.rows.filter((r) => r.status === 'disagree') : comparison.rows;
+  const th = { padding: '7px 10px', fontSize: 10.5, fontWeight: 700, letterSpacing: '.04em', textTransform: 'uppercase',
+    color: '#4B585C', textAlign: 'left', whiteSpace: 'nowrap', borderBottom: '1px solid var(--line,#E7E1D3)' };
+  return (
+    <div className="appr-avoid" style={{ marginBottom: 24 }}>
+      <div style={{ display: 'flex', alignItems: 'baseline', justifyContent: 'space-between', gap: 10, flexWrap: 'wrap' }}>
+        <h4 style={{ fontFamily: 'var(--serif,Georgia,serif)', margin: '0 0 4px', color: '#141B22' }}>Data comparison — the appraisal against the file</h4>
+        {s.disagree > 0 && (
+          <button className="appr-noprint" onClick={() => setOnlyDiff((v) => !v)}
+            style={{ fontSize: 12, fontWeight: 600, borderRadius: 8, padding: '5px 11px', cursor: 'pointer',
+              border: '1px solid ' + (onlyDiff ? 'var(--crit,#B4483C)' : 'var(--line,#D9D4C8)'),
+              background: onlyDiff ? 'var(--crit,#B4483C)' : 'var(--paper,#F6F3EC)',
+              color: onlyDiff ? '#fff' : '#141B22' }}>
+            {onlyDiff ? 'Show every fact' : `Show only what differs (${s.disagree})`}
+          </button>
+        )}
+      </div>
+      <p style={{ fontSize: 12, color: '#4B585C', margin: '0 0 10px' }}>
+        Every fact the appraisal states, next to what the loan file says.
+        {s.facts ? ` ${s.agree} of ${s.facts} match${s.disagree ? ` · ${s.disagree} differ` : ''}.` : ''}
+        {' '}This stays here whether or not a finding was raised — it is the read, not the to-do.
+      </p>
+      <div style={{ overflowX: 'auto', border: '1px solid var(--line,#E7E1D3)', borderRadius: 12 }}>
+        <table style={{ width: '100%', borderCollapse: 'collapse', minWidth: 480 }}>
+          <thead><tr>
+            <th style={th}>Fact</th><th style={th}>Appraisal</th><th style={th}>Loan file</th><th style={th}></th>
+          </tr></thead>
+          <tbody>
+            {rows.map((r) => {
+              const c = CMP[r.status] || CMP.noref;
+              return (
+                <tr key={r.key} style={{ background: c.bg }}>
+                  <td style={{ padding: '7px 10px', fontSize: 12.5, fontWeight: 600, color: '#141B22', borderBottom: '1px solid var(--line-soft,#EFEADD)', whiteSpace: 'nowrap' }}>{r.label}</td>
+                  <td style={{ padding: '7px 10px', fontSize: 12.5, color: '#141B22', borderBottom: '1px solid var(--line-soft,#EFEADD)' }}>{r.appraisalValue || <span style={{ color: '#4B585C' }}>—</span>}</td>
+                  <td style={{ padding: '7px 10px', fontSize: 12.5, color: '#141B22', borderBottom: '1px solid var(--line-soft,#EFEADD)' }}>{r.fileValue || <span style={{ color: '#4B585C' }}>—</span>}</td>
+                  <td style={{ padding: '7px 10px', fontSize: 11.5, fontWeight: 700, color: c.fg, borderBottom: '1px solid var(--line-soft,#EFEADD)', whiteSpace: 'nowrap' }}>{c.mark} {c.word}</td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+}
+
 // Collapsible report section (owner-directed 2026-07-20): the appraisal report is
 // long, so each big section collapses to just its header — scan the headers, open
 // the one you want. Native <details> = auto-collapsed by default (unless
@@ -1170,12 +1233,17 @@ export default function AppraisalPanel({ appId, readOnly = false, onSummary, rel
   const findings = (data && data.findings) || [];
   const comps = (data && data.comparables) || [];
   const photos = (data && data.photos) || [];
-  // THE MAIN PICTURE MUST BE A PHOTOGRAPH (owner-reported 2026-08-02: "for the main picture of the
-  // house it comes up the appraiser's signature"). The server now stores real photographs ahead of
-  // the form's own artwork AND records which is which, so this is belt-and-suspenders: never lead
-  // with something classified as a graphic (signature, logo, location map, floor-plan sketch). An
-  // older gallery that has not been re-classified yet carries no category and behaves as before.
-  const hero = photos.find((p) => p.category !== 'graphic') || photos[0];
+  // THE MAIN PICTURE MUST BE A PHOTOGRAPH — ideally the FRONT of the house (owner-reported
+  // 2026-08-02: "for the main picture of the house it comes up the appraiser's signature"). The
+  // server stores real photographs ahead of the form's own artwork and records what each one is, so
+  // the order alone would do; this makes the intent explicit and prefers the shot the appraiser
+  // themselves labelled the subject front when the XML named it. Mirrors photo-meta.heroIndex. An
+  // older gallery not yet re-classified carries no category and behaves exactly as before.
+  const NOT_A_PHOTO = new Set(['graphic', 'map', 'sketch', 'exhibit', 'cover']);
+  const shots = photos.filter((p) => !NOT_A_PHOTO.has(p.category));
+  const hero = shots.find((p) => p.category === 'subject_front')
+    || shots.find((p) => p.category === 'subject')
+    || shots[0] || photos[0];
 
   // Value basis: an ARV present + a subject-to / hypothetical condition means the headline value
   // reflects the AFTER-REPAIR value. State it plainly so no one mis-sizes the loan.
@@ -1290,6 +1358,11 @@ export default function AppraisalPanel({ appId, readOnly = false, onSummary, rel
           ) : (
             <p style={{ color: 'var(--good,#3F7A5B)', fontSize: 13, marginBottom: 20 }}>✓ No open findings — the appraisal matches the file.</p>
           )}
+
+          {/* The standing appraisal-vs-file comparison — never removed because a finding was raised
+              or answered. Staff only: the borrower's read-only property report shows the appraisal,
+              not our internal reconciliation against the loan file. */}
+          {!readOnly && <DataComparison comparison={data && data.comparison} />}
 
           {/* ===== PHOTO GALLERY ===== */}
           {photos.length > 0 ? (
