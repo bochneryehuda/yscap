@@ -1,4 +1,4 @@
--- 412 — GOOGLE COORDINATES ARE KEPT ONLY AS LONG AS GOOGLE ALLOWS
+-- 413 — GOOGLE COORDINATES ARE KEPT ONLY AS LONG AS GOOGLE ALLOWS
 -- (owner-authorized 2026-08-02: "go ahead and fix the google coordinates issue")
 --
 -- db/124 created `address_canon_cache` and says so plainly in its own header: each
@@ -24,7 +24,7 @@
 --     fields go.
 --   • An `osm:` row NEVER expires. OpenStreetMap's licence permits keeping the
 --     result, so those rows are left exactly as they are — and the research
---     warehouse's own coordinates (db/411) are Census/OSM-sourced for the same
+--     warehouse's own coordinates (db/412) are Census/OSM-sourced for the same
 --     reason and are not affected by any of this.
 --
 -- WHEN A CALLER GENUINELY NEEDS COORDINATES (the ClickUp location push) and the

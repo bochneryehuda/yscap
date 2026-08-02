@@ -4,7 +4,7 @@
 now, what other information can we add so it should save on the comparable database."*
 
 **Scope.** Everything the MISMO 2.6 appraisal XML carries that we do **not** store as a first-class
-column on `property_observations` or `properties` (db/408) — ranked by how much it would improve
+column on `property_observations` or `properties` (db/409) — ranked by how much it would improve
 (a) **finding better comparables** and (b) **building an internal AVM**.
 
 **How this differs from the prior audit.** `docs/research/APPRAISAL-FACT-COVERAGE-AUDIT.md` asked a
@@ -13,7 +13,7 @@ floor between them?* Almost all of its findings have since been fixed — F1's `
 columns, F2's `condition_text`/`quality_text`, F4's `ON DELETE SET NULL`, F5's `rows_skipped`,
 F6's `comp_set_confidence`, F7's `appraisal_photos.identifier`/`comp_seq` (now written at
 `src/lib/appraisal/desk.js:188-192`), F8's `condition_basis`, F9's `condo_unit_identifier` fallback,
-T13's `gla_basis`, and `unit_mix` are all live in db/408 + the current parser. **This document does
+T13's `gla_basis`, and `unit_mix` are all live in db/409 + the current parser. **This document does
 not repeat any of that.** It asks the layer above: *what is in the XML that never reaches the
 per-file tables either, or reaches them and then dies inside one loan file?*
 
@@ -23,7 +23,7 @@ per-file tables either, or reaches them and then dies inside one loan file?*
 
 **Read in full:** `src/lib/appraisal/extract.js` (1,075 lines), `comp-grid.js`, `xml.js`,
 `photo-meta.js`, `import.js`, `src/lib/research/ingest.js`, `src/lib/research/search.js`,
-`db/408_property_research_database.sql`, `db/409_property_valuations.sql`, and the enrichment
+`db/409_property_research_database.sql`, `db/410_property_valuations.sql`, and the enrichment
 migrations `db/158`, `162`, `163`, `168`, `169`.
 
 **Corpus measurements are quoted, never invented.** Every frequency below is cited to the file that
@@ -48,7 +48,7 @@ as a fact.
 
 **Line-number citations were taken against the tree as of 2026-08-02.** `src/lib/research/ingest.js`
 was substantially rewritten by a parallel session the same day (the standalone-XML-import feature,
-`db/410`); `ROLLUP_FACTS` and `AS_IS_ONLY` are still at lines 61 and 91, but **prefer the function and
+`db/411`); `ROLLUP_FACTS` and `AS_IS_ONLY` are still at lines 61 and 91, but **prefer the function and
 constant names over line numbers** when following any reference here.
 
 **Where the docs are ambiguous, that is said out loud.** "Present in N/33 files" in the catalog means
@@ -242,7 +242,7 @@ already handles this with a magnitude guard; the warehouse column must store dol
 
 **This is the most valuable single missing field, and it is a direct fix to a known hole.** The owner
 called condition *"the single most important comparable fact"*. On a renovation report the subject's
-`condition_uad` is the **after-repair** rating, and db/408 is correct to refuse to roll that up as the
+`condition_uad` is the **after-repair** rating, and db/409 is correct to refuse to roll that up as the
 property's condition today (`AS_IS_ONLY`, `ingest.js:91`). The consequence is that **every renovation
 file we own — which is most of them — contributes a subject property with `condition_uad = NULL` in
 the warehouse.** We deliberately store nothing rather than store a future state.
@@ -499,7 +499,7 @@ directly relevant to a renovation lender) · `building_status` (33/33) · `RentC
 ## 4. MARKET-LEVEL AND TIME-SERIES FACTS — they need their own home
 
 **The warehouse has no home for "what was the market doing in this ZIP in Q2 2025."** Every table in
-db/408 is keyed on a property. The 1004MC grid, the neighborhood price band, the demand/supply
+db/409 is keyed on a property. The 1004MC grid, the neighborhood price band, the demand/supply
 reading, the marketing time, the land-use mix and the appraiser's search-pool counts are **not facts
 about a property** — they are facts about a *market at a point in time*, and forcing them onto
 `property_observations` would duplicate the same 36 numbers onto every comp in the report and make
@@ -604,7 +604,7 @@ hunting for them.
 
 | Fact | Status | What a future source would have to supply |
 |---|---|---|
-| **A comparable's property type / unit count** | **NOT PRESENT.** The documented `SALE_PRICE_ADJUSTMENT/@_Type` vocabulary (`photos-comps-variation.md` §c) contains no unit-count or property-type row, and the prior audit's F1 reached the same conclusion. db/408 §7 records the resolution: the warehouse answers it when that same address turns up as some **other** report's subject — and never inherits it from the report the comp is on | MLS property-type field, or an assessor/public-record parcel feed |
+| **A comparable's property type / unit count** | **NOT PRESENT.** The documented `SALE_PRICE_ADJUSTMENT/@_Type` vocabulary (`photos-comps-variation.md` §c) contains no unit-count or property-type row, and the prior audit's F1 reached the same conclusion. db/409 §7 records the resolution: the warehouse answers it when that same address turns up as some **other** report's subject — and never inherits it from the report the comp is on | MLS property-type field, or an assessor/public-record parcel feed |
 | **A comparable's lot size as a number** | **PARTIAL.** Only as the `SiteArea` adjustment line's free-text description (`"12632 sf"`), which `ingest.fromAdjustments` already mines into `lot_area`/`lot_sqft`. It is a description, not a measured field, and it is absent whenever the appraiser wrote no site line | assessor parcel record |
 | **A comparable's APN, owner name, or seller** | **NOT PRESENT.** `PRIOR_SALES` gives a comp's previous sale date/price and nothing about the parties | deed/public record |
 | **School district, school ratings, attendance zone** | **NOT PRESENT — anywhere, on any form** | a schools data vendor (GreatSchools, NCES) joined on geography |
@@ -654,7 +654,7 @@ Do not build on any of these until a real file has been checked.
 other than this document.** Additive and idempotent throughout, per the repo's migration rule. Column
 comments are deliberately verbose in the house style.
 
-> **Numbering:** `db/410_research_xml_imports.sql` was claimed by a parallel session while this
+> **Numbering:** `db/411_research_xml_imports.sql` was claimed by a parallel session while this
 > research was being written (it adds `property_observations.import_id` for standalone XML uploads
 > that are not on a loan file). Every `ALTER` below is `IF NOT EXISTS` on a **different** column, so
 > the two compose cleanly — but take the next free number at the moment you write the file, and

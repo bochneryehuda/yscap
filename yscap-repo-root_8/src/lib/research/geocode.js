@@ -1,6 +1,6 @@
 'use strict';
 /**
- * WHERE IS THIS PROPERTY? — coordinates for the research warehouse (db/411).
+ * WHERE IS THIS PROPERTY? — coordinates for the research warehouse (db/412).
  *
  * The owner asked for "a Google Maps system that tells us how far each comparable
  * in the database is" from a subject property. The distance arithmetic was already
@@ -38,7 +38,7 @@
  *
  *  3. IT WRITES ONLY THE `geo_*` COLUMNS. `latitude`/`longitude` are the
  *     appraiser's own figures and are re-derived from the reports on every ingest;
- *     writing a geocode there would be silently erased (db/411 explains).
+ *     writing a geocode there would be silently erased (db/412 explains).
  */
 const https = require('https');
 const { URL } = require('url');

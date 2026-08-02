@@ -3,7 +3,7 @@
  * decides two address lines on two different appraisals are the same house.
  *
  * This is the single highest-consequence pure function in the research warehouse
- * (db/408): fold two properties together and every price-per-foot read is
+ * (db/409): fold two properties together and every price-per-foot read is
  * corrupted; split one property in two and the sale history disappears. So the
  * test is written as the dedupe DECISIONS, not as string comparisons — each case
  * says what a real report wrote and whether it is the same house.

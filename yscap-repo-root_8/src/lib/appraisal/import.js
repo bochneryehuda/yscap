@@ -88,7 +88,7 @@ async function importAppraisalTx(db, {
  * parser read to what the database stores.
  *
  * Factored out of the insert above so a report can be shaped WITHOUT being stored
- * on a loan file: the research warehouse's standalone XML upload (db/410) has no
+ * on a loan file: the research warehouse's standalone XML upload (db/411) has no
  * application to hang an `appraisals` row on, and builds this exact object in
  * memory instead. One mapping means the two doors can never learn to disagree
  * about what a field means — a new column added here reaches both at once.
@@ -329,7 +329,7 @@ async function fillFileFacts(db, applicationId, A) {
  * SHAPE ONE `appraisal_comparables` ROW from a parsed comparable — the sibling of
  * `appraisalRowFrom`, and the only mapping from a parsed grid line to storage.
  *
- * Same reason it exists: the research warehouse's standalone XML upload (db/410)
+ * Same reason it exists: the research warehouse's standalone XML upload (db/411)
  * builds these in memory rather than storing them against a loan file, and the two
  * doors must read one report identically. PURE: no database, no IO.
  */
@@ -352,7 +352,7 @@ function comparableRowFrom(c) {
     below_grade_sqft: c.belowGradeSqft, below_grade_finished_sqft: c.belowGradeFinishedSqft,
     data_source: c.compDataSource, location_type: c.locationType,
     // The worded condition/quality rating a non-UAD vendor wrote, and which of
-    // the two AREA measures this comp's `gla` actually is (db/408 §7).
+    // the two AREA measures this comp's `gla` actually is (db/409 §7).
     condition_text: c.conditionText, quality_text: c.qualityText, gla_basis: c.glaBasis,
   };
 }
@@ -384,7 +384,7 @@ function buildFieldsJson(A) {
 
 module.exports = {
   importAppraisal,
-  // Shared with the research warehouse's standalone XML upload (db/410) so one
+  // Shared with the research warehouse's standalone XML upload (db/411) so one
   // report is read the same way whichever door it arrives through.
   appraisalRowFrom, comparableRowFrom,
   _internals: { marketMonthlyRent, fillFileFacts },

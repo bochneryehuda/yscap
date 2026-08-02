@@ -17,7 +17,7 @@ const ADDR = require('./address');   // canonical one-line formatting (pure)
 
 // An OSM-sourced row is keyed and identified with this prefix so it can never be
 // confused with a Google place_id — which is also what decides whether its
-// coordinates expire (db/412).
+// coordinates expire (db/413).
 const OSM_PREFIX = 'osm:';
 const inputKey = (t) => String(t || '').trim().toLowerCase().replace(/\s+/g, ' ').slice(0, 300);
 
@@ -135,7 +135,7 @@ async function cachePut(key, parsed) {
 }
 
 // ---------------------------------------------------------------------------
-// GOOGLE COORDINATES EXPIRE; THE PLACE ID DOES NOT (db/412)
+// GOOGLE COORDINATES EXPIRE; THE PLACE ID DOES NOT (db/413)
 // ---------------------------------------------------------------------------
 /**
  * Google Maps Platform permits keeping a `place_id` indefinitely and caps a stored
@@ -215,7 +215,7 @@ async function canonicalize(text, { needCoords = false } = {}) {
   const cached = await cacheGet(key);
   if (cached !== undefined) {
     if (cached === null) return null;                 // a still-fresh "unresolvable"
-    // A RESOLVED ROW STILL PROVES IDENTITY EVEN WITH ITS COORDINATES GONE (db/412).
+    // A RESOLVED ROW STILL PROVES IDENTITY EVEN WITH ITS COORDINATES GONE (db/413).
     // `samePlace` — the reason this cache exists — compares `place_id` and asks for
     // no coordinates, so it is served from cache exactly as before, forever. Only a
     // caller that actually NEEDS coordinates (the ClickUp location push) pays for a
@@ -383,7 +383,7 @@ async function geocode(text) {
   try {
     // COORDINATES ARE WHAT THIS CALLER IS FOR, so it asks for them explicitly —
     // which is what re-fetches a Google row whose licensed window has lapsed
-    // (db/412) instead of quietly answering with a row that no longer has any.
+    // (db/413) instead of quietly answering with a row that no longer has any.
     const g = await canonicalize(q, { needCoords: true });
     if (g && g.lat != null && g.lng != null) return g;
   } catch (_) { /* fall through to the keyless provider */ }
@@ -394,7 +394,7 @@ module.exports = {
   canonicalize, samePlace, geocode, parseGeocodeResult, parseOsmResult, inputKey,
   // Pure — exported for the never-cache-a-transient-failure test.
   googleDefinitive, osmDefinitive, negativeExpired, NEGATIVE_TTL_DAYS,
-  // Google's 30-day coordinate window (db/412).
+  // Google's 30-day coordinate window (db/413).
   expireGoogleCoordsOnce, coordsExpiryFor, coordsLapsed, cacheRefreshCoords,
   GOOGLE_COORD_TTL_DAYS,
 };

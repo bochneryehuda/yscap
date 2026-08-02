@@ -1,0 +1,51 @@
+# The backup job's container.
+#
+# WHY IT EXISTS: the backup needs `pg_dump` and `pg_restore`, and their MAJOR VERSION must be at
+# least the database's. Render's native Node runtime does not guarantee either, and a version
+# mismatch is not a soft failure — pg_dump flatly refuses to dump a newer server. Pinning the
+# client here makes the one tool the whole system depends on a build-time fact instead of a
+# hope about the base image.
+#
+# Used by the `ys-capital-backup` and `ys-capital-backup-verify` cron services in render.yaml
+# (Runtime: Docker, Dockerfile path: yscap-repo-root_8/Dockerfile.backup).
+#
+# WHEN THE DATABASE IS UPGRADED: bump PG_MAJOR to match (or exceed) the new server version and
+# redeploy. `scripts/backup-run.js --preflight` refuses to run on a mismatch and says which version
+# to install, so this is a loud failure, never a silently broken backup.
+FROM node:22-bookworm-slim
+
+ARG PG_MAJOR=17
+
+# PostgreSQL's own apt repository — Debian's packaged client lags, and "close enough" is exactly
+# what fails on the night the database is a major version ahead.
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends ca-certificates curl gnupg \
+ && install -d /usr/share/postgresql-common/pgdg \
+ && curl -fsSL https://www.postgresql.org/media/keys/ACCC4CF8.asc \
+      -o /usr/share/postgresql-common/pgdg/apt.postgresql.org.asc \
+ && echo "deb [signed-by=/usr/share/postgresql-common/pgdg/apt.postgresql.org.asc] \
+      https://apt.postgresql.org/pub/repos/apt bookworm-pgdg main" \
+      > /etc/apt/sources.list.d/pgdg.list \
+ && apt-get update \
+ && apt-get install -y --no-install-recommends "postgresql-client-${PG_MAJOR}" \
+ && apt-get purge -y gnupg && apt-get autoremove -y \
+ && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+
+# The app has four runtime dependencies and no build step, so this stays small and fast.
+COPY package.json package-lock.json* ./
+RUN npm install --omit=dev --no-audit --no-fund
+
+COPY src ./src
+COPY scripts ./scripts
+COPY db ./db
+
+# Fail fast and visibly if the wiring is wrong, rather than at 2am inside a cron log.
+RUN node --check scripts/backup-run.js \
+ && node --check scripts/backup-restore.js \
+ && node --check scripts/backup-verify.js \
+ && pg_dump --version
+
+# The cron service overrides this (`node scripts/backup-verify.js` for the weekly drill).
+CMD ["node", "scripts/backup-run.js"]

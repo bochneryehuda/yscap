@@ -2,7 +2,7 @@
 
 **Status:** research + opinionated build spec. No code changed by this document.
 **Written:** 2026-08-02.
-**Reads:** `db/408_property_research_database.sql`, `src/lib/research/search.js`,
+**Reads:** `db/409_property_research_database.sql`, `src/lib/research/search.js`,
 `src/lib/research/valuation.js`, `src/routes/research.js`,
 `app-v2/src/screens/StaffPropertyResearch.jsx`.
 
@@ -360,7 +360,7 @@ changes *what a good comp is*:
   `arv_comp_count > 0`. A C5 sale two doors down is a *bad* ARV comp and a *great* as-is
   comp, and today's `scoreComp` cannot tell the difference.
 
-`db/408` already denormalized `arv_comp_count`/`asis_comp_count` onto `properties`
+`db/409` already denormalized `arv_comp_count`/`asis_comp_count` onto `properties`
 specifically so this filter is a plain indexed comparison. `search.js` already exposes
 `comp_set`. Nothing in the schema needs to change — the *screen* needs a two-way toggle
 that sets the comp-set preference and the condition target together.
@@ -442,7 +442,7 @@ sit entirely in cache (§6), so eleven of them worst-case is still under ~100 ms
 ## 2.6 The property with no coordinates
 
 Roughly a third to a half of our rows will have no lat/lng — MISMO grids frequently omit
-them, and we do no geocoding in the research path on purpose (`db/408`: *"the warehouse
+them, and we do no geocoding in the research path on purpose (`db/409`: *"the warehouse
 must dedupe with no network and no API key"*). A subject-anchored search must degrade, not
 fail:
 
@@ -979,7 +979,7 @@ is whatever one appraiser typed. Offering a neighbourhood filter over free text 
 produce a dropdown of typos.
 
 **4. Elasticsearch, OpenSearch, or any separate search service.** Postgres tsvector + GIN
-already handles our address search (`db/408`, and note `pg_trgm` is contrib and cannot be
+already handles our address search (`db/409`, and note `pg_trgm` is contrib and cannot be
 assumed on managed Postgres). Adding an operational dependency to search 50,000 rows is
 indefensible.
 

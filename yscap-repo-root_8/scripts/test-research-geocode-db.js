@@ -1,5 +1,5 @@
 /**
- * DISTANCE SEARCH — the coordinates behind it (db/411, src/lib/research/geocode.js,
+ * DISTANCE SEARCH — the coordinates behind it (db/412, src/lib/research/geocode.js,
  * the radius block in src/lib/research/search.js).
  *
  * The owner asked for "how close do you want the comparables" and "a map telling us
@@ -11,7 +11,7 @@
  *      `properties` is recomputed from the observations on each ingest, and a
  *      column no observation states goes back to NULL — so a coordinate looked up
  *      today disappears the next time any report mentioning that property is read.
- *      db/411 gives the looked-up coordinate its own columns; this proves it
+ *      db/412 gives the looked-up coordinate its own columns; this proves it
  *      survives a re-ingest.
  *   2. THE RADIUS CUT THE CIRCLE IN JAVASCRIPT, AFTER THE SQL `LIMIT`. The total
  *      came from a window function that had counted the bounding BOX, so the count

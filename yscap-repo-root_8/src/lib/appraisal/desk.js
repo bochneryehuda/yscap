@@ -263,7 +263,7 @@ function firePhotoExtraction(appraisalId, appId, pdfB64, importedBy, xml) {
 }
 
 /**
- * FOLD THIS REPORT INTO THE RESEARCH WAREHOUSE (db/408).
+ * FOLD THIS REPORT INTO THE RESEARCH WAREHOUSE (db/409).
  *
  * Every imported appraisal also becomes rows in the cross-file property /
  * comparable / appraiser database: the subject, every comparable, the sales, the

@@ -3,7 +3,7 @@
 **Status:** research only. No code changes. Written 2026-08-02.
 **Reads on top of:** `docs/research/COMP-DATABASE-INDUSTRY-RESEARCH.md` (the industry survey — data models,
 the sales-comparison grid, GSE rules, AVM families, the small-data assessment) and
-`docs/PROPERTY-COMP-DATABASE-RESEARCH.md` (the design of what we actually built: db/408, db/409,
+`docs/PROPERTY-COMP-DATABASE-RESEARCH.md` (the design of what we actually built: db/409, db/410,
 `src/lib/research/*`). This document does not repeat those. It answers the next question.
 
 **The owner's ask, verbatim:**
@@ -198,7 +198,7 @@ correct order.
 
 ### 1.7 Measure it — do not estimate it
 
-Every number in §1.3 is a projection. All of them are directly measurable against db/408 today. Run
+Every number in §1.3 is a projection. All of them are directly measurable against db/409 today. Run
 these and put them on a dashboard; §9 makes that the first item.
 
 ```sql
@@ -302,7 +302,7 @@ At those margins a 10% ARV error is the entire deal.
 On a subject-to-repairs report the appraiser states **two values for one property on one day**: the
 as-is value and the after-repair value. Critically, the two are supported by **two different comp
 sets** — the as-is grid uses tired C4/C5 sales, the ARV grid uses renovated C2/C3 resales — and
-db/408 already records which grid every comparable came off (`property_observations.comp_set`), how
+db/409 already records which grid every comparable came off (`property_observations.comp_set`), how
 confident that split is (`comp_set_confidence`), and whether the subject's condition rating describes
 the house today or after the work (`condition_basis` = `as_is` | `as_repaired`).
 
@@ -323,7 +323,7 @@ Layered on top of it, still ours alone:
 | Asset | Where it lives today | State |
 |---|---|---|
 | Paired as-is / ARV values | `appraisals.as_is_value`, `.arv_value`, `.condition_of_appraisal` (db/137) | present, structured, confidence-stamped |
-| The ARV comp set, separated | `property_observations.comp_set` + `comp_set_confidence` (db/408) | present |
+| The ARV comp set, separated | `property_observations.comp_set` + `comp_set_confidence` (db/409) | present |
 | As-repaired subject attributes | the seq-0 `appraisal_comparables.is_subject` column + `condition_basis='as_repaired'` | present, and this is the *label* for §2.4 |
 | Construction budget | `applications.rehab_budget`, `financed_rehab_budget`, `rehab_type`, `sqft_pre`, `sqft_post` | present |
 | **Line-item scope of work** | the SOW tool payload (18 categories, ~90 line items, `web/v2/tools/rehab-budget.js`) | **stored as JSONB — cannot be grouped** |
@@ -406,7 +406,7 @@ if* it were in its post-rehab state, against the ARV comp set:
    `comp_set = 'arv'` (they were chosen by an appraiser as renovated comparables, which is a
    free relevance signal nobody else has).
 3. Run `src/lib/research/valuation.js` `buildGrid()` unchanged, with `purpose = 'arv'`
-   (db/409 already carries the field).
+   (db/410 already carries the field).
 
 Everything in that path exists today except step 1.
 
@@ -1427,7 +1427,7 @@ outside the banking perimeter. Concretely:
    documented action on breach (the honest action is "the model stops offering values in that
    segment," automatically).
 4. **Change control and versioning.** Every number ever shown must be reproducible years later from a
-   stored snapshot. **db/409 already does this correctly** — `subject_snapshot`, each comp's
+   stored snapshot. **db/410 already does this correctly** — `subject_snapshot`, each comp's
    `snapshot`, and `market_rates` are copied in, never referenced, precisely so a saved valuation
    cannot silently change. That design decision is already compliance-grade; say so in the model card
    and do not undo it.
@@ -1562,7 +1562,7 @@ extrapolate is disqualifying, not tunable.
 ### Phase 8 — Use in a credit decision. *Entry: everything in Phase 5, plus the §7.5 program.*
 
 Model inventory and card; independent validation; documented backtesting with pre-agreed thresholds
-and an automatic stop on breach; change control (already satisfied by db/409's snapshots); separation
+and an automatic stop on breach; change control (already satisfied by db/410's snapshots); separation
 of duties; the §7.6 fair-lending outcome testing running on a schedule with alarms set; the
 principal-dwelling determination captured per file; the random-sample review running.
 

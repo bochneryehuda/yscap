@@ -1,14 +1,14 @@
 # PROPERTY / COMPARABLE-SALES SEARCH ENGINE — RESEARCH
 
 **Scope.** How to build an MLS/RPR-shaped faceted search over `properties` /
-`property_observations` / `property_sales` (db/408) in **plain Postgres**, with
+`property_observations` / `property_sales` (db/409) in **plain Postgres**, with
 only `express`, `pg`, `pdf-lib`, `unpdf` available. No PostGIS. No Elasticsearch.
 No new npm packages. No extension beyond `pgcrypto` may be *assumed* (the
 production database is a managed Render Postgres), and every migration is a new
 numbered idempotent `db/NNN_*.sql`.
 
 Everything below is written to drop into this codebase: the SQL matches the real
-column names in `db/408_property_research_database.sql`, and the JS matches the
+column names in `db/409_property_research_database.sql`, and the JS matches the
 house `pg` style already used by `buildPipelineFilter` in `src/routes/staff.js`
 (`const add = (val) => { params.push(val); return '$' + params.length; }`).
 
@@ -181,7 +181,7 @@ CREATE INDEX IF NOT EXISTS idx_props_zip_saledate
 ```
 
 **Tier 2 — one single-column btree per range filter, and let the planner
-BitmapAnd them.** These already exist in db/408 (`idx_properties_beds`,
+BitmapAnd them.** These already exist in db/409 (`idx_properties_beds`,
 `_gla`, `_year_built`, `_sale_price`, `_sale_date`); add the missing ones:
 
 ```sql
@@ -276,7 +276,7 @@ specific to this repo:
 
 * **`ILIKE` is not `LIKE`.** Even `ILIKE 'abc%'` cannot use a plain btree,
   because the index is ordered by the *collation of the stored value*, not of
-  its lowercase form. db/408 already does the right thing:
+  its lowercase form. db/409 already does the right thing:
   `CREATE INDEX idx_properties_addr_lower ON properties(lower(display_address) text_pattern_ops)`.
   You must then query `lower(display_address) LIKE lower($1) || '%'` — **`LIKE`,
   on `lower(...)`**, never `ILIKE`.
@@ -1113,7 +1113,7 @@ sqrt( power((b.latitude  - $1) * 69.0546, 2)
 ### 4.3 The index that makes the box cheap
 
 ```sql
--- db/408 already has:  (latitude, longitude) WHERE latitude IS NOT NULL
+-- db/409 already has:  (latitude, longitude) WHERE latitude IS NOT NULL
 CREATE INDEX IF NOT EXISTS idx_properties_latlng
   ON properties(latitude, longitude) WHERE latitude IS NOT NULL;
 ```
@@ -1473,7 +1473,7 @@ The comp panel must render, per comp: the score, the coverage, the breakdown, an
 the *provenance* — "stated by 3 reports, most recently the 2026-04-11 appraisal
 by J. Smith." That last part is a query against `property_observations`, and it
 is what distinguishes this warehouse from a black-box AVM. It is also the same
-"always show your work" rule db/408's own header states.
+"always show your work" rule db/409's own header states.
 
 ---
 
@@ -1575,7 +1575,7 @@ Non-negotiables for this codebase:
   will not use the feature.
 * **The output is an internal value indication, labelled as such**, and it may
   never be presented as, or used in place of, an appraisal. It shows how many
-  comps, which ones, and every adjustment — db/408's own header commits to this.
+  comps, which ones, and every adjustment — db/409's own header commits to this.
 * **Persist the selection**, not just the number. A valuation whose comps cannot
   be re-listed a year later is not evidence.
 
@@ -1813,7 +1813,7 @@ An opinionated blueprint. Build it in this order; each stage ships independently
 
 ### R1 — Migration `db/408_property_search.sql` (one file, idempotent)
 
-*(`db/408` is the research warehouse and `db/409` is "build your own valuation";
+*(`db/409` is the research warehouse and `db/410` is "build your own valuation";
 408 is the next free number at the time of writing. Re-check before creating the
 file — two sessions grabbing the same number is a real collision here, and the
 standing rule is that **you** renumber, never the other session.)*
@@ -1971,7 +1971,7 @@ router.get('/properties', async (req, res) => {
 11. **The search says what it is.** Every response and every export carries the
     provenance line: these are facts *stated by appraisal reports*, rolled up to
     the most recent statement — not public record, not an AVM, not an appraisal.
-    That is db/408's own commitment, and the search engine is the first surface
+    That is db/409's own commitment, and the search engine is the first surface
     where a user could forget it.
 
 ### R6 — Tests to ship with it

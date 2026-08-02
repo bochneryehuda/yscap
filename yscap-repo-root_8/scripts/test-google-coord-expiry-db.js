@@ -1,5 +1,5 @@
 /**
- * GOOGLE COORDINATES ARE KEPT ONLY AS LONG AS GOOGLE ALLOWS (db/412,
+ * GOOGLE COORDINATES ARE KEPT ONLY AS LONG AS GOOGLE ALLOWS (db/413,
  * src/lib/address-canon.js) — owner-authorized 2026-08-02.
  *
  * `address_canon_cache` (db/124) was designed to be permanent, and for its actual

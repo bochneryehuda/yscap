@@ -204,7 +204,7 @@ function buildQuery(input = {}) {
   if (f.has_sale === true || f.has_sale === 'true' || f.has_sale === '1') where.push('p.last_sale_price IS NOT NULL AND p.last_sale_date IS NOT NULL');
   if (f.has_photos === true || f.has_photos === 'true' || f.has_photos === '1') where.push('p.photo_count > 0');
 
-  // ---- the facts the reports have always stated (db/413) -------------------
+  // ---- the facts the reports have always stated (db/414) -------------------
   // Each is a plain equality on a rolled-up column with a partial index behind it.
   // They are all THREE-STATE, and that is the point: `sfha=1` means the reports say
   // it IS in a flood zone, `sfha=0` means they say it is NOT, and asking for neither
@@ -272,7 +272,7 @@ function buildQuery(input = {}) {
   // miles. Using one delta for both (the usual version of this bug) silently
   // clips the east-west edges off every radius search.
   //
-  // IT READS `eff_latitude` / `eff_longitude`, NEVER `latitude` (db/411). Those are
+  // IT READS `eff_latitude` / `eff_longitude`, NEVER `latitude` (db/412). Those are
   // the appraiser's own figures, which only some comparables carry and no subject
   // ever does; `eff_*` is the looked-up coordinate falling back to the appraiser's,
   // and is a generated STORED column precisely so a query cannot forget which one

@@ -120,7 +120,7 @@ export default function StaffPropertyDetail() {
           <Fact k="Cooling" v={p.cooling} />
           <Fact k="Style" v={p.design_style} />
           <Fact k="Stories" v={p.stories} />
-          {/* db/413 — facts the reports have always stated. A flood determination
+          {/* db/414 — facts the reports have always stated. A flood determination
               is THREE-STATE: "no" is an answer worth showing, and blank means no
               report has said either way. */}
           <Fact k="Flood zone" v={p.sfha === true

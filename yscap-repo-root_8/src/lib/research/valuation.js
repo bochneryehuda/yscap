@@ -594,7 +594,7 @@ function scoreComp(subject, comp, { today = null } = {}) {
   // its FULL weight with ZERO earned, which is a penalty for our own missing data
   // rather than a measure of similarity: a property next door, identical in every
   // way, with no coordinates and no size on file could not exceed 45 out of 100 —
-  // and since a subject property was never geocoded at all (db/411), the largest
+  // and since a subject property was never geocoded at all (db/412), the largest
   // single weight was contributing nothing but noise to every comparison.
   //
   // So an unknown is EXCLUDED from the denominator, and the share of the weight we

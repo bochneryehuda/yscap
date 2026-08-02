@@ -322,6 +322,50 @@ module.exports = {
                       : /^(1|true|yes)$/i.test(String(process.env.S3_FORCE_PATH_STYLE).trim()),
   },
 
+  // --- OFF-SITE BACKUP (owner-directed 2026-08-02) ---
+  // The nightly encrypted dump of the whole database into an object-storage vault that is NOT
+  // Render — see docs/DATABASE-BACKUP-AND-RESTORE.md. Only the switches live here; the per-vault
+  // settings (BACKUP_S3_* / BACKUP_S3_SECONDARY_*) are read by src/lib/backup/vault.js and the
+  // retention window by src/lib/backup/retention.js, each from one place, so a new vault is
+  // env-only and touches no code.
+  //
+  // INERT until configured: with no key and no bucket, `npm run backup` refuses politely and the
+  // app itself is completely unaffected — nothing in the request path ever loads these modules.
+  backup: {
+    // The master key that encrypts every backup BEFORE it leaves this machine. Generate with
+    // `openssl rand -base64 32`. Without it the job refuses to run rather than writing borrower
+    // data to a third-party bucket in the clear.
+    encryptionKey:   (process.env.BACKUP_ENCRYPTION_KEY || '').trim(),
+    // Normally the live database. Point it somewhere else to back up a copy (e.g. a read replica)
+    // without the job needing the production connection string.
+    databaseUrl:     (process.env.BACKUP_DATABASE_URL || process.env.DATABASE_URL || '').trim(),
+    // Scratch space for the encrypted dump before it is uploaded. It is deleted afterwards, always
+    // (including when the job fails). Needs room for the compressed dump — roughly a quarter of the
+    // database size, but size it generously.
+    tempDir:         (process.env.BACKUP_TEMP_DIR || '').trim(),
+    // Skip the scratch file and pipe pg_dump straight into the upload. Uses almost no disk, but a
+    // failed upload means re-running the whole dump, and a second vault means a second dump — so
+    // it is off by default and exists for databases too big for the cron job's disk.
+    streamDirect:    /^(1|true|yes)$/i.test(String(process.env.BACKUP_STREAM_DIRECT || '').trim()),
+    // Also copy the DOCUMENT objects (loan PDFs) into the vault. A database restored without them
+    // has every loan file and no paperwork, so this defaults ON whenever S3 documents are in use.
+    documents:       process.env.BACKUP_DOCUMENTS == null
+                       ? true : /^(1|true|yes)$/i.test(String(process.env.BACKUP_DOCUMENTS).trim()),
+    // Ceiling on how many document objects one nightly run will copy, so the first run after a big
+    // import cannot run for hours. The rest are picked up by the next run — the state table makes
+    // the copy resumable.
+    documentsPerRun: Math.max(1, parseInt(process.env.BACKUP_DOCUMENTS_PER_RUN || '5000', 10) || 5000),
+    // Where "the backup failed" is emailed. Falls back to NOTIFY_ADMINS. A backup system that fails
+    // quietly is worse than none, because it is believed.
+    alertEmail:      (process.env.BACKUP_ALERT_EMAIL || process.env.NOTIFY_ADMINS || '').trim(),
+    // Email on a clean run too. Off by default — a nightly "all good" becomes noise nobody reads,
+    // and the health page already shows the last successful run.
+    alertOnSuccess:  /^(1|true|yes)$/i.test(String(process.env.BACKUP_ALERT_ON_SUCCESS || '').trim()),
+    // The scratch database used by the weekly restore DRILL. It is DROPPED and recreated on every
+    // drill, so it must never point at anything real — the drill refuses if it equals DATABASE_URL.
+    verifyDatabaseUrl: (process.env.BACKUP_VERIFY_DATABASE_URL || '').trim(),
+  },
+
   // --- SharePoint document sync (one-way mirror into Pipeline Drive) ---
   // Owner-directed design (2026-07-13): every document saved on the server is
   // mirrored into the existing team-site tree at

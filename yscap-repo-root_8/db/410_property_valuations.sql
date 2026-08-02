@@ -1,12 +1,12 @@
 -- ============================================================================
--- 407 — BUILD YOUR OWN VALUATION (owner-directed 2026-08-02: "make a thing that
+-- 410 — BUILD YOUR OWN VALUATION (owner-directed 2026-08-02: "make a thing that
 --       you can also build up yourself an AVM on a certain property by searching
 --       which comps you want to add on your AVM and then adjust those comps
 --       however you want … and you can run a report how your property may be
 --       going to be appraised").
 --
 -- A saved run of the sales-comparison grid: a SUBJECT, the comparables a human
--- picked out of the research warehouse (db/408), the dollar adjustments they
+-- picked out of the research warehouse (db/409), the dollar adjustments they
 -- made to each one, and the reconciled indicated value — kept so it can be
 -- re-opened, re-run, printed and defended months later.
 --

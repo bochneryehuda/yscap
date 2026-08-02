@@ -1066,7 +1066,7 @@ export const api = {
   borrowerViewHistory:  (limit) => req('GET', '/api/borrower-view/history' + qs({ limit })),
 
   // ---- Research desk: the property / comparable / appraiser database ----------
-  // Built out of every appraisal XML we have ever imported (db/408). Staff-wide —
+  // Built out of every appraisal XML we have ever imported (db/409). Staff-wide —
   // it holds addresses, property facts and recorded sale prices, no borrower data.
   researchStats:       () => req('GET', '/api/research/stats'),
   researchSearch:      (f) => req('GET', '/api/research/properties' + qs(f)),
@@ -1083,7 +1083,7 @@ export const api = {
   // of them would blow past the server's request-size limit in a single POST.
   researchImportXml:   (b) => req('POST', '/api/research/imports', b),
   researchImports:     (f) => req('GET', '/api/research/imports' + qs(f)),
-  // Build-your-own valuations (db/409)
+  // Build-your-own valuations (db/410)
   valuations:          (f) => req('GET', '/api/research/valuations' + qs(f)),
   valuation:           (id) => req('GET', `/api/research/valuations/${id}`),
   valuationCreate:     (b) => req('POST', '/api/research/valuations', b),

@@ -1,6 +1,6 @@
--- 410 — STANDALONE XML IMPORTS INTO THE RESEARCH WAREHOUSE
+-- 411 — STANDALONE XML IMPORTS INTO THE RESEARCH WAREHOUSE
 --
--- db/408 files an appraisal into the warehouse by reading the per-loan-file tables
+-- db/409 files an appraisal into the warehouse by reading the per-loan-file tables
 -- the appraisal desk already wrote (`appraisals` + `appraisal_comparables`). That
 -- covers every report that arrived on a loan file — but the owner also wants to
 -- feed the warehouse REPORTS THAT ARE NOT ON A FILE: an old export folder, an
@@ -77,7 +77,7 @@ CREATE INDEX IF NOT EXISTS ix_research_imports_appr    ON research_imports(appra
 -- ---------------------------------------------------------------------------
 -- 2. an observation may come from an upload instead of a loan file
 -- ---------------------------------------------------------------------------
--- ON DELETE SET NULL, never CASCADE — for exactly the reason db/408 gives for the
+-- ON DELETE SET NULL, never CASCADE — for exactly the reason db/409 gives for the
 -- appraisal link. Deleting the paperwork must never delete what it taught us about
 -- the market; the observation outlives the import record.
 ALTER TABLE property_observations
@@ -87,7 +87,7 @@ CREATE INDEX IF NOT EXISTS ix_prop_obs_import ON property_observations(import_id
   WHERE import_id IS NOT NULL;
 
 -- The two pivots that make an upload re-runnable, mirroring the appraisal-side
--- pair in db/408. An uploaded report has no `appraisal_comparables` row to key a
+-- pair in db/409. An uploaded report has no `appraisal_comparables` row to key a
 -- comparable on, so its comps are keyed on (import, grid position) instead — the
 -- position IS the identity within one report's grid.
 CREATE UNIQUE INDEX IF NOT EXISTS uq_prop_obs_import_subject

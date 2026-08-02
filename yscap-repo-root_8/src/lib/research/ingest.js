@@ -1,6 +1,6 @@
 'use strict';
 /**
- * THE INGEST — fold ONE imported appraisal into the research warehouse (db/408).
+ * THE INGEST — fold ONE imported appraisal into the research warehouse (db/409).
  *
  * Reads the per-file tables the appraisal import already wrote (`appraisals`,
  * `appraisal_comparables`, `appraisal_units`, `appraisal_photos`) and lands them
@@ -75,7 +75,7 @@ const ROLLUP_FACTS = Object.freeze({
   effective_age: 'effective_age', heating_type: 'heating_type', cooling: 'cooling',
   foundation_type: 'foundation_type',
   latitude: 'latitude', longitude: 'longitude',
-  // db/413 — facts the reports have always stated and the search could not reach,
+  // db/414 — facts the reports have always stated and the search could not reach,
   // because `search.js` queries `properties` and these lived only on the
   // observation. No new parsing: these values were already read and validated.
   basement_finished_pct: 'basement_finished_pct',
@@ -217,7 +217,7 @@ async function recountAppraiser(db, appraiserId) {
   // TWO COUNTERS, TWO MEANINGS. `appraisal_count` is the reports that came in on a
   // loan file and `file_count` the files they were on — the profile shows them side
   // by side, so neither may quietly start including something else. An UPLOADED
-  // report (db/410) is a report this person wrote too, and gets its own counter.
+  // report (db/411) is a report this person wrote too, and gets its own counter.
   //
   // The upload count is taken from the OBSERVATIONS rather than from
   // `research_imports.status`, because this runs INSIDE the import's transaction —
@@ -277,7 +277,7 @@ async function upsertObservation(db, cols) {
   const keys = Object.keys(cols);
   // WHICH DOOR THE REPORT CAME THROUGH DECIDES THE PIVOT. A loan-file report is
   // keyed on its `appraisals` row (subject) and on the `appraisal_comparables` row
-  // (each comp). An UPLOADED report (db/410) has neither, so it is keyed on its
+  // (each comp). An UPLOADED report (db/411) has neither, so it is keyed on its
   // import row and — because one upload carries a whole grid — the comp's own
   // position within that grid. Picking the wrong pivot does not error; it inserts
   // a second copy, which is why the choice is made from the row itself rather than
@@ -532,7 +532,7 @@ async function ingestAppraisal(db, appraisalId) {
  *
  * A report reaches the warehouse two ways: it was imported onto a loan file (the
  * `appraisals` + `appraisal_comparables` rows the desk wrote), or it was uploaded
- * straight into the research database with no file behind it (db/410). Those two
+ * straight into the research database with no file behind it (db/411). Those two
  * doors MUST read one report identically — a fact that lands in a different column
  * depending on how the XML arrived is a fact the search cannot be trusted on — so
  * there is exactly ONE mapping, here, and the callers only differ in where the
@@ -750,7 +750,7 @@ async function writeReport(db, { a, comps, link, out }) {
   // doubling every one of those properties' comp counts and letting one
   // appraiser's single opinion out-vote the rest of the market in the roll-up.
   // The loan-file copy always wins: it is the one with the photographs, the
-  // findings and a file behind it. (db/410)
+  // findings and a file behind it. (db/411)
   if (appraisalId && subjectId) {
     await retireDuplicateImports(db, { appraisalId, subjectId, observedOn, appraiserId, touched });
   }
@@ -885,7 +885,7 @@ function fromAdjustments(adjustments, kind, parse) {
 
 /** The per-unit rent roll off a 1025/1007, or null when the report carried none. */
 async function subjectUnitMix(db, a) {
-  // An UPLOADED report (db/410) has no `appraisal_units` rows — it was never stored
+  // An UPLOADED report (db/411) has no `appraisal_units` rows — it was never stored
   // per-file — so it hands its parsed rent schedule along on the row shape itself.
   // Without this a 1025 uploaded straight into the research database would lose its
   // whole unit mix, which is one of the facts the warehouse exists to hold.
@@ -995,7 +995,7 @@ async function backfill(db, { limit = 500, force = false, onProgress = null } = 
 
 /** How much of the corpus is folded in — for the admin panel and the boot log. */
 /**
- * RE-ROLL THE PROPERTIES THAT PREDATE THE CURRENT ROLL-UP (db/413).
+ * RE-ROLL THE PROPERTIES THAT PREDATE THE CURRENT ROLL-UP (db/414).
  *
  * `properties` is derived from the observations, but `rollupProperty` only runs
  * when a report TOUCHES a property — so widening what rolls up leaves every
@@ -1043,7 +1043,7 @@ async function ingestStatus(db) {
 
 module.exports = {
   ingestAppraisal, backfill, ingestStatus, linkPhotos, rerollStaleProperties,
-  // The shared report-writing body — the standalone XML upload (db/410) drives it
+  // The shared report-writing body — the standalone XML upload (db/411) drives it
   // with the same row shapes, so both doors read one report identically.
   writeReport,
   INGEST_VERSION,

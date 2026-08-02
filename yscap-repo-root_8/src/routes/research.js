@@ -239,7 +239,7 @@ router.get('/appraisers/:id', async (req, res, next) => {
         LIMIT 2000`, [req.params.id]);
 
     // THE REPORTS THEY WROTE THAT ARE NOT ON A LOAN FILE — uploaded straight into
-    // the research database (db/410). Without this the profile would show only the
+    // the research database (db/411). Without this the profile would show only the
     // deals we happened to write, and an appraiser's real body of work here would
     // read as smaller than it is.
     const imports = await db.query(
@@ -351,7 +351,7 @@ router.get('/comps', async (req, res, next) => {
     }
     if (subject.id) filters.exclude_property_id = subject.id;
     // WHERE THE SUBJECT IS — the looked-up coordinate first, the appraiser's second
-    // (db/411). A stored subject property has `eff_latitude`; a typed one carries
+    // (db/412). A stored subject property has `eff_latitude`; a typed one carries
     // whatever the caller sent as lat/lng. Distance is always computed when we know
     // both ends, even with no radius asked for, because "how far is each of these
     // from my property" is the question the screen is there to answer.
@@ -800,7 +800,7 @@ router.post('/backfill', async (req, res, next) => {
 });
 
 // ---------------------------------------------------------------------------
-// PUTTING PROPERTIES ON THE MAP — the distance search's fuel (db/411)
+// PUTTING PROPERTIES ON THE MAP — the distance search's fuel (db/412)
 // ---------------------------------------------------------------------------
 /** How many properties we can measure a distance to, and how many are still to do. */
 router.get('/geocode/status', async (req, res, next) => {
@@ -826,7 +826,7 @@ router.post('/geocode/run', async (req, res, next) => {
 });
 
 // ---------------------------------------------------------------------------
-// UPLOAD AN APPRAISAL XML STRAIGHT INTO THE DATABASE — single or bulk (db/410)
+// UPLOAD AN APPRAISAL XML STRAIGHT INTO THE DATABASE — single or bulk (db/411)
 // ---------------------------------------------------------------------------
 /**
  * The owner's "we should be able to manually add XML appraisal reports to build up

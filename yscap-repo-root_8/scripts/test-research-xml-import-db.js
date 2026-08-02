@@ -1,5 +1,5 @@
 /**
- * THE STANDALONE XML UPLOAD (db/410, src/lib/research/xml-import.js, the
+ * THE STANDALONE XML UPLOAD (db/411, src/lib/research/xml-import.js, the
  * `/api/research/imports` routes) — against a REAL database and the REAL routes.
  *
  * The owner asked to be able to feed the research database directly: "we should be
@@ -153,7 +153,7 @@ const propByAddress = async (street) => (await db.query(
       'and points at the property and the appraiser, so the screen can link straight to them');
 
     // =====================================================================
-    // 1b. THE FACTS THAT USED TO BE STORED AND UNSEARCHABLE (db/413)
+    // 1b. THE FACTS THAT USED TO BE STORED AND UNSEARCHABLE (db/414)
     // =====================================================================
     // Every one of these was already read, validated and stored on the OBSERVATION
     // and was invisible to the search, which queries `properties` alone.

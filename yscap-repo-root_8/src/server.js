@@ -186,6 +186,27 @@ app.get('/api/health', async (req, res) => {
       conditionsGuard = { filesZeroItems: g.rows[0].zero_items, rtlFilesMissingContract: g.rows[0].no_contract };
     } catch (e) { console.warn('[health] conditions guard failed:', db.describeError(e)); conditionsGuard = { error: 'unavailable' }; }
   }
+  // Off-site backup status (owner-directed 2026-08-02). "Are we protected right now?" has to be
+  // answerable without opening a bucket — a backup job that quietly stopped is the failure this
+  // whole system exists to prevent, and it is invisible by nature. Read-only, time-bounded, and
+  // deliberately WITHOUT sizes, table counts or bucket names: this endpoint is public.
+  let backupStatus;
+  if (dbStatus === 'up') {
+    try {
+      const s = await Promise.race([
+        require('./lib/backup/report').protectionStatusCached(db),
+        new Promise((_, rej) => setTimeout(() => rej(new Error('backup status timeout')), 2500)),
+      ]);
+      backupStatus = {
+        protected: s.protected,
+        lastBackupAt: s.lastBackupAt,
+        lastBackupAgeHours: s.lastBackupAgeHours,
+        lastVerifiedAt: s.lastVerifiedAt,
+        verificationFresh: s.verificationFresh,
+      };
+    } catch (e) { backupStatus = { protected: null, error: 'unavailable' }; }
+  }
+
   // Liveness: 200 unless the caller explicitly asked for a strict DB gate.
   const code = (strict && dbStatus !== 'up') ? 503 : 200;
   res.status(code).json({
@@ -209,6 +230,8 @@ app.get('/api/health', async (req, res) => {
     // The full card (provider, live reachability, dual-read migration state). The four flat
     // fields above are kept verbatim for back-compat with anything already reading them.
     storageHealth: storageCard,
+    // `protected:false` means the nightly off-site backup has not succeeded recently — act on it.
+    backup: backupStatus,
     // SharePoint one-way sync status (config + last reconciliation pass; cheap —
     // no live Graph call on the health path).
     sharepointSync: (() => { try { return require('./lib/sharepoint-backup').health(); } catch (e) { return { enabled: false, error: e.message }; } })(),
@@ -285,8 +308,8 @@ app.use('/api/trustpoint', require('./routes/trustpoint'));
 // PILOT findings. The router applies requireAuth + requireStaff + per-file scoping itself.
 app.use('/api/appraisal', require('./routes/appraisal'));
 // The research desk: the cross-file property / comparable / appraiser database built
-// out of every appraisal XML we have ever imported (db/408), its search engine, and
-// the build-your-own valuation grid (db/409). Staff-wide by design — it holds
+// out of every appraisal XML we have ever imported (db/409), its search engine, and
+// the build-your-own valuation grid (db/410). Staff-wide by design — it holds
 // addresses, property characteristics and recorded sale prices, no borrower data —
 // so the router applies requireAuth + requireStaff itself and does NOT scope per file.
 app.use('/api/research', require('./routes/research'));
@@ -607,7 +630,7 @@ if (require.main === module) {
         // this database — on every single file that we have already in XML, all the
         // comparables that he used should be saved into that database"). Folds every
         // appraisal we have ever imported into the cross-file property / comparable /
-        // appraiser warehouse (db/408). Oldest report first, so the final state matches
+        // appraiser warehouse (db/409). Oldest report first, so the final state matches
         // what we would have reached by filing each report as it arrived.
         //
         // Bounded per boot and SELF-DRAINING: the ingest ledger records each report, so
@@ -616,7 +639,7 @@ if (require.main === module) {
         require('./lib/research/ingest').backfill(require('./db'), { limit: 400 })
           .then((r) => r && r.ingested && console.log('[boot] research warehouse backfill:', JSON.stringify(r)))
           .catch((e) => console.error('[boot] research warehouse backfill failed:', e.message));
-        // PUTTING THOSE PROPERTIES ON THE MAP (db/411) — what makes "find me every
+        // PUTTING THOSE PROPERTIES ON THE MAP (db/412) — what makes "find me every
         // comparable within half a mile" possible. Only comparables the appraiser's
         // own software happened to geocode carry coordinates, and a SUBJECT property
         // never does, so the radius search had almost nothing to filter.
@@ -634,7 +657,7 @@ if (require.main === module) {
           { limit: Number(process.env.RESEARCH_GEOCODE_BOOT || 120) })
           .then((r) => r && r.looked && console.log('[boot] research geocoding:', JSON.stringify(r)))
           .catch((e) => console.error('[boot] research geocoding failed:', e.message));
-        // PREVIOUS AND FUTURE for the warehouse's own roll-up (db/413). `properties`
+        // PREVIOUS AND FUTURE for the warehouse's own roll-up (db/414). `properties`
         // is derived from the observations, but the roll-up only runs when a report
         // TOUCHES a property — so widening what rolls up (the facts the reports have
         // always stated and the search could not reach) would leave every property
@@ -689,14 +712,14 @@ if (require.main === module) {
         require('./lib/address-heal').healProviderLongAddressesOnce()
           .then((r) => r && r.fixed && console.log('[boot] address format repair:', JSON.stringify(r)))
           .catch((e) => console.error('[boot] address format repair failed:', e.message));
-        // GOOGLE COORDINATES ARE KEPT ONLY AS LONG AS GOOGLE ALLOWS (db/412,
+        // GOOGLE COORDINATES ARE KEPT ONLY AS LONG AS GOOGLE ALLOWS (db/413,
         // owner-authorized 2026-08-02). Maps Platform permits keeping a `place_id`
         // indefinitely and caps a stored latitude/longitude at 30 days; this cache
         // was holding them permanently. The sweep blanks the lapsed COORDINATES and
         // keeps the place_id, so `samePlace()` — the whole reason db/124 exists — is
         // untouched: no extra API call, no behaviour change, nothing slower. An
         // `osm:` row never expires (its licence permits keeping the result), and the
-        // research warehouse's own coordinates (db/411) are Census/OSM-sourced and
+        // research warehouse's own coordinates (db/412) are Census/OSM-sourced and
         // are not affected. Bounded, idempotent, self-draining, never throws.
         require('./lib/address-canon').expireGoogleCoordsOnce()
           .then((r) => r && r.expired && console.log('[boot] google coordinate expiry:', JSON.stringify(r)))
