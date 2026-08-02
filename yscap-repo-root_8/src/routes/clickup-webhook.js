@@ -11,6 +11,10 @@
 const express = require('express');
 const crypto = require('crypto');
 const router = require('../lib/safe-router')();
+const FLD = require('../lib/fields');         // jsonbText: this router is mounted ABOVE
+                                              // the request-boundary NUL stripper (it needs the
+                                              // RAW body for signature checks), so the helper is
+                                              // genuinely the only guard here (audit 2026-08-02).
 const db = require('../db');
 const cfg = require('../config');
 const clickup = require('../clickup/client');
@@ -61,7 +65,7 @@ router.post('/', async (req, res) => {
     await db.query(
       `INSERT INTO clickup_webhook_inbox (event_id, event, task_id, payload)
        VALUES ($1,$2,$3,$4) ON CONFLICT (event_id) DO NOTHING`,
-      [eventId, payload.event || null, taskId, JSON.stringify(stored)]);
+      [eventId, payload.event || null, taskId, FLD.jsonbText(stored)]);
   } catch (e) {
     console.error('[clickup-webhook] inbox insert failed:', db.describeError ? db.describeError(e) : e.message);
     // Still 200 — ClickUp retries are fine; we just didn't record this one.

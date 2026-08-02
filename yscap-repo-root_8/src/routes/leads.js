@@ -9,6 +9,7 @@
 const express = require('express');
 const router = require('../lib/safe-router')();
 const db = require('../db');
+const F = require('../lib/fields');           // jsonbText: NUL-safe jsonb binds
 const notify = require('../lib/notify');
 const mail = require('../lib/email/catalog');
 const { redactPII } = require('../lib/redact');
@@ -198,7 +199,7 @@ router.post('/', async (req, res) => {
     const payloadObj = b.payload ? redactPII(b.payload) : {};
     const fromUrl = String(req.get('referer') || '').slice(0, 300);
     if (fromUrl && payloadObj && typeof payloadObj === 'object' && !Array.isArray(payloadObj) && !payloadObj._submittedFrom) payloadObj._submittedFrom = fromUrl;
-    const payloadJson = (b.payload || fromUrl) ? JSON.stringify(payloadObj) : null;
+    const payloadJson = (b.payload || fromUrl) ? F.jsonbText(payloadObj) : null;
     const ins = await db.query(
       `INSERT INTO leads (tool,name,email,phone,officer_code,officer_id,subject,message,payload,ip_address,user_agent)
        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11) RETURNING id`,

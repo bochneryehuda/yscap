@@ -18,6 +18,7 @@ const express = require('express');
 // rejected promises from async handlers. Every borrower draw write must be hang-proof.
 const router = require('../lib/safe-router')();
 const db = require('../db');
+const F = require('../lib/fields');           // jsonbText: NUL-safe jsonb binds
 const { requireAuth, requireBorrower } = require('../auth');
 const rollupMod = require('../sitewire/rollup');
 const { planReallocation } = require('../sitewire/reallocation');
@@ -307,7 +308,7 @@ router.post('/findings/:findingId/dispute', async (req, res) => {
   for (const u of updates) {
     await db.query(
       `UPDATE draw_finding_lines SET dispute_status='open', dispute_desired_cents=$2, dispute_note=$3, dispute_media=$4, updated_at=now() WHERE id=$1`,
-      [u.line_id, u.desired, u.note, u.evidence.length ? JSON.stringify(u.evidence) : null]);
+      [u.line_id, u.desired, u.note, u.evidence.length ? F.jsonbText(u.evidence) : null]);
   }
   const count = updates.length;
   await notify.notifyAppStaff(f.application_id, { type: 'draw_disputed', title: 'Borrower disputed a draw', badge: { text: 'Disputed', tone: 'action' },
@@ -371,7 +372,7 @@ router.post('/draws/:appId/change-request', async (req, res) => {
     await db.query(
       `INSERT INTO sow_change_request_details (change_request_id, application_id, proposed_payload, deltas, net_zero, after_ctc, needs_capital_partner, capital_partner_status)
        VALUES ($1,$2,$3,$4,$5,$6,$7,$8)`,
-      [cr.id, appId, JSON.stringify(proposedPayload), JSON.stringify(plan.cells), plan.totals.net_zero, phase === 'after_ctc', plan.needs_capital_partner, plan.needs_capital_partner ? 'pending' : null]);
+      [cr.id, appId, F.jsonbText(proposedPayload), F.jsonbText(plan.cells), plan.totals.net_zero, phase === 'after_ctc', plan.needs_capital_partner, plan.needs_capital_partner ? 'pending' : null]);
     await notify.notifyAppStaff(appId, { type: 'sow_change_request', title: 'Borrower requested a budget change', badge: { text: 'Review needed', tone: 'gold' },
       body: 'The borrower proposed a Scope-of-Work change. Review it on the file before it flows to draws.', applicationId: appId, link: `/internal/app/${appId}` }).catch(() => {});
     // borrower-safe: never echo capital-partner review status detail back to the borrower
