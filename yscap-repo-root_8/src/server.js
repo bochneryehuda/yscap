@@ -565,6 +565,13 @@ if (require.main === module) {
         require('./lib/appraisal/desk').backfillAppraisalPhotosOnce()
           .then((r) => r && r.filled && console.log('[boot] appraisal photo backfill:', JSON.stringify(r)))
           .catch((e) => console.error('[boot] appraisal photo backfill failed:', e.message));
+        // Previous-files fix (owner-reported 2026-08-02): galleries extracted before photographs
+        // were told apart from the form's own artwork are stored in raw page order, so the
+        // appraiser's signature outranks the subject front photo and shows as the property's main
+        // picture. Re-extract + re-order those. Bounded per boot, self-draining, fire-and-forget.
+        require('./lib/appraisal/desk').backfillAppraisalPhotoKindsOnce()
+          .then((r) => r && r.refreshed && console.log('[boot] appraisal photo re-classify:', JSON.stringify(r)))
+          .catch((e) => console.error('[boot] appraisal photo re-classify failed:', e.message));
         // Previous-files fix: appraisals imported before the As-Is/ARV comp-grid split have every
         // comp stored as 'unknown', so the report shows one mixed grid instead of two. Re-run the
         // extractor on each pre-split appraisal's stored XML and write back the per-comp grid.

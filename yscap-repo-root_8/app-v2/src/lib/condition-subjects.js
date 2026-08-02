@@ -55,7 +55,7 @@ const SUBJECT_ORDER = Object.fromEntries(SUBJECTS.map((s, i) => [s.key, i]));
    migrations is listed, so a standard file never falls through to a guess.
    When a new condition template is added, add its code here too. */
 export const CODE_SUBJECT = {
-  // who the borrower is — the photo ID, and (db/400, CorrFirst) the Social
+  // who the borrower is — the photo ID, and (db/398, CorrFirst) the Social
   // Security number verified off the card / an SSA-89 / the credit report.
   gov_id: 'identity', rtl_p1_id: 'identity', cond_ssn_verify_corrfirst: 'identity',
   // the borrowing entity

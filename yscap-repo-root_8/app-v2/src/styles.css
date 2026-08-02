@@ -2274,10 +2274,10 @@ details[open]>.appr-sec-sum .appr-sec-chev{transform:rotate(180deg)}
    Presentation only. A new outer grid wraps the (unchanged) FileSections
    layout on the main side and a NEW presentational right rail on the other,
    matching web/preview/pilot-borrower-file.html and pilot-staff-file.html.
-   `.file-rail-grid` / `.file-rail` (and `.rail-*`) are NEW hooks used ONLY in
-   Application.jsx (borrower) and StaffApplication.jsx (staff). Every rule is
-   scoped to the surface root — borrower under .shell, staff under .app — so
-   one variant's styling can never reach the other, and the shared FileSections
+   `.file-rail-grid` / `.file-rail` (and `.rail-*`) are hooks used ONLY in
+   Application.jsx (the BORROWER loan file) — the staff screen's aside was
+   retired by Seven Rooms Phase 1. Every rule is scoped under .shell, so the
+   styling can never reach another surface, and the shared FileSections
    `.file-*` base classes / behaviour are untouched. Colours resolve from the
    light palette (no dark-on-dark); the grid degrades to a single column with
    the rail below on narrow screens (first-paint safe, reduced-motion safe).
@@ -2310,14 +2310,9 @@ details[open]>.appr-sec-sum .appr-sec-chev{transform:rotate(180deg)}
   .shell .file-rail{position:static;margin-top:20px}
 }
 
-/* ---- Staff (.app) ---- */
-.app .file-rail-grid{display:grid;grid-template-columns:minmax(0,1fr) 340px;gap:22px;align-items:start}
-.app .file-rail{position:sticky;top:152px;display:flex;flex-direction:column;gap:20px;min-width:0}
-.app .file-rail .panel{margin-top:0}
-@media(max-width:1080px){
-  .app .file-rail-grid{display:block}
-  .app .file-rail{position:static;margin-top:20px}
-}
+/* ---- Staff (.app): RETIRED (Seven Rooms Phase 1) — the staff file's
+   right-hand summary aside is gone; only the borrower (.shell) rail remains.
+   Do not re-add staff-scoped .file-rail* rules without re-adding the aside. */
 
 /* =====================================================================
    BLUEPRINT DERIVED-DATA ELEMENTS (frontend-only, 2026-07-13)
@@ -3607,3 +3602,28 @@ details[open]>.appr-sec-sum .appr-sec-chev{transform:rotate(180deg)}
   background:#fff;border-bottom:1px solid var(--border);
   padding-top:calc(10px + env(safe-area-inset-top,0px))}
 .isuite-full-body{flex:1;min-height:0;display:flex}
+
+/* ===== Seven Rooms rail (staff loan file, Phase 1 — docs/LOAN-FILE-NAVIGATION-AUDIT-2026-07.md) ===== */
+/* Room rows reuse the .file-nav a treatment; the ACTIVE room's child sections
+   nest under it as slimmer "spoke" rows. The nested list must not re-apply the
+   outer list's card chrome (the descendant selector would). */
+.file-nav ol.file-nav-spokes{background:transparent;border:none;border-radius:0;
+  margin:2px 0 4px 12px;padding:0 0 2px 8px;border-left:1px solid var(--line)}
+.file-nav a.file-nav-station{font-weight:600}
+.file-nav ol.file-nav-spokes a{padding:6px 10px;font-size:12.5px;font-weight:400}
+/* Rail footer: the classic-view toggle + "where did everything go?" one-pager.
+   Explicit dark text — never a --ink* token (those are LIGHT). */
+.file-nav-foot{padding:10px 6px 2px;display:flex;flex-direction:column;gap:6px;align-items:flex-start}
+.file-nav-help summary{cursor:pointer;list-style:none;font-size:12px;color:#4B585C;padding:2px 0}
+.file-nav-help summary::-webkit-details-marker{display:none}
+.file-nav-help summary::before{content:'▸ ';color:#4B585C}
+.file-nav-help[open] summary::before{content:'▾ '}
+.file-nav-help ul{list-style:none;margin:6px 0 0;padding:0;font-size:12px;color:#4B585C}
+.file-nav-help li{padding:2px 0}
+.file-nav-help li b{color:#141B22}
+@media(max-width:720px){
+  /* Phone chip bar: 7 room chips on one row; the in-room section headers are
+     the drill-down there, so the spokes and footer stay off the strip. */
+  .file-nav ol.file-nav-spokes{display:none}
+  .file-nav-foot{display:none}
+}
