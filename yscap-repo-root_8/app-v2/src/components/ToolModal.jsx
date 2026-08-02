@@ -147,7 +147,11 @@ export default function ToolModal({ url, title, onClose }) {
           style.id = 'ys-portal-embed-style';
           // Hide the tool's OWN marketing header (both header variants) + footer
           // so the embed looks standalone — no double header inside the portal.
-          style.textContent = '.ys-theme-toggle,.topbar,.tool-bar,.suite-footer{display:none!important}html,body{background:#F4F0E7!important}';
+          // White, in lock-step with StaticToolFrame's injected rule and the
+          // .toolframe/.toolsheet-body host — otherwise expanding a tool to full
+          // screen brings the beige back (owner-directed 2026-08-02).
+          style.textContent = '.ys-theme-toggle,.topbar,.tool-bar,.suite-footer{display:none!important}'
+            + 'html,body{background:#fff!important}:root{--ds-paper:#fff!important}';
           doc.head.appendChild(style);
         }
         done = true;

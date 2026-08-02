@@ -2154,7 +2154,7 @@ function StaffTrackRecordPanel({ app, role }) {
         key={borrowerId}
         title="Borrower track record"
         src={`/tools/track-record.html?internal=1&borrower=${borrowerId}&embed=1`}
-        minHeight={520}
+        minHeight={220}
       />
       {full && (
         <ToolModal
