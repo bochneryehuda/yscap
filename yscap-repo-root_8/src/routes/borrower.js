@@ -24,6 +24,7 @@ const { redactPII } = require('../lib/redact');
    `b.x || null` it replaced did (so a typed "0" still stores 0.00, not NULL) and
    only then parses. See lib/fields.js. */
 const { moneyColumn } = require('../lib/fields');
+const numberBounds = require('../lib/number-bounds');     // ONE definition of every column's ceiling
 const { serveDocument } = require('../lib/serve-document');
 const { decodeUploadBase64, safeFilename } = require('../lib/upload-bytes');
 const pricing = require('../lib/pricing');
@@ -2067,13 +2068,36 @@ router.post('/applications/:id/complete-fields', async (req, res) => {
     for (const [k, t] of Object.entries(B_COMPLETE_APP)) {
       if (!(k in b) || b[k] === '' || b[k] == null) continue;
       let v = b[k];
-      if (t === 'money') { const s = String(v).replace(/[^0-9.]/g, ''); if (s === '') continue; v = Number(s); if (!Number.isFinite(v)) continue; }
+      if (t === 'money') {
+        const s = String(v).replace(/[^0-9.]/g, ''); if (s === '') continue;
+        v = Number(s); if (!Number.isFinite(v)) continue;
+        /* …and it has to FIT (post-merge audit round 2, 2026-08-02). Judged
+           BEFORE the locked branch, so one check covers both outcomes: on an
+           unlocked file the value used to reach Postgres and come back to the
+           borrower as a 500 "server error", and on a locked one `openRequest`
+           refused it correctly but the refusal was swallowed below and the
+           borrower was told "ok" with nothing filed. */
+        const bad = numberBounds.applicationColumnProblem(k, v);
+        if (bad) return res.status(400).json({ error: bad });
+      }
       if (locked) {
         try {
           const cr = await changeRequests.openRequest(req.params.id, k, b[k],
             { reason: b.reason || null, requesterKind: 'borrower', requesterId: me(req) });
           if (!cr.unchanged) requested.push(cr);
-        } catch (_) { /* skip a bad field, keep going with the rest */ }
+        } catch (e) {
+          /* A REFUSAL IS THE ANSWER, NOT A FIELD TO SKIP (post-merge audit round
+             2, 2026-08-02). `openRequest` bounds the proposal and throws a 400
+             naming the field — and this catch swallowed it, so the door replied
+             200 {ok:true} while no request was filed and nothing was said. That
+             is the repo's #1 recurring class ("returned 200 but didn't save"),
+             and it hid the one guard that was working. Anything WITHOUT a
+             client-error status really is something transient and unrelated, so
+             that still skips the field and keeps the rest of the save. */
+          if (e && e.status && e.status >= 400 && e.status < 500) {
+            return res.status(e.status).json({ error: e.message });
+          }
+        }
         continue;   // never a live write for a governed field on a locked file
       }
       if (k === 'loan_type') v = require('../lib/fields').sanitizeLoanType(v);   // #95: never a program
@@ -2100,7 +2124,7 @@ router.post('/applications/:id/complete-fields', async (req, res) => {
             [pa.state, pa.zip].filter(Boolean).join(' '),
           ].filter(Boolean).join(', ');
         }
-        appVals.push(JSON.stringify(pa)); appSets.push(`property_address=$${appVals.length}`); appKeys.push('property_address');
+        appVals.push(require('../lib/fields').jsonbText(pa)); appSets.push(`property_address=$${appVals.length}`); appKeys.push('property_address');
       }
     }
     // Couple units to a live property_type change. The completeness panel doesn't
@@ -2134,7 +2158,19 @@ router.post('/applications/:id/complete-fields', async (req, res) => {
           const cr = await changeRequests.openRequest(req.params.id, k, b[k],
             { reason: b.reason || null, requesterKind: 'borrower', requesterId: me(req), targetBorrowerId: me(req) });
           if (!cr.unchanged) requested.push(cr);
-        } catch (_) { /* skip a bad field, keep going with the rest */ }
+        } catch (e) {
+          /* A REFUSAL IS THE ANSWER, NOT A FIELD TO SKIP (post-merge audit round
+             2, 2026-08-02). `openRequest` bounds the proposal and throws a 400
+             naming the field — and this catch swallowed it, so the door replied
+             200 {ok:true} while no request was filed and nothing was said. That
+             is the repo's #1 recurring class ("returned 200 but didn't save"),
+             and it hid the one guard that was working. Anything WITHOUT a
+             client-error status really is something transient and unrelated, so
+             that still skips the field and keeps the rest of the save. */
+          if (e && e.status && e.status >= 400 && e.status < 500) {
+            return res.status(e.status).json({ error: e.message });
+          }
+        }
         continue;   // never a live write for a personal field on a locked file
       }
       let v = b[k];
@@ -3297,7 +3333,10 @@ router.post('/drafts', async (req, res) => {
   const r = await db.query(
     `INSERT INTO application_drafts (borrower_id,label,data,step)
      VALUES ($1,$2,$3,$4) RETURNING id,label,step,updated_at`,
-    [me(req), b.label || null, JSON.stringify(b.data || {}), b.step || 1]);
+    // jsonbText, not JSON.stringify: a NUL byte anywhere in the draft is refused
+    // by Postgres and answered 500, on an AUTOSAVE the borrower never triggered
+    // deliberately (post-merge audit, 2026-08-02).
+    [me(req), b.label || null, require('../lib/fields').jsonbText(b.data), b.step || 1]);
   res.status(201).json(r.rows[0]);
 });
 
@@ -3335,7 +3374,7 @@ router.put('/drafts/:id', async (req, res) => {
             updated_at = now()
       WHERE id=$1 AND borrower_id=$2
       RETURNING id,step,updated_at`,
-    [req.params.id, me(req), JSON.stringify(data),
+    [req.params.id, me(req), require('../lib/fields').jsonbText(data),
      (b.step == null ? null : b.step), (b.label == null ? null : b.label)]);
   res.json({ ok: true, ...r.rows[0] });
 });

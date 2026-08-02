@@ -337,8 +337,31 @@ router.post('/:appId/findings/:fid/resolve', requirePermission('sign_off_conditi
       const raw = action === 'replace' ? fnd.appraisal_value : b.value;
       const kind = REPRICE_COLS[col];
       if (kind === 'numeric') { newValue = Number(String(raw).replace(/[,$]/g, '')); if (!Number.isFinite(newValue) || newValue <= 0) return res.status(400).json({ error: 'a positive number is required' }); }
-      else if (kind === 'int') { newValue = parseInt(String(raw).replace(/\D/g, ''), 10); if (!Number.isInteger(newValue)) return res.status(400).json({ error: 'a whole number is required' }); }
+      else if (kind === 'int') {
+        /* A `custom` value is free text a staffer typed, so it must READ as a
+           whole number. Deleting every non-digit instead SILENTLY REINTERPRETS
+           it (post-merge audit round 2, 2026-08-02): "1e10" stored 110 units and
+           "2-4" — the property-type spelling, an easy thing to type in a units
+           box — stored 24, on an input the loan is PRICED off. The three create
+           doors already refuse both (fields.APP_RAW_COUNT_FIELDS); this one
+           quietly accepted a different number than the one on the screen.
+           A `replace` value is OUR OWN extracted string ("3 units"), which has
+           always been stripped and must keep working, so only `custom` tightens. */
+        const txt = String(raw == null ? '' : raw).trim();
+        if (action === 'custom' && !/^[+-]?\d+$/.test(txt)) return res.status(400).json({ error: 'a whole number is required' });
+        newValue = parseInt(action === 'custom' ? txt : txt.replace(/\D/g, ''), 10);
+        if (!Number.isInteger(newValue)) return res.status(400).json({ error: 'a whole number is required' });
+      }
       else { newValue = String(raw || '').trim(); if (!newValue) return res.status(400).json({ error: 'a value is required' }); }
+      /* …and whatever it is, it has to FIT the column it is about to be written
+         to. Without this an oversized ARV or unit count reached Postgres and came
+         back as a 500 "Something went wrong on our end", on a door whose whole job
+         is rewriting the loan's economics. Same limit and wording as every other
+         door (lib/number-bounds). */
+      {
+        const bad = require('../lib/number-bounds').applicationColumnProblem(col, newValue);
+        if (bad) return res.status(400).json({ error: bad });
+      }
       // #84 — repricing off a finding rewrites the loan's economics (arv / as-is /
       // price / units / type), so it is frozen on a clear-to-close / funded file
       // (a super_admin can unlock to correct it). Non-reprice resolutions

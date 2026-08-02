@@ -218,5 +218,138 @@ assert(/assignment fee/i.test(pr.quoteStorageProblem(OK_Q, { ...OK_I, purchasePr
 eq(pr.quoteStorageProblem({}, {}), '', 'a quote with nothing to check is not refused');
 eq(pr.quoteStorageProblem(null, null), '', 'and a missing quote never throws');
 
+/* =====================================================================
+   THE COLUMN TABLE — audit round 2 (2026-08-02).
+
+   Enumerating DOORS kept failing, so the answer became a table of COLUMNS. The
+   table is only worth anything if it is COMPLETE and if the kinds are RIGHT, so
+   both are asserted here rather than assumed.
+   ===================================================================== */
+console.log('\n--- the column table ---');
+{
+  const K = nb.COLUMN_KIND.applications;
+
+  // Spot-check the three kinds against columns whose real types were read out of
+  // information_schema. A wrong kind is worse than a missing one: it enforces a
+  // ceiling three orders of magnitude off and reads as if it were guarding.
+  eq(K.purchase_price, 'money', 'purchase_price is numeric(14,2)');
+  eq(K.estimated_rental_income, 'money', 'estimated_rental_income is money (the staff-only field)');
+  eq(K.ltv, 'pct', 'ltv is numeric(6,3) — NOT money');
+  eq(K.rate_pct, 'pct', 'rate_pct is numeric(6,3) — NOT money');
+  eq(K.dscr_ratio, 'pct', 'dscr_ratio is numeric(6,3) too');
+  eq(K.units, 'int', 'units is int4');
+  eq(K.sqft_pre, 'int', 'sqft_pre is int4');
+  assert(K.requested_ir_months && K.requested_ir_months.max === 24,
+    'requested_ir_months quotes its CHECK (0–24), not int4\'s ceiling');
+
+  /* THE TEN-TIMES-TIGHTER COLUMN IS THE ONE THAT BINDS. A percent column judged
+     by the money ceiling is the exact mistake intake and MISMO both shipped. */
+  assert(nb.applicationColumnProblem('ltv', 5000) !== '', 'an LTV of 5000 does not fit numeric(6,3)');
+  eq(nb.applicationColumnProblem('purchase_price', 5000), '', '…while 5000 is a perfectly ordinary purchase price');
+  eq(nb.applicationColumnProblem('ltv', 75.5), '', 'an ordinary LTV fits');
+
+  // An unknown column is NOT an error — it is a column with no ceiling to
+  // enforce, so a gap in the table can never block a door.
+  eq(nb.applicationColumnProblem('property_address', 12), '', 'a column with no ceiling answers "nothing wrong"');
+  eq(nb.applicationColumnProblem('no_such_column', 1e30), '', '…and so does one that does not exist');
+  eq(nb.columnKindOf('applications', 'nope'), null, 'columnKindOf says so plainly');
+  eq(nb.columnKindOf('no_such_table', 'units'), null, '…for an unknown table too');
+
+  // The engine writes `borrowers` as well as `applications`, keyed on the target.
+  eq(nb.columnKindOf('borrowers', 'fico'), 'int', 'the conditions engine\'s borrowers target is covered');
+  assert(nb.tableColumnProblem('borrowers', 'fico', 1e10) !== '', 'a FICO past int4 is refused');
+
+  // The message names the field in words, never the raw column name.
+  assert(/After-repair value/.test(nb.applicationColumnProblem('arv', 1e14)),
+    'the message uses the words the form uses');
+  assert(/Estimated rental income/i.test(nb.applicationColumnProblem('estimated_rental_income', 1e14)),
+    '…humanized even for a column with no hand-written label');
+
+  /* COMPLETENESS. Every numeric column on `applications` that HAS a ceiling must
+     be in the table, or the next door to be written gets no cover — which is how
+     this round's five defects happened. The list is the one read out of
+     information_schema; a bare `numeric` (no precision) has no ceiling and is
+     deliberately absent. */
+  const MUST_HAVE = [
+    'actual_appraised_value', 'appraised_rental_value', 'approx_appraised_rental_value',
+    'approx_appraised_value', 'arv', 'as_is_value', 'assignment_fee', 'cda_value',
+    'costs_already_paid', 'estimated_cash_out', 'estimated_rental_income', 'existing_debt',
+    'first_lien', 'loan_amount', 'original_purchase_price', 'payoff_amount', 'property_hoa',
+    'property_insurance', 'property_taxes', 'purchase_price', 'rehab_budget', 'rental_income',
+    'requested_ir_amount', 'second_lien', 'underlying_contract_price', 'verified_cash_out',
+    'verified_hard_costs', 'deferred_orig_pct', 'dscr_ratio', 'ltv', 'rate_pct',
+    'requested_exp_flips', 'requested_exp_ground', 'requested_exp_holds', 'requested_exp_reo',
+    'sqft_post', 'sqft_pre', 'units', 'requested_ir_months',
+  ];
+  const missing = MUST_HAVE.filter((c) => !nb.columnKindOf('applications', c));
+  eq(missing.join(',') || '(none)', '(none)', 'every bounded applications column is in the table');
+}
+
+/* =====================================================================
+   THE SAME NUL BYTE, ONE COLUMN TYPE OVER (R3).
+   ===================================================================== */
+console.log('\n--- jsonbText ---');
+{
+  const F = require('../src/lib/fields');
+  const NUL = String.fromCharCode(0);
+  eq(JSON.parse(F.jsonbText({ a: `x${NUL}y` })).a, 'xy', 'a NUL inside a value is removed');
+  eq(Object.keys(JSON.parse(F.jsonbText({ [`k${NUL}`]: 1 })))[0], 'k', '…and inside a KEY');
+  eq(JSON.parse(F.jsonbText({ n: [{ deep: `a${NUL}` }] })).n[0].deep, 'a', '…at any depth, through arrays');
+
+  /* THE TRAP. The obvious one-liner — stripping ` ` out of the SERIALIZED
+     JSON — eats the second backslash of an escaped backslash and produces
+     malformed JSON, which is worse than the bug it fixes. */
+  const literal = 'a\\u0000b';
+  eq(JSON.parse(F.jsonbText({ s: literal })).s, literal, 'text that merely SPELLS the escape survives intact');
+  eq(F.jsonbText(null), '{}', 'null serializes to an empty object, never "null"');
+  eq(JSON.parse(F.jsonbText({ n: 1, b: true, z: null })).z, null, 'non-strings pass through untouched');
+}
+
+/* =====================================================================
+   THE TWO IMPORT PATHS (R1, R2) — bounded at the value coercion, so a single
+   unstorable figure drops instead of taking the whole import/sync down.
+   ===================================================================== */
+console.log('\n--- the MISMO import coercions ---');
+{
+  const M = require('../src/lib/mismo')._internals;
+  eq(M.num(1e14), null, 'a money value past numeric(14,2) is dropped, not imported');
+  eq(M.num(450000), 450000, '…while an ordinary one is kept');
+  eq(M.int(1e11), null, 'a count past int4 is dropped');
+  eq(M.int('4'), 4, '…while an ordinary one is kept');
+  /* ltv / rate_pct / dscr_ratio are numeric(6,3). Binding them through the money
+     helper was three orders of magnitude too loose — the identical mistake the
+     intake door had already been fixed for. */
+  eq(M.pct(5000), null, 'an LTV of 5000 does not fit numeric(6,3) and is dropped');
+  eq(M.num(5000), 5000, '…and the money helper alone would have let it through');
+  eq(M.pct(75.5), 75.5, 'an ordinary LTV is kept');
+  eq(M.pct(11.99), 11.99, '…and an ordinary rate');
+  eq(M.clampIrMonths(99), 24, 'the reserve months still clamp to their CHECK');
+}
+
+console.log('\n--- the ClickUp inbound sweep ---');
+{
+  const { dropUnstorableCols } = require('../src/clickup/ingest');
+  // Dropped ⇒ the UPDATE's COALESCE keeps the portal value and the INSERT omits
+  // the column. Never a thrown error, which would fail that task's sync forever.
+  const cols = {
+    purchase_price: 1e20, ltv: 5000, units: '1e10', arv: 450000,
+    rehab_budget: '$450,000', loan_amount: '', status: 'underwriting',
+    ys_loan_number: 'YSCAP258134728', property_address: { line1: '1 A St' },
+  };
+  const dropped = dropUnstorableCols(cols, 'task-1').sort();
+  eq(cols.purchase_price, null, 'a money value past the column is dropped');
+  eq(cols.ltv, null, 'an LTV past numeric(6,3) is dropped');
+  eq(cols.units, null, '"1e10" is dropped rather than bound as text Postgres refuses');
+  eq(cols.rehab_budget, null, 'a FORMATTED money string is dropped (22P02 breaks the sync too)');
+  eq(cols.loan_amount, null, 'an empty string is "not provided", never zero');
+  eq(cols.arv, 450000, 'an ordinary value is untouched');
+  eq(cols.status, 'underwriting', 'a text column is never touched');
+  eq(cols.ys_loan_number, 'YSCAP258134728', '…including one that merely looks numeric-ish');
+  assert(cols.property_address && cols.property_address.line1 === '1 A St', 'a jsonb column is never touched');
+  eq(dropped.join(','), 'loan_amount,ltv,purchase_price,rehab_budget,units', 'it reports exactly what it dropped');
+  eq(dropUnstorableCols({}, 't').length, 0, 'nothing to do is not an error');
+  eq(dropUnstorableCols(null, 't').length, 0, '…and a missing bag never throws');
+}
+
 console.log(failures ? `\n${failures} assertion(s) failed` : '\nALL number-bounds assertions passed');
 process.exit(failures ? 1 : 0);

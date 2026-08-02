@@ -19,12 +19,37 @@ const fields = require('../fields');
 const { buildMismoXml } = require('./build');
 const { parseMismoXml } = require('./parse');
 
+/* A MISMO file is written by somebody else's system, so every number on it is
+   untrusted input — and none of these were bounded (post-merge audit round 2,
+   2026-08-02). This is the SIXTH door that creates an application, and it was
+   never counted among "the five create doors": an out-of-range value reached
+   Postgres, raised 22003/22P02 and came back as a 500, losing the whole import.
+   Same drop-don't-crash rule the public intake door uses — an import must not
+   fail wholesale over one unstorable figure, and the raw file is kept in
+   `raw_intake` either way, so nothing is actually lost. */
+const numberBounds = require('../number-bounds');
 const num = (v) => {
   if (v == null || v === '') return null;
   const n = Number(String(v).replace(/[^0-9.\-]/g, ''));
-  return isFinite(n) ? n : null;
+  if (!isFinite(n) || numberBounds.moneyOverflows(n)) return null;
+  return n;
 };
-const int = (v) => { const n = num(v); return n == null ? null : Math.round(n); };
+const int = (v) => {
+  const n = num(v);
+  if (n == null) return null;
+  const r = Math.round(n);
+  return numberBounds.intOverflows(r) ? null : r;
+};
+/* numeric(6,3) — a PERCENT or a ratio (ltv, rate_pct, dscr_ratio), a THOUSAND
+   times tighter than `num()`'s numeric(14,2). Binding these through `num()` was
+   the identical three-orders-of-magnitude mistake the intake door was already
+   fixed for; an `ltv` of 5000 overflowed and took the import down with it. */
+const pct = (v) => {
+  if (v == null || v === '') return null;
+  const n = Number(String(v).replace(/[^0-9.\-]/g, ''));
+  if (!isFinite(n) || numberBounds.pctOverflows(n)) return null;
+  return n;
+};
 // requested_ir_months is DB-constrained to 0..24 — clamp an out-of-range import
 // (a hand-edited/foreign file) instead of letting it throw a CHECK violation.
 const clampIrMonths = (v) => { const n = int(v); return n == null ? null : Math.max(0, Math.min(24, n)); };
@@ -287,9 +312,10 @@ async function createFromParsed(parsed, opts = {}) {
        extras.arv != null ? num(extras.arv) : null,
        extras.rehabBudget != null ? num(extras.rehabBudget) : null, extras.rehabType || null,
        loan.loanAmount != null ? num(loan.loanAmount) : null,
-       extras.ltv != null ? num(extras.ltv) : null,
-       extras.dscr != null ? num(extras.dscr) : null,
-       loan.rate != null ? num(loan.rate) : null, loan.term || null, extras.ppp || null,
+       // ltv / dscr_ratio / rate_pct are numeric(6,3), not money — see pct() above.
+       extras.ltv != null ? pct(extras.ltv) : null,
+       extras.dscr != null ? pct(extras.dscr) : null,
+       loan.rate != null ? pct(loan.rate) : null, loan.term || null, extras.ppp || null,
        // requested experience columns are NOT NULL DEFAULT 0 — coerce to integers.
        int(extras.expFlips) || 0, int(extras.expHolds) || 0, int(extras.expGround) || 0,
        extras.sqftPre != null ? int(extras.sqftPre) : null,
@@ -356,4 +382,7 @@ async function createFromParsed(parsed, opts = {}) {
 module.exports = {
   loadFile, exportApplicationXml, exportFilename,
   previewImport, createFromParsed,
+  // The value coercions, exposed so their ceilings are unit-testable without
+  // constructing a whole MISMO document (audit round 2, 2026-08-02).
+  _internals: { num, int, pct, clampIrMonths },
 };

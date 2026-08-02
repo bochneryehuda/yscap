@@ -2348,7 +2348,10 @@ router.post('/applications/:id/pricing/register', async (req, res) => {
            failing to reach it. Magnitude-rounded, matching how Postgres rounds
            before it checks for overflow. */
         if (numberBounds.moneyOverflows(nCo)) {
-          return refuse(400, { error: 'estimatedCashOut is too large — the largest amount this field can hold is 999,999,999,999.99' }, 'cash_out_too_large');
+          // The NUMBER comes from the shared definition too, not a typed copy of
+          // it — a hand-written ceiling is the one part of this that can still
+          // drift silently (audit round 2, 2026-08-02).
+          return refuse(400, { error: `estimatedCashOut is too large — the largest amount this field can hold is ${numberBounds.MONEY_LIMIT_TEXT}` }, 'cash_out_too_large');
         }
       }
     }
@@ -2581,8 +2584,16 @@ router.post('/applications/:id/pricing/register', async (req, res) => {
          a numeric overflow inside this transaction, and TEN of them exhaust
          DB_POOL_MAX (10) — after which EVERY request in the app answers 503.
          One bad paste in the studio's admin zone could take the whole service
-         down. Released here, and `released` stops the later `finally` from
-         double-releasing (pg treats that as an error). */
+         down. Released here.
+
+         `released` is DEFENSIVE, not load-bearing, and the comment used to
+         overstate it (audit round 2, 2026-08-02): the `throw e` below leaves the
+         function before the vesting block is entered, so that `finally` never
+         actually runs on this path and the flag is always false when it does.
+         It is kept so that the day someone turns this rethrow into a `return`
+         — or wraps the vesting block differently — the double release it would
+         otherwise introduce (pg treats that as an error) is already prevented.
+         Proved unreachable by mutation: removing the guard fails no assertion. */
       released = true;
       try { await client.query('ROLLBACK'); } catch (_) { /* the connection may already be gone */ }
       try { client.release(); } catch (_) { /* best-effort */ }
@@ -9466,7 +9477,18 @@ async function completeFields(req, res, borrowerScoped) {
     for (const [k, t] of Object.entries(COMPLETE_APP_FIELDS)) {
       if (!(k in b) || b[k] === '' || b[k] == null) continue;
       let v = b[k];
-      if (t === 'money') { const s = String(v).replace(/[^0-9.]/g, ''); if (s === '') continue; v = Number(s); if (!Number.isFinite(v)) continue; }
+      if (t === 'money') {
+        const s = String(v).replace(/[^0-9.]/g, ''); if (s === '') continue;
+        v = Number(s); if (!Number.isFinite(v)) continue;
+        /* …and it has to FIT (post-merge audit round 2, 2026-08-02). This panel
+           writes the SAME economics columns as `PATCH /details`, which answers a
+           plain 400 naming the field — here the value went straight to Postgres,
+           raised 22003 and came back to the officer as "server error" with
+           nothing saved and no hint which box was at fault. Same rule, same
+           words, decided by the COLUMN (lib/number-bounds). */
+        const bad = numberBounds.applicationColumnProblem(k, v);
+        if (bad) return res.status(400).json({ error: bad });
+      }
       if (k === 'loan_type') v = require('../lib/fields').sanitizeLoanType(v);   // #95: never a program
       appVals.push(v); appSets.push(`${k}=$${appVals.length}`); appKeys.push(k);
     }
@@ -10554,7 +10576,7 @@ router.post('/applications/:id/closing/cash-to-close', async (req, res) => {
   // numeric(14,2) ceiling as the details door, now from the same definition
   // (`lib/number-bounds`) rather than a third inline copy of it.
   if (!blank && numberBounds.moneyOverflows(val)) {
-    return res.status(400).json({ error: 'That cash-to-close amount is too large — the largest this field can hold is 999,999,999,999.99.' });
+    return res.status(400).json({ error: `That cash-to-close amount is too large — the largest this field can hold is ${numberBounds.MONEY_LIMIT_TEXT}.` });
   }
   /* THE ATTACHED ALTA MUST BE A REAL DOCUMENT ON THIS FILE (post-merge audit
      2026-07-31). `actual_cash_to_close_doc_id` is a uuid with a foreign key
@@ -10571,7 +10593,12 @@ router.post('/applications/:id/closing/cash-to-close', async (req, res) => {
   let docId = req.body && req.body.docId ? String(req.body.docId).trim() : null;
   if (docId) {
     if (!UUID_RE.test(docId)) return res.status(400).json({ error: 'That attachment is not a document on this file — pick it again.' });
-    const dq = await db.query(`SELECT 1 FROM documents WHERE id=$1 AND application_id=$2`, [docId, appId]);
+    /* …and it must be the CURRENT copy. A superseded document is still on the
+       file, so without this filter the closer could cite a replaced settlement
+       statement as the evidence for the cash to close — the stale-figure version
+       of the wrong-file problem the ownership check above already closes
+       (post-merge audit, 2026-08-02). */
+    const dq = await db.query(`SELECT 1 FROM documents WHERE id=$1 AND application_id=$2 AND is_current = true`, [docId, appId]);
     if (!dq.rows[0]) return res.status(400).json({ error: 'That attachment is not a document on this file — pick it again.' });
   } else {
     docId = null;

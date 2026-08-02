@@ -130,8 +130,131 @@ function columnProblem(key, n, kind, label) {
   return intOverflows(n) ? `${name} is too large — the largest value this field can hold is ${INT_LIMIT_TEXT}` : '';
 }
 
+/* =====================================================================
+   WHICH COLUMN IS WHICH TYPE — so that no door has to know (post-merge audit,
+   second pass, 2026-08-02).
+
+   The first pass wired the guards above into the doors it ENUMERATED. That
+   list turned out not to be the same list as "every door that binds a typed
+   column", and every door it missed failed exactly the way the enumerated
+   ones used to:
+
+     · both completeness panels (staff + borrower) bind purchase_price /
+       as_is_value / arv / rehab_budget / estimated_rental_income straight
+       from a free-text box, so a fat-fingered paste answered 500 "server
+       error" — while the SAME value on `PATCH /details` answered a plain 400
+       naming the field and quoting its ceiling;
+     · the appraisal finding's "custom" reprice bound arv / as-is / price with
+       only a `> 0` test, and parsed a unit COUNT by deleting every non-digit
+       — so "1e10" silently became 110 units and "2-4" (the property-type
+       spelling) became 24, on a PRICING input;
+     · the info-condition engine let a borrower's own answer reach Postgres
+       and handed back the driver's words ("numeric field overflow"), naming
+       no field and quoting no limit, on a borrower-facing screen;
+     · the public intake door bounded each assignment PART but not the
+       purchase price it DERIVES from them, so $900bn + $900bn overflowed and
+       LOST THE LEAD to a 500 — the one thing that door must never do;
+     · and the MISMO import had no ceiling at all, and bound `ltv`/`rate_pct`
+       — numeric(6,3) — through a numeric(14,2) helper: the same
+       three-orders-of-magnitude-too-loose mistake intake was already fixed for.
+
+   Enumerating DOORS is what keeps failing, because a door is added by whoever
+   needs one and no list stays complete. A type is a property of the COLUMN, so
+   the answer is a table of COLUMNS — read straight out of information_schema
+   and complete for `applications` — that any door can ask.
+
+   `money` means numeric(14,2) SPECIFICALLY, `pct` numeric(6,3), `int` int4.
+   A column of some other precision (borrowers.housing_payment is numeric(12,2))
+   must NOT be given one of these kinds — its ceiling is a different number.
+   Columns declared bare `numeric`, with no precision at all, have no ceiling to
+   enforce and are deliberately absent (file_markup_*_pct, financed_rehab_budget).
+
+   `borrowers` carries only what the conditions engine can write there today.
+
+   Add a numeric column to `applications` and add it here in the same commit.
+   ===================================================================== */
+const IR_MONTHS = Object.freeze({ min: 0, max: 24, what: 'months' });
+const COLUMN_KIND = Object.freeze({
+  applications: Object.freeze({
+    // numeric(14,2)
+    actual_appraised_value: 'money', appraised_rental_value: 'money',
+    approx_appraised_rental_value: 'money', approx_appraised_value: 'money',
+    arv: 'money', as_is_value: 'money', assignment_fee: 'money',
+    cda_value: 'money', costs_already_paid: 'money', estimated_cash_out: 'money',
+    estimated_rental_income: 'money', existing_debt: 'money', first_lien: 'money',
+    loan_amount: 'money', original_purchase_price: 'money', payoff_amount: 'money',
+    property_hoa: 'money', property_insurance: 'money', property_taxes: 'money',
+    purchase_price: 'money', rehab_budget: 'money', rental_income: 'money',
+    requested_ir_amount: 'money', second_lien: 'money',
+    underlying_contract_price: 'money', verified_cash_out: 'money',
+    verified_hard_costs: 'money',
+    // numeric(6,3) — a PERCENT (or a ratio), NOT money. Ten times tighter.
+    deferred_orig_pct: 'pct', dscr_ratio: 'pct', ltv: 'pct', rate_pct: 'pct',
+    // int4
+    requested_exp_flips: 'int', requested_exp_ground: 'int',
+    requested_exp_holds: 'int', requested_exp_reo: 'int',
+    sqft_post: 'int', sqft_pre: 'int', units: 'int',
+    /* int4 with a CHECK narrower than the type (db/030), so the CONSTRAINT is
+       the ceiling and int4's number would be the wrong one to quote. */
+    requested_ir_months: IR_MONTHS,
+  }),
+  borrowers: Object.freeze({
+    /* int4. The 300–850 rule is business policy (fields.sanitizeFico), not a
+       storage limit, so it is deliberately NOT stated here — this table answers
+       "what can the column hold", and the doors keep their own kinder wording. */
+    fico: 'int',
+  }),
+});
+
+/* What a message should CALL a column. Only the ones a person actually sees are
+   worth spelling out; anything else is humanized from the column name, which
+   still reads far better than raw snake_case. */
+const COLUMN_LABEL = Object.freeze({
+  purchase_price: 'Purchase price', as_is_value: 'As-is value',
+  arv: 'After-repair value', rehab_budget: 'Rehab budget',
+  loan_amount: 'Loan amount', payoff_amount: 'Payoff amount',
+  original_purchase_price: 'Original purchase price',
+  underlying_contract_price: 'Original contract price',
+  assignment_fee: 'Assignment fee',
+  requested_ir_amount: 'Interest reserve amount',
+  requested_ir_months: 'Interest reserve (months)',
+  estimated_rental_income: 'Estimated rental income',
+  units: 'Number of units', sqft_pre: 'Square footage before',
+  sqft_post: 'Square footage after', ltv: 'LTV', rate_pct: 'Rate',
+  fico: 'Credit score',
+});
+function humanizeColumn(column) {
+  const s = String(column || '').replace(/_/g, ' ').trim();
+  return s ? s.charAt(0).toUpperCase() + s.slice(1) : 'That value';
+}
+
+/** The column's type, or null when this table/column has no ceiling to enforce. */
+function columnKindOf(table, column) {
+  const t = COLUMN_KIND[table];
+  return (t && Object.prototype.hasOwnProperty.call(t, column)) ? t[column] : null;
+}
+
+/**
+ * The reason `n` cannot be stored in `table.column`, or '' if it can.
+ *
+ * A column this table does not know is NOT an error — it is a column with no
+ * ceiling worth enforcing (text, a date, a bare `numeric`), so the answer is
+ * "nothing wrong". A door must never be blocked by a gap in a lookup table.
+ */
+function tableColumnProblem(table, column, n, label) {
+  const kind = columnKindOf(table, column);
+  if (!kind) return '';
+  return columnProblem(column, n, kind, label || COLUMN_LABEL[column] || humanizeColumn(column));
+}
+
+/** Convenience for the many doors that only ever write `applications`. */
+function applicationColumnProblem(column, n, label) {
+  return tableColumnProblem('applications', column, n, label);
+}
+
 module.exports = {
   MONEY_MAX, INT_MAX, INT_MIN, RATE_MAX, PCT_MAX,
   MONEY_LIMIT_TEXT, INT_LIMIT_TEXT,
   moneyOverflows, rateOverflows, pctOverflows, intOverflows, columnProblem,
+  COLUMN_KIND, COLUMN_LABEL, columnKindOf, tableColumnProblem, applicationColumnProblem,
 };
