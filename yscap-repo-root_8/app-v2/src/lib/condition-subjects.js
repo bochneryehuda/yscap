@@ -84,6 +84,7 @@ export const CODE_SUBJECT = {
   // internal housekeeping
   cond_note_buyer_missing: 'setup', cond_loan_number_missing: 'setup',
   rtl_cond_investorstruct: 'setup', underwriting_review_cleared: 'setup',
+  usps_address_verification: 'setup',
 };
 
 /* Tool-backed conditions carry a tool_key even when the template code varies. */
