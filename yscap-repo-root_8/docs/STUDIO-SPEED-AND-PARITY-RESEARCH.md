@@ -364,10 +364,36 @@ A line-for-line replication of `calc` / `calcGold` / `calcSilver` against `prici
 | **Cash to close** | **7.69%** | **$0.005** |
 | **Liquidity to show** | **9.41%** | **$0.005** |
 
-**Cause:** the server rounds to the cent at each step; the browser accumulates unrounded and rounds only
-when displaying. Half a cent of raw difference can display as a one-cent difference.
+> ### ⚠️ THE TABLE ABOVE IS WRONG. Corrected 2026-08-02.
+>
+> A third measurement — **28,960 program-quotes**, comparing the **exact strings the studio prints**
+> against the server's values formatted identically — found:
+>
+> | Field | I claimed | Actually differs **on screen** |
+> |---|---|---|
+> | Origination fee | 1.23% | **never** (0 of 28,960) |
+> | Closing due at closing | 4.43% | **never** |
+> | **Cash to close** | **7.69%** | **NEVER — 0 of 28,960, on every program** |
+> | **Liquidity to show** | **9.41%** | **1.80%, Standard only** (Gold and Silver: never) |
+>
+> **Overall: 0.75% of quotes, in one field, on one program.** I was wrong by roughly ten times, and
+> **cash-to-close never visibly differs at all.**
+>
+> **What reconciles the three attempts:** the *raw, unrounded* arithmetic differs **often** (61–80% of
+> quotes, always by exactly $0.005) — but a half-cent almost always rounds to the same displayed figure.
+> My first attempt compared displayed values and found nothing; the second compared raw values and found
+> ~8%; this one compared displayed values at scale and found 0.75%. **The raw number is real. The number
+> a human sees is not, except in that one field.**
+>
+> My table was also **internally impossible** and I should have caught it: origination is the *source* of
+> the error, so it cannot differ *less* often than cash-to-close, which is derived from it.
+>
+> **The real cause is narrower than "the server rounds at each step."** Exactly **one** rounding is not a
+> no-op: the origination fee. Title, lender and credit fees are whole dollars; the reserve is a 2-decimal
+> payment times a whole number of months; the buffer is 1% of a whole-dollar loan. Everything else was
+> already exact.
 
-**The loan structure is identical everywhere. Only the fee and cash totals can land a cent apart.**
+**The loan structure is identical everywhere. One field, on one program, can show a cent apart.**
 
 **And here is the part that matters most:** this divergence **already exists today**, between what the
 studio *shows you* and what registration *actually saves*. Moving to the server does not create it —
@@ -563,6 +589,64 @@ So the record shows what is *not* the problem:
 - **Request auditing / database logging on static files.** Static requests are skipped entirely.
 - **Any previously-tracked performance issue.** Nothing in `docs/` or `CLAUDE.md` records a prior
   complaint about portal or studio speed — this is new to the record.
+
+---
+
+## 9b. WHERE I WAS WRONG — an adversarial audit, and what it found
+
+A third audit was told to disprove everything above rather than confirm it. It did, in six places. All are
+corrected in place; they are listed here so the record is honest.
+
+| What I claimed | What is actually true |
+|---|---|
+| Cash-to-close and liquidity differ on ~8% of deals | **Wrong by ~10×.** Cash-to-close **never** visibly differs; liquidity differs on **1.80%** of Standard quotes only. See §7b. |
+| The "Max LTC" problem is triggered by editing the **interest reserve** | **Wrong trigger.** It moves with the **leverage slider and admin overrides** — not the reserve. And **Silver is already correct on the server**, so it is a Standard + Gold problem. The field-name mismatch half is confirmed. |
+| A same-machine round trip is **0.99 ms** — "the physical floor" | **Wrong by 13×.** Measured **0.076 ms** on a kept-open connection. My "7.6× slower than a keystroke" and "6× the computation" lines do not survive. *The conclusion is unaffected* — the network still dominates — but I over-argued it. |
+| One keystroke costs **24 engine calls** | Right **only** in the comparison view. Gold drilled in is **59**; a dropdown change with Gold drilled in is **118**; one slider drag is **87**. |
+| There are **eleven doors** into the rules | **Double-counted.** Ten under my own definition. The number that matters for the work is **~42 call sites across 21 functions**, plus four more on the loan application page. |
+| One recompute does 43 text writes and 30 element lookups | **Understated.** Measured **74 text writes and 339 lookups**. This makes the "it's the screen, not the pricing" case *stronger*, and points at an easy fix I never proposed: remember the elements instead of looking them up 339 times. |
+
+**What held up under attack:** the 94%-is-screen-drawing finding (re-measured independently — the pricing
+is **0.6%** of a keystroke, so I was being *conservative*); the ten-step ladder maximum (verified over
+1.5 million scenarios); the shared-markup safety (proven synchronous end to end); and every byte count.
+
+---
+
+## 9c. A HOLE IN MY OWN SAFETY NET — found, reproduced, fixed
+
+The audit found a real defect in the parity harness **I built and put into `npm test`**, and I reproduced
+it myself before fixing it.
+
+**The title-cost rules were never actually tested.** The file was loaded and fingerprinted, but never
+*run* — so changing a title fee produced no difference at all. And a changed fingerprint only printed a
+warning. Proven: I edited a title rate and ran the suite:
+
+```
+⚠ ENGINE FILE(S) CHANGED since the baseline: title
+PASS — every scenario produces identical numbers.
+EXIT CODE: 0
+```
+
+**`npm test` went green on a changed guideline file, printing a sentence that was false.**
+
+Three fixes, each verified by tampering with a real file and confirming it now fails:
+
+1. **Title costs and the caps table are now exercised on all 115,200 scenarios** — a change to either
+   moves the fingerprint.
+2. **A changed rule file is now FATAL, not a warning.** If a change is authorised, the baseline is
+   re-recorded deliberately — which is the reviewable act that records it.
+3. **The two copies of each rule file must now match.** They are maintained *by hand*, and nothing
+   checked it. If they drift, the server prices one way and the page shows another.
+
+Verified: a title change → **caught**. A markup change → **caught**. A deliberate drift between the two
+folders → **caught**, naming both fingerprints.
+
+**The baseline fingerprint therefore changed** (it now covers more) from `654b6287ffa65cfb` to
+`654b6287ffa65cfb`. **No pricing number moved** — the rule files are byte-identical.
+
+**Also corrected: a published checksum in the plan was wrong** — and it was the capital partner's
+workbook, the most sensitive of the four. It had been captured before two changes on 2026-07-30. All four
+now match reality.
 
 ---
 

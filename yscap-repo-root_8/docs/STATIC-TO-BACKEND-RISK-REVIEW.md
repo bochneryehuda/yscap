@@ -63,10 +63,10 @@ brief must name all four engines, and Silver first.
 
 | Engine | Copies | Identical? |
 |---|---|---|
-| `standard-program.js` | 6 | ✅ all identical (`18cf2e34`) |
-| `gold-standard.js` | 6 | ✅ all identical (`da11d625`) |
-| `silver-program.js` | 6 | ✅ all identical (`94c335bc`) |
-| `title-cost.js` | 6 | ✅ all identical (`d165a204`) |
+| `standard-program.js` | 2 | ✅ all identical (`18cf2e34`) |
+| `gold-standard.js` | 2 | ✅ all identical (`da11d625`) |
+| `silver-program.js` | 2 | ✅ all identical (`b2c59d5d`) |
+| `title-cost.js` | 2 | ✅ all identical (`d165a204`) |
 
 Under `web/tools`, `web/v2/tools`, `web/portal/engines`, `web/v2/portal/engines`, `app/public/engines`,
 `app-v2/public/engines`. **Removing four files removes nothing** — the other twenty stay downloadable.

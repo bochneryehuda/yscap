@@ -54,10 +54,10 @@ All verified in the code, not assumed:
 
 | File | Copies | All identical? |
 |---|---|---|
-| `standard-program.js` | 6 | ✅ yes (`18cf2e34`) |
-| `gold-standard.js` | 6 | ✅ yes (`da11d625`) |
-| `silver-program.js` | 6 | ✅ yes (`94c335bc`) |
-| `title-cost.js` | 6 | ✅ yes (`d165a204`) |
+| `standard-program.js` | 2 | ✅ yes (`18cf2e34`) |
+| `gold-standard.js` | 2 | ✅ yes (`da11d625`) |
+| `silver-program.js` | 2 | ✅ yes (`b2c59d5d`) |
+| `title-cost.js` | 2 | ✅ yes (`d165a204`) |
 
 So collapsing them to **one** copy on the server loses nothing — the other five are exact duplicates.
 

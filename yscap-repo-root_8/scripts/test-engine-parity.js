@@ -50,6 +50,32 @@ const GSP = load('gold-standard.js');
 const SVP = load('silver-program.js');
 const TTL = load('title-cost.js');
 
+/* THE TWO COPIES MUST STAY IDENTICAL, and nothing checked it until now.
+   Each engine exists twice — web/tools (V1, and what src/lib/pricing.js requires)
+   and web/v2/tools (V2, what the live studio loads). They are maintained BY HAND:
+   every guideline change has to be pasted into both. If they drift, the server
+   prices one way and the page shows another, and this harness would not notice
+   because it only ever loads one folder (web/tools by default). */
+if (dirIx < 0) {
+  const A = path.join(__dirname, '..', 'web', 'tools');
+  const B = path.join(__dirname, '..', 'web', 'v2', 'tools');
+  const drifted = [];
+  for (const name of ['standard-program.js', 'gold-standard.js', 'silver-program.js', 'title-cost.js']) {
+    const a = path.join(A, name), b = path.join(B, name);
+    if (!fs.existsSync(a) || !fs.existsSync(b)) { drifted.push(`${name} (missing a copy)`); continue; }
+    const ha = crypto.createHash('md5').update(fs.readFileSync(a)).digest('hex');
+    const hb = crypto.createHash('md5').update(fs.readFileSync(b)).digest('hex');
+    if (ha !== hb) drifted.push(`${name} (web/tools ${ha.slice(0, 8)} vs web/v2/tools ${hb.slice(0, 8)})`);
+  }
+  if (drifted.length) {
+    console.error('\nFAIL: the two engine copies have DRIFTED APART:');
+    drifted.forEach(d => console.error('  - ' + d));
+    console.error('  The server prices from web/tools; the live studio loads web/v2/tools.');
+    console.error('  A guideline change must be applied to BOTH copies, byte for byte.');
+    process.exit(1);
+  }
+}
+
 /* ---- the scenario matrix (deterministic; never randomised) ------------- */
 const STATES     = QUICK ? ['NJ','NY','IN'] : ['NJ','NY','FL','TX','PA','CA','GA','OH','CT','IN'];
 const STRATEGIES = ['Fix & Flip','Fix & Hold','Ground Up','Bridge'];
@@ -107,12 +133,23 @@ let n = 0;
 const statuses = {};
 for (const s of scenarios()) {
   n++;
+  const ysp = call(() => YSP.mod.evaluate(s));
+  /* title-cost.js and YSP.caps used to be LOADED (for their md5) but never CALLED,
+     so a guideline change inside either produced zero numeric difference and this
+     harness printed "every scenario produces identical numbers" — which was false.
+     Proven 2026-08-02 by editing a title rate: the run went green, exit 0.
+     Both are now exercised on every scenario, driven by the Standard result so the
+     loan amount and the tier are the real ones for that deal. */
+  const ok = ysp.ok || {};
+  const loanForTitle = (ok.sizing && ok.sizing.totalLoan) || 0;
   const r = {
-    ysp:  call(() => YSP.mod.evaluate(s)),
+    ysp,
     yspL: call(() => YSP.mod.priceLadder(s)),
     gsp:  call(() => GSP.mod.evaluate(s)),
     svp:  call(() => SVP.mod.evaluate(s)),
     svpL: call(() => SVP.mod.priceLadder(s)),
+    ttl:  call(() => TTL.mod.estimate(s.state, loanForTitle, s.loanType)),
+    caps: call(() => YSP.mod.caps(ok.regime, ok.loanType, ok.strategyCode, ok.tier)),
   };
   const st = (r.ysp.ok && r.ysp.ok.status) || (r.ysp.err ? 'ERROR' : '?');
   statuses[st] = (statuses[st] || 0) + 1;
@@ -153,10 +190,21 @@ const base = JSON.parse(fs.readFileSync(BASELINE, 'utf8'));
 console.log(`scenarios        : ${n.toLocaleString()}`);
 console.log(`status spread    : ${JSON.stringify(statuses)}`);
 
+/* A CHANGED ENGINE FILE IS FATAL, not a warning.
+   This used to `console.log` and carry on, so `npm test` went GREEN on an edited
+   guideline file — and printed "every scenario produces identical numbers" while
+   doing it. The frozen-engine rule in CLAUDE.md says a guideline change needs the
+   owner's explicit written authorisation; a test that merely mentions it in
+   passing does not enforce anything. If the change IS authorised, re-record with
+   --update, which is the deliberate, reviewable act that records it. */
 const engineChanged = Object.keys(result.engines).filter(k => result.engines[k] !== base.engines[k]);
 if (engineChanged.length) {
-  console.log(`\n⚠ ENGINE FILE(S) CHANGED since the baseline: ${engineChanged.join(', ')}`);
-  console.log('  A guideline change requires the owner\'s explicit written authorisation.');
+  console.error(`\nFAIL: engine file(s) changed since the baseline: ${engineChanged.join(', ')}`);
+  console.error('  The frozen pricing engines may not change without the owner\'s EXPLICIT WRITTEN');
+  console.error('  authorisation. If this change was authorised, re-record the baseline with:');
+  console.error('      node scripts/test-engine-parity.js --update');
+  console.error('  and say in the commit which guideline the owner authorised.');
+  process.exit(1);
 }
 if (base.version !== result.version || base.matrix.quick !== QUICK || base.matrix.chunk !== CHUNK) {
   console.error(`\nFAIL: baseline shape differs (version/--quick/chunk); re-record with the same settings.`);
