@@ -44,15 +44,25 @@ function call(server, method, path, token, body) {
     r.on('error', reject); if (data) r.write(data); r.end();
   });
 }
+// Several cases below want an INDEPENDENT condition to work on, and some reuse the
+// same template code (rtl_p1_id is made three times). Two rows of one template on
+// one file is the duplicate-condition bug, and db/399's unique guard refuses it —
+// so each synthetic item carries its own `field_key`, which is exactly how
+// production expresses "a second, separate row of this template" (the co-borrower
+// credit condition, the draw conditions). Harmless here: `signOffGate` only ever
+// branches on field_key for the 'cob_credit' marker, so a synthetic key changes
+// nothing these cases assert.
+let mkItemSeq = 0;
 async function mkItem(appId, code, over = {}) {
   const t = await db.query(`SELECT id, item_kind, tool_key, is_required, label FROM checklist_templates WHERE code=$1`, [code]);
   const tpl = t.rows[0];
   const r = await db.query(
-    `INSERT INTO checklist_items (template_id, scope, application_id, label, status, item_kind, tool_key, is_required)
-     VALUES ($1,'application',$2,$3,'received',$4,$5,$6) RETURNING id`,
+    `INSERT INTO checklist_items (template_id, scope, application_id, label, status, item_kind, tool_key, is_required, field_key)
+     VALUES ($1,'application',$2,$3,'received',$4,$5,$6,$7) RETURNING id`,
     [tpl.id, appId, tpl.label, over.item_kind || tpl.item_kind,
      over.tool_key !== undefined ? over.tool_key : tpl.tool_key,
-     over.is_required !== undefined ? over.is_required : tpl.is_required]);
+     over.is_required !== undefined ? over.is_required : tpl.is_required,
+     `test_item_${++mkItemSeq}`]);
   return r.rows[0].id;
 }
 const itemRow = async (id) => (await db.query(
