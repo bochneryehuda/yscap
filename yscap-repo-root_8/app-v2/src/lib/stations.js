@@ -1,0 +1,61 @@
+/* THE SEVEN ROOMS (docs/LOAN-FILE-NAVIGATION-AUDIT-2026-07.md, Phase 1).
+   The staff loan file renders ONE room at a time; each room is a small set of
+   the EXISTING sec-* sections, unchanged. This module is the single source of
+   truth for that grouping and for the alias map that keeps every historical
+   deep link landing (sec-* ids are permanent public addresses — rooms are
+   presentation; the alias table is additive-only, never edited destructively).
+
+   Pure data + pure helpers — no React, no DOM — so the link-contract test can
+   run it under plain node. */
+
+export const STATIONS = [
+  { id: 'st-overview', label: 'Overview', sections: ['sec-overview'] },
+  { id: 'st-deal', label: 'The Deal', sections: ['sec-application', 'sec-payoff', 'sec-pricing', 'sec-exceptions', 'sec-encompass'] },
+  { id: 'st-review', label: 'Review & Conditions', sections: ['sec-conditions', 'sec-underwriting', 'sec-appraisal', 'sec-track', 'sec-documents'] },
+  { id: 'st-signing', label: 'Signing & Closing', sections: ['sec-esign', 'sec-orders', 'sec-closing'] },
+  { id: 'st-delivery', label: 'Send to Investor', sections: ['sec-tapes'] },
+  { id: 'st-draws', label: 'Construction Draws', sections: ['sec-draws'] },
+  { id: 'st-messages', label: 'Messages & History', sections: ['sec-messages'] },
+];
+
+/* Inner anchors that external callers and page furniture jump to. Each names
+   the SECTION that must be open for the anchor to exist (a collapsed Section
+   unmounts its children). sec-overview is open by default, so its anchors only
+   need the room switch. */
+export const ANCHOR_SECTION = {
+  'note-buyer-slot': 'sec-overview',
+  'ctc-outstanding': 'sec-overview',
+  'ai-findings': 'sec-underwriting',
+  'conversations': 'sec-messages',
+};
+
+/* sec-* id (or inner anchor id) → owning room id. Built, not hand-typed, so
+   the table can never disagree with STATIONS. */
+export const STATION_OF = (() => {
+  const map = {};
+  for (const st of STATIONS) for (const sec of st.sections) map[sec] = st.id;
+  for (const [anchor, sec] of Object.entries(ANCHOR_SECTION)) map[anchor] = map[sec];
+  return map;
+})();
+
+/* Resolve any target — '#sec-pricing', 'sec-pricing', 'ai-findings' — to its
+   room id, or null for a target that is not part of the loan file (so the
+   resolver can decline and leave behavior byte-identical elsewhere). */
+export function stationOf(target) {
+  return STATION_OF[String(target || '').replace(/^#/, '')] || null;
+}
+
+export function stationLabel(stationId) {
+  const st = STATIONS.find((s) => s.id === stationId);
+  return st ? st.label : '';
+}
+
+/* "Where did everything go?" — old section label → new room label, for the
+   one-pager keyed by the old names (consolidation research: publish the map,
+   never make people guess). */
+export function whereDidItGo(sectionsList) {
+  return (sectionsList || []).map((s) => ({
+    old: s.label,
+    now: stationLabel(STATION_OF[s.id]) || 'Overview',
+  }));
+}
