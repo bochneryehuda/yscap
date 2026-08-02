@@ -654,6 +654,11 @@ if (require.main === module) {
     // Self-gated by SHAREPOINT_BACKUP_ENABLED + MS_* creds; inert otherwise.
     // First run performs the full-history backfill (oldest-first).
     try { require('./lib/sharepoint-backup').start(); } catch (e) { console.warn('sharepoint sync not started:', e.message); }
+    // One-shot EMD refolder (owner-directed 2026-07-31): renames the mirror's
+    // OWN all-EMD condition folders to the clean "EMD" category name so files
+    // mirrored before the categorizer change match it. Marker-gated, guarded,
+    // kill switch SHAREPOINT_EMD_REFOLDER_DISABLED=1; inert when sync is off.
+    try { require('./lib/sharepoint-emd-refolder').kickoff(); } catch (e) { console.warn('emd refolder not scheduled:', e.message); }
     // DocuSign e-sign heartbeat: drains the Connect event inbox + send queue and
     // reconciles any in-flight envelope that went quiet (missed-webhook recovery).
     // Self-gated — inert until the DocuSign credentials are configured.
