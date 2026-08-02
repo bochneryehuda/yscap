@@ -2565,6 +2565,16 @@ function trackRecordCols(b) {
     notes: b.notes ? String(b.notes).slice(0, 1000) : null,
     property_type: b.propertyType ? String(b.propertyType).slice(0, 60) : null,
     entity_name: (!personal && b.entityName) ? String(b.entityName).slice(0, 160) : null,
+    /* THE DEDUPE KEY, written on every save from either door (owner-reported
+       2026-08-02: "one track record has twice the same address"). Both tool-save
+       routes used to write NO address_key at all — they deduped on client_row_id,
+       which is per tool SESSION, so the same house entered again next week, or
+       arriving from ClickUp or Encompass, became a second row. Writing it here
+       covers both doors and both the create and update paths at once, and keeps
+       the key in step with the address on every edit (address-heal's rewrite used
+       to leave a key describing the OLD text). '' when the address is unreadable
+       — stored as NULL so it never groups with another unreadable row. */
+    address_key: require('../lib/track-record-key').trackRecordKey(b.propertyAddress) || null,
   };
 }
 router.post('/track-records', async (req, res) => {

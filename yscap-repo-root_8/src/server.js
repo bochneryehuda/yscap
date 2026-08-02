@@ -614,6 +614,27 @@ if (require.main === module) {
         require('./lib/address-heal').healProviderLongAddressesOnce()
           .then((r) => r && r.fixed && console.log('[boot] address format repair:', JSON.stringify(r)))
           .catch((e) => console.error('[boot] address format repair failed:', e.message));
+        // Previous-files fix (owner-reported 2026-08-02: "one track record has twice
+        // the same address"). Four writers each invented their own dedupe key, so the
+        // same property arriving from two sources became two lines. The CAUSE is fixed
+        // at the shared chokepoint (lib/track-record-key); this re-keys every existing
+        // row from that one function and folds the duplicates it can PROVE are
+        // untouched into the line carrying the work. Runs AFTER the address repair on
+        // purpose — that pass rewrites the addresses this one reads. Bounded,
+        // resumable, idempotent; never blocks boot.
+        require('./lib/track-record-heal').healOnce()
+          .then((r) => r && (r.rekeyed || r.merged)
+            && console.log('[boot] track-record dedupe:', JSON.stringify({ ...r, left: r.left.length })))
+          .catch((e) => console.error('[boot] track-record dedupe failed:', e.message));
+        // Previous files (owner-reported 2026-08-02: the borrower's own deals with
+        // US were the ones missing from their track record). Both funded doors now
+        // record the deal going forward; this walks the loans already funded, once,
+        // from a durable cursor. Idempotent — a property already on the record is
+        // filled, never duplicated.
+        require('./lib/track-record-from-file').backfillFundedOnce()
+          .then((r) => r && (r.added || r.filled)
+            && console.log('[boot] funded deals onto track records:', JSON.stringify(r)))
+          .catch((e) => console.error('[boot] funded track-record backfill failed:', e.message));
         // Previous-files fix (owner-directed 2026-07-27): a borrower's name is now
         // THREE fields (first / middle / last, + suffix) so it lines up with the way
         // Encompass, MISMO and every closing document model a person. This splits the

@@ -69,9 +69,19 @@ async function healColumn({ table, col }, limit) {
       // between the read and the write is never clobbered. Compare as jsonb, not
       // as text: jsonb::text re-orders keys and re-spaces, so a text compare
       // against JSON.stringify() never matches and the repair silently no-ops.
+      /* A track record's dedupe key DESCRIBES its address, so rewriting the
+         address without it left a key describing the OLD text — one of the four
+         ways the same property ended up on two lines (owner-reported
+         2026-08-02). Recomputed in the SAME statement, so the two can never
+         drift apart even if this pass is interrupted. Other tables have no such
+         key and are byte-identical to before. */
+      const rekey = table === 'track_records'
+        ? ', address_key = $4' : '';
+      const params = [r.id, JSON.stringify(next), JSON.stringify(r.addr)];
+      if (rekey) params.push(require('./track-record-key').trackRecordKey(next) || null);
       const w = await db.query(
-        `UPDATE ${table} SET ${col} = $2::jsonb WHERE id = $1 AND ${col} = $3::jsonb`,
-        [r.id, JSON.stringify(next), JSON.stringify(r.addr)]);
+        `UPDATE ${table} SET ${col} = $2::jsonb${rekey} WHERE id = $1 AND ${col} = $3::jsonb`,
+        params);
       fixed += w.rowCount || 0;
     } catch (_) { /* best effort, row by row */ }
   }

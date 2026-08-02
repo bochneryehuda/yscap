@@ -634,28 +634,41 @@ async function upsertLlc(borrowerId, llcName, ein, taskId) {
   }
 }
 
-const addrKey = (a) => {
-  const s = a && (a.formatted_address || a.oneLine);
-  return s ? String(s).toLowerCase().replace(/[^a-z0-9]/g, '') : null;
-};
+/* The track-record dedupe key is the SHARED one now (lib/track-record-key).
+   This used to lower-case the string and strip every non-alphanumeric, with no
+   abbreviation, ordinal, ZIP+4 or country handling — so "26 S 10th St" and
+   "26 South 10th Street" were two different properties, and the same house
+   arriving from Encompass (whose own normalizer differed again) became a second
+   row. That is the duplicate the owner reported on 2026-08-02. */
+const { trackRecordKey, matchTrackRecord } = require('../lib/track-record-key');
 
 /** Auto track-record line from a closed file, with deal-type inference. */
 async function upsertTrackRecord(borrowerId, read, taskId) {
   const a = read.app || {};
-  const key = addrKey(a.property_address);
+  const key = trackRecordKey(a.property_address);
   if (!key) return null;
-  const exists = await db.query(
-    `SELECT id FROM track_records WHERE borrower_id=$1 AND (source_task_id=$2 OR address_key=$3) LIMIT 1`,
-    [borrowerId, taskId, key]);
+  /* Match on the TASK (same card, unambiguous) or on the PROPERTY. The property
+     arm reads the borrower's rows and confirms with sameAddress rather than
+     trusting a stored key: a row written by one of the old normalizers, or one
+     whose address was rewritten by address-heal, carries a key that no longer
+     describes it, and matching on the key alone is exactly how a second row for
+     the same house got created. */
+  const byTask = taskId
+    ? await db.query(`SELECT id FROM track_records WHERE borrower_id=$1 AND source_task_id=$2 LIMIT 1`, [borrowerId, taskId])
+    : { rows: [] };
+  const mine = await db.query(
+    `SELECT id, property_address, address_key FROM track_records WHERE borrower_id=$1`, [borrowerId]);
+  const hit = byTask.rows[0] || matchTrackRecord(mine.rows, a.property_address);
+  const exists = { rows: hit ? [hit] : [] };
   // deal-type inference (§ decision 3)
   let dealType = 'fix-and-hold', inferred = true;
   const prog = crosswalk.fromClickUpLabel ? a.program : a.program;
   if (a.program === 'Fix & Flip w/ Construction') { dealType = 'flip'; inferred = true; }
   const isRefi = /refi/i.test(a.loan_type || '');
-  const priorSameAddr = await db.query(
-    `SELECT deal_type, loan_purpose_hint FROM (SELECT deal_type, NULL loan_purpose_hint FROM track_records WHERE borrower_id=$1 AND address_key=$2) t LIMIT 1`,
-    [borrowerId, key]).catch(() => ({ rows: [] }));
-  if (isRefi && (priorSameAddr.rows.length || exists.rows.length)) { dealType = 'fix-and-hold'; inferred = true; }
+  // "Has this borrower already got a line on this property?" — the refinance
+  // signal. Read from the SAME matched set, so it can't disagree with `exists`
+  // about what counts as the same house (it used to run its own key compare).
+  if (isRefi && hit) { dealType = 'fix-and-hold'; inferred = true; }
 
   if (exists.rows[0]) {
     // Also (re)fill the property address — early track records were written with

@@ -29,6 +29,7 @@ const loanExceptions = require('../lib/loan-exceptions');
 const termOpts = require('../lib/term-options');
 const workflow = require('../lib/workflow');
 const workflowAuto = require('../lib/workflow-automation');
+const trackRecordFromFile = require('../lib/track-record-from-file');
 const closing = require('../lib/closing');
 const numberBounds = require('../lib/number-bounds');     // ONE definition of every column's ceiling
 const purchasing = require('../lib/purchasing');
@@ -10182,6 +10183,11 @@ async function applyInternalStatus(appId, internalStatus, opts = {}) {
     // The Workflow, phase two: a freshly-funded file auto-hands off to the draw
     // coordinator (best-effort — never breaks the status move).
     try { await workflowAuto.onFunded(appId, opts.actorId); } catch (_) {}
+    // A deal WE funded belongs on the borrower's own track record — PILOT
+    // imported history from ClickUp and Encompass but never recorded its own
+    // closings (owner-reported 2026-08-02). Unverified, never a duplicate,
+    // best-effort: a funding must never fail over a track-record line.
+    try { await trackRecordFromFile.addFromFundedFile(appId); } catch (_) {}
   }
   try { await conditionEngine.evaluateApplication(appId, { actor: opts.actorId ? { id: opts.actorId } : undefined, reason: 'status_change' }); } catch (_) {}
   // Announce only when the BORROWER-FACING bucket actually changed (many internal
@@ -10313,6 +10319,8 @@ router.patch('/applications/:id', async (req, res) => {
     if (status === 'funded') {
       try { await seedPostClosing(req.params.id); } catch (_) {}
       try { await workflowAuto.onFunded(req.params.id, req.actor.id); } catch (_) {}
+      // Same as the internal-status door above — both doors must record the deal.
+      try { await trackRecordFromFile.addFromFundedFile(req.params.id); } catch (_) {}
     }
     await audit(req, 'status_change', 'application', req.params.id, { from: cur.rows[0].status, to: status, forced: forced || undefined });
     // R6.18 (#202) — a super-admin proceeding past a confirmed-fatal issuance hard
