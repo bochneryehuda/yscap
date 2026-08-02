@@ -26,6 +26,9 @@ const MAX_ORDERS_10MIN = parseInt(process.env.XACTUS_FLOOD_MAX_ORDERS_10MIN || '
 // The in-request certificate retrieval is bounded well under the 90s wire default:
 // it runs AFTER the order call inside the same staff request.
 const RETRIEVE_TIMEOUT_MS = 25000;
+// The explicit "Get the certificate PDF" action is the ONLY call in its request, so
+// it gets a longer budget than the order-path retry — but still under a proxy's.
+const FETCH_TIMEOUT_MS = 60000;
 
 function clean(v) { return v == null ? '' : String(v).trim(); }
 
@@ -122,8 +125,16 @@ async function fetchCertificate({ appId, actorId }) {
   if (!client.enabled()) return { ok: false, error: 'disabled', message: 'Flood ordering is not turned on yet.' };
   if (!client.configured()) return { ok: false, error: 'not_configured', message: 'Flood ordering is not set up yet — add the Xactus flood web address in the settings.' };
 
-  const order = await latestCompletedOrder(appId);
-  if (!order) return { ok: false, error: 'no_completed_order', message: 'There is no completed flood determination on this file yet.' };
+  let order;
+  try { order = await latestCompletedOrder(appId); }
+  catch (_) { return { ok: false, error: 'lookup_failed', message: 'PILOT couldn’t read this file’s flood orders just now. Try again in a moment.' }; }
+  // Scoped to THIS provider's orders (their reference number is what gets sent back).
+  // A determination placed by the other provider is not retrievable here, so say that
+  // plainly rather than claiming the file has no determination at all.
+  if (!order) {
+    return { ok: false, error: 'no_completed_order',
+      message: 'There is no Xactus flood determination on this file to retrieve. If a certificate exists, upload it manually instead.' };
+  }
   if (await certificateOnFile(order)) {
     return { ok: true, alreadyFiled: true, order, message: 'The flood certificate is already filed on this condition.' };
   }
@@ -132,7 +143,7 @@ async function fetchCertificate({ appId, actorId }) {
   }
 
   let st;
-  try { st = await client.getOrderStatus(order.order_id); }
+  try { st = await client.getOrderStatus(order.order_id, FETCH_TIMEOUT_MS); }
   catch (e) {
     return { ok: false, error: 'fetch_failed', order, message: `Could not retrieve the certificate from Xactus: ${e.userMessage || e.message}` };
   }

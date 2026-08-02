@@ -69,15 +69,19 @@ async function orderFlood(args) {
       // to assert it unconditionally, which is the very untruth this work removed
       // from the card.
       let filed = false;
+      let canFetch = false;
       try {
         const desk = activeDesk();
         filed = typeof desk.certificateOnFile === 'function' ? await desk.certificateOnFile(done) : false;
+        canFetch = typeof desk.fetchCertificate === 'function';
       } catch (_) { filed = false; }
       return {
         ok: false, error: 'already_completed', order: done,
         message: filed
           ? 'A flood certificate has already come back for this file, so PILOT did not order another one (each order is billable). It’s filed on this condition.'
-          : 'A flood determination has already come back for this file, so PILOT did not order another one (each order is billable). Use “Get the certificate PDF” to pull down the certificate we already paid for.',
+          : canFetch
+            ? 'A flood determination has already come back for this file, so PILOT did not order another one (each order is billable). Use “Get the certificate PDF” to pull down the certificate we already paid for.'
+            : 'A flood determination has already come back for this file, so PILOT did not order another one (each order is billable). Upload the certificate manually if it isn’t on the condition.',
       };
     }
   }

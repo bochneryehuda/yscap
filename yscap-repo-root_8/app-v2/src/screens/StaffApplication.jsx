@@ -1000,10 +1000,12 @@ function OrderFloodButton({ appId, itemId, onChanged, onUploadTo }) {
           )}
         </div>
       )}
-      <button className="btn ghost small" style={{ marginTop: isDry ? 6 : 0 }} disabled={busy || !state.hasLoanNumber} onClick={() => placeOrder(false)}>
-        {busy ? 'Ordering…' : (errored || isDry) ? 'Order flood certificate again' : 'Order flood certificate'}
-      </button>
-      {!state.hasLoanNumber && (
+      {!state.hasCompletedOrder && (
+        <button className="btn ghost small" style={{ marginTop: isDry ? 6 : 0 }} disabled={busy || !state.hasLoanNumber} onClick={() => placeOrder(false)}>
+          {busy ? 'Ordering…' : (errored || isDry) ? 'Order flood certificate again' : 'Order flood certificate'}
+        </button>
+      )}
+      {!state.hasCompletedOrder && !state.hasLoanNumber && (
         <div className="small" style={{ color: '#4B585C', marginTop: 4 }}>
           {state.needs === 'address'
             ? 'Add the full property address (street, city, state, ZIP) to this file first — the flood certificate is ordered on the property address.'

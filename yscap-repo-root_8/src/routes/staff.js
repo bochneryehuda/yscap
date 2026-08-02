@@ -11902,7 +11902,7 @@ router.post('/applications/:id/flood-certificate', async (req, res) => {
   try {
     const out = await require('../flood/dispatch').fetchCertificate({ appId: req.params.id, actorId: req.actor.id });
     if (!out.ok) {
-      const soft = ['no_completed_order', 'no_reference', 'no_pdf', 'disabled', 'not_configured', 'unsupported', 'file_failed'].includes(out.error);
+      const soft = ['no_completed_order', 'no_reference', 'no_pdf', 'disabled', 'not_configured', 'unsupported', 'file_failed', 'lookup_failed'].includes(out.error);
       return res.status(soft ? 400 : 502).json({ error: out.error, message: out.message, order: out.order || null });
     }
     return res.json(out);
