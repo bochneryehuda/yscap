@@ -61,15 +61,19 @@ const ok = (c, m) => { if (c) { pass++; } else { fail++; console.log('  FAIL:', 
 
 // ───────────────────────── PURE: migration widens the CHECK ─────────────────
 (function migration() {
-  const sql = fs.readFileSync(R + '/db/396_tape_encompass_exception.sql', 'utf8');
-  ok(/loan_exceptions_exception_type_check/.test(sql), 'db/396 touches the exception_type CHECK');
-  ok(/tape_encompass_override/.test(sql), 'db/396 adds tape_encompass_override to the CHECK');
+  const sql = fs.readFileSync(R + '/db/397_tape_encompass_exception.sql', 'utf8');
+  ok(/loan_exceptions_exception_type_check/.test(sql), 'db/397 touches the exception_type CHECK');
+  ok(/tape_encompass_override/.test(sql), 'db/397 adds tape_encompass_override to the CHECK');
   // It must re-assert the STATUS check verbatim too (the rollback-collateral rule
   // documented on db/344/388) — every prior-boot value must survive.
-  ok(/loan_exceptions_status_check[\s\S]*'requested'[\s\S]*'expired'/.test(sql), 'db/396 re-asserts the status CHECK incl. expired');
-  // Numbered last (highest number) so it wins the boot ordering.
-  const nums = fs.readdirSync(R + '/db').filter((f) => /^\d+_.*\.sql$/.test(f)).map((f) => parseInt(f, 10));
-  ok(396 >= Math.max(...nums), 'db/396 is the highest-numbered migration (re-asserts the full list last)');
+  ok(/loan_exceptions_status_check[\s\S]*'requested'[\s\S]*'expired'/.test(sql), 'db/397 re-asserts the status CHECK incl. expired');
+  // It must be numbered ABOVE every other loan_exceptions type-CHECK migration so
+  // its full list is the boot's final word (the db/388 rollback-collateral rule).
+  const typeCheckNums = fs.readdirSync(R + '/db')
+    .filter((f) => /^\d+_.*\.sql$/.test(f))
+    .filter((f) => /loan_exceptions_exception_type_check/.test(fs.readFileSync(R + '/db/' + f, 'utf8')))
+    .map((f) => parseInt(f, 10));
+  ok(397 === Math.max(...typeCheckNums), 'db/397 is the highest-numbered loan_exceptions type-CHECK migration');
 })();
 
 // ───────────────────────── PURE: notify maps register the events ────────────
