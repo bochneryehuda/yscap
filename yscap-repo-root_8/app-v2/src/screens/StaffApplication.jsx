@@ -4750,7 +4750,18 @@ function TapeExport({ appId }) {
   const [busy, setBusy] = useState(null);
   const [msg, setMsg] = useState(''); // "Exported the X tape" confirmation
   const [pending, setPending] = useState(null); // { tapeKey, name, questions } — questionnaire modal
-  useEffect(() => { api.staffTapesForApp(appId).then(setState).catch(() => setState({ tapes: [], currentBuyer: null, error: true })); }, [appId]);
+  const [ln, setLn] = useState('');       // loan-number slot input
+  const [lnBusy, setLnBusy] = useState(false);
+  const [lnErr, setLnErr] = useState('');
+  const [reqOpen, setReqOpen] = useState(false); // request-exception form open
+  const [reqNote, setReqNote] = useState('');
+  const [reqBusy, setReqBusy] = useState(false);
+  const [reqErr, setReqErr] = useState('');
+  function load() { api.staffTapesForApp(appId).then(setState).catch(() => setState({ tapes: [], currentBuyer: null, error: true })); }
+  useEffect(() => { load(); }, [appId]);
+  const enc = (state && state.encompass) || null;
+  const exc = enc && enc.exception;              // { status:'approved'|'requested', ... } | null
+  const approved = !!(exc && exc.status === 'approved');
   // Click → check whether this loan needs extra details before exporting:
   //  • New-Construction-only fields (ground-up loans), and/or
   //  • a seasoned-loan confirmation (current balance / next due / reserve).
@@ -4774,24 +4785,42 @@ function TapeExport({ appId }) {
       setMsg(`Exported the ${name} tape. Check your downloads.`);
     } catch (e) {
       const d = (e && e.data) || {};
-      // Encompass reconciliation gate (owner-directed 2026-07-26): the file must be
-      // in Encompass and fully matching before its tape leaves. An admin may
-      // override with a logged reason; a non-admin is told to reconcile first.
-      if (d.code === 'encompass_unreconciled' || d.code === 'encompass_override_reason_required') {
-        if (d.canOverride) {
-          const reason = window.prompt(`${d.message || 'This loan doesn’t fully match Encompass yet.'}\n\nTo export it anyway, type a short reason (this is logged):`, '');
-          if (reason && reason.trim()) {
-            await runExport(tapeKey, name, { ...(answers || {}), encompassOverrideReason: reason.trim() });
-            return;
-          }
-        } else {
-          alert(d.message || 'This loan isn’t reconciled with Encompass yet. Finish the Encompass sync first.');
-        }
-        return;
+      // Encompass reconciliation gate (owner-directed 2026-07-26; tightened 2026-08-02):
+      // the file must be in Encompass and every field matching before its tape leaves.
+      // NOBODY may self-override — a super admin can allow it inline with a reason;
+      // everyone else asks a super admin for an exception.
+      if (d.code === 'encompass_override_reason_required') {
+        // Super admin — allow it inline with a reason.
+        const reason = window.prompt(`${d.message || 'This loan doesn’t fully match Encompass yet.'}\n\nAs a super admin you can allow it — type a short reason (this is logged):`, '');
+        if (reason && reason.trim()) { await runExport(tapeKey, name, { ...(answers || {}), encompassOverrideReason: reason.trim() }); return; }
+        setBusy(null); return;
+      }
+      if (d.code === 'encompass_exception_required' || d.code === 'encompass_unreconciled') {
+        // Not a super admin — ask a super admin for an exception.
+        setPending(null); setReqOpen(true); load();
+        setBusy(null); return;
       }
       alert(d.message || e.message || 'Export failed');
     }
     finally { setBusy(null); }
+  }
+  async function saveLoanNumber() {
+    const v = String(ln || '').trim();
+    setLnErr('');
+    if (!v) { setLnErr('Enter the loan number.'); return; }
+    setLnBusy(true);
+    try { await api.staffSetLoanNumber(appId, v); setLn(''); load(); }
+    catch (e) { setLnErr((e.data && e.data.error) || e.message || 'Could not save the loan number.'); }
+    finally { setLnBusy(false); }
+  }
+  async function submitRequest() {
+    const note = String(reqNote || '').trim();
+    setReqErr('');
+    if (!note) { setReqErr('Say why the tape needs to go out now.'); return; }
+    setReqBusy(true);
+    try { await api.requestTapeException(appId, { reasonNote: note }); setReqOpen(false); setReqNote(''); load(); }
+    catch (e) { setReqErr((e.data && e.data.error) || e.message || 'Could not send the request.'); }
+    finally { setReqBusy(false); }
   }
   return (
     <div className="panel" style={{ marginTop: 4 }}>
@@ -4809,17 +4838,61 @@ function TapeExport({ appId }) {
         export the tape for the provider this loan is <strong>currently set to</strong>. To export a different provider's
         tape, use “Change capital provider” above, switch it on the file, then come back here and export.
       </p>
-      {state && state.encompass && state.encompass.blocked && (
+      {enc && approved && (
+        <div className="small" role="status" style={{ margin: '8px 0', padding: '10px 12px', borderRadius: 8, border: '1px solid #2F7F86', background: '#EAF3F3', color: '#141B22' }}>
+          <strong style={{ color: '#141B22' }}>A super admin allowed this tape to go out.</strong>{' '}
+          <span style={{ color: '#3A4550' }}>You can export it now{exc && exc.expiresAt ? ` (allowed until ${fmtDay(exc.expiresAt)})` : ''}. It still needs the Encompass check the normal way — this exception is just for now.</span>
+        </div>
+      )}
+      {enc && enc.blocked && !approved && (
         <div className="small" role="alert" style={{ margin: '8px 0', padding: '10px 12px', borderRadius: 8, border: '1px solid #E0B84C', background: '#FCF6E6', color: '#141B22' }}>
-          <strong style={{ color: '#141B22' }}>Finish the Encompass check before exporting.</strong>{' '}
-          <span style={{ color: '#3A4550' }}>{state.encompass.message}</span>{' '}
-          <button type="button" onClick={() => goToSection('sec-encompass')}
-            title="Jump to the Encompass sync section, reconcile every field, then come back to export"
-            style={{ background: 'none', border: 'none', color: '#0B6B63', textDecoration: 'underline', cursor: 'pointer', padding: 0, font: 'inherit' }}>
-            Open the Encompass section →
-          </button>
-          {state.encompass.canOverride && (
-            <div style={{ marginTop: 4, color: '#4B585C' }}>As an admin you can still export — you'll be asked for a reason, which is logged.</div>
+          <strong style={{ color: '#141B22' }}>The tape can’t go out until Encompass matches.</strong>{' '}
+          <span style={{ color: '#3A4550' }}>{enc.message}</span>
+          {/* No loan number yet → give a slot to add it, which starts the Encompass sync. */}
+          {!enc.hasLoanNumber && (
+            <div style={{ marginTop: 8 }}>
+              <div style={{ color: '#4B585C', marginBottom: 4 }}>The loan number isn’t in the system yet. Add it here — that pulls the loan from Encompass so it can be matched.</div>
+              <div className="row" style={{ gap: 6, alignItems: 'center', flexWrap: 'wrap' }}>
+                <input value={ln} onChange={(e) => setLn(e.target.value)} placeholder="YSCAP258134628"
+                  style={{ padding: '6px 8px', borderRadius: 6, border: '1px solid #C9C7BE', minWidth: 190, fontSize: 14 }} />
+                <button className="btn primary small" disabled={lnBusy} onClick={saveLoanNumber}>{lnBusy ? 'Saving…' : 'Save loan number'}</button>
+              </div>
+              {lnErr && <div style={{ color: '#B4401F', marginTop: 4 }}>{lnErr}</div>}
+            </div>
+          )}
+          <div style={{ marginTop: 8 }}>
+            <button type="button" onClick={() => goToSection('sec-encompass')}
+              title="Jump to the Encompass sync section, reconcile every field, then come back to export"
+              style={{ background: 'none', border: 'none', color: '#0B6B63', textDecoration: 'underline', cursor: 'pointer', padding: 0, font: 'inherit' }}>
+              Open the Encompass section →
+            </button>
+          </div>
+          {/* Escape hatch. Super admin: allow inline (a reason is asked at export). */}
+          {enc.canOverride && (
+            <div style={{ marginTop: 6, color: '#4B585C' }}>As a super admin you can allow it now — click Export and you’ll be asked for a short reason, which is logged.</div>
+          )}
+          {/* A request is already in a super admin's queue. */}
+          {exc && exc.status === 'requested' && (
+            <div style={{ marginTop: 6, color: '#4B585C' }}>A request to allow this tape is waiting for a super admin{exc.seq ? ` (EX-${exc.seq})` : ''}.</div>
+          )}
+          {/* Everyone else: ask a super admin for an exception. */}
+          {enc.canRequestException && !(exc && exc.status === 'requested') && !reqOpen && (
+            <div style={{ marginTop: 8 }}>
+              <button className="btn small" onClick={() => { setReqOpen(true); setReqErr(''); }}>Ask a super admin to allow it</button>
+            </div>
+          )}
+          {reqOpen && (
+            <div style={{ marginTop: 8, borderTop: '1px solid #E7DFC5', paddingTop: 8 }}>
+              <div style={{ color: '#141B22', fontWeight: 600, marginBottom: 4 }}>Ask a super admin to allow this tape</div>
+              <textarea value={reqNote} onChange={(e) => setReqNote(e.target.value)} rows={3}
+                placeholder="Why does the tape need to go out before Encompass matches?"
+                style={{ width: '100%', padding: '6px 8px', borderRadius: 6, border: '1px solid #C9C7BE', fontSize: 14, boxSizing: 'border-box' }} />
+              {reqErr && <div style={{ color: '#B4401F', marginTop: 4 }}>{reqErr}</div>}
+              <div className="row" style={{ gap: 6, marginTop: 6 }}>
+                <button className="btn primary small" disabled={reqBusy} onClick={submitRequest}>{reqBusy ? 'Sending…' : 'Send request'}</button>
+                <button className="btn ghost small" disabled={reqBusy} onClick={() => { setReqOpen(false); setReqErr(''); }}>Cancel</button>
+              </div>
+            </div>
           )}
         </div>
       )}
