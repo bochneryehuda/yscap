@@ -391,11 +391,13 @@ function allFieldIds() { return REGISTRY.map((e) => e.encompassFieldId).filter(B
 // Every STANDARD Encompass field id in IDENTITY_MAP, for BOTH the borrower and the
 // co-borrower (owner-directed 2026-08-02, file YSCAP258134762). Handed to the
 // fieldReader so borrower/co-borrower name, DOB, email, phone AND SSN can be read BY
-// NUMBER — the SAME location-independent, self-healing read economics already uses for
-// 1859/388. This is what recovers a co-borrower the stored applications[] JSON subtree
-// left out: a snapshot pulled BEFORE the co-borrower was added, or a name stored at a
-// non-standard path, would otherwise leave every co-borrower field reading "no data to
-// compare" and BLOCK-holding the term sheet — with no self-heal, unlike economics.
+// NUMBER — the same by-number read economics uses for 1859/388, applied at PARTY
+// granularity: reconcile.compareIdentity uses these to RECOVER A WHOLE PARTY the stored
+// applications[] subtree left out (it does not per-field re-heal a party already present).
+// A snapshot pulled BEFORE the co-borrower was added, or one whose co-borrower name is at
+// a non-standard path (so the party reads as unnamed and drops out), would otherwise leave
+// every co-borrower field reading "no data to compare" and BLOCK-holding the term sheet —
+// the identity subtree, unlike economics, had no by-number read and no self-heal.
 // Derived from IDENTITY_MAP.stdFieldId so it can never drift from the map. The SSN ids
 // (65/97) ARE included, but the raw value is HASHED + stripped in the impure reader
 // layer (reader.scrubFieldValuesSsn) before anything is stored — plaintext SSN is never
@@ -464,6 +466,13 @@ function flattenLoan(rawLoan) {
   if (authoritative) {
     for (const [id, v] of Object.entries(authoritative)) {
       if (v === undefined || v === null || v === '') continue;
+      // REGISTRY-mapped ids ONLY (economics). `_fieldValues` now ALSO carries borrower/
+      // co-borrower identity read by number (name/DOB/email/phone + the keyed-HMAC SSN +
+      // the `_idRead` marker) for the missing-co-borrower recovery in
+      // reconcile.compareIdentity — which reads `_fieldValues` DIRECTLY. Those keys must
+      // never leak into the economics extract or the super-admin raw diagnostic, so
+      // flattenLoan stays registry-only exactly as its header documents.
+      if (!KNOWN_FIELD_IDS.has(id)) continue;
       out[id] = { value: v };
     }
   }

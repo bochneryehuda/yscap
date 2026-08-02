@@ -415,6 +415,9 @@ async function main() {
     // Identity read by number is stored so the co-borrower is recoverable downstream.
     assert.strictEqual(stored._fieldValues['4004'], 'Patrick', 'co-borrower first name stored by number');
     assert.strictEqual(stored._fieldValues['4006'], 'Kamara', 'co-borrower last name stored by number');
+    // The identity-read sentinel is stamped so the panel self-heal treats this as
+    // already-identity-read and never re-fires a live read on every view.
+    assert.strictEqual(stored._fieldValues['_idRead'], 1, 'the _idRead sentinel is stamped on a non-empty read');
     // Raw SSN is NEVER stored — replaced by the PII-safe keyed HMAC + last-4.
     assert.strictEqual(stored._fieldValues['65'], undefined, 'raw borrower SSN (65) stripped from _fieldValues');
     assert.strictEqual(stored._fieldValues['97'], undefined, 'raw co-borrower SSN (97) stripped from _fieldValues');

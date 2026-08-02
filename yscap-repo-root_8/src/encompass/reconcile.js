@@ -391,33 +391,34 @@ function _collectParties(loan) {
     if (app.borrower && _named(app.borrower)) out.push({ party: app.borrower, pairIndex: i, role: 'borrower' });
     if (app.coBorrower && _named(app.coBorrower)) out.push({ party: app.coBorrower, pairIndex: i, role: 'coBorrower' });
   }
-  // AUTHORITATIVE BY-NUMBER fallback (owner-directed 2026-08-02, YSCAP258134762): the
-  // co-borrower is sometimes MISSING from the stored applications[] subtree above (added
-  // in Encompass after the snapshot, or stored at a non-standard JSON path), so every
-  // co-borrower field reads "no data to compare" and BLOCK-holds the term sheet. The
-  // identity fields ALSO have standard field ids read BY NUMBER into `_fieldValues` (the
-  // same location-independent, self-healing read economics uses for 1859/388); append a
-  // synthetic pair-1 co-borrower (and, only when the pair-1 borrower slot is itself empty,
-  // a synthetic borrower) as ADDITIONAL candidates. Matching claims each party at most
-  // once and prefers SSN then name, so a synthetic DUPLICATE of a party already present is
-  // simply never chosen, while a genuinely missing party is now found.
+  // AUTHORITATIVE BY-NUMBER RECOVERY (owner-directed 2026-08-02, YSCAP258134762): the
+  // co-borrower is sometimes WHOLLY MISSING from the stored applications[] subtree above
+  // (added in Encompass after the snapshot, or the party stored at a non-standard JSON
+  // path so it reads as empty), so every co-borrower field reads "no data to compare" and
+  // BLOCK-holds the term sheet. The identity fields ALSO have standard field ids read BY
+  // NUMBER into `_fieldValues` (the same by-number read economics uses for 1859/388, at
+  // party granularity — it recovers a MISSING party, it does not per-field re-heal a party
+  // already present in the subtree). Append a synthetic pair-1 co-borrower (and, only when
+  // the pair-1 borrower slot is itself empty, a synthetic borrower) as ADDITIONAL
+  // candidates, tagged `byNumber` so the fallbacks below never mis-slot them. Matching
+  // claims each party at most once and prefers SSN then name, so a synthetic DUPLICATE of a
+  // party already present is never chosen, while a genuinely missing party is now found.
   //
-  // WHY the borrower guard: the co-borrower synthetic can only ever be surfaced as a
-  // co-borrower, but a synthetic BORROWER duplicating an already-present pair-1 borrower
-  // would sit unclaimed after the primary matches the subtree copy, and the co-borrower
-  // fallback (first unclaimed party) could then surface the PRIMARY again as a phantom
-  // "co-borrower" on a single-borrower file. Appending the borrower synthetic ONLY when
-  // the subtree has no named pair-1 borrower removes that path while still recovering a
-  // genuinely missing primary. Degrades to nothing when the by-number read did not run
-  // (Encompass unconfigured / fieldReader unavailable / a pre-wiring snapshot).
+  // WHY the borrower guard: a synthetic BORROWER duplicating an already-present, NAMED
+  // pair-1 borrower would let our primary match the synthetic (e.g. full name vs an
+  // abbreviated subtree name) and leave the subtree copy unclaimed for the co-borrower
+  // fallback to grab as a phantom. Appending the borrower synthetic ONLY when the subtree
+  // has no named pair-1 borrower removes that path while still recovering a genuinely
+  // missing primary. Degrades to nothing when the by-number read did not run (Encompass
+  // unconfigured / fieldReader unavailable / a pre-wiring snapshot).
   const fv = loan && loan._fieldValues;
   if (fv && typeof fv === 'object') {
     const cb = _partyFromFieldValues(fv, 'coBorrower');
-    if (cb) out.push({ party: cb, pairIndex: 0, role: 'coBorrower' });
+    if (cb) out.push({ party: cb, pairIndex: 0, role: 'coBorrower', byNumber: true });
     const app0Borrower = apps[0] && apps[0].borrower;
     if (!_named(app0Borrower)) {
       const b = _partyFromFieldValues(fv, 'borrower');
-      if (b) out.push({ party: b, pairIndex: 0, role: 'borrower' });
+      if (b) out.push({ party: b, pairIndex: 0, role: 'borrower', byNumber: true });
     }
   }
   return out;
@@ -517,22 +518,31 @@ function compareIdentity(row, loan) {
   let bor;
   if (primaryHit) bor = primaryHit.party;
   else {
-    // No match anywhere → fall back to pair 1's borrower (the classic slot) so a
-    // genuine "our borrower isn't in Encompass" still surfaces as a comparison (a
-    // name mismatch), never silently vanishes. But NOT if that party was already
-    // claimed by our second borrower (then it is not ours) — use nothing instead.
-    const b0 = (apps[0] && apps[0].borrower) ? apps[0].borrower : null;
-    bor = (b0 && !used.has(b0)) ? b0 : {};
-    if (_named(bor)) used.add(bor);
+    // No primary match. Prefer pair 1's NAMED subtree borrower so a genuine "our borrower
+    // isn't in Encompass" still surfaces as a real comparison (a name mismatch), never
+    // silently vanishing. If that slot is EMPTY, fall to the authoritative by-number
+    // borrower (a primary recovered by number) — this both surfaces the honest mismatch
+    // AND claims that synthetic, so it can't sit unclaimed for the co-borrower fallback to
+    // grab as a phantom "co-borrower". Never a party already claimed by our second.
+    const b0 = (apps[0] && _named(apps[0].borrower) && !used.has(apps[0].borrower)) ? apps[0].borrower : null;
+    if (b0) { bor = b0; used.add(b0); }
+    else {
+      const syn = parties.find((e) => e.byNumber && e.role === 'borrower' && !used.has(e.party));
+      if (syn) { bor = syn.party; used.add(syn.party); } else bor = {};
+    }
   }
 
   let coBor;
   if (secondHit) coBor = secondHit.party;
   else {
-    // The first still-unclaimed named party — naturally pair 1's co-borrower,
-    // else a SECOND pair's borrower — so both historical representations, and an
-    // "Encompass has an extra person we don't", still surface.
-    const fb = parties.find((e) => !used.has(e.party));
+    // The first still-unclaimed SUBTREE party — naturally pair 1's co-borrower, else a
+    // SECOND pair's borrower — so both historical representations, and an "Encompass has
+    // an extra person we don't", still surface. A BY-NUMBER synthetic is deliberately
+    // EXCLUDED here: it addresses pair 1's own borrower/co-borrower slot and is trusted as
+    // OUR second only when our person actually matched it (secondHit above). Assigning an
+    // UNMATCHED by-number party to the co-borrower slot would surface the primary (or an
+    // unrelated pair-1 co-borrower) as a phantom co-borrower on a single-borrower file.
+    const fb = parties.find((e) => !used.has(e.party) && !e.byNumber);
     coBor = fb ? fb.party : {};
   }
 
@@ -726,13 +736,17 @@ function _hasFieldValues(loan) {
 // True when the stored `_fieldValues` already carries the BY-NUMBER identity read
 // (owner-directed 2026-08-02). A snapshot from before this wiring may have the economics
 // `_fieldValues` (1859/388) but NO identity fields, so the co-borrower still can't be
-// recovered by number — that file must re-heal to pull identity too. The markers are the
-// borrower name ids (present on every loan once identity is fetched) and the hashed-SSN
-// keys (present when only an SSN, no name, came back). Absent all of them → heal.
+// recovered by number — that file must re-heal once to pull identity too. The definitive
+// marker is `_idRead`, stamped whenever the identity ids were REQUESTED by number (even if
+// the tenant returned some empty / the persona lacks scope for the SSN fields), so a file
+// heals AT MOST ONCE and never re-fires a live read on every panel view. The borrower-name
+// and hashed-SSN keys are a fallback marker for a snapshot written before the sentinel
+// existed. Absent all of them → heal.
 function _hasIdentityFieldValues(loan) {
   const fv = loan && loan._fieldValues;
   if (!fv || typeof fv !== 'object') return false;
-  return ('4002' in fv) || ('4000' in fv) || ('4006' in fv) || ('4004' in fv)
+  return ('_idRead' in fv)
+    || ('4002' in fv) || ('4000' in fv) || ('4006' in fv) || ('4004' in fv)
     || ('_ssn_b_hash' in fv) || ('_ssn_cb_hash' in fv);
 }
 
@@ -761,6 +775,7 @@ async function _ensureFieldValues(c, appId, loan, guid, ourLoanNumber) {
     if (!vals || !Object.keys(vals).length) return loan;
     // Hash + strip the plaintext SSN (65/97) BEFORE it is used or persisted.
     require('./reader').scrubFieldValuesSsn(vals);
+    vals._idRead = 1; // identity was read by number — heal at most once (see _hasIdentityFieldValues)
     const norm = (v) => String(v == null ? '' : v).trim().toUpperCase().replace(/\s+/g, '');
     const theirLoanNo = vals['364'];
     // If field 364 came back and disagrees with our loan number, these values are for a

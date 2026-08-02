@@ -285,7 +285,10 @@ async function pullLoanForApplication(appId) {
     const vals = await client.readFields(guid, ids);
     // Hash + strip the plaintext SSN (fields 65/97) BEFORE it is ever stored on the loan.
     scrubFieldValuesSsn(vals);
-    if (vals && typeof vals === 'object' && Object.keys(vals).length) loan._fieldValues = vals;
+    // Stamp that identity was read by number (only on a non-empty read) so the reconcile
+    // self-heal treats this snapshot as already-identity-read and never re-fires a live
+    // read on every panel view (see reconcile._hasIdentityFieldValues).
+    if (vals && typeof vals === 'object' && Object.keys(vals).length) { vals._idRead = 1; loan._fieldValues = vals; }
   } catch (e) {
     // eslint-disable-next-line no-console
     console.warn('[encompass] fieldReader unavailable, falling back to loan paths:', e && e.message);

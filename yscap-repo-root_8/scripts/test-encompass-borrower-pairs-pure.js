@@ -316,4 +316,37 @@ ok('J: a single-borrower file with a by-number borrower never creates a phantom 
 }
 ok('K: when the subtree already has the co-borrower, the by-number duplicate is never double-counted');
 
+// ── SCENARIO L — subtree primary present-but-EMPTY, recovered primary differs ─
+// Regression for the phantom-co-borrower defect: `applications[0].borrower` exists but is
+// unnamed ({firstName:'',lastName:''}), and the by-number primary is a DIFFERENT person.
+// The by-number primary must fill the BORROWER slot (an honest mismatch), NOT sit
+// unclaimed and get grabbed by the co-borrower fallback as a phantom.
+{
+  const loan = {
+    applications: [ { borrower: { firstName: '', lastName: '' }, coBorrower: null } ],
+    _fieldValues: { '4000': 'Jane', '4002': 'Doe' },
+  };
+  const row = bor('John', 'Smith');   // single-borrower file
+  const f = byKey(compareIdentity(row, loan));
+  assert.strictEqual(f.id_borrower_name.status, 'mismatch', 'the by-number primary surfaces as an honest borrower MISMATCH (John Smith vs Jane Doe)');
+  assert.ok(!f.id_coborrower_name, 'NO phantom co-borrower row — the recovered primary never lands in the co slot');
+}
+ok('L: an empty subtree primary recovered by number surfaces as a borrower mismatch, never a phantom co-borrower');
+
+// ── SCENARIO M — Encompass co-fields carry the PRIMARY's own name (data artifact) ─
+// Regression for the narrower phantom variant: on a single-borrower file, the by-number
+// co-borrower fields happen to hold the primary's name. An UNMATCHED by-number co-borrower
+// must NOT be slotted as our co-borrower (we have none), so no phantom row appears.
+{
+  const loan = {
+    applications: [ app(P('John', 'Smith'), null) ],
+    _fieldValues: { '4000': 'John', '4002': 'Smith', '4004': 'John', '4006': 'Smith' },
+  };
+  const row = bor('John', 'Smith');   // single-borrower on our side
+  const f = byKey(compareIdentity(row, loan));
+  assert.strictEqual(f.id_borrower_name.status, 'match', 'primary matches');
+  assert.ok(!f.id_coborrower_name, 'NO phantom co-borrower — an unmatched by-number co-borrower is never slotted');
+}
+ok('M: an unmatched by-number co-borrower (even one carrying the primary name) never becomes a phantom co-borrower');
+
 console.log(`\nEncompass borrower-pairs pure — ${passed} groups passed`);
