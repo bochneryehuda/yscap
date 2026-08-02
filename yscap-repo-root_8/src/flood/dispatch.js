@@ -44,6 +44,29 @@ async function latestFloodOrder(appId) {
   } catch (_) { return null; }
 }
 
+// Retrieve the certificate for a determination ALREADY paid for (never a new
+// order). Only the Xactus desk implements it; the parked Encompass desk does not,
+// so it degrades to a plain "not available" instead of throwing.
+async function fetchCertificate(args) {
+  const desk = activeDesk();
+  if (typeof desk.fetchCertificate !== 'function') {
+    return { ok: false, error: 'unsupported', message: 'This flood provider can’t re-fetch a certificate — upload it manually instead.' };
+  }
+  return desk.fetchCertificate(args);
+}
+
+// Is the file's completed determination's certificate actually filed as a live
+// document? Drives the truthful "certificate is / isn't attached" wording.
+async function certificateFiled(appId) {
+  try {
+    const desk = activeDesk();
+    if (typeof desk.latestCompletedOrder !== 'function' || typeof desk.certificateOnFile !== 'function') return null;
+    const done = await desk.latestCompletedOrder(appId);
+    if (!done) return null;
+    return await desk.certificateOnFile(done);
+  } catch (_) { return null; }
+}
+
 // Whether the file has what the ACTIVE provider needs before it can order.
 //   xactus    → a usable property address (the determination is on the property)
 //   encompass → a loan number (the link to the Encompass loan)
@@ -60,4 +83,4 @@ async function readiness(appId) {
   } catch (_) { return { ready: false, needs: 'error' }; }
 }
 
-module.exports = { providerName, activeDesk, activeClient, enabled, orderFlood, latestFloodOrder, readiness };
+module.exports = { providerName, activeDesk, activeClient, enabled, orderFlood, latestFloodOrder, readiness, fetchCertificate, certificateFiled };

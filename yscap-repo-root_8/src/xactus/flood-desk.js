@@ -85,6 +85,71 @@ async function circuitOk() {
   } catch (_) { return false; }
 }
 
+// The newest COMPLETED flood order on this file, whichever provider placed it —
+// the proof that a determination has already been bought for this property.
+async function latestCompletedOrder(appId) {
+  try {
+    const r = await db.query(
+      `SELECT * FROM encompass_flood_orders
+        WHERE application_id=$1 AND status='completed'
+        ORDER BY completed_at DESC NULLS LAST, ordered_at DESC LIMIT 1`, [appId]);
+    return r.rows[0] || null;
+  } catch (_) { return null; }
+}
+
+// Does the order's filed certificate still exist as a live document?
+async function certificateOnFile(order) {
+  if (!order || !order.document_id) return false;
+  try {
+    const r = await db.query(`SELECT 1 FROM documents WHERE id=$1 AND is_current=true`, [order.document_id]);
+    return !!r.rows[0];
+  } catch (_) { return false; }
+}
+
+// ── Retrieve the certificate for an order we ALREADY paid for ─────────────────
+// A StatusQuery fetches the completed report — it is a retrieval, NOT a new order,
+// so it never charges us again. This is what the "Get the certificate" action runs
+// when a determination came back without its PDF attached.
+async function fetchCertificate({ appId, actorId }) {
+  if (!client.enabled()) return { ok: false, error: 'disabled', message: 'Flood ordering is not turned on yet.' };
+  if (!client.configured()) return { ok: false, error: 'not_configured', message: 'Flood ordering is not set up yet — add the Xactus flood web address in the settings.' };
+
+  const order = await latestCompletedOrder(appId);
+  if (!order) return { ok: false, error: 'no_completed_order', message: 'There is no completed flood determination on this file yet.' };
+  if (await certificateOnFile(order)) {
+    return { ok: true, alreadyFiled: true, order, message: 'The flood certificate is already filed on this condition.' };
+  }
+  if (!order.order_id) {
+    return { ok: false, error: 'no_reference', order, message: 'This determination has no Xactus reference number, so the certificate can’t be retrieved. Upload it manually instead.' };
+  }
+
+  let st;
+  try { st = await client.getOrderStatus(order.order_id); }
+  catch (e) {
+    return { ok: false, error: 'fetch_failed', order, message: `Could not retrieve the certificate from Xactus: ${e.userMessage || e.message}` };
+  }
+  if (!st || !st.pdfBase64) {
+    return { ok: false, error: 'no_pdf', order, message: 'Xactus did not return a certificate PDF for this determination. Upload the certificate manually instead.' };
+  }
+
+  let documentId = null;
+  try {
+    const buf = decodePdf(st.pdfBase64);
+    if (buf && buf.length) documentId = await attachCertificate(order, buf);
+  } catch (e) {
+    return { ok: false, error: 'file_failed', order, message: `The certificate came back but could not be saved: ${e.message}` };
+  }
+  if (!documentId) return { ok: false, error: 'file_failed', order, message: 'The certificate came back but could not be read as a PDF. Upload it manually instead.' };
+
+  await db.query(
+    `UPDATE encompass_flood_orders SET document_id=$2, updated_at=now(),
+            raw = COALESCE(raw,'{}'::jsonb) || jsonb_build_object('pdfAttached', true)
+      WHERE id=$1`, [order.id, documentId]).catch(() => {});
+  await audit(actorId, 'xactus_flood_certificate_fetched', appId, { certId: order.order_id, documentId });
+  const fresh = (await db.query(`SELECT * FROM encompass_flood_orders WHERE id=$1`, [order.id])).rows[0] || order;
+  return { ok: true, order: fresh, documentId, message: 'Flood certificate retrieved — it’s filed on this condition.' };
+}
+
 async function recordOrder({ appId, itemId, actorId, status, orderId, raw, lastError, product }) {
   // provider='xactus'; encompass_loan_guid is NULL (Xactus has no Encompass GUID —
   // db/394 dropped the NOT NULL and added the provider column).
@@ -98,7 +163,7 @@ async function recordOrder({ appId, itemId, actorId, status, orderId, raw, lastE
 
 // ── Place an order ───────────────────────────────────────────────────────────
 // Returns a shaped result the route hands straight back: { ok, order?, error?, message }.
-async function orderFlood({ appId, checklistItemId, actorId }) {
+async function orderFlood({ appId, checklistItemId, actorId, force }) {
   if (!client.enabled()) return { ok: false, error: 'disabled', message: 'Flood ordering is not turned on yet.' };
   if (!client.configured()) return { ok: false, error: 'not_configured', message: 'Flood ordering is not set up yet — add the Xactus flood web address, username and password in the settings.' };
 
@@ -110,6 +175,23 @@ async function orderFlood({ appId, checklistItemId, actorId }) {
   if (!f.borrowers.length) {
     return { ok: false, error: 'borrower_required', message: 'Add the borrower’s name to this file first — the flood certificate is issued in the borrower’s name.' };
   }
+  // ALREADY BOUGHT — never order twice by accident (owner-directed 2026-08-02:
+  // "after successful on each file you should not be able to do it again unless if
+  // it failed"). A flood order is billable and a Life-of-Loan determination is
+  // monitored for the life of the loan, so a second one is pure waste. A FAILED or
+  // dry-run order does not block. `force` is the deliberate way through (a corrected
+  // property address genuinely needs a fresh determination) — it is never the
+  // default, so a stale screen or a double click can never re-charge us.
+  if (!force) {
+    const doneRow = await latestCompletedOrder(appId);
+    if (doneRow) {
+      return {
+        ok: false, error: 'already_completed', order: doneRow,
+        message: 'A flood certificate has already come back for this file, so PILOT did not order another one (each order is billable). It is filed on this condition.',
+      };
+    }
+  }
+
   if (!(await circuitOk())) return { ok: false, error: 'circuit_open', message: 'Too many flood orders in a short window — try again shortly.' };
 
   const itemId = checklistItemId || await floodConditionId(appId);
@@ -185,7 +267,9 @@ async function pollPendingOnce() {
   for (const o of rows) {
     try {
       const st = await client.getOrderStatus(o.order_id);
-      if (st.status === 'completed') { await completeOrder(o, st); completed++; }
+      // This determination CAME from a StatusQuery, so a missing PDF must not
+      // trigger another identical StatusQuery inside completeOrder.
+      if (st.status === 'completed') { await completeOrder(o, st, { viaStatusQuery: true }); completed++; }
       else if (st.status === 'error') {
         await db.query(`UPDATE encompass_flood_orders SET status='error', last_error=$2, updated_at=now() WHERE id=$1`,
           [o.id, (st.error || 'The flood vendor reported the order failed.').slice(0, 400)]);
@@ -200,11 +284,27 @@ async function pollPendingOnce() {
 }
 
 // A completed order: file the PDF, record the determination, re-evaluate conditions.
-async function completeOrder(order, parsed) {
+// `opts.viaStatusQuery` = this determination CAME from a StatusQuery, so re-querying
+// for a missing PDF would just repeat the same answer.
+async function completeOrder(order, parsed, opts = {}) {
   let documentId = null;
-  if (parsed.pdfBase64) {
+  let pdfBase64 = parsed.pdfBase64 || null;
+
+  // The certificate normally rides back inside the order response. When it doesn't
+  // (the account is set to exclude embedded files, or the determination completed
+  // out-of-band), RETRIEVE it with a StatusQuery — the vendor's documented way to
+  // fetch a completed report. This is a retrieval of a report we already paid for,
+  // never a second order. Best-effort: the determination still lands either way.
+  if (!pdfBase64 && order.order_id && !opts.viaStatusQuery) {
     try {
-      const buf = decodePdf(parsed.pdfBase64);
+      const st = await client.getOrderStatus(order.order_id);
+      if (st && st.pdfBase64) pdfBase64 = st.pdfBase64;
+    } catch (e) { console.warn('[xactus-flood] certificate retrieval failed (non-fatal):', e.message); }
+  }
+
+  if (pdfBase64) {
+    try {
+      const buf = decodePdf(pdfBase64);
       if (buf && buf.length) documentId = await attachCertificate(order, buf);
     } catch (e) { console.warn('[xactus-flood] certificate file failed (non-fatal):', e.message); }
   }
@@ -214,7 +314,10 @@ async function completeOrder(order, parsed) {
             raw=$6, completed_at=now(), updated_at=now(), last_error=NULL
       WHERE id=$1`,
     [order.id, parsed.sfha, parsed.floodZone, parsed.determination ? JSON.stringify(parsed.determination) : null,
-     documentId, JSON.stringify({ statusText: parsed.statusText, code: parsed.code, certId: parsed.certId })]);
+     // Record WHETHER the certificate was filed, so a missing PDF is diagnosable
+     // from the order row itself instead of being invisible.
+     documentId, JSON.stringify({ statusText: parsed.statusText, code: parsed.code, certId: parsed.certId,
+       pdfAttached: !!documentId })]);
 
   // Re-run the Condition Center. `in_flood_zone` now also reads this completed
   // order (engine.loadRuleContext reads encompass_flood_orders), so a proven flood
@@ -269,4 +372,5 @@ async function audit(actorId, action, appId, detail) {
 
 module.exports = {
   orderFlood, pollPendingOnce, completeOrder, attachCertificate, resolveFile, resolveAddress, addressUsable, readiness, floodConditionId,
+  fetchCertificate, latestCompletedOrder, certificateOnFile,
 };

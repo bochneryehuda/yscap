@@ -116,7 +116,14 @@ function buildOrderBody({ loanNumber, borrowers, property, product } = {}) {
   const prop = property || {};
   const residential = isResidential(borrowers);
   const req = el('REQUEST_GROUP', { MISMOVersionID: version() }, [
-    el('REQUESTING_PARTY', { _Name: clean(cfg.requestingParty) || 'YS Capital Group' }, []),
+    // PREFERRED_RESPONSE/_UseEmbeddedFileIndicator="Y" EXPLICITLY asks for the
+    // certificate PDF to ride back inside the response as a base64 EMBEDDED_FILE.
+    // Xactus documents this as a toggle that can EXCLUDE the PDF, so we never leave
+    // it to the account default — a determination with no certificate is useless to
+    // us (owner-reported 2026-08-02: the zone came back but no PDF was filed).
+    el('REQUESTING_PARTY', { _Name: clean(cfg.requestingParty) || 'YS Capital Group' }, [
+      el('PREFERRED_RESPONSE', { _UseEmbeddedFileIndicator: 'Y' }, []),
+    ]),
     el('SUBMITTING_PARTY', { _Name: 'PILOT by YS Capital' }, []),
     el('REQUEST', {}, [el('REQUEST_DATA', {}, [
       el('FLOOD_REQUEST', { _ActionType: 'Original' }, [

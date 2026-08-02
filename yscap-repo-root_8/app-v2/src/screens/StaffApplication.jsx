@@ -902,16 +902,37 @@ function OrderFloodButton({ appId, itemId, onChanged, onUploadTo }) {
   const errored = order && order.status === 'error';
   const box = { marginTop: 8, padding: '8px 10px', border: '1px solid var(--gold)', borderRadius: 8, background: 'rgba(174,135,70,0.06)' };
 
-  async function placeOrder() {
+  // `force` re-orders a file that already has a determination — ALWAYS passed
+  // explicitly (a bare onClick={placeOrder} would hand the click event in as
+  // `force`, which is truthy, and silently re-charge us).
+  async function placeOrder(force) {
     setBusy(true); setErr(''); setMsg('');
     try {
-      const out = await api.orderFlood(appId, itemId);
+      const out = await api.orderFlood(appId, itemId, force === true);
       setMsg(out.message || 'Flood certificate ordered.');
       await load();
       onChanged && onChanged();
     } catch (e) {
       setErr((e.data && e.data.message) || e.message || 'Could not order the flood certificate.');
     } finally { setBusy(false); }
+  }
+
+  // Retrieval of a certificate already paid for — never places a new order.
+  async function fetchCert() {
+    setBusy(true); setErr(''); setMsg('');
+    try {
+      const out = await api.fetchFloodCertificate(appId);
+      setMsg(out.message || 'Flood certificate retrieved.');
+      await load();
+      onChanged && onChanged();
+    } catch (e) {
+      setErr((e.data && e.data.message) || e.message || 'Could not get the certificate.');
+    } finally { setBusy(false); }
+  }
+
+  function reorder() {
+    if (!window.confirm('This places a NEW flood order with Xactus and we will be charged again.\n\nOnly do this if the determination on file is wrong (for example the property address was corrected). Continue?')) return;
+    placeOrder(true);
   }
 
   if (done) {
@@ -924,8 +945,30 @@ function OrderFloodButton({ appId, itemId, onChanged, onUploadTo }) {
             : order.sfha === false
               ? `Not in a flood zone${order.flood_zone ? ` (zone ${order.flood_zone})` : ''}.`
               : 'The determination came back.'}
-          {' '}The certificate is filed on this condition.
+          {' '}{state.hasCertificate === false
+            ? 'The certificate PDF is not on this condition yet.'
+            : 'The certificate PDF is filed on this condition — it’s in the documents above.'}
         </div>
+        {/* Only offered when the PDF really is missing. This RETRIEVES the report we
+            already paid for — it never places (or is charged for) a second order. */}
+        {state.hasCertificate === false && (
+          <button className="btn ghost small" style={{ marginTop: 6 }} disabled={busy} onClick={fetchCert}>
+            {busy ? 'Getting the certificate…' : 'Get the certificate PDF'}
+          </button>
+        )}
+        <div style={{ color: '#4B585C', marginTop: 6 }}>
+          PILOT won’t order another one for this file — each order is billable.
+        </div>
+        {state.canReorder && (
+          <button className="btn link small" style={{ marginTop: 4, color: '#256168', display: 'block' }}
+            disabled={busy} onClick={reorder}>Order a new determination anyway (charges again)</button>
+        )}
+        {onUploadTo && (
+          <button className="btn link small" style={{ marginTop: 4, color: '#256168', display: 'block' }}
+            onClick={() => onUploadTo({ itemId, slotBase: 0 })}>Upload a certificate manually instead</button>
+        )}
+        {msg && <div className="notice" style={{ marginTop: 6 }}>{msg}</div>}
+        {err && <div className="notice err" style={{ marginTop: 6 }}>{err}</div>}
       </div>
     );
   }
@@ -952,7 +995,7 @@ function OrderFloodButton({ appId, itemId, onChanged, onUploadTo }) {
           )}
         </div>
       )}
-      <button className="btn ghost small" style={{ marginTop: isDry ? 6 : 0 }} disabled={busy || !state.hasLoanNumber} onClick={placeOrder}>
+      <button className="btn ghost small" style={{ marginTop: isDry ? 6 : 0 }} disabled={busy || !state.hasLoanNumber} onClick={() => placeOrder(false)}>
         {busy ? 'Ordering…' : (errored || isDry) ? 'Order flood certificate again' : 'Order flood certificate'}
       </button>
       {!state.hasLoanNumber && (
