@@ -521,8 +521,9 @@ function compareIdentity(row, loan) {
       // so a reviewer can still see the two spellings without it being a finding.
       detailOnly: cmp.status === 'match_detail_only',
       // WHERE in Encompass this person was found + HOW (borrower pair, by name /
-      // by SSN) — null when they matched the classic pair-1 slot with nothing to
-      // note. The panel can show it so the multi-pair match is transparent.
+      // by SSN). Populated for every real match (including a legitimate pair-1
+      // name match); null ONLY on the no-hit fallback. The panel can show it so
+      // the multi-pair match is transparent.
       matchNote: matchNote || null,
       writable: false, open: status === 'mismatch', resolution: null,
     });
