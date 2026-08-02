@@ -35,6 +35,12 @@ async function seedFile() {
     [`titlegate_${process.pid}@example.com`])).rows[0];
   const app = (await db.query(
     'INSERT INTO applications (borrower_id, status) VALUES ($1,$2) RETURNING id', [bor.id, 'underwriting'])).rows[0];
+  // The fully-executed term sheet package is its own clear-to-close gate
+  // (esign/ctc-gate.js). It is not what THIS test is about, so the file carries a
+  // real executed package and the title/insurance question is measured on its own.
+  await db.query(
+    `INSERT INTO esign_envelopes (application_id, purpose, status, completed_at, is_test)
+     VALUES ($1,'term_sheet_package','completed', now(), false)`, [app.id]);
   return { borId: bor.id, appId: app.id };
 }
 

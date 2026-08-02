@@ -37,6 +37,7 @@ const { enqueueClickupPush, enqueueChecklistStatusPush } = require('../clickup/e
 const statusMap = require('../clickup/status');
 const llcLib = require('../lib/llc');
 const conditionEngine = require('../lib/conditions/engine');
+const esignCtcGate = require('../lib/esign/ctc-gate');
 const issuanceBackstop = require('../lib/underwriting/issuance-backstop'); // R6.18 (#202) issuance HARD-WARNING backstop
 const advisoryPolicy = require('../lib/underwriting/advisory-policy');     // AI findings are ADVISORY ONLY (owner-directed 2026-07-27)
 const conditionRules = require('../lib/conditions/rules');
@@ -8796,9 +8797,23 @@ async function advancementBlockers(appId, target) {
   const aiRows = [...underwritingFatals, ...aiAdvisories, ...aiReviewConds];
   const enforcedAi = aiRows.filter((r) => r.source === 'underwriting');
   const advisoryAi = aiRows.filter((r) => r.source !== 'underwriting');
+  // THE FULLY-EXECUTED TERM SHEET PACKAGE IS A REAL GATE (owner-directed
+  // 2026-08-01). Not a condition anyone can tick — a read of the actual DocuSign
+  // state. `rtl_cond_signedts` stays exactly as it is (required, borrower-facing,
+  // nudged to 'received' when the package completes); this sits BESIDE it so the
+  // file cannot reach clear-to-close on a ticked box with nothing executed behind
+  // it. Returned as a GATE, which means the readiness widget reads "not ready"
+  // and the status door refuses — while an ADMIN can still force past it, the
+  // same recorded escape hatch every other gate has. Fails OPEN on a DB error
+  // (see lib/esign/ctc-gate.js) so a wobble can never freeze the pipeline.
+  let esignGates = [];
+  try {
+    const g = await esignCtcGate.termSheetGate(appId, db);
+    if (g) esignGates = [g];
+  } catch (_) { esignGates = []; }
   return {
     conditions: [...underwriting, ...checklistConds.rows, ...enforcedAi].map(r => decorateBlocker(r, 'condition')),
-    gates: gates.rows.map(r => decorateBlocker(r, 'gate')),
+    gates: [...gates.rows, ...esignGates].map(r => decorateBlocker(r, 'gate')),
     advisories: advisoryAi.map(r => decorateBlocker(r, 'advisory')),
   };
 }

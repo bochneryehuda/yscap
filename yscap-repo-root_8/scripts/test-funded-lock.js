@@ -86,6 +86,12 @@ const statusOf = async (id) => (await db.query(`SELECT status FROM applications 
     // H2 — the internal-status endpoint cannot advance a file to funded past an
     // unsatisfied required condition.
     const app2 = (await db.query(`INSERT INTO applications (borrower_id, loan_officer_id, status) VALUES ($1,$2,'processing') RETURNING id`, [borrowerId, superId])).rows[0].id;
+    // The fully-executed term sheet package is its own gate on clear-to-close AND
+    // funding (esign/ctc-gate.js). H2 is about the open CONDITION, so the file
+    // carries a real executed package and the condition is measured on its own.
+    await db.query(
+      `INSERT INTO esign_envelopes (application_id, purpose, status, completed_at, is_test)
+       VALUES ($1,'term_sheet_package','completed', now(), false)`, [app2]);
     const tpl = (await db.query(`SELECT id, label, item_kind FROM checklist_templates WHERE code='rtl_p1_id'`)).rows[0];
     const item = (await db.query(
       `INSERT INTO checklist_items (template_id, scope, application_id, label, status, item_kind, is_required)
