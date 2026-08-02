@@ -273,6 +273,89 @@ const asgCtx = (over) => ({
     'and the discrepancy still fires — the gate never gets quieter than it was');
 }
 
+// ===== 8b. THE LADDER ONLY RUNS WHEN THE FILE SAYS SO — the application AND the pricing =====
+// Owner's rule (2026-08-02): "this ladder is only if the file shows that it's an assignment of
+// contract on the application and on the product and pricing. If not, then you need a regular
+// contract from the seller to the end buyer with one price."
+{
+  const wholesaleDocs = [
+    ext('title', { vestedOwners: [SELLER] }, 't'),
+    ext('purchase_contract', { sellerNames: [SELLER], buyerName: FLIPPER, purchasePrice: 438000 }, 'c1'),
+    ext('assignment', { assignorName: FLIPPER, assigneeName: VEST, sellerName: SELLER,
+      originalPurchasePrice: 438000, assignmentFee: 36000, totalPriceToAssignee: 474000 }, 'a1'),
+  ];
+  const withReg = (assignment) => Object.assign(asgCtx(), { registration: { isAssignment: !!assignment, assignment: assignment || null } });
+
+  // Both halves say assignment → the ladder runs, exactly as before.
+  const both = buildAssignmentChain(withReg({ sellerPrice: 438000, fee: 36000 }), wholesaleDocs);
+  assert.strictEqual(both.isAssignment, true);
+  assert.strictEqual(both.status, 'intact');
+  assert.deepStrictEqual(codes(both), []);
+
+  // The application says assignment, the PRODUCT was priced on one price → the ladder stands down
+  // and says why. No chain findings at all — measuring a wholesale chain against straight-purchase
+  // pricing would only produce noise.
+  const priced = buildAssignmentChain(withReg(null), wholesaleDocs);
+  assert.strictEqual(priced.isAssignment, false, 'pricing that disagrees stands the ladder down');
+  assert.strictEqual(priced.pricedAsAssignment, false);
+  assert.strictEqual(priced.legs.length, 0, 'no legs are drawn when the ladder does not apply');
+  assert.deepStrictEqual(codes(priced), ['asg_not_priced_as_assignment']);
+  assert.ok(/regular contract from the seller/.test(priced.findings[0].howTo),
+    'and it names the other way out: one straight contract at one price');
+
+  // NOT YET REGISTERED is "not yet", never "no" — the review is most useful before pricing.
+  const unpriced = buildAssignmentChain(asgCtx(), wholesaleDocs);
+  assert.strictEqual(unpriced.pricedAsAssignment, null);
+  assert.strictEqual(unpriced.isAssignment, true, 'an unregistered file still gets the ladder');
+  assert.deepStrictEqual(codes(unpriced), []);
+
+  // The seller-role tolerance stands down with the ladder: on straight-purchase pricing the two
+  // contracts' sellers are compared the ordinary way, so a real disagreement is still caught.
+  const twoContracts = [
+    ext('title', { propertyAddress: ADDR, vestedOwners: [SELLER] }, 't'),
+    ext('purchase_contract', { propertyAddress: ADDR, sellerNames: [SELLER], buyerName: FLIPPER, purchasePrice: 438000 }, 'c1'),
+    ext('purchase_contract', { propertyAddress: ADDR, sellerNames: [FLIPPER], buyerName: VEST, purchasePrice: 474000 }, 'c2'),
+  ].map((e) => ({ id: e.id, docType: e.doc_type, fields: e.fields }));
+  assert.ok(!buildTieout(withReg({ sellerPrice: 438000 }), twoContracts).discrepancies.some((d) => d.code === 'tieout_seller_name'),
+    'priced as an assignment → the flip contract is judged against the flipper');
+  assert.ok(buildTieout(withReg(null), twoContracts).discrepancies.some((d) => d.code === 'tieout_seller_name'),
+    'priced as a straight purchase → two different sellers are a mismatch again');
+}
+
+// ===== 8c. NOT a wholesale file, but the paperwork is shaped like one =====
+{
+  const straight = { app: { property_address: ADDR, is_assignment: false, purchase_price: 474000 }, vestingName: VEST };
+
+  const withAssignmentDoc = buildAssignmentChain(straight, [
+    ext('title', { vestedOwners: [SELLER] }, 't'),
+    ext('purchase_contract', { sellerNames: [SELLER], buyerName: VEST, purchasePrice: 474000 }, 'c1'),
+    ext('assignment', { assignorName: FLIPPER, assigneeName: VEST }, 'a1'),
+  ]);
+  assert.deepStrictEqual(codes(withAssignmentDoc), ['asg_documents_show_a_flip']);
+  assert.ok(/ONE contract from the seller directly/.test(withAssignmentDoc.findings[0].howTo),
+    'the remedy is the owner’s: one contract, seller to end buyer, one price');
+
+  const twoPrices = buildAssignmentChain(straight, [
+    ext('purchase_contract', { sellerNames: [SELLER], buyerName: FLIPPER, purchasePrice: 438000 }, 'c1'),
+    ext('purchase_contract', { sellerNames: [FLIPPER], buyerName: VEST, purchasePrice: 474000 }, 'c2'),
+  ]);
+  assert.deepStrictEqual(codes(twoPrices), ['asg_documents_show_a_flip'], 'two contracts at two prices is not a straight purchase');
+
+  // A perfectly ordinary straight purchase stays silent.
+  const clean = buildAssignmentChain(straight, [
+    ext('title', { vestedOwners: [SELLER] }, 't'),
+    ext('purchase_contract', { sellerNames: [SELLER], buyerName: VEST, purchasePrice: 474000 }, 'c1'),
+  ]);
+  assert.deepStrictEqual(codes(clean), [], 'one contract, one price, seller to end buyer → nothing to say');
+
+  // A single contract that merely DECLARES itself an assignment belongs to the purchase-contract
+  // check (`assignment_unexpected`) — never duplicated here.
+  const declares = buildAssignmentChain(straight, [
+    ext('purchase_contract', { sellerNames: [SELLER], buyerName: VEST, purchasePrice: 474000, isAssignment: true }, 'c1'),
+  ]);
+  assert.deepStrictEqual(codes(declares), [], 'the self-declaring contract is the per-document check’s finding');
+}
+
 // ===== 9. The card never claims "intact" while the documents are still arguing =====
 {
   const disputed = buildAssignmentChain(asgCtx(), [

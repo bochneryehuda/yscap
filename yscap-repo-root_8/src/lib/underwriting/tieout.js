@@ -202,8 +202,12 @@ function buildTieout(fileCtx, sources = []) {
     // it actually speaks to, and the original-seller consensus is taken over the origin-role
     // documents ONLY. Requires a chain we could actually resolve; with nothing proven every document
     // stays 'origin' and the row behaves exactly as it did before.
-    const roleAware = isAssignment && fact.key === 'seller_name'
-      && !!chain && (chain.originalSellerNames.length > 0 || chain.flipperNames.length > 0);
+    // Gated on the CHAIN's own flag, not the raw application flag: the owner's rule is that the
+    // wholesale ladder only applies when the application AND the product & pricing both say
+    // assignment. A file the engine priced on ONE price gets the ordinary single-seller comparison.
+    const roleAware = fact.key === 'seller_name'
+      && !!chain && chain.isAssignment
+      && (chain.originalSellerNames.length > 0 || chain.flipperNames.length > 0);
     const roleOf = (id) => ((roleAware && chainRoles[id] === 'flipper') ? 'flipper' : 'origin');
 
     // Truth = the file value if the file stores this fact, else the documents' consensus.

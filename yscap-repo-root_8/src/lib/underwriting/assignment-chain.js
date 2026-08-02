@@ -103,6 +103,7 @@ function buildAssignmentChain(fileCtx, exts) {
   // and every caller here is a best-effort path that must never throw.
   const ctx = fileCtx || {};
   const app = ctx.app || {};
+  const reg = ctx.registration || null;
   const vesting = ctx.vestingName || null;
   const person = borrowerName(ctx.borrower) || null;
 
@@ -113,10 +114,27 @@ function buildAssignmentChain(fileCtx, exts) {
   const appraisals = ofType(srcs, 'appraisal');
   const settlements = ofType(srcs, 'settlement');
 
-  const fileSaysAssignment = !!app.is_assignment;
-  // A document can also PROVE the deal is a wholesale even before the file is marked one.
+  // ── 0. IS THIS LADDER EVEN THE RIGHT ONE TO CLIMB? ────────────────────────────────────────────
+  // OWNER'S RULE (2026-08-02): "this ladder is only if the file shows that it's an assignment of
+  // contract ON THE APPLICATION and ON THE PRODUCT AND PRICING. If not, then you need a regular
+  // contract from the seller to the end buyer with one price."
+  //
+  // So the FILE decides, never the documents. A stray assignment PDF on a straight purchase must not
+  // switch the review into wholesale mode — it is a discrepancy to raise, not a mode to adopt.
+  //   · the APPLICATION  → `applications.is_assignment`.
+  //   · PRODUCT & PRICING → the registered quote carries an `assignment` block ONLY when the engine
+  //     actually sized the loan on the seller price plus the financeable fee.
+  // A file that has NOT been registered yet has no pricing statement at all — that is "not yet",
+  // not "no", so it does not veto (the review is most useful during early underwriting, and the
+  // registration will contradict it later if the two really disagree). A registration that priced a
+  // STRAIGHT purchase is a real contradiction: the ladder stands down and F0 says so.
+  const appSaysAssignment = !!app.is_assignment;
+  const pricedAsAssignment = reg ? !!reg.isAssignment : null;   // null = nothing registered yet
+  const isAssignment = appSaysAssignment && pricedAsAssignment !== false;
+  // What the DOCUMENTS look like — never a mode switch, only evidence for the two disagreement
+  // findings below.
   const docsSayAssignment = assignments.length > 0 || contracts.some((c) => c.fields.isAssignment === true);
-  const isAssignment = fileSaysAssignment || docsSayAssignment;
+  const fileSaysAssignment = appSaysAssignment;
 
   // ── 1. THE ORIGINAL SELLER — the public record is the authority ────────────────────────────────
   // The title report's vested owner(s) and the appraisal's owner of record / seller of public
@@ -378,6 +396,45 @@ function buildAssignmentChain(fileCtx, exts) {
         break; // one is enough — the chain is either connected or it isn't
       }
     }
+  } else {
+    // ── THE LADDER IS NOT THE RIGHT ONE FOR THIS FILE ────────────────────────────────────────────
+    // The owner's other half: "if not, then you need a regular contract from the seller to the end
+    // buyer with one price." Two ways a file lands here, and each gets ONE finding naming both ways
+    // out — re-price it as a wholesale, or produce the single straight contract.
+
+    // F0a. The APPLICATION says assignment; the registered product priced a straight purchase. The
+    // loan is sized on ONE price, so the whole seller → flipper → end buyer ladder is measuring the
+    // deal against a structure the pricing does not share.
+    if (appSaysAssignment && pricedAsAssignment === false) {
+      findings.push(mk({
+        code: 'asg_not_priced_as_assignment', severity: 'warning', field: 'is_assignment',
+        docValue: 'marked as an assignment on the application', fileValue: `priced on one price of ${money(fileTotal)}`,
+        title: 'The application says assignment but the product was priced as a straight purchase',
+        howTo: `The file is marked as an assignment, but the registered product was sized on a single purchase price of ${money(fileTotal)} — no seller price and no flip fee went into it. Either capture the seller's original price and the flip fee and re-register the product, or, if this is not a wholesale deal, un-mark it and get one regular contract from the seller straight to ${vesting || 'the borrowing entity'} for one price.`,
+        actions: ['fix_file', 'request_document', 'post_condition', 'dismiss'],
+      }));
+    }
+
+    // F0b. The file is NOT a wholesale, but the paperwork is shaped like one — an assignment
+    // document, or two contracts at two different prices. A straight purchase has exactly one
+    // contract and one price. (A single contract that merely DECLARES itself an assignment is
+    // `assignment_unexpected`, raised by the purchase-contract check — never duplicated here.)
+    if (!appSaysAssignment) {
+      const prices = contracts.map((c) => num(c.fields.purchasePrice)).filter((v) => v != null);
+      const twoPrices = prices.some((p, i) => prices.some((q, j) => j > i && Math.abs(p - q) > TOL));
+      if (assignments.length || twoPrices) {
+        const what = assignments.length
+          ? 'an assignment of contract is on file'
+          : `there are ${contracts.length} purchase contracts at different prices (${prices.map(money).join(' and ')})`;
+        findings.push(mk({
+          code: 'asg_documents_show_a_flip', severity: 'warning', field: 'is_assignment',
+          docValue: what, fileValue: `not an assignment — one price of ${money(fileTotal)}`,
+          title: 'The file is not a wholesale deal, but the paperwork is shaped like one',
+          howTo: `The file is not marked as an assignment and the loan is sized on one purchase price of ${money(fileTotal)}, but ${what}. A straight purchase needs ONE contract from the seller directly to ${vesting || 'the borrowing entity'} at one price. Either get that contract, or — if this really is a wholesale deal — mark it as an assignment, capture the seller's original price and the flip fee, and re-register the product so the pricing matches.`,
+          actions: ['fix_file', 'request_document', 'post_condition', 'dismiss'],
+        }));
+      }
+    }
   }
 
   // ── 7. The view: the two legs and the three bodies, for the desk ──────────────────────────────
@@ -410,7 +467,10 @@ function buildAssignmentChain(fileCtx, exts) {
           && agrees(docFlip, fileFlip) === true) ? 'intact' : 'incomplete'));
 
   return {
-    isAssignment, fileSaysAssignment, docsSayAssignment, status, reachesVesting,
+    // `isAssignment` is the LADDER's own gate — the application AND the pricing, per the owner's
+    // rule. The three inputs ride along so a surface can say WHY the ladder stood down.
+    isAssignment, fileSaysAssignment, docsSayAssignment, appSaysAssignment, pricedAsAssignment,
+    status, reachesVesting,
     parties: {
       originalSeller: originalSellerNames,
       flipper: flipperNames,
