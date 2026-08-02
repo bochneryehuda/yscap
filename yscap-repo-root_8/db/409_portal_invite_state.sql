@@ -1,4 +1,4 @@
--- 407 — THE FILE SAYS WHERE EACH BORROWER STANDS WITH THE PORTAL
+-- 409 — THE FILE SAYS WHERE EACH BORROWER STANDS WITH THE PORTAL
 --
 -- Owner-directed 2026-08-02: the loan file must show, for the borrower AND the
 -- co-borrower, whether they were invited to the portal and when, with a way to

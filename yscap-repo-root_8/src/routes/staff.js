@@ -2097,7 +2097,7 @@ router.post('/applications/:id/vesting/personal-name', async (req, res) => {
     }
     /* THE AFFIDAVIT IS NO LONGER A PREREQUISITE OF MARKING THE FILE INDIVIDUAL
        (owner-directed 2026-08-02). It is still REQUIRED — as its own rule-driven
-       condition (db/408, `cond_noo_affidavit_individual`), which is the thing
+       condition (db/410, `cond_noo_affidavit_individual`), which is the thing
        that must be cleared before clear-to-close.
 
        WHY THE OLD 400 HAD TO GO: it demanded the affidavit ride along in the very
@@ -6391,7 +6391,7 @@ async function signOffGate(itemId, actor) {
     const pn = (await db.query(
       `SELECT personal_name_purchase FROM applications WHERE id=$1`, [item.application_id])).rows[0];
     /* THE AFFIDAVIT IS NO LONGER DEMANDED HERE (owner-directed 2026-08-02). It
-       has its own condition now — `cond_noo_affidavit_individual` (db/408),
+       has its own condition now — `cond_noo_affidavit_individual` (db/410),
        rule-driven on `vesting_is_individual` — and that condition is
        prior_to_docs, so it holds clear-to-close exactly as this gate used to.
        Keeping the demand in BOTH places would mean one affidavit asked for

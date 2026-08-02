@@ -246,7 +246,7 @@ const COLUMN_KIND = Object.freeze({
        "what can the column hold", and the doors keep their own kinder wording. */
     fico: 'int',
     dependents_count: 'int', months_at_residence: 'int', tier: 'int',
-    /* db/407 — how many portal invitations have gone to this person. Never typed
+    /* db/409 — how many portal invitations have gone to this person. Never typed
        by a human (lib/portal-invite increments it), so no door can overflow it;
        it is declared anyway because this table answers "what can the column
        hold" for EVERY numeric column, and the DB guard reads the live schema —

@@ -106,7 +106,7 @@ const CODE_CATEGORY = {
   // filed inside Contract & Assignment (owner-directed 2026-07-31).
   cond_emd_corrfirst: C.EMD,
   // The non-owner-occupied affidavit files with the ENTITY documents: on an
-  // individual-vested file it is what stands in for the entity file (db/408).
+  // individual-vested file it is what stands in for the entity file (db/410).
   cond_noo_affidavit_individual: C.ENTITY,
   // LLC / vesting entity documents
   llc_docs: C.LLC, operating_agmt: C.LLC, rtl_p1_llc: C.LLC,
